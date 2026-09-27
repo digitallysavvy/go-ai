@@ -34,6 +34,10 @@ type AssistantMessageContent struct {
 
 	// Text is the text content.
 	Text string `json:"text"`
+
+	// Annotations holds citations attached to this text part (url_citation,
+	// file_citation, container_file_citation, file_path).
+	Annotations []TextAnnotation `json:"annotations,omitempty"`
 }
 
 // FunctionCallItem represents a function call output item.
@@ -482,6 +486,152 @@ type FunctionCallOutputItem struct {
 	Output interface{} `json:"output"` // string or []CustomToolCallOutputPart
 }
 
+// ImageGenerationCallItem represents a hosted image_generation tool call
+// output item. Result (the base64-encoded generated image) is only present
+// on the output_item.done / non-streaming shape.
+type ImageGenerationCallItem struct {
+	// Type is always "image_generation_call".
+	Type string `json:"type"`
+
+	// ID is the unique identifier for this output item.
+	ID string `json:"id,omitempty"`
+
+	// Result is the base64-encoded generated image. Absent at
+	// output_item.added time.
+	Result string `json:"result,omitempty"`
+}
+
+// FileSearchResult is a single matched document from a file_search_call.
+type FileSearchResult struct {
+	Attributes map[string]interface{} `json:"attributes,omitempty"`
+	FileID     string                 `json:"file_id"`
+	Filename   string                 `json:"filename"`
+	Score      float64                `json:"score"`
+	Text       string                 `json:"text"`
+}
+
+// FileSearchCallItem represents a hosted file_search tool call output item.
+// Queries/Results are only present on the output_item.done / non-streaming
+// shape.
+type FileSearchCallItem struct {
+	// Type is always "file_search_call".
+	Type string `json:"type"`
+
+	// ID is the unique identifier for this output item.
+	ID string `json:"id,omitempty"`
+
+	Queries []string           `json:"queries,omitempty"`
+	Results []FileSearchResult `json:"results,omitempty"`
+}
+
+// CodeInterpreterOutput is a single output artifact from a code_interpreter
+// tool call: either a text log or a generated image URL.
+type CodeInterpreterOutput struct {
+	// Type is "logs" or "image".
+	Type string `json:"type"`
+	Logs string `json:"logs,omitempty"`
+	URL  string `json:"url,omitempty"`
+}
+
+// CodeInterpreterCallItem represents a hosted code_interpreter tool call
+// output item.
+type CodeInterpreterCallItem struct {
+	// Type is always "code_interpreter_call".
+	Type string `json:"type"`
+
+	// ID is the unique identifier for this output item.
+	ID string `json:"id,omitempty"`
+
+	// ContainerID identifies the sandbox container running the code.
+	ContainerID string `json:"container_id,omitempty"`
+
+	// Code is the code executed, or nil if not yet available.
+	Code *string `json:"code,omitempty"`
+
+	// Outputs holds the logs/images produced by execution. Only present at
+	// output_item.done / non-streaming time.
+	Outputs []CodeInterpreterOutput `json:"outputs,omitempty"`
+
+	// Status is "in_progress", "completed", or "incomplete".
+	Status string `json:"status,omitempty"`
+}
+
+// McpErrorValue is either a plain string or a structured error object,
+// mirroring the Responses API's loose mcp_call/mcp_list_tools error shape.
+type McpErrorValue struct {
+	// Message holds the error when it was a plain string.
+	Message string
+	// Raw holds the full structured error object when the API returned one.
+	Raw json.RawMessage
+}
+
+// UnmarshalJSON accepts either a JSON string or an arbitrary JSON object for
+// the mcp error field.
+func (e *McpErrorValue) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		e.Message = s
+		e.Raw = nil
+		return nil
+	}
+	e.Raw = append(json.RawMessage(nil), data...)
+	return nil
+}
+
+// MarshalJSON re-emits the original string or object form.
+func (e McpErrorValue) MarshalJSON() ([]byte, error) {
+	if e.Raw != nil {
+		return e.Raw, nil
+	}
+	return json.Marshal(e.Message)
+}
+
+// AsJSONValue returns the error as a value suitable for a tool-result JSON
+// payload: the raw structured object when present, otherwise the string.
+func (e McpErrorValue) AsJSONValue() interface{} {
+	if e.Raw != nil {
+		var v interface{}
+		if err := json.Unmarshal(e.Raw, &v); err == nil {
+			return v
+		}
+		return string(e.Raw)
+	}
+	return e.Message
+}
+
+// McpCallItem represents an MCP tool invocation resolved by the Responses
+// API's hosted MCP integration.
+type McpCallItem struct {
+	// Type is always "mcp_call".
+	Type string `json:"type"`
+
+	// ID is the unique identifier for this output item.
+	ID string `json:"id,omitempty"`
+
+	Status            string         `json:"status,omitempty"`
+	Arguments         string         `json:"arguments,omitempty"`
+	Name              string         `json:"name,omitempty"`
+	ServerLabel       string         `json:"server_label,omitempty"`
+	Output            *string        `json:"output,omitempty"`
+	Error             *McpErrorValue `json:"error,omitempty"`
+	ApprovalRequestID *string        `json:"approval_request_id,omitempty"`
+}
+
+// McpApprovalRequestItem is emitted when a hosted MCP tool call requires
+// user approval before execution.
+type McpApprovalRequestItem struct {
+	// Type is always "mcp_approval_request".
+	Type string `json:"type"`
+
+	// ID is the unique identifier for this output item.
+	ID string `json:"id,omitempty"`
+
+	ServerLabel       string  `json:"server_label,omitempty"`
+	Name              string  `json:"name,omitempty"`
+	Arguments         string  `json:"arguments,omitempty"`
+	ApprovalRequestID *string `json:"approval_request_id,omitempty"`
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Responses API response types (non-streaming POST /responses body)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -610,6 +760,24 @@ type OutputItemAddedEvent struct {
 		Name   string `json:"name,omitempty"`    // function_call
 		// Namespace is present for function_call items produced by tool search.
 		Namespace string `json:"namespace,omitempty"`
+		// EncryptedContent is present on "reasoning" items.
+		EncryptedContent string `json:"encrypted_content,omitempty"`
+		// Phase is present on "message" items.
+		Phase *string `json:"phase,omitempty"`
+		// Execution is present on "tool_search_call" items ("server"/"client").
+		Execution string `json:"execution,omitempty"`
+		// ContainerID is present on "code_interpreter_call" items.
+		ContainerID string `json:"container_id,omitempty"`
+		// Async is present on "function_call" and "custom_tool_call" items.
+		Async *bool `json:"async,omitempty"`
+		// Operation is present on "apply_patch_call" items. Diff is omitted
+		// here: at output_item.added it may be empty/partial and the
+		// operation type/path are all that's needed to build the opening
+		// JSON prefix for progressive tool-input-delta streaming.
+		Operation *struct {
+			Type string `json:"type"`
+			Path string `json:"path,omitempty"`
+		} `json:"operation,omitempty"`
 	} `json:"item"`
 }
 
@@ -630,17 +798,110 @@ type FunctionCallArgumentsDeltaEvent struct {
 // ReasoningSummaryPartAddedEvent is emitted when a new reasoning summary part begins.
 // Signals that a reasoning block has started for the given item.
 type ReasoningSummaryPartAddedEvent struct {
-	Type        string `json:"type"` // "response.reasoning_summary_part.added"
-	ItemID      string `json:"item_id"`
-	OutputIndex int    `json:"output_index"`
+	Type         string `json:"type"` // "response.reasoning_summary_part.added"
+	ItemID       string `json:"item_id"`
+	OutputIndex  int    `json:"output_index"`
+	SummaryIndex int    `json:"summary_index"`
 }
 
 // ReasoningSummaryTextDeltaEvent carries an incremental reasoning text chunk.
 type ReasoningSummaryTextDeltaEvent struct {
-	Type        string `json:"type"` // "response.reasoning_summary_text.delta"
+	Type         string `json:"type"` // "response.reasoning_summary_text.delta"
+	ItemID       string `json:"item_id"`
+	OutputIndex  int    `json:"output_index"`
+	SummaryIndex int    `json:"summary_index"`
+	Delta        string `json:"delta"`
+}
+
+// ReasoningSummaryPartDoneEvent is emitted when a reasoning summary part
+// finishes. Whether it immediately closes the reasoning block or waits for
+// output_item.done depends on whether the request used store=false (so the
+// encrypted_content on the final item can still be attached).
+type ReasoningSummaryPartDoneEvent struct {
+	Type         string `json:"type"` // "response.reasoning_summary_part.done"
+	ItemID       string `json:"item_id"`
+	OutputIndex  int    `json:"output_index"`
+	SummaryIndex int    `json:"summary_index"`
+}
+
+// ImageGenerationPartialImageEvent carries a partial (in-progress) base64
+// image while a hosted image_generation tool call streams progressive
+// previews.
+type ImageGenerationPartialImageEvent struct {
+	Type            string `json:"type"` // "response.image_generation_call.partial_image"
+	ItemID          string `json:"item_id"`
+	OutputIndex     int    `json:"output_index"`
+	PartialImageB64 string `json:"partial_image_b64"`
+}
+
+// CodeInterpreterCallCodeDeltaEvent carries an incremental chunk of code
+// being written by a hosted code_interpreter tool call.
+type CodeInterpreterCallCodeDeltaEvent struct {
+	Type        string `json:"type"` // "response.code_interpreter_call_code.delta"
 	ItemID      string `json:"item_id"`
 	OutputIndex int    `json:"output_index"`
 	Delta       string `json:"delta"`
+}
+
+// CodeInterpreterCallCodeDoneEvent carries the fully assembled code for a
+// hosted code_interpreter tool call.
+type CodeInterpreterCallCodeDoneEvent struct {
+	Type        string `json:"type"` // "response.code_interpreter_call_code.done"
+	ItemID      string `json:"item_id"`
+	OutputIndex int    `json:"output_index"`
+	Code        string `json:"code"`
+}
+
+// CustomToolCallInputDeltaEvent carries an incremental chunk of a custom
+// tool call's raw input string.
+type CustomToolCallInputDeltaEvent struct {
+	Type        string `json:"type"` // "response.custom_tool_call_input.delta"
+	ItemID      string `json:"item_id"`
+	OutputIndex int    `json:"output_index"`
+	Delta       string `json:"delta"`
+}
+
+// ApplyPatchCallOperationDiffDeltaEvent carries an incremental chunk of an
+// apply_patch call's diff text.
+type ApplyPatchCallOperationDiffDeltaEvent struct {
+	Type        string `json:"type"` // "response.apply_patch_call_operation_diff.delta"
+	ItemID      string `json:"item_id"`
+	OutputIndex int    `json:"output_index"`
+	Delta       string `json:"delta"`
+}
+
+// ApplyPatchCallOperationDiffDoneEvent carries the fully assembled diff for
+// an apply_patch call.
+type ApplyPatchCallOperationDiffDoneEvent struct {
+	Type        string `json:"type"` // "response.apply_patch_call_operation_diff.done"
+	ItemID      string `json:"item_id"`
+	OutputIndex int    `json:"output_index"`
+	Diff        string `json:"diff"`
+}
+
+// OutputTextAnnotationAddedEvent carries one citation/annotation as it is
+// attached to the currently streaming text part.
+type OutputTextAnnotationAddedEvent struct {
+	Type       string         `json:"type"` // "response.output_text.annotation.added"
+	Annotation TextAnnotation `json:"annotation"`
+}
+
+// TextAnnotation is a single citation attached to assistant message text:
+// url_citation, file_citation, container_file_citation, or file_path.
+type TextAnnotation struct {
+	Type string `json:"type"`
+
+	// url_citation
+	StartIndex int    `json:"start_index,omitempty"`
+	EndIndex   int    `json:"end_index,omitempty"`
+	URL        string `json:"url,omitempty"`
+	Title      string `json:"title,omitempty"`
+
+	// file_citation / container_file_citation / file_path
+	FileID      string `json:"file_id,omitempty"`
+	Filename    string `json:"filename,omitempty"`
+	Index       int    `json:"index,omitempty"`
+	ContainerID string `json:"container_id,omitempty"`
 }
 
 // OutputItemDoneEvent is emitted when an output item is fully assembled.

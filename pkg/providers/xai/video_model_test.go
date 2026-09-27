@@ -1560,3 +1560,39 @@ func TestVideoModel_StatusPending202InvalidJSON(t *testing.T) {
 	require.NotNil(t, resp)
 	assert.Equal(t, "https://example.com/video.mp4", resp.Videos[0].URL)
 }
+
+// TestVideoModel_StatusPending202OversizedBodyErrors covers P1-5c item 8: a
+// 202 status body larger than the 1 MiB bound is a real error, mirroring TS
+// readPendingBody's APICallError, rather than being silently treated as
+// pending forever.
+func TestVideoModel_StatusPending202OversizedBodyErrors(t *testing.T) {
+	oversized := strings.Repeat("a", 1024*1024+1)
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		switch requestCount {
+		case 1:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"request_id": "test-request-id"})
+		default:
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(oversized))
+		}
+	}))
+	defer server.Close()
+
+	prov := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewVideoModel(prov, "grok-imagine-video")
+
+	opts := &provider.VideoModelV3CallOptions{
+		Prompt: "A sunset",
+		ProviderOptions: map[string]interface{}{
+			"xai": map[string]interface{}{"pollIntervalMs": 50},
+		},
+	}
+
+	resp, err := model.DoGenerate(context.Background(), opts)
+	require.Error(t, err)
+	require.Nil(t, resp)
+	assert.Contains(t, err.Error(), "exceeded")
+}

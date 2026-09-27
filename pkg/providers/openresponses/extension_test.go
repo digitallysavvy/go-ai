@@ -2,6 +2,7 @@ package openresponses
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"strconv"
 	"strings"
@@ -329,7 +330,10 @@ func TestOpenResponsesExtensionItemDecodeGenerate(t *testing.T) {
 	if err := json.Unmarshal(raw, &item); err != nil {
 		t.Fatalf("unmarshal item failed: %v", err)
 	}
-	result := model.convertResponse(OpenResponsesResponse{Output: []OutputItem{item}})
+	result, convertErr := model.convertResponse(OpenResponsesResponse{Output: []OutputItem{item}})
+	if convertErr != nil {
+		t.Fatalf("convertResponse failed: %v", convertErr)
+	}
 
 	if len(result.ToolCalls) != 1 || result.ToolCalls[0].ToolName != "run_code" || !result.ToolCalls[0].ProviderExecuted {
 		t.Fatalf("ToolCalls = %#v, want one provider-executed run_code call", result.ToolCalls)
@@ -359,6 +363,36 @@ func TestOpenResponsesExtensionItemDecodeGenerate(t *testing.T) {
 	}
 }
 
+// TestOpenResponsesExtensionItemDecodeGenerateErrorAborts covers P1-5c item
+// 6: when a registered extension's DecodeItem fails on a known extension
+// item type, convertResponse (and therefore DoGenerate) aborts the whole
+// call with that error instead of silently skipping the malformed item --
+// matching TS doGenerate, which has no try/catch around decodeExtensionItem.
+func TestOpenResponsesExtensionItemDecodeGenerateErrorAborts(t *testing.T) {
+	failingExt := Extension{
+		ID:        "lmstudio.broken",
+		ItemTypes: []string{"lmstudio:broken"},
+		DecodeItem: func(item ExtensionItem, mode string) ([]types.ContentPart, error) {
+			return nil, errors.New("boom")
+		},
+	}
+	p := New(Config{BaseURL: "http://localhost:1234/v1", Extensions: []Extension{failingExt}})
+	model := NewLanguageModel(p, "local-model")
+
+	raw := json.RawMessage(`{"type":"lmstudio:broken","id":"b_1","status":"completed"}`)
+	var item OutputItem
+	if err := json.Unmarshal(raw, &item); err != nil {
+		t.Fatalf("unmarshal item failed: %v", err)
+	}
+	result, convertErr := model.convertResponse(OpenResponsesResponse{Output: []OutputItem{item}})
+	if convertErr == nil {
+		t.Fatalf("convertResponse() = %#v, nil, want an error from the failing DecodeItem", result)
+	}
+	if !strings.Contains(convertErr.Error(), "boom") {
+		t.Fatalf("convertResponse() error = %v, want it to wrap the DecodeItem error", convertErr)
+	}
+}
+
 // TestOpenResponsesExtensionItemReplayCarrier covers row 9a68261: an
 // extension-decoded tool call/result round-trips through input conversion
 // by resending the original wire item verbatim via its replay carrier.
@@ -371,7 +405,10 @@ func TestOpenResponsesExtensionItemReplayCarrier(t *testing.T) {
 	if err := json.Unmarshal(raw, &item); err != nil {
 		t.Fatalf("unmarshal item failed: %v", err)
 	}
-	result := model.convertResponse(OpenResponsesResponse{Output: []OutputItem{item}})
+	result, convertErr := model.convertResponse(OpenResponsesResponse{Output: []OutputItem{item}})
+	if convertErr != nil {
+		t.Fatalf("convertResponse failed: %v", convertErr)
+	}
 
 	body, _, err := model.buildRequestBody(&provider.GenerateOptions{
 		Prompt: types.Prompt{Messages: []types.Message{
@@ -511,7 +548,10 @@ func TestOpenResponsesExtensionSourceContentGenerate(t *testing.T) {
 	if err := json.Unmarshal(raw, &item); err != nil {
 		t.Fatalf("unmarshal item failed: %v", err)
 	}
-	result := model.convertResponse(OpenResponsesResponse{Output: []OutputItem{item}})
+	result, convertErr := model.convertResponse(OpenResponsesResponse{Output: []OutputItem{item}})
+	if convertErr != nil {
+		t.Fatalf("convertResponse failed: %v", convertErr)
+	}
 
 	var sawSource bool
 	for _, part := range result.Content {

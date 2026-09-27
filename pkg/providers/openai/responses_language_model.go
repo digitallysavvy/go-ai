@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -98,7 +99,7 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 
 // DoStream performs streaming generation via POST /v1/responses with stream=true.
 func (m *ResponsesLanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
-	body, _, warnings, err := m.buildRequest(opts, true)
+	body, store, warnings, err := m.buildRequest(opts, true)
 	if err != nil {
 		return nil, err
 	}
@@ -117,6 +118,10 @@ func (m *ResponsesLanguageModel) DoStream(ctx context.Context, opts *provider.Ge
 
 	stream := newResponsesStreamWithMetadata(httpResp.Body, opts.IncludeRawChunks, webSearchToolName, m.provider.responsesProviderOptionsName(), httpResp.Header)
 	stream.tools = opts.Tools
+	stream.store = store
+	if name := toolSearchToolName(opts.Tools); name != "" {
+		stream.toolSearchToolName = name
+	}
 	return streaming.NewWarningsStream(stream, warnings), nil
 }
 
@@ -1072,6 +1077,12 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 	}
 
 	var toolCalls []types.ToolCall
+	var sourceCounter int
+	// hostedToolSearchCallIds pairs a server-executed tool_search_call with
+	// its following tool_search_output in FIFO order (row e6a2992 area;
+	// mirrors TS `hostedToolSearchCallIds`), since hosted tool_search_output
+	// items report call_id: null.
+	var hostedToolSearchCallIds []string
 
 	for _, rawItem := range resp.Output {
 		// Peek at type field.
@@ -1092,8 +1103,13 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				result.Text += part.Text
 				result.Content = append(result.Content, types.TextContent{
 					Text:            part.Text,
-					ProviderOptions: openAIResponsesMessageProviderOptions(providerName, item.ID, item.Phase),
+					ProviderOptions: openAIResponsesMessageProviderOptions(providerName, item.ID, item.Phase, part.Annotations),
 				})
+				for _, ann := range part.Annotations {
+					if src, ok := openAIAnnotationToSource(providerName, ann, &sourceCounter); ok {
+						result.Content = append(result.Content, src)
+					}
+				}
 			}
 
 		case "function_call":
@@ -1308,6 +1324,266 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			if chunk.CustomContent != nil {
 				result.Content = append(result.Content, *chunk.CustomContent)
 			}
+
+		case "image_generation_call":
+			var item responses.ImageGenerationCallItem
+			if err := json.Unmarshal(rawItem, &item); err != nil {
+				continue
+			}
+			toolCalls = append(toolCalls, types.ToolCall{
+				ID:               item.ID,
+				ToolName:         "openai.image_generation",
+				Arguments:        map[string]interface{}{},
+				ProviderExecuted: true,
+			})
+			result.Content = append(result.Content,
+				types.ToolCallContent{
+					ToolCallID:       item.ID,
+					ToolName:         "openai.image_generation",
+					Input:            "{}",
+					Arguments:        map[string]interface{}{},
+					ProviderExecuted: true,
+				},
+				types.ToolResultContent{
+					ToolCallID:       item.ID,
+					ToolName:         "openai.image_generation",
+					Result:           map[string]interface{}{"result": item.Result},
+					ProviderExecuted: true,
+				},
+			)
+
+		case "tool_search_call":
+			var item responses.ToolSearchCallItem
+			if err := json.Unmarshal(rawItem, &item); err != nil {
+				continue
+			}
+			toolName := toolSearchToolName(tools)
+			if toolName == "" {
+				toolName = "openai.tool_search"
+			}
+			isHosted := item.Execution == "server"
+			toolCallID := item.ID
+			if item.CallID != nil && *item.CallID != "" {
+				toolCallID = *item.CallID
+			}
+			if isHosted {
+				hostedToolSearchCallIds = append(hostedToolSearchCallIds, toolCallID)
+			}
+			inputRaw, _ := json.Marshal(map[string]interface{}{
+				"arguments": item.Arguments,
+				"call_id":   item.CallID,
+			})
+			tc := types.ToolCall{
+				ID:               toolCallID,
+				ToolName:         toolName,
+				RawArguments:     string(inputRaw),
+				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, "", nil, nil),
+			}
+			json.Unmarshal(inputRaw, &tc.Arguments) //nolint:errcheck
+			if isHosted {
+				tc.ProviderExecuted = true
+			}
+			toolCalls = append(toolCalls, tc)
+
+		case "tool_search_output":
+			var item responses.ToolSearchOutputItem
+			if err := json.Unmarshal(rawItem, &item); err != nil {
+				continue
+			}
+			toolCallID := item.ID
+			if item.CallID != nil && *item.CallID != "" {
+				toolCallID = *item.CallID
+			} else if len(hostedToolSearchCallIds) > 0 {
+				toolCallID = hostedToolSearchCallIds[0]
+				hostedToolSearchCallIds = hostedToolSearchCallIds[1:]
+			}
+			matchedTools := make([]interface{}, 0, len(item.Tools))
+			for _, t := range item.Tools {
+				var v interface{}
+				json.Unmarshal(t, &v) //nolint:errcheck
+				matchedTools = append(matchedTools, v)
+			}
+			result.Content = append(result.Content, types.ToolResultContent{
+				ToolCallID:       toolCallID,
+				ToolName:         firstNonEmpty(toolSearchToolName(tools), "openai.tool_search"),
+				Result:           map[string]interface{}{"tools": matchedTools},
+				ProviderMetadata: toRawMetadata(openAIResponsesToolCallMetadata(providerName, item.ID, "", nil, nil)),
+			})
+
+		case "file_search_call":
+			var item responses.FileSearchCallItem
+			if err := json.Unmarshal(rawItem, &item); err != nil {
+				continue
+			}
+			toolCalls = append(toolCalls, types.ToolCall{
+				ID:               item.ID,
+				ToolName:         "openai.file_search",
+				Arguments:        map[string]interface{}{},
+				ProviderExecuted: true,
+			})
+			var results interface{}
+			if item.Results != nil {
+				mapped := make([]map[string]interface{}, 0, len(item.Results))
+				for _, r := range item.Results {
+					mapped = append(mapped, map[string]interface{}{
+						"attributes": r.Attributes,
+						"fileId":     r.FileID,
+						"filename":   r.Filename,
+						"score":      r.Score,
+						"text":       r.Text,
+					})
+				}
+				results = mapped
+			}
+			result.Content = append(result.Content,
+				types.ToolCallContent{
+					ToolCallID:       item.ID,
+					ToolName:         "openai.file_search",
+					Input:            "{}",
+					Arguments:        map[string]interface{}{},
+					ProviderExecuted: true,
+				},
+				types.ToolResultContent{
+					ToolCallID:       item.ID,
+					ToolName:         "openai.file_search",
+					Result:           map[string]interface{}{"queries": item.Queries, "results": results},
+					ProviderExecuted: true,
+				},
+			)
+
+		case "code_interpreter_call":
+			var item responses.CodeInterpreterCallItem
+			if err := json.Unmarshal(rawItem, &item); err != nil {
+				continue
+			}
+			codeArgs := map[string]interface{}{"containerId": item.ContainerID}
+			if item.Code != nil {
+				codeArgs["code"] = *item.Code
+			}
+			rawCodeArgs, _ := json.Marshal(codeArgs)
+			toolCalls = append(toolCalls, types.ToolCall{
+				ID:               item.ID,
+				ToolName:         "openai.code_interpreter",
+				Arguments:        codeArgs,
+				RawArguments:     string(rawCodeArgs),
+				ProviderExecuted: true,
+			})
+			outputs := make([]map[string]interface{}, 0, len(item.Outputs))
+			for _, o := range item.Outputs {
+				switch o.Type {
+				case "logs":
+					outputs = append(outputs, map[string]interface{}{"type": "logs", "logs": o.Logs})
+				case "image":
+					outputs = append(outputs, map[string]interface{}{"type": "image", "url": o.URL})
+				}
+			}
+			var outputsValue interface{}
+			if item.Outputs != nil {
+				outputsValue = outputs
+			}
+			result.Content = append(result.Content,
+				types.ToolCallContent{
+					ToolCallID:       item.ID,
+					ToolName:         "openai.code_interpreter",
+					Input:            string(rawCodeArgs),
+					Arguments:        codeArgs,
+					ProviderExecuted: true,
+				},
+				types.ToolResultContent{
+					ToolCallID:       item.ID,
+					ToolName:         "openai.code_interpreter",
+					Result:           map[string]interface{}{"outputs": outputsValue},
+					ProviderExecuted: true,
+				},
+			)
+
+		case "mcp_call":
+			var item responses.McpCallItem
+			if err := json.Unmarshal(rawItem, &item); err != nil {
+				continue
+			}
+			toolCallID := item.ID
+			toolName := "mcp." + item.Name
+			var args map[string]interface{}
+			json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
+			mcpResult := map[string]interface{}{
+				"type":        "call",
+				"serverLabel": item.ServerLabel,
+				"name":        item.Name,
+				"arguments":   item.Arguments,
+			}
+			if item.Output != nil {
+				mcpResult["output"] = *item.Output
+			}
+			if item.Error != nil {
+				mcpResult["error"] = item.Error.AsJSONValue()
+			}
+			toolCalls = append(toolCalls, types.ToolCall{
+				ID:               toolCallID,
+				ToolName:         toolName,
+				Arguments:        args,
+				RawArguments:     item.Arguments,
+				ProviderExecuted: true,
+				Dynamic:          true,
+			})
+			result.Content = append(result.Content,
+				types.ToolCallContent{
+					ToolCallID:       toolCallID,
+					ToolName:         toolName,
+					Input:            item.Arguments,
+					Arguments:        args,
+					ProviderExecuted: true,
+					Dynamic:          true,
+				},
+				types.ToolResultContent{
+					ToolCallID:       toolCallID,
+					ToolName:         toolName,
+					Result:           mcpResult,
+					ProviderExecuted: true,
+					Dynamic:          true,
+					ProviderMetadata: toRawMetadata(openAIResponsesToolCallMetadata(providerName, item.ID, "", nil, nil)),
+				},
+			)
+
+		case "mcp_list_tools":
+			// TS: skipped entirely -- not exposed to the caller or replayed.
+			continue
+
+		case "mcp_approval_request":
+			var item responses.McpApprovalRequestItem
+			if err := json.Unmarshal(rawItem, &item); err != nil {
+				continue
+			}
+			approvalRequestID := item.ID
+			if item.ApprovalRequestID != nil && *item.ApprovalRequestID != "" {
+				approvalRequestID = *item.ApprovalRequestID
+			}
+			dummyToolCallID := streaming.GenerateID()
+			toolName := "mcp." + item.Name
+			var args map[string]interface{}
+			json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
+			toolCalls = append(toolCalls, types.ToolCall{
+				ID:               dummyToolCallID,
+				ToolName:         toolName,
+				Arguments:        args,
+				RawArguments:     item.Arguments,
+				ProviderExecuted: true,
+				Dynamic:          true,
+			})
+			result.Content = append(result.Content,
+				types.ToolCallContent{
+					ToolCallID:       dummyToolCallID,
+					ToolName:         toolName,
+					Input:            item.Arguments,
+					Arguments:        args,
+					ProviderExecuted: true,
+					Dynamic:          true,
+				},
+				types.ToolApprovalRequestContent{
+					ApprovalID: approvalRequestID,
+					ToolCallID: dummyToolCallID,
+				},
+			)
 		}
 	}
 
@@ -1423,7 +1699,7 @@ func openAIResponsesReasoningMetadata(providerName, itemID string) json.RawMessa
 	return raw
 }
 
-func openAIResponsesMessageProviderOptions(providerName, itemID string, phase *string) map[string]interface{} {
+func openAIResponsesMessageProviderOptions(providerName, itemID string, phase *string, annotations []responses.TextAnnotation) map[string]interface{} {
 	openai := map[string]interface{}{}
 	if itemID != "" {
 		openai["itemId"] = itemID
@@ -1431,10 +1707,113 @@ func openAIResponsesMessageProviderOptions(providerName, itemID string, phase *s
 	if phase != nil && *phase != "" {
 		openai["phase"] = *phase
 	}
+	if len(annotations) > 0 {
+		openai["annotations"] = annotations
+	}
 	if len(openai) == 0 {
 		return nil
 	}
 	return map[string]interface{}{providerName: openai}
+}
+
+// openAIAnnotationToSource converts a single Responses API text annotation
+// into a SourceContent part, mirroring TS's per-annotation switch in the
+// "message" case of convertResponse. Not every annotation type produces a
+// source ("compaction" etc. never reach this function).
+func openAIAnnotationToSource(providerName string, ann responses.TextAnnotation, counter *int) (types.SourceContent, bool) {
+	*counter++
+	id := fmt.Sprintf("source-%d", *counter)
+	switch ann.Type {
+	case "url_citation":
+		return types.SourceContent{
+			SourceType: "url",
+			ID:         id,
+			URL:        ann.URL,
+			Title:      ann.Title,
+		}, true
+	case "file_citation":
+		meta, _ := json.Marshal(map[string]interface{}{
+			providerName: map[string]interface{}{
+				"type":   ann.Type,
+				"fileId": ann.FileID,
+				"index":  ann.Index,
+			},
+		})
+		return types.SourceContent{
+			SourceType:       "document",
+			ID:               id,
+			MediaType:        "text/plain",
+			Title:            ann.Filename,
+			Filename:         ann.Filename,
+			ProviderMetadata: meta,
+		}, true
+	case "container_file_citation":
+		meta, _ := json.Marshal(map[string]interface{}{
+			providerName: map[string]interface{}{
+				"type":        ann.Type,
+				"fileId":      ann.FileID,
+				"containerId": ann.ContainerID,
+			},
+		})
+		return types.SourceContent{
+			SourceType:       "document",
+			ID:               id,
+			MediaType:        "text/plain",
+			Title:            ann.Filename,
+			Filename:         ann.Filename,
+			ProviderMetadata: meta,
+		}, true
+	case "file_path":
+		meta, _ := json.Marshal(map[string]interface{}{
+			providerName: map[string]interface{}{
+				"type":   ann.Type,
+				"fileId": ann.FileID,
+				"index":  ann.Index,
+			},
+		})
+		return types.SourceContent{
+			SourceType:       "document",
+			ID:               id,
+			MediaType:        "application/octet-stream",
+			Title:            ann.FileID,
+			Filename:         ann.FileID,
+			ProviderMetadata: meta,
+		}, true
+	}
+	*counter--
+	return types.SourceContent{}, false
+}
+
+// toRawMetadata marshals a provider metadata map into json.RawMessage, for
+// the types.ToolResultContent.ProviderMetadata field (unlike
+// types.ToolCall/types.ToolResult, which take the map directly).
+func toRawMetadata(m map[string]interface{}) json.RawMessage {
+	if len(m) == 0 {
+		return nil
+	}
+	raw, _ := json.Marshal(m)
+	return raw
+}
+
+// nonEmptyOrNil returns nil for an empty string so it marshals as JSON null
+// (matching TS's `encryptedContent ?? null`), or the string itself otherwise.
+func nonEmptyOrNil(s string) interface{} {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// escapeJSONDelta returns delta's JSON string-escaped form without the
+// surrounding quotes, for splicing into a hand-built JSON string during
+// progressive tool-input-delta streaming. Mirrors TS's escapeJSONDelta
+// (`JSON.stringify(delta).slice(1, -1)`).
+func escapeJSONDelta(delta string) string {
+	raw, err := json.Marshal(delta)
+	if err != nil || len(raw) < 2 {
+		return delta
+	}
+	return string(raw[1 : len(raw)-1])
 }
 
 func mapWebSearchOutput(action *WebSearchAction) map[string]interface{} {
@@ -1578,9 +1957,17 @@ type responsesToolAccum struct {
 	arguments string
 }
 
-// responsesReasoningAccum accumulates streaming reasoning summary text.
+// responsesReasoningAccum tracks the lifecycle of a streaming reasoning
+// item's summary parts (row a0d2e8c/6fe187f/3b9f025 area), mirroring TS's
+// `activeReasoning[itemId]`. Each summary index can be one of "active"
+// (still streaming or never explicitly closed), "can-conclude" (its
+// response.reasoning_summary_part.done arrived but store=false, so the
+// final encrypted_content on output_item.done must still be attached
+// before closing), or "concluded" (a reasoning-end chunk was already
+// emitted for it).
 type responsesReasoningAccum struct {
-	text string
+	encryptedContent string
+	summaryParts     map[int]string
 }
 
 // responsesStream implements provider.TextStream for the Responses API SSE stream.
@@ -1591,8 +1978,11 @@ type responsesStream struct {
 
 	// Accumulated tool calls keyed by output_index.
 	toolAccum map[int]*responsesToolAccum
-	// Accumulated reasoning text keyed by output_index.
-	reasoningAccum map[int]*responsesReasoningAccum
+	// Accumulated reasoning summary-part state keyed by item id (not
+	// output_index: response.reasoning_summary_part.added/.done carry a
+	// nullable output_index in the API schema, so item id is the only
+	// reliable correlation key -- mirrors TS's `activeReasoning[itemId]`).
+	reasoningAccum map[string]*responsesReasoningAccum
 	// Item type by output_index, set on output_item.added.
 	itemTypes map[int]string
 	// firstItemIDByOutputIndex records the item id first seen for a given
@@ -1625,6 +2015,60 @@ type responsesStream struct {
 	// Left nil in most tests; only DoStream and tests exercising parallel
 	// expansion set it.
 	tools []types.Tool
+
+	// ongoingToolCalls tracks per-output-index state for tool calls whose
+	// input streams progressively across multiple SSE events (apply_patch,
+	// custom_tool_call, code_interpreter, tool_search), mirroring TS's
+	// `ongoingToolCalls` array.
+	ongoingToolCalls map[int]*responsesOngoingToolCall
+
+	// toolSearchToolName is the SDK tool name registered for
+	// "openai.tool_search", or "openai.tool_search" if none is registered
+	// under a custom name.
+	toolSearchToolName string
+
+	// hostedToolSearchIDs pairs a hosted (server-executed) tool_search_call
+	// with its following tool_search_output in FIFO order, since hosted
+	// tool_search_output items report call_id: null.
+	hostedToolSearchIDs []string
+
+	// store mirrors the request's effective `store` option: controls whether
+	// a reasoning summary part can be concluded immediately on
+	// response.reasoning_summary_part.done, or must wait for
+	// output_item.done to carry the final encrypted_content.
+	store bool
+
+	// mcpApprovalAlias maps an mcp_approval_request's approval_request_id
+	// (seen earlier in this same stream) to the dummy tool-call id emitted
+	// for it, so a later mcp_call sharing that approval_request_id reuses
+	// the same tool-call id the approval was requested/answered under.
+	mcpApprovalAlias map[string]string
+}
+
+// responsesOngoingToolCall tracks per-output-index state for a tool call
+// whose input streams progressively across multiple SSE events. Mirrors
+// TS's `ongoingToolCalls[output_index]` entry shape.
+type responsesOngoingToolCall struct {
+	toolName   string
+	toolCallID string
+
+	applyPatch      *applyPatchStreamState
+	codeInterpreter *codeInterpreterStreamState
+	// toolSearchExecution is "server" or "client" for a tool_search_call.
+	toolSearchExecution string
+}
+
+// applyPatchStreamState tracks whether an apply_patch_call's diff has
+// started streaming and whether its tool-input-end has already been sent.
+type applyPatchStreamState struct {
+	hasDiff    bool
+	endEmitted bool
+}
+
+// codeInterpreterStreamState carries the container id needed to close out
+// the code_interpreter_call's synthetic input JSON.
+type codeInterpreterStreamState struct {
+	containerID string
 }
 
 // emitDecodeError reports a decode failure for a known Responses API SSE
@@ -1660,13 +2104,15 @@ func newResponsesStreamWithMetadata(r io.ReadCloser, includeRawChunks bool, tool
 		reader:                   r,
 		parser:                   streaming.NewSSEParser(r),
 		toolAccum:                make(map[int]*responsesToolAccum),
-		reasoningAccum:           make(map[int]*responsesReasoningAccum),
+		reasoningAccum:           make(map[string]*responsesReasoningAccum),
 		itemTypes:                make(map[int]string),
 		firstItemIDByOutputIndex: make(map[int]string),
 		includeRawChunks:         includeRawChunks,
 		webSearchToolName:        toolName,
 		providerName:             providerName,
 		responseHeaders:          headers,
+		ongoingToolCalls:         make(map[int]*responsesOngoingToolCall),
+		toolSearchToolName:       "openai.tool_search",
 	}
 }
 
@@ -1846,7 +2292,140 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			)
 			return s.Next()
 		case "reasoning":
-			s.reasoningAccum[e.OutputIndex] = &responsesReasoningAccum{}
+			accum := &responsesReasoningAccum{
+				encryptedContent: e.Item.EncryptedContent,
+				summaryParts:     map[int]string{0: "active"},
+			}
+			s.reasoningAccum[e.Item.ID] = accum
+			var encMeta interface{}
+			if e.Item.EncryptedContent != "" {
+				encMeta = e.Item.EncryptedContent
+			}
+			meta, _ := json.Marshal(map[string]interface{}{
+				s.providerName: map[string]interface{}{
+					"itemId":                    e.Item.ID,
+					"reasoningEncryptedContent": encMeta,
+				},
+			})
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+				Type:             provider.ChunkTypeReasoningStart,
+				ID:               e.Item.ID + ":0",
+				ProviderMetadata: meta,
+			})
+			return s.Next()
+		case "file_search_call":
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+				Type: provider.ChunkTypeToolCall,
+				ToolCall: &types.ToolCall{
+					ID:               e.Item.ID,
+					ToolName:         "openai.file_search",
+					Arguments:        map[string]interface{}{},
+					ProviderExecuted: true,
+				},
+			})
+			return s.Next()
+		case "image_generation_call":
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+				Type: provider.ChunkTypeToolCall,
+				ToolCall: &types.ToolCall{
+					ID:               e.Item.ID,
+					ToolName:         "openai.image_generation",
+					Arguments:        map[string]interface{}{},
+					ProviderExecuted: true,
+				},
+			})
+			return s.Next()
+		case "code_interpreter_call":
+			s.ongoingToolCalls[e.OutputIndex] = &responsesOngoingToolCall{
+				toolName:        "openai.code_interpreter",
+				toolCallID:      e.Item.ID,
+				codeInterpreter: &codeInterpreterStreamState{containerID: e.Item.ContainerID},
+			}
+			s.flushQueue = append(s.flushQueue,
+				&provider.StreamChunk{
+					Type: provider.ChunkTypeToolInputStart,
+					ToolCall: &types.ToolCall{
+						ID:               e.Item.ID,
+						ToolName:         "openai.code_interpreter",
+						ProviderExecuted: true,
+					},
+				},
+				&provider.StreamChunk{
+					Type: provider.ChunkTypeToolInputDelta,
+					ID:   e.Item.ID,
+					Text: `{"containerId":"` + e.Item.ContainerID + `","code":"`,
+				},
+			)
+			return s.Next()
+		case "tool_search_call":
+			execution := e.Item.Execution
+			if execution == "" {
+				execution = "server"
+			}
+			s.ongoingToolCalls[e.OutputIndex] = &responsesOngoingToolCall{
+				toolName:            s.toolSearchToolName,
+				toolCallID:          e.Item.ID,
+				toolSearchExecution: execution,
+			}
+			if execution == "server" {
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+					Type: provider.ChunkTypeToolInputStart,
+					ToolCall: &types.ToolCall{
+						ID:               e.Item.ID,
+						ToolName:         s.toolSearchToolName,
+						ProviderExecuted: true,
+					},
+				})
+			}
+			return s.Next()
+		case "custom_tool_call":
+			s.ongoingToolCalls[e.OutputIndex] = &responsesOngoingToolCall{
+				toolName:   e.Item.Name,
+				toolCallID: e.Item.CallID,
+			}
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+				Type: provider.ChunkTypeToolInputStart,
+				ToolCall: &types.ToolCall{
+					ID:       e.Item.CallID,
+					ToolName: e.Item.Name,
+				},
+			})
+			return s.Next()
+		case "apply_patch_call":
+			// Row 45f2b6a / item 9: progressive tool-input streaming, mirroring
+			// TS's ongoingToolCalls[output_index].applyPatch tracking.
+			callID := e.Item.CallID
+			opType, opPath := "", ""
+			if e.Item.Operation != nil {
+				opType = e.Item.Operation.Type
+				opPath = e.Item.Operation.Path
+			}
+			isDelete := opType == "delete_file"
+			s.ongoingToolCalls[e.OutputIndex] = &responsesOngoingToolCall{
+				toolName:   "openai.apply_patch",
+				toolCallID: callID,
+				applyPatch: &applyPatchStreamState{hasDiff: isDelete, endEmitted: isDelete},
+			}
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+				Type: provider.ChunkTypeToolInputStart,
+				ToolCall: &types.ToolCall{
+					ID:       callID,
+					ToolName: "openai.apply_patch",
+				},
+			})
+			if isDelete {
+				inputStr, _ := json.Marshal(map[string]interface{}{
+					"callId":    callID,
+					"operation": map[string]interface{}{"type": opType, "path": opPath},
+				})
+				s.flushQueue = append(s.flushQueue,
+					&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: callID, Text: string(inputStr)},
+					&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: callID},
+				)
+			} else {
+				prefix := `{"callId":"` + escapeJSONDelta(callID) + `","operation":{"type":"` + escapeJSONDelta(opType) + `","path":"` + escapeJSONDelta(opPath) + `","diff":"`
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: callID, Text: prefix})
+			}
 		}
 		return s.Next()
 
@@ -1893,14 +2472,235 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		if eventRawChunk != nil {
 			s.flushQueue = append(s.flushQueue, eventRawChunk)
 		}
-		// Accumulate for providerMetadata and emit as reasoning chunk.
-		if accum, ok := s.reasoningAccum[e.OutputIndex]; ok {
-			accum.text += e.Delta
+		meta, _ := json.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"itemId": e.ItemID}})
+		return s.emitParsedChunk(&provider.StreamChunk{
+			Type:             provider.ChunkTypeReasoning,
+			ID:               fmt.Sprintf("%s:%d", e.ItemID, e.SummaryIndex),
+			Reasoning:        e.Delta,
+			ProviderMetadata: meta,
+		})
+
+	case "response.reasoning_summary_part.added":
+		var e responses.ReasoningSummaryPartAddedEvent
+		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			return s.emitDecodeError(peek.Type, err)
+		}
+		s.markOutputStarted()
+		if eventRawChunk != nil {
+			s.flushQueue = append(s.flushQueue, eventRawChunk)
+		}
+		// The first summary part's reasoning-start was already emitted from
+		// output_item.added; only summary_index > 0 needs boundary handling
+		// here (row a0d2e8c/6fe187f area).
+		if e.SummaryIndex > 0 {
+			if accum := s.reasoningAccum[e.ItemID]; accum != nil {
+				accum.summaryParts[e.SummaryIndex] = "active"
+				// A new active summary part means every "can-conclude" part
+				// (its own .done arrived under store=false, waiting for the
+				// final encrypted_content) can now be concluded.
+				for idx, status := range accum.summaryParts {
+					if status == "can-conclude" {
+						endMeta, _ := json.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"itemId": e.ItemID}})
+						s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+							Type:             provider.ChunkTypeReasoningEnd,
+							ID:               fmt.Sprintf("%s:%d", e.ItemID, idx),
+							ProviderMetadata: endMeta,
+						})
+						accum.summaryParts[idx] = "concluded"
+					}
+				}
+				startMeta, _ := json.Marshal(map[string]interface{}{
+					s.providerName: map[string]interface{}{
+						"itemId":                    e.ItemID,
+						"reasoningEncryptedContent": nonEmptyOrNil(accum.encryptedContent),
+					},
+				})
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+					Type:             provider.ChunkTypeReasoningStart,
+					ID:               fmt.Sprintf("%s:%d", e.ItemID, e.SummaryIndex),
+					ProviderMetadata: startMeta,
+				})
+			}
+		}
+		return s.Next()
+
+	case "response.reasoning_summary_part.done":
+		var e responses.ReasoningSummaryPartDoneEvent
+		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			return s.emitDecodeError(peek.Type, err)
+		}
+		s.markOutputStarted()
+		if eventRawChunk != nil {
+			s.flushQueue = append(s.flushQueue, eventRawChunk)
+		}
+		if accum := s.reasoningAccum[e.ItemID]; accum != nil {
+			if s.store {
+				// The response is stored server-side, so no encrypted_content
+				// needs to be attached: the reasoning block can close now.
+				meta, _ := json.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"itemId": e.ItemID}})
+				accum.summaryParts[e.SummaryIndex] = "concluded"
+				return s.emitParsedChunk(&provider.StreamChunk{
+					Type:             provider.ChunkTypeReasoningEnd,
+					ID:               fmt.Sprintf("%s:%d", e.ItemID, e.SummaryIndex),
+					ProviderMetadata: meta,
+				})
+			}
+			// store=false: keep the block open until output_item.done, which
+			// carries the final encrypted_content.
+			accum.summaryParts[e.SummaryIndex] = "can-conclude"
+		}
+		return s.Next()
+
+	case "response.output_text.annotation.added":
+		var e responses.OutputTextAnnotationAddedEvent
+		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			return s.emitDecodeError(peek.Type, err)
+		}
+		s.markOutputStarted()
+		if eventRawChunk != nil {
+			s.flushQueue = append(s.flushQueue, eventRawChunk)
+		}
+		var counter int
+		if src, ok := openAIAnnotationToSource(s.providerName, e.Annotation, &counter); ok {
+			src.ID = streaming.GenerateID()
+			return s.emitParsedChunk(&provider.StreamChunk{
+				Type:          provider.ChunkTypeSource,
+				SourceContent: &src,
+			})
+		}
+		return s.Next()
+
+	case "response.custom_tool_call_input.delta":
+		var e responses.CustomToolCallInputDeltaEvent
+		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			return s.emitDecodeError(peek.Type, err)
+		}
+		s.markOutputStarted()
+		if eventRawChunk != nil {
+			s.flushQueue = append(s.flushQueue, eventRawChunk)
+		}
+		if toolCall, ok := s.ongoingToolCalls[e.OutputIndex]; ok {
+			return s.emitParsedChunk(&provider.StreamChunk{
+				Type: provider.ChunkTypeToolInputDelta,
+				ID:   toolCall.toolCallID,
+				Text: e.Delta,
+			})
+		}
+		return s.Next()
+
+	case "response.apply_patch_call_operation_diff.delta":
+		var e responses.ApplyPatchCallOperationDiffDeltaEvent
+		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			return s.emitDecodeError(peek.Type, err)
+		}
+		s.markOutputStarted()
+		if eventRawChunk != nil {
+			s.flushQueue = append(s.flushQueue, eventRawChunk)
+		}
+		if toolCall, ok := s.ongoingToolCalls[e.OutputIndex]; ok && toolCall.applyPatch != nil {
+			toolCall.applyPatch.hasDiff = true
+			return s.emitParsedChunk(&provider.StreamChunk{
+				Type: provider.ChunkTypeToolInputDelta,
+				ID:   toolCall.toolCallID,
+				Text: escapeJSONDelta(e.Delta),
+			})
+		}
+		return s.Next()
+
+	case "response.apply_patch_call_operation_diff.done":
+		var e responses.ApplyPatchCallOperationDiffDoneEvent
+		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			return s.emitDecodeError(peek.Type, err)
+		}
+		s.markOutputStarted()
+		if eventRawChunk != nil {
+			s.flushQueue = append(s.flushQueue, eventRawChunk)
+		}
+		if toolCall, ok := s.ongoingToolCalls[e.OutputIndex]; ok && toolCall.applyPatch != nil && !toolCall.applyPatch.endEmitted {
+			if !toolCall.applyPatch.hasDiff {
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+					Type: provider.ChunkTypeToolInputDelta,
+					ID:   toolCall.toolCallID,
+					Text: escapeJSONDelta(e.Diff),
+				})
+				toolCall.applyPatch.hasDiff = true
+			}
+			toolCall.applyPatch.endEmitted = true
+			s.flushQueue = append(s.flushQueue,
+				&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: toolCall.toolCallID, Text: `"}}`},
+				&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: toolCall.toolCallID},
+			)
+		}
+		return s.Next()
+
+	case "response.image_generation_call.partial_image":
+		var e responses.ImageGenerationPartialImageEvent
+		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			return s.emitDecodeError(peek.Type, err)
+		}
+		s.markOutputStarted()
+		if eventRawChunk != nil {
+			s.flushQueue = append(s.flushQueue, eventRawChunk)
 		}
 		return s.emitParsedChunk(&provider.StreamChunk{
-			Type:      provider.ChunkTypeReasoning,
-			Reasoning: e.Delta,
+			Type: provider.ChunkTypeToolResult,
+			ToolResult: &types.ToolResult{
+				ToolCallID:  e.ItemID,
+				ToolName:    "openai.image_generation",
+				Result:      map[string]interface{}{"result": e.PartialImageB64},
+				Preliminary: true,
+			},
 		})
+
+	case "response.code_interpreter_call_code.delta":
+		var e responses.CodeInterpreterCallCodeDeltaEvent
+		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			return s.emitDecodeError(peek.Type, err)
+		}
+		s.markOutputStarted()
+		if eventRawChunk != nil {
+			s.flushQueue = append(s.flushQueue, eventRawChunk)
+		}
+		if toolCall, ok := s.ongoingToolCalls[e.OutputIndex]; ok {
+			return s.emitParsedChunk(&provider.StreamChunk{
+				Type: provider.ChunkTypeToolInputDelta,
+				ID:   toolCall.toolCallID,
+				Text: escapeJSONDelta(e.Delta),
+			})
+		}
+		return s.Next()
+
+	case "response.code_interpreter_call_code.done":
+		var e responses.CodeInterpreterCallCodeDoneEvent
+		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+			return s.emitDecodeError(peek.Type, err)
+		}
+		s.markOutputStarted()
+		if eventRawChunk != nil {
+			s.flushQueue = append(s.flushQueue, eventRawChunk)
+		}
+		if toolCall, ok := s.ongoingToolCalls[e.OutputIndex]; ok {
+			delete(s.ongoingToolCalls, e.OutputIndex)
+			containerID := ""
+			if toolCall.codeInterpreter != nil {
+				containerID = toolCall.codeInterpreter.containerID
+			}
+			inputStr, _ := json.Marshal(map[string]interface{}{"code": e.Code, "containerId": containerID})
+			s.flushQueue = append(s.flushQueue,
+				&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: toolCall.toolCallID, Text: `"}`},
+				&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: toolCall.toolCallID},
+				&provider.StreamChunk{
+					Type: provider.ChunkTypeToolCall,
+					ToolCall: &types.ToolCall{
+						ID:               toolCall.toolCallID,
+						ToolName:         "openai.code_interpreter",
+						RawArguments:     string(inputStr),
+						ProviderExecuted: true,
+					},
+				},
+			)
+		}
+		return s.Next()
 
 	case "response.output_item.done":
 		var e responses.OutputItemDoneEvent
@@ -2122,7 +2922,6 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		// output_item.added) rather than this done event's own id, in case
 		// OpenAI rotated the item id mid-stream.
 		firstID := s.firstItemIDByOutputIndex[e.OutputIndex]
-		delete(s.reasoningAccum, e.OutputIndex)
 		delete(s.itemTypes, e.OutputIndex)
 		delete(s.firstItemIDByOutputIndex, e.OutputIndex)
 		var item struct {
@@ -2136,6 +2935,9 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		if id == "" {
 			id = item.ID
 		}
+		accum := s.reasoningAccum[id]
+		delete(s.reasoningAccum, id)
+
 		meta := map[string]interface{}{}
 		if item.EncryptedContent != "" {
 			meta["encryptedContent"] = item.EncryptedContent
@@ -2144,18 +2946,63 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			meta["itemId"] = id
 		}
 		providerMeta, _ := json.Marshal(map[string]interface{}{s.providerName: meta})
+
+		// Row 3b9f025/6fe187f: close every summary part that is still open
+		// (active, i.e. never got its own response.reasoning_summary_part.done,
+		// or can-conclude, i.e. store=false and was waiting on this event's
+		// encrypted_content) with the same final metadata.
+		var indices []int
+		if accum != nil {
+			for idx, status := range accum.summaryParts {
+				if status == "active" || status == "can-conclude" {
+					indices = append(indices, idx)
+				}
+			}
+		} else {
+			indices = []int{0}
+		}
+		sort.Ints(indices)
+		if len(indices) == 0 {
+			return s.Next()
+		}
+		for _, idx := range indices[:len(indices)-1] {
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+				Type:             provider.ChunkTypeReasoningEnd,
+				ID:               fmt.Sprintf("%s:%d", id, idx),
+				ProviderMetadata: providerMeta,
+			})
+		}
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type:             provider.ChunkTypeReasoningEnd,
-			ID:               id,
+			ID:               fmt.Sprintf("%s:%d", id, indices[len(indices)-1]),
 			ProviderMetadata: providerMeta,
 		})
 
 	case "apply_patch_call":
-		// Row 45f2b6a.
+		// Row 45f2b6a / item 9: close out progressive input streaming (as a
+		// safety net, in case the dedicated diff.delta/.done events didn't
+		// already do so) before emitting the final tool-call.
 		delete(s.itemTypes, e.OutputIndex)
 		var item responses.ApplyPatchCall
 		if err := json.Unmarshal(e.Item, &item); err != nil {
 			return s.emitDecodeError("apply_patch_call", err)
+		}
+		toolCall := s.ongoingToolCalls[e.OutputIndex]
+		delete(s.ongoingToolCalls, e.OutputIndex)
+		if toolCall != nil && toolCall.applyPatch != nil && !toolCall.applyPatch.endEmitted && item.Operation.Type != "delete_file" {
+			if !toolCall.applyPatch.hasDiff {
+				diff := ""
+				if item.Operation.Diff != nil {
+					diff = *item.Operation.Diff
+				}
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+					Type: provider.ChunkTypeToolInputDelta, ID: toolCall.toolCallID, Text: escapeJSONDelta(diff),
+				})
+			}
+			s.flushQueue = append(s.flushQueue,
+				&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: toolCall.toolCallID, Text: `"}}`},
+				&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: toolCall.toolCallID},
+			)
 		}
 		rawArgs, _ := json.Marshal(map[string]interface{}{
 			"callId":    item.CallID,
@@ -2236,10 +3083,15 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 
 	case "custom_tool_call":
 		delete(s.itemTypes, e.OutputIndex)
+		delete(s.ongoingToolCalls, e.OutputIndex)
 		var item responses.CustomToolCallItem
 		if err := json.Unmarshal(e.Item, &item); err != nil {
 			return s.Next()
 		}
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+			Type:     provider.ChunkTypeToolInputEnd,
+			ToolCall: &types.ToolCall{ID: item.CallID},
+		})
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{
@@ -2300,6 +3152,248 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				ToolCallID: item.CallID,
 				ToolName:   "openai.programmatic_tool_calling",
 				Result:     map[string]interface{}{"result": item.Result, "status": item.Status},
+			},
+		})
+
+	case "image_generation_call":
+		delete(s.itemTypes, e.OutputIndex)
+		var item responses.ImageGenerationCallItem
+		if err := json.Unmarshal(e.Item, &item); err != nil {
+			return s.Next()
+		}
+		return s.emitParsedChunk(&provider.StreamChunk{
+			Type: provider.ChunkTypeToolResult,
+			ToolResult: &types.ToolResult{
+				ToolCallID: item.ID,
+				ToolName:   "openai.image_generation",
+				Result:     map[string]interface{}{"result": item.Result},
+			},
+		})
+
+	case "file_search_call":
+		delete(s.itemTypes, e.OutputIndex)
+		var item responses.FileSearchCallItem
+		if err := json.Unmarshal(e.Item, &item); err != nil {
+			return s.Next()
+		}
+		var results interface{}
+		if item.Results != nil {
+			mapped := make([]map[string]interface{}, 0, len(item.Results))
+			for _, r := range item.Results {
+				mapped = append(mapped, map[string]interface{}{
+					"attributes": r.Attributes,
+					"fileId":     r.FileID,
+					"filename":   r.Filename,
+					"score":      r.Score,
+					"text":       r.Text,
+				})
+			}
+			results = mapped
+		}
+		return s.emitParsedChunk(&provider.StreamChunk{
+			Type: provider.ChunkTypeToolResult,
+			ToolResult: &types.ToolResult{
+				ToolCallID: item.ID,
+				ToolName:   "openai.file_search",
+				Result:     map[string]interface{}{"queries": item.Queries, "results": results},
+			},
+		})
+
+	case "code_interpreter_call":
+		// The tool-call itself was already emitted by the
+		// response.code_interpreter_call_code.done handler; this only
+		// carries the final outputs.
+		delete(s.itemTypes, e.OutputIndex)
+		delete(s.ongoingToolCalls, e.OutputIndex)
+		var item responses.CodeInterpreterCallItem
+		if err := json.Unmarshal(e.Item, &item); err != nil {
+			return s.Next()
+		}
+		outputs := make([]map[string]interface{}, 0, len(item.Outputs))
+		for _, o := range item.Outputs {
+			switch o.Type {
+			case "logs":
+				outputs = append(outputs, map[string]interface{}{"type": "logs", "logs": o.Logs})
+			case "image":
+				outputs = append(outputs, map[string]interface{}{"type": "image", "url": o.URL})
+			}
+		}
+		var outputsValue interface{}
+		if item.Outputs != nil {
+			outputsValue = outputs
+		}
+		return s.emitParsedChunk(&provider.StreamChunk{
+			Type: provider.ChunkTypeToolResult,
+			ToolResult: &types.ToolResult{
+				ToolCallID: item.ID,
+				ToolName:   "openai.code_interpreter",
+				Result:     map[string]interface{}{"outputs": outputsValue},
+			},
+		})
+
+	case "tool_search_call":
+		delete(s.itemTypes, e.OutputIndex)
+		toolCall := s.ongoingToolCalls[e.OutputIndex]
+		delete(s.ongoingToolCalls, e.OutputIndex)
+		var item responses.ToolSearchCallItem
+		if err := json.Unmarshal(e.Item, &item); err != nil {
+			return s.Next()
+		}
+		if toolCall == nil {
+			return s.Next()
+		}
+		isHosted := item.Execution == "server"
+		toolCallID := toolCall.toolCallID
+		if isHosted {
+			s.hostedToolSearchIDs = append(s.hostedToolSearchIDs, toolCallID)
+		} else if item.CallID != nil && *item.CallID != "" {
+			toolCallID = *item.CallID
+		} else {
+			toolCallID = item.ID
+		}
+		if !isHosted {
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+				Type:     provider.ChunkTypeToolInputStart,
+				ToolCall: &types.ToolCall{ID: toolCallID, ToolName: toolCall.toolName},
+			})
+		}
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+			Type:     provider.ChunkTypeToolInputEnd,
+			ToolCall: &types.ToolCall{ID: toolCallID},
+		})
+		var callIDForInput interface{}
+		if isHosted {
+			callIDForInput = nil
+		} else {
+			callIDForInput = toolCallID
+		}
+		inputRaw, _ := json.Marshal(map[string]interface{}{"arguments": item.Arguments, "call_id": callIDForInput})
+		tc := types.ToolCall{
+			ID:               toolCallID,
+			ToolName:         toolCall.toolName,
+			RawArguments:     string(inputRaw),
+			ProviderExecuted: isHosted,
+			ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, item.ID, "", nil, nil),
+		}
+		json.Unmarshal(inputRaw, &tc.Arguments) //nolint:errcheck
+		return s.emitParsedChunk(&provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &tc})
+
+	case "tool_search_output":
+		delete(s.itemTypes, e.OutputIndex)
+		var item responses.ToolSearchOutputItem
+		if err := json.Unmarshal(e.Item, &item); err != nil {
+			return s.Next()
+		}
+		toolCallID := item.ID
+		if item.CallID != nil && *item.CallID != "" {
+			toolCallID = *item.CallID
+		} else if len(s.hostedToolSearchIDs) > 0 {
+			toolCallID = s.hostedToolSearchIDs[0]
+			s.hostedToolSearchIDs = s.hostedToolSearchIDs[1:]
+		}
+		matchedTools := make([]interface{}, 0, len(item.Tools))
+		for _, t := range item.Tools {
+			var v interface{}
+			json.Unmarshal(t, &v) //nolint:errcheck
+			matchedTools = append(matchedTools, v)
+		}
+		return s.emitParsedChunk(&provider.StreamChunk{
+			Type: provider.ChunkTypeToolResult,
+			ToolResult: &types.ToolResult{
+				ToolCallID:       toolCallID,
+				ToolName:         s.toolSearchToolName,
+				Result:           map[string]interface{}{"tools": matchedTools},
+				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, item.ID, "", nil, nil),
+			},
+		})
+
+	case "mcp_call":
+		delete(s.itemTypes, e.OutputIndex)
+		var item responses.McpCallItem
+		if err := json.Unmarshal(e.Item, &item); err != nil {
+			return s.Next()
+		}
+		toolCallID := item.ID
+		if item.ApprovalRequestID != nil {
+			if alias, ok := s.mcpApprovalAlias[*item.ApprovalRequestID]; ok {
+				toolCallID = alias
+			}
+		}
+		toolName := "mcp." + item.Name
+		var args map[string]interface{}
+		json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
+		mcpResult := map[string]interface{}{
+			"type":        "call",
+			"serverLabel": item.ServerLabel,
+			"name":        item.Name,
+			"arguments":   item.Arguments,
+		}
+		if item.Output != nil {
+			mcpResult["output"] = *item.Output
+		}
+		if item.Error != nil {
+			mcpResult["error"] = item.Error.AsJSONValue()
+		}
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+			Type: provider.ChunkTypeToolCall,
+			ToolCall: &types.ToolCall{
+				ID:               toolCallID,
+				ToolName:         toolName,
+				Arguments:        args,
+				RawArguments:     item.Arguments,
+				ProviderExecuted: true,
+				Dynamic:          true,
+			},
+		})
+		return s.emitParsedChunk(&provider.StreamChunk{
+			Type: provider.ChunkTypeToolResult,
+			ToolResult: &types.ToolResult{
+				ToolCallID:       toolCallID,
+				ToolName:         toolName,
+				Result:           mcpResult,
+				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, item.ID, "", nil, nil),
+			},
+		})
+
+	case "mcp_list_tools":
+		// TS: skipped entirely -- not exposed to the caller or replayed.
+		delete(s.itemTypes, e.OutputIndex)
+		return s.Next()
+
+	case "mcp_approval_request":
+		delete(s.itemTypes, e.OutputIndex)
+		var item responses.McpApprovalRequestItem
+		if err := json.Unmarshal(e.Item, &item); err != nil {
+			return s.Next()
+		}
+		approvalRequestID := item.ID
+		if item.ApprovalRequestID != nil && *item.ApprovalRequestID != "" {
+			approvalRequestID = *item.ApprovalRequestID
+		}
+		dummyToolCallID := streaming.GenerateID()
+		if s.mcpApprovalAlias == nil {
+			s.mcpApprovalAlias = map[string]string{}
+		}
+		s.mcpApprovalAlias[approvalRequestID] = dummyToolCallID
+		toolName := "mcp." + item.Name
+		var args map[string]interface{}
+		json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+			Type: provider.ChunkTypeToolCall,
+			ToolCall: &types.ToolCall{
+				ID:               dummyToolCallID,
+				ToolName:         toolName,
+				Arguments:        args,
+				RawArguments:     item.Arguments,
+				ProviderExecuted: true,
+				Dynamic:          true,
+			},
+		})
+		return s.emitParsedChunk(&provider.StreamChunk{
+			Type: provider.ChunkTypeToolApprovalRequest,
+			ToolApprovalRequest: &types.ToolApprovalRequestContent{
+				ApprovalID: approvalRequestID,
+				ToolCallID: dummyToolCallID,
 			},
 		})
 

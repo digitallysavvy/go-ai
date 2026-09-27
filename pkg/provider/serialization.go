@@ -22,6 +22,17 @@ type SerializableModel interface {
 	Serialize() SerializedModel
 }
 
+// SerializableModelStrict is implemented by models whose serialization can
+// fail -- e.g. an Open Responses model with registered extension codecs
+// cannot be serialized across workflow boundaries, since the codecs
+// themselves (functions) cannot be reconstructed from JSON. This mirrors
+// the TS SDK's `static [WORKFLOW_SERIALIZE]` throwing a SerializationError.
+// SerializeModel prefers this interface over SerializableModel when a model
+// implements both.
+type SerializableModelStrict interface {
+	SerializeStrict() (SerializedModel, error)
+}
+
 // ModelDeserializer reconstructs a language model from its serialized form.
 type ModelDeserializer func(SerializedModel) (LanguageModel, error)
 
@@ -53,6 +64,16 @@ func DeserializeModel(serialized SerializedModel) (LanguageModel, error) {
 func SerializeModel(model LanguageModel) (SerializedModel, error) {
 	if model == nil {
 		return SerializedModel{}, providererrors.NewSerializationError("provider: model is nil", nil)
+	}
+	if strict, ok := model.(SerializableModelStrict); ok {
+		serialized, err := strict.SerializeStrict()
+		if err != nil {
+			return SerializedModel{}, err
+		}
+		if serialized.Config == nil {
+			serialized.Config = map[string]interface{}{}
+		}
+		return serialized, nil
 	}
 	serializable, ok := model.(SerializableModel)
 	if !ok {

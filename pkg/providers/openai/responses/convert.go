@@ -355,9 +355,11 @@ func convertAssistantItems(msg types.Message, opts ConvertOptions) ([]interface{
 				items = append(items, item)
 			}
 		case types.ReasoningContent:
-			if item := convertReasoningItem(p, opts, reasoningItems); item != nil {
+			item, w := convertReasoningItem(p, opts, reasoningItems)
+			if item != nil {
 				items = append(items, item)
 			}
+			warnings = append(warnings, w...)
 		case types.ToolCallContent:
 			toolCallContentIDs[p.ToolCallID] = true
 			if item := convertAssistantToolCallContentItem(p, opts); item != nil {
@@ -758,32 +760,44 @@ func convertAssistantTextItem(part types.TextContent, opts ConvertOptions) inter
 	return item
 }
 
-func convertReasoningItem(part types.ReasoningContent, opts ConvertOptions, reasoningItems map[string]map[string]interface{}) interface{} {
+func convertReasoningItem(part types.ReasoningContent, opts ConvertOptions, reasoningItems map[string]map[string]interface{}) (interface{}, []types.Warning) {
 	itemID := openAIReasoningItemID(part, openAIProviderOptionsName(opts))
 	if (opts.HasPreviousResponseID || opts.HasConversation) && itemID != "" {
-		return nil
+		return nil, nil
 	}
 	if opts.Store && itemID != "" {
 		if _, ok := reasoningItems[itemID]; ok {
-			return nil
+			return nil, nil
 		}
 		reasoningItems[itemID] = map[string]interface{}{}
 		return map[string]interface{}{
 			"type": "item_reference",
 			"id":   itemID,
-		}
+		}, nil
 	}
 
 	summaryParts := reasoningSummaryParts(part.Text)
 	if itemID != "" {
-		if existing, ok := reasoningItems[itemID]; ok {
+		existing, hadExisting := reasoningItems[itemID]
+		if hadExisting {
+			var warnings []types.Warning
 			if len(summaryParts) > 0 {
 				existing["summary"] = appendReasoningSummary(existing["summary"], summaryParts)
+			} else {
+				// Row (P1-5c item 7): TS warns (but still forwards
+				// encrypted_content below) when an empty-text reasoning part
+				// would otherwise append nothing to an already-started
+				// reasoning sequence.
+				raw, _ := json.Marshal(part)
+				warnings = append(warnings, types.Warning{
+					Type:    "other",
+					Message: fmt.Sprintf("Cannot append empty reasoning part to existing reasoning sequence. Skipping reasoning part: %s.", raw),
+				})
 			}
 			if part.EncryptedContent != "" {
 				existing["encrypted_content"] = part.EncryptedContent
 			}
-			return nil
+			return nil, warnings
 		}
 		item := map[string]interface{}{
 			"type":    "reasoning",
@@ -794,16 +808,23 @@ func convertReasoningItem(part types.ReasoningContent, opts ConvertOptions, reas
 			item["encrypted_content"] = part.EncryptedContent
 		}
 		reasoningItems[itemID] = item
-		return item
+		return item, nil
 	}
 	if part.EncryptedContent == "" {
-		return nil
+		// Row (P1-5c item 7): a reasoning part with neither an itemId nor
+		// encrypted_content didn't originate from this provider and cannot
+		// be replayed; TS warns instead of silently dropping it.
+		raw, _ := json.Marshal(part)
+		return nil, []types.Warning{{
+			Type:    "other",
+			Message: fmt.Sprintf("Non-OpenAI reasoning parts are not supported. Skipping reasoning part: %s.", raw),
+		}}
 	}
 
 	item := map[string]interface{}{"type": "reasoning"}
 	item["encrypted_content"] = part.EncryptedContent
 	item["summary"] = summaryParts
-	return item
+	return item, nil
 }
 
 func reasoningSummaryParts(text string) []map[string]interface{} {

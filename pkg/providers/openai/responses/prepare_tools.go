@@ -603,6 +603,55 @@ func resolveAllowedToolForTool(t types.Tool) allowedToolResolution {
 	return allowedToolResolution{supported: true, entry: AllowedToolsToolEntry{Type: "function", Name: t.Name}}
 }
 
+// allowedToolKey returns a comparison key for an AllowedToolsToolEntry,
+// mirroring TS `allowedToolKey`: two entries are "the same allowed tool" iff
+// their keys match.
+func allowedToolKey(entry AllowedToolsToolEntry) string {
+	switch entry.Type {
+	case "mcp":
+		return "mcp:" + entry.ServerLabel
+	case "function", "custom":
+		return entry.Type + ":" + entry.Name
+	default:
+		return entry.Type
+	}
+}
+
+// isSameAllowedTool mirrors TS `isSameAllowedTool`.
+func isSameAllowedTool(a, b allowedToolResolution) bool {
+	if a.supported && b.supported {
+		return allowedToolKey(a.entry) == allowedToolKey(b.entry)
+	}
+	if !a.supported && !b.supported {
+		return a.reason == b.reason
+	}
+	return false
+}
+
+// canonicalAllowedToolName returns the "provider tool name" a resolved
+// allowedTools entry would be known by on the wire, independent of the SDK
+// tool's own (possibly custom) Name -- mirrors what TS's
+// `toolNameMapping.toProviderToolName` resolves to for a provider-defined
+// tool. Function/custom tools have no separate wire identity distinct from
+// their own name, so they return "" (no alias is recorded for them, matching
+// TS passing `undefined` as canonicalName in the function-tool branch).
+func canonicalAllowedToolName(entry AllowedToolsToolEntry) string {
+	switch entry.Type {
+	case "function", "custom":
+		return ""
+	default:
+		return allowedToolKey(entry)
+	}
+}
+
+// allowedToolAlias is either a resolved allowedToolResolution or the
+// "ambiguous" marker (aliasAmbiguous == true), mirroring TS's
+// `AllowedToolResolution | 'ambiguous'` union.
+type allowedToolAlias struct {
+	resolution     allowedToolResolution
+	aliasAmbiguous bool
+}
+
 // ResolveAllowedTools implements the TS openai-responses-prepare-tools.ts
 // `allowedTools` handling (row a062795): each requested tool name is
 // resolved against the actual tool list by exact name match to determine
@@ -615,11 +664,24 @@ func resolveAllowedToolForTool(t types.Tool) allowedToolResolution {
 // requested name is dropped, this returns an error (TS throws
 // UnsupportedFunctionalityError).
 //
-// Note: unlike TS, this does not implement the provider-tool-name alias
-// resolution layer (matching an allowedTools entry against a tool's
-// *mapped* wire name in addition to its SDK name) — Go's tool model has no
-// separate name-mapping layer, so direct SDK tool name matching is the only
-// resolution path.
+// A requested name that doesn't match any tool's own SDK Name is also
+// checked against each provider-defined tool's canonical wire identity (row
+// a062795 alias layer): e.g. "file_search" resolves to a tool registered
+// under a custom Name whose ProviderID is "openai.file_search". If two
+// different tools in the request share the same canonical identity, the
+// alias is "ambiguous" and dropped with a warning directing the caller to
+// use the tool's own Name instead. If a name matches BOTH a tool's own Name
+// and another tool's canonical alias, the direct match wins with a warning.
+//
+// Note: TS reaches the "ambiguous" case through its toolNameMapping
+// name-collision-rename layer, which Go's tool model has no equivalent of.
+// Two *stock* Go tool registrations that canonicalize to the same alias key
+// always resolve to an identical entry (every built-in canonical key is
+// derived 1:1 from the resolved entry itself), so they are correctly
+// treated as "the same tool" rather than ambiguous. The ambiguity marking
+// and warning logic is still implemented and unit-tested for correctness,
+// and would engage automatically if Go's tool model ever gains a
+// name-collision layer of its own.
 func ResolveAllowedTools(tools []types.Tool, toolNames []string, mode string) (*AllowedToolsToolChoice, []types.Warning, error) {
 	if len(toolNames) == 0 {
 		return nil, nil, nil
@@ -629,15 +691,55 @@ func ResolveAllowedTools(tools []types.Tool, toolNames []string, mode string) (*
 	}
 
 	resolutions := make(map[string]allowedToolResolution, len(tools))
+	aliases := make(map[string]allowedToolAlias)
 	for _, t := range tools {
-		resolutions[t.Name] = resolveAllowedToolForTool(t)
+		resolution := resolveAllowedToolForTool(t)
+		resolutions[t.Name] = resolution
+
+		canonical := ""
+		if resolution.supported {
+			canonical = canonicalAllowedToolName(resolution.entry)
+		}
+		if canonical == "" || canonical == t.Name {
+			continue
+		}
+		if existing, ok := aliases[canonical]; !ok {
+			aliases[canonical] = allowedToolAlias{resolution: resolution}
+		} else if !existing.aliasAmbiguous && !isSameAllowedTool(existing.resolution, resolution) {
+			aliases[canonical] = allowedToolAlias{aliasAmbiguous: true}
+		}
 	}
 
 	var warnings []types.Warning
 	var entries []AllowedToolsToolEntry
 	var dropped []string
 	for _, name := range toolNames {
-		resolution, ok := resolutions[name]
+		directResolution, hasDirect := resolutions[name]
+		alias, hasAlias := aliases[name]
+
+		if hasDirect && hasAlias {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: fmt.Sprintf("allowedTools entry %q", name),
+				Details: "this name is both a tool name and the provider tool name of another tool in this request; the tool with this name is allowed",
+			})
+		}
+
+		if !hasDirect && hasAlias && alias.aliasAmbiguous {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: fmt.Sprintf("allowedTools entry %q", name),
+				Details: "several tools in this request share this provider tool name; use the tool name from the tools for this request instead",
+			})
+			dropped = append(dropped, name)
+			continue
+		}
+
+		resolution, ok := directResolution, hasDirect
+		if !ok && hasAlias {
+			resolution, ok = alias.resolution, true
+		}
+
 		if !ok {
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",

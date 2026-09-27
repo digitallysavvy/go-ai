@@ -2486,13 +2486,28 @@ func TestResponsesLanguageModel_ApplyPatchCallDecodesAsToolCall(t *testing.T) {
 // TestResponsesLanguageModel_StreamApplyPatchCallDecodesAsToolCall covers row
 // 45f2b6a for the streaming path.
 func TestResponsesLanguageModel_StreamApplyPatchCallDecodesAsToolCall(t *testing.T) {
-	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"apply_patch_call","id":"ap_1"}}
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"apply_patch_call","id":"ap_1","call_id":"call_1","operation":{"type":"delete_file","path":"bar.go"}}}
 
 data: {"type":"response.output_item.done","output_index":0,"item":{"type":"apply_patch_call","id":"ap_1","call_id":"call_1","status":"completed","operation":{"type":"delete_file","path":"bar.go"}}}
 
 `)), false)
 	defer stream.Close() //nolint:errcheck
 
+	// A delete_file operation is fully known at output_item.added (row
+	// 45f2b6a / item 9): expect tool-input-start, tool-input-delta (full
+	// input), tool-input-end, then the final tool-call at output_item.done.
+	start, err := stream.Next()
+	if err != nil || start.Type != provider.ChunkTypeToolInputStart {
+		t.Fatalf("chunk = %#v, err = %v, want tool-input-start", start, err)
+	}
+	delta, err := stream.Next()
+	if err != nil || delta.Type != provider.ChunkTypeToolInputDelta {
+		t.Fatalf("chunk = %#v, err = %v, want tool-input-delta", delta, err)
+	}
+	end, err := stream.Next()
+	if err != nil || end.Type != provider.ChunkTypeToolInputEnd {
+		t.Fatalf("chunk = %#v, err = %v, want tool-input-end", end, err)
+	}
 	chunk, err := stream.Next()
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
@@ -2520,11 +2535,15 @@ data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reaso
 `)), false)
 	defer stream.Close() //nolint:errcheck
 
+	start, err := stream.Next()
+	if err != nil || start.Type != provider.ChunkTypeReasoningStart {
+		t.Fatalf("chunk = %#v, err = %v, want reasoning-start", start, err)
+	}
 	chunk, err := stream.Next()
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
-	if chunk.Type != provider.ChunkTypeReasoningEnd || chunk.ID != "rs_original" {
+	if chunk.Type != provider.ChunkTypeReasoningEnd || chunk.ID != "rs_original:0" {
 		t.Fatalf("chunk = %#v, want reasoning-end with the original (first-seen) item id", chunk)
 	}
 }
