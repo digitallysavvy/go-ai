@@ -53,8 +53,18 @@ type ExternalStreamOptions struct {
 //   - provider.ChunkTypeFinishStep closes a step that is not the last one:
 //     the step is appended to Steps(), and consumption continues (expecting
 //     another ChunkTypeStreamStart).
-//   - provider.ChunkTypeFinish closes the final step the same way, and marks
-//     the whole result done.
+//   - provider.ChunkTypeFinish closes the final step the same way when it
+//     carries new content of its own (no preceding ChunkTypeFinishStep for
+//     that content), and marks the whole result done. But when it arrives
+//     with no new content at all — i.e. every step was already closed by its
+//     own ChunkTypeFinishStep — it is treated as a pure turn-closing
+//     boundary: no extra empty step is appended, and its Usage (when set)
+//     OVERRIDES the locally-summed total instead of being added to it. This
+//     is the shape a harness.HarnessAgent turn produces: one
+//     ChunkTypeFinishStep per underlying model step (each with that step's
+//     own usage), then a terminal, content-less ChunkTypeFinish carrying the
+//     turn's real totalUsage (see state/parity/sep_23_2026/harness.md WG4,
+//     TS 57e0a59).
 //
 // No provider is called and no tools are executed: src is assumed to already
 // represent everything that happened (e.g. a harness bridge session that ran
@@ -81,6 +91,20 @@ func NewStreamTextResultFromParts(ctx context.Context, src provider.TextStream, 
 	go result.consumeExternalParts(ctx, src, opts)
 
 	return result
+}
+
+// isEmpty reports whether no content has been accumulated for this step
+// since it was last reset. Used to distinguish a terminal ChunkTypeFinish
+// that closes a step's own content (the general case) from one that is a
+// pure turn-closing boundary carrying no new content of its own (the harness
+// case: every step was already closed by its own ChunkTypeFinishStep, and
+// the terminal ChunkTypeFinish exists only to carry the turn's totalUsage and
+// mark the stream done). See consumeExternalParts's ChunkTypeFinish handling
+// below.
+func (s *externalStepAccum) isEmpty() bool {
+	return s.text == "" && len(s.content) == 0 && len(s.reasoning) == 0 &&
+		len(s.files) == 0 && len(s.sources) == 0 && len(s.toolCalls) == 0 &&
+		len(s.toolResults) == 0 && len(s.warnings) == 0
 }
 
 // externalStepAccum holds the in-progress state for one step while
@@ -269,6 +293,40 @@ consumeLoop:
 			}
 
 		case provider.ChunkTypeFinishStep, provider.ChunkTypeFinish:
+			// A terminal ChunkTypeFinish that arrives with no step content
+			// accumulated since the last step boundary is a pure turn-closing
+			// boundary, not a fresh step of its own: every real step was
+			// already appended to Steps() by its own ChunkTypeFinishStep.
+			// This is exactly the shape a harness.HarnessAgent turn produces
+			// (harness.md WG4, TS 57e0a59 "ensure finish chunk's total usage
+			// is actually coming from total usage"): the terminal `finish`
+			// bridge part carries the run's totalUsage, which must OVERRIDE
+			// the locally summed total rather than being added to it, and
+			// must not create a spurious empty extra step. Handle that case
+			// distinctly instead of running it through finishStep, which
+			// always appends a step and always sums usage.
+			if chunk.Type == provider.ChunkTypeFinish && step.isEmpty() {
+				r.mu.Lock()
+				if chunk.Usage != nil {
+					r.usage = *chunk.Usage
+				}
+				r.finishReason = chunk.FinishReason
+				if chunk.RawFinishReason != "" {
+					r.rawFinishReason = chunk.RawFinishReason
+				}
+				if len(chunk.ProviderMetadata) > 0 {
+					var md map[string]interface{}
+					if jsonErr := json.Unmarshal(chunk.ProviderMetadata, &md); jsonErr == nil {
+						if raw, err := json.Marshal(md); err == nil {
+							r.providerMetadata = raw
+						}
+					}
+				}
+				r.status = StreamStatusDone
+				r.mu.Unlock()
+				break
+			}
+
 			if chunk.Usage != nil {
 				step.usage = *chunk.Usage
 			}

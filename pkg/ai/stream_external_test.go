@@ -212,6 +212,54 @@ func TestNewStreamTextResultFromParts_ErrorChunkPreservesPartialStep(t *testing.
 	}
 }
 
+// TestNewStreamTextResultFromParts_TerminalFinishOverridesTotalUsage ports
+// the harness.md WG4 / TS 57e0a59 behavior: a terminal ChunkTypeFinish that
+// carries no new step content of its own (every step was already closed by
+// its own ChunkTypeFinishStep) must not sum its Usage onto the locally
+// accumulated total, and must not append a spurious empty extra step —
+// its Usage instead OVERRIDES the total, matching
+// HarnessStreamTextResult.finish()'s `this.accumulatedUsage =
+// asLanguageModelUsage(input.totalUsage)`.
+func TestNewStreamTextResultFromParts_TerminalFinishOverridesTotalUsage(t *testing.T) {
+	t.Parallel()
+
+	one := int64(1)
+	hundred := int64(100)
+	src := testutil.NewMockTextStream([]provider.StreamChunk{
+		// Step 0.
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeText, Text: "hi"},
+		{Type: provider.ChunkTypeFinishStep, FinishReason: types.FinishReasonToolCalls, Usage: &types.Usage{InputTokens: &one, OutputTokens: &one, TotalTokens: &one}},
+		// Step 1.
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeText, Text: " there"},
+		{Type: provider.ChunkTypeFinishStep, FinishReason: types.FinishReasonStop, Usage: &types.Usage{InputTokens: &one, OutputTokens: &one, TotalTokens: &one}},
+		// Terminal finish: no new content, carries the bridge's own
+		// (larger, e.g. cache-inclusive) totalUsage that must win outright.
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, Usage: &types.Usage{InputTokens: &hundred, OutputTokens: &hundred, TotalTokens: &hundred}},
+	})
+
+	result := NewStreamTextResultFromParts(context.Background(), src, ExternalStreamOptions{})
+
+	if err := result.Err(); err != nil {
+		t.Fatalf("Err() = %v, want nil", err)
+	}
+	if got, want := result.Text(), "hi there"; got != want {
+		t.Fatalf("Text() = %q, want %q", got, want)
+	}
+	steps := result.Steps()
+	if len(steps) != 2 {
+		t.Fatalf("len(Steps()) = %d, want 2 (no phantom step for the terminal boundary): %+v", len(steps), steps)
+	}
+	usage := result.Usage()
+	if usage.TotalTokens == nil || *usage.TotalTokens != 100 {
+		t.Fatalf("Usage().TotalTokens = %v, want 100 (overridden by the terminal finish, not summed to 102)", usage.TotalTokens)
+	}
+	if got := result.FinishReason(); got != types.FinishReasonStop {
+		t.Fatalf("FinishReason() = %q, want stop", got)
+	}
+}
+
 // TestNewStreamTextResultFromParts_RespectsContextCancellation verifies that
 // an already-cancelled ctx stops consumption instead of hanging forever.
 func TestNewStreamTextResultFromParts_RespectsContextCancellation(t *testing.T) {
