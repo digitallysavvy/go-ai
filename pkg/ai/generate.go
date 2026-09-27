@@ -33,6 +33,14 @@ func gatewayMaxRetries(model provider.LanguageModel, maxRetries *int) int {
 	return *maxRetries
 }
 
+// GatewayMaxRetries is the exported form of gatewayMaxRetries: 0 unless model
+// is an AI Gateway model, in which case it is maxRetries (default 2 when
+// nil). Exported so other packages (e.g. pkg/agent) can share this logic
+// instead of maintaining their own copy.
+func GatewayMaxRetries(model provider.LanguageModel, maxRetries *int) int {
+	return gatewayMaxRetries(model, maxRetries)
+}
+
 func validateMaxRetries(maxRetries *int) error {
 	if maxRetries != nil && *maxRetries < 0 {
 		return &providererrors.InvalidArgumentError{
@@ -66,6 +74,13 @@ func isGatewayCallRetryable(err error) bool {
 	return false
 }
 
+// IsGatewayCallRetryable is the exported form of isGatewayCallRetryable.
+// Exported so other packages (e.g. pkg/agent) can share this logic instead
+// of maintaining their own copy.
+func IsGatewayCallRetryable(err error) bool {
+	return isGatewayCallRetryable(err)
+}
+
 func doGenerateWithGatewayRetry(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries *int) (*types.GenerateResult, error) {
 	retries := gatewayMaxRetries(model, maxRetries)
 	if retries <= 0 {
@@ -86,6 +101,18 @@ func doGenerateWithGatewayRetry(ctx context.Context, model provider.LanguageMode
 		return err
 	})
 	return result, err
+}
+
+// DoGenerateWithGatewayRetry is the exported form of
+// doGenerateWithGatewayRetry: it calls model.DoGenerate, retrying with the
+// AI Gateway's retry policy when model is a Gateway model. Exported so other
+// packages (e.g. pkg/agent) can share this logic instead of maintaining
+// their own near-identical copy (gatewayMaxRetriesForStep /
+// isGatewayStepCallRetryable / doGenerateWithGatewayRetry in
+// pkg/agent/gateway_retry.go, as of P1-7b) — see this PRD cycle's hand-off
+// notes for the pending switch-over once both branches are merged.
+func DoGenerateWithGatewayRetry(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries *int) (*types.GenerateResult, error) {
+	return doGenerateWithGatewayRetry(ctx, model, opts, maxRetries)
 }
 
 func doStreamWithGatewayRetry(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries *int) (provider.TextStream, error) {

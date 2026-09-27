@@ -1664,6 +1664,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	// OnStepFinish / OnFinishEvent still fire with whatever was accumulated —
 	// matching the TS SDK's TransformStream flush behaviour where the flush
 	// handler always executes even after a transform error.
+streamLoop:
 	for {
 		chunk, chunkErr := stream.Next()
 		if chunkErr != nil {
@@ -1716,11 +1717,18 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 			}
 
 		case provider.ChunkTypeError:
+			// A provider error part is terminal: stop reading immediately
+			// rather than continuing to consume chunks after it, and report
+			// finishReason "error" instead of whatever finish reason (if
+			// any) the model happened to send. Mirrors TS stream-object.ts's
+			// TransformStream error handling (audit row b181020 / WG5).
 			chunkErr := errors.New(chunk.Text)
 			if opts.OnError != nil {
 				safeInvoke(func() { opts.OnError(ctx, chunkErr) })
 			}
 			streamErr = chunkErr
+			finishReason = types.FinishReasonError
+			break streamLoop
 
 		case provider.ChunkTypeResponseMetadata:
 			if chunk.ResponseMetadata != nil {

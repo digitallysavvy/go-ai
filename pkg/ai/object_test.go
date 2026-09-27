@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -943,6 +944,53 @@ func TestStreamObject_PanickingOnChunkDoesNotAbortStream(t *testing.T) {
 	}
 	if result.Object == nil {
 		t.Error("expected non-nil object despite panicking OnChunk")
+	}
+}
+
+// TestStreamObject_ErrorChunkIsTerminal ports TS stream-object.ts's
+// TransformStream error handling (audit row b181020 / WG5): a provider error
+// part must stop consumption immediately (no later chunks processed) and
+// report finishReason "error" rather than whatever finish reason the model
+// sent (or omitted).
+func TestStreamObject_ErrorChunkIsTerminal(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: `{"result": "partial"`},
+				{Type: provider.ChunkTypeError, Text: "provider exploded"},
+				// These must never be observed: the stream is terminal at the
+				// error part above.
+				{Type: provider.ChunkTypeText, Text: `"}`},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})
+
+	var finishEvent *ObjectOnFinishEvent
+	_, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model:  model,
+		Prompt: "Stream object",
+		Schema: testSchema,
+		OnEnd: func(ctx context.Context, e ObjectOnFinishEvent) {
+			finishEvent = &e
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "provider exploded") {
+		t.Fatalf("StreamObject() error = %v, want it to wrap the provider error part", err)
+	}
+	if finishEvent == nil {
+		t.Fatal("OnEnd was not called")
+	}
+	if finishEvent.FinishReason != types.FinishReasonError {
+		t.Fatalf("FinishReason = %q, want error", finishEvent.FinishReason)
+	}
+	if finishEvent.Object != nil {
+		t.Fatalf("Object = %#v, want nil after an error part", finishEvent.Object)
 	}
 }
 
