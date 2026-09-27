@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -88,6 +89,145 @@ func (f GatewayModelFallback) toWire() interface{} {
 		"model": f.Model,
 		"when":  f.When.toWire(),
 	}
+}
+
+// MarshalJSON encodes a GatewayModelFallback the way TS's
+// GatewayModelFallback union serializes: a plain fallback (When == nil) as
+// a bare model-ID string, a conditional fallback as {"model", "when"}.
+// GatewayProviderOptions.Models itself goes through toMap()/toWire() when
+// building a request body, but this makes []GatewayModelFallback also
+// round-trip correctly through a direct json.Marshal (e.g. a config file
+// that embeds GatewayProviderOptions).
+func (f GatewayModelFallback) MarshalJSON() ([]byte, error) {
+	return json.Marshal(f.toWire())
+}
+
+// UnmarshalJSON accepts either shape TS's GatewayModelFallback union
+// allows: a bare model-ID string (the common case -- GatewayModel-style
+// plain fallbacks), or a {"model", "when"} object (a
+// GatewayConditionalModelFallback). This is the ergonomic counterpart to
+// GatewayModel/GatewayConditionalModelFallback: existing JSON such as
+// {"models": ["a", "b"]} unmarshals straight into []GatewayModelFallback
+// without callers having to wrap every entry.
+func (f *GatewayModelFallback) UnmarshalJSON(data []byte) error {
+	var plain string
+	if err := json.Unmarshal(data, &plain); err == nil {
+		*f = GatewayModelFallback{Model: plain}
+		return nil
+	}
+
+	var wire struct {
+		Model string          `json:"model"`
+		When  json.RawMessage `json:"when"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return fmt.Errorf("gateway: GatewayModelFallback must be a model-ID string or a {model, when} object: %w", err)
+	}
+	if wire.Model == "" {
+		return errors.New("gateway: GatewayModelFallback.model is required")
+	}
+	result := GatewayModelFallback{Model: wire.Model}
+	if len(wire.When) > 0 && string(wire.When) != "null" {
+		cond, err := unmarshalEvaluationFallbackCondition(wire.When)
+		if err != nil {
+			return err
+		}
+		result.When = &cond
+	}
+	*f = result
+	return nil
+}
+
+// unmarshalEvaluationFallbackCondition decodes a raw JSON "when" condition
+// into an EvaluationFallbackCondition tree. It mirrors the shapes
+// validateEvaluationFallbackCondition accepts structurally, but performs no
+// bounds checking itself -- validateGatewayEvaluationModelsOption still
+// runs at request time and is the source of truth for limits/error
+// messages.
+func unmarshalEvaluationFallbackCondition(data []byte) (EvaluationFallbackCondition, error) {
+	var m map[string]interface{}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return EvaluationFallbackCondition{}, fmt.Errorf("gateway: invalid evaluation fallback condition: %w", err)
+	}
+	return evaluationFallbackConditionFromMap(m)
+}
+
+func evaluationFallbackConditionFromMap(m map[string]interface{}) (EvaluationFallbackCondition, error) {
+	switch {
+	case m["confidenceBelow"] != nil:
+		question, _ := m["question"].(string)
+		v, ok := toFloat64(m["confidenceBelow"])
+		if !ok {
+			return EvaluationFallbackCondition{}, errors.New("gateway: confidenceBelow must be a number")
+		}
+		return EvaluationFallbackCondition{Question: question, ConfidenceBelow: &v}, nil
+
+	case m["probabilityBetween"] != nil:
+		question, _ := m["question"].(string)
+		arr, ok := toInterfaceSlice(m["probabilityBetween"])
+		if !ok || len(arr) != 2 {
+			return EvaluationFallbackCondition{}, errors.New("gateway: probabilityBetween must be a two-element array")
+		}
+		minV, ok1 := toFloat64(arr[0])
+		maxV, ok2 := toFloat64(arr[1])
+		if !ok1 || !ok2 {
+			return EvaluationFallbackCondition{}, errors.New("gateway: probabilityBetween values must be numbers")
+		}
+		pb := [2]float64{minV, maxV}
+		return EvaluationFallbackCondition{Question: question, ProbabilityBetween: &pb}, nil
+
+	case m["any"] != nil:
+		list, err := evaluationFallbackConditionListFromValue(m["any"])
+		if err != nil {
+			return EvaluationFallbackCondition{}, err
+		}
+		return EvaluationFallbackCondition{Any: list}, nil
+
+	case m["all"] != nil:
+		list, err := evaluationFallbackConditionListFromValue(m["all"])
+		if err != nil {
+			return EvaluationFallbackCondition{}, err
+		}
+		return EvaluationFallbackCondition{All: list}, nil
+
+	case m["atLeast"] != nil:
+		atLeast, ok := m["atLeast"].(map[string]interface{})
+		if !ok {
+			return EvaluationFallbackCondition{}, errors.New("gateway: atLeast must be an object")
+		}
+		countF, ok := toFloat64(atLeast["count"])
+		if !ok {
+			return EvaluationFallbackCondition{}, errors.New("gateway: atLeast.count must be a number")
+		}
+		list, err := evaluationFallbackConditionListFromValue(atLeast["conditions"])
+		if err != nil {
+			return EvaluationFallbackCondition{}, err
+		}
+		return EvaluationFallbackCondition{AtLeast: &EvaluationFallbackAtLeast{Count: int(countF), Conditions: list}}, nil
+
+	default:
+		return EvaluationFallbackCondition{}, errors.New("gateway: unrecognized evaluation fallback condition shape")
+	}
+}
+
+func evaluationFallbackConditionListFromValue(v interface{}) ([]EvaluationFallbackCondition, error) {
+	arr, ok := toInterfaceSlice(v)
+	if !ok {
+		return nil, errors.New("gateway: condition list must be an array")
+	}
+	out := make([]EvaluationFallbackCondition, len(arr))
+	for i, item := range arr {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("gateway: condition[%d] must be an object", i)
+		}
+		c, err := evaluationFallbackConditionFromMap(m)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = c
+	}
+	return out, nil
 }
 
 func (c EvaluationFallbackCondition) toWire() map[string]interface{} {
