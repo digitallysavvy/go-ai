@@ -320,3 +320,116 @@ func TestStreamTextInstructionMessagesProviderOptionsReachPrompt(t *testing.T) {
 		t.Fatalf("expected ProviderOptions to reach the prompt, got %+v", captured)
 	}
 }
+
+// TestStreamTextInvalidToolCallErrorChunkOrder pins down the exact chunk
+// order for an invalid (unrepairable — no RepairToolCall configured) tool
+// call streamed alongside a valid one, per review MUST-CHECK item 1: TS's
+// run-tools-transformation forwards every tool-call part as it streams
+// (invalid ones included, since the client needs to render them), then
+// executes/synthesizes results for the whole step only once that step's
+// provider stream ends — never after later steps' chunks. This asserts Go
+// matches that: both tool-call chunks and the finish-reason chunk arrive
+// first, then both tool-result chunks (the invalid call's synthesized error
+// and the valid call's real result, still within step 1), and only then does
+// step 2's own output begin.
+func TestStreamTextInvalidToolCallErrorChunkOrder(t *testing.T) {
+	t.Parallel()
+
+	step := 0
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(_ context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+			step++
+			if step == 1 {
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "bogus-1", ToolName: "bogus", RawArguments: `{}`}},
+					{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "valid-1", ToolName: "testTool", RawArguments: `{"value":"x"}`}},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+				}), nil
+			}
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "done"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	tool := pipelineTestTool("testTool", func(map[string]interface{}) (interface{}, error) {
+		return "ok", nil
+	})
+
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "hi",
+		Tools:  []types.Tool{tool},
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+
+	type seen struct {
+		typ       provider.ChunkType
+		toolName  string
+		hasError  bool
+		finishRsn types.FinishReason
+	}
+	var order []seen
+	stream := result.Stream()
+	for {
+		chunk, err := stream.Next()
+		if err != nil {
+			break
+		}
+		s := seen{typ: chunk.Type}
+		if chunk.ToolCall != nil {
+			s.toolName = chunk.ToolCall.ToolName
+		}
+		if chunk.ToolResult != nil {
+			s.toolName = chunk.ToolResult.ToolName
+			s.hasError = chunk.ToolResult.Error != nil
+		}
+		if chunk.Type == provider.ChunkTypeFinish {
+			s.finishRsn = chunk.FinishReason
+		}
+		order = append(order, s)
+	}
+	if err := result.Err(); err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+
+	// Find the indices of the two tool-call chunks, the two tool-result
+	// chunks, the tool-calls finish chunk, and step 2's first text chunk.
+	idx := func(pred func(seen) bool) int {
+		for i, s := range order {
+			if pred(s) {
+				return i
+			}
+		}
+		return -1
+	}
+	bogusCall := idx(func(s seen) bool { return s.typ == provider.ChunkTypeToolCall && s.toolName == "bogus" })
+	validCall := idx(func(s seen) bool { return s.typ == provider.ChunkTypeToolCall && s.toolName == "testTool" })
+	toolCallsFinish := idx(func(s seen) bool {
+		return s.typ == provider.ChunkTypeFinish && s.finishRsn == types.FinishReasonToolCalls
+	})
+	bogusResult := idx(func(s seen) bool { return s.typ == provider.ChunkTypeToolResult && s.toolName == "bogus" })
+	validResult := idx(func(s seen) bool {
+		return s.typ == provider.ChunkTypeToolResult && s.toolName == "testTool" && !s.hasError
+	})
+	step2Text := idx(func(s seen) bool { return s.typ == provider.ChunkTypeText })
+
+	if bogusCall < 0 || validCall < 0 || toolCallsFinish < 0 || bogusResult < 0 || validResult < 0 || step2Text < 0 {
+		t.Fatalf("missing expected chunk(s), got order = %+v", order)
+	}
+	if !(bogusCall < validCall && validCall < toolCallsFinish) {
+		t.Fatalf("expected both tool-call chunks before the tool-calls finish chunk, got order = %+v", order)
+	}
+	if !order[bogusResult].hasError {
+		t.Fatalf("expected the invalid call's tool-result chunk to carry an error, got %+v", order[bogusResult])
+	}
+	if !(toolCallsFinish < bogusResult && toolCallsFinish < validResult) {
+		t.Fatalf("expected both tool-result chunks after step 1's finish chunk, got order = %+v", order)
+	}
+	if !(bogusResult < step2Text && validResult < step2Text) {
+		t.Fatalf("expected step 1's tool-result chunks (including the invalid call's synthesized error) before step 2's text — invalid calls must not be deferred past the stream, got order = %+v", order)
+	}
+}
