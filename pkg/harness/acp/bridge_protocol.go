@@ -103,4 +103,17 @@ type StartMessage struct {
 	PermissionModeMapping *PermissionModeMapping `json:"permissionModeMapping,omitempty"`
 	ModelMapping          *ModelMapping          `json:"modelMapping,omitempty"`
 	TurnStartConfig       TurnStartConfig        `json:"turnStartConfig"`
+	RecoveryMode          *RecoveryMode          `json:"recoveryMode,omitempty"`
+}
+
+// RecoveryMode tags a "start" frame sent to a respawned bridge process as a
+// process-loss recovery attempt rather than a fresh turn. Mirrors TS's
+// `lossyRecoverySchema`/`coldRestoreSchema` union on `startMessageSchema`
+// (`acp-v1-bridge-protocol.ts`).
+type RecoveryMode struct {
+	// Type is "lossy-rerun" or "cold-restore".
+	Type         string `json:"type"`
+	ACPSessionID string `json:"acpSessionId"`
+	// Reason is only present for "lossy-rerun".
+	Reason string `json:"reason,omitempty"`
 }

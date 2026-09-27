@@ -12,17 +12,20 @@
 // protocol over a WebSocket (pkg/harness/bridge), and translates frames
 // to/from pkg/harness's harness.Harness/Session/PromptControl surface.
 //
-// Deferred (see the final implementation report for exact TS source
-// pointers):
-//   - Process-loss recovery beyond a live reconnect: TS distinguishes
-//     disk-replay / lossy-rerun / cold-restore recovery rungs when the
-//     bridge process itself is gone. This port always attempts a live
-//     attach (matching TS's own first attempt) and, on failure, starts a
-//     fresh turn; it does not replay from an on-disk event log or restore a
-//     cold ACP session id.
-//   - `ACPAskUserQuestionsSettings.isNativeToolCall`'s exact interaction
-//     with `isMcpToolCall` is simplified: a candidate is suppressed only
-//     when `isMcpToolCall` returns true.
+// Process-loss recovery: when a live attach to a persisted bridge
+// coordinate fails (or none was persisted), this port implements the same
+// three tiers as TS's `ACPRespawnStrategy`/`restoreColdACPSession`
+// (acp-v1-harness.ts): disk-replay (a continued turn whose event log ends
+// in a terminal `finish`, replayed from disk on a respawned bridge),
+// lossy-rerun (a continued turn resumed from persisted turn-start
+// configuration and the native ACP session id, config-fingerprint
+// validated), and cold-restore (a plain resume of a session with no
+// in-flight turn, restoring the native ACP session by id via a
+// prompt-less "start" carrying `recoveryMode: cold-restore`, resolved
+// through the bridge's `acp-session-restored` raw frame). See harness.go
+// (acpRespawnStrategy, DoStart's isResume block), turn_start_config.go
+// (validateTurnStartConfig/validateColdSessionConfiguration), and
+// session.go (restoreColdACPSession, DoContinueTurn's lossyRerun branch).
 //
 // See state/parity/sep_23_2026/harness.md WG11 and TS
 // packages/harness-acp/src/{acp-harness,acp-auth,acp-tool-call}.ts and

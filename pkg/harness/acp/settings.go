@@ -28,9 +28,15 @@ type Source struct {
 	PackageVersion string // optional exact semver; empty means "latest"
 
 	// npm-locked
-	PackageJSON       string
-	PnpmLockYAML      string
-	PnpmWorkspaceYAML string // optional
+	PackageJSON  string
+	PnpmLockYAML string
+	// PnpmWorkspaceYAML is optional. TS additionally rejects an explicitly
+	// empty string distinctly from "not provided" (`pnpmWorkspaceYaml?.length
+	// === 0` throws); Go cannot represent that distinction on a plain string
+	// field without an API-breaking change to *string, and an explicit ""
+	// already behaves identically to omission here, so that extra check is
+	// not ported.
+	PnpmWorkspaceYAML string
 
 	// install-command
 	Command string

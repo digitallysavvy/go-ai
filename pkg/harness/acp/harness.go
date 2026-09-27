@@ -88,16 +88,17 @@ func (h *acpHarness) GetBootstrap(ctx context.Context) (*harness.Bootstrap, erro
 }
 
 // resumeStateData is the adapter-defined `data` payload of lifecycle state.
-// Mirrors TS `acpResumeStateSchema` (only the fields this simplified port
-// reads/writes; unknown fields such as `coldSession`/`recovery`/
-// `restoration` round-trip transparently via json.RawMessage passthrough at
-// the caller, since this port never produces them).
+// Mirrors TS `ACPLifecycleData` (`acp-v1-lifecycle.ts`).
 type resumeStateData struct {
 	ImplementationIdentity       string                         `json:"implementationIdentity"`
 	AuthenticationProfile        *authenticationProfileIdentity `json:"authenticationProfile,omitempty"`
 	SandboxCredentialEnvironment map[string]string              `json:"sandboxCredentialEnvironment,omitempty"`
 	ACPSessionID                 string                         `json:"acpSessionId,omitempty"`
 	Bridge                       *bridgeCoords                  `json:"bridge,omitempty"`
+	ColdSession                  *ColdSessionState              `json:"coldSession,omitempty"`
+	TurnStartConfig              *TurnStartConfig               `json:"turnStartConfig,omitempty"`
+	Recovery                     *recoveryInfo                  `json:"recovery,omitempty"`
+	Restoration                  *restorationInfo               `json:"restoration,omitempty"`
 	InitialGuidanceApplied       bool                           `json:"initialGuidanceApplied,omitempty"`
 	InstructionsFingerprint      string                         `json:"instructionsFingerprint,omitempty"`
 	SkillsDirectory              string                         `json:"skillsDirectory,omitempty"`
@@ -122,6 +123,39 @@ func (h *acpHarness) ValidateLifecycleStateData(data json.RawMessage) error {
 func unsupported(harnessID, message string) error {
 	return harness.NewCapabilityUnsupportedError(message, harnessID, nil)
 }
+
+func unsupportedCause(harnessID, message string, cause error) error {
+	return harness.NewCapabilityUnsupportedError(message, harnessID, cause)
+}
+
+// acpRespawnStrategy mirrors TS `ACPRespawnStrategy`: the process-loss
+// recovery tier chosen when a live attach to a persisted bridge coordinate
+// fails (or no coordinate was persisted). Exactly one of disk-replay,
+// lossy-rerun or cold-restore applies.
+type acpRespawnStrategy struct {
+	mode acpRecoveryMode
+	// reason (disk-replay/lossy-rerun only): recorded on the resumeStateData
+	// for the NEXT lifecycle snapshot's `recovery.reason`, and, for
+	// lossy-rerun, sent as the bridge's `recoveryMode.reason`.
+	reason string
+	// afterSeq (disk-replay only): the cursor a respawned bridge should
+	// resume its channel replay from.
+	afterSeq float64
+	// turnStartConfig (lossy-rerun/cold-restore only): the persisted,
+	// fingerprint-validated configuration to restart the turn/session with.
+	turnStartConfig *TurnStartConfig
+	// acpSessionID (lossy-rerun/cold-restore only): the native ACP session
+	// id the respawned bridge should resume or load.
+	acpSessionID string
+}
+
+type acpRecoveryMode string
+
+const (
+	acpRecoveryDiskReplay  acpRecoveryMode = "disk-replay"
+	acpRecoveryLossyRerun  acpRecoveryMode = "lossy-rerun"
+	acpRecoveryColdRestore acpRecoveryMode = "cold-restore"
+)
 
 func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (harness.Session, error) {
 	settings := h.settings
@@ -306,24 +340,73 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 		isMcpToolCall: settings.IsMcpToolCall, sandbox: toolSafeSandboxSession,
 		homePath: implementationHomeDir, skillsDir: skillsDir, skillsDirectory: skillsDirectory,
 		sandboxID: sandboxID, sandboxCredentialEnvironment: sandboxCredentialEnvironment,
-		reconnect: settings.Reconnect,
+		reconnect: settings.Reconnect, bridgeStateDir: bridgeStateDir,
 	}
 
 	// Attach to a still-running bridge when coordinates are known (TS's
-	// first, and in this port only, recovery attempt). On any failure,
-	// this port falls through to a fresh spawn rather than TS's
-	// disk-replay/lossy-rerun/cold-restore recovery tiers (see package doc).
-	if coords := resumeData.Bridge; coords != nil {
-		if sess, ok := attachToRunningBridge(ctx, sandboxSession, settings, coords, isContinue, resumeData, onBridgeErr, sessionArgs); ok {
-			return sess, nil
+	// first recovery attempt). On failure, fall through to process-loss
+	// recovery: disk-replay/lossy-rerun for a continued turn, cold-restore
+	// for a plain resume. Mirrors TS's `isResume` block in `doStart`.
+	var respawnStrategy *acpRespawnStrategy
+	if isResume {
+		if len(lifecycleData) == 0 {
+			return nil, fmt.Errorf("ACP lifecycle state data is missing.")
 		}
-		if isContinue {
-			return nil, unsupported(settings.HarnessID, fmt.Sprintf(
-				"%s ACP process-loss recovery is unavailable in this Go port; the bridge process is unreachable and the turn cannot be continued.", settings.HarnessID))
+		coords := resumeData.Bridge
+		if coords == nil && isContinue {
+			return nil, unsupported(settings.HarnessID,
+				"ACP continuation state does not contain bridge coordinates required for replay or process-loss rerun.")
 		}
-	} else if isResume {
-		return nil, unsupported(settings.HarnessID, fmt.Sprintf(
-			"%s ACP cold-session restoration (no live bridge coordinates) is not supported by this Go port.", settings.HarnessID))
+		if coords != nil {
+			sess, attachErr := attachToRunningBridge(ctx, sandboxSession, settings, coords, isContinue, resumeData, onBridgeErr, sessionArgs)
+			if attachErr == nil {
+				return sess, nil
+			}
+			if isContinue {
+				logText, _ := toolSafeSandboxSession.ReadTextFile(ctx, providerutils.SandboxReadTextFileOptions{Path: bridgeStateDir + "/event-log.ndjson"})
+				text := ""
+				if logText != nil {
+					text = *logText
+				}
+				if harnessutil.ClassifyDiskLog(text) == harnessutil.DiskLogReplay {
+					respawnStrategy = &acpRespawnStrategy{mode: acpRecoveryDiskReplay, reason: "completed coherent event log", afterSeq: coords.LastSeenEventID}
+				} else {
+					if resumeData.TurnStartConfig == nil || resumeData.ACPSessionID == "" {
+						return nil, unsupportedCause(settings.HarnessID,
+							"ACP process-loss recovery is unavailable because the lifecycle state does not contain the persisted turn start configuration and ACP session identifier.",
+							attachErr)
+					}
+					if err := validateTurnStartConfig(*resumeData.TurnStartConfig, validateTurnStartConfigInput{
+						AuthenticationProfile: authProfile, SessionMeta: settings.SessionMeta,
+						InstructionMapping: settings.InstructionMapping, OutputSchemaMapping: settings.OutputSchemaMapping,
+						ModelMapping: settings.ModelMapping, BuiltinTools: builtinToolCatalog,
+						PermissionModeMapping: h.permMap, MCPServers: settings.MCPServers,
+					}); err != nil {
+						return nil, err
+					}
+					respawnStrategy = &acpRespawnStrategy{
+						mode: acpRecoveryLossyRerun, reason: "event log not replayable",
+						turnStartConfig: resumeData.TurnStartConfig, acpSessionID: resumeData.ACPSessionID,
+					}
+				}
+			}
+		}
+		if !isContinue {
+			if resumeData.ColdSession == nil || resumeData.ACPSessionID == "" {
+				return nil, unsupported(settings.HarnessID,
+					"Cold ACP session restoration requires persisted cold-session configuration and an ACP session identifier.")
+			}
+			cfg, err := validateColdSessionConfiguration(*resumeData.ColdSession, validateColdSessionConfigurationInput{
+				PermissionMode: permissionMode, AuthenticationProfile: authProfile, SessionMeta: settings.SessionMeta,
+				InstructionMapping: settings.InstructionMapping, OutputSchemaMapping: settings.OutputSchemaMapping,
+				ModelMapping: settings.ModelMapping, BuiltinTools: builtinToolCatalog,
+				PermissionModeMapping: h.permMap, MCPServers: settings.MCPServers, Debug: debugConfig(opts.Observability),
+			})
+			if err != nil {
+				return nil, err
+			}
+			respawnStrategy = &acpRespawnStrategy{mode: acpRecoveryColdRestore, turnStartConfig: &cfg, acpSessionID: resumeData.ACPSessionID}
+		}
 	}
 
 	forwardedImplementationEnvironment := sandboxImplementationEnvironment
@@ -417,6 +500,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 		Label: settings.HarnessID + " ACP bridge", Source: settings.HarnessID, Sandbox: toolSafeSandboxSession,
 		Command: command, Env: env, Port: port, Token: token,
 		BridgeStateDir: bridgeStateDir, BridgeType: settings.HarnessID, StartupTimeout: timeout,
+		ReplayFromDisk: respawnStrategy != nil && respawnStrategy.mode == acpRecoveryDiskReplay,
 		ResolveEndpoint: func(ctx context.Context, boundPort int) (harness.PortEndpoint, error) {
 			return resolveBridgeEndpoint(ctx, sandboxSession, settings.PortEndpoint, boundPort, settings.HarnessID)
 		},
@@ -425,23 +509,85 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 		return nil, err
 	}
 
-	channel := bridge.NewChannel(bridge.ChannelOptions{
+	channelOpts := bridge.ChannelOptions{
 		Connect:       bridge.NewConnectFunc(launched.Endpoint, bridge.DialOptions{Name: settings.HarnessID + " ACP bridge"}),
 		Decode:        decodeOutbound,
 		Reconnect:     settings.Reconnect,
 		OnBridgeError: onBridgeErr,
-	})
-	if err := channel.Open(ctx, false); err != nil {
+	}
+	resumeChannel := false
+	if respawnStrategy != nil && respawnStrategy.mode == acpRecoveryDiskReplay {
+		channelOpts.InitialLastSeenEventID = respawnStrategy.afterSeq
+		resumeChannel = true
+	}
+	channel := bridge.NewChannel(channelOpts)
+	if err := channel.Open(ctx, resumeChannel); err != nil {
 		return nil, err
+	}
+
+	var coldRestoration string
+	if respawnStrategy != nil && respawnStrategy.mode == acpRecoveryColdRestore {
+		startMsg := StartMessage{
+			StartBase: bridge.StartBase{
+				Tools: respawnStrategy.turnStartConfig.Tools, PermissionMode: permissionMode,
+				Debug: debugConfig(opts.Observability),
+			},
+			Prompt: []TextContentBlock{}, BuiltinTools: builtinToolCatalog, PermissionModeMapping: h.permMap,
+			TurnStartConfig: *respawnStrategy.turnStartConfig,
+			RecoveryMode:    &RecoveryMode{Type: "cold-restore", ACPSessionID: respawnStrategy.acpSessionID},
+		}
+		if settings.InstructionMapping != nil {
+			startMsg.InstructionMapping = settings.InstructionMapping
+		}
+		if settings.MCPServers != nil {
+			startMsg.MCPServers = settings.MCPServers
+		}
+		method, err := restoreColdACPSession(ctx, channel, settings.HarnessID, startMsg)
+		if err != nil {
+			channel.BeginClose()
+			if !channel.IsClosed() {
+				_ = channel.Send(bridge.DestroyCommand{})
+			}
+			_ = launched.Proc.Kill()
+			channel.Close()
+			return nil, err
+		}
+		coldRestoration = method
 	}
 
 	sessionArgs.channel = channel
 	sessionArgs.proc = launched.Proc
 	sessionArgs.bridgePort = port
 	sessionArgs.bridgeToken = token
-	sessionArgs.isResume = false
-	sessionArgs.turnInFlight = false
+	sessionArgs.isResume = isResume
+	sessionArgs.acpSessionID = resumeData.ACPSessionID
+	switch {
+	case respawnStrategy != nil && (respawnStrategy.mode == acpRecoveryLossyRerun || respawnStrategy.mode == acpRecoveryColdRestore):
+		sessionArgs.turnStartConfig = respawnStrategy.turnStartConfig
+	default:
+		sessionArgs.turnStartConfig = resumeData.TurnStartConfig
+	}
+	sessionArgs.turnInFlight = respawnStrategy != nil && (respawnStrategy.mode == acpRecoveryDiskReplay || respawnStrategy.mode == acpRecoveryLossyRerun)
+	if respawnStrategy != nil && (respawnStrategy.mode == acpRecoveryDiskReplay || respawnStrategy.mode == acpRecoveryLossyRerun) {
+		sessionArgs.recoveryStatus = &recoveryInfo{Mode: string(respawnStrategy.mode), Reason: respawnStrategy.reason}
+	} else if resumeData.Recovery != nil {
+		sessionArgs.recoveryStatus = &recoveryInfo{Mode: resumeData.Recovery.Mode, Reason: resumeData.Recovery.Reason}
+	}
+	if coldRestoration != "" {
+		sessionArgs.restoration = &restorationInfo{Method: coldRestoration}
+	} else if resumeData.Restoration != nil {
+		sessionArgs.restoration = &restorationInfo{Method: resumeData.Restoration.Method}
+	}
+	sessionArgs.replayOnly = respawnStrategy != nil && respawnStrategy.mode == acpRecoveryDiskReplay
+	sessionArgs.lossyRerun = respawnStrategy != nil && respawnStrategy.mode == acpRecoveryLossyRerun
 	return newSession(sessionArgs), nil
+}
+
+func debugConfig(o *harness.Observability) *harness.DebugConfig {
+	if o == nil {
+		return nil
+	}
+	return o.Debug
 }
 
 func askUserQuestionsRequestMethod(s *AskUserQuestionsSettings) string {

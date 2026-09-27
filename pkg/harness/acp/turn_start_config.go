@@ -3,6 +3,7 @@ package acp
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 )
@@ -111,6 +112,90 @@ func createColdSessionState(cfg TurnStartConfig) ColdSessionState {
 		ResponseFormat: cfg.ResponseFormat, OutputSchemaMapping: cfg.OutputSchemaMapping,
 		PermissionModeMapping: cfg.PermissionModeMapping,
 	}
+}
+
+// validateTurnStartConfigInput is the current (non-persisted) configuration
+// validateTurnStartConfig recomputes a fingerprint from, to compare against
+// a persisted TurnStartConfig. Mirrors TS `validateACPTurnStartConfig`'s
+// parameter object.
+type validateTurnStartConfigInput struct {
+	AuthenticationProfile authenticationProfileIdentity
+	SessionMeta           map[string]any
+	InstructionMapping    *InstructionMapping
+	OutputSchemaMapping   *OutputSchemaMapping
+	ModelMapping          ModelMapping
+	BuiltinTools          []BuiltinToolMapping
+	PermissionModeMapping *PermissionModeMapping
+	MCPServers            map[string]any
+}
+
+// validateTurnStartConfig mirrors TS `validateACPTurnStartConfig`: it
+// recomputes the non-secret configuration fingerprint from the CURRENT
+// session settings (not the persisted ones) and rejects a lossy rerun if it
+// no longer matches, since the resumed turn must not silently change tool
+// catalogs, permission mapping, auth, etc.
+func validateTurnStartConfig(turnStartConfig TurnStartConfig, in validateTurnStartConfigInput) error {
+	current := createTurnStartConfig(createTurnStartConfigInput{
+		Prompt: turnStartConfig.Prompt, Tools: turnStartConfig.Tools, BuiltinTools: in.BuiltinTools,
+		PermissionMode: turnStartConfig.PermissionMode, PermissionModeMapping: in.PermissionModeMapping,
+		MCPServers: in.MCPServers, Debug: turnStartConfig.Debug, AuthenticationProfile: in.AuthenticationProfile,
+		SessionMeta: in.SessionMeta, InstructionMapping: in.InstructionMapping, ResponseFormat: turnStartConfig.ResponseFormat,
+		OutputSchemaMapping: in.OutputSchemaMapping, Model: turnStartConfig.Model, ModelMapping: in.ModelMapping,
+	})
+	if current.ConfigurationFingerprint != turnStartConfig.ConfigurationFingerprint {
+		return fmt.Errorf("The persisted ACP turn start configuration is incompatible with the current non-secret start configuration.")
+	}
+	return nil
+}
+
+// validateColdSessionConfigurationInput mirrors
+// validateTurnStartConfigInput, plus the fields a cold restore also needs
+// (permissionMode and debug are not part of the persisted ColdSessionState
+// itself but must match the CURRENT turn's settings).
+type validateColdSessionConfigurationInput struct {
+	PermissionMode        harness.PermissionMode
+	AuthenticationProfile authenticationProfileIdentity
+	SessionMeta           map[string]any
+	InstructionMapping    *InstructionMapping
+	OutputSchemaMapping   *OutputSchemaMapping
+	ModelMapping          ModelMapping
+	BuiltinTools          []BuiltinToolMapping
+	PermissionModeMapping *PermissionModeMapping
+	MCPServers            map[string]any
+	Debug                 *harness.DebugConfig
+}
+
+// validateColdSessionConfiguration mirrors TS
+// `validateACPColdSessionConfiguration`: it recomputes a turn start config
+// with an empty prompt (a cold restore carries no prompt) and the current
+// session settings, and rejects the restore if either the fingerprint or
+// the permission mode changed. Returns the freshly computed config, which
+// becomes the respawned session's turnStartConfig (TS's `current` return
+// value — used verbatim as the cold-restore `start` frame's turnStartConfig
+// and as the session's remembered config for a future rerun/cold-restore).
+func validateColdSessionConfiguration(coldSession ColdSessionState, in validateColdSessionConfigurationInput) (TurnStartConfig, error) {
+	current := createTurnStartConfig(createTurnStartConfigInput{
+		Prompt: nil, Tools: coldSession.Tools, BuiltinTools: in.BuiltinTools,
+		PermissionMode: in.PermissionMode, PermissionModeMapping: in.PermissionModeMapping,
+		MCPServers: in.MCPServers, Debug: in.Debug, AuthenticationProfile: in.AuthenticationProfile,
+		SessionMeta: in.SessionMeta, InstructionMapping: in.InstructionMapping, ResponseFormat: coldSession.ResponseFormat,
+		OutputSchemaMapping: in.OutputSchemaMapping, Model: "", ModelMapping: in.ModelMapping,
+	})
+	if current.ConfigurationFingerprint != coldSession.ConfigurationFingerprint || coldSession.PermissionMode != in.PermissionMode {
+		return TurnStartConfig{}, fmt.Errorf("ACP cold-session state is incompatible with the current non-secret session configuration.")
+	}
+	return current, nil
+}
+
+// assertRecoveryToolCatalog mirrors TS `assertRecoveryToolCatalog`: a lossy
+// rerun must use the exact same active host tool catalog as the turn it is
+// replacing, since the fresh process negotiates tool availability once, at
+// start.
+func assertRecoveryToolCatalog(persisted, current []harness.ToolSpec) error {
+	if fingerprintValue(persisted) != fingerprintValue(current) {
+		return fmt.Errorf("ACP lossy rerun requires the same active host tool catalog as the original turn.")
+	}
+	return nil
 }
 
 // fingerprintValue mirrors TS `fingerprintValue`.
