@@ -905,20 +905,79 @@ func TestResolveAllowedTools_CanonicalAliasResolves(t *testing.T) {
 	}
 }
 
-// TestResolveAllowedTools_AmbiguousAliasDroppedWithWarning covers the second
-// of item 4's two warnings end-to-end. Real ambiguity requires two tools
-// that canonicalize to the same alias key but resolve to genuinely
-// different entries; TS reaches this through its toolNameMapping name-
-// collision-rename layer (renaming one of two same-named tools and mapping
-// both back to the original name). Go's tool model has no such rename
-// layer, so this test drives the ambiguous marker directly via the
-// package-private aliasing helpers to prove the marking/warning/drop logic
-// itself is correct, since it cannot be reached from two *stock* tool
-// registrations (every built-in canonical key is derived 1:1 from the
-// resolved entry, so two tools that share a canonical key always resolve to
-// the identical entry and are correctly treated as "the same tool", not
-// ambiguous).
+// mcpTool builds an MCP provider tool with a custom SDK Name distinct from
+// its fixed ProviderID, mirroring the TS test helper `mcpTool(name,
+// serverLabel)` in openai-responses-prepare-tools.test.ts: two such tools
+// with different server labels both canonicalize to the alias "mcp" (see
+// canonicalAllowedToolName), which is exactly what makes the ambiguous case
+// below reachable.
+func mcpToolWithName(name, serverLabel string) types.Tool {
+	return types.Tool{
+		Type:       types.ToolTypeProviderDefined,
+		Name:       name,
+		ProviderID: "openai.mcp",
+		ProviderOptions: openaitool.MCPConfig{
+			ServerLabel: serverLabel,
+			ServerURL:   "https://" + serverLabel + ".example.com/mcp",
+		},
+	}
+}
+
+// TestResolveAllowedTools_AmbiguousAliasDroppedWithWarning ports TS's
+// "should drop an ambiguous canonical name when several tools share it"
+// (openai-responses-prepare-tools.test.ts). Two MCP tools with different
+// server labels (and therefore different custom Names) both canonicalize to
+// the fixed alias "mcp"; requesting "mcp" in allowedTools is genuinely
+// ambiguous between them and is dropped with a warning, leaving only the
+// unambiguous function tool allowed.
 func TestResolveAllowedTools_AmbiguousAliasDroppedWithWarning(t *testing.T) {
+	tools := []types.Tool{
+		{Type: types.ToolTypeFunction, Name: "get_weather"},
+		mcpToolWithName("alpha", "alpha"),
+		mcpToolWithName("beta", "beta"),
+	}
+	choice, warnings, err := ResolveAllowedTools(tools, []string{"get_weather", "mcp"}, "")
+	if err != nil {
+		t.Fatalf("ResolveAllowedTools failed: %v", err)
+	}
+	if len(choice.Tools) != 1 || choice.Tools[0].Type != "function" || choice.Tools[0].Name != "get_weather" {
+		t.Fatalf("choice = %#v, want only the unambiguous get_weather function tool", choice)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %#v, want exactly one ambiguity warning", warnings)
+	}
+	if warnings[0].Feature != `allowedTools entry "mcp"` ||
+		warnings[0].Details != "several tools in this request share this provider tool name; use the tool name from the tools for this request instead" {
+		t.Fatalf("warning = %#v, want the ambiguous-canonical-name warning", warnings[0])
+	}
+}
+
+// TestResolveAllowedTools_EachMcpServerResolvesByOwnName ports TS's "should
+// still resolve each mcp server by its own tool name": even though both MCP
+// tools canonicalize to the ambiguous alias "mcp", an allowedTools entry
+// that names one tool's own SDK Name directly ("beta") resolves
+// unambiguously to that tool, with no warnings.
+func TestResolveAllowedTools_EachMcpServerResolvesByOwnName(t *testing.T) {
+	tools := []types.Tool{
+		mcpToolWithName("alpha", "alpha"),
+		mcpToolWithName("beta", "beta"),
+	}
+	choice, warnings, err := ResolveAllowedTools(tools, []string{"beta"}, "")
+	if err != nil {
+		t.Fatalf("ResolveAllowedTools failed: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none", warnings)
+	}
+	if len(choice.Tools) != 1 || choice.Tools[0].Type != "mcp" || choice.Tools[0].ServerLabel != "beta" {
+		t.Fatalf("choice = %#v, want the beta mcp server resolved directly by its own name", choice)
+	}
+}
+
+// TestResolveAllowedTools_IsSameAllowedTool unit-tests the equality helper
+// used to decide whether two colliding canonical aliases are "the same
+// tool" (and thus not ambiguous) directly.
+func TestResolveAllowedTools_IsSameAllowedTool(t *testing.T) {
 	a := allowedToolResolution{supported: true, entry: AllowedToolsToolEntry{Type: "custom", Name: "one"}}
 	b := allowedToolResolution{supported: true, entry: AllowedToolsToolEntry{Type: "custom", Name: "two"}}
 	if isSameAllowedTool(a, b) {

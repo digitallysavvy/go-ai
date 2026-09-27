@@ -630,17 +630,27 @@ func isSameAllowedTool(a, b allowedToolResolution) bool {
 
 // canonicalAllowedToolName returns the "provider tool name" a resolved
 // allowedTools entry would be known by on the wire, independent of the SDK
-// tool's own (possibly custom) Name -- mirrors what TS's
-// `toolNameMapping.toProviderToolName` resolves to for a provider-defined
-// tool. Function/custom tools have no separate wire identity distinct from
-// their own name, so they return "" (no alias is recorded for them, matching
-// TS passing `undefined` as canonicalName in the function-tool branch).
+// tool's own (possibly custom) Name -- mirrors TS's static
+// `providerToolNames` table (id -> fixed provider tool name, e.g.
+// "openai.mcp" -> "mcp") consulted through
+// `toolNameMapping.toProviderToolName`. This is deliberately just the
+// resolved entry's Type, NOT `allowedToolKey(entry)`: TS's canonical name for
+// every MCP tool is the single fixed string "mcp" regardless of
+// server_label (all "openai.mcp" tools share one entry in providerToolNames),
+// whereas allowedToolKey intentionally differentiates MCP entries by
+// server_label for the *equality* check in isSameAllowedTool. Reusing
+// allowedToolKey here would make the canonical key already unique per
+// server_label, so two different MCP servers could never collide on it --
+// silently making the "ambiguous" case below unreachable. Function/custom
+// tools have no separate wire identity distinct from their own name, so they
+// return "" (no alias is recorded for them, matching TS passing `undefined`
+// as canonicalName in the function-tool branch).
 func canonicalAllowedToolName(entry AllowedToolsToolEntry) string {
 	switch entry.Type {
 	case "function", "custom":
 		return ""
 	default:
-		return allowedToolKey(entry)
+		return entry.Type
 	}
 }
 
@@ -673,15 +683,12 @@ type allowedToolAlias struct {
 // use the tool's own Name instead. If a name matches BOTH a tool's own Name
 // and another tool's canonical alias, the direct match wins with a warning.
 //
-// Note: TS reaches the "ambiguous" case through its toolNameMapping
-// name-collision-rename layer, which Go's tool model has no equivalent of.
-// Two *stock* Go tool registrations that canonicalize to the same alias key
-// always resolve to an identical entry (every built-in canonical key is
-// derived 1:1 from the resolved entry itself), so they are correctly
-// treated as "the same tool" rather than ambiguous. The ambiguity marking
-// and warning logic is still implemented and unit-tested for correctness,
-// and would engage automatically if Go's tool model ever gains a
-// name-collision layer of its own.
+// This is reachable in Go the same way it is in TS: two different MCP tools
+// (distinct ProviderOptions.ServerLabel, and therefore distinct SDK Names)
+// both canonicalize to the fixed alias "mcp" (see canonicalAllowedToolName),
+// so an allowedTools entry of "mcp" is genuinely ambiguous between them and
+// is dropped with a warning -- the caller must use each tool's own Name
+// instead.
 func ResolveAllowedTools(tools []types.Tool, toolNames []string, mode string) (*AllowedToolsToolChoice, []types.Warning, error) {
 	if len(toolNames) == 0 {
 		return nil, nil, nil
