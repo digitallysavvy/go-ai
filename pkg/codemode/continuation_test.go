@@ -226,6 +226,116 @@ func TestContinueCodeModeApproval_ChainsTwoSequentialApprovals(t *testing.T) {
 	}
 }
 
+// Exercises prepareContinuation/toolBridge's generic handling of a
+// multi-entry PendingInterruptions batch -- the shape this package itself
+// never produces (see the package doc's "Host tool bridge dispatch"
+// section: it only ever emits single-entry batches), but that the doc
+// claims the consuming code still handles correctly for "a hypothetical
+// future concurrent implementation, or, structurally, one from
+// TypeScript". This hand-builds a signed two-entry Continuation the way
+// such an implementation would, then drives it through the same
+// ContinueCodeModeInterrupt/RunCodeMode path a real caller would use:
+// resolving entry 0 must yield exactly entry 1 as the next Interrupt
+// (not skip it or execute early), and only resolving entry 1 too must
+// replay the (empty) ledger, resume both calls with their respective
+// resolutions via ToolExecutionOptions.CodeModeInterrupt, and complete.
+func TestContinueCodeModeInterrupt_ResumesHandBuiltTwoEntryBatch(t *testing.T) {
+	const outerToolCall = "outer"
+	tools := ToolSet{
+		"a": {
+			Name:       "a",
+			Parameters: map[string]interface{}{"type": "object"},
+			Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+				resume, _ := opts.CodeModeInterrupt.(*InterruptExecutionContext)
+				if resume == nil {
+					t.Fatal("tool 'a' executed without resume context")
+				}
+				return resume.Resolution, nil
+			},
+		},
+		"b": {
+			Name:       "b",
+			Parameters: map[string]interface{}{"type": "object"},
+			Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+				resume, _ := opts.CodeModeInterrupt.(*InterruptExecutionContext)
+				if resume == nil {
+					t.Fatal("tool 'b' executed without resume context")
+				}
+				return resume.Resolution, nil
+			},
+		},
+	}
+	js := `
+		const a = await tools.a({});
+		const b = await tools.b({});
+		return { a, b };
+	`
+
+	emptyLedger, err := encodeReplayLedger(nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	unsigned := Continuation{
+		Version:         2,
+		JS:              js,
+		OuterToolCallID: outerToolCall,
+		ToolNames:       []string{"a", "b"},
+		Token:           emptyLedger,
+		PendingInterruptions: []PendingInterruption{
+			{
+				RunInterruptionID: "interrupt-1",
+				InterruptID:       outerToolCall + ":tool-1:interrupt",
+				ToolName:          "a",
+				ToolCallID:        outerToolCall + ":tool-1",
+				Input:             map[string]interface{}{},
+				Payload:           InterruptPayload{"kind": "generic"},
+			},
+			{
+				RunInterruptionID: "interrupt-2",
+				InterruptID:       outerToolCall + ":tool-2:interrupt",
+				ToolName:          "b",
+				ToolCallID:        outerToolCall + ":tool-2",
+				Input:             map[string]interface{}{},
+				Payload:           InterruptPayload{"kind": "generic"},
+			},
+		},
+		Resolutions: []PendingResolution{},
+	}
+	security, err := resolveContinuationSecurity(ContinuationSecurityOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	signed, err := signContinuation(unsigned, security)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	firstInterrupt, err := toCodeModeInterrupt(signed, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	pendingSecond, err := ContinueCodeModeInterrupt(context.Background(), *firstInterrupt, "resolved-a", tools, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	secondInterrupt, ok := pendingSecond.(*Interrupt)
+	if !ok {
+		t.Fatalf("expected the second batch entry as a *Interrupt, got %#v", pendingSecond)
+	}
+	if secondInterrupt.ToolName != "b" || secondInterrupt.InterruptID != unsigned.PendingInterruptions[1].InterruptID {
+		t.Fatalf("expected entry 1 ('b') next, got %#v", secondInterrupt)
+	}
+	if len(secondInterrupt.Continuation.Resolutions) != 1 {
+		t.Fatalf("expected exactly one recorded resolution, got %#v", secondInterrupt.Continuation.Resolutions)
+	}
+
+	final, err := ContinueCodeModeInterrupt(context.Background(), *secondInterrupt, "resolved-b", tools, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertDeepEqual(t, final, map[string]interface{}{"a": "resolved-a", "b": "resolved-b"})
+}
+
 // No TypeScript test exercises getCodeModeInterrupt/unwrapCodeModeResult
 // directly (grep of code-mode/src/*.test.ts confirms neither name appears
 // outside the implementation files), so this is new coverage for the
