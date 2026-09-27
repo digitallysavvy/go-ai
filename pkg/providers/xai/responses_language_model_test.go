@@ -1113,6 +1113,31 @@ func TestXAIResponsesGrok420RejectsReasoningEffort(t *testing.T) {
 	}
 }
 
+// TestXAIResponsesDefaultReasoningSkipsGrok420Warning covers a bug adjacent
+// to row 8e006de: TS gates the unsupported-model check on
+// isCustomReasoning(reasoning), which excludes the "provider-default"
+// sentinel. Requesting the provider's own default reasoning against a
+// grok-4.20-reasoning model must never warn, unlike an explicit effort.
+func TestXAIResponsesDefaultReasoningSkipsGrok420Warning(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "grok-4.20-reasoning")
+
+	def := types.ReasoningDefault
+	body, warnings, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt:    types.Prompt{Text: "hi"},
+		Reasoning: &def,
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	if _, ok := body["reasoning"]; ok {
+		t.Fatalf("reasoning = %#v, want no reasoning field", body["reasoning"])
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none for provider-default reasoning", warnings)
+	}
+}
+
 // TestXAIResponsesXHighEffortModelGating covers row 8e006de's effort map:
 // xhigh maps to "xhigh" only for grok-4.6, "high" for every other model.
 func TestXAIResponsesXHighEffortModelGating(t *testing.T) {
@@ -1170,6 +1195,55 @@ func TestXAIResponsesServiceTier(t *testing.T) {
 	xaiMeta, ok := result.ProviderMetadata["xai"].(map[string]interface{})
 	if !ok || xaiMeta["serviceTier"] != "priority" {
 		t.Fatalf("ProviderMetadata = %#v, want xai.serviceTier=priority", result.ProviderMetadata)
+	}
+}
+
+// TestXAIResponsesServiceTierStreaming covers row 484293f: unlike
+// doGenerate, the streaming response.completed/response.done finish event
+// previously never decoded or surfaced service_tier at all (the shared
+// ResponseCompletedEvent.Response struct had no ServiceTier field).
+func TestXAIResponsesServiceTierStreaming(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","service_tier":"priority","usage":{"input_tokens":1,"output_tokens":1}}}
+
+`)
+	}))
+	defer server.Close()
+
+	model := NewResponsesLanguageModel(New(Config{APIKey: "test-key", BaseURL: server.URL}), "grok-3")
+	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{
+			"xai": map[string]interface{}{"serviceTier": "priority"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error: %v", err)
+	}
+	defer stream.Close() //nolint:errcheck
+
+	var finish *provider.StreamChunk
+	for {
+		chunk, err := stream.Next()
+		if err != nil {
+			break
+		}
+		if chunk.Type == provider.ChunkTypeFinish {
+			finish = chunk
+			break
+		}
+	}
+	if finish == nil {
+		t.Fatal("did not observe a finish chunk")
+	}
+	var meta map[string]interface{}
+	if err := json.Unmarshal(finish.ProviderMetadata, &meta); err != nil {
+		t.Fatalf("unmarshal ProviderMetadata failed: %v", err)
+	}
+	xaiMeta, ok := meta["xai"].(map[string]interface{})
+	if !ok || xaiMeta["serviceTier"] != "priority" {
+		t.Fatalf("finish.ProviderMetadata = %#v, want xai.serviceTier=priority", meta)
 	}
 }
 

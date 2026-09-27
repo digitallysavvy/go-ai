@@ -206,7 +206,11 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 	// effort parameter entirely (including "none"); reasoning:"none" maps to
 	// effort "none" (not omitted) on models that do support it.
 	effort := xaiOpts.ReasoningEffort
-	if effort == "" && opts.Reasoning != nil {
+	// TS gates this whole branch on isCustomReasoning(reasoning), which
+	// excludes the "provider-default" sentinel (types.ReasoningDefault):
+	// requesting the provider's own default reasoning is never "custom"
+	// reasoning and must never trigger the unsupported-model warning below.
+	if effort == "" && opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault {
 		if !supportsReasoningEffort(m.modelID) {
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
@@ -1253,12 +1257,15 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 
 		var meta json.RawMessage
 		metaMap := map[string]interface{}{}
-		if e.Response.Usage != nil && (e.Response.Usage.CostInUsdTicks != nil || e.Response.Usage.InputTokensCost != nil || e.Response.Usage.OutputTokensCost != nil) {
+		hasCost := e.Response.Usage != nil && (e.Response.Usage.CostInUsdTicks != nil || e.Response.Usage.InputTokensCost != nil || e.Response.Usage.OutputTokensCost != nil)
+		// Row 484293f: serviceTier surfaces in providerMetadata.xai
+		// alongside costInUsdTicks in streaming too, not just doGenerate.
+		if hasCost || e.Response.ServiceTier != "" {
 			xaiMeta := map[string]interface{}{}
-			if e.Response.Usage.CostInUsdTicks != nil {
+			if e.Response.Usage != nil && e.Response.Usage.CostInUsdTicks != nil {
 				xaiMeta["costInUsdTicks"] = *e.Response.Usage.CostInUsdTicks
 			}
-			if e.Response.Usage.InputTokensCost != nil || e.Response.Usage.OutputTokensCost != nil {
+			if e.Response.Usage != nil && (e.Response.Usage.InputTokensCost != nil || e.Response.Usage.OutputTokensCost != nil) {
 				cost := map[string]interface{}{}
 				if e.Response.Usage.InputTokensCost != nil {
 					cost["inputTokensCost"] = *e.Response.Usage.InputTokensCost
@@ -1267,6 +1274,9 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 					cost["outputTokensCost"] = *e.Response.Usage.OutputTokensCost
 				}
 				xaiMeta["cost"] = cost
+			}
+			if e.Response.ServiceTier != "" {
+				xaiMeta["serviceTier"] = e.Response.ServiceTier
 			}
 			metaMap["xai"] = xaiMeta
 		}
