@@ -32,9 +32,11 @@ func resolveCerebrasOptions(opts *provider.GenerateOptions) (cerebrasRequestExtr
 	if user, ok := providerutils.OpenAICompatibleStringOption(cerebrasOpts, "user"); ok {
 		extras["user"] = user
 	}
-	if strictJSONSchema, ok := providerutils.OpenAICompatibleBoolOption(cerebrasOpts, "strictJsonSchema"); ok {
-		extras["strictJsonSchema"] = strictJSONSchema
-	}
+	// strictJsonSchema is intentionally not handled here: the shared
+	// OpenAI-compatible chat model's strictJSONSchema() already reads
+	// providerOptions[m.provider.Name()] (i.e. "cerebras") when building
+	// response_format, so re-applying it via cerebrasTransformTransport would
+	// just duplicate work the base model already does correctly.
 	if parallelToolCalls, ok := providerutils.OpenAICompatibleBoolOption(cerebrasOpts, "parallelToolCalls"); ok {
 		extras["parallel_tool_calls"] = parallelToolCalls
 	}

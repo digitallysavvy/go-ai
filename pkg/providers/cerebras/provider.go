@@ -136,35 +136,17 @@ func renameMaxTokens(value interface{}) {
 
 // applyCerebrasRequestExtras merges providerOptions.cerebras-derived fields
 // into the request body (TS transformCerebrasRequestBody). strictJsonSchema
-// is handled specially: it sets response_format.json_schema.strict rather
-// than being a top-level field.
+// is not among these: the base OpenAI-compatible chat model already applies
+// it to response_format.json_schema.strict when building the body (see
+// resolveCerebrasOptions).
 func applyCerebrasRequestExtras(value interface{}, extras cerebrasRequestExtras) {
 	payload, ok := value.(map[string]interface{})
 	if !ok {
 		return
 	}
 	for key, val := range extras {
-		if key == "strictJsonSchema" {
-			applyStrictJSONSchema(payload, val)
-			continue
-		}
 		payload[key] = val
 	}
-}
-
-func applyStrictJSONSchema(payload map[string]interface{}, strict interface{}) {
-	responseFormat, ok := payload["response_format"].(map[string]interface{})
-	if !ok {
-		return
-	}
-	if responseFormat["type"] != "json_schema" {
-		return
-	}
-	jsonSchema, ok := responseFormat["json_schema"].(map[string]interface{})
-	if !ok {
-		return
-	}
-	jsonSchema["strict"] = strict
 }
 
 func renameReasoningContent(value interface{}) {
