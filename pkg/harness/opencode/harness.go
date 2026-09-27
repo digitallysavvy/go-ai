@@ -214,7 +214,7 @@ func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions
 		if log != nil {
 			text = *log
 		}
-		if classifyDiskLog(text) == diskLogReplay {
+		if harnessutil.ClassifyDiskLog(text) == harnessutil.DiskLogReplay {
 			respawnStrategy = "replay"
 		}
 	}
