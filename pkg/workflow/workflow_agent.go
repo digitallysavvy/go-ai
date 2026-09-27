@@ -85,6 +85,26 @@ type LanguageModelCallOptions struct {
 	PreviousSteps         []types.StepResult
 	AccumulatedUsage      types.Usage
 	CustomData            interface{}
+
+	// StopWhen, ActiveTools and ExperimentalDownload mirror TS prepareCall's
+	// per-call stopWhen/activeTools/download settings parity (d56638a): a
+	// PrepareCall/PrepareStep hook can read the current effective value here
+	// and mutate it to override the call.
+	StopWhen             []ai.StopCondition
+	ActiveTools          []string
+	ExperimentalDownload ai.DownloadFunction
+
+	// MaxRetries and Timeout mirror TS's `maxRetries`/`abortSignal` prepareCall
+	// parity (419adc7). Timeout is the Go stand-in for TS's AbortSignal.
+	MaxRetries *int
+	Timeout    *ai.TimeoutConfig
+
+	// InitialInstructions and InitialMessages are the original (unmutated)
+	// instructions/messages the call was invoked with, matching TS
+	// prepareCall's initial-inputs parity (b666f57). They are read-only: a
+	// hook should mutate System/Messages to change what is sent, not these.
+	InitialInstructions string
+	InitialMessages     []types.Message
 }
 
 // WorkflowAgent is a serializable-friendly wrapper around the SDK tool loop.
@@ -152,6 +172,18 @@ type WorkflowAgent struct {
 	// ExperimentalToolApprovalSecret signs issued approval requests and
 	// verifies resumed approvals before approved tools execute.
 	ExperimentalToolApprovalSecret []byte
+
+	// MaxRetries controls transient provider call retries for each model
+	// call, forwarded to agent.AgentConfig.MaxRetries. Defaults to 2 when
+	// nil, matching TS WorkflowAgent's `mergedGenerationSettings.maxRetries
+	// ?? 2`.
+	MaxRetries *int
+	// Timeout provides granular timeout controls, forwarded to
+	// agent.AgentConfig.Timeout.
+	Timeout *ai.TimeoutConfig
+	// ExperimentalDownload customizes remote file URL downloads before model
+	// calls, forwarded to agent.AgentConfig.ExperimentalDownload.
+	ExperimentalDownload ai.DownloadFunction
 }
 
 // WorkflowGenerateOptions configures a single generate invocation.
@@ -178,6 +210,13 @@ type WorkflowGenerateOptions struct {
 	ExperimentalRepairToolCall ai.ToolCallRepairFunction
 	// ExperimentalToolApprovalSecret overrides the agent's approval secret.
 	ExperimentalToolApprovalSecret []byte
+
+	// MaxRetries overrides the agent's MaxRetries for this call.
+	MaxRetries *int
+	// Timeout overrides the agent's Timeout for this call.
+	Timeout *ai.TimeoutConfig
+	// ExperimentalDownload overrides the agent's ExperimentalDownload for this call.
+	ExperimentalDownload ai.DownloadFunction
 
 	OnStart              StartCallback
 	OnStepStart          StepStartCallback
@@ -219,6 +258,13 @@ type WorkflowStreamOptions struct {
 	ExperimentalRepairToolCall ai.ToolCallRepairFunction
 	// ExperimentalToolApprovalSecret overrides the agent's approval secret.
 	ExperimentalToolApprovalSecret []byte
+
+	// MaxRetries overrides the agent's MaxRetries for this call.
+	MaxRetries *int
+	// Timeout overrides the agent's Timeout for this call.
+	Timeout *ai.TimeoutConfig
+	// ExperimentalDownload overrides the agent's ExperimentalDownload for this call.
+	ExperimentalDownload ai.DownloadFunction
 
 	OnChunk              func(chunk provider.StreamChunk)
 	OnStart              StartCallback
@@ -744,12 +790,36 @@ func mergeAbort(a, b AbortCallback) AbortCallback {
 	return func(ctx context.Context, steps []types.StepResult) { a(ctx, steps); b(ctx, steps) }
 }
 
-func (w *WorkflowAgent) makePrepareCall(activeTools []string) func(ctx context.Context, c agent.PrepareCallConfig) agent.PrepareCallConfig {
-	if w.PrepareCall == nil && w.PrepareStep == nil && w.FilterActiveTools == nil && activeTools == nil && w.ActiveTools == nil {
+// prepareCallContext bundles per-call values that are known once, at call
+// construction time in makeAgent, but that a PrepareCall/PrepareStep hook
+// needs to see and may override on the returned LanguageModelCallOptions
+// (TS prepareCall setting parity: d56638a stopWhen/activeTools/download,
+// 419adc7 maxRetries/abortSignal, b666f57 initial instructions/messages).
+type prepareCallContext struct {
+	activeTools          []string
+	stopWhen             []ai.StopCondition
+	download             ai.DownloadFunction
+	maxRetries           *int
+	timeout              *ai.TimeoutConfig
+	initialInstructions  string
+	initialMessages      []types.Message
+}
+
+func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext) func(ctx context.Context, c agent.PrepareCallConfig) agent.PrepareCallConfig {
+	if w.PrepareCall == nil && w.PrepareStep == nil && w.FilterActiveTools == nil && pctx.activeTools == nil && w.ActiveTools == nil {
 		return nil
 	}
 	return func(ctx context.Context, c agent.PrepareCallConfig) agent.PrepareCallConfig {
-		opts := LanguageModelCallOptions{StepNumber: c.StepNumber, System: c.System, AllowSystemInMessages: c.AllowSystemInMessages, Messages: c.Messages, Tools: c.Tools, ToolChoice: c.ToolChoice, CallOptions: c.CallOptions, Temperature: c.Temperature, MaxTokens: c.MaxTokens, TopP: c.TopP, TopK: c.TopK, FrequencyPenalty: c.FrequencyPenalty, PresencePenalty: c.PresencePenalty, StopSequences: c.StopSequences, Seed: c.Seed, Headers: c.Headers, Reasoning: c.Reasoning, SendReasoning: c.SendReasoning, ProviderOptions: c.ProviderOptions, RuntimeContext: c.RuntimeContext, ToolsContext: c.ToolsContext, ExperimentalSandbox: c.ExperimentalSandbox, PreviousSteps: c.PreviousSteps, AccumulatedUsage: c.AccumulatedUsage, CustomData: c.CustomData}
+		opts := LanguageModelCallOptions{
+			StepNumber: c.StepNumber, System: c.System, AllowSystemInMessages: c.AllowSystemInMessages, Messages: c.Messages, Tools: c.Tools, ToolChoice: c.ToolChoice, CallOptions: c.CallOptions,
+			Temperature: c.Temperature, MaxTokens: c.MaxTokens, TopP: c.TopP, TopK: c.TopK, FrequencyPenalty: c.FrequencyPenalty, PresencePenalty: c.PresencePenalty, StopSequences: c.StopSequences, Seed: c.Seed,
+			Headers: c.Headers, Reasoning: c.Reasoning, SendReasoning: c.SendReasoning, ProviderOptions: c.ProviderOptions,
+			RuntimeContext: c.RuntimeContext, ToolsContext: c.ToolsContext, ExperimentalSandbox: c.ExperimentalSandbox,
+			PreviousSteps: c.PreviousSteps, AccumulatedUsage: c.AccumulatedUsage, CustomData: c.CustomData,
+			StopWhen: pctx.stopWhen, ActiveTools: pctx.activeTools, ExperimentalDownload: pctx.download,
+			MaxRetries: pctx.maxRetries, Timeout: pctx.timeout,
+			InitialInstructions: pctx.initialInstructions, InitialMessages: pctx.initialMessages,
+		}
 		if w.PrepareStep != nil {
 			if mutated, err := w.PrepareStep(ctx, opts); err == nil {
 				opts = mutated
@@ -765,13 +835,18 @@ func (w *WorkflowAgent) makePrepareCall(activeTools []string) func(ctx context.C
 		c.FrequencyPenalty, c.PresencePenalty, c.StopSequences, c.Seed = opts.FrequencyPenalty, opts.PresencePenalty, opts.StopSequences, opts.Seed
 		c.Headers, c.Reasoning, c.SendReasoning, c.ProviderOptions = opts.Headers, opts.Reasoning, opts.SendReasoning, opts.ProviderOptions
 		c.RuntimeContext, c.ToolsContext, c.ExperimentalSandbox, c.CustomData = opts.RuntimeContext, opts.ToolsContext, opts.ExperimentalSandbox, opts.CustomData
+		c.StopWhen, c.ExperimentalDownload, c.MaxRetries, c.Timeout = opts.StopWhen, opts.ExperimentalDownload, opts.MaxRetries, opts.Timeout
 		if w.FilterActiveTools != nil {
 			c.Tools = w.FilterActiveTools(ctx, c.StepNumber, c.Tools)
 		}
-		effectiveActive := activeTools
+		effectiveActive := opts.ActiveTools
+		if effectiveActive == nil {
+			effectiveActive = pctx.activeTools
+		}
 		if effectiveActive == nil {
 			effectiveActive = w.ActiveTools
 		}
+		c.ActiveTools = effectiveActive
 		if effectiveActive != nil {
 			c.Tools = ai.FilterActiveTools(c.Tools, effectiveActive)
 		}
@@ -874,10 +949,44 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		tools = orderedTools(ovr.Tools, ovr.ToolSet)
 	}
 	allowSystemInMessages := w.AllowSystemInMessages || govr.AllowSystemInMessages || ovr.AllowSystemInMessages
+	maxRetries := w.MaxRetries
+	if govr.MaxRetries != nil {
+		maxRetries = govr.MaxRetries
+	}
+	if ovr.MaxRetries != nil {
+		maxRetries = ovr.MaxRetries
+	}
+	timeout := w.Timeout
+	if govr.Timeout != nil {
+		timeout = govr.Timeout
+	}
+	if ovr.Timeout != nil {
+		timeout = ovr.Timeout
+	}
+	download := w.ExperimentalDownload
+	if govr.ExperimentalDownload != nil {
+		download = govr.ExperimentalDownload
+	}
+	if ovr.ExperimentalDownload != nil {
+		download = ovr.ExperimentalDownload
+	}
+	initialMessages := govr.Messages
+	if len(ovr.Messages) > 0 {
+		initialMessages = ovr.Messages
+	}
+	pctx := prepareCallContext{
+		activeTools:         ovr.ActiveTools,
+		stopWhen:            stopWhen,
+		download:            download,
+		maxRetries:          maxRetries,
+		timeout:             timeout,
+		initialInstructions: system,
+		initialMessages:     initialMessages,
+	}
 	return agent.NewToolLoopAgent(agent.AgentConfig{
 		ID: w.ID, Model: w.Model, System: system, Prompt: w.Prompt, Tools: tools, StopWhen: stopWhen,
 		AllowSystemInMessages: allowSystemInMessages,
-		CallOptionsSchema:     w.CallOptionsSchema, CallOptions: w.CallOptions, PrepareCall: w.makePrepareCall(ovr.ActiveTools),
+		CallOptionsSchema:     w.CallOptionsSchema, CallOptions: w.CallOptions, PrepareCall: w.makePrepareCall(pctx),
 		Temperature: w.Temperature, MaxTokens: w.MaxTokens, TopP: w.TopP, TopK: w.TopK, FrequencyPenalty: w.FrequencyPenalty,
 		PresencePenalty: w.PresencePenalty, StopSequences: w.StopSequences, Seed: w.Seed, Headers: w.Headers, Reasoning: w.Reasoning,
 		SendReasoning: w.SendReasoning, ProviderOptions: w.ProviderOptions, RuntimeContext: runtimeContext, ToolsContext: toolsContext,
@@ -887,8 +996,11 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		Include:                        include,
 		ExperimentalSandbox:            sandbox,
 		ExperimentalRefineToolInput:    refineToolInput,
+		ExperimentalDownload:           download,
 		RepairToolCall:                 repairToolCall,
 		ExperimentalToolApprovalSecret: approvalSecret,
+		MaxRetries:                     maxRetries,
+		Timeout:                        timeout,
 		OnStart:                        mergeStart(w.OnStart, mergeStart(govr.OnStart, ovr.OnStart)),
 		OnStepStartEvent:               mergeStepStart(w.OnStepStart, mergeStepStart(govr.OnStepStart, ovr.OnStepStart)),
 		OnToolExecutionStart:           mergeToolStart(w.OnToolExecutionStart, mergeToolStart(govr.OnToolExecutionStart, ovr.OnToolExecutionStart)),
