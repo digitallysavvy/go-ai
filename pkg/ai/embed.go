@@ -245,6 +245,7 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 		opts.ExperimentalOnStart(startEvent)
 	}
 	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
+		CallID:         callID,
 		OperationType:  "ai.embed",
 		ModelProvider:  opts.Model.Provider(),
 		ModelID:        opts.Model.ModelID(),
@@ -307,7 +308,7 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 		return nil
 	})
 	if err != nil {
-		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, Error: err})
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: err})
 		return nil, err
 	}
 
@@ -353,6 +354,7 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 		}
 	}
 	telemetry.FireOnFinish(ctx, telemetry.TelemetryFinishEvent{
+		CallID:        callID,
 		OperationType: "ai.embed",
 		Settings:      opts.ExperimentalTelemetry,
 		FinishReason:  string(types.FinishReasonStop),
@@ -515,6 +517,7 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 		opts.ExperimentalOnStart(startEvent)
 	}
 	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
+		CallID:         callID,
 		OperationType:  "ai.embedMany",
 		ModelProvider:  opts.Model.Provider(),
 		ModelID:        opts.Model.ModelID(),
@@ -530,7 +533,7 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 
 	embedResult, err := embedManyCalls(ctx, opts, callID, resolvedMaxRetries)
 	if err != nil {
-		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, Error: err})
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: err})
 		return nil, err
 	}
 
@@ -568,6 +571,7 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 		}
 	}
 	telemetry.FireOnFinish(ctx, telemetry.TelemetryFinishEvent{
+		CallID:        callID,
 		OperationType: "ai.embedMany",
 		Settings:      opts.ExperimentalTelemetry,
 		FinishReason:  string(types.FinishReasonStop),

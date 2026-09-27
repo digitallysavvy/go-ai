@@ -748,7 +748,13 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		telMessages = buildPrompt(opts.Prompt, opts.Messages, "").Messages
 	}
 	streamTextMaxRetries := preparedMaxRetries(opts.MaxRetries)
+	// H5: compute callID before FireOnStart (previously computed further down)
+	// so TelemetryStartEvent.CallID is populated — every telemetry
+	// integration needs it from the very first event to track its own root
+	// span by CallID.
+	callID := internalGenerateCallID(opts.Internal)()
 	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
+		CallID:           callID,
 		OperationType:    "ai.streamText",
 		ModelProvider:    opts.Model.Provider(),
 		ModelID:          opts.Model.ModelID(),
@@ -787,7 +793,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	allowSystem := allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages)
 	normalizedPrompt, normErr := promptutils.NormalizePrompt(prompt, allowSystem)
 	if normErr != nil {
-		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: normErr})
+		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: normErr})
 		r.fail(normErr)
 		return
 	}
@@ -799,7 +805,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 
 	// Extract telemetry info once for all callback events
 	cbFuncID, cbMeta := telemetryCallbackInfo(telemetrySettings)
-	callID := internalGenerateCallID(opts.Internal)()
+	// callID was already computed above (H5: before FireOnStart).
 	onStepEndEvent := opts.OnStepEndEvent
 	if onStepEndEvent == nil {
 		onStepEndEvent = opts.OnStepFinishEvent
@@ -890,7 +896,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		// stream error rather than a synchronous StreamText() error — the
 		// caller already has this *StreamTextResult and reads the error via
 		// Err()/ReadAll()/Stream(), matching review finding F6.
-		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: resumeErr})
+		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: resumeErr})
 		r.fail(resumeErr)
 		return
 	}
@@ -1077,7 +1083,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 				if stepCancel != nil {
 					stepCancel()
 				}
-				telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: rfErr})
+				telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: rfErr})
 				r.fail(fmt.Errorf("output.ResponseFormat failed: %w", rfErr))
 				return
 			}
@@ -1090,7 +1096,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		if stepCancel != nil {
 			stepCancel()
 		}
-		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: normErr})
+		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: normErr})
 		r.fail(fmt.Errorf("prompt normalization failed: %w", normErr))
 		return
 	}
@@ -1191,7 +1197,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 			telemetry.FireOnAbort(telemetryCtx, telemetry.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID, Reason: reason})
 		} else {
 			telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
-			telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
+			telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 		}
 		r.fail(fmt.Errorf("failed to start stream: %w", err))
 		return
@@ -1489,6 +1495,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			stepPromptMessages = r.stepReopenGenOpts.Prompt.Messages
 		}
 		telemetryStepCtx := telemetry.FireOnStepStart(ctx, telemetry.TelemetryStepStartEvent{
+			CallID:         r.cbCallID,
 			OperationType:  "ai.streamText",
 			Settings:       r.telemetrySettings,
 			StepNumber:     stepIndex,
@@ -2330,6 +2337,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 			r.mu.Unlock()
 			telemetry.FireOnStepEnd(telemetryStepCtx, telemetry.TelemetryStepEndEvent{
+				CallID:         r.cbCallID,
 				OperationType:  "ai.streamText",
 				StepNumber:     stepIndex,
 				FinishReason:   string(r.finishReason),
@@ -2747,6 +2755,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		if !isAbortErr(ctx, r.err) {
 			telemetry.FireOnError(r.telemetryCtx, telemetry.TelemetryErrorEvent{
 				Settings: r.telemetrySettings,
+				CallID:   r.cbCallID,
 				Error:    r.err,
 			})
 		}
@@ -2810,6 +2819,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	}
 	r.mu.Unlock()
 	telemetry.FireOnFinish(r.telemetryCtx, telemetry.TelemetryFinishEvent{
+		CallID:           r.cbCallID,
 		OperationType:    "ai.streamText",
 		FinishReason:     string(r.finishReason),
 		Usage:            streamTelUsage,
@@ -3786,6 +3796,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 	}
 	r.mu.Unlock()
 	telemetry.FireOnFinish(r.telemetryCtx, telemetry.TelemetryFinishEvent{
+		CallID:           r.cbCallID,
 		OperationType:    "ai.streamText",
 		FinishReason:     string(r.finishReason),
 		Usage:            readAllTelUsage,

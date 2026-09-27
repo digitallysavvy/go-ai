@@ -22,6 +22,16 @@ import (
 
 // TelemetryStartEvent is passed to TelemetryIntegration.OnStart.
 type TelemetryStartEvent struct {
+	// CallID identifies the logical call this root span belongs to. Every
+	// telemetry event for the same generateText/streamText/generateObject/
+	// streamObject/embed/embedMany/rerank invocation shares this value, so
+	// each integration can track its own root/step/tool spans in its own
+	// callId-keyed state instead of relying on trace.SpanFromContext(ctx) —
+	// which only ever resolves the single "current" span in ctx and breaks
+	// when two integrations are registered at once (H5; mirrors TS's
+	// per-integration `callStates` map in legacy-open-telemetry.ts /
+	// open-telemetry.ts, keyed by event.callId).
+	CallID string
 	// OperationType is the canonical AI operation name, e.g. "ai.generateText".
 	OperationType string
 	ModelProvider string
@@ -93,6 +103,9 @@ type TelemetryStartEvent struct {
 // TelemetryStepStartEvent is passed to TelemetryIntegration.OnStepStart.
 type TelemetryStepStartEvent struct {
 	Settings *Settings
+	// CallID identifies the logical call this step belongs to (H5). See
+	// TelemetryStartEvent.CallID.
+	CallID string
 	// OperationType is the canonical AI operation name, e.g. "ai.generateText".
 	// Used to name the per-step OTel child span.
 	OperationType string
@@ -224,7 +237,11 @@ type RerankingModelCallEndEvent struct {
 
 // TelemetryToolCallStartEvent is passed to TelemetryIntegration.OnToolExecutionStart.
 type TelemetryToolCallStartEvent struct {
-	Settings    *Settings
+	Settings *Settings
+	// CallID identifies the logical (generateText/streamText/...) call this
+	// tool call belongs to (H5), distinct from ToolCallID which identifies
+	// the individual tool invocation. See TelemetryStartEvent.CallID.
+	CallID      string
 	ToolCallID  string
 	ToolName    string
 	Args        map[string]interface{}
@@ -233,7 +250,10 @@ type TelemetryToolCallStartEvent struct {
 
 // TelemetryToolCallFinishEvent is passed to TelemetryIntegration.OnToolExecutionEnd.
 type TelemetryToolCallFinishEvent struct {
-	Settings    *Settings
+	Settings *Settings
+	// CallID identifies the logical call this tool call belongs to (H5). See
+	// TelemetryToolCallStartEvent.CallID.
+	CallID      string
 	ToolCallID  string
 	ToolName    string
 	Args        map[string]interface{}
@@ -256,6 +276,9 @@ type TelemetryChunkEvent struct {
 //
 // Deprecated: use TelemetryStepEndEvent.
 type TelemetryStepFinishEvent struct {
+	// CallID identifies the logical call this step belongs to (H5). See
+	// TelemetryStartEvent.CallID.
+	CallID string
 	// OperationType is the canonical AI operation name for the call this step
 	// belongs to (e.g. "ai.generateText", "ai.generateObject"). Legacy
 	// integrations use it to pick the TS-equivalent per-operation step-end
@@ -322,6 +345,9 @@ type deprecatedStepFinishHandler interface {
 
 // TelemetryFinishEvent is passed to TelemetryIntegration.OnFinish.
 type TelemetryFinishEvent struct {
+	// CallID identifies the logical call this root span belongs to (H5). See
+	// TelemetryStartEvent.CallID.
+	CallID string
 	// OperationType is the canonical AI operation name (e.g. "ai.generateText",
 	// "ai.generateObject", "ai.embed", "ai.embedMany", "ai.rerank"). Legacy
 	// integrations dispatch on it to reproduce TS's per-operation OnEnd shape
@@ -417,8 +443,14 @@ type TelemetryUsage struct {
 type TelemetryIntegration interface {
 	// OnStart is called once before the first LLM request.
 	// Implementations that create a root span should embed it in the returned
-	// context (e.g. via trace.ContextWithSpan) so downstream methods can
-	// retrieve it with trace.SpanFromContext.
+	// context (e.g. via trace.ContextWithSpan) for downstream nesting, but
+	// should track it themselves in their own CallID-keyed state (e.Settings'
+	// events all carry a CallID — see TelemetryStartEvent.CallID) rather than
+	// relying on trace.SpanFromContext(ctx) to find it again later: when
+	// multiple integrations are registered, FireOnStart/FireOnStepStart/etc
+	// thread ctx through each of them in turn, so trace.SpanFromContext(ctx)
+	// only ever resolves whichever integration ran last (H5). See
+	// LegacyOpenTelemetry/OpenTelemetry in this package for the pattern.
 	OnStart(ctx context.Context, e TelemetryStartEvent) context.Context
 
 	// OnStepStart is called at the beginning of each LLM step.
@@ -644,6 +676,101 @@ func modelCallID(parts ...string) string {
 		}
 	}
 	return ""
+}
+
+// ---------------------------------------------------------------------------
+// H5: per-callID call state (LegacyOpenTelemetry)
+// ---------------------------------------------------------------------------
+//
+// FireOnStart/FireOnStepStart/etc thread ctx through every registered
+// integration in turn (each integration's OnStart/OnStepStart embeds its own
+// span in the returned ctx via tracer.Start, which uses OTel's single
+// well-known "current span" context key). With only one integration
+// registered this is harmless, but with two — e.g. LegacyOpenTelemetry and
+// OpenTelemetry (GenAI) — the second integration's span silently becomes the
+// "current" span, so trace.SpanFromContext(ctx) inside OnEnd/OnError/OnAbort/
+// OnStepStart/etc can only ever find the LAST integration's span. The other
+// integration's root span (and any span it derives from a wrong "parent")
+// never gets the right end attributes and never gets ended at all — a span
+// leak on every call.
+//
+// TS avoids this by giving each integration class its own `callStates =
+// new Map<string, CallState>()`, keyed by the event's callId
+// (packages/otel/src/legacy-open-telemetry.ts / open-telemetry.ts): every
+// lifecycle method looks up (or creates) its OWN state for event.callId and
+// reads/writes rootSpan/stepSpan/toolSpans/etc there, never through ambient
+// OTel context. This ports that: legacyCallState is LegacyOpenTelemetry's own
+// per-call bookkeeping (a parallel, GenAI-specific genAICallState exists in
+// open_telemetry.go so the two integrations' state can never collide), keyed
+// by CallID in the package-level legacyCallStates map — LegacyOpenTelemetry
+// is a small value type constructed fresh per NewLegacyOpenTelemetry call
+// (like the pre-existing otelModelCallSpans for embed/rerank/evaluation), so
+// its mutable span bookkeeping has always lived in package-level state rather
+// than the struct itself.
+//
+// ctx is still threaded through and still carries the correct parent span for
+// nesting: every span-creating method here resolves ITS OWN parent from this
+// state (never trace.SpanFromContext(ctx)) and explicitly rebases ctx onto
+// that parent via trace.ContextWithSpan before calling tracer.Start, so a
+// step/tool/etc span is correctly nested under this integration's own
+// root/step span regardless of what the other integration did to ctx.
+type legacyCallState struct {
+	mu              sync.Mutex
+	rootSpan        trace.Span
+	stepSpan        trace.Span
+	toolSpans       map[string]trace.Span
+	// embedSpans holds the nested "doEmbed" span(s) for this call, keyed by
+	// EmbedCallID (a single ai.embed call has one entry; ai.embedMany's
+	// batch splitting can have several concurrently) — mirrors TS's
+	// state.embedSpans Map. rerankSpan holds the single nested "doRerank"
+	// span — mirrors TS's state.rerankSpan. Both are closed defensively by
+	// OnError/OnAbort (mirroring TS) so a provider failure that skips
+	// OnEmbedEnd/OnRerankEnd doesn't leak them.
+	embedSpans      map[string]trace.Span
+	rerankSpan      trace.Span
+	baseAttrs       []attribute.KeyValue
+	settings        legacySettings
+	runtimeCtxAttrs []attribute.KeyValue
+}
+
+var legacyCallStates sync.Map // map[string]*legacyCallState, keyed by CallID
+
+// legacyState returns (creating if necessary) LegacyOpenTelemetry's call
+// state for callID. Returns nil for an empty callID (defensive: an event
+// from a call site that hasn't been migrated to populate CallID yet).
+func legacyState(callID string) *legacyCallState {
+	if callID == "" {
+		return nil
+	}
+	v, _ := legacyCallStates.LoadOrStore(callID, &legacyCallState{})
+	return v.(*legacyCallState)
+}
+
+// legacyDeleteState removes callID's call state once its root span has ended
+// (mirrors TS's this.cleanupCallState(event.callId), called at the end of
+// onGenerateEnd/onObjectOperationEnd/onEmbedOperationEnd/onRerankOperationEnd/
+// onAbort/onError).
+func legacyDeleteState(callID string) {
+	if callID != "" {
+		legacyCallStates.Delete(callID)
+	}
+}
+
+// legacyRootSpanFor resolves LegacyOpenTelemetry's own root span for callID.
+// Falls back to trace.SpanFromContext(ctx) when callID is empty or has no
+// recorded root span yet, so any call site not yet updated to populate
+// CallID keeps working exactly as before (single-integration behavior is
+// unaffected either way).
+func legacyRootSpanFor(callID string, ctx context.Context) trace.Span {
+	if st := legacyState(callID); st != nil {
+		st.mu.Lock()
+		span := st.rootSpan
+		st.mu.Unlock()
+		if span != nil {
+			return span
+		}
+	}
+	return trace.SpanFromContext(ctx)
 }
 
 // finiteFloat64Attr returns an attribute.KeyValue for a float64 value, or
@@ -981,6 +1108,19 @@ func (i LegacyOpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent)
 	// onStepStart/onObjectStepStart for gen_ai.request.* attributes.
 	ctx = context.WithValue(ctx, legacyRequestSettingsKey{}, settings)
 
+	// H5: record this integration's own root span (and the base attrs/
+	// settings needed to build descendant spans) in callId-keyed state, so
+	// OnStepStart/OnEmbedStart/OnRerankStart/OnToolExecutionStart/OnEnd/
+	// OnError/OnAbort can find it by CallID instead of trace.SpanFromContext.
+	if e.CallID != "" {
+		st := legacyState(e.CallID)
+		st.mu.Lock()
+		st.rootSpan = span
+		st.baseAttrs = baseAttrs
+		st.settings = settings
+		st.mu.Unlock()
+	}
+
 	recordInputs := e.Settings == nil || e.Settings.RecordInputs
 
 	switch e.OperationType {
@@ -1047,6 +1187,13 @@ func (i LegacyOpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent)
 		// baseTelemetryAttributes reuse (0651c5f). RuntimeContext here is
 		// already filtered by Settings.IncludeRuntimeContext upstream.
 		ctx = context.WithValue(ctx, runtimeContextAttrsKey{}, attrs)
+		if e.CallID != "" {
+			if st := legacyState(e.CallID); st != nil {
+				st.mu.Lock()
+				st.runtimeCtxAttrs = attrs
+				st.mu.Unlock()
+			}
+		}
 	}
 	return ctx // span is embedded via OTel context propagation
 }
@@ -1151,11 +1298,18 @@ func legacyStepOperationID(operationType string) string {
 // operation.name/resource.name/ai.telemetry.functionId/ai.operationId for
 // the nested doGenerate/doStream operation (assembleOperationName).
 func (i LegacyOpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepStartEvent) context.Context {
-	rootSpan := trace.SpanFromContext(ctx)
+	// H5: resolve this integration's OWN root span by CallID rather than
+	// trace.SpanFromContext(ctx), which — with two integrations registered —
+	// would return whichever integration's OnStart ran last.
+	rootSpan := legacyRootSpanFor(e.CallID, ctx)
 	if !rootSpan.IsRecording() {
 		return ctx
 	}
 	tracer := rootSpan.TracerProvider().Tracer("go-ai")
+	// Explicitly rebase ctx onto our own root span before creating the step
+	// span, so it nests correctly under LegacyOpenTelemetry's root even if
+	// ctx's ambient "current span" belongs to another registered integration.
+	ctx = trace.ContextWithSpan(ctx, rootSpan)
 	opType := e.OperationType
 	if opType == "" {
 		opType = "ai.step"
@@ -1270,6 +1424,13 @@ func (i LegacyOpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepSta
 			}
 		}
 	}
+	if e.CallID != "" {
+		if st := legacyState(e.CallID); st != nil {
+			st.mu.Lock()
+			st.stepSpan = stepSpan
+			st.mu.Unlock()
+		}
+	}
 	return context.WithValue(ctx, stepSpanKey{}, stepSpan)
 }
 
@@ -1305,7 +1466,9 @@ func (i LegacyOpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepSta
 // gen_ai.* attributes at all — those are a Go-only addition that doesn't
 // exist on this span in TS (H3 follow-up 2).
 func (i LegacyOpenTelemetry) OnEmbedStart(ctx context.Context, e EmbeddingModelCallStartEvent) {
-	parent := trace.SpanFromContext(ctx)
+	// H5: resolve our own root span by CallID rather than
+	// trace.SpanFromContext(ctx).
+	parent := legacyRootSpanFor(e.CallID, ctx)
 	if !parent.IsRecording() {
 		return
 	}
@@ -1315,7 +1478,7 @@ func (i LegacyOpenTelemetry) OnEmbedStart(ctx context.Context, e EmbeddingModelC
 	if spanName == "" {
 		spanName = "ai.embed.doEmbed"
 	}
-	_, span := tracer.Start(ctx, spanName)
+	_, span := tracer.Start(trace.ContextWithSpan(ctx, parent), spanName)
 	if attrs := customSpanAttributes(ctx, i.enrichSpan, e.Settings, EnrichSpanOptions{
 		SpanType:      SpanTypeEmbedding,
 		OperationType: e.OperationID,
@@ -1334,6 +1497,21 @@ func (i LegacyOpenTelemetry) OnEmbedStart(ctx context.Context, e EmbeddingModelC
 	if callID != "" {
 		otelModelCallSpans.Store(otelSpanKey("embedding", callID), otelSpanEntry{span: span})
 	}
+	// H5: also record it in our own callId-keyed state (mirrors TS's
+	// state.embedSpans.set(event.embedCallId, ...)) so OnError/OnAbort can
+	// defensively close it if the provider call itself fails before
+	// OnEmbedEnd ever fires — otherwise this span leaks (TS's onError/onAbort
+	// both iterate state.embedSpans.values()).
+	if e.CallID != "" {
+		if st := legacyState(e.CallID); st != nil {
+			st.mu.Lock()
+			if st.embedSpans == nil {
+				st.embedSpans = make(map[string]trace.Span)
+			}
+			st.embedSpans[e.EmbedCallID] = span
+			st.mu.Unlock()
+		}
+	}
 }
 
 // OnEmbedEnd records embedding attributes and ends the doEmbed span.
@@ -1342,6 +1520,13 @@ func (i LegacyOpenTelemetry) OnEmbedStart(ctx context.Context, e EmbeddingModelC
 func (i LegacyOpenTelemetry) OnEmbedEnd(_ context.Context, e EmbeddingModelCallEndEvent) {
 	callID := modelCallID(e.EmbedCallID, e.CallID, e.OperationID)
 	value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("embedding", callID))
+	if e.CallID != "" {
+		if st := legacyState(e.CallID); st != nil {
+			st.mu.Lock()
+			delete(st.embedSpans, e.EmbedCallID)
+			st.mu.Unlock()
+		}
+	}
 	if !ok {
 		return
 	}
@@ -1365,7 +1550,9 @@ func (i LegacyOpenTelemetry) OnEmbedEnd(_ context.Context, e EmbeddingModelCallE
 // ("ai.rerank.doRerank"), reuses the root span's base attributes, and
 // carries no gen_ai.* (H3 follow-up 2).
 func (i LegacyOpenTelemetry) OnRerankStart(ctx context.Context, e RerankingModelCallStartEvent) {
-	parent := trace.SpanFromContext(ctx)
+	// H5: resolve our own root span by CallID rather than
+	// trace.SpanFromContext(ctx).
+	parent := legacyRootSpanFor(e.CallID, ctx)
 	if !parent.IsRecording() {
 		return
 	}
@@ -1375,7 +1562,7 @@ func (i LegacyOpenTelemetry) OnRerankStart(ctx context.Context, e RerankingModel
 	if spanName == "" {
 		spanName = "ai.rerank.doRerank"
 	}
-	_, span := tracer.Start(ctx, spanName)
+	_, span := tracer.Start(trace.ContextWithSpan(ctx, parent), spanName)
 	if attrs := customSpanAttributes(ctx, i.enrichSpan, e.Settings, EnrichSpanOptions{
 		SpanType:      SpanTypeReranking,
 		OperationType: e.OperationID,
@@ -1396,6 +1583,16 @@ func (i LegacyOpenTelemetry) OnRerankStart(ctx context.Context, e RerankingModel
 	if callID != "" {
 		otelModelCallSpans.Store(otelSpanKey("reranking", callID), otelSpanEntry{span: span})
 	}
+	// H5: also record it in our own callId-keyed state (mirrors TS's
+	// state.rerankSpan = {span, context}) so OnError/OnAbort can defensively
+	// close it if the provider call itself fails before OnRerankEnd fires.
+	if e.CallID != "" {
+		if st := legacyState(e.CallID); st != nil {
+			st.mu.Lock()
+			st.rerankSpan = span
+			st.mu.Unlock()
+		}
+	}
 }
 
 // OnRerankEnd records reranking attributes and ends the doRerank span.
@@ -1404,6 +1601,13 @@ func (i LegacyOpenTelemetry) OnRerankStart(ctx context.Context, e RerankingModel
 func (i LegacyOpenTelemetry) OnRerankEnd(_ context.Context, e RerankingModelCallEndEvent) {
 	callID := modelCallID(e.CallID, e.OperationID)
 	value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("reranking", callID))
+	if e.CallID != "" {
+		if st := legacyState(e.CallID); st != nil {
+			st.mu.Lock()
+			st.rerankSpan = nil
+			st.mu.Unlock()
+		}
+	}
 	if !ok {
 		return
 	}
@@ -1428,12 +1632,29 @@ func (i LegacyOpenTelemetry) OnRerankEnd(_ context.Context, e RerankingModelCall
 // operation.name/resource.name/ai.telemetry.functionId
 // (assembleOperationName({operationId: 'ai.toolCall', telemetry})).
 func (i LegacyOpenTelemetry) OnToolExecutionStart(ctx context.Context, e TelemetryToolCallStartEvent) context.Context {
-	span := trace.SpanFromContext(ctx)
-	if !span.IsRecording() {
-		return ctx
+	// H5: parent the tool span under OUR OWN step span specifically,
+	// resolved by CallID — mirrors TS's onToolExecutionStart
+	// (legacy-open-telemetry.ts), which requires state.stepContext exactly
+	// (no root fallback: `if (!state?.stepContext) return;`) rather than
+	// trace.SpanFromContext(ctx) (which — with two integrations registered —
+	// could return the other integration's "current" span).
+	var span trace.Span
+	if e.CallID != "" {
+		st := legacyState(e.CallID)
+		st.mu.Lock()
+		span = st.stepSpan
+		st.mu.Unlock()
+		if span == nil || !span.IsRecording() {
+			return ctx
+		}
+	} else {
+		span = trace.SpanFromContext(ctx)
+		if !span.IsRecording() {
+			return ctx
+		}
 	}
 	tracer := span.TracerProvider().Tracer("go-ai")
-	ctx, child := tracer.Start(ctx, "ai.toolCall")
+	ctx, child := tracer.Start(trace.ContextWithSpan(ctx, span), "ai.toolCall")
 	if attrs := customSpanAttributes(ctx, i.enrichSpan, e.Settings, EnrichSpanOptions{
 		SpanType: SpanTypeTool,
 		CallID:   e.ToolCallID,
@@ -1463,6 +1684,16 @@ func (i LegacyOpenTelemetry) OnToolExecutionStart(ctx context.Context, e Telemet
 	if attrs, ok := ctx.Value(runtimeContextAttrsKey{}).([]attribute.KeyValue); ok {
 		child.SetAttributes(attrs...)
 	}
+	if e.CallID != "" {
+		if st := legacyState(e.CallID); st != nil {
+			st.mu.Lock()
+			if st.toolSpans == nil {
+				st.toolSpans = make(map[string]trace.Span)
+			}
+			st.toolSpans[e.ToolCallID] = child
+			st.mu.Unlock()
+		}
+	}
 	return ctx
 }
 
@@ -1472,7 +1703,22 @@ func (i LegacyOpenTelemetry) OnToolExecutionStart(ctx context.Context, e Telemet
 // instead. ai.toolCall.durationMs is a Go-only addition (TS carries no
 // duration on this span) kept as an additive, non-conflicting attribute.
 func (i LegacyOpenTelemetry) OnToolExecutionEnd(ctx context.Context, e TelemetryToolCallFinishEvent) {
-	span := trace.SpanFromContext(ctx)
+	// H5: look up OUR OWN tool span by (CallID, ToolCallID) instead of
+	// trace.SpanFromContext(ctx).
+	var span trace.Span
+	if e.CallID != "" {
+		if st := legacyState(e.CallID); st != nil {
+			st.mu.Lock()
+			span = st.toolSpans[e.ToolCallID]
+			if span != nil {
+				delete(st.toolSpans, e.ToolCallID)
+			}
+			st.mu.Unlock()
+		}
+	}
+	if span == nil {
+		span = trace.SpanFromContext(ctx)
+	}
 	if !span.IsRecording() {
 		return
 	}
@@ -1742,6 +1988,18 @@ func (i LegacyOpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEv
 	}
 
 	stepSpan.End()
+	// H5: clear the recorded step span so OnAbort/OnError (which also close
+	// state.stepSpan if it's still set, mirroring TS's onAbort/onError) don't
+	// try to end it a second time.
+	if e.CallID != "" {
+		if st := legacyState(e.CallID); st != nil {
+			st.mu.Lock()
+			if st.stepSpan == stepSpan {
+				st.stepSpan = nil
+			}
+			st.mu.Unlock()
+		}
+	}
 }
 
 // OnStepError closes an in-flight step span when the provider call itself
@@ -1765,6 +2023,15 @@ func (i LegacyOpenTelemetry) OnStepError(ctx context.Context, e TelemetryErrorEv
 		RecordErrorOnSpan(stepSpan, e.Error)
 	}
 	stepSpan.End()
+	if e.CallID != "" {
+		if st := legacyState(e.CallID); st != nil {
+			st.mu.Lock()
+			if st.stepSpan == stepSpan {
+				st.stepSpan = nil
+			}
+			st.mu.Unlock()
+		}
+	}
 }
 
 // OnEnd sets output attributes on the root span and ends it. Dispatches on
@@ -1779,7 +2046,11 @@ func (i LegacyOpenTelemetry) OnStepError(ctx context.Context, e TelemetryErrorEv
 // gen_ai.system/gen_ai.request.model from the root span for the same
 // reason: TS's onXEnd methods never set gen_ai.* on the root span at all).
 func (i LegacyOpenTelemetry) OnEnd(ctx context.Context, e TelemetryFinishEvent) {
-	span := trace.SpanFromContext(ctx)
+	// H5: resolve OUR OWN root span by CallID instead of
+	// trace.SpanFromContext(ctx), which — with a second integration also
+	// registered — would silently resolve to that other integration's span
+	// and leave ours never ended.
+	span := legacyRootSpanFor(e.CallID, ctx)
 	if !span.IsRecording() {
 		return
 	}
@@ -1796,6 +2067,7 @@ func (i LegacyOpenTelemetry) OnEnd(ctx context.Context, e TelemetryFinishEvent) 
 		i.legacyOnGenerateEnd(span, e, recordOutputs)
 	}
 	span.End()
+	legacyDeleteState(e.CallID)
 }
 
 // legacyOnGenerateEnd mirrors TS's onGenerateEnd (generateText/streamText).
@@ -1886,7 +2158,55 @@ func (i LegacyOpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent)
 			}
 		}
 	}
-	span := trace.SpanFromContext(ctx)
+	// H5: close any of OUR OWN still-open step/tool spans, mirroring TS's
+	// onError (`if (state.stepSpan) { recordSpanError(...); .end(); }` and a
+	// loop over state.toolSpans) — otherwise a step or tool span left open by
+	// an error that skipped OnStepEnd/OnToolExecutionEnd would leak.
+	if st := legacyState(e.CallID); st != nil {
+		st.mu.Lock()
+		stepSpan := st.stepSpan
+		st.stepSpan = nil
+		toolSpans := st.toolSpans
+		st.toolSpans = nil
+		embedSpans := st.embedSpans
+		st.embedSpans = nil
+		rerankSpan := st.rerankSpan
+		st.rerankSpan = nil
+		st.mu.Unlock()
+		if stepSpan != nil && stepSpan.IsRecording() {
+			if e.Error != nil {
+				RecordErrorOnSpan(stepSpan, e.Error)
+			}
+			stepSpan.End()
+		}
+		for _, toolSpan := range toolSpans {
+			if toolSpan.IsRecording() {
+				if e.Error != nil {
+					RecordErrorOnSpan(toolSpan, e.Error)
+				}
+				toolSpan.End()
+			}
+		}
+		// H5: also close any still-open embed/rerank nested spans, mirroring
+		// TS's onError loop over state.embedSpans and its state.rerankSpan
+		// close — otherwise a doEmbed/doRerank span left open by a provider
+		// error that skipped OnEmbedEnd/OnRerankEnd would leak.
+		for _, embedSpan := range embedSpans {
+			if embedSpan.IsRecording() {
+				if e.Error != nil {
+					RecordErrorOnSpan(embedSpan, e.Error)
+				}
+				embedSpan.End()
+			}
+		}
+		if rerankSpan != nil && rerankSpan.IsRecording() {
+			if e.Error != nil {
+				RecordErrorOnSpan(rerankSpan, e.Error)
+			}
+			rerankSpan.End()
+		}
+	}
+	span := legacyRootSpanFor(e.CallID, ctx)
 	if !span.IsRecording() {
 		return
 	}
@@ -1894,21 +2214,53 @@ func (i LegacyOpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent)
 		RecordErrorOnSpan(span, e.Error)
 	}
 	span.End()
+	legacyDeleteState(e.CallID)
 }
 
 // OnAbort closes any in-flight step span (mirroring TS onAbort's
 // `state.stepSpan.end()`, no error status — LegacyOpenTelemetry has no
-// inferenceSpan of its own to close, unlike GenAI's OpenTelemetry) and
-// records the abort reason on the root span before ending it.
+// inferenceSpan of its own to close, unlike GenAI's OpenTelemetry), any
+// in-flight tool spans, and records the abort reason on the root span before
+// ending it. H5: all three are resolved by CallID from our own state (never
+// trace.SpanFromContext(ctx)/ctx.Value(stepSpanKey{}) alone), so this closes
+// the right spans even when another integration is also registered.
 func (i LegacyOpenTelemetry) OnAbort(ctx context.Context, e TelemetryAbortEvent) {
-	if stepSpan, ok := ctx.Value(stepSpanKey{}).(trace.Span); ok && stepSpan.IsRecording() {
+	if st := legacyState(e.CallID); st != nil {
+		st.mu.Lock()
+		stepSpan := st.stepSpan
+		st.stepSpan = nil
+		toolSpans := st.toolSpans
+		st.toolSpans = nil
+		embedSpans := st.embedSpans
+		st.embedSpans = nil
+		rerankSpan := st.rerankSpan
+		st.rerankSpan = nil
+		st.mu.Unlock()
+		if stepSpan != nil && stepSpan.IsRecording() {
+			stepSpan.End()
+		}
+		for _, toolSpan := range toolSpans {
+			if toolSpan.IsRecording() {
+				toolSpan.End()
+			}
+		}
+		for _, embedSpan := range embedSpans {
+			if embedSpan.IsRecording() {
+				embedSpan.End()
+			}
+		}
+		if rerankSpan != nil && rerankSpan.IsRecording() {
+			rerankSpan.End()
+		}
+	} else if stepSpan, ok := ctx.Value(stepSpanKey{}).(trace.Span); ok && stepSpan.IsRecording() {
 		stepSpan.End()
 	}
-	span := trace.SpanFromContext(ctx)
+	span := legacyRootSpanFor(e.CallID, ctx)
 	if !span.IsRecording() {
 		return
 	}
 	span.End()
+	legacyDeleteState(e.CallID)
 }
 
 // ExecuteTool delegates directly to execute. Nested span support can be added here.
@@ -2003,17 +2355,37 @@ func telemetryDisabled(settings *Settings) bool {
 // Fire functions — fan-out to all registered integrations
 // ---------------------------------------------------------------------------
 
-// FireOnStart calls OnStart on every registered integration, threading the
-// returned context through the chain so each integration can inject spans.
+// FireOnStart calls OnStart on every registered integration.
+//
+// H5: every integration is given the SAME base ctx (not the previous
+// integration's result), matching TS's per-integration onStart — each of
+// TS's LegacyOpenTelemetry/OpenTelemetry independently computes its root
+// span's parent from `context.active()` (the ambient context at the time
+// FireOnStart was called), never from another integration's just-created
+// span. If ctx were threaded through the loop instead, the second
+// integration's tracer.Start call would nest its root span as a CHILD of the
+// first integration's root span (wrong: TS's root spans are siblings), and —
+// since OTel's trace.SpanFromContext only ever resolves the single "current"
+// span — later OnEnd/OnError/OnAbort calls could only ever find the LAST
+// integration's span, leaking every other integration's root span. Each
+// integration now resolves its OWN root/step/tool spans from its own
+// callId-keyed state (see legacyCallState / genAICallState) rather than
+// trace.SpanFromContext(ctx), so which integration's span ends up as ctx's
+// "current" span here no longer affects correctness — only which
+// integration's span becomes the ambient parent for any real (non-telemetry)
+// auto-instrumented provider HTTP spans. The last-processed integration's
+// returned ctx is used for that; with a single integration registered this
+// is byte-for-byte the previous behavior.
 func FireOnStart(ctx context.Context, e TelemetryStartEvent) context.Context {
 	if telemetryDisabled(e.Settings) {
 		return ctx
 	}
 	PublishDiagnostic(ctx, DiagnosticEventOnStart, e)
+	result := ctx
 	for _, i := range snapshotFor(e.Settings) {
-		ctx = i.OnStart(ctx, e)
+		result = i.OnStart(ctx, e)
 	}
-	return ctx
+	return result
 }
 
 // FireOnStepStart calls OnStepStart on every registered integration, threading

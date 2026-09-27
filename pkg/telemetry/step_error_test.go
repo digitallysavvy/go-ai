@@ -97,9 +97,9 @@ func TestOpenTelemetry_OnStepError_ClosesStepAndChatSpans(t *testing.T) {
 	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tracer})
 	settings := &Settings{IsEnabled: Bool(true)}
 
-	rootCtx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", ModelProvider: "openai", ModelID: "gpt-5", Settings: settings})
+	rootCtx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", ModelProvider: "openai", ModelID: "gpt-5", Settings: settings, CallID: "lm-1"})
 	stepCtx := integration.OnStepStart(rootCtx, TelemetryStepStartEvent{
-		OperationType: "ai.generateText", Settings: settings, ModelProvider: "openai", ModelID: "gpt-5",
+		OperationType: "ai.generateText", Settings: settings, ModelProvider: "openai", ModelID: "gpt-5", CallID: "lm-1",
 	})
 	modelCallCtx := integration.OnLanguageModelCallStart(stepCtx, LanguageModelCallStartEvent{
 		Settings: settings, CallID: "lm-1", ModelProvider: "openai", ModelID: "gpt-5",

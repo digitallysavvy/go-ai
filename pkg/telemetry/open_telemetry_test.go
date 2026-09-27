@@ -98,7 +98,11 @@ func TestOpenTelemetryLanguageModelCallStartRequestParams(t *testing.T) {
 	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tracer})
 	settings := &Settings{IsEnabled: Bool(true)}
 
-	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings})
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings, CallID: "call-1"})
+	// H5: OnLanguageModelCallStart parents the "chat" span under the
+	// integration's own step span, resolved by CallID (mirrors TS's
+	// state.stepContext requirement), so OnStepStart must fire first.
+	ctx = integration.OnStepStart(ctx, TelemetryStepStartEvent{Settings: settings, OperationType: "ai.generateText", StepNumber: 0, CallID: "call-1"})
 	temp := 0.7
 	maxTokens := 512
 	seed := 42
@@ -153,8 +157,8 @@ func TestOpenTelemetryProviderMetadataGatedByOptionOnly(t *testing.T) {
 	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tracer, ProviderMetadata: true})
 	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: false}
 
-	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings})
-	ctx = integration.OnStepStart(ctx, TelemetryStepStartEvent{Settings: settings, OperationType: "ai.generateText", StepNumber: 0})
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings, CallID: "call-pm"})
+	ctx = integration.OnStepStart(ctx, TelemetryStepStartEvent{Settings: settings, OperationType: "ai.generateText", StepNumber: 0, CallID: "call-pm"})
 	ctx = integration.OnLanguageModelCallStart(ctx, LanguageModelCallStartEvent{Settings: settings, CallID: "call-pm", ModelID: "gpt-5"})
 	integration.OnLanguageModelCallEnd(ctx, LanguageModelCallEndEvent{
 		Settings:         settings,
@@ -245,8 +249,8 @@ func TestOpenTelemetryProviderExecutedToolGetsExecuteToolSpan(t *testing.T) {
 	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tracer})
 	settings := &Settings{IsEnabled: Bool(true)}
 
-	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings})
-	ctx = integration.OnStepStart(ctx, TelemetryStepStartEvent{Settings: settings, OperationType: "ai.generateText", StepNumber: 0})
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings, CallID: "call-tc"})
+	ctx = integration.OnStepStart(ctx, TelemetryStepStartEvent{Settings: settings, OperationType: "ai.generateText", StepNumber: 0, CallID: "call-tc"})
 	ctx = integration.OnLanguageModelCallStart(ctx, LanguageModelCallStartEvent{Settings: settings, CallID: "call-tc", ModelID: "gpt-5"})
 	integration.OnLanguageModelCallEnd(ctx, LanguageModelCallEndEvent{
 		Settings:     settings,
@@ -372,7 +376,10 @@ func TestOpenTelemetryLanguageModelCallOutputMessagesSemConvShape(t *testing.T) 
 	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tracer})
 	settings := &Settings{IsEnabled: Bool(true), RecordOutputs: true}
 
-	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings})
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings, CallID: "call-2"})
+	// H5: OnLanguageModelCallStart parents the "chat" span under the
+	// integration's own step span, resolved by CallID.
+	ctx = integration.OnStepStart(ctx, TelemetryStepStartEvent{Settings: settings, OperationType: "ai.generateText", StepNumber: 0, CallID: "call-2"})
 	ctx = integration.OnLanguageModelCallStart(ctx, LanguageModelCallStartEvent{Settings: settings, CallID: "call-2", ModelID: "gpt-5"})
 	integration.OnLanguageModelCallEnd(ctx, LanguageModelCallEndEvent{
 		Settings:     settings,
