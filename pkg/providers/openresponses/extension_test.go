@@ -1,0 +1,436 @@
+package openresponses
+
+import (
+	"encoding/json"
+	"io"
+	"strconv"
+	"strings"
+	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+)
+
+// TestNewExtensionRegistry_ValidationRules covers row 9a68261 (OR-EXT): the
+// registration validation rules mirrored from TS
+// createOpenResponsesExtensionRegistry.
+func TestNewExtensionRegistry_ValidationRules(t *testing.T) {
+	cases := []struct {
+		name    string
+		ext     Extension
+		wantErr bool
+	}{
+		{
+			name:    "missing namespace separator",
+			ext:     Extension{ID: "noseparator", EncodeTool: func(string, map[string]interface{}) (map[string]interface{}, error) { return nil, nil }, ToolType: "x:y"},
+			wantErr: true,
+		},
+		{
+			name:    "toolType without EncodeTool",
+			ext:     Extension{ID: "ns.ext", ToolType: "ns:tool"},
+			wantErr: true,
+		},
+		{
+			name:    "EncodeTool without toolType",
+			ext:     Extension{ID: "ns.ext", EncodeTool: func(string, map[string]interface{}) (map[string]interface{}, error) { return nil, nil }},
+			wantErr: true,
+		},
+		{
+			name: "encodeToolChoice without EncodeTool",
+			ext: Extension{
+				ID:               "ns.ext",
+				ItemTypes:        []string{"ns:item"},
+				DecodeItem:       func(ExtensionItem, string) ([]types.ContentPart, error) { return nil, nil },
+				EncodeToolChoice: func(string, map[string]interface{}) (map[string]interface{}, error) { return nil, nil },
+			},
+			wantErr: true,
+		},
+		{
+			name:    "toolType wrong namespace",
+			ext:     Extension{ID: "ns.ext", ToolType: "other:tool", EncodeTool: func(string, map[string]interface{}) (map[string]interface{}, error) { return nil, nil }},
+			wantErr: true,
+		},
+		{
+			name: "itemTypes wrong namespace",
+			ext: Extension{
+				ID:         "ns.ext",
+				ItemTypes:  []string{"other:item"},
+				DecodeItem: func(ExtensionItem, string) ([]types.ContentPart, error) { return nil, nil },
+			},
+			wantErr: true,
+		},
+		{
+			name:    "no capability registered",
+			ext:     Extension{ID: "ns.ext"},
+			wantErr: true,
+		},
+		{
+			name: "valid full extension",
+			ext: Extension{
+				ID:         "ns.ext",
+				ToolType:   "ns:tool",
+				ItemTypes:  []string{"ns:item"},
+				EventTypes: []string{"ns:event"},
+				EncodeTool: func(string, map[string]interface{}) (map[string]interface{}, error) {
+					return map[string]interface{}{}, nil
+				},
+				DecodeItem: func(ExtensionItem, string) ([]types.ContentPart, error) { return nil, nil },
+				DecodeEvent: func(ExtensionEvent, map[string]interface{}) ([]*provider.StreamChunk, error) {
+					return nil, nil
+				},
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewExtensionRegistry([]Extension{tc.ext})
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("NewExtensionRegistry() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestNewExtensionRegistry_DuplicateRegistration(t *testing.T) {
+	makeExt := func(id string) Extension {
+		return Extension{
+			ID:       id,
+			ToolType: "ns:tool",
+			EncodeTool: func(string, map[string]interface{}) (map[string]interface{}, error) {
+				return map[string]interface{}{}, nil
+			},
+		}
+	}
+	_, err := NewExtensionRegistry([]Extension{makeExt("ns.a"), makeExt("ns.a")})
+	if err == nil {
+		t.Fatal("expected duplicate extension ID to error")
+	}
+
+	dupToolType := []Extension{
+		{ID: "ns.a", ToolType: "ns:tool", EncodeTool: func(string, map[string]interface{}) (map[string]interface{}, error) {
+			return map[string]interface{}{}, nil
+		}},
+		{ID: "ns.b", ToolType: "ns:tool", EncodeTool: func(string, map[string]interface{}) (map[string]interface{}, error) {
+			return map[string]interface{}{}, nil
+		}},
+	}
+	if _, err := NewExtensionRegistry(dupToolType); err == nil {
+		t.Fatal("expected duplicate ToolType to error")
+	}
+}
+
+// codeExecutionExtension returns a stand-in extension resembling the doc
+// comment's example (an "lmstudio.code_execution"-style tool), used across
+// the tests below.
+func codeExecutionExtension() Extension {
+	return Extension{
+		ID:       "lmstudio.code_execution",
+		ToolType: "lmstudio:code_execution",
+		EncodeTool: func(name string, args map[string]interface{}) (map[string]interface{}, error) {
+			return map[string]interface{}{"language": args["language"]}, nil
+		},
+		ItemTypes: []string{"lmstudio:code_execution"},
+		DecodeItem: func(item ExtensionItem, mode string) ([]types.ContentPart, error) {
+			code, _ := item["code"].(string)
+			result, _ := item["result"].(string)
+			return []types.ContentPart{
+				types.ToolCallContent{
+					ToolCallID:       item.ID(),
+					ToolName:         "run_code",
+					Input:            code,
+					Arguments:        map[string]interface{}{"code": code},
+					ProviderExecuted: true,
+				},
+				types.ToolResultContent{
+					ToolCallID:       item.ID(),
+					ToolName:         "run_code",
+					Result:           result,
+					ProviderExecuted: true,
+				},
+			}, nil
+		},
+		EncodeInputItem: func(part types.ContentPart, tool types.Tool) ([]ExtensionItem, error) {
+			tc, ok := part.(types.ToolCallContent)
+			if !ok {
+				return nil, nil
+			}
+			return []ExtensionItem{{
+				"type":   "lmstudio:code_execution",
+				"id":     tc.ToolCallID,
+				"status": "completed",
+				"code":   tc.Input,
+			}}, nil
+		},
+	}
+}
+
+// TestOpenResponsesExtensionToolPrepareAndChoice covers row 9a68261: a
+// registered extension's provider-defined tool encodes into the request
+// body's tools array, and tool_choice targeting it is encoded via the
+// extension's ToolType.
+func TestOpenResponsesExtensionToolPrepareAndChoice(t *testing.T) {
+	registry, err := NewExtensionRegistry([]Extension{codeExecutionExtension()})
+	if err != nil {
+		t.Fatalf("NewExtensionRegistry failed: %v", err)
+	}
+	p := New(Config{BaseURL: "http://localhost:1234/v1", Extensions: []Extension{codeExecutionExtension()}})
+	_ = registry
+	model := NewLanguageModel(p, "local-model")
+
+	body, _, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		Tools: []types.Tool{
+			{Name: "run_code", Type: "provider", ProviderID: "lmstudio.code_execution", ProviderArgs: map[string]interface{}{"language": "python"}},
+		},
+		ToolChoice: types.ToolChoice{Type: "tool", ToolName: "run_code"},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	tools, ok := body["tools"].([]interface{})
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools = %#v, want one encoded extension tool", body["tools"])
+	}
+	toolDef, ok := tools[0].(map[string]interface{})
+	if !ok || toolDef["type"] != "lmstudio:code_execution" || toolDef["language"] != "python" {
+		t.Fatalf("tool def = %#v, want lmstudio:code_execution with language=python", tools[0])
+	}
+	choice, ok := body["tool_choice"].(map[string]interface{})
+	if !ok || choice["type"] != "lmstudio:code_execution" {
+		t.Fatalf("tool_choice = %#v, want {type: lmstudio:code_execution}", body["tool_choice"])
+	}
+}
+
+// TestOpenResponsesExtensionToolUnsupportedWithoutRegistry covers row
+// 9a68261: without a matching extension, a provider-defined tool is still
+// skipped with an "unsupported" warning (pre-existing OR-CORE behavior).
+func TestOpenResponsesExtensionToolUnsupportedWithoutRegistry(t *testing.T) {
+	p := New(Config{BaseURL: "http://localhost:1234/v1"})
+	model := NewLanguageModel(p, "local-model")
+
+	body, warnings, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		Tools: []types.Tool{
+			{Name: "run_code", Type: "provider", ProviderID: "lmstudio.code_execution"},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	if _, ok := body["tools"]; ok {
+		t.Fatalf("tools = %#v, want omitted when no tools could be encoded", body["tools"])
+	}
+	assertUnsupportedWarning(t, warnings, "provider-defined tool lmstudio.code_execution")
+}
+
+// TestOpenResponsesExtensionItemDecodeGenerate covers row 9a68261: an
+// unrecognized output item matching a registered extension's ItemTypes
+// decodes into a provider-executed tool call/result pair, driving the
+// tool-calls finish reason, with a replay carrier preserved for round-trip.
+func TestOpenResponsesExtensionItemDecodeGenerate(t *testing.T) {
+	p := New(Config{BaseURL: "http://localhost:1234/v1", Extensions: []Extension{codeExecutionExtension()}})
+	model := NewLanguageModel(p, "local-model")
+
+	raw := json.RawMessage(`{"type":"lmstudio:code_execution","id":"ce_1","status":"completed","code":"print(1)","result":"1"}`)
+	var item OutputItem
+	if err := json.Unmarshal(raw, &item); err != nil {
+		t.Fatalf("unmarshal item failed: %v", err)
+	}
+	result := model.convertResponse(OpenResponsesResponse{Output: []OutputItem{item}})
+
+	if len(result.ToolCalls) != 1 || result.ToolCalls[0].ToolName != "run_code" || !result.ToolCalls[0].ProviderExecuted {
+		t.Fatalf("ToolCalls = %#v, want one provider-executed run_code call", result.ToolCalls)
+	}
+	if result.FinishReason != types.FinishReasonToolCalls {
+		t.Fatalf("FinishReason = %v, want tool-calls", result.FinishReason)
+	}
+
+	var sawCarrier, sawResult bool
+	for _, part := range result.Content {
+		switch c := part.(type) {
+		case types.CustomContent:
+			if c.Kind == extensionReplayKind {
+				sawCarrier = true
+			}
+		case types.ToolResultContent:
+			if c.Result == "1" {
+				sawResult = true
+			}
+		}
+	}
+	if !sawCarrier {
+		t.Fatalf("result.Content = %#v, want an extension replay carrier", result.Content)
+	}
+	if !sawResult {
+		t.Fatalf("result.Content = %#v, want the decoded tool result", result.Content)
+	}
+}
+
+// TestOpenResponsesExtensionItemReplayCarrier covers row 9a68261: an
+// extension-decoded tool call/result round-trips through input conversion
+// by resending the original wire item verbatim via its replay carrier.
+func TestOpenResponsesExtensionItemReplayCarrier(t *testing.T) {
+	p := New(Config{BaseURL: "http://localhost:1234/v1", Extensions: []Extension{codeExecutionExtension()}})
+	model := NewLanguageModel(p, "local-model")
+
+	raw := json.RawMessage(`{"type":"lmstudio:code_execution","id":"ce_1","status":"completed","code":"print(1)","result":"1"}`)
+	var item OutputItem
+	if err := json.Unmarshal(raw, &item); err != nil {
+		t.Fatalf("unmarshal item failed: %v", err)
+	}
+	result := model.convertResponse(OpenResponsesResponse{Output: []OutputItem{item}})
+
+	body, _, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleAssistant, Content: result.Content},
+		}},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	input, ok := body["input"].([]interface{})
+	if !ok {
+		t.Fatalf("input = %#v, want an input item array", body["input"])
+	}
+	var found bool
+	for _, in := range input {
+		m, ok := in.(map[string]interface{})
+		if ok && m["type"] == "lmstudio:code_execution" && m["id"] == "ce_1" && m["code"] == "print(1)" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("input = %#v, want the original lmstudio:code_execution item resent verbatim", input)
+	}
+}
+
+// TestOpenResponsesExtensionItemEncodeInputItemFallback covers row 9a68261:
+// a fresh extension tool call (no preserved raw item) replays via the
+// extension's EncodeInputItem.
+func TestOpenResponsesExtensionItemEncodeInputItemFallback(t *testing.T) {
+	p := New(Config{BaseURL: "http://localhost:1234/v1", Extensions: []Extension{codeExecutionExtension()}})
+	model := NewLanguageModel(p, "local-model")
+
+	refMeta, _ := json.Marshal(map[string]interface{}{
+		"open-responses": map[string]interface{}{
+			"openResponsesExtension": map[string]interface{}{"id": "lmstudio.code_execution", "itemId": "ce_fresh"},
+		},
+	})
+	toolCall := types.ToolCallContent{
+		ToolCallID:       "ce_fresh",
+		ToolName:         "run_code",
+		Input:            "print(2)",
+		ProviderExecuted: true,
+		ProviderMetadata: refMeta,
+	}
+
+	body, _, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleAssistant, Content: []types.ContentPart{toolCall}},
+		}},
+		Tools: []types.Tool{{Name: "run_code", Type: "provider", ProviderID: "lmstudio.code_execution"}},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	input, ok := body["input"].([]interface{})
+	if !ok || len(input) != 1 {
+		t.Fatalf("input = %#v, want one EncodeInputItem-produced item", body["input"])
+	}
+	m, ok := input[0].(map[string]interface{})
+	if !ok || m["type"] != "lmstudio:code_execution" || m["code"] != "print(2)" {
+		t.Fatalf("input[0] = %#v, want the EncodeInputItem-encoded item", input[0])
+	}
+}
+
+// TestOpenResponsesExtensionItemDecodeStream covers row 9a68261: an
+// unrecognized item type in a response.output_item.done event matching a
+// registered extension decodes into tool-call/tool-result stream chunks.
+func TestOpenResponsesExtensionItemDecodeStream(t *testing.T) {
+	p := New(Config{BaseURL: "http://localhost:1234/v1", Extensions: []Extension{codeExecutionExtension()}})
+
+	var item OutputItem
+	raw := json.RawMessage(`{"type":"lmstudio:code_execution","id":"ce_1","status":"completed","code":"print(1)","result":"1"}`)
+	if err := json.Unmarshal(raw, &item); err != nil {
+		t.Fatalf("unmarshal item failed: %v", err)
+	}
+
+	s := newOpenResponsesStream(io.NopCloser(strings.NewReader("")), nil, "open-responses")
+	s.extensionRegistry = p.extensionRegistry
+
+	carrierChunk, err := s.handleStreamEvent(&StreamEvent{Type: "response.output_item.done", Item: &item})
+	if err != nil {
+		t.Fatalf("handleStreamEvent failed: %v", err)
+	}
+	if carrierChunk.Type != provider.ChunkTypeCustom || carrierChunk.CustomContent == nil || carrierChunk.CustomContent.Kind != extensionReplayKind {
+		t.Fatalf("carrierChunk = %#v, want the extension replay carrier first", carrierChunk)
+	}
+	if !s.hasToolCalls {
+		t.Fatal("hasToolCalls = false, want true after decoding an extension tool call")
+	}
+
+	toolCallChunk, err := s.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if toolCallChunk.Type != provider.ChunkTypeToolCall || toolCallChunk.ToolCall.ToolName != "run_code" {
+		t.Fatalf("toolCallChunk = %#v, want a run_code tool call", toolCallChunk)
+	}
+
+	toolResultChunk, err := s.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if toolResultChunk.Type != provider.ChunkTypeToolResult || toolResultChunk.ToolResult.ToolCallID != "ce_1" {
+		t.Fatalf("toolResultChunk = %#v, want the queued tool-result chunk", toolResultChunk)
+	}
+}
+
+// TestOpenResponsesExtensionEventDecodeStream covers row 9a68261: a
+// namespaced streaming event matching a registered extension's EventTypes
+// decodes into stream chunks via DecodeEvent, using the stream's persistent
+// state map across calls.
+func TestOpenResponsesExtensionEventDecodeStream(t *testing.T) {
+	ext := Extension{
+		ID:         "lmstudio.progress",
+		EventTypes: []string{"lmstudio:progress"},
+		DecodeEvent: func(event ExtensionEvent, state map[string]interface{}) ([]*provider.StreamChunk, error) {
+			percent, _ := event["percent"].(float64)
+			calls, _ := state["calls"].(int)
+			state["calls"] = calls + 1
+			return []*provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "progress"},
+				{Type: provider.ChunkTypeReasoning, Reasoning: strconv.Itoa(int(percent))},
+			}, nil
+		},
+	}
+	p := New(Config{BaseURL: "http://localhost:1234/v1", Extensions: []Extension{ext}})
+
+	body := `data: {"type":"lmstudio:progress","sequence_number":1,"percent":50}
+
+data: {"type":"response.completed","response":{"id":"r1","output":[],"status":"completed"}}
+
+`
+	s := newOpenResponsesStream(io.NopCloser(strings.NewReader(body)), nil, "open-responses")
+	s.extensionRegistry = p.extensionRegistry
+
+	chunk1, err := s.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if chunk1.Type != provider.ChunkTypeText || chunk1.Text != "progress" {
+		t.Fatalf("chunk1 = %#v, want a text chunk from DecodeEvent", chunk1)
+	}
+	chunk2, err := s.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if chunk2.Type != provider.ChunkTypeReasoning || chunk2.Reasoning != "50" {
+		t.Fatalf("chunk2 = %#v, want a reasoning chunk carrying the percent", chunk2)
+	}
+	if s.extensionState["calls"] != 1 {
+		t.Fatalf("extensionState[calls] = %#v, want 1 (state persists across the stream)", s.extensionState["calls"])
+	}
+}

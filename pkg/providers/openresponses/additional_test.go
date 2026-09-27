@@ -56,34 +56,44 @@ func TestProviderBasicsAndOptionsExtractors(t *testing.T) {
 }
 
 func TestConvertToolsChoicesAndUsage(t *testing.T) {
-	tools, toolWarnings := convertToolsToOpenResponses([]types.Tool{
+	tools, encodedProviderTools, toolWarnings := convertToolsToOpenResponses([]types.Tool{
 		{Name: "weather", Description: "lookup", Parameters: map[string]interface{}{"type": "object"}, Strict: true},
-	})
-	if len(tools) != 1 || tools[0].Name != "weather" || !tools[0].Strict {
+	}, nil)
+	if len(tools) != 1 {
+		t.Fatalf("tools conversion failed: %+v", tools)
+	}
+	ft, ok := tools[0].(FunctionTool)
+	if !ok || ft.Name != "weather" || !ft.Strict {
 		t.Fatalf("tools conversion failed: %+v", tools)
 	}
 	if len(toolWarnings) != 0 {
 		t.Fatalf("unexpected tool warnings: %+v", toolWarnings)
 	}
+	if len(encodedProviderTools) != 0 {
+		t.Fatalf("unexpected encoded provider tools: %+v", encodedProviderTools)
+	}
 
-	providerTools, providerToolWarnings := convertToolsToOpenResponses([]types.Tool{
+	providerTools, providerEncodedTools, providerToolWarnings := convertToolsToOpenResponses([]types.Tool{
 		{Name: "search", Type: "provider", ProviderID: "openai.web_search"},
-	})
+	}, nil)
 	if len(providerTools) != 0 {
 		t.Fatalf("provider-defined tools should be skipped: %+v", providerTools)
 	}
+	if len(providerEncodedTools) != 0 {
+		t.Fatalf("unexpected encoded provider tools: %+v", providerEncodedTools)
+	}
 	assertUnsupportedWarning(t, providerToolWarnings, "provider-defined tool openai.web_search")
 
-	if got := convertToolChoiceToOpenResponses(types.ToolChoice{Type: "auto"}); got != "auto" {
+	if got := convertToolChoiceToOpenResponses(types.ToolChoice{Type: "auto"}, nil); got != "auto" {
 		t.Fatalf("auto choice = %#v", got)
 	}
-	if got := convertToolChoiceToOpenResponses(types.ToolChoice{Type: "required"}); got != "required" {
+	if got := convertToolChoiceToOpenResponses(types.ToolChoice{Type: "required"}, nil); got != "required" {
 		t.Fatalf("required choice = %#v", got)
 	}
-	if got := convertToolChoiceToOpenResponses(types.ToolChoice{Type: "none"}); got != "none" {
+	if got := convertToolChoiceToOpenResponses(types.ToolChoice{Type: "none"}, nil); got != "none" {
 		t.Fatalf("none choice = %#v", got)
 	}
-	toolChoice := convertToolChoiceToOpenResponses(types.ToolChoice{Type: "tool", ToolName: "weather"})
+	toolChoice := convertToolChoiceToOpenResponses(types.ToolChoice{Type: "tool", ToolName: "weather"}, nil)
 	choiceMap, ok := toolChoice.(map[string]interface{})
 	if !ok || choiceMap["name"] != "weather" {
 		t.Fatalf("tool choice conversion failed: %#v", toolChoice)
@@ -599,7 +609,7 @@ func TestBuildRequestBodyAllowedToolsParity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildRequestBody() error = %v", err)
 	}
-	if len(body["tools"].([]FunctionTool)) != 2 {
+	if len(body["tools"].([]interface{})) != 2 {
 		t.Fatalf("tools = %#v, want full tool list preserved", body["tools"])
 	}
 	choice := body["tool_choice"].(map[string]interface{})

@@ -153,7 +153,9 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 
 	// Create stream wrapper
-	return newOpenResponsesStream(httpResp.Body, warnings, m.provider.config.Name), nil
+	stream := newOpenResponsesStream(httpResp.Body, warnings, m.provider.config.Name)
+	stream.extensionRegistry = m.provider.extensionRegistry
+	return stream, nil
 }
 
 // buildRequestBody builds the Open Responses API request body
@@ -169,7 +171,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	}
 
 	// Convert messages to Open Responses format
-	input, instructions, conversionWarnings, err := ConvertToOpenResponsesInputForProviderStrict(opts.Prompt.Messages, opts.Prompt.System, m.provider.config.Name, m.provider.config.StrictResponseInput)
+	input, instructions, conversionWarnings, err := ConvertToOpenResponsesInputForProviderStrict(opts.Prompt.Messages, opts.Prompt.System, m.provider.config.Name, m.provider.config.StrictResponseInput, openResponsesExtensionOptions{Registry: m.provider.extensionRegistry, Tools: opts.Tools})
 	if err != nil {
 		return nil, warnings, err
 	}
@@ -233,12 +235,13 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		})
 	}
 
-	// Convert tools, skipping provider-defined tools (OR-CORE does not carry
-	// an extension registry) with an "unsupported" warning, mirroring TS's
-	// getArgs behavior when no matching extension is registered. Only send
-	// the tools field when the resulting list is non-empty (TS: `tools:
-	// convertedTools.length ? convertedTools : undefined`).
-	convertedTools, toolWarnings := convertToolsToOpenResponses(opts.Tools)
+	// Convert tools. Provider-defined tools are encoded via a registered
+	// extension when one matches (row 9a68261, OR-EXT); otherwise they're
+	// skipped with an "unsupported" warning, mirroring TS's getArgs behavior
+	// when no matching extension is registered. Only send the tools field
+	// when the resulting list is non-empty (TS: `tools: convertedTools.length
+	// ? convertedTools : undefined`).
+	convertedTools, encodedProviderTools, toolWarnings := convertToolsToOpenResponses(opts.Tools, m.provider.extensionRegistry)
 	warnings = append(warnings, toolWarnings...)
 	if len(convertedTools) > 0 {
 		body["tools"] = convertedTools
@@ -247,11 +250,11 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	// Convert tool choice
 	if allowedToolsChoice := openResponsesAllowedToolsChoice(provOpts.Raw); allowedToolsChoice != nil {
 		body["tool_choice"] = allowedToolsChoice
-	} else if opts.ToolChoice.Type == "tool" && openResponsesToolChoiceTargetsProviderTool(opts.Tools, opts.ToolChoice.ToolName) {
+	} else if opts.ToolChoice.Type == "tool" && openResponsesToolChoiceTargetsProviderTool(opts.Tools, opts.ToolChoice.ToolName, encodedProviderTools) {
 		// Targets a provider-defined tool we couldn't encode; omit tool_choice
 		// like TS does when no extension is registered for it.
 	} else if opts.ToolChoice.Type != "" {
-		body["tool_choice"] = convertToolChoiceToOpenResponses(opts.ToolChoice)
+		body["tool_choice"] = convertToolChoiceToOpenResponses(opts.ToolChoice, encodedProviderTools)
 	}
 
 	// Add response format if present. TS only serializes responseFormat when
@@ -603,20 +606,46 @@ func openResponsesTruthyString(value interface{}) bool {
 }
 
 // convertToolsToOpenResponses converts AI SDK tools to Open Responses format.
-// Provider-defined tools (Type == "provider") are skipped with an
-// "unsupported" warning: OR-CORE does not carry an extension registry to
-// encode them (see OR-EXT, item 12), mirroring TS's getArgs behavior when no
-// matching extension is registered for a provider tool.
-func convertToolsToOpenResponses(tools []types.Tool) ([]FunctionTool, []types.Warning) {
-	result := make([]FunctionTool, 0, len(tools))
-	var warnings []types.Warning
+// Provider-defined tools (Type == "provider") are encoded via a registered
+// extension's EncodeTool when one is registered for the tool's ProviderID
+// (row 9a68261, OR-EXT); otherwise they are skipped with an "unsupported"
+// warning, mirroring TS's getArgs behavior when no matching extension is
+// registered for a provider tool. encodedProviderTools maps each
+// successfully-encoded provider tool's SDK name to the extension that
+// encoded it, for tool_choice encoding below.
+func convertToolsToOpenResponses(tools []types.Tool, registry *ExtensionRegistry) (result []interface{}, encodedProviderTools map[string]*Extension, warnings []types.Warning) {
+	result = make([]interface{}, 0, len(tools))
+	encodedProviderTools = map[string]*Extension{}
 
 	for _, t := range tools {
 		if t.Type == "provider" {
-			warnings = append(warnings, types.Warning{
-				Type:    "unsupported",
-				Feature: fmt.Sprintf("provider-defined tool %s", t.ProviderID),
-			})
+			var ext *Extension
+			if registry != nil {
+				ext = registry.ByProviderToolID[t.ProviderID]
+			}
+
+			var encoded map[string]interface{}
+			if ext != nil && ext.EncodeTool != nil {
+				fields, err := ext.EncodeTool(t.Name, t.ProviderArgs)
+				if err == nil && fields != nil {
+					encoded = map[string]interface{}{}
+					for k, v := range fields {
+						encoded[k] = v
+					}
+					encoded["type"] = ext.ToolType
+				}
+			}
+
+			if encoded == nil {
+				warnings = append(warnings, types.Warning{
+					Type:    "unsupported",
+					Feature: fmt.Sprintf("provider-defined tool %s", t.ProviderID),
+				})
+				continue
+			}
+
+			result = append(result, encoded)
+			encodedProviderTools[t.Name] = ext
 			continue
 		}
 
@@ -638,13 +667,18 @@ func convertToolsToOpenResponses(tools []types.Tool) ([]FunctionTool, []types.Wa
 		result = append(result, ft)
 	}
 
-	return result, warnings
+	return result, encodedProviderTools, warnings
 }
 
 // openResponsesToolChoiceTargetsProviderTool reports whether toolName refers
-// to a provider-defined tool in tools, used to omit tool_choice for tools
-// this package cannot encode (item 7).
-func openResponsesToolChoiceTargetsProviderTool(tools []types.Tool, toolName string) bool {
+// to a provider-defined tool this package couldn't encode (no extension
+// registered for it), used to omit tool_choice entirely for it (item 7). A
+// provider tool that WAS encoded via a registered extension is not reported
+// here; it gets its own tool_choice encoding (row 9a68261, OR-EXT).
+func openResponsesToolChoiceTargetsProviderTool(tools []types.Tool, toolName string, encodedProviderTools map[string]*Extension) bool {
+	if _, encoded := encodedProviderTools[toolName]; encoded {
+		return false
+	}
 	for _, t := range tools {
 		if t.Name == toolName {
 			return t.Type == "provider"
@@ -653,8 +687,11 @@ func openResponsesToolChoiceTargetsProviderTool(tools []types.Tool, toolName str
 	return false
 }
 
-// convertToolChoiceToOpenResponses converts tool choice to Open Responses format
-func convertToolChoiceToOpenResponses(toolChoice types.ToolChoice) interface{} {
+// convertToolChoiceToOpenResponses converts tool choice to Open Responses
+// format. When toolChoice targets a provider tool encoded via a registered
+// extension, it's encoded via that extension's EncodeToolChoice, or
+// {"type": extension.ToolType} by default (row 9a68261, OR-EXT).
+func convertToolChoiceToOpenResponses(toolChoice types.ToolChoice, encodedProviderTools map[string]*Extension) interface{} {
 	switch toolChoice.Type {
 	case "auto":
 		return "auto"
@@ -663,6 +700,20 @@ func convertToolChoiceToOpenResponses(toolChoice types.ToolChoice) interface{} {
 	case "none":
 		return "none"
 	case "tool":
+		if ext, ok := encodedProviderTools[toolChoice.ToolName]; ok && ext != nil {
+			if ext.EncodeToolChoice != nil {
+				fields, err := ext.EncodeToolChoice(toolChoice.ToolName, nil)
+				if err == nil && fields != nil {
+					encoded := map[string]interface{}{}
+					for k, v := range fields {
+						encoded[k] = v
+					}
+					encoded["type"] = ext.ToolType
+					return encoded
+				}
+			}
+			return map[string]interface{}{"type": ext.ToolType}
+		}
 		return map[string]interface{}{
 			"type": "function",
 			"name": toolChoice.ToolName,
@@ -748,6 +799,34 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) *types.G
 				ToolName:  item.Name,
 				Arguments: map[string]interface{}{"input": item.Input},
 			})
+
+		default:
+			// Row 9a68261 (OR-EXT): an unrecognized item type may be a
+			// registered extension's namespaced output item.
+			decoded, handled, err := decodeExtensionItem(m.provider.extensionRegistry, item.Raw, "generate", m.providerName())
+			if handled {
+				if err != nil {
+					// Mirrors TS's try/catch around decodeExtensionItem: a
+					// decode failure doesn't abort the whole response.
+					continue
+				}
+				result.Content = append(result.Content, decoded...)
+				for _, part := range decoded {
+					tc, ok := part.(types.ToolCallContent)
+					if !ok {
+						continue
+					}
+					hasToolCalls = true
+					toolCalls = append(toolCalls, types.ToolCall{
+						ID:               tc.ToolCallID,
+						ToolName:         tc.ToolName,
+						Arguments:        tc.Arguments,
+						RawArguments:     tc.Input,
+						ProviderExecuted: tc.ProviderExecuted,
+						ProviderMetadata: extensionToolCallProviderMetadata(tc.ProviderMetadata),
+					})
+				}
+			}
 		}
 	}
 
@@ -858,6 +937,14 @@ type openResponsesStream struct {
 	// used when a single event must emit more than one chunk (e.g. a
 	// reasoning-end synthesized before the finish chunk).
 	pending []*provider.StreamChunk
+
+	// extensionRegistry and extensionState support decoding registered Open
+	// Responses extension items/events (row 9a68261, OR-EXT). extensionState
+	// persists for the stream's lifetime, shared across all DecodeEvent
+	// calls. Left nil (no-op) in most tests; only DoStream and tests
+	// exercising extensions set extensionRegistry.
+	extensionRegistry *ExtensionRegistry
+	extensionState    map[string]interface{}
 }
 
 // toolCallState tracks the state of a tool call during streaming
@@ -881,6 +968,7 @@ func newOpenResponsesStream(reader io.ReadCloser, warnings []types.Warning, prov
 		providerName:      name,
 		toolCallsByItemID: make(map[string]*toolCallState),
 		finishReason:      types.FinishReasonOther,
+		extensionState:    make(map[string]interface{}),
 	}
 }
 
@@ -1069,6 +1157,59 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 				ID:               event.Item.ID,
 				ProviderMetadata: providerMeta,
 			}, nil
+
+		default:
+			// Row 9a68261 (OR-EXT): an unrecognized item type may be a
+			// registered extension's namespaced output item.
+			decoded, handled, err := decodeExtensionItem(s.extensionRegistry, event.Item.Raw, "stream", s.providerName)
+			if !handled {
+				break
+			}
+			if err != nil {
+				// Mirrors TS's try/catch around decodeExtensionItem: a
+				// decode failure doesn't abort the whole stream.
+				return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: err.Error()}, nil
+			}
+			for _, part := range decoded {
+				if tc, ok := part.(types.ToolCallContent); ok {
+					s.hasToolCalls = true
+					s.pending = append(s.pending, &provider.StreamChunk{
+						Type: provider.ChunkTypeToolCall,
+						ToolCall: &types.ToolCall{
+							ID:               tc.ToolCallID,
+							ToolName:         tc.ToolName,
+							Arguments:        tc.Arguments,
+							RawArguments:     tc.Input,
+							ProviderExecuted: tc.ProviderExecuted,
+							ProviderMetadata: extensionToolCallProviderMetadata(tc.ProviderMetadata),
+						},
+					})
+					continue
+				}
+				if tr, ok := part.(types.ToolResultContent); ok {
+					s.pending = append(s.pending, &provider.StreamChunk{
+						Type: provider.ChunkTypeToolResult,
+						ToolResult: &types.ToolResult{
+							ToolCallID: tr.ToolCallID,
+							ToolName:   tr.ToolName,
+							Result:     tr.Result,
+						},
+					})
+					continue
+				}
+				if cc, ok := part.(types.CustomContent); ok {
+					// The replay carrier (or any other custom content an
+					// extension's DecodeItem returns): passed through as-is
+					// so it round-trips into the assistant message's content
+					// like any other stream part, preserving the original
+					// wire item for replay.
+					s.pending = append(s.pending, &provider.StreamChunk{
+						Type:          provider.ChunkTypeCustom,
+						CustomContent: &cc,
+					})
+				}
+			}
+			return s.Next()
 		}
 		return s.Next()
 
@@ -1120,7 +1261,23 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		return s.Next()
 
 	default:
-		// Unknown event type, skip
+		// Row 9a68261 (OR-EXT): an unrecognized event type may be a
+		// registered extension's namespaced streaming event.
+		decoded, handled, err := decodeExtensionEvent(s.extensionRegistry, event.Raw, s.extensionState)
+		if !handled {
+			return s.Next()
+		}
+		if err != nil {
+			// Mirrors TS's try/catch around extension.decodeEvent: a decode
+			// failure doesn't abort the whole stream.
+			return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: err.Error()}, nil
+		}
+		for _, chunk := range decoded {
+			if chunk.Type == provider.ChunkTypeToolCall || chunk.Type == provider.ChunkTypeToolInputStart {
+				s.hasToolCalls = true
+			}
+			s.pending = append(s.pending, chunk)
+		}
 		return s.Next()
 	}
 }

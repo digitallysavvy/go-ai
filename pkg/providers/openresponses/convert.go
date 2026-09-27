@@ -35,12 +35,16 @@ func ConvertToOpenResponsesInputForProvider(messages []types.Message, system str
 // assistant text without a known item ID is serialized as a plain string
 // message, while assistant text with a known item ID is replayed as a
 // complete output-text output item.
-func ConvertToOpenResponsesInputForProviderStrict(messages []types.Message, system string, providerName string, strictResponseInput bool) (interface{}, string, []types.Warning, error) {
+func ConvertToOpenResponsesInputForProviderStrict(messages []types.Message, system string, providerName string, strictResponseInput bool, extOpts ...openResponsesExtensionOptions) (interface{}, string, []types.Warning, error) {
 	var input []interface{}
 	var warnings []types.Warning
 	var systemMessages []string
 	if providerName == "" {
 		providerName = "openai"
+	}
+	var extensionOptions openResponsesExtensionOptions
+	if len(extOpts) > 0 {
+		extensionOptions = extOpts[0]
 	}
 
 	// Collect system messages
@@ -71,7 +75,7 @@ func ConvertToOpenResponsesInputForProviderStrict(messages []types.Message, syst
 			})
 
 		case types.RoleAssistant:
-			input = append(input, convertAssistantContent(msg.Content, providerName, strictResponseInput)...)
+			input = append(input, convertAssistantContent(msg.Content, providerName, strictResponseInput, extensionOptions)...)
 
 		case types.RoleTool:
 			// Convert tool results
@@ -238,10 +242,24 @@ func mediaTypeOrDefault(mediaType string) string {
 // message is flushed whenever a reasoning or tool-call item interrupts it, or
 // whenever a text part's itemId boundary changes, so reasoning/text/tool-call
 // ordering and per-item boundaries survive a round trip (OR-CORE item 3).
-func convertAssistantContent(content []types.ContentPart, providerName string, strictResponseInput bool) []interface{} {
+// openResponsesExtensionOptions carries the registry and declared tools
+// needed to encode/decode Open Responses extension content on replay (row
+// 9a68261, OR-EXT). The zero value disables all extension handling, so
+// existing callers that don't pass it see unchanged behavior.
+type openResponsesExtensionOptions struct {
+	Registry *ExtensionRegistry
+	Tools    []types.Tool
+}
+
+func convertAssistantContent(content []types.ContentPart, providerName string, strictResponseInput bool, extOpts ...openResponsesExtensionOptions) []interface{} {
+	var opts openResponsesExtensionOptions
+	if len(extOpts) > 0 {
+		opts = extOpts[0]
+	}
 	var items []interface{}
 	var assistantContent []OutputTextContent
 	var assistantMessageID string
+	handledExtensionItemIDs := map[string]bool{}
 
 	flush := func() {
 		if len(assistantContent) == 0 {
@@ -347,8 +365,34 @@ func convertAssistantContent(content []types.ContentPart, providerName string, s
 				Annotations: annotations,
 			})
 
+		case types.CustomContent:
+			// Row 9a68261 (OR-EXT): replay carrier preserving an extension
+			// item's original bytes verbatim, added alongside its decoded
+			// content parts by decodeExtensionItem.
+			if p.Kind == extensionReplayKind {
+				if item, itemID := extensionReplayInputItem(p.ProviderMetadata, providerName); item != nil {
+					flush()
+					items = append(items, item)
+					if itemID != "" {
+						handledExtensionItemIDs[itemID] = true
+					}
+				}
+			}
+
 		case types.ToolCallContent:
 			if p.ProviderExecuted {
+				// Row 9a68261 (OR-EXT): a provider-executed call from a
+				// registered extension replays via its preserved raw item
+				// (handled above, once, via the item's replay carrier) or,
+				// lacking one, via the extension's EncodeInputItem.
+				extensionID, itemID := extensionReferenceInfo(p.ProviderMetadata, providerName)
+				if itemID != "" && handledExtensionItemIDs[itemID] {
+					continue
+				}
+				if encoded := encodeExtensionInputItems(extensionID, p, opts); len(encoded) > 0 {
+					flush()
+					items = append(items, encoded...)
+				}
 				continue
 			}
 			flush()
@@ -368,6 +412,25 @@ func convertAssistantContent(content []types.ContentPart, providerName string, s
 				item.ID = itemID
 			}
 			items = append(items, item)
+
+		case types.ToolResultContent:
+			// Row 9a68261 (OR-EXT): a provider-executed result embedded in
+			// the assistant's own turn (e.g. a synchronously-resolved
+			// extension tool), mirroring the ToolCallContent handling above.
+			// Non-extension provider-executed results have no other replay
+			// path in this package and are silently skipped, unchanged from
+			// before this feature existed.
+			if !p.ProviderExecuted {
+				continue
+			}
+			extensionID, itemID := extensionReferenceInfo(p.ProviderMetadata, providerName)
+			if itemID != "" && handledExtensionItemIDs[itemID] {
+				continue
+			}
+			if encoded := encodeExtensionInputItems(extensionID, p, opts); len(encoded) > 0 {
+				flush()
+				items = append(items, encoded...)
+			}
 		}
 	}
 

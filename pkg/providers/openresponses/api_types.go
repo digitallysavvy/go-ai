@@ -1,5 +1,7 @@
 package openresponses
 
+import "encoding/json"
+
 // OpenResponsesRequestBody represents the request body for the Open Responses API
 type OpenResponsesRequestBody struct {
 	// Model is the model ID to use (e.g., "llama-2-7b", "mistral-7b")
@@ -191,6 +193,26 @@ type OutputItem struct {
 	// For reasoning type
 	Summary          []ContentPart `json:"summary,omitempty"`
 	EncryptedContent string        `json:"encrypted_content,omitempty"`
+
+	// Raw preserves this item's original JSON bytes, including any fields
+	// not modeled above (e.g. a namespaced Open Responses extension item's
+	// custom fields). Used for extension item decode/replay (row 9a68261,
+	// OR-EXT). Populated by UnmarshalJSON.
+	Raw json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON decodes the known OutputItem fields via a type alias (so the
+// default struct-tag-driven decoding still applies), then separately
+// preserves the item's original bytes in Raw.
+func (o *OutputItem) UnmarshalJSON(data []byte) error {
+	type outputItemAlias OutputItem
+	var alias outputItemAlias
+	if err := json.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+	*o = OutputItem(alias)
+	o.Raw = append(json.RawMessage(nil), data...)
+	return nil
 }
 
 // ContentPart represents a part of message content
@@ -258,4 +280,25 @@ type StreamEvent struct {
 	CallID         string                 `json:"call_id,omitempty"`
 	Arguments      string                 `json:"arguments,omitempty"`
 	Error          *ResponseError         `json:"error,omitempty"`
+
+	// Raw preserves this event's original JSON bytes, including any fields
+	// not modeled above (e.g. a namespaced Open Responses extension event's
+	// custom fields). Used for extension event decode (row 9a68261,
+	// OR-EXT). Populated by UnmarshalJSON; left nil for StreamEvent values
+	// constructed directly (e.g. in tests) rather than decoded from JSON.
+	Raw json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON decodes the known StreamEvent fields via a type alias (so
+// the default struct-tag-driven decoding still applies), then separately
+// preserves the event's original bytes in Raw.
+func (e *StreamEvent) UnmarshalJSON(data []byte) error {
+	type streamEventAlias StreamEvent
+	var alias streamEventAlias
+	if err := json.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+	*e = StreamEvent(alias)
+	e.Raw = append(json.RawMessage(nil), data...)
+	return nil
 }
