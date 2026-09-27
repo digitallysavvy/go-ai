@@ -1107,12 +1107,57 @@ func TestStreamText_ToolChoiceForwardedToProvider(t *testing.T) {
 	}
 	// The first provider request now happens in the background (matching TS,
 	// where streamText() returns before any I/O), so wait for it before
-	// reading the value DoStreamFunc captured.
-	if _, err := result.ReadAll(); err != nil {
-		t.Fatalf("ReadAll error = %v", err)
+	// reading the value DoStreamFunc captured. The mock stream produces no
+	// tool call despite ToolChoice: required, so this now correctly surfaces
+	// ToolChoiceViolationError (audit row 36b3364/ccf98e7 / WG3) rather than
+	// silently succeeding.
+	if _, err := result.ReadAll(); !IsToolChoiceViolationError(err) {
+		t.Fatalf("ReadAll error = %v, want ToolChoiceViolationError", err)
 	}
 	if capturedChoice.Type != types.ToolChoiceRequired {
 		t.Errorf("expected ToolChoiceRequired forwarded to provider, got %q", capturedChoice.Type)
+	}
+}
+
+// TestStreamText_ToolChoiceRequiredSatisfiedByAnyToolCall ports TS's
+// ToolChoiceViolationError happy path to streamText (audit row 36b3364/
+// ccf98e7 / WG3): any tool call satisfies "required".
+func TestStreamText_ToolChoiceRequiredSatisfiedByAnyToolCall(t *testing.T) {
+	t.Parallel()
+
+	tools := []types.Tool{{
+		Name: "search",
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "results", nil
+		},
+	}}
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{
+					ID: "call_1", ToolName: "search", Arguments: map[string]interface{}{},
+				}},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+			}), nil
+		},
+	}
+	maxSteps := 1
+
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:      model,
+		Prompt:     "search something",
+		Tools:      tools,
+		ToolChoice: types.RequiredToolChoice(),
+		MaxSteps:   &maxSteps,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := result.ReadAll(); err != nil {
+		t.Fatalf("ReadAll error = %v", err)
+	}
+	if len(result.ToolCalls()) != 1 || result.ToolCalls()[0].ToolName != "search" {
+		t.Fatalf("ToolCalls() = %+v", result.ToolCalls())
 	}
 }
 

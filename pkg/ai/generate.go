@@ -1093,6 +1093,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			Performance:   languageModelCallPerformance(performance),
 		})
 
+		if violation := checkToolChoiceViolation(stepToolChoice, genResult.ToolCalls, genResult.FinishReason, stepModel.Provider(), stepModel.ModelID(), genResult.Content); violation != nil {
+			return nil, violation
+		}
+
 		// Extract sources, files, and reasoning from content parts
 		var stepSources []types.SourceContent
 		var stepFiles []types.GeneratedFileContent

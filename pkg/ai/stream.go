@@ -503,9 +503,10 @@ type StreamTextResult struct {
 	resumeChunksRemaining int
 	cbExperimentalSandbox interface{}
 	// Snapshot of the initial messages and tools for event population
-	cbMessages []types.Message
-	cbTools    []types.Tool
-	cbSystem   string
+	cbMessages   []types.Message
+	cbTools      []types.Tool
+	cbToolChoice types.ToolChoice
+	cbSystem     string
 
 	// cbInstructionMessages is the current step's instructions, when given as
 	// system messages (TS instructions: SystemModelMessage[]). Updated by
@@ -1025,6 +1026,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	r.cbInclude = include
 	r.cbMessages = stepMessages
 	r.cbTools = stepTools
+	r.cbToolChoice = stepToolChoice
 	r.cbSystem = stepSystem
 	r.cbInstructionMessages = stepInstructionMessages
 	r.cbInitialInstructionMessages = cloneInstructionMessages(instructionMessages)
@@ -1133,6 +1135,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	pendingDeferredToolCalls := make(map[string]string)
 
 	var allSteps []types.StepResult
+	// currentToolChoice tracks the tool choice actually used to open each
+	// step's stream (bootstrapAndStream's resolved value, including any
+	// PrepareStep override, for step 1; then whatever PrepareStep resolves
+	// for later steps below), so the tool-choice-enforcement check can
+	// compare each step's tool calls against the choice that produced them
+	// (audit rows 8b6b756/36b3364/ccf98e7, WG3).
+	currentToolChoice := r.cbToolChoice
 	firstChunkEver := true
 	suppressReasoningBoundaries := shouldSuppressReasoningBoundaries(opts.SendReasoning)
 	var accumulatedTextParts []string
@@ -1595,6 +1604,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		stepContent = replaceToolCallContentParts(stepContent, stepToolCalls)
 		stepContent = replaceToolResultContentParts(stepContent, stepToolCalls)
 
+		if violation := checkToolChoiceViolation(currentToolChoice, stepToolCalls, r.finishReason, stepProvider, stepResponseModelID, stepContent); violation != nil {
+			r.err = violation
+			cancelStep()
+			break
+		}
+
 		// Execute accumulated tool calls after stream is fully consumed.
 		// All chunks (including tool call chunks) have already been forwarded above.
 		var stepToolResults []types.ToolResult
@@ -2002,6 +2017,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		r.cbSystem = nextSystem
 		r.cbInstructionMessages = nextInstructionMessages
 		currentTools = append([]types.Tool(nil), nextTools...)
+		currentToolChoice = nextToolChoice
 		opts.ExperimentalSandbox = nextSandbox
 		nextStepCtx := ctx
 		nextStepCancel := func() {}

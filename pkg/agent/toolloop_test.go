@@ -2016,14 +2016,19 @@ func TestToolLoopAgent_GeneratePerCallOptionsOverrideConfig(t *testing.T) {
 
 	started := false
 	result, err := agent.Generate(context.Background(), AgentGenerateOptions{
-		Prompt:          "hello",
-		System:          "per-call system",
-		Temperature:     &callTemp,
-		MaxTokens:       &maxTokens,
-		Seed:            &seed,
-		RuntimeContext:  runtimeCtx,
-		ToolsContext:    map[string]interface{}{"tool": map[string]interface{}{"tenant": "acme"}},
-		ToolChoice:      types.RequiredToolChoice(),
+		Prompt:         "hello",
+		System:         "per-call system",
+		Temperature:    &callTemp,
+		MaxTokens:      &maxTokens,
+		Seed:           &seed,
+		RuntimeContext: runtimeCtx,
+		ToolsContext:   map[string]interface{}{"tool": map[string]interface{}{"tenant": "acme"}},
+		// Uses NoneToolChoice (rather than RequiredToolChoice) so this test,
+		// which only checks that the per-call override is forwarded to the
+		// provider request, doesn't also need to satisfy tool-choice
+		// enforcement (ToolChoiceViolationError, audit row 8b6b756 / WG3)
+		// with a mock that returns no tool call.
+		ToolChoice:      types.ToolChoice{Type: types.ToolChoiceNone},
 		ProviderOptions: providerOpts,
 		OnStart: func(ctx context.Context, e ai.OnStartEvent) {
 			started = true
@@ -2051,7 +2056,7 @@ func TestToolLoopAgent_GeneratePerCallOptionsOverrideConfig(t *testing.T) {
 	if got.Seed == nil || *got.Seed != seed {
 		t.Fatalf("seed override not forwarded: %v", got.Seed)
 	}
-	if got.ToolChoice.Type != types.ToolChoiceRequired {
+	if got.ToolChoice.Type != types.ToolChoiceNone {
 		t.Fatalf("tool choice override not forwarded: %+v", got.ToolChoice)
 	}
 	if !reflect.DeepEqual(got.RuntimeContext, runtimeCtx) {
