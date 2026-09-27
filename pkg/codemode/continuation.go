@@ -38,13 +38,10 @@ var (
 func init() {
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
-		// crypto/rand.Read practically never fails; if it somehow does,
-		// fall back to a fixed (still 32-byte) key rather than panicking
-		// at import time. A caller that cares should call
-		// SetCodeModeContinuationSigningKey explicitly.
-		for i := range key {
-			key[i] = byte(i + 1)
-		}
+		// Never fall back to a predictable key: anyone who knew it could
+		// forge continuations. (Since Go 1.24 crypto/rand.Read does not
+		// return errors, so this is unreachable in practice.)
+		panic("codemode: crypto/rand unavailable for the continuation signing key: " + err.Error())
 	}
 	defaultSigningKey = key
 }
