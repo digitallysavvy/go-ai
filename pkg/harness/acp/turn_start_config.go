@@ -1,0 +1,146 @@
+package acp
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+
+	"github.com/digitallysavvy/go-ai/pkg/harness"
+)
+
+// BuiltinToolMapping is one entry the bridge uses to resolve an ACP native
+// tool call it cannot name programmatically. Mirrors TS
+// `ACPBuiltinToolMapping`.
+type BuiltinToolMapping struct {
+	ToolName    string         `json:"toolName"`
+	NativeName  string         `json:"nativeName,omitempty"`
+	Title       string         `json:"title,omitempty"`
+	ToolUseKind string         `json:"toolUseKind,omitempty"`
+	InputSchema map[string]any `json:"inputSchema,omitempty"`
+}
+
+// TurnStartConfig is the versioned, fingerprinted non-secret turn
+// configuration sent with every `start` frame. Mirrors TS
+// `ACPTurnStartConfig`.
+type TurnStartConfig struct {
+	Version                  int                     `json:"version"`
+	ConfigurationFingerprint string                  `json:"configurationFingerprint"`
+	Prompt                   []TextContentBlock      `json:"prompt"`
+	Tools                    []harness.ToolSpec      `json:"tools"`
+	BuiltinTools             []BuiltinToolMapping    `json:"builtinTools"`
+	PermissionMode           harness.PermissionMode  `json:"permissionMode"`
+	PermissionModeMapping    *PermissionModeMapping  `json:"permissionModeMapping,omitempty"`
+	Model                    string                  `json:"model,omitempty"`
+	ModelMapping             *ModelMapping           `json:"modelMapping,omitempty"`
+	Debug                    *harness.DebugConfig    `json:"debug,omitempty"`
+	ResponseFormat           *harness.ResponseFormat `json:"responseFormat,omitempty"`
+	OutputSchemaMapping      *OutputSchemaMapping    `json:"outputSchemaMapping,omitempty"`
+}
+
+// ColdSessionState is the subset of TurnStartConfig persisted for a cold ACP
+// session restore. Mirrors TS `ACPColdSessionState`. This port never
+// produces or consumes cold-restore lifecycle data (see the package doc);
+// the type exists so lifecycle JSON round-trips without data loss.
+type ColdSessionState struct {
+	Version                  int                     `json:"version"`
+	ConfigurationFingerprint string                  `json:"configurationFingerprint"`
+	Tools                    []harness.ToolSpec      `json:"tools"`
+	BuiltinTools             []BuiltinToolMapping    `json:"builtinTools"`
+	PermissionMode           harness.PermissionMode  `json:"permissionMode"`
+	ResponseFormat           *harness.ResponseFormat `json:"responseFormat,omitempty"`
+	OutputSchemaMapping      *OutputSchemaMapping    `json:"outputSchemaMapping,omitempty"`
+	PermissionModeMapping    *PermissionModeMapping  `json:"permissionModeMapping,omitempty"`
+}
+
+// createTurnStartConfigInput is the input of createTurnStartConfig.
+type createTurnStartConfigInput struct {
+	Prompt                []TextContentBlock
+	Tools                 []harness.ToolSpec
+	BuiltinTools          []BuiltinToolMapping
+	PermissionMode        harness.PermissionMode
+	PermissionModeMapping *PermissionModeMapping
+	MCPServers            map[string]any
+	Debug                 *harness.DebugConfig
+	AuthenticationProfile authenticationProfileIdentity
+	SessionMeta           map[string]any
+	InstructionMapping    *InstructionMapping
+	ResponseFormat        *harness.ResponseFormat
+	OutputSchemaMapping   *OutputSchemaMapping
+	Model                 string
+	ModelMapping          ModelMapping
+}
+
+// createTurnStartConfig mirrors TS `createACPTurnStartConfig`.
+func createTurnStartConfig(in createTurnStartConfigInput) TurnStartConfig {
+	fingerprintPayload := map[string]any{
+		"authenticationProfile": in.AuthenticationProfile,
+		"sessionMeta":           in.SessionMeta,
+		"modelMapping":          in.ModelMapping,
+		"builtinTools":          in.BuiltinTools,
+		"permissionModeMapping": in.PermissionModeMapping,
+		"mcpServers":            in.MCPServers,
+	}
+	if in.InstructionMapping != nil {
+		fingerprintPayload["instructionMapping"] = in.InstructionMapping
+	}
+	if in.OutputSchemaMapping != nil {
+		fingerprintPayload["outputSchemaMapping"] = in.OutputSchemaMapping
+	}
+	sum := sha256.Sum256([]byte(stableStringify(fingerprintPayload)))
+
+	cfg := TurnStartConfig{
+		Version: 1, ConfigurationFingerprint: hex.EncodeToString(sum[:]),
+		Prompt:         nonNilBlocks(in.Prompt),
+		Tools:          nonNilToolSpecs(in.Tools),
+		BuiltinTools:   nonNilBuiltinTools(in.BuiltinTools),
+		PermissionMode: in.PermissionMode, PermissionModeMapping: in.PermissionModeMapping,
+		ResponseFormat: in.ResponseFormat, OutputSchemaMapping: in.OutputSchemaMapping, Debug: in.Debug,
+	}
+	if in.Model != "" {
+		cfg.Model = in.Model
+		m := in.ModelMapping
+		cfg.ModelMapping = &m
+	}
+	return cfg
+}
+
+// createColdSessionState mirrors TS `createACPColdSessionState`.
+func createColdSessionState(cfg TurnStartConfig) ColdSessionState {
+	return ColdSessionState{
+		Version: cfg.Version, ConfigurationFingerprint: cfg.ConfigurationFingerprint,
+		Tools: cfg.Tools, BuiltinTools: cfg.BuiltinTools, PermissionMode: cfg.PermissionMode,
+		ResponseFormat: cfg.ResponseFormat, OutputSchemaMapping: cfg.OutputSchemaMapping,
+		PermissionModeMapping: cfg.PermissionModeMapping,
+	}
+}
+
+// fingerprintValue mirrors TS `fingerprintValue`.
+func fingerprintValue(value any) string {
+	sum := sha256.Sum256([]byte(stableStringify(value)))
+	return hex.EncodeToString(sum[:])
+}
+
+// nonNilBlocks/nonNilToolSpecs/nonNilBuiltinTools guarantee a non-nil
+// (possibly empty) slice: the embedded bridge's zod schemas require the
+// `prompt`/`tools`/`builtinTools` wire fields to always be JSON arrays,
+// never `null`, matching TS's `z.array(...)` (with `.default([])` for the
+// two array fields that are optional at the call site).
+func nonNilBlocks(v []TextContentBlock) []TextContentBlock {
+	if v == nil {
+		return []TextContentBlock{}
+	}
+	return append([]TextContentBlock(nil), v...)
+}
+
+func nonNilToolSpecs(v []harness.ToolSpec) []harness.ToolSpec {
+	if v == nil {
+		return []harness.ToolSpec{}
+	}
+	return append([]harness.ToolSpec(nil), v...)
+}
+
+func nonNilBuiltinTools(v []BuiltinToolMapping) []BuiltinToolMapping {
+	if v == nil {
+		return []BuiltinToolMapping{}
+	}
+	return append([]BuiltinToolMapping(nil), v...)
+}
