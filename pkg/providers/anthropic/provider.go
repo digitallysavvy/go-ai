@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
@@ -251,4 +252,20 @@ func (p *Provider) Files() provider.FilesAPI {
 
 func (p *Provider) Skills() provider.SkillsAPI {
 	return &SkillsAPI{provider: p}
+}
+
+// EvaluationModel returns an experimental evaluation model backed by the
+// Anthropic Messages API language model. Mirrors TypeScript's
+// AnthropicProvider.evaluationModel: `provider.evaluationModel = (modelId) =>
+// new EvaluationLanguageModel({ model: createChatModel(modelId), provider:
+// providerName + '.evaluation' })`.
+func (p *Provider) EvaluationModel(modelID string) (provider.EvaluationModel, error) {
+	model, err := p.LanguageModel(modelID)
+	if err != nil {
+		return nil, err
+	}
+	return ai.NewEvaluationLanguageModel(ai.EvaluationLanguageModelOptions{
+		Model:    model,
+		Provider: p.Name() + ".evaluation",
+	})
 }

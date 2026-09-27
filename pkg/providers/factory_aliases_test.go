@@ -21,6 +21,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providers/perplexity"
 	"github.com/digitallysavvy/go-ai/pkg/providers/quiverai"
 	"github.com/digitallysavvy/go-ai/pkg/providers/together"
+	"github.com/digitallysavvy/go-ai/pkg/providers/typesafeai"
 	"github.com/digitallysavvy/go-ai/pkg/providers/xai"
 	"github.com/digitallysavvy/go-ai/pkg/providers/zai"
 )
@@ -82,6 +83,9 @@ func TestProviderFactoryAliasesMirrorTypeScriptCreateExports(t *testing.T) {
 	}
 	if minimax.CreateMiniMax(minimax.Config{}) == nil {
 		t.Fatal("CreateMiniMax returned nil")
+	}
+	if typesafeai.CreateTypeSafeAI(typesafeai.Config{}) == nil {
+		t.Fatal("CreateTypeSafeAI returned nil")
 	}
 
 	vertexCfg := googlevertex.Config{

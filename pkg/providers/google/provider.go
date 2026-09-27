@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/version"
@@ -209,4 +210,21 @@ func (p *Provider) APIKey() string {
 
 func (p *Provider) Files() provider.FilesAPI {
 	return &FilesAPI{provider: p}
+}
+
+// EvaluationModel returns an experimental evaluation model backed by the
+// Google Generative AI chat language model. Mirrors TypeScript's
+// GoogleGenerativeAIProvider.evaluationModel: `provider.evaluationModel =
+// (modelId) => new EvaluationLanguageModel({ model: createChatModel(modelId),
+// provider: providerName.replace(/\.generative-ai$/, "") + '.evaluation' })`.
+func (p *Provider) EvaluationModel(modelID string) (provider.EvaluationModel, error) {
+	model, err := p.LanguageModel(modelID)
+	if err != nil {
+		return nil, err
+	}
+	providerName := strings.TrimSuffix(p.Name(), ".generative-ai") + ".evaluation"
+	return ai.NewEvaluationLanguageModel(ai.EvaluationLanguageModelOptions{
+		Model:    model,
+		Provider: providerName,
+	})
 }
