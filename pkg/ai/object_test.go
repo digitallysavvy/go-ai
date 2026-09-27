@@ -93,6 +93,77 @@ func TestGenerateObject_ArrayMode(t *testing.T) {
 	}
 }
 
+// TestGenerateObject_ArrayModeHoistsDefsToRoot ports TS's preservation of
+// root-level $defs when wrapping array output schemas to the GenerateObject
+// array wrapper (audit row 72ec74f / WG4).
+func TestGenerateObject_ArrayModeHoistsDefsToRoot(t *testing.T) {
+	t.Parallel()
+
+	var capturedFormat *provider.ResponseFormat
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			capturedFormat = opts.ResponseFormat
+			return &types.GenerateResult{
+				Text:         `{"elements": [{"name": "John"}]}`,
+				FinishReason: types.FinishReasonStop,
+			}, nil
+		},
+	}
+
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+		"$schema": "http://json-schema.org/draft-07/schema#",
+		"$ref":    "#/$defs/Person",
+		"$defs": map[string]interface{}{
+			"Person": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"name": map[string]interface{}{"type": "string"},
+				},
+			},
+		},
+	})
+
+	_, err := GenerateObject(context.Background(), GenerateObjectOptions{
+		Model:      model,
+		Prompt:     "Generate people",
+		Schema:     testSchema,
+		OutputMode: ObjectModeArray,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedFormat == nil {
+		t.Fatal("model was not called with a ResponseFormat")
+	}
+
+	schemaMap, ok := unwrapSchemaForTest(capturedFormat.Schema)
+	if !ok {
+		t.Fatalf("Schema = %#v, not a map", capturedFormat.Schema)
+	}
+	if _, ok := schemaMap["$defs"]; !ok {
+		t.Fatal("$defs was not hoisted to the wrapper root")
+	}
+	props, _ := schemaMap["properties"].(map[string]interface{})
+	elements, _ := props["elements"].(map[string]interface{})
+	items, _ := elements["items"].(map[string]interface{})
+	if _, ok := items["$defs"]; ok {
+		t.Fatal("$defs was left under items as well as hoisted to root")
+	}
+}
+
+// unwrapSchemaForTest handles both the plain map schema shape and the
+// enumSchemaWrapper wrapper used for array/enum modes.
+func unwrapSchemaForTest(rawSchema interface{}) (map[string]interface{}, bool) {
+	if m, ok := rawSchema.(map[string]interface{}); ok {
+		return m, true
+	}
+	if w, ok := rawSchema.(enumSchemaWrapper); ok {
+		return w.JSONSchema(), true
+	}
+	return nil, false
+}
+
 func TestGenerateObject_ArrayModeReturnsDefaultedElements(t *testing.T) {
 	t.Parallel()
 

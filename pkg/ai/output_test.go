@@ -187,6 +187,146 @@ func TestArrayOutput_ParseCompleteOutput(t *testing.T) {
 	}
 }
 
+// TestArrayOutput_MinMaxItemsInSchema ports TS Output.array()'s minItems/
+// maxItems JSON Schema placement (audit row d4485fe / WG4).
+func TestArrayOutput_MinMaxItemsInSchema(t *testing.T) {
+	t.Parallel()
+
+	out := ArrayOutput[map[string]interface{}](ArrayOutputOptions[map[string]interface{}]{
+		ElementSchema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"}),
+		MinItems:      intPtr(2),
+		MaxItems:      intPtr(5),
+	})
+
+	format, err := out.ResponseFormat(context.Background())
+	if err != nil {
+		t.Fatalf("ResponseFormat error: %v", err)
+	}
+	schemaMap, ok := format.Schema.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Schema = %T, want map[string]interface{}", format.Schema)
+	}
+	props := schemaMap["properties"].(map[string]interface{})
+	elements := props["elements"].(map[string]interface{})
+	if elements["minItems"] != 2 {
+		t.Errorf("minItems = %v, want 2", elements["minItems"])
+	}
+	if elements["maxItems"] != 5 {
+		t.Errorf("maxItems = %v, want 5", elements["maxItems"])
+	}
+}
+
+// TestArrayOutput_MinItemsGreaterThanMaxItemsIsInvalidArgument ports TS's
+// synchronous constructor-time validation (audit row d4485fe / WG4).
+func TestArrayOutput_MinItemsGreaterThanMaxItemsIsInvalidArgument(t *testing.T) {
+	t.Parallel()
+
+	out := ArrayOutput[map[string]interface{}](ArrayOutputOptions[map[string]interface{}]{
+		ElementSchema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"}),
+		MinItems:      intPtr(5),
+		MaxItems:      intPtr(2),
+	})
+
+	if _, err := out.ResponseFormat(context.Background()); err == nil {
+		t.Fatal("expected an error when minItems > maxItems")
+	}
+	if _, err := out.ParseCompleteOutput(context.Background(), ParseCompleteOutputOptions{Text: `{"elements":[]}`}); err == nil {
+		t.Fatal("expected an error when minItems > maxItems")
+	}
+}
+
+// TestArrayOutput_NegativeMinItemsIsInvalidArgument ports TS's
+// validateArrayBound (audit row d4485fe / WG4).
+func TestArrayOutput_NegativeMinItemsIsInvalidArgument(t *testing.T) {
+	t.Parallel()
+
+	out := ArrayOutput[map[string]interface{}](ArrayOutputOptions[map[string]interface{}]{
+		ElementSchema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"}),
+		MinItems:      intPtr(-1),
+	})
+
+	if _, err := out.ResponseFormat(context.Background()); err == nil {
+		t.Fatal("expected an error for negative minItems")
+	}
+}
+
+// TestArrayOutput_ParseCompleteOutput_LengthOutOfBounds ports TS's
+// getArrayLengthValidationError applied to the final parsed array (audit row
+// d4485fe / WG4).
+func TestArrayOutput_ParseCompleteOutput_LengthOutOfBounds(t *testing.T) {
+	t.Parallel()
+
+	out := ArrayOutput[map[string]interface{}](ArrayOutputOptions[map[string]interface{}]{
+		ElementSchema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"}),
+		MinItems:      intPtr(2),
+		MaxItems:      intPtr(3),
+	})
+
+	if _, err := out.ParseCompleteOutput(context.Background(), ParseCompleteOutputOptions{
+		Text: `{"elements":[{}]}`,
+	}); err == nil {
+		t.Fatal("expected NoObjectGeneratedError for too few elements")
+	}
+
+	if _, err := out.ParseCompleteOutput(context.Background(), ParseCompleteOutputOptions{
+		Text: `{"elements":[{},{},{},{}]}`,
+	}); err == nil {
+		t.Fatal("expected NoObjectGeneratedError for too many elements")
+	}
+
+	if _, err := out.ParseCompleteOutput(context.Background(), ParseCompleteOutputOptions{
+		Text: `{"elements":[{},{},{}]}`,
+	}); err != nil {
+		t.Fatalf("unexpected error for in-bounds length: %v", err)
+	}
+}
+
+// TestArrayOutput_ResponseFormatHoistsDefsToRoot ports TS's preservation of
+// root-level $defs/definitions when wrapping array output schemas (audit row
+// 72ec74f / WG4): putting them under "items" breaks "#/$defs/..." refs,
+// which resolve against the document root.
+func TestArrayOutput_ResponseFormatHoistsDefsToRoot(t *testing.T) {
+	t.Parallel()
+
+	elementSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+		"$schema": "http://json-schema.org/draft-07/schema#",
+		"$ref":    "#/$defs/Item",
+		"$defs": map[string]interface{}{
+			"Item": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"name": map[string]interface{}{"type": "string"},
+				},
+			},
+		},
+	})
+
+	out := ArrayOutput[map[string]interface{}](ArrayOutputOptions[map[string]interface{}]{
+		ElementSchema: elementSchema,
+	})
+
+	format, err := out.ResponseFormat(context.Background())
+	if err != nil {
+		t.Fatalf("ResponseFormat error: %v", err)
+	}
+	schemaMap, ok := format.Schema.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Schema = %T, want map[string]interface{}", format.Schema)
+	}
+	if _, ok := schemaMap["$defs"]; !ok {
+		t.Fatal("$defs was not hoisted to the wrapper root")
+	}
+	props := schemaMap["properties"].(map[string]interface{})
+	elements := props["elements"].(map[string]interface{})
+	items := elements["items"].(map[string]interface{})
+	if _, ok := items["$defs"]; ok {
+		t.Fatal("$defs was left under items as well as hoisted to root")
+	}
+	if items["$ref"] != "#/$defs/Item" {
+		t.Fatalf("items[$ref] = %v, want #/$defs/Item preserved", items["$ref"])
+	}
+}
+
 func TestArrayOutput_ParseCompleteOutput_MissingElements(t *testing.T) {
 	t.Parallel()
 

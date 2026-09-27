@@ -57,17 +57,42 @@ func extractObjectReasoning(result *types.GenerateResult) string {
 
 // schemaToMap extracts the JSON Schema representation from a schema.Schema.
 // Returns nil if the schema is nil.
+// schemaToMap extracts a schema.Schema's JSON Schema representation via its
+// Validator(), which the schema.Validator interface always guarantees
+// (JSONSchema() map[string]interface{}). Go through the validator rather
+// than asserting an ad hoc "JSONSchema() ..." method directly on s: some
+// Schema implementations (e.g. *schema.SimpleJSONSchema) only expose it on
+// the value Validator() returns, so asserting it on s itself silently
+// dropped the whole schema (empty {} item schemas for array/enum output
+// wrapping) for those implementations.
 func schemaToMap(s schema.Schema) map[string]interface{} {
 	if s == nil {
 		return nil
 	}
-	type jsonSchemaProvider interface {
-		JSONSchema() map[string]interface{}
+	v := s.Validator()
+	if v == nil {
+		return nil
 	}
-	if p, ok := s.(jsonSchemaProvider); ok {
-		return p.JSONSchema()
+	return v.JSONSchema()
+}
+
+// hoistSchemaDefs removes "definitions"/"$defs" from itemSchema (mutating
+// it) and returns them as entries to merge into the wrapper root schema, so
+// "#/$defs/..."/"#/definitions/..." refs (which resolve against the document
+// root) keep working once itemSchema is nested under "items" (audit row
+// 72ec74f / WG4: root-level JSON Schema definitions must survive wrapping an
+// element schema for array output).
+func hoistSchemaDefs(itemSchema map[string]interface{}) map[string]interface{} {
+	root := map[string]interface{}{}
+	if definitions, ok := itemSchema["definitions"]; ok {
+		root["definitions"] = definitions
+		delete(itemSchema, "definitions")
 	}
-	return nil
+	if defs, ok := itemSchema["$defs"]; ok {
+		root["$defs"] = defs
+		delete(itemSchema, "$defs")
+	}
+	return root
 }
 
 func cloneSchemaMap(in map[string]interface{}) map[string]interface{} {
@@ -265,20 +290,25 @@ func buildStreamObjectResponseFormat(opts StreamObjectOptions) (*provider.Respon
 			itemSchemaMap = map[string]interface{}{}
 		}
 		delete(itemSchemaMap, "$schema")
-		return &provider.ResponseFormat{
-			Type: "json_schema",
-			Schema: enumSchemaWrapper{map[string]interface{}{
-				"$schema": "http://json-schema.org/draft-07/schema#",
-				"type":    "object",
-				"properties": map[string]interface{}{
-					"elements": map[string]interface{}{
-						"type":  "array",
-						"items": itemSchemaMap,
-					},
+		rootDefs := hoistSchemaDefs(itemSchemaMap)
+		wrapped := map[string]interface{}{
+			"$schema": "http://json-schema.org/draft-07/schema#",
+			"type":    "object",
+			"properties": map[string]interface{}{
+				"elements": map[string]interface{}{
+					"type":  "array",
+					"items": itemSchemaMap,
 				},
-				"required":             []string{"elements"},
-				"additionalProperties": false,
-			}},
+			},
+			"required":             []string{"elements"},
+			"additionalProperties": false,
+		}
+		for k, v := range rootDefs {
+			wrapped[k] = v
+		}
+		return &provider.ResponseFormat{
+			Type:        "json_schema",
+			Schema:      enumSchemaWrapper{wrapped},
 			Name:        opts.SchemaName,
 			Description: opts.SchemaDescription,
 		}, nil
@@ -974,6 +1004,9 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 	}
 	// Remove $schema from item schema (mirrors TS: const { $schema, ...itemSchema } = ...)
 	delete(itemSchemaMap, "$schema")
+	// Hoist definitions/$defs to the wrapper root: see hoistSchemaDefs (audit
+	// row 72ec74f / WG4).
+	rootDefs := hoistSchemaDefs(itemSchemaMap)
 	wrappedArraySchema := map[string]interface{}{
 		"$schema": "http://json-schema.org/draft-07/schema#",
 		"type":    "object",
@@ -985,6 +1018,9 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 		},
 		"required":             []string{"elements"},
 		"additionalProperties": false,
+	}
+	for k, v := range rootDefs {
+		wrappedArraySchema[k] = v
 	}
 
 	genOpts := &provider.GenerateOptions{
