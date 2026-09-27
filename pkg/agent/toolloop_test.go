@@ -2331,6 +2331,37 @@ func TestToolLoopAgentPrepareCallCanOverrideModelAndInclude(t *testing.T) {
 	}
 }
 
+// TestToolLoopAgentGenerateTagsUserAgent ports the TS "tags outgoing
+// requests so usage can be attributed to ToolLoopAgent" case (audit row
+// 75763b0): the model call's User-Agent header must carry the
+// "ai-sdk-agent/tool-loop" segment, and any caller-supplied headers survive.
+func TestToolLoopAgentGenerateTagsUserAgent(t *testing.T) {
+	var generateOpts *provider.GenerateOptions
+	model := &functionalAgentLanguageModel{
+		doGenerate: func(_ context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			generateOpts = opts
+			return &types.GenerateResult{Text: "ok", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+	agent := NewToolLoopAgent(AgentConfig{
+		Model:   model,
+		Headers: map[string]string{"x-user": "custom"},
+	})
+	if _, err := agent.Generate(context.Background(), AgentGenerateOptions{Prompt: "test"}); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if generateOpts == nil {
+		t.Fatal("model was not called")
+	}
+	if generateOpts.Headers["x-user"] != "custom" {
+		t.Fatalf("caller header lost: %#v", generateOpts.Headers)
+	}
+	ua := generateOpts.Headers["user-agent"]
+	if !strings.Contains(ua, "ai-sdk-agent/tool-loop") {
+		t.Fatalf("user-agent = %q, want it to contain ai-sdk-agent/tool-loop", ua)
+	}
+}
+
 func TestToolLoopAgentGenerateForwardsHeadersTelemetryAndInternalFromPrepareCall(t *testing.T) {
 	var generateOpts *provider.GenerateOptions
 	model := &functionalAgentLanguageModel{

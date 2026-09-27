@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
@@ -16,6 +17,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 	"github.com/google/uuid"
 )
 
@@ -222,6 +224,31 @@ func (a *ToolLoopAgent) Tools() []types.Tool {
 	return tools
 }
 
+// agentHeaders tags outgoing requests so usage can be attributed to
+// ToolLoopAgent. Chains with the "ai/<version>" and
+// "ai-sdk/<provider>/<version>" suffixes added downstream by
+// GenerateText/StreamText and the provider (TS ToolLoopAgent.agentHeaders).
+//
+// If the headers already carry an "ai-sdk-agent/*" segment (for example,
+// WorkflowAgent tags "ai-sdk-agent/workflow" before delegating to an
+// internal ToolLoopAgent), that segment is left as the sole agent
+// attribution instead of appending a second, conflicting one.
+func agentHeaders(headers map[string]string) map[string]string {
+	if hasAgentUserAgentSegment(headers) {
+		return headers
+	}
+	return version.WithUserAgentSuffix(headers, "ai-sdk-agent/tool-loop")
+}
+
+func hasAgentUserAgentSegment(headers map[string]string) bool {
+	for k, v := range headers {
+		if strings.EqualFold(k, "user-agent") {
+			return strings.Contains(v, "ai-sdk-agent/")
+		}
+	}
+	return false
+}
+
 // Generate runs the agent with per-call options, mirroring TypeScript
 // ToolLoopAgent.generate with an idiomatic Go options struct.
 func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions) (*ai.GenerateTextResult, error) {
@@ -268,7 +295,7 @@ func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions)
 		PresencePenalty:                callConfig.PresencePenalty,
 		StopSequences:                  callConfig.StopSequences,
 		Seed:                           callConfig.Seed,
-		Headers:                        callConfig.Headers,
+		Headers:                        agentHeaders(callConfig.Headers),
 		Tools:                          callConfig.Tools,
 		ActiveTools:                    callConfig.ActiveTools,
 		ToolChoice:                     defaultToolChoice(callConfig.ToolChoice),
@@ -378,7 +405,7 @@ func (a *ToolLoopAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*a
 		PresencePenalty:                callConfig.PresencePenalty,
 		StopSequences:                  callConfig.StopSequences,
 		Seed:                           callConfig.Seed,
-		Headers:                        callConfig.Headers,
+		Headers:                        agentHeaders(callConfig.Headers),
 		Tools:                          callConfig.Tools,
 		ActiveTools:                    callConfig.ActiveTools,
 		ToolChoice:                     defaultToolChoice(callConfig.ToolChoice),

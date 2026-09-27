@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"reflect"
+	"strings"
 	"testing"
 
 	agentpkg "github.com/digitallysavvy/go-ai/pkg/agent"
@@ -936,6 +937,38 @@ func TestWorkflowErrorAndAbortCallbacks(t *testing.T) {
 // (eb49d29 / HANDOFF.md item 5) reaches the underlying agent's tool-call
 // parsing, and that a per-call override (GenerateWithOptions) takes
 // precedence over the WorkflowAgent-level setting.
+// TestWorkflowAgentTagsUserAgent ports the TS "tags outgoing requests so
+// usage can be attributed to WorkflowAgent" case (audit row 75763b0): the
+// model call's User-Agent header must carry the "ai-sdk-agent/workflow"
+// segment, not the internal ToolLoopAgent's "ai-sdk-agent/tool-loop" one.
+func TestWorkflowAgentTagsUserAgent(t *testing.T) {
+	model := &wfMockModel{}
+	agent, err := NewWorkflowAgent(WorkflowAgent{
+		Model:   model,
+		Headers: map[string]string{"x-user": "custom"},
+	})
+	if err != nil {
+		t.Fatalf("NewWorkflowAgent() error = %v", err)
+	}
+	if _, err := agent.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "hello"}); err != nil {
+		t.Fatalf("GenerateWithOptions() error = %v", err)
+	}
+	if len(model.opts) == 0 {
+		t.Fatal("model was not called")
+	}
+	got := model.opts[0].Headers
+	if got["x-user"] != "custom" {
+		t.Fatalf("caller header lost: %#v", got)
+	}
+	ua := got["user-agent"]
+	if !strings.Contains(ua, "ai-sdk-agent/workflow") {
+		t.Fatalf("user-agent = %q, want it to contain ai-sdk-agent/workflow", ua)
+	}
+	if strings.Contains(ua, "ai-sdk-agent/tool-loop") {
+		t.Fatalf("user-agent = %q, should not also carry ai-sdk-agent/tool-loop", ua)
+	}
+}
+
 func TestWorkflowAgentForwardsRepairToolCall(t *testing.T) {
 	model := &wfMockModel{}
 	var agentLevelCalled bool
