@@ -11,6 +11,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providers/deepseek"
 	"github.com/digitallysavvy/go-ai/pkg/providers/fireworks"
 	"github.com/digitallysavvy/go-ai/pkg/providers/gateway"
+	"github.com/digitallysavvy/go-ai/pkg/providers/gmicloud"
 	"github.com/digitallysavvy/go-ai/pkg/providers/google"
 	"github.com/digitallysavvy/go-ai/pkg/providers/googlevertex"
 	"github.com/digitallysavvy/go-ai/pkg/providers/groq"
@@ -70,6 +71,9 @@ func TestProviderFactoryAliasesMirrorTypeScriptCreateExports(t *testing.T) {
 	}
 	if quiverai.CreateQuiverAI(quiverai.Config{}) == nil {
 		t.Fatal("CreateQuiverAI returned nil")
+	}
+	if gmicloud.CreateGmicloud(gmicloud.Config{}) == nil {
+		t.Fatal("CreateGmicloud returned nil")
 	}
 
 	vertexCfg := googlevertex.Config{
