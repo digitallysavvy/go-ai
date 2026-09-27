@@ -173,6 +173,10 @@ func TestOpenTelemetryEmbeddingUsageNotDoubleCounted(t *testing.T) {
 // TestOpenTelemetryProviderExecutedToolGetsExecuteToolSpan covers 5ad6abf: a
 // provider-executed tool call surfaced in OnStepEnd gets its own
 // execute_tool span with gen_ai.tool.type=extension.
+// TestOpenTelemetryProviderExecutedToolGetsExecuteToolSpan covers 37b75e8: a
+// provider-executed tool call surfaced in the model response gets its own
+// execute_tool span, parented under the chat span (TS's onLanguageModelCallEnd
+// creates these — not onStepEnd, which only records step-level attributes).
 func TestOpenTelemetryProviderExecutedToolGetsExecuteToolSpan(t *testing.T) {
 	rec := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
@@ -184,6 +188,15 @@ func TestOpenTelemetryProviderExecutedToolGetsExecuteToolSpan(t *testing.T) {
 
 	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings})
 	ctx = integration.OnStepStart(ctx, TelemetryStepStartEvent{Settings: settings, OperationType: "ai.generateText", StepNumber: 0})
+	ctx = integration.OnLanguageModelCallStart(ctx, LanguageModelCallStartEvent{Settings: settings, CallID: "call-tc", ModelID: "gpt-5"})
+	integration.OnLanguageModelCallEnd(ctx, LanguageModelCallEndEvent{
+		Settings:     settings,
+		CallID:       "call-tc",
+		FinishReason: "tool-calls",
+		Content: []types.ContentPart{
+			types.ToolCallContent{ToolCallID: "tc-1", ToolName: "web_search", ProviderExecuted: true},
+		},
+	})
 	integration.OnStepEnd(ctx, TelemetryStepEndEvent{
 		Settings:     settings,
 		StepNumber:   0,
@@ -193,11 +206,11 @@ func TestOpenTelemetryProviderExecutedToolGetsExecuteToolSpan(t *testing.T) {
 		},
 	})
 
-	toolSpan := findSpan(rec, "execute_tool web_search")
-	if toolSpan == nil {
-		t.Fatal("expected an 'execute_tool web_search' span for the provider-executed tool call")
+	toolSpans := findSpans(rec, "execute_tool web_search")
+	if len(toolSpans) != 1 {
+		t.Fatalf("expected exactly one 'execute_tool web_search' span (chat-span level only, not duplicated at step end), got %d", len(toolSpans))
 	}
-	if v, ok := attrValue(toolSpan, "gen_ai.tool.type"); !ok || v.(string) != "extension" {
+	if v, ok := attrValue(toolSpans[0], "gen_ai.tool.type"); !ok || v.(string) != "extension" {
 		t.Fatalf("expected gen_ai.tool.type=extension, got %v ok=%v", v, ok)
 	}
 }

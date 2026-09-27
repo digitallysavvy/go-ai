@@ -687,24 +687,12 @@ func (i OpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEvent) {
 	}
 	stepSpan.SetAttributes(attrs...)
 
-	// Provider-executed tool calls have no separate OnToolExecutionStart/End
-	// pair (the provider ran them), so synthesize a short execute_tool span
-	// for each one here, using the step span as parent.
-	for _, tc := range e.ToolCalls {
-		if !tc.ProviderExecuted {
-			continue
-		}
-		tracer := stepSpan.TracerProvider().Tracer("go-ai")
-		_, toolSpan := tracer.Start(ctx, "execute_tool "+tc.ToolName)
-		toolSpan.SetAttributes(
-			attribute.String("gen_ai.operation.name", "execute_tool"),
-			attribute.String("gen_ai.tool.call.id", tc.ID),
-			attribute.String("gen_ai.tool.name", tc.ToolName),
-			attribute.String("gen_ai.tool.type", "extension"),
-		)
-		toolSpan.End()
-	}
-
+	// Provider-executed tool calls get their execute_tool span from
+	// OnLanguageModelCallEnd (parented under the chat span), matching TS's
+	// onLanguageModelCallEnd (37b75e8) — TS's onStepEnd does not create tool
+	// spans. A synthesis here as well would double-emit one execute_tool
+	// span per provider-executed call in normal use, since every step always
+	// goes through OnLanguageModelCallEnd first.
 	stepSpan.End()
 }
 

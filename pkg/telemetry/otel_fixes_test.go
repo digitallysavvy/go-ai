@@ -30,6 +30,26 @@ func findSpan(rec *tracetest.SpanRecorder, name string) sdktrace.ReadOnlySpan {
 	return nil
 }
 
+// findSpans returns every span (started or ended) with the given name, for
+// tests that assert a span was NOT duplicated.
+func findSpans(rec *tracetest.SpanRecorder, name string) []sdktrace.ReadOnlySpan {
+	var out []sdktrace.ReadOnlySpan
+	seen := make(map[trace.SpanID]bool)
+	for _, s := range rec.Started() {
+		if s.Name() == name && !seen[s.SpanContext().SpanID()] {
+			seen[s.SpanContext().SpanID()] = true
+			out = append(out, s)
+		}
+	}
+	for _, s := range rec.Ended() {
+		if s.Name() == name && !seen[s.SpanContext().SpanID()] {
+			seen[s.SpanContext().SpanID()] = true
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func attrValue(s sdktrace.ReadOnlySpan, key string) (interface{}, bool) {
 	if s == nil {
 		return nil, false
