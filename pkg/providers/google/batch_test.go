@@ -471,6 +471,75 @@ func TestGoogleBatch_EncodesResponseFilePathSegments(t *testing.T) {
 	}
 }
 
+// TestGoogleBatch_StreamsResultsAcrossJSONLChunkBoundaries ports TS "streams
+// successful and failed results across JSONL chunk boundaries"
+// (google-batch.test.ts:829). The TS fixture (prepareOutput) always delivers
+// the results body as three raw chunks sliced at fixed byte offsets that do
+// not align with line breaks, proving the JSONL reader reassembles lines
+// split across separate stream reads rather than assuming each chunk is a
+// whole line. This does the same over a real HTTP connection: the handler
+// writes the two-line NDJSON body in three arbitrary, non-newline-aligned
+// byte ranges and flushes after each one, so the client's bufio.Scanner must
+// see the line split across multiple underlying Read calls.
+func TestGoogleBatch_StreamsResultsAcrossJSONLChunkBoundaries(t *testing.T) {
+	line1 := `{"key":"france","response":` + googleGenerateContentResponseJSON("response-france", "Paris") + `}`
+	line2 := `{"key":"germany","error":{"code":3,"message":"The request was invalid.","details":[{"reason":"INVALID_ARGUMENT"}]}}`
+	body := line1 + "\n" + line2
+	if len(body) < 61 {
+		t.Fatalf("fixture body too short (%d bytes) to slice at byte 61 the way the TS fixture does", len(body))
+	}
+	chunks := []string{body[:17], body[17:61], body[61:]}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/download/") {
+			flusher, ok := w.(http.Flusher)
+			if !ok {
+				t.Fatal("ResponseWriter does not support flushing")
+			}
+			for _, chunk := range chunks {
+				_, _ = w.Write([]byte(chunk))
+				flusher.Flush()
+			}
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"name":"batches/batch-123","done":true,"metadata":{"state":"BATCH_STATE_SUCCEEDED","output":{"responsesFile":"files/batch-output"}}}`))
+	}))
+	defer srv.Close()
+
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	b := p.ExperimentalBatch()
+	stream, err := b.DoGetBatchResults(t.Context(), provider.BatchV4OperationOptions{BatchID: "batches/batch-123"})
+	if err != nil {
+		t.Fatalf("DoGetBatchResults: %v", err)
+	}
+	defer stream.Close()
+
+	var items []*provider.BatchV4ItemResult
+	for {
+		item, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+		items = append(items, item)
+	}
+	if len(items) != 2 {
+		t.Fatalf("len(items) = %d, want 2: %+v", len(items), items)
+	}
+	france := items[0]
+	if france.ID != "france" || france.Status != provider.BatchItemSucceeded || france.TextResult == nil || france.TextResult.Text != "Paris" {
+		t.Fatalf("items[0] (france) = %+v", france)
+	}
+	germany := items[1]
+	if germany.ID != "germany" || germany.Status != provider.BatchItemFailed || germany.Error == nil ||
+		germany.Error.Message != "The request was invalid." || germany.Error.Code != "3" {
+		t.Fatalf("items[1] (germany) = %+v", germany)
+	}
+}
+
 func TestGoogleBatch_EmptyStreamForFailedBatchWithoutOutput(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
