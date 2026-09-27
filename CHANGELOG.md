@@ -22,6 +22,16 @@ Bedrock, BFL, and Prodia.
   unset can be distinguished from explicit `false`. This matches the TypeScript
   SDK resolution order: `include.rawChunks ?? includeRawChunks ?? false`.
   Existing callers should replace `RawChunks: true` with a bool pointer.
+- **Anthropic Provider** Removed the exported `ToAnthropicFormatWithCache(tools
+  []types.Tool) []map[string]interface{}` function from
+  `pkg/providers/anthropic`. It was an older, unused tool converter kept alive
+  only by its own tests — production request building has always gone through
+  the internal `prepareTools` request path (used by `LanguageModel.DoGenerate`
+  / `DoStream`), which has since diverged from it (e.g. it warns and skips
+  unrecognized provider-executed tools instead of falling through to
+  function-tool serialization). Callers should build requests through the
+  standard `provider.LanguageModel` interface instead of calling this helper
+  directly; there is no drop-in replacement function.
 
 ### Added
 

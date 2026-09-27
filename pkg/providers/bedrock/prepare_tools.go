@@ -203,6 +203,27 @@ func prepareBedrockTools(tools []types.Tool, toolChoice types.ToolChoice, hasToo
 	return result
 }
 
+// anthropicAPIMapper is satisfied by ProviderOptions types that produce their
+// own Anthropic API tool map (computer_*, computer_toolset_20260801,
+// text_editor_20250728, web_search/web_fetch). Declared locally rather than
+// imported because pkg/providers/anthropic's identically-shaped interface is
+// unexported — Go interface satisfaction is structural, so a type assertion
+// against this local declaration works the same way against ProviderOptions
+// values built by pkg/providers/anthropic/tools.
+type anthropicAPIMapper interface {
+	ToAnthropicAPIMap() map[string]interface{}
+}
+
+// bedrockToolsetNames maps toolset tool Names to the short display name
+// Bedrock's toolSpec needs. A toolset has no "name" of its own in its
+// Anthropic API map (its member tool_use blocks come back keyed by
+// toolset_name instead of name) but is still exposed to callers as one named
+// tool call — mirrors prompt.AnthropicToolsetNames in
+// pkg/providerutils/prompt/anthropic.go.
+var bedrockToolsetNames = map[string]string{
+	"anthropic.computer_toolset_20260801": "computer",
+}
+
 // bedrockAnthropicProviderTool maps a supported Anthropic provider-defined
 // tool to its Bedrock toolSpec representation: {name, inputSchema}, matching
 // the standard AmazonBedrockTool shape (Bedrock's toolSpec has no separate
@@ -214,37 +235,55 @@ func prepareBedrockTools(tools []types.Tool, toolChoice types.ToolChoice, hasToo
 // factory.inputSchema} — i.e. it forwards ANY builtin Anthropic tool it can
 // find a schema for, not just tool_search.
 //
-// The short API name comes from anthropic.BuiltinToolAPIName, the same table
-// pkg/providers/anthropic itself uses for the "simple" builtins (bash, text
-// editors 20241022/20250124/20250429, code_execution, memory, advisor,
-// tool_search) — these need no per-instance config and their Go constructors
-// (pkg/providers/anthropic/tools) already populate types.Tool.Parameters with
-// a concrete JSON Schema, exactly like their TS factory counterparts, so no
-// separate schema table is needed here.
+// Two families of Anthropic provider tools reach this function:
 //
-// Self-serializing tools (computer_toolset_20260801, text_editor_20250728,
-// and — despite also having a static Parameters schema — the computer_*
-// variants, which TS still resolves via the *same* generic factory lookup)
-// are intentionally NOT covered here: their Bedrock wire "name" cannot be
-// derived from BuiltinToolAPIName's static table (computer_toolset has no
-// "name" in its own Anthropic API map at all; the others need per-instance
-// config this function does not have access to). Returns nil for tools
-// Bedrock does not recognize this way (the caller emits an "unsupported"
-// warning) — this is a narrower, documented subset of TS's coverage, tracked
-// as a follow-up rather than a silent gap.
+//   - Simple builtins (bash, text editors 20241022/20250124/20250429,
+//     code_execution, memory, advisor, tool_search): the short API name comes
+//     from anthropic.BuiltinToolAPIName, the same table pkg/providers/anthropic
+//     itself uses for these. They need no per-instance config and their Go
+//     constructors (pkg/providers/anthropic/tools) already populate
+//     types.Tool.Parameters with a concrete JSON Schema, exactly like their TS
+//     factory counterparts, so no separate schema table is needed here.
+//
+//   - Self-serializing tools (computer_20241022/20250124/20251124,
+//     computer_toolset_20260801, text_editor_20250728): these implement
+//     ToAnthropicAPIMap() on their ProviderOptions (like the direct Anthropic
+//     provider's own prepare_tools.go does) to produce their Anthropic API
+//     map, whose "name" field is the short wire name TS's factory lookup
+//     would have found via tool.name. computer_toolset_20260801's map has no
+//     "name" (it is a toolset, not a single named tool), so its name comes
+//     from bedrockToolsetNames instead. TS uses a *default-args* factory
+//     instance purely to read a static schema; in Go, t.Parameters was
+//     already built by the caller's own constructor call with their actual
+//     args, which is the concrete schema for the instance actually being
+//     sent, so it is used directly instead of reconstructing a separate
+//     "static" one.
+//
+// Returns nil for tools Bedrock does not recognize this way (the caller
+// emits an "unsupported" warning).
 func bedrockAnthropicProviderTool(t types.Tool) map[string]interface{} {
-	shortName, ok := anthropic.BuiltinToolAPIName(t.Name)
-	if !ok {
-		return nil
-	}
 	inputSchema := t.Parameters
 	if inputSchema == nil {
 		inputSchema = map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
 	}
-	return map[string]interface{}{
-		"name":        shortName,
-		"inputSchema": map[string]interface{}{"json": inputSchema},
+	wireSchema := map[string]interface{}{"json": inputSchema}
+
+	if shortName, ok := anthropic.BuiltinToolAPIName(t.Name); ok {
+		return map[string]interface{}{"name": shortName, "inputSchema": wireSchema}
 	}
+
+	if mapper, ok := t.ProviderOptions.(anthropicAPIMapper); ok && t.ProviderOptions != nil {
+		name, _ := mapper.ToAnthropicAPIMap()["name"].(string)
+		if name == "" {
+			name = bedrockToolsetNames[t.Name]
+		}
+		if name == "" {
+			return nil
+		}
+		return map[string]interface{}{"name": name, "inputSchema": wireSchema}
+	}
+
+	return nil
 }
 
 // bedrockAnthropicToolChoice maps a ToolChoice to Bedrock's Anthropic

@@ -276,15 +276,43 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 	// Extract text and reasoning content from content blocks.
 	// When jsonTool mode is active the model responds via a synthetic tool, not
 	// a text block — skip text blocks entirely in that case, matching the TS SDK.
+	//
+	// On-demand compaction responses ("compaction" content blocks) are text
+	// content whose providerMetadata identifies them as a compaction summary
+	// (TS: `content.push({type: 'text', text: part.content, providerMetadata})`).
+	// An empty or null compaction content is omitted entirely (TS: `if
+	// (!part.content) break;`).
 	if !usesJsonResponseTool {
 		var textParts []string
+		var textBlocks []types.ContentPart
+		hasCompaction := false
 		for _, content := range response.Content {
-			if content.Type == "text" {
+			switch content.Type {
+			case "text":
 				textParts = append(textParts, content.Text)
+				textBlocks = append(textBlocks, types.TextContent{Text: content.Text})
+			case "compaction":
+				text, ok := anthropicCompactionText(content.Content)
+				if !ok {
+					continue
+				}
+				hasCompaction = true
+				textParts = append(textParts, text)
+				textBlocks = append(textBlocks, types.TextContent{
+					Text:             text,
+					ProviderMetadata: anthropicCompactionMetadata(content.Signature),
+				})
 			}
 		}
 		if len(textParts) > 0 {
-			result.Text = textParts[0]
+			result.Text = strings.Join(textParts, "")
+		}
+		// Only surface text blocks as explicit content parts when a compaction
+		// block is present. In the common single-text-block case, result.Text
+		// alone carries the content (generateResultContentParts synthesizes the
+		// content part from it), matching existing behavior.
+		if hasCompaction {
+			result.Content = append(result.Content, textBlocks...)
 		}
 	}
 
@@ -599,6 +627,35 @@ func convertAnthropicUsage(usage anthropicUsage) types.Usage {
 	}
 
 	return result
+}
+
+// anthropicCompactionText extracts the compaction block's text content,
+// treating an absent, null, or empty string as "no content" (TS: `if
+// (!part.content) break;`). The second return value is false when the block
+// should be omitted entirely.
+func anthropicCompactionText(raw json.RawMessage) (string, bool) {
+	if len(raw) == 0 {
+		return "", false
+	}
+	var text *string
+	if err := json.Unmarshal(raw, &text); err != nil || text == nil || *text == "" {
+		return "", false
+	}
+	return *text, true
+}
+
+// anthropicCompactionMetadata builds the providerMetadata.anthropic payload
+// for a compaction text block (TS: `{type: 'compaction', ...(signature && {signature})}`).
+func anthropicCompactionMetadata(signature string) json.RawMessage {
+	meta := map[string]interface{}{"type": "compaction"}
+	if signature != "" {
+		meta["signature"] = signature
+	}
+	raw, err := json.Marshal(map[string]interface{}{"anthropic": meta})
+	if err != nil {
+		return nil
+	}
+	return raw
 }
 
 // metadataExtras carries optional provider metadata fields.
@@ -1160,6 +1217,8 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				ToolUseID string      `json:"tool_use_id"`
 				IsError   bool        `json:"is_error"`
 				Content   interface{} `json:"content"`
+				// compaction fields
+				Signature string `json:"signature"`
 			} `json:"content_block"`
 		}
 		if err := json.Unmarshal([]byte(event.Data), &start); err != nil {
@@ -1328,9 +1387,27 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				ToolResult: tr,
 			}, nil
 
+		case "compaction":
+			// Compaction blocks are surfaced as text chunks (TS marks the
+			// content_block's providerMetadata as {type: 'compaction'}; this
+			// streaming implementation doesn't attach block-level metadata to
+			// text chunks, so it emits plain text like other blocks).
+			s.contentBlocks[start.Index] = &streamContentBlock{blockType: "text"}
+			// On-demand compaction blocks may arrive fully formed in
+			// content_block_start — without any following compaction_delta
+			// events — when both signature and content are present.
+			if start.ContentBlock.Signature != "" {
+				if text, ok := start.ContentBlock.Content.(string); ok && text != "" {
+					return &provider.StreamChunk{
+						Type: provider.ChunkTypeText,
+						Text: text,
+					}, nil
+				}
+			}
+
 		default:
-			// "text", "compaction", and any unknown types: record so
-			// content_block_stop is always a clean no-op.
+			// "text" and any unknown types: record so content_block_stop is
+			// always a clean no-op.
 			s.contentBlocks[start.Index] = &streamContentBlock{
 				blockType: start.ContentBlock.Type,
 			}

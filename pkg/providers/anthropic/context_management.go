@@ -160,8 +160,13 @@ const (
 	// BetaHeaderContextManagement is required for clear_tool_uses and clear_thinking edits
 	BetaHeaderContextManagement = "context-management-2025-06-27"
 
-	// BetaHeaderCompact is required for compact edits
+	// BetaHeaderCompact is required for compact_20260112 context management edits
 	BetaHeaderCompact = "compact-2026-01-12"
+
+	// BetaHeaderCompaction is required for the request-level Compaction option
+	// (on-demand summarization) and for replaying signed compaction blocks
+	// from message history. Distinct from BetaHeaderCompact.
+	BetaHeaderCompaction = "compact-2026-09-04"
 
 	// BetaHeaderFastMode is required for fast mode (Opus 4.6)
 	BetaHeaderFastMode = "fast-mode-2026-02-01"

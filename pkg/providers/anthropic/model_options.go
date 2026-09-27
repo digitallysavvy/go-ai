@@ -139,6 +139,18 @@ type Safeguard struct {
 	ClassifierContext map[string]interface{} `json:"classifierContext,omitempty"`
 }
 
+// CompactionOption requests an on-demand summary of the supplied conversation.
+// Serialized as the request-level "compaction" field and adds the
+// "compact-2026-09-04" beta header automatically. Mutually exclusive with
+// ContextManagement: setting both returns an error from DoGenerate/DoStream.
+type CompactionOption struct {
+	// Type must be "summarize".
+	Type string `json:"type"`
+
+	// Instructions optionally steers what the on-demand summary should preserve.
+	Instructions string `json:"instructions,omitempty"`
+}
+
 // ModelOptions contains optional configuration for Anthropic language models.
 // These options can be passed when creating a model instance to configure
 // provider-specific features.
@@ -159,6 +171,16 @@ type ModelOptions struct {
 	//
 	// See ContextManagement for available strategies.
 	ContextManagement *ContextManagement `json:"context_management,omitempty"`
+
+	// Compaction requests an on-demand summary of the supplied conversation.
+	// Mutually exclusive with ContextManagement (setting both returns an
+	// error). Adds the "compact-2026-09-04" beta header automatically.
+	//
+	// Example:
+	//   options := anthropic.ModelOptions{
+	//       Compaction: &anthropic.CompactionOption{Type: "summarize"},
+	//   }
+	Compaction *CompactionOption `json:"compaction,omitempty"`
 
 	// Thinking configures Claude's extended thinking capabilities.
 	//
