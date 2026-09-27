@@ -1670,6 +1670,7 @@ func TestVideoModel_MapsKeyframesLastFrameGenerateAudioStorageOptions(t *testing
 				"keyframes": []map[string]interface{}{
 					{"imageUrl": "https://example.com/middle.png", "timestampSeconds": 2.5},
 				},
+				"pollIntervalMs": 1,
 			},
 		},
 	}
@@ -1718,6 +1719,9 @@ func TestVideoModel_LastFrame_WarnsForOldModel(t *testing.T) {
 				Image:     provider.VideoModelV3File{Type: "url", URL: "https://example.com/end.png"},
 			},
 		},
+		ProviderOptions: map[string]interface{}{
+			"xai": map[string]interface{}{"pollIntervalMs": 1},
+		},
 	}
 
 	resp, err := model.DoGenerate(context.Background(), opts)
@@ -1749,6 +1753,9 @@ func TestVideoModel_InputReferences_SeparatesImageAndAudio(t *testing.T) {
 		InputReferences: []provider.VideoModelV3File{
 			{Type: "url", URL: "https://example.com/ref1.jpg"},
 			{Type: "url", URL: "https://example.com/voice.mp3", MediaType: "audio/mpeg"},
+		},
+		ProviderOptions: map[string]interface{}{
+			"xai": map[string]interface{}{"pollIntervalMs": 1},
 		},
 	}
 
@@ -1782,6 +1789,9 @@ func TestVideoModel_InputReferences_AudioOnlyR2V(t *testing.T) {
 		InputReferences: []provider.VideoModelV3File{
 			{Type: "url", URL: "https://example.com/voice.mp3", MediaType: "audio/mpeg"},
 		},
+		ProviderOptions: map[string]interface{}{
+			"xai": map[string]interface{}{"pollIntervalMs": 1},
+		},
 	}
 
 	resp, err := model.DoGenerate(context.Background(), opts)
@@ -1812,6 +1822,9 @@ func TestVideoModel_InputReferences_VideoOnly_NoEmptyReferenceImages(t *testing.
 		InputReferences: []provider.VideoModelV3File{
 			{Type: "url", URL: "https://example.com/clip.mp4", MediaType: "video/mp4"},
 		},
+		ProviderOptions: map[string]interface{}{
+			"xai": map[string]interface{}{"pollIntervalMs": 1},
+		},
 	}
 
 	_, err := model.DoGenerate(context.Background(), opts)
@@ -1836,6 +1849,9 @@ func TestVideoModel_InputReferences_FirstFrameWithAudioReference(t *testing.T) {
 		Image:  &provider.VideoModelV3File{Type: "url", URL: "https://example.com/start.jpg", MediaType: "image/jpeg"},
 		InputReferences: []provider.VideoModelV3File{
 			{Type: "url", URL: "https://example.com/voice.mp3", MediaType: "audio/mpeg"},
+		},
+		ProviderOptions: map[string]interface{}{
+			"xai": map[string]interface{}{"pollIntervalMs": 1},
 		},
 	}
 
@@ -1870,7 +1886,7 @@ func TestVideoModel_InputReferences_ExplicitAudioOnlyR2V(t *testing.T) {
 			{Type: "url", URL: "https://example.com/voice.mp3", MediaType: "audio/mpeg"},
 		},
 		ProviderOptions: map[string]interface{}{
-			"xai": map[string]interface{}{"mode": "reference-to-video"},
+			"xai": map[string]interface{}{"mode": "reference-to-video", "pollIntervalMs": 1},
 		},
 	}
 
@@ -1898,7 +1914,7 @@ func TestVideoModel_ExplicitR2V_NoReferences_Warns(t *testing.T) {
 	opts := &provider.VideoModelV3CallOptions{
 		Prompt: "A chicken flying into the sunset",
 		ProviderOptions: map[string]interface{}{
-			"xai": map[string]interface{}{"mode": "reference-to-video"},
+			"xai": map[string]interface{}{"mode": "reference-to-video", "pollIntervalMs": 1},
 		},
 	}
 
@@ -1941,6 +1957,7 @@ func TestVideoModel_InputReferences_CombinedAudioCapTruncatesWithWarning(t *test
 			"xai": map[string]interface{}{
 				"mode":              "reference-to-video",
 				"referenceVoiceIds": []string{"voice-1", "voice-2"},
+				"pollIntervalMs":    1,
 			},
 		},
 	}
@@ -1980,8 +1997,9 @@ func TestVideoModel_InputReferences_IgnoredOutsideR2V_Warns(t *testing.T) {
 		},
 		ProviderOptions: map[string]interface{}{
 			"xai": map[string]interface{}{
-				"mode":     "edit-video",
-				"videoUrl": "https://example.com/source.mp4",
+				"mode":           "edit-video",
+				"videoUrl":       "https://example.com/source.mp4",
+				"pollIntervalMs": 1,
 			},
 		},
 	}
@@ -2013,6 +2031,9 @@ func TestVideoModel_StartImage_RejectsVideoFile(t *testing.T) {
 	opts := &provider.VideoModelV3CallOptions{
 		Prompt: "A chicken flying into the sunset",
 		Image:  &provider.VideoModelV3File{Type: "url", URL: "https://example.com/clip.mp4", MediaType: "video/mp4"},
+		ProviderOptions: map[string]interface{}{
+			"xai": map[string]interface{}{"pollIntervalMs": 1},
+		},
 	}
 
 	resp, err := model.DoGenerate(context.Background(), opts)
@@ -2059,7 +2080,12 @@ func TestVideoModel_FileOutput_MapsToProviderMetadata(t *testing.T) {
 	prov := New(Config{APIKey: "test-key", BaseURL: server.URL})
 	model := NewVideoModel(prov, ModelGrokImagineVideo15)
 
-	resp, err := model.DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{Prompt: "A sunset"})
+	resp, err := model.DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{
+		Prompt: "A sunset",
+		ProviderOptions: map[string]interface{}{
+			"xai": map[string]interface{}{"pollIntervalMs": 1},
+		},
+	})
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 	assert.Equal(t, "https://files.x.ai/result.mp4", resp.Videos[0].URL)
