@@ -40,6 +40,10 @@ type sessionParams struct {
 	sandboxHomeDir                 string
 	reconnect                      bridge.ReconnectOptions
 	supportsUserMessageResponses   func() bool
+	// transformModel remaps the wire `model` field when native GitLab
+	// subscription credentials are brokered (resolveOpenCodeGitLabSubscriptionModel).
+	// Nil otherwise. Mirrors TS `transformModel`.
+	transformModel func(model string) (string, error)
 }
 
 type session struct {
@@ -232,7 +236,14 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 	return c
 }
 
-func (s *session) startBase(turnModel string) StartMessage {
+func (s *session) startBase(turnModel string) (StartMessage, error) {
+	if s.p.transformModel != nil {
+		transformed, err := s.p.transformModel(turnModel)
+		if err != nil {
+			return StartMessage{}, err
+		}
+		turnModel = transformed
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	msg := StartMessage{
@@ -251,7 +262,7 @@ func (s *session) startBase(turnModel string) StartMessage {
 	if s.p.debug != nil {
 		msg.StartBase.Debug = s.p.debug
 	}
-	return msg
+	return msg, nil
 }
 
 func (s *session) prepareTurn(ctx context.Context, opts turnPrepareOptions) (*promptControl, *harnessutil.WriteSkillsResult, error) {
@@ -297,7 +308,10 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 	}
 	s.mu.Unlock()
 
-	msg := s.startBase(turnModel)
+	msg, err := s.startBase(turnModel)
+	if err != nil {
+		return nil, err
+	}
 	msg.Operation = OperationPrompt
 	msg.Prompt = promptText
 	msg.Tools = opts.Tools
@@ -328,7 +342,10 @@ func (s *session) DoContinueTurn(ctx context.Context, opts harness.ContinueTurnO
 		}
 		s.mu.Unlock()
 
-		msg := s.startBase(turnModel)
+		msg, err := s.startBase(turnModel)
+		if err != nil {
+			return nil, err
+		}
 		msg.Operation = OperationPrompt
 		msg.Prompt = "Continue."
 		msg.Tools = opts.Tools
@@ -358,7 +375,10 @@ func (s *session) DoCompact(ctx context.Context, customInstructions string) erro
 			"Harness 'opencode' supports manual compaction between turns; compacting during an active turn is not supported by the bridge transport.", HarnessID, nil)
 	}
 	model := s.currentModel()
-	msg := s.startBase(model)
+	msg, err := s.startBase(model)
+	if err != nil {
+		return err
+	}
 	msg.Operation = OperationCompact
 	msg.Prompt = ""
 	msg.Tools = nil

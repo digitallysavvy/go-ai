@@ -8,9 +8,10 @@ import (
 )
 
 // SubscriptionAccessTokenEnvironmentVariable mirrors TS
-// `OPENCODE_SUBSCRIPTION_ACCESS_TOKEN_ENVIRONMENT_VARIABLE`. Reserved for
-// forward compatibility with a future native-subscription port; this
-// adapter never populates it (see package doc — deferred).
+// `OPENCODE_SUBSCRIPTION_ACCESS_TOKEN_ENVIRONMENT_VARIABLE`. Set on
+// resolvedAuthEnvironment (in resolveOpenCodeAuthentication) when a native
+// OpenCode subscription was read; brokered like any other credential (see
+// subscription.go) and never forwarded to the sandbox verbatim.
 const SubscriptionAccessTokenEnvironmentVariable = "AI_SDK_OPENCODE_NATIVE_ACCESS_TOKEN"
 
 // CredentialEnvironmentVariables are the environment variables OpenCode

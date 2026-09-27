@@ -7,13 +7,17 @@
 // translates frames to/from pkg/harness's harness.Harness/Session/
 // PromptControl surface.
 //
-// Deferred (see the final implementation report): OpenCode's adapter-native
-// subscription auth (`opencode-subscription.ts`, including the GitLab AI
-// Gateway special case) reads OS keychains and mints its own short-lived
-// access tokens; this port supports only environment-variable-based
-// authentication (direct provider credentials and AI Gateway). Passing an
-// explicit `auth` environment or a direct API key works exactly as in TS.
+// Native OpenCode subscription auth (subscription.go, ported from TS
+// opencode-subscription.ts, including the GitLab AI Gateway direct-access
+// case) is fully implemented: unlike the OS-keychain-backed native
+// subscription readers other bridge adapters use, OpenCode's own store is a
+// plain JSON file (`~/.local/share/opencode/auth.json`, or
+// `OPENCODE_AUTH_CONTENT` verbatim for host processes that supply it
+// directly) plus HTTP OAuth-refresh and, for GitLab, one extra HTTP call —
+// no OS keychain or CLI is ever involved, so nothing here needed to be
+// deferred.
 //
 // See state/parity/sep_23_2026/harness.md WG9 and TS
-// packages/harness-opencode/src/opencode-harness.ts.
+// packages/harness-opencode/src/{opencode-harness,opencode-auth,
+// opencode-subscription}.ts.
 package opencode
