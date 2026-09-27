@@ -172,6 +172,34 @@ func TestCreateOpenCodeRequestTransformations_OpenAI(t *testing.T) {
 	assertBearerTransformation(t, got, "openai.example", "sandbox-openai-secret", "openai-secret")
 }
 
+// TS: "matches both supported Gateway credential headers"
+func TestCreateOpenCodeRequestTransformations_AIGateway(t *testing.T) {
+	got, err := createOpenCodeRequestTransformations(createRequestTransformationsInput{
+		Env: map[string]string{
+			"OPENAI_API_KEY":      "unselected-openai-secret",
+			"OPENAI_BASE_URL":     "https://unselected-openai.example/v1",
+			"AI_GATEWAY_API_KEY":  "gateway-secret",
+			"AI_GATEWAY_BASE_URL": "https://gateway.example/v1",
+		},
+		SandboxEnv: map[string]string{"AI_GATEWAY_API_KEY": "sandbox-gateway-secret"},
+		Auth:       AuthAIGateway,
+	})
+	if err != nil {
+		t.Fatalf("createOpenCodeRequestTransformations: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len(transformations) = %d, want 2: %+v", len(got), got)
+	}
+	if got[0].Match.Host != "gateway.example" || got[0].Match.Headers[0].Key.Exact != "x-api-key" ||
+		got[0].Match.Headers[0].Value.Exact != "sandbox-gateway-secret" || got[0].Transform.Headers["Authorization"] != "Bearer gateway-secret" {
+		t.Errorf("transformations[0] = %+v", got[0])
+	}
+	if got[1].Match.Host != "gateway.example" || got[1].Match.Headers[0].Key.Exact != "Authorization" ||
+		got[1].Match.Headers[0].Value.Exact != "Bearer sandbox-gateway-secret" || got[1].Transform.Headers["Authorization"] != "Bearer gateway-secret" {
+		t.Errorf("transformations[1] = %+v", got[1])
+	}
+}
+
 // TS: "injects both supported Anthropic credential headers"
 func TestCreateOpenCodeRequestTransformations_Anthropic(t *testing.T) {
 	got, err := createOpenCodeRequestTransformations(createRequestTransformationsInput{
