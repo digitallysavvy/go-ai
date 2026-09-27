@@ -16,6 +16,15 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
 
+// invalidToolInputMessage is the generic error surfaced to both the harness
+// runtime (via SubmitToolResult) and the consumer stream (as a tool-error's
+// Error) for a host tool call whose input failed schema validation. Mirrors
+// TS `invalidToolInputMessage` (internal/run-prompt.ts) — the detailed
+// NoSuchToolError/InvalidToolInputError from validation is never sent back to
+// the runtime/model or exposed to the consumer; it exists only for local
+// diagnostics.
+const invalidToolInputMessage = "Tool input validation failed."
+
 // nowMs returns the current wall-clock time in Unix milliseconds, used for
 // telemetry.go's model-call response-time measurement (mirrors TS
 // turn-telemetry.ts's `Date.now()`-based `modelCallStartedAt`).
@@ -276,10 +285,24 @@ type turnDriver struct {
 	// execToolCallsByID holds the *unstripped* tool-call event for host tool
 	// execution (execution needs the real absolute paths); toolCallsByID
 	// holds the parsed, display (work-dir-stripped) public tool call used
-	// for approvals, classification and callbacks.
-	execToolCallsByID map[string]*ToolCallPart
-	toolCallsByID     map[string]types.ToolCall
-	providerExecByID  map[string]bool
+	// for approvals, classification and callbacks. validatedHostCallsByID
+	// holds the schema-validated call with *unstripped* Arguments actually
+	// used for execution (nil for a toolCallID that isn't a host tool call,
+	// e.g. provider-executed or the client-executed askUserQuestions
+	// builtin) — mirrors TS run-prompt.ts's per-tool-call
+	// `validatedHostToolCall` closure variable, made addressable by ID since
+	// Go's driver revisits a call's validation result from separate
+	// functions (handleHostToolCall, processApprovalContinuation) rather
+	// than a single closure scope.
+	execToolCallsByID      map[string]*ToolCallPart
+	toolCallsByID          map[string]types.ToolCall
+	validatedHostCallsByID map[string]*types.ToolCall
+	providerExecByID       map[string]bool
+
+	// toolsList is d.in.Tools flattened once per turn, for ai.ParseToolCall
+	// (which — like TS parseToolCall/doParseToolCall — needs the merged tool
+	// set to resolve a call's schema).
+	toolsList []types.Tool
 
 	settledHostIDs    map[string]struct{}
 	settledBuiltinIDs map[string]struct{}
@@ -375,7 +398,12 @@ type turnDriver struct {
 func (d *turnDriver) run() {
 	d.execToolCallsByID = map[string]*ToolCallPart{}
 	d.toolCallsByID = map[string]types.ToolCall{}
+	d.validatedHostCallsByID = map[string]*types.ToolCall{}
 	d.providerExecByID = map[string]bool{}
+	d.toolsList = make([]types.Tool, 0, len(d.in.Tools))
+	for _, tool := range d.in.Tools {
+		d.toolsList = append(d.toolsList, tool)
+	}
 	d.settledHostIDs = map[string]struct{}{}
 	d.settledBuiltinIDs = map[string]struct{}{}
 	d.pendingApprovalsByApprovalID = map[string]*PendingToolApproval{}
@@ -665,12 +693,18 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 		}
 
 		if tc, isCall := display.(*ToolCallPart); isCall {
-			d.execToolCallsByID[tc.ToolCallID] = part.(*ToolCallPart)
-			validated := d.validateToolCall(tc)
-			d.toolCallsByID[tc.ToolCallID] = validated
+			rawTC := part.(*ToolCallPart)
+			d.execToolCallsByID[tc.ToolCallID] = rawTC
+			displayCall, hostCall, verr := d.classifyAndValidateToolCall(rawTC, tc)
+			if verr != nil {
+				_ = d.joinOutstandingExecutions()
+				return false, false, verr
+			}
+			d.toolCallsByID[tc.ToolCallID] = displayCall
+			d.validatedHostCallsByID[tc.ToolCallID] = hostCall
 			d.providerExecByID[tc.ToolCallID] = tc.ProviderExecuted
-			d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &validated})
-			d.stepToolCalls = append(d.stepToolCalls, validated)
+			d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &displayCall})
+			d.stepToolCalls = append(d.stepToolCalls, displayCall)
 			// TS 32349cc: counted for every tool call in the step (not only
 			// host ones), and the first non-nil StepToolCallCount observed
 			// wins (mirrors TS `expectedStepToolCallCount ??=
@@ -820,31 +854,87 @@ func (d *turnDriver) translateOpts() TranslateOptions {
 	}}
 }
 
-// validateToolCall parses a harness tool-call event against the merged tool
-// set, mirroring TS `validateToolCall` (schema/existence validation; async in
-// TS only because of dynamic schema imports, synchronous here).
-func (d *turnDriver) validateToolCall(tc *ToolCallPart) types.ToolCall {
-	args, parseErr := parseJSONObject(tc.Input)
-	call := types.ToolCall{
-		ID: tc.ToolCallID, ToolName: tc.ToolName, Arguments: args, RawArguments: tc.Input,
-		ProviderExecuted: tc.ProviderExecuted, Dynamic: tc.Dynamic,
-		ProviderMetadata: convertProviderMetadata(ProviderMetadata(tc.ProviderMetadata)),
+// classifyAndValidateToolCall validates a tool-call event's input against the
+// merged tool set's schema, reusing ai.ParseToolCall — the same validator
+// (pkg/schema, via pkg/ai's tool_call_pipeline.go) pkg/ai's own generate/
+// stream loop uses for tool inputs, so the harness and core behave the same.
+// Mirrors TS's inline `isHostTool`/`validateToolCall`/`displayHostToolCall`
+// sequence in run-prompt.ts.
+//
+// A host tool call (not provider-executed, present in the merged tool set,
+// and not the client-executed askUserQuestions builtin) is validated against
+// the RAW (unstripped) event, so the validated/transformed input keeps the
+// absolute working-directory paths a schema may require for execution; the
+// returned hostCall carries that unstripped input and is what
+// handleHostToolCall/processApprovalContinuation must execute with. Every
+// other tool call — provider-executed, or the client-executed
+// askUserQuestions builtin, both never executed through this path — is
+// validated against the display (already work-dir-stripped) event instead,
+// and hostCall is nil.
+//
+// displayCall is always the consumer-facing, work-dir-stripped call: for a
+// host tool call, its (already-parsed) Arguments are stripped by
+// displayHostToolCall from the *validated* value (not re-parsed from raw
+// JSON), and an invalid call's detailed validation error is replaced by the
+// generic invalidToolInputMessage so schema diagnostics never reach the
+// runtime/model or the consumer stream.
+func (d *turnDriver) classifyAndValidateToolCall(raw, display *ToolCallPart) (displayCall types.ToolCall, hostCall *types.ToolCall, err error) {
+	// isHostTool checks ActiveTools (TS: `hasTool({ tools: activeTools,
+	// ... })`), not the full merged Tools — a tool present but filtered out
+	// of the active set is never executed through this path (handled by the
+	// active-tool-filtering "execution-denied" check ahead of this in
+	// handleHostToolCall), so it must be validated the same way a
+	// provider-executed/builtin call is: against the display value, not raw.
+	_, hasActiveToolEntry := d.in.ActiveTools[raw.ToolName]
+	_, harnessHasBuiltin := d.in.Harness.BuiltinTools()[raw.ToolName]
+	isHostTool := !raw.ProviderExecuted && hasActiveToolEntry &&
+		!(raw.ToolName == string(BuiltinToolAskUserQuestions) && harnessHasBuiltin)
+
+	eventPart := display
+	if isHostTool {
+		eventPart = raw
 	}
-	if _, known := d.in.Tools[tc.ToolName]; !known {
-		call.Dynamic = true
-		call.Invalid = true
-		names := make([]string, 0, len(d.in.Tools))
-		for n := range d.in.Tools {
-			names = append(names, n)
-		}
-		call.Error = &ai.NoSuchToolError{ToolName: tc.ToolName, AvailableTools: names}
-		return call
+	parsed, perr := ai.ParseToolCall(d.ctx, ai.ParseToolCallOptions{
+		ToolCall: toolCallPartToCall(eventPart),
+		Tools:    d.toolsList,
+	})
+	if perr != nil {
+		return types.ToolCall{}, nil, perr
 	}
-	if parseErr != nil {
-		call.Invalid = true
-		call.Error = fmt.Errorf("invalid tool input JSON for %q: %w", tc.ToolName, parseErr)
+
+	if !isHostTool {
+		return parsed, nil, nil
 	}
-	return call
+	hc := parsed
+	return displayHostToolCall(parsed, d.in.SessionWorkDir), &hc, nil
+}
+
+// toolCallPartToCall converts a harness ToolCallPart event into the
+// types.ToolCall shape ai.ParseToolCall expects, preserving the raw streamed
+// JSON input (RawArguments) so parsing/validation happens against the exact
+// text the event carried — mirrors TS's `LanguageModelV4ToolCall` shape
+// `validateToolCall` builds from a `HarnessV1StreamPart` tool-call event.
+func toolCallPartToCall(p *ToolCallPart) types.ToolCall {
+	return types.ToolCall{
+		ID:               p.ToolCallID,
+		ToolName:         p.ToolName,
+		RawArguments:     p.Input,
+		ProviderExecuted: p.ProviderExecuted,
+		Dynamic:          p.Dynamic,
+		ProviderMetadata: convertProviderMetadata(ProviderMetadata(p.ProviderMetadata)),
+	}
+}
+
+// displayHostToolCall strips the session working-directory prefix from a
+// validated host tool call's already-parsed Arguments, for consumer display.
+// Mirrors TS `displayHostToolCall`.
+func displayHostToolCall(call types.ToolCall, sessionWorkDir string) types.ToolCall {
+	out := call
+	out.Arguments, _ = stripParsedToolInputWorkDir(call.Arguments, sessionWorkDir).(map[string]interface{})
+	if call.Invalid {
+		out.Error = errors.New(invalidToolInputMessage)
+	}
+	return out
 }
 
 func parseJSONObject(input string) (map[string]interface{}, error) {
@@ -1312,6 +1402,18 @@ func (d *turnDriver) handleHostToolCall(raw *ToolCallPart) (awaiting bool, err e
 		return true, nil
 	}
 
+	hostCall := d.validatedHostCallsByID[raw.ToolCallID]
+	if hostCall == nil {
+		return false, fmt.Errorf("harness '%s' could not validate host tool '%s'", d.in.Harness.HarnessID(), raw.ToolName)
+	}
+	// Schema-invalid input is rejected here, before any approval decision is
+	// made and without ever calling tool.Execute — mirrors TS's
+	// `validatedHostToolCall.invalid` short-circuit, which runs ahead of
+	// resolveCustomToolApproval.
+	if hostCall.Invalid {
+		return false, d.rejectInvalidHostToolCall(raw, call)
+	}
+
 	decision := ResolveCustomToolApproval(raw.ToolName, d.in.ToolApproval)
 	switch decision.Type {
 	case CustomToolApprovalDeny:
@@ -1373,9 +1475,38 @@ func (d *turnDriver) handleHostToolCall(raw *ToolCallPart) (awaiting bool, err e
 			}
 			return true, nil
 		}
-		d.executeHostToolAsync(tool, raw, call)
+		d.executeHostToolAsync(tool, raw, hostCall.Arguments)
 		return false, nil
 	}
+}
+
+// rejectInvalidHostToolCall surfaces a schema-invalid host tool call as a
+// consumer-facing tool-error (buffered like every other tool-result chunk,
+// flushed at the next step boundary) and settles it back to the harness
+// runtime as an error result, without ever calling the tool's Execute.
+// Mirrors TS's `validatedHostToolCall.invalid` branch (the generic
+// invalidToolInputMessage on both sides; the detailed validation error stays
+// local-only). The call's ID is marked settled so a later echoed
+// tool-result/tool-approval-request event for it is replayed-and-skipped,
+// same as every other host-settled call (see isSettled/isReplayable in
+// consumeLoop).
+func (d *turnDriver) rejectInvalidHostToolCall(raw *ToolCallPart, displayCall types.ToolCall) error {
+	d.settledHostIDs[raw.ToolCallID] = struct{}{}
+	d.bufferedResultChunks = append(d.bufferedResultChunks, []provider.StreamChunk{{
+		Type: provider.ChunkTypeToolResult,
+		ToolResult: &types.ToolResult{
+			ToolCallID: raw.ToolCallID,
+			ToolName:   raw.ToolName,
+			Input:      displayCall.Arguments,
+			Error:      errors.New(invalidToolInputMessage),
+			Dynamic:    true,
+		},
+	}})
+	return d.control.SubmitToolResult(d.ctx, ToolResultSubmission{
+		ToolCallID: raw.ToolCallID,
+		Output:     map[string]interface{}{"error": invalidToolInputMessage},
+		IsError:    true,
+	})
 }
 
 // recordPendingResult parks a client-side (non-executable) or client-
@@ -1395,8 +1526,14 @@ func (d *turnDriver) recordPendingResult(raw *ToolCallPart) {
 // executeHostToolAsync runs tool.Execute in its own goroutine (so
 // independent host tool calls within a step run concurrently, matching TS
 // row 8d717b3) and submits the result back to the harness when it completes.
-// Joined at the next step boundary via joinOutstandingExecutions.
-func (d *turnDriver) executeHostToolAsync(tool types.Tool, raw *ToolCallPart, call types.ToolCall) {
+// Joined at the next step boundary via joinOutstandingExecutions. execArgs is
+// the schema-validated, *unstripped* input (types.ToolCall.Arguments from
+// classifyAndValidateToolCall's hostCall) — the tool always executes with the
+// real absolute paths a schema may require, never the work-dir-stripped
+// display value. Mirrors TS `maybeExecuteHostTool`'s
+// `input.parsedToolCall.input` (the raw-validated `validatedHostToolCall`,
+// not the display `parsedToolCall`).
+func (d *turnDriver) executeHostToolAsync(tool types.Tool, raw *ToolCallPart, execArgs map[string]interface{}) {
 	// Snapshotted here, synchronously in the caller's (turnDriver.run's)
 	// goroutine, rather than read as d.telStepCtx from inside the spawned
 	// goroutine below: d.telStepCtx is mutated by the main goroutine at
@@ -1427,7 +1564,7 @@ func (d *turnDriver) executeHostToolAsync(tool types.Tool, raw *ToolCallPart, ca
 		// can create nested spans for tool -> generateText chains (TS
 		// 59a2306's `wrappedExecuteTool`, matching pkg/ai/generate.go's own
 		// tool-loop wrapping of the same call).
-		output, err := telemetry.FireExecuteToolWithSettings(execTelCtx, d.in.Telemetry, raw.ToolName, call.Arguments,
+		output, err := telemetry.FireExecuteToolWithSettings(execTelCtx, d.in.Telemetry, raw.ToolName, execArgs,
 			func(execCtx context.Context, args map[string]interface{}) (interface{}, error) {
 				return tool.Execute(execCtx, args, types.ToolExecutionOptions{
 					ToolCallID: raw.ToolCallID, RuntimeContext: d.in.RuntimeContext, ToolContext: toolCtx,
@@ -1453,18 +1590,71 @@ func (d *turnDriver) recordExecError(toolCallID string, err error) {
 	}
 }
 
+// approvalAsToolCallPart reconstructs the ToolCallPart shape of a pending
+// approval's originating tool call from the approval record itself. Used
+// when no runtime event for it exists in this turn (a resumed/suspended
+// turn's startup continuation) and, for a custom approval, unconditionally —
+// mirrors TS's `rawToolCall` fallback object literal in
+// `processPendingApprovalContinuation`, which only prefers a turn-local raw
+// event (`rawToolCallsByToolCallId`) for a *builtin* approval; a custom
+// approval always reconstructs from `approval.input`, the unstripped input
+// captured when the approval was first recorded (handleApprovalRequest /
+// handleHostToolCall).
+func approvalAsToolCallPart(approval PendingToolApproval) ToolCallPart {
+	providerExecuted := false
+	if approval.ProviderExecuted != nil {
+		providerExecuted = *approval.ProviderExecuted
+	}
+	return ToolCallPart{
+		ToolCallID: approval.ToolCallID, ToolName: approval.ToolName, Input: approval.Input,
+		ProviderExecuted: providerExecuted, NativeName: approval.NativeName,
+	}
+}
+
 // processApprovalContinuation submits a resolved approval decision back to
 // the harness (builtin via PromptControl.SubmitToolApproval, custom via a
 // denial/execution result), mirroring TS `processPendingApprovalContinuation`.
+//
+// A custom approval that was just approved is *revalidated* against its raw
+// (unstripped) input here — the approval's Input was only ever JSON-parsed,
+// never schema-validated, when it was first recorded, and an approval
+// continuation can equally arrive for a resumed/suspended turn where no
+// earlier validation happened in this process at all. Mirrors TS's
+// `validateToolCall({ event: rawToolCall, tools: input.tools })` re-run
+// inside `processPendingApprovalContinuation`.
 func (d *turnDriver) processApprovalContinuation(approval PendingToolApproval, continuation types.ToolApprovalResponseContent) (turnOutcome, error) {
-	call, ok := d.toolCallsByID[approval.ToolCallID]
-	if !ok {
-		args, _ := parseJSONObject(approval.Input)
-		providerExecuted := false
-		if approval.ProviderExecuted != nil {
-			providerExecuted = *approval.ProviderExecuted
+	rawToolCall := approvalAsToolCallPart(approval)
+	if approval.Kind == PendingToolApprovalBuiltin {
+		if r := d.execToolCallsByID[approval.ToolCallID]; r != nil {
+			rawToolCall = *r
 		}
-		call = types.ToolCall{ID: approval.ToolCallID, ToolName: approval.ToolName, Arguments: args, RawArguments: approval.Input, ProviderExecuted: providerExecuted}
+	}
+
+	// validatedHostToolCall carries the unstripped, schema-validated
+	// Arguments actually used for execution below; call is always the
+	// consumer-facing (display) tool call embedded in the
+	// tool-approval-response chunk. Only set for a just-approved custom
+	// approval — mirrors TS's `validatedToolCall`/`toolCall` split.
+	var validatedHostToolCall *types.ToolCall
+	var call types.ToolCall
+	if approval.Kind == PendingToolApprovalCustom && continuation.Approved {
+		parsed, perr := ai.ParseToolCall(d.ctx, ai.ParseToolCallOptions{
+			ToolCall: toolCallPartToCall(&rawToolCall),
+			Tools:    d.toolsList,
+		})
+		if perr != nil {
+			return turnOutcomeContinue, perr
+		}
+		vc := parsed
+		validatedHostToolCall = &vc
+		call = displayHostToolCall(parsed, d.in.SessionWorkDir)
+	} else {
+		// No schema validation for a denial or a builtin approval: neither
+		// executes through this path, so only a plain JSON parse (for
+		// display) is needed — mirrors TS's `safeParseJSON`-only else
+		// branch.
+		args, _ := parseJSONObject(rawToolCall.Input)
+		call = types.ToolCall{ID: rawToolCall.ToolCallID, ToolName: rawToolCall.ToolName, Arguments: args, ProviderExecuted: rawToolCall.ProviderExecuted}
 	}
 
 	d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeToolApprovalResponse, ToolApprovalResponse: &types.ToolApprovalResponseContent{
@@ -1498,6 +1688,31 @@ func (d *turnDriver) processApprovalContinuation(approval PendingToolApproval, c
 		return turnOutcomeContinue, nil
 	}
 
+	if validatedHostToolCall == nil {
+		return turnOutcomeContinue, fmt.Errorf("harness '%s' could not validate approved host tool '%s'", d.in.Harness.HarnessID(), approval.ToolName)
+	}
+	// Revalidation rejected the input: settle as a tool-error, exactly like
+	// a first-pass invalid host tool call (rejectInvalidHostToolCall),
+	// without ever calling tool.Execute. Mirrors TS's
+	// `validatedToolCall.invalid` branch here.
+	if validatedHostToolCall.Invalid {
+		if err := d.control.SubmitToolResult(d.ctx, ToolResultSubmission{
+			ToolCallID: approval.ToolCallID,
+			Output:     map[string]interface{}{"error": invalidToolInputMessage},
+			IsError:    true,
+		}); err != nil {
+			return turnOutcomeContinue, err
+		}
+		d.bufferedResultChunks = append(d.bufferedResultChunks, []provider.StreamChunk{{
+			Type: provider.ChunkTypeToolResult,
+			ToolResult: &types.ToolResult{
+				ToolCallID: approval.ToolCallID, ToolName: approval.ToolName,
+				Input: call.Arguments, Error: errors.New(invalidToolInputMessage), Dynamic: true,
+			},
+		}})
+		return turnOutcomeContinue, nil
+	}
+
 	tool, executable := d.in.ActiveTools[approval.ToolName]
 	if !executable || tool.Execute == nil {
 		d.recordPendingResult(&ToolCallPart{ToolCallID: approval.ToolCallID, ToolName: approval.ToolName, Input: approval.Input})
@@ -1506,7 +1721,7 @@ func (d *turnDriver) processApprovalContinuation(approval PendingToolApproval, c
 		}
 		return turnOutcomeAwaitingToolResult, nil
 	}
-	d.executeHostToolAsync(tool, &ToolCallPart{ToolCallID: approval.ToolCallID, ToolName: approval.ToolName, Input: approval.Input}, call)
+	d.executeHostToolAsync(tool, &ToolCallPart{ToolCallID: approval.ToolCallID, ToolName: approval.ToolName, Input: approval.Input}, validatedHostToolCall.Arguments)
 	return turnOutcomeContinue, nil
 }
 
