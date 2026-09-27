@@ -835,8 +835,15 @@ const (
 
 // detectSkillsWarning returns a warning when container skills are configured but no code
 // execution tool is present in opts. Matches TypeScript SDK behavior.
+//
+// Resolves the effective per-call ModelOptions (construction-time defaults
+// merged with this call's providerOptions.anthropic/providerOptions.<custom>
+// container) rather than reading m.options directly, so a container/skills
+// configuration supplied only via providerOptions (not construction-time
+// ModelOptions) is still detected.
 func (m *LanguageModel) detectSkillsWarning(opts *provider.GenerateOptions) *types.Warning {
-	if m.options == nil || m.options.Container == nil || len(m.options.Container.Skills) == 0 {
+	o, err := m.resolveCallOptions(opts)
+	if err != nil || o.Container == nil || len(o.Container.Skills) == 0 {
 		return nil
 	}
 	if opts != nil {

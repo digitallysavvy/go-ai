@@ -96,7 +96,7 @@ type ThinkingConfig struct {
 	// BudgetTokens specifies the maximum tokens for thinking (only for "enabled" type)
 	// Requires a minimum of 1,024 tokens and counts towards the max_tokens limit.
 	// Optional for "enabled" type, not used for "adaptive" type.
-	BudgetTokens *int `json:"budget_tokens,omitempty"`
+	BudgetTokens *int `json:"budgetTokens,omitempty"`
 
 	// Display controls how thinking is returned for "adaptive" thinking:
 	// ThinkingDisplayOmitted, ThinkingDisplaySummarized or
@@ -170,7 +170,7 @@ type ModelOptions struct {
 	//   }
 	//
 	// See ContextManagement for available strategies.
-	ContextManagement *ContextManagement `json:"context_management,omitempty"`
+	ContextManagement *ContextManagement `json:"contextManagement,omitempty"`
 
 	// Compaction requests an on-demand summary of the supplied conversation.
 	// Mutually exclusive with ContextManagement (setting both returns an
@@ -236,7 +236,7 @@ type ModelOptions struct {
 	//   options := anthropic.ModelOptions{
 	//       CacheControl: &anthropic.CacheControlOption{Type: "ephemeral", TTL: "5m"},
 	//   }
-	CacheControl *CacheControlOption `json:"cache_control_option,omitempty"`
+	CacheControl *CacheControlOption `json:"cacheControl,omitempty"`
 
 	// Effort controls the model's reasoning effort level.
 	// Supported values: EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax.
@@ -251,11 +251,11 @@ type ModelOptions struct {
 	// TaskBudget informs the model of the total token budget available for the
 	// current task. This is advisory only; it does not enforce a hard limit.
 	// Requires the "task-budgets-2026-03-13" beta header (injected automatically).
-	TaskBudget *TaskBudget `json:"task_budget,omitempty"`
+	TaskBudget *TaskBudget `json:"taskBudget,omitempty"`
 
 	// InferenceGeo controls where Anthropic inference may run for this request.
 	// Supported values match the TypeScript SDK: "us" or "global".
-	InferenceGeo string `json:"inference_geo,omitempty"`
+	InferenceGeo string `json:"inferenceGeo,omitempty"`
 
 	// Fallbacks configures Anthropic server-side fallback attempts.
 	Fallbacks []FallbackConfig `json:"fallbacks,omitempty"`
@@ -285,7 +285,7 @@ type ModelOptions struct {
 	// Example (disable):
 	//   disabled := false
 	//   options := anthropic.ModelOptions{ToolStreaming: &disabled}
-	ToolStreaming *bool `json:"tool_streaming,omitempty"`
+	ToolStreaming *bool `json:"toolStreaming,omitempty"`
 
 	// DisableParallelToolUse prevents the model from calling multiple tools in a
 	// single response. When true, adds {disable_parallel_tool_use: true} to the
@@ -297,7 +297,7 @@ type ModelOptions struct {
 	//   options := anthropic.ModelOptions{
 	//       DisableParallelToolUse: &disable,
 	//   }
-	DisableParallelToolUse *bool `json:"disable_parallel_tool_use,omitempty"`
+	DisableParallelToolUse *bool `json:"disableParallelToolUse,omitempty"`
 
 	// MCPServers configures remote MCP servers for native server-side tool invocation.
 	// The Anthropic API connects to these MCP servers directly, exposing their tools
@@ -310,7 +310,7 @@ type ModelOptions struct {
 	//           {Type: "url", Name: "my-server", URL: "https://mcp.example.com/sse"},
 	//       },
 	//   }
-	MCPServers []MCPServerConfig `json:"mcp_servers,omitempty"`
+	MCPServers []MCPServerConfig `json:"mcpServers,omitempty"`
 
 	// Container configures an Anthropic agent container for code execution and skills.
 	// When Skills are provided, the code-execution-2025-08-25, skills-2025-10-02, and
@@ -345,7 +345,7 @@ type ModelOptions struct {
 	//   options := anthropic.ModelOptions{
 	//       StructuredOutputMode: anthropic.StructuredOutputJSONTool,
 	//   }
-	StructuredOutputMode StructuredOutputMode `json:"structured_output_mode,omitempty"`
+	StructuredOutputMode StructuredOutputMode `json:"structuredOutputMode,omitempty"`
 
 	// SendReasoning controls whether ReasoningContent (thinking) blocks from message
 	// history are included when sending messages to the Anthropic API.
@@ -362,7 +362,25 @@ type ModelOptions struct {
 	// Example (disable when switching to non-thinking model):
 	//   disabled := false
 	//   options := anthropic.ModelOptions{SendReasoning: &disabled}
-	SendReasoning *bool `json:"send_reasoning,omitempty"`
+	SendReasoning *bool `json:"sendReasoning,omitempty"`
+
+	// Metadata to include with the request (TS anthropicLanguageModelOptions.metadata).
+	//
+	// Example:
+	//   options := anthropic.ModelOptions{
+	//       Metadata: &anthropic.Metadata{UserID: "user-123"},
+	//   }
+	Metadata *Metadata `json:"metadata,omitempty"`
+}
+
+// Metadata carries request metadata. Currently only UserID (an external
+// identifier for the user associated with the request) is supported,
+// matching TS anthropicLanguageModelOptions.metadata.
+type Metadata struct {
+	// UserID is an external identifier for the user associated with the
+	// request. Should be a UUID, hash value, or other opaque identifier.
+	// Must not contain PII (name, email, phone number, etc.).
+	UserID string `json:"userId,omitempty"`
 }
 
 // MCPServerConfig configures a remote MCP server for the Anthropic API to connect to.
@@ -375,15 +393,15 @@ type MCPServerConfig struct {
 	// URL is the HTTP(S) endpoint of the MCP server
 	URL string `json:"url"`
 	// AuthorizationToken is an optional bearer token for authentication
-	AuthorizationToken string `json:"authorization_token,omitempty"`
+	AuthorizationToken string `json:"authorizationToken,omitempty"`
 	// ToolConfiguration optionally restricts which tools from this server are available
-	ToolConfiguration *MCPToolConfiguration `json:"tool_configuration,omitempty"`
+	ToolConfiguration *MCPToolConfiguration `json:"toolConfiguration,omitempty"`
 }
 
 // MCPToolConfiguration controls which tools from an MCP server are exposed to the model.
 type MCPToolConfiguration struct {
 	// AllowedTools restricts which tool names are available from this server
-	AllowedTools []string `json:"allowed_tools,omitempty"`
+	AllowedTools []string `json:"allowedTools,omitempty"`
 	// Enabled controls whether tools from this server are active
 	Enabled *bool `json:"enabled,omitempty"`
 }
@@ -393,7 +411,7 @@ type ContainerSkill struct {
 	// Type is "anthropic" for built-in skills or "custom" for custom skills
 	Type string `json:"type"`
 	// SkillID is the identifier of the skill
-	SkillID string `json:"skill_id"`
+	SkillID string `json:"skillId"`
 	// Version is the optional skill version
 	Version string `json:"version,omitempty"`
 }

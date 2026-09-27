@@ -96,9 +96,9 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 		opts = &provider.GenerateOptions{}
 	}
 	var warnings []types.Warning
-	o := m.options
-	if o == nil {
-		o = &ModelOptions{}
+	o, err := m.resolveCallOptions(opts)
+	if err != nil {
+		return nil, err
 	}
 
 	if o.ContextManagement != nil && o.Compaction != nil {
@@ -339,8 +339,8 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 	} else if o.AutomaticCaching {
 		body["cache_control"] = map[string]string{"type": "auto"}
 	}
-	if userID := callMetadataUserID(opts); userID != "" {
-		body["metadata"] = map[string]interface{}{"user_id": userID}
+	if o.Metadata != nil && o.Metadata.UserID != "" {
+		body["metadata"] = map[string]interface{}{"user_id": o.Metadata.UserID}
 	}
 	if len(o.MCPServers) > 0 {
 		body["mcp_servers"] = mcpServersWire(o.MCPServers)
@@ -578,22 +578,6 @@ func resolveReasoningConfig(level types.ReasoningLevel, modelID string, caps Mod
 		budget = caps.MaxOutputTokens
 	}
 	return &effectiveThinking{typ: ThinkingTypeEnabled, budgetTokens: &budget, set: true}, ""
-}
-
-func callMetadataUserID(opts *provider.GenerateOptions) string {
-	if opts == nil || opts.ProviderOptions == nil {
-		return ""
-	}
-	anthropicOpts, ok := opts.ProviderOptions["anthropic"].(map[string]interface{})
-	if !ok {
-		return ""
-	}
-	metadata, ok := anthropicOpts["metadata"].(map[string]interface{})
-	if !ok {
-		return ""
-	}
-	userID, _ := metadata["userId"].(string)
-	return userID
 }
 
 func mcpServersWire(servers []MCPServerConfig) []map[string]interface{} {
