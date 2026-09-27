@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	stdhttp "net/http"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +15,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"golang.org/x/net/websocket"
 )
 
@@ -361,22 +361,36 @@ func (s *openAIRealtimeTranscriptionStream) run(cfg openAIRealtimeTranscriptionS
 		return
 	}
 
-	go s.pumpAudio(conn, cfg.audio)
+	audioErrCh := make(chan error, 1)
+	go s.pumpAudio(conn, cfg.audio, audioErrCh)
 
 	if !s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart, Warnings: cfg.warnings}) {
 		return
 	}
 
+	msgCh := make(chan wsutil.Message)
+	go wsutil.ReceiveLoop(s.ctx, conn, msgCh)
+
 	for {
-		msg, err := s.receive(conn)
-		if err != nil {
-			select {
-			case <-s.ctx.Done():
-				cause := s.ctx.Err()
-				s.setErr(cause)
-				cfg.audio.Cancel(cause)
-			default:
-				if errors.Is(err, io.EOF) {
+		select {
+		case <-s.ctx.Done():
+			cause := s.ctx.Err()
+			s.setErr(cause)
+			cfg.audio.Cancel(cause)
+			return
+
+		case audioErr := <-audioErrCh:
+			// Mirrors TS `void sendAudio(socket).catch(finishWithError)`: a
+			// failure pumping audio (reading the caller's AudioStream, or
+			// writing to the WebSocket) terminates the stream with an error
+			// instead of being silently dropped.
+			s.setErr(audioErr)
+			cfg.audio.Cancel(audioErr)
+			return
+
+		case res := <-msgCh:
+			if res.Err != nil {
+				if wsutil.IsCleanClose(res.Err) {
 					// A clean close with no completed/error event yet is a
 					// normal end of stream, not a failure (TS onClose calls
 					// controller.close(), not controller.error(), when the
@@ -387,67 +401,75 @@ func (s *openAIRealtimeTranscriptionStream) run(cfg openAIRealtimeTranscriptionS
 				realtimeErr := errors.New("OpenAI realtime transcription error")
 				s.setErr(realtimeErr)
 				cfg.audio.Cancel(realtimeErr)
-			}
-			return
-		}
-
-		var raw map[string]interface{}
-		if jsonErr := json.Unmarshal(msg, &raw); jsonErr != nil {
-			continue
-		}
-		if cfg.includeRawChunks {
-			if !s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeRaw, RawValue: raw}) {
-				return
-			}
-		}
-
-		eventType, _ := raw["type"].(string)
-		switch eventType {
-		case "conversation.item.input_audio_transcription.delta":
-			itemID, _ := raw["item_id"].(string)
-			delta, _ := raw["delta"].(string)
-			if !s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeDelta, ID: itemID, Delta: delta}) {
 				return
 			}
 
-		case "conversation.item.input_audio_transcription.completed":
-			itemID, _ := raw["item_id"].(string)
-			transcript, _ := raw["transcript"].(string)
-			if itemID != "" {
-				if !s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeFinal, ID: itemID, Text: transcript}) {
+			var raw map[string]interface{}
+			if jsonErr := json.Unmarshal([]byte(res.Text), &raw); jsonErr != nil {
+				continue
+			}
+			if cfg.includeRawChunks {
+				if !s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeRaw, RawValue: raw}) {
 					return
 				}
 			}
-			langCopy := cfg.language
-			finish := provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeFinish, FinishText: transcript, Language: langCopy}
-			s.emit(finish)
-			return
 
-		case "error":
-			message := "OpenAI realtime error"
-			if errObj, ok := raw["error"].(map[string]interface{}); ok {
-				if m, ok := errObj["message"].(string); ok && m != "" {
-					message = m
+			eventType, _ := raw["type"].(string)
+			switch eventType {
+			case "conversation.item.input_audio_transcription.delta":
+				itemID, _ := raw["item_id"].(string)
+				delta, _ := raw["delta"].(string)
+				if !s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeDelta, ID: itemID, Delta: delta}) {
+					return
 				}
+
+			case "conversation.item.input_audio_transcription.completed":
+				itemID, _ := raw["item_id"].(string)
+				transcript, _ := raw["transcript"].(string)
+				if itemID != "" {
+					if !s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeFinal, ID: itemID, Text: transcript}) {
+						return
+					}
+				}
+				langCopy := cfg.language
+				finish := provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeFinish, FinishText: transcript, Language: langCopy}
+				s.emit(finish)
+				return
+
+			case "error":
+				message := "OpenAI realtime error"
+				if errObj, ok := raw["error"].(map[string]interface{}); ok {
+					if m, ok := errObj["message"].(string); ok && m != "" {
+						message = m
+					}
+				}
+				streamErr := errors.New(message)
+				s.setErr(streamErr)
+				cfg.audio.Cancel(streamErr)
+				return
 			}
-			streamErr := errors.New(message)
-			s.setErr(streamErr)
-			cfg.audio.Cancel(streamErr)
-			return
 		}
 	}
 }
 
 // pumpAudio reads chunks from audio and forwards them as
-// input_audio_buffer.append messages, committing the buffer at EOF. Errors
-// close the connection with the pump's error path, mirroring TS sendAudio's
-// finally-driven cleanup.
-func (s *openAIRealtimeTranscriptionStream) pumpAudio(conn *websocket.Conn, audio provider.AudioStream) {
+// input_audio_buffer.append messages, committing the buffer at EOF. Any other
+// failure — reading from the AudioStream, or writing to the WebSocket — is
+// reported on errCh, mirroring TS's `void sendAudio(socket).catch(finishWithError)`
+// (a rejected `audioReader.read()` fails the stream exactly like a failed
+// `socket.send`). A failure that stems from s.ctx already being cancelled is
+// not reported here: run()'s own select on s.ctx.Done() already handles that
+// case.
+func (s *openAIRealtimeTranscriptionStream) pumpAudio(conn *websocket.Conn, audio provider.AudioStream, errCh chan<- error) {
 	for {
 		chunk, err := audio.Next(s.ctx)
 		if err != nil {
 			if err == io.EOF {
-				_ = s.send(conn, []byte(`{"type":"input_audio_buffer.commit"}`))
+				if sendErr := s.send(conn, []byte(`{"type":"input_audio_buffer.commit"}`)); sendErr != nil {
+					s.reportAudioError(errCh, sendErr)
+				}
+			} else if s.ctx.Err() == nil {
+				s.reportAudioError(errCh, err)
 			}
 			return
 		}
@@ -459,66 +481,31 @@ func (s *openAIRealtimeTranscriptionStream) pumpAudio(conn *websocket.Conn, audi
 			continue
 		}
 		if err := s.send(conn, msg); err != nil {
+			if s.ctx.Err() == nil {
+				s.reportAudioError(errCh, err)
+			}
 			return
 		}
 	}
 }
 
+// reportAudioError delivers err to errCh, falling back to s.ctx.Done() so a
+// send that no longer has a reader (run() already returned via a different
+// path) cannot block pumpAudio forever.
+func (s *openAIRealtimeTranscriptionStream) reportAudioError(errCh chan<- error, err error) {
+	select {
+	case errCh <- err:
+	case <-s.ctx.Done():
+	}
+}
+
 func (s *openAIRealtimeTranscriptionStream) dial(wsURL string, headers map[string]string) (*websocket.Conn, error) {
 	protocols, filteredHeaders := openAIRealtimeWSAuth(headers)
-	wsConfig, err := websocket.NewConfig(wsURL, "http://localhost/")
-	if err != nil {
-		return nil, err
-	}
-	wsConfig.Protocol = protocols
-	wsConfig.Header = stdhttp.Header{}
-	for k, v := range filteredHeaders {
-		if v != "" {
-			wsConfig.Header.Set(k, v)
-		}
-	}
-
-	// DialContext (rather than DialConfig, which always dials against
-	// context.Background()) forces the pending handshake to fail and cleans
-	// up the socket when s.ctx is cancelled mid-dial, instead of leaving an
-	// unread, unclosed connection behind if the dial completes after we've
-	// already given up on it.
-	return wsConfig.DialContext(s.ctx)
+	return wsutil.Dial(s.ctx, wsURL, wsutil.DialOptions{Headers: filteredHeaders, Protocols: protocols})
 }
 
 func (s *openAIRealtimeTranscriptionStream) send(conn *websocket.Conn, message []byte) error {
-	done := make(chan error, 1)
-	go func() {
-		done <- websocket.Message.Send(conn, string(message))
-	}()
-	select {
-	case <-s.ctx.Done():
-		return s.ctx.Err()
-	case err := <-done:
-		return err
-	}
-}
-
-func (s *openAIRealtimeTranscriptionStream) receive(conn *websocket.Conn) ([]byte, error) {
-	type result struct {
-		msg string
-		err error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		var msg string
-		err := websocket.Message.Receive(conn, &msg)
-		ch <- result{msg: msg, err: err}
-	}()
-	select {
-	case <-s.ctx.Done():
-		return nil, s.ctx.Err()
-	case res := <-ch:
-		if res.err != nil {
-			return nil, res.err
-		}
-		return []byte(res.msg), nil
-	}
+	return wsutil.Send(s.ctx, conn, string(message))
 }
 
 var (
