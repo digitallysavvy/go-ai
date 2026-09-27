@@ -480,11 +480,27 @@ func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.S
 		if len(chunk.Error.Code) > 0 {
 			_ = json.Unmarshal(chunk.Error.Code, &code)
 		}
+		// TS parity: the Gateway's `ProviderStreamError` marker (a JS
+		// Symbol.for tag set by the origin provider's createProviderStreamError)
+		// never survives the JSON round trip over SSE, so on the client
+		// normalizeStreamProviderError's isProviderStreamError(error) check is
+		// always false for a Gateway-forwarded error. That routes it through
+		// the "not already marked" branch, which sets `data` to the *entire*
+		// raw error object (message/type/code/statusCode/isRetryable/data all
+		// included), not just its nested `data` field — see
+		// normalize-stream-provider-error.ts's `data: providerStreamError ?
+		// error.data : error` and the "preserves provider type and code as
+		// separate discriminators" test. Use the raw decoded map for parity
+		// rather than chunk.Error.Data alone.
+		var rawErr interface{} = chunk.Error
+		if m, ok := chunk.raw["error"]; ok {
+			rawErr = m
+		}
 		// The Gateway forwards an already-normalized ProviderStreamError
 		// verbatim (see the Error field doc above), so its own
 		// statusCode/isRetryable are used as-is (P1-1c part 2) — no
 		// discriminator/inference needed, unlike a raw provider frame.
-		streamErr := providererrors.NewStreamProviderError(chunk.Error.Message, "gateway", chunk.Error.Type, code, chunk.Error.StatusCode, chunk.Error.IsRetryable, chunk.Error.Data)
+		streamErr := providererrors.NewStreamProviderError(chunk.Error.Message, "gateway", chunk.Error.Type, code, chunk.Error.StatusCode, chunk.Error.IsRetryable, rawErr)
 		return &provider.StreamChunk{
 			Type:        provider.ChunkTypeError,
 			Text:        chunk.Error.Message,
