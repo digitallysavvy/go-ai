@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
@@ -98,6 +99,13 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 	o := m.options
 	if o == nil {
 		o = &ModelOptions{}
+	}
+
+	if o.ContextManagement != nil && o.Compaction != nil {
+		return nil, &providererrors.InvalidArgumentError{
+			Field:   "providerOptions",
+			Message: "Anthropic provider options `compaction` and `contextManagement` cannot be used together.",
+		}
 	}
 
 	if opts.FrequencyPenalty != nil {
@@ -360,6 +368,9 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 	if o.ContextManagement != nil {
 		body["context_management"] = o.ContextManagement
 	}
+	if o.Compaction != nil {
+		body["compaction"] = o.Compaction
+	}
 
 	if isThinking {
 		if th.typ == ThinkingTypeEnabled && thinkingBudget == nil {
@@ -421,6 +432,9 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 				break
 			}
 		}
+	}
+	if o.Compaction != nil {
+		betas.add(BetaHeaderCompaction)
 	}
 	if o.Container != nil && len(o.Container.Skills) > 0 {
 		betas.add(BetaHeaderCodeExecution20250825, BetaHeaderSkills, BetaHeaderFilesAPI)
