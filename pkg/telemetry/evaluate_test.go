@@ -89,9 +89,13 @@ func TestLegacyOpenTelemetryEvaluateSpans(t *testing.T) {
 		Answers: answers,
 	})
 
-	rootSpan := findSpan(rec, "ai.evaluate.evaluate-test")
+	// The root span keeps its bare operation id as its real OTel name — TS
+	// never suffixes the span name with functionID (see
+	// legacyOperationNameAttrs); functionID surfaces only via the
+	// operation.name/resource.name/ai.telemetry.functionId attributes.
+	rootSpan := findSpan(rec, "ai.evaluate")
 	if rootSpan == nil {
-		t.Fatal("expected a 'ai.evaluate.evaluate-test' root span")
+		t.Fatal("expected an 'ai.evaluate' root span")
 	}
 	doEvaluateSpan := findSpan(rec, "ai.evaluate.doEvaluate")
 	if doEvaluateSpan == nil {
@@ -100,6 +104,21 @@ func TestLegacyOpenTelemetryEvaluateSpans(t *testing.T) {
 
 	if v, ok := attrValue(rootSpan, "ai.operationId"); !ok || v.(string) != "ai.evaluate" {
 		t.Errorf("root ai.operationId = %v, ok=%v", v, ok)
+	}
+	if v, ok := attrValue(rootSpan, "operation.name"); !ok || v.(string) != "ai.evaluate evaluate-test" {
+		t.Errorf("root operation.name = %v, ok=%v", v, ok)
+	}
+	if v, ok := attrValue(rootSpan, "resource.name"); !ok || v.(string) != "evaluate-test" {
+		t.Errorf("root resource.name = %v, ok=%v", v, ok)
+	}
+	if v, ok := attrValue(rootSpan, "ai.model.provider"); !ok || v.(string) != "test-provider" {
+		t.Errorf("root ai.model.provider = %v, ok=%v", v, ok)
+	}
+	if v, ok := attrValue(rootSpan, "ai.model.id"); !ok || v.(string) != "test-model" {
+		t.Errorf("root ai.model.id = %v, ok=%v", v, ok)
+	}
+	if v, ok := attrValue(rootSpan, "ai.settings.maxRetries"); !ok || v.(int64) != 2 {
+		t.Errorf("root ai.settings.maxRetries = %v, ok=%v", v, ok)
 	}
 	if v, ok := attrValue(rootSpan, "ai.evaluation.state"); !ok || v.(string) != `{"input":"hello"}` {
 		t.Errorf("root ai.evaluation.state = %v, ok=%v", v, ok)
@@ -110,8 +129,14 @@ func TestLegacyOpenTelemetryEvaluateSpans(t *testing.T) {
 	if _, ok := attrValue(rootSpan, "ai.evaluation.answers"); !ok {
 		t.Error("root span missing ai.evaluation.answers")
 	}
-	if v, ok := attrValue(rootSpan, "gen_ai.system"); !ok || v.(string) != "test-provider" {
-		t.Errorf("root gen_ai.system = %v, ok=%v", v, ok)
+	// TS's onEvaluateOperationStart carries no gen_ai.* attributes at all
+	// (legacy-open-telemetry.ts); follow-up H1 removed the Go-only
+	// gen_ai.system/gen_ai.request.model that used to be set here.
+	if _, ok := attrValue(rootSpan, "gen_ai.system"); ok {
+		t.Error("root span should not carry gen_ai.system (TS parity)")
+	}
+	if _, ok := attrValue(rootSpan, "gen_ai.request.model"); ok {
+		t.Error("root span should not carry gen_ai.request.model (TS parity)")
 	}
 
 	if v, ok := attrValue(doEvaluateSpan, "ai.operationId"); !ok || v.(string) != "ai.evaluate.doEvaluate" {
@@ -382,6 +407,49 @@ func TestOpenTelemetryEvaluateSpans_ExperimentalEvaluationGate(t *testing.T) {
 				t.Error("expected ai.response.providerMetadata (gated by ProviderMetadata option, not ExperimentalEvaluation)")
 			}
 		})
+	}
+}
+
+// TestOpenTelemetryEvaluateSpans_ProviderMetadataGatedByOptionOnly covers
+// follow-up H2 for evaluate.go specifically: ai.response.providerMetadata on
+// the nested "ai.evaluate.doEvaluate"-equivalent span must appear whenever
+// OpenTelemetryOptions.ProviderMetadata is set, regardless of
+// Settings.RecordOutputs (TS gates it only on the providerMetadata
+// supplemental flag, since it is a plain pre-computed value, not an
+// {output: () => ...} accessor).
+func TestOpenTelemetryEvaluateSpans_ProviderMetadataGatedByOptionOnly(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	tracer := tp.Tracer("genai-evaluate-test")
+
+	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tracer, ProviderMetadata: true})
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: false}
+
+	ctx := integration.OnEvaluateStart(context.Background(), EvaluateStartEvent{
+		Settings: settings, CallID: "call-pm", OperationID: "ai.evaluate", ModelID: "gpt-5",
+	})
+	integration.OnEvaluationModelCallStart(ctx, EvaluationModelCallStartEvent{
+		Settings: settings, CallID: "call-pm", OperationID: "ai.evaluate.doEvaluate", ModelID: "gpt-5",
+	})
+	integration.OnEvaluationModelCallEnd(ctx, EvaluationModelCallEndEvent{
+		EvaluationModelCallStartEvent: EvaluationModelCallStartEvent{Settings: settings, CallID: "call-pm", OperationID: "ai.evaluate.doEvaluate"},
+		Answers:                       map[string]interface{}{"q1": "yes"},
+		ProviderMetadata:              map[string]interface{}{"p": "v"},
+	})
+
+	spans := findSpans(rec, "evaluate gpt-5")
+	if len(spans) != 2 {
+		t.Fatalf("expected 2 'evaluate gpt-5' spans, got %d", len(spans))
+	}
+	var found bool
+	for _, s := range spans {
+		if _, ok := attrValue(s, "ai.response.providerMetadata"); ok {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected ai.response.providerMetadata on the nested evaluate span even with RecordOutputs=false")
 	}
 }
 

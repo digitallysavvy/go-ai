@@ -248,7 +248,7 @@ func TestOTelIntegrationRuntimeContextAttributesOnRootAndToolSpans(t *testing.T)
 
 	toolCtx := integration.OnToolExecutionStart(ctx, TelemetryToolCallStartEvent{Settings: settings, ToolCallID: "call-1", ToolName: "lookup"})
 	integration.OnToolExecutionEnd(toolCtx, TelemetryToolCallFinishEvent{Settings: settings, ToolCallID: "call-1", ToolName: "lookup"})
-	toolSpan := findSpan(rec, "ai.toolCall.lookup")
+	toolSpan := findSpan(rec, "ai.toolCall")
 	if v, ok := attrValue(toolSpan, "ai.settings.context.userId"); !ok || v.(string) != "u1" {
 		t.Fatalf("expected ai.settings.context.userId=u1 on the tool span, got %v ok=%v", v, ok)
 	}

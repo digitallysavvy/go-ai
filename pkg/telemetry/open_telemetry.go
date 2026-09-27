@@ -402,7 +402,14 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 			attrs = append(attrs, attribute.String("gen_ai.output.messages", string(b)))
 		}
 	}
-	if i.opts.ProviderMetadata && recordOutputs && e.ProviderMetadata != nil {
+	// ai.response.providerMetadata is gated only by opts.ProviderMetadata, not
+	// recordOutputs — TS's selectSupplementalAttributes/selectAttributes only
+	// applies the recordOutputs gate to values wrapped in {output: () => ...};
+	// providerMetadata is a plain pre-computed value in both
+	// onLanguageModelCallEnd and onStepEnd (legacy-open-telemetry.ts) /
+	// their GenAI equivalents (open-telemetry.ts), so only isEnabled and the
+	// providerMetadata supplemental flag gate it.
+	if i.opts.ProviderMetadata && e.ProviderMetadata != nil {
 		if b, err := json.Marshal(e.ProviderMetadata); err == nil {
 			attrs = append(attrs, attribute.String("ai.response.providerMetadata", string(b)))
 		}
@@ -669,7 +676,6 @@ func (i OpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEvent) {
 	if !ok || !stepSpan.IsRecording() {
 		return
 	}
-	recordOutputs := e.Settings != nil && e.Settings.RecordOutputs
 	attrs := []attribute.KeyValue{
 		attribute.StringSlice("gen_ai.response.finish_reasons", []string{e.FinishReason}),
 	}
@@ -680,7 +686,9 @@ func (i OpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEvent) {
 		attrs = append(attrs, attribute.String("gen_ai.response.model", e.ResponseModelID))
 	}
 	attrs = appendGenAIUsageAttrs(attrs, e.Usage, i.opts.Usage)
-	if i.opts.ProviderMetadata && recordOutputs && e.ProviderMetadata != nil {
+	// Gated only by opts.ProviderMetadata (not recordOutputs) — see the
+	// identical comment in OnLanguageModelCallEnd.
+	if i.opts.ProviderMetadata && e.ProviderMetadata != nil {
 		if b, err := json.Marshal(e.ProviderMetadata); err == nil {
 			attrs = append(attrs, attribute.String("ai.response.providerMetadata", string(b)))
 		}

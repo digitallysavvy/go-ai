@@ -116,6 +116,346 @@ func TestOTelIntegrationStepFinishFinishAndError(t *testing.T) {
 	}
 }
 
+// TestLegacyOpenTelemetryOnStartBaseAttributes ports TS's
+// "should record telemetry data when enabled" legacy-open-telemetry.test.ts
+// case (see the matching __snapshots__ entry): the root "ai.generateText"
+// span must carry ai.model.provider/id, ai.settings.<key> for every call
+// setting including maxRetries, ai.request.headers.<name>, and
+// operation.name/resource.name/ai.telemetry.functionId — and its real OTel
+// span name must be the bare operation id, never suffixed with functionID
+// (follow-up H1, 2026-09-27).
+func TestLegacyOpenTelemetryOnStartBaseAttributes(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	tracer := tp.Tracer("legacy-base-attrs-test")
+
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
+	settings := &Settings{
+		IsEnabled:     Bool(true),
+		RecordInputs:  true,
+		RecordOutputs: true,
+		FunctionID:    "test-function-id",
+	}
+
+	maxTokens := 100
+	temp := 0.5
+	topP := 0.2
+	// TS's snapshot uses a float for topK (0.1); Go's TopK field is *int, so
+	// this test exercises the int representation instead.
+	topKInt := 1
+	presence := 0.4
+	frequency := 0.3
+	seed := 7
+	maxRetries := 2
+
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{
+		OperationType:    "ai.generateText",
+		ModelProvider:    "mock-provider",
+		ModelID:          "mock-model-id",
+		Settings:         settings,
+		Prompt:           "prompt",
+		Headers:          map[string]string{"header1": "value1", "header2": "value2"},
+		MaxOutputTokens:  &maxTokens,
+		Temperature:      &temp,
+		TopP:             &topP,
+		TopK:             &topKInt,
+		PresencePenalty:  &presence,
+		FrequencyPenalty: &frequency,
+		StopSequences:    []string{"stop"},
+		Seed:             &seed,
+		MaxRetries:       &maxRetries,
+	})
+	if !trace.SpanFromContext(ctx).IsRecording() {
+		t.Fatal("expected OnStart to embed a recording span in ctx")
+	}
+
+	span := findSpan(rec, "ai.generateText")
+	if span == nil {
+		t.Fatal("expected the real span name to be the bare operation id 'ai.generateText' (not suffixed with functionID)")
+	}
+
+	wantStrings := map[string]string{
+		"ai.model.provider":          "mock-provider",
+		"ai.model.id":                "mock-model-id",
+		"ai.request.headers.header1": "value1",
+		"ai.request.headers.header2": "value2",
+		"ai.telemetry.functionId":    "test-function-id",
+		"ai.operationId":             "ai.generateText",
+		"operation.name":             "ai.generateText test-function-id",
+		"resource.name":              "test-function-id",
+	}
+	for key, want := range wantStrings {
+		if v, ok := attrValue(span, key); !ok || v.(string) != want {
+			t.Errorf("%s = %v (ok=%v), want %q", key, v, ok, want)
+		}
+	}
+
+	wantFloats := map[string]float64{
+		"ai.settings.temperature":      0.5,
+		"ai.settings.topP":             0.2,
+		"ai.settings.presencePenalty":  0.4,
+		"ai.settings.frequencyPenalty": 0.3,
+	}
+	for key, want := range wantFloats {
+		if v, ok := attrValue(span, key); !ok || v.(float64) != want {
+			t.Errorf("%s = %v (ok=%v), want %v", key, v, ok, want)
+		}
+	}
+
+	wantInts := map[string]int64{
+		"ai.settings.maxOutputTokens": 100,
+		"ai.settings.topK":            1,
+		"ai.settings.seed":            7,
+		"ai.settings.maxRetries":      2,
+	}
+	for key, want := range wantInts {
+		if v, ok := attrValue(span, key); !ok || v.(int64) != want {
+			t.Errorf("%s = %v (ok=%v), want %v", key, v, ok, want)
+		}
+	}
+
+	if v, ok := attrValue(span, "ai.settings.stopSequences"); !ok {
+		t.Error("expected ai.settings.stopSequences to be set")
+	} else if got := v.([]string); len(got) != 1 || got[0] != "stop" {
+		t.Errorf("ai.settings.stopSequences = %v, want [stop]", got)
+	}
+
+	// gen_ai.system/gen_ai.request.model must NOT be on the root span — TS's
+	// onGenerateStart never sets them there (only the nested doGenerate/
+	// doStream step span does).
+	if _, ok := attrValue(span, "gen_ai.system"); ok {
+		t.Error("root span should not carry gen_ai.system")
+	}
+	if _, ok := attrValue(span, "gen_ai.request.model"); ok {
+		t.Error("root span should not carry gen_ai.request.model")
+	}
+}
+
+// TestLegacyOpenTelemetryOnStartPromptJSON ports TS's legacy-open-telemetry
+// snapshot shapes for ai.prompt: onGenerateStart's `JSON.stringify({system,
+// messages})` for generateText/streamText (a `prompt` string call option
+// normalizes into a single user message) and onObjectOperationStart's
+// `JSON.stringify({system, prompt, messages})` for generateObject/
+// streamObject (prompt/messages passed through as raw, mutually-exclusive
+// call options, unlike generateText's always-normalized messages).
+func TestLegacyOpenTelemetryOnStartPromptJSON(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	tracer := tp.Tracer("legacy-prompt-json-test")
+
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true}
+
+	// generateText: `event.messages` is always the normalized message list,
+	// even though this event is built directly here (bypassing pkg/ai's
+	// prompt-to-messages normalization) with an explicit Messages value —
+	// mirroring a caller that used the `messages` option directly.
+	integration.OnStart(context.Background(), TelemetryStartEvent{
+		OperationType: "ai.generateText",
+		Settings:      settings,
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "prompt"}}},
+		},
+	})
+	textSpan := findSpan(rec, "ai.generateText")
+	if textSpan == nil {
+		t.Fatal("expected an 'ai.generateText' span")
+	}
+	wantTextPrompt := `{"messages":[{"role":"user","content":[{"type":"text","text":"prompt"}]}]}`
+	if v, ok := attrValue(textSpan, "ai.prompt"); !ok || v.(string) != wantTextPrompt {
+		t.Errorf("generateText ai.prompt = %v (ok=%v), want %q", v, ok, wantTextPrompt)
+	}
+
+	// generateObject: prompt/messages are raw, mutually-exclusive call
+	// options — a bare `prompt` string produces `{"prompt":"..."}` with no
+	// "messages" key at all (TS: `JSON.stringify({system, prompt,
+	// messages})` drops the undefined `messages` field).
+	integration.OnStart(context.Background(), TelemetryStartEvent{
+		OperationType: "ai.generateObject",
+		Settings:      settings,
+		Prompt:        "prompt",
+	})
+	objectSpan := findSpan(rec, "ai.generateObject")
+	if objectSpan == nil {
+		t.Fatal("expected an 'ai.generateObject' span")
+	}
+	wantObjectPrompt := `{"prompt":"prompt"}`
+	if v, ok := attrValue(objectSpan, "ai.prompt"); !ok || v.(string) != wantObjectPrompt {
+		t.Errorf("generateObject ai.prompt = %v (ok=%v), want %q", v, ok, wantObjectPrompt)
+	}
+}
+
+// TestLegacyOpenTelemetryOnStartEmbedRerankAttributes ports TS's
+// onEmbedOperationStart/onRerankOperationStart shape: ai.embed uses
+// ai.value, ai.embedMany uses ai.values (array of JSON-encoded strings, not
+// a count), and ai.rerank uses ai.documents — never ai.prompt.
+func TestLegacyOpenTelemetryOnStartEmbedRerankAttributes(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	tracer := tp.Tracer("legacy-embed-rerank-test")
+
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true}
+
+	integration.OnStart(context.Background(), TelemetryStartEvent{
+		OperationType: "ai.embed",
+		ModelProvider: "openai",
+		ModelID:       "text-embedding-3-small",
+		Settings:      settings,
+		Prompt:        "hello world",
+	})
+	embedSpan := findSpan(rec, "ai.embed")
+	if embedSpan == nil {
+		t.Fatal("expected an 'ai.embed' span")
+	}
+	if v, ok := attrValue(embedSpan, "ai.value"); !ok || v.(string) != `"hello world"` {
+		t.Errorf("ai.value = %v (ok=%v), want %q", v, ok, `"hello world"`)
+	}
+	if _, ok := attrValue(embedSpan, "ai.prompt"); ok {
+		t.Error("ai.embed span should not carry ai.prompt")
+	}
+
+	integration.OnStart(context.Background(), TelemetryStartEvent{
+		OperationType: "ai.embedMany",
+		ModelProvider: "openai",
+		ModelID:       "text-embedding-3-small",
+		Settings:      settings,
+		Values:        []string{"a", "b"},
+	})
+	embedManySpan := findSpan(rec, "ai.embedMany")
+	if embedManySpan == nil {
+		t.Fatal("expected an 'ai.embedMany' span")
+	}
+	if v, ok := attrValue(embedManySpan, "ai.values"); !ok {
+		t.Error("expected ai.values to be set")
+	} else if got := v.([]string); len(got) != 2 || got[0] != `"a"` || got[1] != `"b"` {
+		t.Errorf("ai.values = %v, want [\"a\" \"b\"]", got)
+	}
+
+	integration.OnStart(context.Background(), TelemetryStartEvent{
+		OperationType: "ai.rerank",
+		ModelProvider: "cohere",
+		ModelID:       "rerank-v3.5",
+		Settings:      settings,
+		Documents:     []string{"doc1", "doc2"},
+	})
+	rerankSpan := findSpan(rec, "ai.rerank")
+	if rerankSpan == nil {
+		t.Fatal("expected an 'ai.rerank' span")
+	}
+	if v, ok := attrValue(rerankSpan, "ai.documents"); !ok {
+		t.Error("expected ai.documents to be set")
+	} else if got := v.([]string); len(got) != 2 || got[0] != `"doc1"` || got[1] != `"doc2"` {
+		t.Errorf("ai.documents = %v, want [\"doc1\" \"doc2\"]", got)
+	}
+	if _, ok := attrValue(rerankSpan, "ai.prompt"); ok {
+		t.Error("ai.rerank span should not carry ai.prompt")
+	}
+}
+
+// TestLegacyOpenTelemetryToolCallSpan ports TS's legacy-open-telemetry.test.ts
+// "should record tool call telemetry data" case (see the matching
+// __snapshots__ entry, which shows `"name": "ai.toolCall"` and
+// `"ai.operationId": "ai.toolCall"` on the tool span, with no per-tool-name
+// suffix anywhere): the real span name is the bare "ai.toolCall" (never
+// suffixed with the tool name), it carries operation.name/ai.operationId
+// (assembleOperationName), and ai.toolCall.args/result are JSON-encoded and
+// gated by RecordOutputs (TS wraps both in an `output: () => ...`
+// accessor), not by RecordInputs.
+func TestLegacyOpenTelemetryToolCallSpan(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	tracer := tp.Tracer("legacy-toolcall-test")
+
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{
+		OperationType: "ai.generateText",
+		Settings:      settings,
+	})
+	toolCtx := integration.OnToolExecutionStart(ctx, TelemetryToolCallStartEvent{
+		Settings:   settings,
+		ToolCallID: "tool-call-1",
+		ToolName:   "myTool",
+		Args:       map[string]interface{}{"query": "test"},
+	})
+	integration.OnToolExecutionEnd(toolCtx, TelemetryToolCallFinishEvent{
+		Settings:   settings,
+		ToolCallID: "tool-call-1",
+		ToolName:   "myTool",
+		Result:     "result1",
+	})
+
+	toolSpan := findSpan(rec, "ai.toolCall")
+	if toolSpan == nil {
+		t.Fatal("expected the tool call span to be named the bare 'ai.toolCall' (not suffixed with the tool name)")
+	}
+	if v, ok := attrValue(toolSpan, "ai.operationId"); !ok || v.(string) != "ai.toolCall" {
+		t.Errorf("ai.operationId = %v (ok=%v), want ai.toolCall", v, ok)
+	}
+	if v, ok := attrValue(toolSpan, "operation.name"); !ok || v.(string) != "ai.toolCall" {
+		t.Errorf("operation.name = %v (ok=%v), want ai.toolCall", v, ok)
+	}
+	if v, ok := attrValue(toolSpan, "ai.toolCall.name"); !ok || v.(string) != "myTool" {
+		t.Errorf("ai.toolCall.name = %v (ok=%v), want myTool", v, ok)
+	}
+	if v, ok := attrValue(toolSpan, "ai.toolCall.id"); !ok || v.(string) != "tool-call-1" {
+		t.Errorf("ai.toolCall.id = %v (ok=%v), want tool-call-1", v, ok)
+	}
+	if v, ok := attrValue(toolSpan, "ai.toolCall.args"); !ok || v.(string) != `{"query":"test"}` {
+		t.Errorf("ai.toolCall.args = %v (ok=%v), want {\"query\":\"test\"}", v, ok)
+	}
+	if v, ok := attrValue(toolSpan, "ai.toolCall.result"); !ok || v.(string) != `"result1"` {
+		t.Errorf(`ai.toolCall.result = %v (ok=%v), want "result1"`, v, ok)
+	}
+}
+
+// TestLegacyOpenTelemetryToolCallSpan_RecordOutputsFalse verifies
+// ai.toolCall.args/result are absent (not just recomputed) when
+// RecordOutputs is false, matching TS's output()-accessor gating.
+func TestLegacyOpenTelemetryToolCallSpan_RecordOutputsFalse(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	tracer := tp.Tracer("legacy-toolcall-recordoutputs-false-test")
+
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: false}
+
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{
+		OperationType: "ai.generateText",
+		Settings:      settings,
+	})
+	toolCtx := integration.OnToolExecutionStart(ctx, TelemetryToolCallStartEvent{
+		Settings:   settings,
+		ToolCallID: "tool-call-1",
+		ToolName:   "myTool",
+		Args:       map[string]interface{}{"query": "test"},
+	})
+	integration.OnToolExecutionEnd(toolCtx, TelemetryToolCallFinishEvent{
+		Settings:   settings,
+		ToolCallID: "tool-call-1",
+		ToolName:   "myTool",
+		Result:     "result1",
+	})
+
+	toolSpan := findSpan(rec, "ai.toolCall")
+	if toolSpan == nil {
+		t.Fatal("expected an 'ai.toolCall' span")
+	}
+	if _, ok := attrValue(toolSpan, "ai.toolCall.args"); ok {
+		t.Error("expected ai.toolCall.args to be absent when RecordOutputs is false")
+	}
+	if _, ok := attrValue(toolSpan, "ai.toolCall.result"); ok {
+		t.Error("expected ai.toolCall.result to be absent when RecordOutputs is false")
+	}
+}
+
 func TestOTelIntegrationCustomSpanAttributes(t *testing.T) {
 	rec := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
@@ -129,6 +469,7 @@ func TestOTelIntegrationCustomSpanAttributes(t *testing.T) {
 			return map[string]interface{}{
 				"custom.span_type":       string(opts.SpanType),
 				"gen_ai.request.model":   "custom-should-not-win",
+				"ai.model.id":            "custom-should-not-win",
 				"custom.runtime_present": opts.RuntimeContext["user"] == "alice",
 				"custom.call_id":         opts.CallID,
 			}
@@ -240,7 +581,11 @@ func TestOTelIntegrationCustomSpanAttributes(t *testing.T) {
 	if spansByType["languageModel"]["custom.call_id"] != "lm-1" || spansByType["embedding"]["custom.call_id"] != "embed-1" || spansByType["reranking"]["custom.call_id"] != "rerank-1" {
 		t.Fatalf("model call ids were not passed to enrichers: %#v", spansByType)
 	}
-	if spansByType["operation"]["gen_ai.request.model"] != "gpt-5" || spansByType["step"]["gen_ai.request.model"] != "gpt-5" {
+	// The root "operation" span no longer carries gen_ai.request.model (TS's
+	// onGenerateStart root span never has gen_ai.* attributes — only the
+	// nested doGenerate/doStream step span does), so the collision check for
+	// it uses ai.model.id instead, which the root span does set.
+	if spansByType["operation"]["ai.model.id"] != "gpt-5" || spansByType["step"]["gen_ai.request.model"] != "gpt-5" {
 		t.Fatalf("SDK attributes were not allowed to override custom attributes: %#v", spansByType)
 	}
 }
@@ -285,12 +630,18 @@ func TestOTelIntegrationToolContextParentsNestedOperation(t *testing.T) {
 	integration.OnStepEnd(stepCtx, TelemetryStepEndEvent{Settings: settings, StepNumber: 0, FinishReason: "tool-calls"})
 	integration.OnEnd(rootCtx, TelemetryFinishEvent{Settings: settings, FinishReason: "stop"})
 
+	// The nested "inner" root span is no longer named "ai.generateText.inner"
+	// (TS never suffixes the real span name with functionID — see
+	// legacyOperationNameAttrs), so it is distinguished from the outer root
+	// span (also named "ai.generateText") by its operation.name attribute
+	// ("ai.generateText inner") instead of by span name.
 	var toolSpan, innerSpan sdktrace.ReadOnlySpan
 	for _, span := range rec.Ended() {
-		switch span.Name() {
-		case "ai.toolCall.lookup":
+		if span.Name() == "ai.toolCall" {
 			toolSpan = span
-		case "ai.generateText.inner":
+			continue
+		}
+		if v, ok := attrValue(span, "operation.name"); ok && v.(string) == "ai.generateText inner" {
 			innerSpan = span
 		}
 	}

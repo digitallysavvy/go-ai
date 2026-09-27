@@ -132,6 +132,57 @@ func TestOpenTelemetryLanguageModelCallStartRequestParams(t *testing.T) {
 	}
 }
 
+// TestOpenTelemetryProviderMetadataGatedByOptionOnly covers follow-up H2:
+// TS's selectSupplementalAttributes gates ai.response.providerMetadata only
+// by the providerMetadata supplemental attribute flag (a plain,
+// pre-computed JSON string, not wrapped in an {output: () => ...}
+// accessor), so selectAttributes' recordOutputs gate never applies to it —
+// see legacy-open-telemetry.ts onLanguageModelCallEnd/onStepEnd and
+// open-telemetry.ts's equivalents. Go previously also required
+// Settings.RecordOutputs, dropping providerMetadata whenever a caller
+// disabled output recording even with ProviderMetadata explicitly opted in.
+func TestOpenTelemetryProviderMetadataGatedByOptionOnly(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	tracer := tp.Tracer("genai-test")
+
+	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tracer, ProviderMetadata: true})
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: false}
+
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings})
+	ctx = integration.OnStepStart(ctx, TelemetryStepStartEvent{Settings: settings, OperationType: "ai.generateText", StepNumber: 0})
+	ctx = integration.OnLanguageModelCallStart(ctx, LanguageModelCallStartEvent{Settings: settings, CallID: "call-pm", ModelID: "gpt-5"})
+	integration.OnLanguageModelCallEnd(ctx, LanguageModelCallEndEvent{
+		Settings:         settings,
+		CallID:           "call-pm",
+		FinishReason:     "stop",
+		ProviderMetadata: map[string]interface{}{"openai": map[string]interface{}{"cachedTokens": 5}},
+	})
+	integration.OnStepEnd(ctx, TelemetryStepEndEvent{
+		Settings:         settings,
+		StepNumber:       0,
+		FinishReason:     "stop",
+		ProviderMetadata: map[string]interface{}{"openai": map[string]interface{}{"cachedTokens": 5}},
+	})
+
+	chatSpan := findSpan(rec, "chat gpt-5")
+	if chatSpan == nil {
+		t.Fatal("expected a 'chat gpt-5' span")
+	}
+	if _, ok := attrValue(chatSpan, "ai.response.providerMetadata"); !ok {
+		t.Error("expected ai.response.providerMetadata on the chat span even with RecordOutputs=false, since it is gated only by the ProviderMetadata option")
+	}
+
+	stepSpan := findSpan(rec, "step 0")
+	if stepSpan == nil {
+		t.Fatal("expected a 'step 0' span")
+	}
+	if _, ok := attrValue(stepSpan, "ai.response.providerMetadata"); !ok {
+		t.Error("expected ai.response.providerMetadata on the step span even with RecordOutputs=false, since it is gated only by the ProviderMetadata option")
+	}
+}
+
 // TestOpenTelemetryEmbeddingUsageNotDoubleCounted covers c0a42bc: the root
 // ai.embed span must not carry gen_ai.usage.input_tokens (only the
 // embeddings request span does), so a trace-wide sum of that attribute

@@ -649,25 +649,38 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	// Fire OnStart — integrations start their root spans here and embed them
 	// in the returned context.  FireOnFinish / FireOnError are called later
 	// from processStream or ReadAll once the stream completes.
-	telPrompt := ""
 	telSystem := ""
 	var telMessages []types.Message
 	if telemetrySettings != nil && telemetrySettings.RecordInputs {
-		telPrompt = opts.Prompt
 		telSystem = system
-		telMessages = opts.Messages
+		if len(instructionMessages) > 0 {
+			telSystem = instructionMessagesText(instructionMessages)
+		}
+		// See the matching comment in generate.go: TS's
+		// GenerateTextStartEvent.messages is always the normalized message
+		// list, even for the `prompt` string convenience.
+		telMessages = buildPrompt(opts.Prompt, opts.Messages, "").Messages
 	}
+	streamTextMaxRetries := preparedMaxRetries(opts.MaxRetries)
 	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
-		OperationType:  "ai.streamText",
-		ModelProvider:  opts.Model.Provider(),
-		ModelID:        opts.Model.ModelID(),
-		Settings:       telemetrySettings,
-		Prompt:         telPrompt,
-		System:         telSystem,
-		Messages:       telMessages,
-		Headers:        opts.Headers,
-		RuntimeContext: telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
-		ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
+		OperationType:    "ai.streamText",
+		ModelProvider:    opts.Model.Provider(),
+		ModelID:          opts.Model.ModelID(),
+		Settings:         telemetrySettings,
+		System:           telSystem,
+		Messages:         telMessages,
+		Headers:          opts.Headers,
+		MaxOutputTokens:  opts.MaxTokens,
+		Temperature:      opts.Temperature,
+		TopP:             opts.TopP,
+		TopK:             opts.TopK,
+		PresencePenalty:  opts.PresencePenalty,
+		FrequencyPenalty: opts.FrequencyPenalty,
+		StopSequences:    opts.StopSequences,
+		Seed:             opts.Seed,
+		MaxRetries:       &streamTextMaxRetries,
+		RuntimeContext:   telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
+		ToolsContext:     telemetryToolsContext(telemetrySettings, toolsContext),
 	})
 	telemetryCtx := ctx // snapshot ctx with embedded spans before timeout wrapping
 
