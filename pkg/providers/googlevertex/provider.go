@@ -321,7 +321,7 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 		return nil, fmt.Errorf("model ID cannot be empty")
 	}
 	if isEndpointModelID(modelID) && p.config.APIKey != "" {
-		return nil, fmt.Errorf("google Vertex tuned models do not support Express Mode API keys. Use standard Google Cloud credentials instead")
+		return nil, fmt.Errorf("Google Vertex tuned models do not support Express Mode API keys. Use standard Google Cloud credentials instead.")
 	}
 
 	return NewLanguageModel(p, modelID), nil
@@ -338,7 +338,7 @@ func (p *Provider) Interactions(modelID string) (provider.LanguageModel, error) 
 		return nil, fmt.Errorf("model ID cannot be empty")
 	}
 	if p.config.APIKey != "" {
-		return nil, fmt.Errorf("google Vertex Interactions models do not support Express Mode API keys. Use standard Google Cloud credentials instead")
+		return nil, fmt.Errorf("Google Vertex Interactions models do not support Express Mode API keys. Use standard Google Cloud credentials instead.")
 	}
 	return googleprovider.NewInteractionsLanguageModelWithConfig(p.interactionsConfig(), modelID), nil
 }
@@ -350,7 +350,7 @@ func (p *Provider) InteractionsAgent(agent string) (provider.LanguageModel, erro
 		return nil, fmt.Errorf("agent cannot be empty")
 	}
 	if p.config.APIKey != "" {
-		return nil, fmt.Errorf("google Vertex Interactions models do not support Express Mode API keys. Use standard Google Cloud credentials instead")
+		return nil, fmt.Errorf("Google Vertex Interactions models do not support Express Mode API keys. Use standard Google Cloud credentials instead.")
 	}
 	return googleprovider.NewInteractionsAgentModelWithConfig(p.interactionsConfig(), agent), nil
 }
@@ -362,7 +362,7 @@ func (p *Provider) InteractionsManagedAgent(id string) (provider.LanguageModel, 
 		return nil, fmt.Errorf("managed agent id cannot be empty")
 	}
 	if p.config.APIKey != "" {
-		return nil, fmt.Errorf("google Vertex Interactions models do not support Express Mode API keys. Use standard Google Cloud credentials instead")
+		return nil, fmt.Errorf("Google Vertex Interactions models do not support Express Mode API keys. Use standard Google Cloud credentials instead.")
 	}
 	return googleprovider.NewInteractionsManagedAgentModelWithConfig(p.interactionsConfig(), id), nil
 }
@@ -449,7 +449,7 @@ func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
 	// `modelId.startsWith('chirp')`).
 	if strings.HasPrefix(modelID, "chirp") {
 		if p.config.APIKey != "" {
-			return nil, fmt.Errorf("google Vertex Chirp speech models do not support Express Mode API keys. Use standard Google Cloud credentials instead")
+			return nil, fmt.Errorf("Google Vertex Chirp speech models do not support Express Mode API keys. Use standard Google Cloud credentials instead.")
 		}
 		return NewCloudTTSSpeechModel(p, modelID), nil
 	}
@@ -473,7 +473,7 @@ func (p *Provider) Speech(modelID string) (provider.SpeechModel, error) {
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
 	if p.config.APIKey != "" {
-		return nil, fmt.Errorf("google vertex transcription models do not support Express Mode API keys")
+		return nil, fmt.Errorf("Google Vertex transcription models do not support Express Mode API keys. Use standard Google Cloud credentials instead.")
 	}
 	return NewTranscriptionModel(p, modelID), nil
 }
