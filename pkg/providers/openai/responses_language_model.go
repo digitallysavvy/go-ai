@@ -142,6 +142,8 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	promptCacheKey := ""
 	reasoningEffort := ""
 	reasoningEffortUpdate := ""
+	reasoningMode := ""
+	reasoningContext := ""
 	reasoningSummary := ""
 	reasoningSummarySet := false
 	strictJSONSchema := true
@@ -197,6 +199,12 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 			}
 			if v, ok := openaiOpts["reasoningEffortUpdate"].(string); ok {
 				reasoningEffortUpdate = v
+			}
+			if v, ok := openaiOpts["reasoningMode"].(string); ok {
+				reasoningMode = v
+			}
+			if v, ok := openaiOpts["reasoningContext"].(string); ok {
+				reasoningContext = v
 			}
 			if v, ok := openaiOpts["reasoningSummary"]; ok {
 				reasoningSummarySet = true
@@ -338,7 +346,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	// no auto-truncation).
 	if reasoningEffortUpdate != "" {
 		configurationUpdateSupported := modelCapabilities.SupportsConfigurationUpdate &&
-			!contextManagementExplicit && truncation != "auto"
+			reasoningMode != "pro" && !contextManagementExplicit && truncation != "auto"
 		if !configurationUpdateSupported {
 			details := "reasoningEffortUpdate requires standard reasoning mode without automatic compaction or automatic truncation"
 			if !modelCapabilities.SupportsConfigurationUpdate {
@@ -396,13 +404,21 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	if !reasoningSummarySet && resolvedReasoningSummary == "" && effort != "" && effort != "none" {
 		resolvedReasoningSummary = "detailed"
 	}
-	if isReasoning && (effort != "" || resolvedReasoningSummary != "") {
+	if isReasoning && (effort != "" || resolvedReasoningSummary != "" || reasoningMode != "" || reasoningContext != "") {
 		reasoning := map[string]interface{}{}
 		if effort != "" {
 			reasoning["effort"] = effort
 		}
 		if resolvedReasoningSummary != "" {
 			reasoning["summary"] = resolvedReasoningSummary
+		}
+		// Row b2b1bb9 (Responses half): GPT-5.6 reasoningMode ("standard"/
+		// "pro") and reasoningContext ("auto"/"current_turn"/"all_turns").
+		if reasoningMode != "" {
+			reasoning["mode"] = reasoningMode
+		}
+		if reasoningContext != "" {
+			reasoning["context"] = reasoningContext
 		}
 		body["reasoning"] = reasoning
 	} else if !isReasoning {
@@ -418,6 +434,20 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 				Type:    "unsupported",
 				Feature: "reasoningSummary",
 				Details: "reasoningSummary is not supported for non-reasoning models",
+			})
+		}
+		if reasoningMode != "" {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "reasoningMode",
+				Details: "reasoningMode is not supported for non-reasoning models",
+			})
+		}
+		if reasoningContext != "" {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "reasoningContext",
+				Details: "reasoningContext is not supported for non-reasoning models",
 			})
 		}
 	}
@@ -1240,6 +1270,19 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 	} else {
 		result.FinishReason = mapResponsesFinishReason(resp.IncompleteDetails, false)
 	}
+
+	// Row b2b1bb9 (Responses half): surface the response id, echoed
+	// service tier, and effective reasoning context (GPT-5.6
+	// reasoningContext) in provider metadata, mirroring TS's
+	// doGenerate providerMetadata assembly.
+	meta := map[string]interface{}{"responseId": resp.ID}
+	if resp.ServiceTier != "" {
+		meta["serviceTier"] = resp.ServiceTier
+	}
+	if resp.Reasoning != nil && resp.Reasoning.Context != "" {
+		meta["reasoningContext"] = resp.Reasoning.Context
+	}
+	result.ProviderMetadata = map[string]interface{}{providerName: meta}
 
 	return result, nil
 }

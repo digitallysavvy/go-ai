@@ -1930,6 +1930,143 @@ func TestResponsesLanguageModel_GPT6DropsPromptCacheRetentionAndTopLogprobs(t *t
 	}
 }
 
+// TestResponsesLanguageModel_ReasoningModeAndContext covers row b2b1bb9
+// (Responses half): GPT-5.6's reasoningMode ("standard"/"pro") and
+// reasoningContext ("auto"/"current_turn"/"all_turns") provider options are
+// sent as reasoning.mode/reasoning.context, including when neither
+// reasoningEffort nor reasoningSummary is set (mirrors TS's "should let
+// GPT-5.6 use its default effort with pro mode").
+func TestResponsesLanguageModel_ReasoningModeAndContext(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+
+	model := NewResponsesLanguageModel(p, ModelGPT56)
+	body, _, warnings, err := model.buildRequest(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		}},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{
+				"reasoningEffort":  "max",
+				"reasoningMode":    "pro",
+				"reasoningContext": "all_turns",
+			},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequest failed: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none", warnings)
+	}
+	reasoning, ok := body["reasoning"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("body[reasoning] = %#v, want a map", body["reasoning"])
+	}
+	if reasoning["effort"] != "max" || reasoning["summary"] != "detailed" ||
+		reasoning["mode"] != "pro" || reasoning["context"] != "all_turns" {
+		t.Fatalf("reasoning = %#v, want effort=max summary=detailed mode=pro context=all_turns", reasoning)
+	}
+
+	// Without effort/summary, mode/context alone still populate `reasoning`.
+	body, _, warnings, err = model.buildRequest(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		}},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{
+				"reasoningMode":    "pro",
+				"reasoningContext": "auto",
+			},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequest failed: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none", warnings)
+	}
+	reasoning, ok = body["reasoning"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("body[reasoning] = %#v, want a map", body["reasoning"])
+	}
+	if len(reasoning) != 2 || reasoning["mode"] != "pro" || reasoning["context"] != "auto" {
+		t.Fatalf("reasoning = %#v, want only mode=pro context=auto", reasoning)
+	}
+
+	// Non-reasoning models warn and drop both options.
+	nonReasoning := NewResponsesLanguageModel(p, "gpt-4o")
+	body, _, warnings, err = nonReasoning.buildRequest(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		}},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{
+				"reasoningMode":    "pro",
+				"reasoningContext": "all_turns",
+			},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequest failed: %v", err)
+	}
+	if _, ok := body["reasoning"]; ok {
+		t.Fatalf("reasoning should not be sent for a non-reasoning model: %#v", body)
+	}
+	if len(warnings) != 2 || warnings[0].Feature != "reasoningMode" || warnings[1].Feature != "reasoningContext" {
+		t.Fatalf("warnings = %#v, want reasoningMode then reasoningContext warnings", warnings)
+	}
+
+	// reasoningEffortUpdate is rejected in pro mode even on GPT-6+.
+	gpt6 := NewResponsesLanguageModel(p, ModelGPT6Astra)
+	body, _, warnings, err = gpt6.buildRequest(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		}},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{
+				"reasoningEffortUpdate": "high",
+				"reasoningMode":         "pro",
+			},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequest failed: %v", err)
+	}
+	if len(warnings) != 1 || warnings[0].Feature != "reasoningEffortUpdate" {
+		t.Fatalf("warnings = %#v, want reasoningEffortUpdate warning", warnings)
+	}
+	for _, item := range body["input"].([]interface{}) {
+		if m, ok := item.(map[string]interface{}); ok && m["type"] == "configuration_update" {
+			t.Fatalf("unexpected configuration_update while reasoningMode is pro: %#v", body["input"])
+		}
+	}
+}
+
+// TestResponsesLanguageModel_ReasoningContextMetadata covers row b2b1bb9
+// (Responses half): the response's echoed reasoning.context surfaces in
+// providerMetadata.openai.reasoningContext, alongside responseId and
+// serviceTier, for both doGenerate and streaming.
+func TestResponsesLanguageModel_ReasoningContextMetadata(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, ModelGPT56)
+
+	resp := mockResponsesResponse("resp_abc", "hi")
+	resp.ServiceTier = "priority"
+	resp.Reasoning = &responses.ResponsesReasoningInfo{Context: "current_turn"}
+
+	result, err := model.convertResponse(resp, true, "", nil, "openai")
+	if err != nil {
+		t.Fatalf("convertResponse failed: %v", err)
+	}
+	meta, ok := result.ProviderMetadata["openai"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("ProviderMetadata[openai] = %#v, want a map", result.ProviderMetadata["openai"])
+	}
+	if meta["responseId"] != "resp_abc" || meta["serviceTier"] != "priority" || meta["reasoningContext"] != "current_turn" {
+		t.Fatalf("meta = %#v, want responseId/serviceTier/reasoningContext", meta)
+	}
+}
+
 // TestResponsesLanguageModel_ReasoningEffortValidatedForGPT6 covers row
 // 17e489e: an unsupported reasoning effort for a GPT-6+ model is dropped
 // with a warning instead of being sent.

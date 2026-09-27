@@ -501,10 +501,21 @@ type ResponsesAPIResponse struct {
 	Usage             *ResponsesAPIUsage `json:"usage,omitempty"`
 	IncompleteDetails *IncompleteDetails `json:"incomplete_details,omitempty"`
 
+	// Reasoning carries the effective reasoning configuration echoed back by
+	// the API (row b2b1bb9, Responses half: GPT-5.6 reasoningContext).
+	Reasoning *ResponsesReasoningInfo `json:"reasoning,omitempty"`
+
 	// Error is populated for a 200 response that failed at the API level
 	// (row 75f86f4): non-nil means the request must fail with the embedded
 	// message, mapped to HTTP status 400.
 	Error *ResponsesAPIError `json:"error,omitempty"`
+}
+
+// ResponsesReasoningInfo is the `reasoning` object echoed back on a
+// Responses API response, carrying the effective reasoning context
+// (row b2b1bb9: GPT-5.6 `reasoningContext`).
+type ResponsesReasoningInfo struct {
+	Context string `json:"context,omitempty"`
 }
 
 // ResponsesAPIError is the `error` object embedded in an otherwise-200
@@ -646,9 +657,11 @@ type ResponseCompletedEvent struct {
 	Response struct {
 		ID string `json:"id"`
 		// Status is "completed", "incomplete", or "failed". Primary finish-reason signal.
-		Status            string             `json:"status,omitempty"`
-		Usage             *ResponsesAPIUsage `json:"usage,omitempty"`
-		IncompleteDetails *IncompleteDetails `json:"incomplete_details,omitempty"`
+		Status            string                  `json:"status,omitempty"`
+		Usage             *ResponsesAPIUsage      `json:"usage,omitempty"`
+		IncompleteDetails *IncompleteDetails      `json:"incomplete_details,omitempty"`
+		ServiceTier       string                  `json:"service_tier,omitempty"`
+		Reasoning         *ResponsesReasoningInfo `json:"reasoning,omitempty"`
 	} `json:"response"`
 }
 
@@ -663,7 +676,8 @@ type ResponseFailedEvent struct {
 			Code    string `json:"code,omitempty"`
 			Message string `json:"message,omitempty"`
 		} `json:"error,omitempty"`
-		IncompleteDetails *IncompleteDetails `json:"incomplete_details,omitempty"`
+		IncompleteDetails *IncompleteDetails      `json:"incomplete_details,omitempty"`
+		Reasoning         *ResponsesReasoningInfo `json:"reasoning,omitempty"`
 	} `json:"response"`
 }
 
