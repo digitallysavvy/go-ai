@@ -3,7 +3,7 @@ package codemode
 import (
 	"context"
 
-	"github.com/fastschema/qjs"
+	"github.com/digitallysavvy/go-ai/pkg/internal/third_party/qjs"
 )
 
 // RunCodeMode runs code-mode JavaScript directly, without wrapping it as an

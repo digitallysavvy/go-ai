@@ -2,8 +2,17 @@
 // package. It lets a model write JavaScript that calls host tools
 // programmatically instead of one tool call per model turn ("code mode").
 // The model's source runs in an isolated QuickJS sandbox compiled to
-// WebAssembly and executed with wazero (github.com/fastschema/qjs), so no
-// cgo is required.
+// WebAssembly and executed with wazero, via a vendored, locally-patched
+// copy of github.com/fastschema/qjs v0.0.6 at
+// pkg/internal/third_party/qjs (see its README.vendor.md), so no cgo is
+// required.
+//
+// # Experimental
+//
+// This package is experimental, mirroring the TypeScript package's own
+// experimental_ naming convention on every exported entry point (e.g.
+// experimental_runCodeMode, experimental_createCodeModeTool,
+// experimental_setMaxWorkers): its API may change in a minor version.
 //
 // # Scope
 //

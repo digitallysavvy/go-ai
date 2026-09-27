@@ -7,12 +7,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fastschema/qjs"
+	"github.com/digitallysavvy/go-ai/pkg/internal/third_party/qjs"
 )
 
-// This file wraps github.com/fastschema/qjs (QuickJS compiled to
-// WebAssembly, executed with wazero -- pure Go, no cgo) as the code-mode
-// sandbox engine. See the package doc for how this compares to
+// This file wraps a vendored copy of github.com/fastschema/qjs v0.0.6
+// (QuickJS compiled to WebAssembly, executed with wazero -- pure Go, no
+// cgo), at pkg/internal/third_party/qjs, as the code-mode sandbox engine.
+// See that package's README.vendor.md for why it's vendored (a memory-safety
+// patch to Mem.ReadString) and the package doc for how this compares to
 // TypeScript's worker+quickjs-emscripten (now `run`) engine.
 //
 // Two real, verified quirks in fastschema/qjs v0.0.6 shape this file:
