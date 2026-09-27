@@ -400,6 +400,108 @@ func TestTranscriptionModel_DoStream_StopsAudioOnServerError(t *testing.T) {
 	t.Fatal("expected the audio stream to be cancelled after a server error part")
 }
 
+// failingTestAudioStream is a provider.AudioStream test double whose Next
+// returns a fixed non-EOF error after yielding any configured chunks,
+// simulating a real audio-source failure (as opposed to natural completion).
+type failingTestAudioStream struct {
+	chunks [][]byte
+	err    error
+
+	mu        sync.Mutex
+	cancelled bool
+}
+
+func (s *failingTestAudioStream) Next(ctx context.Context) ([]byte, error) {
+	if len(s.chunks) > 0 {
+		c := s.chunks[0]
+		s.chunks = s.chunks[1:]
+		return c, nil
+	}
+	return nil, s.err
+}
+
+func (s *failingTestAudioStream) Cancel(reason error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cancelled = true
+}
+
+func (s *failingTestAudioStream) wasCancelled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cancelled
+}
+
+// TestTranscriptionModel_DoStream_AudioReadErrorSurfacesError mirrors TS
+// `void sendAudio(socket).catch(finishWithError)`: a genuine AudioStream read
+// failure (distinct from its natural io.EOF completion) must terminate the
+// stream with an error, not be silently swallowed. Regression test for a bug
+// where pumpAudio returned on a non-EOF read (or write) error without
+// reporting it.
+func TestTranscriptionModel_DoStream_AudioReadErrorSurfacesError(t *testing.T) {
+	server := newGatewayTranscriptionTestServer(t)
+	defer server.close()
+
+	audio := &failingTestAudioStream{err: errors.New("audio source failed")}
+	model := newTestGatewayTranscriptionModel(t, server.ts.URL)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            audio,
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+
+	_, err = result.Stream.Next()
+	for err == nil {
+		_, err = result.Stream.Next()
+	}
+	if !strings.Contains(err.Error(), "audio source failed") {
+		t.Fatalf("err = %v, want an error containing 'audio source failed'", err)
+	}
+}
+
+// TestTranscriptionModel_DoStream_TeamHeaderPerCallOverride verifies the
+// x-vercel-ai-gateway-team subprotocol scope comes from the per-call merged
+// header set (config headers + opts.Headers), not the provider's static
+// TeamIDOrSlug field, matching TS getProtocolsFromHeaders (which reads the
+// team scope out of the already-combined header set).
+func TestTranscriptionModel_DoStream_TeamHeaderPerCallOverride(t *testing.T) {
+	server := newGatewayTranscriptionTestServer(t)
+	defer server.close()
+
+	p, err := New(Config{APIKey: "test-token", BaseURL: server.ts.URL, TeamIDOrSlug: "default-team"})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	model := NewTranscriptionModel(p, "openai/gpt-realtime-whisper")
+
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newChanTestAudioStream(),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+		Headers:          map[string]string{"x-vercel-ai-gateway-team": "override-team"},
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+
+	server.waitForFrame(t, transcriptionStreamStartFrameType, time.Second)
+
+	server.mu.Lock()
+	protocolHeader := server.protocolHeader
+	server.mu.Unlock()
+
+	wantTeamProtocol := GatewayTeamSubprotocolPrefix + encodeSubprotocolValue("override-team")
+	if strings.Contains(protocolHeader, GatewayTeamSubprotocolPrefix+encodeSubprotocolValue("default-team")) {
+		t.Errorf("Sec-WebSocket-Protocol = %q, still carries the static config team, want the per-call override", protocolHeader)
+	}
+	if !strings.Contains(protocolHeader, wantTeamProtocol) {
+		t.Errorf("Sec-WebSocket-Protocol = %q, want containing %q", protocolHeader, wantTeamProtocol)
+	}
+}
+
 // TestParseGatewayTranscriptionStreamPart_RejectsMalformedFrames mirrors TS
 // provider-utils transcription-stream-envelope.test.ts: a recognized `type`
 // with a missing/wrong-typed required field is rejected wholesale (ok=false)

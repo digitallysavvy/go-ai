@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	stdhttp "net/http"
 	"sync"
 	"time"
 
@@ -14,6 +13,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
+	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"golang.org/x/net/websocket"
 )
 
@@ -66,7 +66,12 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 	}
 
 	wsURL := ToGatewayTranscriptionURL(m.provider.baseURL, m.modelID)
-	protocols := GetGatewayTranscriptionProtocols(token, m.provider.config.TeamIDOrSlug)
+	// The team scope rides the subprotocol from the fully merged per-call
+	// header set (headers, above — config headers + opts.Headers), not the
+	// static TeamIDOrSlug config field, so a caller overriding
+	// x-vercel-ai-gateway-team per call (e.g. via opts.Headers) takes effect
+	// here exactly like it does on every other Gateway request.
+	protocols := GetGatewayTranscriptionProtocols(token, gatewayTeamFromHeaders(headers))
 
 	abortCtx := opts.AbortSignal
 	if abortCtx == nil {
@@ -217,67 +222,79 @@ func (s *gatewayTranscriptionStream) run(cfg gatewayTranscriptionStreamConfig) {
 	// the server's terminal close (TS stopAudio()).
 	audioCtx, stopAudio := context.WithCancel(s.ctx)
 	defer stopAudio()
-	go s.pumpAudio(audioCtx, conn, cfg.audio)
+	audioErrCh := make(chan error, 1)
+	go s.pumpAudio(audioCtx, conn, cfg.audio, audioErrCh)
+
+	msgCh := make(chan wsutil.Message)
+	go wsutil.ReceiveLoop(s.ctx, conn, msgCh)
 
 	var lastServerError interface{}
 	hasServerError := false
 	finished := false
 
 	for {
-		text, err := s.receive(conn)
-		if err != nil {
+		select {
+		case <-s.ctx.Done():
 			if finished {
 				return
 			}
-			if s.ctx.Err() != nil {
-				fail(s.ctx.Err())
-			} else if hasServerError {
-				fail(gatewayTranscriptionServerError(lastServerError, cfg.authMethod))
-			} else if isGatewaySocketError(err) {
-				fail(errors.New("Connection error on AI Gateway transcription stream"))
-			} else {
-				fail(errors.New("AI Gateway transcription stream closed before a finish part was received"))
-			}
+			fail(s.ctx.Err())
 			return
-		}
 
-		part, ok := parseGatewayTranscriptionStreamPart(text)
-		if !ok {
-			continue
-		}
+		case audioErr := <-audioErrCh:
+			// Mirrors TS `void sendAudio(socket).catch(finishWithError)`: a
+			// failure pumping audio (reading the caller's AudioStream, or
+			// writing to the WebSocket) terminates the stream with an error
+			// instead of being silently dropped.
+			if finished {
+				return
+			}
+			fail(audioErr)
+			return
 
-		if part.Type == provider.TranscriptionStreamPartTypeFinish {
-			finished = true
+		case res := <-msgCh:
+			if res.Err != nil {
+				if finished {
+					return
+				}
+				if hasServerError {
+					fail(gatewayTranscriptionServerError(lastServerError, cfg.authMethod))
+				} else if !wsutil.IsCleanClose(res.Err) {
+					fail(errors.New("Connection error on AI Gateway transcription stream"))
+				} else {
+					fail(errors.New("AI Gateway transcription stream closed before a finish part was received"))
+				}
+				return
+			}
+
+			part, ok := parseGatewayTranscriptionStreamPart(res.Text)
+			if !ok {
+				continue
+			}
+
+			if part.Type == provider.TranscriptionStreamPartTypeFinish {
+				finished = true
+				if !s.emit(*part) {
+					return
+				}
+				return
+			}
+
+			if part.Type == provider.TranscriptionStreamPartTypeError {
+				hasServerError = true
+				lastServerError = part.Err
+				// envelope rule 5: error parts are terminal — stop sending audio
+				// while the server holds the connection open (e.g. for its final
+				// billing flush).
+				stopAudio()
+				cfg.audio.Cancel(nil)
+			}
+
 			if !s.emit(*part) {
 				return
 			}
-			return
-		}
-
-		if part.Type == provider.TranscriptionStreamPartTypeError {
-			hasServerError = true
-			lastServerError = part.Err
-			// envelope rule 5: error parts are terminal — stop sending audio
-			// while the server holds the connection open (e.g. for its final
-			// billing flush).
-			stopAudio()
-			cfg.audio.Cancel(nil)
-		}
-
-		if !s.emit(*part) {
-			return
 		}
 	}
-}
-
-// isGatewaySocketError reports whether err came from the underlying
-// connection failing outright (as opposed to a clean close), matching TS's
-// distinction between onSocketError and onClose with no error precedent.
-// golang.org/x/net/websocket surfaces both as plain errors from
-// websocket.Message.Receive with no close-code information to key on, so any
-// error other than a clean io.EOF is treated as a socket-level error.
-func isGatewaySocketError(err error) bool {
-	return err != nil && !errors.Is(err, io.EOF)
 }
 
 // gatewayServerErrorStatusCodes are the canonical status codes for server
@@ -320,13 +337,23 @@ func gatewayTranscriptionServerError(payload interface{}, authMethod string) err
 
 // pumpAudio reads chunks from audio and forwards them as binary frames (split
 // to stay under the server frame-size limit), sending the audio-done TEXT
-// frame at EOF.
-func (s *gatewayTranscriptionStream) pumpAudio(ctx context.Context, conn *websocket.Conn, audio provider.AudioStream) {
+// frame at EOF. Any other failure — reading from the AudioStream, or writing
+// to the WebSocket — is reported on errCh, mirroring TS's
+// `void sendAudio(socket).catch(finishWithError)` (a rejected `reader.read()`
+// fails the stream exactly like a failed `socket.send`). A failure that stems
+// from ctx already being cancelled (either s.ctx, or stopAudio() pausing the
+// pump for a server error part) is not reported: run()'s own handling of that
+// cancellation already covers it.
+func (s *gatewayTranscriptionStream) pumpAudio(ctx context.Context, conn *websocket.Conn, audio provider.AudioStream, errCh chan<- error) {
 	for {
 		chunk, err := audio.Next(ctx)
 		if err != nil {
 			if err == io.EOF {
-				_ = s.sendText(conn, fmt.Sprintf(`{"type":%q}`, transcriptionStreamAudioDoneFrameType))
+				if sendErr := s.sendText(conn, fmt.Sprintf(`{"type":%q}`, transcriptionStreamAudioDoneFrameType)); sendErr != nil && ctx.Err() == nil {
+					s.reportAudioError(ctx, errCh, sendErr)
+				}
+			} else if ctx.Err() == nil {
+				s.reportAudioError(ctx, errCh, err)
 			}
 			return
 		}
@@ -336,79 +363,35 @@ func (s *gatewayTranscriptionStream) pumpAudio(ctx context.Context, conn *websoc
 				end = len(chunk)
 			}
 			if err := s.sendBinary(conn, chunk[offset:end]); err != nil {
+				if ctx.Err() == nil {
+					s.reportAudioError(ctx, errCh, err)
+				}
 				return
 			}
 		}
 	}
 }
 
-func (s *gatewayTranscriptionStream) dial(wsURL string, protocols []string, headers map[string]string) (*websocket.Conn, error) {
-	wsConfig, err := websocket.NewConfig(wsURL, "http://localhost/")
-	if err != nil {
-		return nil, err
+// reportAudioError delivers err to errCh, falling back to ctx.Done() so a
+// send that no longer has a reader (run() already returned via a different
+// path) cannot block pumpAudio forever.
+func (s *gatewayTranscriptionStream) reportAudioError(ctx context.Context, errCh chan<- error, err error) {
+	select {
+	case errCh <- err:
+	case <-ctx.Done():
 	}
-	wsConfig.Protocol = protocols
-	wsConfig.Header = stdhttp.Header{}
-	for k, v := range headers {
-		if v != "" {
-			wsConfig.Header.Set(k, v)
-		}
-	}
+}
 
-	// DialContext (rather than DialConfig, which always dials against
-	// context.Background()) forces the pending TCP/TLS handshake to fail and
-	// cleans up the socket when s.ctx is cancelled mid-dial, instead of
-	// leaving an unread, unclosed connection behind if the dial completes
-	// after we've already given up on it.
-	return wsConfig.DialContext(s.ctx)
+func (s *gatewayTranscriptionStream) dial(wsURL string, protocols []string, headers map[string]string) (*websocket.Conn, error) {
+	return wsutil.Dial(s.ctx, wsURL, wsutil.DialOptions{Headers: headers, Protocols: protocols})
 }
 
 func (s *gatewayTranscriptionStream) sendText(conn *websocket.Conn, message string) error {
-	done := make(chan error, 1)
-	go func() {
-		done <- websocket.Message.Send(conn, message)
-	}()
-	select {
-	case <-s.ctx.Done():
-		return s.ctx.Err()
-	case err := <-done:
-		return err
-	}
+	return wsutil.Send(s.ctx, conn, message)
 }
 
 func (s *gatewayTranscriptionStream) sendBinary(conn *websocket.Conn, message []byte) error {
-	done := make(chan error, 1)
-	go func() {
-		done <- websocket.Message.Send(conn, message)
-	}()
-	select {
-	case <-s.ctx.Done():
-		return s.ctx.Err()
-	case err := <-done:
-		return err
-	}
-}
-
-func (s *gatewayTranscriptionStream) receive(conn *websocket.Conn) (string, error) {
-	type result struct {
-		msg string
-		err error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		var msg string
-		err := websocket.Message.Receive(conn, &msg)
-		ch <- result{msg: msg, err: err}
-	}()
-	select {
-	case <-s.ctx.Done():
-		return "", s.ctx.Err()
-	case res := <-ch:
-		if res.err != nil {
-			return "", res.err
-		}
-		return res.msg, nil
-	}
+	return wsutil.Send(s.ctx, conn, message)
 }
 
 // parseGatewayTranscriptionStreamPart parses one server TEXT frame (a
