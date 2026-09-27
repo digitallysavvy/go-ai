@@ -223,6 +223,20 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 				reasoningEffort = v
 			}
 			if v, ok := openaiOpts["reasoningEffortUpdate"].(string); ok {
+				// TS validates reasoningEffortUpdate against a fixed schema
+				// enum (z.enum(['none','low','medium','high','xhigh','max']),
+				// row 94d5d6d3e6) independently of, and prior to, the
+				// per-model SupportedReasoningEfforts check below -- an
+				// out-of-enum value like "minimal" is rejected the same way
+				// on every model, including ones (like gpt-6-luna) that
+				// support "none". Go has no schema layer, so validate
+				// manually here, before any model-specific handling.
+				if !slices.Contains(responses.ValidReasoningEffortUpdateValues, v) {
+					return nil, store, nil, &providererrors.InvalidArgumentError{
+						Field:   "providerOptions." + providerOptionsName + ".reasoningEffortUpdate",
+						Message: fmt.Sprintf("must be one of %s", strings.Join(responses.ValidReasoningEffortUpdateValues, ", ")),
+					}
+				}
 				reasoningEffortUpdate = v
 			}
 			if v, ok := openaiOpts["reasoningMode"].(string); ok {

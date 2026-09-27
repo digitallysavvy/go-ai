@@ -600,3 +600,124 @@ func TestResponsesReasoningEffortUpdate_ChecksFirstItemAfterSystemTextRemoved(t 
 		t.Fatalf("warnings = %#v, want a single 'system messages are removed' warning", warnings)
 	}
 }
+
+// TS: 'message-level continuation with $field' describe.each over
+// previousResponseId/conversation -- reasoning already stored server-side is
+// filtered out of history, which can leave a positioned update either
+// correctly isolated or newly adjacent to another update.
+func TestResponsesReasoningEffortUpdate_ContinuationFiltersStoredReasoning(t *testing.T) {
+	previousReasoning := types.Message{
+		Role: types.RoleAssistant,
+		Content: []types.ContentPart{types.ReasoningContent{
+			Text: "Earlier reasoning",
+			ProviderOptions: map[string]interface{}{
+				"openai": map[string]interface{}{"itemId": "rs_previous"},
+			},
+		}},
+	}
+
+	cases := []struct {
+		name  string
+		field string
+		opts  map[string]interface{}
+	}{
+		{name: "previousResponseId", field: "previous_response_id", opts: map[string]interface{}{"previousResponseId": "resp_previous"}},
+		{name: "conversation", field: "conversation", opts: map[string]interface{}{"conversation": "conv_test"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name+"/preserves an update after filtering reasoning already stored in history", func(t *testing.T) {
+			p := New(Config{APIKey: "test-key"})
+			m := NewResponsesLanguageModel(p, ModelGPT6Astra)
+			openaiOpts := map[string]interface{}{"reasoningEffort": "low"}
+			for k, v := range tc.opts {
+				openaiOpts[k] = v
+			}
+			body, _, warnings, err := m.buildRequest(&provider.GenerateOptions{
+				Prompt: types.Prompt{Messages: []types.Message{
+					previousReasoning,
+					updateMsg("openai", "high", ""),
+					userMsg("Question"),
+				}},
+				ProviderOptions: map[string]interface{}{"openai": openaiOpts},
+			}, false)
+			if err != nil {
+				t.Fatalf("buildRequest failed: %v", err)
+			}
+			if got := body[tc.field]; got != tc.opts[continuationOptKey(tc.name)] {
+				t.Fatalf("body[%q] = %#v, want %#v", tc.field, got, tc.opts[continuationOptKey(tc.name)])
+			}
+			input := inputMaps(t, body)
+			if len(input) != 2 || input[0]["type"] != "configuration_update" || input[0]["reasoning"].(map[string]interface{})["effort"] != "high" {
+				t.Fatalf("input = %#v, want [configuration_update(high), user]", input)
+			}
+			if input[1]["role"] != "user" {
+				t.Fatalf("input[1] = %#v, want user message", input[1])
+			}
+			if len(warnings) != 0 {
+				t.Fatalf("warnings = %#v, want none", warnings)
+			}
+		})
+
+		t.Run(tc.name+"/rejects updates made adjacent by filtering stored reasoning", func(t *testing.T) {
+			p := New(Config{APIKey: "test-key"})
+			m := NewResponsesLanguageModel(p, ModelGPT6Astra)
+			_, _, _, err := m.buildRequest(&provider.GenerateOptions{
+				Prompt: types.Prompt{Messages: []types.Message{
+					updateMsg("openai", "high", ""),
+					previousReasoning,
+					updateMsg("openai", "low", ""),
+					userMsg("Question"),
+				}},
+				ProviderOptions: map[string]interface{}{"openai": tc.opts},
+			}, false)
+			ufe := asUnsupportedFunctionalityError(t, err)
+			if ufe.Functionality != "Adjacent reasoning effort configuration updates" {
+				t.Errorf("Functionality = %q", ufe.Functionality)
+			}
+		})
+	}
+}
+
+// TS: 'rejects minimal message-level updates even on Luna' -- reasoningEffortUpdate
+// is validated against a fixed schema enum independently of, and before, any
+// per-model SupportedReasoningEfforts check, so an out-of-enum value like
+// "minimal" is rejected the same way even on a model (Luna) that supports "none".
+func TestResponsesReasoningEffortUpdate_RejectsInvalidMessageLevelValue(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	m := NewResponsesLanguageModel(p, ModelGPT6Luna)
+	_, _, _, err := m.buildRequest(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			updateMsg("openai", "minimal", ""),
+			userMsg("Question"),
+		}},
+	}, false)
+	if !providererrors.IsInvalidArgumentError(err) {
+		t.Fatalf("err = %v, want InvalidArgumentError", err)
+	}
+}
+
+// TS: 'rejects minimal request-level updates even on Luna'.
+func TestResponsesReasoningEffortUpdate_RejectsInvalidRequestLevelValue(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	m := NewResponsesLanguageModel(p, ModelGPT6Luna)
+	_, _, _, err := m.buildRequest(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{userMsg("Question")}},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{"reasoningEffortUpdate": "minimal"},
+		},
+	}, false)
+	if !providererrors.IsInvalidArgumentError(err) {
+		t.Fatalf("err = %v, want InvalidArgumentError", err)
+	}
+}
+
+// continuationOptKey maps a continuation case name to its providerOptions
+// key, so the "preserves" subtest above can assert the wire field echoes the
+// caller-supplied value regardless of which continuation option was used.
+func continuationOptKey(name string) string {
+	if name == "previousResponseId" {
+		return "previousResponseId"
+	}
+	return "conversation"
+}

@@ -183,6 +183,19 @@ func convertSystemMidConversationMessage(msg types.Message, systemMessageMode st
 	content := systemMessageText(msg)
 
 	if effort != "" {
+		// TS parses this field against a fixed schema enum
+		// (z.enum(['none','low','medium','high','xhigh','max']), row
+		// 94d5d6d3e6) before any model-specific handling, so an
+		// out-of-enum value like "minimal" is rejected the same way on
+		// every model, including ones that support "none". Go has no
+		// schema layer, so validate manually here, first.
+		if !isValidReasoningEffortUpdateValue(effort) {
+			return nil, nil, &providererrors.InvalidArgumentError{
+				Field:   "providerOptions." + providerName + ".reasoningEffortUpdate",
+				Message: fmt.Sprintf("must be one of %s", strings.Join(ValidReasoningEffortUpdateValues, ", ")),
+			}
+		}
+
 		var unsupportedReason string
 		if content != "" {
 			unsupportedReason = "Message-level reasoningEffortUpdate requires empty system message content."
@@ -1161,6 +1174,26 @@ func openAIItemIDAndPhase(metadata map[string]interface{}, providerName string) 
 func openAIItemID(metadata map[string]interface{}, providerName string) string {
 	itemID, _ := openAIItemIDAndPhase(metadata, providerName)
 	return itemID
+}
+
+// ValidReasoningEffortUpdateValues is the fixed set of values TS validates
+// reasoningEffortUpdate against at the schema level (both request-level
+// providerOptions.openai.reasoningEffortUpdate and message-level
+// providerOptions[provider].reasoningEffortUpdate on system messages), via
+// z.enum(['none','low','medium','high','xhigh','max']) as of row
+// 94d5d6d3e6. This is independent of, and checked before, any per-model
+// SupportedReasoningEfforts restriction (e.g. gpt-6-astra rejecting "none").
+var ValidReasoningEffortUpdateValues = []string{"none", "low", "medium", "high", "xhigh", "max"}
+
+// isValidReasoningEffortUpdateValue reports whether effort is one of the
+// fixed schema-level reasoningEffortUpdate values.
+func isValidReasoningEffortUpdateValue(effort string) bool {
+	for _, v := range ValidReasoningEffortUpdateValues {
+		if v == effort {
+			return true
+		}
+	}
+	return false
 }
 
 func openAIProviderOptionsName(opts ConvertOptions) string {
