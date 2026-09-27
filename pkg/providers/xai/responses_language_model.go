@@ -20,8 +20,12 @@ import (
 
 // XAIResponsesProviderOptions contains XAI-specific options for the Responses API path.
 type XAIResponsesProviderOptions struct {
-	// ReasoningSummary controls the reasoning summary detail level included in responses.
-	// Valid values: "auto", "concise", "detailed".
+	// ReasoningSummary is deprecated: xAI ignores the requested summary
+	// level and always returns a detailed reasoning summary. It is kept on
+	// the type for backward compatibility but is no longer sent on the
+	// request (TS row 0a5dd0f9c3 stopped emitting reasoning.summary).
+	//
+	// Deprecated: xAI ignores this value.
 	ReasoningSummary string `json:"reasoningSummary,omitempty"`
 
 	// ReasoningEffort overrides the top-level opts.Reasoning for the Responses API.
@@ -34,6 +38,29 @@ type XAIResponsesProviderOptions struct {
 	// TopLogprobs is the number of most likely tokens to return per position.
 	// Setting this implicitly enables Logprobs.
 	TopLogprobs *int `json:"topLogprobs,omitempty"`
+
+	// MinP is the min-p sampling threshold between 0 and 1.
+	MinP *float64 `json:"minP,omitempty"`
+
+	// MaxTurns is the maximum number of agentic tool-calling turns.
+	MaxTurns *int `json:"maxTurns,omitempty"`
+
+	// ParallelToolCalls controls whether the model may call tools in
+	// parallel. Defaults to true on the API.
+	ParallelToolCalls *bool `json:"parallelToolCalls,omitempty"`
+
+	// PromptCacheKey is a cache key used to route requests with shared
+	// prompt prefixes. Echoed back in ProviderMetadata["xai"]["promptCacheKey"].
+	PromptCacheKey string `json:"promptCacheKey,omitempty"`
+
+	// SafetyIdentifier is a stable identifier used to attribute policy
+	// violations to an end user. Echoed back in
+	// ProviderMetadata["xai"]["safetyIdentifier"].
+	SafetyIdentifier string `json:"safetyIdentifier,omitempty"`
+
+	// User is a unique identifier for the end user, used for abuse
+	// monitoring.
+	User string `json:"user,omitempty"`
 
 	// Store controls whether the response is stored server-side for multi-turn use.
 	// When false, reasoning.encrypted_content is automatically added to Include.
@@ -237,15 +264,11 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 		}
 	}
 
-	if effort != "" || xaiOpts.ReasoningSummary != "" {
-		reasoning := map[string]interface{}{}
-		if effort != "" {
-			reasoning["effort"] = effort
-		}
-		if xaiOpts.ReasoningSummary != "" {
-			reasoning["summary"] = xaiOpts.ReasoningSummary
-		}
-		body["reasoning"] = reasoning
+	// Row 0a5dd0f9c3: xAI ignores the requested reasoning summary level and
+	// always returns a detailed summary, so reasoning.summary is no longer
+	// sent (xaiOpts.ReasoningSummary is deprecated and read nowhere here).
+	if effort != "" {
+		body["reasoning"] = map[string]interface{}{"effort": effort}
 	}
 	if opts.MaxTokens != nil {
 		body["max_output_tokens"] = *opts.MaxTokens
@@ -263,6 +286,24 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 	// frequencyPenalty/presencePenalty/stopSequences which are unsupported.
 	if opts.TopK != nil {
 		body["top_k"] = *opts.TopK
+	}
+	if xaiOpts.MinP != nil {
+		body["min_p"] = *xaiOpts.MinP
+	}
+	if xaiOpts.MaxTurns != nil {
+		body["max_turns"] = *xaiOpts.MaxTurns
+	}
+	if xaiOpts.ParallelToolCalls != nil {
+		body["parallel_tool_calls"] = *xaiOpts.ParallelToolCalls
+	}
+	if xaiOpts.PromptCacheKey != "" {
+		body["prompt_cache_key"] = xaiOpts.PromptCacheKey
+	}
+	if xaiOpts.SafetyIdentifier != "" {
+		body["safety_identifier"] = xaiOpts.SafetyIdentifier
+	}
+	if xaiOpts.User != "" {
+		body["user"] = xaiOpts.User
 	}
 
 	// Row 484293f: serviceTier ("default" or "priority"), surfaced back in
@@ -439,6 +480,22 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			result.ProviderMetadata["xai"] = xaiMeta
 		}
 		xaiMeta["serviceTier"] = resp.ServiceTier
+	}
+	if resp.PromptCacheKey != "" || resp.SafetyIdentifier != "" {
+		if result.ProviderMetadata == nil {
+			result.ProviderMetadata = map[string]interface{}{}
+		}
+		xaiMeta, _ := result.ProviderMetadata["xai"].(map[string]interface{})
+		if xaiMeta == nil {
+			xaiMeta = map[string]interface{}{}
+			result.ProviderMetadata["xai"] = xaiMeta
+		}
+		if resp.PromptCacheKey != "" {
+			xaiMeta["promptCacheKey"] = resp.PromptCacheKey
+		}
+		if resp.SafetyIdentifier != "" {
+			xaiMeta["safetyIdentifier"] = resp.SafetyIdentifier
+		}
 	}
 
 	// Resolve user-registered tool names for provider-executed tools.
@@ -1260,7 +1317,8 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 		hasCost := e.Response.Usage != nil && (e.Response.Usage.CostInUsdTicks != nil || e.Response.Usage.InputTokensCost != nil || e.Response.Usage.OutputTokensCost != nil)
 		// Row 484293f: serviceTier surfaces in providerMetadata.xai
 		// alongside costInUsdTicks in streaming too, not just doGenerate.
-		if hasCost || e.Response.ServiceTier != "" {
+		// Row 0a5dd0f9c3: promptCacheKey/safetyIdentifier echo the same way.
+		if hasCost || e.Response.ServiceTier != "" || e.Response.PromptCacheKey != "" || e.Response.SafetyIdentifier != "" {
 			xaiMeta := map[string]interface{}{}
 			if e.Response.Usage != nil && e.Response.Usage.CostInUsdTicks != nil {
 				xaiMeta["costInUsdTicks"] = *e.Response.Usage.CostInUsdTicks
@@ -1277,6 +1335,12 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			}
 			if e.Response.ServiceTier != "" {
 				xaiMeta["serviceTier"] = e.Response.ServiceTier
+			}
+			if e.Response.PromptCacheKey != "" {
+				xaiMeta["promptCacheKey"] = e.Response.PromptCacheKey
+			}
+			if e.Response.SafetyIdentifier != "" {
+				xaiMeta["safetyIdentifier"] = e.Response.SafetyIdentifier
 			}
 			metaMap["xai"] = xaiMeta
 		}
@@ -1323,6 +1387,18 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 		if e.Response.IncompleteDetails != nil && e.Response.IncompleteDetails.Reason != "" {
 			finishReason = mapXAIResponsesFinishReason("incomplete", e.Response.IncompleteDetails)
 		}
+		// Mirrors TS xai-responses-language-model.ts's response.failed
+		// branch: response.error != null enqueues a structured error chunk
+		// (createXaiResponsesStreamError) before the terminal finish chunk.
+		if e.Response.Error != nil {
+			var data interface{}
+			_ = json.Unmarshal([]byte(event.Data), &data)
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: formatXAIResponseError(e.Response.Error.Code, e.Response.Error.Message),
+				Err:  newXAIResponsesStreamError("xai", e.Response.Error.Message, e.Response.Error.Code, peek.Type, data),
+			})
+		}
 		s.err = io.EOF
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type:         provider.ChunkTypeFinish,
@@ -1336,9 +1412,12 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			return s.Next()
 		}
 		streamErr := &XAIStreamError{Code: e.Code, Message: e.Message}
+		var data interface{}
+		_ = json.Unmarshal([]byte(event.Data), &data)
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeError,
 			Text: streamErr.Error(),
+			Err:  newXAIResponsesStreamError("xai", e.Message, e.Code, peek.Type, data),
 		})
 
 	default:

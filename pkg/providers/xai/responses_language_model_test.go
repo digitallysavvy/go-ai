@@ -3,6 +3,7 @@ package xai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai/responses"
 )
@@ -207,36 +209,22 @@ func TestXAIResponsesToolsPreserveAdditionalPropertiesFalse(t *testing.T) {
 
 // TestXAIResponsesReasoningSummary verifies that the reasoningSummary provider option
 // is serialized as reasoning.summary in the Responses API request body.
+// TestXAIResponsesReasoningSummary ports TS "accepts deprecated
+// reasoningSummary without sending it"
+// (xai-responses-language-model.test.ts:655): row 0a5dd0f9c3 removed the
+// reasoning.summary wire field entirely -- xAI ignores the requested
+// summary level and always returns a detailed summary -- so
+// providerOptions.xai.reasoningSummary must never produce a "reasoning"
+// body field on its own (no reasoningEffort/opts.Reasoning set).
 func TestXAIResponsesReasoningSummary(t *testing.T) {
 	tests := []struct {
 		name             string
 		reasoningSummary string
-		wantSummary      string
-		wantReasoning    bool
 	}{
-		{
-			name:             "auto summary",
-			reasoningSummary: "auto",
-			wantSummary:      "auto",
-			wantReasoning:    true,
-		},
-		{
-			name:             "concise summary",
-			reasoningSummary: "concise",
-			wantSummary:      "concise",
-			wantReasoning:    true,
-		},
-		{
-			name:             "detailed summary",
-			reasoningSummary: "detailed",
-			wantSummary:      "detailed",
-			wantReasoning:    true,
-		},
-		{
-			name:             "no summary",
-			reasoningSummary: "",
-			wantReasoning:    false,
-		},
+		{name: "auto summary", reasoningSummary: "auto"},
+		{name: "concise summary", reasoningSummary: "concise"},
+		{name: "detailed summary", reasoningSummary: "detailed"},
+		{name: "no summary", reasoningSummary: ""},
 	}
 
 	for _, tt := range tests {
@@ -274,26 +262,8 @@ func TestXAIResponsesReasoningSummary(t *testing.T) {
 				t.Skip("server not reached")
 			}
 
-			reasoning, hasReasoning := capturedBody["reasoning"]
-			if tt.wantReasoning && !hasReasoning {
-				t.Errorf("expected 'reasoning' field in request body")
-				return
-			}
-			if !tt.wantReasoning && hasReasoning {
-				t.Errorf("expected no 'reasoning' field in request body")
-				return
-			}
-			if !tt.wantReasoning {
-				return
-			}
-
-			reasoningMap, ok := reasoning.(map[string]interface{})
-			if !ok {
-				t.Fatalf("reasoning field is %T, want map", reasoning)
-			}
-			gotSummary, _ := reasoningMap["summary"].(string)
-			if gotSummary != tt.wantSummary {
-				t.Errorf("reasoning.summary = %q, want %q", gotSummary, tt.wantSummary)
+			if _, hasReasoning := capturedBody["reasoning"]; hasReasoning {
+				t.Errorf("expected no 'reasoning' field in request body, got: %#v", capturedBody["reasoning"])
 			}
 		})
 	}
@@ -844,6 +814,91 @@ func TestXAIResponsesIncludeExplicit(t *testing.T) {
 	}
 }
 
+// TestXAIResponsesIncludeNoInlineCitations ports TS "include with
+// no_inline_citations" (xai-responses-language-model.test.ts:912): row
+// 0a5dd0f9c3 widened XaiResponsesIncludeValue to include
+// "no_inline_citations", and Go's Include field is an unvalidated []string
+// so any value passes through unchanged.
+func TestXAIResponsesIncludeNoInlineCitations(t *testing.T) {
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&capturedBody) //nolint:errcheck
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
+			"id": "resp_test", "output": []interface{}{},
+			"usage": map[string]interface{}{"input_tokens": 5, "output_tokens": 3},
+		})
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewResponsesLanguageModel(p, "grok-3")
+
+	opts := &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hello"},
+		ProviderOptions: map[string]interface{}{
+			"xai": map[string]interface{}{
+				"include": []interface{}{"no_inline_citations"},
+			},
+		},
+	}
+	_, _ = model.DoGenerate(context.Background(), opts)
+
+	if capturedBody == nil {
+		t.Skip("server not reached")
+	}
+	include, ok := capturedBody["include"].([]interface{})
+	if !ok {
+		t.Fatalf("include = %v, want slice", capturedBody["include"])
+	}
+	if len(include) != 1 || include[0] != "no_inline_citations" {
+		t.Errorf("include = %v, want [no_inline_citations]", include)
+	}
+}
+
+// TestXAIResponsesIncludeServerSideToolOutputs ports TS "include with
+// server-side tool outputs" (xai-responses-language-model.test.ts:934): row
+// 0a5dd0f9c3 also added "web_search_call.action.sources" and
+// "code_interpreter_call.outputs" to XaiResponsesIncludeValue.
+func TestXAIResponsesIncludeServerSideToolOutputs(t *testing.T) {
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&capturedBody) //nolint:errcheck
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
+			"id": "resp_test", "output": []interface{}{},
+			"usage": map[string]interface{}{"input_tokens": 5, "output_tokens": 3},
+		})
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewResponsesLanguageModel(p, "grok-3")
+
+	opts := &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hello"},
+		ProviderOptions: map[string]interface{}{
+			"xai": map[string]interface{}{
+				"include": []interface{}{"web_search_call.action.sources", "code_interpreter_call.outputs"},
+			},
+		},
+	}
+	_, _ = model.DoGenerate(context.Background(), opts)
+
+	if capturedBody == nil {
+		t.Skip("server not reached")
+	}
+	include, ok := capturedBody["include"].([]interface{})
+	if !ok {
+		t.Fatalf("include = %v, want slice", capturedBody["include"])
+	}
+	if len(include) != 2 || include[0] != "web_search_call.action.sources" || include[1] != "code_interpreter_call.outputs" {
+		t.Errorf("include = %v, want [web_search_call.action.sources code_interpreter_call.outputs]", include)
+	}
+}
+
 // TestXAIResponsesPreviousResponseId verifies that previousResponseId is serialized
 // as previous_response_id in the request body.
 func TestXAIResponsesPreviousResponseId(t *testing.T) {
@@ -947,24 +1002,30 @@ func TestXAIResponsesDoGenerateTokenCostMetadata(t *testing.T) {
 
 func TestXAIResponsesStreamEventsHandling(t *testing.T) {
 	tests := []struct {
-		name          string
-		event         string
-		wantChunkType provider.ChunkType
+		name           string
+		event          string
+		wantChunkTypes []provider.ChunkType
 	}{
 		{
-			name:          "error",
-			event:         `{"type":"error","code":"bad_request","message":"boom"}`,
-			wantChunkType: provider.ChunkTypeError,
+			name:           "error",
+			event:          `{"type":"error","code":"bad_request","message":"boom"}`,
+			wantChunkTypes: []provider.ChunkType{provider.ChunkTypeError},
 		},
 		{
-			name:          "incomplete",
-			event:         `{"type":"response.incomplete","response":{"usage":{"input_tokens":1,"output_tokens":2},"incomplete_details":{"reason":"max_output_tokens"}}}`,
-			wantChunkType: provider.ChunkTypeFinish,
+			name:           "incomplete",
+			event:          `{"type":"response.incomplete","response":{"usage":{"input_tokens":1,"output_tokens":2},"incomplete_details":{"reason":"max_output_tokens"}}}`,
+			wantChunkTypes: []provider.ChunkType{provider.ChunkTypeFinish},
 		},
 		{
-			name:          "failed",
-			event:         `{"type":"response.failed","response":{"usage":{"input_tokens":3,"output_tokens":4},"error":{"code":"server_error","message":"failed"},"incomplete_details":{"reason":"error"}}}`,
-			wantChunkType: provider.ChunkTypeFinish,
+			// A response.failed carrying a response.error now enqueues a
+			// ChunkTypeError chunk (structured StreamProviderError) before
+			// the terminal finish chunk, mirroring TS's
+			// createXaiResponsesStreamError branch (XE, see
+			// TestXAIResponsesStreamResponseFailedEmitsStructuredErrorChunk
+			// for the detailed assertions).
+			name:           "failed",
+			event:          `{"type":"response.failed","response":{"usage":{"input_tokens":3,"output_tokens":4},"error":{"code":"server_error","message":"failed"},"incomplete_details":{"reason":"error"}}}`,
+			wantChunkTypes: []provider.ChunkType{provider.ChunkTypeError, provider.ChunkTypeFinish},
 		},
 	}
 
@@ -972,14 +1033,18 @@ func TestXAIResponsesStreamEventsHandling(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			sse := "data: " + tt.event + "\n\n"
 			stream := newXAIResponsesStream(io.NopCloser(strings.NewReader(sse)))
-			chunk, err := stream.Next()
-			if err != nil {
-				t.Fatalf("Next error: %v", err)
+			var gotTypes []provider.ChunkType
+			for _, want := range tt.wantChunkTypes {
+				chunk, err := stream.Next()
+				if err != nil {
+					t.Fatalf("Next error: %v", err)
+				}
+				gotTypes = append(gotTypes, chunk.Type)
+				if chunk.Type != want {
+					t.Fatalf("chunk.Type = %s, want %s (got sequence so far: %v)", chunk.Type, want, gotTypes)
+				}
 			}
-			if chunk.Type != tt.wantChunkType {
-				t.Fatalf("chunk.Type = %s, want %s", chunk.Type, tt.wantChunkType)
-			}
-			_, err = stream.Next()
+			_, err := stream.Next()
 			if err == nil {
 				t.Fatal("expected stream termination")
 			}
@@ -1018,6 +1083,152 @@ data: [DONE]
 	}
 	if !strings.Contains(chunk.Text, "failed to parse stream chunk") {
 		t.Fatalf("error text = %q, want parse failure", chunk.Text)
+	}
+}
+
+// TestXAIResponsesStreamResponseFailedEmitsStructuredErrorChunk ports TS
+// xai-responses-language-model.ts's response.failed branch (mirrors XE, the
+// openai `fix(openai): attach structured stream error payload` pattern in
+// 4c8ee24): a response.failed with a non-nil response.error must enqueue a
+// ChunkTypeError chunk carrying a structured *providererrors.StreamProviderError
+// on Err (built via createXaiResponsesStreamError's code->statusCode/
+// isRetryable table) before the terminal finish chunk.
+func TestXAIResponsesStreamResponseFailedEmitsStructuredErrorChunk(t *testing.T) {
+	stream := newXAIResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.failed","response":{"id":"resp_1","error":{"code":"server_error","message":"mid-stream failure"}}}
+
+`)))
+	defer stream.Close() //nolint:errcheck
+
+	var errChunk, finishChunk *provider.StreamChunk
+	for i := 0; i < 10; i++ {
+		chunk, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next() error: %v", err)
+		}
+		switch chunk.Type {
+		case provider.ChunkTypeError:
+			errChunk = chunk
+		case provider.ChunkTypeFinish:
+			finishChunk = chunk
+		}
+	}
+
+	if errChunk == nil {
+		t.Fatal("expected a ChunkTypeError chunk for the response.failed error")
+	}
+	if !strings.Contains(errChunk.Text, "mid-stream failure") {
+		t.Errorf("errChunk.Text = %q, want to mention mid-stream failure", errChunk.Text)
+	}
+	var streamErr *providererrors.StreamProviderError
+	if !errors.As(errChunk.Err, &streamErr) {
+		t.Fatalf("errChunk.Err = %v (%T), want *providererrors.StreamProviderError", errChunk.Err, errChunk.Err)
+	}
+	if streamErr.Message != "mid-stream failure" {
+		t.Errorf("streamErr.Message = %q, want mid-stream failure", streamErr.Message)
+	}
+	if streamErr.Type != "response.failed" {
+		t.Errorf("streamErr.Type = %q, want response.failed", streamErr.Type)
+	}
+	// server_error -> {statusCode: 500, isRetryable: true} per
+	// getXaiResponsesStreamErrorMetadata.
+	if streamErr.StatusCode == nil || *streamErr.StatusCode != 500 {
+		t.Errorf("StatusCode = %v, want 500 (server_error discriminator)", streamErr.StatusCode)
+	}
+	if !streamErr.IsRetryable {
+		t.Error("IsRetryable = false, want true for server_error")
+	}
+
+	if finishChunk == nil {
+		t.Fatal("expected a terminal ChunkTypeFinish chunk after the error chunk")
+	}
+}
+
+// TestXAIResponsesStreamErrorEventAttachesStructuredPayload ports TS
+// xai-responses-language-model.ts's generic `error` event branch: the
+// chunk's Err field must carry a structured StreamProviderError with the
+// code-derived statusCode/isRetryable, not just Text.
+func TestXAIResponsesStreamErrorEventAttachesStructuredPayload(t *testing.T) {
+	stream := newXAIResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"error","message":"rate limited","code":"rate_limit_exceeded"}
+
+`)))
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeError {
+		t.Fatalf("chunk type = %v, want error", chunk.Type)
+	}
+	var streamErr *providererrors.StreamProviderError
+	if !errors.As(chunk.Err, &streamErr) {
+		t.Fatalf("chunk.Err = %v (%T), want *providererrors.StreamProviderError", chunk.Err, chunk.Err)
+	}
+	if streamErr.Message != "rate limited" {
+		t.Errorf("Message = %q, want rate limited", streamErr.Message)
+	}
+	if streamErr.Type != "error" {
+		t.Errorf("Type = %q, want error", streamErr.Type)
+	}
+	if streamErr.StatusCode == nil || *streamErr.StatusCode != 429 {
+		t.Errorf("StatusCode = %v, want 429 (rate_limit discriminator)", streamErr.StatusCode)
+	}
+	if !streamErr.IsRetryable {
+		t.Error("IsRetryable = false, want true for rate_limit_exceeded")
+	}
+}
+
+// TestXAIResponsesStreamErrorNumericCodeUsedAsHTTPStatus ports TS
+// getHttpStatusCode: a 3-digit numeric error code in [400,599] is treated
+// directly as the HTTP status instead of going through the named-code
+// metadata table.
+func TestXAIResponsesStreamErrorNumericCodeUsedAsHTTPStatus(t *testing.T) {
+	stream := newXAIResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"error","message":"forbidden","code":"403"}
+
+`)))
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() error: %v", err)
+	}
+	var streamErr *providererrors.StreamProviderError
+	if !errors.As(chunk.Err, &streamErr) {
+		t.Fatalf("chunk.Err = %v (%T), want *providererrors.StreamProviderError", chunk.Err, chunk.Err)
+	}
+	if streamErr.StatusCode == nil || *streamErr.StatusCode != 403 {
+		t.Errorf("StatusCode = %v, want 403", streamErr.StatusCode)
+	}
+	if streamErr.IsRetryable {
+		t.Error("IsRetryable = true, want false for 403")
+	}
+}
+
+// TestXAIResponsesStreamErrorInsufficientQuotaNotRetryable ports TS
+// getXaiResponsesStreamErrorMetadata's insufficient_quota case: 429 status
+// but never retryable, unlike other 429 codes.
+func TestXAIResponsesStreamErrorInsufficientQuotaNotRetryable(t *testing.T) {
+	stream := newXAIResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"error","message":"quota exceeded","code":"insufficient_quota"}
+
+`)))
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() error: %v", err)
+	}
+	var streamErr *providererrors.StreamProviderError
+	if !errors.As(chunk.Err, &streamErr) {
+		t.Fatalf("chunk.Err = %v (%T), want *providererrors.StreamProviderError", chunk.Err, chunk.Err)
+	}
+	if streamErr.StatusCode == nil || *streamErr.StatusCode != 429 {
+		t.Errorf("StatusCode = %v, want 429", streamErr.StatusCode)
+	}
+	if streamErr.IsRetryable {
+		t.Error("IsRetryable = true, want false for insufficient_quota")
 	}
 }
 
@@ -1244,6 +1455,140 @@ func TestXAIResponsesServiceTierStreaming(t *testing.T) {
 	xaiMeta, ok := meta["xai"].(map[string]interface{})
 	if !ok || xaiMeta["serviceTier"] != "priority" {
 		t.Fatalf("finish.ProviderMetadata = %#v, want xai.serviceTier=priority", meta)
+	}
+}
+
+// TestXAIResponsesAdditionalRequestOptions ports TS "additional request
+// options" (xai-responses-language-model.test.ts:800): minP, maxTurns,
+// parallelToolCalls, promptCacheKey, safetyIdentifier, serviceTier, and
+// user all forward to their snake_case wire fields (row 0a5dd0f9c3).
+func TestXAIResponsesAdditionalRequestOptions(t *testing.T) {
+	var capturedBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&capturedBody) //nolint:errcheck
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
+			"id": "resp_test", "output": []interface{}{},
+			"usage": map[string]interface{}{"input_tokens": 10, "output_tokens": 5},
+		})
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewResponsesLanguageModel(p, "grok-4.7")
+
+	topK := 40
+	_, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hello"},
+		TopK:   &topK,
+		ProviderOptions: map[string]interface{}{
+			"xai": map[string]interface{}{
+				"minP":              0.1,
+				"maxTurns":          5,
+				"parallelToolCalls": false,
+				"promptCacheKey":    "conversation-123",
+				"safetyIdentifier":  "hashed-user-123",
+				"serviceTier":       "priority",
+				"user":              "user-123",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate failed: %v", err)
+	}
+
+	want := map[string]interface{}{
+		"top_k":               float64(40),
+		"min_p":               0.1,
+		"max_turns":           float64(5),
+		"parallel_tool_calls": false,
+		"prompt_cache_key":    "conversation-123",
+		"safety_identifier":   "hashed-user-123",
+		"service_tier":        "priority",
+		"user":                "user-123",
+	}
+	for k, v := range want {
+		if capturedBody[k] != v {
+			t.Errorf("body[%q] = %#v, want %#v", k, capturedBody[k], v)
+		}
+	}
+}
+
+// TestXAIResponsesEchoedRequestIdentifiers ports TS "should expose echoed
+// request identifiers in providerMetadata"
+// (xai-responses-language-model.test.ts:199).
+func TestXAIResponsesEchoedRequestIdentifiers(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
+			"id": "resp_123", "status": "completed", "output": []interface{}{},
+			"usage":             map[string]interface{}{"input_tokens": 10, "output_tokens": 5},
+			"prompt_cache_key":  "conversation-123",
+			"safety_identifier": "hashed-user-123",
+		})
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewResponsesLanguageModel(p, "grok-4-fast-non-reasoning")
+
+	result, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate failed: %v", err)
+	}
+	xaiMeta, ok := result.ProviderMetadata["xai"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("ProviderMetadata = %#v, want xai map", result.ProviderMetadata)
+	}
+	if xaiMeta["promptCacheKey"] != "conversation-123" || xaiMeta["safetyIdentifier"] != "hashed-user-123" {
+		t.Fatalf("xaiMeta = %#v, want promptCacheKey/safetyIdentifier echoed", xaiMeta)
+	}
+}
+
+// TestXAIResponsesEchoedRequestIdentifiersStreaming ports TS "should
+// expose echoed request identifiers in finish providerMetadata"
+// (xai-responses-language-model.test.ts:4674).
+func TestXAIResponsesEchoedRequestIdentifiersStreaming(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","prompt_cache_key":"conversation-123","safety_identifier":"hashed-user-123","usage":{"input_tokens":1,"output_tokens":1}}}
+
+`)
+	}))
+	defer server.Close()
+
+	model := NewResponsesLanguageModel(New(Config{APIKey: "test-key", BaseURL: server.URL}), "grok-3")
+	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error: %v", err)
+	}
+	defer stream.Close() //nolint:errcheck
+
+	var finish *provider.StreamChunk
+	for {
+		chunk, err := stream.Next()
+		if err != nil {
+			break
+		}
+		if chunk.Type == provider.ChunkTypeFinish {
+			finish = chunk
+			break
+		}
+	}
+	if finish == nil {
+		t.Fatal("did not observe a finish chunk")
+	}
+	var meta map[string]interface{}
+	if err := json.Unmarshal(finish.ProviderMetadata, &meta); err != nil {
+		t.Fatalf("unmarshal ProviderMetadata failed: %v", err)
+	}
+	xaiMeta, ok := meta["xai"].(map[string]interface{})
+	if !ok || xaiMeta["promptCacheKey"] != "conversation-123" || xaiMeta["safetyIdentifier"] != "hashed-user-123" {
+		t.Fatalf("finish.ProviderMetadata = %#v, want xai.promptCacheKey/safetyIdentifier echoed", meta)
 	}
 }
 

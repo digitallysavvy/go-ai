@@ -3,6 +3,7 @@ package xai
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
@@ -82,6 +83,81 @@ func (e *XAIStreamError) Error() string {
 // XAIStreamIncomplete represents a response.incomplete SSE event.
 type XAIStreamIncomplete struct {
 	Reason string
+}
+
+// xaiStreamErrorCodeMetadata mirrors TS xai-responses-language-model.ts's
+// getXaiResponsesStreamErrorMetadata: known xAI error codes map to a status
+// code + retryability when the code isn't itself already a numeric HTTP
+// status.
+func xaiStreamErrorCodeMetadata(code string) (statusCode int, isRetryable bool, ok bool) {
+	switch code {
+	case "rate_limit_exceeded", "rate_limit_error":
+		return 429, true, true
+	case "insufficient_quota":
+		return 429, false, true
+	case "api_error", "internal_server_error", "server_error":
+		return 500, true, true
+	case "overloaded_error", "service_unavailable":
+		return 503, true, true
+	case "timeout", "timeout_error":
+		return 504, true, true
+	case "authentication_error", "invalid_api_key":
+		return 401, false, true
+	case "permission_error":
+		return 403, false, true
+	case "not_found_error", "model_not_found":
+		return 404, false, true
+	case "bad_request", "context_length_exceeded", "invalid_request_error":
+		return 400, false, true
+	default:
+		return 0, false, false
+	}
+}
+
+// xaiStreamErrorHTTPStatusCode mirrors TS getHttpStatusCode: a numeric code
+// (or a 3-digit numeric string) between 400 and 599 is treated as an
+// explicit HTTP status code carried directly in the error's "code" field.
+func xaiStreamErrorHTTPStatusCode(code string) (int, bool) {
+	if len(code) != 3 {
+		return 0, false
+	}
+	n, err := strconv.Atoi(code)
+	if err != nil {
+		return 0, false
+	}
+	if n < 400 || n > 599 {
+		return 0, false
+	}
+	return n, true
+}
+
+func xaiStreamErrorIsRetryableStatusCode(statusCode int) bool {
+	return statusCode == 408 || statusCode == 409 || statusCode == 429 || statusCode >= 500
+}
+
+// newXAIResponsesStreamError builds a *providererrors.StreamProviderError
+// from a mid-stream xAI Responses error, mirroring TS
+// createXaiResponsesStreamError. eventType is "error" or "response.failed"
+// (used as the error's Type, matching TS's `type: eventType`). data is the
+// raw event payload, attached verbatim for callers that inspect it further.
+func newXAIResponsesStreamError(providerName, message, code, eventType string, data interface{}) *providererrors.StreamProviderError {
+	var statusCode *int
+	var isRetryable *bool
+
+	if sc, ok := xaiStreamErrorHTTPStatusCode(code); ok {
+		statusCode = &sc
+		r := xaiStreamErrorIsRetryableStatusCode(sc)
+		isRetryable = &r
+	} else if sc, retryable, matched := xaiStreamErrorCodeMetadata(code); matched {
+		statusCode = &sc
+		isRetryable = &retryable
+	}
+
+	var codeArg interface{}
+	if code != "" {
+		codeArg = code
+	}
+	return providererrors.NewStreamProviderError(message, providerName, eventType, codeArg, statusCode, isRetryable, data)
 }
 
 func (e *XAIStreamIncomplete) Error() string {

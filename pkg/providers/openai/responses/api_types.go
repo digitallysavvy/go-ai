@@ -642,6 +642,11 @@ type ResponsesAPIResponse struct {
 	CreatedAt   int64  `json:"created_at"`
 	Model       string `json:"model"`
 	ServiceTier string `json:"service_tier,omitempty"`
+
+	// PromptCacheKey and SafetyIdentifier are echoed back verbatim when the
+	// request set them (xAI Responses API; row 0a5dd0f9c3).
+	PromptCacheKey   string `json:"prompt_cache_key,omitempty"`
+	SafetyIdentifier string `json:"safety_identifier,omitempty"`
 	// Status is the terminal state: "completed", "incomplete", "failed".
 	// Primary signal for finish reason; use IncompleteDetails for truncation details.
 	Status string            `json:"status,omitempty"`
@@ -922,6 +927,8 @@ type ResponseCompletedEvent struct {
 		Usage             *ResponsesAPIUsage      `json:"usage,omitempty"`
 		IncompleteDetails *IncompleteDetails      `json:"incomplete_details,omitempty"`
 		ServiceTier       string                  `json:"service_tier,omitempty"`
+		PromptCacheKey    string                  `json:"prompt_cache_key,omitempty"`
+		SafetyIdentifier  string                  `json:"safety_identifier,omitempty"`
 		Reasoning         *ResponsesReasoningInfo `json:"reasoning,omitempty"`
 	} `json:"response"`
 }

@@ -156,12 +156,20 @@ type Config struct {
 // GatewayProviderOptions contains AI Gateway request-scoped routing,
 // compliance, quota, and BYOK settings.
 type GatewayProviderOptions struct {
-	Only                   []string                       `json:"only,omitempty"`
-	Order                  []string                       `json:"order,omitempty"`
-	Sort                   string                         `json:"sort,omitempty"`
-	User                   string                         `json:"user,omitempty"`
-	Tags                   []string                       `json:"tags,omitempty"`
-	Models                 []string                       `json:"models,omitempty"`
+	Only  []string `json:"only,omitempty"`
+	Order []string `json:"order,omitempty"`
+	Sort  string   `json:"sort,omitempty"`
+	User  string   `json:"user,omitempty"`
+	Tags  []string `json:"tags,omitempty"`
+
+	// Models is the ordered list of fallback models to try. On evaluation
+	// requests, the first entry may be a conditional GatewayModelFallback
+	// (built with GatewayConditionalModelFallback) that reruns the
+	// evaluation against a different model when its When condition matches
+	// the primary answers; every other entry (and every entry for
+	// non-evaluation requests) must be a plain model ID (built with
+	// GatewayModel).
+	Models                 []GatewayModelFallback         `json:"models,omitempty"`
 	BYOK                   map[string][]map[string]any    `json:"byok,omitempty"`
 	ZeroDataRetention      *bool                          `json:"zeroDataRetention,omitempty"`
 	DisallowPromptTraining *bool                          `json:"disallowPromptTraining,omitempty"`
@@ -171,9 +179,9 @@ type GatewayProviderOptions struct {
 
 	// Has restricts routing to provider models that satisfy every given
 	// entry. Entries are capability tags (GatewayHasImplicitCaching,
-	// GatewayHasReasoning, GatewayHasToolUse, GatewayHasVision) or
-	// weight-format conditions built with GatewayHasQuantization /
-	// GatewayHasNotQuantization.
+	// GatewayHasReasoning, GatewayHasStructuredOutput, GatewayHasToolUse,
+	// GatewayHasVision) or weight-format conditions built with
+	// GatewayHasQuantization / GatewayHasNotQuantization.
 	Has []string `json:"has,omitempty"`
 
 	// IdempotencyKey is used by experimental_startBatch: retries with the
@@ -187,10 +195,11 @@ type GatewayProviderOptions struct {
 
 // Gateway `has` capability tags. See GatewayProviderOptions.Has.
 const (
-	GatewayHasImplicitCaching = "implicit-caching"
-	GatewayHasReasoning       = "reasoning"
-	GatewayHasToolUse         = "tool-use"
-	GatewayHasVision          = "vision"
+	GatewayHasImplicitCaching  = "implicit-caching"
+	GatewayHasReasoning        = "reasoning"
+	GatewayHasStructuredOutput = "structured-output"
+	GatewayHasToolUse          = "tool-use"
+	GatewayHasVision           = "vision"
 )
 
 // GatewayCachingAuto is the only valid value for GatewayProviderOptions.Caching.
@@ -237,7 +246,11 @@ func (o GatewayProviderOptions) toMap() map[string]interface{} {
 		out["tags"] = o.Tags
 	}
 	if len(o.Models) > 0 {
-		out["models"] = o.Models
+		models := make([]interface{}, len(o.Models))
+		for i, m := range o.Models {
+			models[i] = m.toWire()
+		}
+		out["models"] = models
 	}
 	if len(o.BYOK) > 0 {
 		out["byok"] = o.BYOK
@@ -814,6 +827,18 @@ func (t *Tools) ExaSearch(config tools.ExaSearchConfig) tools.ExaSearchTool {
 // TakoSearch creates a Tako search tool with the given configuration.
 func (t *Tools) TakoSearch(config tools.TakoSearchConfig) tools.TakoSearchTool {
 	return tools.NewTakoSearch(config)
+}
+
+// BrowserbaseSearch creates a Browserbase search tool with the given
+// configuration.
+func (t *Tools) BrowserbaseSearch(config tools.BrowserbaseSearchConfig) tools.BrowserbaseSearchTool {
+	return tools.NewBrowserbaseSearch(config)
+}
+
+// BrowserbaseFetch creates a Browserbase fetch tool with the given
+// configuration.
+func (t *Tools) BrowserbaseFetch(config tools.BrowserbaseFetchConfig) tools.BrowserbaseFetchTool {
+	return tools.NewBrowserbaseFetch(config)
 }
 
 // NewTools creates a new Tools instance for accessing gateway-specific tools

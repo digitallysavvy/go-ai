@@ -1109,6 +1109,7 @@ func TestGatewayProviderOptionsHasSerializes(t *testing.T) {
 		Has: []string{
 			GatewayHasImplicitCaching,
 			GatewayHasReasoning,
+			GatewayHasStructuredOutput,
 			GatewayHasToolUse,
 			GatewayHasVision,
 			GatewayHasQuantization("fp8"),
@@ -1120,7 +1121,7 @@ func TestGatewayProviderOptionsHasSerializes(t *testing.T) {
 	if !ok {
 		t.Fatalf("has type = %T, want []string", got["has"])
 	}
-	want := []string{"implicit-caching", "reasoning", "tool-use", "vision", "quantization:fp8", "!quantization:fp8"}
+	want := []string{"implicit-caching", "reasoning", "structured-output", "tool-use", "vision", "quantization:fp8", "!quantization:fp8"}
 	if len(has) != len(want) {
 		t.Fatalf("has = %#v, want %#v", has, want)
 	}
@@ -1128,6 +1129,46 @@ func TestGatewayProviderOptionsHasSerializes(t *testing.T) {
 		if has[i] != want[i] {
 			t.Fatalf("has[%d] = %q, want %q", i, has[i], want[i])
 		}
+	}
+}
+
+// TestGatewayProviderOptionsModelsSerializesPlainAndConditionalFallbacks
+// mirrors TS gateway-provider-options d3cc6ae28d/b67b1b7463: a plain
+// GatewayModel entry serializes to a bare string, and a
+// GatewayConditionalModelFallback entry serializes to {model, when}.
+func TestGatewayProviderOptionsModelsSerializesPlainAndConditionalFallbacks(t *testing.T) {
+	confidenceBelow := 0.6
+	opts := GatewayProviderOptions{
+		Models: []GatewayModelFallback{
+			GatewayConditionalModelFallback("openai/gpt-5.6-sol", EvaluationFallbackCondition{
+				Question:        "intent",
+				ConfidenceBelow: &confidenceBelow,
+			}),
+			GatewayModel("anthropic/claude-sonnet-5"),
+		},
+	}
+	got := opts.toMap()
+	models, ok := got["models"].([]interface{})
+	if !ok || len(models) != 2 {
+		t.Fatalf("models = %#v, want 2-entry []interface{}", got["models"])
+	}
+	first, ok := models[0].(map[string]interface{})
+	if !ok || first["model"] != "openai/gpt-5.6-sol" {
+		t.Fatalf("models[0] = %#v", models[0])
+	}
+	when, ok := first["when"].(map[string]interface{})
+	if !ok || when["question"] != "intent" || when["confidenceBelow"] != 0.6 {
+		t.Fatalf("models[0].when = %#v", first["when"])
+	}
+	if models[1] != "anthropic/claude-sonnet-5" {
+		t.Fatalf("models[1] = %#v, want plain string", models[1])
+	}
+}
+
+func TestGatewayProviderOptionsModelsOmittedWhenEmpty(t *testing.T) {
+	got := GatewayProviderOptions{}.toMap()
+	if _, ok := got["models"]; ok {
+		t.Fatalf("models should be omitted when empty, got %#v", got["models"])
 	}
 }
 
