@@ -216,7 +216,7 @@ func (p *Provider) Files() provider.FilesAPI {
 // Google Generative AI chat language model. Mirrors TypeScript's
 // GoogleGenerativeAIProvider.evaluationModel: `provider.evaluationModel =
 // (modelId) => new EvaluationLanguageModel({ model: createChatModel(modelId),
-// provider: providerName.replace(/\.generative-ai$/, '') + '.evaluation' })`.
+// provider: providerName.replace(/\.generative-ai$/, "") + '.evaluation' })`.
 func (p *Provider) EvaluationModel(modelID string) (provider.EvaluationModel, error) {
 	model, err := p.LanguageModel(modelID)
 	if err != nil {
