@@ -915,6 +915,15 @@ func TestAgent_StopWhenSuspendedTurnIsResumable(t *testing.T) {
 				&StreamStartPart{},
 				&TextDeltaPart{ID: "t1", Delta: "first"},
 				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonToolCalls}, Usage: stringUsage(1, 1)},
+				// One event of lookahead (TS's "one event of lookahead"
+				// refinement / pendingStopBoundary): the driver peeks at
+				// this next event before deciding whether to suspend.
+				// Reusing a finish-step here (rather than a natural finish)
+				// mirrors TS's own analogous test
+				// ("generate() stops after a configured step..."), which
+				// reuses `finishEvents()[0]` as both the trigger and the
+				// lookahead peek.
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)},
 			}
 		},
 		continueScript: func(submit func(string, interface{})) []StreamPart {
@@ -993,6 +1002,10 @@ func TestAgent_StopWhenFallsBackToHardFinishWhenSuspendUnsupported(t *testing.T)
 				&StreamStartPart{},
 				&TextDeltaPart{ID: "t1", Delta: "first"},
 				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonToolCalls}, Usage: stringUsage(1, 1)},
+				// One event of lookahead — see
+				// TestAgent_StopWhenSuspendedTurnIsResumable's identical
+				// comment.
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)},
 			}
 		},
 		doSuspendTurn: func(context.Context) (*ContinueTurnState, error) {

@@ -334,6 +334,13 @@ type turnDriver struct {
 
 	closingResumedStep bool
 
+	// pendingStopBoundary is set at a finish-step whose completed step might
+	// satisfy a StopCondition, and resolved against the *next* part read
+	// (TS's "one event of lookahead") before actually deciding to suspend.
+	// See suspendOrFinishNow's doc and consumeLoop's pendingStopBoundary
+	// handling.
+	pendingStopBoundary *pendingStopBoundary
+
 	// Telemetry span/context state — see telemetry.go. telCallID is
 	// generated once per turn (runPrompt) and shared across every step's
 	// language-model-call span, mirroring how pkg/ai/generate.go reuses one
@@ -555,6 +562,7 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 			return false, false, d.ctx.Err()
 		}
 		if !ok {
+			d.releasePendingStopBoundary()
 			if !finished {
 				// The adapter ended the turn (closed its Done channel)
 				// without ever emitting `finish`. Mirrors TS's fallback
@@ -563,6 +571,28 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 				return false, false, errors.New("harness: adapter ended the turn without emitting `finish`")
 			}
 			return true, false, nil
+		}
+
+		// One event of lookahead (TS run-prompt.ts's `pendingStopBoundary`
+		// check, evaluated against the *next* part read after a
+		// StopConditions-eligible finish-step): if that next part is the
+		// harness's own terminal `finish`, the turn was ending on its own
+		// anyway — release the checkpoint and let it finish naturally
+		// instead of suspending redundantly right before it. Otherwise,
+		// evaluate StopConditions now (using the step just completed) and
+		// either suspend or fall through to process this part normally.
+		if d.pendingStopBoundary != nil {
+			psb := d.pendingStopBoundary
+			d.pendingStopBoundary = nil
+			if _, isFinish := part.(*FinishPart); isFinish {
+				psb.release()
+			} else if reason := d.evaluateStopConditions(); reason != "" {
+				psb.release()
+				d.suspendOrFinishNow(psb.finishReason, psb.usage)
+				return false, true, nil
+			} else {
+				psb.release()
+			}
 		}
 
 		if sp, isStart := part.(*StreamStartPart); isStart {
@@ -677,9 +707,19 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 				return false, false, err
 			}
 			d.completeStep(fs.FinishReason, fs.Usage)
-			if reason := d.evaluateStopConditions(); reason != "" {
-				d.suspendOrFinishNow(fs.FinishReason, fs.Usage)
-				return false, true, nil
+			// Deferred to the *next* part read — see the pendingStopBoundary
+			// handling above (TS's "one event of lookahead") — rather than
+			// evaluated immediately: StopConditions are meaningless with none
+			// configured, so this only fires when the caller actually asked
+			// for early-stop behavior.
+			if len(d.in.StopConditions) > 0 {
+				var release func()
+				if pinner, ok := d.control.(CheckpointPinner); ok {
+					release = pinner.PinCheckpoint()
+				}
+				d.pendingStopBoundary = &pendingStopBoundary{
+					finishReason: fs.FinishReason, usage: fs.Usage, releaseCheckpoint: release,
+				}
 			}
 		}
 
@@ -1015,6 +1055,33 @@ func (d *turnDriver) pauseForHostInput() error {
 	return nil
 }
 
+// pendingStopBoundary is a completed step's finish-step data, captured when
+// StopConditions are configured, awaiting the next part read before
+// consumeLoop decides whether to actually suspend. Mirrors TS
+// `pendingStopBoundary` in run-prompt.ts.
+type pendingStopBoundary struct {
+	finishReason      FinishReason
+	usage             Usage
+	releaseCheckpoint func()
+}
+
+// release calls releaseCheckpoint if set. Safe on a nil releaseCheckpoint
+// (no CheckpointPinner was available).
+func (p *pendingStopBoundary) release() {
+	if p.releaseCheckpoint != nil {
+		p.releaseCheckpoint()
+	}
+}
+
+// releasePendingStopBoundary releases and clears d.pendingStopBoundary, if
+// any. Mirrors TS `releasePendingStopBoundary`.
+func (d *turnDriver) releasePendingStopBoundary() {
+	if d.pendingStopBoundary != nil {
+		d.pendingStopBoundary.release()
+		d.pendingStopBoundary = nil
+	}
+}
+
 // suspendOrFinishNow settles the local *ai.StreamTextResult right now, ahead
 // of any later `finish` the adapter might still emit — used only by the
 // StopConditions early-stop path. finishReason is the last completed step's;
@@ -1039,21 +1106,21 @@ func (d *turnDriver) pauseForHostInput() error {
 // (`input.onStopConditionMet?.()` then `lifecycle.end`/`result.finish()`,
 // with no `onTurnFinished` call in that branch either).
 //
-// Deferred to WG13 (workflow-harness slicing) and to WG7+ bridge adapters,
-// respectively: (1) TS's "one event of lookahead" refinement, which skips
-// suspending entirely when the adapter's very next event turns out to be
-// its own natural `finish` arriving right after this step anyway (avoiding
-// a redundant suspend immediately before a turn that was ending on its
-// own) — this needs to peek at (and safely re-inject) the following part,
-// which interacts closely enough with WG13's own time-slice boundary
-// handling that building it twice isn't worthwhile; and (2) the bridge-
-// level replay-checkpoint pinning (TS `pinSandboxChannelEventCheckpoint`)
-// that keeps a *live* bridge connection's event buffer from being
-// garbage-collected while a stop decision is pending — see spec.go's
-// CheckpointPinner, an optional extension point a bridge-backed adapter can
-// implement for that optimization; correctness here does not depend on it,
-// since DoSuspendTurn (not this driver) is what actually freezes the
-// adapter's cursor.
+// Implemented (WG13): (1) TS's "one event of lookahead" refinement — a
+// finish-step whose step might satisfy a StopCondition only sets
+// d.pendingStopBoundary; consumeLoop's next iteration peeks at the following
+// part and skips suspending entirely when that turns out to be the harness's
+// own natural `finish` arriving right after this step anyway (avoiding a
+// redundant suspend immediately before a turn that was ending on its own),
+// or evaluates StopConditions and suspends only when they still match. See
+// consumeLoop's pendingStopBoundary handling. (2) The bridge-level
+// replay-checkpoint pinning (TS `pinSandboxChannelEventCheckpoint`), via
+// spec.go's CheckpointPinner: the pendingStopBoundary above pins one (when
+// d.control implements it) for the duration of the lookahead, so a live
+// bridge connection's event buffer isn't garbage-collected while the stop
+// decision is pending. Correctness never depended on this — DoSuspendTurn
+// (not this driver) is what actually freezes the adapter's cursor — it is
+// purely the replay-safety optimization CheckpointPinner's own doc describes.
 func (d *turnDriver) suspendOrFinishNow(finishReason FinishReason, usage Usage) {
 	suspended := false
 	if d.in.OnStopConditionMet != nil {

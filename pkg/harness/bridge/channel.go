@@ -112,8 +112,28 @@ func (e Event) PinCheckpoint() (release func()) {
 	if !e.HasSeq || e.ch == nil {
 		return nil
 	}
-	c := e.ch
-	pin := &pinnedCursor{eventID: e.Seq}
+	return e.ch.pinCheckpointAt(e.Seq)
+}
+
+// PinEventCheckpoint is the free-function form of Event.PinCheckpoint.
+func PinEventCheckpoint(e Event) func() { return e.PinCheckpoint() }
+
+// PinCheckpoint pins the suspension cursor to the channel's most recently
+// observed event (LastSeenEventID), without requiring the caller to hold a
+// specific Event value. Used by an adapter's PromptControl (harness.
+// CheckpointPinner) whose wireTurn forwards parts without retaining each
+// individual bridge.Event — see Event.PinCheckpoint for full pinning
+// semantics, which this shares exactly, just seeded from the channel's
+// current cursor instead of one particular event's seq.
+func (c *Channel) PinCheckpoint() (release func()) {
+	c.mu.Lock()
+	seq := c.lastSeen
+	c.mu.Unlock()
+	return c.pinCheckpointAt(seq)
+}
+
+func (c *Channel) pinCheckpointAt(seq float64) (release func()) {
+	pin := &pinnedCursor{eventID: seq}
 	c.mu.Lock()
 	c.pinned = pin
 	c.mu.Unlock()
@@ -125,9 +145,6 @@ func (e Event) PinCheckpoint() (release func()) {
 		c.mu.Unlock()
 	}
 }
-
-// PinEventCheckpoint is the free-function form of Event.PinCheckpoint.
-func PinEventCheckpoint(e Event) func() { return e.PinCheckpoint() }
 
 type pinnedCursor struct{ eventID float64 }
 

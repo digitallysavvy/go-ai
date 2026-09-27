@@ -122,6 +122,13 @@ func (c *promptControl) Err() error {
 	return c.err
 }
 
+// PinCheckpoint implements harness.CheckpointPinner by delegating to the
+// underlying bridge channel's replay checkpoint (WG13: run_prompt.go's
+// StopWhen early-stop path pins this while deciding whether to suspend).
+func (c *promptControl) PinCheckpoint() (release func()) { return c.channel.PinCheckpoint() }
+
+var _ harness.CheckpointPinner = (*promptControl)(nil)
+
 // wireTurn subscribes to one live turn's events, forwarding every
 // harness.StreamPart to emit until `finish`/`error` settle the turn or the
 // channel closes. Mirrors TS `wireTurn`.

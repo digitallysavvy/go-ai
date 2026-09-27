@@ -146,6 +146,13 @@ func (c *promptControl) Err() error {
 	return c.err
 }
 
+// PinCheckpoint implements harness.CheckpointPinner by delegating to the
+// underlying bridge channel's replay checkpoint (WG13: run_prompt.go's
+// StopWhen early-stop path pins this while deciding whether to suspend).
+func (c *promptControl) PinCheckpoint() (release func()) { return c.channel.PinCheckpoint() }
+
+var _ harness.CheckpointPinner = (*promptControl)(nil)
+
 func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptControl {
 	s.mu.Lock()
 	s.activeTurn = true

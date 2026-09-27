@@ -194,6 +194,13 @@ func (c *promptControl) Err() error {
 	return c.err
 }
 
+// PinCheckpoint implements harness.CheckpointPinner by delegating to the
+// underlying bridge channel's replay checkpoint (WG13: run_prompt.go's
+// StopWhen early-stop path pins this while deciding whether to suspend).
+func (c *promptControl) PinCheckpoint() (release func()) { return c.channel.PinCheckpoint() }
+
+var _ harness.CheckpointPinner = (*promptControl)(nil)
+
 // nativeRequestOption reads the native ask-user-questions request a buffered
 // tool result was submitted against, from the provider metadata this
 // session's askUserQuestions handler stamped onto the forwarded tool-call

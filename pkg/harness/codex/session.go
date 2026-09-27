@@ -21,6 +21,7 @@ import (
 var _ harness.Session = (*session)(nil)
 var _ harness.PromptControl = (*promptControl)(nil)
 var _ harness.ToolApprovalSubmitter = (*promptControl)(nil)
+var _ harness.CheckpointPinner = (*promptControl)(nil)
 
 // sessionOptions is the input of newSession. Mirrors the object TS
 // `createSession` closes over.
@@ -466,6 +467,11 @@ func (c *promptControl) SubmitToolApproval(ctx context.Context, approval harness
 
 func (c *promptControl) Done() <-chan struct{} { return c.done }
 func (c *promptControl) Err() error            { return c.err }
+
+// PinCheckpoint implements harness.CheckpointPinner by delegating to the
+// underlying bridge channel's replay checkpoint (WG13: run_prompt.go's
+// StopWhen early-stop path pins this while deciding whether to suspend).
+func (c *promptControl) PinCheckpoint() (release func()) { return c.channel.PinCheckpoint() }
 
 // extractUserText mirrors TS `extractUserText`.
 func extractUserText(prompt harness.Prompt) (string, error) {
