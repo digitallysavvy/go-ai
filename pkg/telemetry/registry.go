@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -448,6 +449,38 @@ func modelCallID(parts ...string) string {
 	return ""
 }
 
+// finiteFloat64Attr returns an attribute.KeyValue for a float64 value, or
+// false when the value is NaN or ±Inf. OTLP does not support non-finite
+// floats; mirrors TS sanitizeAttributeValue (otel/src/sanitize-attribute-value.ts).
+func finiteFloat64Attr(key string, v float64) (attribute.KeyValue, bool) {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return attribute.KeyValue{}, false
+	}
+	return attribute.Float64(key, v), true
+}
+
+// finiteFloat64Slice returns values unchanged, or false if any element is
+// NaN/±Inf (TS drops the whole array in that case; see sanitizeAttributeValue).
+func finiteFloat64Slice(values []float64) ([]float64, bool) {
+	for _, v := range values {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return nil, false
+		}
+	}
+	return values, true
+}
+
+// setFiniteFloat64 appends a Float64 attribute.KeyValue to attrs, skipping
+// non-finite values (NaN/±Inf), which are otherwise silently dropped or
+// rejected by OTLP exporters. Common source: tokens-per-second metrics
+// computed with a zero-duration denominator.
+func setFiniteFloat64(attrs []attribute.KeyValue, key string, v float64) []attribute.KeyValue {
+	if kv, ok := finiteFloat64Attr(key, v); ok {
+		return append(attrs, kv)
+	}
+	return attrs
+}
+
 func customSpanAttributes(ctx context.Context, settings *Settings, opts EnrichSpanOptions) []attribute.KeyValue {
 	if settings == nil || settings.EnrichSpan == nil {
 		return nil
@@ -471,7 +504,9 @@ func customSpanAttributes(ctx context.Context, settings *Settings, opts EnrichSp
 		case int64:
 			out = append(out, attribute.Int64(key, v))
 		case float64:
-			out = append(out, attribute.Float64(key, v))
+			if kv, ok := finiteFloat64Attr(key, v); ok {
+				out = append(out, kv)
+			}
 		case []string:
 			out = append(out, attribute.StringSlice(key, v))
 		case []bool:
@@ -481,7 +516,9 @@ func customSpanAttributes(ctx context.Context, settings *Settings, opts EnrichSp
 		case []int64:
 			out = append(out, attribute.Int64Slice(key, v))
 		case []float64:
-			out = append(out, attribute.Float64Slice(key, v))
+			if finite, ok := finiteFloat64Slice(v); ok {
+				out = append(out, attribute.Float64Slice(key, finite))
+			}
 		default:
 			if b, err := json.Marshal(v); err == nil {
 				out = append(out, attribute.String(key, string(b)))
@@ -527,7 +564,80 @@ func (OTelTelemetryIntegration) OnStart(ctx context.Context, e TelemetryStartEve
 	if e.OperationType == "ai.embedMany" && e.ValueCount > 0 {
 		span.SetAttributes(attribute.Int("ai.values.count", e.ValueCount))
 	}
+	if attrs := runtimeContextAttributes(e.RuntimeContext); len(attrs) > 0 {
+		span.SetAttributes(attrs...)
+		// Stashed so descendant spans (e.g. tool call spans) can also carry
+		// the flattened ai.settings.context.* attrs, matching TS's
+		// baseTelemetryAttributes reuse (0651c5f). RuntimeContext here is
+		// already filtered by Settings.IncludeRuntimeContext upstream.
+		ctx = context.WithValue(ctx, runtimeContextAttrsKey{}, attrs)
+	}
 	return ctx // span is embedded via OTel context propagation
+}
+
+// runtimeContextAttrsKey is a private context key carrying the root span's
+// flattened ai.settings.context.* attributes down to descendant spans.
+type runtimeContextAttrsKey struct{}
+
+// runtimeContextAttributes flattens a runtime context map into
+// "ai.settings.context.<path>" attributes, mirroring TS's
+// getRuntimeContextAttributes (otel/src/supplemental-attributes.ts): nested
+// objects recurse, arrays and other primitives are kept as-is, and nil
+// values are skipped.
+func runtimeContextAttributes(runtimeContext map[string]interface{}) []attribute.KeyValue {
+	if len(runtimeContext) == 0 {
+		return nil
+	}
+	var attrs []attribute.KeyValue
+	for key, value := range runtimeContext {
+		attrs = appendRuntimeContextAttribute(attrs, "ai.settings.context."+key, value)
+	}
+	return attrs
+}
+
+func appendRuntimeContextAttribute(attrs []attribute.KeyValue, key string, value interface{}) []attribute.KeyValue {
+	if value == nil {
+		return attrs
+	}
+	if nested, ok := value.(map[string]interface{}); ok {
+		for nestedKey, nestedValue := range nested {
+			attrs = appendRuntimeContextAttribute(attrs, key+"."+nestedKey, nestedValue)
+		}
+		return attrs
+	}
+	switch v := value.(type) {
+	case string:
+		return append(attrs, attribute.String(key, v))
+	case bool:
+		return append(attrs, attribute.Bool(key, v))
+	case int:
+		return append(attrs, attribute.Int(key, v))
+	case int64:
+		return append(attrs, attribute.Int64(key, v))
+	case float64:
+		if kv, ok := finiteFloat64Attr(key, v); ok {
+			return append(attrs, kv)
+		}
+		return attrs
+	case []string:
+		return append(attrs, attribute.StringSlice(key, v))
+	case []bool:
+		return append(attrs, attribute.BoolSlice(key, v))
+	case []int:
+		return append(attrs, attribute.IntSlice(key, v))
+	case []int64:
+		return append(attrs, attribute.Int64Slice(key, v))
+	case []float64:
+		if finite, ok := finiteFloat64Slice(v); ok {
+			return append(attrs, attribute.Float64Slice(key, finite))
+		}
+		return attrs
+	default:
+		if b, err := json.Marshal(v); err == nil {
+			return append(attrs, attribute.String(key, string(b)))
+		}
+		return attrs
+	}
 }
 
 // stepSpanKey is a private context key used to pass the OTel step span from
@@ -602,30 +712,36 @@ func (OTelTelemetryIntegration) OnLanguageModelCallEnd(_ context.Context, e Lang
 	if !ok || !entry.span.IsRecording() {
 		return
 	}
-	entry.span.SetAttributes(
+	attrs := []attribute.KeyValue{
 		attribute.String("ai.response.finishReason", e.FinishReason),
 		attribute.Int64("ai.response.responseTimeMs", e.Performance.ResponseTimeMs),
-		attribute.Float64("ai.response.effectiveOutputTokensPerSecond", e.Performance.EffectiveOutputTokensPerSecond),
-		attribute.Float64("ai.response.effectiveTotalTokensPerSecond", e.Performance.EffectiveTotalTokensPerSecond),
-	)
+	}
+	attrs = setFiniteFloat64(attrs, "ai.response.effectiveOutputTokensPerSecond", e.Performance.EffectiveOutputTokensPerSecond)
+	attrs = setFiniteFloat64(attrs, "ai.response.effectiveTotalTokensPerSecond", e.Performance.EffectiveTotalTokensPerSecond)
+	entry.span.SetAttributes(attrs...)
 	if e.Performance.OutputTokensPerSecond != nil {
-		entry.span.SetAttributes(attribute.Float64("ai.response.outputTokensPerSecond", *e.Performance.OutputTokensPerSecond))
+		if kv, ok := finiteFloat64Attr("ai.response.outputTokensPerSecond", *e.Performance.OutputTokensPerSecond); ok {
+			entry.span.SetAttributes(kv)
+		}
 	}
 	if e.Performance.InputTokensPerSecond != nil {
-		entry.span.SetAttributes(attribute.Float64("ai.response.inputTokensPerSecond", *e.Performance.InputTokensPerSecond))
+		if kv, ok := finiteFloat64Attr("ai.response.inputTokensPerSecond", *e.Performance.InputTokensPerSecond); ok {
+			entry.span.SetAttributes(kv)
+		}
 	}
 	if e.Performance.TimeToFirstOutputMs != nil {
 		entry.span.SetAttributes(attribute.Int64("ai.response.timeToFirstOutputMs", *e.Performance.TimeToFirstOutputMs))
 	}
 	if stats := e.Performance.TimeBetweenOutputChunksMs; stats != nil {
-		entry.span.SetAttributes(
+		durationAttrs := []attribute.KeyValue{
 			attribute.Int64("ai.response.timeBetweenOutputChunksMs.min", stats.Min),
 			attribute.Int64("ai.response.timeBetweenOutputChunksMs.p10", stats.P10),
 			attribute.Int64("ai.response.timeBetweenOutputChunksMs.median", stats.Median),
-			attribute.Float64("ai.response.timeBetweenOutputChunksMs.avg", stats.Avg),
 			attribute.Int64("ai.response.timeBetweenOutputChunksMs.p90", stats.P90),
 			attribute.Int64("ai.response.timeBetweenOutputChunksMs.max", stats.Max),
-		)
+		}
+		durationAttrs = setFiniteFloat64(durationAttrs, "ai.response.timeBetweenOutputChunksMs.avg", stats.Avg)
+		entry.span.SetAttributes(durationAttrs...)
 	}
 	if e.Usage.InputTokens != nil {
 		entry.span.SetAttributes(attribute.Int64("gen_ai.usage.input_tokens", *e.Usage.InputTokens))
@@ -747,6 +863,12 @@ func (OTelTelemetryIntegration) OnToolExecutionStart(ctx context.Context, e Tele
 		attribute.String("ai.toolCall.id", e.ToolCallID),
 		attribute.String("ai.toolCall.name", e.ToolName),
 	)
+	// Runtime context attrs on tool call spans (0651c5f): reuse the root
+	// span's already-flattened ai.settings.context.* attrs, since
+	// TelemetryToolCallStartEvent carries no RuntimeContext of its own.
+	if attrs, ok := ctx.Value(runtimeContextAttrsKey{}).([]attribute.KeyValue); ok {
+		child.SetAttributes(attrs...)
+	}
 	return ctx
 }
 
@@ -985,8 +1107,7 @@ func (OTelTelemetryIntegration) OnError(ctx context.Context, e TelemetryErrorEve
 		return
 	}
 	if e.Error != nil {
-		span.RecordError(e.Error)
-		span.SetStatus(codes.Error, e.Error.Error())
+		RecordErrorOnSpan(span, e.Error)
 	}
 	span.End()
 }

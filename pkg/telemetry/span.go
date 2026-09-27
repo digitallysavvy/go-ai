@@ -2,10 +2,13 @@ package telemetry
 
 import (
 	"context"
+	"errors"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
+
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // SpanOptions configures a telemetry span
@@ -49,10 +52,20 @@ func RecordSpan[T any](
 	return result, nil
 }
 
-// RecordErrorOnSpan records an error on a span and sets the span status to error.
+// RecordErrorOnSpan records an error on a span and sets the span status to
+// error. When the error (or a *providererrors.RetryError's wrapped last
+// error) is a *providererrors.ProviderError with an HTTP status code, that
+// status is also recorded as http.response.status_code, mirroring TS's
+// recordErrorOnSpan (otel/src/record-span.ts), which unwraps RetryError to
+// find the underlying APICallError.
 func RecordErrorOnSpan(span trace.Span, err error) {
 	if err == nil {
 		return
+	}
+
+	var providerErr *providererrors.ProviderError
+	if errors.As(err, &providerErr) && providerErr.StatusCode != 0 {
+		span.SetAttributes(attribute.Int("http.response.status_code", providerErr.StatusCode))
 	}
 
 	span.RecordError(err)
