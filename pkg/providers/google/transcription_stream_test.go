@@ -179,7 +179,17 @@ func newLiveTestModel(t *testing.T, baseURL string) *TranscriptionModel {
 	t.Helper()
 	p := New(Config{APIKey: "test-api-key", BaseURL: baseURL})
 	m := NewTranscriptionModel(p, ModelGemini35TranscribeLive)
-	m.finishGraceMs = 50 * time.Millisecond
+	// No test in this file depends on the finish-grace timer itself elapsing:
+	// every scenario finishes via an explicit terminal signal (turnComplete /
+	// interactionStatus / a connection close). A short override here (this
+	// used to be 50ms) previously raced the timer against real message
+	// delivery on the httptest WebSocket server: under load (observed with
+	// `go test -race -count=10` on a busy machine), the timer could fire and
+	// finish the stream with truncated text before a same-tick server message
+	// was read and processed. Leaving finishGraceMs unset applies
+	// defaultFinishGraceDuration (3s, matching TS's own production default
+	// and its 5000ms test default), which no real test scenario here comes
+	// close to hitting.
 	return m
 }
 
