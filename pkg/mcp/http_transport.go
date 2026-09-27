@@ -1005,10 +1005,6 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 		t.maybeScheduleInboundSSEReconnect(lifecycleCtx)
 		return
 	}
-	if resp.Body == nil {
-		resp.Body = io.NopCloser(bytes.NewReader(nil))
-	}
-
 	if sessionID := resp.Header.Get("mcp-session-id"); sessionID != "" {
 		t.setSessionID(sessionID)
 	}
@@ -1016,8 +1012,10 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 	// 401: run the OAuth refresh once (reusing the single-flight path used by
 	// send()), then retry, matching TS's authorizeOnce()-guarded retry.
 	if resp.StatusCode == http.StatusUnauthorized && t.oauthConfigured() && !triedAuth {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close() //nolint:errcheck
+		if resp.Body != nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close() //nolint:errcheck
+		}
 		if err := t.refreshOAuthToken(connCtx); err != nil {
 			connCancel()
 			t.reportError(NewTransportError("failed to refresh OAuth token", err))
@@ -1031,15 +1029,24 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 	// 405: the server does not support GET on this endpoint. Matching TS,
 	// this is silent (no error reported, no reconnection scheduled).
 	if resp.StatusCode == http.StatusMethodNotAllowed {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close() //nolint:errcheck
+		if resp.Body != nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close() //nolint:errcheck
+		}
 		connCancel()
 		return
 	}
 
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close() //nolint:errcheck
+	// Matches TS openInboundSse's `if (!response.ok || !response.body)`: a
+	// missing body fails the same way a non-2xx status does, even when the
+	// status itself is OK (only reachable via a custom SSEClient, since a
+	// real net/http response body is never nil).
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices || resp.Body == nil {
+		var body []byte
+		if resp.Body != nil {
+			body, _ = io.ReadAll(resp.Body)
+			resp.Body.Close() //nolint:errcheck
+		}
 		if resp.StatusCode == http.StatusNotFound && sessionIDForRequest != "" {
 			t.expireSessionID(sessionIDForRequest)
 		}

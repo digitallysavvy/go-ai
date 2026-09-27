@@ -487,6 +487,65 @@ func TestHTTPTransportInboundSSEExposesStatusOnGETFailure(t *testing.T) {
 	}
 }
 
+// TestHTTPTransportInboundSSEFailsOnOKResponseWithoutBody ports TS
+// openInboundSse's `if (!response.ok || !response.body)`: a nil Body fails
+// the standing GET the same way a non-2xx status does, even when the status
+// itself is 200 OK. A prior version of the Go transport normalized a nil
+// resp.Body to an empty reader right after client.Do, which made this
+// unreachable and would have fed readInboundSSEStream an empty stream
+// forever instead of reporting the "GET SSE failed" error.
+func TestHTTPTransportInboundSSEFailsOnOKResponseWithoutBody(t *testing.T) {
+	sse := &scriptedSSEClient{}
+	sse.respond = func(callNumber int, req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     http.StatusText(http.StatusOK),
+			Header:     make(http.Header),
+			Body:       nil,
+		}, nil
+	}
+
+	var captured *MCPClientError
+	var mu sync.Mutex
+	transport := NewHTTPTransport(HTTPTransportConfig{
+		URL:       "http://localhost:9999/mcp",
+		SSEClient: sse,
+		OnError: func(err error) {
+			mu.Lock()
+			defer mu.Unlock()
+			if clientErr, ok := err.(*MCPClientError); ok {
+				captured = clientErr
+			}
+		},
+	})
+	if err := transport.Connect(t.Context()); err != nil {
+		t.Fatalf("Connect error: %v", err)
+	}
+	defer transport.Close() //nolint:errcheck
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		mu.Lock()
+		got := captured
+		mu.Unlock()
+		if got != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for OnError")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if captured.StatusCode != http.StatusOK {
+		t.Fatalf("StatusCode = %d, want 200", captured.StatusCode)
+	}
+	if !strings.Contains(captured.Message, "GET SSE failed: 200 OK") {
+		t.Fatalf("Message = %q, want it to mention GET SSE failed: 200 OK", captured.Message)
+	}
+}
+
 // TestHTTPTransportInboundSSEReopensAfter202Accepted mirrors TS's "should
 // (re)open inbound SSE after 202 Accepted": a 405 on the initial GET means no
 // SSE connection is active, so a subsequent 202-accepted POST should trigger
