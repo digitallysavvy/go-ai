@@ -67,7 +67,16 @@ func SupportedURLCheckerForModel(model provider.LanguageModel) func(mediaType, r
 	if !ok {
 		return nil
 	}
-	patternsByMediaType := supported.SupportedURLs()
+	return SupportedURLCheckerFromPatterns(supported.SupportedURLs())
+}
+
+// SupportedURLCheckerFromPatterns compiles a raw SupportedURLs()-style map
+// (regexp patterns keyed by media type) into a prompt URL support checker,
+// matching TypeScript's isUrlSupported. Use this when the pattern map is
+// already available without a provider.LanguageModel instance to type-assert
+// against (e.g. the batch API, whose supportedUrls comes from the batch
+// interface rather than a per-request model).
+func SupportedURLCheckerFromPatterns(patternsByMediaType map[string][]string) func(mediaType, rawURL string) bool {
 	if len(patternsByMediaType) == 0 {
 		return nil
 	}

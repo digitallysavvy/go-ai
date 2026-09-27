@@ -3,6 +3,7 @@ package types
 import (
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"strings"
 )
 
@@ -18,6 +19,12 @@ const (
 	FileDataTypeURL       FileDataType = "url"
 	FileDataTypeReference FileDataType = "reference"
 	FileDataTypeText      FileDataType = "text"
+
+	// FileDataTypeStream identifies an upload data variant containing a byte
+	// stream. Providers that support streaming uploads read directly from
+	// Stream without buffering the full file in memory. Mirrors TypeScript's
+	// FilesV4UploadFileStreamData ({ type: 'stream', stream }).
+	FileDataTypeStream FileDataType = "stream"
 )
 
 // FileData is the provider-facing tagged file data shape.
@@ -51,6 +58,12 @@ type FileData struct {
 
 	// MediaType is the IANA media type associated with the file data when known.
 	MediaType string `json:"mediaType,omitempty"`
+
+	// Stream holds a byte stream to read upload data from, for Type ==
+	// FileDataTypeStream. Not JSON-serializable; provider upload
+	// implementations read directly from it (e.g. as a multipart body part)
+	// instead of buffering the full file in memory.
+	Stream io.Reader `json:"-"`
 }
 
 // MarshalJSON preserves the TypeScript file-data union shape. In particular,
@@ -133,7 +146,8 @@ func (f FileData) IsZero() bool {
 		f.URL == "" &&
 		len(f.Reference) == 0 &&
 		f.Text == "" &&
-		f.MediaType == ""
+		f.MediaType == "" &&
+		f.Stream == nil
 }
 
 // DecodeFileDataString decodes the base64/base64url string variant accepted by

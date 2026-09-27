@@ -413,9 +413,15 @@ func TestWrapProvider_PreservesSupportedFilesAndSkills(t *testing.T) {
 
 type registryBackedProvider struct {
 	provider.Provider
+	files provider.FilesAPI
 }
 
-func (registryBackedProvider) Files() provider.FilesAPI   { return testFilesAPI{} }
+func (p registryBackedProvider) Files() provider.FilesAPI {
+	if p.files != nil {
+		return p.files
+	}
+	return testFilesAPI{}
+}
 func (registryBackedProvider) Skills() provider.SkillsAPI { return testSkillsAPI{} }
 
 type testFilesAPI struct{}
@@ -427,4 +433,44 @@ func (testFilesAPI) UploadFile(context.Context, types.UploadFileOptions) (*types
 
 func (testSkillsAPI) UploadSkill(context.Context, types.UploadSkillOptions) (*types.UploadSkillResult, error) {
 	return &types.UploadSkillResult{}, nil
+}
+
+// TestWrapProvider_PreservesFilesV4OptionalCapabilities locks in that
+// WrapProvider returns the underlying Files() value unmodified, so optional
+// v4 capabilities (FileMetadataGetter, FileDownloader, FileDeleter) survive
+// wrapping via type assertion on the concrete value.
+func TestWrapProvider_PreservesFilesV4OptionalCapabilities(t *testing.T) {
+	t.Parallel()
+
+	base := registryBackedProvider{Provider: &testutil.MockProvider{ProviderName: "upload"}, files: fullFilesAPI{}}
+	wrapped := WrapProvider(base, nil, nil)
+
+	fp, ok := wrapped.(provider.FilesProvider)
+	if !ok {
+		t.Fatal("wrapped provider should preserve FilesProvider support")
+	}
+	files := fp.Files()
+	if _, ok := files.(provider.FileMetadataGetter); !ok {
+		t.Fatal("wrapped Files() should preserve FileMetadataGetter")
+	}
+	if _, ok := files.(provider.FileDownloader); !ok {
+		t.Fatal("wrapped Files() should preserve FileDownloader")
+	}
+	if _, ok := files.(provider.FileDeleter); !ok {
+		t.Fatal("wrapped Files() should preserve FileDeleter")
+	}
+}
+
+type fullFilesAPI struct{ testFilesAPI }
+
+func (fullFilesAPI) GetFileMetadata(context.Context, provider.FileMetadataOptions) (*provider.FileMetadataResult, error) {
+	return &provider.FileMetadataResult{}, nil
+}
+
+func (fullFilesAPI) DownloadFile(context.Context, provider.DownloadFileOptions) (*provider.DownloadFileResult, error) {
+	return &provider.DownloadFileResult{}, nil
+}
+
+func (fullFilesAPI) DeleteFile(context.Context, provider.DeleteFileOptions) (*provider.DeleteFileResult, error) {
+	return &provider.DeleteFileResult{}, nil
 }
