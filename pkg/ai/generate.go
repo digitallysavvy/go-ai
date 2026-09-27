@@ -665,17 +665,27 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		}
 		telMessages = opts.Messages
 	}
+	generateTextMaxRetries := preparedMaxRetries(opts.MaxRetries)
 	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
-		OperationType:  "ai.generateText",
-		ModelProvider:  opts.Model.Provider(),
-		ModelID:        opts.Model.ModelID(),
-		Settings:       telemetrySettings,
-		Prompt:         telPrompt,
-		System:         telSystem,
-		Messages:       telMessages,
-		Headers:        opts.Headers,
-		RuntimeContext: telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
-		ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
+		OperationType:    "ai.generateText",
+		ModelProvider:    opts.Model.Provider(),
+		ModelID:          opts.Model.ModelID(),
+		Settings:         telemetrySettings,
+		Prompt:           telPrompt,
+		System:           telSystem,
+		Messages:         telMessages,
+		Headers:          opts.Headers,
+		MaxOutputTokens:  opts.MaxTokens,
+		Temperature:      opts.Temperature,
+		TopP:             opts.TopP,
+		TopK:             opts.TopK,
+		PresencePenalty:  opts.PresencePenalty,
+		FrequencyPenalty: opts.FrequencyPenalty,
+		StopSequences:    opts.StopSequences,
+		Seed:             opts.Seed,
+		MaxRetries:       &generateTextMaxRetries,
+		RuntimeContext:   telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
+		ToolsContext:     telemetryToolsContext(telemetrySettings, toolsContext),
 	})
 	callID := ""
 

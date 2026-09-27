@@ -765,13 +765,23 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 	// registered this is a no-op, and with one registered it creates exactly
 	// one "ai.generateObject" span instead of a duplicate.
 	telObjectRecordInputs := opts.ExperimentalTelemetry == nil || opts.ExperimentalTelemetry.RecordInputs
+	objectMaxRetries := opts.MaxRetries
 	startEvent := telemetry.TelemetryStartEvent{
-		OperationType: "ai.generateObject",
-		ModelProvider: opts.Model.Provider(),
-		ModelID:       opts.Model.ModelID(),
-		Settings:      opts.ExperimentalTelemetry,
-		Prompt:        telemetryInputValue(opts.ExperimentalTelemetry, opts.Prompt),
-		Headers:       opts.Headers,
+		OperationType:    "ai.generateObject",
+		ModelProvider:    opts.Model.Provider(),
+		ModelID:          opts.Model.ModelID(),
+		Settings:         opts.ExperimentalTelemetry,
+		Prompt:           telemetryInputValue(opts.ExperimentalTelemetry, opts.Prompt),
+		Headers:          opts.Headers,
+		MaxOutputTokens:  opts.MaxTokens,
+		Temperature:      opts.Temperature,
+		TopP:             opts.TopP,
+		TopK:             opts.TopK,
+		PresencePenalty:  opts.PresencePenalty,
+		FrequencyPenalty: opts.FrequencyPenalty,
+		Seed:             opts.Seed,
+		MaxRetries:       &objectMaxRetries,
+		SettingsOutput:   string(opts.OutputMode),
 	}
 	if telObjectRecordInputs {
 		startEvent.System = opts.System

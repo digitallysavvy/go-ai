@@ -116,6 +116,191 @@ func TestOTelIntegrationStepFinishFinishAndError(t *testing.T) {
 	}
 }
 
+// TestLegacyOpenTelemetryOnStartBaseAttributes ports TS's
+// "should record telemetry data when enabled" legacy-open-telemetry.test.ts
+// case (see the matching __snapshots__ entry): the root "ai.generateText"
+// span must carry ai.model.provider/id, ai.settings.<key> for every call
+// setting including maxRetries, ai.request.headers.<name>, and
+// operation.name/resource.name/ai.telemetry.functionId — and its real OTel
+// span name must be the bare operation id, never suffixed with functionID
+// (follow-up H1, 2026-09-27).
+func TestLegacyOpenTelemetryOnStartBaseAttributes(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	tracer := tp.Tracer("legacy-base-attrs-test")
+
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
+	settings := &Settings{
+		IsEnabled:     Bool(true),
+		RecordInputs:  true,
+		RecordOutputs: true,
+		FunctionID:    "test-function-id",
+	}
+
+	maxTokens := 100
+	temp := 0.5
+	topP := 0.2
+	// TS's snapshot uses a float for topK (0.1); Go's TopK field is *int, so
+	// this test exercises the int representation instead.
+	topKInt := 1
+	presence := 0.4
+	frequency := 0.3
+	seed := 7
+	maxRetries := 2
+
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{
+		OperationType:    "ai.generateText",
+		ModelProvider:    "mock-provider",
+		ModelID:          "mock-model-id",
+		Settings:         settings,
+		Prompt:           "prompt",
+		Headers:          map[string]string{"header1": "value1", "header2": "value2"},
+		MaxOutputTokens:  &maxTokens,
+		Temperature:      &temp,
+		TopP:             &topP,
+		TopK:             &topKInt,
+		PresencePenalty:  &presence,
+		FrequencyPenalty: &frequency,
+		StopSequences:    []string{"stop"},
+		Seed:             &seed,
+		MaxRetries:       &maxRetries,
+	})
+	if !trace.SpanFromContext(ctx).IsRecording() {
+		t.Fatal("expected OnStart to embed a recording span in ctx")
+	}
+
+	span := findSpan(rec, "ai.generateText")
+	if span == nil {
+		t.Fatal("expected the real span name to be the bare operation id 'ai.generateText' (not suffixed with functionID)")
+	}
+
+	wantStrings := map[string]string{
+		"ai.model.provider":          "mock-provider",
+		"ai.model.id":                "mock-model-id",
+		"ai.request.headers.header1": "value1",
+		"ai.request.headers.header2": "value2",
+		"ai.telemetry.functionId":    "test-function-id",
+		"ai.operationId":             "ai.generateText",
+		"operation.name":             "ai.generateText test-function-id",
+		"resource.name":              "test-function-id",
+	}
+	for key, want := range wantStrings {
+		if v, ok := attrValue(span, key); !ok || v.(string) != want {
+			t.Errorf("%s = %v (ok=%v), want %q", key, v, ok, want)
+		}
+	}
+
+	wantFloats := map[string]float64{
+		"ai.settings.temperature":      0.5,
+		"ai.settings.topP":             0.2,
+		"ai.settings.presencePenalty":  0.4,
+		"ai.settings.frequencyPenalty": 0.3,
+	}
+	for key, want := range wantFloats {
+		if v, ok := attrValue(span, key); !ok || v.(float64) != want {
+			t.Errorf("%s = %v (ok=%v), want %v", key, v, ok, want)
+		}
+	}
+
+	wantInts := map[string]int64{
+		"ai.settings.maxOutputTokens": 100,
+		"ai.settings.topK":            1,
+		"ai.settings.seed":            7,
+		"ai.settings.maxRetries":      2,
+	}
+	for key, want := range wantInts {
+		if v, ok := attrValue(span, key); !ok || v.(int64) != want {
+			t.Errorf("%s = %v (ok=%v), want %v", key, v, ok, want)
+		}
+	}
+
+	if v, ok := attrValue(span, "ai.settings.stopSequences"); !ok {
+		t.Error("expected ai.settings.stopSequences to be set")
+	} else if got := v.([]string); len(got) != 1 || got[0] != "stop" {
+		t.Errorf("ai.settings.stopSequences = %v, want [stop]", got)
+	}
+
+	// gen_ai.system/gen_ai.request.model must NOT be on the root span — TS's
+	// onGenerateStart never sets them there (only the nested doGenerate/
+	// doStream step span does).
+	if _, ok := attrValue(span, "gen_ai.system"); ok {
+		t.Error("root span should not carry gen_ai.system")
+	}
+	if _, ok := attrValue(span, "gen_ai.request.model"); ok {
+		t.Error("root span should not carry gen_ai.request.model")
+	}
+}
+
+// TestLegacyOpenTelemetryOnStartEmbedRerankAttributes ports TS's
+// onEmbedOperationStart/onRerankOperationStart shape: ai.embed uses
+// ai.value, ai.embedMany uses ai.values (array of JSON-encoded strings, not
+// a count), and ai.rerank uses ai.documents — never ai.prompt.
+func TestLegacyOpenTelemetryOnStartEmbedRerankAttributes(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	tracer := tp.Tracer("legacy-embed-rerank-test")
+
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true}
+
+	integration.OnStart(context.Background(), TelemetryStartEvent{
+		OperationType: "ai.embed",
+		ModelProvider: "openai",
+		ModelID:       "text-embedding-3-small",
+		Settings:      settings,
+		Prompt:        "hello world",
+	})
+	embedSpan := findSpan(rec, "ai.embed")
+	if embedSpan == nil {
+		t.Fatal("expected an 'ai.embed' span")
+	}
+	if v, ok := attrValue(embedSpan, "ai.value"); !ok || v.(string) != `"hello world"` {
+		t.Errorf("ai.value = %v (ok=%v), want %q", v, ok, `"hello world"`)
+	}
+	if _, ok := attrValue(embedSpan, "ai.prompt"); ok {
+		t.Error("ai.embed span should not carry ai.prompt")
+	}
+
+	integration.OnStart(context.Background(), TelemetryStartEvent{
+		OperationType: "ai.embedMany",
+		ModelProvider: "openai",
+		ModelID:       "text-embedding-3-small",
+		Settings:      settings,
+		Values:        []string{"a", "b"},
+	})
+	embedManySpan := findSpan(rec, "ai.embedMany")
+	if embedManySpan == nil {
+		t.Fatal("expected an 'ai.embedMany' span")
+	}
+	if v, ok := attrValue(embedManySpan, "ai.values"); !ok {
+		t.Error("expected ai.values to be set")
+	} else if got := v.([]string); len(got) != 2 || got[0] != `"a"` || got[1] != `"b"` {
+		t.Errorf("ai.values = %v, want [\"a\" \"b\"]", got)
+	}
+
+	integration.OnStart(context.Background(), TelemetryStartEvent{
+		OperationType: "ai.rerank",
+		ModelProvider: "cohere",
+		ModelID:       "rerank-v3.5",
+		Settings:      settings,
+		Documents:     []string{"doc1", "doc2"},
+	})
+	rerankSpan := findSpan(rec, "ai.rerank")
+	if rerankSpan == nil {
+		t.Fatal("expected an 'ai.rerank' span")
+	}
+	if v, ok := attrValue(rerankSpan, "ai.documents"); !ok {
+		t.Error("expected ai.documents to be set")
+	} else if got := v.([]string); len(got) != 2 || got[0] != `"doc1"` || got[1] != `"doc2"` {
+		t.Errorf("ai.documents = %v, want [\"doc1\" \"doc2\"]", got)
+	}
+	if _, ok := attrValue(rerankSpan, "ai.prompt"); ok {
+		t.Error("ai.rerank span should not carry ai.prompt")
+	}
+}
+
 func TestOTelIntegrationCustomSpanAttributes(t *testing.T) {
 	rec := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
@@ -129,6 +314,7 @@ func TestOTelIntegrationCustomSpanAttributes(t *testing.T) {
 			return map[string]interface{}{
 				"custom.span_type":       string(opts.SpanType),
 				"gen_ai.request.model":   "custom-should-not-win",
+				"ai.model.id":            "custom-should-not-win",
 				"custom.runtime_present": opts.RuntimeContext["user"] == "alice",
 				"custom.call_id":         opts.CallID,
 			}
@@ -240,7 +426,11 @@ func TestOTelIntegrationCustomSpanAttributes(t *testing.T) {
 	if spansByType["languageModel"]["custom.call_id"] != "lm-1" || spansByType["embedding"]["custom.call_id"] != "embed-1" || spansByType["reranking"]["custom.call_id"] != "rerank-1" {
 		t.Fatalf("model call ids were not passed to enrichers: %#v", spansByType)
 	}
-	if spansByType["operation"]["gen_ai.request.model"] != "gpt-5" || spansByType["step"]["gen_ai.request.model"] != "gpt-5" {
+	// The root "operation" span no longer carries gen_ai.request.model (TS's
+	// onGenerateStart root span never has gen_ai.* attributes — only the
+	// nested doGenerate/doStream step span does), so the collision check for
+	// it uses ai.model.id instead, which the root span does set.
+	if spansByType["operation"]["ai.model.id"] != "gpt-5" || spansByType["step"]["gen_ai.request.model"] != "gpt-5" {
 		t.Fatalf("SDK attributes were not allowed to override custom attributes: %#v", spansByType)
 	}
 }
@@ -285,12 +475,18 @@ func TestOTelIntegrationToolContextParentsNestedOperation(t *testing.T) {
 	integration.OnStepEnd(stepCtx, TelemetryStepEndEvent{Settings: settings, StepNumber: 0, FinishReason: "tool-calls"})
 	integration.OnEnd(rootCtx, TelemetryFinishEvent{Settings: settings, FinishReason: "stop"})
 
+	// The nested "inner" root span is no longer named "ai.generateText.inner"
+	// (TS never suffixes the real span name with functionID — see
+	// legacyOperationNameAttrs), so it is distinguished from the outer root
+	// span (also named "ai.generateText") by its operation.name attribute
+	// ("ai.generateText inner") instead of by span name.
 	var toolSpan, innerSpan sdktrace.ReadOnlySpan
 	for _, span := range rec.Ended() {
-		switch span.Name() {
-		case "ai.toolCall.lookup":
+		if span.Name() == "ai.toolCall.lookup" {
 			toolSpan = span
-		case "ai.generateText.inner":
+			continue
+		}
+		if v, ok := attrValue(span, "operation.name"); ok && v.(string) == "ai.generateText inner" {
 			innerSpan = span
 		}
 	}

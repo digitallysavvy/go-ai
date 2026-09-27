@@ -250,6 +250,8 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 		ModelID:        opts.Model.ModelID(),
 		Settings:       opts.ExperimentalTelemetry,
 		Prompt:         telemetryInputValue(opts.ExperimentalTelemetry, opts.Input),
+		Headers:        opts.Headers,
+		MaxRetries:     &resolvedMaxRetries,
 		RuntimeContext: telemetryRuntimeContext(opts.ExperimentalTelemetry, opts.RuntimeContext),
 		ToolsContext:   map[string]interface{}{},
 	})
@@ -517,6 +519,9 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 		Settings:       opts.ExperimentalTelemetry,
 		Prompt:         telemetryInputValue(opts.ExperimentalTelemetry, opts.Inputs),
 		ValueCount:     len(opts.Inputs),
+		Values:         opts.Inputs,
+		Headers:        opts.Headers,
+		MaxRetries:     &resolvedMaxRetries,
 		RuntimeContext: telemetryRuntimeContext(opts.ExperimentalTelemetry, opts.RuntimeContext),
 		ToolsContext:   map[string]interface{}{},
 	})

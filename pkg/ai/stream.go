@@ -639,17 +639,27 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		telSystem = system
 		telMessages = opts.Messages
 	}
+	streamTextMaxRetries := preparedMaxRetries(opts.MaxRetries)
 	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
-		OperationType:  "ai.streamText",
-		ModelProvider:  opts.Model.Provider(),
-		ModelID:        opts.Model.ModelID(),
-		Settings:       telemetrySettings,
-		Prompt:         telPrompt,
-		System:         telSystem,
-		Messages:       telMessages,
-		Headers:        opts.Headers,
-		RuntimeContext: telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
-		ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
+		OperationType:    "ai.streamText",
+		ModelProvider:    opts.Model.Provider(),
+		ModelID:          opts.Model.ModelID(),
+		Settings:         telemetrySettings,
+		Prompt:           telPrompt,
+		System:           telSystem,
+		Messages:         telMessages,
+		Headers:          opts.Headers,
+		MaxOutputTokens:  opts.MaxTokens,
+		Temperature:      opts.Temperature,
+		TopP:             opts.TopP,
+		TopK:             opts.TopK,
+		PresencePenalty:  opts.PresencePenalty,
+		FrequencyPenalty: opts.FrequencyPenalty,
+		StopSequences:    opts.StopSequences,
+		Seed:             opts.Seed,
+		MaxRetries:       &streamTextMaxRetries,
+		RuntimeContext:   telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
+		ToolsContext:     telemetryToolsContext(telemetrySettings, toolsContext),
 	})
 	telemetryCtx := ctx // snapshot ctx with embedded spans before timeout wrapping
 

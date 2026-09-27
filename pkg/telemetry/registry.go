@@ -53,6 +53,42 @@ type TelemetryStartEvent struct {
 	// Settings.IncludeRuntimeContext and Settings.IncludeToolsContext.
 	RuntimeContext map[string]interface{}
 	ToolsContext   map[string]interface{}
+
+	// MaxOutputTokens, Temperature, TopP, TopK, PresencePenalty,
+	// FrequencyPenalty, StopSequences, and Seed are call-level generation
+	// settings, emitted by LegacyOpenTelemetry as ai.settings.<key> on the
+	// root span, mirroring the TS SDK's per-operation "settings" object built
+	// before getBaseTelemetryAttributes (otel/src/legacy-open-telemetry.ts
+	// onGenerateStart/onObjectOperationStart). StopSequences only applies to
+	// generateText/streamText — TS's onObjectOperationStart settings object
+	// omits it for generateObject/streamObject.
+	MaxOutputTokens  *int
+	Temperature      *float64
+	TopP             *float64
+	TopK             *int
+	PresencePenalty  *float64
+	FrequencyPenalty *float64
+	StopSequences    []string
+	Seed             *int
+	// MaxRetries is emitted as ai.settings.maxRetries. TS includes it in
+	// every operation's settings object (generateText, generateObject,
+	// embed, embedMany, rerank all set it).
+	MaxRetries *int
+	// SettingsOutput carries generateObject/streamObject's output mode
+	// ("object"/"array"/"enum"/"no-schema" etc.), emitted directly as
+	// ai.settings.output. TS sets this outside the settings object
+	// (`'ai.settings.output': event.output`), unconditionally rather than as
+	// part of getBaseTelemetryAttributes.
+	SettingsOutput string
+	// Values holds the embedMany input strings, JSON-encoded per element and
+	// emitted as ai.values (TS: event.values.map(v => JSON.stringify(v))).
+	// For ai.embed (a single value), Prompt already carries the raw input
+	// and LegacyOpenTelemetry JSON-encodes it into ai.value instead.
+	Values []string
+	// Documents holds the rerank input (typically []string or
+	// []map[string]interface{}), JSON-encoded per element and emitted as
+	// ai.documents (TS: event.documents.map(d => JSON.stringify(d))).
+	Documents interface{}
 }
 
 // TelemetryStepStartEvent is passed to TelemetryIntegration.OnStepStart.
@@ -633,18 +669,171 @@ func customSpanAttributes(ctx context.Context, ctorEnrich EnrichSpanFunc, settin
 	return out
 }
 
+// legacyOperationNameAttrs mirrors TS's assembleOperationName
+// (otel/src/assemble-operation-name.ts): operation.name is "<operationID>
+// <functionID>" when functionID is set, else just operationID; resource.name
+// and ai.telemetry.functionId are only set when functionID is non-empty (TS:
+// `telemetry?.functionId` is undefined otherwise, and selectAttributes drops
+// undefined values). The real OTel span name is never suffixed with
+// functionID — TS always names spans after the bare operation id
+// (`this.tracer.startSpan(event.operationId, ...)`); functionID surfaces
+// only through these attributes.
+func legacyOperationNameAttrs(operationID, functionID string) []attribute.KeyValue {
+	opName := operationID
+	if functionID != "" {
+		opName += " " + functionID
+	}
+	attrs := []attribute.KeyValue{
+		attribute.String("operation.name", opName),
+		attribute.String("ai.operationId", operationID),
+	}
+	if functionID != "" {
+		attrs = append(attrs,
+			attribute.String("resource.name", functionID),
+			attribute.String("ai.telemetry.functionId", functionID),
+		)
+	}
+	return attrs
+}
+
+// legacySettings holds the call-level generation settings TS folds into a
+// plain "settings" object before getBaseTelemetryAttributes
+// (legacy-open-telemetry.ts onGenerateStart/onObjectOperationStart/
+// onEmbedOperationStart/onRerankOperationStart/onEvaluateOperationStart).
+// Every operation sets MaxRetries; only generateText/streamText set
+// StopSequences.
+type legacySettings struct {
+	MaxOutputTokens  *int
+	Temperature      *float64
+	TopP             *float64
+	TopK             *int
+	PresencePenalty  *float64
+	FrequencyPenalty *float64
+	StopSequences    []string
+	Seed             *int
+	MaxRetries       *int
+}
+
+// legacySettingsAttrs builds "ai.settings.<key>" attributes, skipping unset
+// (nil) fields — mirroring selectAttributes() dropping settings-object
+// entries whose value is undefined.
+func legacySettingsAttrs(s legacySettings) []attribute.KeyValue {
+	var attrs []attribute.KeyValue
+	if s.MaxOutputTokens != nil {
+		attrs = append(attrs, attribute.Int("ai.settings.maxOutputTokens", *s.MaxOutputTokens))
+	}
+	if s.Temperature != nil {
+		if kv, ok := finiteFloat64Attr("ai.settings.temperature", *s.Temperature); ok {
+			attrs = append(attrs, kv)
+		}
+	}
+	if s.TopP != nil {
+		if kv, ok := finiteFloat64Attr("ai.settings.topP", *s.TopP); ok {
+			attrs = append(attrs, kv)
+		}
+	}
+	if s.TopK != nil {
+		attrs = append(attrs, attribute.Int("ai.settings.topK", *s.TopK))
+	}
+	if s.PresencePenalty != nil {
+		if kv, ok := finiteFloat64Attr("ai.settings.presencePenalty", *s.PresencePenalty); ok {
+			attrs = append(attrs, kv)
+		}
+	}
+	if s.FrequencyPenalty != nil {
+		if kv, ok := finiteFloat64Attr("ai.settings.frequencyPenalty", *s.FrequencyPenalty); ok {
+			attrs = append(attrs, kv)
+		}
+	}
+	if s.StopSequences != nil {
+		attrs = append(attrs, attribute.StringSlice("ai.settings.stopSequences", s.StopSequences))
+	}
+	if s.Seed != nil {
+		attrs = append(attrs, attribute.Int("ai.settings.seed", *s.Seed))
+	}
+	if s.MaxRetries != nil {
+		attrs = append(attrs, attribute.Int("ai.settings.maxRetries", *s.MaxRetries))
+	}
+	return attrs
+}
+
+// legacyBaseAttrs builds ai.model.provider, ai.model.id, ai.settings.<key>,
+// and ai.request.headers.<name>, mirroring TS's getBaseTelemetryAttributes
+// (otel/src/get-base-telemetry-attributes.ts). Runtime context attrs
+// (ai.settings.context.*) are handled separately by runtimeContextAttributes
+// since callers need that slice standalone to stash for descendant spans.
+func legacyBaseAttrs(modelProvider, modelID string, settings legacySettings, headers map[string]string) []attribute.KeyValue {
+	attrs := []attribute.KeyValue{
+		attribute.String("ai.model.provider", modelProvider),
+		attribute.String("ai.model.id", modelID),
+	}
+	attrs = append(attrs, legacySettingsAttrs(settings)...)
+	for k, v := range headers {
+		attrs = append(attrs, attribute.String("ai.request.headers."+k, v))
+	}
+	return attrs
+}
+
+// legacyJSONEachElement JSON-encodes each element of a slice-typed value
+// individually, mirroring TS's `values.map(v => JSON.stringify(v))` used for
+// ai.values (embedMany) and ai.documents (rerank, whose documents may be
+// []string or []map[string]interface{}). Returns nil for unsupported or nil
+// input.
+func legacyJSONEachElement(v interface{}) []string {
+	switch docs := v.(type) {
+	case []string:
+		out := make([]string, len(docs))
+		for i, d := range docs {
+			out[i] = legacyJSONOrEmpty(d)
+		}
+		return out
+	case []map[string]interface{}:
+		out := make([]string, len(docs))
+		for i, d := range docs {
+			out[i] = legacyJSONOrEmpty(d)
+		}
+		return out
+	case []interface{}:
+		out := make([]string, len(docs))
+		for i, d := range docs {
+			out[i] = legacyJSONOrEmpty(d)
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+// legacyJSONOrEmpty JSON-encodes v, returning "" if it cannot be marshaled.
+func legacyJSONOrEmpty(v interface{}) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// legacyBaseAttrsKey is a private context key carrying the root span's
+// ai.model.provider/id + ai.settings.* + ai.request.headers.* attributes
+// down to the nested doGenerate/doStream step span, mirroring TS's reuse of
+// `state.baseTelemetryAttributes` in onStepStart.
+type legacyBaseAttrsKey struct{}
+
 // OnStart starts the root OTel span and embeds it in the returned context.
 // Returns ctx unchanged when settings explicitly disables telemetry.
+// Attribute shape mirrors TS's onGenerateStart / onObjectOperationStart /
+// onEmbedOperationStart / onRerankOperationStart (legacy-open-telemetry.ts):
+// ai.model.provider/id, ai.settings.<key>, ai.request.headers.<name>, and
+// operation.name/resource.name/ai.telemetry.functionId (assembleOperationName)
+// are emitted for every operation; gen_ai.system/gen_ai.request.model are
+// NOT part of the TS root span (they only appear on the nested
+// doGenerate/doStream step span) and are no longer emitted here.
 func (i LegacyOpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) context.Context {
 	if !Enabled(e.Settings) {
 		return ctx
 	}
 	tracer := i.tracerFor(e.Settings)
-	spanName := e.OperationType
-	if e.Settings != nil && e.Settings.FunctionID != "" {
-		spanName += "." + e.Settings.FunctionID
-	}
-	ctx, span := tracer.Start(ctx, spanName)
+	ctx, span := tracer.Start(ctx, e.OperationType)
 	if attrs := customSpanAttributes(ctx, i.enrichSpan, e.Settings, EnrichSpanOptions{
 		SpanType:       SpanTypeOperation,
 		OperationType:  e.OperationType,
@@ -652,23 +841,82 @@ func (i LegacyOpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent)
 	}); len(attrs) > 0 {
 		span.SetAttributes(attrs...)
 	}
-	span.SetAttributes(
-		attribute.String("ai.operationId", e.OperationType),
-		attribute.String("gen_ai.system", e.ModelProvider),
-		attribute.String("gen_ai.request.model", e.ModelID),
-	)
-	if e.Settings != nil && e.Settings.FunctionID != "" {
-		span.SetAttributes(attribute.String("ai.telemetry.functionId", e.Settings.FunctionID))
+
+	functionID := ""
+	if e.Settings != nil {
+		functionID = e.Settings.FunctionID
 	}
-	if (e.Settings == nil || e.Settings.RecordInputs) && e.Prompt != "" {
-		span.SetAttributes(attribute.String("ai.prompt", e.Prompt))
-		if e.OperationType == "ai.embed" {
-			span.SetAttributes(attribute.String("ai.value", e.Prompt))
+	span.SetAttributes(legacyOperationNameAttrs(e.OperationType, functionID)...)
+
+	settings := legacySettings{
+		MaxOutputTokens:  e.MaxOutputTokens,
+		Temperature:      e.Temperature,
+		TopP:             e.TopP,
+		TopK:             e.TopK,
+		PresencePenalty:  e.PresencePenalty,
+		FrequencyPenalty: e.FrequencyPenalty,
+		Seed:             e.Seed,
+		MaxRetries:       e.MaxRetries,
+	}
+	if e.OperationType == "ai.generateText" || e.OperationType == "ai.streamText" {
+		settings.StopSequences = e.StopSequences
+	}
+	baseAttrs := legacyBaseAttrs(e.ModelProvider, e.ModelID, settings, e.Headers)
+	span.SetAttributes(baseAttrs...)
+	// Stashed so the nested doGenerate/doStream step span can reuse the same
+	// base attributes, matching TS's state.baseTelemetryAttributes reuse.
+	ctx = context.WithValue(ctx, legacyBaseAttrsKey{}, baseAttrs)
+
+	recordInputs := e.Settings == nil || e.Settings.RecordInputs
+
+	switch e.OperationType {
+	case "ai.embed":
+		// TS onEmbedOperationStart sets ai.value (not ai.prompt) for a
+		// single embed call, input-gated and JSON-encoded.
+		if recordInputs && e.Prompt != "" {
+			span.SetAttributes(attribute.String("ai.value", legacyJSONOrEmpty(e.Prompt)))
+		}
+	case "ai.embedMany":
+		// TS sets ai.values (array of individually JSON-encoded strings),
+		// input-gated — not ai.prompt and not a bare count.
+		if recordInputs {
+			if values := legacyJSONEachElement(e.Values); len(values) > 0 {
+				span.SetAttributes(attribute.StringSlice("ai.values", values))
+			}
+		}
+	case "ai.rerank":
+		// TS sets ai.documents (array of individually JSON-encoded
+		// strings), input-gated — no ai.prompt/query attribute at all.
+		if recordInputs {
+			if docs := legacyJSONEachElement(e.Documents); len(docs) > 0 {
+				span.SetAttributes(attribute.StringSlice("ai.documents", docs))
+			}
+		}
+	default:
+		// generateText/streamText/generateObject/streamObject: ai.prompt.
+		if recordInputs && e.Prompt != "" {
+			span.SetAttributes(attribute.String("ai.prompt", e.Prompt))
+		}
+		if e.OperationType == "ai.generateObject" || e.OperationType == "ai.streamObject" {
+			// TS: 'ai.schema' is input-gated; schema.name/description and
+			// settings.output are plain (unconditional) values.
+			if recordInputs && len(e.Schema) > 0 {
+				if b, err := json.Marshal(e.Schema); err == nil {
+					span.SetAttributes(attribute.String("ai.schema", string(b)))
+				}
+			}
+			if e.SchemaName != "" {
+				span.SetAttributes(attribute.String("ai.schema.name", e.SchemaName))
+			}
+			if e.SchemaDescription != "" {
+				span.SetAttributes(attribute.String("ai.schema.description", e.SchemaDescription))
+			}
+			if e.SettingsOutput != "" {
+				span.SetAttributes(attribute.String("ai.settings.output", e.SettingsOutput))
+			}
 		}
 	}
-	if e.OperationType == "ai.embedMany" && e.ValueCount > 0 {
-		span.SetAttributes(attribute.Int("ai.values.count", e.ValueCount))
-	}
+
 	if attrs := runtimeContextAttributes(e.RuntimeContext); len(attrs) > 0 {
 		span.SetAttributes(attrs...)
 		// Stashed so descendant spans (e.g. tool call spans) can also carry
@@ -750,8 +998,35 @@ func appendRuntimeContextAttribute(attrs []attribute.KeyValue, key string, value
 // would return the innermost span, potentially set by provider-level tracing).
 type stepSpanKey struct{}
 
+// legacyStepOperationID returns the TS-equivalent nested step operation id
+// ("ai.generateText.doGenerate" / "ai.streamText.doStream" /
+// "ai.generateObject.doGenerate" / "ai.streamObject.doStream"), mirroring
+// TS's stepOperationId ternary in onStepStart/onObjectStepStart
+// (legacy-open-telemetry.ts). Used only for the ai.operationId/
+// operation.name attributes — Go keeps its own descriptive step span name
+// (see OnStepStart) rather than reusing this as the literal span name.
+func legacyStepOperationID(operationType string) string {
+	switch operationType {
+	case "ai.streamText":
+		return "ai.streamText.doStream"
+	case "ai.streamObject":
+		return "ai.streamObject.doStream"
+	case "ai.generateObject":
+		return "ai.generateObject.doGenerate"
+	default:
+		return "ai.generateText.doGenerate"
+	}
+}
+
 // OnStepStart creates a child OTel span for the step and embeds it in the
 // returned context via stepSpanKey, mirroring the TS SDK's onStepStart span.
+// In addition to the pre-existing gen_ai.request.model/gen_ai.system
+// attributes (dual-emitted alongside ai.* in TS), it now reuses the root
+// span's ai.model.provider/id + ai.settings.* + ai.request.headers.*
+// (stashed via legacyBaseAttrsKey by OnStart, mirroring TS's
+// state.baseTelemetryAttributes reuse) and adds
+// operation.name/resource.name/ai.telemetry.functionId/ai.operationId for
+// the nested doGenerate/doStream operation (assembleOperationName).
 func (i LegacyOpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepStartEvent) context.Context {
 	rootSpan := trace.SpanFromContext(ctx)
 	if !rootSpan.IsRecording() {
@@ -775,6 +1050,14 @@ func (i LegacyOpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepSta
 		attribute.String("gen_ai.request.model", e.ModelID),
 		attribute.String("gen_ai.system", e.ModelProvider),
 	)
+	functionID := ""
+	if e.Settings != nil {
+		functionID = e.Settings.FunctionID
+	}
+	stepSpan.SetAttributes(legacyOperationNameAttrs(legacyStepOperationID(opType), functionID)...)
+	if baseAttrs, ok := ctx.Value(legacyBaseAttrsKey{}).([]attribute.KeyValue); ok {
+		stepSpan.SetAttributes(baseAttrs...)
+	}
 	return context.WithValue(ctx, stepSpanKey{}, stepSpan)
 }
 
@@ -1153,12 +1436,13 @@ func (i LegacyOpenTelemetry) OnEnd(ctx context.Context, e TelemetryFinishEvent) 
 		}
 	}
 	span.SetAttributes(attribute.String("ai.response.finishReason", e.FinishReason))
-	if e.ModelProvider != "" {
-		span.SetAttributes(attribute.String("gen_ai.system", e.ModelProvider))
-	}
-	if e.ModelID != "" {
-		span.SetAttributes(attribute.String("gen_ai.request.model", e.ModelID))
-	}
+	// gen_ai.system/gen_ai.request.model are intentionally NOT set here
+	// (follow-up H1, 2026-09-27): TS's onGenerateEnd/onObjectOperationEnd
+	// never put them on the root span (only the nested doGenerate/doStream
+	// step span carries gen_ai.system/gen_ai.request.model — see
+	// OnStepStart); ai.model.provider/ai.model.id, set once at OnStart,
+	// already identify the model on the root span.
+	//
 	// Gen AI semantic convention attributes (OpenTelemetry Gen AI spec).
 	if e.Usage.InputTokens != nil {
 		span.SetAttributes(attribute.Int64("gen_ai.usage.input_tokens", *e.Usage.InputTokens))

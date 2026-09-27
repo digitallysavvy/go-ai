@@ -172,16 +172,20 @@ func jsonAttr(key string, v interface{}) (attribute.KeyValue, bool) {
 // OnEvaluateStart creates the root "ai.evaluate" span for an
 // ExperimentalEvaluate call and embeds it in the returned context, mirroring
 // TS's onEvaluateOperationStart (otel/src/legacy-open-telemetry.ts).
+// Attribute shape follows the same base-attribute parity fix as the generic
+// OnStart (follow-up H1): ai.model.provider/id, ai.settings.maxRetries,
+// ai.request.headers.<name>, and operation.name/resource.name are emitted;
+// gen_ai.system/gen_ai.request.model are NOT part of TS's root span (TS's
+// evaluate root span carries no gen_ai.* at all) but are left in place here
+// since pkg/telemetry/evaluate_test.go and other consumers already assert on
+// them and TS's own dual-emission convention elsewhere makes this a
+// reasonable superset rather than a wrong value.
 func (i LegacyOpenTelemetry) OnEvaluateStart(ctx context.Context, e EvaluateStartEvent) context.Context {
 	if !Enabled(e.Settings) {
 		return ctx
 	}
 	tracer := i.tracerFor(e.Settings)
-	spanName := e.OperationID
-	if e.Settings != nil && e.Settings.FunctionID != "" {
-		spanName = spanName + "." + e.Settings.FunctionID
-	}
-	ctx, span := tracer.Start(ctx, spanName)
+	ctx, span := tracer.Start(ctx, e.OperationID)
 	if attrs := customSpanAttributes(ctx, i.enrichSpan, e.Settings, EnrichSpanOptions{
 		SpanType:       SpanTypeOperation,
 		OperationType:  e.OperationID,
@@ -190,14 +194,22 @@ func (i LegacyOpenTelemetry) OnEvaluateStart(ctx context.Context, e EvaluateStar
 	}); len(attrs) > 0 {
 		span.SetAttributes(attrs...)
 	}
+
+	functionID := ""
+	if e.Settings != nil {
+		functionID = e.Settings.FunctionID
+	}
+	span.SetAttributes(legacyOperationNameAttrs(e.OperationID, functionID)...)
 	span.SetAttributes(
-		attribute.String("ai.operationId", e.OperationID),
 		attribute.String("gen_ai.system", e.ModelProvider),
 		attribute.String("gen_ai.request.model", e.ModelID),
 	)
-	if e.Settings != nil && e.Settings.FunctionID != "" {
-		span.SetAttributes(attribute.String("ai.telemetry.functionId", e.Settings.FunctionID))
-	}
+
+	maxRetries := e.MaxRetries
+	baseAttrs := legacyBaseAttrs(e.ModelProvider, e.ModelID, legacySettings{MaxRetries: &maxRetries}, e.Headers)
+	span.SetAttributes(baseAttrs...)
+	ctx = context.WithValue(ctx, legacyBaseAttrsKey{}, baseAttrs)
+
 	if e.Settings == nil || e.Settings.RecordInputs {
 		if attr, ok := jsonAttr("ai.evaluation.state", e.State); ok {
 			span.SetAttributes(attr)
@@ -240,11 +252,18 @@ func (i LegacyOpenTelemetry) OnEvaluationModelCallStart(ctx context.Context, e E
 	}
 	tracer := parent.TracerProvider().Tracer("go-ai")
 	_, span := tracer.Start(ctx, e.OperationID)
+	functionID := ""
+	if e.Settings != nil {
+		functionID = e.Settings.FunctionID
+	}
+	span.SetAttributes(legacyOperationNameAttrs(e.OperationID, functionID)...)
 	span.SetAttributes(
-		attribute.String("ai.operationId", e.OperationID),
 		attribute.String("gen_ai.system", e.ModelProvider),
 		attribute.String("gen_ai.request.model", e.ModelID),
 	)
+	if baseAttrs, ok := ctx.Value(legacyBaseAttrsKey{}).([]attribute.KeyValue); ok {
+		span.SetAttributes(baseAttrs...)
+	}
 	if e.Settings == nil || e.Settings.RecordInputs {
 		if attr, ok := jsonAttr("ai.evaluation.state", e.State); ok {
 			span.SetAttributes(attr)
@@ -416,7 +435,12 @@ func (i OpenTelemetry) OnEvaluationModelCallEnd(_ context.Context, e EvaluationM
 			entry.span.SetAttributes(attr)
 		}
 	}
-	if i.opts.ProviderMetadata && recordOutputs && e.ProviderMetadata != nil {
+	// Gated only by opts.ProviderMetadata (not recordOutputs), matching TS's
+	// experimental_onEvaluationModelCallEnd: providerMetadata is a plain
+	// pre-computed value passed through selectSupplementalAttributes, not
+	// wrapped in an {output: () => ...} accessor, so selectAttributes never
+	// applies its recordOutputs gate to it.
+	if i.opts.ProviderMetadata && e.ProviderMetadata != nil {
 		if attr, ok := jsonAttr("ai.response.providerMetadata", e.ProviderMetadata); ok {
 			entry.span.SetAttributes(attr)
 		}

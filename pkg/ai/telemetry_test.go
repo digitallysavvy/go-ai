@@ -126,6 +126,27 @@ func (m *mockEmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, _
 	}, nil
 }
 
+// spanByOperationName finds the span named realName whose "operation.name"
+// attribute equals wantOperationName. Since follow-up H1 (2026-09-27), the
+// real OTel span name is never suffixed with functionID — TS's
+// assembleOperationName only puts "<operationId> <functionId>" on the
+// operation.name attribute, not the span's actual name — so tests that used
+// to look up e.g. "ai.generateText.test-function" by span name must instead
+// match on this attribute.
+func spanByOperationName(spans []trace.ReadOnlySpan, realName, wantOperationName string) trace.ReadOnlySpan {
+	for _, span := range spans {
+		if span.Name() != realName {
+			continue
+		}
+		for _, attr := range span.Attributes() {
+			if string(attr.Key) == "operation.name" && attr.Value.AsString() == wantOperationName {
+				return span
+			}
+		}
+	}
+	return nil
+}
+
 func setupTelemetryTest(t *testing.T) (*tracetest.SpanRecorder, func()) {
 	// Create span recorder to capture spans
 	spanRecorder := tracetest.NewSpanRecorder()
@@ -185,25 +206,23 @@ func TestGenerateText_Telemetry(t *testing.T) {
 		t.Fatal("Expected at least one span to be recorded")
 	}
 
-	// Find the ai.generateText span
-	var generateTextSpan trace.ReadOnlySpan
-	for _, span := range spans {
-		if span.Name() == "ai.generateText.test-function" {
-			generateTextSpan = span
-			break
-		}
-	}
+	// Find the ai.generateText span. Its real name is the bare operation id
+	// (TS never suffixes the span name with functionID); functionID is
+	// carried by the operation.name/resource.name/ai.telemetry.functionId
+	// attributes instead (follow-up H1).
+	generateTextSpan := spanByOperationName(spans, "ai.generateText", "ai.generateText test-function")
 
 	if generateTextSpan == nil {
-		t.Fatal("Expected ai.generateText.test-function span")
+		t.Fatal("Expected ai.generateText span with operation.name 'ai.generateText test-function'")
 	}
 
 	// Verify attributes
 	attrs := generateTextSpan.Attributes()
 	expectedAttrs := map[string]interface{}{
 		"ai.operationId":             "ai.generateText",
-		"gen_ai.system":              "test-provider",
-		"gen_ai.request.model":       "test-model",
+		"ai.model.provider":          "test-provider",
+		"ai.model.id":                "test-model",
+		"resource.name":              "test-function",
 		"ai.telemetry.functionId":    "test-function",
 		"ai.prompt":                  "Test prompt",
 		"ai.response.text":           "Test response",
@@ -282,14 +301,13 @@ func TestGenerateText_TelemetryRecordInputsDisabled(t *testing.T) {
 	}
 
 	// Verify prompt attribute is NOT present
-	for _, span := range spans {
-		if span.Name() == "ai.generateText.test-function" {
-			attrs := span.Attributes()
-			for _, attr := range attrs {
-				if string(attr.Key) == "ai.prompt" {
-					t.Error("Expected ai.prompt attribute to be absent when RecordInputs is false")
-				}
-			}
+	generateTextSpan := spanByOperationName(spans, "ai.generateText", "ai.generateText test-function")
+	if generateTextSpan == nil {
+		t.Fatal("Expected ai.generateText span with operation.name 'ai.generateText test-function'")
+	}
+	for _, attr := range generateTextSpan.Attributes() {
+		if string(attr.Key) == "ai.prompt" {
+			t.Error("Expected ai.prompt attribute to be absent when RecordInputs is false")
 		}
 	}
 }
@@ -327,27 +345,24 @@ func TestEmbed_Telemetry(t *testing.T) {
 		t.Fatal("Expected at least one span to be recorded")
 	}
 
-	// Find the ai.embed span
-	var embedSpan trace.ReadOnlySpan
-	for _, span := range spans {
-		if span.Name() == "ai.embed.embed-test" {
-			embedSpan = span
-			break
-		}
-	}
+	// Find the ai.embed span (real name is the bare operation id; functionID
+	// surfaces via operation.name, see spanByOperationName).
+	embedSpan := spanByOperationName(spans, "ai.embed", "ai.embed embed-test")
 
 	if embedSpan == nil {
-		t.Fatal("Expected ai.embed.embed-test span")
+		t.Fatal("Expected ai.embed span with operation.name 'ai.embed embed-test'")
 	}
 
-	// Verify attributes
+	// Verify attributes. ai.value is JSON-encoded (TS: JSON.stringify(value)),
+	// so the quoted-string form is expected rather than the raw value.
 	attrs := embedSpan.Attributes()
 	expectedAttrs := map[string]interface{}{
 		"ai.operationId":          "ai.embed",
-		"gen_ai.system":           "test-provider",
-		"gen_ai.request.model":    "test-embedding-model",
+		"ai.model.provider":       "test-provider",
+		"ai.model.id":             "test-embedding-model",
+		"resource.name":           "embed-test",
 		"ai.telemetry.functionId": "embed-test",
-		"ai.value":                "Test embedding input",
+		"ai.value":                `"Test embedding input"`,
 		"ai.usage.tokens":         5,
 	}
 
@@ -394,8 +409,9 @@ func TestEmbedMany_Telemetry(t *testing.T) {
 	model := &mockEmbeddingModel{}
 
 	telemetrySettings := &telemetry.Settings{
-		IsEnabled:  telemetry.Bool(true),
-		FunctionID: "embed-many-test",
+		IsEnabled:    telemetry.Bool(true),
+		RecordInputs: true,
+		FunctionID:   "embed-many-test",
 	}
 
 	inputs := []string{"input1", "input2", "input3"}
@@ -419,27 +435,23 @@ func TestEmbedMany_Telemetry(t *testing.T) {
 		t.Fatal("Expected at least one span to be recorded")
 	}
 
-	// Find the ai.embedMany span
-	var embedManySpan trace.ReadOnlySpan
-	for _, span := range spans {
-		if span.Name() == "ai.embedMany.embed-many-test" {
-			embedManySpan = span
-			break
-		}
-	}
+	// Find the ai.embedMany span (real name is the bare operation id;
+	// functionID surfaces via operation.name, see spanByOperationName).
+	embedManySpan := spanByOperationName(spans, "ai.embedMany", "ai.embedMany embed-many-test")
 
 	if embedManySpan == nil {
-		t.Fatal("Expected ai.embedMany.embed-many-test span")
+		t.Fatal("Expected ai.embedMany span with operation.name 'ai.embedMany embed-many-test'")
 	}
 
-	// Verify attributes
+	// Verify attributes. ai.values is an array of individually JSON-encoded
+	// strings (TS: event.values.map(v => JSON.stringify(v))), not a count.
 	attrs := embedManySpan.Attributes()
 	expectedAttrs := map[string]interface{}{
 		"ai.operationId":          "ai.embedMany",
-		"gen_ai.system":           "test-provider",
-		"gen_ai.request.model":    "test-embedding-model",
+		"ai.model.provider":       "test-provider",
+		"ai.model.id":             "test-embedding-model",
+		"resource.name":           "embed-many-test",
 		"ai.telemetry.functionId": "embed-many-test",
-		"ai.values.count":         3,
 		"ai.usage.tokens":         15, // 3 inputs * 5 tokens each
 	}
 
@@ -458,6 +470,27 @@ func TestEmbedMany_Telemetry(t *testing.T) {
 		if !found {
 			t.Errorf("Expected attribute %s not found", key)
 		}
+	}
+
+	wantValues := []string{`"input1"`, `"input2"`, `"input3"`}
+	found := false
+	for _, attr := range attrs {
+		if string(attr.Key) != "ai.values" {
+			continue
+		}
+		found = true
+		got := attr.Value.AsStringSlice()
+		if len(got) != len(wantValues) {
+			t.Fatalf("ai.values = %v, want %v", got, wantValues)
+		}
+		for i, w := range wantValues {
+			if got[i] != w {
+				t.Errorf("ai.values[%d] = %q, want %q", i, got[i], w)
+			}
+		}
+	}
+	if !found {
+		t.Error("Expected attribute ai.values not found")
 	}
 }
 
