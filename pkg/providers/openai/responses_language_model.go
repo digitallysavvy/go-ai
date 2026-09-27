@@ -2166,6 +2166,12 @@ type responsesStream struct {
 	// stream (the approval request happened in an earlier turn, not this
 	// one). Mirrors TS's approvalRequestIdToDummyToolCallIdFromPrompt.
 	approvalFromPrompt map[string]string
+
+	// ongoingAnnotations accumulates response.output_text.annotation.added
+	// annotations for the currently-open "message" item, reset when a new
+	// message item starts (output_item.added) and attached to that item's
+	// text-end providerMetadata.openai.annotations (TS `ongoingAnnotations`).
+	ongoingAnnotations []responses.TextAnnotation
 }
 
 // responsesOngoingToolCall tracks per-output-index state for a tool call
@@ -2430,6 +2436,21 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				},
 			)
 			return s.Next()
+		case "message":
+			// TS: `ongoingAnnotations.splice(0)` then emit text-start with
+			// providerMetadata {itemId, phase?} (no annotations yet).
+			s.ongoingAnnotations = nil
+			var meta json.RawMessage
+			if m := openAIResponsesMessageProviderOptions(s.providerName, e.Item.ID, e.Item.Phase, nil); m != nil {
+				meta, _ = json.Marshal(m)
+			}
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+				Type:             provider.ChunkTypeTextStart,
+				ID:               e.Item.ID,
+				ProviderMetadata: meta,
+			})
+			return s.Next()
+
 		case "reasoning":
 			accum := &responsesReasoningAccum{
 				encryptedContent: e.Item.EncryptedContent,
@@ -2583,6 +2604,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		}
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeText,
+			ID:   s.firstItemIDByOutputIndex[e.OutputIndex],
 			Text: e.Delta,
 		})
 
@@ -2709,6 +2731,9 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		if eventRawChunk != nil {
 			s.flushQueue = append(s.flushQueue, eventRawChunk)
 		}
+		// TS: `ongoingAnnotations.push(value.annotation)` -- surfaced on the
+		// owning message item's text-end providerMetadata.openai.annotations.
+		s.ongoingAnnotations = append(s.ongoingAnnotations, e.Annotation)
 		if src, ok := openAIAnnotationToSource(s.providerName, e.Annotation); ok {
 			return s.emitParsedChunk(&provider.StreamChunk{
 				Type:          provider.ChunkTypeSource,
@@ -3060,6 +3085,35 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		}
 		chunk := responses.CompactionEventToChunk(item)
 		return s.emitParsedChunk(chunk)
+
+	case "message":
+		// text-end carries the accumulated annotations from every
+		// response.output_text.annotation.added event seen for this item
+		// (TS output_item.done "message" case: ongoingAnnotations).
+		delete(s.itemTypes, e.OutputIndex)
+		var item struct {
+			ID    string  `json:"id,omitempty"`
+			Phase *string `json:"phase,omitempty"`
+		}
+		if err := json.Unmarshal(e.Item, &item); err != nil {
+			return s.Next()
+		}
+		itemID := s.firstItemIDByOutputIndex[e.OutputIndex]
+		if itemID == "" {
+			itemID = item.ID
+		}
+		delete(s.firstItemIDByOutputIndex, e.OutputIndex)
+		annotations := s.ongoingAnnotations
+		s.ongoingAnnotations = nil
+		var meta json.RawMessage
+		if m := openAIResponsesMessageProviderOptions(s.providerName, itemID, item.Phase, annotations); m != nil {
+			meta, _ = json.Marshal(m)
+		}
+		return s.emitParsedChunk(&provider.StreamChunk{
+			Type:             provider.ChunkTypeTextEnd,
+			ID:               itemID,
+			ProviderMetadata: meta,
+		})
 
 	case "reasoning":
 		// Reasoning text was already emitted as ChunkTypeReasoning deltas.

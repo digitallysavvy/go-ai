@@ -664,6 +664,115 @@ func TestResponsesLanguageModel_DoStream_Text(t *testing.T) {
 	}
 }
 
+// TestResponsesLanguageModel_DoStream_TextBoundaries ports TS's message
+// text-start/text-end streaming: a "message" output item's
+// response.output_item.added emits text-start with
+// providerMetadata.openai{itemId, phase?}, and its output_item.done emits
+// text-end with providerMetadata.openai{itemId, phase?, annotations} —
+// annotations accumulated from every response.output_text.annotation.added
+// event seen for the item in between (TS `ongoingAnnotations`).
+func TestResponsesLanguageModel_DoStream_TextBoundaries(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		events := []string{
+			`{"type":"response.created","response":{"id":"resp_stream","model":"gpt-4o"}}`,
+			`{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","phase":"final_answer"}}`,
+			`{"type":"response.output_text.delta","output_index":0,"delta":"See "}`,
+			`{"type":"response.output_text.annotation.added","annotation":{"type":"url_citation","url":"https://example.com","title":"Example","start_index":0,"end_index":3}}`,
+			`{"type":"response.output_text.delta","output_index":0,"delta":"this."}`,
+			`{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_1","phase":"final_answer"}}`,
+			`{"type":"response.completed","response":{"id":"resp_stream","usage":{"input_tokens":5,"output_tokens":3}}}`,
+		}
+		for _, e := range events {
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", e)
+		}
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{
+			Messages: []types.Message{
+				{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Hi"}}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoStream failed: %v", err)
+	}
+	defer stream.Close() //nolint:errcheck
+
+	var textStart, textEnd, source *provider.StreamChunk
+	var textChunks []string
+	for {
+		chunk, err := stream.Next()
+		if err != nil {
+			break
+		}
+		switch chunk.Type {
+		case provider.ChunkTypeTextStart:
+			textStart = chunk
+		case provider.ChunkTypeTextEnd:
+			textEnd = chunk
+		case provider.ChunkTypeText:
+			textChunks = append(textChunks, chunk.Text)
+		case provider.ChunkTypeSource:
+			source = chunk
+		}
+	}
+
+	if textStart == nil {
+		t.Fatal("expected a text-start chunk")
+	}
+	if textStart.ID != "msg_1" {
+		t.Errorf("text-start ID = %q, want msg_1", textStart.ID)
+	}
+	var startMeta map[string]map[string]interface{}
+	if err := json.Unmarshal(textStart.ProviderMetadata, &startMeta); err != nil {
+		t.Fatalf("decode text-start providerMetadata: %v", err)
+	}
+	if startMeta["openai"]["itemId"] != "msg_1" || startMeta["openai"]["phase"] != "final_answer" {
+		t.Errorf("text-start providerMetadata.openai = %+v", startMeta["openai"])
+	}
+	if _, has := startMeta["openai"]["annotations"]; has {
+		t.Error("text-start providerMetadata.openai should have no annotations yet")
+	}
+
+	if strings.Join(textChunks, "") != "See this." {
+		t.Errorf("streamed text = %q, want %q", strings.Join(textChunks, ""), "See this.")
+	}
+
+	if source == nil || source.SourceContent == nil || source.SourceContent.URL != "https://example.com" {
+		t.Fatalf("expected a source chunk for the url_citation annotation, got %+v", source)
+	}
+
+	if textEnd == nil {
+		t.Fatal("expected a text-end chunk")
+	}
+	if textEnd.ID != "msg_1" {
+		t.Errorf("text-end ID = %q, want msg_1", textEnd.ID)
+	}
+	var endMeta map[string]map[string]interface{}
+	if err := json.Unmarshal(textEnd.ProviderMetadata, &endMeta); err != nil {
+		t.Fatalf("decode text-end providerMetadata: %v", err)
+	}
+	if endMeta["openai"]["itemId"] != "msg_1" || endMeta["openai"]["phase"] != "final_answer" {
+		t.Errorf("text-end providerMetadata.openai = %+v", endMeta["openai"])
+	}
+	annotations, ok := endMeta["openai"]["annotations"].([]interface{})
+	if !ok || len(annotations) != 1 {
+		t.Fatalf("text-end providerMetadata.openai.annotations = %#v, want 1 entry", endMeta["openai"]["annotations"])
+	}
+	ann, ok := annotations[0].(map[string]interface{})
+	if !ok || ann["url"] != "https://example.com" || ann["type"] != "url_citation" {
+		t.Errorf("text-end annotation = %#v", annotations[0])
+	}
+}
+
 func TestResponsesLanguageModel_DoStreamIncludesRawChunks(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
