@@ -64,6 +64,12 @@ func TestDeepSeekDoGenerateProviderMetadataAndResponseMetadata(t *testing.T) {
 	if meta["systemFingerprint"] != "fp_123" {
 		t.Errorf("systemFingerprint = %v", meta["systemFingerprint"])
 	}
+	if meta["promptCacheHitTokens"] != 1 {
+		t.Errorf("promptCacheHitTokens = %v, want 1", meta["promptCacheHitTokens"])
+	}
+	if _, ok := meta["promptCacheMissTokens"]; ok {
+		t.Errorf("promptCacheMissTokens = %v, want absent (not in response)", meta["promptCacheMissTokens"])
+	}
 	toolCallTypes, ok := meta["toolCallTypes"].([]string)
 	if !ok || len(toolCallTypes) != 1 || toolCallTypes[0] != "function" {
 		t.Errorf("toolCallTypes = %#v", meta["toolCallTypes"])

@@ -350,6 +350,13 @@ func (m *LanguageModel) convertResponse(response deepseekResponse) (*types.Gener
 	}
 
 	meta := map[string]interface{}{}
+	hitTokens, missTokens := deepseekPromptCacheTokens(response.Usage)
+	if hitTokens != nil {
+		meta["promptCacheHitTokens"] = *hitTokens
+	}
+	if missTokens != nil {
+		meta["promptCacheMissTokens"] = *missTokens
+	}
 	if response.Object != "" {
 		meta["responseObject"] = response.Object
 	}
@@ -396,6 +403,23 @@ func (m *LanguageModel) handleError(err error) error {
 // typed struct for computing normalized token metrics, and once into a
 // map[string]interface{} so Usage.Raw preserves every field the API
 // returned (not just the ones the typed struct declares).
+// deepseekPromptCacheTokens extracts prompt_cache_hit_tokens/
+// prompt_cache_miss_tokens from a raw usage object for providerMetadata.
+// deepseek.{promptCacheHitTokens,promptCacheMissTokens}, mirroring TS
+// deepseek-chat-language-model.ts's responseBody.usage?.prompt_cache_hit_tokens
+// / prompt_cache_miss_tokens (always present on providerMetadata, even when
+// undefined — Go omits the key instead of including it with a nil value).
+func deepseekPromptCacheTokens(raw json.RawMessage) (hit, miss *int) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var usage deepseekUsage
+	if err := json.Unmarshal(raw, &usage); err != nil {
+		return nil, nil
+	}
+	return usage.PromptCacheHitTokens, usage.PromptCacheMissTokens
+}
+
 func convertDeepseekUsage(raw json.RawMessage) types.Usage {
 	if len(raw) == 0 || string(raw) == "null" {
 		return types.Usage{}
@@ -494,10 +518,12 @@ type deepseekLogprobs struct {
 }
 
 type deepseekUsage struct {
-	PromptTokens        int `json:"prompt_tokens"`
-	CompletionTokens    int `json:"completion_tokens"`
-	TotalTokens         int `json:"total_tokens"`
-	PromptTokensDetails *struct {
+	PromptTokens          int  `json:"prompt_tokens"`
+	CompletionTokens      int  `json:"completion_tokens"`
+	TotalTokens           int  `json:"total_tokens"`
+	PromptCacheHitTokens  *int `json:"prompt_cache_hit_tokens,omitempty"`
+	PromptCacheMissTokens *int `json:"prompt_cache_miss_tokens,omitempty"`
+	PromptTokensDetails   *struct {
 		CachedTokens *int `json:"cached_tokens,omitempty"`
 		AudioTokens  *int `json:"audio_tokens,omitempty"`
 		TextTokens   *int `json:"text_tokens,omitempty"`
@@ -784,6 +810,14 @@ func (s *deepseekStream) attachFinishMetadata(chunk *provider.StreamChunk) {
 	}
 
 	meta := map[string]interface{}{}
+	if hitTokens, missTokens := deepseekPromptCacheTokens(s.usageRaw); hitTokens != nil || missTokens != nil {
+		if hitTokens != nil {
+			meta["promptCacheHitTokens"] = *hitTokens
+		}
+		if missTokens != nil {
+			meta["promptCacheMissTokens"] = *missTokens
+		}
+	}
 	if s.responseObject != "" {
 		meta["responseObject"] = s.responseObject
 	}

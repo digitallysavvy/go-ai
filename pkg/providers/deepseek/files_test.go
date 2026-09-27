@@ -2,6 +2,8 @@ package deepseek
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -9,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -104,6 +107,55 @@ func TestDeepSeekFilesUploadFileUnexpectedObjectDiscriminator(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error for unexpected object discriminator")
+	}
+}
+
+// TestDeepSeekFilesUploadFileRejectsInvalidResponseFields guards TS
+// deepseek-files.test.ts's "should reject an invalid %s response field":
+// purpose must equal "user_data" when present; bytes/created_at/expires_at
+// must each be a nonnegative integer.
+func TestDeepSeekFilesUploadFileRejectsInvalidResponseFields(t *testing.T) {
+	cases := []struct {
+		name  string
+		field string
+		value string // raw JSON literal
+	}{
+		{"purpose not user_data", "purpose", `"assistants"`},
+		{"bytes negative", "bytes", `-1`},
+		{"bytes fractional", "bytes", `1.5`},
+		{"created_at negative", "created_at", `-1`},
+		{"created_at fractional", "created_at", `1.5`},
+		{"expires_at negative", "expires_at", `-1`},
+		{"expires_at fractional", "expires_at", `1.5`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := fmt.Sprintf(`{
+				"id": "file-api-invalid",
+				"object": "file",
+				"bytes": 1024,
+				"created_at": 1700000000,
+				"filename": "comic-cat.png",
+				"purpose": "user_data",
+				%q: %s
+			}`, tc.field, tc.value)
+			p := newDeepseekProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: 200,
+					Header:     http.Header{},
+					Body:       io.NopCloser(strings.NewReader(body)),
+				}, nil
+			})
+			files := &FilesAPI{provider: p}
+			_, err := files.UploadFile(context.Background(), types.UploadFileOptions{
+				Data:      types.FileData{Type: types.FileDataTypeData, Data: []byte{1, 2, 3}},
+				MediaType: "image/png",
+			})
+			var respErr *providererrors.InvalidResponseDataError
+			if !errors.As(err, &respErr) {
+				t.Fatalf("error = %v, want InvalidResponseDataError", err)
+			}
+		})
 	}
 }
 

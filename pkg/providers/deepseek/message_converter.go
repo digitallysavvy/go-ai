@@ -8,6 +8,7 @@ import (
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // deepseekMaxImageURLLength mirrors the TypeScript SDK's 8192 character limit
@@ -42,6 +43,21 @@ func deepseekProviderOptionsMap(providerOptionsName string, providerOptions map[
 		return m
 	}
 	return nil
+}
+
+// deepseekValidateImageDetail rejects an imageDetail value outside TS's
+// deepseekFilePartProviderOptions zod enum (low/high/original/auto). Empty
+// means the option was not set and is always allowed.
+func deepseekValidateImageDetail(imageDetail string) error {
+	switch imageDetail {
+	case "", "low", "high", "original", "auto":
+		return nil
+	default:
+		return &providererrors.InvalidArgumentError{
+			Field:   "providerOptions.deepseek.imageDetail",
+			Message: "imageDetail must be one of \"low\", \"high\", \"original\", \"auto\".",
+		}
+	}
 }
 
 // convertMessages converts unified messages to DeepSeek's chat completions
@@ -262,9 +278,14 @@ func deepseekImageDataURL(mediaType string, data []byte) string {
 func deepseekResolveUserImagePart(f types.FileContent, providerOptionsName string) (map[string]interface{}, error) {
 	fileOpts := deepseekProviderOptionsMap(providerOptionsName, f.ProviderOptions)
 	imageDetail, _ := fileOpts["imageDetail"].(string)
+	if err := deepseekValidateImageDetail(imageDetail); err != nil {
+		return nil, err
+	}
 	fileData, _ := fileOpts["fileData"].(bool)
 
-	if ref := deepseekFileReference(f); ref != "" {
+	if ref, err := deepseekFileReference(f); err != nil {
+		return nil, err
+	} else if ref != "" {
 		return map[string]interface{}{"type": "file", "file_id": ref}, nil
 	}
 
@@ -322,7 +343,9 @@ func deepseekResolveUserImagePart(f types.FileContent, providerOptionsName strin
 // support the `fileData`/`file_data` inline-file shape — only `file`/file_id
 // references and `image_url` parts.
 func deepseekResolveToolResultImagePart(f types.FileContent, providerOptionsName string) (map[string]interface{}, error) {
-	if ref := deepseekFileReference(f); ref != "" {
+	if ref, err := deepseekFileReference(f); err != nil {
+		return nil, err
+	} else if ref != "" {
 		return map[string]interface{}{"type": "file", "file_id": ref}, nil
 	}
 
@@ -333,6 +356,9 @@ func deepseekResolveToolResultImagePart(f types.FileContent, providerOptionsName
 
 	fileOpts := deepseekProviderOptionsMap(providerOptionsName, f.ProviderOptions)
 	imageDetail, _ := fileOpts["imageDetail"].(string)
+	if err := deepseekValidateImageDetail(imageDetail); err != nil {
+		return nil, err
+	}
 
 	var url string
 	if u := deepseekFileURL(f); u != "" {
@@ -354,13 +380,18 @@ func deepseekResolveToolResultImagePart(f types.FileContent, providerOptionsName
 	return map[string]interface{}{"type": "image_url", "image_url": imageURL}, nil
 }
 
-func deepseekFileReference(f types.FileContent) string {
+// deepseekFileReference resolves the DeepSeek file identifier from a
+// structured provider-reference map, matching TS's
+// resolveProviderReference({reference, provider: 'deepseek'}) — which looks
+// up the "deepseek" key specifically (not the first non-empty key across all
+// providers) and raises NoSuchProviderReferenceError when that key is
+// absent. Falls back to the legacy plain-string Reference field when
+// FileData isn't the structured reference form.
+func deepseekFileReference(f types.FileContent) (string, error) {
 	if f.FileData.Type == types.FileDataTypeReference {
-		if ref := types.ProviderReferenceString(f.FileData.Reference); ref != "" {
-			return ref
-		}
+		return providerutils.ResolveProviderReference(f.FileData.Reference, "deepseek")
 	}
-	return f.Reference
+	return f.Reference, nil
 }
 
 func deepseekFileURL(f types.FileContent) string {

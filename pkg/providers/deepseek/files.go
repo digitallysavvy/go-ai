@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"mime/multipart"
 	"strings"
 	"unicode/utf8"
@@ -131,19 +132,36 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	}
 
 	var out struct {
-		ID        string `json:"id"`
-		Object    string `json:"object"`
-		Bytes     *int64 `json:"bytes"`
-		CreatedAt *int64 `json:"created_at"`
-		Filename  string `json:"filename"`
-		Purpose   string `json:"purpose"`
-		ExpiresAt *int64 `json:"expires_at"`
+		ID        string   `json:"id"`
+		Object    string   `json:"object"`
+		Bytes     *float64 `json:"bytes"`
+		CreatedAt *float64 `json:"created_at"`
+		Filename  string   `json:"filename"`
+		Purpose   string   `json:"purpose"`
+		ExpiresAt *float64 `json:"expires_at"`
 	}
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		return nil, err
 	}
 	if out.Object != "" && out.Object != "file" {
 		return nil, providererrors.NewInvalidResponseDataError(out, fmt.Sprintf("Expected a DeepSeek file object, got %q.", out.Object))
+	}
+	// TS deepSeekFilesResponseSchema: purpose is z.literal('user_data').nullish().
+	if out.Purpose != "" && out.Purpose != "user_data" {
+		return nil, providererrors.NewInvalidResponseDataError(out, fmt.Sprintf("Expected DeepSeek file purpose %q, got %q.", "user_data", out.Purpose))
+	}
+	// TS: bytes/created_at/expires_at are each z.number().int().nonnegative().nullish().
+	bytesVal, err := deepSeekNonnegativeInt(out.Bytes, "bytes")
+	if err != nil {
+		return nil, err
+	}
+	createdAtVal, err := deepSeekNonnegativeInt(out.CreatedAt, "created_at")
+	if err != nil {
+		return nil, err
+	}
+	expiresAtVal, err := deepSeekNonnegativeInt(out.ExpiresAt, "expires_at")
+	if err != nil {
+		return nil, err
 	}
 
 	filename := out.Filename
@@ -161,14 +179,14 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	if out.Purpose != "" {
 		meta["purpose"] = out.Purpose
 	}
-	if out.Bytes != nil {
-		meta["bytes"] = *out.Bytes
+	if bytesVal != nil {
+		meta["bytes"] = *bytesVal
 	}
-	if out.CreatedAt != nil {
-		meta["createdAt"] = *out.CreatedAt
+	if createdAtVal != nil {
+		meta["createdAt"] = *createdAtVal
 	}
-	if out.ExpiresAt != nil {
-		meta["expiresAt"] = *out.ExpiresAt
+	if expiresAtVal != nil {
+		meta["expiresAt"] = *expiresAtVal
 	}
 
 	result := &types.UploadFileResult{
@@ -183,6 +201,23 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		result.ProviderMetadata = map[string]interface{}{"deepseek": meta}
 	}
 	return result, nil
+}
+
+// deepSeekNonnegativeInt validates a decoded numeric file-metadata field
+// against TS deepSeekFilesResponseSchema's z.number().int().nonnegative()
+// (bytes/created_at/expires_at), returning a typed error for a fractional or
+// negative value instead of silently accepting it (a negative int64 would
+// otherwise decode without error) or surfacing a raw JSON unmarshal error
+// (a non-integer number would fail an *int64 field's decode outright).
+func deepSeekNonnegativeInt(v *float64, field string) (*int64, error) {
+	if v == nil {
+		return nil, nil
+	}
+	if *v != math.Trunc(*v) || *v < 0 {
+		return nil, providererrors.NewInvalidResponseDataError(*v, fmt.Sprintf("Expected DeepSeek file %q to be a nonnegative integer, got %v.", field, *v))
+	}
+	iv := int64(*v)
+	return &iv, nil
 }
 
 func deepSeekInlineFileBytes(data types.FileData) ([]byte, error) {

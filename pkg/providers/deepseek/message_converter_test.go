@@ -1,9 +1,11 @@
 package deepseek
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -166,6 +168,25 @@ func TestDeepSeekImageDetailOption(t *testing.T) {
 	}
 }
 
+// TestDeepSeekImageDetailOptionRejectsInvalidValue guards TS's
+// deepseekFilePartProviderOptions zod enum (low/high/original/auto):
+// anything else must be rejected, not forwarded verbatim to image_url.detail.
+func TestDeepSeekImageDetailOptionRejectsInvalidValue(t *testing.T) {
+	prov := New(Config{APIKey: "k"})
+	m := NewLanguageModel(prov, "deepseek-v4-flash-vision-exp")
+
+	messages := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentPart{
+			types.FileContent{URL: "https://example.com/image.png", MediaType: "image/png", ProviderOptions: deepseekOpt("imageDetail", "ultra")},
+		}},
+	}
+	_, _, err := m.convertMessages(messages)
+	var argErr *providererrors.InvalidArgumentError
+	if !errors.As(err, &argErr) {
+		t.Fatalf("convertMessages error = %v, want InvalidArgumentError", err)
+	}
+}
+
 func TestDeepSeekFileDataOption(t *testing.T) {
 	prov := New(Config{APIKey: "k"})
 	m := NewLanguageModel(prov, "deepseek-v4-flash-vision-exp")
@@ -254,6 +275,70 @@ func TestDeepSeekToolResultImageContent(t *testing.T) {
 	}
 	if parts[1]["type"] != "image_url" {
 		t.Fatalf("part[1] = %#v, want image_url", parts[1])
+	}
+}
+
+// TestDeepSeekImageProviderReferenceUsesDeepSeekKey guards against resolving
+// the wrong provider's file_id from a multi-provider reference map: TS
+// resolveProviderReference({reference, provider: 'deepseek'}) looks up the
+// "deepseek" key specifically, not the first non-empty key across all
+// providers (convert-to-deepseek-chat-messages.test.ts "should convert an
+// image provider reference to a file content part").
+func TestDeepSeekImageProviderReferenceUsesDeepSeekKey(t *testing.T) {
+	prov := New(Config{APIKey: "k"})
+	m := NewLanguageModel(prov, "deepseek-v4-flash-vision-exp")
+
+	messages := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentPart{
+			types.TextContent{Text: "Hello"},
+			types.FileContent{
+				FileData: types.FileData{
+					Type: types.FileDataTypeReference,
+					Reference: types.ProviderReference{
+						"deepseek": "file-api-deepseek",
+						"openai":   "file-openai",
+					},
+				},
+				MediaType: "image/png",
+			},
+		}},
+	}
+	converted, _, err := m.convertMessages(messages)
+	if err != nil {
+		t.Fatalf("convertMessages error = %v", err)
+	}
+	parts, ok := converted[0]["content"].([]map[string]interface{})
+	if !ok || len(parts) != 2 {
+		t.Fatalf("content = %#v, want 2 parts", converted[0]["content"])
+	}
+	if parts[1]["type"] != "file" || parts[1]["file_id"] != "file-api-deepseek" {
+		t.Fatalf("part[1] = %#v, want file_id file-api-deepseek", parts[1])
+	}
+}
+
+// TestDeepSeekImageProviderReferenceMissingDeepSeekKeyErrors guards TS's
+// "should throw when an image reference has no DeepSeek identifier": a
+// reference map with no "deepseek" key must raise a typed error, not
+// silently fall through to treating the part as inline image data.
+func TestDeepSeekImageProviderReferenceMissingDeepSeekKeyErrors(t *testing.T) {
+	prov := New(Config{APIKey: "k"})
+	m := NewLanguageModel(prov, "deepseek-v4-flash-vision-exp")
+
+	messages := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentPart{
+			types.FileContent{
+				FileData: types.FileData{
+					Type:      types.FileDataTypeReference,
+					Reference: types.ProviderReference{"openai": "file-openai"},
+				},
+				MediaType: "image/png",
+			},
+		}},
+	}
+	_, _, err := m.convertMessages(messages)
+	var refErr *providererrors.NoSuchProviderReferenceError
+	if !errors.As(err, &refErr) {
+		t.Fatalf("convertMessages error = %v, want NoSuchProviderReferenceError", err)
 	}
 }
 
