@@ -11,6 +11,7 @@ package cartesia
 
 import (
 	"fmt"
+	"os"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -47,6 +48,9 @@ func New(config Config) *Provider {
 	}
 	if config.APIVersion == "" {
 		config.APIVersion = DefaultAPIVersion
+	}
+	if config.APIKey == "" {
+		config.APIKey = os.Getenv("CARTESIA_API_KEY")
 	}
 
 	client := internalhttp.NewClient(internalhttp.Config{

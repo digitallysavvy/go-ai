@@ -7,6 +7,7 @@ package revai
 
 import (
 	"fmt"
+	"os"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -31,6 +32,9 @@ type Provider struct {
 func New(config Config) *Provider {
 	if config.BaseURL == "" {
 		config.BaseURL = "https://api.rev.ai"
+	}
+	if config.APIKey == "" {
+		config.APIKey = os.Getenv("REVAI_API_KEY")
 	}
 
 	client := internalhttp.NewClient(internalhttp.Config{

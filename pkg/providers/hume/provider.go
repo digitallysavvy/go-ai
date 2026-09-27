@@ -6,6 +6,7 @@ package hume
 
 import (
 	"fmt"
+	"os"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -30,6 +31,9 @@ type Provider struct {
 func New(config Config) *Provider {
 	if config.BaseURL == "" {
 		config.BaseURL = "https://api.hume.ai"
+	}
+	if config.APIKey == "" {
+		config.APIKey = os.Getenv("HUME_API_KEY")
 	}
 
 	client := internalhttp.NewClient(internalhttp.Config{

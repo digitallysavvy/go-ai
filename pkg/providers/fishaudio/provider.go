@@ -5,6 +5,7 @@ package fishaudio
 
 import (
 	"fmt"
+	"os"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -29,6 +30,9 @@ type Provider struct {
 func New(config Config) *Provider {
 	if config.BaseURL == "" {
 		config.BaseURL = "https://api.fish.audio"
+	}
+	if config.APIKey == "" {
+		config.APIKey = os.Getenv("FISH_AUDIO_API_KEY")
 	}
 
 	client := internalhttp.NewClient(internalhttp.Config{

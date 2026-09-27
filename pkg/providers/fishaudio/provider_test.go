@@ -32,6 +32,24 @@ func TestProviderSupportsSpeechAndTranscription(t *testing.T) {
 	}
 }
 
+// TestProviderFallsBackToEnvAPIKey mirrors the TypeScript SDK's loadApiKey
+// fallback to the FISH_AUDIO_API_KEY environment variable when no explicit
+// apiKey is configured.
+func TestProviderFallsBackToEnvAPIKey(t *testing.T) {
+	t.Setenv("FISH_AUDIO_API_KEY", "env-api-key")
+
+	p := New(Config{})
+	if p.config.APIKey != "env-api-key" {
+		t.Fatalf("config.APIKey = %q, want env-api-key", p.config.APIKey)
+	}
+
+	// An explicitly configured key takes precedence over the environment.
+	p = New(Config{APIKey: "explicit-key"})
+	if p.config.APIKey != "explicit-key" {
+		t.Fatalf("config.APIKey = %q, want explicit-key", p.config.APIKey)
+	}
+}
+
 // TestProviderUnsupportedModelTypes mirrors "should throw for unsupported model types".
 func TestProviderUnsupportedModelTypes(t *testing.T) {
 	p := New(Config{APIKey: "test-api-key"})
