@@ -63,9 +63,13 @@ type Tool struct {
 	// These examples can improve the model's ability to use the tool correctly
 	InputExamples []ToolInputExample `json:"inputExamples,omitempty"`
 
-	// Strict enables strict schema enforcement for tool parameters
-	// When true, the model must follow the schema exactly
-	Strict bool `json:"strict,omitempty"`
+	// Strict enables strict schema enforcement for tool parameters. When
+	// true, the model must follow the schema exactly. A *bool (rather than
+	// bool) lets callers distinguish "unset" from "explicitly false", so a
+	// provider can forward/warn about an explicit strict: false the same
+	// way TS does (TS checks `strict != null`), instead of only ever seeing
+	// the zero value (hand-off: "Tool.Strict bool -> *bool").
+	Strict *bool `json:"strict,omitempty"`
 
 	// ContextSchema optionally validates the tool-specific context passed to the
 	// tool execution and approval callbacks.

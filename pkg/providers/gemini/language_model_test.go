@@ -141,7 +141,7 @@ func TestBuildRequestBody_NonGemmaModelIncludesSystemInstruction(t *testing.T) {
 func TestBuildRequestBody_StrictToolsUsesValidatedMode(t *testing.T) {
 	m := makeTestModel("gemini-2.0-flash")
 	body := m.buildRequestBody(&provider.GenerateOptions{
-		Tools: []types.Tool{{Name: "search", Strict: true, Parameters: map[string]interface{}{"type": "object"}}},
+		Tools: []types.Tool{{Name: "search", Strict: types.BoolPtr(true), Parameters: map[string]interface{}{"type": "object"}}},
 	}, false)
 	toolConfig, ok := body["toolConfig"].(map[string]interface{})
 	if !ok {
@@ -156,7 +156,7 @@ func TestBuildRequestBody_StrictToolsUsesValidatedMode(t *testing.T) {
 func TestBuildRequestBody_NoStrictToolsOmitsToolConfig(t *testing.T) {
 	m := makeTestModel("gemini-2.0-flash")
 	body := m.buildRequestBody(&provider.GenerateOptions{
-		Tools: []types.Tool{{Name: "search", Strict: false, Parameters: map[string]interface{}{"type": "object"}}},
+		Tools: []types.Tool{{Name: "search", Strict: types.BoolPtr(false), Parameters: map[string]interface{}{"type": "object"}}},
 	}, false)
 	if _, ok := body["toolConfig"]; ok {
 		t.Error("toolConfig must NOT be present when no tool has Strict:true")

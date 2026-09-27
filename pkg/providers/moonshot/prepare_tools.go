@@ -50,7 +50,7 @@ func prepareMoonshotTools(tools []types.Tool, toolChoice types.ToolChoice, hasTo
 			Description: tool.Description,
 			Parameters:  normalized,
 		}
-		if tool.Strict {
+		if tool.Strict != nil && *tool.Strict {
 			strict := true
 			fn.Strict = &strict
 		}

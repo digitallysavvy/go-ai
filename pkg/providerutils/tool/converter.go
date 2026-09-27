@@ -19,7 +19,7 @@ func ToJSONSchema(tool types.Tool) map[string]interface{} {
 	functionDef["parameters"] = defaultObjectSchema(tool.Parameters)
 
 	// Pass strict mode when requested (#12893)
-	if tool.Strict {
+	if tool.Strict != nil && *tool.Strict {
 		functionDef["strict"] = true
 	}
 

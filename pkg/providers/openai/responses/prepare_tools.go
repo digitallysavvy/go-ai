@@ -434,7 +434,7 @@ func convertFunctionTool(t types.Tool) FunctionToolDef {
 		Parameters:  defaultFunctionParameters(t.Parameters),
 	}
 
-	if t.Strict {
+	if t.Strict != nil && *t.Strict {
 		strict := true
 		def.Strict = &strict
 	}

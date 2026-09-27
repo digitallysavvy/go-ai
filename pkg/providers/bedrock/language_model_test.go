@@ -781,7 +781,7 @@ func TestPrepareTools_StrictSchemaCompatibility(t *testing.T) {
 	}
 
 	tools := []types.Tool{
-		{Type: types.ToolTypeFunction, Name: "strict_tool", Strict: true, Parameters: incompatible},
+		{Type: types.ToolTypeFunction, Name: "strict_tool", Strict: types.BoolPtr(true), Parameters: incompatible},
 	}
 	// claude-3-5-sonnet is a legacy model (not in modelsWithoutStrictToolSupport),
 	// so strict tool support itself is allowed, but the schema is incompatible.
@@ -803,7 +803,7 @@ func TestPrepareTools_StrictSchemaCompatibility(t *testing.T) {
 
 func TestPrepareTools_ModelsWithoutStrictSupportOmitStrict(t *testing.T) {
 	tools := []types.Tool{
-		{Type: types.ToolTypeFunction, Name: "t", Strict: true, Parameters: map[string]interface{}{"type": "object", "additionalProperties": false}},
+		{Type: types.ToolTypeFunction, Name: "t", Strict: types.BoolPtr(true), Parameters: map[string]interface{}{"type": "object", "additionalProperties": false}},
 	}
 	result := prepareBedrockTools(tools, types.ToolChoice{}, false, "anthropic.claude-opus-5", "", nil, nil)
 	toolSpec := result.ToolConfig.Tools[0]["toolSpec"].(map[string]interface{})

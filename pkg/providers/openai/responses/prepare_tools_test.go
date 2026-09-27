@@ -56,7 +56,7 @@ func TestPrepareTools_FunctionTool(t *testing.T) {
 func TestPrepareTools_FunctionTool_Strict(t *testing.T) {
 	tool := types.Tool{
 		Name:   "strict_tool",
-		Strict: true,
+		Strict: types.BoolPtr(true),
 	}
 
 	result := PrepareTools([]types.Tool{tool})
@@ -132,7 +132,7 @@ func TestPrepareTools_FunctionTool_NamespaceGrouping(t *testing.T) {
 		{
 			Name:        "list_open_orders",
 			Description: "List open orders for a customer ID.",
-			Strict:      true,
+			Strict:      types.BoolPtr(true),
 			Parameters: map[string]interface{}{
 				"type":       "object",
 				"properties": map[string]interface{}{"customer_id": map[string]interface{}{"type": "string"}},

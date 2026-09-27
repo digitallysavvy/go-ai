@@ -599,10 +599,21 @@ func toolDefinitionsEqual(a, b types.Tool) bool {
 	return a.Name == b.Name &&
 		a.Description == b.Description &&
 		a.Title == b.Title &&
-		a.Strict == b.Strict &&
+		toolStrictEqual(a.Strict, b.Strict) &&
 		a.ProviderExecuted == b.ProviderExecuted &&
 		reflect.DeepEqual(a.Parameters, b.Parameters) &&
 		reflect.DeepEqual(a.OutputSchema, b.OutputSchema)
+}
+
+// toolStrictEqual compares two *bool Tool.Strict values by value (nil means
+// "unset"), not by pointer identity — a plain a == b comparison after
+// Tool.Strict became *bool would almost always be false even when both sides
+// are, say, a fresh `true` pointer (hand-off: "Tool.Strict bool -> *bool").
+func toolStrictEqual(a, b *bool) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 func validateBatchReference(batchAPI provider.BatchV4, batch BatchReference) error {

@@ -676,7 +676,7 @@ func convertToolsToOpenResponses(tools []types.Tool, registry *ExtensionRegistry
 			}
 		}
 
-		ft.Strict = t.Strict
+		ft.Strict = t.Strict != nil && *t.Strict
 
 		result = append(result, ft)
 	}

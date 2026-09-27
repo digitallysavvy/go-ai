@@ -12,7 +12,7 @@ func TestToJSONSchema_StrictModeIncluded(t *testing.T) {
 	tool := types.Tool{
 		Name:        "my_tool",
 		Description: "does something",
-		Strict:      true,
+		Strict:      types.BoolPtr(true),
 	}
 
 	schema := ToJSONSchema(tool)
@@ -36,7 +36,7 @@ func TestToJSONSchema_StrictModeOmittedWhenFalse(t *testing.T) {
 	tool := types.Tool{
 		Name:        "my_tool",
 		Description: "does something",
-		Strict:      false,
+		Strict:      types.BoolPtr(false),
 	}
 
 	schema := ToJSONSchema(tool)
@@ -94,8 +94,8 @@ func TestToAnthropicFormatSanitizesUnsupportedValidationKeywords(t *testing.T) {
 // (used by OpenAI, Groq, and Bedrock providers) also forwards strict mode.
 func TestToOpenAIFormat_StrictModeForwarded(t *testing.T) {
 	tools := []types.Tool{
-		{Name: "strict_tool", Description: "strict", Strict: true},
-		{Name: "normal_tool", Description: "normal", Strict: false},
+		{Name: "strict_tool", Description: "strict", Strict: types.BoolPtr(true)},
+		{Name: "normal_tool", Description: "normal", Strict: types.BoolPtr(false)},
 	}
 
 	formatted := ToOpenAIFormat(tools)

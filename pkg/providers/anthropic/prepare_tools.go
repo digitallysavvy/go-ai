@@ -161,14 +161,15 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 		if eager {
 			m["eager_input_streaming"] = true
 		}
-		if !o.supportsStrictTools && t.Strict {
+		strictSet := t.Strict != nil && *t.Strict
+		if !o.supportsStrictTools && strictSet {
 			out.warnings = append(out.warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "strict",
-				Details: fmt.Sprintf("Tool '%s' has strict: %t, but strict mode is not supported by this provider. The strict property will be ignored.", t.Name, t.Strict),
+				Details: fmt.Sprintf("Tool '%s' has strict: %t, but strict mode is not supported by this provider. The strict property will be ignored.", t.Name, strictSet),
 			})
 		}
-		if o.supportsStrictTools && t.Strict {
+		if o.supportsStrictTools && strictSet {
 			m["strict"] = true
 		}
 		var allowedCallers []string

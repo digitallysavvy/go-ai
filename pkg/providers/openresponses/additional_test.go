@@ -57,7 +57,7 @@ func TestProviderBasicsAndOptionsExtractors(t *testing.T) {
 
 func TestConvertToolsChoicesAndUsage(t *testing.T) {
 	tools, encodedProviderTools, toolWarnings := convertToolsToOpenResponses([]types.Tool{
-		{Name: "weather", Description: "lookup", Parameters: map[string]interface{}{"type": "object"}, Strict: true},
+		{Name: "weather", Description: "lookup", Parameters: map[string]interface{}{"type": "object"}, Strict: types.BoolPtr(true)},
 	}, nil)
 	if len(tools) != 1 {
 		t.Fatalf("tools conversion failed: %+v", tools)
