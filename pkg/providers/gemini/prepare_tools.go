@@ -130,7 +130,7 @@ func prepareTools(tools []types.Tool, toolChoice types.ToolChoice, modelID strin
 	hasStrictTools := false
 	for _, t := range tools {
 		decls = append(decls, functionDeclaration(t))
-		if t.Strict {
+		if t.Strict != nil && *t.Strict {
 			hasStrictTools = true
 		}
 	}

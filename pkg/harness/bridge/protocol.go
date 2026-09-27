@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 )
@@ -249,6 +250,24 @@ func DiagnosticFromFrame(frame OutboundMessage, dc DiagnosticContext) (harness.D
 		}, true
 	}
 	return harness.Diagnostic{}, false
+}
+
+// ReportDiagnostic builds a ChannelOptions.OnDiagnostic callback that
+// normalizes sandbox-log/debug-event frames via DiagnosticFromFrame and
+// forwards them to report (e.g. harness.Observability.Report), stamping
+// each with sessionID and the time it was observed. Returns nil when report
+// is nil, so callers can assign the result directly without a nil check.
+// Mirrors TS adapters' `onDiagnostic` closure (built from
+// `harnessV1DiagnosticFromBridgeFrame`).
+func ReportDiagnostic(report func(harness.Diagnostic), sessionID string) func(OutboundMessage) {
+	if report == nil {
+		return nil
+	}
+	return func(frame OutboundMessage) {
+		if d, ok := DiagnosticFromFrame(frame, DiagnosticContext{SessionID: sessionID, Timestamp: time.Now().UnixMilli()}); ok {
+			report(d)
+		}
+	}
 }
 
 // Ready is the JSON line the bridge writes to stdout once its WebSocket

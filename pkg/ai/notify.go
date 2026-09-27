@@ -71,3 +71,15 @@ func safeInvoke(fn func()) {
 	}()
 	fn()
 }
+
+// safeInvokeBool is safeInvoke for a fn that returns a bool (e.g.
+// StreamTextOptions.OnErrorRetry): a panic is treated as "false" (no retry
+// requested) rather than propagating.
+func safeInvokeBool(fn func() bool) (result bool) {
+	defer func() {
+		if recover() != nil { //nolint:errcheck // intentionally ignore panic value
+			result = false
+		}
+	}()
+	return fn()
+}

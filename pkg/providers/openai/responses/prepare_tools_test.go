@@ -56,7 +56,7 @@ func TestPrepareTools_FunctionTool(t *testing.T) {
 func TestPrepareTools_FunctionTool_Strict(t *testing.T) {
 	tool := types.Tool{
 		Name:   "strict_tool",
-		Strict: true,
+		Strict: types.BoolPtr(true),
 	}
 
 	result := PrepareTools([]types.Tool{tool})
@@ -66,6 +66,41 @@ func TestPrepareTools_FunctionTool_Strict(t *testing.T) {
 	}
 	if def.Strict == nil || !*def.Strict {
 		t.Error("expected Strict to be true")
+	}
+}
+
+// TestPrepareTools_FunctionTool_StrictExplicitFalse verifies that an
+// explicit `Strict: false` is forwarded to the wire (not dropped), matching
+// TS's `tool.strict != null ? {strict: tool.strict} : {}` (any non-null
+// value, not only `true`).
+func TestPrepareTools_FunctionTool_StrictExplicitFalse(t *testing.T) {
+	tool := types.Tool{
+		Name:   "non_strict_tool",
+		Strict: types.BoolPtr(false),
+	}
+
+	result := PrepareTools([]types.Tool{tool})
+	def, ok := result[0].(FunctionToolDef)
+	if !ok {
+		t.Fatalf("expected FunctionToolDef, got %T", result[0])
+	}
+	if def.Strict == nil || *def.Strict {
+		t.Error("expected Strict to be an explicit false, not nil/true")
+	}
+}
+
+// TestPrepareTools_FunctionTool_StrictUnset verifies that an unset Strict
+// omits the field entirely, rather than forwarding a default.
+func TestPrepareTools_FunctionTool_StrictUnset(t *testing.T) {
+	tool := types.Tool{Name: "unspecified_tool"}
+
+	result := PrepareTools([]types.Tool{tool})
+	def, ok := result[0].(FunctionToolDef)
+	if !ok {
+		t.Fatalf("expected FunctionToolDef, got %T", result[0])
+	}
+	if def.Strict != nil {
+		t.Errorf("expected Strict to be nil (omitted) when unset, got %v", *def.Strict)
 	}
 }
 
@@ -132,7 +167,7 @@ func TestPrepareTools_FunctionTool_NamespaceGrouping(t *testing.T) {
 		{
 			Name:        "list_open_orders",
 			Description: "List open orders for a customer ID.",
-			Strict:      true,
+			Strict:      types.BoolPtr(true),
 			Parameters: map[string]interface{}{
 				"type":       "object",
 				"properties": map[string]interface{}{"customer_id": map[string]interface{}{"type": "string"}},

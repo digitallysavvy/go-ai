@@ -217,7 +217,7 @@ func parseMoonshotMessageOptions(providerOptions map[string]interface{}) (*moons
 				tool.Parameters = params
 			}
 			if strict, ok := toolMap["strict"].(bool); ok {
-				tool.Strict = strict
+				tool.Strict = &strict
 			}
 			tools = append(tools, tool)
 		}

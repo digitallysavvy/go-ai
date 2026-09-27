@@ -173,6 +173,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	stream.markCodeExecutionDynamic = req.markCodeExecutionDynamic
 	stream.providerOptionsName = req.providerOptionsName
 	stream.usedCustomProviderKey = req.usedCustomProviderKey
+	stream.requestBody = body
 	return providerutils.WithResponseMetadata(stream, httpResp.Header, m.ModelID()), nil
 }
 
@@ -341,6 +342,22 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 			// Redacted blocks have no visible text — only the opaque data blob.
 			result.Content = append(result.Content, types.ReasoningContent{
 				RedactedData: content.Data,
+			})
+		case "container_upload":
+			// A file the model uploaded to the code execution container
+			// (TS: content.push({type: 'custom', kind:
+			// 'anthropic.container_upload', providerMetadata: {anthropic:
+			// {fileId}}})). TS's doStream doesn't handle this block type, so
+			// this is generate-only, matching TS parity. ProviderMetadata
+			// must be namespaced under "anthropic" like every other
+			// provider-metadata payload (see e.g. Google's CustomContent,
+			// which nests under "google"), not a flat {fileId} object.
+			metadata, _ := json.Marshal(map[string]interface{}{
+				"anthropic": map[string]interface{}{"fileId": content.FileID},
+			})
+			result.Content = append(result.Content, types.CustomContent{
+				Kind:             "anthropic.container_upload",
+				ProviderMetadata: metadata,
 			})
 		}
 	}
@@ -1061,6 +1078,9 @@ type anthropicContent struct {
 	ToolUseID string          `json:"tool_use_id,omitempty"`
 	Content   json.RawMessage `json:"content,omitempty"`
 	IsError   bool            `json:"is_error,omitempty"`
+	// FileID is set on "container_upload" blocks (the uploaded file made
+	// available in the code execution container).
+	FileID string `json:"file_id,omitempty"`
 }
 
 // streamContentBlock tracks an in-flight content block across SSE events.
@@ -1151,6 +1171,11 @@ type anthropicStream struct {
 	// emitted on message_stop (or at end of stream).
 	finish       *provider.StreamChunk
 	finishIssued bool
+
+	// requestBody is the raw request body that opened this stream, exposed
+	// via RequestBody() (provider.StreamRequestBody, hand-off: "stream
+	// request body field").
+	requestBody interface{}
 }
 
 // newAnthropicStream creates a new Anthropic stream.
@@ -1190,6 +1215,14 @@ func (s *anthropicStream) Read(p []byte) (n int, err error) {
 // Close implements io.Closer
 func (s *anthropicStream) Close() error {
 	return s.reader.Close()
+}
+
+// RequestBody implements provider.StreamRequestBody, exposing the raw
+// request body that opened this stream in types.StepRequest.Body for
+// streaming calls, matching TS doStream()'s {request: {body}} (hand-off:
+// "stream request body field").
+func (s *anthropicStream) RequestBody() interface{} {
+	return s.requestBody
 }
 
 // Next returns the next chunk in the stream

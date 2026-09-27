@@ -3,6 +3,7 @@ package tools
 import (
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -117,4 +118,28 @@ func TestCodeExecution20250825_Description(t *testing.T) {
 	assert.Contains(t, tool.Description, "programmatic-tool-call")
 	assert.Contains(t, tool.Description, "bash_code_execution")
 	assert.Contains(t, tool.Description, "text_editor_code_execution")
+}
+
+// Ports the intent of ai/packages/anthropic/src/tool/code-execution_20250825.ts's
+// experimental_toolCaller wiring.
+func TestCodeExecution20250825_ToolCaller(t *testing.T) {
+	tool := CodeExecution20250825()
+	require.NotNil(t, tool.ExperimentalToolCaller)
+	assert.Equal(t, types.ToolCallerTypeProvider, tool.ExperimentalToolCaller.Type)
+
+	out := tool.ExperimentalToolCaller.PrepareProviderOptions(nil)
+	anthropicOpts, ok := out["anthropic"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, []string{"code_execution_20250825"}, anthropicOpts["allowedCallers"])
+
+	// TS: [...new Set([...existing, allowedCallerName])] -- existing
+	// entries keep their original order and the new caller is appended at
+	// the end, not prepended.
+	in := map[string]interface{}{
+		"anthropic": map[string]interface{}{"allowedCallers": []string{"direct"}},
+	}
+	out = tool.ExperimentalToolCaller.PrepareProviderOptions(in)
+	anthropicOpts, ok = out["anthropic"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, []string{"direct", "code_execution_20250825"}, anthropicOpts["allowedCallers"])
 }

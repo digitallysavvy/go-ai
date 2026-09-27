@@ -3274,3 +3274,63 @@ func TestResponsesLanguageModel_ParallelToolCallReplayGrouping(t *testing.T) {
 		t.Fatalf("stateless replay: functionCalls=%d functionCallOutputs=%d, want 2 and 2 (no regrouping)", functionCalls, functionCallOutputs)
 	}
 }
+
+// TestResponsesLanguageModel_ToolResultContentNeverProviderExecuted covers
+// item 4a of the P1-2c sweep: LanguageModelV4ToolResult has no
+// providerExecuted field in TS (only LanguageModelV4ToolCall does), so none
+// of convertResponse's non-streaming ToolResultContent parts should ever
+// set it, even though the paired ToolCallContent legitimately does.
+func TestResponsesLanguageModel_ToolResultContentNeverProviderExecuted(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	computerItem, _ := json.Marshal(map[string]interface{}{
+		"type": "computer_call", "id": "computer_1", "status": "completed",
+	})
+	webSearchItem, _ := json.Marshal(map[string]interface{}{
+		"type": "web_search_call", "id": "ws_1", "status": "completed",
+	})
+	programItem, _ := json.Marshal(map[string]interface{}{
+		"type": "program", "id": "prog_item_1", "call_id": "prog_1", "code": "1+1", "fingerprint": "fp",
+	})
+	programOutputItem, _ := json.Marshal(map[string]interface{}{
+		"type": "program_output", "id": "prog_out_1", "call_id": "prog_1", "result": "2", "status": "completed",
+	})
+
+	result, err := model.convertResponse(responses.ResponsesAPIResponse{
+		Output: []json.RawMessage{computerItem, webSearchItem, programItem, programOutputItem},
+		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
+	}, true, "", nil, nil)
+	if err != nil {
+		t.Fatalf("convertResponse failed: %v", err)
+	}
+
+	sawToolResult := 0
+	for _, part := range result.Content {
+		tr, ok := part.(types.ToolResultContent)
+		if !ok {
+			continue
+		}
+		sawToolResult++
+		if tr.ProviderExecuted {
+			t.Fatalf("tool-result for %q has ProviderExecuted=true, want false (TS never sets it on tool-result parts): %#v", tr.ToolName, tr)
+		}
+	}
+	if sawToolResult != 3 {
+		t.Fatalf("saw %d tool-result parts, want 3 (computer_use, web_search, programmatic_tool_calling)", sawToolResult)
+	}
+
+	// The paired tool-call parts legitimately keep ProviderExecuted=true.
+	sawToolCall := 0
+	for _, part := range result.Content {
+		if tc, ok := part.(types.ToolCallContent); ok {
+			sawToolCall++
+			if !tc.ProviderExecuted {
+				t.Fatalf("tool-call for %q has ProviderExecuted=false, want true: %#v", tc.ToolName, tc)
+			}
+		}
+	}
+	if sawToolCall != 3 {
+		t.Fatalf("saw %d tool-call parts, want 3", sawToolCall)
+	}
+}

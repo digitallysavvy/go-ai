@@ -166,7 +166,7 @@ if result.Usage.InputDetails != nil && result.Usage.InputDetails.CacheReadTokens
 weatherTool := types.Tool{
     Name:   "weather",
     Title:  "Weather Lookup",
-    Strict: true,
+    Strict: types.BoolPtr(true),
     InputExamples: []types.ToolInputExample{
         {Input: map[string]interface{}{"location": "San Francisco, CA"}},
     },

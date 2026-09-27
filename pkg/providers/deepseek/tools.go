@@ -33,7 +33,7 @@ func (m *LanguageModel) prepareDeepSeekTools(tools []types.Tool, toolChoice type
 	hasStrict := false
 	hasNonStrict := false
 	for _, t := range functionTools {
-		if t.Strict {
+		if t.Strict != nil && *t.Strict {
 			hasStrict = true
 		} else {
 			hasNonStrict = true

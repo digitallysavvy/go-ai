@@ -26,9 +26,83 @@ type RealtimeHealthCheckResponder interface {
 	GetHealthCheckResponse(raw json.RawMessage) (json.RawMessage, bool)
 }
 
+// RealtimeRawEventSerializer is an optional Experimental_RealtimeModelV4
+// capability for a provider whose client events sometimes need to bypass
+// the default JSON-object serialization, mirroring TS's
+// encodeRealtimeFrame: a string payload is sent over the WebSocket as-is
+// (not re-JSON-encoded) and a binary payload (TS ArrayBuffer/typed
+// array/Blob) is sent as a binary WS frame instead of text (audit row
+// 8f89c25 / WG-MISC). When a model implements this and returns ok=true for
+// an event, RealtimeSession.Send uses (Data, Binary) directly instead of
+// calling SerializeClientEvent.
+type RealtimeRawEventSerializer interface {
+	SerializeClientEventRaw(event RealtimeClientEvent) (data []byte, binary bool, ok bool, err error)
+}
+
+// RealtimeRawEventParser is an optional Experimental_RealtimeModelV4
+// capability for a provider that needs to receive frames the core session
+// would otherwise silently drop for not being valid JSON — most notably a
+// binary WS frame (e.g. raw audio), which TS passes straight to the
+// model's parser rather than filtering by content (audit row 8f89c25 /
+// WG-MISC). When a model implements this, RealtimeSession.Read calls it
+// for every received frame (binary or text, valid JSON or not) instead of
+// requiring the frame to be valid JSON before calling ParseServerEvent.
+type RealtimeRawEventParser interface {
+	ParseRawServerEvent(raw []byte, binary bool) ([]RealtimeServerEvent, error)
+}
+
+// RealtimeServerWebSocketConfigProvider is an optional realtime model
+// capability for models whose connection is authenticated server-side with
+// request headers (for example a provider API key) instead of a
+// per-connection token minted via DoCreateClientSecret and sent as a
+// WebSocket subprotocol. Mirrors the TypeScript SDK's
+// getServerWebSocketConfig() (e.g. OpenAIRealtimeModelLive). When a
+// realtime model implements this, callers should use it instead of
+// DoCreateClientSecret/GetWebSocketConfig to establish the connection.
+type RealtimeServerWebSocketConfigProvider interface {
+	GetServerWebSocketConfig() (WebSocketConfig, error)
+}
+
+// RealtimeLifecycle describes non-default session startup/finalization
+// framing for a realtime model. Mirrors the relevant part of the TypeScript
+// SDK's Experimental_RealtimeModelV4 capabilities object (`startup` /
+// `finalization`). A zero value means the default GA framing: the session
+// starts implicitly (a "session-update" client event configures it, but the
+// connection is already live) and ends when the socket closes.
+type RealtimeLifecycle struct {
+	// StartupEventType is the client event type sent right after connecting
+	// to configure and start the session. Empty means "session-update"
+	// (default/GA framing). OpenAI Live uses "session-start": the session
+	// does not exist until this event is sent.
+	StartupEventType string
+
+	// FinalizationEventType, when non-empty, is a client event type sent
+	// before closing the connection to end the session gracefully (for
+	// example OpenAI Live's "session-close"). Empty means no explicit
+	// finalization event is sent; the session simply ends when the socket
+	// closes.
+	FinalizationEventType string
+}
+
+// RealtimeLifecycleProvider is an optional realtime model capability
+// exposing non-default session startup/finalization framing. See
+// RealtimeLifecycle.
+type RealtimeLifecycleProvider interface {
+	RealtimeLifecycle() RealtimeLifecycle
+}
+
+// RealtimeServerEventParserFactory is an optional realtime model capability
+// for creating a fresh, potentially stateful raw-event parser scoped to one
+// connection, instead of the stateless ParseServerEvent. Mirrors the
+// TypeScript SDK's optional createServerEventParser().
+type RealtimeServerEventParserFactory interface {
+	NewServerEventParser() func(raw json.RawMessage) ([]RealtimeServerEvent, error)
+}
+
 type WebSocketConfig struct {
-	URL       string   `json:"url"`
-	Protocols []string `json:"protocols,omitempty"`
+	URL       string            `json:"url"`
+	Protocols []string          `json:"protocols,omitempty"`
+	Headers   map[string]string `json:"headers,omitempty"`
 }
 
 type ClientSecretOptions struct {
@@ -39,6 +113,14 @@ type ClientSecretOptions struct {
 type RealtimeFactoryGetTokenOptions struct {
 	Model string `json:"model"`
 	ClientSecretOptions
+
+	// API optionally overrides model ID routing for factories with
+	// multiple realtime APIs sharing one namespace (e.g. OpenAI's "live" vs
+	// "realtime"). Ignored by factories with a single realtime API. Nil
+	// means unset (routing defaults apply); a non-nil value that the
+	// factory doesn't recognize is an error, distinguishing "not passed"
+	// from "passed and invalid" the way TS's optional `api?: string` does.
+	API *string `json:"api,omitempty"`
 }
 
 type ClientSecretResult struct {
@@ -110,6 +192,26 @@ type RealtimeClientEvent struct {
 	ContentIndex int                            `json:"contentIndex,omitempty"`
 	AudioEndMs   int                            `json:"audioEndMs,omitempty"`
 	Options      *RealtimeResponseCreateOptions `json:"options,omitempty"`
+
+	// EventID optionally tags a client event so the corresponding server
+	// acknowledgment (command-acknowledged / error) can be correlated with
+	// it. Used by OpenAI Live.
+	EventID string `json:"eventId,omitempty"`
+
+	// Content and DelegationID carry a "context-append" event's payload
+	// (OpenAI Live: append instructions/thinking/commentary context mid
+	// session). ProviderOptions selects the channel via
+	// providerOptions.openai.channel ("instructions" | "thinking" |
+	// "commentary"; default "thinking").
+	Content         string                 `json:"content,omitempty"`
+	DelegationID    *string                `json:"delegationId,omitempty"`
+	ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
+}
+
+// RealtimeUsage reports cumulative realtime session usage (OpenAI Live
+// session.usage.updated / session.closed).
+type RealtimeUsage struct {
+	Seconds float64 `json:"seconds"`
 }
 
 type RealtimeServerEvent struct {
@@ -130,4 +232,29 @@ type RealtimeServerEvent struct {
 	Code           string          `json:"code,omitempty"`
 	RawType        string          `json:"rawType,omitempty"`
 	Raw            json.RawMessage `json:"raw"`
+
+	// The following fields are populated by OpenAI Live events only.
+
+	// Usage is cumulative session usage, present on session-usage and
+	// session-closed events.
+	Usage *RealtimeUsage `json:"usage,omitempty"`
+	// ContextWindowUsageRatio is the fraction (0-1) of the context window
+	// used, present on some session-usage events.
+	ContextWindowUsageRatio *float64 `json:"contextWindowUsageRatio,omitempty"`
+	// Reason explains why the session closed (session-closed).
+	Reason string `json:"reason,omitempty"`
+	// DelegationMode is "client" or "provider" (session-started).
+	DelegationMode string `json:"delegationMode,omitempty"`
+	// DelegationID and Target/OffsetMs describe a delegation-created event.
+	DelegationID string `json:"delegationId,omitempty"`
+	Target       string `json:"target,omitempty"`
+	OffsetMs     *int   `json:"offsetMs,omitempty"`
+	// Speaker, StartMs and EndMs describe a transcript-fragment event.
+	Speaker string `json:"speaker,omitempty"`
+	StartMs *int   `json:"startMs,omitempty"`
+	EndMs   *int   `json:"endMs,omitempty"`
+	// Command and ClientEventID describe a command-acknowledged event, or
+	// tag the client event an error responds to.
+	Command       string `json:"command,omitempty"`
+	ClientEventID string `json:"clientEventId,omitempty"`
 }

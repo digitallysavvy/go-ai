@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"sync"
 	"time"
 
 	"golang.org/x/net/websocket"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
+	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 )
 
 // Conn is one established host<->bridge socket. Receive blocks until a
@@ -105,7 +105,11 @@ type DialOptions struct {
 	OnHello func(*Hello)
 	// WriteTimeout bounds each write (default DefaultWriteTimeout).
 	WriteTimeout time.Duration
-	// Origin sent with the upgrade request (default "http://localhost/").
+	// Origin is unused: Dial derives the handshake's Origin header from the
+	// target URL itself (x/net/websocket requires one; TS's bridge client,
+	// dialing through a browser or Node WebSocket client, sets none). Kept
+	// as a field for backward compatibility with existing callers; a future
+	// release may remove it.
 	Origin string
 }
 
@@ -123,20 +127,6 @@ func Dial(ctx context.Context, endpoint harness.PortEndpoint, opts DialOptions) 
 	if name == "" {
 		name = "bridge"
 	}
-	origin := opts.Origin
-	if origin == "" {
-		origin = "http://localhost/"
-	}
-	config, err := websocket.NewConfig(endpoint.URL, origin)
-	if err != nil {
-		return nil, err
-	}
-	if len(endpoint.Headers) > 0 {
-		config.Header = http.Header{}
-		for k, v := range endpoint.Headers {
-			config.Header.Set(k, v)
-		}
-	}
 
 	dialCtx := ctx
 	if opts.OpenTimeout > 0 {
@@ -145,7 +135,7 @@ func Dial(ctx context.Context, endpoint harness.PortEndpoint, opts DialOptions) 
 			fmt.Errorf("WebSocket open timed out after %dms", opts.OpenTimeout.Milliseconds()))
 		defer cancel()
 	}
-	ws, err := config.DialContext(dialCtx)
+	ws, err := wsutil.Dial(dialCtx, endpoint.URL, wsutil.DialOptions{Headers: endpoint.Headers})
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, abortError(ctx)

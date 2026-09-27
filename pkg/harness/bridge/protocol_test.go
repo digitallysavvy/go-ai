@@ -84,6 +84,27 @@ func TestDiagnosticFromFrame(t *testing.T) {
 	}
 }
 
+// TestReportDiagnostic covers the ChannelOptions.OnDiagnostic constructor
+// every adapter's DoStart wires from harness.Observability.Report — a
+// regression test for a parity gap where sandbox-log/debug-event frames
+// were silently dropped instead of reaching Observability.Report.
+func TestReportDiagnostic(t *testing.T) {
+	if got := ReportDiagnostic(nil, "s1"); got != nil {
+		t.Fatal("ReportDiagnostic(nil report) must return nil so callers can assign it directly")
+	}
+
+	var reported []harness.Diagnostic
+	onDiagnostic := ReportDiagnostic(func(d harness.Diagnostic) { reported = append(reported, d) }, "s1")
+	onDiagnostic(&SandboxLog{Source: "claude", Stream: "stderr", Line: "oops"})
+	onDiagnostic(&Thread{}) // not a diagnostic frame; must be silently ignored
+	if len(reported) != 1 {
+		t.Fatalf("reported = %v, want exactly 1 diagnostic", reported)
+	}
+	if reported[0].SessionID != "s1" || reported[0].Message != "oops" || reported[0].Timestamp == 0 {
+		t.Fatalf("reported[0] = %+v", reported[0])
+	}
+}
+
 // claudeStart mimics an adapter start frame extending StartBase.
 type claudeStart struct {
 	StartBase

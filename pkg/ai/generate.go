@@ -70,6 +70,20 @@ func preparedMaxRetries(maxRetries *int) int {
 	return *maxRetries
 }
 
+// validateStreamRetries mirrors TS's prepareRetries({parameter:
+// 'streamRetries'}) validation for StreamTextOptions.StreamRetries: a
+// negative value is rejected synchronously (stream-text.test.ts "should
+// reject invalid streamRetries values").
+func validateStreamRetries(streamRetries *int) error {
+	if streamRetries != nil && *streamRetries < 0 {
+		return &providererrors.InvalidArgumentError{
+			Field:   "streamRetries",
+			Message: "streamRetries must be >= 0",
+		}
+	}
+	return nil
+}
+
 func isGatewayCallRetryable(err error) bool {
 	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
@@ -195,6 +209,12 @@ type GenerateTextOptions struct {
 
 	// ActiveTools restricts the tools available for this generation.
 	ActiveTools []string
+
+	// ExperimentalToolCallers configures which tools may call which other
+	// tools (programmatic tool calling / code mode), and which tools stay
+	// hidden from the model until discovered via ai.ToolSearch. Mirrors the
+	// TypeScript SDK's experimental_toolCallers.
+	ExperimentalToolCallers ExperimentalToolCallers
 
 	// ToolApproval configures approval handling for tool execution.
 	ToolApproval types.ToolApprovalConfig
@@ -553,6 +573,24 @@ type PrepareStepOptions struct {
 
 	// Accumulated usage so far
 	AccumulatedUsage types.Usage
+
+	// Per-step model call setting overrides (TS prepare-step-call-settings.ts,
+	// audit row 60f97f6 / WG-STEP). Set any of these in the PrepareStep
+	// callback's returned PrepareStepOptions to override that setting for
+	// this step only; the override does not carry forward to later steps
+	// (each step starts from the outer call's settings again). A nil field
+	// falls back to the outer call's value; an explicit zero value (e.g.
+	// Temperature pointing at 0.0, or an empty non-nil StopSequences slice)
+	// is preserved, not treated as "unset".
+	MaxOutputTokens  *int
+	Temperature      *float64
+	TopP             *float64
+	TopK             *int
+	PresencePenalty  *float64
+	FrequencyPenalty *float64
+	StopSequences    []string
+	Seed             *int
+	Reasoning        *types.ReasoningLevel
 }
 
 // GenerateTextResult contains the result of text generation.
@@ -564,9 +602,13 @@ type GenerateTextResult struct {
 	Text string `json:"text"`
 
 	// Reasoning holds the reasoning/thinking content from the final step.
+	//
+	// Deprecated: use FinalStep.Reasoning instead.
 	Reasoning []types.ReasoningContent `json:"reasoning"`
 
 	// ReasoningText is the concatenated reasoning text from the final step.
+	//
+	// Deprecated: use FinalStep.ReasoningText instead.
 	ReasoningText string `json:"reasoningText,omitempty"`
 
 	// Output contains the parsed output when a WithOutput option was provided.
@@ -618,6 +660,8 @@ type GenerateTextResult struct {
 	Warnings []types.Warning `json:"warnings,omitempty"`
 
 	// ProviderMetadata holds provider-specific metadata from the last generation step.
+	//
+	// Deprecated: use FinalStep.ProviderMetadata instead.
 	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
 
 	// Sources contains citation or grounding references from all steps.
@@ -628,15 +672,22 @@ type GenerateTextResult struct {
 
 	// TotalUsage is the sum of token usage across all steps.
 	// For single-step generation, TotalUsage == Usage.
+	//
+	// Deprecated: use Usage instead (Usage is already the total across all
+	// steps; TS keeps totalUsage only as an alias of usage).
 	TotalUsage types.Usage `json:"totalUsage"`
 
 	// ResponseMessages contains response messages generated across all steps.
 	ResponseMessages []types.Message `json:"responseMessages"`
 
 	// Request contains metadata about the last request sent to the provider.
+	//
+	// Deprecated: use FinalStep.Request instead.
 	Request types.StepRequest `json:"request"`
 
 	// Response contains metadata about the last response from the provider.
+	//
+	// Deprecated: use FinalStep.Response instead.
 	Response types.StepResponse `json:"response"`
 
 	// Raw request/response (for debugging). Deprecated: use Request.Body and Response.Body.
@@ -655,6 +706,14 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		return nil, fmt.Errorf("model is required")
 	}
 	if err := validateMaxRetries(opts.MaxRetries); err != nil {
+		return nil, err
+	}
+	resolvedToolCallers, err := ResolveToolCallerConfiguration(opts.Tools, opts.ExperimentalToolCallers)
+	if err != nil {
+		return nil, err
+	}
+	toolSearchState, err := NewToolSearchState(opts.Tools, resolvedToolCallers)
+	if err != nil {
 		return nil, err
 	}
 	telemetrySettings := effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
@@ -684,15 +743,28 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// Warn (once, up front) when a streaming-only timeout setting is passed
 	// to the non-streaming GenerateText (TS 349afe7 / generate-text.ts
 	// getFirstChunkTimeoutMs/getChunkTimeoutMs unsupportedTimeoutWarnings).
-	// Go's TimeoutConfig has no separate "first chunk" timeout field (TS
-	// firstChunkMs/chunkMs are both distinct from stepMs/totalMs there); its
-	// PerChunk corresponds to TS chunkMs, so only that case is checked here.
-	if opts.Timeout != nil && opts.Timeout.PerChunk != nil {
-		logModelWarnings([]types.Warning{{
-			Type:    "unsupported",
-			Feature: "timeout.chunkMs",
-			Details: "The chunkMs timeout is only supported by streaming functions.",
-		}}, opts.Model.Provider(), opts.Model.ModelID())
+	// TimeoutConfig.FirstChunk corresponds to TS firstChunkMs, PerChunk to
+	// TS chunkMs (audit row 106ea59 / WG-TIMEOUT); both only apply to
+	// streaming.
+	if opts.Timeout != nil {
+		var unsupportedTimeoutWarnings []types.Warning
+		if opts.Timeout.FirstChunk != nil {
+			unsupportedTimeoutWarnings = append(unsupportedTimeoutWarnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "timeout.firstChunkMs",
+				Details: "The firstChunkMs timeout is only supported by streaming functions.",
+			})
+		}
+		if opts.Timeout.PerChunk != nil {
+			unsupportedTimeoutWarnings = append(unsupportedTimeoutWarnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "timeout.chunkMs",
+				Details: "The chunkMs timeout is only supported by streaming functions.",
+			})
+		}
+		if len(unsupportedTimeoutWarnings) > 0 {
+			logModelWarnings(unsupportedTimeoutWarnings, opts.Model.Provider(), opts.Model.ModelID())
+		}
 	}
 
 	// Fire OnStart — registered integrations start their root spans here and
@@ -899,6 +971,19 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		stepToolChoice := opts.ToolChoice
 		stepToolOrder := opts.ToolOrder
 		stepProviderOptions := opts.ProviderOptions
+		// Per-step call-setting overrides (audit row 60f97f6 / WG-STEP):
+		// each starts from the outer call's value and is reset to it again
+		// at the top of every step iteration, so an override from
+		// PrepareStep never carries forward to a later step.
+		stepMaxTokens := opts.MaxTokens
+		stepTemperature := opts.Temperature
+		stepTopP := opts.TopP
+		stepTopK := opts.TopK
+		stepPresencePenalty := opts.PresencePenalty
+		stepFrequencyPenalty := opts.FrequencyPenalty
+		stepStopSequences := opts.StopSequences
+		stepSeed := opts.Seed
+		stepReasoningLevel := opts.Reasoning
 
 		accumulatedResponseMessages := responseMessagesWithInitial(initialResponseMessages, result.Steps)
 		if opts.PrepareStep != nil {
@@ -924,6 +1009,15 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				ProviderOptions:            stepProviderOptions,
 				ExperimentalSandbox:        stepSandbox,
 				AccumulatedUsage:           result.Usage,
+				MaxOutputTokens:            stepMaxTokens,
+				Temperature:                stepTemperature,
+				TopP:                       stepTopP,
+				TopK:                       stepTopK,
+				PresencePenalty:            stepPresencePenalty,
+				FrequencyPenalty:           stepFrequencyPenalty,
+				StopSequences:              stepStopSequences,
+				Seed:                       stepSeed,
+				Reasoning:                  stepReasoningLevel,
 			})
 			if prepared.Model != nil {
 				stepModel = prepared.Model
@@ -968,14 +1062,56 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			if prepared.ExperimentalSandbox != nil {
 				stepSandbox = prepared.ExperimentalSandbox
 			}
+			if prepared.MaxOutputTokens != nil {
+				stepMaxTokens = prepared.MaxOutputTokens
+			}
+			if prepared.Temperature != nil {
+				stepTemperature = prepared.Temperature
+			}
+			if prepared.TopP != nil {
+				stepTopP = prepared.TopP
+			}
+			if prepared.TopK != nil {
+				stepTopK = prepared.TopK
+			}
+			if prepared.PresencePenalty != nil {
+				stepPresencePenalty = prepared.PresencePenalty
+			}
+			if prepared.FrequencyPenalty != nil {
+				stepFrequencyPenalty = prepared.FrequencyPenalty
+			}
+			if prepared.StopSequences != nil {
+				stepStopSequences = prepared.StopSequences
+			}
+			if prepared.Seed != nil {
+				stepSeed = prepared.Seed
+			}
+			if prepared.Reasoning != nil {
+				stepReasoningLevel = prepared.Reasoning
+			}
 		}
+
+		// Apply deferred tool discovery (ai.ToolSearch) and tool-caller
+		// routing (ExperimentalToolCallers) before resolving descriptions
+		// and ordering. stepTools becomes the model-visible set;
+		// stepExecutionTools is used to look up the tool actually invoked
+		// (which may be a bound local caller with a stable model-visible
+		// definition, per prepareToolsForToolCallers).
+		stepTools = toolSearchState.Apply(stepTools, toolsContext, stepSandbox)
+		stepExecutionTools, modelTools, toolCallerMessages := PrepareToolsForToolCallers(stepTools, resolvedToolCallers)
+		stepTools = modelTools
+		if len(toolCallerMessages) > 0 {
+			stepMessages = AppendToolCallerMessages(stepMessages, toolCallerMessages)
+		}
+
 		stepTools = resolveStepTools(ctx, stepTools, toolsContext, stepSandbox)
 		stepTools = orderStepTools(stepTools, stepToolOrder)
+		stepExecutionTools = resolveStepTools(ctx, stepExecutionTools, toolsContext, stepSandbox)
 		instructionsForNextStep = stepSystem
 		instructionMessagesForNextStep = stepInstructionMessages
-		toolsByName := make(map[string]*types.Tool, len(stepTools))
-		for i := range stepTools {
-			toolsByName[stepTools[i].Name] = &stepTools[i]
+		toolsByName := make(map[string]*types.Tool, len(stepExecutionTools))
+		for i := range stepExecutionTools {
+			toolsByName[stepExecutionTools[i].Name] = &stepExecutionTools[i]
 		}
 
 		// Apply per-step timeout if configured
@@ -1035,21 +1171,21 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			Prompt:                stepPrompt,
 			AllowSystemMessages:   allowSystem,
 			AllowSystemInMessages: allowSystem,
-			Temperature:           opts.Temperature,
-			MaxTokens:             opts.MaxTokens,
-			TopP:                  opts.TopP,
-			TopK:                  opts.TopK,
-			FrequencyPenalty:      opts.FrequencyPenalty,
-			PresencePenalty:       opts.PresencePenalty,
-			StopSequences:         opts.StopSequences,
-			Seed:                  opts.Seed,
+			Temperature:           stepTemperature,
+			MaxTokens:             stepMaxTokens,
+			TopP:                  stepTopP,
+			TopK:                  stepTopK,
+			FrequencyPenalty:      stepFrequencyPenalty,
+			PresencePenalty:       stepPresencePenalty,
+			StopSequences:         stepStopSequences,
+			Seed:                  stepSeed,
 			Headers:               opts.Headers,
 			Tools:                 stepTools,
 			ToolChoice:            stepToolChoice,
 			RuntimeContext:        runtimeContext,
 			ToolsContext:          toolsContext,
 			ResponseFormat:        responseFormat,
-			Reasoning:             opts.Reasoning,
+			Reasoning:             stepReasoningLevel,
 			SendReasoning:         opts.SendReasoning,
 			ProviderOptions:       stepProviderOptions,
 			Telemetry:             telemetrySettings,
@@ -1301,7 +1437,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				toolExecutionMs:     map[string]int64{},
 				executionBlocked:    !isToolExecutionAllowedFinishReason(genResult.FinishReason),
 			}
-			toolResults, err := executeTools(ctx, genResult.ToolCalls, stepTools, runtimeContext, toolsContext, opts.ToolApproval, &result.Usage, toolCallbacks)
+			toolResults, err := executeTools(ctx, genResult.ToolCalls, stepExecutionTools, runtimeContext, toolsContext, opts.ToolApproval, &result.Usage, toolCallbacks)
 			if err != nil {
 				if opts.Timeout != nil && opts.Timeout.HasTotal() && ctx.Err() != nil {
 					err = wrapTimeoutError(TimeoutReasonTotal, err)

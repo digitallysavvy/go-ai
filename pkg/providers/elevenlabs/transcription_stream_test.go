@@ -2,10 +2,13 @@ package elevenlabs
 
 import (
 	"context"
+	"crypto/sha1" //nolint:gosec // required by the WebSocket handshake spec, not for security
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
+	stdhttp "net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -997,3 +1000,157 @@ func boolPtr(v bool) *bool         { return &v }
 func floatPtr2(v float64) *float64 { return &v }
 func intPtr(v int) *int            { return &v }
 func stringPtr(v string) *string   { return &v }
+
+// failingRealtimeAudioStream is a provider.AudioStream test double whose Next
+// returns a fixed non-EOF error, mirroring a rejected `audioReader.read()` in
+// TS.
+type failingRealtimeAudioStream struct {
+	err error
+
+	mu        sync.Mutex
+	cancelled bool
+}
+
+func (s *failingRealtimeAudioStream) Next(ctx context.Context) ([]byte, error) {
+	return nil, s.err
+}
+
+func (s *failingRealtimeAudioStream) Cancel(reason error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cancelled = true
+}
+
+func (s *failingRealtimeAudioStream) wasCancelled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cancelled
+}
+
+// TestTranscriptionModel_DoStream_AudioReadErrorSurfacesError mirrors TS
+// `void sendAudio(socket).catch(finishWithError)`: a genuine AudioStream read
+// failure (distinct from its natural io.EOF completion) must terminate the
+// stream with an error, not be silently swallowed. Regression test for a bug
+// where pumpAudio returned on a non-EOF read (or write) error without
+// reporting it.
+func TestTranscriptionModel_DoStream_AudioReadErrorSurfacesError(t *testing.T) {
+	server := newRealtimeTestServer(t)
+	defer server.close()
+
+	audio := &failingRealtimeAudioStream{err: errors.New("audio source failed")}
+	model := newRealtimeTestModel(server.ts.URL)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            audio,
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: rate(16000)},
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+
+	server.toSend <- map[string]interface{}{"message_type": "session_started", "session_id": "session-1"}
+	if _, err := result.Stream.Next(); err != nil {
+		t.Fatalf("Stream.Next() (stream-start) error = %v", err)
+	}
+
+	_, err = drainUntilFinishOrError(t, result.Stream)
+	if err == nil || !strings.Contains(err.Error(), "audio source failed") {
+		t.Fatalf("err = %v, want an error containing 'audio source failed'", err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && !audio.wasCancelled() {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if !audio.wasCancelled() {
+		t.Error("audio stream was not cancelled after a read failure")
+	}
+}
+
+// TestTranscriptionModel_DoStream_AbnormalDisconnectSurfacesError mirrors TS
+// connectToWebSocket's onSocketError semantics: an abnormal disconnection (a
+// connection dropped mid-frame via a TCP RST, distinct from a clean WebSocket
+// close frame) must always surface the "ElevenLabs realtime transcription
+// error." message, unlike a clean close (TS onClose, covered by
+// TestTranscriptionModel_DoStream_ErrorsWhenClosedBeforeFinalCommit and
+// TestTranscriptionModel_DoStream_FinishesOnCloseAfterPostInputCommit), which
+// branches on endOfInput/receivedPostInputCommit. Regression test for a bug
+// where every receive error was routed through that same branching,
+// regardless of whether it was actually a clean close.
+func TestTranscriptionModel_DoStream_AbnormalDisconnectSurfacesError(t *testing.T) {
+	ts := newElevenLabsAbnormalDisconnectTestServer(t)
+	defer ts.Close()
+
+	model := newRealtimeTestModel(ts.URL)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newBlockingAudioStream(),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: rate(16000)},
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+
+	_, err = drainUntilFinishOrError(t, result.Stream)
+	if err == nil {
+		t.Fatal("expected an error for an abnormal disconnection, got a silent finish")
+	}
+	if !strings.Contains(err.Error(), "ElevenLabs realtime transcription error") {
+		t.Fatalf("err = %v, want containing 'ElevenLabs realtime transcription error'", err)
+	}
+}
+
+// newElevenLabsAbnormalDisconnectTestServer performs the WebSocket handshake
+// itself (rather than golang.org/x/net/websocket's server helper) so it can
+// force a TCP RST (via SO_LINGER=0) instead of a clean FIN.
+// golang.org/x/net/websocket parses frame headers one byte at a time via
+// bufio.Reader.ReadByte, which returns a plain io.EOF for any ordinary
+// closed/half-closed connection — indistinguishable, at that layer, from a
+// properly received close frame. Only a genuine socket-level error (here,
+// "connection reset by peer") is distinct from io.EOF.
+func newElevenLabsAbnormalDisconnectTestServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	handler := func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		hijacker, ok := w.(stdhttp.Hijacker)
+		if !ok {
+			t.Fatalf("ResponseWriter does not support hijacking")
+		}
+		conn, buf, err := hijacker.Hijack()
+		if err != nil {
+			t.Fatalf("hijack: %v", err)
+		}
+
+		key := r.Header.Get("Sec-WebSocket-Key")
+		accept := elevenLabsComputeWebSocketAccept(key)
+		resp := "HTTP/1.1 101 Switching Protocols\r\n" +
+			"Upgrade: websocket\r\n" +
+			"Connection: Upgrade\r\n" +
+			"Sec-WebSocket-Accept: " + accept + "\r\n\r\n"
+		if _, err := buf.WriteString(resp); err != nil {
+			conn.Close() //nolint:errcheck
+			return
+		}
+		if err := buf.Flush(); err != nil {
+			conn.Close() //nolint:errcheck
+			return
+		}
+
+		if tcpConn, ok := conn.(*net.TCPConn); ok {
+			// SetLinger(0) makes the following Close() send a RST instead of
+			// the normal FIN/close handshake, forcing a real socket error on
+			// the client's next read instead of a graceful io.EOF.
+			_ = tcpConn.SetLinger(0)
+		}
+		conn.Close() //nolint:errcheck
+	}
+	return httptest.NewServer(stdhttp.HandlerFunc(handler))
+}
+
+// elevenLabsComputeWebSocketAccept computes the Sec-WebSocket-Accept header
+// value for a given Sec-WebSocket-Key, per RFC 6455 section 1.3.
+func elevenLabsComputeWebSocketAccept(key string) string {
+	const magicGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+	h := sha1.New() //nolint:gosec // required by the WebSocket handshake spec, not for security
+	h.Write([]byte(key + magicGUID))
+	return base64.StdEncoding.EncodeToString(h.Sum(nil))
+}

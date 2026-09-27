@@ -434,9 +434,11 @@ func convertFunctionTool(t types.Tool) FunctionToolDef {
 		Parameters:  defaultFunctionParameters(t.Parameters),
 	}
 
-	if t.Strict {
-		strict := true
-		def.Strict = &strict
+	// TS openai-responses-prepare-tools.ts: `...(tool.strict != null ?
+	// {strict: tool.strict} : {})` — forward the explicit value, including
+	// `false`.
+	if t.Strict != nil {
+		def.Strict = t.Strict
 	}
 	if deferLoading, ok := functionToolDeferLoading(t.ProviderOptions); ok {
 		def.DeferLoading = &deferLoading

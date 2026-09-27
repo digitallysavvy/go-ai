@@ -15,7 +15,30 @@ const (
 
 	GatewayAuthSubprotocolPrefix = "ai-gateway-auth."
 	GatewayTeamSubprotocolPrefix = "ai-gateway-team."
+
+	// vercelAIGatewayTeamHeader is the header key that carries the Vercel
+	// team ID or slug, TS VERCEL_AI_GATEWAY_TEAM_HEADER
+	// (gateway-headers.ts). This is the single source of truth for the team
+	// scope a WebSocket handshake's subprotocol encodes: both
+	// transcription_stream.go and realtime_model.go read it from the
+	// resolved header set (config + per-call) via gatewayTeamFromHeaders,
+	// rather than a static config field, so a per-call header override takes
+	// effect exactly like it does for every other Gateway request.
+	vercelAIGatewayTeamHeader = "x-vercel-ai-gateway-team"
 )
+
+// gatewayTeamFromHeaders extracts the Vercel team ID or slug from an already
+// merged header map (provider-level headers combined with any per-call
+// override), looking the key up case-insensitively since MergeHeaders does
+// not normalize casing and callers may pass arbitrary casing.
+func gatewayTeamFromHeaders(headers map[string]string) string {
+	for k, v := range headers {
+		if strings.EqualFold(k, vercelAIGatewayTeamHeader) {
+			return v
+		}
+	}
+	return ""
+}
 
 func GetGatewayRealtimeProtocols(token string, teamIDOrSlug string) []string {
 	return buildGatewayProtocols(GatewayRealtimeSubprotocol, token, teamIDOrSlug)

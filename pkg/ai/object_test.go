@@ -800,6 +800,60 @@ func TestGenerateObject_ExperimentalRepairText(t *testing.T) {
 	}
 }
 
+// TestGenerateObject_RepairTextStableTakesPrecedence verifies the stable
+// RepairText field is used, and that it wins over ExperimentalRepairText
+// when both are set (audit row 09a52cb).
+func TestGenerateObject_RepairTextStableTakesPrecedence(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				Text:         `{"name":"John"`,
+				FinishReason: types.FinishReasonStop,
+			}, nil
+		},
+	}
+
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"name": map[string]interface{}{"type": "string"},
+		},
+		"required": []string{"name"},
+	})
+
+	var stableCalled, deprecatedCalled bool
+	result, err := GenerateObject(context.Background(), GenerateObjectOptions{
+		Model:  model,
+		Prompt: "Generate",
+		Schema: testSchema,
+		RepairText: func(ctx context.Context, text string, parseErr error) (*string, error) {
+			stableCalled = true
+			repaired := text + "}"
+			return &repaired, nil
+		},
+		ExperimentalRepairText: func(ctx context.Context, text string, parseErr error) (*string, error) {
+			deprecatedCalled = true
+			repaired := text + "}"
+			return &repaired, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Object == nil {
+		t.Fatal("expected repaired object")
+	}
+	if !stableCalled {
+		t.Error("expected the stable RepairText to be called")
+	}
+	if deprecatedCalled {
+		t.Error("expected ExperimentalRepairText NOT to be called when RepairText is set")
+	}
+}
+
 func TestGenerateObject_ExperimentalRepairTextReceivesUnderlyingCauseAndCanDecline(t *testing.T) {
 	t.Parallel()
 

@@ -58,6 +58,50 @@ func TestGenerateText_WarnsOnStreamingOnlyTimeoutSetting(t *testing.T) {
 	}
 }
 
+func TestGenerateText_WarnsOnFirstChunkTimeoutSetting(t *testing.T) {
+	buf := setupLogWarnings(t)
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{Text: "ok", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+	firstChunk := 5000 * time.Millisecond
+	if _, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:   model,
+		Prompt:  "hi",
+		Timeout: &TimeoutConfig{FirstChunk: &firstChunk},
+	}); err != nil {
+		t.Fatalf("GenerateText() error = %v", err)
+	}
+	lines := logLines(buf)
+	if len(lines) < 2 || !strings.Contains(lines[1], "firstChunkMs") {
+		t.Fatalf("expected an unsupported timeout.firstChunkMs warning, got lines=%v", lines)
+	}
+}
+
+func TestGenerateText_WarnsOnBothStreamingOnlyTimeoutSettingsInOneCall(t *testing.T) {
+	buf := setupLogWarnings(t)
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{Text: "ok", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+	firstChunk := 5000 * time.Millisecond
+	perChunk := 5000 * time.Millisecond
+	if _, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:   model,
+		Prompt:  "hi",
+		Timeout: &TimeoutConfig{FirstChunk: &firstChunk, PerChunk: &perChunk},
+	}); err != nil {
+		t.Fatalf("GenerateText() error = %v", err)
+	}
+	// TS logs both unsupported-timeout warnings in a single logWarnings call.
+	lines := logLines(buf)
+	if len(lines) != 3 || !strings.Contains(lines[1], "firstChunkMs") || !strings.Contains(lines[2], "chunkMs") {
+		t.Fatalf("expected one logWarnings call with both firstChunkMs and chunkMs warnings, got lines=%v", lines)
+	}
+}
+
 func TestStreamText_LogsModelWarnings(t *testing.T) {
 	buf := setupLogWarnings(t)
 	warning := types.Warning{Type: "other", Message: "stream-text warning"}
