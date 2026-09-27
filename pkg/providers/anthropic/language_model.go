@@ -169,6 +169,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 	stream := newAnthropicStreamWithWarnings(respBody, req.usesJSONResponseTool, opts.Tools, req.warnings)
 	stream.markCodeExecutionDynamic = req.markCodeExecutionDynamic
+	stream.requestBody = body
 	return providerutils.WithResponseMetadata(stream, httpResp.Header, m.ModelID()), nil
 }
 
@@ -1126,6 +1127,11 @@ type anthropicStream struct {
 	// emitted on message_stop (or at end of stream).
 	finish       *provider.StreamChunk
 	finishIssued bool
+
+	// requestBody is the raw request body that opened this stream, exposed
+	// via RequestBody() (provider.StreamRequestBody, hand-off: "stream
+	// request body field").
+	requestBody interface{}
 }
 
 // newAnthropicStream creates a new Anthropic stream.
@@ -1165,6 +1171,14 @@ func (s *anthropicStream) Read(p []byte) (n int, err error) {
 // Close implements io.Closer
 func (s *anthropicStream) Close() error {
 	return s.reader.Close()
+}
+
+// RequestBody implements provider.StreamRequestBody, exposing the raw
+// request body that opened this stream in types.StepRequest.Body for
+// streaming calls, matching TS doStream()'s {request: {body}} (hand-off:
+// "stream request body field").
+func (s *anthropicStream) RequestBody() interface{} {
+	return s.requestBody
 }
 
 // Next returns the next chunk in the stream

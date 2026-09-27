@@ -32,3 +32,14 @@ func (s *WarningsStream) Next() (*provider.StreamChunk, error) {
 
 func (s *WarningsStream) Err() error   { return s.inner.Err() }
 func (s *WarningsStream) Close() error { return s.inner.Close() }
+
+// RequestBody implements provider.StreamRequestBody by delegating to inner
+// when inner implements it, so wrapping a stream in WarningsStream (as every
+// provider's DoStream does) doesn't hide the capability from
+// pkg/ai/stream.go's type assertion.
+func (s *WarningsStream) RequestBody() interface{} {
+	if rb, ok := s.inner.(provider.StreamRequestBody); ok {
+		return rb.RequestBody()
+	}
+	return nil
+}
