@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -232,21 +233,44 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 			fmt.Sprintf("Anthropic batch %q completed without batch output.", opts.BatchID))
 	}
 
-	httpReq, err := stdhttp.NewRequestWithContext(ctx, stdhttp.MethodGet, *batch.ResultsURL, nil)
+	resultsURL := *batch.ResultsURL
+
+	// results_url is provider-response data, not developer-configured
+	// config, and commonly points off the Anthropic API host (e.g. a signed
+	// file-storage URL). Mirrors TS getFromApi({validateUrl: true,
+	// credentialedOrigin: baseURL, trustedOrigin: baseURL}): only a hop that
+	// stays on the configured base URL's origin is dialed through the plain
+	// transport and receives the API key/version/custom headers; every other
+	// host is validated against the SSRF blocklist, DNS-pinned, and never
+	// sees credentials, matching TS's outgoingHeaders = {} for a
+	// non-same-origin hop.
+	baseURL := b.provider.config.BaseURL
+	isTrusted := func(raw string) bool { return providerutils.IsSameOrigin(raw, baseURL) }
+	downloadOpts := fileutil.DefaultDownloadOptions()
+	downloadOpts.URLValidator = fileutil.TrustedURLValidator(isTrusted)
+	downloadOpts.Transport = fileutil.TrustRoutingTransport(isTrusted, nil, fileutil.SafeTransport())
+	if err := downloadOpts.URLValidator(resultsURL); err != nil {
+		return nil, err
+	}
+
+	httpReq, err := stdhttp.NewRequestWithContext(ctx, stdhttp.MethodGet, resultsURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	for k, v := range b.rawRequestHeaders(opts.Headers) {
-		httpReq.Header.Set(k, v)
+	if isTrusted(resultsURL) {
+		for k, v := range b.rawRequestHeaders(opts.Headers) {
+			httpReq.Header.Set(k, v)
+		}
 	}
 
-	httpResp, err := b.provider.client.HTTPClient().Do(httpReq)
+	client := fileutil.NewDownloadClient(resultsURL, downloadOpts)
+	httpResp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, b.handleError(err)
 	}
 	if httpResp.StatusCode >= 400 {
 		defer httpResp.Body.Close() //nolint:errcheck
-		body, _ := io.ReadAll(httpResp.Body)
+		body, _ := fileutil.ReadResponseWithSizeLimit(httpResp, resultsURL, downloadOpts.MaxSize)
 		return nil, b.handleError(&internalhttp.HTTPStatusError{StatusCode: httpResp.StatusCode, Headers: httpResp.Header, Body: body})
 	}
 

@@ -388,6 +388,45 @@ func TestBatch_StreamsAllResultVariants(t *testing.T) {
 	}
 }
 
+// TestBatch_ResultsURLOnUntrustedOriginIsRejectedWithoutLeakingCredentials
+// guards against following a provider-response results_url off the
+// configured base URL's origin: previously the raw API key/version headers
+// were attached unconditionally to whatever host results_url named, with no
+// SSRF check at all. Now a results_url that isn't same-origin with baseURL
+// is validated like any other untrusted download target (fails closed here
+// because httptest servers listen on a loopback address, which the SSRF
+// blocklist always rejects for untrusted hops) and the untrusted host must
+// never even receive a request, let alone the API key.
+func TestBatch_ResultsURLOnUntrustedOriginIsRejectedWithoutLeakingCredentials(t *testing.T) {
+	var untrustedHit bool
+	untrusted := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		untrustedHit = true
+		if r.Header.Get("x-api-key") != "" {
+			t.Error("leaked x-api-key to an untrusted origin")
+		}
+		_, _ = w.Write([]byte(`{"custom_id":"ok","result":{"type":"canceled"}}` + "\n"))
+	}))
+	defer untrusted.Close()
+
+	mux := http.NewServeMux()
+	base := httptest.NewServer(mux)
+	defer base.Close()
+	mux.HandleFunc("/messages/batches/b1", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"b1","type":"message_batch","processing_status":"ended","request_counts":{"processing":0,"succeeded":0,"errored":0,"canceled":1,"expired":0},"created_at":"","expires_at":"","results_url":"` + untrusted.URL + `/results"}`))
+	})
+
+	p := New(Config{APIKey: "secret-key", BaseURL: base.URL})
+	b := p.ExperimentalBatch()
+	_, err := b.DoGetBatchResults(t.Context(), provider.BatchV4OperationOptions{BatchID: "b1"})
+	if err == nil {
+		t.Fatal("expected the untrusted results_url host to be rejected")
+	}
+	if untrustedHit {
+		t.Fatal("the untrusted origin should never have received a request")
+	}
+}
+
 func asInvalidArgumentError(err error, target **providererrors.InvalidArgumentError) bool {
 	if e, ok := err.(*providererrors.InvalidArgumentError); ok {
 		*target = e
