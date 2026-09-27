@@ -37,7 +37,9 @@ type Config struct {
 
 	// ProviderOptionsKeys is the ordered list of keys checked when reading
 	// caller-supplied provider options from GenerateOptions.ProviderOptions.
-	// Google uses ["google"]; Vertex uses ["vertex", "googleVertex", "google"].
+	// Google uses ["google"]; Vertex uses ["googleVertex", "vertex", "google"]
+	// (new "googleVertex" key takes precedence over the legacy "vertex" key,
+	// with "google" as a cross-namespace fallback — TS providerOptionsNames).
 	ProviderOptionsKeys []string
 
 	// GeneratePath returns the full HTTP path for a non-streaming request.
