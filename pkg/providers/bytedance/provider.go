@@ -14,6 +14,13 @@ const defaultBaseURL = "https://ark.ap-southeast.bytepluses.com/api/v3"
 type Provider struct {
 	config Config
 	client *internalhttp.Client
+
+	// reqHeaders are the default headers (Authorization, Content-Type, plus
+	// any Config.Headers) applied to every request. VideoModel.DoStatus
+	// polls status through fileutil (not the internalhttp.Client), so it
+	// needs these to forward credentials the same way DoStart's client-based
+	// POST does.
+	reqHeaders map[string]string
 }
 
 // Config contains configuration for the ByteDance provider
@@ -65,8 +72,9 @@ func New(cfg Config) (*Provider, error) {
 	})
 
 	return &Provider{
-		config: cfg,
-		client: client,
+		config:     cfg,
+		client:     client,
+		reqHeaders: headers,
 	}, nil
 }
 
