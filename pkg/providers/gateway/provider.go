@@ -156,12 +156,20 @@ type Config struct {
 // GatewayProviderOptions contains AI Gateway request-scoped routing,
 // compliance, quota, and BYOK settings.
 type GatewayProviderOptions struct {
-	Only                   []string                       `json:"only,omitempty"`
-	Order                  []string                       `json:"order,omitempty"`
-	Sort                   string                         `json:"sort,omitempty"`
-	User                   string                         `json:"user,omitempty"`
-	Tags                   []string                       `json:"tags,omitempty"`
-	Models                 []string                       `json:"models,omitempty"`
+	Only  []string `json:"only,omitempty"`
+	Order []string `json:"order,omitempty"`
+	Sort  string   `json:"sort,omitempty"`
+	User  string   `json:"user,omitempty"`
+	Tags  []string `json:"tags,omitempty"`
+
+	// Models is the ordered list of fallback models to try. On evaluation
+	// requests, the first entry may be a conditional GatewayModelFallback
+	// (built with GatewayConditionalModelFallback) that reruns the
+	// evaluation against a different model when its When condition matches
+	// the primary answers; every other entry (and every entry for
+	// non-evaluation requests) must be a plain model ID (built with
+	// GatewayModel).
+	Models                 []GatewayModelFallback         `json:"models,omitempty"`
 	BYOK                   map[string][]map[string]any    `json:"byok,omitempty"`
 	ZeroDataRetention      *bool                          `json:"zeroDataRetention,omitempty"`
 	DisallowPromptTraining *bool                          `json:"disallowPromptTraining,omitempty"`
@@ -238,7 +246,11 @@ func (o GatewayProviderOptions) toMap() map[string]interface{} {
 		out["tags"] = o.Tags
 	}
 	if len(o.Models) > 0 {
-		out["models"] = o.Models
+		models := make([]interface{}, len(o.Models))
+		for i, m := range o.Models {
+			models[i] = m.toWire()
+		}
+		out["models"] = models
 	}
 	if len(o.BYOK) > 0 {
 		out["byok"] = o.BYOK

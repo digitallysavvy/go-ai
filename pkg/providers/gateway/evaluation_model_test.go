@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -192,6 +193,182 @@ func TestGatewayEvaluationModel_SupportedQuestionTypes(t *testing.T) {
 	}
 	if model.SpecificationVersion() != "v4" {
 		t.Fatalf("SpecificationVersion() = %q, want v4", model.SpecificationVersion())
+	}
+}
+
+// TS: gateway-evaluation-model.test.ts "should attribute the response to
+// the returned model after a fallback".
+func TestGatewayEvaluationModel_DoEvaluate_AttributesResponseToReturnedModel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"answers": {}, "model": "anthropic/claude-sonnet-5"}`))
+	}))
+	defer server.Close()
+
+	p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New error = %v", err)
+	}
+	model, err := p.EvaluationModel("typesafe-ai/jev")
+	if err != nil {
+		t.Fatalf("EvaluationModel error = %v", err)
+	}
+
+	result, err := model.DoEvaluate(context.Background(), provider.EvaluationCallOptions{
+		State:     "s",
+		Questions: map[string]provider.EvaluationQuestion{"q": {Type: "boolean", Instructions: "i"}},
+	})
+	if err != nil {
+		t.Fatalf("DoEvaluate() error = %v", err)
+	}
+	if result.Response == nil || result.Response.ModelID != "anthropic/claude-sonnet-5" {
+		t.Fatalf("Response.ModelID = %+v, want anthropic/claude-sonnet-5", result.Response)
+	}
+}
+
+// TS: gateway-evaluation-model.test.ts "should attribute the response to
+// the requested model when none is returned".
+func TestGatewayEvaluationModel_DoEvaluate_AttributesResponseToRequestedModelWhenNoneReturned(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"answers": {}}`))
+	}))
+	defer server.Close()
+
+	p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New error = %v", err)
+	}
+	model, err := p.EvaluationModel("typesafe-ai/jev")
+	if err != nil {
+		t.Fatalf("EvaluationModel error = %v", err)
+	}
+
+	result, err := model.DoEvaluate(context.Background(), provider.EvaluationCallOptions{
+		State:     "s",
+		Questions: map[string]provider.EvaluationQuestion{"q": {Type: "boolean", Instructions: "i"}},
+	})
+	if err != nil {
+		t.Fatalf("DoEvaluate() error = %v", err)
+	}
+	if result.Response == nil || result.Response.ModelID != "typesafe-ai/jev" {
+		t.Fatalf("Response.ModelID = %+v, want typesafe-ai/jev", result.Response)
+	}
+}
+
+// TS: gateway-evaluation-model.test.ts "should pass conditional model
+// fallbacks into request body".
+func TestGatewayEvaluationModel_DoEvaluate_PassesConditionalModelFallbacks(t *testing.T) {
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"answers": {}}`))
+	}))
+	defer server.Close()
+
+	p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New error = %v", err)
+	}
+	model, err := p.EvaluationModel("typesafe-ai/jev")
+	if err != nil {
+		t.Fatalf("EvaluationModel error = %v", err)
+	}
+
+	confidenceBelow := 0.6
+	providerOptions := GatewayProviderOptions{
+		Models: []GatewayModelFallback{
+			GatewayConditionalModelFallback("openai/gpt-5.6-sol", EvaluationFallbackCondition{
+				Any: []EvaluationFallbackCondition{
+					{Question: "tone", ConfidenceBelow: &confidenceBelow},
+					{Question: "correct", ProbabilityBetween: &[2]float64{0.4, 0.6}},
+				},
+			}),
+			GatewayModel("anthropic/claude-sonnet-5"),
+		},
+	}.ToProviderOptions()
+
+	_, err = model.DoEvaluate(context.Background(), provider.EvaluationCallOptions{
+		State:           "s",
+		Questions:       map[string]provider.EvaluationQuestion{"q": {Type: "boolean", Instructions: "i"}},
+		ProviderOptions: providerOptions,
+	})
+	if err != nil {
+		t.Fatalf("DoEvaluate() error = %v", err)
+	}
+
+	body, _ := gotBody["providerOptions"].(map[string]interface{})
+	gw, _ := body["gateway"].(map[string]interface{})
+	models, _ := gw["models"].([]interface{})
+	if len(models) != 2 {
+		t.Fatalf("models = %#v, want 2 entries", gw["models"])
+	}
+	first, _ := models[0].(map[string]interface{})
+	if first["model"] != "openai/gpt-5.6-sol" {
+		t.Fatalf("models[0].model = %#v", first["model"])
+	}
+	when, _ := first["when"].(map[string]interface{})
+	anyList, _ := when["any"].([]interface{})
+	if len(anyList) != 2 {
+		t.Fatalf("when.any = %#v, want 2 conditions", when["any"])
+	}
+	if models[1] != "anthropic/claude-sonnet-5" {
+		t.Fatalf("models[1] = %#v, want plain string", models[1])
+	}
+}
+
+// TS: gateway-evaluation-model.test.ts "should reject invalid conditional
+// model fallbacks" — the request must never reach the server.
+func TestGatewayEvaluationModel_DoEvaluate_RejectsInvalidConditionalModelFallbacks(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"answers": {}}`))
+	}))
+	defer server.Close()
+
+	p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New error = %v", err)
+	}
+	model, err := p.EvaluationModel("typesafe-ai/jev")
+	if err != nil {
+		t.Fatalf("EvaluationModel error = %v", err)
+	}
+
+	providerOptions := map[string]interface{}{
+		"gateway": map[string]interface{}{
+			"models": []interface{}{
+				map[string]interface{}{
+					"model": "openai/gpt-5.6-sol",
+					"when": map[string]interface{}{
+						"question":           "correct",
+						"probabilityBetween": []interface{}{0.7, 0.3},
+					},
+				},
+			},
+		},
+	}
+
+	_, err = model.DoEvaluate(context.Background(), provider.EvaluationCallOptions{
+		State:           "s",
+		Questions:       map[string]provider.EvaluationQuestion{"q": {Type: "boolean", Instructions: "i"}},
+		ProviderOptions: providerOptions,
+	})
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if !strings.Contains(err.Error(), "invalid gateway provider options") {
+		t.Fatalf("err = %v, want to contain %q", err, "invalid gateway provider options")
+	}
+	if calls != 0 {
+		t.Fatalf("calls = %d, want 0 (request must not reach the server)", calls)
 	}
 }
 

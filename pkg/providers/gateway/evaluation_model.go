@@ -48,6 +48,12 @@ func (m *EvaluationModel) SupportedQuestionTypes() []string {
 // DoEvaluate evaluates every question against the same state through the
 // Gateway.
 func (m *EvaluationModel) DoEvaluate(ctx context.Context, opts provider.EvaluationCallOptions) (*provider.EvaluationResult, error) {
+	if gatewayOptions, ok := opts.ProviderOptions["gateway"]; ok {
+		if err := validateGatewayEvaluationProviderOptions(gatewayOptions); err != nil {
+			return nil, err
+		}
+	}
+
 	body := map[string]interface{}{
 		"state":     opts.State,
 		"questions": encodeGatewayEvaluationQuestions(opts.Questions),
@@ -73,6 +79,11 @@ func (m *EvaluationModel) DoEvaluate(ctx context.Context, opts provider.Evaluati
 		return nil, m.handleError(ctx, err)
 	}
 
+	modelID := m.modelID
+	if response.Model != nil && *response.Model != "" {
+		modelID = *response.Model
+	}
+
 	return &provider.EvaluationResult{
 		Answers:          response.toAnswers(),
 		Rounding:         response.toRounding(),
@@ -80,7 +91,7 @@ func (m *EvaluationModel) DoEvaluate(ctx context.Context, opts provider.Evaluati
 		Warnings:         warningsOrEmpty(response.Warnings),
 		ProviderMetadata: copyGatewayProviderMetadata(response.ProviderMetadata),
 		Response: &provider.EvaluationResponseInfo{
-			ModelID: m.modelID,
+			ModelID: modelID,
 			Headers: providerutils.ExtractHeaders(httpResp.Headers),
 			Body:    rawJSONBody(httpResp.Body),
 		},
@@ -136,11 +147,16 @@ type gatewayEvaluationUsageWire struct {
 }
 
 type gatewayEvaluationResponse struct {
-	Answers          map[string]gatewayEvaluationAnswerWire `json:"answers"`
-	Rounding         *gatewayEvaluationRoundingWire         `json:"rounding,omitempty"`
-	Usage            *gatewayEvaluationUsageWire            `json:"usage,omitempty"`
-	Warnings         []types.Warning                        `json:"warnings,omitempty"`
-	ProviderMetadata map[string]map[string]interface{}      `json:"providerMetadata,omitempty"`
+	Answers map[string]gatewayEvaluationAnswerWire `json:"answers"`
+	// Model is the model that actually produced the answers. It differs
+	// from the requested model ID when a conditional evaluation fallback
+	// (GatewayConditionalModelFallback) fired. When absent, the requested
+	// model ID is used. Mirrors TS gatewayEvaluationResponseSchema.model.
+	Model            *string                           `json:"model,omitempty"`
+	Rounding         *gatewayEvaluationRoundingWire    `json:"rounding,omitempty"`
+	Usage            *gatewayEvaluationUsageWire       `json:"usage,omitempty"`
+	Warnings         []types.Warning                   `json:"warnings,omitempty"`
+	ProviderMetadata map[string]map[string]interface{} `json:"providerMetadata,omitempty"`
 }
 
 func (r gatewayEvaluationResponse) toAnswers() map[string]provider.EvaluationAnswer {
