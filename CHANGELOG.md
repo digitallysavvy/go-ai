@@ -32,6 +32,23 @@ Bedrock, BFL, and Prodia.
   function-tool serialization). Callers should build requests through the
   standard `provider.LanguageModel` interface instead of calling this helper
   directly; there is no drop-in replacement function.
+- **Anthropic Provider** `pkg/providers/anthropic.ModelOptions` (and its
+  nested `ThinkingConfig`, `MCPServerConfig`, `MCPToolConfiguration`,
+  `ContainerSkill` types) JSON tags changed from snake_case to camelCase
+  (e.g. `context_management` → `contextManagement`, `budget_tokens` →
+  `budgetTokens`, `cache_control_option` → `cacheControl`, `task_budget` →
+  `taskBudget`, `tool_streaming` → `toolStreaming`,
+  `disable_parallel_tool_use` → `disableParallelToolUse`, `mcp_servers` →
+  `mcpServers`, `structured_output_mode` → `structuredOutputMode`,
+  `send_reasoning` → `sendReasoning`, `authorization_token` →
+  `authorizationToken`, `tool_configuration` → `toolConfiguration`,
+  `allowed_tools` → `allowedTools`, `skill_id` → `skillId`,
+  `automatic_caching` → `automaticCaching`, `container_id` →
+  `containerId`), so this struct's field names now match the camelCase
+  `providerOptions.anthropic.*` keys TS accepts. This shipped in v0.4.0 with
+  the old snake_case tags; code that marshals/unmarshals `ModelOptions` to or
+  from JSON directly (not just constructing it as a Go struct literal) must
+  update those key names.
 
 ### Added
 
