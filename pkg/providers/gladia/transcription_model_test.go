@@ -195,6 +195,81 @@ func TestTranscriptionModel_JobFailure(t *testing.T) {
 	}
 }
 
+// TestTranscriptionModel_PollHeadersSurfaced verifies that the headers from
+// the final ("done") poll response reach Response.Headers, matching TS
+// gladia-transcription-model.ts (transcriptionResultHeaders is threaded
+// through to the returned response.headers).
+func TestTranscriptionModel_PollHeadersSurfaced(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/upload":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"audio_url": "u"})
+		case "/v2/pre-recorded":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"result_url": "http://" + r.Host + "/v2/result"})
+		case "/v2/result":
+			w.Header().Set("X-Gladia-Request-Id", "req-123")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"status": "done",
+				"result": map[string]interface{}{
+					"metadata":      map[string]interface{}{"audio_duration": 1.0},
+					"transcription": map[string]interface{}{"full_transcript": "hi", "languages": []string{"en"}, "utterances": []interface{}{}},
+				},
+			})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "k", BaseURL: server.URL + "/v2"})
+	model, _ := p.TranscriptionModel("default")
+
+	result, err := model.DoTranscribe(context.Background(), &provider.TranscriptionOptions{
+		Audio:    []byte("a"),
+		MimeType: "audio/mpeg",
+	})
+	if err != nil {
+		t.Fatalf("DoTranscribe: %v", err)
+	}
+	if result.Response == nil || result.Response.Headers["X-Gladia-Request-Id"] != "req-123" {
+		t.Fatalf("Response.Headers = %#v, want X-Gladia-Request-Id: req-123", result.Response)
+	}
+}
+
+// TestTranscriptionModel_PollErrorBodyParsed verifies that a non-2xx response
+// from the result_url polling GET has its Gladia error envelope decoded, not
+// just a generic "failed to download" message (TS uses the same
+// gladiaFailedResponseHandler for the polling GET as for upload/init).
+func TestTranscriptionModel_PollErrorBodyParsed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/upload":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"audio_url": "u"})
+		case "/v2/pre-recorded":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"result_url": "http://" + r.Host + "/v2/result"})
+		case "/v2/result":
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"error": map[string]interface{}{"message": "job result unavailable", "code": 500},
+			})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "k", BaseURL: server.URL + "/v2"})
+	model, _ := p.TranscriptionModel("default")
+
+	_, err := model.DoTranscribe(context.Background(), &provider.TranscriptionOptions{
+		Audio:    []byte("a"),
+		MimeType: "audio/mpeg",
+	})
+	if err == nil || !strings.Contains(err.Error(), "job result unavailable") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestTranscriptionModel_ErrorHandling(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)

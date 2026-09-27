@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"mime/multipart"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
@@ -224,12 +225,12 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	// Step 3: poll the job's result_url until it completes. The URL comes
 	// from the provider response; validate it (and any redirect) as
 	// untrusted input, trusting only the provider's own configured origin.
-	raw, err := m.pollResult(ctx, initResult.ResultURL, opts.Headers)
+	raw, headers, err := m.pollResult(ctx, initResult.ResultURL, opts.Headers)
 	if err != nil {
 		return nil, err
 	}
 
-	return convertPollResult(raw, currentDate), nil
+	return convertPollResult(raw, headers, currentDate), nil
 }
 
 func buildUploadMultipart(opts *provider.TranscriptionOptions) (*bytes.Buffer, string, error) {
@@ -269,8 +270,10 @@ func gladiaAudioExtension(mimeType string) string {
 }
 
 // pollResult polls resultURL until the job reaches status "done" or "error",
-// or pollTimeout elapses. It returns the raw decoded JSON response.
-func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, headers map[string]string) (map[string]interface{}, error) {
+// or pollTimeout elapses. It returns the raw decoded JSON response along with
+// that response's HTTP headers (TS: response.responseHeaders, surfaced on the
+// final TranscriptionResult.Response.Headers).
+func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, headers map[string]string) (map[string]interface{}, map[string]string, error) {
 	trustedOrigin := m.provider.config.BaseURL
 	pollOpts := fileutil.TrustedOriginDownloadOptions(trustedOrigin, m.provider.client.HTTPClient().Transport)
 	pollOpts.Headers = internalhttp.MergeHeaders(map[string]string{"x-gladia-key": m.provider.config.APIKey}, headers)
@@ -279,37 +282,52 @@ func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, h
 	for {
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, nil, ctx.Err()
 		default:
 		}
 		if time.Since(start) > pollTimeout {
-			return nil, fmt.Errorf("gladia: transcription job polling timed out")
+			return nil, nil, fmt.Errorf("gladia: transcription job polling timed out")
 		}
 
 		var raw map[string]interface{}
-		if _, err := fileutil.PollJSON(ctx, resultURL, pollOpts, &raw); err != nil {
-			return nil, handleError(err)
+		result, err := fileutil.PollJSON(ctx, resultURL, pollOpts, &raw)
+		if err != nil {
+			return nil, nil, handleError(err)
 		}
 
 		status, _ := raw["status"].(string)
 		switch status {
 		case "done":
-			return raw, nil
+			return raw, flattenHeaders(result.Headers), nil
 		case "error":
-			return nil, fmt.Errorf("gladia: transcription job failed: %v", raw["error_code"])
+			return nil, nil, fmt.Errorf("gladia: transcription job failed: %v", raw["error_code"])
 		}
 
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, nil, ctx.Err()
 		case <-time.After(pollInterval):
 		}
 	}
 }
 
+// flattenHeaders joins multi-value HTTP headers into single strings, matching
+// providerutils.ExtractHeaders's convention for other providers' response
+// metadata (avoids importing providerutils here for a one-line helper).
+func flattenHeaders(h map[string][]string) map[string]string {
+	if len(h) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(h))
+	for k, vs := range h {
+		out[http.CanonicalHeaderKey(k)] = strings.Join(vs, ", ")
+	}
+	return out
+}
+
 // convertPollResult maps a raw completed-job response into a
 // TranscriptionResult, mirroring GladiaTranscriptionModel.doGenerate's return.
-func convertPollResult(raw map[string]interface{}, currentDate time.Time) *types.TranscriptionResult {
+func convertPollResult(raw map[string]interface{}, headers map[string]string, currentDate time.Time) *types.TranscriptionResult {
 	b, _ := json.Marshal(raw)
 	var typed struct {
 		Result *struct {
@@ -335,6 +353,7 @@ func convertPollResult(raw map[string]interface{}, currentDate time.Time) *types
 			Response: &types.ResponseMetadata{
 				Timestamp: currentDate,
 				ModelID:   "default",
+				Headers:   headers,
 				Body:      raw,
 			},
 			ProviderMetadata: map[string]interface{}{"gladia": raw},
@@ -377,37 +396,56 @@ func convertPollResult(raw map[string]interface{}, currentDate time.Time) *types
 			// Gladia's model ID is not selectable in the pre-recorded API;
 			// the TS SDK always reports "default" here too.
 			ModelID: "default",
+			Headers: headers,
 			Body:    raw,
 		},
 	}
 }
 
 // handleError converts an HTTP error into a ProviderError, parsing Gladia's
-// `{"error":{"message","code"}}` error shape when present. Errors surfaced by
-// fileutil's polling helpers (DownloadError) are wrapped generically, since
-// their response body is not retained.
+// `{"error":{"message","code"}}` error shape when present. This includes
+// polling errors surfaced via fileutil.PollJSON/DownloadError, which now
+// retains a bounded response body and headers for exactly this purpose (TS
+// gladia-transcription-model.ts uses the same gladiaFailedResponseHandler for
+// both the upload/init requests and the result_url polling GET).
 func handleError(err error) error {
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		var payload struct {
-			Error struct {
-				Message string `json:"message"`
-				Code    int    `json:"code"`
-			} `json:"error"`
-		}
-		message := string(statusErr.Body)
-		code := ""
-		if jsonErr := json.Unmarshal(statusErr.Body, &payload); jsonErr == nil && payload.Error.Message != "" {
-			message = payload.Error.Message
-			code = fmt.Sprintf("%d", payload.Error.Code)
-		}
+		message, code := parseGladiaErrorBody(statusErr.Body)
 		return providererrors.NewProviderError("gladia", statusErr.StatusCode, code, message, err)
 	}
 
 	var downloadErr *providererrors.DownloadError
 	if errors.As(err, &downloadErr) {
-		return providererrors.NewProviderError("gladia", downloadErr.StatusCode, "", downloadErr.Error(), err)
+		message, code := parseGladiaErrorBody(downloadErr.Body)
+		if message == "" {
+			message = downloadErr.Error()
+		}
+		providerErr := providererrors.NewProviderError("gladia", downloadErr.StatusCode, code, message, err)
+		providerErr.ResponseHeaders = flattenHeaders(downloadErr.Headers)
+		if len(downloadErr.Body) > 0 {
+			providerErr.ResponseBody = string(downloadErr.Body)
+		}
+		return providerErr
 	}
 
 	return providererrors.NewProviderError("gladia", 0, "", err.Error(), err)
+}
+
+// parseGladiaErrorBody decodes Gladia's `{"error":{"message","code"}}` error
+// envelope. It returns the raw body as the message (and an empty code) when
+// body is empty or does not match the envelope.
+func parseGladiaErrorBody(body []byte) (message string, code string) {
+	message = string(body)
+	var payload struct {
+		Error struct {
+			Message string `json:"message"`
+			Code    int    `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &payload); err == nil && payload.Error.Message != "" {
+		message = payload.Error.Message
+		code = fmt.Sprintf("%d", payload.Error.Code)
+	}
+	return message, code
 }
