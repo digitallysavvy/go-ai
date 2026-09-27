@@ -82,7 +82,10 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 
 // EmbeddingModel returns an embedding model by ID
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("perplexity does not support embeddings")
+	if modelID == "" {
+		modelID = string(ModelEmbedV1_4B)
+	}
+	return NewEmbeddingModel(p, modelID), nil
 }
 
 // ImageModel returns an image generation model by ID

@@ -42,9 +42,61 @@ func (m *ImageModel) ModelID() string {
 	return m.modelID
 }
 
+// ReplicateImagePollOptions holds the polling-related provider options
+// forwarded via ImageGenerateOptions.ProviderOptions["replicate"]. It mirrors
+// the TS SDK's replicateImageModelOptionsSchema pollIntervalMillis /
+// maxPollAttempts fields.
+type ReplicateImagePollOptions struct {
+	// PollIntervalMillis is the delay between poll attempts when a prediction
+	// exceeds the synchronous "Prefer: wait" duration. Defaults to 500ms.
+	PollIntervalMillis *int
+	// MaxPollAttempts is the maximum number of poll attempts before giving up.
+	// Defaults to 240.
+	MaxPollAttempts *int
+}
+
+const (
+	defaultPollIntervalMillis = 500
+	defaultMaxPollAttempts    = 240
+)
+
+// extractImagePollOptions reads pollIntervalMillis/maxPollAttempts from
+// opts.ProviderOptions["replicate"], falling back to the TS SDK defaults.
+func extractImagePollOptions(opts *provider.ImageGenerateOptions) ReplicateImagePollOptions {
+	result := ReplicateImagePollOptions{}
+	if opts == nil || opts.ProviderOptions == nil {
+		return result
+	}
+	raw, ok := opts.ProviderOptions["replicate"].(map[string]interface{})
+	if !ok {
+		return result
+	}
+	if v, ok := numberOption(raw["pollIntervalMillis"]); ok {
+		result.PollIntervalMillis = &v
+	}
+	if v, ok := numberOption(raw["maxPollAttempts"]); ok {
+		result.MaxPollAttempts = &v
+	}
+	return result
+}
+
+func numberOption(v interface{}) (int, bool) {
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case int64:
+		return int(n), true
+	case float64:
+		return int(n), true
+	default:
+		return 0, false
+	}
+}
+
 // DoGenerate performs image generation
 func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
 	reqBody := m.buildRequestBody(opts)
+	pollOpts := extractImagePollOptions(opts)
 
 	// Create prediction with Prefer: wait header
 	// This tells Replicate to wait for completion instead of returning immediately
@@ -74,10 +126,14 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	// With Prefer: wait, the response should already be complete
 	// But we'll check status and poll if needed as fallback
 	if prediction.Status != "succeeded" {
-		prediction, err = m.pollImagePrediction(ctx, prediction.ID)
+		prediction, err = m.pollImagePrediction(ctx, prediction.ID, pollOpts)
 		if err != nil {
 			return nil, err
 		}
+	}
+
+	if prediction.Output == nil {
+		return nil, providererrors.NewInvalidResponseDataError(prediction, "Replicate image generation completed without output.")
 	}
 
 	return m.convertResponse(ctx, prediction)
@@ -107,9 +163,16 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) map[s
 	}
 }
 
-func (m *ImageModel) pollImagePrediction(ctx context.Context, predictionID string) (replicateImagePrediction, error) {
-	maxAttempts := 60
-	pollInterval := 2 * time.Second
+func (m *ImageModel) pollImagePrediction(ctx context.Context, predictionID string, pollOpts ReplicateImagePollOptions) (replicateImagePrediction, error) {
+	maxAttempts := defaultMaxPollAttempts
+	if pollOpts.MaxPollAttempts != nil {
+		maxAttempts = *pollOpts.MaxPollAttempts
+	}
+	pollIntervalMillis := defaultPollIntervalMillis
+	if pollOpts.PollIntervalMillis != nil {
+		pollIntervalMillis = *pollOpts.PollIntervalMillis
+	}
+	pollInterval := time.Duration(pollIntervalMillis) * time.Millisecond
 
 	for i := 0; i < maxAttempts; i++ {
 		select {
@@ -136,7 +199,9 @@ func (m *ImageModel) pollImagePrediction(ctx context.Context, predictionID strin
 			return replicateImagePrediction{}, fmt.Errorf("prediction %s: %s", prediction.Status, prediction.Error)
 		}
 
-		time.Sleep(pollInterval)
+		if i < maxAttempts-1 {
+			time.Sleep(pollInterval)
+		}
 	}
 
 	return replicateImagePrediction{}, fmt.Errorf("prediction timed out after %d attempts", maxAttempts)

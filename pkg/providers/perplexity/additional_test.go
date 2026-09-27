@@ -31,8 +31,12 @@ func TestPerplexityProvider_FactoriesAndUnsupported(t *testing.T) {
 		t.Fatalf("default model ID = %q", modelAny.ModelID())
 	}
 
-	if _, err := p.EmbeddingModel("x"); err == nil {
-		t.Fatal("EmbeddingModel expected unsupported error")
+	embModel, err := p.EmbeddingModel("x")
+	if err != nil {
+		t.Fatalf("EmbeddingModel() error = %v, want supported", err)
+	}
+	if embModel.ModelID() != "x" {
+		t.Fatalf("EmbeddingModel().ModelID() = %q, want x", embModel.ModelID())
 	}
 	if _, err := p.ImageModel("x"); err == nil {
 		t.Fatal("ImageModel expected unsupported error")

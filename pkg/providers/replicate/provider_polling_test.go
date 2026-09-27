@@ -8,9 +8,11 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -148,6 +150,111 @@ func TestReplicatePollingFailuresAndStreamHelpers(t *testing.T) {
 	}
 	if s.Err() != nil {
 		t.Fatal("replicate stream Err should be nil")
+	}
+}
+
+func TestReplicateImageDoGenerateWiresProviderOptionsIntoPolling(t *testing.T) {
+	var getCount int
+	p := newReplicateProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
+		if r.Method == http.MethodPost && r.URL.Path == "/predictions" {
+			return replicateJSONResponse(200, `{"id":"pred-wire","status":"starting"}`), nil
+		}
+		if r.Method == http.MethodGet && r.URL.Path == "/predictions/pred-wire" {
+			getCount++
+			return replicateJSONResponse(200, `{"id":"pred-wire","status":"processing"}`), nil
+		}
+		return nil, errors.New("unexpected request")
+	})
+	im := NewImageModel(p, "img-wire")
+	_, err := im.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt: "cat",
+		ProviderOptions: map[string]interface{}{
+			"replicate": map[string]interface{}{
+				"pollIntervalMillis": 1,
+				"maxPollAttempts":    3,
+			},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "timed out after 3 attempts") {
+		t.Fatalf("error = %v, want timeout after 3 attempts (ProviderOptions wired through)", err)
+	}
+	if getCount != 3 {
+		t.Fatalf("getCount = %d, want 3 poll attempts", getCount)
+	}
+}
+
+func TestReplicateImageNullOutputAfterCompletionReturnsInvalidResponseDataError(t *testing.T) {
+	p := newReplicateProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
+		if r.Method == http.MethodPost && r.URL.Path == "/predictions" {
+			return replicateJSONResponse(200, `{"id":"pred-null","status":"succeeded","output":null}`), nil
+		}
+		return nil, errors.New("unexpected request")
+	})
+	im := NewImageModel(p, "img-ver")
+	_, err := im.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "cat"})
+	if err == nil {
+		t.Fatal("expected InvalidResponseDataError for null output")
+	}
+	if !providererrors.IsInvalidResponseDataError(err) {
+		t.Fatalf("error = %v (%T), want InvalidResponseDataError", err, err)
+	}
+}
+
+func TestReplicateImagePollingRespectsCustomPollOptions(t *testing.T) {
+	var getCount int
+	p := newReplicateProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
+		if r.Method == http.MethodGet && r.URL.Path == "/predictions/pred-poll" {
+			getCount++
+			if getCount < 3 {
+				return replicateJSONResponse(200, `{"id":"pred-poll","status":"processing"}`), nil
+			}
+			return replicateJSONResponse(200, `{"id":"pred-poll","status":"succeeded","output":["https://example.test/out.png"]}`), nil
+		}
+		return nil, errors.New("unexpected request")
+	})
+	im := NewImageModel(p, "img-poll")
+
+	pollIntervalMillis := 5
+	maxPollAttempts := 10
+	start := time.Now()
+	prediction, err := im.pollImagePrediction(context.Background(), "pred-poll", ReplicateImagePollOptions{
+		PollIntervalMillis: &pollIntervalMillis,
+		MaxPollAttempts:    &maxPollAttempts,
+	})
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("pollImagePrediction error = %v", err)
+	}
+	if prediction.Status != "succeeded" {
+		t.Fatalf("prediction.Status = %q, want succeeded", prediction.Status)
+	}
+	if getCount != 3 {
+		t.Fatalf("getCount = %d, want 3 poll attempts", getCount)
+	}
+	// With a 5ms poll interval and 2 sleeps before success, this should complete
+	// almost immediately — well under the default 2s poll interval that would
+	// otherwise make this test take 4+ seconds.
+	if elapsed > time.Second {
+		t.Fatalf("elapsed = %v, want well under 1s with custom pollIntervalMillis", elapsed)
+	}
+}
+
+func TestReplicateImagePollingRespectsMaxPollAttempts(t *testing.T) {
+	p := newReplicateProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
+		if r.Method == http.MethodGet && r.URL.Path == "/predictions/pred-timeout" {
+			return replicateJSONResponse(200, `{"id":"pred-timeout","status":"processing"}`), nil
+		}
+		return nil, errors.New("unexpected request")
+	})
+	im := NewImageModel(p, "img-timeout")
+	pollIntervalMillis := 1
+	maxPollAttempts := 2
+	_, err := im.pollImagePrediction(context.Background(), "pred-timeout", ReplicateImagePollOptions{
+		PollIntervalMillis: &pollIntervalMillis,
+		MaxPollAttempts:    &maxPollAttempts,
+	})
+	if err == nil || !strings.Contains(err.Error(), "timed out after 2 attempts") {
+		t.Fatalf("error = %v, want timeout after 2 attempts", err)
 	}
 }
 
