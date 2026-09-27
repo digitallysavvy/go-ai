@@ -392,8 +392,20 @@ func TestPerplexityGenerateCitationsAndReasoningUsage(t *testing.T) {
 	if converted.InputDetails == nil || converted.InputDetails.NoCacheTokens == nil || *converted.InputDetails.NoCacheTokens != 10 {
 		t.Fatalf("input details = %+v, want noCache tokens 10", converted.InputDetails)
 	}
-	if converted.OutputDetails == nil || converted.OutputDetails.TextTokens == nil || *converted.OutputDetails.TextTokens != 3 {
-		t.Fatalf("output details = %+v, want text tokens 3", converted.OutputDetails)
+	// 2214258: Perplexity reports reasoning_tokens as ADDITIONAL to
+	// completion_tokens, not a subset of it -- text tokens equal
+	// completion_tokens unmodified, and the output total is completion+reasoning.
+	if converted.OutputDetails == nil || converted.OutputDetails.TextTokens == nil || *converted.OutputDetails.TextTokens != 5 {
+		t.Fatalf("output details = %+v, want text tokens 5", converted.OutputDetails)
+	}
+	if converted.OutputDetails.ReasoningTokens == nil || *converted.OutputDetails.ReasoningTokens != 2 {
+		t.Fatalf("output details = %+v, want reasoning tokens 2", converted.OutputDetails)
+	}
+	if converted.OutputTokens == nil || *converted.OutputTokens != 7 {
+		t.Fatalf("output tokens = %v, want 7 (completion+reasoning)", converted.OutputTokens)
+	}
+	if converted.TotalTokens == nil || *converted.TotalTokens != 17 {
+		t.Fatalf("total tokens = %v, want 17 (prompt+completion+reasoning)", converted.TotalTokens)
 	}
 	// convertPerplexityUsage no longer populates Raw itself: Raw is now set by
 	// the caller from the untransformed wire bytes (extractRawUsage), so that
@@ -835,5 +847,91 @@ func TestPerplexityLanguageModelOptionsValidation(t *testing.T) {
 	}, false)
 	if err == nil {
 		t.Fatal("buildRequestBody() error = nil, want validation error for invalid web_search_options.search_type")
+	}
+
+	// Valid doubly-nested web_search_options.user_location should pass through.
+	body, err = model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{
+			"perplexity": map[string]interface{}{
+				"web_search_options": map[string]interface{}{
+					"user_location": map[string]interface{}{
+						"latitude":  37.7749,
+						"longitude": -122.4194,
+						"city":      "San Francisco",
+					},
+				},
+			},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody() error = %v", err)
+	}
+	wso, ok = body["web_search_options"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("web_search_options missing: %+v", body)
+	}
+	userLocation, ok := wso["user_location"].(map[string]interface{})
+	if !ok || userLocation["city"] != "San Francisco" {
+		t.Fatalf("user_location = %+v, want city=San Francisco", wso["user_location"])
+	}
+
+	// Invalid web_search_options.user_location.latitude type should error.
+	_, err = model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{
+			"perplexity": map[string]interface{}{
+				"web_search_options": map[string]interface{}{
+					"user_location": map[string]interface{}{
+						"latitude": "not-a-number",
+					},
+				},
+			},
+		},
+	}, false)
+	if err == nil {
+		t.Fatal("buildRequestBody() error = nil, want validation error for invalid web_search_options.user_location.latitude")
+	}
+
+	// Valid media_response.overrides.return_videos should pass through.
+	body, err = model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{
+			"perplexity": map[string]interface{}{
+				"media_response": map[string]interface{}{
+					"overrides": map[string]interface{}{
+						"return_videos": true,
+					},
+				},
+			},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody() error = %v", err)
+	}
+	mediaResponse, ok := body["media_response"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("media_response missing: %+v", body)
+	}
+	overrides, ok := mediaResponse["overrides"].(map[string]interface{})
+	if !ok || overrides["return_videos"] != true {
+		t.Fatalf("media_response.overrides = %+v, want return_videos=true", mediaResponse["overrides"])
+	}
+
+	// Invalid media_response.overrides.return_videos type should error.
+	_, err = model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{
+			"perplexity": map[string]interface{}{
+				"media_response": map[string]interface{}{
+					"overrides": map[string]interface{}{
+						"return_videos": "yes",
+					},
+				},
+			},
+		},
+	}, false)
+	if err == nil {
+		t.Fatal("buildRequestBody() error = nil, want validation error for invalid media_response.overrides.return_videos")
 	}
 }

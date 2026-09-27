@@ -63,7 +63,8 @@ type PerplexityLanguageModelOptions struct {
 	// MediaResponse holds additional media response configuration
 	// (e.g. {"overrides": {"return_videos": true}}). Kept as a loose map so
 	// unrecognized nested keys pass through unchanged, matching the TS SDK's
-	// nested z.looseObject schema.
+	// nested z.looseObject schema. The known overrides.return_videos
+	// sub-field is validated.
 	MediaResponse map[string]interface{} `json:"media_response,omitempty"`
 
 	// StreamMode controls the format of streaming events. One of: "full", "concise".
@@ -80,7 +81,8 @@ type PerplexityLanguageModelOptions struct {
 	// WebSearchOptions holds additional web search configuration. Kept as a
 	// loose map so unrecognized nested keys pass through unchanged, matching
 	// the TS SDK's nested z.looseObject schema. Known sub-fields
-	// (search_context_size, search_type) are validated.
+	// (search_context_size, search_type, user_location.*,
+	// image_results_enhanced_relevance) are validated.
 	WebSearchOptions map[string]interface{} `json:"web_search_options,omitempty"`
 }
 
@@ -193,6 +195,46 @@ func perplexityMapField(raw map[string]interface{}, field string) (map[string]in
 	return m, nil
 }
 
+// perplexityNumberField validates that field, if present, is a JSON number
+// (unmarshaled as float64). Used for web_search_options.user_location's
+// latitude/longitude (perplexity-language-model-options.ts: z.number().optional()).
+func perplexityNumberField(raw map[string]interface{}, field string) error {
+	v, ok := raw[field]
+	if !ok || v == nil {
+		return nil
+	}
+	if _, ok := v.(float64); !ok {
+		return invalidPerplexityProviderOptions(field, fmt.Sprintf("must be a number, got %T", v))
+	}
+	return nil
+}
+
+// validatePerplexityUserLocation validates
+// web_search_options.user_location's declared fields, matching TS's nested
+// z.looseObject({ latitude, longitude, country, city, region }) --
+// unrecognized keys within it are left untouched (loose passthrough).
+func validatePerplexityUserLocation(m map[string]interface{}) error {
+	if m == nil {
+		return nil
+	}
+	if err := perplexityNumberField(m, "latitude"); err != nil {
+		return err
+	}
+	if err := perplexityNumberField(m, "longitude"); err != nil {
+		return err
+	}
+	if _, err := perplexityStringField(m, "country"); err != nil {
+		return err
+	}
+	if _, err := perplexityStringField(m, "city"); err != nil {
+		return err
+	}
+	if _, err := perplexityStringField(m, "region"); err != nil {
+		return err
+	}
+	return nil
+}
+
 func validatePerplexityWebSearchOptions(m map[string]interface{}) error {
 	if m == nil {
 		return nil
@@ -201,6 +243,35 @@ func validatePerplexityWebSearchOptions(m map[string]interface{}) error {
 		return err
 	}
 	if _, err := perplexityEnumStringField(m, "search_type", perplexitySearchTypes); err != nil {
+		return err
+	}
+	userLocation, err := perplexityMapField(m, "user_location")
+	if err != nil {
+		return err
+	}
+	if err := validatePerplexityUserLocation(userLocation); err != nil {
+		return err
+	}
+	if _, err := perplexityBoolField(m, "image_results_enhanced_relevance"); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validatePerplexityMediaResponse validates media_response.overrides.return_videos,
+// matching TS's nested z.looseObject({ overrides: z.looseObject({ return_videos }) }).
+func validatePerplexityMediaResponse(m map[string]interface{}) error {
+	if m == nil {
+		return nil
+	}
+	overrides, err := perplexityMapField(m, "overrides")
+	if err != nil {
+		return err
+	}
+	if overrides == nil {
+		return nil
+	}
+	if _, err := perplexityBoolField(overrides, "return_videos"); err != nil {
 		return err
 	}
 	return nil
@@ -263,6 +334,9 @@ func parsePerplexityLanguageModelOptions(raw map[string]interface{}) (*Perplexit
 		return nil, nil, err
 	}
 	if opts.MediaResponse, err = perplexityMapField(raw, "media_response"); err != nil {
+		return nil, nil, err
+	}
+	if err = validatePerplexityMediaResponse(opts.MediaResponse); err != nil {
 		return nil, nil, err
 	}
 	if opts.StreamMode, err = perplexityEnumStringField(raw, "stream_mode", perplexityStreamModes); err != nil {
