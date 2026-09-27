@@ -32,6 +32,16 @@ type preparedRequest struct {
 	// marked dynamic (see HasDynamicFilteringWebToolWithoutCodeExecution).
 	markCodeExecutionDynamic bool
 	toolsetNames             map[string]string
+	// providerOptionsName / usedCustomProviderKey mirror TS prepareRequest's
+	// return fields of the same name: providerOptionsName is the wrapper's
+	// own providerOptions key (e.g. "minimax", "bedrock"), and
+	// usedCustomProviderKey is true when the caller supplied
+	// providerOptions[providerOptionsName] for a non-"anthropic" name. The
+	// response builders use these to duplicate providerMetadata under
+	// providerOptionsName (TS: usedCustomProviderKey && providerOptionsName
+	// !== 'anthropic').
+	providerOptionsName   string
+	usedCustomProviderKey bool
 }
 
 type betaSet struct {
@@ -96,9 +106,9 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 		opts = &provider.GenerateOptions{}
 	}
 	var warnings []types.Warning
-	o := m.options
-	if o == nil {
-		o = &ModelOptions{}
+	o, usedCustomProviderKey, err := m.resolveCallOptions(opts)
+	if err != nil {
+		return nil, err
 	}
 
 	if o.ContextManagement != nil && o.Compaction != nil {
@@ -339,8 +349,8 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 	} else if o.AutomaticCaching {
 		body["cache_control"] = map[string]string{"type": "auto"}
 	}
-	if userID := callMetadataUserID(opts); userID != "" {
-		body["metadata"] = map[string]interface{}{"user_id": userID}
+	if o.Metadata != nil && o.Metadata.UserID != "" {
+		body["metadata"] = map[string]interface{}{"user_id": o.Metadata.UserID}
 	}
 	if len(o.MCPServers) > 0 {
 		body["mcp_servers"] = mcpServersWire(o.MCPServers)
@@ -519,6 +529,8 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 		usesJSONResponseTool:     usesJSONResponseTool,
 		markCodeExecutionDynamic: HasDynamicFilteringWebToolWithoutCodeExecution(prepared.tools),
 		toolsetNames:             toolsetNames,
+		providerOptionsName:      m.providerOptionsName(),
+		usedCustomProviderKey:    usedCustomProviderKey,
 	}, nil
 }
 
@@ -578,22 +590,6 @@ func resolveReasoningConfig(level types.ReasoningLevel, modelID string, caps Mod
 		budget = caps.MaxOutputTokens
 	}
 	return &effectiveThinking{typ: ThinkingTypeEnabled, budgetTokens: &budget, set: true}, ""
-}
-
-func callMetadataUserID(opts *provider.GenerateOptions) string {
-	if opts == nil || opts.ProviderOptions == nil {
-		return ""
-	}
-	anthropicOpts, ok := opts.ProviderOptions["anthropic"].(map[string]interface{})
-	if !ok {
-		return ""
-	}
-	metadata, ok := anthropicOpts["metadata"].(map[string]interface{})
-	if !ok {
-		return ""
-	}
-	userID, _ := metadata["userId"].(string)
-	return userID
 }
 
 func mcpServersWire(servers []MCPServerConfig) []map[string]interface{} {

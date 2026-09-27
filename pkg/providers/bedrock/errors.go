@@ -18,6 +18,11 @@ type bedrockErrorBody struct {
 // amazonBedrockFailedResponseHandler: "{type}: {message}" when a type is
 // present, otherwise just "{message}". Falls back to the raw body text when
 // the body cannot be parsed as JSON.
+//
+// headers and body are carried on the returned ProviderError's
+// ResponseHeaders/ResponseBody fields, matching TS APICallError (which
+// createJsonErrorResponseHandler always populates with responseHeaders and
+// responseBody from the failed HTTP response).
 func bedrockAPIError(statusCode int, body []byte, headers map[string]string) *providererrors.ProviderError {
 	var parsed bedrockErrorBody
 	message := string(body)
@@ -28,5 +33,8 @@ func bedrockAPIError(statusCode int, body []byte, headers map[string]string) *pr
 			message = parsed.Message
 		}
 	}
-	return providererrors.NewProviderError("amazon-bedrock", statusCode, "", message, nil)
+	providerErr := providererrors.NewProviderError("amazon-bedrock", statusCode, "", message, nil)
+	providerErr.ResponseHeaders = headers
+	providerErr.ResponseBody = string(body)
+	return providerErr
 }

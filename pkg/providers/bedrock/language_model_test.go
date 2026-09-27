@@ -1060,6 +1060,26 @@ func TestBedrockAPIError_FormatsTypeAndMessage(t *testing.T) {
 	}
 }
 
+// TestBedrockAPIError_CarriesHeadersAndBody verifies bedrockAPIError populates
+// ProviderError.ResponseHeaders/ResponseBody like TS APICallError (every TS
+// createJsonErrorResponseHandler call attaches responseHeaders and
+// responseBody from the failed HTTP response; the Go integrator follow-up
+// noted bedrockAPIError ignored its headers parameter and every caller
+// passed nil).
+func TestBedrockAPIError_CarriesHeadersAndBody(t *testing.T) {
+	headers := map[string]string{"x-amzn-requestid": "req-123"}
+	body := []byte(`{"message":"bad input","type":"ValidationException"}`)
+
+	err := bedrockAPIError(400, body, headers)
+
+	if err.ResponseBody != string(body) {
+		t.Fatalf("ResponseBody = %q, want %q", err.ResponseBody, string(body))
+	}
+	if err.ResponseHeaders["x-amzn-requestid"] != "req-123" {
+		t.Fatalf("ResponseHeaders = %#v, want x-amzn-requestid=req-123", err.ResponseHeaders)
+	}
+}
+
 func TestResolveAmazonBedrockBaseURL(t *testing.T) {
 	tests := []struct {
 		name   string

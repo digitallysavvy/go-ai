@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -83,13 +82,27 @@ func TestDoGenerateSendsThinkingViaMiniMaxProviderOption(t *testing.T) {
 	}
 }
 
-// Ported (adapted) from minimax-reasoning.test.ts: an invalid thinking.type
-// under the minimax namespace is rejected before the request is sent.
-func TestDoGenerateRejectsInvalidThinkingType(t *testing.T) {
-	called := false
+// TestDoGenerateDoesNotNarrowThinkingType verifies Go matches TS parity: TS's
+// MiniMaxLanguageModelOptions type narrows thinking.type to
+// "adaptive"|"disabled" for compile-time TypeScript ergonomics only —
+// minimax-provider.ts constructs AnthropicLanguageModel directly and never
+// imports or validates against that narrower schema at runtime, and
+// minimax-reasoning.test.ts never asserts rejection of `thinking: { type:
+// "enabled" }`. So a MiniMax call using the fuller Anthropic thinking enum
+// (e.g. "enabled", which plain Anthropic also allows) must be forwarded
+// as-is, not rejected.
+func TestDoGenerateDoesNotNarrowThinkingType(t *testing.T) {
+	var capturedBody map[string]interface{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called = true
-		w.Write([]byte(`{}`)) //nolint:errcheck
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &capturedBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id": "msg_1", "type": "message", "role": "assistant",
+			"content": [{"type": "text", "text": "ok"}],
+			"model": "minimax-m3", "stop_reason": "end_turn", "stop_sequence": null,
+			"usage": {"input_tokens": 1, "output_tokens": 1}
+		}`))
 	}))
 	defer srv.Close()
 
@@ -100,20 +113,16 @@ func TestDoGenerateRejectsInvalidThinkingType(t *testing.T) {
 		Prompt: types.Prompt{Text: "Hello"},
 		ProviderOptions: map[string]interface{}{
 			"minimax": map[string]interface{}{
-				// "enabled" is valid for plain Anthropic but not for
-				// MiniMax's narrower adaptive|disabled enum.
-				"thinking": map[string]interface{}{"type": "enabled"},
+				"thinking": map[string]interface{}{"type": "enabled", "budgetTokens": float64(2048)},
 			},
 		},
 	})
-	if err == nil {
-		t.Fatal("DoGenerate() expected error, got nil")
+	if err != nil {
+		t.Fatalf("DoGenerate() error = %v, want thinking.type=enabled to be forwarded, not rejected", err)
 	}
-	if !strings.Contains(err.Error(), "invalid minimax provider options") {
-		t.Fatalf("error = %v, want it to contain 'invalid minimax provider options'", err)
-	}
-	if called {
-		t.Fatal("request should not have been sent")
+	thinking, ok := capturedBody["thinking"].(map[string]interface{})
+	if !ok || thinking["type"] != "enabled" || thinking["budget_tokens"] != float64(2048) {
+		t.Fatalf("thinking = %#v, want {type: enabled, budget_tokens: 2048}", capturedBody["thinking"])
 	}
 }
 

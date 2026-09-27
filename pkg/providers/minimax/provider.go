@@ -3,12 +3,14 @@
 //
 // MiniMax chat delegates to the Anthropic Messages protocol: TS
 // createMiniMax constructs an AnthropicLanguageModel directly against
-// MiniMax's Anthropic-compatible endpoint. This Go package does the same by
-// embedding pkg/providers/anthropic, adding only the per-call
-// providerOptions.minimax.thinking -> Anthropic ModelOptions.Thinking bridge
-// (see language_model.go) that the shared Anthropic provider does not do on
-// its own (its thinking option is resolved once at model construction, not
-// per call).
+// MiniMax's Anthropic-compatible endpoint, with config.provider =
+// "minimax.messages". This Go package does the same by constructing a single
+// shared *anthropic.LanguageModel (Provider.Name() = "minimax") and
+// delegating every call to it: pkg/providers/anthropic's per-call
+// provider-options resolution (call_options.go) already derives the
+// "minimax" providerOptionsName and reads providerOptions.minimax /
+// providerOptions.anthropic fresh on every call, so this package adds no
+// MiniMax-specific request-building logic of its own.
 package minimax
 
 import (

@@ -746,7 +746,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, bedrockAPIError(resp.StatusCode, respBody, nil)
+		return nil, bedrockAPIError(resp.StatusCode, respBody, providerutils.ExtractHeaders(resp.Header))
 	}
 
 	result, err := m.convertConverseResponse(respBody, args.UsesJSONInstruction, args.UsesJSONResponseTool)
@@ -1042,7 +1042,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(resp.Body)
 		resp.Body.Close() //nolint:errcheck
-		return nil, bedrockAPIError(resp.StatusCode, respBody, nil)
+		return nil, bedrockAPIError(resp.StatusCode, respBody, providerutils.ExtractHeaders(resp.Header))
 	}
 
 	stream := &bedrockConverseStream{
