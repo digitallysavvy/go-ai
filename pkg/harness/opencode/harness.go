@@ -210,11 +210,7 @@ func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions
 	}
 	if coords != nil && isContinue {
 		log, _ := toolSafeSandboxSession.ReadTextFile(ctx, providerutils.SandboxReadTextFileOptions{Path: bridgeStateDir + "/event-log.ndjson"})
-		text := ""
-		if log != nil {
-			text = *log
-		}
-		if harnessutil.ClassifyDiskLog(text) == harnessutil.DiskLogReplay {
+		if harnessutil.ClassifyDiskLog(log) == harnessutil.DiskLogReplay {
 			respawnStrategy = "replay"
 		}
 	}

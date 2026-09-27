@@ -364,11 +364,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 			}
 			if isContinue {
 				logText, _ := toolSafeSandboxSession.ReadTextFile(ctx, providerutils.SandboxReadTextFileOptions{Path: bridgeStateDir + "/event-log.ndjson"})
-				text := ""
-				if logText != nil {
-					text = *logText
-				}
-				if harnessutil.ClassifyDiskLog(text) == harnessutil.DiskLogReplay {
+				if harnessutil.ClassifyDiskLog(logText) == harnessutil.DiskLogReplay {
 					respawnStrategy = &acpRespawnStrategy{mode: acpRecoveryDiskReplay, reason: "completed coherent event log", afterSeq: coords.LastSeenEventID}
 				} else {
 					if resumeData.TurnStartConfig == nil || resumeData.ACPSessionID == "" {
