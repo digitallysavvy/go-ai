@@ -87,10 +87,13 @@ func TestGenerateObject_Telemetry(t *testing.T) {
 		t.Errorf("step span ai.response.object = %v (ok=%v)", v, ok)
 	}
 
-	// Chat (language-model-call) span.
-	chatSpan := findSpanByName(spans, "chat test-model")
-	if chatSpan == nil {
-		t.Fatal("expected a 'chat test-model' language-model-call span — GenerateObject previously fired none (H3 item 1)")
+	// No "chat test-model" span here: setupTelemetryTest registers only the
+	// Legacy integration, and LegacyOpenTelemetry no longer creates a nested
+	// model-call/"chat" span (H4 item 1) — TS's LegacyOpenTelemetry never
+	// did either. See TestStreamObject_LanguageModelCallEndContent below for
+	// GenAI's "chat" span coverage.
+	if chatSpan := findSpanByName(spans, "chat test-model"); chatSpan != nil {
+		t.Error("LegacyOpenTelemetry should not create a 'chat test-model' span (H4 item 1)")
 	}
 
 	if result.Object == nil {
@@ -158,9 +161,10 @@ func TestStreamObject_Telemetry(t *testing.T) {
 		t.Fatal("expected an ai.streamObject.doStream step span")
 	}
 
-	chatSpan := findSpanByName(spans, "chat test-model")
-	if chatSpan == nil {
-		t.Fatal("expected a 'chat test-model' language-model-call span")
+	// No "chat test-model" span: only LegacyOpenTelemetry is registered here,
+	// and it no longer creates a nested model-call/"chat" span (H4 item 1).
+	if chatSpan := findSpanByName(spans, "chat test-model"); chatSpan != nil {
+		t.Error("LegacyOpenTelemetry should not create a 'chat test-model' span (H4 item 1)")
 	}
 
 	if result.Object == nil {
@@ -179,9 +183,10 @@ func TestStreamObject_Telemetry(t *testing.T) {
 func TestStreamObject_LanguageModelCallEndContent(t *testing.T) {
 	spanRecorder, cleanup := setupTelemetryTest(t)
 	defer cleanup()
-	// setupTelemetryTest only registers the Legacy integration; also
-	// register the GenAI one so the "chat" span (which carries
-	// gen_ai.output.messages) gets created too.
+	// setupTelemetryTest only registers the Legacy integration; also register
+	// the GenAI one so the "chat" span (which carries gen_ai.output.messages)
+	// gets created — LegacyOpenTelemetry no longer creates one at all
+	// (H4 item 1), so exactly one "chat test-model" span is expected below.
 	telemetry.RegisterTelemetryIntegration(telemetry.OTelTelemetryIntegration{}, telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{}))
 
 	usage := types.Usage{InputTokens: int64Ptr(8), OutputTokens: int64Ptr(4)}
@@ -216,15 +221,15 @@ func TestStreamObject_LanguageModelCallEndContent(t *testing.T) {
 	}
 
 	spans := spanRecorder.Ended()
-	// Both the Legacy and GenAI integrations create a span named
-	// "chat test-model" (a pre-existing divergence in Legacy, out of scope
-	// here); find the one carrying gen_ai.output.messages, which only the
-	// GenAI integration ever sets.
+	// Exactly one "chat test-model" span now (GenAI's — LegacyOpenTelemetry no
+	// longer creates one, H4 item 1), carrying gen_ai.output.messages.
+	chatSpans := 0
 	var found bool
 	for _, s := range spans {
 		if s.Name() != "chat test-model" {
 			continue
 		}
+		chatSpans++
 		if v, ok := attrValueTelemetry(s, "gen_ai.output.messages"); ok && v != "" {
 			found = true
 			if !strings.Contains(v, `Jane`) {
@@ -232,8 +237,11 @@ func TestStreamObject_LanguageModelCallEndContent(t *testing.T) {
 			}
 		}
 	}
+	if chatSpans != 1 {
+		t.Fatalf("'chat test-model' spans = %d, want exactly 1 (GenAI's; Legacy no longer creates one)", chatSpans)
+	}
 	if !found {
-		t.Fatal("expected some 'chat test-model' span to carry a non-empty gen_ai.output.messages")
+		t.Fatal("expected the 'chat test-model' span to carry a non-empty gen_ai.output.messages")
 	}
 }
 

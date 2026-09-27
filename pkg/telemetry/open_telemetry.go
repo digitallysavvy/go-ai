@@ -779,7 +779,10 @@ func (i OpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent) {
 	span.End()
 }
 
-// OnAbort ends any in-flight model-call span and the root span.
+// OnAbort ends any in-flight model-call ("chat") span, any in-flight step
+// span, and the root span. Mirrors TS onAbort's inferenceSpan/stepSpan
+// handling (legacy-open-telemetry.ts / open-telemetry.ts): plain .end()
+// calls, no error status recorded.
 func (i OpenTelemetry) OnAbort(ctx context.Context, e TelemetryAbortEvent) {
 	if e.CallID != "" {
 		if value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("languageModel", e.CallID)); ok {
@@ -788,11 +791,41 @@ func (i OpenTelemetry) OnAbort(ctx context.Context, e TelemetryAbortEvent) {
 			}
 		}
 	}
+	if stepSpan, ok := ctx.Value(genAIStepSpanKey{}).(trace.Span); ok && stepSpan.IsRecording() {
+		stepSpan.End()
+	}
 	span := trace.SpanFromContext(ctx)
 	if !span.IsRecording() {
 		return
 	}
 	span.End()
+}
+
+// OnStepError closes a still-open step span and the nested model-call
+// ("chat") span when the provider call itself failed, so neither OnStepEnd
+// nor OnLanguageModelCallEnd will ever fire for them — H4 item 2's "span
+// leak on provider error" fix. Mirrors TS onError's stepSpan/inferenceSpan
+// handling: recordErrorOnSpan + end when e.Error is set (provider error),
+// or a plain end (mirroring onAbort) when it's nil.
+func (i OpenTelemetry) OnStepError(ctx context.Context, e TelemetryErrorEvent) {
+	if e.CallID != "" {
+		if value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("languageModel", e.CallID)); ok {
+			if entry, ok := value.(otelSpanEntry); ok && entry.span.IsRecording() {
+				if e.Error != nil {
+					RecordErrorOnSpan(entry.span, e.Error)
+				}
+				entry.span.End()
+			}
+		}
+	}
+	stepSpan, ok := ctx.Value(genAIStepSpanKey{}).(trace.Span)
+	if !ok || !stepSpan.IsRecording() {
+		return
+	}
+	if e.Error != nil {
+		RecordErrorOnSpan(stepSpan, e.Error)
+	}
+	stepSpan.End()
 }
 
 // ExecuteTool delegates directly to execute; nested span support is handled

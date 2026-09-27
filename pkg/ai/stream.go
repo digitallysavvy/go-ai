@@ -1177,13 +1177,20 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		} else if opts.Timeout != nil && opts.Timeout.HasTotal() && ctx.Err() != nil {
 			err = wrapTimeoutError(TimeoutReasonTotal, err)
 		}
+		// Close the model-call/"chat" span opened above (GenAI only —
+		// processStream, not this bootstrap call, creates the actual step span
+		// for step 1, so there is none yet to close here): without this it
+		// would leak, since telemetryCtx below only closes the root span
+		// (H4 item 2). No error status on abort, matching TS onAbort.
 		if isAbortErr(stepCtx, err) {
 			reason := abortReason(stepCtx, err)
 			if onAbort := firstOnAbort(opts.OnAbortEvent, opts.OnAbort); onAbort != nil {
 				onAbort(stepCtx, GenerateTextAbortEvent{CallID: callID, Reason: reason})
 			}
+			telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID})
 			telemetry.FireOnAbort(telemetryCtx, telemetry.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID, Reason: reason})
 		} else {
+			telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 			telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
 		}
 		r.fail(fmt.Errorf("failed to start stream: %w", err))
@@ -1963,7 +1970,19 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					newStream, reopenErr := doStreamWithGatewayRetry(r.stepReopenCtx, r.stepReopenModel, r.stepReopenGenOpts, opts.MaxRetries)
 					if reopenErr != nil {
 						r.err = reopenErr
-						if isAbortErr(ctx, reopenErr) {
+						// Close this iteration's still-open step span
+						// (telemetryStepCtx, from FireOnStepStart at the top of
+						// this loop iteration) and the model-call/"chat" span
+						// (found via CallID regardless of ctx) here — the shared
+						// cleanup after the loop only closes the root span
+						// (H4 item 2).
+						stepErr := reopenErr
+						isAbort := isAbortErr(ctx, reopenErr)
+						if isAbort {
+							stepErr = nil
+						}
+						telemetry.FireOnStepError(telemetryStepCtx, telemetry.TelemetryErrorEvent{Settings: r.telemetrySettings, CallID: r.cbCallID, Error: stepErr})
+						if isAbort {
 							fireAbort(reopenErr)
 						}
 						break
@@ -2686,7 +2705,19 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				err = wrapTimeoutError(TimeoutReasonTotal, err)
 			}
 			r.err = fmt.Errorf("failed to start stream for step %d: %w", stepNum+1, err)
-			if isAbortErr(nextStepCtx, r.err) {
+			// Close the model-call/"chat" span opened just above via
+			// FireOnLanguageModelCallStart (this next step's own FireOnStepStart
+			// hasn't run yet — it happens at the top of the following loop
+			// iteration, which this break prevents from ever being reached): the
+			// shared cleanup after the loop only closes the root span
+			// (H4 item 2).
+			isAbort := isAbortErr(nextStepCtx, r.err)
+			stepErr := r.err
+			if isAbort {
+				stepErr = nil
+			}
+			telemetry.FireOnStepError(nextModelCallCtx, telemetry.TelemetryErrorEvent{Settings: r.telemetrySettings, CallID: r.cbCallID, Error: stepErr})
+			if isAbort {
 				fireAbort(r.err)
 			}
 			break

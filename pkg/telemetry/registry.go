@@ -493,6 +493,13 @@ type abortHandler interface {
 	OnAbort(context.Context, TelemetryAbortEvent)
 }
 
+// stepErrorHandler is implemented by integrations that close a still-open
+// step (and, for GenAI, model-call/"chat") span when the provider call
+// itself failed — see FireOnStepError.
+type stepErrorHandler interface {
+	OnStepError(context.Context, TelemetryErrorEvent)
+}
+
 type endHandler interface {
 	OnEnd(context.Context, TelemetryFinishEvent)
 }
@@ -913,6 +920,15 @@ func legacyPromptJSON(isObjectOp bool, system, prompt string, messages []types.M
 // `state.baseTelemetryAttributes` in onStepStart.
 type legacyBaseAttrsKey struct{}
 
+// legacyRequestSettingsKey is a private context key carrying the root
+// call's request settings (maxOutputTokens/temperature/topP/topK/
+// presencePenalty/frequencyPenalty/stopSequences) down to the nested
+// doGenerate/doStream step span, mirroring TS's reuse of `state.settings` in
+// onStepStart/onObjectStepStart to populate that span's gen_ai.request.*
+// attributes (frequency_penalty, max_tokens, presence_penalty,
+// stop_sequences, temperature, top_k, top_p).
+type legacyRequestSettingsKey struct{}
+
 // OnStart starts the root OTel span and embeds it in the returned context.
 // Returns ctx unchanged when settings explicitly disables telemetry.
 // Attribute shape mirrors TS's onGenerateStart / onObjectOperationStart /
@@ -960,6 +976,10 @@ func (i LegacyOpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent)
 	// Stashed so the nested doGenerate/doStream step span can reuse the same
 	// base attributes, matching TS's state.baseTelemetryAttributes reuse.
 	ctx = context.WithValue(ctx, legacyBaseAttrsKey{}, baseAttrs)
+	// Stashed so the nested doGenerate/doStream step span can also reuse the
+	// raw request settings, matching TS's state.settings reuse in
+	// onStepStart/onObjectStepStart for gen_ai.request.* attributes.
+	ctx = context.WithValue(ctx, legacyRequestSettingsKey{}, settings)
 
 	recordInputs := e.Settings == nil || e.Settings.RecordInputs
 
@@ -1160,6 +1180,47 @@ func (i LegacyOpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepSta
 		attribute.String("gen_ai.request.model", e.ModelID),
 		attribute.String("gen_ai.system", e.ModelProvider),
 	)
+	// gen_ai.request.* settings attributes, sourced from the root call's
+	// settings (stashed via legacyRequestSettingsKey by OnStart) rather than
+	// any per-step override — mirroring TS onStepStart/onObjectStepStart,
+	// which both read from state.settings (set once at ai.<op>Start), never
+	// from per-step values. gen_ai.request.stop_sequences is only set for
+	// generateText/streamText (onObjectStepStart omits it), matching
+	// legacySettings.StopSequences only being populated for those two
+	// operation types in OnStart above.
+	if settings, ok := ctx.Value(legacyRequestSettingsKey{}).(legacySettings); ok {
+		if settings.FrequencyPenalty != nil {
+			if kv, ok := finiteFloat64Attr("gen_ai.request.frequency_penalty", *settings.FrequencyPenalty); ok {
+				stepSpan.SetAttributes(kv)
+			}
+		}
+		if settings.MaxOutputTokens != nil {
+			stepSpan.SetAttributes(attribute.Int("gen_ai.request.max_tokens", *settings.MaxOutputTokens))
+		}
+		if settings.PresencePenalty != nil {
+			if kv, ok := finiteFloat64Attr("gen_ai.request.presence_penalty", *settings.PresencePenalty); ok {
+				stepSpan.SetAttributes(kv)
+			}
+		}
+		if opType == "ai.generateText" || opType == "ai.streamText" {
+			if settings.StopSequences != nil {
+				stepSpan.SetAttributes(attribute.StringSlice("gen_ai.request.stop_sequences", settings.StopSequences))
+			}
+		}
+		if settings.Temperature != nil {
+			if kv, ok := finiteFloat64Attr("gen_ai.request.temperature", *settings.Temperature); ok {
+				stepSpan.SetAttributes(kv)
+			}
+		}
+		if settings.TopK != nil {
+			stepSpan.SetAttributes(attribute.Int("gen_ai.request.top_k", *settings.TopK))
+		}
+		if settings.TopP != nil {
+			if kv, ok := finiteFloat64Attr("gen_ai.request.top_p", *settings.TopP); ok {
+				stepSpan.SetAttributes(kv)
+			}
+		}
+	}
 	functionID := ""
 	if e.Settings != nil {
 		functionID = e.Settings.FunctionID
@@ -1212,89 +1273,29 @@ func (i LegacyOpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepSta
 	return context.WithValue(ctx, stepSpanKey{}, stepSpan)
 }
 
-// OnLanguageModelCallStart creates a child span for provider model inference.
-// OnLanguageModelCallStart starts the "chat"/model-call span and returns it
-// embedded in the returned ctx, so the provider call this wraps (and any
-// HTTP client spans the provider itself creates) runs inside it as a child
-// span (594029e) instead of the span being immediately orphaned.
-func (i LegacyOpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageModelCallStartEvent) context.Context {
-	parent := trace.SpanFromContext(ctx)
-	if !parent.IsRecording() {
-		return ctx
-	}
-	tracer := parent.TracerProvider().Tracer("go-ai")
-	spanName := "chat"
-	if e.ModelID != "" {
-		spanName += " " + e.ModelID
-	}
-	ctx, span := tracer.Start(ctx, spanName)
-	if attrs := customSpanAttributes(ctx, i.enrichSpan, e.Settings, EnrichSpanOptions{
-		SpanType:      SpanTypeLanguageModel,
-		OperationType: "ai.generateText",
-		CallID:        e.CallID,
-	}); len(attrs) > 0 {
-		span.SetAttributes(attrs...)
-	}
-	span.SetAttributes(
-		attribute.String("gen_ai.operation.name", "chat"),
-		attribute.String("gen_ai.system", e.ModelProvider),
-		attribute.String("gen_ai.request.model", e.ModelID),
-	)
-	if e.CallID != "" {
-		otelModelCallSpans.Store(otelSpanKey("languageModel", e.CallID), otelSpanEntry{span: span})
-	}
-	return ctx
-}
-
-// OnLanguageModelCallEnd records model-call attributes and ends the inference span.
-func (i LegacyOpenTelemetry) OnLanguageModelCallEnd(_ context.Context, e LanguageModelCallEndEvent) {
-	value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("languageModel", e.CallID))
-	if !ok {
-		return
-	}
-	entry, ok := value.(otelSpanEntry)
-	if !ok || !entry.span.IsRecording() {
-		return
-	}
-	attrs := []attribute.KeyValue{
-		attribute.String("ai.response.finishReason", e.FinishReason),
-		attribute.Int64("ai.response.responseTimeMs", e.Performance.ResponseTimeMs),
-	}
-	attrs = setFiniteFloat64(attrs, "ai.response.effectiveOutputTokensPerSecond", e.Performance.EffectiveOutputTokensPerSecond)
-	attrs = setFiniteFloat64(attrs, "ai.response.effectiveTotalTokensPerSecond", e.Performance.EffectiveTotalTokensPerSecond)
-	entry.span.SetAttributes(attrs...)
-	if e.Performance.OutputTokensPerSecond != nil {
-		if kv, ok := finiteFloat64Attr("ai.response.outputTokensPerSecond", *e.Performance.OutputTokensPerSecond); ok {
-			entry.span.SetAttributes(kv)
-		}
-	}
-	if e.Performance.InputTokensPerSecond != nil {
-		if kv, ok := finiteFloat64Attr("ai.response.inputTokensPerSecond", *e.Performance.InputTokensPerSecond); ok {
-			entry.span.SetAttributes(kv)
-		}
-	}
-	if e.Performance.TimeToFirstOutputMs != nil {
-		entry.span.SetAttributes(attribute.Int64("ai.response.timeToFirstOutputMs", *e.Performance.TimeToFirstOutputMs))
-	}
-	if stats := e.Performance.TimeBetweenOutputChunksMs; stats != nil {
-		durationAttrs := []attribute.KeyValue{
-			attribute.Int64("ai.response.timeBetweenOutputChunksMs.min", stats.Min),
-			attribute.Int64("ai.response.timeBetweenOutputChunksMs.p10", stats.P10),
-			attribute.Int64("ai.response.timeBetweenOutputChunksMs.median", stats.Median),
-			attribute.Int64("ai.response.timeBetweenOutputChunksMs.p90", stats.P90),
-			attribute.Int64("ai.response.timeBetweenOutputChunksMs.max", stats.Max),
-		}
-		durationAttrs = setFiniteFloat64(durationAttrs, "ai.response.timeBetweenOutputChunksMs.avg", stats.Avg)
-		entry.span.SetAttributes(durationAttrs...)
-	}
-	if e.Usage.InputTokens != nil {
-		entry.span.SetAttributes(attribute.Int64("gen_ai.usage.input_tokens", *e.Usage.InputTokens))
-	}
-	if e.Usage.OutputTokens != nil {
-		entry.span.SetAttributes(attribute.Int64("gen_ai.usage.output_tokens", *e.Usage.OutputTokens))
-	}
-	entry.span.End()
-}
+// LegacyOpenTelemetry intentionally has no OnLanguageModelCallStart/
+// OnLanguageModelCallEnd methods (H4 item 1): TS's LegacyOpenTelemetry
+// (legacy-open-telemetry.ts) never implements the optional
+// onLanguageModelCallStart/onLanguageModelCallEnd Telemetry hooks at all —
+// only the GenAI OpenTelemetry class (open-telemetry.ts) does, where the
+// nested "chat <model>" span IS the doGenerate/doStream inference span. In
+// TS's Legacy integration, the step span created by onStepStart/
+// onObjectStepStart (this file's OnStepStart, above) already *is* the
+// doGenerate/doStream span — there is no separate nested model-call span.
+// Go previously added its own LegacyOpenTelemetry.OnLanguageModelCallStart/
+// End that created an extra "chat <model>" span with Go-only attributes
+// (ai.response.responseTimeMs, effectiveOutputTokensPerSecond, etc. — none
+// of which TS's Legacy step span carries either). Removing these methods
+// means LegacyOpenTelemetry no longer satisfies languageModelCallStartHandler/
+// languageModelCallEndHandler, so FireOnLanguageModelCallStart/End's
+// type-assertion loop (below) silently skips it — matching TS exactly, and
+// ensuring that with both LegacyOpenTelemetry and OpenTelemetry registered,
+// only OpenTelemetry (GenAI) produces a "chat <model>" span. Every attribute
+// TS's onStepStart/onStepEnd put on the step span from model-call data
+// (gen_ai.system, gen_ai.request.model, gen_ai.response.finish_reasons,
+// gen_ai.response.id, gen_ai.usage.input_tokens/output_tokens, etc.) was
+// already being dual-set on the step span by OnStepStart (above) and
+// OnStepEnd (below) — nothing needed to move.
 
 // OnEmbedStart creates a child span for the nested doEmbed model call.
 // Mirrors TS's onEmbedStart (legacy-open-telemetry.ts): the span is named
@@ -1743,6 +1744,29 @@ func (i LegacyOpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEv
 	stepSpan.End()
 }
 
+// OnStepError closes an in-flight step span when the provider call itself
+// failed (doGenerate/doStream returned an error), so no OnStepEnd will ever
+// fire for it — H4 item 2's "span leak on provider error" fix. Callers pass
+// the most deeply-nested ctx available at the failure site (typically the
+// ctx returned by FireOnLanguageModelCallStart), so ctx.Value(stepSpanKey{})
+// still resolves via ctx's ancestor chain regardless of what other
+// integrations layered on top of it afterward — unlike trace.SpanFromContext
+// (used by OnError/OnEnd for the root span), a typed context key lookup is
+// safe to call with a nested ctx without risk of touching another
+// integration's span. Mirrors TS onError's `if (state.stepSpan) {
+// recordSpanError(...); state.stepSpan.end(); }` when e.Error is set, or
+// onAbort's `state.stepSpan.end()` (no error status) when it's nil.
+func (i LegacyOpenTelemetry) OnStepError(ctx context.Context, e TelemetryErrorEvent) {
+	stepSpan, ok := ctx.Value(stepSpanKey{}).(trace.Span)
+	if !ok || !stepSpan.IsRecording() {
+		return
+	}
+	if e.Error != nil {
+		RecordErrorOnSpan(stepSpan, e.Error)
+	}
+	stepSpan.End()
+}
+
 // OnEnd sets output attributes on the root span and ends it. Dispatches on
 // e.OperationType to reproduce TS's per-operation onEnd shape
 // (onGenerateEnd / onObjectOperationEnd / onEmbedOperationEnd /
@@ -1872,14 +1896,13 @@ func (i LegacyOpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent)
 	span.End()
 }
 
-// OnAbort records the abort reason on the root span and ends it.
+// OnAbort closes any in-flight step span (mirroring TS onAbort's
+// `state.stepSpan.end()`, no error status — LegacyOpenTelemetry has no
+// inferenceSpan of its own to close, unlike GenAI's OpenTelemetry) and
+// records the abort reason on the root span before ending it.
 func (i LegacyOpenTelemetry) OnAbort(ctx context.Context, e TelemetryAbortEvent) {
-	if e.CallID != "" {
-		if value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("languageModel", e.CallID)); ok {
-			if entry, ok := value.(otelSpanEntry); ok && entry.span.IsRecording() {
-				entry.span.End()
-			}
-		}
+	if stepSpan, ok := ctx.Value(stepSpanKey{}).(trace.Span); ok && stepSpan.IsRecording() {
+		stepSpan.End()
 	}
 	span := trace.SpanFromContext(ctx)
 	if !span.IsRecording() {
@@ -2209,6 +2232,31 @@ func FireOnAbort(ctx context.Context, e TelemetryAbortEvent) {
 	for _, i := range snapshotFor(e.Settings) {
 		if h, ok := i.(abortHandler); ok {
 			h.OnAbort(ctx, e)
+		}
+	}
+}
+
+// FireOnStepError closes a still-open step span (and, for the GenAI
+// integration, the nested model-call/"chat" span) when the provider call
+// itself failed, so neither OnStepEnd nor OnLanguageModelCallEnd will ever
+// fire for it (H4 item 2: "span leak on provider error"). Callers at the
+// generateText/streamText/generateObject/streamObject provider-call failure
+// sites pass the most deeply-nested ctx they have available (typically the
+// ctx returned by FireOnLanguageModelCallStart) — unlike FireOnError/
+// FireOnAbort's root-span handling (which keys off trace.SpanFromContext and
+// is only ever called with the outer, unnested ctx), integrations implement
+// OnStepError using their own private context key / CallID-keyed lookups, so
+// it is safe to call from any ctx without risking closing another
+// integration's span. Set e.Error to record an error status on the closed
+// span (provider error); leave it nil to just close it without an error
+// status (abort).
+func FireOnStepError(ctx context.Context, e TelemetryErrorEvent) {
+	if telemetryDisabled(e.Settings) {
+		return
+	}
+	for _, i := range snapshotFor(e.Settings) {
+		if h, ok := i.(stepErrorHandler); ok {
+			h.OnStepError(ctx, e)
 		}
 	}
 }
