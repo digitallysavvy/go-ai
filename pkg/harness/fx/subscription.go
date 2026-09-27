@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/harness/acp"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil/subscription"
 )
@@ -48,12 +49,6 @@ type Credential struct {
 	RefreshToken string
 	ExpiresAt    int64
 	AccountID    string
-}
-
-// AuthenticationFile is TS `ACPAuthenticationFile`.
-type AuthenticationFile struct {
-	Path    string
-	Content string
 }
 
 // RequestCredential is one provider's sandbox->host credential pair, as
@@ -143,8 +138,8 @@ func ReadSubscriptions(ctx context.Context, opts ReadSubscriptionsOptions) (map[
 // CreateSubscriptionAuthenticationFiles materializes sandbox-private
 // authentication files carrying broker placeholders (never host tokens).
 // Mirrors TS `createFxSubscriptionAuthenticationFiles`.
-func CreateSubscriptionAuthenticationFiles(env, sandboxEnv map[string]string, credentialBrokeringAvailable bool) []AuthenticationFile {
-	var files []AuthenticationFile
+func CreateSubscriptionAuthenticationFiles(env, sandboxEnv map[string]string, credentialBrokeringAvailable bool) []acp.AuthenticationFile {
+	var files []acp.AuthenticationFile
 	for _, provider := range []subscriptionProvider{providerChatGPT, providerGrok} {
 		envVar := accessTokenEnvVar(provider)
 		_, hostOK := env[envVar]
@@ -168,7 +163,7 @@ func CreateSubscriptionAuthenticationFiles(env, sandboxEnv map[string]string, cr
 			"expires_at_ms": int64(9007199254740991), // Number.MAX_SAFE_INTEGER
 			"account_id":    accountID,
 		})
-		files = append(files, AuthenticationFile{Path: path, Content: string(content) + "\n"})
+		files = append(files, acp.AuthenticationFile{Path: path, Content: string(content) + "\n"})
 	}
 	return files
 }

@@ -2,13 +2,9 @@
 // (pinned to ai@7.0.113, hash d0b241d).
 //
 // Like pkg/harness/cursor, fx is an "ACP-derived" adapter: TS `createFx()`
-// is a thin configuration layer over `createACP()`
-// (`@ai-sdk/harness-acp`). See the pkg/harness/cursor package doc for the
-// rationale behind stopping at the configuration boundary (BuildConfig)
-// instead of wiring a live harness.Harness: the ACP meta-adapter host
-// (pkg/harness/acp, WG11) had not landed yet when this package was written.
-//
-//	h, err := acp.CreateACP(fx.BuildConfig(settings))
+// is a thin configuration layer over `createACP()` (`@ai-sdk/harness-acp`).
+// BuildConfig assembles the exact acp.Settings TS's `createFx()` passes to
+// `createACP()`, and CreateFx wires it into a live harness.Harness.
 //
 // fx is server-side/sandboxable: `fx acp` is spawned inside the sandbox by
 // the shared ACP bridge (pkg/harness/bridges.ACP); this package has no
@@ -17,9 +13,12 @@ package fx
 
 import (
 	"context"
+	"strings"
+	"time"
 	"unicode"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/harness/acp"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
 )
@@ -47,100 +46,40 @@ type Settings struct {
 	MintBridgeToken      harness.MintBridgeTokenCallback
 }
 
-// ToolCall is the subset of TS `ACPToolCall` the classifier closures need.
-type ToolCall struct {
-	Title string
+// CreateFx returns the fx harness-v1 adapter, wiring BuildConfig's
+// acp.Settings into a live harness.Harness via acp.CreateACP. Mirrors TS
+// `createFx()`.
+func CreateFx(settings ...Settings) (harness.Harness, error) {
+	s := Settings{}
+	if len(settings) > 0 {
+		s = settings[0]
+	}
+	return acp.CreateACP(BuildConfig(s))
 }
 
-// Source, ModelMapping and InstructionMapping mirror the corresponding
-// `ACP*` union members (see pkg/harness/cursor for Source/ModelMapping).
-type Source struct {
-	Type    string
-	Command string
-}
-
-type ModelMapping struct {
-	Type string
-	Path string
-}
-
-type InstructionMapping struct {
-	Type string
-	Path string
-}
-
-type PermissionModeTarget struct {
-	Type   string
-	ModeID string
-}
-
-// ProviderAuthenticationValue is TS `ACPProfileValue`: either a literal or a
-// `{ $source }` placeholder resolved by the ACP host from gateway
-// credentials / client-app identity.
-type ProviderAuthenticationValue struct {
-	Literal      any
-	Source       string
-	EnsureSuffix string
-}
-
-// Config is the ACP meta-adapter configuration `createFx()` builds. See the
-// package doc for how to wire it once pkg/harness/acp exists.
-type Config struct {
-	Version                string
-	HarnessID              string
-	ClientAppName          string
-	ClientAppVersion       string
-	Auth                   AuthenticationMode
-	ResolveAuthEnv         func(ctx context.Context, auth AuthenticationMode, env map[string]string) (map[string]string, error)
-	AuthenticationFiles    func(env, sandboxEnv map[string]string, credentialBrokeringAvailable bool) []AuthenticationFile
-	CredentialForwarding   harness.CredentialForwarding
-	Port                   *int
-	PortEndpoint           *harness.PortEndpoint
-	StartupTimeoutMS       *int
-	Reconnect              *bridge.ReconnectOptions
-	MCPServers             map[string]any
-	IsMCPToolCall          func(ToolCall) bool
-	MintBridgeToken        harness.MintBridgeTokenCallback
-	BuiltinTools           map[string]harness.BuiltinTool
-	Source                 Source
-	Executable             string
-	Args                   []string
-	ModelMapping           ModelMapping
-	InstructionMapping     InstructionMapping
-	CredentialEnv          []string
-	CredentialBrokering    func(env, sandboxEnv, headers map[string]string) ([]harness.RequestTransformation, error)
-	ProviderAuthentication map[string]ProviderAuthenticationValue
-	PermissionModeMapping  map[harness.PermissionMode]*PermissionModeTarget
-}
-
-// BuildConfig assembles Config from Settings, mirroring TS `createFx()`
-// (fx-harness.ts).
-func BuildConfig(settings Settings) Config {
+// BuildConfig assembles the acp.Settings `createFx()` builds (TS
+// `ACPHarnessSettings` as passed to `createACP()`).
+func BuildConfig(settings Settings) acp.Settings {
 	mcpToolTitlePrefixes := make([]string, 0, len(settings.MCPServers))
 	for name := range settings.MCPServers {
 		mcpToolTitlePrefixes = append(mcpToolTitlePrefixes, "mcp_"+sanitizeMCPToolNameSegment(name)+"_")
 	}
 	suppliedAuthenticationEnvironment := harnessutil.IsAuthenticationEnvironment(settings.Auth)
 
-	return Config{
-		Version:          "v1",
-		HarnessID:        HarnessID,
-		ClientAppName:    ClientAppName,
-		ClientAppVersion: ClientAppVersion,
-		Auth:             settings.Auth,
-		ResolveAuthEnv: func(ctx context.Context, auth AuthenticationMode, env map[string]string) (map[string]string, error) {
+	cfg := acp.Settings{
+		HarnessID: HarnessID,
+		ClientApp: acp.ClientApp{Name: ClientAppName, Version: ClientAppVersion},
+		Auth:      settings.Auth,
+		ResolveAuthenticationEnvironment: func(ctx context.Context, auth AuthenticationMode, env map[string]string) (map[string]string, error) {
 			return ResolveSubscriptionEnvironment(ctx, ResolveSubscriptionEnvironmentOptions{Auth: auth, Env: env})
 		},
 		AuthenticationFiles:  CreateSubscriptionAuthenticationFiles,
 		CredentialForwarding: settings.CredentialForwarding,
-		Port:                 settings.Port,
 		PortEndpoint:         settings.PortEndpoint,
-		StartupTimeoutMS:     settings.StartupTimeoutMS,
-		Reconnect:            settings.Reconnect,
 		MCPServers:           settings.MCPServers,
-		IsMCPToolCall: func(call ToolCall) bool {
+		IsMcpToolCall: func(call acp.ToolCall) bool {
 			for _, prefix := range mcpToolTitlePrefixes {
-				if len(call.Title) >= len(prefix) && call.Title[:len(prefix)] == prefix {
+				if strings.HasPrefix(call.Title, prefix) {
 					return true
 				}
 			}
@@ -148,40 +87,52 @@ func BuildConfig(settings Settings) Config {
 		},
 		MintBridgeToken: settings.MintBridgeToken,
 		BuiltinTools:    BuiltinTools,
-		Source: Source{
-			Type:    "install-command",
+		Source: acp.Source{
+			Type:    acp.SourceInstallCommand,
 			Command: "curl -fsSL https://fx.sh/setup.sh | bash",
 		},
 		Executable: "fx",
 		Args:       []string{"acp"},
-		ModelMapping: ModelMapping{
-			Type: "session-config-option",
+		ModelMapping: acp.ModelMapping{
+			Type: acp.ModelMappingSessionConfigOption,
 			Path: "model",
 		},
-		InstructionMapping: InstructionMapping{
-			Type: "filesystem",
-			Path: ".fx/AGENTS.md",
+		InstructionMapping: &acp.InstructionMapping{
+			Type:     acp.InstructionMappingFilesystem,
+			FilePath: ".fx/AGENTS.md",
 		},
 		CredentialEnv: append([]string{"VERCEL_OIDC_TOKEN", "AI_GATEWAY_API_KEY"}, SubscriptionEnvironmentVariables...),
-		CredentialBrokering: func(env, sandboxEnv, headers map[string]string) ([]harness.RequestTransformation, error) {
+		CredentialBrokering: func(env, sandboxEnv, headers map[string]string) []harness.RequestTransformation {
 			return CredentialBrokering(env, sandboxEnv, headers, suppliedAuthenticationEnvironment)
 		},
-		ProviderAuthentication: map[string]ProviderAuthenticationValue{
-			"AI_GATEWAY_API_KEY":  {Source: "gateway-api-key"},
-			"AI_GATEWAY_BASE_URL": {Source: "gateway-base-url"},
+		ProviderAuthentication: &acp.ProviderAuthentication{
+			GatewayEnv: map[string]any{
+				"AI_GATEWAY_API_KEY":  map[string]any{"$source": "gateway-api-key"},
+				"AI_GATEWAY_BASE_URL": map[string]any{"$source": "gateway-base-url"},
+			},
 		},
-		PermissionModeMapping: map[harness.PermissionMode]*PermissionModeTarget{
-			harness.PermissionModeAllowReads: {Type: "session-mode", ModeID: "ask"},
-			harness.PermissionModeAllowEdits: {Type: "session-mode", ModeID: "ask"},
-			harness.PermissionModeAllowAll:   {Type: "session-mode", ModeID: "code"},
+		PermissionModeMapping: &acp.PermissionModeMapping{
+			AllowReads: &acp.PermissionModeTarget{Type: acp.PermissionTargetSessionMode, ModeID: "ask"},
+			AllowEdits: &acp.PermissionModeTarget{Type: acp.PermissionTargetSessionMode, ModeID: "ask"},
+			AllowAll:   &acp.PermissionModeTarget{Type: acp.PermissionTargetSessionMode, ModeID: "code"},
 		},
 	}
+	if settings.Port != nil {
+		cfg.Port = *settings.Port
+	}
+	if settings.StartupTimeoutMS != nil {
+		cfg.StartupTimeout = time.Duration(*settings.StartupTimeoutMS) * time.Millisecond
+	}
+	if settings.Reconnect != nil {
+		cfg.Reconnect = *settings.Reconnect
+	}
+	return cfg
 }
 
 // CredentialBrokering builds the request transformations for fx's
 // subscription and AI Gateway credentials. Mirrors the `credentialBrokering`
 // closure in `createFx()`.
-func CredentialBrokering(env, sandboxEnv, headers map[string]string, suppliedAuthenticationEnvironment bool) ([]harness.RequestTransformation, error) {
+func CredentialBrokering(env, sandboxEnv, headers map[string]string, suppliedAuthenticationEnvironment bool) []harness.RequestTransformation {
 	var transformations []harness.RequestTransformation
 	for _, rc := range GetSubscriptionRequestCredentials(env, sandboxEnv) {
 		matchURL := "https://api.x.ai/v1"
@@ -200,12 +151,12 @@ func CredentialBrokering(env, sandboxEnv, headers map[string]string, suppliedAut
 			TransformHeaders: transformHeaders,
 		})
 		if err != nil {
-			return nil, err
+			continue
 		}
 		transformations = append(transformations, tr)
 	}
 	if len(transformations) > 0 {
-		return transformations, nil
+		return transformations
 	}
 
 	environmentVariableName := "AI_GATEWAY_API_KEY"
@@ -219,7 +170,7 @@ func CredentialBrokering(env, sandboxEnv, headers map[string]string, suppliedAut
 	credential := env[environmentVariableName]
 	sandboxCredential := sandboxEnv[environmentVariableName]
 	if credential == "" || sandboxCredential == "" {
-		return nil, nil
+		return nil
 	}
 	baseURL := env["AI_GATEWAY_BASE_URL"]
 	if baseURL == "" {
@@ -237,9 +188,9 @@ func CredentialBrokering(env, sandboxEnv, headers map[string]string, suppliedAut
 		TransformHeaders: transformHeaders,
 	})
 	if err != nil {
-		return nil, err
+		return nil
 	}
-	return []harness.RequestTransformation{tr}, nil
+	return []harness.RequestTransformation{tr}
 }
 
 // sanitizeMCPToolNameSegment mirrors TS `sanitizeFxMcpToolNameSegment`:
