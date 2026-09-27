@@ -215,7 +215,7 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 		disableParallelToolUse = m.options.DisableParallelToolUse
 	}
 
-	prepared := prepareBedrockTools(toolsForPrep, toolChoiceForPrep, hasToolChoice, m.modelID, m.modelFamily(), reasoningBudgetTokens, disableParallelToolUse)
+	prepared := prepareBedrockTools(toolsForPrep, toolChoiceForPrep, hasToolChoice, m.modelID, m.modelFamily(), reasoningBudgetTokens, disableParallelToolUse, caps.RejectsForcedToolUse)
 	warnings = append(warnings, prepared.Warnings...)
 	for k, v := range prepared.AdditionalTools {
 		additionalModelRequestFields[k] = v

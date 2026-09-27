@@ -754,13 +754,91 @@ func TestPrepareTools_FiltersUnsupportedWebToolsWithWarning(t *testing.T) {
 		{Name: "anthropic.web_search_20250305", ProviderExecuted: true},
 		{Type: types.ToolTypeFunction, Name: "get_weather", Parameters: map[string]interface{}{"type": "object"}},
 	}
-	result := prepareBedrockTools(tools, types.ToolChoice{}, false, "anthropic.claude-3-5-sonnet-20241022-v2:0", "", nil, nil)
+	result := prepareBedrockTools(tools, types.ToolChoice{}, false, "anthropic.claude-3-5-sonnet-20241022-v2:0", "", nil, nil, false)
 	if len(result.Warnings) != 1 || result.Warnings[0].Feature != "web_search_20250305 tool" {
 		t.Fatalf("warnings = %#v, want a single web_search_20250305 filter warning", result.Warnings)
 	}
 	if len(result.ToolConfig.Tools) != 1 {
 		t.Fatalf("expected only the function tool to survive, got %#v", result.ToolConfig.Tools)
 	}
+}
+
+// TestPrepareTools_RejectsForcedToolUse ports the TS "models that reject
+// forced tool use" describe block (amazon-bedrock-chat-language-model.test.ts):
+// models with model_capabilities.RejectsForcedToolUse (e.g. Claude Opus 5.5)
+// fall a forced tool_choice ('required' or a named tool) back to 'auto' with
+// an "unsupported" warning, instead of sending the forced choice as-is.
+func TestPrepareTools_RejectsForcedToolUse(t *testing.T) {
+	weatherTool := types.Tool{Type: types.ToolTypeFunction, Name: "getWeather", Description: "Get weather", Parameters: map[string]interface{}{"type": "object"}}
+	timeTool := types.Tool{Type: types.ToolTypeFunction, Name: "getTime", Description: "Get time", Parameters: map[string]interface{}{"type": "object"}}
+
+	t.Run("should build an auto tool choice for required choice", func(t *testing.T) {
+		for _, modelID := range []string{
+			"anthropic.claude-opus-5-5",
+			"us.anthropic.claude-opus-5-5",
+			"global.anthropic.claude-opus-5-5",
+		} {
+			t.Run(modelID, func(t *testing.T) {
+				result := prepareBedrockTools([]types.Tool{weatherTool}, types.RequiredToolChoice(), true, modelID, "", nil, nil, true)
+				if result.ToolConfig.ToolChoice == nil || result.ToolConfig.ToolChoice["auto"] == nil {
+					t.Fatalf("toolConfig.toolChoice = %#v, want {auto: {}}", result.ToolConfig.ToolChoice)
+				}
+				wantWarning := types.Warning{
+					Type:    "unsupported",
+					Feature: "toolChoice",
+					Details: "toolChoice 'required' is not supported by this model because it rejects forced tool use. Using 'auto' instead. Instruct the model to use a tool in the prompt and verify that a tool call was made.",
+				}
+				if len(result.Warnings) != 1 || result.Warnings[0] != wantWarning {
+					t.Fatalf("warnings = %#v, want [%#v]", result.Warnings, wantWarning)
+				}
+			})
+		}
+	})
+
+	t.Run("should build an auto choice containing only the named tool", func(t *testing.T) {
+		result := prepareBedrockTools([]types.Tool{weatherTool, timeTool}, types.ToolChoice{Type: types.ToolChoiceTool, ToolName: "getWeather"}, true, "anthropic.claude-opus-5-5", "", nil, nil, true)
+		if result.ToolConfig.ToolChoice == nil || result.ToolConfig.ToolChoice["auto"] == nil {
+			t.Fatalf("toolConfig.toolChoice = %#v, want {auto: {}}", result.ToolConfig.ToolChoice)
+		}
+		if len(result.ToolConfig.Tools) != 1 || result.ToolConfig.Tools[0]["toolSpec"].(map[string]interface{})["name"] != "getWeather" {
+			t.Fatalf("toolConfig.tools = %#v, want only getWeather", result.ToolConfig.Tools)
+		}
+		wantWarning := types.Warning{
+			Type:    "unsupported",
+			Feature: "toolChoice",
+			Details: "toolChoice 'tool' is not supported by this model because it rejects forced tool use. Only the 'getWeather' tool is sent with 'auto' tool choice. Instruct the model to use the tool in the prompt and verify that a tool call was made.",
+		}
+		if len(result.Warnings) != 1 || result.Warnings[0] != wantWarning {
+			t.Fatalf("warnings = %#v, want [%#v]", result.Warnings, wantWarning)
+		}
+	})
+
+	t.Run("should build an Anthropic auto choice when parallel tool use is disabled", func(t *testing.T) {
+		disable := true
+		result := prepareBedrockTools([]types.Tool{weatherTool}, types.RequiredToolChoice(), true, "anthropic.claude-opus-5-5", "", nil, &disable, true)
+		wantChoice := map[string]interface{}{"type": "auto", "disable_parallel_tool_use": true}
+		toolChoiceField, ok := result.AdditionalTools["tool_choice"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("additionalTools.tool_choice = %#v, want a map", result.AdditionalTools["tool_choice"])
+		}
+		if toolChoiceField["type"] != wantChoice["type"] || toolChoiceField["disable_parallel_tool_use"] != wantChoice["disable_parallel_tool_use"] {
+			t.Fatalf("additionalTools.tool_choice = %#v, want %#v", toolChoiceField, wantChoice)
+		}
+		if result.ToolConfig.ToolChoice != nil {
+			t.Fatalf("toolConfig.toolChoice = %#v, want nil (forced choice moved to additionalModelRequestFields)", result.ToolConfig.ToolChoice)
+		}
+	})
+
+	t.Run("should keep building forced tool choices for models that support them", func(t *testing.T) {
+		// claude-opus-5 (not 5-5) does not set RejectsForcedToolUse.
+		result := prepareBedrockTools([]types.Tool{weatherTool}, types.RequiredToolChoice(), true, "anthropic.claude-opus-5", "", nil, nil, false)
+		if result.ToolConfig.ToolChoice == nil || result.ToolConfig.ToolChoice["any"] == nil {
+			t.Fatalf("toolConfig.toolChoice = %#v, want {any: {}}", result.ToolConfig.ToolChoice)
+		}
+		if len(result.Warnings) != 0 {
+			t.Fatalf("warnings = %#v, want none", result.Warnings)
+		}
+	})
 }
 
 func TestPrepareTools_StrictSchemaCompatibility(t *testing.T) {
@@ -785,7 +863,7 @@ func TestPrepareTools_StrictSchemaCompatibility(t *testing.T) {
 	}
 	// claude-3-5-sonnet is a legacy model (not in modelsWithoutStrictToolSupport),
 	// so strict tool support itself is allowed, but the schema is incompatible.
-	result := prepareBedrockTools(tools, types.ToolChoice{}, false, "anthropic.claude-3-5-sonnet-20241022-v2:0", "", nil, nil)
+	result := prepareBedrockTools(tools, types.ToolChoice{}, false, "anthropic.claude-3-5-sonnet-20241022-v2:0", "", nil, nil, false)
 	foundWarning := false
 	for _, w := range result.Warnings {
 		if w.Feature == "strict" {
@@ -805,7 +883,7 @@ func TestPrepareTools_ModelsWithoutStrictSupportOmitStrict(t *testing.T) {
 	tools := []types.Tool{
 		{Type: types.ToolTypeFunction, Name: "t", Strict: types.BoolPtr(true), Parameters: map[string]interface{}{"type": "object", "additionalProperties": false}},
 	}
-	result := prepareBedrockTools(tools, types.ToolChoice{}, false, "anthropic.claude-opus-5", "", nil, nil)
+	result := prepareBedrockTools(tools, types.ToolChoice{}, false, "anthropic.claude-opus-5", "", nil, nil, false)
 	toolSpec := result.ToolConfig.Tools[0]["toolSpec"].(map[string]interface{})
 	if _, ok := toolSpec["strict"]; ok {
 		t.Fatalf("expected strict omitted for claude-opus-5 (no strict tool support), got %#v", toolSpec)
@@ -837,7 +915,7 @@ func TestPrepareTools_ToolSearchWireShape(t *testing.T) {
 	tools := []types.Tool{
 		{Name: "anthropic.tool_search_bm25_20251119", Parameters: schema, ProviderExecuted: true},
 	}
-	result := prepareBedrockTools(tools, types.ToolChoice{}, false, "anthropic.claude-opus-5", "", nil, nil)
+	result := prepareBedrockTools(tools, types.ToolChoice{}, false, "anthropic.claude-opus-5", "", nil, nil, false)
 	if len(result.ToolConfig.Tools) != 1 {
 		t.Fatalf("ToolConfig.Tools = %#v, want 1 tool", result.ToolConfig.Tools)
 	}
@@ -878,7 +956,7 @@ func TestPrepareTools_BuiltinToolsForwarded(t *testing.T) {
 	tools := []types.Tool{
 		{Name: "anthropic.bash_20250124", Parameters: schema, ProviderExecuted: true},
 	}
-	result := prepareBedrockTools(tools, types.ToolChoice{}, false, "anthropic.claude-opus-5", "", nil, nil)
+	result := prepareBedrockTools(tools, types.ToolChoice{}, false, "anthropic.claude-opus-5", "", nil, nil, false)
 	if len(result.Warnings) != 0 {
 		t.Fatalf("expected no warnings for a recognized builtin tool, got %#v", result.Warnings)
 	}
@@ -918,7 +996,7 @@ func TestPrepareTools_UnrecognizedAnthropicToolWarns(t *testing.T) {
 	tools := []types.Tool{
 		{Name: "anthropic.computer_toolset_20260801", ProviderExecuted: true},
 	}
-	result := prepareBedrockTools(tools, types.ToolChoice{}, false, "anthropic.claude-opus-5", "", nil, nil)
+	result := prepareBedrockTools(tools, types.ToolChoice{}, false, "anthropic.claude-opus-5", "", nil, nil, false)
 	if len(result.ToolConfig.Tools) != 0 {
 		t.Fatalf("expected the unrecognized tool to be dropped, got %#v", result.ToolConfig.Tools)
 	}
@@ -960,7 +1038,7 @@ func TestPrepareTools_SelfSerializingAnthropicToolsForwarded(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := prepareBedrockTools([]types.Tool{tt.tool}, types.ToolChoice{}, false, "anthropic.claude-opus-5", "", nil, nil)
+			result := prepareBedrockTools([]types.Tool{tt.tool}, types.ToolChoice{}, false, "anthropic.claude-opus-5", "", nil, nil, false)
 			if len(result.Warnings) != 0 {
 				t.Fatalf("expected no warnings, got %#v", result.Warnings)
 			}
