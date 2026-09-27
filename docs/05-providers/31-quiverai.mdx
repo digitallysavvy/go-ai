@@ -85,18 +85,16 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 
 QuiverAI also supports a caller-executed "custom" tool (`ProviderID:
 "quiverai.custom"`), whose input the model streams as raw text (e.g. SVG
-markup) instead of JSON function arguments:
+markup) instead of JSON function arguments. Build one with
+`qprovider.Tools().CustomTool(...)`:
 
 ```go
-svgTool := types.Tool{
-    Type:       "provider",
-    ProviderID: "quiverai.custom",
-    Name:       "write_svg",
-    ProviderArgs: map[string]interface{}{
-        "description": "Return raw SVG markup for the requested icon.",
-        "format":      map[string]interface{}{"type": "text"},
-    },
-}
+import "github.com/digitallysavvy/go-ai/pkg/providers/openresponses"
+
+svgTool := qprovider.Tools().CustomTool("write_svg", openresponses.CustomToolOptions{
+    Description: "Return raw SVG markup for the requested icon.",
+    Format:      &openresponses.CustomToolFormat{Type: "text"},
+})
 ```
 
 See [`examples/providers/quiverai`](../../examples/providers/quiverai) for
