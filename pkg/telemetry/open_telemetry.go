@@ -741,8 +741,20 @@ func spanNameLooksLikeEmbed(e TelemetryFinishEvent) bool {
 }
 
 // OnError records the error on the root span (with HTTP status when
-// available) and ends it.
+// available) and ends it. It also defensively closes any nested evaluate
+// span left open by OnEvaluationModelCallStart for this CallID, since
+// OnEvaluationModelCallEnd is never notified on an error path.
 func (i OpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent) {
+	if e.CallID != "" {
+		if value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("evaluation", e.CallID)); ok {
+			if entry, ok := value.(otelSpanEntry); ok && entry.span.IsRecording() {
+				if e.Error != nil {
+					RecordErrorOnSpan(entry.span, e.Error)
+				}
+				entry.span.End()
+			}
+		}
+	}
 	span := trace.SpanFromContext(ctx)
 	if !span.IsRecording() {
 		return

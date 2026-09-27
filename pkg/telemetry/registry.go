@@ -277,6 +277,12 @@ type TelemetryFinishEvent struct {
 type TelemetryErrorEvent struct {
 	Settings *Settings
 	Error    error
+	// CallID, when set, lets an integration defensively close a nested span
+	// it opened for this call (e.g. the "ai.evaluate.doEvaluate" span from
+	// OnEvaluationModelCallStart) that would otherwise leak because the
+	// corresponding *End event is never notified on an error path. Other
+	// operations leave this empty and are unaffected.
+	CallID string
 }
 
 // TelemetryAbortEvent is emitted when a generation is aborted by context
@@ -1204,8 +1210,22 @@ func (i LegacyOpenTelemetry) OnFinish(ctx context.Context, e TelemetryFinishEven
 	i.OnEnd(ctx, e)
 }
 
-// OnError records the error on the root span and ends it.
+// OnError records the error on the root span and ends it. It also
+// defensively closes any nested "ai.evaluate.doEvaluate" span left open by
+// OnEvaluationModelCallStart for this CallID, since
+// OnEvaluationModelCallEnd is never notified on an error path (mirrors
+// evaluate.ts, where onEvaluationModelCallEnd only fires on success).
 func (i LegacyOpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent) {
+	if e.CallID != "" {
+		if value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("evaluation", e.CallID)); ok {
+			if entry, ok := value.(otelSpanEntry); ok && entry.span.IsRecording() {
+				if e.Error != nil {
+					RecordErrorOnSpan(entry.span, e.Error)
+				}
+				entry.span.End()
+			}
+		}
+	}
 	span := trace.SpanFromContext(ctx)
 	if !span.IsRecording() {
 		return

@@ -369,104 +369,15 @@ func TestEmbed_Telemetry(t *testing.T) {
 	}
 }
 
-// TestExperimentalEvaluate_Telemetry mirrors TypeScript's onEvaluateOperationStart
-// / experimental_onEvaluationModelCallStart / experimental_onEvaluationModelCallEnd
-// / onEvaluateOperationEnd in packages/otel/src/legacy-open-telemetry.ts: the root
-// "ai.evaluate" span carries input-gated ai.evaluation.state/questions and an
-// output-gated ai.evaluation.answers, and the nested "ai.evaluate.doEvaluate"
-// span additionally carries usage and providerMetadata (ungated).
-func TestExperimentalEvaluate_Telemetry(t *testing.T) {
-	spanRecorder, cleanup := setupTelemetryTest(t)
-	defer cleanup()
-
-	inputTokens := 3
-	outputTokens := 7
-	model := &mockEvaluationModel{
-		providerName: "test-provider",
-		modelID:      "test-model",
-		doEvaluate: func(_ context.Context, _ provider.EvaluationCallOptions) (*provider.EvaluationResult, error) {
-			return &provider.EvaluationResult{
-				Answers: map[string]provider.EvaluationAnswer{
-					"q1": {Type: "boolean", Probability: floatPtr(0.9)},
-				},
-				Usage:            &provider.EvaluationUsage{InputTokens: &inputTokens, OutputTokens: &outputTokens},
-				ProviderMetadata: map[string]interface{}{"test": map[string]interface{}{"key": "value"}},
-			}, nil
-		},
-	}
-
-	telemetrySettings := &telemetry.Settings{
-		IsEnabled:     telemetry.Bool(true),
-		RecordInputs:  true,
-		RecordOutputs: true,
-		FunctionID:    "evaluate-test",
-	}
-
-	questions := map[string]provider.EvaluationQuestion{
-		"q1": {Type: "boolean", Instructions: "Is it correct?"},
-	}
-
-	_, err := ExperimentalEvaluate(context.Background(), EvaluateOptions{
-		Model:                 model,
-		State:                 map[string]interface{}{"input": "hello"},
-		Questions:             questions,
-		ExperimentalTelemetry: telemetrySettings,
-	})
-	if err != nil {
-		t.Fatalf("ExperimentalEvaluate failed: %v", err)
-	}
-
-	spans := spanRecorder.Ended()
-	var rootSpan, doEvaluateSpan trace.ReadOnlySpan
-	for _, span := range spans {
-		switch span.Name() {
-		case "ai.evaluate.evaluate-test":
-			rootSpan = span
-		case "ai.evaluate.doEvaluate":
-			doEvaluateSpan = span
-		}
-	}
-	if rootSpan == nil {
-		t.Fatal("Expected ai.evaluate.evaluate-test span")
-	}
-	if doEvaluateSpan == nil {
-		t.Fatal("Expected ai.evaluate.doEvaluate span")
-	}
-
-	rootAttrs := attrsToMap(rootSpan.Attributes())
-	if rootAttrs["ai.operationId"] != "ai.evaluate" {
-		t.Errorf("root ai.operationId = %v", rootAttrs["ai.operationId"])
-	}
-	if rootAttrs["ai.evaluation.state"] != `{"input":"hello"}` {
-		t.Errorf("root ai.evaluation.state = %v", rootAttrs["ai.evaluation.state"])
-	}
-	if _, ok := rootAttrs["ai.evaluation.questions"]; !ok {
-		t.Error("root span missing ai.evaluation.questions")
-	}
-	if _, ok := rootAttrs["ai.evaluation.answers"]; !ok {
-		t.Error("root span missing ai.evaluation.answers")
-	}
-
-	doAttrs := attrsToMap(doEvaluateSpan.Attributes())
-	if doAttrs["ai.operationId"] != "ai.evaluate.doEvaluate" {
-		t.Errorf("doEvaluate ai.operationId = %v", doAttrs["ai.operationId"])
-	}
-	if _, ok := doAttrs["ai.evaluation.state"]; !ok {
-		t.Error("doEvaluate span missing ai.evaluation.state")
-	}
-	if _, ok := doAttrs["ai.evaluation.answers"]; !ok {
-		t.Error("doEvaluate span missing ai.evaluation.answers")
-	}
-	if !valuesEqual(int64(3), doAttrs["ai.usage.inputTokens"]) {
-		t.Errorf("doEvaluate ai.usage.inputTokens = %v", doAttrs["ai.usage.inputTokens"])
-	}
-	if !valuesEqual(int64(7), doAttrs["ai.usage.outputTokens"]) {
-		t.Errorf("doEvaluate ai.usage.outputTokens = %v", doAttrs["ai.usage.outputTokens"])
-	}
-	if _, ok := doAttrs["ai.response.providerMetadata"]; !ok {
-		t.Error("doEvaluate span missing ai.response.providerMetadata")
-	}
-}
+// Evaluate's OTel span assertions (root "ai.evaluate" / nested
+// "ai.evaluate.doEvaluate" spans, attribute gating) now live in
+// pkg/telemetry (TestLegacyOpenTelemetryEvaluateSpans and friends), since
+// evaluate.go no longer creates spans directly — it dispatches
+// experimental_onEvaluateStart/End and
+// experimental_onEvaluationModelCallStart/End events that a registered
+// integration (e.g. LegacyOpenTelemetry) turns into spans. See
+// pkg/ai/evaluate_telemetry_test.go for the pkg/ai-level dispatch tests
+// (no span without an integration; exactly the expected spans with one).
 
 func attrsToMap(attrs []attribute.KeyValue) map[string]interface{} {
 	out := make(map[string]interface{}, len(attrs))
