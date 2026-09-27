@@ -133,3 +133,45 @@ func TestStreamText_RemapsDuplicateTextAndReasoningIDsAcrossSteps(t *testing.T) 
 		t.Fatalf("reasoning-end IDs %v must match reasoning-start IDs %v", reasoningEndIDs, reasoningIDs)
 	}
 }
+
+// TestRemapDuplicateBlockID_UsesFreshGeneratedID verifies the exact remap
+// format TS's createPartIdReserver uses: on a collision, the replacement is
+// a fresh ID from the call's ID generator (not a suffix of the ORIGINAL
+// colliding ID, e.g. not "0-2"), with a numeric suffix appended to that
+// fresh ID only if it, too, collides.
+func TestRemapDuplicateBlockID_UsesFreshGeneratedID(t *testing.T) {
+	t.Parallel()
+
+	used := map[string]bool{"0": true}
+	remap := map[string]string{}
+	generateID := func() string { return "generated-id" }
+
+	chunk := &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "0"}
+	remapDuplicateBlockID(chunk, used, remap, provider.ChunkTypeTextStart, provider.ChunkTypeText, provider.ChunkTypeTextEnd, generateID)
+
+	if chunk.ID != "generated-id" {
+		t.Fatalf("chunk.ID = %q, want %q (a fresh generated ID, not a suffix of the original \"0\")", chunk.ID, "generated-id")
+	}
+	if remap["0"] != "generated-id" {
+		t.Fatalf("remap[\"0\"] = %q, want %q", remap["0"], "generated-id")
+	}
+}
+
+// TestRemapDuplicateBlockID_SuffixesGeneratedIDOnCollision verifies the
+// fallback loop when the freshly generated ID ALSO collides: TS appends
+// `-1`, `-2`, ... to the generated ID (not the original), incrementing until
+// unique.
+func TestRemapDuplicateBlockID_SuffixesGeneratedIDOnCollision(t *testing.T) {
+	t.Parallel()
+
+	used := map[string]bool{"0": true, "generated-id": true, "generated-id-1": true}
+	remap := map[string]string{}
+	generateID := func() string { return "generated-id" }
+
+	chunk := &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "0"}
+	remapDuplicateBlockID(chunk, used, remap, provider.ChunkTypeTextStart, provider.ChunkTypeText, provider.ChunkTypeTextEnd, generateID)
+
+	if chunk.ID != "generated-id-2" {
+		t.Fatalf("chunk.ID = %q, want %q", chunk.ID, "generated-id-2")
+	}
+}

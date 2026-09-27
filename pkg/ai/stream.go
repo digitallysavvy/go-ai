@@ -1305,6 +1305,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	// step's own perspective; only cross-step reuse needs remapping).
 	usedTextIDs := make(map[string]bool)
 	usedReasoningIDs := make(map[string]bool)
+	remapGenerateID := internalGenerateID(opts.Internal)
 	pendingStepCtx := r.initialStepCtx
 	pendingStepCancel := r.initialStepCancel
 	abortFired := false
@@ -1509,8 +1510,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				})
 				continue
 			}
-			remapDuplicateBlockID(chunk, usedTextIDs, stepTextIDRemap, provider.ChunkTypeTextStart, provider.ChunkTypeText, provider.ChunkTypeTextEnd)
-			remapDuplicateBlockID(chunk, usedReasoningIDs, stepReasoningIDRemap, provider.ChunkTypeReasoningStart, provider.ChunkTypeReasoning, provider.ChunkTypeReasoningEnd)
+			remapDuplicateBlockID(chunk, usedTextIDs, stepTextIDRemap, provider.ChunkTypeTextStart, provider.ChunkTypeText, provider.ChunkTypeTextEnd, remapGenerateID)
+			remapDuplicateBlockID(chunk, usedReasoningIDs, stepReasoningIDRemap, provider.ChunkTypeReasoningStart, provider.ChunkTypeReasoning, provider.ChunkTypeReasoningEnd, remapGenerateID)
 			forwardChunk := !(suppressReasoningBoundaries && isReasoningBoundaryChunk(chunk.Type))
 			if chunk.Type == provider.ChunkTypeRaw && !includeRawChunksValue(r.cbInclude) {
 				forwardChunk = false
@@ -3754,7 +3755,16 @@ func resetChunkDeadlineOnOutput(stepCtx context.Context, tc *TimeoutConfig, prev
 // the block's delta/end chunks, an existing remap entry (if any) is applied
 // so every chunk for that block carries the same (possibly remapped) ID
 // throughout the step.
-func remapDuplicateBlockID(chunk *provider.StreamChunk, used map[string]bool, remap map[string]string, startType, deltaType, endType provider.ChunkType) {
+//
+// generateID mirrors TS's createPartIdReserver: on collision, the
+// replacement is a fresh ID from generateID() (the call's configured ID
+// generator — TS's generateId, InternalOptions.GenerateID here), not a
+// suffix of the original colliding ID. A numeric suffix is appended to that
+// FRESH id only in the (extremely unlikely) case that it also collides,
+// exactly like TS's `${generatedId}-${++suffix}` loop. Deriving the
+// replacement from the original ID instead (e.g. "0" -> "0-2") would let a
+// provider's own later block ID collide with an earlier remap's output.
+func remapDuplicateBlockID(chunk *provider.StreamChunk, used map[string]bool, remap map[string]string, startType, deltaType, endType provider.ChunkType, generateID IDGenerator) {
 	if chunk == nil || chunk.ID == "" {
 		return
 	}
@@ -3762,9 +3772,10 @@ func remapDuplicateBlockID(chunk *provider.StreamChunk, used map[string]bool, re
 	case startType:
 		id := chunk.ID
 		if used[id] {
-			newID := id
-			for n := 2; used[newID]; n++ {
-				newID = fmt.Sprintf("%s-%d", id, n)
+			generatedID := generateID()
+			newID := generatedID
+			for n := 1; used[newID]; n++ {
+				newID = fmt.Sprintf("%s-%d", generatedID, n)
 			}
 			remap[id] = newID
 			chunk.ID = newID
