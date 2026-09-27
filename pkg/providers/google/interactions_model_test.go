@@ -108,8 +108,19 @@ func TestInteractionsGenerateRequestAndResponse(t *testing.T) {
 	if _, ok := generationConfig["tool_choice"].(map[string]interface{}); !ok {
 		t.Fatalf("tool_choice missing from generation_config: %#v", generationConfig)
 	}
+	// The whole prompt is a single user message, so it becomes one top-level
+	// `user_input` step (never collapsed to a bare content array — TS
+	// `GoogleInteractionsInput` is always `Array<Step>`).
 	input := captured["input"].([]interface{})
-	fileBlock := input[1].(map[string]interface{})
+	if len(input) != 1 {
+		t.Fatalf("input len = %d, want 1 user_input step: %#v", len(input), input)
+	}
+	step0 := input[0].(map[string]interface{})
+	if step0["type"] != "user_input" {
+		t.Fatalf("input[0] = %#v", step0)
+	}
+	stepContent := step0["content"].([]interface{})
+	fileBlock := stepContent[1].(map[string]interface{})
 	if fileBlock["type"] != "image" || fileBlock["uri"] != "https://example.com/a.png" || fileBlock["resolution"] != "high" {
 		t.Fatalf("file block = %#v", fileBlock)
 	}
@@ -167,13 +178,17 @@ func TestInteractionsPreviousInteractionCompactsAssistantAndToolResult(t *testin
 	if captured["previous_interaction_id"] != "v1_prev" {
 		t.Fatalf("previous_interaction_id = %v", captured["previous_interaction_id"])
 	}
-	turns := captured["input"].([]interface{})
-	if len(turns) != 2 {
-		t.Fatalf("turn count = %d, body=%#v", len(turns), captured["input"])
+	// Compaction drops whole assistant/tool messages, so only the two user
+	// messages ("first", "next") should remain, each its own `user_input`
+	// step — no `function_call`/`thought`/`model_output` step (which would
+	// only come from an assistant message) should have leaked through.
+	steps := captured["input"].([]interface{})
+	if len(steps) != 2 {
+		t.Fatalf("step count = %d, body=%#v", len(steps), captured["input"])
 	}
-	for _, turn := range turns {
-		if turn.(map[string]interface{})["role"] == "model" {
-			t.Fatalf("assistant turn was not compacted: %#v", turns)
+	for _, step := range steps {
+		if step.(map[string]interface{})["type"] != "user_input" {
+			t.Fatalf("assistant/tool turn was not compacted: %#v", steps)
 		}
 	}
 }
@@ -501,7 +516,7 @@ func TestInteractionsAssistantToolCallContentRoundTrips(t *testing.T) {
 	t.Parallel()
 
 	model := NewInteractionsLanguageModel(New(Config{APIKey: "test-key"}), ModelGemini25Flash)
-	content, warnings, err := model.convertAssistantParts([]types.ContentPart{
+	steps, warnings, err := model.convertAssistantSteps([]types.ContentPart{
 		types.TextContent{Text: "before"},
 		types.ToolCallContent{
 			ToolCallID:       "call-1",
@@ -511,17 +526,28 @@ func TestInteractionsAssistantToolCallContentRoundTrips(t *testing.T) {
 		},
 	}, nil, "")
 	if err != nil {
-		t.Fatalf("convertAssistantParts() error = %v", err)
+		t.Fatalf("convertAssistantSteps() error = %v", err)
 	}
 	if len(warnings) != 0 {
 		t.Fatalf("warnings = %#v", warnings)
 	}
-	if len(content) != 2 {
-		t.Fatalf("content len = %d", len(content))
+	// Text before the tool-call flushes as its own top-level model_output
+	// step; the tool-call becomes a separate top-level function_call step —
+	// never nested content inside one combined block (TS: adjacent text/file
+	// coalesces into model_output, but a tool-call always flushes it first).
+	if len(steps) != 2 {
+		t.Fatalf("steps len = %d, want 2: %#v", len(steps), steps)
 	}
-	call := content[1]
+	if steps[0]["type"] != "model_output" {
+		t.Fatalf("steps[0] = %#v", steps[0])
+	}
+	modelOutputContent := steps[0]["content"].([]map[string]interface{})
+	if len(modelOutputContent) != 1 || modelOutputContent[0]["text"] != "before" {
+		t.Fatalf("steps[0].content = %#v", modelOutputContent)
+	}
+	call := steps[1]
 	if call["type"] != "function_call" || call["id"] != "call-1" || call["name"] != "lookup" {
-		t.Fatalf("function_call block = %#v", call)
+		t.Fatalf("function_call step = %#v", call)
 	}
 	if call["signature"] != "sig-1" {
 		t.Fatalf("signature = %#v", call["signature"])
@@ -603,9 +629,9 @@ func TestInteractionsProcessingCallAndResultParseAndReplay(t *testing.T) {
 		t.Fatalf("content[1] = %#v", content[1])
 	}
 
-	replayed, warnings, err := model.convertAssistantParts([]types.ContentPart{call, result}, nil, "")
+	replayed, warnings, err := model.convertAssistantSteps([]types.ContentPart{call, result}, nil, "")
 	if err != nil {
-		t.Fatalf("convertAssistantParts() error = %v", err)
+		t.Fatalf("convertAssistantSteps() error = %v", err)
 	}
 	if len(warnings) != 0 {
 		t.Fatalf("warnings = %#v", warnings)
@@ -628,11 +654,11 @@ func TestInteractionsProcessingCustomContentInvalidKindWarns(t *testing.T) {
 	t.Parallel()
 
 	model := NewInteractionsLanguageModel(New(Config{APIKey: "test-key"}), ModelGemini25Flash)
-	_, warnings, err := model.convertAssistantParts([]types.ContentPart{
+	_, warnings, err := model.convertAssistantSteps([]types.ContentPart{
 		types.CustomContent{Kind: "other.thing"},
 	}, nil, "")
 	if err != nil {
-		t.Fatalf("convertAssistantParts() error = %v", err)
+		t.Fatalf("convertAssistantSteps() error = %v", err)
 	}
 	if len(warnings) != 1 || !strings.Contains(warnings[0].Message, "unsupported or invalid custom") {
 		t.Fatalf("warnings = %#v", warnings)
@@ -1088,6 +1114,64 @@ func TestInteractionsStreamFinishMetadataAlwaysGoogleObject(t *testing.T) {
 	}
 	if string(chunk.ProviderMetadata) != `{"google":{}}` {
 		t.Fatalf("provider metadata = %s", chunk.ProviderMetadata)
+	}
+}
+
+// TestInteractionsConvertPromptEmitsFlatTopLevelSteps ports the shape
+// asserted by TS convert-to-google-interactions-input.test.ts: the request
+// body's `input` is always a flat array of discriminated step objects
+// (`GoogleInteractionsInput = Array<Step>`), never `{role, content}` turn
+// wrappers, and an assistant message's reasoning/tool-call/processing
+// parts each become their OWN top-level step rather than nested content
+// inside one combined block — only adjacent text/file content coalesces
+// into a single `model_output` step.
+func TestInteractionsConvertPromptEmitsFlatTopLevelSteps(t *testing.T) {
+	t.Parallel()
+
+	model := NewInteractionsLanguageModel(New(Config{APIKey: "test-key"}), ModelGemini25Flash)
+	steps, _, warnings, err := model.convertPrompt(types.Prompt{
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "question"}}},
+			{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.TextContent{Text: "part one"},
+				types.ReasoningContent{Text: "thinking...", Signature: "sig-r"},
+				types.TextContent{Text: "part two"},
+			}, ToolCalls: []types.ToolCall{{ID: "call-1", ToolName: "lookup", Arguments: map[string]interface{}{"q": "x"}}}},
+		},
+	}, GoogleInteractionsProviderOptions{})
+	if err != nil {
+		t.Fatalf("convertPrompt() error = %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v", warnings)
+	}
+
+	// Expected flat step sequence: user_input, model_output("part one"),
+	// thought, model_output("part two"), function_call. The tool call
+	// (only in msg.ToolCalls, not inline in Content) flushes the pending
+	// "part two" text before becoming its own step.
+	if len(steps) != 5 {
+		t.Fatalf("steps len = %d, want 5: %#v", len(steps), steps)
+	}
+	wantTypes := []string{"user_input", "model_output", "thought", "model_output", "function_call"}
+	for i, want := range wantTypes {
+		if got := steps[i]["type"]; got != want {
+			t.Fatalf("steps[%d].type = %v, want %q (all steps: %#v)", i, got, want, steps)
+		}
+	}
+	firstModelOutput := steps[1]["content"].([]map[string]interface{})
+	if len(firstModelOutput) != 1 || firstModelOutput[0]["text"] != "part one" {
+		t.Fatalf("steps[1].content = %#v", firstModelOutput)
+	}
+	if steps[2]["signature"] != "sig-r" {
+		t.Fatalf("steps[2] (thought) = %#v", steps[2])
+	}
+	secondModelOutput := steps[3]["content"].([]map[string]interface{})
+	if len(secondModelOutput) != 1 || secondModelOutput[0]["text"] != "part two" {
+		t.Fatalf("steps[3].content = %#v", secondModelOutput)
+	}
+	if steps[4]["id"] != "call-1" || steps[4]["name"] != "lookup" {
+		t.Fatalf("steps[4] (function_call) = %#v", steps[4])
 	}
 }
 

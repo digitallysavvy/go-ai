@@ -9,7 +9,20 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
-func (m *InteractionsLanguageModel) convertPrompt(p types.Prompt, opts GoogleInteractionsProviderOptions) (interface{}, string, []types.Warning, error) {
+// convertPrompt ports TS convertToGoogleInteractionsInput: the Interactions
+// wire request body has an `input` field that is ALWAYS a flat array of
+// discriminated step objects (`GoogleInteractionsInput = Array<
+// GoogleInteractionsStep>`) — never a `{role, content}` "turn" wrapper, and
+// never collapsed to a bare content array even for a single user message.
+//   - a user message becomes one `user_input` step (content = its text/file
+//     blocks, with adjacent text merged);
+//   - a tool message becomes one `user_input` step whose content holds one
+//     `function_result` block per tool-result part;
+//   - an assistant message fans out into potentially several steps: adjacent
+//     text/file content coalesces into one `model_output` step, while
+//     reasoning, tool-calls, and processing_call/processing_result custom
+//     parts each become their own top-level step (see convertAssistantSteps).
+func (m *InteractionsLanguageModel) convertPrompt(p types.Prompt, opts GoogleInteractionsProviderOptions) ([]map[string]interface{}, string, []types.Warning, error) {
 	warnings := make([]types.Warning, 0)
 	messages := p.Messages
 	if len(messages) == 0 && p.Text != "" {
@@ -27,7 +40,7 @@ func (m *InteractionsLanguageModel) convertPrompt(p types.Prompt, opts GoogleInt
 	}
 
 	var systemTexts []string
-	turns := make([]map[string]interface{}, 0, len(messages))
+	steps := make([]map[string]interface{}, 0, len(messages))
 	for _, msg := range messages {
 		switch msg.Role {
 		case types.RoleSystem:
@@ -44,17 +57,15 @@ func (m *InteractionsLanguageModel) convertPrompt(p types.Prompt, opts GoogleInt
 			warnings = append(warnings, ws...)
 			content = mergeAdjacentInteractionText(content)
 			if len(content) > 0 {
-				turns = append(turns, map[string]interface{}{"role": "user", "content": content})
+				steps = append(steps, map[string]interface{}{"type": "user_input", "content": content})
 			}
 		case types.RoleAssistant:
-			content, ws, err := m.convertAssistantParts(msg.Content, msg.ToolCalls, opts.MediaResolution)
+			assistantSteps, ws, err := m.convertAssistantSteps(msg.Content, msg.ToolCalls, opts.MediaResolution)
 			if err != nil {
 				return nil, "", nil, err
 			}
 			warnings = append(warnings, ws...)
-			if len(content) > 0 {
-				turns = append(turns, map[string]interface{}{"role": "model", "content": content})
-			}
+			steps = append(steps, assistantSteps...)
 		case types.RoleTool:
 			content, ws, err := convertToolResults(msg.Content)
 			if err != nil {
@@ -62,19 +73,13 @@ func (m *InteractionsLanguageModel) convertPrompt(p types.Prompt, opts GoogleInt
 			}
 			warnings = append(warnings, ws...)
 			if len(content) > 0 {
-				turns = append(turns, map[string]interface{}{"role": "user", "content": content})
+				steps = append(steps, map[string]interface{}{"type": "user_input", "content": content})
 			}
 		}
 	}
 
 	systemInstruction := strings.Join(systemTexts, "\n\n")
-	if len(turns) == 0 {
-		return "", systemInstruction, warnings, nil
-	}
-	if len(turns) == 1 && turns[0]["role"] == "user" {
-		return turns[0]["content"], systemInstruction, warnings, nil
-	}
-	return turns, systemInstruction, warnings, nil
+	return steps, systemInstruction, warnings, nil
 }
 
 func (m *InteractionsLanguageModel) convertContentParts(parts []types.ContentPart, mediaResolution string) ([]map[string]interface{}, []types.Warning, error) {
@@ -110,20 +115,41 @@ func (m *InteractionsLanguageModel) convertContentParts(parts []types.ContentPar
 	return content, warnings, nil
 }
 
-func (m *InteractionsLanguageModel) convertAssistantParts(parts []types.ContentPart, toolCalls []types.ToolCall, mediaResolution string) ([]map[string]interface{}, []types.Warning, error) {
+// convertAssistantSteps ports TS's assistant-message branch of
+// convertToGoogleInteractionsInput: adjacent text/file content blocks
+// coalesce into a single `model_output` step (flushed whenever a
+// non-coalescable part is encountered, and at the end), while reasoning,
+// tool-calls, and processing_call/processing_result custom parts each
+// become their own top-level step — never nested inside `model_output`.
+//
+// Tool calls may appear inline in `parts` (as types.ToolCallContent, for a
+// hand-built prompt) and/or in the separate `toolCalls` slice (as populated
+// by the SDK's own conversation history, see types.Message.ToolCalls). A
+// call ID seen inline is not duplicated from `toolCalls`.
+func (m *InteractionsLanguageModel) convertAssistantSteps(parts []types.ContentPart, toolCalls []types.ToolCall, mediaResolution string) ([]map[string]interface{}, []types.Warning, error) {
 	var warnings []types.Warning
-	content := make([]map[string]interface{}, 0, len(parts)+len(toolCalls))
+	var steps []map[string]interface{}
+	var pending []map[string]interface{}
+	seenToolCallIDs := map[string]bool{}
+
+	flush := func() {
+		if len(pending) > 0 {
+			steps = append(steps, map[string]interface{}{"type": "model_output", "content": pending})
+			pending = nil
+		}
+	}
+
 	for _, part := range parts {
 		switch p := part.(type) {
 		case types.TextContent:
-			content = append(content, map[string]interface{}{"type": "text", "text": p.Text})
+			pending = append(pending, map[string]interface{}{"type": "text", "text": p.Text})
 		case types.ReasoningContent:
-			block := pruneMap(map[string]interface{}{
+			flush()
+			steps = append(steps, pruneMap(map[string]interface{}{
 				"type":      "thought",
 				"signature": emptyToNil(firstNonEmpty(p.Signature, googleSignature(p.ProviderMetadata))),
 				"summary":   reasoningSummary(p.Text),
-			})
-			content = append(content, block)
+			}))
 		case types.FileContent:
 			block, ws, err := fileContentToInteractionBlock(p, mediaResolution)
 			if err != nil {
@@ -133,8 +159,12 @@ func (m *InteractionsLanguageModel) convertAssistantParts(parts []types.ContentP
 			if block == nil {
 				continue
 			}
-			content = append(content, block)
+			pending = append(pending, block)
 		case types.ToolCallContent:
+			flush()
+			if p.ToolCallID != "" {
+				seenToolCallIDs[p.ToolCallID] = true
+			}
 			args := p.Arguments
 			if args == nil && p.Input != "" {
 				_ = json.Unmarshal([]byte(p.Input), &args)
@@ -142,7 +172,7 @@ func (m *InteractionsLanguageModel) convertAssistantParts(parts []types.ContentP
 			if args == nil {
 				args = map[string]interface{}{}
 			}
-			content = append(content, pruneMap(map[string]interface{}{
+			steps = append(steps, pruneMap(map[string]interface{}{
 				"type":      "function_call",
 				"id":        p.ToolCallID,
 				"name":      p.ToolName,
@@ -150,12 +180,13 @@ func (m *InteractionsLanguageModel) convertAssistantParts(parts []types.ContentP
 				"signature": emptyToNil(firstNonEmpty(p.ThoughtSignature, signatureFromRawMetadata(p.ProviderMetadata))),
 			}))
 		case types.CustomContent:
+			flush()
 			google := extractGoogleMetadata(p.ProviderMetadata)
 			signature, _ := google["signature"].(string)
 			switch p.Kind {
 			case "google.processing_call":
 				if processingID, _ := google["processingId"].(string); processingID != "" {
-					content = append(content, pruneMap(map[string]interface{}{
+					steps = append(steps, pruneMap(map[string]interface{}{
 						"type":      "processing_call",
 						"id":        processingID,
 						"signature": emptyToNil(signature),
@@ -164,7 +195,7 @@ func (m *InteractionsLanguageModel) convertAssistantParts(parts []types.ContentP
 				}
 			case "google.processing_result":
 				if processingCallID, _ := google["processingCallId"].(string); processingCallID != "" {
-					content = append(content, pruneMap(map[string]interface{}{
+					steps = append(steps, pruneMap(map[string]interface{}{
 						"type":      "processing_result",
 						"call_id":   processingCallID,
 						"signature": emptyToNil(signature),
@@ -174,14 +205,21 @@ func (m *InteractionsLanguageModel) convertAssistantParts(parts []types.ContentP
 			}
 			msg := fmt.Sprintf("google.interactions: unsupported or invalid custom assistant content part %q; part dropped.", p.Kind)
 			warnings = append(warnings, types.Warning{Type: "other", Message: msg, Details: msg})
+		default:
+			msg := fmt.Sprintf("google.interactions: unsupported assistant content part type %q; part dropped.", part.ContentType())
+			warnings = append(warnings, types.Warning{Type: "other", Message: msg, Details: msg})
 		}
 	}
 	for _, call := range toolCalls {
+		if call.ID != "" && seenToolCallIDs[call.ID] {
+			continue
+		}
+		flush()
 		args := call.Arguments
 		if args == nil {
 			args = map[string]interface{}{}
 		}
-		content = append(content, pruneMap(map[string]interface{}{
+		steps = append(steps, pruneMap(map[string]interface{}{
 			"type":      "function_call",
 			"id":        call.ID,
 			"name":      call.ToolName,
@@ -189,7 +227,8 @@ func (m *InteractionsLanguageModel) convertAssistantParts(parts []types.ContentP
 			"signature": emptyToNil(firstNonEmpty(call.ThoughtSignature, signatureFromMetadataMap(call.ProviderMetadata))),
 		}))
 	}
-	return content, warnings, nil
+	flush()
+	return steps, warnings, nil
 }
 
 func fileContentToInteractionBlock(part types.FileContent, mediaResolution string) (map[string]interface{}, []types.Warning, error) {
