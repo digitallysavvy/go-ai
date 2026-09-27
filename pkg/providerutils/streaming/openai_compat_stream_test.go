@@ -412,6 +412,76 @@ data: [DONE]
 	}
 }
 
+// TestOpenAICompatStream_DefersFinishForTrailingUsageChunk verifies that a
+// trailing choices-less usage event (stream_options.include_usage) arriving
+// after finish_reason is merged into the finish chunk, and that finish is
+// still the last chunk emitted — matching TS openai-compatible, which only
+// enqueues `finish` in flush(), after the whole stream (including this tail
+// chunk) has been consumed.
+func TestOpenAICompatStream_DefersFinishForTrailingUsageChunk(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"stop"}]}
+
+data: {"choices":[],"usage":{"prompt_tokens":4,"completion_tokens":3,"total_tokens":7}}
+
+data: [DONE]
+
+`
+	stream := newTestStream(sseData)
+	defer stream.Close() //nolint:errcheck
+
+	chunks := collectStreamChunks(t, stream)
+	wantTypes := []provider.ChunkType{
+		provider.ChunkTypeText,
+		provider.ChunkTypeFinish,
+	}
+	if len(chunks) != len(wantTypes) {
+		t.Fatalf("chunk sequence = %#v, want length %d", chunks, len(wantTypes))
+	}
+	for i, want := range wantTypes {
+		if chunks[i].Type != want {
+			t.Fatalf("chunk[%d] = %v, want %v (full: %#v)", i, chunks[i].Type, want, chunks)
+		}
+	}
+	finish := chunks[len(chunks)-1]
+	if finish.FinishReason != types.FinishReasonStop {
+		t.Fatalf("finish reason = %v, want stop", finish.FinishReason)
+	}
+	if finish.Usage == nil || finish.Usage.InputTokens == nil || *finish.Usage.InputTokens != 4 {
+		t.Fatalf("finish usage = %#v, want inputTokens 4", finish.Usage)
+	}
+	if finish.Usage.OutputTokens == nil || *finish.Usage.OutputTokens != 3 {
+		t.Fatalf("finish usage = %#v, want outputTokens 3", finish.Usage)
+	}
+	if finish.Usage.TotalTokens == nil || *finish.Usage.TotalTokens != 7 {
+		t.Fatalf("finish usage = %#v, want totalTokens 7", finish.Usage)
+	}
+}
+
+// TestOpenAICompatStream_UsageOnSameEventAsFinishReason verifies the common
+// case where usage arrives on the same SSE event as finish_reason.
+func TestOpenAICompatStream_UsageOnSameEventAsFinishReason(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}
+
+data: [DONE]
+
+`
+	stream := newTestStream(sseData)
+	defer stream.Close() //nolint:errcheck
+
+	chunks := collectStreamChunks(t, stream)
+	finishes := compatChunksOfType(chunks, provider.ChunkTypeFinish)
+	if len(finishes) != 1 {
+		t.Fatalf("expected 1 finish chunk, got %#v", chunks)
+	}
+	if finishes[0].Usage == nil || finishes[0].Usage.TotalTokens == nil || *finishes[0].Usage.TotalTokens != 3 {
+		t.Fatalf("finish usage = %#v, want totalTokens 3", finishes[0].Usage)
+	}
+}
+
 func TestOpenAICompatStream_ParseErrorEmitsErrorChunkAfterRaw(t *testing.T) {
 	sseData := `data: {"choices":[
 

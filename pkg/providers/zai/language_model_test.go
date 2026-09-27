@@ -325,18 +325,16 @@ func TestDoStreamReasoningTextUsageToolStream(t *testing.T) {
 		t.Fatalf("body should not have stream_options: %#v", capturedBody)
 	}
 
-	// TS expects a trailing usage-only chunk's usage to be merged into the
-	// single "finish" part, deferring its emission until that chunk (or
-	// stream end) is seen. The shared providerutils/streaming.OpenAICompatStream
-	// base this Go provider embeds does not defer finish for a trailing
-	// choices-less usage chunk (no provider currently embedding it does this
-	// either — fireworks/together/mistral/xai etc. have no streaming usage
-	// test); it emits "finish" as soon as finish_reason arrives and silently
-	// skips the later choices-less usage event (falling through to the
-	// "empty or unrecognised event" branch). This is a pre-existing gap in
-	// shared streaming infrastructure (tracked separately), not specific to
-	// zai, so this test asserts the current, real behavior rather than the
-	// TS behavior for the tail of the sequence and for finish.Usage.
+	// TS defers the "finish" part's emission to the stream's flush()
+	// callback, which only runs once the whole SSE stream (including a
+	// trailing choices-less usage event) has been consumed, and merges that
+	// event's usage into "finish". The shared
+	// providerutils/streaming.OpenAICompatStream base this Go provider embeds
+	// mirrors that: it holds the finish chunk back when finish_reason arrives
+	// and only enqueues it once the stream ends ([DONE]/EOF), by which point
+	// the trailing usage-only event has already been merged in. So the raw
+	// chunk for that trailing event is emitted (IncludeRawChunks is
+	// unconditional) before "finish", not after.
 	wantSequence := []provider.ChunkType{
 		provider.ChunkTypeStreamStart,
 		provider.ChunkTypeRaw,
@@ -347,8 +345,8 @@ func TestDoStreamReasoningTextUsageToolStream(t *testing.T) {
 		provider.ChunkTypeReasoningEnd,
 		provider.ChunkTypeText,
 		provider.ChunkTypeRaw,
-		provider.ChunkTypeFinish,
 		provider.ChunkTypeRaw,
+		provider.ChunkTypeFinish,
 	}
 	if len(types_) != len(wantSequence) {
 		t.Fatalf("chunk sequence = %v, want length %d", types_, len(wantSequence))
@@ -360,6 +358,15 @@ func TestDoStreamReasoningTextUsageToolStream(t *testing.T) {
 	}
 	if finishChunk == nil || finishChunk.FinishReason != types.FinishReasonStop {
 		t.Fatalf("finish chunk = %#v, want finishReason stop", finishChunk)
+	}
+	if finishChunk.Usage == nil || finishChunk.Usage.InputTokens == nil || *finishChunk.Usage.InputTokens != 4 {
+		t.Fatalf("finish usage = %#v, want inputTokens 4 (merged from trailing usage-only chunk)", finishChunk.Usage)
+	}
+	if finishChunk.Usage.OutputTokens == nil || *finishChunk.Usage.OutputTokens != 3 {
+		t.Fatalf("finish usage = %#v, want outputTokens 3", finishChunk.Usage)
+	}
+	if finishChunk.Usage.TotalTokens == nil || *finishChunk.Usage.TotalTokens != 7 {
+		t.Fatalf("finish usage = %#v, want totalTokens 7", finishChunk.Usage)
 	}
 }
 
@@ -420,6 +427,12 @@ func TestDoStreamIncrementalToolCallArguments(t *testing.T) {
 	}
 	if finishChunk == nil || finishChunk.FinishReason != types.FinishReasonToolCalls {
 		t.Fatalf("finish chunk = %#v, want tool-calls", finishChunk)
+	}
+	if finishChunk.Usage == nil || finishChunk.Usage.InputTokens == nil || *finishChunk.Usage.InputTokens != 5 {
+		t.Fatalf("finish usage = %#v, want inputTokens 5", finishChunk.Usage)
+	}
+	if finishChunk.Usage.OutputTokens == nil || *finishChunk.Usage.OutputTokens != 4 {
+		t.Fatalf("finish usage = %#v, want outputTokens 4", finishChunk.Usage)
 	}
 }
 
