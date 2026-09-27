@@ -75,6 +75,37 @@
 // implementation, or, structurally, one from TypeScript, even though its
 // Token cannot be replayed here -- see above).
 //
+// This was evaluated and rejected as fixable, not just accepted as a given.
+// The vendored qjs binding (pkg/internal/third_party/qjs) does expose real
+// async host functions and JS Promises: Context.Function's callback can
+// receive a pending Promise via This.Promise() and settle it later with
+// Value.Resolve/Value.Reject, which is the primitive true concurrent
+// dispatch would need -- return every `tools.x(input)` call's Promise
+// immediately, unresolved, and let the sandbox's own Promise.all keep
+// issuing further calls before any of them settle. What is missing is a way
+// to *drive* the engine to that point from Go: the only exposed way to make
+// progress on the job queue is Value.Await (`js_std_await`), which blocks
+// until one specific promise settles by internally running the runtime's
+// job queue to completion for it -- there is no exposed primitive to run
+// pending jobs until the queue goes quiescent (i.e. until every runnable
+// microtask has run and only externally-resolved promises are left) and
+// then report which host calls are pending, which is what batching several
+// concurrent tools.x() calls into one Interrupt requires. Adding that
+// primitive means adding a new WASM export to qjs.wasm itself, and the C
+// sources used to build it (QuickJS's own event-loop internals plus the
+// qjs wrapper's helpers.c) were deliberately not vendored (see
+// README.vendor.md's "What's included": "Dropped ... qjswasm/ (the C
+// sources and CMake config used to *build* qjs.wasm from QuickJS --
+// irrelevant once the binary is embedded)") -- there is no C toolchain or
+// source tree in this repository to rebuild it from, and this package
+// already vendors and binary-patches this exact dependency twice for
+// unrelated correctness bugs (see README.vendor.md); a third, much larger
+// change to its own event loop, enlarging the vendoring surface further to
+// chase a single edge case (multi-tool-call approval batching), was judged
+// to risk destabilizing the sandbox for every caller, not just interrupt
+// mode, for a behavior TypeScript callers can already tolerate as a
+// (documented) sequence of single interrupts instead of one batch.
+//
 // # Deterministic replay
 //
 // TypeScript resumes an interrupted invocation by re-running the recorded
