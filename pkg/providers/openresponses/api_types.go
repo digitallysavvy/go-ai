@@ -52,7 +52,7 @@ type FunctionTool struct {
 	Name        string                 `json:"name"`
 	Description string                 `json:"description,omitempty"`
 	Parameters  map[string]interface{} `json:"parameters,omitempty"`
-	Strict      bool                   `json:"strict,omitempty"`
+	Strict      *bool                  `json:"strict,omitempty"`
 }
 
 // Message item types for input

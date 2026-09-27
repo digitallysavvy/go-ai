@@ -676,7 +676,12 @@ func convertToolsToOpenResponses(tools []types.Tool, registry *ExtensionRegistry
 			}
 		}
 
-		ft.Strict = t.Strict != nil && *t.Strict
+		// TS open-responses-language-model.ts: `...(tool.strict != null ?
+		// {strict: tool.strict} : {})` — forward the explicit value,
+		// including `false`, and omit the field entirely when unset.
+		if t.Strict != nil {
+			ft.Strict = t.Strict
+		}
 
 		result = append(result, ft)
 	}

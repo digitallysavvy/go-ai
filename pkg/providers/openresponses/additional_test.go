@@ -63,7 +63,7 @@ func TestConvertToolsChoicesAndUsage(t *testing.T) {
 		t.Fatalf("tools conversion failed: %+v", tools)
 	}
 	ft, ok := tools[0].(FunctionTool)
-	if !ok || ft.Name != "weather" || !ft.Strict {
+	if !ok || ft.Name != "weather" || ft.Strict == nil || !*ft.Strict {
 		t.Fatalf("tools conversion failed: %+v", tools)
 	}
 	if len(toolWarnings) != 0 {
