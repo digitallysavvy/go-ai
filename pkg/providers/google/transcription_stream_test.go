@@ -373,6 +373,85 @@ func TestTranscriptionModel_DoStream_StreamsTranscriptEndToEnd(t *testing.T) {
 	}
 }
 
+// TestTranscriptionModel_DoStream_PassesSmartModeIntoLiveSetup mirrors the TS
+// "passes the SMART transcription mode into the live setup".
+func TestTranscriptionModel_DoStream_PassesSmartModeIntoLiveSetup(t *testing.T) {
+	server := newLiveTranscriptionTestServer(t)
+	defer server.close()
+
+	model := newLiveTestModel(t, server.ts.URL)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newChanAudioStream([]byte{1, 2}),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
+		ProviderOptions: map[string]interface{}{
+			"google": map[string]interface{}{"mode": "SMART"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+
+	setupMsg := server.waitFor(t, func(m map[string]interface{}) bool { _, ok := m["setup"]; return ok }, time.Second)
+	setup, _ := setupMsg["setup"].(map[string]interface{})
+	inputAudioTranscription, _ := setup["inputAudioTranscription"].(map[string]interface{})
+	if inputAudioTranscription == nil || inputAudioTranscription["mode"] != "SMART" {
+		t.Fatalf("setup.inputAudioTranscription = %+v, want mode=SMART", inputAudioTranscription)
+	}
+	if len(inputAudioTranscription) != 1 {
+		t.Fatalf("setup.inputAudioTranscription = %+v, want only mode set", inputAudioTranscription)
+	}
+
+	if _, err := result.Stream.Next(); err != nil {
+		t.Fatalf("Stream.Next() (stream-start) error = %v", err)
+	}
+	server.toSend <- map[string]interface{}{"setupComplete": map[string]interface{}{}}
+	server.waitFor(t, hasRealtimeInputKey("audioStreamEnd"), time.Second)
+
+	server.toSend <- map[string]interface{}{"serverContent": map[string]interface{}{"inputTranscription": map[string]interface{}{"text": "hi", "finished": true}}}
+	server.toSend <- map[string]interface{}{"serverContent": map[string]interface{}{"interactionStatus": "IDLE"}}
+
+	if _, err := drainUntilFinishOrError(t, result.Stream); err != nil {
+		t.Fatalf("stream error = %v", err)
+	}
+}
+
+// TestTranscriptionModel_DoStream_AcceptsRequiresActionAsIdle mirrors the TS
+// "accepts the pre-launch REQUIRES_ACTION interaction status as idle".
+func TestTranscriptionModel_DoStream_AcceptsRequiresActionAsIdle(t *testing.T) {
+	server := newLiveTranscriptionTestServer(t)
+	defer server.close()
+
+	model := newLiveTestModel(t, server.ts.URL)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newChanAudioStream([]byte{1, 2}),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+
+	server.waitFor(t, func(m map[string]interface{}) bool { _, ok := m["setup"]; return ok }, time.Second)
+	if _, err := result.Stream.Next(); err != nil {
+		t.Fatalf("Stream.Next() (stream-start) error = %v", err)
+	}
+	server.toSend <- map[string]interface{}{"setupComplete": map[string]interface{}{}}
+	server.waitFor(t, hasRealtimeInputKey("audioStreamEnd"), time.Second)
+
+	server.toSend <- map[string]interface{}{"serverContent": map[string]interface{}{"inputTranscription": map[string]interface{}{"text": "hi", "finished": true}}}
+	server.toSend <- map[string]interface{}{"serverContent": map[string]interface{}{"interactionStatus": "REQUIRES_ACTION"}}
+
+	parts, err := drainUntilFinishOrError(t, result.Stream)
+	if err != nil {
+		t.Fatalf("stream error = %v", err)
+	}
+	finish := parts[len(parts)-1]
+	if finish.Type != provider.TranscriptionStreamPartTypeFinish || finish.FinishText != "hi" {
+		t.Fatalf("finish = %+v, want finish with text 'hi'", finish)
+	}
+}
+
 // TestTranscriptionModel_DoStream_FallsBackToLatestInterim mirrors the TS
 // "falls back to the latest interim partial when no final segment arrives".
 func TestTranscriptionModel_DoStream_FallsBackToLatestInterim(t *testing.T) {
