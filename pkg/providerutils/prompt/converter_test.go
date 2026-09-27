@@ -974,20 +974,23 @@ func TestToOpenAIMessagesPromptCacheBreakpointIgnoredWithoutOption(t *testing.T)
 	}
 }
 
-// TestToOpenAIMessagesPromptCacheBreakpointUserSingleText ports "should add
-// prompt cache breakpoints to supported content blocks" for the single-text
-// shortcut: a lone text part with a breakpoint must NOT take the plain-string
-// fast path.
-func TestToOpenAIMessagesPromptCacheBreakpointUserSingleText(t *testing.T) {
+// TestToOpenAIMessagesPromptCacheBreakpointSystem ports "should add a prompt
+// cache breakpoint to a system message" (convert-to-openai-chat-messages.test.ts).
+// TS's system message content is a plain string, not a parts array, so its
+// providerOptions live on the MESSAGE itself (types.Message.ProviderOptions),
+// not on a content part -- unlike user/assistant/tool messages.
+func TestToOpenAIMessagesPromptCacheBreakpointSystem(t *testing.T) {
 	msgs := []types.Message{
 		{
-			Role: types.RoleSystem,
-			Content: []types.ContentPart{
-				types.TextContent{Text: "You are a helpful assistant.", ProviderOptions: promptCacheBreakpointOption()},
-			},
+			Role:            types.RoleSystem,
+			Content:         []types.ContentPart{types.TextContent{Text: "You are a helpful assistant."}},
+			ProviderOptions: promptCacheBreakpointOption(),
 		},
 	}
 	result := ToOpenAIMessages(msgs, breakpointOpts)
+	if result[0]["role"] != "system" {
+		t.Fatalf("unexpected role: %#v", result[0]["role"])
+	}
 	content, ok := result[0]["content"].([]map[string]interface{})
 	if !ok {
 		t.Fatalf("expected array content, got %#v", result[0]["content"])
@@ -998,6 +1001,42 @@ func TestToOpenAIMessagesPromptCacheBreakpointUserSingleText(t *testing.T) {
 	bp, ok := content[0]["prompt_cache_breakpoint"].(map[string]interface{})
 	if !ok || bp["mode"] != "explicit" {
 		t.Fatalf("unexpected breakpoint: %#v", content[0]["prompt_cache_breakpoint"])
+	}
+}
+
+// TestToOpenAIMessagesPromptCacheBreakpointSystemWithoutBreakpoint ports
+// "should forward system messages": a system message with no breakpoint
+// stays a plain string even with IncludePromptCacheBreakpoint set.
+func TestToOpenAIMessagesPromptCacheBreakpointSystemWithoutBreakpoint(t *testing.T) {
+	msgs := []types.Message{
+		{
+			Role:    types.RoleSystem,
+			Content: []types.ContentPart{types.TextContent{Text: "You are a helpful assistant."}},
+		},
+	}
+	result := ToOpenAIMessages(msgs, breakpointOpts)
+	if result[0]["content"] != "You are a helpful assistant." {
+		t.Fatalf("expected plain string content, got %#v", result[0]["content"])
+	}
+}
+
+// TestToOpenAIMessagesPromptCacheBreakpointSystemIgnoresContentPartOption
+// verifies a system message's promptCacheBreakpoint carrier is the MESSAGE's
+// own providerOptions, not a content part's: TS's system content is a plain
+// string with no per-part providerOptions, so a breakpoint placed on a
+// content part (rather than the message) must not surface.
+func TestToOpenAIMessagesPromptCacheBreakpointSystemIgnoresContentPartOption(t *testing.T) {
+	msgs := []types.Message{
+		{
+			Role: types.RoleSystem,
+			Content: []types.ContentPart{
+				types.TextContent{Text: "You are a helpful assistant.", ProviderOptions: promptCacheBreakpointOption()},
+			},
+		},
+	}
+	result := ToOpenAIMessages(msgs, breakpointOpts)
+	if result[0]["content"] != "You are a helpful assistant." {
+		t.Fatalf("expected plain string content (part-level option ignored), got %#v", result[0]["content"])
 	}
 }
 

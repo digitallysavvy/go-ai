@@ -83,6 +83,30 @@ func ToOpenAIMessages(messages []types.Message, opts ...ToOpenAIMessagesOptions)
 			continue
 		}
 
+		// ── System role messages ────────────────────────────────────────────────
+		// TS convertToOpenAIChatMessages's system/developer case: system message
+		// content is a plain string (no per-part providerOptions in TS's core
+		// types), so the promptCacheBreakpoint carrier is the MESSAGE's own
+		// providerOptions field (types.Message.ProviderOptions), not a content
+		// part's -- unlike user/assistant/tool messages. Only forwarded when
+		// IncludePromptCacheBreakpoint is set (OpenAI/Azure chat only); other
+		// ToOpenAIMessages callers keep emitting a plain string via the generic
+		// path below, matching @ai-sdk/openai-compatible's system case, which has
+		// no such option.
+		if opt.IncludePromptCacheBreakpoint && msg.Role == types.RoleSystem {
+			text := assistantTextContent(msg.Content)
+			systemMsg := map[string]interface{}{"role": string(msg.Role)}
+			if bp, ok := openAIPromptCacheBreakpoint(msg.ProviderOptions); ok {
+				systemMsg["content"] = []map[string]interface{}{
+					{"type": "text", "text": text, "prompt_cache_breakpoint": bp},
+				}
+			} else {
+				systemMsg["content"] = text
+			}
+			result = append(result, systemMsg)
+			continue
+		}
+
 		// ── All other roles ───────────────────────────────────────────────────
 		openAIMsg := map[string]interface{}{
 			"role": string(msg.Role),
