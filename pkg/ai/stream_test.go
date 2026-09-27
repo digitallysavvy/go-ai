@@ -1239,8 +1239,21 @@ func TestStreamTextResult_StatusLifecycle(t *testing.T) {
 		t.Errorf("expected Submitted immediately after StreamText, got %q", result.Status())
 	}
 
-	// Wait for the goroutine to finish.
-	time.Sleep(100 * time.Millisecond)
+	// Wait for the goroutine to finish (poll rather than a fixed sleep,
+	// which flakes under -race with parallel package load).
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		observed := len(statuses)
+		mu.Unlock()
+		if result.Status() == StreamStatusDone && observed > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 
 	if result.Status() != StreamStatusDone {
 		t.Errorf("expected Done after stream completes, got %q", result.Status())
