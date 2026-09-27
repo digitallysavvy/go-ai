@@ -54,6 +54,18 @@ type ConvertOptions struct {
 	// JSON-encoded (JSON.stringify'd) before being sent.
 	OutputSchemaToolNames map[string]bool
 
+	// ConfigurationUpdateUnsupportedReason, when non-empty, is the reason a
+	// mid-conversation reasoningEffortUpdate configuration_update item
+	// cannot be emitted for this request (e.g. the model doesn't support
+	// GPT-6+ configuration updates, or reasoningMode/contextManagement/
+	// truncation are incompatible with it). Computed once per request by the
+	// caller (mirrors TS getConfigurationUpdateUnsupportedReason) and
+	// applied uniformly to every message-level reasoningEffortUpdate found
+	// while converting the prompt, matching TS
+	// convert-to-openai-responses-input.ts's `configurationUpdateUnsupportedReason`
+	// parameter.
+	ConfigurationUpdateUnsupportedReason string
+
 	// programmaticCallerIDs holds tool-call-ids whose caller was a
 	// programmatic-tool-calling "program", collected from the prompt's
 	// assistant messages by ConvertPromptToInputWithOptions before
@@ -123,6 +135,17 @@ func ConvertPromptToInputWithOptions(prompt types.Prompt, systemMessageMode stri
 
 	for _, msg := range prompt.Messages {
 		switch msg.Role {
+		case types.RoleSystem:
+			item, itemWarning, err := convertSystemMidConversationMessage(msg, systemMessageMode, opts)
+			if err != nil {
+				return nil, warnings, err
+			}
+			if item != nil {
+				input = append(input, item)
+			}
+			if itemWarning != nil {
+				warnings = append(warnings, *itemWarning)
+			}
 		case types.RoleUser:
 			userMessage, err := convertUserMessage(msg, opts)
 			if err != nil {
@@ -143,6 +166,108 @@ func ConvertPromptToInputWithOptions(prompt types.Prompt, systemMessageMode stri
 	}
 
 	return input, warnings, nil
+}
+
+// convertSystemMidConversationMessage converts a system-role Message found in
+// prompt.Messages (as opposed to the hoisted prompt.System) to a Responses
+// API input item. Mirrors TS convert-to-openai-responses-input.ts's
+// `case 'system'`: a message whose providerOptions[provider].
+// reasoningEffortUpdate is set becomes a positioned `configuration_update`
+// item independent of systemMessageMode's text handling; a message with
+// empty reasoningEffortUpdate is handled as an ordinary system/developer
+// message (or dropped with a warning when systemMessageMode is "remove").
+func convertSystemMidConversationMessage(msg types.Message, systemMessageMode string, opts ConvertOptions) (interface{}, *types.Warning, error) {
+	providerName := openAIProviderOptionsName(opts)
+	sysOpts := systemMessageProviderOptions(msg, providerName)
+	effort, _ := sysOpts["reasoningEffortUpdate"].(string)
+	content := systemMessageText(msg)
+
+	if effort != "" {
+		// TS parses this field against a fixed schema enum
+		// (z.enum(['none','low','medium','high','xhigh','max']), row
+		// 94d5d6d3e6) before any model-specific handling, so an
+		// out-of-enum value like "minimal" is rejected the same way on
+		// every model, including ones that support "none". Go has no
+		// schema layer, so validate manually here, first.
+		if !isValidReasoningEffortUpdateValue(effort) {
+			return nil, nil, &providererrors.InvalidArgumentError{
+				Field:   "providerOptions." + providerName + ".reasoningEffortUpdate",
+				Message: fmt.Sprintf("must be one of %s", strings.Join(ValidReasoningEffortUpdateValues, ", ")),
+			}
+		}
+
+		var unsupportedReason string
+		if content != "" {
+			unsupportedReason = "Message-level reasoningEffortUpdate requires empty system message content."
+		} else {
+			unsupportedReason = opts.ConfigurationUpdateUnsupportedReason
+		}
+		if unsupportedReason != "" {
+			return nil, nil, &providererrors.UnsupportedFunctionalityError{
+				Functionality: "Message-level reasoningEffortUpdate",
+				Message:       unsupportedReason,
+			}
+		}
+
+		// The control is independent of systemMessageMode's text handling.
+		return map[string]interface{}{
+			"type":      "configuration_update",
+			"reasoning": map[string]interface{}{"effort": effort},
+		}, nil, nil
+	}
+
+	switch systemMessageMode {
+	case "system", "developer":
+		sysMsg := SystemMessage{Role: systemMessageMode, Content: content}
+		if opts.ExplicitMessageItemType {
+			sysMsg.Type = "message"
+		}
+		return sysMsg, nil, nil
+	case "remove":
+		return nil, &types.Warning{
+			Type:    "other",
+			Message: "system messages are removed for this model",
+		}, nil
+	default:
+		return nil, nil, fmt.Errorf("openai.responses: unsupported system message mode: %s", systemMessageMode)
+	}
+}
+
+// systemMessageProviderOptions reads a system message's provider-specific
+// options, falling back from an Azure-style provider name (e.g. "azure") to
+// "openai" only when no entry is present at all under the request's own
+// provider name -- an explicit (even empty) entry under the request's
+// provider name is used as-is and does not fall back, matching TS
+// parseProviderOptions semantics.
+func systemMessageProviderOptions(msg types.Message, providerName string) map[string]interface{} {
+	if msg.ProviderOptions == nil {
+		return nil
+	}
+	if v, ok := msg.ProviderOptions[providerName].(map[string]interface{}); ok {
+		return v
+	}
+	if providerName != "openai" {
+		if v, ok := msg.ProviderOptions["openai"].(map[string]interface{}); ok {
+			return v
+		}
+	}
+	return nil
+}
+
+// systemMessageText extracts the plain text content of a system message.
+func systemMessageText(msg types.Message) string {
+	var b strings.Builder
+	for _, part := range msg.Content {
+		switch p := part.(type) {
+		case types.TextContent:
+			b.WriteString(p.Text)
+		case *types.TextContent:
+			if p != nil {
+				b.WriteString(p.Text)
+			}
+		}
+	}
+	return b.String()
 }
 
 // convertUserMessage maps a user-role Message to a UserMessage.
@@ -1049,6 +1174,26 @@ func openAIItemIDAndPhase(metadata map[string]interface{}, providerName string) 
 func openAIItemID(metadata map[string]interface{}, providerName string) string {
 	itemID, _ := openAIItemIDAndPhase(metadata, providerName)
 	return itemID
+}
+
+// ValidReasoningEffortUpdateValues is the fixed set of values TS validates
+// reasoningEffortUpdate against at the schema level (both request-level
+// providerOptions.openai.reasoningEffortUpdate and message-level
+// providerOptions[provider].reasoningEffortUpdate on system messages), via
+// z.enum(['none','low','medium','high','xhigh','max']) as of row
+// 94d5d6d3e6. This is independent of, and checked before, any per-model
+// SupportedReasoningEfforts restriction (e.g. gpt-6-astra rejecting "none").
+var ValidReasoningEffortUpdateValues = []string{"none", "low", "medium", "high", "xhigh", "max"}
+
+// isValidReasoningEffortUpdateValue reports whether effort is one of the
+// fixed schema-level reasoningEffortUpdate values.
+func isValidReasoningEffortUpdateValue(effort string) bool {
+	for _, v := range ValidReasoningEffortUpdateValues {
+		if v == effort {
+			return true
+		}
+	}
+	return false
 }
 
 func openAIProviderOptionsName(opts ConvertOptions) string {

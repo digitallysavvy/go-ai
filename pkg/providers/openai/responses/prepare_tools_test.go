@@ -90,7 +90,9 @@ func TestPrepareTools_FunctionTool_StrictExplicitFalse(t *testing.T) {
 }
 
 // TestPrepareTools_FunctionTool_StrictUnset verifies that an unset Strict
-// omits the field entirely, rather than forwarding a default.
+// defaults the wire value to false (TS: 'should default strict mode to
+// false when strict is undefined', row 2abd503e95) rather than omitting the
+// field.
 func TestPrepareTools_FunctionTool_StrictUnset(t *testing.T) {
 	tool := types.Tool{Name: "unspecified_tool"}
 
@@ -99,8 +101,11 @@ func TestPrepareTools_FunctionTool_StrictUnset(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected FunctionToolDef, got %T", result[0])
 	}
-	if def.Strict != nil {
-		t.Errorf("expected Strict to be nil (omitted) when unset, got %v", *def.Strict)
+	if def.Strict == nil {
+		t.Fatal("expected Strict to default to false, got nil (omitted)")
+	}
+	if *def.Strict != false {
+		t.Errorf("expected Strict to default to false, got %v", *def.Strict)
 	}
 }
 

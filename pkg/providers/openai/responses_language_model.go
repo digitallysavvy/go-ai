@@ -223,6 +223,20 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 				reasoningEffort = v
 			}
 			if v, ok := openaiOpts["reasoningEffortUpdate"].(string); ok {
+				// TS validates reasoningEffortUpdate against a fixed schema
+				// enum (z.enum(['none','low','medium','high','xhigh','max']),
+				// row 94d5d6d3e6) independently of, and prior to, the
+				// per-model SupportedReasoningEfforts check below -- an
+				// out-of-enum value like "minimal" is rejected the same way
+				// on every model, including ones (like gpt-6-luna) that
+				// support "none". Go has no schema layer, so validate
+				// manually here, before any model-specific handling.
+				if !slices.Contains(responses.ValidReasoningEffortUpdateValues, v) {
+					return nil, store, nil, &providererrors.InvalidArgumentError{
+						Field:   "providerOptions." + providerOptionsName + ".reasoningEffortUpdate",
+						Message: fmt.Sprintf("must be one of %s", strings.Join(responses.ValidReasoningEffortUpdateValues, ", ")),
+					}
+				}
 				reasoningEffortUpdate = v
 			}
 			if v, ok := openaiOpts["reasoningMode"].(string); ok {
@@ -317,6 +331,31 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 
 	modelCapabilities := GetLanguageModelCapabilities(m.modelID)
 
+	// configurationUpdateUnsupportedReason mirrors TS
+	// getConfigurationUpdateUnsupportedReason: the reason (if any)
+	// reasoningEffortUpdate configuration_update items -- whether positioned
+	// mid-conversation via a message-level providerOptions.openai.
+	// reasoningEffortUpdate, or prepended via the request-level option below
+	// -- cannot be emitted for this request. Computed once and applied
+	// uniformly to both.
+	configurationUpdateUnsupportedReason := ""
+	if !modelCapabilities.SupportsConfigurationUpdate {
+		configurationUpdateUnsupportedReason = "reasoningEffortUpdate is only supported by GPT-6 and later models"
+	} else if reasoningMode == "pro" || contextManagementExplicit || truncation == "auto" {
+		configurationUpdateUnsupportedReason = "reasoningEffortUpdate requires standard reasoning mode without automatic compaction or automatic truncation"
+	}
+
+	// getUpdateEffortUnsupportedReason mirrors TS: the schema accepts update
+	// efforts supported by any supported model, so check whether this
+	// specific model supports the requested effort.
+	getUpdateEffortUnsupportedReason := func(effort string) string {
+		if effort != "" && modelCapabilities.SupportedReasoningEfforts != nil &&
+			!slices.Contains(modelCapabilities.SupportedReasoningEfforts, effort) {
+			return fmt.Sprintf("%s only supports the following reasoning efforts: %s", m.modelID, strings.Join(modelCapabilities.SupportedReasoningEfforts, ", "))
+		}
+		return ""
+	}
+
 	isReasoning := isReasoningModel(m.modelID)
 	if forceReasoning != nil {
 		isReasoning = *forceReasoning
@@ -363,52 +402,102 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 
 	// Convert prompt to Responses API input format.
 	input, inputWarnings, err := responses.ConvertPromptToInputWithOptions(opts.Prompt, systemMsgMode, responses.ConvertOptions{
-		PassThroughUnsupportedFiles: passThroughUnsupportedFiles,
-		HasPreviousResponseID:       previousResponseID != "",
-		HasConversation:             conversation != "",
-		Store:                       store,
-		CustomToolNames:             customToolNames(opts.Tools),
-		HasLocalShellTool:           hasTool(opts.Tools, "openai.local_shell"),
-		HasShellTool:                hasTool(opts.Tools, "openai.shell"),
-		HasApplyPatchTool:           hasTool(opts.Tools, "openai.apply_patch"),
-		HasComputerTool:             hasTool(opts.Tools, "openai.computer"),
-		FileIDPrefixes:              m.provider.responsesFileIDPrefixes(),
-		ProviderOptionsName:         providerOptionsName,
-		ToolSearchToolName:          toolSearchToolName(opts.Tools),
-		OutputSchemaToolNames:       outputSchemaToolNames(opts.Tools),
-		ExplicitMessageItemType:     m.provider.explicitMessageItemType(),
+		PassThroughUnsupportedFiles:          passThroughUnsupportedFiles,
+		HasPreviousResponseID:                previousResponseID != "",
+		HasConversation:                      conversation != "",
+		Store:                                store,
+		CustomToolNames:                      customToolNames(opts.Tools),
+		HasLocalShellTool:                    hasTool(opts.Tools, "openai.local_shell"),
+		HasShellTool:                         hasTool(opts.Tools, "openai.shell"),
+		HasApplyPatchTool:                    hasTool(opts.Tools, "openai.apply_patch"),
+		HasComputerTool:                      hasTool(opts.Tools, "openai.computer"),
+		FileIDPrefixes:                       m.provider.responsesFileIDPrefixes(),
+		ProviderOptionsName:                  providerOptionsName,
+		ToolSearchToolName:                   toolSearchToolName(opts.Tools),
+		OutputSchemaToolNames:                outputSchemaToolNames(opts.Tools),
+		ExplicitMessageItemType:              m.provider.explicitMessageItemType(),
+		ConfigurationUpdateUnsupportedReason: configurationUpdateUnsupportedReason,
 	})
 	if err != nil {
 		return nil, store, warnings, err
 	}
 	warnings = append(warnings, inputWarnings...)
 
-	// reasoningEffortUpdate (GPT-6+): prepend a configuration_update item so
-	// the model's reasoning effort can change mid-conversation without a new
-	// response chain. Requires standard reasoning mode (no auto-compaction,
-	// no auto-truncation).
-	if reasoningEffortUpdate != "" {
-		configurationUpdateSupported := modelCapabilities.SupportsConfigurationUpdate &&
-			reasoningMode != "pro" && !contextManagementExplicit && truncation != "auto"
-		if !configurationUpdateSupported {
-			details := "reasoningEffortUpdate requires standard reasoning mode without automatic compaction or automatic truncation"
-			if !modelCapabilities.SupportsConfigurationUpdate {
-				details = "reasoningEffortUpdate is only supported by GPT-6 and later models"
+	// Reject configuration updates (positioned by message-level
+	// reasoningEffortUpdate above) whose effort value is unsupported by the
+	// selected model.
+	for _, item := range input {
+		m0, ok := item.(map[string]interface{})
+		if !ok || m0["type"] != "configuration_update" {
+			continue
+		}
+		reasoning, _ := m0["reasoning"].(map[string]interface{})
+		effort, _ := reasoning["effort"].(string)
+		if unsupportedReason := getUpdateEffortUnsupportedReason(effort); unsupportedReason != "" {
+			return nil, store, warnings, &providererrors.UnsupportedFunctionalityError{
+				Functionality: "Message-level reasoningEffortUpdate",
+				Message:       unsupportedReason,
 			}
-			warnings = append(warnings, types.Warning{
-				Type:    "unsupported",
-				Feature: "reasoningEffortUpdate",
-				Details: details,
-			})
-		} else {
-			input = append([]interface{}{map[string]interface{}{
-				"type":      "configuration_update",
-				"reasoning": map[string]interface{}{"effort": reasoningEffortUpdate},
-			}}, input...)
 		}
 	}
 
-	// compactionTrigger: append a compaction_trigger item to the end of input.
+	// reasoningEffortUpdate (GPT-6+): prepend a configuration_update item so
+	// the model's reasoning effort can change mid-conversation without a new
+	// response chain. Requires standard reasoning mode (no auto-compaction,
+	// no auto-truncation) and a model that supports the requested effort;
+	// either failing is a warning (not an error) for the request-level
+	// option, unlike the message-level one above.
+	if reasoningEffortUpdate != "" {
+		requestUpdateUnsupportedReason := configurationUpdateUnsupportedReason
+		if requestUpdateUnsupportedReason == "" {
+			requestUpdateUnsupportedReason = getUpdateEffortUnsupportedReason(reasoningEffortUpdate)
+		}
+		if requestUpdateUnsupportedReason != "" {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "reasoningEffortUpdate",
+				Details: requestUpdateUnsupportedReason,
+			})
+		} else {
+			// If the first item already sets this effort (e.g. a
+			// message-level update positioned at the start of history),
+			// prepending another update would create an adjacent pair that
+			// OpenAI rejects -- skip the duplicate instead.
+			firstIsSameUpdate := false
+			if len(input) > 0 {
+				if first, ok := input[0].(map[string]interface{}); ok && first["type"] == "configuration_update" {
+					if reasoning, ok := first["reasoning"].(map[string]interface{}); ok {
+						if effort, _ := reasoning["effort"].(string); effort == reasoningEffortUpdate {
+							firstIsSameUpdate = true
+						}
+					}
+				}
+			}
+			if !firstIsSameUpdate {
+				input = append([]interface{}{map[string]interface{}{
+					"type":      "configuration_update",
+					"reasoning": map[string]interface{}{"effort": reasoningEffortUpdate},
+				}}, input...)
+			}
+		}
+	}
+
+	// Conversion and prepending can make updates adjacent, so check
+	// afterward to catch combinations that OpenAI would reject.
+	for i := 1; i < len(input); i++ {
+		prev, ok1 := input[i-1].(map[string]interface{})
+		curr, ok2 := input[i].(map[string]interface{})
+		if ok1 && ok2 && prev["type"] == "configuration_update" && curr["type"] == "configuration_update" {
+			return nil, store, warnings, &providererrors.UnsupportedFunctionalityError{
+				Functionality: "Adjacent reasoning effort configuration updates",
+			}
+		}
+	}
+
+	// A compaction trigger is a request control, not conversation history.
+	// OpenAI requires it to be the final input item, so append it only
+	// after the complete prompt (and any configuration updates) has been
+	// assembled.
 	if v, ok := openaiOpts["compactionTrigger"].(bool); ok && v {
 		input = append(input, map[string]interface{}{"type": "compaction_trigger"})
 	}

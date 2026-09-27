@@ -434,12 +434,14 @@ func convertFunctionTool(t types.Tool) FunctionToolDef {
 		Parameters:  defaultFunctionParameters(t.Parameters),
 	}
 
-	// TS openai-responses-prepare-tools.ts: `...(tool.strict != null ?
-	// {strict: tool.strict} : {})` — forward the explicit value, including
-	// `false`.
+	// TS openai-responses-prepare-tools.ts: `strict: tool.strict ?? false` —
+	// always sent, defaulting the wire value to false when the caller left
+	// it unset (row 2abd503e95; previously omitted entirely).
+	strict := false
 	if t.Strict != nil {
-		def.Strict = t.Strict
+		strict = *t.Strict
 	}
+	def.Strict = &strict
 	if deferLoading, ok := functionToolDeferLoading(t.ProviderOptions); ok {
 		def.DeferLoading = &deferLoading
 	}
