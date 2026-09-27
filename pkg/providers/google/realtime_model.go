@@ -453,8 +453,11 @@ func googleRealtimeBaseURL(base string) *url.URL {
 	return u
 }
 
+// googleModelPath mirrors TS get-model-path.ts getModelPath: a model ID that
+// already contains a "/" (e.g. a fully-qualified "tunedModels/{id}") is used
+// verbatim as the path segment; otherwise it is prefixed with "models/".
 func googleModelPath(modelID string) string {
-	if strings.HasPrefix(modelID, "models/") || strings.Contains(modelID, "/models/") {
+	if strings.Contains(modelID, "/") {
 		return modelID
 	}
 	return "models/" + modelID

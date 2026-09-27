@@ -11,6 +11,29 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
 
+// TestGoogleModelPath mirrors TS get-model-path.test.ts's three cases for
+// getModelPath: a model ID that already contains a "/" (whether "models/*"
+// or "tunedModels/*") is used verbatim, and one without a "/" is prefixed
+// with "models/".
+func TestGoogleModelPath(t *testing.T) {
+	tests := []struct {
+		name    string
+		modelID string
+		want    string
+	}{
+		{"passes through models/* path", "models/some-model", "models/some-model"},
+		{"passes through tunedModels/* path", "tunedModels/some-model", "tunedModels/some-model"},
+		{"adds models/ prefix when no slash", "some-model", "models/some-model"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := googleModelPath(tt.modelID); got != tt.want {
+				t.Fatalf("googleModelPath(%q) = %q, want %q", tt.modelID, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestGoogleRealtimeParseSingleMessageToMultipleEvents(t *testing.T) {
 	model := NewRealtimeModel(New(Config{APIKey: "k"}), "gemini-2.0-flash-live-001")
 	events, err := model.ParseServerEvent(json.RawMessage(`{
