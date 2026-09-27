@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	stdhttp "net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -18,6 +17,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"golang.org/x/net/websocket"
 )
 
@@ -360,26 +360,10 @@ func (s *elevenLabsRealtimeTranscriptionStream) emit(part provider.Transcription
 	}
 }
 
-type elevenLabsWSResult struct {
-	msg string
-	err error
-}
-
 // receiveLoop continuously reads text frames from conn and forwards each one
 // (or the terminal error) on out, until an error occurs or s.ctx is done.
-func (s *elevenLabsRealtimeTranscriptionStream) receiveLoop(conn *websocket.Conn, out chan<- elevenLabsWSResult) {
-	for {
-		var msg string
-		err := websocket.Message.Receive(conn, &msg)
-		select {
-		case out <- elevenLabsWSResult{msg: msg, err: err}:
-		case <-s.ctx.Done():
-			return
-		}
-		if err != nil {
-			return
-		}
-	}
+func (s *elevenLabsRealtimeTranscriptionStream) receiveLoop(conn *websocket.Conn, out chan<- wsutil.Message) {
+	wsutil.ReceiveLoop(s.ctx, conn, out)
 }
 
 // elevenLabsRealtimeWord is one entry of a transcript event's `words` array.
@@ -405,8 +389,13 @@ type elevenLabsRealtimeEvent struct {
 // chunk carries previous_text, when set), signalling audioEnded and stopping
 // once the AudioStream is exhausted. The main run() loop owns sending the
 // final commit message so only one goroutine ever writes to conn at a time
-// after this returns.
-func (s *elevenLabsRealtimeTranscriptionStream) pumpAudio(conn *websocket.Conn, cfg elevenLabsRealtimeStreamConfig, audioEnded chan<- struct{}) {
+// after this returns. Any other failure — reading from the AudioStream, or
+// writing to the WebSocket — is reported on errCh, mirroring TS's
+// `void sendAudio(socket).catch(finishWithError)` (a rejected
+// `audioReader.read()` fails the stream exactly like a failed `socket.send`).
+// A failure that stems from s.ctx already being cancelled is not reported
+// here: run()'s own select on s.ctx.Done() already handles that case.
+func (s *elevenLabsRealtimeTranscriptionStream) pumpAudio(conn *websocket.Conn, cfg elevenLabsRealtimeStreamConfig, audioEnded chan<- struct{}, errCh chan<- error) {
 	firstChunk := true
 	for {
 		chunk, err := cfg.audio.Next(s.ctx)
@@ -416,6 +405,8 @@ func (s *elevenLabsRealtimeTranscriptionStream) pumpAudio(conn *websocket.Conn, 
 				case audioEnded <- struct{}{}:
 				case <-s.ctx.Done():
 				}
+			} else if s.ctx.Err() == nil {
+				s.reportAudioError(errCh, err)
 			}
 			return
 		}
@@ -434,8 +425,21 @@ func (s *elevenLabsRealtimeTranscriptionStream) pumpAudio(conn *websocket.Conn, 
 			continue
 		}
 		if err := s.send(conn, payload); err != nil {
+			if s.ctx.Err() == nil {
+				s.reportAudioError(errCh, err)
+			}
 			return
 		}
+	}
+}
+
+// reportAudioError delivers err to errCh, falling back to s.ctx.Done() so a
+// send that no longer has a reader (run() already returned via a different
+// path) cannot block pumpAudio forever.
+func (s *elevenLabsRealtimeTranscriptionStream) reportAudioError(errCh chan<- error, err error) {
+	select {
+	case errCh <- err:
+	case <-s.ctx.Done():
 	}
 }
 
@@ -475,10 +479,11 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 	s.connMu.Unlock()
 	defer conn.Close() //nolint:errcheck
 
-	msgCh := make(chan elevenLabsWSResult)
+	msgCh := make(chan wsutil.Message)
 	go s.receiveLoop(conn, msgCh)
 
 	audioEndedCh := make(chan struct{})
+	audioErrCh := make(chan error, 1)
 
 	var (
 		finished                    bool
@@ -556,12 +561,30 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 			})
 			_ = s.send(conn, payload)
 
+		case audioErr := <-audioErrCh:
+			// Mirrors TS `void sendAudio(socket).catch(finishWithError)`: a
+			// failure pumping audio (reading the caller's AudioStream, or
+			// writing to the WebSocket) terminates the stream with an error
+			// instead of being silently dropped.
+			if finished {
+				return
+			}
+			fail(audioErr)
+			return
+
 		case res := <-msgCh:
-			if res.err != nil {
+			if res.Err != nil {
 				if finished {
 					return
 				}
-				if endOfInput && receivedPostInputCommit {
+				if !wsutil.IsCleanClose(res.Err) {
+					// An abnormal disconnection (TS onSocketError) always
+					// fails the stream, regardless of endOfInput/
+					// receivedPostInputCommit — distinct from a clean close
+					// (TS onClose), which finishes successfully once the
+					// post-input commit has been observed.
+					fail(errors.New("ElevenLabs realtime transcription error."))
+				} else if endOfInput && receivedPostInputCommit {
 					finish()
 				} else {
 					fail(errors.New("ElevenLabs realtime transcription stream closed before completion."))
@@ -573,13 +596,13 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 			}
 
 			var raw elevenLabsRealtimeEvent
-			if jsonErr := json.Unmarshal([]byte(res.msg), &raw); jsonErr != nil {
+			if jsonErr := json.Unmarshal([]byte(res.Text), &raw); jsonErr != nil {
 				continue
 			}
 
 			if cfg.includeRawChunks {
 				var rawValue interface{}
-				_ = json.Unmarshal([]byte(res.msg), &rawValue)
+				_ = json.Unmarshal([]byte(res.Text), &rawValue)
 				if !s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeRaw, RawValue: rawValue}) {
 					return
 				}
@@ -605,7 +628,7 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 				if !s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart, Warnings: cfg.warnings}) {
 					return
 				}
-				go s.pumpAudio(conn, cfg, audioEndedCh)
+				go s.pumpAudio(conn, cfg, audioEndedCh, audioErrCh)
 
 			case "partial_transcript":
 				if !s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypePartial, ID: segID(), Text: raw.Text}) {
@@ -684,36 +707,11 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 }
 
 func (s *elevenLabsRealtimeTranscriptionStream) dial(wsURL *url.URL, headers map[string]string) (*websocket.Conn, error) {
-	wsConfig, err := websocket.NewConfig(wsURL.String(), "http://localhost/")
-	if err != nil {
-		return nil, err
-	}
-	wsConfig.Header = stdhttp.Header{}
-	for k, v := range headers {
-		if v != "" {
-			wsConfig.Header.Set(k, v)
-		}
-	}
-
-	// DialContext (rather than DialConfig, which always dials against
-	// context.Background()) forces the pending handshake to fail and cleans
-	// up the socket when s.ctx is cancelled mid-dial, instead of leaving an
-	// unread, unclosed connection behind if the dial completes after we've
-	// already given up on it.
-	return wsConfig.DialContext(s.ctx)
+	return wsutil.Dial(s.ctx, wsURL.String(), wsutil.DialOptions{Headers: headers})
 }
 
 func (s *elevenLabsRealtimeTranscriptionStream) send(conn *websocket.Conn, message []byte) error {
-	done := make(chan error, 1)
-	go func() {
-		done <- websocket.Message.Send(conn, string(message))
-	}()
-	select {
-	case <-s.ctx.Done():
-		return s.ctx.Err()
-	case err := <-done:
-		return err
-	}
+	return wsutil.Send(s.ctx, conn, string(message))
 }
 
 var (
