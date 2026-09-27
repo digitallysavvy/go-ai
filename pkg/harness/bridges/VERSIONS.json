@@ -12,7 +12,7 @@
       },
       "sourceDir": "packages/harness-acp/src/v1/bridge",
       "sourcePackage": "@ai-sdk/harness-acp",
-      "sourceVersion": "1.0.61"
+      "sourceVersion": "1.0.66"
     },
     "claudecode": {
       "bridgeEntry": "bridge.mjs",
