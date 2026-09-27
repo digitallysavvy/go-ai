@@ -12,6 +12,12 @@ const (
 
 	// VideoModeMotionControl is motion control video generation
 	VideoModeMotionControl VideoMode = "motion-control"
+
+	// VideoModeMultiImage is reference-to-video generation (multi-image2video).
+	// It is never returned by detectMode (which reads the model id suffix);
+	// it is an "effective mode" computed per call when an i2v model is given
+	// inputReferences instead of a single start image.
+	VideoModeMultiImage VideoMode = "mi2v"
 )
 
 // ProviderOptions contains KlingAI-specific options for video generation
