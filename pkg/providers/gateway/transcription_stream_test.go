@@ -399,3 +399,57 @@ func TestTranscriptionModel_DoStream_StopsAudioOnServerError(t *testing.T) {
 	}
 	t.Fatal("expected the audio stream to be cancelled after a server error part")
 }
+
+// TestParseGatewayTranscriptionStreamPart_RejectsMalformedFrames mirrors TS
+// provider-utils transcription-stream-envelope.test.ts: a recognized `type`
+// with a missing/wrong-typed required field is rejected wholesale (ok=false)
+// rather than silently defaulting the bad field to its zero value.
+func TestParseGatewayTranscriptionStreamPart_RejectsMalformedFrames(t *testing.T) {
+	cases := []struct {
+		name string
+		json string
+	}{
+		{"finish missing text", `{"type":"finish","segments":[]}`},
+		{"finish text wrong type", `{"type":"finish","text":123,"segments":[]}`},
+		{"finish segments not array", `{"type":"finish","text":"hi","segments":"nope"}`},
+		{"finish segment missing startSecond", `{"type":"finish","text":"hi","segments":[{"text":"hi","endSecond":1}]}`},
+		{"transcript-delta missing delta", `{"type":"transcript-delta","id":"item-1"}`},
+		{"transcript-partial missing text", `{"type":"transcript-partial","id":"item-1"}`},
+		{"transcript-final missing text", `{"type":"transcript-final","id":"item-1"}`},
+		{"stream-start warnings not array", `{"type":"stream-start","warnings":"nope"}`},
+		{"stream-start warning missing type", `{"type":"stream-start","warnings":[{"message":"x"}]}`},
+		{"raw missing rawValue", `{"type":"raw"}`},
+		{"error missing error", `{"type":"error"}`},
+		{"response-metadata bad timestamp", `{"type":"response-metadata","timestamp":"not-a-date"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, ok := parseGatewayTranscriptionStreamPart(tc.json); ok {
+				t.Fatalf("parseGatewayTranscriptionStreamPart(%q) = ok, want rejected", tc.json)
+			}
+		})
+	}
+}
+
+// TestParseGatewayTranscriptionStreamPart_AcceptsValidFrames is the
+// complement of the rejection test above: well-formed frames for every part
+// type still parse successfully.
+func TestParseGatewayTranscriptionStreamPart_AcceptsValidFrames(t *testing.T) {
+	cases := []string{
+		`{"type":"stream-start","warnings":[{"type":"other","message":"x"}]}`,
+		`{"type":"transcript-delta","id":"item-1","delta":"Hel"}`,
+		`{"type":"transcript-partial","id":"item-1","text":"Hel"}`,
+		`{"type":"transcript-final","id":"item-1","text":"Hello"}`,
+		`{"type":"finish","text":"Hello","segments":[{"text":"Hello","startSecond":0,"endSecond":1}]}`,
+		`{"type":"response-metadata","modelId":"m","timestamp":"2026-01-01T00:00:00Z"}`,
+		`{"type":"raw","rawValue":{"a":1}}`,
+		`{"type":"error","error":{"message":"boom"}}`,
+	}
+	for _, tc := range cases {
+		t.Run(tc, func(t *testing.T) {
+			if _, ok := parseGatewayTranscriptionStreamPart(tc); !ok {
+				t.Fatalf("parseGatewayTranscriptionStreamPart(%q) = rejected, want ok", tc)
+			}
+		})
+	}
+}

@@ -423,67 +423,111 @@ func parseGatewayTranscriptionStreamPart(text string) (*provider.TranscriptionSt
 
 	part := &provider.TranscriptionStreamPart{Type: rawType}
 
+	// Mirrors TS parseTranscriptionStreamPart: required fields must be
+	// present with the right type or the whole frame is rejected (ok=false),
+	// not silently defaulted. Optional fields use isOptionalX (absent is
+	// fine; present-but-wrong-type is not).
 	switch rawType {
 	case provider.TranscriptionStreamPartTypeStreamStart:
-		part.Warnings = warningsFromInterface(raw["warnings"])
+		warnings, ok := warningsFromInterfaceStrict(raw["warnings"])
+		if !ok {
+			return nil, false
+		}
+		part.Warnings = warnings
 
 	case provider.TranscriptionStreamPartTypeDelta:
+		delta, ok := raw["delta"].(string)
+		if !ok {
+			return nil, false
+		}
+		if !isOptionalString(raw["id"]) || !isOptionalRecord(raw["providerMetadata"]) {
+			return nil, false
+		}
+		part.Delta = delta
 		part.ID, _ = raw["id"].(string)
-		part.Delta, _ = raw["delta"].(string)
 		part.ProviderMetadata = mapFromInterface(raw["providerMetadata"])
 
 	case provider.TranscriptionStreamPartTypePartial:
+		text, ok := raw["text"].(string)
+		if !ok {
+			return nil, false
+		}
+		if !isOptionalString(raw["id"]) || !isOptionalNumber(raw["startSecond"]) ||
+			!isOptionalNumber(raw["durationInSeconds"]) || !isOptionalNumber(raw["channelIndex"]) ||
+			!isOptionalRecord(raw["providerMetadata"]) {
+			return nil, false
+		}
+		part.Text = text
 		part.ID, _ = raw["id"].(string)
-		part.Text, _ = raw["text"].(string)
 		part.StartSecond = float64PtrFromInterface(raw["startSecond"])
 		part.DurationInSeconds = float64PtrFromInterface(raw["durationInSeconds"])
 		part.ChannelIndex = intPtrFromInterface(raw["channelIndex"])
 		part.ProviderMetadata = mapFromInterface(raw["providerMetadata"])
 
 	case provider.TranscriptionStreamPartTypeFinal:
+		text, ok := raw["text"].(string)
+		if !ok {
+			return nil, false
+		}
+		if !isOptionalString(raw["id"]) || !isOptionalNumber(raw["startSecond"]) ||
+			!isOptionalNumber(raw["endSecond"]) || !isOptionalNumber(raw["channelIndex"]) ||
+			!isOptionalRecord(raw["providerMetadata"]) {
+			return nil, false
+		}
+		part.Text = text
 		part.ID, _ = raw["id"].(string)
-		part.Text, _ = raw["text"].(string)
 		part.StartSecond = float64PtrFromInterface(raw["startSecond"])
 		part.EndSecond = float64PtrFromInterface(raw["endSecond"])
 		part.ChannelIndex = intPtrFromInterface(raw["channelIndex"])
 		part.ProviderMetadata = mapFromInterface(raw["providerMetadata"])
 
 	case provider.TranscriptionStreamPartTypeResponseMetadata:
+		if !isOptionalString(raw["modelId"]) || !isOptionalRecord(raw["headers"]) {
+			return nil, false
+		}
 		part.ModelID, _ = raw["modelId"].(string)
 		part.Headers = stringMapFromInterface(raw["headers"])
-		if ts, ok := raw["timestamp"].(string); ok {
-			if parsed, err := time.Parse(time.RFC3339Nano, ts); err == nil {
-				part.Timestamp = parsed
+		if ts := raw["timestamp"]; ts != nil {
+			tsStr, ok := ts.(string)
+			if !ok {
+				return nil, false
 			}
+			parsed, err := time.Parse(time.RFC3339Nano, tsStr)
+			if err != nil {
+				return nil, false
+			}
+			part.Timestamp = parsed
 		}
 
 	case provider.TranscriptionStreamPartTypeFinish:
-		part.FinishText, _ = raw["text"].(string)
+		text, ok := raw["text"].(string)
+		if !ok {
+			return nil, false
+		}
+		segments, ok := segmentsFromInterfaceStrict(raw["segments"])
+		if !ok {
+			return nil, false
+		}
+		if !isOptionalString(raw["language"]) || !isOptionalNumber(raw["durationInSeconds"]) ||
+			!isOptionalRecord(raw["providerMetadata"]) {
+			return nil, false
+		}
+		part.FinishText = text
 		part.Language, _ = raw["language"].(string)
 		part.DurationInSeconds = float64PtrFromInterface(raw["durationInSeconds"])
 		part.ProviderMetadata = mapFromInterface(raw["providerMetadata"])
-		if segs, ok := raw["segments"].([]interface{}); ok {
-			for _, s := range segs {
-				segMap, ok := s.(map[string]interface{})
-				if !ok {
-					continue
-				}
-				seg := provider.TranscriptSegment{}
-				seg.Text, _ = segMap["text"].(string)
-				if v, ok := float64FromInterface(segMap["startSecond"]); ok {
-					seg.StartSecond = v
-				}
-				if v, ok := float64FromInterface(segMap["endSecond"]); ok {
-					seg.EndSecond = v
-				}
-				part.Segments = append(part.Segments, seg)
-			}
-		}
+		part.Segments = segments
 
 	case provider.TranscriptionStreamPartTypeRaw:
+		if _, ok := raw["rawValue"]; !ok {
+			return nil, false
+		}
 		part.RawValue = raw["rawValue"]
 
 	case provider.TranscriptionStreamPartTypeError:
+		if _, ok := raw["error"]; !ok {
+			return nil, false
+		}
 		part.Err = raw["error"]
 
 	default:
@@ -493,16 +537,50 @@ func parseGatewayTranscriptionStreamPart(text string) (*provider.TranscriptionSt
 	return part, true
 }
 
-func warningsFromInterface(v interface{}) []types.Warning {
+// isOptionalString mirrors TS isOptional(value, isString): absent (nil) is
+// fine; present-but-non-string is not.
+func isOptionalString(v interface{}) bool {
+	if v == nil {
+		return true
+	}
+	_, ok := v.(string)
+	return ok
+}
+
+// isOptionalNumber mirrors TS isOptional(value, isNumber).
+func isOptionalNumber(v interface{}) bool {
+	if v == nil {
+		return true
+	}
+	_, ok := v.(float64)
+	return ok
+}
+
+// isOptionalRecord mirrors TS isOptional(value, isRecord).
+func isOptionalRecord(v interface{}) bool {
+	if v == nil {
+		return true
+	}
+	_, ok := v.(map[string]interface{})
+	return ok
+}
+
+// warningsFromInterfaceStrict mirrors TS's stream-start validation:
+// Array.isArray(warnings) && warnings.every(isWarning), where isWarning
+// requires a record with a string `type`.
+func warningsFromInterfaceStrict(v interface{}) ([]types.Warning, bool) {
 	list, ok := v.([]interface{})
 	if !ok {
-		return nil
+		return nil, false
 	}
 	out := make([]types.Warning, 0, len(list))
 	for _, item := range list {
 		m, ok := item.(map[string]interface{})
 		if !ok {
-			continue
+			return nil, false
+		}
+		if _, ok := m["type"].(string); !ok {
+			return nil, false
 		}
 		w := types.Warning{}
 		w.Type, _ = m["type"].(string)
@@ -512,7 +590,38 @@ func warningsFromInterface(v interface{}) []types.Warning {
 		w.Message, _ = m["message"].(string)
 		out = append(out, w)
 	}
-	return out
+	return out, true
+}
+
+// segmentsFromInterfaceStrict mirrors TS's finish validation:
+// Array.isArray(segments) && segments.every(isSegment), where isSegment
+// requires a record with string text and numeric startSecond/endSecond.
+func segmentsFromInterfaceStrict(v interface{}) ([]provider.TranscriptSegment, bool) {
+	list, ok := v.([]interface{})
+	if !ok {
+		return nil, false
+	}
+	out := make([]provider.TranscriptSegment, 0, len(list))
+	for _, item := range list {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			return nil, false
+		}
+		text, ok := m["text"].(string)
+		if !ok {
+			return nil, false
+		}
+		startSecond, ok := float64FromInterface(m["startSecond"])
+		if !ok {
+			return nil, false
+		}
+		endSecond, ok := float64FromInterface(m["endSecond"])
+		if !ok {
+			return nil, false
+		}
+		out = append(out, provider.TranscriptSegment{Text: text, StartSecond: startSecond, EndSecond: endSecond})
+	}
+	return out, true
 }
 
 func mapFromInterface(v interface{}) map[string]interface{} {
