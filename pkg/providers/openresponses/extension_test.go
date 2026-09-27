@@ -412,6 +412,85 @@ func TestOpenResponsesExtensionItemDecodeStream(t *testing.T) {
 	}
 }
 
+// citationExtension is a test extension whose DecodeItem returns a
+// types.SourceContent part -- one of the OpenResponsesExtensionContentPart
+// union members besides tool-call/tool-result (TS's
+// Extract<LanguageModelV4Content, LanguageModelV4StreamPart> covers
+// tool-call, tool-result, custom, file, reasoning-file,
+// tool-approval-request, and source).
+func citationExtension() Extension {
+	return Extension{
+		ID:        "lmstudio.citation",
+		ItemTypes: []string{"lmstudio:citation"},
+		DecodeItem: func(item ExtensionItem, mode string) ([]types.ContentPart, error) {
+			url, _ := item["url"].(string)
+			return []types.ContentPart{
+				types.SourceContent{SourceType: "url", ID: item.ID(), URL: url},
+			}, nil
+		},
+	}
+}
+
+// TestOpenResponsesExtensionSourceContentGenerate covers row 9a68261: a
+// decodeItem that returns a non-tool-call/tool-result content type (source)
+// is still included in result.Content for a non-streaming response, exactly
+// like any other decoded part.
+func TestOpenResponsesExtensionSourceContentGenerate(t *testing.T) {
+	p := New(Config{BaseURL: "http://localhost:1234/v1", Extensions: []Extension{citationExtension()}})
+	model := NewLanguageModel(p, "local-model")
+
+	raw := json.RawMessage(`{"type":"lmstudio:citation","id":"cit_1","status":"completed","url":"https://example.com"}`)
+	var item OutputItem
+	if err := json.Unmarshal(raw, &item); err != nil {
+		t.Fatalf("unmarshal item failed: %v", err)
+	}
+	result := model.convertResponse(OpenResponsesResponse{Output: []OutputItem{item}})
+
+	var sawSource bool
+	for _, part := range result.Content {
+		if sc, ok := part.(types.SourceContent); ok && sc.URL == "https://example.com" {
+			sawSource = true
+		}
+	}
+	if !sawSource {
+		t.Fatalf("result.Content = %#v, want the decoded source content", result.Content)
+	}
+}
+
+// TestOpenResponsesExtensionSourceContentStream covers row 9a68261: TS
+// forwards every part an extension's decodeItem returns unconditionally
+// (controller.enqueue(part) for each decoded part), including content types
+// other than tool-call/tool-result/custom. The streaming decode path must
+// not silently drop them.
+func TestOpenResponsesExtensionSourceContentStream(t *testing.T) {
+	p := New(Config{BaseURL: "http://localhost:1234/v1", Extensions: []Extension{citationExtension()}})
+
+	raw := json.RawMessage(`{"type":"lmstudio:citation","id":"cit_1","status":"completed","url":"https://example.com"}`)
+	var item OutputItem
+	if err := json.Unmarshal(raw, &item); err != nil {
+		t.Fatalf("unmarshal item failed: %v", err)
+	}
+
+	s := newOpenResponsesStream(io.NopCloser(strings.NewReader("")), nil, "open-responses")
+	s.extensionRegistry = p.extensionRegistry
+
+	carrierChunk, err := s.handleStreamEvent(&StreamEvent{Type: "response.output_item.done", Item: &item})
+	if err != nil {
+		t.Fatalf("handleStreamEvent failed: %v", err)
+	}
+	if carrierChunk.Type != provider.ChunkTypeCustom || carrierChunk.CustomContent == nil || carrierChunk.CustomContent.Kind != extensionReplayKind {
+		t.Fatalf("carrierChunk = %#v, want the extension replay carrier first", carrierChunk)
+	}
+
+	chunk, err := s.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeSource || chunk.SourceContent == nil || chunk.SourceContent.URL != "https://example.com" {
+		t.Fatalf("chunk = %#v, want a forwarded source chunk", chunk)
+	}
+}
+
 // TestOpenResponsesExtensionEventDecodeStream covers row 9a68261: a
 // namespaced streaming event matching a registered extension's EventTypes
 // decodes into stream chunks via DecodeEvent, using the stream's persistent

@@ -431,6 +431,43 @@ func convertAssistantContent(content []types.ContentPart, providerName string, s
 				flush()
 				items = append(items, encoded...)
 			}
+
+		// Row 9a68261 (OR-EXT): file, reasoning-file, and source content
+		// are part of TS's OpenResponsesExtensionContentPart union (every
+		// LanguageModelV4Content type except text/reasoning, which only
+		// exist as stream deltas), so a decodeItem that returns one of
+		// these must be able to replay the same way tool-call/tool-result
+		// do above -- via its preserved replay carrier (already handled),
+		// or lacking one, via EncodeInputItem.
+		case types.GeneratedFileContent:
+			extensionID, itemID := extensionReferenceInfo(p.ProviderMetadata, providerName)
+			if itemID != "" && handledExtensionItemIDs[itemID] {
+				continue
+			}
+			if encoded := encodeExtensionInputItems(extensionID, p, opts); len(encoded) > 0 {
+				flush()
+				items = append(items, encoded...)
+			}
+
+		case types.ReasoningFileContent:
+			extensionID, itemID := extensionReferenceInfo(p.ProviderMetadata, providerName)
+			if itemID != "" && handledExtensionItemIDs[itemID] {
+				continue
+			}
+			if encoded := encodeExtensionInputItems(extensionID, p, opts); len(encoded) > 0 {
+				flush()
+				items = append(items, encoded...)
+			}
+
+		case types.SourceContent:
+			extensionID, itemID := extensionReferenceInfo(p.ProviderMetadata, providerName)
+			if itemID != "" && handledExtensionItemIDs[itemID] {
+				continue
+			}
+			if encoded := encodeExtensionInputItems(extensionID, p, opts); len(encoded) > 0 {
+				flush()
+				items = append(items, encoded...)
+			}
 		}
 	}
 

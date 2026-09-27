@@ -806,8 +806,18 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) *types.G
 			decoded, handled, err := decodeExtensionItem(m.provider.extensionRegistry, item.Raw, "generate", m.providerName())
 			if handled {
 				if err != nil {
-					// Mirrors TS's try/catch around decodeExtensionItem: a
-					// decode failure doesn't abort the whole response.
+					// NOTE: this deliberately diverges from TS, which has no
+					// try/catch around decodeExtensionItem in doGenerate --
+					// there, a decode failure propagates and fails the whole
+					// generate call. convertResponse has no error return, so
+					// making this call site match TS exactly would require
+					// threading an error out of convertResponse (and
+					// updating its non-test callers); until that lands, a
+					// decode failure here just skips the malformed item
+					// instead of aborting the response. The streaming path
+					// (decodeExtensionEvent below) does match TS: it
+					// downgrades a decode failure to a per-event stream
+					// error without aborting the whole stream.
 					continue
 				}
 				result.Content = append(result.Content, decoded...)
@@ -1206,6 +1216,34 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 					s.pending = append(s.pending, &provider.StreamChunk{
 						Type:          provider.ChunkTypeCustom,
 						CustomContent: &cc,
+					})
+					continue
+				}
+				// Row 9a68261 (OR-EXT): TS forwards every part an
+				// extension's decodeItem returns unconditionally
+				// (controller.enqueue(part) for each of decoded ?? []); Go
+				// must forward these remaining OpenResponsesExtensionContentPart
+				// members too instead of silently dropping them, matching
+				// the unconditional append the non-streaming path already
+				// does in convertResponse.
+				if fc, ok := part.(types.GeneratedFileContent); ok {
+					s.pending = append(s.pending, &provider.StreamChunk{
+						Type:                 provider.ChunkTypeFile,
+						GeneratedFileContent: &fc,
+					})
+					continue
+				}
+				if rf, ok := part.(types.ReasoningFileContent); ok {
+					s.pending = append(s.pending, &provider.StreamChunk{
+						Type:                 provider.ChunkTypeReasoningFile,
+						ReasoningFileContent: &rf,
+					})
+					continue
+				}
+				if sc, ok := part.(types.SourceContent); ok {
+					s.pending = append(s.pending, &provider.StreamChunk{
+						Type:          provider.ChunkTypeSource,
+						SourceContent: &sc,
 					})
 				}
 			}

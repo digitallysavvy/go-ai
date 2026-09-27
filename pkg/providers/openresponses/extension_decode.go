@@ -71,9 +71,15 @@ func buildExtensionReplayCarrier(extensionID string, item ExtensionRecord, provi
 
 // attachExtensionItemReference merges a light {id, itemId} extension
 // reference into part's provider metadata, mirroring TS
-// addExtensionItemReferenceMetadata. Only types.ToolCallContent and
-// types.ToolResultContent -- the two part kinds that matter for input
-// replay -- are merged; other content types are returned unchanged.
+// addExtensionItemReferenceMetadata, which runs unconditionally over every
+// part in OpenResponsesExtensionContentPart --
+// Extract<LanguageModelV4Content, LanguageModelV4StreamPart> -- i.e. every
+// full (non-delta) content part EXCEPT text and reasoning (those only exist
+// as -start/-delta/-end stream parts, never as an aggregated shape a
+// decodeItem could return). tool-call, tool-result, custom, file,
+// reasoning-file, tool-approval-request, and source are all covered; text
+// and reasoning content is returned unchanged since DecodeItem is not
+// expected to (and structurally cannot, in TS) return those.
 func attachExtensionItemReference(part types.ContentPart, extensionID, itemID, providerName string) types.ContentPart {
 	reference := map[string]interface{}{"id": extensionID, "itemId": itemID}
 
@@ -82,6 +88,24 @@ func attachExtensionItemReference(part types.ContentPart, extensionID, itemID, p
 		p.ProviderMetadata = mergeExtensionReference(p.ProviderMetadata, providerName, reference)
 		return p
 	case types.ToolResultContent:
+		p.ProviderMetadata = mergeExtensionReference(p.ProviderMetadata, providerName, reference)
+		return p
+	case types.CustomContent:
+		p.ProviderMetadata = mergeExtensionReference(p.ProviderMetadata, providerName, reference)
+		return p
+	case types.GeneratedFileContent:
+		p.ProviderMetadata = mergeExtensionReference(p.ProviderMetadata, providerName, reference)
+		return p
+	case types.ReasoningFileContent:
+		p.ProviderMetadata = mergeExtensionReference(p.ProviderMetadata, providerName, reference)
+		return p
+	// types.ToolApprovalRequestContent has no top-level ProviderMetadata
+	// field to merge a reference into (Go models its provider metadata only
+	// on the nested ToolCall), so it is returned unchanged like text/
+	// reasoning; an extension that decodes to this type cannot round-trip
+	// via the lightweight {id, itemId} reference and must rely on the
+	// replay carrier instead.
+	case types.SourceContent:
 		p.ProviderMetadata = mergeExtensionReference(p.ProviderMetadata, providerName, reference)
 		return p
 	default:
