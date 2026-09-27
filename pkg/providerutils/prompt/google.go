@@ -40,6 +40,15 @@ type GoogleMessagesOptions struct {
 	// IncludeFunctionCallIDs controls whether functionCall/functionResponse
 	// parts carry an `id`. Vertex rejects them (TS includeFunctionCallIds).
 	IncludeFunctionCallIDs bool
+
+	// SupportedFunctionResponseURLs are regex URL patterns (as pattern
+	// source strings, keyed by media type or "*" for all) that a tool-result
+	// file URL may be forwarded directly as functionResponse.parts[].fileData
+	// instead of being JSON-stringified as text, when
+	// SupportsFunctionResponseParts is set (Gemini 3+). Nil disables this
+	// path entirely (TS default {}, which matches nothing). Currently used by
+	// Vertex to forward gs:// (Google Cloud Storage) tool-result file URLs.
+	SupportedFunctionResponseURLs map[string][]string
 }
 
 // GooglePrompt is the converted Gemini prompt.
@@ -68,6 +77,11 @@ type googleConverter struct {
 	isVertexLike bool
 
 	missingSignatureToolNames []string
+
+	// functionResponseURLPatterns is opts.SupportedFunctionResponseURLs
+	// compiled once, keyed by lowercased media type ("*"/"*/*" normalized to
+	// the empty-prefix wildcard).
+	functionResponseURLPatterns map[string][]*regexp.Regexp
 }
 
 // ConvertToGoogleMessages ports TS convertToGoogleMessages
@@ -77,7 +91,12 @@ func ConvertToGoogleMessages(messages []types.Message, opts GoogleMessagesOption
 	if len(names) == 0 {
 		names = []string{"google"}
 	}
-	c := &googleConverter{opts: opts, names: names, isVertexLike: !containsString(names, "google")}
+	c := &googleConverter{
+		opts:                        opts,
+		names:                       names,
+		isVertexLike:                !containsString(names, "google"),
+		functionResponseURLPatterns: compileURLPatterns(opts.SupportedFunctionResponseURLs),
+	}
 	messages = MergeConsecutiveToolMessages(messages)
 
 	var systemParts []map[string]interface{}
@@ -779,6 +798,64 @@ func (c *googleConverter) functionResponse(toolName, toolCallID string, content 
 
 var googleDataURLRegex = regexp.MustCompile(`(?s)^data:([^;,]+);base64,(.+)$`)
 
+// compileURLPatterns compiles a SupportedFunctionResponseURLs-style map
+// (regex pattern source strings keyed by media type) into a lookup table
+// keyed by lowercased media type, dropping any pattern that fails to
+// compile. Returns nil for an empty/nil input.
+func compileURLPatterns(patternsByMediaType map[string][]string) map[string][]*regexp.Regexp {
+	if len(patternsByMediaType) == 0 {
+		return nil
+	}
+	compiled := make(map[string][]*regexp.Regexp, len(patternsByMediaType))
+	for mediaType, patterns := range patternsByMediaType {
+		key := strings.ToLower(mediaType)
+		for _, pattern := range patterns {
+			if re, err := regexp.Compile(pattern); err == nil {
+				compiled[key] = append(compiled[key], re)
+			}
+		}
+	}
+	if len(compiled) == 0 {
+		return nil
+	}
+	return compiled
+}
+
+// isFunctionResponseURLSupported reports whether url may be forwarded
+// directly as functionResponse.parts[].fileData for mediaType, per TS
+// isUrlSupported (provider-utils/src/is-url-supported.ts): a pattern under
+// the exact media type, its `type/*` prefix, or the wildcard "*"/"*/*" must
+// match the (lowercased) URL.
+func (c *googleConverter) isFunctionResponseURLSupported(mediaType, url string) bool {
+	if len(c.functionResponseURLPatterns) == 0 {
+		return false
+	}
+	mediaType = strings.ToLower(mediaType)
+	url = strings.ToLower(url)
+	topLevelOnly := !strings.Contains(mediaType, "/")
+	for key, regexes := range c.functionResponseURLPatterns {
+		prefix := strings.ReplaceAll(key, "*", "")
+		if key == "*" || key == "*/*" {
+			prefix = ""
+		}
+		if prefix != "" {
+			if topLevelOnly {
+				if mediaType+"/" != prefix {
+					continue
+				}
+			} else if !strings.HasPrefix(mediaType, prefix) {
+				continue
+			}
+		}
+		for _, re := range regexes {
+			if re.MatchString(url) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // appendToolResultParts implements the Gemini 3+ multimodal functionResponse
 // format: text goes into response.content, inline files into parts[].
 func (c *googleConverter) appendToolResultParts(parts *[]map[string]interface{}, toolName, toolCallID string, blocks []types.ToolResultContentBlock) {
@@ -800,6 +877,14 @@ func (c *googleConverter) appendToolResultParts(parts *[]map[string]interface{},
 				if m := googleDataURLRegex.FindStringSubmatch(f.url); m != nil {
 					responseParts = append(responseParts, map[string]interface{}{
 						"inlineData": map[string]interface{}{"mimeType": m[1], "data": m[2]},
+					})
+				} else if isFullMediaType(f.mediaType) && c.isFunctionResponseURLSupported(f.mediaType, f.url) {
+					// Forward a supported non-data URL (e.g. gs:// on Vertex,
+					// Gemini 3+) directly instead of inlining it as text.
+					// Ports TS convert-to-google-messages.ts appendToolResultParts
+					// (ai@7.0.118 commit bc49f786f0).
+					responseParts = append(responseParts, map[string]interface{}{
+						"fileData": map[string]interface{}{"mimeType": f.mediaType, "fileUri": f.url},
 					})
 				} else {
 					textParts = append(textParts, googleJSONText(b))

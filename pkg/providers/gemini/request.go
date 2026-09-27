@@ -24,6 +24,19 @@ var configurableSafetySettingCategories = []string{
 // accepts; the Gemini API rejects them.
 var vertexOnlyImageConfigFields = []string{"personGeneration", "prominentPeople", "imageOutputOptions"}
 
+// googleCloudStorageFunctionResponseURLs lists the media types and URL
+// pattern gs:// (Google Cloud Storage) tool-result file URLs may be forwarded
+// directly as functionResponse.parts[].fileData for, on Gemini 3+ models with
+// Config.SupportsGoogleCloudStorageUrls (Vertex). Mirrors TS
+// google-language-model.ts googleCloudStorageFunctionResponseUrls.
+var googleCloudStorageFunctionResponseURLs = map[string][]string{
+	"image/png":       {`^gs://.*$`},
+	"image/jpeg":      {`^gs://.*$`},
+	"image/webp":      {`^gs://.*$`},
+	"application/pdf": {`^gs://.*$`},
+	"text/plain":      {`^gs://.*$`},
+}
+
 func (m *LanguageModel) isVertex() bool {
 	return m.cfg.IsVertex || m.cfg.ProviderName == "google-vertex"
 }
@@ -160,6 +173,10 @@ func (m *LanguageModel) buildRequest(ctx context.Context, opts *provider.Generat
 		}
 		messages = downloaded
 	}
+	var supportedFunctionResponseURLs map[string][]string
+	if caps.UsesGemini3Features && m.cfg.SupportsGoogleCloudStorageUrls {
+		supportedFunctionResponseURLs = googleCloudStorageFunctionResponseURLs
+	}
 	converted, err := prompt.ConvertToGoogleMessages(messages, prompt.GoogleMessagesOptions{
 		System:                        opts.Prompt.System,
 		IsGemmaModel:                  gemma,
@@ -167,6 +184,7 @@ func (m *LanguageModel) buildRequest(ctx context.Context, opts *provider.Generat
 		ProviderOptionsNames:          m.providerOptionsNames(),
 		SupportsFunctionResponseParts: caps.UsesGemini3Features,
 		IncludeFunctionCallIDs:        !isVertex,
+		SupportedFunctionResponseURLs: supportedFunctionResponseURLs,
 	})
 	if err != nil {
 		return nil, nil, nil, err

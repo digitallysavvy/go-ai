@@ -47,7 +47,8 @@ func NewLanguageModel(p *Provider, modelID string) *LanguageModel {
 				"*": {`^https?:\/\/.*$`, `^gs:\/\/.*$`},
 			}
 		},
-		ToolResultDownloadMaxBytes: vertexToolResultDownloadMaxBytes(p.config.ToolResultDownloads),
+		ToolResultDownloadMaxBytes:     vertexToolResultDownloadMaxBytes(p.config.ToolResultDownloads),
+		SupportsGoogleCloudStorageUrls: true,
 	}
 	return &LanguageModel{LanguageModel: gemini.NewLanguageModel(cfg, modelID), provider: p}
 }
