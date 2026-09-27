@@ -412,11 +412,16 @@ func toolResultsToContentParts(results []types.ToolResult, secret ...[]byte) []t
 	return parts
 }
 
+// toolResultModelOutput mirrors TS createToolModelOutput's default case:
+// string results pass through as "text"; everything else is normalized to a
+// plain JSON value via toJSONValue (round-tripped through JSON so structs,
+// time.Time, etc. match what the message actually serializes to) before
+// being stored as "json" (audit row 6aa7c54 / WG24).
 func toolResultModelOutput(result interface{}) *types.ToolResultOutput {
 	if text, ok := result.(string); ok {
 		return &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: text}
 	}
-	return &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: result}
+	return &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: toJSONValue(result)}
 }
 
 func toolResultContentFromToolResult(result types.ToolResult) types.ContentPart {

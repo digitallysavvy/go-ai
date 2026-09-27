@@ -179,7 +179,7 @@ func toolResultContentFromResult(result types.ToolResult) types.ToolResultConten
 		}
 	default:
 		if part.Output == nil {
-			part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: result.Result}
+			part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: toJSONValue(result.Result)}
 			part.Result = nil
 		}
 	}
@@ -214,7 +214,7 @@ func normalizeToolResultContent(part types.ToolResultContent) types.ToolResultCo
 		part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: result}
 		part.Result = nil
 	default:
-		part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: result}
+		part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: toJSONValue(result)}
 		part.Result = nil
 	}
 	return part
@@ -398,6 +398,26 @@ func providerMetadataOptions(metadata json.RawMessage) map[string]interface{} {
 		return nil
 	}
 	return options
+}
+
+// toJSONValue round-trips value through JSON so complex Go tool-result
+// values (structs with json tags, time.Time, etc.) are normalized to plain
+// JSON values matching what the message actually serializes to, mirroring
+// TS createToolModelOutput's toJSONValue (JSON.stringify + JSON.parse;
+// undefined/marshal failure -> null). Audit row 6aa7c54 / WG24.
+func toJSONValue(value interface{}) interface{} {
+	if value == nil {
+		return nil
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var out interface{}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 func providerMetadataRaw(metadata map[string]interface{}) json.RawMessage {
