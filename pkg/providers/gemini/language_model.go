@@ -117,6 +117,16 @@ type googleErrorData struct {
 	} `json:"error"`
 }
 
+// generateID returns a fresh ID for a server tool call/source, using the
+// configured generator when set (TS: `config.generateId()`), falling back to
+// the shared streaming ID generator otherwise.
+func (m *LanguageModel) generateID() string {
+	if m.cfg.GenerateID != nil {
+		return m.cfg.GenerateID()
+	}
+	return streaming.GenerateID()
+}
+
 // handleError wraps a low-level error into a provider error, parsing the
 // Google {error:{code,message,status,details}} JSON body when present
 // (TS googleFailedResponseHandler / createJsonErrorResponseHandler).
@@ -157,6 +167,7 @@ func (m *LanguageModel) convertResponse(response Response, tnm toolNameMapping) 
 
 	var textParts []string
 	var lastCodeExecID string
+	var lastServerToolCallID string
 
 	for _, part := range candidate.Content.Parts {
 		// Thought inlineData → ReasoningFileContent.
@@ -246,6 +257,63 @@ func (m *LanguageModel) convertResponse(response Response, tnm toolNameMapping) 
 				ProviderMetadata: providerMetadata,
 				ThoughtSignature: part.ThoughtSignature,
 			})
+		}
+		// Server-executed built-in tool call/result (distinct from
+		// FunctionCall, which is user-invoked). TS: `'toolCall' in part` /
+		// `'toolResponse' in part`.
+		if part.ToolCall != nil {
+			toolCallID := part.ToolCall.ID
+			if toolCallID == "" {
+				toolCallID = m.generateID()
+			}
+			lastServerToolCallID = toolCallID
+			args := part.ToolCall.Args
+			if args == nil {
+				args = map[string]interface{}{}
+			}
+			meta := map[string]interface{}{
+				"serverToolCallId": toolCallID,
+				"serverToolType":   part.ToolCall.ToolType,
+			}
+			if part.ThoughtSignature != "" {
+				meta["thoughtSignature"] = part.ThoughtSignature
+			}
+			result.ToolCalls = append(result.ToolCalls, types.ToolCall{
+				ID:               toolCallID,
+				ToolName:         "server:" + part.ToolCall.ToolType,
+				Arguments:        args,
+				ProviderExecuted: true,
+				Dynamic:          true,
+				ProviderMetadata: m.cfg.wrapProviderMetadata(meta),
+			})
+		}
+		if part.ToolResponse != nil {
+			toolCallID := lastServerToolCallID
+			if toolCallID == "" {
+				toolCallID = part.ToolResponse.ID
+			}
+			if toolCallID == "" {
+				toolCallID = m.generateID()
+			}
+			resultValue := part.ToolResponse.Response
+			if resultValue == nil {
+				resultValue = map[string]interface{}{}
+			}
+			meta := map[string]interface{}{
+				"serverToolCallId": toolCallID,
+				"serverToolType":   part.ToolResponse.ToolType,
+			}
+			if part.ThoughtSignature != "" {
+				meta["thoughtSignature"] = part.ThoughtSignature
+			}
+			metaJSON, _ := json.Marshal(m.cfg.wrapProviderMetadata(meta))
+			result.Content = append(result.Content, types.ToolResultContent{
+				ToolCallID:       toolCallID,
+				ToolName:         "server:" + part.ToolResponse.ToolType,
+				Result:           resultValue,
+				ProviderMetadata: metaJSON,
+			})
+			lastServerToolCallID = ""
 		}
 	}
 

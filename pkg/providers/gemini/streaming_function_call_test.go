@@ -1,10 +1,12 @@
 package gemini
 
 import (
+	"encoding/json"
 	"io"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // Tests for the per-chunk independent function-call streaming model ported
@@ -317,5 +319,85 @@ func TestStream_CompleteCall_StringArgs(t *testing.T) {
 	tc := calls[0].ToolCall
 	if tc.RawArguments != "already-json-text" {
 		t.Fatalf("RawArguments = %q, want the string used verbatim", tc.RawArguments)
+	}
+}
+
+// TestStream_ServerToolCallAndResult ports TS google-language-model.test.ts's
+// streaming server tool call/result fixture (~line 6540): a `toolCall`/
+// `toolResponse` part pair (distinct from a user-invoked `functionCall`)
+// becomes a `server:<toolType>` tool-call chunk (providerExecuted+dynamic
+// true) and a matching tool-result chunk, each carrying
+// serverToolCallId/serverToolType/thoughtSignature (when present) in
+// providerMetadata.google — and does not itself flip the finish reason to
+// tool-calls (only user-invoked function calls do that).
+func TestStream_ServerToolCallAndResult(t *testing.T) {
+	chunk1 := `{"candidates":[{"content":{"parts":[` +
+		`{"toolCall":{"toolType":"GOOGLE_SEARCH_WEB","args":{"query":"SF weather"},"id":"sc-1"},"thoughtSignature":"sig-1"},` +
+		`{"toolResponse":{"toolType":"GOOGLE_SEARCH_WEB","response":{"results":[{"title":"Weather"}]},"id":"sc-1"}}` +
+		`]}}]}`
+	chunk2 := `{"candidates":[{"content":{"parts":[{"text":"It is sunny."}]},"finishReason":"STOP"}]}`
+
+	s := newTestStream(sseStream(chunk1, chunk2, "[DONE]"))
+	chunks := drainStream(t, s)
+
+	var toolCallChunk, toolResultChunk *provider.StreamChunk
+	for _, c := range chunks {
+		switch c.Type {
+		case provider.ChunkTypeToolCall:
+			toolCallChunk = c
+		case provider.ChunkTypeToolResult:
+			toolResultChunk = c
+		}
+	}
+	if toolCallChunk == nil || toolResultChunk == nil {
+		t.Fatalf("missing tool-call/tool-result chunk: %v", chunkTypes(chunks))
+	}
+
+	call := toolCallChunk.ToolCall
+	if call.ID != "sc-1" || call.ToolName != "server:GOOGLE_SEARCH_WEB" {
+		t.Fatalf("tool call = %#v", call)
+	}
+	if !call.ProviderExecuted || !call.Dynamic {
+		t.Fatalf("expected providerExecuted+dynamic tool call, got %#v", call)
+	}
+	if call.Arguments["query"] != "SF weather" {
+		t.Fatalf("Arguments = %#v", call.Arguments)
+	}
+	var callMeta struct {
+		Google map[string]interface{} `json:"google"`
+	}
+	if err := json.Unmarshal(toolCallChunk.ProviderMetadata, &callMeta); err != nil {
+		t.Fatalf("unmarshal tool call metadata: %v", err)
+	}
+	if callMeta.Google["serverToolCallId"] != "sc-1" || callMeta.Google["thoughtSignature"] != "sig-1" {
+		t.Fatalf("tool call provider metadata = %#v", callMeta.Google)
+	}
+
+	result := toolResultChunk.ToolResult
+	if result.ToolCallID != "sc-1" || result.ToolName != "server:GOOGLE_SEARCH_WEB" {
+		t.Fatalf("tool result = %#v", result)
+	}
+	var resultMeta struct {
+		Google map[string]interface{} `json:"google"`
+	}
+	if err := json.Unmarshal(toolResultChunk.ProviderMetadata, &resultMeta); err != nil {
+		t.Fatalf("unmarshal tool result metadata: %v", err)
+	}
+	// The toolResponse part carries no thoughtSignature of its own, so it
+	// must not inherit the toolCall's.
+	if _, hasSig := resultMeta.Google["thoughtSignature"]; hasSig {
+		t.Fatalf("tool result metadata should not carry a thoughtSignature: %#v", resultMeta.Google)
+	}
+
+	// A server-executed tool does not flip STOP to tool-calls (only a
+	// user-invoked function call does).
+	var finish *provider.StreamChunk
+	for _, c := range chunks {
+		if c.Type == provider.ChunkTypeFinish {
+			finish = c
+		}
+	}
+	if finish == nil || finish.FinishReason != types.FinishReasonStop {
+		t.Fatalf("finish reason = %v, want stop", finish)
 	}
 }

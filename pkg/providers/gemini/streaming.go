@@ -41,6 +41,11 @@ type stream struct {
 	codeExecCount  int
 	lastCodeExecID string
 
+	// lastServerToolCallID associates a server-executed built-in tool's
+	// toolResponse part with its preceding toolCall part (TS
+	// lastServerToolCallId), mirroring lastCodeExecID above.
+	lastServerToolCallID string
+
 	// Metadata accumulated across SSE events, emitted on the finish chunk.
 	lastGroundingMetadata  json.RawMessage
 	lastUrlContextMetadata json.RawMessage
@@ -446,6 +451,73 @@ func (s *stream) processNonFuncPart(part Part) {
 			})
 			return
 		}
+	}
+
+	// Server-executed built-in tool call/result (distinct from a
+	// (user-invoked) functionCall part). TS: `'toolCall' in part` /
+	// `'toolResponse' in part`.
+	if part.ToolCall != nil {
+		toolCallID := part.ToolCall.ID
+		if toolCallID == "" {
+			toolCallID = s.generateID()
+		}
+		s.lastServerToolCallID = toolCallID
+		args := part.ToolCall.Args
+		if args == nil {
+			args = map[string]interface{}{}
+		}
+		meta := map[string]interface{}{
+			"serverToolCallId": toolCallID,
+			"serverToolType":   part.ToolCall.ToolType,
+		}
+		if part.ThoughtSignature != "" {
+			meta["thoughtSignature"] = part.ThoughtSignature
+		}
+		metaJSON, _ := json.Marshal(s.cfg.wrapProviderMetadata(meta))
+		s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
+			Type: provider.ChunkTypeToolCall,
+			ToolCall: &types.ToolCall{
+				ID:               toolCallID,
+				ToolName:         "server:" + part.ToolCall.ToolType,
+				Arguments:        args,
+				ProviderExecuted: true,
+				Dynamic:          true,
+			},
+			ProviderMetadata: metaJSON,
+		})
+		return
+	}
+	if part.ToolResponse != nil {
+		toolCallID := s.lastServerToolCallID
+		if toolCallID == "" {
+			toolCallID = part.ToolResponse.ID
+		}
+		if toolCallID == "" {
+			toolCallID = s.generateID()
+		}
+		resultValue := part.ToolResponse.Response
+		if resultValue == nil {
+			resultValue = map[string]interface{}{}
+		}
+		meta := map[string]interface{}{
+			"serverToolCallId": toolCallID,
+			"serverToolType":   part.ToolResponse.ToolType,
+		}
+		if part.ThoughtSignature != "" {
+			meta["thoughtSignature"] = part.ThoughtSignature
+		}
+		metaJSON, _ := json.Marshal(s.cfg.wrapProviderMetadata(meta))
+		s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
+			Type: provider.ChunkTypeToolResult,
+			ToolResult: &types.ToolResult{
+				ToolCallID: toolCallID,
+				ToolName:   "server:" + part.ToolResponse.ToolType,
+				Result:     resultValue,
+			},
+			ProviderMetadata: metaJSON,
+		})
+		s.lastServerToolCallID = ""
+		return
 	}
 
 	// InlineData → close open blocks, emit reasoning-file or file chunk.

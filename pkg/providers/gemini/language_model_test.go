@@ -731,3 +731,97 @@ func TestConvertResponse_NoArgsToolCallPreservesThoughtSignatureMetadata(t *test
 		t.Fatalf("thoughtSignature metadata = %v", googleMeta["thoughtSignature"])
 	}
 }
+
+// TestConvertResponse_ServerToolCallAndResult ports TS
+// google-language-model.test.ts's "server tool call/result" fixture
+// (~line 3255): a `toolCall`/`toolResponse` part pair (distinct from
+// `functionCall`, which is user-invoked) becomes a `server:<toolType>`
+// tool call (providerExecuted+dynamic true) and a matching tool result,
+// each carrying serverToolCallId/serverToolType/thoughtSignature in
+// providerMetadata.google.
+func TestConvertResponse_ServerToolCallAndResult(t *testing.T) {
+	m := makeTestModel("gemini-3-pro-preview")
+	resp := Response{
+		Candidates: []Candidate{{
+			Content: struct {
+				Parts []Part `json:"parts"`
+				Role  string `json:"role"`
+			}{Parts: []Part{
+				{
+					ToolCall: &struct {
+						ToolType string                 `json:"toolType"`
+						Args     map[string]interface{} `json:"args,omitempty"`
+						ID       string                 `json:"id"`
+					}{ToolType: "GOOGLE_SEARCH_WEB", Args: map[string]interface{}{"query": "San Francisco weather"}, ID: "server-call-1"},
+					ThoughtSignature: "sig-abc",
+				},
+				{
+					ToolResponse: &struct {
+						ToolType string                 `json:"toolType"`
+						Response map[string]interface{} `json:"response,omitempty"`
+						ID       string                 `json:"id"`
+					}{ToolType: "GOOGLE_SEARCH_WEB", Response: map[string]interface{}{"results": []interface{}{map[string]interface{}{"title": "Weather in SF"}}}, ID: "server-call-1"},
+					ThoughtSignature: "sig-def",
+				},
+				{Text: "The weather in San Francisco is sunny."},
+			}},
+			FinishReason: "STOP",
+		}},
+	}
+
+	result := m.convertResponse(resp, nil)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls len = %d, want 1: %#v", len(result.ToolCalls), result.ToolCalls)
+	}
+	call := result.ToolCalls[0]
+	if call.ID != "server-call-1" || call.ToolName != "server:GOOGLE_SEARCH_WEB" {
+		t.Fatalf("tool call = %#v", call)
+	}
+	if !call.ProviderExecuted || !call.Dynamic {
+		t.Fatalf("expected providerExecuted+dynamic, got %#v", call)
+	}
+	if call.Arguments["query"] != "San Francisco weather" {
+		t.Fatalf("Arguments = %#v", call.Arguments)
+	}
+	callMeta, _ := call.ProviderMetadata["google"].(map[string]interface{})
+	if callMeta["serverToolCallId"] != "server-call-1" || callMeta["serverToolType"] != "GOOGLE_SEARCH_WEB" || callMeta["thoughtSignature"] != "sig-abc" {
+		t.Fatalf("tool call provider metadata = %#v", callMeta)
+	}
+
+	// The tool-result and trailing text both land in result.Content, in
+	// order, alongside the tool call — mirroring TS's single flat `content`
+	// array for the assistant message.
+	var toolResult *types.ToolResultContent
+	var text string
+	for _, c := range result.Content {
+		switch v := c.(type) {
+		case types.ToolResultContent:
+			vv := v
+			toolResult = &vv
+		case types.TextContent:
+			text = v.Text
+		}
+	}
+	if toolResult == nil {
+		t.Fatalf("expected a ToolResultContent in result.Content: %#v", result.Content)
+	}
+	if toolResult.ToolCallID != "server-call-1" || toolResult.ToolName != "server:GOOGLE_SEARCH_WEB" {
+		t.Fatalf("tool result = %#v", toolResult)
+	}
+	resultMap, _ := toolResult.Result.(map[string]interface{})
+	results, _ := resultMap["results"].([]interface{})
+	if len(results) != 1 {
+		t.Fatalf("tool result.Result = %#v", toolResult.Result)
+	}
+	var resultMeta map[string]interface{}
+	_ = json.Unmarshal(toolResult.ProviderMetadata, &struct {
+		Google *map[string]interface{} `json:"google"`
+	}{Google: &resultMeta})
+	if resultMeta["serverToolCallId"] != "server-call-1" || resultMeta["thoughtSignature"] != "sig-def" {
+		t.Fatalf("tool result provider metadata = %s", toolResult.ProviderMetadata)
+	}
+	if text != "The weather in San Francisco is sunny." {
+		t.Fatalf("text = %q", text)
+	}
+}

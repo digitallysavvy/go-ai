@@ -199,6 +199,22 @@ type Part struct {
 		Outcome string `json:"outcome"`
 		Output  string `json:"output"`
 	} `json:"codeExecutionResult,omitempty"`
+	// ToolCall/ToolResponse carry a server-executed built-in tool invocation
+	// and its result (distinct from FunctionCall, which is user-invoked).
+	// TS google-language-model.ts: `'toolCall' in part` / `'toolResponse' in
+	// part`, surfaced as a `server:${toolType}` tool call/result with
+	// providerExecuted+dynamic true and serverToolCallId/serverToolType in
+	// provider metadata.
+	ToolCall *struct {
+		ToolType string                 `json:"toolType"`
+		Args     map[string]interface{} `json:"args,omitempty"`
+		ID       string                 `json:"id"`
+	} `json:"toolCall,omitempty"`
+	ToolResponse *struct {
+		ToolType string                 `json:"toolType"`
+		Response map[string]interface{} `json:"response,omitempty"`
+		ID       string                 `json:"id"`
+	} `json:"toolResponse,omitempty"`
 }
 
 // decodeInlineData base64-decodes an inlineData payload.
