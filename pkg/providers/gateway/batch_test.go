@@ -385,6 +385,111 @@ func TestGatewayBatch_DoGetBatchStatus_NotFoundMapsToGatewayNotFoundError(t *tes
 	}
 }
 
+// TS parity: a "not_found" Gateway error also maps to GatewayNotFoundError
+// for doCancelBatch (gateway-batch.test.ts:654).
+func TestGatewayBatch_DoCancelBatch_NotFoundMapsToGatewayNotFoundError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"message":"Resource not found","type":"not_found"}}`))
+	}))
+	defer server.Close()
+
+	p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New error = %v", err)
+	}
+	batch := p.ExperimentalBatch()
+	canceller, ok := batch.(provider.BatchV4Canceller)
+	if !ok {
+		t.Fatalf("gateway Batch does not implement BatchV4Canceller")
+	}
+
+	_, err = canceller.DoCancelBatch(context.Background(), provider.BatchV4OperationOptions{BatchID: "job_missing"})
+	if _, isType := err.(*gatewayerrors.GatewayNotFoundError); !isType {
+		t.Fatalf("err = %v (%T), want GatewayNotFoundError", err, err)
+	}
+}
+
+// TS parity: a "not_found" Gateway error also maps to GatewayNotFoundError
+// for doGetBatchResults (gateway-batch.test.ts:562).
+func TestGatewayBatch_DoGetBatchResults_NotFoundMapsToGatewayNotFoundError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"message":"Resource not found","type":"not_found"}}`))
+	}))
+	defer server.Close()
+
+	p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New error = %v", err)
+	}
+	batch := p.ExperimentalBatch()
+
+	_, err = batch.DoGetBatchResults(context.Background(), provider.BatchV4OperationOptions{BatchID: "job_missing"})
+	if _, isType := err.(*gatewayerrors.GatewayNotFoundError); !isType {
+		t.Fatalf("err = %v (%T), want GatewayNotFoundError", err, err)
+	}
+}
+
+// TS: gateway-batch.test.ts "should include callbackUrl in the request body when webhookUrl is provided"
+func TestGatewayBatch_DoStartBatch_CallbackURL(t *testing.T) {
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"batchId":"job_123","status":"pending"}`))
+	}))
+	defer server.Close()
+
+	p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New error = %v", err)
+	}
+	batch := p.ExperimentalBatch()
+
+	_, err = batch.DoStartBatch(context.Background(), provider.BatchV4StartOptions{
+		Requests:   []provider.BatchV4Request{testBatchTextRequest("req-1", "test-model-1")},
+		WebhookURL: "https://example.com/hook",
+	})
+	if err != nil {
+		t.Fatalf("DoStartBatch() error = %v", err)
+	}
+	if gotBody["callbackUrl"] != "https://example.com/hook" {
+		t.Fatalf("callbackUrl = %v, want https://example.com/hook", gotBody["callbackUrl"])
+	}
+}
+
+// TS: gateway-batch.test.ts "should omit callbackUrl from the request body when webhookUrl is not provided"
+func TestGatewayBatch_DoStartBatch_OmitsCallbackURLWhenAbsent(t *testing.T) {
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"batchId":"job_123","status":"pending"}`))
+	}))
+	defer server.Close()
+
+	p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New error = %v", err)
+	}
+	batch := p.ExperimentalBatch()
+
+	_, err = batch.DoStartBatch(context.Background(), provider.BatchV4StartOptions{
+		Requests: []provider.BatchV4Request{testBatchTextRequest("req-1", "test-model-1")},
+	})
+	if err != nil {
+		t.Fatalf("DoStartBatch() error = %v", err)
+	}
+	if _, present := gotBody["callbackUrl"]; present {
+		t.Fatalf("callbackUrl present = %v, want omitted", gotBody["callbackUrl"])
+	}
+}
+
 // TS: gateway-batch.test.ts "should expose the three batch methods as functions (batch capability duck-type)"
 func TestGatewayBatch_ImplementsBatchV4Capabilities(t *testing.T) {
 	p, err := New(Config{APIKey: "test-key"})
