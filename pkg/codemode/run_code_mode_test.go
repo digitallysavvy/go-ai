@@ -62,6 +62,36 @@ func TestRunCodeMode_StripsInterfaceAndSatisfies(t *testing.T) {
 // in wrapCodeModeSource
 // intercepts any property key, including one reached only through bracket
 // notation, so a tool name need not be a valid JS identifier.
+// The default outerToolCallId (used only when neither
+// ToolExecutionOptions.ToolCallID nor a Continuation supplies one) must be
+// distinct per invocation, mirroring TypeScript's lazily-incremented
+// “ `code-mode-${++invocationCounter}` “ fallback -- not the same literal
+// string reused by every anonymous invocation in the process, which would
+// otherwise give two unrelated invocations' host tool calls colliding
+// toolCallId values (e.g. both "code-mode-1:tool-1").
+func TestRunCodeMode_DefaultOuterToolCallIdIsUniquePerInvocation(t *testing.T) {
+	var toolCallIDs []string
+	tools := ToolSet{"echo": {
+		Name:       "echo",
+		Parameters: map[string]interface{}{"type": "object"},
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			toolCallIDs = append(toolCallIDs, opts.ToolCallID)
+			return "ok", nil
+		},
+	}}
+	for i := 0; i < 2; i++ {
+		if _, err := RunCodeMode(context.Background(), RunInput{JS: "return await tools.echo({});", Tools: tools}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+	if len(toolCallIDs) != 2 {
+		t.Fatalf("expected 2 recorded tool call ids, got %#v", toolCallIDs)
+	}
+	if toolCallIDs[0] == toolCallIDs[1] {
+		t.Fatalf("expected distinct default outerToolCallIds across invocations, both got %q", toolCallIDs[0])
+	}
+}
+
 func TestRunCodeMode_SupportsToolNamesThatAreNotHostFunctionIdentifiers(t *testing.T) {
 	tools := ToolSet{"lookup-user": {
 		Name: "lookup-user",

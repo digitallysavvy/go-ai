@@ -2,10 +2,21 @@ package codemode
 
 import (
 	"context"
+	"fmt"
 	"sort"
+	"sync/atomic"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/third_party/qjs"
 )
+
+// invocationCounter mirrors TypeScript's module-level `invocationCounter`
+// (code-mode/src/run-code-mode.ts), which is only ever incremented lazily
+// via “ `code-mode-${++invocationCounter}` “ as the last fallback in the
+// outerToolCallId `??` chain -- i.e. only for an invocation that supplies
+// neither toolExecutionOptions.toolCallId nor a continuation -- so every
+// such anonymous invocation in the process gets a distinct default id
+// instead of every one colliding on the same literal "code-mode-1".
+var invocationCounter int64
 
 // RunCodeMode runs code-mode JavaScript directly, without wrapping it as an
 // AI SDK tool. The source runs as the body of an async function, so
@@ -54,11 +65,18 @@ func RunCodeMode(ctx context.Context, input RunInput) (interface{}, error) {
 		return prepared.nextInterrupt, nil
 	}
 
-	outerToolCall := "code-mode-1"
-	if input.ToolExecutionOptions != nil && input.ToolExecutionOptions.ToolCallID != "" {
+	var outerToolCall string
+	switch {
+	case input.ToolExecutionOptions != nil && input.ToolExecutionOptions.ToolCallID != "":
 		outerToolCall = input.ToolExecutionOptions.ToolCallID
-	} else if input.Continuation != nil {
+	case input.Continuation != nil:
 		outerToolCall = input.Continuation.OuterToolCallID
+	default:
+		// Mirrors TypeScript's lazy `` `code-mode-${++invocationCounter}` ``
+		// fallback: only incremented for an invocation that supplies neither
+		// of the above, so every such anonymous invocation in the process
+		// gets a distinct default id.
+		outerToolCall = fmt.Sprintf("code-mode-%d", atomic.AddInt64(&invocationCounter, 1))
 	}
 
 	bridge := newToolBridge(ctx, input, options, policy, outerToolCall, prepared.replayLedger, prepared.resumePendings, prepared.resumeResolutions)
