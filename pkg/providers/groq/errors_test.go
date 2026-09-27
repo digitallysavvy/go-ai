@@ -80,7 +80,7 @@ func TestGroqErrorFallsBackForNonEnvelopeBodyPreservesStatusCode(t *testing.T) {
 // structured StreamProviderError, not just a bare message.
 
 func TestGroqStreamErrorRateLimitIsRetryable(t *testing.T) {
-	se := newGroqStreamProviderErrorChunk([]byte(`{"message":"Rate limited","type":"rate_limit_error"}`))
+	se := newGroqStreamProviderErrorChunk([]byte(`{"message":"Rate limited","type":"rate_limit_error"}`), nil)
 	if se.Message != "Rate limited" {
 		t.Errorf("Message = %q, want Rate limited", se.Message)
 	}
@@ -96,7 +96,7 @@ func TestGroqStreamErrorRateLimitIsRetryable(t *testing.T) {
 }
 
 func TestGroqStreamErrorInvalidRequestNotRetryable(t *testing.T) {
-	se := newGroqStreamProviderErrorChunk([]byte(`{"message":"bad input","type":"invalid_request_error"}`))
+	se := newGroqStreamProviderErrorChunk([]byte(`{"message":"bad input","type":"invalid_request_error"}`), nil)
 	if se.StatusCode == nil || *se.StatusCode != 400 {
 		t.Errorf("StatusCode = %v, want 400", se.StatusCode)
 	}
@@ -132,5 +132,14 @@ data: [DONE]
 	}
 	if !streamErr.IsRetryable {
 		t.Error("IsRetryable = false, want true for service_unavailable")
+	}
+	// TS createGroqStreamError(value.error, value) sets `data` to the whole
+	// chunk value (with the `error` wrapper key), not just value.error.
+	dataMap, ok := streamErr.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("streamErr.Data type = %T, want map[string]interface{}", streamErr.Data)
+	}
+	if _, ok := dataMap["error"]; !ok {
+		t.Fatalf("streamErr.Data = %#v, want the whole chunk (with an \"error\" key)", dataMap)
 	}
 }

@@ -498,7 +498,7 @@ func (s *groqStream) Next() (*provider.StreamChunk, error) {
 			// P1-1c part 2: attach the structured StreamProviderError (TS
 			// createGroqStreamError) so streamRetries/IsRetryable see the
 			// real type/statusCode/isRetryable instead of generic inference.
-			Err: newGroqStreamProviderErrorChunk(chunkData.Error),
+			Err: newGroqStreamProviderErrorChunk(chunkData.Error, json.RawMessage(event.Data)),
 		})
 	}
 	if !s.metadataEmitted && (chunkData.ID != "" || chunkData.Model != "" || chunkData.Created != 0 || len(s.responseHeaders) > 0) {

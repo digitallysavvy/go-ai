@@ -63,10 +63,11 @@ func groqStreamErrorMetadata(errType string) (statusCode int, isRetryable bool) 
 
 // newGroqStreamProviderErrorChunk builds a *providererrors.StreamProviderError
 // from a mid-stream `error` frame's raw {"message","type"} payload, mirroring
-// TS createGroqStreamError(value.error, value) (data is the whole chunk
-// value, here the same raw error payload since Go doesn't carry the rest of
-// the chunk's fields at this call site).
-func newGroqStreamProviderErrorChunk(raw json.RawMessage) *providererrors.StreamProviderError {
+// TS createGroqStreamError(value.error, value). fullFrame is the whole SSE
+// chunk (e.g. `{"error":{"message","type"}}`), used verbatim for `data` to
+// match TS's `data: value` (the full chunk, not just `value.error`); it may
+// be nil/empty, in which case raw is used as a fallback.
+func newGroqStreamProviderErrorChunk(raw json.RawMessage, fullFrame json.RawMessage) *providererrors.StreamProviderError {
 	var payload struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
@@ -77,8 +78,12 @@ func newGroqStreamProviderErrorChunk(raw json.RawMessage) *providererrors.Stream
 		message = groqStreamErrorText(raw)
 	}
 	statusCode, isRetryable := groqStreamErrorMetadata(payload.Type)
+	dataSrc := fullFrame
+	if len(dataSrc) == 0 {
+		dataSrc = raw
+	}
 	var data interface{}
-	_ = json.Unmarshal(raw, &data)
+	_ = json.Unmarshal(dataSrc, &data)
 	// A zero statusCode means the type wasn't recognized (TS's
 	// getGroqStreamErrorMetadata returns {}); leave both statusCode and
 	// isRetryable unset so NewStreamProviderError falls back to its own
