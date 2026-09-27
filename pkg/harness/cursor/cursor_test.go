@@ -3,22 +3,22 @@ package cursor
 import (
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/harness/acp"
+	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 )
 
 // Mirrors TS cursor-harness.test.ts "enforces the Cursor ACP implementation".
 func TestBuildConfig_Recipe(t *testing.T) {
 	cfg := BuildConfig(Settings{})
 
-	if cfg.Version != "v1" {
-		t.Errorf("Version = %q, want v1", cfg.Version)
-	}
 	if cfg.HarnessID != "cursor" {
 		t.Errorf("HarnessID = %q, want cursor", cfg.HarnessID)
 	}
-	if cfg.ClientAppName != "ai-sdk/harness-cursor" {
-		t.Errorf("ClientAppName = %q", cfg.ClientAppName)
+	if cfg.ClientApp.Name != "ai-sdk/harness-cursor" || cfg.ClientApp.Version != "0.0.0-go" {
+		t.Errorf("ClientApp = %+v", cfg.ClientApp)
 	}
 	if cfg.Executable != "agent" {
 		t.Errorf("Executable = %q, want agent", cfg.Executable)
@@ -26,18 +26,24 @@ func TestBuildConfig_Recipe(t *testing.T) {
 	if !reflect.DeepEqual(cfg.Args, []string{"--disable-auto-update", "acp"}) {
 		t.Errorf("Args = %v", cfg.Args)
 	}
-	if cfg.Source.Type != "install-command" || cfg.Source.Command != "curl https://cursor.com/install -fsS | bash" {
+	if cfg.Source.Type != acp.SourceInstallCommand || cfg.Source.Command != "curl https://cursor.com/install -fsS | bash" {
 		t.Errorf("Source = %+v", cfg.Source)
 	}
 	if !reflect.DeepEqual(cfg.CredentialEnv, []string{"CURSOR_API_KEY"}) {
 		t.Errorf("CredentialEnv = %v", cfg.CredentialEnv)
 	}
-	if cfg.ModelMapping != (ModelMapping{Type: "session-config-option", Path: "model"}) {
+	if cfg.ModelMapping != (acp.ModelMapping{Type: acp.ModelMappingSessionConfigOption, Path: "model"}) {
 		t.Errorf("ModelMapping = %+v", cfg.ModelMapping)
 	}
 	wantCaps := map[string]any{"_meta": map[string]any{"parameterizedModelPicker": true}}
 	if !reflect.DeepEqual(cfg.ClientCapabilities, wantCaps) {
 		t.Errorf("ClientCapabilities = %+v", cfg.ClientCapabilities)
+	}
+	if cfg.Auth.Mode != "" || len(cfg.Auth.Environment) != 0 {
+		t.Errorf("Auth = %+v, want zero value (undefined)", cfg.Auth)
+	}
+	if cfg.ProviderAuthentication != nil {
+		t.Errorf("ProviderAuthentication = %+v, want nil", cfg.ProviderAuthentication)
 	}
 
 	wantNames := []string{
@@ -59,12 +65,48 @@ func TestBuildConfig_Recipe(t *testing.T) {
 	}
 }
 
+// Mirrors "forwards user-configurable settings".
+func TestBuildConfig_ForwardsUserConfigurableSettings(t *testing.T) {
+	mintBridgeToken := func(sandboxID string) string { return "token-for-" + sandboxID }
+	credentialForwarding := harness.CredentialForwarding(nil)
+	portEndpoint := &harness.PortEndpoint{URL: "wss://sandbox.example/bridge"}
+	reconnect := &bridge.ReconnectOptions{MaxElapsed: 120_000 * time.Millisecond, InitialDelay: 100 * time.Millisecond, MaxDelay: 5_000 * time.Millisecond}
+	port := 4319
+	startupTimeoutMS := 45_000
+
+	cfg := BuildConfig(Settings{
+		CredentialForwarding: credentialForwarding,
+		Port:                 &port,
+		PortEndpoint:         portEndpoint,
+		StartupTimeoutMS:     &startupTimeoutMS,
+		Reconnect:            reconnect,
+		MCPServers:           map[string]any{"external": map[string]any{"command": "external-mcp"}},
+		MintBridgeToken:      mintBridgeToken,
+	})
+
+	if cfg.Port != 4319 {
+		t.Errorf("Port = %d, want 4319", cfg.Port)
+	}
+	if cfg.PortEndpoint != portEndpoint {
+		t.Errorf("PortEndpoint = %+v", cfg.PortEndpoint)
+	}
+	if cfg.StartupTimeout != 45_000*time.Millisecond {
+		t.Errorf("StartupTimeout = %v", cfg.StartupTimeout)
+	}
+	if cfg.Reconnect != *reconnect {
+		t.Errorf("Reconnect = %+v", cfg.Reconnect)
+	}
+	if !reflect.DeepEqual(cfg.MCPServers, map[string]any{"external": map[string]any{"command": "external-mcp"}}) {
+		t.Errorf("MCPServers = %+v", cfg.MCPServers)
+	}
+	if cfg.MintBridgeToken == nil || cfg.MintBridgeToken("sbx-1") != "token-for-sbx-1" {
+		t.Errorf("MintBridgeToken not forwarded correctly")
+	}
+}
+
 func TestCredentialBrokering(t *testing.T) {
 	// mirrors "enforces the Cursor ACP implementation" credentialBrokering assertions
-	transforms, err := CredentialBrokering(harness.Authentication{}, map[string]string{"CURSOR_API_KEY": "cursor-secret"}, map[string]string{"CURSOR_API_KEY": "sandbox-cursor-secret"}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	transforms := CredentialBrokering(harness.Authentication{}, map[string]string{"CURSOR_API_KEY": "cursor-secret"}, map[string]string{"CURSOR_API_KEY": "sandbox-cursor-secret"}, nil)
 	if len(transforms) != 1 {
 		t.Fatalf("got %d transforms, want 1", len(transforms))
 	}
@@ -76,10 +118,7 @@ func TestCredentialBrokering(t *testing.T) {
 		t.Errorf("transform headers = %v", tr.Transform.Headers)
 	}
 
-	empty, err := CredentialBrokering(harness.Authentication{}, map[string]string{}, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	empty := CredentialBrokering(harness.Authentication{}, map[string]string{}, nil, nil)
 	if len(empty) != 0 {
 		t.Errorf("got %d transforms, want 0", len(empty))
 	}
@@ -87,18 +126,12 @@ func TestCredentialBrokering(t *testing.T) {
 
 // Mirrors "applies headers to configured model request routes".
 func TestCredentialBrokering_HeaderRouting(t *testing.T) {
-	gateway, err := CredentialBrokering(harness.AuthMode(harness.AuthModeAIGateway), map[string]string{}, nil, map[string]string{"x-tenant": "acme"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	gateway := CredentialBrokering(harness.AuthMode(harness.AuthModeAIGateway), map[string]string{}, nil, map[string]string{"x-tenant": "acme"})
 	if len(gateway) != 1 || gateway[0].Match.Host != "ai-gateway.vercel.sh" || gateway[0].Match.Path == nil || gateway[0].Match.Path.StartsWith != "/cursor/v1" {
 		t.Errorf("gateway transform = %+v", gateway)
 	}
 
-	direct, err := CredentialBrokering(harness.Authentication{}, map[string]string{}, nil, map[string]string{"x-tenant": "acme"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	direct := CredentialBrokering(harness.Authentication{}, map[string]string{}, nil, map[string]string{"x-tenant": "acme"})
 	if len(direct) != 1 || direct[0].Match.Host != "api2.cursor.sh" || direct[0].Match.Path != nil {
 		t.Errorf("direct transform = %+v", direct)
 	}
@@ -110,10 +143,16 @@ func TestWarnAuthenticationConfiguration(t *testing.T) {
 		var got string
 		orig := Warn
 		Warn = func(message string) { got = message }
-		BuildConfig(Settings{Auth: harness.AuthMode(mode)})
+		cfg := BuildConfig(Settings{Auth: harness.AuthMode(mode)})
 		Warn = orig
 		if got == "" {
 			t.Errorf("mode %q: expected a warning", mode)
+		}
+		if cfg.Auth.Mode != mode {
+			t.Errorf("mode %q: Auth = %+v", mode, cfg.Auth)
+		}
+		if cfg.ProviderAuthentication != nil {
+			t.Errorf("mode %q: ProviderAuthentication = %+v, want nil", mode, cfg.ProviderAuthentication)
 		}
 	}
 
@@ -129,16 +168,42 @@ func TestWarnAuthenticationConfiguration(t *testing.T) {
 	}
 }
 
+// Mirrors "forwards a supplied authentication environment for Cursor
+// credentials".
+func TestBuildConfig_IsolatedAuthenticationEnvironment(t *testing.T) {
+	auth := harness.Authentication{Environment: map[string]string{"CURSOR_API_KEY": "programmatic-cursor-key"}}
+	cfg := BuildConfig(Settings{Auth: auth})
+	if !reflect.DeepEqual(cfg.Auth, auth) {
+		t.Errorf("Auth = %+v", cfg.Auth)
+	}
+	if cfg.ProviderAuthentication != nil {
+		t.Errorf("ProviderAuthentication = %+v, want nil", cfg.ProviderAuthentication)
+	}
+}
+
 // Mirrors "classifies Cursor MCP calls from their raw input".
 func TestIsMCPToolCall(t *testing.T) {
-	if !IsMCPToolCall(ToolCall{RawInput: map[string]any{
+	if !IsMCPToolCall(acp.ToolCall{RawInput: map[string]any{
 		"providerIdentifier": "ai-sdk-harness-tools",
 		"toolName":           "weather",
 		"args":               map[string]any{"city": "Lima"},
 	}}) {
 		t.Error("expected true for MCP-shaped input")
 	}
-	if IsMCPToolCall(ToolCall{RawInput: map[string]any{"path": "README.md"}}) {
+	if IsMCPToolCall(acp.ToolCall{RawInput: map[string]any{"path": "README.md"}}) {
 		t.Error("expected false for non-MCP input")
+	}
+}
+
+func TestCreateCursor(t *testing.T) {
+	h, err := CreateCursor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.HarnessID() != "cursor" {
+		t.Errorf("HarnessID() = %q, want cursor", h.HarnessID())
+	}
+	if !harness.SupportsBuiltinToolApprovals(h) {
+		t.Error("expected SupportsBuiltinToolApprovals() to be true")
 	}
 }

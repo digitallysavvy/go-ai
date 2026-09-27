@@ -5,19 +5,9 @@
 // state/parity/sep_23_2026/harness.md §2): TS `createCursor()` is a thin
 // configuration layer over `createACP()` (`@ai-sdk/harness-acp`), which
 // implements the actual bridge launch, ACP session lifecycle and stream
-// translation. The ACP meta-adapter host (`pkg/harness/acp`, WG11) had not
-// landed in the Go SDK yet when this package was written (WG12, built in
-// parallel with WG11 per the coordinator's instructions), so this package
-// intentionally stops at the configuration boundary: it reproduces every
-// self-contained piece of `createCursor()` (settings, the built-in tool
-// table, the MCP-tool-call classifier, the credential-brokering rules, and
-// the native-subscription reader in subscription.go) and assembles them into
-// Config, the exact value TS passes to `createACP()`.
-//
-// Wiring Config into a working harness.Harness is a one-line follow-up once
-// pkg/harness/acp exists:
-//
-//	h, err := acp.CreateACP(cursor.BuildConfig(settings))
+// translation. This package mirrors that shape: BuildConfig assembles the
+// exact acp.Settings TS's `createCursor()` passes to `createACP()`, and
+// CreateCursor wires it into a live harness.Harness.
 //
 // Cursor is server-side/sandboxable: the CLI (`agent`, installed via
 // `curl https://cursor.com/install | bash`) is spawned inside the sandbox by
@@ -27,10 +17,11 @@
 package cursor
 
 import (
-	"context"
 	"fmt"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/harness/acp"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 )
 
@@ -80,109 +71,71 @@ type Settings struct {
 	MintBridgeToken harness.MintBridgeTokenCallback
 }
 
-// Source is TS `ACPSource`: the recipe used to install the ACP
-// implementation into the sandbox.
-type Source struct {
-	Type              string // "install-command" | "npm-simple" | "npm-locked"
-	Command           string // install-command
-	PackageName       string // npm-simple
-	PackageVersion    string // npm-simple (optional)
-	PackageJSON       string // npm-locked
-	PnpmLockYAML      string // npm-locked
-	PnpmWorkspaceYAML string // npm-locked (optional)
+// CreateCursor returns the Cursor harness-v1 adapter, wiring BuildConfig's
+// acp.Settings into a live harness.Harness via acp.CreateACP. Mirrors TS
+// `createCursor()`.
+func CreateCursor(settings ...Settings) (harness.Harness, error) {
+	s := Settings{}
+	if len(settings) > 0 {
+		s = settings[0]
+	}
+	return acp.CreateACP(BuildConfig(s))
 }
 
-// ModelMapping is TS `ACPModelMapping`.
-type ModelMapping struct {
-	Type string // "session-config-option" | "session-model"
-	Path string
-}
-
-// ToolCall is the subset of TS `ACPToolCall` the classifier closures below
-// need (rawInput and _meta). The full type belongs to pkg/harness/acp
-// (WG11); this is a minimal, wiring-compatible stand-in.
-type ToolCall struct {
-	RawInput any
-	Title    string
-	Meta     map[string]any
-}
-
-// Config is the ACP meta-adapter configuration `createCursor()` builds
-// (TS `ACPHarnessSettings` as passed to `createACP()`). See the package doc
-// for how to wire it into a harness.Harness once pkg/harness/acp exists.
-type Config struct {
-	Version              string
-	HarnessID            string
-	ClientAppName        string
-	ClientAppVersion     string
-	Auth                 AuthenticationMode
-	ResolveAuthEnv       func(ctx context.Context, auth AuthenticationMode, env map[string]string) (map[string]string, error)
-	CredentialForwarding harness.CredentialForwarding
-	Port                 *int
-	PortEndpoint         *harness.PortEndpoint
-	StartupTimeoutMS     *int
-	Reconnect            *bridge.ReconnectOptions
-	MCPServers           map[string]any
-	IsMCPToolCall        func(ToolCall) bool
-	MintBridgeToken      harness.MintBridgeTokenCallback
-	BuiltinTools         map[string]harness.BuiltinTool
-	Source               Source
-	Executable           string
-	Args                 []string
-	ModelMapping         ModelMapping
-	ClientCapabilities   map[string]any
-	CredentialEnv        []string
-	CredentialBrokering  func(env, sandboxEnv, headers map[string]string) ([]harness.RequestTransformation, error)
-}
-
-// BuildConfig assembles Config from Settings, mirroring TS `createCursor()`
-// (cursor-harness.ts). It also emits the TS "cannot configure Cursor
-// provider authentication" warning for explicit auth modes.
-func BuildConfig(settings Settings) Config {
+// BuildConfig assembles the acp.Settings `createCursor()` builds (TS
+// `ACPHarnessSettings` as passed to `createACP()`). It also emits the TS
+// "cannot configure Cursor provider authentication" warning for explicit
+// auth modes.
+func BuildConfig(settings Settings) acp.Settings {
 	if settings.Auth.Mode == harness.AuthModeDirect || settings.Auth.Mode == harness.AuthModeAIGateway {
 		WarnAuthenticationConfiguration(settings.Auth.Mode)
 	}
-	return Config{
-		Version:              "v1",
-		HarnessID:            HarnessID,
-		ClientAppName:        ClientAppName,
-		ClientAppVersion:     ClientAppVersion,
-		Auth:                 settings.Auth,
-		ResolveAuthEnv:       ResolveSubscriptionEnvironment,
-		CredentialForwarding: settings.CredentialForwarding,
-		Port:                 settings.Port,
-		PortEndpoint:         settings.PortEndpoint,
-		StartupTimeoutMS:     settings.StartupTimeoutMS,
-		Reconnect:            settings.Reconnect,
-		MCPServers:           settings.MCPServers,
-		IsMCPToolCall:        IsMCPToolCall,
-		MintBridgeToken:      settings.MintBridgeToken,
-		BuiltinTools:         BuiltinTools,
-		Source: Source{
-			Type:    "install-command",
+	cfg := acp.Settings{
+		HarnessID:                        HarnessID,
+		ClientApp:                        acp.ClientApp{Name: ClientAppName, Version: ClientAppVersion},
+		Auth:                             settings.Auth,
+		ResolveAuthenticationEnvironment: ResolveSubscriptionEnvironment,
+		CredentialForwarding:             settings.CredentialForwarding,
+		PortEndpoint:                     settings.PortEndpoint,
+		MCPServers:                       settings.MCPServers,
+		IsMcpToolCall:                    IsMCPToolCall,
+		MintBridgeToken:                  settings.MintBridgeToken,
+		BuiltinTools:                     BuiltinTools,
+		Source: acp.Source{
+			Type:    acp.SourceInstallCommand,
 			Command: "curl https://cursor.com/install -fsS | bash",
 		},
 		Executable: "agent",
 		Args:       []string{"--disable-auto-update", "acp"},
-		ModelMapping: ModelMapping{
-			Type: "session-config-option",
+		ModelMapping: acp.ModelMapping{
+			Type: acp.ModelMappingSessionConfigOption,
 			Path: "model",
 		},
 		ClientCapabilities: map[string]any{
 			"_meta": map[string]any{"parameterizedModelPicker": true},
 		},
 		CredentialEnv: []string{"CURSOR_API_KEY"},
-		CredentialBrokering: func(env, sandboxEnv, headers map[string]string) ([]harness.RequestTransformation, error) {
+		CredentialBrokering: func(env, sandboxEnv, headers map[string]string) []harness.RequestTransformation {
 			return CredentialBrokering(settings.Auth, env, sandboxEnv, headers)
 		},
 	}
+	if settings.Port != nil {
+		cfg.Port = *settings.Port
+	}
+	if settings.StartupTimeoutMS != nil {
+		cfg.StartupTimeout = time.Duration(*settings.StartupTimeoutMS) * time.Millisecond
+	}
+	if settings.Reconnect != nil {
+		cfg.Reconnect = *settings.Reconnect
+	}
+	return cfg
 }
 
 // IsMCPToolCall classifies a Cursor ACP tool call as a dynamic MCP tool call
 // when its raw input has the `providerIdentifier` / `toolName` / `args`
 // shape Cursor's CLI uses for `mcpToolCall`. Mirrors the `isMcpToolCall`
 // closure in `createCursor()`.
-func IsMCPToolCall(call ToolCall) bool {
+func IsMCPToolCall(call acp.ToolCall) bool {
 	raw, ok := call.RawInput.(map[string]any)
 	if !ok {
 		return false
@@ -214,7 +167,7 @@ var Warn = func(message string) { println(message) }
 // CredentialBrokering builds the request transformations that map Cursor's
 // sandbox-side CURSOR_API_KEY (and any managed headers) back to the host
 // credential. Mirrors the `credentialBrokering` closure in `createCursor()`.
-func CredentialBrokering(auth AuthenticationMode, env, sandboxEnv, headers map[string]string) ([]harness.RequestTransformation, error) {
+func CredentialBrokering(auth AuthenticationMode, env, sandboxEnv, headers map[string]string) []harness.RequestTransformation {
 	var transformations []harness.RequestTransformation
 	if env["CURSOR_API_KEY"] != "" && sandboxEnv["CURSOR_API_KEY"] != "" {
 		transformations = append(transformations, harness.RequestTransformation{
@@ -247,5 +200,5 @@ func CredentialBrokering(auth AuthenticationMode, env, sandboxEnv, headers map[s
 			Transform: harness.RequestTransformationTransform{Headers: headers},
 		})
 	}
-	return transformations, nil
+	return transformations
 }
