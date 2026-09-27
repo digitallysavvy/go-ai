@@ -1387,6 +1387,18 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 		if e.Response.IncompleteDetails != nil && e.Response.IncompleteDetails.Reason != "" {
 			finishReason = mapXAIResponsesFinishReason("incomplete", e.Response.IncompleteDetails)
 		}
+		// Mirrors TS xai-responses-language-model.ts's response.failed
+		// branch: response.error != null enqueues a structured error chunk
+		// (createXaiResponsesStreamError) before the terminal finish chunk.
+		if e.Response.Error != nil {
+			var data interface{}
+			_ = json.Unmarshal([]byte(event.Data), &data)
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: formatXAIResponseError(e.Response.Error.Code, e.Response.Error.Message),
+				Err:  newXAIResponsesStreamError("xai", e.Response.Error.Message, e.Response.Error.Code, peek.Type, data),
+			})
+		}
 		s.err = io.EOF
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type:         provider.ChunkTypeFinish,
@@ -1400,9 +1412,12 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			return s.Next()
 		}
 		streamErr := &XAIStreamError{Code: e.Code, Message: e.Message}
+		var data interface{}
+		_ = json.Unmarshal([]byte(event.Data), &data)
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeError,
 			Text: streamErr.Error(),
+			Err:  newXAIResponsesStreamError("xai", e.Message, e.Code, peek.Type, data),
 		})
 
 	default:

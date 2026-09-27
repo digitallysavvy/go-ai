@@ -3,6 +3,7 @@ package xai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai/responses"
 )
@@ -915,24 +917,30 @@ func TestXAIResponsesDoGenerateTokenCostMetadata(t *testing.T) {
 
 func TestXAIResponsesStreamEventsHandling(t *testing.T) {
 	tests := []struct {
-		name          string
-		event         string
-		wantChunkType provider.ChunkType
+		name           string
+		event          string
+		wantChunkTypes []provider.ChunkType
 	}{
 		{
-			name:          "error",
-			event:         `{"type":"error","code":"bad_request","message":"boom"}`,
-			wantChunkType: provider.ChunkTypeError,
+			name:           "error",
+			event:          `{"type":"error","code":"bad_request","message":"boom"}`,
+			wantChunkTypes: []provider.ChunkType{provider.ChunkTypeError},
 		},
 		{
-			name:          "incomplete",
-			event:         `{"type":"response.incomplete","response":{"usage":{"input_tokens":1,"output_tokens":2},"incomplete_details":{"reason":"max_output_tokens"}}}`,
-			wantChunkType: provider.ChunkTypeFinish,
+			name:           "incomplete",
+			event:          `{"type":"response.incomplete","response":{"usage":{"input_tokens":1,"output_tokens":2},"incomplete_details":{"reason":"max_output_tokens"}}}`,
+			wantChunkTypes: []provider.ChunkType{provider.ChunkTypeFinish},
 		},
 		{
-			name:          "failed",
-			event:         `{"type":"response.failed","response":{"usage":{"input_tokens":3,"output_tokens":4},"error":{"code":"server_error","message":"failed"},"incomplete_details":{"reason":"error"}}}`,
-			wantChunkType: provider.ChunkTypeFinish,
+			// A response.failed carrying a response.error now enqueues a
+			// ChunkTypeError chunk (structured StreamProviderError) before
+			// the terminal finish chunk, mirroring TS's
+			// createXaiResponsesStreamError branch (XE, see
+			// TestXAIResponsesStreamResponseFailedEmitsStructuredErrorChunk
+			// for the detailed assertions).
+			name:           "failed",
+			event:          `{"type":"response.failed","response":{"usage":{"input_tokens":3,"output_tokens":4},"error":{"code":"server_error","message":"failed"},"incomplete_details":{"reason":"error"}}}`,
+			wantChunkTypes: []provider.ChunkType{provider.ChunkTypeError, provider.ChunkTypeFinish},
 		},
 	}
 
@@ -940,14 +948,18 @@ func TestXAIResponsesStreamEventsHandling(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			sse := "data: " + tt.event + "\n\n"
 			stream := newXAIResponsesStream(io.NopCloser(strings.NewReader(sse)))
-			chunk, err := stream.Next()
-			if err != nil {
-				t.Fatalf("Next error: %v", err)
+			var gotTypes []provider.ChunkType
+			for _, want := range tt.wantChunkTypes {
+				chunk, err := stream.Next()
+				if err != nil {
+					t.Fatalf("Next error: %v", err)
+				}
+				gotTypes = append(gotTypes, chunk.Type)
+				if chunk.Type != want {
+					t.Fatalf("chunk.Type = %s, want %s (got sequence so far: %v)", chunk.Type, want, gotTypes)
+				}
 			}
-			if chunk.Type != tt.wantChunkType {
-				t.Fatalf("chunk.Type = %s, want %s", chunk.Type, tt.wantChunkType)
-			}
-			_, err = stream.Next()
+			_, err := stream.Next()
 			if err == nil {
 				t.Fatal("expected stream termination")
 			}
@@ -986,6 +998,152 @@ data: [DONE]
 	}
 	if !strings.Contains(chunk.Text, "failed to parse stream chunk") {
 		t.Fatalf("error text = %q, want parse failure", chunk.Text)
+	}
+}
+
+// TestXAIResponsesStreamResponseFailedEmitsStructuredErrorChunk ports TS
+// xai-responses-language-model.ts's response.failed branch (mirrors XE, the
+// openai `fix(openai): attach structured stream error payload` pattern in
+// 4c8ee24): a response.failed with a non-nil response.error must enqueue a
+// ChunkTypeError chunk carrying a structured *providererrors.StreamProviderError
+// on Err (built via createXaiResponsesStreamError's code->statusCode/
+// isRetryable table) before the terminal finish chunk.
+func TestXAIResponsesStreamResponseFailedEmitsStructuredErrorChunk(t *testing.T) {
+	stream := newXAIResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.failed","response":{"id":"resp_1","error":{"code":"server_error","message":"mid-stream failure"}}}
+
+`)))
+	defer stream.Close() //nolint:errcheck
+
+	var errChunk, finishChunk *provider.StreamChunk
+	for i := 0; i < 10; i++ {
+		chunk, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next() error: %v", err)
+		}
+		switch chunk.Type {
+		case provider.ChunkTypeError:
+			errChunk = chunk
+		case provider.ChunkTypeFinish:
+			finishChunk = chunk
+		}
+	}
+
+	if errChunk == nil {
+		t.Fatal("expected a ChunkTypeError chunk for the response.failed error")
+	}
+	if !strings.Contains(errChunk.Text, "mid-stream failure") {
+		t.Errorf("errChunk.Text = %q, want to mention mid-stream failure", errChunk.Text)
+	}
+	var streamErr *providererrors.StreamProviderError
+	if !errors.As(errChunk.Err, &streamErr) {
+		t.Fatalf("errChunk.Err = %v (%T), want *providererrors.StreamProviderError", errChunk.Err, errChunk.Err)
+	}
+	if streamErr.Message != "mid-stream failure" {
+		t.Errorf("streamErr.Message = %q, want mid-stream failure", streamErr.Message)
+	}
+	if streamErr.Type != "response.failed" {
+		t.Errorf("streamErr.Type = %q, want response.failed", streamErr.Type)
+	}
+	// server_error -> {statusCode: 500, isRetryable: true} per
+	// getXaiResponsesStreamErrorMetadata.
+	if streamErr.StatusCode == nil || *streamErr.StatusCode != 500 {
+		t.Errorf("StatusCode = %v, want 500 (server_error discriminator)", streamErr.StatusCode)
+	}
+	if !streamErr.IsRetryable {
+		t.Error("IsRetryable = false, want true for server_error")
+	}
+
+	if finishChunk == nil {
+		t.Fatal("expected a terminal ChunkTypeFinish chunk after the error chunk")
+	}
+}
+
+// TestXAIResponsesStreamErrorEventAttachesStructuredPayload ports TS
+// xai-responses-language-model.ts's generic `error` event branch: the
+// chunk's Err field must carry a structured StreamProviderError with the
+// code-derived statusCode/isRetryable, not just Text.
+func TestXAIResponsesStreamErrorEventAttachesStructuredPayload(t *testing.T) {
+	stream := newXAIResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"error","message":"rate limited","code":"rate_limit_exceeded"}
+
+`)))
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeError {
+		t.Fatalf("chunk type = %v, want error", chunk.Type)
+	}
+	var streamErr *providererrors.StreamProviderError
+	if !errors.As(chunk.Err, &streamErr) {
+		t.Fatalf("chunk.Err = %v (%T), want *providererrors.StreamProviderError", chunk.Err, chunk.Err)
+	}
+	if streamErr.Message != "rate limited" {
+		t.Errorf("Message = %q, want rate limited", streamErr.Message)
+	}
+	if streamErr.Type != "error" {
+		t.Errorf("Type = %q, want error", streamErr.Type)
+	}
+	if streamErr.StatusCode == nil || *streamErr.StatusCode != 429 {
+		t.Errorf("StatusCode = %v, want 429 (rate_limit discriminator)", streamErr.StatusCode)
+	}
+	if !streamErr.IsRetryable {
+		t.Error("IsRetryable = false, want true for rate_limit_exceeded")
+	}
+}
+
+// TestXAIResponsesStreamErrorNumericCodeUsedAsHTTPStatus ports TS
+// getHttpStatusCode: a 3-digit numeric error code in [400,599] is treated
+// directly as the HTTP status instead of going through the named-code
+// metadata table.
+func TestXAIResponsesStreamErrorNumericCodeUsedAsHTTPStatus(t *testing.T) {
+	stream := newXAIResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"error","message":"forbidden","code":"403"}
+
+`)))
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() error: %v", err)
+	}
+	var streamErr *providererrors.StreamProviderError
+	if !errors.As(chunk.Err, &streamErr) {
+		t.Fatalf("chunk.Err = %v (%T), want *providererrors.StreamProviderError", chunk.Err, chunk.Err)
+	}
+	if streamErr.StatusCode == nil || *streamErr.StatusCode != 403 {
+		t.Errorf("StatusCode = %v, want 403", streamErr.StatusCode)
+	}
+	if streamErr.IsRetryable {
+		t.Error("IsRetryable = true, want false for 403")
+	}
+}
+
+// TestXAIResponsesStreamErrorInsufficientQuotaNotRetryable ports TS
+// getXaiResponsesStreamErrorMetadata's insufficient_quota case: 429 status
+// but never retryable, unlike other 429 codes.
+func TestXAIResponsesStreamErrorInsufficientQuotaNotRetryable(t *testing.T) {
+	stream := newXAIResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"error","message":"quota exceeded","code":"insufficient_quota"}
+
+`)))
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() error: %v", err)
+	}
+	var streamErr *providererrors.StreamProviderError
+	if !errors.As(chunk.Err, &streamErr) {
+		t.Fatalf("chunk.Err = %v (%T), want *providererrors.StreamProviderError", chunk.Err, chunk.Err)
+	}
+	if streamErr.StatusCode == nil || *streamErr.StatusCode != 429 {
+		t.Errorf("StatusCode = %v, want 429", streamErr.StatusCode)
+	}
+	if streamErr.IsRetryable {
+		t.Error("IsRetryable = true, want false for insufficient_quota")
 	}
 }
 
