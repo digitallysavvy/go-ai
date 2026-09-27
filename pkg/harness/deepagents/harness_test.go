@@ -485,6 +485,50 @@ func TestSuspendResolvesTurnCleanly(t *testing.T) {
 	close(release)
 }
 
+// Ports TS "rejects the turn when the channel closes for any other reason"
+// (deepagents-harness.test.ts): an abrupt, non-suspend close (the bridge
+// process/connection is simply gone, reconnect budget exhausted) must
+// settle the turn with an error, not silently swallow it.
+func TestPromptTurnRejectsOnNonSuspendedClose(t *testing.T) {
+	const token = "drop-token"
+	srv := newServer(t, token, func(turn *bridgetest.Turn, _ map[string]any) {
+		turn.Emit(map[string]any{"type": "text-delta", "id": "m", "delta": "partial"})
+		// Never finishes; the test drops the connection instead.
+	})
+	sandbox := newFakeSandbox(srv)
+	h := CreateDeepAgents(Settings{
+		MintBridgeToken: func(string) string { return token },
+		Reconnect:       bridge.ReconnectOptions{MaxElapsed: 20 * time.Millisecond, InitialDelay: time.Millisecond, MaxDelay: 2 * time.Millisecond},
+	})
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{
+		SessionID: "drop-session", SessionWorkDir: "/vercel/sandbox/deepagents-drop-session", SandboxSession: sandbox,
+	})
+	if err != nil {
+		t.Fatalf("DoStart: %v", err)
+	}
+	control, err := sess.DoPromptTurn(context.Background(), harness.PromptTurnOptions{Prompt: harness.TextPrompt("hi")})
+	if err != nil {
+		t.Fatalf("DoPromptTurn: %v", err)
+	}
+	time.Sleep(20 * time.Millisecond)
+
+	// Drop the active connection, then close the server itself so a
+	// reconnect attempt can never succeed; the channel exhausts its (tiny)
+	// reconnect budget and closes with reason "reconnect failed", not
+	// "suspended".
+	srv.DropActive()
+	srv.Close()
+
+	select {
+	case <-control.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("turn did not settle after the connection was dropped")
+	}
+	if err := control.Err(); err == nil || !strings.Contains(err.Error(), "closed before the turn finished") {
+		t.Fatalf("control.Err() = %v, want a bridge-closed-before-finish error", err)
+	}
+}
+
 func TestResolveAuthenticationModeAndEnv(t *testing.T) {
 	env := map[string]string{"AI_GATEWAY_API_KEY": "gw-key"}
 	if got := resolveAuthenticationMode(harness.Authentication{}, env); got != AuthAIGateway {
