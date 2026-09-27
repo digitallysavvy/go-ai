@@ -139,11 +139,14 @@ func TestWaitForBridgeReadyWaitsForPollInterval(t *testing.T) {
 		resultCh <- result
 	}()
 
-	// Shortly after the first (starting) read, no second read should have
-	// happened yet — the poll interval has not elapsed.
-	time.Sleep(40 * time.Millisecond)
+	// Wait for the first (starting) read, then check that no second read has
+	// happened yet: the 150ms poll interval starts after the first read, so
+	// the second cannot follow immediately. Polling for the first read
+	// (instead of a fixed sleep) keeps this stable when the goroutine is
+	// scheduled late under load.
+	waitForT(t, time.Second, func() bool { return sandbox.callCount() >= 1 })
 	if got := sandbox.callCount(); got != 1 {
-		t.Fatalf("after 40ms: ReadTextFile called %d times, want 1", got)
+		t.Fatalf("right after the first read: ReadTextFile called %d times, want 1", got)
 	}
 
 	select {
