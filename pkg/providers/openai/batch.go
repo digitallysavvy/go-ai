@@ -622,12 +622,67 @@ func convertOpenAIBatchResponseBodyBytes(body json.RawMessage) (*types.GenerateR
 		return nil, &provider.BatchError{Message: message, Code: "invalid_response"}
 	}
 
+	// The shared ResponsesLanguageModel.convertResponse switch (used for
+	// both streaming and non-streaming generate calls) has no default case:
+	// an output-item type it doesn't recognize is silently dropped rather
+	// than surfaced. A batch result has no interactive warning channel, so
+	// TS's batch-local converter uses a separate, stricter allowlist and
+	// fails the whole item with "unsupported_content" instead — matched
+	// here by pre-scanning the raw output items before delegating to the
+	// shared converter, without altering that converter's own (intentional)
+	// non-batch behavior.
+	if unsupportedType, found := firstUnsupportedOpenAIBatchOutputItemType(resp.Output); found {
+		return nil, &provider.BatchError{
+			Message: fmt.Sprintf("OpenAI returned an unsupported %q output item in an AI SDK text batch.", unsupportedType),
+			Code:    "unsupported_content",
+		}
+	}
+
 	var lm ResponsesLanguageModel
 	genResult, err := lm.convertResponse(resp.ResponsesAPIResponse, false, "", "openai")
 	if err != nil {
 		return nil, &provider.BatchError{Message: err.Error(), Code: "invalid_response"}
 	}
 	return genResult, nil
+}
+
+// openaiBatchKnownOutputItemTypes are the Responses output-item types TS's
+// batch-local convertOpenAIBatchResult switch implements (anthropic-batch.ts
+// mirrors this pattern with knownAnthropicBatchContentTypes): reasoning,
+// message, function_call, custom_tool_call, web_search_call,
+// file_search_call, code_interpreter_call. This is intentionally a
+// different (stricter, and in the file_search_call/code_interpreter_call
+// case, currently narrower) set than what the shared
+// ResponsesLanguageModel.convertResponse switch implements for
+// streaming/non-streaming generate calls.
+var openaiBatchKnownOutputItemTypes = map[string]bool{
+	"reasoning":             true,
+	"message":               true,
+	"function_call":         true,
+	"custom_tool_call":      true,
+	"web_search_call":       true,
+	"file_search_call":      true,
+	"code_interpreter_call": true,
+}
+
+// firstUnsupportedOpenAIBatchOutputItemType returns the type of the first
+// output item whose "type" field is not in openaiBatchKnownOutputItemTypes,
+// in array order (matching TS's switch, which fails on the first unmatched
+// item it iterates to). Items that fail to decode even a bare "type" field
+// are skipped here; the shared converter's own decoding surfaces that error.
+func firstUnsupportedOpenAIBatchOutputItemType(output []json.RawMessage) (string, bool) {
+	for _, raw := range output {
+		var peek struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(raw, &peek); err != nil {
+			continue
+		}
+		if !openaiBatchKnownOutputItemTypes[peek.Type] {
+			return peek.Type, true
+		}
+	}
+	return "", false
 }
 
 func (s *openAIBatchResultsStream) Err() error { return s.err }

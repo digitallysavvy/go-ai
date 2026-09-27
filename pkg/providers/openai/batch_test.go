@@ -642,5 +642,78 @@ func TestOpenAIBatch_FailedResultsAndUnsupportedItemsDontStopStream(t *testing.T
 	}
 }
 
+// TestOpenAIBatch_UnsupportedOutputItemTypeFailsItemWithoutStoppingStream
+// ports the core of TS "preserves tool calls and fails unsupported items
+// without stopping later results" (openai-batch.test.ts:1005-1215): an
+// output item whose type the batch converter doesn't recognize
+// (image_generation_call, standing in for any future/unimplemented type)
+// must fail that item with an "unsupported_content" error instead of
+// silently returning an incomplete "succeeded" result, and must not stop
+// later items in the stream from being processed.
+//
+// file_search_call/code_interpreter_call are deliberately not exercised
+// here: TS's batch-local allowlist treats them as known-good (they succeed
+// with populated tool-call/tool-result content), but Go's shared
+// ResponsesLanguageModel.convertResponse does not yet implement those two
+// item types (tracked separately; see FOLLOWUP_TRACKER.md P1-5c item 1) —
+// including them here would just document that pre-existing, differently
+// scoped gap rather than this fix.
+func TestOpenAIBatch_UnsupportedOutputItemTypeFailsItemWithoutStoppingStream(t *testing.T) {
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	mux.HandleFunc("/batches/batch_123", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"batch_123","status":"completed","output_file_id":"file-output"}`))
+	})
+	mux.HandleFunc("/files/file-output/content", func(w http.ResponseWriter, r *http.Request) {
+		lines := []string{
+			`{"custom_id":"function-call","response":{"status_code":200,"body":{"id":"resp_1","created_at":1700000000,"model":"gpt-5.6","output":[{"type":"function_call","id":"function-call","call_id":"call-123","name":"get_weather","arguments":"{\"city\":\"Paris\"}"}],"usage":{"input_tokens":1,"output_tokens":1}}},"error":null}`,
+			`{"custom_id":"image","response":{"status_code":200,"body":{"id":"resp_2","created_at":1700000000,"model":"gpt-5.6","output":[{"type":"image_generation_call","id":"image-123","result":"aW1hZ2U="}],"usage":{"input_tokens":1,"output_tokens":1}}},"error":null}`,
+			responsesResultBodyJSON("valid", "Paris"),
+		}
+		_, _ = w.Write([]byte(strings.Join(lines, "\n") + "\n"))
+	})
+
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	b := p.ExperimentalBatch()
+	stream, err := b.DoGetBatchResults(t.Context(), provider.BatchV4OperationOptions{BatchID: "batch_123"})
+	if err != nil {
+		t.Fatalf("DoGetBatchResults: %v", err)
+	}
+	defer stream.Close()
+
+	items := map[string]*provider.BatchV4ItemResult{}
+	for {
+		item, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+		items[item.ID] = item
+	}
+
+	if got := items["function-call"]; got == nil || got.Status != provider.BatchItemSucceeded ||
+		got.TextResult == nil || len(got.TextResult.ToolCalls) != 1 || got.TextResult.ToolCalls[0].ToolName != "get_weather" {
+		t.Fatalf("function-call = %+v", got)
+	}
+	image := items["image"]
+	if image == nil || image.Status != provider.BatchItemFailed || image.Error == nil {
+		t.Fatalf("image = %+v", image)
+	}
+	if image.Error.Code != "unsupported_content" {
+		t.Fatalf("image.Error.Code = %q, want unsupported_content", image.Error.Code)
+	}
+	wantMsg := `OpenAI returned an unsupported "image_generation_call" output item in an AI SDK text batch.`
+	if image.Error.Message != wantMsg {
+		t.Fatalf("image.Error.Message = %q, want %q", image.Error.Message, wantMsg)
+	}
+	if got := items["valid"]; got == nil || got.Status != provider.BatchItemSucceeded {
+		t.Fatalf("valid = %+v", got)
+	}
+}
+
 // --- test helpers shared with files_api_v4_test.go are reused via
 // decodeMultipartFields/decodeMultipartFieldsAndFile.
