@@ -845,29 +845,29 @@ func (s *moonshotStream) Next() (*provider.StreamChunk, error) {
 			s.isActiveReasoning = false
 		}
 		for i, tc := range delta.ToolCalls {
+			// d53589a (TS moonshotai-chat-language-model.ts: `const
+			// toolCallIndex = toolCallDelta.index ?? index`): when a delta
+			// omits "index", TS derives it from the tool call's position
+			// within THAT delta's tool_calls array -- it does not rely on
+			// StreamingToolCallTracker's id/latest-call fallback for
+			// Moonshot. This position is stable because Moonshot always
+			// repeats every in-flight tool call at its original array
+			// position on each continuation delta (see the
+			// moonshotai-stream-indexless-tool-calls fixture: two calls
+			// started together at positions 0/1 are continued together at
+			// positions 0/1). Used for both toolCallTypes bookkeeping and
+			// the tracker correlation key below.
+			idx := i
+			if tc.Index != nil {
+				idx = *tc.Index
+			}
 			if tc.Type != "" {
-				// toolCallTypes bookkeeping keys on the position within this
-				// delta's tool_calls array (the "type" field only ever
-				// arrives once, on the delta that starts a given call), kept
-				// independent from the correlation index passed to the
-				// tracker below so an indexless delta (d53589a: Moonshot may
-				// omit "index" entirely) still reaches the tracker's own
-				// id/latest-call fallback instead of a synthetic index.
-				idx := i
-				if tc.Index != nil {
-					idx = *tc.Index
-				}
 				if s.toolCallTypes == nil {
 					s.toolCallTypes = map[int]string{}
 				}
 				s.toolCallTypes[idx] = tc.Type
 			}
-			// d53589a: pass the provider's index through as-is (nil when
-			// omitted) so StreamingToolCallTracker's own id-then-index-then-
-			// latest-call lookup order applies -- do not synthesize an index
-			// from array position, which would misattribute continuation
-			// deltas across separate stream chunks.
-			for _, tcc := range s.toolCallTracker.Track(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
+			for _, tcc := range s.toolCallTracker.Track(&idx, tc.ID, tc.Function.Name, tc.Function.Arguments) {
 				c := tcc
 				s.flushQueue = append(s.flushQueue, &c)
 			}
