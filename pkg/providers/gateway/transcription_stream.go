@@ -13,6 +13,7 @@ import (
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
 	"golang.org/x/net/websocket"
 )
 
@@ -78,6 +79,7 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		headers:    headers,
 		startFrame: startFrame,
 		audio:      opts.Audio,
+		authMethod: authMethod,
 	})
 
 	return &provider.TranscriptionStreamResult{
@@ -101,6 +103,7 @@ type gatewayTranscriptionStreamConfig struct {
 	headers    map[string]string
 	startFrame map[string]interface{}
 	audio      provider.AudioStream
+	authMethod string
 }
 
 // gatewayTranscriptionStream implements provider.TranscriptionStream over the
@@ -224,7 +227,7 @@ func (s *gatewayTranscriptionStream) run(cfg gatewayTranscriptionStreamConfig) {
 			if s.ctx.Err() != nil {
 				fail(s.ctx.Err())
 			} else if hasServerError {
-				fail(gatewayTranscriptionServerError(lastServerError))
+				fail(gatewayTranscriptionServerError(lastServerError, cfg.authMethod))
 			} else if isGatewaySocketError(err) {
 				fail(errors.New("Connection error on AI Gateway transcription stream"))
 			} else {
@@ -272,9 +275,38 @@ func isGatewaySocketError(err error) bool {
 	return err != nil && !errors.Is(err, io.EOF)
 }
 
-func gatewayTranscriptionServerError(payload interface{}) error {
-	if m, ok := payload.(map[string]interface{}); ok {
-		if msg, ok := m["message"].(string); ok && msg != "" {
+// gatewayServerErrorStatusCodes are the canonical status codes for server
+// error-part types; there is no real HTTP status on the WebSocket itself (TS
+// SERVER_ERROR_STATUS_CODES).
+var gatewayServerErrorStatusCodes = map[string]int{
+	"authentication_error":  401,
+	"failed_dependency":     424,
+	"forbidden":             403,
+	"internal_server_error": 500,
+	"invalid_request_error": 400,
+	"model_not_found":       404,
+	"rate_limit_exceeded":   429,
+}
+
+// gatewayTranscriptionServerError maps a server error-part payload
+// ({message, type}) to the typed Gateway error class for its type, mirroring
+// TS createErrorFromServerErrorPart; unknown shapes keep the generic message.
+func gatewayTranscriptionServerError(payload interface{}, authMethod string) error {
+	m, ok := payload.(map[string]interface{})
+	if ok {
+		msg, hasMsg := m["message"].(string)
+		errType, hasType := m["type"].(string)
+		if hasMsg && hasType {
+			if statusCode, known := gatewayServerErrorStatusCodes[errType]; known {
+				body, marshalErr := json.Marshal(map[string]interface{}{
+					"error": map[string]interface{}{"message": msg, "type": errType},
+				})
+				if marshalErr == nil {
+					return gatewayerrors.CreateGatewayErrorFromResponse(body, statusCode, "AI Gateway transcription stream failed", nil, authMethod)
+				}
+			}
+		}
+		if hasMsg && msg != "" {
 			return fmt.Errorf("AI Gateway transcription stream failed: %s", msg)
 		}
 	}

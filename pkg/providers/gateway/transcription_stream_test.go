@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	stdhttp "net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
 	"golang.org/x/net/websocket"
 )
 
@@ -324,6 +326,38 @@ func TestTranscriptionModel_DoStream_SurfacesServerErrorOnClose(t *testing.T) {
 	_, err = result.Stream.Next()
 	if err == nil || !strings.Contains(err.Error(), "rate limited") {
 		t.Fatalf("Stream.Next() error = %v, want containing 'rate limited'", err)
+	}
+}
+
+// TestTranscriptionModel_DoStream_TypedServerError verifies that a server
+// `error` part with a recognized `type` maps to the matching typed Gateway
+// error class (TS createErrorFromServerErrorPart), not just a generic error
+// wrapping the message text.
+func TestTranscriptionModel_DoStream_TypedServerError(t *testing.T) {
+	server := newGatewayTranscriptionTestServer(t)
+	defer server.close()
+	model := newTestGatewayTranscriptionModel(t, server.ts.URL)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newChanTestAudioStream(),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+
+	server.waitForFrame(t, transcriptionStreamStartFrameType, time.Second)
+	server.toSend <- map[string]interface{}{"type": "error", "error": map[string]interface{}{"message": "rate limited", "type": "rate_limit_exceeded"}}
+
+	if _, err := result.Stream.Next(); err != nil {
+		t.Fatalf("Stream.Next() (error part) error = %v", err)
+	}
+	server.closeConnection()
+
+	_, err = result.Stream.Next()
+	var rateLimitErr *gatewayerrors.GatewayRateLimitError
+	if !errors.As(err, &rateLimitErr) {
+		t.Fatalf("Stream.Next() error = %v (%T), want *GatewayRateLimitError", err, err)
 	}
 }
 
