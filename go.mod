@@ -12,6 +12,7 @@ require (
 	github.com/labstack/echo/v4 v4.15.4
 	github.com/rivo/uniseg v0.4.7
 	github.com/stretchr/testify v1.11.1
+	github.com/tetratelabs/wazero v1.9.0
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.44.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.44.0
