@@ -438,9 +438,12 @@ func (m *LanguageModel) convertResponse(response xaiResponse, lastAssistantMsg s
 				}
 			default:
 				// Unknown content type: wrap as CustomContent so callers can
-				// inspect the raw provider data without the SDK silently dropping it.
+				// inspect the raw provider data without the SDK silently
+				// dropping it. Custom content kinds are namespaced
+				// "{provider}.{type}" (audit row 1f509d4 / G7), not
+				// "{provider}-{type}".
 				contentParts = append(contentParts, types.CustomContent{
-					Kind:             "xai-" + part.Type,
+					Kind:             "xai." + part.Type,
 					ProviderMetadata: part.Raw,
 				})
 			}

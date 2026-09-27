@@ -123,7 +123,7 @@ type CustomToolCallOutputPart struct {
 // CompactionEvent is received in the Responses API SSE stream when the server
 // has compacted the conversation context. Callers should forward the
 // EncryptedContent in subsequent requests to maintain conversation continuity.
-// Surface this to consumers as a CustomContent{Kind: "openai-compaction"} chunk.
+// Surface this to consumers as a CustomContent{Kind: "openai.compaction"} chunk.
 type CompactionEvent struct {
 	// Type is always "compaction".
 	Type string `json:"type"`

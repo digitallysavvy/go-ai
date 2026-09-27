@@ -475,7 +475,7 @@ func toolCallContentInput(t ToolCallContent) interface{} {
 //     carries provider-specific options to forward to the provider.
 type CustomContent struct {
 	// Kind identifies the provider-specific content type.
-	// Format: "{provider}-{provider-type}"
+	// Format: "{provider}.{provider-type}" (e.g. "openai.compaction").
 	Kind string `json:"kind"`
 
 	// ProviderOptions holds provider-specific options for the input (prompt) direction.

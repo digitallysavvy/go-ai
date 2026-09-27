@@ -64,7 +64,7 @@ func TestXAIConvertResponseArrayKnownTypes(t *testing.T) {
 
 // TestXAIConvertResponseUnknownContentEmitsCustomContent verifies that an
 // unknown content block type in the XAI response is emitted as CustomContent
-// with kind "xai-{type}" rather than being silently dropped.
+// with kind "xai.{type}" rather than being silently dropped.
 func TestXAIConvertResponseUnknownContentEmitsCustomContent(t *testing.T) {
 	m := &LanguageModel{modelID: "grok-3"}
 	rawCitation := json.RawMessage(`{"type":"citation","url":"https://x.ai","title":"xAI"}`)
@@ -100,8 +100,8 @@ func TestXAIConvertResponseUnknownContentEmitsCustomContent(t *testing.T) {
 	if !ok {
 		t.Fatalf("Content[0] type = %T, want types.CustomContent", result.Content[0])
 	}
-	if cc.Kind != "xai-citation" {
-		t.Errorf("Kind = %q, want \"xai-citation\"", cc.Kind)
+	if cc.Kind != "xai.citation" {
+		t.Errorf("Kind = %q, want \"xai.citation\"", cc.Kind)
 	}
 	// ProviderMetadata should be the raw JSON of the unknown part
 	if cc.ProviderMetadata == nil {
