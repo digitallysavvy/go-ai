@@ -1347,20 +1347,35 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		stepTextIDRemap := make(map[string]string)
 		stepReasoningIDRemap := make(map[string]string)
 
+		// chunkDeadlineCtx/chunkDeadlineCancel/chunkDeadlineReason implement
+		// FirstChunk/PerChunk (audit row 106ea59 / WG-TIMEOUT): FirstChunk is
+		// armed fresh for this step and disarmed (replaced by a no-deadline
+		// or PerChunk-derived context) as soon as the first semantic output
+		// chunk arrives; PerChunk only resets on a semantic output chunk,
+		// never on metadata/empty-delta chunks. armStepChunkDeadline/
+		// resetChunkDeadlineOnOutput below manage the swap.
+		chunkDeadlineCtx, chunkDeadlineCancel, chunkDeadlineReason := armStepChunkDeadline(stepCtx, r.timeout)
+
 		for {
-			chunk, err := r.nextChunk(stepCtx)
+			chunk, err := r.nextChunk(chunkDeadlineCtx)
 			if err == io.EOF {
 				break
 			}
 			if err != nil {
-				if errors.Is(stepCtx.Err(), context.DeadlineExceeded) && r.timeout != nil && r.timeout.HasPerStep() {
+				if errors.Is(chunkDeadlineCtx.Err(), context.DeadlineExceeded) && chunkDeadlineReason != "" {
+					err = wrapTimeoutError(chunkDeadlineReason, chunkDeadlineCtx.Err())
+				} else if errors.Is(stepCtx.Err(), context.DeadlineExceeded) && r.timeout != nil && r.timeout.HasPerStep() {
 					err = wrapTimeoutError(TimeoutReasonStep, stepCtx.Err())
 				}
 				r.err = err
 				if isAbortErr(ctx, err) {
 					fireAbort(err)
 				}
+				chunkDeadlineCancel()
 				break
+			}
+			if isOutputChunkForTiming(*chunk) {
+				chunkDeadlineCtx, chunkDeadlineCancel, chunkDeadlineReason = resetChunkDeadlineOnOutput(stepCtx, r.timeout, chunkDeadlineCancel)
 			}
 			if r.resumeChunksRemaining > 0 {
 				// Outputs of resumed tool approvals: forward, but they belong
@@ -1651,6 +1666,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				break
 			}
 		}
+		chunkDeadlineCancel()
 		if r.err != nil {
 			// Close the provider stream (and its underlying HTTP response
 			// body) as soon as processStream itself gives up on it, instead
@@ -3344,6 +3360,42 @@ func isOutputChunkForTiming(chunk provider.StreamChunk) bool {
 
 func isReasoningBoundaryChunk(chunkType provider.ChunkType) bool {
 	return chunkType == provider.ChunkTypeReasoningStart || chunkType == provider.ChunkTypeReasoningEnd
+}
+
+// armStepChunkDeadline returns the initial chunk-read deadline context for a
+// step: FirstChunk if configured (it always takes priority at the start of a
+// step — PerChunk only takes over once FirstChunk disarms, see
+// resetChunkDeadlineOnOutput), else PerChunk if configured, else stepCtx
+// itself with a no-op cancel. The returned reason identifies which of
+// TimeoutReasonFirstChunk/TimeoutReasonChunk a deadline expiring on this
+// context should be reported as ("" when there is no deadline at all).
+func armStepChunkDeadline(stepCtx context.Context, tc *TimeoutConfig) (context.Context, context.CancelFunc, TimeoutReason) {
+	if tc.HasFirstChunk() {
+		c, cancel := context.WithTimeout(stepCtx, *tc.FirstChunk)
+		return c, cancel, TimeoutReasonFirstChunk
+	}
+	if tc.HasPerChunk() {
+		c, cancel := context.WithTimeout(stepCtx, *tc.PerChunk)
+		return c, cancel, TimeoutReasonChunk
+	}
+	return stepCtx, func() {}, ""
+}
+
+// resetChunkDeadlineOnOutput is called once a semantic output chunk
+// (isOutputChunkForTiming) has been read. It cancels the previous deadline
+// context and, when PerChunk is configured, arms a fresh PerChunk-only
+// deadline for the rest of the step (this both disarms FirstChunk — it
+// never re-arms within a step — and performs PerChunk's semantic-only
+// reset). When PerChunk isn't configured, it returns stepCtx with a no-op
+// cancel, so no further chunk-level deadline applies for the rest of the
+// step.
+func resetChunkDeadlineOnOutput(stepCtx context.Context, tc *TimeoutConfig, prevCancel context.CancelFunc) (context.Context, context.CancelFunc, TimeoutReason) {
+	prevCancel()
+	if tc.HasPerChunk() {
+		c, cancel := context.WithTimeout(stepCtx, *tc.PerChunk)
+		return c, cancel, TimeoutReasonChunk
+	}
+	return stepCtx, func() {}, ""
 }
 
 // remapDuplicateBlockID rewrites chunk.ID in place to avoid duplicate

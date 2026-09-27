@@ -684,15 +684,28 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// Warn (once, up front) when a streaming-only timeout setting is passed
 	// to the non-streaming GenerateText (TS 349afe7 / generate-text.ts
 	// getFirstChunkTimeoutMs/getChunkTimeoutMs unsupportedTimeoutWarnings).
-	// Go's TimeoutConfig has no separate "first chunk" timeout field (TS
-	// firstChunkMs/chunkMs are both distinct from stepMs/totalMs there); its
-	// PerChunk corresponds to TS chunkMs, so only that case is checked here.
-	if opts.Timeout != nil && opts.Timeout.PerChunk != nil {
-		logModelWarnings([]types.Warning{{
-			Type:    "unsupported",
-			Feature: "timeout.chunkMs",
-			Details: "The chunkMs timeout is only supported by streaming functions.",
-		}}, opts.Model.Provider(), opts.Model.ModelID())
+	// TimeoutConfig.FirstChunk corresponds to TS firstChunkMs, PerChunk to
+	// TS chunkMs (audit row 106ea59 / WG-TIMEOUT); both only apply to
+	// streaming.
+	if opts.Timeout != nil {
+		var unsupportedTimeoutWarnings []types.Warning
+		if opts.Timeout.FirstChunk != nil {
+			unsupportedTimeoutWarnings = append(unsupportedTimeoutWarnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "timeout.firstChunkMs",
+				Details: "The firstChunkMs timeout is only supported by streaming functions.",
+			})
+		}
+		if opts.Timeout.PerChunk != nil {
+			unsupportedTimeoutWarnings = append(unsupportedTimeoutWarnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "timeout.chunkMs",
+				Details: "The chunkMs timeout is only supported by streaming functions.",
+			})
+		}
+		if len(unsupportedTimeoutWarnings) > 0 {
+			logModelWarnings(unsupportedTimeoutWarnings, opts.Model.Provider(), opts.Model.ModelID())
+		}
 	}
 
 	// Fire OnStart — registered integrations start their root spans here and
