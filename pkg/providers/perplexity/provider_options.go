@@ -99,6 +99,11 @@ func parsePerplexityAgentOptions(raw map[string]interface{}) (*perplexityLanguag
 	if opts.Tools, err = perplexityAgentObjectArrayField(raw, "tools"); err != nil {
 		return nil, nil, err
 	}
+	for _, tool := range opts.Tools {
+		if err := validatePerplexityNativeTool(tool); err != nil {
+			return nil, nil, err
+		}
+	}
 	if opts.Models, err = perplexityAgentStringArrayField(raw, "models"); err != nil {
 		return nil, nil, err
 	}
@@ -246,6 +251,95 @@ func perplexityAgentReasoningField(raw map[string]interface{}) (map[string]inter
 		}
 	}
 	return m, nil
+}
+
+var perplexityWebSearchRecencyFilters = map[string]bool{
+	"hour": true, "day": true, "week": true, "month": true, "year": true,
+}
+
+var perplexitySearchContextSizes = map[string]bool{
+	"low": true, "medium": true, "high": true,
+}
+
+var perplexityKnownNativeToolTypes = map[string]bool{
+	"web_search": true, "fetch_url": true, "people_search": true,
+	"finance_search": true, "sandbox": true, "mcp": true, "connector": true,
+}
+
+// validatePerplexityNativeTool mirrors TS's nativeToolSchema union: it checks
+// the required fields and enum values for the recognized native tool types
+// (web_search/fetch_url/people_search/finance_search/sandbox/mcp/connector).
+// Types outside this set are TS-only in the sense that the SDK's own schema
+// doesn't recognize them either (nativeToolSchema is a closed z.union, not a
+// looseObject) -- but since providerOptions.perplexity itself is a
+// z.looseObject and future Agent API tool types are expected, an unrecognized
+// "type" is passed through unchecked here rather than rejected, matching the
+// forward-compatible passthrough documented for the rest of this options
+// object (see parsePerplexityAgentOptions's extras).
+func validatePerplexityNativeTool(tool map[string]interface{}) error {
+	toolType, _ := tool["type"].(string)
+	if toolType == "" {
+		return invalidPerplexityProviderOptions("tools", "each tool must have a string \"type\"")
+	}
+	if !perplexityKnownNativeToolTypes[toolType] {
+		return nil
+	}
+
+	switch toolType {
+	case "mcp":
+		if err := requirePerplexityStringField(tool, "tools", "mcp.server_label"); err != nil {
+			return err
+		}
+		if err := requirePerplexityStringField(tool, "tools", "mcp.server_url"); err != nil {
+			return err
+		}
+	case "connector":
+		if err := requirePerplexityStringField(tool, "tools", "connector.id"); err != nil {
+			return err
+		}
+		if err := requirePerplexityStringField(tool, "tools", "connector.server_label"); err != nil {
+			return err
+		}
+	case "web_search":
+		if filters, ok := tool["filters"].(map[string]interface{}); ok {
+			if recency, ok := filters["search_recency_filter"]; ok && recency != nil {
+				s, ok := recency.(string)
+				if !ok || !perplexityWebSearchRecencyFilters[s] {
+					return invalidPerplexityProviderOptions("tools", fmt.Sprintf("web_search.filters.search_recency_filter: invalid value %v", recency))
+				}
+			}
+		}
+		if size, ok := tool["search_context_size"]; ok && size != nil {
+			s, ok := size.(string)
+			if !ok || !perplexitySearchContextSizes[s] {
+				return invalidPerplexityProviderOptions("tools", fmt.Sprintf("web_search.search_context_size: invalid value %v", size))
+			}
+		}
+	}
+	return nil
+}
+
+func requirePerplexityStringField(tool map[string]interface{}, field, path string) error {
+	v, ok := tool[fieldKeyFromPath(path)]
+	if !ok {
+		return invalidPerplexityProviderOptions(field, fmt.Sprintf("%s is required", path))
+	}
+	s, ok := v.(string)
+	if !ok || s == "" {
+		return invalidPerplexityProviderOptions(field, fmt.Sprintf("%s must be a non-empty string", path))
+	}
+	return nil
+}
+
+// fieldKeyFromPath extracts the wire field name from a "type.field" path used
+// for error messages (e.g. "mcp.server_label" -> "server_label").
+func fieldKeyFromPath(path string) string {
+	for i := len(path) - 1; i >= 0; i-- {
+		if path[i] == '.' {
+			return path[i+1:]
+		}
+	}
+	return path
 }
 
 // toBodyMap serializes the validated agent options (minus Tools, which the

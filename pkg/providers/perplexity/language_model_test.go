@@ -407,6 +407,61 @@ func TestPerplexityDoGenerate_RejectsInvalidProviderOptions(t *testing.T) {
 	}
 }
 
+// Mirrors TS perplexity-language-model-options.ts's nativeToolSchema union:
+// providerOptions.perplexity.tools entries are validated per-type
+// (mcp/connector require specific fields; web_search enums are checked).
+// No upstream TS test exercises this directly, but the zod schema does
+// reject these shapes, so a malformed native tool must fail the same way a
+// malformed top-level provider option does (InvalidArgumentError).
+func TestPerplexityDoGenerate_RejectsMalformedNativeTool(t *testing.T) {
+	cases := []struct {
+		name string
+		tool map[string]interface{}
+	}{
+		{"mcp missing server_label", map[string]interface{}{"type": "mcp", "server_url": "https://example.com/mcp"}},
+		{"mcp missing server_url", map[string]interface{}{"type": "mcp", "server_label": "my-mcp"}},
+		{"connector missing id", map[string]interface{}{"type": "connector", "server_label": "my-connector"}},
+		{"connector missing server_label", map[string]interface{}{"type": "connector", "id": "conn-1"}},
+		{"web_search invalid search_recency_filter", map[string]interface{}{"type": "web_search", "filters": map[string]interface{}{"search_recency_filter": "decade"}}},
+		{"web_search invalid search_context_size", map[string]interface{}{"type": "web_search", "search_context_size": "extreme"}},
+		{"tool missing type", map[string]interface{}{"server_label": "x"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, model := newPerplexityTestServer(t, jsonResponseHandler(t, createTestResponse(nil), nil, nil))
+			_, err := model.DoGenerate(t.Context(), &provider.GenerateOptions{
+				Prompt: types.Prompt{Messages: testPrompt},
+				ProviderOptions: map[string]interface{}{
+					"perplexity": map[string]interface{}{"tools": []interface{}{tc.tool}},
+				},
+			})
+			if err == nil {
+				t.Fatalf("expected error for malformed native tool %+v", tc.tool)
+			}
+		})
+	}
+}
+
+// A future/unrecognized native tool type is forwarded unchecked, matching
+// the forward-compatible passthrough for the rest of providerOptions.perplexity.
+func TestPerplexityDoGenerate_AllowsUnrecognizedNativeToolType(t *testing.T) {
+	var captured map[string]interface{}
+	_, model := newPerplexityTestServer(t, jsonResponseHandler(t, createTestResponse(nil), nil, &captured))
+	_, err := model.DoGenerate(t.Context(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: testPrompt},
+		ProviderOptions: map[string]interface{}{
+			"perplexity": map[string]interface{}{"tools": []interface{}{map[string]interface{}{"type": "future_tool", "config": "x"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate() error = %v, want unrecognized native tool type to pass through", err)
+	}
+	tools, ok := captured["tools"].([]interface{})
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools = %v", captured["tools"])
+	}
+}
+
 // TS: "extracts function calls" + "omits missing function call thought signatures"
 func TestPerplexityDoGenerate_ExtractsFunctionCalls(t *testing.T) {
 	response := createTestResponse(map[string]interface{}{
@@ -1166,3 +1221,133 @@ func TestPerplexityConvertUsage_ReasoningTokensAreSubsetOfOutput(t *testing.T) {
 }
 
 func int64Ptr(v int64) *int64 { return &v }
+
+// TS: "preserves citation annotations from output items and %s" (it.each over
+// response.completed / response.incomplete). A message with a citation is
+// first surfaced via response.output_item.done (so its source is already
+// emitted), then reappears in the terminal event's response.output[] -- the
+// terminal event must not re-emit or duplicate it, while a second message's
+// citation (only present in the terminal event) is still emitted once.
+func TestPerplexityDoStream_PreservesCitationAnnotationsAcrossTerminalEvents(t *testing.T) {
+	for _, terminalType := range []string{"response.completed", "response.incomplete"} {
+		t.Run(terminalType, func(t *testing.T) {
+			message := map[string]interface{}{
+				"id":   "msg-123",
+				"type": "message",
+				"content": []interface{}{
+					map[string]interface{}{
+						"type": "output_text",
+						"text": "A cited answer.",
+						"annotations": []interface{}{
+							map[string]interface{}{"type": "url_citation", "url": "https://example.com/first", "title": "First"},
+							map[string]interface{}{"type": "file_citation", "file_id": "file-123"},
+						},
+					},
+				},
+			}
+			status := "completed"
+			if terminalType == "response.incomplete" {
+				status = "incomplete"
+			}
+			chunks := []map[string]interface{}{
+				{"type": "response.output_item.done", "item": message, "output_index": 0},
+				{"type": terminalType, "response": createTestResponse(map[string]interface{}{
+					"status": status,
+					"output": []interface{}{
+						message,
+						map[string]interface{}{
+							"type": "message",
+							"content": []interface{}{
+								map[string]interface{}{
+									"type": "output_text",
+									"text": "Another citation.",
+									"annotations": []interface{}{
+										map[string]interface{}{"type": "url_citation", "url": "https://example.com/second", "title": "Second"},
+									},
+								},
+							},
+						},
+					},
+				})},
+			}
+			_, model := newPerplexityTestServer(t, streamHandler(t, chunks, nil))
+			stream, err := model.DoStream(t.Context(), &provider.GenerateOptions{Prompt: types.Prompt{Messages: testPrompt}})
+			if err != nil {
+				t.Fatalf("DoStream() error = %v", err)
+			}
+			defer stream.Close()
+			got := collectChunks(t, stream)
+
+			var sources []*provider.StreamChunk
+			for _, c := range got {
+				if c.Type == provider.ChunkTypeSource {
+					sources = append(sources, c)
+				}
+			}
+			if len(sources) != 2 {
+				t.Fatalf("sources = %d, want 2 (First, Second), got %+v", len(sources), sources)
+			}
+			if sources[0].SourceContent.URL != "https://example.com/first" || sources[0].SourceContent.Title != "First" {
+				t.Fatalf("sources[0] = %+v, want First", sources[0].SourceContent)
+			}
+			if sources[1].SourceContent.URL != "https://example.com/second" || sources[1].SourceContent.Title != "Second" {
+				t.Fatalf("sources[1] = %+v, want Second", sources[1].SourceContent)
+			}
+		})
+	}
+}
+
+// TS: "preserves native tool traces in raw chunks without rejecting the response"
+func TestPerplexityDoStream_PreservesNativeToolTracesInRawChunks(t *testing.T) {
+	financeOutput := map[string]interface{}{
+		"type":       "finance_results",
+		"categories": []interface{}{"quote"},
+		"tickers":    []interface{}{"AAPL"},
+		"results": []interface{}{
+			map[string]interface{}{"category": "quote", "content": "AAPL: $230.00", "sources": []interface{}{"https://example.com/quote"}, "tickers": []interface{}{"AAPL"}},
+		},
+	}
+	firstEvent := map[string]interface{}{"type": "response.output_item.done", "output_index": 0, "item": financeOutput}
+	base := createTestResponse(nil)
+	output := append([]interface{}{financeOutput}, base["output"].([]interface{})...)
+	events := append([]map[string]interface{}{firstEvent}, createTestStreamChunks(map[string]interface{}{"output": output})...)
+
+	_, model := newPerplexityTestServer(t, streamHandler(t, events, nil))
+
+	stream, err := model.DoStream(t.Context(), &provider.GenerateOptions{Prompt: types.Prompt{Messages: testPrompt}, IncludeRawChunks: true})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer stream.Close()
+	got := collectChunks(t, stream)
+
+	for _, c := range got {
+		if c.Type == provider.ChunkTypeError {
+			t.Fatalf("unexpected error chunk: %+v", c)
+		}
+	}
+
+	var sawRawFirstEvent bool
+	for _, c := range got {
+		if c.Type == provider.ChunkTypeRaw {
+			b, _ := json.Marshal(c.Raw)
+			want, _ := json.Marshal(firstEvent)
+			if string(b) == string(want) {
+				sawRawFirstEvent = true
+			}
+		}
+	}
+	if !sawRawFirstEvent {
+		t.Fatal("expected a raw chunk carrying the unhandled finance_results output_item.done event")
+	}
+
+	var finish *provider.StreamChunk
+	for _, c := range got {
+		if c.Type == provider.ChunkTypeFinish {
+			finish = c
+		}
+	}
+	if finish == nil || finish.FinishReason != types.FinishReasonStop || finish.RawFinishReason != "completed" {
+		t.Fatalf("finish = %+v, want stop/completed", finish)
+	}
+}
