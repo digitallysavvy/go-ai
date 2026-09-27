@@ -410,6 +410,148 @@ func TestStreamTranscribe_RejectsFullStreamAfterResultPromise(t *testing.T) {
 	}
 }
 
+// TestStreamTranscribe_RejectsPendingPromisesOnMidSendCancel is a regression
+// test for a deadlock: closing FullStream while the pipe goroutine is
+// blocked trying to send a part (because nobody is draining the channel)
+// must still reject the pending result promises and cancel the caller's
+// audio stream, mirroring TS stream-transcribe.ts's Transformer.cancel/catch
+// handler. Before the fix, the pipe goroutine returned without calling fail,
+// so Text() etc. blocked forever and Audio.Cancel was never invoked.
+func TestStreamTranscribe_RejectsPendingPromisesOnMidSendCancel(t *testing.T) {
+	audio := newMockChanAudioStream()
+	model := &mockTranscriptionStreamerModel{
+		doStreamFn: func(ctx context.Context, opts *provider.TranscriptionStreamOptions) (*provider.TranscriptionStreamResult, error) {
+			parts := make(chan provider.TranscriptionStreamPart, 2)
+			parts <- provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart}
+			parts <- provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeDelta, ID: "item-1", Delta: "Hel"}
+			return &provider.TranscriptionStreamResult{
+				Stream: &liveProviderTranscriptionStream{ctx: ctx, parts: parts},
+			}, nil
+		},
+	}
+
+	result, err := ExperimentalStreamTranscribe(context.Background(), StreamTranscribeOptions{
+		Model: model,
+		Audio: audio,
+	})
+	if err != nil {
+		t.Fatalf("ExperimentalStreamTranscribe error = %v", err)
+	}
+
+	// Claim fullStream but never call Next(): the pipe goroutine will block
+	// trying to emit the "transcript-delta" part since nothing drains it.
+	stream, err := result.FullStream()
+	if err != nil {
+		t.Fatalf("FullStream error = %v", err)
+	}
+
+	// Give the pipe goroutine a chance to reach the blocked send before we
+	// cancel; this is best-effort (the test still passes if the send hasn't
+	// started yet, since cancelling before the send also exercises a
+	// legitimate path).
+	time.Sleep(20 * time.Millisecond)
+	if err := stream.Close(); err != nil {
+		t.Fatalf("stream.Close() error = %v", err)
+	}
+
+	done := make(chan struct{})
+	var text string
+	var textErr error
+	go func() {
+		text, textErr = result.Text()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Text() deadlocked after FullStream was cancelled mid-send")
+	}
+	if textErr == nil {
+		t.Fatalf("Text() = %q, want an error after cancellation", text)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if cancelled, _ := audio.wasCancelled(); cancelled {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("expected audio stream to be cancelled after mid-send cancellation")
+}
+
+// TestStreamTranscribe_ProviderErrorMidStream_RejectsAndCancelsAudio mirrors
+// TS's mid-pipe stream error handling: an error from Stream.Next() after
+// parts have already been emitted must reject the pending result promises
+// exactly once and cancel the caller's audio stream.
+func TestStreamTranscribe_ProviderErrorMidStream_RejectsAndCancelsAudio(t *testing.T) {
+	audio := newMockChanAudioStream()
+	streamErr := errors.New("mid-stream provider failure")
+	model := &mockTranscriptionStreamerModel{
+		doStreamFn: func(ctx context.Context, opts *provider.TranscriptionStreamOptions) (*provider.TranscriptionStreamResult, error) {
+			return &provider.TranscriptionStreamResult{
+				Stream: &erroringTranscriptionStream{
+					parts: []provider.TranscriptionStreamPart{
+						{Type: provider.TranscriptionStreamPartTypeStreamStart},
+						{Type: provider.TranscriptionStreamPartTypeDelta, ID: "item-1", Delta: "Hel"},
+					},
+					err: streamErr,
+				},
+			}, nil
+		},
+	}
+
+	result, err := ExperimentalStreamTranscribe(context.Background(), StreamTranscribeOptions{
+		Model: model,
+		Audio: audio,
+	})
+	if err != nil {
+		t.Fatalf("ExperimentalStreamTranscribe error = %v", err)
+	}
+
+	stream, err := result.FullStream()
+	if err != nil {
+		t.Fatalf("FullStream error = %v", err)
+	}
+	for {
+		_, err := stream.Next()
+		if err != nil {
+			if !errors.Is(err, streamErr) {
+				t.Fatalf("stream.Next() error = %v, want %v", err, streamErr)
+			}
+			break
+		}
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if cancelled, _ := audio.wasCancelled(); cancelled {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("expected audio stream to be cancelled after a mid-stream provider error")
+}
+
+// erroringTranscriptionStream replays parts then fails with err.
+type erroringTranscriptionStream struct {
+	parts []provider.TranscriptionStreamPart
+	idx   int
+	err   error
+}
+
+func (s *erroringTranscriptionStream) Next() (*provider.TranscriptionStreamPart, error) {
+	if s.idx >= len(s.parts) {
+		return nil, s.err
+	}
+	p := s.parts[s.idx]
+	s.idx++
+	return &p, nil
+}
+func (s *erroringTranscriptionStream) Err() error   { return s.err }
+func (s *erroringTranscriptionStream) Close() error { return nil }
+
 // TestStreamTranscribe_MP4DetectionMatchesTypeScript verifies the ftyp-based
 // MP4/M4A media type detection fix (TS 76cb673) used by both batch Transcribe
 // and streaming setups that infer media type from raw bytes.

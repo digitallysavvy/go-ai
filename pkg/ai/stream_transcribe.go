@@ -335,6 +335,13 @@ func runTranscriptionStreamPipe(pipeCtx context.Context, streamer provider.Trans
 			provider.TranscriptionStreamPartTypeRaw,
 			provider.TranscriptionStreamPartTypeError:
 			if !sendTranscriptionPart(pipeCtx, result.ch, transcriptionPartFromProvider(part)) {
+				// pipeCtx was cancelled while a send was pending (FullStream
+				// was closed, or the caller's ctx was cancelled) while parts
+				// were still flowing. Mirror the TS SDK's Transformer.cancel
+				// path: reject the still-pending result promises and cancel
+				// the caller's audio stream instead of leaving them to block
+				// forever (TS stream-transcribe.ts cancel()/catch()).
+				fail(errors.New("Transcription stream was cancelled."))
 				return
 			}
 

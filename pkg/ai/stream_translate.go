@@ -365,6 +365,11 @@ func runTranslationStreamPipe(pipeCtx context.Context, opts StreamTranslateOptio
 		case provider.SpeechTranslationStreamPartTypeAudio:
 			hasAudioOutput = true
 			if !sendTranslationPart(pipeCtx, result.ch, translationPartFromProvider(part)) {
+				// See the matching comment in runTranscriptionStreamPipe: a
+				// pending send that loses to pipeCtx cancellation must still
+				// reject the result promises and cancel the caller's audio,
+				// mirroring TS stream-translate.ts's Transformer.cancel/catch.
+				fail(errors.New("Translation stream was cancelled."))
 				return
 			}
 
@@ -376,6 +381,7 @@ func runTranslationStreamPipe(pipeCtx context.Context, opts StreamTranslateOptio
 			provider.SpeechTranslationStreamPartTypeRaw,
 			provider.SpeechTranslationStreamPartTypeError:
 			if !sendTranslationPart(pipeCtx, result.ch, translationPartFromProvider(part)) {
+				fail(errors.New("Translation stream was cancelled."))
 				return
 			}
 
@@ -397,6 +403,13 @@ func runTranslationStreamPipe(pipeCtx context.Context, opts StreamTranslateOptio
 			result.usageP.resolve(part.Usage)
 			result.responseP.resolve(response)
 			result.providerMetadataP.resolve(providerMetadata)
+
+		default:
+			// Mirrors TS stream-translate.ts's exhaustive-check default
+			// branch: an unrecognized part type from the provider is a hard
+			// error rather than a silently dropped chunk.
+			fail(fmt.Errorf("unsupported part type: %s", part.Type))
+			return
 		}
 	}
 
