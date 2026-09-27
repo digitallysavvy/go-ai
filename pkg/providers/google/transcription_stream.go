@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	stdhttp "net/http"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +16,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
+	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"golang.org/x/net/websocket"
 )
 
@@ -296,35 +296,25 @@ func (s *googleLiveTranscriptionStream) emit(part provider.TranscriptionStreamPa
 	}
 }
 
-type googleLiveWSResult struct {
-	msg string
-	err error
-}
-
 // receiveLoop continuously reads text frames from conn and forwards each one
 // (or the terminal error) on out, until an error occurs or s.ctx is done.
 // A dedicated goroutine (rather than one-shot receives from run()) lets the
 // caller's select multiplex incoming messages against the finish-grace timer.
-func (s *googleLiveTranscriptionStream) receiveLoop(conn *websocket.Conn, out chan<- googleLiveWSResult) {
-	for {
-		var msg string
-		err := websocket.Message.Receive(conn, &msg)
-		select {
-		case out <- googleLiveWSResult{msg: msg, err: err}:
-		case <-s.ctx.Done():
-			return
-		}
-		if err != nil {
-			return
-		}
-	}
+func (s *googleLiveTranscriptionStream) receiveLoop(conn *websocket.Conn, out chan<- wsutil.Message) {
+	wsutil.ReceiveLoop(s.ctx, conn, out)
 }
 
 // pumpAudio waits for the server's setupComplete acknowledgement (the Live
 // API contract requires this before sending realtime input), then forwards
 // audio chunks as realtimeInput.audio messages, committing
-// realtimeInput.audioStreamEnd at EOF and signalling audioEnded.
-func (s *googleLiveTranscriptionStream) pumpAudio(conn *websocket.Conn, audio provider.AudioStream, setupComplete <-chan struct{}, rate int, audioEnded chan<- struct{}) {
+// realtimeInput.audioStreamEnd at EOF and signalling audioEnded. Any other
+// failure — reading from the AudioStream, or writing to the WebSocket — is
+// reported on errCh, mirroring TS's `void sendAudio(socket).catch(finishWithError)`
+// (a rejected `audioReader.read()` fails the stream exactly like a failed
+// `socket.send`). A failure that stems from s.ctx already being cancelled is
+// not reported here: run()'s own select on s.ctx.Done() already handles that
+// case.
+func (s *googleLiveTranscriptionStream) pumpAudio(conn *websocket.Conn, audio provider.AudioStream, setupComplete <-chan struct{}, rate int, audioEnded chan<- struct{}, errCh chan<- error) {
 	select {
 	case <-setupComplete:
 	case <-s.ctx.Done():
@@ -335,11 +325,18 @@ func (s *googleLiveTranscriptionStream) pumpAudio(conn *websocket.Conn, audio pr
 		chunk, err := audio.Next(s.ctx)
 		if err != nil {
 			if err == io.EOF {
-				_ = s.send(conn, []byte(`{"realtimeInput":{"audioStreamEnd":true}}`))
+				if sendErr := s.send(conn, []byte(`{"realtimeInput":{"audioStreamEnd":true}}`)); sendErr != nil {
+					if s.ctx.Err() == nil {
+						s.reportAudioError(errCh, sendErr)
+					}
+					return
+				}
 				select {
 				case audioEnded <- struct{}{}:
 				case <-s.ctx.Done():
 				}
+			} else if s.ctx.Err() == nil {
+				s.reportAudioError(errCh, err)
 			}
 			return
 		}
@@ -355,8 +352,21 @@ func (s *googleLiveTranscriptionStream) pumpAudio(conn *websocket.Conn, audio pr
 			continue
 		}
 		if err := s.send(conn, msg); err != nil {
+			if s.ctx.Err() == nil {
+				s.reportAudioError(errCh, err)
+			}
 			return
 		}
+	}
+}
+
+// reportAudioError delivers err to errCh, falling back to s.ctx.Done() so a
+// send that no longer has a reader (run() already returned via a different
+// path) cannot block pumpAudio forever.
+func (s *googleLiveTranscriptionStream) reportAudioError(errCh chan<- error, err error) {
+	select {
+	case errCh <- err:
+	case <-s.ctx.Done():
 	}
 }
 
@@ -439,13 +449,14 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 	resolveSetupComplete := func() { setupCompleteOnce.Do(func() { close(setupCompleteCh) }) }
 
 	audioEndedCh := make(chan struct{})
-	go s.pumpAudio(conn, cfg.audio, setupCompleteCh, cfg.inputAudioRate, audioEndedCh)
+	audioErrCh := make(chan error, 1)
+	go s.pumpAudio(conn, cfg.audio, setupCompleteCh, cfg.inputAudioRate, audioEndedCh, audioErrCh)
 
 	if !s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart, Warnings: cfg.warnings}) {
 		return
 	}
 
-	msgCh := make(chan googleLiveWSResult)
+	msgCh := make(chan wsutil.Message)
 	go s.receiveLoop(conn, msgCh)
 
 	// Transcription fragments arrive incrementally and are accumulated per
@@ -536,12 +547,29 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 			audioEndedCh = nil // consumed once; a nil channel blocks forever in future selects
 			schedulePendingFinish()
 
+		case audioErr := <-audioErrCh:
+			// Mirrors TS `void sendAudio(socket).catch(finishWithError)`: a
+			// failure pumping audio (reading the caller's AudioStream, or
+			// writing to the WebSocket) terminates the stream with an error
+			// instead of being silently dropped.
+			if finished {
+				return
+			}
+			fail(audioErr)
+			return
+
 		case res := <-msgCh:
-			if res.err != nil {
+			if res.Err != nil {
 				if finished {
 					return
 				}
-				if audioEnded {
+				if !wsutil.IsCleanClose(res.Err) {
+					// An abnormal disconnection (TS onSocketError) always
+					// fails the stream, regardless of whether the input audio
+					// had already ended — distinct from a clean close (TS
+					// onClose), which finishes successfully once audioEnded.
+					fail(errors.New("Google Live transcription error"))
+				} else if audioEnded {
 					finish()
 				} else {
 					fail(fmt.Errorf("Google Live transcription WebSocket closed unexpectedly before finishing"))
@@ -553,13 +581,13 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 			}
 
 			var message googleLiveServerMessage
-			if jsonErr := json.Unmarshal([]byte(res.msg), &message); jsonErr != nil {
+			if jsonErr := json.Unmarshal([]byte(res.Text), &message); jsonErr != nil {
 				continue
 			}
 
 			if cfg.includeRawChunks {
 				var rawValue interface{}
-				_ = json.Unmarshal([]byte(res.msg), &rawValue)
+				_ = json.Unmarshal([]byte(res.Text), &rawValue)
 				if !s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeRaw, RawValue: rawValue}) {
 					return
 				}
@@ -636,36 +664,11 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 }
 
 func (s *googleLiveTranscriptionStream) dial(wsURL string, headers map[string]string) (*websocket.Conn, error) {
-	wsConfig, err := websocket.NewConfig(wsURL, "http://localhost/")
-	if err != nil {
-		return nil, err
-	}
-	wsConfig.Header = stdhttp.Header{}
-	for k, v := range headers {
-		if v != "" {
-			wsConfig.Header.Set(k, v)
-		}
-	}
-
-	// DialContext (rather than DialConfig, which always dials against
-	// context.Background()) forces the pending handshake to fail and cleans
-	// up the socket when s.ctx is cancelled mid-dial, instead of leaving an
-	// unread, unclosed connection behind if the dial completes after we've
-	// already given up on it.
-	return wsConfig.DialContext(s.ctx)
+	return wsutil.Dial(s.ctx, wsURL, wsutil.DialOptions{Headers: headers})
 }
 
 func (s *googleLiveTranscriptionStream) send(conn *websocket.Conn, message []byte) error {
-	done := make(chan error, 1)
-	go func() {
-		done <- websocket.Message.Send(conn, string(message))
-	}()
-	select {
-	case <-s.ctx.Done():
-		return s.ctx.Err()
-	case err := <-done:
-		return err
-	}
+	return wsutil.Send(s.ctx, conn, string(message))
 }
 
 var (

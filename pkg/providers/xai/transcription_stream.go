@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	stdhttp "net/http"
 	"net/url"
 	"sort"
 	"strconv"
@@ -18,6 +17,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"golang.org/x/net/websocket"
 )
 
@@ -275,26 +275,10 @@ func (s *xaiTranscriptionStream) emit(part provider.TranscriptionStreamPart) boo
 	}
 }
 
-type xaiWSResult struct {
-	msg string
-	err error
-}
-
 // receiveLoop continuously reads text frames from conn and forwards each one
 // (or the terminal error) on out, until an error occurs or s.ctx is done.
-func (s *xaiTranscriptionStream) receiveLoop(conn *websocket.Conn, out chan<- xaiWSResult) {
-	for {
-		var msg string
-		err := websocket.Message.Receive(conn, &msg)
-		select {
-		case out <- xaiWSResult{msg: msg, err: err}:
-		case <-s.ctx.Done():
-			return
-		}
-		if err != nil {
-			return
-		}
-	}
+func (s *xaiTranscriptionStream) receiveLoop(conn *websocket.Conn, out chan<- wsutil.Message) {
+	wsutil.ReceiveLoop(s.ctx, conn, out)
 }
 
 // xaiStreamingTranscriptionEvent is a server->client streaming transcription
@@ -385,7 +369,7 @@ func (s *xaiTranscriptionStream) run(cfg xaiTranscriptionStreamConfig) {
 	s.connMu.Unlock()
 	defer conn.Close() //nolint:errcheck
 
-	msgCh := make(chan xaiWSResult)
+	msgCh := make(chan wsutil.Message)
 	go s.receiveLoop(conn, msgCh)
 
 	audioEndedCh := make(chan struct{})
@@ -446,11 +430,11 @@ func (s *xaiTranscriptionStream) run(cfg xaiTranscriptionStreamConfig) {
 			if !ok {
 				return
 			}
-			if res.err != nil {
+			if res.Err != nil {
 				if finished {
 					return
 				}
-				if errors.Is(res.err, io.EOF) {
+				if wsutil.IsCleanClose(res.Err) {
 					// A clean WebSocket close before every expected channel's
 					// transcript.done arrived: mirror TS onClose, which ends
 					// the stream without an error and without a synthetic
@@ -466,13 +450,13 @@ func (s *xaiTranscriptionStream) run(cfg xaiTranscriptionStreamConfig) {
 			}
 
 			var raw xaiStreamingTranscriptionEvent
-			if jsonErr := json.Unmarshal([]byte(res.msg), &raw); jsonErr != nil {
+			if jsonErr := json.Unmarshal([]byte(res.Text), &raw); jsonErr != nil {
 				continue
 			}
 
 			if cfg.includeRawChunks {
 				var rawValue interface{}
-				_ = json.Unmarshal([]byte(res.msg), &rawValue)
+				_ = json.Unmarshal([]byte(res.Text), &rawValue)
 				if !s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeRaw, RawValue: rawValue}) {
 					return
 				}
@@ -568,23 +552,7 @@ func (s *xaiTranscriptionStream) run(cfg xaiTranscriptionStreamConfig) {
 }
 
 func (s *xaiTranscriptionStream) dial(wsURL *url.URL, headers map[string]string) (*websocket.Conn, error) {
-	wsConfig, err := websocket.NewConfig(wsURL.String(), "http://localhost/")
-	if err != nil {
-		return nil, err
-	}
-	wsConfig.Header = stdhttp.Header{}
-	for k, v := range headers {
-		if v != "" {
-			wsConfig.Header.Set(k, v)
-		}
-	}
-
-	// DialContext (rather than DialConfig, which always dials against
-	// context.Background()) forces the pending handshake to fail and cleans
-	// up the socket when s.ctx is cancelled mid-dial, instead of leaving an
-	// unread, unclosed connection behind if the dial completes after we've
-	// already given up on it.
-	return wsConfig.DialContext(s.ctx)
+	return wsutil.Dial(s.ctx, wsURL.String(), wsutil.DialOptions{Headers: headers})
 }
 
 func (s *xaiTranscriptionStream) sendText(conn *websocket.Conn, message string) error {
@@ -599,16 +567,7 @@ func (s *xaiTranscriptionStream) sendBinary(conn *websocket.Conn, data []byte) e
 // mirroring golang.org/x/net/websocket.Message's type-based framing so raw
 // audio chunks are sent unwrapped, exactly like TS's `socket.send(value)`.
 func (s *xaiTranscriptionStream) send(conn *websocket.Conn, v interface{}) error {
-	done := make(chan error, 1)
-	go func() {
-		done <- websocket.Message.Send(conn, v)
-	}()
-	select {
-	case <-s.ctx.Done():
-		return s.ctx.Err()
-	case err := <-done:
-		return err
-	}
+	return wsutil.Send(s.ctx, conn, v)
 }
 
 var (

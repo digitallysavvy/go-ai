@@ -18,6 +18,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"golang.org/x/net/websocket"
 )
 
@@ -316,41 +317,16 @@ func (s *cartesiaTranscriptionStream) emit(part provider.TranscriptionStreamPart
 	}
 }
 
-type cartesiaWSResult struct {
-	msg string
-	err error
-}
-
 // receiveLoop continuously reads text frames from conn and forwards each one
 // (or the terminal error) on out, until an error occurs or s.ctx is done.
-func (s *cartesiaTranscriptionStream) receiveLoop(conn *websocket.Conn, out chan<- cartesiaWSResult) {
-	for {
-		var msg string
-		err := websocket.Message.Receive(conn, &msg)
-		select {
-		case out <- cartesiaWSResult{msg: msg, err: err}:
-		case <-s.ctx.Done():
-			return
-		}
-		if err != nil {
-			return
-		}
-	}
+func (s *cartesiaTranscriptionStream) receiveLoop(conn *websocket.Conn, out chan<- wsutil.Message) {
+	wsutil.ReceiveLoop(s.ctx, conn, out)
 }
 
 // send writes v (a string for a text frame, or []byte for a binary frame) to
 // conn, unblocking early if s.ctx is cancelled mid-write.
 func (s *cartesiaTranscriptionStream) send(conn *websocket.Conn, v interface{}) error {
-	done := make(chan error, 1)
-	go func() {
-		done <- websocket.Message.Send(conn, v)
-	}()
-	select {
-	case <-s.ctx.Done():
-		return s.ctx.Err()
-	case err := <-done:
-		return err
-	}
+	return wsutil.Send(s.ctx, conn, v)
 }
 
 // pumpAudio forwards audio chunks as binary frames until the AudioStream is
@@ -450,7 +426,7 @@ func (s *cartesiaTranscriptionStream) run(cfg cartesiaTranscriptionStreamConfig)
 		return
 	}
 
-	msgCh := make(chan cartesiaWSResult)
+	msgCh := make(chan wsutil.Message)
 	audioErrCh := make(chan error, 1)
 	go s.receiveLoop(conn, msgCh)
 	go s.pumpAudio(conn, cfg, audioErrCh)
@@ -501,7 +477,7 @@ func (s *cartesiaTranscriptionStream) run(cfg cartesiaTranscriptionStreamConfig)
 			return
 
 		case res := <-msgCh:
-			if res.err != nil {
+			if res.Err != nil {
 				// A received WebSocket close frame (io.EOF from
 				// golang.org/x/net/websocket's frame reader) mirrors TS
 				// connectToWebSocket's onClose: an implicit, silent finish if
@@ -512,7 +488,7 @@ func (s *cartesiaTranscriptionStream) run(cfg cartesiaTranscriptionStreamConfig)
 				if finished {
 					return
 				}
-				if errors.Is(res.err, io.EOF) {
+				if wsutil.IsCleanClose(res.Err) {
 					finish()
 				} else {
 					fail(errors.New("Cartesia streaming transcription error"))
@@ -524,13 +500,13 @@ func (s *cartesiaTranscriptionStream) run(cfg cartesiaTranscriptionStreamConfig)
 			}
 
 			var raw cartesiaStreamingTranscriptionEvent
-			if jsonErr := json.Unmarshal([]byte(res.msg), &raw); jsonErr != nil {
+			if jsonErr := json.Unmarshal([]byte(res.Text), &raw); jsonErr != nil {
 				continue
 			}
 
 			if cfg.includeRawChunks {
 				var rawValue interface{}
-				_ = json.Unmarshal([]byte(res.msg), &rawValue)
+				_ = json.Unmarshal([]byte(res.Text), &rawValue)
 				if !s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeRaw, RawValue: rawValue}) {
 					return
 				}
@@ -593,17 +569,7 @@ func (s *cartesiaTranscriptionStream) run(cfg cartesiaTranscriptionStreamConfig)
 }
 
 func (s *cartesiaTranscriptionStream) dial(wsURL *url.URL) (*websocket.Conn, error) {
-	wsConfig, err := websocket.NewConfig(wsURL.String(), "http://localhost/")
-	if err != nil {
-		return nil, err
-	}
-
-	// DialContext (rather than DialConfig, which always dials against
-	// context.Background()) forces the pending handshake to fail and cleans
-	// up the socket when s.ctx is cancelled mid-dial, instead of leaving an
-	// unread, unclosed connection behind if the dial completes after we've
-	// already given up on it.
-	return wsConfig.DialContext(s.ctx)
+	return wsutil.Dial(s.ctx, wsURL.String(), wsutil.DialOptions{})
 }
 
 var (
