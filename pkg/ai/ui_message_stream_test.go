@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -2363,6 +2364,73 @@ func TestCreateUIMessageStreamWithOptions_Outcome_ConsumerCancellation(t *testin
 // (audit row #103): ToUIMessageStream derives completed/failed/aborted from
 // the source stream's own finish/abort/error parts.
 // ---------------------------------------------------------------------------
+
+// firstThenBlockTextStream returns a fixed first chunk, then blocks on Next()
+// until release is closed, at which point it reports EOF.
+type firstThenBlockTextStream struct {
+	first    *provider.StreamChunk
+	sent     bool
+	release  chan struct{}
+	returned bool
+}
+
+func (s *firstThenBlockTextStream) Next() (*provider.StreamChunk, error) {
+	if !s.sent {
+		s.sent = true
+		return s.first, nil
+	}
+	<-s.release
+	return nil, io.EOF
+}
+
+func (s *firstThenBlockTextStream) Close() error { return nil }
+func (s *firstThenBlockTextStream) Err() error   { return nil }
+
+// TestToUIMessageStream_ConsumerCancellationSetsIsCancelled ports the
+// consumer-cancellation case (audit row #10) to ToUIMessageStream: cancelling
+// ctx while the source stream is still open must call OnEnd with
+// isCancelled: true and isAborted: false, not report isAborted: true.
+func TestToUIMessageStream_ConsumerCancellationSetsIsCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	release := make(chan struct{})
+	stream := &firstThenBlockTextStream{
+		first:   &provider.StreamChunk{Type: provider.ChunkTypeText, ID: "t1", Text: "hi"},
+		release: release,
+	}
+
+	var end map[string]interface{}
+	var mu sync.Mutex
+	chunks, errs := ToUIMessageStream(ctx, stream, UIMessageStreamResultOptions{
+		OnEnd: func(event map[string]interface{}) {
+			mu.Lock()
+			end = event
+			mu.Unlock()
+		},
+	})
+
+	// Drain the start + text chunks that precede the block.
+	<-chunks
+	<-chunks
+
+	cancel()
+	close(release)
+
+	for range chunks {
+	}
+	<-errs
+
+	mu.Lock()
+	defer mu.Unlock()
+	if end == nil {
+		t.Fatal("OnEnd was not called")
+	}
+	if end["isAborted"] != false {
+		t.Fatalf("isAborted = %v, want false", end["isAborted"])
+	}
+	if end["isCancelled"] != true {
+		t.Fatalf("isCancelled = %v, want true", end["isCancelled"])
+	}
+}
 
 // ports setSourceOutcome({status: 'completed'}) on part.type === 'finish'.
 func TestToUIMessageStream_Outcome_CompletedOnFinishChunk(t *testing.T) {

@@ -436,13 +436,21 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			if onEnd == nil {
 				return
 			}
+			// isCancelled reflects the consumer stopping (ctx cancelled) before
+			// the source stream itself declared an outcome; isAborted reflects
+			// the source stream's own abort part. Mirrors CreateUIMessageStream
+			// above and TS to-ui-message-stream.ts (audit row #10/#103).
+			isCancelled := ctx.Err() != nil && sourceOutcome.Status == UIMessageStreamOutcomeUnknown
 			finishEvent := map[string]interface{}{
 				"isContinuation":  uiState.isContinuation,
-				"isAborted":       ctx.Err() != nil || uiState.isAborted || sourceOutcome.Status == UIMessageStreamOutcomeAborted,
+				"isAborted":       uiState.isAborted || sourceOutcome.Status == UIMessageStreamOutcomeAborted,
 				"responseMessage": uiState.responseMessage(),
 				"messages":        uiState.messages(),
 				"finishReason":    finishReason,
 				"outcome":         uiMessageStreamOutcomeMap(sourceOutcome),
+			}
+			if isCancelled {
+				finishEvent["isCancelled"] = true
 			}
 			defer func() {
 				_ = recover()
@@ -596,6 +604,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			select {
 			case <-ctx.Done():
 				errCh <- ctx.Err()
+				callOnEnd(finishReason)
 				return
 			default:
 			}
