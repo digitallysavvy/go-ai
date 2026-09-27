@@ -61,3 +61,43 @@ result, err := model.DoGenerate(ctx, &provider.ImageGenerateOptions{
 | `maxOutputTokens` | number | Maximum output tokens. |
 | `autoCrop` | bool | Vectorization-only auto-crop setting. |
 | `targetSize` | number | Vectorization-only target canvas size in pixels. |
+
+## Language Models
+
+The Arrow 2 / Arrow 2 Telos models are available through the standard
+language model interface, reusing the Open Responses transport with
+QuiverAI's own request policy layered on top:
+
+```go
+model, _ := qprovider.LanguageModel(quiverai.ModelArrow2) // or quiverai.ModelArrow2Telos
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Suggest a minimal color palette for a weather app icon set.",
+    ProviderOptions: map[string]interface{}{
+        "quiverai": map[string]interface{}{
+            "reasoningEffort":  "medium", // low | medium | high | xhigh
+            "reasoningSummary": "auto",
+        },
+    },
+})
+```
+
+QuiverAI also supports a caller-executed "custom" tool (`ProviderID:
+"quiverai.custom"`), whose input the model streams as raw text (e.g. SVG
+markup) instead of JSON function arguments:
+
+```go
+svgTool := types.Tool{
+    Type:       "provider",
+    ProviderID: "quiverai.custom",
+    Name:       "write_svg",
+    ProviderArgs: map[string]interface{}{
+        "description": "Return raw SVG markup for the requested icon.",
+        "format":      map[string]interface{}{"type": "text"},
+    },
+}
+```
+
+See [`examples/providers/quiverai`](../../examples/providers/quiverai) for
+full runnable examples.

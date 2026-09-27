@@ -50,3 +50,24 @@ result, err := model.DoGenerate(ctx, &provider.ImageGenerateOptions{
 - `autoCrop`, `targetSize`: vectorization options.
 
 The provider returns SVG bytes with `MimeType` set to `image/svg+xml`, QuiverAI image metadata under `ProviderMetadata["quiverai"]`, and token usage when reported by the API.
+
+## Language Models (Arrow 2 / Arrow 2 Telos)
+
+`ModelArrow2` and `ModelArrow2Telos` are available as standard language models, built on the [Open Responses](../openresponses/README.md) transport with QuiverAI's own request policy layered on top (reasoning effort/summary validation, opaque reasoning replay, endpoint-specific error handling, caller-executed "custom" tools via `ProviderID: "quiverai.custom"`).
+
+```go
+model, err := qprovider.LanguageModel(quiverai.ModelArrow2)
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Suggest a minimal color palette for a weather app icon set.",
+    ProviderOptions: map[string]interface{}{
+        "quiverai": map[string]interface{}{
+            "reasoningEffort":  "medium", // low | medium | high | xhigh
+            "reasoningSummary": "auto",
+        },
+    },
+})
+```
+
+See `examples/providers/quiverai` for runnable examples, including custom-tool usage.

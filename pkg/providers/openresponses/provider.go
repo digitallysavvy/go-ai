@@ -51,6 +51,43 @@ type Config struct {
 	// items, and streaming events (row 9a68261, OR-EXT). Most Open
 	// Responses servers need none of this; see Extension for details.
 	Extensions []Extension
+
+	// FailedResponseHandler, when set, converts a non-2xx HTTP response into
+	// an error, overriding the default generic HTTPStatusError wrapping.
+	// Mirrors the TS SDK's `failedResponseHandler` provider setting (e.g.
+	// QuiverAI's endpoint-specific {status,code,message,request_id} error
+	// schema). Returning nil falls back to the default handling.
+	FailedResponseHandler func(*http.HTTPStatusError) error
+
+	// GetResponseErrorMetadata extracts HTTP status and retryability
+	// metadata from an endpoint-specific response error embedded in a 200
+	// response body (`response.error`) or a streamed response.failed/error
+	// event, mirroring the TS SDK's `getResponseErrorMetadata` provider
+	// setting. Either return value may be nil to fall back to the default
+	// classification (statusCode 400 for a non-streaming embedded error;
+	// message/status-code inference for a streamed error).
+	GetResponseErrorMetadata func(*ResponseError) (statusCode *int, retryable *bool)
+
+	// CustomToolID identifies caller-executed Open Responses custom tools by
+	// provider-tool ID (types.Tool.ProviderID). A "provider" tool whose ID
+	// matches is encoded as {"type":"custom",...} instead of going through
+	// the Extensions registry, mirroring the TS SDK's `customToolId`
+	// provider setting.
+	CustomToolID string
+
+	// StructuredOutputs controls whether JSON response formats are sent to
+	// the endpoint. Nil or true (default) sends them; explicit false treats
+	// a JSON responseFormat as unsupported (warning + omitted), mirroring
+	// the TS SDK's `structuredOutputs` provider setting.
+	StructuredOutputs *bool
+
+	// UserAgentSuffix overrides the User-Agent suffix appended to requests.
+	// Defaults to "go-ai/<Name>/<version>", mirroring the TS SDK's
+	// `userAgentSuffix` provider setting (default
+	// `ai-sdk/open-responses/${VERSION}`). A wrapper provider built on this
+	// package (e.g. QuiverAI) sets this to identify itself instead of the
+	// generic "open-responses" name.
+	UserAgentSuffix string
 }
 
 // New creates a new Open Responses provider with the given configuration
@@ -78,7 +115,11 @@ func New(cfg Config) *Provider {
 	for k, v := range cfg.Headers {
 		headers[k] = v
 	}
-	headers = version.WithUserAgentSuffix(headers, version.ProviderUserAgent("open-responses"))
+	userAgentSuffix := cfg.UserAgentSuffix
+	if userAgentSuffix == "" {
+		userAgentSuffix = version.ProviderUserAgent(cfg.Name)
+	}
+	headers = version.WithUserAgentSuffix(headers, userAgentSuffix)
 
 	// Create HTTP client
 	client := http.NewClient(http.Config{

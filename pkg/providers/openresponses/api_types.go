@@ -55,6 +55,16 @@ type FunctionTool struct {
 	Strict      *bool                  `json:"strict,omitempty"`
 }
 
+// CustomToolItem represents a caller-executed "custom" tool definition sent
+// in the request `tools` array, matched via Config.CustomToolID. Mirrors the
+// TS Open Responses `CustomTool` wire shape (type/name/description/format).
+type CustomToolItem struct {
+	Type        string                 `json:"type"`
+	Name        string                 `json:"name"`
+	Description string                 `json:"description,omitempty"`
+	Format      map[string]interface{} `json:"format,omitempty"`
+}
+
 // Message item types for input
 
 // ReasoningInputItem is a top-level reasoning item sent in the request input.
@@ -262,6 +272,12 @@ type IncompleteDetails struct {
 type ResponseError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+
+	// StatusCode is an endpoint-specific HTTP status carried inside the
+	// error payload itself (e.g. QuiverAI's `error.status_code`), distinct
+	// from the transport-level HTTP status of the response envelope. Used
+	// by Config.GetResponseErrorMetadata to classify retryability.
+	StatusCode *int `json:"status_code,omitempty"`
 }
 
 // Streaming event types
@@ -279,6 +295,7 @@ type StreamEvent struct {
 	Text           string                 `json:"text,omitempty"`
 	CallID         string                 `json:"call_id,omitempty"`
 	Arguments      string                 `json:"arguments,omitempty"`
+	Input          string                 `json:"input,omitempty"`
 	Error          *ResponseError         `json:"error,omitempty"`
 
 	// Raw preserves this event's original JSON bytes, including any fields
