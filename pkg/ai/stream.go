@@ -1309,9 +1309,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			toolsByName[stepExecutionTools[i].Name] = &stepExecutionTools[i]
 		}
 		// toolInputCallbacks invokes Tool.OnInputStart/OnInputDelta/OnInputAvailable
-		// as tool-input-start/delta/tool-call chunks arrive (TS
-		// invokeToolCallbacksFromStream). Reset for every step.
-		toolInputCallbacks := newStreamToolInputCallbacks(stepTools, currentMessages, r.cbToolsCtx)
+		// as tool-input-start/delta/tool-call chunks arrive. TS's
+		// invokeToolCallbacksFromStream is given `tools: stepExecutionTools`
+		// (not stepModelTools), so a caller-only callee's callbacks still
+		// fire even though it's hidden from the model. Reset for every step.
+		toolInputCallbacks := newStreamToolInputCallbacks(stepExecutionTools, currentMessages, r.cbToolsCtx)
 		// preRefinementCalls mirrors stepToolCalls before ExperimentalRefineToolInput
 		// runs, for the approval inputSchemaInput diff.
 		var preRefinementCalls []types.ToolCall
@@ -1768,7 +1770,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				executionBlocked:    !isToolExecutionAllowedFinishReason(r.finishReason),
 			}
 			usageForTools := r.usage.Add(stepUsage)
-			stepToolResults, _ = executeTools(stepCtx, stepToolCalls, stepTools, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, &usageForTools, toolCallbacks)
+			stepToolResults, _ = executeTools(stepCtx, stepToolCalls, stepExecutionTools, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, &usageForTools, toolCallbacks)
 			attachToolApprovalSignatures(stepToolResults, opts.ExperimentalToolApprovalSecret)
 		}
 		if stepCtx.Err() != nil && r.timeout != nil && r.timeout.HasPerStep() {
