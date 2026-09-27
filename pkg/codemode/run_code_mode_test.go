@@ -441,6 +441,37 @@ func TestRunCodeMode_ValidatesInputBeforeExecute(t *testing.T) {
 	}
 }
 
+// TestRunCodeMode_AppliesSchemaDefaultsBeforeExecute verifies the bridge
+// fills JSON Schema "default" values (SLICE SC) before validating and before
+// the host tool's Execute runs -- mirroring TS's validateToolInput, which
+// hands execute() the zod-parsed (and thus defaulted) value, not the raw
+// input (code-mode/src/tool-invocation.ts).
+func TestRunCodeMode_AppliesSchemaDefaultsBeforeExecute(t *testing.T) {
+	var gotInput map[string]interface{}
+	tools := ToolSet{"search": {
+		Name: "search",
+		Parameters: map[string]interface{}{
+			"type":     "object",
+			"required": []interface{}{"query"},
+			"properties": map[string]interface{}{
+				"query":  map[string]interface{}{"type": "string"},
+				"region": map[string]interface{}{"type": "string", "default": "us-east-1"},
+			},
+		},
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			gotInput = input
+			return map[string]interface{}{"ok": true}, nil
+		},
+	}}
+	_, err := RunCodeMode(context.Background(), RunInput{JS: "return await tools.search({ query: 'widgets' });", Tools: tools})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotInput["region"] != "us-east-1" {
+		t.Fatalf("tool saw region = %v, want us-east-1 (default should be filled)", gotInput["region"])
+	}
+}
+
 func TestRunCodeMode_DoesNotExecuteToolsThatRequireApproval(t *testing.T) {
 	var called bool
 	tools := ToolSet{"guarded": {

@@ -443,4 +443,135 @@ func TestGenerateTextLanguageModelCallCallbacks(t *testing.T) {
 	}
 }
 
+// TestParseToolCallRejectsSchemaConstraintViolations exercises pkg/schema's
+// extended JSON Schema keyword support (SLICE SC) through ParseToolCall: a
+// tool call whose input violates minLength/pattern/minimum/maxItems must
+// come back invalid with an InvalidToolInputError, the same way an args type
+// mismatch already did before those keywords were supported.
+func TestParseToolCallRejectsSchemaConstraintViolations(t *testing.T) {
+	ctx := context.Background()
+
+	tool := types.Tool{
+		Name: "createUser",
+		Parameters: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"username": map[string]interface{}{"type": "string", "minLength": 3},
+				"code":     map[string]interface{}{"type": "string", "pattern": "^[A-Z]{3}$"},
+				"age":      map[string]interface{}{"type": "integer", "minimum": 18},
+				"tags":     map[string]interface{}{"type": "array", "maxItems": 2},
+			},
+			"required": []interface{}{"username"},
+		},
+	}
+	tools := []types.Tool{tool}
+
+	tests := []struct {
+		name string
+		args string
+	}{
+		{name: "minLength violated", args: `{"username":"ab"}`},
+		{name: "pattern violated", args: `{"username":"abc","code":"abcd"}`},
+		{name: "minimum violated", args: `{"username":"abc","age":10}`},
+		{name: "maxItems violated", args: `{"username":"abc","tags":["a","b","c"]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseToolCall(ctx, ParseToolCallOptions{
+				ToolCall: types.ToolCall{ID: "1", ToolName: "createUser", RawArguments: tt.args},
+				Tools:    tools,
+			})
+			if err != nil {
+				t.Fatalf("unexpected top-level error: %v", err)
+			}
+			if !got.Invalid {
+				t.Fatalf("expected invalid tool call for %s, got valid: %+v", tt.args, got)
+			}
+			if !IsInvalidToolInputError(got.Error) {
+				t.Fatalf("expected InvalidToolInputError, got %T: %v", got.Error, got.Error)
+			}
+		})
+	}
+
+	t.Run("valid input satisfying every constraint is accepted", func(t *testing.T) {
+		got, err := ParseToolCall(ctx, ParseToolCallOptions{
+			ToolCall: types.ToolCall{ID: "1", ToolName: "createUser", RawArguments: `{"username":"abc","code":"XYZ","age":21,"tags":["a"]}`},
+			Tools:    tools,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.Invalid || got.Error != nil {
+			t.Fatalf("expected valid call, got invalid: %v", got.Error)
+		}
+	})
+}
+
+// TestParseToolCallAppliesSchemaDefaults verifies doParseToolCall fills JSON
+// Schema "default" values before validating and before the tool sees its
+// input -- mirroring TS's zod .parse(), which fills .default() values as
+// part of safeParseJSON/safeValidateTypes (see
+// generate-text/parse-tool-call.ts's doParseToolCall).
+func TestParseToolCallAppliesSchemaDefaults(t *testing.T) {
+	ctx := context.Background()
+
+	var gotArgs map[string]interface{}
+	tool := types.Tool{
+		Name: "search",
+		Parameters: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query":  map[string]interface{}{"type": "string"},
+				"region": map[string]interface{}{"type": "string", "default": "us-east-1"},
+				"limit":  map[string]interface{}{"type": "integer", "default": 10},
+			},
+			"required": []interface{}{"query"},
+		},
+		Execute: func(_ context.Context, input map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			gotArgs = input
+			return "ok", nil
+		},
+	}
+
+	got, err := ParseToolCall(ctx, ParseToolCallOptions{
+		ToolCall: types.ToolCall{ID: "1", ToolName: "search", RawArguments: `{"query":"widgets"}`},
+		Tools:    []types.Tool{tool},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Invalid || got.Error != nil {
+		t.Fatalf("expected valid call, got invalid: %v", got.Error)
+	}
+	if got.Arguments["region"] != "us-east-1" {
+		t.Fatalf("Arguments[region] = %v, want us-east-1 (default should be filled)", got.Arguments["region"])
+	}
+	if got.Arguments["limit"] != int64(10) && got.Arguments["limit"] != 10 && got.Arguments["limit"] != float64(10) {
+		t.Fatalf("Arguments[limit] = %v (%T), want 10 (default should be filled)", got.Arguments["limit"], got.Arguments["limit"])
+	}
+
+	// Execute the tool the way the agent loop does (passing the parsed
+	// call's Arguments, not the raw un-defaulted args), and confirm the
+	// defaulted arguments reach it.
+	if _, err := tool.Execute(ctx, got.Arguments, types.ToolExecutionOptions{}); err != nil {
+		t.Fatalf("execute error: %v", err)
+	}
+	if gotArgs["region"] != "us-east-1" {
+		t.Fatalf("tool saw region = %v, want us-east-1", gotArgs["region"])
+	}
+
+	t.Run("explicit value is not overridden by default", func(t *testing.T) {
+		got, err := ParseToolCall(ctx, ParseToolCallOptions{
+			ToolCall: types.ToolCall{ID: "1", ToolName: "search", RawArguments: `{"query":"widgets","region":"eu-west-1"}`},
+			Tools:    []types.Tool{tool},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.Arguments["region"] != "eu-west-1" {
+			t.Fatalf("Arguments[region] = %v, want eu-west-1 (explicit value must win)", got.Arguments["region"])
+		}
+	})
+}
+
 func ptrFloat(v float64) *float64 { return &v }
