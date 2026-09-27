@@ -73,9 +73,21 @@ func unixSecondsToTime(v *int64) *time.Time {
 // file is never buffered in memory, mirroring TypeScript's
 // postMultipartStreamToApi path for `{ type: 'stream' }` data.
 func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions) (*types.UploadFileResult, error) {
+	// Release the caller's stream on any failure path below, mirroring
+	// TypeScript's guarantee that a stream-type upload's source is always
+	// disposed of on rejection (data.stream.cancel(error) on option-parse
+	// failure; postMultipartStreamToApi's body.dispose(error) on every later
+	// failure). succeeded is set true only immediately before the final
+	// successful return.
+	succeeded := false
+	defer func() {
+		if !succeeded {
+			closeStreamOnError(opts.Data)
+		}
+	}()
+
 	filesOpts, err := parseOpenAIFilesOptions(opts.ProviderOptions)
 	if err != nil {
-		closeStreamOnError(opts.Data)
 		return nil, err
 	}
 
@@ -145,6 +157,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		resultFilename = opts.Filename
 	}
 
+	succeeded = true
 	return &types.UploadFileResult{
 		ProviderReference: types.ProviderReference{"openai": out.ID},
 		MediaType:         opts.MediaType,
