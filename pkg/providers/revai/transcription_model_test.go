@@ -235,6 +235,56 @@ func TestTranscriptionModel_ProviderOptions(t *testing.T) {
 	}
 }
 
+// TestTranscriptionModel_ProviderOptionsDefaultsAppliedWhenKeyPresent
+// mirrors the TypeScript SDK's zod `.default(...)` behavior: once
+// providerOptions.revai is present (even as `{}`), its schema defaults are
+// applied and sent on the wire, matching parseProviderOptions running zod
+// validation over the (possibly empty) options object.
+func TestTranscriptionModel_ProviderOptionsDefaultsAppliedWhenKeyPresent(t *testing.T) {
+	var seenConfig map[string]interface{}
+	p := newRevaiTestServer(t, func(path string, r *http.Request) {
+		if path != "/speechtotext/v1/jobs" {
+			return
+		}
+		if err := r.ParseMultipartForm(10 << 20); err != nil {
+			t.Fatalf("ParseMultipartForm: %v", err)
+		}
+		_ = json.Unmarshal([]byte(r.FormValue("config")), &seenConfig)
+	})
+	model, _ := p.TranscriptionModel(ModelMachine)
+
+	_, err := model.DoTranscribe(context.Background(), &provider.TranscriptionOptions{
+		Audio: revaiTestAudio, MimeType: "audio/wav",
+		ProviderOptions: map[string]interface{}{"revai": TranscriptionModelOptions{}},
+	})
+	if err != nil {
+		t.Fatalf("DoTranscribe: %v", err)
+	}
+	want := map[string]interface{}{
+		"transcriber":         "machine",
+		"rush":                false,
+		"test_mode":           false,
+		"skip_diarization":    false,
+		"skip_postprocessing": false,
+		"skip_punctuation":    false,
+		"remove_disfluencies": false,
+		"remove_atmospherics": false,
+		"filter_profanity":    false,
+		"forced_alignment":    false,
+		"diarization_type":    "standard",
+		"language":            "en",
+	}
+	for k, v := range want {
+		if seenConfig[k] != v {
+			t.Fatalf("config[%s] = %#v, want %#v (full config: %#v)", k, seenConfig[k], v, seenConfig)
+		}
+	}
+	// verbatim has no zod default and must stay absent.
+	if _, ok := seenConfig["verbatim"]; ok {
+		t.Fatalf("verbatim should be absent: %#v", seenConfig)
+	}
+}
+
 // TestTranscriptionModel_JobSubmissionFailed mirrors surfacing a failed job
 // submission.
 func TestTranscriptionModel_JobSubmissionFailed(t *testing.T) {
