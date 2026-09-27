@@ -814,6 +814,91 @@ func TestXAIResponsesIncludeExplicit(t *testing.T) {
 	}
 }
 
+// TestXAIResponsesIncludeNoInlineCitations ports TS "include with
+// no_inline_citations" (xai-responses-language-model.test.ts:912): row
+// 0a5dd0f9c3 widened XaiResponsesIncludeValue to include
+// "no_inline_citations", and Go's Include field is an unvalidated []string
+// so any value passes through unchanged.
+func TestXAIResponsesIncludeNoInlineCitations(t *testing.T) {
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&capturedBody) //nolint:errcheck
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
+			"id": "resp_test", "output": []interface{}{},
+			"usage": map[string]interface{}{"input_tokens": 5, "output_tokens": 3},
+		})
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewResponsesLanguageModel(p, "grok-3")
+
+	opts := &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hello"},
+		ProviderOptions: map[string]interface{}{
+			"xai": map[string]interface{}{
+				"include": []interface{}{"no_inline_citations"},
+			},
+		},
+	}
+	_, _ = model.DoGenerate(context.Background(), opts)
+
+	if capturedBody == nil {
+		t.Skip("server not reached")
+	}
+	include, ok := capturedBody["include"].([]interface{})
+	if !ok {
+		t.Fatalf("include = %v, want slice", capturedBody["include"])
+	}
+	if len(include) != 1 || include[0] != "no_inline_citations" {
+		t.Errorf("include = %v, want [no_inline_citations]", include)
+	}
+}
+
+// TestXAIResponsesIncludeServerSideToolOutputs ports TS "include with
+// server-side tool outputs" (xai-responses-language-model.test.ts:934): row
+// 0a5dd0f9c3 also added "web_search_call.action.sources" and
+// "code_interpreter_call.outputs" to XaiResponsesIncludeValue.
+func TestXAIResponsesIncludeServerSideToolOutputs(t *testing.T) {
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&capturedBody) //nolint:errcheck
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
+			"id": "resp_test", "output": []interface{}{},
+			"usage": map[string]interface{}{"input_tokens": 5, "output_tokens": 3},
+		})
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewResponsesLanguageModel(p, "grok-3")
+
+	opts := &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hello"},
+		ProviderOptions: map[string]interface{}{
+			"xai": map[string]interface{}{
+				"include": []interface{}{"web_search_call.action.sources", "code_interpreter_call.outputs"},
+			},
+		},
+	}
+	_, _ = model.DoGenerate(context.Background(), opts)
+
+	if capturedBody == nil {
+		t.Skip("server not reached")
+	}
+	include, ok := capturedBody["include"].([]interface{})
+	if !ok {
+		t.Fatalf("include = %v, want slice", capturedBody["include"])
+	}
+	if len(include) != 2 || include[0] != "web_search_call.action.sources" || include[1] != "code_interpreter_call.outputs" {
+		t.Errorf("include = %v, want [web_search_call.action.sources code_interpreter_call.outputs]", include)
+	}
+}
+
 // TestXAIResponsesPreviousResponseId verifies that previousResponseId is serialized
 // as previous_response_id in the request body.
 func TestXAIResponsesPreviousResponseId(t *testing.T) {
