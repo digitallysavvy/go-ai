@@ -281,6 +281,144 @@ func TestToolSearchState_RespectsActiveToolsBeforeAndAfterDiscovery(t *testing.T
 	}
 }
 
+// TestToolSearchState_DiscoversDirectlyCallableToolsWithRouting ports the
+// "discovers directly callable tools with routing %j" table from
+// prepare-tool-search.test.ts: regardless of how AI_SDK_DIRECT_TOOL_CALL is
+// combined with a local caller in the routing, a directly callable deferred
+// tool is discoverable and, once discovered, present unchanged on the next
+// Apply.
+func TestToolSearchState_DiscoversDirectlyCallableToolsWithRouting(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		routing ResolvedToolCallers
+	}{
+		{"nil", nil},
+		{"empty", ResolvedToolCallers{}},
+		{"search-direct", ResolvedToolCallers{"search": {DirectToolCall}}},
+		{"getWeather-direct", ResolvedToolCallers{"getWeather": {DirectToolCall}}},
+		{"both-direct", ResolvedToolCallers{"search": {DirectToolCall}, "getWeather": {DirectToolCall}}},
+		{"search-code-and-direct", ResolvedToolCallers{"search": {"code", DirectToolCall}, "getWeather": {DirectToolCall}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			state, err := NewToolSearchState(searchTestTools(), tc.routing)
+			if err != nil {
+				t.Fatalf("NewToolSearchState() error = %v", err)
+			}
+			first := state.Apply(searchTestTools(), nil, nil)
+			if hasTool(first, "getWeather") {
+				t.Fatalf("getWeather should not be visible before discovery")
+			}
+			result := runSearch(t, first, "weather")
+			if got, want := searchResultNames(t, result), []string{"getWeather"}; !equalStrings(got, want) {
+				t.Fatalf("search result = %v, want %v", got, want)
+			}
+			if hasTool(first, "getWeather") {
+				t.Fatalf("first should not gain getWeather in place")
+			}
+			second := state.Apply(searchTestTools(), nil, nil)
+			if !hasTool(second, "getWeather") {
+				t.Fatalf("second Apply should include discovered getWeather")
+			}
+		})
+	}
+}
+
+// TestToolSearchState_DoesNotCrossCallerBoundariesWithRouting ports the
+// "does not cross caller boundaries with routing %j" table from
+// prepare-tool-search.test.ts: the search tool's own caller list and a
+// candidate's caller list must overlap for the candidate to be
+// discoverable, even when each is independently valid.
+func TestToolSearchState_DoesNotCrossCallerBoundariesWithRouting(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		routing ResolvedToolCallers
+	}{
+		{"getWeather-empty", ResolvedToolCallers{"getWeather": {}}},
+		{"search-empty", ResolvedToolCallers{"search": {}}},
+		{"getWeather-code", ResolvedToolCallers{"getWeather": {"code"}}},
+		{"search-code", ResolvedToolCallers{"search": {"code"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			state, err := NewToolSearchState(searchTestTools(), tc.routing)
+			if err != nil {
+				t.Fatalf("NewToolSearchState() error = %v", err)
+			}
+			result := runSearch(t, state.Apply(searchTestTools(), nil, nil), "weather")
+			if names := searchResultNames(t, result); len(names) != 0 {
+				t.Fatalf("expected no matches, got %v", names)
+			}
+			if hasTool(state.Apply(searchTestTools(), nil, nil), "getWeather") {
+				t.Fatalf("getWeather must stay hidden across caller boundaries")
+			}
+		})
+	}
+}
+
+// TestToolSearchState_RequiresActiveCallerToDiscoverTools ports "requires an
+// active caller to discover tools": removing the caller itself from
+// activeTools (rather than the candidate) also blocks discovery, since the
+// search tool's own filtered caller list becomes empty.
+func TestToolSearchState_RequiresActiveCallerToDiscoverTools(t *testing.T) {
+	t.Parallel()
+	state, err := NewToolSearchState(searchTestTools(), searchTestCallers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eligible := make([]types.Tool, 0)
+	for _, tl := range searchTestTools() {
+		if tl.Name != "code" {
+			eligible = append(eligible, tl)
+		}
+	}
+	result := runSearch(t, state.Apply(eligible, nil, nil), "weather")
+	if names := searchResultNames(t, result); len(names) != 0 {
+		t.Fatalf("expected no matches when the caller itself is excluded from activeTools, got %v", names)
+	}
+}
+
+// TestToolSearchState_ResolvesDescriptionFunctionsWithContext ports
+// "resolves description functions with the current tool context": a
+// deferred tool's DescriptionFunc is resolved using the toolsContext passed
+// to Apply, not a fixed description string.
+func TestToolSearchState_ResolvesDescriptionFunctionsWithContext(t *testing.T) {
+	t.Parallel()
+	registry := []types.Tool{
+		searchTestCaller(),
+		ToolSearch("search"),
+		{
+			Name:         "getWeather",
+			DeferLoading: true,
+			Parameters:   map[string]interface{}{"type": "object"},
+			DescriptionFunc: func(ctx context.Context, opts types.ToolDescriptionOptions) string {
+				m, _ := opts.Context.(map[string]interface{})
+				capability, _ := m["capability"].(string)
+				return capability
+			},
+		},
+	}
+	state, err := NewToolSearchState(registry, searchTestCallers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolsContext := map[string]interface{}{
+		"getWeather": map[string]interface{}{"capability": "Meteorology"},
+	}
+	result := runSearch(t, state.Apply(registry, toolsContext, nil), "meteorology")
+	want := map[string]interface{}{"tools": []map[string]interface{}{
+		{"name": "getWeather", "description": "Meteorology"},
+	}}
+	if got := searchResultNames(t, result); !equalStrings(got, []string{"getWeather"}) {
+		t.Fatalf("result names = %v", got)
+	}
+	if desc := result["tools"].([]map[string]interface{})[0]["description"]; desc != "Meteorology" {
+		t.Fatalf("description = %v, want %v", result, want)
+	}
+}
+
 func TestToolSearchState_ConcurrentSearchesAccumulate(t *testing.T) {
 	t.Parallel()
 	registry := append(searchTestTools(), types.Tool{
