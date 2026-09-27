@@ -257,10 +257,19 @@ func (s *gatewayTranscriptionStream) run(cfg gatewayTranscriptionStreamConfig) {
 				if finished {
 					return
 				}
-				if hasServerError {
-					fail(gatewayTranscriptionServerError(lastServerError, cfg.authMethod))
-				} else if !wsutil.IsCleanClose(res.Err) {
+				// Priority mirrors TS's real event ordering, not just which
+				// piece of state happens to be set: an abnormal disconnect
+				// (TS onSocketError) always wins over a remembered server
+				// error part, because in TS onSocketError fires (and
+				// finishes the stream) before onClose's hasServerErrorPart
+				// branch ever runs. Only a clean close (TS onClose, which is
+				// the sole handler that fires for a graceful disconnect)
+				// falls through to the remembered server error, then to the
+				// generic "closed before a finish part" message.
+				if !wsutil.IsCleanClose(res.Err) {
 					fail(errors.New("Connection error on AI Gateway transcription stream"))
+				} else if hasServerError {
+					fail(gatewayTranscriptionServerError(lastServerError, cfg.authMethod))
 				} else {
 					fail(errors.New("AI Gateway transcription stream closed before a finish part was received"))
 				}
