@@ -125,15 +125,29 @@ func TestRunBridgeFixtureReplay(t *testing.T) {
 		})
 	}
 
+	wantLive := []string{"stream-start", "text-start", "text-delta", "text-delta"}
 	for _, raw := range liveFrames {
 		conn1.deliverRaw(raw)
 	}
-	waitFor(t, time.Second, func() bool { return ch.LastSeenEventID() == 4 })
+	// Wait for both the handler-dispatched order to catch up and the cursor
+	// to advance: dispatch() only enqueues an event before handleIncoming
+	// updates LastSeenEventID, so delivery to listeners can lag behind the
+	// cursor update when a concurrent selective-flush drain holds the
+	// delivery lock. Waiting on LastSeenEventID alone (as this test used to)
+	// let it read `order` before the last live frame's handler had run,
+	// flaking under load; waiting for the expected event count too removes
+	// that race, and the cursor check keeps the resume frame below
+	// (lastSeenEventId:4) meaningful.
+	waitFor(t, time.Second, func() bool {
+		mu.Lock()
+		n := len(order)
+		mu.Unlock()
+		return n >= len(wantLive) && ch.LastSeenEventID() == 4
+	})
 
 	mu.Lock()
 	gotLive := append([]string(nil), order...)
 	mu.Unlock()
-	wantLive := []string{"stream-start", "text-start", "text-delta", "text-delta"}
 	if !equalStrings(gotLive, wantLive) {
 		t.Fatalf("order after live.ndjson = %v, want %v", gotLive, wantLive)
 	}
@@ -149,17 +163,26 @@ func TestRunBridgeFixtureReplay(t *testing.T) {
 		t.Fatalf("resume frame = %v, want first entry %q", got, wantResume)
 	}
 
-	for _, raw := range resumeFrames {
-		conn2.deliverRaw(raw)
-	}
-	waitFor(t, time.Second, func() bool { return ch.LastSeenEventID() == 8 })
-
-	mu.Lock()
-	defer mu.Unlock()
 	wantOrder := []string{
 		"stream-start", "text-start", "text-delta", "text-delta", // live.ndjson
 		"text-delta", "text-delta", "user-message-response", "text-end", "finish", "user-message-response", "bridge-stop", // resume.ndjson
 	}
+	for _, raw := range resumeFrames {
+		conn2.deliverRaw(raw)
+	}
+	// Same reasoning as the live.ndjson wait above: wait for the handler
+	// order to reach its expected length, not just the cursor, so the
+	// assertions below never read `order` while its last handler is still
+	// dispatching.
+	waitFor(t, time.Second, func() bool {
+		mu.Lock()
+		n := len(order)
+		mu.Unlock()
+		return n >= len(wantOrder) && ch.LastSeenEventID() == 8
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
 	if !equalStrings(order, wantOrder) {
 		t.Fatalf("final order = %v, want %v", order, wantOrder)
 	}
