@@ -8,28 +8,38 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/middleware"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 )
 
 func main() {
+	apiKey := os.Getenv("ANTHROPIC_API_KEY")
+	if apiKey == "" {
+		log.Fatal("ANTHROPIC_API_KEY environment variable is required")
+	}
+
 	// Create Anthropic provider
 	anthropicProvider := anthropic.New(anthropic.Config{
-		APIKey: "your-api-key-here",
+		APIKey: apiKey,
 	})
 
 	// Get a language model
-	model := anthropicProvider.LanguageModel("claude-3-opus-20240229")
+	model, err := anthropicProvider.LanguageModel("claude-3-opus-20240229")
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// Apply extractReasoning middleware for Anthropic thinking blocks
 	wrappedModel := middleware.WrapLanguageModel(
 		model,
 		[]*middleware.LanguageModelMiddleware{
 			middleware.ExtractReasoningMiddleware(&middleware.ExtractReasoningOptions{
-				TagName:   "think", // Anthropic uses <think> tags
-				Separator: "\n",
+				TagName:            "think", // Anthropic uses <think> tags
+				Separator:          "\n",
 				StartWithReasoning: false,
 			}),
 		},
@@ -39,7 +49,7 @@ func main() {
 
 	// Example 1: Non-streaming with reasoning extraction
 	result, err := wrappedModel.DoGenerate(context.Background(), &provider.GenerateOptions{
-		Prompt: provider.Prompt{
+		Prompt: types.Prompt{
 			Text: "Solve this math problem: What is 15 * 24?",
 		},
 	})
@@ -52,7 +62,7 @@ func main() {
 
 	// Example 2: Streaming with reasoning extraction
 	stream, err := wrappedModel.DoStream(context.Background(), &provider.GenerateOptions{
-		Prompt: provider.Prompt{
+		Prompt: types.Prompt{
 			Text: "Explain how photosynthesis works",
 		},
 	})
