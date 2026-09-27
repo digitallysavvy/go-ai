@@ -533,6 +533,84 @@ func TestDoStream_SurfacesModeledException(t *testing.T) {
 	}
 }
 
+// TestDoStream_ModelStreamErrorExceptionIsRetryable is a P1-1c part 2
+// regression test: modelStreamErrorException maps to HTTP 424, which is
+// outside ProviderError.IsRetryable()'s generic 429/5xx default, but TS's
+// getAmazonBedrockStreamErrorMetadata still marks it retryable. Both the
+// final stream.Err() (*providererrors.ProviderError.Retryable override) and
+// the mid-stream ChunkTypeError chunk's Err field (a
+// *providererrors.StreamProviderError, so pkg/ai's streamRetries logic sees
+// the same verdict without waiting for the stream to end) must reflect that.
+func TestDoStream_ModelStreamErrorExceptionIsRetryable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		frame := buildBedrockEventFrame(map[string]string{
+			":message-type":   "exception",
+			":exception-type": "modelStreamErrorException",
+		}, []byte(`{"message":"model stream interrupted"}`))
+		w.WriteHeader(200)
+		_, _ = w.Write(frame)
+	}))
+	defer server.Close()
+
+	model := newHTTPTestBedrockModel(t, server, "anthropic.claude-3-5-sonnet-20241022-v2:0")
+	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if err != nil {
+		t.Fatalf("DoStream error = %v", err)
+	}
+	defer stream.Close() //nolint:errcheck
+
+	var errChunk *provider.StreamChunk
+	for i := 0; i < 10; i++ {
+		chunk, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next() error = %v", err)
+		}
+		if chunk.Type == provider.ChunkTypeError {
+			errChunk = chunk
+		}
+	}
+	if errChunk == nil {
+		t.Fatal("expected an error chunk for the modeled exception")
+	}
+
+	// The chunk's own Err field must already carry a StreamProviderError
+	// with the 424/retryable verdict (P1-1c part 2: structured stream error
+	// payload), not just Text.
+	var streamProviderErr *providererrors.StreamProviderError
+	if !errors.As(errChunk.Err, &streamProviderErr) {
+		t.Fatalf("chunk.Err = %v (%T), want a *providererrors.StreamProviderError", errChunk.Err, errChunk.Err)
+	}
+	if streamProviderErr.StatusCode == nil || *streamProviderErr.StatusCode != 424 {
+		t.Fatalf("chunk.Err.StatusCode = %v, want 424", streamProviderErr.StatusCode)
+	}
+	if !streamProviderErr.IsRetryable {
+		t.Fatal("chunk.Err.IsRetryable = false, want true for modelStreamErrorException")
+	}
+	if streamProviderErr.Type != "modelStreamErrorException" {
+		t.Fatalf("chunk.Err.Type = %q, want modelStreamErrorException", streamProviderErr.Type)
+	}
+
+	// stream.Err() after the stream ends must carry the same override on
+	// ProviderError.Retryable (this is the field IsRetryable() consults).
+	streamErr := stream.Err()
+	var providerErr *providererrors.ProviderError
+	if !errors.As(streamErr, &providerErr) {
+		t.Fatalf("Err() = %v (%T), want a *providererrors.ProviderError", streamErr, streamErr)
+	}
+	if providerErr.StatusCode != 424 {
+		t.Fatalf("StatusCode = %d, want 424 for modelStreamErrorException", providerErr.StatusCode)
+	}
+	if providerErr.Retryable == nil || !*providerErr.Retryable {
+		t.Fatal("expected modelStreamErrorException (424) to be explicitly marked Retryable")
+	}
+	if !providerErr.IsRetryable() {
+		t.Fatal("expected IsRetryable() to honor the 424 override and return true")
+	}
+}
+
 // TestDoStream_ModeledExceptionStillEmitsFinishChunk is a regression test:
 // TS's enqueueError (amazon-bedrock-chat-language-model.ts) records the error
 // and sets finishReason but relies on the ReadableStream's own flush() when
