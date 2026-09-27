@@ -236,6 +236,103 @@ func TestGetBootstrapInstallCommand(t *testing.T) {
 	}
 }
 
+// TS: "preserves caller-provided locked artifacts and freezes installation"
+// (implementation.test.ts) — an npm-locked source ships the caller's
+// package.json/pnpm-lock.yaml verbatim as bootstrap files and installs with
+// --frozen-lockfile (no --prod trimming ambiguity, exact caller artifacts).
+func TestGetBootstrapNPMLocked(t *testing.T) {
+	const packageJSON = `{
+  "name": "locked-acp-agent",
+  "private": true,
+  "dependencies": {
+    "@example/acp-agent": "1.2.3"
+  }
+}
+`
+	const pnpmLockYAML = `lockfileVersion: '9.0'
+importers:
+  .:
+    dependencies:
+      '@example/acp-agent':
+        specifier: 1.2.3
+        version: 1.2.3
+`
+	h, err := CreateACP(testSettings(func(s *Settings) {
+		s.Source = Source{Type: SourceNPMLocked, PackageJSON: packageJSON, PnpmLockYAML: pnpmLockYAML}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := h.(harness.BootstrapProvider).GetBootstrap(context.Background())
+	if err != nil {
+		t.Fatalf("GetBootstrap: %v", err)
+	}
+	contents := map[string]string{}
+	for _, f := range b.Files {
+		contents[f.Path] = f.Content
+	}
+	if got := contents[".harness-bootstrap/test-acp/implementation/package.json"]; got != packageJSON {
+		t.Fatalf("implementation/package.json = %q, want the caller-provided packageJson verbatim", got)
+	}
+	if got := contents[".harness-bootstrap/test-acp/implementation/pnpm-lock.yaml"]; got != pnpmLockYAML {
+		t.Fatalf("implementation/pnpm-lock.yaml = %q, want the caller-provided pnpmLockYaml verbatim", got)
+	}
+	if _, ok := contents[".harness-bootstrap/test-acp/implementation/install.sh"]; ok {
+		t.Fatal("npm-locked source must not produce an install.sh bootstrap file")
+	}
+	if len(b.Commands) != 2 || !strings.Contains(b.Commands[1].Command, "--frozen-lockfile") || !strings.Contains(b.Commands[1].Command, "implementation") {
+		t.Fatalf("commands = %v, want the second command to pnpm-install the implementation dir with --frozen-lockfile", b.Commands)
+	}
+}
+
+// TS `createACPBootstrap(...).getBootstrap` caches its result across calls
+// (module-scoped `cachedBootstrap`, ported as a `sync.Once`-guarded field
+// per harness instance). GetBootstrap must return the identical *Bootstrap
+// on every call, not rebuild it, so concurrent/repeated bootstrap lookups
+// for the same harness instance share one plan.
+func TestGetBootstrap_CachesAcrossCalls(t *testing.T) {
+	h, err := CreateACP(testSettings())
+	if err != nil {
+		t.Fatal(err)
+	}
+	bp := h.(harness.BootstrapProvider)
+	b1, err := bp.GetBootstrap(context.Background())
+	if err != nil {
+		t.Fatalf("GetBootstrap (1st): %v", err)
+	}
+	b2, err := bp.GetBootstrap(context.Background())
+	if err != nil {
+		t.Fatalf("GetBootstrap (2nd): %v", err)
+	}
+	if b1 != b2 {
+		t.Fatalf("GetBootstrap returned distinct results across calls: %p != %p (cache not shared)", b1, b2)
+	}
+
+	// Concurrent callers must also observe the single cached build, not race
+	// into rebuilding it independently.
+	const n = 8
+	results := make([]*harness.Bootstrap, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			b, err := bp.GetBootstrap(context.Background())
+			if err != nil {
+				t.Errorf("GetBootstrap (goroutine %d): %v", i, err)
+				return
+			}
+			results[i] = b
+		}(i)
+	}
+	wg.Wait()
+	for i, b := range results {
+		if b != b1 {
+			t.Fatalf("GetBootstrap goroutine %d returned %p, want the shared cached %p", i, b, b1)
+		}
+	}
+}
+
 func TestDoStartFullRoundTrip(t *testing.T) {
 	const token = "fixed-test-token"
 	var mu sync.Mutex
@@ -933,5 +1030,76 @@ func TestDoStartForwardsHostToolMCPTransportMCPServersAndBuiltinToolMetadata(t *
 	}
 	if bash == nil || bash["nativeName"] != "run_command" || bash["title"] != "Run a shell command" || bash["toolUseKind"] != "bash" {
 		t.Fatalf("builtinTools[bash] = %v", bash)
+	}
+}
+
+// TS 15d0475 "defer auth resolution until session start to correctly
+// recognize available credentials": CreateACP must not resolve
+// authentication at construction time. A credential that only becomes
+// available in the process environment *after* CreateACP returns — but
+// before DoStart is called — must still be picked up, because
+// resolveProviderAuthentication runs inside DoStart against a freshly read
+// process environment, not a snapshot taken at construction.
+func TestDoStart_AuthResolvedAtStartNotConstruction(t *testing.T) {
+	// No AI Gateway credential is available yet.
+	t.Setenv("AI_GATEWAY_API_KEY", "")
+	t.Setenv("VERCEL_OIDC_TOKEN", "")
+
+	h, err := CreateACP(testSettings(func(s *Settings) {
+		s.ProviderAuthentication = &ProviderAuthentication{GatewayEnv: map[string]any{"MY_GATEWAY_VAR": "x"}}
+	}))
+	if err != nil {
+		t.Fatalf("CreateACP: %v", err)
+	}
+
+	// The credential appears only now, strictly after construction.
+	t.Setenv("AI_GATEWAY_API_KEY", "gw-secret")
+
+	const token = "auth-deferral-token"
+	srv := newServer(t, token, func(*bridgetest.Turn, map[string]any) {})
+	sandbox := newFakeSandbox(srv)
+
+	h2, ok := h.(*acpHarness)
+	if !ok {
+		t.Fatalf("harness type = %T", h)
+	}
+	h2.settings.MintBridgeToken = func(string) string { return token }
+
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{
+		SessionID: "auth-deferral-session", SessionWorkDir: "/vercel/sandbox/test-acp-auth-deferral", SandboxSession: sandbox,
+	})
+	if err != nil {
+		t.Fatalf("DoStart: %v (auth was not resolved lazily against the updated environment)", err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+
+	// The resolved provider authentication travels to the bridge as a JSON
+	// blob in the AI_SDK_ACP_BRIDGE_CONFIGURATION spawn env var, not on the
+	// "start" frame itself; the spawned-process env is where the deferred
+	// (post-construction) credential must show up.
+	sandbox.mu.Lock()
+	var spawnEnv map[string]string
+	if len(sandbox.spawnEnvs) > 0 {
+		spawnEnv = sandbox.spawnEnvs[len(sandbox.spawnEnvs)-1]
+	}
+	sandbox.mu.Unlock()
+	raw, ok := spawnEnv[BridgeConfigurationEnv]
+	if !ok {
+		t.Fatalf("spawn env missing %s; spawnEnv = %v", BridgeConfigurationEnv, spawnEnv)
+	}
+	var cfg struct {
+		ProviderAuthentication struct {
+			Type string         `json:"type"`
+			Env  map[string]any `json:"env"`
+		} `json:"providerAuthentication"`
+	}
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatalf("unmarshal %s: %v (%s)", BridgeConfigurationEnv, err, raw)
+	}
+	if cfg.ProviderAuthentication.Type != "ai-gateway" {
+		t.Fatalf("providerAuthentication.type = %q, want ai-gateway (auth must have been resolved lazily against the post-construction credential): %s", cfg.ProviderAuthentication.Type, raw)
+	}
+	if cfg.ProviderAuthentication.Env["MY_GATEWAY_VAR"] != "x" {
+		t.Fatalf("providerAuthentication.env = %v", cfg.ProviderAuthentication.Env)
 	}
 }
