@@ -488,6 +488,7 @@ func (m *VideoModel) encodeVideoFile(file *provider.VideoModelV3File) (interface
 		if file.MediaType != "" {
 			result["mediaType"] = file.MediaType
 		}
+		addVideoFileProviderOptions(result, file.ProviderOptions)
 		return result, nil
 	}
 
@@ -500,10 +501,21 @@ func (m *VideoModel) encodeVideoFile(file *provider.VideoModelV3File) (interface
 		if file.MediaType != "" {
 			result["mediaType"] = file.MediaType
 		}
+		addVideoFileProviderOptions(result, file.ProviderOptions)
 		return result, nil
 	}
 
 	return nil, fmt.Errorf("invalid video file: must have either URL or binary data")
+}
+
+// addVideoFileProviderOptions copies file.ProviderOptions into the encoded
+// wire body, mirroring TS maybeEncodeVideoFile's `{...file, data: ...}`
+// spread, which preserves providerOptions (and any other keys) on the
+// original file object instead of dropping them.
+func addVideoFileProviderOptions(result map[string]interface{}, providerOptions map[string]interface{}) {
+	if providerOptions != nil {
+		result["providerOptions"] = providerOptions
+	}
 }
 
 // getModelConfigHeaders returns headers specific to the gateway model configuration

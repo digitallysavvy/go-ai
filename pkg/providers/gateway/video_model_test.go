@@ -497,6 +497,49 @@ func TestVideoModel_EncodeVideoFile(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			// TS gateway-video-model.ts maybeEncodeVideoFile spreads the
+			// whole file object ({...file, data: base64(...)}), so
+			// providerOptions (and any other keys) survive encoding.
+			name: "URL file preserves providerOptions",
+			file: &provider.VideoModelV3File{
+				Type:            "url",
+				URL:             "https://example.com/image.jpg",
+				ProviderOptions: map[string]interface{}{"fal": map[string]interface{}{"enhanceImage": true}},
+			},
+			wantErr: false,
+			assert: func(t *testing.T, result interface{}) {
+				got := result.(map[string]interface{})
+				po, ok := got["providerOptions"].(map[string]interface{})
+				if !ok {
+					t.Fatalf("providerOptions missing from encoded url file = %#v", got)
+				}
+				fal, ok := po["fal"].(map[string]interface{})
+				if !ok || fal["enhanceImage"] != true {
+					t.Fatalf("providerOptions.fal = %#v", po["fal"])
+				}
+			},
+		},
+		{
+			name: "binary file preserves providerOptions",
+			file: &provider.VideoModelV3File{
+				Type:            "file",
+				Data:            []byte("test data"),
+				ProviderOptions: map[string]interface{}{"fal": map[string]interface{}{"enhanceImage": true}},
+			},
+			wantErr: false,
+			assert: func(t *testing.T, result interface{}) {
+				got := result.(map[string]interface{})
+				po, ok := got["providerOptions"].(map[string]interface{})
+				if !ok {
+					t.Fatalf("providerOptions missing from encoded binary file = %#v", got)
+				}
+				fal, ok := po["fal"].(map[string]interface{})
+				if !ok || fal["enhanceImage"] != true {
+					t.Fatalf("providerOptions.fal = %#v", po["fal"])
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {

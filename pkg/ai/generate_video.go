@@ -381,14 +381,44 @@ func executeStartStatusFlow(ctx context.Context, opts startStatusFlowOptions) (*
 			}
 		} else {
 			remaining := timeoutMs - int(time.Since(startTime).Milliseconds())
+			if remaining < 0 {
+				remaining = 0
+			}
 			statusCtx, cancel := context.WithTimeout(ctx, time.Duration(remaining)*time.Millisecond)
-			statusResult, err = doStatusVideoWithRetry(statusCtx, opts.checker, statusOpts, opts.maxRetries)
-			cancel()
-			if err != nil {
+
+			// Race the status call against the timeout instead of just
+			// passing statusCtx through: a provider whose DoStatus ignores
+			// context cancellation would otherwise keep this call blocked
+			// past the deadline, since context.WithTimeout only cancels
+			// statusCtx, it does not forcibly interrupt an in-flight call.
+			// TS enforces the same SDK-level deadline unconditionally via
+			// Promise.race(statusRetry(...), statusTimeoutPromise).
+			type statusOutcome struct {
+				result *provider.VideoModelV3OperationStatusResult
+				err    error
+			}
+			outcomeCh := make(chan statusOutcome, 1)
+			go func() {
+				r, e := doStatusVideoWithRetry(statusCtx, opts.checker, statusOpts, opts.maxRetries)
+				outcomeCh <- statusOutcome{result: r, err: e}
+			}()
+
+			select {
+			case outcome := <-outcomeCh:
+				cancel()
+				if outcome.err != nil {
+					if statusCtx.Err() == context.DeadlineExceeded {
+						return nil, timeoutErr
+					}
+					return nil, outcome.err
+				}
+				statusResult = outcome.result
+			case <-statusCtx.Done():
+				cancel()
 				if statusCtx.Err() == context.DeadlineExceeded {
 					return nil, timeoutErr
 				}
-				return nil, err
+				return nil, statusCtx.Err()
 			}
 		}
 
@@ -543,8 +573,9 @@ func convertPromptImage(img *VideoPromptImage) (*provider.VideoModelV3File, erro
 
 	if img.URL != "" {
 		return &provider.VideoModelV3File{
-			Type: "url",
-			URL:  img.URL,
+			Type:      "url",
+			URL:       img.URL,
+			MediaType: img.MediaType,
 		}, nil
 	}
 

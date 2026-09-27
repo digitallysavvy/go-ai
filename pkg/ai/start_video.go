@@ -104,7 +104,7 @@ func ExperimentalStartVideo(ctx context.Context, opts StartVideoOptions) (*Start
 	starter, ok := opts.Model.(provider.VideoModelStarter)
 	if !ok {
 		return nil, fmt.Errorf(
-			"video model %s does not implement doStart. Use GenerateVideo for models without an asynchronous start/status flow.",
+			"Video model %s does not implement doStart. Use GenerateVideo for models without an asynchronous start/status flow.",
 			opts.Model.ModelID(),
 		)
 	}
@@ -114,7 +114,7 @@ func ExperimentalStartVideo(ctx context.Context, opts StartVideoOptions) (*Start
 		n = 1
 	}
 	if n < 1 {
-		return nil, fmt.Errorf("invalid n: expected a positive integer, received %d", n)
+		return nil, fmt.Errorf("Invalid n: expected a positive integer, received %d.", n)
 	}
 
 	knownMax := opts.MaxVideosPerCall
@@ -123,7 +123,7 @@ func ExperimentalStartVideo(ctx context.Context, opts StartVideoOptions) (*Start
 	}
 	if knownMax != nil && n > *knownMax {
 		return nil, fmt.Errorf(
-			"video model %s supports at most %d video(s) per call, but %d were requested. Split the batch across multiple StartVideo calls.",
+			"Video model %s supports at most %d video(s) per call, but %d were requested. Split the batch across multiple StartVideo calls.",
 			opts.Model.ModelID(), *knownMax, n,
 		)
 	}

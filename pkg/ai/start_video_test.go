@@ -134,8 +134,8 @@ func TestExperimentalGetVideoStatus_Completed(t *testing.T) {
 	model := &mockAsyncVideoModel{
 		statusFn: func(ctx context.Context, opts *provider.VideoModelV3StatusOptions) (*provider.VideoModelV3OperationStatusResult, error) {
 			return &provider.VideoModelV3OperationStatusResult{
-				Status: provider.VideoOperationStatusCompleted,
-				Videos: []provider.VideoModelV3VideoData{{Type: "url", URL: "https://cdn.example.com/v.mp4", MediaType: "video/mp4"}},
+				Status:   provider.VideoOperationStatusCompleted,
+				Videos:   []provider.VideoModelV3VideoData{{Type: "url", URL: "https://cdn.example.com/v.mp4", MediaType: "video/mp4"}},
 				Response: defaultVideoResponseInfo(),
 			}, nil
 		},
@@ -184,8 +184,8 @@ func TestGenerateVideo_PollFlow_CompletesAfterPending(t *testing.T) {
 				return &provider.VideoModelV3OperationStatusResult{Status: provider.VideoOperationStatusPending, Response: defaultVideoResponseInfo()}, nil
 			}
 			return &provider.VideoModelV3OperationStatusResult{
-				Status: provider.VideoOperationStatusCompleted,
-				Videos: []provider.VideoModelV3VideoData{{Type: "binary", Binary: []byte{0, 0, 0, 0}, MediaType: "video/mp4"}},
+				Status:   provider.VideoOperationStatusCompleted,
+				Videos:   []provider.VideoModelV3VideoData{{Type: "binary", Binary: []byte{0, 0, 0, 0}, MediaType: "video/mp4"}},
 				Response: defaultVideoResponseInfo(),
 			}, nil
 		},
@@ -227,6 +227,46 @@ func TestGenerateVideo_PollFlow_TimesOut(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected polling timeout error")
+	}
+}
+
+// TestGenerateVideo_PollFlow_TimesOutEvenWhenDoStatusIgnoresContext is a
+// regression test mirroring TS generate-video.test.ts "should reject a
+// completed status result returned after the polling timeout": the SDK must
+// enforce the poll timeout itself and return the timeout error promptly, even
+// when a provider's DoStatus ignores ctx cancellation and eventually resolves
+// with a valid "completed" result after the deadline has passed.
+func TestGenerateVideo_PollFlow_TimesOutEvenWhenDoStatusIgnoresContext(t *testing.T) {
+	model := &mockAsyncVideoModel{
+		startFn: func(ctx context.Context, opts *provider.VideoModelV3StartOptions) (*provider.VideoModelV3OperationStartResult, error) {
+			return &provider.VideoModelV3OperationStartResult{Operation: json.RawMessage(`{}`), Response: defaultVideoResponseInfo()}, nil
+		},
+		statusFn: func(ctx context.Context, opts *provider.VideoModelV3StatusOptions) (*provider.VideoModelV3OperationStatusResult, error) {
+			// Ignores ctx entirely and sleeps well past the configured
+			// timeout before returning a valid completed result.
+			time.Sleep(300 * time.Millisecond)
+			return &provider.VideoModelV3OperationStatusResult{
+				Status:   provider.VideoOperationStatusCompleted,
+				Videos:   []provider.VideoModelV3VideoData{{Type: "binary", Binary: []byte{0, 0, 0, 0}, MediaType: "video/mp4"}},
+				Response: defaultVideoResponseInfo(),
+			}, nil
+		},
+	}
+
+	zero := 0
+	timeout := 50
+	start := time.Now()
+	_, err := GenerateVideo(context.Background(), GenerateVideoOptions{
+		Model:  model,
+		Prompt: VideoPrompt{Text: "x"},
+		Poll:   &VideoPollOptions{IntervalMs: &zero, TimeoutMs: &timeout},
+	})
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected a polling timeout error even though DoStatus eventually returned a completed result")
+	}
+	if elapsed >= 250*time.Millisecond {
+		t.Fatalf("GenerateVideo took %v to return the timeout error; want it to return promptly instead of waiting for the uncooperative DoStatus call", elapsed)
 	}
 }
 
