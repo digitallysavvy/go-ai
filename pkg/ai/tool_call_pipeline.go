@@ -257,6 +257,11 @@ func doParseToolCall(call types.ToolCall, tools []types.Tool) (types.ToolCall, e
 		return types.ToolCall{}, &InvalidToolInputError{ToolName: call.ToolName, ToolInput: toolCallInputText(call), Cause: err}
 	}
 	if validator := toolCallInputValidator(tool); validator != nil {
+		// TS's safeParseJSON({text, schema}) validates through zod, whose
+		// .parse() fills any .default() values before the caller (and, in
+		// turn, tool.execute) ever sees the input. schema.Validate alone
+		// doesn't fill defaults, so apply them first -- matching Object.
+		args = applyToolCallInputDefaults(args, validator)
 		if err := validator.Validate(args); err != nil {
 			return types.ToolCall{}, &InvalidToolInputError{ToolName: call.ToolName, ToolInput: toolCallInputText(call), Cause: err}
 		}
@@ -347,6 +352,20 @@ func toolCallInputValidator(tool *types.Tool) schema.Validator {
 		}
 	}
 	return nil
+}
+
+// applyToolCallInputDefaults fills any JSON-Schema "default" values missing
+// from args, mirroring zod's .default() handling during TS's
+// safeParseJSON/safeValidateTypes (see parse-tool-call.ts's doParseToolCall).
+// It never mutates args; on the rare failure to represent the defaulted
+// result as an object (e.g. a non-object root schema), it returns args
+// unchanged rather than losing data.
+func applyToolCallInputDefaults(args map[string]interface{}, validator schema.Validator) map[string]interface{} {
+	defaulted := schema.ApplyDefaults(args, schema.NewSimpleJSONSchema(validator.JSONSchema()))
+	if obj, ok := defaulted.(map[string]interface{}); ok {
+		return obj
+	}
+	return args
 }
 
 func toolInputJSONSchema(tool *types.Tool) map[string]interface{} {

@@ -163,6 +163,12 @@ func (b *toolBridge) invoke(toolName, inputJSON string) (outputJSON string, err 
 	}
 
 	if validator := toolInputValidator(tool); validator != nil {
+		// TS's validateToolInput uses asSchema(...).validate, which for a
+		// zod schema fills .default() values as part of validation and
+		// passes validation.value (not the raw input) on to execute. Apply
+		// defaults before validating for the same effect (schema.Validate
+		// alone does not fill defaults).
+		input = applyToolInputDefaults(input, validator)
 		if verr := validator.Validate(input); verr != nil {
 			return "", NewToolError(
 				fmt.Sprintf("Invalid input for tool %q: %s", toolName, verr.Error()),
@@ -335,6 +341,18 @@ func resolveNeedsApproval(ctx context.Context, tool types.Tool, input map[string
 	default:
 		return false, nil
 	}
+}
+
+// applyToolInputDefaults fills any JSON-Schema "default" values missing from
+// input. Mirrors pkg/ai/tool_call_pipeline.go's applyToolCallInputDefaults;
+// never mutates input, and returns it unchanged if the defaulted result
+// can't be represented as an object.
+func applyToolInputDefaults(input map[string]interface{}, validator schema.Validator) map[string]interface{} {
+	defaulted := schema.ApplyDefaults(input, schema.NewSimpleJSONSchema(validator.JSONSchema()))
+	if obj, ok := defaulted.(map[string]interface{}); ok {
+		return obj
+	}
+	return input
 }
 
 // toolInputValidator returns a JSON-schema validator for the tool's input,

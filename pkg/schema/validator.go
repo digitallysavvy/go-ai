@@ -35,7 +35,8 @@ func ApplyDefaults(value interface{}, schema Schema) interface{} {
 	if schema == nil {
 		return value
 	}
-	return applyJSONSchemaDefaults(value, schema.Validator().JSONSchema())
+	root := schema.Validator().JSONSchema()
+	return applyDefaultsWithRoot(value, root, root)
 }
 
 // JSONSchemaValidator validates using JSON Schema
@@ -96,34 +97,72 @@ func (v *StructValidator) JSONSchema() map[string]interface{} {
 	}
 }
 
+// validateJSONSchemaValue is the package's entry point for JSON Schema
+// validation. The schema passed here also serves as the "document root" for
+// resolving local "#/$defs/..." / "#/definitions/..." $ref pointers found
+// anywhere in the schema, including inside properties/items/allOf/anyOf/etc
+// (pkg/ai hoists $defs to the document root for exactly this reason -- see
+// output.go's ResponseFormat and object.go's hoistSchemaDefs).
 func validateJSONSchemaValue(value interface{}, schema map[string]interface{}, path string) error {
-	if schema == nil {
+	return validateSchemaValue(value, schema, path, schema)
+}
+
+// validateSchemaValue is the recursive validator. root is the top-level
+// schema document (constant across a single Validate call) used to resolve
+// $ref; sch is the (sub)schema being applied at path.
+func validateSchemaValue(value interface{}, sch map[string]interface{}, path string, root map[string]interface{}) error {
+	if sch == nil {
 		return nil
 	}
-	if enumVals, ok := interfaceSlice(schema["enum"]); ok {
+
+	// $ref: resolve (following chained local refs) and validate against the
+	// resolved schema. Keywords alongside $ref in sch are still evaluated
+	// below (draft 2020-12 semantics); draft-07 schemas rarely mix $ref with
+	// siblings, so this is a superset-compatible behavior.
+	if refVal, ok := sch["$ref"].(string); ok && refVal != "" {
+		resolved, err := resolveRefChain(root, refVal)
+		if err != nil {
+			return fmt.Errorf("%s: $ref: %s", path, err.Error())
+		}
+		if resolved != nil {
+			if err := validateSchemaValue(value, resolved, path, root); err != nil {
+				return err
+			}
+		}
+	}
+
+	if constVal, hasConst := sch["const"]; hasConst {
+		if !jsonValuesEqual(value, constVal) {
+			return fmt.Errorf("%s: const: value %v does not equal %v", path, value, constVal)
+		}
+	}
+
+	if enumVals, ok := interfaceSlice(sch["enum"]); ok {
 		matched := false
 		for _, enumVal := range enumVals {
-			if reflect.DeepEqual(value, enumVal) {
+			if jsonValuesEqual(value, enumVal) {
 				matched = true
 				break
 			}
 		}
 		if !matched {
-			return fmt.Errorf("%s: value %v is not one of %v", path, value, enumVals)
+			return fmt.Errorf("%s: enum: value %v is not one of %v", path, value, enumVals)
 		}
 	}
-	if required, ok := stringSlice(schema["required"]); ok {
+
+	if required, ok := stringSlice(sch["required"]); ok {
 		obj, ok := asMap(value)
 		if !ok {
-			return fmt.Errorf("%s: expected object for required properties", path)
+			return fmt.Errorf("%s: required: expected object for required properties", path)
 		}
 		for _, key := range required {
 			if _, exists := obj[key]; !exists {
-				return fmt.Errorf("%s.%s: required property is missing", path, key)
+				return fmt.Errorf("%s.%s: required: property is missing", path, key)
 			}
 		}
 	}
-	if types, ok := schemaTypes(schema["type"]); ok {
+
+	if types, ok := schemaTypes(sch["type"]); ok {
 		var lastErr error
 		for _, typ := range types {
 			if err := validateJSONType(value, typ, path); err == nil {
@@ -137,10 +176,11 @@ func validateJSONSchemaValue(value interface{}, schema map[string]interface{}, p
 			return lastErr
 		}
 	}
-	if props, ok := schema["properties"].(map[string]interface{}); ok {
+
+	if props, ok := sch["properties"].(map[string]interface{}); ok {
 		obj, ok := asMap(value)
 		if !ok {
-			return fmt.Errorf("%s: expected object", path)
+			return fmt.Errorf("%s: properties: expected object", path)
 		}
 		for key, rawPropSchema := range props {
 			propValue, exists := obj[key]
@@ -151,51 +191,111 @@ func validateJSONSchemaValue(value interface{}, schema map[string]interface{}, p
 			if !ok {
 				continue
 			}
-			if err := validateJSONSchemaValue(propValue, propSchema, path+"."+key); err != nil {
+			if err := validateSchemaValue(propValue, propSchema, path+"."+key, root); err != nil {
 				return err
 			}
 		}
 	}
-	if additional, ok := schema["additionalProperties"].(bool); ok && !additional {
-		if obj, ok := asMap(value); ok {
-			props, _ := schema["properties"].(map[string]interface{})
-			for key := range obj {
-				if _, declared := props[key]; !declared {
-					return fmt.Errorf("%s.%s: additional property is not allowed", path, key)
-				}
-			}
+
+	if obj, ok := asMap(value); ok {
+		if err := validateObjectConstraints(obj, sch, path, root); err != nil {
+			return err
 		}
 	}
-	if allOf, ok := interfaceSlice(schema["allOf"]); ok {
+
+	if s, ok := value.(string); ok {
+		if err := validateStringConstraints(s, sch, path); err != nil {
+			return err
+		}
+	}
+
+	if isNumber(value) {
+		if err := validateNumberConstraints(value, sch, path); err != nil {
+			return err
+		}
+	}
+
+	if rv := reflect.ValueOf(value); rv.IsValid() && (rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array) {
+		if err := validateArrayConstraints(value, sch, path, root); err != nil {
+			return err
+		}
+	}
+
+	if allOf, ok := interfaceSlice(sch["allOf"]); ok {
 		for i, rawSubschema := range allOf {
 			subschema, ok := rawSubschema.(map[string]interface{})
 			if !ok {
 				continue
 			}
-			if err := validateJSONSchemaValue(value, subschema, fmt.Sprintf("%s.allOf[%d]", path, i)); err != nil {
+			if err := validateSchemaValue(value, subschema, fmt.Sprintf("%s.allOf[%d]", path, i), root); err != nil {
 				return err
 			}
 		}
 	}
-	if items, ok := schema["items"].(map[string]interface{}); ok {
-		rv := reflect.ValueOf(value)
-		if rv.IsValid() && (rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array) {
-			for i := 0; i < rv.Len(); i++ {
-				if err := validateJSONSchemaValue(rv.Index(i).Interface(), items, fmt.Sprintf("%s[%d]", path, i)); err != nil {
-					return err
-				}
+
+	if anyOf, ok := interfaceSlice(sch["anyOf"]); ok && len(anyOf) > 0 {
+		matched := false
+		var lastErr error
+		for i, rawSubschema := range anyOf {
+			subschema, ok := rawSubschema.(map[string]interface{})
+			if !ok {
+				continue
 			}
+			if err := validateSchemaValue(value, subschema, fmt.Sprintf("%s.anyOf[%d]", path, i), root); err != nil {
+				lastErr = err
+				continue
+			}
+			matched = true
+			break
+		}
+		if !matched {
+			if lastErr != nil {
+				return fmt.Errorf("%s: anyOf: value does not match any subschema (last error: %s)", path, lastErr.Error())
+			}
+			return fmt.Errorf("%s: anyOf: value does not match any subschema", path)
 		}
 	}
+
+	if oneOf, ok := interfaceSlice(sch["oneOf"]); ok && len(oneOf) > 0 {
+		matches := 0
+		for i, rawSubschema := range oneOf {
+			subschema, ok := rawSubschema.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if err := validateSchemaValue(value, subschema, fmt.Sprintf("%s.oneOf[%d]", path, i), root); err == nil {
+				matches++
+			}
+		}
+		if matches != 1 {
+			return fmt.Errorf("%s: oneOf: value must match exactly one subschema, matched %d", path, matches)
+		}
+	}
+
+	if notSchema, ok := sch["not"].(map[string]interface{}); ok {
+		if err := validateSchemaValue(value, notSchema, path, root); err == nil {
+			return fmt.Errorf("%s: not: value must not match the schema", path)
+		}
+	}
+
 	return nil
 }
 
-func applyJSONSchemaDefaults(value interface{}, schema map[string]interface{}) interface{} {
-	if schema == nil {
+// applyDefaultsWithRoot mirrors zod's .default()-filling during parse. root
+// is the top-level schema document (constant across a single ApplyDefaults
+// call), used to resolve $ref/$defs the same way validateSchemaValue does.
+func applyDefaultsWithRoot(value interface{}, sch map[string]interface{}, root map[string]interface{}) interface{} {
+	if sch == nil {
 		return value
 	}
 
-	if props, ok := schema["properties"].(map[string]interface{}); ok {
+	if refVal, ok := sch["$ref"].(string); ok && refVal != "" {
+		if resolved, err := resolveRefChain(root, refVal); err == nil && resolved != nil {
+			return applyDefaultsWithRoot(value, resolved, root)
+		}
+	}
+
+	if props, ok := sch["properties"].(map[string]interface{}); ok {
 		obj, ok := asMap(value)
 		if !ok {
 			return value
@@ -210,22 +310,46 @@ func applyJSONSchemaDefaults(value interface{}, schema map[string]interface{}) i
 				continue
 			}
 			if existing, exists := out[key]; exists {
-				out[key] = applyJSONSchemaDefaults(existing, propSchema)
+				out[key] = applyDefaultsWithRoot(existing, propSchema, root)
 				continue
 			}
-			if def, ok := propSchema["default"]; ok {
+			if def, ok := schemaDefault(propSchema, root); ok {
 				out[key] = cloneJSONValue(def)
 			}
 		}
 		return out
 	}
 
-	if items, ok := schema["items"].(map[string]interface{}); ok {
+	if prefixItems, ok := interfaceSlice(sch["prefixItems"]); ok && len(prefixItems) > 0 {
+		rv := reflect.ValueOf(value)
+		if rv.IsValid() && (rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array) {
+			restSchema, _ := sch["items"].(map[string]interface{})
+			out := make([]interface{}, rv.Len())
+			for i := 0; i < rv.Len(); i++ {
+				elem := rv.Index(i).Interface()
+				switch {
+				case i < len(prefixItems):
+					if sub, ok := prefixItems[i].(map[string]interface{}); ok {
+						out[i] = applyDefaultsWithRoot(elem, sub, root)
+					} else {
+						out[i] = elem
+					}
+				case restSchema != nil:
+					out[i] = applyDefaultsWithRoot(elem, restSchema, root)
+				default:
+					out[i] = elem
+				}
+			}
+			return out
+		}
+	}
+
+	if items, ok := sch["items"].(map[string]interface{}); ok {
 		rv := reflect.ValueOf(value)
 		if rv.IsValid() && (rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array) {
 			out := make([]interface{}, rv.Len())
 			for i := 0; i < rv.Len(); i++ {
-				out[i] = applyJSONSchemaDefaults(rv.Index(i).Interface(), items)
+				out[i] = applyDefaultsWithRoot(rv.Index(i).Interface(), items, root)
 			}
 			return out
 		}
@@ -424,6 +548,65 @@ func isInteger(value interface{}) bool {
 	default:
 		return false
 	}
+}
+
+// toFloat64 converts any JSON-decodable numeric Go type to float64. JSON
+// numbers decode to float64 via encoding/json, but callers may also pass Go
+// int/uint literals (schema maps built in Go code), so both families are
+// accepted.
+func toFloat64(value interface{}) (float64, bool) {
+	switch v := value.(type) {
+	case float64:
+		return v, true
+	case float32:
+		return float64(v), true
+	case int:
+		return float64(v), true
+	case int8:
+		return float64(v), true
+	case int16:
+		return float64(v), true
+	case int32:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case uint:
+		return float64(v), true
+	case uint8:
+		return float64(v), true
+	case uint16:
+		return float64(v), true
+	case uint32:
+		return float64(v), true
+	case uint64:
+		return float64(v), true
+	default:
+		return 0, false
+	}
+}
+
+// toInt converts a numeric schema keyword value (e.g. "minLength": 3) to an
+// int, truncating any fractional component.
+func toInt(value interface{}) (int, bool) {
+	f, ok := toFloat64(value)
+	if !ok {
+		return 0, false
+	}
+	return int(f), true
+}
+
+// jsonValuesEqual compares two decoded JSON values for equality, treating
+// numeric values by numeric equality regardless of their concrete Go type
+// (matching JS/JSON's single "number" type, which const/enum comparisons
+// rely on -- e.g. a schema literal built as `int(1)` must equal a decoded
+// `float64(1)` tool-call argument).
+func jsonValuesEqual(a, b interface{}) bool {
+	if af, aok := toFloat64(a); aok {
+		if bf, bok := toFloat64(b); bok {
+			return af == bf
+		}
+	}
+	return reflect.DeepEqual(a, b)
 }
 
 // SimpleJSONSchema is a simple implementation of Schema
