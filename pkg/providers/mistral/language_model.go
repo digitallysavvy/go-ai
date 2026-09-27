@@ -509,7 +509,7 @@ type mistralStream struct {
 	reader                  io.ReadCloser
 	parser                  *streaming.SSEParser
 	err                     error
-	toolCallAccum           map[int]*mistralStreamAccumToolCall
+	toolCallTracker         *streaming.StreamingToolCallTracker
 	flushQueue              []*provider.StreamChunk
 	isActiveReasoning       bool
 	includeRawChunks        bool
@@ -517,18 +517,12 @@ type mistralStream struct {
 	responseMetadataEmitted bool
 }
 
-type mistralStreamAccumToolCall struct {
-	id        string
-	name      string
-	arguments string
-}
-
 func newMistralStream(reader io.ReadCloser, includeRawChunks ...bool) *mistralStream {
 	emitRaw := len(includeRawChunks) > 0 && includeRawChunks[0]
 	return &mistralStream{
 		reader:           reader,
 		parser:           streaming.NewSSEParser(reader),
-		toolCallAccum:    make(map[int]*mistralStreamAccumToolCall),
+		toolCallTracker:  streaming.NewStreamingToolCallTracker(),
 		includeRawChunks: emitRaw,
 	}
 }
@@ -715,21 +709,18 @@ func (s *mistralStream) Next() (*provider.StreamChunk, error) {
 		}
 	}
 
-	// Tool call deltas — accumulate, never emit mid-stream.
+	// Tool call deltas — tracked via the shared StreamingToolCallTracker
+	// (TS mistral-chat-language-model.ts uses the same tracker), which emits
+	// tool-input-start/delta chunks as arguments arrive and only finalizes
+	// into a tool-call chunk on Flush (never mid-stream, matching Mistral's
+	// finish-time-only semantics).
 	if len(choice.Delta.ToolCalls) > 0 {
 		for _, tc := range choice.Delta.ToolCalls {
-			accum, ok := s.toolCallAccum[tc.Index]
-			if !ok {
-				accum = &mistralStreamAccumToolCall{}
-				s.toolCallAccum[tc.Index] = accum
+			idx := tc.Index
+			for _, chunk := range s.toolCallTracker.Track(&idx, tc.ID, tc.Function.Name, tc.Function.Arguments) {
+				c := chunk
+				s.flushQueue = append(s.flushQueue, &c)
 			}
-			if tc.ID != "" {
-				accum.id = tc.ID
-			}
-			if tc.Function.Name != "" {
-				accum.name = tc.Function.Name
-			}
-			accum.arguments += tc.Function.Arguments
 		}
 	}
 
@@ -749,23 +740,9 @@ func (s *mistralStream) flushMistralToolCalls(finishReason string) {
 			{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
 		}, s.flushQueue...)
 	}
-	for i := 0; i < len(s.toolCallAccum); i++ {
-		accum, ok := s.toolCallAccum[i]
-		if !ok {
-			continue
-		}
-		var args map[string]interface{}
-		if accum.arguments != "" {
-			json.Unmarshal([]byte(accum.arguments), &args) //nolint:errcheck
-		}
-		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-			Type: provider.ChunkTypeToolCall,
-			ToolCall: &types.ToolCall{
-				ID:        accum.id,
-				ToolName:  accum.name,
-				Arguments: args,
-			},
-		})
+	for _, chunk := range s.toolCallTracker.Flush() {
+		c := chunk
+		s.flushQueue = append(s.flushQueue, &c)
 	}
 	s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 		Type:         provider.ChunkTypeFinish,
