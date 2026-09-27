@@ -14,16 +14,6 @@ func MapOpenAIFinishReason(reason string) types.FinishReason {
 		return types.FinishReasonToolCalls
 	case "content_filter":
 		return types.FinishReasonContentFilter
-	// Z.AI-specific finish reasons (mirrors TS mapZaiFinishReason in
-	// zai-chat-language-model.ts). These raw strings are not emitted by any
-	// other OpenAI-compatible provider in this SDK, so adding them here is
-	// safe for all other callers of this shared mapper.
-	case "sensitive":
-		return types.FinishReasonContentFilter
-	case "model_context_window_exceeded":
-		return types.FinishReasonLength
-	case "network_error":
-		return types.FinishReasonError
 	default:
 		return types.FinishReasonOther
 	}

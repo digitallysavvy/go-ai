@@ -251,7 +251,7 @@ func (m *LanguageModel) convertResponse(response zaiResponse) *types.GenerateRes
 	choice := response.Choices[0]
 	result := &types.GenerateResult{
 		Text:         choice.Message.Content,
-		FinishReason: providerutils.MapOpenAIFinishReason(choice.FinishReason),
+		FinishReason: mapZaiFinishReason(choice.FinishReason),
 		Usage:        convertZaiUsage(response.Usage),
 		RawResponse:  response,
 	}
@@ -292,6 +292,25 @@ func (m *LanguageModel) handleError(err error) error {
 		statusCode = statusErr.StatusCode
 	}
 	return providererrors.NewProviderError("zai", statusCode, "", err.Error(), err)
+}
+
+// mapZaiFinishReason remaps Z.AI-specific raw finish_reason strings that the
+// shared providerutils.MapOpenAIFinishReason does not know about, falling
+// back to it for everything else. Ported from TS mapZaiFinishReason in
+// zai-chat-language-model.ts, which is applied only by ZaiChatLanguageModel
+// on top of its OpenAICompatibleChatLanguageModel base — not shared with any
+// other openai-compatible provider.
+func mapZaiFinishReason(raw string) types.FinishReason {
+	switch raw {
+	case "sensitive":
+		return types.FinishReasonContentFilter
+	case "model_context_window_exceeded":
+		return types.FinishReasonLength
+	case "network_error":
+		return types.FinishReasonError
+	default:
+		return providerutils.MapOpenAIFinishReason(raw)
+	}
 }
 
 func convertZaiUsage(usage zaiUsage) types.Usage {
@@ -379,13 +398,17 @@ type zaiStream struct {
 // newZaiStream wraps the shared OpenAICompatStream, adding Z.AI's
 // reasoning_content delta extraction and a one-shot response-metadata chunk
 // derived from the first SSE event (id/model/created), matching the
-// together/gmicloud Go providers. Finish-reason mapping (including Z.AI's
-// "sensitive"/"model_context_window_exceeded"/"network_error" reasons) goes
-// through the shared providerutils.MapOpenAIFinishReason, which the stream
-// base calls automatically at finish.
+// together/gmicloud Go providers. Finish-reason mapping goes through
+// mapZaiFinishReason (Z.AI's "sensitive"/"model_context_window_exceeded"/
+// "network_error" overrides layered on the shared
+// providerutils.MapOpenAIFinishReason), which the stream base calls
+// automatically at finish. This mirrors TS's ZaiChatLanguageModel, which
+// applies mapZaiFinishReason as a post-processing step on top of
+// OpenAICompatibleChatLanguageModel rather than baking it into the shared
+// mapper, so other openai-compatible providers are unaffected.
 func newZaiStream(reader io.ReadCloser) *zaiStream {
 	s := &zaiStream{
-		OpenAICompatStream: streaming.NewOpenAICompatStream(reader, providerutils.MapOpenAIFinishReason),
+		OpenAICompatStream: streaming.NewOpenAICompatStream(reader, mapZaiFinishReason),
 	}
 	s.OnReasoningDelta = func(eventBytes []byte) (string, bool) {
 		var chunk struct {
