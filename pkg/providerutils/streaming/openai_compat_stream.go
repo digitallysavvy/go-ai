@@ -187,10 +187,16 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 		if rc, handled := s.OnReasoningDelta([]byte(eventData)); handled && rc != "" {
 			if !s.isActiveReasoning {
 				s.isActiveReasoning = true
-				s.flushQueue = append([]*provider.StreamChunk{
-					{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"},
-					{Type: provider.ChunkTypeReasoning, Reasoning: rc, ID: "reasoning-0"},
-				}, s.flushQueue...)
+				// Append (not prepend): any chunks OnBeforeDelta already
+				// queued for this same event (e.g. a one-shot
+				// response-metadata chunk) must drain before this stream's
+				// own synthesized reasoning-start/delta, matching TS's
+				// order (response metadata is emitted by the core
+				// transform before provider-specific delta extraction).
+				s.flushQueue = append(s.flushQueue,
+					&provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"},
+					&provider.StreamChunk{Type: provider.ChunkTypeReasoning, Reasoning: rc, ID: "reasoning-0"},
+				)
 				return s.Next()
 			}
 			chunk := &provider.StreamChunk{
@@ -213,10 +219,12 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 		if choice.Delta.Content != "" {
 			if s.isActiveReasoning {
 				s.isActiveReasoning = false
-				s.flushQueue = append([]*provider.StreamChunk{
-					{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
-					{Type: provider.ChunkTypeText, Text: choice.Delta.Content},
-				}, s.flushQueue...)
+				// Append (not prepend): see the matching comment above for
+				// the reasoning-start case.
+				s.flushQueue = append(s.flushQueue,
+					&provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
+					&provider.StreamChunk{Type: provider.ChunkTypeText, Text: choice.Delta.Content},
+				)
 				return s.Next()
 			}
 			chunk := &provider.StreamChunk{

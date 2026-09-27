@@ -16,6 +16,11 @@ func TestMapOpenAIFinishReason(t *testing.T) {
 		{"tool_calls", types.FinishReasonToolCalls},
 		{"function_call", types.FinishReasonToolCalls},
 		{"content_filter", types.FinishReasonContentFilter},
+		// Z.AI-specific finish reasons (pkg/providers/zai), mirrors TS
+		// mapZaiFinishReason.
+		{"sensitive", types.FinishReasonContentFilter},
+		{"model_context_window_exceeded", types.FinishReasonLength},
+		{"network_error", types.FinishReasonError},
 		{"unknown_value", types.FinishReasonOther},
 	}
 

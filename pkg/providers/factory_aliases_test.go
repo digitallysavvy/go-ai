@@ -21,6 +21,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providers/quiverai"
 	"github.com/digitallysavvy/go-ai/pkg/providers/together"
 	"github.com/digitallysavvy/go-ai/pkg/providers/xai"
+	"github.com/digitallysavvy/go-ai/pkg/providers/zai"
 )
 
 func TestProviderFactoryAliasesMirrorTypeScriptCreateExports(t *testing.T) {
@@ -74,6 +75,9 @@ func TestProviderFactoryAliasesMirrorTypeScriptCreateExports(t *testing.T) {
 	}
 	if gmicloud.CreateGmicloud(gmicloud.Config{}) == nil {
 		t.Fatal("CreateGmicloud returned nil")
+	}
+	if zai.CreateZai(zai.Config{}) == nil {
+		t.Fatal("CreateZai returned nil")
 	}
 
 	vertexCfg := googlevertex.Config{
