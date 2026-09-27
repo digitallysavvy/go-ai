@@ -40,14 +40,14 @@ type FileMetadataResult struct {
 	// ProviderReference contains only the operated provider's entry — when
 	// working with a merged multi-provider reference, do not reassign it
 	// with this result.
-	ProviderReference types.ProviderReference
-	Filename          string
-	MediaType         string
-	ByteSize          *int64
-	CreatedAt         *time.Time
-	ExpiresAt         *time.Time
-	ProviderMetadata  map[string]interface{}
-	Warnings          []types.Warning
+	ProviderReference types.ProviderReference `json:"providerReference"`
+	Filename          string                  `json:"filename,omitempty"`
+	MediaType         string                  `json:"mediaType,omitempty"`
+	ByteSize          *int64                  `json:"byteSize,omitempty"`
+	CreatedAt         *time.Time              `json:"createdAt,omitempty"`
+	ExpiresAt         *time.Time              `json:"expiresAt,omitempty"`
+	ProviderMetadata  map[string]interface{}  `json:"providerMetadata,omitempty"`
+	Warnings          []types.Warning         `json:"warnings"`
 }
 
 // FileMetadataGetter is an optional FilesAPI capability for retrieving
@@ -73,11 +73,11 @@ type DownloadFileOptions struct {
 // DownloadFileResult is the result of downloading file content.
 type DownloadFileResult struct {
 	// Content is the file's byte stream. The caller is responsible for
-	// draining and closing it.
-	Content          io.ReadCloser
-	MediaType        string
-	ProviderMetadata map[string]interface{}
-	Warnings         []types.Warning
+	// draining and closing it. Not serializable, so it is excluded from JSON.
+	Content          io.ReadCloser          `json:"-"`
+	MediaType        string                 `json:"mediaType,omitempty"`
+	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
+	Warnings         []types.Warning        `json:"warnings"`
 }
 
 // FileDownloader is an optional FilesAPI capability for streaming a
@@ -104,10 +104,10 @@ type DeleteFileResult struct {
 	// ProviderReference contains only the operated provider's entry — when
 	// working with a merged multi-provider reference, do not reassign it
 	// with this result.
-	ProviderReference types.ProviderReference
-	Deleted           bool
-	ProviderMetadata  map[string]interface{}
-	Warnings          []types.Warning
+	ProviderReference types.ProviderReference `json:"providerReference"`
+	Deleted           bool                    `json:"deleted"`
+	ProviderMetadata  map[string]interface{}  `json:"providerMetadata,omitempty"`
+	Warnings          []types.Warning         `json:"warnings"`
 }
 
 // FileDeleter is an optional FilesAPI capability for deleting a previously

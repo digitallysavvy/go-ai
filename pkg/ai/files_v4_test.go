@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"strings"
@@ -155,5 +156,52 @@ func TestUploadFile_ForwardsHeaders(t *testing.T) {
 	}
 	if api.last.Headers["X-Test"] != "1" {
 		t.Fatalf("Headers not forwarded: %+v", api.last.Headers)
+	}
+}
+
+// TestFilesV4Results_JSONTagsAreCamelCase locks in camelCase JSON field
+// names for the Files v4 result types, matching TypeScript's
+// FilesV4GetFileMetadataResult/FilesV4DeleteFileResult field names and the
+// sibling types.UploadFileResult convention already established in
+// pkg/provider/types/upload.go.
+func TestFilesV4Results_JSONTagsAreCamelCase(t *testing.T) {
+	byteSize := int64(5)
+	metaJSON, err := json.Marshal(provider.FileMetadataResult{
+		ProviderReference: types.ProviderReference{"openai": "file_1"},
+		Filename:          "a.txt",
+		MediaType:         "text/plain",
+		ByteSize:          &byteSize,
+	})
+	if err != nil {
+		t.Fatalf("Marshal(FileMetadataResult) error = %v", err)
+	}
+	for _, key := range []string{`"providerReference"`, `"filename"`, `"mediaType"`, `"byteSize"`} {
+		if !strings.Contains(string(metaJSON), key) {
+			t.Errorf("FileMetadataResult JSON = %s, want %s", metaJSON, key)
+		}
+	}
+
+	deleteJSON, err := json.Marshal(provider.DeleteFileResult{
+		ProviderReference: types.ProviderReference{"openai": "file_1"},
+		Deleted:           true,
+	})
+	if err != nil {
+		t.Fatalf("Marshal(DeleteFileResult) error = %v", err)
+	}
+	for _, key := range []string{`"providerReference"`, `"deleted"`} {
+		if !strings.Contains(string(deleteJSON), key) {
+			t.Errorf("DeleteFileResult JSON = %s, want %s", deleteJSON, key)
+		}
+	}
+
+	downloadJSON, err := json.Marshal(provider.DownloadFileResult{MediaType: "text/plain"})
+	if err != nil {
+		t.Fatalf("Marshal(DownloadFileResult) error = %v", err)
+	}
+	if !strings.Contains(string(downloadJSON), `"mediaType"`) {
+		t.Errorf("DownloadFileResult JSON = %s, want mediaType", downloadJSON)
+	}
+	if strings.Contains(string(downloadJSON), "Content") {
+		t.Errorf("DownloadFileResult JSON = %s, want Content excluded", downloadJSON)
 	}
 }
