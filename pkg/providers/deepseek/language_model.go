@@ -90,14 +90,8 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	}
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
-	responseMetadata := &types.ResponseMetadata{
-		ID:      response.ID,
-		ModelID: response.Model,
-		Headers: result.ResponseHeaders,
-	}
-	if response.Created != 0 {
-		responseMetadata.Timestamp = time.Unix(response.Created, 0)
-	}
+	responseMetadata := providerutils.BuildResponseMetadata(response.ID, response.Model, response.Created)
+	responseMetadata.Headers = result.ResponseHeaders
 	result.ResponseMetadata = responseMetadata
 	return result, nil
 }
@@ -433,8 +427,16 @@ func (m *LanguageModel) convertResponse(response deepseekResponse) (*types.Gener
 			if tc.Function.Arguments != "" {
 				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
 			}
+			id := tc.ID
+			if id == "" {
+				// e6087c9/f807e45: some DeepSeek-compatible endpoints omit
+				// tool call IDs on non-streaming responses; generate one
+				// rather than sending an empty tool_call_id back on the next
+				// turn.
+				id = streaming.GenerateID()
+			}
 			result.ToolCalls[i] = types.ToolCall{
-				ID:        tc.ID,
+				ID:        id,
 				ToolName:  tc.Function.Name,
 				Arguments: args,
 			}
