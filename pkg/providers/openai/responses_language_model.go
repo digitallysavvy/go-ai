@@ -1023,7 +1023,9 @@ func hasTool(tools []types.Tool, name string) bool {
 
 // toolSearchToolName returns the SDK tool name of the tool whose ProviderID
 // is "openai.tool_search", if any is present in this request. Matches TS
-// `getOpenAIToolName('openai.tool_search')`.
+// `getOpenAIToolName('openai.tool_search')`. Returns "" when absent -- some
+// callers need that "not present" signal, so this does not itself apply the
+// bare-name fallback (see openAIProviderToolDisplayName for that).
 func toolSearchToolName(tools []types.Tool) string {
 	for _, tool := range tools {
 		if tool.ProviderID == "openai.tool_search" {
@@ -1031,6 +1033,25 @@ func toolSearchToolName(tools []types.Tool) string {
 		}
 	}
 	return ""
+}
+
+// openAIProviderToolDisplayName resolves the tool name to surface on
+// tool-call/tool-result content for a hosted provider tool, mirroring TS's
+// `toolNameMapping.toCustomToolName(bareName)`: a "provider" tool with the
+// given ProviderID present in the request lends its custom SDK Name (e.g.
+// registering openai.image_generation as name "generateImage" surfaces
+// "generateImage"); otherwise the bare, unprefixed provider tool identity
+// (e.g. "image_generation", not "openai.image_generation") is used, matching
+// TS's untouched fallback -- TS's providerToolNames table maps every one of
+// these ids to its bare identity string, and toCustomToolName returns that
+// input unchanged when no custom mapping exists.
+func openAIProviderToolDisplayName(tools []types.Tool, providerID, bareName string) string {
+	for _, tool := range tools {
+		if tool.ProviderID == providerID {
+			return tool.Name
+		}
+	}
+	return bareName
 }
 
 // outputSchemaToolNames returns the set of function tool names that declared
@@ -1392,25 +1413,27 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			if err := json.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
+			imageGenToolName := openAIProviderToolDisplayName(tools, "openai.image_generation", "image_generation")
 			toolCalls = append(toolCalls, types.ToolCall{
 				ID:               item.ID,
-				ToolName:         "openai.image_generation",
+				ToolName:         imageGenToolName,
 				Arguments:        map[string]interface{}{},
 				ProviderExecuted: true,
 			})
 			result.Content = append(result.Content,
 				types.ToolCallContent{
 					ToolCallID:       item.ID,
-					ToolName:         "openai.image_generation",
+					ToolName:         imageGenToolName,
 					Input:            "{}",
 					Arguments:        map[string]interface{}{},
 					ProviderExecuted: true,
 				},
 				types.ToolResultContent{
-					ToolCallID:       item.ID,
-					ToolName:         "openai.image_generation",
-					Result:           map[string]interface{}{"result": item.Result},
-					ProviderExecuted: true,
+					ToolCallID: item.ID,
+					ToolName:   imageGenToolName,
+					Result:     map[string]interface{}{"result": item.Result},
+					// TS never sets providerExecuted on this tool-result,
+					// only on the tool-call.
 				},
 			)
 
@@ -1419,10 +1442,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			if err := json.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
-			toolName := toolSearchToolName(tools)
-			if toolName == "" {
-				toolName = "openai.tool_search"
-			}
+			toolName := openAIProviderToolDisplayName(tools, "openai.tool_search", "tool_search")
 			isHosted := item.Execution == "server"
 			toolCallID := item.ID
 			if item.CallID != nil && *item.CallID != "" {
@@ -1467,7 +1487,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			}
 			result.Content = append(result.Content, types.ToolResultContent{
 				ToolCallID:       toolCallID,
-				ToolName:         firstNonEmpty(toolSearchToolName(tools), "openai.tool_search"),
+				ToolName:         openAIProviderToolDisplayName(tools, "openai.tool_search", "tool_search"),
 				Result:           map[string]interface{}{"tools": matchedTools},
 				ProviderMetadata: toRawMetadata(openAIResponsesToolCallMetadata(providerName, item.ID, "", nil, nil)),
 			})
@@ -1477,9 +1497,10 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			if err := json.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
+			fileSearchToolName := openAIProviderToolDisplayName(tools, "openai.file_search", "file_search")
 			toolCalls = append(toolCalls, types.ToolCall{
 				ID:               item.ID,
-				ToolName:         "openai.file_search",
+				ToolName:         fileSearchToolName,
 				Arguments:        map[string]interface{}{},
 				ProviderExecuted: true,
 			})
@@ -1500,16 +1521,17 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			result.Content = append(result.Content,
 				types.ToolCallContent{
 					ToolCallID:       item.ID,
-					ToolName:         "openai.file_search",
+					ToolName:         fileSearchToolName,
 					Input:            "{}",
 					Arguments:        map[string]interface{}{},
 					ProviderExecuted: true,
 				},
 				types.ToolResultContent{
-					ToolCallID:       item.ID,
-					ToolName:         "openai.file_search",
-					Result:           map[string]interface{}{"queries": item.Queries, "results": results},
-					ProviderExecuted: true,
+					ToolCallID: item.ID,
+					ToolName:   fileSearchToolName,
+					Result:     map[string]interface{}{"queries": item.Queries, "results": results},
+					// TS never sets providerExecuted on this tool-result,
+					// only on the tool-call.
 				},
 			)
 
@@ -1518,14 +1540,20 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			if err := json.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
-			codeArgs := map[string]interface{}{"containerId": item.ContainerID}
+			// TS's schema is `code: z.string().nullable()`, always present
+			// (null when absent) since JSON.stringify still includes a
+			// null-valued key -- include "code" explicitly here too, not
+			// only when non-nil.
+			var codeValue interface{}
 			if item.Code != nil {
-				codeArgs["code"] = *item.Code
+				codeValue = *item.Code
 			}
+			codeArgs := map[string]interface{}{"containerId": item.ContainerID, "code": codeValue}
 			rawCodeArgs, _ := json.Marshal(codeArgs)
+			codeInterpreterToolName := openAIProviderToolDisplayName(tools, "openai.code_interpreter", "code_interpreter")
 			toolCalls = append(toolCalls, types.ToolCall{
 				ID:               item.ID,
-				ToolName:         "openai.code_interpreter",
+				ToolName:         codeInterpreterToolName,
 				Arguments:        codeArgs,
 				RawArguments:     string(rawCodeArgs),
 				ProviderExecuted: true,
@@ -1546,16 +1574,17 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			result.Content = append(result.Content,
 				types.ToolCallContent{
 					ToolCallID:       item.ID,
-					ToolName:         "openai.code_interpreter",
+					ToolName:         codeInterpreterToolName,
 					Input:            string(rawCodeArgs),
 					Arguments:        codeArgs,
 					ProviderExecuted: true,
 				},
 				types.ToolResultContent{
-					ToolCallID:       item.ID,
-					ToolName:         "openai.code_interpreter",
-					Result:           map[string]interface{}{"outputs": outputsValue},
-					ProviderExecuted: true,
+					ToolCallID: item.ID,
+					ToolName:   codeInterpreterToolName,
+					Result:     map[string]interface{}{"outputs": outputsValue},
+					// TS never sets providerExecuted on this tool-result,
+					// only on the tool-call.
 				},
 			)
 
@@ -2098,8 +2127,10 @@ type responsesStream struct {
 	ongoingToolCalls map[int]*responsesOngoingToolCall
 
 	// toolSearchToolName is the SDK tool name registered for
-	// "openai.tool_search", or "openai.tool_search" if none is registered
-	// under a custom name.
+	// "openai.tool_search", or the bare "tool_search" if none is registered
+	// under a custom name -- matches TS's toolNameMapping.toCustomToolName
+	// fallback (the unprefixed provider tool identity, not the internal
+	// "openai.tool_search" id).
 	toolSearchToolName string
 
 	// hostedToolSearchIDs pairs a hosted (server-executed) tool_search_call
@@ -2219,7 +2250,7 @@ func newResponsesStreamWithMetadata(r io.ReadCloser, includeRawChunks bool, tool
 		providerName:             providerName,
 		responseHeaders:          headers,
 		ongoingToolCalls:         make(map[int]*responsesOngoingToolCall),
-		toolSearchToolName:       "openai.tool_search",
+		toolSearchToolName:       "tool_search",
 	}
 }
 
@@ -2425,7 +2456,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				Type: provider.ChunkTypeToolCall,
 				ToolCall: &types.ToolCall{
 					ID:               e.Item.ID,
-					ToolName:         "openai.file_search",
+					ToolName:         openAIProviderToolDisplayName(s.tools, "openai.file_search", "file_search"),
 					Arguments:        map[string]interface{}{},
 					ProviderExecuted: true,
 				},
@@ -2436,15 +2467,16 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				Type: provider.ChunkTypeToolCall,
 				ToolCall: &types.ToolCall{
 					ID:               e.Item.ID,
-					ToolName:         "openai.image_generation",
+					ToolName:         openAIProviderToolDisplayName(s.tools, "openai.image_generation", "image_generation"),
 					Arguments:        map[string]interface{}{},
 					ProviderExecuted: true,
 				},
 			})
 			return s.Next()
 		case "code_interpreter_call":
+			codeInterpreterName := openAIProviderToolDisplayName(s.tools, "openai.code_interpreter", "code_interpreter")
 			s.ongoingToolCalls[e.OutputIndex] = &responsesOngoingToolCall{
-				toolName:        "openai.code_interpreter",
+				toolName:        codeInterpreterName,
 				toolCallID:      e.Item.ID,
 				codeInterpreter: &codeInterpreterStreamState{containerID: e.Item.ContainerID},
 			}
@@ -2453,7 +2485,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 					Type: provider.ChunkTypeToolInputStart,
 					ToolCall: &types.ToolCall{
 						ID:               e.Item.ID,
-						ToolName:         "openai.code_interpreter",
+						ToolName:         codeInterpreterName,
 						ProviderExecuted: true,
 					},
 				},
@@ -2760,7 +2792,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			Type: provider.ChunkTypeToolResult,
 			ToolResult: &types.ToolResult{
 				ToolCallID:  e.ItemID,
-				ToolName:    "openai.image_generation",
+				ToolName:    openAIProviderToolDisplayName(s.tools, "openai.image_generation", "image_generation"),
 				Result:      map[string]interface{}{"result": e.PartialImageB64},
 				Preliminary: true,
 			},
@@ -2807,7 +2839,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 					Type: provider.ChunkTypeToolCall,
 					ToolCall: &types.ToolCall{
 						ID:               toolCall.toolCallID,
-						ToolName:         "openai.code_interpreter",
+						ToolName:         toolCall.toolName,
 						RawArguments:     string(inputStr),
 						ProviderExecuted: true,
 					},
@@ -3280,7 +3312,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			Type: provider.ChunkTypeToolResult,
 			ToolResult: &types.ToolResult{
 				ToolCallID: item.ID,
-				ToolName:   "openai.image_generation",
+				ToolName:   openAIProviderToolDisplayName(s.tools, "openai.image_generation", "image_generation"),
 				Result:     map[string]interface{}{"result": item.Result},
 			},
 		})
@@ -3309,7 +3341,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			Type: provider.ChunkTypeToolResult,
 			ToolResult: &types.ToolResult{
 				ToolCallID: item.ID,
-				ToolName:   "openai.file_search",
+				ToolName:   openAIProviderToolDisplayName(s.tools, "openai.file_search", "file_search"),
 				Result:     map[string]interface{}{"queries": item.Queries, "results": results},
 			},
 		})
@@ -3319,6 +3351,10 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		// response.code_interpreter_call_code.done handler; this only
 		// carries the final outputs.
 		delete(s.itemTypes, e.OutputIndex)
+		codeInterpreterName := openAIProviderToolDisplayName(s.tools, "openai.code_interpreter", "code_interpreter")
+		if toolCall, ok := s.ongoingToolCalls[e.OutputIndex]; ok && toolCall.toolName != "" {
+			codeInterpreterName = toolCall.toolName
+		}
 		delete(s.ongoingToolCalls, e.OutputIndex)
 		var item responses.CodeInterpreterCallItem
 		if err := json.Unmarshal(e.Item, &item); err != nil {
@@ -3341,7 +3377,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			Type: provider.ChunkTypeToolResult,
 			ToolResult: &types.ToolResult{
 				ToolCallID: item.ID,
-				ToolName:   "openai.code_interpreter",
+				ToolName:   codeInterpreterName,
 				Result:     map[string]interface{}{"outputs": outputsValue},
 			},
 		})

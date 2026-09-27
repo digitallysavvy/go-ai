@@ -28,8 +28,8 @@ func TestResponsesLanguageModel_ImageGenerationCallDecodesAsToolCallAndResult(t 
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
-	if len(result.ToolCalls) != 1 || result.ToolCalls[0].ID != "ig_1" || result.ToolCalls[0].ToolName != "openai.image_generation" {
-		t.Fatalf("ToolCalls = %#v, want one openai.image_generation call", result.ToolCalls)
+	if len(result.ToolCalls) != 1 || result.ToolCalls[0].ID != "ig_1" || result.ToolCalls[0].ToolName != "image_generation" {
+		t.Fatalf("ToolCalls = %#v, want one image_generation call (TS toolNameMapping bare-name fallback)", result.ToolCalls)
 	}
 	if !result.ToolCalls[0].ProviderExecuted {
 		t.Fatalf("ToolCalls[0].ProviderExecuted = false, want true")
@@ -60,8 +60,8 @@ func TestResponsesLanguageModel_FileSearchCallDecodesAsToolCallAndResult(t *test
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
-	if len(result.ToolCalls) != 1 || result.ToolCalls[0].ToolName != "openai.file_search" {
-		t.Fatalf("ToolCalls = %#v, want one openai.file_search call", result.ToolCalls)
+	if len(result.ToolCalls) != 1 || result.ToolCalls[0].ToolName != "file_search" {
+		t.Fatalf("ToolCalls = %#v, want one file_search call (TS toolNameMapping bare-name fallback)", result.ToolCalls)
 	}
 	var tr *types.ToolResultContent
 	for _, c := range result.Content {
@@ -92,8 +92,8 @@ func TestResponsesLanguageModel_CodeInterpreterCallDecodesAsToolCallAndResult(t 
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
-	if len(result.ToolCalls) != 1 || result.ToolCalls[0].ToolName != "openai.code_interpreter" {
-		t.Fatalf("ToolCalls = %#v, want one openai.code_interpreter call", result.ToolCalls)
+	if len(result.ToolCalls) != 1 || result.ToolCalls[0].ToolName != "code_interpreter" {
+		t.Fatalf("ToolCalls = %#v, want one code_interpreter call (TS toolNameMapping bare-name fallback)", result.ToolCalls)
 	}
 	if result.ToolCalls[0].Arguments["containerId"] != "cntr_1" || result.ToolCalls[0].Arguments["code"] != code {
 		t.Fatalf("arguments = %#v, want containerId/code", result.ToolCalls[0].Arguments)
@@ -268,7 +268,7 @@ data: {"type":"response.output_item.done","output_index":0,"item":{"type":"file_
 	defer stream.Close() //nolint:errcheck
 
 	call, err := stream.Next()
-	if err != nil || call.Type != provider.ChunkTypeToolCall || call.ToolCall.ToolName != "openai.file_search" {
+	if err != nil || call.Type != provider.ChunkTypeToolCall || call.ToolCall.ToolName != "file_search" {
 		t.Fatalf("chunk = %#v, err = %v, want a file_search tool-call", call, err)
 	}
 	result, err := stream.Next()
@@ -858,4 +858,112 @@ func TestConvertResponse_ReasoningMultipleSummaryPartsProducesSeparateContent(t 
 	if reasoningParts[0].EncryptedContent != "enc" || reasoningParts[1].EncryptedContent != "enc" {
 		t.Fatalf("reasoning parts = %#v, want both to carry the item's encrypted_content", reasoningParts)
 	}
+}
+
+// ── Hosted-tool name resolution / providerExecuted follow-up fixes ─────────
+//
+// TS resolves a hosted tool's surfaced name via
+// toolNameMapping.toCustomToolName(bareName): a caller-registered "provider"
+// tool with a custom SDK Name wins; otherwise the bare, unprefixed provider
+// tool identity (e.g. "image_generation") is used -- never the internal
+// "openai.image_generation" id. These tests cover both the bare-name
+// fallback (above) and the custom-name override (here), for both paths.
+
+func TestResponsesLanguageModel_ImageGenerationCallUsesCustomToolName(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+	customTools := []types.Tool{{Type: types.ToolTypeProviderDefined, Name: "generateImage", ProviderID: "openai.image_generation"}}
+
+	item, _ := json.Marshal(map[string]interface{}{
+		"type": "image_generation_call", "id": "ig_1", "result": "base64img",
+	})
+	result, err := model.convertResponse(mockResponsesResponseWith(item), true, "", customTools, nil)
+	if err != nil {
+		t.Fatalf("convertResponse failed: %v", err)
+	}
+	if len(result.ToolCalls) != 1 || result.ToolCalls[0].ToolName != "generateImage" {
+		t.Fatalf("ToolCalls = %#v, want the custom name generateImage", result.ToolCalls)
+	}
+}
+
+func TestResponsesLanguageModel_StreamImageGenerationCallUsesCustomToolName(t *testing.T) {
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"image_generation_call","id":"ig_1"}}
+
+`)), false)
+	stream.tools = []types.Tool{{Type: types.ToolTypeProviderDefined, Name: "generateImage", ProviderID: "openai.image_generation"}}
+	defer stream.Close() //nolint:errcheck
+
+	call, err := stream.Next()
+	if err != nil || call.Type != provider.ChunkTypeToolCall || call.ToolCall.ToolName != "generateImage" {
+		t.Fatalf("chunk = %#v, err = %v, want tool-call named generateImage", call, err)
+	}
+}
+
+// TestResponsesLanguageModel_HostedToolResultsHaveNoProviderExecuted covers
+// finding #3: TS never sets providerExecuted on the tool-RESULT for
+// image_generation_call/file_search_call/code_interpreter_call, only on the
+// tool-call.
+func TestResponsesLanguageModel_HostedToolResultsHaveNoProviderExecuted(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	items := []json.RawMessage{
+		mustMarshal(map[string]interface{}{"type": "image_generation_call", "id": "ig_1", "result": "b64"}),
+		mustMarshal(map[string]interface{}{"type": "file_search_call", "id": "fs_1", "queries": []string{"q"}}),
+		mustMarshal(map[string]interface{}{"type": "code_interpreter_call", "id": "ci_1", "container_id": "c1", "code": "1", "status": "completed"}),
+	}
+	for _, item := range items {
+		result, err := model.convertResponse(mockResponsesResponseWith(item), true, "", nil, nil)
+		if err != nil {
+			t.Fatalf("convertResponse failed: %v", err)
+		}
+		var sawResult bool
+		for _, c := range result.Content {
+			if tr, ok := c.(types.ToolResultContent); ok {
+				sawResult = true
+				if tr.ProviderExecuted {
+					t.Fatalf("item %s: tool-result ProviderExecuted = true, want false (only the tool-call should carry it)", item)
+				}
+			}
+		}
+		if !sawResult {
+			t.Fatalf("item %s: no tool-result content found", item)
+		}
+	}
+}
+
+// TestResponsesLanguageModel_CodeInterpreterCallNullCodeIncludesNullKey
+// covers finding #4: TS's schema is `code: z.string().nullable()`, always
+// present (null when absent) since JSON.stringify still includes a
+// null-valued key; Go must include "code":null in the input JSON rather
+// than omitting the key entirely.
+func TestResponsesLanguageModel_CodeInterpreterCallNullCodeIncludesNullKey(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	item, _ := json.Marshal(map[string]interface{}{
+		"type": "code_interpreter_call", "id": "ci_1", "container_id": "cntr_1", "status": "in_progress",
+	})
+	result, err := model.convertResponse(mockResponsesResponseWith(item), true, "", nil, nil)
+	if err != nil {
+		t.Fatalf("convertResponse failed: %v", err)
+	}
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls = %#v, want one", result.ToolCalls)
+	}
+	if !strings.Contains(result.ToolCalls[0].RawArguments, `"code":null`) {
+		t.Fatalf("RawArguments = %q, want it to include \"code\":null", result.ToolCalls[0].RawArguments)
+	}
+	codeVal, hasCode := result.ToolCalls[0].Arguments["code"]
+	if !hasCode || codeVal != nil {
+		t.Fatalf("Arguments[\"code\"] = %#v (present=%v), want present and nil", codeVal, hasCode)
+	}
+}
+
+func mustMarshal(v interface{}) json.RawMessage {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return b
 }
