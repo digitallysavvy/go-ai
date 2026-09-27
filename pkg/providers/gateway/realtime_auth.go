@@ -8,13 +8,29 @@ import (
 const (
 	GatewayRealtimeSubprotocol = "ai-gateway-realtime.v1"
 
+	// GatewayTranscriptionSubprotocol is offered on every streaming
+	// transcription handshake (same negotiation purpose as
+	// GatewayRealtimeSubprotocol), TS GATEWAY_TRANSCRIPTION_SUBPROTOCOL.
+	GatewayTranscriptionSubprotocol = "ai-gateway-transcription.v1"
+
 	GatewayAuthSubprotocolPrefix = "ai-gateway-auth."
 	GatewayTeamSubprotocolPrefix = "ai-gateway-team."
 )
 
 func GetGatewayRealtimeProtocols(token string, teamIDOrSlug string) []string {
+	return buildGatewayProtocols(GatewayRealtimeSubprotocol, token, teamIDOrSlug)
+}
+
+// GetGatewayTranscriptionProtocols is GetGatewayRealtimeProtocols with the
+// streaming transcription marker subprotocol (TS
+// getGatewayTranscriptionProtocols).
+func GetGatewayTranscriptionProtocols(token string, teamIDOrSlug string) []string {
+	return buildGatewayProtocols(GatewayTranscriptionSubprotocol, token, teamIDOrSlug)
+}
+
+func buildGatewayProtocols(marker, token, teamIDOrSlug string) []string {
 	protocols := []string{
-		GatewayRealtimeSubprotocol,
+		marker,
 		GatewayAuthSubprotocolPrefix + token,
 	}
 	if teamIDOrSlug != "" {

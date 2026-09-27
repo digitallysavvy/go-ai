@@ -210,7 +210,7 @@ func ExperimentalTranscribe(ctx context.Context, opts TranscribeOptions) (*Trans
 // "audio" top-level table (rather than the generic, no-topLevelType scan)
 // means MP4-container audio such as M4A is correctly reported as audio/mp4
 // instead of being dropped because a generic scan can't tell an MP4 audio
-// container apart from video/mp4.
+// container apart from video/mp4 (TS detectMediaType, 76cb673).
 func detectTranscriptionMediaType(data []byte) string {
 	if mediaType, ok := fileutil.DetectMediaTypeSignature(data, "audio"); ok {
 		return mediaType
