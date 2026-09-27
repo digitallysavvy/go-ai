@@ -27,4 +27,9 @@ type ToolCall struct {
 	Locations  []ToolCallLocation `json:"locations,omitempty"`
 	RawInput   any                `json:"rawInput,omitempty"`
 	RawOutput  any                `json:"rawOutput,omitempty"`
+	// Meta is the ACP tool call's `_meta` field (TS `ACPToolCall["_meta"]`),
+	// used by isMcpToolCall classifiers that route on implementation-specific
+	// metadata (e.g. Grok Build's `x.ai/tool` namespace) rather than raw
+	// input shape.
+	Meta map[string]any `json:"_meta,omitempty"`
 }
