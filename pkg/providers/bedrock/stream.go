@@ -188,7 +188,11 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 		// read) also sees the correct type/statusCode/isRetryable, mirroring
 		// TS's typed AmazonBedrockStreamError on the enqueued 'error' part
 		// (P1-1c part 2: provider.StreamProviderError normalization).
-		chunkErr := providererrors.NewStreamProviderError(message, "amazon-bedrock", payloadType, payloadType, &statusCode, &isRetryable, payload)
+		// TS's createAmazonBedrockStreamError never sets `code` (only
+		// message/type/statusCode/isRetryable/data via
+		// `...getAmazonBedrockStreamErrorMetadata(type)`) — leave Code nil
+		// rather than duplicating the exception type into it.
+		chunkErr := providererrors.NewStreamProviderError(message, "amazon-bedrock", payloadType, nil, &statusCode, &isRetryable, payload)
 		return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: message, Err: chunkErr}, nil
 
 	case "messageStop":
