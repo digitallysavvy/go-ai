@@ -56,9 +56,38 @@ func main() {
 
 ## Authentication
 
-KlingAI uses access key and secret key authentication. You can provide credentials in two ways:
+KlingAI supports two authentication schemes:
 
-### Environment Variables
+- A single **API key**, sent directly as a bearer token (recommended).
+- The legacy **access key / secret key** pair, used to sign a short-lived JWT.
+
+An explicit value takes precedence over its environment variable, and the API
+key takes precedence over the access key / secret key pair:
+
+1. `Config.APIKey`
+2. `Config.AccessKey` + `Config.SecretKey` (both set)
+3. `KLINGAI_API_KEY` environment variable
+4. `KLINGAI_ACCESS_KEY` + `KLINGAI_SECRET_KEY` environment variables
+
+### API Key (recommended)
+
+```bash
+export KLINGAI_API_KEY=your-api-key
+```
+
+```go
+provider, err := klingai.New(klingai.Config{})
+```
+
+or explicitly:
+
+```go
+provider, err := klingai.New(klingai.Config{
+	APIKey: "your-api-key",
+})
+```
+
+### Legacy Access Key / Secret Key
 
 ```bash
 export KLINGAI_ACCESS_KEY=your-access-key
@@ -68,8 +97,6 @@ export KLINGAI_SECRET_KEY=your-secret-key
 ```go
 provider, err := klingai.New(klingai.Config{})
 ```
-
-### Explicit Configuration
 
 ```go
 provider, err := klingai.New(klingai.Config{
@@ -432,8 +459,9 @@ Attempting to use these options will generate warnings but not fail.
 
 ```go
 type Config struct {
-	AccessKey string // KlingAI access key
-	SecretKey string // KlingAI secret key
+	APIKey    string // KlingAI API key (recommended)
+	AccessKey string // KlingAI access key (legacy)
+	SecretKey string // KlingAI secret key (legacy)
 	BaseURL   string // Optional custom base URL
 	Headers   map[string]string // Additional headers
 }

@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
@@ -237,6 +238,128 @@ func TestDoGenerateAsync_MultiPollSuccess(t *testing.T) {
 	}
 	if result.MimeType != "image/png" {
 		t.Errorf("expected MimeType image/png, got %q", result.MimeType)
+	}
+}
+
+// TestDoGenerateAsync_TimesOutOnWallClockDeadline verifies that
+// pollAsyncResult enforces a wall-clock deadline (TS e4e761e) rather than a
+// fixed attempt count: each poll response is slow enough that a
+// count-based budget (ceil(timeout/interval) attempts) would let the loop
+// run several times longer than pollTimeoutMs before giving up.
+func TestDoGenerateAsync_TimesOutOnWallClockDeadline(t *testing.T) {
+	const modelID = "accounts/fireworks/models/flux-kontext-dev"
+	const requestID = "req-slow-poll"
+	const pollLatency = 30 * time.Millisecond
+	const pollTimeoutMs = 50
+
+	mux := http.NewServeMux()
+	submitPath := "/v1/workflows/" + modelID
+	pollPath := "/v1/workflows/" + modelID + "/get_result"
+
+	mux.HandleFunc("/v1/workflows/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case submitPath:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"request_id": %q}`, requestID)
+		case pollPath:
+			// Always slow and always pending: a count-based budget of
+			// ceil(50ms/1ms) = 50 attempts at 30ms each would take ~1.5s.
+			time.Sleep(pollLatency)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"id": %q, "status": "Pending", "result": null}`, requestID)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	prov := New(Config{
+		APIKey:              "test-key",
+		BaseURL:             server.URL,
+		ImagePollIntervalMs: 1,
+		ImagePollTimeoutMs:  pollTimeoutMs,
+	})
+	model := NewImageModel(prov, modelID)
+
+	start := time.Now()
+	_, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt: "A slow sunset",
+	})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected a timeout error")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("expected timeout error, got: %v", err)
+	}
+	// A count-based budget would need ~1.5s (50 attempts x 30ms); the
+	// wall-clock deadline must abort well before that, close to
+	// pollTimeoutMs plus one in-flight poll.
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("expected wall-clock deadline to abort quickly, took %v", elapsed)
+	}
+}
+
+// TestDoGenerateAsync_DownloadIsNotBoundByPollDeadline verifies that once
+// polling reports the image ready, the final download is not subject to the
+// poll timeout: TS doGenerateAsync downloads with the caller's own
+// abortSignal, not pollForImageUrl's internal timeoutController signal, so a
+// slow download that outlives the remaining poll budget must still succeed.
+func TestDoGenerateAsync_DownloadIsNotBoundByPollDeadline(t *testing.T) {
+	const modelID = "accounts/fireworks/models/flux-kontext-dev"
+	const requestID = "req-slow-download"
+	const pollTimeoutMs = 30
+	const downloadLatency = 100 * time.Millisecond
+
+	mux := http.NewServeMux()
+	submitPath := "/v1/workflows/" + modelID
+	pollPath := "/v1/workflows/" + modelID + "/get_result"
+
+	var imageURL string
+	mux.HandleFunc("/v1/workflows/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case submitPath:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"request_id": %q}`, requestID)
+		case pollPath:
+			// Reports ready immediately, well within pollTimeoutMs.
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"id": %q, "status": "Ready", "result": {"sample": %q}}`, requestID, imageURL)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/fake-image", func(w http.ResponseWriter, r *http.Request) {
+		// The download alone takes longer than the poll timeout budget; it
+		// must not be aborted by the (already-satisfied) poll deadline.
+		time.Sleep(downloadLatency)
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(fakeImageBytes)
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	imageURL = server.URL + "/fake-image"
+
+	prov := New(Config{
+		APIKey:              "test-key",
+		BaseURL:             server.URL,
+		ImagePollIntervalMs: 1,
+		ImagePollTimeoutMs:  pollTimeoutMs,
+	})
+	model := NewImageModel(prov, modelID)
+
+	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt: "A patient sunrise",
+	})
+	if err != nil {
+		t.Fatalf("expected the slow download to succeed despite the poll deadline, got: %v", err)
+	}
+	if len(result.Image) == 0 {
+		t.Error("expected non-empty image bytes")
 	}
 }
 

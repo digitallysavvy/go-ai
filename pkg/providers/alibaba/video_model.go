@@ -14,6 +14,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // VideoModel implements the provider.VideoModelV3 interface for Alibaba Wan
@@ -561,7 +562,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	var statusResp alibabaVideoStatusResponse
 	httpResp, err := m.prov.videoClient.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  "GET",
-		Path:    "/api/v1/tasks/" + operation.TaskID,
+		Path:    "/api/v1/tasks/" + providerutils.EncodePathSegment(operation.TaskID),
 		Headers: opts.Headers,
 	}, &statusResp)
 	if err != nil {
