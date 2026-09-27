@@ -331,6 +331,17 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 			result.Content = append(result.Content, types.ReasoningContent{
 				RedactedData: content.Data,
 			})
+		case "container_upload":
+			// A file the model uploaded to the code execution container
+			// (TS: content.push({type: 'custom', kind:
+			// 'anthropic.container_upload', providerMetadata: {anthropic:
+			// {fileId}}})). TS's doStream doesn't handle this block type, so
+			// this is generate-only, matching TS parity.
+			metadata, _ := json.Marshal(map[string]interface{}{"fileId": content.FileID})
+			result.Content = append(result.Content, types.CustomContent{
+				Kind:             "anthropic.container_upload",
+				ProviderMetadata: metadata,
+			})
 		}
 	}
 
@@ -1028,6 +1039,9 @@ type anthropicContent struct {
 	ToolUseID string          `json:"tool_use_id,omitempty"`
 	Content   json.RawMessage `json:"content,omitempty"`
 	IsError   bool            `json:"is_error,omitempty"`
+	// FileID is set on "container_upload" blocks (the uploaded file made
+	// available in the code execution container).
+	FileID string `json:"file_id,omitempty"`
 }
 
 // streamContentBlock tracks an in-flight content block across SSE events.
