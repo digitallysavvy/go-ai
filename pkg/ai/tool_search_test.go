@@ -14,6 +14,19 @@ import (
 // Ports ai/src/tool-search/prepare-tool-search.test.ts and (partially)
 // ai/src/tool-search/tool-search.test.ts.
 
+func TestToolSearch_DefaultAndCustomName(t *testing.T) {
+	t.Parallel()
+	if got, want := ToolSearch().Name, ToolSearchDefaultName; got != want {
+		t.Fatalf("ToolSearch().Name = %q, want %q", got, want)
+	}
+	if got, want := ToolSearch(ToolSearchConfig{}).Name, ToolSearchDefaultName; got != want {
+		t.Fatalf("ToolSearch(ToolSearchConfig{}).Name = %q, want %q (empty Name falls back to default)", got, want)
+	}
+	if got, want := ToolSearch(ToolSearchConfig{Name: "findTools"}).Name, "findTools"; got != want {
+		t.Fatalf("ToolSearch(ToolSearchConfig{Name: %q}).Name = %q, want %q", "findTools", got, want)
+	}
+}
+
 func searchTestCaller() types.Tool {
 	msg := "catalog"
 	return types.Tool{
@@ -42,7 +55,7 @@ func searchTestWeatherTool() types.Tool {
 }
 
 func searchTestTools() []types.Tool {
-	return []types.Tool{searchTestCaller(), ToolSearch("search"), searchTestWeatherTool()}
+	return []types.Tool{searchTestCaller(), ToolSearch(ToolSearchConfig{Name: "search"}), searchTestWeatherTool()}
 }
 
 var searchTestCallers = ResolvedToolCallers{
@@ -237,7 +250,7 @@ func TestToolSearchState_RejectsDescriptionDiscoveryCallers(t *testing.T) {
 	}
 
 	for _, code := range []types.Tool{noMessage, providerCaller} {
-		tools := []types.Tool{code, ToolSearch("search"), searchTestWeatherTool()}
+		tools := []types.Tool{code, ToolSearch(ToolSearchConfig{Name: "search"}), searchTestWeatherTool()}
 		_, err := NewToolSearchState(tools, searchTestCallers)
 		if err == nil || !strings.Contains(err.Error(), "toolDiscovery: 'conversation'") {
 			t.Fatalf("expected toolDiscovery error, got %v", err)
@@ -388,7 +401,7 @@ func TestToolSearchState_ResolvesDescriptionFunctionsWithContext(t *testing.T) {
 	t.Parallel()
 	registry := []types.Tool{
 		searchTestCaller(),
-		ToolSearch("search"),
+		ToolSearch(ToolSearchConfig{Name: "search"}),
 		{
 			Name:         "getWeather",
 			DeferLoading: true,
@@ -500,7 +513,7 @@ func TestGenerateText_ToolSearch_DiscoversOnNextStep(t *testing.T) {
 		StopWhen: []StopCondition{IsStepCount(3)},
 		Prompt:   "Find the weather.",
 		Tools: []types.Tool{
-			ToolSearch("search"),
+			ToolSearch(ToolSearchConfig{Name: "search"}),
 			{
 				Name:         "getWeather",
 				DeferLoading: true,

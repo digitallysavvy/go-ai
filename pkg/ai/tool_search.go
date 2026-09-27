@@ -12,14 +12,36 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
-// ToolSearch returns the native tool-search tool. Register it under name
-// alongside tools marked DeferLoading: true; the surrounding generation
-// binds the search registry so matches become available on the next model
-// step. Use directly, or through a local tool caller whose
-// PrepareModelMessage announces a discovery catalog in the conversation
-// (code mode with conversation-based tool discovery). Mirrors the
-// TypeScript SDK's toolSearch().
-func ToolSearch(name string) types.Tool {
+// ToolSearchDefaultName is the tool name ToolSearch uses when config.Name is
+// empty or omitted.
+const ToolSearchDefaultName = "toolSearch"
+
+// ToolSearchConfig configures ai.ToolSearch. All fields are optional.
+type ToolSearchConfig struct {
+	// Name overrides the tool's registered name (default:
+	// ToolSearchDefaultName). Set it to register more than one tool-search
+	// instance in the same request (e.g. one per tool-caller boundary), or
+	// to avoid a collision with an existing tool name. Whatever name is
+	// used here must match the corresponding entry in
+	// ExperimentalToolCallers and the tools list passed to
+	// GenerateText/StreamText.
+	Name string
+}
+
+// ToolSearch returns the native tool-search tool, alongside tools marked
+// DeferLoading: true; the surrounding generation binds the search registry
+// so matches become available on the next model step. Use directly, or
+// through a local tool caller whose PrepareModelMessage announces a
+// discovery catalog in the conversation (code mode with conversation-based
+// tool discovery). Mirrors the TypeScript SDK's toolSearch(), whose name is
+// the tools-object key the caller chooses; Go tools are a flat slice keyed
+// by Name, so ToolSearchConfig.Name plays the same role (mirroring
+// MCPConfig.Name for the same reason).
+func ToolSearch(config ...ToolSearchConfig) types.Tool {
+	name := ToolSearchDefaultName
+	if len(config) > 0 && config[0].Name != "" {
+		name = config[0].Name
+	}
 	return types.Tool{
 		Name: name,
 		Description: "Search for tools by keywords in their names and descriptions. Returns up to five matching tools. " +
