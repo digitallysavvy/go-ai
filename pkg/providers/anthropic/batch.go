@@ -475,16 +475,15 @@ type anthropicBatchResponseWire struct {
 
 func (r anthropicBatchResponseWire) toStatus() provider.BatchV4Status {
 	counts := r.RequestCounts
+	total := counts.Processing + counts.Succeeded + counts.Errored + counts.Canceled + counts.Expired
+	pending := counts.Processing
+	completed := counts.Succeeded
+	failed := counts.Errored + counts.Canceled + counts.Expired
 	return provider.BatchV4Status{
-		Status:    mapAnthropicBatchStatus(r.ProcessingStatus),
-		RawStatus: r.ProcessingStatus,
-		RequestCounts: &provider.BatchRequestCounts{
-			Total:     counts.Processing + counts.Succeeded + counts.Errored + counts.Canceled + counts.Expired,
-			Pending:   counts.Processing,
-			Completed: counts.Succeeded,
-			Failed:    counts.Errored + counts.Canceled + counts.Expired,
-		},
-		CreatedAt: r.CreatedAt,
+		Status:        mapAnthropicBatchStatus(r.ProcessingStatus),
+		RawStatus:     r.ProcessingStatus,
+		RequestCounts: providerutils.NormalizeBatchRequestCounts(&total, &pending, &completed, &failed),
+		CreatedAt:     r.CreatedAt,
 		ExpiresAt: r.ExpiresAt,
 		ProviderMetadata: map[string]interface{}{
 			"anthropic": map[string]interface{}{

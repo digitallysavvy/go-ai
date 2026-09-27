@@ -144,6 +144,42 @@ func TestGoogleBatch_StartsInlineBatch(t *testing.T) {
 	}
 }
 
+// TestGoogleBatch_OmitsInconsistentOrMissingRequestCounts mirrors TS
+// normalizeBatchRequestCounts's "returns undefined for invalid counts"
+// behavior applied to Google's batchStats: a batch whose stats never report
+// requestCount (total), or whose sub-counts don't sum to it, must omit
+// RequestCounts entirely rather than surfacing a fabricated/inconsistent
+// block.
+func TestGoogleBatch_OmitsInconsistentOrMissingRequestCounts(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"no batchStats", `{"name":"batches/batch-123","done":true,"metadata":{"state":"BATCH_STATE_SUCCEEDED"}}`},
+		{"missing requestCount", `{"name":"batches/batch-123","done":true,"metadata":{"state":"BATCH_STATE_SUCCEEDED","batchStats":{"successfulRequestCount":"1"}}}`},
+		{"inconsistent sum", `{"name":"batches/batch-123","done":true,"metadata":{"state":"BATCH_STATE_SUCCEEDED","batchStats":{"requestCount":"2","successfulRequestCount":"1","failedRequestCount":"0"}}}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+
+			p := New(Config{APIKey: "k", BaseURL: srv.URL})
+			b := p.ExperimentalBatch()
+			status, err := b.DoGetBatchStatus(t.Context(), provider.BatchV4OperationOptions{BatchID: "batches/batch-123"})
+			if err != nil {
+				t.Fatalf("DoGetBatchStatus: %v", err)
+			}
+			if status.RequestCounts != nil {
+				t.Fatalf("RequestCounts = %+v, want nil", status.RequestCounts)
+			}
+		})
+	}
+}
+
 func TestGoogleBatch_CancelsBatch(t *testing.T) {
 	var gotMethod, gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

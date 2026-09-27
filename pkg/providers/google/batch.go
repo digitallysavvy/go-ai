@@ -622,31 +622,52 @@ func mapGoogleBatchStatus(rawStatus string, done bool, hasError bool) provider.B
 	}
 }
 
+// convertGoogleRequestCounts mirrors TS convertGoogleRequestCounts: the
+// sub-counts default to 0 when absent (parseCount(counts?.xField ?? 0)),
+// but total does not (parseCount(counts?.requestCount)) — a batch whose
+// stats never report a total (or report inconsistent/negative/non-integer
+// counts) omits requestCounts entirely via NormalizeBatchRequestCounts,
+// rather than fabricating a zero-value block.
 func convertGoogleRequestCounts(stats *googleBatchStatsWire) *provider.BatchRequestCounts {
 	if stats == nil {
 		return nil
 	}
-	return &provider.BatchRequestCounts{
-		Total:     parseGoogleBatchCount(stats.RequestCount),
-		Pending:   parseGoogleBatchCount(stats.PendingRequestCount),
-		Completed: parseGoogleBatchCount(stats.SuccessfulRequestCount),
-		Failed:    parseGoogleBatchCount(stats.FailedRequestCount),
+	total := parseGoogleBatchCount(stats.RequestCount)
+	pending := parseGoogleBatchCountOrZero(stats.PendingRequestCount)
+	completed := parseGoogleBatchCountOrZero(stats.SuccessfulRequestCount)
+	failed := parseGoogleBatchCountOrZero(stats.FailedRequestCount)
+	return providerutils.NormalizeBatchRequestCounts(total, pending, completed, failed)
+}
+
+// parseGoogleBatchCount parses a wire count (string or float64) into a
+// non-negative int, returning nil when missing or invalid (matching TS
+// parseCount's Number.isSafeInteger && >= 0 check; Go's int has no separate
+// "safe integer" range concern).
+func parseGoogleBatchCount(v interface{}) *int {
+	switch t := v.(type) {
+	case string:
+		if n, err := strconv.Atoi(t); err == nil && n >= 0 {
+			return &n
+		}
+		return nil
+	case float64:
+		if n := int(t); float64(n) == t && n >= 0 {
+			return &n
+		}
+		return nil
+	default:
+		return nil
 	}
 }
 
-func parseGoogleBatchCount(v interface{}) int {
-	switch t := v.(type) {
-	case string:
-		n, err := strconv.Atoi(t)
-		if err != nil {
-			return 0
-		}
-		return n
-	case float64:
-		return int(t)
-	default:
-		return 0
+// parseGoogleBatchCountOrZero mirrors TS's `parseCount(counts?.xField ?? 0)`
+// default-to-zero behavior for the completed/failed/pending sub-counts.
+func parseGoogleBatchCountOrZero(v interface{}) *int {
+	if v == nil {
+		zero := 0
+		return &zero
 	}
+	return parseGoogleBatchCount(v)
 }
 
 // convertGoogleBatchResultLine converts one batch result (key + response +

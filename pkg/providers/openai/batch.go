@@ -386,24 +386,14 @@ func (r openAIBatchResponseWire) toStatus() provider.BatchV4Status {
 		RawStatus: r.Status,
 	}
 	if r.RequestCounts != nil {
-		rc := &provider.BatchRequestCounts{}
-		var total, completed, failed int
-		if r.RequestCounts.Total != nil {
-			total = *r.RequestCounts.Total
-			rc.Total = total
-		}
-		if r.RequestCounts.Completed != nil {
-			completed = *r.RequestCounts.Completed
-			rc.Completed = completed
-		}
-		if r.RequestCounts.Failed != nil {
-			failed = *r.RequestCounts.Failed
-			rc.Failed = failed
-		}
+		var pending *int
 		if r.RequestCounts.Total != nil && r.RequestCounts.Completed != nil && r.RequestCounts.Failed != nil {
-			rc.Pending = total - completed - failed
+			p := *r.RequestCounts.Total - *r.RequestCounts.Completed - *r.RequestCounts.Failed
+			pending = &p
 		}
-		status.RequestCounts = rc
+		status.RequestCounts = providerutils.NormalizeBatchRequestCounts(
+			r.RequestCounts.Total, pending, r.RequestCounts.Completed, r.RequestCounts.Failed,
+		)
 	}
 	if r.Errors != nil && len(r.Errors.Data) > 0 {
 		first := r.Errors.Data[0]

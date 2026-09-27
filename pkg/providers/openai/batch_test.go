@@ -381,6 +381,43 @@ func TestOpenAIBatch_NormalizesCountsTimestampsAndErrors(t *testing.T) {
 	}
 }
 
+// TestOpenAIBatch_OmitsInconsistentOrMissingRequestCounts mirrors TS
+// normalizeBatchRequestCounts's "returns undefined for invalid counts"
+// cases: a partial or negative request_counts block must be omitted
+// entirely, not surfaced with fabricated/negative values. (OpenAI's
+// `pending` is always derived as total-completed-failed, so it can never
+// disagree with `total` by construction; the only way normalization can
+// fail here is a missing or negative count.)
+func TestOpenAIBatch_OmitsInconsistentOrMissingRequestCounts(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"negative completed", `{"id":"batch_123","status":"failed","request_counts":{"total":2,"completed":-1,"failed":0}}`},
+		{"missing total", `{"id":"batch_123","status":"failed","request_counts":{"completed":1,"failed":0}}`},
+		{"no request_counts", `{"id":"batch_123","status":"failed"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+
+			p := New(Config{APIKey: "k", BaseURL: srv.URL})
+			b := p.ExperimentalBatch()
+			status, err := b.DoGetBatchStatus(t.Context(), provider.BatchV4OperationOptions{BatchID: "batch_123"})
+			if err != nil {
+				t.Fatalf("DoGetBatchStatus: %v", err)
+			}
+			if status.RequestCounts != nil {
+				t.Fatalf("RequestCounts = %+v, want nil", status.RequestCounts)
+			}
+		})
+	}
+}
+
 func TestOpenAIBatch_AcceptsIncompleteErrorDetails(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
