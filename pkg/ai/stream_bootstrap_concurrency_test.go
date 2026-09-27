@@ -351,3 +351,53 @@ func TestStreamText_CtxCancelledMidToolExecutionDoesNotHang(t *testing.T) {
 		t.Fatalf("Status() = %v, want %v after the background goroutine finished", result.Status(), StreamStatusDone)
 	}
 }
+
+// TestStreamText_ReleasesBootstrapContextWithoutClose checks that the
+// background context StreamText derives from the caller's ctx is cancelled
+// once processing finishes, even if the caller never calls Close(), so it
+// does not stay registered on a long-lived parent context.
+func TestStreamText_ReleasesBootstrapContextWithoutClose(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var streamCtx context.Context
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			mu.Lock()
+			streamCtx = ctx
+			mu.Unlock()
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "ok"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	parent, cancelParent := context.WithCancel(context.Background())
+	defer cancelParent()
+	result, err := StreamText(parent, StreamTextOptions{Model: model, Prompt: "hi"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := result.ReadAll(); err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if err := result.Err(); err != nil {
+		t.Fatalf("Err() = %v", err)
+	}
+
+	mu.Lock()
+	ctx := streamCtx
+	mu.Unlock()
+	if ctx == nil {
+		t.Fatal("DoStream was not called")
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("bootstrap context still live after processing finished without Close()")
+	}
+	if parent.Err() != nil {
+		t.Fatal("parent context must not be cancelled")
+	}
+}

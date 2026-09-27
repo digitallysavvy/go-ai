@@ -597,6 +597,11 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 // regardless of which phase produced the error — matching TS, where none of
 // this can make streamText() itself throw or return a rejected promise.
 func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTextOptions, instructionMessages []types.Message) {
+	// Release the bootstrap context once all processing is done, so callers
+	// that never call Close() don't leave it registered on a long-lived
+	// parent context. processStream runs synchronously below, so nothing
+	// uses ctx after this returns. Close() may also call it; that's a no-op.
+	defer r.cancelBootstrap()
 	telemetrySettings := effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
 	runtimeContext := effectiveRuntimeContext(opts.RuntimeContext, opts.ExperimentalContext)
 	system := effectiveSystem(opts.System, opts.Instructions)
