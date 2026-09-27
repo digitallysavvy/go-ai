@@ -122,8 +122,13 @@ func NewBridgeLimitError(message string, details interface{}) *BridgeLimitError 
 // bridge work and returns without awaiting or otherwise observing it.
 // Mirrors TypeScript's CodeModeDetachedBridgeRequestError. This Go port
 // dispatches every `tools.x(input)` call synchronously (see the package
-// doc), so a call can never be left unobserved and this error is defined
-// for API parity but never raised by this package today.
+// doc), so an ordinary call can never be left unobserved -- but a call that
+// raises a code-mode interruption (RequestCodeModeInterrupt, or approval
+// under ApprovalModeInterrupt) propagates as a JS exception meant to unwind
+// the sandboxed script uncaught; if the script instead wraps it in
+// try/catch and completes normally anyway, that interruption was started
+// but never surfaced to the caller for resolution, and RunCodeMode raises
+// this error instead of silently returning a result that discards it.
 type DetachedBridgeRequestError struct{ *BaseError }
 
 // NewDetachedBridgeRequestError creates a DetachedBridgeRequestError.

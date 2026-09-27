@@ -250,6 +250,17 @@ type ToolExecutionOptions struct {
 	// It is intentionally typed as interface{} so applications can provide their
 	// own sandbox implementation while core APIs preserve TypeScript parity.
 	ExperimentalSandbox interface{}
+
+	// CodeModeInterrupt carries resume metadata from pkg/codemode when this
+	// tool execution is deterministically replaying after a prior
+	// codemode.RequestCodeModeInterrupt call from within this same tool's
+	// Execute function. It holds a *codemode.InterruptExecutionContext and
+	// is nil on every other call (including the first attempt, before any
+	// interrupt was requested). Typed as interface{} to avoid an import
+	// cycle: pkg/codemode imports this package for Tool/ToolSet. Mirrors
+	// TypeScript's CodeModeToolExecutionOptions.codeModeInterrupt
+	// (code-mode/src/types.ts).
+	CodeModeInterrupt interface{}
 }
 
 // ToModelOutputFunc converts a tool result to model-readable output
