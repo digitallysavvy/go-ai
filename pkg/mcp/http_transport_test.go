@@ -283,6 +283,76 @@ func TestHTTPTransportReportsMalformedPOSTResponseSSEMessage(t *testing.T) {
 	}
 }
 
+// nilBodyEventStreamSSEClient simulates a text/event-stream response whose
+// Body is nil. A real net/http server response never has a nil Body, but a
+// custom SSEClient/RoundTripper (as MCPTransportConfig.SSEClient allows) can
+// hand one back, and TS's fetch-based transport treats it as a distinct
+// failure (`if (!response.body) throw ...`) rather than an empty stream.
+type nilBodyEventStreamSSEClient struct{}
+
+func (nilBodyEventStreamSSEClient) Do(req *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       nil,
+		Request:    req,
+	}, nil
+}
+
+// TestHTTPTransportSendFailsOnEventStreamResponseWithoutBody ports TS
+// send()'s `if (!response.body) { throw new MCPClientError({message:
+// 'MCP HTTP Transport Error: text/event-stream response without body', ...
+// }); }`. A prior version of the Go transport normalized a nil resp.Body to
+// an empty io.NopCloser reader right after client.Do, which made this
+// content-type-specific failure unreachable -- the send would appear to
+// succeed with a silently empty SSE stream instead of erroring. Send must
+// return the exact TS error message and report it via OnError, matching
+// every other send() failure path.
+func TestHTTPTransportSendFailsOnEventStreamResponseWithoutBody(t *testing.T) {
+	var mu sync.Mutex
+	var errs []error
+	transport := NewHTTPTransport(HTTPTransportConfig{
+		URL:       "http://localhost:9999/mcp",
+		SSEClient: nilBodyEventStreamSSEClient{},
+		OnError: func(err error) {
+			mu.Lock()
+			errs = append(errs, err)
+			mu.Unlock()
+		},
+	})
+	transport.connected = true
+
+	msg, err := CreateRequest(1, "ping", nil)
+	if err != nil {
+		t.Fatalf("CreateRequest error: %v", err)
+	}
+	sendErr := transport.Send(t.Context(), msg)
+	if sendErr == nil {
+		t.Fatal("Send should fail for a text/event-stream response without a body")
+	}
+	var clientErr *MCPClientError
+	if !errors.As(sendErr, &clientErr) {
+		t.Fatalf("error = %T %v, want *MCPClientError", sendErr, sendErr)
+	}
+	const wantMessage = "MCP HTTP Transport Error: text/event-stream response without body"
+	if clientErr.Message != wantMessage {
+		t.Fatalf("message = %q, want %q", clientErr.Message, wantMessage)
+	}
+	if clientErr.StatusCode != http.StatusOK {
+		t.Fatalf("StatusCode = %d, want %d", clientErr.StatusCode, http.StatusOK)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(errs) != 1 {
+		t.Fatalf("OnError calls = %d, want 1: %v", len(errs), errs)
+	}
+	var reportedErr *MCPClientError
+	if !errors.As(errs[0], &reportedErr) || reportedErr.Message != wantMessage {
+		t.Fatalf("OnError reported %v, want the same %q error", errs[0], wantMessage)
+	}
+}
+
 type errorSSEClient struct {
 	status         int
 	body           string

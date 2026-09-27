@@ -167,8 +167,11 @@ type BatchV4CancelResult struct {
 type BatchV4ListOptions struct {
 	ProviderOptions map[string]interface{}
 	Headers         map[string]string
-	Limit           int
-	Cursor          string
+	// Limit is optional (nil means unset), mirroring TypeScript's
+	// `limit?: number`. A provider must forward an explicit 0 rather than
+	// treating it the same as "not set".
+	Limit  *int
+	Cursor string
 }
 
 // BatchV4ListItem is a batch returned by a list operation.

@@ -488,14 +488,17 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		if resp == nil {
 			return fail(NewTransportError("failed to send request", fmt.Errorf("nil HTTP response")))
 		}
-		if resp.Body == nil {
-			resp.Body = io.NopCloser(bytes.NewReader(nil))
-		}
 		if resp.StatusCode != http.StatusUnauthorized || !t.oauthConfigured() || attempt == 1 {
 			break
 		}
-		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close() //nolint:errcheck
+		// A nil Body here is not the case this fix cares about (see the
+		// text/event-stream check below): it's just defensive, since this
+		// intermediate 401 response is discarded and retried regardless of
+		// its body.
+		if resp.Body != nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close() //nolint:errcheck
+		}
 		if err := t.refreshOAuthToken(ctx); err != nil {
 			return fail(NewTransportError("failed to refresh OAuth token", err))
 		}
@@ -523,8 +526,11 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 	}
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		defer resp.Body.Close() //nolint:errcheck
-		body, _ := io.ReadAll(resp.Body)
+		var body []byte
+		if resp.Body != nil {
+			defer resp.Body.Close() //nolint:errcheck
+			body, _ = io.ReadAll(resp.Body)
+		}
 		errMessage := fmt.Sprintf("MCP HTTP Transport Error: POSTing to endpoint (HTTP %d): %s", resp.StatusCode, string(body))
 		// Matches TS send()'s two distinct 404 suffixes: a request that
 		// carried a (now stale) session id gets the session-expired message,
@@ -550,8 +556,10 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		// must still drain and close it to return the connection to the
 		// client's pool -- JS's GC reclaims an unread body implicitly, Go's
 		// http.Client does not.
-		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close() //nolint:errcheck
+		if resp.Body != nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close() //nolint:errcheck
+		}
 		if !t.isModernProtocol() {
 			t.sseMu.Lock()
 			hasConn := t.sseConnCancel != nil
@@ -566,8 +574,10 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		// Matching TS send()'s `if (isNotification) { return; }`: a
 		// notification's response body is never inspected. Go must still
 		// drain and close it to return the connection to the pool.
-		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close() //nolint:errcheck
+		if resp.Body != nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close() //nolint:errcheck
+		}
 		return nil
 	}
 
@@ -578,11 +588,14 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 	contentType := resp.Header.Get("content-type")
 	switch {
 	case strings.Contains(contentType, "application/json"):
-		defer resp.Body.Close() //nolint:errcheck
-
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return fail(NewTransportError("failed to read response", err))
+		var body []byte
+		if resp.Body != nil {
+			defer resp.Body.Close() //nolint:errcheck
+			var readErr error
+			body, readErr = io.ReadAll(resp.Body)
+			if readErr != nil {
+				return fail(NewTransportError("failed to read response", readErr))
+			}
 		}
 
 		if t.config.EnableLogging {
@@ -598,6 +611,14 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		return nil
 
 	case strings.Contains(contentType, "text/event-stream"):
+		// Matches TS send()'s `if (!response.body) { throw ... }`: a
+		// text/event-stream response with no body cannot be piped to the SSE
+		// parser at all, unlike a Go http.Response's Body, which is normally
+		// always non-nil (nil only occurs with a fake/custom RoundTripper, as
+		// in tests). Reported via OnError like every other send() failure.
+		if resp.Body == nil {
+			return fail(NewMCPClientError(0, "MCP HTTP Transport Error: text/event-stream response without body", nil, WithMCPHTTPStatus(resp.StatusCode), WithMCPHTTPURL(t.url)))
+		}
 		// Guard the handoff with the same sseClosing flag (and sseMu lock)
 		// startInboundSSE uses for sseWG: postSSEWG.Add must never race
 		// Close()'s postSSEWG.Wait, so a transport that is already closing
@@ -622,7 +643,9 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		return nil
 
 	default:
-		resp.Body.Close() //nolint:errcheck
+		if resp.Body != nil {
+			resp.Body.Close() //nolint:errcheck
+		}
 		return fail(NewMCPClientError(0, fmt.Sprintf("MCP HTTP Transport Error: Unexpected content type: %s", contentType), nil, WithMCPHTTPStatus(resp.StatusCode), WithMCPHTTPURL(t.url)))
 	}
 }
@@ -982,10 +1005,6 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 		t.maybeScheduleInboundSSEReconnect(lifecycleCtx)
 		return
 	}
-	if resp.Body == nil {
-		resp.Body = io.NopCloser(bytes.NewReader(nil))
-	}
-
 	if sessionID := resp.Header.Get("mcp-session-id"); sessionID != "" {
 		t.setSessionID(sessionID)
 	}
@@ -993,8 +1012,10 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 	// 401: run the OAuth refresh once (reusing the single-flight path used by
 	// send()), then retry, matching TS's authorizeOnce()-guarded retry.
 	if resp.StatusCode == http.StatusUnauthorized && t.oauthConfigured() && !triedAuth {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close() //nolint:errcheck
+		if resp.Body != nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close() //nolint:errcheck
+		}
 		if err := t.refreshOAuthToken(connCtx); err != nil {
 			connCancel()
 			t.reportError(NewTransportError("failed to refresh OAuth token", err))
@@ -1008,15 +1029,24 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 	// 405: the server does not support GET on this endpoint. Matching TS,
 	// this is silent (no error reported, no reconnection scheduled).
 	if resp.StatusCode == http.StatusMethodNotAllowed {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close() //nolint:errcheck
+		if resp.Body != nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close() //nolint:errcheck
+		}
 		connCancel()
 		return
 	}
 
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close() //nolint:errcheck
+	// Matches TS openInboundSse's `if (!response.ok || !response.body)`: a
+	// missing body fails the same way a non-2xx status does, even when the
+	// status itself is OK (only reachable via a custom SSEClient, since a
+	// real net/http response body is never nil).
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices || resp.Body == nil {
+		var body []byte
+		if resp.Body != nil {
+			body, _ = io.ReadAll(resp.Body)
+			resp.Body.Close() //nolint:errcheck
+		}
 		if resp.StatusCode == http.StatusNotFound && sessionIDForRequest != "" {
 			t.expireSessionID(sessionIDForRequest)
 		}
