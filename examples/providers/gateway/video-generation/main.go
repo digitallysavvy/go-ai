@@ -85,9 +85,9 @@ func main() {
 		Prompt: ai.VideoPrompt{
 			Text: "A cat playing with a ball of yarn in slow motion",
 		},
-		AspectRatio: "1:1",  // Square video
+		AspectRatio: "1:1",    // Square video
 		Duration:    ptr(3.0), // 3 seconds
-		FPS:         ptr(30), // 30 frames per second
+		FPS:         ptr(30),  // 30 frames per second
 		ProviderOptions: map[string]interface{}{
 			"enhancePrompt": true,
 		},

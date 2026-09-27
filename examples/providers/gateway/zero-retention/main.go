@@ -51,8 +51,8 @@ func main() {
 	fmt.Println("---------------------------------------")
 
 	result1, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
-		Model: model,
-		Prompt: "Explain the importance of data privacy in healthcare applications.",
+		Model:     model,
+		Prompt:    "Explain the importance of data privacy in healthcare applications.",
 		MaxTokens: ptr(150),
 	})
 	if err != nil {
@@ -77,7 +77,7 @@ func main() {
 		fmt.Printf("\nRequest %d: %s\n", i+1, prompt)
 
 		result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
-		Model: model,
+			Model:     model,
 			Prompt:    prompt,
 			MaxTokens: ptr(100),
 		})
@@ -95,7 +95,7 @@ func main() {
 	fmt.Println("=======================================================")
 
 	stream, err := ai.StreamText(context.Background(), ai.StreamTextOptions{
-		Model: model,
+		Model:  model,
 		Prompt: "List 3 key principles of privacy-by-design.",
 	})
 	if err != nil {

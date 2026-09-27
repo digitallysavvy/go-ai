@@ -39,19 +39,10 @@ func main() {
 	prompt := types.Prompt{
 		Messages: []types.Message{
 			{
-				Role: "user",
+				Role: types.RoleUser,
 				Content: []types.ContentPart{
-					{
-						Type: "image",
-						Image: &types.ImagePart{
-							Type: "url",
-							URL:  imageURL,
-						},
-					},
-					{
-						Type: "text",
-						Text: "What do you see in this image? Describe it in detail.",
-					},
+					types.ImageContent{URL: imageURL},
+					types.TextContent{Text: "What do you see in this image? Describe it in detail."},
 				},
 			},
 		},
@@ -72,18 +63,18 @@ func main() {
 	fmt.Println()
 
 	// Multi-turn conversation with vision
-	fmt.Println("\n--- Multi-turn Vision Chat ---\n")
+	fmt.Println("\n--- Multi-turn Vision Chat ---")
 
 	// Add the assistant's response to the conversation
 	messages := append(prompt.Messages, types.Message{
-		Role:    "assistant",
-		Content: []types.ContentPart{{Type: "text", Text: result.Text}},
+		Role:    types.RoleAssistant,
+		Content: []types.ContentPart{types.TextContent{Text: result.Text}},
 	})
 
 	// Ask a follow-up question
 	messages = append(messages, types.Message{
-		Role:    "user",
-		Content: []types.ContentPart{{Type: "text", Text: "What colors are dominant in this image?"}},
+		Role:    types.RoleUser,
+		Content: []types.ContentPart{types.TextContent{Text: "What colors are dominant in this image?"}},
 	})
 
 	prompt2 := types.Prompt{Messages: messages}

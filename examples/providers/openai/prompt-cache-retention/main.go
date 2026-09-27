@@ -41,7 +41,7 @@ func defaultCacheExample(ctx context.Context, p *openai.Provider) {
 	}
 
 	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-		Model: model,
+		Model:  model,
 		Prompt: "Explain what prompt caching is in AI systems.",
 	})
 	if err != nil {
@@ -88,7 +88,7 @@ Context about our project:
 Based on this context, answer the following question:`
 
 	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-		Model: model,
+		Model:  model,
 		Prompt: largePrompt + "\n\nWhat are the best practices for implementing health checks in our microservices?",
 		ProviderOptions: map[string]interface{}{
 			"openai": map[string]interface{}{
@@ -146,7 +146,7 @@ Given this architecture, `
 		fmt.Printf("\n--- Call %d: %s ---\n", i+1, question)
 
 		result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-			Model: model,
+			Model:  model,
 			Prompt: commonPrefix + question,
 			ProviderOptions: map[string]interface{}{
 				"openai": map[string]interface{}{
@@ -188,4 +188,3 @@ Given this architecture, `
 	fmt.Println("\nNote: The first call writes to cache, subsequent calls read from cache.")
 	fmt.Println("With 24h retention, the cache remains active even if calls are hours apart!")
 }
-

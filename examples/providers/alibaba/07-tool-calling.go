@@ -5,13 +5,12 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"time"
 
-	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/alibaba"
 )
@@ -34,135 +33,92 @@ func main() {
 
 	ctx := context.Background()
 
-	// Define tools
-	tools := []types.Tool{
-		{
-			Name:        "get_weather",
-			Description: "Get the current weather for a location",
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"location": map[string]interface{}{
-						"type":        "string",
-						"description": "The city and country, e.g. London, UK",
-					},
-					"unit": map[string]interface{}{
-						"type":        "string",
-						"enum":        []string{"celsius", "fahrenheit"},
-						"description": "The unit of temperature",
-					},
+	// Define tools. Execute functions let ai.GenerateText run the full tool
+	// loop (call model -> execute tool -> send result back) automatically.
+	weatherTool := types.Tool{
+		Name:        "get_weather",
+		Description: "Get the current weather for a location",
+		Parameters: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"location": map[string]interface{}{
+					"type":        "string",
+					"description": "The city and country, e.g. London, UK",
 				},
-				"required": []string{"location"},
+				"unit": map[string]interface{}{
+					"type":        "string",
+					"enum":        []string{"celsius", "fahrenheit"},
+					"description": "The unit of temperature",
+				},
 			},
+			"required": []string{"location"},
 		},
-		{
-			Name:        "get_time",
-			Description: "Get the current time for a timezone",
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"timezone": map[string]interface{}{
-						"type":        "string",
-						"description": "IANA timezone identifier, e.g. America/New_York",
-					},
-				},
-				"required": []string{"timezone"},
-			},
+		Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			location, _ := params["location"].(string)
+			unit := "celsius"
+			if u, ok := params["unit"].(string); ok {
+				unit = u
+			}
+			return map[string]interface{}{
+				"temperature": 18,
+				"unit":        unit,
+				"condition":   "partly cloudy",
+				"location":    location,
+			}, nil
 		},
 	}
 
-	// Create prompt
-	prompt := types.Prompt{
-		Text: "What's the weather in Paris, France and what time is it there?",
+	timeTool := types.Tool{
+		Name:        "get_time",
+		Description: "Get the current time for a timezone",
+		Parameters: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"timezone": map[string]interface{}{
+					"type":        "string",
+					"description": "IANA timezone identifier, e.g. America/New_York",
+				},
+			},
+			"required": []string{"timezone"},
+		},
+		Execute: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			timezone, _ := params["timezone"].(string)
+			return map[string]interface{}{
+				"timezone": timezone,
+				"time":     time.Now().Format("15:04:05"),
+			}, nil
+		},
 	}
 
-	// Generate with tools
 	fmt.Println("User: What's the weather in Paris, France and what time is it there?")
 	fmt.Println()
 
-	result, err := model.DoGenerate(ctx, &provider.GenerateOptions{
-		Prompt: prompt,
-		Tools:  tools,
+	maxSteps := 5
+	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+		Model:    model,
+		Prompt:   "What's the weather in Paris, France and what time is it there?",
+		Tools:    []types.Tool{weatherTool, timeTool},
+		MaxSteps: &maxSteps,
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// Check for tool calls
 	if len(result.ToolCalls) > 0 {
-		fmt.Printf("Model requested %d tool calls:\n", len(result.ToolCalls))
-		fmt.Println()
-
-		// Execute tool calls and collect results
-		toolResults := make([]types.ToolResult, 0)
+		fmt.Printf("Model made %d tool call(s) across %d step(s):\n", len(result.ToolCalls), len(result.Steps))
 		for _, tc := range result.ToolCalls {
-			fmt.Printf("Tool: %s\n", tc.ToolName)
-			argsJSON, _ := json.MarshalIndent(tc.Arguments, "  ", "  ")
-			fmt.Printf("  Arguments: %s\n", string(argsJSON))
-
-			// Simulate tool execution
-			var resultContent string
-			switch tc.ToolName {
-			case "get_weather":
-				location := tc.Arguments["location"].(string)
-				unit := "celsius"
-				if u, ok := tc.Arguments["unit"].(string); ok {
-					unit = u
-				}
-				resultContent = fmt.Sprintf(`{"temperature": 18, "unit": "%s", "condition": "partly cloudy", "location": "%s"}`, unit, location)
-
-			case "get_time":
-				timezone := tc.Arguments["timezone"].(string)
-				now := time.Now()
-				resultContent = fmt.Sprintf(`{"timezone": "%s", "time": "%s"}`, timezone, now.Format("15:04:05"))
-			}
-
-			fmt.Printf("  Result: %s\n", resultContent)
-			fmt.Println()
-
-			toolResults = append(toolResults, types.ToolResult{
-				ToolCallID: tc.ID,
-				ToolName:   tc.ToolName,
-				Result:     resultContent,
-			})
+			fmt.Printf("  - %s(%v)\n", tc.ToolName, tc.Arguments)
 		}
-
-		// Send tool results back to the model
-		messages := []types.Message{
-			{
-				Role:    "user",
-				Content: []types.ContentPart{{Type: "text", Text: prompt.Text}},
-			},
-			{
-				Role:      "assistant",
-				Content:   []types.ContentPart{{Type: "text", Text: result.Text}},
-				ToolCalls: result.ToolCalls,
-			},
-			{
-				Role:        "tool",
-				ToolResults: toolResults,
-			},
-		}
-
-		finalResult, err := model.DoGenerate(ctx, &provider.GenerateOptions{
-			Prompt: types.Prompt{Messages: messages},
-			Tools:  tools,
-		})
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		fmt.Println("Assistant Response:")
-		fmt.Println(finalResult.Text)
 		fmt.Println()
-
-		// Print token usage
-		fmt.Printf("Token Usage:\n")
-		fmt.Printf("  Input:  %d tokens\n", finalResult.Usage.GetInputTokens())
-		fmt.Printf("  Output: %d tokens\n", finalResult.Usage.GetOutputTokens())
-		fmt.Printf("  Total:  %d tokens\n", finalResult.Usage.GetTotalTokens())
-	} else {
-		fmt.Println("Assistant Response:")
-		fmt.Println(result.Text)
 	}
+
+	fmt.Println("Assistant Response:")
+	fmt.Println(result.Text)
+	fmt.Println()
+
+	// Print token usage
+	fmt.Printf("Token Usage:\n")
+	fmt.Printf("  Input:  %d tokens\n", result.Usage.GetInputTokens())
+	fmt.Printf("  Output: %d tokens\n", result.Usage.GetOutputTokens())
+	fmt.Printf("  Total:  %d tokens\n", result.Usage.GetTotalTokens())
 }

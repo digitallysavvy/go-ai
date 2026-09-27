@@ -86,7 +86,7 @@ func main() {
 	}
 
 	// Print summary
-	fmt.Println("\n")
+	fmt.Println()
 	fmt.Println("---")
 	fmt.Printf("Finish Reason: %s\n", finishReason)
 

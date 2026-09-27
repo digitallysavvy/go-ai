@@ -50,7 +50,7 @@ Who has which pet?`,
 		Prompt: prompt,
 		ProviderOptions: map[string]interface{}{
 			"alibaba": map[string]interface{}{
-				"enable_thinking":  true,
+				"enable_thinking": true,
 				"thinking_budget": thinkingBudget,
 			},
 		},

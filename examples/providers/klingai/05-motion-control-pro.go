@@ -32,10 +32,8 @@ func main() {
 	referenceVideoURL := "https://example.com/dance-reference.mp4"
 
 	fmt.Println("Generating video with motion control (pro mode)...")
-	fmt.Printf("Character image: %s
-", characterImageURL)
-	fmt.Printf("Reference motion: %s
-", referenceVideoURL)
+	fmt.Printf("Character image: %s\n", characterImageURL)
+	fmt.Printf("Reference motion: %s\n", referenceVideoURL)
 
 	response, err := model.DoGenerate(ctx, &provider.VideoModelV3CallOptions{
 		Prompt: "The character performs a smooth dance move",
@@ -66,38 +64,29 @@ func main() {
 	}
 
 	// Display results
-	fmt.Println("
-Video generated successfully!")
-	fmt.Printf("Video URL: %s
-", response.Videos[0].URL)
-	fmt.Printf("Media Type: %s
-", response.Videos[0].MediaType)
+	fmt.Println("\nVideo generated successfully!")
+	fmt.Printf("Video URL: %s\n", response.Videos[0].URL)
+	fmt.Printf("Media Type: %s\n", response.Videos[0].MediaType)
 
 	// Display detailed metadata
 	if metadata, ok := response.ProviderMetadata["klingai"].(map[string]interface{}); ok {
-		fmt.Printf("
-KlingAI Metadata:
-")
+		fmt.Printf("\nKlingAI Metadata:\n")
 		if taskID, ok := metadata["taskId"].(string); ok {
-			fmt.Printf("  Task ID: %s
-", taskID)
+			fmt.Printf("  Task ID: %s\n", taskID)
 		}
 
 		if videos, ok := metadata["videos"].([]map[string]interface{}); ok && len(videos) > 0 {
 			video := videos[0]
 			if watermarkURL, ok := video["watermarkUrl"].(string); ok && watermarkURL != "" {
-				fmt.Printf("  Watermark URL: %s
-", watermarkURL)
+				fmt.Printf("  Watermark URL: %s\n", watermarkURL)
 			}
 			if duration, ok := video["duration"].(string); ok && duration != "" {
-				fmt.Printf("  Duration: %s seconds
-", duration)
+				fmt.Printf("  Duration: %s seconds\n", duration)
 			}
 			if width, ok := video["width"].(float64); ok {
 				fmt.Printf("  Resolution: %.0fx", width)
 				if height, ok := video["height"].(float64); ok {
-					fmt.Printf("%.0f
-", height)
+					fmt.Printf("%.0f\n", height)
 				} else {
 					fmt.Println()
 				}
@@ -107,16 +96,13 @@ KlingAI Metadata:
 
 	// Display warnings if any
 	if len(response.Warnings) > 0 {
-		fmt.Println("
-Warnings:")
+		fmt.Println("\nWarnings:")
 		for _, warning := range response.Warnings {
-			fmt.Printf("  - %s
-", warning.Message)
+			fmt.Printf("  - %s\n", warning.Message)
 		}
 	}
 
-	fmt.Println("
-Pro Mode Features:")
+	fmt.Println("\nPro Mode Features:")
 	fmt.Println("  - Higher quality output")
 	fmt.Println("  - Supports reference videos up to 30 seconds")
 	fmt.Println("  - Better motion capture accuracy")

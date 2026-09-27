@@ -42,15 +42,12 @@ func main() {
 	}
 
 	// Create FAL provider
-	cfg := fal.Config{
-		APIKey: os.Getenv("FAL_API_KEY"),
+	apiKey := os.Getenv("FAL_API_KEY")
+	if apiKey == "" {
+		log.Fatal("FAL_API_KEY environment variable is required")
 	}
 
-	if err := cfg.Validate(); err != nil {
-		log.Fatal(err)
-	}
-
-	prov := fal.New(cfg)
+	prov := fal.New(fal.Config{APIKey: apiKey})
 
 	// Get video model
 	model, err := prov.VideoModel("fal-ai/kling-video/v2.5-turbo/pro/image-to-video")
