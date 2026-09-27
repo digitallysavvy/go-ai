@@ -606,3 +606,80 @@ func TestToolResultModelOutputNilBecomesJSONNull(t *testing.T) {
 		t.Fatalf("Value = %#v, want nil", out.Value)
 	}
 }
+
+// TestAppendTextPart_KeepsProviderMetadata ports TS stream-text.ts's
+// `activeText.providerMetadata = part.providerMetadata ??
+// activeText.providerMetadata` (latest non-nil metadata wins across merged
+// text deltas), and verifies a metadata-only delta (empty text, non-nil
+// metadata -- e.g. Gemini/Gateway thoughtSignature deltas) isn't dropped.
+func TestAppendTextPart_KeepsProviderMetadata(t *testing.T) {
+	meta1 := json.RawMessage(`{"gemini":{"thoughtSignature":"sig-1"}}`)
+	meta2 := json.RawMessage(`{"gemini":{"thoughtSignature":"sig-2"}}`)
+
+	var parts []types.ContentPart
+	parts = appendTextPart(parts, "Hello ", meta1)
+	parts = appendTextPart(parts, "World", nil)
+	// Metadata-only delta: empty text, non-nil metadata must still update.
+	parts = appendTextPart(parts, "", meta2)
+
+	if len(parts) != 1 {
+		t.Fatalf("len(parts) = %d, want 1", len(parts))
+	}
+	text, ok := parts[0].(types.TextContent)
+	if !ok {
+		t.Fatalf("parts[0] = %T, want types.TextContent", parts[0])
+	}
+	if text.Text != "Hello World" {
+		t.Errorf("Text = %q, want %q", text.Text, "Hello World")
+	}
+	// nil-metadata delta ("World") must not clear the previously-seen
+	// metadata; the last non-nil delta ("" with meta2) wins.
+	if string(text.ProviderMetadata) != string(meta2) {
+		t.Errorf("ProviderMetadata = %s, want %s", text.ProviderMetadata, meta2)
+	}
+}
+
+// TestStreamText_KeepsTextProviderMetadata is an end-to-end regression test
+// for the pkg/ai accumulator dropping ProviderMetadata on ChunkTypeText
+// chunks (e.g. Gemini/Gateway thoughtSignature): the final step's Content
+// must retain the metadata from the text delta chunks, not just the
+// concatenated text.
+func TestStreamText_KeepsTextProviderMetadata(t *testing.T) {
+	meta := json.RawMessage(`{"google":{"thoughtSignature":"abc"}}`)
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "Hello ", ProviderMetadata: meta},
+				{Type: provider.ChunkTypeText, Text: "World!"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "Say hello",
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	if _, err := result.ReadAll(); err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+
+	var found *types.TextContent
+	for _, part := range result.Content() {
+		if tc, ok := part.(types.TextContent); ok {
+			found = &tc
+		}
+	}
+	if found == nil {
+		t.Fatalf("no TextContent in result.Content(): %+v", result.Content())
+	}
+	if found.Text != "Hello World!" {
+		t.Errorf("Text = %q, want %q", found.Text, "Hello World!")
+	}
+	if string(found.ProviderMetadata) != string(meta) {
+		t.Errorf("ProviderMetadata = %s, want %s", found.ProviderMetadata, meta)
+	}
+}

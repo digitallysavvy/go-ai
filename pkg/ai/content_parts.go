@@ -6,18 +6,28 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
-func appendTextPart(parts []types.ContentPart, text string) []types.ContentPart {
-	if text == "" {
+// appendTextPart accumulates a ChunkTypeText delta into stepContent, merging
+// consecutive deltas into a single trailing TextContent part. metadata is the
+// delta chunk's ProviderMetadata (e.g. Gemini/Gateway thoughtSignature deltas,
+// which can arrive with empty Text and non-nil metadata); when non-nil it
+// overwrites the accumulated part's ProviderMetadata, matching TS
+// stream-text.ts's `activeText.providerMetadata = part.providerMetadata ??
+// activeText.providerMetadata` (latest non-nil metadata wins).
+func appendTextPart(parts []types.ContentPart, text string, metadata json.RawMessage) []types.ContentPart {
+	if text == "" && len(metadata) == 0 {
 		return parts
 	}
 	if n := len(parts); n > 0 {
 		if last, ok := parts[n-1].(types.TextContent); ok {
 			last.Text += text
+			if len(metadata) > 0 {
+				last.ProviderMetadata = metadata
+			}
 			parts[n-1] = last
 			return parts
 		}
 	}
-	return append(parts, types.TextContent{Text: text})
+	return append(parts, types.TextContent{Text: text, ProviderMetadata: metadata})
 }
 
 func appendReasoningPart(parts []types.ContentPart, text string) []types.ContentPart {

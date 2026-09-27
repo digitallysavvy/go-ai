@@ -1573,7 +1573,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			if chunk.Type == provider.ChunkTypeText {
 				stepTextParts = append(stepTextParts, chunk.Text)
 				accumulatedTextParts = append(accumulatedTextParts, chunk.Text)
-				stepContent = appendTextPart(stepContent, chunk.Text)
+				stepContent = appendTextPart(stepContent, chunk.Text, chunk.ProviderMetadata)
 
 				// Update partial output after each text chunk (with deduplication).
 				// Only publishes when the JSON representation of the partial changes,
@@ -3400,7 +3400,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 		// Accumulate text
 		if chunk.Type == provider.ChunkTypeText {
 			r.text += chunk.Text
-			stepContent = appendTextPart(stepContent, chunk.Text)
+			stepContent = appendTextPart(stepContent, chunk.Text, chunk.ProviderMetadata)
 
 			// Update partial output after each text chunk (with deduplication).
 			if r.outputSpec != nil {
