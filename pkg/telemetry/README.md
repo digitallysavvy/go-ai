@@ -12,4 +12,4 @@ Implement `OnStepEnd(context.Context, TelemetryStepEndEvent)` to observe complet
 
 ## OpenTelemetry
 
-Register `telemetry.OTelTelemetryIntegration` to emit GenAI semantic convention spans for language model calls, tool execution, and step-level lifecycle events. Step spans are ended by `OnStepEnd`, so aborted or completed generations do not leave spans open.
+Register `telemetry.NewOpenTelemetry(...)` (GenAI semantic conventions) or `telemetry.NewLegacyOpenTelemetry(...)` (formerly `OTelTelemetryIntegration`) to emit GenAI semantic convention spans for language model calls, tool execution, and step-level lifecycle events. Step spans are ended by `OnStepEnd`, so aborted or completed generations do not leave spans open.

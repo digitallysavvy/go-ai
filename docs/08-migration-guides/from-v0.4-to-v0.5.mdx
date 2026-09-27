@@ -19,6 +19,28 @@ Go AI SDK v0.5.0 aligns the public API with the May 2026 TypeScript AI SDK chang
 
 ## Breaking changes
 
+### Telemetry: tracers belong to integrations
+
+**Impact:** medium, compile error if you set a tracer per call.
+
+`telemetry.Options.Tracer` and `WithTracer` are removed. Configure the tracer on the integration and register it once. `OTelTelemetryIntegration` is renamed `LegacyOpenTelemetry` (the old name remains as a deprecated alias), and `telemetry.NewOpenTelemetry` adds a GenAI semantic-convention integration. Custom `TelemetryIntegration` implementations must update `OnLanguageModelCallStart`, which now returns a `context.Context` (return the context the model call should run in, or the one you were given).
+
+**Before:**
+
+```go
+Telemetry: &telemetry.Options{IsEnabled: telemetry.Bool(true), Tracer: tracer}
+```
+
+**After:**
+
+```go
+telemetry.RegisterTelemetryIntegration(
+    telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tracer}),
+)
+// per call:
+Telemetry: &telemetry.Options{IsEnabled: telemetry.Bool(true)}
+```
+
 ### Telemetry names are stable
 
 **Impact:** low
@@ -40,7 +62,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 **After:**
 
 ```go
-telemetry.RegisterTelemetryIntegration(telemetry.OTelTelemetryIntegration{})
+telemetry.RegisterTelemetryIntegration(telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{}))
 
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,

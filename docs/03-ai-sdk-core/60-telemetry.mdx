@@ -82,24 +82,31 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 
 ### Custom Tracer
 
-Provide a custom OpenTelemetry tracer instead of using the global tracer:
+Provide a custom OpenTelemetry tracer instead of using the global tracer. The tracer belongs to the integration, not to `telemetry.Options`: construct the integration with it and register it once at startup.
 
 ```go
 import (
-    "go.opentelemetry.io/otel"
     "go.opentelemetry.io/otel/sdk/trace"
+
+    "github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
 
 // Create custom tracer provider
 tp := trace.NewTracerProvider()
 tracer := tp.Tracer("my-custom-tracer")
 
+// GenAI semantic-convention spans. Use telemetry.NewLegacyOpenTelemetry
+// with telemetry.LegacyOpenTelemetryOptions{Tracer: tracer} for the
+// ai.* span names instead.
+telemetry.RegisterTelemetryIntegration(
+    telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{Tracer: tracer}),
+)
+
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "Write a short story about a cat.",
     Telemetry: &telemetry.Options{
         IsEnabled: telemetry.Bool(true),
-        Tracer:    tracer,
     },
 })
 ```
