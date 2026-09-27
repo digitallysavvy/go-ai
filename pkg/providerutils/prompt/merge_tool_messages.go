@@ -6,9 +6,22 @@ import "github.com/digitallysavvy/go-ai/pkg/provider/types"
 // single tool message, mirroring TS convertToLanguageModelPrompt's "combine
 // consecutive tool messages into a single tool message" step
 // (packages/ai/src/prompt/convert-to-language-model-prompt.ts, hash
-// 33647d7). Provider message converters call this once, up front, on the raw
-// standardized message list -- matching TS, where combining happens in the
-// shared core before any provider-specific conversion runs.
+// 33647d7).
+//
+// The primary call site is NormalizePrompt (file_data.go), which -- like TS's
+// convertToLanguageModelPrompt -- is the single shared core step invoked once
+// by pkg/ai and pkg/agent before ANY provider's DoGenerate/DoStream runs, so
+// every provider (including ones with their own bespoke converter, e.g.
+// Bedrock Converse, Cohere, Mistral, DeepSeek) sees pre-merged tool messages,
+// not just the three converters below.
+//
+// ToOpenAIMessages, ConvertToAnthropicPrompt and ConvertToGoogleMessages also
+// call this themselves as a defensive, idempotent second pass: these
+// functions are exported and can be (and are, in tests) called directly with
+// raw, unmerged messages that bypass NormalizePrompt, and producing a wire
+// payload with duplicate tool_call_id entries split across separate messages
+// would be invalid for several providers. Calling it twice is a no-op once
+// the input is already merged.
 //
 // Before a tool message is folded into the previous combined tool message,
 // the previous message's own message-level ProviderOptions are deep-merged
@@ -38,10 +51,18 @@ func MergeConsecutiveToolMessages(messages []types.Message) []types.Message {
 		last := len(combined) - 1
 		if last >= 0 && combined[last].Role == types.RoleTool {
 			lastMsg := &combined[last]
-			if n := len(lastMsg.Content); n > 0 && lastMsg.ProviderOptions != nil {
-				lastMsg.Content[n-1] = pushDownProviderOptions(lastMsg.Content[n-1], lastMsg.ProviderOptions)
+			// Copy the previous message's content into a fresh slice BEFORE
+			// mutating any element. lastMsg.Content still aliases the caller's
+			// original backing array at this point (it was shallow-copied by
+			// `combined = append(combined, msg)` below); writing into it
+			// in place would silently mutate the caller-supplied messages.
+			merged := make([]types.ContentPart, 0, len(lastMsg.Content)+len(msg.Content))
+			merged = append(merged, lastMsg.Content...)
+			if n := len(merged); n > 0 && lastMsg.ProviderOptions != nil {
+				merged[n-1] = pushDownProviderOptions(merged[n-1], lastMsg.ProviderOptions)
 			}
-			lastMsg.Content = append(append([]types.ContentPart{}, lastMsg.Content...), msg.Content...)
+			merged = append(merged, msg.Content...)
+			lastMsg.Content = merged
 			lastMsg.ProviderOptions = msg.ProviderOptions
 			continue
 		}

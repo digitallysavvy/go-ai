@@ -249,3 +249,63 @@ func TestMergeConsecutiveToolMessagesNoop(t *testing.T) {
 		t.Fatalf("len(got) = %d, want %d (no consecutive tool messages to combine)", len(got), len(messages))
 	}
 }
+
+// TestMergeConsecutiveToolMessagesDoesNotMutateInput guards against a
+// regression where combining two tool messages wrote the push-down of the
+// first message's ProviderOptions directly into index len(content)-1 of the
+// FIRST message's own Content slice before that slice had been copied --
+// silently mutating the caller-supplied []types.Message backing array
+// in place. Since MergeConsecutiveToolMessages is called on every
+// GenerateText/StreamText/agent step, and the same []types.Message value can
+// legitimately be reused by a caller across multiple calls (e.g. retries,
+// multi-provider fallback), it must never mutate its input.
+func TestMergeConsecutiveToolMessagesDoesNotMutateInput(t *testing.T) {
+	original := types.ToolResultContent{
+		ToolCallID: "toolCallId1",
+		ToolName:   "toolName",
+		Output:     &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "result1"},
+	}
+	messages := []types.Message{
+		{
+			Role:    types.RoleTool,
+			Content: []types.ContentPart{original},
+			ProviderOptions: map[string]interface{}{
+				"test": map[string]interface{}{"cacheControl": "first-message"},
+			},
+		},
+		{
+			Role: types.RoleTool,
+			Content: []types.ContentPart{
+				types.ToolResultContent{ToolCallID: "toolCallId2", ToolName: "toolName", Output: &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "result2"}},
+			},
+			ProviderOptions: map[string]interface{}{
+				"test": map[string]interface{}{"cacheControl": "second-message"},
+			},
+		},
+	}
+
+	_ = MergeConsecutiveToolMessages(messages)
+
+	// The original input slice's first message must be byte-for-byte
+	// untouched: its Content[0] must still be the original value with no
+	// ProviderOptions pushed into it.
+	got, ok := messages[0].Content[0].(types.ToolResultContent)
+	if !ok {
+		t.Fatalf("messages[0].Content[0] = %#v, want ToolResultContent", messages[0].Content[0])
+	}
+	if got.ProviderOptions != nil {
+		t.Fatalf("input mutated: messages[0].Content[0].ProviderOptions = %#v, want nil (original untouched)", got.ProviderOptions)
+	}
+	if !reflect.DeepEqual(got, original) {
+		t.Fatalf("input mutated: messages[0].Content[0] = %#v, want unchanged %#v", got, original)
+	}
+
+	// Calling it a second time on the SAME original input must produce an
+	// identical result to the first call (proves the first call didn't leave
+	// behind state that would change a subsequent merge).
+	firstResult := MergeConsecutiveToolMessages(messages)
+	secondResult := MergeConsecutiveToolMessages(messages)
+	if !reflect.DeepEqual(firstResult, secondResult) {
+		t.Fatalf("merge is not idempotent across repeated calls on the same input:\nfirst:  %#v\nsecond: %#v", firstResult, secondResult)
+	}
+}
