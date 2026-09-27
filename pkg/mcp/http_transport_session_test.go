@@ -43,6 +43,7 @@ func (c *sessionSSEClient) Do(req *http.Request) (*http.Response, error) {
 	}
 
 	header := make(http.Header)
+	header.Set("Content-Type", "application/json")
 	if c.issueSessionID != "" {
 		header.Set("mcp-session-id", c.issueSessionID)
 	}

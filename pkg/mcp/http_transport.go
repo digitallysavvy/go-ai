@@ -70,14 +70,18 @@ type HTTPTransport struct {
 	// site that calls `this.onerror?.(...)` there has a matching call here.
 	onError func(error)
 
-	// Inbound SSE (legacy protocol era only): a standing background GET
-	// (Accept: text/event-stream) that receives server-initiated messages,
-	// matching TS HttpMCPTransport openInboundSse/startInboundSse.
-	// isModernProtocol() short-circuits it entirely for the 2026-07-28
-	// protocol. sseLifecycleCtx/sseLifecycleCancel span the transport's whole
-	// life (created in Connect, canceled in Close); sseConnCancel cancels
-	// just the current GET/read, used when the negotiated protocol switches
-	// to modern mid-flight.
+	// sseLifecycleCtx/sseLifecycleCancel is the transport-lifetime context,
+	// matching TS HttpMCPTransport's `this.abortController` (created once in
+	// start(), aborted in close()). It is not only for the standing inbound
+	// SSE GET listener below: every outbound Send() POST (and, when a POST
+	// response is itself text/event-stream, the reader draining it) derives
+	// its own per-call context by combining this one with the caller's ctx
+	// (see deriveRequestContext), matching TS send()'s
+	// `AbortSignal.any([transportSignal, options.signal])`. sseConnCancel
+	// cancels just the current inbound GET/read, used when the negotiated
+	// protocol switches to modern mid-flight. sseClosing gates every place
+	// that would otherwise race a WaitGroup.Add against Close()'s Wait:
+	// startInboundSSE (sseWG) and the POST-response SSE reader (postSSEWG).
 	sseMu                sync.Mutex
 	sseLifecycleCtx      context.Context
 	sseLifecycleCancel   context.CancelFunc
@@ -87,6 +91,12 @@ type HTTPTransport struct {
 	sseReconnectTimer    *time.Timer
 	lastInboundEventID   string
 	sseWG                sync.WaitGroup
+
+	// postSSEWG tracks background goroutines draining a text/event-stream
+	// POST response (readMCPHTTPSSEMessages), so Close() can wait for them to
+	// exit rather than leaking them, matching this slice's "goroutines must
+	// exit" requirement (TS has no equivalent: JS has no goroutines to leak).
+	postSSEWG sync.WaitGroup
 }
 
 // HTTPTransportConfig contains configuration for HTTP transport
@@ -329,12 +339,16 @@ func (t *HTTPTransport) Connect(ctx context.Context) error {
 // this.sessionId && ...`, no DELETE is sent for the modern (2026-07-28)
 // protocol era.
 func (t *HTTPTransport) Close() error {
-	// Cancel the inbound SSE lifecycle (in-flight GET and any scheduled
-	// reconnect) and wait for its goroutine(s) to exit before proceeding,
-	// matching TS's `this.inboundSseConnection?.close();
-	// this.abortController?.abort();` and guaranteeing Close() never leaks a
-	// goroutine.
+	// Cancel the transport-lifetime context (in-flight GET/POST requests, any
+	// POST-response SSE reader, and any scheduled inbound-SSE reconnect) and
+	// wait for every goroutine it owns to exit before proceeding, matching
+	// TS's `this.inboundSseConnection?.close(); this.abortController?.abort();`
+	// and guaranteeing Close() never leaks a goroutine. stopInboundSSE cancels
+	// sseLifecycleCtx, which every in-flight Send()'s derived request context
+	// (see deriveRequestContext) is also watching, so this unblocks in-flight
+	// POST requests and POST-response SSE reads too, not just inbound SSE.
 	t.stopInboundSSE()
+	t.postSSEWG.Wait()
 
 	t.mu.Lock()
 	sessionID := t.sessionID
@@ -395,7 +409,11 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 	// `this.onerror?.(error); throw error;` site in TS send()'s attempt()
 	// (non-ok responses, fetch failures, OAuth refresh failures, session
 	// expiry). Matching TS's `if (options?.signal?.aborted) throw error;`
-	// guard, a caller-canceled context suppresses the report.
+	// guard, a caller-canceled context suppresses the report. This
+	// deliberately checks the caller's own ctx, not reqCtx below: TS's guard
+	// only looks at `options?.signal` (the caller's own per-call signal), so
+	// an abort caused solely by Close() (the transport-wide signal) is still
+	// reported here, exactly as TS's send() does.
 	fail := func(err error) error {
 		if ctx.Err() == nil {
 			t.reportError(err)
@@ -413,8 +431,23 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		fmt.Printf("MCP HTTP Send: %s\n", string(data))
 	}
 
+	// reqCtx combines the caller's ctx with the transport-lifetime context
+	// that Close cancels, matching TS send()'s
+	// `AbortSignal.any([transportSignal, options.signal])`: it drives the
+	// POST request itself and, for a text/event-stream response, the reader
+	// draining it. release must run exactly once the derived context is no
+	// longer needed; handedOff tracks whether that responsibility moved to a
+	// background goroutine (the SSE-reader case) instead of happening here.
+	reqCtx, release := t.deriveRequestContext(ctx)
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			release()
+		}
+	}()
+
 	// Create HTTP request
-	req, err := http.NewRequestWithContext(ctx, "POST", t.url, bytes.NewReader(data))
+	req, err := http.NewRequestWithContext(reqCtx, "POST", t.url, bytes.NewReader(data))
 	if err != nil {
 		return fail(NewTransportError("failed to create request", err))
 	}
@@ -466,7 +499,7 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		if err := t.refreshOAuthToken(ctx); err != nil {
 			return fail(NewTransportError("failed to refresh OAuth token", err))
 		}
-		req, err = http.NewRequestWithContext(ctx, "POST", t.url, bytes.NewReader(data))
+		req, err = http.NewRequestWithContext(reqCtx, "POST", t.url, bytes.NewReader(data))
 		if err != nil {
 			return fail(NewTransportError("failed to create request", err))
 		}
@@ -512,7 +545,13 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		// If the server accepted the message (e.g. the initialized
 		// notification), optionally (re)start inbound SSE when it was not
 		// available earlier (e.g. a 405 before init), matching TS's send()
-		// 202 handling. Fire-and-forget: do not block Send() on it.
+		// 202 handling. Fire-and-forget: do not block Send() on it. TS never
+		// reads response.body here either (it returns immediately), but Go
+		// must still drain and close it to return the connection to the
+		// client's pool -- JS's GC reclaims an unread body implicitly, Go's
+		// http.Client does not.
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close() //nolint:errcheck
 		if !t.isModernProtocol() {
 			t.sseMu.Lock()
 			hasConn := t.sseConnCancel != nil
@@ -524,34 +563,68 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		return nil
 	}
 	if IsNotification(message) {
+		// Matching TS send()'s `if (isNotification) { return; }`: a
+		// notification's response body is never inspected. Go must still
+		// drain and close it to return the connection to the pool.
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close() //nolint:errcheck
 		return nil
 	}
 
+	// Content-type dispatch matches TS send()'s exact order: application/json
+	// is parsed, text/event-stream is handed to a reader, and anything else
+	// (including a missing content-type) is an "Unexpected content type"
+	// error, reported via OnError and returned.
 	contentType := resp.Header.Get("content-type")
-	if strings.Contains(contentType, "text/event-stream") {
-		go t.readMCPHTTPSSEMessages(ctx, resp.Body)
+	switch {
+	case strings.Contains(contentType, "application/json"):
+		defer resp.Body.Close() //nolint:errcheck
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return fail(NewTransportError("failed to read response", err))
+		}
+
+		if t.config.EnableLogging {
+			fmt.Printf("MCP HTTP Receive: %s\n", string(body))
+		}
+
+		messages, err := parseMCPHTTPJSONMessages(body)
+		if err != nil {
+			return fail(NewTransportError("failed to unmarshal response", err))
+		}
+
+		t.queueReceivedMessages(messages)
 		return nil
+
+	case strings.Contains(contentType, "text/event-stream"):
+		// Guard the handoff with the same sseClosing flag (and sseMu lock)
+		// startInboundSSE uses for sseWG: postSSEWG.Add must never race
+		// Close()'s postSSEWG.Wait, so a transport that is already closing
+		// drains and discards the stream here instead of starting a
+		// goroutine Close() might already have stopped waiting for.
+		t.sseMu.Lock()
+		closing := t.sseClosing
+		if !closing {
+			t.postSSEWG.Add(1)
+		}
+		t.sseMu.Unlock()
+		if closing {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close() //nolint:errcheck
+			return nil
+		}
+		handedOff = true
+		go func() {
+			defer t.postSSEWG.Done()
+			t.readMCPHTTPSSEMessages(reqCtx, release, resp.Body)
+		}()
+		return nil
+
+	default:
+		resp.Body.Close() //nolint:errcheck
+		return fail(NewMCPClientError(0, fmt.Sprintf("MCP HTTP Transport Error: Unexpected content type: %s", contentType), nil, WithMCPHTTPStatus(resp.StatusCode), WithMCPHTTPURL(t.url)))
 	}
-	defer resp.Body.Close() //nolint:errcheck
-
-	// Read response
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fail(NewTransportError("failed to read response", err))
-	}
-
-	if t.config.EnableLogging {
-		fmt.Printf("MCP HTTP Receive: %s\n", string(body))
-	}
-
-	messages, err := parseMCPHTTPJSONMessages(body)
-	if err != nil {
-		return fail(NewTransportError("failed to unmarshal response", err))
-	}
-
-	t.queueReceivedMessages(messages)
-
-	return nil
 }
 
 func (t *HTTPTransport) queueReceivedMessages(messages []*MCPMessage) {
@@ -613,12 +686,19 @@ func parseMCPHTTPSSEMessages(body io.Reader) ([]*MCPMessage, error) {
 // POST send() (as opposed to the standing inbound SSE GET listener), matching
 // TS send()'s `processEvents()`. A clean end-of-stream (EOF) returns
 // silently, matching TS's `if (done) return;`; a read error is reported via
-// OnError and stops the loop, matching TS's outer catch (`this.onerror?.(error)`,
-// skipped when the failure was caused by the caller's own context
-// cancellation, matching TS's `options?.signal?.aborted` check); a malformed
-// message is reported via OnError but does not stop the loop, matching TS's
-// inner catch around `parseJSONRPCMessage`.
-func (t *HTTPTransport) readMCPHTTPSSEMessages(ctx context.Context, body io.ReadCloser) {
+// OnError and stops the loop, matching TS's outer catch
+// (`this.onerror?.(error)`), except that report is skipped when ctx (the
+// request context deriveRequestContext produced, combining the caller's ctx
+// with the transport-lifetime one Close cancels) is already done, matching
+// TS's `options?.signal?.aborted || error.name === 'AbortError'` check: TS
+// checks the caller signal OR a generic AbortError (which fires for either
+// signal in the merged `AbortSignal.any`), which is exactly what checking
+// this combined ctx captures in one condition. A malformed message is
+// reported via OnError but does not stop the loop, matching TS's inner catch
+// around `parseJSONRPCMessage`. release is deriveRequestContext's cleanup
+// func for ctx, invoked once this goroutine is done with it.
+func (t *HTTPTransport) readMCPHTTPSSEMessages(ctx context.Context, release context.CancelFunc, body io.ReadCloser) {
+	defer release()
 	defer body.Close() //nolint:errcheck
 	parser := streaming.NewSSEParser(body)
 	for {
@@ -664,6 +744,34 @@ func (t *HTTPTransport) isModernProtocol() bool {
 func (t *HTTPTransport) reportError(err error) {
 	if t.onError != nil {
 		t.onError(err)
+	}
+}
+
+// deriveRequestContext derives the context.Context for a single outbound
+// Send() POST request (and, when its response is itself a text/event-stream,
+// the reader draining it) by combining the caller-supplied ctx with the
+// transport-lifetime context Close cancels, matching TS send()'s
+// `AbortSignal.any([transportSignal, options.signal])`. Before Connect has
+// run (sseLifecycleCtx is nil, e.g. tests that set connected directly) there
+// is no transport-lifetime context yet, so ctx is returned unchanged.
+//
+// The returned release func must be called exactly once, when the derived
+// context is no longer needed, to stop the background watcher
+// context.AfterFunc registers against the transport-lifetime context;
+// otherwise that watcher would sit blocked until Close() finally cancels it,
+// leaking one per Send() call for the life of the transport.
+func (t *HTTPTransport) deriveRequestContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	t.sseMu.Lock()
+	lifecycleCtx := t.sseLifecycleCtx
+	t.sseMu.Unlock()
+	if lifecycleCtx == nil {
+		return ctx, func() {}
+	}
+	reqCtx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(lifecycleCtx, cancel)
+	return reqCtx, func() {
+		stop()
+		cancel()
 	}
 }
 
