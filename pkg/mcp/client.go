@@ -30,6 +30,13 @@ type MCPClient struct {
 	serverCapability   ServerCapabilities
 	serverInstructions string
 
+	// initializeResultMu guards initializeResult, which is written once by
+	// Connect (from either the modern server/discover or legacy initialize
+	// handshake) and read by InitializeResult, matching TS's cached
+	// `get initializeResult()` (mcp-client.ts: `_initializeResult`).
+	initializeResultMu sync.RWMutex
+	initializeResult   InitializeResult
+
 	// protocolEra is "legacy" (classic `initialize` handshake) or "modern"
 	// (negotiated via `server/discover`, hash e6a9927). The zero value
 	// ("") behaves as "legacy".
@@ -139,6 +146,12 @@ func NewMCPClient(transport Transport, config MCPClientConfig) *MCPClient {
 			Name:    config.ClientName,
 			Version: config.ClientVersion,
 		},
+		// Matches TS's pre-connect default (`_initializeResult` field
+		// initializer, mcp-client.ts): legacy protocol version, empty
+		// capabilities, empty server info.
+		initializeResult: InitializeResult{
+			ProtocolVersion: LatestLegacyProtocolVersion,
+		},
 		ctx:    ctx,
 		cancel: cancel,
 		config: config,
@@ -238,7 +251,34 @@ func (c *MCPClient) applyDiscoverResult(result DiscoverResult) error {
 	}
 	c.serverCapability = result.Capabilities
 	c.serverInstructions = result.Instructions
+	c.setInitializeResult(InitializeResult{
+		ProtocolVersion: c.protocolVersion,
+		Capabilities:    result.Capabilities,
+		ServerInfo:      c.serverInfo,
+		Instructions:    result.Instructions,
+	})
 	return nil
+}
+
+// setInitializeResult caches result for InitializeResult, matching TS's
+// `this._initializeResult = ...` assignments in applyDiscoverResult and
+// applyInitializeResult (mcp-client.ts).
+func (c *MCPClient) setInitializeResult(result InitializeResult) {
+	c.initializeResultMu.Lock()
+	c.initializeResult = result
+	c.initializeResultMu.Unlock()
+}
+
+// InitializeResult returns the cached result of the handshake that
+// established the connection — either the legacy `initialize` response or
+// the fields synthesized from a modern `server/discover` response — matching
+// TS's `get initializeResult()` (mcp-client.ts). Before Connect succeeds, it
+// returns the same pre-connect default TS does: legacy protocol version,
+// empty capabilities, and empty server info.
+func (c *MCPClient) InitializeResult() InitializeResult {
+	c.initializeResultMu.RLock()
+	defer c.initializeResultMu.RUnlock()
+	return c.initializeResult
 }
 
 // Close closes the connection to the MCP server
@@ -277,6 +317,7 @@ func (c *MCPClient) initialize(ctx context.Context) error {
 	c.serverInstructions = result.Instructions
 	c.protocolEra = "legacy"
 	c.protocolVersion = result.ProtocolVersion
+	c.setInitializeResult(result)
 	if versionTransport, ok := c.transport.(ProtocolVersionTransport); ok {
 		versionTransport.SetProtocolVersion(result.ProtocolVersion)
 	}

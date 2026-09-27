@@ -173,6 +173,71 @@ func TestMCPClientProtocolDiscoverySucceeds(t *testing.T) {
 	}
 }
 
+// TestMCPClientInitializeResultDefaultBeforeConnect mirrors TS's
+// pre-connect `_initializeResult` field initializer (mcp-client.ts):
+// InitializeResult() must be usable (not zero/nil-panicking) before Connect,
+// reporting the legacy protocol version and empty capabilities/server info.
+func TestMCPClientInitializeResultDefaultBeforeConnect(t *testing.T) {
+	client := NewMCPClient(newDiscoveryMockTransport(), MCPClientConfig{})
+	result := client.InitializeResult()
+	if result.ProtocolVersion != LatestLegacyProtocolVersion {
+		t.Fatalf("ProtocolVersion = %q, want the legacy default %q", result.ProtocolVersion, LatestLegacyProtocolVersion)
+	}
+	if result.ServerInfo != (ServerInfo{}) {
+		t.Fatalf("ServerInfo = %#v, want zero value before connect", result.ServerInfo)
+	}
+}
+
+// TestMCPClientInitializeResultCachedAfterModernDiscovery mirrors TS's
+// applyDiscoverResult caching `this._initializeResult` from the
+// server/discover response (mcp-client.ts).
+func TestMCPClientInitializeResultCachedAfterModernDiscovery(t *testing.T) {
+	transport := newDiscoveryMockTransport()
+	transport.supportsDiscovery = true
+	client := NewMCPClient(transport, MCPClientConfig{})
+
+	if err := client.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect error: %v", err)
+	}
+	defer client.Close() //nolint:errcheck
+
+	result := client.InitializeResult()
+	if result.ProtocolVersion != LatestProtocolVersion {
+		t.Fatalf("ProtocolVersion = %q, want %q", result.ProtocolVersion, LatestProtocolVersion)
+	}
+	if result.ServerInfo.Name != "modern-server" || result.ServerInfo.Version != "2.0.0" {
+		t.Fatalf("ServerInfo = %#v", result.ServerInfo)
+	}
+	if result.Instructions != "modern era instructions" {
+		t.Fatalf("Instructions = %q", result.Instructions)
+	}
+	if result.Capabilities.Completions == nil {
+		t.Fatal("expected completions capability cached on InitializeResult")
+	}
+}
+
+// TestMCPClientInitializeResultCachedAfterLegacyInitialize mirrors TS's
+// applyInitializeResult caching the raw `initialize` response as
+// `this._initializeResult` (mcp-client.ts).
+func TestMCPClientInitializeResultCachedAfterLegacyInitialize(t *testing.T) {
+	transport := newDiscoveryMockTransport()
+	transport.supportsDiscovery = false
+	client := NewMCPClient(transport, MCPClientConfig{})
+
+	if err := client.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect error: %v", err)
+	}
+	defer client.Close() //nolint:errcheck
+
+	result := client.InitializeResult()
+	if result.ProtocolVersion != LatestLegacyProtocolVersion {
+		t.Fatalf("ProtocolVersion = %q, want %q", result.ProtocolVersion, LatestLegacyProtocolVersion)
+	}
+	if result.ServerInfo.Name != "legacy-server" {
+		t.Fatalf("ServerInfo = %#v, want the legacy initialize result cached", result.ServerInfo)
+	}
+}
+
 // TestMCPClientProtocolDiscoveryInjectsMeta mirrors TS's modern-era _meta
 // injection (hash e6a9927): subsequent requests carry
 // io.modelcontextprotocol/{protocolVersion,clientCapabilities,clientInfo}.
