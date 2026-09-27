@@ -7,6 +7,79 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
+// TestDeepSeekThinkingSuppressesTemperatureAndTopP guards TS
+// deepseek-chat-language-model.ts:322-345: temperature/topP are omitted from
+// the wire body (with "unsupported" warnings) whenever DeepSeek thinking is
+// enabled — including the default case where no explicit reasoning/thinking
+// option is set but the model is deepseek-reasoner or a V4 model.
+func TestDeepSeekThinkingSuppressesTemperatureAndTopP(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	temp := 0.7
+	topP := 0.9
+
+	t.Run("deepseek-reasoner default thinking suppresses both", func(t *testing.T) {
+		model := NewLanguageModel(p, "deepseek-reasoner")
+		body, warnings, err := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+			Prompt:      types.Prompt{Text: "hi"},
+			Temperature: &temp,
+			TopP:        &topP,
+		}, false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if _, ok := body["temperature"]; ok {
+			t.Errorf("temperature = %#v, want omitted", body["temperature"])
+		}
+		if _, ok := body["top_p"]; ok {
+			t.Errorf("top_p = %#v, want omitted", body["top_p"])
+		}
+		var sawTemp, sawTopP bool
+		for _, w := range warnings {
+			if w.Feature == "temperature" {
+				sawTemp = true
+			}
+			if w.Feature == "topP" {
+				sawTopP = true
+			}
+		}
+		if !sawTemp || !sawTopP {
+			t.Fatalf("warnings = %#v, want temperature and topP unsupported warnings", warnings)
+		}
+	})
+
+	t.Run("deepseek-chat non-reasoner keeps both", func(t *testing.T) {
+		model := NewLanguageModel(p, "deepseek-chat")
+		body, _, err := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+			Prompt:      types.Prompt{Text: "hi"},
+			Temperature: &temp,
+			TopP:        &topP,
+		}, false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if body["temperature"] != temp || body["top_p"] != topP {
+			t.Fatalf("body = %#v, want temperature/top_p forwarded", body)
+		}
+	})
+
+	t.Run("thinking explicitly disabled keeps both", func(t *testing.T) {
+		model := NewLanguageModel(p, "deepseek-reasoner")
+		none := types.ReasoningNone
+		body, _, err := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+			Prompt:      types.Prompt{Text: "hi"},
+			Reasoning:   &none,
+			Temperature: &temp,
+			TopP:        &topP,
+		}, false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if body["temperature"] != temp || body["top_p"] != topP {
+			t.Fatalf("body = %#v, want temperature/top_p forwarded when thinking is disabled", body)
+		}
+	})
+}
+
 func TestDeepSeekReasoningAllLevels(t *testing.T) {
 	p := New(Config{APIKey: "test-key"})
 	model := NewLanguageModel(p, "deepseek-reasoner")

@@ -236,9 +236,39 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		}
 		body["reasoning_effort"] = mapped
 	}
+	thinkingDisabled := false
 	if thinking, ok := body["thinking"].(map[string]interface{}); ok {
 		if thinking["type"] == "disabled" {
+			thinkingDisabled = true
 			delete(body, "reasoning_effort")
+		}
+	}
+
+	// TS: temperature/topP have no effect once DeepSeek thinking is enabled
+	// (and are omitted from the wire body, with an "unsupported" warning),
+	// where isThinkingEnabled is true whenever thinking wasn't explicitly
+	// disabled and either a thinking object was resolved above or the model
+	// defaults to thinking (deepseek-reasoner, or any V4 model).
+	isThinkingEnabled := m.provider.supportsThinking() && !thinkingDisabled &&
+		(body["thinking"] != nil || m.modelID == "deepseek-reasoner" || isDeepSeekV4Model(m.modelID))
+	if isThinkingEnabled {
+		if _, has := body["temperature"]; has {
+			delete(body, "temperature")
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "temperature",
+				Details: "temperature has no effect when DeepSeek thinking is enabled. Set providerOptions.deepseek.thinking.type to 'disabled' to use temperature.",
+				Message: "temperature has no effect when DeepSeek thinking is enabled. Set providerOptions.deepseek.thinking.type to 'disabled' to use temperature.",
+			})
+		}
+		if _, has := body["top_p"]; has {
+			delete(body, "top_p")
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "topP",
+				Details: "topP has no effect when DeepSeek thinking is enabled. Set providerOptions.deepseek.thinking.type to 'disabled' to use topP.",
+				Message: "topP has no effect when DeepSeek thinking is enabled. Set providerOptions.deepseek.thinking.type to 'disabled' to use topP.",
+			})
 		}
 	}
 
