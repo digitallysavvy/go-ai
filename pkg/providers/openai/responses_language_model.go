@@ -1399,6 +1399,24 @@ func mapWebSearchOutput(action *WebSearchAction) map[string]interface{} {
 			mapped["queries"] = action.Queries
 		}
 		result["action"] = mapped
+		// TS only ever includes `sources` on the "search" action
+		// (mapWebSearchOutput's `case 'search'` branch); open_page/
+		// find_in_page never carry a sources key even if the API returned
+		// one.
+		if action.Sources != nil {
+			sources := make([]map[string]interface{}, 0, len(action.Sources))
+			for _, source := range action.Sources {
+				mapped := map[string]interface{}{"type": source.Type}
+				if source.URL != "" {
+					mapped["url"] = source.URL
+				}
+				if source.Name != "" {
+					mapped["name"] = source.Name
+				}
+				sources = append(sources, mapped)
+			}
+			result["sources"] = sources
+		}
 	case "open_page":
 		mapped := map[string]interface{}{"type": "openPage", "url": nil}
 		if action.URL != nil {
@@ -1414,20 +1432,6 @@ func mapWebSearchOutput(action *WebSearchAction) map[string]interface{} {
 			mapped["pattern"] = *action.Pattern
 		}
 		result["action"] = mapped
-	}
-	if action.Sources != nil {
-		sources := make([]map[string]interface{}, 0, len(action.Sources))
-		for _, source := range action.Sources {
-			mapped := map[string]interface{}{"type": source.Type}
-			if source.URL != "" {
-				mapped["url"] = source.URL
-			}
-			if source.Name != "" {
-				mapped["name"] = source.Name
-			}
-			sources = append(sources, mapped)
-		}
-		result["sources"] = sources
 	}
 	return result
 }

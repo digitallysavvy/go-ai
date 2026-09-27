@@ -2067,6 +2067,29 @@ func TestResponsesLanguageModel_ReasoningContextMetadata(t *testing.T) {
 	}
 }
 
+// TestMapWebSearchOutput_SourcesOnlyOnSearch mirrors TS's
+// mapWebSearchOutput: `sources` is only ever included on the "search"
+// action; open_page/find_in_page never carry it even if the API response
+// included one.
+func TestMapWebSearchOutput_SourcesOnlyOnSearch(t *testing.T) {
+	sources := []WebSearchSource{{Type: "url", URL: "https://example.com"}}
+
+	search := mapWebSearchOutput(&WebSearchAction{Type: "search", Sources: sources})
+	if _, ok := search["sources"]; !ok {
+		t.Fatalf("search action = %#v, want a sources key", search)
+	}
+
+	openPage := mapWebSearchOutput(&WebSearchAction{Type: "open_page", Sources: sources})
+	if _, ok := openPage["sources"]; ok {
+		t.Fatalf("open_page action = %#v, want no sources key", openPage)
+	}
+
+	findInPage := mapWebSearchOutput(&WebSearchAction{Type: "find_in_page", Sources: sources})
+	if _, ok := findInPage["sources"]; ok {
+		t.Fatalf("find_in_page action = %#v, want no sources key", findInPage)
+	}
+}
+
 // TestResponsesLanguageModel_ReasoningEffortValidatedForGPT6 covers row
 // 17e489e: an unsupported reasoning effort for a GPT-6+ model is dropped
 // with a warning instead of being sent.
