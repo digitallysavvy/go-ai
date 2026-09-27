@@ -66,6 +66,16 @@ type AgentSession struct {
 	turnSeq       int
 	activeTurnID  int
 	activeHandoff *steerHandoff
+
+	// suspendedState memoizes DoSuspendTurn's result for the currently
+	// running/suspended turn, mirroring TS AgentSession's private
+	// `suspendedTurnState` promise cache: captureStopConditionBoundary (a
+	// StopWhen early-stop, run_prompt.go's suspendOrFinishNow) and a later
+	// explicit SuspendTurn call for the *same* turn must not call the
+	// underlying adapter's DoSuspendTurn twice — the second caller simply
+	// receives the first call's already-resolved state. Cleared whenever a
+	// fresh turn starts (startTrackedTurn).
+	suspendedState *ContinueTurnState
 }
 
 // steerHandoff carries the in-flight turn's PromptControl to a caller
@@ -190,6 +200,7 @@ func (s *AgentSession) startTrackedTurn() int {
 	s.activeTurnID = turnID
 	s.clearActiveHandoffLocked()
 	s.activeHandoff = &steerHandoff{turnID: turnID, ready: make(chan struct{})}
+	s.suspendedState = nil
 	s.mu.Unlock()
 	return turnID
 }
@@ -373,6 +384,17 @@ func (s *AgentSession) SuspendTurn(ctx context.Context) (*ContinueTurnState, err
 		s.mu.Unlock()
 		return nil, fmt.Errorf("harness session '%s': no unfinished turn to suspend", s.sessionID)
 	}
+	// A StopWhen early-stop (suspendOrFinishNow -> captureStopConditionBoundary)
+	// may have already suspended this exact turn and cached the result —
+	// reuse it instead of calling the underlying adapter's DoSuspendTurn a
+	// second time, mirroring TS `suspendCurrentTurn`'s
+	// `this.suspendedTurnState ??= ...` memoization.
+	if s.suspendedState != nil {
+		state := s.suspendedState
+		s.turnState = TurnStateSuspended
+		s.mu.Unlock()
+		return state, nil
+	}
 	s.clearActiveHandoffLocked()
 	s.mu.Unlock()
 
@@ -381,7 +403,54 @@ func (s *AgentSession) SuspendTurn(ctx context.Context) (*ContinueTurnState, err
 		return nil, err
 	}
 	s.mu.Lock()
+	s.suspendedState = state
 	s.turnState = TurnStateSuspended
+	s.mu.Unlock()
+	return state, nil
+}
+
+// captureStopConditionBoundary suspends the underlying harness session's
+// turn in place when a StopWhen condition matches after a completed step,
+// keeping it resumable via ContinueGenerate/ContinueStream instead of
+// discarding it. Wired as runPrompt's OnStopConditionMet callback
+// (turnID-scoped, like OnTurnFinished/OnPromptControlAvailable — see
+// Agent.startTurn). A no-op (returns nil, nil) once turnID is no longer the
+// active "running" turn, mirroring TS's identical guard in
+// `AgentSession.captureStopConditionBoundary`: by the time this runs, a
+// concurrent Detach/Stop/Destroy (or, in principle, a fresher turn) may
+// already have superseded it. See run_prompt.go's suspendOrFinishNow doc
+// for what TS behavior around this is deferred to WG13/bridge adapters.
+func (s *AgentSession) captureStopConditionBoundary(ctx context.Context, turnID int) (*ContinueTurnState, error) {
+	s.mu.Lock()
+	if s.sessionState != SessionStateActive || s.activeTurnID != turnID {
+		s.mu.Unlock()
+		return nil, nil
+	}
+	if s.suspendedState != nil {
+		state := s.suspendedState
+		s.mu.Unlock()
+		return state, nil
+	}
+	s.mu.Unlock()
+
+	state, err := s.underlying.DoSuspendTurn(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	// Re-check after the (possibly slow) adapter call: a concurrent
+	// Detach/Stop/Destroy or a newer turn may have superseded this one while
+	// DoSuspendTurn was in flight. The adapter has already frozen its side
+	// regardless, so the state is still returned to the caller (matching TS,
+	// which awaits and returns `state` from `suspendCurrentTurn` even when
+	// its own later steps no-op) — only this session's own bookkeeping is
+	// skipped.
+	if s.sessionState == SessionStateActive && s.activeTurnID == turnID {
+		s.suspendedState = state
+		s.clearActiveHandoffLocked()
+		s.turnState = TurnStateSuspended
+	}
 	s.mu.Unlock()
 	return state, nil
 }

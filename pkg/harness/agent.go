@@ -622,6 +622,14 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 		// awaiting-tool-result at the moment the pause was discovered.
 		OnTurnFinished: func() { session.finishTrackedTurn(turnID) },
 		OnTurnFailed:   func() { session.finishTrackedTurn(turnID) },
+		// OnStopConditionMet suspends the underlying harness session's turn
+		// in place when StopWhen stops the result early, so it stays
+		// resumable via ContinueGenerate/ContinueStream instead of being
+		// discarded. See run_prompt.go's suspendOrFinishNow and
+		// session.go's captureStopConditionBoundary.
+		OnStopConditionMet: func(ctx context.Context) (*ContinueTurnState, error) {
+			return session.captureStopConditionBoundary(ctx, turnID)
+		},
 		RuntimeContext: opts.RuntimeContext,
 	})
 

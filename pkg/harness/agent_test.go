@@ -91,6 +91,10 @@ type mockHarnessOptions struct {
 	// mockHarness's `promptDone` hook — a window for the test to call
 	// ExperimentalSteer while the turn is provably still active.
 	promptDone func() <-chan struct{}
+	// doSuspendTurn, when set, overrides mockSession's default
+	// (always-succeeding) DoSuspendTurn — used to exercise
+	// suspendOrFinishNow's fallback-to-hard-finish path.
+	doSuspendTurn func(context.Context) (*ContinueTurnState, error)
 }
 
 type mockHarnessResult struct {
@@ -126,7 +130,8 @@ func newMockHarness(opts mockHarnessOptions) *mockHarnessResult {
 	}
 
 	sess := &mockSession{
-		id: "mock-session-1",
+		id:            "mock-session-1",
+		doSuspendTurn: opts.doSuspendTurn,
 		doPromptTurn: func(ctx context.Context, o PromptTurnOptions) (PromptControl, error) {
 			res.prompts = append(res.prompts, o.Prompt)
 			res.turnSettings = append(res.turnSettings, o.TurnSettings)
@@ -183,6 +188,7 @@ type mockSession struct {
 	id             string
 	doPromptTurn   func(context.Context, PromptTurnOptions) (PromptControl, error)
 	doContinueTurn func(context.Context, ContinueTurnOptions) (PromptControl, error)
+	doSuspendTurn  func(context.Context) (*ContinueTurnState, error)
 }
 
 func (s *mockSession) SessionID() string { return s.id }
@@ -197,7 +203,10 @@ func (s *mockSession) DoContinueTurn(ctx context.Context, o ContinueTurnOptions)
 	return s.doContinueTurn(ctx, o)
 }
 func (s *mockSession) DoCompact(context.Context, string) error { return nil }
-func (s *mockSession) DoSuspendTurn(context.Context) (*ContinueTurnState, error) {
+func (s *mockSession) DoSuspendTurn(ctx context.Context) (*ContinueTurnState, error) {
+	if s.doSuspendTurn != nil {
+		return s.doSuspendTurn(ctx)
+	}
 	return NewContinueTurnState("mock", map[string]any{})
 }
 func (s *mockSession) DoDetach(context.Context) (*ResumeSessionState, error) {
@@ -883,6 +892,136 @@ func TestAgent_StopWhenStopsBeforeFurtherSteps(t *testing.T) {
 	}
 	if len(result.Steps()) != 1 {
 		t.Fatalf("Steps() = %d, want 1", len(result.Steps()))
+	}
+	// The mock session's DoSuspendTurn always succeeds, so the StopWhen
+	// early-stop suspends the underlying turn (session.go
+	// captureStopConditionBoundary) rather than hard-finishing it: the
+	// session must stay unfinished/resumable, not return to idle.
+	if !session.HasUnfinishedTurn() {
+		t.Fatal("session should have an unfinished (suspended) turn after a StopWhen early-stop")
+	}
+}
+
+// TestAgent_StopWhenSuspendedTurnIsResumable ports the checkpoint-semantics
+// half of TS's StopWhen contract that TestAgent_StopWhenStopsBeforeFurtherSteps
+// doesn't cover: a turn stopped early by StopWhen isn't just locally
+// truncated, it stays resumable through the ordinary
+// ContinueGenerate/ContinueStream path, exactly like a turn paused for a
+// tool approval or client tool result.
+func TestAgent_StopWhenSuspendedTurnIsResumable(t *testing.T) {
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(submit func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&StreamStartPart{},
+				&TextDeltaPart{ID: "t1", Delta: "first"},
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonToolCalls}, Usage: stringUsage(1, 1)},
+			}
+		},
+		continueScript: func(submit func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&TextDeltaPart{ID: "t2", Delta: "second"},
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)},
+				&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(2, 2)},
+			}
+		},
+	})
+	// Fires only on the *first* call this agent ever makes: AgentSettings.
+	// StopWhen is fixed for the agent's lifetime, but each Stream/
+	// ContinueStream call gets its own fresh turnDriver (and so its own
+	// fresh Steps() count starting back at 0) — plain ai.IsStepCount(1)
+	// would therefore also match the continued call's own first step and
+	// suspend it right back, never reaching its natural finish. A resumed
+	// turn genuinely completing (rather than being suspended a second time)
+	// is exactly what this test needs to observe.
+	var stoppedOnce bool
+	stopOnceAtStepOne := ai.StopCondition(func(state ai.StopConditionState) string {
+		if stoppedOnce || len(state.Steps) < 1 {
+			return ""
+		}
+		stoppedOnce = true
+		return "stop once"
+	})
+	a, err := NewAgent(AgentSettings{Harness: mock.harness, StopWhen: []ai.StopCondition{stopOnceAtStepOne}})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+	session, err := a.CreateSession(context.Background(), CreateSessionOptions{SandboxSession: testSandbox()})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	first, err := a.Stream(context.Background(), agent.AgentStreamOptions{
+		AgentGenerateOptions: agent.AgentGenerateOptions{Prompt: "hi", HarnessSession: session},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if err := first.Err(); err != nil {
+		t.Fatalf("first.Err() = %v", err)
+	}
+	if !session.HasUnfinishedTurn() {
+		t.Fatal("session should have an unfinished (suspended) turn after a StopWhen early-stop")
+	}
+
+	// Directly asserts the underlying resumability contract: the caller can
+	// keep going with ContinueGenerate, and it reaches the harness's
+	// continueScript exactly as it would after a tool-approval/tool-result
+	// pause.
+	continued, err := a.ContinueGenerate(context.Background(), agent.AgentGenerateOptions{HarnessSession: session}, nil, nil)
+	if err != nil {
+		t.Fatalf("ContinueGenerate: %v", err)
+	}
+	if continued.Text != "second" {
+		t.Fatalf("continued.Text = %q, want %q", continued.Text, "second")
+	}
+	if session.HasUnfinishedTurn() {
+		t.Fatal("session should be idle after the resumed turn finishes")
+	}
+}
+
+// TestAgent_StopWhenFallsBackToHardFinishWhenSuspendUnsupported ports the
+// other half of suspendOrFinishNow's contract: when the adapter's
+// DoSuspendTurn fails (e.g. CapabilityUnsupportedError), the local result
+// still settles the same way, but the session falls back to WG4's original
+// hard-finish behavior — OnTurnFinished fires and the session returns to
+// idle — instead of getting stuck reporting an unfinished turn nothing can
+// ever resume.
+func TestAgent_StopWhenFallsBackToHardFinishWhenSuspendUnsupported(t *testing.T) {
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(submit func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&StreamStartPart{},
+				&TextDeltaPart{ID: "t1", Delta: "first"},
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonToolCalls}, Usage: stringUsage(1, 1)},
+			}
+		},
+		doSuspendTurn: func(context.Context) (*ContinueTurnState, error) {
+			return nil, NewCapabilityUnsupportedError("mock harness cannot suspend turns", "mock", nil)
+		},
+	})
+	a, err := NewAgent(AgentSettings{Harness: mock.harness, StopWhen: []ai.StopCondition{ai.IsStepCount(1)}})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+	session, err := a.CreateSession(context.Background(), CreateSessionOptions{SandboxSession: testSandbox()})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	result, err := a.Stream(context.Background(), agent.AgentStreamOptions{
+		AgentGenerateOptions: agent.AgentGenerateOptions{Prompt: "hi", HarnessSession: session},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if err := result.Err(); err != nil {
+		t.Fatalf("Err() = %v", err)
+	}
+	if result.Text() != "first" {
+		t.Fatalf("Text() = %q, want %q", result.Text(), "first")
+	}
+	if session.HasUnfinishedTurn() {
+		t.Fatal("session should be idle: DoSuspendTurn failed, so this must fall back to a hard finish")
 	}
 }
 

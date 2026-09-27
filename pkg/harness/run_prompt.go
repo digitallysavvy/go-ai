@@ -188,6 +188,19 @@ type runPromptInput struct {
 	OnTurnFailed             func()
 	OnPromptControlAvailable func(PromptControl)
 
+	// OnStopConditionMet is called from suspendOrFinishNow when a
+	// StopCondition matches after a completed step: it should suspend the
+	// underlying harness session's turn in place (wired to
+	// AgentSession.captureStopConditionBoundary) so a caller can resume it
+	// later via ContinueGenerate/ContinueStream, and return the resulting
+	// ContinueTurnState. A nil error means the turn is now suspended and
+	// resumable; suspendOrFinishNow falls back to a hard finish (the
+	// original WG4 behavior) on a nil func or a non-nil error (e.g. the
+	// adapter returned CapabilityUnsupportedError). Nil when no
+	// AgentSession is driving this turn (e.g. a bare runPrompt call in a
+	// test). Mirrors TS `runPrompt`'s `input.onStopConditionMet`.
+	OnStopConditionMet func(ctx context.Context) (*ContinueTurnState, error)
+
 	// RuntimeContext flows through to callback events.
 	RuntimeContext interface{}
 }
@@ -496,7 +509,7 @@ func (d *turnDriver) processStartupContinuations() (turnOutcome, error) {
 //
 // finished is true only when the harness's own terminal `finish` part was
 // observed and forwarded. alreadySettled is true when some other path
-// (pauseForHostInput, finishNow) already pushed the closing chunk(s) and
+// (pauseForHostInput, suspendOrFinishNow) already pushed the closing chunk(s) and
 // closed d.stream itself — the caller (run) must not touch d.stream again in
 // that case, and must not fire OnTurnFinished/OnTurnFailed (whichever
 // settled it already did, if appropriate: a pause fires neither, matching
@@ -645,7 +658,7 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 			}
 			d.completeStep(fs.FinishReason, fs.Usage)
 			if reason := d.evaluateStopConditions(); reason != "" {
-				d.finishNow(fs.FinishReason, fs.Usage)
+				d.suspendOrFinishNow(fs.FinishReason, fs.Usage)
 				return false, true, nil
 			}
 		}
@@ -667,8 +680,8 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 			usage := harnessUsageToTypesUsage(fp.TotalUsage)
 			// TS's terminal `finish` handler ends the root telemetry span
 			// with the bridge's own totalUsage, the real end-of-turn total
-			// (as opposed to pauseForHostInput's zero usage or finishNow's
-			// last-step usage).
+			// (as opposed to pauseForHostInput's zero usage or
+			// suspendOrFinishNow's last-step usage).
 			d.telEnd(d.completedSteps, *usage)
 			d.stream.push(provider.StreamChunk{
 				Type:            provider.ChunkTypeFinish,
@@ -980,25 +993,59 @@ func (d *turnDriver) pauseForHostInput() error {
 	return nil
 }
 
-// finishNow settles the turn as fully complete right now, ahead of any later
-// `finish` the adapter might still emit — used only by the StopConditions
-// early-stop path. It fires OnTurnFinished (unlike pauseForHostInput, this
-// really is "done" from the session's point of view: WG4 does not yet keep
-// the underlying harness Session turn reachable afterward for a later
-// resume, so — pending WG13's workflow-harness suspend/continue slicing —
-// treating it as finished is more useful than leaving the session
-// permanently stuck as "running"). finishReason is the last completed
-// step's; usage is deliberately left unset so the locally-summed total
-// stands, since this is not a real bridge-reported total the way a genuine
-// terminal `finish` carries one (contrast pauseForHostInput/the FinishPart
-// branch in consumeLoop).
-func (d *turnDriver) finishNow(finishReason FinishReason, usage Usage) {
+// suspendOrFinishNow settles the local *ai.StreamTextResult right now, ahead
+// of any later `finish` the adapter might still emit — used only by the
+// StopConditions early-stop path. finishReason is the last completed step's;
+// usage is deliberately left off the pushed chunk so the locally-summed
+// total stands, since this is not a real bridge-reported total the way a
+// genuine terminal `finish` carries one (contrast pauseForHostInput/the
+// FinishPart branch in consumeLoop) — but it is still the right usage for
+// the telemetry span's totals (see telEnd's call below), mirroring TS's
+// `pendingStopBoundary.usage`.
+//
+// Whether the *underlying harness session's turn* survives this for a later
+// resume depends on d.in.OnStopConditionMet (wired to
+// AgentSession.captureStopConditionBoundary, which calls the adapter's
+// DoSuspendTurn): when it succeeds, the turn is genuinely suspended — OnTurn-
+// Finished is NOT called, so the session stays in its "suspended" state
+// (HasUnfinishedTurn() true) instead of returning to idle, and a caller can
+// continue it with ContinueGenerate/ContinueStream. When it's unavailable or
+// fails (nil OnStopConditionMet — e.g. a bare runPrompt call outside an
+// Agent/AgentSession — or the adapter can't honor DoSuspendTurn), this falls
+// back to WG4's original behavior: a hard finish, OnTurnFinished fires, and
+// the session returns to idle. Mirrors TS `runPrompt`'s early-stop branch
+// (`input.onStopConditionMet?.()` then `lifecycle.end`/`result.finish()`,
+// with no `onTurnFinished` call in that branch either).
+//
+// Deferred to WG13 (workflow-harness slicing) and to WG7+ bridge adapters,
+// respectively: (1) TS's "one event of lookahead" refinement, which skips
+// suspending entirely when the adapter's very next event turns out to be
+// its own natural `finish` arriving right after this step anyway (avoiding
+// a redundant suspend immediately before a turn that was ending on its
+// own) — this needs to peek at (and safely re-inject) the following part,
+// which interacts closely enough with WG13's own time-slice boundary
+// handling that building it twice isn't worthwhile; and (2) the bridge-
+// level replay-checkpoint pinning (TS `pinSandboxChannelEventCheckpoint`)
+// that keeps a *live* bridge connection's event buffer from being
+// garbage-collected while a stop decision is pending — see spec.go's
+// CheckpointPinner, an optional extension point a bridge-backed adapter can
+// implement for that optimization; correctness here does not depend on it,
+// since DoSuspendTurn (not this driver) is what actually freezes the
+// adapter's cursor.
+func (d *turnDriver) suspendOrFinishNow(finishReason FinishReason, usage Usage) {
+	suspended := false
+	if d.in.OnStopConditionMet != nil {
+		if _, err := d.in.OnStopConditionMet(d.ctx); err == nil {
+			suspended = true
+		}
+	}
 	// TS's StopConditions early-stop path ends the root telemetry span with
 	// the matched step boundary's own usage (`pendingStopBoundary.usage`),
-	// not a fresh/zero one — mirrors that exactly.
+	// not a fresh/zero one — mirrors that exactly, regardless of whether the
+	// underlying session turn was suspended or hard-finished.
 	d.telEnd(d.completedSteps, harnessUsageToTypesUsageValue(usage))
 	d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: unifiedFinishReason(finishReason), RawFinishReason: finishReason.Raw})
-	if d.in.OnTurnFinished != nil {
+	if !suspended && d.in.OnTurnFinished != nil {
 		d.in.OnTurnFinished()
 	}
 	d.stream.closeOK()
