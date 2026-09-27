@@ -313,6 +313,7 @@ func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions)
 		ExperimentalRefineToolInput:    callConfig.ExperimentalRefineToolInput,
 		ExperimentalDownload:           callConfig.ExperimentalDownload,
 		InstructionMessages:            callConfig.InstructionMessages,
+		PrepareStep:                    callConfig.PrepareStep,
 		RepairToolCall:                 callConfig.RepairToolCall,
 		OnLanguageModelCallStart:       callConfig.OnLanguageModelCallStart,
 		OnLanguageModelCallEnd:         callConfig.OnLanguageModelCallEnd,
@@ -424,6 +425,7 @@ func (a *ToolLoopAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*a
 		ExperimentalRefineToolInput:    callConfig.ExperimentalRefineToolInput,
 		ExperimentalDownload:           callConfig.ExperimentalDownload,
 		InstructionMessages:            callConfig.InstructionMessages,
+		PrepareStep:                    callConfig.PrepareStep,
 		RepairToolCall:                 callConfig.RepairToolCall,
 		OnLanguageModelCallStart:       callConfig.OnLanguageModelCallStart,
 		OnLanguageModelCallEnd:         callConfig.OnLanguageModelCallEnd,
@@ -880,6 +882,7 @@ func (a *ToolLoopAgent) prepareStepCallConfig(ctx context.Context, stepNum int, 
 		ExperimentalRefineToolInput:    a.config.ExperimentalRefineToolInput,
 		ExperimentalDownload:           a.config.ExperimentalDownload,
 		InstructionMessages:            a.config.InstructionMessages,
+		PrepareStep:                    a.config.PrepareStep,
 		RepairToolCall:                 firstNonNilRepairToolCall(a.config.RepairToolCall, a.config.ExperimentalRepairToolCall),
 		OnLanguageModelCallStart:       firstNonNilLMCallStart(a.config.OnLanguageModelCallStart, a.config.ExperimentalOnLanguageModelCallStart),
 		OnLanguageModelCallEnd:         firstNonNilLMCallEnd(a.config.OnLanguageModelCallEnd, a.config.ExperimentalOnLanguageModelCallEnd),
@@ -1089,6 +1092,9 @@ func (c AgentConfig) withGenerateOptions(opts AgentGenerateOptions) AgentConfig 
 	}
 	if len(opts.InstructionMessages) > 0 {
 		c.InstructionMessages = opts.InstructionMessages
+	}
+	if opts.PrepareStep != nil {
+		c.PrepareStep = opts.PrepareStep
 	}
 	if opts.RepairToolCall != nil {
 		c.RepairToolCall = opts.RepairToolCall

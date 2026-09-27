@@ -131,6 +131,9 @@ type AgentGenerateOptions struct {
 	// non-empty. See AgentConfig.InstructionMessages.
 	InstructionMessages []types.Message
 
+	// PrepareStep overrides AgentConfig.PrepareStep for this call.
+	PrepareStep func(ctx context.Context, step ai.PrepareStepOptions) ai.PrepareStepOptions
+
 	// RepairToolCall overrides AgentConfig.RepairToolCall for this call.
 	RepairToolCall ai.ToolCallRepairFunction
 	// Deprecated: use RepairToolCall.
@@ -430,6 +433,11 @@ type AgentConfig struct {
 	// over Instructions/System/Prompt when non-empty.
 	InstructionMessages []types.Message
 
+	// PrepareStep lets you provide different settings for a step. Forwarded
+	// to ai.GenerateText/StreamText for Generate/Stream (TS
+	// ToolLoopAgentSettings.prepareStep).
+	PrepareStep func(ctx context.Context, step ai.PrepareStepOptions) ai.PrepareStepOptions
+
 	// RepairToolCall attempts to repair tool calls that fail to parse because
 	// the tool does not exist or its input is invalid. Forwarded to
 	// ai.GenerateText/StreamText for Generate/Stream.
@@ -691,6 +699,10 @@ type PrepareCallConfig struct {
 	// InstructionMessages supplies this step's instructions as system
 	// messages. See AgentConfig.InstructionMessages.
 	InstructionMessages []types.Message
+
+	// PrepareStep lets you provide different settings for a step. See
+	// AgentConfig.PrepareStep.
+	PrepareStep func(ctx context.Context, step ai.PrepareStepOptions) ai.PrepareStepOptions
 
 	// RepairToolCall attempts to repair tool calls that fail to parse for
 	// this step.

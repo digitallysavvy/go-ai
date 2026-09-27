@@ -2336,6 +2336,104 @@ func TestToolLoopAgentPrepareCallCanOverrideModelAndInclude(t *testing.T) {
 	}
 }
 
+// TestToolLoopAgentPrepareStepForwardedToGenerateText ports the TS
+// tool-loop-agent-settings.ts `prepareStep` behavior (audit #132): a
+// PrepareStep set on AgentConfig must reach the underlying
+// ai.GenerateTextOptions.PrepareStep, and PrepareCall must be able to
+// override it per call (TS `prepareCall` picks/returns `prepareStep`).
+func TestToolLoopAgentPrepareStepForwardedToGenerateText(t *testing.T) {
+	var gotTemperature *float64
+	model := &functionalAgentLanguageModel{
+		doGenerate: func(_ context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			gotTemperature = opts.Temperature
+			return &types.GenerateResult{Text: "ok", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+	settingsPrepareStepCalled := false
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: model,
+		PrepareStep: func(ctx context.Context, step ai.PrepareStepOptions) ai.PrepareStepOptions {
+			settingsPrepareStepCalled = true
+			temp := 0.42
+			step.Temperature = &temp
+			return step
+		},
+	})
+	if _, err := agent.Generate(context.Background(), AgentGenerateOptions{Prompt: "test"}); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if !settingsPrepareStepCalled {
+		t.Fatal("AgentConfig.PrepareStep was not invoked")
+	}
+	if gotTemperature == nil || *gotTemperature != 0.42 {
+		t.Fatalf("temperature = %v, want 0.42 from PrepareStep", gotTemperature)
+	}
+
+	// PrepareCall can override PrepareStep for the call (TS: prepareCall
+	// returns a `prepareStep` that supersedes the settings-level one).
+	gotTemperature = nil
+	overrideCalled := false
+	agent = NewToolLoopAgent(AgentConfig{
+		Model: model,
+		PrepareStep: func(ctx context.Context, step ai.PrepareStepOptions) ai.PrepareStepOptions {
+			t.Fatal("settings-level PrepareStep should be overridden by PrepareCall")
+			return step
+		},
+		PrepareCall: func(ctx context.Context, config PrepareCallConfig) PrepareCallConfig {
+			config.PrepareStep = func(ctx context.Context, step ai.PrepareStepOptions) ai.PrepareStepOptions {
+				overrideCalled = true
+				temp := 0.77
+				step.Temperature = &temp
+				return step
+			}
+			return config
+		},
+	})
+	if _, err := agent.Generate(context.Background(), AgentGenerateOptions{Prompt: "test"}); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if !overrideCalled {
+		t.Fatal("PrepareCall-overridden PrepareStep was not invoked")
+	}
+	if gotTemperature == nil || *gotTemperature != 0.77 {
+		t.Fatalf("temperature = %v, want 0.77 from overridden PrepareStep", gotTemperature)
+	}
+}
+
+// TestToolLoopAgentPrepareStepPerCallOverride verifies AgentGenerateOptions
+// can override AgentConfig.PrepareStep on a single call without a
+// PrepareCall hook (Go's equivalent of passing `prepareStep` at call time).
+func TestToolLoopAgentPrepareStepPerCallOverride(t *testing.T) {
+	var gotTemperature *float64
+	model := &functionalAgentLanguageModel{
+		doGenerate: func(_ context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			gotTemperature = opts.Temperature
+			return &types.GenerateResult{Text: "ok", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: model,
+		PrepareStep: func(ctx context.Context, step ai.PrepareStepOptions) ai.PrepareStepOptions {
+			t.Fatal("config-level PrepareStep should be overridden by the call option")
+			return step
+		},
+	})
+	_, err := agent.Generate(context.Background(), AgentGenerateOptions{
+		Prompt: "test",
+		PrepareStep: func(ctx context.Context, step ai.PrepareStepOptions) ai.PrepareStepOptions {
+			temp := 0.13
+			step.Temperature = &temp
+			return step
+		},
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if gotTemperature == nil || *gotTemperature != 0.13 {
+		t.Fatalf("temperature = %v, want 0.13 from call-level PrepareStep", gotTemperature)
+	}
+}
+
 // TestToolLoopAgentGenerateTagsUserAgent ports the TS "tags outgoing
 // requests so usage can be attributed to ToolLoopAgent" case (audit row
 // 75763b0): the model call's User-Agent header must carry the
