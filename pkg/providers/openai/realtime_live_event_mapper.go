@@ -53,14 +53,24 @@ func parseOpenAILiveOptions(providerOptions map[string]interface{}) (openAILiveO
 		if delegationRaw == nil {
 			out.HasDelegation = true
 		} else if delegationMap, ok := delegationRaw.(map[string]interface{}); ok {
-			if t, _ := delegationMap["type"].(string); t != "" {
+			t, _ := delegationMap["type"].(string)
+			switch t {
+			case "responses":
+				// Checked against a loose schema before the strict one in
+				// TS (buildOpenAILiveSessionConfig), so it's accepted here
+				// and rejected later with the friendly "Responses
+				// delegation" message rather than a generic schema error.
 				out.HasDelegation = true
-				if t == "responses" {
-					out.DelegationResp = true
-				} else {
-					typeCopy := t
-					out.Delegation = &typeCopy
-				}
+				out.DelegationResp = true
+			case "client":
+				out.HasDelegation = true
+				typeCopy := t
+				out.Delegation = &typeCopy
+			default:
+				// TS's strict schema only allows {type: 'client'} here
+				// (openaiRealtimeModelLiveOptionsSchema); any other type,
+				// including an absent/malformed one, fails validation.
+				return out, &providererrors.InvalidArgumentError{Field: "providerOptions.openai.delegation.type", Message: `must be "client"`}
 			}
 		} else {
 			return out, &providererrors.InvalidArgumentError{Field: "providerOptions.openai.delegation", Message: "must be an object or null"}
@@ -86,6 +96,28 @@ func parseOpenAILiveOptions(providerOptions map[string]interface{}) (openAILiveO
 			role, _ := item["role"].(string)
 			if !openAILiveInputRoles[role] {
 				return out, &providererrors.InvalidArgumentError{Field: "providerOptions.openai.input", Message: `role must be "developer", "user", or "assistant"`}
+			}
+			// TS's discriminatedUnion('role', ...) also requires content to
+			// be a single-element tuple: {type:"input_text"} for
+			// developer/user, {type:"text"|"output_text"} for assistant.
+			content, ok := item["content"].([]interface{})
+			if !ok || len(content) != 1 {
+				return out, &providererrors.InvalidArgumentError{Field: "providerOptions.openai.input", Message: "content must be a single-element array"}
+			}
+			part, ok := content[0].(map[string]interface{})
+			if !ok {
+				return out, &providererrors.InvalidArgumentError{Field: "providerOptions.openai.input", Message: "content[0] must be an object"}
+			}
+			partType, _ := part["type"].(string)
+			wantType := partType == "input_text"
+			if role == "assistant" {
+				wantType = partType == "text" || partType == "output_text"
+			}
+			if !wantType {
+				return out, &providererrors.InvalidArgumentError{Field: "providerOptions.openai.input", Message: "content[0].type does not match role"}
+			}
+			if _, ok := part["text"].(string); !ok {
+				return out, &providererrors.InvalidArgumentError{Field: "providerOptions.openai.input", Message: "content[0].text must be a string"}
 			}
 		}
 		out.Input = arr

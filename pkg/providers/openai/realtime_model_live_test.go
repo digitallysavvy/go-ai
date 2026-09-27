@@ -324,6 +324,34 @@ func TestOpenAIRealtimeModelLive_ValidatesStartupConfig(t *testing.T) {
 		}},
 		{ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"store": "yes"}}},
 		{ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"unknown": true}}},
+		// content[0].type must match role: "input_text" for developer/user
+		// (TS openaiRealtimeModelLiveOptionsSchema discriminatedUnion).
+		{ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{"input": []interface{}{
+				map[string]interface{}{"type": "message", "role": "user", "content": []interface{}{
+					map[string]interface{}{"type": "output_text", "text": "hi"},
+				}},
+			}},
+		}},
+		// content[0].type must be "text" or "output_text" for assistant.
+		{ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{"input": []interface{}{
+				map[string]interface{}{"type": "message", "role": "assistant", "content": []interface{}{
+					map[string]interface{}{"type": "input_text", "text": "hi"},
+				}},
+			}},
+		}},
+		// content must be a single-element array.
+		{ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{"input": []interface{}{
+				map[string]interface{}{"type": "message", "role": "user", "content": []interface{}{}},
+			}},
+		}},
+		// delegation.type only allows "client" here (besides the
+		// separately-rejected "responses" case).
+		{ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{"delegation": map[string]interface{}{"type": "bogus"}},
+		}},
 	}
 	for i, cfg := range tests {
 		if _, err := buildOpenAILiveSessionConfig(cfg, model.modelID); err == nil {
