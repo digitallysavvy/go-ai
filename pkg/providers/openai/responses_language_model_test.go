@@ -2310,3 +2310,94 @@ data: {"type":"response.failed","response":{"id":"resp_1","incomplete_details":{
 		t.Fatalf("finish chunk = %#v, want RawFinishReason=max_output_tokens", chunk)
 	}
 }
+
+// TestResponsesLanguageModel_AsyncToolCallingGatedByModel covers row
+// 4a09793: async=true on a function tool is sent for a GPT-6+ model, but
+// dropped with a warning for an older model.
+func TestResponsesLanguageModel_AsyncToolCallingGatedByModel(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+
+	tools := []types.Tool{{
+		Type: types.ToolTypeFunction,
+		Name: "lookup",
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{"async": true},
+		},
+	}}
+
+	gpt6 := NewResponsesLanguageModel(p, ModelGPT6Astra)
+	body, _, warnings, err := gpt6.buildRequest(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}}},
+		Tools:  tools,
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequest failed: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none for a GPT-6+ model", warnings)
+	}
+	fn := body["tools"].([]interface{})[0].(responses.FunctionToolDef)
+	if fn.Async == nil || !*fn.Async {
+		t.Fatalf("Async = %v, want true for a GPT-6+ model", fn.Async)
+	}
+
+	older := NewResponsesLanguageModel(p, "gpt-4o")
+	body, _, warnings, err = older.buildRequest(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}}},
+		Tools:  tools,
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequest failed: %v", err)
+	}
+	fn = body["tools"].([]interface{})[0].(responses.FunctionToolDef)
+	if fn.Async != nil {
+		t.Fatalf("Async = %v, want nil (dropped) for an older model", fn.Async)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0].Feature, "async tool calling") {
+		t.Fatalf("warnings = %#v, want an async tool calling warning", warnings)
+	}
+}
+
+// TestResponsesLanguageModel_AsyncToolCallRoundTrip covers row 4a09793: a
+// function_call output item with async=true decodes into
+// ProviderMetadata.async, and replaying that tool call re-emits async on
+// the function_call input item.
+func TestResponsesLanguageModel_AsyncToolCallRoundTrip(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	item, _ := json.Marshal(map[string]interface{}{
+		"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "lookup",
+		"arguments": "{}", "async": true,
+	})
+	result, err := model.convertResponse(responses.ResponsesAPIResponse{
+		Output: []json.RawMessage{item},
+		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
+	}, true, "")
+	if err != nil {
+		t.Fatalf("convertResponse failed: %v", err)
+	}
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls = %#v, want one", result.ToolCalls)
+	}
+	tc := result.ToolCalls[0]
+	openaiMeta, ok := tc.ProviderMetadata["openai"].(map[string]interface{})
+	if !ok || openaiMeta["async"] != true {
+		t.Fatalf("ProviderMetadata = %#v, want async=true", tc.ProviderMetadata)
+	}
+
+	// Replay this tool call back into an input item.
+	input, _, err := responses.ConvertPromptToInputWithOptions(types.Prompt{
+		Messages: []types.Message{{Role: types.RoleAssistant, ToolCalls: []types.ToolCall{tc}}},
+	}, "system", responses.ConvertOptions{})
+	if err != nil {
+		t.Fatalf("ConvertPromptToInputWithOptions failed: %v", err)
+	}
+	if len(input) != 1 {
+		t.Fatalf("input = %#v, want one function_call item", input)
+	}
+	fc, ok := input[0].(responses.FunctionCallItem)
+	if !ok || fc.Async == nil || !*fc.Async {
+		t.Fatalf("input[0] = %#v, want function_call with async=true", input[0])
+	}
+}

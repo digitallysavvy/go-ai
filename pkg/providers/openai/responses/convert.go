@@ -384,9 +384,13 @@ func convertAssistantItems(msg types.Message, opts ConvertOptions) ([]interface{
 		}
 		argsJSON, _ := json.Marshal(args)
 		namespace := ""
+		var async *bool
 		if openaiMeta, ok := tc.ProviderMetadata[providerName].(map[string]interface{}); ok {
 			if rawNS, ok := openaiMeta["namespace"].(string); ok {
 				namespace = rawNS
+			}
+			if rawAsync, ok := openaiMeta["async"].(bool); ok {
+				async = &rawAsync
 			}
 		}
 		items = append(items, FunctionCallItem{
@@ -394,6 +398,7 @@ func convertAssistantItems(msg types.Message, opts ConvertOptions) ([]interface{
 			CallID:    tc.ID,
 			Name:      tc.ToolName,
 			Namespace: namespace,
+			Async:     async,
 			Arguments: string(argsJSON),
 		})
 	}
@@ -423,9 +428,13 @@ func convertAssistantToolCallContentItem(part types.ToolCallContent, opts Conver
 	// Plain client-executed function calls must always be resent in full (see
 	// the comment in convertAssistantItems).
 	namespace := ""
+	var async *bool
 	if openaiMeta, ok := tc.ProviderMetadata[providerName].(map[string]interface{}); ok {
 		if rawNS, ok := openaiMeta["namespace"].(string); ok {
 			namespace = rawNS
+		}
+		if rawAsync, ok := openaiMeta["async"].(bool); ok {
+			async = &rawAsync
 		}
 	}
 	return FunctionCallItem{
@@ -433,6 +442,7 @@ func convertAssistantToolCallContentItem(part types.ToolCallContent, opts Conver
 		CallID:    tc.ID,
 		Name:      tc.ToolName,
 		Namespace: namespace,
+		Async:     async,
 		Arguments: genericArguments,
 	}
 }
@@ -537,11 +547,18 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 			raw, _ := json.Marshal(tc.Arguments)
 			input = string(raw)
 		}
+		var async *bool
+		if openaiMeta, ok := tc.ProviderMetadata[openAIProviderOptionsName(opts)].(map[string]interface{}); ok {
+			if rawAsync, ok := openaiMeta["async"].(bool); ok {
+				async = &rawAsync
+			}
+		}
 		return CustomToolCallItem{
 			Type:   "custom_tool_call",
 			ID:     itemID,
 			CallID: tc.ID,
 			Name:   toolName,
+			Async:  async,
 			Input:  input,
 		}, true
 	}

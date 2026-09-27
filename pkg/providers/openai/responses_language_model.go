@@ -511,7 +511,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		if err != nil {
 			return nil, false, nil, err
 		}
-		toolSchemaWarnings, err := normalizeResponsesToolSchemas(preparedTools)
+		toolSchemaWarnings, err := normalizeResponsesToolSchemas(preparedTools, modelCapabilities.SupportsAsyncToolCalling)
 		if err != nil {
 			return nil, false, nil, err
 		}
@@ -807,22 +807,26 @@ func convertResponsesToolChoice(tc types.ToolChoice, tools []types.Tool) interfa
 // OpenAI structured outputs (d5e3024, 411b3f2: drop propertyNames /
 // lookaround patterns), mirroring the chat model's
 // normalizeOpenAIChatToolSchemas. It mutates tools in place.
-func normalizeResponsesToolSchemas(tools []interface{}) ([]types.Warning, error) {
+func normalizeResponsesToolSchemas(tools []interface{}, supportsAsync bool) ([]types.Warning, error) {
 	var warnings []types.Warning
 	for i, t := range tools {
 		switch v := t.(type) {
 		case responses.FunctionToolDef:
-			normalized, toolWarnings, err := normalizeResponsesFunctionToolDef(v)
+			normalized, toolWarnings, err := normalizeResponsesFunctionToolDef(v, supportsAsync)
 			if err != nil {
 				return nil, err
 			}
 			warnings = append(warnings, toolWarnings...)
 			tools[i] = normalized
+		case responses.CustomToolDef:
+			toolWarnings := gateResponsesToolAsync(&v.Async, v.Name, supportsAsync)
+			warnings = append(warnings, toolWarnings...)
+			tools[i] = v
 		case *responses.NamespaceToolDef:
 			// PrepareToolsWithError always stores namespaces as pointers, so
 			// mutating v.Tools mutates the shared underlying struct.
 			for j, fn := range v.Tools {
-				normalized, toolWarnings, err := normalizeResponsesFunctionToolDef(fn)
+				normalized, toolWarnings, err := normalizeResponsesFunctionToolDef(fn, supportsAsync)
 				if err != nil {
 					return nil, err
 				}
@@ -834,17 +838,35 @@ func normalizeResponsesToolSchemas(tools []interface{}) ([]types.Warning, error)
 	return warnings, nil
 }
 
-func normalizeResponsesFunctionToolDef(fn responses.FunctionToolDef) (responses.FunctionToolDef, []types.Warning, error) {
+func normalizeResponsesFunctionToolDef(fn responses.FunctionToolDef, supportsAsync bool) (responses.FunctionToolDef, []types.Warning, error) {
+	var warnings []types.Warning
 	schemaMap, ok := fn.Parameters.(map[string]interface{})
-	if !ok || schemaMap == nil {
-		return fn, nil, nil
+	if ok && schemaMap != nil {
+		normalized, schemaWarnings, err := NormalizeOpenAIJSONSchema(schemaMap)
+		if err != nil {
+			return fn, nil, err
+		}
+		fn.Parameters = normalized
+		warnings = append(warnings, schemaWarnings...)
 	}
-	normalized, warnings, err := NormalizeOpenAIJSONSchema(schemaMap)
-	if err != nil {
-		return fn, nil, err
-	}
-	fn.Parameters = normalized
+	warnings = append(warnings, gateResponsesToolAsync(&fn.Async, fn.Name, supportsAsync)...)
 	return fn, warnings, nil
+}
+
+// gateResponsesToolAsync implements row 4a09793's model gating: async tool
+// calling is only supported by GPT-6 and later models. If async=true was
+// requested on an unsupported model, drop it and warn, mirroring TS
+// resolveAsyncToolOption.
+func gateResponsesToolAsync(async **bool, toolName string, supportsAsync bool) []types.Warning {
+	if *async == nil || !**async || supportsAsync {
+		return nil
+	}
+	*async = nil
+	return []types.Warning{{
+		Type:    "unsupported",
+		Feature: fmt.Sprintf("async tool calling for %q", toolName),
+		Details: "Async tool calling is only supported by GPT-6 and later models.",
+	}}
 }
 
 func resolveResponsesToolChoiceName(name string, tools []types.Tool) (string, *types.Tool) {
@@ -1033,7 +1055,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				ID:               item.CallID,
 				ToolName:         item.Name,
 				Arguments:        args,
-				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, item.Namespace),
+				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, item.Namespace, item.Async),
 			}
 			toolCalls = append(toolCalls, tc)
 
@@ -1093,9 +1115,10 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				continue
 			}
 			toolCalls = append(toolCalls, types.ToolCall{
-				ID:        item.CallID,
-				ToolName:  item.Name,
-				Arguments: map[string]interface{}{"input": item.Input},
+				ID:               item.CallID,
+				ToolName:         item.Name,
+				Arguments:        map[string]interface{}{"input": item.Input},
+				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, "", item.Async),
 			})
 
 		case "web_search_call":
@@ -1152,13 +1175,17 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 	return result, nil
 }
 
-func openAIResponsesToolCallMetadata(providerName, itemID, namespace string) map[string]interface{} {
+func openAIResponsesToolCallMetadata(providerName, itemID, namespace string, async ...*bool) map[string]interface{} {
 	openai := map[string]interface{}{}
 	if itemID != "" {
 		openai["itemId"] = itemID
 	}
 	if namespace != "" {
 		openai["namespace"] = namespace
+	}
+	// Row 4a09793: forward async on tool-call replay/decode metadata.
+	if len(async) > 0 && async[0] != nil {
+		openai["async"] = *async[0]
 	}
 	if len(openai) == 0 {
 		return nil
@@ -1830,7 +1857,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				ID:               accum.id,
 				ToolName:         accum.name,
 				Arguments:        args,
-				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, accum.itemID, accum.namespace),
+				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, accum.itemID, accum.namespace, item.Async),
 			},
 		})
 
@@ -1915,9 +1942,10 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{
-				ID:        item.CallID,
-				ToolName:  item.Name,
-				Arguments: map[string]interface{}{"input": item.Input},
+				ID:               item.CallID,
+				ToolName:         item.Name,
+				Arguments:        map[string]interface{}{"input": item.Input},
+				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, item.ID, "", item.Async),
 			},
 		})
 

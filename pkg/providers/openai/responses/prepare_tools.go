@@ -125,6 +125,9 @@ func convertCustomTool(t types.Tool) CustomToolDef {
 		}
 		def.Format = f
 	}
+	if ct.Async != nil {
+		def.Async = ct.Async
+	}
 
 	return def
 }
@@ -429,6 +432,19 @@ func convertFunctionTool(t types.Tool) FunctionToolDef {
 	if deferLoading, ok := functionToolDeferLoading(t.ProviderOptions); ok {
 		def.DeferLoading = &deferLoading
 	}
+	// Row 4a09793: async is read here without model-capability gating --
+	// the caller (responses_language_model.go, which knows the model id)
+	// is responsible for warning and stripping it when unsupported, since
+	// this package has no model ID to check against.
+	if async, ok := functionToolAsync(t.ProviderOptions); ok {
+		def.Async = &async
+	}
+	if allowedCallers, ok := functionToolAllowedCallers(t.ProviderOptions); ok {
+		def.AllowedCallers = allowedCallers
+	}
+	if outputSchema, ok := functionToolOutputSchema(t.ProviderOptions); ok {
+		def.OutputSchema = outputSchema
+	}
 
 	return def
 }
@@ -440,6 +456,49 @@ func functionToolDeferLoading(providerOptions interface{}) (bool, bool) {
 	}
 	deferLoading, ok := openaiOptions["deferLoading"].(bool)
 	return deferLoading, ok
+}
+
+func functionToolAsync(providerOptions interface{}) (bool, bool) {
+	openaiOptions, ok := functionToolOpenAIOptions(providerOptions)
+	if !ok {
+		return false, false
+	}
+	async, ok := openaiOptions["async"].(bool)
+	return async, ok
+}
+
+func functionToolAllowedCallers(providerOptions interface{}) ([]string, bool) {
+	openaiOptions, ok := functionToolOpenAIOptions(providerOptions)
+	if !ok {
+		return nil, false
+	}
+	raw, ok := openaiOptions["allowedCallers"]
+	if !ok {
+		return nil, false
+	}
+	switch v := raw.(type) {
+	case []string:
+		return v, len(v) > 0
+	case []interface{}:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out, len(out) > 0
+	default:
+		return nil, false
+	}
+}
+
+func functionToolOutputSchema(providerOptions interface{}) (interface{}, bool) {
+	openaiOptions, ok := functionToolOpenAIOptions(providerOptions)
+	if !ok {
+		return nil, false
+	}
+	schema, ok := openaiOptions["outputSchema"]
+	return schema, ok && schema != nil
 }
 
 type functionToolNamespaceOption struct {

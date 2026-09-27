@@ -54,6 +54,10 @@ type FunctionCallItem struct {
 	// came from Responses API tool search.
 	Namespace string `json:"namespace,omitempty"`
 
+	// Async indicates the model continued generating without waiting for
+	// this call's result (row 4a09793).
+	Async *bool `json:"async,omitempty"`
+
 	// Arguments is the JSON-encoded argument string.
 	Arguments string `json:"arguments"`
 }
@@ -71,6 +75,10 @@ type CustomToolCallItem struct {
 
 	// Name is the custom tool name.
 	Name string `json:"name"`
+
+	// Async indicates the model continued generating without waiting for
+	// this call's result (row 4a09793).
+	Async *bool `json:"async,omitempty"`
 
 	// Input is the raw input string for the custom tool.
 	Input string `json:"input"`
@@ -211,6 +219,19 @@ type FunctionToolDef struct {
 
 	// DeferLoading marks the function as deferred for OpenAI tool_search.
 	DeferLoading *bool `json:"defer_loading,omitempty"`
+
+	// Async, when true, lets the model continue generating after calling
+	// this tool without waiting for its result (row 4a09793). Only
+	// supported by GPT-6 and later models.
+	Async *bool `json:"async,omitempty"`
+
+	// AllowedCallers restricts which callers ("direct"/"programmatic") may
+	// invoke this tool (programmatic tool calling).
+	AllowedCallers []string `json:"allowed_callers,omitempty"`
+
+	// OutputSchema, when set, tells OpenAI to parse the function's
+	// function_call_output.output as JSON against this schema.
+	OutputSchema interface{} `json:"output_schema,omitempty"`
 }
 
 // NamespaceToolDef groups function tools under an OpenAI Responses namespace.
@@ -293,6 +314,11 @@ type CustomToolDef struct {
 
 	// Format specifies output format constraints.
 	Format *CustomToolDefFormat `json:"format,omitempty"`
+
+	// Async, when true, lets the model continue generating after calling
+	// this tool without waiting for its result (row 4a09793). Only
+	// supported by GPT-6 and later models.
+	Async *bool `json:"async,omitempty"`
 }
 
 // CustomToolDefFormat specifies the output format constraints for a custom tool.
