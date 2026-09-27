@@ -3004,3 +3004,92 @@ func TestAgentToolResultsToContentParts_ApprovedNoReasonOnRequest(t *testing.T) 
 		t.Fatalf("expected both a request and a response part, got %+v", parts)
 	}
 }
+
+// TestExecuteWithMessagesDeferredToolDiscovery ports the deferred-tool
+// discovery contract that TS's stream-text-iterator.ts gets from
+// createToolSearchState/prepareToolSearch (mirrored in Go by
+// ai.NewToolSearchState/ToolSearchState.Apply) to the native
+// executeWithMessages step loop used by ToolLoopAgent.GenerateAgent (and by
+// pkg/workflow.WorkflowAgent.GenerateWithOptions, which calls it). A tool
+// marked DeferLoading must stay hidden from the model until a toolSearch
+// call surfaces it; it must become callable on the very next step.
+func TestExecuteWithMessagesDeferredToolDiscovery(t *testing.T) {
+	var toolNamesPerStep [][]string
+	secretExecuted := false
+	calls := 0
+
+	model := &functionalAgentLanguageModel{
+		doGenerate: func(_ context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			calls++
+			names := make([]string, 0, len(opts.Tools))
+			for _, tl := range opts.Tools {
+				names = append(names, tl.Name)
+			}
+			toolNamesPerStep = append(toolNamesPerStep, names)
+			switch calls {
+			case 1:
+				return &types.GenerateResult{
+					FinishReason: types.FinishReasonToolCalls,
+					ToolCalls: []types.ToolCall{
+						{ID: "c1", ToolName: "toolSearch", Arguments: map[string]interface{}{"query": "secret"}},
+					},
+				}, nil
+			case 2:
+				return &types.GenerateResult{
+					FinishReason: types.FinishReasonToolCalls,
+					ToolCalls: []types.ToolCall{
+						{ID: "c2", ToolName: "secret", Arguments: map[string]interface{}{}},
+					},
+				}, nil
+			default:
+				return &types.GenerateResult{Text: "done", FinishReason: types.FinishReasonStop}, nil
+			}
+		},
+	}
+
+	deferredTool := types.Tool{
+		Name:         "secret",
+		Description:  "a secret tool",
+		DeferLoading: true,
+		Type:         types.ToolTypeFunction,
+		Parameters:   map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+		Execute: func(_ context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			secretExecuted = true
+			return "ok", nil
+		},
+	}
+
+	agent := NewToolLoopAgent(AgentConfig{
+		Model:    model,
+		Tools:    []types.Tool{ai.ToolSearch(), deferredTool},
+		MaxSteps: 10,
+	})
+
+	result, err := agent.GenerateAgent(context.Background(), AgentGenerateOptions{Prompt: "hi"})
+	if err != nil {
+		t.Fatalf("GenerateAgent() error = %v", err)
+	}
+	if len(toolNamesPerStep) < 2 {
+		t.Fatalf("expected at least 2 model calls, got %d", len(toolNamesPerStep))
+	}
+	for _, name := range toolNamesPerStep[0] {
+		if name == "secret" {
+			t.Fatalf("step 1 tools = %v, want secret hidden until discovered", toolNamesPerStep[0])
+		}
+	}
+	var sawSecret bool
+	for _, name := range toolNamesPerStep[1] {
+		if name == "secret" {
+			sawSecret = true
+		}
+	}
+	if !sawSecret {
+		t.Fatalf("step 2 tools = %v, want secret discovered and visible", toolNamesPerStep[1])
+	}
+	if !secretExecuted {
+		t.Fatal("expected the deferred tool to be executed once discovered")
+	}
+	if result.FinishReason != types.FinishReasonStop {
+		t.Fatalf("FinishReason = %v, want stop", result.FinishReason)
+	}
+}

@@ -580,6 +580,30 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 	// Custom data for PrepareCall (persists across steps)
 	var customData interface{}
 
+	// Deferred tool discovery (ai.ToolSearch / types.Tool.DeferLoading):
+	// created once per run from the full configured tool set, then applied
+	// per step below so tools marked DeferLoading stay hidden from the
+	// model until a toolSearch call surfaces them. This native step loop
+	// (executeWithMessages) calls the provider model directly instead of
+	// delegating to ai.GenerateText, so it needs its own copy of the same
+	// per-step application ai.GenerateText/StreamText perform internally.
+	// Mirrors TS workflow/stream-text-iterator.ts's createToolSearchState +
+	// prepareToolSearch(filterActiveTools(...)).
+	resolvedToolCallers, err := ai.ResolveToolCallerConfiguration(a.config.Tools, a.config.ExperimentalToolCallers)
+	if err != nil {
+		if a.config.OnChainError != nil {
+			a.config.OnChainError(err)
+		}
+		return nil, err
+	}
+	toolSearchState, err := ai.NewToolSearchState(a.config.Tools, resolvedToolCallers)
+	if err != nil {
+		if a.config.OnChainError != nil {
+			a.config.OnChainError(err)
+		}
+		return nil, err
+	}
+
 	// Execute agent loop
 	for stepNum := 1; a.config.MaxSteps <= 0 || stepNum <= a.config.MaxSteps; stepNum++ {
 		stepIndex := stepNum - 1
@@ -603,6 +627,15 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 		if a.config.OnStepStart != nil {
 			a.config.OnStepStart(stepIndex)
 		}
+
+		// Hide undiscovered DeferLoading tools from the model for this step
+		// and rebind any toolSearch tool's Execute to the deferred
+		// candidates it can surface. Applied after the step-start
+		// notifications above (which, like TS's telemetryDispatcher
+		// .onStepStart, report the full configured tool set) and before the
+		// model call and tool execution, which must only see this step's
+		// effective tools.
+		callConfig.Tools = toolSearchState.Apply(callConfig.Tools, callConfig.ToolsContext, callConfig.ExperimentalSandbox)
 
 		// Execute one step with custom data
 		stepResult, shouldContinue, newCustomData, activeTools, err := a.executeStep(ctx, callConfig)
