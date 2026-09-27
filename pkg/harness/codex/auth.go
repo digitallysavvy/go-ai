@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"context"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
@@ -45,23 +46,40 @@ func resolveAuthenticationMode(auth harness.Authentication, processEnv map[strin
 	return AuthModeDirect
 }
 
-// resolveAuthenticationEnvironment mirrors TS `resolveCodexEnv`.
-func resolveAuthenticationEnvironment(auth harness.Authentication, processEnv map[string]string) map[string]string {
+// resolveAuthenticationEnvironment mirrors TS `resolveCodexEnv`, including
+// the native-subscription fallback (`resolveCodexAuthentication`).
+func resolveAuthenticationEnvironment(ctx context.Context, auth harness.Authentication, processEnv map[string]string) map[string]string {
 	authEnv := processEnv
 	if auth.IsEnvironment() {
 		authEnv = auth.Environment
 	}
+	// An explicit isolated authentication environment opts out of the
+	// host-filesystem native-subscription fallback: the caller asked for
+	// full control over the auth environment.
+	trySubscription := !auth.IsEnvironment()
+	authModeString := ""
 	if auth.Mode == harness.AuthModeDirect {
-		return pickOpenAI(authEnv)
+		authModeString = harness.AuthModeDirect
+	}
+	if auth.Mode == harness.AuthModeDirect {
+		return pickOpenAI(ctx, authEnv, trySubscription, authModeString)
 	}
 	gw := harnessutil.GetAIGatewayAuthFromEnv(authEnv)
 	if auth.Mode == harness.AuthModeAIGateway || gw.APIKey != "" {
 		return pickGateway(gw)
 	}
-	return pickOpenAI(authEnv)
+	return pickOpenAI(ctx, authEnv, trySubscription, authModeString)
 }
 
-func pickOpenAI(env map[string]string) map[string]string {
+func pickOpenAI(ctx context.Context, env map[string]string, trySubscription bool, authModeString string) map[string]string {
+	if trySubscription {
+		hasDirect := env["OPENAI_API_KEY"] != "" || env["CODEX_API_KEY"] != ""
+		if harnessutil.ShouldResolveNativeSubscription(authModeString, env, hasDirect) {
+			if subEnv, ok := readCodexSubscription(ctx); ok {
+				return subEnv
+			}
+		}
+	}
 	out := map[string]string{}
 	apiKey := env["OPENAI_API_KEY"]
 	if apiKey == "" {
