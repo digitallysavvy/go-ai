@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -325,6 +326,42 @@ func TestTranscriptionModel_JobFailedDuringPolling(t *testing.T) {
 	_, err := model.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: revaiTestAudio, MimeType: "audio/wav"})
 	if err == nil {
 		t.Fatal("expected error for a job that fails during polling")
+	}
+}
+
+// TestTranscriptionModel_PollingRedirectToPrivateHostIsRejected mirrors
+// pollJobStatus's use of fileutil.TrustedOriginDownloadOptions: although the
+// polling URL is built from this provider's own configured base URL (not
+// taken verbatim from a job response), a compromised or misbehaving server
+// could still redirect that request off-origin to a private/link-local/
+// metadata address. Such a redirect hop must be rejected the same way an
+// untrusted provider-supplied URL is, and the initial request's Authorization
+// header must not follow it.
+func TestTranscriptionModel_PollingRedirectToPrivateHostIsRejected(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/speechtotext/v1/jobs":
+			_ = json.NewEncoder(w).Encode(revaiJobSubmitFixture)
+		case "/speechtotext/v1/jobs/test-id":
+			// A same-origin polling request redirected off-origin to a
+			// disallowed link-local/metadata address.
+			http.Redirect(w, r, "http://169.254.169.254/status", http.StatusFound)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "test-api-key", BaseURL: server.URL})
+	model, _ := p.TranscriptionModel(ModelMachine)
+
+	_, err := model.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: revaiTestAudio, MimeType: "audio/wav"})
+	if err == nil {
+		t.Fatal("expected the redirect to a disallowed private/link-local address to be rejected")
+	}
+	if !strings.Contains(err.Error(), "169.254.169.254") {
+		t.Fatalf("error = %v, want a rejection naming the disallowed IP", err)
 	}
 }
 
