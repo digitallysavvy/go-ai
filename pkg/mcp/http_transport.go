@@ -64,7 +64,10 @@ type HTTPTransport struct {
 	terminateSessionOnClose bool
 
 	// onError receives non-fatal diagnostics from the background inbound SSE
-	// listener, matching TS HttpMCPTransport's `onerror` callback.
+	// listener, the send()/POST path (non-ok responses, fetch failures,
+	// session expiry), and the POST-response SSE reader, matching TS
+	// HttpMCPTransport's `onerror` callback (mcp-http-transport.ts): every
+	// site that calls `this.onerror?.(...)` there has a matching call here.
 	onError func(error)
 
 	// Inbound SSE (legacy protocol era only): a standing background GET
@@ -128,7 +131,10 @@ type HTTPTransportConfig struct {
 
 	// OnError, when set, receives non-fatal diagnostics from the background
 	// inbound SSE listener (GET reconnect failures, malformed messages,
-	// etc.), matching TS HttpMCPTransport's `onerror` callback. Optional.
+	// etc.), the send()/POST path (non-2xx responses, fetch failures, OAuth
+	// refresh failures, session expiry), and the POST-response SSE reader
+	// (stream read failures, malformed messages), matching TS
+	// HttpMCPTransport's `onerror` callback. Optional.
 	OnError func(error) `json:"-"`
 }
 
@@ -247,7 +253,14 @@ func (t *HTTPTransport) expireSessionID(expired string) {
 // request, including the `mcp-session-id` header when a session is
 // established, and returns the session id (if any) that was attached so the
 // caller can detect a 404 session-expiry for this specific request.
-func (t *HTTPTransport) applyStandardHeaders(req *http.Request) (sentSessionID string) {
+//
+// The session id is attached only when includeSessionID is true AND the
+// negotiated protocol is not the modern (2026-07-28) one, matching TS
+// commonHeaders' `!this.isModernProtocol() && includeSessionId &&
+// this.sessionId`. Callers pass includeSessionID=false for an `initialize`
+// request, matching TS send()'s `includeSessionId: !isInitializeRequest`
+// (a fresh session has not been established yet, so nothing to echo).
+func (t *HTTPTransport) applyStandardHeaders(req *http.Request, includeSessionID bool) (sentSessionID string) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", mcpHTTPAcceptHeader)
 	req.Header.Set("mcp-protocol-version", t.ProtocolVersion())
@@ -255,12 +268,19 @@ func (t *HTTPTransport) applyStandardHeaders(req *http.Request) (sentSessionID s
 		req.Header.Set(k, v)
 	}
 	req.Header.Set("User-Agent", version.UserAgent())
-	sessionID := t.SessionID()
-	if sessionID != "" {
-		req.Header.Set("mcp-session-id", sessionID)
-		sentSessionID = sessionID
+	if includeSessionID && !t.isModernProtocol() {
+		if sessionID := t.SessionID(); sessionID != "" {
+			req.Header.Set("mcp-session-id", sessionID)
+			sentSessionID = sessionID
+		}
 	}
 	return sentSessionID
+}
+
+// isInitializeMessage reports whether message is a JSON-RPC `initialize`
+// request, matching TS send()'s `isInitializeRequest` check.
+func isInitializeMessage(message *MCPMessage) bool {
+	return message != nil && message.Method == "initialize"
 }
 
 // Connect establishes a connection to the HTTP server
@@ -305,7 +325,9 @@ func (t *HTTPTransport) Connect(ctx context.Context) error {
 // established and TerminateSessionOnClose is enabled (the default), it sends
 // a best-effort DELETE with the session id before disconnecting (hash
 // 241a8c5); a failure to terminate is ignored, matching TS's fire-and-forget
-// session termination.
+// session termination. Matching TS close()'s `!this.isModernProtocol() &&
+// this.sessionId && ...`, no DELETE is sent for the modern (2026-07-28)
+// protocol era.
 func (t *HTTPTransport) Close() error {
 	// Cancel the inbound SSE lifecycle (in-flight GET and any scheduled
 	// reconnect) and wait for its goroutine(s) to exit before proceeding,
@@ -324,7 +346,7 @@ func (t *HTTPTransport) Close() error {
 	t.connected = false
 	t.mu.Unlock()
 
-	if terminate && sessionID != "" {
+	if terminate && sessionID != "" && !t.isModernProtocol() {
 		req, err := http.NewRequestWithContext(context.Background(), http.MethodDelete, url, nil)
 		if err == nil {
 			req.Header.Set("mcp-session-id", sessionID)
@@ -369,10 +391,22 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		return NewTransportError("not connected", nil)
 	}
 
+	// fail reports err via OnError before returning it, matching every
+	// `this.onerror?.(error); throw error;` site in TS send()'s attempt()
+	// (non-ok responses, fetch failures, OAuth refresh failures, session
+	// expiry). Matching TS's `if (options?.signal?.aborted) throw error;`
+	// guard, a caller-canceled context suppresses the report.
+	fail := func(err error) error {
+		if ctx.Err() == nil {
+			t.reportError(err)
+		}
+		return err
+	}
+
 	// Marshal message to JSON
 	data, err := json.Marshal(message)
 	if err != nil {
-		return NewTransportError("failed to marshal message", err)
+		return fail(NewTransportError("failed to marshal message", err))
 	}
 
 	if t.config.EnableLogging {
@@ -382,12 +416,15 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 	// Create HTTP request
 	req, err := http.NewRequestWithContext(ctx, "POST", t.url, bytes.NewReader(data))
 	if err != nil {
-		return NewTransportError("failed to create request", err)
+		return fail(NewTransportError("failed to create request", err))
 	}
 
 	// Set headers, including mcp-session-id when a session is established
-	// (hash 241a8c5).
-	sentSessionID := t.applyStandardHeaders(req)
+	// (hash 241a8c5). The session id is never attached to an `initialize`
+	// request, matching TS commonHeaders' `includeSessionId:
+	// !isInitializeRequest`.
+	includeSessionID := !isInitializeMessage(message)
+	sentSessionID := t.applyStandardHeaders(req, includeSessionID)
 	for k, v := range extraHeaders {
 		req.Header.Set(k, v)
 	}
@@ -396,7 +433,7 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 	if token, expired, ok := t.oauthTokenSnapshot(); ok {
 		if expired {
 			if err := t.refreshOAuthToken(ctx); err != nil {
-				return NewTransportError("failed to refresh OAuth token", err)
+				return fail(NewTransportError("failed to refresh OAuth token", err))
 			}
 			token, _, ok = t.oauthTokenSnapshot()
 		}
@@ -413,10 +450,10 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		}
 		resp, err = client.Do(req)
 		if err != nil {
-			return NewTransportError("failed to send request", err)
+			return fail(NewTransportError("failed to send request", err))
 		}
 		if resp == nil {
-			return NewTransportError("failed to send request", fmt.Errorf("nil HTTP response"))
+			return fail(NewTransportError("failed to send request", fmt.Errorf("nil HTTP response")))
 		}
 		if resp.Body == nil {
 			resp.Body = io.NopCloser(bytes.NewReader(nil))
@@ -427,13 +464,13 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		_, _ = io.Copy(io.Discard, resp.Body)
 		resp.Body.Close() //nolint:errcheck
 		if err := t.refreshOAuthToken(ctx); err != nil {
-			return NewTransportError("failed to refresh OAuth token", err)
+			return fail(NewTransportError("failed to refresh OAuth token", err))
 		}
 		req, err = http.NewRequestWithContext(ctx, "POST", t.url, bytes.NewReader(data))
 		if err != nil {
-			return NewTransportError("failed to create request", err)
+			return fail(NewTransportError("failed to create request", err))
 		}
-		sentSessionID = t.applyStandardHeaders(req)
+		sentSessionID = t.applyStandardHeaders(req, includeSessionID)
 		for k, v := range extraHeaders {
 			req.Header.Set(k, v)
 		}
@@ -442,28 +479,34 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		}
 	}
 
-	if sessionID := resp.Header.Get("mcp-session-id"); sessionID != "" {
-		t.setSessionID(sessionID)
-	} else if resp.StatusCode == http.StatusNotFound && sentSessionID != "" {
-		t.expireSessionID(sentSessionID)
+	// Matching TS applySessionIdFromResponse/the 404 handling in send(),
+	// both are no-ops entirely for the modern (2026-07-28) protocol era:
+	// `if (this.isModernProtocol()) return;` and
+	// `if (!this.isModernProtocol() && sessionIdForRequest) { ... }`.
+	if !t.isModernProtocol() {
+		if sessionID := resp.Header.Get("mcp-session-id"); sessionID != "" {
+			t.setSessionID(sessionID)
+		}
 	}
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		defer resp.Body.Close() //nolint:errcheck
 		body, _ := io.ReadAll(resp.Body)
-		message := fmt.Sprintf("MCP HTTP Transport Error: POSTing to endpoint (HTTP %d): %s", resp.StatusCode, string(body))
+		errMessage := fmt.Sprintf("MCP HTTP Transport Error: POSTing to endpoint (HTTP %d): %s", resp.StatusCode, string(body))
 		// Matches TS send()'s two distinct 404 suffixes: a request that
 		// carried a (now stale) session id gets the session-expired message,
 		// while a 404 with no session id in play means the server likely
-		// doesn't support this transport at all.
-		if resp.StatusCode == http.StatusNotFound {
+		// doesn't support this transport at all. Neither suffix applies (and
+		// no session is expired) for the modern protocol era.
+		if resp.StatusCode == http.StatusNotFound && !t.isModernProtocol() {
 			if sentSessionID != "" {
-				message += ". The MCP session expired. Create a new client without `initialSessionId` to start a fresh session"
+				t.expireSessionID(sentSessionID)
+				errMessage += ". The MCP session expired. Create a new client without `initialSessionId` to start a fresh session"
 			} else {
-				message += ". This server does not support HTTP transport. Try using `sse` transport instead"
+				errMessage += ". This server does not support HTTP transport. Try using `sse` transport instead"
 			}
 		}
-		return NewMCPClientError(0, message, nil, WithMCPHTTPResponse(resp.StatusCode, t.url, string(body)))
+		return fail(NewMCPClientError(0, errMessage, nil, WithMCPHTTPResponse(resp.StatusCode, t.url, string(body))))
 	}
 	if resp.StatusCode == http.StatusAccepted {
 		// If the server accepted the message (e.g. the initialized
@@ -486,7 +529,7 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 
 	contentType := resp.Header.Get("content-type")
 	if strings.Contains(contentType, "text/event-stream") {
-		go t.readMCPHTTPSSEMessages(resp.Body)
+		go t.readMCPHTTPSSEMessages(ctx, resp.Body)
 		return nil
 	}
 	defer resp.Body.Close() //nolint:errcheck
@@ -494,7 +537,7 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 	// Read response
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return NewTransportError("failed to read response", err)
+		return fail(NewTransportError("failed to read response", err))
 	}
 
 	if t.config.EnableLogging {
@@ -503,7 +546,7 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 
 	messages, err := parseMCPHTTPJSONMessages(body)
 	if err != nil {
-		return NewTransportError("failed to unmarshal response", err)
+		return fail(NewTransportError("failed to unmarshal response", err))
 	}
 
 	t.queueReceivedMessages(messages)
@@ -566,7 +609,16 @@ func parseMCPHTTPSSEMessages(body io.Reader) ([]*MCPMessage, error) {
 	}
 }
 
-func (t *HTTPTransport) readMCPHTTPSSEMessages(body io.ReadCloser) {
+// readMCPHTTPSSEMessages parses a text/event-stream response returned from a
+// POST send() (as opposed to the standing inbound SSE GET listener), matching
+// TS send()'s `processEvents()`. A clean end-of-stream (EOF) returns
+// silently, matching TS's `if (done) return;`; a read error is reported via
+// OnError and stops the loop, matching TS's outer catch (`this.onerror?.(error)`,
+// skipped when the failure was caused by the caller's own context
+// cancellation, matching TS's `options?.signal?.aborted` check); a malformed
+// message is reported via OnError but does not stop the loop, matching TS's
+// inner catch around `parseJSONRPCMessage`.
+func (t *HTTPTransport) readMCPHTTPSSEMessages(ctx context.Context, body io.ReadCloser) {
 	defer body.Close() //nolint:errcheck
 	parser := streaming.NewSSEParser(body)
 	for {
@@ -575,6 +627,9 @@ func (t *HTTPTransport) readMCPHTTPSSEMessages(body io.ReadCloser) {
 			return
 		}
 		if err != nil {
+			if ctx.Err() == nil {
+				t.reportError(NewTransportError("failed to read event-stream response", err))
+			}
 			return
 		}
 		if event.Event != "" && event.Event != "message" {
@@ -582,6 +637,7 @@ func (t *HTTPTransport) readMCPHTTPSSEMessages(body io.ReadCloser) {
 		}
 		var msg MCPMessage
 		if err := unmarshalSafeJSON([]byte(event.Data), &msg); err != nil {
+			t.reportError(NewMCPClientError(0, "MCP HTTP Transport Error: Failed to parse message", err))
 			continue
 		}
 		t.queueReceivedMessages([]*MCPMessage{&msg})

@@ -192,3 +192,148 @@ func TestHTTPTransportNoSessionCloseIsNoop(t *testing.T) {
 		t.Fatalf("DELETE requests = %d, want 0 without an established session", len(sse.deleteRequests))
 	}
 }
+
+// TestHTTPTransportOmitsSessionIDOnInitializeRequest mirrors TS's "should
+// send initial session id on resumed HTTP requests": an `initialize` request
+// never carries `mcp-session-id`, even when a session id was already
+// established (e.g. resumed via InitialSessionID), matching TS send()'s
+// `includeSessionId: !isInitializeRequest`. A subsequent non-initialize
+// request does carry it.
+func TestHTTPTransportOmitsSessionIDOnInitializeRequest(t *testing.T) {
+	sse := &sessionSSEClient{}
+	transport := NewHTTPTransport(HTTPTransportConfig{
+		URL:              "http://localhost:9999/mcp",
+		SSEClient:        sse,
+		InitialSessionID: "saved-session",
+	})
+	transport.connected = true
+
+	initMsg, err := CreateRequest(1, "initialize", nil)
+	if err != nil {
+		t.Fatalf("CreateRequest error: %v", err)
+	}
+	if err := transport.Send(context.Background(), initMsg); err != nil {
+		t.Fatalf("initialize Send error: %v", err)
+	}
+	if got := sse.lastRequest().Header.Get("mcp-session-id"); got != "" {
+		t.Fatalf("initialize request mcp-session-id = %q, want empty", got)
+	}
+
+	listMsg, _ := CreateRequest(2, "tools/list", nil)
+	if err := transport.Send(context.Background(), listMsg); err != nil {
+		t.Fatalf("tools/list Send error: %v", err)
+	}
+	if got := sse.lastRequest().Header.Get("mcp-session-id"); got != "saved-session" {
+		t.Fatalf("tools/list request mcp-session-id = %q, want saved-session", got)
+	}
+}
+
+// TestHTTPTransportModernProtocolOmitsSessionIDHeader verifies that the
+// modern (2026-07-28) protocol era never attaches `mcp-session-id` on
+// outbound requests, matching TS commonHeaders'
+// `!this.isModernProtocol() && includeSessionId && this.sessionId`.
+func TestHTTPTransportModernProtocolOmitsSessionIDHeader(t *testing.T) {
+	sse := &sessionSSEClient{}
+	transport := NewHTTPTransport(HTTPTransportConfig{
+		URL:              "http://localhost:9999/mcp",
+		SSEClient:        sse,
+		InitialSessionID: "saved-session",
+	})
+	transport.connected = true
+	transport.SetProtocolVersion(LatestProtocolVersion)
+
+	msg, _ := CreateRequest(1, "tools/list", nil)
+	if err := transport.Send(context.Background(), msg); err != nil {
+		t.Fatalf("Send error: %v", err)
+	}
+	if got := sse.lastRequest().Header.Get("mcp-session-id"); got != "" {
+		t.Fatalf("mcp-session-id = %q, want empty for the modern protocol era", got)
+	}
+}
+
+// TestHTTPTransportModernProtocolIgnoresResponseSessionIDHeader verifies
+// that a `mcp-session-id` response header is not captured for the modern
+// protocol era, matching TS applySessionIdFromResponse's
+// `if (this.isModernProtocol()) return;`.
+func TestHTTPTransportModernProtocolIgnoresResponseSessionIDHeader(t *testing.T) {
+	sse := &sessionSSEClient{issueSessionID: "session-abc"}
+	var changed []string
+	transport := NewHTTPTransport(HTTPTransportConfig{
+		URL:               "http://localhost:9999/mcp",
+		SSEClient:         sse,
+		OnSessionIDChange: func(id string) { changed = append(changed, id) },
+	})
+	transport.connected = true
+	transport.SetProtocolVersion(LatestProtocolVersion)
+
+	msg, _ := CreateRequest(1, "tools/list", nil)
+	if err := transport.Send(context.Background(), msg); err != nil {
+		t.Fatalf("Send error: %v", err)
+	}
+	if transport.SessionID() != "" {
+		t.Fatalf("SessionID() = %q, want empty: modern protocol should ignore the response header", transport.SessionID())
+	}
+	if len(changed) != 0 {
+		t.Fatalf("OnSessionIDChange calls = %v, want none for the modern protocol era", changed)
+	}
+}
+
+// TestHTTPTransportModernProtocolSkips404SessionHandling verifies that a 404
+// POST response neither expires a session id nor adds a session-related
+// error suffix for the modern protocol era, matching TS send()'s
+// `if (!this.isModernProtocol() && sessionIdForRequest) { ... } else if
+// (!this.isModernProtocol()) { ... }` (both branches gated on legacy only).
+func TestHTTPTransportModernProtocolSkips404SessionHandling(t *testing.T) {
+	sse := &errorSSEClient{status: http.StatusNotFound, body: "Not Found"}
+	var expired []string
+	transport := NewHTTPTransport(HTTPTransportConfig{
+		URL:              "http://localhost:9999/mcp",
+		SSEClient:        sse,
+		InitialSessionID: "session-abc",
+		OnSessionExpired: func(id string) { expired = append(expired, id) },
+	})
+	transport.connected = true
+	transport.SetProtocolVersion(LatestProtocolVersion)
+
+	// The 404 fires unconditionally (independent of whether a session id was
+	// sent) so this isolates the response-side gating: even though the
+	// server 404s, the modern protocol era must not expire the session or
+	// add either 404 suffix.
+	msg, _ := CreateRequest(1, "tools/list", nil)
+	err := transport.Send(context.Background(), msg)
+	if err == nil {
+		t.Fatal("expected an error for the 404 response")
+	}
+	if strings.Contains(err.Error(), "session expired") || strings.Contains(err.Error(), "does not support HTTP transport") {
+		t.Fatalf("Send error = %v, should not mention session expiry or transport support for the modern protocol era", err)
+	}
+	if len(expired) != 0 {
+		t.Fatalf("OnSessionExpired calls = %v, want none for the modern protocol era", expired)
+	}
+	if transport.SessionID() != "session-abc" {
+		t.Fatalf("SessionID() = %q, want unchanged session-abc", transport.SessionID())
+	}
+}
+
+// TestHTTPTransportModernProtocolSkipsDeleteOnClose verifies Close does not
+// send a session-termination DELETE for the modern protocol era, matching TS
+// close()'s `!this.isModernProtocol() && this.sessionId && ...`.
+func TestHTTPTransportModernProtocolSkipsDeleteOnClose(t *testing.T) {
+	sse := &sessionSSEClient{}
+	transport := NewHTTPTransport(HTTPTransportConfig{
+		URL:              "http://localhost:9999/mcp",
+		SSEClient:        sse,
+		InitialSessionID: "session-abc",
+	})
+	transport.connected = true
+	transport.SetProtocolVersion(LatestProtocolVersion)
+
+	if err := transport.Close(); err != nil {
+		t.Fatalf("Close error: %v", err)
+	}
+	sse.mu.Lock()
+	defer sse.mu.Unlock()
+	if len(sse.deleteRequests) != 0 {
+		t.Fatalf("DELETE requests = %d, want 0 for the modern protocol era", len(sse.deleteRequests))
+	}
+}
