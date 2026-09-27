@@ -809,6 +809,17 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	stepProviderOptions := opts.ProviderOptions
 	stepSandbox := opts.ExperimentalSandbox
 	stepInstructionMessages := instructionMessages
+	// Per-step call-setting overrides (audit row 60f97f6 / WG-STEP); see the
+	// analogous comment in generate.go's GenerateText.
+	stepMaxTokens := opts.MaxTokens
+	stepTemperature := opts.Temperature
+	stepTopP := opts.TopP
+	stepTopK := opts.TopK
+	stepPresencePenalty := opts.PresencePenalty
+	stepFrequencyPenalty := opts.FrequencyPenalty
+	stepStopSequences := opts.StopSequences
+	stepSeed := opts.Seed
+	stepReasoningLevel := opts.Reasoning
 	if opts.PrepareStep != nil {
 		prepared := opts.PrepareStep(ctx, PrepareStepOptions{
 			Model:                      stepModel,
@@ -831,6 +842,15 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 			ToolOrder:                  stepToolOrder,
 			ProviderOptions:            stepProviderOptions,
 			ExperimentalSandbox:        stepSandbox,
+			MaxOutputTokens:            stepMaxTokens,
+			Temperature:                stepTemperature,
+			TopP:                       stepTopP,
+			TopK:                       stepTopK,
+			PresencePenalty:            stepPresencePenalty,
+			FrequencyPenalty:           stepFrequencyPenalty,
+			StopSequences:              stepStopSequences,
+			Seed:                       stepSeed,
+			Reasoning:                  stepReasoningLevel,
 		})
 		if prepared.Model != nil {
 			stepModel = prepared.Model
@@ -874,6 +894,33 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		}
 		if prepared.ExperimentalSandbox != nil {
 			stepSandbox = prepared.ExperimentalSandbox
+		}
+		if prepared.MaxOutputTokens != nil {
+			stepMaxTokens = prepared.MaxOutputTokens
+		}
+		if prepared.Temperature != nil {
+			stepTemperature = prepared.Temperature
+		}
+		if prepared.TopP != nil {
+			stepTopP = prepared.TopP
+		}
+		if prepared.TopK != nil {
+			stepTopK = prepared.TopK
+		}
+		if prepared.PresencePenalty != nil {
+			stepPresencePenalty = prepared.PresencePenalty
+		}
+		if prepared.FrequencyPenalty != nil {
+			stepFrequencyPenalty = prepared.FrequencyPenalty
+		}
+		if prepared.StopSequences != nil {
+			stepStopSequences = prepared.StopSequences
+		}
+		if prepared.Seed != nil {
+			stepSeed = prepared.Seed
+		}
+		if prepared.Reasoning != nil {
+			stepReasoningLevel = prepared.Reasoning
 		}
 	}
 	stepTools = resolveStepTools(ctx, stepTools, toolsContext, stepSandbox)
@@ -943,14 +990,14 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		Prompt:                stepPrompt,
 		AllowSystemMessages:   allowSystem,
 		AllowSystemInMessages: allowSystem,
-		Temperature:           opts.Temperature,
-		MaxTokens:             opts.MaxTokens,
-		TopP:                  opts.TopP,
-		TopK:                  opts.TopK,
-		FrequencyPenalty:      opts.FrequencyPenalty,
-		PresencePenalty:       opts.PresencePenalty,
-		StopSequences:         opts.StopSequences,
-		Seed:                  opts.Seed,
+		Temperature:           stepTemperature,
+		MaxTokens:             stepMaxTokens,
+		TopP:                  stepTopP,
+		TopK:                  stepTopK,
+		FrequencyPenalty:      stepFrequencyPenalty,
+		PresencePenalty:       stepPresencePenalty,
+		StopSequences:         stepStopSequences,
+		Seed:                  stepSeed,
 		Headers:               opts.Headers,
 		Tools:                 stepTools,
 		ToolChoice:            stepToolChoice,
@@ -958,7 +1005,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		RuntimeContext:        runtimeContext,
 		ToolsContext:          toolsContext,
 		ResponseFormat:        responseFormat,
-		Reasoning:             opts.Reasoning,
+		Reasoning:             stepReasoningLevel,
 		SendReasoning:         opts.SendReasoning,
 		ProviderOptions:       stepProviderOptions,
 		Telemetry:             telemetrySettings,
@@ -1290,6 +1337,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		stepModelID := r.cbModel.ModelID()
 		stepResponseModelID := stepModelID
 		var stepResponseID string
+		var stepResponseTimestamp time.Time
 		stepInstructions := r.cbSystem
 		stepInstructionMessages := r.cbInstructionMessages
 		stepTools := append([]types.Tool(nil), currentTools...)
@@ -1633,6 +1681,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				if chunk.ResponseMetadata.ID != "" {
 					stepResponseID = chunk.ResponseMetadata.ID
 				}
+				if !chunk.ResponseMetadata.Timestamp.IsZero() {
+					stepResponseTimestamp = chunk.ResponseMetadata.Timestamp
+				}
 			}
 
 			// Call OnError for error chunks before forwarding.
@@ -1908,7 +1959,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				Body:     streamRequestBody(r.currentStream()),
 				Messages: includedRequestMessages(r.cbInclude.RequestMessages, currentMessages),
 			},
-			Response:         types.StepResponse{Headers: stepHeaders},
+			Response: types.StepResponse{
+				ID:        stepResponseID,
+				ModelID:   stepResponseModelID,
+				Timestamp: stepResponseTimestamp,
+				Headers:   stepHeaders,
+			},
 			ProviderMetadata: stepProviderMeta,
 			ToolsContext:     r.cbToolsCtx,
 			RuntimeContext:   r.cbRuntimeCtx,
@@ -2060,6 +2116,17 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		nextProviderOptions := opts.ProviderOptions
 		nextSandbox := opts.ExperimentalSandbox
 		nextInstructionMessages := r.cbInstructionMessages
+		// Per-step call-setting overrides (audit row 60f97f6 / WG-STEP); see
+		// the analogous comment in generate.go's GenerateText.
+		nextMaxTokens := opts.MaxTokens
+		nextTemperature := opts.Temperature
+		nextTopP := opts.TopP
+		nextTopK := opts.TopK
+		nextPresencePenalty := opts.PresencePenalty
+		nextFrequencyPenalty := opts.FrequencyPenalty
+		nextStopSequences := opts.StopSequences
+		nextSeed := opts.Seed
+		nextReasoningLevel := opts.Reasoning
 		if opts.PrepareStep != nil {
 			prepared := opts.PrepareStep(ctx, PrepareStepOptions{
 				Model:                      nextModel,
@@ -2083,6 +2150,15 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				ProviderOptions:            nextProviderOptions,
 				ExperimentalSandbox:        nextSandbox,
 				AccumulatedUsage:           r.usage,
+				MaxOutputTokens:            nextMaxTokens,
+				Temperature:                nextTemperature,
+				TopP:                       nextTopP,
+				TopK:                       nextTopK,
+				PresencePenalty:            nextPresencePenalty,
+				FrequencyPenalty:           nextFrequencyPenalty,
+				StopSequences:              nextStopSequences,
+				Seed:                       nextSeed,
+				Reasoning:                  nextReasoningLevel,
 			})
 			if prepared.Model != nil {
 				nextModel = prepared.Model
@@ -2127,6 +2203,33 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 			if prepared.ExperimentalSandbox != nil {
 				nextSandbox = prepared.ExperimentalSandbox
+			}
+			if prepared.MaxOutputTokens != nil {
+				nextMaxTokens = prepared.MaxOutputTokens
+			}
+			if prepared.Temperature != nil {
+				nextTemperature = prepared.Temperature
+			}
+			if prepared.TopP != nil {
+				nextTopP = prepared.TopP
+			}
+			if prepared.TopK != nil {
+				nextTopK = prepared.TopK
+			}
+			if prepared.PresencePenalty != nil {
+				nextPresencePenalty = prepared.PresencePenalty
+			}
+			if prepared.FrequencyPenalty != nil {
+				nextFrequencyPenalty = prepared.FrequencyPenalty
+			}
+			if prepared.StopSequences != nil {
+				nextStopSequences = prepared.StopSequences
+			}
+			if prepared.Seed != nil {
+				nextSeed = prepared.Seed
+			}
+			if prepared.Reasoning != nil {
+				nextReasoningLevel = prepared.Reasoning
 			}
 		}
 		nextTools = resolveStepTools(ctx, nextTools, r.cbToolsCtx, nextSandbox)
@@ -2180,14 +2283,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			Prompt:                nextPrompt,
 			AllowSystemMessages:   allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages),
 			AllowSystemInMessages: allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages),
-			Temperature:           opts.Temperature,
-			MaxTokens:             opts.MaxTokens,
-			TopP:                  opts.TopP,
-			TopK:                  opts.TopK,
-			FrequencyPenalty:      opts.FrequencyPenalty,
-			PresencePenalty:       opts.PresencePenalty,
-			StopSequences:         opts.StopSequences,
-			Seed:                  opts.Seed,
+			Temperature:           nextTemperature,
+			MaxTokens:             nextMaxTokens,
+			TopP:                  nextTopP,
+			TopK:                  nextTopK,
+			FrequencyPenalty:      nextFrequencyPenalty,
+			PresencePenalty:       nextPresencePenalty,
+			StopSequences:         nextStopSequences,
+			Seed:                  nextSeed,
 			Headers:               opts.Headers,
 			Tools:                 nextTools,
 			ToolChoice:            nextToolChoice,
@@ -2195,7 +2298,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			RuntimeContext:        r.cbRuntimeCtx,
 			ToolsContext:          r.cbToolsCtx,
 			ResponseFormat:        responseFormat,
-			Reasoning:             opts.Reasoning,
+			Reasoning:             nextReasoningLevel,
 			SendReasoning:         opts.SendReasoning,
 			ProviderOptions:       nextProviderOptions,
 			Telemetry:             r.telemetrySettings,

@@ -553,6 +553,24 @@ type PrepareStepOptions struct {
 
 	// Accumulated usage so far
 	AccumulatedUsage types.Usage
+
+	// Per-step model call setting overrides (TS prepare-step-call-settings.ts,
+	// audit row 60f97f6 / WG-STEP). Set any of these in the PrepareStep
+	// callback's returned PrepareStepOptions to override that setting for
+	// this step only; the override does not carry forward to later steps
+	// (each step starts from the outer call's settings again). A nil field
+	// falls back to the outer call's value; an explicit zero value (e.g.
+	// Temperature pointing at 0.0, or an empty non-nil StopSequences slice)
+	// is preserved, not treated as "unset".
+	MaxOutputTokens  *int
+	Temperature      *float64
+	TopP             *float64
+	TopK             *int
+	PresencePenalty  *float64
+	FrequencyPenalty *float64
+	StopSequences    []string
+	Seed             *int
+	Reasoning        *types.ReasoningLevel
 }
 
 // GenerateTextResult contains the result of text generation.
@@ -898,6 +916,19 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		stepToolChoice := opts.ToolChoice
 		stepToolOrder := opts.ToolOrder
 		stepProviderOptions := opts.ProviderOptions
+		// Per-step call-setting overrides (audit row 60f97f6 / WG-STEP):
+		// each starts from the outer call's value and is reset to it again
+		// at the top of every step iteration, so an override from
+		// PrepareStep never carries forward to a later step.
+		stepMaxTokens := opts.MaxTokens
+		stepTemperature := opts.Temperature
+		stepTopP := opts.TopP
+		stepTopK := opts.TopK
+		stepPresencePenalty := opts.PresencePenalty
+		stepFrequencyPenalty := opts.FrequencyPenalty
+		stepStopSequences := opts.StopSequences
+		stepSeed := opts.Seed
+		stepReasoningLevel := opts.Reasoning
 
 		accumulatedResponseMessages := responseMessagesWithInitial(initialResponseMessages, result.Steps)
 		if opts.PrepareStep != nil {
@@ -923,6 +954,15 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				ProviderOptions:            stepProviderOptions,
 				ExperimentalSandbox:        stepSandbox,
 				AccumulatedUsage:           result.Usage,
+				MaxOutputTokens:            stepMaxTokens,
+				Temperature:                stepTemperature,
+				TopP:                       stepTopP,
+				TopK:                       stepTopK,
+				PresencePenalty:            stepPresencePenalty,
+				FrequencyPenalty:           stepFrequencyPenalty,
+				StopSequences:              stepStopSequences,
+				Seed:                       stepSeed,
+				Reasoning:                  stepReasoningLevel,
 			})
 			if prepared.Model != nil {
 				stepModel = prepared.Model
@@ -966,6 +1006,33 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			}
 			if prepared.ExperimentalSandbox != nil {
 				stepSandbox = prepared.ExperimentalSandbox
+			}
+			if prepared.MaxOutputTokens != nil {
+				stepMaxTokens = prepared.MaxOutputTokens
+			}
+			if prepared.Temperature != nil {
+				stepTemperature = prepared.Temperature
+			}
+			if prepared.TopP != nil {
+				stepTopP = prepared.TopP
+			}
+			if prepared.TopK != nil {
+				stepTopK = prepared.TopK
+			}
+			if prepared.PresencePenalty != nil {
+				stepPresencePenalty = prepared.PresencePenalty
+			}
+			if prepared.FrequencyPenalty != nil {
+				stepFrequencyPenalty = prepared.FrequencyPenalty
+			}
+			if prepared.StopSequences != nil {
+				stepStopSequences = prepared.StopSequences
+			}
+			if prepared.Seed != nil {
+				stepSeed = prepared.Seed
+			}
+			if prepared.Reasoning != nil {
+				stepReasoningLevel = prepared.Reasoning
 			}
 		}
 		stepTools = resolveStepTools(ctx, stepTools, toolsContext, stepSandbox)
@@ -1034,21 +1101,21 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			Prompt:                stepPrompt,
 			AllowSystemMessages:   allowSystem,
 			AllowSystemInMessages: allowSystem,
-			Temperature:           opts.Temperature,
-			MaxTokens:             opts.MaxTokens,
-			TopP:                  opts.TopP,
-			TopK:                  opts.TopK,
-			FrequencyPenalty:      opts.FrequencyPenalty,
-			PresencePenalty:       opts.PresencePenalty,
-			StopSequences:         opts.StopSequences,
-			Seed:                  opts.Seed,
+			Temperature:           stepTemperature,
+			MaxTokens:             stepMaxTokens,
+			TopP:                  stepTopP,
+			TopK:                  stepTopK,
+			FrequencyPenalty:      stepFrequencyPenalty,
+			PresencePenalty:       stepPresencePenalty,
+			StopSequences:         stepStopSequences,
+			Seed:                  stepSeed,
 			Headers:               opts.Headers,
 			Tools:                 stepTools,
 			ToolChoice:            stepToolChoice,
 			RuntimeContext:        runtimeContext,
 			ToolsContext:          toolsContext,
 			ResponseFormat:        responseFormat,
-			Reasoning:             opts.Reasoning,
+			Reasoning:             stepReasoningLevel,
 			SendReasoning:         opts.SendReasoning,
 			ProviderOptions:       stepProviderOptions,
 			Telemetry:             telemetrySettings,
