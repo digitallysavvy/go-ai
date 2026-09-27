@@ -1,6 +1,9 @@
 package codex
 
-import "github.com/digitallysavvy/go-ai/pkg/harness"
+import (
+	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+)
 
 func obj(props map[string]any, required ...string) map[string]any {
 	m := map[string]any{"type": "object", "properties": props}
@@ -12,10 +15,14 @@ func obj(props map[string]any, required ...string) map[string]any {
 
 func str() map[string]any { return map[string]any{"type": "string"} }
 
-// builtinTools mirrors TS `CODEX_BUILTIN_TOOLS`: Codex's other native
-// operations (apply_patch, todo planning) surface only as side-effect events
-// (file-change, todo_list) and are not model-callable tools, so they are not
-// declared here.
+func strEnum(values ...string) map[string]any {
+	return map[string]any{"type": "string", "enum": values}
+}
+
+// builtinTools mirrors TS `CODEX_BUILTIN_TOOLS`: every native Codex tool the
+// app-server can invoke as a model-callable tool. Other native operations
+// (e.g. todo planning) surface only as side-effect events (todo_list) and
+// are not model-callable tools, so they are not declared here.
 func builtinTools() map[string]harness.BuiltinTool {
 	return map[string]harness.BuiltinTool{
 		"bash": harness.CommonTool(harness.BuiltinToolBash, harness.CommonToolOptions{
@@ -28,5 +35,27 @@ func builtinTools() map[string]harness.BuiltinTool {
 			Description: "Search the web",
 			InputSchema: obj(map[string]any{"query": str()}, "query"),
 		}),
+		// No common-name equivalent — keyed by native name, mirrors TS
+		// `apply_patch: { ...tool({ description: 'Apply a patch to files',
+		// inputSchema: z.string() }), toolUseKind: 'edit' }`.
+		"apply_patch": {
+			Tool:        types.Tool{Name: "apply_patch", Description: "Apply a patch to files", Parameters: str()},
+			ToolUseKind: harness.BuiltinToolUseKindEdit,
+		},
+		// Mirrors TS `view_image: { ...tool({ description: 'View a local
+		// image file', inputSchema: z.object({ path, detail?, environment_id?
+		// }) }), toolUseKind: 'readonly' }`.
+		"view_image": {
+			Tool: types.Tool{
+				Name:        "view_image",
+				Description: "View a local image file",
+				Parameters: obj(map[string]any{
+					"path":           str(),
+					"detail":         strEnum("high", "original"),
+					"environment_id": str(),
+				}, "path"),
+			},
+			ToolUseKind: harness.BuiltinToolUseKindReadonly,
+		},
 	}
 }

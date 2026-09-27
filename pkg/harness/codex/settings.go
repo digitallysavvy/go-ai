@@ -1,10 +1,35 @@
 // Package codex is the Go host-side port of TS `@ai-sdk/harness-codex`
-// (`createCodex`), pinned to ai@7.0.113.
+// (`createCodex`), pinned to ai@7.0.118.
 //
 // It implements harness.Harness/Session/PromptControl by launching the
-// embedded, unchanged TS bridge (pkg/harness/bridges, WG6) as `node
-// bridge.mjs` inside the sandbox (pkg/harness/bridge, WG3) and translating the
-// harness-v1 bridge wire protocol to harness.StreamPart Emit calls.
+// embedded TS bridge (pkg/harness/bridges, WG6) as `node bridge.mjs` inside
+// the sandbox (pkg/harness/bridge, WG3) and translating the harness-v1 bridge
+// wire protocol to harness.StreamPart Emit calls.
+//
+// As of TS commit d17ead78cd (ai@7.0.118), the bridge itself no longer runs
+// `codex exec`/the Codex SDK: it drives Codex's `app-server` (JSON-RPC over
+// stdio) directly, registers the caller's tools as app-server "dynamic
+// tools", and receives granular `item/started`/`item/completed`/
+// `rawResponseItem/completed` notifications instead of a coarser SDK event
+// stream. That protocol lives entirely inside the embedded bridge process
+// (pkg/harness/bridges/codex/bridge.mjs) — this package never speaks
+// JSON-RPC to Codex's app-server itself, only the unchanged harness-v1
+// bridge wire protocol (`start`/`tool-result`/`text-delta`/...) to the
+// bridge, so no host-side JSON-RPC client is needed. The host-visible
+// changes from this migration are: (1) tools are now forwarded to the bridge
+// via the `start` frame's `tools` field and registered as real app-server
+// tools (no more prompt-text tool instructions — the CLI-relay shim
+// (`harness-tool.mjs`) and its `composeToolUsageInstructions` prompt framing
+// are gone, both TS-side and here); (2) `apply_patch`/`view_image` are now
+// real model-callable built-in tools (builtin_tools.go); (3)
+// `supportsBuiltinToolFiltering` is now true — app-server can filter
+// bash/webSearch/view_image via config and apply_patch via a trusted hook,
+// both bridge-internal, so DoStart forwards the caller's
+// HarnessV1BuiltinToolFiltering on the `start` frame instead of rejecting
+// it; (4) mid-turn steering (`submitUserMessage`) is now wired via
+// `turn/steer`, unconditionally like TS's own `wireTurn` (unlike
+// claude-code/opencode, this is not gated on a bridge-advertised hello
+// capability).
 //
 // DoStart implements all three TS resume rungs, exactly as the claudecode
 // package does: ATTACH reopens a socket to a still-running bridge using
@@ -12,17 +37,6 @@
 // a continued (suspended) turn's on-disk event log ends in a finished turn;
 // RERUN respawns and rehydrates the Codex thread via `resumeThreadId`
 // otherwise.
-//
-// The host-tool CLI relay's `composeToolUsageInstructions` prompt framing IS
-// ported (it is host-authored prompt text, not vendor code); the relay
-// itself (the HTTP server and the shim script it writes) runs entirely
-// inside the embedded bridge process (WG6), so no additional host-side code
-// is needed for it.
-//
-// submitUserMessage (mid-turn steering) is intentionally NOT wired: TS's own
-// `codex-harness.ts` does not implement it either (its `HarnessV1PromptControl`
-// has no `submitUserMessage` key, unconditionally — Codex has no mid-turn
-// steering channel), so omitting it here is 1:1 parity, not a simplification.
 //
 // TS commit c0e991c ("fix Codex sometimes stopping after a single text
 // response when using workflow-harness") is entirely a codex-harness.ts (this

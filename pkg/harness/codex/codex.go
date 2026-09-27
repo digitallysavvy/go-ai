@@ -18,15 +18,13 @@ import (
 const HarnessID = "codex"
 
 // version is used in the client-app attribution string, mirroring TS
-// `VERSION` pinned to the ai@7.0.113 release this port targets.
-const version = "1.0.125"
-
-// cliShimFilename mirrors TS `CLI_SHIM_FILENAME` (harness-codex/src/bridge/cli-relay.ts).
-const cliShimFilename = "harness-tool.mjs"
+// `VERSION` pinned to the ai@7.0.118 release this port targets.
+const version = "1.0.130"
 
 var _ harness.Harness = (*Harness)(nil)
 var _ harness.BootstrapProvider = (*Harness)(nil)
 var _ harness.LifecycleStateValidator = (*Harness)(nil)
+var _ harness.BuiltinToolFilteringSupport = (*Harness)(nil)
 
 // Harness is the codex harness-v1 adapter.
 type Harness struct {
@@ -47,6 +45,14 @@ func (h *Harness) HarnessID() string { return HarnessID }
 
 // BuiltinTools returns Codex's model-callable built-in tools.
 func (h *Harness) BuiltinTools() map[string]harness.BuiltinTool { return h.tools }
+
+// SupportsBuiltinToolFiltering returns true. Mirrors TS
+// `createCodex().supportsBuiltinToolFiltering = true`: Codex app-server
+// filters bash/webSearch/view_image via its `features` config and
+// apply_patch via a trusted hook (see codex-tool-filtering{,-hook}.ts,
+// bridge-internal — no host-side gating is needed beyond forwarding the
+// caller's HarnessV1BuiltinToolFiltering on the `start` frame).
+func (h *Harness) SupportsBuiltinToolFiltering() bool { return true }
 
 // GetBootstrap returns the embedded bridge bootstrap recipe.
 func (h *Harness) GetBootstrap(ctx context.Context) (*harness.Bootstrap, error) {
@@ -87,9 +93,6 @@ func (h *Harness) ValidateLifecycleStateData(data json.RawMessage) error {
 // attach/replay rungs).
 func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harness.Session, error) {
 	settings := h.settings
-	if opts.BuiltinToolFiltering != nil {
-		return nil, harness.NewCapabilityUnsupportedError("Harness 'codex' does not support built-in tool filtering controls.", HarnessID, nil)
-	}
 	if opts.PermissionMode != "" && opts.PermissionMode != harness.PermissionModeAllowAll {
 		return nil, harness.NewCapabilityUnsupportedError("Harness 'codex' does not support built-in tool approval requests; use permissionMode: 'allow-all'.", HarnessID, nil)
 	}
@@ -170,8 +173,6 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 	workDir := opts.SessionWorkDir
 	sessionDataDir := harness.SessionDataDirectoryPath(stateDir, opts.SessionID)
 	bridgeStateDir := sessionDataDir + "/bridge"
-	cliShimDir := sessionDataDir + "/codex"
-	cliShimPath := cliShimDir + "/" + cliShimFilename
 	timeout := settings.StartupTimeout
 	if timeout <= 0 {
 		timeout = bridge.DefaultStartupTimeout
@@ -200,9 +201,10 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 	if coords != nil {
 		if sess := h.tryAttach(ctx, attachOptions{
 			coords: coords, sandboxSession: sandboxSession, settings: settings, timeout: timeout,
-			sessionID: opts.SessionID, isContinue: opts.ContinueFrom != nil, cliShimPath: cliShimPath,
+			sessionID: opts.SessionID, isContinue: opts.ContinueFrom != nil,
 			reasoningEffort: settings.ReasoningEffort, webSearch: settings.WebSearch,
-			codexConfig: settings.CodexConfig, mcpServers: settings.MCPServers, headers: opts.Headers,
+			builtinToolFiltering: opts.BuiltinToolFiltering,
+			codexConfig:          settings.CodexConfig, mcpServers: settings.MCPServers, headers: opts.Headers,
 			resumeThreadID:               resumeData.ThreadID,
 			sandboxCredentialEnvironment: sandboxCredentialEnv,
 			permissionMode:               opts.PermissionMode, sandbox: restricted, sandboxHomeDir: sandboxHomeDir,
@@ -259,8 +261,8 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 
 	launched, err := bridge.Launch(ctx, bridge.LaunchOptions{
 		Label: "codex bridge", Source: HarnessID, Sandbox: restricted,
-		Command: fmt.Sprintf("node %s/bridge.mjs --workdir %s --bridge-state-dir %s --cli-shim-dir %s",
-			harnessutil.ShellQuote(bootstrapDir), harnessutil.ShellQuote(workDir), harnessutil.ShellQuote(bridgeStateDir), harnessutil.ShellQuote(cliShimDir)),
+		Command: fmt.Sprintf("node %s/bridge.mjs --workdir %s --bridge-state-dir %s",
+			harnessutil.ShellQuote(bootstrapDir), harnessutil.ShellQuote(workDir), harnessutil.ShellQuote(bridgeStateDir)),
 		Env: env, Port: port, Token: token, ReplayFromDisk: respawnStrategy == "replay",
 		BridgeStateDir: bridgeStateDir, BridgeType: HarnessID, StartupTimeout: timeout,
 		ResolveEndpoint: func(ctx context.Context, boundPort int) (harness.PortEndpoint, error) {
@@ -296,9 +298,10 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 	}
 
 	return newSession(sessionOptions{
-		sessionID: opts.SessionID, channel: channel, proc: launched.Proc, cliShimPath: cliShimPath,
+		sessionID: opts.SessionID, channel: channel, proc: launched.Proc,
 		model: DefaultModel, reasoningEffort: settings.ReasoningEffort, webSearch: settings.WebSearch,
-		codexConfig: settings.CodexConfig, mcpServers: settings.MCPServers, headers: opts.Headers,
+		builtinToolFiltering: opts.BuiltinToolFiltering,
+		codexConfig:          settings.CodexConfig, mcpServers: settings.MCPServers, headers: opts.Headers,
 		isResume: isResume, seedResumeThreadOnFirstPrompt: isResume, rerunContinue: isResume,
 		resumeThreadID: resumeData.ThreadID,
 		bridgePort:     port, bridgeToken: token, sandboxID: sandboxID,
@@ -316,10 +319,10 @@ type attachOptions struct {
 	timeout        time.Duration
 	sessionID      string
 	isContinue     bool
-	cliShimPath    string
 
 	reasoningEffort              string
 	webSearch                    *bool
+	builtinToolFiltering         *harness.BuiltinToolFiltering
 	codexConfig                  map[string]any
 	mcpServers                   map[string]any
 	headers                      map[string]string
@@ -366,9 +369,10 @@ func (h *Harness) tryAttach(ctx context.Context, opts attachOptions) *session {
 		return nil
 	}
 	return newSession(sessionOptions{
-		sessionID: opts.sessionID, channel: channel, proc: nil, cliShimPath: opts.cliShimPath,
+		sessionID: opts.sessionID, channel: channel, proc: nil,
 		model: DefaultModel, reasoningEffort: opts.reasoningEffort, webSearch: opts.webSearch,
-		codexConfig: opts.codexConfig, mcpServers: opts.mcpServers, headers: opts.headers,
+		builtinToolFiltering: opts.builtinToolFiltering,
+		codexConfig:          opts.codexConfig, mcpServers: opts.mcpServers, headers: opts.headers,
 		isResume: true, seedResumeThreadOnFirstPrompt: false, rerunContinue: false,
 		resumeThreadID: opts.resumeThreadID,
 		bridgePort:     opts.coords.Port, bridgeToken: opts.coords.Token, sandboxID: opts.coords.SandboxID,
