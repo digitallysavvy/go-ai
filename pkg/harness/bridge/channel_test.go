@@ -242,7 +242,13 @@ func TestChannelDispatchesByType(t *testing.T) {
 	})
 	c.current().deliver(map[string]any{"type": "text-delta", "id": "a", "delta": "hello"})
 	c.current().deliver(map[string]any{"type": "text-delta", "id": "a", "delta": " world"})
-	flush()
+	// Wait for both deltas rather than a fixed sleep: under -race and
+	// parallel package load, 50ms is not always enough for dispatch.
+	waitFor(t, 2*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(text) >= 2
+	})
 
 	mu.Lock()
 	defer mu.Unlock()
