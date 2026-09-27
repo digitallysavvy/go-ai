@@ -297,14 +297,19 @@ func (b *Batch) handleError(err error) error {
 }
 
 // startBatchHeaders builds the create-batch request headers, combining the
-// combined beta set into a single anthropic-beta header (TS getStartBatchHeaders).
+// combined beta set into a single anthropic-beta header (TS
+// getStartBatchHeaders). The computed anthropic-beta value always wins over
+// any anthropic-beta the caller passed in headers, mirroring TS
+// combineHeaders(normalizeHeaders(await this.getBatchHeaders(headers)), {
+// 'anthropic-beta': ... }) — later arguments win, and the computed value is
+// the later argument.
 func (b *Batch) startBatchHeaders(betas []string, headers map[string]string) map[string]string {
 	out := map[string]string{}
-	if len(betas) > 0 {
-		out["anthropic-beta"] = strings.Join(betas, ",")
-	}
 	for k, v := range headers {
 		out[k] = v
+	}
+	if len(betas) > 0 {
+		out["anthropic-beta"] = strings.Join(betas, ",")
 	}
 	return out
 }

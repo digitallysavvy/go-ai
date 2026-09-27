@@ -117,6 +117,41 @@ func TestBatch_StartsBatchAndCombinesBetas(t *testing.T) {
 	}
 }
 
+// TestBatch_ComputedBetaHeaderWinsOverCallerHeader mirrors TS
+// getStartBatchHeaders's combineHeaders ordering: the computed anthropic-beta
+// value (from providerOptions.anthropic.anthropicBeta) always wins over an
+// anthropic-beta the caller also passed via Headers, not the other way
+// around.
+func TestBatch_ComputedBetaHeaderWinsOverCallerHeader(t *testing.T) {
+	var capturedBeta string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBeta = r.Header.Get("anthropic-beta")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id": "msgbatch_1", "type": "message_batch", "processing_status": "in_progress",
+			"request_counts": {"processing": 1, "succeeded": 0, "errored": 0, "canceled": 0, "expired": 0},
+			"created_at": "2024-01-01T00:00:00Z", "expires_at": "2024-01-02T00:00:00Z"
+		}`))
+	}))
+	defer srv.Close()
+
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	b := p.ExperimentalBatch()
+	_, err := b.DoStartBatch(t.Context(), provider.BatchV4StartOptions{
+		Requests: []provider.BatchV4Request{textBatchRequest("req-1", ClaudeSonnet4_5, "Hello")},
+		ProviderOptions: map[string]interface{}{
+			"anthropic": map[string]interface{}{"anthropicBeta": []interface{}{"computed-beta"}},
+		},
+		Headers: map[string]string{"anthropic-beta": "caller-literal-beta"},
+	})
+	if err != nil {
+		t.Fatalf("DoStartBatch: %v", err)
+	}
+	if capturedBeta != "computed-beta" {
+		t.Fatalf("anthropic-beta = %q, want computed-beta (computed value must win)", capturedBeta)
+	}
+}
+
 func TestBatch_RejectsPerRequestBetas(t *testing.T) {
 	p := New(Config{APIKey: "k"})
 	b := p.ExperimentalBatch()
