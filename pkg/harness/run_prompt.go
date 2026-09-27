@@ -191,7 +191,14 @@ type runPromptOutput struct {
 // (mostly bridge/workflow-slice-specific machinery out of WG4's scope).
 func runPrompt(ctx context.Context, in runPromptInput) *runPromptOutput {
 	stream := newChunkChannelStream()
-	result := ai.NewStreamTextResultFromParts(ctx, stream, ai.ExternalStreamOptions{
+	// The result consumes the driver's channel with a context that is not
+	// cancelled with the caller's: cancellation is handled by the driver,
+	// which settles the turn through settleFailure (OnTurnFailed first, then
+	// an abort chunk and a close). Reading until that close guarantees the
+	// session's turn state is settled before Err()/Text() return, and that
+	// the channel is always drained, so the driver never blocks on push after
+	// the caller cancels.
+	result := ai.NewStreamTextResultFromParts(context.WithoutCancel(ctx), stream, ai.ExternalStreamOptions{
 		Provider: "harness:" + in.Harness.HarnessID(),
 		ModelID:  in.Model,
 	})
