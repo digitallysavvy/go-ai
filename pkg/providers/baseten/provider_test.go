@@ -76,3 +76,38 @@ func TestLanguageModel_AcceptsSyncV1ModelURL(t *testing.T) {
 		t.Fatalf("Provider() = %q", m.Provider())
 	}
 }
+
+// Ports TS baseten-provider.ts createChatModel: `modelId ?? 'placeholder'`
+// for a custom /sync/v1 deployment, `modelId ?? 'chat'` otherwise.
+func TestLanguageModel_DefaultModelID(t *testing.T) {
+	tests := []struct {
+		name     string
+		modelURL string
+		want     string
+	}{
+		{"default Model APIs", "", "chat"},
+		{"custom /sync/v1 deployment", "https://model-abc.api.baseten.co/environments/production/sync/v1", "placeholder"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := New(Config{APIKey: "k", ModelURL: tt.modelURL})
+			model, err := p.LanguageModel("")
+			if err != nil {
+				t.Fatalf("LanguageModel error = %v", err)
+			}
+			if got := model.ModelID(); got != tt.want {
+				t.Fatalf("ModelID() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+
+	// An explicit model ID always wins.
+	p := New(Config{APIKey: "k", ModelURL: "https://model-abc.api.baseten.co/environments/production/sync/v1"})
+	model, err := p.LanguageModel("my-model")
+	if err != nil {
+		t.Fatalf("LanguageModel error = %v", err)
+	}
+	if got := model.ModelID(); got != "my-model" {
+		t.Fatalf("ModelID() = %q, want %q", got, "my-model")
+	}
+}

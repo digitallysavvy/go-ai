@@ -118,7 +118,14 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 		return nil, fmt.Errorf("baseten: not supported; you must use a /sync/v1 endpoint for chat models")
 	}
 	if modelID == "" {
-		modelID = "chat"
+		// TS: modelId ?? 'placeholder' for a custom /sync/v1 deployment
+		// (dedicated single-model endpoints ignore the "model" wire field),
+		// modelId ?? 'chat' for the default Model APIs.
+		if strings.Contains(p.modelURL, "/sync/v1") {
+			modelID = "placeholder"
+		} else {
+			modelID = "chat"
+		}
 	}
 	return p.Provider.ChatModel(modelID)
 }
