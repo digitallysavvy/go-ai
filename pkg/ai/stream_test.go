@@ -1324,6 +1324,50 @@ func TestStreamTextReasoningPropagated(t *testing.T) {
 	}
 }
 
+// TestStreamTextResultReasoningAccessors ports the TS StreamTextResult
+// `reasoning`/`reasoningText` deprecated getters (stream-text-result.ts:
+// "@deprecated Use `finalStep.reasoning` instead." /
+// "@deprecated Use `finalStep.reasoningText` instead."): both must mirror
+// FinalStep().Reasoning / FinalStep().ReasoningText.
+func TestStreamTextResultReasoningAccessors(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeReasoningStart, ID: "r1"},
+				{Type: provider.ChunkTypeReasoning, ID: "r1", Reasoning: "thinking..."},
+				{Type: provider.ChunkTypeReasoningEnd, ID: "r1"},
+				{Type: provider.ChunkTypeText, Text: "ok"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "think hard",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	_, _ = result.ReadAll()
+
+	finalStep := result.FinalStep()
+	if got := result.ReasoningText(); got != finalStep.ReasoningText {
+		t.Errorf("ReasoningText() = %q, want FinalStep().ReasoningText = %q", got, finalStep.ReasoningText)
+	}
+	if result.ReasoningText() == "" {
+		t.Error("expected non-empty ReasoningText()")
+	}
+	if got := result.Reasoning(); len(got) != len(finalStep.Reasoning) {
+		t.Errorf("Reasoning() = %#v, want FinalStep().Reasoning = %#v", got, finalStep.Reasoning)
+	}
+	if len(result.Reasoning()) == 0 {
+		t.Error("expected non-empty Reasoning()")
+	}
+}
+
 // TestStreamTextToolsExecutedAfterStreamEnd verifies that tool Execute() is NOT
 // called while the stream is in progress, only after all chunks are consumed.
 // Tool-result chunks are forwarded to OnChunk after Execute fires.
