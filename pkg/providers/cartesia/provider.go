@@ -1,12 +1,11 @@
 // Package cartesia provides a Cartesia speech and transcription provider for
-// the Go AI SDK. Cartesia offers text-to-speech (POST /tts/bytes) and batch
-// speech-to-text (POST /stt) endpoints.
+// the Go AI SDK. Cartesia offers text-to-speech (POST /tts/bytes), batch
+// speech-to-text (POST /stt), and Ink 2 realtime/streaming transcription
+// (WebSocket-based, over /stt/websocket and /stt/turns/websocket) endpoints.
 //
-// Ink 2 realtime/streaming transcription (WebSocket-based, over
-// /stt/websocket and /stt/turns/websocket) is out of scope for this
-// batch-only TranscriptionModel; it is designed to grow a DoStream method
-// later without changing this package's exported API. DoTranscribe rejects
-// streaming-only model IDs (ink-2 and ink-2-*).
+// TranscriptionModel.DoTranscribe rejects streaming-only model IDs (ink-2
+// and ink-2-*); use TranscriptionModel.DoStream (provider.TranscriptionStreamer)
+// for those instead. See transcription_stream.go.
 package cartesia
 
 import (

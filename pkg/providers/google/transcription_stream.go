@@ -16,6 +16,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
 	"golang.org/x/net/websocket"
 )
 
@@ -171,7 +172,7 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 	// empirically working shape — until the endpoint honors the documented
 	// form (mirrors the TS comment in google-transcription-model.ts).
 	setup := map[string]interface{}{
-		"model":                   googleModelPath(m.modelID),
+		"model":                   gemini.GetModelPath(m.modelID),
 		"inputAudioTranscription": audioConfig,
 	}
 

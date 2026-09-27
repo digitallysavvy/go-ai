@@ -146,7 +146,7 @@ func TestTranscriptionModel_StreamingOptionWarning(t *testing.T) {
 	result, err := model.DoTranscribe(context.Background(), &provider.TranscriptionOptions{
 		Audio: cartesiaTestAudio, MimeType: "audio/wav",
 		ProviderOptions: map[string]interface{}{
-			"cartesia": TranscriptionModelOptions{Streaming: map[string]interface{}{"turnDetection": false}},
+			"cartesia": TranscriptionModelOptions{Streaming: &StreamingOptions{TurnDetection: boolPtr(false)}},
 		},
 	})
 	if err != nil {

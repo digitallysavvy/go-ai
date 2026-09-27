@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
 )
 
 const realtimeWebSocketPath = "google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained"
@@ -135,7 +136,7 @@ func isThinkingLiveModel(modelID string) bool {
 }
 
 func (m *GoogleRealtimeModel) BuildSessionConfig(config provider.RealtimeSessionConfig) any {
-	setup := map[string]interface{}{"model": googleModelPath(m.modelID)}
+	setup := map[string]interface{}{"model": gemini.GetModelPath(m.modelID)}
 	generation := map[string]interface{}{}
 	if config.OutputModalities != nil {
 		modalities := make([]string, len(config.OutputModalities))
@@ -451,13 +452,6 @@ func googleRealtimeBaseURL(base string) *url.URL {
 		}
 	}
 	return u
-}
-
-func googleModelPath(modelID string) string {
-	if strings.HasPrefix(modelID, "models/") || strings.Contains(modelID, "/models/") {
-		return modelID
-	}
-	return "models/" + modelID
 }
 
 func googleRealtimeISOString(t time.Time) string {

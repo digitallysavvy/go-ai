@@ -2,6 +2,7 @@ package elevenlabs
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -15,7 +16,7 @@ type Provider struct {
 
 // Config contains configuration for the ElevenLabs provider
 type Config struct {
-	// APIKey is the ElevenLabs API key
+	// APIKey is the ElevenLabs API key. Falls back to ELEVENLABS_API_KEY.
 	APIKey string
 
 	// BaseURL is the base URL for the ElevenLabs API (optional)
@@ -27,6 +28,9 @@ func New(cfg Config) *Provider {
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = "https://api.elevenlabs.io"
+	}
+	if cfg.APIKey == "" {
+		cfg.APIKey = os.Getenv("ELEVENLABS_API_KEY")
 	}
 
 	client := http.NewClient(http.Config{
