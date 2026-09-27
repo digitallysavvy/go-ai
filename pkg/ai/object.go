@@ -22,6 +22,15 @@ const defaultObjectMaxRetries = 2
 
 type RepairTextFunc func(ctx context.Context, text string, parseErr error) (*string, error)
 
+// effectiveRepairText resolves the stable RepairText field over the
+// deprecated ExperimentalRepairText alias (audit row 09a52cb).
+func effectiveRepairText(stable, experimental RepairTextFunc) RepairTextFunc {
+	if stable != nil {
+		return stable
+	}
+	return experimental
+}
+
 // objectCallCtx carries call-scoped metadata through the internal mode functions
 // so structured callback events can be correlated across OnStepStart/OnStepFinish/OnFinish.
 type objectCallCtx struct {
@@ -523,8 +532,15 @@ type GenerateObjectOptions struct {
 	Seed             *int
 	MaxRetries       int
 
+	// RepairText repairs invalid JSON or schema-invalid object output.
+	// Return nil when the output cannot be repaired. Takes precedence over
+	// ExperimentalRepairText when both are set (audit row 09a52cb).
+	RepairText RepairTextFunc
+
 	// ExperimentalRepairText repairs invalid JSON or schema-invalid object output.
 	// Return nil when the output cannot be repaired.
+	//
+	// Deprecated: use RepairText.
 	ExperimentalRepairText RepairTextFunc
 
 	// Additional HTTP headers sent with the request.
@@ -925,8 +941,9 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 	}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
 
 	obj, _, _, err := parseObjectResult(genResult, ObjectModeObject, opts.Schema, nil, opts.Model)
-	if err != nil && opts.ExperimentalRepairText != nil {
-		repairedText, repairErr := attemptRepair(ctx, opts.ExperimentalRepairText, genResult.Text, err)
+	repairTextFn := effectiveRepairText(opts.RepairText, opts.ExperimentalRepairText)
+	if err != nil && repairTextFn != nil {
+		repairedText, repairErr := attemptRepair(ctx, repairTextFn, genResult.Text, err)
 		if repairErr != nil {
 			return nil, repairErr
 		}
@@ -1068,8 +1085,9 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 	}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
 
 	_, arr, _, err := parseObjectResult(genResult, ObjectModeArray, opts.Schema, nil, opts.Model)
-	if err != nil && opts.ExperimentalRepairText != nil {
-		repairedText, repairErr := attemptRepair(ctx, opts.ExperimentalRepairText, genResult.Text, err)
+	repairTextFn := effectiveRepairText(opts.RepairText, opts.ExperimentalRepairText)
+	if err != nil && repairTextFn != nil {
+		repairedText, repairErr := attemptRepair(ctx, repairTextFn, genResult.Text, err)
 		if repairErr != nil {
 			return nil, repairErr
 		}
@@ -1202,8 +1220,9 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc object
 	}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
 
 	_, _, selectedValue, err := parseObjectResult(genResult, ObjectModeEnum, nil, opts.EnumValues, opts.Model)
-	if err != nil && opts.ExperimentalRepairText != nil {
-		repairedText, repairErr := attemptRepair(ctx, opts.ExperimentalRepairText, genResult.Text, err)
+	repairTextFn := effectiveRepairText(opts.RepairText, opts.ExperimentalRepairText)
+	if err != nil && repairTextFn != nil {
+		repairedText, repairErr := attemptRepair(ctx, repairTextFn, genResult.Text, err)
 		if repairErr != nil {
 			return nil, repairErr
 		}
@@ -1330,8 +1349,9 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc ob
 	}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
 
 	obj, _, _, err := parseObjectResult(genResult, ObjectModeNoSchema, nil, nil, opts.Model)
-	if err != nil && opts.ExperimentalRepairText != nil {
-		repairedText, repairErr := attemptRepair(ctx, opts.ExperimentalRepairText, genResult.Text, err)
+	repairTextFn := effectiveRepairText(opts.RepairText, opts.ExperimentalRepairText)
+	if err != nil && repairTextFn != nil {
+		repairedText, repairErr := attemptRepair(ctx, repairTextFn, genResult.Text, err)
 		if repairErr != nil {
 			return nil, repairErr
 		}
@@ -1426,8 +1446,15 @@ type StreamObjectOptions struct {
 	Seed             *int
 	MaxRetries       int
 
+	// RepairText repairs invalid JSON or schema-invalid object output.
+	// Return nil when the output cannot be repaired. Takes precedence over
+	// ExperimentalRepairText when both are set (audit row 09a52cb).
+	RepairText RepairTextFunc
+
 	// ExperimentalRepairText repairs invalid JSON or schema-invalid object output.
 	// Return nil when the output cannot be repaired.
+	//
+	// Deprecated: use RepairText.
 	ExperimentalRepairText RepairTextFunc
 
 	// Additional HTTP headers sent with the request.
@@ -1854,8 +1881,9 @@ streamLoop:
 		},
 	}
 	parsedObject, parsedArray, parsedEnum, parseErr := parseObjectResult(streamResult, opts.OutputMode, opts.Schema, opts.EnumValues, opts.Model)
-	if parseErr != nil && opts.ExperimentalRepairText != nil {
-		repairedText, repairErr := attemptRepair(ctx, opts.ExperimentalRepairText, accumulatedText, parseErr)
+	repairTextFn := effectiveRepairText(opts.RepairText, opts.ExperimentalRepairText)
+	if parseErr != nil && repairTextFn != nil {
+		repairedText, repairErr := attemptRepair(ctx, repairTextFn, accumulatedText, parseErr)
 		if repairErr != nil {
 			parseErr = repairErr
 		} else if repairedText != nil && *repairedText != accumulatedText {
