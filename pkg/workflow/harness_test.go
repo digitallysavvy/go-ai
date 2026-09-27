@@ -8,10 +8,38 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/agent"
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
+
+// stubHarnessWorkflowAgent is a from-scratch HarnessWorkflowAgent, mirroring
+// TS's inline `const agent: HarnessWorkflowAgent = {...}` mock objects in
+// run-harness-agent-slice.test.ts: unlike newFakeHarnessAgent's real
+// *harness.Agent, this lets a test make CreateSession/Stream/ContinueStream
+// fail independently of one another (e.g. a session that creates fine but
+// whose Stream call rejects outright, before any streaming starts).
+type stubHarnessWorkflowAgent struct {
+	hasOutput      bool
+	createSession  func(context.Context, harness.CreateSessionOptions) (*harness.AgentSession, error)
+	stream         func(context.Context, agent.AgentStreamOptions) (*ai.StreamTextResult, error)
+	continueStream func(context.Context, agent.AgentStreamOptions, []types.ToolApprovalResponseContent, []types.ToolResultContent) (*ai.StreamTextResult, error)
+}
+
+func (s stubHarnessWorkflowAgent) HasOutput() bool { return s.hasOutput }
+func (s stubHarnessWorkflowAgent) CreateSession(ctx context.Context, opts harness.CreateSessionOptions) (*harness.AgentSession, error) {
+	return s.createSession(ctx, opts)
+}
+func (s stubHarnessWorkflowAgent) Stream(ctx context.Context, opts agent.AgentStreamOptions) (*ai.StreamTextResult, error) {
+	return s.stream(ctx, opts)
+}
+func (s stubHarnessWorkflowAgent) ContinueStream(ctx context.Context, opts agent.AgentStreamOptions, approvals []types.ToolApprovalResponseContent, results []types.ToolResultContent) (*ai.StreamTextResult, error) {
+	return s.continueStream(ctx, opts, approvals, results)
+}
+
+var _ HarnessWorkflowAgent = stubHarnessWorkflowAgent{}
 
 // ─── fake sandbox (mirrors pkg/harness/agent_test.go's mockSandbox/
 // mockNetworkSandbox, scoped locally since those are unexported test types
@@ -95,6 +123,10 @@ type fakeHarnessOptions struct {
 
 type fakeSession struct {
 	opts fakeHarnessOptions
+
+	mu           sync.Mutex
+	detachCalls  int
+	destroyCalls int
 }
 
 func (s *fakeSession) SessionID() string { return "fake-session-1" }
@@ -140,12 +172,26 @@ func (s *fakeSession) DoSuspendTurn(ctx context.Context) (*harness.ContinueTurnS
 }
 
 func (s *fakeSession) DoDetach(context.Context) (*harness.ResumeSessionState, error) {
+	s.mu.Lock()
+	s.detachCalls++
+	s.mu.Unlock()
 	return harness.NewResumeSessionState("fake", map[string]any{})
 }
 func (s *fakeSession) DoStop(context.Context) (*harness.ResumeSessionState, error) {
 	return harness.NewResumeSessionState("fake", map[string]any{})
 }
-func (s *fakeSession) DoDestroy(context.Context) error { return nil }
+func (s *fakeSession) DoDestroy(context.Context) error {
+	s.mu.Lock()
+	s.destroyCalls++
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *fakeSession) counts() (detach, destroy int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.detachCalls, s.destroyCalls
+}
 
 type fakePromptControl struct {
 	done chan struct{}
@@ -638,6 +684,127 @@ func TestRunHarnessAgentTimeSlice_NoOutputCapabilitySkipsOutput(t *testing.T) {
 	}
 	if next.FinalResult == nil || next.FinalResult.Output != nil {
 		t.Fatalf("FinalResult.Output = %#v, want nil", next.FinalResult)
+	}
+}
+
+// TestRunHarnessAgentTimeSlice_StreamStartupFailureDetachesSession ports TS
+// "stream startup failures detach the session and return fresh resume
+// state": when Stream itself rejects (a startup failure, before any
+// streaming begins — distinct from a wire-level error mid-turn), the run
+// must still fail cleanly through the ordinary detach path: status=failed,
+// the rejection's own message as Error, ResumeFrom populated from Detach,
+// and DoDestroy never called (destroyOnFinish defaults to false).
+func TestRunHarnessAgentTimeSlice_StreamStartupFailureDetachesSession(t *testing.T) {
+	fake := &fakeSession{}
+	real, err := harness.NewAgent(harness.AgentSettings{
+		Harness: &fakeHarnessAdapter{session: fake}, Sandbox: fakeSandboxProvider{},
+	})
+	if err != nil {
+		t.Fatalf("harness.NewAgent: %v", err)
+	}
+	session, err := real.CreateSession(context.Background(), harness.CreateSessionOptions{SessionID: "ses_1"})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	stub := stubHarnessWorkflowAgent{
+		createSession: func(context.Context, harness.CreateSessionOptions) (*harness.AgentSession, error) {
+			return session, nil
+		},
+		stream: func(context.Context, agent.AgentStreamOptions) (*ai.StreamTextResult, error) {
+			return nil, errors.New("configuration unavailable")
+		},
+		continueStream: func(context.Context, agent.AgentStreamOptions, []types.ToolApprovalResponseContent, []types.ToolResultContent) (*ai.StreamTextResult, error) {
+			return nil, errors.New("continue should not be called on the first turn")
+		},
+	}
+
+	staleResumeFrom, err := harness.NewResumeSessionState("fake", map[string]any{"stale": true})
+	if err != nil {
+		t.Fatalf("NewResumeSessionState: %v", err)
+	}
+	state := CreateHarnessWorkflowState(HarnessWorkflowInput{
+		Prompt: harness.TextPrompt("hi"), SessionID: "ses_1",
+		ResumeFrom: staleResumeFrom,
+	})
+	next, err := RunHarnessAgentTimeSlice(context.Background(), RunHarnessAgentTimeSliceOptions{
+		Agent: stub, State: state, Writable: &collectingWriter{},
+	})
+	if err != nil {
+		t.Fatalf("RunHarnessAgentTimeSlice: %v", err)
+	}
+	if next.Status != HarnessWorkflowStatusFailed {
+		t.Fatalf("Status = %v, want failed", next.Status)
+	}
+	if next.Error != "configuration unavailable" {
+		t.Fatalf("Error = %q, want %q", next.Error, "configuration unavailable")
+	}
+	if next.ResumeFrom == nil {
+		t.Fatal("ResumeFrom should be populated from Detach, not left stale/empty")
+	}
+	if detach, destroy := fake.counts(); detach != 1 || destroy != 0 {
+		t.Fatalf("detachCalls=%d destroyCalls=%d, want 1, 0", detach, destroy)
+	}
+}
+
+// hasOutputLiarAgent wraps a real *harness.Agent (with no Output configured)
+// and overrides HasOutput to report true anyway — reproducing, through
+// entirely public APIs, a HarnessWorkflowAgent implementation that is
+// structurally incompatible with its own HasOutput claim: exactly the case
+// TS run-harness-agent.ts's `outputPromise == null` check guards against.
+// For the real *harness.Agent, HasOutput() is tied 1:1 to whether Output was
+// configured (agent.go), so this mismatch can only happen via a custom
+// HarnessWorkflowAgent implementation, which is exactly what this simulates.
+type hasOutputLiarAgent struct{ *harness.Agent }
+
+func (hasOutputLiarAgent) HasOutput() bool { return true }
+
+// TestRunHarnessAgentTimeSlice_MissingOutputFailsRun is the regression test
+// for the output-persistence parity gap: TS run-harness-agent.ts's
+// `if (outputPromise == null) throw new Error('Harness agent result does not
+// expose structured output.')` fails the run through the same
+// endFailedSession path as a parse error, rather than silently finishing
+// with an empty output. Go's *ai.StreamTextResult.Output/.OutputErr both
+// return nil (no error) when no Output option was ever configured (see
+// their doc comments) — the workflow runner must still fail a run whose
+// HarnessWorkflowAgent claims HasOutput() but never actually produces one,
+// not report Finished with a silently lost output.
+func TestRunHarnessAgentTimeSlice_MissingOutputFailsRun(t *testing.T) {
+	base := newFakeHarnessAgent(t, fakeHarnessOptions{
+		script: func() []harness.StreamPart {
+			return []harness.StreamPart{
+				&harness.StreamStartPart{},
+				&harness.TextStartPart{ID: "t1"},
+				&harness.TextDeltaPart{ID: "t1", Delta: "Hello."},
+				&harness.TextEndPart{ID: "t1"},
+				&harness.FinishStepPart{FinishReason: harness.FinishReason{Unified: harness.FinishReasonStop}, Usage: usageParts(1, 1)},
+				&harness.FinishPart{FinishReason: harness.FinishReason{Unified: harness.FinishReasonStop}, TotalUsage: usageParts(1, 1)},
+			}
+		},
+		// No Output configured on the underlying agent — hasOutputLiarAgent
+		// alone is what claims HasOutput().
+	})
+	a := hasOutputLiarAgent{base}
+	writer := &collectingWriter{}
+
+	state := CreateHarnessWorkflowState(HarnessWorkflowInput{Prompt: harness.TextPrompt("Score this."), SessionID: "ses_1"})
+	next, err := RunHarnessAgentTimeSlice(context.Background(), RunHarnessAgentTimeSliceOptions{
+		Agent: a, State: state, Writable: writer,
+	})
+	if err != nil {
+		t.Fatalf("RunHarnessAgentTimeSlice: %v", err)
+	}
+	if next.Status != HarnessWorkflowStatusFailed {
+		t.Fatalf("Status = %v, want failed", next.Status)
+	}
+	if next.Error == "" {
+		t.Fatal("Error should be populated")
+	}
+	if next.FinalResult != nil {
+		t.Fatalf("FinalResult = %+v, want nil", next.FinalResult)
+	}
+	if next.ResumeFrom == nil {
+		t.Fatal("ResumeFrom should still be populated (session detached, not destroyed)")
 	}
 }
 

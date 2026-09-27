@@ -432,7 +432,22 @@ func RunHarnessAgent(ctx context.Context, opts RunHarnessAgentOptions) (HarnessW
 	shouldCaptureOutput := a.HasOutput()
 	if shouldCaptureOutput {
 		output = result.Output()
-		if oerr := result.OutputErr(); oerr != nil {
+		oerr := result.OutputErr()
+		// TS's `result.output` is a promise property that is only ever
+		// absent (`outputPromise == null`) for a structurally-incompatible
+		// HarnessWorkflowAgent implementation — a real HarnessAgent's output
+		// getter always returns a promise, rejecting instead when no output
+		// specification was configured. Go's `*ai.StreamTextResult.Output`/
+		// `.OutputErr` collapse "never configured" and "not yet available"
+		// into a silent (nil, nil) rather than an error, so mirror TS's
+		// explicit null-check with the equivalent Go condition: HasOutput
+		// promised structured output but none — and no parse error either
+		// — actually came back. Both cases funnel into the same
+		// failed-session handling TS's single try/catch already shares.
+		if oerr == nil && output == nil {
+			oerr = errors.New("harness agent result does not expose structured output")
+		}
+		if oerr != nil {
 			resumeFrom, continueFrom, ferr := endFailedHarnessSession(ctx, session, destroyOnFinish, nil)
 			if ferr != nil {
 				return HarnessWorkflowState{}, ferr
