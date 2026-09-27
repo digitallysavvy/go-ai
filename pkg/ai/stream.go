@@ -3304,6 +3304,22 @@ func (r *StreamTextResult) FinalStep() types.StepResult {
 	return steps[len(steps)-1]
 }
 
+// Reasoning returns the reasoning/thinking content parts from the final
+// stream step, consuming the stream if needed.
+//
+// Deprecated: use FinalStep().Reasoning instead.
+func (r *StreamTextResult) Reasoning() []types.ReasoningContent {
+	return r.FinalStep().Reasoning
+}
+
+// ReasoningText returns the concatenated reasoning text from the final
+// stream step, consuming the stream if needed.
+//
+// Deprecated: use FinalStep().ReasoningText instead.
+func (r *StreamTextResult) ReasoningText() string {
+	return r.FinalStep().ReasoningText
+}
+
 // Content returns generated content from all stream steps in order.
 func (r *StreamTextResult) Content() []types.ContentPart {
 	steps := r.Steps()

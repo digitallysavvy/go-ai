@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"syscall"
@@ -828,6 +829,27 @@ func TestCallToolDoesNotRetryByDefault(t *testing.T) {
 	}
 	if transport.attempts() != 1 {
 		t.Fatalf("attempts = %d, want 1 (no retry by default)", transport.attempts())
+	}
+}
+
+// TestConnectRejectsNegativeMaxRetries mirrors TS mcp-client.ts's
+// prepareMaxRetries, which throws MCPClientError("maxRetries must be >= 0")
+// synchronously from the constructor for a negative maxRetries. Go's
+// constructor (NewMCPClient) cannot fail, so the check happens at the first
+// fallible call, Connect.
+func TestConnectRejectsNegativeMaxRetries(t *testing.T) {
+	transport := newRetryableCallTransport(0, nil)
+	client := NewMCPClient(transport, MCPClientConfig{MaxRetries: -1})
+	err := client.Connect(context.Background())
+	if err == nil {
+		t.Fatal("expected Connect to reject a negative MaxRetries")
+	}
+	var mcpErr *MCPClientError
+	if !errors.As(err, &mcpErr) {
+		t.Fatalf("error = %T, want *MCPClientError", err)
+	}
+	if transport.connected {
+		t.Fatal("transport should not have been connected after validation failure")
 	}
 }
 

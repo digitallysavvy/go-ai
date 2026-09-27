@@ -88,6 +88,46 @@ func TestConvertToGoogleMessages_OmitsFunctionCallIDs(t *testing.T) {
 	}
 }
 
+// TestConvertToGoogleMessages_CombinesConsecutiveToolMessages ports the
+// core combining step (MergeConsecutiveToolMessages, hash 33647d7) applied
+// ahead of Google conversion: two consecutive RoleTool SDK messages must
+// become a SINGLE Google "user" turn with both functionResponse parts,
+// instead of two separate "user" turns (previously: converter.go emitted one
+// user turn per tool message).
+func TestConvertToGoogleMessages_CombinesConsecutiveToolMessages(t *testing.T) {
+	msgs := []types.Message{
+		{Role: types.RoleAssistant, ToolCalls: []types.ToolCall{
+			{ID: "call-1", ToolName: "weather", Arguments: map[string]interface{}{"city": "SF"}},
+			{ID: "call-2", ToolName: "time", Arguments: map[string]interface{}{"tz": "PST"}},
+		}},
+		{Role: types.RoleTool, Content: []types.ContentPart{types.ToolResultContent{ToolCallID: "call-1", ToolName: "weather",
+			Output: &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "sunny"}}}},
+		{Role: types.RoleTool, Content: []types.ContentPart{types.ToolResultContent{ToolCallID: "call-2", ToolName: "time",
+			Output: &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "3pm"}}}},
+	}
+	out, err := ConvertToGoogleMessages(msgs, GoogleMessagesOptions{IncludeFunctionCallIDs: true})
+	if err != nil {
+		t.Fatalf("ConvertToGoogleMessages error: %v", err)
+	}
+	// assistant turn + ONE combined user turn (not two).
+	if len(out.Contents) != 2 {
+		t.Fatalf("len(Contents) = %d, want 2 (assistant + one combined tool turn); got %#v", len(out.Contents), out.Contents)
+	}
+	userTurn := out.Contents[1]
+	if userTurn["role"] != "user" {
+		t.Fatalf("Contents[1].role = %v, want user", userTurn["role"])
+	}
+	parts, ok := userTurn["parts"].([]map[string]interface{})
+	if !ok || len(parts) != 2 {
+		t.Fatalf("Contents[1].parts = %#v, want 2 functionResponse parts", userTurn["parts"])
+	}
+	fr1 := parts[0]["functionResponse"].(map[string]interface{})
+	fr2 := parts[1]["functionResponse"].(map[string]interface{})
+	if fr1["id"] != "call-1" || fr2["id"] != "call-2" {
+		t.Errorf("functionResponse ids = %v, %v, want call-1, call-2", fr1["id"], fr2["id"])
+	}
+}
+
 // TS: provider-executed code_execution replays as executableCode / codeExecutionResult (2db5621).
 func TestConvertToGoogleMessages_CodeExecutionReplay(t *testing.T) {
 	msgs := []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{

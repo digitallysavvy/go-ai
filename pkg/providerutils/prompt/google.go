@@ -78,6 +78,7 @@ func ConvertToGoogleMessages(messages []types.Message, opts GoogleMessagesOption
 		names = []string{"google"}
 	}
 	c := &googleConverter{opts: opts, names: names, isVertexLike: !containsString(names, "google")}
+	messages = MergeConsecutiveToolMessages(messages)
 
 	var systemParts []map[string]interface{}
 	var systemTexts []string

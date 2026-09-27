@@ -250,7 +250,7 @@ func ConvertToAnthropicPrompt(messages []types.Message, opts AnthropicPromptOpti
 	}
 	sendReasoning := opts.SendReasoning == nil || *opts.SendReasoning
 
-	blocks := groupAnthropicBlocks(messages)
+	blocks := groupAnthropicBlocks(MergeConsecutiveToolMessages(messages))
 	var system []map[string]interface{}
 	out := make([]map[string]interface{}, 0, len(blocks))
 

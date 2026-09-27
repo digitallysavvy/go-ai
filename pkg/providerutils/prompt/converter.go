@@ -53,6 +53,7 @@ func ToOpenAIMessages(messages []types.Message, opts ...ToOpenAIMessagesOptions)
 	if len(opts) > 0 {
 		opt = opts[0]
 	}
+	messages = MergeConsecutiveToolMessages(messages)
 	result := make([]map[string]interface{}, 0, len(messages))
 
 	for _, msg := range messages {

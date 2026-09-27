@@ -829,11 +829,6 @@ func (s *openAIStream) RequestBody() interface{} {
 	return s.requestBody
 }
 
-// Read implements io.Reader
-func (s *openAIStream) Read(p []byte) (n int, err error) {
-	return s.reader.Read(p)
-}
-
 // Close implements io.Closer
 func (s *openAIStream) Close() error {
 	return s.reader.Close()

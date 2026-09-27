@@ -662,6 +662,29 @@ func TestConvertToAnthropicPrompt_Golden(t *testing.T) {
 			]}]`,
 		},
 		{
+			// Two consecutive tool messages, each with its own message-level
+			// cache_control and no part-level cache_control. Core combining
+			// (MergeConsecutiveToolMessages, hash 33647d7) merges them into one
+			// tool message before Anthropic's own grouping runs. cache_control
+			// from the FIRST message must land on ITS OWN last part (not be
+			// lost when its message-level ProviderOptions is overwritten by the
+			// second message's), and cache_control from the second (now final)
+			// message must land on the true last part of the combined result.
+			name: "cache_control preserved across combined consecutive tool messages",
+			messages: []types.Message{
+				{Role: types.RoleTool, ProviderOptions: anthropicOpt("cacheControl", ephemeral), Content: []types.ContentPart{
+					types.ToolResultContent{ToolCallID: "a", ToolName: "t", Output: &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "x"}},
+				}},
+				{Role: types.RoleTool, ProviderOptions: anthropicOpt("cacheControl", ephemeral), Content: []types.ContentPart{
+					types.ToolResultContent{ToolCallID: "b", ToolName: "t", Output: &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "y"}},
+				}},
+			},
+			wantMessages: `[{"role":"user","content":[
+				{"type":"tool_result","tool_use_id":"a","content":"x","cache_control":{"type":"ephemeral"}},
+				{"type":"tool_result","tool_use_id":"b","content":"y","cache_control":{"type":"ephemeral"}}
+			]}]`,
+		},
+		{
 			name: "reject cache_control on thinking blocks",
 			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
 				types.ReasoningContent{Text: "t", ProviderOptions: anthropicOpt("signature", "s", "cacheControl", ephemeral)},
