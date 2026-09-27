@@ -300,10 +300,13 @@ type UserMessageSubmitter interface {
 // replay buffer; an adapter that does not implement it (any adapter's own
 // test double, or one with no live event buffer to protect) simply skips the
 // optimization with no change in correctness. Mirrors TS
-// `pinSandboxChannelEventCheckpoint` (harness/utils/sandbox-channel.ts).
-// Implemented by every bridge-backed adapter's promptControl (claudecode,
-// codex, opencode, deepagents, acp), delegating to
-// pkg/harness/bridge.Channel.PinCheckpoint.
+// `pinSandboxChannelEventCheckpoint` (harness/utils/sandbox-channel.ts),
+// whose per-event symbol is attached at decode time for the same reason
+// pkg/harness/bridge.CheckpointRecorder.Record captures a seq at dispatch
+// time rather than reading the channel's live cursor when Pin is later
+// called — see that type's doc. Implemented by every bridge-backed adapter's
+// promptControl (claudecode, codex, opencode, deepagents, acp), each
+// delegating to its own pkg/harness/bridge.CheckpointRecorder.
 type CheckpointPinner interface {
 	PinCheckpoint() (release func())
 }

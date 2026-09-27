@@ -369,6 +369,7 @@ func waitForProcOrTimeout(proc providerutils.SandboxProcess, d time.Duration) {
 // DoPromptTurn/DoContinueTurn call wireTurn and then Send directly.
 func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptControl {
 	pc := &promptControl{channel: s.opts.channel, done: make(chan struct{}), emit: emit}
+	pc.checkpoint = bridge.NewCheckpointRecorder(s.opts.channel)
 
 	eventTypes := []string{
 		harness.PartTypeStreamStart, harness.PartTypeTextStart, harness.PartTypeTextDelta, harness.PartTypeTextEnd,
@@ -379,6 +380,9 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 	var unsubs []func()
 	for _, t := range eventTypes {
 		unsubs = append(unsubs, s.opts.channel.On(t, func(e bridge.Event) {
+			if t == harness.PartTypeFinishStep {
+				pc.checkpoint.Record(e)
+			}
 			if f, ok := e.Message.(bridge.StreamPartFrame); ok {
 				pc.forward(f.Part)
 			}
@@ -424,9 +428,10 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 
 // promptControl implements harness.PromptControl + ToolApprovalSubmitter.
 type promptControl struct {
-	channel *bridge.Channel
-	emit    harness.EmitFunc
-	unsubs  []func()
+	channel    *bridge.Channel
+	emit       harness.EmitFunc
+	unsubs     []func()
+	checkpoint *bridge.CheckpointRecorder
 
 	once sync.Once
 	done chan struct{}
@@ -468,10 +473,14 @@ func (c *promptControl) SubmitToolApproval(ctx context.Context, approval harness
 func (c *promptControl) Done() <-chan struct{} { return c.done }
 func (c *promptControl) Err() error            { return c.err }
 
-// PinCheckpoint implements harness.CheckpointPinner by delegating to the
-// underlying bridge channel's replay checkpoint (WG13: run_prompt.go's
-// StopWhen early-stop path pins this while deciding whether to suspend).
-func (c *promptControl) PinCheckpoint() (release func()) { return c.channel.PinCheckpoint() }
+// PinCheckpoint implements harness.CheckpointPinner by pinning the bridge
+// channel's replay checkpoint to the finish-step event's own seq, recorded
+// synchronously in wireTurn's listener (WG13: run_prompt.go's StopWhen
+// early-stop path pins this while deciding whether to suspend, but only
+// after that finish-step's StreamPart has already crossed run_prompt.go's
+// buffered parts channel — the live cursor may have moved on by then, so
+// this must not pin "now").
+func (c *promptControl) PinCheckpoint() (release func()) { return c.checkpoint.Pin() }
 
 // extractUserText mirrors TS `extractUserText`.
 func extractUserText(prompt harness.Prompt) (string, error) {

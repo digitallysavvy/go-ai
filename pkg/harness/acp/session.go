@@ -115,8 +115,9 @@ var acpEventTypes = []string{
 }
 
 type promptControl struct {
-	s       *session
-	channel *bridge.Channel
+	s          *session
+	channel    *bridge.Channel
+	checkpoint *bridge.CheckpointRecorder
 
 	mu      sync.Mutex
 	settled bool
@@ -194,10 +195,14 @@ func (c *promptControl) Err() error {
 	return c.err
 }
 
-// PinCheckpoint implements harness.CheckpointPinner by delegating to the
-// underlying bridge channel's replay checkpoint (WG13: run_prompt.go's
-// StopWhen early-stop path pins this while deciding whether to suspend).
-func (c *promptControl) PinCheckpoint() (release func()) { return c.channel.PinCheckpoint() }
+// PinCheckpoint implements harness.CheckpointPinner by pinning the bridge
+// channel's replay checkpoint to the finish-step event's own seq, recorded
+// synchronously in wireTurn's listener (WG13: run_prompt.go's StopWhen
+// early-stop path pins this while deciding whether to suspend, but only
+// after that finish-step's StreamPart has already crossed run_prompt.go's
+// buffered parts channel — the live cursor may have moved on by then, so
+// this must not pin "now").
+func (c *promptControl) PinCheckpoint() (release func()) { return c.checkpoint.Pin() }
 
 var _ harness.CheckpointPinner = (*promptControl)(nil)
 
@@ -285,6 +290,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 		dynamicToolCalls: map[string]bool{}, toolCallClassificationErr: map[string]error{},
 		activeQuestions: map[string]activeQuestion{}, questionToolCallByRequest: map[string]string{},
 	}
+	c.checkpoint = bridge.NewCheckpointRecorder(s.p.channel)
 
 	var openBlockType, openBlockID string
 	var unsub []func()
@@ -474,6 +480,9 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 	for _, t := range acpEventTypes {
 		t := t
 		unsub = append(unsub, s.p.channel.On(t, func(e bridge.Event) {
+			if t == harness.PartTypeFinishStep {
+				c.checkpoint.Record(e)
+			}
 			if f, ok := e.Message.(bridge.StreamPartFrame); ok {
 				forward(f.Part)
 			}

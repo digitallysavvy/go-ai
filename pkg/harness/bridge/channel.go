@@ -112,7 +112,7 @@ func (e Event) PinCheckpoint() (release func()) {
 	if !e.HasSeq || e.ch == nil {
 		return nil
 	}
-	return e.ch.pinCheckpointAt(e.Seq)
+	return e.ch.PinCheckpointAt(e.Seq)
 }
 
 // PinEventCheckpoint is the free-function form of Event.PinCheckpoint.
@@ -120,19 +120,32 @@ func PinEventCheckpoint(e Event) func() { return e.PinCheckpoint() }
 
 // PinCheckpoint pins the suspension cursor to the channel's most recently
 // observed event (LastSeenEventID), without requiring the caller to hold a
-// specific Event value. Used by an adapter's PromptControl (harness.
-// CheckpointPinner) whose wireTurn forwards parts without retaining each
-// individual bridge.Event — see Event.PinCheckpoint for full pinning
-// semantics, which this shares exactly, just seeded from the channel's
-// current cursor instead of one particular event's seq.
+// specific Event value.
+//
+// Callers that need to pin a *specific* event — in particular, one already
+// dispatched some time ago, possibly with further events dispatched (and
+// LastSeenEventID advanced) since — must capture that event's own Seq
+// synchronously in the On() listener that first observes it (Event.HasSeq /
+// Event.Seq, or Event.PinCheckpoint() itself) and later call
+// PinCheckpointAt(seq) with that captured value instead of this method. This
+// method reads whatever LastSeenEventID happens to be *right now*, which is
+// wrong for a decision deferred past any buffering (e.g. a
+// harness.CheckpointPinner invoked from consumeLoop only after a StreamPart
+// has crossed the adapter's buffered parts channel) — see each bridge
+// adapter's session.go PinCheckpoint, which records finish-step's Seq at
+// dispatch time for exactly this reason and does not call this method.
 func (c *Channel) PinCheckpoint() (release func()) {
 	c.mu.Lock()
 	seq := c.lastSeen
 	c.mu.Unlock()
-	return c.pinCheckpointAt(seq)
+	return c.PinCheckpointAt(seq)
 }
 
-func (c *Channel) pinCheckpointAt(seq float64) (release func()) {
+// PinCheckpointAt pins the suspension cursor to an explicit event seq,
+// typically one captured earlier (see PinCheckpoint's doc). Mirrors
+// Event.PinCheckpoint's pinning semantics: last pin wins, and the returned
+// release only clears the cursor if no newer pin has replaced it.
+func (c *Channel) PinCheckpointAt(seq float64) (release func()) {
 	pin := &pinnedCursor{eventID: seq}
 	c.mu.Lock()
 	c.pinned = pin
@@ -147,6 +160,60 @@ func (c *Channel) pinCheckpointAt(seq float64) (release func()) {
 }
 
 type pinnedCursor struct{ eventID float64 }
+
+// CheckpointRecorder records a checkpoint-worthy bridge event's own Seq as it
+// is dispatched — synchronously, in the same On() listener callback that
+// first observes it — so a caller can later pin the channel's suspension
+// cursor to that historical point even after further events have advanced
+// the channel's live cursor in the meantime.
+//
+// This exists because a harness.CheckpointPinner (e.g. run_prompt.go's
+// pendingStopBoundary) is invoked only after its corresponding StreamPart has
+// crossed the adapter's buffered parts channel — by which point
+// Channel.PinCheckpoint's "current" LastSeenEventID may already have moved
+// past the event actually being decided on. Record must be called from the
+// On() listener itself (before the event is forwarded through any
+// buffering); Pin must be called later, once a caller decides it actually
+// wants to pin. Safe for concurrent use.
+type CheckpointRecorder struct {
+	ch *Channel
+
+	mu  sync.Mutex
+	seq float64
+	has bool
+}
+
+// NewCheckpointRecorder returns a recorder bound to ch.
+func NewCheckpointRecorder(ch *Channel) *CheckpointRecorder {
+	return &CheckpointRecorder{ch: ch}
+}
+
+// Record captures e's own Seq, overwriting any previously recorded value.
+// A no-op for events without a seq (e.g. control frames).
+func (r *CheckpointRecorder) Record(e Event) {
+	if !e.HasSeq {
+		return
+	}
+	r.mu.Lock()
+	r.seq, r.has = e.Seq, true
+	r.mu.Unlock()
+}
+
+// Pin pins the channel's suspension cursor to the most recently recorded
+// Seq — the historical point Record last captured, not whatever the channel's
+// live cursor has advanced to since. Falls back to Channel.PinCheckpoint
+// (the current cursor) if Record was never called. Mirrors TS
+// `pinSandboxChannelEventCheckpoint`, whose per-event symbol is attached at
+// decode time for the same reason this records at dispatch time.
+func (r *CheckpointRecorder) Pin() (release func()) {
+	r.mu.Lock()
+	seq, has := r.seq, r.has
+	r.mu.Unlock()
+	if !has {
+		return r.ch.PinCheckpoint()
+	}
+	return r.ch.PinCheckpointAt(seq)
+}
 
 type listener struct{ fn func(Event) }
 
