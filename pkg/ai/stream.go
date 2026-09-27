@@ -1757,6 +1757,51 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				}
 			}
 
+			// NOT IMPLEMENTED, intentionally: TS's tool-part buffering
+			// (stream-text.ts's `shouldBufferToolParts` /
+			// `bufferedAttemptParts`). Once StreamRetries is configured, TS
+			// stops forwarding chunks to the consumer as soon as it sees a
+			// tool-related part (tool-input-*/tool-call/tool-approval-*/
+			// tool-result/tool-error), buffering that part and every part
+			// after it (of any type) until the attempt reaches
+			// model-call-end (flush) or errors (discard on retry, or flush
+			// then forward on a terminal error). Reviewed for WG8 parity
+			// (2026-09-27) and judged infeasible to port without a large,
+			// risky rewrite of this loop:
+			//   - This loop forwards each chunk (OnChunk/fullStream/
+			//     telemetry/transform chain) inline as it is read, and
+			//     accumulates step state (text, tool calls, usage, content,
+			//     IDs) inline too — TS splits these into separate pipeline
+			//     stages (buffering stage -> tool-callback stage -> tool-
+			//     execution stage -> aggregation stage) that all sit
+			//     downstream of the buffer, so a discarded attempt's parts
+			//     never reach any of them. Reproducing that would mean
+			//     restructuring every per-chunk side effect in this ~600
+			//     line loop (chunk deadlines, ID remap tables, tool input
+			//     callbacks, StepResponse metadata, transform chaining) to
+			//     operate on a buffered/replayed chunk queue instead of the
+			//     chunk currently being read.
+			//   - The primary risk TS's buffering guards against — a tool
+			//     from a discarded attempt getting executed, or double-
+			//     executed after a retry — does not apply here: Go always
+			//     executes tools once, in a batch, after this loop ends
+			//     (see executeTools below), using stepToolCalls, which IS
+			//     fully reset on a retry (see the reset block below). So a
+			//     retry can never cause a tool to run for the discarded
+			//     attempt.
+			//   - The residual, accepted gap: if tool-related chunks were
+			//     already streamed to the consumer (OnChunk/fullStream)
+			//     before the error that triggers a retry, the consumer will
+			//     see those "phantom" chunks (and their forwarded text/
+			//     reasoning neighbors once buffering would have started)
+			//     even though the attempt is discarded, whereas TS hides
+			//     them entirely. This is purely a consumer-visible
+			//     presentation difference during an active mid-stream
+			//     retry (an opt-in, narrow window) — internal state
+			//     (Text(), ToolCalls(), Usage(), FinalStep, etc.) is
+			//     unaffected because it's rebuilt from the reset step state
+			//     below, not from what was forwarded.
+			//
 			// Call OnError for error chunks before forwarding, and decide
 			// whether a retryable mid-stream provider error should reopen
 			// this step's model call instead of terminating the stream
@@ -1780,6 +1825,17 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				isToolChoiceViolation := IsToolChoiceViolationError(rawErr)
 				normalizedErr := rawErr
 				if !isToolChoiceViolation {
+					// chunk.Raw is nil here today: no provider populates it
+					// on a ChunkTypeError chunk (it's documented for
+					// ChunkTypeRaw passthrough only), so
+					// NormalizeStreamProviderError's structured-payload
+					// extraction (type/code/statusCode/isRetryable) is
+					// currently a no-op and it falls back to wrapping
+					// chunk.Text. Wiring a provider's raw error object
+					// through here (or through chunk.Err) is provider-audit
+					// work (WG8's "provider mapping", e.g. Anthropic
+					// overloaded_error, Bedrock exceptions, Google, Groq,
+					// DeepSeek, HuggingFace, MoonshotAI, Gateway).
 					normalizedErr = providererrors.NormalizeStreamProviderError(rawErr, stepProvider, chunk.Raw)
 				}
 				if opts.OnError != nil {
@@ -3647,7 +3703,6 @@ func isOutputChunkForTiming(chunk provider.StreamChunk) bool {
 func isReasoningBoundaryChunk(chunkType provider.ChunkType) bool {
 	return chunkType == provider.ChunkTypeReasoningStart || chunkType == provider.ChunkTypeReasoningEnd
 }
-
 
 // armStepChunkDeadline returns the initial chunk-read deadline context for a
 // step: FirstChunk if configured (it always takes priority at the start of a

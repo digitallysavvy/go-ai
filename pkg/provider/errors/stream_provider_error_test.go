@@ -111,3 +111,93 @@ func TestNormalizeStreamProviderError_NilIsNil(t *testing.T) {
 		t.Errorf("expected nil, got %v", got)
 	}
 }
+
+// TestNormalizeStreamProviderError_ExtractsStructuredData ports the shape of
+// TS normalize-stream-provider-error.test.ts's structured-payload cases: a
+// raw provider error object (type/code/statusCode/isRetryable) attached as
+// data is extracted into the normalized *StreamProviderError, mirroring TS's
+// field-by-field resolution exactly.
+func TestNormalizeStreamProviderError_ExtractsStructuredData(t *testing.T) {
+	t.Parallel()
+
+	raw := errors.New("Overloaded")
+	data := map[string]interface{}{
+		"message":     "Overloaded",
+		"type":        "overloaded_error",
+		"code":        "provider_overloaded",
+		"statusCode":  float64(529), // Anthropic's real "overloaded" status; within TS's 400-599 range.
+		"isRetryable": true,
+	}
+	got := NormalizeStreamProviderError(raw, "anthropic", data)
+	var streamErr *StreamProviderError
+	if !errors.As(got, &streamErr) {
+		t.Fatalf("expected a *StreamProviderError, got %T: %v", got, got)
+	}
+	if streamErr.Type != "overloaded_error" {
+		t.Errorf("Type = %q, want %q", streamErr.Type, "overloaded_error")
+	}
+	if streamErr.Code != "provider_overloaded" {
+		t.Errorf("Code = %v, want %q", streamErr.Code, "provider_overloaded")
+	}
+	if streamErr.StatusCode == nil || *streamErr.StatusCode != 529 {
+		t.Errorf("StatusCode = %v, want 529", streamErr.StatusCode)
+	}
+	if !streamErr.IsRetryable {
+		t.Error("expected IsRetryable = true (explicit)")
+	}
+	if streamErr.Message != "Overloaded" {
+		t.Errorf("Message = %q, want %q", streamErr.Message, "Overloaded")
+	}
+}
+
+// TestNormalizeStreamProviderError_ExtractsNestedResponseError verifies the
+// `response.error` nesting TS's normalizeStreamProviderError checks before
+// falling back to a top-level `error` object or the payload itself.
+func TestNormalizeStreamProviderError_ExtractsNestedResponseError(t *testing.T) {
+	t.Parallel()
+
+	raw := errors.New("fallback message")
+	data := map[string]interface{}{
+		"response": map[string]interface{}{
+			"error": map[string]interface{}{
+				"message": "nested message",
+				"type":    "nested_type",
+			},
+		},
+	}
+	got := NormalizeStreamProviderError(raw, "p", data)
+	var streamErr *StreamProviderError
+	if !errors.As(got, &streamErr) {
+		t.Fatalf("expected a *StreamProviderError, got %T: %v", got, got)
+	}
+	if streamErr.Message != "nested message" {
+		t.Errorf("Message = %q, want %q", streamErr.Message, "nested message")
+	}
+	if streamErr.Type != "nested_type" {
+		t.Errorf("Type = %q, want %q", streamErr.Type, "nested_type")
+	}
+}
+
+// TestNormalizeStreamProviderError_SnakeCaseFields verifies the
+// is_retryable/status_code snake_case variants TS also checks.
+func TestNormalizeStreamProviderError_SnakeCaseFields(t *testing.T) {
+	t.Parallel()
+
+	raw := errors.New("boom")
+	data := map[string]interface{}{
+		"message":      "boom",
+		"status_code":  float64(503),
+		"is_retryable": false,
+	}
+	got := NormalizeStreamProviderError(raw, "p", data)
+	var streamErr *StreamProviderError
+	if !errors.As(got, &streamErr) {
+		t.Fatalf("expected a *StreamProviderError, got %T: %v", got, got)
+	}
+	if streamErr.StatusCode == nil || *streamErr.StatusCode != 503 {
+		t.Errorf("StatusCode = %v, want 503", streamErr.StatusCode)
+	}
+	if streamErr.IsRetryable {
+		t.Error("expected explicit is_retryable=false to override the 503 default")
+	}
+}

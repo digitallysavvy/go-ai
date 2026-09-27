@@ -1,7 +1,9 @@
 package errors
 
 import (
+	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 )
 
@@ -112,10 +114,20 @@ func NewStreamProviderError(message, providerName, errType string, code interfac
 // (a *ProviderError, an existing *StreamProviderError, or any other error
 // this SDK constructs deliberately) — normalization only applies to a raw,
 // provider-shaped payload arriving as a plain error whose message is all a
-// provider gave. providerName/data are used verbatim when they can't be
-// recovered from err itself, matching the core normalization call site
-// (pkg/ai/stream.go), which only has the chunk's Text message and,
-// optionally, a structured Err/Raw value a provider attached.
+// provider gave.
+//
+// data, when a map[string]interface{} (the shape a provider gets by
+// json.Unmarshal-ing a raw error payload into map[string]interface{} and
+// attaching it as StreamChunk.Err's underlying data, or passing it directly
+// here), is inspected the same way TS's normalizeStreamProviderError
+// inspects the raw error object: type/code/statusCode (and their
+// status_code/status/snake_case/isRetryable/is_retryable variants) are read
+// from a nested `response.error` or `error` object when present, else from
+// the top-level map. No provider currently attaches such structured data
+// (see providerName/data doc on the pkg/ai/stream.go call site) — until one
+// does, this falls back to wrapping err.Error() as the message, exactly as
+// before. providerName is used verbatim; it can't be recovered from err
+// itself.
 func NormalizeStreamProviderError(err error, providerName string, data interface{}) error {
 	if err == nil {
 		return nil
@@ -123,5 +135,119 @@ func NormalizeStreamProviderError(err error, providerName string, data interface
 	if IsStreamProviderError(err) || IsProviderError(err) {
 		return err
 	}
-	return NewStreamProviderError(err.Error(), providerName, "", nil, nil, nil, data)
+
+	message := err.Error()
+	var errType string
+	var code interface{}
+	var statusCode *int
+	var explicitRetryable *bool
+
+	if outer, ok := asRecord(data); ok {
+		details := outer
+		if nested, ok := asRecord(outer["response"]); ok {
+			if errObj, ok := asRecord(nested["error"]); ok {
+				details = errObj
+			}
+		} else if errObj, ok := asRecord(outer["error"]); ok {
+			details = errObj
+		}
+
+		if m, ok := details["message"].(string); ok && m != "" {
+			message = m
+		}
+
+		errType = firstString(details["type"], outer["type"])
+		code = firstStringOrNumber(details["code"], outer["code"])
+		statusCode = firstHTTPStatusCode(
+			details["statusCode"], outer["statusCode"],
+			details["status_code"], outer["status_code"],
+			details["status"], outer["status"],
+			details["code"], outer["code"],
+		)
+		explicitRetryable = firstBool(
+			details["isRetryable"], outer["isRetryable"],
+			details["is_retryable"], outer["is_retryable"],
+		)
+	}
+
+	return NewStreamProviderError(message, providerName, errType, code, statusCode, explicitRetryable, data)
+}
+
+// asRecord mirrors TS normalize-stream-provider-error.ts's asRecord: it
+// returns v as a map[string]interface{} when it is one.
+func asRecord(v interface{}) (map[string]interface{}, bool) {
+	m, ok := v.(map[string]interface{})
+	return m, ok
+}
+
+func firstString(values ...interface{}) string {
+	for _, v := range values {
+		if s, ok := v.(string); ok && s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func firstStringOrNumber(values ...interface{}) interface{} {
+	for _, v := range values {
+		switch v.(type) {
+		case string, float64, int, int64, json.Number:
+			return v
+		}
+	}
+	return nil
+}
+
+func firstBool(values ...interface{}) *bool {
+	for _, v := range values {
+		if b, ok := v.(bool); ok {
+			return &b
+		}
+	}
+	return nil
+}
+
+// firstHTTPStatusCode returns the first value that parses as an HTTP status
+// code (an integer, or a 3-digit numeric string, in [400, 599]), mirroring
+// TS's getHttpStatusCode.
+func firstHTTPStatusCode(values ...interface{}) *int {
+	for _, v := range values {
+		var n int
+		switch t := v.(type) {
+		case float64:
+			n = int(t)
+			if float64(n) != t {
+				continue
+			}
+		case int:
+			n = t
+		case int64:
+			n = int(t)
+		case json.Number:
+			f, err := t.Float64()
+			if err != nil {
+				continue
+			}
+			n = int(f)
+			if float64(n) != f {
+				continue
+			}
+		case string:
+			if len(t) != 3 {
+				continue
+			}
+			parsed, err := strconv.Atoi(t)
+			if err != nil {
+				continue
+			}
+			n = parsed
+		default:
+			continue
+		}
+		if n >= 400 && n <= 599 {
+			return &n
+		}
+	}
+	return nil
 }
