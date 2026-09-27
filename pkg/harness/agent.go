@@ -457,7 +457,12 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 	}
 
 	model := a.settings.Model
-	instructions := a.settings.Instructions
+	// instructionsRaw carries either a string or a *types.Message (system
+	// message) through PrepareCall exactly as TS does, extracted to a plain
+	// string only once, below, after PrepareCall has had a chance to replace
+	// it (TS 4d1bf28: `HarnessAgentSettings.instructions: string |
+	// SystemModelMessage`).
+	var instructionsRaw interface{} = a.settings.Instructions
 	toolsContext := a.settings.ToolsContext
 	if opts.ToolsContext != nil {
 		toolsContext = opts.ToolsContext
@@ -476,7 +481,7 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 		}
 	}
 	if opts.Instructions != nil {
-		instructions = *opts.Instructions
+		instructionsRaw = *opts.Instructions
 	}
 
 	// PrepareCall (TS 14d4fc0/8961fde/7608210) derives the turn-scoped
@@ -488,7 +493,7 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 	if a.settings.PrepareCall != nil {
 		prepared, err := a.settings.PrepareCall(ctx, PrepareCallOptions{
 			CallOptions: opts.CallOptions, Prompt: prompt, Model: model,
-			Skills: skills, Instructions: instructions, Tools: tools, ToolsContext: toolsContext,
+			Skills: skills, Instructions: instructionsRaw, Tools: tools, ToolsContext: toolsContext,
 		})
 		if err != nil {
 			return nil, err
@@ -500,7 +505,7 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 			skills = prepared.Skills
 		}
 		if prepared.HasInstructions {
-			instructions = prepared.Instructions
+			instructionsRaw = prepared.Instructions
 		}
 		if prepared.Tools != nil {
 			tools = prepared.Tools
@@ -513,9 +518,48 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 		}
 	}
 
-	activeTools := tools
-	toolSpecs := make([]ToolSpec, 0, len(tools))
+	// Extracted once, after PrepareCall has had its say, exactly like TS
+	// `_prepareTurnSettings` — every harness-v1 adapter only understands a
+	// plain instructions string.
+	instructions, err := instructionsText(instructionsRaw)
+	if err != nil {
+		return nil, err
+	}
+
+	// Re-resolve the active *user* tool set for this turn — mirrors TS
+	// `_prepareTurnSettings`'s fresh `resolveHarnessAgentToolFiltering` call
+	// on every turn (TS 7859cea), applied against whatever PrepareCall may
+	// have replaced Tools with. Settings.ActiveTools/InactiveTools are fixed
+	// for the agent's lifetime (unlike model/skills/instructions/tools,
+	// PrepareCall cannot override them — matches TS, which always reads
+	// `this.settings.activeTools`/`inactiveTools` here, never a per-call
+	// value). This must NOT be skipped/cached from NewAgent time: NewAgent
+	// only used ResolveToolFiltering to validate eagerly and to derive the
+	// (turn-invariant) BuiltinToolFiltering — its ActiveUserTools result was
+	// deliberately discarded there, exactly as TS's constructor discards
+	// `toolFiltering.activeUserTools` too.
+	builtinNames := a.settings.Harness.BuiltinTools()
+	userTools := make(map[string]types.Tool, len(tools))
 	for name, t := range tools {
+		if _, isBuiltin := builtinNames[name]; !isBuiltin {
+			userTools[name] = t
+		}
+	}
+	toolFiltering, err := ResolveToolFiltering(ResolveToolFilteringOptions{
+		Harness: a.settings.Harness, UserTools: userTools, AllTools: tools,
+		ActiveTools: a.settings.ActiveTools, InactiveTools: a.settings.InactiveTools,
+	})
+	if err != nil {
+		return nil, err
+	}
+	activeTools := toolFiltering.ActiveUserTools
+
+	// Wire-format projection of *active user* tools only: harness builtins
+	// are executed by the runtime and the adapter already knows about them
+	// (never re-declared over the wire), and inactive user tools are
+	// excluded too — mirrors TS `_toToolSpecs(toolFiltering.activeUserTools)`.
+	toolSpecs := make([]ToolSpec, 0, len(activeTools))
+	for name, t := range activeTools {
 		schema, _ := t.Parameters.(map[string]any)
 		toolSpecs = append(toolSpecs, ToolSpec{Name: name, Description: t.Description, InputSchema: schema})
 	}

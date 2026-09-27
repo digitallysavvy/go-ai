@@ -25,9 +25,14 @@ type AgentToolApprovalConfiguration = ToolApprovalConfiguration
 // fields it may override, plus the (possibly rewritten) prompt. Mirrors the
 // return type of TS `HarnessAgentSettings.prepareCall`.
 type PrepareCallResult struct {
-	Model        string
-	Skills       []Skill
-	Instructions string
+	Model  string
+	Skills []Skill
+	// Instructions is either a string or a *types.Message (a system message;
+	// only its Content text is used), mirroring TS `HarnessAgentSettings`'s
+	// `instructions?: string | SystemModelMessage` (TS 4d1bf28). Extracted to
+	// a plain string via instructionsText before being handed to the harness
+	// adapter.
+	Instructions interface{}
 	// HasInstructions distinguishes "clear the instructions" (Instructions
 	// == "", HasInstructions == true) from "leave them as configured"
 	// (HasInstructions == false). Go has no `undefined`, so this flag plays
@@ -40,11 +45,14 @@ type PrepareCallResult struct {
 
 // PrepareCallOptions is passed to Settings.PrepareCall.
 type PrepareCallOptions struct {
-	CallOptions  interface{}
-	Prompt       Prompt
-	Model        string
-	Skills       []Skill
-	Instructions string
+	CallOptions interface{}
+	Prompt      Prompt
+	Model       string
+	Skills      []Skill
+	// Instructions is either a string or a *types.Message, exactly as
+	// configured on AgentSettings.Instructions (or overridden by the
+	// per-call Instructions option). See PrepareCallResult.Instructions.
+	Instructions interface{}
 	Tools        map[string]types.Tool
 	ToolsContext map[string]interface{}
 }
@@ -96,8 +104,14 @@ type AgentSettings struct {
 	Skills []Skill
 
 	// Instructions for the underlying agent runtime. Adapters append these
-	// to a native system/developer prompt when supported.
-	Instructions string
+	// to a native system/developer prompt when supported. Accepts either a
+	// plain string or a *types.Message (a system message; only its Content
+	// text is forwarded to the harness adapter) for parity with
+	// ToolLoopAgent's Instructions field, mirroring TS
+	// `HarnessAgentSettings.instructions: string | SystemModelMessage` (TS
+	// 4d1bf28). PrepareCall can replace it (with the same two shapes)
+	// between completed turns.
+	Instructions interface{}
 
 	// Headers are additional HTTP headers sent with every model request.
 	// "authorization", "x-api-key", "user-agent" and "x-client-app" are
@@ -163,6 +177,45 @@ func normalizeAgentHeaders(headers map[string]string) (map[string]string, error)
 		out[lower] = value
 	}
 	return out, nil
+}
+
+// instructionsText extracts a plain instructions string from a value that is
+// either nil, a string, or a *types.Message/types.Message (a system
+// message). Mirrors TS `_prepareTurnSettings`'s
+// `typeof options.instructions === 'string' ? options.instructions :
+// options.instructions?.content` (TS 4d1bf28): a SystemModelMessage's
+// content is always a single string there, while Go's types.Message
+// generalizes content to []ContentPart, so this concatenates the text parts.
+// Every harness-v1 adapter only understands a plain string, so this
+// extraction happens once, after PrepareCall has had a chance to replace
+// Instructions, exactly like TS.
+func instructionsText(v interface{}) (string, error) {
+	switch t := v.(type) {
+	case nil:
+		return "", nil
+	case string:
+		return t, nil
+	case types.Message:
+		return harnessSystemMessageText(t), nil
+	case *types.Message:
+		if t == nil {
+			return "", nil
+		}
+		return harnessSystemMessageText(*t), nil
+	default:
+		return "", fmt.Errorf("harness: Instructions must be a string or *types.Message, got %T", v)
+	}
+}
+
+// harnessSystemMessageText concatenates a message's text content parts.
+func harnessSystemMessageText(msg types.Message) string {
+	var b strings.Builder
+	for _, part := range msg.Content {
+		if text, ok := part.(types.TextContent); ok {
+			b.WriteString(text.Text)
+		}
+	}
+	return b.String()
 }
 
 // assertNoReservedQuestionTool mirrors TS `assertNoReservedQuestionTool`.

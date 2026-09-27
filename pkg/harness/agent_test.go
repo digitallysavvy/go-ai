@@ -72,6 +72,7 @@ type mockHarnessResult struct {
 	toolResults   []recordedToolResult
 	toolApprovals []recordedApproval
 	prompts       []Prompt
+	turnSettings  []TurnSettings
 }
 
 // newMockHarness builds a mock Harness whose Session emits opts.script on a
@@ -84,6 +85,7 @@ func newMockHarness(opts mockHarnessOptions) *mockHarnessResult {
 		id: "mock-session-1",
 		doPromptTurn: func(ctx context.Context, o PromptTurnOptions) (PromptControl, error) {
 			res.prompts = append(res.prompts, o.Prompt)
+			res.turnSettings = append(res.turnSettings, o.TurnSettings)
 			control := &mockPromptControl{
 				toolResults: &res.toolResults, toolApprovals: &res.toolApprovals,
 				onSubmitResult: opts.onSubmitResult, done: make(chan struct{}),
@@ -157,6 +159,9 @@ type mockHarnessAdapter struct {
 	builtinTools     map[string]BuiltinTool
 	session          Session
 	supportsApproval bool
+
+	mu         sync.Mutex
+	startCalls []StartOptions
 }
 
 func (h *mockHarnessAdapter) SpecificationVersion() string { return SpecificationVersion }
@@ -167,7 +172,10 @@ func (h *mockHarnessAdapter) BuiltinTools() map[string]BuiltinTool {
 	}
 	return h.builtinTools
 }
-func (h *mockHarnessAdapter) DoStart(context.Context, StartOptions) (Session, error) {
+func (h *mockHarnessAdapter) DoStart(_ context.Context, opts StartOptions) (Session, error) {
+	h.mu.Lock()
+	h.startCalls = append(h.startCalls, opts)
+	h.mu.Unlock()
 	return h.session, nil
 }
 func (h *mockHarnessAdapter) SupportsBuiltinToolApprovals() bool { return h.supportsApproval }
@@ -575,6 +583,97 @@ func TestAgent_WireErrorWithoutCancelStaysAnError(t *testing.T) {
 	}
 	if session.HasUnfinishedTurn() {
 		t.Fatal("session should be idle after a failed turn")
+	}
+}
+
+// TestAgent_SettingsInstructionsAcceptsSystemMessage ports TS 4d1bf28
+// ("support `instructions` on `HarnessAgent` to be a `SystemModelMessage`
+// for parity with `ToolLoopAgent`"): AgentSettings.Instructions accepts a
+// *types.Message (a system message) in addition to a plain string, and only
+// its Content text reaches the harness adapter's TurnSettings.Instructions.
+func TestAgent_SettingsInstructionsAcceptsSystemMessage(t *testing.T) {
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(submit func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&StreamStartPart{},
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)},
+				&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(1, 1)},
+			}
+		},
+	})
+	a, err := NewAgent(AgentSettings{
+		Harness: mock.harness,
+		Instructions: &types.Message{
+			Role:    types.RoleSystem,
+			Content: []types.ContentPart{types.TextContent{Text: "Be concise."}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+	session, err := a.CreateSession(context.Background(), CreateSessionOptions{SandboxSession: testSandbox()})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	if _, err := a.Generate(context.Background(), agent.AgentGenerateOptions{Prompt: "hi", HarnessSession: session}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	if len(mock.turnSettings) != 1 {
+		t.Fatalf("turnSettings = %+v, want 1 recorded turn", mock.turnSettings)
+	}
+	if got := mock.turnSettings[0].Instructions; got != "Be concise." {
+		t.Fatalf("TurnSettings.Instructions = %q, want %q (extracted from the *types.Message's Content)", got, "Be concise.")
+	}
+}
+
+// TestAgent_PrepareCallInstructionsAcceptsSystemMessage ports the same TS
+// 4d1bf28 parity for the PrepareCall path: a prepareCall hook may return a
+// *types.Message for PrepareCallResult.Instructions too (mirrors TS's
+// harness-agent.test.ts "prepares model, skills, instructions, tools ... for
+// each fresh turn", where prepareCall returns `instructions: { role:
+// 'system', content: ... }`), and it is extracted the same way.
+func TestAgent_PrepareCallInstructionsAcceptsSystemMessage(t *testing.T) {
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(submit func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&StreamStartPart{},
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)},
+				&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(1, 1)},
+			}
+		},
+	})
+	a, err := NewAgent(AgentSettings{
+		Harness:      mock.harness,
+		Instructions: "default instructions",
+		PrepareCall: func(ctx context.Context, opts PrepareCallOptions) (PrepareCallResult, error) {
+			return PrepareCallResult{
+				HasInstructions: true,
+				Instructions: &types.Message{
+					Role:    types.RoleSystem,
+					Content: []types.ContentPart{types.TextContent{Text: "Serve "}, types.TextContent{Text: "the tenant."}},
+				},
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+	session, err := a.CreateSession(context.Background(), CreateSessionOptions{SandboxSession: testSandbox()})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	if _, err := a.Generate(context.Background(), agent.AgentGenerateOptions{Prompt: "hi", HarnessSession: session}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	if len(mock.turnSettings) != 1 {
+		t.Fatalf("turnSettings = %+v, want 1 recorded turn", mock.turnSettings)
+	}
+	if got := mock.turnSettings[0].Instructions; got != "Serve the tenant." {
+		t.Fatalf("TurnSettings.Instructions = %q, want %q", got, "Serve the tenant.")
 	}
 }
 
