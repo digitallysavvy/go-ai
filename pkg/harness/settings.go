@@ -9,6 +9,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
 
 // AgentSandboxConfig is the sandbox working-directory and lifecycle-hook
@@ -165,6 +166,13 @@ type AgentSettings struct {
 	// SandboxConfig is the sandbox working-directory and lifecycle-hook
 	// configuration.
 	SandboxConfig AgentSandboxConfig
+
+	// Telemetry configures OpenTelemetry span/attribute reporting for every
+	// turn this agent runs, via pkg/telemetry's dispatch pattern (see
+	// run_prompt.go's telemetry.go): a turn span nests step spans, which
+	// nest model-call and tool-execution spans. Nil disables it. Mirrors TS
+	// `HarnessAgentSettings.telemetry`.
+	Telemetry *telemetry.Settings
 }
 
 var forbiddenAgentHeaders = map[string]struct{}{

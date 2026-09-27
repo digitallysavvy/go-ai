@@ -596,7 +596,7 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 		Tools: tools, ToolsContext: toolsContext, ActiveTools: activeTools, ToolSpecs: toolSpecs,
 		BuiltinToolFiltering: a.builtinToolFiltering,
 		SandboxSession:       session.sandboxSession, SessionWorkDir: session.sessionWorkDir,
-		ResponseFormat: responseFormat, Output: a.settings.Output,
+		ResponseFormat: responseFormat, Output: a.settings.Output, Telemetry: a.settings.Telemetry,
 		Callbacks: a.settings.Callbacks, StopConditions: a.stopConditions, ToolApproval: a.settings.ToolApproval,
 		PendingToolApprovals: pendingApprovals, PendingToolResults: pendingResults,
 		ToolApprovalContinuations: toolApprovalContinuations, ToolResultContinuations: toolResultContinuations,
