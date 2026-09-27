@@ -351,6 +351,64 @@ func TestRunSandboxBootstrap(t *testing.T) {
 			t.Fatalf("workDir = %q, %v", workDir, err)
 		}
 	})
+
+	// 31742b9a1b: onBootstrap marker mechanism.
+	t.Run("skips onBootstrap when the marker for bootstrapHash already exists", func(t *testing.T) {
+		sb := newMockSandbox()
+		calls := 0
+		opts := RunSandboxBootstrapOptions{
+			Session: sb,
+			OnBootstrap: func(context.Context, SandboxBootstrapContext) error {
+				calls++
+				return nil
+			},
+			BootstrapHash:           "hash-1",
+			SkipOnBootstrapIfMarked: true,
+		}
+		if err := RunSandboxBootstrap(ctx, opts); err != nil {
+			t.Fatal(err)
+		}
+		if calls != 1 {
+			t.Fatalf("first call: onBootstrap called %d times, want 1", calls)
+		}
+		if err := RunSandboxBootstrap(ctx, opts); err != nil {
+			t.Fatal(err)
+		}
+		if calls != 1 {
+			t.Fatalf("second call: onBootstrap called %d times, want 1 (marker should skip it)", calls)
+		}
+	})
+
+	t.Run("does not write a marker when skipOnBootstrapIfMarked is false", func(t *testing.T) {
+		sb := newMockSandbox()
+		calls := 0
+		opts := RunSandboxBootstrapOptions{
+			Session: sb,
+			OnBootstrap: func(context.Context, SandboxBootstrapContext) error {
+				calls++
+				return nil
+			},
+			BootstrapHash: "hash-2",
+		}
+		if err := RunSandboxBootstrap(ctx, opts); err != nil {
+			t.Fatal(err)
+		}
+		marked, err := HasOnBootstrapMarker(ctx, sb, "hash-2")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !marked {
+			t.Fatal("marker should still be written after a successful OnBootstrap, regardless of SkipOnBootstrapIfMarked")
+		}
+		if err := RunSandboxBootstrap(ctx, RunSandboxBootstrapOptions{
+			Session: sb, OnBootstrap: opts.OnBootstrap, BootstrapHash: "hash-2",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if calls != 2 {
+			t.Fatalf("onBootstrap called %d times, want 2 (SkipOnBootstrapIfMarked false must not consult the marker)", calls)
+		}
+	})
 }
 
 func TestStateDirectoryPaths(t *testing.T) {

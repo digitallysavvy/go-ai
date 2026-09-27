@@ -86,8 +86,9 @@ var eventTypes = []string{
 }
 
 type promptControl struct {
-	channel   *bridge.Channel
-	submitter *bridge.ExperimentalUserMessageSubmitter
+	channel    *bridge.Channel
+	submitter  *bridge.ExperimentalUserMessageSubmitter
+	checkpoint *bridge.CheckpointRecorder
 
 	mu      sync.Mutex
 	settled bool
@@ -146,12 +147,24 @@ func (c *promptControl) Err() error {
 	return c.err
 }
 
+// PinCheckpoint implements harness.CheckpointPinner by pinning the bridge
+// channel's replay checkpoint to the finish-step event's own seq, recorded
+// synchronously in wireTurn's listener (WG13: run_prompt.go's StopWhen
+// early-stop path pins this while deciding whether to suspend, but only
+// after that finish-step's StreamPart has already crossed run_prompt.go's
+// buffered parts channel — the live cursor may have moved on by then, so
+// this must not pin "now").
+func (c *promptControl) PinCheckpoint() (release func()) { return c.checkpoint.Pin() }
+
+var _ harness.CheckpointPinner = (*promptControl)(nil)
+
 func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptControl {
 	s.mu.Lock()
 	s.activeTurn = true
 	s.mu.Unlock()
 
 	c := &promptControl{channel: s.p.channel, done: make(chan struct{})}
+	c.checkpoint = bridge.NewCheckpointRecorder(s.p.channel)
 	if s.p.supportsUserMessageResponses != nil && s.p.supportsUserMessageResponses() {
 		c.submitter = bridge.NewChannelUserMessageSubmitter(s.p.channel)
 	}
@@ -182,6 +195,9 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 
 	for _, t := range eventTypes {
 		unsub = append(unsub, s.p.channel.On(t, func(e bridge.Event) {
+			if t == harness.PartTypeFinishStep {
+				c.checkpoint.Record(e)
+			}
 			if f, ok := e.Message.(bridge.StreamPartFrame); ok {
 				forward(f.Part)
 			}

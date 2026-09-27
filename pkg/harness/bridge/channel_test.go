@@ -602,6 +602,130 @@ func TestChannelReturnsToLatestCursorAfterRelease(t *testing.T) {
 	}
 }
 
+// TestChannelPinCheckpointFreezesCurrentCursor exercises Channel.PinCheckpoint
+// directly (no Event involved): it must pin to whatever LastSeenEventID is at
+// the moment it is called, exactly like Event.PinCheckpoint pins to that
+// event's own seq.
+func TestChannelPinCheckpointFreezesCurrentCursor(t *testing.T) {
+	c := newConnector()
+	ch := newTestChannel(t, c, nil)
+	mustOpen(t, ch)
+	ch.On("text-delta", func(Event) {})
+
+	c.current().deliver(map[string]any{"type": "text-delta", "id": "a", "delta": "one"}, 1)
+	waitFor(t, time.Second, func() bool { return ch.LastSeenEventID() == 1 })
+
+	release := ch.PinCheckpoint()
+	if release == nil {
+		t.Fatal("PinCheckpoint returned nil")
+	}
+
+	// Further events advance LastSeenEventID, but Suspend must still return
+	// the pinned (earlier) cursor.
+	c.current().deliver(map[string]any{"type": "text-delta", "id": "a", "delta": "two"}, 2)
+	waitFor(t, time.Second, func() bool { return ch.LastSeenEventID() == 2 })
+
+	cursor := <-ch.Suspend()
+	if cursor != 1 {
+		t.Fatalf("cursor = %v, want 1 (pinned)", cursor)
+	}
+}
+
+// TestCheckpointRecorderPinsRecordedSeqNotLiveCursor is the regression test
+// for the bug this type exists to prevent: a harness.CheckpointPinner (e.g.
+// each bridge adapter's promptControl.PinCheckpoint) is invoked only after
+// its finish-step's StreamPart has crossed run_prompt.go's buffered parts
+// channel — by which point further bridge events may have already advanced
+// the channel's live cursor. Record captures the finish-step's own seq
+// synchronously at dispatch time (mirroring TS's decode-time
+// attachEventCheckpoint); Pin, called later, must still freeze at that
+// earlier point, not at whatever LastSeenEventID has become since.
+func TestCheckpointRecorderPinsRecordedSeqNotLiveCursor(t *testing.T) {
+	c := newConnector()
+	ch := newTestChannel(t, c, nil)
+	mustOpen(t, ch)
+
+	rec := NewCheckpointRecorder(ch)
+	ch.On("finish-step", func(e Event) { rec.Record(e) })
+	ch.On("text-delta", func(Event) {})
+
+	c.current().deliver(map[string]any{"type": "finish-step"}, 1)
+	waitFor(t, time.Second, func() bool { return ch.LastSeenEventID() == 1 })
+
+	// Simulate the buffering gap: more bridge events stream in and advance
+	// the live cursor well past the finish-step before anything decides to
+	// pin.
+	c.current().deliver(map[string]any{"type": "text-delta", "id": "a", "delta": "next"}, 2)
+	c.current().deliver(map[string]any{"type": "text-delta", "id": "a", "delta": " step"}, 3)
+	waitFor(t, time.Second, func() bool { return ch.LastSeenEventID() == 3 })
+
+	release := rec.Pin()
+	if release == nil {
+		t.Fatal("Pin returned nil")
+	}
+	defer release()
+
+	cursor := <-ch.Suspend()
+	if cursor != 1 {
+		t.Fatalf("cursor = %v, want 1 (the recorded finish-step seq, not the live cursor of 3)", cursor)
+	}
+}
+
+// TestCheckpointRecorderReleaseReturnsToLatestCursor mirrors
+// TestChannelReturnsToLatestCursorAfterRelease for CheckpointRecorder: once
+// released, Suspend falls back to the live cursor again.
+func TestCheckpointRecorderReleaseReturnsToLatestCursor(t *testing.T) {
+	c := newConnector()
+	ch := newTestChannel(t, c, nil)
+	mustOpen(t, ch)
+
+	rec := NewCheckpointRecorder(ch)
+	ch.On("finish-step", func(e Event) { rec.Record(e) })
+	ch.On("text-delta", func(Event) {})
+
+	c.current().deliver(map[string]any{"type": "finish-step"}, 1)
+	c.current().deliver(map[string]any{"type": "text-delta", "id": "a", "delta": "next"}, 2)
+	waitFor(t, time.Second, func() bool { return ch.LastSeenEventID() == 2 })
+
+	release := rec.Pin()
+	if release == nil {
+		t.Fatal("Pin returned nil")
+	}
+	release()
+
+	cursor := <-ch.Suspend()
+	if cursor != 2 {
+		t.Fatalf("cursor = %v, want 2", cursor)
+	}
+}
+
+// TestCheckpointRecorderFallsBackToLiveCursorWithoutRecord verifies Pin's
+// fallback when Record was never called (e.g. the channel never dispatched a
+// checkpoint-worthy event before something decided to pin): it behaves like
+// Channel.PinCheckpoint, freezing whatever the live cursor is right now.
+func TestCheckpointRecorderFallsBackToLiveCursorWithoutRecord(t *testing.T) {
+	c := newConnector()
+	ch := newTestChannel(t, c, nil)
+	mustOpen(t, ch)
+	ch.On("text-delta", func(Event) {})
+
+	rec := NewCheckpointRecorder(ch)
+
+	c.current().deliver(map[string]any{"type": "text-delta", "id": "a", "delta": "one"}, 1)
+	waitFor(t, time.Second, func() bool { return ch.LastSeenEventID() == 1 })
+
+	release := rec.Pin()
+	if release == nil {
+		t.Fatal("Pin returned nil")
+	}
+	defer release()
+
+	cursor := <-ch.Suspend()
+	if cursor != 1 {
+		t.Fatalf("cursor = %v, want 1 (fallback to live cursor)", cursor)
+	}
+}
+
 // TS: "refuses to send once terminally closed"
 func TestChannelRefusesSendOnceClosed(t *testing.T) {
 	c := newConnector()

@@ -256,6 +256,35 @@ func (a *Agent) CreateSession(ctx context.Context, opts CreateSessionOptions) (*
 }
 
 func (a *Agent) acquireSandbox(ctx context.Context, opts CreateSessionOptions, isResumedSession bool) (providerutils.SandboxSession, string, error) {
+	sandboxSession, sessionWorkDir, err := a.acquireSandboxSession(ctx, opts, isResumedSession)
+	if err != nil {
+		return nil, "", err
+	}
+
+	// Unconditionally ensures sandboxConfig.OnBootstrap has run against this
+	// physical sandbox, regardless of which branch above produced it —
+	// including a caller-supplied SandboxSession (31742b9a1b), which
+	// previously never ran OnBootstrap at all, and a freshly-created
+	// sandbox whose provider may not honor CreateSandboxSessionOptions.
+	// OnFirstCreate. SkipOnBootstrapIfMarked makes the common case (a
+	// provider that already ran it via OnFirstCreate) a cheap marker-file
+	// read. Mirrors TS `HarnessAgent.createSession`'s unconditional
+	// post-branch `runSandboxBootstrap` call.
+	if err := RunSandboxBootstrap(ctx, RunSandboxBootstrapOptions{
+		Session: GetRestrictedSandboxSession(sandboxSession), WorkDir: a.sandboxConfig.WorkDir,
+		OnBootstrap: a.sandboxConfig.OnBootstrap, BootstrapHash: a.sandboxConfig.BootstrapHash,
+		SkipOnBootstrapIfMarked: true,
+	}); err != nil {
+		return nil, "", err
+	}
+	return sandboxSession, sessionWorkDir, nil
+}
+
+// acquireSandboxSession resolves the concrete sandbox session (caller-owned,
+// resumed, or freshly created) and applies the harness's own bootstrap
+// recipe. It does not run sandboxConfig.OnBootstrap — see acquireSandbox's
+// unconditional post-branch call for that.
+func (a *Agent) acquireSandboxSession(ctx context.Context, opts CreateSessionOptions, isResumedSession bool) (providerutils.SandboxSession, string, error) {
 	harness := a.settings.Harness
 
 	if opts.SandboxSession != nil {

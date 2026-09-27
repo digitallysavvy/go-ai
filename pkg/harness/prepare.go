@@ -102,6 +102,7 @@ func PrepareSandboxForHarness(ctx context.Context, opts PrepareSandboxForHarness
 			Session:                 opts.Session,
 			WorkDir:                 workDir,
 			OnBootstrap:             cfg.OnBootstrap,
+			BootstrapHash:           cfg.BootstrapHash,
 			DefaultWorkingDirectory: defaultWD,
 		}); err != nil {
 			return nil, err
@@ -194,4 +195,120 @@ func PrepareHarnessSandboxTemplate(ctx context.Context, opts PrepareHarnessSandb
 // Deprecated: use PrepareHarnessSandboxTemplate.
 func PrewarmHarness(ctx context.Context, opts PrepareHarnessSandboxTemplateOptions) error {
 	return PrepareHarnessSandboxTemplate(ctx, opts)
+}
+
+// HarnessSandboxTemplate is a reusable, prepared sandbox template: Identity
+// is a deterministic cache key a snapshot-capable SandboxProvider can use to
+// skip re-running Prepare against an already-prepared sandbox, and Prepare
+// applies every configured harness's own bootstrap recipe plus the caller's
+// OnBootstrap hook to a fresh sandbox session. Mirrors TS
+// `HarnessV1SandboxTemplate`/`HarnessSandboxTemplate` (31742b9a1b).
+type HarnessSandboxTemplate struct {
+	Identity string
+	Prepare  func(ctx context.Context, session providerutils.SandboxSession) error
+}
+
+// CreateHarnessSandboxTemplateOptions is the input of
+// CreateHarnessSandboxTemplate.
+type CreateHarnessSandboxTemplateOptions struct {
+	Harnesses []Harness
+	// SandboxConfig is optional; OnSession is ignored.
+	SandboxConfig *SandboxConfig
+}
+
+// CreateHarnessSandboxTemplate computes a reusable HarnessSandboxTemplate for
+// one or more harnesses. Returns (nil, nil) when there is nothing to prepare
+// (no bootstrap recipes and no OnBootstrap). Supersedes
+// PrepareSandboxForHarness/PrepareHarnessSandboxTemplate for combining
+// multiple harnesses into one template with a single Prepare call; those
+// remain for existing callers (deprecated in TS, not removed here). Mirrors
+// TS `createHarnessSandboxTemplate` (31742b9a1b).
+func CreateHarnessSandboxTemplate(ctx context.Context, opts CreateHarnessSandboxTemplateOptions) (*HarnessSandboxTemplate, error) {
+	if len(opts.Harnesses) == 0 {
+		return nil, errors.New("CreateHarnessSandboxTemplate: at least one harness must be provided.")
+	}
+	cfg := SandboxConfig{}
+	if opts.SandboxConfig != nil {
+		cfg = *opts.SandboxConfig
+	}
+	if err := ValidateSandboxBootstrapSettings(cfg); err != nil {
+		return nil, err
+	}
+	workDir := ""
+	if cfg.WorkDir != "" {
+		wd, err := NormalizeSandboxWorkDir(cfg.WorkDir)
+		if err != nil {
+			return nil, err
+		}
+		workDir = wd
+	}
+
+	byID := map[string]Harness{}
+	order := make([]string, 0, len(opts.Harnesses))
+	for _, h := range opts.Harnesses {
+		id := h.HarnessID()
+		if _, seen := byID[id]; !seen {
+			order = append(order, id)
+		}
+		byID[id] = h
+	}
+	posixpath.SortStrings(order)
+
+	type recipeEntry struct {
+		recipe   Bootstrap
+		identity string
+	}
+	recipes := make(map[string]recipeEntry, len(order))
+	recipeIdentities := map[string]string{}
+	for _, id := range order {
+		recipe, err := GetBootstrap(ctx, byID[id])
+		if err != nil {
+			return nil, err
+		}
+		if recipe == nil {
+			continue
+		}
+		identity := HashHarnessBootstrap(*recipe)
+		recipes[id] = recipeEntry{recipe: *recipe, identity: identity}
+		recipeIdentities[id] = identity
+	}
+
+	identity := resolvePreparedSandboxIdentity(recipeIdentities, cfg.BootstrapHash, workDir)
+	if identity == "" {
+		return nil, nil
+	}
+
+	onBootstrap, bootstrapHash := cfg.OnBootstrap, cfg.BootstrapHash
+	return &HarnessSandboxTemplate{
+		Identity: identity,
+		Prepare: func(ctx context.Context, session providerutils.SandboxSession) error {
+			for _, id := range order {
+				entry, ok := recipes[id]
+				if !ok {
+					continue
+				}
+				recipe := entry.recipe
+				if err := RunSandboxBootstrap(ctx, RunSandboxBootstrapOptions{
+					Session: session, Recipe: &recipe, RecipeIdentity: entry.identity,
+				}); err != nil {
+					return err
+				}
+			}
+			return RunSandboxBootstrap(ctx, RunSandboxBootstrapOptions{
+				Session: session, WorkDir: workDir, OnBootstrap: onBootstrap,
+				BootstrapHash: bootstrapHash, SkipOnBootstrapIfMarked: true,
+			})
+		},
+	}, nil
+}
+
+// GetSandboxTemplate computes this agent's reusable HarnessSandboxTemplate
+// (its harness's own bootstrap recipe plus sandboxConfig.OnBootstrap).
+// Returns (nil, nil) when there is nothing to prepare. Mirrors TS
+// `HarnessAgent.getSandboxTemplate` (31742b9a1b).
+func (a *Agent) GetSandboxTemplate(ctx context.Context) (*HarnessSandboxTemplate, error) {
+	cfg := a.sandboxConfig
+	return CreateHarnessSandboxTemplate(ctx, CreateHarnessSandboxTemplateOptions{
+		Harnesses: []Harness{a.settings.Harness}, SandboxConfig: &cfg,
+	})
 }

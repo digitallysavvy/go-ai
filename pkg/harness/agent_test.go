@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/agent"
 	"github.com/digitallysavvy/go-ai/pkg/ai"
@@ -38,7 +39,42 @@ type mockPromptControl struct {
 	onSubmitResult func(ToolResultSubmission)
 	done           chan struct{}
 	err            error
+
+	// pinCalls/releaseCalls and onPin support
+	// TestAgent_StopWhenReleasesCheckpointPinOnAbort's regression coverage
+	// for run_prompt.go's checkpoint-pin release guarantee: every
+	// mockPromptControl implements harness.CheckpointPinner (matching every
+	// real bridge adapter's promptControl), so ordinary StopWhen tests also
+	// exercise the pin/release path even though they don't inspect it.
+	pinCalls     int
+	releaseCalls int
+	onPin        func()
 }
+
+// PinCheckpoint implements harness.CheckpointPinner, mirroring the real
+// bridge adapters' promptControl.PinCheckpoint used by run_prompt.go's
+// pendingStopBoundary handling.
+func (c *mockPromptControl) PinCheckpoint() (release func()) {
+	c.mu.Lock()
+	c.pinCalls++
+	c.mu.Unlock()
+	if c.onPin != nil {
+		c.onPin()
+	}
+	return func() {
+		c.mu.Lock()
+		c.releaseCalls++
+		c.mu.Unlock()
+	}
+}
+
+func (c *mockPromptControl) checkpointCounts() (pins, releases int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.pinCalls, c.releaseCalls
+}
+
+var _ CheckpointPinner = (*mockPromptControl)(nil)
 
 func (c *mockPromptControl) SubmitToolResult(_ context.Context, r ToolResultSubmission) error {
 	if c.onSubmitResult != nil {
@@ -95,6 +131,12 @@ type mockHarnessOptions struct {
 	// (always-succeeding) DoSuspendTurn — used to exercise
 	// suspendOrFinishNow's fallback-to-hard-finish path.
 	doSuspendTurn func(context.Context) (*ContinueTurnState, error)
+	// onControl, when set, is called synchronously with each turn's
+	// underlying *mockPromptControl as soon as DoPromptTurn/DoContinueTurn
+	// creates it, letting a test observe pin/release counts.
+	onControl func(*mockPromptControl)
+	// onPin, when set, becomes every turn's mockPromptControl.onPin hook.
+	onPin func()
 }
 
 type mockHarnessResult struct {
@@ -121,7 +163,10 @@ func newMockHarness(opts mockHarnessOptions) *mockHarnessResult {
 	newControl := func() (PromptControl, *mockPromptControl) {
 		base := &mockPromptControl{
 			toolResults: &res.toolResults, toolApprovals: &res.toolApprovals,
-			onSubmitResult: opts.onSubmitResult, done: make(chan struct{}),
+			onSubmitResult: opts.onSubmitResult, done: make(chan struct{}), onPin: opts.onPin,
+		}
+		if opts.onControl != nil {
+			opts.onControl(base)
 		}
 		if !opts.supportsSteering {
 			return base, base
@@ -915,6 +960,15 @@ func TestAgent_StopWhenSuspendedTurnIsResumable(t *testing.T) {
 				&StreamStartPart{},
 				&TextDeltaPart{ID: "t1", Delta: "first"},
 				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonToolCalls}, Usage: stringUsage(1, 1)},
+				// One event of lookahead (TS's "one event of lookahead"
+				// refinement / pendingStopBoundary): the driver peeks at
+				// this next event before deciding whether to suspend.
+				// Reusing a finish-step here (rather than a natural finish)
+				// mirrors TS's own analogous test
+				// ("generate() stops after a configured step..."), which
+				// reuses `finishEvents()[0]` as both the trigger and the
+				// lookahead peek.
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)},
 			}
 		},
 		continueScript: func(submit func(string, interface{})) []StreamPart {
@@ -979,6 +1033,84 @@ func TestAgent_StopWhenSuspendedTurnIsResumable(t *testing.T) {
 	}
 }
 
+// TestAgent_StopWhenReleasesCheckpointPinOnAbort is the regression test for
+// run_prompt.go's checkpoint-pin release guarantee (WG13, 31742b9a1b):
+// consumeLoop must release a pin taken at a StopWhen-eligible finish-step on
+// *every* exit path, not just the two it decides on explicitly (a matching
+// StopCondition, or the harness's own natural `finish` arriving right after).
+// Before this test's fix, a caller-cancelled ctx racing the "one event of
+// lookahead" read (consumeLoop's `case <-d.ctx.Done(): return ...`) skipped
+// the release entirely, leaking the bridge channel's pinned replay
+// checkpoint forever. Mirrors TS run-prompt.ts's top-level
+// `try { ... } finally { releasePendingStopBoundary(); }` around the whole
+// read loop, which Go's `defer d.releasePendingStopBoundary()` now matches.
+func TestAgent_StopWhenReleasesCheckpointPinOnAbort(t *testing.T) {
+	var ctrl *mockPromptControl
+	pinned := make(chan struct{})
+	var pinnedOnce sync.Once
+	unblock := make(chan struct{})
+
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(submit func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&StreamStartPart{},
+				&TextDeltaPart{ID: "t1", Delta: "first"},
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonToolCalls}, Usage: stringUsage(1, 1)},
+			}
+		},
+		// Keeps the turn "running" (no further parts, control.Done() stays
+		// open) past the qualifying finish-step, so consumeLoop's next read
+		// has nothing else to observe until the test cancels ctx — forcing
+		// the ctx.Done() branch of the select, never the "next part" one.
+		promptDone: func() <-chan struct{} { return unblock },
+		onControl:  func(c *mockPromptControl) { ctrl = c },
+		onPin:      func() { pinnedOnce.Do(func() { close(pinned) }) },
+	})
+	a, err := NewAgent(AgentSettings{Harness: mock.harness, StopWhen: []ai.StopCondition{ai.IsStepCount(1)}})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+	session, err := a.CreateSession(context.Background(), CreateSessionOptions{SandboxSession: testSandbox()})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result, err := a.Stream(ctx, agent.AgentStreamOptions{
+		AgentGenerateOptions: agent.AgentGenerateOptions{Prompt: "hi", HarnessSession: session},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	select {
+	case <-pinned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for PinCheckpoint (finish-step never processed)")
+	}
+	cancel()
+	close(unblock) // let the mock goroutine finish so it doesn't leak.
+
+	// Drain the result to force the turn to fully settle before inspecting
+	// the mock control's counters, exactly like
+	// TestAgent_CallerCancelSettlesWithAbortNotError.
+	uiChunks, errs := result.ToUIMessageStream(context.Background())
+	for range uiChunks {
+	}
+	<-errs
+
+	if ctrl == nil {
+		t.Fatal("onControl was never called")
+	}
+	pins, releases := ctrl.checkpointCounts()
+	if pins != 1 {
+		t.Fatalf("pinCalls = %d, want 1", pins)
+	}
+	if releases != 1 {
+		t.Fatalf("releaseCalls = %d, want 1 (the pin must be released even though the turn ended via ctx cancellation, not a StopWhen decision)", releases)
+	}
+}
+
 // TestAgent_StopWhenFallsBackToHardFinishWhenSuspendUnsupported ports the
 // other half of suspendOrFinishNow's contract: when the adapter's
 // DoSuspendTurn fails (e.g. CapabilityUnsupportedError), the local result
@@ -993,6 +1125,10 @@ func TestAgent_StopWhenFallsBackToHardFinishWhenSuspendUnsupported(t *testing.T)
 				&StreamStartPart{},
 				&TextDeltaPart{ID: "t1", Delta: "first"},
 				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonToolCalls}, Usage: stringUsage(1, 1)},
+				// One event of lookahead — see
+				// TestAgent_StopWhenSuspendedTurnIsResumable's identical
+				// comment.
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)},
 			}
 		},
 		doSuspendTurn: func(context.Context) (*ContinueTurnState, error) {
@@ -1022,6 +1158,47 @@ func TestAgent_StopWhenFallsBackToHardFinishWhenSuspendUnsupported(t *testing.T)
 	}
 	if session.HasUnfinishedTurn() {
 		t.Fatal("session should be idle: DoSuspendTurn failed, so this must fall back to a hard finish")
+	}
+}
+
+// TestAgent_CreateSession_CallerOwnedSandboxRunsOnBootstrap ports the
+// 31742b9a1b gap fix: sandboxConfig.OnBootstrap previously never ran when
+// the caller supplied its own SandboxSession to CreateSession (only the
+// harness's own bootstrap recipe did) — it must now run unconditionally,
+// the same as the provider-managed paths, mirroring TS `HarnessAgent.
+// createSession`'s unconditional post-branch `runSandboxBootstrap` call.
+func TestAgent_CreateSession_CallerOwnedSandboxRunsOnBootstrap(t *testing.T) {
+	mock := newMockHarness(mockHarnessOptions{script: func(func(string, interface{})) []StreamPart { return nil }})
+	calls := 0
+	a, err := NewAgent(AgentSettings{
+		Harness: mock.harness,
+		SandboxConfig: SandboxConfig{
+			BootstrapHash: "v1",
+			OnBootstrap: func(context.Context, SandboxBootstrapContext) error {
+				calls++
+				return nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+	sb := newMockSandbox()
+	if _, err := a.CreateSession(context.Background(), CreateSessionOptions{SandboxSession: sb}); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("OnBootstrap called %d times, want 1", calls)
+	}
+
+	// A second session against the same physical sandbox must not re-run
+	// OnBootstrap (marker-guarded), the same idempotency
+	// CreateHarnessSandboxTemplate relies on.
+	if _, err := a.CreateSession(context.Background(), CreateSessionOptions{SandboxSession: sb}); err != nil {
+		t.Fatalf("CreateSession (second): %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("OnBootstrap called %d times after a second CreateSession, want 1 (marker should skip it)", calls)
 	}
 }
 

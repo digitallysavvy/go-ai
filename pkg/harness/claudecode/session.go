@@ -20,6 +20,7 @@ var _ harness.Session = (*session)(nil)
 var _ harness.PromptControl = (*promptControl)(nil)
 var _ harness.ToolApprovalSubmitter = (*promptControl)(nil)
 var _ harness.UserMessageSubmitter = (*promptControl)(nil)
+var _ harness.CheckpointPinner = (*promptControl)(nil)
 
 // sessionOptions is the input of newSession. Mirrors the object TS
 // `createSession` closes over.
@@ -318,6 +319,7 @@ func waitForProcOrTimeout(proc providerutils.SandboxProcess, d time.Duration) {
 // control surface. Mirrors TS `wireTurn`.
 func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptControl {
 	pc := &promptControl{channel: s.opts.channel, done: make(chan struct{})}
+	pc.checkpoint = bridge.NewCheckpointRecorder(s.opts.channel)
 	forward := func(part harness.StreamPart) {
 		defer func() { _ = recover() }()
 		emit(part)
@@ -342,6 +344,9 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 	for _, t := range eventTypes {
 		t := t
 		unsubs = append(unsubs, s.opts.channel.On(t, func(e bridge.Event) {
+			if t == harness.PartTypeFinishStep {
+				pc.checkpoint.Record(e)
+			}
 			if f, ok := e.Message.(bridge.StreamPartFrame); ok {
 				forward(f.Part)
 			}
@@ -404,6 +409,7 @@ type promptControl struct {
 	channel      *bridge.Channel
 	unsubs       []func()
 	userMessages *bridge.ExperimentalUserMessageSubmitter
+	checkpoint   *bridge.CheckpointRecorder
 
 	once sync.Once
 	done chan struct{}
@@ -449,6 +455,15 @@ func (c *promptControl) SubmitToolApproval(ctx context.Context, approval harness
 
 func (c *promptControl) Done() <-chan struct{} { return c.done }
 func (c *promptControl) Err() error            { return c.err }
+
+// PinCheckpoint implements harness.CheckpointPinner by pinning the bridge
+// channel's replay checkpoint to the finish-step event's own seq, recorded
+// synchronously in wireTurn's listener (WG13: run_prompt.go's StopWhen
+// early-stop path pins this while deciding whether to suspend, but only
+// after that finish-step's StreamPart has already crossed run_prompt.go's
+// buffered parts channel — the live cursor may have moved on by then, so
+// this must not pin "now").
+func (c *promptControl) PinCheckpoint() (release func()) { return c.checkpoint.Pin() }
 
 // SubmitUserMessage steers the in-flight turn with an acknowledged mid-turn
 // user message. It is only reachable when the bridge advertised
