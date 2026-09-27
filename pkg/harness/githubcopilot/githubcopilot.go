@@ -4,12 +4,9 @@
 //
 // Like pkg/harness/cursor, GitHub Copilot is an "ACP-derived" adapter: TS
 // `createGitHubCopilot()` is a thin configuration layer over `createACP()`
-// (`@ai-sdk/harness-acp`). See the pkg/harness/cursor package doc for the
-// rationale behind stopping at the configuration boundary (BuildConfig)
-// instead of wiring a live harness.Harness: the ACP meta-adapter host
-// (pkg/harness/acp, WG11) had not landed yet when this package was written.
-//
-//	h, err := acp.CreateACP(githubcopilot.BuildConfig(settings))
+// (`@ai-sdk/harness-acp`). BuildConfig assembles the exact acp.Settings TS's
+// `createGitHubCopilot()` passes to `createACP()`, and CreateGitHubCopilot
+// wires it into a live harness.Harness.
 //
 // Unlike cursor and fx, GitHub Copilot's ACP implementation (`@github/copilot`)
 // is installed via a locked npm recipe: BuildConfig embeds the exact
@@ -23,8 +20,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/harness/acp"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridges"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
@@ -77,77 +76,29 @@ type Settings struct {
 	MintBridgeToken      harness.MintBridgeTokenCallback
 }
 
-// ToolCall is the subset of TS `ACPToolCall` the classifier closures need.
-type ToolCall struct {
-	Title string
+// CreateGitHubCopilot returns the GitHub Copilot harness-v1 adapter, wiring
+// BuildConfig's acp.Settings into a live harness.Harness via acp.CreateACP.
+// Mirrors TS `createGitHubCopilot()`.
+func CreateGitHubCopilot(settings ...Settings) (harness.Harness, error) {
+	s := Settings{}
+	if len(settings) > 0 {
+		s = settings[0]
+	}
+	cfg, err := BuildConfig(s)
+	if err != nil {
+		return nil, err
+	}
+	return acp.CreateACP(cfg)
 }
 
-// Source is TS `ACPNpmLockedSource`.
-type Source struct {
-	Type              string
-	PackageJSON       string
-	PnpmLockYAML      string
-	PnpmWorkspaceYAML string
-}
-
-type ModelMapping struct {
-	Type string
-	Path string
-}
-
-type InstructionMapping struct {
-	Type string
-	Path string
-}
-
-// ProviderAuthenticationValue is TS `ACPProfileValue`.
-type ProviderAuthenticationValue struct {
-	Literal      any
-	Source       string
-	Prefix       string
-	EnsureSuffix string
-}
-
-// Config is the ACP meta-adapter configuration `createGitHubCopilot()`
-// builds. See the package doc for how to wire it once pkg/harness/acp
-// exists.
-type Config struct {
-	Version                string
-	HarnessID              string
-	ClientAppName          string
-	ClientAppVersion       string
-	Source                 Source
-	Executable             string
-	Args                   []string
-	Auth                   AuthenticationMode
-	ResolveAuthEnv         func(ctx context.Context, auth AuthenticationMode, env map[string]string) (map[string]string, error)
-	HostToolMCPTransport   string
-	ForwardEnv             []string
-	CredentialEnv          []string
-	CredentialBrokering    func(env, sandboxEnv, headers map[string]string) ([]harness.RequestTransformation, error)
-	CredentialForwarding   harness.CredentialForwarding
-	ProviderAuthentication map[string]ProviderAuthenticationValue
-	ModelMapping           ModelMapping
-	SkillsDirectory        string
-	InstructionMapping     InstructionMapping
-	BuiltinTools           map[string]harness.BuiltinTool
-	MCPServers             map[string]any
-	IsMCPToolCall          func(ToolCall) bool
-	Port                   *int
-	PortEndpoint           *harness.PortEndpoint
-	StartupTimeoutMS       *int
-	Reconnect              *bridge.ReconnectOptions
-	MintBridgeToken        harness.MintBridgeTokenCallback
-}
-
-// BuildConfig assembles Config from Settings, mirroring TS
-// `createGitHubCopilot()` (github-copilot-harness.ts). It returns an error
-// only if the embedded bridge asset lookup fails, which cannot happen for a
+// BuildConfig assembles the acp.Settings `createGitHubCopilot()` builds (TS
+// `ACPHarnessSettings` as passed to `createACP()`). It returns an error only
+// if the embedded bridge asset lookup fails, which cannot happen for a
 // correctly built binary.
-func BuildConfig(settings Settings) (Config, error) {
+func BuildConfig(settings Settings) (acp.Settings, error) {
 	files, err := bridges.Files(bridges.GitHubCopilot)
 	if err != nil {
-		return Config{}, err
+		return acp.Settings{}, err
 	}
 
 	mcpToolTitlePrefixes := []string{"github-mcp-server-"}
@@ -160,13 +111,11 @@ func BuildConfig(settings Settings) (Config, error) {
 		args = append(args, "--reasoning-effort="+string(settings.ReasoningEffort))
 	}
 
-	return Config{
-		Version:          "v1",
-		HarnessID:        HarnessID,
-		ClientAppName:    ClientAppName,
-		ClientAppVersion: ClientAppVersion,
-		Source: Source{
-			Type:              "npm-locked",
+	cfg := acp.Settings{
+		HarnessID: HarnessID,
+		ClientApp: acp.ClientApp{Name: ClientAppName, Version: ClientAppVersion},
+		Source: acp.Source{
+			Type:              acp.SourceNPMLocked,
 			PackageJSON:       string(files["package.json"]),
 			PnpmLockYAML:      string(files["pnpm-lock.yaml"]),
 			PnpmWorkspaceYAML: string(files["pnpm-workspace.yaml"]),
@@ -174,33 +123,33 @@ func BuildConfig(settings Settings) (Config, error) {
 		Executable: "copilot",
 		Args:       args,
 		Auth:       settings.Auth,
-		ResolveAuthEnv: func(ctx context.Context, auth AuthenticationMode, env map[string]string) (map[string]string, error) {
+		ResolveAuthenticationEnvironment: func(ctx context.Context, auth AuthenticationMode, env map[string]string) (map[string]string, error) {
 			return ResolveSubscriptionEnvironment(ctx, ResolveSubscriptionEnvironmentOptions{Auth: auth, Env: env})
 		},
-		HostToolMCPTransport: "http",
+		HostToolMCPTransport: acp.HostToolMCPHTTP,
 		ForwardEnv:           []string{"COPILOT_GH_HOST", "GH_HOST"},
 		CredentialEnv:        []string{"COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"},
-		CredentialBrokering: func(env, sandboxEnv, headers map[string]string) ([]harness.RequestTransformation, error) {
-			return CredentialBrokering(env, sandboxEnv, headers)
-		},
+		CredentialBrokering:  CredentialBrokering,
 		CredentialForwarding: CredentialForwarding(settings.CredentialForwarding),
-		ProviderAuthentication: map[string]ProviderAuthenticationValue{
-			"COPILOT_PROVIDER_BASE_URL": {Source: "gateway-base-url", EnsureSuffix: "/v1"},
-			"COPILOT_PROVIDER_TYPE":     {Literal: "openai"},
-			"COPILOT_PROVIDER_API_KEY":  {Source: "gateway-api-key"},
-			"COPILOT_PROVIDER_WIRE_API": {Literal: "responses"},
-			"COPILOT_MODEL":             {Literal: "openai/gpt-5.5"},
-			"COPILOT_PROVIDER_HEADERS":  {Source: "client-app", Prefix: "x-client-app: "},
+		ProviderAuthentication: &acp.ProviderAuthentication{
+			GatewayEnv: map[string]any{
+				"COPILOT_PROVIDER_BASE_URL": map[string]any{"$source": "gateway-base-url", "ensureSuffix": "/v1"},
+				"COPILOT_PROVIDER_TYPE":     "openai",
+				"COPILOT_PROVIDER_API_KEY":  map[string]any{"$source": "gateway-api-key"},
+				"COPILOT_PROVIDER_WIRE_API": "responses",
+				"COPILOT_MODEL":             "openai/gpt-5.5",
+				"COPILOT_PROVIDER_HEADERS":  map[string]any{"$source": "client-app", "prefix": "x-client-app: "},
+			},
 		},
-		ModelMapping:    ModelMapping{Type: "session-config-option", Path: "model"},
+		ModelMapping:    acp.ModelMapping{Type: acp.ModelMappingSessionConfigOption, Path: "model"},
 		SkillsDirectory: ".copilot/skills",
-		InstructionMapping: InstructionMapping{
-			Type: "filesystem",
-			Path: ".copilot/copilot-instructions.md",
+		InstructionMapping: &acp.InstructionMapping{
+			Type:     acp.InstructionMappingFilesystem,
+			FilePath: ".copilot/copilot-instructions.md",
 		},
 		BuiltinTools: BuiltinTools,
 		MCPServers:   settings.MCPServers,
-		IsMCPToolCall: func(call ToolCall) bool {
+		IsMcpToolCall: func(call acp.ToolCall) bool {
 			for _, prefix := range mcpToolTitlePrefixes {
 				if len(call.Title) >= len(prefix) && call.Title[:len(prefix)] == prefix {
 					return true
@@ -208,12 +157,19 @@ func BuildConfig(settings Settings) (Config, error) {
 			}
 			return false
 		},
-		Port:             settings.Port,
-		PortEndpoint:     settings.PortEndpoint,
-		StartupTimeoutMS: settings.StartupTimeoutMS,
-		Reconnect:        settings.Reconnect,
-		MintBridgeToken:  settings.MintBridgeToken,
-	}, nil
+		PortEndpoint:    settings.PortEndpoint,
+		MintBridgeToken: settings.MintBridgeToken,
+	}
+	if settings.Port != nil {
+		cfg.Port = *settings.Port
+	}
+	if settings.StartupTimeoutMS != nil {
+		cfg.StartupTimeout = time.Duration(*settings.StartupTimeoutMS) * time.Millisecond
+	}
+	if settings.Reconnect != nil {
+		cfg.Reconnect = *settings.Reconnect
+	}
+	return cfg, nil
 }
 
 // CredentialForwarding wraps a caller-supplied forwarding callback so that

@@ -8,7 +8,7 @@ import (
 // CredentialBrokering builds the request transformations mapping Copilot's
 // sandbox-side GitHub / provider credentials back to the host values.
 // Mirrors the `credentialBrokering` closure in `createGitHubCopilot()`.
-func CredentialBrokering(env, sandboxEnv, headers map[string]string) ([]harness.RequestTransformation, error) {
+func CredentialBrokering(env, sandboxEnv, headers map[string]string) []harness.RequestTransformation {
 	var transformations []harness.RequestTransformation
 
 	githubHost := normalizeGitHubHost(firstNonEmpty(env["COPILOT_GH_HOST"], env["GH_HOST"], "github.com"))
@@ -50,15 +50,13 @@ func CredentialBrokering(env, sandboxEnv, headers map[string]string) ([]harness.
 			transformHeaders[k] = v
 		}
 		transformHeaders["Authorization"] = "Bearer " + providerCredential
-		tr, err := harnessutil.CreateCredentialRequestTransformation(harnessutil.CreateCredentialRequestTransformationOptions{
+		if tr, err := harnessutil.CreateCredentialRequestTransformation(harnessutil.CreateCredentialRequestTransformationOptions{
 			MatchURL:         providerBaseURL,
 			MatchHeaders:     map[string]string{"Authorization": "Bearer " + sandboxProviderCredential},
 			TransformHeaders: transformHeaders,
-		})
-		if err != nil {
-			return nil, err
+		}); err == nil {
+			transformations = append(transformations, tr)
 		}
-		transformations = append(transformations, tr)
 	case headers != nil:
 		copilotHosts := []string{githubHost, "*." + githubHost}
 		if githubHost == "github.com" {
@@ -72,7 +70,7 @@ func CredentialBrokering(env, sandboxEnv, headers map[string]string) ([]harness.
 		}
 	}
 
-	return transformations, nil
+	return transformations
 }
 
 func firstNonEmpty(values ...string) string {

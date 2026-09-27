@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil/subscription"
@@ -204,6 +205,9 @@ func windowsGitHubCliExecutableNames(pathExt string) []string {
 }
 
 func readHostGitHubCliToken(ctx context.Context, executable, hostname string, env map[string]string) (string, error) {
+	// Mirrors TS `readHostGitHubCliToken`'s `timeout: 10_000`.
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, executable, "auth", "token", "--hostname", hostname)
 	cmd.Env = mapToEnvList(env)
 	var stdout bytes.Buffer
