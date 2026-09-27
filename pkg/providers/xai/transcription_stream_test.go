@@ -2,10 +2,13 @@ package xai
 
 import (
 	"context"
+	"crypto/sha1" //nolint:gosec // required by the WebSocket handshake spec, not for security
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
 	"net"
+	stdhttp "net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
@@ -707,3 +710,85 @@ func TestTranscriptionModel_DoStream_FallsBackToPendingTextOnDone(t *testing.T) 
 }
 
 func intPtr(v int) *int { return &v }
+
+// TestTranscriptionModel_DoStream_AbnormalDisconnectSurfacesError mirrors TS
+// connectToWebSocket's onSocketError semantics: an abnormal disconnection
+// (here, a connection dropped mid-frame via a TCP RST, distinct from a clean
+// WebSocket close frame) must surface as an error rather than a silent
+// finish. Regression test for the shared-WebSocket-helper error-handling
+// sweep (bug (a)).
+func TestTranscriptionModel_DoStream_AbnormalDisconnectSurfacesError(t *testing.T) {
+	ts := newXAIAbnormalDisconnectTestServer(t)
+	defer ts.Close()
+
+	model := newTestXAITranscriptionModel(ts.URL)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newXAIBlockingAudioStream(),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+
+	_, err = drainXAIStream(result.Stream)
+	if err == nil {
+		t.Fatal("expected an error for an abnormal disconnection, got a silent finish")
+	}
+}
+
+// newXAIAbnormalDisconnectTestServer performs the WebSocket handshake itself
+// (rather than golang.org/x/net/websocket's server helper) so it can force a
+// TCP RST (via SO_LINGER=0) instead of a clean FIN. golang.org/x/net/websocket
+// parses frame headers one byte at a time via bufio.Reader.ReadByte, which
+// returns a plain io.EOF for any ordinary closed/half-closed connection —
+// indistinguishable, at that layer, from a properly received close frame.
+// Only a genuine socket-level error (here, "connection reset by peer") is
+// distinct from io.EOF, so this is the reliable way to exercise the
+// onSocketError path instead of onClose.
+func newXAIAbnormalDisconnectTestServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	handler := func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		hijacker, ok := w.(stdhttp.Hijacker)
+		if !ok {
+			t.Fatalf("ResponseWriter does not support hijacking")
+		}
+		conn, buf, err := hijacker.Hijack()
+		if err != nil {
+			t.Fatalf("hijack: %v", err)
+		}
+
+		key := r.Header.Get("Sec-WebSocket-Key")
+		accept := xaiComputeWebSocketAccept(key)
+		resp := "HTTP/1.1 101 Switching Protocols\r\n" +
+			"Upgrade: websocket\r\n" +
+			"Connection: Upgrade\r\n" +
+			"Sec-WebSocket-Accept: " + accept + "\r\n\r\n"
+		if _, err := buf.WriteString(resp); err != nil {
+			conn.Close() //nolint:errcheck
+			return
+		}
+		if err := buf.Flush(); err != nil {
+			conn.Close() //nolint:errcheck
+			return
+		}
+
+		if tcpConn, ok := conn.(*net.TCPConn); ok {
+			// SetLinger(0) makes the following Close() send a RST instead of
+			// the normal FIN/close handshake, forcing a real socket error on
+			// the client's next read instead of a graceful io.EOF.
+			_ = tcpConn.SetLinger(0)
+		}
+		conn.Close() //nolint:errcheck
+	}
+	return httptest.NewServer(stdhttp.HandlerFunc(handler))
+}
+
+// xaiComputeWebSocketAccept computes the Sec-WebSocket-Accept header value
+// for a given Sec-WebSocket-Key, per RFC 6455 section 1.3.
+func xaiComputeWebSocketAccept(key string) string {
+	const magicGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+	h := sha1.New() //nolint:gosec // required by the WebSocket handshake spec, not for security
+	h.Write([]byte(key + magicGUID))
+	return base64.StdEncoding.EncodeToString(h.Sum(nil))
+}
