@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"testing"
 
@@ -29,7 +30,7 @@ func TestSimulateStreamingMiddleware(t *testing.T) {
 					TotalTokens: int64Ptr(10),
 				},
 			},
-			expectedChunks: 3, // text, usage, finish
+			expectedChunks: 5, // stream-start, text-start, text-delta, text-end, finish
 		},
 		{
 			name: "text with tool calls",
@@ -49,7 +50,7 @@ func TestSimulateStreamingMiddleware(t *testing.T) {
 					TotalTokens: int64Ptr(15),
 				},
 			},
-			expectedChunks: 4, // text, tool-call, usage, finish
+			expectedChunks: 6, // stream-start, text-start, text-delta, text-end, tool-call, finish
 		},
 		{
 			name: "empty text",
@@ -60,7 +61,7 @@ func TestSimulateStreamingMiddleware(t *testing.T) {
 					TotalTokens: int64Ptr(5),
 				},
 			},
-			expectedChunks: 2, // usage, finish (no text chunk)
+			expectedChunks: 2, // stream-start, finish (no text chunk)
 		},
 		{
 			name: "multiple tool calls",
@@ -75,7 +76,7 @@ func TestSimulateStreamingMiddleware(t *testing.T) {
 					TotalTokens: int64Ptr(20),
 				},
 			},
-			expectedChunks: 5, // text, tool-call1, tool-call2, usage, finish
+			expectedChunks: 7, // stream-start, text-start, text-delta, text-end, tool-call1, tool-call2, finish
 		},
 	}
 
@@ -118,13 +119,9 @@ func TestSimulateStreamingMiddleware(t *testing.T) {
 					if chunk.ToolCall == nil {
 						t.Error("tool call chunk has nil ToolCall")
 					}
-				case provider.ChunkTypeUsage:
-					hasUsage = true
-					if chunk.Usage == nil {
-						t.Error("usage chunk has nil Usage")
-					}
 				case provider.ChunkTypeFinish:
 					hasFinish = true
+					hasUsage = chunk.Usage != nil
 					if chunk.FinishReason != tt.generateResult.FinishReason {
 						t.Errorf("finish reason: expected %v, got %v", tt.generateResult.FinishReason, chunk.FinishReason)
 					}
@@ -174,11 +171,13 @@ func TestSimulateStreamingMiddleware_ChunkOrder(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify chunk order: text -> tool-call -> usage -> finish
+	// Verify chunk order: stream-start -> text-start -> text -> text-end -> tool-call -> finish
 	expectedOrder := []provider.ChunkType{
+		provider.ChunkTypeStreamStart,
+		provider.ChunkTypeTextStart,
 		provider.ChunkTypeText,
+		provider.ChunkTypeTextEnd,
 		provider.ChunkTypeToolCall,
-		provider.ChunkTypeUsage,
 		provider.ChunkTypeFinish,
 	}
 
@@ -227,5 +226,62 @@ func TestSimulateStreamingMiddleware_Close(t *testing.T) {
 	_, err = stream.Next()
 	if err != io.EOF {
 		t.Errorf("expected EOF after close, got %v", err)
+	}
+}
+
+// TestSimulateStreamingMiddleware_PreservesTextPartMetadata ports the TS
+// "should preserve provider metadata" case (audit row 4775577 / WG12): a
+// text content part's ProviderMetadata must land on its text-start chunk,
+// and the top-level result ProviderMetadata must land on the finish chunk.
+func TestSimulateStreamingMiddleware_PreservesTextPartMetadata(t *testing.T) {
+	textMeta := json.RawMessage(`{"google":{"thoughtSignature":"sig"}}`)
+	finishMeta := map[string]interface{}{"google": map[string]interface{}{"finishMessage": "done"}}
+
+	mockModel := &mockLanguageModel{
+		generateResult: &types.GenerateResult{
+			Text: "hello",
+			Content: []types.ContentPart{
+				types.TextContent{Text: "hello", ProviderMetadata: textMeta},
+			},
+			FinishReason:     types.FinishReasonStop,
+			Usage:            types.Usage{TotalTokens: int64Ptr(3)},
+			ProviderMetadata: finishMeta,
+		},
+	}
+
+	middleware := SimulateStreamingMiddleware()
+	wrapped := WrapLanguageModel(mockModel, []*LanguageModelMiddleware{middleware}, nil, nil)
+
+	stream, err := wrapped.DoStream(context.Background(), &provider.GenerateOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var sawTextStartMeta, sawFinishMeta bool
+	for {
+		chunk, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		switch chunk.Type {
+		case provider.ChunkTypeTextStart:
+			if string(chunk.ProviderMetadata) == string(textMeta) {
+				sawTextStartMeta = true
+			}
+		case provider.ChunkTypeFinish:
+			if len(chunk.ProviderMetadata) > 0 {
+				sawFinishMeta = true
+			}
+		}
+	}
+
+	if !sawTextStartMeta {
+		t.Error("text-start chunk did not carry the text part's ProviderMetadata")
+	}
+	if !sawFinishMeta {
+		t.Error("finish chunk did not carry the result's ProviderMetadata")
 	}
 }
