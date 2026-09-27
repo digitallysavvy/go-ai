@@ -287,7 +287,7 @@ func TestResolveGeneratedSpeechMediaType(t *testing.T) {
 				"Content-Type": "audio/mpeg",
 			},
 			outputFormat: "pcm",
-			want:         "audio/wave",
+			want:         "audio/wav", // TS detectMediaType topLevelType audio (detect-media-type.ts:134)
 		},
 		{
 			name: "falls back to response Content-Type header",
