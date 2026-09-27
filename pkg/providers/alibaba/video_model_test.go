@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 func TestVideoModelDetectMode(t *testing.T) {
@@ -402,6 +403,49 @@ func TestDoStatus_Completed(t *testing.T) {
 	}
 	if len(result.Videos) != 1 || result.Videos[0].URL != "https://example.com/video.mp4" {
 		t.Errorf("videos = %+v", result.Videos)
+	}
+}
+
+// TestDoStatus_EncodesTaskID verifies the task ID is percent-encoded as a
+// single path segment before being appended to the status URL, so a
+// provider-returned ID containing "/", "?", or other reserved characters
+// cannot redirect the request to a different path or inject query
+// parameters (Low hardening item from the Sep-23 E3 slice).
+func TestDoStatus_EncodesTaskID(t *testing.T) {
+	const rawTaskID = "task/123?evil=1"
+	model, server := newAlibabaVideoTestModel(t, func(w http.ResponseWriter, r *http.Request) {
+		// The task ID's "/" and "?" must reach the server percent-encoded
+		// (never as literal path/query separators): check the raw
+		// request-line target, since r.URL.Path is decoded back to the
+		// original ID by net/http.
+		wantRawPath := "/api/v1/tasks/" + providerutils.EncodePathSegment(rawTaskID)
+		if r.URL.EscapedPath() != wantRawPath {
+			t.Fatalf("raw path = %s, want %s", r.URL.EscapedPath(), wantRawPath)
+		}
+		if r.URL.RawQuery != "" {
+			t.Fatalf("unexpected query on request: %s", r.URL.RawQuery)
+		}
+		if r.URL.Path != "/api/v1/tasks/"+rawTaskID {
+			t.Fatalf("decoded path = %s, want %s", r.URL.Path, "/api/v1/tasks/"+rawTaskID)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"output": map[string]interface{}{
+				"task_id":     rawTaskID,
+				"task_status": "SUCCEEDED",
+				"video_url":   "https://example.com/video.mp4",
+			},
+		})
+	})
+	defer server.Close()
+
+	op, _ := json.Marshal(alibabaOperation{TaskID: rawTaskID})
+	result, err := model.DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: op})
+	if err != nil {
+		t.Fatalf("DoStatus() error: %v", err)
+	}
+	if result.Status != provider.VideoOperationStatusCompleted {
+		t.Fatalf("status = %v", result.Status)
 	}
 }
 
