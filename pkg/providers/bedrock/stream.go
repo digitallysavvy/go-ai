@@ -166,21 +166,34 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 		if m, ok := payload["message"].(string); ok && m != "" {
 			message = m
 		}
-		statusCode, _ := bedrockStreamErrorMetadata(payloadType)
+		statusCode, isRetryable := bedrockStreamErrorMetadata(payloadType)
 		// Surface the modeled exception's status code (and, via ErrorCode, its
 		// type) on a structured error so callers inspecting stream.Err() after
 		// the stream ends get more than a bare message. modelStreamErrorException
 		// maps to HTTP 424 but is still retryable per TS
-		// getAmazonBedrockStreamErrorMetadata; ProviderError.IsRetryable()'s
-		// generic 429/5xx heuristic doesn't know that special case, so treat the
-		// chunk text/finish-reason as the source of truth for that one type.
+		// getAmazonBedrockStreamErrorMetadata, so set Retryable explicitly
+		// (ProviderError.IsRetryable()'s generic 429/5xx heuristic would
+		// otherwise call 424 non-retryable) — TS parity, P1-1c part 2.
 		s.err = &providererrors.ProviderError{
 			Provider:   "amazon-bedrock",
 			StatusCode: statusCode,
 			ErrorCode:  payloadType,
 			Message:    message,
+			Data:       payload,
+			Retryable:  &isRetryable,
 		}
-		return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: message}, nil
+		// Attach the same structured error to the stream chunk (via
+		// StreamProviderError) so a mid-stream consumer inspecting the
+		// ChunkTypeError chunk itself (before the stream ends and Err() is
+		// read) also sees the correct type/statusCode/isRetryable, mirroring
+		// TS's typed AmazonBedrockStreamError on the enqueued 'error' part
+		// (P1-1c part 2: provider.StreamProviderError normalization).
+		// TS's createAmazonBedrockStreamError never sets `code` (only
+		// message/type/statusCode/isRetryable/data via
+		// `...getAmazonBedrockStreamErrorMetadata(type)`) — leave Code nil
+		// rather than duplicating the exception type into it.
+		chunkErr := providererrors.NewStreamProviderError(message, "amazon-bedrock", payloadType, nil, &statusCode, &isRetryable, payload)
+		return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: message, Err: chunkErr}, nil
 
 	case "messageStop":
 		if stopReason, ok := payload["stopReason"].(string); ok {

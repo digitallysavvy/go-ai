@@ -911,6 +911,11 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 		errorChunk := &provider.StreamChunk{
 			Type: provider.ChunkTypeError,
 			Text: openAIStreamErrorText(chunkData.Error),
+			// P1-1c part 2: attach a structured StreamProviderError (mirrors
+			// TS createOpenAIProviderStreamError) so streamRetries/IsRetryable
+			// see the real type/code/statusCode/isRetryable instead of
+			// falling back to generic text-based inference.
+			Err: newOpenAIStreamProviderErrorChunk(s.providerName, chunkData.Error),
 		}
 		if len(s.flushQueue) > 0 {
 			s.flushQueue = append(s.flushQueue, errorChunk)

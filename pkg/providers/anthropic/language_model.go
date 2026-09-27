@@ -996,6 +996,35 @@ type anthropicErrorBody struct {
 	} `json:"error"`
 }
 
+// anthropicStreamErrorMetadata returns the inferred (statusCode, isRetryable)
+// pair for a mid-stream Anthropic error's type field, mirroring TS
+// anthropic-language-model.ts's getAnthropicStreamErrorMetadata. The zero
+// value (0, false) means "no inference" (TS returns {}); the caller only
+// falls back to it when the wire event didn't supply its own statusCode/
+// isRetryable.
+func anthropicStreamErrorMetadata(errType string) (statusCode int, isRetryable bool) {
+	switch errType {
+	case "api_error":
+		return 500, true
+	case "overloaded_error":
+		return 529, true
+	case "rate_limit_error":
+		return 429, true
+	case "request_too_large":
+		return 413, false
+	case "authentication_error":
+		return 401, false
+	case "permission_error":
+		return 403, false
+	case "not_found_error":
+		return 404, false
+	case "billing_error", "invalid_request_error":
+		return 400, false
+	default:
+		return 0, false
+	}
+}
+
 // handleError converts various errors to provider errors.
 // It attempts to parse Anthropic API error responses (HTTP NNN: {...}) so that
 // error.type is surfaced as ProviderError.ErrorCode rather than being lost.
@@ -1343,11 +1372,6 @@ func newAnthropicStreamWithWarnings(reader io.ReadCloser, usesJsonResponseTool b
 	}
 }
 
-// Read implements io.Reader
-func (s *anthropicStream) Read(p []byte) (n int, err error) {
-	return s.reader.Read(p)
-}
-
 // Close implements io.Closer
 func (s *anthropicStream) Close() error {
 	return s.reader.Close()
@@ -1421,10 +1445,10 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				Caller      map[string]interface{} `json:"caller"`
 				// mcp_tool_use fields
 				ServerName string `json:"server_name"`
-				// mcp_tool_result fields
-				ToolUseID string      `json:"tool_use_id"`
-				IsError   bool        `json:"is_error"`
-				Content   interface{} `json:"content"`
+				// mcp_tool_result / web_search_tool_result / web_fetch_tool_result fields
+				ToolUseID string          `json:"tool_use_id"`
+				IsError   bool            `json:"is_error"`
+				Content   json.RawMessage `json:"content"`
 				// compaction fields
 				Signature string `json:"signature"`
 			} `json:"content_block"`
@@ -1599,10 +1623,14 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				Dynamic:          true,
 				ProviderMetadata: call.providerMetadata,
 			}
+			var mcpResultContent interface{}
+			if len(start.ContentBlock.Content) > 0 {
+				json.Unmarshal(start.ContentBlock.Content, &mcpResultContent) //nolint:errcheck
+			}
 			if start.ContentBlock.IsError {
-				tr.Error = fmt.Errorf("mcp tool error: %v", start.ContentBlock.Content)
+				tr.Error = fmt.Errorf("mcp tool error: %v", mcpResultContent)
 			} else {
-				tr.Result = start.ContentBlock.Content
+				tr.Result = mcpResultContent
 			}
 			// Track so content_block_stop is a clean no-op.
 			s.contentBlocks[start.Index] = &streamContentBlock{
@@ -1645,7 +1673,8 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			// content_block_start — without any following compaction_delta
 			// events — when both signature and content are present.
 			if start.ContentBlock.Signature != "" {
-				if text, ok := start.ContentBlock.Content.(string); ok && text != "" {
+				var text string
+				if err := json.Unmarshal(start.ContentBlock.Content, &text); err == nil && text != "" {
 					s.pending = append(s.pending, &provider.StreamChunk{
 						Type: provider.ChunkTypeText,
 						ID:   strconv.Itoa(start.Index),
@@ -1654,6 +1683,73 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				}
 			}
 			return textStart, nil
+
+		case "web_fetch_tool_result":
+			// Live-streamed deferred tool result (TS anthropic-language-model.ts
+			// content_block_start "web_fetch_tool_result" case, ~line 2226).
+			// Resolve toolName from the paired server_tool_use block tracked in
+			// s.serverToolCallNames, remap snake_case wire fields to camelCase,
+			// and grow citationDocuments so a later page_location/char_location
+			// citation can resolve against this fetched document.
+			toolName := s.serverToolCallNames[start.ContentBlock.ToolUseID]
+			if toolName == "" {
+				toolName = providerToolResultName(start.ContentBlock.Type)
+			}
+			tr := &types.ToolResult{
+				ToolCallID:       start.ContentBlock.ToolUseID,
+				ToolName:         toolName,
+				ProviderExecuted: true,
+			}
+			if errResult, ok := parseAnthropicWebToolResultError(start.ContentBlock.Content, "web_fetch_tool_result_error", start.ContentBlock.IsError); ok {
+				tr.Result = errResult
+				tr.Error = fmt.Errorf("%v", errResult["errorCode"])
+			} else if len(start.ContentBlock.Content) > 0 {
+				tr.Result = convertWebFetchToolResult(start.ContentBlock.Content)
+				if doc, ok := extractWebFetchCitationDocument(start.ContentBlock.Content); ok {
+					s.citationDocuments = append(s.citationDocuments, doc)
+				}
+			}
+			s.contentBlocks[start.Index] = &streamContentBlock{blockType: "web-fetch-tool-result"}
+			return &provider.StreamChunk{
+				Type:       provider.ChunkTypeToolResult,
+				ToolResult: tr,
+			}, nil
+
+		case "web_search_tool_result":
+			// Live-streamed deferred tool result (TS anthropic-language-model.ts
+			// content_block_start "web_search_tool_result" case, ~line 2272).
+			// Emits the tool-result chunk followed by a source chunk for each
+			// search result (TS enqueues 'source' parts after the 'tool-result').
+			toolName := s.serverToolCallNames[start.ContentBlock.ToolUseID]
+			if toolName == "" {
+				toolName = providerToolResultName(start.ContentBlock.Type)
+			}
+			tr := &types.ToolResult{
+				ToolCallID:       start.ContentBlock.ToolUseID,
+				ToolName:         toolName,
+				ProviderExecuted: true,
+			}
+			var webSearchSources []types.SourceContent
+			if errResult, ok := parseAnthropicWebToolResultError(start.ContentBlock.Content, "web_search_tool_result_error", start.ContentBlock.IsError); ok {
+				tr.Result = errResult
+				tr.Error = fmt.Errorf("%v", errResult["errorCode"])
+			} else if len(start.ContentBlock.Content) > 0 {
+				mapped, sources := convertWebSearchToolResult(start.ContentBlock.Content)
+				tr.Result = mapped
+				webSearchSources = sources
+			}
+			s.contentBlocks[start.Index] = &streamContentBlock{blockType: "web-search-tool-result"}
+			for _, src := range webSearchSources {
+				s2 := src
+				s.pending = append(s.pending, &provider.StreamChunk{
+					Type:          provider.ChunkTypeSource,
+					SourceContent: &s2,
+				})
+			}
+			return &provider.StreamChunk{
+				Type:       provider.ChunkTypeToolResult,
+				ToolResult: tr,
+			}, nil
 
 		default:
 			// Any unknown types: record so content_block_stop is always a
@@ -1690,6 +1786,8 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 					ID    string                 `json:"id"`
 					Name  string                 `json:"name"`
 					Input map[string]interface{} `json:"input"`
+					// mcp_tool_use fields
+					ServerName string `json:"server_name,omitempty"`
 					// Deferred provider tool result fields
 					ToolUseID string          `json:"tool_use_id,omitempty"`
 					Content   json.RawMessage `json:"content,omitempty"`
@@ -1768,6 +1866,34 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 							},
 						})
 					}
+				case "mcp_tool_use":
+					// Pre-populated deferred MCP tool call (TS content_block_start
+					// "mcp_tool_use" case, mirrored here for parity with the other
+					// deferred block types already handled in this loop). Track the
+					// call's toolName/providerMetadata in s.mcpToolCalls so a paired
+					// mcp_tool_result elsewhere in this same content array (or a
+					// later content_block_start) can resolve them.
+					input := part.Input
+					if input == nil {
+						input = map[string]interface{}{}
+					}
+					s.serverToolCallNames[part.ID] = part.Name
+					mcpMeta := anthropicMCPToolUseMetadata(part.ServerName)
+					s.mcpToolCalls[part.ID] = mcpToolCallInfo{
+						toolName:         part.Name,
+						providerMetadata: mcpMeta,
+					}
+					s.pending = append(s.pending, &provider.StreamChunk{
+						Type: provider.ChunkTypeToolCall,
+						ToolCall: &types.ToolCall{
+							ID:               part.ID,
+							ToolName:         part.Name,
+							Arguments:        input,
+							ProviderExecuted: true,
+							Dynamic:          true,
+							ProviderMetadata: mcpMeta,
+						},
+					})
 				case "web_search_tool_result":
 					// Remap snake_case wire fields to camelCase and emit source chunks.
 					toolName := s.serverToolCallNames[part.ToolUseID]
@@ -2232,6 +2358,55 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			return s.Next()
 		}
 		return s.Next()
+
+	case "error":
+		// A mid-stream provider error (TS `case 'error'`, e.g. an
+		// overloaded_error sent on an otherwise-200 response). Previously
+		// this event type fell through to "Unknown event, get next" below
+		// and was silently discarded; port TS's createAnthropicStreamError:
+		// build a fully-normalized *providererrors.StreamProviderError so
+		// pkg/ai's streamRetries / IsRetryable sees the correct type/
+		// statusCode/isRetryable without falling back to generic inference.
+		var errEvent struct {
+			Error struct {
+				Type        string          `json:"type"`
+				Message     string          `json:"message"`
+				Code        json.RawMessage `json:"code"`
+				StatusCode  *int            `json:"statusCode"`
+				IsRetryable *bool           `json:"isRetryable"`
+				Data        interface{}     `json:"data"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(event.Data), &errEvent); err != nil {
+			return s.Next()
+		}
+		// anthropicStreamErrorMetadata returns (0, false) for an
+		// unrecognized type (TS's getAnthropicStreamErrorMetadata returns
+		// {}, i.e. both fields undefined). Only apply the inferred
+		// isRetryable when the type was actually recognized — otherwise
+		// leave it nil so NewStreamProviderError falls back to its own
+		// message/status-code inference instead of forcing false.
+		inferredStatus, inferredRetryable := anthropicStreamErrorMetadata(errEvent.Error.Type)
+		statusCode := errEvent.Error.StatusCode
+		if statusCode == nil && inferredStatus != 0 {
+			sc := inferredStatus
+			statusCode = &sc
+		}
+		isRetryable := errEvent.Error.IsRetryable
+		if isRetryable == nil && inferredStatus != 0 {
+			ir := inferredRetryable
+			isRetryable = &ir
+		}
+		var code interface{}
+		if len(errEvent.Error.Code) > 0 {
+			json.Unmarshal(errEvent.Error.Code, &code) //nolint:errcheck
+		}
+		data := errEvent.Error.Data
+		if data == nil {
+			data = errEvent.Error
+		}
+		chunkErr := providererrors.NewStreamProviderError(errEvent.Error.Message, "anthropic", errEvent.Error.Type, code, statusCode, isRetryable, data)
+		return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: errEvent.Error.Message, Err: chunkErr}, nil
 
 	case "message_stop":
 		s.isMessageOpen = false

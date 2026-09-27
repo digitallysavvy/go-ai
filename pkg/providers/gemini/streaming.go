@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
@@ -164,7 +165,18 @@ func (s *stream) Next() (*provider.StreamChunk, error) {
 
 	var chunkData Response
 	if err := json.Unmarshal([]byte(event.Data), &chunkData); err != nil {
-		return nil, fmt.Errorf("failed to parse stream chunk: %w", err)
+		// TS google-language-model.ts: `if (!chunk.success) { controller
+		// .enqueue({type:'error', error: chunk.error}); return; }` — a
+		// malformed chunk (schema/JSON failure) is surfaced as an error
+		// chunk and the transform CONTINUES reading, it does not terminate
+		// the stream. Previously Go returned this as a terminal Next()
+		// error, ending the stream outright (P1-1c part 2).
+		message := fmt.Sprintf("failed to parse stream chunk: %v", err)
+		return &provider.StreamChunk{
+			Type: provider.ChunkTypeError,
+			Text: message,
+			Err:  providererrors.NewStreamProviderError(message, s.cfg.ProviderName, "", nil, nil, nil, nil),
+		}, nil
 	}
 
 	s.processSSEEvent(chunkData)

@@ -979,6 +979,101 @@ data: {"type":"response.failed","sequence_number":1,"response":{"error":{"code":
 	}
 }
 
+// TestResponsesLanguageModel_DoStreamMidStreamResponseFailedEmitsErrorChunk
+// is a P1-1c part 2 regression test: once output has started (a
+// response.output_item.added has already been seen), a subsequent
+// response.failed carrying a response.error must enqueue a ChunkTypeError
+// chunk (with a structured StreamProviderError, TS's `encounteredStreamError`
+// branch that builds a synthetic {type:'response.failed', response:{error,...}}
+// frame) BEFORE the terminal finish chunk. Previously Go only emitted the
+// finish chunk and silently dropped the error.
+func TestResponsesLanguageModel_DoStreamMidStreamResponseFailedEmitsErrorChunk(t *testing.T) {
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1"}}
+
+data: {"type":"response.failed","sequence_number":1,"response":{"id":"resp_1","error":{"code":"server_error","message":"mid-stream failure"},"incomplete_details":null,"usage":null,"service_tier":null}}
+
+`)), false)
+	defer stream.Close() //nolint:errcheck
+
+	// Drain chunks emitted for output_item.added (implementation detail —
+	// just skip past them) until we see the error chunk.
+	var errChunk, finishChunk *provider.StreamChunk
+	for i := 0; i < 10; i++ {
+		chunk, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next() error: %v", err)
+		}
+		switch chunk.Type {
+		case provider.ChunkTypeError:
+			errChunk = chunk
+		case provider.ChunkTypeFinish:
+			finishChunk = chunk
+		}
+	}
+
+	if errChunk == nil {
+		t.Fatal("expected a ChunkTypeError chunk for the mid-stream response.failed error")
+	}
+	if !strings.Contains(errChunk.Text, "mid-stream failure") {
+		t.Errorf("errChunk.Text = %q, want to mention mid-stream failure", errChunk.Text)
+	}
+	var streamErr *providererrors.StreamProviderError
+	if !errors.As(errChunk.Err, &streamErr) {
+		t.Fatalf("errChunk.Err = %v (%T), want *providererrors.StreamProviderError", errChunk.Err, errChunk.Err)
+	}
+	if streamErr.Message != "mid-stream failure" {
+		t.Errorf("streamErr.Message = %q, want mid-stream failure", streamErr.Message)
+	}
+
+	if finishChunk == nil {
+		t.Fatal("expected a terminal ChunkTypeFinish chunk after the error chunk")
+	}
+}
+
+// TestResponsesLanguageModel_DoStreamMidStreamErrorEventAttachesStructuredPayload
+// is a P1-1c part 2 regression test for the generic `error` event type (TS
+// isErrorChunk branch): once output has started, the chunk's Err field must
+// carry a structured StreamProviderError, not just Text.
+func TestResponsesLanguageModel_DoStreamMidStreamErrorEventAttachesStructuredPayload(t *testing.T) {
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1"}}
+
+data: {"type":"error","message":"rate limited","code":"rate_limit_exceeded"}
+
+`)), false)
+	defer stream.Close() //nolint:errcheck
+
+	var errChunk *provider.StreamChunk
+	for i := 0; i < 10; i++ {
+		chunk, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next() error: %v", err)
+		}
+		if chunk.Type == provider.ChunkTypeError {
+			errChunk = chunk
+			break
+		}
+	}
+	if errChunk == nil {
+		t.Fatal("expected a ChunkTypeError chunk for the mid-stream error event")
+	}
+	var streamErr *providererrors.StreamProviderError
+	if !errors.As(errChunk.Err, &streamErr) {
+		t.Fatalf("errChunk.Err = %v (%T), want *providererrors.StreamProviderError", errChunk.Err, errChunk.Err)
+	}
+	if streamErr.Message != "rate limited" {
+		t.Errorf("Message = %q, want rate limited", streamErr.Message)
+	}
+	if streamErr.StatusCode == nil || *streamErr.StatusCode != 429 {
+		t.Errorf("StatusCode = %v, want 429 (rate_limit discriminator)", streamErr.StatusCode)
+	}
+}
+
 func TestResponsesLanguageModel_DoStreamIncompleteUsesCreatedResponseID(t *testing.T) {
 	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.created","response":{"id":"resp_created","created_at":1741269019,"model":"gpt-4o"}}
 

@@ -1015,11 +1015,6 @@ func newOpenResponsesStream(reader io.ReadCloser, warnings []types.Warning, prov
 	}
 }
 
-// Read implements io.Reader
-func (s *openResponsesStream) Read(p []byte) (n int, err error) {
-	return s.reader.Read(p)
-}
-
 // Close implements io.Closer
 func (s *openResponsesStream) Close() error {
 	return s.reader.Close()

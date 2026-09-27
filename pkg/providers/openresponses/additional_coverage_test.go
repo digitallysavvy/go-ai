@@ -143,10 +143,10 @@ func TestOpenResponsesToolResultConverters(t *testing.T) {
 		t.Fatalf("expected structured output parts, got %#v", out)
 	}
 
-	// Validate stream wrapper methods Read/Close/Err paths.
+	// Validate stream wrapper methods Close/Err paths. openResponsesStream is
+	// a provider.TextStream (Next/Err/Close only) — it must not implement
+	// io.Reader (P1-1c part 2).
 	s := newOpenResponsesStream(io.NopCloser(strings.NewReader("")), nil)
-	buf := make([]byte, 1)
-	_, _ = s.Read(buf)
 	_ = s.Close()
 	if s.Err() != nil {
 		t.Fatalf("Err() should be nil when stream ended cleanly")
