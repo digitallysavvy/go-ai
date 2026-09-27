@@ -813,6 +813,35 @@ func legacyJSONOrEmpty(v interface{}) string {
 	return string(b)
 }
 
+// legacyPromptJSON builds the "ai.prompt" JSON attribute value for
+// generateText/streamText/generateObject/streamObject root spans, mirroring
+// TS's onGenerateStart (`JSON.stringify({system, messages})`) and
+// onObjectOperationStart (`JSON.stringify({system, prompt, messages})`) in
+// legacy-open-telemetry.ts. Field order matches the TS object-literal
+// insertion order (Go struct fields marshal in declared order, unlike map
+// keys which json.Marshal sorts alphabetically); `omitempty` mirrors
+// JSON.stringify dropping undefined fields. Unlike TS — whose ModelMessage
+// content can be a bare string for simple text — Go's types.Message.Content
+// is always a slice of parts, so a simple single-text message serializes as
+// an array-of-parts object rather than a bare string; this is an accepted
+// Go-runtime type-system divergence (same one already present in
+// ai.prompt.messages / ai.prompt.tools elsewhere).
+func legacyPromptJSON(isObjectOp bool, system, prompt string, messages []types.Message) string {
+	if isObjectOp {
+		v := struct {
+			System   string          `json:"system,omitempty"`
+			Prompt   string          `json:"prompt,omitempty"`
+			Messages []types.Message `json:"messages,omitempty"`
+		}{System: system, Prompt: prompt, Messages: messages}
+		return legacyJSONOrEmpty(v)
+	}
+	v := struct {
+		System   string          `json:"system,omitempty"`
+		Messages []types.Message `json:"messages,omitempty"`
+	}{System: system, Messages: messages}
+	return legacyJSONOrEmpty(v)
+}
+
 // legacyBaseAttrsKey is a private context key carrying the root span's
 // ai.model.provider/id + ai.settings.* + ai.request.headers.* attributes
 // down to the nested doGenerate/doStream step span, mirroring TS's reuse of
@@ -893,11 +922,20 @@ func (i LegacyOpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent)
 			}
 		}
 	default:
-		// generateText/streamText/generateObject/streamObject: ai.prompt.
-		if recordInputs && e.Prompt != "" {
-			span.SetAttributes(attribute.String("ai.prompt", e.Prompt))
+		// generateText/streamText/generateObject/streamObject: ai.prompt is
+		// a JSON object (see legacyPromptJSON), not the bare prompt string.
+		// TS always calls JSON.stringify(...) here when recordInputs is
+		// true (selectAttributes only checks `resolved != null`, and the
+		// object literal is never nullish), so this is unconditional on
+		// content — matching that rather than gating on any field being
+		// non-empty.
+		isObjectOp := e.OperationType == "ai.generateObject" || e.OperationType == "ai.streamObject"
+		if recordInputs {
+			if promptJSON := legacyPromptJSON(isObjectOp, e.System, e.Prompt, e.Messages); promptJSON != "" {
+				span.SetAttributes(attribute.String("ai.prompt", promptJSON))
+			}
 		}
-		if e.OperationType == "ai.generateObject" || e.OperationType == "ai.streamObject" {
+		if isObjectOp {
 			// TS: 'ai.schema' is input-gated; schema.name/description and
 			// settings.output are plain (unconditional) values.
 			if recordInputs && len(e.Schema) > 0 {
@@ -1058,6 +1096,17 @@ func (i LegacyOpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepSta
 	if baseAttrs, ok := ctx.Value(legacyBaseAttrsKey{}).([]attribute.KeyValue); ok {
 		stepSpan.SetAttributes(baseAttrs...)
 	}
+	// TS's onStepStart sets 'ai.model.provider'/'ai.model.id' from the
+	// step's own event.provider/event.modelId AFTER spreading
+	// state.baseTelemetryAttributes, so a step whose model differs from the
+	// initial call (e.g. via a per-step model override) reports its own
+	// model rather than the root's. Set these after the baseAttrs reuse
+	// above so they take precedence (OTel SetAttributes keeps the latest
+	// value per key).
+	stepSpan.SetAttributes(
+		attribute.String("ai.model.provider", e.ModelProvider),
+		attribute.String("ai.model.id", e.ModelID),
+	)
 	return context.WithValue(ctx, stepSpanKey{}, stepSpan)
 }
 
@@ -1239,23 +1288,42 @@ func (i LegacyOpenTelemetry) OnRerankEnd(_ context.Context, e RerankingModelCall
 }
 
 // OnToolExecutionStart starts a child span for tool execution and embeds it.
+// Mirrors TS's onToolExecutionStart (legacy-open-telemetry.ts): the real
+// span name is the bare "ai.toolCall" (never suffixed with the tool name —
+// same span-naming rule as legacyOperationNameAttrs elsewhere), with the
+// tool name carried only by the ai.toolCall.name attribute and by
+// operation.name/resource.name/ai.telemetry.functionId
+// (assembleOperationName({operationId: 'ai.toolCall', telemetry})).
 func (i LegacyOpenTelemetry) OnToolExecutionStart(ctx context.Context, e TelemetryToolCallStartEvent) context.Context {
 	span := trace.SpanFromContext(ctx)
 	if !span.IsRecording() {
 		return ctx
 	}
 	tracer := span.TracerProvider().Tracer("go-ai")
-	ctx, child := tracer.Start(ctx, "ai.toolCall."+e.ToolName)
+	ctx, child := tracer.Start(ctx, "ai.toolCall")
 	if attrs := customSpanAttributes(ctx, i.enrichSpan, e.Settings, EnrichSpanOptions{
 		SpanType: SpanTypeTool,
 		CallID:   e.ToolCallID,
 	}); len(attrs) > 0 {
 		child.SetAttributes(attrs...)
 	}
+	functionID := ""
+	if e.Settings != nil {
+		functionID = e.Settings.FunctionID
+	}
+	child.SetAttributes(legacyOperationNameAttrs("ai.toolCall", functionID)...)
 	child.SetAttributes(
-		attribute.String("ai.toolCall.id", e.ToolCallID),
 		attribute.String("ai.toolCall.name", e.ToolName),
+		attribute.String("ai.toolCall.id", e.ToolCallID),
 	)
+	// ai.toolCall.args is output-gated in TS (`output: () => ...`), not
+	// input-gated — the model's tool-call arguments are treated as part of
+	// the generation's output.
+	if (e.Settings == nil || e.Settings.RecordOutputs) && e.Args != nil {
+		if b, err := json.Marshal(e.Args); err == nil {
+			child.SetAttributes(attribute.String("ai.toolCall.args", string(b)))
+		}
+	}
 	// Runtime context attrs on tool call spans (0651c5f): reuse the root
 	// span's already-flattened ai.settings.context.* attrs, since
 	// TelemetryToolCallStartEvent carries no RuntimeContext of its own.
@@ -1265,7 +1333,11 @@ func (i LegacyOpenTelemetry) OnToolExecutionStart(ctx context.Context, e Telemet
 	return ctx
 }
 
-// OnToolExecutionEnd ends the tool execution child span.
+// OnToolExecutionEnd ends the tool execution child span, mirroring TS's
+// onToolExecutionEnd: a successful call records ai.toolCall.result
+// (output-gated, JSON-encoded), a failed one records the error on the span
+// instead. ai.toolCall.durationMs is a Go-only addition (TS carries no
+// duration on this span) kept as an additive, non-conflicting attribute.
 func (i LegacyOpenTelemetry) OnToolExecutionEnd(ctx context.Context, e TelemetryToolCallFinishEvent) {
 	span := trace.SpanFromContext(ctx)
 	if !span.IsRecording() {
@@ -1275,6 +1347,10 @@ func (i LegacyOpenTelemetry) OnToolExecutionEnd(ctx context.Context, e Telemetry
 	if e.Error != nil {
 		span.RecordError(e.Error)
 		span.SetStatus(codes.Error, e.Error.Error())
+	} else if (e.Settings == nil || e.Settings.RecordOutputs) && e.Result != nil {
+		if b, err := json.Marshal(e.Result); err == nil {
+			span.SetAttributes(attribute.String("ai.toolCall.result", string(b)))
+		}
 	}
 	span.End()
 }

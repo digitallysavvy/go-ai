@@ -63,12 +63,28 @@ func TestWorkflowApprovalResumeToolSpanParentedUnderRootSpan(t *testing.T) {
 		t.Fatalf("stream ReadAll error: %v", err)
 	}
 
+	// The tool call span's real OTel name is the bare "ai.toolCall" (TS never
+	// suffixes it with the tool name — see legacy-open-telemetry.ts
+	// onToolExecutionStart / follow-up H1), so it is identified by its
+	// ai.toolCall.name attribute instead.
+	isGetWeatherToolSpan := func(s sdktrace.ReadOnlySpan) bool {
+		if s.Name() != "ai.toolCall" {
+			return false
+		}
+		for _, a := range s.Attributes() {
+			if string(a.Key) == "ai.toolCall.name" && a.Value.AsString() == "getWeather" {
+				return true
+			}
+		}
+		return false
+	}
+
 	var rootSpan, toolSpan sdktrace.ReadOnlySpan
 	for _, s := range rec.Ended() {
-		switch s.Name() {
-		case "ai.workflowAgent.stream":
+		switch {
+		case s.Name() == "ai.workflowAgent.stream":
 			rootSpan = s
-		case "ai.toolCall.getWeather":
+		case isGetWeatherToolSpan(s):
 			toolSpan = s
 		}
 	}
@@ -76,7 +92,7 @@ func TestWorkflowApprovalResumeToolSpanParentedUnderRootSpan(t *testing.T) {
 		if s.Name() == "ai.workflowAgent.stream" && rootSpan == nil {
 			rootSpan = s
 		}
-		if s.Name() == "ai.toolCall.getWeather" && toolSpan == nil {
+		if isGetWeatherToolSpan(s) && toolSpan == nil {
 			toolSpan = s
 		}
 	}
@@ -84,7 +100,7 @@ func TestWorkflowApprovalResumeToolSpanParentedUnderRootSpan(t *testing.T) {
 		t.Fatal("expected an 'ai.workflowAgent.stream' root span")
 	}
 	if toolSpan == nil {
-		t.Fatal("expected an 'ai.toolCall.getWeather' span for the approval-resume tool execution")
+		t.Fatal("expected an 'ai.toolCall' span (ai.toolCall.name=getWeather) for the approval-resume tool execution")
 	}
 	if toolSpan.Parent().SpanID() != rootSpan.SpanContext().SpanID() {
 		t.Fatalf("expected the approval-resume tool span's parent (%s) to be the root span (%s)",

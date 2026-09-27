@@ -232,6 +232,61 @@ func TestLegacyOpenTelemetryOnStartBaseAttributes(t *testing.T) {
 	}
 }
 
+// TestLegacyOpenTelemetryOnStartPromptJSON ports TS's legacy-open-telemetry
+// snapshot shapes for ai.prompt: onGenerateStart's `JSON.stringify({system,
+// messages})` for generateText/streamText (a `prompt` string call option
+// normalizes into a single user message) and onObjectOperationStart's
+// `JSON.stringify({system, prompt, messages})` for generateObject/
+// streamObject (prompt/messages passed through as raw, mutually-exclusive
+// call options, unlike generateText's always-normalized messages).
+func TestLegacyOpenTelemetryOnStartPromptJSON(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	tracer := tp.Tracer("legacy-prompt-json-test")
+
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true}
+
+	// generateText: `event.messages` is always the normalized message list,
+	// even though this event is built directly here (bypassing pkg/ai's
+	// prompt-to-messages normalization) with an explicit Messages value —
+	// mirroring a caller that used the `messages` option directly.
+	integration.OnStart(context.Background(), TelemetryStartEvent{
+		OperationType: "ai.generateText",
+		Settings:      settings,
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "prompt"}}},
+		},
+	})
+	textSpan := findSpan(rec, "ai.generateText")
+	if textSpan == nil {
+		t.Fatal("expected an 'ai.generateText' span")
+	}
+	wantTextPrompt := `{"messages":[{"role":"user","content":[{"type":"text","text":"prompt"}]}]}`
+	if v, ok := attrValue(textSpan, "ai.prompt"); !ok || v.(string) != wantTextPrompt {
+		t.Errorf("generateText ai.prompt = %v (ok=%v), want %q", v, ok, wantTextPrompt)
+	}
+
+	// generateObject: prompt/messages are raw, mutually-exclusive call
+	// options — a bare `prompt` string produces `{"prompt":"..."}` with no
+	// "messages" key at all (TS: `JSON.stringify({system, prompt,
+	// messages})` drops the undefined `messages` field).
+	integration.OnStart(context.Background(), TelemetryStartEvent{
+		OperationType: "ai.generateObject",
+		Settings:      settings,
+		Prompt:        "prompt",
+	})
+	objectSpan := findSpan(rec, "ai.generateObject")
+	if objectSpan == nil {
+		t.Fatal("expected an 'ai.generateObject' span")
+	}
+	wantObjectPrompt := `{"prompt":"prompt"}`
+	if v, ok := attrValue(objectSpan, "ai.prompt"); !ok || v.(string) != wantObjectPrompt {
+		t.Errorf("generateObject ai.prompt = %v (ok=%v), want %q", v, ok, wantObjectPrompt)
+	}
+}
+
 // TestLegacyOpenTelemetryOnStartEmbedRerankAttributes ports TS's
 // onEmbedOperationStart/onRerankOperationStart shape: ai.embed uses
 // ai.value, ai.embedMany uses ai.values (array of JSON-encoded strings, not
@@ -298,6 +353,106 @@ func TestLegacyOpenTelemetryOnStartEmbedRerankAttributes(t *testing.T) {
 	}
 	if _, ok := attrValue(rerankSpan, "ai.prompt"); ok {
 		t.Error("ai.rerank span should not carry ai.prompt")
+	}
+}
+
+// TestLegacyOpenTelemetryToolCallSpan ports TS's legacy-open-telemetry.test.ts
+// "should record tool call telemetry data" case (see the matching
+// __snapshots__ entry, which shows `"name": "ai.toolCall"` and
+// `"ai.operationId": "ai.toolCall"` on the tool span, with no per-tool-name
+// suffix anywhere): the real span name is the bare "ai.toolCall" (never
+// suffixed with the tool name), it carries operation.name/ai.operationId
+// (assembleOperationName), and ai.toolCall.args/result are JSON-encoded and
+// gated by RecordOutputs (TS wraps both in an `output: () => ...`
+// accessor), not by RecordInputs.
+func TestLegacyOpenTelemetryToolCallSpan(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	tracer := tp.Tracer("legacy-toolcall-test")
+
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{
+		OperationType: "ai.generateText",
+		Settings:      settings,
+	})
+	toolCtx := integration.OnToolExecutionStart(ctx, TelemetryToolCallStartEvent{
+		Settings:   settings,
+		ToolCallID: "tool-call-1",
+		ToolName:   "myTool",
+		Args:       map[string]interface{}{"query": "test"},
+	})
+	integration.OnToolExecutionEnd(toolCtx, TelemetryToolCallFinishEvent{
+		Settings:   settings,
+		ToolCallID: "tool-call-1",
+		ToolName:   "myTool",
+		Result:     "result1",
+	})
+
+	toolSpan := findSpan(rec, "ai.toolCall")
+	if toolSpan == nil {
+		t.Fatal("expected the tool call span to be named the bare 'ai.toolCall' (not suffixed with the tool name)")
+	}
+	if v, ok := attrValue(toolSpan, "ai.operationId"); !ok || v.(string) != "ai.toolCall" {
+		t.Errorf("ai.operationId = %v (ok=%v), want ai.toolCall", v, ok)
+	}
+	if v, ok := attrValue(toolSpan, "operation.name"); !ok || v.(string) != "ai.toolCall" {
+		t.Errorf("operation.name = %v (ok=%v), want ai.toolCall", v, ok)
+	}
+	if v, ok := attrValue(toolSpan, "ai.toolCall.name"); !ok || v.(string) != "myTool" {
+		t.Errorf("ai.toolCall.name = %v (ok=%v), want myTool", v, ok)
+	}
+	if v, ok := attrValue(toolSpan, "ai.toolCall.id"); !ok || v.(string) != "tool-call-1" {
+		t.Errorf("ai.toolCall.id = %v (ok=%v), want tool-call-1", v, ok)
+	}
+	if v, ok := attrValue(toolSpan, "ai.toolCall.args"); !ok || v.(string) != `{"query":"test"}` {
+		t.Errorf("ai.toolCall.args = %v (ok=%v), want {\"query\":\"test\"}", v, ok)
+	}
+	if v, ok := attrValue(toolSpan, "ai.toolCall.result"); !ok || v.(string) != `"result1"` {
+		t.Errorf(`ai.toolCall.result = %v (ok=%v), want "result1"`, v, ok)
+	}
+}
+
+// TestLegacyOpenTelemetryToolCallSpan_RecordOutputsFalse verifies
+// ai.toolCall.args/result are absent (not just recomputed) when
+// RecordOutputs is false, matching TS's output()-accessor gating.
+func TestLegacyOpenTelemetryToolCallSpan_RecordOutputsFalse(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	tracer := tp.Tracer("legacy-toolcall-recordoutputs-false-test")
+
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: false}
+
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{
+		OperationType: "ai.generateText",
+		Settings:      settings,
+	})
+	toolCtx := integration.OnToolExecutionStart(ctx, TelemetryToolCallStartEvent{
+		Settings:   settings,
+		ToolCallID: "tool-call-1",
+		ToolName:   "myTool",
+		Args:       map[string]interface{}{"query": "test"},
+	})
+	integration.OnToolExecutionEnd(toolCtx, TelemetryToolCallFinishEvent{
+		Settings:   settings,
+		ToolCallID: "tool-call-1",
+		ToolName:   "myTool",
+		Result:     "result1",
+	})
+
+	toolSpan := findSpan(rec, "ai.toolCall")
+	if toolSpan == nil {
+		t.Fatal("expected an 'ai.toolCall' span")
+	}
+	if _, ok := attrValue(toolSpan, "ai.toolCall.args"); ok {
+		t.Error("expected ai.toolCall.args to be absent when RecordOutputs is false")
+	}
+	if _, ok := attrValue(toolSpan, "ai.toolCall.result"); ok {
+		t.Error("expected ai.toolCall.result to be absent when RecordOutputs is false")
 	}
 }
 
@@ -482,7 +637,7 @@ func TestOTelIntegrationToolContextParentsNestedOperation(t *testing.T) {
 	// ("ai.generateText inner") instead of by span name.
 	var toolSpan, innerSpan sdktrace.ReadOnlySpan
 	for _, span := range rec.Ended() {
-		if span.Name() == "ai.toolCall.lookup" {
+		if span.Name() == "ai.toolCall" {
 			toolSpan = span
 			continue
 		}

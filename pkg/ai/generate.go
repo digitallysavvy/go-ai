@@ -654,16 +654,21 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// Fire OnStart — registered integrations start their root spans here and
 	// embed them in the returned context.  When no integration is registered
 	// the fire function is a no-op.
-	telPrompt := ""
 	telSystem := ""
 	var telMessages []types.Message
 	if telemetrySettings != nil && telemetrySettings.RecordInputs {
-		telPrompt = opts.Prompt
 		telSystem = system
 		if len(instructionMessages) > 0 {
 			telSystem = instructionMessagesText(instructionMessages)
 		}
-		telMessages = opts.Messages
+		// TS's GenerateTextStartEvent.messages is always the *normalized*
+		// message list (initialPrompt.messages from standardizePrompt),
+		// even when the caller used the `prompt` string convenience rather
+		// than `messages` — so ai.prompt's JSON `{system, messages}` shape
+		// (legacy-open-telemetry.ts onGenerateStart) always has a messages
+		// array. buildPrompt performs the same prompt-string-to-message
+		// normalization Go already does for the actual provider call.
+		telMessages = buildPrompt(opts.Prompt, opts.Messages, "").Messages
 	}
 	generateTextMaxRetries := preparedMaxRetries(opts.MaxRetries)
 	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
@@ -671,7 +676,6 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		ModelProvider:    opts.Model.Provider(),
 		ModelID:          opts.Model.ModelID(),
 		Settings:         telemetrySettings,
-		Prompt:           telPrompt,
 		System:           telSystem,
 		Messages:         telMessages,
 		Headers:          opts.Headers,
