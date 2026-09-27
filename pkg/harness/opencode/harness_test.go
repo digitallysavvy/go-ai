@@ -409,3 +409,189 @@ func TestExtractUserTextRejectsNonTextParts(t *testing.T) {
 		t.Fatalf("extractUserText(text) error = %v", err)
 	}
 }
+
+// mcpServers configured on Settings must reach the bridge's "start" frame
+// for a prompt turn. TS coverage of this field lives inside the larger
+// composite `it('passes native config through prompts, compaction, and
+// resumed sessions', ...)` test in opencode-harness.test.ts (which also
+// asserts mcpServers on the compact frame and on a resumed session's next
+// start frame — those two legs are not covered here).
+func TestDoPromptTurn_SendsMCPServersInStartFrame(t *testing.T) {
+	const token = "mcp-servers-token"
+	var mu sync.Mutex
+	var capturedStart map[string]any
+	srv := newServer(t, token, func(turn *bridgetest.Turn, start map[string]any) {
+		mu.Lock()
+		capturedStart = start
+		mu.Unlock()
+		turn.Emit(map[string]any{
+			"type": "finish", "finishReason": map[string]any{"unified": "stop", "raw": "stop"},
+			"totalUsage": map[string]any{"inputTokens": map[string]any{"total": 1}, "outputTokens": map[string]any{"total": 1}},
+		})
+	})
+	sandbox := newFakeSandbox(srv)
+	h, err := CreateOpenCode(Settings{
+		MintBridgeToken: func(string) string { return token },
+		MCPServers: map[string]any{
+			"my-server": map[string]any{"type": "http", "url": "https://example.com/mcp"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{
+		SessionID: "mcp-servers-session", SessionWorkDir: "/vercel/sandbox/mcp-servers-session", SandboxSession: sandbox,
+	})
+	if err != nil {
+		t.Fatalf("DoStart: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+
+	control, err := sess.DoPromptTurn(context.Background(), harness.PromptTurnOptions{
+		Prompt: harness.TextPrompt("hi"), Emit: func(harness.StreamPart) {},
+	})
+	if err != nil {
+		t.Fatalf("DoPromptTurn: %v", err)
+	}
+	select {
+	case <-control.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("turn did not finish")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	mcpServers, ok := capturedStart["mcpServers"].(map[string]any)
+	if !ok {
+		t.Fatalf("start.mcpServers = %v, want a map", capturedStart["mcpServers"])
+	}
+	server, ok := mcpServers["my-server"].(map[string]any)
+	if !ok || server["url"] != "https://example.com/mcp" || server["type"] != "http" {
+		t.Fatalf("start.mcpServers[my-server] = %v", mcpServers["my-server"])
+	}
+}
+
+// Compaction rides its own "start" frame with operation "compact" and an
+// empty prompt, and resolves once the bridge sends a terminal finish (no
+// compaction-part requirement — DoCompact only needs the operation to
+// settle). This is not asserted by a standalone TS test; the closest TS
+// coverage is embedded in the composite
+// `it('passes native config through prompts, compaction, and resumed
+// sessions', ...)` test in opencode-harness.test.ts, which does not assert
+// on `tools` at all (uses toMatchObject). TS's runCompactOperation
+// (opencode-harness.ts) always sends `tools: []` on the wire; Go sends no
+// `tools` key (nil slice + `omitempty`). Both are accepted by the shared
+// bridge protocol schema, where `tools` is `.optional()`, so this is a
+// deliberate, harmless Go-runtime wire-format difference, not a gap.
+func TestDoCompact_SendsCompactOperation(t *testing.T) {
+	const token = "compact-token"
+	var mu sync.Mutex
+	var capturedStart map[string]any
+	srv := newServer(t, token, func(turn *bridgetest.Turn, start map[string]any) {
+		mu.Lock()
+		capturedStart = start
+		mu.Unlock()
+		turn.Emit(map[string]any{
+			"type": "finish", "finishReason": map[string]any{"unified": "stop", "raw": "stop"},
+			"totalUsage": map[string]any{"inputTokens": map[string]any{"total": 1}, "outputTokens": map[string]any{"total": 1}},
+		})
+	})
+	sandbox := newFakeSandbox(srv)
+	h, err := CreateOpenCode(Settings{MintBridgeToken: func(string) string { return token }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{
+		SessionID: "compact-session", SessionWorkDir: "/vercel/sandbox/compact-session", SandboxSession: sandbox,
+	})
+	if err != nil {
+		t.Fatalf("DoStart: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+
+	if err := sess.DoCompact(context.Background(), ""); err != nil {
+		t.Fatalf("DoCompact: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if capturedStart == nil {
+		t.Fatal("bridge never received a start frame for the compact operation")
+	}
+	if capturedStart["operation"] != "compact" {
+		t.Fatalf("start.operation = %v, want compact", capturedStart["operation"])
+	}
+	if prompt, ok := capturedStart["prompt"]; ok && prompt != "" {
+		t.Fatalf("start.prompt = %v, want empty for a compaction", prompt)
+	}
+	if _, ok := capturedStart["tools"]; ok {
+		t.Fatalf("start.tools = %v, want none for a compaction", capturedStart["tools"])
+	}
+}
+
+// Ports the rejection logic in TS `doCompact` (opencode-harness.ts): OpenCode
+// does not expose custom compaction instructions through the supported API,
+// so a non-empty customInstructions throws HarnessCapabilityUnsupportedError.
+// No standalone TS test exercises this branch (grepped
+// harness-opencode/src/*.test.ts); this is new coverage of TS source
+// behavior, not a ported TS test.
+func TestDoCompact_RejectsCustomInstructions(t *testing.T) {
+	const token = "compact-reject-token"
+	srv := newServer(t, token, func(*bridgetest.Turn, map[string]any) {})
+	sandbox := newFakeSandbox(srv)
+	h, err := CreateOpenCode(Settings{MintBridgeToken: func(string) string { return token }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{
+		SessionID: "compact-reject-session", SessionWorkDir: "/vercel/sandbox/compact-reject-session", SandboxSession: sandbox,
+	})
+	if err != nil {
+		t.Fatalf("DoStart: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+
+	err = sess.DoCompact(context.Background(), "focus on the auth module")
+	if _, ok := err.(*harness.CapabilityUnsupportedError); !ok {
+		t.Fatalf("DoCompact with custom instructions error = %v, want *harness.CapabilityUnsupportedError", err)
+	}
+}
+
+// SubmitUserMessage round trip: the bridge-hello capability negotiation
+// (bridgetest.Server always advertises ExperimentalUserMessageResponses)
+// must produce a session control that implements
+// harness.UserMessageSubmitter, and Submit must resolve once the fake
+// bridge accepts the message (OnUserMessage's default: accept everything).
+func TestDoPromptTurn_SubmitUserMessage(t *testing.T) {
+	const token = "submit-user-message-token"
+	srv := newServer(t, token, func(*bridgetest.Turn, map[string]any) {})
+	sandbox := newFakeSandbox(srv)
+	h, err := CreateOpenCode(Settings{MintBridgeToken: func(string) string { return token }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{
+		SessionID: "submit-user-message-session", SessionWorkDir: "/vercel/sandbox/submit-user-message-session", SandboxSession: sandbox,
+	})
+	if err != nil {
+		t.Fatalf("DoStart: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+
+	control, err := sess.DoPromptTurn(context.Background(), harness.PromptTurnOptions{
+		Prompt: harness.TextPrompt("hi"), Emit: func(harness.StreamPart) {},
+	})
+	if err != nil {
+		t.Fatalf("DoPromptTurn: %v", err)
+	}
+
+	submitter, ok := control.(harness.UserMessageSubmitter)
+	if !ok {
+		t.Fatal("control does not implement harness.UserMessageSubmitter")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := submitter.SubmitUserMessage(ctx, "steer this"); err != nil {
+		t.Fatalf("SubmitUserMessage: %v", err)
+	}
+}

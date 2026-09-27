@@ -190,6 +190,17 @@ func (c *connector) count() int {
 // flush gives goroutines and the SelectiveFlushGrace timer time to run.
 func flush() { time.Sleep(50 * time.Millisecond) }
 
+// pendingBufferedLen reports the number of events dispatch() has appended to
+// the FIFO buffer on the reader goroutine. Tests that deliver frames before
+// any listener is registered use it with waitFor to know the reader has
+// actually processed them, instead of racing a fixed sleep against that
+// goroutine under load.
+func (c *Channel) pendingBufferedLen() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.buffered)
+}
+
 func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -264,7 +275,7 @@ func TestChannelReplaysBufferedBeforeSubscribe(t *testing.T) {
 	mustOpen(t, ch)
 
 	c.current().deliver(map[string]any{"type": "finish"})
-	flush()
+	waitFor(t, time.Second, func() bool { return ch.pendingBufferedLen() == 1 })
 
 	var captured int
 	ch.On("finish", func(Event) { captured++ })
@@ -283,7 +294,7 @@ func TestChannelReplaysBufferedOrderAcrossTypes(t *testing.T) {
 	c.current().deliver(map[string]any{"type": "text-delta", "id": "a", "delta": "result"})
 	c.current().deliver(map[string]any{"type": "finish-step"})
 	c.current().deliver(map[string]any{"type": "finish"})
-	flush()
+	waitFor(t, time.Second, func() bool { return ch.pendingBufferedLen() == 4 })
 
 	var captured []string
 	ch.On("text-delta", func(e Event) { captured = append(captured, e.Type()) })
@@ -312,7 +323,7 @@ func TestChannelPreservesOrderAcrossExplicitAttachment(t *testing.T) {
 	mustOpen(t, ch)
 	c.current().deliver(map[string]any{"type": "finish-step"})
 	c.current().deliver(map[string]any{"type": "text-delta", "id": "a", "delta": "result"})
-	flush()
+	waitFor(t, time.Second, func() bool { return ch.pendingBufferedLen() == 2 })
 
 	var captured []string
 	ch.On("text-delta", func(e Event) { captured = append(captured, e.Type()) })
@@ -339,7 +350,7 @@ func TestChannelHoldsEventsWhileAttaching(t *testing.T) {
 	var captured []string
 	ch.On("text-delta", func(e Event) { captured = append(captured, e.Message.(fakeFrame).delta) })
 	c.current().deliver(map[string]any{"type": "text-delta", "id": "a", "delta": "result"})
-	flush()
+	waitFor(t, time.Second, func() bool { return ch.pendingBufferedLen() == 1 })
 	if len(captured) != 0 {
 		t.Fatalf("captured before finishing attachment = %v, want []", captured)
 	}
@@ -359,7 +370,7 @@ func TestChannelDoesNotBlockSubscribedBehindUnhandledType(t *testing.T) {
 	c.current().deliver(map[string]any{"type": "compaction"})
 	c.current().deliver(map[string]any{"type": "text-delta", "id": "a", "delta": "result"})
 	c.current().deliver(map[string]any{"type": "finish"})
-	flush()
+	waitFor(t, time.Second, func() bool { return ch.pendingBufferedLen() == 3 })
 
 	var mu sync.Mutex
 	var captured []string
@@ -411,7 +422,7 @@ func TestChannelDeliversBufferedEventAfterImmediateUnsubscribe(t *testing.T) {
 
 	c.current().deliver(map[string]any{"type": "compaction"})
 	c.current().deliver(map[string]any{"type": "text-delta", "id": "a", "delta": "result"})
-	flush()
+	waitFor(t, time.Second, func() bool { return ch.pendingBufferedLen() == 2 })
 
 	var mu sync.Mutex
 	var captured []string
@@ -597,7 +608,7 @@ func TestChannelRefusesSendOnceClosed(t *testing.T) {
 	ch := newTestChannel(t, c, nil)
 	mustOpen(t, ch)
 	ch.Close()
-	flush()
+	waitFor(t, time.Second, ch.IsClosed)
 
 	err := ch.Send(AbortCommand{})
 	if err == nil || !strings.Contains(err.Error(), "closed") {
@@ -619,7 +630,11 @@ func TestChannelSurfacesMalformedMessagesAsErrors(t *testing.T) {
 		mu.Unlock()
 	})
 	c.current().deliver(map[string]any{"type": "mystery"})
-	flush()
+	waitFor(t, time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(errs) == 1
+	})
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -658,7 +673,7 @@ func TestChannelReconnectsTransparentlyOnTransientDrop(t *testing.T) {
 
 	c.current().deliver(map[string]any{"type": "text-delta", "id": "a", "delta": "one"}, 1)
 	c.current().deliver(map[string]any{"type": "text-delta", "id": "a", "delta": "two"}, 2)
-	flush()
+	waitFor(t, time.Second, func() bool { return ch.LastSeenEventID() == 2 })
 
 	c.current().drop()
 	waitFor(t, time.Second, func() bool { return c.count() == 2 })
@@ -685,7 +700,11 @@ func TestChannelReconnectsTransparentlyOnTransientDrop(t *testing.T) {
 	closesMu.Unlock()
 
 	c.current().deliver(map[string]any{"type": "text-delta", "id": "a", "delta": "three"}, 3)
-	flush()
+	waitFor(t, time.Second, func() bool {
+		textMu.Lock()
+		defer textMu.Unlock()
+		return len(text) == 3
+	})
 	textMu.Lock()
 	got := append([]string(nil), text...)
 	textMu.Unlock()
@@ -752,7 +771,7 @@ func TestChannelQueuesSendsWhileDisconnected(t *testing.T) {
 	}
 	close(gate)
 	waitFor(t, time.Second, func() bool { return c.count() == 2 })
-	flush()
+	waitFor(t, time.Second, func() bool { return len(c.current().Sent()) == 2 })
 
 	want := []string{
 		`{"type":"resume","lastSeenEventId":0}`,
@@ -946,7 +965,12 @@ func TestChannelAbortsActiveConnectionOnTeardown(t *testing.T) {
 		return reconnectCtx != nil
 	})
 	ch.Close()
-	flush()
+	waitFor(t, time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return reconnectCtx.Err() != nil
+	})
+	waitFor(t, time.Second, ch.IsClosed)
 
 	mu.Lock()
 	sig := reconnectCtx
@@ -1079,7 +1103,7 @@ func TestChannelRoutesDiagnosticsToOnDiagnostic(t *testing.T) {
 	c.current().deliver(map[string]any{"type": "sandbox-log", "source": "bridge", "stream": "stdout", "line": "hi"}, 1)
 	c.current().deliver(map[string]any{"type": "debug-event", "level": "info", "subsystem": "bridge.turn", "message": "started"}, 2)
 	c.current().deliver(map[string]any{"type": "text-delta", "id": "a", "delta": "x"}, 3)
-	flush()
+	waitFor(t, time.Second, func() bool { return ch.LastSeenEventID() == 3 })
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -1127,7 +1151,7 @@ func TestChannelReportsErrorFramesToOnBridgeError(t *testing.T) {
 		"type":  "error",
 		"error": map[string]any{"name": "Error", "message": "boom", "stack": "Error: boom"},
 	}, 1)
-	flush()
+	waitFor(t, time.Second, func() bool { return ch.LastSeenEventID() == 1 })
 
 	mu.Lock()
 	defer mu.Unlock()

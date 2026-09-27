@@ -170,10 +170,12 @@ func TestRunBridgeFixtureReplay(t *testing.T) {
 	for _, raw := range resumeFrames {
 		conn2.deliverRaw(raw)
 	}
-	// Same reasoning as the live.ndjson wait above: wait for the handler
-	// order to reach its expected length, not just the cursor, so the
-	// assertions below never read `order` while its last handler is still
-	// dispatching.
+	// Wait for every delivered event, not just the cursor. The trailing
+	// "user-message-response" (rejected) and "bridge-stop" frames carry no
+	// seq, so LastSeenEventID stops at 8 (the "finish" frame) before they
+	// are delivered, and handler dispatch can lag the cursor update (see
+	// the live.ndjson wait above). Requiring the full handler-order length
+	// covers both; the cursor check keeps the seq bookkeeping asserted.
 	waitFor(t, time.Second, func() bool {
 		mu.Lock()
 		n := len(order)

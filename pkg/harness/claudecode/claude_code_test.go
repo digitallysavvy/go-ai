@@ -756,3 +756,76 @@ func TestDoContinueTurn_ReplaysDiskLogOnRespawn(t *testing.T) {
 		t.Errorf("spawn env BRIDGE_REPLAY_FROM_DISK = %q, want \"1\" (finished-turn disk log must trigger replay)", env["BRIDGE_REPLAY_FROM_DISK"])
 	}
 }
+
+// TS `claude-code-harness.ts` onDiagnostic: `sandbox-log`/`debug-event`
+// bridge frames are normalized into harness.Diagnostic and forwarded to
+// StartOptions.Observability.Report, stamped with the session id. Diagnostic
+// frames must not be delivered to the ordinary stream-part listener.
+func TestDoStart_ReportsDiagnostics(t *testing.T) {
+	var mu sync.Mutex
+	var diags []harness.Diagnostic
+	reported := make(chan struct{}, 2)
+	report := func(d harness.Diagnostic) {
+		mu.Lock()
+		diags = append(diags, d)
+		mu.Unlock()
+		reported <- struct{}{}
+	}
+
+	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnStart: func(turn *bridgetest.Turn, start map[string]any) {
+		turn.Emit(map[string]any{"type": "sandbox-log", "source": "claude", "stream": "stderr", "line": "boom"})
+		turn.Emit(map[string]any{"type": "debug-event", "level": "warn", "subsystem": "claude-code.bridge", "message": "retrying"})
+		turn.Emit(map[string]any{
+			"type": "finish", "finishReason": map[string]any{"unified": "stop", "raw": "stop"},
+			"totalUsage": map[string]any{"inputTokens": map[string]any{"total": 1}, "outputTokens": map[string]any{"total": 1}},
+		})
+	}})
+	t.Cleanup(srv.Close)
+	sandbox := newTestSandbox(srv)
+	wireSpawn(sandbox)
+
+	h, err := claudecode.New(claudecode.Settings{MintBridgeToken: func(string) string { return "tok" }, StartupTimeout: 2 * time.Second})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{
+		SessionID: "diag-session", SandboxSession: sandbox, SessionWorkDir: "/workdir",
+		Observability: &harness.Observability{Report: report},
+	})
+	if err != nil {
+		t.Fatalf("DoStart: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+
+	control, err := sess.DoPromptTurn(context.Background(), harness.PromptTurnOptions{
+		Prompt: harness.TextPrompt("hi"), Emit: func(harness.StreamPart) {},
+	})
+	if err != nil {
+		t.Fatalf("DoPromptTurn: %v", err)
+	}
+	select {
+	case <-control.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("turn never finished")
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case <-reported:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("only %d/2 diagnostics reported", i)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(diags) != 2 {
+		t.Fatalf("len(diags) = %d, want 2", len(diags))
+	}
+	logDiag, eventDiag := diags[0], diags[1]
+	if logDiag.Kind != "log" || logDiag.Message != "boom" || logDiag.Level != harness.DebugLevelWarn || logDiag.SessionID != "diag-session" {
+		t.Errorf("log diagnostic = %+v", logDiag)
+	}
+	if eventDiag.Kind != "event" || eventDiag.Message != "retrying" || eventDiag.Subsystem != "claude-code.bridge" || eventDiag.SessionID != "diag-session" {
+		t.Errorf("event diagnostic = %+v", eventDiag)
+	}
+}
