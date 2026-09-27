@@ -59,6 +59,58 @@ func mustMarshal(v interface{}) string {
 
 // --- streaming tests ---------------------------------------------------------
 
+// TestStream_MalformedChunkEmitsErrorChunkAndContinues is a P1-1c part 2
+// regression test, porting TS google-language-model.ts's
+// `if (!chunk.success) { controller.enqueue({type:'error', error:
+// chunk.error}); return; }`: a malformed SSE payload must surface as a
+// ChunkTypeError chunk (with a structured Err) and the stream must continue
+// reading subsequent events, not terminate. Previously Go returned this as
+// a terminal Next() error, ending the stream outright.
+func TestStream_MalformedChunkEmitsErrorChunkAndContinues(t *testing.T) {
+	s := newTestStream(sseStream(
+		`{not valid json`,
+		mustMarshal(Response{
+			Candidates: []Candidate{{
+				Content: struct {
+					Parts []Part `json:"parts"`
+					Role  string `json:"role"`
+				}{Parts: []Part{{Text: "hello"}}},
+			}},
+		}),
+	))
+	defer s.Close() //nolint:errcheck
+
+	chunk, err := s.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v, want a ChunkTypeError chunk with nil error (stream continues)", err)
+	}
+	if chunk.Type != provider.ChunkTypeError {
+		t.Fatalf("chunk.Type = %v, want ChunkTypeError", chunk.Type)
+	}
+	if chunk.Err == nil {
+		t.Fatal("chunk.Err is nil, want a structured *providererrors.StreamProviderError")
+	}
+
+	// The stream must continue: the next real chunk should follow, not EOF.
+	found := false
+	for i := 0; i < 5; i++ {
+		chunk, err = s.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next() error after malformed chunk: %v", err)
+		}
+		if chunk.Type == provider.ChunkTypeText && chunk.Text == "hello" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected the stream to continue past the malformed chunk and emit the following text")
+	}
+}
+
 func TestStream_ThoughtPartsEmitReasoning(t *testing.T) {
 	// Two SSE events: thought part, then text part + STOP.
 	// Expected: reasoning-start, reasoning-delta, reasoning-end,
