@@ -1102,6 +1102,60 @@ func TestAgent_StructuredOutput(t *testing.T) {
 	}
 }
 
+// TestAgent_StructuredOutput_StreamsPartial ports TS harness-agent.test.ts
+// "streams partial typed output": a.Stream's *ai.StreamTextResult PartialOutput()
+// updates as the structured-output text streams in, and Output()/OutputErr()
+// resolve to the final parsed value once the turn settles — through the same
+// ai.ExternalStreamOptions.Output wiring TestNewStreamTextResultFromParts_Output
+// exercises directly, but end to end via AgentSettings.Output/runPrompt.
+func TestAgent_StructuredOutput_StreamsPartial(t *testing.T) {
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(submit func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&StreamStartPart{},
+				&TextDeltaPart{ID: "structured", Delta: `{"answer":`},
+				&TextDeltaPart{ID: "structured", Delta: `"yes"}`},
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)},
+				&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(1, 1)},
+			}
+		},
+	})
+	output := ai.JSONOutput(ai.JSONOutputOptions{Name: "answer"})
+	a, err := NewAgent(AgentSettings{Harness: mock.harness, Output: output})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+	session, err := a.CreateSession(context.Background(), CreateSessionOptions{SandboxSession: testSandbox()})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	result, err := a.Stream(context.Background(), agent.AgentStreamOptions{
+		AgentGenerateOptions: agent.AgentGenerateOptions{Prompt: "answer", HarnessSession: session},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if err := result.Err(); err != nil {
+		t.Fatalf("Err() = %v", err)
+	}
+	if err := result.OutputErr(); err != nil {
+		t.Fatalf("OutputErr() = %v, want nil", err)
+	}
+
+	final, ok := result.Output().(map[string]interface{})
+	if !ok || final["answer"] != "yes" {
+		t.Fatalf("Output() = %#v, want map with answer=yes", result.Output())
+	}
+	partial, ok := result.PartialOutput().(map[string]interface{})
+	if !ok {
+		t.Fatalf("PartialOutput() = %#v (%T), want map[string]interface{} (a partial captured while streaming)", result.PartialOutput(), result.PartialOutput())
+	}
+	if partial["answer"] != "yes" {
+		t.Fatalf("PartialOutput()[\"answer\"] = %v, want %q", partial["answer"], "yes")
+	}
+}
+
 // TestAgent_StructuredOutput_TextResponseFormat mirrors
 // `_resolveResponseFormat`'s `responseFormat.type === 'text'` branch: an
 // Output spec that resolves to a text format (ai.TextOutput) is still sent
@@ -1390,5 +1444,89 @@ func TestAgent_ExperimentalSteer_TargetsCurrentTurnAcrossSequentialTurns(t *test
 
 	if len(mock.userMessages) != 2 || mock.userMessages[0] != "Steer first." || mock.userMessages[1] != "Steer second." {
 		t.Fatalf("userMessages = %v, want [%q %q]", mock.userMessages, "Steer first.", "Steer second.")
+	}
+}
+
+// TestAgent_ExperimentalSteer_RejectsAfterExplicitSuspend ports TS
+// harness-agent.test.ts "experimental_steer() rejects after the active turn
+// is suspended": AgentSession.SuspendTurn (unlike the internal StopWhen
+// early-stop path) always detaches the local session handle, mirroring TS
+// `suspendTurn()`'s `finally { endLocalHandle({sessionState: 'detached'}) }`
+// — a subsequent steer must be rejected, and the still in-flight turn must
+// still settle normally once its own gate is released (this session's
+// finishTrackedTurn is a no-op once detached, so it must not fight
+// SuspendTurn's own state).
+func TestAgent_ExperimentalSteer_RejectsAfterExplicitSuspend(t *testing.T) {
+	finishPrompt := make(chan struct{})
+	var closeOnce sync.Once
+	mock := newMockHarness(mockHarnessOptions{
+		script:           steerTestScript,
+		supportsSteering: true,
+		promptDone:       func() <-chan struct{} { return finishPrompt },
+		doSuspendTurn: func(context.Context) (*ContinueTurnState, error) {
+			closeOnce.Do(func() { close(finishPrompt) })
+			return NewContinueTurnState("mock", map[string]any{})
+		},
+	})
+	a, session := newTestAgent(t, mock, nil, Callbacks{}, nil)
+
+	result, err := a.Stream(context.Background(), agent.AgentStreamOptions{
+		AgentGenerateOptions: agent.AgentGenerateOptions{Prompt: "Start.", HarnessSession: session},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	if _, err := session.SuspendTurn(context.Background()); err != nil {
+		t.Fatalf("SuspendTurn: %v", err)
+	}
+
+	err = a.ExperimentalSteer(context.Background(), session, "Change course.")
+	if err == nil || !strings.Contains(err.Error(), "no running turn to steer") {
+		t.Fatalf("ExperimentalSteer err = %v, want \"no running turn to steer\"", err)
+	}
+	if len(mock.userMessages) != 0 {
+		t.Fatalf("userMessages = %v, want none", mock.userMessages)
+	}
+
+	// The turn that SuspendTurn detached from still settles on its own —
+	// its late OnTurnFinished must not resurrect the session's turnState.
+	if err := result.Err(); err != nil {
+		t.Fatalf("result.Err() = %v", err)
+	}
+	if session.turnState != TurnStateSuspended {
+		t.Fatalf("session.turnState = %v, want %v (SuspendTurn's own state, undisturbed by the detached turn's finish)", session.turnState, TurnStateSuspended)
+	}
+}
+
+// TestAgentSession_SuspendTurn_DetachesLocalHandle verifies SuspendTurn's own
+// direct contract: a second explicit SuspendTurn call on the now-detached
+// session is rejected, mirroring TS `suspendTurn`'s
+// `sessionState !== 'active'` guard.
+func TestAgentSession_SuspendTurn_DetachesLocalHandle(t *testing.T) {
+	finishPrompt := make(chan struct{})
+	mock := newMockHarness(mockHarnessOptions{
+		script:     steerTestScript,
+		promptDone: func() <-chan struct{} { return finishPrompt },
+	})
+	a, session := newTestAgent(t, mock, nil, Callbacks{}, nil)
+
+	result, err := a.Stream(context.Background(), agent.AgentStreamOptions{
+		AgentGenerateOptions: agent.AgentGenerateOptions{Prompt: "Start.", HarnessSession: session},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	if _, err := session.SuspendTurn(context.Background()); err != nil {
+		t.Fatalf("SuspendTurn: %v", err)
+	}
+	if _, err := session.SuspendTurn(context.Background()); err == nil || !strings.Contains(err.Error(), "is not active") {
+		t.Fatalf("second SuspendTurn err = %v, want \"is not active\"", err)
+	}
+
+	close(finishPrompt)
+	if err := result.Err(); err != nil {
+		t.Fatalf("result.Err() = %v", err)
 	}
 }
