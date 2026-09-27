@@ -217,7 +217,7 @@ func TestGoogleBatch_ListsAndNormalizesBatches(t *testing.T) {
 
 	p := New(Config{APIKey: "k", BaseURL: srv.URL})
 	b := p.ExperimentalBatch().(provider.BatchV4Lister)
-	result, err := b.DoListBatches(t.Context(), provider.BatchV4ListOptions{Limit: 2, Cursor: "page-token-1"})
+	result, err := b.DoListBatches(t.Context(), provider.BatchV4ListOptions{Limit: intPtr(2), Cursor: "page-token-1"})
 	if err != nil {
 		t.Fatalf("DoListBatches: %v", err)
 	}

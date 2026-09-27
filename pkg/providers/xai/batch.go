@@ -291,8 +291,8 @@ func (b *Batch) DoCancelBatch(ctx context.Context, opts provider.BatchV4Operatio
 // XaiBatch#doListBatches.
 func (b *Batch) DoListBatches(ctx context.Context, opts provider.BatchV4ListOptions) (*provider.BatchV4ListResult, error) {
 	query := map[string]string{}
-	if opts.Limit > 0 {
-		query["limit"] = strconv.Itoa(opts.Limit)
+	if opts.Limit != nil {
+		query["limit"] = strconv.Itoa(*opts.Limit)
 	}
 	if opts.Cursor != "" {
 		// Pre-escaped: internalhttp.Client.Do concatenates query values

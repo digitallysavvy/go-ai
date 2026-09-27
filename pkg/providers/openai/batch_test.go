@@ -288,7 +288,7 @@ func TestOpenAIBatch_ListsAndNormalizesBatches(t *testing.T) {
 
 	p := New(Config{APIKey: "k", BaseURL: srv.URL})
 	b := p.ExperimentalBatch().(provider.BatchV4Lister)
-	result, err := b.DoListBatches(t.Context(), provider.BatchV4ListOptions{Limit: 2, Cursor: "batch_122"})
+	result, err := b.DoListBatches(t.Context(), provider.BatchV4ListOptions{Limit: intPtr(2), Cursor: "batch_122"})
 	if err != nil {
 		t.Fatalf("DoListBatches: %v", err)
 	}
@@ -717,3 +717,5 @@ func TestOpenAIBatch_UnsupportedOutputItemTypeFailsItemWithoutStoppingStream(t *
 
 // --- test helpers shared with files_api_v4_test.go are reused via
 // decodeMultipartFields/decodeMultipartFieldsAndFile.
+
+func intPtr(v int) *int { return &v }

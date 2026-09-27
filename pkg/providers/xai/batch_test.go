@@ -479,7 +479,7 @@ func TestBatch_DoListBatches(t *testing.T) {
 	if !ok {
 		t.Fatal("Batch does not implement BatchV4Lister")
 	}
-	result, err := lister.DoListBatches(context.Background(), provider.BatchV4ListOptions{Limit: 2, Cursor: "previous/page"})
+	result, err := lister.DoListBatches(context.Background(), provider.BatchV4ListOptions{Limit: intPtr(2), Cursor: "previous/page"})
 	if err != nil {
 		t.Fatalf("DoListBatches() error = %v", err)
 	}

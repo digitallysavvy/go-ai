@@ -340,8 +340,8 @@ func (b *Batch) DoCancelBatch(ctx context.Context, opts provider.BatchV4Operatio
 // DoListBatches lists batches (`GET /batches`).
 func (b *Batch) DoListBatches(ctx context.Context, opts provider.BatchV4ListOptions) (*provider.BatchV4ListResult, error) {
 	query := map[string]string{}
-	if opts.Limit > 0 {
-		query["pageSize"] = strconv.Itoa(opts.Limit)
+	if opts.Limit != nil {
+		query["pageSize"] = strconv.Itoa(*opts.Limit)
 	}
 	if opts.Cursor != "" {
 		query["pageToken"] = opts.Cursor

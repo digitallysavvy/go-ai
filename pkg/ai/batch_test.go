@@ -476,8 +476,8 @@ func TestExperimentalListBatches_ForwardsToProviderAndConverts(t *testing.T) {
 	mock := &mockBatchV4WithLister{
 		mockBatchV4: inner,
 		listFn: func(_ context.Context, opts provider.BatchV4ListOptions) (*provider.BatchV4ListResult, error) {
-			if opts.Limit != 10 {
-				t.Fatalf("Limit = %d, want 10", opts.Limit)
+			if opts.Limit == nil || *opts.Limit != 10 {
+				t.Fatalf("Limit = %v, want 10", opts.Limit)
 			}
 			return &provider.BatchV4ListResult{
 				Batches: []provider.BatchV4ListItem{
@@ -488,7 +488,7 @@ func TestExperimentalListBatches_ForwardsToProviderAndConverts(t *testing.T) {
 		},
 	}
 
-	result, err := ExperimentalListBatches(context.Background(), ListBatchesOptions{Provider: mock, Limit: 10})
+	result, err := ExperimentalListBatches(context.Background(), ListBatchesOptions{Provider: mock, Limit: intPtr(10)})
 	if err != nil {
 		t.Fatalf("ExperimentalListBatches() error = %v", err)
 	}

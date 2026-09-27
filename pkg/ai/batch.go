@@ -441,11 +441,14 @@ func ExperimentalCancelBatch(ctx context.Context, opts CancelBatchOptions) (*Can
 type ListBatchesOptions struct {
 	Provider        interface{}
 	ProviderOptions map[string]interface{}
-	Limit           int
-	Cursor          string
-	MaxRetries      *int
-	Headers         map[string]string
-	Timeout         *time.Duration
+	// Limit is optional (nil means unset), mirroring TypeScript's
+	// `limit?: number`. An explicit 0 is forwarded to the provider rather
+	// than treated as "not set".
+	Limit      *int
+	Cursor     string
+	MaxRetries *int
+	Headers    map[string]string
+	Timeout    *time.Duration
 }
 
 // ListBatchesResult is one page of listed batches.

@@ -286,7 +286,7 @@ func TestBatch_ListsAndNormalizesBatches(t *testing.T) {
 
 	p := New(Config{APIKey: "k", BaseURL: srv.URL})
 	b := p.ExperimentalBatch().(provider.BatchV4Lister)
-	result, err := b.DoListBatches(t.Context(), provider.BatchV4ListOptions{Limit: 10, Cursor: "prev"})
+	result, err := b.DoListBatches(t.Context(), provider.BatchV4ListOptions{Limit: intPtr(10), Cursor: "prev"})
 	if err != nil {
 		t.Fatalf("DoListBatches: %v", err)
 	}
