@@ -225,7 +225,7 @@ func TestBatch_RejectsAliasedProviderToolNames(t *testing.T) {
 func TestBatch_WebhookURLProducesWarning(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"b1","type":"message_batch","processing_status":"in_progress","request_counts":{"processing":1,"succeeded":0,"errored":0,"canceled":0,"expired":0},"created_at":"","expires_at":""}`))
+		_, _ = w.Write([]byte(`{"id":"b1","type":"message_batch","processing_status":"in_progress","request_counts":{"processing":1,"succeeded":0,"errored":0,"canceled":0,"expired":0},"created_at":"2024-01-01T00:00:00Z","expires_at":"2024-01-02T00:00:00Z"}`))
 	}))
 	defer srv.Close()
 
@@ -255,7 +255,7 @@ func TestBatch_CancelsBatch(t *testing.T) {
 		gotPath = r.URL.Path
 		gotMethod = r.Method
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"msgbatch_1","type":"message_batch","processing_status":"canceling","request_counts":{"processing":1,"succeeded":0,"errored":0,"canceled":0,"expired":0},"created_at":"","expires_at":""}`))
+		_, _ = w.Write([]byte(`{"id":"msgbatch_1","type":"message_batch","processing_status":"canceling","request_counts":{"processing":1,"succeeded":0,"errored":0,"canceled":0,"expired":0},"created_at":"2024-01-01T00:00:00Z","expires_at":"2024-01-02T00:00:00Z"}`))
 	}))
 	defer srv.Close()
 
@@ -277,7 +277,7 @@ func TestBatch_ListsAndNormalizesBatches(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
 			"data": [
-				{"id":"b1","type":"message_batch","processing_status":"ended","request_counts":{"processing":0,"succeeded":5,"errored":0,"canceled":0,"expired":0},"created_at":"","expires_at":""}
+				{"id":"b1","type":"message_batch","processing_status":"ended","request_counts":{"processing":0,"succeeded":5,"errored":0,"canceled":0,"expired":0},"created_at":"2024-01-01T00:00:00Z","expires_at":"2024-01-02T00:00:00Z"}
 			],
 			"has_more": true, "last_id": "b1"
 		}`))
@@ -325,7 +325,7 @@ func TestBatch_OmitsNextCursorWhenNoMore(t *testing.T) {
 func TestBatch_RejectsResultRetrievalWhilePending(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"b1","type":"message_batch","processing_status":"in_progress","request_counts":{"processing":1,"succeeded":0,"errored":0,"canceled":0,"expired":0},"created_at":"","expires_at":""}`))
+		_, _ = w.Write([]byte(`{"id":"b1","type":"message_batch","processing_status":"in_progress","request_counts":{"processing":1,"succeeded":0,"errored":0,"canceled":0,"expired":0},"created_at":"2024-01-01T00:00:00Z","expires_at":"2024-01-02T00:00:00Z"}`))
 	}))
 	defer srv.Close()
 
@@ -340,7 +340,7 @@ func TestBatch_RejectsResultRetrievalWhilePending(t *testing.T) {
 func TestBatch_RejectsCompletedBatchWithoutOutput(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"b1","type":"message_batch","processing_status":"ended","request_counts":{"processing":0,"succeeded":0,"errored":0,"canceled":0,"expired":0},"created_at":"","expires_at":""}`))
+		_, _ = w.Write([]byte(`{"id":"b1","type":"message_batch","processing_status":"ended","request_counts":{"processing":0,"succeeded":0,"errored":0,"canceled":0,"expired":0},"created_at":"2024-01-01T00:00:00Z","expires_at":"2024-01-02T00:00:00Z"}`))
 	}))
 	defer srv.Close()
 
@@ -355,7 +355,7 @@ func TestBatch_RejectsCompletedBatchWithoutOutput(t *testing.T) {
 func TestBatch_RejectsArchivedResults(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"b1","type":"message_batch","processing_status":"ended","archived_at":"2024-01-01T00:00:00Z","request_counts":{"processing":0,"succeeded":1,"errored":0,"canceled":0,"expired":0},"created_at":"","expires_at":"","results_url":"https://example.com/results"}`))
+		_, _ = w.Write([]byte(`{"id":"b1","type":"message_batch","processing_status":"ended","archived_at":"2024-01-01T00:00:00Z","request_counts":{"processing":0,"succeeded":1,"errored":0,"canceled":0,"expired":0},"created_at":"2024-01-01T00:00:00Z","expires_at":"2024-01-02T00:00:00Z","results_url":"https://example.com/results"}`))
 	}))
 	defer srv.Close()
 
@@ -383,7 +383,7 @@ func TestBatch_StreamsAllResultVariants(t *testing.T) {
 	defer srv.Close()
 	mux.HandleFunc("/messages/batches/b1", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"b1","type":"message_batch","processing_status":"ended","request_counts":{"processing":0,"succeeded":1,"errored":1,"canceled":1,"expired":1},"created_at":"","expires_at":"","results_url":"` + srv.URL + `/results"}`))
+		_, _ = w.Write([]byte(`{"id":"b1","type":"message_batch","processing_status":"ended","request_counts":{"processing":0,"succeeded":1,"errored":1,"canceled":1,"expired":1},"created_at":"2024-01-01T00:00:00Z","expires_at":"2024-01-02T00:00:00Z","results_url":"` + srv.URL + `/results"}`))
 	})
 	mux.HandleFunc("/results", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(resultsBody))
@@ -423,6 +423,79 @@ func TestBatch_StreamsAllResultVariants(t *testing.T) {
 	}
 }
 
+// TestBatch_ErroredResultRequiresErrorTypeLiteral mirrors TS
+// anthropicBatchResultSchema's discriminated-union member for "errored",
+// which requires error.type === "error" (z.literal('error')). A result line
+// whose nested envelope uses any other literal fails safeValidateTypes in TS
+// and becomes invalidAnthropicBatchResult, not a partially-populated error.
+func TestBatch_ErroredResultRequiresErrorTypeLiteral(t *testing.T) {
+	resultsBody := `{"custom_id":"bad","result":{"type":"errored","error":{"type":"not_error","error":{"type":"invalid_request_error","message":"bad request"}}}}`
+
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	mux.HandleFunc("/messages/batches/b1", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"b1","type":"message_batch","processing_status":"ended","request_counts":{"processing":0,"succeeded":0,"errored":1,"canceled":0,"expired":0},"created_at":"2024-01-01T00:00:00Z","expires_at":"2024-01-02T00:00:00Z","results_url":"` + srv.URL + `/results"}`))
+	})
+	mux.HandleFunc("/results", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(resultsBody))
+	})
+
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	b := p.ExperimentalBatch()
+	stream, err := b.DoGetBatchResults(t.Context(), provider.BatchV4OperationOptions{BatchID: "b1"})
+	if err != nil {
+		t.Fatalf("DoGetBatchResults: %v", err)
+	}
+	defer stream.Close()
+
+	item, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	if item.Status != provider.BatchItemFailed || item.Error == nil || item.Error.Code != "invalid_response" {
+		t.Fatalf("item = %+v, want invalid_response failure", item)
+	}
+	if item.Error.Message != "Anthropic returned an invalid Message batch result." {
+		t.Fatalf("item.Error.Message = %q", item.Error.Message)
+	}
+}
+
+// TestBatch_BatchEnvelopeMissingRequiredFieldFails mirrors TS
+// anthropicBatchResponseZodSchema requiring id/type/created_at/expires_at:
+// createJsonResponseHandler throws when the decoded envelope fails schema
+// validation, instead of silently defaulting missing fields.
+func TestBatch_BatchEnvelopeMissingRequiredFieldFails(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"missing id", `{"type":"message_batch","processing_status":"in_progress","request_counts":{"processing":1,"succeeded":0,"errored":0,"canceled":0,"expired":0},"created_at":"2024-01-01T00:00:00Z","expires_at":"2024-01-02T00:00:00Z"}`},
+		{"wrong type", `{"id":"b1","type":"not_message_batch","processing_status":"in_progress","request_counts":{"processing":1,"succeeded":0,"errored":0,"canceled":0,"expired":0},"created_at":"2024-01-01T00:00:00Z","expires_at":"2024-01-02T00:00:00Z"}`},
+		{"missing created_at", `{"id":"b1","type":"message_batch","processing_status":"in_progress","request_counts":{"processing":1,"succeeded":0,"errored":0,"canceled":0,"expired":0},"expires_at":"2024-01-02T00:00:00Z"}`},
+		{"missing expires_at", `{"id":"b1","type":"message_batch","processing_status":"in_progress","request_counts":{"processing":1,"succeeded":0,"errored":0,"canceled":0,"expired":0},"created_at":"2024-01-01T00:00:00Z"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+
+			p := New(Config{APIKey: "k", BaseURL: srv.URL})
+			b := p.ExperimentalBatch()
+			_, err := b.DoStartBatch(t.Context(), provider.BatchV4StartOptions{
+				Requests: []provider.BatchV4Request{textBatchRequest("1", "claude-sonnet-4-5", "hi")},
+			})
+			if err == nil || !providererrors.IsInvalidResponseDataError(err) {
+				t.Fatalf("err = %v, want InvalidResponseDataError", err)
+			}
+		})
+	}
+}
+
 // TestBatch_ResultsURLOnUntrustedOriginIsRejectedWithoutLeakingCredentials
 // guards against following a provider-response results_url off the
 // configured base URL's origin: previously the raw API key/version headers
@@ -448,7 +521,7 @@ func TestBatch_ResultsURLOnUntrustedOriginIsRejectedWithoutLeakingCredentials(t 
 	defer base.Close()
 	mux.HandleFunc("/messages/batches/b1", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"b1","type":"message_batch","processing_status":"ended","request_counts":{"processing":0,"succeeded":0,"errored":0,"canceled":1,"expired":0},"created_at":"","expires_at":"","results_url":"` + untrusted.URL + `/results"}`))
+		_, _ = w.Write([]byte(`{"id":"b1","type":"message_batch","processing_status":"ended","request_counts":{"processing":0,"succeeded":0,"errored":0,"canceled":1,"expired":0},"created_at":"2024-01-01T00:00:00Z","expires_at":"2024-01-02T00:00:00Z","results_url":"` + untrusted.URL + `/results"}`))
 	})
 
 	p := New(Config{APIKey: "secret-key", BaseURL: base.URL})
@@ -576,7 +649,7 @@ func anthropicBatchResultsServer(t *testing.T, resultsBody string) *httptest.Ser
 	srv := httptest.NewServer(mux)
 	mux.HandleFunc("/messages/batches/b1", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"b1","type":"message_batch","processing_status":"ended","request_counts":{"processing":0,"succeeded":1,"errored":0,"canceled":0,"expired":0},"created_at":"","expires_at":"","results_url":"` + srv.URL + `/results"}`))
+		_, _ = w.Write([]byte(`{"id":"b1","type":"message_batch","processing_status":"ended","request_counts":{"processing":0,"succeeded":1,"errored":0,"canceled":0,"expired":0},"created_at":"2024-01-01T00:00:00Z","expires_at":"2024-01-02T00:00:00Z","results_url":"` + srv.URL + `/results"}`))
 	})
 	mux.HandleFunc("/results", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(resultsBody + "\n"))

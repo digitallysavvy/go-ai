@@ -141,6 +141,9 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 	}, &response); err != nil {
 		return nil, b.handleError(err)
 	}
+	if err := response.validate(); err != nil {
+		return nil, err
+	}
 
 	return &provider.BatchV4StartResult{
 		BatchV4Status: response.toStatus(),
@@ -172,6 +175,9 @@ func (b *Batch) DoCancelBatch(ctx context.Context, opts provider.BatchV4Operatio
 	}, &response); err != nil {
 		return nil, b.handleError(err)
 	}
+	if err := response.validate(); err != nil {
+		return nil, err
+	}
 	return &provider.BatchV4CancelResult{}, nil
 }
 
@@ -197,6 +203,12 @@ func (b *Batch) DoListBatches(ctx context.Context, opts provider.BatchV4ListOpti
 
 	batches := make([]provider.BatchV4ListItem, 0, len(response.Data))
 	for _, item := range response.Data {
+		// Mirrors TS's anthropicBatchListResponseSchema, which validates every
+		// entry in "data" against the same required-field envelope as a single
+		// batch response; one malformed entry fails the whole list call.
+		if err := item.validate(); err != nil {
+			return nil, err
+		}
 		batches = append(batches, provider.BatchV4ListItem{BatchV4Status: item.toStatus(), BatchID: item.ID})
 	}
 
@@ -287,6 +299,9 @@ func (b *Batch) retrieveBatch(ctx context.Context, batchID string, headers map[s
 		Headers: headers,
 	}, &response); err != nil {
 		return nil, b.handleError(err)
+	}
+	if err := response.validate(); err != nil {
+		return nil, err
 	}
 	return &response, nil
 }
@@ -473,6 +488,24 @@ type anthropicBatchResponseWire struct {
 	ResultsURL        *string                         `json:"results_url"`
 }
 
+// validate rejects a batch-object response missing fields the TS zod schema
+// (anthropicBatchResponseZodSchema) requires: id, type === "message_batch",
+// created_at, and expires_at. Mirrors TS's createJsonResponseHandler throwing
+// when safeParseJSON/schema validation fails on the decoded envelope.
+func (r anthropicBatchResponseWire) validate() error {
+	switch {
+	case r.ID == "":
+		return providererrors.NewInvalidResponseDataError(r, "Anthropic batch response is missing required field \"id\".")
+	case r.Type != "message_batch":
+		return providererrors.NewInvalidResponseDataError(r, fmt.Sprintf("Anthropic batch response has unexpected \"type\" %q, want \"message_batch\".", r.Type))
+	case r.CreatedAt == "":
+		return providererrors.NewInvalidResponseDataError(r, "Anthropic batch response is missing required field \"created_at\".")
+	case r.ExpiresAt == "":
+		return providererrors.NewInvalidResponseDataError(r, "Anthropic batch response is missing required field \"expires_at\".")
+	}
+	return nil
+}
+
 func (r anthropicBatchResponseWire) toStatus() provider.BatchV4Status {
 	counts := r.RequestCounts
 	total := counts.Processing + counts.Succeeded + counts.Errored + counts.Canceled + counts.Expired
@@ -583,6 +616,13 @@ func (s *anthropicBatchResultsStream) convertResult(wire anthropicBatchResultLin
 	case "errored":
 		var errWire anthropicBatchResultErrorWire
 		if err := json.Unmarshal(result.Error, &errWire); err != nil {
+			return invalidAnthropicBatchResult(wire.CustomID)
+		}
+		// Mirrors TS anthropicBatchResultSchema's discriminated-union member for
+		// "errored", which requires error.type === "error" (z.literal('error'))
+		// plus non-empty error.error.type/message; any mismatch fails the whole
+		// result line rather than surfacing a partially-populated error.
+		if errWire.Type != "error" || errWire.Error.Type == "" || errWire.Error.Message == "" {
 			return invalidAnthropicBatchResult(wire.CustomID)
 		}
 		item := &provider.BatchV4ItemResult{
