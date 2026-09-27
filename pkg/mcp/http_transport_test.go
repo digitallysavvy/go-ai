@@ -207,6 +207,82 @@ func TestHTTPTransportEventStreamSendReturnsBeforeStreamCloses(t *testing.T) {
 	}
 }
 
+// TestHTTPTransportReportsMalformedPOSTResponseSSEMessage mirrors TS send()'s
+// processEvents() inner catch around parseJSONRPCMessage: a malformed
+// JSON-RPC message on a POST-response text/event-stream is reported via
+// OnError (message contains "Failed to parse message") but does not stop the
+// reader, matching TS's `this.onerror?.(e)` without rethrowing.
+func TestHTTPTransportReportsMalformedPOSTResponseSSEMessage(t *testing.T) {
+	reader, writer := io.Pipe()
+	var mu sync.Mutex
+	var errs []error
+	transport := NewHTTPTransport(HTTPTransportConfig{
+		URL:       "http://localhost:9999/mcp",
+		SSEClient: streamingResponseClient{body: reader},
+		OnError: func(err error) {
+			mu.Lock()
+			errs = append(errs, err)
+			mu.Unlock()
+		},
+	})
+	transport.connected = true
+	defer writer.Close() //nolint:errcheck
+
+	msg, err := CreateRequest(1, "ping", nil)
+	if err != nil {
+		t.Fatalf("CreateRequest error: %v", err)
+	}
+	if err := transport.Send(t.Context(), msg); err != nil {
+		t.Fatalf("Send error: %v", err)
+	}
+
+	// Syntactically invalid JSON (unlike TS, this Go port's SSE message parse
+	// step is a plain unmarshal with no separate JSON-RPC shape validation,
+	// matching the existing inbound-SSE malformed-message test), so only a
+	// JSON syntax error takes the error path.
+	if _, err := writer.Write([]byte("event: message\ndata: {not-valid-json\n\n")); err != nil {
+		t.Fatalf("write malformed SSE event: %v", err)
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		mu.Lock()
+		n := len(errs)
+		mu.Unlock()
+		if n > 0 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for OnError from malformed POST-response SSE message")
+		case <-time.After(time.Millisecond):
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	var clientErr *MCPClientError
+	if !errors.As(errs[0], &clientErr) {
+		t.Fatalf("error = %T %v, want *MCPClientError", errs[0], errs[0])
+	}
+	if !strings.Contains(clientErr.Message, "Failed to parse message") {
+		t.Fatalf("message = %q, want it to mention Failed to parse message", clientErr.Message)
+	}
+
+	// The reader keeps running after a malformed message: a subsequent valid
+	// message is still queued.
+	if _, err := writer.Write([]byte("data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}\n\n")); err != nil {
+		t.Fatalf("write valid SSE event: %v", err)
+	}
+	got, err := transport.Receive(t.Context())
+	if err != nil {
+		t.Fatalf("Receive error: %v", err)
+	}
+	if got.ID != float64(1) {
+		t.Fatalf("queued SSE message = %+v, want id 1", got)
+	}
+}
+
 type errorSSEClient struct {
 	status         int
 	body           string
@@ -355,6 +431,124 @@ func TestHTTPTransportPOST404MessageWithSessionID(t *testing.T) {
 	}
 	if strings.Contains(clientErr.Message, "does not support HTTP transport") {
 		t.Fatalf("message = %q, should not mention does-not-support-transport when a session id was sent", clientErr.Message)
+	}
+}
+
+// TestHTTPTransportReportsErrorOnNon2xxPOST mirrors TS's "should report HTTP
+// errors from POST": a non-ok POST response is reported via OnError with the
+// same *MCPClientError returned to the caller, matching TS send()'s
+// `this.onerror?.(error); throw error;` in the `!response.ok` branch.
+func TestHTTPTransportReportsErrorOnNon2xxPOST(t *testing.T) {
+	sse := &errorSSEClient{status: http.StatusInternalServerError, body: "Internal Server Error"}
+	var captured error
+	transport := NewHTTPTransport(HTTPTransportConfig{
+		URL:       "http://localhost:9999/mcp",
+		SSEClient: sse,
+		OnError:   func(err error) { captured = err },
+	})
+	transport.connected = true
+
+	msg, err := CreateRequest(3, "test", nil)
+	if err != nil {
+		t.Fatalf("CreateRequest error: %v", err)
+	}
+	sendErr := transport.Send(t.Context(), msg)
+	if sendErr == nil {
+		t.Fatal("expected an error for the 500 response")
+	}
+	if !strings.Contains(sendErr.Error(), "POSTing to endpoint") {
+		t.Fatalf("Send error = %v, want it to mention POSTing to endpoint", sendErr)
+	}
+
+	if captured == nil {
+		t.Fatal("expected OnError to be called")
+	}
+	var clientErr *MCPClientError
+	if !errors.As(captured, &clientErr) {
+		t.Fatalf("OnError error = %T %v, want *MCPClientError", captured, captured)
+	}
+	if clientErr.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("StatusCode = %d, want 500", clientErr.StatusCode)
+	}
+	if clientErr.URL != "http://localhost:9999/mcp" {
+		t.Fatalf("URL = %q, want the transport URL", clientErr.URL)
+	}
+	if clientErr.ResponseBody != "Internal Server Error" {
+		t.Fatalf("ResponseBody = %q, want Internal Server Error", clientErr.ResponseBody)
+	}
+	if !errors.Is(sendErr, captured) && sendErr.Error() != captured.Error() {
+		t.Fatalf("Send() error and OnError error should describe the same failure: %v vs %v", sendErr, captured)
+	}
+}
+
+// TestHTTPTransportReportsErrorOn404NotSupportedFromPOST mirrors TS's
+// "should expose HTTP status, URL, and response body on 404 from POST".
+func TestHTTPTransportReportsErrorOn404NotSupportedFromPOST(t *testing.T) {
+	sse := &errorSSEClient{status: http.StatusNotFound, body: "Not Found"}
+	var captured error
+	transport := NewHTTPTransport(HTTPTransportConfig{
+		URL:       "http://localhost:9999/mcp",
+		SSEClient: sse,
+		OnError:   func(err error) { captured = err },
+	})
+	transport.connected = true
+
+	msg, err := CreateRequest(1, "initialize", nil)
+	if err != nil {
+		t.Fatalf("CreateRequest error: %v", err)
+	}
+	if err := transport.Send(t.Context(), msg); err == nil {
+		t.Fatal("expected an error for the 404 response")
+	}
+
+	if captured == nil {
+		t.Fatal("expected OnError to be called")
+	}
+	var clientErr *MCPClientError
+	if !errors.As(captured, &clientErr) {
+		t.Fatalf("OnError error = %T %v, want *MCPClientError", captured, captured)
+	}
+	if clientErr.StatusCode != http.StatusNotFound {
+		t.Fatalf("StatusCode = %d, want 404", clientErr.StatusCode)
+	}
+	if clientErr.URL != "http://localhost:9999/mcp" {
+		t.Fatalf("URL = %q, want the transport URL", clientErr.URL)
+	}
+	if clientErr.ResponseBody != "Not Found" {
+		t.Fatalf("ResponseBody = %q, want Not Found", clientErr.ResponseBody)
+	}
+	if !strings.Contains(clientErr.Message, "does not support HTTP transport") {
+		t.Fatalf("message = %q, want it to mention does not support HTTP transport", clientErr.Message)
+	}
+}
+
+// TestHTTPTransportReportsErrorOnPOSTNetworkFailure mirrors TS's catch-all
+// `this.onerror?.(error); throw error;` around a failed fetch() call: a
+// transport-level network failure on the POST path is also reported via
+// OnError.
+func TestHTTPTransportReportsErrorOnPOSTNetworkFailure(t *testing.T) {
+	cause := errors.New("dial refused")
+	var captured error
+	transport := NewHTTPTransport(HTTPTransportConfig{
+		URL:       "http://localhost:9999/mcp",
+		SSEClient: networkErrorSSEClient{err: cause},
+		OnError:   func(err error) { captured = err },
+	})
+	transport.connected = true
+
+	msg, err := CreateRequest(1, "ping", nil)
+	if err != nil {
+		t.Fatalf("CreateRequest error: %v", err)
+	}
+	if err := transport.Send(t.Context(), msg); err == nil {
+		t.Fatal("expected a network error")
+	}
+
+	if captured == nil {
+		t.Fatal("expected OnError to be called for the network failure")
+	}
+	if !errors.Is(captured, cause) {
+		t.Fatalf("OnError error should wrap cause %v: %v", cause, captured)
 	}
 }
 
