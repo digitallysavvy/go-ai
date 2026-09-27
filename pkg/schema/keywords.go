@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"reflect"
@@ -135,15 +136,8 @@ func validateArrayConstraints(value interface{}, sch map[string]interface{}, pat
 		return fmt.Errorf("%s: maxItems: array has %d items, more than %d", path, n, maxItems)
 	}
 	if unique, ok := sch["uniqueItems"].(bool); ok && unique {
-		seen := make([]interface{}, 0, n)
-		for i := 0; i < n; i++ {
-			elem := rv.Index(i).Interface()
-			for _, prior := range seen {
-				if jsonValuesEqual(elem, prior) {
-					return fmt.Errorf("%s: uniqueItems: duplicate item at index %d", path, i)
-				}
-			}
-			seen = append(seen, elem)
+		if err := validateUniqueItems(rv, n, path); err != nil {
+			return err
 		}
 	}
 
@@ -164,6 +158,96 @@ func validateArrayConstraints(value interface{}, sch map[string]interface{}, pat
 	}
 
 	return nil
+}
+
+// validateUniqueItems checks the JSON Schema "uniqueItems" keyword, which
+// requires deep equality between elements (per spec, JSON numbers compare by
+// mathematical value regardless of their representation -- see
+// jsonValuesEqual). A naive pairwise comparison is O(n^2) and becomes a
+// bottleneck on large arrays (e.g. a tool argument with thousands of
+// elements), so elements are hashed into a canonical JSON encoding instead:
+// encoding/json sorts object keys and normalizes numeric formatting
+// (float64(1) and int(1) both marshal to "1"), so two deep-equal elements
+// always produce the same key, giving amortized O(n) duplicate detection.
+// Elements that fail to marshal (a decoded JSON value never does, but a
+// hand-built schema.Schema Go value in principle could contain something
+// exotic like a function) fall back to an O(n^2) DeepEqual-based scan so
+// correctness never depends on marshaling success.
+func validateUniqueItems(rv reflect.Value, n int, path string) error {
+	seenKeys := make(map[string]int, n)
+	var fallback []interface{}
+	for i := 0; i < n; i++ {
+		elem := rv.Index(i).Interface()
+		key, err := canonicalUniqueItemsKey(elem)
+		if err != nil {
+			for _, prior := range fallback {
+				if jsonValuesEqual(elem, prior) {
+					return fmt.Errorf("%s: uniqueItems: duplicate item at index %d", path, i)
+				}
+			}
+			fallback = append(fallback, elem)
+			continue
+		}
+		if _, dup := seenKeys[key]; dup {
+			return fmt.Errorf("%s: uniqueItems: duplicate item at index %d", path, i)
+		}
+		seenKeys[key] = i
+	}
+	return nil
+}
+
+// canonicalUniqueItemsKey encodes value as canonical JSON for use as a
+// uniqueItems dedup key. All JSON-decodable numeric Go types are normalized
+// to float64 first so that, e.g., int(1) and float64(1) (which JSON Schema
+// treats as the equal number 1) produce the same key.
+func canonicalUniqueItemsKey(value interface{}) (string, error) {
+	normalized, err := normalizeForCanonicalKey(value)
+	if err != nil {
+		return "", err
+	}
+	b, err := json.Marshal(normalized)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func normalizeForCanonicalKey(value interface{}) (interface{}, error) {
+	if f, ok := toFloat64(value); ok {
+		return f, nil
+	}
+	rv := reflect.ValueOf(value)
+	if !rv.IsValid() {
+		return nil, nil
+	}
+	switch rv.Kind() {
+	case reflect.Slice, reflect.Array:
+		out := make([]interface{}, rv.Len())
+		for i := 0; i < rv.Len(); i++ {
+			normalized, err := normalizeForCanonicalKey(rv.Index(i).Interface())
+			if err != nil {
+				return nil, err
+			}
+			out[i] = normalized
+		}
+		return out, nil
+	case reflect.Map:
+		if rv.Type().Key().Kind() != reflect.String {
+			return nil, fmt.Errorf("unsupported map key type %s", rv.Type().Key())
+		}
+		out := make(map[string]interface{}, rv.Len())
+		iter := rv.MapRange()
+		for iter.Next() {
+			normalized, err := normalizeForCanonicalKey(iter.Value().Interface())
+			if err != nil {
+				return nil, err
+			}
+			out[iter.Key().String()] = normalized
+		}
+		return out, nil
+	default:
+		return value, nil
+	}
 }
 
 // validateTupleItems validates the positional tuple schemas against the

@@ -1,8 +1,11 @@
 package schema
 
 import (
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // validateCase is a table-driven test case shared by the keyword tests
@@ -121,10 +124,16 @@ func TestValidateFormat(t *testing.T) {
 	runValidateCases(t, []validateCase{
 		{name: "date-time valid", schema: fmtSchema("date-time"), value: "2024-01-02T15:04:05Z"},
 		{name: "date-time invalid", schema: fmtSchema("date-time"), value: "not-a-date", wantErr: true, errSubstr: "format"},
+		// RFC 3339 section 5.6 permits lowercase "t"/"z" as equivalent to
+		// "T"/"Z" (ABNF literals are case-insensitive); ajv-formats and
+		// other JSON Schema validators accept both.
+		{name: "date-time valid lowercase t and z", schema: fmtSchema("date-time"), value: "2024-01-02t15:04:05z"},
+		{name: "date-time valid lowercase z with offset unaffected", schema: fmtSchema("date-time"), value: "2024-01-02T15:04:05.5+01:00"},
 		{name: "date valid", schema: fmtSchema("date"), value: "2024-01-02"},
 		{name: "date invalid calendar", schema: fmtSchema("date"), value: "2024-02-30", wantErr: true, errSubstr: "format"},
 		{name: "time valid", schema: fmtSchema("time"), value: "15:04:05Z"},
 		{name: "time invalid", schema: fmtSchema("time"), value: "25:99:99", wantErr: true, errSubstr: "format"},
+		{name: "time valid lowercase z", schema: fmtSchema("time"), value: "15:04:05z"},
 		{name: "email valid", schema: fmtSchema("email"), value: "user@example.com"},
 		{name: "email invalid", schema: fmtSchema("email"), value: "not-an-email", wantErr: true, errSubstr: "format"},
 		{name: "uri valid", schema: fmtSchema("uri"), value: "https://example.com/path"},
@@ -183,6 +192,47 @@ func TestValidateArrayKeywords(t *testing.T) {
 		{name: "maxItems violated", schema: map[string]interface{}{"maxItems": 2}, value: []interface{}{1, 2, 3}, wantErr: true, errSubstr: "maxItems"},
 		{name: "uniqueItems ok", schema: map[string]interface{}{"uniqueItems": true}, value: []interface{}{1, 2, 3}},
 		{name: "uniqueItems violated", schema: map[string]interface{}{"uniqueItems": true}, value: []interface{}{1, 2, 1}, wantErr: true, errSubstr: "uniqueItems"},
+		{
+			// uniqueItems must use deep (structural) equality, not just
+			// scalar comparison: two distinct objects with the same
+			// key/value pairs (key order shouldn't matter) are duplicates.
+			name:   "uniqueItems deep equality on objects (key order irrelevant)",
+			schema: map[string]interface{}{"uniqueItems": true},
+			value: []interface{}{
+				map[string]interface{}{"a": 1, "b": 2},
+				map[string]interface{}{"b": 2, "a": 1},
+			},
+			wantErr:   true,
+			errSubstr: "uniqueItems",
+		},
+		{
+			name:   "uniqueItems distinguishes objects with different values",
+			schema: map[string]interface{}{"uniqueItems": true},
+			value: []interface{}{
+				map[string]interface{}{"a": 1},
+				map[string]interface{}{"a": 2},
+			},
+		},
+		{
+			// JSON Schema numbers compare by mathematical value regardless
+			// of the concrete Go representation (float64 vs int), matching
+			// jsonValuesEqual/the const/enum keywords.
+			name:      "uniqueItems treats equal numbers of different Go types as duplicates",
+			schema:    map[string]interface{}{"uniqueItems": true},
+			value:     []interface{}{int(1), float64(1)},
+			wantErr:   true,
+			errSubstr: "uniqueItems",
+		},
+		{
+			name:   "uniqueItems deep equality on nested arrays",
+			schema: map[string]interface{}{"uniqueItems": true},
+			value: []interface{}{
+				[]interface{}{1, []interface{}{"a", 2}},
+				[]interface{}{1, []interface{}{"a", 2}},
+			},
+			wantErr:   true,
+			errSubstr: "uniqueItems",
+		},
 		{
 			name: "prefixItems positional",
 			schema: map[string]interface{}{
@@ -393,6 +443,23 @@ func TestValidateRefAndDefs(t *testing.T) {
 		}
 	})
 
+	t.Run("draft 2020-12: sibling keywords alongside $ref are still applied", func(t *testing.T) {
+		t.Parallel()
+		sch := map[string]interface{}{
+			"$defs": map[string]interface{}{
+				"Region": map[string]interface{}{"type": "string"},
+			},
+			"$ref":      "#/$defs/Region",
+			"minLength": 3,
+		}
+		if err := NewJSONSchema(sch).Validate("us"); err == nil {
+			t.Fatal("expected minLength (a sibling of $ref) to still be enforced")
+		}
+		if err := NewJSONSchema(sch).Validate("usa"); err != nil {
+			t.Fatalf("value satisfying both $ref and its sibling minLength should validate: %v", err)
+		}
+	})
+
 	t.Run("circular $ref chain is reported, not infinite recursion", func(t *testing.T) {
 		t.Parallel()
 		sch := map[string]interface{}{
@@ -448,4 +515,116 @@ func TestApplyDefaultsWithRefAndTuples(t *testing.T) {
 			t.Fatalf("ApplyDefaults()[0] = %+v, want enabled=true", arr[0])
 		}
 	})
+}
+
+// TestApplyDefaultsNullVsMissing locks in that ApplyDefaults only fills a
+// "default" for a *missing* key, never for a key explicitly present with a
+// JSON null value -- matching zod's ".default()", which only substitutes
+// for `undefined`, not `null` (a schema property with both `.nullable()`
+// and `.default(x)` still parses an explicit `null` as `null`, not `x`).
+func TestApplyDefaultsNullVsMissing(t *testing.T) {
+	t.Parallel()
+
+	s := NewSimpleJSONSchema(map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"region": map[string]interface{}{"type": []interface{}{"string", "null"}, "default": "us-east-1"},
+		},
+	})
+
+	t.Run("missing key gets the default", func(t *testing.T) {
+		t.Parallel()
+		got := ApplyDefaults(map[string]interface{}{}, s)
+		obj, ok := got.(map[string]interface{})
+		if !ok || obj["region"] != "us-east-1" {
+			t.Fatalf("ApplyDefaults() = %+v, want region=us-east-1", got)
+		}
+	})
+
+	t.Run("explicit null is left as null, not defaulted", func(t *testing.T) {
+		t.Parallel()
+		got := ApplyDefaults(map[string]interface{}{"region": nil}, s)
+		obj, ok := got.(map[string]interface{})
+		if !ok {
+			t.Fatalf("ApplyDefaults() = %+v, want a map", got)
+		}
+		region, exists := obj["region"]
+		if !exists || region != nil {
+			t.Fatalf("ApplyDefaults() region = %+v (exists=%v), want explicit nil", region, exists)
+		}
+	})
+
+	t.Run("present non-null value is preserved", func(t *testing.T) {
+		t.Parallel()
+		got := ApplyDefaults(map[string]interface{}{"region": "eu-west-1"}, s)
+		obj, ok := got.(map[string]interface{})
+		if !ok || obj["region"] != "eu-west-1" {
+			t.Fatalf("ApplyDefaults() = %+v, want region=eu-west-1", got)
+		}
+	})
+}
+
+// TestValidateNumericConstraintsAcceptJSONNumber verifies numeric keywords
+// (type, minimum/maximum, multipleOf) and const/enum/uniqueItems recognize
+// json.Number values, not only float64. json.Number is what
+// encoding/json.Decoder produces when configured with UseNumber() -- used
+// elsewhere in this codebase (e.g. pkg/mcp's JSON-RPC decoding) to preserve
+// integer precision -- so a value arriving as json.Number must be validated
+// the same way an equivalent float64/int value would be, not silently
+// skipped or misreported as the wrong type.
+func TestValidateNumericConstraintsAcceptJSONNumber(t *testing.T) {
+	t.Parallel()
+	runValidateCases(t, []validateCase{
+		{name: "json.Number satisfies type:number", schema: map[string]interface{}{"type": "number"}, value: json.Number("5")},
+		{name: "json.Number satisfies type:integer", schema: map[string]interface{}{"type": "integer"}, value: json.Number("5")},
+		{name: "json.Number with fraction fails type:integer", schema: map[string]interface{}{"type": "integer"}, value: json.Number("5.5"), wantErr: true},
+		{name: "json.Number enforces minimum", schema: map[string]interface{}{"minimum": 10}, value: json.Number("5"), wantErr: true, errSubstr: "minimum"},
+		{name: "json.Number enforces maximum", schema: map[string]interface{}{"maximum": 10}, value: json.Number("15"), wantErr: true, errSubstr: "maximum"},
+		{name: "json.Number enforces multipleOf", schema: map[string]interface{}{"multipleOf": 5}, value: json.Number("12"), wantErr: true, errSubstr: "multipleOf"},
+		{name: "json.Number satisfies const against a float64 literal", schema: map[string]interface{}{"const": 5.0}, value: json.Number("5")},
+		{name: "json.Number satisfies enum against an int literal", schema: map[string]interface{}{"enum": []interface{}{1, 2, 3}}, value: json.Number("2")},
+	})
+
+	t.Run("uniqueItems treats a json.Number and an equal float64 as duplicates", func(t *testing.T) {
+		t.Parallel()
+		s := NewJSONSchema(map[string]interface{}{"uniqueItems": true})
+		if err := s.Validate([]interface{}{json.Number("1"), float64(1)}); err == nil {
+			t.Fatal("expected uniqueItems violation for json.Number(1) and float64(1)")
+		}
+	})
+}
+
+// TestValidateUniqueItemsLargeArrayIsNotQuadratic guards against a
+// regression to the naive O(n^2) pairwise-comparison implementation of
+// "uniqueItems": with n=20000 distinct elements, an O(n) hash-based
+// dedup finishes in milliseconds, while an O(n^2) scan (4*10^8 comparisons)
+// would take on the order of minutes. The 5s budget is generous enough to
+// avoid flaking on a loaded CI machine while still catching the regression.
+func TestValidateUniqueItemsLargeArrayIsNotQuadratic(t *testing.T) {
+	t.Parallel()
+
+	const n = 20000
+	items := make([]interface{}, n)
+	for i := 0; i < n; i++ {
+		items[i] = map[string]interface{}{"id": i, "name": fmt.Sprintf("item-%d", i)}
+	}
+	s := NewJSONSchema(map[string]interface{}{"uniqueItems": true})
+
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() {
+		done <- s.Validate(items)
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Validate() with %d unique elements = %v, want nil", n, err)
+		}
+		if elapsed := time.Since(start); elapsed > 5*time.Second {
+			t.Fatalf("Validate() with %d unique elements took %s, want well under 5s (suggests O(n^2) uniqueItems)", n, elapsed)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Validate() with %d unique elements did not finish within 5s (suggests O(n^2) uniqueItems)", n)
+	}
 }

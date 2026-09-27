@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
@@ -530,7 +531,7 @@ func stringSlice(value interface{}) ([]string, bool) {
 
 func isNumber(value interface{}) bool {
 	switch value.(type) {
-	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, json.Number:
 		return true
 	default:
 		return false
@@ -538,22 +539,30 @@ func isNumber(value interface{}) bool {
 }
 
 func isInteger(value interface{}) bool {
-	switch value.(type) {
+	switch v := value.(type) {
 	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
 		return true
 	case float32:
-		return value.(float32) == float32(int64(value.(float32)))
+		return v == float32(int64(v))
 	case float64:
-		return value.(float64) == float64(int64(value.(float64)))
+		return v == float64(int64(v))
+	case json.Number:
+		if _, err := v.Int64(); err == nil {
+			return true
+		}
+		f, ok := toFloat64(v)
+		return ok && f == float64(int64(f))
 	default:
 		return false
 	}
 }
 
 // toFloat64 converts any JSON-decodable numeric Go type to float64. JSON
-// numbers decode to float64 via encoding/json, but callers may also pass Go
-// int/uint literals (schema maps built in Go code), so both families are
-// accepted.
+// numbers decode to float64 via encoding/json by default, but a decoder
+// configured with UseNumber() (e.g. pkg/mcp's JSON-RPC decoding, which
+// preserves precision for large integers) instead produces json.Number, and
+// callers may also pass Go int/uint literals (schema maps built in Go
+// code), so all three families are accepted.
 func toFloat64(value interface{}) (float64, bool) {
 	switch v := value.(type) {
 	case float64:
@@ -580,6 +589,12 @@ func toFloat64(value interface{}) (float64, bool) {
 		return float64(v), true
 	case uint64:
 		return float64(v), true
+	case json.Number:
+		f, err := v.Float64()
+		if err != nil {
+			return 0, false
+		}
+		return f, true
 	default:
 		return 0, false
 	}
