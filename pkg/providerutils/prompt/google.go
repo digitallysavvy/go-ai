@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // GoogleSkipThoughtSignatureValidator is the sentinel value Google documents
@@ -95,7 +96,7 @@ func ConvertToGoogleMessages(messages []types.Message, opts GoogleMessagesOption
 		opts:                        opts,
 		names:                       names,
 		isVertexLike:                !containsString(names, "google"),
-		functionResponseURLPatterns: compileURLPatterns(opts.SupportedFunctionResponseURLs),
+		functionResponseURLPatterns: providerutils.CompileSupportedURLPatterns(opts.SupportedFunctionResponseURLs),
 	}
 	messages = MergeConsecutiveToolMessages(messages)
 
@@ -798,62 +799,16 @@ func (c *googleConverter) functionResponse(toolName, toolCallID string, content 
 
 var googleDataURLRegex = regexp.MustCompile(`(?s)^data:([^;,]+);base64,(.+)$`)
 
-// compileURLPatterns compiles a SupportedFunctionResponseURLs-style map
-// (regex pattern source strings keyed by media type) into a lookup table
-// keyed by lowercased media type, dropping any pattern that fails to
-// compile. Returns nil for an empty/nil input.
-func compileURLPatterns(patternsByMediaType map[string][]string) map[string][]*regexp.Regexp {
-	if len(patternsByMediaType) == 0 {
-		return nil
-	}
-	compiled := make(map[string][]*regexp.Regexp, len(patternsByMediaType))
-	for mediaType, patterns := range patternsByMediaType {
-		key := strings.ToLower(mediaType)
-		for _, pattern := range patterns {
-			if re, err := regexp.Compile(pattern); err == nil {
-				compiled[key] = append(compiled[key], re)
-			}
-		}
-	}
-	if len(compiled) == 0 {
-		return nil
-	}
-	return compiled
-}
-
 // isFunctionResponseURLSupported reports whether url may be forwarded
 // directly as functionResponse.parts[].fileData for mediaType, per TS
 // isUrlSupported (provider-utils/src/is-url-supported.ts): a pattern under
 // the exact media type, its `type/*` prefix, or the wildcard "*"/"*/*" must
-// match the (lowercased) URL.
+// match the (lowercased) URL. The matching algorithm itself is shared with
+// pkg/ai's SupportedURLCheckerFromPatterns via providerutils.MatchesSupportedURL
+// (pkg/ai cannot import this package without an import cycle, so the shared
+// logic lives in pkg/providerutils, which both already import).
 func (c *googleConverter) isFunctionResponseURLSupported(mediaType, url string) bool {
-	if len(c.functionResponseURLPatterns) == 0 {
-		return false
-	}
-	mediaType = strings.ToLower(mediaType)
-	url = strings.ToLower(url)
-	topLevelOnly := !strings.Contains(mediaType, "/")
-	for key, regexes := range c.functionResponseURLPatterns {
-		prefix := strings.ReplaceAll(key, "*", "")
-		if key == "*" || key == "*/*" {
-			prefix = ""
-		}
-		if prefix != "" {
-			if topLevelOnly {
-				if mediaType+"/" != prefix {
-					continue
-				}
-			} else if !strings.HasPrefix(mediaType, prefix) {
-				continue
-			}
-		}
-		for _, re := range regexes {
-			if re.MatchString(url) {
-				return true
-			}
-		}
-	}
-	return false
+	return providerutils.MatchesSupportedURL(c.functionResponseURLPatterns, mediaType, url)
 }
 
 // appendToolResultParts implements the Gemini 3+ multimodal functionResponse
