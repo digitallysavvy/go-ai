@@ -26,6 +26,31 @@ type RealtimeHealthCheckResponder interface {
 	GetHealthCheckResponse(raw json.RawMessage) (json.RawMessage, bool)
 }
 
+// RealtimeRawEventSerializer is an optional Experimental_RealtimeModelV4
+// capability for a provider whose client events sometimes need to bypass
+// the default JSON-object serialization, mirroring TS's
+// encodeRealtimeFrame: a string payload is sent over the WebSocket as-is
+// (not re-JSON-encoded) and a binary payload (TS ArrayBuffer/typed
+// array/Blob) is sent as a binary WS frame instead of text (audit row
+// 8f89c25 / WG-MISC). When a model implements this and returns ok=true for
+// an event, RealtimeSession.Send uses (Data, Binary) directly instead of
+// calling SerializeClientEvent.
+type RealtimeRawEventSerializer interface {
+	SerializeClientEventRaw(event RealtimeClientEvent) (data []byte, binary bool, ok bool, err error)
+}
+
+// RealtimeRawEventParser is an optional Experimental_RealtimeModelV4
+// capability for a provider that needs to receive frames the core session
+// would otherwise silently drop for not being valid JSON — most notably a
+// binary WS frame (e.g. raw audio), which TS passes straight to the
+// model's parser rather than filtering by content (audit row 8f89c25 /
+// WG-MISC). When a model implements this, RealtimeSession.Read calls it
+// for every received frame (binary or text, valid JSON or not) instead of
+// requiring the frame to be valid JSON before calling ParseServerEvent.
+type RealtimeRawEventParser interface {
+	ParseRawServerEvent(raw []byte, binary bool) ([]RealtimeServerEvent, error)
+}
+
 type WebSocketConfig struct {
 	URL       string   `json:"url"`
 	Protocols []string `json:"protocols,omitempty"`
