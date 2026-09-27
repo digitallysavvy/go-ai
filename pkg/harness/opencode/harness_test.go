@@ -410,8 +410,12 @@ func TestExtractUserTextRejectsNonTextParts(t *testing.T) {
 	}
 }
 
-// mcpServers must reach the bridge on every start frame, not just the
-// initial prompt turn.
+// mcpServers configured on Settings must reach the bridge's "start" frame
+// for a prompt turn. TS coverage of this field lives inside the larger
+// composite `it('passes native config through prompts, compaction, and
+// resumed sessions', ...)` test in opencode-harness.test.ts (which also
+// asserts mcpServers on the compact frame and on a resumed session's next
+// start frame — those two legs are not covered here).
 func TestDoPromptTurn_SendsMCPServersInStartFrame(t *testing.T) {
 	const token = "mcp-servers-token"
 	var mu sync.Mutex
@@ -467,10 +471,18 @@ func TestDoPromptTurn_SendsMCPServersInStartFrame(t *testing.T) {
 	}
 }
 
-// TS opencode-harness.test.ts DoCompact coverage: compaction rides its own
-// "start" frame with operation "compact", an empty prompt, and no tools, and
-// resolves once the bridge sends a terminal finish (no compaction-part
-// requirement — DoCompact only needs the operation to settle).
+// Compaction rides its own "start" frame with operation "compact" and an
+// empty prompt, and resolves once the bridge sends a terminal finish (no
+// compaction-part requirement — DoCompact only needs the operation to
+// settle). This is not asserted by a standalone TS test; the closest TS
+// coverage is embedded in the composite
+// `it('passes native config through prompts, compaction, and resumed
+// sessions', ...)` test in opencode-harness.test.ts, which does not assert
+// on `tools` at all (uses toMatchObject). TS's runCompactOperation
+// (opencode-harness.ts) always sends `tools: []` on the wire; Go sends no
+// `tools` key (nil slice + `omitempty`). Both are accepted by the shared
+// bridge protocol schema, where `tools` is `.optional()`, so this is a
+// deliberate, harmless Go-runtime wire-format difference, not a gap.
 func TestDoCompact_SendsCompactOperation(t *testing.T) {
 	const token = "compact-token"
 	var mu sync.Mutex
@@ -517,8 +529,12 @@ func TestDoCompact_SendsCompactOperation(t *testing.T) {
 	}
 }
 
-// TS "supports custom compaction instructions being rejected": OpenCode does
-// not expose custom compaction instructions through the supported API.
+// Ports the rejection logic in TS `doCompact` (opencode-harness.ts): OpenCode
+// does not expose custom compaction instructions through the supported API,
+// so a non-empty customInstructions throws HarnessCapabilityUnsupportedError.
+// No standalone TS test exercises this branch (grepped
+// harness-opencode/src/*.test.ts); this is new coverage of TS source
+// behavior, not a ported TS test.
 func TestDoCompact_RejectsCustomInstructions(t *testing.T) {
 	const token = "compact-reject-token"
 	srv := newServer(t, token, func(*bridgetest.Turn, map[string]any) {})
