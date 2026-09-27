@@ -356,6 +356,201 @@ func TestLegacyOpenTelemetryOnStartEmbedRerankAttributes(t *testing.T) {
 	}
 }
 
+// TestLegacyOpenTelemetryNestedEmbedRerankSpans ports TS's
+// legacy-open-telemetry.test.ts rerank "should record telemetry data when
+// enabled" snapshot (name: "ai.rerank.doRerank", ai.operationId/
+// operation.name: "ai.rerank.doRerank", ai.documents/ai.ranking/
+// ai.ranking.type, ai.model.provider/id + ai.settings.maxRetries reused from
+// the root span's base attributes, no gen_ai.*) and the analogous
+// onEmbedStart/onEmbedEnd shape for "ai.embed.doEmbed" (H3 follow-up 2: the
+// nested spans were previously named "embeddings <model>"/
+// "reranking <model>" and carried gen_ai.* instead).
+func TestLegacyOpenTelemetryNestedEmbedRerankSpans(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	tracer := tp.Tracer("legacy-nested-embed-rerank-test")
+
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+	maxRetries := 2
+
+	rootCtx := integration.OnStart(context.Background(), TelemetryStartEvent{
+		OperationType: "ai.embed",
+		ModelProvider: "openai",
+		ModelID:       "text-embedding-3-small",
+		Settings:      settings,
+		Prompt:        "hello world",
+		MaxRetries:    &maxRetries,
+	})
+	integration.OnEmbedStart(rootCtx, EmbeddingModelCallStartEvent{
+		Settings: settings, CallID: "embed-call", EmbedCallID: "embed-1",
+		OperationID: "ai.embed.doEmbed", ModelProvider: "openai", ModelID: "text-embedding-3-small",
+		Values: []string{"hello world"},
+	})
+	integration.OnEmbedEnd(rootCtx, EmbeddingModelCallEndEvent{
+		Settings: settings, CallID: "embed-call", EmbedCallID: "embed-1",
+		OperationID: "ai.embed.doEmbed", ModelProvider: "openai", ModelID: "text-embedding-3-small",
+		Embeddings: [][]float64{{0.1, 0.2}},
+		Usage:      types.EmbeddingUsage{Tokens: 5},
+	})
+
+	doEmbedSpan := findSpan(rec, "ai.embed.doEmbed")
+	if doEmbedSpan == nil {
+		t.Fatal(`expected a span literally named "ai.embed.doEmbed" (not "embeddings text-embedding-3-small")`)
+	}
+	if v, ok := attrValue(doEmbedSpan, "ai.operationId"); !ok || v.(string) != "ai.embed.doEmbed" {
+		t.Errorf("ai.operationId = %v (ok=%v), want ai.embed.doEmbed", v, ok)
+	}
+	if v, ok := attrValue(doEmbedSpan, "ai.model.provider"); !ok || v.(string) != "openai" {
+		t.Errorf("expected ai.model.provider reused from the root span's base attrs, got %v (ok=%v)", v, ok)
+	}
+	if v, ok := attrValue(doEmbedSpan, "ai.settings.maxRetries"); !ok || v.(int64) != 2 {
+		t.Errorf("expected ai.settings.maxRetries=2 reused from the root span's base attrs, got %v (ok=%v)", v, ok)
+	}
+	if v, ok := attrValue(doEmbedSpan, "ai.values"); !ok {
+		t.Error("expected ai.values to be set")
+	} else if got := v.([]string); len(got) != 1 || got[0] != `"hello world"` {
+		t.Errorf("ai.values = %v, want [\"hello world\"]", got)
+	}
+	if v, ok := attrValue(doEmbedSpan, "ai.embeddings"); !ok {
+		t.Error("expected ai.embeddings to be set")
+	} else if got := v.([]string); len(got) != 1 || got[0] != `[0.1,0.2]` {
+		t.Errorf("ai.embeddings = %v, want [[0.1,0.2]]", got)
+	}
+	if v, ok := attrValue(doEmbedSpan, "ai.usage.tokens"); !ok || v.(float64) != 5 {
+		t.Errorf("ai.usage.tokens = %v (ok=%v), want 5", v, ok)
+	}
+	for _, key := range []string{"gen_ai.operation.name", "gen_ai.system", "gen_ai.request.model"} {
+		if _, ok := attrValue(doEmbedSpan, key); ok {
+			t.Errorf("ai.embed.doEmbed span should not carry %s (TS has no gen_ai.* here)", key)
+		}
+	}
+
+	rerankRootCtx := integration.OnStart(context.Background(), TelemetryStartEvent{
+		OperationType: "ai.rerank",
+		ModelProvider: "cohere",
+		ModelID:       "rerank-v3.5",
+		Settings:      settings,
+		Documents:     []string{"doc1", "doc2"},
+		MaxRetries:    &maxRetries,
+	})
+	integration.OnRerankStart(rerankRootCtx, RerankingModelCallStartEvent{
+		Settings: settings, CallID: "rerank-call", OperationID: "ai.rerank.doRerank",
+		ModelProvider: "cohere", ModelID: "rerank-v3.5", Documents: []string{"doc1", "doc2"},
+	})
+	integration.OnRerankEnd(rerankRootCtx, RerankingModelCallEndEvent{
+		Settings: settings, CallID: "rerank-call", OperationID: "ai.rerank.doRerank",
+		ModelProvider: "cohere", ModelID: "rerank-v3.5", DocumentsType: "text",
+		Ranking: []types.RerankItem{{Index: 1, RelevanceScore: 0.9}, {Index: 0, RelevanceScore: 0.4}},
+	})
+
+	doRerankSpan := findSpan(rec, "ai.rerank.doRerank")
+	if doRerankSpan == nil {
+		t.Fatal(`expected a span literally named "ai.rerank.doRerank" (not "reranking rerank-v3.5")`)
+	}
+	if v, ok := attrValue(doRerankSpan, "ai.operationId"); !ok || v.(string) != "ai.rerank.doRerank" {
+		t.Errorf("ai.operationId = %v (ok=%v), want ai.rerank.doRerank", v, ok)
+	}
+	if v, ok := attrValue(doRerankSpan, "ai.model.provider"); !ok || v.(string) != "cohere" {
+		t.Errorf("expected ai.model.provider reused from the root span's base attrs, got %v (ok=%v)", v, ok)
+	}
+	if v, ok := attrValue(doRerankSpan, "ai.documents"); !ok {
+		t.Error("expected ai.documents to be set")
+	} else if got := v.([]string); len(got) != 2 || got[0] != `"doc1"` || got[1] != `"doc2"` {
+		t.Errorf("ai.documents = %v, want [\"doc1\" \"doc2\"]", got)
+	}
+	if v, ok := attrValue(doRerankSpan, "ai.ranking.type"); !ok || v.(string) != "text" {
+		t.Errorf("ai.ranking.type = %v (ok=%v), want text", v, ok)
+	}
+	if _, ok := attrValue(doRerankSpan, "ai.ranking"); !ok {
+		t.Error("expected ai.ranking to be set")
+	}
+	for _, key := range []string{"gen_ai.operation.name", "gen_ai.system", "gen_ai.request.model"} {
+		if _, ok := attrValue(doRerankSpan, key); ok {
+			t.Errorf("ai.rerank.doRerank span should not carry %s (TS has no gen_ai.* here)", key)
+		}
+	}
+}
+
+// TestLegacyOpenTelemetryOnEndPerOperationShape covers H3 item 3: OnEnd
+// dispatches on TelemetryFinishEvent.OperationType to reproduce TS's
+// per-operation root-span shape — onRerankOperationEnd sets nothing beyond
+// ending the span (not even ai.response.finishReason), onEmbedOperationEnd
+// sets only ai.embedding(s), and onObjectOperationEnd sets ai.response.object
+// instead of ai.response.text, with a reduced usage set.
+func TestLegacyOpenTelemetryOnEndPerOperationShape(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	tracer := tp.Tracer("legacy-onend-shape-test")
+
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
+	settings := &Settings{IsEnabled: Bool(true), RecordOutputs: true}
+
+	// rerank: OnEnd sets nothing at all.
+	rerankCtx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.rerank", Settings: settings})
+	integration.OnEnd(rerankCtx, TelemetryFinishEvent{OperationType: "ai.rerank", Settings: settings, FinishReason: "stop"})
+	rerankSpan := findSpan(rec, "ai.rerank")
+	if rerankSpan == nil {
+		t.Fatal("expected an ai.rerank span")
+	}
+	if _, ok := attrValue(rerankSpan, "ai.response.finishReason"); ok {
+		t.Error("ai.rerank root span's OnEnd should not set ai.response.finishReason (TS onRerankOperationEnd sets nothing)")
+	}
+
+	// embed: OnEnd sets only ai.embedding, no usage.
+	embedCtx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.embed", Settings: settings})
+	integration.OnEnd(embedCtx, TelemetryFinishEvent{
+		OperationType: "ai.embed", Settings: settings,
+		Embedding: []float64{0.1, 0.2},
+		Usage:     TelemetryUsage{TotalTokens: int64p(5)},
+	})
+	embedSpan := findSpan(rec, "ai.embed")
+	if embedSpan == nil {
+		t.Fatal("expected an ai.embed span")
+	}
+	if v, ok := attrValue(embedSpan, "ai.embedding"); !ok || v.(string) != `[0.1,0.2]` {
+		t.Errorf("ai.embedding = %v (ok=%v), want [0.1,0.2]", v, ok)
+	}
+	if _, ok := attrValue(embedSpan, "ai.usage.totalTokens"); ok {
+		t.Error("ai.embed root span's OnEnd should not carry usage (that lives on the nested doEmbed span only)")
+	}
+
+	// generateObject: OnEnd sets ai.response.object, not ai.response.text,
+	// and the reduced (5-field) usage set.
+	objCtx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateObject", Settings: settings})
+	integration.OnEnd(objCtx, TelemetryFinishEvent{
+		OperationType: "ai.generateObject", Settings: settings,
+		FinishReason: "stop",
+		Text:         `{"name":"Ann"}`,
+		Object:       map[string]interface{}{"name": "Ann"},
+		Usage:        TelemetryUsage{InputTokens: int64p(3)},
+	})
+	objSpan := findSpan(rec, "ai.generateObject")
+	if objSpan == nil {
+		t.Fatal("expected an ai.generateObject span")
+	}
+	if v, ok := attrValue(objSpan, "ai.response.object"); !ok || v.(string) != `{"name":"Ann"}` {
+		t.Errorf("ai.response.object = %v (ok=%v), want {\"name\":\"Ann\"}", v, ok)
+	}
+	if _, ok := attrValue(objSpan, "ai.response.text"); ok {
+		t.Error("ai.generateObject root span should not carry ai.response.text (that's the generateText shape)")
+	}
+	if v, ok := attrValue(objSpan, "ai.usage.inputTokens"); !ok || v.(int64) != 3 {
+		t.Errorf("ai.usage.inputTokens = %v (ok=%v), want 3", v, ok)
+	}
+
+	// No gen_ai.usage.* dual-emission on any of the three root spans.
+	for _, span := range []sdktrace.ReadOnlySpan{rerankSpan, embedSpan, objSpan} {
+		for _, key := range []string{"gen_ai.usage.input_tokens", "gen_ai.usage.output_tokens"} {
+			if _, ok := attrValue(span, key); ok {
+				t.Errorf("%s root span should not carry %s", span.Name(), key)
+			}
+		}
+	}
+}
+
 // TestLegacyOpenTelemetryToolCallSpan ports TS's legacy-open-telemetry.test.ts
 // "should record tool call telemetry data" case (see the matching
 // __snapshots__ entry, which shows `"name": "ai.toolCall"` and
