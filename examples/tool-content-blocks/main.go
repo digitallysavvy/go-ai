@@ -107,4 +107,3 @@ func errorHandlingExample() {
 	)
 	fmt.Printf("Success result: is_error=%v\n", successResult.Error != "")
 }
-

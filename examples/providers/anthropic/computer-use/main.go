@@ -50,7 +50,7 @@ func main() {
 				},
 			},
 		},
-		Tools: []types.Tool{computerTool},
+		Tools:    []types.Tool{computerTool},
 		MaxSteps: intPtr(5),
 	})
 

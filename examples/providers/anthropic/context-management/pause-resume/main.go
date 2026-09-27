@@ -27,8 +27,8 @@ func main() {
 		ContextManagement: &anthropic.ContextManagement{
 			Edits: []anthropic.ContextManagementEdit{
 				anthropic.NewCompactEdit().
-					WithTrigger(50000).                  // Compact at 50K tokens
-					WithPauseAfterCompaction(true).      // PAUSE after compaction
+					WithTrigger(50000).             // Compact at 50K tokens
+					WithPauseAfterCompaction(true). // PAUSE after compaction
 					WithInstructions("Preserve key technical decisions and recent context"),
 			},
 		},

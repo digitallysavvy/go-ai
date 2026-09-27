@@ -7,8 +7,8 @@ import (
 	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/agent"
-	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
 // This example demonstrates how to use the OnStepFinish callback

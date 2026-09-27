@@ -57,7 +57,7 @@ func runDataAnalysisExample(model provider.LanguageModel, tool types.Tool) {
 				},
 			},
 		},
-		Tools: []types.Tool{tool},
+		Tools:    []types.Tool{tool},
 		MaxSteps: intPtr(5),
 	})
 
@@ -82,7 +82,7 @@ func runBashExample(model provider.LanguageModel, tool types.Tool) {
 				},
 			},
 		},
-		Tools: []types.Tool{tool},
+		Tools:    []types.Tool{tool},
 		MaxSteps: intPtr(5),
 	})
 
@@ -107,7 +107,7 @@ func runFileOperationsExample(model provider.LanguageModel, tool types.Tool) {
 				},
 			},
 		},
-		Tools: []types.Tool{tool},
+		Tools:    []types.Tool{tool},
 		MaxSteps: intPtr(5),
 	})
 
