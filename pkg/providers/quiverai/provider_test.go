@@ -23,8 +23,15 @@ func TestProviderFactories(t *testing.T) {
 	if model.Provider() != "quiverai.image" || model.ModelID() != ModelArrow11 {
 		t.Fatalf("unexpected model metadata: provider=%q id=%q", model.Provider(), model.ModelID())
 	}
-	if _, err := p.LanguageModel("x"); err == nil {
-		t.Fatal("LanguageModel should be unsupported")
+	lm, err := p.LanguageModel("arrow-2-telos")
+	if err != nil {
+		t.Fatalf("LanguageModel: %v", err)
+	}
+	if lm.Provider() != "quiverai.responses" || lm.ModelID() != "arrow-2-telos" {
+		t.Fatalf("unexpected language model metadata: provider=%q id=%q", lm.Provider(), lm.ModelID())
+	}
+	if defaultLM, err := p.LanguageModel(""); err != nil || defaultLM.ModelID() != ModelArrow2 {
+		t.Fatalf("LanguageModel(\"\") should default to %q, got %v (err=%v)", ModelArrow2, defaultLM, err)
 	}
 }
 

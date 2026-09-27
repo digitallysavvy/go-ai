@@ -79,7 +79,7 @@ func ConvertToOpenResponsesInputForProviderStrict(messages []types.Message, syst
 
 		case types.RoleTool:
 			// Convert tool results
-			toolResults, err := convertToolResults(msg.Content, &warnings, providerName)
+			toolResults, err := convertToolResults(msg.Content, &warnings, providerName, extensionOptions)
 			if err != nil {
 				return nil, "", warnings, err
 			}
@@ -249,6 +249,14 @@ func mediaTypeOrDefault(mediaType string) string {
 type openResponsesExtensionOptions struct {
 	Registry *ExtensionRegistry
 	Tools    []types.Tool
+
+	// CustomToolID identifies caller-executed Open Responses custom tools by
+	// provider-tool ID (mirrors Config.CustomToolID / TS customToolId). A
+	// tool-call/tool-result content part whose ToolName resolves (via Tools)
+	// to a "provider" tool with this ProviderID replays as
+	// custom_tool_call/custom_tool_call_output instead of
+	// function_call/function_call_output.
+	CustomToolID string
 }
 
 func convertAssistantContent(content []types.ContentPart, providerName string, strictResponseInput bool, extOpts ...openResponsesExtensionOptions) []interface{} {
@@ -401,6 +409,25 @@ func convertAssistantContent(content []types.ContentPart, providerName string, s
 			itemID, _ := data["itemId"].(string)
 			namespace, _ := data["namespace"].(string)
 
+			// A caller-executed "custom" tool (Config.CustomToolID) replays as
+			// custom_tool_call, whose wire `input` is the model's raw
+			// (un-escaped) text rather than a JSON arguments string, mirroring
+			// TS's `customToolId != null && providerTool?.id === customToolId`
+			// branch in convertToOpenResponsesInput.
+			if opts.CustomToolID != "" && findToolByName(opts.Tools, p.ToolName).ProviderID == opts.CustomToolID {
+				custom := CustomToolCallItem{
+					Type:   "custom_tool_call",
+					CallID: p.ToolCallID,
+					Name:   p.ToolName,
+					Input:  customToolCallInputText(p),
+				}
+				if itemID != "" {
+					custom.ID = itemID
+				}
+				items = append(items, custom)
+				continue
+			}
+
 			item := FunctionCallItem{
 				Type:      "function_call",
 				CallID:    p.ToolCallID,
@@ -474,6 +501,29 @@ func convertAssistantContent(content []types.ContentPart, providerName string, s
 	flush()
 
 	return items
+}
+
+// customToolCallInputText recovers the raw (un-escaped) text a custom tool
+// call's input represents, for replay into the custom_tool_call wire item's
+// `input` field. This package's decode path (convertResponse /
+// handleStreamEvent) stores that raw text two ways -- toolCall.Arguments
+// ({"input": rawText}), the analog of TS's parsed LanguageModelV4Prompt
+// tool-call `input` value, and toolCall.Input (RawArguments), a JSON-encoded
+// string of it -- so both are checked, preferring the already-decoded form.
+func customToolCallInputText(toolCall types.ToolCallContent) string {
+	if toolCall.Arguments != nil {
+		if v, ok := toolCall.Arguments["input"].(string); ok {
+			return v
+		}
+	}
+	if toolCall.Input != "" {
+		var text string
+		if err := json.Unmarshal([]byte(toolCall.Input), &text); err == nil {
+			return text
+		}
+		return toolCall.Input
+	}
+	return ""
 }
 
 func serializeToolCallArguments(toolCall types.ToolCallContent) string {
@@ -689,8 +739,13 @@ func asInt(value interface{}) (int, bool) {
 	}
 }
 
-// convertToolResults converts tool results to Open Responses format
-func convertToolResults(content []types.ContentPart, warnings *[]types.Warning, providerName string) ([]interface{}, error) {
+// convertToolResults converts tool results to Open Responses format. A
+// result whose ToolName resolves (via opts.Tools) to a "provider" tool with
+// ProviderID == opts.CustomToolID replays as custom_tool_call_output instead
+// of function_call_output, mirroring TS's `customToolId != null &&
+// providerTool?.id === customToolId` branch in convertToOpenResponsesInput
+// (the `output` value itself is computed identically either way).
+func convertToolResults(content []types.ContentPart, warnings *[]types.Warning, providerName string, opts openResponsesExtensionOptions) ([]interface{}, error) {
 	var results []interface{}
 
 	for _, part := range content {
@@ -699,6 +754,15 @@ func convertToolResults(content []types.ContentPart, warnings *[]types.Warning, 
 				output, err := convertToolResultOutput(toolResult, warnings, providerName)
 				if err != nil {
 					return nil, err
+				}
+
+				if opts.CustomToolID != "" && findToolByName(opts.Tools, toolResult.ToolName).ProviderID == opts.CustomToolID {
+					results = append(results, CustomToolCallOutputItem{
+						Type:   "custom_tool_call_output",
+						CallID: toolResult.ToolCallID,
+						Output: output,
+					})
+					continue
 				}
 
 				results = append(results, FunctionCallOutputItem{

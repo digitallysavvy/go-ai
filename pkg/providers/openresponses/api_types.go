@@ -55,6 +55,16 @@ type FunctionTool struct {
 	Strict      *bool                  `json:"strict,omitempty"`
 }
 
+// CustomToolItem represents a caller-executed "custom" tool definition sent
+// in the request `tools` array, matched via Config.CustomToolID. Mirrors the
+// TS Open Responses `CustomTool` wire shape (type/name/description/format).
+type CustomToolItem struct {
+	Type        string                 `json:"type"`
+	Name        string                 `json:"name"`
+	Description string                 `json:"description,omitempty"`
+	Format      map[string]interface{} `json:"format,omitempty"`
+}
+
 // Message item types for input
 
 // ReasoningInputItem is a top-level reasoning item sent in the request input.
@@ -141,6 +151,31 @@ type FunctionCallOutputItem struct {
 	Output interface{} `json:"output"`
 	ID     string      `json:"id,omitempty"`
 	Status string      `json:"status,omitempty"`
+}
+
+// CustomToolCallItem replays a caller-executed "custom" tool call back into
+// request input, matched via Config.CustomToolID. Mirrors the TS Open
+// Responses `custom_tool_call` request input item
+// (CustomToolCallItemParam): id?/call_id/name/input, where Input is the raw
+// (unescaped) text the model originally produced.
+type CustomToolCallItem struct {
+	Type   string `json:"type"`
+	ID     string `json:"id,omitempty"`
+	CallID string `json:"call_id"`
+	Name   string `json:"name"`
+	Input  string `json:"input"`
+}
+
+// CustomToolCallOutputItem replays a caller-executed "custom" tool result
+// back into request input, matched via Config.CustomToolID. Mirrors the TS
+// Open Responses `custom_tool_call_output` request input item
+// (CustomToolCallOutputItemParam): id?/call_id/output, using the same
+// Output shape as FunctionCallOutputItem.
+type CustomToolCallOutputItem struct {
+	Type   string      `json:"type"`
+	CallID string      `json:"call_id"`
+	Output interface{} `json:"output"`
+	ID     string      `json:"id,omitempty"`
 }
 
 // OpenResponsesResponse represents the non-streaming response
@@ -262,6 +297,12 @@ type IncompleteDetails struct {
 type ResponseError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+
+	// StatusCode is an endpoint-specific HTTP status carried inside the
+	// error payload itself (e.g. QuiverAI's `error.status_code`), distinct
+	// from the transport-level HTTP status of the response envelope. Used
+	// by Config.GetResponseErrorMetadata to classify retryability.
+	StatusCode *int `json:"status_code,omitempty"`
 }
 
 // Streaming event types
@@ -279,6 +320,7 @@ type StreamEvent struct {
 	Text           string                 `json:"text,omitempty"`
 	CallID         string                 `json:"call_id,omitempty"`
 	Arguments      string                 `json:"arguments,omitempty"`
+	Input          string                 `json:"input,omitempty"`
 	Error          *ResponseError         `json:"error,omitempty"`
 
 	// Raw preserves this event's original JSON bytes, including any fields

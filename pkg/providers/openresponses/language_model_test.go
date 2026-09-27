@@ -1,6 +1,7 @@
 package openresponses
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -134,6 +135,96 @@ func TestConvertResponse_FunctionCallPreservesProviderMetadata(t *testing.T) {
 	}
 	if metadata["itemId"] != "fc_item_1" || metadata["namespace"] != "weather" {
 		t.Fatalf("provider metadata payload = %+v", metadata)
+	}
+}
+
+// TestConvertResponse_MessageTextCarriesItemIDAndAnnotations verifies that
+// convertResponse emits a types.TextContent per output_text content part
+// (not just the plain-string result.Text), carrying {itemId, annotations?}
+// provider metadata, mirroring TS's `content.push({type: 'text', text:
+// contentPart.text, providerMetadata: {[providerOptionsName]: {itemId:
+// part.id, ...(annotations.length > 0 && {annotations})}}})`.
+func TestConvertResponse_MessageTextCarriesItemIDAndAnnotations(t *testing.T) {
+	response := OpenResponsesResponse{
+		Output: []OutputItem{
+			{
+				ID:   "msg_1",
+				Type: "message",
+				Content: []ContentPart{
+					{
+						Type: "output_text",
+						Text: "hello world",
+						Annotations: []Annotation{
+							{Type: "url_citation", URL: "https://example.com", Title: "Example", StartIndex: 0, EndIndex: 5},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	lm := &LanguageModel{}
+	result, convertErr := lm.convertResponse(response)
+	if convertErr != nil {
+		t.Fatalf("convertResponse failed: %v", convertErr)
+	}
+	if result.Text != "hello world" {
+		t.Fatalf("result.Text = %q, want %q", result.Text, "hello world")
+	}
+	if len(result.Content) != 1 {
+		t.Fatalf("result.Content = %+v, want 1 TextContent part", result.Content)
+	}
+	text, ok := result.Content[0].(types.TextContent)
+	if !ok {
+		t.Fatalf("result.Content[0] = %T, want types.TextContent", result.Content[0])
+	}
+	if text.Text != "hello world" {
+		t.Fatalf("text.Text = %q, want %q", text.Text, "hello world")
+	}
+	var payload map[string]map[string]interface{}
+	if err := json.Unmarshal(text.ProviderMetadata, &payload); err != nil {
+		t.Fatalf("ProviderMetadata unmarshal failed: %v", err)
+	}
+	meta, ok := payload["open-responses"]
+	if !ok {
+		t.Fatalf("ProviderMetadata = %s, want open-responses key", text.ProviderMetadata)
+	}
+	if meta["itemId"] != "msg_1" {
+		t.Fatalf("itemId = %v, want msg_1", meta["itemId"])
+	}
+	annotations, ok := meta["annotations"].([]interface{})
+	if !ok || len(annotations) != 1 {
+		t.Fatalf("annotations = %+v, want 1 entry", meta["annotations"])
+	}
+	annotation := annotations[0].(map[string]interface{})
+	if annotation["type"] != "url_citation" || annotation["url"] != "https://example.com" {
+		t.Fatalf("annotation = %+v", annotation)
+	}
+}
+
+// TestConvertResponse_MessageTextWithoutAnnotationsOmitsAnnotationsKey
+// verifies that the annotations key is omitted entirely (not an empty
+// array) when the content part carries none, matching TS's
+// `...(annotations.length > 0 && {annotations})` spread.
+func TestConvertResponse_MessageTextWithoutAnnotationsOmitsAnnotationsKey(t *testing.T) {
+	response := OpenResponsesResponse{
+		Output: []OutputItem{
+			{ID: "msg_2", Type: "message", Content: []ContentPart{{Type: "output_text", Text: "plain"}}},
+		},
+	}
+
+	lm := &LanguageModel{}
+	result, convertErr := lm.convertResponse(response)
+	if convertErr != nil {
+		t.Fatalf("convertResponse failed: %v", convertErr)
+	}
+	text := result.Content[0].(types.TextContent)
+	var payload map[string]map[string]interface{}
+	if err := json.Unmarshal(text.ProviderMetadata, &payload); err != nil {
+		t.Fatalf("ProviderMetadata unmarshal failed: %v", err)
+	}
+	if _, ok := payload["open-responses"]["annotations"]; ok {
+		t.Fatalf("payload = %+v, want no annotations key", payload["open-responses"])
 	}
 }
 

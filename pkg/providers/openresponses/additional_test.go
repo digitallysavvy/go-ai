@@ -58,7 +58,7 @@ func TestProviderBasicsAndOptionsExtractors(t *testing.T) {
 func TestConvertToolsChoicesAndUsage(t *testing.T) {
 	tools, encodedProviderTools, toolWarnings := convertToolsToOpenResponses([]types.Tool{
 		{Name: "weather", Description: "lookup", Parameters: map[string]interface{}{"type": "object"}, Strict: types.BoolPtr(true)},
-	}, nil)
+	}, nil, "")
 	if len(tools) != 1 {
 		t.Fatalf("tools conversion failed: %+v", tools)
 	}
@@ -75,7 +75,7 @@ func TestConvertToolsChoicesAndUsage(t *testing.T) {
 
 	providerTools, providerEncodedTools, providerToolWarnings := convertToolsToOpenResponses([]types.Tool{
 		{Name: "search", Type: "provider", ProviderID: "openai.web_search"},
-	}, nil)
+	}, nil, "")
 	if len(providerTools) != 0 {
 		t.Fatalf("provider-defined tools should be skipped: %+v", providerTools)
 	}
@@ -660,12 +660,22 @@ func TestOpenResponsesStreamHandleEvents(t *testing.T) {
 		t.Fatalf("unexpected tool call chunk: %+v", chunk)
 	}
 
-	customChunk, err := s.handleStreamEvent(&StreamEvent{
+	// A completed custom_tool_call enqueues tool-input-end then tool-call
+	// (mirrors TS: two separate stream parts), so the tool-call itself is
+	// read back via a follow-up Next() call from the pending queue.
+	customEndChunk, err := s.handleStreamEvent(&StreamEvent{
 		Type: "response.output_item.done",
 		Item: &OutputItem{Type: "custom_tool_call", CallID: "call-2", Name: "custom", Input: "raw"},
 	})
+	if err != nil || customEndChunk.Type != provider.ChunkTypeToolInputEnd || customEndChunk.ID != "call-2" {
+		t.Fatalf("custom_tool_call tool-input-end failed: chunk=%+v err=%v", customEndChunk, err)
+	}
+	customChunk, err := s.Next()
 	if err != nil || customChunk.ToolCall == nil || customChunk.ToolCall.Arguments["input"] != "raw" {
 		t.Fatalf("custom_tool_call conversion failed: chunk=%+v err=%v", customChunk, err)
+	}
+	if customChunk.ToolCall.RawArguments != `"raw"` {
+		t.Fatalf("custom_tool_call RawArguments = %q, want %q", customChunk.ToolCall.RawArguments, `"raw"`)
 	}
 
 	reasoningChunk, err := s.handleStreamEvent(&StreamEvent{
@@ -707,12 +717,75 @@ func TestOpenResponsesStreamHandleEvents(t *testing.T) {
 		t.Fatalf("finish chunk failed: chunk=%+v err=%v", finishChunk, err)
 	}
 
-	_, err = s.handleStreamEvent(&StreamEvent{
+	// A bare "error" event is surfaced as an in-band ChunkTypeError chunk
+	// (mirrors TS's controller.enqueue({type:'error',...})), not returned as
+	// a fatal Next()/handleStreamEvent error -- the stream still ends
+	// normally afterward.
+	errChunk, err := s.handleStreamEvent(&StreamEvent{
 		Type:  "error",
 		Error: &ResponseError{Code: "bad_request", Message: "boom"},
 	})
-	if err == nil {
-		t.Fatal("expected stream error event to return error")
+	if err != nil {
+		t.Fatalf("unexpected error from stream error event: %v", err)
+	}
+	if errChunk.Type != provider.ChunkTypeError || errChunk.Text != "boom" {
+		t.Fatalf("unexpected error chunk: %+v", errChunk)
+	}
+	if !providererrors.IsStreamProviderError(errChunk.Err) {
+		t.Fatalf("expected a StreamProviderError, got %T: %v", errChunk.Err, errChunk.Err)
+	}
+}
+
+// TestOpenResponsesStreamTextStartDeltaEnd verifies that a "message" output
+// item streams text-start (on output_item.added), a text delta carrying the
+// item id (on response.output_text.delta), and text-end with {itemId,
+// annotations?} provider metadata (on output_item.done), mirroring TS's
+// `{type:'text-start', id: chunk.item.id}` / `{type:'text-delta', id:
+// chunk.item_id, delta: chunk.delta}` / `{type:'text-end', id:
+// chunk.item.id, providerMetadata: {...}}`.
+func TestOpenResponsesStreamTextStartDeltaEnd(t *testing.T) {
+	s := newOpenResponsesStream(nopReadCloser{Reader: strings.NewReader("")}, nil)
+
+	startChunk, err := s.handleStreamEvent(&StreamEvent{
+		Type: "response.output_item.added",
+		Item: &OutputItem{Type: "message", ID: "msg_1"},
+	})
+	if err != nil || startChunk.Type != provider.ChunkTypeTextStart || startChunk.ID != "msg_1" {
+		t.Fatalf("text-start failed: chunk=%+v err=%v", startChunk, err)
+	}
+
+	deltaChunk, err := s.handleStreamEvent(&StreamEvent{
+		Type: "response.output_text.delta", ItemID: "msg_1", Delta: "hello",
+	})
+	if err != nil || deltaChunk.Type != provider.ChunkTypeText || deltaChunk.ID != "msg_1" || deltaChunk.Text != "hello" {
+		t.Fatalf("text delta failed: chunk=%+v err=%v", deltaChunk, err)
+	}
+
+	endChunk, err := s.handleStreamEvent(&StreamEvent{
+		Type: "response.output_item.done",
+		Item: &OutputItem{
+			Type: "message",
+			ID:   "msg_1",
+			Content: []ContentPart{
+				{Type: "output_text", Text: "hello", Annotations: []Annotation{
+					{Type: "url_citation", URL: "https://example.com", Title: "Example", StartIndex: 0, EndIndex: 5},
+				}},
+			},
+		},
+	})
+	if err != nil || endChunk.Type != provider.ChunkTypeTextEnd || endChunk.ID != "msg_1" {
+		t.Fatalf("text-end failed: chunk=%+v err=%v", endChunk, err)
+	}
+	var payload map[string]map[string]interface{}
+	if unmarshalErr := json.Unmarshal(endChunk.ProviderMetadata, &payload); unmarshalErr != nil {
+		t.Fatalf("ProviderMetadata unmarshal failed: %v", unmarshalErr)
+	}
+	meta := payload["open-responses"]
+	if meta["itemId"] != "msg_1" {
+		t.Fatalf("itemId = %v, want msg_1", meta["itemId"])
+	}
+	if annotations, ok := meta["annotations"].([]interface{}); !ok || len(annotations) != 1 {
+		t.Fatalf("annotations = %+v, want 1 entry", meta["annotations"])
 	}
 }
 

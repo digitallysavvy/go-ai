@@ -436,3 +436,195 @@ func TestConvertToOpenResponsesInput_ClientAndProviderExecutedToolCalls(t *testi
 		t.Fatalf("output = %#v", output)
 	}
 }
+
+// TestConvertToOpenResponsesInput_CustomToolCallReplay verifies that a
+// tool-call content part whose ToolName resolves (via the declared Tools
+// list) to a "provider" tool matching Config.CustomToolID replays as
+// custom_tool_call, not function_call, mirroring TS convertToOpenResponsesInput's
+// `customToolId != null && providerTool?.id === customToolId` branch. The
+// wire `input` is the raw text (recovered from Arguments["input"], the Go
+// analog of the already-parsed LanguageModelV4Prompt tool-call input TS
+// checks with `typeof part.input === 'string'`), not a JSON-escaped string.
+func TestConvertToOpenResponsesInput_CustomToolCallReplay(t *testing.T) {
+	msgs := []types.Message{
+		{
+			Role: types.RoleAssistant,
+			Content: []types.ContentPart{
+				types.ToolCallContent{
+					ToolCallID: "call_1",
+					ToolName:   "render",
+					Arguments:  map[string]interface{}{"input": "<svg></svg>"},
+					ProviderOptions: map[string]interface{}{
+						"acme": map[string]interface{}{"itemId": "ct_item_1"},
+					},
+				},
+			},
+		},
+	}
+	tools := []types.Tool{{Type: "provider", ProviderID: "acme.custom", Name: "render"}}
+
+	input, _, _, err := ConvertToOpenResponsesInputForProviderStrict(msgs, "", "acme", false, openResponsesExtensionOptions{
+		Tools:        tools,
+		CustomToolID: "acme.custom",
+	})
+	if err != nil {
+		t.Fatalf("ConvertToOpenResponsesInputForProviderStrict() error = %v", err)
+	}
+
+	items := input.([]interface{})
+	if len(items) != 1 {
+		t.Fatalf("items = %#v, want 1 custom_tool_call item", items)
+	}
+	call, ok := items[0].(CustomToolCallItem)
+	if !ok {
+		t.Fatalf("items[0] = %#v (%T), want CustomToolCallItem", items[0], items[0])
+	}
+	if call.Type != "custom_tool_call" || call.CallID != "call_1" || call.Name != "render" || call.ID != "ct_item_1" {
+		t.Fatalf("call = %#v", call)
+	}
+	if call.Input != "<svg></svg>" {
+		t.Fatalf("Input = %q, want raw (un-escaped) text %q", call.Input, "<svg></svg>")
+	}
+}
+
+// TestConvertToOpenResponsesInput_NonCustomToolCallStillUsesFunctionCall
+// verifies that CustomToolID only affects tool calls whose declared tool's
+// ProviderID actually matches -- an ordinary tool call still replays as
+// function_call even when CustomToolID is configured, mirroring TS falling
+// through to the `function_call` branch whenever `providerTool?.id !==
+// customToolId`.
+func TestConvertToOpenResponsesInput_NonCustomToolCallStillUsesFunctionCall(t *testing.T) {
+	msgs := []types.Message{
+		{
+			Role: types.RoleAssistant,
+			Content: []types.ContentPart{
+				types.ToolCallContent{
+					ToolCallID: "call_2",
+					ToolName:   "get_weather",
+					Arguments:  map[string]interface{}{"city": "Paris"},
+				},
+			},
+		},
+	}
+	tools := []types.Tool{
+		{Type: "provider", ProviderID: "acme.custom", Name: "render"},
+		{Name: "get_weather"},
+	}
+
+	input, _, _, err := ConvertToOpenResponsesInputForProviderStrict(msgs, "", "acme", false, openResponsesExtensionOptions{
+		Tools:        tools,
+		CustomToolID: "acme.custom",
+	})
+	if err != nil {
+		t.Fatalf("ConvertToOpenResponsesInputForProviderStrict() error = %v", err)
+	}
+
+	items := input.([]interface{})
+	call, ok := items[0].(FunctionCallItem)
+	if !ok {
+		t.Fatalf("items[0] = %#v (%T), want FunctionCallItem", items[0], items[0])
+	}
+	if call.CallID != "call_2" || call.Name != "get_weather" {
+		t.Fatalf("call = %#v", call)
+	}
+}
+
+// TestConvertToOpenResponsesInput_CustomToolResultsPreserveTextImagesAndFiles
+// ports the TS open-responses test "preserves text, images, and files in
+// custom tool history" (convert-to-open-responses-input.test.ts, describe
+// "custom tool results"): a tool-result whose ToolName resolves to
+// Config.CustomToolID replays as custom_tool_call_output (not
+// function_call_output); the output content itself is computed identically
+// either way.
+func TestConvertToOpenResponsesInput_CustomToolResultsPreserveTextImagesAndFiles(t *testing.T) {
+	msgs := []types.Message{
+		{
+			Role: types.RoleTool,
+			Content: []types.ContentPart{
+				types.ToolResultContent{
+					ToolCallID: "call_1",
+					ToolName:   "render",
+					Output: &types.ToolResultOutput{
+						Type: types.ToolResultOutputContent,
+						Content: []types.ToolResultContentBlock{
+							types.TextContentBlock{Text: "Rendered result"},
+							types.FileContentBlock{
+								MediaType: "image/png",
+								FileData: types.FileData{
+									Type: types.FileDataTypeURL,
+									URL:  "https://example.com/result.png",
+								},
+							},
+							types.FileContentBlock{
+								MediaType: "application/pdf",
+								FileData: types.FileData{
+									Type: types.FileDataTypeURL,
+									URL:  "https://example.com/result.pdf",
+								},
+							},
+							types.FileContentBlock{
+								MediaType: "image/png",
+								FileData: types.FileData{
+									Type: types.FileDataTypeData,
+									Data: []byte("image"),
+								},
+							},
+							types.FileContentBlock{
+								MediaType: "application/pdf",
+								Filename:  "result.pdf",
+								FileData: types.FileData{
+									Type: types.FileDataTypeData,
+									Data: []byte("pdf"),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	tools := []types.Tool{{Type: "provider", ProviderID: "acme.custom", Name: "render"}}
+
+	input, _, warnings, err := ConvertToOpenResponsesInputForProviderStrict(msgs, "", "acme", false, openResponsesExtensionOptions{
+		Tools:        tools,
+		CustomToolID: "acme.custom",
+	})
+	if err != nil {
+		t.Fatalf("ConvertToOpenResponsesInputForProviderStrict() error = %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none", warnings)
+	}
+
+	items := input.([]interface{})
+	if len(items) != 1 {
+		t.Fatalf("items = %#v, want 1 custom_tool_call_output item", items)
+	}
+	output, ok := items[0].(CustomToolCallOutputItem)
+	if !ok {
+		t.Fatalf("items[0] = %#v (%T), want CustomToolCallOutputItem", items[0], items[0])
+	}
+	if output.Type != "custom_tool_call_output" || output.CallID != "call_1" {
+		t.Fatalf("output = %#v", output)
+	}
+
+	parts := output.Output.([]interface{})
+	if len(parts) != 5 {
+		t.Fatalf("parts = %#v, want 5", parts)
+	}
+	if text := parts[0].(InputTextContent); text.Type != "input_text" || text.Text != "Rendered result" {
+		t.Fatalf("text part = %#v", text)
+	}
+	if img := parts[1].(InputImageContent); img.Type != "input_image" || img.ImageURL != "https://example.com/result.png" {
+		t.Fatalf("url image part = %#v", img)
+	}
+	if file := parts[2].(InputFileContent); file.Type != "input_file" || file.FileURL != "https://example.com/result.pdf" {
+		t.Fatalf("url file part = %#v", file)
+	}
+	if img := parts[3].(InputImageContent); img.Type != "input_image" || img.ImageURL != "data:image/png;base64,aW1hZ2U=" {
+		t.Fatalf("data image part = %#v", img)
+	}
+	if file := parts[4].(InputFileContent); file.Type != "input_file" || file.Filename != "result.pdf" || file.FileData != "data:application/pdf;base64,cGRm" {
+		t.Fatalf("data file part = %#v", file)
+	}
+}
