@@ -100,7 +100,7 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 
 // DoStream performs streaming generation via POST /v1/responses with stream=true.
 func (m *ResponsesLanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
-	body, store, warnings, err := m.buildRequest(opts, true)
+	body, _, warnings, err := m.buildRequest(opts, true)
 	if err != nil {
 		return nil, err
 	}
@@ -119,7 +119,7 @@ func (m *ResponsesLanguageModel) DoStream(ctx context.Context, opts *provider.Ge
 
 	stream := newResponsesStreamWithMetadata(httpResp.Body, opts.IncludeRawChunks, webSearchToolName, m.provider.responsesProviderOptionsName(), httpResp.Header)
 	stream.tools = opts.Tools
-	stream.store = store
+	stream.store = responsesExplicitStore(body)
 	stream.approvalFromPrompt = extractApprovalRequestIDToToolCallIDFromPrompt(opts.Prompt)
 	if name := toolSearchToolName(opts.Tools); name != "" {
 		stream.toolSearchToolName = name
@@ -136,6 +136,24 @@ func (m *ResponsesLanguageModel) DoStream(ctx context.Context, opts *provider.Ge
 func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, bool, error) {
 	body, store, _, err := m.buildRequest(opts, stream)
 	return body, store, err
+}
+
+// responsesExplicitStore reports whether the caller explicitly set
+// providerOptions.openai.store to a boolean, by inspecting the request body
+// buildRequest already assembled. This is TS's raw `openaiOptions?.store`
+// (openai-responses-language-model.ts line 511: `boolean | undefined`,
+// truthy-checked as `if (store)`) -- distinct from buildRequest's own
+// `store` return value, which defaults to true (matching TS's separate
+// `openaiOptions?.store ?? true` at line 399/386, used for the request
+// body's "store" field and for prompt-conversion item_reference decisions).
+// buildRequest only ever writes a bool into body["store"] when the option
+// was explicitly set (storeExplicit); it is otherwise left unset (or set to
+// nil for an explicit `store: null`), so a failed type assertion here
+// correctly yields false for every case TS's `if (store)` also treats as
+// falsy: unset, or explicit null.
+func responsesExplicitStore(body map[string]interface{}) bool {
+	v, _ := body["store"].(bool)
+	return v
 }
 
 func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, bool, []types.Warning, error) {
@@ -1112,7 +1130,6 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 	}
 
 	var toolCalls []types.ToolCall
-	var sourceCounter int
 	// hostedToolSearchCallIds pairs a server-executed tool_search_call with
 	// its following tool_search_output in FIFO order (row e6a2992 area;
 	// mirrors TS `hostedToolSearchCallIds`), since hosted tool_search_output
@@ -1141,7 +1158,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 					ProviderOptions: openAIResponsesMessageProviderOptions(providerName, item.ID, item.Phase, part.Annotations),
 				})
 				for _, ann := range part.Annotations {
-					if src, ok := openAIAnnotationToSource(providerName, ann, &sourceCounter); ok {
+					if src, ok := openAIAnnotationToSource(providerName, ann); ok {
 						result.Content = append(result.Content, src)
 					}
 				}
@@ -1256,16 +1273,26 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			if err := json.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
-			var summaryText string
-			for _, s := range item.Summary {
-				summaryText += s.Text
+			// TS pushes one `reasoning` content entry per summary array
+			// element (openai-responses-language-model.ts: "when there are
+			// no summary parts, we need to add an empty reasoning part"),
+			// not one entry with every part's text concatenated -- push an
+			// empty summary_text part when there are none, matching TS's
+			// fallback exactly.
+			summaries := item.Summary
+			if len(summaries) == 0 {
+				summaries = []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				}{{Type: "summary_text", Text: ""}}
 			}
-			rc := types.ReasoningContent{
-				Text:             summaryText,
-				EncryptedContent: item.EncryptedContent,
-				ProviderMetadata: openAIResponsesReasoningMetadata(providerName, item.ID),
+			for _, s := range summaries {
+				result.Content = append(result.Content, types.ReasoningContent{
+					Text:             s.Text,
+					EncryptedContent: item.EncryptedContent,
+					ProviderMetadata: openAIResponsesReasoningMetadata(providerName, item.ID),
+				})
 			}
-			result.Content = append(result.Content, rc)
 
 		case "custom_tool_call":
 			var item responses.CustomToolCallItem
@@ -1765,10 +1792,13 @@ func openAIResponsesMessageProviderOptions(providerName, itemID string, phase *s
 // openAIAnnotationToSource converts a single Responses API text annotation
 // into a SourceContent part, mirroring TS's per-annotation switch in the
 // "message" case of convertResponse. Not every annotation type produces a
-// source ("compaction" etc. never reach this function).
-func openAIAnnotationToSource(providerName string, ann responses.TextAnnotation, counter *int) (types.SourceContent, bool) {
-	*counter++
-	id := fmt.Sprintf("source-%d", *counter)
+// source ("compaction" etc. never reach this function). The id is generated
+// the same way in both the non-streaming and streaming paths -- TS uses
+// `this.config.generateId?.() ?? generateId()` for each source there;
+// streaming.GenerateID() is this file's existing stand-in for that (also
+// used for the mcp_approval_request dummy tool-call id below).
+func openAIAnnotationToSource(providerName string, ann responses.TextAnnotation) (types.SourceContent, bool) {
+	id := streaming.GenerateID()
 	switch ann.Type {
 	case "url_citation":
 		return types.SourceContent{
@@ -1826,7 +1856,6 @@ func openAIAnnotationToSource(providerName string, ann responses.TextAnnotation,
 			ProviderMetadata: meta,
 		}, true
 	}
-	*counter--
 	return types.SourceContent{}, false
 }
 
@@ -2078,10 +2107,17 @@ type responsesStream struct {
 	// tool_search_output items report call_id: null.
 	hostedToolSearchIDs []string
 
-	// store mirrors the request's effective `store` option: controls whether
-	// a reasoning summary part can be concluded immediately on
+	// store mirrors TS's raw `openaiOptions?.store` (boolean | undefined,
+	// truthy-checked as `if (store)`) used by doStream's reasoning-summary
+	// state machine -- NOT the request-body-default-true `store` value used
+	// elsewhere (the field actually sent to the API, and the value used for
+	// prompt-conversion item_reference decisions). It controls whether a
+	// reasoning summary part can be concluded immediately on
 	// response.reasoning_summary_part.done, or must wait for
-	// output_item.done to carry the final encrypted_content.
+	// output_item.done to carry the final encrypted_content: unset/false
+	// defers to output_item.done (matching TS's undefined-is-falsy
+	// default); only an explicit `store: true` concludes immediately. See
+	// responsesExplicitStore.
 	store bool
 
 	// mcpApprovalAlias maps an mcp_approval_request's approval_request_id
@@ -2124,6 +2160,22 @@ type applyPatchStreamState struct {
 // the code_interpreter_call's synthetic input JSON.
 type codeInterpreterStreamState struct {
 	containerID string
+}
+
+// resolveOutputItemID mirrors TS's `resolveOutputItemId`: an event carrying
+// both an output_index and an item id resolves to the id first seen for
+// that output_index at output_item.added (s.firstItemIDByOutputIndex),
+// falling back to the event's own id if none was recorded yet. This handles
+// OpenAI rotating/reusing item ids across events sharing the same
+// output_index mid-stream, and must be applied at every reasoning-summary
+// event carrying item_id -- response.reasoning_summary_part.added,
+// response.reasoning_summary_text.delta, and
+// response.reasoning_summary_part.done -- not just output_item.done.
+func (s *responsesStream) resolveOutputItemID(outputIndex int, itemID string) string {
+	if first, ok := s.firstItemIDByOutputIndex[outputIndex]; ok {
+		return first
+	}
+	return itemID
 }
 
 // emitDecodeError reports a decode failure for a known Responses API SSE
@@ -2520,17 +2572,17 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
 			return s.emitDecodeError(peek.Type, err)
 		}
-		if e.Delta == "" {
-			return s.Next()
-		}
 		s.markOutputStarted()
 		if eventRawChunk != nil {
 			s.flushQueue = append(s.flushQueue, eventRawChunk)
 		}
-		meta, _ := json.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"itemId": e.ItemID}})
+		// TS unconditionally enqueues reasoning-delta here, even for an
+		// empty-string delta -- no guard.
+		itemID := s.resolveOutputItemID(e.OutputIndex, e.ItemID)
+		meta, _ := json.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"itemId": itemID}})
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type:             provider.ChunkTypeReasoning,
-			ID:               fmt.Sprintf("%s:%d", e.ItemID, e.SummaryIndex),
+			ID:               fmt.Sprintf("%s:%d", itemID, e.SummaryIndex),
 			Reasoning:        e.Delta,
 			ProviderMetadata: meta,
 		})
@@ -2548,31 +2600,39 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		// output_item.added; only summary_index > 0 needs boundary handling
 		// here (row a0d2e8c/6fe187f area).
 		if e.SummaryIndex > 0 {
-			if accum := s.reasoningAccum[e.ItemID]; accum != nil {
+			itemID := s.resolveOutputItemID(e.OutputIndex, e.ItemID)
+			if accum := s.reasoningAccum[itemID]; accum != nil {
 				accum.summaryParts[e.SummaryIndex] = "active"
 				// A new active summary part means every "can-conclude" part
 				// (its own .done arrived under store=false, waiting for the
-				// final encrypted_content) can now be concluded.
+				// final encrypted_content) can now be concluded. Close them
+				// in ascending index order, matching TS's Object.keys
+				// (ascending for numeric-string keys).
+				var canConclude []int
 				for idx, status := range accum.summaryParts {
 					if status == "can-conclude" {
-						endMeta, _ := json.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"itemId": e.ItemID}})
-						s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-							Type:             provider.ChunkTypeReasoningEnd,
-							ID:               fmt.Sprintf("%s:%d", e.ItemID, idx),
-							ProviderMetadata: endMeta,
-						})
-						accum.summaryParts[idx] = "concluded"
+						canConclude = append(canConclude, idx)
 					}
+				}
+				sort.Ints(canConclude)
+				for _, idx := range canConclude {
+					endMeta, _ := json.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"itemId": itemID}})
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+						Type:             provider.ChunkTypeReasoningEnd,
+						ID:               fmt.Sprintf("%s:%d", itemID, idx),
+						ProviderMetadata: endMeta,
+					})
+					accum.summaryParts[idx] = "concluded"
 				}
 				startMeta, _ := json.Marshal(map[string]interface{}{
 					s.providerName: map[string]interface{}{
-						"itemId":                    e.ItemID,
+						"itemId":                    itemID,
 						"reasoningEncryptedContent": nonEmptyOrNil(accum.encryptedContent),
 					},
 				})
 				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 					Type:             provider.ChunkTypeReasoningStart,
-					ID:               fmt.Sprintf("%s:%d", e.ItemID, e.SummaryIndex),
+					ID:               fmt.Sprintf("%s:%d", itemID, e.SummaryIndex),
 					ProviderMetadata: startMeta,
 				})
 			}
@@ -2588,15 +2648,16 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		if eventRawChunk != nil {
 			s.flushQueue = append(s.flushQueue, eventRawChunk)
 		}
-		if accum := s.reasoningAccum[e.ItemID]; accum != nil {
+		itemID := s.resolveOutputItemID(e.OutputIndex, e.ItemID)
+		if accum := s.reasoningAccum[itemID]; accum != nil {
 			if s.store {
 				// The response is stored server-side, so no encrypted_content
 				// needs to be attached: the reasoning block can close now.
-				meta, _ := json.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"itemId": e.ItemID}})
+				meta, _ := json.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"itemId": itemID}})
 				accum.summaryParts[e.SummaryIndex] = "concluded"
 				return s.emitParsedChunk(&provider.StreamChunk{
 					Type:             provider.ChunkTypeReasoningEnd,
-					ID:               fmt.Sprintf("%s:%d", e.ItemID, e.SummaryIndex),
+					ID:               fmt.Sprintf("%s:%d", itemID, e.SummaryIndex),
 					ProviderMetadata: meta,
 				})
 			}
@@ -2615,9 +2676,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		if eventRawChunk != nil {
 			s.flushQueue = append(s.flushQueue, eventRawChunk)
 		}
-		var counter int
-		if src, ok := openAIAnnotationToSource(s.providerName, e.Annotation, &counter); ok {
-			src.ID = streaming.GenerateID()
+		if src, ok := openAIAnnotationToSource(s.providerName, e.Annotation); ok {
 			return s.emitParsedChunk(&provider.StreamChunk{
 				Type:          provider.ChunkTypeSource,
 				SourceContent: &src,
@@ -2993,10 +3052,11 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		accum := s.reasoningAccum[id]
 		delete(s.reasoningAccum, id)
 
-		meta := map[string]interface{}{}
-		if item.EncryptedContent != "" {
-			meta["encryptedContent"] = item.EncryptedContent
-		}
+		// TS always sets reasoningEncryptedContent (falling back to `null`),
+		// not only when non-empty -- matches the key name/shape used at the
+		// other two reasoning-end sites in this file (output_item.added and
+		// reasoning_summary_part.added).
+		meta := map[string]interface{}{"reasoningEncryptedContent": nonEmptyOrNil(item.EncryptedContent)}
 		if id != "" {
 			meta["itemId"] = id
 		}

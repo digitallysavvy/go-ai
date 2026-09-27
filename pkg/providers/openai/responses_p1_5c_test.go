@@ -1,8 +1,12 @@
 package openai
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -660,5 +664,198 @@ data: {"type":"response.output_item.done","output_index":1,"item":{"type":"mcp_c
 	call, err := stream.Next()
 	if err != nil || call.Type != provider.ChunkTypeToolCall || call.ToolCall.ID != streamDummyID {
 		t.Fatalf("chunk = %#v, err = %v, want mcp_call aliased to the in-stream dummy id %q (not the prompt one)", call, err, streamDummyID)
+	}
+}
+
+// ── Reasoning summary-part follow-up fixes (post-review) ───────────────────
+
+// TestResponsesLanguageModel_StreamReasoningSummaryIDRotation ports TS's
+// "should correlate rotated item ids by output index"
+// (github-copilot-id-rotation.1 fixture): every SSE event in a single
+// reasoning block can carry a distinct item_id, but every resulting
+// reasoning-* chunk must collapse to the id first seen at
+// output_item.added. This must hold for reasoning_summary_part.added,
+// reasoning_summary_text.delta, and reasoning_summary_part.done too, not
+// just output_item.done.
+func TestResponsesLanguageModel_StreamReasoningSummaryIDRotation(t *testing.T) {
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"capture-id-3"}}
+
+data: {"type":"response.reasoning_summary_part.added","item_id":"capture-id-4","output_index":0,"summary_index":0}
+
+data: {"type":"response.reasoning_summary_text.delta","item_id":"capture-id-5","output_index":0,"summary_index":0,"delta":"thinking"}
+
+data: {"type":"response.reasoning_summary_part.done","item_id":"capture-id-7","output_index":0,"summary_index":0}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"capture-id-8","encrypted_content":null,"summary":[{"type":"summary_text","text":"thinking"}]}}
+
+`)), false)
+	defer stream.Close() //nolint:errcheck
+
+	var chunks []*provider.StreamChunk
+	for {
+		c, err := stream.Next()
+		if err != nil {
+			t.Fatalf("Next() error = %v", err)
+		}
+		chunks = append(chunks, c)
+		if c.Type == provider.ChunkTypeReasoningEnd {
+			break
+		}
+	}
+	if len(chunks) == 0 {
+		t.Fatal("no chunks emitted")
+	}
+	for _, c := range chunks {
+		if c.ID != "capture-id-3:0" {
+			t.Fatalf("chunk %#v has id %q, want the first-seen id capture-id-3:0", c, c.ID)
+		}
+	}
+}
+
+// TestResponsesLanguageModel_ReasoningSummaryTextDeltaEmptyDeltaStillEmits
+// covers finding (C): TS unconditionally enqueues reasoning-delta even for
+// an empty-string delta -- there is no guard to skip it.
+func TestResponsesLanguageModel_ReasoningSummaryTextDeltaEmptyDeltaStillEmits(t *testing.T) {
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_1"}}
+
+data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_1","output_index":0,"summary_index":0,"delta":""}
+
+`)), false)
+	defer stream.Close() //nolint:errcheck
+
+	start, err := stream.Next()
+	if err != nil || start.Type != provider.ChunkTypeReasoningStart {
+		t.Fatalf("chunk = %#v, err = %v, want reasoning-start", start, err)
+	}
+	delta, err := stream.Next()
+	if err != nil || delta.Type != provider.ChunkTypeReasoning || delta.Reasoning != "" {
+		t.Fatalf("chunk = %#v, err = %v, want an (empty-string) reasoning delta chunk, not a skip", delta, err)
+	}
+}
+
+// TestResponsesExplicitStore covers finding (A): responsesExplicitStore
+// must return false (deferring reasoning-end to output_item.done) whenever
+// the caller did not explicitly set providerOptions.openai.store to a
+// boolean -- matching TS's raw `openaiOptions?.store` truthy check, where
+// `undefined` is falsy. Only an explicit `store: true` should return true.
+func TestResponsesExplicitStore(t *testing.T) {
+	tests := []struct {
+		name string
+		body map[string]interface{}
+		want bool
+	}{
+		{"unset (no key)", map[string]interface{}{}, false},
+		{"explicit true", map[string]interface{}{"store": true}, true},
+		{"explicit false", map[string]interface{}{"store": false}, false},
+		{"explicit null", map[string]interface{}{"store": nil}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := responsesExplicitStore(tt.body); got != tt.want {
+				t.Fatalf("responsesExplicitStore(%#v) = %v, want %v", tt.body, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestResponsesLanguageModel_DoStreamDefaultStoreDefersReasoningEnd is an
+// end-to-end regression test for finding (A) through the real DoStream path
+// (not the newResponsesStream test helper, which defaults stream.store to
+// Go's zero value and so could mask this bug): with no providerOptions.openai
+// set at all, a reasoning summary part's .done must NOT immediately close
+// the reasoning block -- it must defer to output_item.done, matching TS's
+// default (store option unset behaves like store=false).
+func TestResponsesLanguageModel_DoStreamDefaultStoreDefersReasoningEnd(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		events := []string{
+			`{"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_1"}}`,
+			`{"type":"response.reasoning_summary_text.delta","item_id":"rs_1","output_index":0,"summary_index":0,"delta":"thinking"}`,
+			`{"type":"response.reasoning_summary_part.done","item_id":"rs_1","output_index":0,"summary_index":0}`,
+			`{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_1","encrypted_content":"enc","summary":[{"type":"summary_text","text":"thinking"}]}}`,
+			`{"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":1,"output_tokens":1}}}`,
+		}
+		for _, e := range events {
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", e)
+		}
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Hi"}}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("DoStream failed: %v", err)
+	}
+	defer stream.Close() //nolint:errcheck
+
+	var sawReasoningEndBeforeDone bool
+	var sawFinalReasoningEnd bool
+	var finalMeta map[string]interface{}
+	for {
+		c, err := stream.Next()
+		if err != nil {
+			break
+		}
+		if c.Type == provider.ChunkTypeReasoningEnd {
+			if !sawFinalReasoningEnd {
+				sawFinalReasoningEnd = true
+				_ = json.Unmarshal(c.ProviderMetadata, &finalMeta)
+			} else {
+				sawReasoningEndBeforeDone = true
+			}
+		}
+	}
+	if !sawFinalReasoningEnd {
+		t.Fatal("expected a reasoning-end chunk")
+	}
+	if sawReasoningEndBeforeDone {
+		t.Fatal("got more than one reasoning-end chunk; the store=false-default path should defer to a single reasoning-end at output_item.done")
+	}
+	openaiMeta, _ := finalMeta["openai"].(map[string]interface{})
+	if openaiMeta == nil || openaiMeta["reasoningEncryptedContent"] != "enc" {
+		t.Fatalf("reasoning-end providerMetadata = %#v, want reasoningEncryptedContent \"enc\" from output_item.done (proves it was deferred, not closed early at reasoning_summary_part.done)", finalMeta)
+	}
+}
+
+// TestConvertResponse_ReasoningMultipleSummaryPartsProducesSeparateContent
+// covers finding (E): TS's doGenerate pushes one `reasoning` content entry
+// per summary array element (openai-responses-language-model.ts), not one
+// entry with every part's text concatenated together.
+func TestConvertResponse_ReasoningMultipleSummaryPartsProducesSeparateContent(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	item, _ := json.Marshal(map[string]interface{}{
+		"type": "reasoning", "id": "rs_1", "encrypted_content": "enc",
+		"summary": []map[string]interface{}{
+			{"type": "summary_text", "text": "first"},
+			{"type": "summary_text", "text": "second"},
+		},
+	})
+	result, err := model.convertResponse(mockResponsesResponseWith(item), true, "", nil, nil)
+	if err != nil {
+		t.Fatalf("convertResponse failed: %v", err)
+	}
+	var reasoningParts []types.ReasoningContent
+	for _, c := range result.Content {
+		if rc, ok := c.(types.ReasoningContent); ok {
+			reasoningParts = append(reasoningParts, rc)
+		}
+	}
+	if len(reasoningParts) != 2 {
+		t.Fatalf("reasoning content parts = %#v, want 2 separate blocks", reasoningParts)
+	}
+	if reasoningParts[0].Text != "first" || reasoningParts[1].Text != "second" {
+		t.Fatalf("reasoning parts = %#v, want texts \"first\" then \"second\"", reasoningParts)
+	}
+	if reasoningParts[0].EncryptedContent != "enc" || reasoningParts[1].EncryptedContent != "enc" {
+		t.Fatalf("reasoning parts = %#v, want both to carry the item's encrypted_content", reasoningParts)
 	}
 }
