@@ -56,11 +56,42 @@ func TestRunCodeMode_StripsInterfaceAndSatisfies(t *testing.T) {
 }
 
 // Ports TypeScript's code-mode/src/run-compatibility.test.ts, "supports
-// tool names that are not host-function identifiers". (Its other cases are
-// interrupt-system compatibility tests, out of scope -- see the package
-// doc.) The bridge Proxy's `get(_t, name)` trap in wrapCodeModeSource
+// tool names that are not host-function identifiers". (Its other two cases,
+// exercising interrupt resolutions and continuation signing keys, are
+// ported in continuation_test.go.) The bridge Proxy's `get(_t, name)` trap
+// in wrapCodeModeSource
 // intercepts any property key, including one reached only through bracket
 // notation, so a tool name need not be a valid JS identifier.
+// The default outerToolCallId (used only when neither
+// ToolExecutionOptions.ToolCallID nor a Continuation supplies one) must be
+// distinct per invocation, mirroring TypeScript's lazily-incremented
+// “ `code-mode-${++invocationCounter}` “ fallback -- not the same literal
+// string reused by every anonymous invocation in the process, which would
+// otherwise give two unrelated invocations' host tool calls colliding
+// toolCallId values (e.g. both "code-mode-1:tool-1").
+func TestRunCodeMode_DefaultOuterToolCallIdIsUniquePerInvocation(t *testing.T) {
+	var toolCallIDs []string
+	tools := ToolSet{"echo": {
+		Name:       "echo",
+		Parameters: map[string]interface{}{"type": "object"},
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			toolCallIDs = append(toolCallIDs, opts.ToolCallID)
+			return "ok", nil
+		},
+	}}
+	for i := 0; i < 2; i++ {
+		if _, err := RunCodeMode(context.Background(), RunInput{JS: "return await tools.echo({});", Tools: tools}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+	if len(toolCallIDs) != 2 {
+		t.Fatalf("expected 2 recorded tool call ids, got %#v", toolCallIDs)
+	}
+	if toolCallIDs[0] == toolCallIDs[1] {
+		t.Fatalf("expected distinct default outerToolCallIds across invocations, both got %q", toolCallIDs[0])
+	}
+}
+
 func TestRunCodeMode_SupportsToolNamesThatAreNotHostFunctionIdentifiers(t *testing.T) {
 	tools := ToolSet{"lookup-user": {
 		Name: "lookup-user",
@@ -692,7 +723,12 @@ func TestRunCodeMode_ApprovalCallback_Denied(t *testing.T) {
 	}
 }
 
-func TestRunCodeMode_InterruptModeUnsupported(t *testing.T) {
+// ApprovalModeInterrupt is now implemented (see continuation_test.go and
+// approval_continuation_test.go for its ported TypeScript coverage); this
+// only checks that a tool requiring approval under it pauses with an
+// *Interrupt instead of erroring, without exercising the full
+// continuation round trip.
+func TestRunCodeMode_InterruptModeReturnsInterrupt(t *testing.T) {
 	tools := ToolSet{"guarded": {
 		Name:          "guarded",
 		Parameters:    map[string]interface{}{"type": "object"},
@@ -701,14 +737,20 @@ func TestRunCodeMode_InterruptModeUnsupported(t *testing.T) {
 			return nil, nil
 		},
 	}}
-	_, err := RunCodeMode(context.Background(), RunInput{
+	got, err := RunCodeMode(context.Background(), RunInput{
 		JS:      "return await tools.guarded({});",
 		Tools:   tools,
 		Options: &Options{Approval: &ApprovalOptions{Mode: ApprovalModeInterrupt}},
 	})
-	var protoErr *ProtocolError
-	if !errors.As(err, &protoErr) {
-		t.Fatalf("expected *ProtocolError, got %#v (%v)", err, err)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	interrupt, ok := got.(*Interrupt)
+	if !ok {
+		t.Fatalf("expected *Interrupt, got %#v", got)
+	}
+	if interrupt.ToolName != "guarded" || interrupt.Payload.Kind() != ToolApprovalKind {
+		t.Fatalf("unexpected interrupt: %#v", interrupt)
 	}
 }
 
