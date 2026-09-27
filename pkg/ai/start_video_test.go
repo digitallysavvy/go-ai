@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -109,6 +110,49 @@ func TestExperimentalStartVideo_HonorsCallerIdempotencyKey(t *testing.T) {
 	}
 }
 
+// TestExperimentalStartVideo_StableIdempotencyKeyAcrossRetries mirrors TS
+// "should send one stable idempotency key across doStart retries": doStart is
+// billable, so the minted idempotency-key must be generated once outside the
+// retry loop and reused verbatim on every retry attempt, not regenerated per
+// attempt.
+func TestExperimentalStartVideo_StableIdempotencyKeyAcrossRetries(t *testing.T) {
+	var seenKeys []string
+	attempts := 0
+	model := &mockAsyncVideoModel{
+		startFn: func(ctx context.Context, opts *provider.VideoModelV3StartOptions) (*provider.VideoModelV3OperationStartResult, error) {
+			attempts++
+			seenKeys = append(seenKeys, opts.Headers["idempotency-key"])
+			if attempts < 3 {
+				return nil, &providererrors.ProviderError{
+					Provider:        "mock",
+					StatusCode:      500,
+					Message:         "temporary",
+					ResponseHeaders: map[string]string{"retry-after-ms": "0"},
+				}
+			}
+			return &provider.VideoModelV3OperationStartResult{Operation: json.RawMessage(`{}`), Response: defaultVideoResponseInfo()}, nil
+		},
+	}
+
+	_, err := ExperimentalStartVideo(context.Background(), StartVideoOptions{
+		Model: model, Prompt: VideoPrompt{Text: "x"},
+	})
+	if err != nil {
+		t.Fatalf("ExperimentalStartVideo error = %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("attempts = %d, want 3", attempts)
+	}
+	for i, key := range seenKeys {
+		if key == "" {
+			t.Fatalf("seenKeys[%d] is empty", i)
+		}
+		if key != seenKeys[0] {
+			t.Fatalf("seenKeys = %v, want the same idempotency-key on every retry", seenKeys)
+		}
+	}
+}
+
 func TestExperimentalStartVideo_RejectsWhenNoDoStart(t *testing.T) {
 	model := &mockVideoModel{generateFn: func(ctx context.Context, opts *provider.VideoModelV3CallOptions) (*provider.VideoModelV3Response, error) {
 		return nil, nil
@@ -169,6 +213,54 @@ func TestExperimentalGetVideoStatus_RejectsWhenNoDoStatus(t *testing.T) {
 	_, err := ExperimentalGetVideoStatus(context.Background(), model, GetVideoStatusOptions{Operation: json.RawMessage(`{}`)})
 	if err == nil {
 		t.Fatal("expected error for model without doStatus")
+	}
+}
+
+// TestGenerateVideo_PollFlow_StableIdempotencyKeyAcrossDoStartRetries is the
+// GenerateVideo/executeStartStatusFlow counterpart to
+// TestExperimentalStartVideo_StableIdempotencyKeyAcrossRetries: doStart
+// retries triggered from the poll/webhook orchestration path must also reuse
+// a single minted idempotency key.
+func TestGenerateVideo_PollFlow_StableIdempotencyKeyAcrossDoStartRetries(t *testing.T) {
+	var seenKeys []string
+	startAttempts := 0
+	model := &mockAsyncVideoModel{
+		startFn: func(ctx context.Context, opts *provider.VideoModelV3StartOptions) (*provider.VideoModelV3OperationStartResult, error) {
+			startAttempts++
+			seenKeys = append(seenKeys, opts.Headers["idempotency-key"])
+			if startAttempts < 2 {
+				return nil, &providererrors.ProviderError{
+					Provider:        "mock",
+					StatusCode:      500,
+					Message:         "temporary",
+					ResponseHeaders: map[string]string{"retry-after-ms": "0"},
+				}
+			}
+			return &provider.VideoModelV3OperationStartResult{Operation: json.RawMessage(`{}`), Response: defaultVideoResponseInfo()}, nil
+		},
+		statusFn: func(ctx context.Context, opts *provider.VideoModelV3StatusOptions) (*provider.VideoModelV3OperationStatusResult, error) {
+			return &provider.VideoModelV3OperationStatusResult{
+				Status:   provider.VideoOperationStatusCompleted,
+				Videos:   []provider.VideoModelV3VideoData{{Type: "binary", Binary: []byte{0, 0, 0, 0}, MediaType: "video/mp4"}},
+				Response: defaultVideoResponseInfo(),
+			}, nil
+		},
+	}
+
+	zero := 0
+	_, err := GenerateVideo(context.Background(), GenerateVideoOptions{
+		Model:  model,
+		Prompt: VideoPrompt{Text: "x"},
+		Poll:   &VideoPollOptions{IntervalMs: &zero},
+	})
+	if err != nil {
+		t.Fatalf("GenerateVideo error = %v", err)
+	}
+	if startAttempts != 2 {
+		t.Fatalf("startAttempts = %d, want 2", startAttempts)
+	}
+	if seenKeys[0] == "" || seenKeys[0] != seenKeys[1] {
+		t.Fatalf("seenKeys = %v, want the same idempotency-key on every doStart retry", seenKeys)
 	}
 }
 
