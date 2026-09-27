@@ -293,6 +293,49 @@ func TestBFLImageModel_TrustedSelfHostedLocalhostBaseURL(t *testing.T) {
 	}
 }
 
+// TestBFLImageModel_PollingURLToPrivateHostIsRejected guards against the
+// getPollBody SSRF gap found in P0 review round 2: the poll target
+// (bflCreateResponse.PollingURL) is provider-response data, exactly like the
+// image sample URL, so it must be validated and never fetched with a plain,
+// unguarded HTTP client. Before the fix, getPollBody built the request with
+// http.NewRequestWithContext and sent it through
+// m.provider.client.HTTPClient().Do directly -- no ValidateDownloadURL check,
+// no DNS pinning, no redirect protection, and an unbounded read -- so a
+// malicious or compromised polling_url could reach an internal address (e.g.
+// a cloud metadata endpoint) unimpeded. Mirrors TS pollForImageUrl's
+// getFromApi({validateUrl: true, trustedOrigin}).
+func TestBFLImageModel_PollingURLToPrivateHostIsRejected(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/flux-pro":
+			// The create response's polling_url points straight at a
+			// disallowed private/link-local address, not at the configured
+			// base URL or a *.bfl.ai host.
+			_, _ = w.Write([]byte(`{"id":"req-1","polling_url":"http://169.254.169.254/poll"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "k", BaseURL: server.URL})
+	m := NewImageModel(p, "flux-pro")
+	_, err := m.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt: "a mountain",
+		ProviderOptions: map[string]interface{}{
+			"blackForestLabs": map[string]interface{}{"pollIntervalMillis": 1},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected the untrusted poll URL to a disallowed IP to be rejected")
+	}
+	if !strings.Contains(err.Error(), "169.254.169.254") {
+		t.Fatalf("error = %v, want a rejection naming the disallowed IP", err)
+	}
+}
+
 func TestBFLImageModel_DoGenerateErrorPaths(t *testing.T) {
 	t.Parallel()
 

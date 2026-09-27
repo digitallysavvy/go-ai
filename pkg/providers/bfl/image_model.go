@@ -326,16 +326,38 @@ func (m *ImageModel) pollResult(ctx context.Context, createResp bflCreateRespons
 	return bflResult{}, fmt.Errorf("Black Forest Labs generation timed out.")
 }
 
+// getPollBody fetches the poll status body. pollURL is provider-response
+// data (bflCreateResponse.PollingURL, or a path resolved against the
+// developer-configured base URL as a fallback), so it must be validated and
+// DNS-pinned exactly like downloadImage's response-supplied sample URL --
+// mirrors TS pollForImageUrl's getFromApi({validateUrl: true, trustedOrigin}),
+// which validates the poll URL and only forwards credentials when it stays on
+// a trusted host. Before this fix the request went straight through the
+// provider's plain HTTP client with no SSRF check, no DNS pinning and no
+// redirect protection, so a malicious or compromised poll URL could reach an
+// internal address (e.g. the cloud metadata endpoint).
 func (m *ImageModel) getPollBody(ctx context.Context, pollURL string, headers map[string]string) ([]byte, error) {
 	resolvedURL := pollURL
 	if !strings.HasPrefix(pollURL, "http://") && !strings.HasPrefix(pollURL, "https://") {
 		resolvedURL = strings.TrimRight(m.provider.baseURL(), "/") + "/" + strings.TrimLeft(pollURL, "/")
 	}
+	baseURL := m.provider.baseURL()
+	isTrusted := func(raw string) bool { return bflTrustedURL(raw, baseURL) }
+	opts := fileutil.DefaultDownloadOptions()
+	opts.Timeout = 30 * time.Second
+	opts.URLValidator = fileutil.TrustedURLValidator(isTrusted)
+	opts.Transport = fileutil.TrustRoutingTransport(isTrusted, nil, downloadTransport())
+	if err := opts.URLValidator(resolvedURL); err != nil {
+		return nil, err
+	}
+	trusted := isTrusted(resolvedURL)
+	// Validates each redirect hop and drops credentials on cross-origin hops.
+	client := fileutil.NewDownloadClient(resolvedURL, opts)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, resolvedURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	if bflTrustedURL(resolvedURL, m.provider.baseURL()) {
+	if trusted {
 		for k, v := range headers {
 			req.Header.Set(k, v)
 		}
@@ -343,14 +365,21 @@ func (m *ImageModel) getPollBody(ctx context.Context, pollURL string, headers ma
 			req.Header.Set("X-Key", m.provider.config.APIKey)
 		}
 	}
-	resp, err := m.provider.client.HTTPClient().Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close() //nolint:errcheck
-	body, err := io.ReadAll(resp.Body)
+	limit := opts.MaxSize
+	if limit == 0 {
+		limit = fileutil.DefaultMaxDownloadSize
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return nil, err
+	}
+	if int64(len(body)) > limit {
+		return nil, fmt.Errorf("BFL poll response exceeded maximum size of %d bytes", limit)
 	}
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("BFL API returned status %d: %s", resp.StatusCode, string(body))
