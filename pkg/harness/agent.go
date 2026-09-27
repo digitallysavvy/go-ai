@@ -130,11 +130,8 @@ func (a *Agent) ID() string { return a.settings.ID }
 func (a *Agent) HarnessID() string { return a.settings.Harness.HarnessID() }
 
 // HasOutput reports whether this agent parses completed turns with a
-// configured output specification.
-//
-// Deferred (see package doc): structured output (TS `output` -> harness
-// ResponseFormat) is not wired in this pass; HasOutput always reports false.
-func (a *Agent) HasOutput() bool { return false }
+// configured output specification. Mirrors TS `HarnessAgent.hasOutput`.
+func (a *Agent) HasOutput() bool { return hasOutputSpec(a.settings.Output) }
 
 // Tools returns the merged harness-builtin + user tool set.
 func (a *Agent) Tools() []types.Tool {
@@ -574,6 +571,15 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 		}
 	}
 
+	// Resolved fresh for every turn (TS `_resolveResponseFormat`, called from
+	// both the fresh-prompt and continue paths) rather than cached at
+	// NewAgent time, matching how instructions/tools/etc are re-derived per
+	// turn above.
+	responseFormat, err := resolveOutputResponseFormat(ctx, a.settings.Output)
+	if err != nil {
+		return nil, fmt.Errorf("harness: output.ResponseFormat failed: %w", err)
+	}
+
 	session.startTrackedTurn()
 
 	out := runPrompt(ctx, runPromptInput{
@@ -583,6 +589,7 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 		Tools: tools, ToolsContext: toolsContext, ActiveTools: activeTools, ToolSpecs: toolSpecs,
 		BuiltinToolFiltering: a.builtinToolFiltering,
 		SandboxSession:       session.sandboxSession, SessionWorkDir: session.sessionWorkDir,
+		ResponseFormat: responseFormat, Output: a.settings.Output,
 		Callbacks: a.settings.Callbacks, StopConditions: a.stopConditions, ToolApproval: a.settings.ToolApproval,
 		PendingToolApprovals: pendingApprovals, PendingToolResults: pendingResults,
 		ToolApprovalContinuations: toolApprovalContinuations, ToolResultContinuations: toolResultContinuations,
@@ -655,6 +662,7 @@ func streamResultToGenerateResult(r *ai.StreamTextResult) *ai.GenerateTextResult
 	return &ai.GenerateTextResult{
 		Content:            r.Content(),
 		Text:               r.Text(),
+		Output:             r.Output(),
 		Reasoning:          finalStep.Reasoning,
 		ReasoningText:      finalStep.ReasoningText,
 		ToolCalls:          r.ToolCalls(),

@@ -67,12 +67,13 @@ type mockHarnessOptions struct {
 }
 
 type mockHarnessResult struct {
-	harness       Harness
-	session       Session
-	toolResults   []recordedToolResult
-	toolApprovals []recordedApproval
-	prompts       []Prompt
-	turnSettings  []TurnSettings
+	harness         Harness
+	session         Session
+	toolResults     []recordedToolResult
+	toolApprovals   []recordedApproval
+	prompts         []Prompt
+	turnSettings    []TurnSettings
+	responseFormats []*ResponseFormat
 }
 
 // newMockHarness builds a mock Harness whose Session emits opts.script on a
@@ -86,6 +87,7 @@ func newMockHarness(opts mockHarnessOptions) *mockHarnessResult {
 		doPromptTurn: func(ctx context.Context, o PromptTurnOptions) (PromptControl, error) {
 			res.prompts = append(res.prompts, o.Prompt)
 			res.turnSettings = append(res.turnSettings, o.TurnSettings)
+			res.responseFormats = append(res.responseFormats, o.ResponseFormat)
 			control := &mockPromptControl{
 				toolResults: &res.toolResults, toolApprovals: &res.toolApprovals,
 				onSubmitResult: opts.onSubmitResult, done: make(chan struct{}),
@@ -100,6 +102,7 @@ func newMockHarness(opts mockHarnessOptions) *mockHarnessResult {
 			return control, nil
 		},
 		doContinueTurn: func(ctx context.Context, o ContinueTurnOptions) (PromptControl, error) {
+			res.responseFormats = append(res.responseFormats, o.ResponseFormat)
 			control := &mockPromptControl{
 				toolResults: &res.toolResults, toolApprovals: &res.toolApprovals,
 				onSubmitResult: opts.onSubmitResult, done: make(chan struct{}),
@@ -829,5 +832,147 @@ func TestAgent_StopWhenStopsBeforeFurtherSteps(t *testing.T) {
 	}
 	if len(result.Steps()) != 1 {
 		t.Fatalf("Steps() = %d, want 1", len(result.Steps()))
+	}
+}
+
+// TestAgent_HasOutput mirrors TS `HarnessAgent.hasOutput`'s
+// `this.settings.output != null`.
+func TestAgent_HasOutput(t *testing.T) {
+	mock := newMockHarness(mockHarnessOptions{script: func(func(string, interface{})) []StreamPart { return nil }})
+
+	withoutOutput, err := NewAgent(AgentSettings{Harness: mock.harness})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+	if withoutOutput.HasOutput() {
+		t.Fatalf("HasOutput() = true, want false when Output is unset")
+	}
+
+	withOutput, err := NewAgent(AgentSettings{Harness: mock.harness, Output: ai.JSONOutput(ai.JSONOutputOptions{Name: "data"})})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+	if !withOutput.HasOutput() {
+		t.Fatalf("HasOutput() = false, want true when Output is set")
+	}
+}
+
+// TestAgent_StructuredOutput ports the structured-output wiring TS
+// 62a9c2a added to HarnessAgent: (1) the configured Output derives the
+// harness-v1 ResponseFormat sent on the wire with every turn (asserted via
+// the mock's recorded o.ResponseFormat, mirroring
+// `HarnessAgent._resolveResponseFormat`), and (2) the finished turn's Output
+// parses the final step's text with that same Output spec, surfaced through
+// both StreamTextResult.Output() (Stream) and GenerateTextResult.Output
+// (Generate) — mirrors `HarnessAgent._toGenerateResult` awaiting
+// `streamResult.output` only when `settings.output != null`.
+func TestAgent_StructuredOutput(t *testing.T) {
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(submit func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&StreamStartPart{},
+				&TextDeltaPart{ID: "t1", Delta: `{"greeting":`},
+				&TextDeltaPart{ID: "t1", Delta: `"hi"}`},
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)},
+				&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(1, 1)},
+			}
+		},
+	})
+	output := ai.JSONOutput(ai.JSONOutputOptions{Name: "greeting"})
+	a, err := NewAgent(AgentSettings{Harness: mock.harness, Output: output})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+	session, err := a.CreateSession(context.Background(), CreateSessionOptions{SandboxSession: testSandbox()})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	result, err := a.Generate(context.Background(), agent.AgentGenerateOptions{Prompt: "hi", HarnessSession: session})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	if len(mock.responseFormats) != 1 || mock.responseFormats[0] == nil {
+		t.Fatalf("responseFormats = %+v, want one non-nil entry", mock.responseFormats)
+	}
+	if mock.responseFormats[0].Type != ResponseFormatJSON {
+		t.Fatalf("ResponseFormat.Type = %q, want %q", mock.responseFormats[0].Type, ResponseFormatJSON)
+	}
+	if mock.responseFormats[0].Name != "greeting" {
+		t.Fatalf("ResponseFormat.Name = %q, want %q", mock.responseFormats[0].Name, "greeting")
+	}
+
+	parsed, ok := result.Output.(map[string]interface{})
+	if !ok {
+		t.Fatalf("GenerateTextResult.Output = %#v (%T), want map[string]interface{}", result.Output, result.Output)
+	}
+	if parsed["greeting"] != "hi" {
+		t.Fatalf("Output[\"greeting\"] = %v, want %q", parsed["greeting"], "hi")
+	}
+}
+
+// TestAgent_StructuredOutput_TextResponseFormat mirrors
+// `_resolveResponseFormat`'s `responseFormat.type === 'text'` branch: an
+// Output spec that resolves to a text format (ai.TextOutput) is still sent
+// as an explicit `{type:"text"}` ResponseFormat, distinct from HasOutput
+// being false (no Output configured at all sends a nil ResponseFormat).
+func TestAgent_StructuredOutput_TextResponseFormat(t *testing.T) {
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(submit func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&StreamStartPart{},
+				&TextDeltaPart{ID: "t1", Delta: "hello"},
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)},
+				&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(1, 1)},
+			}
+		},
+	})
+	a, err := NewAgent(AgentSettings{Harness: mock.harness, Output: ai.TextOutput()})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+	if !a.HasOutput() {
+		t.Fatalf("HasOutput() = false, want true")
+	}
+	session, err := a.CreateSession(context.Background(), CreateSessionOptions{SandboxSession: testSandbox()})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	if _, err := a.Generate(context.Background(), agent.AgentGenerateOptions{Prompt: "hi", HarnessSession: session}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if len(mock.responseFormats) != 1 || mock.responseFormats[0] == nil {
+		t.Fatalf("responseFormats = %+v, want one non-nil entry", mock.responseFormats)
+	}
+	if mock.responseFormats[0].Type != ResponseFormatText {
+		t.Fatalf("ResponseFormat.Type = %q, want %q", mock.responseFormats[0].Type, ResponseFormatText)
+	}
+}
+
+// TestAgent_NoOutputSendsNilResponseFormat ensures an agent with no Output
+// configured sends a nil ResponseFormat on the wire (the common,
+// pre-62a9c2a path must be unaffected).
+func TestAgent_NoOutputSendsNilResponseFormat(t *testing.T) {
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(submit func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&StreamStartPart{},
+				&TextDeltaPart{ID: "t1", Delta: "hello"},
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)},
+				&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(1, 1)},
+			}
+		},
+	})
+	a, session := newTestAgent(t, mock, nil, Callbacks{}, nil)
+	if a.HasOutput() {
+		t.Fatalf("HasOutput() = true, want false")
+	}
+	if _, err := a.Generate(context.Background(), agent.AgentGenerateOptions{Prompt: "hi", HarnessSession: session}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if len(mock.responseFormats) != 1 || mock.responseFormats[0] != nil {
+		t.Fatalf("responseFormats = %+v, want one nil entry", mock.responseFormats)
 	}
 }

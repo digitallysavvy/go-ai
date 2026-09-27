@@ -438,3 +438,79 @@ func TestNewStreamTextResultFromParts_RespectsContextCancellation(t *testing.T) 
 		t.Fatal("Err() = nil, want context.Canceled")
 	}
 }
+
+// TestNewStreamTextResultFromParts_Output ports the harness.md WG4
+// structured-output wiring (TS 62a9c2a): ExternalStreamOptions.Output, when
+// it satisfies outputProcessor, parses the final step's accumulated text
+// into Output()/OutputErr() once the stream settles, and PartialOutput()
+// updates (deduplicated) as text arrives within that step — mirroring the
+// identical block in the regular StreamText path this reuses (see
+// stream.go's opts.Output handling).
+func TestNewStreamTextResultFromParts_Output(t *testing.T) {
+	t.Parallel()
+
+	src := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeText, Text: `{"greeting":`},
+		{Type: provider.ChunkTypeText, Text: `"hi"}`},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	})
+
+	result := NewStreamTextResultFromParts(context.Background(), src, ExternalStreamOptions{
+		Provider: "harness", ModelID: "claude-code",
+		Output: JSONOutput(JSONOutputOptions{Name: "greeting"}),
+	})
+
+	if err := result.Err(); err != nil {
+		t.Fatalf("Err() = %v, want nil", err)
+	}
+	if err := result.OutputErr(); err != nil {
+		t.Fatalf("OutputErr() = %v, want nil", err)
+	}
+	parsed, ok := result.Output().(map[string]interface{})
+	if !ok {
+		t.Fatalf("Output() = %#v (%T), want map[string]interface{}", result.Output(), result.Output())
+	}
+	if parsed["greeting"] != "hi" {
+		t.Fatalf("Output()[\"greeting\"] = %v, want %q", parsed["greeting"], "hi")
+	}
+	// The dedup rule (only publish when the JSON representation changes)
+	// still lets a valid, growing partial publish more than once; assert
+	// only that some non-nil partial was captured along the way.
+	if result.PartialOutput() == nil {
+		t.Fatal("PartialOutput() = nil, want a parsed partial from streaming text")
+	}
+}
+
+// TestNewStreamTextResultFromParts_OutputIgnoredWhenUnset verifies that
+// ExternalStreamOptions.Output left at its zero value (nil) leaves
+// Output()/OutputErr()/PartialOutput() at their own zero values, and that a
+// value not satisfying outputProcessor is silently ignored exactly like
+// StreamTextOptions.Output (both mirror the TS `settings.output == null`
+// short-circuit).
+func TestNewStreamTextResultFromParts_OutputIgnoredWhenUnset(t *testing.T) {
+	t.Parallel()
+
+	src := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeText, Text: "hello"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	})
+
+	result := NewStreamTextResultFromParts(context.Background(), src, ExternalStreamOptions{
+		Provider: "harness", ModelID: "claude-code", Output: "not-an-output-spec",
+	})
+
+	if err := result.Err(); err != nil {
+		t.Fatalf("Err() = %v, want nil", err)
+	}
+	if result.Output() != nil {
+		t.Fatalf("Output() = %#v, want nil", result.Output())
+	}
+	if result.OutputErr() != nil {
+		t.Fatalf("OutputErr() = %v, want nil", result.OutputErr())
+	}
+	if result.PartialOutput() != nil {
+		t.Fatalf("PartialOutput() = %#v, want nil", result.PartialOutput())
+	}
+}

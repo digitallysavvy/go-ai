@@ -142,6 +142,13 @@ type runPromptInput struct {
 	SandboxSession       providerutils.SandboxSession
 	SessionWorkDir       string
 	ResponseFormat       *ResponseFormat
+	// Output is AgentSettings.Output, forwarded to
+	// ai.ExternalStreamOptions.Output so the returned *ai.StreamTextResult's
+	// Output()/OutputErr()/PartialOutput() accessors work for a HarnessAgent
+	// turn exactly like they do for a StreamText call. See settings.go's
+	// outputResponseFormatter doc for why ResponseFormat is derived
+	// separately instead of through this value.
+	Output interface{}
 
 	Callbacks      Callbacks
 	StopConditions []ai.StopCondition
@@ -201,6 +208,7 @@ func runPrompt(ctx context.Context, in runPromptInput) *runPromptOutput {
 	result := ai.NewStreamTextResultFromParts(context.WithoutCancel(ctx), stream, ai.ExternalStreamOptions{
 		Provider: "harness:" + in.Harness.HarnessID(),
 		ModelID:  in.Model,
+		Output:   in.Output,
 	})
 
 	done := make(chan struct{})

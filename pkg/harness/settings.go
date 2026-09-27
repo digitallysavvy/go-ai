@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -122,6 +123,17 @@ type AgentSettings struct {
 	// completed turns. See PrepareCallOptions/PrepareCallResult.
 	PrepareCall func(ctx context.Context, opts PrepareCallOptions) (PrepareCallResult, error)
 
+	// Output is an optional specification for generating typed output (e.g.
+	// ai.ObjectOutput/ai.ArrayOutput/ai.ChoiceOutput/ai.JSONOutput/
+	// ai.TextOutput), active for every turn this agent runs. Mirrors TS
+	// `HarnessAgentSettings.output`. The same value type StreamText's
+	// StreamTextOptions.Output/GenerateTextOptions.Output accept — it is
+	// resolved against pkg/ai's internal outputProcessor interface, so any
+	// value that does not implement it is silently ignored, exactly like
+	// those options. See Agent.HasOutput and startTurn's ResponseFormat
+	// derivation.
+	Output interface{}
+
 	// StopWhen are the conditions that stop the current result after a
 	// completed harness tool step that could continue into another model
 	// step. The underlying turn remains unfinished and can be suspended and
@@ -226,4 +238,67 @@ func assertNoReservedQuestionTool(harness Harness, userTools map[string]types.To
 		return errors.New("HarnessAgent tool name 'askUserQuestions' is reserved for harness question requests.")
 	}
 	return nil
+}
+
+// outputResponseFormatter is a narrower, structural view of pkg/ai's
+// internal (unexported) outputProcessor interface — just the exported
+// `ResponseFormat` method every ai.TextOutput/ObjectOutput/ArrayOutput/
+// ChoiceOutput/JSONOutput value implements. pkg/harness derives the
+// harness-v1 ResponseFormat for a turn through this narrow interface instead
+// of importing pkg/ai's private output-processing machinery; the parsed
+// Output()/OutputErr()/PartialOutput() accessors on the resulting
+// *ai.StreamTextResult are wired separately by handing AgentSettings.Output
+// straight through to ai.ExternalStreamOptions.Output (run_prompt.go),
+// which performs its own internal type assertion against outputProcessor.
+type outputResponseFormatter interface {
+	ResponseFormat(ctx context.Context) (*provider.ResponseFormat, error)
+}
+
+// hasOutputSpec reports whether output is configured with a value that can
+// produce a harness-v1 ResponseFormat. Mirrors TS `HarnessAgent.hasOutput`'s
+// `this.settings.output != null` (every ai.*Output constructor only ever
+// returns an outputResponseFormatter-satisfying value, so the interface
+// assertion is equivalent to a nil check here).
+func hasOutputSpec(output interface{}) bool {
+	if output == nil {
+		return false
+	}
+	_, ok := output.(outputResponseFormatter)
+	return ok
+}
+
+// resolveOutputResponseFormat derives the harness-v1 ResponseFormat for
+// AgentSettings.Output, mirroring TS `HarnessAgent._resolveResponseFormat`.
+// Returns (nil, nil) when output is unset or does not implement
+// outputResponseFormatter.
+func resolveOutputResponseFormat(ctx context.Context, output interface{}) (*ResponseFormat, error) {
+	formatter, ok := output.(outputResponseFormatter)
+	if !ok {
+		return nil, nil
+	}
+	rf, err := formatter.ResponseFormat(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return toHarnessResponseFormat(rf), nil
+}
+
+// toHarnessResponseFormat converts a pkg/provider ResponseFormat (the shape
+// every ai.*Output.ResponseFormat method returns) to the harness-v1 wire
+// shape. Mirrors TS `_resolveResponseFormat`'s object literal: a "text"
+// format collapses to {type:"text"} with no schema/name/description, and
+// every other type (json/json_object/json_schema) is carried as harness-v1's
+// single "json" type.
+func toHarnessResponseFormat(rf *provider.ResponseFormat) *ResponseFormat {
+	if rf == nil {
+		return nil
+	}
+	if rf.Type == "text" {
+		return &ResponseFormat{Type: ResponseFormatText}
+	}
+	out := &ResponseFormat{Type: ResponseFormatJSON, Name: rf.Name, Description: rf.Description}
+	if schema, ok := rf.Schema.(map[string]any); ok {
+		out.Schema = schema
+	}
+	return out
 }
