@@ -348,6 +348,21 @@ type turnDriver struct {
 	telStepCtx            context.Context
 	telModelCallStartedAt int64
 	telEnded              bool
+
+	// pendingFinishChunk holds the terminal ChunkTypeFinish chunk once the
+	// harness's own `finish` part has been observed, deferred until run()
+	// has called OnTurnFinished. Mirrors TS runPrompt's `finalFinish`, which
+	// is likewise only turned into an enqueued stream part inside the final
+	// `result.finish()` call, after `input.onTurnFinished?.()` has already
+	// run. d.stream is a buffered channel: pushing the finish chunk here
+	// (inside consumeLoop, on the same goroutine that will later call
+	// OnTurnFinished) would make it visible to a concurrent reader —
+	// pkg/ai's StreamTextResult sets its status to done as soon as it reads
+	// that chunk, without waiting for the channel to close — so a caller
+	// blocked in Err()/etc. could observe the turn as finished, and start a
+	// new one on the same AgentSession, before finishTrackedTurn has reset
+	// the session's turnState back to idle.
+	pendingFinishChunk *provider.StreamChunk
 }
 
 func (d *turnDriver) run() {
@@ -455,6 +470,11 @@ func (d *turnDriver) run() {
 	}
 	if finished && d.in.OnTurnFinished != nil {
 		d.in.OnTurnFinished()
+	}
+	// Push the terminal finish chunk (if any) only now, after
+	// OnTurnFinished has already run — see pendingFinishChunk's doc.
+	if d.pendingFinishChunk != nil {
+		d.stream.push(*d.pendingFinishChunk)
 	}
 	d.stream.closeOK()
 }
@@ -683,12 +703,14 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 			// (as opposed to pauseForHostInput's zero usage or
 			// suspendOrFinishNow's last-step usage).
 			d.telEnd(d.completedSteps, *usage)
-			d.stream.push(provider.StreamChunk{
+			// Deferred, not pushed here — see turnDriver.pendingFinishChunk's
+			// doc. run() pushes it once OnTurnFinished has been called.
+			d.pendingFinishChunk = &provider.StreamChunk{
 				Type:            provider.ChunkTypeFinish,
 				FinishReason:    unifiedFinishReason(fp.FinishReason),
 				RawFinishReason: fp.FinishReason.Raw,
 				Usage:           usage,
-			})
+			}
 			finished = true
 		}
 
@@ -1044,10 +1066,20 @@ func (d *turnDriver) suspendOrFinishNow(finishReason FinishReason, usage Usage) 
 	// not a fresh/zero one — mirrors that exactly, regardless of whether the
 	// underlying session turn was suspended or hard-finished.
 	d.telEnd(d.completedSteps, harnessUsageToTypesUsageValue(usage))
-	d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: unifiedFinishReason(finishReason), RawFinishReason: finishReason.Raw})
+	// OnTurnFinished must run before the finish chunk is pushed onto
+	// d.stream, not after: d.stream is a buffered channel, so pushing makes
+	// the chunk visible to a concurrent reader (pkg/ai's StreamTextResult
+	// marks itself done as soon as it reads a ChunkTypeFinish chunk, without
+	// waiting for the channel to close) immediately, before this goroutine
+	// would otherwise get around to calling OnTurnFinished — letting a
+	// caller blocked on Err()/etc. see the turn as finished, and start a new
+	// one on the same AgentSession, before finishTrackedTurn has actually
+	// reset the session's turnState back to idle. See run()'s identical
+	// ordering for the natural-finish path (pendingFinishChunk).
 	if !suspended && d.in.OnTurnFinished != nil {
 		d.in.OnTurnFinished()
 	}
+	d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: unifiedFinishReason(finishReason), RawFinishReason: finishReason.Raw})
 	d.stream.closeOK()
 }
 
