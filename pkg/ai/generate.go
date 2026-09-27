@@ -196,6 +196,12 @@ type GenerateTextOptions struct {
 	// ActiveTools restricts the tools available for this generation.
 	ActiveTools []string
 
+	// ExperimentalToolCallers configures which tools may call which other
+	// tools (programmatic tool calling / code mode), and which tools stay
+	// hidden from the model until discovered via ai.ToolSearch. Mirrors the
+	// TypeScript SDK's experimental_toolCallers.
+	ExperimentalToolCallers ExperimentalToolCallers
+
 	// ToolApproval configures approval handling for tool execution.
 	ToolApproval types.ToolApprovalConfig
 
@@ -657,6 +663,14 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	if err := validateMaxRetries(opts.MaxRetries); err != nil {
 		return nil, err
 	}
+	resolvedToolCallers, err := ResolveToolCallerConfiguration(opts.Tools, opts.ExperimentalToolCallers)
+	if err != nil {
+		return nil, err
+	}
+	toolSearchState, err := NewToolSearchState(opts.Tools, resolvedToolCallers)
+	if err != nil {
+		return nil, err
+	}
 	telemetrySettings := effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
 	runtimeContext := effectiveRuntimeContext(opts.RuntimeContext, opts.ExperimentalContext)
 	system := effectiveSystem(opts.System, opts.Instructions)
@@ -969,13 +983,28 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				stepSandbox = prepared.ExperimentalSandbox
 			}
 		}
+
+		// Apply deferred tool discovery (ai.ToolSearch) and tool-caller
+		// routing (ExperimentalToolCallers) before resolving descriptions
+		// and ordering. stepTools becomes the model-visible set;
+		// stepExecutionTools is used to look up the tool actually invoked
+		// (which may be a bound local caller with a stable model-visible
+		// definition, per prepareToolsForToolCallers).
+		stepTools = toolSearchState.Apply(stepTools, toolsContext, stepSandbox)
+		stepExecutionTools, modelTools, toolCallerMessages := PrepareToolsForToolCallers(stepTools, resolvedToolCallers)
+		stepTools = modelTools
+		if len(toolCallerMessages) > 0 {
+			stepMessages = AppendToolCallerMessages(stepMessages, toolCallerMessages)
+		}
+
 		stepTools = resolveStepTools(ctx, stepTools, toolsContext, stepSandbox)
 		stepTools = orderStepTools(stepTools, stepToolOrder)
+		stepExecutionTools = resolveStepTools(ctx, stepExecutionTools, toolsContext, stepSandbox)
 		instructionsForNextStep = stepSystem
 		instructionMessagesForNextStep = stepInstructionMessages
-		toolsByName := make(map[string]*types.Tool, len(stepTools))
-		for i := range stepTools {
-			toolsByName[stepTools[i].Name] = &stepTools[i]
+		toolsByName := make(map[string]*types.Tool, len(stepExecutionTools))
+		for i := range stepExecutionTools {
+			toolsByName[stepExecutionTools[i].Name] = &stepExecutionTools[i]
 		}
 
 		// Apply per-step timeout if configured
@@ -1301,7 +1330,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				toolExecutionMs:     map[string]int64{},
 				executionBlocked:    !isToolExecutionAllowedFinishReason(genResult.FinishReason),
 			}
-			toolResults, err := executeTools(ctx, genResult.ToolCalls, stepTools, runtimeContext, toolsContext, opts.ToolApproval, &result.Usage, toolCallbacks)
+			toolResults, err := executeTools(ctx, genResult.ToolCalls, stepExecutionTools, runtimeContext, toolsContext, opts.ToolApproval, &result.Usage, toolCallbacks)
 			if err != nil {
 				if opts.Timeout != nil && opts.Timeout.HasTotal() && ctx.Err() != nil {
 					err = wrapTimeoutError(TimeoutReasonTotal, err)
