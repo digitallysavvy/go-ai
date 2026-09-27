@@ -3,6 +3,7 @@ package fireworks
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 
@@ -144,18 +145,24 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["response_format"] = format
 	}
 	// Map top-level Reasoning to Fireworks reasoning_effort.
-	// none and provider-default → omit (Fireworks passes through the raw level string
-	// and only accepts supported values; none is excluded at the base layer).
-	// minimal/low → "low", medium → "medium", high/xhigh → "high".
+	// TS: reasoning_effort is set to the raw reasoning value whenever
+	// isCustomReasoning(reasoning) is true — which excludes only undefined
+	// and 'provider-default', NOT 'none' (openai-compatible-chat-language-
+	// model.ts:310-312) — then Fireworks' own transformRequestBody remaps
+	// only minimal→low and xhigh→high, passing low/medium/high/none through
+	// unchanged (fireworks-provider.ts:169-177). So 'none' is forwarded as
+	// "none", not omitted; only 'provider-default' (nil here) is omitted.
 	if opts.Reasoning != nil {
 		switch *opts.Reasoning {
+		case types.ReasoningNone:
+			body["reasoning_effort"] = "none"
 		case types.ReasoningMinimal, types.ReasoningLow:
 			body["reasoning_effort"] = "low"
 		case types.ReasoningMedium:
 			body["reasoning_effort"] = "medium"
 		case types.ReasoningHigh, types.ReasoningXHigh:
 			body["reasoning_effort"] = "high"
-			// ReasoningNone and ReasoningDefault: omit
+			// ReasoningDefault: omit
 		}
 	}
 
@@ -241,7 +248,16 @@ func (m *LanguageModel) handleError(err error) error {
 	if parsed := parseFireworksProviderError(err); parsed != nil {
 		return parsed
 	}
-	return providererrors.NewProviderError("fireworks", 0, "", err.Error(), err)
+	// TS createJsonErrorResponseHandler always sets statusCode: response.status
+	// even in its catch-all branch; preserve the real HTTP status here too
+	// instead of hardcoding 0 (which several retry-classification paths treat
+	// as "unknown", i.e. retryable).
+	statusCode := 0
+	var statusErr *internalhttp.HTTPStatusError
+	if errors.As(err, &statusErr) {
+		statusCode = statusErr.StatusCode
+	}
+	return providererrors.NewProviderError("fireworks", statusCode, "", err.Error(), err)
 }
 
 // convertFireworksUsage converts Fireworks usage to detailed Usage struct

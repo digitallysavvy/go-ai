@@ -16,8 +16,12 @@ func TestFireworksReasoningAllLevels(t *testing.T) {
 		want   string
 		hasKey bool
 	}{
-		// ReasoningNone: Fireworks base layer excludes none; omit the field.
-		{types.ReasoningNone, "", false},
+		// TS: reasoning_effort is set to the raw reasoning value whenever
+		// isCustomReasoning(reasoning) is true, which excludes only
+		// undefined/'provider-default' — NOT 'none'. Fireworks' own
+		// transformRequestBody only remaps minimal->low and xhigh->high,
+		// passing "none" through unchanged.
+		{types.ReasoningNone, "none", true},
 		{types.ReasoningMinimal, "low", true},
 		{types.ReasoningLow, "low", true},
 		{types.ReasoningMedium, "medium", true},
