@@ -233,6 +233,76 @@ func TestHTTPTransportUnexpectedContentTypeReportsAndReturnsError(t *testing.T) 
 	}
 }
 
+// statusBodyClient returns a fixed status code and body for any POST (and a
+// 405 for any GET, so Connect's inbound SSE listener never blocks a test),
+// letting a test assert that Send() drains and closes a response body on a
+// path where TS never reads from it (202 Accepted, and a notification's
+// response) -- a Go-specific requirement TS has no equivalent for: an
+// unread fetch Response body is reclaimed by the JS GC either way, while an
+// unclosed Go http.Response.Body leaks the underlying connection.
+type statusBodyClient struct {
+	status int
+	body   io.ReadCloser
+}
+
+func (c statusBodyClient) Do(req *http.Request) (*http.Response, error) {
+	if req.Method == http.MethodGet {
+		return &http.Response{StatusCode: http.StatusMethodNotAllowed, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+	return &http.Response{StatusCode: c.status, Header: make(http.Header), Body: c.body}, nil
+}
+
+// TestHTTPTransportClosesResponseBodyOn202 guards against a body/connection
+// leak on the 202 Accepted path (matching TS send()'s early `return;` for
+// `response.status === 202`, which likewise never reads the body -- but Go,
+// unlike JS, must still close it explicitly).
+func TestHTTPTransportClosesResponseBodyOn202(t *testing.T) {
+	wrapped := &closeSignalingReadCloser{Reader: strings.NewReader(""), closed: make(chan struct{})}
+	transport := NewHTTPTransport(HTTPTransportConfig{
+		URL:       "http://localhost:9999/mcp",
+		SSEClient: statusBodyClient{status: http.StatusAccepted, body: wrapped},
+	})
+	transport.connected = true
+
+	msg, err := CreateRequest(1, "ping", nil)
+	if err != nil {
+		t.Fatalf("CreateRequest error: %v", err)
+	}
+	if err := transport.Send(t.Context(), msg); err != nil {
+		t.Fatalf("Send error: %v", err)
+	}
+	select {
+	case <-wrapped.closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected the 202 response body to be closed")
+	}
+}
+
+// TestHTTPTransportClosesResponseBodyOnNotification guards against a
+// body/connection leak on the notification path (matching TS send()'s
+// `if (isNotification) { return; }`, which likewise never reads the body).
+func TestHTTPTransportClosesResponseBodyOnNotification(t *testing.T) {
+	wrapped := &closeSignalingReadCloser{Reader: strings.NewReader(""), closed: make(chan struct{})}
+	transport := NewHTTPTransport(HTTPTransportConfig{
+		URL:       "http://localhost:9999/mcp",
+		SSEClient: statusBodyClient{status: http.StatusOK, body: wrapped},
+	})
+	transport.connected = true
+
+	msg, err := CreateNotification("notifications/initialized", nil)
+	if err != nil {
+		t.Fatalf("CreateNotification error: %v", err)
+	}
+	if err := transport.Send(t.Context(), msg); err != nil {
+		t.Fatalf("Send error: %v", err)
+	}
+	select {
+	case <-wrapped.closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected the notification response body to be closed")
+	}
+}
+
 // TestHTTPTransportMissingContentTypeReportsUnexpectedContentType mirrors TS
 // send()'s `const contentType = response.headers.get('content-type') || ”;`:
 // a response with no content-type header at all takes the same "Unexpected

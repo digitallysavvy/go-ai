@@ -545,7 +545,13 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		// If the server accepted the message (e.g. the initialized
 		// notification), optionally (re)start inbound SSE when it was not
 		// available earlier (e.g. a 405 before init), matching TS's send()
-		// 202 handling. Fire-and-forget: do not block Send() on it.
+		// 202 handling. Fire-and-forget: do not block Send() on it. TS never
+		// reads response.body here either (it returns immediately), but Go
+		// must still drain and close it to return the connection to the
+		// client's pool -- JS's GC reclaims an unread body implicitly, Go's
+		// http.Client does not.
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close() //nolint:errcheck
 		if !t.isModernProtocol() {
 			t.sseMu.Lock()
 			hasConn := t.sseConnCancel != nil
@@ -557,6 +563,11 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		return nil
 	}
 	if IsNotification(message) {
+		// Matching TS send()'s `if (isNotification) { return; }`: a
+		// notification's response body is never inspected. Go must still
+		// drain and close it to return the connection to the pool.
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close() //nolint:errcheck
 		return nil
 	}
 
