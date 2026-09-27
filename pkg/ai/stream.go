@@ -1923,7 +1923,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					// through here (or through chunk.Err) is provider-audit
 					// work (WG8's "provider mapping", e.g. Anthropic
 					// overloaded_error, Bedrock exceptions, Google, Groq,
-					// DeepSeek, HuggingFace, MoonshotAI, Gateway).
+					// DeepSeek, MoonshotAI, Gateway). HuggingFace now wires
+					// chunk.Err via *providererrors.StreamProviderError (SSE
+					// port to the Responses API), so it no longer belongs on
+					// this list.
 					normalizedErr = providererrors.NormalizeStreamProviderError(rawErr, stepProvider, chunk.Raw)
 				}
 				if opts.OnError != nil {
