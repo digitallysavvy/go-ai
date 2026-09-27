@@ -1638,11 +1638,12 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 					Dynamic:          true,
 				},
 				types.ToolResultContent{
-					ToolCallID:       toolCallID,
-					ToolName:         toolName,
-					Result:           mcpResult,
-					ProviderExecuted: true,
-					Dynamic:          true,
+					ToolCallID: toolCallID,
+					ToolName:   toolName,
+					Result:     mcpResult,
+					// TS never sets providerExecuted/dynamic on this
+					// tool-result, only on the tool-call (matches the
+					// streaming path's output_item.done handler below).
 					ProviderMetadata: toRawMetadata(openAIResponsesToolCallMetadata(providerName, item.ID, "", nil, nil)),
 				},
 			)

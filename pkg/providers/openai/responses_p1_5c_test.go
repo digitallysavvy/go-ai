@@ -163,6 +163,11 @@ func TestResponsesLanguageModel_McpCallDecodesAsToolCallAndResult(t *testing.T) 
 	if res["output"] != "found it" || res["serverLabel"] != "docs" {
 		t.Fatalf("mcp result = %#v, want output=found it serverLabel=docs", res)
 	}
+	// TS never sets providerExecuted/dynamic on the mcp_call tool-RESULT,
+	// only on the tool-call (matches the streaming path).
+	if tr.ProviderExecuted || tr.Dynamic {
+		t.Fatalf("mcp tool-result = %#v, want ProviderExecuted=false and Dynamic=false", tr)
+	}
 }
 
 func TestResponsesLanguageModel_McpApprovalRequestDecodesAsApprovalRequest(t *testing.T) {
