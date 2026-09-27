@@ -78,7 +78,9 @@ for range result.Chunks() {
 
 ### XAI default API changed to Responses API
 
-`xai.Provider.LanguageModel()` now returns a model backed by the Responses API instead of the Chat Completions API. The Responses API supports additional features like image input and more granular reasoning effort levels. If you need the legacy Chat Completions behavior, use `ChatCompletionsLanguageModel()` instead.
+`xai.Provider.LanguageModel()` now returns a model backed by the Responses API instead of the Chat Completions API. The Responses API supports additional features like image input and more granular reasoning effort levels.
+
+`ChatCompletionsLanguageModel()` was available as an escape hatch to the legacy API for a time, but has since been **removed entirely**, matching the upstream TypeScript SDK's breaking change. `xai.Provider.LanguageModel()` is now the only language model xAI exposes; there is no way to opt back into the Chat Completions API.
 
 **Before (v0.3.x):**
 
@@ -98,11 +100,10 @@ import "github.com/digitallysavvy/go-ai/pkg/providers/xai"
 
 provider := xai.New(xai.Config{APIKey: os.Getenv("XAI_API_KEY")})
 
-// v0.4.0: LanguageModel() now uses the Responses API (new default)
+// v0.4.0: LanguageModel() now uses the Responses API (new default,
+// and the only API available -- ChatCompletionsLanguageModel() was
+// removed)
 model, _ := provider.LanguageModel("grok-3")
-
-// To explicitly use the Chat Completions API:
-chatModel, _ := provider.ChatCompletionsLanguageModel("grok-3")
 ```
 
 ### XAI model IDs removed
@@ -236,7 +237,7 @@ v0.4.0 also introduces several new capabilities:
 ### Code changes
 
 - [ ] Update `StreamText` consumers that depend on mid-stream tool results to handle deferred execution
-- [ ] Replace `xai.Provider.LanguageModel()` with `ChatCompletionsLanguageModel()` if you need Chat Completions API behavior
+- [ ] Update any code calling `xai.Provider.ChatCompletionsLanguageModel()` -- it has been removed; `xai.Provider.LanguageModel()` (Responses API) is now the only option
 - [ ] Replace `grok-2` and `grok-2-vision-1212` model IDs with `grok-3` family models
 - [ ] Add `Config: mcp.TransportConfig{Redirect: mcp.MCPRedirectFollow}` to MCP transport configs that need redirects
 - [ ] Move custom `Tracer` setup to `telemetry.RegisterTelemetryIntegration()` at startup

@@ -111,7 +111,7 @@ result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 ```
 
-The legacy chat-completions `SearchParameters` option remains source-compatible but is deprecated. Prefer provider-executed `WebSearch` or `XSearch` tools on the Responses API.
+The legacy chat-completions `SearchParameters` option was removed along with `ChatCompletionsLanguageModel()`. Use the provider-executed `WebSearch` or `XSearch` tools on the Responses API instead.
 
 ### Reasoning summary
 
