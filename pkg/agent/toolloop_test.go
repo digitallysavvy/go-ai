@@ -3093,3 +3093,159 @@ func TestExecuteWithMessagesDeferredToolDiscovery(t *testing.T) {
 		t.Fatalf("FinishReason = %v, want stop", result.FinishReason)
 	}
 }
+
+// TestExecuteWithMessagesDeferredToolDiscovery_OnStepStartReportsEffectiveTools
+// verifies that OnStepStartEvent, in the native executeWithMessages step
+// loop, reports this step's *effective* (tool-search-filtered) tool set
+// rather than the full configured set — matching ai.GenerateText's per-step
+// pipeline (pkg/ai/generate.go applies toolSearchState.Apply before
+// Notify(OnStepStartEvent)). Before this fix, executeWithMessages notified
+// with the pre-toolSearch tool list and only narrowed callConfig.Tools
+// afterward, so a still-deferred tool was visibly reported at step start.
+func TestExecuteWithMessagesDeferredToolDiscovery_OnStepStartReportsEffectiveTools(t *testing.T) {
+	var stepStartToolNames [][]string
+	calls := 0
+	model := &functionalAgentLanguageModel{
+		doGenerate: func(_ context.Context, _ *provider.GenerateOptions) (*types.GenerateResult, error) {
+			calls++
+			if calls == 1 {
+				return &types.GenerateResult{
+					FinishReason: types.FinishReasonToolCalls,
+					ToolCalls: []types.ToolCall{
+						{ID: "c1", ToolName: "toolSearch", Arguments: map[string]interface{}{"query": "secret"}},
+					},
+				}, nil
+			}
+			return &types.GenerateResult{Text: "done", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+
+	deferredTool := types.Tool{
+		Name:         "secret",
+		Description:  "a secret tool",
+		DeferLoading: true,
+		Type:         types.ToolTypeFunction,
+		Parameters:   map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+		Execute: func(_ context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			return "ok", nil
+		},
+	}
+
+	agent := NewToolLoopAgent(AgentConfig{
+		Model:    model,
+		Tools:    []types.Tool{ai.ToolSearch(), deferredTool},
+		MaxSteps: 10,
+		OnStepStartEvent: func(_ context.Context, e ai.OnStepStartEvent) {
+			names := make([]string, 0, len(e.Tools))
+			for _, tl := range e.Tools {
+				names = append(names, tl.Name)
+			}
+			stepStartToolNames = append(stepStartToolNames, names)
+		},
+	})
+
+	if _, err := agent.GenerateAgent(context.Background(), AgentGenerateOptions{Prompt: "hi"}); err != nil {
+		t.Fatalf("GenerateAgent() error = %v", err)
+	}
+	if len(stepStartToolNames) < 1 {
+		t.Fatalf("expected at least 1 OnStepStartEvent, got %d", len(stepStartToolNames))
+	}
+	for _, name := range stepStartToolNames[0] {
+		if name == "secret" {
+			t.Fatalf("OnStepStartEvent step 1 tools = %v, want secret hidden until discovered (matches the tools actually sent to the model)", stepStartToolNames[0])
+		}
+	}
+}
+
+// TestExecuteWithMessagesToolCallers_LateBindsLocalCaller ports the
+// "experimental_toolCallers" local-caller contract exercised in
+// pkg/ai/tool_caller_test.go (TestGenerateText_ToolCallers_LateBindsLocalCaller)
+// to the native executeWithMessages step loop, since ToolLoopAgent calls the
+// provider model directly instead of delegating to ai.GenerateText and so
+// needs its own application of PrepareToolsForToolCallers /
+// AppendToolCallerMessages. A tool configured as callable only through a
+// local caller (ExperimentalToolCallers) must be hidden from the model, and
+// invoking the caller must run the caller's bound Execute (which sees the
+// routed sub-tools), not the callee's own Execute.
+func TestExecuteWithMessagesToolCallers_LateBindsLocalCaller(t *testing.T) {
+	var modelToolNames []string
+	calleeExecuted := false
+
+	callerTool := types.Tool{
+		Name:       "code_mode",
+		Parameters: map[string]interface{}{"type": "object"},
+		Execute: func(_ context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			return nil, fmt.Errorf("caller was not bound")
+		},
+		ExperimentalToolCaller: &types.ToolCallerDefinition{
+			Type: types.ToolCallerTypeLocal,
+			Bind: func(tools map[string]types.Tool) types.Tool {
+				return types.Tool{
+					Name:       "code_mode",
+					Parameters: map[string]interface{}{"type": "object"},
+					Execute: func(_ context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+						names := make([]string, 0, len(tools))
+						for n := range tools {
+							names = append(names, n)
+						}
+						return names, nil
+					},
+				}
+			},
+		},
+	}
+	calleeTool := types.Tool{
+		Name:       "getInventory",
+		Parameters: map[string]interface{}{"type": "object"},
+		Execute: func(_ context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			calleeExecuted = true
+			return map[string]interface{}{"availableUnits": 42}, nil
+		},
+	}
+
+	calls := 0
+	model := &functionalAgentLanguageModel{
+		doGenerate: func(_ context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			calls++
+			if calls == 1 {
+				for _, tl := range opts.Tools {
+					modelToolNames = append(modelToolNames, tl.Name)
+				}
+				return &types.GenerateResult{
+					FinishReason: types.FinishReasonToolCalls,
+					ToolCalls: []types.ToolCall{
+						{ID: "call-1", ToolName: "code_mode", Arguments: map[string]interface{}{}},
+					},
+				}, nil
+			}
+			return &types.GenerateResult{Text: "done", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+
+	agent := NewToolLoopAgent(AgentConfig{
+		Model:    model,
+		Tools:    []types.Tool{callerTool, calleeTool},
+		MaxSteps: 10,
+		ExperimentalToolCallers: ai.ExperimentalToolCallers{
+			"getInventory": {"code_mode"},
+		},
+	})
+
+	result, err := agent.GenerateAgent(context.Background(), AgentGenerateOptions{Prompt: "Check inventory."})
+	if err != nil {
+		t.Fatalf("GenerateAgent() error = %v", err)
+	}
+	if len(modelToolNames) != 1 || modelToolNames[0] != "code_mode" {
+		t.Fatalf("model-visible tools = %v, want only [code_mode] (getInventory routed exclusively through the caller must be hidden)", modelToolNames)
+	}
+	if calleeExecuted {
+		t.Fatal("getInventory.Execute must not run directly; only the caller's bound Execute should run")
+	}
+	if len(result.ToolResults) != 1 {
+		t.Fatalf("ToolResults = %d, want 1", len(result.ToolResults))
+	}
+	names, ok := result.ToolResults[0].Result.([]string)
+	if !ok || len(names) != 1 || names[0] != "getInventory" {
+		t.Fatalf("ToolResults[0].Result = %v, want [getInventory] (caller's bound Execute must see the routed callee)", result.ToolResults[0].Result)
+	}
+}
