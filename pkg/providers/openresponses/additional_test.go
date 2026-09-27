@@ -84,16 +84,16 @@ func TestConvertToolsChoicesAndUsage(t *testing.T) {
 	}
 	assertUnsupportedWarning(t, providerToolWarnings, "provider-defined tool openai.web_search")
 
-	if got := convertToolChoiceToOpenResponses(types.ToolChoice{Type: "auto"}, nil); got != "auto" {
+	if got, _ := convertToolChoiceToOpenResponses(types.ToolChoice{Type: "auto"}, nil); got != "auto" {
 		t.Fatalf("auto choice = %#v", got)
 	}
-	if got := convertToolChoiceToOpenResponses(types.ToolChoice{Type: "required"}, nil); got != "required" {
+	if got, _ := convertToolChoiceToOpenResponses(types.ToolChoice{Type: "required"}, nil); got != "required" {
 		t.Fatalf("required choice = %#v", got)
 	}
-	if got := convertToolChoiceToOpenResponses(types.ToolChoice{Type: "none"}, nil); got != "none" {
+	if got, _ := convertToolChoiceToOpenResponses(types.ToolChoice{Type: "none"}, nil); got != "none" {
 		t.Fatalf("none choice = %#v", got)
 	}
-	toolChoice := convertToolChoiceToOpenResponses(types.ToolChoice{Type: "tool", ToolName: "weather"}, nil)
+	toolChoice, _ := convertToolChoiceToOpenResponses(types.ToolChoice{Type: "tool", ToolName: "weather"}, nil)
 	choiceMap, ok := toolChoice.(map[string]interface{})
 	if !ok || choiceMap["name"] != "weather" {
 		t.Fatalf("tool choice conversion failed: %#v", toolChoice)

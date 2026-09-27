@@ -254,7 +254,11 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		// Targets a provider-defined tool we couldn't encode; omit tool_choice
 		// like TS does when no extension is registered for it.
 	} else if opts.ToolChoice.Type != "" {
-		body["tool_choice"] = convertToolChoiceToOpenResponses(opts.ToolChoice, encodedProviderTools)
+		toolChoice, toolChoiceWarnings := convertToolChoiceToOpenResponses(opts.ToolChoice, encodedProviderTools)
+		warnings = append(warnings, toolChoiceWarnings...)
+		if toolChoice != nil {
+			body["tool_choice"] = toolChoice
+		}
 	}
 
 	// Add response format if present. TS only serializes responseFormat when
@@ -610,12 +614,22 @@ func openResponsesTruthyString(value interface{}) bool {
 // extension's EncodeTool when one is registered for the tool's ProviderID
 // (row 9a68261, OR-EXT); otherwise they are skipped with an "unsupported"
 // warning, mirroring TS's getArgs behavior when no matching extension is
+// encodedProviderTool pairs a provider-defined tool's extension with the
+// tool's own declared ProviderArgs, mirroring TS's
+// encodedProviderToolsByName map (name -> the full LanguageModelV4ProviderTool,
+// args included), so EncodeToolChoice below can be called with the same args
+// TS passes it instead of always nil.
+type encodedProviderTool struct {
+	ext  *Extension
+	args map[string]interface{}
+}
+
 // registered for a provider tool. encodedProviderTools maps each
-// successfully-encoded provider tool's SDK name to the extension that
-// encoded it, for tool_choice encoding below.
-func convertToolsToOpenResponses(tools []types.Tool, registry *ExtensionRegistry) (result []interface{}, encodedProviderTools map[string]*Extension, warnings []types.Warning) {
+// successfully-encoded provider tool's SDK name to the extension (and its
+// declared args) that encoded it, for tool_choice encoding below.
+func convertToolsToOpenResponses(tools []types.Tool, registry *ExtensionRegistry) (result []interface{}, encodedProviderTools map[string]encodedProviderTool, warnings []types.Warning) {
 	result = make([]interface{}, 0, len(tools))
-	encodedProviderTools = map[string]*Extension{}
+	encodedProviderTools = map[string]encodedProviderTool{}
 
 	for _, t := range tools {
 		if t.Type == "provider" {
@@ -645,7 +659,7 @@ func convertToolsToOpenResponses(tools []types.Tool, registry *ExtensionRegistry
 			}
 
 			result = append(result, encoded)
-			encodedProviderTools[t.Name] = ext
+			encodedProviderTools[t.Name] = encodedProviderTool{ext: ext, args: t.ProviderArgs}
 			continue
 		}
 
@@ -675,7 +689,7 @@ func convertToolsToOpenResponses(tools []types.Tool, registry *ExtensionRegistry
 // registered for it), used to omit tool_choice entirely for it (item 7). A
 // provider tool that WAS encoded via a registered extension is not reported
 // here; it gets its own tool_choice encoding (row 9a68261, OR-EXT).
-func openResponsesToolChoiceTargetsProviderTool(tools []types.Tool, toolName string, encodedProviderTools map[string]*Extension) bool {
+func openResponsesToolChoiceTargetsProviderTool(tools []types.Tool, toolName string, encodedProviderTools map[string]encodedProviderTool) bool {
 	if _, encoded := encodedProviderTools[toolName]; encoded {
 		return false
 	}
@@ -689,37 +703,48 @@ func openResponsesToolChoiceTargetsProviderTool(tools []types.Tool, toolName str
 
 // convertToolChoiceToOpenResponses converts tool choice to Open Responses
 // format. When toolChoice targets a provider tool encoded via a registered
-// extension, it's encoded via that extension's EncodeToolChoice, or
-// {"type": extension.ToolType} by default (row 9a68261, OR-EXT).
-func convertToolChoiceToOpenResponses(toolChoice types.ToolChoice, encodedProviderTools map[string]*Extension) interface{} {
+// extension, it's encoded via that extension's EncodeToolChoice (called with
+// the tool's own declared ProviderArgs, matching TS's
+// encodeToolChoice({name: tool.name, args: tool.args})); when
+// EncodeToolChoice is unset, {"type": extension.ToolType} is used as
+// before. When EncodeToolChoice IS set but fails or returns invalid output,
+// TS emits an "unsupported: tool choice for provider-defined tool <id>"
+// warning and omits tool_choice entirely rather than falling back to
+// {"type": extension.ToolType} (row 9a68261, OR-EXT).
+func convertToolChoiceToOpenResponses(toolChoice types.ToolChoice, encodedProviderTools map[string]encodedProviderTool) (interface{}, []types.Warning) {
 	switch toolChoice.Type {
 	case "auto":
-		return "auto"
+		return "auto", nil
 	case "required":
-		return "required"
+		return "required", nil
 	case "none":
-		return "none"
+		return "none", nil
 	case "tool":
-		if ext, ok := encodedProviderTools[toolChoice.ToolName]; ok && ext != nil {
+		if encoded, ok := encodedProviderTools[toolChoice.ToolName]; ok && encoded.ext != nil {
+			ext := encoded.ext
 			if ext.EncodeToolChoice != nil {
-				fields, err := ext.EncodeToolChoice(toolChoice.ToolName, nil)
+				fields, err := ext.EncodeToolChoice(toolChoice.ToolName, encoded.args)
 				if err == nil && fields != nil {
-					encoded := map[string]interface{}{}
+					result := map[string]interface{}{}
 					for k, v := range fields {
-						encoded[k] = v
+						result[k] = v
 					}
-					encoded["type"] = ext.ToolType
-					return encoded
+					result["type"] = ext.ToolType
+					return result, nil
 				}
+				return nil, []types.Warning{{
+					Type:    "unsupported",
+					Feature: fmt.Sprintf("tool choice for provider-defined tool %s", ext.ID),
+				}}
 			}
-			return map[string]interface{}{"type": ext.ToolType}
+			return map[string]interface{}{"type": ext.ToolType}, nil
 		}
 		return map[string]interface{}{
 			"type": "function",
 			"name": toolChoice.ToolName,
-		}
+		}, nil
 	default:
-		return "auto"
+		return "auto", nil
 	}
 }
 

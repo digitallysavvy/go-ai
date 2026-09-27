@@ -227,6 +227,73 @@ func TestOpenResponsesExtensionToolPrepareAndChoice(t *testing.T) {
 	}
 }
 
+// TestOpenResponsesExtensionToolChoiceUsesToolArgs covers row 9a68261: TS
+// calls encodeToolChoice({name: tool.name, args: tool.args}) using the
+// provider tool's own declared args, not always nil.
+func TestOpenResponsesExtensionToolChoiceUsesToolArgs(t *testing.T) {
+	ext := Extension{
+		ID:       "lmstudio.code_execution",
+		ToolType: "lmstudio:code_execution",
+		EncodeTool: func(name string, args map[string]interface{}) (map[string]interface{}, error) {
+			return map[string]interface{}{"language": args["language"]}, nil
+		},
+		EncodeToolChoice: func(name string, args map[string]interface{}) (map[string]interface{}, error) {
+			return map[string]interface{}{"language": args["language"]}, nil
+		},
+	}
+	p := New(Config{BaseURL: "http://localhost:1234/v1", Extensions: []Extension{ext}})
+	model := NewLanguageModel(p, "local-model")
+
+	body, _, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		Tools: []types.Tool{
+			{Name: "run_code", Type: "provider", ProviderID: "lmstudio.code_execution", ProviderArgs: map[string]interface{}{"language": "python"}},
+		},
+		ToolChoice: types.ToolChoice{Type: "tool", ToolName: "run_code"},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	choice, ok := body["tool_choice"].(map[string]interface{})
+	if !ok || choice["language"] != "python" {
+		t.Fatalf("tool_choice = %#v, want language=python threaded from the tool's ProviderArgs", body["tool_choice"])
+	}
+}
+
+// TestOpenResponsesExtensionToolChoiceEncodeFailureWarns covers row 9a68261:
+// when EncodeToolChoice is set but fails/returns invalid output, TS emits an
+// "unsupported: tool choice for provider-defined tool <id>" warning and
+// omits tool_choice entirely (not a {"type": toolType} fallback).
+func TestOpenResponsesExtensionToolChoiceEncodeFailureWarns(t *testing.T) {
+	ext := Extension{
+		ID:       "lmstudio.code_execution",
+		ToolType: "lmstudio:code_execution",
+		EncodeTool: func(name string, args map[string]interface{}) (map[string]interface{}, error) {
+			return map[string]interface{}{}, nil
+		},
+		EncodeToolChoice: func(name string, args map[string]interface{}) (map[string]interface{}, error) {
+			return nil, nil
+		},
+	}
+	p := New(Config{BaseURL: "http://localhost:1234/v1", Extensions: []Extension{ext}})
+	model := NewLanguageModel(p, "local-model")
+
+	body, warnings, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		Tools: []types.Tool{
+			{Name: "run_code", Type: "provider", ProviderID: "lmstudio.code_execution"},
+		},
+		ToolChoice: types.ToolChoice{Type: "tool", ToolName: "run_code"},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	if _, ok := body["tool_choice"]; ok {
+		t.Fatalf("tool_choice = %#v, want omitted after an EncodeToolChoice failure", body["tool_choice"])
+	}
+	assertUnsupportedWarning(t, warnings, "tool choice for provider-defined tool lmstudio.code_execution")
+}
+
 // TestOpenResponsesExtensionToolUnsupportedWithoutRegistry covers row
 // 9a68261: without a matching extension, a provider-defined tool is still
 // skipped with an "unsupported" warning (pre-existing OR-CORE behavior).
