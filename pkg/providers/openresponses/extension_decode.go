@@ -230,6 +230,18 @@ func findToolByProviderID(tools []types.Tool, providerID string) types.Tool {
 	return types.Tool{}
 }
 
+// findToolByName looks up a declared tool by its (unique) Name, mirroring
+// TS's `providerToolsByName` map used to resolve a tool-call/tool-result
+// content part's ProviderID during replay (e.g. custom tool detection).
+func findToolByName(tools []types.Tool, name string) types.Tool {
+	for _, t := range tools {
+		if t.Name == name {
+			return t
+		}
+	}
+	return types.Tool{}
+}
+
 // decodeExtensionEvent looks up rawEvent's namespaced type in the registry
 // and, if a matching extension is registered, decodes it into stream
 // chunks. handled reports whether an extension matched.

@@ -153,6 +153,31 @@ type FunctionCallOutputItem struct {
 	Status string      `json:"status,omitempty"`
 }
 
+// CustomToolCallItem replays a caller-executed "custom" tool call back into
+// request input, matched via Config.CustomToolID. Mirrors the TS Open
+// Responses `custom_tool_call` request input item
+// (CustomToolCallItemParam): id?/call_id/name/input, where Input is the raw
+// (unescaped) text the model originally produced.
+type CustomToolCallItem struct {
+	Type   string `json:"type"`
+	ID     string `json:"id,omitempty"`
+	CallID string `json:"call_id"`
+	Name   string `json:"name"`
+	Input  string `json:"input"`
+}
+
+// CustomToolCallOutputItem replays a caller-executed "custom" tool result
+// back into request input, matched via Config.CustomToolID. Mirrors the TS
+// Open Responses `custom_tool_call_output` request input item
+// (CustomToolCallOutputItemParam): id?/call_id/output, using the same
+// Output shape as FunctionCallOutputItem.
+type CustomToolCallOutputItem struct {
+	Type   string      `json:"type"`
+	CallID string      `json:"call_id"`
+	Output interface{} `json:"output"`
+	ID     string      `json:"id,omitempty"`
+}
+
 // OpenResponsesResponse represents the non-streaming response
 type OpenResponsesResponse struct {
 	ID          string       `json:"id"`
