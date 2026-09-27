@@ -108,7 +108,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, NewVideoGenerationError(fmt.Sprintf("failed to submit request: %v", err))
 	}
 	if submitResp.StatusCode != 200 {
-		return nil, NewVideoGenerationError(fmt.Sprintf("API returned status %d: %s", submitResp.StatusCode, string(submitResp.Body)))
+		return nil, parseKlingAIErrorBody(submitResp.StatusCode, submitResp.Body)
 	}
 
 	var createResp createTaskResponse
@@ -319,16 +319,24 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 func (m *VideoModel) handlePollError(err error) error {
 	var dlErr *providererrors.DownloadError
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
-		var envelope struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-		}
-		if jsonErr := json.Unmarshal(dlErr.Body, &envelope); jsonErr == nil && envelope.Message != "" {
-			return NewError(envelope.Code, envelope.Message, "")
-		}
-		return NewVideoGenerationError(fmt.Sprintf("status check returned %d: %s", dlErr.StatusCode, string(dlErr.Body)))
+		return parseKlingAIErrorBody(dlErr.StatusCode, dlErr.Body)
 	}
 	return fmt.Errorf("failed to check status: %w", err)
+}
+
+// parseKlingAIErrorBody decodes a non-2xx KlingAI response body into the
+// {code, message} error envelope (TS klingaiFailedResponseHandler /
+// klingaiErrorDataSchema), falling back to a generic error carrying the raw
+// body when the envelope cannot be parsed or carries no message.
+func parseKlingAIErrorBody(statusCode int, body []byte) error {
+	var envelope struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}
+	if jsonErr := json.Unmarshal(body, &envelope); jsonErr == nil && envelope.Message != "" {
+		return NewError(envelope.Code, envelope.Message, "")
+	}
+	return NewVideoGenerationError(fmt.Sprintf("API returned status %d: %s", statusCode, string(body)))
 }
 
 // detectMode detects the video generation mode from the model ID suffix
@@ -923,7 +931,9 @@ func (m *VideoModel) checkUnsupportedOptions(opts *provider.VideoModelV3CallOpti
 		})
 	}
 
-	if opts.Seed != nil {
+	// TS checks `if (options.seed)` / `if (options.fps)`: a truthy check, so
+	// an explicit zero (like an omitted value) does not warn.
+	if opts.Seed != nil && *opts.Seed != 0 {
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
 			Feature: "seed",
@@ -931,7 +941,7 @@ func (m *VideoModel) checkUnsupportedOptions(opts *provider.VideoModelV3CallOpti
 		})
 	}
 
-	if opts.FPS != nil {
+	if opts.FPS != nil && *opts.FPS != 0 {
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
 			Feature: "fps",

@@ -551,6 +551,36 @@ func TestCheckUnsupportedOptions(t *testing.T) {
 	}
 }
 
+// TestCheckUnsupportedOptions_ZeroValuesNoWarning mirrors TS's truthy checks
+// (`if (options.seed)`, `if (options.fps)`): an explicit zero must not warn,
+// matching the falsy behavior of a JS number 0.
+func TestCheckUnsupportedOptions_ZeroValuesNoWarning(t *testing.T) {
+	cfg := Config{
+		AccessKey: "test-ak",
+		SecretKey: "test-sk",
+	}
+	prov, _ := New(cfg)
+	model := &VideoModel{
+		prov:    prov,
+		modelID: "kling-v2.6-t2v",
+		mode:    VideoModeT2V,
+	}
+
+	zeroSeed := 0
+	zeroFPS := 0
+	opts := &provider.VideoModelV3CallOptions{
+		Seed: &zeroSeed,
+		FPS:  &zeroFPS,
+		N:    1,
+	}
+
+	warnings := model.checkUnsupportedOptions(opts)
+
+	if len(warnings) != 0 {
+		t.Errorf("expected no warnings for zero seed/fps, got %d: %+v", len(warnings), warnings)
+	}
+}
+
 func TestExtractProviderOptions(t *testing.T) {
 	t.Run("returns empty options when nil", func(t *testing.T) {
 		opts, err := extractProviderOptions(nil)
