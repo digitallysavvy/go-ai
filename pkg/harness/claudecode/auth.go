@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -46,9 +47,9 @@ func resolveAuthenticationMode(auth harness.Authentication, processEnv map[strin
 	return AuthModeDirect
 }
 
-// resolveAuthenticationEnvironment mirrors TS `resolveClaudeCodeEnv` (minus
-// the native-subscription and apiKeyHelper fallbacks — see package doc).
-func resolveAuthenticationEnvironment(auth harness.Authentication, processEnv map[string]string) map[string]string {
+// resolveAuthenticationEnvironment mirrors TS `resolveClaudeCodeEnv`,
+// including the native-subscription fallback (`resolveClaudeCodeAuthentication`).
+func resolveAuthenticationEnvironment(ctx context.Context, auth harness.Authentication, processEnv map[string]string) map[string]string {
 	authEnv := processEnv
 	if auth.IsEnvironment() {
 		authEnv = auth.Environment
@@ -57,17 +58,33 @@ func resolveAuthenticationEnvironment(auth harness.Authentication, processEnv ma
 	if auth.IsEnvironment() || auth.Mode == harness.AuthModeDirect {
 		readHelper = func() string { return "" }
 	}
+	// An explicit isolated authentication environment opts out of every
+	// host-filesystem fallback (apiKeyHelper above, native subscription
+	// here): the caller asked for full control over the auth environment.
+	trySubscription := !auth.IsEnvironment()
+	authModeString := ""
 	if auth.Mode == harness.AuthModeDirect {
-		return pickAnthropic(authEnv, readHelper)
+		authModeString = harness.AuthModeDirect
+	}
+	if auth.Mode == harness.AuthModeDirect {
+		return pickAnthropic(ctx, authEnv, readHelper, trySubscription, authModeString)
 	}
 	gw := harnessutil.GetAIGatewayAuthFromEnv(authEnv)
 	if auth.Mode == harness.AuthModeAIGateway || gw.APIKey != "" {
 		return pickGateway(gw)
 	}
-	return pickAnthropic(authEnv, readHelper)
+	return pickAnthropic(ctx, authEnv, readHelper, trySubscription, authModeString)
 }
 
-func pickAnthropic(env map[string]string, readHelper func() string) map[string]string {
+func pickAnthropic(ctx context.Context, env map[string]string, readHelper func() string, trySubscription bool, authModeString string) map[string]string {
+	if trySubscription {
+		hasDirect := env["ANTHROPIC_API_KEY"] != "" || env["ANTHROPIC_AUTH_TOKEN"] != "" || env["CLAUDE_CODE_OAUTH_TOKEN"] != ""
+		if harnessutil.ShouldResolveNativeSubscription(authModeString, env, hasDirect) {
+			if subEnv, ok := readClaudeCodeSubscription(ctx); ok {
+				return subEnv
+			}
+		}
+	}
 	out := map[string]string{}
 	helperKey := readHelper()
 	apiKey := env["ANTHROPIC_API_KEY"]

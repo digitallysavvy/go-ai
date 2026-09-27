@@ -6,20 +6,26 @@
 // bridge.mjs` inside the sandbox (pkg/harness/bridge, WG3) and translating the
 // harness-v1 bridge wire protocol to harness.StreamPart Emit calls.
 //
+// DoStart implements all three TS resume rungs: (1) ATTACH reopens a socket
+// to a still-running bridge using persisted coordinates (no respawn, no
+// fresh token); (2) REPLAY respawns the bridge with `BRIDGE_REPLAY_FROM_DISK`
+// when a continued (suspended) turn's on-disk event log ends in a finished
+// turn; (3) RERUN respawns and rehydrates the Claude conversation via
+// `resumeSessionId`/`continue` otherwise. Mid-turn steering
+// (`submitUserMessage`) is wired whenever the bridge advertises
+// `experimental_userMessageResponses` on its hello.
+//
 // Deferred versus TS (see the Sep-23-2026 WG7 report for the full rationale):
-//   - The "attach to a still-running bridge from persisted coordinates" and
-//     "replay a respawned bridge's on-disk event log" rungs are not ported.
-//     Every DoStart spawns a fresh bridge process; a resume/continue rehydrates
-//     the underlying Claude conversation via `resumeSessionId`/`continue`
-//     instead of reattaching to the live process. This is lossy across a
-//     mid-turn suspend (in-flight work is recomputed) but never lossy of
-//     already-persisted turns, matching TS's own documented "rerun" fallback
-//     path — just taken unconditionally rather than only when attach fails.
-//   - Native subscription credential discovery (OS keychain / Secret Service /
-//     Credential Manager reading, OAuth refresh) is not ported. Only
-//     environment-variable and AI Gateway authentication are supported.
-//   - The experimental mid-turn `submitUserMessage` (steering) acknowledgement
-//     channel is not wired.
+//   - Native subscription credential discovery reads the same
+//     `~/.claude/.credentials.json` file TS reads (subscription.go), including
+//     OAuth refresh and write-back. The macOS Keychain fallback TS also has is
+//     NOT ported: this SDK's sandbox providers (pkg/harness/sandbox/local, the
+//     Vercel provider) run Linux containers, where `/usr/bin/security` does
+//     not exist, and TS itself only takes that fallback when
+//     `CLAUDE_CONFIG_DIR` is unset/default, so it is a secondary path even in
+//     TS. Linux's Secret Service / Windows Credential Manager equivalents are
+//     for the *host* Claude CLI config, not this adapter's discovery, so they
+//     are not applicable here either.
 package claudecode
 
 import (
