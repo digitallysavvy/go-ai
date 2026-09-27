@@ -100,7 +100,12 @@ func fireObjectLanguageModelCallEnd(
 // by fireObjectStepStart. objectText is the raw (possibly partial, for a
 // streaming error path) JSON text of the model's response, used by
 // LegacyOpenTelemetry's isLegacyObjectOperation branch to build
-// ai.response.object.
+// ai.response.object. firstChunkAt is the time the first stream chunk was
+// received (zero value for non-streaming generateObject, which — like TS's
+// `msToFirstChunk: undefined` in generate-object.ts — never reports a
+// first-chunk time); when set, it becomes
+// Performance.TimeToFirstOutputMs, matching TS stream-object.ts's
+// `msToFirstChunk = now() - startTimestampMs`.
 func fireObjectStepEnd(
 	step objectTelemetryStep,
 	operationType string,
@@ -111,7 +116,13 @@ func fireObjectStepEnd(
 	responseID, responseModelID string,
 	responseTimestamp time.Time,
 	providerMetadata map[string]interface{},
+	firstChunkAt time.Time,
 ) {
+	var perf telemetry.LanguageModelCallPerformance
+	if !firstChunkAt.IsZero() {
+		ms := firstChunkAt.Sub(step.start).Milliseconds()
+		perf.TimeToFirstOutputMs = &ms
+	}
 	telemetry.FireOnStepEnd(step.stepCtx, telemetry.TelemetryStepEndEvent{
 		OperationType:     operationType,
 		StepNumber:        0,
@@ -122,6 +133,7 @@ func fireObjectStepEnd(
 		ResponseID:        responseID,
 		ResponseModelID:   responseModelID,
 		ResponseTimestamp: responseTimestamp,
+		Performance:       perf,
 		Settings:          settings,
 	})
 }

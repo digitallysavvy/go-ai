@@ -296,6 +296,17 @@ type TelemetryStepFinishEvent struct {
 	// ResponseTimestamp is when the provider response was received.
 	ResponseTimestamp time.Time
 
+	// Performance carries step timing (TimeToFirstOutputMs, ResponseTimeMs,
+	// EffectiveOutputTokensPerSecond), mirroring TS's event.performance.
+	// LegacyOpenTelemetry.OnStepEnd uses it for the ai.response.msToFirstChunk/
+	// msToFinish/avgOutputTokensPerSecond attributes and the
+	// ai.stream.firstChunk/ai.stream.finish span events (ai.streamText only),
+	// and for the ai.stream.msToFirstChunk attribute/event on the
+	// generateObject/streamObject onObjectStepEnd shape (TimeToFirstOutputMs
+	// only; always nil for non-streaming generateObject, matching TS's
+	// `msToFirstChunk: undefined`).
+	Performance LanguageModelCallPerformance
+
 	// Settings holds the caller-supplied telemetry configuration.
 	Settings       *Settings
 	RuntimeContext map[string]interface{}
@@ -1639,6 +1650,18 @@ func (i LegacyOpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEv
 			}
 			stepSpan.SetAttributes(attribute.String("ai.response.object", objectAttr))
 		}
+		// onObjectStepEnd sets ai.stream.msToFirstChunk directly (bypassing
+		// the recordOutputs-gated attribute set entirely, like TS) and adds
+		// an "ai.stream.firstChunk" span event, only when the step actually
+		// streamed a first chunk — always nil for non-streaming
+		// generateObject, matching TS's `msToFirstChunk: undefined` there.
+		if e.Performance.TimeToFirstOutputMs != nil {
+			ms := *e.Performance.TimeToFirstOutputMs
+			stepSpan.SetAttributes(attribute.Int64("ai.stream.msToFirstChunk", ms))
+			stepSpan.AddEvent("ai.stream.firstChunk", trace.WithAttributes(
+				attribute.Int64("ai.stream.msToFirstChunk", ms),
+			))
+		}
 	} else {
 		if recordOutputs && e.Text != "" {
 			stepSpan.SetAttributes(attribute.String("ai.response.text", e.Text))
@@ -1653,6 +1676,35 @@ func (i LegacyOpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEv
 			if s, ok := legacyFilesJSON(e.Files); ok {
 				stepSpan.SetAttributes(attribute.String("ai.response.files", s))
 			}
+		}
+		// ai.response.msToFirstChunk/msToFinish/avgOutputTokensPerSecond and
+		// the matching "ai.stream.firstChunk"/"ai.stream.finish" span events
+		// are ai.streamText-only (TS's onStepEnd `isStreamText` gate) and,
+		// like the msTo* fields above, are plain values in TS's
+		// selectAttributes call, not {output: ...} — so they're never gated
+		// by recordOutputs.
+		isStreamText := e.OperationType == "ai.streamText"
+		if isStreamText {
+			if e.Performance.TimeToFirstOutputMs != nil {
+				ms := *e.Performance.TimeToFirstOutputMs
+				stepSpan.SetAttributes(attribute.Int64("ai.response.msToFirstChunk", ms))
+				stepSpan.AddEvent("ai.stream.firstChunk", trace.WithAttributes(
+					attribute.Int64("ai.response.msToFirstChunk", ms),
+				))
+			}
+			stepSpan.SetAttributes(
+				attribute.Int64("ai.response.msToFinish", e.Performance.ResponseTimeMs),
+			)
+			// ai.response.avgOutputTokensPerSecond goes through selectAttributes
+			// (sanitizeAttributeValue drops NaN) as a regular attribute, but
+			// TS's addEvent call below bypasses selectAttributes entirely, so
+			// the event attribute is NOT NaN-filtered — pass the raw value,
+			// matching TS exactly.
+			stepSpan.SetAttributes(setFiniteFloat64(nil, "ai.response.avgOutputTokensPerSecond", e.Performance.EffectiveOutputTokensPerSecond)...)
+			stepSpan.AddEvent("ai.stream.finish", trace.WithAttributes(
+				attribute.Int64("ai.response.msToFinish", e.Performance.ResponseTimeMs),
+				attribute.Float64("ai.response.avgOutputTokensPerSecond", e.Performance.EffectiveOutputTokensPerSecond),
+			))
 		}
 	}
 

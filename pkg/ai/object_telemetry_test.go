@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -164,6 +165,75 @@ func TestStreamObject_Telemetry(t *testing.T) {
 
 	if result.Object == nil {
 		t.Fatal("expected a non-nil result object")
+	}
+}
+
+// TestStreamObject_LanguageModelCallEndContent covers H3 item 4(b):
+// fireObjectLanguageModelCallEnd used to pass a hardcoded nil Content for
+// ai.streamObject, so the GenAI OpenTelemetry integration's "chat" span
+// (which builds gen_ai.output.messages from LanguageModelCallEndEvent.Content
+// via formatOutputMessages) recorded no output at all. It should now carry
+// the accumulated text, matching TS's flush handler passing the accumulated
+// text/reasoning to its language-model-call-end event regardless of
+// streaming.
+func TestStreamObject_LanguageModelCallEndContent(t *testing.T) {
+	spanRecorder, cleanup := setupTelemetryTest(t)
+	defer cleanup()
+	// setupTelemetryTest only registers the Legacy integration; also
+	// register the GenAI one so the "chat" span (which carries
+	// gen_ai.output.messages) gets created too.
+	telemetry.RegisterTelemetryIntegration(telemetry.OTelTelemetryIntegration{}, telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{}))
+
+	usage := types.Usage{InputTokens: int64Ptr(8), OutputTokens: int64Ptr(4)}
+	model := &testutil.MockLanguageModel{
+		ProviderName:      "test-provider",
+		ModelName:         "test-model",
+		StructuredSupport: true,
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: `{"name":"Jane"}`},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, Usage: &usage},
+			}), nil
+		},
+	}
+
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+		"type":       "object",
+		"properties": map[string]interface{}{"name": map[string]interface{}{"type": "string"}},
+	})
+
+	_, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model:  model,
+		Prompt: "Generate a person",
+		Schema: testSchema,
+		ExperimentalTelemetry: &telemetry.Settings{
+			IsEnabled:     telemetry.Bool(true),
+			RecordOutputs: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamObject failed: %v", err)
+	}
+
+	spans := spanRecorder.Ended()
+	// Both the Legacy and GenAI integrations create a span named
+	// "chat test-model" (a pre-existing divergence in Legacy, out of scope
+	// here); find the one carrying gen_ai.output.messages, which only the
+	// GenAI integration ever sets.
+	var found bool
+	for _, s := range spans {
+		if s.Name() != "chat test-model" {
+			continue
+		}
+		if v, ok := attrValueTelemetry(s, "gen_ai.output.messages"); ok && v != "" {
+			found = true
+			if !strings.Contains(v, `Jane`) {
+				t.Errorf("gen_ai.output.messages = %s, want it to contain the accumulated text", v)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected some 'chat test-model' span to carry a non-empty gen_ai.output.messages")
 	}
 }
 

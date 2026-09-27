@@ -882,3 +882,132 @@ func TestLegacyOpenTelemetryConstructorTracer(t *testing.T) {
 		t.Fatalf("expected the constructor's tracer to record 1 span, got %d", len(rec.Ended()))
 	}
 }
+
+// TestLegacyOpenTelemetryStreamFirstChunkFinishEvents covers H3 item 4(a):
+// TS's onStepEnd (legacy-open-telemetry.ts) adds "ai.stream.firstChunk" /
+// "ai.stream.finish" span events (plus the matching ai.response.msToFirstChunk/
+// msToFinish/avgOutputTokensPerSecond attributes), gated on isStreamText —
+// see the legacy-open-telemetry.test.ts streamText integration snapshot
+// (events: [{"name": "ai.stream.firstChunk", ...}, {"name": "ai.stream.finish", ...}]).
+// ai.generateText (non-streaming) must NOT get either the attributes or the
+// events, even when Performance data happens to be set.
+func TestLegacyOpenTelemetryStreamFirstChunkFinishEvents(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	tracer := tp.Tracer("legacy-stream-events-test")
+
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+	perf := LanguageModelCallPerformance{
+		ResponseTimeMs:                 500,
+		EffectiveOutputTokensPerSecond: 20,
+		TimeToFirstOutputMs:            int64p(100),
+	}
+
+	rootCtx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.streamText", Settings: settings})
+	stepCtx := integration.OnStepStart(rootCtx, TelemetryStepStartEvent{
+		OperationType: "ai.streamText", Settings: settings, ModelProvider: "openai", ModelID: "gpt-5",
+	})
+	integration.OnStepEnd(stepCtx, TelemetryStepEndEvent{
+		OperationType: "ai.streamText", Settings: settings, FinishReason: "stop", Performance: perf,
+	})
+
+	stepSpan := findSpan(rec, "ai.streamText.doStream")
+	if stepSpan == nil {
+		t.Fatal("expected an ai.streamText.doStream step span")
+	}
+	if v, ok := attrValue(stepSpan, "ai.response.msToFirstChunk"); !ok || v.(int64) != 100 {
+		t.Errorf("ai.response.msToFirstChunk = %v (ok=%v), want 100", v, ok)
+	}
+	if v, ok := attrValue(stepSpan, "ai.response.msToFinish"); !ok || v.(int64) != 500 {
+		t.Errorf("ai.response.msToFinish = %v (ok=%v), want 500", v, ok)
+	}
+	if v, ok := attrValue(stepSpan, "ai.response.avgOutputTokensPerSecond"); !ok || v.(float64) != 20 {
+		t.Errorf("ai.response.avgOutputTokensPerSecond = %v (ok=%v), want 20", v, ok)
+	}
+	events := stepSpan.Events()
+	if len(events) != 2 {
+		t.Fatalf("expected 2 span events, got %d: %+v", len(events), events)
+	}
+	if events[0].Name != "ai.stream.firstChunk" {
+		t.Errorf("events[0].Name = %q, want ai.stream.firstChunk", events[0].Name)
+	}
+	if events[1].Name != "ai.stream.finish" {
+		t.Errorf("events[1].Name = %q, want ai.stream.finish", events[1].Name)
+	}
+
+	// ai.generateText (non-streaming) must not get these attributes/events.
+	rootCtx2 := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings})
+	stepCtx2 := integration.OnStepStart(rootCtx2, TelemetryStepStartEvent{
+		OperationType: "ai.generateText", Settings: settings, ModelProvider: "openai", ModelID: "gpt-5",
+	})
+	integration.OnStepEnd(stepCtx2, TelemetryStepEndEvent{
+		OperationType: "ai.generateText", Settings: settings, FinishReason: "stop", Performance: perf,
+	})
+	genStepSpan := findSpan(rec, "ai.generateText.doGenerate")
+	if genStepSpan == nil {
+		t.Fatal("expected an ai.generateText.doGenerate step span")
+	}
+	if _, ok := attrValue(genStepSpan, "ai.response.msToFirstChunk"); ok {
+		t.Error("ai.generateText step span should not carry ai.response.msToFirstChunk")
+	}
+	if len(genStepSpan.Events()) != 0 {
+		t.Errorf("ai.generateText step span should have no events, got %+v", genStepSpan.Events())
+	}
+}
+
+// TestLegacyOpenTelemetryObjectStepFirstChunkEvent covers H3 item 4(a) for
+// the deprecated onObjectStepEnd shape: TS sets ai.stream.msToFirstChunk
+// (not ai.response.msToFirstChunk) directly and adds an "ai.stream.firstChunk"
+// event, only when msToFirstChunk is non-nil (never for non-streaming
+// generateObject).
+func TestLegacyOpenTelemetryObjectStepFirstChunkEvent(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	tracer := tp.Tracer("legacy-object-step-events-test")
+
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+
+	rootCtx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.streamObject", Settings: settings})
+	stepCtx := integration.OnStepStart(rootCtx, TelemetryStepStartEvent{
+		OperationType: "ai.streamObject", Settings: settings, ModelProvider: "openai", ModelID: "gpt-5",
+	})
+	integration.OnStepEnd(stepCtx, TelemetryStepEndEvent{
+		OperationType: "ai.streamObject", Settings: settings, FinishReason: "stop",
+		Performance: LanguageModelCallPerformance{TimeToFirstOutputMs: int64p(75)},
+	})
+
+	stepSpan := findSpan(rec, "ai.streamObject.doStream")
+	if stepSpan == nil {
+		t.Fatal("expected an ai.streamObject.doStream step span")
+	}
+	if v, ok := attrValue(stepSpan, "ai.stream.msToFirstChunk"); !ok || v.(int64) != 75 {
+		t.Errorf("ai.stream.msToFirstChunk = %v (ok=%v), want 75", v, ok)
+	}
+	events := stepSpan.Events()
+	if len(events) != 1 || events[0].Name != "ai.stream.firstChunk" {
+		t.Fatalf("expected exactly one ai.stream.firstChunk event, got %+v", events)
+	}
+
+	// Non-streaming generateObject: no Performance data, so no event/attribute.
+	rootCtx2 := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateObject", Settings: settings})
+	stepCtx2 := integration.OnStepStart(rootCtx2, TelemetryStepStartEvent{
+		OperationType: "ai.generateObject", Settings: settings, ModelProvider: "openai", ModelID: "gpt-5",
+	})
+	integration.OnStepEnd(stepCtx2, TelemetryStepEndEvent{
+		OperationType: "ai.generateObject", Settings: settings, FinishReason: "stop",
+	})
+	genStepSpan := findSpan(rec, "ai.generateObject.doGenerate")
+	if genStepSpan == nil {
+		t.Fatal("expected an ai.generateObject.doGenerate step span")
+	}
+	if _, ok := attrValue(genStepSpan, "ai.stream.msToFirstChunk"); ok {
+		t.Error("non-streaming ai.generateObject step span should not carry ai.stream.msToFirstChunk")
+	}
+	if len(genStepSpan.Events()) != 0 {
+		t.Errorf("non-streaming ai.generateObject step span should have no events, got %+v", genStepSpan.Events())
+	}
+}

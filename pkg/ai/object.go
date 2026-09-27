@@ -960,7 +960,7 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 	resMeta := generateStepResponseFromGenerateResult(opts.Model, genResult)
 
 	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, generateResultContentParts(genResult), resMeta.ID, genResult.ProviderMetadata)
-	fireObjectStepEnd(telStep, "ai.generateObject", opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, genResult.Text, resMeta.ID, resMeta.ModelID, resMeta.Timestamp, genResult.ProviderMetadata)
+	fireObjectStepEnd(telStep, "ai.generateObject", opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, genResult.Text, resMeta.ID, resMeta.ModelID, resMeta.Timestamp, genResult.ProviderMetadata, time.Time{})
 
 	// Fire OnStepFinish after provider returns, BEFORE JSON parsing.
 	Notify(ctx, ObjectOnStepFinishEvent{
@@ -1110,7 +1110,7 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 	arrResMeta := generateStepResponseFromGenerateResult(opts.Model, genResult)
 
 	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, generateResultContentParts(genResult), arrResMeta.ID, genResult.ProviderMetadata)
-	fireObjectStepEnd(telStep, "ai.generateObject", opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, genResult.Text, arrResMeta.ID, arrResMeta.ModelID, arrResMeta.Timestamp, genResult.ProviderMetadata)
+	fireObjectStepEnd(telStep, "ai.generateObject", opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, genResult.Text, arrResMeta.ID, arrResMeta.ModelID, arrResMeta.Timestamp, genResult.ProviderMetadata, time.Time{})
 
 	Notify(ctx, ObjectOnStepFinishEvent{
 		CallID:           cc.callID,
@@ -1250,7 +1250,7 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc object
 	enumResMeta := generateStepResponseFromGenerateResult(opts.Model, genResult)
 
 	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, generateResultContentParts(genResult), enumResMeta.ID, genResult.ProviderMetadata)
-	fireObjectStepEnd(telStep, "ai.generateObject", opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, genResult.Text, enumResMeta.ID, enumResMeta.ModelID, enumResMeta.Timestamp, genResult.ProviderMetadata)
+	fireObjectStepEnd(telStep, "ai.generateObject", opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, genResult.Text, enumResMeta.ID, enumResMeta.ModelID, enumResMeta.Timestamp, genResult.ProviderMetadata, time.Time{})
 
 	Notify(ctx, ObjectOnStepFinishEvent{
 		CallID:           cc.callID,
@@ -1384,7 +1384,7 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc ob
 	nsResMeta := generateStepResponseFromGenerateResult(opts.Model, genResult)
 
 	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, generateResultContentParts(genResult), nsResMeta.ID, genResult.ProviderMetadata)
-	fireObjectStepEnd(telStep, "ai.generateObject", opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, genResult.Text, nsResMeta.ID, nsResMeta.ModelID, nsResMeta.Timestamp, genResult.ProviderMetadata)
+	fireObjectStepEnd(telStep, "ai.generateObject", opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, genResult.Text, nsResMeta.ID, nsResMeta.ModelID, nsResMeta.Timestamp, genResult.ProviderMetadata, time.Time{})
 
 	Notify(ctx, ObjectOnStepFinishEvent{
 		CallID:           cc.callID,
@@ -1792,6 +1792,13 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		ModelID:   opts.Model.ModelID(),
 	}
 
+	// firstChunkAt records when the first (non-stream-start) chunk arrived,
+	// mirroring TS stream-object.ts's `isFirstChunk`/`msToFirstChunk`
+	// tracking in the TransformStream transform() — used by
+	// fireObjectStepEnd to populate Performance.TimeToFirstOutputMs for the
+	// legacy onObjectStepEnd "ai.stream.firstChunk" span event.
+	var firstChunkAt time.Time
+
 	// Process stream chunks. On a non-EOF error we record it and break so that
 	// OnStepFinish / OnFinishEvent still fire with whatever was accumulated —
 	// matching the TS SDK's TransformStream flush behaviour where the flush
@@ -1813,6 +1820,14 @@ streamLoop:
 		// Collect any warnings from any chunk.
 		if len(chunk.Warnings) > 0 {
 			streamWarnings = append(streamWarnings, chunk.Warnings...)
+		}
+
+		// Record the first chunk's arrival time, mirroring TS's isFirstChunk
+		// flag (stream-object.ts): TS skips its synthetic 'stream-start'
+		// chunk before setting msToFirstChunk, so ChunkTypeStreamStart (a
+		// warnings-only marker, handled above) is excluded here too.
+		if firstChunkAt.IsZero() && chunk.Type != provider.ChunkTypeStreamStart {
+			firstChunkAt = time.Now()
 		}
 
 		// Handle different chunk types
@@ -1907,8 +1922,21 @@ streamLoop:
 	// the callback events above — TS's TransformStream flush handler always
 	// runs, whether the stream ended cleanly or with a content error (H3
 	// item 1).
-	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, finishReason, usage, nil, streamResMeta.ID, streamProviderMetadata)
-	fireObjectStepEnd(telStep, "ai.streamObject", opts.ExperimentalTelemetry, finishReason, usage, accumulatedText, streamResMeta.ID, streamResMeta.ModelID, streamResMeta.Timestamp, streamProviderMetadata)
+	//
+	// Content is the accumulated text (+ reasoning, if any) rather than nil:
+	// GenAI's OnLanguageModelCallEnd builds gen_ai.output.messages from it
+	// (formatOutputMessages), matching TS's flush handler, which always
+	// passes the accumulated text/reasoning to its language-model-call-end
+	// event regardless of streaming.
+	var streamCallEndContent []types.ContentPart
+	if accumulatedText != "" {
+		streamCallEndContent = append(streamCallEndContent, types.TextContent{Text: accumulatedText})
+	}
+	if accumulatedReasoning != "" {
+		streamCallEndContent = append(streamCallEndContent, types.ReasoningContent{Text: accumulatedReasoning})
+	}
+	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, finishReason, usage, streamCallEndContent, streamResMeta.ID, streamProviderMetadata)
+	fireObjectStepEnd(telStep, "ai.streamObject", opts.ExperimentalTelemetry, finishReason, usage, accumulatedText, streamResMeta.ID, streamResMeta.ModelID, streamResMeta.Timestamp, streamProviderMetadata, firstChunkAt)
 
 	// If the stream itself errored, fire OnStepFinish + OnFinishEvent with the
 	// error (matching TS flush handler) then return.

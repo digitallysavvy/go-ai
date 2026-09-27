@@ -1632,6 +1632,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				ToolCalls:        genResult.ToolCalls,
 				Files:            stepTelFiles,
 				ProviderMetadata: genResult.ProviderMetadata,
+				Performance:      languageModelCallPerformance(performance),
 				Settings:         telemetrySettings,
 				RuntimeContext:   telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
 				ToolsContext:     telemetryToolsContext(telemetrySettings, toolsContext),

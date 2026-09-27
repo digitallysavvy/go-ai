@@ -2262,6 +2262,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				Reasoning:      stepResult.ReasoningText,
 				ToolCalls:      stepToolCalls,
 				Files:          stepFiles,
+				Performance:    languageModelCallPerformance(performance),
 				Settings:       r.telemetrySettings,
 				RuntimeContext: telemetryRuntimeContextWithSensitivity(r.telemetrySettings, r.cbRuntimeCtx, r.cbSensitiveRuntimeCtx),
 				ToolsContext:   telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
