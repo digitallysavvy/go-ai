@@ -92,6 +92,15 @@ type Config struct {
 	// system/developer/user Responses input items. Azure AI Foundry projects
 	// require this.
 	ExplicitMessageItemType bool
+
+	// AllowVideo emits a "video_url" content part for a video/* FileContent
+	// (prompt.ToOpenAIMessagesOptions.AllowVideo). OpenAI's own Chat
+	// Completions API has no video support, so this defaults to false and
+	// must stay false for the openai package's own provider construction.
+	// Set true only by wrapper providers whose TS counterpart is an
+	// OpenAICompatibleChatLanguageModel subclass reusing Go's openai.Provider
+	// as its OpenAI-compatible base (baseten, cerebras, deepinfra).
+	AllowVideo bool
 }
 
 // New creates a new OpenAI provider with the given configuration

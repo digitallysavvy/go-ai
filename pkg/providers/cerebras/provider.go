@@ -41,6 +41,9 @@ func New(cfg Config) *Provider {
 		Name:       "cerebras",
 		BaseURL:    baseURL,
 		HTTPClient: withCerebrasTransform(cfg.HTTPClient),
+		// TS CerebrasChatLanguageModel extends OpenAICompatibleChatLanguageModel,
+		// which supports video_url content parts (7dd9ec320c).
+		AllowVideo: true,
 	})
 
 	return &Provider{

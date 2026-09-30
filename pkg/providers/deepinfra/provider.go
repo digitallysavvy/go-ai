@@ -54,6 +54,9 @@ func New(cfg Config) *Provider {
 		APIKey:  cfg.APIKey,
 		BaseURL: baseURL,
 		Headers: cfg.Headers,
+		// TS DeepInfraChatLanguageModel extends OpenAICompatibleChatLanguageModel,
+		// which supports video_url content parts (7dd9ec320c).
+		AllowVideo: true,
 	})
 
 	return &Provider{
