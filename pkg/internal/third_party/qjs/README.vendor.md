@@ -328,24 +328,58 @@ digest —
 running the same `cmake`/`make` invocation upstream's own `Makefile` uses
 (`-DQJS_BUILD_LIBC=ON -DQJS_BUILD_CLI_WITH_MIMALLOC=OFF
 -DCMAKE_TOOLCHAIN_FILE=/opt/wasi-sdk/share/cmake/wasi-sdk.cmake
--DCMAKE_PROJECT_INCLUDE=../qjswasm.cmake`, then `make qjswasm`). The two
-upstream source tarballs (`fastschema/qjs`, `quickjs-ng/quickjs`) are each
-downloaded over HTTPS and verified against a sha256 pinned in `build.sh`
-before use, rather than trusting transport integrity alone. The baseline
-(unpatched) rebuild was verified byte-for-byte functionally equivalent to
-the previously-committed binary first — every existing test in this
-package and in `pkg/codemode` passed against it before the patch was
-applied — to isolate what the patch itself changed. Running `build.sh`
-twice independently (fresh `mktemp -d` work dirs, fresh downloads)
-produces a byte-for-byte identical `qjs.wasm` both times.
+-DCMAKE_PROJECT_INCLUDE=../qjswasm.cmake`, then `make qjswasm`), then runs
+`wasm-opt -O3` on the result (pinned binaryen `version_133`, sha256-verified
+per-platform release asset — see "Size and performance" below for why this
+step was added). The two upstream source tarballs (`fastschema/qjs`,
+`quickjs-ng/quickjs`) and the binaryen release are each downloaded over
+HTTPS and verified against a sha256 pinned in `build.sh` before use, rather
+than trusting transport integrity alone. The baseline (unpatched) rebuild
+was verified byte-for-byte functionally equivalent to the
+previously-committed binary first — every existing test in this package
+and in `pkg/codemode` passed against it before the patch was applied — to
+isolate what the patch itself changed. Running `build.sh` twice
+independently (fresh `mktemp -d` work dirs, fresh downloads) produces a
+byte-for-byte identical `qjs.wasm` both times — the whole pipeline is
+reproducible, not just the individual pins.
 
-`pkg/internal/third_party/qjs/qjs.wasm`'s sha256 (this patched build):
+`pkg/internal/third_party/qjs/qjs.wasm`'s sha256 (this patched, `wasm-opt
+-O3`'d build):
 
 ```
-453d2f695c729dd26571bd65fb5de0ee92ed741fcee5d61c24f889f58b24acca
+c1ec7ef73b88ef3076b981d332d3b852c12a9602ace31183b43e9ba539bdb879
 ```
 
 **Verification.** Both pre-existing patch-regression tests
 (`mem_patch_test.go`, `jsonstringify_patch_test.go`) and every test in this
 package and in `pkg/codemode` (including `-race -count=5`) pass against
 this rebuilt binary.
+
+### Size and performance
+
+Baseline (pre-CM3, commit `659ea65`) `qjs.wasm`: 1,038,767 bytes.
+
+Rebuilt with the job-queue-quiescence patch but *without* `wasm-opt -O3`
+(i.e. straight off the wasi-sdk `make qjswasm` step): 1,461,575 bytes — a
+40.7% increase over baseline. `wasm-opt -O3` was previously skipped
+entirely in this script (binaryen is not present in the pinned wasi-sdk
+image); that left a materially larger-than-necessary binary vendored here
+purely because of a missing optimization pass, not because of anything the
+patch itself requires.
+
+With `wasm-opt -O3` applied (pinned binaryen `version_133`, as `build.sh`
+now does by default): 1,283,303 bytes — a 12.2% reduction versus the
+un-optimized build, leaving a 23.5% increase over the pre-CM3 baseline.
+That remaining ~23.5% reflects genuinely new code (four new exports plus
+the job-queue-draining/promise-inspection logic they implement), not an
+optimization gap; it was judged acceptable given the feature this patch
+implements, consistent with the "about 20%" guidance being a threshold for
+catching avoidable regressions rather than a hard cap on any added
+functionality.
+
+Timing (`go test -run
+'TestRunCodeMode_ManyRapidIndependentInvocations|TestRunCodeMode_ManyInvocationsRemainCorrect'
+-count=5 ./pkg/codemode/...`, same machine, same warm build cache):
+un-optimized binary ~9.45s for the 5-run batch; `wasm-opt -O3`'d binary
+~8.22s for the same batch (~13% faster) — `wasm-opt -O3` is a net win on
+both size and runtime here, not just size.

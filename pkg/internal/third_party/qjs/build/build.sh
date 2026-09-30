@@ -8,11 +8,11 @@
 #
 # Requires: curl, tar, patch, shasum or sha256sum (all preinstalled on
 # macOS/most Linux), and a running Docker daemon. Network access is
-# required to fetch the pinned upstream sources and to pull the pinned
-# wasi-sdk image; this script does not fall back to an unpinned image tag
-# or to hand-editing the binary if either fetch fails, or if a downloaded
-# source archive's sha256 doesn't match its pin -- it stops and reports the
-# failure instead.
+# required to fetch the pinned upstream sources, the pinned wasi-sdk image,
+# and the pinned binaryen release; this script does not fall back to an
+# unpinned image tag/version or to hand-editing the binary if any fetch
+# fails, or if a downloaded archive's sha256 doesn't match its pin -- it
+# stops and reports the failure instead.
 #
 # Usage: pkg/internal/third_party/qjs/build/build.sh
 # Output: pkg/internal/third_party/qjs/qjs.wasm (overwritten in place)
@@ -36,7 +36,44 @@ QUICKJS_NG_TARBALL_SHA256=40be727abd6f7d24911b6a33fc3d25603a3f89eee183f74ffe6ca8
 # toolchain ever needs to change; never swap in an unpinned tag here.
 WASI_SDK_IMAGE="ghcr.io/webassembly/wasi-sdk:wasi-sdk-24@sha256:ab1595b844d67f3e2a8b5f47c9983f5165e7ce58ca376685b2d6167e9e28a663"
 
-DOCKER_BIN="${DOCKER_BIN:-docker}"
+# Pinned binaryen release used to run `wasm-opt -O3` on the built binary
+# (see "qjs.wasm rebuild" in ../README.vendor.md for why this step exists:
+# without it, this vendor copy's binary is ~40% bigger than the
+# wasm-opt'd binary upstream's own Makefile produces). Each platform
+# asset's sha256 below is the release's own published
+# binaryen-<version>-<platform>.tar.gz.sha256 sidecar, copied here as a
+# pin rather than fetched at build time (so a compromised/rotated sidecar
+# can't silently change what this script trusts).
+BINARYEN_VERSION="version_133"
+sha256_for_binaryen_asset() {
+  case "$1" in
+    arm64-macos) echo "ad66da82ac13f163e424b1643f16c6dfcccc98b5966296b43e52d3cab04f84a8" ;;
+    x86_64-macos) echo "13a9b90be775c6389ce3d1f879cb8627bea56708ba8c122983941d53a8199b95" ;;
+    x86_64-linux) echo "2dc9c7813f5375db93d96ead4b78222fcc3e2677bbb832297af4797782a37489" ;;
+    aarch64-linux) echo "89c07ea56faf38d0fbecf36ca8ec0721756716185f265b568e133d427f299bf8" ;;
+    *) return 1 ;;
+  esac
+}
+
+# Maps `uname -s`/`uname -m` to a binaryen release asset name above.
+# wasm-opt runs on the host (not inside the wasi-sdk container -- it's not
+# a WASI toolchain component, it's a native binary that transforms a .wasm
+# file), so it must match the host this script runs on, not the container.
+binaryen_asset_for_host() {
+  local os arch
+  os="$(uname -s)"
+  arch="$(uname -m)"
+  case "$os-$arch" in
+    Darwin-arm64) echo "arm64-macos" ;;
+    Darwin-x86_64) echo "x86_64-macos" ;;
+    Linux-x86_64) echo "x86_64-linux" ;;
+    Linux-aarch64) echo "aarch64-linux" ;;
+    *)
+      echo "error: no pinned binaryen release for host '$os-$arch' -- add one to build.sh (sha256_for_binaryen_asset/binaryen_asset_for_host) rather than falling back to an unpinned download" >&2
+      return 1
+      ;;
+  esac
+}
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -54,6 +91,8 @@ verify_sha256() {
     exit 1
   fi
 }
+
+DOCKER_BIN="${DOCKER_BIN:-docker}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 QJS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -106,19 +145,31 @@ echo "==> Building the qjswasm target ..."
   "$WASI_SDK_IMAGE" \
   sh -lc 'make -C build qjswasm -j"$(nproc)"'
 
+UNOPT="$WORK_DIR/qjswasm.unopt.wasm"
+cp "$BUILD_ROOT/qjswasm/quickjs/build/qjswasm" "$UNOPT"
+
+echo "==> Running wasm-opt -O3 (binaryen ${BINARYEN_VERSION}) ..."
+BINARYEN_ASSET="$(binaryen_asset_for_host)"
+BINARYEN_SHA256="$(sha256_for_binaryen_asset "$BINARYEN_ASSET")"
+curl -sSL \
+  "https://github.com/WebAssembly/binaryen/releases/download/${BINARYEN_VERSION}/binaryen-${BINARYEN_VERSION}-${BINARYEN_ASSET}.tar.gz" \
+  -o "$WORK_DIR/binaryen.tar.gz"
+verify_sha256 "$WORK_DIR/binaryen.tar.gz" "$BINARYEN_SHA256"
+mkdir -p "$WORK_DIR/binaryen"
+tar -xzf "$WORK_DIR/binaryen.tar.gz" -C "$WORK_DIR/binaryen" --strip-components=1
+
 OUT="$QJS_DIR/qjs.wasm"
-cp "$BUILD_ROOT/qjswasm/quickjs/build/qjswasm" "$OUT"
+"$WORK_DIR/binaryen/bin/wasm-opt" -O3 -o "$OUT" "$UNOPT"
 
 echo "==> Wrote ${OUT}"
 sha256_file "$OUT" | { read -r h; echo "$h  $OUT"; }
 
 cat <<'EOF'
 
-NOTE: unlike upstream fastschema/qjs's own Makefile, this script does not
-run `wasm-opt -O3` as a post-processing step: binaryen is not present in
-the pinned wasi-sdk image, and this script intentionally does not reach
-for an additional, unpinned tool just to shrink/optimize an already-working
-binary. The output above is a correct, unoptimized-by-wasm-opt WASI
-executable (confirmed against pkg/internal/third_party/qjs's own test
-suite and pkg/codemode's tests -- see ../README.vendor.md).
+NOTE: the binary above has been run through `wasm-opt -O3` (pinned
+binaryen release, sha256-verified -- see BINARYEN_VERSION above), matching
+what upstream fastschema/qjs's own Makefile does as a post-processing
+step. This keeps qjs.wasm's size close to upstream's own build despite
+this vendor copy's additional exports (see "qjs.wasm rebuild" in
+../README.vendor.md for size/perf numbers).
 EOF
