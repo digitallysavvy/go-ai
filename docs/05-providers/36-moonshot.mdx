@@ -1,0 +1,122 @@
+---
+title: Moonshot AI Provider
+description: Setup and usage guide for Moonshot AI (Kimi) models with Go-AI SDK
+---
+
+# Moonshot AI Provider
+
+Moonshot AI provides the Kimi model family and the legacy Moonshot v1
+chat models over an OpenAI-compatible API. It only supports language
+models — `EmbeddingModel`, `ImageModel`, `SpeechModel`, and
+`TranscriptionModel` all return errors.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/moonshot"
+)
+```
+
+### Configuration
+
+```go
+provider := moonshot.New(moonshot.Config{
+    APIKey: os.Getenv("MOONSHOT_API_KEY"),
+})
+
+model, err := provider.LanguageModel(moonshot.ModelKimiK26)
+```
+
+Unlike most providers, `moonshot.New` does **not** fall back to an
+environment variable on its own — pass `APIKey` explicitly, or use
+`moonshot.NewConfig(apiKey)` (empty string falls back to
+`MOONSHOT_API_KEY`, returning an error if that is empty too):
+
+```go
+cfg, err := moonshot.NewConfig("")
+if err != nil {
+    log.Fatal(err)
+}
+provider := moonshot.New(cfg)
+```
+
+Any model ID is accepted; an empty ID defaults to `moonshot-v1-32k`.
+
+### Get API Key
+
+```bash
+export MOONSHOT_API_KEY=...
+```
+
+> **Breaking change (this cycle):** the default base URL is now
+> `https://api.moonshot.ai/v1` (was the China-region
+> `https://api.moonshot.cn/v1`). Set `Config.BaseURL` explicitly to the
+> `.cn` host if you relied on the previous default.
+
+## Available Models
+
+| Model ID | Go constant |
+|----------|-------------|
+| `kimi-k2.7-code` | `moonshot.ModelKimiK27Code` |
+| `kimi-k2.6` | `moonshot.ModelKimiK26` |
+| `kimi-k2.5` | `moonshot.ModelKimiK25` |
+| `kimi-k2-thinking` | `moonshot.ModelKimiK2Thinking` |
+| `kimi-k2-thinking-turbo` | `moonshot.ModelKimiK2ThinkingTurbo` |
+| `kimi-k2-turbo` | `moonshot.ModelKimiK2Turbo` |
+| `kimi-k2-0905` | `moonshot.ModelKimiK20905` |
+| `kimi-k2` | `moonshot.ModelKimiK2` |
+| `moonshot-v1-auto` | `moonshot.ModelMoonshotV1Auto` |
+| `moonshot-v1-128k` | `moonshot.ModelMoonshotV1128k` |
+| `moonshot-v1-32k` | `moonshot.ModelMoonshotV132k` (default) |
+| `moonshot-v1-8k` | `moonshot.ModelMoonshotV18k` |
+| `moonshot-v1-128k-vision-preview` | `moonshot.ModelMoonshotV1128kVisionPreview` |
+| `moonshot-v1-32k-vision-preview` | `moonshot.ModelMoonshotV132kVisionPreview` |
+| `moonshot-v1-8k-vision-preview` | `moonshot.ModelMoonshotV18kVisionPreview` |
+
+## Basic Usage
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Explain the Kimi K2 model family in one paragraph",
+})
+```
+
+## Provider Options And Metadata
+
+> **Breaking change (this cycle):** result metadata moved from
+> `ProviderMetadata["moonshot"]` to `ProviderMetadata["moonshotai"]`
+> (matching the TypeScript SDK's key). `providerOptions.moonshotai` is now
+> honored alongside the package's own `providerOptions.moonshot` key.
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Solve this step by step: ...",
+    ProviderOptions: map[string]interface{}{
+        "moonshotai": map[string]interface{}{
+            "reasoningEffort": "high",
+        },
+    },
+})
+
+if meta, ok := result.ProviderMetadata["moonshotai"].(map[string]interface{}); ok {
+    fmt.Println(meta)
+}
+```
+
+## Workflow Serialization
+
+Moonshot language models can cross a workflow boundary with
+`providerutils.SerializeModel` / `DeserializeModel`. See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
+for the mechanism.
+
+## See Also
+
+- [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
+- [Moonshot AI Documentation](https://platform.moonshot.ai/docs)

@@ -1,0 +1,88 @@
+---
+title: GMI Cloud Provider
+description: Setup and usage guide for GMI Cloud OpenAI-compatible inference with Go-AI SDK
+---
+
+# GMI Cloud Provider
+
+GMI Cloud provides GPU inference for open-weight models over an
+OpenAI-compatible chat API. It only supports language models —
+`EmbeddingModel`, `ImageModel`, `SpeechModel`, `TranscriptionModel`, and
+`RerankingModel` all return errors.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/gmicloud"
+)
+```
+
+### Configuration
+
+```go
+provider := gmicloud.New(gmicloud.Config{
+    APIKey: os.Getenv("GMI_CLOUD_APIKEY"),
+})
+
+model, err := provider.LanguageModel(gmicloud.ModelDeepSeekV4FlashChat)
+```
+
+`gmicloud.Config` also accepts `BaseURL` (default
+`https://api.gmi-serving.com/v1`), `Headers`, and `HTTPClient`.
+
+### Get API Key
+
+```bash
+export GMI_CLOUD_APIKEY=...
+```
+
+## Available Models
+
+| Model ID | Go constant |
+|----------|-------------|
+| `deepseek-ai/DeepSeek-V4-Flash-0731` | `gmicloud.ModelDeepSeekV4FlashChat` |
+| `Qwen/Qwen3.8-Max` | `gmicloud.ModelQwen38Max` |
+| `moonshotai/kimi-k3` | `gmicloud.ModelKimiK3` |
+| `zai-org/GLM-5.2-FP8` | `gmicloud.ModelGLM52FP8` |
+| `MiniMaxAI/MiniMax-M3` | `gmicloud.ModelMiniMaxM3` |
+
+`ChatModel` is an alias for `LanguageModel`.
+
+## Basic Usage
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Explain GPU inference in one paragraph",
+})
+```
+
+## Provider Options
+
+GMI Cloud-specific options are passed under the `"gmicloud"`
+`ProviderOptions` key, resolved through the same OpenAI-compatible option
+resolver used by the other OpenAI-compatible providers in this SDK (see
+[OpenAI-compatible providers](47-openai-compatible.mdx)).
+
+## Video Parts
+
+Chat requests sent through this provider set `AllowVideo: true`
+internally, so `video/*` file parts are sent as `video_url` content parts
+— see
+[OpenAI-compatible providers: Video Parts](47-openai-compatible.mdx#video-parts).
+
+## Workflow Serialization
+
+GMI Cloud language models can cross a workflow boundary with
+`providerutils.SerializeModel` / `DeserializeModel`. See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
+for the mechanism.
+
+## See Also
+
+- [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
+- [GMI Cloud Documentation](https://docs.gmicloud.ai)

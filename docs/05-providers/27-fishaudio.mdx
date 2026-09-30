@@ -1,0 +1,113 @@
+---
+title: Fish Audio Provider
+description: Setup and usage guide for Fish Audio speech synthesis and transcription with Go-AI SDK
+---
+
+# Fish Audio Provider
+
+Fish Audio provides text-to-speech and speech-to-text models. It does not
+offer language, embedding, or image models — `LanguageModel`,
+`EmbeddingModel`, and `ImageModel` all return errors.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/fishaudio"
+)
+```
+
+### Configuration
+
+```go
+provider := fishaudio.New(fishaudio.Config{
+    APIKey: os.Getenv("FISH_AUDIO_API_KEY"),
+})
+```
+
+`fishaudio.Config` also accepts `BaseURL` (default `https://api.fish.audio`).
+
+### Get API Key
+
+```bash
+export FISH_AUDIO_API_KEY=...
+```
+
+## Speech Synthesis
+
+```go
+speechModel, err := provider.SpeechModel(fishaudio.ModelS21Pro)
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+    Model: speechModel,
+    Text:  "Hello from Fish Audio.",
+    ProviderOptions: map[string]interface{}{
+        "fishaudio": map[string]interface{}{
+            "referenceId": "some-voice-id",
+            "latency":     "normal",
+        },
+    },
+})
+```
+
+Model IDs: `fishaudio.ModelS1` (`s1`), `ModelS2Pro` (`s2-pro`),
+`ModelS21Pro` (`s2.1-pro`, Fish Audio's recommended default),
+`ModelS21ProFree` (`s2.1-pro-free`, a free developer tier with no
+time-to-first-audio or data-processing guarantees — prefer `ModelS21Pro`
+for production).
+
+## Transcription
+
+`POST /v1/asr` has no model selector, so the model ID is only a routing
+label; it defaults to `"transcribe-1"` when left empty:
+
+```go
+transcriptionModel, err := provider.TranscriptionModel(fishaudio.ModelTranscribe1)
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
+    Model: transcriptionModel,
+    Audio: audioBytes,
+})
+```
+
+## Provider Options
+
+Speech options are passed under the `"fishaudio"` `ProviderOptions` key:
+
+| Option | Type | Description |
+|--------|------|--------------|
+| `referenceId` | string or []string | Voice model; a slice enables S2-Pro multi-speaker dialogue. Takes precedence over the top-level `Voice` option. |
+| `sampleRate` | int | Output sample rate in Hz |
+| `mp3Bitrate` | int | mp3 bitrate in kbps: 64, 128, or 192 |
+| `opusBitrate` | int | opus bitrate in bps, or -1000 for automatic |
+| `latency` | string | `low`, `normal`, or `balanced` |
+| `volume` | float64 | Volume offset in dB |
+| `normalizeLoudness` | *bool | Loudness normalization (S2 family only) |
+| `temperature` | float64 | Expressiveness, 0 to 1 |
+| `topP` | float64 | Nucleus sampling diversity, 0 to 1 |
+| `chunkLength` | int | Text segment size, 100 to 300 |
+| `minChunkLength` | int | Minimum characters before a new chunk, 0 to 100 |
+| `normalize` | *bool | Text normalization for English and Chinese |
+| `maxNewTokens` | int | Maximum audio tokens per text chunk |
+
+## Workflow Serialization
+
+Fish Audio speech and transcription models can cross a workflow boundary
+with `providerutils.SerializeModel` / `DeserializeModel`. See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
+for the mechanism.
+
+## See Also
+
+- [API Reference: GenerateSpeech](../07-reference/ai/generate-speech.mdx)
+- [API Reference: Transcribe](../07-reference/ai/transcribe.mdx)
+- [Fish Audio Documentation](https://docs.fish.audio)
