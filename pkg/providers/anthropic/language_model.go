@@ -578,9 +578,9 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 	// caller expects "stop" (the JSON content has been extracted as text, not a
 	// tool call). Matches mapAnthropicStopReason() in the TypeScript SDK.
 	switch response.StopReason {
-	case "end_turn":
+	case "end_turn", "pause_turn", "stop_sequence":
 		result.FinishReason = types.FinishReasonStop
-	case "max_tokens":
+	case "max_tokens", "model_context_window_exceeded":
 		result.FinishReason = types.FinishReasonLength
 	case "tool_use":
 		if isJsonResponseFromTool {
@@ -588,8 +588,8 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 		} else {
 			result.FinishReason = types.FinishReasonToolCalls
 		}
-	case "stop_sequence":
-		result.FinishReason = types.FinishReasonStop
+	case "refusal":
+		result.FinishReason = types.FinishReasonContentFilter
 	default:
 		result.FinishReason = types.FinishReasonOther
 	}
@@ -2302,9 +2302,9 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 		if delta.Delta.StopReason != "" {
 			var finishReason types.FinishReason
 			switch delta.Delta.StopReason {
-			case "end_turn":
+			case "end_turn", "pause_turn", "stop_sequence":
 				finishReason = types.FinishReasonStop
-			case "max_tokens":
+			case "max_tokens", "model_context_window_exceeded":
 				finishReason = types.FinishReasonLength
 			case "tool_use":
 				// When the json tool is used, the API returns stop_reason="tool_use"
@@ -2316,6 +2316,8 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				} else {
 					finishReason = types.FinishReasonToolCalls
 				}
+			case "refusal":
+				finishReason = types.FinishReasonContentFilter
 			default:
 				finishReason = types.FinishReasonOther
 			}

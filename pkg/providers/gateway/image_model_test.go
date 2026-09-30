@@ -149,10 +149,9 @@ func TestGatewayImageModelProviderOptionsAndZeroSeedParity(t *testing.T) {
 
 // TestGatewayImageModelPreservesRetryability mirrors the TS test "should
 // preserve response retryability" (gateway-image-model.test.ts, aa4cc14).
-// The Go SDK's types.ImageResult has no IsRetryable field yet (core
-// dependency: commit 45099daf24 / pkg/ai generateImage retry-on-empty-images
-// is not ported), so the value is threaded through via
-// ProviderMetadata["gateway"]["isRetryable"] instead of being dropped.
+// result.IsRetryable is set directly (the core surface pkg/ai/generate_image.go
+// reads to decide whether to retry an empty-image result) and also mirrored
+// into ProviderMetadata["gateway"]["isRetryable"] for back-compat.
 func TestGatewayImageModelPreservesRetryability(t *testing.T) {
 	serverURL, closeServer := newGatewayIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -167,6 +166,9 @@ func TestGatewayImageModelPreservesRetryability(t *testing.T) {
 	result, err := NewImageModel(p, "openai/gpt-image-1").DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "draw cat"})
 	if err != nil {
 		t.Fatalf("DoGenerate error = %v", err)
+	}
+	if result.IsRetryable == nil || *result.IsRetryable != false {
+		t.Fatalf("result.IsRetryable = %v, want pointer to false", result.IsRetryable)
 	}
 	gatewayMeta, ok := result.ProviderMetadata["gateway"].(map[string]interface{})
 	if !ok {
@@ -195,6 +197,9 @@ func TestGatewayImageModelIsRetryableAbsentWhenNotReturned(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoGenerate error = %v", err)
 	}
+	if result.IsRetryable != nil {
+		t.Fatalf("result.IsRetryable = %v, want nil when server omits the field", *result.IsRetryable)
+	}
 	if gatewayMeta, ok := result.ProviderMetadata["gateway"].(map[string]interface{}); ok {
 		if _, ok := gatewayMeta["isRetryable"]; ok {
 			t.Fatalf("did not expect isRetryable to be synthesized when absent: %#v", gatewayMeta)
@@ -219,6 +224,9 @@ func TestGatewayImageModelIsRetryableMergesExistingGatewayMetadata(t *testing.T)
 	result, err := NewImageModel(p, "openai/gpt-image-1").DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "draw cat"})
 	if err != nil {
 		t.Fatalf("DoGenerate error = %v", err)
+	}
+	if result.IsRetryable == nil || *result.IsRetryable != true {
+		t.Fatalf("result.IsRetryable = %v, want pointer to true", result.IsRetryable)
 	}
 	gatewayMeta, ok := result.ProviderMetadata["gateway"].(map[string]interface{})
 	if !ok {

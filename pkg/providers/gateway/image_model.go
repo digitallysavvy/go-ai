@@ -131,13 +131,11 @@ type gatewayImageResponse struct {
 	// added by aa4cc14): the Gateway can report that an empty/failed image
 	// result is safe to retry. Only set when the server includes it.
 	//
-	// NOTE (core dependency, commit 45099daf24): the Go SDK's types.ImageResult
-	// has no IsRetryable field, and pkg/ai/generate_image.go has no retry-on-
-	// empty-images logic (unlike TS generateImage). Until that core surface
-	// exists, this value is threaded through as
-	// ProviderMetadata["gateway"]["isRetryable"] instead of being dropped, so
-	// callers can still read it; see the Sep 23 2026 gateway parity report
-	// (row aa4cc14) for the full core-side change needed.
+	// Set on both types.ImageResult.IsRetryable (the core surface read by
+	// pkg/ai/generate_image.go to decide whether to retry an empty-image
+	// result, mirroring TS generate-image.ts's `result.isRetryable !== false`
+	// check) and mirrored into ProviderMetadata["gateway"]["isRetryable"] for
+	// back-compat with callers already reading it from there.
 	IsRetryable *bool `json:"isRetryable,omitempty"`
 	Usage       *struct {
 		InputTokens  *int `json:"inputTokens"`
@@ -179,6 +177,7 @@ func (m *ImageModel) convertResponse(response gatewayImageResponse, headers http
 		ProviderMetadata: providerMetadata,
 		Response:         &types.ResponseMetadata{Timestamp: time.Now(), ModelID: m.modelID, Headers: flattenHeaders(headers)},
 		Usage:            types.ImageUsage{ImageCount: len(response.Images)},
+		IsRetryable:      response.IsRetryable,
 	}
 	if len(images) > 0 {
 		result.Image = images[0]
