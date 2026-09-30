@@ -87,3 +87,77 @@ func TestSerializeModelNormalizesNilConfig(t *testing.T) {
 		t.Fatalf("Config = %#v, want empty map", serialized.Config)
 	}
 }
+
+// serializableTestImageModel is a minimal ImageModel used to exercise the
+// generic typed-model-kind plumbing (SerializeImageModel/DeserializeImageModel/
+// RegisterImageModelDeserializer), which every non-language-model provider
+// serialization.go added for U4 relies on.
+type serializableTestImageModel struct{}
+
+func (serializableTestImageModel) SpecificationVersion() string { return "v4" }
+func (serializableTestImageModel) Provider() string             { return "typed-test-image" }
+func (serializableTestImageModel) ModelID() string              { return "image-model" }
+func (serializableTestImageModel) DoGenerate(context.Context, *ImageGenerateOptions) (*types.ImageResult, error) {
+	return nil, nil
+}
+func (serializableTestImageModel) Serialize() SerializedModel {
+	return SerializedModel{Provider: "typed-test-image", ModelID: "image-model"}
+}
+
+func TestSerializeImageModelAndDeserializeImageModelRoundTrip(t *testing.T) {
+	RegisterImageModelDeserializer("typed-test-image", func(s SerializedModel) (ImageModel, error) {
+		if s.ModelID != "image-model" {
+			t.Fatalf("unexpected ModelID in deserializer: %q", s.ModelID)
+		}
+		return serializableTestImageModel{}, nil
+	})
+
+	serialized, err := SerializeImageModel(serializableTestImageModel{})
+	if err != nil {
+		t.Fatalf("SerializeImageModel() error = %v", err)
+	}
+	if serialized.Provider != "typed-test-image" || serialized.ModelID != "image-model" {
+		t.Fatalf("unexpected serialized model: %#v", serialized)
+	}
+	if serialized.Config == nil {
+		t.Fatal("Config = nil, want empty map")
+	}
+
+	restored, err := DeserializeImageModel(serialized)
+	if err != nil {
+		t.Fatalf("DeserializeImageModel() error = %v", err)
+	}
+	if restored.Provider() != "typed-test-image" || restored.ModelID() != "image-model" {
+		t.Fatalf("unexpected restored model: provider=%q model=%q", restored.Provider(), restored.ModelID())
+	}
+}
+
+// unserializableTestImageModel implements ImageModel but neither
+// SerializableModel nor SerializableModelStrict.
+type unserializableTestImageModel struct{}
+
+func (unserializableTestImageModel) SpecificationVersion() string { return "v4" }
+func (unserializableTestImageModel) Provider() string             { return "no-serialize" }
+func (unserializableTestImageModel) ModelID() string              { return "m" }
+func (unserializableTestImageModel) DoGenerate(context.Context, *ImageGenerateOptions) (*types.ImageResult, error) {
+	return nil, nil
+}
+
+func TestSerializeImageModelRejectsNonSerializableModel(t *testing.T) {
+	var m ImageModel = unserializableTestImageModel{}
+	if _, err := SerializeImageModel(m); err == nil {
+		t.Fatal("expected error for a model that does not implement SerializableModel")
+	}
+}
+
+func TestDeserializeImageModelErrorsWhenUnregistered(t *testing.T) {
+	if _, err := DeserializeImageModel(SerializedModel{Provider: "no-such-image-provider"}); err == nil {
+		t.Fatal("expected error for an unregistered provider")
+	}
+}
+
+func TestSerializeImageModelErrorsOnNilModel(t *testing.T) {
+	if _, err := SerializeImageModel(nil); err == nil {
+		t.Fatal("expected error for a nil model")
+	}
+}

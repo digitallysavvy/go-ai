@@ -70,3 +70,93 @@ func TestGoogleDeserializeModel_ErrorForEmptyModelID(t *testing.T) {
 		t.Fatal("expected error for empty model ID")
 	}
 }
+
+func TestGoogleSerializeAndDeserializeEmbeddingModel(t *testing.T) {
+	t.Parallel()
+	p := New(Config{APIKey: "k", BaseURL: "https://example.test/v1beta"})
+	modelAny, err := p.EmbeddingModel("gemini-embedding-001")
+	if err != nil {
+		t.Fatalf("EmbeddingModel error = %v", err)
+	}
+	serialized := modelAny.(*EmbeddingModel).Serialize()
+	if serialized.Provider != "google.generative-ai" || serialized.ModelID != "gemini-embedding-001" {
+		t.Fatalf("serialize mismatch: %#v", serialized)
+	}
+	if _, ok := serialized.Config["apiKey"]; ok {
+		t.Fatalf("serialized config should not include apiKey: %#v", serialized.Config)
+	}
+
+	restored, err := deserializeEmbeddingModel(serialized)
+	if err != nil {
+		t.Fatalf("deserializeEmbeddingModel error = %v", err)
+	}
+	if restored.Provider() != "google.generative-ai" || restored.ModelID() != "gemini-embedding-001" {
+		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
+	}
+
+	viaRegistry, err := provider.DeserializeEmbeddingModel(provider.SerializedModel{Provider: serialized.Provider, ModelID: serialized.ModelID, Config: serialized.Config})
+	if err != nil {
+		t.Fatalf("provider.DeserializeEmbeddingModel error = %v", err)
+	}
+	if viaRegistry.ModelID() != "gemini-embedding-001" {
+		t.Fatalf("registry restored mismatch: %#v", viaRegistry)
+	}
+}
+
+func TestGoogleSerializeAndDeserializeImageModel(t *testing.T) {
+	t.Parallel()
+	p := New(Config{APIKey: "k", BaseURL: "https://example.test/v1beta"})
+	modelAny, err := p.ImageModel("gemini-2.5-flash-image")
+	if err != nil {
+		t.Fatalf("ImageModel error = %v", err)
+	}
+	serialized := modelAny.(*ImageModel).Serialize()
+	if serialized.Provider != "google.generative-ai" || serialized.ModelID != "gemini-2.5-flash-image" {
+		t.Fatalf("serialize mismatch: %#v", serialized)
+	}
+
+	restored, err := deserializeImageModel(serialized)
+	if err != nil {
+		t.Fatalf("deserializeImageModel error = %v", err)
+	}
+	if restored.Provider() != "google.generative-ai" || restored.ModelID() != "gemini-2.5-flash-image" {
+		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
+	}
+
+	viaRegistry, err := provider.DeserializeImageModel(provider.SerializedModel{Provider: serialized.Provider, ModelID: serialized.ModelID, Config: serialized.Config})
+	if err != nil {
+		t.Fatalf("provider.DeserializeImageModel error = %v", err)
+	}
+	if viaRegistry.ModelID() != "gemini-2.5-flash-image" {
+		t.Fatalf("registry restored mismatch: %#v", viaRegistry)
+	}
+}
+
+func TestGoogleSerializeAndDeserializeTranscriptionModel(t *testing.T) {
+	t.Parallel()
+	p := New(Config{APIKey: "k", BaseURL: "https://example.test/v1beta"})
+	modelAny, err := p.TranscriptionModel("gemini-3.5-transcribe")
+	if err != nil {
+		t.Fatalf("TranscriptionModel error = %v", err)
+	}
+	serialized := modelAny.(*TranscriptionModel).Serialize()
+	if serialized.Provider != "google.generative-ai.transcription" || serialized.ModelID != "gemini-3.5-transcribe" {
+		t.Fatalf("serialize mismatch: %#v", serialized)
+	}
+
+	restored, err := deserializeTranscriptionModel(serialized)
+	if err != nil {
+		t.Fatalf("deserializeTranscriptionModel error = %v", err)
+	}
+	if restored.Provider() != "google.generative-ai.transcription" || restored.ModelID() != "gemini-3.5-transcribe" {
+		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
+	}
+
+	viaRegistry, err := provider.DeserializeTranscriptionModel(provider.SerializedModel{Provider: serialized.Provider, ModelID: serialized.ModelID, Config: serialized.Config})
+	if err != nil {
+		t.Fatalf("provider.DeserializeTranscriptionModel error = %v", err)
+	}
+	if viaRegistry.ModelID() != "gemini-3.5-transcribe" {
+		t.Fatalf("registry restored mismatch: %#v", viaRegistry)
+	}
+}
