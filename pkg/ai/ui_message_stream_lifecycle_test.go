@@ -53,15 +53,14 @@ func TestToUIMessageStream_DedupesStartStepAgainstStreamStart(t *testing.T) {
 	}
 }
 
-// TestToUIMessageStream_MultiStepFinishStepAndFinishCounts locks down the
-// existing, pinned Go convention (see pkg/workflow/harness_test.go) for how
-// stream.go's own once-only call-level ChunkTypeFinish relates to the UI
-// stream: it is NOT deduped against the last step's ChunkTypeFinishStep (both
-// independently map to "finish-step", matching how a harness-produced stream
-// already surfaces its own per-step ChunkTypeFinishStep plus a separate,
-// content-less, turn-closing ChunkTypeFinish as two distinct "finish-step" UI
-// parts), and the UI stream's own "finish" part is still emitted exactly
-// once, after all of them.
+// TestToUIMessageStream_MultiStepFinishStepAndFinishCounts locks down TS
+// parity for how stream.go's own once-only call-level ChunkTypeFinish relates
+// to the UI stream: TS's to-ui-message-chunk.ts maps 'finish-step' and
+// 'finish' to two completely independent UI part types (a 'finish'
+// TextStreamPart never produces a "finish-step" UI part), so ChunkTypeFinish
+// must NOT also surface as an extra "finish-step" UI part alongside the last
+// step's genuine ChunkTypeFinishStep. Exactly one "finish-step" per real step
+// (2 steps here), and exactly one "finish" at the very end.
 func TestToUIMessageStream_MultiStepFinishStepAndFinishCounts(t *testing.T) {
 	t.Parallel()
 
@@ -108,11 +107,11 @@ func TestToUIMessageStream_MultiStepFinishStepAndFinishCounts(t *testing.T) {
 	if err := <-errCh; err != nil {
 		t.Fatalf("err = %v", err)
 	}
-	// One finish-step per step (2 steps) plus one for the once-only
-	// call-level ChunkTypeFinish that follows the last step's own
-	// ChunkTypeFinishStep = 3, then exactly one "finish".
-	if finishStepCount != 3 {
-		t.Errorf("finish-step UI parts = %d, want 3; order = %v", finishStepCount, order)
+	// One finish-step per step (2 steps); the once-only call-level
+	// ChunkTypeFinish that follows the last step's own ChunkTypeFinishStep
+	// maps only to "finish", not an extra "finish-step".
+	if finishStepCount != 2 {
+		t.Errorf("finish-step UI parts = %d, want 2; order = %v", finishStepCount, order)
 	}
 	if finishCount != 1 {
 		t.Errorf("finish UI parts = %d, want 1; order = %v", finishCount, order)
