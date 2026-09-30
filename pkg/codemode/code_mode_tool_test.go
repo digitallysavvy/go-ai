@@ -53,7 +53,7 @@ func TestCodeModeTool_BindReturnsWorkingTool(t *testing.T) {
 		t.Fatal("expected ExperimentalToolCaller.Bind to be set")
 	}
 
-	boundTools := map[string]types.Tool{"add": {
+	boundTools := []types.Tool{{
 		Name:       "add",
 		Parameters: map[string]interface{}{"type": "object"},
 		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
@@ -85,7 +85,7 @@ func TestCodeModeTool_PrepareModelMessage_AnnouncesBoundTools(t *testing.T) {
 		t.Fatal("expected ExperimentalToolCaller.PrepareModelMessage to be set")
 	}
 
-	boundTools := map[string]types.Tool{"lookup": {
+	boundTools := []types.Tool{{
 		Name:        "lookup",
 		Description: "Look up a record.",
 		Parameters: map[string]interface{}{

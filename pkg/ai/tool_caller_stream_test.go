@@ -110,7 +110,7 @@ func TestStreamText_ToolCallers_AnnouncesLocalCallerInMessage(t *testing.T) {
 		Model:  model,
 		Prompt: "Check inventory.",
 		Tools: []types.Tool{
-			localCallerTool("code_mode", func(map[string]types.Tool) *string { return &msg }),
+			localCallerTool("code_mode", func([]types.Tool) *string { return &msg }),
 			{
 				Name:       "getInventory",
 				Parameters: map[string]interface{}{"type": "object"},

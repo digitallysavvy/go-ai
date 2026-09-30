@@ -95,14 +95,28 @@ func PrepareToolsForToolCallers(tools []types.Tool, toolCallers ResolvedToolCall
 		inModel[name] = true
 	}
 
-	// Tools routed through each local caller, keyed by caller name.
-	localToolsByCaller := make(map[string]map[string]types.Tool)
+	// Tools routed through each local caller, in tools' declaration order
+	// (the order parameter tools itself arrived in). TypeScript threads
+	// caller declaration order through Object.entries(toolCallers) --
+	// ExperimentalToolCallers' own key order -- but that type is a Go map
+	// here (map[string][]string) with no defined iteration order of its
+	// own, so there is no equivalent order to recover once it arrives as a
+	// Go value. The tools slice is Go's one ordered analogue of TypeScript's
+	// insertion-ordered tools object (see ToolCallerDefinition.Bind's doc),
+	// so a caller's routed tools are assembled in that order instead: the
+	// deterministic, declaration-order-preserving choice available in Go,
+	// and what callers that render an ordered catalog (e.g. pkg/codemode's
+	// CodeModeTool) need to reproduce TypeScript's output for any single,
+	// fixed set of tools.
+	localToolsByCaller := make(map[string][]types.Tool)
+	localToolIndexByCaller := make(map[string]map[string]int)
 
-	for toolName, callerNames := range toolCallers {
-		tool, ok := execByName[toolName]
+	for _, toolName := range order {
+		callerNames, ok := toolCallers[toolName]
 		if !ok {
 			continue
 		}
+		tool := execByName[toolName]
 
 		availableDirectly := false
 		availableToProvider := false
@@ -129,12 +143,17 @@ func PrepareToolsForToolCallers(tools []types.Tool, toolCallers ResolvedToolCall
 					prepared.ProviderOptions = caller.PrepareProviderOptions(providerOpts)
 				}
 			} else {
-				localTools := localToolsByCaller[callerName]
-				if localTools == nil {
-					localTools = make(map[string]types.Tool)
-					localToolsByCaller[callerName] = localTools
+				byName := localToolIndexByCaller[callerName]
+				if byName == nil {
+					byName = make(map[string]int)
+					localToolIndexByCaller[callerName] = byName
 				}
-				localTools[toolName] = prepared
+				if idx, exists := byName[toolName]; exists {
+					localToolsByCaller[callerName][idx] = prepared
+				} else {
+					byName[toolName] = len(localToolsByCaller[callerName])
+					localToolsByCaller[callerName] = append(localToolsByCaller[callerName], prepared)
+				}
 			}
 		}
 
@@ -157,9 +176,6 @@ func PrepareToolsForToolCallers(tools []types.Tool, toolCallers ResolvedToolCall
 		}
 
 		callerTools := localToolsByCaller[callerName]
-		if callerTools == nil {
-			callerTools = map[string]types.Tool{}
-		}
 		bound := caller.Bind(callerTools)
 		bound.Name = callerName
 		execByName[callerName] = bound

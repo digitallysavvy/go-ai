@@ -18,15 +18,31 @@ const DefaultToolName = "codeMode"
 // JavaScript in an isolated sandbox, with tools reachable inside the
 // sandbox as `tools.<name>(input)`. Mirrors TypeScript's
 // experimental_createCodeModeTool.
+//
+// tools is a Go map (a Go ToolSet), which has no defined iteration order,
+// unlike TypeScript's tools object (whose keys iterate in insertion
+// order); the generated catalog/prompt therefore lists tools in sorted
+// name order here, not caller declaration order (see orderedFromToolSet).
+// Route tools through CodeModeTool + ai.ExperimentalToolCallers instead
+// when declaration-order catalog output matters: its
+// ToolCallerDefinition.Bind receives tools as an already-ordered
+// []types.Tool from ai.PrepareToolsForToolCallers and reproduces that
+// order exactly.
 func CreateCodeModeTool(tools ToolSet, options Options) types.Tool {
-	return createCodeModeToolWithDiscovery(tools, options, ToolDiscoveryDescription)
+	return createCodeModeToolWithDiscovery(orderedFromToolSet(tools), options, ToolDiscoveryDescription)
 }
 
-func createCodeModeToolWithDiscovery(tools ToolSet, options Options, discovery ToolDiscovery) types.Tool {
+// createCodeModeToolWithDiscovery builds the codeMode tool from tools
+// already in the exact order the catalog/prompt should render them.
+func createCodeModeToolWithDiscovery(tools []types.Tool, options Options, discovery ToolDiscovery) types.Tool {
 	opts := options
+	toolSet := make(ToolSet, len(tools))
+	for _, t := range tools {
+		toolSet[t.Name] = t
+	}
 	return types.Tool{
 		Name:        DefaultToolName,
-		Description: BuildCodeModeToolDescription(tools, discovery),
+		Description: buildCodeModeToolDescriptionOrdered(tools, discovery),
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -42,7 +58,7 @@ func createCodeModeToolWithDiscovery(tools ToolSet, options Options, discovery T
 			js, _ := input["js"].(string)
 			return RunCodeMode(ctx, RunInput{
 				JS:                   js,
-				Tools:                tools,
+				Tools:                toolSet,
 				ToolExecutionOptions: &execOptions,
 				Options:              &opts,
 			})
@@ -55,6 +71,12 @@ func createCodeModeToolWithDiscovery(tools ToolSet, options Options, discovery T
 // assign to the returned Tool) among a host tool's ToolCallers entries to
 // route calls to it through code mode instead of (or in addition to)
 // direct model calls. Mirrors TypeScript's experimental_codeModeTool.
+//
+// The tool catalog/prompt this caller generates once bound lists tools in
+// the same order ai.PrepareToolsForToolCallers determined (ultimately the
+// declaration order of the tools passed to generation), matching
+// TypeScript's insertion-order behavior -- see ToolCallerDefinition.Bind's
+// doc.
 func CodeModeTool(options ToolCallerOptions) types.Tool {
 	discovery := options.ToolDiscovery
 	if discovery == "" {
@@ -62,16 +84,16 @@ func CodeModeTool(options ToolCallerOptions) types.Tool {
 	}
 	codeModeOptions := options.Options
 
-	tool := createCodeModeToolWithDiscovery(ToolSet{}, codeModeOptions, discovery)
+	tool := createCodeModeToolWithDiscovery(nil, codeModeOptions, discovery)
 	tool.ExperimentalToolCaller = &types.ToolCallerDefinition{
 		Type: types.ToolCallerTypeLocal,
-		Bind: func(boundTools map[string]types.Tool) types.Tool {
+		Bind: func(boundTools []types.Tool) types.Tool {
 			return createCodeModeToolWithDiscovery(boundTools, codeModeOptions, discovery)
 		},
 	}
 	if discovery == ToolDiscoveryConversation {
-		tool.ExperimentalToolCaller.PrepareModelMessage = func(boundTools map[string]types.Tool) *string {
-			msg := BuildCodeModeToolCatalogMessage(boundTools)
+		tool.ExperimentalToolCaller.PrepareModelMessage = func(boundTools []types.Tool) *string {
+			msg := buildCodeModeToolCatalogMessageOrdered(boundTools)
 			return &msg
 		}
 	}

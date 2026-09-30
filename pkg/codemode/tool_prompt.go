@@ -36,6 +36,16 @@ const (
 // ToolDiscoveryConversation). Mirrors TypeScript's
 // buildCodeModeToolDescription (code-mode/src/tool-prompt.ts).
 func BuildCodeModeToolDescription(tools ToolSet, discovery ToolDiscovery) string {
+	return buildCodeModeToolDescriptionOrdered(orderedFromToolSet(tools), discovery)
+}
+
+// buildCodeModeToolDescriptionOrdered is BuildCodeModeToolDescription for
+// tools already in the exact order the catalog should render them (e.g.
+// from CodeModeTool's ToolCallerDefinition.Bind, which receives caller
+// declaration order from ai.PrepareToolsForToolCallers -- see
+// orderedFromToolSet's doc on why the exported, map-keyed
+// BuildCodeModeToolDescription can't reproduce that same order itself).
+func buildCodeModeToolDescriptionOrdered(tools []types.Tool, discovery ToolDiscovery) string {
 	fetchLine := "Use exact names/types below. `JSON.parse`/`JSON.stringify` are available."
 	if discovery == ToolDiscoveryConversation {
 		fetchLine = "Use exact names/types from the latest capability update. `JSON.parse`/`JSON.stringify` are available."
@@ -71,6 +81,12 @@ func BuildCodeModeToolDescription(tools ToolSet, discovery ToolDiscovery) string
 // announcing the current host-tool catalog, for ToolDiscoveryConversation.
 // Mirrors TypeScript's buildCodeModeToolCatalogMessage.
 func BuildCodeModeToolCatalogMessage(tools ToolSet) string {
+	return buildCodeModeToolCatalogMessageOrdered(orderedFromToolSet(tools))
+}
+
+// buildCodeModeToolCatalogMessageOrdered is BuildCodeModeToolCatalogMessage
+// for tools already in catalog order; see buildCodeModeToolDescriptionOrdered.
+func buildCodeModeToolCatalogMessageOrdered(tools []types.Tool) string {
 	typeBlock, exampleBlock := renderToolCatalog(tools)
 	sections := []string{
 		"Code mode capability update.",
@@ -86,25 +102,14 @@ func BuildCodeModeToolCatalogMessage(tools ToolSet) string {
 	return strings.Join(sections, "\n")
 }
 
-// sortedToolNames returns tool names in deterministic order. Go maps have
-// no defined iteration order (TypeScript's ToolSet is a plain object, whose
-// keys iterate in declaration/insertion order); this port sorts
-// alphabetically instead so output is reproducible. This is a deliberate,
-// documented deviation from TypeScript's insertion-order behavior.
-//
-// Note for a future fix: giving this package's own ToolSet an ordered
-// representation would only close part of the gap. The primary,
-// README-documented usage path -- CodeModeTool bound through
-// ai.ExperimentalToolCallers -- receives its tools from
-// types.ToolCallerDefinition.Bind(tools map[string]types.Tool) and
-// PrepareModelMessage(tools map[string]types.Tool) (pkg/provider/types/
-// tool.go), both already map-typed by the core tool-caller plumbing
-// (pkg/ai/tool_caller.go) before they ever reach this package -- order is
-// lost upstream of pkg/codemode. Closing this for real needs an ordered
-// tool collection threaded through Bind/PrepareModelMessage in core-ai,
-// which is out of this package's scope; only CreateCodeModeTool's direct
-// (non-tool-caller) path could be fixed locally, and only by also
-// replacing ToolSet with an ordered type throughout this package.
+// sortedToolNames returns a ToolSet's tool names in deterministic,
+// alphabetically-sorted order. Go maps have no defined iteration order
+// (TypeScript's ToolSet is a plain object, whose keys iterate in
+// declaration/insertion order); this port sorts alphabetically instead so
+// output is reproducible. Used by orderedFromToolSet; see its doc for why
+// this remains a deliberate, documented deviation from TypeScript's
+// insertion-order behavior for the direct (non-tool-caller) entry points
+// only.
 func sortedToolNames(tools ToolSet) []string {
 	names := make([]string, 0, len(tools))
 	for name := range tools {
@@ -114,22 +119,41 @@ func sortedToolNames(tools ToolSet) []string {
 	return names
 }
 
-func renderToolCatalog(tools ToolSet) (typeBlock, exampleBlock string) {
+// orderedFromToolSet converts a ToolSet (a Go map, with no defined
+// iteration order) to a deterministic, alphabetically-sorted tool list.
+// This backs the exported, map-keyed entry points (CreateCodeModeTool,
+// BuildCodeModeToolDescription, BuildCodeModeToolCatalogMessage): their
+// ToolSet argument already arrived as a map, so there is no caller
+// declaration order left to recover, unlike the
+// types.ToolCallerDefinition.Bind / PrepareModelMessage path (CodeModeTool
+// bound through ai.ExperimentalToolCallers), which now receives tools as
+// an already-ordered []types.Tool straight from
+// ai.PrepareToolsForToolCallers and renders them via
+// buildCodeModeToolDescriptionOrdered / buildCodeModeToolCatalogMessageOrdered
+// without going through this conversion at all.
+func orderedFromToolSet(tools ToolSet) []types.Tool {
 	names := sortedToolNames(tools)
+	ordered := make([]types.Tool, 0, len(names))
+	for _, name := range names {
+		ordered = append(ordered, tools[name])
+	}
+	return ordered
+}
 
-	if len(names) == 0 {
+func renderToolCatalog(tools []types.Tool) (typeBlock, exampleBlock string) {
+	if len(tools) == 0 {
 		return "No host tools. Do not call `tools.*`.", ""
 	}
 
 	lines := []string{"```ts", "declare const tools: {"}
-	for _, name := range names {
-		lines = append(lines, renderToolType(name, tools[name])...)
+	for _, t := range tools {
+		lines = append(lines, renderToolType(t.Name, t)...)
 	}
 	lines = append(lines, "};", "```")
 	typeBlock = strings.Join(lines, "\n")
 
 	exampleLines := []string{"", "Tool call examples:", "```ts"}
-	exampleLines = append(exampleLines, renderToolExamples(names, tools)...)
+	exampleLines = append(exampleLines, renderToolExamples(tools)...)
 	exampleLines = append(exampleLines, "```")
 	exampleBlock = strings.Join(exampleLines, "\n")
 
@@ -163,23 +187,27 @@ func renderToolType(name string, tool types.Tool) []string {
 	return lines
 }
 
-func renderToolExamples(names []string, tools ToolSet) []string {
-	if len(names) == 1 {
-		name := names[0]
+func renderToolExamples(tools []types.Tool) []string {
+	if len(tools) == 1 {
+		t := tools[0]
 		return []string{
-			fmt.Sprintf("const result = await %s;", renderToolExampleCall(name, tools[name])),
-			fmt.Sprintf("return %s;", renderToolProjection("result", tools[name])),
+			fmt.Sprintf("const result = await %s;", renderToolExampleCall(t.Name, t)),
+			fmt.Sprintf("return %s;", renderToolProjection("result", t)),
 		}
 	}
 
+	names := make([]string, len(tools))
+	for i, t := range tools {
+		names[i] = t.Name
+	}
 	variableNames := uniqueToolVariableNames(names)
 	lines := []string{fmt.Sprintf("const [%s] = await Promise.all([", strings.Join(variableNames, ", "))}
-	for _, name := range names {
-		lines = append(lines, fmt.Sprintf("  %s,", renderToolExampleCall(name, tools[name])))
+	for _, t := range tools {
+		lines = append(lines, fmt.Sprintf("  %s,", renderToolExampleCall(t.Name, t)))
 	}
 	lines = append(lines, "]);", "return {")
-	for i, name := range names {
-		lines = append(lines, fmt.Sprintf("  %s: %s,", formatObjectKey(name), renderToolProjection(variableNames[i], tools[name])))
+	for i, t := range tools {
+		lines = append(lines, fmt.Sprintf("  %s: %s,", formatObjectKey(t.Name), renderToolProjection(variableNames[i], t)))
 	}
 	lines = append(lines, "};")
 	return lines
