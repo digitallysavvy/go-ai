@@ -43,8 +43,16 @@ func TestProviderModelFactoriesAndUnsupportedMethods(t *testing.T) {
 	if _, err := p.TranscriptionModel("x"); err == nil {
 		t.Fatal("expected transcription unsupported error")
 	}
-	if _, err := p.RerankingModel("x"); err == nil {
-		t.Fatal("expected reranking unsupported error")
+	// Reranking is now implemented (C1-2, ai@7.0.118 parity): the default
+	// model resolves rather than erroring. See reranking_model_test.go for
+	// full request/response coverage.
+	rmAny, err := p.RerankingModel("")
+	if err != nil {
+		t.Fatalf("RerankingModel() error = %v", err)
+	}
+	rm := rmAny.(*RerankingModel)
+	if rm.ModelID() != "Salesforce/Llama-Rank-v1" {
+		t.Fatalf("default reranking model id mismatch: %q", rm.ModelID())
 	}
 }
 

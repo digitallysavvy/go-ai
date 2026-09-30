@@ -126,7 +126,11 @@ func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionMod
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("Together AI does not support reranking")
+	if modelID == "" {
+		modelID = "Salesforce/Llama-Rank-v1"
+	}
+
+	return NewRerankingModel(p, modelID), nil
 }
 
 // Client returns the HTTP client for making API requests
