@@ -314,32 +314,27 @@ func (i OpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepStartEven
 // request parameters and returns it embedded in ctx (594029e), so the
 // provider call (and any HTTP spans it creates) runs as its child.
 func (i OpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageModelCallStartEvent) context.Context {
-	// H5: parent the "chat" span under OUR OWN step span, falling back to
-	// our own root span, resolved by CallID rather than
-	// trace.SpanFromContext(ctx) (which — with two integrations registered —
-	// could return the other integration's "current" span). TS's
-	// onLanguageModelCallStart requires state.stepContext strictly with no
-	// root fallback; Go's streamText issues the first step's provider call
-	// before that step's FireOnStepStart has run (the step span is opened
-	// once processStream starts consuming the resulting stream, not before
-	// the initial DoStream call), so a root-span fallback is kept here to
-	// preserve that existing, intentional behavior for step 1 (see
-	// TestStreamTextModelCallRunsInsideGenAIChatSpan).
+	// H5: parent the "chat" span under OUR OWN step span, resolved by CallID
+	// rather than trace.SpanFromContext(ctx) (which — with two integrations
+	// registered — could return the other integration's "current" span).
+	// TS's onLanguageModelCallStart requires state.stepContext strictly, with
+	// no root-span fallback (`if (!state?.stepContext) return;`,
+	// packages/otel/src/open-telemetry.ts). Go used to need a root-span
+	// fallback here because streamText issued each step's provider call
+	// before that step's FireOnStepStart had run; the "ST" fix (stream.go's
+	// bootstrapAndStream/processStream) now fires FireOnStepStart before
+	// every step's DoStream call, so st.stepSpan is always set by the time
+	// this runs and the fallback is dead — removed to match TS exactly (see
+	// TestStreamTextGenAIChatSpanNestsUnderStepSpanForFirstStep).
 	var parent trace.Span
 	if e.CallID != "" {
 		if st := genAIState(e.CallID); st != nil {
 			st.mu.Lock()
 			parent = st.stepSpan
-			if parent == nil {
-				parent = st.rootSpan
-			}
 			st.mu.Unlock()
 		}
 	}
-	if parent == nil {
-		parent = trace.SpanFromContext(ctx)
-	}
-	if !parent.IsRecording() {
+	if parent == nil || !parent.IsRecording() {
 		return ctx
 	}
 	tracer := parent.TracerProvider().Tracer("go-ai")
@@ -669,7 +664,11 @@ func jsonStringifyEach[T any](values []T) []string {
 // OnEmbedEnd records usage on the embeddings request span only — NOT on the
 // root ai.embed/ai.embedMany span, avoiding the double count TS fixed in
 // c0a42bc (the root span's OnEnd omits gen_ai.usage.input_tokens for embed
-// operations; see OnEnd below).
+// operations; see OnEnd below). When e.Error is set (a failed retry attempt
+// — embed_many_batching.go/embed.go fire this event on every attempt's
+// outcome, not just the one that ultimately succeeds), the span is closed
+// with an error status instead, so no span is ever left open for OnEnd to
+// leak — see the doc comment on EmbeddingModelCallEndEvent.
 func (i OpenTelemetry) OnEmbedEnd(_ context.Context, e EmbeddingModelCallEndEvent) {
 	callID := modelCallID(e.EmbedCallID, e.CallID, e.OperationID)
 	value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("embedding", callID))
@@ -685,6 +684,11 @@ func (i OpenTelemetry) OnEmbedEnd(_ context.Context, e EmbeddingModelCallEndEven
 	}
 	entry, ok := value.(otelSpanEntry)
 	if !ok || !entry.span.IsRecording() {
+		return
+	}
+	if e.Error != nil {
+		RecordErrorOnSpan(entry.span, e.Error)
+		entry.span.End()
 		return
 	}
 	if e.Usage.InputTokens > 0 {
@@ -743,7 +747,12 @@ func (i OpenTelemetry) OnRerankStart(ctx context.Context, e RerankingModelCallSt
 	}
 }
 
-// OnRerankEnd ends the reranking request span.
+// OnRerankEnd ends the reranking request span. When e.Error is set (a
+// failed retry attempt — rerank.go fires this event on every attempt's
+// outcome, not just the one that ultimately succeeds), the span is closed
+// with an error status instead, so it is never orphaned by the next
+// attempt's OnRerankStart overwriting st.rerankSpan — see the doc comment
+// on RerankingModelCallEndEvent.
 func (i OpenTelemetry) OnRerankEnd(_ context.Context, e RerankingModelCallEndEvent) {
 	callID := modelCallID(e.CallID, e.OperationID)
 	value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("reranking", callID))
@@ -759,6 +768,11 @@ func (i OpenTelemetry) OnRerankEnd(_ context.Context, e RerankingModelCallEndEve
 	}
 	entry, ok := value.(otelSpanEntry)
 	if !ok || !entry.span.IsRecording() {
+		return
+	}
+	if e.Error != nil {
+		RecordErrorOnSpan(entry.span, e.Error)
+		entry.span.End()
 		return
 	}
 	entry.span.SetAttributes(attribute.Int("ai.reranking.results.count", len(e.Ranking)))

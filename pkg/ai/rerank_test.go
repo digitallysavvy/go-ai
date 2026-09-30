@@ -7,9 +7,14 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/codes"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -512,6 +517,87 @@ func TestRerank_RetriesRetryableError(t *testing.T) {
 	}
 	if len(result.Ranking) != 1 {
 		t.Errorf("expected 1 ranked item, got %d", len(result.Ranking))
+	}
+}
+
+// TestRerank_RetriedAttemptSpanEndsWithErrorStatus is the regression test
+// for the "rerank.go rerankSpan overwrite on retry" fix: a failed attempt's
+// nested "ai.rerank.doRerank" span must end (with error status) even though
+// a later retry of the same call succeeds — previously rerank.go never
+// notified onRerankEnd for a failed attempt (mirroring a real gap in TS's
+// own rerank.ts/open-telemetry.ts), so the failed attempt's span was
+// unconditionally overwritten and orphaned by the next attempt's
+// OnRerankStart (state.rerankSpan/st.rerankSpan is a single field, not a
+// per-attempt map like embed's state.embedSpans), leaking it forever.
+// Reuses the retry scenario from TestRerank_RetriesRetryableError but with
+// a span recorder attached, asserting every started "ai.rerank.doRerank"
+// span appears in Ended() exactly once, with the correct status per
+// attempt.
+func TestRerank_RetriedAttemptSpanEndsWithErrorStatus(t *testing.T) {
+	t.Parallel()
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	tracer := tp.Tracer("rerank-retry-span-test")
+
+	attempts := 0
+	model := &testutil.MockRerankingModel{
+		DoRerankFunc: func(ctx context.Context, opts *provider.RerankOptions) (*types.RerankResult, error) {
+			attempts++
+			if attempts < 2 {
+				pe := providererrors.NewProviderError("mock", 429, "RESOURCE_EXHAUSTED", "rate limited", nil)
+				pe.ResponseHeaders = map[string]string{"retry-after-ms": "0"}
+				return nil, pe
+			}
+			return &types.RerankResult{
+				Ranking: []types.RerankItem{{Index: 0, RelevanceScore: 0.9}},
+			}, nil
+		},
+	}
+
+	result, err := Rerank(context.Background(), RerankOptions{
+		Model:     model,
+		Documents: []string{"doc1"},
+		Query:     "query",
+		Telemetry: &TelemetrySettings{
+			IsEnabled:    telemetry.Bool(true),
+			Integrations: []telemetry.TelemetryIntegration{telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{Tracer: tracer})},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	if len(result.Ranking) != 1 {
+		t.Fatalf("expected 1 ranked item, got %d", len(result.Ranking))
+	}
+
+	// GenAI's root "ai.rerank" span is also present, so restrict to spans
+	// with a valid parent (the nested "ai.rerank.doRerank" attempt spans).
+	var doRerankSpans []sdktrace.ReadOnlySpan
+	for _, s := range rec.Ended() {
+		if strings.HasPrefix(s.Name(), "rerank") && s.Parent().SpanID().IsValid() {
+			doRerankSpans = append(doRerankSpans, s)
+		}
+	}
+	if len(doRerankSpans) != 2 {
+		t.Fatalf("expected 2 ended doRerank attempt spans (one per attempt, including the failed one that was retried), got %d", len(doRerankSpans))
+	}
+	var errored, notErrored int
+	for _, s := range doRerankSpans {
+		if s.Status().Code == codes.Error {
+			errored++
+		} else {
+			notErrored++
+		}
+	}
+	if errored != 1 {
+		t.Fatalf("expected exactly 1 span with error status (the failed attempt), got %d", errored)
+	}
+	if notErrored != 1 {
+		t.Fatalf("expected exactly 1 span without error status (the successful retry), got %d", notErrored)
 	}
 }
 

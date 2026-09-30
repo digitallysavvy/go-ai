@@ -2,8 +2,11 @@ package gemini
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -110,5 +113,121 @@ func TestDownloadToolResultFiles_NoOpWithoutRemoteURLs(t *testing.T) {
 	}
 	if len(out) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(out))
+	}
+}
+
+// TestDownloadToolResultFiles_RejectsUnsupportedURLScheme is the regression
+// test for the "gemini downloads.go URL scheme error" fix: TS's
+// downloadToolResultFiles passes any file URL not already natively supported
+// to downloadBlob, which validates it via validateDownloadUrl
+// (packages/provider-utils/src/validate-download-url.ts) and throws
+// DownloadError("URL scheme must be http, https, or data, got <scheme>") for
+// anything other than http/https/data. The Go port previously silently
+// skipped (continued past) any non-http(s) URL instead of surfacing that
+// error, so an unsupported scheme like ftp:// or file:// silently reached
+// the provider as an unusable reference instead of failing the request.
+func TestDownloadToolResultFiles_RejectsUnsupportedURLScheme(t *testing.T) {
+	called := false
+	m := &LanguageModel{
+		cfg: Config{
+			ToolResultDownloadMaxBytes: DefaultToolResultDownloadMaxBytes,
+			ToolResultDownload: func(ctx context.Context, url string, maxBytes int64) ([]byte, string, error) {
+				called = true
+				return []byte{0x89, 'P', 'N', 'G'}, "image/png", nil
+			},
+		},
+	}
+
+	messages := []types.Message{
+		{
+			Role: types.RoleTool,
+			Content: []types.ContentPart{
+				types.ToolResultContent{
+					ToolCallID: "call-1",
+					ToolName:   "get_file",
+					Output: &types.ToolResultOutput{
+						Type: types.ToolResultOutputContent,
+						Content: []types.ToolResultContentBlock{
+							types.FileContentBlock{
+								URL:       "ftp://example.com/file.png",
+								MediaType: "image/png",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	_, err := m.downloadToolResultFiles(context.Background(), messages)
+	if err == nil {
+		t.Fatal("expected an error for an unsupported URL scheme, got nil")
+	}
+	if called {
+		t.Error("downloader must not be called for an unsupported URL scheme")
+	}
+	var downloadErr *providererrors.DownloadError
+	if !errors.As(err, &downloadErr) {
+		t.Fatalf("expected a *providererrors.DownloadError, got %T: %v", err, err)
+	}
+	wantMsg := "URL scheme must be http, https, or data, got ftp:"
+	if downloadErr.Error() != wantMsg {
+		t.Errorf("error message = %q, want %q", downloadErr.Error(), wantMsg)
+	}
+}
+
+// TestDownloadToolResultFiles_DataURLIsNotDownloaded verifies that a
+// "data:" URL — one of the three schemes validateDownloadUrl accepts — is
+// left as-is rather than downloaded (TS: a data: URL never reaches
+// downloadBlob in practice, since it's always natively supported) or
+// rejected as an unsupported scheme.
+func TestDownloadToolResultFiles_DataURLIsNotDownloaded(t *testing.T) {
+	called := false
+	m := &LanguageModel{
+		cfg: Config{
+			ToolResultDownloadMaxBytes: DefaultToolResultDownloadMaxBytes,
+			ToolResultDownload: func(ctx context.Context, url string, maxBytes int64) ([]byte, string, error) {
+				called = true
+				return nil, "", nil
+			},
+		},
+	}
+
+	dataURL := "data:image/png;base64,iVBORw0KGgo="
+	messages := []types.Message{
+		{
+			Role: types.RoleTool,
+			Content: []types.ContentPart{
+				types.ToolResultContent{
+					ToolCallID: "call-1",
+					ToolName:   "get_image",
+					Output: &types.ToolResultOutput{
+						Type: types.ToolResultOutputContent,
+						Content: []types.ToolResultContentBlock{
+							types.FileContentBlock{
+								URL:       dataURL,
+								MediaType: "image/png",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	out, err := m.downloadToolResultFiles(context.Background(), messages)
+	if err != nil {
+		t.Fatalf("downloadToolResultFiles: %v", err)
+	}
+	if called {
+		t.Error("downloader must not be called for a data: URL")
+	}
+	tr := out[0].Content[0].(types.ToolResultContent)
+	fb := tr.Output.Content[0].(types.FileContentBlock)
+	if fb.URL != dataURL {
+		t.Errorf("expected the data: URL to be left unchanged, got %q", fb.URL)
+	}
+	if !strings.HasPrefix(fb.URL, "data:") {
+		t.Fatalf("test setup error: fb.URL = %q", fb.URL)
 	}
 }
