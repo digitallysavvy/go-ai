@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -297,82 +296,18 @@ type elevenLabsRealtimeStreamConfig struct {
 
 // elevenLabsRealtimeTranscriptionStream implements provider.TranscriptionStream
 // over ElevenLabs' Scribe v2 Realtime WebSocket, mirroring TS
-// createElevenLabsRealtimeTranscriptionStream.
+// createElevenLabsRealtimeTranscriptionStream. The Next/Err/Close/emit/setErr
+// plumbing is the shared wsutil.Session core; pumpAudio's previous_text-on-
+// first-chunk special case doesn't fit the shared wsutil.PumpAudio loop's
+// uniform per-chunk callback cleanly, so it stays local.
 type elevenLabsRealtimeTranscriptionStream struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	parts  chan provider.TranscriptionStreamPart
-
-	mu  sync.Mutex
-	err error
-
-	closeOnce sync.Once
-	connMu    sync.Mutex
-	conn      *websocket.Conn
+	*wsutil.Session[provider.TranscriptionStreamPart]
 }
 
 func newElevenLabsRealtimeTranscriptionStream(parentCtx context.Context, cfg elevenLabsRealtimeStreamConfig) *elevenLabsRealtimeTranscriptionStream {
-	ctx, cancel := context.WithCancel(parentCtx)
-	s := &elevenLabsRealtimeTranscriptionStream{ctx: ctx, cancel: cancel, parts: make(chan provider.TranscriptionStreamPart)}
+	s := &elevenLabsRealtimeTranscriptionStream{Session: wsutil.NewSession[provider.TranscriptionStreamPart](parentCtx)}
 	go s.run(cfg)
 	return s
-}
-
-func (s *elevenLabsRealtimeTranscriptionStream) Next() (*provider.TranscriptionStreamPart, error) {
-	part, ok := <-s.parts
-	if !ok {
-		s.mu.Lock()
-		err := s.err
-		s.mu.Unlock()
-		if err != nil {
-			return nil, err
-		}
-		return nil, io.EOF
-	}
-	return &part, nil
-}
-
-func (s *elevenLabsRealtimeTranscriptionStream) Err() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.err
-}
-
-func (s *elevenLabsRealtimeTranscriptionStream) Close() error {
-	s.closeOnce.Do(func() {
-		s.cancel()
-		s.connMu.Lock()
-		if s.conn != nil {
-			_ = s.conn.Close()
-		}
-		s.connMu.Unlock()
-	})
-	return nil
-}
-
-func (s *elevenLabsRealtimeTranscriptionStream) setErr(err error) {
-	s.mu.Lock()
-	if s.err == nil {
-		s.err = err
-	}
-	s.mu.Unlock()
-}
-
-// emit sends part on s.parts, returning false when the stream's ctx is done
-// (so a blocked send unblocks instead of leaking when Close cancels ctx).
-func (s *elevenLabsRealtimeTranscriptionStream) emit(part provider.TranscriptionStreamPart) bool {
-	select {
-	case s.parts <- part:
-		return true
-	case <-s.ctx.Done():
-		return false
-	}
-}
-
-// receiveLoop continuously reads text frames from conn and forwards each one
-// (or the terminal error) on out, until an error occurs or s.ctx is done.
-func (s *elevenLabsRealtimeTranscriptionStream) receiveLoop(conn *websocket.Conn, out chan<- wsutil.Message) {
-	wsutil.ReceiveLoop(s.ctx, conn, out)
 }
 
 // elevenLabsRealtimeWord is one entry of a transcript event's `words` array.
@@ -402,20 +337,21 @@ type elevenLabsRealtimeEvent struct {
 // writing to the WebSocket — is reported on errCh, mirroring TS's
 // `void sendAudio(socket).catch(finishWithError)` (a rejected
 // `audioReader.read()` fails the stream exactly like a failed `socket.send`).
-// A failure that stems from s.ctx already being cancelled is not reported
-// here: run()'s own select on s.ctx.Done() already handles that case.
+// A failure that stems from the session's context already being cancelled is
+// not reported here: run()'s own select on that context's Done() already
+// handles that case.
 func (s *elevenLabsRealtimeTranscriptionStream) pumpAudio(conn *websocket.Conn, cfg elevenLabsRealtimeStreamConfig, audioEnded chan<- struct{}, errCh chan<- error) {
 	firstChunk := true
 	for {
-		chunk, err := cfg.audio.Next(s.ctx)
+		chunk, err := cfg.audio.Next(s.Context())
 		if err != nil {
 			if err == io.EOF {
 				select {
 				case audioEnded <- struct{}{}:
-				case <-s.ctx.Done():
+				case <-s.Context().Done():
 				}
-			} else if s.ctx.Err() == nil {
-				s.reportAudioError(errCh, err)
+			} else if s.Context().Err() == nil {
+				wsutil.ReportError(s.Context(), errCh, err)
 			}
 			return
 		}
@@ -434,30 +370,20 @@ func (s *elevenLabsRealtimeTranscriptionStream) pumpAudio(conn *websocket.Conn, 
 			continue
 		}
 		if err := s.send(conn, payload); err != nil {
-			if s.ctx.Err() == nil {
-				s.reportAudioError(errCh, err)
+			if s.Context().Err() == nil {
+				wsutil.ReportError(s.Context(), errCh, err)
 			}
 			return
 		}
 	}
 }
 
-// reportAudioError delivers err to errCh, falling back to s.ctx.Done() so a
-// send that no longer has a reader (run() already returned via a different
-// path) cannot block pumpAudio forever.
-func (s *elevenLabsRealtimeTranscriptionStream) reportAudioError(errCh chan<- error, err error) {
-	select {
-	case errCh <- err:
-	case <-s.ctx.Done():
-	}
-}
-
 func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStreamConfig) {
-	defer close(s.parts)
-	// Release s.ctx's resources as soon as run() returns for any reason
-	// instead of only on an explicit Close() call, which a consumer that
-	// only drains Next() to io.EOF may never make.
-	defer s.cancel()
+	defer s.CloseParts()
+	// Release the session's resources as soon as run() returns for any
+	// reason instead of only on an explicit Close() call, which a consumer
+	// that only drains Next() to io.EOF may never make.
+	defer s.CancelContext()
 
 	var finishTimer *time.Timer
 	var finishTimerC <-chan time.Time
@@ -474,7 +400,7 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 	// cancelling the caller's AudioStream.
 	fail := func(err error) {
 		stopFinishTimer()
-		s.setErr(err)
+		s.SetErr(err)
 		cfg.audio.Cancel(err)
 	}
 
@@ -483,13 +409,11 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 		fail(err)
 		return
 	}
-	s.connMu.Lock()
-	s.conn = conn
-	s.connMu.Unlock()
+	s.SetConn(conn)
 	defer conn.Close() //nolint:errcheck
 
 	msgCh := make(chan wsutil.Message)
-	go s.receiveLoop(conn, msgCh)
+	go wsutil.ReceiveLoop(s.Context(), conn, msgCh)
 
 	audioEndedCh := make(chan struct{})
 	audioErrCh := make(chan error, 1)
@@ -540,7 +464,7 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 			d := finalSegments[len(finalSegments)-1].EndSecond
 			duration = &d
 		}
-		s.emit(provider.TranscriptionStreamPart{
+		s.Emit(provider.TranscriptionStreamPart{
 			Type:              provider.TranscriptionStreamPartTypeFinish,
 			FinishText:        text,
 			Segments:          segments,
@@ -552,8 +476,8 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 
 	for {
 		select {
-		case <-s.ctx.Done():
-			fail(s.ctx.Err())
+		case <-s.Context().Done():
+			fail(s.Context().Err())
 			return
 
 		case <-finishTimerC:
@@ -612,7 +536,7 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 			if cfg.includeRawChunks {
 				var rawValue interface{}
 				_ = json.Unmarshal([]byte(res.Text), &rawValue)
-				if !s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeRaw, RawValue: rawValue}) {
+				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeRaw, RawValue: rawValue}) {
 					return
 				}
 			}
@@ -634,13 +558,13 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 			switch raw.MessageType {
 			case "session_started":
 				sessionID = raw.SessionID
-				if !s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart, Warnings: cfg.warnings}) {
+				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart, Warnings: cfg.warnings}) {
 					return
 				}
 				go s.pumpAudio(conn, cfg, audioEndedCh, audioErrCh)
 
 			case "partial_transcript":
-				if !s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypePartial, ID: segID(), Text: raw.Text}) {
+				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypePartial, ID: segID(), Text: raw.Text}) {
 					return
 				}
 
@@ -651,7 +575,7 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 				if len(text) > 0 {
 					finalTexts = append(finalTexts, text)
 					segmentIndex++
-					if !s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeFinal, ID: id, Text: text}) {
+					if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeFinal, ID: id, Text: text}) {
 						return
 					}
 				}
@@ -694,7 +618,7 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 						part.StartSecond = &start
 						part.EndSecond = &end
 					}
-					if !s.emit(part) {
+					if !s.Emit(part) {
 						return
 					}
 				}
@@ -716,11 +640,11 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 }
 
 func (s *elevenLabsRealtimeTranscriptionStream) dial(wsURL *url.URL, headers map[string]string) (*websocket.Conn, error) {
-	return wsutil.Dial(s.ctx, wsURL.String(), wsutil.DialOptions{Headers: headers})
+	return wsutil.Dial(s.Context(), wsURL.String(), wsutil.DialOptions{Headers: headers})
 }
 
 func (s *elevenLabsRealtimeTranscriptionStream) send(conn *websocket.Conn, message []byte) error {
-	return wsutil.Send(s.ctx, conn, string(message))
+	return wsutil.Send(s.Context(), conn, string(message))
 }
 
 var (

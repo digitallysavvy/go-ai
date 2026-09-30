@@ -5,8 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"io"
-	"sync"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -27,94 +25,34 @@ type openAIRealtimeSpeechTranslationStreamConfig struct {
 
 // openAIRealtimeSpeechTranslationStream implements
 // provider.SpeechTranslationStream over the OpenAI realtime translations
-// WebSocket, mirroring TS createOpenAIRealtimeSpeechTranslationStream.
+// WebSocket, mirroring TS createOpenAIRealtimeSpeechTranslationStream. The
+// Next/Err/Close/emit/setErr plumbing is the shared wsutil.Session core;
+// only the protocol-specific run()/pumpAudio()/dial()/send() below are
+// local to OpenAI.
 type openAIRealtimeSpeechTranslationStream struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	parts  chan provider.SpeechTranslationStreamPart
-
-	mu  sync.Mutex
-	err error
-
-	closeOnce sync.Once
-	connMu    sync.Mutex
-	conn      *websocket.Conn
+	*wsutil.Session[provider.SpeechTranslationStreamPart]
 }
 
 func newOpenAIRealtimeSpeechTranslationStream(parentCtx context.Context, cfg openAIRealtimeSpeechTranslationStreamConfig) *openAIRealtimeSpeechTranslationStream {
-	ctx, cancel := context.WithCancel(parentCtx)
-	s := &openAIRealtimeSpeechTranslationStream{ctx: ctx, cancel: cancel, parts: make(chan provider.SpeechTranslationStreamPart)}
+	s := &openAIRealtimeSpeechTranslationStream{Session: wsutil.NewSession[provider.SpeechTranslationStreamPart](parentCtx)}
 	go s.run(cfg)
 	return s
 }
 
-func (s *openAIRealtimeSpeechTranslationStream) Next() (*provider.SpeechTranslationStreamPart, error) {
-	part, ok := <-s.parts
-	if !ok {
-		s.mu.Lock()
-		err := s.err
-		s.mu.Unlock()
-		if err != nil {
-			return nil, err
-		}
-		return nil, io.EOF
-	}
-	return &part, nil
-}
-
-func (s *openAIRealtimeSpeechTranslationStream) Err() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.err
-}
-
-func (s *openAIRealtimeSpeechTranslationStream) Close() error {
-	s.closeOnce.Do(func() {
-		s.cancel()
-		s.connMu.Lock()
-		if s.conn != nil {
-			_ = s.conn.Close()
-		}
-		s.connMu.Unlock()
-	})
-	return nil
-}
-
-func (s *openAIRealtimeSpeechTranslationStream) setErr(err error) {
-	s.mu.Lock()
-	if s.err == nil {
-		s.err = err
-	}
-	s.mu.Unlock()
-}
-
-// emit sends part on s.parts, returning false when the stream's ctx is done
-// (so a blocked send unblocks instead of leaking when Close cancels ctx).
-func (s *openAIRealtimeSpeechTranslationStream) emit(part provider.SpeechTranslationStreamPart) bool {
-	select {
-	case s.parts <- part:
-		return true
-	case <-s.ctx.Done():
-		return false
-	}
-}
-
 func (s *openAIRealtimeSpeechTranslationStream) run(cfg openAIRealtimeSpeechTranslationStreamConfig) {
-	defer close(s.parts)
-	// Release s.ctx's resources as soon as run() returns for any reason
-	// instead of only on an explicit Close() call, which a consumer that
-	// only drains Next() to io.EOF may never make.
-	defer s.cancel()
+	defer s.CloseParts()
+	// Release the session's resources as soon as run() returns for any
+	// reason instead of only on an explicit Close() call, which a consumer
+	// that only drains Next() to io.EOF may never make.
+	defer s.CancelContext()
 
 	conn, err := s.dial(cfg.url, cfg.headers)
 	if err != nil {
-		s.setErr(err)
+		s.SetErr(err)
 		cfg.audio.Cancel(err)
 		return
 	}
-	s.connMu.Lock()
-	s.conn = conn
-	s.connMu.Unlock()
+	s.SetConn(conn)
 	defer conn.Close() //nolint:errcheck
 
 	// Send the session update and start pumping audio before emitting
@@ -123,12 +61,12 @@ func (s *openAIRealtimeSpeechTranslationStream) run(cfg openAIRealtimeSpeechTran
 	// reader before the socket send and sendAudio() call that follow it).
 	payload, err := json.Marshal(cfg.sessionUpdate)
 	if err != nil {
-		s.setErr(err)
+		s.SetErr(err)
 		cfg.audio.Cancel(err)
 		return
 	}
 	if err := s.send(conn, payload); err != nil {
-		s.setErr(err)
+		s.SetErr(err)
 		cfg.audio.Cancel(err)
 		return
 	}
@@ -136,12 +74,12 @@ func (s *openAIRealtimeSpeechTranslationStream) run(cfg openAIRealtimeSpeechTran
 	audioErrCh := make(chan error, 1)
 	go s.pumpAudio(conn, cfg.audio, audioErrCh)
 
-	if !s.emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeStreamStart, Warnings: cfg.warnings}) {
+	if !s.Emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeStreamStart, Warnings: cfg.warnings}) {
 		return
 	}
 
 	msgCh := make(chan wsutil.Message)
-	go wsutil.ReceiveLoop(s.ctx, conn, msgCh)
+	go wsutil.ReceiveLoop(s.Context(), conn, msgCh)
 
 	var sourceText, translationText string
 
@@ -149,16 +87,16 @@ func (s *openAIRealtimeSpeechTranslationStream) run(cfg openAIRealtimeSpeechTran
 	// the finish part, mirroring TS finish().
 	finish := func() {
 		if sourceText != "" {
-			if !s.emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeSourceTranscriptFinal, Text: sourceText}) {
+			if !s.Emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeSourceTranscriptFinal, Text: sourceText}) {
 				return
 			}
 		}
 		if translationText != "" {
-			if !s.emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeOutputTextFinal, Text: translationText}) {
+			if !s.Emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeOutputTextFinal, Text: translationText}) {
 				return
 			}
 		}
-		s.emit(provider.SpeechTranslationStreamPart{
+		s.Emit(provider.SpeechTranslationStreamPart{
 			Type:       provider.SpeechTranslationStreamPartTypeFinish,
 			SourceText: sourceText,
 			OutputText: translationText,
@@ -167,15 +105,15 @@ func (s *openAIRealtimeSpeechTranslationStream) run(cfg openAIRealtimeSpeechTran
 
 	for {
 		select {
-		case <-s.ctx.Done():
-			cause := context.Cause(s.ctx)
-			s.setErr(cause)
+		case <-s.Context().Done():
+			cause := context.Cause(s.Context())
+			s.SetErr(cause)
 			cfg.audio.Cancel(cause)
 			return
 
 		case audioErr := <-audioErrCh:
 			// Mirrors TS `void sendAudio(socket).catch(finishWithError)`.
-			s.setErr(audioErr)
+			s.SetErr(audioErr)
 			cfg.audio.Cancel(audioErr)
 			return
 
@@ -195,7 +133,7 @@ func (s *openAIRealtimeSpeechTranslationStream) run(cfg openAIRealtimeSpeechTran
 				} else {
 					failErr = errors.New("OpenAI realtime translation error")
 				}
-				s.setErr(failErr)
+				s.SetErr(failErr)
 				cfg.audio.Cancel(failErr)
 				return
 			}
@@ -205,7 +143,7 @@ func (s *openAIRealtimeSpeechTranslationStream) run(cfg openAIRealtimeSpeechTran
 				continue
 			}
 			if cfg.includeRawChunks {
-				if !s.emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeRaw, RawValue: raw}) {
+				if !s.Emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeRaw, RawValue: raw}) {
 					return
 				}
 			}
@@ -217,7 +155,7 @@ func (s *openAIRealtimeSpeechTranslationStream) run(cfg openAIRealtimeSpeechTran
 				// skip empty deltas: an empty `audio` part carries no data
 				if delta != "" {
 					if audioBytes, decodeErr := base64.StdEncoding.DecodeString(delta); decodeErr == nil {
-						if !s.emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeAudio, AudioData: audioBytes}) {
+						if !s.Emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeAudio, AudioData: audioBytes}) {
 							return
 						}
 					}
@@ -226,14 +164,14 @@ func (s *openAIRealtimeSpeechTranslationStream) run(cfg openAIRealtimeSpeechTran
 			case "session.output_transcript.delta":
 				delta, _ := raw["delta"].(string)
 				translationText += delta
-				if !s.emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeOutputTextDelta, Delta: delta}) {
+				if !s.Emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeOutputTextDelta, Delta: delta}) {
 					return
 				}
 
 			case "session.input_transcript.delta":
 				delta, _ := raw["delta"].(string)
 				sourceText += delta
-				if !s.emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeSourceTranscriptDelta, Delta: delta}) {
+				if !s.Emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeSourceTranscriptDelta, Delta: delta}) {
 					return
 				}
 
@@ -251,7 +189,7 @@ func (s *openAIRealtimeSpeechTranslationStream) run(cfg openAIRealtimeSpeechTran
 				// Recoverable server errors are streamed as `error` parts
 				// and do not terminate the stream, mirroring TS: only
 				// `onSocketError`/`onClose`/a rejected `sendAudio` end it.
-				if !s.emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeError, Err: errors.New(message)}) {
+				if !s.Emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeError, Err: errors.New(message)}) {
 					return
 				}
 			}
@@ -262,56 +200,34 @@ func (s *openAIRealtimeSpeechTranslationStream) run(cfg openAIRealtimeSpeechTran
 // pumpAudio reads chunks from audio and forwards them as
 // session.input_audio_buffer.append messages, sending session.close at EOF.
 // Any other failure — reading from the AudioStream, or writing to the
-// WebSocket — is reported on errCh, mirroring TS's `void
-// sendAudio(socket).catch(finishWithError)`.
+// WebSocket — is reported on errCh via the shared wsutil.PumpAudio loop,
+// mirroring TS's `void sendAudio(socket).catch(finishWithError)`.
 func (s *openAIRealtimeSpeechTranslationStream) pumpAudio(conn *websocket.Conn, audio provider.AudioStream, errCh chan<- error) {
-	for {
-		chunk, err := audio.Next(s.ctx)
-		if err != nil {
-			if err == io.EOF {
-				if sendErr := s.send(conn, []byte(`{"type":"session.close"}`)); sendErr != nil {
-					if s.ctx.Err() == nil {
-						s.reportAudioError(errCh, sendErr)
-					}
-				}
-			} else if s.ctx.Err() == nil {
-				s.reportAudioError(errCh, err)
+	wsutil.PumpAudio(s.Context(), audio,
+		func(chunk []byte) error {
+			msg, marshalErr := json.Marshal(map[string]string{
+				"type":  "session.input_audio_buffer.append",
+				"audio": base64.StdEncoding.EncodeToString(chunk),
+			})
+			if marshalErr != nil {
+				return nil
 			}
-			return
-		}
-		msg, marshalErr := json.Marshal(map[string]string{
-			"type":  "session.input_audio_buffer.append",
-			"audio": base64.StdEncoding.EncodeToString(chunk),
-		})
-		if marshalErr != nil {
-			continue
-		}
-		if err := s.send(conn, msg); err != nil {
-			if s.ctx.Err() == nil {
-				s.reportAudioError(errCh, err)
-			}
-			return
-		}
-	}
-}
-
-// reportAudioError delivers err to errCh, falling back to s.ctx.Done() so a
-// send that no longer has a reader (run() already returned via a different
-// path) cannot block pumpAudio forever.
-func (s *openAIRealtimeSpeechTranslationStream) reportAudioError(errCh chan<- error, err error) {
-	select {
-	case errCh <- err:
-	case <-s.ctx.Done():
-	}
+			return s.send(conn, msg)
+		},
+		func() error {
+			return s.send(conn, []byte(`{"type":"session.close"}`))
+		},
+		errCh,
+	)
 }
 
 func (s *openAIRealtimeSpeechTranslationStream) dial(wsURL string, headers map[string]string) (*websocket.Conn, error) {
 	protocols, filteredHeaders := openAIRealtimeWSAuth(headers)
-	return wsutil.Dial(s.ctx, wsURL, wsutil.DialOptions{Headers: filteredHeaders, Protocols: protocols})
+	return wsutil.Dial(s.Context(), wsURL, wsutil.DialOptions{Headers: filteredHeaders, Protocols: protocols})
 }
 
 func (s *openAIRealtimeSpeechTranslationStream) send(conn *websocket.Conn, message []byte) error {
-	return wsutil.Send(s.ctx, conn, string(message))
+	return wsutil.Send(s.Context(), conn, string(message))
 }
 
 var (

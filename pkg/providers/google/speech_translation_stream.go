@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"sync"
 	"time"
 
@@ -32,141 +31,52 @@ type googleLiveSpeechTranslationStreamConfig struct {
 
 // googleLiveSpeechTranslationStream implements provider.SpeechTranslationStream
 // over the Gemini Live API WebSocket, mirroring TS
-// createGoogleLiveSpeechTranslationStream.
+// createGoogleLiveSpeechTranslationStream. The Next/Err/Close/emit/setErr
+// plumbing is the shared wsutil.Session core; only the protocol-specific
+// run()/pumpAudio()/dial()/send() below are local to Google.
 type googleLiveSpeechTranslationStream struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	parts  chan provider.SpeechTranslationStreamPart
-
-	mu  sync.Mutex
-	err error
-
-	closeOnce sync.Once
-	connMu    sync.Mutex
-	conn      *websocket.Conn
+	*wsutil.Session[provider.SpeechTranslationStreamPart]
 }
 
 func newGoogleLiveSpeechTranslationStream(parentCtx context.Context, cfg googleLiveSpeechTranslationStreamConfig) *googleLiveSpeechTranslationStream {
-	ctx, cancel := context.WithCancel(parentCtx)
-	s := &googleLiveSpeechTranslationStream{ctx: ctx, cancel: cancel, parts: make(chan provider.SpeechTranslationStreamPart)}
+	s := &googleLiveSpeechTranslationStream{Session: wsutil.NewSession[provider.SpeechTranslationStreamPart](parentCtx)}
 	go s.run(cfg)
 	return s
-}
-
-func (s *googleLiveSpeechTranslationStream) Next() (*provider.SpeechTranslationStreamPart, error) {
-	part, ok := <-s.parts
-	if !ok {
-		s.mu.Lock()
-		err := s.err
-		s.mu.Unlock()
-		if err != nil {
-			return nil, err
-		}
-		return nil, io.EOF
-	}
-	return &part, nil
-}
-
-func (s *googleLiveSpeechTranslationStream) Err() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.err
-}
-
-func (s *googleLiveSpeechTranslationStream) Close() error {
-	s.closeOnce.Do(func() {
-		s.cancel()
-		s.connMu.Lock()
-		if s.conn != nil {
-			_ = s.conn.Close()
-		}
-		s.connMu.Unlock()
-	})
-	return nil
-}
-
-func (s *googleLiveSpeechTranslationStream) setErr(err error) {
-	s.mu.Lock()
-	if s.err == nil {
-		s.err = err
-	}
-	s.mu.Unlock()
-}
-
-// emit sends part on s.parts, returning false when the stream's ctx is done
-// (so a blocked send unblocks instead of leaking when Close cancels ctx).
-func (s *googleLiveSpeechTranslationStream) emit(part provider.SpeechTranslationStreamPart) bool {
-	select {
-	case s.parts <- part:
-		return true
-	case <-s.ctx.Done():
-		return false
-	}
-}
-
-func (s *googleLiveSpeechTranslationStream) receiveLoop(conn *websocket.Conn, out chan<- wsutil.Message) {
-	wsutil.ReceiveLoop(s.ctx, conn, out)
 }
 
 // pumpAudio waits for the server's setupComplete acknowledgement (the Live
 // API contract requires this before sending realtime input), then forwards
 // audio chunks as realtimeInput.audio messages, committing
 // realtimeInput.audioStreamEnd at EOF and signalling audioEnded. Mirrors TS
-// sendAudio.
+// sendAudio, via the shared wsutil.PumpAudioAfterReady loop.
 func (s *googleLiveSpeechTranslationStream) pumpAudio(conn *websocket.Conn, audio provider.AudioStream, setupComplete <-chan struct{}, rate int, audioEnded chan<- struct{}, errCh chan<- error) {
-	select {
-	case <-setupComplete:
-	case <-s.ctx.Done():
-		return
-	}
-
-	for {
-		chunk, err := audio.Next(s.ctx)
-		if err != nil {
-			if err == io.EOF {
-				if sendErr := s.send(conn, []byte(`{"realtimeInput":{"audioStreamEnd":true}}`)); sendErr != nil {
-					if s.ctx.Err() == nil {
-						s.reportAudioError(errCh, sendErr)
-					}
-					return
-				}
-				select {
-				case audioEnded <- struct{}{}:
-				case <-s.ctx.Done():
-				}
-			} else if s.ctx.Err() == nil {
-				s.reportAudioError(errCh, err)
-			}
-			return
-		}
-		msg, marshalErr := json.Marshal(map[string]interface{}{
-			"realtimeInput": map[string]interface{}{
-				"audio": map[string]interface{}{
-					"data":     base64.StdEncoding.EncodeToString(chunk),
-					"mimeType": fmt.Sprintf("audio/pcm;rate=%d", rate),
+	wsutil.PumpAudioAfterReady(s.Context(), setupComplete, audio,
+		func(chunk []byte) error {
+			msg, marshalErr := json.Marshal(map[string]interface{}{
+				"realtimeInput": map[string]interface{}{
+					"audio": map[string]interface{}{
+						"data":     base64.StdEncoding.EncodeToString(chunk),
+						"mimeType": fmt.Sprintf("audio/pcm;rate=%d", rate),
+					},
 				},
-			},
-		})
-		if marshalErr != nil {
-			continue
-		}
-		if err := s.send(conn, msg); err != nil {
-			if s.ctx.Err() == nil {
-				s.reportAudioError(errCh, err)
+			})
+			if marshalErr != nil {
+				return nil
 			}
-			return
-		}
-	}
-}
-
-// reportAudioError delivers err to errCh, falling back to s.ctx.Done() so a
-// send that no longer has a reader (run() already returned via a different
-// path) cannot block pumpAudio forever.
-func (s *googleLiveSpeechTranslationStream) reportAudioError(errCh chan<- error, err error) {
-	select {
-	case errCh <- err:
-	case <-s.ctx.Done():
-	}
+			return s.send(conn, msg)
+		},
+		func() error {
+			if sendErr := s.send(conn, []byte(`{"realtimeInput":{"audioStreamEnd":true}}`)); sendErr != nil {
+				return sendErr
+			}
+			select {
+			case audioEnded <- struct{}{}:
+			case <-s.Context().Done():
+			}
+			return nil
+		},
+		errCh,
+	)
 }
 
 // googleLiveSpeechTranslationServerMessage is the subset of Google Live API
@@ -186,8 +96,8 @@ type googleLiveSpeechTranslationServerMessage struct {
 		InputTranscription  *googleLiveTranscription `json:"inputTranscription,omitempty"`
 		TurnComplete        bool                     `json:"turnComplete,omitempty"`
 	} `json:"serverContent,omitempty"`
-	InputTranscription *googleLiveTranscription             `json:"inputTranscription,omitempty"`
-	UsageMetadata      *googleLiveTranslationUsageMetadata  `json:"usageMetadata,omitempty"`
+	InputTranscription *googleLiveTranscription            `json:"inputTranscription,omitempty"`
+	UsageMetadata      *googleLiveTranslationUsageMetadata `json:"usageMetadata,omitempty"`
 	Error              *struct {
 		Message string `json:"message,omitempty"`
 	} `json:"error,omitempty"`
@@ -283,11 +193,11 @@ func abs16(v int16) int16 {
 // provider.SpeechTranslationStreamPart values, mirroring TS
 // createGoogleLiveSpeechTranslationStream's ReadableStream `start`.
 func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationStreamConfig) {
-	defer close(s.parts)
-	// Release s.ctx's resources as soon as run() returns for any reason
-	// instead of only on an explicit Close() call, which a consumer that
-	// only drains Next() to io.EOF may never make.
-	defer s.cancel()
+	defer s.CloseParts()
+	// Release the session's resources as soon as run() returns for any
+	// reason instead of only on an explicit Close() call, which a consumer
+	// that only drains Next() to io.EOF may never make.
+	defer s.CancelContext()
 
 	var finishTimer *time.Timer
 	var finishTimerC <-chan time.Time
@@ -304,7 +214,7 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 	// cancelling the caller's AudioStream.
 	fail := func(err error) {
 		cancelPendingFinish()
-		s.setErr(err)
+		s.SetErr(err)
 		cfg.audio.Cancel(err)
 	}
 
@@ -313,9 +223,7 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 		fail(err)
 		return
 	}
-	s.connMu.Lock()
-	s.conn = conn
-	s.connMu.Unlock()
+	s.SetConn(conn)
 	defer conn.Close() //nolint:errcheck
 
 	payload, err := json.Marshal(map[string]interface{}{"setup": cfg.setup})
@@ -339,12 +247,12 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 	audioErrCh := make(chan error, 1)
 	go s.pumpAudio(conn, cfg.audio, setupCompleteCh, cfg.inputAudioRate, audioEndedCh, audioErrCh)
 
-	if !s.emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeStreamStart, Warnings: cfg.warnings}) {
+	if !s.Emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeStreamStart, Warnings: cfg.warnings}) {
 		return
 	}
 
 	msgCh := make(chan wsutil.Message)
-	go s.receiveLoop(conn, msgCh)
+	go wsutil.ReceiveLoop(s.Context(), conn, msgCh)
 
 	// Google Live messages carry no response/item IDs; a turn counter
 	// generates consistent synthetic IDs (like the realtime event mapper).
@@ -382,14 +290,14 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 	completeTurn := func() bool {
 		ok := true
 		if sourceTurnBuffer != "" {
-			if !s.emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeSourceTranscriptFinal, ID: itemID(), Text: sourceTurnBuffer}) {
+			if !s.Emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeSourceTranscriptFinal, ID: itemID(), Text: sourceTurnBuffer}) {
 				ok = false
 			}
 			sourceText += sourceTurnBuffer
 			sourceTurnBuffer = ""
 		}
 		if translationTurnBuffer != "" {
-			if !s.emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeOutputTextFinal, ID: itemID(), Text: translationTurnBuffer}) {
+			if !s.Emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeOutputTextFinal, ID: itemID(), Text: translationTurnBuffer}) {
 				ok = false
 			}
 			translationText += translationTurnBuffer
@@ -416,7 +324,7 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 		}
 		finished = true
 		cancelPendingFinish()
-		s.emit(provider.SpeechTranslationStreamPart{
+		s.Emit(provider.SpeechTranslationStreamPart{
 			Type:       provider.SpeechTranslationStreamPartTypeFinish,
 			SourceText: sourceText,
 			OutputText: translationText,
@@ -427,8 +335,8 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 
 	for {
 		select {
-		case <-s.ctx.Done():
-			fail(context.Cause(s.ctx))
+		case <-s.Context().Done():
+			fail(context.Cause(s.Context()))
 			return
 
 		case <-finishTimerC:
@@ -481,7 +389,7 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 			if cfg.includeRawChunks {
 				var rawValue interface{}
 				_ = json.Unmarshal([]byte(res.Text), &rawValue)
-				if !s.emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeRaw, RawValue: rawValue}) {
+				if !s.Emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeRaw, RawValue: rawValue}) {
 					return
 				}
 			}
@@ -512,7 +420,7 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 			if inputText != "" {
 				onTurnActivity()
 				sourceTurnBuffer += inputText
-				if !s.emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeSourceTranscriptDelta, ID: itemID(), Delta: inputText}) {
+				if !s.Emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeSourceTranscriptDelta, ID: itemID(), Delta: inputText}) {
 					return
 				}
 			}
@@ -532,7 +440,7 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 					if decodeErr != nil {
 						continue
 					}
-					if !s.emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeAudio, ID: itemID(), AudioData: audioBytes}) {
+					if !s.Emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeAudio, ID: itemID(), AudioData: audioBytes}) {
 						stop = true
 						break
 					}
@@ -556,7 +464,7 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 			if serverContent.OutputTranscription != nil && serverContent.OutputTranscription.Text != "" {
 				onTurnActivity()
 				translationTurnBuffer += serverContent.OutputTranscription.Text
-				if !s.emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeOutputTextDelta, ID: itemID(), Delta: serverContent.OutputTranscription.Text}) {
+				if !s.Emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeOutputTextDelta, ID: itemID(), Delta: serverContent.OutputTranscription.Text}) {
 					return
 				}
 			}
@@ -576,11 +484,11 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 }
 
 func (s *googleLiveSpeechTranslationStream) dial(wsURL string, headers map[string]string) (*websocket.Conn, error) {
-	return wsutil.Dial(s.ctx, wsURL, wsutil.DialOptions{Headers: headers})
+	return wsutil.Dial(s.Context(), wsURL, wsutil.DialOptions{Headers: headers})
 }
 
 func (s *googleLiveSpeechTranslationStream) send(conn *websocket.Conn, message []byte) error {
-	return wsutil.Send(s.ctx, conn, string(message))
+	return wsutil.Send(s.Context(), conn, string(message))
 }
 
 var (

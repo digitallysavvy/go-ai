@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/url"
 	"sync"
 	"time"
@@ -193,140 +192,54 @@ type geminiLiveTranscriptionStreamConfig struct {
 // the Vertex Live API WebSocket, mirroring TS
 // createVertexLiveTranscriptionStream. Structurally identical to
 // pkg/providers/google's googleLiveTranscriptionStream (same Live API
-// message contract); duplicated rather than shared because the two
-// providers' auth, host, and setup.model shape differ enough that a shared
-// abstraction would need as many parameters as it saves lines, and the two
-// TS source files are themselves separate (near-identical) implementations.
+// message contract) other than auth, host, and setup.model shape, so both
+// embed the shared wsutil.Session core for the Next/Err/Close/emit/setErr
+// plumbing and the shared wsutil.PumpAudioAfterReady loop for pumpAudio;
+// only the differing auth/host/setup construction and the message handling
+// in run() stay provider-local.
 type geminiLiveTranscriptionStream struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	parts  chan provider.TranscriptionStreamPart
-
-	mu  sync.Mutex
-	err error
-
-	closeOnce sync.Once
-	connMu    sync.Mutex
-	conn      *websocket.Conn
+	*wsutil.Session[provider.TranscriptionStreamPart]
 }
 
 func newGeminiLiveTranscriptionStream(parentCtx context.Context, cfg geminiLiveTranscriptionStreamConfig) *geminiLiveTranscriptionStream {
-	ctx, cancel := context.WithCancel(parentCtx)
-	s := &geminiLiveTranscriptionStream{ctx: ctx, cancel: cancel, parts: make(chan provider.TranscriptionStreamPart)}
+	s := &geminiLiveTranscriptionStream{Session: wsutil.NewSession[provider.TranscriptionStreamPart](parentCtx)}
 	go s.run(cfg)
 	return s
-}
-
-func (s *geminiLiveTranscriptionStream) Next() (*provider.TranscriptionStreamPart, error) {
-	part, ok := <-s.parts
-	if !ok {
-		s.mu.Lock()
-		err := s.err
-		s.mu.Unlock()
-		if err != nil {
-			return nil, err
-		}
-		return nil, io.EOF
-	}
-	return &part, nil
-}
-
-func (s *geminiLiveTranscriptionStream) Err() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.err
-}
-
-func (s *geminiLiveTranscriptionStream) Close() error {
-	s.closeOnce.Do(func() {
-		s.cancel()
-		s.connMu.Lock()
-		if s.conn != nil {
-			_ = s.conn.Close()
-		}
-		s.connMu.Unlock()
-	})
-	return nil
-}
-
-func (s *geminiLiveTranscriptionStream) setErr(err error) {
-	s.mu.Lock()
-	if s.err == nil {
-		s.err = err
-	}
-	s.mu.Unlock()
-}
-
-// emit sends part on s.parts, returning false when the stream's ctx is done
-// (so a blocked send unblocks instead of leaking when Close cancels ctx).
-func (s *geminiLiveTranscriptionStream) emit(part provider.TranscriptionStreamPart) bool {
-	select {
-	case s.parts <- part:
-		return true
-	case <-s.ctx.Done():
-		return false
-	}
-}
-
-func (s *geminiLiveTranscriptionStream) receiveLoop(conn *websocket.Conn, out chan<- wsutil.Message) {
-	wsutil.ReceiveLoop(s.ctx, conn, out)
 }
 
 // pumpAudio waits for the server's setupComplete acknowledgement (the Live
 // API contract requires this before sending realtime input), then forwards
 // audio chunks as realtimeInput.audio messages, committing
-// realtimeInput.audioStreamEnd at EOF and signalling audioEnded.
+// realtimeInput.audioStreamEnd at EOF and signalling audioEnded, via the
+// shared wsutil.PumpAudioAfterReady loop.
 func (s *geminiLiveTranscriptionStream) pumpAudio(conn *websocket.Conn, audio provider.AudioStream, setupComplete <-chan struct{}, rate int, audioEnded chan<- struct{}, errCh chan<- error) {
-	select {
-	case <-setupComplete:
-	case <-s.ctx.Done():
-		return
-	}
-
-	for {
-		chunk, err := audio.Next(s.ctx)
-		if err != nil {
-			if err == io.EOF {
-				if sendErr := s.send(conn, []byte(`{"realtimeInput":{"audioStreamEnd":true}}`)); sendErr != nil {
-					if s.ctx.Err() == nil {
-						s.reportAudioError(errCh, sendErr)
-					}
-					return
-				}
-				select {
-				case audioEnded <- struct{}{}:
-				case <-s.ctx.Done():
-				}
-			} else if s.ctx.Err() == nil {
-				s.reportAudioError(errCh, err)
-			}
-			return
-		}
-		msg, marshalErr := json.Marshal(map[string]interface{}{
-			"realtimeInput": map[string]interface{}{
-				"audio": map[string]interface{}{
-					"data":     base64.StdEncoding.EncodeToString(chunk),
-					"mimeType": fmt.Sprintf("audio/pcm;rate=%d", rate),
+	wsutil.PumpAudioAfterReady(s.Context(), setupComplete, audio,
+		func(chunk []byte) error {
+			msg, marshalErr := json.Marshal(map[string]interface{}{
+				"realtimeInput": map[string]interface{}{
+					"audio": map[string]interface{}{
+						"data":     base64.StdEncoding.EncodeToString(chunk),
+						"mimeType": fmt.Sprintf("audio/pcm;rate=%d", rate),
+					},
 				},
-			},
-		})
-		if marshalErr != nil {
-			continue
-		}
-		if err := s.send(conn, msg); err != nil {
-			if s.ctx.Err() == nil {
-				s.reportAudioError(errCh, err)
+			})
+			if marshalErr != nil {
+				return nil
 			}
-			return
-		}
-	}
-}
-
-func (s *geminiLiveTranscriptionStream) reportAudioError(errCh chan<- error, err error) {
-	select {
-	case errCh <- err:
-	case <-s.ctx.Done():
-	}
+			return s.send(conn, msg)
+		},
+		func() error {
+			if sendErr := s.send(conn, []byte(`{"realtimeInput":{"audioStreamEnd":true}}`)); sendErr != nil {
+				return sendErr
+			}
+			select {
+			case audioEnded <- struct{}{}:
+			case <-s.Context().Done():
+			}
+			return nil
+		},
+		errCh,
+	)
 }
 
 // geminiLiveServerMessage is the subset of Vertex Live API server messages
@@ -355,11 +268,11 @@ type geminiLiveTranscription struct {
 }
 
 func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamConfig) {
-	defer close(s.parts)
-	// Release s.ctx's resources as soon as run() returns for any reason
-	// instead of only on an explicit Close() call, which a consumer that
-	// only drains Next() to io.EOF may never make.
-	defer s.cancel()
+	defer s.CloseParts()
+	// Release the session's resources as soon as run() returns for any
+	// reason instead of only on an explicit Close() call, which a consumer
+	// that only drains Next() to io.EOF may never make.
+	defer s.CancelContext()
 
 	var finishTimer *time.Timer
 	var finishTimerC <-chan time.Time
@@ -373,7 +286,7 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 
 	fail := func(err error) {
 		cancelPendingFinish()
-		s.setErr(err)
+		s.SetErr(err)
 		cfg.audio.Cancel(err)
 	}
 
@@ -382,9 +295,7 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 		fail(err)
 		return
 	}
-	s.connMu.Lock()
-	s.conn = conn
-	s.connMu.Unlock()
+	s.SetConn(conn)
 	defer conn.Close() //nolint:errcheck
 
 	payload, err := json.Marshal(map[string]interface{}{"setup": cfg.setup})
@@ -405,12 +316,12 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 	audioErrCh := make(chan error, 1)
 	go s.pumpAudio(conn, cfg.audio, setupCompleteCh, cfg.inputAudioRate, audioEndedCh, audioErrCh)
 
-	if !s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart, Warnings: cfg.warnings}) {
+	if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart, Warnings: cfg.warnings}) {
 		return
 	}
 
 	msgCh := make(chan wsutil.Message)
-	go s.receiveLoop(conn, msgCh)
+	go wsutil.ReceiveLoop(s.Context(), conn, msgCh)
 
 	var (
 		finished       bool
@@ -433,7 +344,7 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 			segmentBuffer = latestInterim
 		}
 		latestInterim = ""
-		ok := s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeFinal, ID: segmentID(), Text: segmentBuffer})
+		ok := s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeFinal, ID: segmentID(), Text: segmentBuffer})
 		if fullText == "" {
 			fullText = segmentBuffer
 		} else {
@@ -464,7 +375,7 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 		if usageMetadata != nil {
 			providerMetadata = map[string]interface{}{"google": map[string]interface{}{"usageMetadata": usageMetadata}}
 		}
-		s.emit(provider.TranscriptionStreamPart{
+		s.Emit(provider.TranscriptionStreamPart{
 			Type:             provider.TranscriptionStreamPartTypeFinish,
 			FinishText:       fullText,
 			Segments:         []provider.TranscriptSegment{},
@@ -476,8 +387,8 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 
 	for {
 		select {
-		case <-s.ctx.Done():
-			cause := s.ctx.Err()
+		case <-s.Context().Done():
+			cause := s.Context().Err()
 			fail(cause)
 			return
 
@@ -524,7 +435,7 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 			if cfg.includeRawChunks {
 				var rawValue interface{}
 				_ = json.Unmarshal([]byte(res.Text), &rawValue)
-				if !s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeRaw, RawValue: rawValue}) {
+				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeRaw, RawValue: rawValue}) {
 					return
 				}
 			}
@@ -551,7 +462,7 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 			if serverContent != nil && serverContent.InterimInputTranscription != nil && serverContent.InterimInputTranscription.Text != "" {
 				schedulePendingFinish()
 				latestInterim = serverContent.InterimInputTranscription.Text
-				if !s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypePartial, ID: segmentID(), Text: latestInterim}) {
+				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypePartial, ID: segmentID(), Text: latestInterim}) {
 					return
 				}
 			}
@@ -568,7 +479,7 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 					schedulePendingFinish()
 					latestInterim = ""
 					segmentBuffer += transcription.Text
-					if !s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeDelta, ID: segmentID(), Delta: transcription.Text}) {
+					if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeDelta, ID: segmentID(), Delta: transcription.Text}) {
 						return
 					}
 				}
@@ -597,11 +508,11 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 }
 
 func (s *geminiLiveTranscriptionStream) dial(wsURL string, headers map[string]string) (*websocket.Conn, error) {
-	return wsutil.Dial(s.ctx, wsURL, wsutil.DialOptions{Headers: headers})
+	return wsutil.Dial(s.Context(), wsURL, wsutil.DialOptions{Headers: headers})
 }
 
 func (s *geminiLiveTranscriptionStream) send(conn *websocket.Conn, message []byte) error {
-	return wsutil.Send(s.ctx, conn, string(message))
+	return wsutil.Send(s.Context(), conn, string(message))
 }
 
 var (

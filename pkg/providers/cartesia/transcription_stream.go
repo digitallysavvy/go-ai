@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -240,18 +239,13 @@ type cartesiaTranscriptionStreamConfig struct {
 
 // cartesiaTranscriptionStream implements provider.TranscriptionStream over
 // Cartesia's Ink 2 realtime WebSocket, mirroring TS
-// createCartesiaStreamingTranscriptionStream.
+// createCartesiaStreamingTranscriptionStream. The Next/Err/Close/emit/setErr
+// plumbing is the shared wsutil.Session core; pumpAudio's turn-detection
+// branching (a "close" control message vs. a bare "finalize" string,
+// depending on cfg.useTurnDetection) doesn't fit the shared wsutil.PumpAudio
+// loop's single onEnd callback cleanly, so it stays local.
 type cartesiaTranscriptionStream struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	parts  chan provider.TranscriptionStreamPart
-
-	mu  sync.Mutex
-	err error
-
-	closeOnce sync.Once
-	connMu    sync.Mutex
-	conn      *websocket.Conn
+	*wsutil.Session[provider.TranscriptionStreamPart]
 
 	// finished mirrors the `finished` flag in TS: set once the stream has
 	// reached a terminal state, checked by pumpAudio (a separate goroutine)
@@ -260,73 +254,15 @@ type cartesiaTranscriptionStream struct {
 }
 
 func newCartesiaTranscriptionStream(parentCtx context.Context, cfg cartesiaTranscriptionStreamConfig) *cartesiaTranscriptionStream {
-	ctx, cancel := context.WithCancel(parentCtx)
-	s := &cartesiaTranscriptionStream{ctx: ctx, cancel: cancel, parts: make(chan provider.TranscriptionStreamPart)}
+	s := &cartesiaTranscriptionStream{Session: wsutil.NewSession[provider.TranscriptionStreamPart](parentCtx)}
 	go s.run(cfg)
 	return s
 }
 
-func (s *cartesiaTranscriptionStream) Next() (*provider.TranscriptionStreamPart, error) {
-	part, ok := <-s.parts
-	if !ok {
-		s.mu.Lock()
-		err := s.err
-		s.mu.Unlock()
-		if err != nil {
-			return nil, err
-		}
-		return nil, io.EOF
-	}
-	return &part, nil
-}
-
-func (s *cartesiaTranscriptionStream) Err() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.err
-}
-
-func (s *cartesiaTranscriptionStream) Close() error {
-	s.closeOnce.Do(func() {
-		s.cancel()
-		s.connMu.Lock()
-		if s.conn != nil {
-			_ = s.conn.Close()
-		}
-		s.connMu.Unlock()
-	})
-	return nil
-}
-
-func (s *cartesiaTranscriptionStream) setErr(err error) {
-	s.mu.Lock()
-	if s.err == nil {
-		s.err = err
-	}
-	s.mu.Unlock()
-}
-
-// emit sends part on s.parts, returning false when the stream's ctx is done
-// (so a blocked send unblocks instead of leaking when Close cancels ctx).
-func (s *cartesiaTranscriptionStream) emit(part provider.TranscriptionStreamPart) bool {
-	select {
-	case s.parts <- part:
-		return true
-	case <-s.ctx.Done():
-		return false
-	}
-}
-
-// receiveLoop continuously reads text frames from conn and forwards each one
-// (or the terminal error) on out, until an error occurs or s.ctx is done.
-func (s *cartesiaTranscriptionStream) receiveLoop(conn *websocket.Conn, out chan<- wsutil.Message) {
-	wsutil.ReceiveLoop(s.ctx, conn, out)
-}
-
 // send writes v (a string for a text frame, or []byte for a binary frame) to
-// conn, unblocking early if s.ctx is cancelled mid-write.
+// conn, unblocking early if the session's ctx is cancelled mid-write.
 func (s *cartesiaTranscriptionStream) send(conn *websocket.Conn, v interface{}) error {
-	return wsutil.Send(s.ctx, conn, v)
+	return wsutil.Send(s.Context(), conn, v)
 }
 
 // pumpAudio forwards audio chunks as binary frames until the AudioStream is
@@ -335,51 +271,42 @@ func (s *cartesiaTranscriptionStream) send(conn *websocket.Conn, v interface{}) 
 // terminal state), mirroring TS sendAudio. Any other failure — reading from
 // the AudioStream, or writing to the WebSocket — is reported on errCh,
 // mirroring `void sendAudio(socket).catch(finishWithError)`. A failure that
-// stems from s.ctx already being cancelled is not reported here: run()'s own
-// select on s.ctx.Done() already handles that case.
+// stems from the session's context already being cancelled is not reported
+// here: run()'s own select on that context's Done() already handles that
+// case.
 func (s *cartesiaTranscriptionStream) pumpAudio(conn *websocket.Conn, cfg cartesiaTranscriptionStreamConfig, errCh chan<- error) {
 	for {
-		chunk, err := cfg.audio.Next(s.ctx)
+		chunk, err := cfg.audio.Next(s.Context())
 		if err != nil {
-			if err != io.EOF && s.ctx.Err() == nil {
-				s.reportAudioError(errCh, err)
+			if err != io.EOF && s.Context().Err() == nil {
+				wsutil.ReportError(s.Context(), errCh, err)
 			}
 			break
 		}
 		if sendErr := s.send(conn, chunk); sendErr != nil {
-			if s.ctx.Err() == nil {
-				s.reportAudioError(errCh, sendErr)
+			if s.Context().Err() == nil {
+				wsutil.ReportError(s.Context(), errCh, sendErr)
 			}
 			return
 		}
 	}
 
-	if s.finished.Load() || s.ctx.Err() != nil {
+	if s.finished.Load() || s.Context().Err() != nil {
 		return
 	}
 	if cfg.useTurnDetection {
 		payload, marshalErr := json.Marshal(map[string]string{"type": "close"})
 		if marshalErr != nil {
-			s.reportAudioError(errCh, marshalErr)
+			wsutil.ReportError(s.Context(), errCh, marshalErr)
 			return
 		}
-		if sendErr := s.send(conn, string(payload)); sendErr != nil && s.ctx.Err() == nil {
-			s.reportAudioError(errCh, sendErr)
+		if sendErr := s.send(conn, string(payload)); sendErr != nil && s.Context().Err() == nil {
+			wsutil.ReportError(s.Context(), errCh, sendErr)
 		}
 	} else {
-		if sendErr := s.send(conn, "finalize"); sendErr != nil && s.ctx.Err() == nil {
-			s.reportAudioError(errCh, sendErr)
+		if sendErr := s.send(conn, "finalize"); sendErr != nil && s.Context().Err() == nil {
+			wsutil.ReportError(s.Context(), errCh, sendErr)
 		}
-	}
-}
-
-// reportAudioError delivers err to errCh, falling back to s.ctx.Done() so a
-// send that no longer has a reader (run() already returned via a different
-// path) cannot block pumpAudio forever.
-func (s *cartesiaTranscriptionStream) reportAudioError(errCh chan<- error, err error) {
-	select {
-	case errCh <- err:
-	case <-s.ctx.Done():
 	}
 }
 
@@ -397,18 +324,18 @@ type cartesiaStreamingTranscriptionEvent struct {
 }
 
 func (s *cartesiaTranscriptionStream) run(cfg cartesiaTranscriptionStreamConfig) {
-	defer close(s.parts)
-	// Release s.ctx's resources as soon as run() returns for any reason
-	// instead of only on an explicit Close() call, which a consumer that
-	// only drains Next() to io.EOF may never make.
-	defer s.cancel()
+	defer s.CloseParts()
+	// Release the session's resources as soon as run() returns for any
+	// reason instead of only on an explicit Close() call, which a consumer
+	// that only drains Next() to io.EOF may never make.
+	defer s.CancelContext()
 
 	var finished bool
 
 	fail := func(err error) {
 		finished = true
 		s.finished.Store(true)
-		s.setErr(err)
+		s.SetErr(err)
 		cfg.audio.Cancel(err)
 	}
 
@@ -417,18 +344,16 @@ func (s *cartesiaTranscriptionStream) run(cfg cartesiaTranscriptionStreamConfig)
 		fail(err)
 		return
 	}
-	s.connMu.Lock()
-	s.conn = conn
-	s.connMu.Unlock()
+	s.SetConn(conn)
 	defer conn.Close() //nolint:errcheck
 
-	if !s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart, Warnings: cfg.warnings}) {
+	if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart, Warnings: cfg.warnings}) {
 		return
 	}
 
 	msgCh := make(chan wsutil.Message)
 	audioErrCh := make(chan error, 1)
-	go s.receiveLoop(conn, msgCh)
+	go wsutil.ReceiveLoop(s.Context(), conn, msgCh)
 	go s.pumpAudio(conn, cfg, audioErrCh)
 
 	var (
@@ -456,14 +381,14 @@ func (s *cartesiaTranscriptionStream) run(cfg cartesiaTranscriptionStreamConfig)
 			d := durationSeconds
 			part.DurationInSeconds = &d
 		}
-		s.emit(part)
+		s.Emit(part)
 		cfg.audio.Cancel(nil)
 	}
 
 	for {
 		select {
-		case <-s.ctx.Done():
-			fail(s.ctx.Err())
+		case <-s.Context().Done():
+			fail(s.Context().Err())
 			return
 
 		case audioErr := <-audioErrCh:
@@ -507,21 +432,21 @@ func (s *cartesiaTranscriptionStream) run(cfg cartesiaTranscriptionStreamConfig)
 			if cfg.includeRawChunks {
 				var rawValue interface{}
 				_ = json.Unmarshal([]byte(res.Text), &rawValue)
-				if !s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeRaw, RawValue: rawValue}) {
+				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeRaw, RawValue: rawValue}) {
 					return
 				}
 			}
 
 			switch raw.Type {
 			case "turn.update", "turn.eager_end":
-				if !s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypePartial, ID: raw.RequestID, Text: raw.Transcript}) {
+				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypePartial, ID: raw.RequestID, Text: raw.Transcript}) {
 					return
 				}
 
 			case "turn.end":
 				text := raw.Transcript
 				finalTexts = append(finalTexts, text)
-				if !s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeFinal, ID: raw.RequestID, Text: text}) {
+				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeFinal, ID: raw.RequestID, Text: text}) {
 					return
 				}
 
@@ -532,7 +457,7 @@ func (s *cartesiaTranscriptionStream) run(cfg cartesiaTranscriptionStreamConfig)
 					if raw.Duration != nil {
 						durationSeconds += *raw.Duration
 					}
-					if !s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeFinal, ID: raw.RequestID, Text: transcript}) {
+					if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeFinal, ID: raw.RequestID, Text: transcript}) {
 						return
 					}
 				} else {
@@ -541,7 +466,7 @@ func (s *cartesiaTranscriptionStream) run(cfg cartesiaTranscriptionStreamConfig)
 						d := *raw.Duration
 						part.DurationInSeconds = &d
 					}
-					if !s.emit(part) {
+					if !s.Emit(part) {
 						return
 					}
 				}
@@ -569,7 +494,7 @@ func (s *cartesiaTranscriptionStream) run(cfg cartesiaTranscriptionStreamConfig)
 }
 
 func (s *cartesiaTranscriptionStream) dial(wsURL *url.URL) (*websocket.Conn, error) {
-	return wsutil.Dial(s.ctx, wsURL.String(), wsutil.DialOptions{})
+	return wsutil.Dial(s.Context(), wsURL.String(), wsutil.DialOptions{})
 }
 
 var (
