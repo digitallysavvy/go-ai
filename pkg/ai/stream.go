@@ -451,6 +451,14 @@ type StreamTextResult struct {
 	stepReopenGenOpts *provider.GenerateOptions
 	stepReopenCtx     context.Context
 
+	// stepReopenTelemetryStepCtx carries the step span this step's
+	// telemetry.FireOnStepStart already created (fired before DoStream was
+	// issued for this step, matching TS's sequential onStepStart-then-doStream
+	// ordering — see the ordering comment in bootstrapAndStream/processStream).
+	// processStream's loop reads it at the top of the iteration that consumes
+	// this step's stream instead of calling FireOnStepStart a second time.
+	stepReopenTelemetryStepCtx context.Context
+
 	// status tracks the lifecycle of the stream.
 	// Protected by mu because it is read by Status() and written by processStream.
 	status StreamStatus
@@ -1128,7 +1136,35 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		Telemetry:             telemetrySettings,
 	}
 
-	Notify(stepCtx, LanguageModelCallStartEvent{
+	// Fire step-start telemetry BEFORE the model call, matching TS's fully
+	// sequential ordering (packages/ai/src/generate-text/stream-text.ts's
+	// streamStep(): prepareStep -> notify([onStepStart,
+	// telemetryDispatcher.onStepStart]) -> notify(onLanguageModelCallStart)
+	// -> doStream, all awaited in order — see
+	// stream-language-model-call.ts's `notify({event: {promptMessages},
+	// callbacks: onStart})` then `executeLanguageModelCallInTelemetryContext`).
+	// Previously this fired only once processStream started consuming the
+	// resulting stream (i.e. AFTER DoStream had already been issued for step
+	// 1), which meant OTel's "chat" model-call span for step 1 had no step
+	// span parent yet. telemetryStepCtx is saved on r so the processStream
+	// loop iteration that consumes this step's stream reads it back instead
+	// of calling FireOnStepStart a second time.
+	telemetryStepCtx := telemetry.FireOnStepStart(stepCtx, telemetry.TelemetryStepStartEvent{
+		CallID:         callID,
+		OperationType:  "ai.streamText",
+		Settings:       telemetrySettings,
+		StepNumber:     0,
+		ModelProvider:  stepModel.Provider(),
+		ModelID:        stepModel.ModelID(),
+		ToolChoice:     stepToolChoice,
+		PromptMessages: genOpts.Prompt.Messages,
+		StepTools:      stepTools,
+		RuntimeContext: telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
+		ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
+	})
+	r.stepReopenTelemetryStepCtx = telemetryStepCtx
+
+	Notify(telemetryStepCtx, LanguageModelCallStartEvent{
 		CallID:              callID,
 		Provider:            stepModel.Provider(),
 		ModelID:             stepModel.ModelID(),
@@ -1148,36 +1184,11 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	}, onLanguageModelCallStart)
 	// Scoped to just this call (594029e): the model call runs inside the
 	// returned ctx, which embeds the telemetry integration's "chat" span when
-	// one is registered, so the provider's own DoStream/HTTP spans become its
-	// children. stepCtx itself is unchanged for subsequent chunk processing
-	// and tool execution, which are parented under the step span instead.
-	//
-	// Known ordering divergence from TS (H5 review): TS's streamText always
-	// fires onStepStart (telemetryDispatcher.onStepStart, which creates the
-	// GenAI "chat" span's parent step span) BEFORE calling doStream for that
-	// step (packages/ai/src/generate-text/stream-language-model-call.ts:
-	// `notify({event: {promptMessages}, callbacks: onStart})` runs, then
-	// `executeLanguageModelCallInTelemetryContext(... resolvedModel.doStream
-	// ...)`), for every step including the first — TS's step loop is fully
-	// sequential (each streamStep() is awaited from the previous step's
-	// flush callback; there is no cross-step prefetching). Go's bootstrap
-	// path calls FireOnLanguageModelCallStart/DoStream here for step 1
-	// BEFORE telemetry.FireOnStepStart ever runs for step 1 (that only
-	// happens once processStream starts consuming the resulting stream), and
-	// the same eager-prefetch shape repeats for every later step (the next
-	// step's DoStream is issued at the tail of the current step's iteration,
-	// before the loop advances and fires that next step's FireOnStepStart —
-	// see the analogous nextModelCallCtx/nextModel.DoStream call below).
-	// Reordering this so FireOnStepStart always precedes the model call
-	// would require restructuring the eager-prefetch step pipeline (moving
-	// prompt/tool preparation and the DoStream call from "tail of the prior
-	// iteration" to "top of the current iteration, after FireOnStepStart")
-	// for every step, not just step 1 — assessed as NOT a small, contained
-	// change, so it is intentionally left as-is; OpenTelemetry.
-	// OnLanguageModelCallStart in pkg/telemetry/open_telemetry.go documents
-	// and compensates for it with a root-span fallback when no step span has
-	// been recorded yet.
-	modelCallCtx := telemetry.FireOnLanguageModelCallStart(stepCtx, telemetry.LanguageModelCallStartEvent{
+	// one is registered, nested under the step span created just above, so
+	// the provider's own DoStream/HTTP spans become its children. stepCtx
+	// itself is unchanged for subsequent chunk processing and tool
+	// execution, which are parented under the step span instead.
+	modelCallCtx := telemetry.FireOnLanguageModelCallStart(telemetryStepCtx, telemetry.LanguageModelCallStartEvent{
 		Settings:         telemetrySettings,
 		CallID:           callID,
 		ModelProvider:    stepModel.Provider(),
@@ -1209,11 +1220,12 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		} else if opts.Timeout != nil && opts.Timeout.HasTotal() && ctx.Err() != nil {
 			err = wrapTimeoutError(TimeoutReasonTotal, err)
 		}
-		// Close the model-call/"chat" span opened above (GenAI only —
-		// processStream, not this bootstrap call, creates the actual step span
-		// for step 1, so there is none yet to close here): without this it
-		// would leak, since telemetryCtx below only closes the root span
-		// (H4 item 2). No error status on abort, matching TS onAbort.
+		// Close the still-open step span and the model-call/"chat" span
+		// (GenAI) opened above: without this they would leak, since
+		// telemetryCtx below only closes the root span (H4 item 2). Both are
+		// reachable from modelCallCtx now that FireOnStepStart runs before
+		// DoStream for step 1 too. No error status on abort, matching TS
+		// onAbort.
 		if isAbortErr(stepCtx, err) {
 			reason := abortReason(stepCtx, err)
 			if onAbort := firstOnAbort(opts.OnAbortEvent, opts.OnAbort); onAbort != nil {
@@ -1511,28 +1523,15 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// preRefinementCalls mirrors stepToolCalls before ExperimentalRefineToolInput
 		// runs, for the approval inputSchemaInput diff.
 		var preRefinementCalls []types.ToolCall
-		// Fire step-start telemetry. OTel implementations create a child step span.
-		// PromptMessages reuses r.stepReopenGenOpts, the exact GenerateOptions
-		// this step's provider call was dispatched with (set either during
-		// bootstrap for step 1, or at the tail of the previous iteration for
-		// step N>1 — see the two doStream/DoStream call sites above/below).
-		var stepPromptMessages []types.Message
-		if r.stepReopenGenOpts != nil {
-			stepPromptMessages = r.stepReopenGenOpts.Prompt.Messages
-		}
-		telemetryStepCtx := telemetry.FireOnStepStart(ctx, telemetry.TelemetryStepStartEvent{
-			CallID:         r.cbCallID,
-			OperationType:  "ai.streamText",
-			Settings:       r.telemetrySettings,
-			StepNumber:     stepIndex,
-			ModelProvider:  stepProvider,
-			ModelID:        stepModelID,
-			ToolChoice:     r.cbToolChoice,
-			PromptMessages: stepPromptMessages,
-			StepTools:      stepTools,
-			RuntimeContext: telemetryRuntimeContextWithSensitivity(r.telemetrySettings, r.cbRuntimeCtx, r.cbSensitiveRuntimeCtx),
-			ToolsContext:   telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
-		})
+		// Step-start telemetry for this step already fired BEFORE its DoStream
+		// call was issued (matching TS's sequential onStepStart-then-doStream
+		// ordering) — either in bootstrapAndStream for step 1, or at the tail
+		// of the previous iteration for step N>1 (see the two
+		// telemetry.FireOnStepStart call sites, each immediately followed by
+		// its own step's DoStream). r.stepReopenTelemetryStepCtx carries the
+		// resulting ctx (with the step span embedded) across that boundary;
+		// read it here instead of firing FireOnStepStart a second time.
+		telemetryStepCtx := r.stepReopenTelemetryStepCtx
 
 		// Track per-step slices before we accumulate more stream data.
 		stepSourcesStart := len(r.sources)
@@ -2693,7 +2692,27 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			ProviderOptions:       nextProviderOptions,
 			Telemetry:             r.telemetrySettings,
 		}
-		Notify(nextStepCtx, LanguageModelCallStartEvent{
+		// Fire this next step's step-start telemetry BEFORE its DoStream call,
+		// matching TS's sequential onStepStart-then-doStream ordering (same
+		// rationale as the analogous comment in bootstrapAndStream for step
+		// 1). nextTelemetryStepCtx is saved on r so the top of the following
+		// loop iteration — which processes the stream DoStream returns here —
+		// reads it back instead of firing FireOnStepStart again.
+		nextTelemetryStepCtx := telemetry.FireOnStepStart(nextStepCtx, telemetry.TelemetryStepStartEvent{
+			CallID:         r.cbCallID,
+			OperationType:  "ai.streamText",
+			Settings:       r.telemetrySettings,
+			StepNumber:     stepNum,
+			ModelProvider:  nextModel.Provider(),
+			ModelID:        nextModel.ModelID(),
+			ToolChoice:     nextToolChoice,
+			PromptMessages: nextGenOpts.Prompt.Messages,
+			StepTools:      nextTools,
+			RuntimeContext: telemetryRuntimeContextWithSensitivity(r.telemetrySettings, r.cbRuntimeCtx, r.cbSensitiveRuntimeCtx),
+			ToolsContext:   telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
+		})
+		r.stepReopenTelemetryStepCtx = nextTelemetryStepCtx
+		Notify(nextTelemetryStepCtx, LanguageModelCallStartEvent{
 			CallID:              r.cbCallID,
 			Provider:            nextModel.Provider(),
 			ModelID:             nextModel.ModelID(),
@@ -2712,8 +2731,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			Reasoning:           nextGenOpts.Reasoning,
 		}, onLanguageModelCallStart)
 		// Scoped to just this call (594029e): see the analogous comment where
-		// the first step's stream is started, above.
-		nextModelCallCtx := telemetry.FireOnLanguageModelCallStart(nextStepCtx, telemetry.LanguageModelCallStartEvent{
+		// the first step's stream is started, above. Parented under the step
+		// span created just above.
+		nextModelCallCtx := telemetry.FireOnLanguageModelCallStart(nextTelemetryStepCtx, telemetry.LanguageModelCallStartEvent{
 			Settings:         r.telemetrySettings,
 			CallID:           r.cbCallID,
 			ModelProvider:    nextModel.Provider(),
@@ -2742,12 +2762,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				err = wrapTimeoutError(TimeoutReasonTotal, err)
 			}
 			r.err = fmt.Errorf("failed to start stream for step %d: %w", stepNum+1, err)
-			// Close the model-call/"chat" span opened just above via
-			// FireOnLanguageModelCallStart (this next step's own FireOnStepStart
-			// hasn't run yet — it happens at the top of the following loop
-			// iteration, which this break prevents from ever being reached): the
-			// shared cleanup after the loop only closes the root span
-			// (H4 item 2).
+			// Close the still-open step span and the model-call/"chat" span
+			// opened just above via FireOnStepStart/FireOnLanguageModelCallStart
+			// (this next step's own iteration of the outer loop is never
+			// reached — this break prevents it): the shared cleanup after the
+			// loop only closes the root span (H4 item 2).
 			isAbort := isAbortErr(nextStepCtx, r.err)
 			stepErr := r.err
 			if isAbort {

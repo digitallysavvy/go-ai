@@ -314,32 +314,27 @@ func (i OpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepStartEven
 // request parameters and returns it embedded in ctx (594029e), so the
 // provider call (and any HTTP spans it creates) runs as its child.
 func (i OpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageModelCallStartEvent) context.Context {
-	// H5: parent the "chat" span under OUR OWN step span, falling back to
-	// our own root span, resolved by CallID rather than
-	// trace.SpanFromContext(ctx) (which — with two integrations registered —
-	// could return the other integration's "current" span). TS's
-	// onLanguageModelCallStart requires state.stepContext strictly with no
-	// root fallback; Go's streamText issues the first step's provider call
-	// before that step's FireOnStepStart has run (the step span is opened
-	// once processStream starts consuming the resulting stream, not before
-	// the initial DoStream call), so a root-span fallback is kept here to
-	// preserve that existing, intentional behavior for step 1 (see
-	// TestStreamTextModelCallRunsInsideGenAIChatSpan).
+	// H5: parent the "chat" span under OUR OWN step span, resolved by CallID
+	// rather than trace.SpanFromContext(ctx) (which — with two integrations
+	// registered — could return the other integration's "current" span).
+	// TS's onLanguageModelCallStart requires state.stepContext strictly, with
+	// no root-span fallback (`if (!state?.stepContext) return;`,
+	// packages/otel/src/open-telemetry.ts). Go used to need a root-span
+	// fallback here because streamText issued each step's provider call
+	// before that step's FireOnStepStart had run; the "ST" fix (stream.go's
+	// bootstrapAndStream/processStream) now fires FireOnStepStart before
+	// every step's DoStream call, so st.stepSpan is always set by the time
+	// this runs and the fallback is dead — removed to match TS exactly (see
+	// TestStreamTextGenAIChatSpanNestsUnderStepSpanForFirstStep).
 	var parent trace.Span
 	if e.CallID != "" {
 		if st := genAIState(e.CallID); st != nil {
 			st.mu.Lock()
 			parent = st.stepSpan
-			if parent == nil {
-				parent = st.rootSpan
-			}
 			st.mu.Unlock()
 		}
 	}
-	if parent == nil {
-		parent = trace.SpanFromContext(ctx)
-	}
-	if !parent.IsRecording() {
+	if parent == nil || !parent.IsRecording() {
 		return ctx
 	}
 	tracer := parent.TracerProvider().Tracer("go-ai")
