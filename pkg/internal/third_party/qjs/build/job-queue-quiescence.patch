@@ -69,7 +69,15 @@
 +}
 --- a/qjswasm/qjs.h
 +++ b/qjswasm/qjs.h
-@@ -145,4 +145,8 @@
+@@ -95,6 +95,7 @@
+ bool input_is_file(QJSEvalOptions opts);
+ JSValue QJS_Load(JSContext *ctx, QJSEvalOptions opts);
+ JSValue QJS_Eval(JSContext *ctx, QJSEvalOptions opts);
++JSValue QJS_EvalNoAutoAwait(JSContext *ctx, QJSEvalOptions opts);
+ unsigned char *QJS_Compile(JSContext *c, QJSEvalOptions opts, size_t *outSize);
+ uint64_t *QJS_Compile2(JSContext *ctx, QJSEvalOptions opts);
+ QJSEvalOptions *QJS_CreateEvalOption(void *buf, uint8_t *bytecode_buf, size_t bytecode_len, char *filename, int eval_flags);
+@@ -145,4 +146,8 @@
  JSValue QJS_NewProxyValue(JSContext *ctx, int64_t proxyId);
  QJSRuntime *QJS_GetRuntime();
 
@@ -80,7 +88,15 @@
  void initialize();
 --- a/qjswasm/qjswasm.cmake
 +++ b/qjswasm/qjswasm.cmake
-@@ -149,6 +149,9 @@
+@@ -110,6 +110,7 @@
+     "LINKER:--export=input_is_file"
+     "LINKER:--export=QJS_Load"
+     "LINKER:--export=QJS_Eval"
++    "LINKER:--export=QJS_EvalNoAutoAwait"
+     "LINKER:--export=QJS_Compile"
+     "LINKER:--export=QJS_Compile2"
+     "LINKER:--export=QJS_CreateEvalOption"
+@@ -149,6 +150,9 @@
      "LINKER:--export=QJS_Call"
      "LINKER:--export=QJS_GetRuntime"
      "LINKER:--export=QJS_Panic"
@@ -90,3 +106,46 @@
 
      "LINKER:--export=malloc"
      "LINKER:--export=free"
+--- a/qjswasm/eval.c
++++ b/qjswasm/eval.c
+@@ -411,4 +411,40 @@
+     opts->eval_flags = eval_flags;
+
+     return opts;
++}
++
++// QJS_EvalNoAutoAwait evaluates global, non-compile-only, non-async script
++// without automatically awaiting a promise result or draining the job
++// queue.
++//
++// Unlike QJS_Eval, this never calls js_std_await/js_std_loop: if
++// evaluation produces (or later yields) a promise that never settles --
++// e.g. a host call intentionally left pending until external approval --
++// QJS_Eval's js_std_await loop spins forever waiting for that one promise,
++// because in this sandboxed build there are no timers/sockets for
++// js_std_await's js_os_poll fallback to ever wake it. QJS_EvalNoAutoAwait
++// sidesteps that by returning evaluation's result exactly as produced --
++// promise or not, settled or not -- and leaving the caller to drive the
++// job queue itself via QJS_RunPendingJobs and inspect/unwrap promises via
++// QJS_PromiseState/QJS_PromiseResult.
++//
++// Only global, non-compile-only, non-JS_EVAL_FLAG_ASYNC evaluation is
++// supported (module evaluation and the async-global { value: <result> }
++// unwrap both go through paths in QJS_Eval that this function does not
++// replicate); opts.eval_flags must not request JS_EVAL_TYPE_MODULE,
++// JS_EVAL_FLAG_COMPILE_ONLY, or JS_EVAL_FLAG_ASYNC.
++JSValue QJS_EvalNoAutoAwait(JSContext *ctx, QJSEvalOptions opts)
++{
++    bool is_module = (opts.eval_flags & JS_EVAL_TYPE_MASK) == JS_EVAL_TYPE_MODULE;
++    bool is_compile_only = (opts.eval_flags & JS_EVAL_FLAG_COMPILE_ONLY) > 0;
++    bool is_async = (opts.eval_flags & JS_EVAL_FLAG_ASYNC) > 0;
++
++    if (is_module || is_compile_only || is_async)
++        return JS_ThrowTypeError(ctx, "QJS_EvalNoAutoAwait only supports global, non-compile-only, non-async evaluation");
++
++    JSValue result = load_buf(ctx, opts, opts.eval_flags, true);
++    if (JS_IsException(result))
++        return JS_Throw(ctx, JS_GetException(ctx));
++
++    return result;
+ }

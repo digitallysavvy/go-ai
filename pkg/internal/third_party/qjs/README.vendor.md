@@ -281,7 +281,7 @@ prototyped and verified against the exports below (including the
 
 **The patch** (`build/job-queue-quiescence.patch`, applied to upstream's
 `qjswasm/` C sources — `helpers.c`, `eval.c`, `qjs.h`, `qjswasm.cmake` —
-before building) adds three new exports:
+before building) adds four new exports:
 
 - `QJS_RunPendingJobs(QJSRuntime *qjs) -> int`: calls
   `JS_ExecutePendingJob` in a loop until it reports no more jobs runnable,
@@ -328,24 +328,24 @@ digest —
 running the same `cmake`/`make` invocation upstream's own `Makefile` uses
 (`-DQJS_BUILD_LIBC=ON -DQJS_BUILD_CLI_WITH_MIMALLOC=OFF
 -DCMAKE_TOOLCHAIN_FILE=/opt/wasi-sdk/share/cmake/wasi-sdk.cmake
--DCMAKE_PROJECT_INCLUDE=../qjswasm.cmake`, then `make qjswasm`). One
-deliberate deviation from upstream's `Makefile`: it does not run
-`wasm-opt -O3` afterward (binaryen is not present in the pinned wasi-sdk
-image, and reaching for an additional, unpinned tool just to
-shrink/optimize an already-correct binary was judged not worth it) — the
-committed `qjs.wasm` is therefore a correct but not `wasm-opt`-optimized
-build. The baseline (unpatched) rebuild was verified byte-for-byte
-functionally equivalent to the previously-committed binary first — every
-existing test in this package and in `pkg/codemode` passed against it
-before the patch was applied — to isolate what the patch itself changed.
+-DCMAKE_PROJECT_INCLUDE=../qjswasm.cmake`, then `make qjswasm`). The two
+upstream source tarballs (`fastschema/qjs`, `quickjs-ng/quickjs`) are each
+downloaded over HTTPS and verified against a sha256 pinned in `build.sh`
+before use, rather than trusting transport integrity alone. The baseline
+(unpatched) rebuild was verified byte-for-byte functionally equivalent to
+the previously-committed binary first — every existing test in this
+package and in `pkg/codemode` passed against it before the patch was
+applied — to isolate what the patch itself changed. Running `build.sh`
+twice independently (fresh `mktemp -d` work dirs, fresh downloads)
+produces a byte-for-byte identical `qjs.wasm` both times.
 
 `pkg/internal/third_party/qjs/qjs.wasm`'s sha256 (this patched build):
 
 ```
-8047fb1d9b08686c7f2b7cd50f848c6f868a0a53e9c7cf1fbcd6dff952598bdd
+453d2f695c729dd26571bd65fb5de0ee92ed741fcee5d61c24f889f58b24acca
 ```
 
 **Verification.** Both pre-existing patch-regression tests
 (`mem_patch_test.go`, `jsonstringify_patch_test.go`) and every test in this
-package and in `pkg/codemode` (including `-race -count=3`) pass against
+package and in `pkg/codemode` (including `-race -count=5`) pass against
 this rebuilt binary.
