@@ -1,4 +1,4 @@
-package google
+package googlevertex
 
 import (
 	"context"
@@ -14,104 +14,99 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // VideoModel implements the provider.VideoModelV3 interface for Google
-// Generative AI (Veo). It ports @ai-sdk/google's GoogleVideoModel
-// (google-video-model.ts): the long-running-operation predictLongRunning
-// endpoint, via DoStart/DoStatus. DoGenerate is the Go equivalent of the
-// default start+poll behavior TS core's generateVideo would drive, built
-// entirely on top of DoStart/DoStatus (TS GoogleVideoModel implements only
-// doStart/doStatus).
+// Vertex AI (Veo). It ports @ai-sdk/google-vertex's GoogleVertexVideoModel
+// (google-vertex-video-model.ts): the long-running-operation
+// predictLongRunning/fetchPredictOperation endpoints, via DoStart/DoStatus.
+// DoGenerate is the Go equivalent of the default start+poll behavior TS
+// core's generateVideo would drive, built entirely on top of DoStart/
+// DoStatus (TS GoogleVertexVideoModel implements only doStart/doStatus).
 type VideoModel struct {
 	prov    *Provider
 	modelID string
 }
 
-// NewVideoModel creates a new Google Generative AI video generation model
+// NewVideoModel creates a new Google Vertex AI video generation model.
 func NewVideoModel(prov *Provider, modelID string) *VideoModel {
-	return &VideoModel{
-		prov:    prov,
-		modelID: modelID,
-	}
+	return &VideoModel{prov: prov, modelID: modelID}
 }
 
-// SpecificationVersion returns the specification version
-func (m *VideoModel) SpecificationVersion() string {
-	return "v3"
-}
+// SpecificationVersion returns the specification version.
+func (m *VideoModel) SpecificationVersion() string { return "v3" }
 
-// Provider returns the provider name
-func (m *VideoModel) Provider() string {
-	return m.prov.Name()
-}
+// Provider returns the provider name.
+func (m *VideoModel) Provider() string { return "google-vertex" }
 
-// ModelID returns the model ID
-func (m *VideoModel) ModelID() string {
-	return m.modelID
-}
+// ModelID returns the model ID.
+func (m *VideoModel) ModelID() string { return m.modelID }
 
-// MaxVideosPerCall returns 4: Google supports multiple videos via
+// MaxVideosPerCall returns 4: Vertex supports multiple videos via
 // sampleCount (TS `get maxVideosPerCall() { return 4; }`).
 func (m *VideoModel) MaxVideosPerCall() *int {
 	four := 4
 	return &four
 }
 
-// GoogleVideoModelOptions mirrors TS GoogleVideoModelOptions
-// (google-video-model-options.ts).
-type GoogleVideoModelOptions struct {
-	PersonGeneration *string                        `json:"personGeneration,omitempty"`
-	NegativePrompt   *string                        `json:"negativePrompt,omitempty"`
-	ReferenceImages  []googleVideoReferenceImageOpt `json:"referenceImages,omitempty"`
+// GoogleVertexVideoModelOptions mirrors TS GoogleVertexVideoModelOptions
+// (google-vertex-video-model-options.ts).
+type GoogleVertexVideoModelOptions struct {
+	PersonGeneration   *string                        `json:"personGeneration,omitempty"`
+	NegativePrompt     *string                        `json:"negativePrompt,omitempty"`
+	GenerateAudio      *bool                          `json:"generateAudio,omitempty"`
+	GcsOutputDirectory *string                        `json:"gcsOutputDirectory,omitempty"`
+	ReferenceImages    []vertexVideoReferenceImageOpt `json:"referenceImages,omitempty"`
 }
 
-type googleVideoReferenceImageOpt struct {
+type vertexVideoReferenceImageOpt struct {
 	BytesBase64Encoded *string `json:"bytesBase64Encoded,omitempty"`
 	GcsURI             *string `json:"gcsUri,omitempty"`
 }
 
-var googleVideoHandledOptionKeys = map[string]bool{
+var vertexVideoHandledOptionKeys = map[string]bool{
 	"pollIntervalMs": true, "pollTimeoutMs": true,
-	"personGeneration": true, "negativePrompt": true, "referenceImages": true,
+	"personGeneration": true, "negativePrompt": true, "generateAudio": true,
+	"gcsOutputDirectory": true, "referenceImages": true,
 }
 
-// extractVideoProviderOptions extracts GoogleVideoModelOptions and any
-// unrecognized keys (passthrough into `parameters`), mirroring TS
-// buildRequest's Object.entries loop over googleOptions.
-func extractVideoProviderOptions(opts map[string]interface{}) (*GoogleVideoModelOptions, map[string]interface{}, error) {
+// extractVideoProviderOptions extracts GoogleVertexVideoModelOptions,
+// checking "googleVertex" first and falling back to the legacy "vertex" key
+// (TS buildRequest's parseProviderOptions(...) ?? parseProviderOptions('vertex', ...)),
+// plus any unrecognized keys (passthrough into `parameters`).
+func extractVideoProviderOptions(opts map[string]interface{}) (*GoogleVertexVideoModelOptions, map[string]interface{}, error) {
 	if opts == nil {
 		return nil, nil, nil
 	}
-	raw, ok := opts["google"]
+	raw, ok := opts["googleVertex"]
+	if !ok {
+		raw, ok = opts["vertex"]
+	}
 	if !ok {
 		return nil, nil, nil
 	}
 	jsonData, err := json.Marshal(raw)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to marshal google video provider options: %w", err)
+		return nil, nil, fmt.Errorf("failed to marshal googleVertex video provider options: %w", err)
 	}
-	var provOpts GoogleVideoModelOptions
+	var provOpts GoogleVertexVideoModelOptions
 	if err := json.Unmarshal(jsonData, &provOpts); err != nil {
-		return nil, nil, fmt.Errorf("failed to unmarshal google video provider options: %w", err)
+		return nil, nil, fmt.Errorf("failed to unmarshal googleVertex video provider options: %w", err)
 	}
 	var rawMap map[string]interface{}
 	if err := json.Unmarshal(jsonData, &rawMap); err != nil {
-		return nil, nil, fmt.Errorf("failed to unmarshal google video provider options map: %w", err)
+		return nil, nil, fmt.Errorf("failed to unmarshal googleVertex video provider options map: %w", err)
 	}
 	extra := make(map[string]interface{})
 	for k, v := range rawMap {
-		if !googleVideoHandledOptionKeys[k] {
+		if !vertexVideoHandledOptionKeys[k] {
 			extra[k] = v
 		}
 	}
 	return &provOpts, extra, nil
 }
 
-// getFirstFrameImage returns the frameImages first_frame entry, if any (TS
-// getFirstFrameImage).
-func googleVideoGetFirstFrameImage(opts *provider.VideoModelV3CallOptions) *provider.VideoModelV3File {
+func vertexVideoGetFirstFrameImage(opts *provider.VideoModelV3CallOptions) *provider.VideoModelV3File {
 	for i := range opts.FrameImages {
 		if opts.FrameImages[i].FrameType == provider.VideoFrameTypeFirstFrame {
 			return &opts.FrameImages[i].Image
@@ -120,9 +115,7 @@ func googleVideoGetFirstFrameImage(opts *provider.VideoModelV3CallOptions) *prov
 	return nil
 }
 
-// googleVideoGetLastFrameImage returns the frameImages last_frame entry, if
-// any (TS getLastFrameImage).
-func googleVideoGetLastFrameImage(opts *provider.VideoModelV3CallOptions) *provider.VideoModelV3File {
+func vertexVideoGetLastFrameImage(opts *provider.VideoModelV3CallOptions) *provider.VideoModelV3File {
 	for i := range opts.FrameImages {
 		if opts.FrameImages[i].FrameType == provider.VideoFrameTypeLastFrame {
 			return &opts.FrameImages[i].Image
@@ -131,19 +124,14 @@ func googleVideoGetLastFrameImage(opts *provider.VideoModelV3CallOptions) *provi
 	return nil
 }
 
-// googleVideoResolveStartImage prefers a frameImages first_frame over the
-// legacy top-level Image field (TS resolveStartImage).
-func googleVideoResolveStartImage(opts *provider.VideoModelV3CallOptions) *provider.VideoModelV3File {
-	if img := googleVideoGetFirstFrameImage(opts); img != nil {
+func vertexVideoResolveStartImage(opts *provider.VideoModelV3CallOptions) *provider.VideoModelV3File {
+	if img := vertexVideoGetFirstFrameImage(opts); img != nil {
 		return img
 	}
 	return opts.Image
 }
 
-// googleVideoGetInputReferences returns InputReferences unless FrameImages
-// were also supplied, matching TS getInputReferences (frameImages and
-// inputReferences cannot be combined at the provider level).
-func googleVideoGetInputReferences(opts *provider.VideoModelV3CallOptions) []provider.VideoModelV3File {
+func vertexVideoGetInputReferences(opts *provider.VideoModelV3CallOptions) []provider.VideoModelV3File {
 	if len(opts.FrameImages) > 0 {
 		return nil
 	}
@@ -153,10 +141,9 @@ func googleVideoGetInputReferences(opts *provider.VideoModelV3CallOptions) []pro
 	return opts.InputReferences
 }
 
-// convertFileToGoogleImage converts a VideoModelV3File to the Vertex-style
-// image payload Veo's predictLongRunning endpoint expects, or nil (with a
-// warning) for a URL that is not a gs:// URI (TS convertFileToGoogleImage).
-func convertFileToGoogleImage(file *provider.VideoModelV3File, warnings *[]types.Warning) map[string]interface{} {
+// convertFileToVertexImage converts a VideoModelV3File to the Vertex-style
+// image payload (TS convertFileToVertexImage).
+func convertFileToVertexImage(file *provider.VideoModelV3File, warnings *[]types.Warning) map[string]interface{} {
 	if file.Type == "url" {
 		if strings.HasPrefix(file.URL, "gs://") {
 			return map[string]interface{}{"gcsUri": file.URL, "mimeType": "image/png"}
@@ -164,7 +151,7 @@ func convertFileToGoogleImage(file *provider.VideoModelV3File, warnings *[]types
 		*warnings = append(*warnings, types.Warning{
 			Type:    "unsupported",
 			Feature: "URL-based image input",
-			Details: "Google Generative AI video models require base64-encoded images or GCS URIs. URL will be ignored.",
+			Details: "Vertex AI video models require base64-encoded images or GCS URIs. URL will be ignored.",
 		})
 		return nil
 	}
@@ -179,44 +166,36 @@ func convertFileToGoogleImage(file *provider.VideoModelV3File, warnings *[]types
 	}
 }
 
-// convertProviderReferenceImage converts a providerOptions.google.
-// referenceImages entry to the request's referenceImages shape (TS
-// convertProviderReferenceImage).
-func convertProviderReferenceImage(ref googleVideoReferenceImageOpt) map[string]interface{} {
-	if ref.BytesBase64Encoded != nil {
-		return map[string]interface{}{
-			"image":         map[string]interface{}{"bytesBase64Encoded": *ref.BytesBase64Encoded, "mimeType": "image/png"},
-			"referenceType": "asset",
-		}
-	}
-	if ref.GcsURI != nil {
-		return map[string]interface{}{
-			"image":         map[string]interface{}{"gcsUri": *ref.GcsURI, "mimeType": "image/png"},
-			"referenceType": "asset",
-		}
-	}
-	return map[string]interface{}{}
-}
-
 // convertInputReferenceImage converts an inputReferences entry into the
 // request's referenceImages shape (TS convertInputReferenceImage).
 func convertInputReferenceImage(file *provider.VideoModelV3File, warnings *[]types.Warning) map[string]interface{} {
-	image := convertFileToGoogleImage(file, warnings)
+	image := convertFileToVertexImage(file, warnings)
 	if image == nil {
 		return nil
 	}
 	return map[string]interface{}{"image": image, "referenceType": "asset"}
 }
 
-// googleVideoResolutionMap mirrors TS's resolutionMap in buildRequest.
-var googleVideoResolutionMap = map[string]string{
+func convertProviderReferenceImageVertex(ref vertexVideoReferenceImageOpt) map[string]interface{} {
+	out := map[string]interface{}{}
+	if ref.BytesBase64Encoded != nil {
+		out["bytesBase64Encoded"] = *ref.BytesBase64Encoded
+	}
+	if ref.GcsURI != nil {
+		out["gcsUri"] = *ref.GcsURI
+	}
+	return out
+}
+
+// vertexVideoResolutionMap mirrors TS's resolutionMap in buildRequest.
+var vertexVideoResolutionMap = map[string]string{
 	"1280x720":  "720p",
 	"1920x1080": "1080p",
 	"3840x2160": "4k",
 }
 
 // buildRequest builds the predictLongRunning request body (TS
-// GoogleVideoModel#buildRequest).
+// GoogleVertexVideoModel#buildRequest).
 func (m *VideoModel) buildRequest(opts *provider.VideoModelV3CallOptions) (map[string]interface{}, []types.Warning, error) {
 	warnings := []types.Warning{}
 
@@ -231,19 +210,19 @@ func (m *VideoModel) buildRequest(opts *provider.VideoModelV3CallOptions) (map[s
 		instance["prompt"] = opts.Prompt
 	}
 
-	if startImage := googleVideoResolveStartImage(opts); startImage != nil {
-		if image := convertFileToGoogleImage(startImage, &warnings); image != nil {
+	if startImage := vertexVideoResolveStartImage(opts); startImage != nil {
+		if image := convertFileToVertexImage(startImage, &warnings); image != nil {
 			instance["image"] = image
 		}
 	}
 
-	if lastFrame := googleVideoGetLastFrameImage(opts); lastFrame != nil {
-		if image := convertFileToGoogleImage(lastFrame, &warnings); image != nil {
+	if lastFrame := vertexVideoGetLastFrameImage(opts); lastFrame != nil {
+		if image := convertFileToVertexImage(lastFrame, &warnings); image != nil {
 			instance["lastFrame"] = image
 		}
 	}
 
-	if inputRefs := googleVideoGetInputReferences(opts); inputRefs != nil {
+	if inputRefs := vertexVideoGetInputReferences(opts); inputRefs != nil {
 		refs := make([]map[string]interface{}, 0, len(inputRefs))
 		for i := range inputRefs {
 			if converted := convertInputReferenceImage(&inputRefs[i], &warnings); converted != nil {
@@ -254,7 +233,7 @@ func (m *VideoModel) buildRequest(opts *provider.VideoModelV3CallOptions) (map[s
 	} else if provOpts != nil && provOpts.ReferenceImages != nil {
 		refs := make([]map[string]interface{}, 0, len(provOpts.ReferenceImages))
 		for _, ref := range provOpts.ReferenceImages {
-			refs = append(refs, convertProviderReferenceImage(ref))
+			refs = append(refs, convertProviderReferenceImageVertex(ref))
 		}
 		instance["referenceImages"] = refs
 	}
@@ -268,7 +247,7 @@ func (m *VideoModel) buildRequest(opts *provider.VideoModelV3CallOptions) (map[s
 	}
 
 	if opts.Resolution != "" {
-		if mapped, ok := googleVideoResolutionMap[opts.Resolution]; ok {
+		if mapped, ok := vertexVideoResolutionMap[opts.Resolution]; ok {
 			parameters["resolution"] = mapped
 		} else {
 			parameters["resolution"] = opts.Resolution
@@ -285,12 +264,23 @@ func (m *VideoModel) buildRequest(opts *provider.VideoModelV3CallOptions) (map[s
 		parameters["seed"] = *opts.Seed
 	}
 
+	generateAudio := opts.GenerateAudio
+	if generateAudio == nil && provOpts != nil {
+		generateAudio = provOpts.GenerateAudio
+	}
+	if generateAudio != nil {
+		parameters["generateAudio"] = *generateAudio
+	}
+
 	if provOpts != nil {
 		if provOpts.PersonGeneration != nil {
 			parameters["personGeneration"] = *provOpts.PersonGeneration
 		}
 		if provOpts.NegativePrompt != nil {
 			parameters["negativePrompt"] = *provOpts.NegativePrompt
+		}
+		if provOpts.GcsOutputDirectory != nil {
+			parameters["gcsOutputDirectory"] = *provOpts.GcsOutputDirectory
 		}
 	}
 	for k, v := range extra {
@@ -303,15 +293,15 @@ func (m *VideoModel) buildRequest(opts *provider.VideoModelV3CallOptions) (map[s
 	}, warnings, nil
 }
 
-// googleVideoOperation is the opaque operation reference returned by
+// vertexVideoOperation is the opaque operation reference returned by
 // DoStart and passed back into DoStatus.
-type googleVideoOperation struct {
+type vertexVideoOperation struct {
 	OperationName string `json:"operationName"`
 }
 
 // DoStart starts an asynchronous video generation via Veo's
 // predictLongRunning endpoint and returns an opaque operation reference (TS
-// GoogleVideoModel#doStart).
+// GoogleVertexVideoModel#doStart).
 func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3StartOptions) (*provider.VideoModelV3OperationStartResult, error) {
 	currentDate := time.Now()
 	callOpts := &opts.VideoModelV3CallOptions
@@ -321,7 +311,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, err
 	}
 
-	var operation googleVideoOperationWire
+	var operation vertexVideoOperationWire
 	httpResp, err := m.prov.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    fmt.Sprintf("/models/%s:predictLongRunning", m.modelID),
@@ -333,10 +323,10 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	}
 
 	if operation.Name == "" {
-		return nil, providererrors.NewVideoGenerationError("google", m.modelID, "No operation name returned from API", nil)
+		return nil, providererrors.NewVideoGenerationError("google-vertex", m.modelID, "No operation name returned from API", nil)
 	}
 
-	op, _ := json.Marshal(googleVideoOperation{OperationName: operation.Name})
+	op, _ := json.Marshal(vertexVideoOperation{OperationName: operation.Name})
 
 	return &provider.VideoModelV3OperationStartResult{
 		Operation: op,
@@ -344,26 +334,29 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		Response: provider.VideoModelV3ResponseInfo{
 			Timestamp: currentDate,
 			ModelID:   m.modelID,
-			Headers:   convertGoogleHeaders(httpResp.Headers),
+			Headers:   convertVertexVideoHeaders(httpResp.Headers),
 		},
 	}, nil
 }
 
 // DoStatus checks the status of an asynchronous video generation started
-// with DoStart via the operation's status endpoint (TS
-// GoogleVideoModel#doStatus).
+// with DoStart via the model's fetchPredictOperation endpoint (TS
+// GoogleVertexVideoModel#doStatus). Unlike the Generative AI API, Vertex
+// polls with a POST carrying {operationName} in the body rather than a GET
+// on the operation's own resource path.
 func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3StatusOptions) (*provider.VideoModelV3OperationStatusResult, error) {
 	currentDate := time.Now()
 
-	var op googleVideoOperation
+	var op vertexVideoOperation
 	if err := json.Unmarshal(opts.Operation, &op); err != nil {
-		return nil, fmt.Errorf("google: invalid operation reference: %w", err)
+		return nil, fmt.Errorf("google-vertex: invalid operation reference: %w", err)
 	}
 
-	var operation googleVideoOperationWire
+	var operation vertexVideoOperationWire
 	httpResp, err := m.prov.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodGet,
-		Path:    "/" + op.OperationName,
+		Method:  http.MethodPost,
+		Path:    fmt.Sprintf("/models/%s:fetchPredictOperation", m.modelID),
+		Body:    map[string]interface{}{"operationName": op.OperationName},
 		Headers: opts.Headers,
 	}, &operation)
 	if err != nil {
@@ -373,7 +366,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	responseInfo := provider.VideoModelV3ResponseInfo{
 		Timestamp: currentDate,
 		ModelID:   m.modelID,
-		Headers:   convertGoogleHeaders(httpResp.Headers),
+		Headers:   convertVertexVideoHeaders(httpResp.Headers),
 	}
 
 	if !operation.Done {
@@ -392,55 +385,67 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 }
 
 // buildCompletedResult converts a done operation's response into a
-// completed status result (TS GoogleVideoModel#buildCompletedResult),
-// appending the API key to same-origin download URLs so the returned URL is
-// directly fetchable.
-func (m *VideoModel) buildCompletedResult(operation *googleVideoOperationWire, responseInfo provider.VideoModelV3ResponseInfo) (*provider.VideoModelV3OperationStatusResult, error) {
-	if operation.Response == nil || operation.Response.GenerateVideoResponse == nil ||
-		len(operation.Response.GenerateVideoResponse.GeneratedSamples) == 0 {
+// completed status result (TS GoogleVertexVideoModel#buildCompletedResult).
+// Each video is either inline base64 data (bytesBase64Encoded) or a GCS URI,
+// depending on whether providerOptions.googleVertex.gcsOutputDirectory was
+// set.
+func (m *VideoModel) buildCompletedResult(operation *vertexVideoOperationWire, responseInfo provider.VideoModelV3ResponseInfo) (*provider.VideoModelV3OperationStatusResult, error) {
+	if operation.Response == nil || len(operation.Response.Videos) == 0 {
 		raw, _ := json.Marshal(operation)
-		return nil, providererrors.NewVideoGenerationError("google", m.modelID, fmt.Sprintf("No videos in response. Response: %s", string(raw)), nil)
+		return nil, providererrors.NewVideoGenerationError("google-vertex", m.modelID, fmt.Sprintf("No videos in response. Response: %s", string(raw)), nil)
 	}
-
-	apiKey := m.prov.client.Headers()["x-goog-api-key"]
 
 	videos := []provider.VideoModelV3VideoData{}
 	videoMetadata := []map[string]interface{}{}
 
-	for _, sample := range operation.Response.GenerateVideoResponse.GeneratedSamples {
-		if sample.Video == nil || sample.Video.URI == "" {
-			continue
+	for _, v := range operation.Response.Videos {
+		mediaType := v.MimeType
+		if mediaType == "" {
+			mediaType = "video/mp4"
 		}
-		videoURL := sample.Video.URI
-		if apiKey != "" && providerutils.IsSameOrigin(sample.Video.URI, m.prov.config.BaseURL) {
-			sep := "?"
-			if strings.Contains(videoURL, "?") {
-				sep = "&"
+		switch {
+		case v.BytesBase64Encoded != "":
+			videos = append(videos, provider.VideoModelV3VideoData{Type: "base64", Data: v.BytesBase64Encoded, MediaType: mediaType})
+			meta := map[string]interface{}{}
+			if v.MimeType != "" {
+				meta["mimeType"] = v.MimeType
 			}
-			videoURL = videoURL + sep + "key=" + apiKey
+			videoMetadata = append(videoMetadata, meta)
+		case v.GcsURI != "":
+			videos = append(videos, provider.VideoModelV3VideoData{Type: "url", URL: v.GcsURI, MediaType: mediaType})
+			meta := map[string]interface{}{"gcsUri": v.GcsURI}
+			if v.MimeType != "" {
+				meta["mimeType"] = v.MimeType
+			}
+			videoMetadata = append(videoMetadata, meta)
 		}
-		videos = append(videos, provider.VideoModelV3VideoData{Type: "url", URL: videoURL, MediaType: "video/mp4"})
-		videoMetadata = append(videoMetadata, map[string]interface{}{"uri": sample.Video.URI})
 	}
 
 	if len(videos) == 0 {
-		return nil, providererrors.NewVideoGenerationError("google", m.modelID, "No valid videos in response", nil)
+		return nil, providererrors.NewVideoGenerationError("google-vertex", m.modelID, "No valid videos in response", nil)
 	}
 
+	payload := map[string]interface{}{"videos": videoMetadata}
+
 	return &provider.VideoModelV3OperationStatusResult{
-		Status:           provider.VideoOperationStatusCompleted,
-		Videos:           videos,
-		Warnings:         []types.Warning{},
-		ProviderMetadata: map[string]interface{}{"google": map[string]interface{}{"videos": videoMetadata}},
-		Response:         responseInfo,
+		Status:   provider.VideoOperationStatusCompleted,
+		Videos:   videos,
+		Warnings: []types.Warning{},
+		ProviderMetadata: map[string]interface{}{
+			"googleVertex": payload,
+			// Legacy keys preserved for backward compatibility.
+			"google-vertex": payload,
+			"vertex":        payload,
+		},
+		Response: responseInfo,
 	}, nil
 }
 
 // DoGenerate generates videos synchronously by starting the operation and
 // polling DoStatus until it completes. Go's VideoModelV3 always requires
-// DoGenerate (unlike TS, where GoogleVideoModel implements only doStart/
-// doStatus and the core generate-video flow polls it directly), so this
-// method is the Go equivalent of that default polling behavior, built
+// DoGenerate (unlike TS, where GoogleVertexVideoModel implements only
+// doStart/doStatus and the core generate-video flow polls it directly), so
+// this method is the Go equivalent of that default polling behavior, built
 // entirely on top of DoStart/DoStatus.
 func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3CallOptions) (*provider.VideoModelV3Response, error) {
 	startResult, err := m.DoStart(ctx, &provider.VideoModelV3StartOptions{VideoModelV3CallOptions: *opts})
@@ -466,7 +471,7 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 			finalStatus = status
 			return &polling.JobResult{Status: polling.JobStatusCompleted}, nil
 		case provider.VideoOperationStatusError:
-			jobFailureErr = providererrors.NewVideoGenerationError("google", m.modelID, status.Error, nil)
+			jobFailureErr = providererrors.NewVideoGenerationError("google-vertex", m.modelID, status.Error, nil)
 			return &polling.JobResult{Status: polling.JobStatusFailed, Error: status.Error}, nil
 		default:
 			return &polling.JobResult{Status: polling.JobStatusProcessing}, nil
@@ -478,7 +483,7 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 		if jobFailureErr != nil {
 			return nil, jobFailureErr
 		}
-		return nil, providererrors.NewVideoGenerationError("google", m.modelID, "polling failed", pollErr)
+		return nil, providererrors.NewVideoGenerationError("google-vertex", m.modelID, "polling failed", pollErr)
 	}
 
 	return &provider.VideoModelV3Response{
@@ -489,7 +494,8 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 	}, nil
 }
 
-// getPollOptions extracts polling options from provider options
+// getPollOptions extracts polling options from provider options, checking
+// "googleVertex" first and falling back to the legacy "vertex" key.
 func (m *VideoModel) getPollOptions(providerOpts map[string]interface{}) polling.PollOptions {
 	// TS has no synchronous doGenerate for this model: core's generateVideo
 	// always drives doStart/doStatus itself, defaulting to
@@ -500,12 +506,18 @@ func (m *VideoModel) getPollOptions(providerOpts map[string]interface{}) polling
 	opts := polling.PollOptions{PollIntervalMs: 5000, PollTimeoutMs: 600000}
 
 	if providerOpts != nil {
-		if googleOpts, ok := providerOpts["google"].(map[string]interface{}); ok {
-			if interval, ok := googleOpts["pollIntervalMs"].(int); ok {
-				opts.PollIntervalMs = interval
-			}
-			if timeout, ok := googleOpts["pollTimeoutMs"].(int); ok {
-				opts.PollTimeoutMs = timeout
+		raw, ok := providerOpts["googleVertex"]
+		if !ok {
+			raw, ok = providerOpts["vertex"]
+		}
+		if ok {
+			if vertexOpts, ok := raw.(map[string]interface{}); ok {
+				if interval, ok := vertexOpts["pollIntervalMs"].(int); ok {
+					opts.PollIntervalMs = interval
+				}
+				if timeout, ok := vertexOpts["pollTimeoutMs"].(int); ok {
+					opts.PollTimeoutMs = timeout
+				}
 			}
 		}
 	}
@@ -517,9 +529,9 @@ func (m *VideoModel) handleError(err error) error {
 	return NewLanguageModel(m.prov, "").HandleError(err)
 }
 
-// convertGoogleHeaders flattens net/http.Header into map[string]string,
+// convertVertexVideoHeaders flattens net/http.Header into map[string]string,
 // taking the first value for each header key.
-func convertGoogleHeaders(h http.Header) map[string]string {
+func convertVertexVideoHeaders(h http.Header) map[string]string {
 	if len(h) == 0 {
 		return map[string]string{}
 	}
@@ -532,8 +544,8 @@ func convertGoogleHeaders(h http.Header) map[string]string {
 	return out
 }
 
-// googleVideoOperationWire mirrors TS googleOperationSchema.
-type googleVideoOperationWire struct {
+// vertexVideoOperationWire mirrors TS googleVertexOperationSchema.
+type vertexVideoOperationWire struct {
 	Name  string `json:"name"`
 	Done  bool   `json:"done"`
 	Error *struct {
@@ -542,12 +554,11 @@ type googleVideoOperationWire struct {
 		Status  string `json:"status,omitempty"`
 	} `json:"error,omitempty"`
 	Response *struct {
-		GenerateVideoResponse *struct {
-			GeneratedSamples []struct {
-				Video *struct {
-					URI string `json:"uri,omitempty"`
-				} `json:"video,omitempty"`
-			} `json:"generatedSamples,omitempty"`
-		} `json:"generateVideoResponse,omitempty"`
+		Videos []struct {
+			BytesBase64Encoded string `json:"bytesBase64Encoded,omitempty"`
+			GcsURI             string `json:"gcsUri,omitempty"`
+			MimeType           string `json:"mimeType,omitempty"`
+		} `json:"videos,omitempty"`
+		RaiMediaFilteredCount *int `json:"raiMediaFilteredCount,omitempty"`
 	} `json:"response,omitempty"`
 }

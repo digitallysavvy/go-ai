@@ -96,19 +96,27 @@ func TestReplicateImageDoGeneratePollingAndNoURLError(t *testing.T) {
 func TestReplicateVideoDoGeneratePollingNoVideo(t *testing.T) {
 	p := newReplicateProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
 		if r.Method == http.MethodPost && r.URL.Path == "/predictions" {
-			return replicateJSONResponse(200, `{"id":"pred3","status":"starting"}`), nil
+			return replicateJSONResponse(200, `{"id":"pred3","status":"starting","urls":{"get":"https://replicate.example/predictions/pred3"}}`), nil
 		}
 		if r.Method == http.MethodGet && r.URL.Path == "/predictions/pred3" {
 			return replicateJSONResponse(200, `{"id":"pred3","status":"succeeded","output":[]}`), nil
 		}
 		return nil, errors.New("unexpected request")
 	})
-	vm := NewVideoModel(p, "vid-ver")
-	if vm.SpecificationVersion() != "v3" || vm.Provider() != "replicate" || vm.ModelID() != "vid-ver" || vm.MaxVideosPerCall() != nil {
+	vm := NewVideoModel(p, "vid-ver:vid-version-id")
+	if vm.SpecificationVersion() != "v3" || vm.Provider() != "replicate" || vm.ModelID() != "vid-ver:vid-version-id" {
 		t.Fatalf("metadata mismatch")
 	}
-	_, err := vm.DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{Prompt: "run"})
-	if err == nil || !strings.Contains(err.Error(), "no video") {
+	if got := vm.MaxVideosPerCall(); got == nil || *got != 1 {
+		t.Fatalf("MaxVideosPerCall() = %v, want 1", got)
+	}
+	_, err := vm.DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{
+		Prompt: "run",
+		ProviderOptions: map[string]interface{}{
+			"replicate": map[string]interface{}{"pollIntervalMs": 1, "pollTimeoutMs": 5000},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "No video URL in response") {
 		t.Fatalf("expected no video error, got %v", err)
 	}
 }

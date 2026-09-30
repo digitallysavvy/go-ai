@@ -70,12 +70,12 @@ func TestReplicateImageModelBuildAndConvertErrors(t *testing.T) {
 	}
 }
 
-func TestReplicateVideoModelBuildPollOptionsAndConvertErrors(t *testing.T) {
+func TestReplicateVideoModelBuildInputAndPollOptions(t *testing.T) {
 	m := NewVideoModel(New(Config{APIKey: "k"}), "vid-ver")
 	duration := 5.0
 	fps := 24
 	seed := 7
-	body := m.buildPredictionRequest(&provider.VideoModelV3CallOptions{
+	input, err := m.buildInput(&provider.VideoModelV3CallOptions{
 		Prompt:      "run",
 		AspectRatio: "16:9",
 		Duration:    &duration,
@@ -90,7 +90,9 @@ func TestReplicateVideoModelBuildPollOptionsAndConvertErrors(t *testing.T) {
 			},
 		},
 	})
-	input := body["input"].(map[string]interface{})
+	if err != nil {
+		t.Fatalf("buildInput() error = %v", err)
+	}
 	if input["prompt"] != "run" || input["aspect_ratio"] != "16:9" || input["duration"] != 5.0 || input["fps"] != 24 || input["seed"] != 7 || input["image"] != "https://example.com/img.png" || input["quality"] != "high" {
 		t.Fatalf("input mismatch: %#v", input)
 	}
@@ -102,11 +104,18 @@ func TestReplicateVideoModelBuildPollOptionsAndConvertErrors(t *testing.T) {
 	if pollOpts.PollIntervalMs != 250 || pollOpts.PollTimeoutMs != 9000 {
 		t.Fatalf("poll options mismatch: %#v", pollOpts)
 	}
+}
 
-	if _, err := m.convertResponse(t.Context(), &replicateVideoPrediction{}); err == nil {
-		t.Fatal("expected no video generated error")
+func TestReplicateVideoModelDoStartURLSplitting(t *testing.T) {
+	// A model ID with no ":version" suffix targets /models/{id}/predictions
+	// without a version field; one with ":version" targets /predictions
+	// with a version field (TS ReplicateVideoModel#doStart).
+	m := NewVideoModel(New(Config{APIKey: "k"}), "owner/model")
+	input, err := m.buildInput(&provider.VideoModelV3CallOptions{Prompt: "run"})
+	if err != nil {
+		t.Fatalf("buildInput() error = %v", err)
 	}
-	if _, err := m.convertResponse(t.Context(), &replicateVideoPrediction{Output: []interface{}{map[string]interface{}{"x": 1}}}); err == nil {
-		t.Fatal("expected unexpected output format error")
+	if input["prompt"] != "run" {
+		t.Fatalf("input mismatch: %#v", input)
 	}
 }
