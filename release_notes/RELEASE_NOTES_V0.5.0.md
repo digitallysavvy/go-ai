@@ -414,6 +414,16 @@ code.
   MCP structured output, `ValidateUIMessages`, tool-approval revalidation,
   agent call options, harness tool `ContextSchema`, and
   `workflow.ValidateSerializableToolInput`.
+- Streaming request bodies: `StreamText` steps now populate
+  `Request.Body` for streaming calls on nearly every provider (the stream
+  implements the new optional `provider.StreamRequestBody`), as they
+  already did for `GenerateText`.
+- Realtime capability interfaces: `DoCreateClientSecret` and
+  `GetWebSocketConfig` moved off `Experimental_RealtimeModelV4` into the
+  optional `provider.RealtimeClientSecretCreator` and
+  `provider.RealtimeWebSocketConfigProvider`, as in TS, where both are
+  optional. `ai.ConnectRealtime` and the providers' `GetRealtimeToken`
+  check for them at runtime.
 
 ### Agents and workflow
 
@@ -507,6 +517,11 @@ code.
 
 ### Providers
 
+- `openai.Config.TransformRequestBody`: rewrite the Chat Completions
+  request body before it is sent (TS `transformRequestBody`), for
+  OpenAI-compatible wrapper providers. Cerebras uses it, so the reported
+  request body is the transformed one. Groq model ID constants
+  (`pkg/providers/groq`, chat and transcription).
 - **New providers**: Voyage AI (embedding/rerank), Fish Audio
   (speech/transcription), Cartesia (speech/transcription, plus Ink 2
   realtime transcription), Rev.ai (transcription), Hume (speech), Luma

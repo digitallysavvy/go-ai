@@ -40,10 +40,14 @@ step-by-step upgrade instructions are in
   `FingerprintTools`/`DetectToolDrift`, `PrepareStep`, stream retries,
   `ToolSearch`/`DeferLoading`, `ExperimentalToolCallers`,
   `UploadFile`/`UploadSkill`, workflow model serialization for every model
-  kind, and more (full list in the release notes).
+  kind, streaming request bodies (`Request.Body` on `StreamText` steps via
+  `provider.StreamRequestBody`), optional realtime capability interfaces
+  (`RealtimeClientSecretCreator`, `RealtimeWebSocketConfigProvider`), and
+  more (full list in the release notes).
 - **Providers**: substantial Anthropic, OpenAI Responses, xAI, Google/
-  Vertex, Bedrock, Gateway, and Cohere feature additions; see the release
-  notes' New Features section for the per-provider breakdown.
+  Vertex, Bedrock, Gateway, and Cohere feature additions;
+  `openai.Config.TransformRequestBody`; Groq model ID constants; see the
+  release notes' New Features section for the per-provider breakdown.
 
 ### Changed
 
