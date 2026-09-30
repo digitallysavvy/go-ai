@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -539,5 +540,101 @@ data: [DONE]
 	}
 	if chunk.Text != "provider failed" {
 		t.Fatalf("error text = %q, want provider failed", chunk.Text)
+	}
+}
+
+// TestOpenAICompatStream_TruncatedStreamEmitsErrorAndErrorFinish covers C1-4:
+// a stream that ends (EOF or [DONE]) after text deltas but without ever
+// observing a finish_reason must be treated as an error, matching TS's
+// flush() `if (finishReason == null)` branch (openai-compatible-chat-
+// language-model.ts:725-734, commit d68139c3bb): an InvalidResponseDataError
+// "error" chunk, followed by a "finish" chunk with the unified error finish
+// reason.
+func TestOpenAICompatStream_TruncatedStreamEmitsErrorAndErrorFinish(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{"content":" world"},"finish_reason":null}]}
+
+`
+	stream := newTestStream(sseData)
+	defer stream.Close() //nolint:errcheck
+
+	chunks := collectStreamChunks(t, stream)
+	wantTypes := []provider.ChunkType{
+		provider.ChunkTypeText,
+		provider.ChunkTypeText,
+		provider.ChunkTypeError,
+		provider.ChunkTypeFinish,
+	}
+	if len(chunks) != len(wantTypes) {
+		t.Fatalf("chunk sequence = %#v, want length %d", chunks, len(wantTypes))
+	}
+	for i, want := range wantTypes {
+		if chunks[i].Type != want {
+			t.Fatalf("chunk[%d] = %v, want %v (full: %#v)", i, chunks[i].Type, want, chunks)
+		}
+	}
+	errChunk := chunks[2]
+	if errChunk.Text != "Response stream ended without a finish reason." {
+		t.Fatalf("error text = %q", errChunk.Text)
+	}
+	if errChunk.Err == nil || !providererrors.IsInvalidResponseDataError(errChunk.Err) {
+		t.Fatalf("error chunk Err = %#v, want *InvalidResponseDataError", errChunk.Err)
+	}
+	finish := chunks[3]
+	if finish.FinishReason != types.FinishReasonError {
+		t.Fatalf("finish reason = %v, want error", finish.FinishReason)
+	}
+}
+
+// TestOpenAICompatStream_TruncatedStreamViaDoneSentinel covers the same gap
+// via an explicit [DONE] sentinel instead of a bare reader EOF -- both are
+// "clean" stream ends in TS's terms (the ReadableStream completing).
+func TestOpenAICompatStream_TruncatedStreamViaDoneSentinel(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}
+
+data: [DONE]
+
+`
+	stream := newTestStream(sseData)
+	defer stream.Close() //nolint:errcheck
+
+	chunks := collectStreamChunks(t, stream)
+	errorChunks := compatChunksOfType(chunks, provider.ChunkTypeError)
+	if len(errorChunks) != 1 {
+		t.Fatalf("expected 1 error chunk, got %#v", chunks)
+	}
+	finishes := compatChunksOfType(chunks, provider.ChunkTypeFinish)
+	if len(finishes) != 1 {
+		t.Fatalf("expected 1 finish chunk, got %#v", chunks)
+	}
+	if finishes[0].FinishReason != types.FinishReasonError {
+		t.Fatalf("finish reason = %v, want error", finishes[0].FinishReason)
+	}
+}
+
+// TestOpenAICompatStream_ToolCallNameErrorSuppressesTruncatedStreamError
+// verifies that a mid-stream tool-call-name error is not doubled up with the
+// separate "truncated stream" error when the underlying reader then hits EOF
+// with no finish chunk ever pending -- TS's toolCallTracker.flush() throw
+// aborts before flush()'s finishReason==null check is ever reached.
+func TestOpenAICompatStream_ToolCallNameErrorSuppressesTruncatedStreamError(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_missing","type":"function","function":{"arguments":"{}"}}]},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`
+	stream := newTestStream(sseData)
+	defer stream.Close() //nolint:errcheck
+
+	chunks := collectStreamChunks(t, stream)
+	errorChunks := compatChunksOfType(chunks, provider.ChunkTypeError)
+	if len(errorChunks) != 1 {
+		t.Fatalf("expected 1 error chunk, got %#v", chunks)
+	}
+	if finishes := compatChunksOfType(chunks, provider.ChunkTypeFinish); len(finishes) != 0 {
+		t.Fatalf("expected no finish chunks, got %#v", finishes)
 	}
 }

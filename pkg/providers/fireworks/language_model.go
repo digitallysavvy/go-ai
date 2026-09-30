@@ -103,10 +103,14 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["stream"] = true
 		body["stream_options"] = map[string]interface{}{"include_usage": true}
 	}
+	// AllowVideo: true -- Fireworks wraps @ai-sdk/openai-compatible's
+	// OpenAICompatibleChatLanguageModel in TS, which supports video_url
+	// content parts (7dd9ec320c).
+	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{AllowVideo: true}
 	if opts.Prompt.IsMessages() {
-		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages)
+		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, toOpenAIMessagesOpts)
 	} else if opts.Prompt.IsSimple() {
-		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text))
+		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text), toOpenAIMessagesOpts)
 	}
 	if opts.Prompt.System != "" {
 		messages := body["messages"].([]map[string]interface{})

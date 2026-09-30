@@ -6,6 +6,7 @@ import (
 	"io"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -62,6 +63,16 @@ type OpenAICompatStream struct {
 	finishPending       bool
 	pendingFinishReason string
 	pendingUsage        *openAICompatStreamUsage
+
+	// streamErrored is set once a ChunkTypeError has already been emitted for
+	// this stream: a JSON parse failure, a provider "error" field on an SSE
+	// event, or toolCallTracker.Flush() erroring (e.g. a tool call whose
+	// function.name never arrived). Each of these corresponds to a TS branch
+	// that sets `finishReason = { unified: 'error', ... }` immediately
+	// (openai-compatible-chat-language-model.ts:574-575, 582-586), so
+	// endStream must not also apply the separate "truncated stream, no
+	// finish_reason ever observed" error/finish pair on top of it.
+	streamErrored bool
 }
 
 // NewOpenAICompatStream creates a new OpenAICompatStream.
@@ -165,12 +176,20 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 	}
 
 	if err := json.Unmarshal([]byte(eventData), &chunkData); err != nil {
+		// Matches TS's chunk-schema-parse-failure branch (openai-compatible-
+		// chat-language-model.ts:574-575), which sets finishReason to the
+		// unified "error" reason right when this fires -- so endStream must
+		// not additionally treat a later clean EOF as a "truncated stream".
+		s.streamErrored = true
 		return &provider.StreamChunk{
 			Type: provider.ChunkTypeError,
 			Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
 		}, nil
 	}
 	if len(chunkData.Error) > 0 {
+		// Matches TS's `'error' in chunk.value` branch (line 582-586), which
+		// likewise sets finishReason to the unified "error" reason.
+		s.streamErrored = true
 		return &provider.StreamChunk{
 			Type: provider.ChunkTypeError,
 			Text: rawStreamErrorText(chunkData.Error),
@@ -320,6 +339,13 @@ func (s *OpenAICompatStream) flushToolCallsAndFinish(finishReason string) {
 		c := chunk
 		s.flushQueue = append(s.flushQueue, &c)
 		if c.Type == provider.ChunkTypeError {
+			// Mirrors TS's toolCallTracker.flush() throwing on a missing
+			// function.name: the stream has already errored out here, so
+			// endStream must not additionally treat the eventual EOF as a
+			// "truncated stream" (no separate finish_reason ever arrives in
+			// that TS throw path either -- flush()'s finishReason==null
+			// check is never reached once flush() throws).
+			s.streamErrored = true
 			return
 		}
 	}
@@ -332,7 +358,15 @@ func (s *OpenAICompatStream) flushToolCallsAndFinish(finishReason string) {
 // endStream is called when the underlying SSE stream is exhausted ([DONE] or
 // a genuine EOF from the reader). If a finish_reason was already observed, it
 // synthesizes the deferred finish chunk (merging in any usage seen since),
-// matching TS's flush()-time `finish` enqueue. Otherwise it just surfaces err.
+// matching TS's flush()-time `finish` enqueue.
+//
+// If no finish_reason was ever observed (a truncated stream), TS's flush()
+// (openai-compatible-chat-language-model.ts, d68139c3bb) treats this as an
+// error: it enqueues an `error` chunk carrying InvalidResponseDataError,
+// forces finishReason to the unified "error" reason, and still enqueues the
+// terminal `finish` chunk. Mirror that here: queue the finish-with-error
+// chunk so it drains on the following Next() call, and return the error
+// chunk first.
 func (s *OpenAICompatStream) endStream(err error) (*provider.StreamChunk, error) {
 	if s.finishPending {
 		s.finishPending = false
@@ -345,6 +379,32 @@ func (s *OpenAICompatStream) endStream(err error) (*provider.StreamChunk, error)
 			FinishReason: s.finishReasonMapper(finishReason),
 			Usage:        convertOpenAICompatStreamUsage(usage),
 		}, nil
+	}
+	if err == io.EOF && !s.streamErrored {
+		// Order matches TS flush(): close any still-open reasoning block
+		// before the error/finish chunks.
+		var pending []*provider.StreamChunk
+		if s.isActiveReasoning {
+			s.isActiveReasoning = false
+			pending = append(pending, &provider.StreamChunk{
+				Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0",
+			})
+		}
+		streamErr := providererrors.NewInvalidResponseDataError(nil, "Response stream ended without a finish reason.")
+		pending = append(pending, &provider.StreamChunk{
+			Type: provider.ChunkTypeError,
+			Text: streamErr.Error(),
+			Err:  streamErr,
+		})
+		pending = append(pending, &provider.StreamChunk{
+			Type:         provider.ChunkTypeFinish,
+			FinishReason: types.FinishReasonError,
+			Usage:        convertOpenAICompatStreamUsage(s.pendingUsage),
+		})
+		s.err = err
+		first := pending[0]
+		s.flushQueue = append(s.flushQueue, pending[1:]...)
+		return first, nil
 	}
 	s.err = err
 	return nil, err

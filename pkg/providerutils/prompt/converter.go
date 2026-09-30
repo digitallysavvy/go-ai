@@ -36,7 +36,49 @@ type ToOpenAIMessagesOptions struct {
 	// Mistral/Ollama/etc. has no such option) -- callers other than OpenAI's
 	// and Azure's chat-completions models must leave this false.
 	IncludePromptCacheBreakpoint bool
+
+	// AssistantToolCallContentMode selects what "content" an assistant
+	// message with tool calls emits, matching each TS converter's own
+	// ternary exactly -- they differ per provider:
+	//   - AssistantToolCallContentNull (default, "") matches OpenAI's own
+	//     chat converter, @ai-sdk/openai-compatible's converter (Together/
+	//     Fireworks/gmicloud/zai/...), and Alibaba's: `text || null` -- an
+	//     empty accumulated text becomes a literal JSON null; non-empty text
+	//     is forwarded as-is.
+	//   - AssistantToolCallContentText matches Groq's `content: text`
+	//     (convert-to-groq-chat-messages.ts): always the accumulated text
+	//     verbatim, including an empty string -- content is never null.
+	//   - AssistantToolCallContentOmit matches Cohere's
+	//     `toolCalls.length > 0 ? undefined : text`
+	//     (convert-to-cohere-chat-prompt.ts): the "content" key is left out
+	//     of the message entirely whenever any tool call is present, even if
+	//     text was also emitted.
+	AssistantToolCallContentMode AssistantToolCallContentMode
+
+	// AllowVideo emits a "video_url" content part for a video/* FileContent
+	// (7dd9ec320c, convert-to-openai-compatible-chat-messages.ts's `topLevel
+	// === 'video'` branch), matching @ai-sdk/openai-compatible's converter --
+	// used by providers that wrap OpenAICompatibleChatLanguageModel directly
+	// (Together, Fireworks, and Go's gmicloud/zai/ollama). OpenAI's own
+	// Chat Completions converter (convert-to-openai-chat-messages.ts) has no
+	// video case at all (it throws UnsupportedFunctionalityError for any
+	// media type besides image/audio/PDF), so OpenAI's and Azure's chat
+	// models must leave this false. Providers with their own local TS
+	// converter that only ever handles images (Groq, Cohere, Alibaba) must
+	// also leave this false.
+	AllowVideo bool
 }
+
+// AssistantToolCallContentMode is documented on
+// ToOpenAIMessagesOptions.AssistantToolCallContentMode.
+type AssistantToolCallContentMode string
+
+const (
+	// AssistantToolCallContentNull is the zero value / default.
+	AssistantToolCallContentNull AssistantToolCallContentMode = ""
+	AssistantToolCallContentText AssistantToolCallContentMode = "text"
+	AssistantToolCallContentOmit AssistantToolCallContentMode = "omit"
+)
 
 // ToOpenAIMessages converts unified messages to OpenAI Chat Completions format.
 //
@@ -129,10 +171,17 @@ func ToOpenAIMessages(messages []types.Message, opts ...ToOpenAIMessagesOptions)
 				}
 			}
 			text := assistantTextContent(msg.Content)
-			if text == "" {
-				openAIMsg["content"] = nil
-			} else {
+			switch opt.AssistantToolCallContentMode {
+			case AssistantToolCallContentOmit:
+				// Leave "content" unset entirely (Cohere).
+			case AssistantToolCallContentText:
 				openAIMsg["content"] = text
+			default:
+				if text == "" {
+					openAIMsg["content"] = nil
+				} else {
+					openAIMsg["content"] = text
+				}
 			}
 			if msg.Name != "" {
 				openAIMsg["name"] = msg.Name
@@ -197,7 +246,7 @@ func ToOpenAIMessages(messages []types.Message, opts ...ToOpenAIMessagesOptions)
 					}
 					contentParts = append(contentParts, imagePart)
 				case types.FileContent:
-					filePart := openAIFileContentPart(p)
+					filePart := openAIFileContentPart(p, opt.AllowVideo)
 					if opt.IncludePromptCacheBreakpoint {
 						if bp, ok := openAIPromptCacheBreakpoint(p.ProviderOptions); ok {
 							filePart["prompt_cache_breakpoint"] = bp
@@ -421,7 +470,7 @@ func ExtractSystemMessage(messages []types.Message) string {
 	return ""
 }
 
-func openAIFileContentPart(file types.FileContent) map[string]interface{} {
+func openAIFileContentPart(file types.FileContent, allowVideo bool) map[string]interface{} {
 	mediaType := firstNonEmpty(file.MediaType, file.MimeType, file.FileData.MediaType)
 	if strings.HasPrefix(mediaType, "image/") || mediaType == "image" {
 		imageURL := file.URL
@@ -437,6 +486,23 @@ func openAIFileContentPart(file types.FileContent) map[string]interface{} {
 		return map[string]interface{}{
 			"type":      "image_url",
 			"image_url": image,
+		}
+	}
+
+	// Video content parts (7dd9ec320c, openai-compatible's video_url branch):
+	// only for callers that opt in via AllowVideo (see
+	// ToOpenAIMessagesOptions.AllowVideo doc comment) -- OpenAI's own chat
+	// converter has no video support at all.
+	if allowVideo && (strings.HasPrefix(mediaType, "video/") || mediaType == "video") {
+		videoURL := file.URL
+		if videoURL == "" && len(file.Data) > 0 {
+			videoURL = fmt.Sprintf("data:%s;base64,%s", mediaType, base64.StdEncoding.EncodeToString(file.Data))
+		}
+		return map[string]interface{}{
+			"type": "video_url",
+			"video_url": map[string]interface{}{
+				"url": videoURL,
+			},
 		}
 	}
 
