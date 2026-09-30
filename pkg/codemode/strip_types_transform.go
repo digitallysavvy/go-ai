@@ -2,27 +2,26 @@ package codemode
 
 import "fmt"
 
-// UnsupportedSyntaxError is returned by stripTypeScriptAnnotations for
-// TypeScript syntax that Node's stripTypeScriptTypes (and therefore
-// TypeScript code-mode, which delegates to it -- see stripTypeScriptAnnotations's
-// doc comment in strip_types.go) recognizes but rejects even in principle,
+// errUnsupportedTSSyntax aborts a strip attempt for TypeScript syntax that
+// Node's stripTypeScriptTypes recognizes but rejects even in principle,
 // throwing ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX: enums, namespaces/modules
 // with a body, and constructor parameter properties. None of these erase
 // to nothing the way a type annotation does, so there is no safe
 // type-stripping translation to plain JavaScript.
-type UnsupportedSyntaxError struct{ *BaseError }
-
-// NewUnsupportedSyntaxError creates an UnsupportedSyntaxError for the named
-// construct (e.g. "enum", "namespace", "constructor parameter property").
-func NewUnsupportedSyntaxError(construct string) *UnsupportedSyntaxError {
-	return &UnsupportedSyntaxError{NewError(
-		fmt.Sprintf("Code mode source uses unsupported TypeScript syntax (%s); it cannot be stripped to plain JavaScript.", construct),
-		"CODE_MODE_UNSUPPORTED_TYPESCRIPT_SYNTAX",
-		map[string]interface{}{"construct": construct},
-	)}
+//
+// This is a plain, unexported error -- not a CodeModeError type -- because,
+// exactly like every other error stripTSTokens can return, its caller
+// (stripTypeScriptAnnotations) never surfaces it: on any error it returns
+// the original source unmodified (see strip_types.go), and RunCodeMode
+// discards the error entirely and runs that unmodified source, letting
+// QuickJS report the failure as an ordinary syntax error -- mirroring
+// stripSnippetTypes's `catch { return source; }` exactly, including for
+// this case. A named exported error type would imply Go rejects this
+// syntax up front, which is precisely the divergence from TypeScript this
+// mirrors away.
+func errUnsupportedTSSyntax(construct string) error {
+	return fmt.Errorf("code mode source uses unsupported TypeScript syntax (%s); it cannot be stripped to plain JavaScript", construct)
 }
-
-var _ CodeModeError = (*UnsupportedSyntaxError)(nil)
 
 // stripTSTokens is the entry point used by stripTypeScriptAnnotations: it
 // runs stripBody over the whole token stream and returns the kept tokens.
@@ -159,11 +158,11 @@ func stripBody(tokens []tsToken, i int, out *[]tsToken, stop func(tsToken) bool)
 				}
 			case "enum":
 				if isStatementStart(*out) {
-					return i, NewUnsupportedSyntaxError("enum")
+					return i, errUnsupportedTSSyntax("enum")
 				}
 			case "namespace", "module":
 				if isStatementStart(*out) && looksLikeNamespaceDecl(tokens, i) {
-					return i, NewUnsupportedSyntaxError(t.text)
+					return i, errUnsupportedTSSyntax(t.text)
 				}
 			case "abstract":
 				// `abstract class C { ... }`: the class-level modifier
@@ -193,7 +192,7 @@ func stripBody(tokens []tsToken, i int, out *[]tsToken, stop func(tsToken) bool)
 				}
 			case "const":
 				if nextIdentIs(tokens, i+1, "enum") {
-					return i, NewUnsupportedSyntaxError("const enum")
+					return i, errUnsupportedTSSyntax("const enum")
 				}
 				*out = append(*out, t)
 				i++

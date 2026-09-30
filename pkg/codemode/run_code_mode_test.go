@@ -510,6 +510,41 @@ func TestRunCodeMode_PropagatesSyntaxErrors(t *testing.T) {
 	assertErrMatches(t, err, `(?i)syntax|unexpected|expression expected`)
 }
 
+// TestRunCodeMode_UnsupportedSyntaxFallsBackToRawSource ports the behavior
+// of TypeScript's stripSnippetTypes (run package,
+// dist/utils/source-cache.js): it catches *any* stripper error and falls
+// back to running the snippet unmodified, rather than rejecting it before
+// execution. TypeScript syntax the stripper recognizes but cannot erase
+// (enums, namespaces, constructor parameter properties) must therefore
+// reach QuickJS unstripped and fail there as an ordinary JavaScript
+// SyntaxError -- never as a distinct "unsupported syntax" error raised by
+// RunCodeMode itself before the sandbox ever runs.
+func TestRunCodeMode_UnsupportedSyntaxFallsBackToRawSource(t *testing.T) {
+	cases := []struct {
+		name string
+		js   string
+	}{
+		{"enum", "enum Color { Red, Green } return Color.Red;"},
+		{"namespace", "namespace NS { export const x = 1; } return NS.x;"},
+		{"constructor parameter property", "class Box { constructor(public value) {} } return 1;"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := RunCodeMode(context.Background(), RunInput{JS: c.js, Tools: ToolSet{}})
+			if err == nil {
+				t.Fatalf("expected an error for unsupported TypeScript syntax %q, got none", c.js)
+			}
+			// A plain QuickJS engine failure, not a package CodeModeError:
+			// the source reached the sandbox unstripped and failed to parse
+			// there, exactly like TypeScript's fallback.
+			if _, ok := err.(CodeModeError); ok {
+				t.Fatalf("expected a plain engine syntax error, got a CodeModeError: %v", err)
+			}
+			assertErrMatches(t, err, `(?i)syntax`)
+		})
+	}
+}
+
 func TestRunCodeMode_PropagatesRuntimeExceptions(t *testing.T) {
 	_, err := RunCodeMode(context.Background(), RunInput{JS: "throw new Error('sandbox exploded');", Tools: ToolSet{}})
 	assertErrMatches(t, err, `sandbox exploded`)

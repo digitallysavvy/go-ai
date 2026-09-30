@@ -33,16 +33,14 @@ import "strings"
 // concerned) fails with a normal JavaScript SyntaxError instead of a
 // TypeScript-specific message.
 //
-// This Go port takes a more direct approach for the two cases that are
-// common enough for a clearer error to matter (enums and namespaces): it
-// recognizes them and returns an UnsupportedSyntaxError immediately,
-// mirroring the *meaning* of Node's ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX rather
-// than its "silently fall through to an opaque engine error" delivery.
-// Anything else this scanner cannot confidently strip (an unbalanced
-// construct, or TypeScript syntax outside the set below) is left
-// unmodified, exactly like the upstream catch-all: the source is handed on
-// to QuickJS as-is and fails there with an ordinary syntax error if it
-// truly isn't valid JavaScript.
+// This Go port matches that fallback exactly: on any error (enums,
+// namespaces/modules with a body, constructor parameter properties, or
+// anything else this scanner cannot confidently strip -- an unbalanced
+// construct, or TypeScript syntax outside the set below), it returns the
+// original source unmodified alongside the error, and its one caller
+// (RunCodeMode) discards the error and runs that unmodified source, letting
+// QuickJS report an ordinary syntax error if it truly isn't valid
+// JavaScript -- never a stripper-specific rejection.
 //
 // Supported erasable syntax (verified against Node's stripTypeScriptTypes
 // directly -- see the package's strip_types_test.go for the exact cases):

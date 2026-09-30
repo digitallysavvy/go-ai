@@ -287,16 +287,12 @@ func TestStripTypeScriptAnnotations_UnsupportedSyntax(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := stripTypeScriptAnnotations(c.src)
+			got, err := stripTypeScriptAnnotations(c.src)
 			if err == nil {
 				t.Fatalf("expected an error for %q, got none", c.src)
 			}
-			cmErr, ok := err.(CodeModeError)
-			if !ok {
-				t.Fatalf("expected a CodeModeError, got %T: %v", err, err)
-			}
-			if cmErr.ErrorCode() != "CODE_MODE_UNSUPPORTED_TYPESCRIPT_SYNTAX" {
-				t.Fatalf("got error code %q, want CODE_MODE_UNSUPPORTED_TYPESCRIPT_SYNTAX", cmErr.ErrorCode())
+			if got != c.src {
+				t.Fatalf("expected the original source unmodified on error, got %q, want %q", got, c.src)
 			}
 		})
 	}

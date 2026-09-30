@@ -130,8 +130,8 @@ func handleDeclaratorList(tokens []tsToken, i int, out *[]tsToken) (int, error) 
 
 // stripParamList strips a parenthesized parameter list starting at
 // tokens[openIdx] (the "("): type annotations, optional `?` markers,
-// access-modifier keywords on constructor parameters (reported as
-// NewUnsupportedSyntaxError -- a parameter property auto-assigns
+// access-modifier keywords on constructor parameters (reported as an
+// errUnsupportedTSSyntax error -- a parameter property auto-assigns
 // `this.x = x`, so merely erasing the modifier would silently drop that
 // behavior, unlike every other erasure in this package), and destructuring
 // patterns/default values, which are recursively stripped via stripBody.
@@ -215,7 +215,7 @@ func stripOneParam(tokens []tsToken, i int, out *[]tsToken, isConstructor bool) 
 	}
 	if sawModifier {
 		if isConstructor {
-			return i, NewUnsupportedSyntaxError("constructor parameter property")
+			return i, errUnsupportedTSSyntax("constructor parameter property")
 		}
 		if j := nextSignificant(tokens, i); j >= 0 {
 			for k := i; k < j; k++ {
