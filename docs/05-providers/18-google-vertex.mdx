@@ -362,13 +362,14 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 ```
 
-> **Breaking change:** Vertex now reads provider options in TS order —
-> `"googleVertex"` first, then the legacy `"vertex"` key, then `"google"` as
-> a cross-namespace fallback (`googleVertex` → `vertex` → `google`). The
-> `"google-vertex"` (hyphenated) key was never read by the language model
-> path and still isn't; a plain `"google"` key still works as the last
-> fallback, so options shared between the AI Studio and Vertex providers
-> don't need duplicating.
+Vertex-specific options are read from the `googleVertex` key (falling back
+to `vertex`, then `google`), matching the TypeScript SDK's own
+`providerOptions.googleVertex` convention. The legacy `"vertex"` key is
+still accepted, and a plain `"google"` key works as the last fallback so
+options shared between the AI Studio and Vertex providers don't need
+duplicating. Note that the hyphenated `"google-vertex"` string is only the
+model's `Provider()` identity/error-wrapping name — it was never a
+`ProviderOptions` key.
 
 | Provider | `ProviderOptions` key(s), in lookup order |
 |----------|----------------------|
