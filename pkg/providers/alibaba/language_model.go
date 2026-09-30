@@ -356,10 +356,11 @@ func (m *LanguageModel) convertResponse(resp alibabaResponse) *types.GenerateRes
 
 	choice := resp.Choices[0]
 	result := &types.GenerateResult{
-		Text:         choice.Message.Content,
-		FinishReason: providerutils.MapOpenAIFinishReason(choice.FinishReason),
-		Usage:        ConvertAlibabaUsage(resp.Usage),
-		RawResponse:  resp,
+		Text:            choice.Message.Content,
+		FinishReason:    providerutils.MapOpenAIFinishReason(choice.FinishReason),
+		RawFinishReason: choice.FinishReason,
+		Usage:           ConvertAlibabaUsage(resp.Usage),
+		RawResponse:     resp,
 	}
 	if choice.Message.ReasoningContent != "" {
 		result.Content = append(result.Content, types.ReasoningContent{Text: choice.Message.ReasoningContent})

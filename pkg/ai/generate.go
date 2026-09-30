@@ -1351,15 +1351,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		}
 		stepReasoningText := buildReasoningText(stepReasoning)
 
-		// Extract raw finish reason from RawResponse.
-		var stepRawFinishReason string
-		if genResult.RawResponse != nil {
-			if respMap, ok := genResult.RawResponse.(map[string]interface{}); ok {
-				if fr, ok := respMap["finish_reason"].(string); ok {
-					stepRawFinishReason = fr
-				}
-			}
-		}
+		stepRawFinishReason := genResult.RawFinishReason
 
 		// Build response metadata for this step.
 		stepResp := generateStepResponseFromGenerateResultWithID(stepModel, genResult, generateID)

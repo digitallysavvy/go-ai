@@ -259,9 +259,10 @@ func (s *alibabaStream) flushToolCalls() {
 // buildFinishChunk creates a finish chunk with accumulated data
 func (s *alibabaStream) buildFinishChunk() *provider.StreamChunk {
 	return &provider.StreamChunk{
-		Type:         provider.ChunkTypeFinish,
-		FinishReason: providerutils.MapOpenAIFinishReason(s.finishReason),
-		Usage:        s.usage,
+		Type:            provider.ChunkTypeFinish,
+		FinishReason:    providerutils.MapOpenAIFinishReason(s.finishReason),
+		RawFinishReason: s.finishReason,
+		Usage:           s.usage,
 	}
 }
 

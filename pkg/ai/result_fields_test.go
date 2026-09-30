@@ -68,6 +68,7 @@ func TestGenerateTextPopulatesStepAndFinalFields(t *testing.T) {
 					{ID: "tc-dyn", ToolName: "search", Dynamic: true},
 				},
 				FinishReason:     types.FinishReasonStop,
+				RawFinishReason:  "stop",
 				Usage:            types.Usage{InputTokens: &in, OutputTokens: &out, TotalTokens: &total},
 				RawRequest:       rawReq,
 				RawResponse:      rawResp,

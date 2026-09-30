@@ -511,9 +511,10 @@ func (m *LanguageModel) convertResponse(resp moonshotResponse) (*types.GenerateR
 	}
 
 	result := &types.GenerateResult{
-		FinishReason: providerutils.MapOpenAIFinishReason(choice.FinishReason),
-		Usage:        usage,
-		RawResponse:  resp,
+		FinishReason:    providerutils.MapOpenAIFinishReason(choice.FinishReason),
+		RawFinishReason: choice.FinishReason,
+		Usage:           usage,
+		RawResponse:     resp,
 	}
 
 	if choice.Message.ReasoningContent != "" {
@@ -701,9 +702,10 @@ type moonshotStream struct {
 	toolCallTypes   map[int]string
 	contentLogprobs []json.RawMessage
 
-	topLevelUsage json.RawMessage
-	choiceUsage   json.RawMessage
-	finishReason  types.FinishReason
+	topLevelUsage   json.RawMessage
+	choiceUsage     json.RawMessage
+	finishReason    types.FinishReason
+	rawFinishReason string
 }
 
 // newMoonshotStream creates a new Moonshot stream
@@ -813,6 +815,7 @@ func (s *moonshotStream) Next() (*provider.StreamChunk, error) {
 	}
 	if choice.FinishReason != nil && *choice.FinishReason != "" {
 		s.finishReason = providerutils.MapOpenAIFinishReason(*choice.FinishReason)
+		s.rawFinishReason = *choice.FinishReason
 	}
 	if len(choice.Logprobs) > 0 && string(choice.Logprobs) != "null" {
 		var lp moonshotLogprobsContent
@@ -921,6 +924,7 @@ func (s *moonshotStream) buildFlushChunks() []*provider.StreamChunk {
 	finishChunk := &provider.StreamChunk{
 		Type:             provider.ChunkTypeFinish,
 		FinishReason:     finishReason,
+		RawFinishReason:  s.rawFinishReason,
 		Usage:            &usage,
 		ProviderMetadata: s.buildProviderMetadata(),
 	}

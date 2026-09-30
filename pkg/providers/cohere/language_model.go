@@ -398,8 +398,9 @@ func convertCohereUsage(raw json.RawMessage) types.Usage {
 
 func (m *LanguageModel) convertV2Response(resp cohereV2Response) (*types.GenerateResult, error) {
 	result := &types.GenerateResult{
-		FinishReason: mapCohereV2FinishReason(resp.FinishReason),
-		RawResponse:  resp,
+		FinishReason:    mapCohereV2FinishReason(resp.FinishReason),
+		RawFinishReason: resp.FinishReason,
+		RawResponse:     resp,
 	}
 	result.Usage = convertCohereUsage(resp.Usage)
 	for _, item := range resp.Message.Content {
@@ -758,9 +759,10 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 		if err := json.Unmarshal(ev.Delta, &delta); err == nil {
 			usage := convertCohereUsage(delta.Usage)
 			return &provider.StreamChunk{
-				Type:         provider.ChunkTypeFinish,
-				FinishReason: mapCohereV2FinishReason(delta.FinishReason),
-				Usage:        &usage,
+				Type:            provider.ChunkTypeFinish,
+				FinishReason:    mapCohereV2FinishReason(delta.FinishReason),
+				RawFinishReason: delta.FinishReason,
+				Usage:           &usage,
 			}, nil
 		}
 		s.err = io.EOF

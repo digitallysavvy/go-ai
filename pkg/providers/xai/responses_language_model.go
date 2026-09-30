@@ -769,6 +769,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 	} else {
 		result.FinishReason = mapXAIResponsesFinishReason(resp.Status, resp.IncompleteDetails)
 	}
+	result.RawFinishReason = resp.Status
 
 	return result, nil
 }
@@ -1352,6 +1353,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type:             provider.ChunkTypeFinish,
 			FinishReason:     finishReason,
+			RawFinishReason:  e.Response.Status,
 			Usage:            &usage,
 			ProviderMetadata: meta,
 		})
@@ -1370,11 +1372,16 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 		}
 		usage := convertXAIResponsesUsage(e.Response.Usage)
 		finishReason := mapXAIResponsesFinishReason("incomplete", e.Response.IncompleteDetails)
+		rawFinishReason := "incomplete"
+		if e.Response.IncompleteDetails != nil && e.Response.IncompleteDetails.Reason != "" {
+			rawFinishReason = e.Response.IncompleteDetails.Reason
+		}
 		s.err = io.EOF
 		return s.emitParsedChunk(&provider.StreamChunk{
-			Type:         provider.ChunkTypeFinish,
-			FinishReason: finishReason,
-			Usage:        &usage,
+			Type:            provider.ChunkTypeFinish,
+			FinishReason:    finishReason,
+			RawFinishReason: rawFinishReason,
+			Usage:           &usage,
 		})
 
 	case "response.failed":
@@ -1383,9 +1390,11 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			return s.Next()
 		}
 		usage := convertXAIResponsesUsage(e.Response.Usage)
-		finishReason := types.FinishReasonOther
+		finishReason := types.FinishReasonError
+		rawFinishReason := "error"
 		if e.Response.IncompleteDetails != nil && e.Response.IncompleteDetails.Reason != "" {
 			finishReason = mapXAIResponsesFinishReason("incomplete", e.Response.IncompleteDetails)
+			rawFinishReason = e.Response.IncompleteDetails.Reason
 		}
 		// Mirrors TS xai-responses-language-model.ts's response.failed
 		// branch: response.error != null enqueues a structured error chunk
@@ -1401,9 +1410,10 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 		}
 		s.err = io.EOF
 		return s.emitParsedChunk(&provider.StreamChunk{
-			Type:         provider.ChunkTypeFinish,
-			FinishReason: finishReason,
-			Usage:        &usage,
+			Type:            provider.ChunkTypeFinish,
+			FinishReason:    finishReason,
+			RawFinishReason: rawFinishReason,
+			Usage:           &usage,
 		})
 
 	case "error":

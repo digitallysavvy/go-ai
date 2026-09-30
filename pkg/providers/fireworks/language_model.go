@@ -240,10 +240,11 @@ func (m *LanguageModel) convertResponse(response fireworksResponse) *types.Gener
 	}
 	choice := response.Choices[0]
 	result := &types.GenerateResult{
-		Text:         choice.Message.Content,
-		FinishReason: providerutils.MapOpenAIFinishReason(choice.FinishReason),
-		Usage:        convertFireworksUsage(response.Usage),
-		RawResponse:  response,
+		Text:            choice.Message.Content,
+		FinishReason:    providerutils.MapOpenAIFinishReason(choice.FinishReason),
+		RawFinishReason: choice.FinishReason,
+		Usage:           convertFireworksUsage(response.Usage),
+		RawResponse:     response,
 	}
 	if choice.Message.ReasoningContent != "" {
 		result.Content = append(result.Content, types.ReasoningContent{Text: choice.Message.ReasoningContent})

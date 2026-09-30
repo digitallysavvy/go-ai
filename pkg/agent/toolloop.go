@@ -1433,15 +1433,7 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		return nil, false, callConfig.CustomData, callConfig.Tools, err
 	}
 
-	// Extract raw finish reason if available
-	rawFinishReason := ""
-	if genResult.RawResponse != nil {
-		if respMap, ok := genResult.RawResponse.(map[string]interface{}); ok {
-			if fr, ok := respMap["finish_reason"].(string); ok {
-				rawFinishReason = fr
-			}
-		}
-	}
+	rawFinishReason := genResult.RawFinishReason
 
 	// Create step result
 	include := ai.IncludeOptions{}

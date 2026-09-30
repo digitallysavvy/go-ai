@@ -585,6 +585,7 @@ func (m *LanguageModel) convertResponse(response openAIResponse) *types.Generate
 
 		// Extract finish reason
 		result.FinishReason = providerutils.MapOpenAIFinishReason(choice.FinishReason)
+		result.RawFinishReason = choice.FinishReason
 	}
 
 	return result
@@ -1058,8 +1059,9 @@ func (s *openAIStream) flushOpenAIToolCalls(finishReason string) {
 		s.flushQueue = append(s.flushQueue, &c)
 	}
 	s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-		Type:         provider.ChunkTypeFinish,
-		FinishReason: providerutils.MapOpenAIFinishReason(finishReason),
+		Type:            provider.ChunkTypeFinish,
+		FinishReason:    providerutils.MapOpenAIFinishReason(finishReason),
+		RawFinishReason: finishReason,
 	})
 }
 

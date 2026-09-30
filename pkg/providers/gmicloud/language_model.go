@@ -185,10 +185,11 @@ func (m *LanguageModel) convertResponse(response gmicloudResponse) *types.Genera
 	}
 	choice := response.Choices[0]
 	result := &types.GenerateResult{
-		Text:         choice.Message.Content,
-		FinishReason: providerutils.MapOpenAIFinishReason(choice.FinishReason),
-		Usage:        convertGmicloudUsage(response.Usage),
-		RawResponse:  response,
+		Text:            choice.Message.Content,
+		FinishReason:    providerutils.MapOpenAIFinishReason(choice.FinishReason),
+		RawFinishReason: choice.FinishReason,
+		Usage:           convertGmicloudUsage(response.Usage),
+		RawResponse:     response,
 	}
 	if choice.Message.ReasoningContent != "" {
 		result.Content = append(result.Content, types.ReasoningContent{Text: choice.Message.ReasoningContent})

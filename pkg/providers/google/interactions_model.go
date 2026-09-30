@@ -419,6 +419,7 @@ func (m *InteractionsLanguageModel) convertResponse(response interactionsRespons
 		Content:          content,
 		ToolCalls:        toolCalls,
 		FinishReason:     finishReason,
+		RawFinishReason:  response.Status,
 		Usage:            convertInteractionsUsage(response.Usage),
 		RawRequest:       request,
 		RawResponse:      rawBody,

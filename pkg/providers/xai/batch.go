@@ -883,11 +883,12 @@ func convertXAIBatchTextResponse(resp xaiBatchTextResponseWire) (*types.Generate
 	}
 
 	result := &types.GenerateResult{
-		Text:         text,
-		Content:      content,
-		ToolCalls:    toolCalls,
-		FinishReason: mapXAIChatFinishReason(finishRaw),
-		Warnings:     []types.Warning{},
+		Text:            text,
+		Content:         content,
+		ToolCalls:       toolCalls,
+		FinishReason:    mapXAIChatFinishReason(finishRaw),
+		RawFinishReason: finishRaw,
+		Warnings:        []types.Warning{},
 	}
 	if resp.Usage != nil {
 		result.Usage = convertXAIBatchTextUsage(*resp.Usage)

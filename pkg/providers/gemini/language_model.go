@@ -377,6 +377,12 @@ func (m *LanguageModel) convertResponse(response Response, tnm toolNameMapping) 
 			result.FinishReason = types.FinishReasonOther
 		}
 	}
+	// Mirrors TS's rawFinishReason = candidate?.finishReason ?? confirmedPromptBlockReason.
+	if candidate.FinishReason != "" {
+		result.RawFinishReason = candidate.FinishReason
+	} else {
+		result.RawFinishReason = confirmedPromptBlockReason
+	}
 
 	if response.ResponseID != "" {
 		result.ResponseMetadata = &types.ResponseMetadata{ID: response.ResponseID}

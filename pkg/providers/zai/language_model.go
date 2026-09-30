@@ -254,10 +254,11 @@ func (m *LanguageModel) convertResponse(response zaiResponse) *types.GenerateRes
 	}
 	choice := response.Choices[0]
 	result := &types.GenerateResult{
-		Text:         choice.Message.Content,
-		FinishReason: mapZaiFinishReason(choice.FinishReason),
-		Usage:        convertZaiUsage(response.Usage),
-		RawResponse:  response,
+		Text:            choice.Message.Content,
+		FinishReason:    mapZaiFinishReason(choice.FinishReason),
+		RawFinishReason: choice.FinishReason,
+		Usage:           convertZaiUsage(response.Usage),
+		RawResponse:     response,
 	}
 	if choice.Message.ReasoningContent != "" {
 		result.Content = append(result.Content, types.ReasoningContent{Text: choice.Message.ReasoningContent})

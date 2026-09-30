@@ -1788,6 +1788,9 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 	} else {
 		result.FinishReason = mapResponsesFinishReason(resp.IncompleteDetails, false)
 	}
+	if resp.IncompleteDetails != nil {
+		result.RawFinishReason = resp.IncompleteDetails.Reason
+	}
 
 	// Row b2b1bb9 (Responses half): surface the response id, echoed
 	// service tier, and effective reasoning context (GPT-5.6
@@ -2991,6 +2994,10 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		}
 		usage := convertResponsesUsage(e.Response.Usage)
 		finishReason := mapResponsesFinishReason(e.Response.IncompleteDetails, false)
+		rawFinishReason := ""
+		if e.Response.IncompleteDetails != nil {
+			rawFinishReason = e.Response.IncompleteDetails.Reason
+		}
 		// Row eee6200: an earlier known-event decode failure forces the
 		// finish reason to "error", regardless of what this event reports.
 		if s.hadDecodeError {
@@ -3014,6 +3021,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type:             provider.ChunkTypeFinish,
 			FinishReason:     finishReason,
+			RawFinishReason:  rawFinishReason,
 			Usage:            &usage,
 			ProviderMetadata: meta,
 		})

@@ -284,6 +284,7 @@ func (m *CompletionModel) convertCompletionResponse(response openAICompletionRes
 	result.Text = choice.Text
 	result.Content = []types.ContentPart{types.TextContent{Text: choice.Text}}
 	result.FinishReason = providerutils.MapOpenAIFinishReason(choice.FinishReason)
+	result.RawFinishReason = choice.FinishReason
 	if len(choice.Logprobs) > 0 && string(choice.Logprobs) != "null" {
 		result.ProviderMetadata["openai"].(map[string]interface{})["logprobs"] = json.RawMessage(choice.Logprobs)
 	}
@@ -365,6 +366,7 @@ type completionStream struct {
 	outputStarted    bool
 	finished         bool
 	finishReason     types.FinishReason
+	rawFinishReason  string
 	usage            *types.Usage
 	providerMetadata map[string]interface{}
 	providerName     string
@@ -461,6 +463,7 @@ func (s *completionStream) Next() (*provider.StreamChunk, error) {
 		choice := chunk.Choices[0]
 		if choice.FinishReason != nil {
 			s.finishReason = providerutils.MapOpenAIFinishReason(*choice.FinishReason)
+			s.rawFinishReason = *choice.FinishReason
 		}
 		if len(choice.Logprobs) > 0 && string(choice.Logprobs) != "null" {
 			s.providerMetadata["openai"].(map[string]interface{})["logprobs"] = json.RawMessage(choice.Logprobs)
@@ -501,6 +504,7 @@ func (s *completionStream) finish() {
 	s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 		Type:             provider.ChunkTypeFinish,
 		FinishReason:     s.finishReason,
+		RawFinishReason:  s.rawFinishReason,
 		Usage:            s.usage,
 		ProviderMetadata: mustMarshalCompletionProviderMetadata(s.providerMetadata),
 	})
