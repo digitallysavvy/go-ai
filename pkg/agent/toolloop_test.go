@@ -3342,14 +3342,14 @@ func TestExecuteWithMessagesToolCallers_LateBindsLocalCaller(t *testing.T) {
 		},
 		ExperimentalToolCaller: &types.ToolCallerDefinition{
 			Type: types.ToolCallerTypeLocal,
-			Bind: func(tools map[string]types.Tool) types.Tool {
+			Bind: func(tools []types.Tool) types.Tool {
 				return types.Tool{
 					Name:       "code_mode",
 					Parameters: map[string]interface{}{"type": "object"},
 					Execute: func(_ context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
 						names := make([]string, 0, len(tools))
-						for n := range tools {
-							names = append(names, n)
+						for _, tl := range tools {
+							names = append(names, tl.Name)
 						}
 						return names, nil
 					},
