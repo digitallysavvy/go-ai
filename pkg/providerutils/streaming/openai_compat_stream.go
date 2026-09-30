@@ -64,15 +64,25 @@ type OpenAICompatStream struct {
 	pendingFinishReason string
 	pendingUsage        *openAICompatStreamUsage
 
-	// streamErrored is set once a ChunkTypeError has already been emitted for
-	// this stream: a JSON parse failure, a provider "error" field on an SSE
-	// event, or toolCallTracker.Flush() erroring (e.g. a tool call whose
-	// function.name never arrived). Each of these corresponds to a TS branch
-	// that sets `finishReason = { unified: 'error', ... }` immediately
-	// (openai-compatible-chat-language-model.ts:574-575, 582-586), so
-	// endStream must not also apply the separate "truncated stream, no
-	// finish_reason ever observed" error/finish pair on top of it.
+	// streamErrored is set once a "soft" error chunk has already been
+	// emitted for this stream: a JSON parse failure or a provider "error"
+	// field on an SSE event. Both correspond to a TS branch that sets
+	// `finishReason = { unified: 'error', ... }` and returns normally from
+	// transform() (openai-compatible-chat-language-model.ts:574-575,
+	// 582-586) -- flush() still runs to completion afterward, so endStream
+	// must still emit the terminal finish chunk, just without re-injecting
+	// the separate "no finish_reason ever observed" error on top of it.
 	streamErrored bool
+
+	// toolCallErrored is set once toolCallTracker.Flush() has produced a
+	// ChunkTypeError (a tool call whose function.name never arrived), either
+	// mid-stream (flushToolCallsAndFinish, when a finish_reason did arrive)
+	// or at true stream end (endStream, for a stream that never observed
+	// one). TS's toolCallTracker.flush() *throws* in this case, aborting
+	// flush() before its terminal `finish` enqueue is ever reached -- so
+	// endStream must never emit a finish chunk once this is set, unlike the
+	// "soft" streamErrored case above.
+	toolCallErrored bool
 }
 
 // NewOpenAICompatStream creates a new OpenAICompatStream.
@@ -342,10 +352,11 @@ func (s *OpenAICompatStream) flushToolCallsAndFinish(finishReason string) {
 			// Mirrors TS's toolCallTracker.flush() throwing on a missing
 			// function.name: the stream has already errored out here, so
 			// endStream must not additionally treat the eventual EOF as a
-			// "truncated stream" (no separate finish_reason ever arrives in
-			// that TS throw path either -- flush()'s finishReason==null
-			// check is never reached once flush() throws).
+			// "truncated stream", nor emit any finish chunk at all (no
+			// finish_reason ever arrives in that TS throw path either --
+			// flush() aborts before its terminal `finish` enqueue).
 			s.streamErrored = true
+			s.toolCallErrored = true
 			return
 		}
 	}
@@ -360,13 +371,19 @@ func (s *OpenAICompatStream) flushToolCallsAndFinish(finishReason string) {
 // synthesizes the deferred finish chunk (merging in any usage seen since),
 // matching TS's flush()-time `finish` enqueue.
 //
-// If no finish_reason was ever observed (a truncated stream), TS's flush()
-// (openai-compatible-chat-language-model.ts, d68139c3bb) treats this as an
-// error: it enqueues an `error` chunk carrying InvalidResponseDataError,
-// forces finishReason to the unified "error" reason, and still enqueues the
-// terminal `finish` chunk. Mirror that here: queue the finish-with-error
-// chunk so it drains on the following Next() call, and return the error
-// chunk first.
+// Otherwise this mirrors TS's flush() unconditional tail (openai-compatible-
+// chat-language-model.ts, d68139c3bb): close any still-open reasoning block,
+// forward any tool-call fragments still buffered in the tracker, and -- only
+// if no finish_reason was ever observed *and* no "soft" error chunk (parse
+// failure / provider error field) was already emitted for this stream --
+// enqueue an InvalidResponseDataError "error" chunk for the missing finish
+// reason. In every case that reaches this point without a hard tool-call
+// error, TS's flush() still runs to completion, so a terminal `finish` chunk
+// (unified "error" reason) is always enqueued alongside it. A hard tool-call
+// error (s.toolCallErrored, set here or earlier by flushToolCallsAndFinish)
+// is the one exception: TS's toolCallTracker.flush() throws in that case,
+// aborting flush() before its terminal `finish` enqueue is ever reached, so
+// no finish chunk is emitted at all.
 func (s *OpenAICompatStream) endStream(err error) (*provider.StreamChunk, error) {
 	if s.finishPending {
 		s.finishPending = false
@@ -380,8 +397,9 @@ func (s *OpenAICompatStream) endStream(err error) (*provider.StreamChunk, error)
 			Usage:        convertOpenAICompatStreamUsage(usage),
 		}, nil
 	}
-	if err == io.EOF && !s.streamErrored {
-		// Order matches TS flush(): close any still-open reasoning block
+	if err == io.EOF {
+		// Order matches TS flush(): close any still-open reasoning block,
+		// then forward pending tool-call fragments through the tracker,
 		// before the error/finish chunks.
 		var pending []*provider.StreamChunk
 		if s.isActiveReasoning {
@@ -390,12 +408,30 @@ func (s *OpenAICompatStream) endStream(err error) (*provider.StreamChunk, error)
 				Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0",
 			})
 		}
-		streamErr := providererrors.NewInvalidResponseDataError(nil, "Response stream ended without a finish reason.")
-		pending = append(pending, &provider.StreamChunk{
-			Type: provider.ChunkTypeError,
-			Text: streamErr.Error(),
-			Err:  streamErr,
-		})
+		for _, chunk := range s.toolCallTracker.Flush() {
+			c := chunk
+			pending = append(pending, &c)
+			if c.Type == provider.ChunkTypeError {
+				s.toolCallErrored = true
+			}
+		}
+		if s.toolCallErrored {
+			s.err = err
+			if len(pending) == 0 {
+				return nil, err
+			}
+			first := pending[0]
+			s.flushQueue = append(s.flushQueue, pending[1:]...)
+			return first, nil
+		}
+		if !s.streamErrored {
+			streamErr := providererrors.NewInvalidResponseDataError(nil, "Response stream ended without a finish reason.")
+			pending = append(pending, &provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: streamErr.Error(),
+				Err:  streamErr,
+			})
+		}
 		pending = append(pending, &provider.StreamChunk{
 			Type:         provider.ChunkTypeFinish,
 			FinishReason: types.FinishReasonError,
