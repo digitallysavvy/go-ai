@@ -52,6 +52,13 @@ type MCPClient struct {
 	toolHeaderBindingsMu sync.Mutex
 	toolHeaderBindings   map[string][]MCPToolHeaderBinding
 
+	// elicitationHandler, when set via OnElicitationRequest, handles
+	// server->client `elicitation/create` requests (matching TS
+	// DefaultMCPClient.elicitationRequestHandler). Only one handler may be
+	// registered at a time.
+	elicitationMu      sync.RWMutex
+	elicitationHandler func(ElicitationRequest) (ElicitResult, error)
+
 	// Client info
 	clientInfo ClientInfo
 
@@ -108,8 +115,10 @@ type MCPClientConfig struct {
 
 	// OnError, when set, receives non-fatal diagnostics the client would
 	// otherwise drop silently: a tool skipped because its x-mcp-header
-	// annotation is invalid, or a tool call whose header binding failed
-	// (hash 0c60a40).
+	// annotation is invalid, a tool call whose header binding failed (hash
+	// 0c60a40), or a registered OnElicitationRequest handler that returned
+	// an error or an invalid ElicitResult (matching TS
+	// DefaultMCPClient.onRequestMessage's this.onError(error) call).
 	OnError func(error) `json:"-"`
 }
 
@@ -619,6 +628,22 @@ func (c *MCPClient) ReadResource(ctx context.Context, uri string) (*ReadResource
 	return &result, nil
 }
 
+// ListResourceTemplates lists resource templates from the MCP server via
+// `resources/templates/list`, matching TS
+// MCPClient.listResourceTemplates (mcp-client.ts).
+func (c *MCPClient) ListResourceTemplates(ctx context.Context) (*ListResourceTemplatesResult, error) {
+	if !c.initialized {
+		return nil, fmt.Errorf("client not initialized")
+	}
+
+	var result ListResourceTemplatesResult
+	if err := c.call(ctx, "resources/templates/list", nil, &result); err != nil {
+		return nil, fmt.Errorf("failed to list resource templates: %w", err)
+	}
+
+	return &result, nil
+}
+
 // ListPrompts lists all available prompts from the MCP server
 func (c *MCPClient) ListPrompts(ctx context.Context) ([]MCPPrompt, error) {
 	if !c.initialized {
@@ -670,6 +695,18 @@ func (c *MCPClient) Complete(ctx context.Context, params CompleteRequestParams) 
 		return nil, fmt.Errorf("failed to complete: %w", err)
 	}
 	return &result, nil
+}
+
+// OnElicitationRequest registers handler for server->client
+// `elicitation/create` requests (interactive user-input requests), matching
+// TS MCPClient.onElicitationRequest (mcp-client.ts). Registering a new
+// handler replaces any previously registered one. When no handler is
+// registered, an incoming elicitation/create request is answered with a
+// "Method not found" (-32601) error, matching TS.
+func (c *MCPClient) OnElicitationRequest(handler func(ElicitationRequest) (ElicitResult, error)) {
+	c.elicitationMu.Lock()
+	c.elicitationHandler = handler
+	c.elicitationMu.Unlock()
 }
 
 // ServerInfo returns information about the connected server
@@ -821,7 +858,12 @@ func (c *MCPClient) handleNotification(msg *MCPMessage) {
 	}
 }
 
-// handleRequest handles requests from the server
+// handleRequest handles requests from the server. Matches TS
+// DefaultMCPClient.onRequestMessage (mcp-client.ts): `ping` is answered
+// directly; `elicitation/create` is dispatched to a registered
+// OnElicitationRequest handler (validating params before, and the result
+// after, the handler call); every other method is rejected with "Method not
+// found".
 func (c *MCPClient) handleRequest(msg *MCPMessage) {
 	if msg.Method == "ping" {
 		response, err := CreateResponse(msg.ID, map[string]interface{}{})
@@ -832,8 +874,99 @@ func (c *MCPClient) handleRequest(msg *MCPMessage) {
 		return
 	}
 
-	response := CreateErrorResponse(msg.ID, ErrorCodeMethodNotFound, "Method not found", nil)
+	if msg.Method != "elicitation/create" {
+		response := CreateErrorResponse(msg.ID, ErrorCodeMethodNotFound, fmt.Sprintf("Unsupported request method: %s", msg.Method), nil)
+		_ = c.transport.Send(c.ctx, response)
+		return
+	}
+
+	c.handleElicitationRequest(msg)
+}
+
+// handleElicitationRequest dispatches a server->client `elicitation/create`
+// request to the registered OnElicitationRequest handler, matching TS
+// DefaultMCPClient.onRequestMessage's `elicitation/create` branch
+// (mcp-client.ts): no handler registered -> -32601; invalid params -> -32602;
+// handler error or an invalid ElicitResult (Action not one of
+// accept/decline/cancel) -> -32603, and the error is also reported via
+// MCPClientConfig.OnError, matching TS's this.onError(error).
+func (c *MCPClient) handleElicitationRequest(msg *MCPMessage) {
+	c.elicitationMu.RLock()
+	handler := c.elicitationHandler
+	c.elicitationMu.RUnlock()
+
+	if handler == nil {
+		response := CreateErrorResponse(msg.ID, ErrorCodeMethodNotFound, "No elicitation handler registered on client", nil)
+		_ = c.transport.Send(c.ctx, response)
+		return
+	}
+
+	request, err := parseElicitationRequestParams(msg.Params)
+	if err != nil {
+		response := CreateErrorResponse(msg.ID, ErrorCodeInvalidParams, fmt.Sprintf("Invalid elicitation request: %s", err.Error()), nil)
+		_ = c.transport.Send(c.ctx, response)
+		return
+	}
+
+	result, err := handler(request)
+	if err == nil && result.Action != "accept" && result.Action != "decline" && result.Action != "cancel" {
+		err = fmt.Errorf(`invalid elicit result: action must be "accept", "decline", or "cancel"`)
+	}
+	if err != nil {
+		response := CreateErrorResponse(msg.ID, ErrorCodeInternalError, "Failed to handle elicitation request", nil)
+		_ = c.transport.Send(c.ctx, response)
+		if c.config.OnError != nil {
+			c.config.OnError(err)
+		}
+		return
+	}
+
+	response, respErr := CreateResponse(msg.ID, result)
+	if respErr != nil {
+		response = CreateErrorResponse(msg.ID, ErrorCodeInternalError, respErr.Error(), nil)
+	}
 	_ = c.transport.Send(c.ctx, response)
+}
+
+// parseElicitationRequestParams validates and extracts an ElicitationRequest
+// from raw JSON-RPC params, matching TS's
+// `ElicitationRequestSchema.safeParse({method, params})`: params must be a
+// JSON object with a string "message" field. "requestedSchema" and "_meta"
+// are carried through unvalidated (TS: z.unknown() / a loose object).
+func parseElicitationRequestParams(raw json.RawMessage) (ElicitationRequest, error) {
+	if len(raw) == 0 {
+		return ElicitationRequest{}, fmt.Errorf("params is required")
+	}
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return ElicitationRequest{}, fmt.Errorf("params must be an object: %w", err)
+	}
+
+	messageRaw, ok := fields["message"]
+	if !ok {
+		return ElicitationRequest{}, fmt.Errorf("params.message is required")
+	}
+	var message string
+	if err := json.Unmarshal(messageRaw, &message); err != nil {
+		return ElicitationRequest{}, fmt.Errorf("params.message must be a string: %w", err)
+	}
+
+	var requestedSchema interface{}
+	if schemaRaw, ok := fields["requestedSchema"]; ok {
+		if err := json.Unmarshal(schemaRaw, &requestedSchema); err != nil {
+			return ElicitationRequest{}, fmt.Errorf("params.requestedSchema is invalid: %w", err)
+		}
+	}
+
+	var meta map[string]interface{}
+	if metaRaw, ok := fields["_meta"]; ok {
+		if err := json.Unmarshal(metaRaw, &meta); err != nil {
+			return ElicitationRequest{}, fmt.Errorf("params._meta must be an object: %w", err)
+		}
+	}
+
+	return ElicitationRequest{Message: message, RequestedSchema: requestedSchema, Meta: meta}, nil
 }
 
 func isSupportedProtocolVersion(version string) bool {

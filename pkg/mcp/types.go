@@ -627,6 +627,25 @@ type ResourceContent struct {
 	Meta     map[string]interface{} `json:"_meta,omitempty"`
 }
 
+// MCPResourceTemplate represents a resource template exposed via MCP
+// (`resources/templates/list`), matching TS ResourceTemplateSchema
+// (types.ts, hash 5d12eaa).
+type MCPResourceTemplate struct {
+	URITemplate string `json:"uriTemplate"`
+	Name        string `json:"name"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+	MimeType    string `json:"mimeType,omitempty"`
+}
+
+// ListResourceTemplatesResult represents the result of listing resource
+// templates via `resources/templates/list`, matching TS
+// ListResourceTemplatesResultSchema (types.ts). Unlike ListResourcesResult,
+// this result is not paginated in the MCP spec (no nextCursor field).
+type ListResourceTemplatesResult struct {
+	ResourceTemplates []MCPResourceTemplate `json:"resourceTemplates"`
+}
+
 // ListPromptsParams represents parameters for listing prompts
 type ListPromptsParams struct {
 	Cursor string `json:"cursor,omitempty"`
@@ -802,6 +821,26 @@ type CompleteResultCompletion struct {
 type CompleteResult struct {
 	Completion CompleteResultCompletion `json:"completion"`
 	ResultType string                   `json:"resultType,omitempty"`
+}
+
+// ElicitationRequest is the payload of a server-to-client `elicitation/create`
+// request: an interactive request for additional user input, matching TS's
+// ElicitationRequestSchema params shape (types.ts, hash 5d12eaa).
+// RequestedSchema describes a JSON Schema the client should use to collect
+// input; its shape is server-defined, so it is left as raw interface{}.
+type ElicitationRequest struct {
+	Message         string                 `json:"message"`
+	RequestedSchema interface{}            `json:"requestedSchema"`
+	Meta            map[string]interface{} `json:"_meta,omitempty"`
+}
+
+// ElicitResult is the client's response to an ElicitationRequest, matching TS
+// ElicitResultSchema (types.ts). Action must be "accept", "decline", or
+// "cancel"; Content carries the collected input when Action is "accept".
+type ElicitResult struct {
+	Action  string                 `json:"action"`
+	Content map[string]interface{} `json:"content,omitempty"`
+	Meta    map[string]interface{} `json:"_meta,omitempty"`
 }
 
 // LoggingLevel represents the level of logging
