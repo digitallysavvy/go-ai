@@ -470,10 +470,20 @@ func (p *Provider) Speech(modelID string) (provider.SpeechModel, error) {
 	return p.SpeechModel(modelID)
 }
 
-// TranscriptionModel returns a speech-to-text model by ID
+// TranscriptionModel returns a speech-to-text model by ID.
+//
+// Gemini-family model IDs (e.g. "gemini-3.5-transcribe",
+// "gemini-3.5-transcribe-live") route to the generateContent/Live API
+// surface via GeminiTranscriptionModel; everything else (Chirp, telephony)
+// routes to Cloud Speech-to-Text v2 via TranscriptionModel. Mirrors TS
+// createTranscriptionModel's `modelId.startsWith('gemini')` routing
+// predicate exactly.
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
 	if p.config.APIKey != "" {
 		return nil, fmt.Errorf("Google Vertex transcription models do not support Express Mode API keys. Use standard Google Cloud credentials instead.")
+	}
+	if strings.HasPrefix(modelID, "gemini") {
+		return NewGeminiTranscriptionModel(p, modelID), nil
 	}
 	return NewTranscriptionModel(p, modelID), nil
 }
