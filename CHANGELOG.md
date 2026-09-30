@@ -7,257 +7,119 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.5.0] - Unreleased
 
-TS SDK parity — targets TS `ai@7.0.113`. Sep 23 2026 parity cycle; other units
-are still merging, so this entry is a snapshot. Full detail, including every
-PRD/follow-up tag, lives in
-`state/parity/sep_23_2026/RELEASE_NOTES_DRAFT.md`.
-
-Carried over from the prior `[Unreleased]` entry (May/June 21 2026 cycles,
-now folded into this release): core SDK gap closures (`RawChunks *bool`,
-`GenerateTextResult.Content`, `StepPerformance` timing, `Sandbox.Description`,
-`StreamTextOptions.OnError`/`ExperimentalTransform`, `Tool.Metadata`/
-`DescriptionFunc`), Anthropic `ModelOptions` JSON tags → camelCase and
-`ToAnthropicFormatWithCache` removal, Telemetry `OnToolExecutionStart/End`
-naming, Google Vertex Anthropic sub-provider, new Voyage AI embedding/rerank
-provider, xAI image/speech/transcription updates, Perplexity cost metadata,
-OpenAI GPT-5.5 family, Mistral reasoning support, and a
-`TestGenerateVideoParallelGenerate` race fix.
-
-### Breaking
-
-- **Gateway**: all `xai/*` model IDs renamed to `spacexai/*`; `hipaaCompliant`
-  removed from `Config` / `GatewayProviderOptions`.
-- **xAI**: the Chat Completions API is removed —
-  `ChatCompletionsLanguageModel()`, `NewLanguageModel`, and `SearchParameters`
-  are gone. `LanguageModel()` (Responses API) is now the only xAI language
-  model; use the provider-executed `WebSearch` / `XSearch` tools instead.
-- **Anthropic**: request `system`/user content are now arrays; `BaseURL`
-  includes `/v1`; `DisableParallelToolUse` is `*bool`; model-level `Thinking`
-  now takes precedence over call-level `Reasoning`; `ModelOptions` JSON tags
-  are camelCase (`budgetTokens`, `contextManagement`, `automaticCaching`, …);
-  `ContainerSkill{Type:"custom"}` now requires `ProviderReference`;
-  `ToAnthropicFormatWithCache` removed; a spliced stream now surfaces as a
-  `ChunkTypeError` chunk instead of a Go error from `Next()`.
-- **Bedrock / Bedrock-Anthropic**: rebuilt on `anthropic.LanguageModel`
-  (Converse API replaces `/invoke`); Go-only `CacheConfig` API removed (use
-  `anthropic.ModelOptions{AutomaticCaching}`/`CacheControl`);
-  `PrepareTools`/`UpgradeToolVersion`/`MapToolName`/`GetBetaHeaders`/
-  `IsComputerUseTool` and old stream reader types removed; Cohere embedding
-  batch size is now 96; explicit AWS creds no longer read
-  `AWS_SESSION_TOKEN` from env; `AWS_ENDPOINT_URL_BEDROCK_RUNTIME` /
-  `AWS_ENDPOINT_URL` are now honored for endpoint override.
-- **OpenAI**: reasoning models drop `temperature`/`topP`/penalties/
-  `logitBias`/`logprobs` and use `max_completion_tokens`; `ReasoningNone`
-  sends `reasoning_effort: "none"`; `whisper-1` always requests
-  `verbose_json`; non-object replayed `RawArguments` now sent as `{}`
-  (OpenAI/Azure chat only).
-- **Azure**: unrecognized base URLs are now treated as custom gateways (no
-  `/v1` or `api-version` appended).
-- **Google/Vertex**: provider-option key resolution order changed
-  (`googleVertex` → `vertex` → `google`); Gemini 2.5 thinking-budget formula
-  changed (no 1024 floor); non-Gemini Imagen models removed; Gemini image
-  models ignore `N` (auto-batched); Interactions API now sends a flat step
-  array; `ToGoogleMessages` deprecated.
-- **Embed/EmbedMany/Rerank**: `MaxRetries` is now `*int` (nil → 2); an empty
-  `EmbedMany` call returns an empty result instead of an error.
-- **Schema**: validator now enforces `additionalProperties: false`.
-- **Workflow**: approval-resume now lets per-call runtime/tools/sandbox
-  override agent defaults; server-side run multiplexer renamed
-  `WorkflowRunMultiplexer`, with a new client-side `WorkflowChatTransport`.
-- **Callbacks**: several tool-execution event fields (`StepNumber`,
-  `ModelProvider`, `ModelID`, `Args`, `Result`, `Error`, `DurationMs`)
-  deprecated and excluded from JSON.
-- **UI message streams**: cancellation-vs-abort semantics changed; new
-  `outcome` field (`completed`/`failed`/`aborted`/`unknown`);
-  `ValidateUIMessages` is stricter about required `input`/`output`; SmoothStream
-  rejects invalid `chunking` with a typed error.
-- **Tool calls**: unknown-tool or invalid-input calls are now marked invalid
-  instead of silently accepted, including `WorkflowAgent`'s default path.
-- **StreamText**: now returns before the first model request (async, TS
-  parity) — only option-validation errors return synchronously; everything
-  else surfaces through `Err()`/`ReadAll()`/`Stream()`.
-- **Smaller providers**: Moonshot (new default base URL and metadata key),
-  Baseten (new base URL/provider name), Cerebras (retired model constants
-  removed), DeepSeek (`SupportsImageInput` now true), Mistral embeddings
-  (batch size 32), Together (`providerOptions.togetherai` honored).
-- **Telemetry**: `Options.Tracer`/`WithTracer` removed;
-  `OnLanguageModelCallStart` now returns `context.Context`;
-  `OTelTelemetryIntegration` renamed `LegacyOpenTelemetry`; span names,
-  attributes, and nesting overhauled to match TS (see release notes for the
-  full attribute-by-attribute list).
-- **Core**: `ToolChoiceViolationError` on an ignored required/specific tool
-  choice; structured-output parse semantics match TS
-  (`NoObjectGeneratedError` on truncation); `CustomContent.Kind` uses the
-  `provider.type` form; no default denial reason for denied tool approvals.
-- **Tools**: `types.Tool.Strict` (and Open Responses `FunctionTool.Strict`)
-  changed from `bool` to `*bool`.
-- **Perplexity**: migrated to the Agent API (`/v1/agent`); all Sonar-era
-  `providerOptions.perplexity` keys removed and replaced; `PerplexityMetadata`
-  reshaped; reasoning tokens now a subset of output tokens; PDF input
-  rejected.
-- **MCP stdio**: child process env is now allowlisted (`Env` + a fixed TS
-  allowlist), not inherited wholesale.
-- **Harness**: `sandboxConfig.OnBootstrap` now actually runs.
-- **HuggingFace**: ported to the Responses API (`/responses`); embedding/image
-  models now always error (removed); provider name is
-  `"huggingface.responses"`.
-- **CosineSimilarity**: a zero/empty vector now returns `(0, nil)`; a length
-  mismatch returns a typed `*InvalidArgumentError`.
-- **fal**: default base URL fixed to `https://fal.run` (was doubling the
-  path); fully-qualified model IDs are now required.
-- **Middleware/Registry**: `AddToolInputExamplesOptions.Remove` is now
-  `*bool` (nil means remove, TS default); a model ID without a separator now
-  returns a typed `NoSuchModelError`.
-- **OpenAI-compatible streams**: a stream ending without `finish_reason` now
-  emits an error chunk instead of ending silently; Groq/Cohere tool-call
-  message-shape fixes.
+TS SDK parity target: `ai@7.0.118` (was `ai@6.0.137` in v0.4.0). Ships
+everything merged since the v0.4.0 tag — about 1,000 commits across the May,
+June, and September 2026 parity cycles. Condensed from and superseded in
+detail by [`release_notes/RELEASE_NOTES_V0.5.0.md`](release_notes/RELEASE_NOTES_V0.5.0.md);
+step-by-step upgrade instructions are in
+`docs/08-migration-guides/from-v0.4-to-v0.5.mdx`.
 
 ### Added
 
-- **New providers**: Fish Audio (speech/transcription), Cartesia
-  (speech/transcription, plus Ink 2 realtime transcription), Rev.ai
-  (transcription), Hume (speech), Luma (async image), GMI Cloud, Z.AI,
-  MiniMax (chat + async video), TypeSafe AI (evaluation), QuiverAI (Arrow 2 /
-  Arrow 2 Telos, built on OpenResponses).
-- **Experimental surfaces**: Batch API (`ExperimentalStartBatch`/
-  `GetBatchStatus`/`GetBatchResults`/`CancelBatch`/`ListBatches` — Anthropic,
-  OpenAI, Google, Gateway); Evaluation (`ExperimentalEvaluate`,
-  `EvaluationModel` — Anthropic, OpenAI, Google, Gateway, TypeSafe AI); Files
-  API v4 (`GetFileMetadata`/`DownloadFile`/`DeleteFile`, streamed uploads —
-  OpenAI, xAI); Async video (`ExperimentalStartVideo`/`GetVideoStatus` —
-  Alibaba, ByteDance, KlingAI, BFL, MiniMax); Streaming transcription/
-  translation (`ExperimentalStreamTranscribe`/`StreamTranslate` — Gateway,
-  OpenAI, Google, ElevenLabs, Cartesia, xAI); Speech translation (Google Live
-  Translation, OpenAI `/realtime/translations`).
-- **Code-mode** (experimental): `pkg/codemode` runs model-written JavaScript
-  in a QuickJS-on-WebAssembly sandbox with TS execution-policy limits, plus
-  signed continuations, interrupts, and approval flows.
-- **Harness ecosystem**: `pkg/harness` (Go port of `@ai-sdk/harness`) with
-  Agent/AgentSession, `StopWhen`, tool approvals, and telemetry; adapters for
-  Claude Code, Codex, OpenCode, Deep Agents, ACP, Cursor, fx, GitHub Copilot,
-  and Grok Build; Vercel Sandbox harness provider; `pkg/workflow` harness
-  integration helpers.
+- **New providers**: Voyage AI (embedding/rerank), Fish Audio, Cartesia
+  (plus Ink 2 realtime transcription), Rev.ai, Hume, Luma, GMI Cloud, Z.AI,
+  MiniMax, TypeSafe AI, QuiverAI, and `anthropicaws` (Claude Platform on
+  AWS).
+- **Experimental surfaces**: Batch API, Evaluation, Files API v4, async
+  video, streaming transcription/translation, and speech translation, each
+  implemented by two or more providers.
+- **`pkg/codemode`** (experimental): runs model-written JavaScript in a
+  QuickJS-on-WebAssembly sandbox, with signed continuations, interrupts, and
+  approval flows.
+- **`pkg/harness`** (Go port of `@ai-sdk/harness`): Agent/AgentSession,
+  `StopWhen`, tool approvals, telemetry; adapters for Claude Code, Codex,
+  OpenCode, Deep Agents, ACP, Cursor, fx, GitHub Copilot, Grok Build; a
+  Vercel Sandbox harness provider; `pkg/workflow` harness integration
+  helpers.
 - **MCP**: full OAuth `Auth()` flow, 2026 protocol support, elicitation
-  requests, resource-template listing, tool annotations, paginated lists, a
-  standing inbound SSE listener for legacy servers.
-- **Telemetry**: new `telemetry.NewOpenTelemetry` GenAI-semantic-convention
-  integration; workflow approval-resume tool spans parented correctly;
-  `GenerateObject`/`StreamObject` now emit spans.
-- **Google/Vertex**: Interactions API (including managed agents) on Vertex;
-  Chirp 3 HD text-to-speech; Gemini 3.5 Transcribe.
-- **Anthropic**: request-level `Compaction` model option; citations surfaced
-  as source parts; per-call `providerOptions.anthropic` merged over
-  construction-time `ModelOptions`; `ForwardContainerIDFromLastStep` helper.
-- **OpenAI Responses**: computer tool, async/programmatic tool calling,
-  GPT-6 reasoning config, citations/annotations as source parts, MCP
-  approvals answered in earlier turns, prompt cache options.
-- **xAI**: Responses API parity across video/image/speech, experimental
-  batch, Files v4, streaming speech-to-text.
-- **Core SDK**: `RepairToolCall`, `LogWarnings`, `FingerprintTools`/
-  `DetectToolDrift`, `PrepareStep` (per call and per step), stream retries
-  (`StreamRetries`, `OnErrorRetry`), `InstructionMessages`, `ToolSearch`/
-  `Tool.DeferLoading`, `ExperimentalToolCallers`,
-  `UIMessageStreamWriter.SetOutcome`, `NewStreamTextResultFromParts`,
-  `StreamTextResult.Files()`/`Reasoning()`/`ReasoningText()`, and more (see
-  release notes for the full list).
+  requests, resource-template listing, a standing inbound SSE listener for
+  legacy servers.
+- **Telemetry**: `telemetry.NewOpenTelemetry`, a GenAI-semantic-convention
+  integration; `GenerateObject`/`StreamObject` telemetry spans.
+- **Core**: stable lifecycle callbacks, `RepairToolCall`, `LogWarnings`,
+  `FingerprintTools`/`DetectToolDrift`, `PrepareStep`, stream retries,
+  `ToolSearch`/`DeferLoading`, `ExperimentalToolCallers`,
+  `UploadFile`/`UploadSkill`, workflow model serialization for every model
+  kind, and more (full list in the release notes).
+- **Providers**: substantial Anthropic, OpenAI Responses, xAI, Google/
+  Vertex, Bedrock, Gateway, and Cohere feature additions; see the release
+  notes' New Features section for the per-provider breakdown.
+
+### Changed
+
+- **`StreamText` is now asynchronous**, matching TS: it returns before the
+  first model request, and only option-validation errors return from the
+  call itself.
+- **Full-stream chunk lifecycle redesigned**: `ChunkTypeFinish` now fires
+  once per call; steps are bracketed by new `ChunkTypeStartStep` /
+  `ChunkTypeFinishStep`.
+- **Runtime/tool context split**: `ExperimentalContext` → `RuntimeContext` /
+  `ToolsContext`; tool approval is now call-level (`ToolApproval`).
+- **File data is a tagged union** (`types.FileData`/`FileDataType*`);
+  system messages in `Messages` are rejected by default
+  (`AllowSystemMessages` opts back in).
+- **Bedrock rebuilt on the Converse API**; **Bedrock-Anthropic rebuilt on
+  `anthropic.LanguageModel`**; **xAI Chat Completions API removed** (use the
+  Responses API); **Gateway `xai/*` model IDs renamed `spacexai/*`**.
+- **Anthropic**: `system`/user content are arrays, `BaseURL` includes
+  `/v1`, `DisableParallelToolUse` is `*bool`, `ModelOptions` JSON tags are
+  camelCase.
+- **OpenAI/Azure**: reasoning-model parameter handling changed
+  (`max_completion_tokens`, dropped unsupported params);
+  Azure classifies unrecognized base URLs as custom gateways.
+- **Google/Vertex**: provider-option key order, thinking-budget formula,
+  Imagen removal, Interactions API wire format.
+- **Embed/EmbedMany/Rerank**: `MaxRetries` is now `*int`. **Schema**:
+  `additionalProperties: false` now enforced. **Perplexity**: migrated to
+  the Agent API. **Telemetry**: tracers belong to registered integrations;
+  `LegacyOpenTelemetry` span shape overhauled to match TS.
+- **Outgoing requests now carry a `User-Agent` header**
+  (`ai-sdk/<provider>/<version> runtime/go/<goVersion>`, plus `ai/<version>`
+  from `pkg/ai`), matching the TypeScript SDK.
+- Full list of breaking and behavior changes: release notes' Breaking
+  Changes and Behavior Changes sections.
+
+### Deprecated
+
+- `ExperimentalContext`, per-tool `NeedsApproval`,
+  `ExperimentalFilterActiveTools`, `MaxSteps`, `ExperimentalTelemetry`,
+  `OTelTelemetryIntegration`, `ToGoogleMessages`,
+  `StreamTextResult.FullStream()`, and several tool-execution event fields
+  (excluded from JSON). All have stable replacements; see the release
+  notes' Deprecations section.
+
+### Removed
+
+- Bedrock-Anthropic's Go-only `CacheConfig` API and
+  `PrepareTools`/`UpgradeToolVersion`/`MapToolName`/`GetBetaHeaders`/
+  `IsComputerUseTool`; xAI `ChatCompletionsLanguageModel()`/
+  `NewLanguageModel`/`SearchParameters`; Anthropic
+  `ToAnthropicFormatWithCache`; HuggingFace's `EmbeddingModel`/`ImageModel`;
+  non-Gemini Imagen models on Google/Vertex; `telemetry.Options.Tracer`/
+  `WithTracer`; Cerebras's retired model constants.
 
 ### Fixed
 
-- **Anthropic**: multi-step tool use; `result.Text` joins all text blocks
-  (was first-only); live streaming now emits web_search/web_fetch results and
-  sources; mid-stream `error` events surfaced; finish-reason mapping for
-  `pause_turn`/`refusal`/`model_context_window_exceeded`.
-- **OpenAI/Responses**: structured-output `response_format` now sends
-  `json_schema`/`json_object` correctly; previously-dropped output items
-  (`image_generation_call`, `mcp_call`, `file_search_call`,
-  `code_interpreter_call`, `tool_search_call`) are now decoded;
-  `response.failed` emits an error chunk before finish; realtime WebSocket
-  bearer-token parsing is now case-insensitive with flexible whitespace.
-- **Bedrock**: rerank request key; `ProviderError` carries response
-  headers/body; forced tool choice matches provider-defined tools by wire
-  name; `modelStreamErrorException` marked retryable.
-- **Cerebras/Vercel**: call Chat Completions, not Responses. **Moonshot**:
-  accepts any model ID.
-- **Error messages**: a stray leading "L" bug (introduced in v0.4.0's lint
-  cleanup, ~88 strings) fixed; transport failures now match TS wording.
-- **StreamText**: executes tools/later steps without callbacks;
-  `Timeout.Total` no longer self-cancels the first request; step-start
-  telemetry now fires before each step's model call so spans nest correctly.
-- **Smaller providers**: DeepSeek, Groq, Fireworks, Replicate, Mistral,
-  Deepgram, Gladia — error/response-envelope handling fixes.
-- **OpenAI-compatible providers**: tool-result content-array serialization
-  fixed; streamed responses now report token usage (trailing usage chunk was
-  being dropped).
-- **Cohere**: tool calling now actually works (`tools`/`tool_choice`/
-  `TopP`/`TopK`/penalties/`Seed`/`StopSequences`/JSON `response_format` were
-  never sent); citations become source parts; `Usage.Raw` is complete.
-- **ByteDance/Alibaba video**: poll interval/timeout defaults corrected to
-  match TS.
-- **MCP HTTP transport**: session-id handling, response-body leaks on 202/
-  notifications, `Close()` cancellation of in-flight requests, content-type
-  validation, empty-body SSE handling.
-- **Google/Vertex**: model-path prefixing fix for IDs containing `/`;
-  unsupported file URL schemes now error instead of passing through; `gs://`
-  forwarding on Vertex Gemini 3+.
-- **Realtime/WebSocket**: a dropped connection or failed audio send now fails
-  the stream instead of finishing silently; Gateway subprotocol/Origin header
-  fixes; ElevenLabs/Deepgram API-key env-var fallback.
-- **Core**: `schemaToMap` empty-item-schema handling; `ShellSandbox` output
-  race fixed; duplicate text/reasoning IDs remapped across steps;
-  `PipeTextStreamToWriter` flushes per chunk and returns write errors;
-  `ExperimentalTransform` chaining applies every transform to every chunk;
-  consecutive tool messages merged before every provider call; JSON Schema
-  `$ref` cycle guard and default application before validation.
-- **Telemetry**: step/model-call spans no longer leak on provider error or
-  abort; dual-integration (`LegacyOpenTelemetry` + `OpenTelemetry`) spans
-  both close correctly; failed embed/embedMany/rerank attempts now end their
-  span with error status.
-- **Harness**: Codex app-server protocol migration; host-tool input
-  validation/execution fixes; GitHub Copilot `gh auth token` timeout; Grok
-  Build deterministic OAuth record selection; HarnessAgent turn-release race
-  fixed; bridge diagnostics reported through `Observability.Report`.
-- **Middleware**: `DefaultSettingsMiddleware` no longer drops call fields
-  (deep-merges `ProviderOptions` instead of rebuilding from a fixed list).
-- **Image polling**: Fireworks/BFL now enforce a wall-clock deadline instead
-  of an attempt count. **KlingAI**: credentials resolved per-request instead
-  of cached at `New()`.
+- Anthropic multi-step tool use, streaming web tool results, mid-stream
+  errors, and finish-reason mapping; OpenAI Responses previously-dropped
+  output items now decoded; Bedrock rerank key, forced tool choice, and
+  retryable stream errors; Cohere tool calling now works end-to-end; MCP
+  HTTP transport connection leaks and content-type handling; realtime/
+  WebSocket connections now fail instead of finishing silently on a dropped
+  connection; telemetry spans no longer leak on error/abort; harness
+  Codex/host-tool/turn-release fixes; a stray leading "L" in ~88 error
+  strings. Full list in the release notes' Bug Fixes section.
 
 ### Security
 
-- Tool approvals verified on resume (HMAC v1, byte-compatible with TS).
-- Downloads: DNS pinning at dial time, synced blocklist, bounded reads,
-  credential stripping across cross-origin redirect hops.
-- MCP OAuth discovery is SSRF-guarded; policy-opa fails closed.
-- Dependency bumps: `echo` v4.15.4 (GHSA-vfp3-v2gw-7wfq / CVE-2026-55677),
-  `chi` v5.3.0, OTel v1.44.0, `grpc` v1.83.2, `x/text` v0.41.0, `quic-go`
-  v0.59.1 — govulncheck reports no reachable vulnerabilities.
-- Black Forest Labs poll URLs and Anthropic batch `results_url` now fetched
-  through the SSRF-safe download path (DNS-pinned, trusted-origin credential
-  gating, bounded reads); Alibaba video status polling path-encodes the
-  provider-returned task ID.
-
-### Not ported (TS-only)
-
-- OpenAI Live over WebRTC (browser transport); the Go SDK uses the server
-  WebSocket instead.
-- `@ai-sdk/harness-cline` and `@ai-sdk/harness-pi` (they run vendor Node SDKs
-  in-process) — use the TS SDK for these.
-- DeepSeek batch API / extra Files methods — TS `@ai-sdk/deepseek` has none
-  either; existing file support already matches TS.
-- Durable webhook suspension for async video in workflows (depends on the
-  Node-only Vercel Workflow DevKit runtime); Go polls until the job is done.
-
-### Known differences
-
-- `StreamObject` (deprecated in both SDKs) returns after the stream is fully
-  consumed and reports progress via `OnChunk`, while TS returns lazy streams
-  immediately. Use `StreamText` with `Output` (`PartialOutput`/
-  `ElementStream`) for incremental partial objects, as TS also recommends.
-- Vercel Sandbox harness provider has no `@vercel/oidc` token-refresh loop;
-  `VERCEL_OIDC_TOKEN` is re-read on each call (explicit `Token`/`TeamID`/
-  `ProjectID` also work).
-
-<!-- v0.5.0 entry generated from RELEASE_NOTES_DRAFT.md @ cefc274; regenerate at final gate -->
+- Tool approvals verified on resume (HMAC v1, TS-compatible).
+- Downloads: DNS pinning, synced blocklist, bounded reads, credential
+  stripping across cross-origin redirects. MCP OAuth discovery SSRF-guarded.
+- Dependency bumps: `echo` v4.15.4 (CVE-2026-55677), `chi` v5.3.0, OTel
+  v1.44.0, `grpc` v1.83.2, `x/text` v0.41.0, `quic-go` v0.59.1 —
+  `govulncheck` reports no reachable vulnerabilities.
+- BFL poll URLs, OpenAI image-edit URL inputs, and Anthropic batch
+  `results_url` now fetched through the SSRF-safe download path.
 
 ## [0.4.0] - 2026-03-29
 
