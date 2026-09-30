@@ -83,6 +83,14 @@ type OpenAICompatStream struct {
 	// endStream must never emit a finish chunk once this is set, unlike the
 	// "soft" streamErrored case above.
 	toolCallErrored bool
+
+	// requestBody is the raw request body this stream was opened with,
+	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
+	// "stream request body field"). Providers that embed OpenAICompatStream
+	// should call SetRequestBody right after constructing it, mirroring TS
+	// openai-compatible-chat-language-model.ts's doStream() resolving
+	// `request: { body }` alongside `stream`.
+	requestBody interface{}
 }
 
 // NewOpenAICompatStream creates a new OpenAICompatStream.
@@ -110,6 +118,21 @@ func (s *OpenAICompatStream) Err() error {
 		return nil
 	}
 	return s.err
+}
+
+// SetRequestBody records the raw request body used to open this stream, so
+// RequestBody() can expose it later. Call this right after
+// NewOpenAICompatStream, passing the same body value used for the HTTP
+// request.
+func (s *OpenAICompatStream) SetRequestBody(body interface{}) {
+	s.requestBody = body
+}
+
+// RequestBody implements provider.StreamRequestBody, exposing the raw
+// request body that was sent to open this stream (hand-off: "stream request
+// body field"). Returns nil if SetRequestBody was never called.
+func (s *OpenAICompatStream) RequestBody() interface{} {
+	return s.requestBody
 }
 
 // Next returns the next chunk from the stream.

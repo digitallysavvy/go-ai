@@ -75,21 +75,45 @@ func (p *Provider) RealtimeModel(modelID string, opts ...OpenAIRealtimeModelOpti
 }
 
 // GetRealtimeToken mints a short-lived client secret for the GA Realtime
-// API. It fails with OpenAIRealtimeModelLive.DoCreateClientSecret's error
-// when the resolved model routes to Live, matching TS
-// createOpenAIRealtimeFactory().getToken() rejecting Live models before
-// minting a token.
+// API. It rejects Live models with the same error TS
+// createOpenAIRealtimeFactory().getToken() throws (an explicit
+// `instanceof OpenAIRealtimeModelLive` check before calling
+// doCreateClientSecret): OpenAIRealtimeModelLive implements neither
+// DoCreateClientSecret nor GetWebSocketConfig in TS, so the Go model
+// doesn't either, and the RealtimeClientSecretCreator type assertion below
+// fails for it exactly like TS's instanceof check.
 func (p *Provider) GetRealtimeToken(ctx context.Context, opts provider.RealtimeFactoryGetTokenOptions) (provider.ClientSecretResult, error) {
 	model, err := p.ExperimentalRealtimeModel(opts.Model, OpenAIRealtimeModelOptions{API: opts.API})
 	if err != nil {
 		return provider.ClientSecretResult{}, err
 	}
-	return model.DoCreateClientSecret(ctx, opts.ClientSecretOptions)
+	creator, ok := model.(provider.RealtimeClientSecretCreator)
+	if !ok {
+		return provider.ClientSecretResult{}, &providererrors.UnsupportedFunctionalityError{
+			Functionality: "Short-lived OpenAI credentials for the Live API. Use server WebSocket setup via GetServerWebSocketConfig() with a server-side API key instead.",
+		}
+	}
+	return creator.DoCreateClientSecret(ctx, opts.ClientSecretOptions)
 }
 
 func (m *OpenAIRealtimeModel) SpecificationVersion() string { return "v4" }
 func (m *OpenAIRealtimeModel) Provider() string             { return m.provider.Name() + ".realtime" }
 func (m *OpenAIRealtimeModel) ModelID() string              { return m.modelID }
+
+// Compile-time check that the GA *OpenAIRealtimeModel still implements both
+// optional client-secret-WebSocket capabilities (RealtimeClientSecretCreator
+// / RealtimeWebSocketConfigProvider) that DoCreateClientSecret/
+// GetWebSocketConfig moved into (hand-off: "realtime optional
+// capabilities"). GetRealtimeToken above relies on a
+// RealtimeClientSecretCreator type assertion succeeding for this type;
+// losing DoCreateClientSecret would otherwise only surface as a runtime
+// UnsupportedFunctionalityError matching the Live-model rejection path,
+// which would be wrong for the GA model.
+var (
+	_ provider.Experimental_RealtimeModelV4    = (*OpenAIRealtimeModel)(nil)
+	_ provider.RealtimeClientSecretCreator     = (*OpenAIRealtimeModel)(nil)
+	_ provider.RealtimeWebSocketConfigProvider = (*OpenAIRealtimeModel)(nil)
+)
 
 func (m *OpenAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.ClientSecretOptions) (provider.ClientSecretResult, error) {
 	if m.provider.config.APIKey == "" {

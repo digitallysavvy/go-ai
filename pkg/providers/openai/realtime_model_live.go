@@ -1,13 +1,11 @@
 package openai
 
 import (
-	"context"
 	"encoding/json"
 	"net/url"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // knownLiveModelIDs lists OpenAI Realtime model IDs that route to the Live
@@ -36,25 +34,30 @@ func (m *OpenAIRealtimeModelLive) SpecificationVersion() string { return "v4" }
 func (m *OpenAIRealtimeModelLive) Provider() string             { return m.provider.Name() + ".live" }
 func (m *OpenAIRealtimeModelLive) ModelID() string              { return m.modelID }
 
-// DoCreateClientSecret always fails for Live: short-lived browser
-// credentials are not supported over the server-WebSocket flow. Connect
-// with a server-side API key via GetServerWebSocketConfig instead. Mirrors
-// TS createOpenAIRealtimeFactory().getToken() rejecting
-// OpenAIRealtimeModelLive.
-func (m *OpenAIRealtimeModelLive) DoCreateClientSecret(ctx context.Context, opts provider.ClientSecretOptions) (provider.ClientSecretResult, error) {
-	return provider.ClientSecretResult{}, &providererrors.UnsupportedFunctionalityError{
-		Functionality: "Short-lived OpenAI credentials for the Live API. Use server WebSocket setup via GetServerWebSocketConfig() with a server-side API key instead.",
-	}
-}
+// Compile-time checks that *OpenAIRealtimeModelLive still implements the
+// capabilities it authenticates and frames its session with. There is no
+// compile-time way to assert the *absence* of RealtimeClientSecretCreator /
+// RealtimeWebSocketConfigProvider (see the comment below); that half is
+// covered at runtime by
+// TestOpenAIRealtimeModelLive_DoesNotImplementClientSecretOrWebSocketConfig.
+var (
+	_ provider.Experimental_RealtimeModelV4          = (*OpenAIRealtimeModelLive)(nil)
+	_ provider.RealtimeServerWebSocketConfigProvider = (*OpenAIRealtimeModelLive)(nil)
+	_ provider.RealtimeLifecycleProvider             = (*OpenAIRealtimeModelLive)(nil)
+)
 
-// GetWebSocketConfig is required by provider.Experimental_RealtimeModelV4
-// but unused for Live connections: pkg/ai.ConnectRealtime prefers
-// GetServerWebSocketConfig when a model implements
-// provider.RealtimeServerWebSocketConfigProvider, which this model does.
-func (m *OpenAIRealtimeModelLive) GetWebSocketConfig(token, wsURL string) provider.WebSocketConfig {
-	cfg, _ := m.GetServerWebSocketConfig()
-	return cfg
-}
+// DoCreateClientSecret and GetWebSocketConfig are intentionally NOT
+// implemented: short-lived browser credentials are not supported over the
+// server-WebSocket flow. Connect with a server-side API key via
+// GetServerWebSocketConfig instead. Mirrors TS OpenAIRealtimeModelLive,
+// which implements neither doCreateClientSecret nor getWebSocketConfig
+// (both optional in RealtimeModelV4); createOpenAIRealtimeFactory().getToken()
+// rejects OpenAIRealtimeModelLive with an explicit instanceof check before
+// ever calling doCreateClientSecret (see (*Provider).GetRealtimeToken's
+// RealtimeClientSecretCreator type assertion, the Go equivalent). pkg/ai's
+// ConnectRealtime prefers GetServerWebSocketConfig when a model implements
+// provider.RealtimeServerWebSocketConfigProvider, which this model does, so
+// GetWebSocketConfig is never needed for Live connections either.
 
 // GetServerWebSocketConfig builds the server-authenticated Live WebSocket
 // connection: the provider's own request headers (Authorization,

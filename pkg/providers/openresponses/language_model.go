@@ -164,6 +164,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	stream := newOpenResponsesStream(httpResp.Body, warnings, m.provider.config.Name)
 	stream.extensionRegistry = m.provider.extensionRegistry
 	stream.getResponseErrorMetadata = m.provider.config.GetResponseErrorMetadata
+	stream.requestBody = reqBody
 	return stream, nil
 }
 
@@ -1106,7 +1107,16 @@ type openResponsesStream struct {
 	// exercising extensions set extensionRegistry.
 	extensionRegistry *ExtensionRegistry
 	extensionState    map[string]interface{}
+
+	// requestBody is the raw request body this stream was opened with,
+	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
+	// "stream request body field").
+	requestBody interface{}
 }
+
+// RequestBody implements provider.StreamRequestBody, exposing the raw
+// request body that was sent to open this stream.
+func (s *openResponsesStream) RequestBody() interface{} { return s.requestBody }
 
 // toolCallState tracks the state of a tool call during streaming
 type toolCallState struct {

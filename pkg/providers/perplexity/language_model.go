@@ -303,7 +303,9 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 
 	responseHeaders := providerutils.ExtractHeaders(httpResp.Header)
-	return newPerplexityAgentStream(httpResp.Body, warnings, opts.IncludeRawChunks, responseHeaders), nil
+	stream := newPerplexityAgentStream(httpResp.Body, warnings, opts.IncludeRawChunks, responseHeaders)
+	stream.requestBody = body
+	return stream, nil
 }
 
 // handleError converts an HTTP-level error into a ProviderError, resolving
@@ -578,7 +580,16 @@ type perplexityAgentStream struct {
 	rawFinishReason string
 	usage           *perplexityUsage
 	usageRawBytes   []byte
+
+	// requestBody is the raw request body this stream was opened with,
+	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
+	// "stream request body field").
+	requestBody interface{}
 }
+
+// RequestBody implements provider.StreamRequestBody, exposing the raw
+// request body that was sent to open this stream.
+func (s *perplexityAgentStream) RequestBody() interface{} { return s.requestBody }
 
 func newPerplexityAgentStream(reader io.ReadCloser, warnings []types.Warning, includeRaw bool, responseHeaders map[string]string) *perplexityAgentStream {
 	return &perplexityAgentStream{

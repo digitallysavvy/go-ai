@@ -39,17 +39,32 @@ func (p *Provider) RealtimeModel(modelID string, opts ...GoogleRealtimeModelOpti
 	return p.ExperimentalRealtimeModel(modelID, opts...)
 }
 
+// GetRealtimeToken mints a client secret via the concrete
+// *GoogleRealtimeModel, which always implements RealtimeClientSecretCreator
+// (mirrors TS createRealtimeModel().doCreateClientSecret(), called on the
+// concrete class instance rather than through the general RealtimeModelV4
+// type).
 func (p *Provider) GetRealtimeToken(ctx context.Context, opts provider.RealtimeFactoryGetTokenOptions) (provider.ClientSecretResult, error) {
-	model, err := p.ExperimentalRealtimeModel(opts.Model)
-	if err != nil {
-		return provider.ClientSecretResult{}, err
-	}
+	model := NewRealtimeModel(p, opts.Model)
 	return model.DoCreateClientSecret(ctx, opts.ClientSecretOptions)
 }
 
 func (m *GoogleRealtimeModel) SpecificationVersion() string { return "v4" }
 func (m *GoogleRealtimeModel) Provider() string             { return m.provider.Name() + ".realtime" }
 func (m *GoogleRealtimeModel) ModelID() string              { return m.modelID }
+
+// Compile-time checks that *GoogleRealtimeModel satisfies both
+// Experimental_RealtimeModelV4 and the optional client-secret-WebSocket
+// capabilities (RealtimeClientSecretCreator / RealtimeWebSocketConfigProvider)
+// that DoCreateClientSecret/GetWebSocketConfig moved into (hand-off:
+// "realtime optional capabilities"). GetRealtimeToken above calls
+// DoCreateClientSecret directly on the concrete type, so losing either
+// method would otherwise only surface as a runtime failure elsewhere.
+var (
+	_ provider.Experimental_RealtimeModelV4    = (*GoogleRealtimeModel)(nil)
+	_ provider.RealtimeClientSecretCreator     = (*GoogleRealtimeModel)(nil)
+	_ provider.RealtimeWebSocketConfigProvider = (*GoogleRealtimeModel)(nil)
+)
 
 func (m *GoogleRealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.ClientSecretOptions) (provider.ClientSecretResult, error) {
 	apiKey := m.googleRealtimeAPIKey()

@@ -1057,6 +1057,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		requestID:            resp.Header.Get("x-amzn-requestid"),
 		contentBlocks:        map[int]*bedrockStreamContentBlock{},
 		finishReason:         types.FinishReasonOther,
+		requestBody:          args.Body,
 	}
 	if dateHeader := resp.Header.Get("date"); dateHeader != "" {
 		if ts, err := time.Parse(time.RFC1123, dateHeader); err == nil {

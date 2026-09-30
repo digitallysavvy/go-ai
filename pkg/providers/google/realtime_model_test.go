@@ -232,6 +232,29 @@ func TestGoogleRealtimeCreateClientSecret(t *testing.T) {
 	}
 }
 
+// TestGoogleGetRealtimeToken_UsesConcreteModel verifies Provider.GetRealtimeToken
+// still mints a client secret after DoCreateClientSecret moved to the
+// optional provider.RealtimeClientSecretCreator capability: Google's
+// *GoogleRealtimeModel always implements it, so GetRealtimeToken must call
+// the concrete model's DoCreateClientSecret directly rather than the general
+// provider.Experimental_RealtimeModelV4 interface (hand-off: "realtime
+// optional capabilities").
+func TestGoogleGetRealtimeToken_UsesConcreteModel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"name": "token", "expireTime": "2026-06-07T12:00:00Z"})
+	}))
+	defer srv.Close()
+
+	p := New(Config{APIKey: "k", BaseURL: srv.URL + "/v1beta"})
+	secret, err := p.GetRealtimeToken(context.Background(), provider.RealtimeFactoryGetTokenOptions{Model: "gemini-2.0-flash-live-001"})
+	if err != nil {
+		t.Fatalf("GetRealtimeToken: %v", err)
+	}
+	if secret.Token != "token" {
+		t.Fatalf("secret = %+v", secret)
+	}
+}
+
 func TestGoogleRealtimeCreateClientSecretUsesEffectiveHeaderAPIKey(t *testing.T) {
 	var queryKey string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

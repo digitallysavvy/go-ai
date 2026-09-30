@@ -141,6 +141,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		return nil, m.handleError(err)
 	}
 	inner := newMistralStream(httpResp.Body, opts.IncludeRawChunks)
+	inner.requestBody = reqBody
 	inner.responseHeaders = providerutils.ExtractHeaders(httpResp.Header)
 	return streaming.NewWarningsStream(inner, warnings), nil
 }
@@ -519,7 +520,15 @@ type mistralStream struct {
 	includeRawChunks        bool
 	responseHeaders         map[string]string
 	responseMetadataEmitted bool
+	// requestBody is the raw request body this stream was opened with,
+	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
+	// "stream request body field").
+	requestBody interface{}
 }
+
+// RequestBody implements provider.StreamRequestBody, exposing the raw
+// request body that was sent to open this stream.
+func (s *mistralStream) RequestBody() interface{} { return s.requestBody }
 
 func newMistralStream(reader io.ReadCloser, includeRawChunks ...bool) *mistralStream {
 	emitRaw := len(includeRawChunks) > 0 && includeRawChunks[0]

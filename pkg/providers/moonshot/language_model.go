@@ -129,6 +129,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 
 	inner := newMoonshotStream(httpResp.Body, opts.IncludeRawChunks)
+	inner.requestBody = reqBody
 	return providerutils.WithResponseMetadata(streaming.NewWarningsStream(inner, warnings), httpResp.Header, m.ModelID()), nil
 }
 
@@ -706,7 +707,16 @@ type moonshotStream struct {
 	choiceUsage     json.RawMessage
 	finishReason    types.FinishReason
 	rawFinishReason string
+
+	// requestBody is the raw request body this stream was opened with,
+	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
+	// "stream request body field").
+	requestBody interface{}
 }
+
+// RequestBody implements provider.StreamRequestBody, exposing the raw
+// request body that was sent to open this stream.
+func (s *moonshotStream) RequestBody() interface{} { return s.requestBody }
 
 // newMoonshotStream creates a new Moonshot stream
 func newMoonshotStream(reader io.ReadCloser, includeRawChunks bool) *moonshotStream {

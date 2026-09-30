@@ -188,9 +188,20 @@ func (m *InteractionsLanguageModel) DoStream(ctx context.Context, opts *provider
 			return nil, fmt.Errorf("google.interactions: background POST response did not include an interaction id; cannot stream the result")
 		}
 		if isTerminalInteractionStatus(response.Status) {
-			return newSynthesizedInteractionsStream(response, warnings, resp.Headers), nil
+			synth := newSynthesizedInteractionsStream(response, warnings, resp.Headers)
+			if s, ok := synth.(*sliceTextStream); ok {
+				s.requestBody = args
+			}
+			return synth, nil
 		}
-		return newInteractionsStream(ctx, m.cfg.Client, response.ID, headers, warnings, providerutils.ExtractHeaders(resp.Headers), interactionsOpts.PollingTimeoutMs)
+		pollStream, err := newInteractionsStream(ctx, m.cfg.Client, response.ID, headers, warnings, providerutils.ExtractHeaders(resp.Headers), interactionsOpts.PollingTimeoutMs)
+		if err != nil {
+			return nil, err
+		}
+		if s, ok := pollStream.(*interactionsStream); ok {
+			s.requestBody = args
+		}
+		return pollStream, nil
 	}
 
 	streamArgs := args
@@ -206,7 +217,11 @@ func (m *InteractionsLanguageModel) DoStream(ctx context.Context, opts *provider
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	return newInteractionsEventStream(ctx, m.cfg.Client, httpResp.Body, "", headers, warnings, providerutils.ExtractHeaders(httpResp.Header), 0), nil
+	eventStream := newInteractionsEventStream(ctx, m.cfg.Client, httpResp.Body, "", headers, warnings, providerutils.ExtractHeaders(httpResp.Header), 0)
+	if s, ok := eventStream.(*interactionsStream); ok {
+		s.requestBody = streamArgs
+	}
+	return eventStream, nil
 }
 
 func (m *InteractionsLanguageModel) buildArgs(opts *provider.GenerateOptions, _ bool) (interactionsRequest, []types.Warning, GoogleInteractionsProviderOptions, error) {

@@ -161,6 +161,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		parser:           stream,
 		body:             httpResp.Body,
 		includeRawChunks: opts.IncludeRawChunks,
+		requestBody:      reqBody,
 	}, nil
 }
 
@@ -170,7 +171,16 @@ type gatewayTextStream struct {
 	body             io.ReadCloser
 	err              error
 	includeRawChunks bool
+
+	// requestBody is the raw request body this stream was opened with,
+	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
+	// "stream request body field").
+	requestBody interface{}
 }
+
+// RequestBody implements provider.StreamRequestBody, exposing the raw
+// request body that was sent to open this stream.
+func (s *gatewayTextStream) RequestBody() interface{} { return s.requestBody }
 
 // gatewayStreamErrorPayload is the wire shape of a Gateway `error` stream
 // part's `error` field: a ProviderStreamError forwarded verbatim from the

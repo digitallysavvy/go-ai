@@ -74,13 +74,21 @@ func ConnectRealtime(ctx context.Context, model provider.Experimental_RealtimeMo
 	} else {
 		secret := opts.ClientSecret
 		if secret == nil {
-			created, err := model.DoCreateClientSecret(ctx, provider.ClientSecretOptions{SessionConfig: opts.SessionConfig})
+			creator, ok := model.(provider.RealtimeClientSecretCreator)
+			if !ok {
+				return nil, errors.New("realtime model does not support minting a client secret (RealtimeClientSecretCreator); pass ClientSecret explicitly instead")
+			}
+			created, err := creator.DoCreateClientSecret(ctx, provider.ClientSecretOptions{SessionConfig: opts.SessionConfig})
 			if err != nil {
 				return nil, err
 			}
 			secret = &created
 		}
-		cfg = model.GetWebSocketConfig(secret.Token, secret.URL)
+		wsConfigProvider, ok := model.(provider.RealtimeWebSocketConfigProvider)
+		if !ok {
+			return nil, errors.New("Realtime model does not support client-secret WebSocket configuration")
+		}
+		cfg = wsConfigProvider.GetWebSocketConfig(secret.Token, secret.URL)
 	}
 
 	conn, err := dialer.Dial(ctx, cfg)

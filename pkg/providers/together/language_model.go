@@ -95,6 +95,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		return nil, m.handleError(err)
 	}
 	inner := newTogetherStream(httpResp.Body)
+	inner.SetRequestBody(reqBody)
 	inner.IncludeRawChunks = opts.IncludeRawChunks
 	inner.responseHeaders = providerutils.ExtractHeaders(httpResp.Header)
 	return streaming.NewWarningsStream(inner, warnings), nil

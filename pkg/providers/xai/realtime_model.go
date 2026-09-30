@@ -32,17 +32,31 @@ func (p *Provider) RealtimeModel(modelID string, opts ...XAIRealtimeModelOptions
 	return p.ExperimentalRealtimeModel(modelID, opts...)
 }
 
+// GetRealtimeToken mints a client secret via the concrete *XAIRealtimeModel,
+// which always implements RealtimeClientSecretCreator (mirrors TS
+// createRealtimeModel().doCreateClientSecret(), called on the concrete
+// class instance rather than through the general RealtimeModelV4 type).
 func (p *Provider) GetRealtimeToken(ctx context.Context, opts provider.RealtimeFactoryGetTokenOptions) (provider.ClientSecretResult, error) {
-	model, err := p.ExperimentalRealtimeModel(opts.Model)
-	if err != nil {
-		return provider.ClientSecretResult{}, err
-	}
+	model := NewRealtimeModel(p, opts.Model)
 	return model.DoCreateClientSecret(ctx, opts.ClientSecretOptions)
 }
 
 func (m *XAIRealtimeModel) SpecificationVersion() string { return "v4" }
 func (m *XAIRealtimeModel) Provider() string             { return "xai.realtime" }
 func (m *XAIRealtimeModel) ModelID() string              { return m.modelID }
+
+// Compile-time checks that *XAIRealtimeModel satisfies both
+// Experimental_RealtimeModelV4 and the optional client-secret-WebSocket
+// capabilities (RealtimeClientSecretCreator / RealtimeWebSocketConfigProvider)
+// that DoCreateClientSecret/GetWebSocketConfig moved into (hand-off:
+// "realtime optional capabilities"). GetRealtimeToken above calls
+// DoCreateClientSecret directly on the concrete type, so losing either
+// method would otherwise only surface as a runtime failure elsewhere.
+var (
+	_ provider.Experimental_RealtimeModelV4    = (*XAIRealtimeModel)(nil)
+	_ provider.RealtimeClientSecretCreator     = (*XAIRealtimeModel)(nil)
+	_ provider.RealtimeWebSocketConfigProvider = (*XAIRealtimeModel)(nil)
+)
 
 func (m *XAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.ClientSecretOptions) (provider.ClientSecretResult, error) {
 	if m.provider.config.APIKey == "" {

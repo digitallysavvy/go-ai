@@ -95,7 +95,9 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	return streaming.NewWarningsStream(newCohereV2Stream(httpResp.Body), warnings), nil
+	inner := newCohereV2Stream(httpResp.Body)
+	inner.requestBody = reqBody
+	return streaming.NewWarningsStream(inner, warnings), nil
 }
 
 // buildRequestBody builds the Cohere v2 chat request body without warnings.
@@ -534,7 +536,16 @@ type cohereV2Stream struct {
 	contentType       map[int]string // index → "text" | "thinking"
 	pendingTools      map[string]*cohereV2PendingTool
 	isActiveReasoning bool
+
+	// requestBody is the raw request body this stream was opened with,
+	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
+	// "stream request body field").
+	requestBody interface{}
 }
+
+// RequestBody implements provider.StreamRequestBody, exposing the raw
+// request body that was sent to open this stream.
+func (s *cohereV2Stream) RequestBody() interface{} { return s.requestBody }
 
 type cohereV2PendingTool struct {
 	id        string

@@ -118,6 +118,18 @@ type Config struct {
 	// `ai-sdk/azure` tag before reaching here) has already tagged the
 	// request and no further tag should be appended.
 	UserAgentName string
+
+	// TransformRequestBody can rewrite the Chat Completions request body
+	// before it is sent, mirroring TS OpenAICompatibleChatLanguageModel's
+	// `transformRequestBody` config hook (e.g. cerebras-provider.ts's
+	// transformCerebrasRequestBody, which renames max_tokens ->
+	// max_completion_tokens and reasoning_content -> reasoning). It runs
+	// inside buildRequestBodyWithWarnings, before the body is captured for
+	// both the outgoing HTTP request and the optional
+	// provider.StreamRequestBody / types.StepRequest.Body exposure, so
+	// RequestBody() reflects the same post-transform shape TS's
+	// `request: { body }` does.
+	TransformRequestBody func(body map[string]interface{}) map[string]interface{} `json:"-"`
 }
 
 // New creates a new OpenAI provider with the given configuration

@@ -89,7 +89,16 @@ type stream struct {
 	// prompt block is terminal for generated content, but later chunks can
 	// still contribute usage and provider metadata.").
 	confirmedPromptBlockReason string
+
+	// requestBody is the raw request body this stream was opened with,
+	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
+	// "stream request body field").
+	requestBody interface{}
 }
+
+// RequestBody implements provider.StreamRequestBody, exposing the raw
+// request body that was sent to open this stream.
+func (s *stream) RequestBody() interface{} { return s.requestBody }
 
 // activeStreamingToolCall tracks one in-progress streamed function call,
 // mirroring the anonymous entries TS pushes onto `activeStreamingToolCalls`.

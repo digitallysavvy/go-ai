@@ -79,7 +79,16 @@ type bedrockConverseStream struct {
 
 	done bool
 	err  error
+
+	// requestBody is the raw request body this stream was opened with,
+	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
+	// "stream request body field").
+	requestBody interface{}
 }
+
+// RequestBody implements provider.StreamRequestBody, exposing the raw
+// request body that was sent to open this stream.
+func (s *bedrockConverseStream) RequestBody() interface{} { return s.requestBody }
 
 func (s *bedrockConverseStream) enqueue(chunk *provider.StreamChunk) {
 	s.queue = append(s.queue, chunk)

@@ -160,6 +160,19 @@ func (m *RealtimeModel) BuildSessionConfig(config provider.RealtimeSessionConfig
 
 var _ provider.Experimental_RealtimeModelV4 = (*RealtimeModel)(nil)
 
+// Compile-time checks that *RealtimeModel still satisfies the optional
+// client-secret-WebSocket capabilities now that DoCreateClientSecret and
+// GetWebSocketConfig moved off Experimental_RealtimeModelV4 into
+// RealtimeClientSecretCreator/RealtimeWebSocketConfigProvider (hand-off:
+// "realtime optional capabilities"). GetRealtimeToken above calls
+// DoCreateClientSecret directly on the concrete type rather than through a
+// type assertion, so losing either method would otherwise only surface as
+// a runtime failure elsewhere.
+var (
+	_ provider.RealtimeClientSecretCreator     = (*RealtimeModel)(nil)
+	_ provider.RealtimeWebSocketConfigProvider = (*RealtimeModel)(nil)
+)
+
 // ToGatewayRealtimeURL builds the Gateway realtime WebSocket URL. The
 // HTTP(S) base URL is upgraded to WS(S) and the model id rides the
 // ?ai-model-id= query — the WS transport of the ai-model-id header the HTTP
