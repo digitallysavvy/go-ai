@@ -2,6 +2,7 @@ package together
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -102,11 +103,17 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 	return &types.RerankResult{
 		Ranking: ranking,
 		Response: types.RerankResponse{
+			// TS: `modelId: response.model ?? undefined` — no fallback to the
+			// requested model ID when the server omits `model`.
 			ID:        response.ID,
 			Timestamp: time.Now(),
-			ModelID:   firstNonEmpty(response.Model, m.modelID),
+			ModelID:   response.Model,
 			Headers:   map[string][]string(httpResp.Headers),
-			Body:      response,
+			// TS: `body: rawValue` — the full raw JSON response (including
+			// fields like per-result `document` and top-level `object` that
+			// togetherRerankingResponse doesn't capture), not the narrowed
+			// typed struct.
+			Body: rawTogetherJSONBody(httpResp.Body),
 		},
 	}, nil
 }
@@ -128,11 +135,15 @@ func togetherRerankDocuments(docs interface{}) interface{} {
 	}
 }
 
-func firstNonEmpty(a, b string) string {
-	if a != "" {
-		return a
+// rawTogetherJSONBody decodes the raw response bytes into a generic value for
+// RerankResponse.Body, matching TS's `body: rawValue` (the untouched JSON
+// response, not the fields captured by togetherRerankingResponse).
+func rawTogetherJSONBody(body []byte) interface{} {
+	var raw interface{}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil
 	}
-	return b
+	return raw
 }
 
 type togetherRerankingResponse struct {

@@ -86,6 +86,44 @@ func TestTogetherRerankingModel_RequestBodyAndResponse(t *testing.T) {
 	if result.Response.ModelID != "Salesforce/Llama-Rank-v1" {
 		t.Errorf("response.ModelID = %q", result.Response.ModelID)
 	}
+
+	// TS: `body: rawValue` — Response.Body must preserve the full raw JSON
+	// response (e.g. "usage"), not just the fields captured by the typed
+	// togetherRerankingResponse struct.
+	bodyMap, ok := result.Response.Body.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Response.Body = %#v (%T), want map[string]interface{}", result.Response.Body, result.Response.Body)
+	}
+	usage, ok := bodyMap["usage"].(map[string]interface{})
+	if !ok || usage["prompt_tokens"] != float64(10) {
+		t.Errorf("Response.Body[\"usage\"] = %#v, want prompt_tokens=10", bodyMap["usage"])
+	}
+}
+
+// TestTogetherRerankingModel_ModelIDAbsent verifies TS's
+// `modelId: response.model ?? undefined` semantics: when the server response
+// omits `model`, Response.ModelID is left empty rather than falling back to
+// the requested model ID.
+func TestTogetherRerankingModel_ModelIDAbsent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results": [{"index": 0, "relevance_score": 0.5}]}`))
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewRerankingModel(p, "Salesforce/Llama-Rank-v1")
+
+	result, err := model.DoRerank(context.Background(), &provider.RerankOptions{
+		Query:     "q",
+		Documents: []string{"a"},
+	})
+	if err != nil {
+		t.Fatalf("DoRerank() error: %v", err)
+	}
+	if result.Response.ModelID != "" {
+		t.Errorf("response.ModelID = %q, want empty (no fallback to requested model ID)", result.Response.ModelID)
+	}
 }
 
 // TestTogetherRerankingModel_RankFieldsProviderOption ports the rankFields
