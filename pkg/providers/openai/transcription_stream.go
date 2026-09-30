@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +19,13 @@ import (
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"golang.org/x/net/websocket"
 )
+
+// bearerTokenPattern extracts the token from an "Authorization: Bearer
+// <token>" header value, mirroring TS getOpenAIRealtimeConnection's
+// `/^bearer\s+(.+)$/i`: the "bearer" scheme name is matched
+// case-insensitively (the HTTP auth scheme is case-insensitive) and any run
+// of whitespace separates it from the token, not just a single space.
+var bearerTokenPattern = regexp.MustCompile(`(?i)^bearer\s+(.+)$`)
 
 // isRealtimeTranscriptionModelID reports whether modelID streams over the
 // OpenAI realtime WebSocket rather than the REST transcription endpoint.
@@ -221,10 +229,8 @@ func openAIRealtimeWSAuth(headers map[string]string) ([]string, map[string]strin
 	var token string
 	for k, v := range headers {
 		if strings.EqualFold(k, "authorization") && v != "" {
-			if rest, ok := strings.CutPrefix(v, "Bearer "); ok {
-				token = rest
-			} else if rest, ok := strings.CutPrefix(v, "bearer "); ok {
-				token = rest
+			if m := bearerTokenPattern.FindStringSubmatch(v); m != nil {
+				token = m[1]
 			}
 		}
 	}

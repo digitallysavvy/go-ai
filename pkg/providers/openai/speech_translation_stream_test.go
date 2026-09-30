@@ -509,3 +509,69 @@ func TestProvider_Translation_CreatesSpeechTranslationModel(t *testing.T) {
 	defer result.Stream.Close() //nolint:errcheck
 	server.waitForReceived(t, "session.update", time.Second)
 }
+
+// TestOpenAIRealtimeWSAuth_StripsAuthorizationHeader mirrors TS
+// "should strip only the Authorization header and pass other headers to the
+// WebSocket constructor": a Bearer token rides the
+// "openai-insecure-api-key.<token>" subprotocol and is stripped from the
+// header map (case-insensitively), leaving other headers untouched. This
+// exercises openAIRealtimeWSAuth directly since the httptest-based
+// end-to-end tests in this package cannot introspect the negotiated
+// subprotocols or handshake headers golang.org/x/net/websocket sends.
+func TestOpenAIRealtimeWSAuth_StripsAuthorizationHeader(t *testing.T) {
+	headers := map[string]string{
+		"Authorization":       "Bearer test-api-key",
+		"OpenAI-Organization": "test-organization",
+		"Custom-Header":       "custom-value",
+	}
+
+	protocols, filtered := openAIRealtimeWSAuth(headers)
+
+	wantProtocols := []string{"realtime", "openai-insecure-api-key.test-api-key"}
+	if len(protocols) != len(wantProtocols) || protocols[0] != wantProtocols[0] || protocols[1] != wantProtocols[1] {
+		t.Fatalf("protocols = %v, want %v", protocols, wantProtocols)
+	}
+
+	if filtered["OpenAI-Organization"] != "test-organization" || filtered["Custom-Header"] != "custom-value" {
+		t.Fatalf("filtered headers = %v, missing expected passthrough headers", filtered)
+	}
+	for k := range filtered {
+		if strings.EqualFold(k, "authorization") {
+			t.Fatalf("filtered headers = %v, want no case-variant of Authorization", filtered)
+		}
+	}
+}
+
+// TestOpenAIRealtimeWSAuth_NoAuthorizationHeader mirrors TS "should use only
+// the realtime protocol and pass headers unchanged when there is no
+// Authorization header".
+func TestOpenAIRealtimeWSAuth_NoAuthorizationHeader(t *testing.T) {
+	headers := map[string]string{"Custom-Header": "custom-value"}
+
+	protocols, filtered := openAIRealtimeWSAuth(headers)
+
+	if len(protocols) != 1 || protocols[0] != "realtime" {
+		t.Fatalf("protocols = %v, want [realtime]", protocols)
+	}
+	if len(filtered) != 1 || filtered["Custom-Header"] != "custom-value" {
+		t.Fatalf("filtered headers = %v, want unchanged", filtered)
+	}
+}
+
+// TestOpenAIRealtimeWSAuth_CaseInsensitiveBearerScheme verifies the "bearer"
+// auth scheme name and header key are matched case-insensitively and that
+// any run of whitespace (not just a single space) separates it from the
+// token, mirroring TS's `/^bearer\s+(.+)$/i`.
+func TestOpenAIRealtimeWSAuth_CaseInsensitiveBearerScheme(t *testing.T) {
+	headers := map[string]string{"authorization": "BEARER\ttest-api-key"}
+
+	protocols, filtered := openAIRealtimeWSAuth(headers)
+
+	wantProtocols := []string{"realtime", "openai-insecure-api-key.test-api-key"}
+	if len(protocols) != len(wantProtocols) || protocols[0] != wantProtocols[0] || protocols[1] != wantProtocols[1] {
+		t.Fatalf("protocols = %v, want %v", protocols, wantProtocols)
+	}
+	if len(filtered) != 0 {
+		t.Fatalf("filtered headers = %v, want empty", filtered)
+	}
+}
