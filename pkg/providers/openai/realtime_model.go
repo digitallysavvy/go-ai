@@ -100,6 +100,21 @@ func (m *OpenAIRealtimeModel) SpecificationVersion() string { return "v4" }
 func (m *OpenAIRealtimeModel) Provider() string             { return m.provider.Name() + ".realtime" }
 func (m *OpenAIRealtimeModel) ModelID() string              { return m.modelID }
 
+// Compile-time check that the GA *OpenAIRealtimeModel still implements both
+// optional client-secret-WebSocket capabilities (RealtimeClientSecretCreator
+// / RealtimeWebSocketConfigProvider) that DoCreateClientSecret/
+// GetWebSocketConfig moved into (hand-off: "realtime optional
+// capabilities"). GetRealtimeToken above relies on a
+// RealtimeClientSecretCreator type assertion succeeding for this type;
+// losing DoCreateClientSecret would otherwise only surface as a runtime
+// UnsupportedFunctionalityError matching the Live-model rejection path,
+// which would be wrong for the GA model.
+var (
+	_ provider.Experimental_RealtimeModelV4    = (*OpenAIRealtimeModel)(nil)
+	_ provider.RealtimeClientSecretCreator     = (*OpenAIRealtimeModel)(nil)
+	_ provider.RealtimeWebSocketConfigProvider = (*OpenAIRealtimeModel)(nil)
+)
+
 func (m *OpenAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.ClientSecretOptions) (provider.ClientSecretResult, error) {
 	if m.provider.config.APIKey == "" {
 		return provider.ClientSecretResult{}, fmt.Errorf("OpenAI API key is missing. Pass it using the 'apiKey' parameter or the OPENAI_API_KEY environment variable.")

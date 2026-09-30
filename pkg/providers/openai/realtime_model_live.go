@@ -34,6 +34,18 @@ func (m *OpenAIRealtimeModelLive) SpecificationVersion() string { return "v4" }
 func (m *OpenAIRealtimeModelLive) Provider() string             { return m.provider.Name() + ".live" }
 func (m *OpenAIRealtimeModelLive) ModelID() string              { return m.modelID }
 
+// Compile-time checks that *OpenAIRealtimeModelLive still implements the
+// capabilities it authenticates and frames its session with. There is no
+// compile-time way to assert the *absence* of RealtimeClientSecretCreator /
+// RealtimeWebSocketConfigProvider (see the comment below); that half is
+// covered at runtime by
+// TestOpenAIRealtimeModelLive_DoesNotImplementClientSecretOrWebSocketConfig.
+var (
+	_ provider.Experimental_RealtimeModelV4          = (*OpenAIRealtimeModelLive)(nil)
+	_ provider.RealtimeServerWebSocketConfigProvider = (*OpenAIRealtimeModelLive)(nil)
+	_ provider.RealtimeLifecycleProvider             = (*OpenAIRealtimeModelLive)(nil)
+)
+
 // DoCreateClientSecret and GetWebSocketConfig are intentionally NOT
 // implemented: short-lived browser credentials are not supported over the
 // server-WebSocket flow. Connect with a server-side API key via
