@@ -214,6 +214,21 @@ func (m *mockTransport) Send(ctx context.Context, msg *MCPMessage) error {
 		}
 	}
 
+	if msg.Method == "resources/templates/list" {
+		response := &MCPMessage{JSONRpc: "2.0", ID: msg.ID}
+		result := ListResourceTemplatesResult{
+			ResourceTemplates: []MCPResourceTemplate{
+				{URITemplate: "file:///{path}", Name: "t1", Description: "template one"},
+			},
+		}
+		resultBytes, _ := json.Marshal(result)
+		response.Result = resultBytes
+		select {
+		case m.messages <- response:
+		default:
+		}
+	}
+
 	if msg.Method == "prompts/list" {
 		response := &MCPMessage{JSONRpc: "2.0", ID: msg.ID}
 		result := ListPromptsResult{
@@ -882,5 +897,300 @@ func TestIsRetryableMCPToolCallError(t *testing.T) {
 				t.Fatalf("isRetryableMCPToolCallError(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestMCPClientListResourceTemplates ports the intent of TS's
+// listResourceTemplates coverage (mcp-client.ts): the client sends
+// `resources/templates/list` and returns the server's resourceTemplates.
+func TestMCPClientListResourceTemplates(t *testing.T) {
+	transport := newMockTransport()
+	client := NewMCPClient(transport, MCPClientConfig{})
+
+	ctx := context.Background()
+	if err := client.Connect(ctx); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close() //nolint:errcheck
+
+	result, err := client.ListResourceTemplates(ctx)
+	if err != nil {
+		t.Fatalf("ListResourceTemplates failed: %v", err)
+	}
+	if len(result.ResourceTemplates) != 1 || result.ResourceTemplates[0].Name != "t1" ||
+		result.ResourceTemplates[0].URITemplate != "file:///{path}" {
+		t.Fatalf("ListResourceTemplates result = %#v", result.ResourceTemplates)
+	}
+}
+
+func TestMCPClientListResourceTemplatesNotInitialized(t *testing.T) {
+	client := NewMCPClient(newMockTransport(), MCPClientConfig{})
+	if _, err := client.ListResourceTemplates(context.Background()); err == nil {
+		t.Fatal("expected error when client is not initialized")
+	}
+}
+
+// awaitResponseTo polls transport.sentMessages() until a response with the
+// given id appears, or fails the test after a short deadline.
+func awaitResponseTo(t *testing.T, transport *mockTransport, id interface{}) *MCPMessage {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for response to id=%v", id)
+		default:
+		}
+		for _, msg := range transport.sentMessages() {
+			if fmt.Sprint(msg.ID) == fmt.Sprint(id) {
+				return msg
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestMCPClientElicitationRequestRoundTrip ports the intent of TS
+// DefaultMCPClient.onRequestMessage's `elicitation/create` branch
+// (mcp-client.ts): a registered OnElicitationRequest handler is invoked with
+// the request's message/requestedSchema, and its ElicitResult is sent back
+// as the JSON-RPC result.
+func TestMCPClientElicitationRequestRoundTrip(t *testing.T) {
+	transport := newMockTransport()
+	client := NewMCPClient(transport, MCPClientConfig{})
+	if err := client.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close() //nolint:errcheck
+
+	var gotRequest ElicitationRequest
+	client.OnElicitationRequest(func(ctx context.Context, req ElicitationRequest) (ElicitResult, error) {
+		gotRequest = req
+		return ElicitResult{Action: "accept", Content: map[string]interface{}{"name": "Ada"}}, nil
+	})
+
+	transport.messages <- &MCPMessage{
+		JSONRpc: "2.0",
+		ID:      "elicit-1",
+		Method:  "elicitation/create",
+		Params:  json.RawMessage(`{"message":"What is your name?","requestedSchema":{"type":"object"}}`),
+	}
+
+	response := awaitResponseTo(t, transport, "elicit-1")
+	if response.Error != nil {
+		t.Fatalf("elicitation response error = %#v", response.Error)
+	}
+	var result ElicitResult
+	if err := json.Unmarshal(response.Result, &result); err != nil {
+		t.Fatalf("unmarshal elicitation result: %v", err)
+	}
+	if result.Action != "accept" || result.Content["name"] != "Ada" {
+		t.Fatalf("elicitation result = %#v", result)
+	}
+	if gotRequest.Message != "What is your name?" {
+		t.Fatalf("handler request.Message = %q", gotRequest.Message)
+	}
+}
+
+// TestMCPClientElicitationRequestNoHandlerRegistered matches TS: with no
+// handler registered, the client responds "Method not found" (-32601).
+func TestMCPClientElicitationRequestNoHandlerRegistered(t *testing.T) {
+	transport := newMockTransport()
+	client := NewMCPClient(transport, MCPClientConfig{})
+	if err := client.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close() //nolint:errcheck
+
+	transport.messages <- &MCPMessage{
+		JSONRpc: "2.0",
+		ID:      "elicit-2",
+		Method:  "elicitation/create",
+		Params:  json.RawMessage(`{"message":"hi","requestedSchema":{}}`),
+	}
+
+	response := awaitResponseTo(t, transport, "elicit-2")
+	if response.Error == nil || response.Error.Code != ErrorCodeMethodNotFound {
+		t.Fatalf("response.Error = %#v, want code %d", response.Error, ErrorCodeMethodNotFound)
+	}
+}
+
+// TestMCPClientElicitationRequestInvalidParams matches TS: a missing
+// "message" field is an invalid params error (-32602).
+func TestMCPClientElicitationRequestInvalidParams(t *testing.T) {
+	transport := newMockTransport()
+	client := NewMCPClient(transport, MCPClientConfig{})
+	if err := client.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close() //nolint:errcheck
+
+	client.OnElicitationRequest(func(ctx context.Context, req ElicitationRequest) (ElicitResult, error) {
+		t.Fatal("handler should not be invoked for invalid params")
+		return ElicitResult{}, nil
+	})
+
+	transport.messages <- &MCPMessage{
+		JSONRpc: "2.0",
+		ID:      "elicit-3",
+		Method:  "elicitation/create",
+		Params:  json.RawMessage(`{"requestedSchema":{}}`),
+	}
+
+	response := awaitResponseTo(t, transport, "elicit-3")
+	if response.Error == nil || response.Error.Code != ErrorCodeInvalidParams {
+		t.Fatalf("response.Error = %#v, want code %d", response.Error, ErrorCodeInvalidParams)
+	}
+}
+
+// TestMCPClientElicitationRequestHandlerErrorRespondsInternalError matches
+// TS: a handler error is reported as -32603 and surfaced via OnError.
+func TestMCPClientElicitationRequestHandlerErrorRespondsInternalError(t *testing.T) {
+	transport := newMockTransport()
+	var onErrMu sync.Mutex
+	var onErr error
+	client := NewMCPClient(transport, MCPClientConfig{
+		OnError: func(err error) {
+			onErrMu.Lock()
+			onErr = err
+			onErrMu.Unlock()
+		},
+	})
+	if err := client.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close() //nolint:errcheck
+
+	client.OnElicitationRequest(func(ctx context.Context, req ElicitationRequest) (ElicitResult, error) {
+		return ElicitResult{}, fmt.Errorf("handler boom")
+	})
+
+	transport.messages <- &MCPMessage{
+		JSONRpc: "2.0",
+		ID:      "elicit-4",
+		Method:  "elicitation/create",
+		Params:  json.RawMessage(`{"message":"hi"}`),
+	}
+
+	response := awaitResponseTo(t, transport, "elicit-4")
+	if response.Error == nil || response.Error.Code != ErrorCodeInternalError {
+		t.Fatalf("response.Error = %#v, want code %d", response.Error, ErrorCodeInternalError)
+	}
+	// Matches TS: `error instanceof Error ? error.message : ...` — the
+	// handler's actual error message is sent, not a generic fallback.
+	if response.Error.Message != "handler boom" {
+		t.Fatalf("response.Error.Message = %q, want %q", response.Error.Message, "handler boom")
+	}
+
+	deadline := time.After(time.Second)
+	for {
+		onErrMu.Lock()
+		got := onErr
+		onErrMu.Unlock()
+		if got != nil {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for OnError callback")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+}
+
+// TestMCPClientElicitationRequestInvalidActionRespondsInternalError matches
+// TS's ElicitResultSchema.parse(result) validation: an Action outside
+// accept/decline/cancel is treated as a handler failure (-32603).
+func TestMCPClientElicitationRequestInvalidActionRespondsInternalError(t *testing.T) {
+	transport := newMockTransport()
+	client := NewMCPClient(transport, MCPClientConfig{})
+	if err := client.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close() //nolint:errcheck
+
+	client.OnElicitationRequest(func(ctx context.Context, req ElicitationRequest) (ElicitResult, error) {
+		return ElicitResult{Action: "not-a-real-action"}, nil
+	})
+
+	transport.messages <- &MCPMessage{
+		JSONRpc: "2.0",
+		ID:      "elicit-5",
+		Method:  "elicitation/create",
+		Params:  json.RawMessage(`{"message":"hi"}`),
+	}
+
+	response := awaitResponseTo(t, transport, "elicit-5")
+	if response.Error == nil || response.Error.Code != ErrorCodeInternalError {
+		t.Fatalf("response.Error = %#v, want code %d", response.Error, ErrorCodeInternalError)
+	}
+}
+
+// TestMCPClientElicitationHandlerCanMakeNestedClientCall matches TS's
+// non-awaited `this.onRequestMessage(message)` dispatch (mcp-client.ts
+// transport.onmessage): the handler must not run on the transport's receive
+// loop, since a handler that issues its own client call (e.g. to fetch data
+// needed to build the elicitation prompt) depends on that same loop to
+// deliver the nested call's response. A short RequestTimeoutMS means this
+// test fails fast (via a timeout error from the nested call) if handleRequest
+// regresses to running inline on the receive loop.
+func TestMCPClientElicitationHandlerCanMakeNestedClientCall(t *testing.T) {
+	transport := newMockTransport()
+	client := NewMCPClient(transport, MCPClientConfig{RequestTimeoutMS: 500})
+	if err := client.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close() //nolint:errcheck
+
+	nestedCallErrCh := make(chan error, 1)
+	client.OnElicitationRequest(func(ctx context.Context, req ElicitationRequest) (ElicitResult, error) {
+		_, err := client.ListResourceTemplates(ctx)
+		nestedCallErrCh <- err
+		return ElicitResult{Action: "accept"}, nil
+	})
+
+	transport.messages <- &MCPMessage{
+		JSONRpc: "2.0",
+		ID:      "elicit-6",
+		Method:  "elicitation/create",
+		Params:  json.RawMessage(`{"message":"hi"}`),
+	}
+
+	select {
+	case err := <-nestedCallErrCh:
+		if err != nil {
+			t.Fatalf("nested ListResourceTemplates call from elicitation handler failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for nested call inside elicitation handler (handler is blocking the receive loop)")
+	}
+
+	response := awaitResponseTo(t, transport, "elicit-6")
+	if response.Error != nil {
+		t.Fatalf("elicitation response error = %#v", response.Error)
+	}
+}
+
+// TestMCPClientElicitationRequestUnsupportedMethodRespondsMethodNotFound
+// matches TS: any server->client request method other than ping/
+// elicitation/create is rejected with -32601.
+func TestMCPClientElicitationRequestUnsupportedMethodRespondsMethodNotFound(t *testing.T) {
+	transport := newMockTransport()
+	client := NewMCPClient(transport, MCPClientConfig{})
+	if err := client.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close() //nolint:errcheck
+
+	transport.messages <- &MCPMessage{
+		JSONRpc: "2.0",
+		ID:      "unsupported-1",
+		Method:  "roots/list",
+	}
+
+	response := awaitResponseTo(t, transport, "unsupported-1")
+	if response.Error == nil || response.Error.Code != ErrorCodeMethodNotFound {
+		t.Fatalf("response.Error = %#v, want code %d", response.Error, ErrorCodeMethodNotFound)
 	}
 }
