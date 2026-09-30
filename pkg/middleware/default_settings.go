@@ -19,7 +19,21 @@ func DefaultSettingsMiddleware(settings *provider.GenerateOptions) *LanguageMode
 	}
 }
 
-// mergeGenerateOptions merges two GenerateOptions, with the second taking precedence
+// mergeGenerateOptions merges defaults into overrides, with overrides (the
+// caller's own call params) taking precedence. This mirrors the TypeScript
+// SDK's `mergeObjects(settings, params)`, which starts from a copy of the
+// full `params` object (so every field the caller set survives, even ones
+// `settings` doesn't know about) and only pulls in `settings` keys the
+// caller left unset.
+//
+// The previous implementation built a fresh, empty GenerateOptions and only
+// copied a hand-picked subset of fields from both defaults and overrides,
+// which silently dropped every other field (ProviderOptions, Prompt.System,
+// Reasoning, SendReasoning, RuntimeContext, ToolsContext, IncludeRawChunks,
+// AllowSystemMessages/AllowSystemInMessages, Telemetry) from the caller's
+// own params, not just from defaults. Starting from a full copy of
+// overrides fixes that: any field not explicitly handled below already
+// survives via the struct copy.
 func mergeGenerateOptions(defaults, overrides *provider.GenerateOptions) *provider.GenerateOptions {
 	if defaults == nil {
 		return overrides
@@ -28,103 +42,122 @@ func mergeGenerateOptions(defaults, overrides *provider.GenerateOptions) *provid
 		return defaults
 	}
 
-	result := &provider.GenerateOptions{}
+	// Copy every field from overrides first, so nothing the caller passed is
+	// ever dropped -- including fields not explicitly handled below (e.g.
+	// AllowSystemMessages/AllowSystemInMessages/IncludeRawChunks, which are
+	// plain bools in Go and so have no way to represent "unset" vs.
+	// "explicitly false"; they always come from the caller's own params).
+	result := *overrides
 
-	// Copy from defaults first
-	if defaults.Prompt.Messages != nil {
+	if result.Prompt.Messages == nil {
 		result.Prompt.Messages = defaults.Prompt.Messages
 	}
-	if defaults.MaxTokens != nil {
-		result.MaxTokens = defaults.MaxTokens
+	if result.Prompt.System == "" {
+		result.Prompt.System = defaults.Prompt.System
 	}
-	if defaults.Temperature != nil {
+	if result.Prompt.Text == "" {
+		result.Prompt.Text = defaults.Prompt.Text
+	}
+	if result.Temperature == nil {
 		result.Temperature = defaults.Temperature
 	}
-	if defaults.TopP != nil {
+	if result.MaxTokens == nil {
+		result.MaxTokens = defaults.MaxTokens
+	}
+	if result.TopP == nil {
 		result.TopP = defaults.TopP
 	}
-	if defaults.TopK != nil {
+	if result.TopK == nil {
 		result.TopK = defaults.TopK
 	}
-	if defaults.PresencePenalty != nil {
+	if result.PresencePenalty == nil {
 		result.PresencePenalty = defaults.PresencePenalty
 	}
-	if defaults.FrequencyPenalty != nil {
+	if result.FrequencyPenalty == nil {
 		result.FrequencyPenalty = defaults.FrequencyPenalty
 	}
-	if defaults.StopSequences != nil {
+	if result.StopSequences == nil {
 		result.StopSequences = defaults.StopSequences
 	}
-	if defaults.Seed != nil {
+	if result.Seed == nil {
 		result.Seed = defaults.Seed
 	}
-	if defaults.Tools != nil {
+	if result.Tools == nil {
 		result.Tools = defaults.Tools
 	}
-	if defaults.ToolChoice.Type != "" {
+	if result.ToolChoice.Type == "" {
 		result.ToolChoice = defaults.ToolChoice
 	}
-	if defaults.ResponseFormat != nil {
+	if result.ResponseFormat == nil {
 		result.ResponseFormat = defaults.ResponseFormat
 	}
-	if defaults.Headers != nil {
-		result.Headers = make(map[string]string)
-		for k, v := range defaults.Headers {
-			result.Headers[k] = v
-		}
-	}
-	if defaults.MaxSteps != nil {
+	if result.MaxSteps == nil {
 		result.MaxSteps = defaults.MaxSteps
 	}
+	if result.Reasoning == nil {
+		result.Reasoning = defaults.Reasoning
+	}
+	if result.SendReasoning == nil {
+		result.SendReasoning = defaults.SendReasoning
+	}
+	if result.RuntimeContext == nil {
+		result.RuntimeContext = defaults.RuntimeContext
+	}
+	if result.ToolsContext == nil {
+		result.ToolsContext = defaults.ToolsContext
+	}
+	if result.Telemetry == nil {
+		result.Telemetry = defaults.Telemetry
+	}
 
-	// Override with values from overrides
-	if overrides.Prompt.Messages != nil {
-		result.Prompt.Messages = overrides.Prompt.Messages
-	}
-	if overrides.MaxTokens != nil {
-		result.MaxTokens = overrides.MaxTokens
-	}
-	if overrides.Temperature != nil {
-		result.Temperature = overrides.Temperature
-	}
-	if overrides.TopP != nil {
-		result.TopP = overrides.TopP
-	}
-	if overrides.TopK != nil {
-		result.TopK = overrides.TopK
-	}
-	if overrides.PresencePenalty != nil {
-		result.PresencePenalty = overrides.PresencePenalty
-	}
-	if overrides.FrequencyPenalty != nil {
-		result.FrequencyPenalty = overrides.FrequencyPenalty
-	}
-	if overrides.StopSequences != nil {
-		result.StopSequences = overrides.StopSequences
-	}
-	if overrides.Seed != nil {
-		result.Seed = overrides.Seed
-	}
-	if overrides.Tools != nil {
-		result.Tools = overrides.Tools
-	}
-	if overrides.ToolChoice.Type != "" {
-		result.ToolChoice = overrides.ToolChoice
-	}
-	if overrides.ResponseFormat != nil {
-		result.ResponseFormat = overrides.ResponseFormat
-	}
-	if overrides.Headers != nil {
-		if result.Headers == nil {
-			result.Headers = make(map[string]string)
+	// Headers: merge maps, overrides win per-key.
+	if defaults.Headers != nil || overrides.Headers != nil {
+		merged := make(map[string]string, len(defaults.Headers)+len(overrides.Headers))
+		for k, v := range defaults.Headers {
+			merged[k] = v
 		}
 		for k, v := range overrides.Headers {
-			result.Headers[k] = v
+			merged[k] = v
 		}
-	}
-	if overrides.MaxSteps != nil {
-		result.MaxSteps = overrides.MaxSteps
+		result.Headers = merged
 	}
 
+	// ProviderOptions: deep merge (recursively for nested maps), overrides
+	// win per-key. Matches TS mergeObjects's recursive-object behavior.
+	result.ProviderOptions = deepMergeProviderOptions(defaults.ProviderOptions, overrides.ProviderOptions)
+
+	return &result
+}
+
+// deepMergeProviderOptions recursively merges overrides into base, with
+// overrides winning on key collisions. Nested map[string]interface{} values
+// present on both sides are merged recursively; everything else (including
+// arrays and primitives) is replaced outright by the overrides value. This
+// mirrors TS's util/merge-objects.ts.
+func deepMergeProviderOptions(base, overrides map[string]interface{}) map[string]interface{} {
+	if base == nil && overrides == nil {
+		return nil
+	}
+	if base == nil {
+		return overrides
+	}
+	if overrides == nil {
+		return base
+	}
+
+	result := make(map[string]interface{}, len(base)+len(overrides))
+	for k, v := range base {
+		result[k] = v
+	}
+	for k, v := range overrides {
+		baseVal, baseHas := result[k]
+		if overrideMap, ok := v.(map[string]interface{}); ok {
+			if baseMap, ok := baseVal.(map[string]interface{}); ok && baseHas {
+				result[k] = deepMergeProviderOptions(baseMap, overrideMap)
+				continue
+			}
+		}
+		result[k] = v
+	}
 	return result
 }
