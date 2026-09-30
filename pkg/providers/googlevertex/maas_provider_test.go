@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -116,6 +117,42 @@ func TestVertexMaaS_DefaultProvider(t *testing.T) {
 	}
 	if VertexMaaS.Name() != "vertex.maas" {
 		t.Fatalf("Name() = %q", VertexMaaS.Name())
+	}
+}
+
+// TestNewMaaS_UserAgentTaggedOpenAICompatibleNotGoogleVertex mirrors TS
+// google-vertex-maas-provider.ts, which builds on @ai-sdk/openai-compatible's
+// createOpenAICompatible (not @ai-sdk/google-vertex), so its requests carry
+// openai-compatible's own "ai-sdk/openai-compatible/VERSION" tag, never
+// "ai-sdk/google-vertex".
+func TestNewMaaS_UserAgentTaggedOpenAICompatibleNotGoogleVertex(t *testing.T) {
+	var gotUserAgent string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUserAgent = r.Header.Get("User-Agent")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"1","object":"chat.completion","created":1,"model":"test-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	p := NewMaaS(MaaSConfig{
+		Project: "test-project",
+		BaseURL: server.URL,
+		GoogleAuthOptions: &GoogleAuthOptions{
+			TokenSource: staticTokenSource("dynamic-token"),
+		},
+	})
+	model, err := p.LanguageModel("test-model")
+	if err != nil {
+		t.Fatalf("LanguageModel error = %v", err)
+	}
+	if _, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{}}); err != nil {
+		t.Fatalf("DoGenerate error = %v", err)
+	}
+	if !strings.HasPrefix(gotUserAgent, "ai-sdk/openai-compatible/") {
+		t.Fatalf("User-Agent = %q, want ai-sdk/openai-compatible/... prefix", gotUserAgent)
+	}
+	if strings.Contains(gotUserAgent, "ai-sdk/google-vertex/") {
+		t.Fatalf("User-Agent = %q, must not carry the ai-sdk/google-vertex tag", gotUserAgent)
 	}
 }
 
