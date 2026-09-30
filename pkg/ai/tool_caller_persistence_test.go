@@ -191,3 +191,130 @@ func assertAnnouncementMessage(t *testing.T, messages []types.Message, announcem
 func callID(n int) string {
 	return fmt.Sprintf("call-%d", n)
 }
+
+// TestGenerateText_ToolCallers_PrepareStepInitialMessagesStaysRaw is a
+// regression test for a second bug in the same area: TS generate-text.ts
+// keeps `initialMessages = initialPrompt.messages` fixed for the whole call
+// and passes that raw, un-announced value to every prepareStep invocation's
+// `initialMessages` field (distinct from `messages`, which is that step's
+// own announcement-inclusive `stepMessages`). GenerateText must do the same:
+// PrepareStepOptions.InitialMessages must never pick up a tool caller's
+// PrepareModelMessage announcement from an earlier step, even though that
+// announcement correctly persists into Messages/history.
+func TestGenerateText_ToolCallers_PrepareStepInitialMessagesStaysRaw(t *testing.T) {
+	t.Parallel()
+	callNum := 0
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(_ context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			callNum++
+			return toolCallResponse(callID(callNum), "code_mode", nil), nil
+		},
+	}
+
+	announcement := "Available caller tools: getInventory."
+	var initialMessagesByStep [][]types.Message
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:    model,
+		StopWhen: []StopCondition{IsStepCount(2)},
+		Prompt:   "Check inventory.",
+		Tools: []types.Tool{
+			localCallerTool("code_mode", func([]types.Tool) *string { return &announcement }),
+			{
+				Name:       "getInventory",
+				Parameters: map[string]interface{}{"type": "object"},
+				Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+					return map[string]interface{}{"sku": "sku-1", "availableUnits": 42}, nil
+				},
+			},
+		},
+		ExperimentalToolCallers: ExperimentalToolCallers{
+			"getInventory": {"code_mode"},
+		},
+		PrepareStep: func(_ context.Context, step PrepareStepOptions) PrepareStepOptions {
+			initialMessagesByStep = append(initialMessagesByStep, step.InitialMessages)
+			return step
+		},
+	})
+	if err != nil {
+		t.Fatalf("GenerateText() error = %v", err)
+	}
+	if len(initialMessagesByStep) != 2 {
+		t.Fatalf("PrepareStep called %d times, want 2", len(initialMessagesByStep))
+	}
+
+	want := []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Check inventory."}}}}
+	for i, got := range initialMessagesByStep {
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("step %d InitialMessages = %+v, want %+v (raw prompt, no announcement)", i, got, want)
+		}
+	}
+}
+
+// TestStreamText_ToolCallers_PrepareStepInitialMessagesStaysRaw is the
+// StreamText analogue of TestGenerateText_ToolCallers_PrepareStepInitialMessagesStaysRaw.
+func TestStreamText_ToolCallers_PrepareStepInitialMessagesStaysRaw(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	callNum := 0
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(_ context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			mu.Lock()
+			callNum++
+			n := callNum
+			mu.Unlock()
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{
+					ID: callID(n), ToolName: "code_mode", Arguments: map[string]interface{}{},
+				}},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+			}), nil
+		},
+	}
+
+	announcement := "Available caller tools: getInventory."
+	var initialMessagesByStep [][]types.Message
+	done := make(chan struct{})
+	maxSteps := 3
+	_, err := StreamText(context.Background(), StreamTextOptions{
+		Model:    model,
+		Prompt:   "Check inventory.",
+		MaxSteps: &maxSteps,
+		Tools: []types.Tool{
+			localCallerTool("code_mode", func([]types.Tool) *string { return &announcement }),
+			{
+				Name:       "getInventory",
+				Parameters: map[string]interface{}{"type": "object"},
+				Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+					return map[string]interface{}{"sku": "sku-1", "availableUnits": 42}, nil
+				},
+			},
+		},
+		ExperimentalToolCallers: ExperimentalToolCallers{
+			"getInventory": {"code_mode"},
+		},
+		PrepareStep: func(_ context.Context, step PrepareStepOptions) PrepareStepOptions {
+			mu.Lock()
+			initialMessagesByStep = append(initialMessagesByStep, step.InitialMessages)
+			mu.Unlock()
+			return step
+		},
+		OnFinish: func(*StreamTextResult) { close(done) },
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(initialMessagesByStep) != 3 {
+		t.Fatalf("PrepareStep called %d times, want 3", len(initialMessagesByStep))
+	}
+
+	want := []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Check inventory."}}}}
+	for i, got := range initialMessagesByStep {
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("step %d InitialMessages = %+v, want %+v (raw prompt, no announcement) — step 3 picking up an earlier step's announcement means r.cbMessages (step 0's post-announcement messages) leaked into InitialMessages instead of a separate raw snapshot", i, got, want)
+		}
+	}
+}
