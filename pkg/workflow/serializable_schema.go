@@ -135,18 +135,23 @@ func ResolveSerializableTools(defs map[string]SerializableToolDef) []types.Tool 
 }
 
 // ValidateSerializableToolInput validates a tool input against its serialized
-// JSON Schema. Defaults declared on the schema are applied before
-// validating (matching pkg/ai/tool_call_pipeline.go's
-// applyToolCallInputDefaults and the rest of the codebase's
-// validate-after-ApplyDefaults convention): a field missing from input but
-// declared with a schema default must not fail validation.
-func ValidateSerializableToolInput(def SerializableToolDef, input interface{}) error {
+// JSON Schema and returns the defaulted value. Defaults declared on the
+// schema are applied before validating (matching
+// pkg/ai/tool_call_pipeline.go's applyToolCallInputDefaults and the rest of
+// the codebase's apply-defaults-before-validate convention): a field missing
+// from input but declared with a schema default must not fail validation.
+// Like tool_call_pipeline.go's args and validate_ui_messages.go's parsed
+// value, the returned value -- not the raw input -- is what a caller should
+// go on to pass to the resolved tool's Execute, so the schema's defaults
+// actually reach the tool (mirrors TS's validateTypes/safeValidateTypes,
+// whose defaulted parse result is always what downstream code consumes).
+func ValidateSerializableToolInput(def SerializableToolDef, input interface{}) (interface{}, error) {
 	params := def.InputSchema
 	if params == nil {
 		params = def.Parameters
 	}
 	if params == nil {
-		return nil
+		return input, nil
 	}
 	s := schema.NewSimpleJSONSchema(params)
 	defaulted := schema.ApplyDefaults(input, s)
@@ -155,7 +160,7 @@ func ValidateSerializableToolInput(def SerializableToolDef, input interface{}) e
 		if name == "" {
 			name = "tool"
 		}
-		return fmt.Errorf("workflow: invalid input for %s: %w", name, err)
+		return nil, fmt.Errorf("workflow: invalid input for %s: %w", name, err)
 	}
-	return nil
+	return defaulted, nil
 }
