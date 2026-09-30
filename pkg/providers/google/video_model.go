@@ -491,7 +491,13 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 
 // getPollOptions extracts polling options from provider options
 func (m *VideoModel) getPollOptions(providerOpts map[string]interface{}) polling.PollOptions {
-	opts := polling.DefaultPollOptions()
+	// TS has no synchronous doGenerate for this model: core's generateVideo
+	// always drives doStart/doStatus itself, defaulting to
+	// intervalMs=5000/timeoutMs=600_000 (generate-video.ts). Match that
+	// default here rather than polling.DefaultPollOptions()'s 2s/5min,
+	// which is unrelated to video and would poll faster/timeout sooner
+	// than TS by default.
+	opts := polling.PollOptions{PollIntervalMs: 5000, PollTimeoutMs: 600000}
 
 	if providerOpts != nil {
 		if googleOpts, ok := providerOpts["google"].(map[string]interface{}); ok {

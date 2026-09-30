@@ -110,7 +110,12 @@ func TestReplicateVideoDoGeneratePollingNoVideo(t *testing.T) {
 	if got := vm.MaxVideosPerCall(); got == nil || *got != 1 {
 		t.Fatalf("MaxVideosPerCall() = %v, want 1", got)
 	}
-	_, err := vm.DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{Prompt: "run"})
+	_, err := vm.DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{
+		Prompt: "run",
+		ProviderOptions: map[string]interface{}{
+			"replicate": map[string]interface{}{"pollIntervalMs": 1, "pollTimeoutMs": 5000},
+		},
+	})
 	if err == nil || !strings.Contains(err.Error(), "No video URL in response") {
 		t.Fatalf("expected no video error, got %v", err)
 	}

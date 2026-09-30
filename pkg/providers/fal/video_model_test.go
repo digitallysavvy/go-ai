@@ -473,7 +473,12 @@ func TestVideoModel_DoGenerate_EndToEnd(t *testing.T) {
 	})
 	model, _ := newTestVideoModel(t, "luma-dream-machine", mux)
 
-	resp, err := model.DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{Prompt: "x"})
+	resp, err := model.DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{
+		Prompt: "x",
+		ProviderOptions: map[string]interface{}{
+			"fal": map[string]interface{}{"pollIntervalMs": 1, "pollTimeoutMs": 5000},
+		},
+	})
 	if err != nil {
 		t.Fatalf("DoGenerate() error = %v", err)
 	}

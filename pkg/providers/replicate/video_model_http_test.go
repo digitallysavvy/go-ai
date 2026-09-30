@@ -247,7 +247,12 @@ func TestVideoModel_DoGenerate_EndToEnd(t *testing.T) {
 	})
 	model, _ := newTestVideoModelServer(t, mux)
 
-	resp, err := model.DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{Prompt: "x"})
+	resp, err := model.DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{
+		Prompt: "x",
+		ProviderOptions: map[string]interface{}{
+			"replicate": map[string]interface{}{"pollIntervalMs": 1, "pollTimeoutMs": 5000},
+		},
+	})
 	if err != nil {
 		t.Fatalf("DoGenerate() error = %v", err)
 	}
