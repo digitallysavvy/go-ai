@@ -1106,7 +1106,7 @@ This release achieves **complete server-side parity** with the Vercel AI SDK:
 
 ## Requirements
 
-- Go 1.21 or higher
+- Go 1.25 or higher
 - Valid API keys for desired providers
 
 ## Installation
