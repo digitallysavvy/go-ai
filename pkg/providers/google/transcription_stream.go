@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"sync"
 	"time"
@@ -224,84 +223,17 @@ type googleLiveTranscriptionStreamConfig struct {
 
 // googleLiveTranscriptionStream implements provider.TranscriptionStream over
 // the Gemini Live API WebSocket, mirroring TS
-// createGoogleLiveTranscriptionStream.
+// createGoogleLiveTranscriptionStream. The Next/Err/Close/emit/setErr
+// plumbing is the shared wsutil.Session core; only the protocol-specific
+// run()/pumpAudio()/dial()/send() below are local to Google.
 type googleLiveTranscriptionStream struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	parts  chan provider.TranscriptionStreamPart
-
-	mu  sync.Mutex
-	err error
-
-	closeOnce sync.Once
-	connMu    sync.Mutex
-	conn      *websocket.Conn
+	*wsutil.Session[provider.TranscriptionStreamPart]
 }
 
 func newGoogleLiveTranscriptionStream(parentCtx context.Context, cfg googleLiveTranscriptionStreamConfig) *googleLiveTranscriptionStream {
-	ctx, cancel := context.WithCancel(parentCtx)
-	s := &googleLiveTranscriptionStream{ctx: ctx, cancel: cancel, parts: make(chan provider.TranscriptionStreamPart)}
+	s := &googleLiveTranscriptionStream{Session: wsutil.NewSession[provider.TranscriptionStreamPart](parentCtx)}
 	go s.run(cfg)
 	return s
-}
-
-func (s *googleLiveTranscriptionStream) Next() (*provider.TranscriptionStreamPart, error) {
-	part, ok := <-s.parts
-	if !ok {
-		s.mu.Lock()
-		err := s.err
-		s.mu.Unlock()
-		if err != nil {
-			return nil, err
-		}
-		return nil, io.EOF
-	}
-	return &part, nil
-}
-
-func (s *googleLiveTranscriptionStream) Err() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.err
-}
-
-func (s *googleLiveTranscriptionStream) Close() error {
-	s.closeOnce.Do(func() {
-		s.cancel()
-		s.connMu.Lock()
-		if s.conn != nil {
-			_ = s.conn.Close()
-		}
-		s.connMu.Unlock()
-	})
-	return nil
-}
-
-func (s *googleLiveTranscriptionStream) setErr(err error) {
-	s.mu.Lock()
-	if s.err == nil {
-		s.err = err
-	}
-	s.mu.Unlock()
-}
-
-// emit sends part on s.parts, returning false when the stream's ctx is done
-// (so a blocked send unblocks instead of leaking when Close cancels ctx).
-func (s *googleLiveTranscriptionStream) emit(part provider.TranscriptionStreamPart) bool {
-	select {
-	case s.parts <- part:
-		return true
-	case <-s.ctx.Done():
-		return false
-	}
-}
-
-// receiveLoop continuously reads text frames from conn and forwards each one
-// (or the terminal error) on out, until an error occurs or s.ctx is done.
-// A dedicated goroutine (rather than one-shot receives from run()) lets the
-// caller's select multiplex incoming messages against the finish-grace timer.
-func (s *googleLiveTranscriptionStream) receiveLoop(conn *websocket.Conn, out chan<- wsutil.Message) {
-	wsutil.ReceiveLoop(s.ctx, conn, out)
 }
 
 // pumpAudio waits for the server's setupComplete acknowledgement (the Live
@@ -309,65 +241,37 @@ func (s *googleLiveTranscriptionStream) receiveLoop(conn *websocket.Conn, out ch
 // audio chunks as realtimeInput.audio messages, committing
 // realtimeInput.audioStreamEnd at EOF and signalling audioEnded. Any other
 // failure — reading from the AudioStream, or writing to the WebSocket — is
-// reported on errCh, mirroring TS's `void sendAudio(socket).catch(finishWithError)`
-// (a rejected `audioReader.read()` fails the stream exactly like a failed
-// `socket.send`). A failure that stems from s.ctx already being cancelled is
-// not reported here: run()'s own select on s.ctx.Done() already handles that
-// case.
+// reported on errCh via the shared wsutil.PumpAudioAfterReady loop, mirroring
+// TS's `void sendAudio(socket).catch(finishWithError)` (a rejected
+// `audioReader.read()` fails the stream exactly like a failed `socket.send`).
 func (s *googleLiveTranscriptionStream) pumpAudio(conn *websocket.Conn, audio provider.AudioStream, setupComplete <-chan struct{}, rate int, audioEnded chan<- struct{}, errCh chan<- error) {
-	select {
-	case <-setupComplete:
-	case <-s.ctx.Done():
-		return
-	}
-
-	for {
-		chunk, err := audio.Next(s.ctx)
-		if err != nil {
-			if err == io.EOF {
-				if sendErr := s.send(conn, []byte(`{"realtimeInput":{"audioStreamEnd":true}}`)); sendErr != nil {
-					if s.ctx.Err() == nil {
-						s.reportAudioError(errCh, sendErr)
-					}
-					return
-				}
-				select {
-				case audioEnded <- struct{}{}:
-				case <-s.ctx.Done():
-				}
-			} else if s.ctx.Err() == nil {
-				s.reportAudioError(errCh, err)
-			}
-			return
-		}
-		msg, marshalErr := json.Marshal(map[string]interface{}{
-			"realtimeInput": map[string]interface{}{
-				"audio": map[string]interface{}{
-					"data":     base64.StdEncoding.EncodeToString(chunk),
-					"mimeType": fmt.Sprintf("audio/pcm;rate=%d", rate),
+	wsutil.PumpAudioAfterReady(s.Context(), setupComplete, audio,
+		func(chunk []byte) error {
+			msg, marshalErr := json.Marshal(map[string]interface{}{
+				"realtimeInput": map[string]interface{}{
+					"audio": map[string]interface{}{
+						"data":     base64.StdEncoding.EncodeToString(chunk),
+						"mimeType": fmt.Sprintf("audio/pcm;rate=%d", rate),
+					},
 				},
-			},
-		})
-		if marshalErr != nil {
-			continue
-		}
-		if err := s.send(conn, msg); err != nil {
-			if s.ctx.Err() == nil {
-				s.reportAudioError(errCh, err)
+			})
+			if marshalErr != nil {
+				return nil
 			}
-			return
-		}
-	}
-}
-
-// reportAudioError delivers err to errCh, falling back to s.ctx.Done() so a
-// send that no longer has a reader (run() already returned via a different
-// path) cannot block pumpAudio forever.
-func (s *googleLiveTranscriptionStream) reportAudioError(errCh chan<- error, err error) {
-	select {
-	case errCh <- err:
-	case <-s.ctx.Done():
-	}
+			return s.send(conn, msg)
+		},
+		func() error {
+			if sendErr := s.send(conn, []byte(`{"realtimeInput":{"audioStreamEnd":true}}`)); sendErr != nil {
+				return sendErr
+			}
+			select {
+			case audioEnded <- struct{}{}:
+			case <-s.Context().Done():
+			}
+			return nil
+		},
+		errCh,
+	)
 }
 
 // googleLiveServerMessage is the subset of Google Live API server messages
@@ -396,11 +300,11 @@ type googleLiveTranscription struct {
 }
 
 func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamConfig) {
-	defer close(s.parts)
-	// Release s.ctx's resources as soon as run() returns for any reason
-	// instead of only on an explicit Close() call, which a consumer that
-	// only drains Next() to io.EOF may never make.
-	defer s.cancel()
+	defer s.CloseParts()
+	// Release the session's resources as soon as run() returns for any
+	// reason instead of only on an explicit Close() call, which a consumer
+	// that only drains Next() to io.EOF may never make.
+	defer s.CancelContext()
 
 	var finishTimer *time.Timer
 	var finishTimerC <-chan time.Time
@@ -417,7 +321,7 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 	// cancelling the caller's AudioStream.
 	fail := func(err error) {
 		cancelPendingFinish()
-		s.setErr(err)
+		s.SetErr(err)
 		cfg.audio.Cancel(err)
 	}
 
@@ -426,9 +330,7 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 		fail(err)
 		return
 	}
-	s.connMu.Lock()
-	s.conn = conn
-	s.connMu.Unlock()
+	s.SetConn(conn)
 	defer conn.Close() //nolint:errcheck
 
 	payload, err := json.Marshal(map[string]interface{}{"setup": cfg.setup})
@@ -452,12 +354,12 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 	audioErrCh := make(chan error, 1)
 	go s.pumpAudio(conn, cfg.audio, setupCompleteCh, cfg.inputAudioRate, audioEndedCh, audioErrCh)
 
-	if !s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart, Warnings: cfg.warnings}) {
+	if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart, Warnings: cfg.warnings}) {
 		return
 	}
 
 	msgCh := make(chan wsutil.Message)
-	go s.receiveLoop(conn, msgCh)
+	go wsutil.ReceiveLoop(s.Context(), conn, msgCh)
 
 	// Transcription fragments arrive incrementally and are accumulated per
 	// segment; a `finished: true` transcription or `turnComplete` finalizes
@@ -486,7 +388,7 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 			segmentBuffer = latestInterim
 		}
 		latestInterim = ""
-		ok := s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeFinal, ID: segmentID(), Text: segmentBuffer})
+		ok := s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeFinal, ID: segmentID(), Text: segmentBuffer})
 		if fullText == "" {
 			fullText = segmentBuffer
 		} else {
@@ -520,7 +422,7 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 		if usageMetadata != nil {
 			providerMetadata = map[string]interface{}{"google": map[string]interface{}{"usageMetadata": usageMetadata}}
 		}
-		s.emit(provider.TranscriptionStreamPart{
+		s.Emit(provider.TranscriptionStreamPart{
 			Type:             provider.TranscriptionStreamPartTypeFinish,
 			FinishText:       fullText,
 			Segments:         []provider.TranscriptSegment{},
@@ -532,8 +434,8 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 
 	for {
 		select {
-		case <-s.ctx.Done():
-			cause := s.ctx.Err()
+		case <-s.Context().Done():
+			cause := s.Context().Err()
 			fail(cause)
 			return
 
@@ -598,7 +500,7 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 			if cfg.includeRawChunks {
 				var rawValue interface{}
 				_ = json.Unmarshal([]byte(res.Text), &rawValue)
-				if !s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeRaw, RawValue: rawValue}) {
+				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeRaw, RawValue: rawValue}) {
 					return
 				}
 			}
@@ -625,7 +527,7 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 			if serverContent != nil && serverContent.InterimInputTranscription != nil && serverContent.InterimInputTranscription.Text != "" {
 				schedulePendingFinish()
 				latestInterim = serverContent.InterimInputTranscription.Text
-				if !s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypePartial, ID: segmentID(), Text: latestInterim}) {
+				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypePartial, ID: segmentID(), Text: latestInterim}) {
 					return
 				}
 			}
@@ -642,7 +544,7 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 					schedulePendingFinish()
 					latestInterim = ""
 					segmentBuffer += transcription.Text
-					if !s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeDelta, ID: segmentID(), Delta: transcription.Text}) {
+					if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeDelta, ID: segmentID(), Delta: transcription.Text}) {
 						return
 					}
 				}
@@ -674,11 +576,11 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 }
 
 func (s *googleLiveTranscriptionStream) dial(wsURL string, headers map[string]string) (*websocket.Conn, error) {
-	return wsutil.Dial(s.ctx, wsURL, wsutil.DialOptions{Headers: headers})
+	return wsutil.Dial(s.Context(), wsURL, wsutil.DialOptions{Headers: headers})
 }
 
 func (s *googleLiveTranscriptionStream) send(conn *websocket.Conn, message []byte) error {
-	return wsutil.Send(s.ctx, conn, string(message))
+	return wsutil.Send(s.Context(), conn, string(message))
 }
 
 var (
