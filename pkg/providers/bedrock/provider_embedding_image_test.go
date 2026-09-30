@@ -93,7 +93,7 @@ func TestBedrockRerankingModelDoRerank(t *testing.T) {
 			if req.Header.Get("X-Config") != "cfg" || req.Header.Get("X-Request") != "req" {
 				t.Fatalf("headers missing: %#v", req.Header)
 			}
-			if !strings.Contains(req.Header.Get("User-Agent"), "go-ai/amazon-bedrock/") {
+			if !strings.Contains(req.Header.Get("User-Agent"), "ai-sdk/amazon-bedrock/") {
 				t.Fatalf("user-agent missing provider suffix: %#v", req.Header)
 			}
 			body, _ := io.ReadAll(req.Body)

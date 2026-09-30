@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
-	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // SSETransport implements the legacy MCP SSE transport.
@@ -343,7 +342,7 @@ func (t *SSETransport) applyHeaders(ctx context.Context, req *http.Request, base
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
 	}
-	req.Header.Set("User-Agent", version.UserAgent())
+	setMCPUserAgent(req.Header)
 }
 
 func (t *SSETransport) readSSEStream(body io.ReadCloser, ready chan<- error) {

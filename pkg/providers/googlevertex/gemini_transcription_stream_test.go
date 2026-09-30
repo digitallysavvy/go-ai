@@ -149,6 +149,15 @@ func (s *liveTranscriptionTestServer) authorizationHeader() string {
 	return s.handshakeHeaders.Get("Authorization")
 }
 
+func (s *liveTranscriptionTestServer) userAgentHeader() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.handshakeHeaders == nil {
+		return ""
+	}
+	return s.handshakeHeaders.Get("User-Agent")
+}
+
 func (s *liveTranscriptionTestServer) waitFor(t *testing.T, pred func(map[string]interface{}) bool, timeout time.Duration) map[string]interface{} {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -289,6 +298,12 @@ func TestGeminiTranscriptionModel_DoStream_StreamsTranscriptEndToEnd(t *testing.
 
 	if got := server.authorizationHeader(); got != "Bearer test-oauth-token" {
 		t.Fatalf("handshake Authorization header = %q, want %q", got, "Bearer test-oauth-token")
+	}
+	// TS google-vertex-gemini-transcription-model.ts reuses this.config.headers()
+	// -- the same tagged getHeaders() closure used for REST calls -- for the
+	// WebSocket handshake, so it carries the ai-sdk/google-vertex/VERSION tag too.
+	if got := server.userAgentHeader(); !strings.HasPrefix(got, "ai-sdk/google-vertex/") {
+		t.Fatalf("handshake User-Agent header = %q, want ai-sdk/google-vertex/... prefix", got)
 	}
 
 	// audio is gated on setupComplete: nothing else should have been sent yet.

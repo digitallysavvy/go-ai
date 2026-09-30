@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -35,6 +36,13 @@ func TestSpeechModel_DoGenerate(t *testing.T) {
 		contentType := r.Header.Get("Content-Type")
 		if contentType != "application/json" {
 			t.Errorf("Expected Content-Type 'application/json', got '%s'", contentType)
+		}
+
+		// LMNT has no TS package (Go-only provider): tagged "ai-sdk/lmnt/VERSION"
+		// directly in DoGenerate, since it builds its *http.Request by hand
+		// instead of going through the shared pkg/internal/http.Client.
+		if ua := r.Header.Get("User-Agent"); !strings.HasPrefix(ua, "ai-sdk/lmnt/") {
+			t.Errorf("User-Agent = %q, want ai-sdk/lmnt/... prefix", ua)
 		}
 
 		// Verify request body

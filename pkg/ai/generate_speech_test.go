@@ -46,7 +46,7 @@ func TestGenerateSpeechForwardsProviderResponseMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateSpeech error = %v", err)
 	}
-	if capturedHeaders["user-agent"] != "go-ai/0.5.0" {
+	if capturedHeaders["user-agent"] != "ai/0.5.0" {
 		t.Fatalf("user-agent = %q", capturedHeaders["user-agent"])
 	}
 	if capturedProviderOptions == nil || len(capturedProviderOptions) != 0 {
@@ -183,7 +183,7 @@ func TestGenerateSpeechRejectsNegativeMaxRetriesWithInvalidArgumentError(t *test
 	}
 }
 
-func TestGenerateSpeechAppendsGoAIUserAgent(t *testing.T) {
+func TestGenerateSpeechAppendsAIUserAgent(t *testing.T) {
 	t.Parallel()
 
 	var capturedHeaders map[string]string
@@ -207,7 +207,7 @@ func TestGenerateSpeechAppendsGoAIUserAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateSpeech error = %v", err)
 	}
-	if capturedHeaders["user-agent"] != "custom-agent go-ai/0.5.0" {
+	if capturedHeaders["user-agent"] != "custom-agent ai/0.5.0" {
 		t.Fatalf("user-agent = %q", capturedHeaders["user-agent"])
 	}
 	if _, ok := capturedHeaders["User-Agent"]; ok {

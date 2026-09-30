@@ -16,6 +16,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 const defaultObjectMaxRetries = 2
@@ -759,6 +760,12 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 	if opts.OutputMode != ObjectModeNoSchema && !opts.Model.SupportsStructuredOutput() {
 		return nil, fmt.Errorf("model does not support structured output")
 	}
+
+	// TS generate-object.ts tags every call's headers with `ai/${VERSION}`
+	// (`headersWithUserAgent = withUserAgentSuffix(headers ?? {}, ai/${VERSION})`)
+	// before building the onStart event, so the tagged value is what
+	// reaches both the model call and the onStart/onStepStart callbacks.
+	opts.Headers = version.WithUserAgentSuffix(opts.Headers, version.UserAgent())
 
 	// Generate a call ID for correlating all callback events for this call.
 	callID := newCallID()

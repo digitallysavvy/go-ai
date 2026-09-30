@@ -16,7 +16,7 @@ func TestProviderAPIKeyFromEnv(t *testing.T) {
 		t.Setenv("FAL_API_KEY", "from-fal-api-key")
 		t.Setenv("FAL_KEY", "from-fal-key")
 		p := New(Config{APIKey: "explicit-key"})
-		if got := p.client.Headers()["Authorization"]; got != "Key explicit-key" {
+		if got := p.client.Headers()["authorization"]; got != "Key explicit-key" {
 			t.Fatalf("Authorization = %q, want Key explicit-key", got)
 		}
 	})
@@ -25,7 +25,7 @@ func TestProviderAPIKeyFromEnv(t *testing.T) {
 		t.Setenv("FAL_API_KEY", "from-fal-api-key")
 		t.Setenv("FAL_KEY", "from-fal-key")
 		p := New(Config{})
-		if got := p.client.Headers()["Authorization"]; got != "Key from-fal-api-key" {
+		if got := p.client.Headers()["authorization"]; got != "Key from-fal-api-key" {
 			t.Fatalf("Authorization = %q, want Key from-fal-api-key", got)
 		}
 	})
@@ -34,7 +34,7 @@ func TestProviderAPIKeyFromEnv(t *testing.T) {
 		t.Setenv("FAL_API_KEY", "")
 		t.Setenv("FAL_KEY", "from-fal-key")
 		p := New(Config{})
-		if got := p.client.Headers()["Authorization"]; got != "Key from-fal-key" {
+		if got := p.client.Headers()["authorization"]; got != "Key from-fal-key" {
 			t.Fatalf("Authorization = %q, want Key from-fal-key", got)
 		}
 	})

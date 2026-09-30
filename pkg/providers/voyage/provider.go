@@ -7,6 +7,7 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 const DefaultBaseURL = "https://api.voyageai.com/v1"
@@ -39,7 +40,7 @@ func New(cfg Config) *Provider {
 		config: cfg,
 		client: internalhttp.NewClient(internalhttp.Config{
 			BaseURL:    baseURL,
-			Headers:    internalhttp.MergeHeaders(headers, cfg.Headers),
+			Headers:    version.WithUserAgentSuffix(internalhttp.MergeHeaders(headers, cfg.Headers), version.ProviderUserAgent("voyage")),
 			HTTPClient: cfg.HTTPClient,
 		}),
 	}

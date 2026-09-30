@@ -15,6 +15,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // now returns the current time in milliseconds since Unix epoch.
@@ -708,6 +709,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	if err := validateMaxRetries(opts.MaxRetries); err != nil {
 		return nil, err
 	}
+	// TS generate-text.ts tags every call's headers with `ai/${VERSION}`
+	// (`headersWithUserAgent = withUserAgentSuffix(headers ?? {}, ai/${VERSION})`)
+	// right after validating retries, before the prompt is standardized.
+	opts.Headers = version.WithUserAgentSuffix(opts.Headers, version.UserAgent())
 	resolvedToolCallers, err := ResolveToolCallerConfiguration(opts.Tools, opts.ExperimentalToolCallers)
 	if err != nil {
 		return nil, err

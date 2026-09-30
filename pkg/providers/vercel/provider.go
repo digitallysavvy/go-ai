@@ -29,8 +29,9 @@ func New(cfg Config) *Provider {
 	}
 
 	openaiProvider := openai.New(openai.Config{
-		APIKey:  cfg.APIKey,
-		BaseURL: baseURL,
+		APIKey:        cfg.APIKey,
+		BaseURL:       baseURL,
+		UserAgentName: "vercel",
 	})
 
 	return &Provider{

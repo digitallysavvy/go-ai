@@ -296,8 +296,13 @@ func TestDownloadDropsCallerHeadersOnCrossOriginRedirect(t *testing.T) {
 	if got.Get("X-Key") != "" || got.Get("Authorization") != "" {
 		t.Fatalf("cross-origin hop leaked credentials: %v", got)
 	}
-	if got.Get("User-Agent") != "ai-sdk-test" {
-		t.Fatalf("cross-origin hop should keep User-Agent, got %q", got.Get("User-Agent"))
+	// The caller-supplied "ai-sdk-test" value survives as a prefix:
+	// setDownloadUserAgent appends the SDK-wide + runtime tags to whatever
+	// User-Agent opts.Headers already set (owner decision 2026-09-30: match
+	// TS's download.ts withUserAgentSuffix), and that combined value is what
+	// crosses the redirect (unlike Authorization/X-Key, which are dropped).
+	if !strings.HasPrefix(got.Get("User-Agent"), "ai-sdk-test ai-sdk/") {
+		t.Fatalf("cross-origin hop should keep User-Agent as a prefix, got %q", got.Get("User-Agent"))
 	}
 }
 

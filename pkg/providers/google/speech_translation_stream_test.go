@@ -45,6 +45,21 @@ func drainUntilTranslationFinishOrError(t *testing.T, stream provider.SpeechTran
 	}
 }
 
+// TestSpeechTranslationModel_BaseHeadersCarryUserAgentTag mirrors TS
+// google-live-speech-translation-model.ts's doStream, which reuses
+// `this.config.headers()` -- the same tagged getHeaders() closure used for
+// REST calls -- for the WebSocket handshake, so it carries the
+// `ai-sdk/google/VERSION` tag too.
+func TestSpeechTranslationModel_BaseHeadersCarryUserAgentTag(t *testing.T) {
+	p := New(Config{APIKey: "test-api-key"})
+	m := NewSpeechTranslationModel(p, "gemini-3.5-live-translate-preview")
+
+	ua := m.baseSpeechTranslationHeaders()["user-agent"]
+	if !strings.HasPrefix(ua, "ai-sdk/google/") {
+		t.Fatalf("user-agent = %q, want ai-sdk/google/... prefix", ua)
+	}
+}
+
 func TestSpeechTranslationModel_DoStream_RequiresTargetLanguage(t *testing.T) {
 	p := New(Config{APIKey: "test-api-key"})
 	m := NewSpeechTranslationModel(p, "gemini-3.5-live-translate-preview")

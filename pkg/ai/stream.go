@@ -1539,6 +1539,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// read it here instead of firing FireOnStepStart a second time.
 		telemetryStepCtx := r.stepReopenTelemetryStepCtx
 
+		// Reset the raw finish reason for every step: it must come only from
+		// this step's own finish chunk (TS: each step's rawFinishReason is
+		// read fresh off that step's own StreamTextResult, never inherited
+		// from a previous step). Without this reset, a step whose provider
+		// stream ends without emitting a raw reason (e.g. an aborted or
+		// tool-only step) would incorrectly report the previous step's value.
+		r.rawFinishReason = ""
+
 		// Track per-step slices before we accumulate more stream data.
 		stepSourcesStart := len(r.sources)
 		// Track how many files existed before this step so we can slice per-step files.

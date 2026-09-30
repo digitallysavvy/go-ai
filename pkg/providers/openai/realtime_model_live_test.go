@@ -129,8 +129,17 @@ func TestOpenAIRealtimeModelLive_GetServerWebSocketConfig(t *testing.T) {
 	if cfg.URL != "wss://api.openai.com/v1/live/sessions" {
 		t.Fatalf("URL = %q", cfg.URL)
 	}
-	if cfg.Headers["Authorization"] != "Bearer test-key" {
+	// TS openai-realtime-model-live.ts's getServerWebSocketConfig() reuses
+	// config.headers() verbatim (the same tagged getHeaders() used for
+	// regular HTTP requests), so the WS handshake headers carry the
+	// `ai-sdk/openai/VERSION` tag too. version.WithUserAgentSuffix
+	// normalizes header keys to lowercase, mirroring TS's Headers-backed
+	// withUserAgentSuffix.
+	if cfg.Headers["authorization"] != "Bearer test-key" {
 		t.Fatalf("headers = %v", cfg.Headers)
+	}
+	if !strings.HasPrefix(cfg.Headers["user-agent"], "ai-sdk/openai/") {
+		t.Fatalf("headers user-agent = %q, want ai-sdk/openai/... prefix", cfg.Headers["user-agent"])
 	}
 }
 
@@ -154,10 +163,10 @@ func TestOpenAIRealtimeModelLive_GetServerWebSocketConfig_CustomBaseAndHeaders(t
 	if cfg.URL != "wss://example.com/proxy/v1/live/sessions" {
 		t.Fatalf("URL = %q", cfg.URL)
 	}
-	if cfg.Headers["Authorization"] != "Bearer test-key" ||
-		cfg.Headers["OpenAI-Organization"] != "org-test" ||
-		cfg.Headers["OpenAI-Project"] != "proj-test" ||
-		cfg.Headers["X-Custom"] != "value" {
+	if cfg.Headers["authorization"] != "Bearer test-key" ||
+		cfg.Headers["openai-organization"] != "org-test" ||
+		cfg.Headers["openai-project"] != "proj-test" ||
+		cfg.Headers["x-custom"] != "value" {
 		t.Fatalf("headers = %v", cfg.Headers)
 	}
 }

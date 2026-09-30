@@ -12,7 +12,30 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
+
+// applyUserAgentSuffix appends the Go runtime tag to whatever "User-Agent"
+// value is already present on req (set by the client's default headers
+// and/or request-specific headers — normally each provider's own
+// `ai-sdk/<provider>/VERSION` tag, added via version.ProviderUserAgent at
+// provider construction). The final shape matches the owner's 2026-09-30
+// decision: `ai-sdk/<provider>/<version> runtime/go/<goVersion>`.
+//
+// TS's provider-utils postToApi/getFromApi additionally chain in their own
+// package's `ai-sdk/provider-utils/VERSION` tag here (TS has no single Go
+// module equivalent of that internal package, and the owner's decision
+// specifies the two-segment shape above), so this only adds the runtime
+// tag, not a third "shared layer" segment. http.Header canonicalizes the
+// header name for us, so this is case-insensitive with respect to however
+// upstream code set it.
+func applyUserAgentSuffix(h http.Header) {
+	merged := providerutils.WithUserAgentSuffix(
+		map[string]string{"user-agent": h.Get("User-Agent")},
+		providerutils.RuntimeEnvironmentUserAgent(),
+	)
+	h.Set("User-Agent", merged["user-agent"])
+}
 
 // DefaultHTTPClient is a shared HTTP client with sensible defaults
 var DefaultHTTPClient = &http.Client{
@@ -188,6 +211,10 @@ func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 		httpReq.Header.Set(k, v)
 	}
 
+	// Tag the request's User-Agent, appending to (not replacing) whatever
+	// the headers above already set. See applyUserAgentSuffix.
+	applyUserAgentSuffix(httpReq.Header)
+
 	// Set content type for JSON body
 	if req.Body != nil && httpReq.Header.Get("Content-Type") == "" {
 		httpReq.Header.Set("Content-Type", "application/json")
@@ -309,6 +336,10 @@ func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, err
 	for k, v := range req.Headers {
 		httpReq.Header.Set(k, v)
 	}
+
+	// Tag the request's User-Agent, appending to (not replacing) whatever
+	// the headers above already set. See applyUserAgentSuffix.
+	applyUserAgentSuffix(httpReq.Header)
 
 	// Set content type for JSON body
 	if req.Body != nil && httpReq.Header.Get("Content-Type") == "" {

@@ -9,6 +9,8 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 const (
@@ -101,6 +103,21 @@ type Config struct {
 	// OpenAICompatibleChatLanguageModel subclass reusing Go's openai.Provider
 	// as its OpenAI-compatible base (baseten, cerebras, deepinfra).
 	AllowVideo bool
+
+	// UserAgentName selects the `ai-sdk/<name>/VERSION` User-Agent tag this
+	// provider construction adds (version.ProviderUserAgent). Every wrapper
+	// provider whose TS counterpart is its own distinct npm package (and
+	// therefore its own `ai-sdk/<name>` tag) but is implemented in Go by
+	// reusing openai.New as an OpenAI-Chat-Completions-compatible transport
+	// (cerebras, deepinfra, baseten, vercel, amazon-bedrock's Mantle gateway,
+	// google-vertex's MaaS models) must set this to that TS package's name;
+	// leaving it empty here would wrongly tag those providers' requests
+	// "ai-sdk/openai". Defaults to "openai" — unless Headers already carries
+	// a "user-agent" entry (case-insensitive), meaning the caller (e.g. the
+	// azure package, whose own TS package already applies its own
+	// `ai-sdk/azure` tag before reaching here) has already tagged the
+	// request and no further tag should be appended.
+	UserAgentName string
 }
 
 // New creates a new OpenAI provider with the given configuration
@@ -135,9 +152,20 @@ func New(cfg Config) *Provider {
 		headers["OpenAI-Project"] = cfg.Project
 	}
 
+	mergedHeaders := http.MergeHeaders(headers, cfg.Headers)
+	uaName := cfg.UserAgentName
+	if uaName == "" && !providerutils.HasUserAgent(mergedHeaders) {
+		uaName = "openai"
+	}
+	var uaSuffix string
+	if uaName != "" {
+		uaSuffix = version.ProviderUserAgent(uaName)
+	}
+	mergedHeaders = version.WithUserAgentSuffix(mergedHeaders, uaSuffix)
+
 	client := http.NewClient(http.Config{
 		BaseURL:    baseURL,
-		Headers:    http.MergeHeaders(headers, cfg.Headers),
+		Headers:    mergedHeaders,
 		HTTPClient: cfg.HTTPClient,
 	})
 

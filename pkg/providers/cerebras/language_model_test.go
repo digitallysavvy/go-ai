@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -85,8 +86,10 @@ func (m *mockCerebrasBaseModel) DoStream(context.Context, *provider.GenerateOpti
 func TestCerebrasLanguageModelUsesChatCompletions(t *testing.T) {
 	var gotPath string
 	var gotBody map[string]interface{}
+	var gotUserAgent string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
+		gotUserAgent = r.Header.Get("User-Agent")
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","model":"llama3.1-8b","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
@@ -117,6 +120,17 @@ func TestCerebrasLanguageModelUsesChatCompletions(t *testing.T) {
 		}
 		if result.Text != "hi" {
 			t.Fatalf("%s text = %q", factory, result.Text)
+		}
+		// Cerebras is implemented by reusing pkg/providers/openai as its
+		// Chat-Completions-compatible transport, but TS cerebras-provider.ts
+		// has its own `ai-sdk/cerebras/VERSION` tag, distinct from
+		// @ai-sdk/openai's own `ai-sdk/openai/VERSION`. openai.Config's
+		// UserAgentName field is what makes that distinction reach the wire.
+		if !strings.HasPrefix(gotUserAgent, "ai-sdk/cerebras/") {
+			t.Fatalf("%s User-Agent = %q, want ai-sdk/cerebras/... prefix", factory, gotUserAgent)
+		}
+		if strings.Contains(gotUserAgent, "ai-sdk/openai/") {
+			t.Fatalf("%s User-Agent = %q, must not carry the ai-sdk/openai tag", factory, gotUserAgent)
 		}
 	}
 }

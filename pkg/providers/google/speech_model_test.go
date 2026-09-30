@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -55,7 +56,7 @@ func TestGoogleSpeechModelRequestAndWAVResponse(t *testing.T) {
 	if capturedKey != "test-key" {
 		t.Fatalf("x-goog-api-key = %q", capturedKey)
 	}
-	if capturedUserAgent != "go-ai/google/0.5.0" {
+	if !strings.HasPrefix(capturedUserAgent, "ai-sdk/google/0.5.0 ") {
 		t.Fatalf("User-Agent = %q", capturedUserAgent)
 	}
 	contents := capturedBody["contents"].([]interface{})

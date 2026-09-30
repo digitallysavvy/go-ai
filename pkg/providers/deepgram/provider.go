@@ -6,6 +6,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // Provider implements the provider.Provider interface for Deepgram
@@ -35,10 +36,10 @@ func New(cfg Config) *Provider {
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: map[string]string{
+		Headers: version.WithUserAgentSuffix(map[string]string{
 			"Authorization": "Token " + cfg.APIKey,
 			"Content-Type":  "application/json",
-		},
+		}, version.ProviderUserAgent("deepgram")),
 	})
 
 	return &Provider{

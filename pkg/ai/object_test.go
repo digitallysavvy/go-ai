@@ -14,6 +14,41 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
+// TestGenerateObject_AppendsAIUserAgent mirrors TS generate-object.ts, which
+// tags every call's headers with `ai/${VERSION}` via withUserAgentSuffix
+// before the onStart/onStepStart callbacks fire and before the model call.
+// StreamObject has no such call in TS (generate-object/stream-object.ts) and
+// so is deliberately not tagged.
+func TestGenerateObject_AppendsAIUserAgent(t *testing.T) {
+	t.Parallel()
+
+	var capturedHeaders map[string]string
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			capturedHeaders = opts.Headers
+			return &types.GenerateResult{Text: `{"name": "John"}`, FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+
+	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+		"type":       "object",
+		"properties": map[string]interface{}{"name": map[string]interface{}{"type": "string"}},
+	})
+
+	_, err := GenerateObject(context.Background(), GenerateObjectOptions{
+		Model:  model,
+		Prompt: "Generate a person",
+		Schema: testSchema,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedHeaders["user-agent"] != "ai/0.5.0" {
+		t.Fatalf("user-agent = %q, want ai/0.5.0", capturedHeaders["user-agent"])
+	}
+}
+
 func TestGenerateObject_ObjectMode(t *testing.T) {
 	t.Parallel()
 

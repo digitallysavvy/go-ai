@@ -282,6 +282,20 @@ func TestTranscriptionModel_DoStream_RequiresAPIKey(t *testing.T) {
 // key from each header source separately (rather than from an
 // already-merged map) avoids depending on Go's unspecified map iteration
 // order when the two sources use different casings of x-goog-api-key.
+// TestTranscriptionModel_BaseHeadersCarryUserAgentTag mirrors TS
+// google-transcription-model.ts's doStream, which reuses `this.config.headers()`
+// -- the same tagged getHeaders() closure used for REST calls -- for the
+// WebSocket handshake, so it carries the `ai-sdk/google/VERSION` tag too.
+func TestTranscriptionModel_BaseHeadersCarryUserAgentTag(t *testing.T) {
+	p := New(Config{APIKey: "provider-level-key"})
+	m := NewTranscriptionModel(p, ModelGemini35TranscribeLive)
+
+	ua := m.baseTranscriptionHeaders()["user-agent"]
+	if !strings.HasPrefix(ua, "ai-sdk/google/") {
+		t.Fatalf("user-agent = %q, want ai-sdk/google/... prefix", ua)
+	}
+}
+
 func TestTranscriptionModel_DoStream_PerCallAPIKeyOverridesProviderLevel(t *testing.T) {
 	p := New(Config{APIKey: "provider-level-key"})
 	m := NewTranscriptionModel(p, ModelGemini35TranscribeLive)

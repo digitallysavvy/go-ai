@@ -12,6 +12,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // SpeechModel represents an LMNT speech synthesis model
@@ -68,6 +69,11 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	for key, value := range opts.Headers {
 		req.Header.Set(key, value)
 	}
+	req.Header.Set("User-Agent", providerutils.WithUserAgentSuffix(
+		map[string]string{"user-agent": req.Header.Get("User-Agent")},
+		version.ProviderUserAgent("lmnt"),
+		providerutils.RuntimeEnvironmentUserAgent(),
+	)["user-agent"])
 
 	// Send request
 	client := &http.Client{}

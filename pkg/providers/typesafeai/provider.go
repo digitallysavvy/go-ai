@@ -12,6 +12,7 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // DefaultBaseURL is the default TypeSafe AI API base URL.
@@ -84,7 +85,7 @@ func (p *Provider) resolveHeaders() (map[string]string, error) {
 	for k, v := range p.config.Headers {
 		headers[k] = v
 	}
-	return headers, nil
+	return version.WithUserAgentSuffix(headers, version.ProviderUserAgent("typesafe-ai")), nil
 }
 
 // EvaluationModel returns an evaluation model by ID. Mirrors TypeScript's

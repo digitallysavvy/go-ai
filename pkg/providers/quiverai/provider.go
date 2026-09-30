@@ -52,11 +52,10 @@ func resolveQuiverAIConfig(cfg Config) (apiKey, baseURL string) {
 // QUIVERAI_API_KEY and QUIVERAI_BASE_URL to mirror the TypeScript SDK.
 func New(cfg Config) *Provider {
 	apiKey, baseURL := resolveQuiverAIConfig(cfg)
-	headers := internalhttp.MergeHeaders(map[string]string{
+	headers := version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{
 		"Authorization": "Bearer " + apiKey,
 		"Content-Type":  "application/json",
-		"User-Agent":    "go-ai/quiverai",
-	}, cfg.Headers)
+	}, cfg.Headers), version.ProviderUserAgent("quiverai"))
 	return &Provider{
 		config: cfg,
 		client: internalhttp.NewClient(internalhttp.Config{

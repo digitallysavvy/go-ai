@@ -15,6 +15,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 	"golang.org/x/net/websocket"
 )
 
@@ -116,6 +117,11 @@ func (m *GeminiTranscriptionModel) DoStream(ctx context.Context, opts *provider.
 	for k, v := range m.provider.config.Headers {
 		wsHeaders[k] = v
 	}
+	// TS google-vertex-gemini-transcription-model.ts reuses
+	// this.config.headers() -- the same tagged getHeaders() closure used for
+	// REST calls -- so the WS handshake carries the `ai-sdk/google-vertex/
+	// VERSION` tag too.
+	wsHeaders = version.WithUserAgentSuffix(wsHeaders, version.ProviderUserAgent("google-vertex"))
 	for k, v := range opts.Headers {
 		wsHeaders[k] = v
 	}

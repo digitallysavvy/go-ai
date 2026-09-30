@@ -6,6 +6,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // Provider implements the provider.Provider interface for Black Forest Labs (FLUX)
@@ -46,10 +47,10 @@ func New(cfg Config) *Provider {
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: http.MergeHeaders(map[string]string{
+		Headers: version.WithUserAgentSuffix(http.MergeHeaders(map[string]string{
 			"X-Key":        cfg.APIKey,
 			"Content-Type": "application/json",
-		}, cfg.Headers),
+		}, cfg.Headers), version.ProviderUserAgent("black-forest-labs")),
 	})
 
 	return &Provider{

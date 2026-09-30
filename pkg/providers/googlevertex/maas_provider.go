@@ -226,6 +226,10 @@ func (p *MaaSProvider) init() error {
 		BaseURL:          baseURL,
 		HTTPClient:       httpClient,
 		ChatProviderName: "vertex.maas",
+		// TS google-vertex-maas-provider.ts builds on @ai-sdk/openai-compatible's
+		// createOpenAICompatible, which tags requests with its own
+		// `ai-sdk/openai-compatible/VERSION` (not `ai-sdk/google-vertex`).
+		UserAgentName: "openai-compatible",
 	})
 	return nil
 }

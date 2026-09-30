@@ -41,6 +41,29 @@ func TestGenerateImage_Basic(t *testing.T) {
 	}
 }
 
+// TestGenerateImage_AppendsAIUserAgent mirrors TS generate-image.ts, which
+// tags every call's headers with `ai/${VERSION}` via withUserAgentSuffix
+// before the model call.
+func TestGenerateImage_AppendsAIUserAgent(t *testing.T) {
+	var capturedHeaders map[string]string
+	m := &testutil.MockImageModel{
+		DoGenerateFunc: func(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
+			capturedHeaders = opts.Headers
+			return &types.ImageResult{Image: []byte("img"), MimeType: "image/png"}, nil
+		},
+	}
+	_, err := GenerateImage(context.Background(), GenerateImageOptions{
+		Model:  m,
+		Prompt: "cat",
+	})
+	if err != nil {
+		t.Fatalf("GenerateImage() error = %v", err)
+	}
+	if capturedHeaders["user-agent"] != "ai/0.5.0" {
+		t.Fatalf("user-agent = %q, want ai/0.5.0", capturedHeaders["user-agent"])
+	}
+}
+
 func TestGenerateImage_Base64ImagesDecodeToGeneratedFiles(t *testing.T) {
 	m := &testutil.MockImageModel{
 		DoGenerateFunc: func(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
@@ -431,8 +454,8 @@ func TestGenerateSpeechAndTranscribe_Basic(t *testing.T) {
 			if opts.MimeType != "audio/wav" {
 				t.Fatalf("transcription media type = %q, want audio/wav", opts.MimeType)
 			}
-			if opts.Headers["user-agent"] != "go-ai/0.5.0" {
-				t.Fatalf("transcription user-agent = %q, want go-ai/0.5.0", opts.Headers["user-agent"])
+			if opts.Headers["user-agent"] != "ai/0.5.0" {
+				t.Fatalf("transcription user-agent = %q, want ai/0.5.0", opts.Headers["user-agent"])
 			}
 			if opts.ProviderOptions == nil || len(opts.ProviderOptions) != 0 {
 				t.Fatalf("provider options = %#v, want empty map", opts.ProviderOptions)
@@ -542,7 +565,7 @@ func TestTranscribe_AudioURLCustomDownloadMatchesTypeScript(t *testing.T) {
 			if opts.MimeType != "audio/wav" {
 				t.Fatalf("media type = %q, want detected audio/wav", opts.MimeType)
 			}
-			if opts.Headers["user-agent"] != "custom-agent go-ai/0.5.0" {
+			if opts.Headers["user-agent"] != "custom-agent ai/0.5.0" {
 				t.Fatalf("user-agent = %q", opts.Headers["user-agent"])
 			}
 			return &types.TranscriptionResult{

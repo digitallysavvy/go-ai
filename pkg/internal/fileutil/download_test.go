@@ -38,6 +38,55 @@ func TestDownload_Success(t *testing.T) {
 	}
 }
 
+// TestDownload_SetsSDKUserAgent mirrors TS packages/ai/src/util/download/download.ts's
+// `withUserAgentSuffix({}, ai-sdk/${VERSION}, getRuntimeEnvironmentUserAgent())`:
+// remote-file downloads are tagged with the SDK-wide (not provider-specific)
+// tag plus the runtime tag. Owner decision 2026-09-30 reverses the earlier
+// "no custom User-Agent" default.
+func TestDownload_SetsSDKUserAgent(t *testing.T) {
+	var capturedUA string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedUA = r.Header.Get("User-Agent")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data"))
+	}))
+	defer server.Close()
+
+	if _, err := Download(context.Background(), server.URL, insecureDownloadOptions()); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if !strings.HasPrefix(capturedUA, "ai-sdk/") {
+		t.Fatalf("User-Agent = %q, want ai-sdk/... prefix", capturedUA)
+	}
+	if !strings.Contains(capturedUA, "runtime/go/") {
+		t.Fatalf("User-Agent = %q, want a runtime/go/... suffix", capturedUA)
+	}
+}
+
+// TestDownload_AppendsToCallerSuppliedUserAgent covers opts.Headers already
+// carrying a User-Agent: it should be kept as a prefix, matching
+// withUserAgentSuffix's append (not replace) semantics.
+func TestDownload_AppendsToCallerSuppliedUserAgent(t *testing.T) {
+	var capturedUA string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedUA = r.Header.Get("User-Agent")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data"))
+	}))
+	defer server.Close()
+
+	opts := insecureDownloadOptions()
+	opts.Headers = map[string]string{"User-Agent": "MyApp/1.0"}
+	if _, err := Download(context.Background(), server.URL, opts); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if !strings.HasPrefix(capturedUA, "MyApp/1.0 ai-sdk/") {
+		t.Fatalf("User-Agent = %q, want MyApp/1.0 ai-sdk/... prefix", capturedUA)
+	}
+}
+
 func TestDownloadWithMetadataReturnsContentType(t *testing.T) {
 	content := []byte("test content")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -234,6 +234,19 @@ func drainXAIStream(stream provider.TranscriptionStream) ([]provider.Transcripti
 }
 
 // TS: "should require channels when streaming multichannel audio"
+// TestTranscriptionModel_WSHeadersCarryUserAgentTag mirrors TS
+// xai-transcription-model.ts's doStream, which reuses `this.config.headers()`
+// -- the same tagged getHeaders() closure used for REST calls -- for the
+// WebSocket handshake, so it carries the `ai-sdk/xai/VERSION` tag too.
+func TestTranscriptionModel_WSHeadersCarryUserAgentTag(t *testing.T) {
+	m := newTestXAITranscriptionModel("http://example.invalid")
+
+	ua := m.provider.client.Headers()["user-agent"]
+	if !strings.HasPrefix(ua, "ai-sdk/xai/") {
+		t.Fatalf("user-agent = %q, want ai-sdk/xai/... prefix", ua)
+	}
+}
+
 func TestTranscriptionModel_DoStream_RequiresChannelsForMultichannel(t *testing.T) {
 	model := newTestXAITranscriptionModel("https://api.x.ai/v1")
 	rate := 16000

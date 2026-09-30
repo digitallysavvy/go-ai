@@ -10,6 +10,7 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // Config holds configuration for the Hume provider.
@@ -38,9 +39,9 @@ func New(config Config) *Provider {
 
 	client := internalhttp.NewClient(internalhttp.Config{
 		BaseURL: config.BaseURL,
-		Headers: map[string]string{
+		Headers: version.WithUserAgentSuffix(map[string]string{
 			"X-Hume-Api-Key": config.APIKey,
-		},
+		}, version.ProviderUserAgent("hume")),
 	})
 
 	return &Provider{

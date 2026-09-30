@@ -18,6 +18,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 	"golang.org/x/net/websocket"
 )
 
@@ -239,7 +240,15 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		return nil, err
 	}
 
-	headers := internalhttp.MergeHeaders(map[string]string{"xi-api-key": m.provider.config.APIKey}, opts.Headers)
+	// TS elevenlabs-transcription-model.ts's WebSocket connect reuses
+	// `this.config.headers()` (combineHeaders(this.config.headers?.(),
+	// options.headers) at elevenlabs-transcription-model.ts:313) -- the same
+	// tagged getHeaders() used for regular HTTP requests, which carries the
+	// `ai-sdk/elevenlabs/VERSION` tag. Match that here instead of building a
+	// fresh, untagged header set.
+	headers := version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{
+		"xi-api-key": m.provider.config.APIKey,
+	}, opts.Headers), version.ProviderUserAgent("elevenlabs"))
 
 	var previousText *string
 	if streaming != nil {
