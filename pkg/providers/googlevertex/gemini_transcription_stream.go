@@ -108,7 +108,7 @@ func (m *GeminiTranscriptionModel) DoStream(ctx context.Context, opts *provider.
 	// x-goog-api-key on the query string) -- resolved once up front since
 	// the handshake needs it synchronously, mirroring TS's
 	// config.headers()/webSocketHeaders resolution before connectToWebSocket.
-	token, err := m.provider.anthropicAuthToken(ctx)
+	token, err := m.provider.vertexAuthToken(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve Vertex auth token for streaming transcription: %w", err)
 	}

@@ -1,3 +1,11 @@
+// Package googlevertex implements the Go equivalent of TS's
+// @ai-sdk/google-vertex: Gemini, Anthropic (via the anthropic subpackage),
+// and Grok (via the xai subpackage) models served through Google Vertex AI,
+// alongside Vertex-hosted embedding, image, video, speech, and
+// transcription models. Gemini-family chat/generation logic is shared with
+// pkg/providers/google through pkg/providers/gemini; OAuth2 Bearer
+// authentication (or Express Mode API-key auth) and Vertex's
+// region/project-scoped base URLs are this package's own concern.
 package googlevertex
 
 import (
@@ -14,6 +22,7 @@ import (
 	anthropicprovider "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 	googleprovider "github.com/digitallysavvy/go-ai/pkg/providers/google"
 	vertexanthropic "github.com/digitallysavvy/go-ai/pkg/providers/googlevertex/anthropic"
+	vertexinternal "github.com/digitallysavvy/go-ai/pkg/providers/googlevertex/internal"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 	"golang.org/x/oauth2"
 )
@@ -133,21 +142,6 @@ func (c *cachedTokenSource) tokenFor(ctx context.Context) (string, error) {
 	return token, nil
 }
 
-type authTransport struct {
-	base      stdhttp.RoundTripper
-	tokenFunc func(ctx context.Context) (string, error)
-}
-
-func (t *authTransport) RoundTrip(req *stdhttp.Request) (*stdhttp.Response, error) {
-	clone := req.Clone(req.Context())
-	token, err := t.tokenFunc(req.Context())
-	if err != nil {
-		return nil, err
-	}
-	clone.Header.Set("Authorization", "Bearer "+token)
-	return t.base.RoundTrip(clone)
-}
-
 // New creates a new Google Vertex AI provider with the given configuration
 func New(cfg Config) (*Provider, error) {
 	if cfg.APIKey == "" {
@@ -228,9 +222,9 @@ func New(cfg Config) (*Provider, error) {
 			baseTransport = httpClient.Transport
 		}
 		httpClient = &stdhttp.Client{
-			Transport: &authTransport{
-				base: baseTransport,
-				tokenFunc: func(ctx context.Context) (string, error) {
+			Transport: &vertexinternal.AuthTransport{
+				Base: baseTransport,
+				TokenFunc: func(ctx context.Context) (string, error) {
 					// Token override bypasses cached credentials.
 					if cfg.AuthToken != nil {
 						return cfg.AuthToken(ctx)
@@ -399,12 +393,19 @@ func (p *Provider) AnthropicModel(modelID string, settings ...*anthropicprovider
 		Location:  p.config.Location,
 		BaseURL:   p.config.BaseURL,
 		Headers:   p.config.Headers,
-		AuthToken: p.anthropicAuthToken,
+		AuthToken: p.vertexAuthToken,
 	})
 	return vertexAnthropic.LanguageModelWithOptions(modelID, opts)
 }
 
-func (p *Provider) anthropicAuthToken(ctx context.Context) (string, error) {
+// vertexAuthToken resolves a bearer token for any Vertex-authenticated
+// sub-request using this provider's configured credentials (AuthToken,
+// AccessToken, or TokenSource, in that order). Despite living on the path
+// used to wire up the Anthropic sub-provider, it is provider-generic --
+// also used by the Gemini live transcription WebSocket handshake (see
+// gemini_transcription_stream.go) -- since Vertex's OAuth Bearer auth is
+// shared across every model family, not specific to Anthropic.
+func (p *Provider) vertexAuthToken(ctx context.Context) (string, error) {
 	if p.config.AuthToken != nil {
 		return p.config.AuthToken(ctx)
 	}

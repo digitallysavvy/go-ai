@@ -23,8 +23,12 @@
 // method on pkg/providers/googlevertex.Provider, with its own Google Cloud
 // auth (falling back to Application Default Credentials, like the TS
 // package's own auth module) instead of depending on that package's
-// unexported auth transport (which would also create an import cycle if
-// googlevertex ever added a convenience factory here).
+// unexported provider type or ADC-fallback logic. The one piece of auth
+// plumbing that is identical either way -- an http.RoundTripper that sets
+// the Authorization Bearer header -- is a shared, provider-agnostic helper
+// imported from pkg/providers/googlevertex/internal (a leaf package neither
+// this package nor the parent googlevertex package needs to avoid), rather
+// than duplicated here.
 package xai
 
 import (
@@ -36,6 +40,7 @@ import (
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	vertexinternal "github.com/digitallysavvy/go-ai/pkg/providers/googlevertex/internal"
 	"golang.org/x/oauth2"
 )
 
@@ -121,7 +126,7 @@ func New(cfg Config) (*Provider, error) {
 	}
 	authedClient := &http.Client{
 		Timeout:   timeout,
-		Transport: &authTransport{base: baseTransport, tokenFunc: cfg.resolveAuthToken()},
+		Transport: &vertexinternal.AuthTransport{Base: baseTransport, TokenFunc: cfg.resolveAuthToken()},
 	}
 
 	client := internalhttp.NewClient(internalhttp.Config{

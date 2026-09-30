@@ -3,7 +3,6 @@ package xai
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"sync"
 
 	"golang.org/x/oauth2"
@@ -14,27 +13,6 @@ import (
 // back to Application Default Credentials, matching
 // pkg/providers/googlevertex/anthropic's defaultCloudPlatformAuth.
 const defaultCloudPlatformAuthScope = "https://www.googleapis.com/auth/cloud-platform"
-
-// authTransport injects a fresh OAuth2 Bearer token into every outgoing
-// request. Duplicated (rather than imported) from the unexported
-// authTransport types in pkg/providers/googlevertex/provider.go and
-// pkg/providers/googlevertex/anthropic/auth.go: this package intentionally
-// does not depend on the parent googlevertex package (see provider.go's
-// package doc) so it cannot reuse those.
-type authTransport struct {
-	base      http.RoundTripper
-	tokenFunc func(ctx context.Context) (string, error)
-}
-
-func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	clone := req.Clone(req.Context())
-	token, err := t.tokenFunc(req.Context())
-	if err != nil {
-		return nil, err
-	}
-	clone.Header.Set("Authorization", "Bearer "+token)
-	return t.base.RoundTrip(clone)
-}
 
 // resolveAuthToken builds a token-resolver function from Config, mirroring
 // TS's node/edge createGoogleVertexXai wrappers (google-vertex-xai-provider-node.ts
