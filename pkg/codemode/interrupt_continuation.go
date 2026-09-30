@@ -4,40 +4,89 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"regexp"
+	"strconv"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
-// replayRecord is one completed host tool call recorded in call order.
-// Continuation.Token is the JSON encoding of a []replayRecord: every call
-// completed before the (at most one, for continuations this package
-// produces; see the package doc) pending interruption. Resuming decodes it
-// back and short-circuits calls 0..len(ledger)-1 with the recorded
-// OutputJSON instead of re-invoking the real host tool, so side effects
-// never repeat.
+// replayRecord is one completed host tool call's recorded (tool name,
+// input, output). Continuation.Token is the JSON encoding of a
+// map[int]replayRecord (see encodeReplayLedger), keyed by each call's
+// 0-based dispatch index: every call that had completed by the time this
+// continuation's interruption batch was collected. Since CM3 (concurrent
+// approval batching), this is sparse rather than a call-order prefix: a
+// later-dispatched call can complete -- and be recorded -- before an
+// earlier-dispatched one that is still pending approval in the same batch
+// (e.g. `Promise.all([tools.guarded(x), tools.free(y)])`, where "free"
+// needs no approval), so the ledger cannot be a plain "calls
+// 0..len(ledger)-1" list; see the package doc's "Deterministic replay"
+// section. Resuming decodes it back and short-circuits exactly the call
+// indices present in it with their recorded OutputJSON instead of
+// re-invoking the real host tool, so side effects never repeat -- an index
+// absent from the ledger executes for real (or applies resume semantics;
+// see resumePendings/resumeResolutions in toolBridge) regardless of
+// whether it is less than the highest recorded index.
 type replayRecord struct {
 	ToolName   string `json:"toolName"`
 	InputJSON  string `json:"inputJson"`
 	OutputJSON string `json:"outputJson"`
 }
 
-func encodeReplayLedger(records []replayRecord) (string, error) {
-	if records == nil {
-		records = []replayRecord{}
+func encodeReplayLedger(records map[int]replayRecord) (string, error) {
+	wire := make(map[string]replayRecord, len(records))
+	for idx, rec := range records {
+		wire[strconv.Itoa(idx)] = rec
 	}
-	data, err := json.Marshal(records)
+	data, err := json.Marshal(wire)
 	if err != nil {
 		return "", NewProtocolError("Failed to encode the code mode replay ledger.", nil)
 	}
 	return string(data), nil
 }
 
-func decodeReplayLedger(token string) ([]replayRecord, error) {
-	var records []replayRecord
-	if err := json.Unmarshal([]byte(token), &records); err != nil {
+func decodeReplayLedger(token string) (map[int]replayRecord, error) {
+	var wire map[string]replayRecord
+	if err := json.Unmarshal([]byte(token), &wire); err != nil {
 		return nil, NewProtocolError("Code mode continuation token could not be decoded by this implementation.", nil)
 	}
+	records := make(map[int]replayRecord, len(wire))
+	for key, rec := range wire {
+		idx, err := strconv.Atoi(key)
+		if err != nil || idx < 0 {
+			return nil, NewProtocolError("Code mode continuation token could not be decoded by this implementation.", nil)
+		}
+		records[idx] = rec
+	}
 	return records, nil
+}
+
+// runInterruptionIndexPattern matches the RunInterruptionID format
+// toolBridge.raiseInterrupt generates ("interrupt-%d", 1-based call
+// number), mirroring TypeScript's interruptionIndex
+// (code-mode/src/run-code-mode.ts: /^interrupt-(\d+)$/).
+var runInterruptionIndexPattern = regexp.MustCompile(`^interrupt-(\d+)$`)
+
+// callIndexForPending returns pending's 0-based dispatch call index,
+// parsed from its RunInterruptionID. Every PendingInterruption this
+// package produces has one in exactly this shape; a malformed one (e.g.
+// from a hand-built or foreign continuation) is a protocol error.
+func callIndexForPending(pending PendingInterruption) (int, error) {
+	match := runInterruptionIndexPattern.FindStringSubmatch(pending.RunInterruptionID)
+	if match == nil {
+		return 0, NewProtocolError(
+			"Code mode continuation has a malformed pending interruption id.",
+			map[string]interface{}{"runInterruptionId": pending.RunInterruptionID},
+		)
+	}
+	n, err := strconv.Atoi(match[1])
+	if err != nil || n < 1 {
+		return 0, NewProtocolError(
+			"Code mode continuation has a malformed pending interruption id.",
+			map[string]interface{}{"runInterruptionId": pending.RunInterruptionID},
+		)
+	}
+	return n - 1, nil
 }
 
 // IsCodeModeInterrupt reports whether value is a valid, signed Interrupt:

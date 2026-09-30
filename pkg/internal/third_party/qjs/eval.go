@@ -33,6 +33,30 @@ func eval(c *Context, file string, flags ...EvalOptionFunc) (*Value, error) {
 	return normalizeJsValue(c, result)
 }
 
+// evalNoAutoAwait is the Go binding for QJS_EvalNoAutoAwait (see
+// pkg/internal/third_party/qjs/build/job-queue-quiescence.patch and
+// README.vendor.md). Unlike eval/QJS_Eval, it never blocks draining the
+// job queue waiting for a promise result to settle: it returns exactly
+// what evaluation produced, promise or not, settled or not, for the
+// caller to drive via Runtime.RunPendingJobs/Value.PromiseState/
+// Value.PromiseResult. Only non-module, non-FlagAsync evaluation is
+// supported (see QJS_EvalNoAutoAwait's C doc comment for why); flags may
+// not set TypeModule() or FlagAsync().
+func evalNoAutoAwait(c *Context, file string, flags ...EvalOptionFunc) (*Value, error) {
+	if file == "" {
+		return nil, ErrInvalidFileName
+	}
+
+	option := createEvalOption(c, file, flags...)
+
+	evalOptions := option.Handle()
+	defer option.Free()
+
+	result := c.Call("QJS_EvalNoAutoAwait", c.Raw(), evalOptions)
+
+	return normalizeJsValue(c, result)
+}
+
 func compile(c *Context, file string, flags ...EvalOptionFunc) (_ []byte, err error) {
 	option := createEvalOption(c, file, flags...)
 

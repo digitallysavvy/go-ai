@@ -24,58 +24,83 @@ type toolBridge struct {
 	policy        resolvedPolicy
 	outerToolCall string
 
-	// replayLedger holds calls 0..len(replayLedger)-1 from a prior
-	// invocation of the identical source, in call order; invoke
-	// short-circuits them with their recorded output instead of calling
-	// the real host tool. nil on a fresh (non-continuation) invocation.
-	replayLedger []replayRecord
+	// replayLedger holds every call from a prior invocation of the
+	// identical source that had already completed, keyed by its 0-based
+	// call index (see replayRecord's doc comment for why this is sparse,
+	// not a "calls 0..N-1" prefix, since CM3's concurrent batching); invoke
+	// short-circuits an index present here with its recorded output
+	// instead of calling the real host tool. nil on a fresh
+	// (non-continuation) invocation.
+	replayLedger map[int]replayRecord
 
-	// resumePendings/resumeResolutions cover calls
-	// len(replayLedger)..len(replayLedger)+len(resumePendings)-1: each is
-	// resumed with its resolution (skipping approval, for the approval
+	// resumePendings/resumeResolutions cover exactly the call indices of
+	// the continuation's PendingInterruptions (recovered from each one's
+	// RunInterruptionID via callIndexForPending, not from their position
+	// in the batch -- see prepareContinuation in run_code_mode.go): each
+	// is resumed with its resolution (skipping approval, for the approval
 	// kind, or populating types.ToolExecutionOptions.CodeModeInterrupt,
-	// for any other kind) instead of interrupting again. Parallel slices;
-	// nil/empty on a fresh invocation. Calls beyond this range execute for
-	// real, exactly like a fresh invocation.
-	resumePendings    []PendingInterruption
-	resumeResolutions []interface{}
+	// for any other kind) instead of interrupting again. Parallel maps,
+	// keyed by call index; nil/empty on a fresh invocation. A call index
+	// present in neither replayLedger nor here executes for real, exactly
+	// like a fresh invocation.
+	resumePendings    map[int]PendingInterruption
+	resumeResolutions map[int]interface{}
 
 	mu           sync.Mutex
 	requestCount int
 
-	// committed accumulates every call resolved so far, in order --
-	// short-circuited replay calls and resumed/fresh real calls alike --
-	// so a *new* interrupt raised later in this same invocation can encode
-	// the next continuation's replay ledger from it (see
-	// buildInterruptResult in run_code_mode.go).
-	committed []replayRecord
+	// committed accumulates every call resolved so far this invocation,
+	// keyed by its 0-based call index (see replayRecord's doc comment for
+	// why this must be index-keyed rather than append-ordered: a
+	// later-dispatched call can settle before an earlier-dispatched one
+	// still pending approval in the same batch) -- short-circuited replay
+	// calls and resumed/fresh real calls alike -- so a *new* interrupt
+	// raised later in this same invocation can encode the next
+	// continuation's replay ledger from it (see buildInterruptResult in
+	// run_code_mode.go).
+	committed map[int]replayRecord
 
-	// pendingNew/pendingNewIndex record the most recent call that decided
-	// to interrupt (approval under ApprovalModeInterrupt, or a host tool
-	// calling RequestCodeModeInterrupt), together with the 0-based call
-	// index it happened at. RunCodeMode inspects this after the sandbox
-	// returns to tell a genuine escaping interrupt (sandbox failed, and
-	// this is the most recent failure -- see lastCodeModeErrIndex) from a
-	// *DetachedBridgeRequestError (sandbox nonetheless "succeeded",
-	// meaning the sandboxed script caught and discarded the interrupt
-	// instead of letting it unwind -- see the package doc).
-	pendingNew      *PendingInterruption
-	pendingNewIndex int
+	// pendingBatch accumulates every call that decided to interrupt
+	// (approval under ApprovalModeInterrupt, or a host tool calling
+	// RequestCodeModeInterrupt) during the current invocation, in the call
+	// order each one was dispatched. A dispatch that decides to interrupt
+	// never resolves or rejects its own Promise (see invoke's doc comment
+	// and bindCodeModeDispatch in run_code_mode.go): the sandboxed script
+	// keeps running -- issuing further concurrent dispatches, e.g. the
+	// rest of a `Promise.all([...])` array -- until the job queue goes
+	// quiescent (runInSandbox's poll loop, driven by
+	// qjs.Context.RunPendingJobs), at which point every entry collected
+	// here so far is surfaced together as one multi-item Interrupt batch.
+	// This is what lets Promise.all([tools.a(x), tools.b(y)]), where both
+	// need approval, produce a single two-item Continuation instead of two
+	// single-item ones chained together.
+	pendingBatch []PendingInterruption
 
-	// lastCodeModeErr/lastCodeModeErrIndex record the most recent
-	// CodeModeError produced by a bridge call, so RunCodeMode can
-	// re-surface the original typed error instead of the generic
-	// JavaScript exception text that comes back once it round-trips
-	// through the sandbox (mirrors TypeScript's codeModeErrors
-	// accumulator / findPreservedCodeModeError). The index lets RunCodeMode
-	// prefer whichever of this or pendingNew happened later, when a script
-	// catches an earlier failure of one kind and a later one of the other
-	// kind escapes uncaught.
-	lastCodeModeErr      CodeModeError
-	lastCodeModeErrIndex int
+	// fatalErr, once set, wins over everything else once runInSandbox next
+	// polls the bridge: an aborted context or an exceeded bridge-request
+	// limit must stop the whole invocation immediately, not just the one
+	// call that observed it (mirrors TypeScript's failTerminal, which
+	// aborts the entire worker run for exactly these two conditions,
+	// outside the per-call promise machinery entirely -- see
+	// run-code-mode.ts's markWorkerRequest). Every other bridge failure
+	// (an unknown tool, a failing tool.Execute, a denied callback-mode
+	// approval, an oversized payload, ...) only rejects its own call's
+	// Promise, exactly as TypeScript's invokeCodeModeTool throwing inside
+	// one `__codeMode.toolN` async host function only rejects that one
+	// call.
+	fatalErr CodeModeError
+
+	// lastTypedErr/lastTypedErrIndex record the most recent CodeModeError
+	// produced by a bridge call, so RunCodeMode can re-surface the
+	// original typed error (via the lastCodeModeErr getter) instead of the
+	// generic JavaScript exception text that comes back once it
+	// round-trips through the sandbox (mirrors TypeScript's
+	// codeModeErrors accumulator / findPreservedCodeModeError).
+	lastTypedErr      CodeModeError
+	lastTypedErrIndex int
 }
 
-func newToolBridge(ctx context.Context, input RunInput, options *Options, policy resolvedPolicy, outerToolCall string, replayLedger []replayRecord, resumePendings []PendingInterruption, resumeResolutions []interface{}) *toolBridge {
+func newToolBridge(ctx context.Context, input RunInput, options *Options, policy resolvedPolicy, outerToolCall string, replayLedger map[int]replayRecord, resumePendings map[int]PendingInterruption, resumeResolutions map[int]interface{}) *toolBridge {
 	base := types.ToolExecutionOptions{}
 	if input.ToolExecutionOptions != nil {
 		base = *input.ToolExecutionOptions
@@ -90,6 +115,7 @@ func newToolBridge(ctx context.Context, input RunInput, options *Options, policy
 		replayLedger:      replayLedger,
 		resumePendings:    resumePendings,
 		resumeResolutions: resumeResolutions,
+		committed:         make(map[int]replayRecord),
 	}
 }
 
@@ -100,8 +126,8 @@ func (b *toolBridge) invoke(toolName, inputJSON string) (outputJSON string, err 
 		if err != nil {
 			if cmErr, ok := err.(CodeModeError); ok {
 				b.mu.Lock()
-				b.lastCodeModeErr = cmErr
-				b.lastCodeModeErrIndex = b.requestCount
+				b.lastTypedErr = cmErr
+				b.lastTypedErrIndex = b.requestCount
 				b.mu.Unlock()
 			}
 		}
@@ -126,11 +152,13 @@ func (b *toolBridge) invoke(toolName, inputJSON string) (outputJSON string, err 
 	// Short-circuit a call already resolved by a prior invocation of this
 	// same source: return its recorded result without touching the real
 	// host tool, so side effects never repeat. Mirrors TypeScript's
-	// deterministic replay of a resumed run.
-	if idx < len(b.replayLedger) {
-		rec := b.replayLedger[idx]
+	// deterministic replay of a resumed run. Keyed by call index, not
+	// position (see replayLedger's doc comment): a later-dispatched call
+	// can have settled, and so be present here, while an earlier-dispatched
+	// one is not.
+	if rec, ok := b.replayLedger[idx]; ok {
 		b.mu.Lock()
-		b.committed = append(b.committed, rec)
+		b.committed[idx] = rec
 		b.mu.Unlock()
 		return rec.OutputJSON, nil
 	}
@@ -182,12 +210,11 @@ func (b *toolBridge) invoke(toolName, inputJSON string) (outputJSON string, err 
 	execOptions.ToolCallID = toolCallID
 
 	// Determine whether this call is resuming a previously pending
-	// interruption (see the replayLedger/resumePendings doc above).
+	// interruption (see the replayLedger/resumePendings doc above), keyed
+	// by call index directly.
 	skipApproval := false
-	resumeOffset := idx - len(b.replayLedger)
-	if resumeOffset >= 0 && resumeOffset < len(b.resumePendings) {
-		pending := b.resumePendings[resumeOffset]
-		resolution := b.resumeResolutions[resumeOffset]
+	if pending, ok := b.resumePendings[idx]; ok {
+		resolution := b.resumeResolutions[idx]
 		if pending.Payload.Kind() == ToolApprovalKind {
 			decision, derr := normalizeApprovalResolution(resolution)
 			if derr != nil {
@@ -246,16 +273,26 @@ func (b *toolBridge) invoke(toolName, inputJSON string) (outputJSON string, err 
 		return "", jerr
 	}
 	b.mu.Lock()
-	b.committed = append(b.committed, replayRecord{ToolName: toolName, InputJSON: inputJSON, OutputJSON: outJSON})
+	b.committed[idx] = replayRecord{ToolName: toolName, InputJSON: inputJSON, OutputJSON: outJSON}
 	b.mu.Unlock()
 	return outJSON, nil
 }
 
 // raiseInterrupt records the call at index n-1 (1-based n, matching
-// invoke's toolCallID numbering) as the invocation's pending interruption
-// and returns the sentinel error that unwinds the sandboxed script.
-// RunCodeMode inspects toolBridge.pendingNew after the sandbox returns to
-// build the resulting Interrupt/Continuation (see buildInterruptResult).
+// invoke's toolCallID numbering) as one of the invocation's pending
+// interruptions (see pendingBatch's doc comment) and returns the sentinel
+// error bindCodeModeDispatch recognizes to leave this call's Promise
+// deliberately unresolved instead of rejecting it, so the sandboxed script
+// keeps making synchronous progress (e.g. the rest of a concurrent
+// Promise.all array) until nothing more can run.
+//
+// Enforces policy.MaxInFlightBridgeRequests against the batch collected so
+// far: TypeScript enforces the same limit (run-code-mode.ts's
+// maxInFlightBridgeRequests -> run's RunLimits.maxInFlightBridgeRequests)
+// against however many host calls are concurrently dispatched-but-not-yet-
+// settled; in this port that count is exactly len(pendingBatch), since
+// every non-interrupting call already resolves synchronously before the
+// next dispatch happens (see invoke).
 func (b *toolBridge) raiseInterrupt(toolName string, input interface{}, toolCallID string, n int, payload InterruptPayload) error {
 	pending := PendingInterruption{
 		RunInterruptionID: fmt.Sprintf("interrupt-%d", n),
@@ -266,17 +303,24 @@ func (b *toolBridge) raiseInterrupt(toolName string, input interface{}, toolCall
 		Payload:           payload,
 	}
 	b.mu.Lock()
-	b.pendingNew = &pending
-	b.pendingNewIndex = n
-	b.mu.Unlock()
+	defer b.mu.Unlock()
+	if b.policy.MaxInFlightBridgeRequests > 0 && len(b.pendingBatch) >= b.policy.MaxInFlightBridgeRequests {
+		b.fatalErr = NewBridgeLimitError(
+			fmt.Sprintf("Code mode exceeded the %d in-flight bridge request limit.", b.policy.MaxInFlightBridgeRequests),
+			map[string]interface{}{"maxInFlightBridgeRequests": b.policy.MaxInFlightBridgeRequests},
+		)
+		return b.fatalErr
+	}
+	b.pendingBatch = append(b.pendingBatch, pending)
 	return &interruptUnwind{pending: pending}
 }
 
 // interruptUnwind is the sentinel error returned by invoke when a call
-// raises a pending interruption, propagated as a JS exception the way any
-// other bridge error is (see bindCodeModeDispatch in run_code_mode.go) so
-// it unwinds the sandboxed script -- unless the script itself catches it,
-// in which case RunCodeMode reports *DetachedBridgeRequestError (see the
+// raises a pending interruption. bindCodeModeDispatch (run_code_mode.go)
+// recognizes it by type and leaves the call's Promise deliberately
+// unresolved instead of rejecting it -- unless the sandboxed script
+// finishes (or itself settles) without ever awaiting that Promise, in
+// which case RunCodeMode reports *DetachedBridgeRequestError (see the
 // package doc).
 type interruptUnwind struct {
 	pending PendingInterruption
@@ -284,6 +328,56 @@ type interruptUnwind struct {
 
 func (e *interruptUnwind) Error() string {
 	return fmt.Sprintf("Code mode execution paused: tool %q requested an interruption (kind=%q).", e.pending.ToolName, e.pending.Payload.Kind())
+}
+
+// batchSnapshot returns a copy of the interruptions collected so far (see
+// pendingBatch's doc comment).
+func (b *toolBridge) batchSnapshot() []PendingInterruption {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.pendingBatch) == 0 {
+		return nil
+	}
+	return append([]PendingInterruption(nil), b.pendingBatch...)
+}
+
+// committedSnapshot returns a copy of every call resolved so far, keyed by
+// call index (see the committed field's doc comment).
+func (b *toolBridge) committedSnapshot() map[int]replayRecord {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	snap := make(map[int]replayRecord, len(b.committed))
+	for idx, rec := range b.committed {
+		snap[idx] = rec
+	}
+	return snap
+}
+
+// lastCodeModeErr returns the most recent typed CodeModeError a bridge
+// call produced, if any (see lastTypedErr's doc comment).
+func (b *toolBridge) lastCodeModeErr() CodeModeError {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.lastTypedErr
+}
+
+// fatal returns the invocation's fatal error, if any (see fatalErr's doc
+// comment).
+func (b *toolBridge) fatal() CodeModeError {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.fatalErr
+}
+
+// setFatal records err as the invocation's fatal error unless one is
+// already recorded (first one wins, matching TypeScript's failTerminal
+// being a no-op once terminalReached is set).
+func (b *toolBridge) setFatal(err CodeModeError) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.fatalErr == nil {
+		b.fatalErr = err
+	}
 }
 
 func (b *toolBridge) resolveApproval(tool types.Tool, toolName string, input map[string]interface{}, toolCallID string, n int) error {

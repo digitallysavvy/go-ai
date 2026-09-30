@@ -225,6 +225,13 @@ func (r *Runtime) Eval(file string, flags ...EvalOptionFunc) (*Value, error) {
 	return r.context.Eval(file, flags...)
 }
 
+// EvalNoAutoAwait executes JavaScript code in the runtime's context
+// without automatically awaiting a promise result -- see
+// Context.EvalNoAutoAwait.
+func (r *Runtime) EvalNoAutoAwait(file string, flags ...EvalOptionFunc) (*Value, error) {
+	return r.context.EvalNoAutoAwait(file, flags...)
+}
+
 // Compile compiles JavaScript code to bytecode without executing it.
 func (r *Runtime) Compile(file string, flags ...EvalOptionFunc) ([]byte, error) {
 	return r.context.Compile(file, flags...)
@@ -243,6 +250,38 @@ func (r *Runtime) Call(name string, args ...uint64) *Handle {
 // CallUnPack calls a WebAssembly function and unpacks the returned pointer.
 func (r *Runtime) CallUnPack(name string, args ...uint64) (uint32, uint32) {
 	return r.mem.UnpackPtr(r.Call(name, args...).raw)
+}
+
+// RunPendingJobs drains the runtime's job queue to exhaustion: it runs
+// every currently-runnable job (promise reaction callbacks, thenable
+// resolution jobs, etc.) until none remain, then returns -- regardless of
+// whether any particular promise a caller cares about has settled yet.
+// Returns the number of jobs executed (0 if the queue was already empty),
+// or an error if a job threw while running (the triggering exception is
+// left pending on r.Context(), exactly as any other failing qjs call
+// leaves it -- callers check r.Context().HasException()/Exception() the
+// same way).
+//
+// This is the Go binding for QJS_RunPendingJobs, added to qjs.wasm by
+// pkg/internal/third_party/qjs/build/job-queue-quiescence.patch (see
+// README.vendor.md). Unlike Value.Await (js_std_await), RunPendingJobs
+// never blocks waiting for one specific promise to settle and never polls
+// for external events, so it cannot hang on a promise that is
+// intentionally left pending forever. It is the primitive the code-mode
+// host bridge (pkg/codemode) polls to detect that no more synchronous
+// progress is possible in the sandbox -- every host function call
+// dispatched so far is either settled or genuinely parked awaiting
+// approval -- before batching concurrent tool-approval interrupts
+// together (e.g. from a guest `Promise.all([...])`).
+func (r *Runtime) RunPendingJobs() (int, error) {
+	ran := r.Call("QJS_RunPendingJobs", r.handle.raw).Int32()
+	if ran < 0 {
+		if r.context.HasException() {
+			return 0, r.context.Exception()
+		}
+		return 0, fmt.Errorf("qjs: a pending job failed without recording an exception")
+	}
+	return int(ran), nil
 }
 
 // Malloc allocates memory in the WebAssembly linear memory and return a pointer to it.

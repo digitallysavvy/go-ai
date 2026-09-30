@@ -42,10 +42,12 @@ type ExecutionPolicy struct {
 	// one invocation. Default: 256.
 	MaxBridgeRequests int
 
-	// MaxInFlightBridgeRequests bounds concurrently outstanding host tool
-	// calls. This Go port dispatches host tool calls synchronously (see
-	// package doc), so this limit is accepted for API parity but never
-	// exceeded in practice. Default: 32.
+	// MaxInFlightBridgeRequests bounds how many host tool calls may
+	// accumulate in one pending-interruption batch at once (see the
+	// package doc's "Host tool bridge dispatch" section): calls dispatched
+	// concurrently (e.g. within a Promise.all([...])) that all need
+	// approval count toward this together. Exceeding it fails the whole
+	// invocation with *BridgeLimitError. Default: 32.
 	MaxInFlightBridgeRequests int
 }
 

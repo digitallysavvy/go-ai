@@ -480,6 +480,34 @@ func (v *Value) IsPromise() bool {
 	return v.Call("QJS_IsPromise", v.Ctx(), v.Raw()).handle.Bool()
 }
 
+// PromiseStateEnum mirrors quickjs.h's JSPromiseStateEnum, as returned by
+// the vendoring patch's QJS_PromiseState export (see
+// pkg/internal/third_party/qjs/build/job-queue-quiescence.patch and
+// README.vendor.md).
+type PromiseStateEnum int32
+
+const (
+	PromiseStatePending PromiseStateEnum = iota
+	PromiseStateFulfilled
+	PromiseStateRejected
+)
+
+// PromiseState reports v's current promise state. Callers must first
+// check IsPromise(); PromiseState on a non-promise value is undefined,
+// exactly as QJS_PromiseState/JS_PromiseState's own C contract is.
+func (v *Value) PromiseState() PromiseStateEnum {
+	return PromiseStateEnum(v.Call("QJS_PromiseState", v.Ctx(), v.Raw()).handle.Int32())
+}
+
+// PromiseResult returns v's fulfillment value or rejection reason,
+// whichever PromiseState currently reports as populated. Callers must
+// only call this once PromiseState has reported PromiseStateFulfilled or
+// PromiseStateRejected, exactly as QJS_PromiseResult/JS_PromiseResult
+// require.
+func (v *Value) PromiseResult() *Value {
+	return v.Call("QJS_PromiseResult", v.Ctx(), v.Raw())
+}
+
 // Resolve resolves a promise with the given arguments.
 // This method is intended for use with Go function bindings (this.Promise() in async Go functions).
 // It will NOT work with native JavaScript promises created via "new Promise()".
