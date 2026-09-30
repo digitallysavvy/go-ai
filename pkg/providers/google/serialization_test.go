@@ -34,7 +34,7 @@ func TestGoogleSerializeAndDeserializeModel(t *testing.T) {
 	if _, ok := serialized.Config["headers"]; !ok {
 		t.Fatalf("expected serializable headers in config: %#v", serialized.Config)
 	}
-	if _, ok := serialized.Config["apiKey"]; ok {
+	if _, ok := serialized.Config["APIKey"]; ok {
 		t.Fatalf("API key must be omitted from serializable config: %#v", serialized.Config)
 	}
 
@@ -222,7 +222,7 @@ func TestGoogleSerializeAndDeserializeEmbeddingModel(t *testing.T) {
 	if serialized.Provider != "google.generative-ai" || serialized.ModelID != "gemini-embedding-001" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
-	if _, ok := serialized.Config["apiKey"]; ok {
+	if _, ok := serialized.Config["APIKey"]; ok {
 		t.Fatalf("serialized config should not include apiKey: %#v", serialized.Config)
 	}
 

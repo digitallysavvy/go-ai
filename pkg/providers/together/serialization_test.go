@@ -16,7 +16,7 @@ func TestTogetherSerializeAndDeserializeImageModel(t *testing.T) {
 	if serialized.Provider != "together" || serialized.ModelID != "black-forest-labs/FLUX.1-schnell" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
-	if _, ok := serialized.Config["apiKey"]; ok {
+	if _, ok := serialized.Config["APIKey"]; ok {
 		t.Fatalf("serialized config should not include apiKey: %#v", serialized.Config)
 	}
 

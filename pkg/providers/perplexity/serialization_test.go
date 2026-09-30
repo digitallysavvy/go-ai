@@ -35,7 +35,7 @@ func TestPerplexitySerializeAndDeserializeEmbeddingModel(t *testing.T) {
 	if serialized.Provider != "perplexity" || serialized.ModelID != "perplexity-embed" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
-	if _, ok := serialized.Config["apiKey"]; ok {
+	if _, ok := serialized.Config["APIKey"]; ok {
 		t.Fatalf("serialized config should not include apiKey: %#v", serialized.Config)
 	}
 

@@ -61,7 +61,7 @@ func TestXaiSerializeAndDeserializeImageModel(t *testing.T) {
 	if serialized.Provider != "xai.image" || serialized.ModelID != "grok-2-image" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
-	if _, ok := serialized.Config["apiKey"]; ok {
+	if _, ok := serialized.Config["APIKey"]; ok {
 		t.Fatalf("serialized config should not include apiKey: %#v", serialized.Config)
 	}
 

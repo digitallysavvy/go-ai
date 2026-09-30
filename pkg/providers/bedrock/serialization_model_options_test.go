@@ -93,7 +93,7 @@ func TestBedrockEmbeddingModelSerializeRoundTrip(t *testing.T) {
 	if serialized.Provider != "amazon-bedrock" || serialized.ModelID != "amazon.titan-embed-text-v2:0" {
 		t.Fatalf("serialized mismatch: %#v", serialized)
 	}
-	if _, ok := serialized.Config["awsAccessKeyID"]; ok {
+	if _, ok := serialized.Config["AWSAccessKeyID"]; ok {
 		t.Fatalf("serialized config should not include credentials: %#v", serialized.Config)
 	}
 	rawOpts, ok := serialized.Config["modelOptions"].(map[string]interface{})
@@ -138,7 +138,7 @@ func TestBedrockImageModelSerializeRoundTrip(t *testing.T) {
 	if serialized.Provider != "amazon-bedrock" || serialized.ModelID != "amazon.titan-image-generator-v2:0" {
 		t.Fatalf("serialized mismatch: %#v", serialized)
 	}
-	if _, ok := serialized.Config["awsSecretAccessKey"]; ok {
+	if _, ok := serialized.Config["AWSSecretAccessKey"]; ok {
 		t.Fatalf("serialized config should not include credentials: %#v", serialized.Config)
 	}
 

@@ -101,7 +101,7 @@ func TestVertexSerializeAndDeserializeEmbeddingModel(t *testing.T) {
 	if serialized.Provider != "google-vertex" || serialized.ModelID != "text-embedding-004" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
-	if _, ok := serialized.Config["accessToken"]; ok {
+	if _, ok := serialized.Config["AccessToken"]; ok {
 		t.Fatalf("access token must be omitted from serializable config: %#v", serialized.Config)
 	}
 
@@ -145,7 +145,7 @@ func TestVertexSerializeAndDeserializeImageModel(t *testing.T) {
 	if serialized.Provider != "google-vertex" || serialized.ModelID != "gemini-2.5-flash-image" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
-	if _, ok := serialized.Config["accessToken"]; ok {
+	if _, ok := serialized.Config["AccessToken"]; ok {
 		t.Fatalf("access token must be omitted from serializable config: %#v", serialized.Config)
 	}
 
@@ -191,7 +191,7 @@ func TestVertexSerializeAndDeserializeTranscriptionModel(t *testing.T) {
 	if serialized.Provider != "google.vertex.transcription" || serialized.ModelID != "chirp_3" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
-	if _, ok := serialized.Config["accessToken"]; ok {
+	if _, ok := serialized.Config["AccessToken"]; ok {
 		t.Fatalf("access token must be omitted from serializable config: %#v", serialized.Config)
 	}
 

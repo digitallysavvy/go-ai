@@ -36,7 +36,7 @@ func TestCohereSerializeAndDeserializeEmbeddingModel(t *testing.T) {
 	if serialized.Provider != "cohere" || serialized.ModelID != "embed-english-v3.0" || serialized.Config == nil {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
-	if _, ok := serialized.Config["apiKey"]; ok {
+	if _, ok := serialized.Config["APIKey"]; ok {
 		t.Fatalf("serialized config should not include apiKey: %#v", serialized.Config)
 	}
 

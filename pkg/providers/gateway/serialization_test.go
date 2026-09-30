@@ -48,7 +48,7 @@ func TestGatewaySerializeAndDeserializeEmbeddingModel(t *testing.T) {
 	if serialized.Provider != "gateway" || serialized.ModelID != "openai/text-embedding-3-small" || serialized.Config == nil {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
-	if _, ok := serialized.Config["apiKey"]; ok {
+	if _, ok := serialized.Config["APIKey"]; ok {
 		t.Fatalf("serialized config should not include apiKey: %#v", serialized.Config)
 	}
 
