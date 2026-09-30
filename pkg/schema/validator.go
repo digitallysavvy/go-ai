@@ -2,12 +2,21 @@ package schema
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
 
 	playground "github.com/go-playground/validator/v10"
 )
+
+// errCircularRef is wrapped into the error returned when a $ref cycle is
+// detected (see refGuard). "not"/"anyOf"/"oneOf" ordinarily treat a failed
+// subschema validation as "did not match" and keep going (trying the next
+// branch, or reporting success for "not"); a circular-reference error must
+// instead propagate immediately; it is a malformed schema, not a value that
+// legitimately failed one branch.
+var errCircularRef = errors.New("circular reference")
 
 // Validator validates data against a schema
 type Validator interface {
@@ -37,7 +46,7 @@ func ApplyDefaults(value interface{}, schema Schema) interface{} {
 		return value
 	}
 	root := schema.Validator().JSONSchema()
-	return applyDefaultsWithRoot(value, root, root)
+	return applyDefaultsWithRoot(value, root, root, newRefGuard())
 }
 
 // JSONSchemaValidator validates using JSON Schema
@@ -105,15 +114,67 @@ func (v *StructValidator) JSONSchema() map[string]interface{} {
 // (pkg/ai hoists $defs to the document root for exactly this reason -- see
 // output.go's ResponseFormat and object.go's hoistSchemaDefs).
 func validateJSONSchemaValue(value interface{}, schema map[string]interface{}, path string) error {
-	return validateSchemaValue(value, schema, path, schema)
+	return validateSchemaValue(value, schema, path, schema, newRefGuard())
+}
+
+// refGuard detects a $ref cycle that never consumes any data. JSON Schema
+// permits (and go-ai must keep supporting) recursive schemas that recurse
+// through actual data -- e.g. a tree node whose "children" items $ref back
+// to the node schema -- and those terminate naturally because each
+// recursive step consumes a node of the (finite) value being validated. But
+// a $ref that loops back to itself purely through schema combinators
+// (allOf/anyOf/oneOf/not) without ever passing through a "properties" or
+// "items" edge never consumes data and would otherwise recurse forever.
+// Because that recursion has no data-dependent base case, Go's recover()
+// cannot catch it either -- unbounded recursion overflows the goroutine
+// stack and crashes the whole process with an unrecoverable fatal error, so
+// this must be prevented up front rather than merely caught.
+//
+// A refGuard tracks which $ref values are currently "on the stack" for the
+// value at the current data position: entering a ref already active is a
+// cycle. It is reset to a fresh, empty guard at every edge that consumes
+// data (a property value, an array/tuple element, a pattern/additional
+// property value, a property name) and carried through unchanged across
+// edges that revalidate the very same value (a $ref resolution, or an
+// allOf/anyOf/oneOf/not branch).
+type refGuard struct {
+	active map[string]bool
+}
+
+func newRefGuard() *refGuard {
+	return &refGuard{}
+}
+
+// enter marks ref as being expanded against the current value and reports
+// whether that is new (true) or already active, i.e. a cycle (false). Every
+// successful enter must be paired with a leave once the recursive
+// validation of ref returns, so that sibling branches (e.g. separate anyOf
+// arms) are not falsely flagged as cycles.
+func (g *refGuard) enter(ref string) bool {
+	if g.active == nil {
+		g.active = make(map[string]bool)
+	}
+	if g.active[ref] {
+		return false
+	}
+	g.active[ref] = true
+	return true
+}
+
+func (g *refGuard) leave(ref string) {
+	delete(g.active, ref)
 }
 
 // validateSchemaValue is the recursive validator. root is the top-level
 // schema document (constant across a single Validate call) used to resolve
-// $ref; sch is the (sub)schema being applied at path.
-func validateSchemaValue(value interface{}, sch map[string]interface{}, path string, root map[string]interface{}) error {
+// $ref; sch is the (sub)schema being applied at path. guard is the active
+// $ref cycle guard for value's current data position (see refGuard).
+func validateSchemaValue(value interface{}, sch map[string]interface{}, path string, root map[string]interface{}, guard *refGuard) error {
 	if sch == nil {
 		return nil
+	}
+	if guard == nil {
+		guard = newRefGuard()
 	}
 
 	// $ref: resolve (following chained local refs) and validate against the
@@ -121,14 +182,22 @@ func validateSchemaValue(value interface{}, sch map[string]interface{}, path str
 	// below (draft 2020-12 semantics); draft-07 schemas rarely mix $ref with
 	// siblings, so this is a superset-compatible behavior.
 	if refVal, ok := sch["$ref"].(string); ok && refVal != "" {
+		if !guard.enter(refVal) {
+			return fmt.Errorf("%s: $ref: circular reference %q without consuming input: %w", path, refVal, errCircularRef)
+		}
 		resolved, err := resolveRefChain(root, refVal)
 		if err != nil {
+			guard.leave(refVal)
 			return fmt.Errorf("%s: $ref: %s", path, err.Error())
 		}
 		if resolved != nil {
-			if err := validateSchemaValue(value, resolved, path, root); err != nil {
+			err := validateSchemaValue(value, resolved, path, root, guard)
+			guard.leave(refVal)
+			if err != nil {
 				return err
 			}
+		} else {
+			guard.leave(refVal)
 		}
 	}
 
@@ -192,7 +261,7 @@ func validateSchemaValue(value interface{}, sch map[string]interface{}, path str
 			if !ok {
 				continue
 			}
-			if err := validateSchemaValue(propValue, propSchema, path+"."+key, root); err != nil {
+			if err := validateSchemaValue(propValue, propSchema, path+"."+key, root, newRefGuard()); err != nil {
 				return err
 			}
 		}
@@ -228,7 +297,7 @@ func validateSchemaValue(value interface{}, sch map[string]interface{}, path str
 			if !ok {
 				continue
 			}
-			if err := validateSchemaValue(value, subschema, fmt.Sprintf("%s.allOf[%d]", path, i), root); err != nil {
+			if err := validateSchemaValue(value, subschema, fmt.Sprintf("%s.allOf[%d]", path, i), root, guard); err != nil {
 				return err
 			}
 		}
@@ -242,7 +311,10 @@ func validateSchemaValue(value interface{}, sch map[string]interface{}, path str
 			if !ok {
 				continue
 			}
-			if err := validateSchemaValue(value, subschema, fmt.Sprintf("%s.anyOf[%d]", path, i), root); err != nil {
+			if err := validateSchemaValue(value, subschema, fmt.Sprintf("%s.anyOf[%d]", path, i), root, guard); err != nil {
+				if errors.Is(err, errCircularRef) {
+					return err
+				}
 				lastErr = err
 				continue
 			}
@@ -264,8 +336,10 @@ func validateSchemaValue(value interface{}, sch map[string]interface{}, path str
 			if !ok {
 				continue
 			}
-			if err := validateSchemaValue(value, subschema, fmt.Sprintf("%s.oneOf[%d]", path, i), root); err == nil {
+			if err := validateSchemaValue(value, subschema, fmt.Sprintf("%s.oneOf[%d]", path, i), root, guard); err == nil {
 				matches++
+			} else if errors.Is(err, errCircularRef) {
+				return err
 			}
 		}
 		if matches != 1 {
@@ -274,8 +348,10 @@ func validateSchemaValue(value interface{}, sch map[string]interface{}, path str
 	}
 
 	if notSchema, ok := sch["not"].(map[string]interface{}); ok {
-		if err := validateSchemaValue(value, notSchema, path, root); err == nil {
+		if err := validateSchemaValue(value, notSchema, path, root, guard); err == nil {
 			return fmt.Errorf("%s: not: value must not match the schema", path)
+		} else if errors.Is(err, errCircularRef) {
+			return err
 		}
 	}
 
@@ -285,15 +361,30 @@ func validateSchemaValue(value interface{}, sch map[string]interface{}, path str
 // applyDefaultsWithRoot mirrors zod's .default()-filling during parse. root
 // is the top-level schema document (constant across a single ApplyDefaults
 // call), used to resolve $ref/$defs the same way validateSchemaValue does.
-func applyDefaultsWithRoot(value interface{}, sch map[string]interface{}, root map[string]interface{}) interface{} {
+// guard is the active $ref cycle guard for value's current data position
+// (see refGuard's doc comment on validateSchemaValue's identical use): a
+// schema that cycles back to the same $ref without ever passing through a
+// "properties"/"items"/"prefixItems" edge (this function does not evaluate
+// allOf/anyOf/oneOf/not at all, so those never recurse here) leaves value
+// unchanged rather than recursing forever.
+func applyDefaultsWithRoot(value interface{}, sch map[string]interface{}, root map[string]interface{}, guard *refGuard) interface{} {
 	if sch == nil {
 		return value
 	}
+	if guard == nil {
+		guard = newRefGuard()
+	}
 
 	if refVal, ok := sch["$ref"].(string); ok && refVal != "" {
-		if resolved, err := resolveRefChain(root, refVal); err == nil && resolved != nil {
-			return applyDefaultsWithRoot(value, resolved, root)
+		if !guard.enter(refVal) {
+			return value
 		}
+		result := value
+		if resolved, err := resolveRefChain(root, refVal); err == nil && resolved != nil {
+			result = applyDefaultsWithRoot(value, resolved, root, guard)
+		}
+		guard.leave(refVal)
+		return result
 	}
 
 	if props, ok := sch["properties"].(map[string]interface{}); ok {
@@ -311,7 +402,7 @@ func applyDefaultsWithRoot(value interface{}, sch map[string]interface{}, root m
 				continue
 			}
 			if existing, exists := out[key]; exists {
-				out[key] = applyDefaultsWithRoot(existing, propSchema, root)
+				out[key] = applyDefaultsWithRoot(existing, propSchema, root, newRefGuard())
 				continue
 			}
 			if def, ok := schemaDefault(propSchema, root); ok {
@@ -331,12 +422,12 @@ func applyDefaultsWithRoot(value interface{}, sch map[string]interface{}, root m
 				switch {
 				case i < len(prefixItems):
 					if sub, ok := prefixItems[i].(map[string]interface{}); ok {
-						out[i] = applyDefaultsWithRoot(elem, sub, root)
+						out[i] = applyDefaultsWithRoot(elem, sub, root, newRefGuard())
 					} else {
 						out[i] = elem
 					}
 				case restSchema != nil:
-					out[i] = applyDefaultsWithRoot(elem, restSchema, root)
+					out[i] = applyDefaultsWithRoot(elem, restSchema, root, newRefGuard())
 				default:
 					out[i] = elem
 				}
@@ -350,7 +441,7 @@ func applyDefaultsWithRoot(value interface{}, sch map[string]interface{}, root m
 		if rv.IsValid() && (rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array) {
 			out := make([]interface{}, rv.Len())
 			for i := 0; i < rv.Len(); i++ {
-				out[i] = applyDefaultsWithRoot(rv.Index(i).Interface(), items, root)
+				out[i] = applyDefaultsWithRoot(rv.Index(i).Interface(), items, root, newRefGuard())
 			}
 			return out
 		}

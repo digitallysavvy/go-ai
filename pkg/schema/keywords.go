@@ -151,7 +151,7 @@ func validateArrayConstraints(value interface{}, sch map[string]interface{}, pat
 
 	if items, ok := sch["items"].(map[string]interface{}); ok {
 		for i := 0; i < n; i++ {
-			if err := validateSchemaValue(rv.Index(i).Interface(), items, fmt.Sprintf("%s[%d]", path, i), root); err != nil {
+			if err := validateSchemaValue(rv.Index(i).Interface(), items, fmt.Sprintf("%s[%d]", path, i), root, newRefGuard()); err != nil {
 				return err
 			}
 		}
@@ -260,7 +260,7 @@ func validateTupleItems(rv reflect.Value, n int, tupleItems []interface{}, restI
 		if !ok {
 			continue
 		}
-		if err := validateSchemaValue(rv.Index(i).Interface(), sub, fmt.Sprintf("%s[%d]", path, i), root); err != nil {
+		if err := validateSchemaValue(rv.Index(i).Interface(), sub, fmt.Sprintf("%s[%d]", path, i), root, newRefGuard()); err != nil {
 			return err
 		}
 	}
@@ -271,7 +271,7 @@ func validateTupleItems(rv reflect.Value, n int, tupleItems []interface{}, restI
 
 	if restSchema, ok := restItemsRaw.(map[string]interface{}); ok {
 		for i := len(tupleItems); i < n; i++ {
-			if err := validateSchemaValue(rv.Index(i).Interface(), restSchema, fmt.Sprintf("%s[%d]", path, i), root); err != nil {
+			if err := validateSchemaValue(rv.Index(i).Interface(), restSchema, fmt.Sprintf("%s[%d]", path, i), root, newRefGuard()); err != nil {
 				return err
 			}
 		}
@@ -285,7 +285,7 @@ func validateTupleItems(rv reflect.Value, n int, tupleItems []interface{}, restI
 		}
 	case map[string]interface{}:
 		for i := len(tupleItems); i < n; i++ {
-			if err := validateSchemaValue(rv.Index(i).Interface(), additional, fmt.Sprintf("%s[%d]", path, i), root); err != nil {
+			if err := validateSchemaValue(rv.Index(i).Interface(), additional, fmt.Sprintf("%s[%d]", path, i), root, newRefGuard()); err != nil {
 				return err
 			}
 		}
@@ -309,7 +309,7 @@ func validateObjectConstraints(obj map[string]interface{}, sch map[string]interf
 
 	if propertyNamesSchema, ok := sch["propertyNames"].(map[string]interface{}); ok {
 		for key := range obj {
-			if err := validateSchemaValue(key, propertyNamesSchema, fmt.Sprintf("%s.%s (property name)", path, key), root); err != nil {
+			if err := validateSchemaValue(key, propertyNamesSchema, fmt.Sprintf("%s.%s (property name)", path, key), root, newRefGuard()); err != nil {
 				return err
 			}
 		}
@@ -343,7 +343,7 @@ func validateObjectConstraints(obj map[string]interface{}, sch map[string]interf
 	for _, cp := range compiled {
 		for key, val := range obj {
 			if cp.re.MatchString(key) {
-				if err := validateSchemaValue(val, cp.schema, path+"."+key, root); err != nil {
+				if err := validateSchemaValue(val, cp.schema, path+"."+key, root, newRefGuard()); err != nil {
 					return err
 				}
 			}
@@ -372,7 +372,7 @@ func validateObjectConstraints(obj map[string]interface{}, sch map[string]interf
 			if matchesPattern(key) {
 				continue
 			}
-			if err := validateSchemaValue(val, additional, path+"."+key, root); err != nil {
+			if err := validateSchemaValue(val, additional, path+"."+key, root, newRefGuard()); err != nil {
 				return err
 			}
 		}
