@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
@@ -223,17 +224,70 @@ func TestCosineSimilarity_DimensionMismatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for dimension mismatch")
 	}
+	if !providererrors.IsInvalidArgumentError(err) {
+		t.Errorf("expected InvalidArgumentError, got %T: %v", err, err)
+	}
 }
 
+// TestCosineSimilarity_ZeroVector mirrors TS cosine-similarity.test.ts
+// "should give 0 when one of the vectors is a zero vector": a zero vector on
+// either side must return similarity 0 with no error, not an error (A2-3).
 func TestCosineSimilarity_ZeroVector(t *testing.T) {
 	t.Parallel()
 
-	a := []float64{0.0, 0.0, 0.0}
-	b := []float64{1.0, 2.0, 3.0}
+	a := []float64{0.0, 1.0, 2.0}
+	b := []float64{0.0, 0.0, 0.0}
 
-	_, err := CosineSimilarity(a, b)
-	if err == nil {
-		t.Fatal("expected error for zero vector")
+	sim, err := CosineSimilarity(a, b)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sim != 0 {
+		t.Errorf("expected similarity 0, got %f", sim)
+	}
+
+	sim2, err2 := CosineSimilarity(b, a)
+	if err2 != nil {
+		t.Fatalf("unexpected error: %v", err2)
+	}
+	if sim2 != 0 {
+		t.Errorf("expected similarity 0, got %f", sim2)
+	}
+}
+
+// TestCosineSimilarity_EmptyVectors mirrors TS behavior: n === 0 returns 0,
+// not an error, when no length mismatch is thrown.
+func TestCosineSimilarity_EmptyVectors(t *testing.T) {
+	t.Parallel()
+
+	sim, err := CosineSimilarity([]float64{}, []float64{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sim != 0 {
+		t.Errorf("expected similarity 0 for empty vectors, got %f", sim)
+	}
+}
+
+// TestCosineSimilarity_SmallMagnitudes mirrors TS cosine-similarity.test.ts
+// "should handle vectors with very small magnitudes".
+func TestCosineSimilarity_SmallMagnitudes(t *testing.T) {
+	t.Parallel()
+
+	sim, err := CosineSimilarity([]float64{1e-10, 0, 0}, []float64{2e-10, 0, 0})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if math.Abs(sim-1.0) > 1e-9 {
+		t.Errorf("expected similarity 1.0, got %f", sim)
+	}
+
+	sim2, err2 := CosineSimilarity([]float64{1e-10, 0, 0}, []float64{-1e-10, 0, 0})
+	if err2 != nil {
+		t.Fatalf("unexpected error: %v", err2)
+	}
+	if math.Abs(sim2-(-1.0)) > 1e-9 {
+		t.Errorf("expected similarity -1.0, got %f", sim2)
 	}
 }
 
