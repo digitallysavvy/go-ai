@@ -552,6 +552,43 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		sawTerminal := false
 		sawFinishChunk := false
 		sawOutput := false
+		// allowStepStartUI dedupes the UI "start-step" part within one step
+		// boundary: a stream produced by stream.go's own StreamText loop now
+		// carries BOTH the genuine, once-per-step ChunkTypeStartStep chunk
+		// AND (when a provider surfaces pre-stream warnings) the older
+		// ChunkTypeStreamStart chunk that used to be this package's only
+		// source for the "start-step" UI part before ChunkTypeStartStep
+		// existed — both map to "start-step". Only the first of either
+		// within a step boundary is converted; see the dedup switch below
+		// for why "finish-step" is handled differently (not deduped against
+		// itself the same way).
+		allowStepStartUI := true
+		// sawStepFinishStep tracks whether a genuine ChunkTypeFinishStep has
+		// already closed the current step boundary. stream.go's own
+		// StreamText loop (and the harness bridge) always emits an explicit
+		// ChunkTypeFinishStep before the call-level ChunkTypeFinish that
+		// follows it, so ChunkTypeFinish must NOT also convert to its own
+		// "finish-step" UI part in that case — TS's to-ui-message-chunk.ts
+		// maps 'finish-step' and 'finish' to two fully independent UI part
+		// types, and a 'finish' part never produces "finish-step". But a
+		// bare/raw provider stream with no separate ChunkTypeFinishStep at
+		// all (e.g. a hand-built StreamTextResult, or any TextStream fed
+		// straight into ToUIMessageStream without going through stream.go's
+		// own multi-step processStream loop) has only ChunkTypeFinish as its
+		// single step-and-call boundary signal, so in that case it must
+		// still convert to "finish-step" the same way a genuine
+		// ChunkTypeFinishStep would (existing, pinned contract — see
+		// TestStreamTextResult_ToUIMessageStream_OptionsAndCallbacks and
+		// TestToUIMessageStream_MessageMetadataReceivesUIPartTypes). Reset to
+		// false on every ChunkTypeStartStep/ChunkTypeStreamStart (a new step
+		// boundary starting) so a multi-step external/harness stream whose
+		// LAST step has no explicit ChunkTypeFinishStep of its own (only a
+		// terminal ChunkTypeFinish that carries that step's own new content —
+		// see stream_external.go's consumeExternalParts doc comment) still
+		// gets its own "finish-step" instead of being wrongly suppressed by
+		// an earlier step's ChunkTypeFinishStep (see
+		// TestNewStreamTextResultFromParts_ToUIMessageStream).
+		sawStepFinishStep := false
 		activeTextIDs := map[string]bool{}
 		activeReasoningIDs := map[string]bool{}
 		textID := ""
@@ -633,10 +670,18 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				return
 			}
 
-			if chunk.Type == provider.ChunkTypeFinish {
+			if chunk.Type == provider.ChunkTypeFinish || chunk.Type == provider.ChunkTypeFinishStep {
 				sawTerminal = true
 				sawFinishChunk = true
 				finishReason = chunk.FinishReason
+			}
+			// The source outcome only goes Completed on the call-level,
+			// once-only ChunkTypeFinish — not on a per-step ChunkTypeFinishStep
+			// — because setSourceOutcome's guard ignores any update once the
+			// outcome is Completed, and an intermediate step's finish-step
+			// must not block a later real error in the same call from being
+			// recorded as Failed.
+			if chunk.Type == provider.ChunkTypeFinish {
 				setSourceOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeCompleted})
 			}
 			if chunk.Type == provider.ChunkTypeError {
@@ -707,11 +752,64 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			case provider.ChunkTypeFinish, provider.ChunkTypeFinishStep:
 				closeOpenParts()
 			}
-			converted := toUIMessageChunks(chunkForConversion, options)
-			for _, uiChunk := range converted {
-				processChunk(uiChunk)
+
+			// Dedupe the "start-step" UI part within one step boundary (see
+			// allowStepStartUI's doc comment above): a stream produced by
+			// stream.go's own StreamText loop now carries the genuine,
+			// once-per-step ChunkTypeStartStep chunk in addition to a
+			// provider's own ChunkTypeStreamStart chunk (when it has
+			// pre-stream warnings) — both map to "start-step" — so only the
+			// first of either within a step boundary is converted.
+			//
+			// ChunkTypeFinish is skipped here ONLY when a genuine
+			// ChunkTypeFinishStep already closed the current step boundary
+			// (sawStepFinishStep, see its doc comment above): TS's
+			// to-ui-message-chunk.ts maps 'finish-step' and 'finish' to two
+			// completely independent UI part types, so once a real
+			// "finish-step" has already been produced for this step, the
+			// call-level ChunkTypeFinish that follows it must not ALSO
+			// convert to another one — its own UI "finish" part
+			// (finishReason + messageMetadata) is synthesized once below,
+			// after the loop ends, from finishReason (kept up to date by
+			// every ChunkTypeFinish/ChunkTypeFinishStep chunk above). See
+			// TestToUIMessageStream_MultiStepFinishStepAndFinishCounts and
+			// pkg/workflow/harness_test.go, whose want slices assert exactly
+			// one "finish-step" per real step. ChunkTypeStreamFinish is
+			// Go-only and always immediately follows a real ChunkTypeFinish,
+			// so it is skipped unconditionally.
+			skipStepBoundaryDup := false
+			switch chunk.Type {
+			case provider.ChunkTypeStartStep, provider.ChunkTypeStreamStart:
+				// A new step boundary starts: reset sawStepFinishStep so a
+				// later step's own terminal ChunkTypeFinish (with no
+				// explicit ChunkTypeFinishStep of its own — see
+				// TestNewStreamTextResultFromParts_ToUIMessageStream) is not
+				// wrongly skipped because an EARLIER step's FinishStep set
+				// the flag.
+				sawStepFinishStep = false
+				if allowStepStartUI {
+					allowStepStartUI = false
+				} else {
+					skipStepBoundaryDup = true
+				}
+			case provider.ChunkTypeFinishStep:
+				allowStepStartUI = true
+				sawStepFinishStep = true
+			case provider.ChunkTypeFinish:
+				allowStepStartUI = true
+				if sawStepFinishStep {
+					skipStepBoundaryDup = true
+				}
+			case provider.ChunkTypeStreamFinish:
+				skipStepBoundaryDup = true
 			}
-			processMessageMetadata(*chunk)
+			if !skipStepBoundaryDup {
+				converted := toUIMessageChunks(chunkForConversion, options)
+				for _, uiChunk := range converted {
+					processChunk(uiChunk)
+				}
+				processMessageMetadata(*chunk)
+			}
 		}
 
 		if !sawTerminal {
@@ -777,6 +875,17 @@ func toUIMessageChunks(part provider.StreamChunk, opts UIMessageStreamResultOpti
 	case provider.ChunkTypeStreamStart:
 		return []UIMessageChunk{{"type": "start-step"}}
 	case provider.ChunkTypeFinish, provider.ChunkTypeFinishStep:
+		// A bare/raw provider stream (no separate ChunkTypeFinishStep, e.g. a
+		// hand-built StreamTextResult or a TextStream fed straight into
+		// ToUIMessageStream without going through stream.go's own multi-step
+		// processStream loop) has only ChunkTypeFinish as its single
+		// step-and-call boundary signal, so it must still map to "finish-step"
+		// here (see TestStreamTextResult_ToUIMessageStream_OptionsAndCallbacks,
+		// TestToUIMessageStream_MessageMetadataReceivesUIPartTypes). When a
+		// real per-step ChunkTypeFinishStep already closed the step, the main
+		// loop's dedup switch skips calling this function for the subsequent
+		// call-level ChunkTypeFinish entirely (see sawStepFinishStep below),
+		// so this case is never reached redundantly for that chunk.
 		return []UIMessageChunk{{"type": "finish-step"}}
 	case provider.ChunkTypeAbort:
 		chunk := UIMessageChunk{"type": "abort"}
@@ -2102,10 +2211,9 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 			"type":      "error",
 			"errorText": opts.OnError(errors.New(chunk.Text)),
 		})
-	case provider.ChunkTypeFinish:
-		out = append(out, map[string]interface{}{
-			"type": "finish-step",
-		})
+	// ChunkTypeFinish is handled by toUIMessageChunks' own switch (alongside
+	// ChunkTypeFinishStep) before this function is ever reached, so it is
+	// intentionally absent here.
 	default:
 		if chunk.Type == "start-step" {
 			out = append(out, map[string]interface{}{"type": "start-step"})

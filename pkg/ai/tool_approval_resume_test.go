@@ -901,10 +901,19 @@ func TestStreamText_ResumeApprovedToolApproval(t *testing.T) {
 		t.Fatalf("executed = %d", executed)
 	}
 	mu.Lock()
-	first := chunks[0]
+	// chunks[0] is now the call-level ChunkTypeStart marker (emitted before
+	// any step's stream is consumed, so before the resumed tool-result
+	// chunk); find the first tool-result chunk instead of assuming index 0.
+	var first provider.StreamChunk
+	for _, c := range chunks {
+		if c.Type == provider.ChunkTypeToolResult {
+			first = c
+			break
+		}
+	}
 	mu.Unlock()
 	if first.Type != provider.ChunkTypeToolResult || first.ToolResult == nil || first.ToolResult.Result != "result1" {
-		t.Fatalf("first chunk = %+v", first)
+		t.Fatalf("first tool-result chunk = %+v", first)
 	}
 	tr := singleToolResult(t, model.lastMessageOfFirstPrompt(t))
 	if tr.Output == nil || tr.Output.Value != "result1" {
@@ -978,7 +987,17 @@ func TestStreamText_ResumeDeniedApprovalStreamsOutputDenied(t *testing.T) {
 		t.Fatal(err)
 	}
 	chunks := collectStream(t, result)
-	if len(chunks) == 0 || chunks[0].Type != provider.ChunkTypeToolOutputDenied || chunks[0].ToolResult.ToolCallID != "call-1" {
+	// chunks[0] is now the call-level ChunkTypeStart marker, emitted before
+	// the resumed tool-output-denied chunk; find it by type instead of
+	// assuming index 0.
+	var denied *provider.StreamChunk
+	for i := range chunks {
+		if chunks[i].Type == provider.ChunkTypeToolOutputDenied {
+			denied = &chunks[i]
+			break
+		}
+	}
+	if denied == nil || denied.ToolResult == nil || denied.ToolResult.ToolCallID != "call-1" {
 		t.Fatalf("chunks = %+v", chunks)
 	}
 	tr := singleToolResult(t, model.lastMessageOfFirstPrompt(t))

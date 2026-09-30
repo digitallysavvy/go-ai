@@ -1483,6 +1483,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		forwardThroughTransformChain(startIdx+1, out)
 	}
 
+	// Push ChunkTypeStart exactly once, before the first step's provider
+	// stream is consumed, mirroring TS's `controller.enqueue({type:'start'})`
+	// at the top of the outer stream (stream-text.ts:1855), which runs
+	// before any step's content is read.
+	forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeStart}})
+
 	for stepNum := 1; ; stepNum++ {
 		stepIndex := stepNum - 1
 		stepStart := time.Now()
@@ -1561,8 +1567,17 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		var modelCallEndFired bool
 		var stepUsage types.Usage
 		var stepSawTerminal bool
-		var stepSawFinish bool
 		var stepSawOutput bool
+		// stepFirstForwardedChunk gates the emission of ChunkTypeStartStep:
+		// the chunk is pushed before the first raw chunk of this step other
+		// than ChunkTypeStreamStart (Go's analogue of TS's 'model-call-start',
+		// which also never triggers TS's stepFirstChunk gate — see
+		// stream-text.ts:2824-2836). By the time any non-StreamStart chunk
+		// arrives, any ChunkTypeStreamStart warnings for this step have
+		// already been merged into r.warnings (below), matching TS's
+		// `warnings = chunk.warnings` assignment happening before the
+		// stepFirstChunk check runs for the next chunk.
+		stepFirstForwardedChunk := true
 		// streamedToolResults tracks provider-inline tool results by tool call ID.
 		streamedToolResults := make(map[string]types.ToolResult)
 		// stepTextIDRemap/stepReasoningIDRemap: see usedTextIDs/usedReasoningIDs above.
@@ -1628,6 +1643,42 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 			if chunk.Type == provider.ChunkTypeText && chunk.Text == "" {
 				forwardChunk = false
+			}
+			// The raw provider finish chunk is never forwarded to the
+			// consumer directly (mirrors TS's 'model-call-end', which is
+			// consumed internally and converted into 'finish-step' below,
+			// never enqueued itself — stream-text.ts:2967-2977). Its data is
+			// still used just below (r.finishReason etc.) and carried out to
+			// the consumer via the ChunkTypeFinishStep chunk pushed once this
+			// step's stream is fully drained.
+			if chunk.Type == provider.ChunkTypeFinish {
+				forwardChunk = false
+			}
+
+			// Emit ChunkTypeStartStep once, before the first raw chunk of
+			// this step other than ChunkTypeStreamStart (see
+			// stepFirstForwardedChunk's doc comment above). Mirrors TS's
+			// per-step 'start-step' gating at stream-text.ts:2829-2836,
+			// carrying this step's request metadata and any warnings
+			// accumulated so far (including from a preceding
+			// ChunkTypeStreamStart chunk, whose warnings were already merged
+			// into r.warnings below before this point is reached for the
+			// next chunk).
+			if stepFirstForwardedChunk && chunk.Type != provider.ChunkTypeStreamStart {
+				stepFirstForwardedChunk = false
+				startStepWarnings := append([]types.Warning(nil), r.warnings[stepWarningsStart:]...)
+				if startStepWarnings == nil {
+					startStepWarnings = []types.Warning{}
+				}
+				startStepRequest := types.StepRequest{
+					Body:     streamRequestBody(r.currentStream()),
+					Messages: includedRequestMessages(r.cbInclude.RequestMessages, currentMessages),
+				}
+				forwardThroughTransformChain(0, []provider.StreamChunk{{
+					Type:     provider.ChunkTypeStartStep,
+					Request:  &startStepRequest,
+					Warnings: startStepWarnings,
+				}})
 			}
 
 			// Transition from Submitted to Streaming on the first content chunk.
@@ -1792,7 +1843,6 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// Update finish reason and context management
 			if chunk.Type == provider.ChunkTypeFinish {
 				stepSawTerminal = true
-				stepSawFinish = true
 				r.finishReason = chunk.FinishReason
 				if chunk.RawFinishReason != "" {
 					r.rawFinishReason = chunk.RawFinishReason
@@ -2045,7 +2095,6 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					modelCallEndFired = false
 					stepUsage = types.Usage{}
 					stepSawTerminal = false
-					stepSawFinish = false
 					stepSawOutput = false
 					streamedToolResults = make(map[string]types.ToolResult)
 					stepTextIDRemap = make(map[string]string)
@@ -2123,16 +2172,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 			r.finishReason = types.FinishReasonOther
 		}
-		if !stepSawFinish && r.finishReason != "" {
-			finishChunk := provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: r.finishReason}
-			if onChunk != nil {
-				onChunk(finishChunk)
-			}
-			telemetry.FireOnChunk(ctx, telemetry.TelemetryChunkEvent{
-				Settings:  r.telemetrySettings,
-				ChunkType: string(finishChunk.Type),
-			})
-		}
+		// The consumer-visible per-step finish signal is ChunkTypeFinishStep,
+		// pushed once this step's tool calls/results have also been forwarded
+		// (see below) — mirroring TS's finish-step, which is enqueued in
+		// flush() after every other part of the step (stream-text.ts:3020-
+		// 3033). r.finishReason (set above, either from the provider's own
+		// finish chunk or synthesized as FinishReasonOther) already carries
+		// what a raw finish chunk used to forward directly.
 		stepText := strings.Join(stepTextParts, "")
 		lastStepText = stepText
 		r.text = strings.Join(accumulatedTextParts, "")
@@ -2340,6 +2386,28 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			ToolsContext:     r.cbToolsCtx,
 			RuntimeContext:   r.cbRuntimeCtx,
 		}
+
+		// Push ChunkTypeFinishStep now that every part of this step (text,
+		// reasoning, tool calls, tool-approval/tool-result chunks) has
+		// already been forwarded above, mirroring TS's finish-step being
+		// enqueued in flush() after all of a step's other parts
+		// (stream-text.ts:3020-3033). It does not carry response.messages
+		// (populated on the step below, after tool results settle) — TS's
+		// finish-step response shape is {...stepResponse, headers} without
+		// messages either.
+		finishStepResponse := stepResult.Response
+		finishStepPerf := performance
+		finishStepUsage := stepUsage
+		forwardThroughTransformChain(0, []provider.StreamChunk{{
+			Type:             provider.ChunkTypeFinishStep,
+			Response:         &finishStepResponse,
+			Usage:            &finishStepUsage,
+			Performance:      &finishStepPerf,
+			FinishReason:     r.finishReason,
+			RawFinishReason:  stepRawFinishReason,
+			ProviderMetadata: r.providerMetadata,
+		}})
+
 		allSteps = append(allSteps, stepResult)
 
 		// Fire step-finish telemetry — OTel implementation ends the child step span.
@@ -2781,6 +2849,23 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		pendingStepCtx = nextStepCtx
 		pendingStepCancel = nextStepCancel
 		r.setStream(newStream)
+	}
+
+	// Push the call-level ChunkTypeFinish exactly once, after the loop above
+	// has stopped continuing to a further step (no error, no abort — those
+	// paths leave r.err set and skip this), mirroring TS's single top-level
+	// 'finish' part enqueued only on the non-continuation branch of the
+	// step-decision check (stream-text.ts:3129-3136), carrying the call's
+	// finishReason/rawFinishReason and totalUsage.
+	if r.err == nil {
+		totalUsage := r.usage
+		callFinishChunk := provider.StreamChunk{
+			Type:            provider.ChunkTypeFinish,
+			FinishReason:    r.finishReason,
+			RawFinishReason: r.rawFinishReason,
+			Usage:           &totalUsage,
+		}
+		forwardThroughTransformChain(0, []provider.StreamChunk{callFinishChunk})
 	}
 
 	if r.err == nil {
