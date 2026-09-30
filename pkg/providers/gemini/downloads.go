@@ -101,8 +101,31 @@ func downloadContentBlocks(ctx context.Context, blocks []types.ToolResultContent
 		if url == "" {
 			url = fb.FileData.URL
 		}
-		lower := strings.ToLower(url)
-		if url == "" || !(strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")) {
+		if url == "" {
+			// No remote URL on this block at all (e.g. already-inline data) —
+			// nothing to validate or download.
+			continue
+		}
+		// Validate the URL scheme before deciding whether to download it,
+		// matching TS's downloadToolResultFiles: any file URL not already
+		// natively supported by the model is passed to downloadBlob, which
+		// validates it via fetchUntrustedUrl/validateDownloadUrl and throws
+		// DownloadError("URL scheme must be http, https, or data, got
+		// <scheme>") for anything other than http/https/data
+		// (packages/provider-utils/src/validate-download-url.ts). The
+		// previous Go code silently skipped (continued past) any URL whose
+		// scheme wasn't http(s) instead of surfacing that error — including
+		// genuinely unsupported schemes like ftp:// or file://, which then
+		// silently reached the provider as an unusable reference instead of
+		// failing the request.
+		if err := fileutil.ValidateDownloadURL(url); err != nil {
+			return nil, false, err
+		}
+		if strings.HasPrefix(strings.ToLower(url), "data:") {
+			// Inline data URL: valid, but nothing to download over the
+			// network — leave the block as-is (mirrors TS, where a data: URL
+			// is always accepted by isUrlSupported/the provider directly and
+			// so never reaches downloadBlob in practice).
 			continue
 		}
 		data, contentType, err := download(ctx, url, maxBytes)
