@@ -516,6 +516,57 @@ func TestStripTypeScriptAnnotations_WrapperParity(t *testing.T) {
 	}
 }
 
+// plainJSSnippets are real plain-JavaScript code-mode snippets (no
+// TypeScript-only syntax) that the stripper must return byte-identical.
+// Shared by TestStripTypeScriptAnnotations_FuzzPlainJS and
+// FuzzStripTypeScriptAnnotations.
+var plainJSSnippets = []string{
+	// Single-line snippets, run_code_mode_test.go / continuation_test.go
+	// / approval_continuation_test.go / stress_codemode_test.go /
+	// serialization_test.go / code_mode_tool_test.go.
+	"const value = 1 + 1;",
+	"globalThis.sharedValue = 123; return globalThis.sharedValue;",
+	"return 'abcdef';",
+	"return 'unused';",
+	"return { answer: 40 + 2 };",
+	"return { value: () => 1 };",
+	"return { value: Infinity };",
+	"return 1;",
+	"return 1n;",
+	"return 999 * 999;",
+	"return await tools.add({ a: 'wrong', b: 2 });",
+	"return await tools.add({});",
+	"return await tools.authorize({});",
+	"return await tools.catalog({});",
+	"return await tools.circular({});",
+	"return await tools.connection({});",
+	"return await tools.context({});",
+	"return await tools.date({});",
+	"return await tools.echo({ value: 'abcdef' });",
+	"return await tools.echo({});",
+	"return await tools.fail({});",
+	"return await tools.guarded({});",
+	"return await tools.large({});",
+	"return await tools.manual({});",
+	"return await tools.nope({});",
+	"return await tools.search({ query: 'widgets' });",
+	"return await tools.sensitive({});",
+	"return await tools.wait({});",
+	"return await tools['lookup-user']({ id: 'user-1' });",
+	"return globalThis.sharedValue ?? 'missing';",
+	"throw new Error('sandbox exploded');",
+	"while(true){}",
+	"const first = await tools.add({ a: 2, b: 3 }); return await tools.double(first);",
+	"const value = await tools.nothing({}); return { type: typeof value };",
+	// Multi-line snippets, lifted verbatim.
+	"\n          const parsed = JSON.parse('{\"count\":2,\"items\":[\"a\",\"b\"]}');\n          parsed.items.push(\"c\");\n          return JSON.stringify(parsed);\n        ",
+	"\n          const before = Date.now();\n          const toolResult = await tools.wait({});\n          const after = Date.now();\n          return { before, hostNow: toolResult.hostNow, after };\n        ",
+	"\n          const input = { value: \"x\" };\n          input.self = input;\n          return await tools.echo(input);\n        ",
+	"\n\t\tconst first = await tools.first({});\n\t\tconst second = await tools.second({});\n\t\treturn { first, second };\n\t",
+	"\n\t\tconst a = await tools.a({});\n\t\tconst b = await tools.b({});\n\t\treturn { a, b };\n\t",
+	"\n\t\tconst first = await tools.lookup({ id: 'item-1' });\n\t\tconst second = await tools.sensitive({ id: first.id });\n\t\treturn { first, second };\n\t",
+}
+
 // TestStripTypeScriptAnnotations_FuzzPlainJS takes ~30 real plain-JavaScript
 // code-mode snippets (containing no TypeScript-only syntax) lifted directly
 // from this package's other test files and asserts the stripper's output is
@@ -523,52 +574,7 @@ func TestStripTypeScriptAnnotations_WrapperParity(t *testing.T) {
 // scanner that runs ahead of every code-mode execution: it must never
 // corrupt source that was already valid JavaScript.
 func TestStripTypeScriptAnnotations_FuzzPlainJS(t *testing.T) {
-	snippets := []string{
-		// Single-line snippets, run_code_mode_test.go / continuation_test.go
-		// / approval_continuation_test.go / stress_codemode_test.go /
-		// serialization_test.go / code_mode_tool_test.go.
-		"const value = 1 + 1;",
-		"globalThis.sharedValue = 123; return globalThis.sharedValue;",
-		"return 'abcdef';",
-		"return 'unused';",
-		"return { answer: 40 + 2 };",
-		"return { value: () => 1 };",
-		"return { value: Infinity };",
-		"return 1;",
-		"return 1n;",
-		"return 999 * 999;",
-		"return await tools.add({ a: 'wrong', b: 2 });",
-		"return await tools.add({});",
-		"return await tools.authorize({});",
-		"return await tools.catalog({});",
-		"return await tools.circular({});",
-		"return await tools.connection({});",
-		"return await tools.context({});",
-		"return await tools.date({});",
-		"return await tools.echo({ value: 'abcdef' });",
-		"return await tools.echo({});",
-		"return await tools.fail({});",
-		"return await tools.guarded({});",
-		"return await tools.large({});",
-		"return await tools.manual({});",
-		"return await tools.nope({});",
-		"return await tools.search({ query: 'widgets' });",
-		"return await tools.sensitive({});",
-		"return await tools.wait({});",
-		"return await tools['lookup-user']({ id: 'user-1' });",
-		"return globalThis.sharedValue ?? 'missing';",
-		"throw new Error('sandbox exploded');",
-		"while(true){}",
-		"const first = await tools.add({ a: 2, b: 3 }); return await tools.double(first);",
-		"const value = await tools.nothing({}); return { type: typeof value };",
-		// Multi-line snippets, lifted verbatim.
-		"\n          const parsed = JSON.parse('{\"count\":2,\"items\":[\"a\",\"b\"]}');\n          parsed.items.push(\"c\");\n          return JSON.stringify(parsed);\n        ",
-		"\n          const before = Date.now();\n          const toolResult = await tools.wait({});\n          const after = Date.now();\n          return { before, hostNow: toolResult.hostNow, after };\n        ",
-		"\n          const input = { value: \"x\" };\n          input.self = input;\n          return await tools.echo(input);\n        ",
-		"\n\t\tconst first = await tools.first({});\n\t\tconst second = await tools.second({});\n\t\treturn { first, second };\n\t",
-		"\n\t\tconst a = await tools.a({});\n\t\tconst b = await tools.b({});\n\t\treturn { a, b };\n\t",
-		"\n\t\tconst first = await tools.lookup({ id: 'item-1' });\n\t\tconst second = await tools.sensitive({ id: first.id });\n\t\treturn { first, second };\n\t",
-	}
+	snippets := plainJSSnippets
 	if len(snippets) < 30 {
 		t.Fatalf("expected at least 30 fuzz snippets, got %d", len(snippets))
 	}

@@ -1,6 +1,9 @@
 package codemode
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // stripTypeScriptAnnotations removes type-only TypeScript syntax from
 // code-mode source so it can run as plain JavaScript in QuickJS.
@@ -74,7 +77,32 @@ import "strings"
 //
 // String, template-literal, regular-expression-literal, and comment
 // contents are never inspected for TypeScript syntax.
+//
+// It never panics: stripping runs on untrusted, model-written source, so a
+// panic anywhere in the lexer or transforms is recovered and treated like
+// any other strip error -- the source is returned unmodified along with the
+// error, and the caller runs it as-is (TS stripSnippetTypes fallback).
 func stripTypeScriptAnnotations(src string) (string, error) {
+	return stripWithRecover(src, stripTypeScriptAnnotationsUnchecked)
+}
+
+// stripWithRecover runs core on src, converting a panic into an error with
+// the original source returned unmodified. core is a parameter (rather than
+// a package-level hook) so tests can exercise the recover path without
+// mutating shared state.
+func stripWithRecover(src string, core func(string) (string, error)) (out string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			out = src
+			err = fmt.Errorf("codemode: TypeScript type stripper panicked: %v", r)
+		}
+	}()
+	return core(src)
+}
+
+// stripTypeScriptAnnotationsUnchecked is the stripper without panic
+// recovery. Only stripTypeScriptAnnotations and tests call it directly.
+func stripTypeScriptAnnotationsUnchecked(src string) (string, error) {
 	tokens := tokenizeTS(src)
 	kept, err := stripTSTokens(tokens)
 	if err != nil {
