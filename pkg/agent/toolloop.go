@@ -641,8 +641,13 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 		// used below to actually run the call; callConfig.Tools becomes
 		// the model-visible set reported to OnStepStartEvent and sent to
 		// the model). A local caller's catalog-announcement message, if
-		// any, is appended to this step's messages only (not to
-		// currentMessages, so it never becomes part of persisted history).
+		// any, is appended to callConfig.Messages below, and persists into
+		// currentMessages once this step's response messages are recorded
+		// (see the currentMessages assignment after executeTools/
+		// ConvertToResponseMessages below), matching TS generate-text.ts's
+		// `messagesForNextStep = [...stepMessages, ...stepResponseMessages]`
+		// where stepMessages already carries that step's
+		// appendToolCallerMessages announcement.
 		callConfig.Tools = toolSearchState.Apply(callConfig.Tools, callConfig.ToolsContext, callConfig.ExperimentalSandbox)
 		executionTools, modelTools, toolCallerMessages := ai.PrepareToolsForToolCallers(callConfig.Tools, resolvedToolCallers)
 		callConfig.Tools = modelTools
@@ -711,7 +716,10 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 				}
 				stepResult.ToolCalls = refined
 			}
-			toolResults, err := a.executeTools(ctx, stepResult.ToolCalls, executionTools, currentMessages, stepIndex, callConfig.RuntimeContext, callConfig.ToolsContext, callConfig.ExperimentalSandbox, callConfig.ToolApproval, cbs)
+			// callConfig.Messages (this step's messages, including its own
+			// AppendToolCallerMessages announcement), not currentMessages,
+			// matches TS generate-text.ts's executeToolCall({ messages: stepMessages, ... }).
+			toolResults, err := a.executeTools(ctx, stepResult.ToolCalls, executionTools, callConfig.Messages, stepIndex, callConfig.RuntimeContext, callConfig.ToolsContext, callConfig.ExperimentalSandbox, callConfig.ToolApproval, cbs)
 			if err != nil {
 				// Call OnChainError callback
 				if a.config.OnChainError != nil {
@@ -738,7 +746,13 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 		responseMessages := providerutils.ConvertToResponseMessages(stepResult.ToolCalls, responseContent, stepToolResults)
 		stepResult.ResponseMessages = responseMessages
 		stepResult.Response.Messages = responseMessages
-		currentMessages = append(currentMessages, responseMessages...)
+		// Use callConfig.Messages (this step's messages after
+		// AppendToolCallerMessages above), not the stale pre-announcement
+		// currentMessages, so a local caller's catalog announcement
+		// persists into subsequent steps' history instead of being dropped
+		// after one step (TS generate-text.ts: messagesForNextStep =
+		// [...stepMessages, ...stepResponseMessages]).
+		currentMessages = append(append([]types.Message(nil), callConfig.Messages...), responseMessages...)
 
 		// Add step to results after tool execution so step data mirrors TS step objects.
 		result.Steps = append(result.Steps, *stepResult)

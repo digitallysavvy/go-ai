@@ -152,22 +152,17 @@ func TestCodeModeWithToolSearch_DiscoversAndResetsPerGeneration(t *testing.T) {
 			t.Fatalf("generation %d: second-step prompt should not mention stockPrice:\n%s", generation, secondPrompt)
 		}
 
-		// NOTE: TS's tool-search.test.ts also asserts
-		// `second.prompt.slice(0, first.prompt.length)).toEqual(first.prompt)`
-		// (the second step's prompt is an exact prefix-extension of the
-		// first step's). That does not hold here: Go's step loop
-		// (pkg/ai/generate.go's currentMessages, pkg/ai/stream.go, and
-		// pkg/agent/toolloop.go) carries forward the pre-toolCallerMessages
-		// currentMessages into the next step rather than TS's
-		// `messagesForNextStep = [...stepMessages, ...stepResponseMessages]`
-		// (which folds that step's AppendToolCallerMessages announcement
-		// into the persisted history). So each step's local-caller catalog
-		// announcement is recomputed against the bare running history
-		// instead of accumulating in it, and the prior step's announcement
-		// message is dropped rather than kept. This is a pre-existing gap
-		// in the tool-caller message-threading logic from P1-2c/P1-2d
-		// (merged before this unit), outside CM2's ordering-only scope;
-		// flagged as a hand-off rather than fixed here.
+		// Ports TS's `expect(second.prompt.slice(0, first.prompt.length)).toEqual(first.prompt)`:
+		// the second step's prompt is an exact prefix-extension of the first
+		// step's (the first step's messages, including any tool-caller
+		// catalog announcement, persist unchanged at the head of the second
+		// step's prompt).
+		firstMessages := model.GenerateCalls[0].Prompt.Messages
+		secondMessages := model.GenerateCalls[1].Prompt.Messages
+		if len(secondMessages) < len(firstMessages) {
+			t.Fatalf("generation %d: second-step prompt has %d messages, want at least %d (first-step length)", generation, len(secondMessages), len(firstMessages))
+		}
+		assertDeepEqual(t, secondMessages[:len(firstMessages)], firstMessages)
 	}
 }
 

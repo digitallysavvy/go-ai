@@ -589,10 +589,17 @@ type StreamTextResult struct {
 	// the stream; they are forwarded but not accumulated into step content.
 	resumeChunksRemaining int
 	cbExperimentalSandbox interface{}
-	// Snapshot of the initial messages and tools for event population
-	cbMessages []types.Message
-	cbTools    []types.Tool
-	cbSystem   string
+	// Snapshot of the initial messages and tools for event population.
+	// cbMessages is step 0's post-announcement messages (used for step 0's
+	// own StepRequest.Messages and as the loop's starting currentMessages).
+	// cbInitialMessages is the raw, un-announced prompt.Messages (TS
+	// generate-text.ts's `initialMessages = initialPrompt.messages`), used
+	// for PrepareStep's InitialMessages on every step — it must never pick
+	// up any step's AppendToolCallerMessages announcement.
+	cbMessages        []types.Message
+	cbInitialMessages []types.Message
+	cbTools           []types.Tool
+	cbSystem          string
 
 	// cbExecutionTools is the tool set actually invoked when a tool call
 	// arrives (bound local tool callers), as opposed to cbTools (the
@@ -1277,6 +1284,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	r.cbToolChoice = stepToolChoice
 	r.cbInclude = include
 	r.cbMessages = stepMessages
+	r.cbInitialMessages = append([]types.Message(nil), prompt.Messages...)
 	r.cbTools = stepTools
 	r.cbExecutionTools = stepExecutionTools
 	r.cbSystem = stepSystem
@@ -2587,7 +2595,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				InstructionMessages:        cloneInstructionMessages(nextInstructionMessages),
 				InitialInstructionMessages: cloneInstructionMessages(r.cbInitialInstructionMessages),
 				Messages:                   append([]types.Message(nil), nextMessages...),
-				InitialMessages:            append([]types.Message(nil), r.cbMessages...),
+				InitialMessages:            append([]types.Message(nil), r.cbInitialMessages...),
 				ResponseMessages:           responseMessagesWithInitial(r.initialResponseMessages, allSteps),
 				UserContext:                r.cbRuntimeCtx,
 				RuntimeContext:             r.cbRuntimeCtx,
@@ -2688,12 +2696,18 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		nextExecutionTools, nextModelTools, nextToolCallerMessages := PrepareToolsForToolCallers(nextTools, r.resolvedToolCallers)
 		nextTools = nextModelTools
 		if len(nextToolCallerMessages) > 0 {
-			// Appended only to the prompt sent for this step, not persisted
-			// into currentMessages: each step recomputes its own caller
-			// announcement (TS appendToolCallerMessages is applied per-step,
-			// not accumulated into the conversation history).
 			nextMessages = AppendToolCallerMessages(nextMessages, nextToolCallerMessages)
 		}
+		// TS stream-text.ts: `currentStepMessages = stepMessages` (the
+		// result of appendToolCallerMessages) becomes the base for that
+		// step's `stepMessagesForNextStep = [...currentStepMessages,
+		// ...stepResponseMessages]` once the step finishes. Mirror that here
+		// by syncing currentMessages to nextMessages now, so when the next
+		// loop iteration processes this step's response and does
+		// `currentMessages = append(currentMessages, stepResponseMsgs...)`
+		// above, it builds on top of this step's own toolCaller
+		// announcement instead of dropping it after one step.
+		currentMessages = nextMessages
 
 		nextTools = resolveStepTools(ctx, nextTools, r.cbToolsCtx, nextSandbox)
 		nextTools = orderStepTools(nextTools, nextToolOrder)
