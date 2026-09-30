@@ -42,6 +42,14 @@ type InteractionsConfig struct {
 	// current implementation derives fallback IDs from the response/step
 	// shape instead (matching existing Go behavior).
 	GenerateID func() string
+
+	// SerializableConfig returns a JSON-friendly copy of the constructing
+	// provider's Config struct (credentials stripped), used for workflow
+	// serialization (SER2). Set by the constructing provider
+	// (interactionsConfigFromProvider here, or googlevertex.Provider's
+	// interactionsConfig); nil if built without a provider back-reference,
+	// in which case Serialize() returns an empty config.
+	SerializableConfig func() map[string]interface{}
 }
 
 // InteractionsLanguageModel targets the Gemini Interactions API
@@ -56,7 +64,13 @@ type InteractionsLanguageModel struct {
 // (API-key) Google provider: the Interactions API is served from the same
 // host as generateContent, so it reuses the provider's own client verbatim.
 func interactionsConfigFromProvider(p *Provider) InteractionsConfig {
-	return InteractionsConfig{ProviderName: p.Name() + ".interactions", Client: p.client}
+	return InteractionsConfig{
+		ProviderName: p.Name() + ".interactions",
+		Client:       p.client,
+		SerializableConfig: func() map[string]interface{} {
+			return provider.SerializableConfig(p.config)
+		},
+	}
 }
 
 func NewInteractionsLanguageModel(p *Provider, modelID string) *InteractionsLanguageModel {

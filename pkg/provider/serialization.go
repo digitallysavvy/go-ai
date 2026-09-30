@@ -1,3 +1,28 @@
+// Package provider's serialization helpers (this file) are the Go
+// equivalent of TS's [WORKFLOW_SERIALIZE]/[WORKFLOW_DESERIALIZE] symbols on
+// each LanguageModelV3/ImageModelV4/VideoModelV3/SpeechModelV4/
+// TranscriptionModelV4/EmbeddingModelV4/Experimental_EvaluationModelV4
+// implementation: every serializable model in this SDK exposes a
+// Serialize() (or SerializeStrict()) method, and every provider package
+// registers a matching deserializer factory in its own init() via
+// RegisterModelDeserializer / RegisterImageModelDeserializer / etc.
+//
+// Unlike TS, where @workflow/serde wires these symbols into
+// packages/workflow's durable step/state persistence automatically (any
+// model value that crosses a step boundary is transparently
+// serialized/deserialized by the workflow runtime), Go's pkg/workflow and
+// pkg/ai packages do not call SerializeModel/DeserializeModel (or their
+// typed counterparts) on your behalf anywhere in this SDK. There is no
+// equivalent "serde" layer watching for model values. An application that
+// wants to persist a model across a workflow step, queue message, or any
+// other durability boundary must call provider.SerializeModel(model) (or
+// SerializeImageModel/SerializeVideoModel/SerializeSpeechModel/
+// SerializeSpeechTranslationModel/SerializeTranscriptionModel/
+// SerializeEmbeddingModel/SerializeEvaluationModel, matching the model's
+// kind) itself before persisting the result, and the corresponding
+// DeserializeModel/Deserialize<Kind>Model function itself after loading it
+// back -- both are ordinary, explicitly-called functions, not framework
+// plumbing.
 package provider
 
 import (
@@ -46,6 +71,22 @@ func RegisterModelDeserializer(providerName string, fn ModelDeserializer) {
 	modelDeserializersMu.Lock()
 	defer modelDeserializersMu.Unlock()
 	modelDeserializers[providerName] = fn
+}
+
+// RegisteredModelDeserializerKeys returns every provider name currently
+// registered with RegisterModelDeserializer. Exposed so tests (and callers
+// building an introspection UI) can enumerate what DeserializeModel accepts
+// without reaching into package-private state; used by
+// pkg/providers/serialization_registry_test.go's permanent
+// registry-wide round-trip check.
+func RegisteredModelDeserializerKeys() []string {
+	modelDeserializersMu.RLock()
+	defer modelDeserializersMu.RUnlock()
+	keys := make([]string, 0, len(modelDeserializers))
+	for k := range modelDeserializers {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 // DeserializeModel reconstructs a serialized language model using a registered
@@ -131,6 +172,18 @@ func (r *typedModelRegistry[M]) deserialize(kind string, serialized SerializedMo
 	return fn(serialized)
 }
 
+// keys returns every provider name currently registered on this registry.
+// See RegisteredModelDeserializerKeys's doc comment for why this exists.
+func (r *typedModelRegistry[M]) keys() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	keys := make([]string, 0, len(r.fns))
+	for k := range r.fns {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 // serializableModelMetadata is the minimal shape serializeTypedModel needs
 // to produce a useful error when a model doesn't implement
 // SerializableModel/SerializableModelStrict. Every model kind interface
@@ -182,6 +235,13 @@ func DeserializeImageModel(serialized SerializedModel) (ImageModel, error) {
 	return imageModelDeserializers.deserialize("image", serialized)
 }
 
+// RegisteredImageModelDeserializerKeys returns every provider name
+// currently registered with RegisterImageModelDeserializer. See
+// RegisteredModelDeserializerKeys's doc comment.
+func RegisteredImageModelDeserializerKeys() []string {
+	return imageModelDeserializers.keys()
+}
+
 // SerializeImageModel returns a JSON-friendly serialized image model
 // representation.
 func SerializeImageModel(model ImageModel) (SerializedModel, error) {
@@ -203,6 +263,13 @@ func RegisterVideoModelDeserializer(providerName string, fn func(SerializedModel
 // registered provider factory.
 func DeserializeVideoModel(serialized SerializedModel) (VideoModelV3, error) {
 	return videoModelDeserializers.deserialize("video", serialized)
+}
+
+// RegisteredVideoModelDeserializerKeys returns every provider name
+// currently registered with RegisterVideoModelDeserializer. See
+// RegisteredModelDeserializerKeys's doc comment.
+func RegisteredVideoModelDeserializerKeys() []string {
+	return videoModelDeserializers.keys()
 }
 
 // SerializeVideoModel returns a JSON-friendly serialized video model
@@ -228,6 +295,13 @@ func DeserializeSpeechModel(serialized SerializedModel) (SpeechModel, error) {
 	return speechModelDeserializers.deserialize("speech", serialized)
 }
 
+// RegisteredSpeechModelDeserializerKeys returns every provider name
+// currently registered with RegisterSpeechModelDeserializer. See
+// RegisteredModelDeserializerKeys's doc comment.
+func RegisteredSpeechModelDeserializerKeys() []string {
+	return speechModelDeserializers.keys()
+}
+
 // SerializeSpeechModel returns a JSON-friendly serialized speech model
 // representation.
 func SerializeSpeechModel(model SpeechModel) (SerializedModel, error) {
@@ -249,6 +323,13 @@ func RegisterTranscriptionModelDeserializer(providerName string, fn func(Seriali
 // model using a registered provider factory.
 func DeserializeTranscriptionModel(serialized SerializedModel) (TranscriptionModel, error) {
 	return transcriptionModelDeserializers.deserialize("transcription", serialized)
+}
+
+// RegisteredTranscriptionModelDeserializerKeys returns every provider name
+// currently registered with RegisterTranscriptionModelDeserializer. See
+// RegisteredModelDeserializerKeys's doc comment.
+func RegisteredTranscriptionModelDeserializerKeys() []string {
+	return transcriptionModelDeserializers.keys()
 }
 
 // SerializeTranscriptionModel returns a JSON-friendly serialized
@@ -274,9 +355,48 @@ func DeserializeEmbeddingModel(serialized SerializedModel) (EmbeddingModel, erro
 	return embeddingModelDeserializers.deserialize("embedding", serialized)
 }
 
+// RegisteredEmbeddingModelDeserializerKeys returns every provider name
+// currently registered with RegisterEmbeddingModelDeserializer. See
+// RegisteredModelDeserializerKeys's doc comment.
+func RegisteredEmbeddingModelDeserializerKeys() []string {
+	return embeddingModelDeserializers.keys()
+}
+
 // SerializeEmbeddingModel returns a JSON-friendly serialized embedding
 // model representation.
 func SerializeEmbeddingModel(model EmbeddingModel) (SerializedModel, error) {
+	if model == nil {
+		return SerializedModel{}, providererrors.NewSerializationError("provider: model is nil", nil)
+	}
+	return serializeTypedModel(model)
+}
+
+var speechTranslationModelDeserializers = newTypedModelRegistry[SpeechTranslationModel]()
+
+// RegisterSpeechTranslationModelDeserializer registers a model factory for
+// DeserializeSpeechTranslationModel.
+func RegisterSpeechTranslationModelDeserializer(providerName string, fn func(SerializedModel) (SpeechTranslationModel, error)) {
+	speechTranslationModelDeserializers.register(providerName, fn)
+}
+
+// DeserializeSpeechTranslationModel reconstructs a serialized speech
+// translation model using a registered provider factory.
+func DeserializeSpeechTranslationModel(serialized SerializedModel) (SpeechTranslationModel, error) {
+	return speechTranslationModelDeserializers.deserialize("speech translation", serialized)
+}
+
+// RegisteredSpeechTranslationModelDeserializerKeys returns every provider
+// name currently registered with RegisterSpeechTranslationModelDeserializer.
+// See RegisteredModelDeserializerKeys's doc comment.
+func RegisteredSpeechTranslationModelDeserializerKeys() []string {
+	return speechTranslationModelDeserializers.keys()
+}
+
+// SerializeSpeechTranslationModel returns a JSON-friendly serialized speech
+// translation model representation. Mirrors TS
+// GoogleSpeechTranslationModel/OpenAISpeechTranslationModel
+// [WORKFLOW_SERIALIZE].
+func SerializeSpeechTranslationModel(model SpeechTranslationModel) (SerializedModel, error) {
 	if model == nil {
 		return SerializedModel{}, providererrors.NewSerializationError("provider: model is nil", nil)
 	}
@@ -295,6 +415,13 @@ func RegisterEvaluationModelDeserializer(providerName string, fn func(Serialized
 // using a registered provider factory.
 func DeserializeEvaluationModel(serialized SerializedModel) (EvaluationModel, error) {
 	return evaluationModelDeserializers.deserialize("evaluation", serialized)
+}
+
+// RegisteredEvaluationModelDeserializerKeys returns every provider name
+// currently registered with RegisterEvaluationModelDeserializer. See
+// RegisteredModelDeserializerKeys's doc comment.
+func RegisteredEvaluationModelDeserializerKeys() []string {
+	return evaluationModelDeserializers.keys()
 }
 
 // SerializeEvaluationModel returns a JSON-friendly serialized evaluation
