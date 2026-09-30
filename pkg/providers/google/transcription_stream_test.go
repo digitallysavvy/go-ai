@@ -589,6 +589,55 @@ func TestTranscriptionModel_DoStream_FinishesOnCleanCloseAfterAudioEnded(t *test
 	}
 }
 
+// TestTranscriptionModel_DoStream_FinishWhenCloseWhilePending is a regression
+// test for the close-while-pending gate: it uses a finish-grace period long
+// enough (10s) that the timer could not plausibly have fired on its own
+// before the server closes the connection, proving the close is what
+// finishes the stream (gated on the pending finish timer, matching the
+// equivalent speech-translation stream's onClose gate) rather than the timer
+// itself elapsing.
+func TestTranscriptionModel_DoStream_FinishWhenCloseWhilePending(t *testing.T) {
+	server := newLiveTranscriptionTestServer(t)
+	defer server.close()
+
+	model := newLiveTestModel(t, server.ts.URL)
+	model.finishGraceMs = 10 * time.Second
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newChanAudioStream([]byte{1, 2}),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+
+	server.waitFor(t, func(m map[string]interface{}) bool { _, ok := m["setup"]; return ok }, time.Second)
+	if _, err := result.Stream.Next(); err != nil {
+		t.Fatalf("Stream.Next() (stream-start) error = %v", err)
+	}
+	server.toSend <- map[string]interface{}{"setupComplete": map[string]interface{}{}}
+	server.waitFor(t, hasRealtimeInputKey("audioStreamEnd"), time.Second)
+
+	server.toSend <- map[string]interface{}{"serverContent": map[string]interface{}{"inputTranscription": map[string]interface{}{"text": "partial words"}}}
+	time.Sleep(20 * time.Millisecond)
+
+	// close while the (10s) grace-period finish is pending confirms completion:
+	server.closeConnection()
+
+	start := time.Now()
+	parts, err := drainUntilFinishOrError(t, result.Stream)
+	if err != nil {
+		t.Fatalf("stream error = %v", err)
+	}
+	if elapsed := time.Since(start); elapsed >= 5*time.Second {
+		t.Fatalf("finish took %v, want it to complete well under the 10s grace period (the close, not the timer, should finish the stream)", elapsed)
+	}
+	finish := parts[len(parts)-1]
+	if finish.Type != provider.TranscriptionStreamPartTypeFinish || finish.FinishText != "partial words" {
+		t.Fatalf("finish = %+v", finish)
+	}
+}
+
 // TestTranscriptionModel_DoStream_ErrorsOnCloseBeforeAudioEnded mirrors TS
 // "errors when the socket closes before the audio ended".
 func TestTranscriptionModel_DoStream_ErrorsOnCloseBeforeAudioEnded(t *testing.T) {
