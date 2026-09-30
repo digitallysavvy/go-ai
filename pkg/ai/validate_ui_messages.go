@@ -107,10 +107,16 @@ func safeValidateUIMessagesInternal(ctx context.Context, opts ValidateUIMessages
 	if opts.MetadataSchema != nil {
 		for i := range messages {
 			message := &messages[i]
-			if err := opts.MetadataSchema.Validator().Validate(message.Metadata); err != nil {
+			// TS's validateTypes performs a zod/standard-schema .parse(),
+			// which fills .default() values as part of parsing itself -- a
+			// field missing a default must not fail validation, and the
+			// defaulted value (not the raw one) is what the caller
+			// receives. Apply defaults before validating, not after.
+			defaulted := schema.ApplyDefaults(message.Metadata, opts.MetadataSchema)
+			if err := opts.MetadataSchema.Validator().Validate(defaulted); err != nil {
 				return fail(uiValidationError(message.Metadata, err, fmt.Sprintf("messages[%d].metadata", i), "", message.ID))
 			}
-			message.Metadata = schema.ApplyDefaults(message.Metadata, opts.MetadataSchema)
+			message.Metadata = defaulted
 		}
 	}
 
@@ -129,10 +135,14 @@ func safeValidateUIMessagesInternal(ctx context.Context, opts ValidateUIMessages
 				if dataSchema == nil {
 					return fail(uiValidationError(dataPart.Data, fmt.Errorf("No data schema found for data part %s", dataName), field, dataName, dataPart.ID))
 				}
-				if err := dataSchema.Validator().Validate(dataPart.Data); err != nil {
+				// Apply defaults before validating (see the metadata
+				// handling above for why): a missing field with a default
+				// must not fail validation.
+				defaultedData := schema.ApplyDefaults(dataPart.Data, dataSchema)
+				if err := dataSchema.Validator().Validate(defaultedData); err != nil {
 					return fail(uiValidationError(dataPart.Data, err, field, dataName, dataPart.ID))
 				}
-				dataPart.Data = schema.ApplyDefaults(dataPart.Data, dataSchema)
+				dataPart.Data = defaultedData
 			}
 
 			if !shouldValidateToolParts || !IsStaticToolUIPart(part) {
@@ -183,7 +193,12 @@ func safeValidateUIMessagesInternal(ctx context.Context, opts ValidateUIMessages
 
 			if toolPart.State == ToolStateOutputAvailable {
 				if validator := schemaValidatorFor(tool.OutputSchema); validator != nil {
-					if err := validator.Validate(toolPart.Output); err != nil {
+					// Apply defaults before validating (see the metadata
+					// handling above): a missing field with a default must
+					// not fail validation. Mirrors TS, which does not
+					// reassign toolPart.output with the defaulted value
+					// either (validateTypes's result here is discarded).
+					if err := validator.Validate(applyDefaultsForValidator(toolPart.Output, validator)); err != nil {
 						return fail(uiValidationError(toolPart.Output, err, fmt.Sprintf("messages[%d].parts[%d].output", msgIdx, partIdx), toolName, toolPart.ToolCallID))
 					}
 				}
@@ -202,15 +217,15 @@ func validateUIToolInput(ctx context.Context, tool *types.Tool, toolPart *ToolUI
 	toolName := GetStaticToolName(toolPart)
 	parsed := value
 	if validator := toolInputValidator(tool); validator != nil {
-		if err := validator.Validate(value); err != nil {
+		// Apply defaults before validating (see the metadata handling in
+		// SafeValidateUIMessages for why): a missing field with a default
+		// must not fail validation, and the defaulted value is what gets
+		// parsed on.
+		defaulted := applyDefaultsForValidator(value, validator)
+		if err := validator.Validate(defaulted); err != nil {
 			return uiValidationError(value, err, field, toolName, toolPart.ToolCallID)
 		}
-		switch s := tool.Parameters.(type) {
-		case schema.Schema:
-			parsed = schema.ApplyDefaults(value, s)
-		case map[string]interface{}:
-			parsed = schema.ApplyDefaults(value, schema.NewSimpleJSONSchema(s))
-		}
+		parsed = defaulted
 	}
 	if !hasInputSchemaInput {
 		return nil
@@ -253,6 +268,17 @@ func schemaValidatorFor(s interface{}) schema.Validator {
 		return schema.NewSimpleJSONSchema(v).Validator()
 	}
 	return nil
+}
+
+// applyDefaultsForValidator fills any JSON-Schema "default" values missing
+// from value using validator's schema, mirroring the zod/standard-schema
+// .parse() step TS's validateTypes performs (see SafeValidateUIMessages's
+// metadata handling for the full rationale). It never mutates value.
+func applyDefaultsForValidator(value interface{}, validator schema.Validator) interface{} {
+	if validator == nil {
+		return value
+	}
+	return schema.ApplyDefaults(value, schema.NewSimpleJSONSchema(validator.JSONSchema()))
 }
 
 func uiValidationError(value interface{}, cause error, field, entityName, entityID string) error {

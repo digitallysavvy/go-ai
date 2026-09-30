@@ -423,6 +423,67 @@ func TestValidateApprovedToolApprovals(t *testing.T) {
 			t.Fatalf("no secret: %+v, %v", got, err)
 		}
 	})
+
+	// SC2 item 2: TS validate-tool-approvals.ts revalidates approved input
+	// through safeValidateTypes (a zod/standard-schema parse), which fills
+	// .default() values as part of parsing itself -- so a required field
+	// missing a default fails at the *schema* validation step before the
+	// fix (a generic "Invalid input for tool" error), but after applying
+	// defaults first (matching TS), that same schema check now succeeds and
+	// the failure -- correctly -- moves to the later "must never change the
+	// approved operation" equality check instead (TS's own comment: this
+	// guard is deliberately strict about defaults introducing a field the
+	// original approval never carried; see refineParsedToolCallInput /
+	// validation.value in validate-tool-approvals.ts). Both TS and Go still
+	// reject the approval either way; what this test pins down is that the
+	// fix changes *which* check rejects it, matching TS exactly.
+	t.Run("applies schema defaults before revalidating approved input", func(t *testing.T) {
+		defaultingSchema := map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"value": map[string]interface{}{"type": "string"},
+				"unit":  map[string]interface{}{"type": "string", "default": "metric"},
+			},
+			"required": []interface{}{"value", "unit"},
+		}
+		// The original tool call's arguments never carried "unit" -- it
+		// only exists as a schema default filled in during revalidation.
+		a := approval(map[string]interface{}{"value": "test"})
+		got, err := ValidateApprovedToolApprovals(ctx, ValidateApprovedToolApprovalsOptions{
+			ApprovedToolApprovals: []CollectedToolApproval{a},
+			Tools:                 []types.Tool{executable(defaultingSchema)},
+		})
+		if err != nil || len(got.InvalidToolApprovals) != 1 || len(got.ApprovedToolApprovals) != 0 {
+			t.Fatalf("got %+v, %v", got, err)
+		}
+		if !strings.Contains(got.InvalidToolApprovals[0].Error.Error(), "does not match the validated schema output") {
+			t.Fatalf("error = %v, want the approved-operation mismatch message (not a schema validation error)", got.InvalidToolApprovals[0].Error)
+		}
+	})
+
+	// The defaults-before-validate fix does matter on its own when the
+	// defaulted value still equals the approved input -- e.g. the approval
+	// already carries the schema's default explicitly, so applying it again
+	// is a no-op and revalidation must succeed exactly as it did before a
+	// default existed on the schema at all.
+	t.Run("succeeds when the approved input already matches the schema default", func(t *testing.T) {
+		defaultingSchema := map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"value": map[string]interface{}{"type": "string"},
+				"unit":  map[string]interface{}{"type": "string", "default": "metric"},
+			},
+			"required": []interface{}{"value", "unit"},
+		}
+		a := approval(map[string]interface{}{"value": "test", "unit": "metric"})
+		got, err := ValidateApprovedToolApprovals(ctx, ValidateApprovedToolApprovalsOptions{
+			ApprovedToolApprovals: []CollectedToolApproval{a},
+			Tools:                 []types.Tool{executable(defaultingSchema)},
+		})
+		if err != nil || len(got.ApprovedToolApprovals) != 1 || len(got.InvalidToolApprovals) != 0 {
+			t.Fatalf("got %+v, %v", got, err)
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
