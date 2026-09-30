@@ -256,11 +256,15 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 ```
 
-For Vertex AI models, use the `"vertex"` key instead of `"google"`:
+For Vertex AI models, use the `"googleVertex"` key instead of `"google"`.
+Vertex checks provider options keys in this order: `"googleVertex"` (preferred),
+then `"vertex"` (legacy, still honored), then `"google"` (cross-namespace
+fallback) — never the hyphenated `"google-vertex"`, which is the provider's
+identity string, not a provider options key.
 
 ```go
 ProviderOptions: map[string]interface{}{
-    "vertex": map[string]interface{}{
+    "googleVertex": map[string]interface{}{
         "thinkingConfig": map[string]interface{}{
             "thinkingBudget": 10000,
         },

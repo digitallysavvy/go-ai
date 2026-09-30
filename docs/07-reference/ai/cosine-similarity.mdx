@@ -27,6 +27,14 @@ Returns a float64 between -1 and 1:
 - 0.0: Vectors are orthogonal (no similarity)
 - -1.0: Vectors are opposite
 
+### Zero and empty vectors
+
+A zero vector (all-zero components) or an empty (`len == 0`) vector on either
+side returns `(0, nil)` — not an error — matching the TypeScript AI SDK. Only
+a length mismatch between `a` and `b` returns an error, a typed
+`*errors.InvalidArgumentError` with message
+`"Vectors must have the same length (vector1Length=…, vector2Length=…)"`.
+
 ## Examples
 
 ### Basic Similarity Calculation
@@ -148,19 +156,21 @@ for i := 0; i < len(embeddings); i++ {
 
 ## Error Handling
 
+`CosineSimilarity` only returns an error for a length mismatch; a zero or
+empty vector is not an error condition.
+
 ```go
 similarity, err := ai.CosineSimilarity(a, b)
 if err != nil {
-    switch {
-    case strings.Contains(err.Error(), "dimensions must match"):
-        log.Printf("Dimension mismatch: %d != %d", len(a), len(b))
-    case strings.Contains(err.Error(), "zero vector"):
-        log.Println("Cannot compute similarity for zero vector")
-    default:
+    var invalidArg *providererrors.InvalidArgumentError
+    if errors.As(err, &invalidArg) {
+        log.Printf("Dimension mismatch: %v", invalidArg)
+    } else {
         log.Println("Unknown error:", err)
     }
     return
 }
+// similarity is 0 (not an error) if either vector is all-zero or empty.
 ```
 
 ## See Also

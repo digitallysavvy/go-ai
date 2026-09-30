@@ -585,6 +585,41 @@ if err := validateTextLength(text, 4096); err != nil {
 }
 ```
 
+## Speech Translation (Experimental)
+
+Speech-to-speech translation streams source-language audio in and receives
+translated audio (and text) out, over a WebSocket connection. It is separate
+from text-to-speech (`GenerateSpeech`) and speech-to-text (`Transcribe`).
+
+Google (`SpeechTranslationModel`, Live Translation over the
+BidiGenerateContent WebSocket) and OpenAI (`SpeechTranslationModel`, the
+`/realtime/translations` WebSocket) implement `provider.SpeechTranslationModel`,
+accessed through `Provider.SpeechTranslationModel(modelID)` or the
+TS-compatible alias `Provider.Translation(modelID)`:
+
+```go
+prov := google.New(google.Config{APIKey: os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY")})
+translationModel, err := prov.SpeechTranslationModel("gemini-2.0-flash-live-001")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.ExperimentalStreamTranslate(ctx, ai.StreamTranslateOptions{
+    Model:            translationModel,
+    Audio:            audioStream, // provider.AudioStream of raw input chunks
+    InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
+    TargetLanguage:   "es",
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer result.Close()
+```
+
+This feature is experimental and its API may change. See the package docs
+under `pkg/providers/google` and `pkg/providers/openai` for the current
+`provider.AudioStream` and streamed-event shapes.
+
 ## Next Steps
 
 - Learn about [Transcription](./36-transcription.mdx)
