@@ -1409,6 +1409,32 @@ func parseToolInputPartial(text string) interface{} {
 	return nil
 }
 
+// UIMessageStreamError is the error reported (via onError) when a UI message
+// stream contains invalid or out-of-sequence chunks: a delta/end chunk
+// received without a corresponding start chunk, or a tool invocation/
+// approval response that can't be matched to a toolCallId/approvalId.
+// Mirrors TS's AI_UIMessageStreamError (error/ui-message-stream-error.ts).
+type UIMessageStreamError struct {
+	// ChunkType is the type of chunk that caused the error (e.g. "text-delta", "reasoning-end").
+	ChunkType string
+
+	// ChunkID is the ID associated with the failing chunk (part ID or toolCallId/approvalId).
+	ChunkID string
+
+	// Message describes the error.
+	Message string
+}
+
+func (e *UIMessageStreamError) Error() string {
+	return e.Message
+}
+
+// IsUIMessageStreamError reports whether err is a *UIMessageStreamError.
+func IsUIMessageStreamError(err error) bool {
+	var target *UIMessageStreamError
+	return errors.As(err, &target)
+}
+
 func reportMissingUIMessagePart(onError func(error) string, chunkType, chunkID string) {
 	if onError == nil {
 		return
@@ -1418,28 +1444,44 @@ func reportMissingUIMessagePart(onError func(error) string, chunkType, chunkID s
 		partType = "reasoning"
 	}
 	startType := partType + "-start"
-	_ = onError(fmt.Errorf(`Received %s for missing %s part with ID %q. Ensure a "%s" chunk is sent before any "%s" chunks.`, chunkType, partType, chunkID, startType, chunkType))
+	_ = onError(&UIMessageStreamError{
+		ChunkType: chunkType,
+		ChunkID:   chunkID,
+		Message:   fmt.Sprintf(`Received %s for missing %s part with ID %q. Ensure a "%s" chunk is sent before any "%s" chunks.`, chunkType, partType, chunkID, startType, chunkType),
+	})
 }
 
 func reportMissingToolInput(onError func(error) string, chunkType, toolCallID string) {
 	if onError == nil {
 		return
 	}
-	_ = onError(fmt.Errorf(`Received %s for missing tool call with ID %q. Ensure a "tool-input-start" chunk is sent before any "%s" chunks.`, chunkType, toolCallID, chunkType))
+	_ = onError(&UIMessageStreamError{
+		ChunkType: chunkType,
+		ChunkID:   toolCallID,
+		Message:   fmt.Sprintf(`Received %s for missing tool call with ID %q. Ensure a "tool-input-start" chunk is sent before any "%s" chunks.`, chunkType, toolCallID, chunkType),
+	})
 }
 
 func reportMissingToolInvocation(onError func(error) string, toolCallID string) {
 	if onError == nil {
 		return
 	}
-	_ = onError(fmt.Errorf("No tool invocation found for tool call ID %q.", toolCallID))
+	_ = onError(&UIMessageStreamError{
+		ChunkType: "tool-invocation",
+		ChunkID:   toolCallID,
+		Message:   fmt.Sprintf("No tool invocation found for tool call ID %q.", toolCallID),
+	})
 }
 
 func reportMissingApproval(onError func(error) string, approvalID string) {
 	if onError == nil {
 		return
 	}
-	_ = onError(fmt.Errorf("No tool invocation found for approval ID %q.", approvalID))
+	_ = onError(&UIMessageStreamError{
+		ChunkType: "tool-approval-response",
+		ChunkID:   approvalID,
+		Message:   fmt.Sprintf("No tool invocation found for approval ID %q.", approvalID),
+	})
 }
 
 func cloneUIMessageChunk(in UIMessageChunk) UIMessageChunk {

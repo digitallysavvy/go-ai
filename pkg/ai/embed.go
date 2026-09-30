@@ -619,11 +619,20 @@ func telemetryInputValue(settings *TelemetrySettings, value interface{}) string 
 	return string(b)
 }
 
-// CosineSimilarity calculates the cosine similarity between two embeddings
-// Returns a value between -1 (opposite) and 1 (identical)
+// CosineSimilarity calculates the cosine similarity between two embeddings.
+// Returns a value between -1 (opposite) and 1 (identical), or 0 if either
+// vector is the zero vector (or both vectors are empty). Matches TS
+// cosineSimilarity: only a length mismatch is an error.
 func CosineSimilarity(a, b []float64) (float64, error) {
 	if len(a) != len(b) {
-		return 0, fmt.Errorf("embedding dimensions must match: %d != %d", len(a), len(b))
+		return 0, &providererrors.InvalidArgumentError{
+			Field:   "vector1,vector2",
+			Message: fmt.Sprintf("Vectors must have the same length (vector1Length=%d, vector2Length=%d)", len(a), len(b)),
+		}
+	}
+
+	if len(a) == 0 {
+		return 0, nil
 	}
 
 	var dotProduct, normA, normB float64
@@ -633,9 +642,9 @@ func CosineSimilarity(a, b []float64) (float64, error) {
 		normB += b[i] * b[i]
 	}
 
-	// Avoid division by zero
+	// Zero vector on either side yields similarity 0, not an error.
 	if normA == 0 || normB == 0 {
-		return 0, fmt.Errorf("cannot compute similarity for zero vector")
+		return 0, nil
 	}
 
 	return dotProduct / (math.Sqrt(normA) * math.Sqrt(normB)), nil

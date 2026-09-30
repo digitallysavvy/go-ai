@@ -2519,3 +2519,105 @@ func TestToUIMessageStream_Outcome_FailedOnTransportError(t *testing.T) {
 		t.Fatalf("status = %q, want failed", got)
 	}
 }
+
+// TestUIMessageStreamError_MissingToolInput ports the "no tool-input-start
+// before tool-input-delta" case from TS process-ui-message-stream.ts, and
+// asserts the typed AI_UIMessageStreamError parity fields (A2-6).
+func TestUIMessageStreamError_MissingToolInput(t *testing.T) {
+	var captured error
+	stream, errCh := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
+		Execute: func(writer UIMessageStreamWriter) {
+			writer.Write(UIMessageChunk{
+				"type":           "tool-input-delta",
+				"toolCallId":     "call_missing",
+				"inputTextDelta": "{",
+			})
+		},
+		OnError: func(err error) string {
+			captured = err
+			return err.Error()
+		},
+	})
+	for range stream {
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("unexpected stream error: %v", err)
+	}
+
+	if captured == nil {
+		t.Fatal("expected OnError to be called")
+	}
+	if !IsUIMessageStreamError(captured) {
+		t.Fatalf("expected *UIMessageStreamError, got %T: %v", captured, captured)
+	}
+	var target *UIMessageStreamError
+	if !errors.As(captured, &target) {
+		t.Fatalf("errors.As failed for %T", captured)
+	}
+	if target.ChunkType != "tool-input-delta" {
+		t.Errorf("ChunkType = %q, want %q", target.ChunkType, "tool-input-delta")
+	}
+	if target.ChunkID != "call_missing" {
+		t.Errorf("ChunkID = %q, want %q", target.ChunkID, "call_missing")
+	}
+	wantMsg := `Received tool-input-delta for missing tool call with ID "call_missing". Ensure a "tool-input-start" chunk is sent before any "tool-input-delta" chunks.`
+	if target.Error() != wantMsg {
+		t.Errorf("Error() = %q, want %q", target.Error(), wantMsg)
+	}
+}
+
+// TestUIMessageStreamError_MissingTextDelta ports the "no text-start before
+// text-delta" case from TS process-ui-message-stream.ts (A2-6).
+func TestUIMessageStreamError_MissingTextDelta(t *testing.T) {
+	var captured error
+	stream, errCh := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
+		Execute: func(writer UIMessageStreamWriter) {
+			writer.Write(UIMessageChunk{"type": "text-delta", "id": "text_missing", "delta": "hi"})
+		},
+		OnError: func(err error) string {
+			captured = err
+			return err.Error()
+		},
+	})
+	for range stream {
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("unexpected stream error: %v", err)
+	}
+
+	var target *UIMessageStreamError
+	if !errors.As(captured, &target) {
+		t.Fatalf("expected *UIMessageStreamError, got %T", captured)
+	}
+	if target.ChunkType != "text-delta" || target.ChunkID != "text_missing" {
+		t.Errorf("unexpected fields: ChunkType=%q ChunkID=%q", target.ChunkType, target.ChunkID)
+	}
+}
+
+// TestUIMessageStreamError_MissingReasoningEnd ports the "no reasoning-start
+// before reasoning-end" case from TS process-ui-message-stream.ts (A2-6).
+func TestUIMessageStreamError_MissingReasoningEnd(t *testing.T) {
+	var captured error
+	stream, errCh := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
+		Execute: func(writer UIMessageStreamWriter) {
+			writer.Write(UIMessageChunk{"type": "reasoning-end", "id": "reasoning_missing"})
+		},
+		OnError: func(err error) string {
+			captured = err
+			return err.Error()
+		},
+	})
+	for range stream {
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("unexpected stream error: %v", err)
+	}
+
+	var target *UIMessageStreamError
+	if !errors.As(captured, &target) {
+		t.Fatalf("expected *UIMessageStreamError, got %T", captured)
+	}
+	if target.ChunkType != "reasoning-end" || target.ChunkID != "reasoning_missing" {
+		t.Errorf("unexpected fields: ChunkType=%q ChunkID=%q", target.ChunkType, target.ChunkID)
+	}
+}
