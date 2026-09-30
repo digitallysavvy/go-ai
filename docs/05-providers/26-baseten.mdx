@@ -1,11 +1,15 @@
 ---
 title: Baseten Provider
-description: Setup and usage guide for Baseten ML model deployment with Go-AI SDK
+description: Setup and usage guide for Baseten Model APIs and custom deployments with Go-AI SDK
 ---
 
 # Baseten Provider
 
-Baseten provides serverless infrastructure for deploying and scaling ML models. Deploy any model from HuggingFace, custom models, or optimized inference endpoints.
+Baseten hosts an OpenAI-compatible Model APIs endpoint alongside custom
+model deployments. `pkg/providers/baseten` builds on the shared `openai`
+package (like the TypeScript provider) — there is no deployment
+orchestration API in this SDK; use the Baseten dashboard or CLI to deploy
+models, and this provider to call them.
 
 ## Setup
 
@@ -25,7 +29,7 @@ provider := baseten.New(baseten.Config{
     APIKey: os.Getenv("BASETEN_API_KEY"),
 })
 
-model, err := provider.LanguageModel("model-id")
+model, err := provider.LanguageModel("") // "" defaults to "chat" against the Model APIs
 ```
 
 ### Get API Key
@@ -34,47 +38,75 @@ model, err := provider.LanguageModel("model-id")
 export BASETEN_API_KEY=...
 ```
 
-## Features
+`Config.APIKey` falls back to `BASETEN_API_KEY` when left empty.
 
-### Deploy Any Model
-
-Deploy models from HuggingFace or custom:
+## Config
 
 ```go
-// Deploy from HuggingFace
-deployment := baseten.NewDeployment(baseten.DeploymentConfig{
-    Name:  "my-llama-deployment",
-    Model: "meta-llama/Llama-2-7b-chat-hf",
-    GPU:   "A100",
-})
-
-modelID, err := deployment.Deploy()
+type Config struct {
+    APIKey     string            // falls back to BASETEN_API_KEY
+    BaseURL    string            // default: https://inference.baseten.co/v1
+    ModelURL   string            // custom deployment URL (see below)
+    Headers    map[string]string
+    HTTPClient *http.Client
+}
 ```
 
-### Autoscaling
+## Model APIs vs. Custom Deployments
 
-Automatic scaling based on demand:
-
-```go
-deployment := baseten.NewDeployment(baseten.DeploymentConfig{
-    Name:       "my-model",
-    Model:      "model-id",
-    MinReplicas: 0,  // Scale to zero
-    MaxReplicas: 10,
-    GPU:        "A10",
-})
-```
-
-### Private Deployment
-
-Deploy models privately:
+- **Model APIs (default):** leave `ModelURL` empty. `provider.LanguageModel(modelID)`
+  calls Baseten's shared OpenAI-compatible Model APIs at
+  `https://inference.baseten.co/v1` with `ChatProviderName: "baseten.chat"`.
+  An empty `modelID` defaults to `"chat"`.
+- **Custom deployment:** set `Config.ModelURL` to your deployment's
+  `/sync/v1` endpoint. An empty `modelID` then defaults to `"placeholder"`
+  instead of `"chat"`, since dedicated single-model endpoints ignore the
+  wire-level `model` field. A `/predict` URL is rejected — chat requires a
+  `/sync/v1` (OpenAI-compatible Chat Completions) endpoint.
 
 ```go
 provider := baseten.New(baseten.Config{
-    APIKey:  os.Getenv("BASETEN_API_KEY"),
-    Private: true, // Private VPC
+    APIKey:   os.Getenv("BASETEN_API_KEY"),
+    ModelURL: "https://model-xxxxxxx.api.baseten.co/environments/production/sync/v1",
 })
+
+model, err := provider.LanguageModel("")
+if err != nil {
+    log.Fatal(err)
+}
 ```
+
+> **Breaking change (this cycle):** the default base URL changed from the
+> old `bridge.baseten.co` host to `https://inference.baseten.co/v1`, and
+> the chat model's provider name is now `"baseten.chat"`. With a custom
+> `/sync/v1` `ModelURL`, an empty model ID now defaults to `"placeholder"`
+> (was `"chat"`).
+
+## Embeddings
+
+Baseten has no default embeddings endpoint on the Model APIs. `Config.ModelURL`
+must point at a `/sync` or `/sync/v1` deployment URL, or `EmbeddingModel`
+returns an error:
+
+```go
+provider := baseten.New(baseten.Config{
+    APIKey:   os.Getenv("BASETEN_API_KEY"),
+    ModelURL: "https://model-xxxxxxx.api.baseten.co/environments/production/sync",
+})
+
+embeddingModel, err := provider.EmbeddingModel("")
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+Baseten embeddings batch at most 128 inputs per call.
+
+## Video Parts
+
+Chat requests sent through this provider set `AllowVideo: true` internally,
+so `video/*` file parts are sent as `video_url` content parts — see
+[OpenAI-compatible providers: Video Parts](35-openai-compatible.mdx#video-parts).
 
 ## Examples
 
@@ -84,6 +116,7 @@ provider := baseten.New(baseten.Config{
 package main
 
 import (
+    "context"
     "fmt"
     "log"
     "os"
@@ -97,28 +130,28 @@ func main() {
         APIKey: os.Getenv("BASETEN_API_KEY"),
     })
 
-    model, err := provider.LanguageModel("model-id")
+    model, err := provider.LanguageModel("")
     if err != nil {
         log.Fatal(err)
     }
 
-    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: "Explain Baseten"})
+    result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{Model: model, Prompt: "Explain Baseten"})
+    if err != nil {
+        log.Fatal(err)
+    }
     fmt.Println(result.Text)
 }
 ```
 
-## Best Practices
+## Workflow Serialization
 
-1. **Deployment**
-   - Use autoscaling for variable load
-   - Scale to zero for development
-   - Monitor GPU utilization
-
-2. **Cost Management**
-   - Pay per second of compute
-   - Scale to zero when idle
-   - Choose appropriate GPU
+Baseten embedding models can cross a workflow boundary with
+`providerutils.SerializeModel` / `DeserializeModel` (language models could
+already be serialized). See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
+for the mechanism.
 
 ## See Also
 
+- [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
 - [Baseten Documentation](https://docs.baseten.co)

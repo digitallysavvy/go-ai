@@ -28,11 +28,15 @@ provider := gladia.New(gladia.Config{
     APIKey: os.Getenv("GLADIA_API_KEY"),
 })
 
-model, err := provider.TranscriptionModel("whisper-v3")
+model, err := provider.TranscriptionModel("")
 if err != nil {
     log.Fatal(err)
 }
 ```
+
+Gladia has a single transcription model, not a selectable catalog — the
+model ID argument is kept for interface parity with other providers but is
+not sent in the request; pass an empty string.
 
 ## Transcribe Audio
 
@@ -83,6 +87,13 @@ for _, segment := range result.Segments {
     fmt.Printf("[%.2f-%.2f] %s\n", segment.StartSecond, segment.EndSecond, segment.Text)
 }
 ```
+
+## Workflow Serialization
+
+Gladia transcription models can cross a workflow boundary with
+`providerutils.SerializeModel` / `DeserializeModel`. See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
+for the mechanism.
 
 ## See Also
 

@@ -57,20 +57,31 @@ export ALIBABA_API_KEY=sk-...
 |----------|---------|----------|
 | qwen-plus | 32K | Balanced performance and cost |
 | qwen-turbo | 8K | Fast responses, economical |
-| qwen-max | 32K | Most capable, highest quality |
-| qwen-qwq-32b-preview | 32K | Complex reasoning with thinking |
+| qwen3-max | 32K | Most capable, highest quality |
+| qwq-32b | 32K | Complex reasoning with thinking |
 | qwen-vl-max | 32K | Vision + language understanding |
 
 ### Wan Video Models
 
-| Model ID | Type | Duration | Best For |
-|----------|------|----------|----------|
-| wan2.5-t2v | Text-to-video | 5-6s | Preview quality (720p) |
-| wan2.6-t2v | Text-to-video | 5-6s | High quality generation |
-| wan2.6-i2v | Image-to-video | 5-6s | Animate static images |
-| wan2.6-i2v-flash | Image-to-video | 5-6s | Faster generation |
-| wan2.6-r2v | Reference-to-video | 5-6s | Style transfer from reference |
-| wan2.6-r2v-flash | Reference-to-video | 5-6s | Faster style transfer |
+`Provider.VideoModel` accepts any model ID (there is no fixed allowlist);
+the constants below (`pkg/providers/alibaba/video_model_ids.go`) cover the
+documented catalog. An empty model ID defaults to `wan2.6-t2v`.
+
+| Model ID | Go constant | Type | Best For |
+|----------|-------------|------|----------|
+| wan2.5-t2v-preview | `VideoModelWan2_5T2VPreview` | Text-to-video | Preview quality (720p) |
+| wan2.6-t2v | `VideoModelWan2_6T2V` | Text-to-video | High quality generation |
+| wan2.7-t2v | `VideoModelWan2_7T2V` | Text-to-video | Latest generation |
+| wan2.6-i2v | `VideoModelWan2_6I2V` | Image-to-video | Animate static images |
+| wan2.6-i2v-flash | `VideoModelWan2_6I2VFlash` | Image-to-video | Faster generation |
+| wan2.6-r2v | `VideoModelWan2_6R2V` | Reference-to-video | Style transfer from reference |
+| wan2.6-r2v-flash | `VideoModelWan2_6R2VFlash` | Reference-to-video | Faster style transfer |
+| wan2.7-r2v | `VideoModelWan2_7R2V` | Reference-to-video | Latest reference-to-video |
+| wan3.0-video | `VideoModelWan3Video` | All-in-one | One model ID serves text-, image-, and reference-to-video, and supports custom aspect ratios |
+
+`wan2.7` and `wan3` are new this cycle — `wan3.0-video` in particular
+replaces separate t2v/i2v/r2v model IDs with one model that branches on
+which inputs (`Prompt` only, `Image`, or `InputReferences`) you pass.
 
 ### Embedding Models
 
@@ -116,8 +127,8 @@ result, err := model.DoGenerate(ctx, &provider.GenerateOptions{
     },
     ProviderOptions: map[string]interface{}{
         "alibaba": map[string]interface{}{
-            "enable_thinking":  true,
-            "thinking_budget": 1000, // Max reasoning tokens
+            "enableThinking":  true,
+            "thinkingBudget": 1000, // Max reasoning tokens
         },
     },
 })
@@ -159,30 +170,20 @@ if result.Usage.InputDetails != nil {
 Image understanding with Qwen VL models:
 
 ```go
-prompt := types.Prompt{
-    Messages: []types.Message{
-        {
-            Role: "user",
-            Content: []types.ContentPart{
-                {
-                    Type: "image",
-                    Image: &types.ImagePart{
-                        Type: "url",
-                        URL:  "https://example.com/photo.jpg",
-                    },
-                },
-                {
-                    Type: "text",
-                    Text: "What's in this image?",
-                },
-            },
+messages := []types.Message{
+    {
+        Role: types.RoleUser,
+        Content: []types.ContentPart{
+            types.FileContent{MediaType: "image/jpeg", URL: "https://example.com/photo.jpg"},
+            types.TextContent{Text: "What's in this image?"},
         },
     },
 }
 
 visionModel, _ := provider.LanguageModel("qwen-vl-max")
-result, err := visionModel.DoGenerate(ctx, &provider.GenerateOptions{
-    Prompt: prompt,
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:    visionModel,
+    Messages: messages,
 })
 ```
 
@@ -213,7 +214,7 @@ result, err := model.DoGenerate(ctx, &provider.GenerateOptions{
     Tools:  tools,
     ProviderOptions: map[string]interface{}{
         "alibaba": map[string]interface{}{
-            "parallel_tool_calls": true, // Enable parallel execution
+            "parallelToolCalls": true, // Enable parallel execution
         },
     },
 })
@@ -281,6 +282,28 @@ result, err := videoModel.DoGenerate(ctx, &provider.VideoModelV3CallOptions{
 })
 ```
 
+#### Async Video
+
+`VideoModel` also implements `provider.VideoModelStarter` /
+`VideoModelStatusChecker`, so it works with `ai.ExperimentalStartVideo` /
+`ai.ExperimentalGetVideoStatus` instead of the polling `ai.GenerateVideo`.
+The default poll interval/timeout are 5s / 10 minutes, and the
+provider-returned task ID is path-encoded when polling status.
+
+```go
+started, err := ai.ExperimentalStartVideo(ctx, ai.StartVideoOptions{
+    Model:  videoModel,
+    Prompt: ai.VideoPrompt{Text: "A golden retriever playing in a park"},
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+status, err := ai.ExperimentalGetVideoStatus(ctx, videoModel, ai.GetVideoStatusOptions{
+    Operation: started.Operation,
+})
+```
+
 ## Examples
 
 ### Basic Text Generation
@@ -325,7 +348,7 @@ func main() {
 ### Reasoning with Thinking
 
 ```go
-model, _ := provider.LanguageModel("qwen-qwq-32b-preview")
+model, _ := provider.LanguageModel("qwq-32b")
 
 result, err := model.DoGenerate(ctx, &provider.GenerateOptions{
     Prompt: types.Prompt{
@@ -338,8 +361,8 @@ Who has which pet?`,
     },
     ProviderOptions: map[string]interface{}{
         "alibaba": map[string]interface{}{
-            "enable_thinking":  true,
-            "thinking_budget": 1000,
+            "enableThinking":  true,
+            "thinkingBudget": 1000,
         },
     },
 })
@@ -368,8 +391,8 @@ result, err := videoModel.DoGenerate(ctx, &provider.VideoModelV3CallOptions{
 2. **Choose the Right Model**
    - `qwen-turbo`: Simple tasks, fast responses
    - `qwen-plus`: Balanced for most use cases
-   - `qwen-max`: Complex reasoning, highest quality
-   - `qwen-qwq-32b-preview`: Logic puzzles, math problems
+   - `qwen3-max`: Complex reasoning, highest quality
+   - `qwq-32b`: Logic puzzles, math problems
 
 3. **Video Generation**
    - Text-to-video takes 1-2 minutes
@@ -412,6 +435,14 @@ See the [Alibaba provider examples](https://github.com/digitallysavvy/go-ai/tree
 6. Vision chat
 7. Tool calling
 8. Reference-to-video
+
+## Workflow Serialization
+
+Alibaba embedding models can cross a workflow boundary with
+`providerutils.SerializeModel` / `DeserializeModel` (language models could
+already be serialized). See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
+for the mechanism; video models are not yet serializable.
 
 ## See Also
 

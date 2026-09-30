@@ -5,29 +5,32 @@ description: Setup and usage guide for Cerebras ultra-fast wafer-scale inference
 
 # Cerebras Provider
 
-Cerebras provides the world's fastest AI inference using wafer-scale engines. Achieves speeds of 1,800+ tokens/second with Llama models - perfect for latency-critical applications.
+Cerebras provides ultra-fast AI inference using wafer-scale engines — ideal for latency-critical and high-throughput applications.
 
 ## Setup
 
 ### Installation
 
+Cerebras has its own dedicated package (not the generic `openai` package with a custom `BaseURL`):
+
 ```go
 import (
     "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/providers/openai" // Cerebras uses OpenAI-compatible API
+    "github.com/digitallysavvy/go-ai/pkg/providers/cerebras"
 )
 ```
 
 ### Configuration
 
 ```go
-provider := openai.New(openai.Config{
-    APIKey:  os.Getenv("CEREBRAS_API_KEY"),
-    BaseURL: "https://api.cerebras.ai/v1",
+provider := cerebras.New(cerebras.Config{
+    APIKey: os.Getenv("CEREBRAS_API_KEY"),
 })
 
-model, err := provider.LanguageModel("llama3.1-70b")
+model, err := provider.LanguageModel(cerebras.ModelGPTOSS120B)
 ```
+
+`cerebras.Config` also accepts `BaseURL` (default `https://api.cerebras.ai/v1`) and `HTTPClient`.
 
 ### Get API Key
 
@@ -37,39 +40,41 @@ export CEREBRAS_API_KEY=...
 
 ## Available Models
 
-### Language Models
+| Model ID | Go constant | Best For |
+|----------|-------------|----------|
+| `gpt-oss-120b` | `cerebras.ModelGPTOSS120B` | General-purpose, high throughput |
+| `gemma-4-31b` | `cerebras.ModelGemma4_31B` | Fast, cost-effective |
 
-| Model ID | Parameters | Tokens/Sec | Price | Best For |
-|----------|-----------|-----------|-------|----------|
-| llama3.1-70b | 70B | 1,800+ | $0.60/1M | Ultra-fast inference |
-| llama3.1-8b | 8B | 2,200+ | $0.10/1M | Blazing fast |
+> **Removed this cycle:** `llama3.1-8b`, `qwen-3-235b-a22b-instruct-2507`,
+> `qwen-3-235b-a22b-thinking-2507`, `zai-glm-4.6`, and `zai-glm-4.7` were
+> retired from Cerebras and no longer have Go constants. Cerebras accepts
+> any model ID string, so passing a retired ID compiles but fails against
+> the live API — use `provider.LanguageModel(cerebras.ModelGPTOSS120B)` or
+> check [inference-docs.cerebras.ai/models](https://inference-docs.cerebras.ai/models/overview)
+> for the current catalog.
 
 ## Provider-Specific Features
 
-### Record-Breaking Speed
-
-Cerebras delivers unprecedented inference speed:
+### Measuring Throughput
 
 ```go
-import "time"
-
 start := time.Now()
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-        Model: model,
-        Prompt: "Write a detailed 500-word essay about AI",
-    })
+    Model:  model,
+    Prompt: "Write a detailed 500-word essay about AI",
+})
+if err != nil {
+    log.Fatal(err)
+}
 
 elapsed := time.Since(start)
 tokensPerSec := float64(result.Usage.GetOutputTokens()) / elapsed.Seconds()
 
-fmt.Printf("Generated %d tokens in %v\n", result.Usage.GetOutputTokens(), elapsed)
-fmt.Printf("Speed: %.0f tokens/second\n", tokensPerSec)
-// Output: Speed: 1800+ tokens/second
+fmt.Printf("Generated %d tokens in %v (%.0f tokens/sec)\n",
+    result.Usage.GetOutputTokens(), elapsed, tokensPerSec)
 ```
 
-### Real-Time Streaming
-
-Ultra-fast streaming for immediate user feedback:
+### Streaming
 
 ```go
 stream, err := ai.StreamText(ctx, ai.StreamTextOptions{Model: model, Prompt: "Write a story"})
@@ -78,26 +83,22 @@ if err != nil {
 }
 defer stream.Close()
 
-// Tokens arrive at 1,800+ tokens/second
-startTime := time.Now()
-tokenCount := 0
-
 for chunk := range stream.Chunks() {
     fmt.Print(chunk.Text)
-    tokenCount++
 }
-
-elapsed := time.Since(startTime)
-fmt.Printf("\n\nSpeed: %.0f tokens/sec\n",
-    float64(tokenCount)/elapsed.Seconds())
 ```
+
+### Video Parts
+
+Chat requests sent through this provider set `AllowVideo: true` internally,
+so `video/*` file parts are sent as `video_url` content parts — see
+[OpenAI-compatible providers: Video Parts](35-openai-compatible.mdx#video-parts).
 
 ### High Throughput
 
 Handle massive concurrent requests:
 
 ```go
-// Process 100 requests in parallel
 var wg sync.WaitGroup
 requests := 100
 
@@ -106,7 +107,7 @@ for i := 0; i < requests; i++ {
     wg.Add(1)
     go func(idx int) {
         defer wg.Done()
-        result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        _, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
             Model:  model,
             Prompt: fmt.Sprintf("Query %d", idx),
         })
@@ -119,8 +120,6 @@ wg.Wait()
 
 elapsed := time.Since(start)
 fmt.Printf("Processed %d requests in %v\n", requests, elapsed)
-fmt.Printf("Throughput: %.1f requests/sec\n",
-    float64(requests)/elapsed.Seconds())
 ```
 
 ## Examples
@@ -131,29 +130,29 @@ fmt.Printf("Throughput: %.1f requests/sec\n",
 package main
 
 import (
+    "context"
     "fmt"
     "log"
     "os"
     "time"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/cerebras"
 )
 
 func main() {
-    provider := openai.New(openai.Config{
-        APIKey:  os.Getenv("CEREBRAS_API_KEY"),
-        BaseURL: "https://api.cerebras.ai/v1",
+    provider := cerebras.New(cerebras.Config{
+        APIKey: os.Getenv("CEREBRAS_API_KEY"),
     })
 
-    model, err := provider.LanguageModel("llama3.1-70b")
+    model, err := provider.LanguageModel(cerebras.ModelGPTOSS120B)
     if err != nil {
         log.Fatal(err)
     }
 
     start := time.Now()
-    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-        Model: model,
+    result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+        Model:  model,
         Prompt: "Explain wafer-scale computing in one paragraph",
     })
     if err != nil {
@@ -172,8 +171,7 @@ func main() {
 ### Interactive Chat Application
 
 ```go
-func interactiveChat(model provider.LanguageModel) {
-    ctx := context.Background()
+func interactiveChat(ctx context.Context, model provider.LanguageModel) {
     scanner := bufio.NewScanner(os.Stdin)
     messages := []types.Message{}
 
@@ -193,7 +191,6 @@ func interactiveChat(model provider.LanguageModel) {
             },
         })
 
-        // Ultra-fast response
         stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
             Model:    model,
             Messages: messages,
@@ -207,7 +204,7 @@ func interactiveChat(model provider.LanguageModel) {
         var response string
         for chunk := range stream.Chunks() {
             fmt.Print(chunk.Text)
-            response += chunk
+            response += chunk.Text
         }
         fmt.Println()
 
@@ -224,9 +221,7 @@ func interactiveChat(model provider.LanguageModel) {
 ### High-Volume Processing
 
 ```go
-func processHighVolume(prompts []string) {
-    model, _ := provider.LanguageModel("llama3.1-8b") // Fastest model
-
+func processHighVolume(ctx context.Context, model provider.LanguageModel, prompts []string) {
     results := make(chan string, len(prompts))
     semaphore := make(chan struct{}, 50) // Limit concurrency
 
@@ -269,9 +264,9 @@ func processHighVolume(prompts []string) {
    - Process high volumes efficiently
 
 2. **Model Selection**
-   - Use llama3.1-70b for best quality
-   - Use llama3.1-8b for maximum speed
-   - Both offer exceptional performance
+   - Check [inference-docs.cerebras.ai/models](https://inference-docs.cerebras.ai/models/overview) for current production models
+   - Use `cerebras.ModelGPTOSS120B` for general-purpose tasks
+   - Use `cerebras.ModelGemma4_31B` for cost-sensitive, high-throughput tasks
 
 3. **Architecture**
    - Wafer-scale engine eliminates GPU bottlenecks
@@ -286,31 +281,8 @@ func processHighVolume(prompts []string) {
 
 ## Rate Limits & Pricing
 
-### Rate Limits
-
-High throughput supported - contact for enterprise limits.
-
-### Pricing
-
-| Model | Input | Output | Best For |
-|-------|-------|--------|----------|
-| Llama 3.1 70B | $0.60/1M | $0.60/1M | Quality + Speed |
-| Llama 3.1 8B | $0.10/1M | $0.10/1M | Maximum Speed |
-
-### Cost-Benefit
-
-```go
-// Despite speed, pricing is competitive
-func calculateCostPerSecond(tokensPerSec float64, pricePerMillion float64) float64 {
-    tokensPerSecond := tokensPerSec
-    costPerToken := pricePerMillion / 1_000_000
-    return tokensPerSecond * costPerToken
-}
-
-// Llama 3.1 70B at 1,800 tokens/sec
-cost := calculateCostPerSecond(1800, 0.60)
-fmt.Printf("Cost per second: $%.6f\n", cost) // Very efficient
-```
+Check the [Cerebras dashboard](https://cloud.cerebras.ai) for current rate
+limits and per-model pricing — both vary by model and plan.
 
 ## Error Handling
 
@@ -318,11 +290,18 @@ fmt.Printf("Cost per second: $%.6f\n", cost) // Very efficient
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: prompt})
 if err != nil {
     if strings.Contains(err.Error(), "rate_limit") {
-        log.Println("Rate limited - unlikely with Cerebras' high throughput")
+        log.Println("Rate limited")
     }
     log.Fatal(err)
 }
 ```
+
+## Workflow Serialization
+
+Cerebras language models can cross a workflow boundary with
+`providerutils.SerializeModel` / `DeserializeModel`. See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
+for the mechanism.
 
 ## See Also
 

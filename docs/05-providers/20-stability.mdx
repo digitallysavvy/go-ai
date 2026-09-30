@@ -37,6 +37,13 @@ export STABILITY_API_KEY=sk-...
 
 ## Available Models
 
+`provider.ImageModel(modelID)` calls the legacy Stability v1 REST API —
+`POST /v1/generation/{modelID}/text-to-image` — so `modelID` must be a v1
+"engine" ID. Stability's newer SD3/Stable Image v2beta models
+(`sd3-large`, `sd3-medium`, `core`, `ultra`, etc.) are **not** reachable
+through this provider, since they live under a different endpoint
+(`/v2beta/stable-image/...`) that this package does not implement.
+
 ### Image Generation
 
 | Model ID | Output | Best For |
@@ -177,8 +184,6 @@ Varies by plan - typical limits:
 func estimateImageCost(model string, count int) float64 {
     prices := map[string]float64{
         "stable-diffusion-xl-1024-v1-0": 0.04,
-        "sd3-large":                      0.065,
-        "sd3-medium":                     0.035,
         "stable-diffusion-v1-6":         0.02,
     }
 
