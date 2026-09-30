@@ -360,6 +360,19 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) map[s
 		}
 	}
 
+	// Merge provider-specific options (passthrough). Matches TS, where the same
+	// fireworks-image-model-options schema (cfg_scale/steps for legacy
+	// image_generation models, plus guidance_scale/num_inference_steps/
+	// output_format/webhook_url/webhook_secret/prompt_upsampling/
+	// safety_tolerance) applies uniformly to both the sync and async paths.
+	if opts.ProviderOptions != nil {
+		if fwOpts, ok := opts.ProviderOptions["fireworks"].(map[string]interface{}); ok {
+			for k, v := range fwOpts {
+				reqBody[k] = v
+			}
+		}
+	}
+
 	return reqBody
 }
 

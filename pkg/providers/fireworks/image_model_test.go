@@ -666,6 +666,97 @@ func TestBuildAsyncRequestBody(t *testing.T) {
 	}
 }
 
+// TestBuildRequestBody_SyncProviderOptionsPassthrough ports the TS
+// fireworks-image-model-options.ts schema check (cfg_scale/steps documented
+// as being "for legacy image_generation models" — the sync, non-flux-kontext
+// path) to the sync buildRequestBody, mirroring TestBuildAsyncRequestBody's
+// passthrough coverage for the async path.
+func TestBuildRequestBody_SyncProviderOptionsPassthrough(t *testing.T) {
+	prov := New(Config{APIKey: "test"})
+	model := NewImageModel(prov, "accounts/fireworks/models/stable-diffusion-xl-1024-v1-0")
+
+	n := 2
+	opts := &provider.ImageGenerateOptions{
+		Prompt: "Test prompt",
+		N:      &n,
+		Size:   "512x512",
+		ProviderOptions: map[string]interface{}{
+			"fireworks": map[string]interface{}{
+				"cfg_scale":        7.5,
+				"steps":            30,
+				"output_format":    "png",
+				"safety_tolerance": "2",
+			},
+		},
+	}
+
+	body := model.buildRequestBody(opts)
+
+	if body["prompt"] != "Test prompt" {
+		t.Errorf("expected prompt, got %v", body["prompt"])
+	}
+	if body["n"] != 2 {
+		t.Errorf("expected n=2, got %v", body["n"])
+	}
+	if body["width"] != 512 || body["height"] != 512 {
+		t.Errorf("expected width/height=512, got %v/%v", body["width"], body["height"])
+	}
+	if body["cfg_scale"] != 7.5 {
+		t.Errorf("expected cfg_scale passthrough, got %v", body["cfg_scale"])
+	}
+	if body["steps"] != 30 {
+		t.Errorf("expected steps passthrough, got %v", body["steps"])
+	}
+	if body["output_format"] != "png" {
+		t.Errorf("expected output_format passthrough, got %v", body["output_format"])
+	}
+	if body["safety_tolerance"] != "2" {
+		t.Errorf("expected safety_tolerance passthrough, got %v", body["safety_tolerance"])
+	}
+}
+
+// TestDoGenerateSync_ProviderOptionsInRequestBody verifies the full sync
+// DoGenerate path actually sends provider-specific options over the wire,
+// not just that buildRequestBody includes them in isolation.
+func TestDoGenerateSync_ProviderOptionsInRequestBody(t *testing.T) {
+	const modelID = "accounts/fireworks/models/stable-diffusion-xl-1024-v1-0"
+
+	var gotBody map[string]interface{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/images/generations", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintln(w, `{"data": [{"url": "https://example.com/sync.png"}]}`) //nolint:errcheck
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	prov := providerForAsyncServer(server.URL)
+	model := NewImageModel(prov, modelID)
+
+	_, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt: "Mountains",
+		ProviderOptions: map[string]interface{}{
+			"fireworks": map[string]interface{}{
+				"cfg_scale": 7.0,
+				"steps":     float64(25),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if gotBody["cfg_scale"] != 7.0 {
+		t.Errorf("expected cfg_scale=7 in request body, got %v", gotBody["cfg_scale"])
+	}
+	if gotBody["steps"] != float64(25) {
+		t.Errorf("expected steps=25 in request body, got %v", gotBody["steps"])
+	}
+}
+
 // TestDoGenerateAsync_Warnings verifies that unsupported options produce the correct warnings.
 func TestDoGenerateAsync_Warnings(t *testing.T) {
 	const modelID = "accounts/fireworks/models/flux-kontext-dev"
