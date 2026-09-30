@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -78,24 +79,52 @@ func TestCustomProviderModelFallbackAndNoSuchModelErrors(t *testing.T) {
 		fn   func() error
 		want string
 	}{
-		{"language", func() error { _, err := noFallback.LanguageModel("m"); return err }, "no such languageModel: m"},
-		{"embedding", func() error { _, err := noFallback.EmbeddingModel("m"); return err }, "no such embeddingModel: m"},
-		{"image", func() error { _, err := noFallback.ImageModel("m"); return err }, "no such imageModel: m"},
-		{"speech", func() error { _, err := noFallback.SpeechModel("m"); return err }, "no such speechModel: m"},
-		{"transcription", func() error { _, err := noFallback.TranscriptionModel("m"); return err }, "no such transcriptionModel: m"},
-		{"reranking", func() error { _, err := noFallback.RerankingModel("m"); return err }, "no such rerankingModel: m"},
+		{"language", func() error { _, err := noFallback.LanguageModel("m"); return err }, "No such languageModel: m"},
+		{"embedding", func() error { _, err := noFallback.EmbeddingModel("m"); return err }, "No such embeddingModel: m"},
+		{"image", func() error { _, err := noFallback.ImageModel("m"); return err }, "No such imageModel: m"},
+		{"speech", func() error { _, err := noFallback.SpeechModel("m"); return err }, "No such speechModel: m"},
+		{"transcription", func() error { _, err := noFallback.TranscriptionModel("m"); return err }, "No such transcriptionModel: m"},
+		{"reranking", func() error { _, err := noFallback.RerankingModel("m"); return err }, "No such rerankingModel: m"},
 		{"video", func() error {
 			_, err := noFallback.(interface {
 				VideoModel(string) (provider.VideoModelV3, error)
 			}).VideoModel("m")
 			return err
-		}, "no such videoModel: m"},
+		}, "No such videoModel: m"},
 	}
 	for _, c := range errChecks {
 		err := c.fn()
 		if err == nil || err.Error() != c.want {
 			t.Fatalf("%s no-fallback error = %v, want %q", c.name, err, c.want)
 		}
+		if !providererrors.IsNoSuchModelError(err) {
+			t.Errorf("%s no-fallback error should be a NoSuchModelError, got %T", c.name, err)
+		}
+	}
+}
+
+// TestCustomProvider_NoSuchModelError_Fields covers A2-7: the registry's
+// custom-provider layer must return a typed, matchable NoSuchModelError
+// (mirroring TS's AI_NoSuchModelError) rather than a plain fmt.Errorf, with
+// ModelID/ModelType populated.
+func TestCustomProvider_NoSuchModelError_Fields(t *testing.T) {
+	t.Parallel()
+
+	noFallback := NewCustomProvider(CustomProviderOptions{})
+	_, err := noFallback.LanguageModel("missing-model")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+
+	var target *providererrors.NoSuchModelError
+	if !errors.As(err, &target) {
+		t.Fatalf("expected *providererrors.NoSuchModelError, got %T", err)
+	}
+	if target.ModelID != "missing-model" {
+		t.Errorf("ModelID = %q, want %q", target.ModelID, "missing-model")
+	}
+	if target.ModelType != "languageModel" {
+		t.Errorf("ModelType = %q, want %q", target.ModelType, "languageModel")
 	}
 }
 

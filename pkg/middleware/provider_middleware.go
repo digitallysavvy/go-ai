@@ -9,16 +9,42 @@ type wrappedProvider struct {
 	provider                 provider.Provider
 	languageModelMiddleware  []*LanguageModelMiddleware
 	embeddingModelMiddleware []*EmbeddingModelMiddleware
+	imageModelMiddleware     []*ImageModelMiddleware
+}
+
+// ProviderMiddlewareOption configures optional WrapProvider behavior (e.g.
+// image model middleware) via a trailing variadic parameter, so that
+// WrapProvider's original 3-argument call shape (p, languageModelMiddleware,
+// embeddingModelMiddleware) keeps compiling unchanged. Added alongside image
+// model middleware support (mirrors TypeScript's wrapProvider
+// options.imageModelMiddleware) instead of a 4th required parameter, which
+// would have been a breaking change for every existing call site.
+type ProviderMiddlewareOption func(*wrappedProvider)
+
+// WithImageModelMiddleware sets the middleware applied to every image model
+// resolved through the wrapped provider, matching TypeScript's wrapProvider
+// options.imageModelMiddleware.
+func WithImageModelMiddleware(imageModelMiddleware []*ImageModelMiddleware) ProviderMiddlewareOption {
+	return func(w *wrappedProvider) {
+		w.imageModelMiddleware = imageModelMiddleware
+	}
 }
 
 // WrapProvider wraps a Provider instance with middleware functionality.
 // This function allows you to apply middleware to all language models and
-// embedding models from the provider.
-func WrapProvider(p provider.Provider, languageModelMiddleware []*LanguageModelMiddleware, embeddingModelMiddleware []*EmbeddingModelMiddleware) provider.Provider {
+// embedding models from the provider, and (via WithImageModelMiddleware)
+// optionally to image models, mirroring TypeScript's wrapProvider
+// options.imageModelMiddleware.
+func WrapProvider(p provider.Provider, languageModelMiddleware []*LanguageModelMiddleware, embeddingModelMiddleware []*EmbeddingModelMiddleware, opts ...ProviderMiddlewareOption) provider.Provider {
 	wrapped := &wrappedProvider{
 		provider:                 p,
 		languageModelMiddleware:  languageModelMiddleware,
 		embeddingModelMiddleware: embeddingModelMiddleware,
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(wrapped)
+		}
 	}
 	_, hasFiles := p.(provider.FilesProvider)
 	_, hasSkills := p.(provider.SkillsProvider)
@@ -67,9 +93,18 @@ func (w *wrappedProvider) EmbeddingModel(modelID string) (provider.EmbeddingMode
 	return model, nil
 }
 
-// ImageModel returns an image generation model by ID (no middleware applied)
+// ImageModel returns an image generation model by ID, with middleware applied
 func (w *wrappedProvider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return w.provider.ImageModel(modelID)
+	model, err := w.provider.ImageModel(modelID)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(w.imageModelMiddleware) > 0 {
+		model = WrapImageModel(model, w.imageModelMiddleware, nil, nil)
+	}
+
+	return model, nil
 }
 
 // SpeechModel returns a speech synthesis model by ID (no middleware applied)

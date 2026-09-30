@@ -40,7 +40,7 @@ func main() {
 		[]*middleware.LanguageModelMiddleware{
 			middleware.AddToolInputExamplesMiddleware(&middleware.AddToolInputExamplesOptions{
 				Prefix: "Input Examples:",
-				Remove: true, // Remove inputExamples after adding to description
+				Remove: types.BoolPtr(true), // Remove inputExamples after adding to description
 			}),
 		},
 		nil,
@@ -129,7 +129,7 @@ func main() {
 			// Custom formatting for examples
 			return fmt.Sprintf("Example %d: %v", index+1, example.Input)
 		},
-		Remove: false, // Keep inputExamples in the tool definition
+		Remove: types.BoolPtr(false), // Keep inputExamples in the tool definition
 	})
 
 	wrappedModel2 := middleware.WrapLanguageModel(

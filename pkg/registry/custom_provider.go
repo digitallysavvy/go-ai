@@ -1,9 +1,8 @@
 package registry
 
 import (
-	"fmt"
-
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // CustomProviderOptions configures an idiomatic Go custom provider. Each model
@@ -203,5 +202,5 @@ func resolveCustomSkills(p *customProvider) provider.SkillsAPI {
 }
 
 func noSuchModel(modelID, modelType string) error {
-	return fmt.Errorf("no such %s: %s", modelType, modelID)
+	return providererrors.NewNoSuchModelError(modelID, modelType)
 }

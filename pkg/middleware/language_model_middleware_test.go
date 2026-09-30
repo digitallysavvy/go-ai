@@ -392,3 +392,75 @@ func TestWrapLanguageModel_NoWrapStream(t *testing.T) {
 		t.Error("expected non-nil stream")
 	}
 }
+
+// supportedURLsLanguageModel is a mock LanguageModel that implements the
+// optional SupportedURLs() capability, used to test A2-4 forwarding.
+type supportedURLsLanguageModel struct {
+	testutil.MockLanguageModel
+	urls map[string][]string
+}
+
+func (m *supportedURLsLanguageModel) SupportedURLs() map[string][]string {
+	return m.urls
+}
+
+// A2-4: wrapping a model that implements the optional SupportedURLs()
+// capability with no OverrideSupportedURLs middleware hook should forward
+// the wrapped model's own SupportedURLs(), matching TS's
+// `supportedUrls: overrideSupportedUrls?.({ model }) ?? model.supportedUrls`.
+func TestWrapLanguageModel_SupportedURLs_ForwardsWrappedModel(t *testing.T) {
+	t.Parallel()
+
+	want := map[string][]string{"image/*": {"^https://.*"}}
+	model := &supportedURLsLanguageModel{urls: want}
+
+	wrapped := WrapLanguageModel(model, []*LanguageModelMiddleware{{}}, nil, nil)
+
+	withURLs, ok := wrapped.(interface{ SupportedURLs() map[string][]string })
+	if !ok {
+		t.Fatal("expected wrapped model to expose SupportedURLs()")
+	}
+	got := withURLs.SupportedURLs()
+	if len(got) != 1 || len(got["image/*"]) != 1 || got["image/*"][0] != "^https://.*" {
+		t.Errorf("SupportedURLs() = %v, want %v", got, want)
+	}
+}
+
+// A2-4: OverrideSupportedURLs, when set, takes precedence over the wrapped
+// model's own SupportedURLs().
+func TestWrapLanguageModel_OverrideSupportedURLs(t *testing.T) {
+	t.Parallel()
+
+	model := &supportedURLsLanguageModel{urls: map[string][]string{"image/*": {"^https://.*"}}}
+
+	middleware := &LanguageModelMiddleware{
+		OverrideSupportedURLs: func(model provider.LanguageModel) map[string][]string {
+			return map[string][]string{"application/pdf": {"^https://.*"}}
+		},
+	}
+	wrapped := WrapLanguageModel(model, []*LanguageModelMiddleware{middleware}, nil, nil)
+
+	withURLs := wrapped.(interface{ SupportedURLs() map[string][]string })
+	got := withURLs.SupportedURLs()
+	if len(got) != 1 || len(got["application/pdf"]) != 1 {
+		t.Errorf("SupportedURLs() = %v, want override to take precedence", got)
+	}
+}
+
+// A2-4: a wrapped model that does NOT implement the optional SupportedURLs()
+// capability should report nil (no supported URLs), matching TS's fallback
+// to `model.supportedUrls` being empty/undefined for such models.
+func TestWrapLanguageModel_SupportedURLs_NilWhenNotImplemented(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{}
+	wrapped := WrapLanguageModel(model, []*LanguageModelMiddleware{{}}, nil, nil)
+
+	withURLs, ok := wrapped.(interface{ SupportedURLs() map[string][]string })
+	if !ok {
+		t.Fatal("expected wrapped model to expose SupportedURLs()")
+	}
+	if got := withURLs.SupportedURLs(); got != nil {
+		t.Errorf("SupportedURLs() = %v, want nil", got)
+	}
+}
