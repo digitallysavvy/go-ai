@@ -115,6 +115,17 @@ type Config struct {
 	// this by reusing anthropic.New as their Messages-API transport, so they
 	// set this field to avoid inheriting the wrong "ai-sdk/anthropic" tag.
 	UserAgentName string `json:"userAgentName,omitempty"`
+
+	// NoUserAgentTag disables the `ai-sdk/<name>/VERSION` tag entirely
+	// (UserAgentName is ignored when this is true). TS's
+	// google-vertex-anthropic-provider.ts builds its
+	// AnthropicLanguageModel directly instead of going through
+	// createAnthropic (the only place TS's own `ai-sdk/anthropic/VERSION`
+	// tag is added), so Vertex-Anthropic requests carry no
+	// anthropic-package tag at all -- only the runtime tag the shared HTTP
+	// client appends downstream. pkg/providers/googlevertex/anthropic sets
+	// this to match.
+	NoUserAgentTag bool `json:"noUserAgentTag,omitempty"`
 }
 
 // DefaultSupportedURLs returns the URL patterns the direct Anthropic API and
@@ -153,11 +164,13 @@ func New(cfg Config) *Provider {
 	}
 
 	mergedHeaders := http.MergeHeaders(headers, cfg.Headers)
-	uaName := cfg.UserAgentName
-	if uaName == "" {
-		uaName = "anthropic"
+	if !cfg.NoUserAgentTag {
+		uaName := cfg.UserAgentName
+		if uaName == "" {
+			uaName = "anthropic"
+		}
+		mergedHeaders = version.WithUserAgentSuffix(mergedHeaders, version.ProviderUserAgent(uaName))
 	}
-	mergedHeaders = version.WithUserAgentSuffix(mergedHeaders, version.ProviderUserAgent(uaName))
 
 	client := http.NewClient(http.Config{
 		BaseURL:    baseURL,

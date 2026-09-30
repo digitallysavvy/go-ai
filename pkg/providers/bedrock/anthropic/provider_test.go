@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -100,6 +101,36 @@ func TestBuildRequestURL_NonStreaming(t *testing.T) {
 	want := "/model/anthropic.claude-3-sonnet-20240229-v1%3A0/invoke"
 	if gotPath != want {
 		t.Errorf("path = %q, want %q", gotPath, want)
+	}
+}
+
+// TestUserAgentTaggedAmazonBedrockNotAnthropic covers the owner's 2026-09-30
+// User-Agent decision: TS amazon-bedrock-anthropic-provider.ts tags requests
+// with its own package's "ai-sdk/amazon-bedrock/VERSION" tag (shared with the
+// Converse-API amazon-bedrock provider), never "ai-sdk/anthropic" -- even
+// though this Go package reuses pkg/providers/anthropic as its transport.
+func TestUserAgentTaggedAmazonBedrockNotAnthropic(t *testing.T) {
+	var gotUserAgent string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUserAgent = r.Header.Get("User-Agent")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"m","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer srv.Close()
+
+	p := New(Config{BaseURL: srv.URL, BearerToken: "token", HTTPClient: srv.Client()})
+	model, err := p.LanguageModel("anthropic.claude-3-sonnet-20240229-v1:0")
+	if err != nil {
+		t.Fatalf("LanguageModel: %v", err)
+	}
+	if _, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hello"}}); err != nil {
+		t.Fatalf("DoGenerate: %v", err)
+	}
+	if !strings.HasPrefix(gotUserAgent, "ai-sdk/amazon-bedrock/") {
+		t.Fatalf("User-Agent = %q, want ai-sdk/amazon-bedrock/... prefix", gotUserAgent)
+	}
+	if strings.Contains(gotUserAgent, "ai-sdk/anthropic/") {
+		t.Fatalf("User-Agent = %q, must not carry the ai-sdk/anthropic tag", gotUserAgent)
 	}
 }
 

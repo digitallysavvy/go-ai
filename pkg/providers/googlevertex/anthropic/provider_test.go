@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -69,6 +70,46 @@ func TestLanguageModelNonStreamingRequest(t *testing.T) {
 	}
 	if result.Text != "ok" {
 		t.Fatalf("Text = %q, want ok", result.Text)
+	}
+}
+
+// TestLanguageModelDoesNotTagAnthropicUserAgent covers the owner's 2026-09-30
+// User-Agent decision: TS google-vertex-anthropic-provider.ts builds its
+// AnthropicLanguageModel directly rather than through createAnthropic (the
+// only place @ai-sdk/anthropic's own "ai-sdk/anthropic/VERSION" tag is
+// added), so Vertex-Anthropic requests must not carry that tag -- only the
+// runtime tag the shared HTTP client appends downstream.
+func TestLanguageModelDoesNotTagAnthropicUserAgent(t *testing.T) {
+	var gotUserAgent string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUserAgent = r.Header.Get("User-Agent")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":2,"output_tokens":3}}`))
+	}))
+	defer server.Close()
+
+	p := NewGoogleVertexAnthropicProvider(Options{
+		BaseURL: server.URL,
+		AuthToken: func(context.Context) (string, error) {
+			return "test-token", nil
+		},
+		HTTPClient: server.Client(),
+	})
+	model, err := p.LanguageModel(string(ClaudeSonnet4_6))
+	if err != nil {
+		t.Fatalf("LanguageModel error = %v", err)
+	}
+	if _, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hello"},
+	}); err != nil {
+		t.Fatalf("DoGenerate error = %v", err)
+	}
+
+	if strings.Contains(gotUserAgent, "ai-sdk/anthropic/") {
+		t.Fatalf("User-Agent = %q, must not carry the ai-sdk/anthropic tag", gotUserAgent)
+	}
+	if strings.Contains(gotUserAgent, "ai-sdk/") {
+		t.Fatalf("User-Agent = %q, want no ai-sdk/... tag at all", gotUserAgent)
 	}
 }
 

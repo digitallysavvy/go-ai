@@ -149,6 +149,10 @@ func (p *BedrockAnthropicProvider) LanguageModelWithOptions(modelID string, opti
 		SupportsNativeStructuredOutput: &nativeStructuredOutput,
 		SupportsStrictTools:            &strictTools,
 		SupportsImageInput:             &supportsImageInput,
+		// TS amazon-bedrock-anthropic-provider.ts tags requests
+		// "ai-sdk/amazon-bedrock/VERSION" (its own package's tag, shared with
+		// the Converse-API amazon-bedrock provider), not "ai-sdk/anthropic".
+		UserAgentName: "amazon-bedrock",
 		// Bedrock-Anthropic forces base64 conversion instead of passing URLs
 		// through, matching TS amazon-bedrock-anthropic-provider.ts
 		// (`supportedUrls: () => ({})`).
