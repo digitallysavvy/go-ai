@@ -212,6 +212,25 @@ result, _ := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
 
 Returns `ModerationError` if content is filtered. `CostInUsdTicks` available in provider metadata.
 
+### Async video
+
+`xai.VideoModel` implements `provider.VideoModelStarter` / `VideoModelStatusChecker`, so it also works with the fire-and-forget `ai.ExperimentalStartVideo` / `ai.ExperimentalGetVideoStatus` calls instead of the polling `ai.GenerateVideo`:
+
+```go
+started, _ := ai.ExperimentalStartVideo(ctx, ai.StartVideoOptions{
+    Model:  videoModel,
+    Prompt: ai.VideoPrompt{Text: "A cat playing piano"},
+})
+
+// Persist started.Operation, then later (even from another process):
+status, _ := ai.ExperimentalGetVideoStatus(ctx, videoModel, ai.GetVideoStatusOptions{
+    Operation: started.Operation,
+})
+if status.Status == provider.VideoOperationStatusCompleted {
+    fmt.Println(status.Videos)
+}
+```
+
 ## Speech and transcription
 
 `SpeechModel("")` maps to xAI's `/v1/tts` endpoint. It defaults to voice
@@ -298,3 +317,7 @@ xAI response, image, and video calls surface `costInUsdTicks` under provider met
 ### File uploads
 
 Use `ai.UploadFile` with `xai.New(...)`. The returned `ProviderReference` is `map[string]string{"xai": fileID}`.
+
+## Workflow serialization
+
+xAI's image, speech, and transcription models can cross a workflow boundary with `providerutils.SerializeModel` / `DeserializeModel` (language models could already be serialized). See [Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization) for the mechanism; video models are not yet serializable.

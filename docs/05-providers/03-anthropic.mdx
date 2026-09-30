@@ -269,9 +269,11 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Prompt: "Solve this complex optimization problem...",
 })
 
-// Response includes thinking process
-if result.Thinking != "" {
-    fmt.Println("Claude's reasoning:", result.Thinking)
+// Response includes thinking process as ordered reasoning content parts
+for _, part := range result.Content {
+    if reasoning, ok := part.(types.ReasoningContent); ok {
+        fmt.Println("Claude's reasoning:", reasoning.Text)
+    }
 }
 fmt.Println("Final answer:", result.Text)
 ```
@@ -599,10 +601,14 @@ provider := anthropic.New(anthropic.Config{
 
 ### Custom Base URL
 
+> **Breaking change:** the default base URL now includes `/v1` (TS parity).
+> A bare `https://api.anthropic.com` is normalized automatically, but a
+> custom `BaseURL` (proxy, test server) must include `/v1` itself.
+
 ```go
 provider := anthropic.New(anthropic.Config{
     APIKey:  os.Getenv("ANTHROPIC_API_KEY"),
-    BaseURL: "https://your-proxy.com",
+    BaseURL: "https://your-proxy.com/v1",
 })
 ```
 
@@ -754,9 +760,85 @@ func calculateCost(usage ai.Usage, model string) float64 {
 }
 ```
 
-### Batch API (Coming Soon)
+### Batch API
 
-Process large volumes at 50% discount with 24-hour turnaround.
+Anthropic implements the batch API (Message Batches) used by
+`ai.ExperimentalStartBatch` / `ExperimentalGetBatchStatus` /
+`ExperimentalGetBatchResults` — process large volumes at a discount with
+async turnaround instead of `ai.GenerateText` per request:
+
+```go
+started, err := ai.ExperimentalStartBatch(ctx, ai.StartBatchOptions{
+    Provider: provider, // an *anthropic.Provider (implements provider.BatchProvider)
+    Requests: []ai.BatchRequest{
+        {Text: &ai.BatchTextRequest{
+            ID:     "req-1",
+            Model:  "claude-sonnet-4-6",
+            Prompt: "Summarize the Go concurrency model.",
+        }},
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+status, err := ai.ExperimentalGetBatchStatus(ctx, ai.GetBatchStatusOptions{
+    Provider: provider,
+    Batch:    started.BatchReference,
+})
+```
+
+## Forwarding Code-Execution Containers Across Steps
+
+`anthropic.ForwardContainerIDFromLastStep(steps)` builds `ProviderOptions`
+that reuse the code-execution container from the most recent step that had
+one, so a multi-step agent loop doesn't pay to spin up a fresh sandbox on
+every step. Use it from `PrepareStep`:
+
+```go
+// tools includes anthropicTools.CodeExecution20260120() — see
+// docs/providers/anthropic-advanced-features.md#code-execution-tool-2026-01-20
+// for the full code execution tool setup.
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Run some Python to analyze this data, then summarize.",
+    Tools:  tools,
+    PrepareStep: func(ctx context.Context, step ai.PrepareStepOptions) ai.PrepareStepOptions {
+        if opts := anthropic.ForwardContainerIDFromLastStep(step.Steps); opts != nil {
+            step.ProviderOptions = opts
+        }
+        return step
+    },
+})
+```
+
+## Finish Reasons
+
+`result.FinishReason` and `result.RawFinishReason` (and their `StreamChunk`
+equivalents) report Anthropic's raw `stop_reason` alongside the normalized
+value. Since this release, three additional raw reasons map to
+non-`"other"` finish reasons, matching TS:
+
+| Anthropic `stop_reason` | `FinishReason` |
+|--------------------------|-----------------|
+| `end_turn`, `stop_sequence` | `stop` |
+| `pause_turn` | `stop` |
+| `refusal` | `content-filter` |
+| `model_context_window_exceeded` | `length` |
+| `max_tokens` | `length` |
+| `tool_use` | `tool-calls` |
+
+`RawFinishReason` always carries Anthropic's original string (e.g.
+`"pause_turn"`), so you can distinguish these cases from a plain `end_turn`
+even though they share the same normalized `FinishReason`.
+
+## Workflow Serialization
+
+Anthropic language models can cross a workflow boundary with
+`providerutils.SerializeModel` / `DeserializeModel`. See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
+for the mechanism. Anthropic has no embedding, image, speech, transcription,
+or video models, so there is nothing else to serialize.
 
 ## See Also
 

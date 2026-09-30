@@ -22,16 +22,27 @@ import (
 
 ```go
 provider := fal.New(fal.Config{
-    APIKey: os.Getenv("FAL_KEY"),
+    APIKey:  os.Getenv("FAL_API_KEY"),
+    Headers: map[string]string{"X-Custom": "value"},
 })
 
 model, err := provider.ImageModel("fal-ai/flux-pro")
 ```
 
+`fal.Config.APIKey` falls back to the `FAL_API_KEY` environment variable,
+then to `FAL_KEY`, if left empty. `fal.Config.Headers` are sent on every
+request across image, video, speech, and transcription models.
+
+> **Breaking change:** the default base URL is now `https://fal.run` (was
+> `https://fal.run/fal-ai`, which doubled the path for fully-qualified model
+> IDs and broke default-config requests). Always pass fully-qualified model
+> IDs like `fal-ai/fast-sdxl`, not `fast-sdxl`. The image and video default
+> models are `fal-ai/fast-sdxl` and `fal-ai/luma-ray`.
+
 ### Get API Key
 
 ```bash
-export FAL_KEY=...
+export FAL_API_KEY=...
 ```
 
 ## Available Models
@@ -94,17 +105,48 @@ result, err := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
 os.WriteFile("output.mp4", result.Video.Data, 0644)
 ```
 
-### Real-Time Generation
+### Async Video And Webhooks
 
-Streaming image generation:
+`fal.VideoModel` implements `provider.VideoModelStarter` /
+`VideoModelStatusChecker`, so it also works with `ai.ExperimentalStartVideo`
+/ `ai.ExperimentalGetVideoStatus`, and can complete via a webhook instead of
+polling:
 
 ```go
-stream, err := ai.StreamImage(model, "Progressive reveal of landscape")
-for update := range stream.Updates() {
-    // Receive progressive image updates
-    displayPartialImage(update.Data)
-}
+started, err := ai.ExperimentalStartVideo(ctx, ai.StartVideoOptions{
+    Model:      videoModel,
+    Prompt:     ai.VideoPrompt{Text: "A cat playing piano"},
+    WebhookURL: "https://example.com/fal-webhook",
+})
 ```
+
+### Speech and Transcription
+
+```go
+speechModel, err := provider.SpeechModel("fal-ai/minimax/speech-02-hd")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+    Model: speechModel,
+    Text:  "Hello from Fal.",
+})
+```
+
+```go
+transcriptionModel, err := provider.TranscriptionModel("fal-ai/wizper")
+if err != nil {
+    log.Fatal(err)
+}
+
+transcript, err := ai.Transcribe(ctx, ai.TranscribeOptions{
+    Model: transcriptionModel,
+    Audio: audioBytes,
+})
+```
+
+Fal does not support reranking — `provider.RerankingModel` returns an error.
 
 ## Examples
 
@@ -199,6 +241,13 @@ wg.Wait()
 ## Rate Limits & Pricing
 
 Check dashboard for current limits and pricing.
+
+## Workflow Serialization
+
+Fal image, speech, and transcription models can cross a workflow boundary
+with `providerutils.SerializeModel` / `DeserializeModel`. See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
+for the mechanism; video models are not yet serializable.
 
 ## See Also
 

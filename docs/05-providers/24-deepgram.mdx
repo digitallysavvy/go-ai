@@ -90,11 +90,46 @@ Common Deepgram model IDs include:
 
 | Model ID | Best For |
 |---|---|
-| `nova-2` | General transcription |
+| `nova-2` | General transcription (default when the model ID is empty) |
 | `nova-2-phonecall` | Phone audio |
 | `nova-2-meeting` | Meetings |
 | `enhanced` | General-purpose transcription |
 | `base` | Cost-sensitive use cases |
+
+## Speech Synthesis
+
+Deepgram also exposes Aura text-to-speech through `provider.SpeechModel(modelID)`:
+
+```go
+speechModel, err := provider.SpeechModel("aura-2-thalia-en")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+    Model: speechModel,
+    Text:  "Hello from Deepgram.",
+})
+```
+
+Deepgram does not support reranking — `provider.RerankingModel` returns an
+error.
+
+## Array Query Options
+
+Deepgram provider options that take a list (e.g. `keywords`) are sent as
+comma-joined query values, matching the Deepgram REST API's expected query
+string format.
+
+`DEEPGRAM_API_KEY` is read automatically when no API key is passed to
+`Config`.
+
+## Workflow Serialization
+
+Deepgram speech and transcription models can cross a workflow boundary
+with `providerutils.SerializeModel` / `DeserializeModel`. See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
+for the mechanism.
 
 ## See Also
 

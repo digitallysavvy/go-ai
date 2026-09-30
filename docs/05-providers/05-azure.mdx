@@ -110,7 +110,9 @@ if err != nil {
 }
 ```
 
-The default URL shape matches TypeScript: `{baseURL}/v1{path}?api-version=v1`. Set `UseDeploymentBasedURLs` only for Azure deployments that still require `{baseURL}/deployments/{deployment}{path}`:
+The default URL shape matches TypeScript: `{baseURL}/v1{path}?api-version=v1`. This only applies to a recognized Azure OpenAI / AI Foundry / Cognitive Services host (`*.openai.azure.com`, `*.services.ai.azure.com`, `*.cognitiveservices.azure.com`); a `BaseURL` host outside those patterns is treated as a custom gateway and used exactly as given, with no `/v1` suffix or `api-version` query param appended — verify your proxy's URL matches one of the recognized patterns if you expect Azure's own query-string behavior.
+
+Set `UseDeploymentBasedURLs` only for Azure deployments that still require `{baseURL}/deployments/{deployment}{path}`:
 
 ```go
 provider, err := azure.New(azure.Config{

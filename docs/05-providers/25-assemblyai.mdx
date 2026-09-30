@@ -108,6 +108,13 @@ for _, segment := range result.Segments {
 | `best` | Highest-accuracy transcription |
 | `nano` | Lower-latency transcription |
 
+## Workflow Serialization
+
+AssemblyAI transcription models can cross a workflow boundary with
+`providerutils.SerializeModel` / `DeserializeModel`. See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
+for the mechanism.
+
 ## See Also
 
 - [API Reference: Transcribe](../07-reference/ai/transcribe.mdx)

@@ -1,0 +1,136 @@
+---
+title: Cartesia Provider
+description: Setup and usage guide for Cartesia speech synthesis and transcription with Go-AI SDK
+---
+
+# Cartesia Provider
+
+Cartesia provides low-latency text-to-speech (Sonic) and both batch and
+realtime speech-to-text (Ink) models. It does not offer language,
+embedding, or image models — `LanguageModel`, `EmbeddingModel`, and
+`ImageModel` all return errors.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/cartesia"
+)
+```
+
+### Configuration
+
+```go
+provider := cartesia.New(cartesia.Config{
+    APIKey: os.Getenv("CARTESIA_API_KEY"),
+})
+```
+
+`cartesia.Config` also accepts `BaseURL` (default `https://api.cartesia.ai`)
+and `APIVersion` (sent as the `Cartesia-Version` header, default
+`"2026-03-01"`).
+
+### Get API Key
+
+```bash
+export CARTESIA_API_KEY=...
+```
+
+## Speech Synthesis
+
+```go
+speechModel, err := provider.SpeechModel(cartesia.ModelSonic2)
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+    Model: speechModel,
+    Text:  "Hello from Cartesia.",
+    ProviderOptions: map[string]interface{}{
+        "cartesia": map[string]interface{}{
+            "container":  "mp3",
+            "sampleRate": 44100,
+            "speed":      1.0,
+        },
+    },
+})
+```
+
+Model IDs: `cartesia.ModelSonic35` (`sonic-3.5`), `ModelSonic3`
+(`sonic-3`), `ModelSonic2` (`sonic-2`), `ModelSonicTurbo`
+(`sonic-turbo`), `ModelSonicLatest` (`sonic-latest`).
+
+## Transcription
+
+```go
+transcriptionModel, err := provider.TranscriptionModel(cartesia.ModelInkWhisper)
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
+    Model: transcriptionModel,
+    Audio: audioBytes,
+    ProviderOptions: map[string]interface{}{
+        "cartesia": map[string]interface{}{
+            "language": "en",
+        },
+    },
+})
+```
+
+### Streaming Transcription (Ink 2)
+
+`cartesia.ModelInk2` (and any `ink-2-*` variant) is streaming-only — the
+batch `DoTranscribe` path rejects it. Use `ai.ExperimentalStreamTranscribe`
+instead, which streams over Cartesia's Ink 2 WebSocket:
+
+```go
+liveModel, err := provider.TranscriptionModel(cartesia.ModelInk2)
+if err != nil {
+    log.Fatal(err)
+}
+
+stream, err := ai.ExperimentalStreamTranscribe(ctx, ai.StreamTranscribeOptions{
+    Model: liveModel,
+    Audio: audioStream,
+    ProviderOptions: map[string]interface{}{
+        "cartesia": map[string]interface{}{
+            "streaming": map[string]interface{}{
+                "turnDetection": true,
+            },
+        },
+    },
+})
+```
+
+## Provider Options
+
+| Option | Applies to | Type | Description |
+|--------|------------|------|-------------|
+| `container` | Speech | string | Output audio container: `raw`, `wav`, or `mp3` |
+| `encoding` | Speech | string | `pcm_f32le`, `pcm_s16le`, `pcm_mulaw`, or `pcm_alaw` |
+| `sampleRate` | Speech | int | Output sample rate in Hz |
+| `bitRate` | Speech | int | Bitrate for mp3 output |
+| `speed` | Speech | float64 | Speech speed, 0.6 to 1.5 |
+| `language` | Speech, Transcription | string | ISO 639-1 language code |
+| `timestampGranularities` | Transcription | []string | Currently only `["word"]` is supported |
+| `streaming.encoding` | Transcription (streaming) | string | Raw audio encoding sent to Ink 2 |
+| `streaming.turnDetection` | Transcription (streaming) | *bool | Use Cartesia's native turn detection (default true) |
+
+## Workflow Serialization
+
+Cartesia speech and transcription models can cross a workflow boundary
+with `providerutils.SerializeModel` / `DeserializeModel`. See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
+for the mechanism.
+
+## See Also
+
+- [API Reference: GenerateSpeech](../07-reference/ai/generate-speech.mdx)
+- [API Reference: Transcribe](../07-reference/ai/transcribe.mdx)
+- [Cartesia Documentation](https://docs.cartesia.ai)

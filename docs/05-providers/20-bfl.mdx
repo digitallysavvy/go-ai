@@ -177,6 +177,42 @@ for i, style := range styles {
 }
 ```
 
+## Video Generation (FLUX 3)
+
+`provider.VideoModel(modelID)` (e.g. `"flux-video"`) generates a single
+video per call (`MaxVideosPerCall() == 1`) — FLUX 3 video does not accept a
+custom frame rate or seed:
+
+```go
+videoModel, err := provider.VideoModel("flux-video")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
+    Model:  videoModel,
+    Prompt: ai.VideoPrompt{Text: "A time-lapse of clouds over a mountain range"},
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+for _, video := range result.Videos {
+    fmt.Println(video.URL)
+}
+```
+
+`VideoModel` also implements `provider.VideoModelStarter` /
+`VideoModelStatusChecker`, so it works with `ai.ExperimentalStartVideo` /
+`ai.ExperimentalGetVideoStatus`.
+
+## Workflow Serialization
+
+BFL image and video models can cross a workflow boundary with
+`providerutils.SerializeModel` / `DeserializeModel`. See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
+for the mechanism.
+
 ## Best Practices
 
 1. **Prompt Engineering**
@@ -230,4 +266,4 @@ Provider options are parsed once when the request body is built. Polling and res
 
 - [API Reference: GenerateImage](../07-reference/ai/generate-image.mdx)
 - [BFL Documentation](https://docs.bfl.ai)
-- [Stability AI Provider](20-stability.mdx) - Alternative
+- [Stability AI Provider](19-stability.mdx) - Alternative

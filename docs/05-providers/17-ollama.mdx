@@ -138,7 +138,10 @@ texts := []string{
     "Local inference is private",
 }
 
-embeddings, err := ai.Embed(embeddingModel, texts...)
+result, err := ai.EmbedMany(ctx, ai.EmbedManyOptions{
+    Model:  embeddingModel,
+    Inputs: texts,
+})
 ```
 
 ## Best Practices

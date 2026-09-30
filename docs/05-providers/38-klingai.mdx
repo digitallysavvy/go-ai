@@ -20,26 +20,38 @@ import (
 
 ### Configuration
 
+The recommended path is a single API key, sent directly as a bearer token:
+
 ```go
 provider, err := klingai.New(klingai.Config{
-    AccessKey: os.Getenv("KLINGAI_ACCESS_KEY"),
-    SecretKey: os.Getenv("KLINGAI_SECRET_KEY"),
+    APIKey: os.Getenv("KLINGAI_API_KEY"),
 })
 
 model, err := provider.VideoModel("kling-v2.6-t2v")
 ```
 
-### Get API Keys
+```bash
+export KLINGAI_API_KEY=...
+```
 
-1. Sign up at [klingai.com](https://klingai.com)
-2. Navigate to API settings
-3. Generate access key and secret key
-4. Set environment variables:
+The legacy access-key/secret-key pair (which signs a short-lived JWT per
+request) is still supported and used when `APIKey` is unset:
+
+```go
+provider, err := klingai.New(klingai.Config{
+    AccessKey: os.Getenv("KLINGAI_ACCESS_KEY"),
+    SecretKey: os.Getenv("KLINGAI_SECRET_KEY"),
+})
+```
 
 ```bash
 export KLINGAI_ACCESS_KEY=your-access-key
 export KLINGAI_SECRET_KEY=your-secret-key
 ```
+
+Credentials are resolved on every request rather than once in `New()`, so
+changing the environment variables takes effect without rebuilding the
+provider.
 
 ## Available Models
 
@@ -65,6 +77,7 @@ export KLINGAI_SECRET_KEY=your-secret-key
 | Model ID | Quality | Speed | Max Reference | Best For |
 |----------|---------|-------|---------------|----------|
 | kling-v2.6-motion-control | High | Slow | 30s (pro) / 10s (std) | Motion transfer |
+| kling-v3.0-motion-control | Highest | Slow | 30s (pro) / 10s (std) | Latest motion transfer |
 
 ## Provider-Specific Features
 
@@ -236,7 +249,9 @@ import (
 )
 
 func main() {
-    prov, err := klingai.New(klingai.Config{})
+    prov, err := klingai.New(klingai.Config{
+        APIKey: os.Getenv("KLINGAI_API_KEY"),
+    })
     if err != nil {
         log.Fatal(err)
     }
@@ -265,6 +280,12 @@ See `examples/providers/klingai/` for more complete examples including:
 - Image-to-video with camera control
 - Start/end frame control
 - Motion control (standard and pro)
+
+## Async Video
+
+`VideoModel` also implements `provider.VideoModelStarter` /
+`VideoModelStatusChecker`, so it works with `ai.ExperimentalStartVideo` /
+`ai.ExperimentalGetVideoStatus` in addition to the polling `ai.GenerateVideo`.
 
 ## Polling Behavior
 

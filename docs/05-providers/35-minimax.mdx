@@ -1,0 +1,104 @@
+---
+title: MiniMax Provider
+description: Setup and usage guide for MiniMax chat and video models with Go-AI SDK
+---
+
+# MiniMax Provider
+
+MiniMax provides chat language models over an Anthropic-compatible
+endpoint, plus its own video generation API. Chat requests delegate to the
+shared Anthropic language model implementation (`Provider.Name()` is
+`"minimax"`), so `providerOptions.minimax` and `providerOptions.anthropic`
+are both read on every call.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/minimax"
+)
+```
+
+### Configuration
+
+```go
+provider := minimax.New(minimax.Config{
+    APIKey: os.Getenv("MINIMAX_API_KEY"),
+})
+
+model, err := provider.LanguageModel(minimax.ModelM3)
+```
+
+`minimax.Config` also accepts `BaseURL` (default
+`https://api.minimax.io/anthropic/v1`), `VideoBaseURL` (default
+`https://api.minimax.io`), and `Headers`. Video-request credentials are
+resolved fresh on every call, so rotating `MINIMAX_API_KEY` after `New()`
+still takes effect on the next request.
+
+### Get API Key
+
+```bash
+export MINIMAX_API_KEY=...
+```
+
+## Available Chat Models
+
+| Model ID | Go constant |
+|----------|-------------|
+| `minimax-m3` | `minimax.ModelM3` |
+| `minimax-m2.7` | `minimax.ModelM27` |
+| `minimax-m2.7-highspeed` | `minimax.ModelM27HighSpeed` |
+| `minimax-m2.5` | `minimax.ModelM25` |
+| `minimax-m2.5-highspeed` | `minimax.ModelM25HighSpeed` |
+| `minimax-m2.1` | `minimax.ModelM21` |
+| `minimax-m2.1-highspeed` | `minimax.ModelM21HighSpeed` |
+| `minimax-m2` | `minimax.ModelM2` |
+
+`ChatModel` is an alias for `LanguageModel`. `EmbeddingModel`,
+`ImageModel`, `SpeechModel`, `TranscriptionModel`, and `RerankingModel`
+all return errors — MiniMax only supports chat and video here.
+
+## Basic Usage
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Explain the MiniMax M3 model in one paragraph",
+})
+```
+
+## Video Generation
+
+```go
+videoModel, err := provider.VideoModel(string(minimax.ModelH3))
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
+    Model:  videoModel,
+    Prompt: ai.VideoPrompt{Text: "A neon-lit city street at night, rain reflections"},
+})
+```
+
+Model IDs: `minimax.ModelH3` (`MiniMax-H3`), `minimax.ModelH3Max`
+(`MiniMax-H3-Max`). Default resolution is `"2K"` and default aspect ratio
+is `"16:9"`. `VideoModel` also implements `provider.VideoModelStarter` /
+`VideoModelStatusChecker`, so it works with `ai.ExperimentalStartVideo` /
+`ai.ExperimentalGetVideoStatus`.
+
+## Provider Options
+
+Since chat delegates to the Anthropic language model, MiniMax accepts the
+same per-call `providerOptions.anthropic` fields (thinking, context
+management, etc. — see the [Anthropic provider](03-anthropic.mdx)) under
+either the `"minimax"` or `"anthropic"` key.
+
+## See Also
+
+- [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
+- [Anthropic Provider](03-anthropic.mdx) - MiniMax chat shares this implementation
+- [MiniMax Documentation](https://www.minimax.io/platform_overview)

@@ -1,0 +1,63 @@
+---
+title: Vercel AI Provider
+description: Setup and usage guide for the Vercel AI OpenAI-compatible endpoint with Go-AI SDK
+---
+
+# Vercel AI Provider
+
+The Vercel provider (`pkg/providers/vercel`) is a thin wrapper around the
+`openai` package pointed at Vercel's OpenAI-compatible chat endpoint. It is
+**Go-only** — there is no equivalent package in the upstream TypeScript AI
+SDK.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/vercel"
+)
+```
+
+### Configuration
+
+```go
+provider := vercel.New(vercel.Config{
+    APIKey: os.Getenv("VERCEL_API_KEY"),
+})
+
+model, err := provider.LanguageModel("your-model-id")
+```
+
+`vercel.Config` accepts `APIKey` and `BaseURL` (default
+`https://api.vercel.com/v1`) — there is no environment-variable fallback
+built into `New()`, so pass the key explicitly.
+
+`LanguageModel` calls the Chat Completions endpoint (`/chat/completions`),
+not the OpenAI Responses API — OpenAI-compatible hosts generally don't
+implement Responses.
+
+## Basic Usage
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Explain how Vercel's AI infrastructure works",
+})
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(result.Text)
+```
+
+Because `vercel.Provider` embeds `*openai.Provider`, embedding, image,
+speech, and transcription factory methods are also available and behave
+like the `openai` package's — see the [OpenAI provider](02-openai.mdx) for
+their full option surface.
+
+## See Also
+
+- [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
+- [OpenAI Provider](02-openai.mdx) - this provider's underlying implementation

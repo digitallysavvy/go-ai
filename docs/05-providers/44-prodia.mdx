@@ -75,7 +75,7 @@ func main() {
         log.Fatal(err)
     }
 
-    fmt.Printf("Generated image: %d bytes, type: %s\n", len(result.Image), result.MimeType)
+    fmt.Printf("Generated image: %d bytes, type: %s\n", len(result.Image), result.MediaType)
 }
 ```
 
@@ -318,8 +318,16 @@ if prodiaMeta, ok := result.ProviderMetadata["prodia"].(map[string]interface{});
 }
 ```
 
+## Workflow Serialization
+
+Prodia image models can cross a workflow boundary with
+`providerutils.SerializeModel` / `DeserializeModel` (language models could
+already be serialized). See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
+for the mechanism; video models are not yet serializable.
+
 ## See also
 
 - [Provider options](../02-foundations/06-provider-options.mdx) — how to pass provider-specific configuration
-- [KlingAI provider](./29-klingai.mdx) — another video generation provider
+- [KlingAI provider](./38-klingai.mdx) — another video generation provider
 - [Prodia documentation](https://docs.prodia.com/)

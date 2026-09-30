@@ -255,13 +255,16 @@ texts := []string{
     "Open-source models on demand",
 }
 
-embeddings, err := ai.Embed(embeddingModel, texts...)
+result, err := ai.EmbedMany(ctx, ai.EmbedManyOptions{
+    Model:  embeddingModel,
+    Inputs: texts,
+})
 if err != nil {
     log.Fatal(err)
 }
 
 fmt.Printf("Generated %d embeddings of dimension %d\n",
-    len(embeddings), len(embeddings[0]))
+    len(result.Embeddings), len(result.Embeddings[0]))
 
 // Use embeddings for semantic search, clustering, etc.
 ```
