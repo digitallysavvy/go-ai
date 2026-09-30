@@ -1,6 +1,11 @@
 package providers_test
 
 import (
+	"io/fs"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -405,5 +410,57 @@ func TestEvaluationModelDeserializerRegistryKeysRoundTrip(t *testing.T) {
 				t.Fatalf("restored Provider() = %q, want %q", restored.Provider(), key)
 			}
 		})
+	}
+}
+
+// TestBlankImportsCoverAllSerializationPackages walks pkg/providers (this
+// test file's own directory) for every serialization.go, and fails if its
+// package isn't among the blank imports at the top of this file. Without
+// this, adding a new provider's serialization.go but forgetting to
+// blank-import it here would silently drop that provider from every
+// TestXDeserializerRegistryKeysRoundTrip test above -- those only walk
+// whatever ended up registered, so a missing import produces no failure on
+// its own, just quiet under-coverage.
+func TestBlankImportsCoverAllSerializationPackages(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine this test file's path via runtime.Caller")
+	}
+	providersDir := filepath.Dir(thisFile)
+
+	var withSerialization []string
+	err := filepath.WalkDir(providersDir, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() || d.Name() != "serialization.go" {
+			return nil
+		}
+		rel, relErr := filepath.Rel(providersDir, filepath.Dir(path))
+		if relErr != nil {
+			return relErr
+		}
+		withSerialization = append(withSerialization, filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking %s: %v", providersDir, err)
+	}
+	if len(withSerialization) == 0 {
+		t.Fatal("found no serialization.go files under pkg/providers -- this test is broken")
+	}
+
+	src, err := os.ReadFile(thisFile)
+	if err != nil {
+		t.Fatalf("reading %s: %v", thisFile, err)
+	}
+	source := string(src)
+
+	const modulePrefix = "github.com/digitallysavvy/go-ai/pkg/providers/"
+	for _, rel := range withSerialization {
+		importPath := modulePrefix + rel
+		if !strings.Contains(source, `"`+importPath+`"`) {
+			t.Errorf("pkg/providers/%s has a serialization.go but is not blank-imported in this file -- add _ %q to the import block", rel, importPath)
+		}
 	}
 }
