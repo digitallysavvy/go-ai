@@ -81,6 +81,9 @@ step-by-step upgrade instructions are in
   (`ai-sdk/<provider>/<version> runtime/go/<goVersion>`, plus `ai/<version>`
   from the non-streaming `pkg/ai` calls; `StreamText`, `StreamObject` and
   `Rerank` add no `ai/` tag), matching the TypeScript SDK.
+- Internal refactor: the WebSocket transcription and translation streams
+  share a session core in `pkg/providerutils/websocket` (`Session[T]`,
+  `ReportError`, `PumpAudio`, `PumpAudioAfterReady`). No behavior change.
 - Full list of breaking and behavior changes: release notes' Breaking
   Changes and Behavior Changes sections.
 

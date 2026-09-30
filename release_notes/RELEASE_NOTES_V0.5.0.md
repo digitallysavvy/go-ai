@@ -456,7 +456,11 @@ code.
 - `CreateHarnessSandboxTemplate`, `Agent.GetSandboxTemplate`, an
   OnBootstrap marker so `onBootstrap` doesn't re-run.
 - `pkg/providerutils/websocket`, a shared helper used by every realtime and
-  streaming-transcription connection.
+  streaming-transcription connection. It also provides a shared session
+  core (`Session[T]`, `ReportError`, `PumpAudio`, `PumpAudioAfterReady`),
+  which the WebSocket transcription and translation streams (OpenAI,
+  Google, Google Vertex, xAI, Cartesia, ElevenLabs, Gateway) now use. This
+  is an internal refactor with no behavior change.
 
 ### Code-mode (experimental)
 
