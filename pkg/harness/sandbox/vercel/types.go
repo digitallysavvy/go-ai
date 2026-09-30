@@ -13,18 +13,38 @@ type SnapshotSource struct {
 	SnapshotID string `json:"snapshotId,omitempty"`
 }
 
+// ResourcesParams selects vCPU allocation for the sandbox. Mirrors TS
+// `resources?: { vcpus: number }` on `BaseCreateSandboxParams`.
+type ResourcesParams struct {
+	Vcpus int `json:"vcpus"`
+}
+
+// KeepLastSnapshotsParams configures snapshot retention. Mirrors TS
+// `keepLastSnapshots?: { count; expiration?; deleteEvicted? }`.
+type KeepLastSnapshotsParams struct {
+	Count         int    `json:"count"`
+	Expiration    *int64 `json:"expiration,omitempty"`
+	DeleteEvicted *bool  `json:"deleteEvicted,omitempty"`
+}
+
 // createSandboxRequest is the body of POST /v2|v3/sandboxes.
 type createSandboxRequest struct {
-	ProjectID          string          `json:"projectId,omitempty"`
-	Ports              []int           `json:"ports,omitempty"`
-	Source             *SnapshotSource `json:"source,omitempty"`
-	Timeout            int64           `json:"timeout,omitempty"`
-	Runtime            string          `json:"runtime,omitempty"`
-	Image              string          `json:"image,omitempty"`
-	Name               string          `json:"name,omitempty"`
-	Persistent         *bool           `json:"persistent,omitempty"`
-	NetworkPolicy      *NetworkPolicy  `json:"networkPolicy,omitempty"`
-	SnapshotExpiration *int64          `json:"snapshotExpiration,omitempty"`
+	ProjectID          string                   `json:"projectId,omitempty"`
+	Ports              []int                    `json:"ports,omitempty"`
+	Source             *SnapshotSource          `json:"source,omitempty"`
+	Timeout            int64                    `json:"timeout,omitempty"`
+	Resources          *ResourcesParams         `json:"resources,omitempty"`
+	Runtime            string                   `json:"runtime,omitempty"`
+	Image              string                   `json:"image,omitempty"`
+	Name               string                   `json:"name,omitempty"`
+	Persistent         *bool                    `json:"persistent,omitempty"`
+	NetworkPolicy      *NetworkPolicy           `json:"networkPolicy,omitempty"`
+	Env                map[string]string        `json:"env,omitempty"`
+	Tags               map[string]string        `json:"tags,omitempty"`
+	SnapshotExpiration *int64                   `json:"snapshotExpiration,omitempty"`
+	KeepLastSnapshots  *KeepLastSnapshotsParams `json:"keepLastSnapshots,omitempty"`
+	Region             string                   `json:"region,omitempty"`
+	FailoverRegions    []string                 `json:"failoverRegions,omitempty"`
 }
 
 type sandboxRouteWire struct {

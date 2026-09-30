@@ -17,6 +17,12 @@ type CreateParams struct {
 	Persistent         *bool
 	NetworkPolicy      *NetworkPolicy
 	SnapshotExpiration *int64
+	Resources          *ResourcesParams
+	Env                map[string]string
+	Tags               map[string]string
+	Region             string
+	FailoverRegions    []string
+	KeepLastSnapshots  *KeepLastSnapshotsParams
 }
 
 func (p CreateParams) toRequest() createSandboxRequest {
@@ -30,6 +36,12 @@ func (p CreateParams) toRequest() createSandboxRequest {
 		Persistent:         p.Persistent,
 		NetworkPolicy:      p.NetworkPolicy,
 		SnapshotExpiration: p.SnapshotExpiration,
+		Resources:          p.Resources,
+		Env:                p.Env,
+		Tags:               p.Tags,
+		Region:             p.Region,
+		FailoverRegions:    p.FailoverRegions,
+		KeepLastSnapshots:  p.KeepLastSnapshots,
 	}
 }
 

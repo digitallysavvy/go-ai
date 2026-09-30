@@ -34,6 +34,12 @@ type LegacySettings struct {
 	Persistent         *bool
 	NetworkPolicy      *NetworkPolicy
 	SnapshotExpiration *int64
+	Resources          *ResourcesParams
+	Env                map[string]string
+	Tags               map[string]string
+	Region             string
+	FailoverRegions    []string
+	KeepLastSnapshots  *KeepLastSnapshotsParams
 }
 
 func (s LegacySettings) createParams() CreateParams {
@@ -41,6 +47,12 @@ func (s LegacySettings) createParams() CreateParams {
 		Runtime: s.Runtime, Image: s.Image, Source: s.Source, TimeoutMs: s.TimeoutMs,
 		Ports: s.Ports, Persistent: s.Persistent, NetworkPolicy: s.NetworkPolicy,
 		SnapshotExpiration: s.SnapshotExpiration,
+		Resources:          s.Resources,
+		Env:                s.Env,
+		Tags:               s.Tags,
+		Region:             s.Region,
+		FailoverRegions:    s.FailoverRegions,
+		KeepLastSnapshots:  s.KeepLastSnapshots,
 	}
 }
 

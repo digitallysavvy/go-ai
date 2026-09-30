@@ -18,9 +18,6 @@
 //     `@workflow/serde` (de)serialization hooks — these are native-SDK
 //     features unrelated to the harness sandbox surface and are not exposed
 //     by packages/sandbox-vercel either.
-//   - `resources` (vcpus/memory), `env`, `tags`, `region`/`failoverRegions`,
-//     and `keepLastSnapshots` are not forwarded on create/update (not
-//     exercised by the harness adapter or its tests).
 package vercel
 
 import (
@@ -110,6 +107,12 @@ type CreateSessionOptions struct {
 	Persistent         *bool
 	NetworkPolicy      *NetworkPolicy
 	SnapshotExpiration *int64
+	Resources          *ResourcesParams
+	Env                map[string]string
+	Tags               map[string]string
+	Region             string
+	FailoverRegions    []string
+	KeepLastSnapshots  *KeepLastSnapshotsParams
 
 	Template *Template
 }
@@ -129,6 +132,12 @@ func CreateNetworkSandboxSession(ctx context.Context, opts CreateSessionOptions)
 		Runtime: opts.Runtime, Image: opts.Image, Source: opts.Source, TimeoutMs: opts.TimeoutMs,
 		Ports: opts.Ports, Persistent: opts.Persistent, NetworkPolicy: opts.NetworkPolicy,
 		SnapshotExpiration: opts.SnapshotExpiration,
+		Resources:          opts.Resources,
+		Env:                opts.Env,
+		Tags:               opts.Tags,
+		Region:             opts.Region,
+		FailoverRegions:    opts.FailoverRegions,
+		KeepLastSnapshots:  opts.KeepLastSnapshots,
 	})
 
 	creds, err := ResolveCredentials(opts.Credentials)

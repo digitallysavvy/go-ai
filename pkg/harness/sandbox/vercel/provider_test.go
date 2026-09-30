@@ -33,6 +33,59 @@ func TestCreateNetworkSandboxSessionBasic(t *testing.T) {
 	}
 }
 
+// TestCreateNetworkSandboxSessionForwardsFullCreateOptions confirms the
+// deferred TS `BaseCreateSandboxParams` fields (resources, env, tags,
+// region, failoverRegions, keepLastSnapshots) reach the create request body,
+// matching TS's `VercelSandboxCreateParams` alias of `Sandbox.create`'s
+// parameter type: it accepts these directly and spreads them straight
+// through in `createVercelNetworkSandboxSession` -> `Sandbox.create` ->
+// `APIClient.createSandbox`.
+func TestCreateNetworkSandboxSessionForwardsFullCreateOptions(t *testing.T) {
+	f := newFakeServer()
+	defer f.Close()
+
+	expiration := int64(3600_000)
+	deleteEvicted := true
+	_, err := CreateNetworkSandboxSession(context.Background(), CreateSessionOptions{
+		Credentials: testCreds(), BaseURL: f.URL(), SandboxID: "full-options", Runtime: "node24",
+		Resources:       &ResourcesParams{Vcpus: 4},
+		Env:             map[string]string{"NODE_ENV": "production"},
+		Tags:            map[string]string{"team": "infra"},
+		Region:          "iad1",
+		FailoverRegions: []string{"sfo1"},
+		KeepLastSnapshots: &KeepLastSnapshotsParams{
+			Count: 3, Expiration: &expiration, DeleteEvicted: &deleteEvicted,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.createRequests) != 1 {
+		t.Fatalf("expected 1 create request, got %d", len(f.createRequests))
+	}
+	req := f.createRequests[0]
+	if req.Resources == nil || req.Resources.Vcpus != 4 {
+		t.Errorf("Resources not forwarded: %#v", req.Resources)
+	}
+	if req.Env["NODE_ENV"] != "production" {
+		t.Errorf("Env not forwarded: %#v", req.Env)
+	}
+	if req.Tags["team"] != "infra" {
+		t.Errorf("Tags not forwarded: %#v", req.Tags)
+	}
+	if req.Region != "iad1" {
+		t.Errorf("Region not forwarded: %q", req.Region)
+	}
+	if len(req.FailoverRegions) != 1 || req.FailoverRegions[0] != "sfo1" {
+		t.Errorf("FailoverRegions not forwarded: %#v", req.FailoverRegions)
+	}
+	if req.KeepLastSnapshots == nil || req.KeepLastSnapshots.Count != 3 ||
+		req.KeepLastSnapshots.Expiration == nil || *req.KeepLastSnapshots.Expiration != expiration ||
+		req.KeepLastSnapshots.DeleteEvicted == nil || !*req.KeepLastSnapshots.DeleteEvicted {
+		t.Errorf("KeepLastSnapshots not forwarded: %#v", req.KeepLastSnapshots)
+	}
+}
+
 func TestCreateNetworkSandboxSessionRejectsConflictingNameAndID(t *testing.T) {
 	f := newFakeServer()
 	defer f.Close()
@@ -228,6 +281,52 @@ func TestCreateLiveSandboxFromSnapshotStripsEnvironmentFields(t *testing.T) {
 	}
 	if req.Name != "live-session" || req.Timeout != 60_000 {
 		t.Fatalf("expected name/timeout preserved, got %#v", req)
+	}
+}
+
+// TestCreateLiveSandboxFromSnapshotPreservesForwardedOptions confirms
+// resources/env/tags/region/failoverRegions/keepLastSnapshots survive the
+// runtime/image/persistent/source strip in createLiveSandboxFromSnapshot,
+// matching TS `createLiveSandboxFromSnapshot`'s `...forkParams` spread
+// (only `runtime`, `image`, `source`, and `persistent` are destructured out).
+func TestCreateLiveSandboxFromSnapshotPreservesForwardedOptions(t *testing.T) {
+	f := newFakeServer()
+	defer f.Close()
+	client := NewAPIClient(f.URL(), testCreds())
+	expiration := int64(1000)
+
+	_, err := createLiveSandboxFromSnapshot(context.Background(), client, CreateParams{
+		Image:           "vercel/sandbox/universal",
+		Resources:       &ResourcesParams{Vcpus: 2},
+		Env:             map[string]string{"FOO": "bar"},
+		Tags:            map[string]string{"env": "staging"},
+		Region:          "iad1",
+		FailoverRegions: []string{"sfo1"},
+		KeepLastSnapshots: &KeepLastSnapshotsParams{
+			Count: 2, Expiration: &expiration,
+		},
+	}, "snap_derived", "live-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := f.createRequests[0]
+	if req.Resources == nil || req.Resources.Vcpus != 2 {
+		t.Errorf("Resources not preserved: %#v", req.Resources)
+	}
+	if req.Env["FOO"] != "bar" {
+		t.Errorf("Env not preserved: %#v", req.Env)
+	}
+	if req.Tags["env"] != "staging" {
+		t.Errorf("Tags not preserved: %#v", req.Tags)
+	}
+	if req.Region != "iad1" {
+		t.Errorf("Region not preserved: %q", req.Region)
+	}
+	if len(req.FailoverRegions) != 1 || req.FailoverRegions[0] != "sfo1" {
+		t.Errorf("FailoverRegions not preserved: %#v", req.FailoverRegions)
+	}
+	if req.KeepLastSnapshots == nil || req.KeepLastSnapshots.Count != 2 {
+		t.Errorf("KeepLastSnapshots not preserved: %#v", req.KeepLastSnapshots)
 	}
 }
 
