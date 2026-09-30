@@ -112,7 +112,7 @@ func TestVideoModelHelpers(t *testing.T) {
 	dur := 5.0
 	fps := 24
 	seed := 42
-	req := m.buildPredictionRequest(&provider.VideoModelV3CallOptions{
+	input, err := m.buildInput(&provider.VideoModelV3CallOptions{
 		Prompt:      "A running horse",
 		AspectRatio: "16:9",
 		Duration:    &dur,
@@ -126,10 +126,9 @@ func TestVideoModelHelpers(t *testing.T) {
 			},
 		},
 	})
-	if req["version"] != "video-model" {
-		t.Fatalf("version mismatch: %#v", req["version"])
+	if err != nil {
+		t.Fatalf("buildInput() error = %v", err)
 	}
-	input := req["input"].(map[string]interface{})
 	if input["aspect_ratio"] != "16:9" || input["duration"] != dur || input["fps"] != fps {
 		t.Fatalf("video input mismatch: %#v", input)
 	}
@@ -148,9 +147,5 @@ func TestVideoModelHelpers(t *testing.T) {
 	})
 	if pollOpts.PollIntervalMs != 800 || pollOpts.PollTimeoutMs != 12000 {
 		t.Fatalf("poll options mismatch: %#v", pollOpts)
-	}
-
-	if _, err := m.convertResponse(t.Context(), &replicateVideoPrediction{}); err == nil {
-		t.Fatal("convertResponse should fail when output is empty")
 	}
 }

@@ -490,7 +490,7 @@ func (p *Provider) VideoModel(modelID string) (provider.VideoModelV3, error) {
 		return nil, fmt.Errorf("model ID cannot be empty")
 	}
 
-	return nil, fmt.Errorf("video models not yet implemented for Google Vertex AI")
+	return NewVideoModel(p, modelID), nil
 }
 
 // Client returns the HTTP client for making API requests

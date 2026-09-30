@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 	"time"
 
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/polling"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -135,26 +137,35 @@ type XAIVideoPublicURLOptions struct {
 	ExpiresAfter *int `json:"expiresAfter,omitempty"`
 }
 
-// DoGenerate performs video generation with polling
-func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3CallOptions) (*provider.VideoModelV3Response, error) {
+// xaiVideoOperation is the opaque operation reference returned by DoStart
+// and passed back into DoStatus.
+type xaiVideoOperation struct {
+	RequestID string `json:"requestId"`
+}
+
+// DoStart starts an asynchronous video generation/edit/extension via the
+// mode-appropriate xAI endpoint and returns an opaque operation reference
+// (TS XaiVideoModel#doStart).
+func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3StartOptions) (*provider.VideoModelV3OperationStartResult, error) {
+	currentDate := time.Now()
+	callOpts := &opts.VideoModelV3CallOptions
 	warnings := []types.Warning{}
 
-	// Extract provider options
-	provOpts, extra, err := extractVideoProviderOptions(opts.ProviderOptions)
+	provOpts, extra, err := extractVideoProviderOptions(callOpts.ProviderOptions)
 	if err != nil {
 		return nil, err
 	}
 
-	mode := resolveMode(opts, provOpts)
+	mode := resolveMode(callOpts, provOpts)
 	isEdit := mode == "edit-video"
 	isExtension := mode == "extend-video"
 	hasReferenceImages := mode == "reference-to-video"
 
 	// Check for unsupported options and add warnings
-	warnings = append(warnings, m.checkUnsupportedOptions(opts, provOpts, mode)...)
+	warnings = append(warnings, m.checkUnsupportedOptions(callOpts, provOpts, mode)...)
 
 	// Build request body
-	body, bodyWarnings := m.buildRequestBody(opts, provOpts, extra, isEdit, isExtension, hasReferenceImages)
+	body, bodyWarnings := m.buildRequestBody(callOpts, provOpts, extra, isEdit, isExtension, hasReferenceImages)
 	warnings = append(warnings, bodyWarnings...)
 
 	// Determine endpoint
@@ -167,7 +178,13 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 
 	// Submit video generation/edit/extension request
 	var createResp xaiVideoCreateResponse
-	if err := m.provider.client.PostJSON(ctx, endpoint, body, &createResp); err != nil {
+	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+		Method:  http.MethodPost,
+		Path:    endpoint,
+		Body:    body,
+		Headers: callOpts.Headers,
+	}, &createResp)
+	if err != nil {
 		return nil, m.handleError(err)
 	}
 
@@ -176,138 +193,142 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 			fmt.Sprintf("No request_id returned from xAI API. Response: %+v", createResp), nil)
 	}
 
-	// Poll for completion
-	pollInterval := 5 * time.Second
-	if provOpts.PollIntervalMs != nil && *provOpts.PollIntervalMs > 0 {
-		pollInterval = time.Duration(*provOpts.PollIntervalMs) * time.Millisecond
+	operation, _ := json.Marshal(xaiVideoOperation{RequestID: createResp.RequestID})
+
+	return &provider.VideoModelV3OperationStartResult{
+		Operation: operation,
+		Warnings:  warnings,
+		Response: provider.VideoModelV3ResponseInfo{
+			Timestamp: currentDate,
+			ModelID:   m.modelID,
+			Headers:   convertXAIHeaders(httpResp.Headers),
+		},
+	}, nil
+}
+
+// DoStatus checks the status of an asynchronous video generation/edit/
+// extension started with DoStart via xAI's video status endpoint (TS
+// XaiVideoModel#doStatus).
+func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3StatusOptions) (*provider.VideoModelV3OperationStatusResult, error) {
+	currentDate := time.Now()
+
+	var op xaiVideoOperation
+	if err := json.Unmarshal(opts.Operation, &op); err != nil {
+		return nil, fmt.Errorf("xai: invalid operation reference: %w", err)
 	}
 
-	pollTimeout := 600 * time.Second
-	if provOpts.PollTimeoutMs != nil && *provOpts.PollTimeoutMs > 0 {
-		pollTimeout = time.Duration(*provOpts.PollTimeoutMs) * time.Millisecond
+	status, headers, err := m.checkVideoStatus(ctx, op.RequestID, opts.Headers)
+	if err != nil {
+		return nil, m.handleError(err)
 	}
 
-	// Use polling utility
-	pollOpts := polling.PollOptions{
-		PollIntervalMs: int(pollInterval.Milliseconds()),
-		PollTimeoutMs:  int(pollTimeout.Milliseconds()),
+	responseInfo := provider.VideoModelV3ResponseInfo{
+		Timestamp: currentDate,
+		ModelID:   m.modelID,
+		Headers:   headers,
 	}
 
-	statusChecker := func(ctx context.Context) (*polling.JobResult, error) {
-		status, err := m.checkVideoStatus(ctx, createResp.RequestID)
-		if err != nil {
-			return nil, m.handleError(err)
-		}
-
-		// Check if done
-		if status.Status == "done" || (status.Status == "" && status.Video != nil && resolveVideoURL(status.Video) != "") {
-			// Terminal outcomes (moderation rejection, missing URL) are
-			// reported as an upstream `failed` status via polling.JobResult
-			// rather than thrown as a Go error, so they surface the same way
-			// as any other job failure.
-			if status.Video != nil && status.Video.RespectModeration != nil && !*status.Video.RespectModeration {
-				return &polling.JobResult{
-					Status: polling.JobStatusFailed,
-					Error:  "Video generation was blocked due to a content policy violation.",
-				}, nil
-			}
-
-			if status.Video == nil || resolveVideoURL(status.Video) == "" {
-				return &polling.JobResult{
-					Status: polling.JobStatusFailed,
-					Error:  "Video generation completed but no video URL was returned.",
-				}, nil
-			}
-			return &polling.JobResult{
-				Status:    polling.JobStatusCompleted,
-				OutputURL: resolveVideoURL(status.Video),
-				Metadata: map[string]interface{}{
-					"video":    status.Video,
-					"model":    status.Model,
-					"usage":    status.Usage,
-					"warnings": status.Warnings,
-					"progress": status.Progress,
-				},
-			}, nil
-		}
-
-		// Check if expired
-		if status.Status == "expired" {
-			return &polling.JobResult{
-				Status: polling.JobStatusFailed,
-				Error:  "Video generation request expired.",
-			}, nil
-		}
-
-		if status.Status == "failed" {
-			errDetails := ""
-			if status.Error != nil {
-				if status.Error.Message != "" {
-					errDetails = status.Error.Message
-				} else {
-					errDetails = status.Error.Code
-				}
-			}
-			if errDetails != "" {
-				return &polling.JobResult{
-					Status: polling.JobStatusFailed,
-					Error:  fmt.Sprintf("Video generation failed: %s", errDetails),
-				}, nil
-			}
-			return &polling.JobResult{
-				Status: polling.JobStatusFailed,
-				Error:  "Video generation failed.",
-			}, nil
-		}
-
-		// Still pending
-		return &polling.JobResult{
-			Status: polling.JobStatusProcessing,
+	if status.Status == "expired" {
+		return &provider.VideoModelV3OperationStatusResult{
+			Status:   provider.VideoOperationStatusError,
+			Error:    "Video generation request expired.",
+			Response: responseInfo,
 		}, nil
 	}
 
-	jobResult, err := polling.PollForCompletion(ctx, statusChecker, pollOpts)
-
-	if err != nil {
-		return nil, err
+	if status.Status == "failed" {
+		errDetails := ""
+		if status.Error != nil {
+			if status.Error.Message != "" {
+				errDetails = status.Error.Message
+			} else {
+				errDetails = status.Error.Code
+			}
+		}
+		msg := "Video generation failed."
+		if errDetails != "" {
+			msg = fmt.Sprintf("Video generation failed: %s", errDetails)
+		}
+		return &provider.VideoModelV3OperationStatusResult{
+			Status:   provider.VideoOperationStatusError,
+			Error:    msg,
+			Response: responseInfo,
+		}, nil
 	}
 
-	// Extract video data from metadata
-	videoData := jobResult.Metadata["video"].(*xaiVideoData)
-	if warningItems, ok := jobResult.Metadata["warnings"].([]xaiWarning); ok {
-		for _, w := range warningItems {
+	if status.Status == "done" || (status.Status == "" && status.Video != nil && resolveVideoURL(status.Video) != "") {
+		// Terminal outcomes (moderation rejection, missing URL) are reported
+		// as an error status rather than a thrown Go error, so they surface
+		// the same way as any other job failure.
+		if status.Video != nil && status.Video.RespectModeration != nil && !*status.Video.RespectModeration {
+			return &provider.VideoModelV3OperationStatusResult{
+				Status:   provider.VideoOperationStatusError,
+				Error:    "Video generation was blocked due to a content policy violation.",
+				Response: responseInfo,
+			}, nil
+		}
+
+		videoURL := resolveVideoURL(status.Video)
+		if videoURL == "" {
+			return &provider.VideoModelV3OperationStatusResult{
+				Status:   provider.VideoOperationStatusError,
+				Error:    "Video generation completed but no video URL was returned.",
+				Response: responseInfo,
+			}, nil
+		}
+
+		// Status-level warnings (beyond the TS response schema, kept for
+		// backward compatibility with existing callers of this Go SDK).
+		var statusWarnings []types.Warning
+		for _, w := range status.Warnings {
 			msg := w.Message
 			if msg == "" {
 				msg = w.Code
 			}
 			if msg != "" {
-				warnings = append(warnings, types.Warning{
+				statusWarnings = append(statusWarnings, types.Warning{
 					Type:    "provider-warning",
 					Details: msg,
 					Message: msg,
 				})
 			}
 		}
+
+		return &provider.VideoModelV3OperationStatusResult{
+			Status:           provider.VideoOperationStatusCompleted,
+			Videos:           []provider.VideoModelV3VideoData{{Type: "url", URL: videoURL, MediaType: "video/mp4"}},
+			Warnings:         statusWarnings,
+			ProviderMetadata: map[string]interface{}{"xai": buildXAIVideoMetadata(op.RequestID, status)},
+			Response:         responseInfo,
+		}, nil
 	}
 
-	// Build xai-scoped metadata.
-	xaiMeta := map[string]interface{}{
-		"requestId": createResp.RequestID,
+	return &provider.VideoModelV3OperationStatusResult{
+		Status:   provider.VideoOperationStatusPending,
+		Response: responseInfo,
+	}, nil
+}
+
+// buildXAIVideoMetadata builds the xai-scoped providerMetadata object from a
+// completed status response (TS doStatus's inline providerMetadata.xai
+// construction).
+func buildXAIVideoMetadata(requestID string, status *xaiVideoStatusResponse) map[string]interface{} {
+	videoData := status.Video
+	meta := map[string]interface{}{
+		"requestId": requestID,
 		"videoUrl":  resolveVideoURL(videoData),
 	}
-	if videoData.Duration != nil {
-		xaiMeta["duration"] = *videoData.Duration
+	if videoData != nil && videoData.Duration != nil {
+		meta["duration"] = *videoData.Duration
 	}
 	// Cost is in the top-level usage object, not inside the video object.
-	if usageData, ok := jobResult.Metadata["usage"].(*xaiVideoUsage); ok && usageData != nil {
-		if usageData.CostInUsdTicks != nil {
-			xaiMeta["costInUsdTicks"] = *usageData.CostInUsdTicks
-		}
+	if status.Usage != nil && status.Usage.CostInUsdTicks != nil {
+		meta["costInUsdTicks"] = *status.Usage.CostInUsdTicks
 	}
-	if progress, ok := jobResult.Metadata["progress"].(*int); ok && progress != nil {
-		xaiMeta["progress"] = *progress
+	if status.Progress != nil {
+		meta["progress"] = *status.Progress
 	}
-	if videoData.FileOutput != nil {
+	if videoData != nil && videoData.FileOutput != nil {
 		fileOutput := map[string]interface{}{
 			"fileId":   videoData.FileOutput.FileID,
 			"filename": videoData.FileOutput.Filename,
@@ -324,33 +345,96 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 		if videoData.FileOutput.PublicURLExpiresAt != nil {
 			fileOutput["publicUrlExpiresAt"] = *videoData.FileOutput.PublicURLExpiresAt
 		}
-		xaiMeta["fileOutput"] = fileOutput
+		meta["fileOutput"] = fileOutput
 	}
-	if videoData.StorageError != nil {
-		xaiMeta["storageError"] = *videoData.StorageError
+	if videoData != nil && videoData.StorageError != nil {
+		meta["storageError"] = *videoData.StorageError
+	}
+	return meta
+}
+
+// convertXAIHeaders flattens net/http.Header into map[string]string, taking
+// the first value for each header key.
+func convertXAIHeaders(h http.Header) map[string]string {
+	if len(h) == 0 {
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(h))
+	for k, vals := range h {
+		if len(vals) > 0 {
+			out[k] = vals[0]
+		}
+	}
+	return out
+}
+
+// DoGenerate generates a video synchronously by starting the operation and
+// polling DoStatus until it completes. Go's VideoModelV3 always requires
+// DoGenerate (unlike TS, where this model implements only
+// doStart/doStatus and the core generate-video flow polls it directly), so
+// this method is the Go equivalent of that default polling behavior, built
+// entirely on top of DoStart/DoStatus.
+func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3CallOptions) (*provider.VideoModelV3Response, error) {
+	startResult, err := m.DoStart(ctx, &provider.VideoModelV3StartOptions{VideoModelV3CallOptions: *opts})
+	if err != nil {
+		return nil, err
 	}
 
-	// Build response
-	resp := &provider.VideoModelV3Response{
-		Videos: []provider.VideoModelV3VideoData{
-			{
-				Type:      "url",
-				URL:       resolveVideoURL(videoData),
-				MediaType: "video/mp4",
-			},
-		},
-		Warnings: warnings,
-		ProviderMetadata: map[string]interface{}{
-			"xai": xaiMeta,
-		},
-		Response: provider.VideoModelV3ResponseInfo{
-			Timestamp: time.Now(),
-			ModelID:   m.modelID,
-			Headers:   map[string]string{},
-		},
+	provOpts, _, _ := extractVideoProviderOptions(opts.ProviderOptions)
+	pollOpts := m.getPollOptions(provOpts)
+
+	var finalStatus *provider.VideoModelV3OperationStatusResult
+	var jobFailureErr error
+
+	checker := func(ctx context.Context) (*polling.JobResult, error) {
+		status, err := m.DoStatus(ctx, &provider.VideoModelV3StatusOptions{
+			Operation: startResult.Operation,
+			Headers:   opts.Headers,
+		})
+		if err != nil {
+			return nil, err
+		}
+		switch status.Status {
+		case provider.VideoOperationStatusCompleted:
+			finalStatus = status
+			return &polling.JobResult{Status: polling.JobStatusCompleted}, nil
+		case provider.VideoOperationStatusError:
+			jobFailureErr = providererrors.NewProviderError("xai", 0, "", status.Error, nil)
+			return &polling.JobResult{Status: polling.JobStatusFailed, Error: status.Error}, nil
+		default:
+			return &polling.JobResult{Status: polling.JobStatusProcessing}, nil
+		}
 	}
 
-	return resp, nil
+	_, pollErr := polling.PollForCompletion(ctx, checker, pollOpts)
+	if pollErr != nil {
+		if jobFailureErr != nil {
+			return nil, jobFailureErr
+		}
+		return nil, pollErr
+	}
+
+	return &provider.VideoModelV3Response{
+		Videos:           finalStatus.Videos,
+		Warnings:         append(append([]types.Warning{}, startResult.Warnings...), finalStatus.Warnings...),
+		ProviderMetadata: finalStatus.ProviderMetadata,
+		Response:         finalStatus.Response,
+	}, nil
+}
+
+// getPollOptions extracts polling options from XAIVideoProviderOptions,
+// applying the same 5s/600s defaults DoGenerate previously hardcoded.
+func (m *VideoModel) getPollOptions(provOpts *XAIVideoProviderOptions) polling.PollOptions {
+	pollOpts := polling.PollOptions{PollIntervalMs: 5000, PollTimeoutMs: 600000}
+	if provOpts != nil {
+		if provOpts.PollIntervalMs != nil && *provOpts.PollIntervalMs > 0 {
+			pollOpts.PollIntervalMs = *provOpts.PollIntervalMs
+		}
+		if provOpts.PollTimeoutMs != nil && *provOpts.PollTimeoutMs > 0 {
+			pollOpts.PollTimeoutMs = *provOpts.PollTimeoutMs
+		}
+	}
+	return pollOpts
 }
 
 // maxPendingStatusBodyBytes bounds how much of a 202 (still processing)
@@ -360,16 +444,24 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 const maxPendingStatusBodyBytes = 1024 * 1024
 
 // checkVideoStatus fetches the current status of a video generation/edit/
-// extension job. It uses the lower-level client.Get (rather than GetJSON) so
+// extension job. It uses the lower-level client.Do (rather than DoJSON) so
 // a 202 response with an empty or non-JSON body can be treated as "pending"
-// instead of failing on JSON unmarshal.
-func (m *VideoModel) checkVideoStatus(ctx context.Context, requestID string) (*xaiVideoStatusResponse, error) {
+// instead of failing on JSON unmarshal. Returns the flattened response
+// headers alongside the parsed status, matching TS doStatus's
+// responseHeaders.
+func (m *VideoModel) checkVideoStatus(ctx context.Context, requestID string, headers map[string]string) (*xaiVideoStatusResponse, map[string]string, error) {
 	statusPath := "/videos/" + providerutils.EncodePathSegment(requestID)
 
-	resp, err := m.provider.client.Get(ctx, statusPath)
+	resp, err := m.provider.client.Do(ctx, internalhttp.Request{
+		Method:  http.MethodGet,
+		Path:    statusPath,
+		Headers: headers,
+	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+
+	respHeaders := convertXAIHeaders(resp.Headers)
 
 	if resp.StatusCode == 202 {
 		// Bound how much of the body we attempt to parse. An empty or
@@ -380,36 +472,36 @@ func (m *VideoModel) checkVideoStatus(ctx context.Context, requestID string) (*x
 		// "pending" for a payload that large.
 		limited, readErr := io.ReadAll(io.LimitReader(bytes.NewReader(resp.Body), maxPendingStatusBodyBytes+1))
 		if readErr != nil {
-			return &xaiVideoStatusResponse{Status: "pending"}, nil
+			return &xaiVideoStatusResponse{Status: "pending"}, respHeaders, nil
 		}
 		if len(limited) > maxPendingStatusBodyBytes {
-			return nil, providererrors.NewProviderError("xai", resp.StatusCode, "",
+			return nil, nil, providererrors.NewProviderError("xai", resp.StatusCode, "",
 				fmt.Sprintf("xAI video status response exceeded %d bytes", maxPendingStatusBodyBytes), nil)
 		}
 		if len(limited) == 0 {
-			return &xaiVideoStatusResponse{Status: "pending"}, nil
+			return &xaiVideoStatusResponse{Status: "pending"}, respHeaders, nil
 		}
 
 		var status xaiVideoStatusResponse
 		if err := json.Unmarshal(limited, &status); err != nil {
-			return &xaiVideoStatusResponse{Status: "pending"}, nil
+			return &xaiVideoStatusResponse{Status: "pending"}, respHeaders, nil
 		}
 		if status.Status == "" && (status.Video == nil || resolveVideoURL(status.Video) == "") {
 			status.Status = "pending"
 		}
-		return &status, nil
+		return &status, respHeaders, nil
 	}
 
 	if resp.StatusCode >= 400 {
-		return nil, providererrors.NewProviderError("xai", resp.StatusCode, "",
+		return nil, nil, providererrors.NewProviderError("xai", resp.StatusCode, "",
 			parseXAIErrorMessage(resp.Body), nil)
 	}
 
 	var status xaiVideoStatusResponse
 	if err := json.Unmarshal(resp.Body, &status); err != nil {
-		return nil, fmt.Errorf("failed to decode JSON response: %w", err)
+		return nil, nil, fmt.Errorf("failed to decode JSON response: %w", err)
 	}
-	return &status, nil
+	return &status, respHeaders, nil
 }
 
 // buildRequestBody constructs the API request body
