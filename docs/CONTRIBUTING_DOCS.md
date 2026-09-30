@@ -623,7 +623,7 @@ go run extract-examples.go -docs=../07-reference/api/new-type.mdx -verbose
 
 - [Documentation Style Guide](./DOCUMENTATION_STYLE_GUIDE.md)
 - [Template Files](./_templates/)
-- [Existing Documentation](./01-getting-started/)
+- [Existing Documentation](./02-getting-started/)
 - [Go-AI Repository](https://github.com/digitallysavvy/go-ai)
 
 ### Questions?
