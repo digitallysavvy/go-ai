@@ -89,6 +89,223 @@ func SerializeModel(model LanguageModel) (SerializedModel, error) {
 	return serialized, nil
 }
 
+// -----------------------------------------------------------------------
+// Non-language model kinds (image, video, speech, transcription,
+// embedding, evaluation).
+//
+// Language models use the LanguageModel-specific SerializeModel /
+// DeserializeModel / RegisterModelDeserializer above. Every other model
+// kind shares the generic plumbing below, since the SerializableModel /
+// SerializableModelStrict contract (a bare "Serialize() SerializedModel"
+// method) has no model-kind-specific shape -- it only needs Provider()
+// and ModelID() to produce a useful error. Mirrors the TypeScript SDK,
+// where ImageModelV4, VideoModelV3/V4, SpeechModelV4, TranscriptionModelV4,
+// EmbeddingModelV4, and Experimental_EvaluationModelV4 implementations all
+// carry the same [WORKFLOW_SERIALIZE]/[WORKFLOW_DESERIALIZE] contract as
+// LanguageModelV3.
+type typedModelDeserializer[M any] func(SerializedModel) (M, error)
+
+type typedModelRegistry[M any] struct {
+	mu  sync.RWMutex
+	fns map[string]typedModelDeserializer[M]
+}
+
+func newTypedModelRegistry[M any]() *typedModelRegistry[M] {
+	return &typedModelRegistry[M]{fns: map[string]typedModelDeserializer[M]{}}
+}
+
+func (r *typedModelRegistry[M]) register(providerName string, fn typedModelDeserializer[M]) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.fns[providerName] = fn
+}
+
+func (r *typedModelRegistry[M]) deserialize(kind string, serialized SerializedModel) (M, error) {
+	r.mu.RLock()
+	fn := r.fns[serialized.Provider]
+	r.mu.RUnlock()
+	var zero M
+	if fn == nil {
+		return zero, fmt.Errorf("provider: no %s model deserializer registered for %q", kind, serialized.Provider)
+	}
+	return fn(serialized)
+}
+
+// serializableModelMetadata is the minimal shape serializeTypedModel needs
+// to produce a useful error when a model doesn't implement
+// SerializableModel/SerializableModelStrict. Every model kind interface
+// (ImageModel, VideoModelV3, SpeechModel, TranscriptionModel,
+// EmbeddingModel, EvaluationModel) already satisfies this structurally.
+type serializableModelMetadata interface {
+	Provider() string
+	ModelID() string
+}
+
+// serializeTypedModel implements the shared Serialize() dispatch (prefer
+// SerializableModelStrict, fall back to SerializableModel) for any model
+// kind.
+func serializeTypedModel(model serializableModelMetadata) (SerializedModel, error) {
+	if strict, ok := model.(SerializableModelStrict); ok {
+		serialized, err := strict.SerializeStrict()
+		if err != nil {
+			return SerializedModel{}, err
+		}
+		if serialized.Config == nil {
+			serialized.Config = map[string]interface{}{}
+		}
+		return serialized, nil
+	}
+	if serializable, ok := model.(SerializableModel); ok {
+		serialized := serializable.Serialize()
+		if serialized.Config == nil {
+			serialized.Config = map[string]interface{}{}
+		}
+		return serialized, nil
+	}
+	return SerializedModel{}, providererrors.NewSerializationError(
+		fmt.Sprintf("provider: model %q from provider %q is not serializable", model.ModelID(), model.Provider()),
+		nil,
+	)
+}
+
+var imageModelDeserializers = newTypedModelRegistry[ImageModel]()
+
+// RegisterImageModelDeserializer registers a model factory for
+// DeserializeImageModel.
+func RegisterImageModelDeserializer(providerName string, fn func(SerializedModel) (ImageModel, error)) {
+	imageModelDeserializers.register(providerName, fn)
+}
+
+// DeserializeImageModel reconstructs a serialized image model using a
+// registered provider factory.
+func DeserializeImageModel(serialized SerializedModel) (ImageModel, error) {
+	return imageModelDeserializers.deserialize("image", serialized)
+}
+
+// SerializeImageModel returns a JSON-friendly serialized image model
+// representation.
+func SerializeImageModel(model ImageModel) (SerializedModel, error) {
+	if model == nil {
+		return SerializedModel{}, providererrors.NewSerializationError("provider: model is nil", nil)
+	}
+	return serializeTypedModel(model)
+}
+
+var videoModelDeserializers = newTypedModelRegistry[VideoModelV3]()
+
+// RegisterVideoModelDeserializer registers a model factory for
+// DeserializeVideoModel.
+func RegisterVideoModelDeserializer(providerName string, fn func(SerializedModel) (VideoModelV3, error)) {
+	videoModelDeserializers.register(providerName, fn)
+}
+
+// DeserializeVideoModel reconstructs a serialized video model using a
+// registered provider factory.
+func DeserializeVideoModel(serialized SerializedModel) (VideoModelV3, error) {
+	return videoModelDeserializers.deserialize("video", serialized)
+}
+
+// SerializeVideoModel returns a JSON-friendly serialized video model
+// representation.
+func SerializeVideoModel(model VideoModelV3) (SerializedModel, error) {
+	if model == nil {
+		return SerializedModel{}, providererrors.NewSerializationError("provider: model is nil", nil)
+	}
+	return serializeTypedModel(model)
+}
+
+var speechModelDeserializers = newTypedModelRegistry[SpeechModel]()
+
+// RegisterSpeechModelDeserializer registers a model factory for
+// DeserializeSpeechModel.
+func RegisterSpeechModelDeserializer(providerName string, fn func(SerializedModel) (SpeechModel, error)) {
+	speechModelDeserializers.register(providerName, fn)
+}
+
+// DeserializeSpeechModel reconstructs a serialized speech model using a
+// registered provider factory.
+func DeserializeSpeechModel(serialized SerializedModel) (SpeechModel, error) {
+	return speechModelDeserializers.deserialize("speech", serialized)
+}
+
+// SerializeSpeechModel returns a JSON-friendly serialized speech model
+// representation.
+func SerializeSpeechModel(model SpeechModel) (SerializedModel, error) {
+	if model == nil {
+		return SerializedModel{}, providererrors.NewSerializationError("provider: model is nil", nil)
+	}
+	return serializeTypedModel(model)
+}
+
+var transcriptionModelDeserializers = newTypedModelRegistry[TranscriptionModel]()
+
+// RegisterTranscriptionModelDeserializer registers a model factory for
+// DeserializeTranscriptionModel.
+func RegisterTranscriptionModelDeserializer(providerName string, fn func(SerializedModel) (TranscriptionModel, error)) {
+	transcriptionModelDeserializers.register(providerName, fn)
+}
+
+// DeserializeTranscriptionModel reconstructs a serialized transcription
+// model using a registered provider factory.
+func DeserializeTranscriptionModel(serialized SerializedModel) (TranscriptionModel, error) {
+	return transcriptionModelDeserializers.deserialize("transcription", serialized)
+}
+
+// SerializeTranscriptionModel returns a JSON-friendly serialized
+// transcription model representation.
+func SerializeTranscriptionModel(model TranscriptionModel) (SerializedModel, error) {
+	if model == nil {
+		return SerializedModel{}, providererrors.NewSerializationError("provider: model is nil", nil)
+	}
+	return serializeTypedModel(model)
+}
+
+var embeddingModelDeserializers = newTypedModelRegistry[EmbeddingModel]()
+
+// RegisterEmbeddingModelDeserializer registers a model factory for
+// DeserializeEmbeddingModel.
+func RegisterEmbeddingModelDeserializer(providerName string, fn func(SerializedModel) (EmbeddingModel, error)) {
+	embeddingModelDeserializers.register(providerName, fn)
+}
+
+// DeserializeEmbeddingModel reconstructs a serialized embedding model using
+// a registered provider factory.
+func DeserializeEmbeddingModel(serialized SerializedModel) (EmbeddingModel, error) {
+	return embeddingModelDeserializers.deserialize("embedding", serialized)
+}
+
+// SerializeEmbeddingModel returns a JSON-friendly serialized embedding
+// model representation.
+func SerializeEmbeddingModel(model EmbeddingModel) (SerializedModel, error) {
+	if model == nil {
+		return SerializedModel{}, providererrors.NewSerializationError("provider: model is nil", nil)
+	}
+	return serializeTypedModel(model)
+}
+
+var evaluationModelDeserializers = newTypedModelRegistry[EvaluationModel]()
+
+// RegisterEvaluationModelDeserializer registers a model factory for
+// DeserializeEvaluationModel.
+func RegisterEvaluationModelDeserializer(providerName string, fn func(SerializedModel) (EvaluationModel, error)) {
+	evaluationModelDeserializers.register(providerName, fn)
+}
+
+// DeserializeEvaluationModel reconstructs a serialized evaluation model
+// using a registered provider factory.
+func DeserializeEvaluationModel(serialized SerializedModel) (EvaluationModel, error) {
+	return evaluationModelDeserializers.deserialize("evaluation", serialized)
+}
+
+// SerializeEvaluationModel returns a JSON-friendly serialized evaluation
+// model representation.
+func SerializeEvaluationModel(model EvaluationModel) (SerializedModel, error) {
+	if model == nil {
+		return SerializedModel{}, providererrors.NewSerializationError("provider: model is nil", nil)
+	}
+	return serializeTypedModel(model)
+}
+
 // SerializableConfig returns a JSON-compatible copy of config for workflow
 // boundaries. It mirrors the TypeScript SDK's serializeModelOptions behavior:
 // JSON-serializable values, including static headers, are preserved while
