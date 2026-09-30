@@ -2,53 +2,116 @@ package codemode
 
 import "strings"
 
-// stripTypeScriptAnnotations removes a conservative, unambiguous subset of
-// type-only TypeScript syntax so QuickJS (a JavaScript engine) can execute
-// lightly type-annotated code-mode source. This approximates the "or
-// type-stripped TypeScript" support the TypeScript SDK gets for free from
-// the `run` package's engine (state/parity/sep_23_2026/mcp-workflow-misc.md
-// CODE-MODE); it is a small heuristic scanner, not a TypeScript parser or
-// a full erasable-syntax implementation.
+// stripTypeScriptAnnotations removes type-only TypeScript syntax from
+// code-mode source so it can run as plain JavaScript in QuickJS.
 //
-// Handled (matches the ported TypeScript test cases in core.test.ts):
-//   - `interface Name { ... }` declarations (balanced braces), removed
-//     whole.
-//   - Top-level `type Name = ...;` alias declarations.
-//   - `satisfies TypeExpr` assertions.
-//   - `: TypeExpr` annotations on `const`/`let`/`var` declarations
-//     (`const value: number = 7` -> `const value = 7`).
+// This mirrors what TypeScript code-mode actually does before execution.
+// The `code-mode` package delegates execution to the `run` package
+// (https://www.npmjs.com/package/run), whose
+// dist/utils/source-cache.js#stripSnippetTypes wraps the raw snippet as
+// `async function __runUser__(){ <snippet> }` and calls Node's built-in
+// `node:module` `stripTypeScriptTypes(source)` (Node's "type stripping"
+// feature, https://nodejs.org/api/typescript.html, backed by the Amaro/swc
+// TypeScript parser) in its default "strip" mode, then slices the wrapper
+// back off. That function erases type-only syntax in place -- replacing it
+// with the equivalent amount of whitespace so line/column numbers in stack
+// traces are preserved -- and throws:
+//   - ERR_INVALID_TYPESCRIPT_SYNTAX for a genuine parse error (including
+//     `import`/`export`, which cannot appear inside the function-body
+//     wrapper regardless of TypeScript syntax), or
+//   - ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX for TypeScript syntax that is
+//     erasable in principle but not supported by Node's "strip-only" mode
+//     without full transformation: enums, namespaces/modules with a body,
+//     and constructor parameter properties.
 //
-// Deliberately NOT handled, to avoid misparsing plain JavaScript object
-// literals and call expressions (deferred; see package doc):
-//   - `as TypeExpr` assertions (an `as` token is not reserved in
-//     JavaScript, so stripping it generically risks mangling other code;
-//     only `satisfies`, which has no legitimate JavaScript meaning, is
-//     handled).
-//   - Function parameter and return type annotations
-//     (`function f(x: number): number`) and generic type parameters
-//     (`function f<T>(x: T)`), enums, decorators, `declare`/`namespace`
-//     blocks, and `import type`.
+// Critically, `stripSnippetTypes` catches *any* error from
+// `stripTypeScriptTypes` and falls back to returning the snippet
+// unmodified: `catch { return source; }`. So in practice a snippet
+// containing unsupported syntax is never rejected by the stripper itself --
+// it is handed to the JavaScript engine unstripped, where the leftover
+// TypeScript-only syntax (an invalid token as far as the engine is
+// concerned) fails with a normal JavaScript SyntaxError instead of a
+// TypeScript-specific message.
 //
-// String, template-literal and comment contents are left untouched.
-func stripTypeScriptAnnotations(src string) string {
+// This Go port takes a more direct approach for the two cases that are
+// common enough for a clearer error to matter (enums and namespaces): it
+// recognizes them and returns an UnsupportedSyntaxError immediately,
+// mirroring the *meaning* of Node's ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX rather
+// than its "silently fall through to an opaque engine error" delivery.
+// Anything else this scanner cannot confidently strip (an unbalanced
+// construct, or TypeScript syntax outside the set below) is left
+// unmodified, exactly like the upstream catch-all: the source is handed on
+// to QuickJS as-is and fails there with an ordinary syntax error if it
+// truly isn't valid JavaScript.
+//
+// Supported erasable syntax (verified against Node's stripTypeScriptTypes
+// directly -- see the package's strip_types_test.go for the exact cases):
+//   - Type annotations on `const`/`let`/`var` declarators (including
+//     multiple comma-separated declarators), function/method parameters
+//     (including default values, destructuring, and rest parameters), and
+//     function/method/arrow return types.
+//   - `as` and `satisfies` type assertions, including chained
+//     (`x as A as B`) and `as const`.
+//   - Type parameters/arguments on function and class declarations, arrow
+//     functions, and call/`new` expressions (`f<T>()`, `new Box<T>()`),
+//     disambiguated from `<`/`>` comparisons.
+//   - `interface Name { ... }` and `type Name = ...;` declarations
+//     (top-level only, not nested inside an expression).
+//   - Non-null assertions (`foo!.bar`) and definite assignment assertions
+//     (`let x!: number;`, a class field `x!: number;`).
+//   - Optional markers on parameters and class fields (`x?: number`).
+//   - `import type ...;` / `export type ...;` statements.
+//   - Class member access modifiers (`public`/`private`/`protected`) and
+//     `readonly`/`override`/`declare`, plus bodyless (abstract or overload)
+//     member/function signatures, which are erased entirely.
+//   - `declare` ambient statements (`declare var/let/const/function/class`),
+//     erased entirely.
+//
+// Known gap: a generic arrow function written as a bare expression, e.g.
+// `const f = <T,>(x: T) => x;`, is not recognized (declaration-position
+// generics on `function`/`class`, and generics on a call/`new` expression,
+// are). Type parameters immediately followed by `(` at the very start of
+// an expression are inherently ambiguous with a JSX element in TypeScript
+// itself (resolved there only by the `.tsx` vs `.ts` file extension, which
+// code-mode snippets don't have); detecting it heuristically would risk
+// misreading a real less-than comparison. Code-mode snippets needing
+// generics on an arrow function can use a named `function` declaration
+// instead, which this stripper fully supports.
+//
+// String, template-literal, regular-expression-literal, and comment
+// contents are never inspected for TypeScript syntax.
+func stripTypeScriptAnnotations(src string) (string, error) {
 	tokens := tokenizeTS(src)
-	kept := stripTSTokens(tokens)
+	kept, err := stripTSTokens(tokens)
+	if err != nil {
+		return src, err
+	}
 	var b strings.Builder
 	for _, t := range kept {
 		b.WriteString(t.text)
 	}
-	return b.String()
+	return b.String(), nil
 }
 
+// tsToken is one lexical token of (possibly-TypeScript) source.
 type tsToken struct {
-	kind string // "ident", "punct", "string", "space", "comment"
+	kind string // "ident", "number", "string", "regex", "punct", "space", "comment"
 	text string
 }
 
+// tokenizeTS splits src into tokens, correctly skipping over the contents
+// of strings, template literals (including nested `${...}` interpolations,
+// which may themselves contain strings/templates), regular expression
+// literals, and line/block comments so TypeScript-syntax detection never
+// looks inside them.
 func tokenizeTS(src string) []tsToken {
 	runes := []rune(src)
 	n := len(runes)
 	var tokens []tsToken
+	// prevSignificant is the kind/text of the last non-space/non-comment
+	// token, used to disambiguate a leading `/` as a regex literal (as
+	// opposed to division) the same way real JS lexers do.
+	var prevSignificant *tsToken
 	i := 0
 	for i < n {
 		c := runes[i]
@@ -73,46 +136,28 @@ func tokenizeTS(src string) []tsToken {
 			tokens = append(tokens, tsToken{"comment", string(runes[i:end])})
 			i = end
 
+		case c == '/' && regexAllowedAfter(prevSignificant):
+			if end, ok := scanRegexLiteral(runes, i); ok {
+				tokens = append(tokens, tsToken{"regex", string(runes[i:end])})
+				i = end
+				prevSignificant = &tokens[len(tokens)-1]
+				continue
+			}
+			fallthrough
+
 		case c == '"' || c == '\'':
-			j := i + 1
-			for j < n && runes[j] != c {
-				if runes[j] == '\\' && j+1 < n {
-					j += 2
-				} else {
-					j++
-				}
-			}
-			if j < n {
-				j++
-			}
+			j := scanStringLiteral(runes, i)
 			tokens = append(tokens, tsToken{"string", string(runes[i:j])})
 			i = j
 
 		case c == '`':
-			j := i + 1
-			depth := 0
-			for j < n {
-				if runes[j] == '\\' && j+1 < n {
-					j += 2
-					continue
-				}
-				if runes[j] == '`' && depth == 0 {
-					j++
-					break
-				}
-				if runes[j] == '$' && j+1 < n && runes[j+1] == '{' {
-					depth++
-					j += 2
-					continue
-				}
-				if runes[j] == '}' && depth > 0 {
-					depth--
-					j++
-					continue
-				}
-				j++
-			}
+			j := scanTemplateLiteral(runes, i)
 			tokens = append(tokens, tsToken{"string", string(runes[i:j])})
+			i = j
+
+		case isDigit(c) || (c == '.' && i+1 < n && isDigit(runes[i+1])):
+			j := scanNumber(runes, i)
+			tokens = append(tokens, tsToken{"number", string(runes[i:j])})
 			i = j
 
 		case isTSIdentStart(c):
@@ -141,13 +186,231 @@ func tokenizeTS(src string) []tsToken {
 				i++
 			}
 		}
+
+		if len(tokens) > 0 {
+			last := tokens[len(tokens)-1]
+			if last.kind != "space" && last.kind != "comment" {
+				prevSignificant = &tokens[len(tokens)-1]
+			}
+		}
 	}
 	return tokens
 }
 
+// scanStringLiteral scans a single- or double-quoted string starting at
+// runes[i] and returns the index just past its closing quote (or past the
+// end of input, for an unterminated string).
+func scanStringLiteral(runes []rune, i int) int {
+	n := len(runes)
+	quote := runes[i]
+	j := i + 1
+	for j < n && runes[j] != quote {
+		if runes[j] == '\\' && j+1 < n {
+			j += 2
+			continue
+		}
+		j++
+	}
+	if j < n {
+		j++
+	}
+	return j
+}
+
+// scanTemplateLiteral scans a template literal starting at runes[i] == '`'
+// and returns the index just past its closing backtick. Interpolations
+// (`${...}`) are scanned with scanBalancedExpr, which is itself aware of
+// nested strings, template literals, and comments, so a `}`, backtick, or
+// quote inside a nested string/template cannot prematurely close the
+// interpolation or the outer template.
+func scanTemplateLiteral(runes []rune, i int) int {
+	n := len(runes)
+	j := i + 1
+	for j < n {
+		c := runes[j]
+		switch {
+		case c == '\\' && j+1 < n:
+			j += 2
+		case c == '`':
+			return j + 1
+		case c == '$' && j+1 < n && runes[j+1] == '{':
+			j = scanBalancedExpr(runes, j+2)
+		default:
+			j++
+		}
+	}
+	return j
+}
+
+// scanBalancedExpr scans an interpolation expression's tokens starting just
+// after its opening `${`, returning the index just past the matching `}`.
+// It tracks nested `(`, `[`, `{` bracket depth and recognizes nested
+// strings, template literals, and comments so their contents can't disturb
+// that count.
+func scanBalancedExpr(runes []rune, j int) int {
+	n := len(runes)
+	depth := 0
+	for j < n {
+		c := runes[j]
+		switch {
+		case c == '\'' || c == '"':
+			j = scanStringLiteral(runes, j)
+		case c == '`':
+			j = scanTemplateLiteral(runes, j)
+		case c == '/' && j+1 < n && runes[j+1] == '/':
+			for j < n && runes[j] != '\n' {
+				j++
+			}
+		case c == '/' && j+1 < n && runes[j+1] == '*':
+			j += 2
+			for j+1 < n && !(runes[j] == '*' && runes[j+1] == '/') {
+				j++
+			}
+			j += 2
+			if j > n {
+				j = n
+			}
+		case c == '{' || c == '(' || c == '[':
+			depth++
+			j++
+		case c == '}':
+			if depth == 0 {
+				return j + 1
+			}
+			depth--
+			j++
+		case c == ')' || c == ']':
+			if depth > 0 {
+				depth--
+			}
+			j++
+		default:
+			j++
+		}
+	}
+	return j
+}
+
+// scanRegexLiteral attempts to scan a regular expression literal starting
+// at runes[i] == '/'. It respects character classes (`[...]`), where an
+// unescaped `/` does not terminate the literal, and returns
+// (indexPastFlags, true) on success or (_, false) if this `/` cannot be
+// parsed as a regex (e.g. it is unterminated before a line break).
+func scanRegexLiteral(runes []rune, i int) (int, bool) {
+	n := len(runes)
+	j := i + 1
+	inClass := false
+	for j < n {
+		c := runes[j]
+		if c == '\n' {
+			return 0, false
+		}
+		if c == '\\' && j+1 < n {
+			j += 2
+			continue
+		}
+		if c == '[' {
+			inClass = true
+		} else if c == ']' {
+			inClass = false
+		} else if c == '/' && !inClass {
+			j++
+			for j < n && isTSIdentPart(runes[j]) {
+				j++
+			}
+			return j, true
+		}
+		j++
+	}
+	return 0, false
+}
+
+// regexAllowedAfter reports whether a `/` immediately following prev could
+// start a regular expression literal, as opposed to being a division or
+// division-assignment operator. It uses the same approximation real JS
+// lexers use: a `/` starts a regex unless the previous significant token
+// was something a value expression can end with (an identifier that isn't
+// a keyword expecting a following expression, a number, a string/template,
+// a regex, or a closing `)`/`]`).
+func regexAllowedAfter(prev *tsToken) bool {
+	if prev == nil {
+		return true
+	}
+	switch prev.kind {
+	case "number", "string", "regex":
+		return false
+	case "ident":
+		return isRegexPrecedingKeyword(prev.text)
+	case "punct":
+		switch prev.text {
+		case ")", "]":
+			return false
+		default:
+			return true
+		}
+	}
+	return true
+}
+
+var regexPrecedingKeywords = map[string]bool{
+	"return": true, "typeof": true, "instanceof": true, "in": true,
+	"of": true, "new": true, "delete": true, "void": true, "throw": true,
+	"case": true, "do": true, "else": true, "yield": true, "await": true,
+}
+
+func isRegexPrecedingKeyword(ident string) bool {
+	return regexPrecedingKeywords[ident]
+}
+
+func isDigit(c rune) bool { return c >= '0' && c <= '9' }
+
+// scanNumber scans a numeric literal (decimal, hex/octal/binary with a
+// `0x`/`0o`/`0b` prefix, decimal point, exponent, numeric separators `_`,
+// and a trailing BigInt `n` suffix) starting at runes[i].
+func scanNumber(runes []rune, i int) int {
+	n := len(runes)
+	j := i
+	if runes[j] == '0' && j+1 < n && (runes[j+1] == 'x' || runes[j+1] == 'X' || runes[j+1] == 'o' || runes[j+1] == 'O' || runes[j+1] == 'b' || runes[j+1] == 'B') {
+		j += 2
+		for j < n && (isHexDigit(runes[j]) || runes[j] == '_') {
+			j++
+		}
+	} else {
+		for j < n && (isDigit(runes[j]) || runes[j] == '_') {
+			j++
+		}
+		if j < n && runes[j] == '.' {
+			j++
+			for j < n && (isDigit(runes[j]) || runes[j] == '_') {
+				j++
+			}
+		}
+		if j < n && (runes[j] == 'e' || runes[j] == 'E') {
+			k := j + 1
+			if k < n && (runes[k] == '+' || runes[k] == '-') {
+				k++
+			}
+			if k < n && isDigit(runes[k]) {
+				j = k
+				for j < n && isDigit(runes[j]) {
+					j++
+				}
+			}
+		}
+	}
+	if j < n && runes[j] == 'n' {
+		j++
+	}
+	return j
+}
+
+func isHexDigit(c rune) bool {
+	return isDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
+
 var tsMultiCharOperators = []string{
 	">>>=", "===", "!==", "**=", "<<=", ">>=", "&&=", "||=", "??=",
-	"=>", "...", "?.", "??", "**", "<<", ">>", ">>>", "&&", "||",
+	"=>", "...", "?.", "??", "**", "<<", ">>>", ">>", "&&", "||",
 	"==", "!=", "<=", ">=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=",
 }
 
@@ -170,238 +433,4 @@ func isTSIdentStart(c rune) bool {
 
 func isTSIdentPart(c rune) bool {
 	return isTSIdentStart(c) || (c >= '0' && c <= '9')
-}
-
-// stripTSTokens removes interface/type-alias/satisfies/typed-declaration
-// tokens from the stream, returning the tokens to keep.
-func stripTSTokens(tokens []tsToken) []tsToken {
-	var out []tsToken
-	depth := 0 // combined (){}[] nesting depth
-	i := 0
-	for i < len(tokens) {
-		t := tokens[i]
-
-		switch t.kind {
-		case "punct":
-			switch t.text {
-			case "(", "{", "[":
-				depth++
-			case ")", "}", "]":
-				depth--
-			}
-		case "ident":
-			switch t.text {
-			case "interface":
-				if depth == 0 && !precededByDot(out) {
-					i = skipInterfaceDecl(tokens, i)
-					continue
-				}
-			case "type":
-				if depth == 0 && !precededByDot(out) && looksLikeTypeAlias(tokens, i) {
-					i = skipTypeAlias(tokens, i)
-					continue
-				}
-			case "satisfies":
-				if !precededByDot(out) && precededBySignificant(out) {
-					i = consumeTypeExpr(tokens, i+1, true)
-					continue
-				}
-			case "const", "let", "var":
-				out = append(out, t)
-				i++
-				i = passThroughTypedDeclaration(tokens, i, &out)
-				continue
-			}
-		}
-
-		out = append(out, t)
-		i++
-	}
-	return out
-}
-
-// precededByDot reports whether the last significant (non-space,
-// non-comment) emitted token is `.`, which means the following identifier
-// is a property name, not a keyword.
-func precededByDot(out []tsToken) bool {
-	for i := len(out) - 1; i >= 0; i-- {
-		if out[i].kind == "space" || out[i].kind == "comment" {
-			continue
-		}
-		return out[i].kind == "punct" && out[i].text == "."
-	}
-	return false
-}
-
-// precededBySignificant reports whether at least one non-trivial token has
-// been emitted (a `satisfies` at the very start of the source cannot be a
-// type assertion).
-func precededBySignificant(out []tsToken) bool {
-	for _, t := range out {
-		if t.kind != "space" && t.kind != "comment" {
-			return true
-		}
-	}
-	return false
-}
-
-// skipInterfaceDecl returns the index just past a balanced
-// `interface ... { ... }` block starting at tokens[i] (the "interface"
-// token). If no opening brace is found, only the "interface" token itself
-// is skipped.
-func skipInterfaceDecl(tokens []tsToken, i int) int {
-	j := i + 1
-	for j < len(tokens) && !(tokens[j].kind == "punct" && tokens[j].text == "{") {
-		j++
-	}
-	if j >= len(tokens) {
-		return i + 1
-	}
-	depth := 0
-	for j < len(tokens) {
-		if tokens[j].kind == "punct" {
-			switch tokens[j].text {
-			case "{":
-				depth++
-			case "}":
-				depth--
-				if depth == 0 {
-					return j + 1
-				}
-			}
-		}
-		j++
-	}
-	return j
-}
-
-// looksLikeTypeAlias reports whether tokens[i] ("type") begins a
-// `type Ident =` alias declaration, distinguishing it from an identifier
-// named "type" used as a value (e.g. `const type = 1;`, `obj.type`,
-// `{ type: 'x' }`).
-func looksLikeTypeAlias(tokens []tsToken, i int) bool {
-	next := nextSignificant(tokens, i+1)
-	if next < 0 || tokens[next].kind != "ident" {
-		return false
-	}
-	eq := nextSignificant(tokens, next+1)
-	// Allow simple generic parameters: `type Foo<T> = ...`.
-	if eq >= 0 && tokens[eq].kind == "punct" && tokens[eq].text == "<" {
-		depth := 0
-		for eq < len(tokens) {
-			if tokens[eq].kind == "punct" {
-				if tokens[eq].text == "<" {
-					depth++
-				} else if tokens[eq].text == ">" {
-					depth--
-					if depth == 0 {
-						eq = nextSignificant(tokens, eq+1)
-						break
-					}
-				}
-			}
-			eq++
-		}
-	}
-	return eq >= 0 && tokens[eq].kind == "punct" && tokens[eq].text == "="
-}
-
-// skipTypeAlias returns the index just past a `type Name = ...;` statement
-// starting at tokens[i] (the "type" token), consuming through the matching
-// top-level semicolon (or end of input).
-func skipTypeAlias(tokens []tsToken, i int) int {
-	j := i + 1
-	depth := 0
-	for j < len(tokens) {
-		t := tokens[j]
-		if t.kind == "punct" {
-			switch t.text {
-			case "(", "{", "[", "<":
-				depth++
-			case ")", "}", "]", ">":
-				if depth > 0 {
-					depth--
-				}
-			case ";":
-				if depth == 0 {
-					return j + 1
-				}
-			}
-		}
-		j++
-	}
-	return j
-}
-
-// passThroughTypedDeclaration copies tokens for a `const|let|var` binding
-// into *out unchanged, except it removes a single `: TypeExpr` annotation
-// immediately following the bound identifier (before `=`, `,` or `;`).
-// Returns the index just past what it consumed.
-func passThroughTypedDeclaration(tokens []tsToken, i int, out *[]tsToken) int {
-	j := nextSignificant(tokens, i)
-	if j < 0 || tokens[j].kind != "ident" {
-		return i
-	}
-	// Copy any tokens (including whitespace) up to and including the
-	// identifier.
-	for k := i; k <= j; k++ {
-		*out = append(*out, tokens[k])
-	}
-	i = j + 1
-
-	colon := nextSignificant(tokens, i)
-	if colon < 0 || !(tokens[colon].kind == "punct" && tokens[colon].text == ":") {
-		return i
-	}
-	// Copy whitespace/comments between the identifier and the colon, then
-	// drop the colon and the following type expression.
-	for k := i; k < colon; k++ {
-		*out = append(*out, tokens[k])
-	}
-	return consumeTypeExpr(tokens, colon+1, false)
-}
-
-// consumeTypeExpr skips a type expression starting at tokens[i], balancing
-// (), [], {} and <> and stopping at the first top-level `;`, `,`, `)`,
-// `}`, `=` or `=>`. When leadingKeywordAlreadyConsumed is false the caller
-// is responsible for having already dropped the introducing token (e.g.
-// `:`); it exists only for readability at call sites.
-func consumeTypeExpr(tokens []tsToken, i int, _ bool) int {
-	depth := 0
-	for i < len(tokens) {
-		t := tokens[i]
-		if t.kind == "punct" {
-			switch t.text {
-			case "(", "{", "[":
-				depth++
-			case ")", "}", "]":
-				if depth == 0 {
-					return i
-				}
-				depth--
-			case "<":
-				depth++
-			case ">":
-				if depth > 0 {
-					depth--
-				}
-			case ";", ",", "=", "=>":
-				if depth == 0 {
-					return i
-				}
-			}
-		}
-		i++
-	}
-	return i
-}
-
-func nextSignificant(tokens []tsToken, i int) int {
-	for i < len(tokens) {
-		if tokens[i].kind != "space" && tokens[i].kind != "comment" {
-			return i
-		}
-		i++
-	}
-	return -1
 }

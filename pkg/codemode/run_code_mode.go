@@ -80,7 +80,11 @@ func RunCodeMode(ctx context.Context, input RunInput) (interface{}, error) {
 	}
 
 	bridge := newToolBridge(ctx, input, options, policy, outerToolCall, prepared.replayLedger, prepared.resumePendings, prepared.resumeResolutions)
-	source := wrapCodeModeSource(stripTypeScriptAnnotations(input.JS))
+	strippedJS, stripErr := stripTypeScriptAnnotations(input.JS)
+	if stripErr != nil {
+		return nil, stripErr
+	}
+	source := wrapCodeModeSource(strippedJS)
 
 	resultJSON, isUndefined, err := runInSandbox(ctx, policy, source, func(jsCtx *qjs.Context) error {
 		return bindCodeModeDispatch(jsCtx, bridge)
