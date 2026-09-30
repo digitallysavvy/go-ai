@@ -279,7 +279,22 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 		})
 		res, callErr := opts.Model.DoEmbed(callCtx, opts.Input, embedModelOpts)
 		if callErr != nil {
-			return fmt.Errorf("embedding failed: %w", callErr)
+			wrappedErr := fmt.Errorf("embedding failed: %w", callErr)
+			// Close THIS attempt's span immediately, with error status, so a
+			// later retry attempt's success doesn't leave it open forever
+			// (OnEnd never sweeps leftover per-attempt spans — see the doc
+			// comment on EmbeddingModelCallEndEvent).
+			telemetry.FireOnEmbedEnd(callCtx, telemetry.EmbeddingModelCallEndEvent{
+				Settings:      opts.ExperimentalTelemetry,
+				CallID:        callID,
+				EmbedCallID:   embedCallID,
+				OperationID:   "ai.embed.doEmbed",
+				ModelProvider: opts.Model.Provider(),
+				ModelID:       opts.Model.ModelID(),
+				Values:        []string{opts.Input},
+				Error:         wrappedErr,
+			})
+			return wrappedErr
 		}
 		embeddings := [][]float64{}
 		var usage types.EmbeddingUsage

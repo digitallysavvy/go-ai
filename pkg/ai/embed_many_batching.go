@@ -62,7 +62,22 @@ func embedManyCalls(ctx context.Context, opts EmbedManyOptions, callID string, m
 				Headers:         opts.Headers,
 			})
 			if err != nil {
-				return fmt.Errorf("batch embedding failed: %w", err)
+				wrappedErr := fmt.Errorf("batch embedding failed: %w", err)
+				// Close THIS attempt's span immediately, with error status, so
+				// a later retry attempt's success doesn't leave it open forever
+				// (OnEnd never sweeps leftover per-attempt spans — see the doc
+				// comment on EmbeddingModelCallEndEvent).
+				telemetry.FireOnEmbedEnd(attemptCtx, telemetry.EmbeddingModelCallEndEvent{
+					Settings:      opts.ExperimentalTelemetry,
+					CallID:        callID,
+					EmbedCallID:   embedCallID,
+					OperationID:   "ai.embedMany.doEmbed",
+					ModelProvider: model.Provider(),
+					ModelID:       model.ModelID(),
+					Values:        values,
+					Error:         wrappedErr,
+				})
+				return wrappedErr
 			}
 			if res == nil {
 				res = &types.EmbeddingsResult{}

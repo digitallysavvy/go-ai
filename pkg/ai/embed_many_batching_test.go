@@ -4,9 +4,14 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"go.opentelemetry.io/otel/codes"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/digitallysavvy/go-ai/pkg/middleware"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -326,6 +331,90 @@ func TestEmbedMany_RetriesFailedBatchOnly(t *testing.T) {
 	}
 	if len(res.Responses) != 2 {
 		t.Fatalf("responses = %d, want 2", len(res.Responses))
+	}
+}
+
+// TestEmbedMany_RetriedAttemptSpanEndsWithErrorStatus is the regression test
+// for the "embed_many_batching.go retry span leak" fix: a failed attempt's
+// nested "embeddings" (doEmbed) span must end (with error status) even
+// though a later retry of the same batch succeeds and the overall EmbedMany
+// call finishes successfully — previously OnEnd never swept leftover
+// per-attempt spans from st.embedSpans, so the failed attempt's span was
+// left open forever. Reuses the exact retry scenario from
+// TestEmbedMany_RetriesFailedBatchOnly (TS embed-many-google.test.ts
+// "retries a failed batch with the same content without repeating
+// successful batches") but with a span recorder attached, and asserts every
+// started "embeddings" span appears in Ended() exactly once, with the
+// correct status per attempt.
+func TestEmbedMany_RetriedAttemptSpanEndsWithErrorStatus(t *testing.T) {
+	t.Parallel()
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	tracer := tp.Tracer("embed-many-retry-span-test")
+
+	var mu sync.Mutex
+	failed := false
+	model := &batchEmbeddingModel{maxPerCall: 2}
+	model.doEmbedMany = func(_ context.Context, values []string, _ *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if values[0] == testEmbedValues[2] && !failed {
+			failed = true
+			pe := providererrors.NewProviderError("mock", 429, "RESOURCE_EXHAUSTED", "Rate limited", nil)
+			pe.ResponseHeaders = map[string]string{"retry-after-ms": "0"}
+			return nil, pe
+		}
+		out := make([][]float64, len(values))
+		for i := range values {
+			out[i] = []float64{1}
+		}
+		return &types.EmbeddingsResult{Embeddings: out}, nil
+	}
+
+	_, err := EmbedMany(context.Background(), EmbedManyOptions{
+		Model:      model,
+		Inputs:     testEmbedValues,
+		MaxRetries: intPtr(1),
+		Telemetry: &telemetry.Settings{
+			IsEnabled:    telemetry.Bool(true),
+			Integrations: []telemetry.TelemetryIntegration{telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{Tracer: tracer})},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// GenAI's root "ai.embedMany" span is ALSO named "embeddings <modelID>"
+	// (mapOperationName maps both "ai.embedMany" and "ai.embedMany.doEmbed"
+	// to "embeddings"), so exclude it by parent: every nested doEmbed
+	// attempt span has the root span as its parent, while the root span
+	// itself has no parent.
+	var embeddingSpans []sdktrace.ReadOnlySpan
+	for _, s := range rec.Ended() {
+		if strings.HasPrefix(s.Name(), "embeddings") && s.Parent().SpanID().IsValid() {
+			embeddingSpans = append(embeddingSpans, s)
+		}
+	}
+	// 3 doEmbedMany attempts total: 2 successful batches, plus the failed
+	// attempt for the 3rd batch that got retried (and its own successful
+	// retry) => 3 ended "embeddings" spans, one per attempt.
+	if len(embeddingSpans) != 3 {
+		t.Fatalf("expected 3 ended 'embeddings' spans (one per doEmbedMany attempt, including the failed one that was retried), got %d", len(embeddingSpans))
+	}
+	var errored, notErrored int
+	for _, s := range embeddingSpans {
+		if s.Status().Code == codes.Error {
+			errored++
+		} else {
+			notErrored++
+		}
+	}
+	if errored != 1 {
+		t.Fatalf("expected exactly 1 span with error status (the failed retry attempt), got %d", errored)
+	}
+	if notErrored != 2 {
+		t.Fatalf("expected exactly 2 spans without error status (the two successful attempts), got %d", notErrored)
 	}
 }
 

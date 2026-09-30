@@ -664,7 +664,11 @@ func jsonStringifyEach[T any](values []T) []string {
 // OnEmbedEnd records usage on the embeddings request span only — NOT on the
 // root ai.embed/ai.embedMany span, avoiding the double count TS fixed in
 // c0a42bc (the root span's OnEnd omits gen_ai.usage.input_tokens for embed
-// operations; see OnEnd below).
+// operations; see OnEnd below). When e.Error is set (a failed retry attempt
+// — embed_many_batching.go/embed.go fire this event on every attempt's
+// outcome, not just the one that ultimately succeeds), the span is closed
+// with an error status instead, so no span is ever left open for OnEnd to
+// leak — see the doc comment on EmbeddingModelCallEndEvent.
 func (i OpenTelemetry) OnEmbedEnd(_ context.Context, e EmbeddingModelCallEndEvent) {
 	callID := modelCallID(e.EmbedCallID, e.CallID, e.OperationID)
 	value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("embedding", callID))
@@ -680,6 +684,11 @@ func (i OpenTelemetry) OnEmbedEnd(_ context.Context, e EmbeddingModelCallEndEven
 	}
 	entry, ok := value.(otelSpanEntry)
 	if !ok || !entry.span.IsRecording() {
+		return
+	}
+	if e.Error != nil {
+		RecordErrorOnSpan(entry.span, e.Error)
+		entry.span.End()
 		return
 	}
 	if e.Usage.InputTokens > 0 {

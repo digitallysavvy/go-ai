@@ -198,7 +198,17 @@ type EmbeddingModelCallStartEvent struct {
 	Values        []string
 }
 
-// EmbeddingModelCallEndEvent is emitted after an embedding model call completes.
+// EmbeddingModelCallEndEvent is emitted after an embedding model call
+// attempt concludes — either with a result (Error nil) or with the error
+// that attempt failed with (Error non-nil). Firing this on BOTH outcomes
+// (not just success) is what lets OnEmbedEnd close every span
+// OnEmbedStart ever opened exactly once, immediately, including for a
+// retried attempt that ultimately failed (embed_many_batching.go /
+// embed.go's withEmbedRetry loop): without this, a failed attempt's nested
+// doEmbed span would stay open forever once a later retry succeeds, since
+// OnEnd's root-span close never sweeps leftover per-attempt spans (matching
+// neither TS's onEmbedOperationEnd, which has the same gap, nor a
+// leak-free Go implementation).
 type EmbeddingModelCallEndEvent struct {
 	Settings      *Settings
 	CallID        string
@@ -209,6 +219,10 @@ type EmbeddingModelCallEndEvent struct {
 	Values        []string
 	Embeddings    [][]float64
 	Usage         types.EmbeddingUsage
+	// Error is set when this attempt failed (the model call returned an
+	// error). OnEmbedEnd records it on the span (matching TS onError's
+	// recordErrorOnSpan) instead of setting usage/embeddings attributes.
+	Error error
 }
 
 // RerankingModelCallStartEvent is emitted immediately before a reranking model call.
@@ -1514,9 +1528,15 @@ func (i LegacyOpenTelemetry) OnEmbedStart(ctx context.Context, e EmbeddingModelC
 	}
 }
 
-// OnEmbedEnd records embedding attributes and ends the doEmbed span.
-// Mirrors TS's onEmbedEnd: only ai.embeddings (output-gated) and
-// ai.usage.tokens — no gen_ai.* here either.
+// OnEmbedEnd records embedding attributes and ends the doEmbed span. Mirrors
+// TS's onEmbedEnd: only ai.embeddings (output-gated) and ai.usage.tokens —
+// no gen_ai.* here either. When e.Error is set (a failed retry attempt —
+// embed_many_batching.go/embed.go fire this event on every attempt's
+// outcome, not just the one that ultimately succeeds), the span is closed
+// with an error status instead (mirrors TS onError/onAbort's
+// recordErrorOnSpan+end handling of state.embedSpans, applied here per
+// attempt so no span is ever left open for OnEnd to leak — see the doc
+// comment on EmbeddingModelCallEndEvent).
 func (i LegacyOpenTelemetry) OnEmbedEnd(_ context.Context, e EmbeddingModelCallEndEvent) {
 	callID := modelCallID(e.EmbedCallID, e.CallID, e.OperationID)
 	value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("embedding", callID))
@@ -1532,6 +1552,11 @@ func (i LegacyOpenTelemetry) OnEmbedEnd(_ context.Context, e EmbeddingModelCallE
 	}
 	entry, ok := value.(otelSpanEntry)
 	if !ok || !entry.span.IsRecording() {
+		return
+	}
+	if e.Error != nil {
+		RecordErrorOnSpan(entry.span, e.Error)
+		entry.span.End()
 		return
 	}
 	if (e.Settings == nil || e.Settings.RecordOutputs) && len(e.Embeddings) > 0 {
