@@ -9,7 +9,7 @@ While text generation can be useful, your use case will likely call for generati
 
 Many language models are capable of generating structured data, often defined as using "JSON modes" or "tools". However, you need to manually provide schemas and then validate the generated data as LLMs can produce incorrect or incomplete structured data.
 
-The Go AI SDK standardizes structured output via the `Output` option on [`ai.GenerateText()`](../07-reference/ai/generate-text.md) and [`ai.StreamText()`](../07-reference/ai/stream-text.md). Five output factories cover all common patterns:
+The Go AI SDK standardizes structured output via the `Output` option on [`ai.GenerateText()`](../07-reference/ai/generate-text.mdx) and [`ai.StreamText()`](../07-reference/ai/stream-text.mdx). Five output factories cover all common patterns:
 
 | Factory | Use case |
 |---|---|
@@ -328,7 +328,7 @@ fmt.Printf("Body: %+v\n", result.Response.Body)
 
 ## Stream Object
 
-Given the added complexity of returning structured data, model response time can be unacceptable for your interactive use case. With the [`ai.StreamObject()`](../07-reference/ai/stream-object.md) function, you can stream the model's response as it is generated.
+Given the added complexity of returning structured data, model response time can be unacceptable for your interactive use case. With the [`ai.StreamObject()`](../07-reference/ai/stream-object.mdx) function, you can stream the model's response as it is generated.
 
 ```go
 result, err := ai.StreamObject(ctx, ai.StreamObjectOptions{
@@ -815,14 +815,14 @@ result, _ := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
 
 ## Next Steps
 
-- Learn about [Tools and Tool Calling](./04-tools-and-tool-calling.md)
-- Explore [Embeddings](./05-embeddings.md)
-- See [Examples](../examples/03-structured-output.md)
+- Learn about [Tools and Tool Calling](./15-tools-and-tool-calling.mdx)
+- Explore [Embeddings](./30-embeddings.mdx)
+- See [Examples](https://github.com/digitallysavvy/go-ai/tree/main/examples)
 
 ## See Also
 
-- [Generating Text](./02-generating-text.md)
-- [Settings](./10-settings.md)
-- [Error Handling](./13-error-handling.md)
-- [API Reference: GenerateObject](../07-reference/ai/generate-object.md)
-- [API Reference: StreamObject](../07-reference/ai/stream-object.md)
+- [Generating Text](./05-generating-text.mdx)
+- [Settings](./25-settings.mdx)
+- [Error Handling](./50-error-handling.mdx)
+- [API Reference: GenerateObject](../07-reference/ai/generate-object.mdx)
+- [API Reference: StreamObject](../07-reference/ai/stream-object.mdx)

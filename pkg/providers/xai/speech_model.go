@@ -2,6 +2,7 @@ package xai
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -26,16 +27,41 @@ func (m *SpeechModel) SpecificationVersion() string { return "v4" }
 func (m *SpeechModel) Provider() string             { return "xai.speech" }
 func (m *SpeechModel) ModelID() string              { return m.modelID }
 
+// XAISpeechProviderOptions holds xAI-specific text-to-speech options, sent
+// under providerOptions.xai. Mirrors TS xaiSpeechModelOptionsSchema.
 type XAISpeechProviderOptions struct {
-	SampleRate               *int  `json:"sampleRate,omitempty"`
-	BitRate                  *int  `json:"bitRate,omitempty"`
-	OptimizeStreamingLatency *int  `json:"optimizeStreamingLatency,omitempty"`
-	TextNormalization        *bool `json:"textNormalization,omitempty"`
+	SampleRate               *int              `json:"sampleRate,omitempty"`
+	BitRate                  *int              `json:"bitRate,omitempty"`
+	OptimizeStreamingLatency *int              `json:"optimizeStreamingLatency,omitempty"`
+	TextNormalization        *bool             `json:"textNormalization,omitempty"`
+	WithTimestamps           *bool             `json:"withTimestamps,omitempty"`
+	Replace                  map[string]string `json:"replace,omitempty"`
+}
+
+// xaiSpeechAudioTimestamps holds character-level timing metadata returned in
+// the `with_timestamps` JSON envelope.
+type xaiSpeechAudioTimestamps struct {
+	GraphChars []string     `json:"graph_chars"`
+	GraphTimes [][2]float64 `json:"graph_times"`
+}
+
+// xaiSpeechTimestampsResponse is the JSON envelope xAI returns instead of raw
+// audio bytes when `with_timestamps` is requested: base64-encoded audio plus
+// character-level timing metadata.
+type xaiSpeechTimestampsResponse struct {
+	Audio           *string                   `json:"audio,omitempty"`
+	ContentType     *string                   `json:"content_type,omitempty"`
+	Duration        *float64                  `json:"duration,omitempty"`
+	AudioTimestamps *xaiSpeechAudioTimestamps `json:"audio_timestamps,omitempty"`
 }
 
 func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGenerateOptions) (*types.SpeechResult, error) {
 	if opts == nil {
 		opts = &provider.SpeechGenerateOptions{}
+	}
+	xaiOpts, err := extractXAISpeechProviderOptions(opts.ProviderOptions)
+	if err != nil {
+		return nil, err
 	}
 	body, warnings, err := m.buildRequestBody(opts)
 	if err != nil {
@@ -52,8 +78,14 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	if err != nil {
 		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 	}
+	// xAI returns a trace id on every response, success and error.
+	traceID := resp.Headers.Get("x-trace-id")
 	if resp.StatusCode >= 400 {
-		return nil, newXAIProviderError(m.Provider(), resp.StatusCode, resp.Body)
+		message := parseXAIErrorMessage(resp.Body)
+		if traceID != "" {
+			message = fmt.Sprintf("%s (trace: %s)", message, traceID)
+		}
+		return nil, providererrors.NewProviderError(m.Provider(), resp.StatusCode, "", message, nil)
 	}
 
 	requestBytes, err := json.Marshal(body)
@@ -61,9 +93,60 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		return nil, fmt.Errorf("failed to marshal xAI speech request metadata: %w", err)
 	}
 
+	// With `with_timestamps` the API returns a JSON envelope carrying
+	// base64-encoded audio plus character-level timings instead of raw audio
+	// bytes.
+	withTimestamps := xaiOpts.WithTimestamps != nil && *xaiOpts.WithTimestamps
+	audio := resp.Body
+	var envelope *xaiSpeechTimestampsResponse
+	if withTimestamps {
+		var parsed xaiSpeechTimestampsResponse
+		if err := json.Unmarshal(resp.Body, &parsed); err != nil {
+			return nil, providererrors.NewProviderError(m.Provider(), 0, "",
+				fmt.Sprintf("failed to decode speech timestamps envelope: %v", err), err)
+		}
+		envelope = &parsed
+		if envelope.Audio != nil && *envelope.Audio != "" {
+			decoded, decErr := base64.StdEncoding.DecodeString(*envelope.Audio)
+			if decErr != nil {
+				return nil, providererrors.NewProviderError(m.Provider(), 0, "",
+					fmt.Sprintf("failed to decode base64 audio: %v", decErr), decErr)
+			}
+			audio = decoded
+		} else {
+			// Empty audio is returned as-is so the core layer can surface
+			// NoSpeechGeneratedError the same way the TS SDK does.
+			audio = []byte{}
+		}
+	}
+
+	xaiMetadata := map[string]interface{}{}
+	if traceID != "" {
+		xaiMetadata["traceId"] = traceID
+	}
+	if envelope != nil {
+		if envelope.Duration != nil {
+			xaiMetadata["duration"] = *envelope.Duration
+		}
+		if envelope.ContentType != nil {
+			xaiMetadata["contentType"] = *envelope.ContentType
+		}
+		if envelope.AudioTimestamps != nil {
+			xaiMetadata["audioTimestamps"] = map[string]interface{}{
+				"graphChars": envelope.AudioTimestamps.GraphChars,
+				"graphTimes": envelope.AudioTimestamps.GraphTimes,
+			}
+		}
+	}
+	var providerMetadata map[string]interface{}
+	if len(xaiMetadata) > 0 {
+		providerMetadata = map[string]interface{}{"xai": xaiMetadata}
+	}
+
 	return &types.SpeechResult{
-		Audio:    resp.Body,
-		Warnings: warnings,
+		Audio:            audio,
+		Warnings:         warnings,
+		ProviderMetadata: providerMetadata,
 		Request: &types.StepRequest{
 			Body: string(requestBytes),
 		},
@@ -144,6 +227,12 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 	}
 	if xaiOpts.TextNormalization != nil {
 		body["text_normalization"] = *xaiOpts.TextNormalization
+	}
+	if xaiOpts.WithTimestamps != nil {
+		body["with_timestamps"] = *xaiOpts.WithTimestamps
+	}
+	if len(xaiOpts.Replace) > 0 {
+		body["replace"] = xaiOpts.Replace
 	}
 	return body, warnings, nil
 }

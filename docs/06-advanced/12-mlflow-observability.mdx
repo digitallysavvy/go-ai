@@ -75,13 +75,17 @@ func main() {
     })
     model, _ := provider.LanguageModel("gpt-4")
 
-    // Configure telemetry with MLflow tracer
+    // Send spans to MLflow: register an integration built with the MLflow tracer
+    telemetry.RegisterTelemetryIntegration(
+        telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tracker.Tracer()}),
+    )
+
+    // Configure telemetry
     telemetrySettings := &telemetry.Options{
-        IsEnabled: telemetry.Bool(true),
+        IsEnabled:     telemetry.Bool(true),
         RecordInputs:  true,
         RecordOutputs: true,
         FunctionID:    "text-generation",
-        Tracer:        tracker.Tracer(),
     }
 
     // Generate text with telemetry
@@ -198,10 +202,9 @@ telemetrySettings := &telemetry.Options{
 
     // Explicit context inclusion for telemetry
     IncludeRuntimeContext: map[string]bool{"request_id": true},
-
-    // MLflow tracer
-    Tracer: tracker.Tracer(),
 }
+// The MLflow tracer is configured on the registered integration
+// (telemetry.NewLegacyOpenTelemetry), not on telemetry.Options.
 ```
 
 ### Privacy and Security
@@ -214,7 +217,6 @@ telemetrySettings := &telemetry.Options{
     IsEnabled: telemetry.Bool(true),
     RecordInputs:  false, // Don't log user prompts
     RecordOutputs: false, // Don't log responses
-    Tracer:        tracker.Tracer(),
 }
 // Token usage and latency still tracked
 ```
@@ -445,5 +447,5 @@ result, _ := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
 - [MLflow Official Documentation](https://mlflow.org/docs/latest/)
 - [MLflow Tracing Guide](https://mlflow.org/docs/latest/genai/tracing)
 - [OpenTelemetry Go SDK](https://opentelemetry.io/docs/instrumentation/go/)
-- [Telemetry Package Reference](../07-reference/telemetry/)
-- [Example: observability-mlflow](../../examples/observability-mlflow/)
+- [Telemetry Package Reference](../03-ai-sdk-core/60-telemetry.mdx)
+- [Example: observability-mlflow](https://github.com/digitallysavvy/go-ai/tree/main/examples/observability-mlflow)

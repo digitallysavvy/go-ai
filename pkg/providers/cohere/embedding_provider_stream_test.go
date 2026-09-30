@@ -120,7 +120,7 @@ data: [DONE]
 	if lm.SpecificationVersion() != "v3" || lm.Provider() != "cohere" || lm.ModelID() != "command-r-plus" {
 		t.Fatalf("metadata mismatch")
 	}
-	if !lm.SupportsTools() || lm.SupportsStructuredOutput() || !lm.SupportsImageInput() {
+	if !lm.SupportsTools() || !lm.SupportsStructuredOutput() || !lm.SupportsImageInput() {
 		t.Fatalf("capability mismatch")
 	}
 	stream, err := lm.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})

@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -29,14 +28,6 @@ func TestXAIProvider_WrappersAndDefaults(t *testing.T) {
 	}
 	if lm.ModelID() != "grok-beta" {
 		t.Fatalf("default responses model ID = %q, want grok-beta", lm.ModelID())
-	}
-
-	legacyLM, err := p.ChatCompletionsLanguageModel("")
-	if err != nil {
-		t.Fatalf("ChatCompletionsLanguageModel() error = %v", err)
-	}
-	if legacyLM.ModelID() != "grok-beta" {
-		t.Fatalf("default chat-completions model ID = %q, want grok-beta", legacyLM.ModelID())
 	}
 
 	img, err := p.ImageModel("")
@@ -151,25 +142,6 @@ func TestXAIModelMetadataAndErrorHelpers(t *testing.T) {
 	t.Parallel()
 
 	p := New(Config{APIKey: "test-key"})
-	lm := NewLanguageModel(p, "grok-3")
-	if lm.SpecificationVersion() != "v3" {
-		t.Fatalf("language spec = %q", lm.SpecificationVersion())
-	}
-	if lm.Provider() != "xai" {
-		t.Fatalf("language provider = %q", lm.Provider())
-	}
-	if lm.ModelID() != "grok-3" {
-		t.Fatalf("language model ID = %q", lm.ModelID())
-	}
-	if !lm.SupportsTools() || !lm.SupportsStructuredOutput() || lm.SupportsImageInput() {
-		t.Fatal("language model capabilities mismatch")
-	}
-	lerr := lm.handleError(errors.New("chat fail"))
-	var lpErr *providererrors.ProviderError
-	if !errors.As(lerr, &lpErr) || lpErr.Provider != "xai" {
-		t.Fatalf("language handleError mismatch: %v", lerr)
-	}
-
 	im := NewImageModel(p, ModelGrokImagineImage)
 	if im.SpecificationVersion() != "v4" {
 		t.Fatalf("image spec = %q", im.SpecificationVersion())
@@ -216,24 +188,11 @@ func TestXAIResponsesToolNameResolutionHelpers(t *testing.T) {
 	}
 }
 
-func TestXAIStreamHelpersAndLastAssistantText(t *testing.T) {
+func TestXAIResponsesStreamHelpers(t *testing.T) {
 	t.Parallel()
 
-	// newXAIStream + Next/Err/Close coverage with immediate done stream.
-	stream := newXAIStream(io.NopCloser(strings.NewReader("data: [DONE]\n\n")), "")
-	_, err := stream.Next()
-	if !errors.Is(err, io.EOF) {
-		t.Fatalf("newXAIStream Next() err = %v, want EOF", err)
-	}
-	if stream.Err() != nil {
-		t.Fatalf("xaiStream.Err() = %v, want nil after EOF", stream.Err())
-	}
-	if err := stream.Close(); err != nil {
-		t.Fatalf("xaiStream.Close() error = %v", err)
-	}
-
 	respStream := newXAIResponsesStream(io.NopCloser(strings.NewReader("data: [DONE]\n\n")))
-	_, err = respStream.Next()
+	_, err := respStream.Next()
 	if !errors.Is(err, io.EOF) {
 		t.Fatalf("xaiResponsesStream Next() err = %v, want EOF", err)
 	}
@@ -242,21 +201,6 @@ func TestXAIStreamHelpersAndLastAssistantText(t *testing.T) {
 	}
 	if err := respStream.Close(); err != nil {
 		t.Fatalf("xaiResponsesStream.Close() error = %v", err)
-	}
-
-	// lastAssistantText branch coverage.
-	if got := lastAssistantText(&provider.GenerateOptions{Prompt: types.Prompt{Text: "simple"}}); got != "" {
-		t.Fatalf("lastAssistantText(simple prompt) = %q, want empty", got)
-	}
-	if got := lastAssistantText(&provider.GenerateOptions{Prompt: types.Prompt{Messages: []types.Message{
-		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "u"}}},
-	}}}); got != "" {
-		t.Fatalf("lastAssistantText(last user) = %q, want empty", got)
-	}
-	if got := lastAssistantText(&provider.GenerateOptions{Prompt: types.Prompt{Messages: []types.Message{
-		{Role: types.RoleAssistant, Content: []types.ContentPart{types.TextContent{Text: "assistant text"}}},
-	}}}); got != "assistant text" {
-		t.Fatalf("lastAssistantText(assistant) = %q", got)
 	}
 
 	rm := NewResponsesLanguageModel(New(Config{APIKey: "k"}), "grok-3")

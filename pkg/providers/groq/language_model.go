@@ -3,6 +3,7 @@ package groq
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -74,9 +75,15 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	result := m.convertResponse(response)
+	result, err := m.convertResponse(response)
+	if err != nil {
+		return nil, err
+	}
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	responseMetadata := providerutils.BuildResponseMetadata(response.ID, response.Model, response.Created)
+	responseMetadata.Headers = result.ResponseHeaders
+	result.ResponseMetadata = responseMetadata
 	return result, nil
 }
 
@@ -95,6 +102,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		return nil, m.handleError(err)
 	}
 	inner := newGroqStream(httpResp.Body, opts.IncludeRawChunks)
+	inner.requestBody = reqBody
 	inner.responseHeaders = providerutils.ExtractHeaders(httpResp.Header)
 	return streaming.NewWarningsStream(inner, warnings), nil
 }
@@ -109,10 +117,15 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		"model":  m.modelID,
 		"stream": stream,
 	}
+	// AssistantToolCallContentMode: Text -- Groq's own TS converter
+	// (convert-to-groq-chat-messages.ts) always sets `content: text`
+	// unconditionally, never null, even when tool calls are present and no
+	// text was generated.
+	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{AssistantToolCallContentMode: prompt.AssistantToolCallContentText}
 	if opts.Prompt.IsMessages() {
-		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages)
+		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, toOpenAIMessagesOpts)
 	} else if opts.Prompt.IsSimple() {
-		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text))
+		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text), toOpenAIMessagesOpts)
 	}
 	if opts.Prompt.System != "" {
 		messages := body["messages"].([]map[string]interface{})
@@ -143,44 +156,72 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(opts.ToolChoice)
 		}
 	}
-	if opts.ResponseFormat != nil {
-		body["response_format"] = map[string]interface{}{
-			"type": opts.ResponseFormat.Type,
-		}
-	}
-	// Map top-level Reasoning to Groq reasoning_effort.
-	// none and provider-default → omit (Groq does not accept "disabled" for none).
+	compatibleOptions, warnings := providerutils.ResolveOpenAICompatibleProviderOptions("groq", opts.ProviderOptions)
+	warnings = append(warnings, providerutils.OpenAICompatibleCommonOptionWarnings(compatibleOptions)...)
+	// Map top-level Reasoning to Groq reasoning_effort. An explicit
+	// providerOptions.groq.reasoningEffort always wins (applied below via
+	// ApplyOpenAICompatibleCommonRequestOptions, which runs after this).
+	// provider-default → omit. none → "none" for qwen/qwen3.6-27b (the only
+	// model that accepts it), else an "unsupported" warning (Groq otherwise
+	// has no way to disable reasoning on a reasoning model).
 	// minimal/low → "low", medium → "medium", high/xhigh → "high".
-	if opts.Reasoning != nil {
+	if _, hasExplicitReasoningEffort := providerutils.OpenAICompatibleStringOption(compatibleOptions, "reasoningEffort", "reasoning_effort", "reasoning-effort"); !hasExplicitReasoningEffort && opts.Reasoning != nil {
 		switch *opts.Reasoning {
+		case types.ReasoningNone:
+			if m.modelID == "qwen/qwen3.6-27b" {
+				body["reasoning_effort"] = "none"
+			} else {
+				warnings = append(warnings, types.Warning{
+					Type:    "unsupported",
+					Feature: "reasoning",
+					Details: `reasoning "none" is not supported by this model.`,
+				})
+			}
 		case types.ReasoningMinimal, types.ReasoningLow:
 			body["reasoning_effort"] = "low"
 		case types.ReasoningMedium:
 			body["reasoning_effort"] = "medium"
 		case types.ReasoningHigh, types.ReasoningXHigh:
 			body["reasoning_effort"] = "high"
-			// ReasoningNone and ReasoningDefault: omit
+			// ReasoningDefault: omit
 		}
 	}
-	compatibleOptions, warnings := providerutils.ResolveOpenAICompatibleProviderOptions("groq", opts.ProviderOptions)
-	warnings = append(warnings, providerutils.OpenAICompatibleCommonOptionWarnings(compatibleOptions)...)
+	// Response format (TS groq-chat-language-model.ts): structuredOutputs and
+	// strictJsonSchema both default to true; a dropped schema is warned about.
+	responseFormat, formatWarnings := providerutils.ChatResponseFormat(opts.ResponseFormat, providerutils.ChatResponseFormatOptions{
+		StructuredOutputs:         providerutils.BoolOption(compatibleOptions, "structuredOutputs", true),
+		StrictJSONSchema:          providerutils.BoolOption(compatibleOptions, "strictJsonSchema", true),
+		WarnWhenSchemaUnsupported: true,
+	})
+	if responseFormat != nil {
+		body["response_format"] = responseFormat
+	}
+	warnings = append(warnings, formatWarnings...)
 	providerutils.ApplyOpenAICompatibleCommonRequestOptions(body, compatibleOptions)
+	// Groq performance service tier: on_demand/flex/auto/performance.
+	if serviceTier, ok := providerutils.OpenAICompatibleStringOption(compatibleOptions, "serviceTier", "service_tier", "service-tier"); ok {
+		body["service_tier"] = serviceTier
+	}
+	if parallelToolCalls, ok := providerutils.OpenAICompatibleBoolOption(compatibleOptions, "parallelToolCalls", "parallel_tool_calls", "parallel-tool-calls"); ok {
+		body["parallel_tool_calls"] = parallelToolCalls
+	}
+	if reasoningFormat, ok := providerutils.OpenAICompatibleStringOption(compatibleOptions, "reasoningFormat", "reasoning_format", "reasoning-format"); ok {
+		body["reasoning_format"] = reasoningFormat
+	}
 	return body, warnings
 }
 
-func (m *LanguageModel) convertResponse(response groqResponse) *types.GenerateResult {
+func (m *LanguageModel) convertResponse(response groqResponse) (*types.GenerateResult, error) {
 	if len(response.Choices) == 0 {
-		return &types.GenerateResult{
-			Text:         "",
-			FinishReason: types.FinishReasonOther,
-		}
+		return nil, providererrors.NewInvalidResponseDataError(response, "Response did not contain any choices.")
 	}
 	choice := response.Choices[0]
 	result := &types.GenerateResult{
-		Text:         choice.Message.Content,
-		FinishReason: providerutils.MapOpenAIFinishReason(choice.FinishReason),
-		Usage:        convertGroqUsage(response.Usage),
-		RawResponse:  response,
+		Text:            choice.Message.Content,
+		FinishReason:    providerutils.MapOpenAIFinishReason(choice.FinishReason),
+		RawFinishReason: choice.FinishReason,
+		Usage:           convertGroqUsage(response.Usage),
+		RawResponse:     response,
 	}
 	if choice.Message.Reasoning != "" {
 		result.Content = append(result.Content, types.ReasoningContent{Text: choice.Message.Reasoning})
@@ -192,14 +233,21 @@ func (m *LanguageModel) convertResponse(response groqResponse) *types.GenerateRe
 			if tc.Function.Arguments != "" {
 				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args) //nolint:errcheck
 			}
+			id := tc.ID
+			if id == "" {
+				// e6087c9/f807e45: some Groq-compatible endpoints omit tool
+				// call IDs on non-streaming responses; generate one rather
+				// than sending an empty tool_call_id back on the next turn.
+				id = streaming.GenerateID()
+			}
 			result.ToolCalls[i] = types.ToolCall{
-				ID:        tc.ID,
+				ID:        id,
 				ToolName:  tc.Function.Name,
 				Arguments: args,
 			}
 		}
 	}
-	return result
+	return result, nil
 }
 
 func convertGroqUsage(usage groqUsage) types.Usage {
@@ -252,9 +300,14 @@ func convertGroqUsage(usage groqUsage) types.Usage {
 		}
 	}
 
-	// Set output details
+	// Set output details. 2214258: clamp to zero -- some providers report
+	// reasoning tokens that exceed the completion token count (TS
+	// convertGroqUsage: Math.max(0, completionTokens - reasoningTokens)).
 	if reasoningTokens > 0 {
 		textOutputTokens := completionTokens - reasoningTokens
+		if textOutputTokens < 0 {
+			textOutputTokens = 0
+		}
 		result.OutputDetails = &types.OutputTokenDetails{
 			TextTokens:      &textOutputTokens,
 			ReasoningTokens: &reasoningTokens,
@@ -283,7 +336,15 @@ func convertGroqUsage(usage groqUsage) types.Usage {
 }
 
 func (m *LanguageModel) handleError(err error) error {
-	return providererrors.NewProviderError("groq", 0, "", err.Error(), err)
+	if parsed := parseGroqProviderError(err); parsed != nil {
+		return parsed
+	}
+	statusCode := 0
+	var statusErr *internalhttp.HTTPStatusError
+	if errors.As(err, &statusErr) {
+		statusCode = statusErr.StatusCode
+	}
+	return providererrors.NewProviderError("groq", statusCode, "", err.Error(), err)
 }
 
 type groqResponse struct {
@@ -373,7 +434,15 @@ type groqStream struct {
 	includeRawChunks  bool
 	responseHeaders   map[string]string
 	metadataEmitted   bool
+	// requestBody is the raw request body this stream was opened with,
+	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
+	// "stream request body field").
+	requestBody interface{}
 }
+
+// RequestBody implements provider.StreamRequestBody, exposing the raw
+// request body that was sent to open this stream.
+func (s *groqStream) RequestBody() interface{} { return s.requestBody }
 
 func newGroqStream(reader io.ReadCloser, includeRawChunks ...bool) *groqStream {
 	emitRaw := len(includeRawChunks) > 0 && includeRawChunks[0]
@@ -441,6 +510,10 @@ func (s *groqStream) Next() (*provider.StreamChunk, error) {
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeError,
 			Text: groqStreamErrorText(chunkData.Error),
+			// P1-1c part 2: attach the structured StreamProviderError (TS
+			// createGroqStreamError) so streamRetries/IsRetryable see the
+			// real type/statusCode/isRetryable instead of generic inference.
+			Err: newGroqStreamProviderErrorChunk(chunkData.Error, json.RawMessage(event.Data)),
 		})
 	}
 	if !s.metadataEmitted && (chunkData.ID != "" || chunkData.Model != "" || chunkData.Created != 0 || len(s.responseHeaders) > 0) {
@@ -542,8 +615,9 @@ func (s *groqStream) flushGroqToolCalls(finishReason string) {
 		s.flushQueue = append(s.flushQueue, &c)
 	}
 	finishChunk := &provider.StreamChunk{
-		Type:         provider.ChunkTypeFinish,
-		FinishReason: providerutils.MapOpenAIFinishReason(finishReason),
+		Type:            provider.ChunkTypeFinish,
+		FinishReason:    providerutils.MapOpenAIFinishReason(finishReason),
+		RawFinishReason: finishReason,
 	}
 	if s.pendingUsage != nil {
 		u := convertGroqUsage(*s.pendingUsage)

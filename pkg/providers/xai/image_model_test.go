@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -725,6 +726,56 @@ func TestXAIImageRespectsCallContextWhenAbortSignalIsSet(t *testing.T) {
 	}
 	if providerErr.Provider != "xai.image" {
 		t.Fatalf("Provider = %q, want xai.image", providerErr.Provider)
+	}
+}
+
+// TestXAIImageRespectModerationBlocked verifies that a response where any
+// image is flagged with respect_moderation: false surfaces a content-policy
+// error, matching the TS SDK's xai-image-model.ts behavior.
+func TestXAIImageRespectModerationBlocked(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"url":"https://example.com/img.png","respect_moderation":false}]}`))
+	}))
+	defer server.Close()
+
+	prov := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewImageModel(prov, ModelGrokImagineImage)
+
+	opts := &provider.ImageGenerateOptions{Prompt: "a violent scene"}
+
+	result, err := model.DoGenerate(context.Background(), opts)
+	if err == nil {
+		t.Fatal("expected an error for a moderation-blocked image, got nil")
+	}
+	if result != nil {
+		t.Errorf("expected nil result, got: %+v", result)
+	}
+	if !strings.Contains(err.Error(), "content policy violation") {
+		t.Errorf("error = %q, want to contain %q", err.Error(), "content policy violation")
+	}
+}
+
+// TestXAIImageRespectModerationAllowed verifies that a response where
+// respect_moderation is true (or absent) is not treated as blocked.
+func TestXAIImageRespectModerationAllowed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"b64_json":"aGVsbG8=","respect_moderation":true}]}`))
+	}))
+	defer server.Close()
+
+	prov := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewImageModel(prov, ModelGrokImagineImage)
+
+	opts := &provider.ImageGenerateOptions{Prompt: "a cat"}
+
+	result, err := model.DoGenerate(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil || len(result.Image) == 0 {
+		t.Error("expected non-empty image bytes")
 	}
 }
 

@@ -234,7 +234,11 @@ func TestVertexProvider_ModelFactoriesAndUnsupportedMethods(t *testing.T) {
 	if _, err := p.VideoModel(""); err == nil {
 		t.Fatal("VideoModel(\"\") expected validation error")
 	}
-	if _, err := p.VideoModel("veo-3.0-generate-preview"); err == nil {
-		t.Fatal("VideoModel expected not implemented error")
+	video, err := p.VideoModel("veo-3.0-generate-preview")
+	if err != nil {
+		t.Fatalf("VideoModel() error = %v", err)
+	}
+	if video.Provider() != "google-vertex" || video.ModelID() != "veo-3.0-generate-preview" {
+		t.Fatalf("VideoModel metadata = %s/%s", video.Provider(), video.ModelID())
 	}
 }

@@ -5,9 +5,15 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/digitallysavvy/go-ai/pkg/middleware"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
+
+// defaultSeparator is the default provider:model separator, matching
+// TypeScript's createProviderRegistry default of ':'.
+const defaultSeparator = ":"
 
 // NoSuchProviderError mirrors the TypeScript AI SDK registry error. It is
 // returned when a provider ID cannot be resolved, or when a provider does not
@@ -36,15 +42,70 @@ type Registry struct {
 	providers map[string]provider.Provider
 	aliases   map[string]string // model alias -> provider:model
 	tools     map[string]ToolEntry
+
+	// separator is used between provider ID and model ID in a combined
+	// "providerId<sep>modelId" identifier. Defaults to ":", matching
+	// TypeScript's createProviderRegistry options.separator.
+	separator string
+
+	// languageModelMiddleware/imageModelMiddleware, when non-empty, are
+	// applied (via middleware.WrapLanguageModel/WrapImageModel) to every
+	// model resolved through this registry. Matches TypeScript's
+	// createProviderRegistry options.languageModelMiddleware /
+	// options.imageModelMiddleware.
+	languageModelMiddleware []*middleware.LanguageModelMiddleware
+	imageModelMiddleware    []*middleware.ImageModelMiddleware
 }
 
-// NewRegistry creates a new registry
-func NewRegistry() *Registry {
-	return &Registry{
+// RegistryOption configures a Registry constructed via NewRegistry.
+type RegistryOption func(*Registry)
+
+// WithSeparator sets a custom separator between provider ID and model ID
+// (e.g. "|" to resolve "openai|gpt-5"). Defaults to ":".
+func WithSeparator(separator string) RegistryOption {
+	return func(r *Registry) {
+		r.separator = separator
+	}
+}
+
+// WithLanguageModelMiddleware applies middleware to every language model
+// resolved through the registry. When multiple middlewares are provided, the
+// first middleware transforms the input first, and the last middleware wraps
+// directly around the model (matching middleware.WrapLanguageModel).
+func WithLanguageModelMiddleware(mw ...*middleware.LanguageModelMiddleware) RegistryOption {
+	return func(r *Registry) {
+		r.languageModelMiddleware = mw
+	}
+}
+
+// WithImageModelMiddleware applies middleware to every image model resolved
+// through the registry. When multiple middlewares are provided, the first
+// middleware transforms the input first, and the last middleware wraps
+// directly around the model (matching middleware.WrapImageModel).
+func WithImageModelMiddleware(mw ...*middleware.ImageModelMiddleware) RegistryOption {
+	return func(r *Registry) {
+		r.imageModelMiddleware = mw
+	}
+}
+
+// NewRegistry creates a new registry. By default the provider:model
+// separator is ":" and no middleware is applied; pass RegistryOption values (e.g.
+// WithSeparator, WithLanguageModelMiddleware, WithImageModelMiddleware) to
+// configure it, mirroring TypeScript's createProviderRegistry(providers, options).
+func NewRegistry(opts ...RegistryOption) *Registry {
+	r := &Registry{
 		providers: make(map[string]provider.Provider),
 		aliases:   make(map[string]string),
 		tools:     make(map[string]ToolEntry),
+		separator: defaultSeparator,
 	}
+	for _, opt := range opts {
+		opt(r)
+	}
+	if r.separator == "" {
+		r.separator = defaultSeparator
+	}
+	return r
 }
 
 const (
@@ -102,7 +163,7 @@ func (r *Registry) ResolveLanguageModel(model string) (provider.LanguageModel, e
 	}
 
 	// Parse provider:model format
-	providerName, modelID, err := parseModelString(model)
+	providerName, modelID, err := parseModelString(model, r.separator, "languageModel")
 	if err != nil {
 		return nil, err
 	}
@@ -114,7 +175,18 @@ func (r *Registry) ResolveLanguageModel(model string) (provider.LanguageModel, e
 	}
 
 	// Get model from provider
-	return p.LanguageModel(modelID)
+	lm, err := p.LanguageModel(modelID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Apply any registry-configured language model middleware, matching
+	// TypeScript's createProviderRegistry options.languageModelMiddleware.
+	if len(r.languageModelMiddleware) > 0 {
+		lm = middleware.WrapLanguageModel(lm, r.languageModelMiddleware, nil, nil)
+	}
+
+	return lm, nil
 }
 
 // ResolveEmbeddingModel resolves a model string to an EmbeddingModel
@@ -128,7 +200,7 @@ func (r *Registry) ResolveEmbeddingModel(model string) (provider.EmbeddingModel,
 	}
 
 	// Parse provider:model format
-	providerName, modelID, err := parseModelString(model)
+	providerName, modelID, err := parseModelString(model, r.separator, "embeddingModel")
 	if err != nil {
 		return nil, err
 	}
@@ -148,7 +220,21 @@ func (r *Registry) ResolveImageModel(model string) (provider.ImageModel, error) 
 	if err != nil {
 		return nil, err
 	}
-	return p.ImageModel(modelID)
+	im, err := p.ImageModel(modelID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Apply any registry-configured image model middleware, matching
+	// TypeScript's createProviderRegistry options.imageModelMiddleware.
+	// r.imageModelMiddleware is set only at construction (NewRegistry/
+	// WithImageModelMiddleware) and never mutated afterward, so reading it
+	// here without holding r.mu is safe.
+	if len(r.imageModelMiddleware) > 0 {
+		im = middleware.WrapImageModel(im, r.imageModelMiddleware, nil, nil)
+	}
+
+	return im, nil
 }
 
 func (r *Registry) ResolveSpeechModel(model string) (provider.SpeechModel, error) {
@@ -181,7 +267,7 @@ func (r *Registry) ResolveVideoModel(model string) (provider.VideoModelV3, error
 	if target, ok := r.aliases[model]; ok {
 		model = target
 	}
-	providerName, modelID, err := parseModelString(model)
+	providerName, modelID, err := parseModelString(model, r.separator, "videoModel")
 	if err != nil {
 		return nil, err
 	}
@@ -196,6 +282,32 @@ func (r *Registry) ResolveVideoModel(model string) (provider.VideoModelV3, error
 		return nil, &NoSuchProviderError{ProviderID: providerName, ModelID: modelID, ModelType: "videoModel", AvailableProviders: r.listProvidersLocked()}
 	}
 	return vp.VideoModel(modelID)
+}
+
+// ResolveEvaluationModel resolves a "provider:model" string to an
+// EvaluationModel. Evaluation is experimental and not part of the stable
+// Provider contract: the resolved provider must additionally implement
+// provider.EvaluationModelProvider (mirrors TypeScript's registry
+// `evaluationModel`).
+func (r *Registry) ResolveEvaluationModel(model string) (provider.EvaluationModel, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if target, ok := r.aliases[model]; ok {
+		model = target
+	}
+	providerName, modelID, err := parseModelString(model, r.separator, "evaluationModel")
+	if err != nil {
+		return nil, err
+	}
+	p, ok := r.providers[providerName]
+	if !ok {
+		return nil, &NoSuchProviderError{ProviderID: providerName, ModelID: modelID, ModelType: "evaluationModel", AvailableProviders: r.listProvidersLocked()}
+	}
+	ep, ok := p.(provider.EvaluationModelProvider)
+	if !ok {
+		return nil, &NoSuchProviderError{ProviderID: providerName, ModelID: modelID, ModelType: "evaluationModel", AvailableProviders: r.listProvidersLocked()}
+	}
+	return ep.EvaluationModel(modelID)
 }
 
 func (r *Registry) Files(providerID string) (provider.FilesAPI, error) {
@@ -242,7 +354,7 @@ func (r *Registry) resolveProviderAndModel(model, modelType string) (provider.Pr
 	if target, ok := r.aliases[model]; ok {
 		model = target
 	}
-	providerName, modelID, err := parseModelString(model)
+	providerName, modelID, err := parseModelString(model, r.separator, modelType)
 	if err != nil {
 		return nil, "", err
 	}
@@ -346,20 +458,33 @@ func cloneMap(in map[string]interface{}) map[string]interface{} {
 	return out
 }
 
-// parseModelString parses a model string into provider and model ID
-// Formats supported:
-//   - "provider:model" -> ("provider", "model")
-//   - "model" -> ("", "model") - error if no colon
-func parseModelString(model string) (provider, modelID string, err error) {
-	// Find colon separator
-	for i := 0; i < len(model); i++ {
-		if model[i] == ':' {
-			return model[:i], model[i+1:], nil
+// parseModelString parses a model string into provider and model ID using
+// the given separator (defaults to ":" when empty). Formats supported:
+//   - "provider<sep>model" -> ("provider", "model")
+//   - "model" -> error if the separator is not present
+//
+// When the separator is missing, this returns a *providererrors.NoSuchModelError
+// with the same message shape as TypeScript's DefaultProviderRegistry.splitId:
+// `Invalid ${modelType} id for registry: ${id} (must be in the format
+// "providerId${separator}modelId")` (provider-registry.ts).
+func parseModelString(model, separator, modelType string) (providerID, modelID string, err error) {
+	if separator == "" {
+		separator = defaultSeparator
+	}
+
+	idx := strings.Index(model, separator)
+	if idx == -1 {
+		return "", "", &providererrors.NoSuchModelError{
+			ModelID:   model,
+			ModelType: modelType,
+			Message: fmt.Sprintf(
+				"Invalid %s id for registry: %s (must be in the format \"providerId%smodelId\")",
+				modelType, model, separator,
+			),
 		}
 	}
 
-	// No colon found
-	return "", "", fmt.Errorf("invalid model string format (expected 'provider:model'): %s", model)
+	return model[:idx], model[idx+len(separator):], nil
 }
 
 // Global registry functions
@@ -407,6 +532,12 @@ func ResolveRerankingModel(model string) (provider.RerankingModel, error) {
 
 func ResolveVideoModel(model string) (provider.VideoModelV3, error) {
 	return globalRegistry.ResolveVideoModel(model)
+}
+
+// ResolveEvaluationModel resolves an evaluation model string using the
+// global registry.
+func ResolveEvaluationModel(model string) (provider.EvaluationModel, error) {
+	return globalRegistry.ResolveEvaluationModel(model)
 }
 
 func Files(providerID string) (provider.FilesAPI, error) {

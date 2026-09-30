@@ -12,6 +12,8 @@ import (
 	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 const (
@@ -156,7 +158,11 @@ func executeYouAPI(ctx context.Context, config YouToolsConfig, endpoint endpoint
 	}
 	req.Header.Set("X-API-Key", apiKey)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "Go-AI-SDK You.com")
+	req.Header.Set("User-Agent", providerutils.WithUserAgentSuffix(
+		map[string]string{"user-agent": req.Header.Get("User-Agent")},
+		version.ProviderUserAgent("youcom"),
+		providerutils.RuntimeEnvironmentUserAgent(),
+	)["user-agent"])
 
 	resp, err := client.Do(req)
 	if err != nil {

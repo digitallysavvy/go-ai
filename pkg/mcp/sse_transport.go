@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
-	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // SSETransport implements the legacy MCP SSE transport.
@@ -41,6 +40,13 @@ type SSETransport struct {
 
 	config TransportConfig
 	oauth  *OAuthConfig
+
+	// refreshMu/refreshCh/refreshErr single-flight concurrent OAuth token
+	// refreshes triggered by a 401 response (hash 4b5cb49), mirroring
+	// HTTPTransport.refreshOAuthToken.
+	refreshMu  sync.Mutex
+	refreshCh  chan struct{}
+	refreshErr error
 }
 
 // SSETransportConfig contains configuration for legacy SSE transport.
@@ -212,25 +218,46 @@ func (t *SSETransport) Send(ctx context.Context, message *MCPMessage) error {
 		fmt.Printf("MCP SSE Send: %s\n", string(data))
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(data))
-	if err != nil {
-		return NewTransportError("failed to create request", err)
-	}
-	t.applyHeaders(ctx, req, map[string]string{"Content-Type": "application/json"})
+	// Retry once on a 401, refreshing the OAuth token first (hash 4b5cb49).
+	// Concurrent Send calls share a single in-flight refresh; a 401 that
+	// arrives after another call already refreshed the token (a "stale" 401
+	// for the old token) retries immediately with the now-current token
+	// instead of triggering a second, redundant refresh.
+	var resp *http.Response
+	for attempt := 0; attempt < 2; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(data))
+		if err != nil {
+			return NewTransportError("failed to create request", err)
+		}
+		t.applyHeaders(ctx, req, map[string]string{"Content-Type": "application/json"})
+		sentToken, _, _ := t.oauthTokenSnapshot()
 
-	client := SSEClient(t.client)
-	if t.sseClient != nil {
-		client = t.sseClient
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return NewTransportError("failed to send request", err)
-	}
-	if resp == nil {
-		return NewTransportError("failed to send request", fmt.Errorf("nil HTTP response"))
-	}
-	if resp.Body == nil {
-		resp.Body = io.NopCloser(bytes.NewReader(nil))
+		client := SSEClient(t.client)
+		if t.sseClient != nil {
+			client = t.sseClient
+		}
+		resp, err = client.Do(req)
+		if err != nil {
+			return NewTransportError("failed to send request", err)
+		}
+		if resp == nil {
+			return NewTransportError("failed to send request", fmt.Errorf("nil HTTP response"))
+		}
+		if resp.Body == nil {
+			resp.Body = io.NopCloser(bytes.NewReader(nil))
+		}
+
+		if resp.StatusCode != http.StatusUnauthorized || !t.oauthConfigured() || attempt == 1 {
+			break
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close() //nolint:errcheck
+
+		if currentToken, _, _ := t.oauthTokenSnapshot(); currentToken == "" || currentToken == sentToken {
+			if err := t.refreshOAuthToken(ctx); err != nil {
+				return NewTransportError("failed to refresh OAuth token", err)
+			}
+		}
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
@@ -315,7 +342,7 @@ func (t *SSETransport) applyHeaders(ctx context.Context, req *http.Request, base
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
 	}
-	req.Header.Set("User-Agent", version.UserAgent())
+	setMCPUserAgent(req.Header)
 }
 
 func (t *SSETransport) readSSEStream(body io.ReadCloser, ready chan<- error) {
@@ -406,25 +433,72 @@ func (t *SSETransport) queueReceivedMessages(messages []*MCPMessage) {
 	t.receiveMu.Unlock()
 }
 
+// refreshOAuthToken refreshes the OAuth access token. Concurrent callers
+// (e.g. multiple in-flight Send calls that both hit a 401) are deduplicated
+// into a single underlying refresh (hash 4b5cb49), mirroring
+// HTTPTransport.refreshOAuthToken.
 func (t *SSETransport) refreshOAuthToken(ctx context.Context) error {
-	if t.oauth == nil || t.oauth.RefreshTokenFunc == nil {
-		return fmt.Errorf("LOAuth refresh not yet implemented - please provide access token manually")
+	if t.oauth == nil {
+		return fmt.Errorf("OAuth not configured")
 	}
-	token, expiresIn, err := t.oauth.RefreshTokenFunc(ctx, t.oauth)
+
+	t.refreshMu.Lock()
+	if t.refreshCh != nil {
+		ch := t.refreshCh
+		t.refreshMu.Unlock()
+		select {
+		case <-ch:
+			t.refreshMu.Lock()
+			err := t.refreshErr
+			t.refreshMu.Unlock()
+			return err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	t.refreshCh = make(chan struct{})
+	t.refreshMu.Unlock()
+
+	err := t.doRefreshOAuthToken(ctx)
+
+	t.refreshMu.Lock()
+	t.refreshErr = err
+	close(t.refreshCh)
+	t.refreshCh = nil
+	t.refreshMu.Unlock()
+	return err
+}
+
+func (t *SSETransport) doRefreshOAuthToken(ctx context.Context) error {
+	t.mu.Lock()
+	oauth := t.oauth
+	t.mu.Unlock()
+	if oauth == nil || oauth.RefreshTokenFunc == nil {
+		return fmt.Errorf("OAuth refresh not yet implemented - please provide access token manually")
+	}
+	token, expiresIn, err := oauth.RefreshTokenFunc(ctx, oauth)
 	if err != nil {
 		return err
 	}
 	if token == "" {
-		return fmt.Errorf("LOAuth refresh returned empty access token")
+		return fmt.Errorf("OAuth refresh returned empty access token")
 	}
 	if expiresIn <= 0 {
 		expiresIn = time.Hour
 	}
 	t.mu.Lock()
-	t.oauth.AccessToken = token
-	t.oauth.ExpiresAt = time.Now().Add(expiresIn)
+	if t.oauth != nil {
+		t.oauth.AccessToken = token
+		t.oauth.ExpiresAt = time.Now().Add(expiresIn)
+	}
 	t.mu.Unlock()
 	return nil
+}
+
+func (t *SSETransport) oauthConfigured() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.oauth != nil
 }
 
 func (t *SSETransport) oauthTokenSnapshot() (token string, expired bool, ok bool) {

@@ -472,11 +472,11 @@ result2, _ := mainAgent.DelegateToSubagent(ctx, "research", prompt2)
 ## See Also
 
 - [Agent Skills](./agent-skills.md) - Reusable agent behaviors
-- [Tool Loop Agent](./tool-loop-agent.md) - Core agent implementation
-- [Agent Configuration](./agent-configuration.md) - Configuring agents
+- [Tool Loop Agent](../07-reference/ai/tool-loop-agent.mdx) - Core agent implementation
+- [Agent Configuration](./05-configuring-call-options.mdx) - Configuring agents
 
 ## Examples
 
 See these examples for complete working code:
-- [agent-subagents example](../../examples/agent-subagents/) - Basic subagent usage
-- [agent-skills-subagents example](../../examples/agent-skills-subagents/) - Skills and subagents together
+- [agent-subagents example](https://github.com/digitallysavvy/go-ai/tree/main/examples/agent-subagents) - Basic subagent usage
+- [agent-skills-subagents example](https://github.com/digitallysavvy/go-ai/tree/main/examples/agent-skills-subagents) - Skills and subagents together

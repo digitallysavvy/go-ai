@@ -47,6 +47,73 @@ func TestMCPToolConverterPropagatesMcpProviderMetadata(t *testing.T) {
 	}
 }
 
+// TestMCPToolConverterSurfacesAnnotations mirrors TS toolsFromDefinitions
+// annotation handling (mcp-client.ts, hash 33ba8fd): all five known hints are
+// mapped, unknown keys are dropped, and an absent annotations object yields
+// no "annotations" key at all.
+func TestMCPToolConverterSurfacesAnnotations(t *testing.T) {
+	client := NewMCPClient(newMockTransport(), MCPClientConfig{})
+	converter := NewMCPToolConverter(client)
+
+	t.Run("all five hints mapped, unknown keys dropped", func(t *testing.T) {
+		tool, err := converter.convertTool(MCPTool{
+			Name:        "delete_file",
+			InputSchema: map[string]interface{}{"type": "object"},
+			Annotations: map[string]interface{}{
+				"title":           "Delete File",
+				"readOnlyHint":    false,
+				"destructiveHint": true,
+				"idempotentHint":  true,
+				"openWorldHint":   false,
+				"unknownHint":     "should be dropped",
+			},
+		}, nil)
+		if err != nil {
+			t.Fatalf("convertTool error: %v", err)
+		}
+		mcpMeta, ok := tool.ProviderMetadata["mcp"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("missing mcp provider metadata: %#v", tool.ProviderMetadata)
+		}
+		annotations, ok := mcpMeta["annotations"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("missing annotations in mcp metadata: %#v", mcpMeta)
+		}
+		want := map[string]interface{}{
+			"title":           "Delete File",
+			"readOnlyHint":    false,
+			"destructiveHint": true,
+			"idempotentHint":  true,
+			"openWorldHint":   false,
+		}
+		if len(annotations) != len(want) {
+			t.Fatalf("annotations = %#v, want %#v", annotations, want)
+		}
+		for k, v := range want {
+			if annotations[k] != v {
+				t.Fatalf("annotations[%q] = %#v, want %#v", k, annotations[k], v)
+			}
+		}
+		if _, ok := annotations["unknownHint"]; ok {
+			t.Fatalf("unknown annotation key must be dropped: %#v", annotations)
+		}
+	})
+
+	t.Run("absent annotations yield no key", func(t *testing.T) {
+		tool, err := converter.convertTool(MCPTool{
+			Name:        "read_file",
+			InputSchema: map[string]interface{}{"type": "object"},
+		}, nil)
+		if err != nil {
+			t.Fatalf("convertTool error: %v", err)
+		}
+		mcpMeta := tool.ProviderMetadata["mcp"].(map[string]interface{})
+		if _, ok := mcpMeta["annotations"]; ok {
+			t.Fatalf("annotations key must be absent: %#v", mcpMeta)
+		}
+	})
+}
+
 func TestMCPToolConverterTitleUsesTSNullishSemantics(t *testing.T) {
 	client := NewMCPClient(newMockTransport(), MCPClientConfig{})
 	converter := NewMCPToolConverter(client)
@@ -302,6 +369,58 @@ func TestMCPToolConverterSchemasFilterAndValidateOutput(t *testing.T) {
 	if got["temperature"] != 22.5 || got["conditions"] != "Sunny" {
 		t.Fatalf("structured output = %#v", result)
 	}
+}
+
+// TestMCPToolConverterOutputSchemaAppliesDefaultsBeforeValidating covers SC2
+// item 2: TS's mcp-client.ts extractStructuredContent validates through
+// safeValidateTypes/safeParseJSON (a zod/standard-schema parse), which fills
+// .default() values as part of parsing itself, so a required field missing
+// from a tool's result but declared with a schema default must not fail
+// validation -- and the value the caller receives must be the defaulted
+// one, not the raw one.
+func TestMCPToolConverterOutputSchemaAppliesDefaultsBeforeValidating(t *testing.T) {
+	outputSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+		"type":     "object",
+		"required": []interface{}{"temperature", "unit"},
+		"properties": map[string]interface{}{
+			"temperature": map[string]interface{}{"type": "number"},
+			"unit":        map[string]interface{}{"type": "string", "default": "celsius"},
+		},
+	})
+
+	t.Run("structuredContent missing a defaulted required field", func(t *testing.T) {
+		result, err := extractMCPStructuredOutput(CallToolResult{
+			StructuredContent: map[string]interface{}{"temperature": 22.5},
+		}, outputSchema, "weather-tool")
+		if err != nil {
+			t.Fatalf("extract structured content error: %v", err)
+		}
+		got, ok := result.(map[string]interface{})
+		if !ok || got["unit"] != "celsius" || got["temperature"] != 22.5 {
+			t.Fatalf("structured output = %#v, want defaulted unit=celsius", result)
+		}
+	})
+
+	t.Run("text content missing a defaulted required field", func(t *testing.T) {
+		result, err := extractMCPStructuredOutput(CallToolResult{
+			Content: []ToolResultContent{{Type: "text", Text: `{"temperature": 18}`}},
+		}, outputSchema, "weather-tool")
+		if err != nil {
+			t.Fatalf("extract structured content error: %v", err)
+		}
+		got, ok := result.(map[string]interface{})
+		if !ok || got["unit"] != "celsius" || got["temperature"] != float64(18) {
+			t.Fatalf("structured output = %#v, want defaulted unit=celsius", result)
+		}
+	})
+
+	t.Run("a field with no default is still required", func(t *testing.T) {
+		if _, err := extractMCPStructuredOutput(CallToolResult{
+			StructuredContent: map[string]interface{}{"unit": "fahrenheit"},
+		}, outputSchema, "weather-tool"); err == nil {
+			t.Fatal("expected an error for a missing field with no schema default")
+		}
+	})
 }
 
 func TestMCPToolConverterOutputSchemaParsesTextAndBypassesErrors(t *testing.T) {

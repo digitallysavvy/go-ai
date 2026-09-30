@@ -300,5 +300,5 @@ if err != nil {
 ## See Also
 
 - [Security Advisory: Unbounded Download DoS](../security/ADVISORY-Download-DoS.md)
-- [Error Handling Guide](error-handling.md)
-- [API Reference: CreateDownload](../reference/api.md#createdownload)
+- [Error Handling Guide](../03-ai-sdk-core/50-error-handling.mdx)
+- [API Reference: CreateDownload](../reference/download-api.md#createdownload)

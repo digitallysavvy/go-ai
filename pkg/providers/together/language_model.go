@@ -51,9 +51,10 @@ func (m *LanguageModel) SupportsTools() bool {
 	return true
 }
 
-// SupportsStructuredOutput returns whether the model supports structured output
+// SupportsStructuredOutput returns whether the model supports json_schema
+// structured outputs (TS supportsStructuredOutputs for Together AI).
 func (m *LanguageModel) SupportsStructuredOutput() bool {
-	return true
+	return SupportsStructuredOutputs(m.modelID)
 }
 
 // SupportsImageInput returns whether the model accepts image inputs
@@ -94,6 +95,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		return nil, m.handleError(err)
 	}
 	inner := newTogetherStream(httpResp.Body)
+	inner.SetRequestBody(reqBody)
 	inner.IncludeRawChunks = opts.IncludeRawChunks
 	inner.responseHeaders = providerutils.ExtractHeaders(httpResp.Header)
 	return streaming.NewWarningsStream(inner, warnings), nil
@@ -110,11 +112,18 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	}
 	if stream {
 		body["stream"] = true
+		// Without stream_options.include_usage, streaming responses report no
+		// token usage at all.
+		body["stream_options"] = map[string]interface{}{"include_usage": true}
 	}
+	// AllowVideo: true -- Together wraps @ai-sdk/openai-compatible's
+	// OpenAICompatibleChatLanguageModel in TS, which supports video_url
+	// content parts (7dd9ec320c).
+	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{AllowVideo: true}
 	if opts.Prompt.IsMessages() {
-		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages)
+		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, toOpenAIMessagesOpts)
 	} else if opts.Prompt.IsSimple() {
-		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text))
+		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text), toOpenAIMessagesOpts)
 	}
 	if opts.Prompt.System != "" {
 		messages := body["messages"].([]map[string]interface{})
@@ -142,13 +151,22 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(opts.ToolChoice)
 		}
 	}
-	if opts.ResponseFormat != nil {
-		body["response_format"] = map[string]interface{}{
-			"type": opts.ResponseFormat.Type,
-		}
-	}
 	compatibleOptions, warnings := providerutils.ResolveOpenAICompatibleProviderOptions("together", opts.ProviderOptions)
+	mergeTogetherAIProviderOptions(compatibleOptions, opts.ProviderOptions)
 	warnings = append(warnings, providerutils.OpenAICompatibleCommonOptionWarnings(compatibleOptions)...)
+	// Response format (TS openai-compatible chat model with
+	// supportsStructuredOutputs = getModelStructuredOutputSupport(modelId)):
+	// only structured-output models get json_schema; others fall back to
+	// json_object with a warning when a schema was supplied.
+	responseFormat, formatWarnings := providerutils.ChatResponseFormat(opts.ResponseFormat, providerutils.ChatResponseFormatOptions{
+		StructuredOutputs:         SupportsStructuredOutputs(m.modelID),
+		StrictJSONSchema:          togetherStrictJSONSchema(opts.ProviderOptions, compatibleOptions),
+		WarnWhenSchemaUnsupported: true,
+	})
+	if responseFormat != nil {
+		body["response_format"] = responseFormat
+	}
+	warnings = append(warnings, formatWarnings...)
 	providerutils.ApplyOpenAICompatibleCommonRequestOptions(body, compatibleOptions)
 	return body, warnings
 }
@@ -162,10 +180,11 @@ func (m *LanguageModel) convertResponse(response togetherResponse) *types.Genera
 	}
 	choice := response.Choices[0]
 	result := &types.GenerateResult{
-		Text:         choice.Message.Content,
-		FinishReason: providerutils.MapOpenAIFinishReason(choice.FinishReason),
-		Usage:        convertTogetherUsage(response.Usage),
-		RawResponse:  response,
+		Text:            choice.Message.Content,
+		FinishReason:    providerutils.MapOpenAIFinishReason(choice.FinishReason),
+		RawFinishReason: choice.FinishReason,
+		Usage:           convertTogetherUsage(response.Usage),
+		RawResponse:     response,
 	}
 	if len(choice.Message.ToolCalls) > 0 {
 		result.ToolCalls = make([]types.ToolCall, len(choice.Message.ToolCalls))
@@ -347,4 +366,39 @@ func newTogetherStream(reader io.ReadCloser) *togetherStream {
 		}}
 	}
 	return s
+}
+
+// SupportsStructuredOutputs reports whether a Together AI chat model supports
+// json_schema structured outputs. Mirrors getModelStructuredOutputSupport in
+// packages/togetherai/src/togetherai-provider.ts.
+func SupportsStructuredOutputs(modelID string) bool {
+	return modelID == "deepseek-ai/DeepSeek-V4-Flash-0731"
+}
+
+// togetherStrictJSONSchema reads strictJsonSchema (default true) from the
+// "together" options and the TS provider options key "togetherai".
+func togetherStrictJSONSchema(_, compatibleOptions map[string]interface{}) bool {
+	// mergeTogetherAIProviderOptions has already folded providerOptions.togetherai
+	// (the TS provider options key) into compatibleOptions by the time this runs.
+	return providerutils.BoolOption(compatibleOptions, "strictJsonSchema", true)
+}
+
+// mergeTogetherAIProviderOptions merges providerOptions.togetherai into an
+// already-resolved compatibleOptions map (in place), giving it precedence.
+// TS's provider config name is "togetherai.chat"
+// (togetherai-provider.ts:150), so its OpenAICompatibleChatLanguageModel's
+// providerOptionsName (config.provider.split('.')[0]) is "togetherai" — not
+// "together", which is this Go SDK's own package/provider-name convention.
+// ResolveOpenAICompatibleProviderOptions only ever resolves the literal name
+// passed to it (plus its camelCase form, which is a no-op here), so a caller
+// following TS docs/examples and writing providerOptions.togetherai.* would
+// otherwise be silently ignored.
+func mergeTogetherAIProviderOptions(compatibleOptions, providerOptions map[string]interface{}) {
+	togetherAI, ok := providerOptions["togetherai"].(map[string]interface{})
+	if !ok {
+		return
+	}
+	for k, v := range togetherAI {
+		compatibleOptions[k] = v
+	}
 }

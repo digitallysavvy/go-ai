@@ -46,7 +46,7 @@ func main() {
 		ProviderOptions: map[string]interface{}{
 			"xai": map[string]interface{}{
 				"resolution":     "720p",
-				"pollIntervalMs": 5000,  // Check every 5 seconds
+				"pollIntervalMs": 5000,   // Check every 5 seconds
 				"pollTimeoutMs":  600000, // 10 minute timeout
 			},
 		},

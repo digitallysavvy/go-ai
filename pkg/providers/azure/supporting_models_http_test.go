@@ -39,7 +39,7 @@ func TestAzureEmbeddingModelDoEmbedAndDoEmbedManyHTTP(t *testing.T) {
 	if len(one.Embedding) != 2 || one.Response.Headers["X-Req"] != "r1" {
 		t.Fatalf("result mismatch: %#v", one)
 	}
-	if seenUserAgent != "go-ai/azure/0.5.0" {
+	if !strings.HasPrefix(seenUserAgent, "ai-sdk/azure/0.5.0 ") {
 		t.Fatalf("User-Agent = %q", seenUserAgent)
 	}
 
@@ -161,7 +161,7 @@ func TestAzureADTokenProviderAuthenticatesEveryRequestSurface(t *testing.T) {
 	var tokenCalls int
 	var seenPaths []string
 	p := mustNewProvider(t, Config{
-		BaseURL:      "https://azure.example",
+		BaseURL:      "https://test-resource.openai.azure.com",
 		DeploymentID: "dep",
 		APIVersion:   "2024-10-21",
 		ADTokenProvider: func(ctx context.Context) (string, error) {
@@ -220,7 +220,7 @@ func TestAzureADTokenProviderAuthenticatesEveryRequestSurface(t *testing.T) {
 func TestAzureADTokenProviderDoesNotOverrideExplicitAuthorizationHeader(t *testing.T) {
 	var tokenCalls int
 	p := mustNewProvider(t, Config{
-		BaseURL:      "https://azure.example",
+		BaseURL:      "https://test-resource.openai.azure.com",
 		DeploymentID: "dep",
 		APIVersion:   "2024-10-21",
 		ADTokenProvider: func(ctx context.Context) (string, error) {
@@ -252,7 +252,7 @@ func TestAzureADTokenProviderDoesNotOverrideExplicitAuthorizationHeader(t *testi
 func TestAzureADTokenProviderPreservesCallerAPIKeyHeader(t *testing.T) {
 	var tokenCalls int
 	p := mustNewProvider(t, Config{
-		BaseURL:      "https://azure.example",
+		BaseURL:      "https://test-resource.openai.azure.com",
 		DeploymentID: "dep",
 		APIVersion:   "2024-10-21",
 		ADTokenProvider: func(ctx context.Context) (string, error) {
@@ -285,13 +285,13 @@ func TestAzureUseDeploymentBasedURLs(t *testing.T) {
 	var seenURI string
 	p := mustNewProvider(t, Config{
 		APIKey:                 "k",
-		BaseURL:                "https://azure.example/openai",
+		BaseURL:                "https://test-resource.openai.azure.com/openai",
 		DeploymentID:           "dep",
 		APIVersion:             "v1",
 		UseDeploymentBasedURLs: true,
 	})
 	p.client = internalhttp.NewClient(internalhttp.Config{
-		BaseURL: "https://azure.example/openai",
+		BaseURL: "https://test-resource.openai.azure.com/openai",
 		Headers: map[string]string{"api-key": "k"},
 		HTTPClient: &http.Client{Transport: azureRoundTripper(func(r *http.Request) (*http.Response, error) {
 			seenURI = r.URL.RequestURI()
@@ -334,9 +334,9 @@ func (f azureRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 
 func newAzureProviderWithTransport(t *testing.T, rt azureRoundTripper) *Provider {
 	t.Helper()
-	p := mustNewProvider(t, Config{APIKey: "k", BaseURL: "https://azure.example", DeploymentID: "dep", APIVersion: "2024-10-21"})
+	p := mustNewProvider(t, Config{APIKey: "k", BaseURL: "https://test-resource.openai.azure.com", DeploymentID: "dep", APIVersion: "2024-10-21"})
 	p.client = internalhttp.NewClient(internalhttp.Config{
-		BaseURL:    "https://azure.example",
+		BaseURL:    "https://test-resource.openai.azure.com",
 		Headers:    p.staticAuthHeaders(),
 		HTTPClient: &http.Client{Transport: rt},
 	})

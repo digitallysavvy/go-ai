@@ -139,36 +139,36 @@ func createLargeToolCatalog() map[string]types.Tool {
 	tools := map[string]types.Tool{
 		// Weather tools
 		"get_weather_forecast": createMockTool("get_weather_forecast", "Get weather forecast for a location"),
-		"get_current_weather": createMockTool("get_current_weather", "Get current weather conditions"),
-		"get_weather_alerts": createMockTool("get_weather_alerts", "Get weather alerts and warnings"),
+		"get_current_weather":  createMockTool("get_current_weather", "Get current weather conditions"),
+		"get_weather_alerts":   createMockTool("get_weather_alerts", "Get weather alerts and warnings"),
 
 		// Database tools
-		"database_query": createMockTool("database_query", "Execute SQL query on database"),
+		"database_query":  createMockTool("database_query", "Execute SQL query on database"),
 		"database_insert": createMockTool("database_insert", "Insert data into database"),
 		"database_update": createMockTool("database_update", "Update database records"),
 		"database_delete": createMockTool("database_delete", "Delete database records"),
 
 		// File tools
-		"file_read": createMockTool("file_read", "Read contents of a file"),
-		"file_write": createMockTool("file_write", "Write contents to a file"),
+		"file_read":   createMockTool("file_read", "Read contents of a file"),
+		"file_write":  createMockTool("file_write", "Write contents to a file"),
 		"file_delete": createMockTool("file_delete", "Delete a file"),
 		"file_search": createMockTool("file_search", "Search for files by pattern"),
 
 		// API tools
-		"api_get_request": createMockTool("api_get_request", "Make HTTP GET request"),
+		"api_get_request":  createMockTool("api_get_request", "Make HTTP GET request"),
 		"api_post_request": createMockTool("api_post_request", "Make HTTP POST request"),
-		"api_put_request": createMockTool("api_put_request", "Make HTTP PUT request"),
+		"api_put_request":  createMockTool("api_put_request", "Make HTTP PUT request"),
 
 		// User management tools
 		"get_user_data": createMockTool("get_user_data", "Retrieve user information"),
-		"create_user": createMockTool("create_user", "Create a new user account"),
-		"update_user": createMockTool("update_user", "Update user information"),
-		"delete_user": createMockTool("delete_user", "Delete user account"),
+		"create_user":   createMockTool("create_user", "Create a new user account"),
+		"update_user":   createMockTool("update_user", "Update user information"),
+		"delete_user":   createMockTool("delete_user", "Delete user account"),
 
 		// Analytics tools
 		"get_analytics_report": createMockTool("get_analytics_report", "Generate analytics report"),
-		"track_event": createMockTool("track_event", "Track analytics event"),
-		"get_metrics": createMockTool("get_metrics", "Retrieve system metrics"),
+		"track_event":          createMockTool("track_event", "Track analytics event"),
+		"get_metrics":          createMockTool("get_metrics", "Retrieve system metrics"),
 	}
 
 	return tools

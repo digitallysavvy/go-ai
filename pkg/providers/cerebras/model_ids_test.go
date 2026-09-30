@@ -5,16 +5,12 @@ import "testing"
 // TestCerebrasModelIDs verifies that all model ID constants have the expected values.
 func TestCerebrasModelIDs(t *testing.T) {
 	cases := []struct {
-		name  string
-		got   string
-		want  string
+		name string
+		got  string
+		want string
 	}{
-		{"ModelLlama31_8B", ModelLlama31_8B, "llama3.1-8b"},
 		{"ModelGPTOSS120B", ModelGPTOSS120B, "gpt-oss-120b"},
-		{"ModelQwen3_235BA22BInstruct2507", ModelQwen3_235BA22BInstruct2507, "qwen-3-235b-a22b-instruct-2507"},
-		{"ModelQwen3_235BA22BThinking2507", ModelQwen3_235BA22BThinking2507, "qwen-3-235b-a22b-thinking-2507"},
-		{"ModelZaiGLM4_6", ModelZaiGLM4_6, "zai-glm-4.6"},
-		{"ModelZaiGLM4_7", ModelZaiGLM4_7, "zai-glm-4.7"},
+		{"ModelGemma4_31B", ModelGemma4_31B, "gemma-4-31b"},
 	}
 
 	for _, tc := range cases {
@@ -26,18 +22,16 @@ func TestCerebrasModelIDs(t *testing.T) {
 	}
 }
 
-// TestCerebrasModelIDsAcceptedByProvider verifies that model ID constants are
-// accepted by the provider without error.
+// TestCerebrasModelIDsAcceptedByProvider verifies that model ID constants,
+// and arbitrary/custom model IDs, are accepted by the provider without error
+// (Cerebras does not validate model IDs; TS: (string & {})).
 func TestCerebrasModelIDsAcceptedByProvider(t *testing.T) {
 	prov := New(Config{APIKey: "test-key"})
 
 	modelIDs := []string{
-		ModelLlama31_8B,
 		ModelGPTOSS120B,
-		ModelQwen3_235BA22BInstruct2507,
-		ModelQwen3_235BA22BThinking2507,
-		ModelZaiGLM4_6,
-		ModelZaiGLM4_7,
+		ModelGemma4_31B,
+		"some-future-cerebras-model",
 	}
 
 	for _, id := range modelIDs {

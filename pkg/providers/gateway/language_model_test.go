@@ -3,12 +3,15 @@ package gateway
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	gatewaytools "github.com/digitallysavvy/go-ai/pkg/providers/gateway/tools"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
@@ -41,7 +44,7 @@ func TestGatewayTextStreamMapsV4PartsAndFiltersRaw(t *testing.T) {
 			"",
 			`data: {"type":"file","mediaType":"text/plain","data":"SGk=","providerMetadata":{"gateway":{"fileId":"f1"}}}`,
 			"",
-			`data: {"type":"custom","kind":"gateway-extra","providerMetadata":{"gateway":{"x":true}}}`,
+			`data: {"type":"custom","kind":"gateway.extra","providerMetadata":{"gateway":{"x":true}}}`,
 			"",
 			`data: {"type":"finish","finishReason":"stop"}`,
 			"",
@@ -90,7 +93,7 @@ func TestGatewayTextStreamMapsV4PartsAndFiltersRaw(t *testing.T) {
 		t.Fatalf("file mismatch chunk=%#v err=%v", chunk, err)
 	}
 	chunk, err = stream.Next()
-	if err != nil || chunk.Type != provider.ChunkTypeCustom || chunk.CustomContent.Kind != "gateway-extra" {
+	if err != nil || chunk.Type != provider.ChunkTypeCustom || chunk.CustomContent.Kind != "gateway.extra" {
 		t.Fatalf("custom mismatch chunk=%#v err=%v", chunk, err)
 	}
 	chunk, err = stream.Next()
@@ -117,6 +120,47 @@ func TestGatewayTextStreamIncludesRawChunksWhenRequested(t *testing.T) {
 
 func streamingParser(data string) *streaming.SSEParser {
 	return streaming.NewSSEParser(strings.NewReader(data))
+}
+
+// TestGatewayTextStreamErrorChunkAttachesStructuredPayload is a P1-1c part 2
+// regression test: the Gateway server forwards an already-normalized
+// ProviderStreamError object verbatim on an `error` stream part (TS
+// gateway-language-model.ts's transform() passes streamPart through as-is).
+// The `error` field was previously typed as a Go string, which fails to
+// unmarshal against this object shape and aborted the whole chunk with a
+// generic parse error before ever reaching the error-chunk handling.
+func TestGatewayTextStreamErrorChunkAttachesStructuredPayload(t *testing.T) {
+	stream := &gatewayTextStream{
+		parser: streamingParser(`data: {"type":"error","error":{"message":"Rate limit exceeded","type":"rate_limit_exceeded","statusCode":429,"isRetryable":true}}` + "\n\n"),
+		body:   io.NopCloser(strings.NewReader("")),
+	}
+
+	chunk, err := stream.Next()
+	if chunk == nil {
+		t.Fatalf("stream.Next() chunk = nil, err = %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeError {
+		t.Fatalf("chunk.Type = %v, want ChunkTypeError", chunk.Type)
+	}
+	if chunk.Text != "Rate limit exceeded" {
+		t.Errorf("chunk.Text = %q, want Rate limit exceeded", chunk.Text)
+	}
+	if chunk.AbortReason != "Rate limit exceeded" {
+		t.Errorf("chunk.AbortReason = %q, want Rate limit exceeded", chunk.AbortReason)
+	}
+	var streamErr *providererrors.StreamProviderError
+	if !errors.As(chunk.Err, &streamErr) {
+		t.Fatalf("chunk.Err = %v (%T), want *providererrors.StreamProviderError", chunk.Err, chunk.Err)
+	}
+	if streamErr.Type != "rate_limit_exceeded" {
+		t.Errorf("Type = %q, want rate_limit_exceeded", streamErr.Type)
+	}
+	if streamErr.StatusCode == nil || *streamErr.StatusCode != 429 {
+		t.Errorf("StatusCode = %v, want 429", streamErr.StatusCode)
+	}
+	if !streamErr.IsRetryable {
+		t.Error("IsRetryable = false, want true")
+	}
 }
 
 func TestGatewayLanguageModelMetadataAndCapabilities(t *testing.T) {
@@ -273,7 +317,7 @@ func TestGatewayLanguageModelConvertContentPart(t *testing.T) {
 		t.Fatalf("tool result file block = %#v", fileBlock)
 	}
 
-	_, err = model.convertContentPart(types.CustomContent{Kind: "xai-citation"})
+	_, err = model.convertContentPart(types.CustomContent{Kind: "xai.citation"})
 	if err == nil || !strings.Contains(err.Error(), "unsupported content part type") {
 		t.Fatalf("unsupported part error = %v", err)
 	}
@@ -284,7 +328,6 @@ func TestGatewayLanguageModelProviderOptionsMerge(t *testing.T) {
 		provider: &Provider{
 			config: Config{
 				DisallowPromptTraining: true,
-				HIPAACompliant:         true,
 				QuotaEntityID:          "quota-123",
 			},
 		},
@@ -307,7 +350,7 @@ func TestGatewayLanguageModelProviderOptionsMerge(t *testing.T) {
 	if !ok {
 		t.Fatalf("gateway options type = %T", got["gateway"])
 	}
-	if gatewayOpts["disallowPromptTraining"] != true || gatewayOpts["hipaaCompliant"] != true || gatewayOpts["quotaEntityId"] != "quota-123" {
+	if gatewayOpts["disallowPromptTraining"] != true || gatewayOpts["quotaEntityId"] != "quota-123" {
 		t.Fatalf("missing config-derived gateway options: %#v", gatewayOpts)
 	}
 	if _, ok := gatewayOpts["only"]; !ok {
@@ -395,5 +438,34 @@ func TestGatewayLanguageModelBuildRequestBodyProviderExecutedToolIncludesProvide
 	args := tool["args"].(map[string]interface{})
 	if args["numResults"] != 5 || args["category"] != "news" {
 		t.Fatalf("provider tool args = %#v", args)
+	}
+}
+
+// TestGatewayLanguageModelBuildRequestBodyIncludesTakoSearchTool is a
+// request-shape test (a371615) confirming tools.NewTakoSearch produces a
+// gateway.tako_search provider-defined tool wire entry end to end.
+func TestGatewayLanguageModelBuildRequestBodyIncludesTakoSearchTool(t *testing.T) {
+	model := newTestGatewayLanguageModel("openai/gpt-5")
+
+	takoTool := gatewaytools.NewTakoSearch(gatewaytools.TakoSearchConfig{Effort: "deep"})
+
+	body, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "search"}}}}},
+		Tools:  []types.Tool{takoTool.ToTool()},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody error = %v", err)
+	}
+	tools, ok := body["tools"].([]map[string]interface{})
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools = %#v", body["tools"])
+	}
+	tool := tools[0]
+	if tool["name"] != "tako_search" || tool["type"] != "provider" || tool["id"] != "gateway.tako_search" {
+		t.Fatalf("provider tool wire identity = %#v", tool)
+	}
+	args := tool["args"].(map[string]interface{})
+	if args["effort"] != "deep" {
+		t.Fatalf("tako_search args = %#v", args)
 	}
 }

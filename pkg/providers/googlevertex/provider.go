@@ -1,3 +1,11 @@
+// Package googlevertex implements the Go equivalent of TS's
+// @ai-sdk/google-vertex: Gemini, Anthropic (via the anthropic subpackage),
+// and Grok (via the xai subpackage) models served through Google Vertex AI,
+// alongside Vertex-hosted embedding, image, video, speech, and
+// transcription models. Gemini-family chat/generation logic is shared with
+// pkg/providers/google through pkg/providers/gemini; OAuth2 Bearer
+// authentication (or Express Mode API-key auth) and Vertex's
+// region/project-scoped base URLs are this package's own concern.
 package googlevertex
 
 import (
@@ -5,6 +13,7 @@ import (
 	"fmt"
 	stdhttp "net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,6 +22,7 @@ import (
 	anthropicprovider "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 	googleprovider "github.com/digitallysavvy/go-ai/pkg/providers/google"
 	vertexanthropic "github.com/digitallysavvy/go-ai/pkg/providers/googlevertex/anthropic"
+	vertexinternal "github.com/digitallysavvy/go-ai/pkg/providers/googlevertex/internal"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 	"golang.org/x/oauth2"
 )
@@ -27,6 +37,33 @@ const (
 type Provider struct {
 	config Config
 	client *http.Client
+
+	// endpointClient targets the endpoint-style base URL (no
+	// "/publishers/google" suffix), used for tuned models addressed as
+	// "endpoints/{id}" (TS isEndpointModelId / loadBaseURL({endpoint: true})).
+	// nil when the caller supplied an explicit BaseURL, matching TS: an
+	// explicit baseURL is used verbatim regardless of the endpoint flag.
+	endpointClient *http.Client
+
+	// cloudTTSClient targets the (non-regional) Cloud Text-to-Speech
+	// synthesize endpoint for Chirp 3: HD voices, reusing the same
+	// OAuth-authenticated *stdhttp.Client as client/endpointClient. nil in
+	// Express Mode (API key auth), which Chirp speech models reject outright.
+	cloudTTSClient *http.Client
+}
+
+// defaultCloudTTSSynthesizeURL is the (non-regional) Cloud Text-to-Speech
+// synthesize endpoint used by Chirp 3: HD voices
+// (TS CLOUD_TTS_SYNTHESIZE_URL). Unlike Vertex AI and Speech-to-Text, Cloud
+// Text-to-Speech has a single global host, not a per-region one.
+const defaultCloudTTSSynthesizeURL = "https://texttospeech.googleapis.com/v1/text:synthesize"
+
+// isEndpointModelID mirrors TS isEndpointModelId: tuned models are served
+// from a deployed endpoint and addressed by their "endpoints/{id}" resource,
+// which replaces "publishers/google/models/{id}".
+// https://cloud.google.com/vertex-ai/generative-ai/docs/deploy/overview
+func isEndpointModelID(modelID string) bool {
+	return strings.HasPrefix(modelID, "endpoints/")
 }
 
 // Config contains configuration for the Google Vertex AI provider
@@ -57,11 +94,29 @@ type Config struct {
 	// BaseURL is the base URL for the Vertex AI API (optional, computed from project/location if not provided)
 	BaseURL string
 
+	// CloudTTSBaseURL overrides the Cloud Text-to-Speech synthesize endpoint
+	// used by Chirp 3: HD voices (default: the real, non-regional
+	// texttospeech.googleapis.com host). Primarily for tests.
+	CloudTTSBaseURL string
+
 	// Headers are custom HTTP headers to include in requests.
 	Headers map[string]string `json:"headers,omitempty"`
 
 	// HTTPClient overrides the HTTP client used for requests.
 	HTTPClient *stdhttp.Client `json:"-"`
+
+	// ToolResultDownloads configures downloading of remote files referenced
+	// by tool-result content before sending them to Vertex as inline data
+	// (Vertex function responses only accept inline data, unlike the Google
+	// Generative AI API). Matches TS GoogleVertexProviderSettings.toolResultDownloads.
+	ToolResultDownloads ToolResultDownloadsConfig
+}
+
+// ToolResultDownloadsConfig configures the Vertex tool-result file downloader.
+type ToolResultDownloadsConfig struct {
+	// MaxBytes is the maximum size in bytes for each downloaded file.
+	// Defaults to 7 MiB (TS toolResultDownloads.maxBytes default) when zero.
+	MaxBytes int64
 }
 
 type cachedTokenSource struct {
@@ -87,21 +142,6 @@ func (c *cachedTokenSource) tokenFor(ctx context.Context) (string, error) {
 	return token, nil
 }
 
-type authTransport struct {
-	base      stdhttp.RoundTripper
-	tokenFunc func(ctx context.Context) (string, error)
-}
-
-func (t *authTransport) RoundTrip(req *stdhttp.Request) (*stdhttp.Response, error) {
-	clone := req.Clone(req.Context())
-	token, err := t.tokenFunc(req.Context())
-	if err != nil {
-		return nil, err
-	}
-	clone.Header.Set("Authorization", "Bearer "+token)
-	return t.base.RoundTrip(clone)
-}
-
 // New creates a new Google Vertex AI provider with the given configuration
 func New(cfg Config) (*Provider, error) {
 	if cfg.APIKey == "" {
@@ -114,7 +154,9 @@ func New(cfg Config) (*Provider, error) {
 		cfg.Location = os.Getenv("GOOGLE_VERTEX_LOCATION")
 	}
 
+	explicitBaseURL := cfg.BaseURL != ""
 	baseURL := cfg.BaseURL
+	var endpointBaseURL string
 	headers := map[string]string{
 		"Content-Type": "application/json",
 	}
@@ -122,6 +164,8 @@ func New(cfg Config) (*Provider, error) {
 
 	if cfg.APIKey != "" {
 		// Vertex express mode (TS parity): API key auth and publishers/google base URL.
+		// Tuned "endpoints/{id}" models are rejected in Express Mode (checked
+		// in LanguageModel), so no endpoint-style base URL is needed here.
 		if baseURL == "" {
 			baseURL = "https://aiplatform.googleapis.com/v1/publishers/google"
 		}
@@ -139,6 +183,12 @@ func New(cfg Config) (*Provider, error) {
 		}
 		if baseURL == "" {
 			baseURL = fmt.Sprintf("https://%s/v1beta1/projects/%s/locations/%s/publishers/google",
+				vertexHost(cfg.Location), cfg.Project, cfg.Location)
+			// Tuned models are addressed via their deployed endpoint
+			// ".../locations/{region}/endpoints/{id}" instead of the
+			// base-model ".../publishers/google/models/{id}" path, so they
+			// omit the "/publishers/google" suffix (TS loadBaseURL({endpoint: true})).
+			endpointBaseURL = fmt.Sprintf("https://%s/v1beta1/projects/%s/locations/%s",
 				vertexHost(cfg.Location), cfg.Project, cfg.Location)
 		}
 
@@ -172,9 +222,9 @@ func New(cfg Config) (*Provider, error) {
 			baseTransport = httpClient.Transport
 		}
 		httpClient = &stdhttp.Client{
-			Transport: &authTransport{
-				base: baseTransport,
-				tokenFunc: func(ctx context.Context) (string, error) {
+			Transport: &vertexinternal.AuthTransport{
+				Base: baseTransport,
+				TokenFunc: func(ctx context.Context) (string, error) {
 					// Token override bypasses cached credentials.
 					if cfg.AuthToken != nil {
 						return cfg.AuthToken(ctx)
@@ -185,15 +235,45 @@ func New(cfg Config) (*Provider, error) {
 		}
 	}
 
+	mergedHeaders := version.WithUserAgentSuffix(http.MergeHeaders(headers, cfg.Headers), version.ProviderUserAgent("google-vertex"))
 	client := http.NewClient(http.Config{
 		BaseURL:    baseURL,
-		Headers:    version.WithUserAgentSuffix(http.MergeHeaders(headers, cfg.Headers), version.ProviderUserAgent("google-vertex")),
+		Headers:    mergedHeaders,
 		HTTPClient: httpClient,
 	})
 
+	var endpointClient *http.Client
+	// An explicit BaseURL is used verbatim for every model (TS: loadBaseURL
+	// returns `options.baseURL` unconditionally when set, ignoring the
+	// endpoint flag), so the alternate client only exists for auto-derived URLs.
+	if !explicitBaseURL && endpointBaseURL != "" {
+		endpointClient = http.NewClient(http.Config{
+			BaseURL:    endpointBaseURL,
+			Headers:    mergedHeaders,
+			HTTPClient: httpClient,
+		})
+	}
+
+	var cloudTTSClient *http.Client
+	// Chirp speech models reject Express Mode outright (checked in
+	// SpeechModel), so the Cloud TTS client is only built for OAuth auth.
+	if cfg.APIKey == "" {
+		cloudTTSBaseURL := cfg.CloudTTSBaseURL
+		if cloudTTSBaseURL == "" {
+			cloudTTSBaseURL = defaultCloudTTSSynthesizeURL
+		}
+		cloudTTSClient = http.NewClient(http.Config{
+			BaseURL:    cloudTTSBaseURL,
+			Headers:    mergedHeaders,
+			HTTPClient: httpClient,
+		})
+	}
+
 	return &Provider{
-		config: cfg,
-		client: client,
+		config:         cfg,
+		client:         client,
+		endpointClient: endpointClient,
+		cloudTTSClient: cloudTTSClient,
 	}, nil
 }
 
@@ -234,8 +314,71 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 	if modelID == "" {
 		return nil, fmt.Errorf("model ID cannot be empty")
 	}
+	if isEndpointModelID(modelID) && p.config.APIKey != "" {
+		return nil, fmt.Errorf("Google Vertex tuned models do not support Express Mode API keys. Use standard Google Cloud credentials instead.")
+	}
 
 	return NewLanguageModel(p, modelID), nil
+}
+
+// Interactions returns a language model backed by the Gemini Interactions
+// API (`.../locations/{region}/interactions`) on Vertex. It reuses the base
+// google package's InteractionsLanguageModel (TS: the exact same
+// GoogleInteractionsLanguageModel class, just constructed with a
+// Vertex-flavored config) with Vertex's OAuth-authenticated client and
+// location-scoped, endpoint-style base URL (no "/publishers/google" suffix).
+func (p *Provider) Interactions(modelID string) (provider.LanguageModel, error) {
+	if modelID == "" {
+		return nil, fmt.Errorf("model ID cannot be empty")
+	}
+	if p.config.APIKey != "" {
+		return nil, fmt.Errorf("Google Vertex Interactions models do not support Express Mode API keys. Use standard Google Cloud credentials instead.")
+	}
+	return googleprovider.NewInteractionsLanguageModelWithConfig(p.interactionsConfig(), modelID), nil
+}
+
+// InteractionsAgent returns a Vertex Interactions API model for a Gemini
+// agent preset (e.g. Deep Research).
+func (p *Provider) InteractionsAgent(agent string) (provider.LanguageModel, error) {
+	if agent == "" {
+		return nil, fmt.Errorf("agent cannot be empty")
+	}
+	if p.config.APIKey != "" {
+		return nil, fmt.Errorf("Google Vertex Interactions models do not support Express Mode API keys. Use standard Google Cloud credentials instead.")
+	}
+	return googleprovider.NewInteractionsAgentModelWithConfig(p.interactionsConfig(), agent), nil
+}
+
+// InteractionsManagedAgent returns a Vertex Interactions API model for a
+// user-defined agent created via the Agent Builder API.
+func (p *Provider) InteractionsManagedAgent(id string) (provider.LanguageModel, error) {
+	if id == "" {
+		return nil, fmt.Errorf("managed agent id cannot be empty")
+	}
+	if p.config.APIKey != "" {
+		return nil, fmt.Errorf("Google Vertex Interactions models do not support Express Mode API keys. Use standard Google Cloud credentials instead.")
+	}
+	return googleprovider.NewInteractionsManagedAgentModelWithConfig(p.interactionsConfig(), id), nil
+}
+
+// interactionsConfig builds the InteractionsConfig for Vertex: the
+// endpoint-style client when available (no "/publishers/google" suffix,
+// matching TS `createConfig('interactions', { endpoint: true })`), falling
+// back to the regular client when the caller supplied an explicit BaseURL
+// (TS loadBaseURL returns an explicit baseURL verbatim regardless of the
+// endpoint flag, so there is no separate endpoint client in that case).
+func (p *Provider) interactionsConfig() googleprovider.InteractionsConfig {
+	client := p.client
+	if p.endpointClient != nil {
+		client = p.endpointClient
+	}
+	return googleprovider.InteractionsConfig{
+		ProviderName: "google.vertex.interactions",
+		Client:       client,
+		SerializableConfig: func() map[string]interface{} {
+			return provider.SerializableConfig(p.config)
+		},
+	}
 }
 
 // AnthropicModel returns a Claude language model routed through Vertex AI's
@@ -253,12 +396,19 @@ func (p *Provider) AnthropicModel(modelID string, settings ...*anthropicprovider
 		Location:  p.config.Location,
 		BaseURL:   p.config.BaseURL,
 		Headers:   p.config.Headers,
-		AuthToken: p.anthropicAuthToken,
+		AuthToken: p.vertexAuthToken,
 	})
 	return vertexAnthropic.LanguageModelWithOptions(modelID, opts)
 }
 
-func (p *Provider) anthropicAuthToken(ctx context.Context) (string, error) {
+// vertexAuthToken resolves a bearer token for any Vertex-authenticated
+// sub-request using this provider's configured credentials (AuthToken,
+// AccessToken, or TokenSource, in that order). Despite living on the path
+// used to wire up the Anthropic sub-provider, it is provider-generic --
+// also used by the Gemini live transcription WebSocket handshake (see
+// gemini_transcription_stream.go) -- since Vertex's OAuth Bearer auth is
+// shared across every model family, not specific to Anthropic.
+func (p *Provider) vertexAuthToken(ctx context.Context) (string, error) {
 	if p.config.AuthToken != nil {
 		return p.config.AuthToken(ctx)
 	}
@@ -298,6 +448,15 @@ func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
 
 // SpeechModel returns a Gemini TTS speech synthesis model by ID.
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
+	// Chirp 3: HD voices are served by the dedicated Cloud Text-to-Speech
+	// API, not Vertex's generateContent endpoint (TS:
+	// `modelId.startsWith('chirp')`).
+	if strings.HasPrefix(modelID, "chirp") {
+		if p.config.APIKey != "" {
+			return nil, fmt.Errorf("Google Vertex Chirp speech models do not support Express Mode API keys. Use standard Google Cloud credentials instead.")
+		}
+		return NewCloudTTSSpeechModel(p, modelID), nil
+	}
 	return googleprovider.NewSpeechModelWithConfig(modelID, googleprovider.SpeechModelConfig{
 		ProviderName:        "google.vertex.speech",
 		MetadataKey:         "google",
@@ -306,25 +465,44 @@ func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
 			return fmt.Sprintf("/models/%s:generateContent", id)
 		},
 		Client: p.client,
+		// Kind/SerializableConfig let Serialize()/deserializeSpeechModel
+		// (serialization.go) tell this Gemini TTS model apart from
+		// CloudTTSSpeechModel, which shares the same "google.vertex.speech"
+		// Provider() tag (see SER2 notes on SpeechModelConfig.Kind).
+		Kind: "gemini-tts",
+		SerializableConfig: func() map[string]interface{} {
+			return provider.SerializableConfig(p.config)
+		},
 	}), nil
 }
 
-// Speech returns a Gemini TTS speech synthesis model by ID.
+// Speech returns a speech synthesis model by ID (Gemini TTS via
+// generateContent, or Chirp 3: HD via Cloud Text-to-Speech).
 func (p *Provider) Speech(modelID string) (provider.SpeechModel, error) {
 	return p.SpeechModel(modelID)
 }
 
-// TranscriptionModel returns a speech-to-text model by ID
+// TranscriptionModel returns a speech-to-text model by ID.
+//
+// Gemini-family model IDs (e.g. "gemini-3.5-transcribe",
+// "gemini-3.5-transcribe-live") route to the generateContent/Live API
+// surface via GeminiTranscriptionModel; everything else (Chirp, telephony)
+// routes to Cloud Speech-to-Text v2 via TranscriptionModel. Mirrors TS
+// createTranscriptionModel's `modelId.startsWith('gemini')` routing
+// predicate exactly.
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
 	if p.config.APIKey != "" {
-		return nil, fmt.Errorf("google vertex transcription models do not support Express Mode API keys")
+		return nil, fmt.Errorf("Google Vertex transcription models do not support Express Mode API keys. Use standard Google Cloud credentials instead.")
+	}
+	if strings.HasPrefix(modelID, "gemini") {
+		return NewGeminiTranscriptionModel(p, modelID), nil
 	}
 	return NewTranscriptionModel(p, modelID), nil
 }
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("LGoogle Vertex AI does not support reranking")
+	return nil, fmt.Errorf("Google Vertex AI does not support reranking")
 }
 
 // VideoModel returns a video generation model by ID
@@ -334,7 +512,7 @@ func (p *Provider) VideoModel(modelID string) (provider.VideoModelV3, error) {
 		return nil, fmt.Errorf("model ID cannot be empty")
 	}
 
-	return nil, fmt.Errorf("video models not yet implemented for Google Vertex AI")
+	return NewVideoModel(p, modelID), nil
 }
 
 // Client returns the HTTP client for making API requests

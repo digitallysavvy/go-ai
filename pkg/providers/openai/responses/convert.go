@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -21,7 +22,7 @@ import (
 //   - FunctionCallItem
 //   - FunctionCallOutputItem
 func ConvertPromptToInput(prompt types.Prompt, systemMessageMode string) []interface{} {
-	input, _ := ConvertPromptToInputWithOptions(prompt, systemMessageMode, ConvertOptions{PassThroughUnsupportedFiles: true})
+	input, _, _ := ConvertPromptToInputWithOptions(prompt, systemMessageMode, ConvertOptions{PassThroughUnsupportedFiles: true})
 	return input
 }
 
@@ -35,39 +36,238 @@ type ConvertOptions struct {
 	HasLocalShellTool           bool
 	HasShellTool                bool
 	HasApplyPatchTool           bool
+	HasComputerTool             bool
 	FileIDPrefixes              []string
 	ProviderOptionsName         string
+	// ExplicitMessageItemType, when true, adds `"type":"message"` to easy-input
+	// assistant/system messages (required by Azure Foundry projects). See TS
+	// convert-to-openai-responses-input.ts `explicitMessageItemType`.
+	ExplicitMessageItemType bool
+	// ToolSearchToolName is the exact SDK tool name whose ProviderID is
+	// "openai.tool_search" for this request, if any. Only a tool call/result
+	// with this exact name is treated as the tool_search feature; a regular
+	// function tool that happens to be named "tool_search" is not.
+	ToolSearchToolName string
+	// OutputSchemaToolNames holds the names of function tools that declared
+	// providerOptions.openai.outputSchema. OpenAI parses their
+	// function_call_output.output as JSON, so text-like results must be
+	// JSON-encoded (JSON.stringify'd) before being sent.
+	OutputSchemaToolNames map[string]bool
+
+	// ConfigurationUpdateUnsupportedReason, when non-empty, is the reason a
+	// mid-conversation reasoningEffortUpdate configuration_update item
+	// cannot be emitted for this request (e.g. the model doesn't support
+	// GPT-6+ configuration updates, or reasoningMode/contextManagement/
+	// truncation are incompatible with it). Computed once per request by the
+	// caller (mirrors TS getConfigurationUpdateUnsupportedReason) and
+	// applied uniformly to every message-level reasoningEffortUpdate found
+	// while converting the prompt, matching TS
+	// convert-to-openai-responses-input.ts's `configurationUpdateUnsupportedReason`
+	// parameter.
+	ConfigurationUpdateUnsupportedReason string
+
+	// programmaticCallerIDs holds tool-call-ids whose caller was a
+	// programmatic-tool-calling "program", collected from the prompt's
+	// assistant messages by ConvertPromptToInputWithOptions before
+	// conversion. Used to reject execution-denied results for those calls
+	// when the result itself doesn't carry its own caller metadata (row
+	// e105b2b). Do not set directly.
+	programmaticCallerIDs map[string]bool
+
+	// parallelToolResultGroups, emittedParallelToolCalls and
+	// emittedParallelToolResults support regrouping an expanded "parallel"
+	// tool call wrapper's child results back into a single
+	// function_call/function_call_output pair on replay, when Responses API
+	// server-side state (conversation or previousResponseId) requires the
+	// server's original wrapper call_id to be preserved (row 6be0f51).
+	// Populated by ConvertPromptToInputWithOptions; do not set directly.
+	parallelToolResultGroups   map[string]parallelToolResultGroup
+	emittedParallelToolCalls   map[string]bool
+	emittedParallelToolResults map[string]bool
+}
+
+// parallelToolResultGroup is a complete set of child results for one
+// expanded "parallel" tool call wrapper, ordered by their original index.
+type parallelToolResultGroup struct {
+	metadata ParallelToolCallMetadata
+	results  []types.ToolResultContent
+}
+
+// toolSearchName returns the configured tool_search tool name, defaulting to
+// the literal "tool_search" for backward compatibility when no tool in the
+// request declares ProviderID "openai.tool_search".
+func (o ConvertOptions) toolSearchName() string {
+	if o.ToolSearchToolName != "" {
+		return o.ToolSearchToolName
+	}
+	// The Go tool_search factory (openaitool.ToolSearch) always sets both Name
+	// and ProviderID to "openai.tool_search" (Go does not support renaming
+	// this tool), so that is the correct default when no request-specific
+	// name has been resolved (e.g. direct ConvertOptions calls in tests).
+	return "openai.tool_search"
 }
 
 // ConvertPromptToInputWithOptions converts a prompt to Responses API input and
 // validates file media types according to OpenAI Responses defaults.
-func ConvertPromptToInputWithOptions(prompt types.Prompt, systemMessageMode string, opts ConvertOptions) ([]interface{}, error) {
+func ConvertPromptToInputWithOptions(prompt types.Prompt, systemMessageMode string, opts ConvertOptions) ([]interface{}, []types.Warning, error) {
 	input := make([]interface{}, 0, len(prompt.Messages)+1)
+	var warnings []types.Warning
+	opts.programmaticCallerIDs = collectProgrammaticCallerIDs(prompt, openAIProviderOptionsName(opts))
+	if opts.HasConversation || opts.HasPreviousResponseID {
+		opts.parallelToolResultGroups = collectCompleteParallelToolResultGroups(prompt, openAIProviderOptionsName(opts))
+	} else {
+		opts.parallelToolResultGroups = map[string]parallelToolResultGroup{}
+	}
+	opts.emittedParallelToolCalls = map[string]bool{}
+	opts.emittedParallelToolResults = map[string]bool{}
 
 	// Prepend system message when present and not suppressed.
 	if prompt.System != "" && systemMessageMode != "remove" {
-		input = append(input, SystemMessage{
+		sysMsg := SystemMessage{
 			Role:    systemMessageMode,
 			Content: prompt.System,
-		})
+		}
+		if opts.ExplicitMessageItemType {
+			sysMsg.Type = "message"
+		}
+		input = append(input, sysMsg)
 	}
 
 	for _, msg := range prompt.Messages {
 		switch msg.Role {
+		case types.RoleSystem:
+			item, itemWarning, err := convertSystemMidConversationMessage(msg, systemMessageMode, opts)
+			if err != nil {
+				return nil, warnings, err
+			}
+			if item != nil {
+				input = append(input, item)
+			}
+			if itemWarning != nil {
+				warnings = append(warnings, *itemWarning)
+			}
 		case types.RoleUser:
 			userMessage, err := convertUserMessage(msg, opts)
 			if err != nil {
-				return nil, err
+				return nil, warnings, err
 			}
 			input = append(input, userMessage)
 		case types.RoleAssistant:
-			input = append(input, convertAssistantItems(msg, opts)...)
+			items, itemWarnings := convertAssistantItems(msg, opts)
+			input = append(input, items...)
+			warnings = append(warnings, itemWarnings...)
 		case types.RoleTool:
-			input = append(input, convertToolItems(msg, opts)...)
+			items, err := convertToolItems(msg, opts)
+			if err != nil {
+				return nil, warnings, err
+			}
+			input = append(input, items...)
 		}
 	}
 
-	return input, nil
+	return input, warnings, nil
+}
+
+// convertSystemMidConversationMessage converts a system-role Message found in
+// prompt.Messages (as opposed to the hoisted prompt.System) to a Responses
+// API input item. Mirrors TS convert-to-openai-responses-input.ts's
+// `case 'system'`: a message whose providerOptions[provider].
+// reasoningEffortUpdate is set becomes a positioned `configuration_update`
+// item independent of systemMessageMode's text handling; a message with
+// empty reasoningEffortUpdate is handled as an ordinary system/developer
+// message (or dropped with a warning when systemMessageMode is "remove").
+func convertSystemMidConversationMessage(msg types.Message, systemMessageMode string, opts ConvertOptions) (interface{}, *types.Warning, error) {
+	providerName := openAIProviderOptionsName(opts)
+	sysOpts := systemMessageProviderOptions(msg, providerName)
+	effort, _ := sysOpts["reasoningEffortUpdate"].(string)
+	content := systemMessageText(msg)
+
+	if effort != "" {
+		// TS parses this field against a fixed schema enum
+		// (z.enum(['none','low','medium','high','xhigh','max']), row
+		// 94d5d6d3e6) before any model-specific handling, so an
+		// out-of-enum value like "minimal" is rejected the same way on
+		// every model, including ones that support "none". Go has no
+		// schema layer, so validate manually here, first.
+		if !isValidReasoningEffortUpdateValue(effort) {
+			return nil, nil, &providererrors.InvalidArgumentError{
+				Field:   "providerOptions." + providerName + ".reasoningEffortUpdate",
+				Message: fmt.Sprintf("must be one of %s", strings.Join(ValidReasoningEffortUpdateValues, ", ")),
+			}
+		}
+
+		var unsupportedReason string
+		if content != "" {
+			unsupportedReason = "Message-level reasoningEffortUpdate requires empty system message content."
+		} else {
+			unsupportedReason = opts.ConfigurationUpdateUnsupportedReason
+		}
+		if unsupportedReason != "" {
+			return nil, nil, &providererrors.UnsupportedFunctionalityError{
+				Functionality: "Message-level reasoningEffortUpdate",
+				Message:       unsupportedReason,
+			}
+		}
+
+		// The control is independent of systemMessageMode's text handling.
+		return map[string]interface{}{
+			"type":      "configuration_update",
+			"reasoning": map[string]interface{}{"effort": effort},
+		}, nil, nil
+	}
+
+	switch systemMessageMode {
+	case "system", "developer":
+		sysMsg := SystemMessage{Role: systemMessageMode, Content: content}
+		if opts.ExplicitMessageItemType {
+			sysMsg.Type = "message"
+		}
+		return sysMsg, nil, nil
+	case "remove":
+		return nil, &types.Warning{
+			Type:    "other",
+			Message: "system messages are removed for this model",
+		}, nil
+	default:
+		return nil, nil, fmt.Errorf("openai.responses: unsupported system message mode: %s", systemMessageMode)
+	}
+}
+
+// systemMessageProviderOptions reads a system message's provider-specific
+// options, falling back from an Azure-style provider name (e.g. "azure") to
+// "openai" only when no entry is present at all under the request's own
+// provider name -- an explicit (even empty) entry under the request's
+// provider name is used as-is and does not fall back, matching TS
+// parseProviderOptions semantics.
+func systemMessageProviderOptions(msg types.Message, providerName string) map[string]interface{} {
+	if msg.ProviderOptions == nil {
+		return nil
+	}
+	if v, ok := msg.ProviderOptions[providerName].(map[string]interface{}); ok {
+		return v
+	}
+	if providerName != "openai" {
+		if v, ok := msg.ProviderOptions["openai"].(map[string]interface{}); ok {
+			return v
+		}
+	}
+	return nil
+}
+
+// systemMessageText extracts the plain text content of a system message.
+func systemMessageText(msg types.Message) string {
+	var b strings.Builder
+	for _, part := range msg.Content {
+		switch p := part.(type) {
+		case types.TextContent:
+			b.WriteString(p.Text)
+		case *types.TextContent:
+			if p != nil {
+				b.WriteString(p.Text)
+			}
+		}
+	}
+	return b.String()
 }
 
 // convertUserMessage maps a user-role Message to a UserMessage.
@@ -191,7 +391,11 @@ func convertUserMessage(msg types.Message, opts ConvertOptions) (UserMessage, er
 		}
 	}
 
-	return UserMessage{Role: "user", Content: parts}, nil
+	userMsg := UserMessage{Role: "user", Content: parts}
+	if opts.ExplicitMessageItemType {
+		userMsg.Type = "message"
+	}
+	return userMsg, nil
 }
 
 func openAIFileMediaType(part types.FileContent) string {
@@ -262,8 +466,9 @@ func validateResponsesFileMediaType(mediaType string, passThroughUnsupportedFile
 
 // convertAssistantItems maps assistant-role content parts and ToolCalls to
 // Responses API input items.
-func convertAssistantItems(msg types.Message, opts ConvertOptions) []interface{} {
+func convertAssistantItems(msg types.Message, opts ConvertOptions) ([]interface{}, []types.Warning) {
 	items := make([]interface{}, 0, 1+len(msg.ToolCalls))
+	var warnings []types.Warning
 	providerName := openAIProviderOptionsName(opts)
 
 	reasoningItems := map[string]map[string]interface{}{}
@@ -275,9 +480,11 @@ func convertAssistantItems(msg types.Message, opts ConvertOptions) []interface{}
 				items = append(items, item)
 			}
 		case types.ReasoningContent:
-			if item := convertReasoningItem(p, opts, reasoningItems); item != nil {
+			item, w := convertReasoningItem(p, opts, reasoningItems)
+			if item != nil {
 				items = append(items, item)
 			}
+			warnings = append(warnings, w...)
 		case types.ToolCallContent:
 			toolCallContentIDs[p.ToolCallID] = true
 			if item := convertAssistantToolCallContentItem(p, opts); item != nil {
@@ -313,7 +520,9 @@ func convertAssistantItems(msg types.Message, opts ConvertOptions) []interface{}
 		}
 	}
 	if !opts.Store {
-		items = filterReasoningItemsWithoutEncryptedContent(items)
+		filtered, filterWarnings := filterReasoningItemsWithoutEncryptedContent(items)
+		items = filtered
+		warnings = append(warnings, filterWarnings...)
 	}
 
 	// Each ToolCall on the message becomes a function_call item.
@@ -331,18 +540,23 @@ func convertAssistantItems(msg types.Message, opts ConvertOptions) []interface{}
 			}
 			continue
 		}
-		if opts.HasPreviousResponseID && opts.Store && itemID != "" {
-			continue
-		}
+		// Plain client-executed function calls must always be resent in full,
+		// even when chaining with previousResponseId: the matching
+		// function_call_output can only reference the call by call_id, which
+		// the API cannot reconcile with an item id or item_reference.
 		args := tc.Arguments
 		if args == nil {
 			args = map[string]interface{}{}
 		}
 		argsJSON, _ := json.Marshal(args)
 		namespace := ""
+		var async *bool
 		if openaiMeta, ok := tc.ProviderMetadata[providerName].(map[string]interface{}); ok {
 			if rawNS, ok := openaiMeta["namespace"].(string); ok {
 				namespace = rawNS
+			}
+			if rawAsync, ok := openaiMeta["async"].(bool); ok {
+				async = &rawAsync
 			}
 		}
 		items = append(items, FunctionCallItem{
@@ -350,11 +564,13 @@ func convertAssistantItems(msg types.Message, opts ConvertOptions) []interface{}
 			CallID:    tc.ID,
 			Name:      tc.ToolName,
 			Namespace: namespace,
+			Async:     async,
+			Caller:    toolCallCallerFromMetadata(tc.ProviderMetadata, providerName),
 			Arguments: string(argsJSON),
 		})
 	}
 
-	return items
+	return items, warnings
 }
 
 func convertAssistantToolCallContentItem(part types.ToolCallContent, opts ConvertOptions) interface{} {
@@ -376,13 +592,16 @@ func convertAssistantToolCallContentItem(part types.ToolCallContent, opts Conver
 	if item, handled := convertAssistantToolCallItem(tc, itemID, opts); handled {
 		return item
 	}
-	if opts.HasPreviousResponseID && opts.Store && itemID != "" {
-		return nil
-	}
+	// Plain client-executed function calls must always be resent in full (see
+	// the comment in convertAssistantItems).
 	namespace := ""
+	var async *bool
 	if openaiMeta, ok := tc.ProviderMetadata[providerName].(map[string]interface{}); ok {
 		if rawNS, ok := openaiMeta["namespace"].(string); ok {
 			namespace = rawNS
+		}
+		if rawAsync, ok := openaiMeta["async"].(bool); ok {
+			async = &rawAsync
 		}
 	}
 	return FunctionCallItem{
@@ -390,8 +609,62 @@ func convertAssistantToolCallContentItem(part types.ToolCallContent, opts Conver
 		CallID:    tc.ID,
 		Name:      tc.ToolName,
 		Namespace: namespace,
+		Async:     async,
+		Caller:    toolCallCallerFromMetadata(tc.ProviderMetadata, providerName),
 		Arguments: genericArguments,
 	}
+}
+
+// toolCallCallerFromMetadata extracts the caller (direct vs. a
+// programmatic-tool-calling "program") from a decoded tool-call's
+// ProviderMetadata, for forwarding onto a reconstructed plain function_call
+// input item (row 1f6dd3a). Mirrors TS's caller.type === 'program' ?
+// {type:'program', caller_id} : caller, applied in reverse (SDK -> wire).
+func toolCallCallerFromMetadata(metadata map[string]interface{}, providerName string) *ToolCaller {
+	openaiMeta, ok := metadata[providerName].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	caller, ok := openaiMeta["caller"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	callerType, _ := caller["type"].(string)
+	if callerType == "" {
+		return nil
+	}
+	if callerType == "program" {
+		callerID, _ := caller["callerId"].(string)
+		return &ToolCaller{Type: "program", CallerID: callerID}
+	}
+	return &ToolCaller{Type: callerType}
+}
+
+// toolResultCaller extracts the caller from a decoded tool-result's
+// ProviderOptions (checked first, matching TS's part.providerOptions
+// lookup) or ProviderMetadata (checked second), for the
+// execution-denied-for-programmatic-calls rejection below (row e105b2b).
+func toolResultCaller(part types.ToolResultContent, providerName string) *ToolCaller {
+	if openaiOptions, ok := part.ProviderOptions[providerName].(map[string]interface{}); ok {
+		if caller, ok := openaiOptions["caller"].(map[string]interface{}); ok {
+			callerType, _ := caller["type"].(string)
+			if callerType == "program" {
+				callerID, _ := caller["callerId"].(string)
+				return &ToolCaller{Type: "program", CallerID: callerID}
+			}
+			if callerType != "" {
+				return &ToolCaller{Type: callerType}
+			}
+		}
+	}
+	if len(part.ProviderMetadata) == 0 {
+		return nil
+	}
+	var metadata map[string]interface{}
+	if err := json.Unmarshal(part.ProviderMetadata, &metadata); err != nil {
+		return nil
+	}
+	return toolCallCallerFromMetadata(metadata, providerName)
 }
 
 func toolCallContentArguments(part types.ToolCallContent) (map[string]interface{}, string) {
@@ -416,8 +689,30 @@ func toolCallContentArguments(part types.ToolCallContent) (map[string]interface{
 }
 
 func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts ConvertOptions) (interface{}, bool) {
+	// Row 6be0f51: a tool call expanded from an internal "parallel" wrapper
+	// replays as the ORIGINAL wrapper's single function_call (only once, and
+	// only when the server doesn't already remember it via conversation
+	// state), not as its own individual function_call.
+	if metadata, ok := GetParallelToolCallMetadata(tc.ProviderMetadata, openAIProviderOptionsName(opts)); ok {
+		if group, exists := opts.parallelToolResultGroups[metadata.ToolCallID]; exists && sameParallelToolCall(group.metadata, metadata) {
+			if opts.emittedParallelToolCalls[group.metadata.ToolCallID] {
+				return nil, true
+			}
+			opts.emittedParallelToolCalls[group.metadata.ToolCallID] = true
+			if opts.HasConversation {
+				// Conversations already contain the original wrapper item.
+				return nil, true
+			}
+			return FunctionCallItem{
+				Type:      "function_call",
+				CallID:    group.metadata.ToolCallID,
+				Name:      group.metadata.ToolName,
+				Arguments: group.metadata.Input,
+			}, true
+		}
+	}
 	toolName := normalizeOpenAIToolName(tc.ToolName)
-	if toolName == "tool_search" {
+	if tc.ToolName == opts.toolSearchName() {
 		if opts.Store && itemID != "" {
 			return map[string]interface{}{"type": "item_reference", "id": itemID}, true
 		}
@@ -432,20 +727,55 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 		if nested, ok := arguments["arguments"]; ok {
 			rawArguments, _ = json.Marshal(nested)
 		}
+		// TS: `id: id ?? part.toolCallId` -- unlike local_shell_call/
+		// shell_call/apply_patch_call/computer_call (which use a bare `id!`
+		// non-null assertion with no fallback), tool_search_call falls back
+		// to the tool call's own id when no persisted itemId exists.
+		id := itemID
+		if id == "" {
+			id = tc.ID
+		}
 		return ToolSearchCallItem{
 			Type:      "tool_search_call",
-			ID:        itemID,
+			ID:        id,
 			Status:    "completed",
 			Execution: execution,
 			CallID:    callID,
 			Arguments: rawArguments,
 		}, true
 	}
+	if tc.ToolName == "openai.programmatic_tool_calling" {
+		// Row 1f6dd3a: checked before the generic ProviderExecuted branch
+		// below, mirroring TS placing its 'programmatic_tool_calling' check
+		// ahead of the generic providerExecuted branch.
+		if opts.Store && itemID != "" {
+			return map[string]interface{}{"type": "item_reference", "id": itemID}, true
+		}
+		id := itemID
+		if id == "" {
+			id = tc.ID
+		}
+		code, _ := tc.Arguments["code"].(string)
+		fingerprint, _ := tc.Arguments["fingerprint"].(string)
+		return ProgramItem{
+			Type:        "program",
+			ID:          id,
+			CallID:      tc.ID,
+			Code:        code,
+			Fingerprint: fingerprint,
+		}, true
+	}
 	if tc.ProviderExecuted {
 		if opts.Store && itemID != "" {
 			return map[string]interface{}{"type": "item_reference", "id": itemID}, true
 		}
-		return nil, true
+		// Without response storage, shell calls must be reconstructed together
+		// with their matching shell_call_output; every other provider-executed
+		// call type is simply omitted when not stored.
+		if opts.Store || !opts.HasShellTool || toolName != "shell" {
+			return nil, true
+		}
+		// fall through to the shell reconstruction branch below.
 	}
 	if opts.Store && itemID != "" && isProviderDefinedResponsesTool(toolName, tc.ToolName, opts) {
 		if opts.HasPreviousResponseID {
@@ -482,17 +812,35 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 			Operation: operation,
 		}, true
 	}
+	if opts.HasComputerTool && toolName == "computer" {
+		callID := tc.ID
+		return ComputerCall{
+			Type:                "computer_call",
+			ID:                  stringPtr(itemID),
+			CallID:              &callID,
+			Status:              stringArgDefault(tc.Arguments, "status", "completed"),
+			Actions:             computerActionsFromArgs(tc.Arguments),
+			PendingSafetyChecks: computerSafetyChecksFromArgs(tc.Arguments, "pendingSafetyChecks"),
+		}, true
+	}
 	if opts.CustomToolNames[tc.ToolName] || opts.CustomToolNames[toolName] {
 		input := tc.RawArguments
 		if input == "" {
 			raw, _ := json.Marshal(tc.Arguments)
 			input = string(raw)
 		}
+		var async *bool
+		if openaiMeta, ok := tc.ProviderMetadata[openAIProviderOptionsName(opts)].(map[string]interface{}); ok {
+			if rawAsync, ok := openaiMeta["async"].(bool); ok {
+				async = &rawAsync
+			}
+		}
 		return CustomToolCallItem{
 			Type:   "custom_tool_call",
 			ID:     itemID,
 			CallID: tc.ID,
 			Name:   toolName,
+			Async:  async,
 			Input:  input,
 		}, true
 	}
@@ -503,10 +851,16 @@ func isProviderDefinedResponsesTool(normalizedToolName, originalToolName string,
 	return (opts.HasLocalShellTool && normalizedToolName == "local_shell") ||
 		(opts.HasShellTool && normalizedToolName == "shell") ||
 		(opts.HasApplyPatchTool && normalizedToolName == "apply_patch") ||
+		(opts.HasComputerTool && normalizedToolName == "computer") ||
 		opts.CustomToolNames[originalToolName] ||
 		opts.CustomToolNames[normalizedToolName]
 }
 
+// convertAssistantTextItem builds an "easy input message" for assistant text.
+// Per TS convert-to-openai-responses-input.ts, this never includes an `id`
+// field (an id present with store=false is simply dropped, since the text is
+// being resent as fresh content); `type` is only added when
+// opts.ExplicitMessageItemType is set (Azure Foundry projects).
 func convertAssistantTextItem(part types.TextContent, opts ConvertOptions) interface{} {
 	itemID, phase := openAITextMetadata(part, openAIProviderOptionsName(opts))
 	if opts.HasConversation && itemID != "" {
@@ -518,49 +872,57 @@ func convertAssistantTextItem(part types.TextContent, opts ConvertOptions) inter
 			"id":   itemID,
 		}
 	}
-	return AssistantMessageItem{
-		Type: "message",
-		Role: "assistant",
-		ID:   itemID,
-		Phase: func() *string {
-			if phase == "" {
-				return nil
-			}
-			return &phase
-		}(),
-		Content: []AssistantMessageContent{{
-			Type: "output_text",
-			Text: part.Text,
-		}},
+	item := map[string]interface{}{
+		"role":    "assistant",
+		"content": part.Text,
 	}
+	if opts.ExplicitMessageItemType {
+		item["type"] = "message"
+	}
+	if phase != "" {
+		item["phase"] = phase
+	}
+	return item
 }
 
-func convertReasoningItem(part types.ReasoningContent, opts ConvertOptions, reasoningItems map[string]map[string]interface{}) interface{} {
+func convertReasoningItem(part types.ReasoningContent, opts ConvertOptions, reasoningItems map[string]map[string]interface{}) (interface{}, []types.Warning) {
 	itemID := openAIReasoningItemID(part, openAIProviderOptionsName(opts))
 	if (opts.HasPreviousResponseID || opts.HasConversation) && itemID != "" {
-		return nil
+		return nil, nil
 	}
 	if opts.Store && itemID != "" {
 		if _, ok := reasoningItems[itemID]; ok {
-			return nil
+			return nil, nil
 		}
 		reasoningItems[itemID] = map[string]interface{}{}
 		return map[string]interface{}{
 			"type": "item_reference",
 			"id":   itemID,
-		}
+		}, nil
 	}
 
 	summaryParts := reasoningSummaryParts(part.Text)
 	if itemID != "" {
-		if existing, ok := reasoningItems[itemID]; ok {
+		existing, hadExisting := reasoningItems[itemID]
+		if hadExisting {
+			var warnings []types.Warning
 			if len(summaryParts) > 0 {
 				existing["summary"] = appendReasoningSummary(existing["summary"], summaryParts)
+			} else {
+				// Row (P1-5c item 7): TS warns (but still forwards
+				// encrypted_content below) when an empty-text reasoning part
+				// would otherwise append nothing to an already-started
+				// reasoning sequence.
+				raw, _ := json.Marshal(part)
+				warnings = append(warnings, types.Warning{
+					Type:    "other",
+					Message: fmt.Sprintf("Cannot append empty reasoning part to existing reasoning sequence. Skipping reasoning part: %s.", raw),
+				})
 			}
 			if part.EncryptedContent != "" {
 				existing["encrypted_content"] = part.EncryptedContent
 			}
-			return nil
+			return nil, warnings
 		}
 		item := map[string]interface{}{
 			"type":    "reasoning",
@@ -571,16 +933,23 @@ func convertReasoningItem(part types.ReasoningContent, opts ConvertOptions, reas
 			item["encrypted_content"] = part.EncryptedContent
 		}
 		reasoningItems[itemID] = item
-		return item
+		return item, nil
 	}
 	if part.EncryptedContent == "" {
-		return nil
+		// Row (P1-5c item 7): a reasoning part with neither an itemId nor
+		// encrypted_content didn't originate from this provider and cannot
+		// be replayed; TS warns instead of silently dropping it.
+		raw, _ := json.Marshal(part)
+		return nil, []types.Warning{{
+			Type:    "other",
+			Message: fmt.Sprintf("Non-OpenAI reasoning parts are not supported. Skipping reasoning part: %s.", raw),
+		}}
 	}
 
 	item := map[string]interface{}{"type": "reasoning"}
 	item["encrypted_content"] = part.EncryptedContent
 	item["summary"] = summaryParts
-	return item
+	return item, nil
 }
 
 func reasoningSummaryParts(text string) []map[string]interface{} {
@@ -600,16 +969,25 @@ func appendReasoningSummary(existing interface{}, additional []map[string]interf
 	return append(summary, additional...)
 }
 
-func filterReasoningItemsWithoutEncryptedContent(items []interface{}) []interface{} {
+func filterReasoningItemsWithoutEncryptedContent(items []interface{}) ([]interface{}, []types.Warning) {
 	filtered := items[:0]
+	var warnings []types.Warning
+	dropped := false
 	for _, item := range items {
 		reasoning, ok := item.(map[string]interface{})
 		if ok && reasoning["type"] == "reasoning" && reasoning["encrypted_content"] == nil {
+			dropped = true
 			continue
 		}
 		filtered = append(filtered, item)
 	}
-	return filtered
+	if dropped {
+		warnings = append(warnings, types.Warning{
+			Type:    "other",
+			Message: "Reasoning parts without encrypted content are not supported when store is false. Skipping reasoning parts.",
+		})
+	}
+	return filtered, warnings
 }
 
 func convertAssistantToolResultItem(part types.ToolResultContent, opts ConvertOptions) interface{} {
@@ -620,7 +998,7 @@ func convertAssistantToolResultItem(part types.ToolResultContent, opts ConvertOp
 		return nil
 	}
 	toolName := normalizeOpenAIToolName(part.ToolName)
-	if toolName == "tool_search" {
+	if part.ToolName == opts.toolSearchName() {
 		itemID := firstNonEmpty(openAIToolResultItemID(part, openAIProviderOptionsName(opts)), part.ToolCallID)
 		if opts.Store {
 			return map[string]interface{}{
@@ -634,6 +1012,33 @@ func convertAssistantToolResultItem(part types.ToolResultContent, opts ConvertOp
 					output.ID = itemID
 					output.CallID = nil
 					return output
+				}
+			}
+		}
+		return nil
+	}
+	if part.ToolName == "openai.programmatic_tool_calling" {
+		// Row 1f6dd3a: the result of a hosted program's execution, mirroring
+		// tool_search's item_reference-first handling above.
+		itemID := firstNonEmpty(openAIToolResultItemID(part, openAIProviderOptionsName(opts)), part.ToolCallID)
+		if opts.Store {
+			return map[string]interface{}{
+				"type": "item_reference",
+				"id":   itemID,
+			}
+		}
+		if part.Output != nil && part.Output.Type == types.ToolResultOutputJSON {
+			var parsed struct {
+				Result string `json:"result"`
+				Status string `json:"status"`
+			}
+			if decodeToolOutputJSON(part.Output.Value, &parsed) {
+				return ProgramOutputItem{
+					Type:   "program_output",
+					ID:     itemID,
+					CallID: part.ToolCallID,
+					Result: parsed.Result,
+					Status: parsed.Status,
 				}
 			}
 		}
@@ -771,6 +1176,26 @@ func openAIItemID(metadata map[string]interface{}, providerName string) string {
 	return itemID
 }
 
+// ValidReasoningEffortUpdateValues is the fixed set of values TS validates
+// reasoningEffortUpdate against at the schema level (both request-level
+// providerOptions.openai.reasoningEffortUpdate and message-level
+// providerOptions[provider].reasoningEffortUpdate on system messages), via
+// z.enum(['none','low','medium','high','xhigh','max']) as of row
+// 94d5d6d3e6. This is independent of, and checked before, any per-model
+// SupportedReasoningEfforts restriction (e.g. gpt-6-astra rejecting "none").
+var ValidReasoningEffortUpdateValues = []string{"none", "low", "medium", "high", "xhigh", "max"}
+
+// isValidReasoningEffortUpdateValue reports whether effort is one of the
+// fixed schema-level reasoningEffortUpdate values.
+func isValidReasoningEffortUpdateValue(effort string) bool {
+	for _, v := range ValidReasoningEffortUpdateValues {
+		if v == effort {
+			return true
+		}
+	}
+	return false
+}
+
 func openAIProviderOptionsName(opts ConvertOptions) string {
 	if opts.ProviderOptionsName != "" {
 		return opts.ProviderOptionsName
@@ -818,7 +1243,7 @@ func firstNonEmpty(values ...string) string {
 }
 
 // convertToolItems maps tool-role message content to function_call_output items.
-func convertToolItems(msg types.Message, options ...ConvertOptions) []interface{} {
+func convertToolItems(msg types.Message, options ...ConvertOptions) ([]interface{}, error) {
 	var opts ConvertOptions
 	if len(options) > 0 {
 		opts = options[0]
@@ -832,7 +1257,7 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) []interface{
 				continue
 			}
 			processedApprovals[p.ApprovalID] = true
-			if opts.Store {
+			if opts.Store && !opts.HasConversation && !opts.HasPreviousResponseID {
 				items = append(items, map[string]interface{}{
 					"type": "item_reference",
 					"id":   p.ApprovalID,
@@ -848,7 +1273,7 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) []interface{
 				continue
 			}
 			processedApprovals[p.ApprovalID] = true
-			if opts.Store {
+			if opts.Store && !opts.HasConversation && !opts.HasPreviousResponseID {
 				items = append(items, map[string]interface{}{
 					"type": "item_reference",
 					"id":   p.ApprovalID,
@@ -860,6 +1285,12 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) []interface{
 				Approve:           p.Approved,
 			})
 		case types.ToolResultContent:
+			if handled, err := appendParallelToolResult(&items, p, opts); handled {
+				if err != nil {
+					return nil, err
+				}
+				continue
+			}
 			if shouldSkipApprovalDeniedOutput(p) {
 				continue
 			}
@@ -875,6 +1306,9 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) []interface{
 				})
 				continue
 			}
+			if err := rejectDeniedProgrammaticToolResult(p, opts); err != nil {
+				return nil, err
+			}
 			items = append(items, FunctionCallOutputItem{
 				Type:   "function_call_output",
 				CallID: p.ToolCallID,
@@ -882,6 +1316,12 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) []interface{
 			})
 		case *types.ToolResultContent:
 			if p != nil {
+				if handled, err := appendParallelToolResult(&items, *p, opts); handled {
+					if err != nil {
+						return nil, err
+					}
+					continue
+				}
 				if shouldSkipApprovalDeniedOutput(*p) {
 					continue
 				}
@@ -897,6 +1337,9 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) []interface{
 					})
 					continue
 				}
+				if err := rejectDeniedProgrammaticToolResult(*p, opts); err != nil {
+					return nil, err
+				}
 				items = append(items, FunctionCallOutputItem{
 					Type:   "function_call_output",
 					CallID: p.ToolCallID,
@@ -905,17 +1348,232 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) []interface{
 			}
 		}
 	}
-	return items
+	return items, nil
+}
+
+// appendParallelToolResult reports whether part belongs to a complete
+// parallel tool result group (row 6be0f51): if so, it appends the group's
+// single regrouped function_call_output to items (only on the first child
+// result seen for that group) and returns handled=true so the caller skips
+// its normal per-part handling for this part.
+func appendParallelToolResult(items *[]interface{}, part types.ToolResultContent, opts ConvertOptions) (handled bool, err error) {
+	metadata, ok := GetParallelToolCallMetadata(toolResultContentProviderMetadata(part), openAIProviderOptionsName(opts))
+	if !ok {
+		return false, nil
+	}
+	group, exists := opts.parallelToolResultGroups[metadata.ToolCallID]
+	if !exists || !sameParallelToolCall(group.metadata, metadata) {
+		return false, nil
+	}
+	if !opts.emittedParallelToolResults[group.metadata.ToolCallID] {
+		opts.emittedParallelToolResults[group.metadata.ToolCallID] = true
+		*items = append(*items, buildParallelFunctionCallOutput(group, opts))
+	}
+	return true, nil
+}
+
+// collectProgrammaticCallerIDs scans the prompt's assistant messages for
+// tool calls whose caller was a programmatic-tool-calling "program",
+// returning their tool-call-ids. Used as a fallback by
+// rejectDeniedProgrammaticToolResult when a tool-result doesn't carry its
+// own caller metadata (row e105b2b, mirrors TS's programmaticToolCallIds).
+func collectProgrammaticCallerIDs(prompt types.Prompt, providerName string) map[string]bool {
+	ids := map[string]bool{}
+	addIfProgrammatic := func(toolCallID string, metadata map[string]interface{}) {
+		if toolCallID == "" {
+			return
+		}
+		if caller := toolCallCallerFromMetadata(metadata, providerName); caller != nil && caller.Type == "program" {
+			ids[toolCallID] = true
+		}
+	}
+	for _, msg := range prompt.Messages {
+		if msg.Role != types.RoleAssistant {
+			continue
+		}
+		for _, tc := range msg.ToolCalls {
+			addIfProgrammatic(tc.ID, tc.ProviderMetadata)
+		}
+		for _, part := range msg.Content {
+			switch p := part.(type) {
+			case types.ToolCallContent:
+				addIfProgrammatic(p.ToolCallID, toolCallContentProviderMetadata(p))
+			case *types.ToolCallContent:
+				if p != nil {
+					addIfProgrammatic(p.ToolCallID, toolCallContentProviderMetadata(*p))
+				}
+			}
+		}
+	}
+	return ids
+}
+
+// rejectDeniedProgrammaticToolResult mirrors TS's check in the 'tool' role
+// case: a client function tool invoked by a programmatic-tool-calling
+// "program" caller cannot receive an execution-denied result, since there is
+// no interactive approval loop inside the hosted JavaScript sandbox (row
+// e105b2b).
+func rejectDeniedProgrammaticToolResult(part types.ToolResultContent, opts ConvertOptions) error {
+	if !isExecutionDeniedOutput(part.Output) {
+		return nil
+	}
+	providerName := openAIProviderOptionsName(opts)
+	caller := toolResultCaller(part, providerName)
+	isProgrammatic := (caller != nil && caller.Type == "program") || opts.programmaticCallerIDs[part.ToolCallID]
+	if !isProgrammatic {
+		return nil
+	}
+	// Matches TS's UnsupportedFunctionalityError({ functionality:
+	// 'execution-denied results for programmatic tool calls' }), whose
+	// default message template is `'${functionality}' functionality not
+	// supported.`.
+	const functionality = "execution-denied results for programmatic tool calls"
+	return &providererrors.UnsupportedFunctionalityError{
+		Functionality: functionality,
+		Message:       fmt.Sprintf("'%s' functionality not supported.", functionality),
+	}
+}
+
+// sameParallelToolCall reports whether two ParallelToolCallMetadata values
+// describe the same "parallel" wrapper call (row 6be0f51).
+func sameParallelToolCall(a, b ParallelToolCallMetadata) bool {
+	return a.ItemID == b.ItemID &&
+		a.ToolCallID == b.ToolCallID &&
+		a.ToolName == b.ToolName &&
+		a.Input == b.Input &&
+		a.Count == b.Count
+}
+
+// toolResultContentProviderMetadata merges a ToolResultContent's
+// ProviderOptions and ProviderMetadata into one map, keyed by provider name,
+// mirroring toolCallContentProviderMetadata for the tool-result side.
+func toolResultContentProviderMetadata(part types.ToolResultContent) map[string]interface{} {
+	metadata := map[string]interface{}{}
+	for key, value := range part.ProviderOptions {
+		metadata[key] = value
+	}
+	if len(part.ProviderMetadata) == 0 {
+		return metadata
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal(part.ProviderMetadata, &raw); err != nil {
+		return metadata
+	}
+	for key, value := range raw {
+		if _, ok := metadata[key]; !ok {
+			metadata[key] = value
+		}
+	}
+	return metadata
+}
+
+// collectCompleteParallelToolResultGroups scans the prompt's "tool" role
+// messages for results carrying parallelToolCall metadata, and returns the
+// complete groups: every child result for a given wrapper call_id present,
+// none duplicated, and all agreeing on the same wrapper identity (row
+// 6be0f51, mirrors TS collectCompleteParallelToolResultGroups).
+func collectCompleteParallelToolResultGroups(prompt types.Prompt, providerName string) map[string]parallelToolResultGroup {
+	type pendingGroup struct {
+		metadata ParallelToolCallMetadata
+		results  map[int]types.ToolResultContent
+		invalid  bool
+	}
+	pending := map[string]*pendingGroup{}
+
+	addResult := func(part types.ToolResultContent) {
+		metadata, ok := GetParallelToolCallMetadata(toolResultContentProviderMetadata(part), providerName)
+		if !ok {
+			return
+		}
+		g, exists := pending[metadata.ToolCallID]
+		if !exists {
+			pending[metadata.ToolCallID] = &pendingGroup{
+				metadata: metadata,
+				results:  map[int]types.ToolResultContent{metadata.Index: part},
+			}
+			return
+		}
+		if _, has := g.results[metadata.Index]; has || !sameParallelToolCall(g.metadata, metadata) {
+			g.invalid = true
+			return
+		}
+		g.results[metadata.Index] = part
+	}
+
+	for _, msg := range prompt.Messages {
+		if msg.Role != types.RoleTool {
+			continue
+		}
+		for _, part := range msg.Content {
+			switch p := part.(type) {
+			case types.ToolResultContent:
+				addResult(p)
+			case *types.ToolResultContent:
+				if p != nil {
+					addResult(*p)
+				}
+			}
+		}
+	}
+
+	complete := map[string]parallelToolResultGroup{}
+	for toolCallID, g := range pending {
+		if g.invalid || len(g.results) != g.metadata.Count {
+			continue
+		}
+		ordered := make([]types.ToolResultContent, g.metadata.Count)
+		allPresent := true
+		for i := 0; i < g.metadata.Count; i++ {
+			r, has := g.results[i]
+			if !has {
+				allPresent = false
+				break
+			}
+			ordered[i] = r
+		}
+		if allPresent {
+			complete[toolCallID] = parallelToolResultGroup{metadata: g.metadata, results: ordered}
+		}
+	}
+	return complete
+}
+
+// buildParallelFunctionCallOutput joins a complete parallel tool result
+// group's child outputs into the single function_call_output the server
+// expects for its original "parallel" wrapper call_id, in the same order as
+// the original tool_uses array (row 6be0f51).
+//
+// TS additionally supports per-child prompt-cache-breakpoints by emitting an
+// array-of-parts output in that case; this port always joins with "\n"
+// (matching TS's plain-string fallback), since attaching a prompt-cache
+// breakpoint to one child of a regrouped parallel call is a narrow edge case.
+func buildParallelFunctionCallOutput(group parallelToolResultGroup, opts ConvertOptions) FunctionCallOutputItem {
+	parts := make([]string, len(group.results))
+	for i, r := range group.results {
+		switch out := toolResultOutputWithOptions(r, opts).(type) {
+		case string:
+			parts[i] = out
+		default:
+			b, _ := json.Marshal(out)
+			parts[i] = string(b)
+		}
+	}
+	return FunctionCallOutputItem{
+		Type:   "function_call_output",
+		CallID: group.metadata.ToolCallID,
+		Output: strings.Join(parts, "\n"),
+	}
 }
 
 func convertSpecialToolOutput(part types.ToolResultContent, opts ConvertOptions) interface{} {
 	if part.Output == nil || part.Output.Type != types.ToolResultOutputJSON {
 		return nil
 	}
+	if part.ToolName == opts.toolSearchName() {
+		return convertToolSearchOutput(part, "client")
+	}
 	toolName := normalizeOpenAIToolName(part.ToolName)
 	switch toolName {
-	case "tool_search":
-		return convertToolSearchOutput(part, "client")
 	case "local_shell":
 		if !opts.HasLocalShellTool {
 			return nil
@@ -931,6 +1589,11 @@ func convertSpecialToolOutput(part types.ToolResultContent, opts ConvertOptions)
 			return nil
 		}
 		return convertApplyPatchOutput(part)
+	case "computer":
+		if !opts.HasComputerTool {
+			return nil
+		}
+		return convertComputerOutput(part)
 	default:
 		return nil
 	}
@@ -1007,6 +1670,39 @@ func convertShellOutput(part types.ToolResultContent) interface{} {
 	}
 }
 
+func convertComputerOutput(part types.ToolResultContent) interface{} {
+	var parsed struct {
+		Output struct {
+			ImageURL string `json:"imageUrl"`
+			FileID   string `json:"fileId"`
+			Detail   string `json:"detail"`
+		} `json:"output"`
+		AcknowledgedSafetyChecks []struct {
+			ID      string `json:"id"`
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"acknowledgedSafetyChecks"`
+	}
+	if !decodeToolOutputJSON(part.Output.Value, &parsed) {
+		return nil
+	}
+	checks := make([]ComputerSafetyCheck, 0, len(parsed.AcknowledgedSafetyChecks))
+	for _, c := range parsed.AcknowledgedSafetyChecks {
+		checks = append(checks, ComputerSafetyCheck{ID: c.ID, Code: c.Code, Message: c.Message})
+	}
+	return ComputerCallOutput{
+		Type:   "computer_call_output",
+		CallID: part.ToolCallID,
+		Output: ComputerCallOutputScreenshot{
+			Type:     "computer_screenshot",
+			ImageURL: parsed.Output.ImageURL,
+			FileID:   parsed.Output.FileID,
+			Detail:   parsed.Output.Detail,
+		},
+		AcknowledgedSafetyChecks: checks,
+	}
+}
+
 func convertApplyPatchOutput(part types.ToolResultContent) interface{} {
 	var parsed struct {
 		Status string  `json:"status"`
@@ -1053,6 +1749,50 @@ func shellActionFromArgs(args map[string]interface{}) ShellCallAction {
 		TimeoutMs:       intPtrArg(action, "timeoutMs"),
 		MaxOutputLength: intPtrArg(action, "maxOutputLength"),
 	}
+}
+
+// computerActionsFromArgs extracts the "actions" array from a computer tool
+// call's arguments and translates each action's field names to the wire
+// format (row 0063c2d).
+func computerActionsFromArgs(args map[string]interface{}) []map[string]interface{} {
+	raw, ok := args["actions"].([]interface{})
+	if !ok {
+		return nil
+	}
+	actions := make([]map[string]interface{}, 0, len(raw))
+	for _, item := range raw {
+		if m, ok := item.(map[string]interface{}); ok {
+			actions = append(actions, MapComputerActionToWire(m))
+		}
+	}
+	return actions
+}
+
+func computerSafetyChecksFromArgs(args map[string]interface{}, key string) []ComputerSafetyCheck {
+	raw, ok := args[key].([]interface{})
+	if !ok {
+		return nil
+	}
+	checks := make([]ComputerSafetyCheck, 0, len(raw))
+	for _, item := range raw {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		checks = append(checks, ComputerSafetyCheck{
+			ID:      stringArg(m, "id"),
+			Code:    stringArg(m, "code"),
+			Message: stringArg(m, "message"),
+		})
+	}
+	return checks
+}
+
+func stringArgDefault(values map[string]interface{}, key, fallback string) string {
+	if v := stringArg(values, key); v != "" {
+		return v
+	}
+	return fallback
 }
 
 func applyPatchOperationFromArgs(args map[string]interface{}) ApplyPatchOperation {
@@ -1189,21 +1929,33 @@ func toolResultOutput(tr types.ToolResultContent) interface{} {
 
 func toolResultOutputWithOptions(tr types.ToolResultContent, opts ConvertOptions) interface{} {
 	providerName := openAIProviderOptionsName(opts)
+	// OpenAI parses function_call_output.output as JSON when the function
+	// declared output_schema. Text-like results therefore need to be
+	// JSON-encoded to become valid JSON string literals.
+	hasOutputSchema := opts.OutputSchemaToolNames[tr.ToolName]
+	scalarOutput := func(value string) interface{} {
+		if !hasOutputSchema {
+			return value
+		}
+		b, _ := json.Marshal(value)
+		return string(b)
+	}
 	if tr.Output != nil {
 		switch tr.Output.Type {
 		case types.ToolResultOutputText:
 			if s, ok := tr.Output.Value.(string); ok {
-				return s
+				return scalarOutput(s)
 			}
 		case types.ToolResultOutputJSON:
 			if b, err := json.Marshal(tr.Output.Value); err == nil {
 				return string(b)
 			}
 		case types.ToolResultOutputExecutionDenied:
-			if tr.Output.Reason != "" {
-				return tr.Output.Reason
+			reason := tr.Output.Reason
+			if reason == "" {
+				reason = "Tool call execution denied."
 			}
-			return "Tool call execution denied."
+			return scalarOutput(reason)
 		case types.ToolResultOutputContent:
 			parts := make([]CustomToolCallOutputPart, 0, len(tr.Output.Content))
 			for _, block := range tr.Output.Content {
@@ -1228,6 +1980,8 @@ func toolResultOutputWithOptions(tr types.ToolResultContent, opts ConvertOptions
 						switch {
 						case b.URL != "":
 							fileDataType = types.FileDataTypeURL
+						case b.Reference != "" || len(b.FileData.Reference) > 0:
+							fileDataType = types.FileDataTypeReference
 						case len(b.Data) > 0:
 							fileDataType = types.FileDataTypeData
 						case b.FileData.DataString != "" || len(b.FileData.Data) > 0:
@@ -1235,6 +1989,23 @@ func toolResultOutputWithOptions(tr types.ToolResultContent, opts ConvertOptions
 						}
 					}
 					switch fileDataType {
+					case types.FileDataTypeReference:
+						reference := firstNonEmpty(providerReferenceString(b.FileData.Reference, providerName), b.Reference)
+						if reference == "" {
+							continue
+						}
+						if isImageMediaType(mediaType) {
+							parts = append(parts, CustomToolCallOutputPart{
+								Type:   "input_image",
+								FileID: reference,
+								Detail: openAIResponsesImageDetail(b.ProviderOptions, providerName),
+							})
+						} else {
+							parts = append(parts, CustomToolCallOutputPart{
+								Type:   "input_file",
+								FileID: reference,
+							})
+						}
 					case types.FileDataTypeURL:
 						url := firstNonEmpty(b.FileData.URL, b.URL)
 						if url == "" {

@@ -87,13 +87,13 @@ func TestConvertPromptToInputWithOptionsUnsupportedFileDefaultAndPassThrough(t *
 			types.FileContent{Data: []byte("csv"), MediaType: "text/csv", Filename: "data.csv"},
 		},
 	}}}
-	if _, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{}); err == nil {
+	if _, _, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{}); err == nil {
 		t.Fatal("expected unsupported file media type error")
 	}
-	if _, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{ProviderOptionsName: "azure"}); err == nil || !strings.Contains(err.Error(), "providerOptions.azure.passThroughUnsupportedFiles") {
+	if _, _, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{ProviderOptionsName: "azure"}); err == nil || !strings.Contains(err.Error(), "providerOptions.azure.passThroughUnsupportedFiles") {
 		t.Fatalf("azure unsupported file error = %v, want azure providerOptions hint", err)
 	}
-	input, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{PassThroughUnsupportedFiles: true})
+	input, _, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{PassThroughUnsupportedFiles: true})
 	if err != nil {
 		t.Fatalf("ConvertPromptToInputWithOptions error = %v", err)
 	}
@@ -108,7 +108,7 @@ func TestConvertPromptToInputWithOptionsUnsupportedFileDefaultAndPassThrough(t *
 func TestConvertPromptToInput_UserContentArrayAndDefaultFilenames(t *testing.T) {
 	t.Parallel()
 
-	input, err := ConvertPromptToInputWithOptions(types.Prompt{
+	input, _, err := ConvertPromptToInputWithOptions(types.Prompt{
 		Messages: []types.Message{
 			{
 				Role: types.RoleUser,
@@ -160,7 +160,7 @@ func TestConvertPromptToInput_UserContentArrayAndDefaultFilenames(t *testing.T) 
 func TestConvertPromptToInput_UserFileDataVariants(t *testing.T) {
 	t.Parallel()
 
-	input, err := ConvertPromptToInputWithOptions(types.Prompt{
+	input, _, err := ConvertPromptToInputWithOptions(types.Prompt{
 		Messages: []types.Message{
 			{
 				Role: types.RoleUser,
@@ -229,7 +229,7 @@ func TestConvertPromptToInput_UserFileDataVariants(t *testing.T) {
 		t.Fatalf("parts[4] = %#v, want input_file file_id", parts[4])
 	}
 
-	_, err = ConvertPromptToInputWithOptions(types.Prompt{
+	_, _, err = ConvertPromptToInputWithOptions(types.Prompt{
 		Messages: []types.Message{{
 			Role: types.RoleUser,
 			Content: []types.ContentPart{types.FileContent{
@@ -245,7 +245,7 @@ func TestConvertPromptToInput_UserFileDataVariants(t *testing.T) {
 func TestConvertPromptToInput_ProviderOptionsName(t *testing.T) {
 	t.Parallel()
 
-	input, err := ConvertPromptToInputWithOptions(types.Prompt{
+	input, _, err := ConvertPromptToInputWithOptions(types.Prompt{
 		Messages: []types.Message{{
 			Role: types.RoleUser,
 			Content: []types.ContentPart{types.FileContent{
@@ -286,7 +286,7 @@ func TestConvertPromptToInputResponsesReasoningItems(t *testing.T) {
 		Content: []types.ContentPart{reasoning},
 	}}}
 
-	input, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{Store: true})
+	input, _, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{Store: true})
 	if err != nil {
 		t.Fatalf("ConvertPromptToInputWithOptions: %v", err)
 	}
@@ -295,7 +295,7 @@ func TestConvertPromptToInputResponsesReasoningItems(t *testing.T) {
 		t.Fatalf("stored reasoning item = %#v, want item_reference rs_123", itemRef)
 	}
 
-	input, err = ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{HasPreviousResponseID: true, Store: true})
+	input, _, err = ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{HasPreviousResponseID: true, Store: true})
 	if err != nil {
 		t.Fatalf("ConvertPromptToInputWithOptions with previous response id: %v", err)
 	}
@@ -305,7 +305,7 @@ func TestConvertPromptToInputResponsesReasoningItems(t *testing.T) {
 
 	reasoning.ProviderOptions = nil
 	prompt.Messages[0].Content = []types.ContentPart{reasoning}
-	input, err = ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{})
+	input, _, err = ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{})
 	if err != nil {
 		t.Fatalf("ConvertPromptToInputWithOptions full reasoning: %v", err)
 	}
@@ -335,7 +335,7 @@ func TestConvertPromptToInputResponsesReasoningConversationSkipAndDedup(t *testi
 		Content: []types.ContentPart{reasoning, duplicate},
 	}}}
 
-	input, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{HasConversation: true})
+	input, _, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{HasConversation: true})
 	if err != nil {
 		t.Fatalf("ConvertPromptToInputWithOptions with conversation: %v", err)
 	}
@@ -343,7 +343,7 @@ func TestConvertPromptToInputResponsesReasoningConversationSkipAndDedup(t *testi
 		t.Fatalf("stored reasoning with conversation should be skipped, got %#v", input)
 	}
 
-	input, err = ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{})
+	input, _, err = ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{})
 	if err != nil {
 		t.Fatalf("ConvertPromptToInputWithOptions dedupe: %v", err)
 	}
@@ -365,7 +365,7 @@ func TestConvertPromptToInputResponsesReasoningConversationSkipAndDedup(t *testi
 			types.ReasoningContent{Text: "summary without encrypted content"},
 		},
 	}}}
-	input, err = ConvertPromptToInputWithOptions(summaryOnly, "system", ConvertOptions{})
+	input, _, err = ConvertPromptToInputWithOptions(summaryOnly, "system", ConvertOptions{})
 	if err != nil {
 		t.Fatalf("ConvertPromptToInputWithOptions summary-only reasoning: %v", err)
 	}
@@ -376,7 +376,7 @@ func TestConvertPromptToInputResponsesReasoningConversationSkipAndDedup(t *testi
 	firstWithoutEncrypted := reasoning
 	firstWithoutEncrypted.EncryptedContent = ""
 	prompt.Messages[0].Content = []types.ContentPart{firstWithoutEncrypted, duplicate}
-	input, err = ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{})
+	input, _, err = ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{})
 	if err != nil {
 		t.Fatalf("ConvertPromptToInputWithOptions late encrypted reasoning: %v", err)
 	}
@@ -390,6 +390,70 @@ func TestConvertPromptToInputResponsesReasoningConversationSkipAndDedup(t *testi
 	summary = item["summary"].([]map[string]interface{})
 	if len(summary) != 2 || summary[0]["text"] != "summary one" || summary[1]["text"] != "summary two" {
 		t.Fatalf("late encrypted reasoning summary = %#v", summary)
+	}
+}
+
+// TestConvertReasoningItemNonOpenAIPartWarns covers the first of P1-5c item
+// 7's two missing warnings: a reasoning part with neither an itemId nor
+// encrypted_content didn't originate from this provider and is dropped with
+// a warning instead of silently.
+func TestConvertReasoningItemNonOpenAIPartWarns(t *testing.T) {
+	prompt := types.Prompt{Messages: []types.Message{{
+		Role:    types.RoleAssistant,
+		Content: []types.ContentPart{types.ReasoningContent{Text: "summary without encrypted content"}},
+	}}}
+	input, warnings, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{})
+	if err != nil {
+		t.Fatalf("ConvertPromptToInputWithOptions: %v", err)
+	}
+	if len(input) != 0 {
+		t.Fatalf("non-OpenAI reasoning part should be dropped, got %#v", input)
+	}
+	if len(warnings) != 1 || warnings[0].Type != "other" || !strings.Contains(warnings[0].Message, "Non-OpenAI reasoning parts are not supported") {
+		t.Fatalf("warnings = %#v, want a Non-OpenAI reasoning parts warning", warnings)
+	}
+}
+
+// TestConvertReasoningItemEmptyAppendWarns covers the second of P1-5c item
+// 7's two missing warnings: an empty-text reasoning part that would append
+// nothing to an already-started (non-stored) reasoning sequence for the
+// same itemId is dropped with a warning, while still forwarding any
+// encrypted_content it carries onto the existing sequence.
+func TestConvertReasoningItemEmptyAppendWarns(t *testing.T) {
+	first := types.ReasoningContent{
+		Text: "first",
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{"itemId": "rs_1"},
+		},
+	}
+	emptyFollowUp := types.ReasoningContent{
+		Text:             "",
+		EncryptedContent: "enc_late",
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{"itemId": "rs_1"},
+		},
+	}
+	prompt := types.Prompt{Messages: []types.Message{{
+		Role:    types.RoleAssistant,
+		Content: []types.ContentPart{first, emptyFollowUp},
+	}}}
+	input, warnings, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{})
+	if err != nil {
+		t.Fatalf("ConvertPromptToInputWithOptions: %v", err)
+	}
+	if len(input) != 1 {
+		t.Fatalf("expected a single merged reasoning item, got %#v", input)
+	}
+	item := input[0].(map[string]interface{})
+	if item["encrypted_content"] != "enc_late" {
+		t.Fatalf("reasoning item = %#v, want the late encrypted_content still forwarded", item)
+	}
+	summary := item["summary"].([]map[string]interface{})
+	if len(summary) != 1 || summary[0]["text"] != "first" {
+		t.Fatalf("reasoning summary = %#v, want only the first (non-empty) summary part", summary)
+	}
+	if len(warnings) != 1 || warnings[0].Type != "other" || !strings.Contains(warnings[0].Message, "Cannot append empty reasoning part") {
+		t.Fatalf("warnings = %#v, want a Cannot append empty reasoning part warning", warnings)
 	}
 }
 
@@ -416,7 +480,7 @@ func TestConvertPromptToInputResponsesStoredAssistantTextAndClientFunctionCalls(
 		},
 	}}}
 
-	input, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{Store: true})
+	input, _, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{Store: true})
 	if err != nil {
 		t.Fatalf("ConvertPromptToInputWithOptions store=true: %v", err)
 	}
@@ -432,7 +496,7 @@ func TestConvertPromptToInputResponsesStoredAssistantTextAndClientFunctionCalls(
 		t.Fatalf("function call item = %#v, want full client function_call without item id", callItem)
 	}
 
-	input, err = ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{HasConversation: true, Store: true})
+	input, _, err = ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{HasConversation: true, Store: true})
 	if err != nil {
 		t.Fatalf("ConvertPromptToInputWithOptions conversation: %v", err)
 	}
@@ -440,13 +504,17 @@ func TestConvertPromptToInputResponsesStoredAssistantTextAndClientFunctionCalls(
 		t.Fatalf("stored assistant text/function calls should be skipped with conversation, got %#v", input)
 	}
 
-	input, err = ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{})
+	input, _, err = ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{})
 	if err != nil {
 		t.Fatalf("ConvertPromptToInputWithOptions full items: %v", err)
 	}
-	msg := input[0].(AssistantMessageItem)
-	if msg.ID != "msg_123" || msg.Phase == nil || *msg.Phase != "final_answer" {
-		t.Fatalf("assistant message metadata = %#v, want id and phase", msg)
+	// Per TS convert-to-openai-responses-input.ts, an assistant text item with
+	// store=false is always resent as a fresh "easy input message" — the item
+	// id is never included (only item_reference carries an id), and `type` is
+	// only added when ExplicitMessageItemType is set.
+	msg := input[0].(map[string]interface{})
+	if msg["type"] != nil || msg["role"] != "assistant" || msg["content"] != "stored answer" || msg["phase"] != "final_answer" {
+		t.Fatalf("assistant message metadata = %#v, want role/content/phase without id or type", msg)
 	}
 	call := input[1].(FunctionCallItem)
 	if call.ID != "" {
@@ -494,8 +562,8 @@ func TestConvertToolResultOutput_StructuredContentAndFallbacks(t *testing.T) {
 		},
 	})
 	parts, ok := out.([]CustomToolCallOutputPart)
-	if !ok || len(parts) != 5 {
-		t.Fatalf("expected 5 structured parts, got %#v", out)
+	if !ok || len(parts) != 6 {
+		t.Fatalf("expected 6 structured parts, got %#v", out)
 	}
 	if parts[1].Detail != "low" || parts[2].Filename != "x.json" {
 		t.Fatalf("structured part fields mismatch: %#v", parts)
@@ -505,6 +573,13 @@ func TestConvertToolResultOutput_StructuredContentAndFallbacks(t *testing.T) {
 	}
 	if parts[4].Type != "input_image" || !strings.HasPrefix(parts[4].ImageURL, "data:image/png;base64,") || parts[4].Detail != "auto" {
 		t.Fatalf("image data file block mismatch: %#v", parts[4])
+	}
+	// Non-image file provider references become input_file{file_id}, resolved
+	// via resolveProviderReference (fd75cee); an unsupported text-file block
+	// (no data/url/reference) is silently dropped, matching the previous
+	// (pre-fix) behavior for that combination.
+	if parts[5].Type != "input_file" || parts[5].FileID != "file_unsupported" {
+		t.Fatalf("file reference block mismatch: %#v", parts[5])
 	}
 
 	deny := toolResultOutput(types.ToolResultContent{
@@ -639,7 +714,7 @@ func TestConvertPromptToInput_SkipsApprovalDeniedToolOutput(t *testing.T) {
 func TestConvertPromptToInput_StoredToolApprovalAddsItemReference(t *testing.T) {
 	t.Parallel()
 
-	input, err := ConvertPromptToInputWithOptions(types.Prompt{
+	input, _, err := ConvertPromptToInputWithOptions(types.Prompt{
 		Messages: []types.Message{
 			{
 				Role: types.RoleTool,
@@ -672,7 +747,7 @@ func TestConvertPromptToInput_OpenAISpecialToolOutputs(t *testing.T) {
 	t.Parallel()
 
 	patchOutput := "applied"
-	input, err := ConvertPromptToInputWithOptions(types.Prompt{
+	input, _, err := ConvertPromptToInputWithOptions(types.Prompt{
 		Messages: []types.Message{
 			{
 				Role: types.RoleTool,
@@ -766,7 +841,7 @@ func TestConvertPromptToInput_OpenAISpecialToolOutputs(t *testing.T) {
 func TestConvertPromptToInput_OpenAICustomToolOutput(t *testing.T) {
 	t.Parallel()
 
-	input, err := ConvertPromptToInputWithOptions(types.Prompt{
+	input, _, err := ConvertPromptToInputWithOptions(types.Prompt{
 		Messages: []types.Message{
 			{
 				Role: types.RoleTool,
@@ -798,7 +873,7 @@ func TestConvertPromptToInput_OpenAICustomToolOutput(t *testing.T) {
 func TestConvertPromptToInput_OpenAISpecialAssistantToolCalls(t *testing.T) {
 	t.Parallel()
 
-	input, err := ConvertPromptToInputWithOptions(types.Prompt{
+	input, _, err := ConvertPromptToInputWithOptions(types.Prompt{
 		Messages: []types.Message{
 			{
 				Role: types.RoleAssistant,
@@ -854,7 +929,7 @@ func TestConvertPromptToInput_OpenAISpecialAssistantToolCalls(t *testing.T) {
 func TestConvertPromptToInput_OpenAIAssistantToolResultOutputs(t *testing.T) {
 	t.Parallel()
 
-	input, err := ConvertPromptToInputWithOptions(types.Prompt{
+	input, _, err := ConvertPromptToInputWithOptions(types.Prompt{
 		Messages: []types.Message{
 			{
 				Role: types.RoleAssistant,
@@ -917,7 +992,7 @@ func TestConvertPromptToInput_OpenAIAssistantToolResultOutputs(t *testing.T) {
 func TestConvertPromptToInput_AssistantToolCallContentParts(t *testing.T) {
 	t.Parallel()
 
-	input, err := ConvertPromptToInputWithOptions(types.Prompt{
+	input, _, err := ConvertPromptToInputWithOptions(types.Prompt{
 		Messages: []types.Message{
 			{
 				Role: types.RoleAssistant,
@@ -967,7 +1042,7 @@ func TestConvertPromptToInput_AssistantToolCallContentParts(t *testing.T) {
 func TestConvertPromptToInput_AssistantToolCallContentDeduplicatesTopLevelToolCalls(t *testing.T) {
 	t.Parallel()
 
-	input, err := ConvertPromptToInputWithOptions(types.Prompt{
+	input, _, err := ConvertPromptToInputWithOptions(types.Prompt{
 		Messages: []types.Message{
 			{
 				Role: types.RoleAssistant,
@@ -1008,7 +1083,7 @@ func TestConvertPromptToInput_ClientExecutedToolCallsDoNotUseItemIDs(t *testing.
 		t.Run(fmt.Sprintf("store=%v", store), func(t *testing.T) {
 			t.Parallel()
 
-			input, err := ConvertPromptToInputWithOptions(types.Prompt{
+			input, _, err := ConvertPromptToInputWithOptions(types.Prompt{
 				Messages: []types.Message{
 					{
 						Role: types.RoleAssistant,
@@ -1079,7 +1154,7 @@ func TestConvertPromptToInput_ClientExecutedToolCallsDoNotUseItemIDs(t *testing.
 func TestConvertPromptToInput_StoredOpenAISpecialAssistantToolCalls(t *testing.T) {
 	t.Parallel()
 
-	input, err := ConvertPromptToInputWithOptions(types.Prompt{
+	input, _, err := ConvertPromptToInputWithOptions(types.Prompt{
 		Messages: []types.Message{
 			{
 				Role: types.RoleAssistant,
@@ -1127,7 +1202,7 @@ func TestConvertPromptToInput_StoredOpenAISpecialAssistantToolCalls(t *testing.T
 		}
 	}
 
-	skipped, err := ConvertPromptToInputWithOptions(types.Prompt{
+	skipped, _, err := ConvertPromptToInputWithOptions(types.Prompt{
 		Messages: []types.Message{
 			{
 				Role: types.RoleAssistant,
@@ -1156,7 +1231,7 @@ func TestConvertPromptToInput_StoredOpenAISpecialAssistantToolCalls(t *testing.T
 func TestConvertPromptToInput_StoredAssistantToolCallContentParts(t *testing.T) {
 	t.Parallel()
 
-	input, err := ConvertPromptToInputWithOptions(types.Prompt{
+	input, _, err := ConvertPromptToInputWithOptions(types.Prompt{
 		Messages: []types.Message{
 			{
 				Role: types.RoleAssistant,
@@ -1208,7 +1283,7 @@ func TestConvertPromptToInput_StoredAssistantToolCallContentParts(t *testing.T) 
 func TestConvertPromptToInput_StoredAssistantToolResultReferencesItem(t *testing.T) {
 	t.Parallel()
 
-	input, err := ConvertPromptToInputWithOptions(types.Prompt{
+	input, _, err := ConvertPromptToInputWithOptions(types.Prompt{
 		Messages: []types.Message{
 			{
 				Role: types.RoleAssistant,
@@ -1236,7 +1311,7 @@ func TestConvertPromptToInput_StoredAssistantToolResultReferencesItem(t *testing
 		t.Fatalf("input[0] = %#v, want item_reference tool-result-item", input[0])
 	}
 
-	conversationInput, err := ConvertPromptToInputWithOptions(types.Prompt{
+	conversationInput, _, err := ConvertPromptToInputWithOptions(types.Prompt{
 		Messages: []types.Message{
 			{
 				Role: types.RoleAssistant,
@@ -1281,7 +1356,7 @@ func TestConvertPromptToInput_OpenAICompactionCustomContent(t *testing.T) {
 		},
 	}
 
-	input, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{})
+	input, _, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{})
 	if err != nil {
 		t.Fatalf("conversion failed: %v", err)
 	}
@@ -1293,7 +1368,7 @@ func TestConvertPromptToInput_OpenAICompactionCustomContent(t *testing.T) {
 		t.Fatalf("input[0] = %#v, want compaction item", input[0])
 	}
 
-	stored, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{Store: true})
+	stored, _, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{Store: true})
 	if err != nil {
 		t.Fatalf("stored conversion failed: %v", err)
 	}
@@ -1326,14 +1401,14 @@ func TestOpenAIResponsesImageDetailHelper(t *testing.T) {
 func TestConvertPromptToInput_ToolCallsWithoutItemIDDoNotSetID(t *testing.T) {
 	t.Parallel()
 
-	input, err := ConvertPromptToInputWithOptions(types.Prompt{
+	input, _, err := ConvertPromptToInputWithOptions(types.Prompt{
 		Messages: []types.Message{
 			{
 				Role: types.RoleAssistant,
 				ToolCalls: []types.ToolCall{
 					{
 						ID:               "search-call",
-						ToolName:         "tool_search",
+						ToolName:         "openai.tool_search",
 						Arguments:        map[string]interface{}{"paths": []string{"weather"}},
 						ProviderMetadata: map[string]interface{}{},
 					},
@@ -1390,9 +1465,14 @@ func TestConvertPromptToInput_ToolCallsWithoutItemIDDoNotSetID(t *testing.T) {
 		}
 	}
 
+	// Unlike local_shell_call/shell_call/apply_patch_call/function_call
+	// (which use a bare `id!` with no fallback, so they end up with no id at
+	// all here), TS's tool_search_call uses `id ?? part.toolCallId` --
+	// falling back to the tool call's own id when there's no persisted item
+	// id.
 	search, ok := input[0].(ToolSearchCallItem)
-	if !ok || search.ID != "" || search.CallID != nil {
-		t.Fatalf("input[0] = %#v, want tool_search_call without item id and nil call_id", input[0])
+	if !ok || search.ID != "search-call" || search.CallID != nil {
+		t.Fatalf("input[0] = %#v, want tool_search_call with id falling back to the tool call id, and nil call_id", input[0])
 	}
 	local, ok := input[1].(LocalShellCall)
 	if !ok || local.ID != "" || local.CallID != "local-call" {
@@ -1413,5 +1493,217 @@ func TestConvertPromptToInput_ToolCallsWithoutItemIDDoNotSetID(t *testing.T) {
 	function, ok := input[5].(FunctionCallItem)
 	if !ok || function.ID != "" || function.CallID != "fn-call" {
 		t.Fatalf("input[5] = %#v, want function_call without item id", input[5])
+	}
+}
+
+// TestConvertAssistantText_ExplicitMessageItemType covers row 1f5bb62: an
+// assistant text "easy input message" never carries an id, and only gets a
+// `type` field when ExplicitMessageItemType is set (Azure Foundry projects).
+func TestConvertAssistantText_ExplicitMessageItemType(t *testing.T) {
+	t.Parallel()
+
+	prompt := types.Prompt{Messages: []types.Message{{
+		Role:    types.RoleAssistant,
+		Content: []types.ContentPart{types.TextContent{Text: "hello there"}},
+	}}}
+
+	input, _, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{})
+	if err != nil {
+		t.Fatalf("conversion failed: %v", err)
+	}
+	item := input[0].(map[string]interface{})
+	if item["type"] != nil {
+		t.Fatalf("item = %#v, want no type field by default", item)
+	}
+	if item["role"] != "assistant" || item["content"] != "hello there" {
+		t.Fatalf("item = %#v, want role/content", item)
+	}
+
+	input, _, err = ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{ExplicitMessageItemType: true})
+	if err != nil {
+		t.Fatalf("conversion failed: %v", err)
+	}
+	item = input[0].(map[string]interface{})
+	if item["type"] != "message" {
+		t.Fatalf("item = %#v, want type=message with ExplicitMessageItemType", item)
+	}
+}
+
+// TestConvertPromptToInput_ShellCallReconstructedWhenNotStored covers row
+// 59d6def: a provider-executed shell call must be reconstructed in full
+// (rather than dropped) when store is false, since its matching
+// shell_call_output has to be paired with it in the same request.
+func TestConvertPromptToInput_ShellCallReconstructedWhenNotStored(t *testing.T) {
+	t.Parallel()
+
+	prompt := types.Prompt{Messages: []types.Message{{
+		Role: types.RoleAssistant,
+		ToolCalls: []types.ToolCall{
+			{
+				ID:               "shell-call",
+				ToolName:         "openai.shell",
+				ProviderExecuted: true,
+				Arguments:        map[string]interface{}{"action": map[string]interface{}{"commands": []interface{}{"ls"}}},
+				ProviderMetadata: map[string]interface{}{
+					"openai": map[string]interface{}{"itemId": "sh_123"},
+				},
+			},
+		},
+	}}}
+
+	// store=false, HasShellTool=true: must reconstruct in full with the item id.
+	input, _, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{HasShellTool: true, Store: false})
+	if err != nil {
+		t.Fatalf("conversion failed: %v", err)
+	}
+	if len(input) != 1 {
+		t.Fatalf("input = %#v, want reconstructed shell_call", input)
+	}
+	shell, ok := input[0].(ShellCall)
+	if !ok || shell.ID != "sh_123" || shell.CallID != "shell-call" {
+		t.Fatalf("input[0] = %#v, want reconstructed shell_call with item id", input[0])
+	}
+
+	// store=true: item_reference is preferred (existing behavior unaffected).
+	input, _, err = ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{HasShellTool: true, Store: true})
+	if err != nil {
+		t.Fatalf("conversion failed: %v", err)
+	}
+	ref, ok := input[0].(map[string]interface{})
+	if !ok || ref["type"] != "item_reference" || ref["id"] != "sh_123" {
+		t.Fatalf("input[0] = %#v, want item_reference when stored", input[0])
+	}
+
+	// A non-shell provider-executed call is still simply omitted when unstored.
+	nonShellPrompt := types.Prompt{Messages: []types.Message{{
+		Role: types.RoleAssistant,
+		ToolCalls: []types.ToolCall{
+			{ID: "web-call", ToolName: "openai.web_search", ProviderExecuted: true},
+		},
+	}}}
+	input, _, err = ConvertPromptToInputWithOptions(nonShellPrompt, "system", ConvertOptions{Store: false})
+	if err != nil {
+		t.Fatalf("conversion failed: %v", err)
+	}
+	if len(input) != 0 {
+		t.Fatalf("input = %#v, want provider-executed non-shell call omitted when unstored", input)
+	}
+}
+
+// TestConvertPromptToInput_MCPApprovalResponseItemReferenceGating covers row
+// e19a4a6: the item_reference for an mcp_approval_response must not be sent
+// when the request uses conversation or previousResponseId (the API already
+// has that item and rejects duplicates).
+func TestConvertPromptToInput_MCPApprovalResponseItemReferenceGating(t *testing.T) {
+	t.Parallel()
+
+	newPrompt := func() types.Prompt {
+		return types.Prompt{Messages: []types.Message{{
+			Role: types.RoleTool,
+			Content: []types.ContentPart{
+				types.ToolApprovalResponseContent{ApprovalID: "appr_1", Approved: true},
+			},
+		}}}
+	}
+
+	// store=true, no conversation/previousResponseId: item_reference + response.
+	input, _, err := ConvertPromptToInputWithOptions(newPrompt(), "system", ConvertOptions{Store: true})
+	if err != nil {
+		t.Fatalf("conversion failed: %v", err)
+	}
+	if len(input) != 2 {
+		t.Fatalf("input = %#v, want item_reference + mcp_approval_response", input)
+	}
+	ref, ok := input[0].(map[string]interface{})
+	if !ok || ref["type"] != "item_reference" || ref["id"] != "appr_1" {
+		t.Fatalf("input[0] = %#v, want item_reference", input[0])
+	}
+
+	// store=true + HasConversation: no item_reference, only the response.
+	input, _, err = ConvertPromptToInputWithOptions(newPrompt(), "system", ConvertOptions{Store: true, HasConversation: true})
+	if err != nil {
+		t.Fatalf("conversion failed: %v", err)
+	}
+	if len(input) != 1 {
+		t.Fatalf("input = %#v, want only mcp_approval_response with conversation", input)
+	}
+	if _, ok := input[0].(MCPApprovalResponse); !ok {
+		t.Fatalf("input[0] = %#v, want MCPApprovalResponse", input[0])
+	}
+
+	// store=true + HasPreviousResponseID: no item_reference either.
+	input, _, err = ConvertPromptToInputWithOptions(newPrompt(), "system", ConvertOptions{Store: true, HasPreviousResponseID: true})
+	if err != nil {
+		t.Fatalf("conversion failed: %v", err)
+	}
+	if len(input) != 1 {
+		t.Fatalf("input = %#v, want only mcp_approval_response with previousResponseId", input)
+	}
+}
+
+// TestConvertToolResultOutput_OutputSchemaJSONEncodesScalarOutputs covers row
+// 6157098: when a function tool declared output_schema, OpenAI parses
+// function_call_output.output as JSON, so text-like results (text and
+// execution-denied) must be JSON-encoded rather than sent as a raw string.
+func TestConvertToolResultOutput_OutputSchemaJSONEncodesScalarOutputs(t *testing.T) {
+	t.Parallel()
+
+	opts := ConvertOptions{OutputSchemaToolNames: map[string]bool{"search": true}}
+
+	textOut := toolResultOutputWithOptions(types.ToolResultContent{
+		ToolName: "search",
+		Output:   &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "hello"},
+	}, opts)
+	if textOut != `"hello"` {
+		t.Fatalf("text output with output_schema = %#v, want JSON-encoded string", textOut)
+	}
+
+	deniedOut := toolResultOutputWithOptions(types.ToolResultContent{
+		ToolName: "search",
+		Output:   &types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: "nope"},
+	}, opts)
+	if deniedOut != `"nope"` {
+		t.Fatalf("execution-denied output with output_schema = %#v, want JSON-encoded string", deniedOut)
+	}
+
+	// Without output_schema for this tool name, results stay raw strings.
+	plainOut := toolResultOutputWithOptions(types.ToolResultContent{
+		ToolName: "other",
+		Output:   &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "hello"},
+	}, opts)
+	if plainOut != "hello" {
+		t.Fatalf("text output without output_schema = %#v, want raw string", plainOut)
+	}
+}
+
+// TestConvertPromptToInput_ReasoningWithoutEncryptedContentWarns covers row
+// a71d345: dropping a reasoning part without encrypted content when store is
+// false must emit a warning, not fail silently.
+func TestConvertPromptToInput_ReasoningWithoutEncryptedContentWarns(t *testing.T) {
+	t.Parallel()
+
+	prompt := types.Prompt{Messages: []types.Message{{
+		Role: types.RoleAssistant,
+		Content: []types.ContentPart{
+			types.ReasoningContent{
+				Text: "some reasoning",
+				ProviderOptions: map[string]interface{}{
+					"openai": map[string]interface{}{"itemId": "rs_1"},
+				},
+			},
+			types.TextContent{Text: "answer"},
+		},
+	}}}
+
+	input, warnings, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{Store: false})
+	if err != nil {
+		t.Fatalf("conversion failed: %v", err)
+	}
+	if len(input) != 1 {
+		t.Fatalf("input = %#v, want reasoning part dropped", input)
+	}
+	if len(warnings) != 1 || warnings[0].Type != "other" ||
+		!strings.Contains(warnings[0].Message, "Reasoning parts without encrypted content are not supported when store is false") {
+		t.Fatalf("warnings = %#v, want reasoning-dropped warning", warnings)
 	}
 }

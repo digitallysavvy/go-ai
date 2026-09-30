@@ -6,18 +6,62 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
-func appendTextPart(parts []types.ContentPart, text string) []types.ContentPart {
-	if text == "" {
+// appendTextPart accumulates a ChunkTypeText delta into stepContent, merging
+// consecutive deltas into a single trailing TextContent part. metadata is the
+// delta chunk's ProviderMetadata (e.g. Gemini/Gateway thoughtSignature deltas,
+// which can arrive with empty Text and non-nil metadata); when non-nil it
+// overwrites the accumulated part's ProviderMetadata, matching TS
+// stream-text.ts's `activeText.providerMetadata = part.providerMetadata ??
+// activeText.providerMetadata` (latest non-nil metadata wins).
+func appendTextPart(parts []types.ContentPart, text string, metadata json.RawMessage) []types.ContentPart {
+	if text == "" && len(metadata) == 0 {
 		return parts
 	}
 	if n := len(parts); n > 0 {
 		if last, ok := parts[n-1].(types.TextContent); ok {
 			last.Text += text
+			if len(metadata) > 0 {
+				last.ProviderMetadata = metadata
+			}
 			parts[n-1] = last
 			return parts
 		}
 	}
-	return append(parts, types.TextContent{Text: text})
+	return append(parts, types.TextContent{Text: text, ProviderMetadata: metadata})
+}
+
+// startNewTextPart marks a ChunkTypeTextStart boundary in stepContent,
+// unconditionally starting a fresh TextContent part seeded with the
+// text-start chunk's ProviderMetadata. This mirrors TS stream-text.ts, which
+// keys accumulated text by the text-start chunk's id and always pushes a
+// fresh record onto recordedContent for each text-start
+// (`activeTextContent[part.id] = {type: 'text', text: emptyString,
+// providerMetadata: part.providerMetadata}; recordedContent.push(...)`),
+// even before any delta arrives.
+//
+// This closes two gaps in Go's id-less, delta-driven accumulation
+// (appendTextPart, which otherwise only creates a new part lazily on the
+// first delta and has no notion of block boundaries):
+//
+//  1. Two adjacent text-like blocks with no other content between them (for
+//     example an Anthropic compaction block immediately followed by a plain
+//     text block, each carrying different providerMetadata on its own
+//     text-start) would otherwise merge into a single part, with the second
+//     block's deltas — and metadata — folded into the first, already-closed
+//     block.
+//  2. A text-start's own providerMetadata (e.g. Anthropic's
+//     {type:"compaction", signature} or citations) would otherwise be lost
+//     entirely whenever the immediately following delta chunk carries no
+//     metadata of its own, since appendTextPart only reads the *delta's*
+//     metadata when it lazily creates the part.
+//
+// Providers that never emit text-start/text-end at all (openai chat,
+// gemini's non-boundary deltas, the openai-compatible providers, ...) are
+// unaffected: this function only runs when a text-start chunk is actually
+// observed, and appendTextPart's lazy new-part-on-first-delta fallback still
+// handles everything else exactly as before.
+func startNewTextPart(parts []types.ContentPart, metadata json.RawMessage) []types.ContentPart {
+	return append(parts, types.TextContent{ProviderMetadata: metadata})
 }
 
 func appendReasoningPart(parts []types.ContentPart, text string) []types.ContentPart {
@@ -187,6 +231,20 @@ func providerMetadataRaw(metadata map[string]interface{}) json.RawMessage {
 	return raw
 }
 
+// decodeProviderMetadataMap is the inverse of providerMetadataRaw: it decodes
+// a chunk's raw provider metadata back into a map for structured events such
+// as LanguageModelCallEndEvent.
+func decodeProviderMetadataMap(raw json.RawMessage) map[string]interface{} {
+	if len(raw) == 0 {
+		return nil
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil
+	}
+	return out
+}
+
 func contentHasText(parts []types.ContentPart) bool {
 	for _, part := range parts {
 		switch p := part.(type) {
@@ -248,13 +306,19 @@ func toolCallForToolResult(tr types.ToolResult) types.ToolCall {
 }
 
 func toolApprovalRequestFromToolResult(tr types.ToolResult) types.ToolApprovalRequestContent {
-	return types.ToolApprovalRequestContent{
+	request := types.ToolApprovalRequestContent{
 		ApprovalID:  approvalIDForToolResult(tr),
 		ToolCallID:  tr.ToolCallID,
 		ToolCall:    toolCallForToolResult(tr),
 		Signature:   tr.ApprovalSignature,
 		IsAutomatic: tr.ApprovalStatus == types.ToolApprovalStatusApproved || tr.ApprovalStatus == types.ToolApprovalStatusDenied,
 	}
+	// user-approval reasons are shown on the request; approved/denied reasons
+	// are emitted on the response.
+	if tr.ApprovalStatus == types.ToolApprovalStatusUserApproval && tr.ApprovalReason != nil {
+		request.Reason = *tr.ApprovalReason
+	}
+	return request
 }
 
 func toolApprovalResponseFromToolResult(tr types.ToolResult) types.ToolApprovalResponseContent {
@@ -392,11 +456,16 @@ func toolResultsToContentParts(results []types.ToolResult, secret ...[]byte) []t
 	return parts
 }
 
+// toolResultModelOutput mirrors TS createToolModelOutput's default case:
+// string results pass through as "text"; everything else is normalized to a
+// plain JSON value via toJSONValue (round-tripped through JSON so structs,
+// time.Time, etc. match what the message actually serializes to) before
+// being stored as "json" (audit row 6aa7c54 / WG24).
 func toolResultModelOutput(result interface{}) *types.ToolResultOutput {
 	if text, ok := result.(string); ok {
 		return &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: text}
 	}
-	return &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: result}
+	return &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: toJSONValue(result)}
 }
 
 func toolResultContentFromToolResult(result types.ToolResult) types.ContentPart {

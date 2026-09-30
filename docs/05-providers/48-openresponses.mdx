@@ -1,0 +1,100 @@
+---
+title: OpenResponses Provider
+description: Use the OpenResponses provider for Responses-compatible model APIs.
+---
+
+# OpenResponses Provider
+
+The OpenResponses provider targets APIs that implement the OpenAI Responses wire shape (self-hosted servers like LMStudio, Ollama, or LocalAI, or any other `/responses`-compatible endpoint). Use it when a provider exposes `/responses` semantics instead of chat completions. It only supports language models — `EmbeddingModel`, `ImageModel`, `SpeechModel`, `TranscriptionModel`, and `RerankingModel` all return errors. [QuiverAI](42-quiverai.mdx) is built on this same transport.
+
+## Setup
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openresponses"
+)
+
+provider := openresponses.New(openresponses.Config{
+    BaseURL: "http://localhost:1234/v1", // e.g. LMStudio
+    APIKey:  os.Getenv("OPENRESPONSES_API_KEY"), // optional; many local servers need none
+})
+
+model, err := provider.LanguageModel("responses-model")
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+`openresponses.Config` also accepts `Headers`, `Name` (overrides the
+provider identity, default `"open-responses"`), and
+`StrictResponseInput` (controls how assistant history without a known item
+ID is replayed).
+
+## Custom Tools
+
+`provider.Tools().CustomTool(name, options)` builds a caller-executed
+"custom" tool whose input the model streams as raw text (not JSON function
+arguments) — useful for tools like `apply_patch` or free-form code/markup
+generation. `custom_tool_call` / `custom_tool_call_output` items are
+replayed correctly in message history, and the default custom tool ID is
+`"open-responses.custom"` (`Config.CustomToolID` overrides it; QuiverAI
+overrides it to `"quiverai.custom"`).
+
+```go
+patchTool := provider.Tools().CustomTool("apply_patch", openresponses.CustomToolOptions{
+    Description: "Apply a unified diff patch to the workspace.",
+    Format:      &openresponses.CustomToolFormat{Type: "text"},
+})
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Fix the off-by-one bug in main.go.",
+    Tools:  []types.Tool{patchTool},
+})
+```
+
+## Streaming And Text Parts
+
+Streaming emits `text-start` / `text-end` chunk boundaries around text
+content, and text parts carry the Responses `itemId` and any annotations
+in their provider metadata.
+
+## Workflow Serialization
+
+OpenResponses language models can cross a workflow boundary with
+`providerutils.SerializeModel` / `DeserializeModel`, gated by
+`provider.SerializableModelStrict` — a model is refused for serialization
+when extensions are registered on it (since extension codecs can't be
+reconstructed from a serialized config alone). See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
+for the general mechanism.
+
+## May 2026 parity updates
+
+### Reasoning summary
+
+OpenResponses supports the `reasoningSummary` provider option. The provider serializes it to the Responses `reasoning.summary` request field for APIs that accept `auto`, `concise`, or `detailed` summaries.
+
+```go
+p := openresponses.New(openresponses.Config{
+    APIKey:  os.Getenv("OPENRESPONSES_API_KEY"),
+    BaseURL: "https://api.example.com/v1",
+})
+
+model, err := p.LanguageModel("responses-model")
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Summarize the reasoning at a high level.",
+    ProviderOptions: map[string]interface{}{
+        "openresponses": map[string]interface{}{
+            "reasoningSummary": "concise",
+        },
+    },
+})
+```
+
+### System messages
+
+System messages are converted to the Responses instructions shape by the provider. At the core SDK layer, system-role messages inside `Messages` are rejected by default; use the top-level `System` field or opt in with `AllowSystemMessages`.

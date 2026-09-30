@@ -70,13 +70,20 @@ func main() {
 		log.Fatalf("Failed to create language model: %v", err)
 	}
 
-	// Create telemetry settings with MLflow tracer
+	// Register a LegacyOpenTelemetry integration configured with the MLflow
+	// tracer. telemetry.Options no longer carries a Tracer field directly
+	// (each registered integration configures its own tracer instead), so
+	// the tracer is passed to the integration's constructor.
+	telemetry.RegisterTelemetryIntegration(
+		telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tracker.Tracer()}),
+	)
+
+	// Create telemetry settings
 	telemetrySettings := &telemetry.Options{
 		IsEnabled:     telemetry.Bool(true),
 		RecordInputs:  true,
 		RecordOutputs: true,
 		FunctionID:    "example-generation",
-		Tracer:        tracker.Tracer(),
 	}
 
 	// Example 1: Simple text generation with telemetry

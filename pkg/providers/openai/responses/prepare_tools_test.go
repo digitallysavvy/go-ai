@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	openaitool "github.com/digitallysavvy/go-ai/pkg/providers/openai/tool"
 )
@@ -55,7 +56,7 @@ func TestPrepareTools_FunctionTool(t *testing.T) {
 func TestPrepareTools_FunctionTool_Strict(t *testing.T) {
 	tool := types.Tool{
 		Name:   "strict_tool",
-		Strict: true,
+		Strict: types.BoolPtr(true),
 	}
 
 	result := PrepareTools([]types.Tool{tool})
@@ -65,6 +66,46 @@ func TestPrepareTools_FunctionTool_Strict(t *testing.T) {
 	}
 	if def.Strict == nil || !*def.Strict {
 		t.Error("expected Strict to be true")
+	}
+}
+
+// TestPrepareTools_FunctionTool_StrictExplicitFalse verifies that an
+// explicit `Strict: false` is forwarded to the wire (not dropped), matching
+// TS's `tool.strict != null ? {strict: tool.strict} : {}` (any non-null
+// value, not only `true`).
+func TestPrepareTools_FunctionTool_StrictExplicitFalse(t *testing.T) {
+	tool := types.Tool{
+		Name:   "non_strict_tool",
+		Strict: types.BoolPtr(false),
+	}
+
+	result := PrepareTools([]types.Tool{tool})
+	def, ok := result[0].(FunctionToolDef)
+	if !ok {
+		t.Fatalf("expected FunctionToolDef, got %T", result[0])
+	}
+	if def.Strict == nil || *def.Strict {
+		t.Error("expected Strict to be an explicit false, not nil/true")
+	}
+}
+
+// TestPrepareTools_FunctionTool_StrictUnset verifies that an unset Strict
+// defaults the wire value to false (TS: 'should default strict mode to
+// false when strict is undefined', row 2abd503e95) rather than omitting the
+// field.
+func TestPrepareTools_FunctionTool_StrictUnset(t *testing.T) {
+	tool := types.Tool{Name: "unspecified_tool"}
+
+	result := PrepareTools([]types.Tool{tool})
+	def, ok := result[0].(FunctionToolDef)
+	if !ok {
+		t.Fatalf("expected FunctionToolDef, got %T", result[0])
+	}
+	if def.Strict == nil {
+		t.Fatal("expected Strict to default to false, got nil (omitted)")
+	}
+	if *def.Strict != false {
+		t.Errorf("expected Strict to default to false, got %v", *def.Strict)
 	}
 }
 
@@ -131,7 +172,7 @@ func TestPrepareTools_FunctionTool_NamespaceGrouping(t *testing.T) {
 		{
 			Name:        "list_open_orders",
 			Description: "List open orders for a customer ID.",
-			Strict:      true,
+			Strict:      types.BoolPtr(true),
 			Parameters: map[string]interface{}{
 				"type":       "object",
 				"properties": map[string]interface{}{"customer_id": map[string]interface{}{"type": "string"}},
@@ -209,8 +250,11 @@ func TestPrepareTools_FunctionTool_NamespaceConflictingDescription(t *testing.T)
 	if err == nil {
 		t.Fatal("PrepareToolsWithError() error = nil, want conflict")
 	}
-	if got, want := err.Error(), `unsupported functionality: conflicting descriptions for OpenAI tool namespace "crm"`; got != want {
+	if got, want := err.Error(), `'conflicting descriptions for OpenAI tool namespace "crm"' functionality not supported.`; got != want {
 		t.Fatalf("error = %q, want %q", got, want)
+	}
+	if !providererrors.IsUnsupportedFunctionalityError(err) {
+		t.Fatalf("error = %#v, want an UnsupportedFunctionalityError", err)
 	}
 }
 
@@ -789,5 +833,226 @@ func TestPrepareTools_ToolSearch_SerializesToJSON(t *testing.T) {
 	}
 	if raw[0]["execution"] != "client" {
 		t.Errorf("execution: got %v, want client", raw[0]["execution"])
+	}
+}
+
+// TestPrepareTools_WebSearch_BlockedDomains covers row 96a237d: the web
+// search tool's filters must serialize blockedDomains as blocked_domains
+// alongside allowed_domains.
+func TestPrepareTools_WebSearch_BlockedDomains(t *testing.T) {
+	result := PrepareTools([]types.Tool{openaitool.WebSearch(openaitool.WebSearchConfig{
+		Filters: &openaitool.WebSearchFilters{
+			AllowedDomains: []string{"example.com"},
+			BlockedDomains: []string{"blocked.example.com"},
+		},
+	})})
+	def, ok := result[0].(WebSearchToolDef)
+	if !ok {
+		t.Fatalf("expected WebSearchToolDef, got %T", result[0])
+	}
+	allowed := def.Filters["allowed_domains"].([]string)
+	blocked := def.Filters["blocked_domains"].([]string)
+	if allowed[0] != "example.com" || blocked[0] != "blocked.example.com" {
+		t.Fatalf("filters = %#v", def.Filters)
+	}
+}
+
+// TestPrepareTools_ImageGeneration_Action covers row b54e551: the
+// image_generation tool must serialize the "action" field.
+func TestPrepareTools_ImageGeneration_Action(t *testing.T) {
+	result := PrepareTools([]types.Tool{
+		openaitool.ImageGeneration(openaitool.ImageGenerationConfig{Action: "edit"}),
+	})
+	def, ok := result[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected map[string]interface{}, got %T", result[0])
+	}
+	if def["action"] != "edit" {
+		t.Fatalf("image generation def = %#v, want action=edit", def)
+	}
+}
+
+// TestResolveAllowedTools_MCPServerLabel covers the MCP branch of a062795:
+// an allowed MCP tool resolves to {type:"mcp", server_label}.
+func TestResolveAllowedTools_MCPServerLabel(t *testing.T) {
+	tools := []types.Tool{{
+		Type:            types.ToolTypeProviderDefined,
+		Name:            "docs",
+		ProviderID:      "openai.mcp",
+		ProviderOptions: openaitool.MCPConfig{ServerLabel: "docs-server"},
+	}}
+	choice, warnings, err := ResolveAllowedTools(tools, []string{"docs"}, "")
+	if err != nil {
+		t.Fatalf("ResolveAllowedTools failed: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none", warnings)
+	}
+	if choice.Mode != "auto" || choice.Tools[0].Type != "mcp" || choice.Tools[0].ServerLabel != "docs-server" {
+		t.Fatalf("choice = %#v, want mcp entry with server_label", choice)
+	}
+}
+
+// TestResolveAllowedTools_NamespacedToolDropped covers the namespace branch
+// of a062795: a namespaced function tool cannot be allow-listed.
+func TestResolveAllowedTools_NamespacedToolDropped(t *testing.T) {
+	tools := []types.Tool{{
+		Type: types.ToolTypeFunction,
+		Name: "grouped_tool",
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{
+				"namespace": map[string]interface{}{"name": "ns", "description": "d"},
+			},
+		},
+	}}
+	_, warnings, err := ResolveAllowedTools(tools, []string{"grouped_tool"}, "")
+	if err == nil {
+		t.Fatal("expected an error since the only entry is dropped")
+	}
+	if len(warnings) != 1 || warnings[0].Feature != `allowedTools entry "grouped_tool"` {
+		t.Fatalf("warnings = %#v, want namespace warning", warnings)
+	}
+}
+
+// TestResolveAllowedTools_EmptyReturnsNil covers the no-op path: no
+// allowedTools requested means no tool_choice override.
+func TestResolveAllowedTools_EmptyReturnsNil(t *testing.T) {
+	choice, warnings, err := ResolveAllowedTools(nil, nil, "")
+	if choice != nil || warnings != nil || err != nil {
+		t.Fatalf("ResolveAllowedTools(nil) = %#v, %#v, %v, want all nil", choice, warnings, err)
+	}
+}
+
+// TestResolveAllowedTools_CanonicalAliasResolves covers item 4 of the P1-5c
+// slice: an allowedTools entry that names a provider tool's canonical wire
+// identity ("file_search") rather than its own (custom) SDK Name resolves
+// via the alias layer.
+func TestResolveAllowedTools_CanonicalAliasResolves(t *testing.T) {
+	tools := []types.Tool{{
+		Type:       types.ToolTypeProviderDefined,
+		Name:       "myFileSearch",
+		ProviderID: "openai.file_search",
+	}}
+	choice, warnings, err := ResolveAllowedTools(tools, []string{"file_search"}, "")
+	if err != nil {
+		t.Fatalf("ResolveAllowedTools failed: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none", warnings)
+	}
+	if len(choice.Tools) != 1 || choice.Tools[0].Type != "file_search" {
+		t.Fatalf("choice = %#v, want a file_search entry via alias", choice)
+	}
+}
+
+// mcpTool builds an MCP provider tool with a custom SDK Name distinct from
+// its fixed ProviderID, mirroring the TS test helper `mcpTool(name,
+// serverLabel)` in openai-responses-prepare-tools.test.ts: two such tools
+// with different server labels both canonicalize to the alias "mcp" (see
+// canonicalAllowedToolName), which is exactly what makes the ambiguous case
+// below reachable.
+func mcpToolWithName(name, serverLabel string) types.Tool {
+	return types.Tool{
+		Type:       types.ToolTypeProviderDefined,
+		Name:       name,
+		ProviderID: "openai.mcp",
+		ProviderOptions: openaitool.MCPConfig{
+			ServerLabel: serverLabel,
+			ServerURL:   "https://" + serverLabel + ".example.com/mcp",
+		},
+	}
+}
+
+// TestResolveAllowedTools_AmbiguousAliasDroppedWithWarning ports TS's
+// "should drop an ambiguous canonical name when several tools share it"
+// (openai-responses-prepare-tools.test.ts). Two MCP tools with different
+// server labels (and therefore different custom Names) both canonicalize to
+// the fixed alias "mcp"; requesting "mcp" in allowedTools is genuinely
+// ambiguous between them and is dropped with a warning, leaving only the
+// unambiguous function tool allowed.
+func TestResolveAllowedTools_AmbiguousAliasDroppedWithWarning(t *testing.T) {
+	tools := []types.Tool{
+		{Type: types.ToolTypeFunction, Name: "get_weather"},
+		mcpToolWithName("alpha", "alpha"),
+		mcpToolWithName("beta", "beta"),
+	}
+	choice, warnings, err := ResolveAllowedTools(tools, []string{"get_weather", "mcp"}, "")
+	if err != nil {
+		t.Fatalf("ResolveAllowedTools failed: %v", err)
+	}
+	if len(choice.Tools) != 1 || choice.Tools[0].Type != "function" || choice.Tools[0].Name != "get_weather" {
+		t.Fatalf("choice = %#v, want only the unambiguous get_weather function tool", choice)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %#v, want exactly one ambiguity warning", warnings)
+	}
+	if warnings[0].Feature != `allowedTools entry "mcp"` ||
+		warnings[0].Details != "several tools in this request share this provider tool name; use the tool name from the tools for this request instead" {
+		t.Fatalf("warning = %#v, want the ambiguous-canonical-name warning", warnings[0])
+	}
+}
+
+// TestResolveAllowedTools_EachMcpServerResolvesByOwnName ports TS's "should
+// still resolve each mcp server by its own tool name": even though both MCP
+// tools canonicalize to the ambiguous alias "mcp", an allowedTools entry
+// that names one tool's own SDK Name directly ("beta") resolves
+// unambiguously to that tool, with no warnings.
+func TestResolveAllowedTools_EachMcpServerResolvesByOwnName(t *testing.T) {
+	tools := []types.Tool{
+		mcpToolWithName("alpha", "alpha"),
+		mcpToolWithName("beta", "beta"),
+	}
+	choice, warnings, err := ResolveAllowedTools(tools, []string{"beta"}, "")
+	if err != nil {
+		t.Fatalf("ResolveAllowedTools failed: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none", warnings)
+	}
+	if len(choice.Tools) != 1 || choice.Tools[0].Type != "mcp" || choice.Tools[0].ServerLabel != "beta" {
+		t.Fatalf("choice = %#v, want the beta mcp server resolved directly by its own name", choice)
+	}
+}
+
+// TestResolveAllowedTools_IsSameAllowedTool unit-tests the equality helper
+// used to decide whether two colliding canonical aliases are "the same
+// tool" (and thus not ambiguous) directly.
+func TestResolveAllowedTools_IsSameAllowedTool(t *testing.T) {
+	a := allowedToolResolution{supported: true, entry: AllowedToolsToolEntry{Type: "custom", Name: "one"}}
+	b := allowedToolResolution{supported: true, entry: AllowedToolsToolEntry{Type: "custom", Name: "two"}}
+	if isSameAllowedTool(a, b) {
+		t.Fatalf("isSameAllowedTool(%#v, %#v) = true, want false (different entries)", a, b)
+	}
+	if !isSameAllowedTool(a, a) {
+		t.Fatalf("isSameAllowedTool(a, a) = false, want true (identical entries)")
+	}
+	unsupportedA := allowedToolResolution{reason: "r1"}
+	unsupportedB := allowedToolResolution{reason: "r2"}
+	if isSameAllowedTool(unsupportedA, unsupportedB) {
+		t.Fatalf("isSameAllowedTool with different reasons = true, want false")
+	}
+	if isSameAllowedTool(a, unsupportedA) {
+		t.Fatalf("isSameAllowedTool(supported, unsupported) = true, want false")
+	}
+}
+
+// TestResolveAllowedTools_DirectNameWinsOverAlias covers the first of item
+// 4's two warnings: a name that matches both a tool's own SDK Name and
+// another tool's canonical alias resolves to the direct match, with a
+// warning explaining the overlap.
+func TestResolveAllowedTools_DirectNameWinsOverAlias(t *testing.T) {
+	tools := []types.Tool{
+		{Type: types.ToolTypeFunction, Name: "file_search"},
+		{Type: types.ToolTypeProviderDefined, Name: "myFileSearch", ProviderID: "openai.file_search"},
+	}
+	choice, warnings, err := ResolveAllowedTools(tools, []string{"file_search"}, "")
+	if err != nil {
+		t.Fatalf("ResolveAllowedTools failed: %v", err)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %#v, want one overlap warning", warnings)
+	}
+	if len(choice.Tools) != 1 || choice.Tools[0].Type != "function" || choice.Tools[0].Name != "file_search" {
+		t.Fatalf("choice = %#v, want the direct function-tool match to win", choice)
 	}
 }

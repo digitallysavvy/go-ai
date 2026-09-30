@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -34,8 +35,10 @@ const (
 
 var knownGatewayModelTypes = map[string]struct{}{
 	"embedding":     {},
+	"evaluation":    {},
 	"image":         {},
 	"language":      {},
+	"realtime":      {},
 	"reranking":     {},
 	"speech":        {},
 	"transcription": {},
@@ -145,10 +148,6 @@ type Config struct {
 	// prompt data. It is forwarded as providerOptions.gateway.disallowPromptTraining.
 	DisallowPromptTraining bool
 
-	// HIPAACompliant filters routing to providers that are HIPAA compliant with
-	// Vercel AI Gateway. It is forwarded as providerOptions.gateway.hipaaCompliant.
-	HIPAACompliant bool
-
 	// QuotaEntityID identifies the entity against which quota is tracked. It is
 	// forwarded as providerOptions.gateway.quotaEntityId.
 	QuotaEntityID string
@@ -157,19 +156,65 @@ type Config struct {
 // GatewayProviderOptions contains AI Gateway request-scoped routing,
 // compliance, quota, and BYOK settings.
 type GatewayProviderOptions struct {
-	Only                   []string                       `json:"only,omitempty"`
-	Order                  []string                       `json:"order,omitempty"`
-	Sort                   string                         `json:"sort,omitempty"`
-	User                   string                         `json:"user,omitempty"`
-	Tags                   []string                       `json:"tags,omitempty"`
-	Models                 []string                       `json:"models,omitempty"`
+	Only  []string `json:"only,omitempty"`
+	Order []string `json:"order,omitempty"`
+	Sort  string   `json:"sort,omitempty"`
+	User  string   `json:"user,omitempty"`
+	Tags  []string `json:"tags,omitempty"`
+
+	// Models is the ordered list of fallback models to try. On evaluation
+	// requests, the first entry may be a conditional GatewayModelFallback
+	// (built with GatewayConditionalModelFallback) that reruns the
+	// evaluation against a different model when its When condition matches
+	// the primary answers; every other entry (and every entry for
+	// non-evaluation requests) must be a plain model ID (built with
+	// GatewayModel).
+	Models                 []GatewayModelFallback         `json:"models,omitempty"`
 	BYOK                   map[string][]map[string]any    `json:"byok,omitempty"`
 	ZeroDataRetention      *bool                          `json:"zeroDataRetention,omitempty"`
 	DisallowPromptTraining *bool                          `json:"disallowPromptTraining,omitempty"`
-	HIPAACompliant         *bool                          `json:"hipaaCompliant,omitempty"`
 	QuotaEntityID          string                         `json:"quotaEntityId,omitempty"`
 	ProviderTimeouts       *GatewayProviderTimeoutOptions `json:"providerTimeouts,omitempty"`
 	ServiceTier            string                         `json:"serviceTier,omitempty"`
+
+	// Has restricts routing to provider models that satisfy every given
+	// entry. Entries are capability tags (GatewayHasImplicitCaching,
+	// GatewayHasReasoning, GatewayHasStructuredOutput, GatewayHasToolUse,
+	// GatewayHasVision) or weight-format conditions built with
+	// GatewayHasQuantization / GatewayHasNotQuantization.
+	Has []string `json:"has,omitempty"`
+
+	// IdempotencyKey is used by experimental_startBatch: retries with the
+	// same key replay the original batch instead of creating a duplicate.
+	IdempotencyKey string `json:"idempotencyKey,omitempty"`
+
+	// Caching enables automatic caching behavior when supported by the
+	// Gateway. The only valid value is GatewayCachingAuto ("auto").
+	Caching string `json:"caching,omitempty"`
+}
+
+// Gateway `has` capability tags. See GatewayProviderOptions.Has.
+const (
+	GatewayHasImplicitCaching  = "implicit-caching"
+	GatewayHasReasoning        = "reasoning"
+	GatewayHasStructuredOutput = "structured-output"
+	GatewayHasToolUse          = "tool-use"
+	GatewayHasVision           = "vision"
+)
+
+// GatewayCachingAuto is the only valid value for GatewayProviderOptions.Caching.
+const GatewayCachingAuto = "auto"
+
+// GatewayHasQuantization returns a `has` entry that requires the serving
+// provider to report the given weight format (e.g. "fp8").
+func GatewayHasQuantization(format string) string {
+	return "quantization:" + format
+}
+
+// GatewayHasNotQuantization returns a `has` entry that excludes the given
+// weight format. Providers with no recorded format still pass this exclusion.
+func GatewayHasNotQuantization(format string) string {
+	return "!quantization:" + format
 }
 
 // GatewayProviderTimeoutOptions contains Gateway provider timeout settings.
@@ -201,7 +246,11 @@ func (o GatewayProviderOptions) toMap() map[string]interface{} {
 		out["tags"] = o.Tags
 	}
 	if len(o.Models) > 0 {
-		out["models"] = o.Models
+		models := make([]interface{}, len(o.Models))
+		for i, m := range o.Models {
+			models[i] = m.toWire()
+		}
+		out["models"] = models
 	}
 	if len(o.BYOK) > 0 {
 		out["byok"] = o.BYOK
@@ -212,9 +261,6 @@ func (o GatewayProviderOptions) toMap() map[string]interface{} {
 	if o.DisallowPromptTraining != nil {
 		out["disallowPromptTraining"] = *o.DisallowPromptTraining
 	}
-	if o.HIPAACompliant != nil {
-		out["hipaaCompliant"] = *o.HIPAACompliant
-	}
 	if o.QuotaEntityID != "" {
 		out["quotaEntityId"] = o.QuotaEntityID
 	}
@@ -223,6 +269,15 @@ func (o GatewayProviderOptions) toMap() map[string]interface{} {
 	}
 	if o.ServiceTier != "" {
 		out["serviceTier"] = o.ServiceTier
+	}
+	if len(o.Has) > 0 {
+		out["has"] = o.Has
+	}
+	if o.IdempotencyKey != "" {
+		out["idempotencyKey"] = o.IdempotencyKey
+	}
+	if o.Caching != "" {
+		out["caching"] = o.Caching
 	}
 	return out
 }
@@ -615,10 +670,65 @@ func (p *Provider) gatewayAPIErrorWithAuthMethod(resp *internalhttp.Response, au
 	cause := &providererrors.ProviderError{
 		Provider:        "gateway",
 		StatusCode:      resp.StatusCode,
-		Message:         "Gateway request failed",
+		Message:         gatewayErrorMessage(resp.Body, resp.StatusCode),
 		ResponseHeaders: providerutils.ExtractHeaders(resp.Headers),
+		ResponseBody:    string(resp.Body),
+		Data:            gatewayErrorData(resp.Body),
 	}
 	return gatewayerrors.CreateGatewayErrorFromResponse(resp.Body, resp.StatusCode, "Gateway request failed", cause, authMethod)
+}
+
+// gatewayErrorMessage mirrors TS provider-utils createJsonErrorResponseHandler
+// + getErrorMessage (@ai-sdk/provider): an empty response body or one that
+// fails to parse as JSON falls back to the HTTP status text (TS
+// `response.statusText`); a JSON string body is used as-is; a JSON `null`
+// body yields "unknown error" (TS getErrorMessage(null)); any other JSON
+// value is re-serialized. Used to populate the nested cause's message with
+// the full error body instead of the generic "Gateway request failed"
+// placeholder.
+func gatewayErrorMessage(body []byte, statusCode int) string {
+	if len(bytes.TrimSpace(body)) == 0 {
+		return gatewayStatusTextFallback(statusCode)
+	}
+	var value interface{}
+	if err := json.Unmarshal(body, &value); err != nil {
+		return gatewayStatusTextFallback(statusCode)
+	}
+	if value == nil {
+		return "unknown error"
+	}
+	if str, ok := value.(string); ok {
+		return str
+	}
+	serialized, err := json.Marshal(value)
+	if err != nil {
+		return gatewayStatusTextFallback(statusCode)
+	}
+	return string(serialized)
+}
+
+// gatewayStatusTextFallback returns the standard HTTP status text for
+// statusCode (TS `response.statusText`), or "unknown error" for codes with
+// no standard text (e.g. 0, from a response the SDK never received).
+func gatewayStatusTextFallback(statusCode int) string {
+	if text := http.StatusText(statusCode); text != "" {
+		return text
+	}
+	return "unknown error"
+}
+
+// gatewayErrorData best-effort decodes the response body into a generic
+// value for ProviderError.Data, mirroring the parsed error body TS providers
+// attach to their APICallError.data.
+func gatewayErrorData(body []byte) interface{} {
+	if len(body) == 0 {
+		return nil
+	}
+	var value interface{}
+	if err := json.Unmarshal(body, &value); err != nil {
+		return nil
+	}
+	return value
 }
 
 func (p *Provider) gatewayAPIErrorWithContext(ctx context.Context, resp *internalhttp.Response) error {
@@ -635,8 +745,10 @@ func (p *Provider) gatewayAPIErrorWithContext(ctx context.Context, resp *interna
 	cause := &providererrors.ProviderError{
 		Provider:        "gateway",
 		StatusCode:      resp.StatusCode,
-		Message:         "Gateway request failed",
+		Message:         gatewayErrorMessage(resp.Body, resp.StatusCode),
 		ResponseHeaders: providerutils.ExtractHeaders(resp.Headers),
+		ResponseBody:    string(resp.Body),
+		Data:            gatewayErrorData(resp.Body),
 	}
 	return gatewayerrors.CreateGatewayErrorFromResponse(resp.Body, resp.StatusCode, "Gateway request failed", cause, authMethod)
 }
@@ -645,14 +757,48 @@ func (p *Provider) gatewayUnknownError(err error) error {
 	if err == nil {
 		return nil
 	}
-	return gatewayerrors.NewGatewayResponseError(
+	// TS parity: asGatewayError's fallback path (opaque, non-APICallError
+	// errors) marks the resulting error's retryability explicitly rather than
+	// relying purely on the (unknown, defaulted-to-500) status code. A JSON
+	// decode failure is a permanent error (the body will never parse
+	// differently on retry); a transient network/body-read error is
+	// retryable. See 90192f1.
+	retryable := !isGatewayJSONDecodeError(err)
+	return gatewayerrors.NewGatewayResponseErrorWithRetryable(
 		fmt.Sprintf("Invalid error response format: Gateway request failed: %s", err.Error()),
 		http.StatusInternalServerError,
 		map[string]interface{}{},
 		fmt.Errorf("invalid gateway error response"),
 		err,
 		"",
+		&retryable,
 	)
+}
+
+// isGatewayJSONDecodeError reports whether err originates from a JSON
+// decode/parse failure (as opposed to a network or body-read error). Such
+// errors are never retryable: the same malformed body will fail identically
+// on retry.
+//
+// NOTE: recovering the *real* HTTP status code for a body-read failure that
+// occurs after a successful (2xx) response — so it can be preserved instead
+// of defaulted to 500, matching TS's `statusCode < 400` check in
+// asGatewayError — requires internal/http/client.go to surface the status
+// code on read errors from Do(). That is a core dependency outside this
+// package's scope (see state/parity/sep_23_2026/gateway.md row 90192f1).
+func isGatewayJSONDecodeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var syntaxErr *json.SyntaxError
+	if errors.As(err, &syntaxErr) {
+		return true
+	}
+	var typeErr *json.UnmarshalTypeError
+	if errors.As(err, &typeErr) {
+		return true
+	}
+	return strings.Contains(err.Error(), "failed to decode JSON response")
 }
 
 // Client returns the HTTP client for making API requests
@@ -676,6 +822,23 @@ func (t *Tools) PerplexitySearch(config tools.PerplexitySearchConfig) tools.Perp
 // ExaSearch creates an Exa search tool with the given configuration.
 func (t *Tools) ExaSearch(config tools.ExaSearchConfig) tools.ExaSearchTool {
 	return tools.NewExaSearch(config)
+}
+
+// TakoSearch creates a Tako search tool with the given configuration.
+func (t *Tools) TakoSearch(config tools.TakoSearchConfig) tools.TakoSearchTool {
+	return tools.NewTakoSearch(config)
+}
+
+// BrowserbaseSearch creates a Browserbase search tool with the given
+// configuration.
+func (t *Tools) BrowserbaseSearch(config tools.BrowserbaseSearchConfig) tools.BrowserbaseSearchTool {
+	return tools.NewBrowserbaseSearch(config)
+}
+
+// BrowserbaseFetch creates a Browserbase fetch tool with the given
+// configuration.
+func (t *Tools) BrowserbaseFetch(config tools.BrowserbaseFetchConfig) tools.BrowserbaseFetchTool {
+	return tools.NewBrowserbaseFetch(config)
 }
 
 // NewTools creates a new Tools instance for accessing gateway-specific tools

@@ -179,7 +179,7 @@ func toolResultContentFromResult(result types.ToolResult) types.ToolResultConten
 		}
 	default:
 		if part.Output == nil {
-			part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: result.Result}
+			part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: toJSONValue(result.Result)}
 			part.Result = nil
 		}
 	}
@@ -214,7 +214,7 @@ func normalizeToolResultContent(part types.ToolResultContent) types.ToolResultCo
 		part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: result}
 		part.Result = nil
 	default:
-		part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: result}
+		part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: toJSONValue(result)}
 		part.Result = nil
 	}
 	return part
@@ -238,6 +238,16 @@ func responseMessageHasContent(msg types.Message) bool {
 }
 
 func normalizeResponseToolCall(call types.ToolCall) types.ToolCall {
+	// Arguments (which may have been changed by ExperimentalRefineToolInput
+	// after the call was parsed) is authoritative when present. RawArguments
+	// is only a fallback for calls that were never decoded, so it must never
+	// clobber an already-populated Arguments map with the pre-refinement
+	// JSON: the persisted tool-call part and the HMAC approval signature both
+	// need to agree on the same (refined) input. Mirrors the TS SDK, which
+	// has only a single `input` field that carries the refined value.
+	if call.Arguments != nil {
+		return stripResponseToolCallMetadata(call)
+	}
 	if call.RawArguments != "" {
 		var parsed map[string]interface{}
 		if err := json.Unmarshal([]byte(call.RawArguments), &parsed); err != nil {
@@ -248,10 +258,9 @@ func normalizeResponseToolCall(call types.ToolCall) types.ToolCall {
 			parsed = map[string]interface{}{}
 		}
 		call.Arguments = parsed
+		return stripResponseToolCallMetadata(call)
 	}
-	if call.Arguments == nil {
-		call.Arguments = map[string]interface{}{}
-	}
+	call.Arguments = map[string]interface{}{}
 	return stripResponseToolCallMetadata(call)
 }
 
@@ -391,6 +400,26 @@ func providerMetadataOptions(metadata json.RawMessage) map[string]interface{} {
 	return options
 }
 
+// toJSONValue round-trips value through JSON so complex Go tool-result
+// values (structs with json tags, time.Time, etc.) are normalized to plain
+// JSON values matching what the message actually serializes to, mirroring
+// TS createToolModelOutput's toJSONValue (JSON.stringify + JSON.parse;
+// undefined/marshal failure -> null). Audit row 6aa7c54 / WG24.
+func toJSONValue(value interface{}) interface{} {
+	if value == nil {
+		return nil
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var out interface{}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil
+	}
+	return out
+}
+
 func providerMetadataRaw(metadata map[string]interface{}) json.RawMessage {
 	if len(metadata) == 0 {
 		return nil
@@ -478,10 +507,12 @@ func responseToolApprovalRequestContent(part types.ToolApprovalRequestContent) t
 		toolCallID = part.ToolCall.ID
 	}
 	return types.ToolApprovalRequestContent{
-		ApprovalID:  part.ApprovalID,
-		ToolCallID:  toolCallID,
-		Signature:   part.Signature,
-		IsAutomatic: part.IsAutomatic,
+		ApprovalID:       part.ApprovalID,
+		ToolCallID:       toolCallID,
+		Reason:           part.Reason,
+		Signature:        part.Signature,
+		IsAutomatic:      part.IsAutomatic,
+		InputSchemaInput: part.InputSchemaInput,
 	}
 }
 
@@ -495,6 +526,12 @@ func responseToolApprovalResponseContent(part types.ToolApprovalResponseContent)
 }
 
 func normalizeResponseToolCallContent(part types.ToolCallContent) types.ToolCallContent {
+	// See normalizeResponseToolCall: Arguments wins over a reparse of the raw
+	// Input string so a refined input is not overwritten by the stale
+	// pre-refinement JSON.
+	if part.Arguments != nil {
+		return part
+	}
 	if part.Input != "" {
 		var parsed map[string]interface{}
 		if err := json.Unmarshal([]byte(part.Input), &parsed); err != nil {
@@ -505,9 +542,8 @@ func normalizeResponseToolCallContent(part types.ToolCallContent) types.ToolCall
 			parsed = map[string]interface{}{}
 		}
 		part.Arguments = parsed
+		return part
 	}
-	if part.Arguments == nil {
-		part.Arguments = map[string]interface{}{}
-	}
+	part.Arguments = map[string]interface{}{}
 	return part
 }

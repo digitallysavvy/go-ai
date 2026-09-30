@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 const (
@@ -46,10 +47,10 @@ func New(cfg Config) *Provider {
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: http.MergeHeaders(map[string]string{
+		Headers: version.WithUserAgentSuffix(http.MergeHeaders(map[string]string{
 			"Authorization": "Bearer " + apiKey,
 			"Content-Type":  "application/json",
-		}, cfg.Headers),
+		}, cfg.Headers), version.ProviderUserAgent("perplexity")),
 	})
 
 	return &Provider{
@@ -82,7 +83,10 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 
 // EmbeddingModel returns an embedding model by ID
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("perplexity does not support embeddings")
+	if modelID == "" {
+		modelID = string(ModelEmbedV1_4B)
+	}
+	return NewEmbeddingModel(p, modelID), nil
 }
 
 // ImageModel returns an image generation model by ID

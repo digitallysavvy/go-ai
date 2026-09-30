@@ -1,18 +1,20 @@
 # Google Vertex AI Provider
 
-This package provides access to Google Vertex AI models, including **Gemini language models**, **Imagen**, and **Gemini** image generation capabilities.
+This package provides access to Google Vertex AI models, including **Gemini language models** and **Gemini** image generation capabilities.
 
 ## Features
 
 - ✅ **Gemini Language Models**: `gemini-1.5-pro`, `gemini-1.5-flash`, `gemini-1.5-flash-8b`, `gemini-2.0-flash-exp`
 - ✅ **Text Generation**: Chat, streaming, function calling, JSON mode
 - ✅ **Multi-modal Inputs**: Text, images, files (including Google Cloud Storage URLs)
-- ✅ **Imagen 3.0 Models**: `imagen-3.0-generate-001`, `imagen-3.0-fast-generate-001`
 - ✅ **Gemini Image Models**: `gemini-2.5-flash-image`, `gemini-3-pro-image-preview`
 - ✅ **Text-to-Image Generation**: Create images from text prompts
 - ✅ **Aspect Ratio Control**: 1:1, 4:3, 3:4, 16:9, 9:16
-- ✅ **Image Editing**: Vertex Imagen source images, masks, and edit options
 - ✅ **Gemini TTS Speech Models**: `gemini-2.5-flash-tts`, `gemini-2.5-pro-tts`, `gemini-2.5-flash-lite-preview-tts`, `gemini-3.1-flash-tts-preview`
+
+> **Note:** Imagen (`:predict` API) models are no longer supported, matching the
+> upstream TypeScript AI SDK (`ai@7.0.113`). `ImageModel()` accepts only model
+> IDs starting with `gemini-`; other IDs return an error at `DoGenerate` time.
 - ✅ **EU/US Multi-Region Routing**: `eu` and `us` locations use regional REP hosts
 
 ## Installation
@@ -58,11 +60,6 @@ export GOOGLE_VERTEX_ACCESS_TOKEN=$(gcloud auth print-access-token)
 - `gemini-2.0-flash-exp` - Experimental next-generation model
 - `gemini-pro` - Legacy model (deprecated, use gemini-1.5-pro)
 - `gemini-pro-vision` - Legacy vision model (deprecated, use gemini-1.5-pro)
-
-### Imagen Models (Vertex AI)
-- `imagen-3.0-generate-001` - High quality image generation
-- `imagen-3.0-fast-generate-001` - Faster generation
-- `imagen-3.0-capability-001` - Enhanced capabilities
 
 ### Gemini Image Models
 - `gemini-2.5-flash-image` - Fast Gemini image generation
@@ -258,49 +255,6 @@ result, err := model.DoGenerate(ctx, &provider.GenerateOptions{
 
 ### Image Generation
 
-### Basic Text-to-Image (Imagen)
-
-```go
-package main
-
-import (
-    "context"
-    "os"
-
-    "github.com/digitallysavvy/go-ai/pkg/provider"
-    "github.com/digitallysavvy/go-ai/pkg/providers/googlevertex"
-)
-
-func main() {
-    // Create Vertex AI provider
-    prov, err := googlevertex.New(googlevertex.Config{
-        Project:     os.Getenv("GOOGLE_VERTEX_PROJECT"),
-        Location:    os.Getenv("GOOGLE_VERTEX_LOCATION"),
-        AccessToken: os.Getenv("GOOGLE_VERTEX_ACCESS_TOKEN"),
-    })
-    if err != nil {
-        panic(err)
-    }
-
-    // Create image model
-    model, _ := prov.ImageModel("imagen-3.0-generate-001")
-
-    // Generate image
-    n := 1
-    result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
-        Prompt: "A futuristic cityscape at night",
-        N:      &n,
-        Size:   "1920x1080", // Converts to 16:9 aspect ratio
-    })
-    if err != nil {
-        panic(err)
-    }
-
-    // Save image
-    os.WriteFile("vertex_output.png", result.Image, 0644)
-}
-```
-
 ### Text-to-Image with Gemini
 
 ```go
@@ -455,9 +409,6 @@ type ImageUsage struct {
 
 | Model | Speed | Quality | Best For |
 |-------|-------|---------|----------|
-| `imagen-3.0-generate-001` | Medium | High | Production use |
-| `imagen-3.0-fast-generate-001` | Fast | Good | Rapid iteration |
-| `imagen-3.0-capability-001` | Medium | Very High | Enhanced features |
 | `gemini-2.5-flash-image` | Very Fast | Good | Quick generation |
 
 ## Examples
@@ -469,7 +420,6 @@ See the [examples/providers/googlevertex](../../../examples/providers/googlevert
 
 See also [examples/image-generation](../../../examples/image-generation):
 
-- `vertex_imagen.go` - Vertex AI Imagen generation
 - `vertex_gemini.go` - Vertex AI Gemini generation
 
 ## Error Handling
@@ -498,7 +448,6 @@ Vertex AI image generation pricing varies by model and region. See [Google Cloud
 ## Resources
 
 - [Vertex AI Documentation](https://cloud.google.com/vertex-ai/docs)
-- [Imagen Documentation](https://cloud.google.com/vertex-ai/generative-ai/docs/image/overview)
 - [Gemini API Documentation](https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/overview)
 
 ## License

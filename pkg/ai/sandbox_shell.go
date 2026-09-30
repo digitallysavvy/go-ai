@@ -66,8 +66,15 @@ func (s *ShellSandbox) Run(ctx context.Context, opts SandboxProcessOptions) (San
 		defer copyWG.Done()
 		_, _ = io.Copy(&stderr, process.Stderr())
 	}()
-	waitResult, waitErr := process.Wait()
+	// Drain both pipes to EOF (which the copy goroutines see once the child
+	// closes them at process exit) before calling Wait. exec.Cmd.Wait closes
+	// the StdoutPipe/StderrPipe read ends once it observes the process exit;
+	// calling it concurrently with in-flight reads races the pipe close
+	// against io.Copy and can truncate output under load (see
+	// https://pkg.go.dev/os/exec#Cmd.StdoutPipe: "it is incorrect to call
+	// Wait before all reads from the pipe have completed").
 	copyWG.Wait()
+	waitResult, waitErr := process.Wait()
 	return SandboxRunResult{
 		Stdout:   stdout.String(),
 		Stderr:   stderr.String(),

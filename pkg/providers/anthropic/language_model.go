@@ -3,10 +3,12 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
+	"strconv"
 	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -16,7 +18,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 )
 
 // LanguageModel implements the provider.LanguageModel interface for Anthropic
@@ -56,43 +57,31 @@ func (m *LanguageModel) SupportsTools() bool {
 	return true
 }
 
-// isJsonToolMode returns true when a given request would use the jsonTool
-// structured output strategy (synthetic 'json' tool) rather than
-// output_config.format. This mirrors the useStructuredOutput computation in
-// buildRequestBody so that DoGenerate/DoStream can pass the flag downstream to
-// convertResponse and the stream handler.
+// isJsonToolMode reports whether a request uses the synthetic 'json' tool
+// for structured output (TS usesJsonResponseTool).
 func (m *LanguageModel) isJsonToolMode(opts *provider.GenerateOptions) bool {
-	if opts == nil || opts.ResponseFormat == nil || opts.ResponseFormat.Schema == nil {
-		return false
-	}
-	if opts.ResponseFormat.Type != "json" && opts.ResponseFormat.Type != "json_schema" {
-		return false
-	}
-	mode := StructuredOutputAuto
-	if m.options != nil && m.options.StructuredOutputMode != "" {
-		mode = m.options.StructuredOutputMode
-	}
-	return mode == StructuredOutputJSONTool ||
-		(mode == StructuredOutputAuto && !m.SupportsStructuredOutput())
+	req, err := m.prepareRequest(opts, false)
+	return err == nil && req.usesJSONResponseTool
 }
 
 // SupportsStructuredOutput returns whether the model supports structured output
-// via output_config.format. Matches the TS SDK getModelCapabilities() logic:
-// claude-opus-4-8, claude-*-4-6, claude-*-4-5, and claude-opus-4-1 families return true.
+// via output_config.format (TS getModelCapabilities().supportsStructuredOutput,
+// gated by the provider config).
 func (m *LanguageModel) SupportsStructuredOutput() bool {
-	if m.provider.config.SupportsNativeStructuredOutput != nil {
-		return *m.provider.config.SupportsNativeStructuredOutput
+	return m.configBool(m.provider.config.SupportsNativeStructuredOutput) &&
+		GetModelCapabilities(m.modelID).SupportsStructuredOutput
+}
+
+// SupportedURLs returns the URL patterns (regular expressions keyed by media
+// type) this model accepts directly without downloading first. Mirrors TS
+// languageModelConfig.supportedUrls: the direct Anthropic API and
+// anthropic-aws accept https image/PDF URLs directly; Vertex-Anthropic and
+// Bedrock-Anthropic override Config.SupportedURLs to force base64 conversion.
+func (m *LanguageModel) SupportedURLs() map[string][]string {
+	if m.provider.config.SupportedURLs != nil {
+		return m.provider.config.SupportedURLs(m.modelID)
 	}
-	id := m.modelID
-	return strings.Contains(id, "claude-opus-4-8") ||
-		strings.Contains(id, "claude-opus-4-7") ||
-		strings.Contains(id, "claude-fable-5") ||
-		strings.Contains(id, "claude-sonnet-4-6") ||
-		strings.Contains(id, "claude-opus-4-6") ||
-		strings.Contains(id, "claude-sonnet-4-5") ||
-		strings.Contains(id, "claude-opus-4-5") ||
-		strings.Contains(id, "claude-haiku-4-5") ||
-		strings.Contains(id, "claude-opus-4-1")
+	return DefaultSupportedURLs()
 }
 
 // SupportsImageInput returns whether the model accepts image inputs
@@ -107,30 +96,38 @@ func (m *LanguageModel) SupportsImageInput() bool {
 		m.modelID == "claude-3-5-sonnet-20241022"
 }
 
+func (m *LanguageModel) requestHeaders(opts *provider.GenerateOptions, betas []string, stream bool) map[string]string {
+	headers := map[string]string{}
+	if opts != nil {
+		for k, v := range opts.Headers {
+			if strings.EqualFold(k, "anthropic-beta") {
+				continue
+			}
+			headers[k] = v
+		}
+	}
+	if stream {
+		headers["Accept"] = "text/event-stream"
+	}
+	if len(betas) > 0 {
+		headers["anthropic-beta"] = strings.Join(betas, ",")
+	}
+	return headers
+}
+
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-	// Build request body
-	reqBody := m.buildRequestBody(opts, false)
-	reqBody = m.transformRequestBody(reqBody, false)
-
-	// Determine whether this request uses the synthetic json tool for structured output.
-	// Must be computed from the same options used to build the request body.
-	usesJsonResponseTool := m.isJsonToolMode(opts)
-
-	// Collect beta headers from model options and tool requirements (non-streaming)
-	betaHeaders := m.combineBetaHeaders(opts, false)
-
-	reqHeaders := map[string]string{}
-	if len(betaHeaders) > 0 {
-		reqHeaders["anthropic-beta"] = betaHeaders
+	req, err := m.prepareRequest(opts, false)
+	if err != nil {
+		return nil, err
 	}
+	body := m.transformRequestBody(req.body, req.betas, false)
 
-	// Make API request, capturing response headers.
 	internalReq := internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    m.messagesPath(false),
-		Body:    reqBody,
-		Headers: reqHeaders,
+		Body:    body,
+		Headers: m.requestHeaders(opts, req.betas, false),
 	}
 	var response anthropicResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalReq, &response)
@@ -138,371 +135,118 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, m.handleError(err)
 	}
 
-	// Convert response to GenerateResult and attach HTTP headers.
-	result := m.convertResponse(response, usesJsonResponseTool, opts.Tools)
+	result := m.convertResponseWithOptions(response, convertOptions{
+		usesJSONResponseTool:     req.usesJSONResponseTool,
+		tools:                    opts.Tools,
+		markCodeExecutionDynamic: req.markCodeExecutionDynamic,
+		providerOptionsName:      req.providerOptionsName,
+		usedCustomProviderKey:    req.usedCustomProviderKey,
+		citationDocuments:        extractCitationDocuments(opts.Prompt.Messages),
+	})
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
-	result.Warnings = append(result.Warnings, m.strictToolWarnings(opts)...)
-	if w := m.detectSkillsWarning(opts); w != nil {
-		result.Warnings = append(result.Warnings, *w)
-	}
+	result.RawRequest = req.body
+	result.Warnings = append(result.Warnings, req.warnings...)
 	return result, nil
 }
 
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
-	// Build request body with streaming enabled
-	reqBody := m.buildRequestBody(opts, true)
-	reqBody = m.transformRequestBody(reqBody, true)
-
-	// Prepare headers
-	headers := map[string]string{
-		"Accept": "text/event-stream",
+	req, err := m.prepareRequest(opts, true)
+	if err != nil {
+		return nil, err
 	}
+	body := m.transformRequestBody(req.body, req.betas, true)
 
-	// Collect beta headers from model options and tool requirements (streaming)
-	betaHeaders := m.combineBetaHeaders(opts, true)
-	if len(betaHeaders) > 0 {
-		headers["anthropic-beta"] = betaHeaders
-	}
-
-	// Make streaming API request
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    m.messagesPath(true),
-		Body:    reqBody,
-		Headers: headers,
+		Body:    body,
+		Headers: m.requestHeaders(opts, req.betas, true),
 	})
 	if err != nil {
 		return nil, m.handleError(err)
 	}
 
-	// Create stream wrapper; pass jsonTool mode so the stream can suppress text
-	// events and route json tool input_json_delta as text chunks.
-	usesJsonResponseTool := m.isJsonToolMode(opts)
-	return providerutils.WithResponseMetadata(newAnthropicStreamWithWarnings(httpResp.Body, usesJsonResponseTool, opts.Tools, m.strictToolWarnings(opts)), httpResp.Header, m.ModelID()), nil
+	respBody := httpResp.Body
+	if m.provider.config.TransformStreamBody != nil {
+		respBody = m.provider.config.TransformStreamBody(respBody, httpResp.Header)
+	}
+	stream := newAnthropicStreamWithWarnings(respBody, req.usesJSONResponseTool, opts.Tools, req.warnings)
+	stream.markCodeExecutionDynamic = req.markCodeExecutionDynamic
+	stream.providerOptionsName = req.providerOptionsName
+	stream.usedCustomProviderKey = req.usedCustomProviderKey
+	stream.requestBody = body
+	stream.citationDocuments = extractCitationDocuments(opts.Prompt.Messages)
+	return providerutils.WithResponseMetadata(stream, httpResp.Header, m.ModelID()), nil
 }
 
 func (m *LanguageModel) messagesPath(stream bool) string {
 	if m.provider.config.MessagesPath != nil {
 		return m.provider.config.MessagesPath(m.modelID, stream)
 	}
-	return "/v1/messages"
+	return "/messages"
 }
 
-func (m *LanguageModel) transformRequestBody(body map[string]interface{}, stream bool) map[string]interface{} {
+func (m *LanguageModel) transformRequestBody(body map[string]interface{}, betas []string, stream bool) map[string]interface{} {
+	if m.provider.config.TransformRequestBodyWithBetas != nil {
+		body = m.provider.config.TransformRequestBodyWithBetas(body, betas, stream)
+	}
 	if m.provider.config.TransformRequestBody != nil {
 		return m.provider.config.TransformRequestBody(body, stream)
 	}
 	return body
 }
 
-func (m *LanguageModel) strictToolWarnings(opts *provider.GenerateOptions) []types.Warning {
-	if m.provider.config.SupportsStrictTools == nil || *m.provider.config.SupportsStrictTools || opts == nil {
-		return nil
-	}
-	var warnings []types.Warning
-	for _, t := range opts.Tools {
-		if !t.Strict {
-			continue
-		}
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported",
-			Feature: "strict",
-			Details: fmt.Sprintf("Tool '%s' has strict: true, but strict mode is not supported by this provider. The strict property will be ignored.", t.Name),
-		})
-	}
-	return warnings
+// ConvertPrompt converts a call prompt (system prompt, messages or text) with
+// the Anthropic prompt converter (TS convertToAnthropicPrompt).
+func ConvertPrompt(opts *provider.GenerateOptions, sendReasoning *bool) (*prompt.AnthropicPrompt, error) {
+	return convertCallPrompt(opts, prompt.AnthropicPromptOptions{
+		SendReasoning: sendReasoning,
+		ToolsetNames:  prompt.AnthropicToolsetNames(opts.Tools),
+	})
 }
 
-// buildRequestBody builds the Anthropic API request body
-func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
-	body := map[string]interface{}{
-		"model":  m.modelID,
-		"stream": stream,
-	}
-
-	// Determine whether to strip reasoning content from outgoing messages.
-	// Default (nil or true): include reasoning blocks. False: filter them out.
-	sendReasoning := true
-	if m.options != nil && m.options.SendReasoning != nil {
-		sendReasoning = *m.options.SendReasoning
-	}
-
-	// Convert messages (Anthropic format), optionally filtering reasoning blocks.
-	if opts.Prompt.IsMessages() {
-		msgs := opts.Prompt.Messages
-		if !sendReasoning {
-			msgs = filterReasoningContent(msgs)
-		}
-		body["messages"] = prompt.ToAnthropicMessages(msgs)
-	} else if opts.Prompt.IsSimple() {
-		body["messages"] = prompt.ToAnthropicMessages(prompt.SimpleTextToMessages(opts.Prompt.Text))
-	}
-
-	// Add system message separately (Anthropic requires this)
+// convertCallPrompt converts the call prompt; opts.Prompt.System becomes a
+// leading system message, matching how the TS core places the system prompt.
+func convertCallPrompt(opts *provider.GenerateOptions, promptOpts prompt.AnthropicPromptOptions) (*prompt.AnthropicPrompt, error) {
+	var msgs []types.Message
 	if opts.Prompt.System != "" {
-		body["system"] = opts.Prompt.System
+		msgs = append(msgs, types.Message{
+			Role:    types.RoleSystem,
+			Content: []types.ContentPart{types.TextContent{Text: opts.Prompt.System}},
+		})
 	}
+	if opts.Prompt.IsMessages() {
+		msgs = append(msgs, opts.Prompt.Messages...)
+	} else if opts.Prompt.Text != "" {
+		msgs = append(msgs, prompt.SimpleTextToMessages(opts.Prompt.Text)...)
+	}
+	return prompt.ConvertToAnthropicPrompt(msgs, promptOpts)
+}
 
-	// Set max_tokens (required by Anthropic)
-	maxTokens := 4096 // Default
-	if opts.MaxTokens != nil {
-		maxTokens = *opts.MaxTokens
+// buildRequestBody builds the Anthropic API request body. Preparation errors
+// are dropped; DoGenerate/DoStream surface them.
+func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
+	req, err := m.prepareRequest(opts, stream)
+	if err != nil {
+		return map[string]interface{}{"model": m.modelID}
 	}
-	body["max_tokens"] = maxTokens
+	return req.body
+}
 
-	// Resolve thinking configuration. Call-level Reasoning takes precedence over
-	// model-level Thinking option. ReasoningDefault means "don't override".
-	//
-	// isThinking is true whenever thinking will be enabled in the final request,
-	// which affects whether temperature/top_k/top_p may be sent (Anthropic rejects
-	// those parameters when thinking is active).
-	isThinking := false
-	reasoningEffort := ""
-	if opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault {
-		// Call-level Reasoning overrides model Thinking option
-		if *opts.Reasoning == types.ReasoningNone {
-			body["thinking"] = map[string]interface{}{"type": "disabled"}
-		} else if anthropicSupportsAdaptiveThinking(m.modelID) {
-			body["thinking"] = map[string]interface{}{"type": "adaptive"}
-			reasoningEffort = anthropicReasoningEffort(*opts.Reasoning, m.modelID)
-			isThinking = true
-		} else {
-			switch *opts.Reasoning {
-			case types.ReasoningMinimal:
-				body["thinking"] = map[string]interface{}{"type": "enabled", "budget_tokens": anthropicReasoningBudget(types.ReasoningMinimal, m.modelID)}
-				isThinking = true
-			case types.ReasoningLow:
-				body["thinking"] = map[string]interface{}{"type": "enabled", "budget_tokens": anthropicReasoningBudget(types.ReasoningLow, m.modelID)}
-				isThinking = true
-			case types.ReasoningMedium:
-				body["thinking"] = map[string]interface{}{"type": "enabled", "budget_tokens": anthropicReasoningBudget(types.ReasoningMedium, m.modelID)}
-				isThinking = true
-			case types.ReasoningHigh:
-				body["thinking"] = map[string]interface{}{"type": "enabled", "budget_tokens": anthropicReasoningBudget(types.ReasoningHigh, m.modelID)}
-				isThinking = true
-			case types.ReasoningXHigh:
-				body["thinking"] = map[string]interface{}{"type": "enabled", "budget_tokens": anthropicReasoningBudget(types.ReasoningXHigh, m.modelID)}
-				isThinking = true
-			}
-		}
-	} else if m.options != nil && m.options.Thinking != nil {
-		// Fall back to model-level Thinking option
-		thinkingConfig := map[string]interface{}{
-			"type": string(m.options.Thinking.Type),
-		}
-		// Only add budget_tokens for "enabled" type
-		if m.options.Thinking.Type == ThinkingTypeEnabled && m.options.Thinking.BudgetTokens != nil {
-			thinkingConfig["budget_tokens"] = *m.options.Thinking.BudgetTokens
-		}
-		body["thinking"] = thinkingConfig
-		isThinking = m.options.Thinking.Type != ThinkingTypeDisabled
+// combineBetaHeaders returns the comma-separated anthropic-beta value for a
+// request.
+func (m *LanguageModel) combineBetaHeaders(opts *provider.GenerateOptions, stream bool) string {
+	req, err := m.prepareRequest(opts, stream)
+	if err != nil {
+		return ""
 	}
+	return strings.Join(req.betas, ",")
+}
 
-	// Temperature, top_k, and top_p are incompatible with thinking mode (Anthropic API
-	// rejects them). Also, top_p and temperature are mutually exclusive — only one can
-	// be sent at a time. Matches TS SDK: !isThinking && (topP != null && temp == null).
-	if !isThinking {
-		if opts.Temperature != nil {
-			body["temperature"] = *opts.Temperature
-		}
-		if opts.TopK != nil {
-			body["top_k"] = *opts.TopK
-		}
-		// top_p is only valid when temperature is not also set
-		if opts.TopP != nil && opts.Temperature == nil {
-			body["top_p"] = *opts.TopP
-		}
-	}
-	if len(opts.StopSequences) > 0 {
-		body["stop_sequences"] = opts.StopSequences
-	}
-
-	// Add tools if present
-	if len(opts.Tools) > 0 {
-		body["tools"] = ToAnthropicFormatWithCache(opts.Tools)
-		if opts.ToolChoice.Type != "" {
-			body["tool_choice"] = tool.ConvertToolChoiceToAnthropic(opts.ToolChoice)
-		}
-	}
-
-	// disable_parallel_tool_use merges into the existing tool_choice object (or creates
-	// a new one). Matches TS SDK behavior: { ...toolChoice, disable_parallel_tool_use: true }.
-	if m.options != nil && m.options.DisableParallelToolUse {
-		if existing, ok := body["tool_choice"]; ok {
-			if tcMap, ok := existing.(map[string]interface{}); ok {
-				tcMap["disable_parallel_tool_use"] = true
-			}
-		} else {
-			body["tool_choice"] = map[string]interface{}{
-				"disable_parallel_tool_use": true,
-			}
-		}
-	}
-
-	// Add speed configuration if set (fast mode for Opus 4.6)
-	if m.options != nil && m.options.Speed != "" {
-		body["speed"] = string(m.options.Speed)
-	}
-
-	// Add context management if configured (beta feature)
-	if m.options != nil && m.options.ContextManagement != nil {
-		body["context_management"] = m.options.ContextManagement
-	}
-
-	// Build output_config and handle structured output mode.
-	// Effort always goes into output_config.effort (when set).
-	// ResponseFormat goes into output_config.format (outputFormat mode) or
-	// injects a synthetic 'json' tool (jsonTool mode), depending on mode and
-	// model capability. Both effort and format can coexist in output_config.
-	outputConfig := map[string]interface{}{}
-	if m.options != nil && m.options.Effort != "" {
-		outputConfig["effort"] = string(m.options.Effort)
-	} else if reasoningEffort != "" {
-		outputConfig["effort"] = reasoningEffort
-	}
-	if m.options != nil && m.options.TaskBudget != nil {
-		taskBudget := map[string]interface{}{
-			"type":  m.options.TaskBudget.Type,
-			"total": m.options.TaskBudget.Total,
-		}
-		if m.options.TaskBudget.Remaining != nil {
-			taskBudget["remaining"] = *m.options.TaskBudget.Remaining
-		}
-		outputConfig["task_budget"] = taskBudget
-	}
-	if opts.ResponseFormat != nil && opts.ResponseFormat.Schema != nil &&
-		(opts.ResponseFormat.Type == "json" || opts.ResponseFormat.Type == "json_schema") {
-
-		// Determine effective mode: explicit option wins; default is auto.
-		mode := StructuredOutputAuto
-		if m.options != nil && m.options.StructuredOutputMode != "" {
-			mode = m.options.StructuredOutputMode
-		}
-
-		useOutputFormat := mode == StructuredOutputFormat ||
-			(mode == StructuredOutputAuto && m.SupportsStructuredOutput())
-
-		if useOutputFormat {
-			// outputFormat mode: use output_config.format (native structured output).
-			outputConfig["format"] = map[string]interface{}{
-				"type":   "json_schema",
-				"schema": tool.SanitizeAnthropicSchema(opts.ResponseFormat.Schema),
-			}
-		} else {
-			// jsonTool mode: inject a synthetic 'json' tool that forces the model
-			// to respond with a JSON object matching the schema. This works on all
-			// Claude models, including those that don't support output_config.format.
-			jsonTool := map[string]interface{}{
-				"name":         "json",
-				"description":  "Respond with a JSON object.",
-				"input_schema": tool.SanitizeAnthropicSchema(opts.ResponseFormat.Schema),
-			}
-			existing, _ := body["tools"].([]map[string]interface{})
-			body["tools"] = append(existing, jsonTool)
-			// Use {type:"any"} (required) with disable_parallel_tool_use to match
-			// the TypeScript SDK's prepareTools({toolChoice:{type:'required'},
-			// disableParallelToolUse:true}) behaviour.
-			body["tool_choice"] = map[string]interface{}{
-				"type":                      "any",
-				"disable_parallel_tool_use": true,
-			}
-		}
-	}
-	if len(outputConfig) > 0 {
-		body["output_config"] = outputConfig
-	}
-
-	if m.options != nil && m.options.InferenceGeo != "" {
-		body["inference_geo"] = m.options.InferenceGeo
-	}
-	if m.options != nil && len(m.options.Fallbacks) > 0 {
-		body["fallbacks"] = m.options.Fallbacks
-	}
-
-	// cache_control: explicit CacheControl takes precedence over AutomaticCaching.
-	if m.options != nil && m.options.CacheControl != nil {
-		body["cache_control"] = m.options.CacheControl
-	} else if m.options != nil && m.options.AutomaticCaching {
-		body["cache_control"] = map[string]string{"type": "auto"}
-	}
-
-	// Add MCP servers when configured. Optional fields (authorization_token,
-	// tool_configuration) are omitted when not set.
-	if m.options != nil && len(m.options.MCPServers) > 0 {
-		servers := make([]map[string]interface{}, len(m.options.MCPServers))
-		for i, s := range m.options.MCPServers {
-			srv := map[string]interface{}{
-				"type": s.Type,
-				"name": s.Name,
-				"url":  s.URL,
-			}
-			if s.AuthorizationToken != "" {
-				srv["authorization_token"] = s.AuthorizationToken
-			}
-			if s.ToolConfiguration != nil {
-				tc := map[string]interface{}{}
-				if len(s.ToolConfiguration.AllowedTools) > 0 {
-					tc["allowed_tools"] = s.ToolConfiguration.AllowedTools
-				}
-				if s.ToolConfiguration.Enabled != nil {
-					tc["enabled"] = *s.ToolConfiguration.Enabled
-				}
-				if len(tc) > 0 {
-					srv["tool_configuration"] = tc
-				}
-			}
-			servers[i] = srv
-		}
-		body["mcp_servers"] = servers
-	}
-
-	// Extract metadata.userId from call-level anthropic provider options.
-	// Wire format: metadata: { user_id: "..." } (snake_case per Anthropic API spec).
-	// Omitted entirely when userId is not provided.
-	if opts.ProviderOptions != nil {
-		if anthropicOpts, ok := opts.ProviderOptions["anthropic"].(map[string]interface{}); ok {
-			if metadata, ok := anthropicOpts["metadata"].(map[string]interface{}); ok {
-				if userID, ok := metadata["userId"].(string); ok && userID != "" {
-					body["metadata"] = map[string]interface{}{"user_id": userID}
-				}
-			}
-		}
-	}
-
-	// Add container config. ContainerID (string shorthand) takes precedence over Container struct.
-	// When Container has skills, send as an object {id, skills}; otherwise send the plain ID string.
-	// This matches the TypeScript SDK behavior.
-	if m.options != nil && m.options.ContainerID != "" {
-		body["container"] = m.options.ContainerID
-	} else if m.options != nil && m.options.Container != nil {
-		if len(m.options.Container.Skills) > 0 {
-			// Object format when skills are provided (agent skills feature)
-			containerBody := map[string]interface{}{}
-			if m.options.Container.ID != "" {
-				containerBody["id"] = m.options.Container.ID
-			}
-			skills := make([]map[string]interface{}, len(m.options.Container.Skills))
-			for i, s := range m.options.Container.Skills {
-				skill := map[string]interface{}{
-					"type":     s.Type,
-					"skill_id": s.SkillID,
-				}
-				if s.Version != "" {
-					skill["version"] = s.Version
-				}
-				skills[i] = skill
-			}
-			containerBody["skills"] = skills
-			body["container"] = containerBody
-		} else if m.options.Container.ID != "" {
-			// String format when no skills (referencing/resuming an existing container)
-			body["container"] = m.options.Container.ID
-		}
-		// Otherwise (empty ContainerConfig): don't add any container field
-	}
-
-	return body
+// getBetaHeaders returns the betas required by the model options alone.
+func (m *LanguageModel) getBetaHeaders() string {
+	return m.combineBetaHeaders(&provider.GenerateOptions{}, false)
 }
 
 // convertResponse converts an Anthropic response to GenerateResult.
@@ -511,28 +255,132 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 // the json-tool-as-text extraction so a real user tool named "json" is never
 // misidentified as the structured output tool.
 func (m *LanguageModel) convertResponse(response anthropicResponse, usesJsonResponseTool bool, toolsOpt ...[]types.Tool) *types.GenerateResult {
+	var tools []types.Tool
+	if len(toolsOpt) > 0 {
+		tools = toolsOpt[0]
+	}
+	return m.convertResponseWithOptions(response, convertOptions{usesJSONResponseTool: usesJsonResponseTool, tools: tools})
+}
+
+// convertOptions carries the request-derived flags convertResponse needs.
+type convertOptions struct {
+	usesJSONResponseTool     bool
+	tools                    []types.Tool
+	markCodeExecutionDynamic bool
+	// providerOptionsName / usedCustomProviderKey mirror preparedRequest's
+	// fields of the same name (see request.go); when set, the response
+	// providerMetadata is duplicated under providerOptionsName, matching TS
+	// doGenerate's `if (usedCustomProviderKey && providerOptionsName !==
+	// 'anthropic') providerMetadata[providerOptionsName] = anthropicMetadata`.
+	providerOptionsName   string
+	usedCustomProviderKey bool
+	// citationDocuments maps citation document_index -> title/filename/mediaType,
+	// extracted from citation-enabled file parts in the request prompt (TS
+	// extractCitationDocuments). Used to resolve page_location/char_location
+	// citations into document source parts.
+	citationDocuments []citationDocument
+	// rawBatchCitations is true for batch result conversion (TS
+	// convertAnthropicBatchResponse), which preserves the *entire* raw
+	// citations array on the text part's providerMetadata instead of just the
+	// web-search subset doGenerate/doStream keep — batch results are
+	// retrieved independently of the original request, so there is no
+	// document ordering to normalize page_location/char_location citations
+	// against (citationDocuments is left empty in that case).
+	rawBatchCitations bool
+}
+
+func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, co convertOptions) *types.GenerateResult {
+	usesJsonResponseTool := co.usesJSONResponseTool
+	tools := co.tools
 	result := &types.GenerateResult{
 		Usage:       convertAnthropicUsage(response.Usage),
 		RawResponse: response,
 	}
-	var tools []types.Tool
-	if len(toolsOpt) > 0 {
-		tools = toolsOpt[0]
+	if response.ID != "" || response.Model != "" {
+		result.ResponseMetadata = &types.ResponseMetadata{ID: response.ID, ModelID: response.Model}
 	}
 	toolNameMap := anthropicProviderToolNameMap(tools)
 
 	// Extract text and reasoning content from content blocks.
 	// When jsonTool mode is active the model responds via a synthetic tool, not
 	// a text block — skip text blocks entirely in that case, matching the TS SDK.
+	//
+	// On-demand compaction responses ("compaction" content blocks) are text
+	// content whose providerMetadata identifies them as a compaction summary
+	// (TS: `content.push({type: 'text', text: part.content, providerMetadata})`).
+	// An empty or null compaction content is omitted entirely (TS: `if
+	// (!part.content) break;`).
 	if !usesJsonResponseTool {
 		var textParts []string
+		var textBlocks []types.ContentPart
+		hasExtraContent := false
+		// citationDocs starts from the prompt-derived documents and grows in
+		// response-content order as web_fetch_tool_result blocks are
+		// encountered below, mirroring TS's single ordered `for (const part of
+		// response.content)` loop where `citationDocuments.push(...)` runs
+		// inline with citation resolution (anthropic-language-model.ts:1216).
+		// A citation can only resolve against a web-fetched document that
+		// appears earlier in the content array, same as TS.
+		citationDocs := append([]citationDocument(nil), co.citationDocuments...)
 		for _, content := range response.Content {
-			if content.Type == "text" {
+			switch content.Type {
+			case "text":
 				textParts = append(textParts, content.Text)
+				metadataCitations := filterWebSearchCitations(content.Citations)
+				if co.rawBatchCitations {
+					metadataCitations = content.Citations
+				}
+				textBlocks = append(textBlocks, types.TextContent{
+					Text:             content.Text,
+					ProviderMetadata: citationsProviderMetadata(metadataCitations),
+				})
+				if len(metadataCitations) > 0 {
+					hasExtraContent = true
+				}
+				for _, citation := range content.Citations {
+					src, ok := createCitationSource(citation, citationDocs, anthropicGenerateID)
+					if !ok {
+						continue
+					}
+					textBlocks = append(textBlocks, src)
+					hasExtraContent = true
+				}
+			case "web_fetch_tool_result":
+				// Batch result retrieval has no original prompt to derive
+				// document ordering from at all, so indexed document citations
+				// can never be normalized safely there -- not even against a
+				// document fetched within the same batch response. TS's batch
+				// converter always resolves citations against a hardcoded `[]`
+				// (anthropic-batch.ts:762 `createCitationSource(citation, [],
+				// generateId)`), never growing it for web_fetch_tool_result.
+				if !co.rawBatchCitations {
+					if doc, ok := extractWebFetchCitationDocument(content.Content); ok {
+						citationDocs = append(citationDocs, doc)
+					}
+				}
+			case "compaction":
+				text, ok := anthropicCompactionText(content.Content)
+				if !ok {
+					continue
+				}
+				hasExtraContent = true
+				textParts = append(textParts, text)
+				textBlocks = append(textBlocks, types.TextContent{
+					Text:             text,
+					ProviderMetadata: anthropicCompactionMetadata(content.Signature),
+				})
 			}
 		}
 		if len(textParts) > 0 {
-			result.Text = textParts[0]
+			result.Text = strings.Join(textParts, "")
+		}
+		// Only surface text blocks as explicit content parts when a compaction
+		// block or citations are present. In the common single-text-block,
+		// no-citations case, result.Text alone carries the content
+		// (generateResultContentParts synthesizes the content part from it),
+		// matching existing behavior.
+		if hasExtraContent {
+			result.Content = append(result.Content, textBlocks...)
 		}
 	}
 
@@ -551,6 +399,22 @@ func (m *LanguageModel) convertResponse(response anthropicResponse, usesJsonResp
 			result.Content = append(result.Content, types.ReasoningContent{
 				RedactedData: content.Data,
 			})
+		case "container_upload":
+			// A file the model uploaded to the code execution container
+			// (TS: content.push({type: 'custom', kind:
+			// 'anthropic.container_upload', providerMetadata: {anthropic:
+			// {fileId}}})). TS's doStream doesn't handle this block type, so
+			// this is generate-only, matching TS parity. ProviderMetadata
+			// must be namespaced under "anthropic" like every other
+			// provider-metadata payload (see e.g. Google's CustomContent,
+			// which nests under "google"), not a flat {fileId} object.
+			metadata, _ := json.Marshal(map[string]interface{}{
+				"anthropic": map[string]interface{}{"fileId": content.FileID},
+			})
+			result.Content = append(result.Content, types.CustomContent{
+				Kind:             "anthropic.container_upload",
+				ProviderMetadata: metadata,
+			})
 		}
 	}
 
@@ -563,6 +427,11 @@ func (m *LanguageModel) convertResponse(response anthropicResponse, usesJsonResp
 	// specially: its input is marshalled to JSON and set as the text result rather
 	// than surfaced as a ToolCall. The usesJsonResponseTool gate prevents a real
 	// user tool named "json" from being misidentified.
+	//
+	// mcpToolCalls tracks each mcp_tool_use call's toolName/providerMetadata by
+	// id so the paired mcp_tool_result (TS mcpToolCalls[part.tool_use_id]) can
+	// resolve the same toolName and reuse the same providerMetadata.
+	mcpToolCalls := map[string]mcpToolCallInfo{}
 	for _, content := range response.Content {
 		switch content.Type {
 		case "tool_use":
@@ -572,21 +441,56 @@ func (m *LanguageModel) convertResponse(response anthropicResponse, usesJsonResp
 				inputJSON, _ := json.Marshal(content.Input)
 				result.Text = string(inputJSON)
 				isJsonResponseFromTool = true
+			} else if content.ToolsetName != "" {
+				// Toolset member calls (e.g. the computer toolset) map to the
+				// toolset tool with the member name as the action.
+				meta := map[string]interface{}{"toolsetName": content.ToolsetName}
+				if caller := anthropicCallerInfo(content.Caller); caller != nil {
+					meta["caller"] = caller
+				}
+				result.ToolCalls = append(result.ToolCalls, types.ToolCall{
+					ID:               content.ID,
+					ToolName:         mapAnthropicToolName(content.ToolsetName, toolNameMap),
+					Arguments:        toToolsetMemberInput(content.Name, content.Input),
+					ProviderMetadata: map[string]interface{}{"anthropic": meta},
+				})
 			} else {
 				result.ToolCalls = append(result.ToolCalls, types.ToolCall{
-					ID:        content.ID,
-					ToolName:  mapAnthropicToolName(content.Name, toolNameMap),
-					Arguments: content.Input,
+					ID:               content.ID,
+					ToolName:         mapAnthropicToolName(content.Name, toolNameMap),
+					Arguments:        content.Input,
+					ProviderMetadata: anthropicCallerMetadata(content.Caller),
 				})
 			}
+		case "server_tool_use":
+			if tc, ok := serverToolUseCall(content, toolNameMap, co.markCodeExecutionDynamic); ok {
+				result.ToolCalls = append(result.ToolCalls, tc)
+			}
 		case "mcp_tool_use":
-			// MCP tool calls are executed server-side; surface them as ToolCalls
-			// so callers can inspect which MCP tools the model invoked.
+			// MCP tool calls are executed server-side; surface them as
+			// provider-executed dynamic tool calls (TS mcp_tool_use handling).
+			meta := anthropicMCPToolUseMetadata(content.ServerName)
+			mcpToolCalls[content.ID] = mcpToolCallInfo{toolName: content.Name, providerMetadata: meta}
 			result.ToolCalls = append(result.ToolCalls, types.ToolCall{
-				ID:        content.ID,
-				ToolName:  content.Name,
-				Arguments: content.Input,
+				ID:               content.ID,
+				ToolName:         content.Name,
+				Arguments:        content.Input,
+				ProviderExecuted: true,
+				Dynamic:          true,
+				ProviderMetadata: meta,
 			})
+		case "advisor_tool_result":
+			trc := types.ToolResultContent{
+				ToolCallID:       content.ToolUseID,
+				ToolName:         mapAnthropicToolName("advisor", toolNameMap),
+				ProviderExecuted: true,
+			}
+			res, isErr := convertAdvisorResult(content.Content)
+			trc.Result = res
+			if isErr {
+				trc.Error = fmt.Sprintf("%v", res["errorCode"])
+			}
+			result.Content = append(result.Content, trc)
 		case "web_search_tool_result":
 			// Remap snake_case wire fields to camelCase and emit source chunks.
 			// Mirrors TS SDK anthropic-messages-language-model.ts:1055-1093.
@@ -622,10 +526,33 @@ func (m *LanguageModel) convertResponse(response anthropicResponse, usesJsonResp
 				trc.Result = convertWebFetchToolResult(content.Content)
 			}
 			result.Content = append(result.Content, trc)
+		case "mcp_tool_result":
+			// Resolve toolName and providerMetadata from the paired mcp_tool_use
+			// call (TS: `mcpToolCalls[part.tool_use_id].toolName` /
+			// `.providerMetadata`), and mark the result dynamic like TS.
+			call := mcpToolCalls[content.ToolUseID]
+			trc := types.ToolResultContent{
+				ToolCallID: content.ToolUseID,
+				ToolName:   call.toolName,
+				Dynamic:    true,
+			}
+			if call.providerMetadata != nil {
+				if meta, err := json.Marshal(call.providerMetadata); err == nil {
+					trc.ProviderMetadata = meta
+				}
+			}
+			var parsed interface{}
+			if len(content.Content) > 0 {
+				json.Unmarshal(content.Content, &parsed) //nolint:errcheck
+			}
+			if content.IsError {
+				trc.Error = fmt.Sprintf("%v", parsed)
+			} else {
+				trc.Result = parsed
+			}
+			result.Content = append(result.Content, trc)
 		case "code_execution_tool_result", "bash_code_execution_tool_result",
-			"text_editor_code_execution_tool_result", "tool_search_tool_result",
-			"advisor_tool_result",
-			"mcp_tool_result":
+			"text_editor_code_execution_tool_result", "tool_search_tool_result":
 			// Deferred provider tool results: the provider executed the tool in a
 			// previous step and delivers the result inline here. Surface as
 			// ToolResultContent so the SDK's pendingDeferredToolCalls map is cleared.
@@ -651,9 +578,9 @@ func (m *LanguageModel) convertResponse(response anthropicResponse, usesJsonResp
 	// caller expects "stop" (the JSON content has been extracted as text, not a
 	// tool call). Matches mapAnthropicStopReason() in the TypeScript SDK.
 	switch response.StopReason {
-	case "end_turn":
+	case "end_turn", "pause_turn", "stop_sequence":
 		result.FinishReason = types.FinishReasonStop
-	case "max_tokens":
+	case "max_tokens", "model_context_window_exceeded":
 		result.FinishReason = types.FinishReasonLength
 	case "tool_use":
 		if isJsonResponseFromTool {
@@ -661,11 +588,12 @@ func (m *LanguageModel) convertResponse(response anthropicResponse, usesJsonResp
 		} else {
 			result.FinishReason = types.FinishReasonToolCalls
 		}
-	case "stop_sequence":
-		result.FinishReason = types.FinishReasonStop
+	case "refusal":
+		result.FinishReason = types.FinishReasonContentFilter
 	default:
 		result.FinishReason = types.FinishReasonOther
 	}
+	result.RawFinishReason = response.StopReason
 
 	// Extract context management (check root level first, then usage block)
 	if response.ContextManagement != nil {
@@ -674,7 +602,10 @@ func (m *LanguageModel) convertResponse(response anthropicResponse, usesJsonResp
 		// Fallback to legacy location in usage block
 		result.ContextManagement = response.Usage.ContextManagement
 	}
-	result.ProviderMetadata = anthropicProviderMetadata(response.Usage, response.StopSequence, response.StopDetails, response.Container, result.ContextManagement)
+	result.ProviderMetadata = withCustomProviderKeyMetadata(anthropicProviderMetadata(response.Usage, response.StopSequence, response.StopDetails, response.Container, result.ContextManagement, metadataExtras{
+		inputTransformations: rawJSONValue(response.InputTransformations),
+		safeguardResults:     rawJSONValue(response.SafeguardResults),
+	}), co.providerOptionsName, co.usedCustomProviderKey)
 
 	return result
 }
@@ -701,33 +632,9 @@ func providerToolResultName(resultType string) string {
 }
 
 func anthropicProviderToolNameMap(tools []types.Tool) map[string]string {
-	if len(tools) == 0 {
-		return nil
-	}
-	providerNames := map[string]string{
-		"anthropic.code_execution_20250522":    "code_execution",
-		"anthropic.code_execution_20250825":    "code_execution",
-		"anthropic.code_execution_20260120":    "code_execution",
-		"anthropic.computer_20241022":          "computer",
-		"anthropic.computer_20250124":          "computer",
-		"anthropic.text_editor_20241022":       "str_replace_editor",
-		"anthropic.text_editor_20250124":       "str_replace_editor",
-		"anthropic.text_editor_20250429":       "str_replace_based_edit_tool",
-		"anthropic.text_editor_20250728":       "str_replace_based_edit_tool",
-		"anthropic.bash_20241022":              "bash",
-		"anthropic.bash_20250124":              "bash",
-		"anthropic.memory_20250818":            "memory",
-		"anthropic.web_search_20250305":        "web_search",
-		"anthropic.web_search_20260209":        "web_search",
-		"anthropic.web_fetch_20250910":         "web_fetch",
-		"anthropic.web_fetch_20260209":         "web_fetch",
-		"anthropic.tool_search_regex_20251119": "tool_search_tool_regex",
-		"anthropic.tool_search_bm25_20251119":  "tool_search_tool_bm25",
-		"anthropic.advisor_20260301":           "advisor",
-	}
 	out := map[string]string{}
 	for _, t := range tools {
-		if providerName, ok := providerNames[t.Name]; ok {
+		if providerName := prompt.AnthropicProviderToolName(t.Name); providerName != t.Name {
 			out[providerName] = t.Name
 		}
 	}
@@ -766,13 +673,15 @@ func convertAnthropicUsage(usage anthropicUsage) types.Usage {
 	// the served fallback answer, while the primary message iteration is only
 	// the blocked/failed attempt.
 	if len(usage.Iterations) > 0 && !servedByFallback {
+		hasExecutorIteration := false
 		for _, iter := range usage.Iterations {
 			if iter.Type == "compaction" || iter.Type == "message" {
+				hasExecutorIteration = true
 				inputTokens += int64(iter.InputTokens)
 				outputTokens += int64(iter.OutputTokens)
 			}
 		}
-		if inputTokens == 0 && outputTokens == 0 {
+		if !hasExecutorIteration {
 			inputTokens = int64(usage.InputTokens)
 			outputTokens = int64(usage.OutputTokens)
 		}
@@ -802,11 +711,13 @@ func convertAnthropicUsage(usage anthropicUsage) types.Usage {
 		CacheWriteTokens: &cacheCreationTokens,
 	}
 
-	// Anthropic doesn't provide reasoning tokens breakdown yet
-	// So we just set the total output tokens as text tokens
-	result.OutputDetails = &types.OutputTokenDetails{
-		TextTokens:      &outputTokens,
-		ReasoningTokens: nil,
+	// usage.output_tokens_details.thinking_tokens is the reasoning share of
+	// the output tokens (TS convertAnthropicUsage); text is the remainder.
+	result.OutputDetails = &types.OutputTokenDetails{TextTokens: &outputTokens}
+	if usage.OutputTokensDetails != nil && usage.OutputTokensDetails.ThinkingTokens != nil {
+		reasoning := int64(*usage.OutputTokensDetails.ThinkingTokens)
+		text := outputTokens - reasoning
+		result.OutputDetails = &types.OutputTokenDetails{TextTokens: &text, ReasoningTokens: &reasoning}
 	}
 
 	// Store raw usage for provider-specific details
@@ -824,11 +735,49 @@ func convertAnthropicUsage(usage anthropicUsage) types.Usage {
 	if len(usage.Iterations) > 0 {
 		result.Raw["iterations"] = usage.Iterations
 	}
+	if usage.OutputTokensDetails != nil {
+		result.Raw["output_tokens_details"] = usage.OutputTokensDetails
+	}
 
 	return result
 }
 
-func anthropicProviderMetadata(usage anthropicUsage, stopSequence string, stopDetails *anthropicStopDetails, container *anthropicContainerResponse, contextManagement interface{}) map[string]interface{} {
+// anthropicCompactionText extracts the compaction block's text content,
+// treating an absent, null, or empty string as "no content" (TS: `if
+// (!part.content) break;`). The second return value is false when the block
+// should be omitted entirely.
+func anthropicCompactionText(raw json.RawMessage) (string, bool) {
+	if len(raw) == 0 {
+		return "", false
+	}
+	var text *string
+	if err := json.Unmarshal(raw, &text); err != nil || text == nil || *text == "" {
+		return "", false
+	}
+	return *text, true
+}
+
+// anthropicCompactionMetadata builds the providerMetadata.anthropic payload
+// for a compaction text block (TS: `{type: 'compaction', ...(signature && {signature})}`).
+func anthropicCompactionMetadata(signature string) json.RawMessage {
+	meta := map[string]interface{}{"type": "compaction"}
+	if signature != "" {
+		meta["signature"] = signature
+	}
+	raw, err := json.Marshal(map[string]interface{}{"anthropic": meta})
+	if err != nil {
+		return nil
+	}
+	return raw
+}
+
+// metadataExtras carries optional provider metadata fields.
+type metadataExtras struct {
+	inputTransformations interface{}
+	safeguardResults     interface{}
+}
+
+func anthropicProviderMetadata(usage anthropicUsage, stopSequence string, stopDetails *anthropicStopDetails, container *anthropicContainerResponse, contextManagement interface{}, extrasOpt ...metadataExtras) map[string]interface{} {
 	anthropic := map[string]interface{}{
 		"usage":             anthropicRawUsage(usage),
 		"stopSequence":      nil,
@@ -842,6 +791,14 @@ func anthropicProviderMetadata(usage anthropicUsage, stopSequence string, stopDe
 	if mappedStopDetails := mapAnthropicStopDetails(stopDetails); mappedStopDetails != nil {
 		anthropic["stopDetails"] = mappedStopDetails
 	}
+	if len(extrasOpt) > 0 {
+		if extrasOpt[0].inputTransformations != nil {
+			anthropic["inputTransformations"] = extrasOpt[0].inputTransformations
+		}
+		if extrasOpt[0].safeguardResults != nil {
+			anthropic["safeguardResults"] = extrasOpt[0].safeguardResults
+		}
+	}
 	if container != nil {
 		anthropic["container"] = map[string]interface{}{
 			"expiresAt": container.ExpiresAt,
@@ -852,8 +809,23 @@ func anthropicProviderMetadata(usage anthropicUsage, stopSequence string, stopDe
 	return map[string]interface{}{"anthropic": anthropic}
 }
 
-func anthropicProviderMetadataRaw(usage anthropicUsage, stopSequence string, stopDetails *anthropicStopDetails, container *anthropicContainerResponse, contextManagement interface{}) json.RawMessage {
-	raw, err := json.Marshal(anthropicProviderMetadata(usage, stopSequence, stopDetails, container, contextManagement))
+// withCustomProviderKeyMetadata duplicates meta["anthropic"] under
+// providerOptionsName when usedCustomProviderKey is set and
+// providerOptionsName isn't "anthropic" itself, matching TS's
+// `if (usedCustomProviderKey && providerOptionsName !== 'anthropic')
+// providerMetadata[providerOptionsName] = anthropicMetadata`.
+func withCustomProviderKeyMetadata(meta map[string]interface{}, providerOptionsName string, usedCustomProviderKey bool) map[string]interface{} {
+	if usedCustomProviderKey && providerOptionsName != "" && providerOptionsName != "anthropic" {
+		if anthropicMeta, ok := meta["anthropic"]; ok {
+			meta[providerOptionsName] = anthropicMeta
+		}
+	}
+	return meta
+}
+
+func anthropicProviderMetadataRaw(usage anthropicUsage, stopSequence string, stopDetails *anthropicStopDetails, container *anthropicContainerResponse, contextManagement interface{}, providerOptionsName string, usedCustomProviderKey bool, extras ...metadataExtras) json.RawMessage {
+	meta := withCustomProviderKeyMetadata(anthropicProviderMetadata(usage, stopSequence, stopDetails, container, contextManagement, extras...), providerOptionsName, usedCustomProviderKey)
+	raw, err := json.Marshal(meta)
 	if err != nil {
 		return nil
 	}
@@ -951,6 +923,9 @@ func anthropicRawUsage(usage anthropicUsage) map[string]interface{} {
 	if len(usage.Iterations) > 0 {
 		raw["iterations"] = usage.Iterations
 	}
+	if usage.OutputTokensDetails != nil {
+		raw["output_tokens_details"] = usage.OutputTokensDetails
+	}
 	return raw
 }
 
@@ -986,153 +961,17 @@ const (
 	codeExecution20250825ToolName = "anthropic.code_execution_20250825"
 )
 
-// combineBetaHeaders combines model-option beta headers with any request-specific
-// beta headers. stream should be true when called from DoStream.
-func (m *LanguageModel) combineBetaHeaders(opts *provider.GenerateOptions, stream bool) string {
-	base := m.getBetaHeaders()
-
-	if opts != nil {
-		// Collect which beta headers are needed based on the tool list.
-		needed := map[string]bool{}
-
-		for _, t := range opts.Tools {
-			switch t.Name {
-			case codeExecution20260120ToolName:
-				needed[BetaHeaderCodeExecution] = true
-			case codeExecution20250825ToolName:
-				needed[BetaHeaderCodeExecution20250825] = true
-			case "anthropic.code_execution_20250522":
-				needed[BetaHeaderCodeExecution20250522] = true
-			case "anthropic.web_fetch_20250910":
-				needed[BetaHeaderWebFetch20250910] = true
-			case "anthropic.web_search_20260209", "anthropic.web_fetch_20260209":
-				needed[BetaHeaderWebTools20260209] = true
-			case "anthropic.bash_20241022", "anthropic.computer_20241022", "anthropic.text_editor_20241022":
-				needed[BetaHeaderComputerUse20241022] = true
-			case "anthropic.bash_20250124", "anthropic.computer_20250124",
-				"anthropic.text_editor_20250124", "anthropic.text_editor_20250429":
-				needed[BetaHeaderComputerUse20250124] = true
-			case "anthropic.computer_20251124":
-				needed[BetaHeaderComputerUse20251124] = true
-			case "anthropic.memory_20250818":
-				needed[BetaHeaderContextManagement] = true
-			case "anthropic.advisor_20260301":
-				needed[BetaHeaderAdvisorTool] = true
-			}
-			// advanced-tool-use: AllowedCallers or InputExamples on any tool
-			if !needed[BetaHeaderAdvancedToolUse] {
-				if toolOpts, ok := t.ProviderOptions.(*ToolOptions); ok && len(toolOpts.AllowedCallers) > 0 {
-					needed[BetaHeaderAdvancedToolUse] = true
-				}
-				if len(t.InputExamples) > 0 {
-					needed[BetaHeaderAdvancedToolUse] = true
-				}
-			}
-		}
-
-		// Inject in a stable order so the header value is deterministic.
-		for _, h := range []string{
-			BetaHeaderCodeExecution,
-			BetaHeaderCodeExecution20250522,
-			BetaHeaderCodeExecution20250825,
-			BetaHeaderWebFetch20250910,
-			BetaHeaderWebTools20260209,
-			BetaHeaderComputerUse20241022,
-			BetaHeaderComputerUse20250124,
-			BetaHeaderComputerUse20251124,
-			BetaHeaderContextManagement,
-			BetaHeaderAdvancedToolUse,
-			BetaHeaderAdvisorTool,
-		} {
-			if needed[h] {
-				if base != "" {
-					base += "," + h
-				} else {
-					base = h
-				}
-			}
-		}
-	}
-
-	return base
-}
-
-// getBetaHeaders returns the comma-separated beta headers needed for context management
-func (m *LanguageModel) getBetaHeaders() string {
-	if m.options == nil {
-		return ""
-	}
-
-	var headers []string
-
-	// Check context management for beta headers
-	if m.options.ContextManagement != nil {
-		hasCompact := false
-
-		// Check which edit types are present
-		for _, edit := range m.options.ContextManagement.Edits {
-			if _, ok := edit.(*CompactEdit); ok {
-				hasCompact = true
-			}
-		}
-
-		// Always add context-management header if edits are present
-		if len(m.options.ContextManagement.Edits) > 0 {
-			headers = append(headers, BetaHeaderContextManagement)
-		}
-
-		// Add compact header if compact edits are present
-		if hasCompact {
-			headers = append(headers, BetaHeaderCompact)
-		}
-	}
-
-	// Add fast mode header if fast mode is enabled
-	if m.options.Speed == SpeedFast {
-		headers = append(headers, BetaHeaderFastMode)
-	}
-
-	// Add automatic caching beta header when automatic caching is enabled
-	if m.options.AutomaticCaching {
-		headers = append(headers, BetaHeaderPromptCaching)
-	}
-
-	if m.options.TaskBudget != nil {
-		headers = append(headers, BetaHeaderTaskBudgets)
-	}
-
-	// Add MCP client beta header when MCP servers are configured
-	if len(m.options.MCPServers) > 0 {
-		headers = append(headers, BetaHeaderMCPClient)
-	}
-	if len(m.options.Fallbacks) > 0 {
-		headers = append(headers, BetaHeaderServerSideFallback)
-	}
-
-	// Container skills require three beta headers; plain container without skills needs none
-	if m.options.Container != nil && len(m.options.Container.Skills) > 0 {
-		headers = append(headers,
-			BetaHeaderCodeExecution20250825,
-			BetaHeaderSkills,
-			BetaHeaderFilesAPI,
-		)
-	}
-
-	// Join with comma as per Anthropic API spec
-	result := ""
-	for i, h := range headers {
-		if i > 0 {
-			result += ","
-		}
-		result += h
-	}
-	return result
-}
-
 // detectSkillsWarning returns a warning when container skills are configured but no code
 // execution tool is present in opts. Matches TypeScript SDK behavior.
+//
+// Resolves the effective per-call ModelOptions (construction-time defaults
+// merged with this call's providerOptions.anthropic/providerOptions.<custom>
+// container) rather than reading m.options directly, so a container/skills
+// configuration supplied only via providerOptions (not construction-time
+// ModelOptions) is still detected.
 func (m *LanguageModel) detectSkillsWarning(opts *provider.GenerateOptions) *types.Warning {
-	if m.options == nil || m.options.Container == nil || len(m.options.Container.Skills) == 0 {
+	o, _, err := m.resolveCallOptions(opts)
+	if err != nil || o.Container == nil || len(o.Container.Skills) == 0 {
 		return nil
 	}
 	if opts != nil {
@@ -1148,39 +987,6 @@ func (m *LanguageModel) detectSkillsWarning(opts *provider.GenerateOptions) *typ
 	}
 }
 
-// filterReasoningContent returns a copy of messages with all ReasoningContent
-// parts removed from every message. The original slice is not modified.
-// Messages that have only reasoning content are kept but with an empty content
-// slice, matching the TypeScript SDK behaviour.
-func filterReasoningContent(messages []types.Message) []types.Message {
-	filtered := make([]types.Message, 0, len(messages))
-	for _, msg := range messages {
-		hasReasoning := false
-		for _, part := range msg.Content {
-			if _, ok := part.(types.ReasoningContent); ok {
-				hasReasoning = true
-				break
-			}
-		}
-		if !hasReasoning {
-			filtered = append(filtered, msg)
-			continue
-		}
-		// Rebuild message without reasoning parts.
-		newContent := make([]types.ContentPart, 0, len(msg.Content))
-		for _, part := range msg.Content {
-			if _, ok := part.(types.ReasoningContent); !ok {
-				newContent = append(newContent, part)
-			}
-		}
-		filtered = append(filtered, types.Message{
-			Role:    msg.Role,
-			Content: newContent,
-		})
-	}
-	return filtered
-}
-
 // anthropicErrorBody is the top-level structure of an Anthropic API error response.
 // Example: {"type":"error","error":{"type":"overloaded_error","message":"..."}}
 type anthropicErrorBody struct {
@@ -1191,12 +997,53 @@ type anthropicErrorBody struct {
 	} `json:"error"`
 }
 
+// anthropicStreamErrorMetadata returns the inferred (statusCode, isRetryable)
+// pair for a mid-stream Anthropic error's type field, mirroring TS
+// anthropic-language-model.ts's getAnthropicStreamErrorMetadata. The zero
+// value (0, false) means "no inference" (TS returns {}); the caller only
+// falls back to it when the wire event didn't supply its own statusCode/
+// isRetryable.
+func anthropicStreamErrorMetadata(errType string) (statusCode int, isRetryable bool) {
+	switch errType {
+	case "api_error":
+		return 500, true
+	case "overloaded_error":
+		return 529, true
+	case "rate_limit_error":
+		return 429, true
+	case "request_too_large":
+		return 413, false
+	case "authentication_error":
+		return 401, false
+	case "permission_error":
+		return 403, false
+	case "not_found_error":
+		return 404, false
+	case "billing_error", "invalid_request_error":
+		return 400, false
+	default:
+		return 0, false
+	}
+}
+
 // handleError converts various errors to provider errors.
 // It attempts to parse Anthropic API error responses (HTTP NNN: {...}) so that
 // error.type is surfaced as ProviderError.ErrorCode rather than being lost.
 func (m *LanguageModel) handleError(err error) error {
 	if err == nil {
 		return nil
+	}
+	var statusErr *internalhttp.HTTPStatusError
+	if errors.As(err, &statusErr) {
+		body := statusErr.Body
+		if m.provider.config.TransformErrorBody != nil {
+			body = m.provider.config.TransformErrorBody(body)
+		}
+		var parsed anthropicErrorBody
+		if jsonErr := json.Unmarshal(body, &parsed); jsonErr == nil && (parsed.Error.Type != "" || parsed.Error.Message != "") {
+			return providererrors.NewProviderError(m.provider.Name(), statusErr.StatusCode, parsed.Error.Type, parsed.Error.Message, err)
+		}
+		return providererrors.NewProviderError(m.provider.Name(), statusErr.StatusCode, "", string(body), err)
 	}
 	msg := err.Error()
 	// HTTP errors from the internal client look like "HTTP NNN: <body>"
@@ -1211,59 +1058,13 @@ func (m *LanguageModel) handleError(err error) error {
 	return providererrors.NewProviderError("anthropic", 0, "", msg, err)
 }
 
-// anthropicMaxOutputTokens returns the maximum output tokens for a given Anthropic model.
-// Mirrors getModelCapabilities() in the TS SDK anthropic-messages-language-model.ts.
+// anthropicMaxOutputTokens returns the maximum output tokens for a model.
 func anthropicMaxOutputTokens(modelID string) int {
-	lower := strings.ToLower(modelID)
-	switch {
-	case strings.Contains(lower, "claude-opus-4-8") || strings.Contains(lower, "claude-opus-4-7") || strings.Contains(lower, "claude-fable-5"):
-		return 128000
-	case strings.Contains(lower, "claude-sonnet-4-6") || strings.Contains(lower, "claude-opus-4-6"):
-		return 128000
-	case strings.Contains(lower, "claude-sonnet-4-5") || strings.Contains(lower, "claude-opus-4-5") || strings.Contains(lower, "claude-haiku-4-5"):
-		return 64000
-	case strings.Contains(lower, "claude-opus-4-1"):
-		return 32000
-	case strings.Contains(lower, "claude-sonnet-4-"):
-		return 64000
-	case strings.Contains(lower, "claude-opus-4-"):
-		return 32000
-	case strings.Contains(lower, "claude-3-haiku"):
-		return 4096
-	default:
-		return 4096
-	}
+	return GetModelCapabilities(modelID).MaxOutputTokens
 }
 
 func anthropicSupportsAdaptiveThinking(modelID string) bool {
-	lower := strings.ToLower(modelID)
-	return strings.Contains(lower, "claude-opus-4-7") ||
-		strings.Contains(lower, "claude-fable-5") ||
-		strings.Contains(lower, "claude-sonnet-4-6") ||
-		strings.Contains(lower, "claude-opus-4-6")
-}
-
-func anthropicSupportsXHighEffort(modelID string) bool {
-	lower := strings.ToLower(modelID)
-	return strings.Contains(lower, "claude-opus-4-7") || strings.Contains(lower, "claude-fable-5")
-}
-
-func anthropicReasoningEffort(level types.ReasoningLevel, modelID string) string {
-	switch level {
-	case types.ReasoningMinimal, types.ReasoningLow:
-		return "low"
-	case types.ReasoningMedium:
-		return "medium"
-	case types.ReasoningHigh:
-		return "high"
-	case types.ReasoningXHigh:
-		if anthropicSupportsXHighEffort(modelID) {
-			return "xhigh"
-		}
-		return "max"
-	default:
-		return ""
-	}
+	return GetModelCapabilities(modelID).SupportsAdaptiveThinking
 }
 
 // anthropicReasoningBudget computes the budget_tokens for Anthropic's extended thinking
@@ -1333,6 +1134,10 @@ type anthropicResponse struct {
 	ContextManagement *ContextManagementResponse `json:"context_management,omitempty"`
 	// Container info returned when a container was used/created
 	Container *anthropicContainerResponse `json:"container,omitempty"`
+	// InputTransformations reports preserved-thinking input transformations.
+	InputTransformations json.RawMessage `json:"input_transformations,omitempty"`
+	// SafeguardResults holds safeguard classifier verdicts.
+	SafeguardResults json.RawMessage `json:"safeguard_results,omitempty"`
 }
 
 // anthropicUsage represents Anthropic usage information with cache tracking and context management
@@ -1345,6 +1150,12 @@ type anthropicUsage struct {
 	ContextManagement *ContextManagementResponse `json:"context_management,omitempty"`
 	// Iterations breakdown when compaction is used
 	Iterations []UsageIteration `json:"iterations,omitempty"`
+	// OutputTokensDetails carries thinking_tokens (reasoning share of output).
+	OutputTokensDetails *anthropicOutputTokensDetails `json:"output_tokens_details,omitempty"`
+}
+
+type anthropicOutputTokensDetails struct {
+	ThinkingTokens *int `json:"thinking_tokens,omitempty"`
 }
 
 // UsageIteration represents a single iteration in the usage breakdown
@@ -1359,6 +1170,26 @@ type UsageIteration struct {
 	CacheReadInputTokens     int    `json:"cache_read_input_tokens,omitempty"`     // Cache read tokens for this iteration
 }
 
+// mcpToolCallInfo records an mcp_tool_use call's toolName and providerMetadata
+// so a later mcp_tool_result block for the same tool_use_id can resolve the
+// same values (TS mcpToolCalls[part.id]).
+type mcpToolCallInfo struct {
+	toolName         string
+	providerMetadata map[string]interface{}
+}
+
+// anthropicMCPToolUseMetadata builds the {"anthropic":{"type":"mcp-tool-use",
+// "serverName":...}} providerMetadata shared by an mcp_tool_use call and its
+// paired mcp_tool_result.
+func anthropicMCPToolUseMetadata(serverName string) map[string]interface{} {
+	return map[string]interface{}{
+		"anthropic": map[string]interface{}{
+			"type":       "mcp-tool-use",
+			"serverName": serverName,
+		},
+	}
+}
+
 // anthropicContent represents content in an Anthropic response
 type anthropicContent struct {
 	Type      string                 `json:"type"` // "text", "tool_use", "thinking", "redacted_thinking", "*_tool_result"
@@ -1371,10 +1202,26 @@ type anthropicContent struct {
 	Thinking  string                 `json:"thinking,omitempty"`  // For "thinking" type
 	Signature string                 `json:"signature,omitempty"` // For "thinking" type
 	Data      string                 `json:"data,omitempty"`      // For "redacted_thinking" type
+	// Citations holds the raw citation objects attached to a "text" content
+	// block (page_location, char_location, content_block_location,
+	// search_result_location, web_search_result_location, ...). Kept as raw
+	// maps so unknown/newer citation shapes round-trip untouched into
+	// providerMetadata.anthropic.citations (TS keeps the validated-but-typed
+	// object as-is).
+	Citations []map[string]interface{} `json:"citations,omitempty"`
+	// ToolsetName is set on tool_use blocks of toolset members.
+	ToolsetName string `json:"toolset_name,omitempty"`
+	// Caller identifies the caller of a tool_use / server_tool_use block.
+	Caller map[string]interface{} `json:"caller,omitempty"`
+	// ServerName is set on mcp_tool_use blocks.
+	ServerName string `json:"server_name,omitempty"`
 	// Deferred provider tool result fields (web_search_tool_result, code_execution_tool_result, etc.)
 	ToolUseID string          `json:"tool_use_id,omitempty"`
 	Content   json.RawMessage `json:"content,omitempty"`
 	IsError   bool            `json:"is_error,omitempty"`
+	// FileID is set on "container_upload" blocks (the uploaded file made
+	// available in the code execution container).
+	FileID string `json:"file_id,omitempty"`
 }
 
 // streamContentBlock tracks an in-flight content block across SSE events.
@@ -1390,6 +1237,31 @@ type streamContentBlock struct {
 	// false for provider-executed tools (type: server_tool_use).
 	// tool-input-start/delta/end stream events are only emitted for custom tools.
 	isCustomTool bool
+	// providerToolInputType is injected as {"type": ...} into the first input
+	// delta of code execution server tools (TS providerToolInputType).
+	providerToolInputType string
+	providerExecuted      bool
+	dynamic               bool
+	// toolsetName/memberName are set for toolset member calls; their input is
+	// emitted once, with the member injected as the action, at block stop.
+	toolsetName string
+	memberName  string
+	caller      map[string]interface{}
+	// citations accumulates web_search_result_location citations observed via
+	// citations_delta events for "text" (and json-response-tool/compaction,
+	// which are also surfaced as text) blocks, emitted on text-end
+	// providerMetadata.anthropic.citations (TS contentBlock.citations).
+	citations []map[string]interface{}
+}
+
+// isTextLikeBlock reports whether a streamContentBlock's blockType is one of
+// the three block kinds that stream as ChunkTypeText content and therefore
+// get text-start/text-end boundary chunks: plain text, on-demand compaction,
+// and the synthetic json-response-tool block (jsonTool structured output
+// mode). Matches TS's `contentBlocks[value.index] = {type: 'text', ...}`
+// assignment for all three content_block_start cases.
+func isTextLikeBlock(blockType string) bool {
+	return blockType == "text" || blockType == "compaction" || blockType == "json-response-tool"
 }
 
 // anthropicStream implements provider.TextStream for Anthropic streaming
@@ -1428,6 +1300,47 @@ type anthropicStream struct {
 	// the corresponding *_tool_result block arrives (potentially in a later step).
 	serverToolCallNames map[string]string
 	toolNameMap         map[string]string
+	// mcpToolCalls maps mcp_tool_use tool_use_id -> its toolName/providerMetadata
+	// (TS mcpToolCalls[part.id]), so the paired mcp_tool_result can resolve the
+	// same toolName, set dynamic:true, and reuse the same providerMetadata.
+	mcpToolCalls map[string]mcpToolCallInfo
+
+	// markCodeExecutionDynamic marks code_execution calls dynamic (see
+	// HasDynamicFilteringWebToolWithoutCodeExecution).
+	markCodeExecutionDynamic bool
+	// providerOptionsName / usedCustomProviderKey mirror preparedRequest's
+	// fields of the same name; finalizeFinish uses them to duplicate the
+	// finish chunk's providerMetadata under providerOptionsName (TS
+	// doStream's message_stop handler).
+	providerOptionsName   string
+	usedCustomProviderKey bool
+	// isMessageOpen / activeMessageID detect spliced streams (a second
+	// message_start while a message is still open).
+	isMessageOpen   bool
+	activeMessageID string
+	// spliced is set once a spliced-stream error chunk has been emitted (TS
+	// hasInvalidMessageSequence). Once true, every remaining SSE event is
+	// discarded (never surfaced as a chunk, and no finish chunk is
+	// synthesized) until the underlying stream ends.
+	spliced bool
+	// inputTransformations / safeguardResults are reported in the finish
+	// provider metadata.
+	inputTransformations interface{}
+	safeguardResults     interface{}
+	// finish holds the finish chunk assembled from message_delta; it is
+	// emitted on message_stop (or at end of stream).
+	finish       *provider.StreamChunk
+	finishIssued bool
+
+	// requestBody is the raw request body that opened this stream, exposed
+	// via RequestBody() (provider.StreamRequestBody, hand-off: "stream
+	// request body field").
+	requestBody interface{}
+
+	// citationDocuments maps citation document_index -> title/filename/mediaType,
+	// extracted from citation-enabled file parts in the request prompt (TS
+	// extractCitationDocuments). Set by DoStream before the first Next() call.
+	citationDocuments []citationDocument
 }
 
 // newAnthropicStream creates a new Anthropic stream.
@@ -1454,19 +1367,23 @@ func newAnthropicStreamWithWarnings(reader io.ReadCloser, usesJsonResponseTool b
 		contentBlocks:        make(map[int]*streamContentBlock),
 		pending:              pending,
 		serverToolCallNames:  make(map[string]string),
+		mcpToolCalls:         make(map[string]mcpToolCallInfo),
 		usesJsonResponseTool: usesJsonResponseTool,
 		toolNameMap:          anthropicProviderToolNameMap(tools),
 	}
 }
 
-// Read implements io.Reader
-func (s *anthropicStream) Read(p []byte) (n int, err error) {
-	return s.reader.Read(p)
-}
-
 // Close implements io.Closer
 func (s *anthropicStream) Close() error {
 	return s.reader.Close()
+}
+
+// RequestBody implements provider.StreamRequestBody, exposing the raw
+// request body that opened this stream in types.StepRequest.Body for
+// streaming calls, matching TS doStream()'s {request: {body}} (hand-off:
+// "stream request body field").
+func (s *anthropicStream) RequestBody() interface{} {
+	return s.requestBody
 }
 
 // Next returns the next chunk in the stream
@@ -1486,8 +1403,27 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 	// Get next SSE event
 	event, err := s.parser.Next()
 	if err != nil {
+		if s.spliced {
+			// A spliced stream ends without a finish chunk: TS never
+			// re-enqueues after hasInvalidMessageSequence is set, and the
+			// ReadableStream simply closes once the underlying byte stream
+			// ends (no synthesized finish part).
+			s.err = io.EOF
+			return nil, io.EOF
+		}
+		if err == io.EOF && s.finish != nil && !s.finishIssued {
+			s.finishIssued = true
+			s.err = io.EOF
+			return s.finalizeFinish(), nil
+		}
 		s.err = err
 		return nil, err
+	}
+
+	// Once a spliced-stream error chunk has been emitted, every remaining
+	// event is silently discarded (TS hasInvalidMessageSequence guard).
+	if s.spliced {
+		return s.Next()
 	}
 
 	// Anthropic uses different event types
@@ -1502,16 +1438,20 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 		var start struct {
 			Index        int `json:"index"`
 			ContentBlock struct {
-				Type  string                 `json:"type"`
-				ID    string                 `json:"id"`
-				Name  string                 `json:"name"`
-				Input map[string]interface{} `json:"input"` // non-empty for programmatic deferred tool calls
+				Type        string                 `json:"type"`
+				ID          string                 `json:"id"`
+				Name        string                 `json:"name"`
+				Input       map[string]interface{} `json:"input"` // non-empty for programmatic deferred tool calls
+				ToolsetName string                 `json:"toolset_name"`
+				Caller      map[string]interface{} `json:"caller"`
 				// mcp_tool_use fields
 				ServerName string `json:"server_name"`
-				// mcp_tool_result fields
-				ToolUseID string      `json:"tool_use_id"`
-				IsError   bool        `json:"is_error"`
-				Content   interface{} `json:"content"`
+				// mcp_tool_result / web_search_tool_result / web_fetch_tool_result fields
+				ToolUseID string          `json:"tool_use_id"`
+				IsError   bool            `json:"is_error"`
+				Content   json.RawMessage `json:"content"`
+				// compaction fields
+				Signature string `json:"signature"`
 			} `json:"content_block"`
 		}
 		if err := json.Unmarshal([]byte(event.Data), &start); err != nil {
@@ -1528,7 +1468,10 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				s.contentBlocks[start.Index] = &streamContentBlock{
 					blockType: "json-response-tool",
 				}
-				break
+				return &provider.StreamChunk{
+					Type: provider.ChunkTypeTextStart,
+					ID:   strconv.Itoa(start.Index),
+				}, nil
 			}
 
 			// Some deferred (programmatic) tool calls carry their full input
@@ -1547,6 +1490,13 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				toolName:     mapAnthropicToolName(start.ContentBlock.Name, s.toolNameMap),
 				firstDelta:   initialInput == "", // expect deltas only when no initial input
 				isCustomTool: true,               // user-defined function tool
+				caller:       anthropicCallerInfo(start.ContentBlock.Caller),
+			}
+			if start.ContentBlock.ToolsetName != "" {
+				block.toolName = mapAnthropicToolName(start.ContentBlock.ToolsetName, s.toolNameMap)
+				block.toolsetName = start.ContentBlock.ToolsetName
+				block.memberName = start.ContentBlock.Name
+				block.firstDelta = true
 			}
 			if initialInput != "" {
 				block.inputBuf.WriteString(initialInput)
@@ -1583,21 +1533,51 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			// bash/text_editor variants are normalized to "code_execution" for
 			// the emitted tool name, but the original name is stored so the
 			// first-delta type prefix can be injected (see input_json_delta).
-			toolName := start.ContentBlock.Name
-			providerToolName := start.ContentBlock.Name
-			if toolName == "bash_code_execution" || toolName == "text_editor_code_execution" {
-				toolName = "code_execution"
+			name := start.ContentBlock.Name
+			providerToolName := name
+			inputType := ""
+			switch name {
+			case "bash_code_execution", "text_editor_code_execution":
+				providerToolName = "code_execution"
+				inputType = name
+			case "code_execution":
+				inputType = "programmatic-tool-call"
+			case "web_fetch", "web_search", "tool_search_tool_regex", "tool_search_tool_bm25", "advisor":
+			default:
+				// Unknown server tools are ignored (TS emits nothing for them).
+				s.contentBlocks[start.Index] = &streamContentBlock{blockType: "unknown-server-tool"}
+				return s.Next()
 			}
+			toolName := mapAnthropicToolName(providerToolName, s.toolNameMap)
 			// Track tool call ID → tool name so the corresponding *_tool_result
 			// block (deferred result) can resolve the tool name.
 			s.serverToolCallNames[start.ContentBlock.ID] = toolName
-			s.contentBlocks[start.Index] = &streamContentBlock{
-				blockType:        "tool-call",
-				toolCallID:       start.ContentBlock.ID,
-				toolName:         toolName,
-				providerToolName: providerToolName,
-				firstDelta:       true,
+			block := &streamContentBlock{
+				blockType:             "tool-call",
+				toolCallID:            start.ContentBlock.ID,
+				toolName:              toolName,
+				providerToolName:      providerToolName,
+				providerToolInputType: inputType,
+				providerExecuted:      true,
+				dynamic:               s.markCodeExecutionDynamic && providerToolName == "code_execution",
+				firstDelta:            true,
+				caller:                anthropicCallerInfo(start.ContentBlock.Caller),
 			}
+			switch name {
+			case "advisor":
+				block.inputBuf.WriteString("{}")
+			case "tool_search_tool_regex", "tool_search_tool_bm25":
+			default:
+				// Dynamic web tools provide their input here; other tools
+				// stream it via deltas, so only non-empty input is used.
+				if len(start.ContentBlock.Input) > 0 {
+					if b, err := json.Marshal(start.ContentBlock.Input); err == nil {
+						block.inputBuf.Write(b)
+						block.firstDelta = false
+					}
+				}
+			}
+			s.contentBlocks[start.Index] = block
 
 		case "mcp_tool_use":
 			// MCP tool calls have their full input pre-populated in content_block_start.
@@ -1606,8 +1586,15 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			if input == nil {
 				input = map[string]interface{}{}
 			}
-			// Track tool call ID → tool name for mcp_tool_result lookup.
+			// Track tool call ID → tool name for mcp_tool_result lookup, and the
+			// full toolName/providerMetadata pair so the paired mcp_tool_result
+			// can resolve the same values (TS mcpToolCalls[part.id]).
 			s.serverToolCallNames[start.ContentBlock.ID] = start.ContentBlock.Name
+			mcpMeta := anthropicMCPToolUseMetadata(start.ContentBlock.ServerName)
+			s.mcpToolCalls[start.ContentBlock.ID] = mcpToolCallInfo{
+				toolName:         start.ContentBlock.Name,
+				providerMetadata: mcpMeta,
+			}
 			// Track as a non-buffering block so content_block_stop is a clean no-op.
 			s.contentBlocks[start.Index] = &streamContentBlock{
 				blockType: "mcp-tool-use",
@@ -1615,24 +1602,36 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			return &provider.StreamChunk{
 				Type: provider.ChunkTypeToolCall,
 				ToolCall: &types.ToolCall{
-					ID:        start.ContentBlock.ID,
-					ToolName:  start.ContentBlock.Name,
-					Arguments: input,
+					ID:               start.ContentBlock.ID,
+					ToolName:         start.ContentBlock.Name,
+					Arguments:        input,
+					ProviderExecuted: true,
+					Dynamic:          true,
+					ProviderMetadata: mcpMeta,
 				},
 			}, nil
 
 		case "mcp_tool_result":
 			// MCP tool results arrive in content_block_start. Emit as ChunkTypeToolResult
-			// so the SDK's pendingDeferredToolCalls map is cleared.
-			toolName := s.serverToolCallNames[start.ContentBlock.ToolUseID]
+			// so the SDK's pendingDeferredToolCalls map is cleared. Resolve
+			// toolName/providerMetadata from the paired mcp_tool_use call (TS:
+			// `mcpToolCalls[part.tool_use_id].toolName` / `.providerMetadata`) and
+			// mark the result dynamic like TS.
+			call := s.mcpToolCalls[start.ContentBlock.ToolUseID]
 			tr := &types.ToolResult{
-				ToolCallID: start.ContentBlock.ToolUseID,
-				ToolName:   toolName,
+				ToolCallID:       start.ContentBlock.ToolUseID,
+				ToolName:         call.toolName,
+				Dynamic:          true,
+				ProviderMetadata: call.providerMetadata,
+			}
+			var mcpResultContent interface{}
+			if len(start.ContentBlock.Content) > 0 {
+				json.Unmarshal(start.ContentBlock.Content, &mcpResultContent) //nolint:errcheck
 			}
 			if start.ContentBlock.IsError {
-				tr.Error = fmt.Errorf("mcp tool error: %v", start.ContentBlock.Content)
+				tr.Error = fmt.Errorf("mcp tool error: %v", mcpResultContent)
 			} else {
-				tr.Result = start.ContentBlock.Content
+				tr.Result = mcpResultContent
 			}
 			// Track so content_block_stop is a clean no-op.
 			s.contentBlocks[start.Index] = &streamContentBlock{
@@ -1643,9 +1642,119 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				ToolResult: tr,
 			}, nil
 
+		case "text":
+			// When a json response tool is used, the tool call is returned as
+			// text, so real "text" content blocks are ignored entirely (TS: `if
+			// (usesJsonResponseTool) { return; }`).
+			if s.usesJsonResponseTool {
+				return s.Next()
+			}
+			s.contentBlocks[start.Index] = &streamContentBlock{blockType: "text"}
+			return &provider.StreamChunk{
+				Type: provider.ChunkTypeTextStart,
+				ID:   strconv.Itoa(start.Index),
+			}, nil
+
+		case "compaction":
+			// Compaction blocks are surfaced as text chunks whose text-start
+			// carries providerMetadata.anthropic = {type: 'compaction', signature?}
+			// (TS content_block_start "compaction" case).
+			s.contentBlocks[start.Index] = &streamContentBlock{blockType: "compaction"}
+			meta := map[string]interface{}{"type": "compaction"}
+			if start.ContentBlock.Signature != "" {
+				meta["signature"] = start.ContentBlock.Signature
+			}
+			metaJSON, _ := json.Marshal(map[string]interface{}{"anthropic": meta})
+			textStart := &provider.StreamChunk{
+				Type:             provider.ChunkTypeTextStart,
+				ID:               strconv.Itoa(start.Index),
+				ProviderMetadata: metaJSON,
+			}
+			// On-demand compaction blocks may arrive fully formed in
+			// content_block_start — without any following compaction_delta
+			// events — when both signature and content are present.
+			if start.ContentBlock.Signature != "" {
+				var text string
+				if err := json.Unmarshal(start.ContentBlock.Content, &text); err == nil && text != "" {
+					s.pending = append(s.pending, &provider.StreamChunk{
+						Type: provider.ChunkTypeText,
+						ID:   strconv.Itoa(start.Index),
+						Text: text,
+					})
+				}
+			}
+			return textStart, nil
+
+		case "web_fetch_tool_result":
+			// Live-streamed deferred tool result (TS anthropic-language-model.ts
+			// content_block_start "web_fetch_tool_result" case, ~line 2226).
+			// Resolve toolName from the paired server_tool_use block tracked in
+			// s.serverToolCallNames, remap snake_case wire fields to camelCase,
+			// and grow citationDocuments so a later page_location/char_location
+			// citation can resolve against this fetched document.
+			toolName := s.serverToolCallNames[start.ContentBlock.ToolUseID]
+			if toolName == "" {
+				toolName = providerToolResultName(start.ContentBlock.Type)
+			}
+			tr := &types.ToolResult{
+				ToolCallID:       start.ContentBlock.ToolUseID,
+				ToolName:         toolName,
+				ProviderExecuted: true,
+			}
+			if errResult, ok := parseAnthropicWebToolResultError(start.ContentBlock.Content, "web_fetch_tool_result_error", start.ContentBlock.IsError); ok {
+				tr.Result = errResult
+				tr.Error = fmt.Errorf("%v", errResult["errorCode"])
+			} else if len(start.ContentBlock.Content) > 0 {
+				tr.Result = convertWebFetchToolResult(start.ContentBlock.Content)
+				if doc, ok := extractWebFetchCitationDocument(start.ContentBlock.Content); ok {
+					s.citationDocuments = append(s.citationDocuments, doc)
+				}
+			}
+			s.contentBlocks[start.Index] = &streamContentBlock{blockType: "web-fetch-tool-result"}
+			return &provider.StreamChunk{
+				Type:       provider.ChunkTypeToolResult,
+				ToolResult: tr,
+			}, nil
+
+		case "web_search_tool_result":
+			// Live-streamed deferred tool result (TS anthropic-language-model.ts
+			// content_block_start "web_search_tool_result" case, ~line 2272).
+			// Emits the tool-result chunk followed by a source chunk for each
+			// search result (TS enqueues 'source' parts after the 'tool-result').
+			toolName := s.serverToolCallNames[start.ContentBlock.ToolUseID]
+			if toolName == "" {
+				toolName = providerToolResultName(start.ContentBlock.Type)
+			}
+			tr := &types.ToolResult{
+				ToolCallID:       start.ContentBlock.ToolUseID,
+				ToolName:         toolName,
+				ProviderExecuted: true,
+			}
+			var webSearchSources []types.SourceContent
+			if errResult, ok := parseAnthropicWebToolResultError(start.ContentBlock.Content, "web_search_tool_result_error", start.ContentBlock.IsError); ok {
+				tr.Result = errResult
+				tr.Error = fmt.Errorf("%v", errResult["errorCode"])
+			} else if len(start.ContentBlock.Content) > 0 {
+				mapped, sources := convertWebSearchToolResult(start.ContentBlock.Content)
+				tr.Result = mapped
+				webSearchSources = sources
+			}
+			s.contentBlocks[start.Index] = &streamContentBlock{blockType: "web-search-tool-result"}
+			for _, src := range webSearchSources {
+				s2 := src
+				s.pending = append(s.pending, &provider.StreamChunk{
+					Type:          provider.ChunkTypeSource,
+					SourceContent: &s2,
+				})
+			}
+			return &provider.StreamChunk{
+				Type:       provider.ChunkTypeToolResult,
+				ToolResult: tr,
+			}, nil
+
 		default:
-			// "text", "compaction", and any unknown types: record so
-			// content_block_stop is always a clean no-op.
+			// Any unknown types: record so content_block_stop is always a
+			// clean no-op.
 			s.contentBlocks[start.Index] = &streamContentBlock{
 				blockType: start.ContentBlock.Type,
 			}
@@ -1662,7 +1771,10 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 		// events, so we emit ChunkTypeToolCall for each such block immediately.
 		var msg struct {
 			Message struct {
-				Usage struct {
+				ID                   string          `json:"id"`
+				Model                string          `json:"model"`
+				InputTransformations json.RawMessage `json:"input_transformations"`
+				Usage                struct {
 					InputTokens              int              `json:"input_tokens"`
 					OutputTokens             int              `json:"output_tokens,omitempty"`
 					CacheReadInputTokens     int              `json:"cache_read_input_tokens"`
@@ -1675,6 +1787,8 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 					ID    string                 `json:"id"`
 					Name  string                 `json:"name"`
 					Input map[string]interface{} `json:"input"`
+					// mcp_tool_use fields
+					ServerName string `json:"server_name,omitempty"`
 					// Deferred provider tool result fields
 					ToolUseID string          `json:"tool_use_id,omitempty"`
 					Content   json.RawMessage `json:"content,omitempty"`
@@ -1683,6 +1797,30 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			} `json:"message"`
 		}
 		if err := json.Unmarshal([]byte(event.Data), &msg); err == nil {
+			if s.isMessageOpen {
+				if s.activeMessageID == msg.Message.ID {
+					return s.Next()
+				}
+				// A spliced stream: emit an error chunk in the stream itself
+				// (matching TS, which enqueues an 'error' stream part rather
+				// than throwing) and discard everything after it. This is
+				// not a fatal Go error: the generation already produced
+				// output, so the failure must surface the same way other
+				// mid-stream provider errors do (see openai/language_model.go
+				// for the analogous outputStarted convention).
+				s.spliced = true
+				return &provider.StreamChunk{
+					Type: provider.ChunkTypeError,
+					Text: fmt.Sprintf(
+						"Received message_start for message %s while message %s is still open.",
+						jsonQuote(msg.Message.ID), jsonQuote(s.activeMessageID)),
+				}, nil
+			}
+			s.isMessageOpen = true
+			s.activeMessageID = msg.Message.ID
+			if v := rawJSONValue(msg.Message.InputTransformations); v != nil {
+				s.inputTransformations = v
+			}
 			s.inputTokens = int64(msg.Message.Usage.InputTokens)
 			s.cacheReadTokens = int64(msg.Message.Usage.CacheReadInputTokens)
 			s.cacheWriteTokens = int64(msg.Message.Usage.CacheCreationInputTokens)
@@ -1729,6 +1867,34 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 							},
 						})
 					}
+				case "mcp_tool_use":
+					// Pre-populated deferred MCP tool call (TS content_block_start
+					// "mcp_tool_use" case, mirrored here for parity with the other
+					// deferred block types already handled in this loop). Track the
+					// call's toolName/providerMetadata in s.mcpToolCalls so a paired
+					// mcp_tool_result elsewhere in this same content array (or a
+					// later content_block_start) can resolve them.
+					input := part.Input
+					if input == nil {
+						input = map[string]interface{}{}
+					}
+					s.serverToolCallNames[part.ID] = part.Name
+					mcpMeta := anthropicMCPToolUseMetadata(part.ServerName)
+					s.mcpToolCalls[part.ID] = mcpToolCallInfo{
+						toolName:         part.Name,
+						providerMetadata: mcpMeta,
+					}
+					s.pending = append(s.pending, &provider.StreamChunk{
+						Type: provider.ChunkTypeToolCall,
+						ToolCall: &types.ToolCall{
+							ID:               part.ID,
+							ToolName:         part.Name,
+							Arguments:        input,
+							ProviderExecuted: true,
+							Dynamic:          true,
+							ProviderMetadata: mcpMeta,
+						},
+					})
 				case "web_search_tool_result":
 					// Remap snake_case wire fields to camelCase and emit source chunks.
 					toolName := s.serverToolCallNames[part.ToolUseID]
@@ -1776,6 +1942,47 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 						tr.Error = fmt.Errorf("%v", errResult["errorCode"])
 					} else if len(part.Content) > 0 {
 						tr.Result = convertWebFetchToolResult(part.Content)
+						// Grow the citation document list in stream order so a later
+						// page_location/char_location citation (in a subsequent text
+						// block) can resolve against this fetched document, mirroring
+						// TS's inline `citationDocuments.push(...)` in the same
+						// content_block_start switch (anthropic-language-model.ts:2228).
+						if doc, ok := extractWebFetchCitationDocument(part.Content); ok {
+							s.citationDocuments = append(s.citationDocuments, doc)
+						}
+					}
+					s.pending = append(s.pending, &provider.StreamChunk{
+						Type:       provider.ChunkTypeToolResult,
+						ToolResult: tr,
+					})
+				case "mcp_tool_result":
+					// Resolve toolName/providerMetadata from the paired mcp_tool_use
+					// call (populated when it was streamed, potentially in an
+					// earlier compaction iteration of this same connection), and
+					// mark the result dynamic like TS.
+					call := s.mcpToolCalls[part.ToolUseID]
+					toolName := call.toolName
+					if toolName == "" {
+						toolName = s.serverToolCallNames[part.ToolUseID]
+					}
+					tr := &types.ToolResult{
+						ToolCallID:       part.ToolUseID,
+						ToolName:         toolName,
+						Dynamic:          true,
+						ProviderMetadata: call.providerMetadata,
+					}
+					if part.IsError {
+						var errContent interface{}
+						if len(part.Content) > 0 {
+							json.Unmarshal(part.Content, &errContent) //nolint:errcheck
+						}
+						tr.Error = fmt.Errorf("%v", errContent)
+					} else {
+						if len(part.Content) > 0 {
+							var result interface{}
+							json.Unmarshal(part.Content, &result) //nolint:errcheck
+							tr.Result = result
+						}
 					}
 					s.pending = append(s.pending, &provider.StreamChunk{
 						Type:       provider.ChunkTypeToolResult,
@@ -1783,8 +1990,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 					})
 				case "code_execution_tool_result", "bash_code_execution_tool_result",
 					"text_editor_code_execution_tool_result", "tool_search_tool_result",
-					"advisor_tool_result",
-					"mcp_tool_result":
+					"advisor_tool_result":
 					// Deferred provider tool results pre-populated in message_start.
 					// Emit as ChunkTypeToolResult so the SDK can clear pendingDeferredToolCalls.
 					toolName := s.serverToolCallNames[part.ToolUseID]
@@ -1825,11 +2031,12 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			Type  string `json:"type"`
 			Index int    `json:"index"`
 			Delta struct {
-				Type        string  `json:"type"`
-				Text        string  `json:"text"`
-				Content     *string `json:"content"`      // nullable in compaction_delta
-				PartialJSON string  `json:"partial_json"` // in input_json_delta
-				Thinking    string  `json:"thinking"`     // in thinking_delta
+				Type        string                 `json:"type"`
+				Text        string                 `json:"text"`
+				Content     *string                `json:"content"`      // nullable in compaction_delta
+				PartialJSON string                 `json:"partial_json"` // in input_json_delta
+				Thinking    string                 `json:"thinking"`     // in thinking_delta
+				Citation    map[string]interface{} `json:"citation"`     // in citations_delta
 			} `json:"delta"`
 		}
 		if err := json.Unmarshal([]byte(event.Data), &delta); err != nil {
@@ -1846,6 +2053,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			}
 			return &provider.StreamChunk{
 				Type: provider.ChunkTypeText,
+				ID:   strconv.Itoa(delta.Index),
 				Text: delta.Delta.Text,
 			}, nil
 
@@ -1864,18 +2072,21 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			if block.blockType == "json-response-tool" {
 				return &provider.StreamChunk{
 					Type: provider.ChunkTypeText,
+					ID:   strconv.Itoa(delta.Index),
 					Text: delta.Delta.PartialJSON,
 				}, nil
 			}
 			partialJSON := delta.Delta.PartialJSON
-			// For bash_code_execution and text_editor_code_execution the API
-			// streams raw arguments without a type discriminator. On the first
-			// delta, inject {"type":"<providerToolName>", so that the assembled
-			// JSON can be decoded as a CodeExecutionInput union value.
-			if block.firstDelta && (block.providerToolName == "bash_code_execution" ||
-				block.providerToolName == "text_editor_code_execution") &&
-				len(partialJSON) > 0 && partialJSON[0] == '{' {
-				partialJSON = `{"type":"` + block.providerToolName + `",` + partialJSON[1:]
+			// Toolset member input is emitted once the block is complete.
+			if block.toolsetName != "" {
+				block.inputBuf.WriteString(partialJSON)
+				return s.Next()
+			}
+			// Code execution server tools stream raw arguments without a type
+			// discriminator. On the first delta, inject the providerToolInputType
+			// (TS: `{"type": "<type>",` + delta.substring(1)).
+			if block.firstDelta && block.providerToolInputType != "" {
+				partialJSON = `{"type": "` + block.providerToolInputType + `",` + partialJSON[1:]
 			}
 			block.firstDelta = false
 			block.inputBuf.WriteString(partialJSON)
@@ -1886,7 +2097,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				return &provider.StreamChunk{
 					Type: provider.ChunkTypeToolInputDelta,
 					ID:   block.toolCallID,
-					Text: delta.Delta.PartialJSON,
+					Text: partialJSON,
 				}, nil
 			}
 			return s.Next()
@@ -1907,7 +2118,28 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			if delta.Delta.Content != nil {
 				return &provider.StreamChunk{
 					Type: provider.ChunkTypeText,
+					ID:   strconv.Itoa(delta.Index),
 					Text: *delta.Delta.Content,
+				}, nil
+			}
+			return s.Next()
+
+		case "citations_delta":
+			// Accumulate web_search_result_location citations onto the owning
+			// text-like block (surfaced on its text-end providerMetadata), and
+			// emit a source chunk for every citation that resolves to one (TS
+			// createCitationSource): web_search_result_location always resolves;
+			// page_location/char_location resolve against citationDocuments
+			// extracted from the request prompt.
+			if block := s.contentBlocks[delta.Index]; block != nil && isTextLikeBlock(block.blockType) {
+				if citationType(delta.Delta.Citation) == "web_search_result_location" {
+					block.citations = append(block.citations, delta.Delta.Citation)
+				}
+			}
+			if src, ok := createCitationSource(delta.Delta.Citation, s.citationDocuments, anthropicGenerateID); ok {
+				return &provider.StreamChunk{
+					Type:          provider.ChunkTypeSource,
+					SourceContent: &src,
 				}, nil
 			}
 			return s.Next()
@@ -1941,13 +2173,50 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			if args == nil {
 				args = map[string]interface{}{}
 			}
+			var toolsetDelta *provider.StreamChunk
+			if block.toolsetName != "" {
+				args = toToolsetMemberInput(block.memberName, args)
+				b, _ := json.Marshal(args)
+				toolsetDelta = &provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: block.toolCallID, Text: string(b)}
+			}
+			if block.providerToolName == "code_execution" {
+				_, hasCode := args["code"]
+				_, hasType := args["type"]
+				if hasCode && !hasType {
+					withType := map[string]interface{}{"type": "programmatic-tool-call"}
+					for k, v := range args {
+						withType[k] = v
+					}
+					args = withType
+				}
+			}
+			var meta map[string]interface{}
+			if block.caller != nil || block.toolsetName != "" {
+				am := map[string]interface{}{}
+				if block.toolsetName != "" {
+					am["toolsetName"] = block.toolsetName
+				}
+				if block.caller != nil {
+					am["caller"] = block.caller
+				}
+				meta = map[string]interface{}{"anthropic": am}
+			}
 			toolCallChunk := &provider.StreamChunk{
 				Type: provider.ChunkTypeToolCall,
 				ToolCall: &types.ToolCall{
-					ID:        block.toolCallID,
-					ToolName:  block.toolName,
-					Arguments: args,
+					ID:               block.toolCallID,
+					ToolName:         block.toolName,
+					Arguments:        args,
+					ProviderExecuted: block.providerExecuted,
+					Dynamic:          block.dynamic,
+					ProviderMetadata: meta,
 				},
+			}
+			if toolsetDelta != nil {
+				s.pending = append(s.pending,
+					&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ToolCall: &types.ToolCall{ID: block.toolCallID}},
+					toolCallChunk)
+				return toolsetDelta, nil
 			}
 			// For custom function tools, emit tool-input-end first, then the
 			// assembled tool-call via the pending queue. This completes the
@@ -1963,19 +2232,35 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			}
 			return toolCallChunk, nil
 		}
-		// json-response-tool, text, reasoning, or unknown — no chunk to emit.
+		if block != nil && isTextLikeBlock(block.blockType) {
+			// text, compaction, and json-response-tool blocks all close with a
+			// text-end carrying the accumulated web-search citations, if any
+			// (TS content_block_stop "text" case).
+			var meta json.RawMessage
+			if len(block.citations) > 0 {
+				meta = citationsProviderMetadata(block.citations)
+			}
+			return &provider.StreamChunk{
+				Type:             provider.ChunkTypeTextEnd,
+				ID:               strconv.Itoa(stop.Index),
+				ProviderMetadata: meta,
+			}, nil
+		}
+		// reasoning or unknown — no chunk to emit.
 		return s.Next()
 
 	case "message_delta":
 		// Parse message delta for finish reason, context management, and container.
 		var delta struct {
 			Delta struct {
-				StopReason   string                      `json:"stop_reason"`
-				StopSequence string                      `json:"stop_sequence"`
-				StopDetails  *anthropicStopDetails       `json:"stop_details,omitempty"`
-				Container    *anthropicContainerResponse `json:"container,omitempty"`
+				StopReason       string                      `json:"stop_reason"`
+				StopSequence     string                      `json:"stop_sequence"`
+				StopDetails      *anthropicStopDetails       `json:"stop_details,omitempty"`
+				Container        *anthropicContainerResponse `json:"container,omitempty"`
+				SafeguardResults json.RawMessage             `json:"safeguard_results,omitempty"`
 			} `json:"delta"`
-			Usage struct {
+			InputTransformations json.RawMessage `json:"input_transformations,omitempty"`
+			Usage                struct {
 				InputTokens              *int `json:"input_tokens,omitempty"`
 				OutputTokens             *int `json:"output_tokens,omitempty"`
 				CacheReadInputTokens     *int `json:"cache_read_input_tokens,omitempty"`
@@ -1983,7 +2268,8 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				// Legacy location for context management
 				ContextManagement *ContextManagementResponse `json:"context_management,omitempty"`
 				// Iterations breakdown for compaction
-				Iterations []UsageIteration `json:"iterations,omitempty"`
+				Iterations          []UsageIteration              `json:"iterations,omitempty"`
+				OutputTokensDetails *anthropicOutputTokensDetails `json:"output_tokens_details,omitempty"`
 			} `json:"usage"`
 			// Root-level context management (new location - takes precedence)
 			ContextManagement *ContextManagementResponse `json:"context_management,omitempty"`
@@ -2002,13 +2288,24 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 		}
 		s.stopSequence = delta.Delta.StopSequence
 		s.stopDetails = delta.Delta.StopDetails
+		if v := rawJSONValue(delta.InputTransformations); v != nil {
+			s.inputTransformations = v
+		}
+		// Earlier deltas may carry null while the classifier is still running;
+		// the last non-null value is the final verdict.
+		if v := rawJSONValue(delta.Delta.SafeguardResults); v != nil {
+			s.safeguardResults = v
+		}
+		if delta.Usage.OutputTokensDetails != nil {
+			s.usage.OutputTokensDetails = delta.Usage.OutputTokensDetails
+		}
 
 		if delta.Delta.StopReason != "" {
 			var finishReason types.FinishReason
 			switch delta.Delta.StopReason {
-			case "end_turn":
+			case "end_turn", "pause_turn", "stop_sequence":
 				finishReason = types.FinishReasonStop
-			case "max_tokens":
+			case "max_tokens", "model_context_window_exceeded":
 				finishReason = types.FinishReasonLength
 			case "tool_use":
 				// When the json tool is used, the API returns stop_reason="tool_use"
@@ -2020,6 +2317,8 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				} else {
 					finishReason = types.FinishReasonToolCalls
 				}
+			case "refusal":
+				finishReason = types.FinishReasonContentFilter
 			default:
 				finishReason = types.FinishReasonOther
 			}
@@ -2045,9 +2344,10 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			usage := convertAnthropicUsage(s.usage)
 
 			chunk := &provider.StreamChunk{
-				Type:         provider.ChunkTypeFinish,
-				FinishReason: finishReason,
-				Usage:        &usage,
+				Type:            provider.ChunkTypeFinish,
+				FinishReason:    finishReason,
+				RawFinishReason: delta.Delta.StopReason,
+				Usage:           &usage,
 			}
 
 			// Extract context management (check root level first, then usage block)
@@ -2056,12 +2356,70 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			} else if delta.Usage.ContextManagement != nil {
 				chunk.ContextManagement = delta.Usage.ContextManagement
 			}
-			chunk.ProviderMetadata = anthropicProviderMetadataRaw(s.usage, s.stopSequence, s.stopDetails, s.container, chunk.ContextManagement)
-
-			return chunk, nil
+			// The finish chunk is emitted on message_stop so later deltas
+			// (e.g. final safeguard results) are included.
+			s.finish = chunk
+			return s.Next()
 		}
+		return s.Next()
+
+	case "error":
+		// A mid-stream provider error (TS `case 'error'`, e.g. an
+		// overloaded_error sent on an otherwise-200 response). Previously
+		// this event type fell through to "Unknown event, get next" below
+		// and was silently discarded; port TS's createAnthropicStreamError:
+		// build a fully-normalized *providererrors.StreamProviderError so
+		// pkg/ai's streamRetries / IsRetryable sees the correct type/
+		// statusCode/isRetryable without falling back to generic inference.
+		var errEvent struct {
+			Error struct {
+				Type        string          `json:"type"`
+				Message     string          `json:"message"`
+				Code        json.RawMessage `json:"code"`
+				StatusCode  *int            `json:"statusCode"`
+				IsRetryable *bool           `json:"isRetryable"`
+				Data        interface{}     `json:"data"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(event.Data), &errEvent); err != nil {
+			return s.Next()
+		}
+		// anthropicStreamErrorMetadata returns (0, false) for an
+		// unrecognized type (TS's getAnthropicStreamErrorMetadata returns
+		// {}, i.e. both fields undefined). Only apply the inferred
+		// isRetryable when the type was actually recognized — otherwise
+		// leave it nil so NewStreamProviderError falls back to its own
+		// message/status-code inference instead of forcing false.
+		inferredStatus, inferredRetryable := anthropicStreamErrorMetadata(errEvent.Error.Type)
+		statusCode := errEvent.Error.StatusCode
+		if statusCode == nil && inferredStatus != 0 {
+			sc := inferredStatus
+			statusCode = &sc
+		}
+		isRetryable := errEvent.Error.IsRetryable
+		if isRetryable == nil && inferredStatus != 0 {
+			ir := inferredRetryable
+			isRetryable = &ir
+		}
+		var code interface{}
+		if len(errEvent.Error.Code) > 0 {
+			json.Unmarshal(errEvent.Error.Code, &code) //nolint:errcheck
+		}
+		data := errEvent.Error.Data
+		if data == nil {
+			data = errEvent.Error
+		}
+		chunkErr := providererrors.NewStreamProviderError(errEvent.Error.Message, "anthropic", errEvent.Error.Type, code, statusCode, isRetryable, data)
+		return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: errEvent.Error.Message, Err: chunkErr}, nil
 
 	case "message_stop":
+		s.isMessageOpen = false
+		s.activeMessageID = ""
+		if s.finish != nil && !s.finishIssued {
+			s.finishIssued = true
+			s.err = io.EOF
+			return s.finalizeFinish(), nil
+		}
 		// Stream complete
 		s.err = io.EOF
 		return nil, io.EOF
@@ -2069,6 +2427,24 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 
 	// Unknown event, get next
 	return s.Next()
+}
+
+// finalizeFinish recomputes usage and provider metadata from the final
+// stream state and returns the finish chunk.
+func (s *anthropicStream) finalizeFinish() *provider.StreamChunk {
+	chunk := s.finish
+	usage := convertAnthropicUsage(s.usage)
+	chunk.Usage = &usage
+	chunk.ProviderMetadata = anthropicProviderMetadataRaw(s.usage, s.stopSequence, s.stopDetails, s.container, chunk.ContextManagement, s.providerOptionsName, s.usedCustomProviderKey, metadataExtras{
+		inputTransformations: s.inputTransformations,
+		safeguardResults:     s.safeguardResults,
+	})
+	return chunk
+}
+
+func jsonQuote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }
 
 // Err returns any error that occurred during streaming

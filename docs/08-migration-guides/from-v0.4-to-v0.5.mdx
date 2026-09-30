@@ -5,57 +5,49 @@ description: Guide for upgrading Go AI SDK applications from v0.4.x to v0.5.0
 
 # Migrate Go AI SDK v0.4.x to v0.5.0
 
-Go AI SDK v0.5.0 aligns the public API with the May 2026 TypeScript AI SDK changes. The main work is renaming formerly experimental options, splitting runtime context from tool context, adopting call-level tool approval, and using the provider v4 file data shape.
+v0.4.0 is the last tagged release, so this guide covers everything that
+shipped after it: the May/June 2026 cycle (splitting runtime context from
+tool context, call-level tool approval, the provider v4 tagged-union file
+data shape, MCP Apps and Responses tool options) and the September 2026
+parity cycle (removing the xAI Chat Completions API, rebuilding
+Bedrock-Anthropic and Bedrock on shared code paths, changing `StreamText`'s
+full-stream chunk lifecycle, and a long list of provider-specific parity
+fixes). Both cycles land together in v0.5.0. TS SDK parity now tracks
+`ai@7.0.118`.
+
+This guide is organized by area rather than by cycle, since most applications
+only care about what changed in the areas they use. See [Known differences
+from the TypeScript AI SDK](./known-differences.mdx) for behavior that stays
+intentionally different, and the repository's `release_notes/` and
+`CHANGELOG.md` for the complete, cycle-by-cycle list this guide is built
+from.
 
 ## Recommended migration process
 
-1. Upgrade on a clean branch and run `go test ./...` before editing.
-2. Replace deprecated names with the stable names listed below.
-3. Move shared request state into `RuntimeContext` and per-tool state into `ToolsContext`.
-4. Replace per-tool approval defaults with call-level `ToolApproval`.
-5. Normalize file and image inputs to `types.FileContent` plus `types.FileData`.
-6. Move multi-step limits from `MaxSteps` to `StopWhen`.
-7. Run `go test ./...` for packages. For examples that use `//go:build ignore`, compile the specific example file you changed, for example `go build ./examples/upload-file/provider-reference/main.go`.
+1. Upgrade on a clean branch and run `go vet ./...` and `go test ./...` before editing.
+2. Search your codebase for `xai.ChatCompletionsLanguageModel`, `xai.NewLanguageModel`, and Bedrock `CacheConfig` usage — these no longer compile.
+3. Search for `Strict: true` (tools), `DisableParallelToolUse:` (Anthropic), and `MaxRetries:` (Embed/EmbedMany/Rerank) — these fields changed from value to pointer types.
+4. Search for `ExperimentalContext`, `NeedsApproval`, `ToolNeedsApproval`, and `types.ImageContent` — these still compile as deprecated aliases, but new code should move to `RuntimeContext`/`ToolsContext`, call-level `ToolApproval`, and `types.FileContent`/`FileData`.
+5. If your code or wrappers still use TypeScript-style `experimental_*` option names (`experimental_output`, `experimental_activeTools`, `experimental_prepareStep`), map them to `Output`, `FilterActiveTools`, and `PrepareStep`.
+6. If you read/write `anthropic.ModelOptions` as JSON (config files, serialized state), update field names to camelCase.
+7. If you detect step boundaries in `StreamText`'s full stream by watching for `provider.ChunkTypeFinish`, switch to `provider.ChunkTypeFinishStep`.
+8. If you set `telemetry.Options.Tracer` per call, move the tracer to a registered `telemetry.TelemetryIntegration` instead.
+9. Move multi-step limits from `MaxSteps` to `StopWhen` where practical (`MaxSteps` still works as a compatibility shorthand).
+10. Re-run `go vet ./...` and `go test ./...`. For examples that use `//go:build ignore`, compile the specific example file you changed, e.g. `go build ./examples/upload-file/provider-reference/main.go`.
 
 ## Breaking changes
 
-### Telemetry names are stable
+### Runtime context, tool execution, and control flow
 
-**Impact:** low
+#### Runtime and tool context are split
 
-`ExperimentalTelemetry` is deprecated. Use `Telemetry`. `telemetry.Settings` remains as a compatibility alias for `telemetry.Options`, but new code should use `telemetry.Options`. Telemetry is active by default when at least one global or local integration is registered; set `IsEnabled: telemetry.Bool(false)` to disable a call.
+**Impact:** breaking (in spirit) / low (in practice — the old field still compiles as a deprecated alias).
 
-**Before:**
-
-```go
-result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-    Model:  model,
-    Prompt: "Summarize the changelog.",
-    ExperimentalTelemetry: &telemetry.Settings{
-        IsEnabled: telemetry.Bool(true),
-    },
-})
-```
-
-**After:**
-
-```go
-telemetry.RegisterTelemetryIntegration(telemetry.OTelTelemetryIntegration{})
-
-result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-    Model:  model,
-    Prompt: "Summarize the changelog.",
-    Telemetry: &telemetry.Options{
-        FunctionID: "release-summary",
-    },
-})
-```
-
-### Runtime and tool context are split
-
-**Impact:** breaking
-
-`ExperimentalContext` and generic `Context` style values are replaced by `RuntimeContext`. Per-tool state belongs in `ToolsContext`, keyed by tool name. Tool execution receives `ToolExecutionOptions.RuntimeContext` and `ToolExecutionOptions.ToolContext`.
+`ExperimentalContext` and generic `Context`-style values are replaced by
+`RuntimeContext`. Per-tool state belongs in `ToolsContext`, keyed by tool
+name. Tool execution receives `ToolExecutionOptions.RuntimeContext` and
+`ToolExecutionOptions.ToolContext`. `ExperimentalContext` remains as a
+deprecated alias field on `GenerateTextOptions` for now.
 
 **Before:**
 
@@ -82,11 +74,38 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 ```
 
-### Tool approval is call-level
+#### Tool execution options replace tool call options
 
-**Impact:** breaking
+**Impact:** medium
 
-`ToolNeedsApproval` was renamed to `ToolApproval`. Per-tool `NeedsApproval` is deprecated and is only used when no call-level approval is configured. `ToolApproval` can be a single function or a per-tool map with `approved`, `denied`, or `user-approval`.
+Tool executors receive `types.ToolExecutionOptions`. Use `ToolCallID`,
+`RuntimeContext`, and `ToolContext` from that struct. Do not depend on
+removed `ToolCallOptions` naming in examples or wrappers.
+
+**Before:**
+
+```go
+Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+    return lookup(input, opts.UserContext), nil
+}
+```
+
+**After:**
+
+```go
+Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+    return lookup(input, opts.RuntimeContext, opts.ToolContext), nil
+}
+```
+
+#### Tool approval is call-level
+
+**Impact:** breaking (in spirit) / low (in practice — `NeedsApproval` still compiles as a deprecated alias).
+
+`ToolNeedsApproval` was renamed to `ToolApproval`. Per-tool `NeedsApproval`
+is deprecated and is only used when no call-level approval is configured.
+`ToolApproval` can be a single function or a per-tool map with `approved`,
+`denied`, or `user-approval`.
 
 **Before:**
 
@@ -117,33 +136,26 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 ```
 
-### Tool execution options replace tool call options
+#### Tool calls: invalid calls are marked, not silently dropped or executed
 
-**Impact:** medium
+**Impact:** behavior change for tool-call error handling, including `WorkflowAgent`'s default path (September cycle).
 
-Tool executors receive `types.ToolExecutionOptions`. Use `ToolCallID`, `RuntimeContext`, and `ToolContext` from that struct. Do not depend on removed `ToolCallOptions` naming in examples or wrappers.
+Calls to unknown tools, or calls with input that fails schema validation, are
+now marked invalid (TS `parseToolCall`) instead of being silently skipped or
+executed with bad input. Tool calls made without any tools configured are
+also invalid. An invalid call is not executed — it carries a
+`NoSuchToolError` (unknown tool) or `InvalidToolInputError` (invalid input)
+result, unless a configured `RepairToolCall` fixes it first.
 
-**Before:**
-
-```go
-Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
-    return lookup(input, opts.UserContext), nil
-}
-```
-
-**After:**
-
-```go
-Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
-    return lookup(input, opts.RuntimeContext, opts.ToolContext), nil
-}
-```
-
-### Experimental generation options were removed
+#### Experimental generation options were removed
 
 **Impact:** breaking
 
-Use stable names for output, active tools, and step preparation. If your code or wrappers still expose TypeScript-style experimental option names, map `experimental_output` to `Output`, `experimental_activeTools` to `FilterActiveTools` or provider `ToolChoice`, and `experimental_prepareStep` to `PrepareStep`.
+Use stable names for output, active tools, and step preparation. If your
+code or wrappers still expose TypeScript-style experimental option names,
+map `experimental_output` to `Output`, `experimental_activeTools` to
+`FilterActiveTools` or provider `ToolChoice`, and `experimental_prepareStep`
+to `PrepareStep`.
 
 **After:**
 
@@ -158,11 +170,243 @@ opts := ai.GenerateTextOptions{
 }
 ```
 
-### File data is a tagged union
+#### FilterActiveTools is the stable helper
 
-**Impact:** breaking
+**Impact:** low
 
-Provider v4 file parts use `types.FileData` with a `Type` discriminator. `types.ImageContent` still works as a compatibility input, but new multimodal code should use `types.FileContent` with `FileDataTypeData`, `FileDataTypeURL`, `FileDataTypeReference`, or `FileDataTypeText`.
+`ExperimentalFilterActiveTools` remains only as a compatibility alias. Use
+`FilterActiveTools` in new code.
+
+**Before:**
+
+```go
+active := ai.ExperimentalFilterActiveTools(tools, []string{"search"})
+```
+
+**After:**
+
+```go
+active := ai.FilterActiveTools(tools, []string{"search"})
+```
+
+#### MaxSteps is deprecated
+
+**Impact:** medium
+
+`MaxSteps *int` is still accepted as a compatibility shorthand, but
+`StopWhen` is the stable multi-step control. If both are set, `StopWhen`
+wins.
+
+**Before:**
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:    model,
+    Prompt:   "Use tools if needed.",
+    Tools:    tools,
+    MaxSteps: intPtr(5),
+})
+```
+
+**After:**
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:    model,
+    Prompt:   "Use tools if needed.",
+    Tools:    tools,
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
+})
+```
+
+#### Tools: Strict is now *bool
+
+**Impact:** compile error if you set `Strict` as a plain bool (September cycle).
+
+`types.Tool.Strict` and Open Responses `FunctionTool.Strict` changed from
+`bool` to `*bool` (tri-state, TS parity): `nil` leaves strict mode unset, and
+an explicit `false` is now forwarded to providers (previously
+indistinguishable from unset).
+
+**Before:**
+
+```go
+tool := types.Tool{Name: "search", Strict: true, /* ... */}
+```
+
+**After:**
+
+```go
+tool := types.Tool{Name: "search", Strict: types.BoolPtr(true), /* ... */}
+```
+
+#### StreamText is asynchronous
+
+**Impact:** breaking for code that only checks `StreamText`'s returned error (September cycle).
+
+`StreamText` now returns before the first model request, matching TS
+`streamText`. Only option-validation errors (nil model, invalid
+`MaxRetries`, invalid `InstructionMessages`) are returned from the call
+itself. Everything else — including prompt errors, approval-signature
+failures on resume, and failures starting the first provider stream —
+surfaces through `Err()` / `ReadAll()` / `Stream()` / `Chunks()`.
+
+**Before:**
+
+```go
+result, err := ai.StreamText(ctx, opts)
+if err != nil {
+    // This used to catch prompt errors and first-request failures too.
+    log.Fatal(err)
+}
+```
+
+**After:**
+
+```go
+result, err := ai.StreamText(ctx, opts)
+if err != nil {
+    // Only option-validation errors land here now.
+    log.Fatal(err)
+}
+defer result.Close()
+
+text, err := result.ReadAll()
+if err != nil {
+    // Prompt errors, approval failures, and first-request failures land here.
+    log.Fatal(err)
+}
+```
+
+#### StreamText full stream: chunk lifecycle changed
+
+**Impact:** breaking for code that used `ChunkTypeFinish` to detect step boundaries (September cycle).
+
+In v0.4.0, `provider.ChunkTypeFinish` was forwarded once per step. It is now
+emitted exactly once per call, carrying total usage across all steps. Each
+step is now bracketed by `provider.ChunkTypeStartStep` /
+`provider.ChunkTypeFinishStep` (carrying that step's own request, response,
+usage, finish reason, and provider metadata), and `provider.ChunkTypeStart`
+opens the stream once, before the first step. `OnChunk` receives all of
+these chunks.
+
+**Before:**
+
+```go
+for chunk := range result.Chunks() {
+    if chunk.Type == provider.ChunkTypeFinish {
+        // Used to fire once per step.
+        recordStep(chunk)
+    }
+}
+```
+
+**After:**
+
+```go
+for chunk := range result.Chunks() {
+    switch chunk.Type {
+    case provider.ChunkTypeFinishStep:
+        recordStep(chunk) // fires once per step, as before
+    case provider.ChunkTypeFinish:
+        recordCallTotals(chunk) // fires once per call, with total usage
+    }
+}
+```
+
+See [StreamText reference](../07-reference/ai/stream-text.mdx#full-stream-lifecycle)
+for the complete chunk-ordering description.
+
+### Telemetry
+
+#### Telemetry: tracers belong to integrations
+
+**Impact:** medium, compile error if you set a tracer per call.
+
+`telemetry.Options.Tracer` and `WithTracer` are removed. Configure the
+tracer on the integration and register it once. `OTelTelemetryIntegration`
+is renamed `LegacyOpenTelemetry` (the old name remains as a deprecated
+alias), and `telemetry.NewOpenTelemetry` adds a GenAI semantic-convention
+integration (September cycle). `TelemetryIntegration.OnLanguageModelCallStart`
+now returns a `context.Context` — the model call runs in the returned
+context, so its span becomes the parent of provider work. Custom
+integrations must update this method to return a context.
+
+**Before:**
+
+```go
+Telemetry: &telemetry.Options{IsEnabled: telemetry.Bool(true), Tracer: tracer}
+```
+
+**After:**
+
+```go
+telemetry.RegisterTelemetryIntegration(
+    telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tracer}),
+)
+// per call:
+Telemetry: &telemetry.Options{IsEnabled: telemetry.Bool(true)}
+```
+
+#### Telemetry names are stable
+
+**Impact:** low
+
+`ExperimentalTelemetry` is deprecated. Use `Telemetry`. `telemetry.Settings`
+remains as a compatibility alias for `telemetry.Options`, but new code
+should use `telemetry.Options`. Telemetry is active by default when at
+least one global or local integration is registered; set `IsEnabled:
+telemetry.Bool(false)` to disable a call.
+
+**Before:**
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Summarize the changelog.",
+    ExperimentalTelemetry: &telemetry.Settings{
+        IsEnabled: telemetry.Bool(true),
+    },
+})
+```
+
+**After:**
+
+```go
+telemetry.RegisterTelemetryIntegration(telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{}))
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Summarize the changelog.",
+    Telemetry: &telemetry.Options{
+        FunctionID: "release-summary",
+    },
+})
+```
+
+Also carried over from the May/June cycle: telemetry lifecycle method names
+are now `OnToolExecutionStart` / `OnToolExecutionEnd` on
+`TelemetryIntegration` (previously different naming).
+
+#### Callbacks / events: deprecated tool-execution fields excluded from JSON
+
+**Impact:** low — fields still exist but are no longer serialized (September cycle).
+
+Tool execution event fields `StepNumber`, `ModelProvider`, `ModelID`, `Args`,
+`Result`, `Error`, `DurationMs` are deprecated and excluded from JSON
+marshaling. If you serialize these events, read the replacement fields
+documented on the event types instead.
+
+### Messages, files, and prompts
+
+#### File data is a tagged union
+
+**Impact:** breaking (in spirit) / low (in practice — `types.ImageContent` still works as a compatibility input).
+
+Provider v4 file parts use `types.FileData` with a `Type` discriminator.
+`types.ImageContent` still works as a compatibility input, but new
+multimodal code should use `types.FileContent` with `FileDataTypeData`,
+`FileDataTypeURL`, `FileDataTypeReference`, or `FileDataTypeText`.
 
 **Before:**
 
@@ -196,11 +440,14 @@ messages := []types.Message{{
 }}
 ```
 
-### System messages in Messages are rejected by default
+#### System messages in Messages are rejected by default
 
 **Impact:** breaking
 
-Put system instructions in `GenerateTextOptions.System` or `StreamTextOptions.System`. If you intentionally need provider-native system-role messages in `Messages`, opt in with `AllowSystemMessages` or the TypeScript-compatible alias `AllowSystemInMessages`.
+Put system instructions in `GenerateTextOptions.System` or
+`StreamTextOptions.System`. If you intentionally need provider-native
+system-role messages in `Messages`, opt in with `AllowSystemMessages` or the
+TypeScript-compatible alias `AllowSystemInMessages`.
 
 **Before:**
 
@@ -236,11 +483,13 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 ```
 
-### Upload APIs use provider capabilities
+#### Upload APIs use provider capabilities
 
 **Impact:** medium
 
-Use `ai.UploadFile` and `ai.UploadSkill` with a provider that exposes `Files()` or `Skills()`. Upload results return `ProviderReference`, which can be passed back as `types.FileDataTypeReference`.
+Use `ai.UploadFile` and `ai.UploadSkill` with a provider that exposes
+`Files()` or `Skills()`. Upload results return `ProviderReference`, which
+can be passed back as `types.FileDataTypeReference`.
 
 **Before:**
 
@@ -269,13 +518,20 @@ file := types.FileContent{
 }
 ```
 
-### Models can be serialized for workflows
+### Workflow
+
+#### Models can be serialized for workflows
 
 **Impact:** medium
 
-Models that implement `provider.SerializableModel` can cross workflow boundaries. Use `provider.SerializeModel` and `provider.DeserializeModel`; provider deserializers must be registered before deserialization.
+Models that implement `provider.SerializableModel` can cross workflow
+boundaries. Use `provider.SerializeModel` and `provider.DeserializeModel`;
+provider deserializers must be registered before deserialization.
 
-Static JSON-compatible provider headers are preserved during serialization, matching the TypeScript SDK workflow behavior. API keys, HTTP clients, functions, and other non-serializable values are omitted; pass replacement auth through the provider factory or environment when restoring a workflow.
+Static JSON-compatible provider headers are preserved during serialization,
+matching the TypeScript SDK workflow behavior. API keys, HTTP clients,
+functions, and other non-serializable values are omitted; pass replacement
+auth through the provider factory or environment when restoring a workflow.
 
 **Before:**
 
@@ -294,59 +550,359 @@ if err != nil {
 restored, err := provider.DeserializeModel(serialized)
 ```
 
-### FilterActiveTools is the stable helper
+As of the September cycle, this same `Serialize*`/`Deserialize*`/
+`Register*Deserializer` triplet exists for every other model kind a
+provider can serialize (image, video, speech, transcription, embedding,
+evaluation), for every provider model TS marks `WORKFLOW_SERIALIZE`. See
+[WorkflowAgent: Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
+for the full list. None of this is wired in automatically — your
+application calls these functions explicitly.
+
+#### Workflow: transport renames and per-call context precedence
+
+**Impact:** breaking for code using the old transport name; behavior change on approval resume (September cycle).
+
+`workflow.WorkflowChatTransport` is now the client-side `ai.ChatTransport`
+(the Go port of TS `WorkflowChatTransport`, built with
+`workflow.NewWorkflowChatTransport`). The previous server-side run
+multiplexer (`ServeHTTP` / `Resume`, SSE events) is renamed
+`workflow.WorkflowRunMultiplexer` (`workflow.NewWorkflowRunMultiplexer`).
+
+On approval resume, per-call runtime/tools context and sandbox settings now
+override the agent's defaults (previously the agent defaults always won).
+
+**Before:**
+
+```go
+transport := &workflow.WorkflowChatTransport{}
+http.Handle("/api/workflow", transport)
+```
+
+**After:**
+
+```go
+multiplexer := workflow.NewWorkflowRunMultiplexer()
+http.Handle("/api/workflow", multiplexer)
+
+// Client-side transport is now a separate type:
+clientTransport := workflow.NewWorkflowChatTransport(workflow.WorkflowChatTransportOptions{
+    API: "https://example.com/api/chat",
+})
+```
+
+### xAI
+
+#### xAI Chat Completions API removed
+
+**Impact:** compile error if you use it.
+
+`xai.Provider.ChatCompletionsLanguageModel()`, `xai.NewLanguageModel`, and
+the Chat Completions `SearchParameters` option are removed, matching the
+TypeScript SDK. `LanguageModel()` (Responses API) is the only xAI language
+model. For live search, use the provider-executed `xai.WebSearch` /
+`xai.XSearch` tools instead of `SearchParameters`.
+
+**Before:**
+
+```go
+model, _ := provider.ChatCompletionsLanguageModel("grok-3")
+
+result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "What happened in the news today?",
+    ProviderOptions: map[string]interface{}{
+        "xai": map[string]interface{}{
+            "searchParameters": map[string]interface{}{"mode": "auto"},
+        },
+    },
+})
+```
+
+**After:**
+
+```go
+model, _ := provider.LanguageModel("grok-3")
+
+result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "What happened in the news today?",
+    Tools:  []types.Tool{xai.WebSearch(xai.WebSearchConfig{})},
+})
+```
+
+#### Gateway: xai/* models renamed to spacexai/*
+
+**Impact:** compile error / runtime 404 if you reference the old IDs.
+
+All `xai/*` Gateway model IDs are renamed to `spacexai/*`
+(`GatewayLanguageModelXai*` constants become `...Spacexai...`); 44 language,
+4 image, and 4 video IDs were removed upstream. `hipaaCompliant` is removed
+from `gateway.Config` and `GatewayProviderOptions` — it is no longer sent as
+`providerOptions.gateway.hipaaCompliant`.
+
+### Anthropic
+
+**Impact:** breaking for direct Anthropic API inspection, custom base URLs, and JSON-marshaled `ModelOptions`.
+
+- Request `system` is now an array of text blocks; user content is always an array. If you asserted on the raw request JSON in tests, update the shape.
+- `BaseURL` now includes `/v1`. A bare `https://api.anthropic.com` is normalized automatically, but a custom base URL (proxy, test server) must include `/v1` itself.
+- `DisableParallelToolUse` changed from `bool` to `*bool`.
+- Model-level `Thinking` (on `anthropic.ModelOptions`) now takes precedence over call-level `Reasoning` when both are set.
+- `anthropic.ModelOptions` JSON tags are camelCase (`budgetTokens`, `contextManagement`, `automaticCaching`, ...), matching TS provider options. v0.4.0 used snake_case.
+- `anthropic.ContainerSkill` (JSON `skillId`, was `skill_id`) with `Type: "custom"` now requires `ProviderReference`; without it the call fails with `NoSuchProviderReferenceError`.
+- The exported `anthropic.ToAnthropicFormatWithCache` is removed (it was unused by the request path).
+- A spliced stream (a second `message_start` while a message is open) is now reported as a `ChunkTypeError` chunk, and the rest of the stream is dropped — `Next()` no longer returns it as a Go `error`.
+
+**Before:**
+
+```go
+// DisableParallelToolUse was a plain bool on anthropic.ModelOptions:
+model := anthropic.NewLanguageModel(prov, anthropic.ClaudeSonnet4_6, &anthropic.ModelOptions{
+    DisableParallelToolUse: true,
+})
+```
+
+**After:**
+
+```go
+disable := true
+model := anthropic.NewLanguageModel(prov, anthropic.ClaudeSonnet4_6, &anthropic.ModelOptions{
+    DisableParallelToolUse: &disable,
+})
+```
+
+```go
+// v0.4.0 ModelOptions JSON (snake_case) — no longer accepted:
+// {"budget_tokens": 4096, "context_management": {...}, "automatic_caching": true}
+
+// v0.5.0 ModelOptions JSON (camelCase):
+// {"budgetTokens": 4096, "contextManagement": {...}, "automaticCaching": true}
+```
+
+### Bedrock
+
+#### Bedrock-Anthropic: rebuilt on anthropic.LanguageModel
+
+**Impact:** breaking — several exported APIs removed.
+
+Bedrock-Anthropic is now built on `anthropic.LanguageModel`, as the
+TypeScript SDK does, instead of a Go-only Converse-shaped implementation.
+Removed:
+
+- `CacheConfig` API: `WithSystemCache`, `WithToolCache`, `WithMessageCacheIndices`, `CacheTTL1Hour`, `CacheTTL5Minutes`, `NewCacheConfig`. It inserted Converse-style `cachePoint` blocks into Messages API requests, which is invalid for this code path. Use `anthropic.ModelOptions{AutomaticCaching: ...}` or `CacheControl` instead.
+- `PrepareTools`, `UpgradeToolVersion`, `MapToolName`, `GetBetaHeaders`, `IsComputerUseTool`, and the old stream reader types.
+- The unused exported `bedrock/anthropic.BaseURLFormat` constant.
+
+Explicit `AccessKeyID` / `SecretAccessKey` no longer pick up
+`AWS_SESSION_TOKEN` from the environment — pass `SessionToken` explicitly if
+you need it alongside explicit credentials. `anthropic-aws`'s default base
+URL now includes `/v1`.
+
+**Before:**
+
+```go
+cache := bedrockanthropic.NewCacheConfig().WithSystemCache(true)
+```
+
+**After:**
+
+```go
+model := anthropic.NewLanguageModel(prov, anthropic.ClaudeSonnet4_6, &anthropic.ModelOptions{
+    AutomaticCaching: true,
+})
+```
+
+#### Bedrock (Converse): invoke API replaced with Converse
+
+**Impact:** breaking for code inspecting raw request/response bodies.
+
+`bedrock.LanguageModel` now calls the Converse API
+(`/model/{id}/converse`, `/converse-stream`) instead of `/invoke`, matching
+the TypeScript SDK. `RawRequest` / `RawResponse` on results now carry
+Converse-shaped JSON — code that parsed the old per-model invoke bodies
+(Claude Messages format, Titan format, etc.) must be updated to the single
+Converse shape. Forced tool choice now matches provider-defined Anthropic
+tools by their wire name.
+
+#### Bedrock: other changes
+
+- **Embeddings:** Cohere embedding models' `MaxEmbeddingsPerCall` is now 96 (was 1); `EmbedMany` batches Cohere inputs accordingly.
+- **Mantle:** the underlying OpenAI provider is now built per call, so `openai/v1` vs `v1` routing can follow the model ID. No API change.
+- **Endpoints:** when `BaseURL` is unset, `AWS_ENDPOINT_URL_BEDROCK_RUNTIME` (or `_AGENT_RUNTIME`) and then `AWS_ENDPOINT_URL` are now honored, and China/ISO regions get their partition DNS suffix. If your environment sets these variables for other AWS tooling, Bedrock calls now route through them too — set `BaseURL` explicitly to opt out.
+- `ProviderError` from Bedrock calls now carries response headers and body.
+
+### OpenAI and Azure
+
+#### OpenAI and Azure chat: reasoning-model parameter handling
+
+**Impact:** behavior change for reasoning models; no signature change.
+
+For reasoning models, `Temperature`, `TopP`, frequency/presence penalties,
+`LogitBias`, and `Logprobs` are now dropped with warnings (instead of being
+sent and rejected by the API), and the output limit is sent as
+`max_completion_tokens` instead of `max_tokens`.
+
+`ReasoningNone` is now sent as `reasoning_effort: "none"` (was `"disabled"`);
+`minimal` and `xhigh` are passed through verbatim. `whisper-1` transcription
+always requests `response_format: "verbose_json"`.
+
+Replayed tool-call arguments (`RawArguments`) that aren't a JSON object are
+now sent as `{}` for OpenAI and Azure chat specifically (TS
+`serializeToolCallArguments`); other OpenAI-compatible providers (Groq,
+DeepSeek, Together, Fireworks, Mistral, Ollama, ...) are unaffected and still
+send the raw arguments.
+
+#### Azure: base URL classification
+
+**Impact:** behavior change for non-standard base URLs.
+
+Azure base URLs are now classified like TS: hosts that don't match a
+recognized Azure OpenAI / Foundry pattern are treated as custom gateways and
+used as-is (no `/v1` or `api-version` appended). If you use a custom-domain
+gateway in front of Azure, verify the resulting request URL still works.
+
+### Google / Vertex
+
+- Vertex provider options are now read in TS order: `googleVertex` → `vertex` → `google` (was a different order in v0.4.0).
+- Gemini 2.5 thinking budget is now `min(model max, round(65536 × pct))`, with no 1024-token floor.
+- Imagen (non-`gemini-*`) image models are removed from Google and Vertex, matching TS. Such model IDs now fail with: `"Google image models other than Gemini are no longer supported. Use a model ID that starts with gemini-."`
+- Gemini image models ignore `N` (one image per call, auto-batched) instead of erroring when `N > 1`.
+- The Interactions API now sends `input` as a flat array of steps (`user_input` / `model_output` / tool steps) instead of role/content turns — a wire-format fix, not an API change.
+- `ToGoogleMessages` is deprecated in favor of the new converter; it still works but new code should not call it directly.
+
+### Embed / EmbedMany / Rerank: MaxRetries is now a pointer
+
+**Impact:** compile error if you set `MaxRetries` as a plain int.
+
+`MaxRetries` changed from `int` to `*int` (nil now means the TS default of
+2, matching `GenerateTextOptions.MaxRetries`). `EmbedMany` with no input
+values now returns an empty result instead of an error.
+
+**Before:**
+
+```go
+result, err := ai.Embed(ctx, ai.EmbedOptions{
+    Model:      model,
+    Input:      "hello",
+    MaxRetries: 5,
+})
+```
+
+**After:**
+
+```go
+retries := 5
+result, err := ai.Embed(ctx, ai.EmbedOptions{
+    Model:      model,
+    Input:      "hello",
+    MaxRetries: &retries,
+})
+```
+
+### Schema: additionalProperties: false is enforced
+
+**Impact:** behavior change — previously-accepted objects with extra properties now fail validation.
+
+The `pkg/schema` validator now enforces `additionalProperties: false` when a
+schema sets it. If you relied on extra properties silently passing
+validation, either remove `additionalProperties: false` from the schema or
+update the produced/validated data to match the schema exactly. See the
+[JSON Schema reference](../07-reference/schema/json-schema.mdx) for the
+defaults-before-validate and `$ref` cycle guard behavior added alongside
+this.
+
+### UI message streams: isAborted / isCancelled semantics
+
+**Impact:** behavior change for consumers of `CreateUIMessageStream`'s end callback.
+
+The end callback no longer reports `isAborted: true` just because the
+request context was cancelled. Consumer cancellation before an outcome is
+declared now sets `isCancelled: true`, and the event carries a new
+`Outcome` field (`completed` / `failed` / `aborted` / `unknown`), matching
+TS. `ValidateUIMessages` now rejects tool parts missing `input` (and
+`output` in `output-available`) for states where TS requires them; tool
+parts in `input-streaming` / `output-error` omit the `input` key instead of
+sending `null`. `finish-step` no longer closes active text/reasoning parts.
+
+### SmoothStream: invalid chunking value returns a typed error
+
+**Impact:** low. An invalid `chunking` value now returns
+`*errors.InvalidArgumentError` instead of a generic error.
+
+### Core: structured output, tool choice violation, custom content
+
+- `GenerateText` / `StreamText` return `ToolChoiceViolationError` when the model ignores a required or specific tool choice.
+- `GenerateText` structured output parse semantics follow TS: a truncated response now yields `NoObjectGeneratedError` (previously may have returned a partial value).
+- `StreamText` with `Output` always parses the final step.
+- `CustomContent.Kind` values use the `provider.type` form (for example `xai.citation`, `openai.compaction`), not `provider-type`. Update any code that pattern-matches on the old hyphenated form.
+- Core no longer supplies a default denial reason for denied tool approvals; providers that need text now apply their own default.
+
+### LegacyOpenTelemetry span shape (affects dashboards and queries)
+
+**Impact:** breaking for existing dashboards/alerts built on span names or `gen_ai.*` root attributes.
+
+- Span names no longer carry the `.<functionId>` suffix; filter on the `operation.name` / `resource.name` attributes instead.
+- Tool call spans are named `ai.toolCall` (was `ai.toolCall.<toolName>`); the tool name is in the `ai.toolCall.name` attribute.
+- Root and evaluate spans no longer set `gen_ai.system` / `gen_ai.request.model`; use `ai.model.provider` / `ai.model.id`.
+- `ai.prompt` is JSON `{system, messages}` (object operations: `{system, prompt, messages}`).
+- Embed and rerank spans use `ai.value` / `ai.values` / `ai.documents` instead of `ai.prompt`; `ai.values.count` is removed.
+- Nested step spans are named `ai.<operation>.doGenerate` / `ai.<operation>.doStream` (were `"<operation> step N"`).
+- Nested embed/rerank spans are named `ai.embed.doEmbed` / `ai.embedMany.doEmbed` / `ai.rerank.doRerank` (were `"embeddings <model>"` / `"reranking <model>"`) and carry no `gen_ai.*` attributes.
+- Root span end attributes are now per operation: rerank sets none, embed sets `ai.embedding` / `ai.embeddings` and `ai.usage.tokens`, object operations set `ai.response.object`; `gen_ai.usage.*` is no longer emitted on root spans.
+- The nested `"chat <model>"` span is removed — the `ai.<op>.doGenerate` / `ai.<op>.doStream` step span is now the model-call span.
+
+The GenAI `OpenTelemetry` integration's root span is now named
+`<operation> <modelId>` (for example `invoke_agent gpt-5`), step spans are
+1-indexed, and `ai.values.count` is removed there too.
+
+### Provider-specific breaking changes
+
+- **Perplexity** (catch-up to TS): the provider now uses the Agent API (`/v1/agent`) instead of `/chat/completions`. Every Sonar-era `providerOptions.perplexity` key is removed (`search_recency_filter`, `search_domain_filter`, `web_search_options`, `return_images`, `return_related_questions`, `disable_search`, `reasoning_effort`, `media_response`, `stream_mode`, ...); new keys are `instructions`, `tools`, `models`, `max_steps`, `max_tool_calls`, `previous_response_id`, `store`, `language_preference`, `reasoning.effort` (adds `xhigh`), and `skills`. `PerplexityMetadata.Images` is always nil; `Cost` gains `Currency`, `CacheCreationCost`, `CacheReadCost`, `ToolCallsCost`; new `ToolCalls` map; `Usage.CitationTokens` is always nil; `NumSearchQueries` comes from `tool_calls_details`. Reasoning tokens are now a subset of `outputTokens.total` (previously additive). PDF input is rejected (images only); tools, structured output, and image input are now supported.
+- **MCP stdio**: the child process no longer inherits the whole parent environment — it gets `StdioTransportConfig.Env` plus a small allowlist (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`; Windows equivalents on Windows). Pass API keys and other secrets explicitly through `Env`.
+- **Harness**: `sandboxConfig.OnBootstrap` now actually runs for a caller-owned `SandboxSession` (it previously never ran).
+- **HuggingFace**: the provider is now a port of TS's Responses-API provider. Base URL is `router.huggingface.co/v1`, calling `POST /responses` instead of `/models/{id}`. `EmbeddingModel` and `ImageModel` always return an error (use the HF Inference API directly) — the exported `huggingface.EmbeddingModel` / `NewEmbeddingModel` and `huggingface.ImageModel` / `NewImageModel` types are removed. `Provider()` is now `"huggingface.responses"`. An empty model ID is no longer rejected.
+- **CosineSimilarity**: a zero (or empty) vector now returns `(0, nil)` instead of an error. A length mismatch returns a typed `*errors.InvalidArgumentError`. See [CosineSimilarity reference](../07-reference/ai/cosine-similarity.mdx).
+- **fal**: the default base URL is now `https://fal.run` (was `https://fal.run/fal-ai`, which doubled the path for fully-qualified model IDs). Pass fully-qualified IDs, e.g. `fal-ai/fast-sdxl`, not `fast-sdxl`. New defaults are `fal-ai/fast-sdxl` (image) and `fal-ai/luma-ray` (video).
+- **Middleware / Registry**: `AddToolInputExamplesOptions.Remove` changed from `bool` to `*bool` — `nil` now means remove (the TS default); before, the zero value `false` silently kept the examples. A model ID without the registry separator now returns a typed `*errors.NoSuchModelError`. See [Provider & Model Management](../03-ai-sdk-core/45-provider-management.mdx) and [Middleware Aliases](../07-reference/ai/middleware-aliases.mdx).
+- **OpenAI-compatible streams**: a stream that ends without a `finish_reason` now emits an `InvalidResponseDataError` error chunk and a finish chunk with reason `error`, instead of ending silently. Assistant messages with tool calls: Groq now sends the text content verbatim (empty string, not `null`), and Cohere omits `content` entirely.
+- **Moonshot**: default base URL is now `https://api.moonshot.ai/v1` (was `api.moonshot.cn`); set `Config.BaseURL` for the China endpoint. Provider metadata moved from `providerMetadata.moonshot` to `providerMetadata.moonshotai`; `providerOptions.moonshotai` is now honored alongside `moonshot`.
+- **Baseten**: default base URL is now `https://inference.baseten.co/v1` (was `bridge.baseten.co`), and the chat provider name is `baseten.chat`. With a custom `/sync/v1` `ModelURL`, an empty model ID now defaults to `placeholder` instead of `chat`.
+- **Cerebras**: removed model constants for retired models (`ModelLlama31_8B`, `ModelQwen3_235BA22BInstruct2507`, `ModelQwen3_235BA22BThinking2507`, `ModelZaiGLM4_6`, `ModelZaiGLM4_7`).
+- **DeepSeek**: `SupportsImageInput()` now returns `true` (V4 vision) — image parts are sent instead of being rejected.
+- **Mistral embeddings**: `MaxEmbeddingsPerCall` is 32 (was 2048) and `SupportsParallelCalls` is false; `EmbedMany` sends more, sequential requests.
+- **Together**: `providerOptions.togetherai` is now honored for chat options alongside `together`.
+
+### Every provider request now sends a User-Agent header
 
 **Impact:** low
 
-`ExperimentalFilterActiveTools` remains only as a compatibility alias. Use `FilterActiveTools` in new code.
+v0.4.x deliberately sent no custom `User-Agent` header. v0.5.0 reverses that decision to match the TypeScript SDK: every provider request now carries `ai-sdk/<provider>/<version> runtime/go/<goVersion>` (for example `ai-sdk/openai/0.5.0 runtime/go/go1.25.1`), appended to any `User-Agent` value you already set via `Headers` rather than replacing it. `pkg/ai` call-level functions (`GenerateText`, `GenerateObject`, `GenerateImage`, `Embed`, `EmbedMany`, `Transcribe`, `GenerateSpeech`, `GenerateVideo`, `Batch`, `Evaluate`) additionally tag their own headers with `ai/<version>` before the request reaches the model, matching the TS SDK's `ai` package. `StreamText`, `StreamObject`, and `Rerank` do not add this `ai/<version>` tag, matching TS.
 
-**Before:**
-
-```go
-active := ai.ExperimentalFilterActiveTools(tools, []string{"search"})
-```
-
-**After:**
-
-```go
-active := ai.FilterActiveTools(tools, []string{"search"})
-```
-
-### MaxSteps is deprecated
-
-**Impact:** medium
-
-`MaxSteps` is still accepted as a compatibility shorthand, but `StopWhen` is the stable multi-step control. If both are set, `StopWhen` wins.
-
-**Before:**
-
-```go
-result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-    Model:    model,
-    Prompt:   "Use tools if needed.",
-    Tools:    tools,
-    MaxSteps: intPtr(5),
-})
-```
-
-**After:**
-
-```go
-result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-    Model:    model,
-    Prompt:   "Use tools if needed.",
-    Tools:    tools,
-    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
-})
-```
+If you filter or allowlist outbound headers at a proxy or egress gateway, update that configuration to permit `User-Agent`, since requests that previously had no custom value now do.
 
 ## Provider updates to review
 
-- OpenAI: GPT-5.5 chat IDs, `gpt-image-2`, function-call namespace preservation, image detail forwarding, null assistant content only for tool-call messages, custom headers, and Responses metadata.
-- Anthropic: Claude Opus 4.7, `InferenceGeo`, `TaskBudget`, schema sanitization, and obsolete beta header removal.
-- Google and Vertex: model refresh, per-modality token usage, thought signatures, no-arg tool calls, auth reuse, MaaS auth overrides, and Vertex MaaS Grok models.
-- Bedrock: explicit credential precedence, reasoning block filtering, Opus 4.7 behavior, native structured output, and the Go-specific note that TypeScript lazy `fetch` resolution has no direct runtime equivalent.
-- XAI: non-image file URLs in Responses, cost metadata, ZDR encrypted reasoning, and file uploads.
-- Gateway: reranking, routing sort, quota entity ID, HIPAA filtering, and unknown model type resilience.
-- MCP: secure JSON parsing, server instructions, TypeScript-compatible MCP provider metadata, MCP Apps helpers, negotiated protocol headers, and custom transports.
-- Voyage, Cohere, Mistral, and DeepSeek: new provider or model-feature parity updates.
+The following areas gained substantial new functionality without breaking
+existing calls — review them if they're relevant to your application:
+
+- **OpenAI**: GPT-5.5/GPT-6 family model IDs, `gpt-image-2`, function-call namespace preservation, image detail forwarding, null assistant content only for tool-call messages, custom headers, Responses metadata. **OpenAI Responses**: computer tool, async and programmatic tool calling, GPT-6 reasoning config, prompt cache options, `RawFinishReason` on stream chunks, `serviceTier` on finish, citations/annotations as source parts, MCP approvals answered in earlier turns.
+- **Anthropic**: Claude Opus 4.7, `InferenceGeo`, `TaskBudget`, schema sanitization, obsolete beta header removal, request-level `Compaction` model option, `ForwardContainerIDFromLastStep`, citations as source parts, `container_upload` custom content, corrected finish-reason mapping (`pause_turn`→`stop`, `refusal`→`content-filter`, `model_context_window_exceeded`→`length`).
+- **Google and Vertex**: model refresh, per-modality token usage, thought signatures, no-arg tool calls, auth reuse, MaaS auth overrides, Vertex MaaS Grok models, Interactions API (including managed agents) on Vertex, Chirp 3 HD text-to-speech, Gemini 3.5 Transcribe, Google Vertex video (Veo), realtime lifecycle events.
+- **Bedrock**: explicit credential precedence, reasoning block filtering, Opus 4.7 behavior, native structured output, and the Go-specific note that TypeScript lazy `fetch` resolution has no direct runtime equivalent.
+- **XAI**: non-image file URLs in Responses, cost metadata, ZDR encrypted reasoning, file uploads, `referenceVoiceIds` limit.
+- **Gateway**: reranking, routing sort, quota entity ID, HIPAA filtering, unknown model type resilience.
+- **MCP**: secure JSON parsing, server instructions, TypeScript-compatible MCP provider metadata, MCP Apps helpers, negotiated protocol headers, custom transports, `MCPClient.OnElicitationRequest`, `MCPClient.ListResourceTemplates`, a standing inbound SSE listener for legacy-protocol servers. See [MCP](../03-ai-sdk-core/16-mcp-tools.mdx).
+- **Voyage, Cohere, Mistral, and DeepSeek**: new provider or model-feature parity updates (Voyage AI embedding/rerank is a new provider).
+- **Async video**: `ai.ExperimentalStartVideo` / `ExperimentalGetVideoStatus` for fal, Google, Google Vertex, Replicate, and xAI. See [Video Generation](../03-ai-sdk-core/38-video-generation.mdx).
+- **Speech translation (experimental)**: Google and OpenAI `SpeechTranslationModel`. See [Speech](../03-ai-sdk-core/37-speech.mdx#speech-translation-experimental).
+- **Batch API / Evaluation (experimental)**: `ai.ExperimentalStartBatch` family and `ai.ExperimentalEvaluate`, implemented by Anthropic, OpenAI, and Google.
+- **Code-mode (experimental)**: `pkg/codemode` runs model-written JavaScript in a QuickJS-on-WebAssembly sandbox. See [pkg/codemode reference](../07-reference/ai/code-mode.mdx) and [Known differences](./known-differences.mdx#code-mode-concurrent-approvals-are-not-batched).
+- **Harness**: `pkg/harness` (Go port of `@ai-sdk/harness`) with adapters for Claude Code, Codex, OpenCode, Deep Agents, ACP, Cursor, GitHub Copilot, Grok Build, and a Vercel Sandbox provider. See [pkg/harness/sandbox/vercel reference](../07-reference/ai/harness-sandbox-vercel.mdx).
+- **New providers**: GMI Cloud, Z.AI, MiniMax, TypeSafe AI, Fish Audio, Cartesia, Rev.ai, Hume, Luma.
+- **LlamaIndex**: `pkg/llamaindex.ToUIMessageStream` adapts a LlamaIndex chat-engine delta stream to UI message stream chunks. See [pkg/llamaindex reference](../07-reference/ai/llamaindex.mdx).
+
+## See Also
+
+- [Known differences from the TypeScript AI SDK](./known-differences.mdx)
+- [Migrating from the TypeScript AI SDK](./from-typescript-ai-sdk.mdx)
+- [StreamText reference](../07-reference/ai/stream-text.mdx)

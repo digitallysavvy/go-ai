@@ -6,8 +6,11 @@ import (
 	"os"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 const (
@@ -78,6 +81,55 @@ type Config struct {
 	// Nil defaults to []string{"file-"} to match the TypeScript OpenAI provider;
 	// set an empty non-nil slice to disable this compatibility path.
 	FileIDPrefixes []string
+
+	// SupportsWebSearchSourcesInclude controls whether the Responses API
+	// request automatically includes "web_search_call.action.sources" when a
+	// web_search tool is present. Defaults to true (nil). Set to a pointer to
+	// false for backends that reject that include value (e.g. Amazon Bedrock
+	// Mantle). Callers can also override this per-call via the Responses
+	// provider option "includeWebSearchSources".
+	SupportsWebSearchSourcesInclude *bool
+
+	// ExplicitMessageItemType adds an explicit `"type":"message"` field to
+	// system/developer/user Responses input items. Azure AI Foundry projects
+	// require this.
+	ExplicitMessageItemType bool
+
+	// AllowVideo emits a "video_url" content part for a video/* FileContent
+	// (prompt.ToOpenAIMessagesOptions.AllowVideo). OpenAI's own Chat
+	// Completions API has no video support, so this defaults to false and
+	// must stay false for the openai package's own provider construction.
+	// Set true only by wrapper providers whose TS counterpart is an
+	// OpenAICompatibleChatLanguageModel subclass reusing Go's openai.Provider
+	// as its OpenAI-compatible base (baseten, cerebras, deepinfra).
+	AllowVideo bool
+
+	// UserAgentName selects the `ai-sdk/<name>/VERSION` User-Agent tag this
+	// provider construction adds (version.ProviderUserAgent). Every wrapper
+	// provider whose TS counterpart is its own distinct npm package (and
+	// therefore its own `ai-sdk/<name>` tag) but is implemented in Go by
+	// reusing openai.New as an OpenAI-Chat-Completions-compatible transport
+	// (cerebras, deepinfra, baseten, vercel, amazon-bedrock's Mantle gateway,
+	// google-vertex's MaaS models) must set this to that TS package's name;
+	// leaving it empty here would wrongly tag those providers' requests
+	// "ai-sdk/openai". Defaults to "openai" — unless Headers already carries
+	// a "user-agent" entry (case-insensitive), meaning the caller (e.g. the
+	// azure package, whose own TS package already applies its own
+	// `ai-sdk/azure` tag before reaching here) has already tagged the
+	// request and no further tag should be appended.
+	UserAgentName string
+
+	// TransformRequestBody can rewrite the Chat Completions request body
+	// before it is sent, mirroring TS OpenAICompatibleChatLanguageModel's
+	// `transformRequestBody` config hook (e.g. cerebras-provider.ts's
+	// transformCerebrasRequestBody, which renames max_tokens ->
+	// max_completion_tokens and reasoning_content -> reasoning). It runs
+	// inside buildRequestBodyWithWarnings, before the body is captured for
+	// both the outgoing HTTP request and the optional
+	// provider.StreamRequestBody / types.StepRequest.Body exposure, so
+	// RequestBody() reflects the same post-transform shape TS's
+	// `request: { body }` does.
+	TransformRequestBody func(body map[string]interface{}) map[string]interface{} `json:"-"`
 }
 
 // New creates a new OpenAI provider with the given configuration
@@ -112,9 +164,20 @@ func New(cfg Config) *Provider {
 		headers["OpenAI-Project"] = cfg.Project
 	}
 
+	mergedHeaders := http.MergeHeaders(headers, cfg.Headers)
+	uaName := cfg.UserAgentName
+	if uaName == "" && !providerutils.HasUserAgent(mergedHeaders) {
+		uaName = "openai"
+	}
+	var uaSuffix string
+	if uaName != "" {
+		uaSuffix = version.ProviderUserAgent(uaName)
+	}
+	mergedHeaders = version.WithUserAgentSuffix(mergedHeaders, uaSuffix)
+
 	client := http.NewClient(http.Config{
 		BaseURL:    baseURL,
-		Headers:    http.MergeHeaders(headers, cfg.Headers),
+		Headers:    mergedHeaders,
 		HTTPClient: cfg.HTTPClient,
 	})
 
@@ -137,6 +200,10 @@ func (p *Provider) responsesFileIDPrefixes() []string {
 		return p.config.FileIDPrefixes
 	}
 	return []string{"file-"}
+}
+
+func (p *Provider) explicitMessageItemType() bool {
+	return p.config.ExplicitMessageItemType
 }
 
 func (p *Provider) responsesProviderName() string {
@@ -277,7 +344,7 @@ func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionMod
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
 	// OpenAI doesn't provide reranking models
-	return nil, fmt.Errorf("LOpenAI does not support reranking")
+	return nil, fmt.Errorf("OpenAI does not support reranking")
 }
 
 // ResponsesModel returns a language model that uses the OpenAI Responses API
@@ -301,4 +368,20 @@ func (p *Provider) Files() provider.FilesAPI {
 
 func (p *Provider) Skills() provider.SkillsAPI {
 	return &SkillsAPI{provider: p}
+}
+
+// EvaluationModel returns an experimental evaluation model backed by the
+// OpenAI Responses API language model. Mirrors TypeScript's
+// OpenAIProvider.evaluationModel: `provider.evaluationModel = (modelId) =>
+// new EvaluationLanguageModel({ model: createResponsesModel(modelId),
+// provider: providerName + '.evaluation' })`.
+func (p *Provider) EvaluationModel(modelID string) (provider.EvaluationModel, error) {
+	model, err := p.ResponsesModel(modelID)
+	if err != nil {
+		return nil, err
+	}
+	return ai.NewEvaluationLanguageModel(ai.EvaluationLanguageModelOptions{
+		Model:    model,
+		Provider: p.Name() + ".evaluation",
+	})
 }

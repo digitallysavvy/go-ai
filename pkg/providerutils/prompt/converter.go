@@ -9,6 +9,77 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
+// ToOpenAIMessagesOptions controls provider-specific variations in
+// ToOpenAIMessages behavior. The zero value matches the behavior of every
+// non-OpenAI TS consumer of this wire format (Groq, DeepSeek,
+// @ai-sdk/openai-compatible's Together/Fireworks/Mistral/Ollama/..., Alibaba):
+// they all just JSON.stringify(part.input) with no sanitization.
+type ToOpenAIMessagesOptions struct {
+	// SanitizeReplayedToolCallArguments matches OpenAI's own
+	// serializeToolCallArguments (packages/openai/src/chat/convert-to-openai-chat-messages.ts):
+	// a replayed RawArguments string that doesn't parse to a JSON object is
+	// sent as "{}" rather than forwarded verbatim. This sanitization is
+	// unique to OpenAI's chat-completions conversion in the TS SDK -- every
+	// other provider that shares this OpenAI-shaped wire format
+	// (Groq/DeepSeek/openai-compatible/Alibaba) does not do this, so callers
+	// other than OpenAI's and Azure's own chat-completions models (Azure's
+	// `chat()` factory wraps OpenAIChatLanguageModel in TS) must leave this
+	// false.
+	SanitizeReplayedToolCallArguments bool
+
+	// IncludePromptCacheBreakpoint forwards a per-part
+	// providerOptions.openai.promptCacheBreakpoint value as a
+	// "prompt_cache_breakpoint" field on the emitted wire part (b2b1bb9,
+	// convert-to-openai-chat-messages.ts's getPromptCacheBreakpoint). This is
+	// unique to OpenAI's own chat-completions conversion in the TS SDK (the
+	// shared @ai-sdk/openai-compatible base used by Together/Fireworks/
+	// Mistral/Ollama/etc. has no such option) -- callers other than OpenAI's
+	// and Azure's chat-completions models must leave this false.
+	IncludePromptCacheBreakpoint bool
+
+	// AssistantToolCallContentMode selects what "content" an assistant
+	// message with tool calls emits, matching each TS converter's own
+	// ternary exactly -- they differ per provider:
+	//   - AssistantToolCallContentNull (default, "") matches OpenAI's own
+	//     chat converter, @ai-sdk/openai-compatible's converter (Together/
+	//     Fireworks/gmicloud/zai/...), and Alibaba's: `text || null` -- an
+	//     empty accumulated text becomes a literal JSON null; non-empty text
+	//     is forwarded as-is.
+	//   - AssistantToolCallContentText matches Groq's `content: text`
+	//     (convert-to-groq-chat-messages.ts): always the accumulated text
+	//     verbatim, including an empty string -- content is never null.
+	//   - AssistantToolCallContentOmit matches Cohere's
+	//     `toolCalls.length > 0 ? undefined : text`
+	//     (convert-to-cohere-chat-prompt.ts): the "content" key is left out
+	//     of the message entirely whenever any tool call is present, even if
+	//     text was also emitted.
+	AssistantToolCallContentMode AssistantToolCallContentMode
+
+	// AllowVideo emits a "video_url" content part for a video/* FileContent
+	// (7dd9ec320c, convert-to-openai-compatible-chat-messages.ts's `topLevel
+	// === 'video'` branch), matching @ai-sdk/openai-compatible's converter --
+	// used by providers that wrap OpenAICompatibleChatLanguageModel directly
+	// (Together, Fireworks, and Go's gmicloud/zai/ollama). OpenAI's own
+	// Chat Completions converter (convert-to-openai-chat-messages.ts) has no
+	// video case at all (it throws UnsupportedFunctionalityError for any
+	// media type besides image/audio/PDF), so OpenAI's and Azure's chat
+	// models must leave this false. Providers with their own local TS
+	// converter that only ever handles images (Groq, Cohere, Alibaba) must
+	// also leave this false.
+	AllowVideo bool
+}
+
+// AssistantToolCallContentMode is documented on
+// ToOpenAIMessagesOptions.AssistantToolCallContentMode.
+type AssistantToolCallContentMode string
+
+const (
+	// AssistantToolCallContentNull is the zero value / default.
+	AssistantToolCallContentNull AssistantToolCallContentMode = ""
+	AssistantToolCallContentText AssistantToolCallContentMode = "text"
+	AssistantToolCallContentOmit AssistantToolCallContentMode = "omit"
+)
+
 // ToOpenAIMessages converts unified messages to OpenAI Chat Completions format.
 //
 // Key invariants maintained:
@@ -16,7 +87,15 @@ import (
 //     array, which OpenAI requires to be present before any "tool" role messages.
 //   - Tool role messages emit "tool_call_id" as a top-level field and their
 //     result as a plain string in "content" — the format OpenAI expects.
-func ToOpenAIMessages(messages []types.Message) []map[string]interface{} {
+//
+// opts is variadic so existing call sites are unaffected; at most the first
+// element is used.
+func ToOpenAIMessages(messages []types.Message, opts ...ToOpenAIMessagesOptions) []map[string]interface{} {
+	var opt ToOpenAIMessagesOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+	messages = MergeConsecutiveToolMessages(messages)
 	result := make([]map[string]interface{}, 0, len(messages))
 
 	for _, msg := range messages {
@@ -26,13 +105,48 @@ func ToOpenAIMessages(messages []types.Message) []map[string]interface{} {
 		if msg.Role == types.RoleTool {
 			for _, part := range msg.Content {
 				if p, ok := part.(types.ToolResultContent); ok {
-					result = append(result, map[string]interface{}{
+					toolMsg := map[string]interface{}{
 						"role":         "tool",
 						"tool_call_id": p.ToolCallID,
-						"content":      openAIToolResultText(p),
-					})
+					}
+					text := openAIToolResultText(p)
+					if opt.IncludePromptCacheBreakpoint {
+						if bp, ok := openAIToolResultPromptCacheBreakpoint(p); ok {
+							toolMsg["content"] = []map[string]interface{}{
+								{"type": "text", "text": text, "prompt_cache_breakpoint": bp},
+							}
+							result = append(result, toolMsg)
+							continue
+						}
+					}
+					toolMsg["content"] = text
+					result = append(result, toolMsg)
 				}
 			}
+			continue
+		}
+
+		// ── System role messages ────────────────────────────────────────────────
+		// TS convertToOpenAIChatMessages's system/developer case: system message
+		// content is a plain string (no per-part providerOptions in TS's core
+		// types), so the promptCacheBreakpoint carrier is the MESSAGE's own
+		// providerOptions field (types.Message.ProviderOptions), not a content
+		// part's -- unlike user/assistant/tool messages. Only forwarded when
+		// IncludePromptCacheBreakpoint is set (OpenAI/Azure chat only); other
+		// ToOpenAIMessages callers keep emitting a plain string via the generic
+		// path below, matching @ai-sdk/openai-compatible's system case, which has
+		// no such option.
+		if opt.IncludePromptCacheBreakpoint && msg.Role == types.RoleSystem {
+			text := assistantTextContent(msg.Content)
+			systemMsg := map[string]interface{}{"role": string(msg.Role)}
+			if bp, ok := openAIPromptCacheBreakpoint(msg.ProviderOptions); ok {
+				systemMsg["content"] = []map[string]interface{}{
+					{"type": "text", "text": text, "prompt_cache_breakpoint": bp},
+				}
+			} else {
+				systemMsg["content"] = text
+			}
+			result = append(result, systemMsg)
 			continue
 		}
 
@@ -44,13 +158,30 @@ func ToOpenAIMessages(messages []types.Message) []map[string]interface{} {
 		// Assistant messages that made tool calls must carry the tool_calls array
 		// so that the subsequent tool role messages are considered valid by OpenAI.
 		if msg.Role == types.RoleAssistant && len(msg.ToolCalls) > 0 {
-			toolCalls := openAIToolCalls(msg.ToolCalls)
+			toolCalls := openAIToolCalls(msg.ToolCalls, opt.SanitizeReplayedToolCallArguments)
 			openAIMsg["tool_calls"] = toolCalls
+			if opt.IncludePromptCacheBreakpoint {
+				if textParts, hasBreakpoint := assistantTextPartsWithBreakpoint(msg.Content); hasBreakpoint {
+					openAIMsg["content"] = textParts
+					if msg.Name != "" {
+						openAIMsg["name"] = msg.Name
+					}
+					result = append(result, openAIMsg)
+					continue
+				}
+			}
 			text := assistantTextContent(msg.Content)
-			if text == "" {
-				openAIMsg["content"] = nil
-			} else {
+			switch opt.AssistantToolCallContentMode {
+			case AssistantToolCallContentOmit:
+				// Leave "content" unset entirely (Cohere).
+			case AssistantToolCallContentText:
 				openAIMsg["content"] = text
+			default:
+				if text == "" {
+					openAIMsg["content"] = nil
+				} else {
+					openAIMsg["content"] = text
+				}
 			}
 			if msg.Name != "" {
 				openAIMsg["name"] = msg.Name
@@ -59,8 +190,19 @@ func ToOpenAIMessages(messages []types.Message) []map[string]interface{} {
 			continue
 		}
 
-		// Handle content parts
-		if len(msg.Content) == 1 && msg.Content[0].ContentType() == "text" {
+		// Handle content parts. The single-text fast path is skipped when
+		// IncludePromptCacheBreakpoint is set and that lone part carries a
+		// breakpoint -- TS convertToOpenAIChatMessages only takes the plain
+		// string shortcut when getPromptCacheBreakpoint(content[0].providerOptions) == null.
+		useSingleTextShortcut := len(msg.Content) == 1 && msg.Content[0].ContentType() == "text"
+		if useSingleTextShortcut && opt.IncludePromptCacheBreakpoint {
+			if textContent, ok := msg.Content[0].(types.TextContent); ok {
+				if _, has := openAIPromptCacheBreakpoint(textContent.ProviderOptions); has {
+					useSingleTextShortcut = false
+				}
+			}
+		}
+		if useSingleTextShortcut {
 			if textContent, ok := msg.Content[0].(types.TextContent); ok {
 				openAIMsg["content"] = textContent.Text
 			}
@@ -69,10 +211,16 @@ func ToOpenAIMessages(messages []types.Message) []map[string]interface{} {
 			for _, part := range msg.Content {
 				switch p := part.(type) {
 				case types.TextContent:
-					contentParts = append(contentParts, map[string]interface{}{
+					textPart := map[string]interface{}{
 						"type": "text",
 						"text": p.Text,
-					})
+					}
+					if opt.IncludePromptCacheBreakpoint {
+						if bp, ok := openAIPromptCacheBreakpoint(p.ProviderOptions); ok {
+							textPart["prompt_cache_breakpoint"] = bp
+						}
+					}
+					contentParts = append(contentParts, textPart)
 				case types.ImageContent:
 					var imageData string
 					if p.URL != "" {
@@ -87,12 +235,24 @@ func ToOpenAIMessages(messages []types.Message) []map[string]interface{} {
 					if detail := openAIImageDetail(p.ProviderOptions); detail != "" {
 						imageURL["detail"] = detail
 					}
-					contentParts = append(contentParts, map[string]interface{}{
+					imagePart := map[string]interface{}{
 						"type":      "image_url",
 						"image_url": imageURL,
-					})
+					}
+					if opt.IncludePromptCacheBreakpoint {
+						if bp, ok := openAIPromptCacheBreakpoint(p.ProviderOptions); ok {
+							imagePart["prompt_cache_breakpoint"] = bp
+						}
+					}
+					contentParts = append(contentParts, imagePart)
 				case types.FileContent:
-					contentParts = append(contentParts, openAIFileContentPart(p))
+					filePart := openAIFileContentPart(p, opt.AllowVideo)
+					if opt.IncludePromptCacheBreakpoint {
+						if bp, ok := openAIPromptCacheBreakpoint(p.ProviderOptions); ok {
+							filePart["prompt_cache_breakpoint"] = bp
+						}
+					}
+					contentParts = append(contentParts, filePart)
 				case types.CustomContent:
 					// CustomContent in assistant messages may carry OpenAI-specific
 					// provider options. Forward the openai-keyed options verbatim if
@@ -125,11 +285,24 @@ func ToOpenAIMessages(messages []types.Message) []map[string]interface{} {
 	return result
 }
 
-func openAIToolCalls(toolCalls []types.ToolCall) []map[string]interface{} {
+func openAIToolCalls(toolCalls []types.ToolCall, sanitizeReplayedArguments bool) []map[string]interface{} {
 	result := make([]map[string]interface{}, 0, len(toolCalls))
 	for _, tc := range toolCalls {
 		arguments := tc.RawArguments
-		if arguments == "" {
+		if arguments != "" {
+			// 2523403 (OpenAI only -- see ToOpenAIMessagesOptions): a replayed
+			// RawArguments string that doesn't parse to a JSON object (e.g. an
+			// array, string, number, or invalid JSON) is sent as "{}" instead
+			// of forwarded verbatim.
+			if sanitizeReplayedArguments {
+				var probe interface{}
+				if err := json.Unmarshal([]byte(arguments), &probe); err != nil {
+					arguments = "{}"
+				} else if _, isObject := probe.(map[string]interface{}); !isObject {
+					arguments = "{}"
+				}
+			}
+		} else {
 			args := tc.Arguments
 			if args == nil {
 				args = map[string]interface{}{}
@@ -159,393 +332,129 @@ func assistantTextContent(content []types.ContentPart) string {
 	return b.String()
 }
 
-// openAIToolResultText extracts a plain string from a ToolResultContent for
-// use as the "content" field of an OpenAI tool role message.
-func openAIToolResultText(p types.ToolResultContent) string {
-	if p.Output != nil && p.Output.Type == types.ToolResultOutputContent {
-		for _, block := range p.Output.Content {
-			if textBlock, ok := block.(types.TextContentBlock); ok {
-				return textBlock.Text
-			}
-		}
-		return fmt.Sprintf("[complex output from %s]", p.ToolName)
-	}
-	return fmt.Sprintf("%v", p.Result)
-}
-
-// ToAnthropicMessages converts unified messages to Anthropic format
-func ToAnthropicMessages(messages []types.Message) []map[string]interface{} {
-	result := make([]map[string]interface{}, 0, len(messages))
-
-	for _, msg := range messages {
-		// Skip system messages (handled separately in Anthropic)
-		if msg.Role == types.RoleSystem {
-			continue
-		}
-
-		anthropicMsg := map[string]interface{}{
-			"role": string(msg.Role),
-		}
-
-		// Handle content
-		if len(msg.Content) == 1 && msg.Content[0].ContentType() == "text" {
-			// Simple text content
-			if textContent, ok := msg.Content[0].(types.TextContent); ok {
-				anthropicMsg["content"] = textContent.Text
-			}
-		} else {
-			// Multi-part content
-			contentParts := make([]map[string]interface{}, 0, len(msg.Content))
-			for _, part := range msg.Content {
-				switch p := part.(type) {
-				case types.TextContent:
-					contentParts = append(contentParts, map[string]interface{}{
-						"type": "text",
-						"text": p.Text,
-					})
-				case types.ReasoningContent:
-					// Emit thinking or redacted_thinking blocks for Anthropic.
-					// A Signature is required to re-send a thinking block; RedactedData
-					// identifies a redacted_thinking block. If neither is set the block
-					// cannot be safely re-sent and is silently skipped (same behaviour
-					// as sendReasoning=false).
-					if p.RedactedData != "" {
-						contentParts = append(contentParts, map[string]interface{}{
-							"type": "redacted_thinking",
-							"data": p.RedactedData,
-						})
-					} else if p.Signature != "" {
-						contentParts = append(contentParts, map[string]interface{}{
-							"type":      "thinking",
-							"thinking":  p.Text,
-							"signature": p.Signature,
-						})
-					}
-					// Neither field set: skip silently — block cannot be safely re-sent.
-				case types.ImageContent:
-					// Anthropic requires base64 encoded images
-					imageData := base64.StdEncoding.EncodeToString(p.Image)
-					contentParts = append(contentParts, map[string]interface{}{
-						"type": "image",
-						"source": map[string]interface{}{
-							"type":       "base64",
-							"media_type": p.MimeType,
-							"data":       imageData,
-						},
-					})
-				case types.FileContent:
-					contentParts = append(contentParts, anthropicFileContentPart(p))
-				case types.CustomContent:
-					// CustomContent in assistant messages may carry Anthropic-specific
-					// provider options that the API understands (e.g., future block types).
-					// Forward the anthropic-keyed options verbatim if present; otherwise
-					// skip — custom parts are typically provider metadata (citations, etc.)
-					// that should not be re-sent without explicit configuration.
-					if anthropicOpts, ok := p.ProviderOptions["anthropic"].(map[string]interface{}); ok {
-						block := map[string]interface{}{}
-						for k, v := range anthropicOpts {
-							block[k] = v
-						}
-						contentParts = append(contentParts, block)
-					}
-				case types.ReasoningFileContent:
-					// Reasoning files generated by the model are not re-sent to Anthropic.
-				case types.ToolResultContent:
-					if toolResult, ok := anthropicProviderExecutedToolResult(p); ok {
-						if cacheControl := anthropicToolResultCacheControl(p); cacheControl != nil {
-							toolResult["cache_control"] = cacheControl
-						}
-						contentParts = append(contentParts, toolResult)
-						continue
-					}
-					// Check if using new Output style with content blocks
-					if p.Output != nil && p.Output.Type == types.ToolResultOutputContent {
-						// Build content array from blocks
-						contentArray := []map[string]interface{}{}
-
-						for _, block := range p.Output.Content {
-							switch b := block.(type) {
-							case types.TextContentBlock:
-								contentArray = append(contentArray, map[string]interface{}{
-									"type": "text",
-									"text": b.Text,
-								})
-
-							case types.ImageContentBlock:
-								imageData := base64.StdEncoding.EncodeToString(b.Data)
-								contentArray = append(contentArray, map[string]interface{}{
-									"type": "image",
-									"source": map[string]interface{}{
-										"type":       "base64",
-										"media_type": b.MediaType,
-										"data":       imageData,
-									},
-								})
-
-							case types.FileContentBlock:
-								contentArray = append(contentArray, anthropicFileContentBlockPart(b))
-
-							case types.CustomContentBlock:
-								// Check for Anthropic-specific content (e.g., tool-reference)
-								if anthropicOpts, ok := b.ProviderOptions["anthropic"].(map[string]interface{}); ok {
-									if anthropicOpts["type"] == "tool-reference" {
-										contentArray = append(contentArray, map[string]interface{}{
-											"type":      "tool_reference",
-											"tool_name": anthropicOpts["toolName"],
-										})
-									}
-								}
-								// Other providers' custom content is silently ignored for Anthropic
-							}
-						}
-
-						toolResult := map[string]interface{}{
-							"type":        "tool_result",
-							"tool_use_id": p.ToolCallID,
-							"content":     contentArray,
-							"is_error":    p.Error != "",
-						}
-						if cacheControl := anthropicToolResultCacheControl(p); cacheControl != nil {
-							toolResult["cache_control"] = cacheControl
-						}
-						contentParts = append(contentParts, toolResult)
-					} else {
-						// Fall back to old style (backward compatible)
-						toolResult := map[string]interface{}{
-							"type":        "tool_result",
-							"tool_use_id": p.ToolCallID,
-							"content":     fmt.Sprintf("%v", p.Result),
-							"is_error":    p.Error != "",
-						}
-						if cacheControl := anthropicToolResultCacheControl(p); cacheControl != nil {
-							toolResult["cache_control"] = cacheControl
-						}
-						contentParts = append(contentParts, toolResult)
-					}
-				}
-			}
-			anthropicMsg["content"] = contentParts
-		}
-
-		result = append(result, anthropicMsg)
-	}
-
-	return result
-}
-
-func anthropicToolResultCacheControl(p types.ToolResultContent) interface{} {
-	if cacheControl := anthropicCacheControlFromOptions(p.ProviderOptions); cacheControl != nil {
-		return cacheControl
-	}
-	if p.Output != nil {
-		if cacheControl := anthropicCacheControlFromOptions(p.Output.ProviderOptions); cacheControl != nil {
-			return cacheControl
-		}
-		if p.Output.Type == types.ToolResultOutputContent && len(p.Output.Content) > 0 {
-			if cacheControl := anthropicCacheControlFromBlock(p.Output.Content[0]); cacheControl != nil {
-				return cacheControl
-			}
-		}
-	}
-	return nil
-}
-
-func anthropicProviderExecutedToolResult(p types.ToolResultContent) (map[string]interface{}, bool) {
-	if !p.ProviderExecuted &&
-		p.ToolName != "anthropic.web_search_20250305" &&
-		p.ToolName != "anthropic.web_search_20260209" &&
-		p.ToolName != "anthropic.web_fetch_20250910" &&
-		p.ToolName != "anthropic.web_fetch_20260209" {
-		return nil, false
-	}
-	switch p.ToolName {
-	case "web_search", "anthropic.web_search_20250305", "anthropic.web_search_20260209":
-		return anthropicWebSearchToolResult(p), true
-	case "web_fetch", "anthropic.web_fetch_20250910", "anthropic.web_fetch_20260209":
-		return anthropicWebFetchToolResult(p), true
-	default:
-		return nil, false
-	}
-}
-
-func anthropicWebSearchToolResult(p types.ToolResultContent) map[string]interface{} {
-	var content interface{}
-	if errorCode, ok := anthropicToolResultErrorCode(p); ok {
-		content = map[string]interface{}{
-			"type":       "web_search_tool_result_error",
-			"error_code": errorCode,
-		}
-	} else {
-		content = anthropicWebSearchResultContent(anthropicToolResultValue(p))
-	}
-	return map[string]interface{}{
-		"type":        "web_search_tool_result",
-		"tool_use_id": p.ToolCallID,
-		"content":     content,
-	}
-}
-
-func anthropicWebFetchToolResult(p types.ToolResultContent) map[string]interface{} {
-	var content interface{}
-	if errorCode, ok := anthropicToolResultErrorCode(p); ok {
-		content = map[string]interface{}{
-			"type":       "web_fetch_tool_result_error",
-			"error_code": errorCode,
-		}
-	} else {
-		content = anthropicWebFetchResultContent(anthropicToolResultValue(p))
-	}
-	return map[string]interface{}{
-		"type":        "web_fetch_tool_result",
-		"tool_use_id": p.ToolCallID,
-		"content":     content,
-	}
-}
-
-func anthropicToolResultValue(p types.ToolResultContent) interface{} {
-	if p.Output != nil {
-		return p.Output.Value
-	}
-	return p.Result
-}
-
-func anthropicToolResultErrorCode(p types.ToolResultContent) (string, bool) {
-	if p.Output != nil && (p.Output.Type == types.ToolResultOutputErrorJSON || p.Output.Type == types.ToolResultOutputError) {
-		if code := errorCodeFromValue(p.Output.Value); code != "" {
-			return code, true
-		}
-		return "unavailable", true
-	}
-	if p.Error != "" {
-		return "unavailable", true
-	}
-	return "", false
-}
-
-func errorCodeFromValue(value interface{}) string {
-	if m, ok := value.(map[string]interface{}); ok {
-		if code, ok := m["errorCode"].(string); ok {
-			return code
-		}
-		if code, ok := m["error_code"].(string); ok {
-			return code
-		}
-	}
-	return ""
-}
-
-func anthropicWebSearchResultContent(value interface{}) []map[string]interface{} {
-	items := interfaceSlice(value)
-	out := make([]map[string]interface{}, 0, len(items))
-	for _, item := range items {
-		m, ok := item.(map[string]interface{})
+// assistantTextPartsWithBreakpoint builds the per-part "text" array TS emits
+// for an assistant message's content when any text part carries a
+// providerOptions.openai.promptCacheBreakpoint (convert-to-openai-chat-messages.ts's
+// assistant case: `content: hasPromptCacheBreakpoint ? textParts : ...`).
+// It always includes every text part -- not just the one(s) with a
+// breakpoint -- once any single part triggers the array form. The second
+// return value reports whether any part actually had a breakpoint.
+func assistantTextPartsWithBreakpoint(content []types.ContentPart) ([]map[string]interface{}, bool) {
+	textParts := make([]map[string]interface{}, 0, len(content))
+	hasBreakpoint := false
+	for _, part := range content {
+		text, ok := part.(types.TextContent)
 		if !ok {
 			continue
 		}
-		result := map[string]interface{}{}
-		copyIfPresent(result, "type", m, "type")
-		copyIfPresent(result, "url", m, "url")
-		copyIfPresent(result, "title", m, "title")
-		if v, ok := m["pageAge"]; ok {
-			result["page_age"] = v
-		} else {
-			copyIfPresent(result, "page_age", m, "page_age")
+		textPart := map[string]interface{}{
+			"type": "text",
+			"text": text.Text,
 		}
-		if v, ok := m["encryptedContent"]; ok {
-			result["encrypted_content"] = v
-		} else {
-			copyIfPresent(result, "encrypted_content", m, "encrypted_content")
+		if bp, ok := openAIPromptCacheBreakpoint(text.ProviderOptions); ok {
+			textPart["prompt_cache_breakpoint"] = bp
+			hasBreakpoint = true
 		}
-		out = append(out, result)
+		textParts = append(textParts, textPart)
 	}
-	return out
+	if !hasBreakpoint {
+		return nil, false
+	}
+	return textParts, true
 }
 
-func anthropicWebFetchResultContent(value interface{}) map[string]interface{} {
-	m, ok := value.(map[string]interface{})
+// openAIPromptCacheBreakpoint extracts providerOptions.openai.promptCacheBreakpoint
+// verbatim (TS getPromptCacheBreakpoint, convert-to-openai-chat-messages.ts).
+// The value is forwarded as-is -- TS types it as `{ mode: 'explicit' }` but
+// never inspects its shape, only whether it is present.
+func openAIPromptCacheBreakpoint(providerOptions map[string]interface{}) (interface{}, bool) {
+	if providerOptions == nil {
+		return nil, false
+	}
+	openaiOpts, ok := providerOptions["openai"].(map[string]interface{})
 	if !ok {
-		return map[string]interface{}{}
+		return nil, false
 	}
-	result := map[string]interface{}{}
-	copyIfPresent(result, "type", m, "type")
-	copyIfPresent(result, "url", m, "url")
-	if v, ok := m["retrievedAt"]; ok {
-		result["retrieved_at"] = v
-	} else {
-		copyIfPresent(result, "retrieved_at", m, "retrieved_at")
+	bp, ok := openaiOpts["promptCacheBreakpoint"]
+	if !ok || bp == nil {
+		return nil, false
 	}
-	if content, ok := m["content"].(map[string]interface{}); ok {
-		doc := map[string]interface{}{}
-		copyIfPresent(doc, "type", content, "type")
-		copyIfPresent(doc, "title", content, "title")
-		copyIfPresent(doc, "citations", content, "citations")
-		if source, ok := content["source"].(map[string]interface{}); ok {
-			src := map[string]interface{}{}
-			copyIfPresent(src, "type", source, "type")
-			if v, ok := source["mediaType"]; ok {
-				src["media_type"] = v
-			} else {
-				copyIfPresent(src, "media_type", source, "media_type")
-			}
-			copyIfPresent(src, "data", source, "data")
-			doc["source"] = src
-		}
-		result["content"] = doc
-	}
-	return result
+	return bp, true
 }
 
-func interfaceSlice(value interface{}) []interface{} {
-	switch v := value.(type) {
-	case []interface{}:
-		return v
-	case []map[string]interface{}:
-		out := make([]interface{}, len(v))
-		for i := range v {
-			out[i] = v[i]
-		}
-		return out
-	default:
-		return nil
-	}
-}
-
-func copyIfPresent(dst map[string]interface{}, dstKey string, src map[string]interface{}, srcKey string) {
-	if v, ok := src[srcKey]; ok {
-		dst[dstKey] = v
-	}
-}
-
-func anthropicCacheControlFromBlock(block types.ToolResultContentBlock) interface{} {
+// toolResultContentBlockProviderOptions extracts ProviderOptions from a tool
+// result content block, if the concrete block type carries one.
+func toolResultContentBlockProviderOptions(block types.ToolResultContentBlock) map[string]interface{} {
 	switch b := block.(type) {
 	case types.TextContentBlock:
-		return anthropicCacheControlFromOptions(b.ProviderOptions)
+		return b.ProviderOptions
 	case types.ImageContentBlock:
-		return anthropicCacheControlFromOptions(b.ProviderOptions)
+		return b.ProviderOptions
 	case types.FileContentBlock:
-		return anthropicCacheControlFromOptions(b.ProviderOptions)
+		return b.ProviderOptions
 	case types.CustomContentBlock:
-		return anthropicCacheControlFromOptions(b.ProviderOptions)
+		return b.ProviderOptions
 	default:
 		return nil
 	}
 }
 
-func anthropicCacheControlFromOptions(options map[string]interface{}) interface{} {
-	if options == nil {
-		return nil
+// openAIToolResultPromptCacheBreakpoint mirrors TS's tool-response
+// promptCacheBreakpoint resolution (convert-to-openai-chat-messages.ts):
+// for a "content" output, the first content-block breakpoint found wins;
+// otherwise the output's own providerOptions; falling back to the tool
+// response part's own providerOptions.
+func openAIToolResultPromptCacheBreakpoint(p types.ToolResultContent) (interface{}, bool) {
+	if p.Output != nil {
+		if p.Output.Type == types.ToolResultOutputContent {
+			for _, block := range p.Output.Content {
+				if bp, ok := openAIPromptCacheBreakpoint(toolResultContentBlockProviderOptions(block)); ok {
+					return bp, true
+				}
+			}
+		} else if bp, ok := openAIPromptCacheBreakpoint(p.Output.ProviderOptions); ok {
+			return bp, true
+		}
 	}
-	anthropicOpts, ok := options["anthropic"].(map[string]interface{})
-	if !ok {
-		return nil
+	return openAIPromptCacheBreakpoint(p.ProviderOptions)
+}
+
+// openAIToolResultText extracts a plain string from a ToolResultContent for
+// use as the "content" field of an OpenAI tool role message. Mirrors TS's
+// tool-response contentValue switch (convert-to-openai-chat-messages.ts, and
+// identically @ai-sdk/openai-compatible's convert-to-openai-compatible-chat-
+// messages.ts, so this applies to every ToOpenAIMessages caller): text and
+// error-text forward the value verbatim, execution-denied uses the denial
+// reason (or the default message), and content/json/error-json all
+// JSON.stringify the output's value. "content" is JSON.stringify of the whole
+// block array, not a first-text-block extraction (follow-up C, b2e53c3).
+// resolveToolOutput (shared with the Anthropic converter) also handles the
+// legacy Result/Error fields (P1-1 7259126).
+func openAIToolResultText(p types.ToolResultContent) string {
+	out := resolveToolOutput(p)
+	switch out.kind {
+	case "text", "error-text":
+		return stringValue(out.value)
+	case "execution-denied":
+		if out.reason != "" {
+			return out.reason
+		}
+		return "Tool call execution denied."
+	case "content":
+		// Mirror ToolResultOutput.MarshalJSON's Value/Content precedence so a
+		// round-tripped (Value set) and a natively built (Content set) output
+		// produce the same wire text.
+		var value interface{} = out.content
+		if out.value != nil {
+			value = out.value
+		}
+		if value == nil {
+			value = []types.ToolResultContentBlock{}
+		}
+		return jsonStringify(value)
+	default: // json, error-json
+		return jsonStringify(out.value)
 	}
-	if cacheControl, ok := anthropicOpts["cache_control"]; ok {
-		return cacheControl
-	}
-	if cacheControl, ok := anthropicOpts["cacheControl"]; ok {
-		return cacheControl
-	}
-	return nil
 }
 
 // ExtractSystemMessage extracts the system message from a list of messages
@@ -561,309 +470,7 @@ func ExtractSystemMessage(messages []types.Message) string {
 	return ""
 }
 
-// ToGoogleMessages converts unified messages to Google (Gemini) format.
-//
-// supportsFunctionResponseParts controls whether tool results with image/file
-// content are sent using the Gemini 3+ multimodal functionResponse.parts[]
-// format (true) or the legacy fallback for older models (false).
-func ToGoogleMessages(messages []types.Message, supportsFunctionResponseParts bool) []map[string]interface{} {
-	result := make([]map[string]interface{}, 0, len(messages))
-
-	for _, msg := range messages {
-		switch msg.Role {
-
-		case types.RoleTool:
-			// Tool results go as role "user" with functionResponse parts.
-			// Each ToolResultContent in the message becomes one functionResponse entry.
-			parts := make([]map[string]interface{}, 0, len(msg.Content))
-			for _, part := range msg.Content {
-				if p, ok := part.(types.ToolResultContent); ok {
-					googleAppendFunctionResponse(&parts, p, supportsFunctionResponseParts)
-				}
-			}
-			if len(parts) > 0 {
-				result = append(result, map[string]interface{}{
-					"role":  "user",
-					"parts": parts,
-				})
-			}
-
-		case types.RoleAssistant:
-			// Assistant messages use role "model".
-			parts := make([]map[string]interface{}, 0)
-			for _, part := range msg.Content {
-				switch p := part.(type) {
-				case types.TextContent:
-					textPart := map[string]interface{}{"text": p.Text}
-					// Restore thoughtSignature from ProviderMetadata when present so
-					// Google can verify the reasoning chain on the next turn.
-					// Check "google" (Google provider) and "vertex" (Vertex provider) keys.
-					if len(p.ProviderMetadata) > 0 {
-						var meta map[string]interface{}
-						if json.Unmarshal(p.ProviderMetadata, &meta) == nil {
-							for _, key := range []string{"google", "vertex", "googleVertex"} {
-								if provMeta, ok := meta[key].(map[string]interface{}); ok {
-									if sig, ok := provMeta["thoughtSignature"].(string); ok && sig != "" {
-										textPart["thoughtSignature"] = sig
-										break
-									}
-								}
-							}
-						}
-					}
-					parts = append(parts, textPart)
-				case types.ReasoningContent:
-					// Emit thought parts with the cryptographic signature Google uses to
-					// verify the reasoning chain was not modified across turns.
-					// Only emit when there is text or a signature — empty blocks are skipped.
-					if p.Text != "" || p.Signature != "" {
-						thoughtPart := map[string]interface{}{
-							"thought": true,
-							"text":    p.Text,
-						}
-						if p.Signature != "" {
-							thoughtPart["thoughtSignature"] = p.Signature
-						}
-						parts = append(parts, thoughtPart)
-					}
-				case types.ImageContent:
-					imageData := base64.StdEncoding.EncodeToString(p.Image)
-					parts = append(parts, map[string]interface{}{
-						"inlineData": map[string]interface{}{
-							"mimeType": p.MimeType,
-							"data":     imageData,
-						},
-					})
-				case types.FileContent:
-					parts = append(parts, googleFileContentPart(p))
-				case types.CustomContent:
-					if googleOpts, ok := p.ProviderOptions["google"].(map[string]interface{}); ok {
-						block := map[string]interface{}{}
-						for k, v := range googleOpts {
-							block[k] = v
-						}
-						parts = append(parts, block)
-					}
-				case types.ReasoningFileContent:
-					// Reasoning files are not re-sent to Google.
-				}
-			}
-			// Emit functionCall parts for any tool calls the model made.
-			// Include ThoughtSignature at part level when present so Google can
-			// verify the sealed reasoning chain in multi-turn conversations.
-			for _, tc := range msg.ToolCalls {
-				functionCall := map[string]interface{}{
-					"name": tc.ToolName,
-					"args": tc.Arguments,
-				}
-				if tc.ID != "" {
-					functionCall["id"] = tc.ID
-				}
-				fcPart := map[string]interface{}{
-					"functionCall": functionCall,
-				}
-				if tc.ThoughtSignature != "" {
-					fcPart["thoughtSignature"] = tc.ThoughtSignature
-				}
-				parts = append(parts, fcPart)
-			}
-			result = append(result, map[string]interface{}{
-				"role":  "model",
-				"parts": parts,
-			})
-
-		default:
-			// User (and any other) role → "user".
-			parts := make([]map[string]interface{}, 0, len(msg.Content))
-			for _, part := range msg.Content {
-				switch p := part.(type) {
-				case types.TextContent:
-					parts = append(parts, map[string]interface{}{"text": p.Text})
-				case types.ImageContent:
-					// When a URL is provided use fileData (Cloud Storage / GCS URI).
-					// Otherwise send as base64-encoded inlineData.
-					if p.URL != "" {
-						mimeType := p.MimeType
-						if mimeType == "image/*" {
-							mimeType = "image/jpeg"
-						}
-						parts = append(parts, map[string]interface{}{
-							"fileData": map[string]interface{}{
-								"mimeType": mimeType,
-								"fileUri":  p.URL,
-							},
-						})
-					} else {
-						imageData := base64.StdEncoding.EncodeToString(p.Image)
-						parts = append(parts, map[string]interface{}{
-							"inlineData": map[string]interface{}{
-								"mimeType": p.MimeType,
-								"data":     imageData,
-							},
-						})
-					}
-				case types.FileContent:
-					parts = append(parts, googleFileContentPart(p))
-				case types.CustomContent:
-					if googleOpts, ok := p.ProviderOptions["google"].(map[string]interface{}); ok {
-						block := map[string]interface{}{}
-						for k, v := range googleOpts {
-							block[k] = v
-						}
-						parts = append(parts, block)
-					}
-				case types.ReasoningFileContent:
-					// Reasoning files are not re-sent to Google.
-				}
-			}
-			result = append(result, map[string]interface{}{
-				"role":  "user",
-				"parts": parts,
-			})
-		}
-	}
-
-	return result
-}
-
-// googleAppendFunctionResponse appends a functionResponse part (or parts) for
-// a single ToolResultContent to the given parts slice.
-func googleAppendFunctionResponse(parts *[]map[string]interface{}, p types.ToolResultContent, supportsFunctionResponseParts bool) {
-	if p.Output != nil && p.Output.Type == types.ToolResultOutputContent {
-		if supportsFunctionResponseParts {
-			googleAppendToolResultParts(parts, p.ToolName, p.Output.Content)
-		} else {
-			googleAppendLegacyToolResultParts(parts, p.ToolName, p.Output.Content)
-		}
-		return
-	}
-
-	// Simple text/JSON result or error output.
-	content := fmt.Sprintf("%v", p.Result)
-	if p.Output != nil {
-		switch p.Output.Type {
-		case types.ToolResultOutputError, types.ToolResultOutputErrorText, types.ToolResultOutputErrorJSON:
-			if p.Output.Value != nil {
-				content = fmt.Sprintf("%v", p.Output.Value)
-			} else {
-				content = "Tool execution failed."
-			}
-		case types.ToolResultOutputExecutionDenied:
-			// The tool was blocked by the user approval gate before it ran.
-			// Match TS SDK exactly: use reason directly, or default fallback.
-			if p.Output.Reason != "" {
-				content = p.Output.Reason
-			} else {
-				content = "Tool execution denied."
-			}
-		default:
-			if p.Output.Value != nil {
-				content = fmt.Sprintf("%v", p.Output.Value)
-			}
-		}
-	}
-	functionResponse := map[string]interface{}{
-		"name": p.ToolName,
-		"response": map[string]interface{}{
-			"name":    p.ToolName,
-			"content": content,
-		},
-	}
-	if p.ToolCallID != "" {
-		functionResponse["id"] = p.ToolCallID
-	}
-	*parts = append(*parts, map[string]interface{}{"functionResponse": functionResponse})
-}
-
-// googleAppendToolResultParts implements the Gemini 3+ multimodal
-// functionResponse format: text goes into response.content, binary data
-// (images/files) go into functionResponse.parts[] as inlineData.
-func googleAppendToolResultParts(parts *[]map[string]interface{}, toolName string, blocks []types.ToolResultContentBlock) {
-	var textParts []string
-	var responseParts []map[string]interface{}
-
-	for _, block := range blocks {
-		switch b := block.(type) {
-		case types.TextContentBlock:
-			textParts = append(textParts, b.Text)
-		case types.ImageContentBlock:
-			responseParts = append(responseParts, map[string]interface{}{
-				"inlineData": map[string]interface{}{
-					"mimeType": b.MediaType,
-					"data":     base64.StdEncoding.EncodeToString(b.Data),
-				},
-			})
-		case types.FileContentBlock:
-			responseParts = append(responseParts, googleFileContentBlockPart(b))
-		default:
-			// Unknown block type — serialize as JSON text.
-			if j, err := json.Marshal(block); err == nil {
-				textParts = append(textParts, string(j))
-			}
-		}
-	}
-
-	responseContent := "Tool executed successfully."
-	if len(textParts) > 0 {
-		responseContent = strings.Join(textParts, "\n")
-	}
-
-	fr := map[string]interface{}{
-		"name": toolName,
-		"response": map[string]interface{}{
-			"name":    toolName,
-			"content": responseContent,
-		},
-	}
-	if len(responseParts) > 0 {
-		fr["parts"] = responseParts
-	}
-	*parts = append(*parts, map[string]interface{}{
-		"functionResponse": fr,
-	})
-}
-
-// googleAppendLegacyToolResultParts implements the pre-Gemini-3 fallback:
-// text becomes a plain functionResponse; images become separate top-level
-// inlineData parts accompanied by a descriptive text part.
-func googleAppendLegacyToolResultParts(parts *[]map[string]interface{}, toolName string, blocks []types.ToolResultContentBlock) {
-	for _, block := range blocks {
-		switch b := block.(type) {
-		case types.TextContentBlock:
-			*parts = append(*parts, map[string]interface{}{
-				"functionResponse": map[string]interface{}{
-					"name": toolName,
-					"response": map[string]interface{}{
-						"name":    toolName,
-						"content": b.Text,
-					},
-				},
-			})
-		case types.ImageContentBlock:
-			*parts = append(*parts,
-				map[string]interface{}{
-					"inlineData": map[string]interface{}{
-						"mimeType": b.MediaType,
-						"data":     base64.StdEncoding.EncodeToString(b.Data),
-					},
-				},
-				map[string]interface{}{
-					"text": "Tool executed successfully and returned this image as a response",
-				},
-			)
-		case types.FileContentBlock:
-			*parts = append(*parts, googleFileContentBlockPart(b))
-		default:
-			// Unknown types are serialized to JSON and sent as text.
-			j, _ := json.Marshal(block)
-			*parts = append(*parts, map[string]interface{}{
-				"text": string(j),
-			})
-		}
-	}
-}
-
-func openAIFileContentPart(file types.FileContent) map[string]interface{} {
+func openAIFileContentPart(file types.FileContent, allowVideo bool) map[string]interface{} {
 	mediaType := firstNonEmpty(file.MediaType, file.MimeType, file.FileData.MediaType)
 	if strings.HasPrefix(mediaType, "image/") || mediaType == "image" {
 		imageURL := file.URL
@@ -879,6 +486,45 @@ func openAIFileContentPart(file types.FileContent) map[string]interface{} {
 		return map[string]interface{}{
 			"type":      "image_url",
 			"image_url": image,
+		}
+	}
+
+	// Video content parts (7dd9ec320c, openai-compatible's video_url branch):
+	// only for callers that opt in via AllowVideo (see
+	// ToOpenAIMessagesOptions.AllowVideo doc comment) -- OpenAI's own chat
+	// converter has no video support at all.
+	if allowVideo && (strings.HasPrefix(mediaType, "video/") || mediaType == "video") {
+		videoURL := file.URL
+		if videoURL == "" && len(file.Data) > 0 {
+			videoURL = fmt.Sprintf("data:%s;base64,%s", mediaType, base64.StdEncoding.EncodeToString(file.Data))
+		}
+		return map[string]interface{}{
+			"type": "video_url",
+			"video_url": map[string]interface{}{
+				"url": videoURL,
+			},
+		}
+	}
+
+	// Audio content parts use OpenAI's dedicated input_audio wire shape
+	// rather than the generic "file" shape (TS convert-to-openai-chat-messages.ts):
+	// only inline data is supported (audio URLs aren't), and only wav/mp3.
+	if len(file.Data) > 0 {
+		var format string
+		switch mediaType {
+		case "audio/wav":
+			format = "wav"
+		case "audio/mp3", "audio/mpeg":
+			format = "mp3"
+		}
+		if format != "" {
+			return map[string]interface{}{
+				"type": "input_audio",
+				"input_audio": map[string]interface{}{
+					"data":   base64.StdEncoding.EncodeToString(file.Data),
+					"format": format,
+				},
+			}
 		}
 	}
 
@@ -920,123 +566,6 @@ func openAIImageDetail(providerOptions map[string]interface{}) string {
 		return detail
 	}
 	return ""
-}
-
-func anthropicFileContentPart(file types.FileContent) map[string]interface{} {
-	mediaType := firstNonEmpty(file.MediaType, file.MimeType, file.FileData.MediaType)
-	if anthropicContainerUpload(file.ProviderOptions) {
-		fileID := firstNonEmpty(file.Reference, file.FileData.Reference["anthropic"])
-		if fileID != "" {
-			return map[string]interface{}{"type": "container_upload", "file_id": fileID}
-		}
-	}
-	if file.Reference == "" && file.FileData.Reference != nil {
-		file.Reference = file.FileData.Reference["anthropic"]
-	}
-	if file.URL == "" && file.FileData.URL != "" {
-		file.URL = file.FileData.URL
-	}
-	if file.Text == "" && file.FileData.Text != "" {
-		file.Text = file.FileData.Text
-	}
-	if len(file.Data) == 0 && len(file.FileData.Data) > 0 {
-		file.Data = file.FileData.Data
-	}
-	if strings.HasPrefix(mediaType, "image/") || mediaType == "image" {
-		source := map[string]interface{}{"type": "base64", "media_type": mediaType}
-		if file.URL != "" {
-			source = map[string]interface{}{"type": "url", "url": file.URL}
-		} else {
-			source["data"] = base64.StdEncoding.EncodeToString(file.Data)
-		}
-		return map[string]interface{}{"type": "image", "source": source}
-	}
-
-	source := map[string]interface{}{"media_type": mediaType}
-	switch {
-	case file.URL != "":
-		source["type"] = "url"
-		source["url"] = file.URL
-	case file.Reference != "":
-		source["type"] = "file"
-		source["file_id"] = file.Reference
-	case file.Text != "":
-		source["type"] = "text"
-		source["data"] = file.Text
-	default:
-		source["type"] = "base64"
-		source["data"] = base64.StdEncoding.EncodeToString(file.Data)
-	}
-	return map[string]interface{}{"type": "document", "source": source}
-}
-
-func anthropicFileContentBlockPart(block types.FileContentBlock) map[string]interface{} {
-	return anthropicFileContentPart(types.FileContent{
-		FileData:        block.FileData,
-		Data:            block.Data,
-		MediaType:       block.MediaType,
-		MimeType:        block.MediaType,
-		Filename:        block.Filename,
-		URL:             block.URL,
-		Reference:       block.Reference,
-		Text:            block.Text,
-		ProviderOptions: block.ProviderOptions,
-	})
-}
-
-func anthropicContainerUpload(providerOptions map[string]interface{}) bool {
-	if providerOptions == nil {
-		return false
-	}
-	raw, ok := providerOptions["anthropic"].(map[string]interface{})
-	if !ok {
-		return false
-	}
-	v, _ := raw["containerUpload"].(bool)
-	return v
-}
-
-func googleFileContentPart(file types.FileContent) map[string]interface{} {
-	mediaType := firstNonEmpty(file.MediaType, file.MimeType, file.FileData.MediaType)
-	if file.URL != "" {
-		return map[string]interface{}{
-			"fileData": map[string]interface{}{
-				"mimeType": mediaType,
-				"fileUri":  file.URL,
-			},
-		}
-	}
-	if file.Reference != "" {
-		return map[string]interface{}{
-			"fileData": map[string]interface{}{
-				"mimeType": mediaType,
-				"fileUri":  file.Reference,
-			},
-		}
-	}
-	if file.Text != "" {
-		return map[string]interface{}{"text": file.Text}
-	}
-	return map[string]interface{}{
-		"inlineData": map[string]interface{}{
-			"mimeType": mediaType,
-			"data":     base64.StdEncoding.EncodeToString(file.Data),
-		},
-	}
-}
-
-func googleFileContentBlockPart(block types.FileContentBlock) map[string]interface{} {
-	return googleFileContentPart(types.FileContent{
-		FileData:        block.FileData,
-		Data:            block.Data,
-		MediaType:       block.MediaType,
-		MimeType:        block.MediaType,
-		Filename:        block.Filename,
-		URL:             block.URL,
-		Reference:       block.Reference,
-		Text:            block.Text,
-		ProviderOptions: block.ProviderOptions,
-	})
 }
 
 // SimpleTextToMessages converts a simple text prompt to a message list

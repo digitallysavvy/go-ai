@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 )
 
 // MediaType represents a detected media type
@@ -21,16 +22,56 @@ type MediaType struct {
 	Extension string
 }
 
-// DetectMediaType detects the media type from data
+// DetectMediaType detects the media type from data. It first tries strict
+// byte-signature matching (image/audio/video/document formats, including
+// AVIF, HEIC and ADTS AAC which net/http does not recognize), then falls back
+// to net/http.DetectContentType for everything else.
 func DetectMediaType(data []byte) MediaType {
+	if mimeType, ok := DetectMediaTypeSignature(data, ""); ok {
+		return MediaType{
+			MimeType:  mimeType,
+			Category:  categoryFromMimeType(mimeType),
+			Extension: extensionFromMimeType(mimeType),
+		}
+	}
+
 	// Use http.DetectContentType which uses the first 512 bytes
 	mimeType := http.DetectContentType(data)
+	if mimeType == "image/bmp" && looksLikeText(data) {
+		// net/http's BMP sniffer only checks the 2-byte "BM" prefix, so plain
+		// text beginning with those letters (e.g. "BM this is a message")
+		// otherwise misclassifies as image/bmp. Our stricter signature check
+		// above already ruled out a real BMP header (it also validates the
+		// reserved header bytes), so treat it as text instead.
+		mimeType = "text/plain; charset=utf-8"
+	}
 
 	return MediaType{
 		MimeType:  mimeType,
 		Category:  categoryFromMimeType(mimeType),
 		Extension: extensionFromMimeType(mimeType),
 	}
+}
+
+// looksLikeText reports whether data is plausibly readable text: valid UTF-8
+// with no control bytes other than common whitespace.
+func looksLikeText(data []byte) bool {
+	sample := data
+	if len(sample) > 512 {
+		sample = sample[:512]
+	}
+	if len(sample) == 0 || !utf8.Valid(sample) {
+		return false
+	}
+	for _, b := range sample {
+		switch {
+		case b == '\t' || b == '\n' || b == '\r':
+			continue
+		case b < 0x20 || b == 0x7f:
+			return false
+		}
+	}
+	return true
 }
 
 // DetectMediaTypeFromFilename detects media type from filename
@@ -82,24 +123,24 @@ func categoryFromMimeType(mimeType string) string {
 func extensionFromMimeType(mimeType string) string {
 	// Common mappings
 	extensions := map[string]string{
-		"image/jpeg":      ".jpg",
-		"image/png":       ".png",
-		"image/gif":       ".gif",
-		"image/webp":      ".webp",
-		"image/svg+xml":   ".svg",
-		"audio/mpeg":      ".mp3",
-		"audio/wav":       ".wav",
-		"audio/ogg":       ".ogg",
-		"audio/webm":      ".webm",
-		"video/mp4":       ".mp4",
-		"video/webm":      ".webm",
-		"video/ogg":       ".ogv",
-		"text/plain":      ".txt",
-		"text/html":       ".html",
-		"text/css":        ".css",
-		"text/javascript": ".js",
+		"image/jpeg":       ".jpg",
+		"image/png":        ".png",
+		"image/gif":        ".gif",
+		"image/webp":       ".webp",
+		"image/svg+xml":    ".svg",
+		"audio/mpeg":       ".mp3",
+		"audio/wav":        ".wav",
+		"audio/ogg":        ".ogg",
+		"audio/webm":       ".webm",
+		"video/mp4":        ".mp4",
+		"video/webm":       ".webm",
+		"video/ogg":        ".ogv",
+		"text/plain":       ".txt",
+		"text/html":        ".html",
+		"text/css":         ".css",
+		"text/javascript":  ".js",
 		"application/json": ".json",
-		"application/pdf": ".pdf",
+		"application/pdf":  ".pdf",
 	}
 
 	if ext, ok := extensions[mimeType]; ok {

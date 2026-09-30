@@ -87,19 +87,44 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	o11y := GetO11yHeaders(ctx)
 	AddO11yHeaders(headers, o11y)
 
-	// Make API request
-	var result types.GenerateResult
+	// Make API request. Warnings are decoded separately as raw JSON (TS parity:
+	// gateway-language-model.ts doGenerate spreads `responseBody.warnings ?? []`)
+	// so that an absent field defaults to an empty slice and a malformed one
+	// does not fail the whole decode.
+	var wire struct {
+		types.GenerateResult
+		Warnings json.RawMessage `json:"warnings,omitempty"`
+	}
 	err = m.provider.client.DoJSON(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/language-model",
 		Body:    reqBody,
 		Headers: headers,
-	}, &result)
+	}, &wire)
 	if err != nil {
 		return nil, m.handleErrorWithContext(ctx, err)
 	}
 
+	result := wire.GenerateResult
+	result.Warnings = parseGatewayWarnings(wire.Warnings)
+
 	return &result, nil
+}
+
+// parseGatewayWarnings tolerantly decodes a gateway response's "warnings"
+// field. TS parity: `responseBody.warnings ?? []` always yields an array;
+// Go additionally falls back to an empty (non-nil) slice when the field is
+// present but does not parse as []types.Warning, instead of failing the
+// entire response decode.
+func parseGatewayWarnings(raw json.RawMessage) []types.Warning {
+	if len(raw) == 0 || string(raw) == "null" {
+		return []types.Warning{}
+	}
+	var warnings []types.Warning
+	if err := json.Unmarshal(raw, &warnings); err != nil || warnings == nil {
+		return []types.Warning{}
+	}
+	return warnings
 }
 
 // DoStream performs streaming text generation
@@ -136,6 +161,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		parser:           stream,
 		body:             httpResp.Body,
 		includeRawChunks: opts.IncludeRawChunks,
+		requestBody:      reqBody,
 	}, nil
 }
 
@@ -145,6 +171,28 @@ type gatewayTextStream struct {
 	body             io.ReadCloser
 	err              error
 	includeRawChunks bool
+
+	// requestBody is the raw request body this stream was opened with,
+	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
+	// "stream request body field").
+	requestBody interface{}
+}
+
+// RequestBody implements provider.StreamRequestBody, exposing the raw
+// request body that was sent to open this stream.
+func (s *gatewayTextStream) RequestBody() interface{} { return s.requestBody }
+
+// gatewayStreamErrorPayload is the wire shape of a Gateway `error` stream
+// part's `error` field: a ProviderStreamError forwarded verbatim from the
+// origin provider (already normalized server-side), mirroring
+// pkg/provider/errors.StreamProviderError's fields.
+type gatewayStreamErrorPayload struct {
+	Message     string          `json:"message"`
+	Type        string          `json:"type"`
+	Code        json.RawMessage `json:"code"`
+	StatusCode  *int            `json:"statusCode"`
+	IsRetryable *bool           `json:"isRetryable"`
+	Data        interface{}     `json:"data"`
 }
 
 // gatewayStreamChunk represents a chunk from the Gateway streaming API
@@ -178,8 +226,16 @@ type gatewayStreamChunk struct {
 		TotalTokens      *int64 `json:"totalTokens,omitempty"`
 	} `json:"usage,omitempty"`
 
-	// For error chunks
-	Error string `json:"error,omitempty"`
+	// For error chunks. The Gateway server is itself built on this SDK and
+	// forwards a stream part shaped exactly like the origin provider's own
+	// normalized error (a ProviderStreamError: message/type/code/statusCode/
+	// isRetryable/data), not a bare string — mirrors TS
+	// gateway-language-model.ts's transform(), which passes `streamPart`
+	// through verbatim with no re-parsing. P1-1c part 2: this used to be
+	// typed `string`, which fails to unmarshal against a real error object
+	// and aborts the whole chunk with a generic parse error before ever
+	// reaching `case "error"` below.
+	Error *gatewayStreamErrorPayload `json:"error,omitempty"`
 
 	Warnings []types.Warning `json:"warnings,omitempty"`
 
@@ -202,11 +258,6 @@ type gatewayStreamChunk struct {
 	ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
 
 	raw map[string]interface{}
-}
-
-// Read implements io.Reader
-func (s *gatewayTextStream) Read(p []byte) (n int, err error) {
-	return s.body.Read(p)
 }
 
 // Close implements io.Closer
@@ -432,10 +483,40 @@ func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.S
 		return s.Next()
 
 	case "error":
+		if chunk.Error == nil {
+			return &provider.StreamChunk{Type: provider.ChunkTypeError}, fmt.Errorf("stream error")
+		}
+		var code interface{}
+		if len(chunk.Error.Code) > 0 {
+			_ = json.Unmarshal(chunk.Error.Code, &code)
+		}
+		// TS parity: the Gateway's `ProviderStreamError` marker (a JS
+		// Symbol.for tag set by the origin provider's createProviderStreamError)
+		// never survives the JSON round trip over SSE, so on the client
+		// normalizeStreamProviderError's isProviderStreamError(error) check is
+		// always false for a Gateway-forwarded error. That routes it through
+		// the "not already marked" branch, which sets `data` to the *entire*
+		// raw error object (message/type/code/statusCode/isRetryable/data all
+		// included), not just its nested `data` field — see
+		// normalize-stream-provider-error.ts's `data: providerStreamError ?
+		// error.data : error` and the "preserves provider type and code as
+		// separate discriminators" test. Use the raw decoded map for parity
+		// rather than chunk.Error.Data alone.
+		var rawErr interface{} = chunk.Error
+		if m, ok := chunk.raw["error"]; ok {
+			rawErr = m
+		}
+		// The Gateway forwards an already-normalized ProviderStreamError
+		// verbatim (see the Error field doc above), so its own
+		// statusCode/isRetryable are used as-is (P1-1c part 2) — no
+		// discriminator/inference needed, unlike a raw provider frame.
+		streamErr := providererrors.NewStreamProviderError(chunk.Error.Message, "gateway", chunk.Error.Type, code, chunk.Error.StatusCode, chunk.Error.IsRetryable, rawErr)
 		return &provider.StreamChunk{
 			Type:        provider.ChunkTypeError,
-			AbortReason: chunk.Error,
-		}, fmt.Errorf("stream error: %s", chunk.Error)
+			Text:        chunk.Error.Message,
+			AbortReason: chunk.Error.Message,
+			Err:         streamErr,
+		}, fmt.Errorf("stream error: %s", chunk.Error.Message)
 
 	default:
 		// Skip unknown chunk types and get next chunk
@@ -631,9 +712,6 @@ func (p *Provider) configGatewayProviderOptions() map[string]interface{} {
 	out := map[string]interface{}{}
 	if p.config.DisallowPromptTraining {
 		out["disallowPromptTraining"] = true
-	}
-	if p.config.HIPAACompliant {
-		out["hipaaCompliant"] = true
 	}
 	if p.config.QuotaEntityID != "" {
 		out["quotaEntityId"] = p.config.QuotaEntityID

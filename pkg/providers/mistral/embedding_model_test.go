@@ -20,7 +20,8 @@ func TestMistralEmbeddingModelMetadataAndLimits(t *testing.T) {
 	if m.SpecificationVersion() != "v3" || m.Provider() != "mistral" || m.ModelID() != "mistral-embed" {
 		t.Fatalf("metadata mismatch: spec=%s provider=%s model=%s", m.SpecificationVersion(), m.Provider(), m.ModelID())
 	}
-	if m.MaxEmbeddingsPerCall() != 2048 || !m.SupportsParallelCalls() {
+	// TS MistralEmbeddingModel: maxEmbeddingsPerCall = 32, supportsParallelCalls = false.
+	if m.MaxEmbeddingsPerCall() != 32 || m.SupportsParallelCalls() {
 		t.Fatalf("limits mismatch: max=%d parallel=%v", m.MaxEmbeddingsPerCall(), m.SupportsParallelCalls())
 	}
 }
@@ -54,6 +55,10 @@ func TestMistralEmbeddingModelDoEmbedAndDoEmbedMany(t *testing.T) {
 	if seenBody["model"] != "mistral-embed" || !ok || len(inputs) != 1 || inputs[0] != "hello" {
 		t.Fatalf("request body mismatch: %#v", seenBody)
 	}
+	// TS MistralEmbeddingModel.doEmbed always sends encoding_format: 'float'.
+	if seenBody["encoding_format"] != "float" {
+		t.Fatalf("encoding_format = %#v, want \"float\"", seenBody["encoding_format"])
+	}
 	if len(one.Embedding) != 2 || one.Usage.Tokens != 7 || one.Usage.InputTokens != 7 || one.Usage.TotalTokens != 9 || one.Response.Headers["X-Request-Id"] != "req_1" {
 		t.Fatalf("DoEmbed result mismatch: %#v", one)
 	}
@@ -64,6 +69,60 @@ func TestMistralEmbeddingModelDoEmbedAndDoEmbedMany(t *testing.T) {
 	}
 	if len(many.Embeddings) != 2 || many.Usage.Tokens != 7 || many.Usage.InputTokens != 7 || many.Usage.TotalTokens != 9 || many.Responses[0].Headers["X-Request-Id"] != "req_1" {
 		t.Fatalf("DoEmbedMany result mismatch: %#v", many)
+	}
+}
+
+// TestMistralEmbeddingModelProviderOptions guards dcb7965:
+// providerOptions.mistral.{metadata,outputDimension,outputDtype} must be
+// forwarded on the wire as metadata/output_dimension/output_dtype.
+func TestMistralEmbeddingModelProviderOptions(t *testing.T) {
+	var seenBody map[string]interface{}
+	p := newMistralProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
+		_ = json.NewDecoder(r.Body).Decode(&seenBody)
+		return mistralJSONResponse(`{"object":"list","data":[{"index":0,"embedding":[0.1,0.2]}],"usage":{"prompt_tokens":3,"total_tokens":4}}`), nil
+	})
+	m := NewEmbeddingModel(p, "mistral-embed")
+
+	_, err := m.DoEmbedMany(context.Background(), []string{"a"}, &provider.EmbedModelOptions{
+		ProviderOptions: map[string]interface{}{
+			"mistral": map[string]interface{}{
+				"metadata":        map[string]interface{}{"purpose": "test"},
+				"outputDimension": float64(256),
+				"outputDtype":     "int8",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoEmbedMany error = %v", err)
+	}
+
+	metadata, ok := seenBody["metadata"].(map[string]interface{})
+	if !ok || metadata["purpose"] != "test" {
+		t.Fatalf("metadata = %#v, want {purpose: test}", seenBody["metadata"])
+	}
+	if got := seenBody["output_dimension"]; got != float64(256) {
+		t.Fatalf("output_dimension = %v, want 256", got)
+	}
+	if got := seenBody["output_dtype"]; got != "int8" {
+		t.Fatalf("output_dtype = %v, want int8", got)
+	}
+}
+
+func TestMistralEmbeddingModelProviderOptionsOmittedWhenUnset(t *testing.T) {
+	var seenBody map[string]interface{}
+	p := newMistralProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
+		_ = json.NewDecoder(r.Body).Decode(&seenBody)
+		return mistralJSONResponse(`{"object":"list","data":[{"index":0,"embedding":[0.1,0.2]}],"usage":{"prompt_tokens":3,"total_tokens":4}}`), nil
+	})
+	m := NewEmbeddingModel(p, "mistral-embed")
+
+	if _, err := m.DoEmbedMany(context.Background(), []string{"a"}, nil); err != nil {
+		t.Fatalf("DoEmbedMany error = %v", err)
+	}
+	for _, key := range []string{"metadata", "output_dimension", "output_dtype"} {
+		if _, ok := seenBody[key]; ok {
+			t.Fatalf("%s should be omitted when unset, got %v", key, seenBody[key])
+		}
 	}
 }
 

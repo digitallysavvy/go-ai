@@ -1,9 +1,8 @@
 package registry
 
 import (
-	"fmt"
-
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // CustomProviderOptions configures an idiomatic Go custom provider. Each model
@@ -18,6 +17,11 @@ type CustomProviderOptions struct {
 	TranscriptionModels map[string]provider.TranscriptionModel
 	RerankingModels     map[string]provider.RerankingModel
 	VideoModels         map[string]provider.VideoModelV3
+
+	// EvaluationModels maps model ID -> evaluation model. Evaluation is
+	// experimental and not part of the stable Provider contract, mirroring
+	// TypeScript's customProvider({ evaluationModels }).
+	EvaluationModels map[string]provider.EvaluationModel
 
 	FilesFactory  func() provider.FilesAPI
 	SkillsFactory func() provider.SkillsAPI
@@ -134,6 +138,21 @@ func (p *customProvider) VideoModel(modelID string) (provider.VideoModelV3, erro
 	return nil, noSuchModel(modelID, "videoModel")
 }
 
+// EvaluationModel implements provider.EvaluationModelProvider, resolving
+// evaluation models registered in EvaluationModels before falling back to a
+// Fallback provider that also implements it. Evaluation is experimental and
+// not part of the stable Provider contract, mirroring TypeScript's
+// customProvider({ evaluationModels }).
+func (p *customProvider) EvaluationModel(modelID string) (provider.EvaluationModel, error) {
+	if model := p.opts.EvaluationModels[modelID]; model != nil {
+		return model, nil
+	}
+	if fallback, ok := p.opts.Fallback.(provider.EvaluationModelProvider); ok {
+		return fallback.EvaluationModel(modelID)
+	}
+	return nil, noSuchModel(modelID, "evaluationModel")
+}
+
 type customProviderWithFiles struct {
 	*customProvider
 }
@@ -183,5 +202,5 @@ func resolveCustomSkills(p *customProvider) provider.SkillsAPI {
 }
 
 func noSuchModel(modelID, modelType string) error {
-	return fmt.Errorf("no such %s: %s", modelType, modelID)
+	return providererrors.NewNoSuchModelError(modelID, modelType)
 }

@@ -466,7 +466,7 @@ func toolCallContentInput(t ToolCallContent) interface{} {
 }
 
 // CustomContent is a provider-specific content block with no standard mapping.
-// Kind follows the format "{provider}-{provider-type}" (e.g., "xai-citation").
+// Kind follows the format "{provider}.{provider-type}" (e.g., "xai.citation").
 //
 // This type serves dual duty matching both TS SDK roles:
 //   - Output (LanguageModelV4CustomContent): ProviderMetadata carries raw JSON
@@ -475,7 +475,7 @@ func toolCallContentInput(t ToolCallContent) interface{} {
 //     carries provider-specific options to forward to the provider.
 type CustomContent struct {
 	// Kind identifies the provider-specific content type.
-	// Format: "{provider}-{provider-type}"
+	// Format: "{provider}.{provider-type}" (e.g. "openai.compaction").
 	Kind string `json:"kind"`
 
 	// ProviderOptions holds provider-specific options for the input (prompt) direction.
@@ -665,6 +665,17 @@ type ToolApprovalRequestContent struct {
 	ToolCall    ToolCall `json:"toolCall,omitempty"`
 	Signature   string   `json:"signature,omitempty"`
 	IsAutomatic bool     `json:"isAutomatic,omitempty"`
+
+	// Reason explains why approval is required (user-approval status with a
+	// reason). It is shown to the approver; approved/denied reasons live on
+	// ToolApprovalResponseContent.
+	Reason string `json:"reason,omitempty"`
+
+	// InputSchemaInput is the tool input as it was before schema parsing and
+	// input refinement, present only when it differs from the approved input.
+	// Approval revalidation re-validates and re-refines this value and
+	// requires the result to equal the approved input.
+	InputSchemaInput interface{} `json:"inputSchemaInput,omitempty"`
 }
 
 func (t ToolApprovalRequestContent) ContentType() string {
@@ -675,18 +686,22 @@ func (t ToolApprovalRequestContent) ContentType() string {
 // provider replay. Public result content still includes ToolCall when present.
 func (t ToolApprovalRequestContent) MarshalJSON() ([]byte, error) {
 	type toolApprovalRequestContentJSON struct {
-		Type        string           `json:"type"`
-		ApprovalID  string           `json:"approvalId"`
-		ToolCallID  string           `json:"toolCallId,omitempty"`
-		ToolCall    *ToolCallContent `json:"toolCall,omitempty"`
-		Signature   string           `json:"signature,omitempty"`
-		IsAutomatic bool             `json:"isAutomatic,omitempty"`
+		Type             string           `json:"type"`
+		ApprovalID       string           `json:"approvalId"`
+		ToolCallID       string           `json:"toolCallId,omitempty"`
+		ToolCall         *ToolCallContent `json:"toolCall,omitempty"`
+		Reason           string           `json:"reason,omitempty"`
+		Signature        string           `json:"signature,omitempty"`
+		IsAutomatic      bool             `json:"isAutomatic,omitempty"`
+		InputSchemaInput interface{}      `json:"inputSchemaInput,omitempty"`
 	}
 	out := toolApprovalRequestContentJSON{
-		Type:        t.ContentType(),
-		ApprovalID:  t.ApprovalID,
-		Signature:   t.Signature,
-		IsAutomatic: t.IsAutomatic,
+		Type:             t.ContentType(),
+		ApprovalID:       t.ApprovalID,
+		Reason:           t.Reason,
+		Signature:        t.Signature,
+		IsAutomatic:      t.IsAutomatic,
+		InputSchemaInput: t.InputSchemaInput,
 	}
 	if !toolCallIsZero(t.ToolCall) {
 		toolCall := toolCallContentFromToolCall(t.ToolCall)

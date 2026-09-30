@@ -84,7 +84,7 @@ func (tts *OpenAITTS) Synthesize(ctx context.Context, text string, options TTSOp
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("LAPI error (%d): %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body))
 	}
 
 	// Read audio data

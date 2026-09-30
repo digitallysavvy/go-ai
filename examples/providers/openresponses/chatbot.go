@@ -52,8 +52,7 @@ func main() {
 	for {
 		// Get user input
 		fmt.Print("You: ")
-		userInput, err := reader.ReadString('
-')
+		userInput, err := reader.ReadString('\n')
 		if err != nil {
 			log.Printf("Error reading input: %v", err)
 			break
@@ -94,10 +93,7 @@ func main() {
 		}
 
 		// Print assistant response
-		fmt.Printf("
-Assistant: %s
-
-", result.Text)
+		fmt.Printf("\nAssistant: %s\n\n", result.Text)
 
 		// Add assistant message to conversation
 		conversation = append(conversation, types.Message{
@@ -108,15 +104,10 @@ Assistant: %s
 		})
 
 		// Print token usage
-		fmt.Printf("(Tokens: %d)
-", result.Usage.GetTotalTokens())
+		fmt.Printf("(Tokens: %d)\n", result.Usage.GetTotalTokens())
 	}
 
 	// Print conversation summary
-	fmt.Printf("
-
-=== Conversation Summary ===
-")
-	fmt.Printf("Total turns: %d
-", len(conversation)/2)
+	fmt.Printf("\n\n=== Conversation Summary ===\n")
+	fmt.Printf("Total turns: %d\n", len(conversation)/2)
 }

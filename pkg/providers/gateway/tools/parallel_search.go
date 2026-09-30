@@ -93,17 +93,17 @@ func NewParallelSearch(config ParallelSearchConfig) ParallelSearchTool {
 		"properties": map[string]interface{}{
 			"include_domains": map[string]interface{}{
 				"type":        "array",
-				"description": "List of domains to include in search results.",
+				"description": "Limit results to these domains. Use plain domain names only — e.g. example.com or sub.example.gov, or a bare extension like .edu. Do not include a scheme, path, or port (e.g. not https://example.com/page).",
 				"items":       map[string]interface{}{"type": "string"},
 			},
 			"exclude_domains": map[string]interface{}{
 				"type":        "array",
-				"description": "List of domains to exclude from search results.",
+				"description": "Exclude results from these domains. Use plain domain names only — e.g. example.com or sub.example.gov, or a bare extension like .edu. Do not include a scheme, path, or port (e.g. not https://example.com/page).",
 				"items":       map[string]interface{}{"type": "string"},
 			},
 			"after_date": map[string]interface{}{
 				"type":        "string",
-				"description": "Only include results published after this date (ISO 8601 format).",
+				"description": "Only include results published after this date. Use an ISO 8601 calendar date formatted YYYY-MM-DD (e.g. 2025-01-01); do not include a time.",
 			},
 		},
 	}

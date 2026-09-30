@@ -1,0 +1,112 @@
+---
+title: Luma Provider
+description: Setup and usage guide for Luma AI image generation with Go-AI SDK
+---
+
+# Luma Provider
+
+Luma AI provides asynchronous image generation (Photon models) with
+reference-image-guided generation — image, style, character, and
+modify-image reference types. Luma has no language, embedding, speech,
+transcription, reranking, or video model in this SDK; only `ImageModel` is
+supported.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/luma"
+)
+```
+
+### Configuration
+
+```go
+provider := luma.New(luma.Config{
+    APIKey: os.Getenv("LUMA_API_KEY"),
+})
+
+model, err := provider.ImageModel(luma.ModelPhoton1)
+```
+
+`luma.Config` also accepts `BaseURL` (default `https://api.lumalabs.ai`)
+and `Headers`. `APIKey` falls back to `LUMA_API_KEY` when left empty. An
+empty model ID defaults to `luma.ModelPhoton1`.
+
+### Get API Key
+
+```bash
+export LUMA_API_KEY=...
+```
+
+## Basic Usage
+
+`DoGenerate` submits an async generation, polls its status, and downloads
+the resulting image — the whole lifecycle happens inside a single
+`ai.GenerateImage` call:
+
+```go
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  model,
+    Prompt: "A neon-lit cyberpunk alley in the rain",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+os.WriteFile("output.png", result.Images[0].Data, 0644)
+```
+
+Model IDs: `luma.ModelPhoton1` (`photon-1`, default), `luma.ModelPhotonFlash1`
+(`photon-flash-1`).
+
+## Reference Images
+
+Pass up to 4 reference images (as `Files` on the lower-level
+`provider.ImageGenerateOptions`) and select a reference type through
+`providerOptions.luma`:
+
+```go
+referenceType := luma.ReferenceTypeStyle
+weight := 0.8
+
+result, err := model.DoGenerate(ctx, &provider.ImageGenerateOptions{
+    Prompt: "A portrait in the same style as the reference",
+    Files: []provider.ImageFile{{
+        Type: "url",
+        URL:  "https://example.com/style-reference.jpg",
+    }},
+    ProviderOptions: map[string]interface{}{
+        "luma": luma.ImageModelOptions{
+            ReferenceType: &referenceType,
+            Images: []luma.ImageConfig{
+                {Weight: &weight},
+            },
+        },
+    },
+})
+```
+
+Reference types: `luma.ReferenceTypeImage` (default, up to 4 images),
+`ReferenceTypeStyle`, `ReferenceTypeCharacter` (up to 4 images, grouped by
+`ImageConfig.ID`), `ReferenceTypeModifyImage` (single input image).
+
+`ImageModelOptions` also accepts `PollIntervalMillis` (default 500) and
+`MaxPollAttempts` (default 120) to override the async polling behavior,
+and an `Additional map[string]interface{}` for any passthrough field not
+explicitly modeled.
+
+## Workflow Serialization
+
+Luma image models can cross a workflow boundary with
+`providerutils.SerializeModel` / `DeserializeModel`. See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
+for the mechanism.
+
+## See Also
+
+- [API Reference: GenerateImage](../07-reference/ai/generate-image.mdx)
+- [Luma AI Documentation](https://docs.lumalabs.ai)

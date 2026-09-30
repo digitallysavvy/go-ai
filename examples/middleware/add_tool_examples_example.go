@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/middleware"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -15,13 +16,21 @@ import (
 )
 
 func main() {
+	apiKey := os.Getenv("OPENAI_API_KEY")
+	if apiKey == "" {
+		log.Fatal("OPENAI_API_KEY environment variable is required")
+	}
+
 	// Create OpenAI provider
 	openaiProvider := openai.New(openai.Config{
-		APIKey: "your-api-key-here",
+		APIKey: apiKey,
 	})
 
 	// Get a language model
-	model := openaiProvider.LanguageModel("gpt-4")
+	model, err := openaiProvider.LanguageModel("gpt-4")
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// Apply addToolInputExamples middleware
 	// This middleware helps improve tool calling accuracy by adding examples to tool descriptions
@@ -31,7 +40,7 @@ func main() {
 		[]*middleware.LanguageModelMiddleware{
 			middleware.AddToolInputExamplesMiddleware(&middleware.AddToolInputExamplesOptions{
 				Prefix: "Input Examples:",
-				Remove: true, // Remove inputExamples after adding to description
+				Remove: types.BoolPtr(true), // Remove inputExamples after adding to description
 			}),
 		},
 		nil,
@@ -95,7 +104,7 @@ func main() {
 	// Use the wrapped model with the tool
 	// The middleware will automatically append the examples to the tool description
 	result, err := wrappedModel.DoGenerate(context.Background(), &provider.GenerateOptions{
-		Prompt: provider.Prompt{
+		Prompt: types.Prompt{
 			Text: "What's the weather like in Paris?",
 		},
 		Tools: []types.Tool{getWeatherTool},
@@ -120,7 +129,7 @@ func main() {
 			// Custom formatting for examples
 			return fmt.Sprintf("Example %d: %v", index+1, example.Input)
 		},
-		Remove: false, // Keep inputExamples in the tool definition
+		Remove: types.BoolPtr(false), // Keep inputExamples in the tool definition
 	})
 
 	wrappedModel2 := middleware.WrapLanguageModel(

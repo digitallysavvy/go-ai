@@ -5,11 +5,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -68,7 +70,7 @@ func (m *ImageModel) doGenerateSync(ctx context.Context, opts *provider.ImageGen
 	}
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("LFireworks AI API returned status %d: %s", resp.StatusCode, string(resp.Body))
+		return nil, fmt.Errorf("Fireworks AI API returned status %d: %s", resp.StatusCode, string(resp.Body))
 	}
 
 	return m.convertResponse(resp.Body)
@@ -99,11 +101,11 @@ func (m *ImageModel) submitAsyncRequest(ctx context.Context, opts *provider.Imag
 
 	var submitResp AsyncSubmitResponse
 	if err := m.provider.client.PostJSON(ctx, "/v1/workflows/"+m.modelID, body, &submitResp); err != nil {
-		return "", fmt.Errorf("LFireworks async submit failed: %w", err)
+		return "", fmt.Errorf("Fireworks async submit failed: %w", err)
 	}
 
 	if submitResp.RequestID == "" {
-		return "", fmt.Errorf("LFireworks async submit returned empty request_id")
+		return "", fmt.Errorf("Fireworks async submit returned empty request_id")
 	}
 
 	return submitResp.RequestID, nil
@@ -116,17 +118,17 @@ func (m *ImageModel) checkAsyncStatus(ctx context.Context, requestID string) (st
 
 	var pollResp AsyncPollResponse
 	if err := m.provider.client.PostJSON(ctx, "/v1/workflows/"+m.modelID+"/get_result", pollBody, &pollResp); err != nil {
-		return "", false, fmt.Errorf("LFireworks async status check failed: %w", err)
+		return "", false, fmt.Errorf("Fireworks async status check failed: %w", err)
 	}
 
 	switch pollResp.Status {
 	case "Ready":
 		if pollResp.Result == nil || pollResp.Result.Sample == nil {
-			return "", false, fmt.Errorf("LFireworks poll response is Ready but missing result.sample")
+			return "", false, fmt.Errorf("Fireworks poll response is Ready but missing result.sample")
 		}
 		return *pollResp.Result.Sample, true, nil
 	case "Error", "Failed":
-		return "", false, fmt.Errorf("LFireworks image generation failed with status: %s", pollResp.Status)
+		return "", false, fmt.Errorf("Fireworks image generation failed with status: %s", pollResp.Status)
 	default:
 		// Pending, Running, or any unknown status → continue polling
 		return "", false, nil
@@ -156,59 +158,80 @@ func (m *ImageModel) pollAsyncResult(ctx context.Context, requestID string) (*ty
 	intervalMs := m.asyncPollIntervalMs()
 	timeoutMs := m.asyncPollTimeoutMs()
 
-	divisor := intervalMs
-	if divisor < 1 {
-		divisor = 1
-	}
-	maxAttempts := (timeoutMs + divisor - 1) / divisor
+	// A wall-clock deadline (TS pollForImageUrl's AbortController + setTimeout),
+	// not a fixed attempt count: a slow poll request (or a slow provider) could
+	// otherwise let the loop run well past timeoutMs before it notices, since
+	// counting attempts only bounds wall time when every request completes
+	// instantly. Deriving pollCtx from the caller's ctx and canceling it both
+	// on timeout and on return also aborts any poll request in flight (the
+	// final image download deliberately uses the caller's own ctx instead;
+	// see the comment at its call site below).
+	pollCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var timedOut atomic.Bool
+	timer := time.AfterFunc(time.Duration(timeoutMs)*time.Millisecond, func() {
+		timedOut.Store(true)
+		cancel()
+	})
+	defer timer.Stop()
 
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-
-		imageURL, done, err := m.checkAsyncStatus(ctx, requestID)
+	for {
+		imageURL, done, err := m.checkAsyncStatus(pollCtx, requestID)
 		if err != nil {
+			if timedOut.Load() {
+				return nil, fmt.Errorf("Fireworks image generation timed out after %dms", timeoutMs)
+			}
 			return nil, err
 		}
 		if done {
+			// TS doGenerateAsync downloads with the caller's own abortSignal,
+			// not the internal polling-deadline signal: once pollForImageUrl
+			// resolves, the poll timeout no longer applies. Using pollCtx here
+			// would let the deadline timer (still armed until this function
+			// returns) abort an in-progress download that outlives the
+			// remaining poll budget.
 			return m.downloadImage(ctx, imageURL)
 		}
 
 		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
+		case <-pollCtx.Done():
+			if timedOut.Load() {
+				return nil, fmt.Errorf("Fireworks image generation timed out after %dms", timeoutMs)
+			}
+			return nil, pollCtx.Err()
 		case <-time.After(time.Duration(intervalMs) * time.Millisecond):
 		}
 	}
-
-	return nil, fmt.Errorf("LFireworks image generation timed out after %dms", timeoutMs)
 }
 
 // downloadImage fetches the image binary from the given URL and returns an ImageResult
 // with the raw bytes and MIME type, matching the TypeScript reference implementation.
+//
+// imageURL comes from the provider response body, so (TS getFromApi with
+// validateUrl, credentialedOrigin and trustedOrigin set to the base URL):
+// foreign-origin URLs and redirect hops are SSRF-validated and DNS-pinned, and
+// provider credentials are only sent when the URL is same-origin with the
+// configured base URL (never to a CDN or an attacker-named host).
 func (m *ImageModel) downloadImage(ctx context.Context, imageURL string) (*types.ImageResult, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, imageURL, nil)
+	baseURL := m.baseURL()
+	var trustedTransport http.RoundTripper
+	if c := m.provider.client.HTTPClient(); c != nil {
+		trustedTransport = c.Transport
+	}
+	dlOpts := fileutil.TrustedOriginDownloadOptions(baseURL, trustedTransport)
+	if fileutil.IsSameOrigin(imageURL, baseURL) {
+		dlOpts.Headers = internalhttp.MergeHeaders(map[string]string{
+			"Authorization": "Bearer " + m.provider.config.APIKey,
+		}, m.provider.config.Headers)
+	}
+
+	downloaded, err := fileutil.DownloadWithMetadata(ctx, imageURL, dlOpts)
 	if err != nil {
-		return nil, fmt.Errorf("LFireworks failed to create download request: %w", err)
+		return nil, fmt.Errorf("Fireworks failed to download image: %w", err)
 	}
+	data := downloaded.Data
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("LFireworks failed to download image: %w", err)
-	}
-	defer resp.Body.Close() //nolint:errcheck
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("LFireworks image download returned status %d", resp.StatusCode)
-	}
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("LFireworks failed to read image data: %w", err)
-	}
-
-	mimeType := resp.Header.Get("Content-Type")
+	mimeType := downloaded.ContentType
 	if mimeType == "" {
 		mimeType = "image/png"
 	}
@@ -221,6 +244,14 @@ func (m *ImageModel) downloadImage(ctx context.Context, imageURL string) (*types
 		Image:    data,
 		MimeType: mimeType,
 	}, nil
+}
+
+// baseURL returns the developer-configured API base URL.
+func (m *ImageModel) baseURL() string {
+	if m.provider.config.BaseURL != "" {
+		return m.provider.config.BaseURL
+	}
+	return "https://api.fireworks.ai/inference"
 }
 
 // buildAsyncWarnings returns warnings for unsupported options on flux-kontext models,
@@ -326,6 +357,19 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) map[s
 		if width > 0 && height > 0 {
 			reqBody["width"] = width
 			reqBody["height"] = height
+		}
+	}
+
+	// Merge provider-specific options (passthrough). Matches TS, where the same
+	// fireworks-image-model-options schema (cfg_scale/steps for legacy
+	// image_generation models, plus guidance_scale/num_inference_steps/
+	// output_format/webhook_url/webhook_secret/prompt_upsampling/
+	// safety_tolerance) applies uniformly to both the sync and async paths.
+	if opts.ProviderOptions != nil {
+		if fwOpts, ok := opts.ProviderOptions["fireworks"].(map[string]interface{}); ok {
+			for k, v := range fwOpts {
+				reqBody[k] = v
+			}
 		}
 	}
 

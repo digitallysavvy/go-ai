@@ -143,6 +143,93 @@ func TestContextManagementSerialization(t *testing.T) {
 	}
 }
 
+// TestContextManagementUnmarshalJSON verifies *ContextManagement.UnmarshalJSON
+// (the request-side option type, added for per-call providerOptions decoding
+// in call_options.go) round-trips all three edit types, including both
+// clear_thinking_20251015 Keep variants ("all" string and {type, value}).
+func TestContextManagementUnmarshalJSON(t *testing.T) {
+	t.Run("clear_tool_uses_20250919", func(t *testing.T) {
+		var cm ContextManagement
+		err := json.Unmarshal([]byte(`{
+			"edits": [{
+				"type": "clear_tool_uses_20250919",
+				"trigger": {"type": "input_tokens", "value": 5000},
+				"keep": {"type": "tool_uses", "value": 3},
+				"clearAtLeast": {"type": "input_tokens", "value": 100},
+				"clearToolInputs": true,
+				"excludeTools": ["keep_me"]
+			}]
+		}`), &cm)
+		require.NoError(t, err)
+		require.Len(t, cm.Edits, 1)
+		edit, ok := cm.Edits[0].(*ClearToolUsesEdit)
+		require.True(t, ok)
+		assert.Equal(t, "clear_tool_uses_20250919", edit.Type)
+		require.NotNil(t, edit.Trigger)
+		assert.Equal(t, "input_tokens", edit.Trigger.Type)
+		assert.Equal(t, 5000, edit.Trigger.Value)
+		require.NotNil(t, edit.Keep)
+		assert.Equal(t, 3, edit.Keep.Value)
+		require.NotNil(t, edit.ClearAtLeast)
+		assert.Equal(t, 100, edit.ClearAtLeast.Value)
+		require.NotNil(t, edit.ClearToolInputs)
+		assert.True(t, *edit.ClearToolInputs)
+		assert.Equal(t, []string{"keep_me"}, edit.ExcludeTools)
+	})
+
+	t.Run("clear_thinking_20251015 keep=all", func(t *testing.T) {
+		var cm ContextManagement
+		err := json.Unmarshal([]byte(`{"edits": [{"type": "clear_thinking_20251015", "keep": "all"}]}`), &cm)
+		require.NoError(t, err)
+		require.Len(t, cm.Edits, 1)
+		edit, ok := cm.Edits[0].(*ClearThinkingEdit)
+		require.True(t, ok)
+		keep, ok := edit.Keep.(*KeepAllThinking)
+		require.True(t, ok)
+		assert.Equal(t, "all", keep.Value)
+	})
+
+	t.Run("clear_thinking_20251015 keep=thinking_turns", func(t *testing.T) {
+		var cm ContextManagement
+		err := json.Unmarshal([]byte(`{"edits": [{"type": "clear_thinking_20251015", "keep": {"type": "thinking_turns", "value": 2}}]}`), &cm)
+		require.NoError(t, err)
+		require.Len(t, cm.Edits, 1)
+		edit, ok := cm.Edits[0].(*ClearThinkingEdit)
+		require.True(t, ok)
+		keep, ok := edit.Keep.(*KeepRecentThinkingTurns)
+		require.True(t, ok)
+		assert.Equal(t, 2, keep.Value)
+	})
+
+	t.Run("compact_20260112", func(t *testing.T) {
+		var cm ContextManagement
+		err := json.Unmarshal([]byte(`{
+			"edits": [{
+				"type": "compact_20260112",
+				"trigger": {"type": "input_tokens", "value": 8000},
+				"pauseAfterCompaction": true,
+				"instructions": "keep decisions"
+			}]
+		}`), &cm)
+		require.NoError(t, err)
+		require.Len(t, cm.Edits, 1)
+		edit, ok := cm.Edits[0].(*CompactEdit)
+		require.True(t, ok)
+		require.NotNil(t, edit.Trigger)
+		assert.Equal(t, 8000, edit.Trigger.Value)
+		require.NotNil(t, edit.PauseAfterCompaction)
+		assert.True(t, *edit.PauseAfterCompaction)
+		require.NotNil(t, edit.Instructions)
+		assert.Equal(t, "keep decisions", *edit.Instructions)
+	})
+
+	t.Run("unknown edit type errors", func(t *testing.T) {
+		var cm ContextManagement
+		err := json.Unmarshal([]byte(`{"edits": [{"type": "not_a_real_edit"}]}`), &cm)
+		assert.Error(t, err)
+	})
+}
+
 // TestContextManagementResponseDeserialization tests parsing of ContextManagementResponse
 func TestContextManagementResponseDeserialization(t *testing.T) {
 	tests := []struct {
@@ -457,10 +544,10 @@ func TestGetBetaHeaders(t *testing.T) {
 // TestDoGenerate_WithContextManagement tests non-streaming generation with context management
 func TestDoGenerate_WithContextManagement(t *testing.T) {
 	tests := []struct {
-		name          string
-		edits         []ContextManagementEdit
-		expectedBeta  string
-		responseJSON  string
+		name           string
+		edits          []ContextManagementEdit
+		expectedBeta   string
+		responseJSON   string
 		validateResult func(*testing.T, *types.GenerateResult)
 	}{
 		{

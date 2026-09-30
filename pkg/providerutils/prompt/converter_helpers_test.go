@@ -49,13 +49,17 @@ func TestValidateMessages(t *testing.T) {
 }
 
 func TestToolResultAndFilePartHelpers(t *testing.T) {
+	// TS's contentValue switch JSON.stringifies output.value (the whole
+	// block array) for the "content" case, identically to "json"/"error-json"
+	// -- not a first-text-block extraction (convert-to-openai-chat-messages.ts
+	// and convert-to-openai-compatible-chat-messages.ts).
 	if got := openAIToolResultText(types.ToolResultContent{
 		ToolName: "x",
 		Output: &types.ToolResultOutput{
 			Type:    types.ToolResultOutputContent,
 			Content: []types.ToolResultContentBlock{types.TextContentBlock{Text: "content-text"}},
 		},
-	}); got != "content-text" {
+	}); got != `[{"type":"text","text":"content-text"}]` {
 		t.Fatalf("openAIToolResultText(text output) = %q", got)
 	}
 	if got := openAIToolResultText(types.ToolResultContent{
@@ -79,7 +83,7 @@ func TestToolResultAndFilePartHelpers(t *testing.T) {
 		ProviderOptions: map[string]interface{}{
 			"openai": map[string]interface{}{"imageDetail": "high"},
 		},
-	})
+	}, false)
 	if imagePart["type"] != "image_url" {
 		t.Fatalf("openAI image part type = %v", imagePart["type"])
 	}
@@ -91,16 +95,54 @@ func TestToolResultAndFilePartHelpers(t *testing.T) {
 	filePart := openAIFileContentPart(types.FileContent{
 		Reference: "file_123",
 		MediaType: "application/pdf",
-	})
+	}, false)
 	fileMap := filePart["file"].(map[string]interface{})
 	if fileMap["file_id"] != "file_123" {
 		t.Fatalf("openAI file_id = %v", fileMap["file_id"])
 	}
 
-	anthropic := anthropicFileContentPart(types.FileContent{
+	// video/* falls back to the generic "file" shape when AllowVideo is
+	// false (OpenAI's own chat converter has no video support).
+	noVideoPart := openAIFileContentPart(types.FileContent{
+		URL:       "https://example.com/video.mp4",
+		MediaType: "video/mp4",
+	}, false)
+	if noVideoPart["type"] != "file" {
+		t.Fatalf("openAI video part type (AllowVideo=false) = %v, want file", noVideoPart["type"])
+	}
+
+	// video/* becomes "video_url" when AllowVideo is true (7dd9ec320c,
+	// @ai-sdk/openai-compatible's convertToOpenAICompatibleChatMessages).
+	videoURLPart := openAIFileContentPart(types.FileContent{
+		URL:       "https://example.com/video.mp4",
+		MediaType: "video/mp4",
+	}, true)
+	if videoURLPart["type"] != "video_url" {
+		t.Fatalf("openAI video part type (AllowVideo=true) = %v, want video_url", videoURLPart["type"])
+	}
+	videoURLMap := videoURLPart["video_url"].(map[string]interface{})
+	if videoURLMap["url"] != "https://example.com/video.mp4" {
+		t.Fatalf("video_url.url = %v", videoURLMap["url"])
+	}
+
+	videoDataPart := openAIFileContentPart(types.FileContent{
+		Data:      []byte{0x01, 0x02, 0x03},
+		MediaType: "video/mp4",
+	}, true)
+	videoDataMap := videoDataPart["video_url"].(map[string]interface{})
+	wantVideoDataURL := "data:video/mp4;base64," + base64.StdEncoding.EncodeToString([]byte{0x01, 0x02, 0x03})
+	if videoDataMap["url"] != wantVideoDataURL {
+		t.Fatalf("video_url.url (inline data) = %v, want %v", videoDataMap["url"], wantVideoDataURL)
+	}
+
+	c := &anthropicConverter{validator: NewAnthropicCacheControlValidator(), betaSet: map[string]bool{}}
+	anthropic, err := c.convertUserFile(types.FileContent{
 		Text:      "doc body",
 		MediaType: "text/plain",
-	})
+	}, nil)
+	if err != nil {
+		t.Fatalf("convertUserFile: %v", err)
+	}
 	if anthropic["type"] != "document" {
 		t.Fatalf("anthropic part type = %v", anthropic["type"])
 	}
@@ -109,26 +151,30 @@ func TestToolResultAndFilePartHelpers(t *testing.T) {
 		t.Fatalf("anthropic text source = %#v", source)
 	}
 
-	blockPart := anthropicFileContentBlockPart(types.FileContentBlock{
-		Data:      []byte("abc"),
-		MediaType: "text/plain",
+	blockPart, err := c.convertToolResultContentBlock(types.FileContentBlock{
+		Data:      []byte("%PDF-1.4"),
+		MediaType: "application/pdf",
 	})
+	if err != nil {
+		t.Fatalf("convertToolResultContentBlock: %v", err)
+	}
 	blockSource := blockPart["source"].(map[string]interface{})
-	if blockSource["data"] != base64.StdEncoding.EncodeToString([]byte("abc")) {
+	if blockSource["data"] != base64.StdEncoding.EncodeToString([]byte("%PDF-1.4")) {
 		t.Fatalf("anthropic block data = %v", blockSource["data"])
 	}
 
-	googleURL := googleFileContentPart(types.FileContent{
+	gc := &googleConverter{names: []string{"google"}}
+	googleURL, _ := gc.fileContentPart(types.FileContent{
 		URL:       "https://example.com/a.png",
 		MediaType: "image/png",
-	})
+	}, false)
 	if googleURL["fileData"] == nil {
 		t.Fatalf("google URL fileData missing: %#v", googleURL)
 	}
-	googleRef := googleFileContentBlockPart(types.FileContentBlock{
+	googleRef, _ := gc.fileContentPart(fileBlockToContent(types.FileContentBlock{
 		Reference: "gs://bucket/file",
 		MediaType: "application/json",
-	})
+	}), false)
 	if googleRef["fileData"] == nil {
 		t.Fatalf("google reference fileData missing: %#v", googleRef)
 	}

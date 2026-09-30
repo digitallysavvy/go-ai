@@ -3,9 +3,8 @@ name: Deploy Docs
 on:
   push:
     branches: [main]
-    paths:
-      - 'docs/**'
-      - 'website/**'
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -14,9 +13,10 @@ permissions:
   id-token: write
 
 # Only one deploy at a time; don't cancel in-progress deploys.
+# PR builds get their own concurrency group so they don't queue behind (or cancel) a deploy.
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: ${{ github.event_name == 'pull_request' && format('pages-pr-{0}', github.event.pull_request.number) || 'pages' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -24,19 +24,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0  # full history for showLastUpdateTime
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - name: Setup Go
+        uses: actions/setup-go@v6
         with:
-          node-version: '20'
+          go-version: '1.26'
+          cache: true
+
+      - name: Validate docs links
+        run: go run docs/scripts/validate-links.go -docs=docs/
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: website/package-lock.json
-
-      - name: Setup Pages
-        uses: actions/configure-pages@v4
 
       - name: Install dependencies
         working-directory: website
@@ -46,13 +52,21 @@ jobs:
         working-directory: website
         run: npm run build
 
+      # Only needed when we're actually going to deploy (push to main / manual dispatch).
+      # Skipped for pull_request builds so forked PRs don't need Pages API access.
+      - name: Setup Pages
+        if: github.event_name != 'pull_request'
+        uses: actions/configure-pages@v6
+
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v5
         with:
           path: website/build
 
   deploy:
     name: Deploy
+    if: github.event_name != 'pull_request'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -61,4 +75,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

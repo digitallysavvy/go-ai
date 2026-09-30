@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
-	"net/http"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -14,23 +12,15 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
 )
 
-// ImageAspectRatio constants for Google Generative AI image generation.
-//
-// For Imagen models, only the five standard ratios are supported:
-// 1:1, 3:4, 4:3, 9:16, 16:9.
-//
-// For Gemini image models (gemini-*), a wider set of aspect ratios is accepted
-// via the imageConfig parameter. All constants below are valid for Gemini models.
+// ImageAspectRatio constants for Gemini image generation (imageConfig.aspectRatio).
 // Added in #12897.
 const (
-	// Standard aspect ratios supported by both Imagen and Gemini image models
 	ImageAspectRatio1x1  = "1:1"
 	ImageAspectRatio3x4  = "3:4"
 	ImageAspectRatio4x3  = "4:3"
 	ImageAspectRatio9x16 = "9:16"
 	ImageAspectRatio16x9 = "16:9"
 
-	// Extended aspect ratios — Gemini image models only (#12897)
 	ImageAspectRatio2x3  = "2:3"
 	ImageAspectRatio3x2  = "3:2"
 	ImageAspectRatio4x5  = "4:5"
@@ -51,8 +41,14 @@ const (
 	ImageSize4K  = "4K"
 )
 
-// ImageModel implements image generation for Google Generative AI
-// Supports both Imagen models (via :predict API) and Gemini image models (via :generateContent API)
+// imagenRemovedError matches TS google-image-model.ts / google-vertex-image-model.ts
+// exactly: "Google image models other than Gemini are no longer supported. Use a
+// model ID that starts with `gemini-`."
+const imagenRemovedError = "Google image models other than Gemini are no longer supported. Use a model ID that starts with `gemini-`."
+
+// ImageModel implements image generation for Google Generative AI.
+// Only Gemini image models (model IDs starting with "gemini-") are supported;
+// Imagen (:predict API) was removed to match TS `ai@7.0.113`.
 type ImageModel struct {
 	prov    *Provider
 	modelID string
@@ -84,122 +80,29 @@ func (m *ImageModel) ModelID() string {
 	return m.modelID
 }
 
-// DoGenerate performs image generation
-func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
-	// Determine if this is a Gemini model or Imagen model
-	if isGeminiModel(m.modelID) {
-		return m.doGenerateGemini(ctx, opts)
-	}
-	return m.doGenerateImagen(ctx, opts)
+// MaxImagesPerCall returns the maximum number of images generated per
+// DoGenerate call. Gemini image models generate exactly one image per call
+// (TS google-image-model.ts has no N/count concept at all); the core
+// GenerateImage helper splits a larger request into multiple calls.
+func (m *ImageModel) MaxImagesPerCall() int {
+	return 1
 }
 
-// doGenerateImagen generates images using the Imagen API (:predict endpoint)
-func (m *ImageModel) doGenerateImagen(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
-	// Image editing is not supported for Google Generative AI Imagen models.
-	if len(opts.Files) > 0 {
-		return nil, fmt.Errorf("image editing with files is not supported for Google Generative AI Imagen models. Use Google Vertex AI instead")
+// DoGenerate performs image generation using Gemini models via the
+// generateContent API. Non-Gemini model IDs are rejected, matching TS.
+func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
+	if !isGeminiModel(m.modelID) {
+		return nil, providererrors.NewProviderError("google", 0, "", imagenRemovedError, nil)
 	}
-	if opts.Mask != nil {
-		return nil, fmt.Errorf("image editing with masks is not supported for Google Generative AI Imagen models. Use Google Vertex AI instead")
-	}
-
-	aspectRatio := opts.AspectRatio
-	if aspectRatio == "" {
-		aspectRatio = ImageAspectRatio1x1
-	}
-
-	parameters := map[string]interface{}{
-		"sampleCount": getIntValue(opts.N, 1),
-		"aspectRatio": aspectRatio,
-	}
-
-	for key, value := range extractGoogleOptions(opts.ProviderOptions) {
-		if key == "googleSearch" {
-			continue
-		}
-		if value != nil {
-			parameters[key] = value
-		}
-	}
-
-	// Build request body for Imagen
-	reqBody := map[string]interface{}{
-		"instances": []map[string]interface{}{
-			{
-				"prompt": opts.Prompt,
-			},
-		},
-		"parameters": parameters,
-	}
-
-	// Build URL with API key
-	path := fmt.Sprintf("/models/%s:predict", m.modelID)
-
-	// Make request
-	resp, err := m.prov.client.Post(ctx, path, reqBody)
-	if err != nil {
-		return nil, providererrors.NewProviderError("google", 0, "", "failed to generate image: "+err.Error(), err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, providererrors.NewProviderError("google", resp.StatusCode, "",
-			fmt.Sprintf("API returned status %d: %s", resp.StatusCode, string(resp.Body)), nil)
-	}
-
-	// Parse response
-	var imagenResp imagenResponse
-	if err := json.Unmarshal(resp.Body, &imagenResp); err != nil {
-		return nil, providererrors.NewProviderError("google", 0, "", "failed to parse response: "+err.Error(), err)
-	}
-
-	if len(imagenResp.Predictions) == 0 {
-		return nil, providererrors.NewProviderError("google", 0, "", "no images in response", nil)
-	}
-
-	images := make([][]byte, 0, len(imagenResp.Predictions))
-	base64Images := make([]string, 0, len(imagenResp.Predictions))
-	imageMetadata := make([]map[string]interface{}, 0, len(imagenResp.Predictions))
-	for _, prediction := range imagenResp.Predictions {
-		imageData, err := base64.StdEncoding.DecodeString(prediction.BytesBase64Encoded)
-		if err != nil {
-			return nil, providererrors.NewProviderError("google", 0, "", "failed to decode image: "+err.Error(), err)
-		}
-		images = append(images, imageData)
-		base64Images = append(base64Images, prediction.BytesBase64Encoded)
-		meta := map[string]interface{}{}
-		if prediction.Prompt != "" {
-			meta["revisedPrompt"] = prediction.Prompt
-		}
-		imageMetadata = append(imageMetadata, meta)
-	}
-
-	return &types.ImageResult{
-		Image:        images[0],
-		Images:       images,
-		Base64Image:  base64Images[0],
-		Base64Images: base64Images,
-		MimeType:     "image/png",
-		Usage: types.ImageUsage{
-			ImageCount: len(imagenResp.Predictions),
-		},
-		Warnings: googleImageWarnings(opts, true),
-		ProviderMetadata: map[string]interface{}{
-			"google": map[string]interface{}{"images": imageMetadata},
-		},
-	}, nil
+	return m.doGenerateGemini(ctx, opts)
 }
 
 // doGenerateGemini generates images using Gemini models via the generateContent API
 func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
 	// Image editing with masks is not supported for Gemini image models.
 	if opts.Mask != nil {
-		return nil, fmt.Errorf("image editing with masks is not supported for Gemini image models")
+		return nil, providererrors.NewProviderError("google", 0, "", "Gemini image models do not support mask-based image editing.", nil)
 	}
-	// Gemini image models only support generating a single image at a time.
-	if opts.N != nil && *opts.N > 1 {
-		return nil, fmt.Errorf("Gemini image models do not support generating multiple images. Use Imagen models for multiple image generation")
-	}
-
 	providerOptions, googleSearch := geminiImageProviderOptions(opts)
 	lmOpts := &provider.GenerateOptions{
 		Prompt: types.Prompt{
@@ -237,7 +140,7 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 		usage.TotalTokens = int(*lmResult.Usage.TotalTokens)
 	}
 
-	warnings := googleImageWarnings(opts, false)
+	warnings := googleImageWarnings(opts)
 	warnings = append(warnings, lmResult.Warnings...)
 	return &types.ImageResult{
 		Image:        file.Data,
@@ -248,10 +151,21 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 		Usage:        usage,
 		Warnings:     warnings,
 		ProviderMetadata: map[string]interface{}{
-			"google": googleImageProviderMetadata(lmResult.ProviderMetadata),
+			"google": googleImageProviderMetadata(lmResult.ProviderMetadata, rawFinishReason(lmResult.RawResponse)),
 		},
 		Response: lmResult.ResponseMetadata,
 	}, nil
+}
+
+// rawFinishReason extracts the raw Gemini candidate finishReason string from
+// a GenerateResult's RawResponse, mirroring TS `result.finishReason.raw`.
+// Returns "" when unavailable.
+func rawFinishReason(raw interface{}) string {
+	resp, ok := raw.(gemini.Response)
+	if !ok || len(resp.Candidates) == 0 {
+		return ""
+	}
+	return resp.Candidates[0].FinishReason
 }
 
 func googleGeminiImageContent(opts *provider.ImageGenerateOptions) []types.ContentPart {
@@ -314,29 +228,34 @@ func firstGeneratedImage(content []types.ContentPart) (types.GeneratedFileConten
 	return types.GeneratedFileContent{}, false
 }
 
-func googleImageProviderMetadata(providerMetadata map[string]interface{}) map[string]interface{} {
+func googleImageProviderMetadata(providerMetadata map[string]interface{}, finishReason string) map[string]interface{} {
 	googleMetadata := map[string]interface{}{"images": []map[string]interface{}{{}}}
 	raw, ok := providerMetadata["google"]
-	if !ok {
-		return googleMetadata
-	}
-	switch meta := raw.(type) {
-	case map[string]json.RawMessage:
-		for key, value := range meta {
-			googleMetadata[key] = value
-		}
-	case map[string]interface{}:
-		for key, value := range meta {
-			googleMetadata[key] = value
+	if ok {
+		switch meta := raw.(type) {
+		case map[string]json.RawMessage:
+			for key, value := range meta {
+				googleMetadata[key] = value
+			}
+		case map[string]interface{}:
+			for key, value := range meta {
+				googleMetadata[key] = value
+			}
 		}
 	}
 	if _, ok := googleMetadata["images"]; !ok {
 		googleMetadata["images"] = []map[string]interface{}{{}}
 	}
+	// finishReason (raw) mirrors TS: `finishReason: result.finishReason.raw ?? null`.
+	if finishReason != "" {
+		googleMetadata["finishReason"] = finishReason
+	} else {
+		googleMetadata["finishReason"] = nil
+	}
 	return googleMetadata
 }
 
-func googleImageWarnings(opts *provider.ImageGenerateOptions, imagen bool) []types.Warning {
+func googleImageWarnings(opts *provider.ImageGenerateOptions) []types.Warning {
 	if opts == nil {
 		return nil
 	}
@@ -346,22 +265,6 @@ func googleImageWarnings(opts *provider.ImageGenerateOptions, imagen bool) []typ
 			Type:    "unsupported",
 			Feature: "size",
 			Details: "This model does not support the `size` option. Use `aspectRatio` instead.",
-		})
-	}
-	if imagen {
-		if _, ok := extractGoogleOptions(opts.ProviderOptions)["googleSearch"]; ok {
-			warnings = append(warnings, types.Warning{
-				Type:    "unsupported",
-				Feature: "googleSearch",
-				Details: "Google Search grounding is only supported on Gemini image models.",
-			})
-		}
-	}
-	if imagen && opts.Seed != nil {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported",
-			Feature: "seed",
-			Details: "This model does not support the `seed` option through this provider.",
 		})
 	}
 	return warnings
@@ -434,15 +337,6 @@ func getIntValue(ptr *int, defaultVal int) int {
 		return *ptr
 	}
 	return defaultVal
-}
-
-// Response types for Imagen API
-type imagenResponse struct {
-	Predictions []struct {
-		BytesBase64Encoded string `json:"bytesBase64Encoded"`
-		MimeType           string `json:"mimeType"`
-		Prompt             string `json:"prompt,omitempty"`
-	} `json:"predictions"`
 }
 
 // Response types for Gemini image API

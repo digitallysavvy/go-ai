@@ -68,6 +68,7 @@ func TestGenerateTextPopulatesStepAndFinalFields(t *testing.T) {
 					{ID: "tc-dyn", ToolName: "search", Dynamic: true},
 				},
 				FinishReason:     types.FinishReasonStop,
+				RawFinishReason:  "stop",
 				Usage:            types.Usage{InputTokens: &in, OutputTokens: &out, TotalTokens: &total},
 				RawRequest:       rawReq,
 				RawResponse:      rawResp,
@@ -83,9 +84,15 @@ func TestGenerateTextPopulatesStepAndFinalFields(t *testing.T) {
 		},
 	}
 
+	// Tool calls are parsed against the available tools (TS parseToolCall):
+	// without tools they would be invalid dynamic calls.
 	result, err := GenerateText(context.Background(), GenerateTextOptions{
 		Model:  model,
 		Prompt: "hello",
+		Tools: []types.Tool{
+			{Name: "lookup"},
+			{Name: "search", Type: "dynamic"},
+		},
 		Include: &IncludeOptions{
 			RequestBody:  true,
 			ResponseBody: true,

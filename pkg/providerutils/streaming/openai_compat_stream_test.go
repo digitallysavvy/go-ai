@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -412,6 +413,76 @@ data: [DONE]
 	}
 }
 
+// TestOpenAICompatStream_DefersFinishForTrailingUsageChunk verifies that a
+// trailing choices-less usage event (stream_options.include_usage) arriving
+// after finish_reason is merged into the finish chunk, and that finish is
+// still the last chunk emitted — matching TS openai-compatible, which only
+// enqueues `finish` in flush(), after the whole stream (including this tail
+// chunk) has been consumed.
+func TestOpenAICompatStream_DefersFinishForTrailingUsageChunk(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"stop"}]}
+
+data: {"choices":[],"usage":{"prompt_tokens":4,"completion_tokens":3,"total_tokens":7}}
+
+data: [DONE]
+
+`
+	stream := newTestStream(sseData)
+	defer stream.Close() //nolint:errcheck
+
+	chunks := collectStreamChunks(t, stream)
+	wantTypes := []provider.ChunkType{
+		provider.ChunkTypeText,
+		provider.ChunkTypeFinish,
+	}
+	if len(chunks) != len(wantTypes) {
+		t.Fatalf("chunk sequence = %#v, want length %d", chunks, len(wantTypes))
+	}
+	for i, want := range wantTypes {
+		if chunks[i].Type != want {
+			t.Fatalf("chunk[%d] = %v, want %v (full: %#v)", i, chunks[i].Type, want, chunks)
+		}
+	}
+	finish := chunks[len(chunks)-1]
+	if finish.FinishReason != types.FinishReasonStop {
+		t.Fatalf("finish reason = %v, want stop", finish.FinishReason)
+	}
+	if finish.Usage == nil || finish.Usage.InputTokens == nil || *finish.Usage.InputTokens != 4 {
+		t.Fatalf("finish usage = %#v, want inputTokens 4", finish.Usage)
+	}
+	if finish.Usage.OutputTokens == nil || *finish.Usage.OutputTokens != 3 {
+		t.Fatalf("finish usage = %#v, want outputTokens 3", finish.Usage)
+	}
+	if finish.Usage.TotalTokens == nil || *finish.Usage.TotalTokens != 7 {
+		t.Fatalf("finish usage = %#v, want totalTokens 7", finish.Usage)
+	}
+}
+
+// TestOpenAICompatStream_UsageOnSameEventAsFinishReason verifies the common
+// case where usage arrives on the same SSE event as finish_reason.
+func TestOpenAICompatStream_UsageOnSameEventAsFinishReason(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}
+
+data: [DONE]
+
+`
+	stream := newTestStream(sseData)
+	defer stream.Close() //nolint:errcheck
+
+	chunks := collectStreamChunks(t, stream)
+	finishes := compatChunksOfType(chunks, provider.ChunkTypeFinish)
+	if len(finishes) != 1 {
+		t.Fatalf("expected 1 finish chunk, got %#v", chunks)
+	}
+	if finishes[0].Usage == nil || finishes[0].Usage.TotalTokens == nil || *finishes[0].Usage.TotalTokens != 3 {
+		t.Fatalf("finish usage = %#v, want totalTokens 3", finishes[0].Usage)
+	}
+}
+
 func TestOpenAICompatStream_ParseErrorEmitsErrorChunkAfterRaw(t *testing.T) {
 	sseData := `data: {"choices":[
 
@@ -469,5 +540,322 @@ data: [DONE]
 	}
 	if chunk.Text != "provider failed" {
 		t.Fatalf("error text = %q, want provider failed", chunk.Text)
+	}
+}
+
+// TestOpenAICompatStream_TruncatedStreamEmitsErrorAndErrorFinish covers C1-4:
+// a stream that ends (EOF or [DONE]) after text deltas but without ever
+// observing a finish_reason must be treated as an error, matching TS's
+// flush() `if (finishReason == null)` branch (openai-compatible-chat-
+// language-model.ts:725-734, commit d68139c3bb): an InvalidResponseDataError
+// "error" chunk, followed by a "finish" chunk with the unified error finish
+// reason.
+func TestOpenAICompatStream_TruncatedStreamEmitsErrorAndErrorFinish(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{"content":" world"},"finish_reason":null}]}
+
+`
+	stream := newTestStream(sseData)
+	defer stream.Close() //nolint:errcheck
+
+	chunks := collectStreamChunks(t, stream)
+	wantTypes := []provider.ChunkType{
+		provider.ChunkTypeText,
+		provider.ChunkTypeText,
+		provider.ChunkTypeError,
+		provider.ChunkTypeFinish,
+	}
+	if len(chunks) != len(wantTypes) {
+		t.Fatalf("chunk sequence = %#v, want length %d", chunks, len(wantTypes))
+	}
+	for i, want := range wantTypes {
+		if chunks[i].Type != want {
+			t.Fatalf("chunk[%d] = %v, want %v (full: %#v)", i, chunks[i].Type, want, chunks)
+		}
+	}
+	errChunk := chunks[2]
+	if errChunk.Text != "Response stream ended without a finish reason." {
+		t.Fatalf("error text = %q", errChunk.Text)
+	}
+	if errChunk.Err == nil || !providererrors.IsInvalidResponseDataError(errChunk.Err) {
+		t.Fatalf("error chunk Err = %#v, want *InvalidResponseDataError", errChunk.Err)
+	}
+	finish := chunks[3]
+	if finish.FinishReason != types.FinishReasonError {
+		t.Fatalf("finish reason = %v, want error", finish.FinishReason)
+	}
+}
+
+// TestOpenAICompatStream_TruncatedStreamViaDoneSentinel covers the same gap
+// via an explicit [DONE] sentinel instead of a bare reader EOF -- both are
+// "clean" stream ends in TS's terms (the ReadableStream completing).
+func TestOpenAICompatStream_TruncatedStreamViaDoneSentinel(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}
+
+data: [DONE]
+
+`
+	stream := newTestStream(sseData)
+	defer stream.Close() //nolint:errcheck
+
+	chunks := collectStreamChunks(t, stream)
+	errorChunks := compatChunksOfType(chunks, provider.ChunkTypeError)
+	if len(errorChunks) != 1 {
+		t.Fatalf("expected 1 error chunk, got %#v", chunks)
+	}
+	finishes := compatChunksOfType(chunks, provider.ChunkTypeFinish)
+	if len(finishes) != 1 {
+		t.Fatalf("expected 1 finish chunk, got %#v", chunks)
+	}
+	if finishes[0].FinishReason != types.FinishReasonError {
+		t.Fatalf("finish reason = %v, want error", finishes[0].FinishReason)
+	}
+}
+
+// TestOpenAICompatStream_ToolCallNameErrorSuppressesTruncatedStreamError
+// verifies that a mid-stream tool-call-name error is not doubled up with the
+// separate "truncated stream" error when the underlying reader then hits EOF
+// with no finish chunk ever pending -- TS's toolCallTracker.flush() throw
+// aborts before flush()'s finishReason==null check is ever reached.
+func TestOpenAICompatStream_ToolCallNameErrorSuppressesTruncatedStreamError(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_missing","type":"function","function":{"arguments":"{}"}}]},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`
+	stream := newTestStream(sseData)
+	defer stream.Close() //nolint:errcheck
+
+	chunks := collectStreamChunks(t, stream)
+	errorChunks := compatChunksOfType(chunks, provider.ChunkTypeError)
+	if len(errorChunks) != 1 {
+		t.Fatalf("expected 1 error chunk, got %#v", chunks)
+	}
+	if finishes := compatChunksOfType(chunks, provider.ChunkTypeFinish); len(finishes) != 0 {
+		t.Fatalf("expected no finish chunks, got %#v", finishes)
+	}
+}
+
+// TestOpenAICompatStream_ParseErrorStillEmitsFinishChunk verifies that a
+// "soft" error (a JSON parse failure) does not suppress the terminal finish
+// chunk once the stream cleanly ends afterward. TS's transform() sets
+// finishReason to the unified "error" reason and returns normally on a parse
+// failure (openai-compatible-chat-language-model.ts:574-575); flush() then
+// still runs to completion, emitting the terminal `finish` chunk with that
+// already-set error reason -- it just skips the separate "no finish_reason
+// observed" error since finishReason is already non-null.
+func TestOpenAICompatStream_ParseErrorStillEmitsFinishChunk(t *testing.T) {
+	sseData := `data: {"choices":[
+
+data: [DONE]
+
+`
+	stream := newTestStream(sseData)
+	defer stream.Close() //nolint:errcheck
+
+	chunks := collectStreamChunks(t, stream)
+	errorChunks := compatChunksOfType(chunks, provider.ChunkTypeError)
+	if len(errorChunks) != 1 {
+		t.Fatalf("expected 1 error chunk, got %#v", chunks)
+	}
+	if !strings.Contains(errorChunks[0].Text, "failed to parse stream chunk") {
+		t.Fatalf("error text = %q, want parse failure", errorChunks[0].Text)
+	}
+	finishes := compatChunksOfType(chunks, provider.ChunkTypeFinish)
+	if len(finishes) != 1 {
+		t.Fatalf("expected 1 finish chunk, got %#v", chunks)
+	}
+	if finishes[0].FinishReason != types.FinishReasonError {
+		t.Fatalf("finish reason = %v, want error", finishes[0].FinishReason)
+	}
+	// The separate "missing finish reason" error must not be doubled up.
+	if errorChunks[0].Text == "Response stream ended without a finish reason." {
+		t.Fatalf("truncated-stream error should not fire after a parse failure: %#v", chunks)
+	}
+}
+
+// TestOpenAICompatStream_ProviderErrorEventStillEmitsFinishChunk is the same
+// check as TestOpenAICompatStream_ParseErrorStillEmitsFinishChunk for a
+// mid-stream provider "error" field instead of a parse failure (openai-
+// compatible-chat-language-model.ts:582-586).
+func TestOpenAICompatStream_ProviderErrorEventStillEmitsFinishChunk(t *testing.T) {
+	sseData := `data: {"error":{"message":"provider failed"}}
+
+data: [DONE]
+
+`
+	stream := newTestStream(sseData)
+	defer stream.Close() //nolint:errcheck
+
+	chunks := collectStreamChunks(t, stream)
+	errorChunks := compatChunksOfType(chunks, provider.ChunkTypeError)
+	if len(errorChunks) != 1 {
+		t.Fatalf("expected 1 error chunk, got %#v", chunks)
+	}
+	if errorChunks[0].Text != "provider failed" {
+		t.Fatalf("error text = %q, want provider failed", errorChunks[0].Text)
+	}
+	finishes := compatChunksOfType(chunks, provider.ChunkTypeFinish)
+	if len(finishes) != 1 {
+		t.Fatalf("expected 1 finish chunk, got %#v", chunks)
+	}
+	if finishes[0].FinishReason != types.FinishReasonError {
+		t.Fatalf("finish reason = %v, want error", finishes[0].FinishReason)
+	}
+}
+
+// TestOpenAICompatStream_TruncatedStreamFlushesPendingToolCall verifies that
+// a truncated stream (no finish_reason ever observed) still flushes any
+// tool-call fragments buffered in the tracker before the missing-finish-
+// reason error/finish pair, matching TS flush()'s unconditional
+// `toolCallTracker.flush()` call ahead of its `finishReason == null` check
+// (openai-compatible-chat-language-model.ts:711-725).
+func TestOpenAICompatStream_TruncatedStreamFlushesPendingToolCall(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"x\"}"}}]},"finish_reason":null}]}
+
+`
+	stream := newTestStream(sseData)
+	defer stream.Close() //nolint:errcheck
+
+	chunks := collectStreamChunks(t, stream)
+	toolCalls := compatChunksOfType(chunks, provider.ChunkTypeToolCall)
+	if len(toolCalls) != 1 {
+		t.Fatalf("expected 1 tool-call chunk, got %#v", chunks)
+	}
+	if toolCalls[0].ToolCall.ID != "call_1" {
+		t.Fatalf("tool call id = %q, want call_1", toolCalls[0].ToolCall.ID)
+	}
+	errorChunks := compatChunksOfType(chunks, provider.ChunkTypeError)
+	if len(errorChunks) != 1 || errorChunks[0].Text != "Response stream ended without a finish reason." {
+		t.Fatalf("error chunks = %#v", errorChunks)
+	}
+	finishes := compatChunksOfType(chunks, provider.ChunkTypeFinish)
+	if len(finishes) != 1 || finishes[0].FinishReason != types.FinishReasonError {
+		t.Fatalf("finish chunks = %#v", finishes)
+	}
+	// The tool call must be flushed (and any open tool-input block closed)
+	// ahead of the error/finish chunks, matching TS's flush() order.
+	if chunks[len(chunks)-1].Type != provider.ChunkTypeFinish {
+		t.Fatalf("finish chunk should be last: %#v", chunks)
+	}
+	toolCallIdx, errIdx := -1, -1
+	for i, c := range chunks {
+		if c.Type == provider.ChunkTypeToolCall {
+			toolCallIdx = i
+		}
+		if c.Type == provider.ChunkTypeError {
+			errIdx = i
+		}
+	}
+	if toolCallIdx == -1 || errIdx == -1 || toolCallIdx > errIdx {
+		t.Fatalf("expected tool-call chunk before error chunk, got %#v", chunks)
+	}
+}
+
+// TestOpenAICompatStream_TruncatedStreamWithMissingToolCallNameSuppressesFinish
+// verifies that a truncated stream whose only pending tool call never
+// received a function.name still surfaces exactly the tool-call-tracker
+// error (not the separate "missing finish reason" error) and emits no finish
+// chunk at all, matching TS's toolCallTracker.flush() throw aborting flush()
+// before its terminal `finish` enqueue.
+func TestOpenAICompatStream_TruncatedStreamWithMissingToolCallNameSuppressesFinish(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_missing","type":"function","function":{"arguments":"{}"}}]},"finish_reason":null}]}
+
+`
+	stream := newTestStream(sseData)
+	defer stream.Close() //nolint:errcheck
+
+	chunks := collectStreamChunks(t, stream)
+	errorChunks := compatChunksOfType(chunks, provider.ChunkTypeError)
+	if len(errorChunks) != 1 {
+		t.Fatalf("expected 1 error chunk, got %#v", chunks)
+	}
+	if errorChunks[0].Text != "Expected 'function.name' to be a string." {
+		t.Fatalf("error text = %q", errorChunks[0].Text)
+	}
+	if finishes := compatChunksOfType(chunks, provider.ChunkTypeFinish); len(finishes) != 0 {
+		t.Fatalf("expected no finish chunks, got %#v", finishes)
+	}
+}
+
+// TestOpenAICompatStream_RawFinishReason verifies that the terminal finish
+// chunk carries the raw provider finish_reason string alongside the unified
+// FinishReason, mirroring TS openai-compatible-chat-language-model.ts's
+// `finishReason: { unified: mapOpenAICompatibleFinishReason(choice.finish_reason),
+// raw: choice.finish_reason ?? undefined }` (the same-event finish path).
+func TestOpenAICompatStream_RawFinishReason(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}
+
+data: [DONE]
+
+`
+	stream := newTestStream(sseData)
+	defer stream.Close() //nolint:errcheck
+
+	chunks := collectStreamChunks(t, stream)
+	finishes := compatChunksOfType(chunks, provider.ChunkTypeFinish)
+	if len(finishes) != 1 {
+		t.Fatalf("expected 1 finish chunk, got %#v", chunks)
+	}
+	if finishes[0].FinishReason != types.FinishReasonStop {
+		t.Fatalf("finish reason = %v, want stop", finishes[0].FinishReason)
+	}
+	if finishes[0].RawFinishReason != "stop" {
+		t.Fatalf("raw finish reason = %q, want %q", finishes[0].RawFinishReason, "stop")
+	}
+}
+
+// TestOpenAICompatStream_RawFinishReason_DeferredTrailingUsage verifies the
+// raw finish reason is preserved when the finish chunk is deferred to
+// endStream (a trailing choices-less usage-only event after finish_reason).
+func TestOpenAICompatStream_RawFinishReason_DeferredTrailingUsage(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"length"}]}
+
+data: {"choices":[],"usage":{"prompt_tokens":4,"completion_tokens":3,"total_tokens":7}}
+
+data: [DONE]
+
+`
+	stream := newTestStream(sseData)
+	defer stream.Close() //nolint:errcheck
+
+	chunks := collectStreamChunks(t, stream)
+	finishes := compatChunksOfType(chunks, provider.ChunkTypeFinish)
+	if len(finishes) != 1 {
+		t.Fatalf("expected 1 finish chunk, got %#v", chunks)
+	}
+	if finishes[0].FinishReason != types.FinishReasonLength {
+		t.Fatalf("finish reason = %v, want length", finishes[0].FinishReason)
+	}
+	if finishes[0].RawFinishReason != "length" {
+		t.Fatalf("raw finish reason = %q, want %q", finishes[0].RawFinishReason, "length")
+	}
+}
+
+// TestOpenAICompatStream_RawFinishReason_EmptyWhenNeverObserved verifies
+// that when no finish_reason is ever observed (truncated stream), the
+// synthesized error-finish chunk carries no raw finish reason, matching TS's
+// `raw: undefined` default.
+func TestOpenAICompatStream_RawFinishReason_EmptyWhenNeverObserved(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}
+
+`
+	stream := newTestStream(sseData)
+	defer stream.Close() //nolint:errcheck
+
+	chunks := collectStreamChunks(t, stream)
+	finishes := compatChunksOfType(chunks, provider.ChunkTypeFinish)
+	if len(finishes) != 1 {
+		t.Fatalf("expected 1 finish chunk, got %#v", chunks)
+	}
+	if finishes[0].RawFinishReason != "" {
+		t.Fatalf("raw finish reason = %q, want empty", finishes[0].RawFinishReason)
 	}
 }

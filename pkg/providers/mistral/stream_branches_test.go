@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
 func TestMistralStreamReasoningToolCallsAndErr(t *testing.T) {
@@ -105,11 +106,60 @@ data: [DONE]
 	}
 }
 
+// TestMistralStreamEmitsToolInputLifecycleChunks guards TS
+// mistral-chat-language-model.ts's use of the shared StreamingToolCallTracker
+// (packages/provider-utils/src/streaming-tool-call-tracker.ts): tool-input-
+// start/delta chunks must be emitted as arguments stream in, not only the
+// final buffered tool-call chunk at flush.
+func TestMistralStreamEmitsToolInputLifecycleChunks(t *testing.T) {
+	sse := `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"tc1","type":"function","function":{"name":"lookup","arguments":"{\"q\":"}}]},"finish_reason":""}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"x\"}"}}]},"finish_reason":""}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`
+	stream := newMistralStream(io.NopCloser(strings.NewReader(sse)))
+	defer stream.Close() //nolint:errcheck
+
+	var types_ []provider.ChunkType
+	for {
+		chunk, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		types_ = append(types_, chunk.Type)
+	}
+
+	want := []provider.ChunkType{
+		provider.ChunkTypeToolInputStart,
+		provider.ChunkTypeToolInputDelta,
+		provider.ChunkTypeToolInputDelta,
+		provider.ChunkTypeToolInputEnd,
+		provider.ChunkTypeToolCall,
+		provider.ChunkTypeFinish,
+	}
+	if len(types_) != len(want) {
+		t.Fatalf("chunk types = %#v, want %#v", types_, want)
+	}
+	for i, w := range want {
+		if types_[i] != w {
+			t.Fatalf("chunk[%d] = %v, want %v (full sequence: %#v)", i, types_[i], w, types_)
+		}
+	}
+}
+
 func TestMistralFlushToolCallsReasoningEnd(t *testing.T) {
+	tracker := streaming.NewStreamingToolCallTracker()
+	idx := 0
+	tracker.Track(&idx, "tc1", "lookup", `{"ok":true}`)
 	s := &mistralStream{
-		toolCallAccum: map[int]*mistralStreamAccumToolCall{
-			0: {id: "tc1", name: "lookup", arguments: `{"ok":true}`},
-		},
+		toolCallTracker:   tracker,
 		isActiveReasoning: true,
 	}
 	s.flushMistralToolCalls("stop")

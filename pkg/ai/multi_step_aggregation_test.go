@@ -135,6 +135,72 @@ func TestStreamTextContentAggregatesAcrossSteps(t *testing.T) {
 	}
 }
 
+// TestStreamTextRawFinishReasonResetsPerStep guards against a step's
+// rawFinishReason leaking into the next step. Step 1's finish chunk carries a
+// raw reason; step 2's does not (RawFinishReason: ""), matching a provider
+// that only sometimes reports a raw string. TS reads each step's
+// rawFinishReason fresh off that step's own result, so the final value must
+// come only from the last step — never inherited from an earlier one.
+func TestStreamTextRawFinishReasonResetsPerStep(t *testing.T) {
+	step := 0
+	model := &testutil.MockLanguageModel{
+		ToolSupport: true,
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			if step == 0 {
+				step++
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeText, Text: "calling tool"},
+					{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{
+						ID:        "tool-1",
+						ToolName:  "calc",
+						Arguments: map[string]interface{}{"x": 1},
+					}},
+					{
+						Type:            provider.ChunkTypeFinish,
+						FinishReason:    types.FinishReasonToolCalls,
+						RawFinishReason: "tool_calls_raw",
+						Usage:           &types.Usage{},
+					},
+				}), nil
+			}
+			// Step 2's finish chunk reports no raw reason at all.
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "done"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, Usage: &types.Usage{}},
+			}), nil
+		},
+	}
+
+	done := make(chan *StreamTextResult, 1)
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "hi",
+		Tools: []types.Tool{{
+			Name: "calc",
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				return map[string]interface{}{"ok": true}, nil
+			},
+		}},
+		StopWhen: []StopCondition{StepCountIs(2)},
+		OnFinish: func(r *StreamTextResult) { done <- r },
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	select {
+	case result = <-done:
+		if err := result.Err(); err != nil {
+			t.Fatalf("stream err = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for stream completion")
+	}
+
+	if got := result.RawFinishReason(); got != "" {
+		t.Fatalf("RawFinishReason() = %q, want empty (step 2 reported none, must not inherit step 1's %q)", got, "tool_calls_raw")
+	}
+}
+
 func TestGenerateTextAggregatesFilesSourcesWarningsAcrossSteps(t *testing.T) {
 	step := 0
 	model := &testutil.MockLanguageModel{

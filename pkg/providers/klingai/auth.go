@@ -6,19 +6,80 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 )
 
-// generateJWTToken generates a JWT token for KlingAI API authentication
-// Uses HS256 (HMAC-SHA256) signing matching the TypeScript implementation
-// The token is valid for 30 minutes
+// resolveKlingAIAuthToken resolves the bearer token to use for a KlingAI API
+// request (TS resolveKlingAIAuthToken).
+//
+// KlingAI supports two authentication schemes:
+//   - A single API key sent directly as a bearer token (recommended).
+//   - A legacy access key / secret key pair that signs a short-lived JWT.
+//
+// Explicit values take precedence over environment variables, and the API
+// key takes precedence over the access key / secret key pair:
+//
+//  1. apiKey (Config.APIKey)
+//  2. accessKey + secretKey (Config.AccessKey / Config.SecretKey, both set)
+//  3. KLINGAI_API_KEY environment variable
+//  4. KLINGAI_ACCESS_KEY + KLINGAI_SECRET_KEY environment variables
+//
+// See https://kling.ai/document-api/guides/get-started/quick-start.
+func resolveKlingAIAuthToken(apiKey, accessKey, secretKey string) (string, error) {
+	if explicit := strings.TrimSpace(apiKey); explicit != "" {
+		return explicit, nil
+	}
+
+	if accessKey != "" && secretKey != "" {
+		return generateJWTToken(accessKey, secretKey)
+	}
+
+	if envAPIKey := strings.TrimSpace(os.Getenv("KLINGAI_API_KEY")); envAPIKey != "" {
+		return envAPIKey, nil
+	}
+
+	hasLegacyCredentials := trimmedSettingPresent(accessKey, "KLINGAI_ACCESS_KEY") ||
+		trimmedSettingPresent(secretKey, "KLINGAI_SECRET_KEY")
+
+	if !hasLegacyCredentials {
+		return "", fmt.Errorf("KlingAI API key is missing. Pass it using the 'apiKey' parameter " +
+			"or the KLINGAI_API_KEY environment variable. Alternatively, pass the " +
+			"legacy 'accessKey' and 'secretKey' parameters or the " +
+			"KLINGAI_ACCESS_KEY and KLINGAI_SECRET_KEY environment variables.")
+	}
+
+	return generateJWTToken(accessKey, secretKey)
+}
+
+// trimmedSettingPresent reports whether settingValue (trimmed) is non-empty,
+// or, when it is empty, whether the named environment variable (trimmed) is.
+func trimmedSettingPresent(settingValue, envVar string) bool {
+	if strings.TrimSpace(settingValue) != "" {
+		return true
+	}
+	return strings.TrimSpace(os.Getenv(envVar)) != ""
+}
+
+// generateJWTToken generates a JWT token for KlingAI API authentication from
+// an access key / secret key pair (TS generateKlingAIAuthToken), falling
+// back to the KLINGAI_ACCESS_KEY / KLINGAI_SECRET_KEY environment variables
+// for whichever value is empty.
+// Uses HS256 (HMAC-SHA256) signing matching the TypeScript implementation.
+// The token is valid for 30 minutes.
 func generateJWTToken(accessKey, secretKey string) (string, error) {
 	if accessKey == "" {
-		return "", fmt.Errorf("access key is required")
+		accessKey = os.Getenv("KLINGAI_ACCESS_KEY")
+	}
+	if accessKey == "" {
+		return "", fmt.Errorf("KlingAI access key is required (set KLINGAI_ACCESS_KEY or provide Config.AccessKey)")
 	}
 	if secretKey == "" {
-		return "", fmt.Errorf("secret key is required")
+		secretKey = os.Getenv("KLINGAI_SECRET_KEY")
+	}
+	if secretKey == "" {
+		return "", fmt.Errorf("KlingAI secret key is required (set KLINGAI_SECRET_KEY or provide Config.SecretKey)")
 	}
 
 	now := time.Now().Unix()

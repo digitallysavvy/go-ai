@@ -46,7 +46,7 @@ func TestGenerateSpeechForwardsProviderResponseMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateSpeech error = %v", err)
 	}
-	if capturedHeaders["user-agent"] != "go-ai/0.5.0" {
+	if capturedHeaders["user-agent"] != "ai/0.5.0" {
 		t.Fatalf("user-agent = %q", capturedHeaders["user-agent"])
 	}
 	if capturedProviderOptions == nil || len(capturedProviderOptions) != 0 {
@@ -183,7 +183,7 @@ func TestGenerateSpeechRejectsNegativeMaxRetriesWithInvalidArgumentError(t *test
 	}
 }
 
-func TestGenerateSpeechAppendsGoAIUserAgent(t *testing.T) {
+func TestGenerateSpeechAppendsAIUserAgent(t *testing.T) {
 	t.Parallel()
 
 	var capturedHeaders map[string]string
@@ -207,7 +207,7 @@ func TestGenerateSpeechAppendsGoAIUserAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateSpeech error = %v", err)
 	}
-	if capturedHeaders["user-agent"] != "custom-agent go-ai/0.5.0" {
+	if capturedHeaders["user-agent"] != "custom-agent ai/0.5.0" {
 		t.Fatalf("user-agent = %q", capturedHeaders["user-agent"])
 	}
 	if _, ok := capturedHeaders["User-Agent"]; ok {
@@ -261,5 +261,113 @@ func TestGeneratedAudioFormatMatchesTypeScript(t *testing.T) {
 		if got := generatedAudioFormat(mediaType); got != want {
 			t.Fatalf("generatedAudioFormat(%q) = %q, want %q", mediaType, got, want)
 		}
+	}
+}
+
+// TestResolveGeneratedSpeechMediaType ports TS generate-speech.ts's media
+// type resolution priority (audit row e61cbd8 / WG11): sniffed bytes, then
+// the response Content-Type header (audio/* only, params stripped), then
+// outputFormat for headerless raw formats, then audio/mp3.
+func TestResolveGeneratedSpeechMediaType(t *testing.T) {
+	t.Parallel()
+
+	wavBytes := []byte("RIFF\x00\x00\x00\x00WAVEfmt ")
+
+	tests := []struct {
+		name         string
+		data         []byte
+		headers      map[string]string
+		outputFormat string
+		want         string
+	}{
+		{
+			name: "sniffed from bytes takes precedence",
+			data: wavBytes,
+			headers: map[string]string{
+				"Content-Type": "audio/mpeg",
+			},
+			outputFormat: "pcm",
+			want:         "audio/wav", // TS detectMediaType topLevelType audio (detect-media-type.ts:134)
+		},
+		{
+			name: "falls back to response Content-Type header",
+			data: []byte("raw pcm bytes that can't be sniffed"),
+			headers: map[string]string{
+				"Content-Type": "audio/wav; codecs=1",
+			},
+			want: "audio/wav",
+		},
+		{
+			name: "ignores a non-audio Content-Type header",
+			data: []byte("raw pcm bytes that can't be sniffed"),
+			headers: map[string]string{
+				"content-type": "application/octet-stream",
+			},
+			outputFormat: "pcm",
+			want:         "audio/pcm",
+		},
+		{
+			name:         "falls back to outputFormat pcm",
+			data:         []byte("raw pcm bytes that can't be sniffed"),
+			outputFormat: "pcm",
+			want:         "audio/pcm",
+		},
+		{
+			name:         "falls back to outputFormat audio/mulaw",
+			data:         []byte("raw mulaw bytes that can't be sniffed"),
+			outputFormat: "mulaw",
+			want:         "audio/mulaw",
+		},
+		{
+			name:         "falls back to outputFormat audio/alaw",
+			data:         []byte("raw alaw bytes that can't be sniffed"),
+			outputFormat: "audio/alaw",
+			want:         "audio/alaw",
+		},
+		{
+			name:         "falls back to outputFormat audio/l16",
+			data:         []byte("raw l16 bytes that can't be sniffed"),
+			outputFormat: "audio/l16",
+			want:         "audio/l16",
+		},
+		{
+			name: "final fallback is audio/mp3",
+			data: []byte("unrecognizable bytes"),
+			want: "audio/mp3",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveGeneratedSpeechMediaType(tt.data, tt.headers, tt.outputFormat)
+			if got != tt.want {
+				t.Errorf("resolveGeneratedSpeechMediaType() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestGenerateSpeechUsesOutputFormatWhenBytesUndetectableAndNoContentType
+// exercises the resolution chain end-to-end through GenerateSpeech.
+func TestGenerateSpeechUsesOutputFormatWhenBytesUndetectableAndNoContentType(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockSpeechModel{
+		ModelName: "speech-model",
+		DoGenerateFunc: func(_ context.Context, opts *provider.SpeechGenerateOptions) (*types.SpeechResult, error) {
+			return &types.SpeechResult{Audio: []byte("raw pcm bytes that can't be sniffed")}, nil
+		},
+	}
+
+	result, err := GenerateSpeech(context.Background(), GenerateSpeechOptions{
+		Model:        model,
+		Text:         "hello",
+		OutputFormat: "pcm",
+	})
+	if err != nil {
+		t.Fatalf("GenerateSpeech error = %v", err)
+	}
+	if result.Audio.MediaType != "audio/pcm" {
+		t.Fatalf("media type = %q, want audio/pcm", result.Audio.MediaType)
 	}
 }

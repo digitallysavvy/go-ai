@@ -32,7 +32,7 @@ func NewLanguageModel(provider *Provider, deploymentID string) *LanguageModel {
 
 // SpecificationVersion returns the specification version
 func (m *LanguageModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
@@ -115,7 +115,9 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 
 	// Create stream wrapper
-	return providerutils.WithResponseMetadata(newAzureStream(httpResp.Body), httpResp.Header, m.ModelID()), nil
+	stream := newAzureStream(httpResp.Body)
+	stream.SetRequestBody(reqBody)
+	return providerutils.WithResponseMetadata(stream, httpResp.Header, m.ModelID()), nil
 }
 
 // buildRequestBody builds the Azure OpenAI API request body
@@ -127,11 +129,14 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["stream"] = true
 	}
 
-	// Convert messages
+	// Convert messages. Azure's chat() factory wraps OpenAIChatLanguageModel
+	// in TS, so it inherits OpenAI's serializeToolCallArguments sanitization
+	// for replayed tool-call arguments (see ToOpenAIMessagesOptions doc).
+	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{SanitizeReplayedToolCallArguments: true, IncludePromptCacheBreakpoint: true}
 	if opts.Prompt.IsMessages() {
-		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages)
+		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, toOpenAIMessagesOpts)
 	} else if opts.Prompt.IsSimple() {
-		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text))
+		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text), toOpenAIMessagesOpts)
 	}
 
 	// Add system message if present
@@ -199,10 +204,11 @@ func (m *LanguageModel) convertResponse(response azureResponse) *types.GenerateR
 
 	choice := response.Choices[0]
 	result := &types.GenerateResult{
-		Text:         choice.Message.Content,
-		FinishReason: providerutils.MapOpenAIFinishReason(choice.FinishReason),
-		Usage:        convertAzureUsage(response.Usage),
-		RawResponse:  response,
+		Text:            choice.Message.Content,
+		FinishReason:    providerutils.MapOpenAIFinishReason(choice.FinishReason),
+		RawFinishReason: choice.FinishReason,
+		Usage:           convertAzureUsage(response.Usage),
+		RawResponse:     response,
 	}
 
 	// Add tool calls if present

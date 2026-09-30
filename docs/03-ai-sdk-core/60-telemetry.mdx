@@ -7,7 +7,7 @@ description: Using OpenTelemetry with the Go AI SDK Core
 
 The Go AI SDK uses [OpenTelemetry](https://opentelemetry.io/) to collect telemetry data. OpenTelemetry is an open-source observability framework designed to provide standardized instrumentation for collecting telemetry data.
 
-Check out the [AI SDK Observability Integrations](/providers/observability) to see providers that offer monitoring and tracing for AI SDK applications.
+Check out the AI SDK Observability Integrations to see providers that offer monitoring and tracing for AI SDK applications.
 
 ## Enabling Telemetry
 
@@ -82,24 +82,31 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 
 ### Custom Tracer
 
-Provide a custom OpenTelemetry tracer instead of using the global tracer:
+Provide a custom OpenTelemetry tracer instead of using the global tracer. The tracer belongs to the integration, not to `telemetry.Options`: construct the integration with it and register it once at startup.
 
 ```go
 import (
-    "go.opentelemetry.io/otel"
     "go.opentelemetry.io/otel/sdk/trace"
+
+    "github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
 
 // Create custom tracer provider
 tp := trace.NewTracerProvider()
 tracer := tp.Tracer("my-custom-tracer")
 
+// GenAI semantic-convention spans. Use telemetry.NewLegacyOpenTelemetry
+// with telemetry.LegacyOpenTelemetryOptions{Tracer: tracer} for the
+// ai.* span names instead.
+telemetry.RegisterTelemetryIntegration(
+    telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{Tracer: tracer}),
+)
+
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "Write a short story about a cat.",
     Telemetry: &telemetry.Options{
         IsEnabled: telemetry.Bool(true),
-        Tracer:    tracer,
     },
 })
 ```
@@ -132,6 +139,14 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 ### Event Names
 
 Telemetry integrations should implement `OnEnd`, `OnEmbedEnd`, and `OnRerankEnd`. The older `OnFinish`, `OnEmbedFinish`, and `OnRerankFinish` names are kept as deprecated compatibility fallbacks. Streaming `OnChunk` telemetry is no longer emitted; application-level `StreamTextOptions.OnChunk` callbacks still receive stream chunks.
+
+`OnEmbedEnd` and `OnRerankEnd` now also fire for a failed model-call attempt
+(a retry that errored), not only on success. `EmbeddingModelCallEndEvent` and
+`RerankingModelCallEndEvent` each gained an `Error error` field: when set,
+the built-in integrations record error status on the span instead of setting
+usage/embeddings/ranking attributes. Custom integrations that implement
+`OnEmbedEnd` / `OnRerankEnd` should check `event.Error` before assuming a
+successful call.
 
 Step lifecycle telemetry uses `OnStepEnd` as the canonical name. `OnStepFinish` is still emitted as a deprecated compatibility event for migration, and `OnStepEnd` takes precedence when both callback names are configured.
 

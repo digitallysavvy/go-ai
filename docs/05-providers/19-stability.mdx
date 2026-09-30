@@ -1,0 +1,198 @@
+---
+title: Stability AI Provider
+description: Setup and usage guide for Stability AI image generation with Go-AI SDK
+---
+
+# Stability AI Provider
+
+The current Go provider exposes Stability text-to-image generation through the shared `ai.GenerateImage` API.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "context"
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/stability"
+)
+```
+
+### Configuration
+
+```go
+provider := stability.New(stability.Config{
+    APIKey: os.Getenv("STABILITY_API_KEY"),
+})
+
+model, err := provider.ImageModel("stable-diffusion-xl-1024-v1-0")
+```
+
+### Get API Key
+
+```bash
+export STABILITY_API_KEY=sk-...
+```
+
+## Available Models
+
+`provider.ImageModel(modelID)` calls the legacy Stability v1 REST API —
+`POST /v1/generation/{modelID}/text-to-image` — so `modelID` must be a v1
+"engine" ID. Stability's newer SD3/Stable Image v2beta models
+(`sd3-large`, `sd3-medium`, `core`, `ultra`, etc.) are **not** reachable
+through this provider, since they live under a different endpoint
+(`/v2beta/stable-image/...`) that this package does not implement.
+
+### Image Generation
+
+| Model ID | Output | Best For |
+|----------|--------|----------|
+| stable-diffusion-xl-1024-v1-0 | PNG bytes | High quality text-to-image generation |
+| stable-diffusion-v1-6 | PNG bytes | Fast text-to-image generation |
+
+## Provider-Specific Features
+
+### Text-to-Image
+
+```go
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  model,
+    Prompt: "A serene landscape",
+    Size:   "1024x1024",
+})
+```
+
+## Examples
+
+### Basic Image Generation
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/stability"
+)
+
+func main() {
+    provider := stability.New(stability.Config{
+        APIKey: os.Getenv("STABILITY_API_KEY"),
+    })
+
+    model, err := provider.ImageModel("stable-diffusion-xl-1024-v1-0")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := ai.GenerateImage(context.Background(), ai.GenerateImageOptions{
+        Model:  model,
+        Prompt: "A futuristic cityscape at sunset, photorealistic",
+        Size:   "1024x1024",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Save image
+    imageData := result.Images[0].Data
+    err = os.WriteFile("output.png", imageData, 0644)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println("Image saved to output.png")
+}
+```
+
+### Batch Generation
+
+```go
+prompts := []string{
+    "A red sports car",
+    "A blue sports car",
+    "A green sports car",
+}
+
+for i, prompt := range prompts {
+    result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+        Model:  model,
+        Prompt: prompt,
+    })
+    if err != nil {
+        log.Printf("Failed to generate %d: %v", i, err)
+        continue
+    }
+
+    filename := fmt.Sprintf("car_%d.png", i)
+    os.WriteFile(filename, result.Images[0].Data, 0644)
+}
+```
+
+### Multiple Images
+
+```go
+n := 4
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  model,
+    Prompt: "A set of colorful product concept images",
+    N:      &n,
+    Size:   "1024x1024",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+for i, image := range result.Images {
+    filename := fmt.Sprintf("concept_%d.png", i)
+    os.WriteFile(filename, image.Data, 0644)
+}
+```
+
+## Best Practices
+
+1. **Prompt Engineering**
+   - Be specific and detailed
+   - Include style keywords
+   - Mention quality (4k, detailed, etc)
+
+2. **Cost Optimization**
+   - Start with one image before increasing `N`
+   - Batch similar requests
+   - Cache generated images
+
+3. **Performance**
+   - Use appropriate model for task
+   - Parallelize generations
+
+## Rate Limits & Pricing
+
+### Rate Limits
+
+Varies by plan - typical limits:
+- 150 images/min (standard)
+- 500 images/min (premium)
+
+### Cost Management
+
+```go
+func estimateImageCost(model string, count int) float64 {
+    prices := map[string]float64{
+        "stable-diffusion-xl-1024-v1-0": 0.04,
+        "stable-diffusion-v1-6":         0.02,
+    }
+
+    return prices[model] * float64(count)
+}
+```
+
+## See Also
+
+- [API Reference: GenerateImage](../07-reference/ai/generate-image.mdx)
+- [Stability AI Documentation](https://platform.stability.ai/docs)
+- [Black Forest Labs Provider](20-bfl.mdx) - Alternative image generation

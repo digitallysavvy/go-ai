@@ -633,6 +633,50 @@ func TestDoStreamFinishReasonMapping(t *testing.T) {
 	}
 }
 
+// TestDoStream_ImplementsStreamRequestBody verifies that the TextStream
+// returned by DoStream exposes the raw request body it sent via the
+// optional provider.StreamRequestBody capability (hand-off: "stream request
+// body field"), through the streaming.WarningsStream wrapper.
+func TestDoStream_ImplementsStreamRequestBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}` + "\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewLanguageModel(p, "gpt-4")
+
+	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{
+			Messages: []types.Message{
+				{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Hello"}}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoStream failed: %v", err)
+	}
+	defer stream.Close() //nolint:errcheck
+
+	rb, ok := stream.(provider.StreamRequestBody)
+	if !ok {
+		t.Fatalf("stream (%T) does not implement provider.StreamRequestBody", stream)
+	}
+	body, ok := rb.RequestBody().(map[string]interface{})
+	if !ok {
+		t.Fatalf("RequestBody() = %#v, want a map[string]interface{}", rb.RequestBody())
+	}
+	if body["model"] != "gpt-4" {
+		t.Errorf("RequestBody()[\"model\"] = %v, want %q", body["model"], "gpt-4")
+	}
+	if body["stream"] != true {
+		t.Errorf("RequestBody()[\"stream\"] = %v, want true", body["stream"])
+	}
+}
+
 // TestDoStreamToolCallChunks verifies that incremental tool call deltas are accumulated
 // and emitted as complete ChunkTypeToolCall chunks before the finish chunk.
 // OpenAI streams tool call arguments across multiple SSE deltas; each delta for a given
@@ -904,6 +948,112 @@ data: [DONE]
 	}
 	if providerErr.StatusCode != 400 || providerErr.Message != "bad request" || providerErr.ResponseBody == "" {
 		t.Fatalf("provider error = %#v", providerErr)
+	}
+}
+
+// TestOpenAIStreamMidStreamErrorAttachesStructuredPayload is a P1-1c part 2
+// regression test: once output has started, a mid-stream `error` frame must
+// carry a structured *providererrors.StreamProviderError on the chunk's Err
+// field (TS createOpenAIProviderStreamError), not just a bare Text message.
+// rate_limit_exceeded infers statusCode 429 (discriminator match) and is
+// retryable per isRetryableStatusCode.
+func TestOpenAIStreamMidStreamErrorAttachesStructuredPayload(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"content":"hi"}}]}
+
+data: {"error":{"message":"Rate limit exceeded","type":"rate_limit_exceeded","code":"rate_limit_exceeded"}}
+
+data: [DONE]
+
+`
+	stream := newOpenAIStream(io.NopCloser(strings.NewReader(sseData)), true)
+	defer stream.Close() //nolint:errcheck
+
+	// First chunk: raw passthrough (includeRawChunks=true).
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("first chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeRaw {
+		t.Fatalf("first chunk type = %v, want raw", chunk.Type)
+	}
+
+	// Second chunk: the text delta that sets outputStarted.
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("second chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeText {
+		t.Fatalf("second chunk type = %v, want text", chunk.Type)
+	}
+
+	// Drain until the error chunk (raw passthrough may interleave).
+	var errChunk *provider.StreamChunk
+	for i := 0; i < 5; i++ {
+		chunk, err = stream.Next()
+		if err != nil {
+			t.Fatalf("Next() error: %v", err)
+		}
+		if chunk.Type == provider.ChunkTypeError {
+			errChunk = chunk
+			break
+		}
+	}
+	if errChunk == nil {
+		t.Fatal("expected a ChunkTypeError chunk for the mid-stream error frame")
+	}
+	var streamErr *providererrors.StreamProviderError
+	if !errors.As(errChunk.Err, &streamErr) {
+		t.Fatalf("chunk.Err = %v (%T), want *providererrors.StreamProviderError", errChunk.Err, errChunk.Err)
+	}
+	if streamErr.Type != "rate_limit_exceeded" {
+		t.Errorf("Type = %q, want rate_limit_exceeded", streamErr.Type)
+	}
+	if streamErr.StatusCode == nil || *streamErr.StatusCode != 429 {
+		t.Errorf("StatusCode = %v, want 429 (rate_limit discriminator)", streamErr.StatusCode)
+	}
+	if !streamErr.IsRetryable {
+		t.Error("IsRetryable = false, want true for a 429")
+	}
+}
+
+// TestOpenAIStreamMidStreamInsufficientQuotaNeverRetryable ports TS
+// isRetryableStreamError's special case: insufficient_quota is never
+// retryable even though its inferred statusCode (429) normally would be.
+func TestOpenAIStreamMidStreamInsufficientQuotaNeverRetryable(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"content":"hi"}}]}
+
+data: {"error":{"message":"You exceeded your quota","type":"insufficient_quota","code":"insufficient_quota"}}
+
+data: [DONE]
+
+`
+	stream := newOpenAIStream(io.NopCloser(strings.NewReader(sseData)), false)
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("first chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeText {
+		t.Fatalf("first chunk type = %v, want text", chunk.Type)
+	}
+
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("Next() error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeError {
+		t.Fatalf("chunk.Type = %v, want ChunkTypeError", chunk.Type)
+	}
+	var streamErr *providererrors.StreamProviderError
+	if !errors.As(chunk.Err, &streamErr) {
+		t.Fatalf("chunk.Err = %v (%T), want *providererrors.StreamProviderError", chunk.Err, chunk.Err)
+	}
+	if streamErr.StatusCode == nil || *streamErr.StatusCode != 429 {
+		t.Errorf("StatusCode = %v, want 429", streamErr.StatusCode)
+	}
+	if streamErr.IsRetryable {
+		t.Error("IsRetryable = true, want false for insufficient_quota (TS special-case)")
 	}
 }
 

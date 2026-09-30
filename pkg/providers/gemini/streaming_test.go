@@ -25,9 +25,19 @@ func sseStream(payloads ...string) io.ReadCloser {
 // code execution enabled) for use in white-box tests.
 func newTestStream(reader io.ReadCloser) *stream {
 	return newStream(reader, Config{
-		MetadataKey:           "google",
-		SupportsCodeExecution: true,
-	})
+		MetadataKey: "google",
+	}, nil, nil, "")
+}
+
+// stripResponseMetadata asserts the stream's first chunk is the single
+// response-metadata chunk (emitted once, from the first SSE event; see
+// processSSEEvent) and returns the remaining chunks.
+func stripResponseMetadata(t *testing.T, chunks []*provider.StreamChunk) []*provider.StreamChunk {
+	t.Helper()
+	if len(chunks) == 0 || chunks[0].Type != provider.ChunkTypeResponseMetadata {
+		t.Fatalf("expected a leading response-metadata chunk, got: %v", chunkTypes(chunks))
+	}
+	return chunks[1:]
 }
 
 // chunkTypes returns chunk type strings for diagnostic output.
@@ -48,6 +58,58 @@ func mustMarshal(v interface{}) string {
 }
 
 // --- streaming tests ---------------------------------------------------------
+
+// TestStream_MalformedChunkEmitsErrorChunkAndContinues is a P1-1c part 2
+// regression test, porting TS google-language-model.ts's
+// `if (!chunk.success) { controller.enqueue({type:'error', error:
+// chunk.error}); return; }`: a malformed SSE payload must surface as a
+// ChunkTypeError chunk (with a structured Err) and the stream must continue
+// reading subsequent events, not terminate. Previously Go returned this as
+// a terminal Next() error, ending the stream outright.
+func TestStream_MalformedChunkEmitsErrorChunkAndContinues(t *testing.T) {
+	s := newTestStream(sseStream(
+		`{not valid json`,
+		mustMarshal(Response{
+			Candidates: []Candidate{{
+				Content: struct {
+					Parts []Part `json:"parts"`
+					Role  string `json:"role"`
+				}{Parts: []Part{{Text: "hello"}}},
+			}},
+		}),
+	))
+	defer s.Close() //nolint:errcheck
+
+	chunk, err := s.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v, want a ChunkTypeError chunk with nil error (stream continues)", err)
+	}
+	if chunk.Type != provider.ChunkTypeError {
+		t.Fatalf("chunk.Type = %v, want ChunkTypeError", chunk.Type)
+	}
+	if chunk.Err == nil {
+		t.Fatal("chunk.Err is nil, want a structured *providererrors.StreamProviderError")
+	}
+
+	// The stream must continue: the next real chunk should follow, not EOF.
+	found := false
+	for i := 0; i < 5; i++ {
+		chunk, err = s.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next() error after malformed chunk: %v", err)
+		}
+		if chunk.Type == provider.ChunkTypeText && chunk.Text == "hello" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected the stream to continue past the malformed chunk and emit the following text")
+	}
+}
 
 func TestStream_ThoughtPartsEmitReasoning(t *testing.T) {
 	// Two SSE events: thought part, then text part + STOP.
@@ -85,6 +147,7 @@ func TestStream_ThoughtPartsEmitReasoning(t *testing.T) {
 		}
 		chunks = append(chunks, c)
 	}
+	chunks = stripResponseMetadata(t, chunks)
 
 	if len(chunks) != 7 {
 		t.Fatalf("expected 7 chunks, got %d: %v", len(chunks), chunkTypes(chunks))
@@ -143,6 +206,7 @@ func TestStream_MultiplePartsInSingleEvent(t *testing.T) {
 		}
 		chunks = append(chunks, c)
 	}
+	chunks = stripResponseMetadata(t, chunks)
 
 	if len(chunks) != 7 {
 		t.Fatalf("expected 7 chunks, got %d: %v", len(chunks), chunkTypes(chunks))
@@ -197,6 +261,7 @@ func TestStream_FinishReasonEmittedAfterText(t *testing.T) {
 		}
 		chunks = append(chunks, c)
 	}
+	chunks = stripResponseMetadata(t, chunks)
 
 	if len(chunks) != 4 {
 		t.Fatalf("expected 4 chunks, got %d: %v", len(chunks), chunkTypes(chunks))
@@ -250,6 +315,7 @@ func TestStream_CodeExecution(t *testing.T) {
 		}
 		chunks = append(chunks, c)
 	}
+	chunks = stripResponseMetadata(t, chunks)
 
 	// Expect: tool-call (code exec), tool-result, finish.
 	if len(chunks) != 3 {
@@ -335,11 +401,7 @@ func TestStream_ToolInputDeltaCarriesID(t *testing.T) {
 				Parts []Part `json:"parts"`
 				Role  string `json:"role"`
 			}{Parts: []Part{
-				{FunctionCall: &struct {
-					ID   string                 `json:"id,omitempty"`
-					Name string                 `json:"name"`
-					Args map[string]interface{} `json:"args"`
-				}{Name: "my_tool", Args: map[string]interface{}{"key": "val"}}},
+				{FunctionCall: &FunctionCall{Name: "my_tool", Args: map[string]interface{}{"key": "val"}, ArgsSet: true}},
 			}},
 			FinishReason: "STOP",
 		}},
@@ -359,6 +421,7 @@ func TestStream_ToolInputDeltaCarriesID(t *testing.T) {
 		}
 		chunks = append(chunks, c)
 	}
+	chunks = stripResponseMetadata(t, chunks)
 
 	// Expected: tool-input-start, tool-input-delta, tool-input-end, tool-call, finish
 	if len(chunks) != 5 {
@@ -440,11 +503,7 @@ func TestStream_FunctionCallArgumentsAreAccumulatedAcrossChunks(t *testing.T) {
 				Parts []Part `json:"parts"`
 				Role  string `json:"role"`
 			}{Parts: []Part{
-				{FunctionCall: &struct {
-					ID   string                 `json:"id,omitempty"`
-					Name string                 `json:"name"`
-					Args map[string]interface{} `json:"args"`
-				}{Name: "tool", Args: map[string]interface{}{"a": "hel"}}},
+				{FunctionCall: &FunctionCall{Name: "tool", Args: map[string]interface{}{"a": "hel"}, ArgsSet: true}},
 			}},
 		}},
 	})
@@ -454,11 +513,7 @@ func TestStream_FunctionCallArgumentsAreAccumulatedAcrossChunks(t *testing.T) {
 				Parts []Part `json:"parts"`
 				Role  string `json:"role"`
 			}{Parts: []Part{
-				{FunctionCall: &struct {
-					ID   string                 `json:"id,omitempty"`
-					Name string                 `json:"name"`
-					Args map[string]interface{} `json:"args"`
-				}{Name: "tool", Args: map[string]interface{}{"a": "hello"}}},
+				{FunctionCall: &FunctionCall{Name: "tool", Args: map[string]interface{}{"a": "hello"}, ArgsSet: true}},
 			}},
 			FinishReason: "STOP",
 		}},
@@ -542,7 +597,7 @@ func TestStream_MetadataKeyAppearsInFinishChunk(t *testing.T) {
 	})
 
 	// Test with vertex key.
-	sv := newStream(sseStream(event), Config{MetadataKey: "vertex"})
+	sv := newStream(sseStream(event), Config{MetadataKey: "vertex"}, nil, nil, "")
 	defer sv.Close() //nolint:errcheck
 	var vertexChunks []*provider.StreamChunk
 	for {
@@ -693,37 +748,5 @@ func TestStreamServiceTierLastValueWins(t *testing.T) {
 	json.Unmarshal(googleMeta["serviceTier"], &serviceTier)
 	if serviceTier != "SERVICE_TIER_PRIORITY" {
 		t.Errorf("serviceTier = %q, want last value %q", serviceTier, "SERVICE_TIER_PRIORITY")
-	}
-}
-
-func TestStreamModalityTokenCountsInMetadata(t *testing.T) {
-	chunk := `{"candidates":[{"content":{"parts":[{"text":"Hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":7,"promptTokensDetails":[{"modality":"TEXT","tokenCount":4},{"modality":"IMAGE","tokenCount":6}],"candidatesTokensDetails":[{"modality":"TEXT","tokenCount":7},{"modality":"AUDIO","tokenCount":2}]}}`
-
-	s := newTestStream(sseStream(chunk))
-	chunks := drainChunks(t, s)
-
-	var finishChunk *provider.StreamChunk
-	for _, c := range chunks {
-		if c.Type == provider.ChunkTypeFinish {
-			finishChunk = c
-		}
-	}
-	if finishChunk == nil || finishChunk.ProviderMetadata == nil {
-		t.Fatal("no finish chunk or no metadata")
-	}
-	var meta map[string]json.RawMessage
-	if err := json.Unmarshal(finishChunk.ProviderMetadata, &meta); err != nil {
-		t.Fatalf("unmarshal outer meta: %v", err)
-	}
-	var googleMeta map[string]json.RawMessage
-	if err := json.Unmarshal(meta["google"], &googleMeta); err != nil {
-		t.Fatalf("unmarshal google meta: %v", err)
-	}
-	var counts ModalityTokenCounts
-	if err := json.Unmarshal(googleMeta["modalityTokenCounts"], &counts); err != nil {
-		t.Fatalf("unmarshal modalityTokenCounts: %v", err)
-	}
-	if counts.TextTokens != 11 || counts.ImageTokens != 6 || counts.AudioTokens != 2 {
-		t.Errorf("modalityTokenCounts = %+v", counts)
 	}
 }

@@ -11,15 +11,19 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providers/deepseek"
 	"github.com/digitallysavvy/go-ai/pkg/providers/fireworks"
 	"github.com/digitallysavvy/go-ai/pkg/providers/gateway"
+	"github.com/digitallysavvy/go-ai/pkg/providers/gmicloud"
 	"github.com/digitallysavvy/go-ai/pkg/providers/google"
 	"github.com/digitallysavvy/go-ai/pkg/providers/googlevertex"
 	"github.com/digitallysavvy/go-ai/pkg/providers/groq"
+	"github.com/digitallysavvy/go-ai/pkg/providers/minimax"
 	"github.com/digitallysavvy/go-ai/pkg/providers/mistral"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 	"github.com/digitallysavvy/go-ai/pkg/providers/perplexity"
 	"github.com/digitallysavvy/go-ai/pkg/providers/quiverai"
 	"github.com/digitallysavvy/go-ai/pkg/providers/together"
+	"github.com/digitallysavvy/go-ai/pkg/providers/typesafeai"
 	"github.com/digitallysavvy/go-ai/pkg/providers/xai"
+	"github.com/digitallysavvy/go-ai/pkg/providers/zai"
 )
 
 func TestProviderFactoryAliasesMirrorTypeScriptCreateExports(t *testing.T) {
@@ -70,6 +74,18 @@ func TestProviderFactoryAliasesMirrorTypeScriptCreateExports(t *testing.T) {
 	}
 	if quiverai.CreateQuiverAI(quiverai.Config{}) == nil {
 		t.Fatal("CreateQuiverAI returned nil")
+	}
+	if gmicloud.CreateGmicloud(gmicloud.Config{}) == nil {
+		t.Fatal("CreateGmicloud returned nil")
+	}
+	if zai.CreateZai(zai.Config{}) == nil {
+		t.Fatal("CreateZai returned nil")
+	}
+	if minimax.CreateMiniMax(minimax.Config{}) == nil {
+		t.Fatal("CreateMiniMax returned nil")
+	}
+	if typesafeai.CreateTypeSafeAI(typesafeai.Config{}) == nil {
+		t.Fatal("CreateTypeSafeAI returned nil")
 	}
 
 	vertexCfg := googlevertex.Config{

@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
@@ -237,6 +238,128 @@ func TestDoGenerateAsync_MultiPollSuccess(t *testing.T) {
 	}
 	if result.MimeType != "image/png" {
 		t.Errorf("expected MimeType image/png, got %q", result.MimeType)
+	}
+}
+
+// TestDoGenerateAsync_TimesOutOnWallClockDeadline verifies that
+// pollAsyncResult enforces a wall-clock deadline (TS e4e761e) rather than a
+// fixed attempt count: each poll response is slow enough that a
+// count-based budget (ceil(timeout/interval) attempts) would let the loop
+// run several times longer than pollTimeoutMs before giving up.
+func TestDoGenerateAsync_TimesOutOnWallClockDeadline(t *testing.T) {
+	const modelID = "accounts/fireworks/models/flux-kontext-dev"
+	const requestID = "req-slow-poll"
+	const pollLatency = 30 * time.Millisecond
+	const pollTimeoutMs = 50
+
+	mux := http.NewServeMux()
+	submitPath := "/v1/workflows/" + modelID
+	pollPath := "/v1/workflows/" + modelID + "/get_result"
+
+	mux.HandleFunc("/v1/workflows/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case submitPath:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"request_id": %q}`, requestID)
+		case pollPath:
+			// Always slow and always pending: a count-based budget of
+			// ceil(50ms/1ms) = 50 attempts at 30ms each would take ~1.5s.
+			time.Sleep(pollLatency)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"id": %q, "status": "Pending", "result": null}`, requestID)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	prov := New(Config{
+		APIKey:              "test-key",
+		BaseURL:             server.URL,
+		ImagePollIntervalMs: 1,
+		ImagePollTimeoutMs:  pollTimeoutMs,
+	})
+	model := NewImageModel(prov, modelID)
+
+	start := time.Now()
+	_, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt: "A slow sunset",
+	})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected a timeout error")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("expected timeout error, got: %v", err)
+	}
+	// A count-based budget would need ~1.5s (50 attempts x 30ms); the
+	// wall-clock deadline must abort well before that, close to
+	// pollTimeoutMs plus one in-flight poll.
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("expected wall-clock deadline to abort quickly, took %v", elapsed)
+	}
+}
+
+// TestDoGenerateAsync_DownloadIsNotBoundByPollDeadline verifies that once
+// polling reports the image ready, the final download is not subject to the
+// poll timeout: TS doGenerateAsync downloads with the caller's own
+// abortSignal, not pollForImageUrl's internal timeoutController signal, so a
+// slow download that outlives the remaining poll budget must still succeed.
+func TestDoGenerateAsync_DownloadIsNotBoundByPollDeadline(t *testing.T) {
+	const modelID = "accounts/fireworks/models/flux-kontext-dev"
+	const requestID = "req-slow-download"
+	const pollTimeoutMs = 30
+	const downloadLatency = 100 * time.Millisecond
+
+	mux := http.NewServeMux()
+	submitPath := "/v1/workflows/" + modelID
+	pollPath := "/v1/workflows/" + modelID + "/get_result"
+
+	var imageURL string
+	mux.HandleFunc("/v1/workflows/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case submitPath:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"request_id": %q}`, requestID)
+		case pollPath:
+			// Reports ready immediately, well within pollTimeoutMs.
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"id": %q, "status": "Ready", "result": {"sample": %q}}`, requestID, imageURL)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	mux.HandleFunc("/fake-image", func(w http.ResponseWriter, r *http.Request) {
+		// The download alone takes longer than the poll timeout budget; it
+		// must not be aborted by the (already-satisfied) poll deadline.
+		time.Sleep(downloadLatency)
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(fakeImageBytes)
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	imageURL = server.URL + "/fake-image"
+
+	prov := New(Config{
+		APIKey:              "test-key",
+		BaseURL:             server.URL,
+		ImagePollIntervalMs: 1,
+		ImagePollTimeoutMs:  pollTimeoutMs,
+	})
+	model := NewImageModel(prov, modelID)
+
+	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt: "A patient sunrise",
+	})
+	if err != nil {
+		t.Fatalf("expected the slow download to succeed despite the poll deadline, got: %v", err)
+	}
+	if len(result.Image) == 0 {
+		t.Error("expected non-empty image bytes")
 	}
 }
 
@@ -540,6 +663,97 @@ func TestBuildAsyncRequestBody(t *testing.T) {
 	}
 	if body["custom_param"] != "value" {
 		t.Errorf("expected custom_param passthrough, got %v", body["custom_param"])
+	}
+}
+
+// TestBuildRequestBody_SyncProviderOptionsPassthrough ports the TS
+// fireworks-image-model-options.ts schema check (cfg_scale/steps documented
+// as being "for legacy image_generation models" — the sync, non-flux-kontext
+// path) to the sync buildRequestBody, mirroring TestBuildAsyncRequestBody's
+// passthrough coverage for the async path.
+func TestBuildRequestBody_SyncProviderOptionsPassthrough(t *testing.T) {
+	prov := New(Config{APIKey: "test"})
+	model := NewImageModel(prov, "accounts/fireworks/models/stable-diffusion-xl-1024-v1-0")
+
+	n := 2
+	opts := &provider.ImageGenerateOptions{
+		Prompt: "Test prompt",
+		N:      &n,
+		Size:   "512x512",
+		ProviderOptions: map[string]interface{}{
+			"fireworks": map[string]interface{}{
+				"cfg_scale":        7.5,
+				"steps":            30,
+				"output_format":    "png",
+				"safety_tolerance": "2",
+			},
+		},
+	}
+
+	body := model.buildRequestBody(opts)
+
+	if body["prompt"] != "Test prompt" {
+		t.Errorf("expected prompt, got %v", body["prompt"])
+	}
+	if body["n"] != 2 {
+		t.Errorf("expected n=2, got %v", body["n"])
+	}
+	if body["width"] != 512 || body["height"] != 512 {
+		t.Errorf("expected width/height=512, got %v/%v", body["width"], body["height"])
+	}
+	if body["cfg_scale"] != 7.5 {
+		t.Errorf("expected cfg_scale passthrough, got %v", body["cfg_scale"])
+	}
+	if body["steps"] != 30 {
+		t.Errorf("expected steps passthrough, got %v", body["steps"])
+	}
+	if body["output_format"] != "png" {
+		t.Errorf("expected output_format passthrough, got %v", body["output_format"])
+	}
+	if body["safety_tolerance"] != "2" {
+		t.Errorf("expected safety_tolerance passthrough, got %v", body["safety_tolerance"])
+	}
+}
+
+// TestDoGenerateSync_ProviderOptionsInRequestBody verifies the full sync
+// DoGenerate path actually sends provider-specific options over the wire,
+// not just that buildRequestBody includes them in isolation.
+func TestDoGenerateSync_ProviderOptionsInRequestBody(t *testing.T) {
+	const modelID = "accounts/fireworks/models/stable-diffusion-xl-1024-v1-0"
+
+	var gotBody map[string]interface{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/images/generations", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintln(w, `{"data": [{"url": "https://example.com/sync.png"}]}`) //nolint:errcheck
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	prov := providerForAsyncServer(server.URL)
+	model := NewImageModel(prov, modelID)
+
+	_, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt: "Mountains",
+		ProviderOptions: map[string]interface{}{
+			"fireworks": map[string]interface{}{
+				"cfg_scale": 7.0,
+				"steps":     float64(25),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if gotBody["cfg_scale"] != 7.0 {
+		t.Errorf("expected cfg_scale=7 in request body, got %v", gotBody["cfg_scale"])
+	}
+	if gotBody["steps"] != float64(25) {
+		t.Errorf("expected steps=25 in request body, got %v", gotBody["steps"])
 	}
 }
 

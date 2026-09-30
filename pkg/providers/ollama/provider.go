@@ -5,6 +5,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // Provider implements the provider.Provider interface for Ollama
@@ -31,9 +32,9 @@ func New(cfg Config) *Provider {
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: http.MergeHeaders(map[string]string{
+		Headers: version.WithUserAgentSuffix(http.MergeHeaders(map[string]string{
 			"Content-Type": "application/json",
-		}, cfg.Headers),
+		}, cfg.Headers), version.ProviderUserAgent("ollama")),
 	})
 
 	return &Provider{

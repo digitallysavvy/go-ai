@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
@@ -67,7 +68,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("LBFL API returned status %d: %s", resp.StatusCode, string(resp.Body))
+		return nil, fmt.Errorf("BFL API returned status %d: %s", resp.StatusCode, string(resp.Body))
 	}
 
 	var createResp bflCreateResponse
@@ -266,11 +267,6 @@ func (m *ImageModel) pollResult(ctx context.Context, createResp bflCreateRespons
 	if pollTimeout <= 0 {
 		pollTimeout = 60 * time.Second
 	}
-	maxAttempts := int((pollTimeout + pollInterval - 1) / pollInterval)
-	if maxAttempts < 1 {
-		maxAttempts = 1
-	}
-
 	pollURL := createResp.PollingURL
 	if pollURL == "" {
 		pollURL = fmt.Sprintf("/get_result?id=%s", createResp.ID)
@@ -285,15 +281,27 @@ func (m *ImageModel) pollResult(ctx context.Context, createResp bflCreateRespons
 		}
 	}
 
-	for i := 0; i < maxAttempts; i++ {
-		select {
-		case <-ctx.Done():
-			return bflResult{}, ctx.Err()
-		default:
-		}
+	// A wall-clock deadline (TS pollForImageUrl's AbortController + setTimeout),
+	// not a fixed attempt count: a slow poll request (or a slow provider) could
+	// otherwise let the loop run well past pollTimeout before it notices, since
+	// counting attempts only bounds wall time when every request completes
+	// instantly. Deriving pollCtx from the caller's ctx and canceling it both
+	// on timeout and on return also aborts any poll request in flight.
+	pollCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var timedOut atomic.Bool
+	timer := time.AfterFunc(pollTimeout, func() {
+		timedOut.Store(true)
+		cancel()
+	})
+	defer timer.Stop()
 
-		body, err := m.getPollBody(ctx, pollURL, headers)
+	for {
+		body, err := m.getPollBody(pollCtx, pollURL, headers)
 		if err != nil {
+			if timedOut.Load() {
+				return bflResult{}, fmt.Errorf("Black Forest Labs generation timed out.")
+			}
 			return bflResult{}, err
 		}
 
@@ -317,25 +325,48 @@ func (m *ImageModel) pollResult(ctx context.Context, createResp bflCreateRespons
 		}
 
 		select {
-		case <-ctx.Done():
-			return bflResult{}, ctx.Err()
+		case <-pollCtx.Done():
+			if timedOut.Load() {
+				return bflResult{}, fmt.Errorf("Black Forest Labs generation timed out.")
+			}
+			return bflResult{}, pollCtx.Err()
 		case <-time.After(pollInterval):
 		}
 	}
-
-	return bflResult{}, fmt.Errorf("Black Forest Labs generation timed out.")
 }
 
+// getPollBody fetches the poll status body. pollURL is provider-response
+// data (bflCreateResponse.PollingURL, or a path resolved against the
+// developer-configured base URL as a fallback), so it must be validated and
+// DNS-pinned exactly like downloadImage's response-supplied sample URL --
+// mirrors TS pollForImageUrl's getFromApi({validateUrl: true, trustedOrigin}),
+// which validates the poll URL and only forwards credentials when it stays on
+// a trusted host. Before this fix the request went straight through the
+// provider's plain HTTP client with no SSRF check, no DNS pinning and no
+// redirect protection, so a malicious or compromised poll URL could reach an
+// internal address (e.g. the cloud metadata endpoint).
 func (m *ImageModel) getPollBody(ctx context.Context, pollURL string, headers map[string]string) ([]byte, error) {
 	resolvedURL := pollURL
 	if !strings.HasPrefix(pollURL, "http://") && !strings.HasPrefix(pollURL, "https://") {
 		resolvedURL = strings.TrimRight(m.provider.baseURL(), "/") + "/" + strings.TrimLeft(pollURL, "/")
 	}
+	baseURL := m.provider.baseURL()
+	isTrusted := func(raw string) bool { return bflTrustedURL(raw, baseURL) }
+	opts := fileutil.DefaultDownloadOptions()
+	opts.Timeout = 30 * time.Second
+	opts.URLValidator = fileutil.TrustedURLValidator(isTrusted)
+	opts.Transport = fileutil.TrustRoutingTransport(isTrusted, nil, downloadTransport())
+	if err := opts.URLValidator(resolvedURL); err != nil {
+		return nil, err
+	}
+	trusted := isTrusted(resolvedURL)
+	// Validates each redirect hop and drops credentials on cross-origin hops.
+	client := fileutil.NewDownloadClient(resolvedURL, opts)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, resolvedURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	if bflTrustedURL(resolvedURL, m.provider.baseURL()) {
+	if trusted {
 		for k, v := range headers {
 			req.Header.Set(k, v)
 		}
@@ -343,14 +374,21 @@ func (m *ImageModel) getPollBody(ctx context.Context, pollURL string, headers ma
 			req.Header.Set("X-Key", m.provider.config.APIKey)
 		}
 	}
-	resp, err := m.provider.client.HTTPClient().Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close() //nolint:errcheck
-	body, err := io.ReadAll(resp.Body)
+	limit := opts.MaxSize
+	if limit == 0 {
+		limit = fileutil.DefaultMaxDownloadSize
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return nil, err
+	}
+	if int64(len(body)) > limit {
+		return nil, fmt.Errorf("BFL poll response exceeded maximum size of %d bytes", limit)
 	}
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("BFL API returned status %d: %s", resp.StatusCode, string(body))
@@ -430,33 +468,40 @@ func bflProviderMetadata(createResp bflCreateResponse, result bflResult) map[str
 	}
 }
 
+// downloadTransport is the DNS-pinning transport used for response-supplied
+// foreign download URLs. Tests replace it to intercept those downloads.
+var downloadTransport = fileutil.SafeTransport
+
 func (m *ImageModel) downloadImage(ctx context.Context, url string, headers map[string]string) ([]byte, map[string]string, error) {
 	if strings.HasPrefix(strings.ToLower(url), "data:") {
 		data, err := fileutil.Download(ctx, url, fileutil.DefaultDownloadOptions())
 		return data, nil, err
 	}
+	baseURL := m.provider.baseURL()
+	isTrusted := func(raw string) bool { return bflTrustedURL(raw, baseURL) }
 	opts := fileutil.DefaultDownloadOptions()
 	opts.Timeout = 30 * time.Second
-	if opts.URLValidator != nil {
-		if err := opts.URLValidator(url); err != nil {
-			return nil, nil, err
-		}
+	// The developer-configured origin (which may be self-hosted, e.g.
+	// http://localhost) and any *.bfl.ai host are trusted and use the plain
+	// transport with no SSRF check; every other hop -- including a redirect
+	// away from a trusted origin -- is validated and DNS-pinned. Choosing the
+	// transport per hop (rather than once for the whole request, as before)
+	// matches TS fetchWithValidatedRedirects, and validating trusted hops
+	// through isTrusted rather than unconditionally also fixes the previous
+	// rejection of a self-hosted trusted base URL.
+	opts.URLValidator = fileutil.TrustedURLValidator(isTrusted)
+	opts.Transport = fileutil.TrustRoutingTransport(isTrusted, nil, downloadTransport())
+	if err := opts.URLValidator(url); err != nil {
+		return nil, nil, err
 	}
-	client := &http.Client{Timeout: opts.Timeout}
-	if opts.URLValidator != nil {
-		validator := opts.URLValidator
-		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-			if len(via) > 10 {
-				return providererrors.NewDownloadError(url, 0, "", "Too many redirects (max 10)", nil)
-			}
-			return validator(req.URL.String())
-		}
-	}
+	trusted := isTrusted(url)
+	// Validates each redirect hop and drops credentials on cross-origin hops.
+	client := fileutil.NewDownloadClient(url, opts)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, nil, err
 	}
-	if bflTrustedURL(url, m.provider.baseURL()) {
+	if trusted {
 		for k, v := range headers {
 			req.Header.Set(k, v)
 		}

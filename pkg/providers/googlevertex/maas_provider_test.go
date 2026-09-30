@@ -2,10 +2,12 @@ package googlevertex
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -115,6 +117,42 @@ func TestVertexMaaS_DefaultProvider(t *testing.T) {
 	}
 	if VertexMaaS.Name() != "vertex.maas" {
 		t.Fatalf("Name() = %q", VertexMaaS.Name())
+	}
+}
+
+// TestNewMaaS_UserAgentTaggedOpenAICompatibleNotGoogleVertex mirrors TS
+// google-vertex-maas-provider.ts, which builds on @ai-sdk/openai-compatible's
+// createOpenAICompatible (not @ai-sdk/google-vertex), so its requests carry
+// openai-compatible's own "ai-sdk/openai-compatible/VERSION" tag, never
+// "ai-sdk/google-vertex".
+func TestNewMaaS_UserAgentTaggedOpenAICompatibleNotGoogleVertex(t *testing.T) {
+	var gotUserAgent string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUserAgent = r.Header.Get("User-Agent")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"1","object":"chat.completion","created":1,"model":"test-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	p := NewMaaS(MaaSConfig{
+		Project: "test-project",
+		BaseURL: server.URL,
+		GoogleAuthOptions: &GoogleAuthOptions{
+			TokenSource: staticTokenSource("dynamic-token"),
+		},
+	})
+	model, err := p.LanguageModel("test-model")
+	if err != nil {
+		t.Fatalf("LanguageModel error = %v", err)
+	}
+	if _, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{}}); err != nil {
+		t.Fatalf("DoGenerate error = %v", err)
+	}
+	if !strings.HasPrefix(gotUserAgent, "ai-sdk/openai-compatible/") {
+		t.Fatalf("User-Agent = %q, want ai-sdk/openai-compatible/... prefix", gotUserAgent)
+	}
+	if strings.Contains(gotUserAgent, "ai-sdk/google-vertex/") {
+		t.Fatalf("User-Agent = %q, must not carry the ai-sdk/google-vertex tag", gotUserAgent)
 	}
 }
 
@@ -296,4 +334,62 @@ func TestNewMaaS_ProviderErrorsUseVertexProviderName(t *testing.T) {
 
 func staticTokenSource(token string) oauth2.TokenSource {
 	return oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
+}
+
+// TestNewMaaS_Llama4DefaultMaxTokens ports TS
+// transformGoogleVertexMaasRequestBody (google-vertex-maas-provider.ts):
+// llama-4 MaaS models get max_tokens=8192 injected when the caller doesn't
+// set one, since they otherwise silently truncate output.
+func TestNewMaaS_Llama4DefaultMaxTokens(t *testing.T) {
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"1","object":"chat.completion","created":1,"model":"meta/llama-4-maverick-17b-128e-instruct-maas","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	p := NewMaaS(MaaSConfig{
+		Project: "test-project",
+		BaseURL: server.URL,
+		GoogleAuthOptions: &GoogleAuthOptions{
+			TokenSource: staticTokenSource("dynamic-token"),
+		},
+	})
+	model, err := p.LanguageModel("meta/llama-4-maverick-17b-128e-instruct-maas")
+	if err != nil {
+		t.Fatalf("LanguageModel error = %v", err)
+	}
+	if _, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}}); err != nil {
+		t.Fatalf("DoGenerate error = %v", err)
+	}
+	if got, ok := gotBody["max_tokens"].(float64); !ok || got != 8192 {
+		t.Fatalf("max_tokens = %v, want 8192", gotBody["max_tokens"])
+	}
+
+	// An explicit MaxTokens is never overridden.
+	gotBody = nil
+	explicit := 100
+	if _, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt:    types.Prompt{Text: "hi"},
+		MaxTokens: &explicit,
+	}); err != nil {
+		t.Fatalf("DoGenerate error = %v", err)
+	}
+	if got, ok := gotBody["max_tokens"].(float64); !ok || got != 100 {
+		t.Fatalf("max_tokens = %v, want 100 (explicit)", gotBody["max_tokens"])
+	}
+
+	// A non-llama-4 model is left alone.
+	gotBody = nil
+	other, err := p.LanguageModel("some-other-model")
+	if err != nil {
+		t.Fatalf("LanguageModel error = %v", err)
+	}
+	if _, err := other.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}}); err != nil {
+		t.Fatalf("DoGenerate error = %v", err)
+	}
+	if _, ok := gotBody["max_tokens"]; ok {
+		t.Fatalf("expected no max_tokens for non-llama-4 model, got %v", gotBody["max_tokens"])
+	}
 }

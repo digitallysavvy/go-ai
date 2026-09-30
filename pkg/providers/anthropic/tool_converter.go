@@ -1,10 +1,5 @@
 package anthropic
 
-import (
-	"github.com/digitallysavvy/go-ai/pkg/provider/types"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
-)
-
 // builtinToolDef holds the API type and canonical name for a simple Anthropic builtin tool.
 // Simple builtins are those that require no per-instance config fields beyond name and type.
 type builtinToolDef struct {
@@ -26,16 +21,42 @@ var anthropicBuiltinToolTypes = map[string]builtinToolDef{
 	"anthropic.text_editor_20250124": {apiType: "text_editor_20250124", name: "str_replace_editor"},
 	"anthropic.text_editor_20250429": {apiType: "text_editor_20250429", name: "str_replace_based_edit_tool"},
 
-	// code execution — Anthropic API requires type only, no name field
-	"anthropic.code_execution_20250522": {apiType: "code_execution_20250522"},
-	"anthropic.code_execution_20250825": {apiType: "code_execution_20250825"},
-	"anthropic.code_execution_20260120": {apiType: "code_execution_20260120"},
+	// code execution (TS prepareTools sends name "code_execution")
+	"anthropic.code_execution_20250522": {apiType: "code_execution_20250522", name: "code_execution"},
+	"anthropic.code_execution_20250825": {apiType: "code_execution_20250825", name: "code_execution"},
+	"anthropic.code_execution_20260120": {apiType: "code_execution_20260120", name: "code_execution"},
 
 	// memory
 	"anthropic.memory_20250818": {apiType: "memory_20250818", name: "memory"},
 
 	// advisor
 	"anthropic.advisor_20260301": {apiType: "advisor_20260301", name: "advisor"},
+
+	// tool search
+	"anthropic.tool_search_regex_20251119": {apiType: "tool_search_tool_regex_20251119", name: "tool_search_tool_regex"},
+	"anthropic.tool_search_bm25_20251119":  {apiType: "tool_search_tool_bm25_20251119", name: "tool_search_tool_bm25"},
+}
+
+// BuiltinToolAPIName returns the short Anthropic API "name" for a simple
+// built-in provider tool identified by its Go SDK tool Name (e.g.
+// "anthropic.tool_search_bm25_20251119" -> "tool_search_tool_bm25"). Exported
+// so other packages that forward Anthropic provider-defined tools through a
+// different wire API (e.g. pkg/providers/bedrock's Converse toolConfig, which
+// has no separate "type" field and instead needs a plain
+// {name, inputSchema}) can reuse the same name table instead of keeping a
+// separate copy — mirrors how TS bedrock imports `anthropicTools` from
+// '@ai-sdk/anthropic/internal' to do a generic tool-id lookup. Only covers
+// the simple builtins in anthropicBuiltinToolTypes (bash, text editors,
+// code execution, memory, advisor, tool search); self-serializing tools
+// (computer, text_editor_20250728, web_search, web_fetch) require
+// per-instance config this helper does not have access to and are not
+// included.
+func BuiltinToolAPIName(name string) (string, bool) {
+	def, ok := anthropicBuiltinToolTypes[name]
+	if !ok || def.name == "" {
+		return "", false
+	}
+	return def.name, true
 }
 
 // anthropicAPIMapper is satisfied by ProviderOptions types that produce their own
@@ -43,83 +64,4 @@ var anthropicBuiltinToolTypes = map[string]builtinToolDef{
 // computer tools (display dims), text_editor_20250728 (max_characters), web tools (filters).
 type anthropicAPIMapper interface {
 	ToAnthropicAPIMap() map[string]interface{}
-}
-
-// ToAnthropicFormatWithCache converts tools to Anthropic's tool format with full
-// provider option support:
-//
-//   - Simple built-in tools (bash, text_editor w/o params, code_execution, memory):
-//     formatted as {"type": "<api-type>", "name": "<api-name>"} with optional cache_control.
-//
-//   - Self-serializing provider tools (computer tools, text_editor_20250728, web_search,
-//     web_fetch): formatted via ToAnthropicAPIMap() on their ProviderOptions, which includes
-//     all required per-instance fields (display dims, max_characters, domain filters, etc.).
-//
-//   - Custom function tools: formatted with name, description, input_schema, and
-//     optional cache_control / eager_input_streaming / defer_loading / allowed_callers.
-func ToAnthropicFormatWithCache(tools []types.Tool) []map[string]interface{} {
-	result := make([]map[string]interface{}, len(tools))
-
-	for i, t := range tools {
-		// 1. Simple builtin tools — {"type": ..., "name": ..., cache_control?}
-		if def, isBuiltin := anthropicBuiltinToolTypes[t.Name]; isBuiltin {
-			toolMap := map[string]interface{}{
-				"type": def.apiType,
-			}
-			if def.name != "" {
-				toolMap["name"] = def.name
-			}
-			if t.ProviderOptions != nil {
-				if toolOpts, ok := t.ProviderOptions.(*ToolOptions); ok && toolOpts.CacheControl != nil {
-					toolMap["cache_control"] = toolOpts.CacheControl
-				}
-			}
-			result[i] = toolMap
-			continue
-		}
-
-		// 2. Self-serializing provider tools (computer, text_editor_20250728, web_search, web_fetch).
-		// These implement ToAnthropicAPIMap() on their ProviderOptions to produce a complete map
-		// including all required per-instance fields.
-		if t.ProviderOptions != nil {
-			if mapper, ok := t.ProviderOptions.(anthropicAPIMapper); ok {
-				result[i] = mapper.ToAnthropicAPIMap()
-				continue
-			}
-		}
-
-		// 3. Regular custom function tool.
-		toolMap := tool.ToAnthropicFormat([]types.Tool{t})[0]
-
-		// Apply ToolOptions: cache_control, eager_input_streaming, defer_loading, allowed_callers.
-		if t.ProviderOptions != nil {
-			if toolOpts, ok := t.ProviderOptions.(*ToolOptions); ok {
-				if toolOpts.CacheControl != nil {
-					toolMap["cache_control"] = toolOpts.CacheControl
-				}
-				if toolOpts.EagerInputStreaming != nil && *toolOpts.EagerInputStreaming {
-					toolMap["eager_input_streaming"] = true
-				}
-				if toolOpts.DeferLoading != nil {
-					toolMap["defer_loading"] = *toolOpts.DeferLoading
-				}
-				if len(toolOpts.AllowedCallers) > 0 {
-					toolMap["allowed_callers"] = toolOpts.AllowedCallers
-				}
-			}
-		}
-
-		// Serialize InputExamples if present (requires advanced-tool-use beta, injected separately).
-		if len(t.InputExamples) > 0 {
-			examples := make([]interface{}, len(t.InputExamples))
-			for j, ex := range t.InputExamples {
-				examples[j] = ex.Input
-			}
-			toolMap["input_examples"] = examples
-		}
-
-		result[i] = toolMap
-	}
-
-	return result
 }

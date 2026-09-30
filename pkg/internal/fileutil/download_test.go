@@ -16,6 +16,7 @@ import (
 func insecureDownloadOptions() DownloadOptions {
 	opts := DefaultDownloadOptions()
 	opts.URLValidator = nil
+	opts.Transport = nil
 	return opts
 }
 
@@ -34,6 +35,55 @@ func TestDownload_Success(t *testing.T) {
 
 	if string(data) != string(content) {
 		t.Fatalf("expected %q, got %q", content, data)
+	}
+}
+
+// TestDownload_SetsSDKUserAgent mirrors TS packages/ai/src/util/download/download.ts's
+// `withUserAgentSuffix({}, ai-sdk/${VERSION}, getRuntimeEnvironmentUserAgent())`:
+// remote-file downloads are tagged with the SDK-wide (not provider-specific)
+// tag plus the runtime tag. Owner decision 2026-09-30 reverses the earlier
+// "no custom User-Agent" default.
+func TestDownload_SetsSDKUserAgent(t *testing.T) {
+	var capturedUA string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedUA = r.Header.Get("User-Agent")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data"))
+	}))
+	defer server.Close()
+
+	if _, err := Download(context.Background(), server.URL, insecureDownloadOptions()); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if !strings.HasPrefix(capturedUA, "ai-sdk/") {
+		t.Fatalf("User-Agent = %q, want ai-sdk/... prefix", capturedUA)
+	}
+	if !strings.Contains(capturedUA, "runtime/go/") {
+		t.Fatalf("User-Agent = %q, want a runtime/go/... suffix", capturedUA)
+	}
+}
+
+// TestDownload_AppendsToCallerSuppliedUserAgent covers opts.Headers already
+// carrying a User-Agent: it should be kept as a prefix, matching
+// withUserAgentSuffix's append (not replace) semantics.
+func TestDownload_AppendsToCallerSuppliedUserAgent(t *testing.T) {
+	var capturedUA string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedUA = r.Header.Get("User-Agent")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data"))
+	}))
+	defer server.Close()
+
+	opts := insecureDownloadOptions()
+	opts.Headers = map[string]string{"User-Agent": "MyApp/1.0"}
+	if _, err := Download(context.Background(), server.URL, opts); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if !strings.HasPrefix(capturedUA, "MyApp/1.0 ai-sdk/") {
+		t.Fatalf("User-Agent = %q, want MyApp/1.0 ai-sdk/... prefix", capturedUA)
 	}
 }
 
@@ -189,7 +239,7 @@ func TestDownload_JustOverLimit(t *testing.T) {
 	}))
 	defer server.Close()
 
-	opts := DefaultDownloadOptions()
+	opts := insecureDownloadOptions()
 	opts.MaxSize = 1000
 
 	_, err := Download(context.Background(), server.URL, opts)
@@ -427,6 +477,19 @@ func TestValidateDownloadURLBlocksUnsafeHosts(t *testing.T) {
 		"http://192.0.0.1/file",
 		"http://240.0.0.1/file",
 		"http://255.255.255.255/file",
+		// TS: should block 224.0.0.0/4 (multicast)
+		"http://224.0.0.1/file",
+		"http://239.255.255.250/file",
+		// TS: TEST-NET documentation ranges
+		"http://192.0.2.1/file",
+		"http://198.51.100.1/file",
+		"http://203.0.113.1/file",
+		"http://[::ffff:203.0.113.1]/file",
+		"http://[64:ff9b::203.0.113.1]/file",
+		// TS: should block 2001:db8::/32 and 3fff::/20 (documentation)
+		"http://[2001:db8::1]/file",
+		"http://[3fff::1]/file",
+		"http://[3fff:fff::1]/file",
 	}
 	for _, raw := range blocked {
 		t.Run(raw, func(t *testing.T) {
@@ -442,10 +505,12 @@ func TestValidateDownloadURLBlocksUnsafeHosts(t *testing.T) {
 		"data:text/plain;base64,aGVsbG8=",
 		"http://172.15.0.1/file",
 		"http://172.32.0.1/file",
-		"http://203.0.113.1/file",
-		"http://[::ffff:203.0.113.1]/file",
-		"http://[64:ff9b::203.0.113.1]/file",
-		"http://[2001:db8::1]/file",
+		"https://8.8.8.8/file",
+		"http://198.51.101.1/file",
+		"http://[::ffff:8.8.8.8]/file",
+		"http://[64:ff9b::8.8.8.8]/file",
+		"http://[2606:4700::1]/file",
+		"http://[3fff:1000::1]/file",
 		"http://100.63.0.1/file",
 		"http://100.128.0.1/file",
 		"http://8.8/file",
@@ -578,6 +643,7 @@ func TestDownloadRedirectTargetValidationBlocksUnsafeTarget(t *testing.T) {
 	defer server.Close()
 
 	opts := DefaultDownloadOptions()
+	opts.Transport = nil // loopback fixtures; connect-time pinning covered in safe_transport_test.go
 	opts.URLValidator = func(raw string) error {
 		if strings.HasPrefix(raw, server.URL) {
 			return nil
@@ -617,6 +683,7 @@ func TestDownloadAllowsTenRedirectsThenRejectsNextHop(t *testing.T) {
 	defer server.Close()
 
 	opts := DefaultDownloadOptions()
+	opts.Transport = nil // loopback fixtures; connect-time pinning covered in safe_transport_test.go
 	opts.URLValidator = func(raw string) error {
 		if strings.HasPrefix(raw, server.URL) {
 			return nil

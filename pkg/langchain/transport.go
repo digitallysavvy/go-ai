@@ -58,10 +58,16 @@ func NewLangSmithDeploymentTransport(options LangSmithDeploymentTransportOptions
 	}
 }
 
+// LangSmithDeploymentTransport implements ai.ChatTransport, matching TS's
+// `class LangSmithDeploymentTransport<UI_MESSAGE> implements
+// ChatTransport<UI_MESSAGE>` (packages/langchain/src/transport.ts).
+var _ ai.ChatTransport = (*LangSmithDeploymentTransport)(nil)
+
 // SendMessages converts AI SDK model messages to LangChain messages, streams the
 // remote graph with streamMode ["values", "messages"], and returns UI chunks.
-func (t *LangSmithDeploymentTransport) SendMessages(ctx context.Context, messages []types.Message) (<-chan ai.UIMessageChunk, <-chan error) {
-	return t.SendMessagesWithCallbacks(ctx, messages, nil)
+// It implements ai.ChatTransport.SendMessages.
+func (t *LangSmithDeploymentTransport) SendMessages(ctx context.Context, req ai.ChatTransportSendMessagesRequest) (<-chan ai.UIMessageChunk, <-chan error) {
+	return t.SendMessagesWithCallbacks(ctx, req.Messages, nil)
 }
 
 // SendMessagesWithCallbacks converts AI SDK model messages to LangChain
@@ -85,8 +91,12 @@ func (t *LangSmithDeploymentTransport) SendMessagesWithCallbacks(ctx context.Con
 	return ToUIMessageStreamWithCallbacks(ctx, streamEvents, callbacks)
 }
 
-// ReconnectToStream matches the current TypeScript adapter behavior.
-func (t *LangSmithDeploymentTransport) ReconnectToStream(context.Context, string) (<-chan ai.UIMessageChunk, <-chan error) {
+// ReconnectToStream implements ai.ChatTransport.ReconnectToStream, matching
+// the current TypeScript adapter behavior: LangSmithDeploymentTransport does
+// not support resuming a stream, so it always reports an error (TS:
+// `async reconnectToStream(): Promise<...> { throw new Error('Method not
+// implemented.'); }`).
+func (t *LangSmithDeploymentTransport) ReconnectToStream(context.Context, ai.ChatTransportReconnectToStreamRequest) (<-chan ai.UIMessageChunk, <-chan error) {
 	out := closedChunkChannel()
 	errs := make(chan error, 1)
 	errs <- errors.New("Method not implemented.")

@@ -55,7 +55,7 @@ func (w *WeatherTool) Definition() types.Tool {
 		},
 
 		// v6.0: NEW Strict mode for exact schema enforcement
-		Strict: true,
+		Strict: types.BoolPtr(true),
 
 		Execute: w.Execute,
 	}

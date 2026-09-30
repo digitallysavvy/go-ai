@@ -9,7 +9,7 @@ description: Learn how to pass provider-specific configuration in the Go AI SDK.
 
 This is useful when you want to access features that are unique to a specific provider, such as exact reasoning token budgets, reasoning summaries, or server-side persistence controls.
 
-> **Note:** For reasoning effort, prefer the top-level `Reasoning` parameter for portability across providers. Use provider-specific options only when you need exact token budgets or provider-unique features. See [Reasoning](../06-advanced/reasoning.mdx) for details.
+> **Note:** For reasoning effort, prefer the top-level `Reasoning` parameter for portability across providers. Use provider-specific options only when you need exact token budgets or provider-unique features. See [Reasoning](../03-ai-sdk-core/26-reasoning.mdx) for details.
 
 ## Common provider options
 
@@ -256,11 +256,15 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 ```
 
-For Vertex AI models, use the `"vertex"` key instead of `"google"`:
+For Vertex AI models, use the `"googleVertex"` key instead of `"google"`.
+Vertex checks provider options keys in this order: `"googleVertex"` (preferred),
+then `"vertex"` (legacy, still honored), then `"google"` (cross-namespace
+fallback) — never the hyphenated `"google-vertex"`, which is the provider's
+identity string, not a provider options key.
 
 ```go
 ProviderOptions: map[string]interface{}{
-    "vertex": map[string]interface{}{
+    "googleVertex": map[string]interface{}{
         "thinkingConfig": map[string]interface{}{
             "thinkingBudget": 10000,
         },
@@ -368,5 +372,5 @@ OpenAI, Google, XAI, and other providers use `map[string]interface{}` with docum
 - [OpenAI provider](../05-providers/02-openai.mdx)
 - [Anthropic provider](../05-providers/03-anthropic.mdx)
 - [Google provider](../05-providers/04-google.mdx)
-- [Google Vertex provider](../05-providers/05-google-vertex.mdx)
+- [Google Vertex provider](../05-providers/18-google-vertex.mdx)
 - [XAI provider](../05-providers/10-xai.mdx)

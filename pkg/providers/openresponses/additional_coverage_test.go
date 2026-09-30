@@ -1,6 +1,7 @@
 package openresponses
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -141,10 +143,10 @@ func TestOpenResponsesToolResultConverters(t *testing.T) {
 		t.Fatalf("expected structured output parts, got %#v", out)
 	}
 
-	// Validate stream wrapper methods Read/Close/Err paths.
+	// Validate stream wrapper methods Close/Err paths. openResponsesStream is
+	// a provider.TextStream (Next/Err/Close only) — it must not implement
+	// io.Reader (P1-1c part 2).
 	s := newOpenResponsesStream(io.NopCloser(strings.NewReader("")), nil)
-	buf := make([]byte, 1)
-	_, _ = s.Read(buf)
 	_ = s.Close()
 	if s.Err() != nil {
 		t.Fatalf("Err() should be nil when stream ended cleanly")
@@ -155,6 +157,61 @@ func TestMapOpenResponsesFinishReason_DefaultBranch(t *testing.T) {
 	t.Parallel()
 	if got := MapOpenResponsesFinishReason("something_else", false); got != types.FinishReasonOther {
 		t.Fatalf("unexpected mapping for unknown reason: %v", got)
+	}
+}
+
+// TestOpenResponsesDoGenerateNoOutputReturnsDescriptiveError covers row
+// 75f86f4: a 200 response with no `output` field must raise a descriptive
+// 500 ProviderError instead of silently producing an empty result.
+func TestOpenResponsesDoGenerateNoOutputReturnsDescriptiveError(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}`))
+	}))
+	defer srv.Close()
+
+	p := New(Config{BaseURL: srv.URL, Name: "open-responses"})
+	m := NewLanguageModel(p, "local-model")
+
+	_, err := m.DoGenerate(t.Context(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+	})
+	if err == nil {
+		t.Fatal("expected an error for a response with no output")
+	}
+	if !strings.Contains(err.Error(), "Responses API returned no output (max_output_tokens)") {
+		t.Fatalf("error = %v, want descriptive no-output message with incomplete reason", err)
+	}
+}
+
+// TestOpenResponsesDoGenerateEmbeddedErrorMapsTo400 covers row 75f86f4: a 200
+// response with an embedded `error` object maps to a 400 ProviderError.
+func TestOpenResponsesDoGenerateEmbeddedErrorMapsTo400(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","error":{"code":"invalid_request","message":"bad prompt"}}`))
+	}))
+	defer srv.Close()
+
+	p := New(Config{BaseURL: srv.URL, Name: "open-responses"})
+	m := NewLanguageModel(p, "local-model")
+
+	_, err := m.DoGenerate(t.Context(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+	})
+	if err == nil {
+		t.Fatal("expected an error for a response with an embedded error object")
+	}
+	var provErr *providererrors.ProviderError
+	if !errors.As(err, &provErr) || provErr.StatusCode != 400 {
+		t.Fatalf("error = %v, want a ProviderError with StatusCode 400", err)
+	}
+	if !strings.Contains(err.Error(), "bad prompt") {
+		t.Fatalf("error = %v, want to contain the embedded error message", err)
 	}
 }
 

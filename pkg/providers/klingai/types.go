@@ -12,6 +12,12 @@ const (
 
 	// VideoModeMotionControl is motion control video generation
 	VideoModeMotionControl VideoMode = "motion-control"
+
+	// VideoModeMultiImage is reference-to-video generation (multi-image2video).
+	// It is never returned by detectMode (which reads the model id suffix);
+	// it is an "effective mode" computed per call when an i2v model is given
+	// inputReferences instead of a single start image.
+	VideoModeMultiImage VideoMode = "mi2v"
 )
 
 // ProviderOptions contains KlingAI-specific options for video generation
@@ -140,7 +146,7 @@ type CameraConfig struct {
 
 // DynamicMask represents a dynamic brush configuration
 type DynamicMask struct {
-	Mask        string       `json:"mask"`
+	Mask         string       `json:"mask"`
 	Trajectories []Trajectory `json:"trajectories"`
 }
 
@@ -158,10 +164,10 @@ type createTaskResponse struct {
 	Message   string `json:"message"`
 	RequestID string `json:"request_id,omitempty"`
 	Data      *struct {
-		TaskID    string `json:"task_id"`
+		TaskID     string `json:"task_id"`
 		TaskStatus string `json:"task_status,omitempty"`
-		CreatedAt int64  `json:"created_at,omitempty"`
-		UpdatedAt int64  `json:"updated_at,omitempty"`
+		CreatedAt  int64  `json:"created_at,omitempty"`
+		UpdatedAt  int64  `json:"updated_at,omitempty"`
 	} `json:"data,omitempty"`
 }
 

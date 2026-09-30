@@ -42,6 +42,19 @@ type XAITranscriptionProviderOptions struct {
 	Diarize      *bool       `json:"diarize,omitempty"`
 	Keyterm      interface{} `json:"keyterm,omitempty"`
 	FillerWords  *bool       `json:"fillerWords,omitempty"`
+
+	// Streaming holds options specific to streaming speech-to-text over
+	// WebSocket (DoStream). Ignored by DoTranscribe.
+	Streaming *XAIStreamingTranscriptionOptions `json:"streaming,omitempty"`
+}
+
+// XAIStreamingTranscriptionOptions mirrors TS
+// xaiTranscriptionModelOptionsSchema's nested `streaming` object.
+type XAIStreamingTranscriptionOptions struct {
+	InterimResults   *bool    `json:"interimResults,omitempty"`
+	Endpointing      *int     `json:"endpointing,omitempty"`
+	SmartTurn        *float64 `json:"smartTurn,omitempty"`
+	SmartTurnTimeout *int     `json:"smartTurnTimeout,omitempty"`
 }
 
 func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.TranscriptionOptions) (*types.TranscriptionResult, error) {
@@ -184,6 +197,18 @@ func extractXAITranscriptionProviderOptions(providerOptions map[string]interface
 	}
 	if err := validateXAIKeyterm(opts.Keyterm); err != nil {
 		return opts, invalidXAIProviderOptions(err)
+	}
+	if opts.Streaming != nil {
+		s := opts.Streaming
+		if s.Endpointing != nil && (*s.Endpointing < 0 || *s.Endpointing > 5000) {
+			return opts, invalidXAIProviderOptions(fmt.Errorf("streaming.endpointing must be between 0 and 5000"))
+		}
+		if s.SmartTurn != nil && (*s.SmartTurn < 0 || *s.SmartTurn > 1) {
+			return opts, invalidXAIProviderOptions(fmt.Errorf("streaming.smartTurn must be between 0 and 1"))
+		}
+		if s.SmartTurnTimeout != nil && (*s.SmartTurnTimeout < 1 || *s.SmartTurnTimeout > 5000) {
+			return opts, invalidXAIProviderOptions(fmt.Errorf("streaming.smartTurnTimeout must be between 1 and 5000"))
+		}
 	}
 	return opts, nil
 }

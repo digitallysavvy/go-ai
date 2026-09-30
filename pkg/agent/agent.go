@@ -90,6 +90,11 @@ type AgentGenerateOptions struct {
 	StopWhen    []ai.StopCondition
 	MaxSteps    int
 
+	// ExperimentalToolCallers configures which tools may call which other
+	// tools, and which tools stay hidden until discovered via ai.ToolSearch.
+	// Forwarded to the underlying GenerateText/StreamText call.
+	ExperimentalToolCallers ai.ExperimentalToolCallers
+
 	Temperature           *float64
 	MaxTokens             *int
 	TopP                  *float64
@@ -115,6 +120,42 @@ type AgentGenerateOptions struct {
 	ExperimentalRefineToolInput map[string]ai.ToolInputRefiner
 	ExperimentalDownload        ai.DownloadFunction
 
+	// HarnessSession is the extension point a harness.HarnessAgent (see
+	// pkg/harness) uses to receive the *harness.AgentSession its caller
+	// created via HarnessAgent.CreateSession. Typed as interface{} (rather
+	// than a pkg/harness type) to avoid an import cycle: pkg/harness imports
+	// this package so HarnessAgent can satisfy the Agent interface. Other
+	// Agent implementations ignore this field. Mirrors the way TS
+	// `AgentCallParameters` carries a `session` for HarnessAgent's
+	// generate/stream (state/parity/sep_23_2026/harness.md §1.3, "the
+	// session is passed via options"). See harness.SessionFromCallOptions.
+	HarnessSession interface{}
+
+	// InstructionMessages supplies this call's instructions as system
+	// messages. Takes precedence over Instructions/System/Prompt when
+	// non-empty. See AgentConfig.InstructionMessages.
+	InstructionMessages []types.Message
+
+	// PrepareStep overrides AgentConfig.PrepareStep for this call.
+	PrepareStep func(ctx context.Context, step ai.PrepareStepOptions) ai.PrepareStepOptions
+
+	// RepairToolCall overrides AgentConfig.RepairToolCall for this call.
+	RepairToolCall ai.ToolCallRepairFunction
+	// Deprecated: use RepairToolCall.
+	ExperimentalRepairToolCall ai.ToolCallRepairFunction
+
+	// OnLanguageModelCallStart overrides AgentConfig.OnLanguageModelCallStart
+	// for this call.
+	OnLanguageModelCallStart ai.OnLanguageModelCallStartCallback
+	// Deprecated: use OnLanguageModelCallStart.
+	ExperimentalOnLanguageModelCallStart ai.OnLanguageModelCallStartCallback
+
+	// OnLanguageModelCallEnd overrides AgentConfig.OnLanguageModelCallEnd for
+	// this call.
+	OnLanguageModelCallEnd ai.OnLanguageModelCallEndCallback
+	// Deprecated: use OnLanguageModelCallEnd.
+	ExperimentalOnLanguageModelCallEnd ai.OnLanguageModelCallEndCallback
+
 	OnStart              func(ctx context.Context, e ai.OnStartEvent)
 	OnStepStart          func(ctx context.Context, e ai.OnStepStartEvent)
 	OnToolExecutionStart func(ctx context.Context, e ai.OnToolCallStartEvent)
@@ -126,7 +167,9 @@ type AgentGenerateOptions struct {
 	OnStepEnd        func(ctx context.Context, e ai.OnStepFinishEvent)
 	// Deprecated: use OnStepEnd.
 	OnStepFinish func(ctx context.Context, e ai.OnStepFinishEvent)
-	OnFinish     func(ctx context.Context, e ai.OnFinishEvent)
+	OnEnd        func(ctx context.Context, e ai.OnFinishEvent)
+	// Deprecated: use OnEnd.
+	OnFinish func(ctx context.Context, e ai.OnFinishEvent)
 }
 
 // AgentStreamOptions contains per-call options for ToolLoopAgent.Stream.
@@ -239,6 +282,12 @@ type AgentConfig struct {
 	// ToolOrder controls the order tools are sent to providers.
 	ToolOrder []string
 
+	// ExperimentalToolCallers configures which tools may call which other
+	// tools, and which tools stay hidden until discovered via ai.ToolSearch.
+	// Forwarded to the underlying GenerateText/StreamText call. Mirrors the
+	// TypeScript SDK's ToolLoopAgentSettings.experimental_toolCallers.
+	ExperimentalToolCallers ai.ExperimentalToolCallers
+
 	// Skills are reusable agent behaviors
 	// Skills can be registered and executed by the agent
 	Skills *SkillRegistry
@@ -320,6 +369,12 @@ type AgentConfig struct {
 	// Supports total timeout, per-step timeout, and per-chunk timeout
 	Timeout *ai.TimeoutConfig
 
+	// MaxRetries controls transient provider call retries, forwarded to
+	// ai.GenerateTextOptions.MaxRetries / ai.StreamTextOptions.MaxRetries.
+	// nil uses the default retry count (2), matching TS WorkflowAgent's
+	// `mergedGenerationSettings.maxRetries ?? 2`.
+	MaxRetries *int
+
 	// ========================================================================
 	// Dynamic Configuration (v6.0.41 - NEW)
 	// ========================================================================
@@ -383,6 +438,47 @@ type AgentConfig struct {
 	// calls. When nil, the core default downloader is used for unsupported URLs.
 	ExperimentalDownload ai.DownloadFunction
 
+	// InstructionMessages supplies the agent's instructions as system messages
+	// (ai.GenerateTextOptions.InstructionMessages / StreamTextOptions
+	// equivalent), preserving per-message ProviderOptions. Takes precedence
+	// over Instructions/System/Prompt when non-empty.
+	InstructionMessages []types.Message
+
+	// PrepareStep lets you provide different settings for a step. Forwarded
+	// to ai.GenerateText/StreamText for Generate/Stream (TS
+	// ToolLoopAgentSettings.prepareStep).
+	PrepareStep func(ctx context.Context, step ai.PrepareStepOptions) ai.PrepareStepOptions
+
+	// RepairToolCall attempts to repair tool calls that fail to parse because
+	// the tool does not exist or its input is invalid. Forwarded to
+	// ai.GenerateText/StreamText for Generate/Stream.
+	RepairToolCall ai.ToolCallRepairFunction
+
+	// ExperimentalRepairToolCall is a deprecated alias for RepairToolCall.
+	//
+	// Deprecated: use RepairToolCall.
+	ExperimentalRepairToolCall ai.ToolCallRepairFunction
+
+	// OnLanguageModelCallStart is called immediately before each provider
+	// model call begins.
+	OnLanguageModelCallStart ai.OnLanguageModelCallStartCallback
+
+	// ExperimentalOnLanguageModelCallStart is a deprecated alias for
+	// OnLanguageModelCallStart.
+	//
+	// Deprecated: use OnLanguageModelCallStart.
+	ExperimentalOnLanguageModelCallStart ai.OnLanguageModelCallStartCallback
+
+	// OnLanguageModelCallEnd is called after each provider model response is
+	// normalized and parsed, before client-side tool execution.
+	OnLanguageModelCallEnd ai.OnLanguageModelCallEndCallback
+
+	// ExperimentalOnLanguageModelCallEnd is a deprecated alias for
+	// OnLanguageModelCallEnd.
+	//
+	// Deprecated: use OnLanguageModelCallEnd.
+	ExperimentalOnLanguageModelCallEnd ai.OnLanguageModelCallEndCallback
+
 	// ========================================================================
 	// Callbacks
 	// ========================================================================
@@ -433,7 +529,12 @@ type AgentConfig struct {
 	// Deprecated: use OnStepEndEvent.
 	OnStepFinishEvent func(ctx context.Context, e ai.OnStepFinishEvent)
 
-	// OnFinishEvent is called once when agent execution completes.
+	// OnEndEvent is called once when agent execution completes.
+	OnEndEvent func(ctx context.Context, e ai.OnFinishEvent)
+
+	// OnFinishEvent is a deprecated alias for OnEndEvent.
+	//
+	// Deprecated: use OnEndEvent.
 	OnFinishEvent func(ctx context.Context, e ai.OnFinishEvent)
 
 	// LangChain/LangGraph-Style Callbacks (v6.0.60+)
@@ -489,6 +590,11 @@ type AgentConfig struct {
 	// types.ToolApprovalFunc and maps keyed by tool name. Nil or zero-valued
 	// results are treated as not-applicable.
 	ToolApproval types.ToolApprovalConfig
+
+	// ExperimentalToolApprovalSecret signs issued tool approval requests and
+	// verifies resumed approval responses before tools execute (TS
+	// experimental_toolApprovalSecret). Nil disables signing/verification.
+	ExperimentalToolApprovalSecret []byte
 }
 
 // PrepareCallConfig contains configuration that can be modified before each call
@@ -525,8 +631,16 @@ type PrepareCallConfig struct {
 	// ToolOrder controls the order tools are sent to providers for this call.
 	ToolOrder []string
 
+	// ExperimentalToolCallers configures which tools may call which other
+	// tools for this call.
+	ExperimentalToolCallers ai.ExperimentalToolCallers
+
 	// ToolApproval configures automatic approval handling for this call.
 	ToolApproval types.ToolApprovalConfig
+
+	// ExperimentalToolApprovalSecret overrides the approval signing secret for
+	// this call.
+	ExperimentalToolApprovalSecret []byte
 
 	// SensitiveRuntimeContext omits runtime context from telemetry payloads.
 	SensitiveRuntimeContext bool
@@ -597,6 +711,26 @@ type PrepareCallConfig struct {
 	// ExperimentalDownload customizes prompt URL download handling.
 	ExperimentalDownload ai.DownloadFunction
 
+	// InstructionMessages supplies this step's instructions as system
+	// messages. See AgentConfig.InstructionMessages.
+	InstructionMessages []types.Message
+
+	// PrepareStep lets you provide different settings for a step. See
+	// AgentConfig.PrepareStep.
+	PrepareStep func(ctx context.Context, step ai.PrepareStepOptions) ai.PrepareStepOptions
+
+	// RepairToolCall attempts to repair tool calls that fail to parse for
+	// this step.
+	RepairToolCall ai.ToolCallRepairFunction
+
+	// OnLanguageModelCallStart is called immediately before this step's
+	// provider model call begins.
+	OnLanguageModelCallStart ai.OnLanguageModelCallStartCallback
+
+	// OnLanguageModelCallEnd is called after this step's provider model
+	// response is normalized and parsed, before client-side tool execution.
+	OnLanguageModelCallEnd ai.OnLanguageModelCallEndCallback
+
 	// RuntimeContext is user-defined runtime data for this call.
 	RuntimeContext interface{}
 
@@ -611,6 +745,13 @@ type PrepareCallConfig struct {
 
 	// CustomData allows passing custom data between PrepareCall invocations
 	CustomData interface{}
+
+	// MaxRetries controls transient provider call retries for this call.
+	MaxRetries *int
+
+	// Timeout provides granular timeout controls for this call, the Go
+	// stand-in for TS's per-call abortSignal.
+	Timeout *ai.TimeoutConfig
 }
 
 // DefaultAgentConfig returns a config with sensible defaults

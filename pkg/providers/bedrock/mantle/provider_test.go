@@ -40,7 +40,7 @@ func TestBedrockMantleBearerTokenSkipsSigV4Transport(t *testing.T) {
 	base := roundTripperFunc(func(req *http.Request) (*http.Response, error) { return nil, nil })
 	client := &http.Client{Transport: base}
 	p := CreateBedrockMantle(ProviderSettings{Region: "us-east-1", APIKey: "bearer", HTTPClient: client})
-	if _, ok := p.openai.Client().HTTPClient().Transport.(*sigV4Transport); ok {
+	if _, ok := p.httpClient.Transport.(*sigV4Transport); ok {
 		t.Fatal("bearer token auth must not install SigV4 transport")
 	}
 }
@@ -64,7 +64,7 @@ func TestBedrockMantleSigV4FallbackTransport(t *testing.T) {
 		AccessKeyID:     "akid",
 		SecretAccessKey: "secret",
 	})
-	if _, ok := p.openai.Client().HTTPClient().Transport.(*sigV4Transport); !ok {
+	if _, ok := p.httpClient.Transport.(*sigV4Transport); !ok {
 		t.Fatal("expected SigV4 transport when bearer token is absent")
 	}
 }
@@ -100,7 +100,7 @@ func TestBedrockMantleCredentialProviderWinsOverStaticCredentials(t *testing.T) 
 	if err != nil {
 		t.Fatalf("NewRequest() error = %v", err)
 	}
-	resp, err := p.openai.Client().HTTPClient().Do(req)
+	resp, err := p.httpClient.Do(req)
 	if err != nil {
 		t.Fatalf("Do() error = %v", err)
 	}
@@ -142,7 +142,7 @@ func TestBedrockMantleExplicitCredentialsUseEnvSessionTokenLikeTS(t *testing.T) 
 	if err != nil {
 		t.Fatalf("NewRequest() error = %v", err)
 	}
-	resp, err := p.openai.Client().HTTPClient().Do(req)
+	resp, err := p.httpClient.Do(req)
 	if err != nil {
 		t.Fatalf("Do() error = %v", err)
 	}
@@ -170,4 +170,44 @@ type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+func TestBaseURLForModel_RoutesOpenAIOnlyModelsToOpenAIPath(t *testing.T) {
+	p := CreateBedrockMantle(ProviderSettings{Region: "us-east-1", APIKey: "bearer"})
+
+	tests := []struct {
+		modelID string
+		want    string
+	}{
+		{"openai.gpt-4o-mantle", "https://bedrock-mantle.us-east-1.api.aws/openai/v1"},
+		{"openai.gpt-5-mantle", "https://bedrock-mantle.us-east-1.api.aws/openai/v1"},
+		{"google.gemma-4-27b", "https://bedrock-mantle.us-east-1.api.aws/openai/v1"},
+		{"xai.grok-4", "https://bedrock-mantle.us-east-1.api.aws/openai/v1"},
+		// gpt-oss-* models are excluded from the OpenAI-only route.
+		{ModelOpenAIGPTOSS20B, "https://bedrock-mantle.us-east-1.api.aws/v1"},
+		{ModelOpenAIGPTOSS120B, "https://bedrock-mantle.us-east-1.api.aws/v1"},
+		{"anthropic.claude-sonnet-5", "https://bedrock-mantle.us-east-1.api.aws/v1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.modelID, func(t *testing.T) {
+			got, err := p.baseURLForModel(tt.modelID)
+			if err != nil {
+				t.Fatalf("baseURLForModel error = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("baseURLForModel(%q) = %q, want %q", tt.modelID, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBaseURLForModel_ExplicitBaseURLAlwaysWins(t *testing.T) {
+	p := CreateBedrockMantle(ProviderSettings{Region: "us-east-1", APIKey: "bearer", BaseURL: "https://custom.example.com/v1"})
+	got, err := p.baseURLForModel("openai.gpt-4o-mantle")
+	if err != nil {
+		t.Fatalf("baseURLForModel error = %v", err)
+	}
+	if got != "https://custom.example.com/v1" {
+		t.Fatalf("baseURLForModel = %q, want explicit override", got)
+	}
 }

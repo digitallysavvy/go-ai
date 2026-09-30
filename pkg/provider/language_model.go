@@ -178,6 +178,21 @@ type TextStream interface {
 	Close() error
 }
 
+// StreamRequestBody is an optional capability a TextStream implementation
+// can additionally provide to expose the raw serialized request body sent
+// to the provider for that stream, mirroring types.StepRequest.Body on the
+// non-streaming DoGenerate path (TS doStream() resolves {request: {body}}
+// alongside {stream}). pkg/ai/stream.go checks for this via a type
+// assertion after opening the stream and, when present, copies it into the
+// step's types.StepRequest.Body (hand-off: "stream request body field").
+// A TextStream that doesn't implement this simply has an empty
+// StepRequest.Body for streaming calls, as before.
+type StreamRequestBody interface {
+	// RequestBody returns the raw request body that was sent to open this
+	// stream, or nil if unavailable.
+	RequestBody() interface{}
+}
+
 // StreamChunk represents a single chunk in a text stream
 type StreamChunk struct {
 	// Type of chunk
@@ -221,6 +236,14 @@ type StreamChunk struct {
 	// Finish reason (when Type is ChunkTypeFinish)
 	FinishReason types.FinishReason
 
+	// RawFinishReason is the raw, provider-specific finish/incomplete reason
+	// string (when Type is ChunkTypeFinish), before normalization to
+	// FinishReason. It mirrors types.GenerateResult.RawFinishReason for the
+	// non-streaming path and is surfaced by StreamTextResult.RawFinishReason()
+	// (TS raw finish reason passthrough). For a Responses response.failed
+	// event it carries the failure's raw reason, or "error" if none was given.
+	RawFinishReason string
+
 	// Context management information (Anthropic-specific)
 	// Contains statistics about automatic conversation history cleanup
 	// Available when Type is ChunkTypeFinish or ChunkTypeMetadata
@@ -262,6 +285,33 @@ type StreamChunk struct {
 	// Carries the provider-level HTTP response metadata emitted early in the
 	// stream (after headers arrive, before content begins).
 	ResponseMetadata *ResponseMetadata
+
+	// Err optionally carries a structured error for a ChunkTypeError chunk
+	// (e.g. a *providererrors.ProviderError or a pre-built
+	// *providererrors.StreamProviderError with provider-specific type/code/
+	// statusCode/isRetryable already resolved). When nil, core falls back to
+	// wrapping Text as a plain error and normalizing it generically
+	// (pkg/ai/stream.go, providererrors.NormalizeStreamProviderError). A
+	// provider that can distinguish real error metadata from a bare message
+	// should set this instead of only Text, so streamRetries' retryability
+	// classification is accurate (audit row 35841f5 / WG8).
+	Err error
+
+	// Request carries this step's request metadata when Type is
+	// ChunkTypeStartStep. Mirrors the TS SDK's 'start-step' fullStream part's
+	// `request` field (LanguageModelRequestMetadata).
+	Request *types.StepRequest
+
+	// Response carries this step's response metadata when Type is
+	// ChunkTypeFinishStep. Does not include Response.Messages (populated
+	// later on the aggregated types.StepResult, not on this chunk), matching
+	// the TS SDK's 'finish-step' fullStream part's `response` field.
+	Response *types.StepResponse
+
+	// Performance carries this step's performance statistics when Type is
+	// ChunkTypeFinishStep. Mirrors the TS SDK's 'finish-step' fullStream
+	// part's `performance` field.
+	Performance *types.StepPerformance
 }
 
 // ResponseMetadata is the payload of a ChunkTypeResponseMetadata chunk.
@@ -300,8 +350,40 @@ const (
 	// ChunkTypeUsage indicates a usage information chunk
 	ChunkTypeUsage ChunkType = "usage"
 
-	// ChunkTypeFinish indicates the final chunk with finish reason
+	// ChunkTypeStart is emitted exactly once, before any step's stream is
+	// consumed, marking the beginning of the whole StreamText call. Carries
+	// no payload. Mirrors the TS SDK's "start" fullStream part
+	// (stream-text.ts:1855, `controller.enqueue({type:'start'})`).
+	ChunkTypeStart ChunkType = "start"
+
+	// ChunkTypeStartStep marks the start of one step in a multi-step stream,
+	// carrying that step's Request and Warnings. Emitted once per step,
+	// before that step's first other chunk. Mirrors the TS SDK's
+	// "start-step" fullStream part (stream-text.ts:2829-2838).
+	ChunkTypeStartStep ChunkType = "start-step"
+
+	// ChunkTypeFinish indicates the call is complete: the final chunk with
+	// the overall finish reason and total usage, emitted exactly once after
+	// the last step's ChunkTypeFinishStep. Mirrors the TS SDK's top-level
+	// "finish" fullStream part (stream-text.ts:3129-3136), which is distinct
+	// from and never repeated per step (see ChunkTypeFinishStep for the
+	// per-step signal).
 	ChunkTypeFinish ChunkType = "finish"
+
+	// ChunkTypeFinishStep marks the end of one step in a multi-step stream,
+	// carrying that step's Response/Usage/Performance/FinishReason/
+	// RawFinishReason/ProviderMetadata. Emitted once per step — including
+	// the last one, immediately before the call-level ChunkTypeFinish —
+	// whether the stream comes from the normal provider.LanguageModel.
+	// DoStream loop or was produced outside it (e.g. a harness bridge
+	// session that already ran its own model calls). Unlike ChunkTypeFinish
+	// it never by itself means the whole call is over; a consumer should
+	// expect either another ChunkTypeStartStep or the call-level
+	// ChunkTypeFinish afterward. Mirrors the TS SDK's "finish-step"
+	// fullStream part (stream-text.ts:3020-3033) and TS harness-v1-stream-
+	// part.ts's "finish-step" (distinct from "finish"). See
+	// state/parity/sep_23_2026/harness.md §3 ("P0 prerequisite").
+	ChunkTypeFinishStep ChunkType = "finish-step"
 
 	// ChunkTypeError indicates an error occurred
 	ChunkTypeError ChunkType = "error"

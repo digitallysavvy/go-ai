@@ -30,12 +30,12 @@ const (
 
 // Result type discriminator values.
 const (
-	CodeExecutionResultTypeProgrammatic    = "code_execution_result"
-	CodeExecutionResultTypeBash            = "bash_code_execution_result"
-	CodeExecutionResultTypeBashError       = "bash_code_execution_tool_result_error"
-	CodeExecutionResultTypeTextEditorError = "text_editor_code_execution_tool_result_error"
-	CodeExecutionResultTypeViewResult      = "text_editor_code_execution_view_result"
-	CodeExecutionResultTypeCreateResult    = "text_editor_code_execution_create_result"
+	CodeExecutionResultTypeProgrammatic     = "code_execution_result"
+	CodeExecutionResultTypeBash             = "bash_code_execution_result"
+	CodeExecutionResultTypeBashError        = "bash_code_execution_tool_result_error"
+	CodeExecutionResultTypeTextEditorError  = "text_editor_code_execution_tool_result_error"
+	CodeExecutionResultTypeViewResult       = "text_editor_code_execution_view_result"
+	CodeExecutionResultTypeCreateResult     = "text_editor_code_execution_create_result"
 	CodeExecutionResultTypeStrReplaceResult = "text_editor_code_execution_str_replace_result"
 )
 
@@ -57,8 +57,8 @@ type ProgrammaticToolCallInput struct {
 	Code string `json:"code"` // Python code to execute
 }
 
-func (p *ProgrammaticToolCallInput) codeExecutionInput()    {}
-func (p *ProgrammaticToolCallInput) GetInputType() string   { return p.Type }
+func (p *ProgrammaticToolCallInput) codeExecutionInput()  {}
+func (p *ProgrammaticToolCallInput) GetInputType() string { return p.Type }
 
 // BashCodeExecutionInput represents a bash command execution request.
 // Sent by the model when it wants to run a shell command.
@@ -69,8 +69,8 @@ type BashCodeExecutionInput struct {
 	Command string `json:"command"` // Shell command to execute
 }
 
-func (b *BashCodeExecutionInput) codeExecutionInput()    {}
-func (b *BashCodeExecutionInput) GetInputType() string   { return b.Type }
+func (b *BashCodeExecutionInput) codeExecutionInput()  {}
+func (b *BashCodeExecutionInput) GetInputType() string { return b.Type }
 
 // TextEditorInput represents a text editor file operation.
 // The Command field specifies the sub-operation: "view", "create", or "str_replace".
@@ -91,8 +91,8 @@ type TextEditorInput struct {
 	NewStr *string `json:"new_str,omitempty"`
 }
 
-func (t *TextEditorInput) codeExecutionInput()    {}
-func (t *TextEditorInput) GetInputType() string   { return t.Type }
+func (t *TextEditorInput) codeExecutionInput()  {}
+func (t *TextEditorInput) GetInputType() string { return t.Type }
 
 // UnmarshalCodeExecutionInput decodes a JSON-encoded CodeExecutionInput by reading
 // the "type" discriminator field and returning the appropriate concrete type.
@@ -141,13 +141,13 @@ type CodeExecutionResult interface {
 
 // CodeExecutionOutputItem is an output file reference in a programmatic execution result.
 type CodeExecutionOutputItem struct {
-	Type   string `json:"type"`    // "code_execution_output"
+	Type   string `json:"type"` // "code_execution_output"
 	FileID string `json:"file_id"`
 }
 
 // BashCodeExecutionOutputItem is an output file reference in a bash execution result.
 type BashCodeExecutionOutputItem struct {
-	Type   string `json:"type"`    // "bash_code_execution_output"
+	Type   string `json:"type"` // "bash_code_execution_output"
 	FileID string `json:"file_id"`
 }
 
@@ -162,8 +162,8 @@ type ProgrammaticExecutionResult struct {
 	Content    []CodeExecutionOutputItem `json:"content,omitempty"`
 }
 
-func (r *ProgrammaticExecutionResult) codeExecutionResult()    {}
-func (r *ProgrammaticExecutionResult) GetResultType() string   { return r.Type }
+func (r *ProgrammaticExecutionResult) codeExecutionResult()  {}
+func (r *ProgrammaticExecutionResult) GetResultType() string { return r.Type }
 
 // BashExecutionResult is returned after a bash command execution.
 // Content is always serialized (even if empty) because the Anthropic API schema
@@ -172,14 +172,14 @@ func (r *ProgrammaticExecutionResult) GetResultType() string   { return r.Type }
 // type: "bash_code_execution_result"
 type BashExecutionResult struct {
 	Type       string                        `json:"type"` // "bash_code_execution_result"
-	Content    []BashCodeExecutionOutputItem  `json:"content"`
+	Content    []BashCodeExecutionOutputItem `json:"content"`
 	Stdout     string                        `json:"stdout"`
 	Stderr     string                        `json:"stderr"`
 	ReturnCode int                           `json:"return_code"`
 }
 
-func (r *BashExecutionResult) codeExecutionResult()    {}
-func (r *BashExecutionResult) GetResultType() string   { return r.Type }
+func (r *BashExecutionResult) codeExecutionResult()  {}
+func (r *BashExecutionResult) GetResultType() string { return r.Type }
 
 // BashExecutionError is returned when bash execution fails with an error code.
 // Available error codes: invalid_tool_input, unavailable, too_many_requests,
@@ -187,12 +187,12 @@ func (r *BashExecutionResult) GetResultType() string   { return r.Type }
 //
 // type: "bash_code_execution_tool_result_error"
 type BashExecutionError struct {
-	Type      string `json:"type"`       // "bash_code_execution_tool_result_error"
+	Type      string `json:"type"` // "bash_code_execution_tool_result_error"
 	ErrorCode string `json:"error_code"`
 }
 
-func (r *BashExecutionError) codeExecutionResult()    {}
-func (r *BashExecutionError) GetResultType() string   { return r.Type }
+func (r *BashExecutionError) codeExecutionResult()  {}
+func (r *BashExecutionError) GetResultType() string { return r.Type }
 
 // TextEditorExecutionError is returned when a text editor operation fails.
 // Available error codes: invalid_tool_input, unavailable, too_many_requests,
@@ -200,19 +200,19 @@ func (r *BashExecutionError) GetResultType() string   { return r.Type }
 //
 // type: "text_editor_code_execution_tool_result_error"
 type TextEditorExecutionError struct {
-	Type      string `json:"type"`       // "text_editor_code_execution_tool_result_error"
+	Type      string `json:"type"` // "text_editor_code_execution_tool_result_error"
 	ErrorCode string `json:"error_code"`
 }
 
-func (r *TextEditorExecutionError) codeExecutionResult()    {}
-func (r *TextEditorExecutionError) GetResultType() string   { return r.Type }
+func (r *TextEditorExecutionError) codeExecutionResult()  {}
+func (r *TextEditorExecutionError) GetResultType() string { return r.Type }
 
 // TextEditorViewResult is returned after a file view operation.
 // FileType is one of: "text", "image", "pdf".
 //
 // type: "text_editor_code_execution_view_result"
 type TextEditorViewResult struct {
-	Type       string `json:"type"`        // "text_editor_code_execution_view_result"
+	Type       string `json:"type"` // "text_editor_code_execution_view_result"
 	Content    string `json:"content"`
 	FileType   string `json:"file_type"`
 	NumLines   *int   `json:"num_lines"`
@@ -220,26 +220,26 @@ type TextEditorViewResult struct {
 	TotalLines *int   `json:"total_lines"`
 }
 
-func (r *TextEditorViewResult) codeExecutionResult()    {}
-func (r *TextEditorViewResult) GetResultType() string   { return r.Type }
+func (r *TextEditorViewResult) codeExecutionResult()  {}
+func (r *TextEditorViewResult) GetResultType() string { return r.Type }
 
 // TextEditorCreateResult is returned after a file create or update operation.
 // IsFileUpdate is true when updating an existing file, false when creating a new one.
 //
 // type: "text_editor_code_execution_create_result"
 type TextEditorCreateResult struct {
-	Type         string `json:"type"`           // "text_editor_code_execution_create_result"
+	Type         string `json:"type"` // "text_editor_code_execution_create_result"
 	IsFileUpdate bool   `json:"is_file_update"`
 }
 
-func (r *TextEditorCreateResult) codeExecutionResult()    {}
-func (r *TextEditorCreateResult) GetResultType() string   { return r.Type }
+func (r *TextEditorCreateResult) codeExecutionResult()  {}
+func (r *TextEditorCreateResult) GetResultType() string { return r.Type }
 
 // TextEditorStrReplaceResult is returned after a str_replace file operation.
 //
 // type: "text_editor_code_execution_str_replace_result"
 type TextEditorStrReplaceResult struct {
-	Type     string   `json:"type"`      // "text_editor_code_execution_str_replace_result"
+	Type     string   `json:"type"` // "text_editor_code_execution_str_replace_result"
 	Lines    []string `json:"lines"`
 	NewLines *int     `json:"new_lines"`
 	NewStart *int     `json:"new_start"`
@@ -247,8 +247,8 @@ type TextEditorStrReplaceResult struct {
 	OldStart *int     `json:"old_start"`
 }
 
-func (r *TextEditorStrReplaceResult) codeExecutionResult()    {}
-func (r *TextEditorStrReplaceResult) GetResultType() string   { return r.Type }
+func (r *TextEditorStrReplaceResult) codeExecutionResult()  {}
+func (r *TextEditorStrReplaceResult) GetResultType() string { return r.Type }
 
 // UnmarshalCodeExecutionResult decodes a JSON-encoded CodeExecutionResult by reading
 // the "type" discriminator field and returning the appropriate concrete type.
@@ -341,6 +341,66 @@ func CodeExecution20260120() types.Tool {
 		Parameters:  buildCodeExecution20260120Schema(),
 		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
 			return nil, fmt.Errorf("code execution tool requires client-side execution: parse input with UnmarshalCodeExecutionInput and return a CodeExecutionResult")
+		},
+		// ExperimentalToolCaller lets other tools opt into programmatic
+		// tool calling through code_execution_20260120 via
+		// ai.ExperimentalToolCallers, mirroring the TypeScript SDK's
+		// codeExecution_20260120() (experimental_toolCaller wrapper).
+		ExperimentalToolCaller: codeExecutionToolCaller(codeExecution20260120AllowedCaller),
+	}
+}
+
+// codeExecution20260120AllowedCaller is the value the Anthropic API expects
+// in providerOptions.anthropic.allowedCallers for a tool routed through
+// code_execution_20260120.
+const codeExecution20260120AllowedCaller = "code_execution_20260120"
+
+// codeExecutionToolCaller builds the shared provider-type
+// ToolCallerDefinition for an Anthropic code execution tool, appending
+// allowedCallerName to providerOptions.anthropic.allowedCallers (deduped),
+// matching the TypeScript SDK's code-execution_20260120.ts /
+// code-execution_20250825.ts prepareProviderOptions.
+func codeExecutionToolCaller(allowedCallerName string) *types.ToolCallerDefinition {
+	return &types.ToolCallerDefinition{
+		Type: types.ToolCallerTypeProvider,
+		PrepareProviderOptions: func(providerOptions map[string]interface{}) map[string]interface{} {
+			out := make(map[string]interface{}, len(providerOptions)+1)
+			for k, v := range providerOptions {
+				out[k] = v
+			}
+			anthropicOpts := map[string]interface{}{}
+			if existing, ok := providerOptions["anthropic"].(map[string]interface{}); ok {
+				for k, v := range existing {
+					anthropicOpts[k] = v
+				}
+			}
+			// TS: [...new Set([...(anthropicOptions?.allowedCallers ?? []),
+			// allowedCallerName])] -- existing entries keep their original
+			// order (Set dedup keeps the first occurrence), and the new
+			// caller is appended at the end only if not already present.
+			seen := map[string]bool{}
+			var callers []string
+			if existing, ok := anthropicOpts["allowedCallers"].([]string); ok {
+				for _, c := range existing {
+					if !seen[c] {
+						seen[c] = true
+						callers = append(callers, c)
+					}
+				}
+			} else if existing, ok := anthropicOpts["allowedCallers"].([]interface{}); ok {
+				for _, c := range existing {
+					if s, ok := c.(string); ok && !seen[s] {
+						seen[s] = true
+						callers = append(callers, s)
+					}
+				}
+			}
+			if !seen[allowedCallerName] {
+				callers = append(callers, allowedCallerName)
+			}
+			anthropicOpts["allowedCallers"] = callers
+			out["anthropic"] = anthropicOpts
+			return out
 		},
 	}
 }

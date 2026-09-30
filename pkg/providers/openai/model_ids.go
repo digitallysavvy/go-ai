@@ -99,6 +99,23 @@ const (
 	// GPT-5.5 series
 	ModelGPT55           = "gpt-5.5"
 	ModelGPT552026_04_23 = "gpt-5.5-2026-04-23"
+
+	// GPT-5.6 series
+	ModelGPT56      = "gpt-5.6"
+	ModelGPT56Luna  = "gpt-5.6-luna"
+	ModelGPT56Sol   = "gpt-5.6-sol"
+	ModelGPT56Terra = "gpt-5.6-terra"
+
+	// GPT-6 series
+	ModelGPT6Astra = "gpt-6-astra"
+	ModelGPT6Luna  = "gpt-6-luna"
+	ModelGPT6Sol   = "gpt-6-sol"
+)
+
+// Completion model ID constants for the legacy OpenAI Completions API.
+const (
+	ModelGPT35TurboInstruct     = "gpt-3.5-turbo-instruct"
+	ModelGPT35TurboInstruct0914 = "gpt-3.5-turbo-instruct-0914"
 )
 
 // Image model ID constants for OpenAI image generation models.
@@ -110,6 +127,12 @@ const (
 	ModelGPTImage1Mini      = "gpt-image-1-mini"
 	ModelGPTImage15         = "gpt-image-1.5"
 	ModelChatGPTImageLatest = "chatgpt-image-latest"
+
+	// GPT Image 2.5 series (5fb2a64)
+	ModelGPTImage25Flare               = "gpt-image-2.5-flare"
+	ModelGPTImage25Flare_2026_09_08    = "gpt-image-2.5-flare-2026-09-08"
+	ModelGPTImage25Sunburst            = "gpt-image-2.5-sunburst"
+	ModelGPTImage25Sunburst_2026_09_08 = "gpt-image-2.5-sunburst-2026-09-08"
 )
 
 // Embedding model ID constants for OpenAI embedding models.

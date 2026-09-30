@@ -3,109 +3,80 @@ package huggingface
 import (
 	"strings"
 	"testing"
-
-	"github.com/digitallysavvy/go-ai/pkg/provider"
-	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
-func TestProviderFactoriesAndDefaults(t *testing.T) {
-	p := New(Config{APIKey: "hf"})
+// Ported from huggingface-provider.test.ts "should create provider with
+// default configuration" / "should create provider with custom settings".
+func TestNewProviderDefaults(t *testing.T) {
+	p := New(Config{})
 	if p.Name() != "huggingface" {
-		t.Fatalf("Name = %q", p.Name())
+		t.Fatalf("Name = %q, want huggingface", p.Name())
 	}
-
-	if _, err := p.LanguageModel(""); err == nil {
-		t.Fatal("LanguageModel should require model ID")
-	}
-	em, err := p.EmbeddingModel("")
-	if err != nil {
-		t.Fatalf("EmbeddingModel: %v", err)
-	}
-	if em.ModelID() != "sentence-transformers/all-MiniLM-L6-v2" {
-		t.Fatalf("default embedding model = %q", em.ModelID())
-	}
-	im, err := p.ImageModel("")
-	if err != nil {
-		t.Fatalf("ImageModel: %v", err)
-	}
-	if im.ModelID() != "stabilityai/stable-diffusion-2-1" {
-		t.Fatalf("default image model = %q", im.ModelID())
-	}
-	if sm, err := p.SpeechModel("x"); sm != nil || err == nil {
-		t.Fatalf("SpeechModel expected unsupported error, got model=%v err=%v", sm, err)
-	}
-	if tm, err := p.TranscriptionModel("x"); tm != nil || err == nil {
-		t.Fatalf("TranscriptionModel expected unsupported error, got model=%v err=%v", tm, err)
-	}
-	if rm, err := p.RerankingModel("x"); rm != nil || err == nil {
-		t.Fatalf("RerankingModel expected unsupported error, got model=%v err=%v", rm, err)
+	if p.client == nil {
+		t.Fatal("expected client to be initialized")
 	}
 }
 
-func TestLanguageModelBuildRequestBodyAndConversions(t *testing.T) {
-	p := New(Config{APIKey: "hf"})
-	m := NewLanguageModel(p, "meta/test")
-	temp := 0.3
-	maxTokens := 128
-
-	body := m.buildRequestBody(&provider.GenerateOptions{
-		Prompt: types.Prompt{
-			Messages: []types.Message{
-				{
-					Role: "user",
-					Content: []types.ContentPart{
-						types.TextContent{Text: "Hello"},
-					},
-				},
-			},
-		},
-		Temperature: &temp,
-		MaxTokens:   &maxTokens,
+func TestNewProviderCustomSettings(t *testing.T) {
+	p := New(Config{
+		APIKey:  "custom-key",
+		BaseURL: "https://custom.url",
+		Headers: map[string]string{"Custom-Header": "test"},
 	})
-	if _, ok := body["inputs"]; !ok {
-		t.Fatalf("inputs missing from body: %#v", body)
-	}
-	params, ok := body["parameters"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("parameters missing from body: %#v", body)
-	}
-	if params["temperature"] != temp || params["max_new_tokens"] != maxTokens {
-		t.Fatalf("unexpected parameters: %#v", params)
-	}
-
-	res, err := m.convertResponse([]byte(`[{"generated_text":"ok"}]`))
-	if err != nil || res.Text != "ok" {
-		t.Fatalf("array convertResponse = %#v err=%v", res, err)
-	}
-	res, err = m.convertResponse([]byte(`{"generated_text":"ok2"}`))
-	if err != nil || res.Text != "ok2" {
-		t.Fatalf("object convertResponse = %#v err=%v", res, err)
-	}
-	if _, err := m.convertResponse([]byte(`{"error":"rate limit"}`)); err == nil || !strings.Contains(err.Error(), "rate limit") {
-		t.Fatalf("expected API error, got %v", err)
-	}
-	if _, err := m.convertResponse([]byte(`{"foo":"bar"}`)); err == nil {
-		t.Fatal("expected unexpected-format error")
+	if p == nil {
+		t.Fatal("expected provider")
 	}
 }
 
-func TestStreamChunks(t *testing.T) {
-	s := &huggingfaceStream{
-		result: &types.GenerateResult{Text: "abcdefghijk"},
+// Ported from huggingface-provider.test.ts "should expose responses method" /
+// "should expose languageModel method".
+func TestProviderModelCreationMethods(t *testing.T) {
+	p := New(Config{APIKey: "hf"})
+
+	lm, err := p.LanguageModel("deepseek-ai/DeepSeek-V3-0324")
+	if err != nil {
+		t.Fatalf("LanguageModel: %v", err)
 	}
-	ch1, err := s.Next()
-	if err != nil || ch1.Type != "text" {
-		t.Fatalf("chunk1 = %#v err=%v", ch1, err)
+	if lm.ModelID() != "deepseek-ai/DeepSeek-V3-0324" {
+		t.Fatalf("ModelID = %q", lm.ModelID())
 	}
-	ch2, err := s.Next()
-	if err != nil || ch2.Type != "text" {
-		t.Fatalf("chunk2 = %#v err=%v", ch2, err)
+	if lm.Provider() != "huggingface.responses" {
+		t.Fatalf("Provider() = %q, want huggingface.responses", lm.Provider())
 	}
-	ch3, err := s.Next()
-	if err != nil || ch3.Type != "finish" {
-		t.Fatalf("chunk3 = %#v err=%v", ch3, err)
+
+	rm, err := p.ResponsesModel("deepseek-ai/DeepSeek-V3-0324")
+	if err != nil {
+		t.Fatalf("ResponsesModel: %v", err)
 	}
-	if _, err := s.Next(); err == nil {
-		t.Fatal("expected stream exhausted error")
+	if rm.ModelID() != "deepseek-ai/DeepSeek-V3-0324" {
+		t.Fatalf("ResponsesModel ModelID = %q", rm.ModelID())
+	}
+}
+
+// Ported from huggingface-provider.test.ts "should throw for text embedding
+// models" / "should throw for image models".
+func TestProviderUnsupportedModels(t *testing.T) {
+	p := New(Config{APIKey: "hf"})
+
+	if _, err := p.EmbeddingModel("any-model"); err == nil {
+		t.Fatal("EmbeddingModel: expected error")
+	} else if !strings.Contains(err.Error(), "Hugging Face Responses API does not support text embeddings") {
+		t.Fatalf("EmbeddingModel error = %q", err.Error())
+	}
+
+	if _, err := p.ImageModel("any-model"); err == nil {
+		t.Fatal("ImageModel: expected error")
+	} else if !strings.Contains(err.Error(), "Hugging Face Responses API does not support image generation") {
+		t.Fatalf("ImageModel error = %q", err.Error())
+	}
+
+	if _, err := p.SpeechModel("any-model"); err == nil {
+		t.Fatal("SpeechModel: expected error")
+	}
+	if _, err := p.TranscriptionModel("any-model"); err == nil {
+		t.Fatal("TranscriptionModel: expected error")
+	}
+	if _, err := p.RerankingModel("any-model"); err == nil {
+		t.Fatal("RerankingModel: expected error")
 	}
 }

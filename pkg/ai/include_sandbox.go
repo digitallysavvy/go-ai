@@ -2,8 +2,6 @@ package ai
 
 import (
 	"context"
-	"regexp"
-	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -67,47 +65,26 @@ func SupportedURLCheckerForModel(model provider.LanguageModel) func(mediaType, r
 	if !ok {
 		return nil
 	}
-	patternsByMediaType := supported.SupportedURLs()
-	if len(patternsByMediaType) == 0 {
-		return nil
-	}
-	compiled := make(map[string][]*regexp.Regexp, len(patternsByMediaType))
-	for mediaType, patterns := range patternsByMediaType {
-		for _, pattern := range patterns {
-			re, err := regexp.Compile(pattern)
-			if err == nil {
-				compiled[strings.ToLower(mediaType)] = append(compiled[strings.ToLower(mediaType)], re)
-			}
-		}
-	}
+	return SupportedURLCheckerFromPatterns(supported.SupportedURLs())
+}
+
+// SupportedURLCheckerFromPatterns compiles a raw SupportedURLs()-style map
+// (regexp patterns keyed by media type) into a prompt URL support checker,
+// matching TypeScript's isUrlSupported. Use this when the pattern map is
+// already available without a provider.LanguageModel instance to type-assert
+// against (e.g. the batch API, whose supportedUrls comes from the batch
+// interface rather than a per-request model).
+//
+// The matching algorithm itself lives in providerutils.MatchesSupportedURL
+// (shared with pkg/providerutils/prompt's Google functionResponse fileData
+// forwarding, which cannot import this package without an import cycle).
+func SupportedURLCheckerFromPatterns(patternsByMediaType map[string][]string) func(mediaType, rawURL string) bool {
+	compiled := providerutils.CompileSupportedURLPatterns(patternsByMediaType)
 	if len(compiled) == 0 {
 		return nil
 	}
 	return func(mediaType, rawURL string) bool {
-		mediaType = strings.ToLower(mediaType)
-		rawURL = strings.ToLower(rawURL)
-		topLevelOnly := !strings.Contains(mediaType, "/")
-		for key, regexes := range compiled {
-			prefix := strings.ReplaceAll(key, "*", "")
-			if key == "*" || key == "*/*" {
-				prefix = ""
-			}
-			if prefix != "" {
-				if topLevelOnly {
-					if mediaType+"/" != prefix {
-						continue
-					}
-				} else if !strings.HasPrefix(mediaType, prefix) {
-					continue
-				}
-			}
-			for _, re := range regexes {
-				if re.MatchString(rawURL) {
-					return true
-				}
-			}
-		}
-		return false
+		return providerutils.MatchesSupportedURL(compiled, mediaType, rawURL)
 	}
 }
 

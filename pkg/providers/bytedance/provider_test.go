@@ -182,10 +182,23 @@ func TestProvider_UnsupportedModels(t *testing.T) {
 		}
 	})
 
-	t.Run("image model returns error", func(t *testing.T) {
-		_, err := prov.ImageModel("dalle-3")
+	t.Run("image model returns a Seedream model", func(t *testing.T) {
+		model, err := prov.ImageModel(string(ModelSeedream50))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if model.ModelID() != string(ModelSeedream50) {
+			t.Errorf("ModelID() = %q, want %q", model.ModelID(), ModelSeedream50)
+		}
+		if model.Provider() != "bytedance.image" {
+			t.Errorf("Provider() = %q, want %q", model.Provider(), "bytedance.image")
+		}
+	})
+
+	t.Run("image model requires a model ID", func(t *testing.T) {
+		_, err := prov.ImageModel("")
 		if err == nil {
-			t.Error("expected error for image model")
+			t.Error("expected error for empty model ID")
 		}
 	})
 

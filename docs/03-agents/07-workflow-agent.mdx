@@ -121,3 +121,30 @@ against the serialized JSON Schema before executing an attached Go function.
 and `config`. Provider auth fields and function-valued fields are omitted. Use
 `providerutils.DeserializeModel(providerID, modelID, config)` after importing the target
 provider package so its deserializer is registered.
+
+`providerutils.SerializeModel`/`DeserializeModel` are convenience wrappers around
+`provider.SerializeModel(provider.LanguageModel) (provider.SerializedModel, error)` and
+`provider.DeserializeModel(provider.SerializedModel) (provider.LanguageModel, error)` for
+the language model case specifically. Every other model kind that a provider can
+serialize has the same pair of functions and a matching `Register*Deserializer`, one set
+per kind — for every provider model TS marks `WORKFLOW_SERIALIZE`:
+
+```go
+provider.SerializeImageModel / DeserializeImageModel / RegisterImageModelDeserializer
+provider.SerializeVideoModel / DeserializeVideoModel / RegisterVideoModelDeserializer
+provider.SerializeSpeechModel / DeserializeSpeechModel / RegisterSpeechModelDeserializer
+provider.SerializeTranscriptionModel / DeserializeTranscriptionModel / RegisterTranscriptionModelDeserializer
+provider.SerializeEmbeddingModel / DeserializeEmbeddingModel / RegisterEmbeddingModelDeserializer
+provider.SerializeEvaluationModel / DeserializeEvaluationModel / RegisterEvaluationModelDeserializer
+```
+
+None of this is wired into the workflow runtime automatically — there is no
+implicit "serialize every model field on a workflow struct" step. Your
+application calls `Serialize*Model` explicitly before persisting workflow
+state or crossing a boundary, and calls `Deserialize*Model` (after importing
+the target provider package, so its deserializer registers itself via
+`init()`) explicitly when resuming. A model that implements
+`provider.SerializableModelStrict` instead of the plain `SerializableModel`
+interface can refuse to serialize — for example, an Open Responses model with
+registered extension codecs, since the codecs are functions and cannot be
+reconstructed from JSON.

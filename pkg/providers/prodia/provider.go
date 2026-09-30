@@ -7,6 +7,7 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // Provider implements the provider.Provider interface for Prodia
@@ -53,7 +54,7 @@ func New(cfg Config) *Provider {
 
 	client := internalhttp.NewClient(internalhttp.Config{
 		BaseURL: baseURL,
-		Headers: headers,
+		Headers: version.WithUserAgentSuffix(headers, version.ProviderUserAgent("prodia")),
 	})
 
 	return &Provider{

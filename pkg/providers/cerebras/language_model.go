@@ -23,10 +23,12 @@ func (m *LanguageModel) SupportsStructuredOutput() bool {
 func (m *LanguageModel) SupportsImageInput() bool { return m.base.SupportsImageInput() }
 
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	ctx, warnings := m.withCerebrasOptions(ctx, opts)
 	result, err := m.base.DoGenerate(ctx, opts)
 	if err != nil || result == nil {
 		return result, parseCerebrasProviderError(err)
 	}
+	result.Warnings = append(warnings, result.Warnings...)
 	if cerebrasJSONMode(opts) && result.Text != "" && result.FinishReason == types.FinishReasonToolCalls {
 		result.ToolCalls = nil
 		result.FinishReason = types.FinishReasonStop
@@ -35,6 +37,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 }
 
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	ctx, _ = m.withCerebrasOptions(ctx, opts)
 	stream, err := m.base.DoStream(ctx, opts)
 	if err != nil {
 		return nil, parseCerebrasProviderError(err)
@@ -43,6 +46,19 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		return stream, nil
 	}
 	return &cerebrasStream{inner: stream}, nil
+}
+
+// withCerebrasOptions resolves providerOptions.cerebras and, when present,
+// attaches it to ctx so cerebrasTransformTransport can merge the
+// corresponding wire fields into the serialized request body. See
+// cerebrasOptionsContextKey for why this goes through context rather than a
+// hook on the base model.
+func (m *LanguageModel) withCerebrasOptions(ctx context.Context, opts *provider.GenerateOptions) (context.Context, []types.Warning) {
+	extras, warnings := resolveCerebrasOptions(opts)
+	if len(extras) == 0 {
+		return ctx, warnings
+	}
+	return context.WithValue(ctx, cerebrasOptionsContextKey{}, extras), warnings
 }
 
 func cerebrasJSONMode(opts *provider.GenerateOptions) bool {
@@ -79,3 +95,13 @@ func (s *cerebrasStream) Next() (*provider.StreamChunk, error) {
 
 func (s *cerebrasStream) Close() error { return s.inner.Close() }
 func (s *cerebrasStream) Err() error   { return s.inner.Err() }
+
+// RequestBody implements provider.StreamRequestBody by delegating to inner
+// when inner implements it, so wrapping the base OpenAI-compatible stream
+// doesn't hide the capability (hand-off: "stream request body field").
+func (s *cerebrasStream) RequestBody() interface{} {
+	if rb, ok := s.inner.(provider.StreamRequestBody); ok {
+		return rb.RequestBody()
+	}
+	return nil
+}

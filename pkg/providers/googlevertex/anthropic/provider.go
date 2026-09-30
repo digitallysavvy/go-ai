@@ -87,6 +87,15 @@ func (p *GoogleVertexAnthropicProvider) LanguageModelWithOptions(modelID string,
 		SupportsNativeStructuredOutput: &nativeStructuredOutput,
 		SupportsImageInput:             &supportsImageInput,
 		SupportsStrictTools:            &supportsStrictTools,
+		// TS google-vertex-anthropic-provider.ts builds AnthropicLanguageModel
+		// directly rather than through createAnthropic, so it never gets
+		// @ai-sdk/anthropic's own "ai-sdk/anthropic/VERSION" tag. Only the
+		// runtime tag (added centrally downstream) reaches the wire.
+		NoUserAgentTag: true,
+		// Vertex-Anthropic forces base64 conversion instead of passing URLs
+		// through, matching TS google-vertex-anthropic-provider.ts
+		// (`supportedUrls: () => ({})`).
+		SupportedURLs: func(string) map[string][]string { return map[string][]string{} },
 		MessagesPath: func(id string, stream bool) string {
 			action := "rawPredict"
 			if stream {

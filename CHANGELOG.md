@@ -5,114 +5,126 @@ All notable changes to the Go AI SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - Unreleased
 
-TS SDK parity — fully compatible with TS AI SDK v7 at `9e8753a26c`.
-May 2026 cycle: 7 PRDs (P1-4 through P2-3), 120+ tasks. Zero open parity gaps.
-June 21 2026 parity audit: TS commit range `19736eedbb..5415a858c1`
-is accounted for in `state/parity/jun_21_2026_audit.md`; implementation rows
-cover Gateway realtime/client secrets/Exa, MCP OAuth/SSE hardening, WorkflowAgent
-approval resume behavior, stable callback names, UI stream redaction, and
-provider updates for OpenAI, Anthropic, Azure, Vertex, Google, Fireworks,
-Bedrock, BFL, and Prodia.
-
-### Breaking Changes
-
-- **Core SDK** `IncludeOptions.RawChunks` is now `*bool` instead of `bool` so
-  unset can be distinguished from explicit `false`. This matches the TypeScript
-  SDK resolution order: `include.rawChunks ?? includeRawChunks ?? false`.
-  Existing callers should replace `RawChunks: true` with a bool pointer.
+TS SDK parity target: `ai@7.0.118` (was `ai@6.0.137` in v0.4.0). Ships
+everything merged since the v0.4.0 tag — about 1,000 commits across the May,
+June, and September 2026 parity cycles. Condensed from and superseded in
+detail by [`release_notes/RELEASE_NOTES_V0.5.0.md`](release_notes/RELEASE_NOTES_V0.5.0.md);
+step-by-step upgrade instructions are in
+`docs/08-migration-guides/from-v0.4-to-v0.5.mdx`.
 
 ### Added
 
-#### Core SDK
-- **`GenerateTextResult.Content []types.ContentPart`** — aggregates content from
-  all steps in order (text, tool calls, tool results, reasoning); mirrors TS
-  `GenerateTextResult.content` (GAP-008)
-- **`StepPerformance.StepTimeMs int64`** and **`ToolExecutionMs map[string]int64`**
-  — wall-clock step time and per-tool execution time keyed by toolCallID (GAP-001)
-- **`Sandbox.Description() string`** interface method; `ShellSandbox.WithShellSandboxDescription()`
-  option; non-empty description appended to system prompt before each provider
-  call (GAP-009)
-- **`StreamTextOptions.OnError func(ctx, err)`** — called when a `ChunkTypeError`
-  chunk arrives during streaming; mirrors TS `onError` callback
-- **`StreamTextOptions.ExperimentalTransform []StreamTransformFunc`** — ordered
-  post-emit transforms applied to each chunk before `OnChunk` and telemetry;
-  mirrors TS `experimental_transform`
-- **`Tool.Metadata map[string]interface{}`** — arbitrary caller metadata attached
-  to a tool definition; propagated to `ToolCall.ToolMetadata` and
-  `ToolResult.ToolMetadata` for use in callbacks and logging (GAP-002)
-- **`Tool.DescriptionFunc func(ctx, ToolDescriptionOptions) string`** — dynamic
-  description evaluated per-step with runtime context and sandbox (GAP-003)
+- **New providers**: Voyage AI (embedding/rerank), Fish Audio, Cartesia
+  (plus Ink 2 realtime transcription), Rev.ai, Hume, Luma, GMI Cloud, Z.AI,
+  MiniMax, TypeSafe AI, QuiverAI, and `anthropicaws` (Claude Platform on
+  AWS).
+- **Experimental surfaces**: Batch API, Evaluation, Files API v4, async
+  video, streaming transcription/translation, and speech translation, each
+  implemented by two or more providers.
+- **`pkg/codemode`** (experimental): runs model-written JavaScript in a
+  QuickJS-on-WebAssembly sandbox, with signed continuations, interrupts, and
+  approval flows.
+- **`pkg/harness`** (Go port of `@ai-sdk/harness`): Agent/AgentSession,
+  `StopWhen`, tool approvals, telemetry; adapters for Claude Code, Codex,
+  OpenCode, Deep Agents, ACP, Cursor, fx, GitHub Copilot, Grok Build; a
+  Vercel Sandbox harness provider; `pkg/workflow` harness integration
+  helpers.
+- **MCP**: full OAuth `Auth()` flow, 2026 protocol support, elicitation
+  requests, resource-template listing, a standing inbound SSE listener for
+  legacy servers.
+- **Telemetry**: `telemetry.NewOpenTelemetry`, a GenAI-semantic-convention
+  integration; `GenerateObject`/`StreamObject` telemetry spans.
+- **Core**: stable lifecycle callbacks, `RepairToolCall`, `LogWarnings`,
+  `FingerprintTools`/`DetectToolDrift`, `PrepareStep`, stream retries,
+  `ToolSearch`/`DeferLoading`, `ExperimentalToolCallers`,
+  `UploadFile`/`UploadSkill`, workflow model serialization for every model
+  kind, streaming request bodies (`Request.Body` on `StreamText` steps via
+  `provider.StreamRequestBody`), optional realtime capability interfaces
+  (`RealtimeClientSecretCreator`, `RealtimeWebSocketConfigProvider`), and
+  more (full list in the release notes).
+- **Providers**: substantial Anthropic, OpenAI Responses, xAI, Google/
+  Vertex, Bedrock, Gateway, and Cohere feature additions;
+  `openai.Config.TransformRequestBody`; Groq model ID constants; see the
+  release notes' New Features section for the per-provider breakdown.
 
-#### Telemetry
-- **`OnToolExecutionStart` / `OnToolExecutionEnd`** primary method names on
-  `TelemetryIntegration`; `OnToolCallStart` / `OnToolCallFinish` kept as
-  deprecated aliases; matches TS SDK naming (GAP-004)
+### Changed
 
-#### Google Vertex Provider
-- **`GoogleVertexAnthropicProvider`** sub-package
-  (`pkg/providers/googlevertex/anthropic/`) — ADC Bearer token auth,
-  15 `GoogleVertexAnthropicModelID` constants matching TS union,
-  `AnthropicModel()` factory on the Vertex provider (GAP-012)
+- **`StreamText` is now asynchronous**, matching TS: it returns before the
+  first model request, and only option-validation errors return from the
+  call itself.
+- **Full-stream chunk lifecycle redesigned**: `ChunkTypeFinish` now fires
+  once per call; steps are bracketed by new `ChunkTypeStartStep` /
+  `ChunkTypeFinishStep`.
+- **Runtime/tool context split**: `ExperimentalContext` → `RuntimeContext` /
+  `ToolsContext`; tool approval is now call-level (`ToolApproval`).
+- **File data is a tagged union** (`types.FileData`/`FileDataType*`);
+  system messages in `Messages` are rejected by default
+  (`AllowSystemMessages` opts back in).
+- **Bedrock rebuilt on the Converse API**; **Bedrock-Anthropic rebuilt on
+  `anthropic.LanguageModel`**; **xAI Chat Completions API removed** (use the
+  Responses API); **Gateway `xai/*` model IDs renamed `spacexai/*`**.
+- **Anthropic**: `system`/user content are arrays, `BaseURL` includes
+  `/v1`, `DisableParallelToolUse` is `*bool`, `ModelOptions` JSON tags are
+  camelCase.
+- **OpenAI/Azure**: reasoning-model parameter handling changed
+  (`max_completion_tokens`, dropped unsupported params);
+  Azure classifies unrecognized base URLs as custom gateways.
+- **Google/Vertex**: provider-option key order, thinking-budget formula,
+  Imagen removal, Interactions API wire format.
+- **Embed/EmbedMany/Rerank**: `MaxRetries` is now `*int`. **Schema**:
+  `additionalProperties: false` now enforced. **Perplexity**: migrated to
+  the Agent API. **Telemetry**: tracers belong to registered integrations;
+  `LegacyOpenTelemetry` span shape overhauled to match TS.
+- **Outgoing requests now carry a `User-Agent` header**
+  (`ai-sdk/<provider>/<version> runtime/go/<goVersion>`, plus `ai/<version>`
+  from the non-streaming `pkg/ai` calls; `StreamText`, `StreamObject` and
+  `Rerank` add no `ai/` tag), matching the TypeScript SDK.
+- Full list of breaking and behavior changes: release notes' Breaking
+  Changes and Behavior Changes sections.
 
-#### DeepSeek Provider
-- **`thinking.type = 'adaptive'`** passthrough — the type string is now forwarded
-  verbatim to the wire payload (adaptive / enabled / disabled) (GAP-005)
+### Deprecated
 
-#### Bedrock Provider
-- **Part-level `cachePoint`** injection — `{cachePoint:{type:default}}` appended
-  after each content block when `bedrock.cachePoint` provider option is set (GAP-006)
-- **Unsigned reasoning filter** — `ReasoningContent` parts with an empty
-  `Signature` field are now silently skipped in assistant message conversion (GAP-007)
+- `ExperimentalContext`, per-tool `NeedsApproval`,
+  `ExperimentalFilterActiveTools`, `MaxSteps`, `ExperimentalTelemetry`,
+  `OTelTelemetryIntegration`, `ToGoogleMessages`,
+  `StreamTextResult.FullStream()`, and several tool-execution event fields
+  (excluded from JSON). All have stable replacements; see the release
+  notes' Deprecations section.
 
-#### Gateway Provider
-- **`GatewayError.IsRetryable() bool`** — returns true for status 408/409/429
-  and ≥500; wired into exponential-backoff retry in generate.go / stream.go (GAP-010)
-- **Model catalog sync** — ~26 previously missing provider models added
-  (amazon/nova-*, arcee-ai, bytedance/seed-*, inception/mercury-*,
-  interfaze, kwaipilot/kat-coder-*, meituan/longcat-*) (GAP-011)
-- **Realtime runtime client secrets** — `ExperimentalRealtime`,
-  `GetRealtimeToken`, and `MintRealtimeClientSecret` mirror the TS Gateway
-  realtime auth surface, including Gateway-origin `/v1/realtime/client-secrets`
-  requests and WebSocket protocol helpers.
-- **Exa Gateway tool** — `gateway/tools.NewExaSearch` and
-  `Provider.Tools.ExaSearch` serialize the provider-executed `gateway.exa_search`
-  tool shape with TS-compatible schema fields and explicit-zero option handling.
-- **Provider warnings and typed errors** — Gateway embedding/reranking warnings,
-  deprecated warnings on media surfaces, `GatewayForbiddenError`, and
-  `GatewayFailedDependencyError` match the June 21 TS provider behavior.
+### Removed
 
-#### New Provider: Voyage AI
-- **`pkg/providers/voyage/`** — embedding and reranking models; all 17 model ID
-  constants (`voyage-4-large` through `voyage-2`) matching TS union (P2-2)
-
-#### xAI Provider
-- **Image model**: `b64_json` response format, `Quality`, `User`, and
-  `CostInUsdTicks` fields in both options and metadata (P2-2)
-- **Speech and transcription** — `SpeechModel` and `TranscriptionModel` now
-  implement the June 21 xAI `/v1/tts` and `/v1/stt` surfaces, including xAI
-  provider options, speech warnings, multipart transcription fields, timestamp
-  segments, and response metadata.
-
-#### Perplexity Provider
-- **Cost in `providerMetadata`** — `PerplexityMetadata.Cost` with
-  `InputTokensCost`, `OutputTokensCost`, `RequestCost`, `TotalCost`; reads from
-  nested `usage.cost.*` wire format (P2-2)
-
-#### OpenAI Provider
-- **GPT-5.5 model family** — `gpt-5.5`, `gpt-5.5-2026-04-23` model ID constants
-  completing the GPT-5.x catalog (P2-2)
-
-#### Mistral Provider
-- **Reasoning support** for `mistral-medium-3.5` and `mistral-small-latest` —
-  `supportsReasoningEffort()` check wired to `reasoning_effort` wire field (P2-2)
+- Bedrock-Anthropic's Go-only `CacheConfig` API and
+  `PrepareTools`/`UpgradeToolVersion`/`MapToolName`/`GetBetaHeaders`/
+  `IsComputerUseTool`; xAI `ChatCompletionsLanguageModel()`/
+  `NewLanguageModel`/`SearchParameters`; Anthropic
+  `ToAnthropicFormatWithCache`; HuggingFace's `EmbeddingModel`/`ImageModel`;
+  non-Gemini Imagen models on Google/Vertex; `telemetry.Options.Tracer`/
+  `WithTracer`; Cerebras's retired model constants.
 
 ### Fixed
 
-- **`TestGenerateVideoParallelGenerate` race** — `callCount` in the test mock
-  converted from `int` to `atomic.Int32` to eliminate the data race under
-  `-race`
+- Anthropic multi-step tool use, streaming web tool results, mid-stream
+  errors, and finish-reason mapping; OpenAI Responses previously-dropped
+  output items now decoded; Bedrock rerank key, forced tool choice, and
+  retryable stream errors; Cohere tool calling now works end-to-end; MCP
+  HTTP transport connection leaks and content-type handling; realtime/
+  WebSocket connections now fail instead of finishing silently on a dropped
+  connection; telemetry spans no longer leak on error/abort; harness
+  Codex/host-tool/turn-release fixes; a stray leading "L" in ~88 error
+  strings. Full list in the release notes' Bug Fixes section.
+
+### Security
+
+- Tool approvals verified on resume (HMAC v1, TS-compatible).
+- Downloads: DNS pinning, synced blocklist, bounded reads, credential
+  stripping across cross-origin redirects. MCP OAuth discovery SSRF-guarded.
+- Dependency bumps: `echo` v4.15.4 (CVE-2026-55677), `chi` v5.3.0, OTel
+  v1.44.0, `grpc` v1.83.2, `x/text` v0.41.0, `quic-go` v0.59.1 —
+  `govulncheck` reports no reachable vulnerabilities.
+- BFL poll URLs, OpenAI image-edit URL inputs, and Anthropic batch
+  `results_url` now fetched through the SSRF-safe download path.
 
 ## [0.4.0] - 2026-03-29
 
@@ -208,10 +220,12 @@ Full release notes: `release_notes/RELEASE_NOTES_V0.4.0.md`.
 
 ---
 
-## [Unreleased] - 2026-02-28
+## [0.3.0] - 2026-03-01
 
 TypeScript AI SDK parity update — commit range `c123363c0..ed17fe86d`
-(124 commits, 18 PRDs, 321 tasks).
+(124 commits, 18 PRDs, 321 tasks). Also includes the `StopWhen` / `MaxSteps`
+agent-loop alignment work (2026-02-16 – 2026-02-19) merged ahead of the PRD
+cycle, filled in below from git history.
 
 ### ⚠️ Breaking Changes
 
@@ -233,6 +247,11 @@ TypeScript AI SDK parity update — commit range `c123363c0..ed17fe86d`
   `OnFinishEvent`
 - Panic-safe `Notify[E]` dispatch utility
 - Agent callback merging support
+- **Stop conditions**: `StopCondition` type and built-in `StepCountIs`/
+  `HasToolCall` conditions; `StopWhen`/`StopReason` fields on `GenerateText`
+  and agent (`ToolLoopAgent`) options; `StopWhen` evaluation wired into both
+  the `GenerateText` step loop and the agent loop; `MaxSteps` realigned with
+  the Vercel AI SDK v5 `stopWhen` approach (deprecation comments removed)
 
 #### Anthropic Provider
 - `code-execution-20260120` tool with `programmatic-tool-call`,
@@ -308,9 +327,15 @@ TypeScript AI SDK parity update — commit range `c123363c0..ed17fe86d`
 
 ---
 
-## [Unreleased] - 2026-02-15
+## [0.2.0] - 2026-02-16
 
-### 🎉 100% Feature Parity Achieved
+Release v0.2.0: AI SDK v6. Combines the `2025-12-18` v6.0 API synchronization
+work and the `2026-02-15` telemetry/audio-provider work (both previously
+tracked under stale `[Unreleased]` headings), plus provider and platform
+work filled in below from git history that was never written up in either
+section.
+
+### 🎉 100% Feature Parity Achieved (2026-02-15)
 
 Closed the final gap to achieve complete feature parity with the TypeScript AI SDK through telemetry integration and audio provider additions.
 
@@ -495,9 +520,7 @@ result, _ := model.DoGenerate(ctx, &provider.SpeechGenerateOptions{
 - **Documentation completeness:** 100% parity with TypeScript SDK
 - **Breaking changes:** 0 (fully backward compatible)
 
-## [Unreleased] - 2025-12-18
-
-### 🚀 v6.0 API Synchronization
+### 🚀 v6.0 API Synchronization (2025-12-18)
 
 Synchronized with TypeScript AI SDK v6.0 for complete feature parity.
 
@@ -672,6 +695,46 @@ result, _ := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
 - Added migration guide for v5.0 → v6.0
 - Updated tool calling examples
 - Updated structured output examples
+
+### Added (additional provider & platform work, filled in from git history)
+
+These commits shipped as part of the v0.2.0 range (`v0.1.0..v0.2.0`) but were
+never written up in either of the sections merged above.
+
+#### New Providers
+- **Alibaba** — chat provider with streaming support
+- **KlingAI** — video generation provider
+- **Moonshot** — chat provider
+- **OpenResponses** — chat provider
+- **xAI** — full provider implementation (previously listed as supported but
+  not fully implemented), with examples and docs
+
+#### Provider Updates
+- **Google** — image generation support added; Google Vertex updates
+- **FAL / Alibaba** — improved image-to-video generation
+- **Fireworks AI, xAI** — updated MCP support and examples
+- **DeepInfra, MLflow integration** — updates
+
+#### Anthropic Provider
+- Advanced features, agent skills, and subagents support
+- Context condensing ("condense"), with updated docs and examples
+
+#### Core SDK
+- Token usage / tracking API updates
+- Session retention support
+- Security fixes
+
+#### Gateway
+- Video generation gateway support
+
+#### Integrations
+- LangChain callbacks now carry run IDs
+- LangFlow callback updates
+
+#### Development Tools
+- CI workflows and issue/PR templates added
+
+---
 
 ## [0.1.0] - 2025-12-15
 
@@ -910,7 +973,7 @@ This release achieves **complete server-side parity** with the Vercel AI SDK:
 
 ## Requirements
 
-- Go 1.21 or higher
+- Go 1.25 or higher
 - Valid API keys for desired providers
 
 ## Installation
@@ -925,4 +988,8 @@ Apache 2.0 - See LICENSE for details
 
 ---
 
+[0.5.0]: https://github.com/digitallysavvy/go-ai/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/digitallysavvy/go-ai/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/digitallysavvy/go-ai/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/digitallysavvy/go-ai/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/digitallysavvy/go-ai/releases/tag/v0.1.0

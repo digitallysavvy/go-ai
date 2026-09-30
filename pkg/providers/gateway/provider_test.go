@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -315,6 +316,53 @@ func TestProvider_GetAvailableModels_FiltersUnknownModelTypes(t *testing.T) {
 	}
 	if metadata.Models[0].ModelType != "language" {
 		t.Fatalf("modelType = %q, want language", metadata.Models[0].ModelType)
+	}
+}
+
+// TestProvider_GetAvailableModels_KeepsRealtimeAndEvaluationTypes mirrors the
+// TS test "should include realtime models in getAvailableModels" (9dce0a7)
+// plus the evaluation model type added by 6982e9d5c6's catalog work.
+func TestProvider_GetAvailableModels_KeepsRealtimeAndEvaluationTypes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"models": [
+				{
+					"id": "openai/gpt-realtime-2",
+					"name": "GPT Realtime",
+					"specification": {"specificationVersion":"v4","provider":"openai.realtime","modelId":"gpt-realtime-2"},
+					"modelType": "realtime"
+				},
+				{
+					"id": "typesafe-ai/jev",
+					"name": "JEV",
+					"specification": {"specificationVersion":"v4","provider":"typesafe.evaluation","modelId":"jev"},
+					"modelType": "evaluation"
+				}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	provider, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("Failed to create provider: %v", err)
+	}
+
+	metadata, err := provider.GetAvailableModels(context.Background())
+	if err != nil {
+		t.Fatalf("GetAvailableModels() error = %v", err)
+	}
+	if len(metadata.Models) != 2 {
+		t.Fatalf("expected realtime and evaluation entries to be kept, got %d models: %#v", len(metadata.Models), metadata.Models)
+	}
+	types := map[string]bool{}
+	for _, m := range metadata.Models {
+		types[m.ModelType] = true
+	}
+	if !types["realtime"] || !types["evaluation"] {
+		t.Fatalf("expected realtime and evaluation model types present, got %#v", types)
 	}
 }
 
@@ -778,6 +826,94 @@ func TestProvider_LanguageModel_DoGenerate_HTTPStatusErrorPreservesGatewayErrorM
 	}
 }
 
+// TestProvider_LanguageModel_DoGenerate_NestedCauseSerializesErrorBody mirrors
+// ea75787 (errorToMessage: data => getErrorMessage(data)): the nested
+// ProviderError cause's Message must be the full serialized error body
+// instead of the generic "Gateway request failed" placeholder, and
+// ResponseBody/Data must be populated from the same body.
+func TestProvider_LanguageModel_DoGenerate_NestedCauseSerializesErrorBody(t *testing.T) {
+	const rawBody = `{"error":{"message":"slow down","type":"rate_limit_exceeded"},"generationId":"gen_123"}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(rawBody))
+	}))
+	defer server.Close()
+
+	p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New error = %v", err)
+	}
+	model, err := p.LanguageModel("openai/gpt-4o")
+	if err != nil {
+		t.Fatalf("LanguageModel error = %v", err)
+	}
+
+	_, err = model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hello"}})
+	if err == nil {
+		t.Fatal("expected gateway error")
+	}
+
+	var providerErr *providererrors.ProviderError
+	if !errors.As(err, &providerErr) {
+		t.Fatalf("expected provider error cause, got %T: %v", err, err)
+	}
+
+	// Re-serialize the raw body the same way gatewayErrorMessage does
+	// (parse then re-marshal) so the assertion isn't order-sensitive.
+	var parsed interface{}
+	if jsonErr := json.Unmarshal([]byte(rawBody), &parsed); jsonErr != nil {
+		t.Fatalf("failed to parse fixture body: %v", jsonErr)
+	}
+	wantMessage, err2 := json.Marshal(parsed)
+	if err2 != nil {
+		t.Fatalf("failed to re-marshal fixture body: %v", err2)
+	}
+	if providerErr.Message != string(wantMessage) {
+		t.Fatalf("nested cause Message = %q, want serialized body %q", providerErr.Message, string(wantMessage))
+	}
+	if providerErr.ResponseBody != rawBody {
+		t.Fatalf("ResponseBody = %q, want %q", providerErr.ResponseBody, rawBody)
+	}
+	if providerErr.Data == nil {
+		t.Fatal("expected Data to be populated with the parsed error body")
+	}
+}
+
+// TestGatewayErrorMessage mirrors TS provider-utils
+// createJsonErrorResponseHandler + getErrorMessage (@ai-sdk/provider): an
+// empty or non-JSON body falls back to the HTTP status text
+// (response.statusText), a JSON string body is used as-is, a JSON `null`
+// body yields "unknown error", and any other JSON value is re-serialized.
+// Regression test for a bug where a literal JSON `null` body unmarshaled
+// into a Go string as "" (no error) and slipped past the empty-body check.
+func TestGatewayErrorMessage(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		statusCode int
+		want       string
+	}{
+		{"empty body falls back to status text", "", http.StatusTooManyRequests, "Too Many Requests"},
+		{"empty body with unknown status falls back to unknown error", "", 0, "unknown error"},
+		{"non-JSON body falls back to status text", "not json", http.StatusBadRequest, "Bad Request"},
+		{"literal null", "null", http.StatusInternalServerError, "unknown error"},
+		{"whitespace-only null", " null \n", http.StatusInternalServerError, "unknown error"},
+		{"JSON string body used as-is", `"boom"`, http.StatusInternalServerError, "boom"},
+		{"JSON empty string body", `""`, http.StatusInternalServerError, ""},
+		{"JSON object body re-serialized", `{"b":2,"a":1}`, http.StatusInternalServerError, `{"a":1,"b":2}`},
+		{"JSON number body re-serialized", `42`, http.StatusInternalServerError, "42"},
+		{"JSON boolean body re-serialized", `false`, http.StatusInternalServerError, "false"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := gatewayErrorMessage([]byte(tt.body), tt.statusCode); got != tt.want {
+				t.Fatalf("gatewayErrorMessage(%q, %d) = %q, want %q", tt.body, tt.statusCode, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLanguageModel_DoGenerate_ForwardsGatewayProviderOptions(t *testing.T) {
 	var capturedBody map[string]interface{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -799,12 +935,10 @@ func TestLanguageModel_DoGenerate_ForwardsGatewayProviderOptions(t *testing.T) {
 		t.Fatalf("LanguageModel error = %v", err)
 	}
 
-	hipaa := true
 	disallowTraining := true
 	_, err = model.DoGenerate(context.Background(), &provider.GenerateOptions{
 		Prompt: types.Prompt{Text: "hello"},
 		ProviderOptions: GatewayProviderOptions{
-			HIPAACompliant:         &hipaa,
 			QuotaEntityID:          "tenant-123",
 			DisallowPromptTraining: &disallowTraining,
 		}.ToProviderOptions(),
@@ -820,9 +954,6 @@ func TestLanguageModel_DoGenerate_ForwardsGatewayProviderOptions(t *testing.T) {
 	gatewayOptions, ok := providerOptions["gateway"].(map[string]interface{})
 	if !ok {
 		t.Fatalf("providerOptions.gateway missing or wrong type: %#v", providerOptions["gateway"])
-	}
-	if gatewayOptions["hipaaCompliant"] != true {
-		t.Fatalf("hipaaCompliant = %#v, want true", gatewayOptions["hipaaCompliant"])
 	}
 	if gatewayOptions["quotaEntityId"] != "tenant-123" {
 		t.Fatalf("quotaEntityId = %#v, want tenant-123", gatewayOptions["quotaEntityId"])
@@ -847,7 +978,6 @@ func TestLanguageModel_DoGenerate_MergesGatewayConfigProviderOptions(t *testing.
 	p, err := New(Config{
 		APIKey:                 "test-key",
 		BaseURL:                server.URL,
-		HIPAACompliant:         true,
 		DisallowPromptTraining: true,
 		QuotaEntityID:          "config-tenant",
 	})
@@ -872,14 +1002,217 @@ func TestLanguageModel_DoGenerate_MergesGatewayConfigProviderOptions(t *testing.
 	}
 
 	gatewayOptions := capturedBody["providerOptions"].(map[string]interface{})["gateway"].(map[string]interface{})
-	if gatewayOptions["hipaaCompliant"] != true {
-		t.Fatalf("hipaaCompliant = %#v, want true", gatewayOptions["hipaaCompliant"])
-	}
 	if gatewayOptions["disallowPromptTraining"] != true {
 		t.Fatalf("disallowPromptTraining = %#v, want true", gatewayOptions["disallowPromptTraining"])
 	}
 	if gatewayOptions["quotaEntityId"] != "request-tenant" {
 		t.Fatalf("quotaEntityId = %#v, want request override", gatewayOptions["quotaEntityId"])
+	}
+}
+
+// TestLanguageModel_DoGenerate_ForwardsWarnings mirrors the TS test "should
+// forward warnings returned by the gateway" (gateway-language-model.test.ts).
+func TestLanguageModel_DoGenerate_ForwardsWarnings(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"text":"ok","finishReason":"stop","usage":{},"warnings":[{"type":"other","message":"from provider"}]}`))
+	}))
+	defer server.Close()
+
+	p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New error = %v", err)
+	}
+	model, err := p.LanguageModel("openai/gpt-4o")
+	if err != nil {
+		t.Fatalf("LanguageModel error = %v", err)
+	}
+
+	result, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hello"}})
+	if err != nil {
+		t.Fatalf("DoGenerate error = %v", err)
+	}
+	if len(result.Warnings) != 1 || result.Warnings[0].Message != "from provider" {
+		t.Fatalf("Warnings = %#v, want one warning with message 'from provider'", result.Warnings)
+	}
+}
+
+// TestLanguageModel_DoGenerate_DefaultsWarningsToEmptySlice mirrors the TS
+// test "should default warnings to an empty array when absent".
+func TestLanguageModel_DoGenerate_DefaultsWarningsToEmptySlice(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"text":"ok","finishReason":"stop","usage":{}}`))
+	}))
+	defer server.Close()
+
+	p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New error = %v", err)
+	}
+	model, err := p.LanguageModel("openai/gpt-4o")
+	if err != nil {
+		t.Fatalf("LanguageModel error = %v", err)
+	}
+
+	result, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hello"}})
+	if err != nil {
+		t.Fatalf("DoGenerate error = %v", err)
+	}
+	if result.Warnings == nil {
+		t.Fatalf("Warnings = nil, want empty (non-nil) slice")
+	}
+	if len(result.Warnings) != 0 {
+		t.Fatalf("Warnings = %#v, want empty", result.Warnings)
+	}
+}
+
+// TestLanguageModel_DoGenerate_MalformedWarningsFallBackToEmptySlice covers
+// the Go-specific tolerant-decode requirement: a warnings field that does not
+// parse as []types.Warning must not fail the whole response decode.
+func TestLanguageModel_DoGenerate_MalformedWarningsFallBackToEmptySlice(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"text":"ok","finishReason":"stop","usage":{},"warnings":"not-an-array"}`))
+	}))
+	defer server.Close()
+
+	p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New error = %v", err)
+	}
+	model, err := p.LanguageModel("openai/gpt-4o")
+	if err != nil {
+		t.Fatalf("LanguageModel error = %v", err)
+	}
+
+	result, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hello"}})
+	if err != nil {
+		t.Fatalf("DoGenerate error = %v, want call to still succeed", err)
+	}
+	if result.Warnings == nil || len(result.Warnings) != 0 {
+		t.Fatalf("Warnings = %#v, want empty (non-nil) slice", result.Warnings)
+	}
+	if result.Text != "ok" {
+		t.Fatalf("Text = %q, want ok (rest of decode unaffected)", result.Text)
+	}
+}
+
+// TestGatewayProviderOptionsHasSerializes mirrors the TS gateway-provider.test-d.ts
+// `has` typing coverage: implicit-caching/reasoning/tool-use/vision plus the
+// quantization helpers all serialize verbatim and in order.
+func TestGatewayProviderOptionsHasSerializes(t *testing.T) {
+	opts := GatewayProviderOptions{
+		Has: []string{
+			GatewayHasImplicitCaching,
+			GatewayHasReasoning,
+			GatewayHasStructuredOutput,
+			GatewayHasToolUse,
+			GatewayHasVision,
+			GatewayHasQuantization("fp8"),
+			GatewayHasNotQuantization("fp8"),
+		},
+	}
+	got := opts.toMap()
+	has, ok := got["has"].([]string)
+	if !ok {
+		t.Fatalf("has type = %T, want []string", got["has"])
+	}
+	want := []string{"implicit-caching", "reasoning", "structured-output", "tool-use", "vision", "quantization:fp8", "!quantization:fp8"}
+	if len(has) != len(want) {
+		t.Fatalf("has = %#v, want %#v", has, want)
+	}
+	for i := range want {
+		if has[i] != want[i] {
+			t.Fatalf("has[%d] = %q, want %q", i, has[i], want[i])
+		}
+	}
+}
+
+// TestGatewayProviderOptionsModelsSerializesPlainAndConditionalFallbacks
+// mirrors TS gateway-provider-options d3cc6ae28d/b67b1b7463: a plain
+// GatewayModel entry serializes to a bare string, and a
+// GatewayConditionalModelFallback entry serializes to {model, when}.
+func TestGatewayProviderOptionsModelsSerializesPlainAndConditionalFallbacks(t *testing.T) {
+	confidenceBelow := 0.6
+	opts := GatewayProviderOptions{
+		Models: []GatewayModelFallback{
+			GatewayConditionalModelFallback("openai/gpt-5.6-sol", EvaluationFallbackCondition{
+				Question:        "intent",
+				ConfidenceBelow: &confidenceBelow,
+			}),
+			GatewayModel("anthropic/claude-sonnet-5"),
+		},
+	}
+	got := opts.toMap()
+	models, ok := got["models"].([]interface{})
+	if !ok || len(models) != 2 {
+		t.Fatalf("models = %#v, want 2-entry []interface{}", got["models"])
+	}
+	first, ok := models[0].(map[string]interface{})
+	if !ok || first["model"] != "openai/gpt-5.6-sol" {
+		t.Fatalf("models[0] = %#v", models[0])
+	}
+	when, ok := first["when"].(map[string]interface{})
+	if !ok || when["question"] != "intent" || when["confidenceBelow"] != 0.6 {
+		t.Fatalf("models[0].when = %#v", first["when"])
+	}
+	if models[1] != "anthropic/claude-sonnet-5" {
+		t.Fatalf("models[1] = %#v, want plain string", models[1])
+	}
+}
+
+func TestGatewayProviderOptionsModelsOmittedWhenEmpty(t *testing.T) {
+	got := GatewayProviderOptions{}.toMap()
+	if _, ok := got["models"]; ok {
+		t.Fatalf("models should be omitted when empty, got %#v", got["models"])
+	}
+}
+
+// TestGatewayProviderOptionsHasOmittedWhenEmpty mirrors TS `has` being
+// optional: an unset Has field must not appear in the serialized map.
+func TestGatewayProviderOptionsHasOmittedWhenEmpty(t *testing.T) {
+	got := GatewayProviderOptions{}.toMap()
+	if _, ok := got["has"]; ok {
+		t.Fatalf("has should be omitted when empty, got %#v", got["has"])
+	}
+}
+
+// TestGatewayProviderOptionsIdempotencyKeySerializes covers
+// providerOptions.gateway.idempotencyKey used by experimental_startBatch.
+func TestGatewayProviderOptionsIdempotencyKeySerializes(t *testing.T) {
+	got := GatewayProviderOptions{IdempotencyKey: "idem-abc"}.toMap()
+	if got["idempotencyKey"] != "idem-abc" {
+		t.Fatalf("idempotencyKey = %#v, want idem-abc", got["idempotencyKey"])
+	}
+	empty := GatewayProviderOptions{}.toMap()
+	if _, ok := empty["idempotencyKey"]; ok {
+		t.Fatalf("idempotencyKey should be omitted when empty")
+	}
+}
+
+// TestGatewayProviderOptionsCachingSerializes covers providerOptions.gateway.caching.
+func TestGatewayProviderOptionsCachingSerializes(t *testing.T) {
+	got := GatewayProviderOptions{Caching: GatewayCachingAuto}.toMap()
+	if got["caching"] != "auto" {
+		t.Fatalf("caching = %#v, want auto", got["caching"])
+	}
+	empty := GatewayProviderOptions{}.toMap()
+	if _, ok := empty["caching"]; ok {
+		t.Fatalf("caching should be omitted when empty")
+	}
+}
+
+// TestGatewayProviderOptionsHIPAACompliantRemoved documents that the removed
+// hipaaCompliant option (cefa3b1) no longer round-trips through toMap, even
+// via the raw providerOptions passthrough shape callers might still send.
+func TestGatewayProviderOptionsHIPAACompliantRemoved(t *testing.T) {
+	got := GatewayProviderOptions{}.toMap()
+	if _, ok := got["hipaaCompliant"]; ok {
+		t.Fatalf("hipaaCompliant should no longer be a typed option, got %#v", got["hipaaCompliant"])
 	}
 }
 
@@ -1016,5 +1349,116 @@ func TestProjectIDHeader_AbsentWhenNotSet(t *testing.T) {
 
 	if capturedHeader != "" {
 		t.Errorf("Expected ai-o11y-project-id header to be absent, got %q", capturedHeader)
+	}
+}
+
+// TestIsGatewayJSONDecodeError covers the classifier used by gatewayUnknownError
+// to distinguish permanent JSON decode failures from transient errors (90192f1).
+func TestIsGatewayJSONDecodeError(t *testing.T) {
+	var syntaxErr error
+	if err := json.Unmarshal([]byte("{"), &struct{}{}); err != nil {
+		syntaxErr = err
+	}
+	if syntaxErr == nil {
+		t.Fatal("expected a JSON syntax error from malformed input")
+	}
+	wrapped := fmt.Errorf("failed to decode JSON response: %w", syntaxErr)
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "wrapped decode error", err: wrapped, want: true},
+		{name: "raw syntax error", err: syntaxErr, want: true},
+		{name: "generic network error", err: errors.New("connection reset by peer"), want: false},
+		{name: "nil", err: nil, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isGatewayJSONDecodeError(tt.err); got != tt.want {
+				t.Fatalf("isGatewayJSONDecodeError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestLanguageModel_DoGenerate_MalformedJSONBodyNotRetryable covers the
+// "JSON decode failures must NOT be retryable" half of 90192f1: a 200
+// response whose body is not valid JSON at all (not just a malformed
+// "warnings" field) must surface a non-retryable gateway error.
+func TestLanguageModel_DoGenerate_MalformedJSONBodyNotRetryable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`not-json`))
+	}))
+	defer server.Close()
+
+	p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New error = %v", err)
+	}
+	model, err := p.LanguageModel("openai/gpt-4o")
+	if err != nil {
+		t.Fatalf("LanguageModel error = %v", err)
+	}
+
+	_, err = model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hello"}})
+	if err == nil {
+		t.Fatal("expected an error for a non-JSON response body")
+	}
+	var gatewayErr gatewayerrors.GatewayError
+	if !errors.As(err, &gatewayErr) {
+		t.Fatalf("expected GatewayError, got %T: %v", err, err)
+	}
+	if gatewayErr.IsRetryable() {
+		t.Fatal("a JSON decode failure must not be retryable")
+	}
+}
+
+// TestLanguageModel_DoGenerate_TruncatedBodyIsRetryable covers the
+// "transient network errors while reading successful response bodies are
+// retryable" half of 90192f1: a connection that closes before delivering
+// the promised Content-Length must surface a retryable gateway error.
+func TestLanguageModel_DoGenerate_TruncatedBodyIsRetryable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("ResponseWriter does not support hijacking")
+		}
+		conn, buf, err := hj.Hijack()
+		if err != nil {
+			t.Fatalf("hijack error: %v", err)
+		}
+		defer conn.Close() //nolint:errcheck
+		// Declare a Content-Length far larger than the bytes actually sent,
+		// then close the connection: the client's body read fails with a
+		// truncated-body error even though the status line was 200 OK.
+		_, _ = buf.WriteString("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 4096\r\n\r\n")
+		_, _ = buf.WriteString(`{"text":"partial`)
+		_ = buf.Flush()
+	}))
+	defer server.Close()
+
+	p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New error = %v", err)
+	}
+	model, err := p.LanguageModel("openai/gpt-4o")
+	if err != nil {
+		t.Fatalf("LanguageModel error = %v", err)
+	}
+
+	_, err = model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hello"}})
+	if err == nil {
+		t.Fatal("expected an error for a truncated response body")
+	}
+	var gatewayErr gatewayerrors.GatewayError
+	if !errors.As(err, &gatewayErr) {
+		t.Fatalf("expected GatewayError, got %T: %v", err, err)
+	}
+	if !gatewayErr.IsRetryable() {
+		t.Fatal("a truncated body read error should be retryable")
 	}
 }

@@ -31,7 +31,7 @@ func mockResponsesResponse(id, text string) responses.ResponsesAPIResponse {
 		ID:     id,
 		Model:  "gpt-4o",
 		Output: []json.RawMessage{content},
-		Usage: responses.ResponsesAPIUsage{
+		Usage: &responses.ResponsesAPIUsage{
 			InputTokens:  5,
 			OutputTokens: 10,
 		},
@@ -120,8 +120,8 @@ func TestResponsesLanguageModel_WebSearchIncludesSourcesAndMapsQueries(t *testin
 		ID:     "resp_web",
 		Model:  "gpt-4o",
 		Output: []json.RawMessage{webSearchItem},
-		Usage:  responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
-	}, true, responsesWebSearchToolName(opts.Tools))
+		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
+	}, true, responsesWebSearchToolName(opts.Tools), opts.Tools, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -151,6 +151,84 @@ func TestResponsesLanguageModel_WebSearchIncludesSourcesAndMapsQueries(t *testin
 	}
 }
 
+// TestResponsesLanguageModel_SupportsWebSearchSourcesIncludeFalse verifies
+// that Config.SupportsWebSearchSourcesInclude=false (used by Amazon Bedrock
+// Mantle, which rejects the include value) skips
+// "web_search_call.action.sources". Ports TS openai-responses-language-
+// model.ts:500-503's `config.supportsWebSearchSourcesInclude !== false &&
+// openaiOptions?.includeWebSearchSources !== false` — an AND of two
+// "not explicitly false" checks: a false Config value cannot be overridden
+// back on by a per-call providerOptions.openai.includeWebSearchSources=true,
+// but a per-call false always disables it even when Config allows it.
+func TestResponsesLanguageModel_SupportsWebSearchSourcesIncludeFalse(t *testing.T) {
+	hasInclude := func(t *testing.T, body map[string]interface{}) bool {
+		t.Helper()
+		include, _ := body["include"].([]string)
+		for _, f := range include {
+			if f == "web_search_call.action.sources" {
+				return true
+			}
+		}
+		return false
+	}
+
+	unsupported := false
+	p := New(Config{APIKey: "test-key", SupportsWebSearchSourcesInclude: &unsupported})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+	opts := &provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "search"}}}}},
+		Tools:  []types.Tool{openaitool.WebSearch(openaitool.WebSearchConfig{})},
+	}
+	body, _, err := model.buildRequestBody(opts, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	if hasInclude(t, body) {
+		t.Fatalf("expected web_search_call.action.sources to be omitted, got %#v", body["include"])
+	}
+
+	// A false Config value cannot be overridden back to true by the per-call
+	// provider option (matches TS's AND-of-not-false semantics exactly).
+	optsOverrideTrue := &provider.GenerateOptions{
+		Prompt:          opts.Prompt,
+		Tools:           opts.Tools,
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"includeWebSearchSources": true}},
+	}
+	bodyOverrideTrue, _, err := model.buildRequestBody(optsOverrideTrue, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	if hasInclude(t, bodyOverrideTrue) {
+		t.Fatalf("expected a false Config.SupportsWebSearchSourcesInclude to stay disabled even with includeWebSearchSources:true, got %#v", bodyOverrideTrue["include"])
+	}
+
+	// A per-call false disables the include even when Config allows it
+	// (default/unset Config).
+	defaultProvider := New(Config{APIKey: "test-key"})
+	defaultModel := NewResponsesLanguageModel(defaultProvider, "gpt-4o")
+	optsPerCallFalse := &provider.GenerateOptions{
+		Prompt:          opts.Prompt,
+		Tools:           opts.Tools,
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"includeWebSearchSources": false}},
+	}
+	bodyPerCallFalse, _, err := defaultModel.buildRequestBody(optsPerCallFalse, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	if hasInclude(t, bodyPerCallFalse) {
+		t.Fatalf("expected a per-call includeWebSearchSources:false to disable the include, got %#v", bodyPerCallFalse["include"])
+	}
+
+	// Baseline: default Config + no per-call override still includes it.
+	bodyDefault, _, err := defaultModel.buildRequestBody(opts, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	if !hasInclude(t, bodyDefault) {
+		t.Fatalf("expected web_search_call.action.sources to be included by default, got %#v", bodyDefault["include"])
+	}
+}
+
 func TestResponsesLanguageModel_WebSearchPreviewPreservesToolNameAndEmptyArrays(t *testing.T) {
 	webSearchItem := json.RawMessage(`{"type":"web_search_call","id":"ws_preview","status":"completed","action":{"type":"search","queries":[],"sources":[]}}`)
 
@@ -161,8 +239,8 @@ func TestResponsesLanguageModel_WebSearchPreviewPreservesToolNameAndEmptyArrays(
 		ID:     "resp_web",
 		Model:  "gpt-4o",
 		Output: []json.RawMessage{webSearchItem},
-		Usage:  responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
-	}, true, responsesWebSearchToolName(tools))
+		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
+	}, true, responsesWebSearchToolName(tools), tools, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -268,7 +346,7 @@ func TestResponsesLanguageModel_DoGenerate_ToolCall(t *testing.T) {
 			ID:     "resp_tool",
 			Model:  "gpt-4o",
 			Output: []json.RawMessage{callItem},
-			Usage:  responses.ResponsesAPIUsage{InputTokens: 5, OutputTokens: 5},
+			Usage:  &responses.ResponsesAPIUsage{InputTokens: 5, OutputTokens: 5},
 		})
 	}))
 	defer server.Close()
@@ -347,7 +425,12 @@ func TestResponsesLanguageModel_AllowedToolsProviderOption(t *testing.T) {
 	}
 }
 
-func TestResponsesLanguageModel_AllowedToolsMapsProviderToolNames(t *testing.T) {
+// TestResponsesLanguageModel_AllowedToolsResolvesBuiltinToolType covers row
+// a062795: an allowedTools entry naming a built-in provider tool must
+// resolve to that tool's own type (e.g. `{type:"web_search"}`), never to
+// `{type:"function", name:...}` — the API rejects the latter for a tool that
+// isn't actually a function.
+func TestResponsesLanguageModel_AllowedToolsResolvesBuiltinToolType(t *testing.T) {
 	p := New(Config{APIKey: "test-key"})
 	model := NewResponsesLanguageModel(p, "gpt-4o")
 
@@ -372,8 +455,80 @@ func TestResponsesLanguageModel_AllowedToolsMapsProviderToolNames(t *testing.T) 
 		t.Fatalf("buildRequestBody failed: %v", err)
 	}
 	choice := body["tool_choice"].(responses.AllowedToolsToolChoice)
-	if choice.Tools[0].Name != "web_search" {
-		t.Fatalf("allowed tool name = %q, want provider mapped web_search", choice.Tools[0].Name)
+	if choice.Tools[0].Type != "web_search" || choice.Tools[0].Name != "" {
+		t.Fatalf("allowed tool entry = %#v, want built-in web_search entry without a name", choice.Tools[0])
+	}
+}
+
+// TestResponsesLanguageModel_AllowedToolsFunctionAndUnknown covers the
+// function and "not part of this request" branches of a062795.
+func TestResponsesLanguageModel_AllowedToolsFunctionAndUnknown(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	body, _, warnings, err := model.buildRequest(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		}},
+		Tools: []types.Tool{{
+			Type: types.ToolTypeFunction,
+			Name: "lookup",
+		}},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{
+				"allowedTools": map[string]interface{}{
+					"toolNames": []string{"lookup", "not_in_request"},
+					"mode":      "required",
+				},
+			},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	choice := body["tool_choice"].(responses.AllowedToolsToolChoice)
+	if choice.Mode != "required" || len(choice.Tools) != 2 {
+		t.Fatalf("allowed tools choice = %#v", choice)
+	}
+	if choice.Tools[0].Type != "function" || choice.Tools[0].Name != "lookup" {
+		t.Fatalf("allowed tool[0] = %#v, want function lookup", choice.Tools[0])
+	}
+	if choice.Tools[1].Type != "function" || choice.Tools[1].Name != "not_in_request" {
+		t.Fatalf("allowed tool[1] = %#v, want unknown name sent through as function", choice.Tools[1])
+	}
+	if len(warnings) != 1 || warnings[0].Feature != `allowedTools entry "not_in_request"` {
+		t.Fatalf("warnings = %#v, want unknown allowedTools entry warning", warnings)
+	}
+}
+
+// TestResponsesLanguageModel_AllowedToolsAllDroppedErrors covers the
+// UnsupportedFunctionalityError path: when every requested tool name is
+// unsupported for allow-listing, buildRequestBody must return an error.
+func TestResponsesLanguageModel_AllowedToolsAllDroppedErrors(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	_, _, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		}},
+		Tools: []types.Tool{{
+			Type: types.ToolTypeFunction,
+			Name: "deferred_tool",
+			ProviderOptions: map[string]interface{}{
+				"openai": map[string]interface{}{"deferLoading": true},
+			},
+		}},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{
+				"allowedTools": map[string]interface{}{
+					"toolNames": []string{"deferred_tool"},
+				},
+			},
+		},
+	}, false)
+	if err == nil {
+		t.Fatal("expected an error when every allowedTools entry is dropped")
 	}
 }
 
@@ -396,8 +551,8 @@ func TestResponsesLanguageModel_WebSearchProviderIDUsesCallerToolName(t *testing
 		ID:     "resp_web",
 		Model:  "gpt-4o",
 		Output: []json.RawMessage{webSearchItem},
-		Usage:  responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
-	}, true, responsesWebSearchToolName(tools))
+		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
+	}, true, responsesWebSearchToolName(tools), tools, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -506,6 +661,176 @@ func TestResponsesLanguageModel_DoStream_Text(t *testing.T) {
 		t.Error("expected a finish chunk")
 	} else if finishChunk.FinishReason != types.FinishReasonStop {
 		t.Errorf("FinishReason = %q, want stop", finishChunk.FinishReason)
+	}
+}
+
+// TestResponsesLanguageModel_DoStream_TextBoundaries ports TS's message
+// text-start/text-end streaming: a "message" output item's
+// response.output_item.added emits text-start with
+// providerMetadata.openai{itemId, phase?}, and its output_item.done emits
+// text-end with providerMetadata.openai{itemId, phase?, annotations} —
+// annotations accumulated from every response.output_text.annotation.added
+// event seen for the item in between (TS `ongoingAnnotations`).
+func TestResponsesLanguageModel_DoStream_TextBoundaries(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		events := []string{
+			`{"type":"response.created","response":{"id":"resp_stream","model":"gpt-4o"}}`,
+			`{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","phase":"final_answer"}}`,
+			`{"type":"response.output_text.delta","output_index":0,"delta":"See "}`,
+			`{"type":"response.output_text.annotation.added","annotation":{"type":"url_citation","url":"https://example.com","title":"Example","start_index":0,"end_index":3}}`,
+			`{"type":"response.output_text.delta","output_index":0,"delta":"this."}`,
+			`{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_1","phase":"final_answer"}}`,
+			`{"type":"response.completed","response":{"id":"resp_stream","usage":{"input_tokens":5,"output_tokens":3}}}`,
+		}
+		for _, e := range events {
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", e)
+		}
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{
+			Messages: []types.Message{
+				{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Hi"}}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoStream failed: %v", err)
+	}
+	defer stream.Close() //nolint:errcheck
+
+	var textStart, textEnd, source *provider.StreamChunk
+	var textChunks []string
+	for {
+		chunk, err := stream.Next()
+		if err != nil {
+			break
+		}
+		switch chunk.Type {
+		case provider.ChunkTypeTextStart:
+			textStart = chunk
+		case provider.ChunkTypeTextEnd:
+			textEnd = chunk
+		case provider.ChunkTypeText:
+			textChunks = append(textChunks, chunk.Text)
+		case provider.ChunkTypeSource:
+			source = chunk
+		}
+	}
+
+	if textStart == nil {
+		t.Fatal("expected a text-start chunk")
+	}
+	if textStart.ID != "msg_1" {
+		t.Errorf("text-start ID = %q, want msg_1", textStart.ID)
+	}
+	var startMeta map[string]map[string]interface{}
+	if err := json.Unmarshal(textStart.ProviderMetadata, &startMeta); err != nil {
+		t.Fatalf("decode text-start providerMetadata: %v", err)
+	}
+	if startMeta["openai"]["itemId"] != "msg_1" || startMeta["openai"]["phase"] != "final_answer" {
+		t.Errorf("text-start providerMetadata.openai = %+v", startMeta["openai"])
+	}
+	if _, has := startMeta["openai"]["annotations"]; has {
+		t.Error("text-start providerMetadata.openai should have no annotations yet")
+	}
+
+	if strings.Join(textChunks, "") != "See this." {
+		t.Errorf("streamed text = %q, want %q", strings.Join(textChunks, ""), "See this.")
+	}
+
+	if source == nil || source.SourceContent == nil || source.SourceContent.URL != "https://example.com" {
+		t.Fatalf("expected a source chunk for the url_citation annotation, got %+v", source)
+	}
+
+	if textEnd == nil {
+		t.Fatal("expected a text-end chunk")
+	}
+	if textEnd.ID != "msg_1" {
+		t.Errorf("text-end ID = %q, want msg_1", textEnd.ID)
+	}
+	var endMeta map[string]map[string]interface{}
+	if err := json.Unmarshal(textEnd.ProviderMetadata, &endMeta); err != nil {
+		t.Fatalf("decode text-end providerMetadata: %v", err)
+	}
+	if endMeta["openai"]["itemId"] != "msg_1" || endMeta["openai"]["phase"] != "final_answer" {
+		t.Errorf("text-end providerMetadata.openai = %+v", endMeta["openai"])
+	}
+	annotations, ok := endMeta["openai"]["annotations"].([]interface{})
+	if !ok || len(annotations) != 1 {
+		t.Fatalf("text-end providerMetadata.openai.annotations = %#v, want 1 entry", endMeta["openai"]["annotations"])
+	}
+	ann, ok := annotations[0].(map[string]interface{})
+	if !ok || ann["url"] != "https://example.com" || ann["type"] != "url_citation" {
+		t.Errorf("text-end annotation = %#v", annotations[0])
+	}
+}
+
+// TestResponsesLanguageModel_DoStream_TextEndPhaseFallsBackToAddedEvent ports
+// TS's `phase = value.item.phase ?? activeMessagePhase` in the
+// output_item.done "message" case: when output_item.done's own item omits
+// phase, text-end's providerMetadata falls back to the phase captured from
+// output_item.added, rather than silently dropping it.
+func TestResponsesLanguageModel_DoStream_TextEndPhaseFallsBackToAddedEvent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		events := []string{
+			`{"type":"response.created","response":{"id":"resp_stream","model":"gpt-4o"}}`,
+			`{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","phase":"final_answer"}}`,
+			`{"type":"response.output_text.delta","output_index":0,"delta":"Hi."}`,
+			`{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_1"}}`,
+			`{"type":"response.completed","response":{"id":"resp_stream","usage":{"input_tokens":5,"output_tokens":3}}}`,
+		}
+		for _, e := range events {
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", e)
+		}
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{
+			Messages: []types.Message{
+				{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Hi"}}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoStream failed: %v", err)
+	}
+	defer stream.Close() //nolint:errcheck
+
+	var textEnd *provider.StreamChunk
+	for {
+		chunk, err := stream.Next()
+		if err != nil {
+			break
+		}
+		if chunk.Type == provider.ChunkTypeTextEnd {
+			textEnd = chunk
+		}
+	}
+
+	if textEnd == nil {
+		t.Fatal("expected a text-end chunk")
+	}
+	var endMeta map[string]map[string]interface{}
+	if err := json.Unmarshal(textEnd.ProviderMetadata, &endMeta); err != nil {
+		t.Fatalf("decode text-end providerMetadata: %v", err)
+	}
+	if endMeta["openai"]["phase"] != "final_answer" {
+		t.Errorf("text-end providerMetadata.openai.phase = %v, want final_answer (fallback to output_item.added's phase)", endMeta["openai"]["phase"])
 	}
 }
 
@@ -651,6 +976,101 @@ data: {"type":"response.failed","sequence_number":1,"response":{"error":{"code":
 	}
 	if providerErr.StatusCode != 500 || providerErr.Message != "response failed" {
 		t.Fatalf("provider error = %#v", providerErr)
+	}
+}
+
+// TestResponsesLanguageModel_DoStreamMidStreamResponseFailedEmitsErrorChunk
+// is a P1-1c part 2 regression test: once output has started (a
+// response.output_item.added has already been seen), a subsequent
+// response.failed carrying a response.error must enqueue a ChunkTypeError
+// chunk (with a structured StreamProviderError, TS's `encounteredStreamError`
+// branch that builds a synthetic {type:'response.failed', response:{error,...}}
+// frame) BEFORE the terminal finish chunk. Previously Go only emitted the
+// finish chunk and silently dropped the error.
+func TestResponsesLanguageModel_DoStreamMidStreamResponseFailedEmitsErrorChunk(t *testing.T) {
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1"}}
+
+data: {"type":"response.failed","sequence_number":1,"response":{"id":"resp_1","error":{"code":"server_error","message":"mid-stream failure"},"incomplete_details":null,"usage":null,"service_tier":null}}
+
+`)), false)
+	defer stream.Close() //nolint:errcheck
+
+	// Drain chunks emitted for output_item.added (implementation detail —
+	// just skip past them) until we see the error chunk.
+	var errChunk, finishChunk *provider.StreamChunk
+	for i := 0; i < 10; i++ {
+		chunk, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next() error: %v", err)
+		}
+		switch chunk.Type {
+		case provider.ChunkTypeError:
+			errChunk = chunk
+		case provider.ChunkTypeFinish:
+			finishChunk = chunk
+		}
+	}
+
+	if errChunk == nil {
+		t.Fatal("expected a ChunkTypeError chunk for the mid-stream response.failed error")
+	}
+	if !strings.Contains(errChunk.Text, "mid-stream failure") {
+		t.Errorf("errChunk.Text = %q, want to mention mid-stream failure", errChunk.Text)
+	}
+	var streamErr *providererrors.StreamProviderError
+	if !errors.As(errChunk.Err, &streamErr) {
+		t.Fatalf("errChunk.Err = %v (%T), want *providererrors.StreamProviderError", errChunk.Err, errChunk.Err)
+	}
+	if streamErr.Message != "mid-stream failure" {
+		t.Errorf("streamErr.Message = %q, want mid-stream failure", streamErr.Message)
+	}
+
+	if finishChunk == nil {
+		t.Fatal("expected a terminal ChunkTypeFinish chunk after the error chunk")
+	}
+}
+
+// TestResponsesLanguageModel_DoStreamMidStreamErrorEventAttachesStructuredPayload
+// is a P1-1c part 2 regression test for the generic `error` event type (TS
+// isErrorChunk branch): once output has started, the chunk's Err field must
+// carry a structured StreamProviderError, not just Text.
+func TestResponsesLanguageModel_DoStreamMidStreamErrorEventAttachesStructuredPayload(t *testing.T) {
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1"}}
+
+data: {"type":"error","message":"rate limited","code":"rate_limit_exceeded"}
+
+`)), false)
+	defer stream.Close() //nolint:errcheck
+
+	var errChunk *provider.StreamChunk
+	for i := 0; i < 10; i++ {
+		chunk, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next() error: %v", err)
+		}
+		if chunk.Type == provider.ChunkTypeError {
+			errChunk = chunk
+			break
+		}
+	}
+	if errChunk == nil {
+		t.Fatal("expected a ChunkTypeError chunk for the mid-stream error event")
+	}
+	var streamErr *providererrors.StreamProviderError
+	if !errors.As(errChunk.Err, &streamErr) {
+		t.Fatalf("errChunk.Err = %v (%T), want *providererrors.StreamProviderError", errChunk.Err, errChunk.Err)
+	}
+	if streamErr.Message != "rate limited" {
+		t.Errorf("Message = %q, want rate limited", streamErr.Message)
+	}
+	if streamErr.StatusCode == nil || *streamErr.StatusCode != 429 {
+		t.Errorf("StatusCode = %v, want 429 (rate_limit discriminator)", streamErr.StatusCode)
 	}
 }
 
@@ -970,16 +1390,24 @@ func TestResponsesLanguageModel_ConversationSkipsStoredReasoningAndWarnsWithPrev
 	if len(input) != 1 {
 		t.Fatalf("input length = %d, want only assistant message", len(input))
 	}
-	msg := input[0].(responses.AssistantMessageItem)
-	if len(msg.Content) != 1 || msg.Content[0].Text != "answer" {
-		t.Fatalf("assistant message item = %#v", msg)
+	msg := input[0].(map[string]interface{})
+	if msg["role"] != "assistant" || msg["content"] != "answer" || msg["type"] != nil {
+		t.Fatalf("assistant message item = %#v, want easy input message without id/type", msg)
 	}
 	if len(warnings) != 1 || warnings[0].Feature != "conversation" {
 		t.Fatalf("warnings = %#v, want conversation warning", warnings)
 	}
 }
 
-func TestResponsesLanguageModel_PreviousResponseIdSkipsStoredFunctionCalls(t *testing.T) {
+// TestResponsesLanguageModel_PreviousResponseIdKeepsPlainFunctionCallsInFull
+// verifies that plain client-executed function calls are always resent in
+// full when chaining with previousResponseId, never as an item_reference.
+// Only provider-defined tool calls (local_shell/shell/apply_patch/computer/
+// custom) may be reduced to an item_reference in that case. See TS
+// convert-to-openai-responses-input.ts (row d302134): sending an
+// item_reference for a plain function call breaks call/output pairing
+// because function_call_output can only reference by call_id.
+func TestResponsesLanguageModel_PreviousResponseIdKeepsPlainFunctionCallsInFull(t *testing.T) {
 	p := New(Config{APIKey: "test-key"})
 	model := NewResponsesLanguageModel(p, "gpt-4o")
 
@@ -1014,12 +1442,16 @@ func TestResponsesLanguageModel_PreviousResponseIdSkipsStoredFunctionCalls(t *te
 		t.Fatalf("buildRequestBody failed: %v", err)
 	}
 	input := body["input"].([]interface{})
-	if len(input) != 1 {
-		t.Fatalf("input length = %d, want only fresh function call", len(input))
+	if len(input) != 2 {
+		t.Fatalf("input length = %d, want both plain function calls resent in full: %#v", len(input), input)
 	}
-	call := input[0].(responses.FunctionCallItem)
-	if call.CallID != "call_2" || call.Name != "fresh" {
-		t.Fatalf("unexpected function call item: %#v", call)
+	first := input[0].(responses.FunctionCallItem)
+	if first.CallID != "call_1" || first.Name != "lookup" || first.ID != "" {
+		t.Fatalf("unexpected first function call item: %#v", first)
+	}
+	second := input[1].(responses.FunctionCallItem)
+	if second.CallID != "call_2" || second.Name != "fresh" {
+		t.Fatalf("unexpected second function call item: %#v", second)
 	}
 }
 
@@ -1056,9 +1488,9 @@ func TestResponsesLanguageModel_PreviousResponseIdSkipsStoredReasoning(t *testin
 	if len(input) != 1 {
 		t.Fatalf("input length = %d, want only assistant message", len(input))
 	}
-	msg := input[0].(responses.AssistantMessageItem)
-	if len(msg.Content) != 1 || msg.Content[0].Text != "answer" {
-		t.Fatalf("assistant message item = %#v", msg)
+	msg := input[0].(map[string]interface{})
+	if msg["role"] != "assistant" || msg["content"] != "answer" || msg["type"] != nil {
+		t.Fatalf("assistant message item = %#v, want easy input message without id/type", msg)
 	}
 }
 
@@ -1115,7 +1547,7 @@ func TestResponsesLanguageModel_MessageItemMetadataRoundTrips(t *testing.T) {
 		ID:     "resp_123",
 		Model:  "gpt-4o",
 		Output: []json.RawMessage{raw},
-	}, true, "")
+	}, true, "", nil, nil)
 	if err != nil {
 		t.Fatalf("convertResponse failed: %v", err)
 	}
@@ -1701,5 +2133,1469 @@ func TestResponsesModel_Factory(t *testing.T) {
 	}
 	if model.SpecificationVersion() != "v4" {
 		t.Errorf("SpecificationVersion() = %q, want v4", model.SpecificationVersion())
+	}
+}
+
+// TestResponsesLanguageModel_CompactionTrigger covers row b6fff2e: the
+// compactionTrigger option appends a compaction_trigger item to the end of
+// the input array.
+func TestResponsesLanguageModel_CompactionTrigger(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	body, _, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		}},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{"compactionTrigger": true},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	input := body["input"].([]interface{})
+	last := input[len(input)-1].(map[string]interface{})
+	if last["type"] != "compaction_trigger" {
+		t.Fatalf("last input item = %#v, want compaction_trigger", last)
+	}
+
+	// Without the option, no compaction_trigger item is appended.
+	body, _, err = model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		}},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	for _, item := range body["input"].([]interface{}) {
+		if m, ok := item.(map[string]interface{}); ok && m["type"] == "compaction_trigger" {
+			t.Fatalf("unexpected compaction_trigger without the option: %#v", body["input"])
+		}
+	}
+}
+
+// TestResponsesLanguageModel_ReasoningEffortUpdate covers row 17e489e: a
+// GPT-6+ model prepends a configuration_update item for reasoningEffortUpdate,
+// and rejects it (with a warning) on older models or with auto truncation.
+func TestResponsesLanguageModel_ReasoningEffortUpdate(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+
+	gpt6 := NewResponsesLanguageModel(p, ModelGPT6Astra)
+	body, _, warnings, err := gpt6.buildRequest(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		}},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{"reasoningEffortUpdate": "high"},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequest failed: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none", warnings)
+	}
+	input := body["input"].([]interface{})
+	first := input[0].(map[string]interface{})
+	if first["type"] != "configuration_update" {
+		t.Fatalf("input[0] = %#v, want configuration_update first", first)
+	}
+	reasoning := first["reasoning"].(map[string]interface{})
+	if reasoning["effort"] != "high" {
+		t.Fatalf("configuration_update reasoning = %#v, want effort high", reasoning)
+	}
+
+	// Older (non-GPT-6) models reject it with a warning; no item is prepended.
+	older := NewResponsesLanguageModel(p, "gpt-5")
+	body, _, warnings, err = older.buildRequest(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		}},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{"reasoningEffortUpdate": "high"},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequest failed: %v", err)
+	}
+	if len(warnings) != 1 || warnings[0].Feature != "reasoningEffortUpdate" {
+		t.Fatalf("warnings = %#v, want reasoningEffortUpdate warning", warnings)
+	}
+	for _, item := range body["input"].([]interface{}) {
+		if m, ok := item.(map[string]interface{}); ok && m["type"] == "configuration_update" {
+			t.Fatalf("unexpected configuration_update on non-GPT-6 model: %#v", body["input"])
+		}
+	}
+}
+
+// TestResponsesLanguageModel_GPT6DropsPromptCacheRetentionAndTopLogprobs
+// covers rows 17e489e/b2b1bb9: GPT-6+ models don't support
+// promptCacheRetention (use promptCacheOptions instead) or logprobs while
+// reasoning, both dropped with a warning.
+func TestResponsesLanguageModel_GPT6DropsPromptCacheRetentionAndTopLogprobs(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, ModelGPT6Astra)
+
+	body, _, warnings, err := model.buildRequest(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		}},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{
+				"promptCacheRetention": "24h",
+				"logprobs":             true,
+				"reasoningEffort":      "high",
+			},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequest failed: %v", err)
+	}
+	if _, ok := body["prompt_cache_retention"]; ok {
+		t.Fatalf("prompt_cache_retention should be dropped for GPT-6+: %#v", body)
+	}
+	if _, ok := body["top_logprobs"]; ok {
+		t.Fatalf("top_logprobs should be dropped for GPT-6+ reasoning: %#v", body)
+	}
+	var sawRetentionWarning, sawLogprobsWarning bool
+	for _, w := range warnings {
+		if w.Feature == "promptCacheRetention" {
+			sawRetentionWarning = true
+		}
+		if w.Feature == "logprobs" {
+			sawLogprobsWarning = true
+		}
+	}
+	if !sawRetentionWarning || !sawLogprobsWarning {
+		t.Fatalf("warnings = %#v, want promptCacheRetention and logprobs warnings", warnings)
+	}
+}
+
+// TestResponsesLanguageModel_ReasoningModeAndContext covers row b2b1bb9
+// (Responses half): GPT-5.6's reasoningMode ("standard"/"pro") and
+// reasoningContext ("auto"/"current_turn"/"all_turns") provider options are
+// sent as reasoning.mode/reasoning.context, including when neither
+// reasoningEffort nor reasoningSummary is set (mirrors TS's "should let
+// GPT-5.6 use its default effort with pro mode").
+func TestResponsesLanguageModel_ReasoningModeAndContext(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+
+	model := NewResponsesLanguageModel(p, ModelGPT56)
+	body, _, warnings, err := model.buildRequest(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		}},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{
+				"reasoningEffort":  "max",
+				"reasoningMode":    "pro",
+				"reasoningContext": "all_turns",
+			},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequest failed: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none", warnings)
+	}
+	reasoning, ok := body["reasoning"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("body[reasoning] = %#v, want a map", body["reasoning"])
+	}
+	if reasoning["effort"] != "max" || reasoning["summary"] != "detailed" ||
+		reasoning["mode"] != "pro" || reasoning["context"] != "all_turns" {
+		t.Fatalf("reasoning = %#v, want effort=max summary=detailed mode=pro context=all_turns", reasoning)
+	}
+
+	// Without effort/summary, mode/context alone still populate `reasoning`.
+	body, _, warnings, err = model.buildRequest(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		}},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{
+				"reasoningMode":    "pro",
+				"reasoningContext": "auto",
+			},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequest failed: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none", warnings)
+	}
+	reasoning, ok = body["reasoning"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("body[reasoning] = %#v, want a map", body["reasoning"])
+	}
+	if len(reasoning) != 2 || reasoning["mode"] != "pro" || reasoning["context"] != "auto" {
+		t.Fatalf("reasoning = %#v, want only mode=pro context=auto", reasoning)
+	}
+
+	// Non-reasoning models warn and drop both options.
+	nonReasoning := NewResponsesLanguageModel(p, "gpt-4o")
+	body, _, warnings, err = nonReasoning.buildRequest(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		}},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{
+				"reasoningMode":    "pro",
+				"reasoningContext": "all_turns",
+			},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequest failed: %v", err)
+	}
+	if _, ok := body["reasoning"]; ok {
+		t.Fatalf("reasoning should not be sent for a non-reasoning model: %#v", body)
+	}
+	if len(warnings) != 2 || warnings[0].Feature != "reasoningMode" || warnings[1].Feature != "reasoningContext" {
+		t.Fatalf("warnings = %#v, want reasoningMode then reasoningContext warnings", warnings)
+	}
+
+	// reasoningEffortUpdate is rejected in pro mode even on GPT-6+.
+	gpt6 := NewResponsesLanguageModel(p, ModelGPT6Astra)
+	body, _, warnings, err = gpt6.buildRequest(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		}},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{
+				"reasoningEffortUpdate": "high",
+				"reasoningMode":         "pro",
+			},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequest failed: %v", err)
+	}
+	if len(warnings) != 1 || warnings[0].Feature != "reasoningEffortUpdate" {
+		t.Fatalf("warnings = %#v, want reasoningEffortUpdate warning", warnings)
+	}
+	for _, item := range body["input"].([]interface{}) {
+		if m, ok := item.(map[string]interface{}); ok && m["type"] == "configuration_update" {
+			t.Fatalf("unexpected configuration_update while reasoningMode is pro: %#v", body["input"])
+		}
+	}
+}
+
+// TestResponsesLanguageModel_ReasoningContextMetadata covers row b2b1bb9
+// (Responses half): the response's echoed reasoning.context surfaces in
+// providerMetadata.openai.reasoningContext, alongside responseId and
+// serviceTier, for both doGenerate and streaming.
+func TestResponsesLanguageModel_ReasoningContextMetadata(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, ModelGPT56)
+
+	resp := mockResponsesResponse("resp_abc", "hi")
+	resp.ServiceTier = "priority"
+	resp.Reasoning = &responses.ResponsesReasoningInfo{Context: "current_turn"}
+
+	result, err := model.convertResponse(resp, true, "", nil, nil, "openai")
+	if err != nil {
+		t.Fatalf("convertResponse failed: %v", err)
+	}
+	meta, ok := result.ProviderMetadata["openai"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("ProviderMetadata[openai] = %#v, want a map", result.ProviderMetadata["openai"])
+	}
+	if meta["responseId"] != "resp_abc" || meta["serviceTier"] != "priority" || meta["reasoningContext"] != "current_turn" {
+		t.Fatalf("meta = %#v, want responseId/serviceTier/reasoningContext", meta)
+	}
+}
+
+// TestMapWebSearchOutput_SourcesOnlyOnSearch mirrors TS's
+// mapWebSearchOutput: `sources` is only ever included on the "search"
+// action; open_page/find_in_page never carry it even if the API response
+// included one.
+func TestMapWebSearchOutput_SourcesOnlyOnSearch(t *testing.T) {
+	sources := []WebSearchSource{{Type: "url", URL: "https://example.com"}}
+
+	search := mapWebSearchOutput(&WebSearchAction{Type: "search", Sources: sources})
+	if _, ok := search["sources"]; !ok {
+		t.Fatalf("search action = %#v, want a sources key", search)
+	}
+
+	openPage := mapWebSearchOutput(&WebSearchAction{Type: "open_page", Sources: sources})
+	if _, ok := openPage["sources"]; ok {
+		t.Fatalf("open_page action = %#v, want no sources key", openPage)
+	}
+
+	findInPage := mapWebSearchOutput(&WebSearchAction{Type: "find_in_page", Sources: sources})
+	if _, ok := findInPage["sources"]; ok {
+		t.Fatalf("find_in_page action = %#v, want no sources key", findInPage)
+	}
+}
+
+// TestResponsesLanguageModel_ReasoningEffortValidatedForGPT6 covers row
+// 17e489e: an unsupported reasoning effort for a GPT-6+ model is dropped
+// with a warning instead of being sent.
+func TestResponsesLanguageModel_ReasoningEffortValidatedForGPT6(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, ModelGPT6Astra)
+
+	body, _, warnings, err := model.buildRequest(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		}},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{"reasoningEffort": "minimal"},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequest failed: %v", err)
+	}
+	if _, ok := body["reasoning"]; ok {
+		t.Fatalf("reasoning should be dropped for unsupported effort: %#v", body)
+	}
+	if len(warnings) != 1 || warnings[0].Feature != "reasoningEffort" {
+		t.Fatalf("warnings = %#v, want reasoningEffort warning", warnings)
+	}
+}
+
+// TestResponsesLanguageModel_ServiceTierFastGatedLikePriority covers row
+// 4cd4548: serviceTier "fast" must be gated the same way as "priority"
+// (previously it fell through to the default case and was always sent).
+func TestResponsesLanguageModel_ServiceTierFastGatedLikePriority(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+
+	supported := NewResponsesLanguageModel(p, "gpt-4o")
+	body, _, err := supported.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		}},
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"serviceTier": "fast"}},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	if body["service_tier"] != "fast" {
+		t.Fatalf("service_tier = %v, want fast for a supported model", body["service_tier"])
+	}
+
+	unsupported := NewResponsesLanguageModel(p, "gpt-5-nano")
+	body, _, warnings, err := unsupported.buildRequest(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		}},
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"serviceTier": "fast"}},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequest failed: %v", err)
+	}
+	if _, ok := body["service_tier"]; ok {
+		t.Fatalf("service_tier should be dropped for an unsupported model: %#v", body)
+	}
+	if len(warnings) != 1 || warnings[0].Feature != "serviceTier" {
+		t.Fatalf("warnings = %#v, want serviceTier warning", warnings)
+	}
+}
+
+// TestResponsesLanguageModel_PromptCacheOptionsPassthrough covers row
+// b2b1bb9: promptCacheOptions is forwarded verbatim as prompt_cache_options.
+func TestResponsesLanguageModel_PromptCacheOptionsPassthrough(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	body, _, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		}},
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{
+				"promptCacheOptions": map[string]interface{}{"mode": "manual", "ttl": "24h"},
+			},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	opts, ok := body["prompt_cache_options"].(map[string]interface{})
+	if !ok || opts["mode"] != "manual" || opts["ttl"] != "24h" {
+		t.Fatalf("prompt_cache_options = %#v, want passthrough", body["prompt_cache_options"])
+	}
+}
+
+// TestConvertResponsesUsage_CacheWriteTokens covers row b2b1bb9: usage's
+// input_tokens_details.cache_write_tokens surfaces as
+// InputDetails.CacheWriteTokens, and NoCacheTokens accounts for it.
+func TestConvertResponsesUsage_CacheWriteTokens(t *testing.T) {
+	cacheWrite := 5
+	usage := responses.ResponsesAPIUsage{
+		InputTokens:  100,
+		OutputTokens: 20,
+		InputTokensDetails: &struct {
+			CachedTokens     int  `json:"cached_tokens,omitempty"`
+			CacheWriteTokens *int `json:"cache_write_tokens,omitempty"`
+		}{CachedTokens: 30, CacheWriteTokens: &cacheWrite},
+	}
+	got := convertResponsesUsage(&usage)
+	if got.InputDetails == nil || got.InputDetails.CacheWriteTokens == nil || *got.InputDetails.CacheWriteTokens != 5 {
+		t.Fatalf("InputDetails = %#v, want CacheWriteTokens=5", got.InputDetails)
+	}
+	if got.InputDetails.NoCacheTokens == nil || *got.InputDetails.NoCacheTokens != 65 {
+		t.Fatalf("NoCacheTokens = %v, want 65 (100-30-5)", got.InputDetails.NoCacheTokens)
+	}
+}
+
+// TestNormalizeResponsesToolSchemas covers d5e3024/411b3f2: function tool
+// parameters (including namespaced tools) and the response_format schema are
+// normalized for OpenAI structured outputs (propertyNames removed).
+func TestNormalizeResponsesToolSchemas(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	body, _, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		}},
+		Tools: []types.Tool{{
+			Type: types.ToolTypeFunction,
+			Name: "lookup",
+			Parameters: map[string]interface{}{
+				"type":          "object",
+				"properties":    map[string]interface{}{"a": map[string]interface{}{"type": "string"}},
+				"propertyNames": map[string]interface{}{"type": "string", "pattern": "^[a-z]+$"},
+			},
+		}},
+		ResponseFormat: &provider.ResponseFormat{
+			Type: "json",
+			Schema: map[string]interface{}{
+				"type":          "object",
+				"propertyNames": map[string]interface{}{"type": "string", "pattern": "^[a-z]+$"},
+			},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	tools := body["tools"].([]interface{})
+	fn := tools[0].(responses.FunctionToolDef)
+	fnParams := fn.Parameters.(map[string]interface{})
+	if _, ok := fnParams["propertyNames"]; ok {
+		t.Fatalf("tool parameters propertyNames should be stripped: %#v", fnParams)
+	}
+	textObj := body["text"].(map[string]interface{})
+	format := textObj["format"].(map[string]interface{})
+	schema := format["schema"].(map[string]interface{})
+	if _, ok := schema["propertyNames"]; ok {
+		t.Fatalf("response_format schema propertyNames should be stripped: %#v", schema)
+	}
+}
+
+// TestResponsesLanguageModel_DoGenerateNoOutputReturnsDescriptiveError covers
+// row 75f86f4: a 200 response with no `output` field must raise a
+// descriptive 500 ProviderError instead of silently producing an empty
+// result.
+func TestResponsesLanguageModel_DoGenerateNoOutputReturnsDescriptiveError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
+			"id": "resp_1", "status": "incomplete",
+			"incomplete_details": map[string]interface{}{"reason": "max_output_tokens"},
+		})
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	_, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+	})
+	if err == nil {
+		t.Fatal("expected an error for a response with no output")
+	}
+	var provErr *providererrors.ProviderError
+	if !errors.As(err, &provErr) || provErr.StatusCode != 500 {
+		t.Fatalf("error = %v, want a 500 ProviderError", err)
+	}
+	if !strings.Contains(err.Error(), "Responses API returned no output (max_output_tokens)") {
+		t.Fatalf("error = %v, want descriptive no-output message", err)
+	}
+}
+
+// TestResponsesLanguageModel_DoGenerateEmbeddedErrorMapsTo400 covers row
+// 75f86f4: a 200 response with an embedded `error` object maps to a 400
+// ProviderError.
+func TestResponsesLanguageModel_DoGenerateEmbeddedErrorMapsTo400(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
+			"id":    "resp_1",
+			"error": map[string]interface{}{"message": "bad prompt", "code": "invalid_request", "type": "invalid_request_error"},
+		})
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	_, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+	})
+	if err == nil {
+		t.Fatal("expected an error for a response with an embedded error object")
+	}
+	var provErr *providererrors.ProviderError
+	if !errors.As(err, &provErr) || provErr.StatusCode != 400 {
+		t.Fatalf("error = %v, want a 400 ProviderError", err)
+	}
+	if !strings.Contains(err.Error(), "bad prompt") {
+		t.Fatalf("error = %v, want to contain the embedded error message", err)
+	}
+}
+
+// TestResponsesLanguageModel_NullUsageYieldsNilUsageFields covers row
+// f6fac50: a JSON `null`/absent usage field yields an all-nil types.Usage
+// instead of an all-zero usage that looks like a real (empty) response.
+func TestResponsesLanguageModel_NullUsageYieldsNilUsageFields(t *testing.T) {
+	got := convertResponsesUsage(nil)
+	if got.InputTokens != nil || got.OutputTokens != nil || got.TotalTokens != nil {
+		t.Fatalf("convertResponsesUsage(nil) = %#v, want all-nil fields", got)
+	}
+}
+
+// TestResponsesLanguageModel_DoStreamChatCompletionsMismatchError covers row
+// 1ead90c: a Chat Completions-shaped chunk (top-level "choices" array, no
+// "type" discriminator) produces a helpful error instead of being silently
+// skipped.
+func TestResponsesLanguageModel_DoStreamChatCompletionsMismatchError(t *testing.T) {
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"}}]}
+
+`)), false)
+	defer stream.Close() //nolint:errcheck
+
+	_, err := stream.Next()
+	if err == nil {
+		t.Fatal("expected an error for a Chat Completions-shaped chunk")
+	}
+	if !strings.Contains(err.Error(), "Received a Chat Completions stream while using the OpenAI Responses API") {
+		t.Fatalf("error = %v, want the Chat Completions mismatch message", err)
+	}
+}
+
+// TestResponsesLanguageModel_DoStreamKnownEventDecodeErrorForcesErrorFinish
+// covers row eee6200: a decode failure on a known event type emits a
+// ChunkTypeError chunk, and forces the eventual finish reason to "error"
+// even though the terminal event itself reports a normal completion.
+func TestResponsesLanguageModel_DoStreamKnownEventDecodeErrorForcesErrorFinish(t *testing.T) {
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_text.delta","delta":123}
+
+data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}
+
+`)), false)
+	defer stream.Close() //nolint:errcheck
+
+	errChunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("first Next() error = %v", err)
+	}
+	if errChunk.Type != provider.ChunkTypeError {
+		t.Fatalf("first chunk = %#v, want ChunkTypeError", errChunk)
+	}
+
+	finishChunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("second Next() error = %v", err)
+	}
+	if finishChunk.Type != provider.ChunkTypeFinish || finishChunk.FinishReason != types.FinishReasonError {
+		t.Fatalf("finish chunk = %#v, want FinishReasonError forced by the earlier decode failure", finishChunk)
+	}
+}
+
+// TestResponsesLanguageModel_ApplyPatchCallDecodesAsToolCall covers row
+// 45f2b6a: apply_patch_call output items decode into a tool call
+// ({callId,operation}) and drive a tool-calls finish reason, in both
+// generate and stream.
+func TestResponsesLanguageModel_ApplyPatchCallDecodesAsToolCall(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	item, _ := json.Marshal(map[string]interface{}{
+		"type": "apply_patch_call", "id": "ap_1", "call_id": "call_1", "status": "completed",
+		"operation": map[string]interface{}{"type": "create_file", "path": "foo.go", "diff": "+package foo"},
+	})
+	result, err := model.convertResponse(responses.ResponsesAPIResponse{
+		Output: []json.RawMessage{item},
+		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
+	}, true, "", nil, nil)
+	if err != nil {
+		t.Fatalf("convertResponse failed: %v", err)
+	}
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls = %#v, want one apply_patch tool call", result.ToolCalls)
+	}
+	tc := result.ToolCalls[0]
+	if tc.ID != "call_1" || tc.ToolName != "openai.apply_patch" {
+		t.Fatalf("tool call = %#v, want callId call_1 and toolName openai.apply_patch", tc)
+	}
+	if tc.Arguments["callId"] != "call_1" {
+		t.Fatalf("arguments = %#v, want callId call_1", tc.Arguments)
+	}
+	operation, ok := tc.Arguments["operation"].(map[string]interface{})
+	if !ok || operation["type"] != "create_file" || operation["path"] != "foo.go" {
+		t.Fatalf("operation = %#v, want create_file foo.go", tc.Arguments["operation"])
+	}
+	if result.FinishReason != types.FinishReasonToolCalls {
+		t.Fatalf("FinishReason = %v, want tool-calls", result.FinishReason)
+	}
+}
+
+// TestResponsesLanguageModel_StreamApplyPatchCallDecodesAsToolCall covers row
+// 45f2b6a for the streaming path.
+func TestResponsesLanguageModel_StreamApplyPatchCallDecodesAsToolCall(t *testing.T) {
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"apply_patch_call","id":"ap_1","call_id":"call_1","operation":{"type":"delete_file","path":"bar.go"}}}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"apply_patch_call","id":"ap_1","call_id":"call_1","status":"completed","operation":{"type":"delete_file","path":"bar.go"}}}
+
+`)), false)
+	defer stream.Close() //nolint:errcheck
+
+	// A delete_file operation is fully known at output_item.added (row
+	// 45f2b6a / item 9): expect tool-input-start, tool-input-delta (full
+	// input), tool-input-end, then the final tool-call at output_item.done.
+	start, err := stream.Next()
+	if err != nil || start.Type != provider.ChunkTypeToolInputStart {
+		t.Fatalf("chunk = %#v, err = %v, want tool-input-start", start, err)
+	}
+	delta, err := stream.Next()
+	if err != nil || delta.Type != provider.ChunkTypeToolInputDelta {
+		t.Fatalf("chunk = %#v, err = %v, want tool-input-delta", delta, err)
+	}
+	end, err := stream.Next()
+	if err != nil || end.Type != provider.ChunkTypeToolInputEnd {
+		t.Fatalf("chunk = %#v, err = %v, want tool-input-end", end, err)
+	}
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeToolCall || chunk.ToolCall == nil {
+		t.Fatalf("chunk = %#v, want a tool call", chunk)
+	}
+	if chunk.ToolCall.ID != "call_1" || chunk.ToolCall.ToolName != "openai.apply_patch" {
+		t.Fatalf("tool call = %#v, want callId call_1 toolName openai.apply_patch", chunk.ToolCall)
+	}
+	operation, ok := chunk.ToolCall.Arguments["operation"].(map[string]interface{})
+	if !ok || operation["type"] != "delete_file" {
+		t.Fatalf("operation = %#v, want delete_file", chunk.ToolCall.Arguments["operation"])
+	}
+}
+
+// TestResponsesLanguageModel_RotatingItemIDUsesFirstSeenID covers row
+// 73d48d0: reasoning-end uses the item id first seen at output_item.added
+// for a given output_index, not a later (rotated) id from output_item.done.
+func TestResponsesLanguageModel_RotatingItemIDUsesFirstSeenID(t *testing.T) {
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_original"}}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_rotated","encrypted_content":"enc"}}
+
+`)), false)
+	defer stream.Close() //nolint:errcheck
+
+	start, err := stream.Next()
+	if err != nil || start.Type != provider.ChunkTypeReasoningStart {
+		t.Fatalf("chunk = %#v, err = %v, want reasoning-start", start, err)
+	}
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeReasoningEnd || chunk.ID != "rs_original:0" {
+		t.Fatalf("chunk = %#v, want reasoning-end with the original (first-seen) item id", chunk)
+	}
+}
+
+// TestResponsesLanguageModel_StreamFailedRawFinishReason covers row
+// e6376c2: a response.failed event carries a RawFinishReason on the finish
+// chunk, using the incomplete reason if present or "error" otherwise.
+func TestResponsesLanguageModel_StreamFailedRawFinishReason(t *testing.T) {
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.created","response":{"id":"resp_1","created_at":1741269019,"model":"gpt-4o"}}
+
+data: {"type":"response.failed","response":{"id":"resp_1","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":1,"output_tokens":1}}}
+
+`)), false)
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeFinish || chunk.RawFinishReason != "max_output_tokens" {
+		t.Fatalf("finish chunk = %#v, want RawFinishReason=max_output_tokens", chunk)
+	}
+}
+
+// TestResponsesLanguageModel_AsyncToolCallingGatedByModel covers row
+// 4a09793: async=true on a function tool is sent for a GPT-6+ model, but
+// dropped with a warning for an older model.
+func TestResponsesLanguageModel_AsyncToolCallingGatedByModel(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+
+	tools := []types.Tool{{
+		Type: types.ToolTypeFunction,
+		Name: "lookup",
+		ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{"async": true},
+		},
+	}}
+
+	gpt6 := NewResponsesLanguageModel(p, ModelGPT6Astra)
+	body, _, warnings, err := gpt6.buildRequest(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}}},
+		Tools:  tools,
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequest failed: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none for a GPT-6+ model", warnings)
+	}
+	fn := body["tools"].([]interface{})[0].(responses.FunctionToolDef)
+	if fn.Async == nil || !*fn.Async {
+		t.Fatalf("Async = %v, want true for a GPT-6+ model", fn.Async)
+	}
+
+	older := NewResponsesLanguageModel(p, "gpt-4o")
+	body, _, warnings, err = older.buildRequest(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}}},
+		Tools:  tools,
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequest failed: %v", err)
+	}
+	fn = body["tools"].([]interface{})[0].(responses.FunctionToolDef)
+	if fn.Async != nil {
+		t.Fatalf("Async = %v, want nil (dropped) for an older model", fn.Async)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0].Feature, "async tool calling") {
+		t.Fatalf("warnings = %#v, want an async tool calling warning", warnings)
+	}
+}
+
+// TestResponsesLanguageModel_AsyncToolCallRoundTrip covers row 4a09793: a
+// function_call output item with async=true decodes into
+// ProviderMetadata.async, and replaying that tool call re-emits async on
+// the function_call input item.
+func TestResponsesLanguageModel_AsyncToolCallRoundTrip(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	item, _ := json.Marshal(map[string]interface{}{
+		"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "lookup",
+		"arguments": "{}", "async": true,
+	})
+	result, err := model.convertResponse(responses.ResponsesAPIResponse{
+		Output: []json.RawMessage{item},
+		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
+	}, true, "", nil, nil)
+	if err != nil {
+		t.Fatalf("convertResponse failed: %v", err)
+	}
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls = %#v, want one", result.ToolCalls)
+	}
+	tc := result.ToolCalls[0]
+	openaiMeta, ok := tc.ProviderMetadata["openai"].(map[string]interface{})
+	if !ok || openaiMeta["async"] != true {
+		t.Fatalf("ProviderMetadata = %#v, want async=true", tc.ProviderMetadata)
+	}
+
+	// Replay this tool call back into an input item.
+	input, _, err := responses.ConvertPromptToInputWithOptions(types.Prompt{
+		Messages: []types.Message{{Role: types.RoleAssistant, ToolCalls: []types.ToolCall{tc}}},
+	}, "system", responses.ConvertOptions{})
+	if err != nil {
+		t.Fatalf("ConvertPromptToInputWithOptions failed: %v", err)
+	}
+	if len(input) != 1 {
+		t.Fatalf("input = %#v, want one function_call item", input)
+	}
+	fc, ok := input[0].(responses.FunctionCallItem)
+	if !ok || fc.Async == nil || !*fc.Async {
+		t.Fatalf("input[0] = %#v, want function_call with async=true", input[0])
+	}
+}
+
+// TestResponsesLanguageModel_ComputerToolPrepareAndDecode covers row
+// 0063c2d: the computer tool prepares as {type:"computer"}, and a
+// computer_call output item decodes into a tool call with camelCase
+// actions/pendingSafetyChecks/status arguments, in both generate and
+// stream.
+func TestResponsesLanguageModel_ComputerToolPrepareAndDecode(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	body, _, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}}},
+		Tools:  []types.Tool{responses.NewComputerTool()},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	def, ok := body["tools"].([]interface{})[0].(map[string]interface{})
+	if !ok || def["type"] != "computer" {
+		t.Fatalf("tool def = %#v, want {type:computer}", body["tools"])
+	}
+
+	item, _ := json.Marshal(map[string]interface{}{
+		"type": "computer_call", "id": "cu_1", "call_id": "call_1", "status": "completed",
+		"actions": []interface{}{
+			map[string]interface{}{"type": "click", "button": "left", "x": 10, "y": 20},
+			map[string]interface{}{"type": "scroll", "x": 1, "y": 2, "scroll_x": 0, "scroll_y": -5},
+		},
+		"pending_safety_checks": []interface{}{
+			map[string]interface{}{"id": "sc_1", "code": "malicious_instructions", "message": "review this"},
+		},
+	})
+	result, err := model.convertResponse(responses.ResponsesAPIResponse{
+		Output: []json.RawMessage{item},
+		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
+	}, true, "", nil, nil)
+	if err != nil {
+		t.Fatalf("convertResponse failed: %v", err)
+	}
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls = %#v, want one computer tool call", result.ToolCalls)
+	}
+	tc := result.ToolCalls[0]
+	if tc.ID != "call_1" || tc.ToolName != "openai.computer" {
+		t.Fatalf("tool call = %#v, want callId call_1 toolName openai.computer", tc)
+	}
+	actions, ok := tc.Arguments["actions"].([]map[string]interface{})
+	if !ok || len(actions) != 2 {
+		t.Fatalf("actions = %#v, want two actions", tc.Arguments["actions"])
+	}
+	if fmt.Sprint(actions[1]["scrollX"]) != "0" || fmt.Sprint(actions[1]["scrollY"]) != "-5" {
+		t.Fatalf("scroll action = %#v, want scrollX/scrollY mapped from scroll_x/scroll_y", actions[1])
+	}
+	checks, ok := tc.Arguments["pendingSafetyChecks"].([]map[string]interface{})
+	if !ok || len(checks) != 1 || checks[0]["id"] != "sc_1" {
+		t.Fatalf("pendingSafetyChecks = %#v", tc.Arguments["pendingSafetyChecks"])
+	}
+	if result.FinishReason != types.FinishReasonToolCalls {
+		t.Fatalf("FinishReason = %v, want tool-calls", result.FinishReason)
+	}
+
+	// Streaming path.
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"computer_call","id":"cu_1"}}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"computer_call","id":"cu_1","call_id":"call_1","status":"completed","actions":[{"type":"screenshot"}],"pending_safety_checks":[]}}
+
+`)), false)
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeToolCall || chunk.ToolCall.ToolName != "openai.computer" {
+		t.Fatalf("chunk = %#v, want an openai.computer tool call", chunk)
+	}
+}
+
+// TestResponsesLanguageModel_ComputerToolNullCallIDIsProviderExecuted covers
+// row 0063c2d: a computer_call with call_id: null is fully server-executed,
+// with no client round trip. It decodes as an immediate "computer_use"
+// tool-call/tool-result pair (providerExecuted) instead of a client
+// "openai.computer" tool call, in both doGenerate and doStream.
+func TestResponsesLanguageModel_ComputerToolNullCallIDIsProviderExecuted(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	item, _ := json.Marshal(map[string]interface{}{
+		"type": "computer_call", "id": "computer_1", "status": "completed",
+	})
+	result, err := model.convertResponse(responses.ResponsesAPIResponse{
+		Output: []json.RawMessage{item},
+		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
+	}, true, "", nil, nil)
+	if err != nil {
+		t.Fatalf("convertResponse failed: %v", err)
+	}
+	if len(result.Content) != 2 {
+		t.Fatalf("Content = %#v, want a tool-call/tool-result pair", result.Content)
+	}
+	tc, ok := result.Content[0].(types.ToolCallContent)
+	if !ok || tc.ToolCallID != "computer_1" || tc.ToolName != "openai.computer_use" || !tc.ProviderExecuted || tc.Input != "" {
+		t.Fatalf("Content[0] = %#v, want a providerExecuted computer_use tool-call with empty input", result.Content[0])
+	}
+	tr, ok := result.Content[1].(types.ToolResultContent)
+	if !ok || tr.ToolCallID != "computer_1" || tr.ToolName != "openai.computer_use" {
+		t.Fatalf("Content[1] = %#v, want a computer_use tool-result", result.Content[1])
+	}
+	resultMap, ok := tr.Result.(map[string]interface{})
+	if !ok || resultMap["type"] != "computer_use_tool_result" || resultMap["status"] != "completed" {
+		t.Fatalf("tool-result.Result = %#v, want {type:computer_use_tool_result, status:completed}", tr.Result)
+	}
+
+	// Streaming path emits tool-input-end, tool-call, then tool-result.
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"computer_call","id":"computer_1"}}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"computer_call","id":"computer_1","status":"completed"}}
+
+`)), false)
+	defer stream.Close() //nolint:errcheck
+
+	chunk1, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if chunk1.Type != provider.ChunkTypeToolInputEnd || chunk1.ToolCall.ToolName != "openai.computer_use" {
+		t.Fatalf("chunk1 = %#v, want tool-input-end for computer_use", chunk1)
+	}
+	chunk2, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if chunk2.Type != provider.ChunkTypeToolCall || chunk2.ToolCall.ToolName != "openai.computer_use" || !chunk2.ToolCall.ProviderExecuted {
+		t.Fatalf("chunk2 = %#v, want a providerExecuted computer_use tool-call", chunk2)
+	}
+	chunk3, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if chunk3.Type != provider.ChunkTypeToolResult || chunk3.ToolResult.ToolName != "openai.computer_use" {
+		t.Fatalf("chunk3 = %#v, want a computer_use tool-result", chunk3)
+	}
+}
+
+// TestComputerCallArguments_FallsBackToSingularAction covers row 0063c2d:
+// TS's mapComputerCallInput uses `actions ?? (action != null ? [action] :
+// [])` -- a singular `action` field is used when `actions` is empty/absent.
+func TestComputerCallArguments_FallsBackToSingularAction(t *testing.T) {
+	item := responses.ComputerCall{
+		Status: "completed",
+		Action: map[string]interface{}{"type": "screenshot"},
+	}
+	args, _ := computerCallArguments(item)
+	actions, ok := args["actions"].([]map[string]interface{})
+	if !ok || len(actions) != 1 || actions[0]["type"] != "screenshot" {
+		t.Fatalf("actions = %#v, want one screenshot action from the singular action field", args["actions"])
+	}
+}
+
+// TestResponsesLanguageModel_ComputerToolInputReplay covers row 0063c2d: a
+// computer tool call and its result round-trip through input conversion as
+// computer_call/computer_call_output items.
+func TestResponsesLanguageModel_ComputerToolInputReplay(t *testing.T) {
+	tc := types.ToolCall{
+		ID:       "call_1",
+		ToolName: "openai.computer",
+		Arguments: map[string]interface{}{
+			"status":  "completed",
+			"actions": []interface{}{map[string]interface{}{"type": "click", "button": "left", "x": 1, "y": 2}},
+		},
+	}
+	input, _, err := responses.ConvertPromptToInputWithOptions(types.Prompt{
+		Messages: []types.Message{{Role: types.RoleAssistant, ToolCalls: []types.ToolCall{tc}}},
+	}, "system", responses.ConvertOptions{HasComputerTool: true})
+	if err != nil {
+		t.Fatalf("ConvertPromptToInputWithOptions failed: %v", err)
+	}
+	if len(input) != 1 {
+		t.Fatalf("input = %#v, want one computer_call item", input)
+	}
+	cc, ok := input[0].(responses.ComputerCall)
+	if !ok || cc.CallID == nil || *cc.CallID != "call_1" || len(cc.Actions) != 1 {
+		t.Fatalf("input[0] = %#v, want computer_call with one action", input[0])
+	}
+
+	toolResultInput, _, err := responses.ConvertPromptToInputWithOptions(types.Prompt{
+		Messages: []types.Message{{
+			Role: types.RoleTool,
+			Content: []types.ContentPart{types.ToolResultContent{
+				ToolCallID: "call_1",
+				ToolName:   "openai.computer",
+				Output: &types.ToolResultOutput{
+					Type: types.ToolResultOutputJSON,
+					Value: map[string]interface{}{
+						"output": map[string]interface{}{"imageUrl": "https://example.com/shot.png"},
+					},
+				},
+			}},
+		}},
+	}, "system", responses.ConvertOptions{HasComputerTool: true})
+	if err != nil {
+		t.Fatalf("ConvertPromptToInputWithOptions (tool result) failed: %v", err)
+	}
+	if len(toolResultInput) != 1 {
+		t.Fatalf("toolResultInput = %#v, want one computer_call_output item", toolResultInput)
+	}
+	out, ok := toolResultInput[0].(responses.ComputerCallOutput)
+	if !ok || out.CallID != "call_1" || out.Output.ImageURL != "https://example.com/shot.png" {
+		t.Fatalf("toolResultInput[0] = %#v, want computer_call_output with the screenshot URL", toolResultInput[0])
+	}
+}
+
+// TestResponsesLanguageModel_ProgrammaticToolCallingPrepareAndDecode covers
+// row 1f6dd3a: the programmatic tool calling tool prepares as
+// {type:"programmatic_tool_calling"}, and "program"/"program_output" output
+// items decode into a single provider-executed tool call + result pair, in
+// both generate and stream.
+func TestResponsesLanguageModel_ProgrammaticToolCallingPrepareAndDecode(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	body, _, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}}},
+		Tools:  []types.Tool{responses.NewProgrammaticToolCallingTool()},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	def, ok := body["tools"].([]interface{})[0].(map[string]interface{})
+	if !ok || def["type"] != "programmatic_tool_calling" {
+		t.Fatalf("tool def = %#v, want {type:programmatic_tool_calling}", body["tools"])
+	}
+
+	programItem, _ := json.Marshal(map[string]interface{}{
+		"type": "program", "id": "pg_1", "call_id": "call_1",
+		"code": "callTool('lookup', {})", "fingerprint": "fp_1",
+	})
+	outputItem, _ := json.Marshal(map[string]interface{}{
+		"type": "program_output", "id": "pgo_1", "call_id": "call_1",
+		"result": "42", "status": "completed",
+	})
+	result, err := model.convertResponse(responses.ResponsesAPIResponse{
+		Output: []json.RawMessage{programItem, outputItem},
+		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
+	}, true, "", nil, nil)
+	if err != nil {
+		t.Fatalf("convertResponse failed: %v", err)
+	}
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls = %#v, want one programmatic tool call", result.ToolCalls)
+	}
+	tc := result.ToolCalls[0]
+	if tc.ID != "call_1" || tc.ToolName != "openai.programmatic_tool_calling" || !tc.ProviderExecuted {
+		t.Fatalf("tool call = %#v, want provider-executed openai.programmatic_tool_calling", tc)
+	}
+	if tc.Arguments["code"] != "callTool('lookup', {})" || tc.Arguments["fingerprint"] != "fp_1" {
+		t.Fatalf("arguments = %#v, want code/fingerprint", tc.Arguments)
+	}
+	var foundResult bool
+	for _, c := range result.Content {
+		trc, ok := c.(types.ToolResultContent)
+		if !ok || trc.ToolCallID != "call_1" {
+			continue
+		}
+		foundResult = true
+		resMap, ok := trc.Result.(map[string]interface{})
+		if !ok || resMap["result"] != "42" || resMap["status"] != "completed" {
+			t.Fatalf("tool result = %#v, want {result:42, status:completed}", trc.Result)
+		}
+	}
+	if !foundResult {
+		t.Fatalf("result.Content = %#v, want a ToolResultContent for call_1", result.Content)
+	}
+
+	// Streaming path: "program" and "program_output" are separate output
+	// items, each decoded on its own output_item.done event.
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"program","id":"pg_1"}}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"program","id":"pg_1","call_id":"call_1","code":"callTool('lookup', {})","fingerprint":"fp_1"}}
+
+`)), false)
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeToolCall || chunk.ToolCall.ToolName != "openai.programmatic_tool_calling" || !chunk.ToolCall.ProviderExecuted {
+		t.Fatalf("chunk = %#v, want a provider-executed openai.programmatic_tool_calling tool call", chunk)
+	}
+
+	outputStream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":1,"item":{"type":"program_output","id":"pgo_1"}}
+
+data: {"type":"response.output_item.done","output_index":1,"item":{"type":"program_output","id":"pgo_1","call_id":"call_1","result":"42","status":"completed"}}
+
+`)), false)
+	defer outputStream.Close() //nolint:errcheck
+
+	resultChunk, err := outputStream.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if resultChunk.Type != provider.ChunkTypeToolResult || resultChunk.ToolResult.ToolCallID != "call_1" {
+		t.Fatalf("chunk = %#v, want a tool-result for call_1", resultChunk)
+	}
+}
+
+// TestResponsesLanguageModel_ProgrammaticToolCallingInputReplay covers row
+// 1f6dd3a: a programmatic tool call and its result round-trip through input
+// conversion as program/program_output items, and a plain function call made
+// by a "program" caller replays with its caller preserved.
+func TestResponsesLanguageModel_ProgrammaticToolCallingInputReplay(t *testing.T) {
+	tc := types.ToolCall{
+		ID:               "call_1",
+		ToolName:         "openai.programmatic_tool_calling",
+		ProviderExecuted: true,
+		Arguments:        map[string]interface{}{"code": "callTool('lookup', {})", "fingerprint": "fp_1"},
+	}
+	input, _, err := responses.ConvertPromptToInputWithOptions(types.Prompt{
+		Messages: []types.Message{{Role: types.RoleAssistant, ToolCalls: []types.ToolCall{tc}}},
+	}, "system", responses.ConvertOptions{})
+	if err != nil {
+		t.Fatalf("ConvertPromptToInputWithOptions failed: %v", err)
+	}
+	if len(input) != 1 {
+		t.Fatalf("input = %#v, want one program item", input)
+	}
+	program, ok := input[0].(responses.ProgramItem)
+	if !ok || program.CallID != "call_1" || program.Code != "callTool('lookup', {})" || program.Fingerprint != "fp_1" {
+		t.Fatalf("input[0] = %#v, want a program item", input[0])
+	}
+
+	toolResultInput, _, err := responses.ConvertPromptToInputWithOptions(types.Prompt{
+		Messages: []types.Message{{
+			Role: types.RoleAssistant,
+			Content: []types.ContentPart{types.ToolResultContent{
+				ToolCallID: "call_1",
+				ToolName:   "openai.programmatic_tool_calling",
+				Output: &types.ToolResultOutput{
+					Type:  types.ToolResultOutputJSON,
+					Value: map[string]interface{}{"result": "42", "status": "completed"},
+				},
+			}},
+		}},
+	}, "system", responses.ConvertOptions{})
+	if err != nil {
+		t.Fatalf("ConvertPromptToInputWithOptions (tool result) failed: %v", err)
+	}
+	if len(toolResultInput) != 1 {
+		t.Fatalf("toolResultInput = %#v, want one program_output item", toolResultInput)
+	}
+	programOutput, ok := toolResultInput[0].(responses.ProgramOutputItem)
+	if !ok || programOutput.CallID != "call_1" || programOutput.Result != "42" || programOutput.Status != "completed" {
+		t.Fatalf("toolResultInput[0] = %#v, want a program_output item", toolResultInput[0])
+	}
+
+	// A plain client function call invoked by a "program" caller replays
+	// with its caller preserved.
+	fnCall := types.ToolCall{
+		ID:       "call_2",
+		ToolName: "lookup",
+		Arguments: map[string]interface{}{
+			"query": "foo",
+		},
+		ProviderMetadata: map[string]interface{}{
+			"openai": map[string]interface{}{
+				"caller": map[string]interface{}{"type": "program", "callerId": "call_1"},
+			},
+		},
+	}
+	fnInput, _, err := responses.ConvertPromptToInputWithOptions(types.Prompt{
+		Messages: []types.Message{{Role: types.RoleAssistant, ToolCalls: []types.ToolCall{fnCall}}},
+	}, "system", responses.ConvertOptions{})
+	if err != nil {
+		t.Fatalf("ConvertPromptToInputWithOptions (function call) failed: %v", err)
+	}
+	if len(fnInput) != 1 {
+		t.Fatalf("fnInput = %#v, want one function_call item", fnInput)
+	}
+	fc, ok := fnInput[0].(responses.FunctionCallItem)
+	if !ok || fc.Caller == nil || fc.Caller.Type != "program" || fc.Caller.CallerID != "call_1" {
+		t.Fatalf("fnInput[0] = %#v, want function_call with caller {program, call_1}", fnInput[0])
+	}
+}
+
+// TestResponsesLanguageModel_ProgrammaticToolCallingRejectsDeniedResult
+// covers row e105b2b: an execution-denied result for a function tool call
+// whose caller was a programmatic-tool-calling "program" is rejected rather
+// than silently sent back as a "denied" text result, since there is no
+// interactive approval loop inside the hosted JavaScript sandbox.
+func TestResponsesLanguageModel_ProgrammaticToolCallingRejectsDeniedResult(t *testing.T) {
+	// Case 1: the caller is tracked from the corresponding assistant tool
+	// call in the same prompt (no caller metadata on the result itself).
+	deniedResult := types.ToolResultContent{
+		ToolCallID: "call_2",
+		ToolName:   "lookup",
+		Output: &types.ToolResultOutput{
+			Type:   types.ToolResultOutputExecutionDenied,
+			Reason: "denied by user",
+		},
+	}
+	fnCall := types.ToolCall{
+		ID:       "call_2",
+		ToolName: "lookup",
+		ProviderMetadata: map[string]interface{}{
+			"openai": map[string]interface{}{
+				"caller": map[string]interface{}{"type": "program", "callerId": "call_1"},
+			},
+		},
+	}
+	_, _, err := responses.ConvertPromptToInputWithOptions(types.Prompt{
+		Messages: []types.Message{
+			{Role: types.RoleAssistant, ToolCalls: []types.ToolCall{fnCall}},
+			{Role: types.RoleTool, Content: []types.ContentPart{deniedResult}},
+		},
+	}, "system", responses.ConvertOptions{})
+	if err == nil {
+		t.Fatal("expected an error rejecting the execution-denied programmatic tool result")
+	}
+
+	// Case 2: a "direct" caller's execution-denied result is unaffected.
+	fnCall.ProviderMetadata = map[string]interface{}{
+		"openai": map[string]interface{}{
+			"caller": map[string]interface{}{"type": "direct"},
+		},
+	}
+	_, _, err = responses.ConvertPromptToInputWithOptions(types.Prompt{
+		Messages: []types.Message{
+			{Role: types.RoleAssistant, ToolCalls: []types.ToolCall{fnCall}},
+			{Role: types.RoleTool, Content: []types.ContentPart{deniedResult}},
+		},
+	}, "system", responses.ConvertOptions{})
+	if err != nil {
+		t.Fatalf("direct caller's execution-denied result should not be rejected: %v", err)
+	}
+}
+
+// TestResponsesLanguageModel_ParallelToolCallExpandsDeclaredTools covers row
+// 6be0f51: an internal "parallel" function call whose tool_uses all name
+// declared function tools expands into one tool call per recipient, in both
+// generate and stream.
+func TestResponsesLanguageModel_ParallelToolCallExpandsDeclaredTools(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+	tools := []types.Tool{
+		{Name: "get_weather", Parameters: map[string]interface{}{"type": "object"}},
+		{Name: "get_time", Parameters: map[string]interface{}{"type": "object"}},
+	}
+
+	rawInput := `{"tool_uses":[{"recipient_name":"functions.get_weather","parameters":{"city":"nyc"}},{"recipient_name":"functions.get_time","parameters":{"zone":"utc"}}]}`
+	item, _ := json.Marshal(map[string]interface{}{
+		"type": "function_call", "id": "fc_1", "call_id": "call_p", "name": "parallel",
+		"arguments": rawInput,
+	})
+	result, err := model.convertResponse(responses.ResponsesAPIResponse{
+		Output: []json.RawMessage{item},
+		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
+	}, true, "", tools, nil)
+	if err != nil {
+		t.Fatalf("convertResponse failed: %v", err)
+	}
+	if len(result.ToolCalls) != 2 {
+		t.Fatalf("ToolCalls = %#v, want two expanded tool calls", result.ToolCalls)
+	}
+	if result.ToolCalls[0].ID != "call_p_0" || result.ToolCalls[0].ToolName != "get_weather" || result.ToolCalls[0].Arguments["city"] != "nyc" {
+		t.Fatalf("ToolCalls[0] = %#v, want get_weather with city=nyc", result.ToolCalls[0])
+	}
+	if result.ToolCalls[1].ID != "call_p_1" || result.ToolCalls[1].ToolName != "get_time" || result.ToolCalls[1].Arguments["zone"] != "utc" {
+		t.Fatalf("ToolCalls[1] = %#v, want get_time with zone=utc", result.ToolCalls[1])
+	}
+	openaiMeta, ok := result.ToolCalls[0].ProviderMetadata["openai"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("ToolCalls[0].ProviderMetadata = %#v, want openai metadata", result.ToolCalls[0].ProviderMetadata)
+	}
+	parallelMeta, ok := openaiMeta["parallelToolCall"].(responses.ParallelToolCallMetadata)
+	if !ok || parallelMeta.ToolCallID != "call_p" || parallelMeta.ToolName != "parallel" || parallelMeta.Count != 2 || parallelMeta.Index != 0 {
+		t.Fatalf("parallelToolCall metadata = %#v, want wrapper call_p/parallel, count=2, index=0", openaiMeta["parallelToolCall"])
+	}
+
+	// Streaming path: the wrapper's arguments arrive as one delta, expansion
+	// happens at output_item.done.
+	stream := newResponsesStreamWithMetadata(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_p","name":"parallel"}}
+
+data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"`+strings.ReplaceAll(rawInput, `"`, `\"`)+`"}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_p","name":"parallel","arguments":""}}
+
+`)), false, "web_search", "openai", nil)
+	stream.tools = tools
+	defer stream.Close() //nolint:errcheck
+
+	chunk1, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if chunk1.Type != provider.ChunkTypeToolCall || chunk1.ToolCall.ToolName != "get_weather" {
+		t.Fatalf("chunk1 = %#v, want get_weather tool call", chunk1)
+	}
+	chunk2, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if chunk2.Type != provider.ChunkTypeToolCall || chunk2.ToolCall.ToolName != "get_time" {
+		t.Fatalf("chunk2 = %#v, want get_time tool call", chunk2)
+	}
+}
+
+// TestResponsesLanguageModel_ParallelToolCallNotExpandedWhenRecipientUndeclared
+// covers row 6be0f51: when a tool_uses recipient doesn't name a declared
+// function tool, the "parallel" call is left unexpanded.
+func TestResponsesLanguageModel_ParallelToolCallNotExpandedWhenRecipientUndeclared(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+	tools := []types.Tool{{Name: "get_weather", Parameters: map[string]interface{}{"type": "object"}}}
+
+	rawInput := `{"tool_uses":[{"recipient_name":"functions.unknown_tool","parameters":{}}]}`
+	item, _ := json.Marshal(map[string]interface{}{
+		"type": "function_call", "id": "fc_1", "call_id": "call_p", "name": "parallel",
+		"arguments": rawInput,
+	})
+	result, err := model.convertResponse(responses.ResponsesAPIResponse{
+		Output: []json.RawMessage{item},
+		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
+	}, true, "", tools, nil)
+	if err != nil {
+		t.Fatalf("convertResponse failed: %v", err)
+	}
+	if len(result.ToolCalls) != 1 || result.ToolCalls[0].ToolName != "parallel" {
+		t.Fatalf("ToolCalls = %#v, want a single unexpanded 'parallel' tool call", result.ToolCalls)
+	}
+}
+
+// TestResponsesLanguageModel_ParallelToolCallReplayGrouping covers row
+// 6be0f51: with conversation state, expanded child calls/results regroup
+// back into a single function_call/function_call_output pair using the
+// original wrapper's call_id; without conversation state, each child
+// replays individually.
+func TestResponsesLanguageModel_ParallelToolCallReplayGrouping(t *testing.T) {
+	rawInput := `{"tool_uses":[{"recipient_name":"functions.get_weather","parameters":{"city":"nyc"}},{"recipient_name":"functions.get_time","parameters":{"zone":"utc"}}]}`
+	wrapperMeta := func(index int) map[string]interface{} {
+		return map[string]interface{}{
+			"openai": map[string]interface{}{
+				"parallelToolCall": responses.ParallelToolCallMetadata{
+					ItemID: "fc_1", ToolCallID: "call_p", ToolName: "parallel",
+					Input: rawInput, Index: index, Count: 2,
+				},
+			},
+		}
+	}
+	toolCalls := []types.ToolCall{
+		{ID: "call_p_0", ToolName: "get_weather", Arguments: map[string]interface{}{"city": "nyc"}, ProviderMetadata: wrapperMeta(0)},
+		{ID: "call_p_1", ToolName: "get_time", Arguments: map[string]interface{}{"zone": "utc"}, ProviderMetadata: wrapperMeta(1)},
+	}
+	toolResults := []types.ContentPart{
+		types.ToolResultContent{
+			ToolCallID: "call_p_0", ToolName: "get_weather",
+			Output:          &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "sunny"},
+			ProviderOptions: wrapperMeta(0),
+		},
+		types.ToolResultContent{
+			ToolCallID: "call_p_1", ToolName: "get_time",
+			Output:          &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "noon"},
+			ProviderOptions: wrapperMeta(1),
+		},
+	}
+
+	// With conversation state: regroup into one function_call + one
+	// function_call_output using the wrapper's own call_id.
+	input, _, err := responses.ConvertPromptToInputWithOptions(types.Prompt{
+		Messages: []types.Message{
+			{Role: types.RoleAssistant, ToolCalls: toolCalls},
+			{Role: types.RoleTool, Content: toolResults},
+		},
+	}, "system", responses.ConvertOptions{HasConversation: true})
+	if err != nil {
+		t.Fatalf("ConvertPromptToInputWithOptions failed: %v", err)
+	}
+	// hasConversation: the assistant side contributes nothing (the
+	// conversation already has the wrapper item); the tool side contributes
+	// exactly one regrouped function_call_output.
+	if len(input) != 1 {
+		t.Fatalf("input = %#v, want one regrouped function_call_output", input)
+	}
+	out, ok := input[0].(responses.FunctionCallOutputItem)
+	if !ok || out.CallID != "call_p" {
+		t.Fatalf("input[0] = %#v, want function_call_output for call_p", input[0])
+	}
+	joined, ok := out.Output.(string)
+	if !ok || joined != "sunny\nnoon" {
+		t.Fatalf("output = %#v, want \"sunny\\nnoon\"", out.Output)
+	}
+
+	// Without conversation/previousResponseId state: each child replays
+	// individually (no regrouping).
+	plainInput, _, err := responses.ConvertPromptToInputWithOptions(types.Prompt{
+		Messages: []types.Message{
+			{Role: types.RoleAssistant, ToolCalls: toolCalls},
+			{Role: types.RoleTool, Content: toolResults},
+		},
+	}, "system", responses.ConvertOptions{})
+	if err != nil {
+		t.Fatalf("ConvertPromptToInputWithOptions (stateless) failed: %v", err)
+	}
+	var functionCalls, functionCallOutputs int
+	for _, item := range plainInput {
+		switch item.(type) {
+		case responses.FunctionCallItem:
+			functionCalls++
+		case responses.FunctionCallOutputItem:
+			functionCallOutputs++
+		}
+	}
+	if functionCalls != 2 || functionCallOutputs != 2 {
+		t.Fatalf("stateless replay: functionCalls=%d functionCallOutputs=%d, want 2 and 2 (no regrouping)", functionCalls, functionCallOutputs)
+	}
+}
+
+// TestResponsesLanguageModel_ToolResultContentNeverProviderExecuted covers
+// item 4a of the P1-2c sweep: LanguageModelV4ToolResult has no
+// providerExecuted field in TS (only LanguageModelV4ToolCall does), so none
+// of convertResponse's non-streaming ToolResultContent parts should ever
+// set it, even though the paired ToolCallContent legitimately does.
+func TestResponsesLanguageModel_ToolResultContentNeverProviderExecuted(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewResponsesLanguageModel(p, "gpt-4o")
+
+	computerItem, _ := json.Marshal(map[string]interface{}{
+		"type": "computer_call", "id": "computer_1", "status": "completed",
+	})
+	webSearchItem, _ := json.Marshal(map[string]interface{}{
+		"type": "web_search_call", "id": "ws_1", "status": "completed",
+	})
+	programItem, _ := json.Marshal(map[string]interface{}{
+		"type": "program", "id": "prog_item_1", "call_id": "prog_1", "code": "1+1", "fingerprint": "fp",
+	})
+	programOutputItem, _ := json.Marshal(map[string]interface{}{
+		"type": "program_output", "id": "prog_out_1", "call_id": "prog_1", "result": "2", "status": "completed",
+	})
+
+	result, err := model.convertResponse(responses.ResponsesAPIResponse{
+		Output: []json.RawMessage{computerItem, webSearchItem, programItem, programOutputItem},
+		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
+	}, true, "", nil, nil)
+	if err != nil {
+		t.Fatalf("convertResponse failed: %v", err)
+	}
+
+	sawToolResult := 0
+	for _, part := range result.Content {
+		tr, ok := part.(types.ToolResultContent)
+		if !ok {
+			continue
+		}
+		sawToolResult++
+		if tr.ProviderExecuted {
+			t.Fatalf("tool-result for %q has ProviderExecuted=true, want false (TS never sets it on tool-result parts): %#v", tr.ToolName, tr)
+		}
+	}
+	if sawToolResult != 3 {
+		t.Fatalf("saw %d tool-result parts, want 3 (computer_use, web_search, programmatic_tool_calling)", sawToolResult)
+	}
+
+	// The paired tool-call parts legitimately keep ProviderExecuted=true.
+	sawToolCall := 0
+	for _, part := range result.Content {
+		if tc, ok := part.(types.ToolCallContent); ok {
+			sawToolCall++
+			if !tc.ProviderExecuted {
+				t.Fatalf("tool-call for %q has ProviderExecuted=false, want true: %#v", tc.ToolName, tc)
+			}
+		}
+	}
+	if sawToolCall != 3 {
+		t.Fatalf("saw %d tool-call parts, want 3", sawToolCall)
 	}
 }

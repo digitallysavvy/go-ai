@@ -27,22 +27,29 @@ type GoogleInteractionsProviderOptions struct {
 	ServiceTier           string
 	ThinkingLevel         string
 	ThinkingSummaries     string
-	ImageConfig           map[string]interface{}
-	Agent                 string
-	AgentConfig           map[string]interface{}
-	Environment           interface{}
-	PollingTimeoutMs      int
-	Background            *bool
+	// ResponseFormat holds raw (camelCase) response_format entries from
+	// providerOptions.google.responseFormat, e.g.
+	// {"type":"video","aspectRatio":"16:9",...}. Converted to snake_case
+	// wire entries in buildArgs.
+	ResponseFormat   []map[string]interface{}
+	ImageConfig      map[string]interface{}
+	Agent            string
+	AgentConfig      map[string]interface{}
+	Environment      interface{}
+	PollingTimeoutMs int
+	Background       *bool
 }
 
 type interactionsRequest struct {
-	Model                 string                   `json:"model,omitempty"`
-	Agent                 string                   `json:"agent,omitempty"`
-	Input                 interface{}              `json:"input"`
-	SystemInstruction     string                   `json:"system_instruction,omitempty"`
-	Tools                 []map[string]interface{} `json:"tools,omitempty"`
-	ResponseFormat        interface{}              `json:"response_format,omitempty"`
-	ResponseMimeType      string                   `json:"response_mime_type,omitempty"`
+	Model             string                   `json:"model,omitempty"`
+	Agent             string                   `json:"agent,omitempty"`
+	Input             interface{}              `json:"input"`
+	SystemInstruction string                   `json:"system_instruction,omitempty"`
+	Tools             []map[string]interface{} `json:"tools,omitempty"`
+	// ResponseFormat is a polymorphic array of entries (TS
+	// `GoogleInteractionsResponseFormatEntry`: text/image/audio/video), not a
+	// bare JSON Schema. There is no `response_mime_type` field on the wire.
+	ResponseFormat        []map[string]interface{} `json:"response_format,omitempty"`
 	ResponseModalities    []string                 `json:"response_modalities,omitempty"`
 	PreviousInteractionID string                   `json:"previous_interaction_id,omitempty"`
 	ServiceTier           string                   `json:"service_tier,omitempty"`

@@ -226,7 +226,7 @@ func postMultipartToProdia(ctx context.Context, reqURL, apiKey string, body *byt
 
 	resp, err := internalhttp.DefaultHTTPClient.Do(req)
 	if err != nil {
-		return nil, nil, fmt.Errorf("LHTTP request failed: %w", err)
+		return nil, nil, fmt.Errorf("HTTP request failed: %w", err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 

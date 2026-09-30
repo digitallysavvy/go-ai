@@ -83,6 +83,26 @@ func TestProviderError_IsRetryable(t *testing.T) {
 	}
 }
 
+func TestProviderError_IsRetryable_Override(t *testing.T) {
+	t.Parallel()
+
+	trueVal, falseVal := true, false
+
+	// A status the default classification treats as non-retryable (424),
+	// overridden to retryable (e.g. Bedrock modelStreamErrorException).
+	err := &ProviderError{StatusCode: 424, Retryable: &trueVal}
+	if !err.IsRetryable() {
+		t.Fatal("expected Retryable override to force IsRetryable() = true for a normally non-retryable status")
+	}
+
+	// A status the default classification treats as retryable (500),
+	// overridden to non-retryable.
+	err2 := &ProviderError{StatusCode: 500, Retryable: &falseVal}
+	if err2.IsRetryable() {
+		t.Fatal("expected Retryable override to force IsRetryable() = false for a normally retryable status")
+	}
+}
+
 func TestIsProviderError(t *testing.T) {
 	t.Parallel()
 

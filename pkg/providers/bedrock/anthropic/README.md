@@ -191,98 +191,45 @@ result, err := ai.GenerateText(ctx, ai.GenerateOptions{
 
 ### Prompt Caching
 
-Bedrock Anthropic supports Anthropic's prompt caching with configurable Time-To-Live (TTL) for reduced latency and costs.
+This provider now wraps `pkg/providers/anthropic.LanguageModel` (the same code path as `pkg/providers/googlevertex/anthropic`), so prompt caching is configured exactly like the direct Anthropic provider via `anthropicprovider.ModelOptions`, passed through `LanguageModelWithOptions`. The Bedrock-specific `CacheConfig`/`WithSystemCache`/`WithToolCache`/`WithMessageCacheIndices`/`CacheTTL1Hour`/`CacheTTL5Minutes` API has been removed — it generated the wrong wire shape (a Converse-style `cachePoint` block) for the native Messages API this provider actually calls, and cache placement is now handled correctly by the shared prompt converter.
 
-#### Cache TTL Options
+#### Automatic caching (recommended)
 
-- **5 minutes (default)**: Ideal for short interactive sessions
-- **1 hour**: Ideal for longer sessions (requires Claude 4.5 Sonnet v2, Opus, or Haiku)
-
-#### Basic Usage with Default 5m TTL
+Lets the API identify and cache reusable prompt segments (system prompt, tools, messages) without explicit markers:
 
 ```go
-provider := bedrockAnthropic.New(bedrockAnthropic.Config{
-    Region: "us-east-1",
-    Credentials: credentials,
-    CacheConfig: bedrockAnthropic.NewCacheConfig(
-        bedrockAnthropic.WithSystemCache(),
-    ),
-})
+import anthropicprovider "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 
-model, _ := provider.LanguageModel("us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+model, _ := provider.LanguageModelWithOptions(
+    "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    &anthropicprovider.ModelOptions{AutomaticCaching: true},
+)
 
-result, err := ai.GenerateText(ctx, ai.GenerateOptions{
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
-    System: largeContext, // This will be cached with 5m TTL
+    System: largeContext,
     Prompt: "Question: ...",
 })
 
 // Check cache statistics
 if result.Usage.InputDetails != nil {
-    fmt.Printf("Cache write tokens: %d\n",
-        *result.Usage.InputDetails.CacheWriteTokens)
-    fmt.Printf("Cache read tokens: %d\n",
-        *result.Usage.InputDetails.CacheReadTokens)
+    fmt.Printf("Cache write tokens: %d\n", *result.Usage.InputDetails.CacheWriteTokens)
+    fmt.Printf("Cache read tokens: %d\n", *result.Usage.InputDetails.CacheReadTokens)
 }
 ```
 
-#### Extended 1-Hour Cache
+#### Explicit ephemeral caching with a TTL
 
 ```go
-ttl := bedrockAnthropic.CacheTTL1Hour
-provider := bedrockAnthropic.New(bedrockAnthropic.Config{
-    Region: "us-east-1",
-    Credentials: credentials,
-    CacheConfig: bedrockAnthropic.NewCacheConfig(
-        bedrockAnthropic.WithCacheTTL(ttl),
-        bedrockAnthropic.WithSystemCache(),
-    ),
-})
+model, _ := provider.LanguageModelWithOptions(
+    "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    &anthropicprovider.ModelOptions{
+        CacheControl: &anthropicprovider.CacheControlOption{Type: "ephemeral", TTL: "1h"}, // "5m" or "1h"
+    },
+)
 ```
 
-#### Cache Tools
-
-```go
-provider := bedrockAnthropic.New(bedrockAnthropic.Config{
-    Region: "us-east-1",
-    Credentials: credentials,
-    CacheConfig: bedrockAnthropic.NewCacheConfig(
-        bedrockAnthropic.WithCacheTTL(bedrockAnthropic.CacheTTL1Hour),
-        bedrockAnthropic.WithSystemCache(),
-        bedrockAnthropic.WithToolCache(),
-    ),
-})
-
-// Tool definitions will be cached for 1 hour
-result, err := ai.GenerateText(ctx, ai.GenerateOptions{
-    Model:  model,
-    System: "You are a helpful assistant.",
-    Prompt: "What's the weather?",
-    Tools:  []ai.Tool{weatherTool, calculatorTool},
-})
-```
-
-#### Cache Specific Messages
-
-```go
-provider := bedrockAnthropic.New(bedrockAnthropic.Config{
-    Region: "us-east-1",
-    Credentials: credentials,
-    CacheConfig: bedrockAnthropic.NewCacheConfig(
-        bedrockAnthropic.WithCacheTTL(bedrockAnthropic.CacheTTL1Hour),
-        bedrockAnthropic.WithMessageCacheIndices(0, 2), // Cache messages at index 0 and 2
-    ),
-})
-```
-
-#### Model Support for 1-Hour Cache
-
-The 1-hour cache TTL is supported by:
-- `us.anthropic.claude-4-5-sonnet-v2:0` (Claude Sonnet 4.5 v2)
-- `us.anthropic.claude-4-5-opus-20250514:0` (Claude Opus 4.5)
-- `us.anthropic.claude-4-5-haiku-20250510:0` (Claude Haiku 4.5)
-
-All caching-capable models support the default 5-minute TTL.
+The 1-hour TTL is supported by Claude Sonnet 4.5 v2, Claude Opus 4.5 and Claude Haiku 4.5; all caching-capable models support the default 5-minute TTL.
 
 ### Image Input
 
@@ -515,11 +462,14 @@ type Config struct {
     // Default: https://bedrock-runtime.{region}.amazonaws.com
     BaseURL string
 
+    // Custom headers to include in every request (optional)
+    Headers map[string]string
+
     // Custom HTTP client (optional)
     HTTPClient *http.Client
 
-    // Cache configuration for prompt caching (optional)
-    CacheConfig *CacheConfig
+    // AWS credential provider for dynamic credentials (optional)
+    CredentialProvider bedrock.CredentialProvider
 }
 
 type AWSCredentials struct {

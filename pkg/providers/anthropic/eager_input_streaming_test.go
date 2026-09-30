@@ -31,7 +31,7 @@ func TestAnthropicEagerInputStreamingSerializedInTool(t *testing.T) {
 		},
 	}
 
-	converted := ToAnthropicFormatWithCache([]types.Tool{tool})
+	converted := testPrepareToolsWire(t, []types.Tool{tool})
 	if len(converted) != 1 {
 		t.Fatalf("expected 1 converted tool, got %d", len(converted))
 	}
@@ -54,7 +54,7 @@ func TestAnthropicEagerInputStreamingNotSetByDefault(t *testing.T) {
 		Parameters:  map[string]interface{}{"type": "object"},
 	}
 
-	converted := ToAnthropicFormatWithCache([]types.Tool{tool})
+	converted := testPrepareToolsWire(t, []types.Tool{tool})
 	toolMap := converted[0]
 
 	if _, hasField := toolMap["eager_input_streaming"]; hasField {
@@ -62,25 +62,42 @@ func TestAnthropicEagerInputStreamingNotSetByDefault(t *testing.T) {
 	}
 }
 
-func TestAnthropicEagerInputStreamingNotAppliedToProviderTools(t *testing.T) {
-	// web_search_20260209 is a provider tool — it must NOT get eager_input_streaming
-	// even if a caller somehow tried to set it. The self-serializing path takes over.
+// TestAnthropicUnrecognizedProviderToolWarnAndSkip ports the real prepareTools
+// path for an "anthropic.*" + ProviderExecuted tool that carries none of the
+// per-instance config prepareTools needs to recognize it (no ProviderOptions,
+// so neither the builtin-type table nor the anthropicAPIMapper self-serializing
+// path matches): TS's prepareTools warns "provider-defined tool <id>" and
+// omits it from the wire tools array entirely (anthropic-prepare-tools.ts
+// default case in the provider-tool switch; see anthropic-prepare-tools.test.ts
+// "should add warnings for unsupported tools"). Replaces the old
+// TestAnthropicEagerInputStreamingNotAppliedToProviderTools, which exercised
+// the removed ToAnthropicFormatWithCache helper — that helper had no
+// warn-and-skip branch and instead silently fell through to regular function
+// tool serialization, which is not what the real request path does.
+func TestAnthropicUnrecognizedProviderToolWarnAndSkip(t *testing.T) {
 	tool := types.Tool{
 		Name:             "anthropic.web_search_20260209",
 		ProviderExecuted: true,
-		// Simulate a caller that (incorrectly) set ToolOptions — this should be ignored
-		// because the tool uses the anthropicAPIMapper path.
 	}
 
-	converted := ToAnthropicFormatWithCache([]types.Tool{tool})
-	toolMap := converted[0]
+	m := NewLanguageModel(New(Config{APIKey: "test-key"}), "claude-sonnet-4-6", nil)
+	req, err := m.prepareRequest(&provider.GenerateOptions{Tools: []types.Tool{tool}}, false)
+	if err != nil {
+		t.Fatalf("prepareRequest() error: %v", err)
+	}
 
-	// Should use the builtin type, not a custom function tool map
-	// (This tool falls through to "regular function tool" since it's not in
-	// anthropicBuiltinToolTypes and has no anthropicAPIMapper — it returns a
-	// regular function map. We just assert no eager_input_streaming appears.)
-	if _, hasField := toolMap["eager_input_streaming"]; hasField {
-		t.Error("eager_input_streaming should not appear on provider tools")
+	if wire, _ := req.body["tools"].([]map[string]interface{}); len(wire) != 0 {
+		t.Errorf("tools = %#v, want empty (unrecognized provider tool skipped)", wire)
+	}
+
+	found := false
+	for _, w := range req.warnings {
+		if w.Type == "unsupported" && w.Feature == "provider-defined tool anthropic.web_search_20260209" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("warnings = %#v, want an 'unsupported' warning for the unrecognized provider tool", req.warnings)
 	}
 }
 

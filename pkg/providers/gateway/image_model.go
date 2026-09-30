@@ -127,7 +127,17 @@ type gatewayImageResponse struct {
 	Images           []string               `json:"images"`
 	Warnings         []types.Warning        `json:"warnings,omitempty"`
 	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
-	Usage            *struct {
+	// IsRetryable mirrors TS ImageModelV4Result.isRetryable (gateway-image-model.ts,
+	// added by aa4cc14): the Gateway can report that an empty/failed image
+	// result is safe to retry. Only set when the server includes it.
+	//
+	// Set on both types.ImageResult.IsRetryable (the core surface read by
+	// pkg/ai/generate_image.go to decide whether to retry an empty-image
+	// result, mirroring TS generate-image.ts's `result.isRetryable !== false`
+	// check) and mirrored into ProviderMetadata["gateway"]["isRetryable"] for
+	// back-compat with callers already reading it from there.
+	IsRetryable *bool `json:"isRetryable,omitempty"`
+	Usage       *struct {
 		InputTokens  *int `json:"inputTokens"`
 		OutputTokens *int `json:"outputTokens"`
 		TotalTokens  *int `json:"totalTokens"`
@@ -143,14 +153,31 @@ func (m *ImageModel) convertResponse(response gatewayImageResponse, headers http
 	if warnings == nil {
 		warnings = []types.Warning{}
 	}
+	providerMetadata := response.ProviderMetadata
+	if response.IsRetryable != nil {
+		providerMetadata = cloneMapStringInterface(providerMetadata)
+		if providerMetadata == nil {
+			providerMetadata = map[string]interface{}{}
+		}
+		// Merge into (rather than replace) any existing "gateway" provider
+		// metadata namespace, which already carries server-reported
+		// per-image metadata (e.g. "images").
+		gatewayMeta := map[string]interface{}{}
+		if existing, ok := providerMetadata["gateway"].(map[string]interface{}); ok {
+			gatewayMeta = cloneMapStringInterface(existing)
+		}
+		gatewayMeta["isRetryable"] = *response.IsRetryable
+		providerMetadata["gateway"] = gatewayMeta
+	}
 	result := &types.ImageResult{
 		Images:           images,
 		Base64Images:     response.Images,
 		MimeType:         "image/png",
 		Warnings:         warnings,
-		ProviderMetadata: response.ProviderMetadata,
+		ProviderMetadata: providerMetadata,
 		Response:         &types.ResponseMetadata{Timestamp: time.Now(), ModelID: m.modelID, Headers: flattenHeaders(headers)},
 		Usage:            types.ImageUsage{ImageCount: len(response.Images)},
+		IsRetryable:      response.IsRetryable,
 	}
 	if len(images) > 0 {
 		result.Image = images[0]

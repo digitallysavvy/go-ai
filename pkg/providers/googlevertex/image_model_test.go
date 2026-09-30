@@ -13,19 +13,37 @@ import (
 )
 
 func TestImageModel_SpecificationVersion(t *testing.T) {
-	model := NewImageModel(nil, "imagen-3.0-generate-001")
+	model := NewImageModel(nil, "gemini-2.5-flash-image")
 	assert.Equal(t, "v4", model.SpecificationVersion())
 }
 
 func TestImageModel_Provider(t *testing.T) {
-	model := NewImageModel(nil, "imagen-3.0-generate-001")
+	model := NewImageModel(nil, "gemini-2.5-flash-image")
 	assert.Equal(t, "google-vertex", model.Provider())
 }
 
 func TestImageModel_ModelID(t *testing.T) {
-	modelID := "imagen-3.0-generate-001"
+	modelID := "gemini-2.5-flash-image"
 	model := NewImageModel(nil, modelID)
 	assert.Equal(t, modelID, model.ModelID())
+}
+
+// TestImageModel_DoGenerate_ImagenRemoved verifies that a non-Gemini model ID
+// (e.g. a legacy Imagen model) is rejected with the exact TS error text from
+// google-image-model.ts / google-vertex-image-model.ts at ai@7.0.113, instead
+// of hitting the (removed) :predict endpoint.
+func TestImageModel_DoGenerate_ImagenRemoved(t *testing.T) {
+	prov, err := New(Config{Project: "test-project", Location: "us-central1", AccessToken: "test-token"})
+	require.NoError(t, err)
+	model := NewImageModel(prov, "imagen-3.0-generate-001")
+
+	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt: "A mountain landscape",
+	})
+
+	assert.Error(t, err)
+	assert.Nil(t, result)
+	assert.Contains(t, err.Error(), "Google image models other than Gemini are no longer supported. Use a model ID that starts with `gemini-`.")
 }
 
 func TestImageModel_IsGeminiModel(t *testing.T) {
@@ -93,145 +111,6 @@ func TestImageModel_ConvertSizeToAspectRatio(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
-}
-
-func TestImageModel_DoGenerate_Imagen(t *testing.T) {
-	// Create mock server
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify request
-		assert.Equal(t, "POST", r.Method)
-		assert.Contains(t, r.URL.Path, "imagen-3.0-generate-001:predict")
-		assert.Equal(t, "Bearer test-token", r.Header.Get("Authorization"))
-
-		// Parse request body
-		var reqBody map[string]interface{}
-		err := json.NewDecoder(r.Body).Decode(&reqBody)
-		require.NoError(t, err)
-
-		// Verify request structure
-		instances, ok := reqBody["instances"].([]interface{})
-		require.True(t, ok)
-		require.Len(t, instances, 1)
-
-		instance := instances[0].(map[string]interface{})
-		assert.Equal(t, "A mountain landscape", instance["prompt"])
-
-		params := reqBody["parameters"].(map[string]interface{})
-		assert.Equal(t, float64(1), params["sampleCount"])
-
-		// Return mock response
-		response := vertexImagenResponse{
-			Predictions: []struct {
-				BytesBase64Encoded string `json:"bytesBase64Encoded"`
-				MimeType           string `json:"mimeType"`
-				Prompt             string `json:"prompt,omitempty"`
-			}{
-				{
-					BytesBase64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-					MimeType:           "image/png",
-					Prompt:             "A mountain landscape",
-				},
-			},
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(response) //nolint:errcheck
-	}))
-	defer server.Close()
-
-	// Create provider with mock server
-	prov, err := New(Config{
-		Project:     "test-project",
-		Location:    "us-central1",
-		AccessToken: "test-token",
-		BaseURL:     server.URL,
-	})
-	require.NoError(t, err)
-
-	// Create model
-	model := NewImageModel(prov, "imagen-3.0-generate-001")
-
-	// Generate image
-	n := 1
-	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
-		Prompt: "A mountain landscape",
-		N:      &n,
-	})
-
-	// Verify result
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	assert.NotEmpty(t, result.Image)
-	assert.Len(t, result.Images, 1)
-	assert.NotEmpty(t, result.Base64Image)
-	assert.Len(t, result.Base64Images, 1)
-	assert.Equal(t, "image/png", result.MimeType)
-	assert.Equal(t, 1, result.Usage.ImageCount)
-	vertexMeta := result.ProviderMetadata["googleVertex"].(map[string]interface{})
-	vertexImages := vertexMeta["images"].([]map[string]interface{})
-	require.Len(t, vertexImages, 1)
-	assert.Equal(t, "A mountain landscape", vertexImages[0]["revisedPrompt"])
-	legacyMeta := result.ProviderMetadata["vertex"].(map[string]interface{})
-	legacyImages := legacyMeta["images"].([]map[string]interface{})
-	assert.Len(t, legacyImages, 1)
-}
-
-func TestImageModel_DoGenerate_Imagen_MultipleImagesAndMetadata(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		response := vertexImagenResponse{
-			Predictions: []struct {
-				BytesBase64Encoded string `json:"bytesBase64Encoded"`
-				MimeType           string `json:"mimeType"`
-				Prompt             string `json:"prompt,omitempty"`
-			}{
-				{
-					BytesBase64Encoded: "Zmlyc3Q=",
-					MimeType:           "image/png",
-					Prompt:             "first revised",
-				},
-				{
-					BytesBase64Encoded: "c2Vjb25k",
-					MimeType:           "image/png",
-					Prompt:             "second revised",
-				},
-			},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(response) //nolint:errcheck
-	}))
-	defer server.Close()
-
-	prov, err := New(Config{
-		Project:     "test-project",
-		Location:    "us-central1",
-		AccessToken: "test-token",
-		BaseURL:     server.URL,
-	})
-	require.NoError(t, err)
-	model := NewImageModel(prov, "imagen-3.0-generate-001")
-	n := 2
-
-	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
-		Prompt: "A mountain landscape",
-		N:      &n,
-	})
-
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	assert.Equal(t, []byte("first"), result.Image)
-	assert.Len(t, result.Images, 2)
-	assert.Equal(t, []byte("second"), result.Images[1])
-	assert.Equal(t, "Zmlyc3Q=", result.Base64Image)
-	assert.Equal(t, []string{"Zmlyc3Q=", "c2Vjb25k"}, result.Base64Images)
-	assert.Equal(t, 2, result.Usage.ImageCount)
-	vertexMeta := result.ProviderMetadata["googleVertex"].(map[string]interface{})
-	vertexImages := vertexMeta["images"].([]map[string]interface{})
-	require.Len(t, vertexImages, 2)
-	assert.Equal(t, "first revised", vertexImages[0]["revisedPrompt"])
-	legacyMeta := result.ProviderMetadata["vertex"].(map[string]interface{})
-	legacyImages := legacyMeta["images"].([]map[string]interface{})
-	require.Len(t, legacyImages, 2)
-	assert.Equal(t, "second revised", legacyImages[1]["revisedPrompt"])
 }
 
 func TestImageModel_DoGenerate_Gemini(t *testing.T) {
@@ -434,26 +313,35 @@ func TestImageModel_DoGenerate_Gemini_WithFilesOptionsAndWarnings(t *testing.T) 
 	}
 }
 
+// TestImageModel_DoGenerate_WithAspectRatio verifies that AspectRatio is
+// forwarded into imageConfig for Gemini image models.
 func TestImageModel_DoGenerate_WithAspectRatio(t *testing.T) {
-	// Create mock server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var reqBody map[string]interface{}
 		_ = json.NewDecoder(r.Body).Decode(&reqBody) //nolint:errcheck
 
-		// Verify aspect ratio is set
-		params := reqBody["parameters"].(map[string]interface{})
-		assert.Equal(t, "16:9", params["aspectRatio"])
+		genConfig := reqBody["generationConfig"].(map[string]interface{})
+		imageConfig := genConfig["imageConfig"].(map[string]interface{})
+		assert.Equal(t, "16:9", imageConfig["aspectRatio"])
 
-		response := vertexImagenResponse{
-			Predictions: []struct {
-				BytesBase64Encoded string `json:"bytesBase64Encoded"`
-				MimeType           string `json:"mimeType"`
-				Prompt             string `json:"prompt,omitempty"`
+		response := vertexGeminiImageResponse{
+			Candidates: []struct {
+				Content struct {
+					Parts []struct {
+						Text       string                  `json:"text,omitempty"`
+						InlineData *vertexGeminiInlineData `json:"inlineData,omitempty"`
+					} `json:"parts"`
+				} `json:"content"`
 			}{
-				{
-					BytesBase64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-					MimeType:           "image/png",
-				},
+				{Content: struct {
+					Parts []struct {
+						Text       string                  `json:"text,omitempty"`
+						InlineData *vertexGeminiInlineData `json:"inlineData,omitempty"`
+					} `json:"parts"`
+				}{Parts: []struct {
+					Text       string                  `json:"text,omitempty"`
+					InlineData *vertexGeminiInlineData `json:"inlineData,omitempty"`
+				}{{InlineData: &vertexGeminiInlineData{MimeType: "image/png", Data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="}}}}},
 			},
 		}
 
@@ -469,7 +357,7 @@ func TestImageModel_DoGenerate_WithAspectRatio(t *testing.T) {
 		BaseURL:     server.URL,
 	})
 
-	model := NewImageModel(prov, "imagen-3.0-generate-001")
+	model := NewImageModel(prov, "gemini-2.5-flash-image")
 	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
 		Prompt:      "Wide landscape",
 		AspectRatio: "16:9",
@@ -479,27 +367,9 @@ func TestImageModel_DoGenerate_WithAspectRatio(t *testing.T) {
 	require.NotNil(t, result)
 }
 
-func TestImageModel_DoGenerate_SizeDoesNotSerializeAspectRatio(t *testing.T) {
+func TestImageModel_DoGenerate_Error_EmptyResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var reqBody map[string]interface{}
-		_ = json.NewDecoder(r.Body).Decode(&reqBody) //nolint:errcheck
-
-		params := reqBody["parameters"].(map[string]interface{})
-		assert.NotContains(t, params, "aspectRatio")
-		assert.NotContains(t, params, "sampleCount")
-
-		response := vertexImagenResponse{
-			Predictions: []struct {
-				BytesBase64Encoded string `json:"bytesBase64Encoded"`
-				MimeType           string `json:"mimeType"`
-				Prompt             string `json:"prompt,omitempty"`
-			}{
-				{
-					BytesBase64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-					MimeType:           "image/png",
-				},
-			},
-		}
+		response := vertexGeminiImageResponse{}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(response) //nolint:errcheck
 	}))
@@ -512,45 +382,14 @@ func TestImageModel_DoGenerate_SizeDoesNotSerializeAspectRatio(t *testing.T) {
 		BaseURL:     server.URL,
 	})
 
-	model := NewImageModel(prov, "imagen-3.0-generate-001")
-	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
-		Prompt: "Wide landscape",
-		Size:   "1920x1080",
-	})
-
-	require.NoError(t, err)
-	require.NotNil(t, result)
-}
-
-func TestImageModel_DoGenerate_Error_EmptyPredictions(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		response := vertexImagenResponse{
-			Predictions: []struct {
-				BytesBase64Encoded string `json:"bytesBase64Encoded"`
-				MimeType           string `json:"mimeType"`
-				Prompt             string `json:"prompt,omitempty"`
-			}{},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(response) //nolint:errcheck
-	}))
-	defer server.Close()
-
-	prov, _ := New(Config{
-		Project:     "test-project",
-		Location:    "us-central1",
-		AccessToken: "test-token",
-		BaseURL:     server.URL,
-	})
-
-	model := NewImageModel(prov, "imagen-3.0-generate-001")
+	model := NewImageModel(prov, "gemini-2.5-flash-image")
 	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
 		Prompt: "Test",
 	})
 
 	assert.Error(t, err)
 	assert.Nil(t, result)
-	assert.Contains(t, err.Error(), "no images in response")
+	assert.Contains(t, err.Error(), "no image in response")
 }
 
 func TestImageModel_DoGenerate_Error_HTTPError(t *testing.T) {
@@ -567,7 +406,7 @@ func TestImageModel_DoGenerate_Error_HTTPError(t *testing.T) {
 		BaseURL:     server.URL,
 	})
 
-	model := NewImageModel(prov, "imagen-3.0-generate-001")
+	model := NewImageModel(prov, "gemini-2.5-flash-image")
 	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
 		Prompt: "Test",
 	})
@@ -777,19 +616,28 @@ func TestImageModel_DoGenerate_WithAspectRatioField(t *testing.T) {
 		var reqBody map[string]interface{}
 		_ = json.NewDecoder(r.Body).Decode(&reqBody) //nolint:errcheck
 
-		params := reqBody["parameters"].(map[string]interface{})
-		assert.Equal(t, "9:16", params["aspectRatio"])
+		genConfig := reqBody["generationConfig"].(map[string]interface{})
+		imageConfig := genConfig["imageConfig"].(map[string]interface{})
+		assert.Equal(t, "9:16", imageConfig["aspectRatio"])
 
-		response := vertexImagenResponse{
-			Predictions: []struct {
-				BytesBase64Encoded string `json:"bytesBase64Encoded"`
-				MimeType           string `json:"mimeType"`
-				Prompt             string `json:"prompt,omitempty"`
+		response := vertexGeminiImageResponse{
+			Candidates: []struct {
+				Content struct {
+					Parts []struct {
+						Text       string                  `json:"text,omitempty"`
+						InlineData *vertexGeminiInlineData `json:"inlineData,omitempty"`
+					} `json:"parts"`
+				} `json:"content"`
 			}{
-				{
-					BytesBase64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-					MimeType:           "image/png",
-				},
+				{Content: struct {
+					Parts []struct {
+						Text       string                  `json:"text,omitempty"`
+						InlineData *vertexGeminiInlineData `json:"inlineData,omitempty"`
+					} `json:"parts"`
+				}{Parts: []struct {
+					Text       string                  `json:"text,omitempty"`
+					InlineData *vertexGeminiInlineData `json:"inlineData,omitempty"`
+				}{{InlineData: &vertexGeminiInlineData{MimeType: "image/png", Data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="}}}}},
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -804,7 +652,7 @@ func TestImageModel_DoGenerate_WithAspectRatioField(t *testing.T) {
 		BaseURL:     server.URL,
 	})
 
-	model := NewImageModel(prov, "imagen-3.0-generate-001")
+	model := NewImageModel(prov, "gemini-2.5-flash-image")
 	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
 		Prompt:      "Portrait photo",
 		AspectRatio: "9:16",
@@ -814,25 +662,35 @@ func TestImageModel_DoGenerate_WithAspectRatioField(t *testing.T) {
 	require.NotNil(t, result)
 }
 
-// TestImageModel_DoGenerate_WithSampleImageSize verifies sampleImageSize is passed correctly.
+// TestImageModel_DoGenerate_WithSampleImageSize verifies sampleImageSize is passed correctly
+// via imageConfig.imageSize for Gemini image models.
 func TestImageModel_DoGenerate_WithSampleImageSize(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var reqBody map[string]interface{}
 		_ = json.NewDecoder(r.Body).Decode(&reqBody) //nolint:errcheck
 
-		params := reqBody["parameters"].(map[string]interface{})
-		assert.Equal(t, "2K", params["sampleImageSize"])
+		genConfig := reqBody["generationConfig"].(map[string]interface{})
+		imageConfig := genConfig["imageConfig"].(map[string]interface{})
+		assert.Equal(t, "2K", imageConfig["imageSize"])
 
-		response := vertexImagenResponse{
-			Predictions: []struct {
-				BytesBase64Encoded string `json:"bytesBase64Encoded"`
-				MimeType           string `json:"mimeType"`
-				Prompt             string `json:"prompt,omitempty"`
+		response := vertexGeminiImageResponse{
+			Candidates: []struct {
+				Content struct {
+					Parts []struct {
+						Text       string                  `json:"text,omitempty"`
+						InlineData *vertexGeminiInlineData `json:"inlineData,omitempty"`
+					} `json:"parts"`
+				} `json:"content"`
 			}{
-				{
-					BytesBase64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-					MimeType:           "image/png",
-				},
+				{Content: struct {
+					Parts []struct {
+						Text       string                  `json:"text,omitempty"`
+						InlineData *vertexGeminiInlineData `json:"inlineData,omitempty"`
+					} `json:"parts"`
+				}{Parts: []struct {
+					Text       string                  `json:"text,omitempty"`
+					InlineData *vertexGeminiInlineData `json:"inlineData,omitempty"`
+				}{{InlineData: &vertexGeminiInlineData{MimeType: "image/png", Data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="}}}}},
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -847,7 +705,7 @@ func TestImageModel_DoGenerate_WithSampleImageSize(t *testing.T) {
 		BaseURL:     server.URL,
 	})
 
-	model := NewImageModel(prov, "imagen-4.0-generate-001")
+	model := NewImageModel(prov, "gemini-2.5-flash-image")
 	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
 		Prompt: "High resolution photo",
 		ProviderOptions: map[string]interface{}{
@@ -872,9 +730,6 @@ func TestVertexModelConstants(t *testing.T) {
 	assert.Equal(t, "gemini-2.5-pro-tts", SpeechModelGemini25ProTTS)
 	assert.Equal(t, "gemini-2.5-flash-lite-preview-tts", SpeechModelGemini25FlashLitePreviewTTS)
 	assert.Equal(t, "gemini-3.1-flash-tts-preview", SpeechModelGemini31FlashTTSPreview)
-	assert.Equal(t, "imagen-4.0-generate-001", ModelImagen40Generate001)
-	assert.Equal(t, "imagen-4.0-ultra-generate-001", ModelImagen40UltraGenerate001)
-	assert.Equal(t, "imagen-4.0-fast-generate-001", ModelImagen40FastGenerate001)
 }
 
 // TestImageModel_DoGenerate_Gemini_ErrorMaskNotSupported verifies that passing a mask to
@@ -894,17 +749,52 @@ func TestImageModel_DoGenerate_Gemini_ErrorMaskNotSupported(t *testing.T) {
 
 	assert.Error(t, err)
 	assert.Nil(t, result)
-	assert.Contains(t, err.Error(), "image editing with masks is not supported")
+	assert.Contains(t, err.Error(), "Gemini image models do not support mask-based image editing.")
 }
 
-// TestImageModel_DoGenerate_Gemini_ErrorMultipleImages verifies that requesting N > 1 from
-// a Gemini image model returns an unsupported error (matches TS behavior).
-func TestImageModel_DoGenerate_Gemini_ErrorMultipleImages(t *testing.T) {
-	prov, _ := New(Config{
+// TestImageModel_DoGenerate_Gemini_IgnoresN verifies that Gemini image
+// models do not error on N > 1: TS google-image-model.ts has no N/count
+// concept, and MaxImagesPerCall() declares the per-call limit of 1 so the
+// core GenerateImage helper issues multiple single-image calls instead.
+func TestImageModel_DoGenerate_Gemini_IgnoresN(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var reqBody map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&reqBody)
+		if _, ok := reqBody["n"]; ok {
+			t.Errorf("request body should not include an 'n' field: %+v", reqBody)
+		}
+		response := vertexGeminiImageResponse{
+			Candidates: []struct {
+				Content struct {
+					Parts []struct {
+						Text       string                  `json:"text,omitempty"`
+						InlineData *vertexGeminiInlineData `json:"inlineData,omitempty"`
+					} `json:"parts"`
+				} `json:"content"`
+			}{
+				{Content: struct {
+					Parts []struct {
+						Text       string                  `json:"text,omitempty"`
+						InlineData *vertexGeminiInlineData `json:"inlineData,omitempty"`
+					} `json:"parts"`
+				}{Parts: []struct {
+					Text       string                  `json:"text,omitempty"`
+					InlineData *vertexGeminiInlineData `json:"inlineData,omitempty"`
+				}{{InlineData: &vertexGeminiInlineData{MimeType: "image/png", Data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="}}}}},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(response) //nolint:errcheck
+	}))
+	defer server.Close()
+
+	prov, err := New(Config{
 		Project:     "test-project",
 		Location:    "us-central1",
 		AccessToken: "test-token",
+		BaseURL:     server.URL,
 	})
+	require.NoError(t, err)
 	model := NewImageModel(prov, "gemini-2.5-flash-image")
 	n := 3
 
@@ -913,218 +803,12 @@ func TestImageModel_DoGenerate_Gemini_ErrorMultipleImages(t *testing.T) {
 		N:      &n,
 	})
 
-	assert.Error(t, err)
-	assert.Nil(t, result)
-	assert.Contains(t, err.Error(), "do not support generating multiple images")
-}
-
-// TestImageModel_DoGenerate_Imagen_WithSeed verifies that the seed is included in
-// Imagen parameters when specified.
-func TestImageModel_DoGenerate_Imagen_WithSeed(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var reqBody map[string]interface{}
-		_ = json.NewDecoder(r.Body).Decode(&reqBody) //nolint:errcheck
-
-		params := reqBody["parameters"].(map[string]interface{})
-		assert.Equal(t, float64(99), params["seed"], "seed should be in parameters")
-
-		response := vertexImagenResponse{
-			Predictions: []struct {
-				BytesBase64Encoded string `json:"bytesBase64Encoded"`
-				MimeType           string `json:"mimeType"`
-				Prompt             string `json:"prompt,omitempty"`
-			}{
-				{
-					BytesBase64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-					MimeType:           "image/png",
-				},
-			},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(response) //nolint:errcheck
-	}))
-	defer server.Close()
-
-	prov, _ := New(Config{
-		Project:     "test-project",
-		Location:    "us-central1",
-		AccessToken: "test-token",
-		BaseURL:     server.URL,
-	})
-	model := NewImageModel(prov, "imagen-3.0-generate-001")
-	seed := 99
-
-	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
-		Prompt: "Reproducible landscape",
-		Seed:   &seed,
-	})
-
 	require.NoError(t, err)
 	require.NotNil(t, result)
-}
-
-// TestImageModel_DoGenerate_Imagen_WithEditing verifies Vertex Imagen editing request
-// serialization matches the TypeScript SDK shape for files, mask, and edit options.
-func TestImageModel_DoGenerate_Imagen_WithEditing(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var reqBody map[string]interface{}
-		_ = json.NewDecoder(r.Body).Decode(&reqBody) //nolint:errcheck
-
-		instances := reqBody["instances"].([]interface{})
-		instance := instances[0].(map[string]interface{})
-		assert.Equal(t, "Add a sunset sky", instance["prompt"])
-
-		references := instance["referenceImages"].([]interface{})
-		require.Len(t, references, 2)
-
-		raw := references[0].(map[string]interface{})
-		assert.Equal(t, "REFERENCE_TYPE_RAW", raw["referenceType"])
-		assert.Equal(t, float64(1), raw["referenceId"])
-		rawImage := raw["referenceImage"].(map[string]interface{})
-		assert.Equal(t, "c291cmNlLWltYWdl", rawImage["bytesBase64Encoded"])
-
-		mask := references[1].(map[string]interface{})
-		assert.Equal(t, "REFERENCE_TYPE_MASK", mask["referenceType"])
-		assert.Equal(t, float64(2), mask["referenceId"])
-		maskImage := mask["referenceImage"].(map[string]interface{})
-		assert.Equal(t, "bWFzay1pbWFnZQ==", maskImage["bytesBase64Encoded"])
-		maskConfig := mask["maskImageConfig"].(map[string]interface{})
-		assert.Equal(t, "MASK_MODE_USER_PROVIDED", maskConfig["maskMode"])
-		assert.Equal(t, 0.01, maskConfig["dilation"])
-
-		params := reqBody["parameters"].(map[string]interface{})
-		assert.Equal(t, "EDIT_MODE_INPAINT_INSERTION", params["editMode"])
-		editConfig := params["editConfig"].(map[string]interface{})
-		assert.Equal(t, float64(35), editConfig["baseSteps"])
-
-		response := vertexImagenResponse{
-			Predictions: []struct {
-				BytesBase64Encoded string `json:"bytesBase64Encoded"`
-				MimeType           string `json:"mimeType"`
-				Prompt             string `json:"prompt,omitempty"`
-			}{
-				{
-					BytesBase64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-					MimeType:           "image/png",
-				},
-			},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(response) //nolint:errcheck
-	}))
-	defer server.Close()
-
-	prov, _ := New(Config{
-		Project:     "test-project",
-		Location:    "us-central1",
-		AccessToken: "test-token",
-		BaseURL:     server.URL,
-	})
-	model := NewImageModel(prov, "imagen-4.0-generate-001")
-
-	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
-		Prompt: "Add a sunset sky",
-		Files: []provider.ImageFile{
-			{Type: "file", Data: []byte("source-image"), MediaType: "image/png"},
-		},
-		Mask: &provider.ImageFile{Type: "file", Data: []byte("mask-image"), MediaType: "image/png"},
-		ProviderOptions: map[string]interface{}{
-			"googleVertex": map[string]interface{}{
-				"edit": map[string]interface{}{
-					"mode":         "EDIT_MODE_INPAINT_INSERTION",
-					"baseSteps":    35,
-					"maskMode":     "MASK_MODE_USER_PROVIDED",
-					"maskDilation": 0.01,
-				},
-			},
-		},
-	})
-
-	require.NoError(t, err)
-	require.NotNil(t, result)
-}
-
-func TestImageModel_DoGenerate_Imagen_EditingRejectsURLFiles(t *testing.T) {
-	prov, _ := New(Config{
-		Project:     "test-project",
-		Location:    "us-central1",
-		AccessToken: "test-token",
-	})
-	model := NewImageModel(prov, "imagen-4.0-generate-001")
-
-	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
-		Prompt: "Edit this",
-		Files: []provider.ImageFile{
-			{Type: "url", URL: "https://example.com/image.png"},
-		},
-	})
-
-	assert.Error(t, err)
-	assert.Nil(t, result)
-	assert.Contains(t, err.Error(), "url-based images are not supported")
-}
-
-// TestImageModel_DoGenerate_Imagen_FullProviderOptions verifies that all Vertex provider
-// options (negativePrompt, personGeneration, safetySetting, addWatermark, storageUri)
-// are passed through to the API.
-func TestImageModel_DoGenerate_Imagen_FullProviderOptions(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var reqBody map[string]interface{}
-		_ = json.NewDecoder(r.Body).Decode(&reqBody) //nolint:errcheck
-
-		instances := reqBody["instances"].([]interface{})
-		instance := instances[0].(map[string]interface{})
-		assert.NotContains(t, instance, "negativePrompt")
-
-		params := reqBody["parameters"].(map[string]interface{})
-		assert.Equal(t, "blurry, distorted", params["negativePrompt"])
-		assert.Equal(t, "allow_adult", params["personGeneration"])
-		assert.Equal(t, "block_some", params["safetySetting"])
-		assert.Equal(t, true, params["addWatermark"])
-		assert.Equal(t, "gs://my-bucket/output", params["storageUri"])
-		assert.Equal(t, "custom-value", params["customPassthrough"])
-
-		response := vertexImagenResponse{
-			Predictions: []struct {
-				BytesBase64Encoded string `json:"bytesBase64Encoded"`
-				MimeType           string `json:"mimeType"`
-				Prompt             string `json:"prompt,omitempty"`
-			}{
-				{
-					BytesBase64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-					MimeType:           "image/png",
-				},
-			},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(response) //nolint:errcheck
-	}))
-	defer server.Close()
-
-	prov, _ := New(Config{
-		Project:     "test-project",
-		Location:    "us-central1",
-		AccessToken: "test-token",
-		BaseURL:     server.URL,
-	})
-	model := NewImageModel(prov, "imagen-4.0-generate-001")
-
-	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
-		Prompt: "A beautiful portrait",
-		ProviderOptions: map[string]interface{}{
-			"vertex": map[string]interface{}{
-				"negativePrompt":    "blurry, distorted",
-				"personGeneration":  "allow_adult",
-				"safetySetting":     "block_some",
-				"addWatermark":      true,
-				"storageUri":        "gs://my-bucket/output",
-				"customPassthrough": "custom-value",
-			},
-		},
-	})
-
-	require.NoError(t, err)
-	require.NotNil(t, result)
+	assert.Len(t, result.Images, 1)
+	if model.MaxImagesPerCall() != 1 {
+		t.Fatalf("MaxImagesPerCall() = %d, want 1", model.MaxImagesPerCall())
+	}
 }
 
 // TestImageModel_DoGenerate_Gemini_WithSeed verifies that seed is passed in generationConfig

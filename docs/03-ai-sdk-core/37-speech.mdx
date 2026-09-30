@@ -5,7 +5,7 @@ description: Learn how to generate speech from text with the Go AI SDK.
 
 # Speech Generation
 
-The Go AI SDK provides the [`ai.GenerateSpeech()`](../07-reference/ai/generate-speech.md) function to generate speech from text using a speech model.
+The Go AI SDK provides the [`ai.GenerateSpeech()`](../07-reference/ai/generate-speech.mdx) function to generate speech from text using a speech model.
 
 ```go
 package main
@@ -585,15 +585,50 @@ if err := validateTextLength(text, 4096); err != nil {
 }
 ```
 
+## Speech Translation (Experimental)
+
+Speech-to-speech translation streams source-language audio in and receives
+translated audio (and text) out, over a WebSocket connection. It is separate
+from text-to-speech (`GenerateSpeech`) and speech-to-text (`Transcribe`).
+
+Google (`SpeechTranslationModel`, Live Translation over the
+BidiGenerateContent WebSocket) and OpenAI (`SpeechTranslationModel`, the
+`/realtime/translations` WebSocket) implement `provider.SpeechTranslationModel`,
+accessed through `Provider.SpeechTranslationModel(modelID)` or the
+TS-compatible alias `Provider.Translation(modelID)`:
+
+```go
+prov := google.New(google.Config{APIKey: os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY")})
+translationModel, err := prov.SpeechTranslationModel("gemini-2.0-flash-live-001")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.ExperimentalStreamTranslate(ctx, ai.StreamTranslateOptions{
+    Model:            translationModel,
+    Audio:            audioStream, // provider.AudioStream of raw input chunks
+    InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
+    TargetLanguage:   "es",
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer result.Close()
+```
+
+This feature is experimental and its API may change. See the package docs
+under `pkg/providers/google` and `pkg/providers/openai` for the current
+`provider.AudioStream` and streamed-event shapes.
+
 ## Next Steps
 
 - Learn about [Transcription](./36-transcription.mdx)
 - Explore [Settings](./25-settings.mdx)
-- See [Provider Documentation](../providers/01-overview.md)
+- See [Provider Documentation](../05-providers/01-overview.mdx)
 
 ## See Also
 
-- [Providers](../providers/01-overview.md)
+- [Providers](../05-providers/01-overview.mdx)
 - [Settings](./25-settings.mdx)
 - [Error Handling](./50-error-handling.mdx)
-- [API Reference: GenerateSpeech](../07-reference/ai/generate-speech.md)
+- [API Reference: GenerateSpeech](../07-reference/ai/generate-speech.mdx)

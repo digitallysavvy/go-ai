@@ -23,8 +23,8 @@ func TestEmbeddingModel_MetadataAndCapabilities(t *testing.T) {
 	if got := m.SpecificationVersion(); got != "v4" {
 		t.Fatalf("SpecificationVersion() = %q, want v4", got)
 	}
-	if got := m.MaxEmbeddingsPerCall(); got != 2048 {
-		t.Fatalf("MaxEmbeddingsPerCall() = %d, want 2048", got)
+	if got := m.MaxEmbeddingsPerCall(); got != 100 {
+		t.Fatalf("MaxEmbeddingsPerCall() = %d, want 100", got)
 	}
 	if got := m.SupportsParallelCalls(); !got {
 		t.Fatal("SupportsParallelCalls() = false, want true")

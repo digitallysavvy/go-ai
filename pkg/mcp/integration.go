@@ -30,10 +30,11 @@ func NewMCPToolConverter(client *MCPClient) *MCPToolConverter {
 	}
 }
 
-// ConvertToGoAITools fetches MCP tools and converts them to Go-AI tools
+// ConvertToGoAITools fetches MCP tools and converts them to Go-AI tools.
+// Fetches every page of tools/list (following NextCursor), matching
+// TypeScript's client.tools() (mcp-client.ts, hash 1175434).
 func (c *MCPToolConverter) ConvertToGoAITools(ctx context.Context) ([]types.Tool, error) {
-	// List tools from MCP server
-	mcpTools, err := c.client.ListTools(ctx)
+	mcpTools, err := c.client.ListAllTools(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list MCP tools: %w", err)
 	}
@@ -44,8 +45,10 @@ func (c *MCPToolConverter) ConvertToGoAITools(ctx context.Context) ([]types.Tool
 // ConvertToGoAIToolsWithSchemas fetches MCP tools and applies a schemas map,
 // matching TypeScript client.tools({ schemas }). Tools not present in schemas
 // are omitted, and per-tool input/output schemas override discovered schemas.
+// Fetches every page of tools/list (following NextCursor), matching
+// TypeScript's client.tools() (mcp-client.ts, hash 1175434).
 func (c *MCPToolConverter) ConvertToGoAIToolsWithSchemas(ctx context.Context, schemas map[string]MCPToolSchema) ([]types.Tool, error) {
-	mcpTools, err := c.client.ListTools(ctx)
+	mcpTools, err := c.client.ListAllTools(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list MCP tools: %w", err)
 	}
@@ -84,6 +87,9 @@ func (c *MCPToolConverter) convertTool(mcpTool MCPTool, toolSchema *MCPToolSchem
 	}
 	if hasResolvedTitle {
 		mcpMetadata["title"] = resolvedTitle
+	}
+	if annotations := extractMCPToolAnnotations(mcpTool.Annotations); annotations != nil {
+		mcpMetadata["annotations"] = annotations
 	}
 	appMeta, err := GetMCPAppToolMeta(mcpTool)
 	if err != nil {
@@ -129,7 +135,7 @@ func (c *MCPToolConverter) convertTool(mcpTool MCPTool, toolSchema *MCPToolSchem
 			// Call MCP tool
 			result, err := c.client.CallTool(ctx, mcpTool.Name, input)
 			if err != nil {
-				return nil, fmt.Errorf("LMCP tool execution failed: %w", err)
+				return nil, fmt.Errorf("MCP tool execution failed: %w", err)
 			}
 			if outputSchema != nil && !result.IsError {
 				return extractMCPStructuredOutput(*result, outputSchema, mcpTool.Name)
@@ -162,6 +168,29 @@ func resolveMCPToolTitle(tool MCPTool) (string, bool) {
 		return annotationsTitle, true
 	}
 	return "", false
+}
+
+// extractMCPToolAnnotations surfaces the known McpToolAnnotations hint keys
+// from a raw MCP tool's annotations object, matching TS toolsFromDefinitions
+// (mcp-client.ts). Unknown keys are dropped. Returns nil when annotations is
+// nil (the "annotations" property was absent from the tool definition);
+// returns a (possibly empty) map otherwise, matching TS's `annotations != null`
+// check, which still emits an "annotations" key when the object carries none
+// of the five known hints.
+func extractMCPToolAnnotations(annotations map[string]interface{}) map[string]interface{} {
+	if annotations == nil {
+		return nil
+	}
+	out := map[string]interface{}{}
+	if title, ok := annotations["title"].(string); ok {
+		out["title"] = title
+	}
+	for _, key := range []string{"readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"} {
+		if value, ok := annotations[key].(bool); ok {
+			out[key] = value
+		}
+	}
+	return out
 }
 
 func normalizeAutomaticMCPInputSchema(input map[string]interface{}) map[string]interface{} {
@@ -210,12 +239,22 @@ func normalizeMCPOutputSchema(value interface{}) (schema.Schema, error) {
 	}
 }
 
+// extractMCPStructuredOutput validates a tool result's structuredContent (or,
+// failing that, its first parseable text content) against outputSchema and
+// returns the validated value. Mirrors TS mcp-client.ts's
+// extractStructuredContent, which validates through safeValidateTypes /
+// safeParseJSON -- zod/standard-schema's parse step, which fills any
+// .default() values as part of parsing itself and returns that defaulted
+// value. A field missing from the tool's result but declared with a schema
+// default must therefore not fail validation, so defaults are applied
+// before validating (not after).
 func extractMCPStructuredOutput(result CallToolResult, outputSchema schema.Schema, toolName string) (interface{}, error) {
 	if result.StructuredContent != nil {
-		if err := outputSchema.Validator().Validate(result.StructuredContent); err != nil {
+		defaulted := schema.ApplyDefaults(result.StructuredContent, outputSchema)
+		if err := outputSchema.Validator().Validate(defaulted); err != nil {
 			return nil, NewMCPClientError(0, fmt.Sprintf("Tool %q returned structuredContent that does not match the expected outputSchema", toolName), err.Error())
 		}
-		return schema.ApplyDefaults(result.StructuredContent, outputSchema), nil
+		return defaulted, nil
 	}
 	for _, part := range result.Content {
 		if part.Type != "text" || !part.hasTextField() {
@@ -225,10 +264,11 @@ func extractMCPStructuredOutput(result CallToolResult, outputSchema schema.Schem
 		if err := json.Unmarshal([]byte(part.Text), &parsed); err != nil {
 			return nil, NewMCPClientError(0, fmt.Sprintf("Tool %q returned content that does not match the expected outputSchema", toolName), err.Error())
 		}
-		if err := outputSchema.Validator().Validate(parsed); err != nil {
+		defaulted := schema.ApplyDefaults(parsed, outputSchema)
+		if err := outputSchema.Validator().Validate(defaulted); err != nil {
 			return nil, NewMCPClientError(0, fmt.Sprintf("Tool %q returned content that does not match the expected outputSchema", toolName), err.Error())
 		}
-		return schema.ApplyDefaults(parsed, outputSchema), nil
+		return defaulted, nil
 	}
 	return nil, NewMCPClientError(0, fmt.Sprintf("Tool %q did not return structuredContent or parseable text content", toolName), nil)
 }

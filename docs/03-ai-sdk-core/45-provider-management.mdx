@@ -127,6 +127,42 @@ myRegistry.RegisterProvider("openai", openai.New(openai.Config{
 model, err := myRegistry.ResolveLanguageModel("openai:gpt-4")
 ```
 
+### Registry Options
+
+`NewRegistry` accepts functional options:
+
+```go
+myRegistry := registry.NewRegistry(
+    // Use a different provider:model separator (default ":").
+    registry.WithSeparator("/"),
+
+    // Apply middleware to every language model resolved through the registry.
+    registry.WithLanguageModelMiddleware(loggingMiddleware),
+
+    // Apply middleware to every image model resolved through the registry.
+    registry.WithImageModelMiddleware(imageLoggingMiddleware),
+)
+
+model, err := myRegistry.ResolveLanguageModel("openai/gpt-4") // custom separator
+```
+
+### NoSuchModelError
+
+A model ID that has no `provider:model` separator (or names an unregistered
+provider or model) returns a typed error from `pkg/provider/errors`:
+
+```go
+import providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+
+model, err := registry.ResolveLanguageModel("gpt-4") // missing "provider:" prefix
+if err != nil {
+    var noSuchModel *providererrors.NoSuchModelError
+    if errors.As(err, &noSuchModel) {
+        log.Printf("no such model: %s (%s)", noSuchModel.ModelID, noSuchModel.ModelType)
+    }
+}
+```
+
 ## Custom Providers with Middleware
 
 You can create custom provider configurations using middleware to pre-configure settings, create aliases, or limit available models.
@@ -652,5 +688,5 @@ model, _ := registry.ResolveLanguageModel(models.DefaultModel)
 
 - [Middleware](./40-middleware.mdx)
 - [Settings](./25-settings.mdx)
-- [Providers](../providers/01-overview.md)
+- [Providers](../05-providers/01-overview.mdx)
 - [Error Handling](./50-error-handling.mdx)

@@ -32,8 +32,10 @@ func ValidateOAuthState(returnedState, sentState string) error {
 }
 
 // OAuthAuthorizationServerInformation pins the authorization server and token
-// endpoint that issued stored OAuth credentials.
+// endpoint (and, when known, issuer) that issued stored OAuth credentials.
+// Matches TS OAuthAuthorizationServerInformation (oauth.ts).
 type OAuthAuthorizationServerInformation struct {
+	Issuer                 string `json:"issuer,omitempty"`
 	AuthorizationServerURL string `json:"authorization_server"`
 	TokenEndpoint          string `json:"token_endpoint"`
 }
@@ -43,21 +45,29 @@ type OAuthAuthorizationServerInformation struct {
 type OAuthProtectedResourceMetadata struct {
 	Resource             string   `json:"resource"`
 	AuthorizationServers []string `json:"authorization_servers,omitempty"`
+	// ScopesSupported lists the OAuth scopes the protected resource supports.
+	// Used for scope selection precedence (TS selectScope, hash 1011e33).
+	ScopesSupported []string `json:"scopes_supported,omitempty"`
 }
 
 // OAuthAuthorizationServerMetadata is OAuth/OIDC authorization server metadata.
 type OAuthAuthorizationServerMetadata struct {
-	Issuer                        string   `json:"issuer"`
-	AuthorizationEndpoint         string   `json:"authorization_endpoint,omitempty"`
-	TokenEndpoint                 string   `json:"token_endpoint"`
-	RegistrationEndpoint          string   `json:"registration_endpoint,omitempty"`
-	ResponseTypesSupported        []string `json:"response_types_supported,omitempty"`
-	GrantTypesSupported           []string `json:"grant_types_supported,omitempty"`
-	CodeChallengeMethodsSupported []string `json:"code_challenge_methods_supported,omitempty"`
-	TokenEndpointAuthMethods      []string `json:"token_endpoint_auth_methods_supported,omitempty"`
-	JWKSURI                       string   `json:"jwks_uri,omitempty"`
-	SubjectTypesSupported         []string `json:"subject_types_supported,omitempty"`
-	IDTokenSigningAlgValues       []string `json:"id_token_signing_alg_values_supported,omitempty"`
+	Issuer                string `json:"issuer"`
+	AuthorizationEndpoint string `json:"authorization_endpoint,omitempty"`
+	TokenEndpoint         string `json:"token_endpoint"`
+	RegistrationEndpoint  string `json:"registration_endpoint,omitempty"`
+	// AuthorizationResponseIssParameterSupported and ClientIDMetadataDocumentSupported
+	// mirror TS OAuthMetadataSchema additions (hash 1f29230).
+	AuthorizationResponseIssParameterSupported bool     `json:"authorization_response_iss_parameter_supported,omitempty"`
+	ClientIDMetadataDocumentSupported          bool     `json:"client_id_metadata_document_supported,omitempty"`
+	ScopesSupported                            []string `json:"scopes_supported,omitempty"`
+	ResponseTypesSupported                     []string `json:"response_types_supported,omitempty"`
+	GrantTypesSupported                        []string `json:"grant_types_supported,omitempty"`
+	CodeChallengeMethodsSupported              []string `json:"code_challenge_methods_supported,omitempty"`
+	TokenEndpointAuthMethods                   []string `json:"token_endpoint_auth_methods_supported,omitempty"`
+	JWKSURI                                    string   `json:"jwks_uri,omitempty"`
+	SubjectTypesSupported                      []string `json:"subject_types_supported,omitempty"`
+	IDTokenSigningAlgValues                    []string `json:"id_token_signing_alg_values_supported,omitempty"`
 }
 
 // OAuthDiscoveryURL is one authorization-server metadata endpoint candidate.
@@ -73,6 +83,12 @@ type OAuthDiscoveryOptions struct {
 	ResourceMetadataURL            string
 	HTTPClient                     *http.Client
 	ValidateAuthorizationServerURL func(serverURL string, authorizationServerURL string) error
+
+	// TrustedOrigin is a developer-configured origin whose discovery hops skip
+	// the SSRF guard in DiscoverAuthorizationServerMetadata (TS trustedOrigin).
+	// It must never be derived from response data. See
+	// TrustedOAuthAuthorizationServerOrigin.
+	TrustedOrigin string
 }
 
 // CreateOAuthAuthorizationServerInformation creates the credential pin used by
@@ -90,7 +106,12 @@ func CreateOAuthAuthorizationServerInformation(authorizationServerURL string, me
 			return OAuthAuthorizationServerInformation{}, err
 		}
 	}
+	issuer := authorizationServerURL
+	if metadata != nil && metadata.Issuer != "" {
+		issuer = metadata.Issuer
+	}
 	return OAuthAuthorizationServerInformation{
+		Issuer:                 issuer,
 		AuthorizationServerURL: oauthURLHref(authURL),
 		TokenEndpoint:          oauthURLHref(tokenURL),
 	}, nil
@@ -98,9 +119,12 @@ func CreateOAuthAuthorizationServerInformation(authorizationServerURL string, me
 
 // AssertOAuthAuthorizationServerInformationMatches prevents rediscovered
 // metadata from being used with credentials issued by a different AS/token
-// endpoint.
+// endpoint. Issuer is compared only when both sides have one (matching TS
+// assertAuthorizationServerInformationMatches, which tolerates older stored
+// pins that predate the issuer field).
 func AssertOAuthAuthorizationServerInformationMatches(stored, current OAuthAuthorizationServerInformation) error {
-	if normalizeOAuthURL(stored.AuthorizationServerURL) != normalizeOAuthURL(current.AuthorizationServerURL) ||
+	if (stored.Issuer != "" && current.Issuer != "" && stored.Issuer != current.Issuer) ||
+		normalizeOAuthURL(stored.AuthorizationServerURL) != normalizeOAuthURL(current.AuthorizationServerURL) ||
 		normalizeOAuthURL(stored.TokenEndpoint) != normalizeOAuthURL(current.TokenEndpoint) {
 		return NewMCPClientError(0, "OAuth authorization server metadata does not match the metadata that issued the stored credentials", nil)
 	}
@@ -120,6 +144,14 @@ func SelectOAuthAuthorizationServerURL(ctx context.Context, serverURL string, op
 		}
 	} else if !strings.Contains(err.Error(), "Resource server does not implement OAuth 2.0 Protected Resource Metadata.") {
 		return "", nil, err
+	}
+	// An authorization server selected by response metadata is untrusted until
+	// its target has passed the SSRF guard. A same-origin (or loopback-to-
+	// loopback) server is already the developer-configured request target.
+	if TrustedOAuthAuthorizationServerOrigin(serverURL, authServerURL) == "" {
+		if err := assertSafeOAuthEndpoint(authServerURL, false); err != nil {
+			return "", nil, err
+		}
 	}
 	if opts.ValidateAuthorizationServerURL != nil {
 		if err := opts.ValidateAuthorizationServerURL(serverURL, authServerURL); err != nil {
@@ -156,41 +188,68 @@ func AssertOAuthResourceMetadataURLSameOrigin(serverURL string, resourceMetadata
 // ExtractResourceMetadataURL extracts RFC 9728 resource_metadata from a Bearer
 // WWW-Authenticate header.
 func ExtractResourceMetadataURL(resp *http.Response) (*url.URL, bool) {
+	params := ExtractWWWAuthenticateParams(resp)
+	return params.ResourceMetadataURL, params.ResourceMetadataURL != nil
+}
+
+// WWWAuthenticateParams is the subset of a Bearer WWW-Authenticate challenge
+// this client understands, matching TS extractWWWAuthenticateParams
+// (oauth.ts, hash 1011e33).
+type WWWAuthenticateParams struct {
+	ResourceMetadataURL *url.URL
+	// Scope is the space-separated scope list requested by the challenge, if
+	// present. Used with precedence challenge > PRM > client metadata by
+	// SelectOAuthScope.
+	Scope string
+}
+
+// ExtractWWWAuthenticateParams parses a Bearer WWW-Authenticate header for
+// both the RFC 9728 resource_metadata URL and an RFC 6750 scope parameter,
+// matching TS extractWWWAuthenticateParams (oauth.ts, hash 1011e33).
+func ExtractWWWAuthenticateParams(resp *http.Response) WWWAuthenticateParams {
 	if resp == nil {
-		return nil, false
+		return WWWAuthenticateParams{}
 	}
 	header := resp.Header.Get("WWW-Authenticate")
 	if header == "" {
-		return nil, false
+		return WWWAuthenticateParams{}
 	}
 	parts := strings.SplitN(header, " ", 2)
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") {
-		return nil, false
+		return WWWAuthenticateParams{}
 	}
-	const key = `resource_metadata="`
-	start := strings.Index(header, key)
+
+	var out WWWAuthenticateParams
+	if resourceMetadataURL := extractQuotedChallengeParam(header, "resource_metadata"); resourceMetadataURL != "" {
+		if parsed, err := url.Parse(resourceMetadataURL); err == nil && parsed.Scheme != "" && parsed.Host != "" {
+			out.ResourceMetadataURL = parsed
+		}
+	}
+	out.Scope = extractQuotedChallengeParam(header, "scope")
+	return out
+}
+
+// extractQuotedChallengeParam extracts `key="value"` from an HTTP challenge
+// header (e.g. WWW-Authenticate), matching TS's per-param regex extraction in
+// extractWWWAuthenticateParams.
+func extractQuotedChallengeParam(header, key string) string {
+	needle := key + `="`
+	start := strings.Index(header, needle)
 	if start < 0 {
-		return nil, false
+		return ""
 	}
-	start += len(key)
+	start += len(needle)
 	end := strings.Index(header[start:], `"`)
 	if end < 0 {
-		return nil, false
+		return ""
 	}
-	parsed, err := url.Parse(header[start : start+end])
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return nil, false
-	}
-	return parsed, true
+	return header[start : start+end]
 }
 
 // DiscoverOAuthProtectedResourceMetadata discovers MCP protected resource
 // metadata using the same path-aware well-known and root fallback as TS.
 func DiscoverOAuthProtectedResourceMetadata(ctx context.Context, serverURL string, opts OAuthDiscoveryOptions) (OAuthProtectedResourceMetadata, error) {
 	client := opts.HTTPClient
-	if client == nil {
-		client = http.DefaultClient
-	}
 	protocolVersion := opts.ProtocolVersion
 	if protocolVersion == "" {
 		protocolVersion = ProtocolVersion
@@ -199,7 +258,13 @@ func DiscoverOAuthProtectedResourceMetadata(ctx context.Context, serverURL strin
 	if err != nil {
 		return OAuthProtectedResourceMetadata{}, err
 	}
-	resp, err := oauthMetadataGET(ctx, client, metadataURL, protocolVersion)
+	// The configured MCP server is trusted as a request target. Redirects
+	// crossing its origin are still validated before they are followed.
+	trustedOrigin := ""
+	if server, err := url.Parse(serverURL); err == nil && server.Scheme != "" && server.Host != "" {
+		trustedOrigin = origin(server)
+	}
+	resp, err := oauthMetadataGET(ctx, client, metadataURL, protocolVersion, trustedOrigin)
 	if err != nil {
 		return OAuthProtectedResourceMetadata{}, err
 	}
@@ -209,7 +274,7 @@ func DiscoverOAuthProtectedResourceMetadata(ctx context.Context, serverURL strin
 		if err != nil {
 			return OAuthProtectedResourceMetadata{}, err
 		}
-		resp, err = oauthMetadataGET(ctx, client, rootURL.ResolveReference(&url.URL{Path: "/.well-known/oauth-protected-resource"}).String(), protocolVersion)
+		resp, err = oauthMetadataGET(ctx, client, rootURL.ResolveReference(&url.URL{Path: "/.well-known/oauth-protected-resource"}).String(), protocolVersion, trustedOrigin)
 		if err != nil {
 			return OAuthProtectedResourceMetadata{}, err
 		}
@@ -261,9 +326,6 @@ func BuildAuthorizationServerDiscoveryURLs(authorizationServerURL string) ([]OAu
 // metadata and validates the issuer against the discovery URL, matching TS.
 func DiscoverAuthorizationServerMetadata(ctx context.Context, authorizationServerURL string, opts OAuthDiscoveryOptions) (*OAuthAuthorizationServerMetadata, error) {
 	client := opts.HTTPClient
-	if client == nil {
-		client = http.DefaultClient
-	}
 	protocolVersion := opts.ProtocolVersion
 	if protocolVersion == "" {
 		protocolVersion = ProtocolVersion
@@ -273,7 +335,7 @@ func DiscoverAuthorizationServerMetadata(ctx context.Context, authorizationServe
 		return nil, err
 	}
 	for _, candidate := range urls {
-		resp, err := oauthMetadataGET(ctx, client, candidate.URL, protocolVersion)
+		resp, err := oauthMetadataGET(ctx, client, candidate.URL, protocolVersion, opts.TrustedOrigin)
 		if err != nil {
 			return nil, err
 		}
@@ -300,7 +362,7 @@ func DiscoverAuthorizationServerMetadata(ctx context.Context, authorizationServe
 		if err := validateOAuthAuthorizationServerMetadata(metadata, candidate.Type); err != nil {
 			return nil, err
 		}
-		if metadata.Issuer != candidate.ExpectedIssuer {
+		if !oauthIssuerMatches(metadata.Issuer, candidate.ExpectedIssuer) {
 			return nil, NewMCPClientError(0, fmt.Sprintf("OAuth authorization server metadata issuer %s does not match expected issuer %s", metadata.Issuer, candidate.ExpectedIssuer), nil)
 		}
 		if candidate.Type == "oidc" && !containsOAuthString(metadata.CodeChallengeMethodsSupported, "S256") {
@@ -328,13 +390,17 @@ func protectedResourceMetadataURL(serverURL, explicit string) (string, error) {
 	return server.String(), nil
 }
 
-func oauthMetadataGET(ctx context.Context, client *http.Client, endpoint, protocolVersion string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, err
+// oauthIssuerMatches accepts an exact issuer match, or a trailing slash on an
+// origin-only expected issuer (TS assertMetadataIssuerMatches, 809e922).
+func oauthIssuerMatches(issuer, expected string) bool {
+	if issuer == expected {
+		return true
 	}
-	req.Header.Set("MCP-Protocol-Version", protocolVersion)
-	return client.Do(req)
+	parsed, err := url.Parse(expected)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return false
+	}
+	return expected == origin(parsed) && issuer == expected+"/"
 }
 
 func shouldAttemptOAuthFallback(resp *http.Response, _ string, serverURL string) bool {
@@ -418,9 +484,6 @@ func validateOAuthAuthorizationServerMetadata(metadata OAuthAuthorizationServerM
 	}
 	if len(metadata.ResponseTypesSupported) == 0 {
 		return fmt.Errorf("OAuth authorization server metadata missing required response_types_supported")
-	}
-	if len(metadata.CodeChallengeMethodsSupported) == 0 {
-		return fmt.Errorf("OAuth authorization server metadata missing required code_challenge_methods_supported")
 	}
 	if metadata.RegistrationEndpoint != "" {
 		if !isAbsoluteOAuthURL(metadata.RegistrationEndpoint) {

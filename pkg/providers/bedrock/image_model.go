@@ -15,6 +15,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ImageModel implements the provider.ImageModel interface for AWS Bedrock
@@ -105,7 +106,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("AWS Bedrock API returned status %d: %s", resp.StatusCode, string(respBody))
+		return nil, bedrockAPIError(resp.StatusCode, respBody, providerutils.ExtractHeaders(resp.Header))
 	}
 
 	return m.convertResponse(respBody, resp.Header, warnings)
@@ -116,7 +117,10 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) (map[
 		opts = &provider.ImageGenerateOptions{}
 	}
 	warnings := []types.Warning{}
-	options := bedrockImageOptions(opts.ProviderOptions)
+	options, err := parseBedrockImageOptions(opts.ProviderOptions)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	imageGenerationConfig := map[string]interface{}{}
 	if opts.Size != "" {
@@ -135,18 +139,18 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) (map[
 	if opts.N != nil && *opts.N != 0 {
 		imageGenerationConfig["numberOfImages"] = *opts.N
 	}
-	if quality, ok := options["quality"].(string); ok && quality != "" {
-		imageGenerationConfig["quality"] = quality
+	if options.Quality != "" {
+		imageGenerationConfig["quality"] = options.Quality
 	}
-	if cfgScale, ok := nonZeroNumberOption(options["cfgScale"]); ok {
-		imageGenerationConfig["cfgScale"] = cfgScale
+	if options.CfgScaleSet && options.CfgScale != 0 {
+		imageGenerationConfig["cfgScale"] = options.CfgScale
 	}
 
 	var args map[string]interface{}
 	if len(opts.Files) > 0 {
 		hasMask := opts.Mask != nil && opts.Mask.Type != ""
-		_, hasMaskPrompt := options["maskPrompt"]
-		taskType := stringOption(options["taskType"])
+		hasMaskPrompt := options.MaskPrompt != ""
+		taskType := options.TaskType
 		if taskType == "" {
 			if hasMask || hasMaskPrompt {
 				taskType = "INPAINTING"
@@ -164,7 +168,9 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) (map[
 			if opts.Prompt != "" {
 				params["text"] = opts.Prompt
 			}
-			addStringOption(params, options, "negativeText")
+			if options.NegativeText != "" {
+				params["negativeText"] = options.NegativeText
+			}
 			if hasMask {
 				maskImage, err := bedrockImageFileBase64(*opts.Mask)
 				if err != nil {
@@ -172,7 +178,7 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) (map[
 				}
 				params["maskImage"] = maskImage
 			} else if hasMaskPrompt {
-				params["maskPrompt"] = options["maskPrompt"]
+				params["maskPrompt"] = options.MaskPrompt
 			}
 			args = map[string]interface{}{"taskType": "INPAINTING", "inPaintingParams": params, "imageGenerationConfig": imageGenerationConfig}
 		case "OUTPAINTING":
@@ -180,8 +186,12 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) (map[
 			if opts.Prompt != "" {
 				params["text"] = opts.Prompt
 			}
-			addStringOption(params, options, "negativeText")
-			addStringOption(params, options, "outPaintingMode")
+			if options.NegativeText != "" {
+				params["negativeText"] = options.NegativeText
+			}
+			if options.OutPaintingMode != "" {
+				params["outPaintingMode"] = options.OutPaintingMode
+			}
 			if hasMask {
 				maskImage, err := bedrockImageFileBase64(*opts.Mask)
 				if err != nil {
@@ -189,7 +199,7 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) (map[
 				}
 				params["maskImage"] = maskImage
 			} else if hasMaskPrompt {
-				params["maskPrompt"] = options["maskPrompt"]
+				params["maskPrompt"] = options.MaskPrompt
 			}
 			args = map[string]interface{}{"taskType": "OUTPAINTING", "outPaintingParams": params, "imageGenerationConfig": imageGenerationConfig}
 		case "BACKGROUND_REMOVAL":
@@ -207,9 +217,11 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) (map[
 			if opts.Prompt != "" {
 				params["text"] = opts.Prompt
 			}
-			addStringOption(params, options, "negativeText")
-			if similarityStrength, ok := numberOption(options["similarityStrength"]); ok {
-				params["similarityStrength"] = similarityStrength
+			if options.NegativeText != "" {
+				params["negativeText"] = options.NegativeText
+			}
+			if options.SimilarityStrengthSet {
+				params["similarityStrength"] = options.SimilarityStrength
 			}
 			args = map[string]interface{}{"taskType": "IMAGE_VARIATION", "imageVariationParams": params, "imageGenerationConfig": imageGenerationConfig}
 		default:
@@ -217,9 +229,11 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) (map[
 		}
 	} else {
 		params := map[string]interface{}{"text": opts.Prompt}
-		addStringOption(params, options, "negativeText")
-		if style := stringOption(options["style"]); style != "" {
-			params["style"] = style
+		if options.NegativeText != "" {
+			params["negativeText"] = options.NegativeText
+		}
+		if options.Style != "" {
+			params["style"] = options.Style
 		}
 		args = map[string]interface{}{"taskType": "TEXT_IMAGE", "textToImageParams": params, "imageGenerationConfig": imageGenerationConfig}
 	}
@@ -319,12 +333,6 @@ func alreadyBase64(data []byte) bool {
 	return base64.StdEncoding.EncodeToString(decoded) == trimmed
 }
 
-func addStringOption(target map[string]interface{}, options map[string]interface{}, key string) {
-	if value := stringOption(options[key]); value != "" {
-		target[key] = value
-	}
-}
-
 func stringOption(value interface{}) string {
 	if s, ok := value.(string); ok {
 		return s
@@ -338,30 +346,6 @@ func numberOption(value interface{}) (interface{}, bool) {
 		return v, true
 	default:
 		return nil, false
-	}
-}
-
-func nonZeroNumberOption(value interface{}) (interface{}, bool) {
-	number, ok := numberOption(value)
-	if !ok {
-		return nil, false
-	}
-	switch v := value.(type) {
-	case int:
-		return number, v != 0
-	case int32:
-		return number, v != 0
-	case int64:
-		return number, v != 0
-	case float32:
-		return number, v != 0
-	case float64:
-		return number, v != 0
-	case json.Number:
-		f, err := v.Float64()
-		return number, err != nil || f != 0
-	default:
-		return number, true
 	}
 }
 

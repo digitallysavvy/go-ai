@@ -1,221 +1,350 @@
+// Package anthropic implements the Bedrock-Anthropic provider: the native
+// Anthropic Messages API surfaced through AWS Bedrock's InvokeModel /
+// InvokeModelWithResponseStream endpoints (as opposed to the Bedrock Converse
+// API used by pkg/providers/bedrock).
+//
+// This is a thin wrapper around pkg/providers/anthropic.LanguageModel, mirroring
+// pkg/providers/googlevertex/anthropic and TS createAmazonBedrockAnthropic
+// (amazon-bedrock-anthropic-provider.ts): the Bedrock-specific request/response
+// transforms are supplied via anthropic.Config's Transform* hooks so that the
+// shared Anthropic prompt converter, capability table and streaming state
+// machine are reused as-is. This also fixes a review finding in the previous
+// standalone implementation: in-prompt system messages were silently dropped
+// whenever Prompt.System was also set, and converter betas/warnings were
+// never propagated (see the wg_b2_system_prompt_test.go proof).
 package anthropic
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	anthropicprovider "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+	anthropictools "github.com/digitallysavvy/go-ai/pkg/providers/anthropic/tools"
 	bedrock "github.com/digitallysavvy/go-ai/pkg/providers/bedrock"
 )
 
 const (
-	// BaseURLFormat for Bedrock runtime endpoints
-	BaseURLFormat = "https://bedrock-runtime.%s.amazonaws.com"
-
-	// AnthropicVersion is the Bedrock Anthropic API version
+	// AnthropicVersion is the Bedrock Anthropic API version, sent as
+	// anthropic_version in the request body (Bedrock does not use the
+	// anthropic-version HTTP header).
 	AnthropicVersion = "bedrock-2023-05-31"
+
+	// providerName is reported by Name(), matching TS 'bedrock.anthropic.messages'.
+	providerName = "bedrock.anthropic.messages"
 )
 
-// AWSCredentials contains AWS authentication information
+// AWSCredentials contains AWS authentication information for SigV4 signing.
 type AWSCredentials struct {
 	AccessKeyID     string
 	SecretAccessKey string
 	SessionToken    string // Optional for temporary credentials
 }
 
-// Config for Bedrock Anthropic provider
+// Config for the Bedrock Anthropic provider.
 type Config struct {
-	// Region is the AWS region (e.g., "us-east-1")
+	// Region is the AWS region (e.g., "us-east-1"). Defaults to AWS_REGION.
 	Region string
 
-	// Credentials for AWS SigV4 authentication
-	// If nil, will attempt bearer token authentication
+	// Credentials for AWS SigV4 authentication. If nil, environment
+	// variables are used, unless BearerToken/CredentialProvider are set.
 	Credentials *AWSCredentials
 
 	// CredentialProvider returns dynamic AWS credentials for SigV4 signing.
 	// When set, it takes precedence over Credentials and environment variables.
 	CredentialProvider bedrock.CredentialProvider
 
-	// BearerToken for alternative authentication
-	// Set via AWS_BEARER_TOKEN_BEDROCK environment variable
-	// If both Credentials and BearerToken are provided, BearerToken takes precedence
+	// BearerToken enables API-key authentication instead of SigV4. Defaults
+	// to the AWS_BEARER_TOKEN_BEDROCK environment variable. Takes precedence
+	// over SigV4 credentials when non-empty.
 	BearerToken string
 
 	// BaseURL overrides the default Bedrock endpoint
-	// Default: https://bedrock-runtime.{region}.amazonaws.com
+	// (default: https://bedrock-runtime.{region}.amazonaws.com).
 	BaseURL string
 
-	// HTTPClient allows custom HTTP client configuration
+	// Headers are custom HTTP headers to include in every request.
+	Headers map[string]string
+
+	// HTTPClient allows custom HTTP client configuration. Its Transport (or
+	// http.DefaultTransport) is wrapped with SigV4/bearer-token
+	// authentication; do not set Transport expecting it to see unsigned
+	// requests.
 	HTTPClient *http.Client
-
-	// CacheConfig specifies prompt caching configuration
-	// If set, cache points will be automatically inserted at configured positions
-	CacheConfig *CacheConfig
 }
 
-// BedrockAnthropicProvider implements native Anthropic Messages API via AWS Bedrock
+// BedrockAnthropicProvider implements native Anthropic Messages API access
+// via AWS Bedrock.
 type BedrockAnthropicProvider struct {
-	region             string
-	credentials        *AWSCredentials
-	credentialProvider bedrock.CredentialProvider
-	bearerToken        string
-	baseURL            string
-	httpClient         *http.Client
-
-	// Tool version mappings for Bedrock compatibility
-	toolVersionMap map[string]string
-
-	// Tool name mappings for Bedrock requirements
-	toolNameMap map[string]string
-
-	// Beta header mappings for computer use tools
-	toolBetaMap map[string]string
-
-	// Cache configuration for prompt caching
-	cacheConfig *CacheConfig
+	config Config
+	region string
 }
 
-// New creates a new Bedrock Anthropic provider
+// New creates a new Bedrock Anthropic provider.
 func New(config Config) *BedrockAnthropicProvider {
-	region := config.Region
-	if region == "" {
-		region = os.Getenv("AWS_REGION")
-	}
-
-	baseURL := config.BaseURL
-	if baseURL == "" && region != "" {
-		baseURL = fmt.Sprintf(BaseURLFormat, region)
-	}
-
-	httpClient := config.HTTPClient
-	if httpClient == nil {
-		httpClient = &http.Client{}
-	}
-
-	return &BedrockAnthropicProvider{
-		region:             region,
-		credentials:        config.Credentials,
-		credentialProvider: config.CredentialProvider,
-		bearerToken:        strings.TrimSpace(firstNonEmpty(config.BearerToken, os.Getenv("AWS_BEARER_TOKEN_BEDROCK"))),
-		baseURL:            baseURL,
-		httpClient:         httpClient,
-		cacheConfig:        config.CacheConfig,
-
-		// Tool version upgrades for Bedrock compatibility
-		toolVersionMap: map[string]string{
-			"bash_20241022":        "bash_20250124",
-			"text_editor_20241022": "text_editor_20250728",
-			"computer_20241022":    "computer_20250124",
-		},
-
-		// Tool name mappings for specific versions
-		toolNameMap: map[string]string{
-			"text_editor_20250728": "str_replace_based_edit_tool",
-		},
-
-		// Beta headers for computer use tools
-		toolBetaMap: map[string]string{
-			"bash_20250124":        "computer-use-2025-01-24",
-			"bash_20241022":        "computer-use-2024-10-22",
-			"text_editor_20250124": "computer-use-2025-01-24",
-			"text_editor_20241022": "computer-use-2024-10-22",
-			"text_editor_20250429": "computer-use-2025-01-24",
-			"text_editor_20250728": "computer-use-2025-01-24",
-			"computer_20250124":    "computer-use-2025-01-24",
-			"computer_20241022":    "computer-use-2024-10-22",
-		},
-	}
+	region := firstNonEmpty(config.Region, os.Getenv("AWS_REGION"))
+	return &BedrockAnthropicProvider{config: config, region: region}
 }
 
-func (p *BedrockAnthropicProvider) resolveCredentials(ctx context.Context) (*AWSCredentials, error) {
-	if p.credentialProvider != nil {
-		creds, err := p.credentialProvider(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("AWS credential provider failed: %v. Please ensure your credential provider returns valid AWS credentials with AccessKeyID and SecretAccessKey fields", err)
-		}
-		if creds.AccessKeyID == "" || creds.SecretAccessKey == "" {
-			return nil, fmt.Errorf("AWS credential provider failed: incomplete credentials. Please ensure your credential provider returns valid AWS credentials with AccessKeyID and SecretAccessKey fields")
-		}
-		return &AWSCredentials{
-			AccessKeyID:     creds.AccessKeyID,
-			SecretAccessKey: creds.SecretAccessKey,
-			SessionToken:    creds.SessionToken,
-		}, nil
-	}
-
-	if p.credentials != nil {
-		return &AWSCredentials{
-			AccessKeyID:     firstNonEmpty(p.credentials.AccessKeyID, os.Getenv("AWS_ACCESS_KEY_ID")),
-			SecretAccessKey: firstNonEmpty(p.credentials.SecretAccessKey, os.Getenv("AWS_SECRET_ACCESS_KEY")),
-			SessionToken:    firstNonEmpty(p.credentials.SessionToken, os.Getenv("AWS_SESSION_TOKEN")),
-		}, nil
-	}
-
-	return &AWSCredentials{
-		AccessKeyID:     os.Getenv("AWS_ACCESS_KEY_ID"),
-		SecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
-		SessionToken:    os.Getenv("AWS_SESSION_TOKEN"),
-	}, nil
+// CreateAmazonBedrockAnthropic mirrors the TypeScript SDK's
+// createAmazonBedrockAnthropic export.
+func CreateAmazonBedrockAnthropic(config Config) *BedrockAnthropicProvider {
+	return New(config)
 }
 
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if value != "" {
-			return value
-		}
-	}
-	return ""
-}
+// Tools exposes the Anthropic-specific tool factories (TS provider.tools).
+var Tools = anthropictools.AnthropicTools
 
+// Name returns the provider name.
+func (p *BedrockAnthropicProvider) Name() string { return providerName }
+
+// runtimeBaseURL resolves the Bedrock runtime endpoint using the shared
+// partition-aware resolver (pkg/providers/bedrock.ResolveAmazonBedrockBaseURL),
+// so Bedrock-Anthropic gets the same precedence (explicit BaseURL, then
+// AWS_ENDPOINT_URL_BEDROCK_RUNTIME, then AWS_ENDPOINT_URL, then a generated
+// URL with the correct partition DNS suffix) as the Converse client.
 func (p *BedrockAnthropicProvider) runtimeBaseURL() (string, error) {
-	if p.baseURL != "" {
-		return p.baseURL, nil
-	}
-	return "", fmt.Errorf("AWS region is required: set Region or AWS_REGION")
+	return bedrock.ResolveAmazonBedrockBaseURL(bedrock.ResolveBaseURLOptions{
+		BaseURL:                              p.config.BaseURL,
+		Region:                               p.region,
+		Service:                              "bedrock-runtime",
+		ServiceEndpointURLEnvironmentVarName: "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
+	})
 }
 
-// Name returns the provider name
-func (p *BedrockAnthropicProvider) Name() string {
-	return "bedrock-anthropic"
-}
-
-// LanguageModel returns a language model instance
+// LanguageModel returns a language model by ID.
 func (p *BedrockAnthropicProvider) LanguageModel(modelID string) (provider.LanguageModel, error) {
-	return &BedrockAnthropicLanguageModel{
-		provider: p,
-		modelID:  modelID,
-	}, nil
+	return p.LanguageModelWithOptions(modelID, nil)
 }
 
-// EmbeddingModel returns an embedding model (not supported)
+// LanguageModelWithOptions returns a language model with Anthropic
+// provider-specific settings (the same ModelOptions surface as the direct
+// Anthropic provider, e.g. Thinking, Safeguards, CacheControl/AutomaticCaching).
+func (p *BedrockAnthropicProvider) LanguageModelWithOptions(modelID string, options *anthropicprovider.ModelOptions) (provider.LanguageModel, error) {
+	if modelID == "" {
+		return nil, fmt.Errorf("model ID cannot be empty")
+	}
+
+	baseURL, err := p.runtimeBaseURL()
+	if err != nil {
+		return nil, err
+	}
+
+	nativeStructuredOutput := supportsNativeStructuredOutput(modelID)
+	strictTools := supportsStrictTools(modelID)
+	supportsImageInput := true
+
+	inner := anthropicprovider.New(anthropicprovider.Config{
+		Name:                           providerName,
+		BaseURL:                        baseURL,
+		Headers:                        p.config.Headers,
+		HTTPClient:                     p.httpClient(),
+		OmitAPIVersionHeader:           true, // anthropic_version goes in the body, not a header.
+		SupportsNativeStructuredOutput: &nativeStructuredOutput,
+		SupportsStrictTools:            &strictTools,
+		SupportsImageInput:             &supportsImageInput,
+		// TS amazon-bedrock-anthropic-provider.ts tags requests
+		// "ai-sdk/amazon-bedrock/VERSION" (its own package's tag, shared with
+		// the Converse-API amazon-bedrock provider), not "ai-sdk/anthropic".
+		UserAgentName: "amazon-bedrock",
+		// Bedrock-Anthropic forces base64 conversion instead of passing URLs
+		// through, matching TS amazon-bedrock-anthropic-provider.ts
+		// (`supportedUrls: () => ({})`).
+		SupportedURLs: func(string) map[string][]string { return map[string][]string{} },
+		MessagesPath: func(id string, stream bool) string {
+			action := "invoke"
+			if stream {
+				action = "invoke-with-response-stream"
+			}
+			return fmt.Sprintf("/model/%s/%s", encodeURIComponent(id), action)
+		},
+		TransformRequestBodyWithBetas: transformRequestBodyWithBetas,
+		TransformStreamBody:           transformEventStreamToSSE,
+		TransformErrorBody:            transformErrorBody,
+	})
+
+	return anthropicprovider.NewLanguageModel(inner, modelID, options), nil
+}
+
+// EmbeddingModel returns an embedding model (not supported).
 func (p *BedrockAnthropicProvider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
 	return nil, noSuchModelError(modelID, "embeddingModel")
 }
 
-// ImageModel returns an image model (not supported)
+// ImageModel returns an image model (not supported).
 func (p *BedrockAnthropicProvider) ImageModel(modelID string) (provider.ImageModel, error) {
 	return nil, noSuchModelError(modelID, "imageModel")
 }
 
-// SpeechModel returns a speech model (not supported)
+// SpeechModel returns a speech model (not supported).
 func (p *BedrockAnthropicProvider) SpeechModel(modelID string) (provider.SpeechModel, error) {
 	return nil, fmt.Errorf("bedrock-anthropic provider does not support speech models")
 }
 
-// TranscriptionModel returns a transcription model (not supported)
+// TranscriptionModel returns a transcription model (not supported).
 func (p *BedrockAnthropicProvider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
 	return nil, fmt.Errorf("bedrock-anthropic provider does not support transcription models")
 }
 
-// RerankingModel returns a reranking model (not supported)
+// RerankingModel returns a reranking model (not supported).
 func (p *BedrockAnthropicProvider) RerankingModel(modelID string) (provider.RerankingModel, error) {
 	return nil, fmt.Errorf("bedrock-anthropic provider does not support reranking models")
 }
 
 func noSuchModelError(modelID, modelType string) error {
 	return fmt.Errorf("%w: bedrock-anthropic %s %q", providererrors.ErrModelNotFound, modelType, modelID)
+}
+
+// --- authentication ---------------------------------------------------------
+
+// httpClient wraps the configured (or default) HTTP client with a transport
+// that authenticates every request: bearer-token if configured, otherwise
+// AWS SigV4.
+func (p *BedrockAnthropicProvider) httpClient() *http.Client {
+	base := p.config.HTTPClient
+	if base == nil {
+		base = &http.Client{}
+	}
+	clone := *base
+	baseTransport := clone.Transport
+	if baseTransport == nil {
+		baseTransport = http.DefaultTransport
+	}
+	clone.Transport = &bedrockAnthropicTransport{base: baseTransport, provider: p}
+	return &clone
+}
+
+// bedrockAnthropicTransport authenticates outgoing requests and forces the
+// correct Accept header for the streaming invoke action (the shared
+// anthropic.LanguageModel sets "text/event-stream", but Bedrock's
+// invoke-with-response-stream endpoint returns
+// application/vnd.amazon.eventstream regardless).
+type bedrockAnthropicTransport struct {
+	base     http.RoundTripper
+	provider *BedrockAnthropicProvider
+}
+
+func (t *bedrockAnthropicTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if strings.Contains(req.URL.Path, "invoke-with-response-stream") {
+		req.Header.Set("Accept", "application/vnd.amazon.eventstream")
+	}
+
+	bearerToken := strings.TrimSpace(firstNonEmpty(t.provider.config.BearerToken, os.Getenv("AWS_BEARER_TOKEN_BEDROCK")))
+	if bearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+bearerToken)
+		return t.base.RoundTrip(req)
+	}
+
+	if req.Body == nil {
+		return t.base.RoundTrip(req)
+	}
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		return nil, err
+	}
+	_ = req.Body.Close()
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	req.ContentLength = int64(len(body))
+
+	creds, err := t.provider.resolveCredentials(req.Context())
+	if err != nil {
+		return nil, err
+	}
+
+	signer := bedrock.NewAWSSigner(creds.AccessKeyID, creds.SecretAccessKey, creds.SessionToken, t.provider.region)
+	if err := signer.SignRequest(req, body); err != nil {
+		return nil, err
+	}
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	return t.base.RoundTrip(req)
+}
+
+// resolveCredentials resolves SigV4 credentials: CredentialProvider first,
+// then explicit Config.Credentials, then environment variables. The ambient
+// AWS_SESSION_TOKEN is only used as a fallback when the caller did not
+// explicitly supply both an access key and a secret key (TS row 6732c16;
+// matches pkg/providers/bedrock.Provider's resolveCredentials).
+func (p *BedrockAnthropicProvider) resolveCredentials(ctx context.Context) (AWSCredentials, error) {
+	if p.config.CredentialProvider != nil {
+		creds, err := p.config.CredentialProvider(ctx)
+		if err != nil {
+			return AWSCredentials{}, fmt.Errorf("AWS credential provider failed: %v. Please ensure your credential provider returns valid AWS credentials with AccessKeyID and SecretAccessKey fields", err)
+		}
+		if creds.AccessKeyID == "" || creds.SecretAccessKey == "" {
+			return AWSCredentials{}, fmt.Errorf("AWS credential provider failed: incomplete credentials. Please ensure your credential provider returns valid AWS credentials with AccessKeyID and SecretAccessKey fields")
+		}
+		return AWSCredentials{AccessKeyID: creds.AccessKeyID, SecretAccessKey: creds.SecretAccessKey, SessionToken: creds.SessionToken}, nil
+	}
+
+	var explicitAccessKeyID, explicitSecretAccessKey, explicitSessionToken string
+	if p.config.Credentials != nil {
+		explicitAccessKeyID = p.config.Credentials.AccessKeyID
+		explicitSecretAccessKey = p.config.Credentials.SecretAccessKey
+		explicitSessionToken = p.config.Credentials.SessionToken
+	}
+
+	accessKeyID := firstNonEmpty(explicitAccessKeyID, os.Getenv("AWS_ACCESS_KEY_ID"))
+	secretAccessKey := firstNonEmpty(explicitSecretAccessKey, os.Getenv("AWS_SECRET_ACCESS_KEY"))
+	sessionToken := explicitSessionToken
+	if sessionToken == "" && (explicitAccessKeyID == "" || explicitSecretAccessKey == "") {
+		sessionToken = os.Getenv("AWS_SESSION_TOKEN")
+	}
+
+	if accessKeyID == "" {
+		return AWSCredentials{}, fmt.Errorf("AWS SigV4 authentication requires AWS credentials. Please provide either:\n" +
+			"1. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables\n" +
+			"2. Provide Credentials in Config\n" +
+			"3. Use a CredentialProvider function\n" +
+			"4. Use API key authentication with BearerToken or AWS_BEARER_TOKEN_BEDROCK")
+	}
+	if secretAccessKey == "" {
+		return AWSCredentials{}, fmt.Errorf("AWS SigV4 authentication requires both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. Please ensure both credentials are provided")
+	}
+
+	return AWSCredentials{AccessKeyID: accessKeyID, SecretAccessKey: secretAccessKey, SessionToken: sessionToken}, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// encodeURIComponent mirrors JavaScript's encodeURIComponent, which Go's
+// url.PathEscape does not: encodeURIComponent percent-encodes ':' and '/'
+// (both allowed, unencoded, in a URL path segment per RFC 3986), which
+// matters for Bedrock model IDs/ARNs such as
+// "anthropic.claude-3-sonnet-20240229-v1:0".
+func encodeURIComponent(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if isURIComponentUnreserved(c) {
+			b.WriteByte(c)
+		} else {
+			fmt.Fprintf(&b, "%%%02X", c)
+		}
+	}
+	return b.String()
+}
+
+func isURIComponentUnreserved(c byte) bool {
+	switch {
+	case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9':
+		return true
+	}
+	switch c {
+	case '-', '_', '.', '!', '~', '*', '\'', '(', ')':
+		return true
+	}
+	return false
 }

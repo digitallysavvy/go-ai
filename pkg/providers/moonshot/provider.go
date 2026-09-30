@@ -5,11 +5,17 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 const (
-	// DefaultBaseURL is the default Moonshot API base URL
-	DefaultBaseURL = "https://api.moonshot.cn/v1"
+	// DefaultBaseURL is the default Moonshot API base URL.
+	//
+	// BREAKING CHANGE: this now matches the TS SDK's default
+	// (https://api.moonshot.ai/v1) instead of the China-region
+	// https://api.moonshot.cn/v1. Callers relying on the previous
+	// default must set Config.BaseURL explicitly to the .cn host.
+	DefaultBaseURL = "https://api.moonshot.ai/v1"
 )
 
 // Provider implements the provider.Provider interface for Moonshot AI
@@ -28,10 +34,10 @@ func New(cfg Config) *Provider {
 	// Create HTTP client with authorization header
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: map[string]string{
+		Headers: version.WithUserAgentSuffix(map[string]string{
 			"Authorization": "Bearer " + cfg.APIKey,
 			"Content-Type":  "application/json",
-		},
+		}, version.ProviderUserAgent("moonshotai")),
 	})
 
 	return &Provider{
@@ -45,31 +51,13 @@ func (p *Provider) Name() string {
 	return "moonshot"
 }
 
-// LanguageModel returns a language model by ID
-// Supported models: moonshot-v1-8k, moonshot-v1-32k, moonshot-v1-128k,
-// kimi-k2, kimi-k2.5, kimi-k2-thinking, kimi-k2-thinking-turbo, kimi-k2-turbo
+// LanguageModel returns a language model by ID. Any model ID is accepted
+// (TS createMoonshotAI does not validate IDs); see model_ids.go for known IDs.
+// An empty ID selects moonshot-v1-32k.
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
 	if modelID == "" {
-		modelID = "moonshot-v1-32k" // Default model
+		modelID = defaultLanguageModelID
 	}
-
-	// Validate model ID
-	validModels := map[string]bool{
-		"moonshot-v1-8k":            true,
-		"moonshot-v1-32k":           true,
-		"moonshot-v1-128k":          true,
-		"kimi-k2":                   true,
-		"kimi-k2-0905":              true,
-		"kimi-k2-thinking":          true,
-		"kimi-k2-thinking-turbo":    true,
-		"kimi-k2-turbo":             true,
-		"kimi-k2.5":                 true,
-	}
-
-	if !validModels[modelID] {
-		return nil, fmt.Errorf("unsupported Moonshot model: %s", modelID)
-	}
-
 	return NewLanguageModel(p, modelID), nil
 }
 

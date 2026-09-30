@@ -53,6 +53,105 @@ func TestGenerateText_BasicPrompt(t *testing.T) {
 	}
 }
 
+// TestGenerateText_AppendsAIUserAgent mirrors TS generate-text.ts, which
+// tags every call's headers with `ai/${VERSION}` via withUserAgentSuffix
+// before invoking the model (and before the onStart callbacks fire).
+func TestGenerateText_AppendsAIUserAgent(t *testing.T) {
+	t.Parallel()
+
+	var capturedHeaders map[string]string
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			capturedHeaders = opts.Headers
+			return &types.GenerateResult{Text: "hi", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:  model,
+		Prompt: "hello",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedHeaders["user-agent"] != "ai/0.5.0" {
+		t.Fatalf("user-agent = %q, want ai/0.5.0", capturedHeaders["user-agent"])
+	}
+
+	// Existing user-agent values are kept as a prefix, not replaced.
+	capturedHeaders = nil
+	_, err = GenerateText(context.Background(), GenerateTextOptions{
+		Model:   model,
+		Prompt:  "hello",
+		Headers: map[string]string{"User-Agent": "custom-agent"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedHeaders["user-agent"] != "custom-agent ai/0.5.0" {
+		t.Fatalf("user-agent = %q, want custom-agent ai/0.5.0", capturedHeaders["user-agent"])
+	}
+}
+
+// TestGenerateText_CombinesConsecutiveToolMessagesForEveryProvider proves
+// that consecutive tool-role messages are merged into one before ANY
+// provider's DoGenerate is invoked -- mirroring TS convertToLanguageModelPrompt,
+// which runs once in the shared core for every provider (packages/ai/src/prompt/
+// convert-to-language-model-prompt.ts, hash 33647d7). The merge lives in
+// promptutils.NormalizePrompt (called from GenerateText before model.DoGenerate),
+// not in any one provider's own message converter, so it reaches providers with
+// bespoke converters too (e.g. Bedrock Converse, Gateway, DeepSeek), not just the
+// three that call ToOpenAIMessages/ConvertToAnthropicPrompt/ConvertToGoogleMessages.
+func TestGenerateText_CombinesConsecutiveToolMessagesForEveryProvider(t *testing.T) {
+	t.Parallel()
+
+	var gotMessages []types.Message
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			gotMessages = opts.Prompt.Messages
+			return &types.GenerateResult{Text: "ok", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: model,
+		Messages: []types.Message{
+			{
+				Role: types.RoleAssistant,
+				Content: []types.ContentPart{
+					types.ToolCallContent{ToolCallID: "call-1", ToolName: "t", Input: "{}"},
+					types.ToolCallContent{ToolCallID: "call-2", ToolName: "t", Input: "{}"},
+				},
+			},
+			{
+				Role: types.RoleTool,
+				Content: []types.ContentPart{
+					types.ToolResultContent{ToolCallID: "call-1", ToolName: "t", Output: &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "r1"}},
+				},
+			},
+			{
+				Role: types.RoleTool,
+				Content: []types.ContentPart{
+					types.ToolResultContent{ToolCallID: "call-2", ToolName: "t", Output: &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "r2"}},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(gotMessages) != 2 {
+		t.Fatalf("model saw %d messages, want 2 (assistant + one combined tool message); got %#v", len(gotMessages), gotMessages)
+	}
+	if gotMessages[1].Role != types.RoleTool {
+		t.Fatalf("gotMessages[1].Role = %q, want tool", gotMessages[1].Role)
+	}
+	if len(gotMessages[1].Content) != 2 {
+		t.Fatalf("gotMessages[1].Content has %d parts, want 2 (both tool results merged into one wire message)", len(gotMessages[1].Content))
+	}
+}
+
 func TestGenerateText_GatewayRetryableErrorsRetry(t *testing.T) {
 	t.Parallel()
 
@@ -860,11 +959,88 @@ func TestGenerateText_ToolChoiceForwardedToProvider(t *testing.T) {
 		Prompt:     "use a tool",
 		ToolChoice: types.RequiredToolChoice(),
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	// The mock returns no tool call despite ToolChoice: required, so this now
+	// correctly surfaces ToolChoiceViolationError (audit row 8b6b756 / WG3)
+	// rather than silently succeeding.
+	if !IsToolChoiceViolationError(err) {
+		t.Fatalf("error = %v, want ToolChoiceViolationError", err)
 	}
 	if capturedChoice.Type != types.ToolChoiceRequired {
 		t.Errorf("expected ToolChoiceRequired forwarded to provider, got %q", capturedChoice.Type)
+	}
+}
+
+// TestGenerateText_ToolChoiceRequiredSatisfiedByAnyToolCall ports TS
+// generate-text.test.ts's ToolChoiceViolationError happy path (audit row
+// 8b6b756 / WG3): any tool call satisfies "required".
+func TestGenerateText_ToolChoiceRequiredSatisfiedByAnyToolCall(t *testing.T) {
+	t.Parallel()
+
+	tools := []types.Tool{{
+		Name: "search",
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "results", nil
+		},
+	}}
+	model := &testutil.MockLanguageModel{
+		ToolSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				FinishReason: types.FinishReasonToolCalls,
+				ToolCalls:    []types.ToolCall{{ID: "call_1", ToolName: "search", Arguments: map[string]interface{}{}}},
+			}, nil
+		},
+	}
+	maxSteps := 1
+
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:      model,
+		Prompt:     "search something",
+		Tools:      tools,
+		ToolChoice: types.RequiredToolChoice(),
+		MaxSteps:   &maxSteps,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.ToolCalls) != 1 || result.ToolCalls[0].ToolName != "search" {
+		t.Fatalf("ToolCalls = %+v", result.ToolCalls)
+	}
+}
+
+// TestGenerateText_ToolChoiceSpecificToolViolation ports TS's specific-tool
+// enforcement message (audit row 8b6b756 / WG3): a call to a different tool
+// does not satisfy {type:"tool", toolName}.
+func TestGenerateText_ToolChoiceSpecificToolViolation(t *testing.T) {
+	t.Parallel()
+
+	tools := []types.Tool{{Name: "search"}, {Name: "other"}}
+	model := &testutil.MockLanguageModel{
+		ToolSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				FinishReason: types.FinishReasonToolCalls,
+				ToolCalls:    []types.ToolCall{{ID: "call_1", ToolName: "other", Arguments: map[string]interface{}{}}},
+			}, nil
+		},
+	}
+
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:      model,
+		Prompt:     "search something",
+		Tools:      tools,
+		ToolChoice: types.SpecificToolChoice("search"),
+	})
+	var violation *ToolChoiceViolationError
+	if !errors.As(err, &violation) {
+		t.Fatalf("error = %v, want *ToolChoiceViolationError", err)
+	}
+	wantMsg := "Model response did not contain a call to the required tool 'search'."
+	if violation.Error() != wantMsg {
+		t.Fatalf("message = %q, want %q", violation.Error(), wantMsg)
+	}
+	if violation.ToolChoice.ToolName != "search" || violation.FinishReason != types.FinishReasonToolCalls {
+		t.Fatalf("violation = %+v", violation)
 	}
 }
 
@@ -1490,6 +1666,79 @@ func TestGenerateText_ToolApprovalUserApprovalPauses(t *testing.T) {
 	}
 }
 
+// ports #105: a user-approval ToolApprovalResult with a Reason must land on
+// ToolApprovalRequestContent.Reason (request reason), and the reason must
+// survive into ResponseMessages so a resumed conversation still shows why
+// approval was requested.
+func TestGenerateText_ToolApprovalUserApprovalWithReason(t *testing.T) {
+	t.Parallel()
+
+	reviewReason := "requires operator review"
+	tool := types.Tool{
+		Name: "needs_human",
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			t.Fatal("user-approval tool should not execute")
+			return nil, nil
+		},
+	}
+
+	model := &testutil.MockLanguageModel{
+		ToolSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				FinishReason: types.FinishReasonToolCalls,
+				ToolCalls:    []types.ToolCall{{ID: "call_1", ToolName: "needs_human", Arguments: map[string]interface{}{"x": 1}}},
+			}, nil
+		},
+	}
+
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: model,
+		Tools: []types.Tool{tool},
+		ToolApproval: types.ToolApprovalFunc(func(toolCall types.ToolCall, tools []types.Tool, messages []types.Message, runtimeCtx interface{}, toolsCtx map[string]interface{}) types.ToolApprovalResult {
+			return types.ToolApprovalResult{Status: types.ToolApprovalStatusUserApproval, Reason: &reviewReason}
+		}),
+		StopWhen: []StopCondition{StepCountIs(3)},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.FinishReason != types.FinishReasonUserApproval {
+		t.Fatalf("expected user-approval finish reason, got %s", result.FinishReason)
+	}
+
+	var req *types.ToolApprovalRequestContent
+	for i := range result.Content {
+		if r, ok := result.Content[i].(types.ToolApprovalRequestContent); ok {
+			req = &r
+			break
+		}
+	}
+	if req == nil {
+		t.Fatalf("no ToolApprovalRequestContent found in result.Content: %#v", result.Content)
+	}
+	if req.Reason != reviewReason {
+		t.Fatalf("ToolApprovalRequestContent.Reason = %q, want %q", req.Reason, reviewReason)
+	}
+
+	// The reason must also survive into the accumulated response messages
+	// (what a caller persists and resumes the conversation with).
+	foundInResponseMessages := false
+	for _, msg := range result.ResponseMessages {
+		for _, part := range msg.Content {
+			if r, ok := part.(types.ToolApprovalRequestContent); ok && r.ApprovalID == req.ApprovalID {
+				if r.Reason != reviewReason {
+					t.Fatalf("ResponseMessages ToolApprovalRequestContent.Reason = %q, want %q", r.Reason, reviewReason)
+				}
+				foundInResponseMessages = true
+			}
+		}
+	}
+	if !foundInResponseMessages {
+		t.Fatalf("expected ToolApprovalRequestContent with reason in ResponseMessages: %#v", result.ResponseMessages)
+	}
+}
+
 func TestGenerateText_ToolApprovalEmptySecretStillSigns(t *testing.T) {
 	t.Parallel()
 
@@ -1852,5 +2101,47 @@ func TestGenerateTextReasoningNilNotPropagated(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestGenerateText_AbortEventCarriesCallIDAndReason ports TS's onAbort event
+// shape to generateText (audit row a8e8ad0 / WG5): the stable OnAbortEvent
+// must carry the call ID and abort reason, and take precedence over the
+// deprecated OnAbort.
+func TestGenerateText_AbortEventCarriesCallIDAndReason(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return nil, context.Canceled
+		},
+	}
+
+	var event *GenerateTextAbortEvent
+	deprecatedCalled := false
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:  model,
+		Prompt: "abort",
+		OnAbort: func(context.Context, []types.StepResult) {
+			deprecatedCalled = true
+		},
+		OnAbortEvent: func(ctx context.Context, e GenerateTextAbortEvent) {
+			event = &e
+		},
+	})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if event == nil {
+		t.Fatal("OnAbortEvent was not called")
+	}
+	if event.CallID == "" {
+		t.Error("GenerateTextAbortEvent.CallID is empty")
+	}
+	if event.Reason == nil {
+		t.Error("GenerateTextAbortEvent.Reason is nil")
+	}
+	if deprecatedCalled {
+		t.Error("deprecated OnAbort was called even though OnAbortEvent is set")
 	}
 }

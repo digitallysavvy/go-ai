@@ -75,7 +75,7 @@ func TestAddToolInputExamplesMiddleware_DescriptionUpdate(t *testing.T) {
 			},
 			options: &AddToolInputExamplesOptions{
 				Prefix: "Input Examples:",
-				Remove: true,
+				Remove: types.BoolPtr(true),
 			},
 			expectedInDesc:     []string{"Get weather for a location", "Input Examples:", `"city":"NYC"`},
 			shouldHaveExamples: false,
@@ -95,7 +95,7 @@ func TestAddToolInputExamplesMiddleware_DescriptionUpdate(t *testing.T) {
 			},
 			options: &AddToolInputExamplesOptions{
 				Prefix: "Examples:",
-				Remove: true,
+				Remove: types.BoolPtr(true),
 			},
 			expectedInDesc:     []string{"Examples:", `"x":5`, `"y":10`},
 			shouldHaveExamples: false,
@@ -115,7 +115,7 @@ func TestAddToolInputExamplesMiddleware_DescriptionUpdate(t *testing.T) {
 			},
 			options: &AddToolInputExamplesOptions{
 				Prefix: "Input Examples:",
-				Remove: false,
+				Remove: types.BoolPtr(false),
 			},
 			expectedInDesc:     []string{"Test tool", "Input Examples:", `"value":"test"`},
 			shouldHaveExamples: true,
@@ -233,7 +233,7 @@ func TestAddToolInputExamplesMiddleware_CustomFormat(t *testing.T) {
 		Format: func(example types.ToolInputExample, index int) string {
 			return "CUSTOM"
 		},
-		Remove: true,
+		Remove: types.BoolPtr(true),
 	})
 
 	opts := &provider.GenerateOptions{
@@ -340,5 +340,43 @@ func TestAddToolInputExamplesMiddleware_NilOptions(t *testing.T) {
 
 	if len(transformedOpts.Tools[0].InputExamples) > 0 {
 		t.Error("should remove examples by default")
+	}
+}
+
+// TestAddToolInputExamplesMiddleware_RemoveDefaultsTrueWithoutExplicitSet
+// covers A2-9: constructing &AddToolInputExamplesOptions{Prefix: "..."}
+// directly (a natural Go calling pattern) without setting Remove must still
+// default to true, matching TypeScript's `remove = true` destructuring
+// default (which applies regardless of how other options are supplied).
+// Before the fix, Remove was a plain bool, so this case silently became
+// false (Go's zero value) instead of the TS default of true.
+func TestAddToolInputExamplesMiddleware_RemoveDefaultsTrueWithoutExplicitSet(t *testing.T) {
+	tool := types.Tool{
+		Name: "test",
+		InputExamples: []types.ToolInputExample{
+			{Input: map[string]interface{}{"x": 1}},
+		},
+	}
+
+	mockModel := &mockLanguageModel{
+		generateResult: &types.GenerateResult{Text: "test"},
+	}
+
+	// Only Prefix is set; Remove is left unset (nil).
+	middleware := AddToolInputExamplesMiddleware(&AddToolInputExamplesOptions{
+		Prefix: "Custom prefix:",
+	})
+
+	opts := &provider.GenerateOptions{
+		Tools: []types.Tool{tool},
+	}
+
+	transformedOpts, err := middleware.TransformParams(context.Background(), "generate", opts, mockModel)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(transformedOpts.Tools[0].InputExamples) > 0 {
+		t.Error("Remove should default to true when unset, even with other options set")
 	}
 }

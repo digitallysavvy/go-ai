@@ -143,6 +143,78 @@ func marshalCompactEdit(e *CompactEdit) (map[string]interface{}, error) {
 	return result, nil
 }
 
+// UnmarshalJSON implements custom JSON unmarshaling for ContextManagement
+// (the request-side option type). It decodes each edit in "edits" based on
+// its "type" discriminator, mirroring the TS zod discriminated union in
+// anthropicLanguageModelOptions.contextManagement. Used to decode per-call
+// providerOptions.anthropic.contextManagement (see call_options.go).
+func (cm *ContextManagement) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Edits []json.RawMessage `json:"edits"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	edits := make([]ContextManagementEdit, 0, len(raw.Edits))
+	for _, rawEdit := range raw.Edits {
+		var typeCheck struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(rawEdit, &typeCheck); err != nil {
+			return err
+		}
+
+		switch typeCheck.Type {
+		case "clear_tool_uses_20250919":
+			var e ClearToolUsesEdit
+			if err := json.Unmarshal(rawEdit, &e); err != nil {
+				return err
+			}
+			edits = append(edits, &e)
+
+		case "clear_thinking_20251015":
+			var raw2 struct {
+				Type string          `json:"type"`
+				Keep json.RawMessage `json:"keep"`
+			}
+			if err := json.Unmarshal(rawEdit, &raw2); err != nil {
+				return err
+			}
+			e := &ClearThinkingEdit{Type: raw2.Type}
+			if len(raw2.Keep) > 0 {
+				var keepStr string
+				if err := json.Unmarshal(raw2.Keep, &keepStr); err == nil {
+					if keepStr != "all" {
+						return fmt.Errorf("contextManagement: clear_thinking_20251015 keep must be \"all\" or {type, value}, got %q", keepStr)
+					}
+					e.Keep = &KeepAllThinking{Value: "all"}
+				} else {
+					var turns KeepRecentThinkingTurns
+					if err := json.Unmarshal(raw2.Keep, &turns); err != nil {
+						return err
+					}
+					e.Keep = &turns
+				}
+			}
+			edits = append(edits, e)
+
+		case "compact_20260112":
+			var e CompactEdit
+			if err := json.Unmarshal(rawEdit, &e); err != nil {
+				return err
+			}
+			edits = append(edits, &e)
+
+		default:
+			return fmt.Errorf("contextManagement: unknown edit type %q", typeCheck.Type)
+		}
+	}
+
+	cm.Edits = edits
+	return nil
+}
+
 // UnmarshalJSON implements custom JSON unmarshaling for ContextManagementResponse
 func (cmr *ContextManagementResponse) UnmarshalJSON(data []byte) error {
 	var raw struct {

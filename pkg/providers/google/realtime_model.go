@@ -9,10 +9,12 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
 )
 
 const realtimeWebSocketPath = "google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained"
@@ -37,17 +39,32 @@ func (p *Provider) RealtimeModel(modelID string, opts ...GoogleRealtimeModelOpti
 	return p.ExperimentalRealtimeModel(modelID, opts...)
 }
 
+// GetRealtimeToken mints a client secret via the concrete
+// *GoogleRealtimeModel, which always implements RealtimeClientSecretCreator
+// (mirrors TS createRealtimeModel().doCreateClientSecret(), called on the
+// concrete class instance rather than through the general RealtimeModelV4
+// type).
 func (p *Provider) GetRealtimeToken(ctx context.Context, opts provider.RealtimeFactoryGetTokenOptions) (provider.ClientSecretResult, error) {
-	model, err := p.ExperimentalRealtimeModel(opts.Model)
-	if err != nil {
-		return provider.ClientSecretResult{}, err
-	}
+	model := NewRealtimeModel(p, opts.Model)
 	return model.DoCreateClientSecret(ctx, opts.ClientSecretOptions)
 }
 
 func (m *GoogleRealtimeModel) SpecificationVersion() string { return "v4" }
 func (m *GoogleRealtimeModel) Provider() string             { return m.provider.Name() + ".realtime" }
 func (m *GoogleRealtimeModel) ModelID() string              { return m.modelID }
+
+// Compile-time checks that *GoogleRealtimeModel satisfies both
+// Experimental_RealtimeModelV4 and the optional client-secret-WebSocket
+// capabilities (RealtimeClientSecretCreator / RealtimeWebSocketConfigProvider)
+// that DoCreateClientSecret/GetWebSocketConfig moved into (hand-off:
+// "realtime optional capabilities"). GetRealtimeToken above calls
+// DoCreateClientSecret directly on the concrete type, so losing either
+// method would otherwise only surface as a runtime failure elsewhere.
+var (
+	_ provider.Experimental_RealtimeModelV4    = (*GoogleRealtimeModel)(nil)
+	_ provider.RealtimeClientSecretCreator     = (*GoogleRealtimeModel)(nil)
+	_ provider.RealtimeWebSocketConfigProvider = (*GoogleRealtimeModel)(nil)
+)
 
 func (m *GoogleRealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.ClientSecretOptions) (provider.ClientSecretResult, error) {
 	apiKey := m.googleRealtimeAPIKey()
@@ -119,8 +136,22 @@ func (m *GoogleRealtimeModel) GetWebSocketConfig(token, wsURL string) provider.W
 	return provider.WebSocketConfig{URL: wsURL + "?access_token=" + url.QueryEscape(token)}
 }
 
+// thinkingLiveModelRe matches Live models that reason in the background
+// (e.g. "gemini-3.8-live-extended-thinking"). Google requires exactly one of
+// thinkingLevel/thinkingBudget in their setup and rejects thinkingConfig on
+// every other Live model (TS isThinkingLiveModel).
+var thinkingLiveModelRe = regexp.MustCompile(`^gemini-\d+\.\d+-live\b.*thinking`)
+
+// isThinkingLiveModel reports whether modelID names a background-reasoning
+// Live model, matching only the last "/"-separated path segment.
+func isThinkingLiveModel(modelID string) bool {
+	segments := strings.Split(modelID, "/")
+	name := strings.ToLower(segments[len(segments)-1])
+	return thinkingLiveModelRe.MatchString(name)
+}
+
 func (m *GoogleRealtimeModel) BuildSessionConfig(config provider.RealtimeSessionConfig) any {
-	setup := map[string]interface{}{"model": googleModelPath(m.modelID)}
+	setup := map[string]interface{}{"model": gemini.GetModelPath(m.modelID)}
 	generation := map[string]interface{}{}
 	if config.OutputModalities != nil {
 		modalities := make([]string, len(config.OutputModalities))
@@ -143,15 +174,15 @@ func (m *GoogleRealtimeModel) BuildSessionConfig(config provider.RealtimeSession
 			generation[k] = v
 		}
 	}
-	if googleOptions, ok := config.ProviderOptions["google"].(map[string]interface{}); ok {
-		if translationConfig, ok := googleOptions["translationConfig"].(map[string]interface{}); ok {
-			generation["translationConfig"] = translationConfig
-		}
+	googleOptions, _ := config.ProviderOptions["google"].(map[string]interface{})
+	if translationConfig, ok := googleOptions["translationConfig"].(map[string]interface{}); ok {
+		generation["translationConfig"] = translationConfig
 	}
 	setup["generationConfig"] = generation
 	if config.Instructions != nil {
 		setup["systemInstruction"] = map[string]interface{}{"parts": []map[string]interface{}{{"text": *config.Instructions}}}
 	}
+	defaultToolBehavior, hasDefaultToolBehavior := googleOptions["defaultToolBehavior"]
 	if len(config.Tools) > 0 {
 		decls := make([]map[string]interface{}, 0, len(config.Tools))
 		for _, tool := range config.Tools {
@@ -161,6 +192,9 @@ func (m *GoogleRealtimeModel) BuildSessionConfig(config provider.RealtimeSession
 			}
 			if tool.Description != nil {
 				decl["description"] = *tool.Description
+			}
+			if hasDefaultToolBehavior {
+				decl["behavior"] = defaultToolBehavior
 			}
 			decls = append(decls, decl)
 		}
@@ -172,12 +206,42 @@ func (m *GoogleRealtimeModel) BuildSessionConfig(config provider.RealtimeSession
 	if config.OutputAudioTranscription != nil {
 		setup["outputAudioTranscription"] = map[string]interface{}{}
 	}
+
+	// Default to the lowest-latency thinking level so a session on a
+	// background-reasoning model works without provider options. Applied
+	// last (after providerOptions are merged below) so it survives a raw
+	// providerOptions.generationConfig.
+	var thinkingConfig interface{}
+	if tc, ok := googleOptions["thinkingConfig"]; ok {
+		thinkingConfig = tc
+	} else if isThinkingLiveModel(m.modelID) {
+		thinkingConfig = map[string]interface{}{"thinkingLevel": "low"}
+	}
+	applyThinkingConfig := func() {
+		if thinkingConfig == nil {
+			return
+		}
+		target, ok := setup["generationConfig"].(map[string]interface{})
+		if !ok {
+			target = generation
+		}
+		target["thinkingConfig"] = thinkingConfig
+		setup["generationConfig"] = target
+	}
+
+	if config.ProviderOptions == nil {
+		applyThinkingConfig()
+		return setup
+	}
+
 	for k, v := range config.ProviderOptions {
 		if k == "google" || k == "generationConfig" {
 			continue
 		}
 		setup[k] = v
 	}
+
+	applyThinkingConfig()
 	return setup
 }
 
@@ -242,6 +306,12 @@ func (m *googleRealtimeEventMapper) parseServerEvent(raw json.RawMessage) []prov
 	if value, ok := data["toolCallCancellation"]; ok && value != nil {
 		return []provider.RealtimeServerEvent{{Type: "custom", RawType: "toolCallCancellation", Raw: raw}}
 	}
+	if value, ok := data["goAway"]; ok && value != nil {
+		return []provider.RealtimeServerEvent{{Type: "custom", RawType: "goAway", Raw: raw}}
+	}
+	if value, ok := data["sessionResumptionUpdate"]; ok && value != nil {
+		return []provider.RealtimeServerEvent{{Type: "custom", RawType: "sessionResumptionUpdate", Raw: raw}}
+	}
 	if serverContent, ok := data["serverContent"].(map[string]interface{}); ok {
 		return m.parseServerContent(serverContent, raw)
 	}
@@ -288,6 +358,25 @@ func (m *googleRealtimeEventMapper) parseServerContent(serverContent map[string]
 			events = append(events, provider.RealtimeServerEvent{Type: "input-transcription-completed", ItemID: fmt.Sprintf("google-input-%d", m.turnCounter), Transcript: text, Raw: raw})
 		}
 	}
+	// generationComplete means generation has stopped, but playback and the
+	// turn can remain open. Kept distinct from response-done, which is
+	// emitted only when Google sends turnComplete.
+	if complete, _ := serverContent["generationComplete"].(bool); complete {
+		events = append(events, provider.RealtimeServerEvent{Type: "custom", RawType: "generationComplete", Raw: raw})
+	}
+	// interactionStatus (IN_PROGRESS | IDLE | WAITING_FOR_INPUT) is the
+	// definitive session-activity signal for background-reasoning models:
+	// turnComplete no longer implies the model is idle, since asynchronous
+	// tool calls and audio may still follow.
+	if value, ok := serverContent["interactionStatus"]; ok && value != nil {
+		events = append(events, provider.RealtimeServerEvent{Type: "custom", RawType: "interactionStatus", Raw: raw})
+	}
+	// waitingForInput is the always-on Proactive Audio turn-taking signal:
+	// the model has yielded the floor and is not generating because it
+	// expects the user to continue.
+	if waiting, _ := serverContent["waitingForInput"].(bool); waiting {
+		events = append(events, provider.RealtimeServerEvent{Type: "custom", RawType: "waitingForInput", Raw: raw})
+	}
 	if complete, _ := serverContent["turnComplete"].(bool); complete {
 		if m.hasAudio {
 			events = append(events, provider.RealtimeServerEvent{Type: "audio-done", ResponseID: m.responseID(), ItemID: m.itemID(), Raw: raw})
@@ -323,10 +412,7 @@ func (m *googleRealtimeEventMapper) serializeClientEvent(event provider.Realtime
 		case "text-message":
 			out = map[string]interface{}{"realtimeInput": map[string]interface{}{"text": event.Item.Text}}
 		case "function-call-output":
-			var response interface{} = map[string]interface{}{}
-			if err := json.Unmarshal([]byte(event.Item.Output), &response); err != nil {
-				response = map[string]interface{}{}
-			}
+			response := toFunctionResponseStruct(event.Item.Output)
 			functionResponse := map[string]interface{}{"id": event.Item.CallID, "response": response}
 			if event.Item.Name != nil {
 				functionResponse["name"] = *event.Item.Name
@@ -383,13 +469,6 @@ func googleRealtimeBaseURL(base string) *url.URL {
 	return u
 }
 
-func googleModelPath(modelID string) string {
-	if strings.HasPrefix(modelID, "models/") || strings.Contains(modelID, "/models/") {
-		return modelID
-	}
-	return "models/" + modelID
-}
-
 func googleRealtimeISOString(t time.Time) string {
 	return t.UTC().Format("2006-01-02T15:04:05.000Z")
 }
@@ -425,6 +504,25 @@ func valueOrEmptyMap(v interface{}) interface{} {
 		return map[string]interface{}{}
 	}
 	return v
+}
+
+// toFunctionResponseStruct converts a tool call's output text into the value
+// Gemini Live accepts for `functionResponse.response`, mirroring TS
+// `toFunctionResponseStruct` (google-realtime-event-mapper.ts): the field is
+// a `google.protobuf.Struct` (an object and nothing else), so a string,
+// number, array, or `null` on the wire is a protocol violation and closes
+// the socket with 1007. An object is passed through unchanged; everything
+// else (including malformed JSON, preserved as the raw string) is wrapped
+// under an "output" key.
+func toFunctionResponseStruct(output string) map[string]interface{} {
+	var parsed interface{}
+	if err := json.Unmarshal([]byte(output), &parsed); err != nil {
+		return map[string]interface{}{"output": output}
+	}
+	if m, ok := parsed.(map[string]interface{}); ok {
+		return m
+	}
+	return map[string]interface{}{"output": parsed}
 }
 
 func valueOrZero(config *provider.RealtimeSessionConfig) provider.RealtimeSessionConfig {

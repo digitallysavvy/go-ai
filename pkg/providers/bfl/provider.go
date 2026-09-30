@@ -6,6 +6,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // Provider implements the provider.Provider interface for Black Forest Labs (FLUX)
@@ -46,10 +47,10 @@ func New(cfg Config) *Provider {
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: http.MergeHeaders(map[string]string{
+		Headers: version.WithUserAgentSuffix(http.MergeHeaders(map[string]string{
 			"X-Key":        cfg.APIKey,
 			"Content-Type": "application/json",
-		}, cfg.Headers),
+		}, cfg.Headers), version.ProviderUserAgent("black-forest-labs")),
 	})
 
 	return &Provider{
@@ -89,6 +90,15 @@ func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
 	}
 
 	return NewImageModel(p, modelID), nil
+}
+
+// VideoModel returns a video generation model by ID (FLUX 3 video).
+func (p *Provider) VideoModel(modelID string) (provider.VideoModelV3, error) {
+	if modelID == "" {
+		modelID = VideoModelFlux3Video
+	}
+
+	return NewVideoModel(p, modelID), nil
 }
 
 // SpeechModel returns a speech synthesis model by ID

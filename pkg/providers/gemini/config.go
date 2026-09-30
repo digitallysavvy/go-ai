@@ -1,6 +1,22 @@
 package gemini
 
-import internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+import (
+	"context"
+	"strings"
+
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+)
+
+// GetModelPath mirrors TS get-model-path.ts getModelPath: a model ID that
+// already contains a "/" (e.g. a Vertex tuned model "endpoints/{id}", or a
+// fully-qualified "tunedModels/{id}") is used verbatim as the path segment;
+// otherwise it is prefixed with "models/".
+func GetModelPath(modelID string) string {
+	if strings.Contains(modelID, "/") {
+		return modelID
+	}
+	return "models/" + modelID
+}
 
 // Config parameterizes the shared Gemini language model implementation
 // for both the google and googlevertex providers.
@@ -21,7 +37,9 @@ type Config struct {
 
 	// ProviderOptionsKeys is the ordered list of keys checked when reading
 	// caller-supplied provider options from GenerateOptions.ProviderOptions.
-	// Google uses ["google"]; Vertex uses ["vertex", "googleVertex", "google"].
+	// Google uses ["google"]; Vertex uses ["googleVertex", "vertex", "google"]
+	// (new "googleVertex" key takes precedence over the legacy "vertex" key,
+	// with "google" as a cross-namespace fallback — TS providerOptionsNames).
 	ProviderOptionsKeys []string
 
 	// GeneratePath returns the full HTTP path for a non-streaming request.
@@ -33,11 +51,64 @@ type Config struct {
 	// Client is the pre-configured HTTP client with auth headers already set.
 	Client *internalhttp.Client
 
-	// SupportsCodeExecution enables handling of executableCode and
-	// codeExecutionResult parts. True for Google Generative AI, false for Vertex.
-	SupportsCodeExecution bool
-
 	// SupportsImageInput returns whether a given model ID accepts image inputs.
 	// When nil, the method returns false.
 	SupportsImageInput func(modelID string) bool
+
+	// IsVertex marks the Vertex AI provider (TS: provider starts with
+	// "google.vertex."). When false, ProviderName == "google-vertex" is also
+	// treated as Vertex for backward compatibility.
+	IsVertex bool
+
+	// MetadataKeys are the keys ProviderMetadata payloads are written under.
+	// Defaults to []string{MetadataKey}. Vertex writes under both
+	// "googleVertex" and "vertex" (TS wrapProviderMetadata).
+	MetadataKeys []string
+
+	// SupportedURLs returns the URL patterns (regular expressions keyed by
+	// media type, "*" for all) the model accepts directly.
+	SupportedURLs func(modelID string) map[string][]string
+
+	// ToolResultDownloadMaxBytes enables downloading http(s) file URLs in tool
+	// results to inline data before conversion (Vertex only accepts inline
+	// data in function responses). Zero disables downloading.
+	ToolResultDownloadMaxBytes int64
+
+	// ToolResultDownload overrides the downloader used for tool-result files
+	// (tests). Returns the bytes and the response content type.
+	ToolResultDownload func(ctx context.Context, url string, maxBytes int64) ([]byte, string, error)
+
+	// SupportsGoogleCloudStorageUrls enables forwarding supported gs://
+	// (Google Cloud Storage) tool-result file URLs directly as
+	// functionResponse.parts[].fileData for Gemini 3+ models, instead of
+	// falling back to a JSON-stringified text part. Vertex sets this true
+	// (TS google-vertex-provider-base.ts downloadToolResultFiles.
+	// supportsGoogleCloudStorageUrls); the standalone Google Developer API
+	// provider never sets it (gs:// URLs are not resolvable there).
+	SupportsGoogleCloudStorageUrls bool
+
+	// GenerateID generates IDs for tool calls and sources. Defaults to a
+	// random ID generator.
+	GenerateID func() string
+}
+
+// metadataKeys returns the keys ProviderMetadata payloads are written under,
+// defaulting to []string{MetadataKey} when MetadataKeys is unset.
+func (c Config) metadataKeys() []string {
+	if len(c.MetadataKeys) > 0 {
+		return c.MetadataKeys
+	}
+	return []string{c.MetadataKey}
+}
+
+// wrapProviderMetadata returns payload under every configured metadata key
+// (TS wrapProviderMetadata: Object.fromEntries(providerOptionsNames.map(name
+// => [name, payload]))). Vertex writes the same payload under both
+// "googleVertex" and "vertex".
+func (c Config) wrapProviderMetadata(payload interface{}) map[string]interface{} {
+	out := map[string]interface{}{}
+	for _, key := range c.metadataKeys() {
+		out[key] = payload
+	}
+	return out
 }

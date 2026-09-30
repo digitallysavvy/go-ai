@@ -61,8 +61,15 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	if err != nil {
 		return nil, err
 	}
-	result.Warnings = append(result.Warnings, togetherWarnings(opts)...)
+	result.Warnings = append(result.Warnings, togetherWarnings(m.modelID, opts)...)
 	return result, nil
+}
+
+// nonDiffusionImageModels lists Together image models that aren't diffusion
+// models under the hood and so reject diffusion-only parameters
+// (steps/guidance/negative_prompt/disable_safety_checker/seed).
+var nonDiffusionImageModels = map[string]bool{
+	"google/gemini-3-pro-image": true,
 }
 
 func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) map[string]interface{} {
@@ -72,11 +79,13 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) map[s
 		"response_format": "base64",
 	}
 
+	isNonDiffusion := nonDiffusionImageModels[m.modelID]
+
 	if opts.N != nil && *opts.N > 1 {
 		reqBody["n"] = *opts.N
 	}
 
-	if opts.Seed != nil {
+	if opts.Seed != nil && !isNonDiffusion {
 		reqBody["seed"] = *opts.Seed
 	}
 
@@ -95,6 +104,9 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) map[s
 
 	if togetherOpts, ok := opts.ProviderOptions["togetherai"].(map[string]interface{}); ok {
 		for key, value := range togetherOpts {
+			if isNonDiffusion && nonDiffusionExcludedOptions[key] {
+				continue
+			}
 			reqBody[key] = value
 		}
 	}
@@ -113,7 +125,17 @@ func togetherImageFileToDataURI(file provider.ImageFile) string {
 	return fmt.Sprintf("data:%s;base64,%s", mediaType, base64.StdEncoding.EncodeToString(file.Data))
 }
 
-func togetherWarnings(opts *provider.ImageGenerateOptions) []types.Warning {
+// nonDiffusionExcludedOptions lists providerOptions.togetherai keys stripped
+// for nonDiffusionImageModels (they're diffusion-only parameters that a
+// non-diffusion model like google/gemini-3-pro-image rejects).
+var nonDiffusionExcludedOptions = map[string]bool{
+	"steps":                  true,
+	"guidance":               true,
+	"negative_prompt":        true,
+	"disable_safety_checker": true,
+}
+
+func togetherWarnings(modelID string, opts *provider.ImageGenerateOptions) []types.Warning {
 	if opts == nil {
 		return nil
 	}
@@ -123,6 +145,13 @@ func togetherWarnings(opts *provider.ImageGenerateOptions) []types.Warning {
 			Type:    "unsupported",
 			Feature: "aspectRatio",
 			Details: "This model does not support the `aspectRatio` option. Use `size` instead.",
+		})
+	}
+	if nonDiffusionImageModels[modelID] && opts.Seed != nil {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "seed",
+			Details: fmt.Sprintf("The %s model does not support the `seed` option.", modelID),
 		})
 	}
 	if len(opts.Files) > 1 {

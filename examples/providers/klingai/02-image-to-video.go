@@ -14,6 +14,7 @@ import (
 
 func main() {
 	// Create KlingAI provider
+	// Credentials loaded from KLINGAI_ACCESS_KEY and KLINGAI_SECRET_KEY env vars
 	prov, err := klingai.New(klingai.Config{})
 	if err != nil {
 		log.Fatalf("Failed to create provider: %v", err)
@@ -25,25 +26,30 @@ func main() {
 		log.Fatalf("Failed to get model: %v", err)
 	}
 
-	// Generate video from image with start and end frames
+	// Animate a static image with a slow zoom-in camera movement
 	ctx := context.Background()
 	duration := 5.0
-	startImageURL := "https://example.com/start-frame.png"
-	endImageURL := "https://example.com/end-frame.png"
+	imageURL := "https://raw.githubusercontent.com/vercel/ai/refs/heads/main/examples/ai-functions/data/comic-cat.png"
+	zoom := 5.0
 
-	fmt.Println("Generating video from image with start/end frame control...")
+	fmt.Println("Generating video from a single image...")
 	response, err := model.DoGenerate(ctx, &provider.VideoModelV3CallOptions{
-		Prompt: "Smoothly transition from the start scene to the end scene",
+		Prompt: "The cat looks around curiously as the camera slowly zooms in",
 		Image: &provider.VideoModelV3File{
 			Type: "url",
-			URL:  startImageURL,
+			URL:  imageURL,
 		},
-		Duration: &duration,
+		AspectRatio: "16:9",
+		Duration:    &duration,
 		ProviderOptions: map[string]interface{}{
 			"klingai": map[string]interface{}{
-				"mode":      "pro", // Pro mode required for start/end frame control
-				"imageTail": endImageURL,
-				"sound":     "on", // Enable audio generation (V2.6+ pro only)
+				"mode": "std",
+				"cameraControl": map[string]interface{}{
+					"type": "simple",
+					"config": map[string]interface{}{
+						"zoom": zoom,
+					},
+				},
 			},
 		},
 	})
@@ -52,22 +58,23 @@ func main() {
 	}
 
 	// Display results
-	fmt.Println("
-Video generated successfully!")
-	fmt.Printf("Video URL: %s
-", response.Videos[0].URL)
+	fmt.Println("\nVideo generated successfully!")
+	fmt.Printf("Video URL: %s\n", response.Videos[0].URL)
+	fmt.Printf("Media Type: %s\n", response.Videos[0].MediaType)
 
-	// Display metadata including watermark URL if available
+	// Display metadata
 	if metadata, ok := response.ProviderMetadata["klingai"].(map[string]interface{}); ok {
-		if videos, ok := metadata["videos"].([]map[string]interface{}); ok && len(videos) > 0 {
-			if watermarkURL, ok := videos[0]["watermarkUrl"].(string); ok && watermarkURL != "" {
-				fmt.Printf("Watermark Video URL: %s
-", watermarkURL)
-			}
-			if duration, ok := videos[0]["duration"].(string); ok && duration != "" {
-				fmt.Printf("Duration: %s seconds
-", duration)
-			}
+		fmt.Printf("\nKlingAI Metadata:\n")
+		if taskID, ok := metadata["taskId"].(string); ok {
+			fmt.Printf("  Task ID: %s\n", taskID)
+		}
+	}
+
+	// Display warnings if any
+	if len(response.Warnings) > 0 {
+		fmt.Println("\nWarnings:")
+		for _, warning := range response.Warnings {
+			fmt.Printf("  - %s\n", warning.Message)
 		}
 	}
 }

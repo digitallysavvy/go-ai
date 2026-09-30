@@ -63,9 +63,13 @@ type Tool struct {
 	// These examples can improve the model's ability to use the tool correctly
 	InputExamples []ToolInputExample `json:"inputExamples,omitempty"`
 
-	// Strict enables strict schema enforcement for tool parameters
-	// When true, the model must follow the schema exactly
-	Strict bool `json:"strict,omitempty"`
+	// Strict enables strict schema enforcement for tool parameters. When
+	// true, the model must follow the schema exactly. A *bool (rather than
+	// bool) lets callers distinguish "unset" from "explicitly false", so a
+	// provider can forward/warn about an explicit strict: false the same
+	// way TS does (TS checks `strict != null`), instead of only ever seeing
+	// the zero value (hand-off: "Tool.Strict bool -> *bool").
+	Strict *bool `json:"strict,omitempty"`
 
 	// ContextSchema optionally validates the tool-specific context passed to the
 	// tool execution and approval callbacks.
@@ -141,6 +145,62 @@ type Tool struct {
 
 	// OnInputAvailable is called when complete tool input is available
 	OnInputAvailable OnInputAvailableFunc `json:"-"`
+
+	// ========================================================================
+	// Tool Search / Deferred Tools / Tool Callers
+	// ========================================================================
+
+	// DeferLoading defers exposing this tool to the model until it is
+	// discovered by a toolSearch tool (see ai.ToolSearch). Deferred tools
+	// still support direct calls and local callers that announce tools in
+	// conversation messages. Discovered tools become available on the next
+	// model step.
+	DeferLoading bool `json:"deferLoading,omitempty"`
+
+	// ExperimentalToolCaller marks this tool as usable as a tool caller for
+	// other tools (TS experimental_toolCaller / ToolCallerTool). Nil means
+	// this tool is not a caller.
+	ExperimentalToolCaller *ToolCallerDefinition `json:"-"`
+
+	// IsToolSearch marks this tool as the native tool search tool created by
+	// ai.ToolSearch(). It mirrors the TypeScript SDK's internal
+	// vercel.ai.toolSearch symbol tag and must not be set directly.
+	IsToolSearch bool `json:"-"`
+}
+
+// ToolCallerType identifies the wiring style of a ToolCallerDefinition.
+const (
+	// ToolCallerTypeLocal routes calls through a locally bound tool.
+	ToolCallerTypeLocal = "local"
+
+	// ToolCallerTypeProvider routes calls by augmenting provider options on
+	// the callee tool so the provider itself allows this caller.
+	ToolCallerTypeProvider = "provider"
+)
+
+// ToolCallerDefinition describes how a tool can act as a caller for other
+// tools, mirroring the TypeScript SDK's ToolCallerDefinition
+// (experimental_toolCaller).
+type ToolCallerDefinition struct {
+	// Type is ToolCallerTypeLocal or ToolCallerTypeProvider.
+	Type string
+
+	// Bind creates the tool exposed to the model/runtime, given the tools
+	// routed through this caller. Only used when Type is
+	// ToolCallerTypeLocal.
+	Bind func(tools map[string]Tool) Tool
+
+	// PrepareModelMessage optionally returns conversation content describing
+	// the tools available through this caller. When non-nil, the unbound
+	// caller tool remains model-visible (its definition stays stable) and
+	// the returned content is added to the conversation instead. Only used
+	// when Type is ToolCallerTypeLocal.
+	PrepareModelMessage func(tools map[string]Tool) *string
+
+	// PrepareProviderOptions augments a tool's provider options so the
+	// provider allows this caller to invoke it. Only used when Type is
+	// ToolCallerTypeProvider.
+	PrepareProviderOptions func(providerOptions map[string]interface{}) map[string]interface{}
 }
 
 // ToolExecutor is a function that executes a tool
@@ -182,10 +242,25 @@ type ToolExecutionOptions struct {
 	// ToolMetadata contains metadata attached to the tool call by the provider.
 	ToolMetadata map[string]interface{}
 
+	// Messages are the model messages sent to the language model to initiate
+	// the response that contained the tool call (TS ToolExecutionOptions.messages).
+	Messages []Message
+
 	// ExperimentalSandbox is the sandbox environment for this tool execution.
 	// It is intentionally typed as interface{} so applications can provide their
 	// own sandbox implementation while core APIs preserve TypeScript parity.
 	ExperimentalSandbox interface{}
+
+	// CodeModeInterrupt carries resume metadata from pkg/codemode when this
+	// tool execution is deterministically replaying after a prior
+	// codemode.RequestCodeModeInterrupt call from within this same tool's
+	// Execute function. It holds a *codemode.InterruptExecutionContext and
+	// is nil on every other call (including the first attempt, before any
+	// interrupt was requested). Typed as interface{} to avoid an import
+	// cycle: pkg/codemode imports this package for Tool/ToolSet. Mirrors
+	// TypeScript's CodeModeToolExecutionOptions.codeModeInterrupt
+	// (code-mode/src/types.ts).
+	CodeModeInterrupt interface{}
 }
 
 // ToModelOutputFunc converts a tool result to model-readable output
@@ -254,19 +329,52 @@ type ToolNeedsApprovalFunc func(ctx context.Context, input map[string]interface{
 // Deprecated: use ToolNeedsApprovalFunc.
 type NeedsApprovalFunc func(ctx context.Context, input map[string]interface{}) bool
 
-// OnInputStartFunc is called when tool input streaming starts
-type OnInputStartFunc func(ctx context.Context) error
+// OnInputStartFunc is called when tool input starts. In streaming calls it
+// fires on the tool-input-start chunk; in non-streaming calls it fires right
+// before OnInputAvailable for each valid tool call (TS onInputStart).
+type OnInputStartFunc func(ctx context.Context, options OnInputStartOptions) error
+
+// OnInputStartOptions contains options for input start callbacks. Cancellation
+// is signalled through the ctx argument (TS abortSignal).
+type OnInputStartOptions struct {
+	// ToolCallID is the ID of the tool call whose input is starting.
+	ToolCallID string
+
+	// Messages are the messages sent to the model for the step that produced
+	// the tool call (TS messages).
+	Messages []Message
+
+	// Context is the per-tool context (ToolsContext[toolName]) validated
+	// against the tool's ContextSchema.
+	Context interface{}
+}
 
 // OnInputDeltaFunc is called for each delta during tool input streaming
 type OnInputDeltaFunc func(ctx context.Context, options OnInputDeltaOptions) error
 
 // OnInputDeltaOptions contains options for input delta callbacks
 type OnInputDeltaOptions struct {
-	// Delta is the incremental text change
+	// InputTextDelta is the incremental tool input text (TS inputTextDelta).
+	InputTextDelta string
+
+	// Delta is the incremental text change.
+	//
+	// Deprecated: use InputTextDelta.
 	Delta string
 
-	// Value is the current accumulated value (may be partial)
+	// Value is not populated by the SDK; it is kept for backward compatibility.
+	//
+	// Deprecated: accumulate InputTextDelta instead.
 	Value interface{}
+
+	// ToolCallID is the ID of the tool call whose input is streaming.
+	ToolCallID string
+
+	// Messages are the messages sent to the model for this step.
+	Messages []Message
+
+	// Context is the validated per-tool context.
+	Context interface{}
 }
 
 // OnInputAvailableFunc is called when complete tool input is available
@@ -274,8 +382,22 @@ type OnInputAvailableFunc func(ctx context.Context, options OnInputAvailableOpti
 
 // OnInputAvailableOptions contains options for input available callbacks
 type OnInputAvailableOptions struct {
-	// Value is the complete tool input value
+	// Input is the complete, parsed tool input (TS input).
+	Input map[string]interface{}
+
+	// Value is the complete tool input value.
+	//
+	// Deprecated: use Input.
 	Value map[string]interface{}
+
+	// ToolCallID is the ID of the tool call.
+	ToolCallID string
+
+	// Messages are the messages sent to the model for this step.
+	Messages []Message
+
+	// Context is the validated per-tool context.
+	Context interface{}
 }
 
 // ToolCall represents a tool call made by the model

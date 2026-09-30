@@ -1,11 +1,18 @@
 ---
 title: HuggingFace Provider
-description: Setup and usage guide for HuggingFace Inference API with Go-AI SDK
+description: Setup and usage guide for HuggingFace Router Responses API with Go-AI SDK
 ---
 
 # HuggingFace Provider
 
-HuggingFace provides access to thousands of open-source models through the Inference API. Perfect for exploring models, prototyping, and accessing the latest research models.
+HuggingFace's Router exposes an OpenAI Responses-API-compatible endpoint
+(`https://router.huggingface.co/v1/responses`) that proxies to open-source
+models hosted across HuggingFace's Inference Providers. This is the only API
+the Go SDK's HuggingFace provider talks to — it mirrors `@ai-sdk/huggingface`.
+
+> The HuggingFace Router Responses API does not offer text embeddings or
+> image generation. `EmbeddingModel`/`ImageModel` return an error; use the
+> HuggingFace Inference API directly for those.
 
 ## Setup
 
@@ -22,55 +29,29 @@ import (
 
 ```go
 provider := huggingface.New(huggingface.Config{
-    APIKey: os.Getenv("HF_API_KEY"),
+    APIKey: os.Getenv("HUGGINGFACE_API_KEY"), // falls back to this env var if empty
 })
 
-model, err := provider.LanguageModel("meta-llama/Meta-Llama-3-70B-Instruct")
+model, err := provider.LanguageModel("deepseek-ai/DeepSeek-V3-0324")
 ```
 
 ### Get API Key
 
 1. Sign up at [huggingface.co](https://huggingface.co)
-2. Create token in settings
-3. Set environment variable:
+2. Create a token in settings
+3. Set the environment variable:
 
 ```bash
-export HF_API_KEY=hf_...
+export HUGGINGFACE_API_KEY=hf_...
 ```
 
-## Available Models
-
-### Language Models
-
-| Model ID | Parameters | Best For |
-|----------|-----------|----------|
-| meta-llama/Meta-Llama-3-70B-Instruct | 70B | General purpose |
-| mistralai/Mixtral-8x7B-Instruct-v0.1 | 47B | Balanced |
-| google/gemma-2-9b-it | 9B | Fast |
-| microsoft/Phi-3-medium-128k-instruct | 14B | Long context |
-
-### Embedding Models
-
-| Model ID | Dimensions | Best For |
-|----------|-----------|----------|
-| sentence-transformers/all-MiniLM-L6-v2 | 384 | Fast embeddings |
-| BAAI/bge-large-en-v1.5 | 1024 | High quality |
-
-### Image Generation
-
-| Model ID | Quality | Best For |
-|----------|---------|----------|
-| stabilityai/stable-diffusion-xl-base-1.0 | High | General images |
-| black-forest-labs/FLUX.1-dev | Excellent | High quality |
-
-## Examples
-
-### Basic Text Generation
+## Example
 
 ```go
 package main
 
 import (
+    "context"
     "fmt"
     "log"
     "os"
@@ -81,56 +62,75 @@ import (
 
 func main() {
     provider := huggingface.New(huggingface.Config{
-        APIKey: os.Getenv("HF_API_KEY"),
+        APIKey: os.Getenv("HUGGINGFACE_API_KEY"),
     })
 
-    model, err := provider.LanguageModel("meta-llama/Meta-Llama-3-70B-Instruct")
+    model, err := provider.LanguageModel("deepseek-ai/DeepSeek-V3-0324")
     if err != nil {
         log.Fatal(err)
     }
 
-    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: "Explain transformers"})
+    result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Explain transformers",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
     fmt.Println(result.Text)
 }
 ```
 
-### Embeddings
+Streaming (`ai.StreamText`) uses the Responses API's real Server-Sent Events
+stream — text, reasoning, tool-call, and source deltas are emitted as they
+arrive rather than being chunked after the fact.
+
+## Tool calls, reasoning, and sources
+
+The Responses API returns tool calls (`function_call`), MCP tool calls/lists
+(`mcp_call`, `mcp_list_tools`), reasoning blocks, and URL citation sources
+alongside text. The Go SDK surfaces all of these through the standard
+`ai.GenerateTextResult`/`ai.StreamTextResult` content and tool-call APIs.
+
+## Provider Options
 
 ```go
-embeddingModel, err := provider.EmbeddingModel("sentence-transformers/all-MiniLM-L6-v2")
-
-texts := []string{
-    "HuggingFace hosts AI models",
-    "Open source machine learning",
-}
-
-embeddings, err := ai.Embed(embeddingModel, texts...)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "...",
+    ProviderOptions: map[string]interface{}{
+        "huggingface": map[string]interface{}{
+            "metadata":         map[string]interface{}{"key": "value"},
+            "instructions":     "Be concise",
+            "strictJsonSchema": true,
+            "reasoningEffort":  "high",
+        },
+    },
+})
 ```
 
-## Best Practices
+## Available Models
 
-1. **Model Selection**
-   - Browse HuggingFace Hub for models
-   - Check model cards for capabilities
-   - Test multiple models easily
+The Responses API accepts any model ID listed at
+[router.huggingface.co/v1/models](https://router.huggingface.co/v1/models),
+including:
 
-2. **Free Tier**
-   - Rate limited on free tier
-   - Use for experimentation
-   - Upgrade for production
+| Model ID | Best For |
+|----------|----------|
+| meta-llama/Llama-3.3-70B-Instruct | General purpose |
+| deepseek-ai/DeepSeek-V3-0324 | General purpose |
+| deepseek-ai/DeepSeek-R1 | Reasoning |
+| Qwen/Qwen3-Coder-480B-A35B-Instruct | Coding |
+| moonshotai/Kimi-K2-Instruct | General purpose |
 
-3. **Inference Endpoints**
-   - Deploy dedicated endpoints for production
-   - Better performance and availability
-   - Custom resource allocation
+## Workflow Serialization
 
-## Rate Limits
-
-Free tier: Rate limited
-Pro: Higher limits
-Inference Endpoints: Dedicated resources
+HuggingFace language models can cross a workflow boundary with
+`providerutils.SerializeModel` / `DeserializeModel`. See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
+for the mechanism.
 
 ## See Also
 
-- [HuggingFace Documentation](https://huggingface.co/docs)
+- [HuggingFace Router Documentation](https://huggingface.co/docs/inference-providers)
 - [Model Hub](https://huggingface.co/models)

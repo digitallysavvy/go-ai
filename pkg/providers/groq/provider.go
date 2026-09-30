@@ -5,6 +5,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // Provider implements the provider.Provider interface for Groq
@@ -34,10 +35,10 @@ func New(cfg Config) *Provider {
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: http.MergeHeaders(map[string]string{
+		Headers: version.WithUserAgentSuffix(http.MergeHeaders(map[string]string{
 			"Authorization": "Bearer " + cfg.APIKey,
 			"Content-Type":  "application/json",
-		}, cfg.Headers),
+		}, cfg.Headers), version.ProviderUserAgent("groq")),
 	})
 
 	return &Provider{
@@ -83,14 +84,18 @@ func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
 	return nil, fmt.Errorf("groq does not support speech synthesis")
 }
 
-// TranscriptionModel returns a speech-to-text model by ID
+// TranscriptionModel returns a speech-to-text model by ID (Groq Whisper,
+// POST /audio/transcriptions). Batch/non-streaming only.
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("LGroq does not support transcription")
+	if modelID == "" {
+		modelID = "whisper-large-v3-turbo"
+	}
+	return NewTranscriptionModel(p, modelID), nil
 }
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("LGroq does not support reranking")
+	return nil, fmt.Errorf("Groq does not support reranking")
 }
 
 // Client returns the HTTP client for making API requests

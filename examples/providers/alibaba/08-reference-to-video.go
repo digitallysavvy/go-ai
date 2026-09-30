@@ -77,7 +77,7 @@ func main() {
 	}
 
 	// Example 2: Using the flash variant for faster generation
-	fmt.Println("\n--- Faster Generation with Flash Variant ---\n")
+	fmt.Println("\n--- Faster Generation with Flash Variant ---")
 
 	flashModel, err := prov.VideoModel("wan2.6-r2v-flash")
 	if err != nil {

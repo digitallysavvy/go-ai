@@ -8,20 +8,30 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/middleware"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
 func main() {
+	apiKey := os.Getenv("OPENAI_API_KEY")
+	if apiKey == "" {
+		log.Fatal("OPENAI_API_KEY environment variable is required")
+	}
+
 	// Create OpenAI provider
 	openaiProvider := openai.New(openai.Config{
-		APIKey: "your-api-key-here",
+		APIKey: apiKey,
 	})
 
 	// Get a language model
-	model := openaiProvider.LanguageModel("gpt-4")
+	model, err := openaiProvider.LanguageModel("gpt-4")
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// Apply simulateStreaming middleware
 	// This allows you to use streaming APIs even with providers that don't support streaming
@@ -38,7 +48,7 @@ func main() {
 	// Now you can use DoStream even if the underlying provider doesn't support it
 	// The middleware will call DoGenerate internally and simulate streaming
 	stream, err := wrappedModel.DoStream(context.Background(), &provider.GenerateOptions{
-		Prompt: provider.Prompt{
+		Prompt: types.Prompt{
 			Text: "Write a haiku about programming",
 		},
 	})

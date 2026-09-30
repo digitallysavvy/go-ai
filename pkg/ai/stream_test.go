@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -258,8 +259,11 @@ func TestStreamText_GatewayNonRetryableErrorsDoNotRetry(t *testing.T) {
 		},
 	}
 
-	_, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "hi", MaxRetries: &maxRetries})
-	if err == nil {
+	result, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "hi", MaxRetries: &maxRetries})
+	if err != nil {
+		t.Fatalf("unexpected error starting stream: %v", err)
+	}
+	if _, err := result.ReadAll(); err == nil {
 		t.Fatal("expected error")
 	}
 	if calls != 1 {
@@ -280,8 +284,11 @@ func TestStreamText_GatewayPlainErrorsDoNotRetry(t *testing.T) {
 		},
 	}
 
-	_, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "hi", MaxRetries: &maxRetries})
-	if err == nil {
+	result, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "hi", MaxRetries: &maxRetries})
+	if err != nil {
+		t.Fatalf("unexpected error starting stream: %v", err)
+	}
+	if _, err := result.ReadAll(); err == nil {
 		t.Fatal("expected error")
 	}
 	if calls != 1 {
@@ -302,8 +309,11 @@ func TestStreamText_GatewayZeroMaxRetriesDisablesRetry(t *testing.T) {
 		},
 	}
 
-	_, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "hi", MaxRetries: &maxRetries})
-	if err == nil {
+	result, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "hi", MaxRetries: &maxRetries})
+	if err != nil {
+		t.Fatalf("unexpected error starting stream: %v", err)
+	}
+	if _, err := result.ReadAll(); err == nil {
 		t.Fatal("expected error")
 	}
 	if calls != 1 {
@@ -335,10 +345,11 @@ func TestStreamText_RejectsNegativeMaxRetries(t *testing.T) {
 func TestStreamText_RejectsSystemMessagesByDefault(t *testing.T) {
 	t.Parallel()
 
-	_, err := StreamText(context.Background(), StreamTextOptions{
+	doStreamCalled := false
+	result, err := StreamText(context.Background(), StreamTextOptions{
 		Model: &testutil.MockLanguageModel{
 			DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
-				t.Fatal("DoStream should not be called when system messages are rejected")
+				doStreamCalled = true
 				return nil, nil
 			},
 		},
@@ -349,9 +360,19 @@ func TestStreamText_RejectsSystemMessagesByDefault(t *testing.T) {
 			},
 		},
 	})
+	// Prompt normalization now happens in the background (matching TS
+	// standardizePrompt, which runs inside streamText's async IIFE), so the
+	// rejection surfaces through Err()/ReadAll(), not the return value.
+	if err != nil {
+		t.Fatalf("unexpected error starting stream: %v", err)
+	}
+	_, err = result.ReadAll()
 	var unsupported *promptutils.UnsupportedSystemMessageError
 	if !errors.As(err, &unsupported) {
 		t.Fatalf("StreamText() error = %T, want UnsupportedSystemMessageError", err)
+	}
+	if doStreamCalled {
+		t.Fatal("DoStream should not be called when system messages are rejected")
 	}
 }
 
@@ -624,8 +645,9 @@ func TestStreamText_OnChunkCallback(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if chunkCallbackCount != 5 { // firstChunk + 2 text chunks + finish chunk + streamFinish
-		t.Errorf("expected 5 chunk callbacks, got %d", chunkCallbackCount)
+	// start + start-step + firstChunk + 2 text chunks + finish-step + finish + streamFinish
+	if chunkCallbackCount != 8 {
+		t.Errorf("expected 8 chunk callbacks, got %d", chunkCallbackCount)
 	}
 }
 
@@ -665,9 +687,12 @@ func TestStreamText_FirstChunkEmittedBeforeFirstContentNotMetadata(t *testing.T)
 	mu.Lock()
 	defer mu.Unlock()
 	want := []provider.ChunkType{
+		provider.ChunkTypeStart,
+		provider.ChunkTypeStartStep,
 		provider.ChunkTypeResponseMetadata,
 		provider.ChunkTypeFirstChunk,
 		provider.ChunkTypeText,
+		provider.ChunkTypeFinishStep,
 		provider.ChunkTypeFinish,
 		provider.ChunkTypeStreamFinish,
 	}
@@ -725,9 +750,12 @@ func TestStreamText_SuppressesReasoningBoundariesWhenSendReasoningFalse(t *testi
 		}
 	}
 	want := []provider.ChunkType{
+		provider.ChunkTypeStart,
+		provider.ChunkTypeStartStep,
 		provider.ChunkTypeFirstChunk,
 		provider.ChunkTypeReasoning,
 		provider.ChunkTypeText,
+		provider.ChunkTypeFinishStep,
 		provider.ChunkTypeFinish,
 		provider.ChunkTypeStreamFinish,
 	}
@@ -872,11 +900,15 @@ func TestStreamText_UsageTracking(t *testing.T) {
 	_, _ = result.ReadAll()
 
 	usage := result.Usage()
-	if usage.InputTokens != expectedUsage.InputTokens {
-		t.Errorf("unexpected input tokens: %d", usage.InputTokens)
+	// Compare dereferenced values, not pointer identity: usage now always
+	// flows through processStream's additive Usage.Add accumulation (even
+	// for a single step, via ReadAll waiting on processingDone), which may
+	// allocate fresh *int64s rather than reusing the chunk's pointers.
+	if usage.InputTokens == nil || *usage.InputTokens != *expectedUsage.InputTokens {
+		t.Errorf("unexpected input tokens: %v", usage.InputTokens)
 	}
-	if usage.OutputTokens != expectedUsage.OutputTokens {
-		t.Errorf("unexpected output tokens: %d", usage.OutputTokens)
+	if usage.OutputTokens == nil || *usage.OutputTokens != *expectedUsage.OutputTokens {
+		t.Errorf("unexpected output tokens: %v", usage.OutputTokens)
 	}
 }
 
@@ -918,11 +950,18 @@ func TestStreamText_ErrorHandling(t *testing.T) {
 		},
 	}
 
-	_, err := StreamText(context.Background(), StreamTextOptions{
+	result, err := StreamText(context.Background(), StreamTextOptions{
 		Model:  model,
 		Prompt: "Hello",
 	})
 
+	// StreamText returns immediately, matching TS streamText(): the first
+	// provider stream request happens in the background, so a failure there
+	// surfaces through Err()/ReadAll(), not the return value.
+	if err != nil {
+		t.Fatalf("unexpected error starting stream: %v", err)
+	}
+	_, err = result.ReadAll()
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -1065,7 +1104,7 @@ func TestStreamText_ToolChoiceForwardedToProvider(t *testing.T) {
 		},
 	}
 
-	_, err := StreamText(context.Background(), StreamTextOptions{
+	result, err := StreamText(context.Background(), StreamTextOptions{
 		Model:      model,
 		Prompt:     "use a tool",
 		ToolChoice: types.RequiredToolChoice(),
@@ -1073,8 +1112,59 @@ func TestStreamText_ToolChoiceForwardedToProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	// The first provider request now happens in the background (matching TS,
+	// where streamText() returns before any I/O), so wait for it before
+	// reading the value DoStreamFunc captured. The mock stream produces no
+	// tool call despite ToolChoice: required, so this now correctly surfaces
+	// ToolChoiceViolationError (audit row 36b3364/ccf98e7 / WG3) rather than
+	// silently succeeding.
+	if _, err := result.ReadAll(); !IsToolChoiceViolationError(err) {
+		t.Fatalf("ReadAll error = %v, want ToolChoiceViolationError", err)
+	}
 	if capturedChoice.Type != types.ToolChoiceRequired {
 		t.Errorf("expected ToolChoiceRequired forwarded to provider, got %q", capturedChoice.Type)
+	}
+}
+
+// TestStreamText_ToolChoiceRequiredSatisfiedByAnyToolCall ports TS's
+// ToolChoiceViolationError happy path to streamText (audit row 36b3364/
+// ccf98e7 / WG3): any tool call satisfies "required".
+func TestStreamText_ToolChoiceRequiredSatisfiedByAnyToolCall(t *testing.T) {
+	t.Parallel()
+
+	tools := []types.Tool{{
+		Name: "search",
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "results", nil
+		},
+	}}
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{
+					ID: "call_1", ToolName: "search", Arguments: map[string]interface{}{},
+				}},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+			}), nil
+		},
+	}
+	maxSteps := 1
+
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:      model,
+		Prompt:     "search something",
+		Tools:      tools,
+		ToolChoice: types.RequiredToolChoice(),
+		MaxSteps:   &maxSteps,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := result.ReadAll(); err != nil {
+		t.Fatalf("ReadAll error = %v", err)
+	}
+	if len(result.ToolCalls()) != 1 || result.ToolCalls()[0].ToolName != "search" {
+		t.Fatalf("ToolCalls() = %+v", result.ToolCalls())
 	}
 }
 
@@ -1156,8 +1246,21 @@ func TestStreamTextResult_StatusLifecycle(t *testing.T) {
 		t.Errorf("expected Submitted immediately after StreamText, got %q", result.Status())
 	}
 
-	// Wait for the goroutine to finish.
-	time.Sleep(100 * time.Millisecond)
+	// Wait for the goroutine to finish (poll rather than a fixed sleep,
+	// which flakes under -race with parallel package load).
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		observed := len(statuses)
+		mu.Unlock()
+		if result.Status() == StreamStatusDone && observed > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 
 	if result.Status() != StreamStatusDone {
 		t.Errorf("expected Done after stream completes, got %q", result.Status())
@@ -1238,6 +1341,50 @@ func TestStreamTextReasoningPropagated(t *testing.T) {
 	}
 	if *capturedReasoning != types.ReasoningHigh {
 		t.Errorf("expected ReasoningHigh, got %v", *capturedReasoning)
+	}
+}
+
+// TestStreamTextResultReasoningAccessors ports the TS StreamTextResult
+// `reasoning`/`reasoningText` deprecated getters (stream-text-result.ts:
+// "@deprecated Use `finalStep.reasoning` instead." /
+// "@deprecated Use `finalStep.reasoningText` instead."): both must mirror
+// FinalStep().Reasoning / FinalStep().ReasoningText.
+func TestStreamTextResultReasoningAccessors(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeReasoningStart, ID: "r1"},
+				{Type: provider.ChunkTypeReasoning, ID: "r1", Reasoning: "thinking..."},
+				{Type: provider.ChunkTypeReasoningEnd, ID: "r1"},
+				{Type: provider.ChunkTypeText, Text: "ok"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "think hard",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	_, _ = result.ReadAll()
+
+	finalStep := result.FinalStep()
+	if got := result.ReasoningText(); got != finalStep.ReasoningText {
+		t.Errorf("ReasoningText() = %q, want FinalStep().ReasoningText = %q", got, finalStep.ReasoningText)
+	}
+	if result.ReasoningText() == "" {
+		t.Error("expected non-empty ReasoningText()")
+	}
+	if got := result.Reasoning(); len(got) != len(finalStep.Reasoning) {
+		t.Errorf("Reasoning() = %#v, want FinalStep().Reasoning = %#v", got, finalStep.Reasoning)
+	}
+	if len(result.Reasoning()) == 0 {
+		t.Error("expected non-empty Reasoning()")
 	}
 }
 
@@ -1599,17 +1746,18 @@ func TestStreamText_ToolApprovalDeniedSkipsExecution(t *testing.T) {
 	if toolResults[0].ApprovalStatus != types.ToolApprovalStatusDenied {
 		t.Fatalf("expected denied approval status, got %s", toolResults[0].ApprovalStatus)
 	}
-	if toolResults[0].ApprovalReason == nil || *toolResults[0].ApprovalReason == "" {
-		t.Fatalf("expected default denial reason, got %#v", toolResults[0].ApprovalReason)
-	}
-	if *toolResults[0].ApprovalReason != "Tool execution denied." {
-		t.Fatalf("unexpected default denial reason: %q", *toolResults[0].ApprovalReason)
+	// No reason was supplied, so Go must leave it unset here (matching TS,
+	// which leaves `reason` undefined) rather than synthesize a default;
+	// each provider converter applies its own default denial text when it
+	// serializes the tool result (audit row 58a2ad7 / G6).
+	if toolResults[0].ApprovalReason != nil {
+		t.Fatalf("expected no synthesized denial reason, got %#v", *toolResults[0].ApprovalReason)
 	}
 	output, ok := toolResults[0].Result.(types.ToolResultOutput)
 	if !ok {
 		t.Fatalf("expected ToolResultOutput, got %T", toolResults[0].Result)
 	}
-	if output.Type != types.ToolResultOutputExecutionDenied || output.Reason != "Tool execution denied." {
+	if output.Type != types.ToolResultOutputExecutionDenied || output.Reason != "" {
 		t.Fatalf("unexpected denied output: %#v", output)
 	}
 }
@@ -2167,6 +2315,111 @@ func TestStreamEmitsGeneratedFile(t *testing.T) {
 	}
 }
 
+// TestStreamTextResult_FilesAccumulatesAcrossSteps verifies that
+// StreamTextResult.Files() accumulates generated files from every step,
+// matching the TypeScript SDK's accumulative StreamTextResult.files.
+func TestStreamTextResult_FilesAccumulatesAcrossSteps(t *testing.T) {
+	t.Parallel()
+
+	tool := types.Tool{
+		Name:        "makeFile",
+		Description: "make a file",
+		Execute: func(_ context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			return "ok", nil
+		},
+	}
+
+	file1 := &types.GeneratedFileContent{MediaType: "image/png", Data: []byte{1}}
+	file2 := &types.GeneratedFileContent{MediaType: "image/jpeg", Data: []byte{2}}
+
+	callCount := 0
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			callCount++
+			switch callCount {
+			case 1:
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeFile, GeneratedFileContent: file1},
+					{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{
+						ID: "call_1", ToolName: "makeFile", Arguments: map[string]interface{}{},
+					}},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+				}), nil
+			case 2:
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeFile, GeneratedFileContent: file2},
+					{Type: provider.ChunkTypeText, Text: "done"},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+				}), nil
+			}
+			t.Fatalf("unexpected stream call count: %d", callCount)
+			return nil, nil
+		},
+	}
+
+	done := make(chan struct{})
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "make two files",
+		Tools:  []types.Tool{tool},
+		OnFinish: func(r *StreamTextResult) {
+			close(done)
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamText failed: %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for stream completion")
+	}
+
+	files := result.Files()
+	if len(files) != 2 {
+		t.Fatalf("Files() = %d files, want 2: %+v", len(files), files)
+	}
+	if files[0].MediaType != "image/png" || files[1].MediaType != "image/jpeg" {
+		t.Errorf("unexpected file media types: %q, %q", files[0].MediaType, files[1].MediaType)
+	}
+}
+
+// TestStreamTextResult_FilesEmptyWhenNoFiles verifies Files() returns an
+// empty slice (never panics/nil-dereferences) when no files were generated.
+func TestStreamTextResult_FilesEmptyWhenNoFiles(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "hi"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	done := make(chan struct{})
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "hi",
+		OnFinish: func(r *StreamTextResult) {
+			close(done)
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamText failed: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for stream completion")
+	}
+	if got := result.Files(); len(got) != 0 {
+		t.Errorf("Files() = %+v, want empty", got)
+	}
+}
+
 // TestStreamEmitsCustomContent verifies that a provider can emit a
 // ChunkTypeCustom chunk and that it flows through to the OnChunk consumer.
 func TestStreamEmitsCustomContent(t *testing.T) {
@@ -2423,6 +2676,49 @@ func TestStreamTextAbortDoesNotCallFinish(t *testing.T) {
 	}
 }
 
+// TestStreamTextAbortEventCarriesCallIDAndReason ports TS's onAbort event
+// shape (audit row a8e8ad0 / WG5): the stable OnAbortEvent must carry the
+// call ID and abort reason, and take precedence over the deprecated OnAbort.
+func TestStreamTextAbortEventCarriesCallIDAndReason(t *testing.T) {
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStreamWithError(context.Canceled), nil
+		},
+	}
+
+	eventCh := make(chan GenerateTextAbortEvent, 1)
+	deprecatedCalled := false
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "abort",
+		OnAbort: func(context.Context, []types.StepResult) {
+			deprecatedCalled = true
+		},
+		OnAbortEvent: func(ctx context.Context, e GenerateTextAbortEvent) {
+			eventCh <- e
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+
+	select {
+	case e := <-eventCh:
+		if e.CallID == "" {
+			t.Error("GenerateTextAbortEvent.CallID is empty")
+		}
+		if e.Reason == nil {
+			t.Error("GenerateTextAbortEvent.Reason is nil")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("OnAbortEvent was not called")
+	}
+	if deprecatedCalled {
+		t.Error("deprecated OnAbort was called even though OnAbortEvent is set")
+	}
+	_ = result
+}
+
 func TestStreamTextRejectsIncompleteMetadataOnlyStream(t *testing.T) {
 	model := &testutil.MockLanguageModel{
 		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
@@ -2522,6 +2818,42 @@ func TestStreamTextAllowsIncompleteStreamWithPartialOutput(t *testing.T) {
 	}
 	if result.FinishReason() != types.FinishReasonOther {
 		t.Fatalf("finishReason = %q, want other", result.FinishReason())
+	}
+}
+
+// TestStreamText_PublishesEmptyStringPartialOutput ports TS's "stream null
+// and empty-string JSON partial outputs" case (audit row 84f5d1b / WG4): a
+// genuine first empty-string partial must be published, not suppressed by
+// comparing against the "nothing published yet" sentinel.
+func TestStreamText_PublishesEmptyStringPartialOutput(t *testing.T) {
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: ""},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "test",
+		Output: TextOutput(),
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	if _, err := result.ReadAll(); err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+
+	partial := result.PartialOutput()
+	s, ok := partial.(string)
+	if !ok {
+		t.Fatalf("PartialOutput() = %#v (%T), want the published empty string, not the unpublished zero value", partial, partial)
+	}
+	if s != "" {
+		t.Fatalf("PartialOutput() = %q, want empty string", s)
 	}
 }
 
@@ -2788,11 +3120,18 @@ func TestStreamTextStepTimeoutCoversInitialDoStream(t *testing.T) {
 		},
 	}
 
-	_, err := StreamText(context.Background(), StreamTextOptions{
+	result, err := StreamText(context.Background(), StreamTextOptions{
 		Model:   model,
 		Prompt:  "test",
 		Timeout: &TimeoutConfig{PerStep: &stepTimeout},
 	})
+	if err != nil {
+		t.Fatalf("unexpected error starting stream: %v", err)
+	}
+	// The first provider request (and the step timeout that covers it) now
+	// happens in the background, so wait for it via ReadAll instead of
+	// checking StreamText's return value.
+	_, err = result.ReadAll()
 	if err == nil {
 		t.Fatal("StreamText() expected step timeout")
 	}
@@ -2835,4 +3174,304 @@ func (s *delayedEOFTextStream) Close() error {
 
 func (s *delayedEOFTextStream) Err() error {
 	return nil
+}
+
+// --- Regression tests: StreamText without callbacks must still execute
+// tools and run later steps (bug confirmed in
+// state/parity/sep_23_2026/review-p0-1-p0-2-round1.md and HANDOFF.md item 2).
+//
+// Before the fix, processStream (which executes accumulated tool calls and
+// starts subsequent steps) only ran when the caller registered a callback
+// such as OnChunk or OnFinish. StreamTextResult.Stream() and .ReadAll()
+// instead read the raw single-step provider stream directly, so a caller
+// using only Stream()/ReadAll()/Chunks() (the plain Go-idiomatic API, no
+// callbacks) never saw tools execute or a second step run — diverging from
+// the TypeScript SDK, where the step loop and tool execution always run
+// regardless of how the consumer reads the stream.
+
+// TestStreamTextResult_NoCallbacksToolsExecuteAndContinue verifies that,
+// with zero callbacks configured, calling only ReadAll() still executes
+// tool calls and continues into a second model step.
+func TestStreamTextResult_NoCallbacksToolsExecuteAndContinue(t *testing.T) {
+	t.Parallel()
+
+	var doStreamCalls int32
+	var executeCalls int32
+
+	tool := types.Tool{
+		Name:        "get_weather",
+		Description: "Get weather",
+		Execute: func(_ context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			atomic.AddInt32(&executeCalls, 1)
+			return "sunny", nil
+		},
+	}
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			call := atomic.AddInt32(&doStreamCalls, 1)
+			if call == 1 {
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeText, Text: "Checking weather..."},
+					{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{
+						ID:        "call_1",
+						ToolName:  "get_weather",
+						Arguments: map[string]interface{}{"city": "NY"},
+					}},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+				}), nil
+			}
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "It's sunny in NY."},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	// Deliberately no callbacks of any kind — the plain Go-idiomatic API.
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "What's the weather in NY?",
+		Tools:  []types.Tool{tool},
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+
+	text, err := result.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+
+	if got := atomic.LoadInt32(&executeCalls); got != 1 {
+		t.Fatalf("expected tool Execute to run exactly once, got %d", got)
+	}
+	if got := atomic.LoadInt32(&doStreamCalls); got != 2 {
+		t.Fatalf("expected DoStream to be called twice (step 1 + step 2), got %d", got)
+	}
+	// r.text accumulates across every step, matching processStream's
+	// existing multi-step behavior.
+	if want := "Checking weather...It's sunny in NY."; text != want {
+		t.Fatalf("expected accumulated text across both steps %q, got %q", want, text)
+	}
+	if len(result.ToolCalls()) != 1 {
+		t.Fatalf("expected 1 recorded tool call, got %d", len(result.ToolCalls()))
+	}
+	if len(result.ToolResults()) != 1 {
+		t.Fatalf("expected 1 recorded tool result, got %d", len(result.ToolResults()))
+	}
+	steps := result.Steps()
+	if len(steps) != 2 {
+		t.Fatalf("expected 2 steps, got %d: %+v", len(steps), steps)
+	}
+}
+
+// TestStreamTextResult_NoCallbacksStreamYieldsFullMultiStep verifies that,
+// with zero callbacks configured, Stream() (not ReadAll) yields the entire
+// multi-step chunk sequence — including the tool-call, the tool-result
+// produced by executing it, and the second step's text — rather than only
+// the first step's raw provider chunks.
+func TestStreamTextResult_NoCallbacksStreamYieldsFullMultiStep(t *testing.T) {
+	t.Parallel()
+
+	var doStreamCalls int32
+	var executeCalls int32
+
+	tool := types.Tool{
+		Name: "get_weather",
+		Execute: func(_ context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			atomic.AddInt32(&executeCalls, 1)
+			return "sunny", nil
+		},
+	}
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			if atomic.AddInt32(&doStreamCalls, 1) == 1 {
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{
+						ID: "call_1", ToolName: "get_weather", Arguments: map[string]interface{}{},
+					}},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+				}), nil
+			}
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "step2-text"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	// No callbacks — consume exclusively via Stream().
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "weather?",
+		Tools:  []types.Tool{tool},
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+
+	stream := result.Stream()
+	var sawToolCall, sawToolResult, sawStep2Text bool
+	var finishCount, finishStepCount int
+	for {
+		chunk, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("stream.Next() error = %v", err)
+		}
+		switch chunk.Type {
+		case provider.ChunkTypeToolCall:
+			sawToolCall = true
+		case provider.ChunkTypeToolResult:
+			sawToolResult = true
+		case provider.ChunkTypeText:
+			if chunk.Text == "step2-text" {
+				sawStep2Text = true
+			}
+		case provider.ChunkTypeFinish:
+			finishCount++
+		case provider.ChunkTypeFinishStep:
+			finishStepCount++
+		}
+	}
+
+	if !sawToolCall {
+		t.Error("expected Stream() to include the tool-call chunk")
+	}
+	if !sawToolResult {
+		t.Error("expected Stream() to include the tool-result chunk produced by executing the tool")
+	}
+	if !sawStep2Text {
+		t.Error("expected Stream() to include step 2's text chunk")
+	}
+	// Exactly one call-level finish chunk (mirrors TS's single top-level
+	// 'finish' fullStream part), plus one finish-step chunk per step.
+	if finishCount != 1 {
+		t.Errorf("expected 1 finish chunk (call-level), got %d", finishCount)
+	}
+	if finishStepCount != 2 {
+		t.Errorf("expected 2 finish-step chunks (one per step), got %d", finishStepCount)
+	}
+	if got := atomic.LoadInt32(&executeCalls); got != 1 {
+		t.Fatalf("expected tool Execute to run exactly once, got %d", got)
+	}
+	if got := atomic.LoadInt32(&doStreamCalls); got != 2 {
+		t.Fatalf("expected DoStream to be called twice, got %d", got)
+	}
+
+	// ReadAll (or any other accessor) must still work after Stream() has been
+	// fully drained — it just waits for the already-running processStream to
+	// finish.
+	if _, err := result.ReadAll(); err != nil {
+		t.Fatalf("ReadAll() after Stream() error = %v", err)
+	}
+}
+
+// TestStreamTextResult_NoCallbacksChunksChannelYieldsFullMultiStep is the
+// Chunks()-channel counterpart of the Stream() test above.
+func TestStreamTextResult_NoCallbacksChunksChannelYieldsFullMultiStep(t *testing.T) {
+	t.Parallel()
+
+	var doStreamCalls int32
+	var executeCalls int32
+
+	tool := types.Tool{
+		Name: "noop",
+		Execute: func(_ context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			atomic.AddInt32(&executeCalls, 1)
+			return "ok", nil
+		},
+	}
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			if atomic.AddInt32(&doStreamCalls, 1) == 1 {
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "1", ToolName: "noop", Arguments: map[string]interface{}{}}},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+				}), nil
+			}
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "done"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "go",
+		Tools:  []types.Tool{tool},
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+
+	var sawToolResult bool
+	for chunk := range result.Chunks() {
+		if chunk.Type == provider.ChunkTypeToolResult {
+			sawToolResult = true
+		}
+	}
+	if !sawToolResult {
+		t.Error("expected Chunks() to include the tool-result chunk")
+	}
+	if got := atomic.LoadInt32(&executeCalls); got != 1 {
+		t.Fatalf("expected tool Execute to run exactly once, got %d", got)
+	}
+	if got := atomic.LoadInt32(&doStreamCalls); got != 2 {
+		t.Fatalf("expected DoStream to be called twice, got %d", got)
+	}
+}
+
+// TestStreamText_PanickingOnChunkDoesNotAbortStream ports TS's callback
+// exception containment (audit row 9a37469 / WG5): a panicking OnChunk must
+// not kill the stream-processing goroutine, and the full text/finish must
+// still be produced.
+func TestStreamText_PanickingOnChunkDoesNotAbortStream(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "Hello, "},
+				{Type: provider.ChunkTypeText, Text: "world!"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	var onErrorCalls int
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "hi",
+		OnChunk: func(chunk provider.StreamChunk) {
+			panic("boom from OnChunk")
+		},
+		OnError: func(ctx context.Context, err error) {
+			onErrorCalls++
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+
+	text, err := result.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if text != "Hello, world!" {
+		t.Fatalf("text = %q, want %q", text, "Hello, world!")
+	}
+	if result.FinishReason() != types.FinishReasonStop {
+		t.Fatalf("FinishReason() = %q, want stop", result.FinishReason())
+	}
+	// The panic must not be misreported as a stream error.
+	if onErrorCalls != 0 {
+		t.Fatalf("onErrorCalls = %d, want 0", onErrorCalls)
+	}
 }

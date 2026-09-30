@@ -1,5 +1,7 @@
 package anthropic
 
+import "github.com/digitallysavvy/go-ai/pkg/provider/types"
+
 // StructuredOutputMode controls how JSON structured output is generated.
 // Different Anthropic models support different strategies for producing
 // structured JSON output, and this option lets you explicitly choose
@@ -96,7 +98,59 @@ type ThinkingConfig struct {
 	// BudgetTokens specifies the maximum tokens for thinking (only for "enabled" type)
 	// Requires a minimum of 1,024 tokens and counts towards the max_tokens limit.
 	// Optional for "enabled" type, not used for "adaptive" type.
-	BudgetTokens *int `json:"budget_tokens,omitempty"`
+	BudgetTokens *int `json:"budgetTokens,omitempty"`
+
+	// Display controls how thinking is returned for "adaptive" thinking:
+	// ThinkingDisplayOmitted, ThinkingDisplaySummarized or
+	// ThinkingDisplayUpdates (adds the thinking-display-updates beta).
+	// Ignored for other thinking types.
+	Display ThinkingDisplay `json:"display,omitempty"`
+
+	// BlockBinding configures preserved-thinking block binding
+	// (thinking.block_binding). It may be set with Type "adaptive" or alone
+	// (empty Type) for binding-only recovery requests. Adds the
+	// thinking-binding-controls beta.
+	BlockBinding *ThinkingBlockBinding `json:"blockBinding,omitempty"`
+}
+
+// ThinkingDisplay controls how adaptive thinking content is returned.
+type ThinkingDisplay string
+
+const (
+	ThinkingDisplayOmitted    ThinkingDisplay = "omitted"
+	ThinkingDisplaySummarized ThinkingDisplay = "summarized"
+	ThinkingDisplayUpdates    ThinkingDisplay = "updates"
+)
+
+// ThinkingBlockBinding configures how the API treats replayed thinking blocks
+// whose prefix does not match. Serialized as
+// thinking.block_binding.prefix_mismatch_behavior.
+type ThinkingBlockBinding struct {
+	// PrefixMismatchBehavior is "error" or "drop_block".
+	PrefixMismatchBehavior string `json:"prefixMismatchBehavior"`
+}
+
+// Safeguard configures an Anthropic safeguard classifier. Serialized as
+// safeguards[{type, classifier_context?}] and adds the
+// dangerous-tool-use-2026-09-03 beta.
+type Safeguard struct {
+	// Type is "dangerous_tool_use".
+	Type string `json:"type"`
+
+	// ClassifierContext is optional context passed to the classifier.
+	ClassifierContext map[string]interface{} `json:"classifierContext,omitempty"`
+}
+
+// CompactionOption requests an on-demand summary of the supplied conversation.
+// Serialized as the request-level "compaction" field and adds the
+// "compact-2026-09-04" beta header automatically. Mutually exclusive with
+// ContextManagement: setting both returns an error from DoGenerate/DoStream.
+type CompactionOption struct {
+	// Type must be "summarize".
+	Type string `json:"type"`
+
+	// Instructions optionally steers what the on-demand summary should preserve.
+	Instructions string `json:"instructions,omitempty"`
 }
 
 // ModelOptions contains optional configuration for Anthropic language models.
@@ -118,7 +172,17 @@ type ModelOptions struct {
 	//   }
 	//
 	// See ContextManagement for available strategies.
-	ContextManagement *ContextManagement `json:"context_management,omitempty"`
+	ContextManagement *ContextManagement `json:"contextManagement,omitempty"`
+
+	// Compaction requests an on-demand summary of the supplied conversation.
+	// Mutually exclusive with ContextManagement (setting both returns an
+	// error). Adds the "compact-2026-09-04" beta header automatically.
+	//
+	// Example:
+	//   options := anthropic.ModelOptions{
+	//       Compaction: &anthropic.CompactionOption{Type: "summarize"},
+	//   }
+	Compaction *CompactionOption `json:"compaction,omitempty"`
 
 	// Thinking configures Claude's extended thinking capabilities.
 	//
@@ -165,7 +229,7 @@ type ModelOptions struct {
 	//   }
 	//
 	// See https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching for details.
-	AutomaticCaching bool `json:"automatic_caching,omitempty"`
+	AutomaticCaching bool `json:"automaticCaching,omitempty"`
 
 	// CacheControl configures explicit ephemeral prompt caching.
 	// Mutually exclusive with AutomaticCaching; CacheControl takes precedence if both are set.
@@ -174,11 +238,11 @@ type ModelOptions struct {
 	//   options := anthropic.ModelOptions{
 	//       CacheControl: &anthropic.CacheControlOption{Type: "ephemeral", TTL: "5m"},
 	//   }
-	CacheControl *CacheControlOption `json:"cache_control_option,omitempty"`
+	CacheControl *CacheControlOption `json:"cacheControl,omitempty"`
 
 	// Effort controls the model's reasoning effort level.
 	// Supported values: EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax.
-	// Requires the "effort-2025-11-24" beta header (injected automatically).
+	// Sent as output_config.effort (no beta header is required).
 	//
 	// Example:
 	//   options := anthropic.ModelOptions{
@@ -189,33 +253,53 @@ type ModelOptions struct {
 	// TaskBudget informs the model of the total token budget available for the
 	// current task. This is advisory only; it does not enforce a hard limit.
 	// Requires the "task-budgets-2026-03-13" beta header (injected automatically).
-	TaskBudget *TaskBudget `json:"task_budget,omitempty"`
+	TaskBudget *TaskBudget `json:"taskBudget,omitempty"`
 
 	// InferenceGeo controls where Anthropic inference may run for this request.
 	// Supported values match the TypeScript SDK: "us" or "global".
-	InferenceGeo string `json:"inference_geo,omitempty"`
+	InferenceGeo string `json:"inferenceGeo,omitempty"`
 
 	// Fallbacks configures Anthropic server-side fallback attempts.
 	Fallbacks []FallbackConfig `json:"fallbacks,omitempty"`
 
+	// FallbacksDefault sends fallbacks: "default" to use Anthropic's default
+	// server-side fallback chain (beta server-side-fallback-2026-07-01). It
+	// takes precedence over Fallbacks.
+	FallbacksDefault bool `json:"fallbacksDefault,omitempty"`
+
+	// ServiceTier selects the Anthropic service tier: "auto" or
+	// "standard_only". Serialized as service_tier.
+	ServiceTier string `json:"serviceTier,omitempty"`
+
+	// AnthropicBeta lists additional anthropic-beta flags to send.
+	AnthropicBeta []string `json:"anthropicBeta,omitempty"`
+
+	// Safeguards configures safeguard classifiers (for example
+	// dangerous_tool_use). Classifier verdicts are returned in
+	// providerMetadata.anthropic.safeguardResults.
+	Safeguards []Safeguard `json:"safeguards,omitempty"`
+
 	// ToolStreaming controls whether fine-grained tool streaming is enabled.
-	// Deprecated: the fine-grained-tool-streaming beta header is obsolete in the
-	// TypeScript SDK and is no longer injected by the Go provider.
+	// When nil or true, streaming requests set eager_input_streaming: true on
+	// function tools that do not set ToolOptions.EagerInputStreaming. Set it
+	// to false to disable that default.
 	//
 	// Example (disable):
 	//   disabled := false
 	//   options := anthropic.ModelOptions{ToolStreaming: &disabled}
-	ToolStreaming *bool `json:"tool_streaming,omitempty"`
+	ToolStreaming *bool `json:"toolStreaming,omitempty"`
 
 	// DisableParallelToolUse prevents the model from calling multiple tools in a
 	// single response. When true, adds {disable_parallel_tool_use: true} to the
-	// tool_choice object sent to the API.
+	// tool_choice object sent to the API. An explicit false is ignored (with a
+	// warning) when the JSON response tool is used for structured output.
 	//
 	// Example:
+	//   disable := true
 	//   options := anthropic.ModelOptions{
-	//       DisableParallelToolUse: true,
+	//       DisableParallelToolUse: &disable,
 	//   }
-	DisableParallelToolUse bool `json:"disable_parallel_tool_use,omitempty"`
+	DisableParallelToolUse *bool `json:"disableParallelToolUse,omitempty"`
 
 	// MCPServers configures remote MCP servers for native server-side tool invocation.
 	// The Anthropic API connects to these MCP servers directly, exposing their tools
@@ -228,7 +312,7 @@ type ModelOptions struct {
 	//           {Type: "url", Name: "my-server", URL: "https://mcp.example.com/sse"},
 	//       },
 	//   }
-	MCPServers []MCPServerConfig `json:"mcp_servers,omitempty"`
+	MCPServers []MCPServerConfig `json:"mcpServers,omitempty"`
 
 	// Container configures an Anthropic agent container for code execution and skills.
 	// When Skills are provided, the code-execution-2025-08-25, skills-2025-10-02, and
@@ -252,7 +336,7 @@ type ModelOptions struct {
 	//   options := anthropic.ModelOptions{
 	//       ContainerID: "container-abc123",
 	//   }
-	ContainerID string `json:"container_id,omitempty"`
+	ContainerID string `json:"containerId,omitempty"`
 
 	// StructuredOutputMode controls how ResponseFormat is sent to the API.
 	// Default (empty/"auto"): uses output_config.format for models that support it
@@ -263,7 +347,7 @@ type ModelOptions struct {
 	//   options := anthropic.ModelOptions{
 	//       StructuredOutputMode: anthropic.StructuredOutputJSONTool,
 	//   }
-	StructuredOutputMode StructuredOutputMode `json:"structured_output_mode,omitempty"`
+	StructuredOutputMode StructuredOutputMode `json:"structuredOutputMode,omitempty"`
 
 	// SendReasoning controls whether ReasoningContent (thinking) blocks from message
 	// history are included when sending messages to the Anthropic API.
@@ -280,7 +364,25 @@ type ModelOptions struct {
 	// Example (disable when switching to non-thinking model):
 	//   disabled := false
 	//   options := anthropic.ModelOptions{SendReasoning: &disabled}
-	SendReasoning *bool `json:"send_reasoning,omitempty"`
+	SendReasoning *bool `json:"sendReasoning,omitempty"`
+
+	// Metadata to include with the request (TS anthropicLanguageModelOptions.metadata).
+	//
+	// Example:
+	//   options := anthropic.ModelOptions{
+	//       Metadata: &anthropic.Metadata{UserID: "user-123"},
+	//   }
+	Metadata *Metadata `json:"metadata,omitempty"`
+}
+
+// Metadata carries request metadata. Currently only UserID (an external
+// identifier for the user associated with the request) is supported,
+// matching TS anthropicLanguageModelOptions.metadata.
+type Metadata struct {
+	// UserID is an external identifier for the user associated with the
+	// request. Should be a UUID, hash value, or other opaque identifier.
+	// Must not contain PII (name, email, phone number, etc.).
+	UserID string `json:"userId,omitempty"`
 }
 
 // MCPServerConfig configures a remote MCP server for the Anthropic API to connect to.
@@ -293,25 +395,36 @@ type MCPServerConfig struct {
 	// URL is the HTTP(S) endpoint of the MCP server
 	URL string `json:"url"`
 	// AuthorizationToken is an optional bearer token for authentication
-	AuthorizationToken string `json:"authorization_token,omitempty"`
+	AuthorizationToken string `json:"authorizationToken,omitempty"`
 	// ToolConfiguration optionally restricts which tools from this server are available
-	ToolConfiguration *MCPToolConfiguration `json:"tool_configuration,omitempty"`
+	ToolConfiguration *MCPToolConfiguration `json:"toolConfiguration,omitempty"`
 }
 
 // MCPToolConfiguration controls which tools from an MCP server are exposed to the model.
 type MCPToolConfiguration struct {
 	// AllowedTools restricts which tool names are available from this server
-	AllowedTools []string `json:"allowed_tools,omitempty"`
+	AllowedTools []string `json:"allowedTools,omitempty"`
 	// Enabled controls whether tools from this server are active
 	Enabled *bool `json:"enabled,omitempty"`
 }
 
 // ContainerSkill configures a skill within an agent container.
+//
+// For Type "anthropic" (built-in skills), SkillID identifies the skill
+// directly. For Type "custom", ProviderReference is used instead: a map of
+// provider name -> provider-specific skill ID (TS
+// AnthropicLanguageModelOptions.container.skills[].providerReference,
+// SharedV4ProviderReference), resolved via ResolveProviderReference against
+// this model's provider name ("anthropic") when building the request body
+// (TS resolveProviderReference in anthropic-language-model.ts).
 type ContainerSkill struct {
 	// Type is "anthropic" for built-in skills or "custom" for custom skills
 	Type string `json:"type"`
-	// SkillID is the identifier of the skill
-	SkillID string `json:"skill_id"`
+	// SkillID is the identifier of the skill. Used when Type is "anthropic".
+	SkillID string `json:"skillId,omitempty"`
+	// ProviderReference maps provider name -> provider-specific skill ID.
+	// Used when Type is "custom".
+	ProviderReference types.ProviderReference `json:"providerReference,omitempty"`
 	// Version is the optional skill version
 	Version string `json:"version,omitempty"`
 }

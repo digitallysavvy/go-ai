@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 
@@ -128,7 +129,7 @@ func TestEmbedOnStartHeadersAndMaxRetries(t *testing.T) {
 	_, err := Embed(context.Background(), EmbedOptions{
 		Model:      model,
 		Input:      "hello",
-		MaxRetries: 3,
+		MaxRetries: intPtr(3),
 		Headers:    map[string]string{"X-Custom": "value"},
 		ExperimentalOnStart: func(e EmbedOnStartEvent) {
 			mu.Lock()
@@ -151,8 +152,14 @@ func TestEmbedOnStartHeadersAndMaxRetries(t *testing.T) {
 	if e.MaxRetries != 3 {
 		t.Errorf("MaxRetries = %d, want 3", e.MaxRetries)
 	}
-	if e.Headers["X-Custom"] != "value" {
-		t.Errorf("Headers[X-Custom] = %q, want %q", e.Headers["X-Custom"], "value")
+	// version.WithUserAgentSuffix normalizes header keys to lowercase, mirroring
+	// TS withUserAgentSuffix's use of the WHATWG Headers class (which lowercases
+	// header names) before adding the "ai/<version>" user-agent suffix.
+	if e.Headers["x-custom"] != "value" {
+		t.Errorf("Headers[x-custom] = %q, want %q", e.Headers["x-custom"], "value")
+	}
+	if !strings.Contains(e.Headers["user-agent"], "ai/0.5.0") {
+		t.Errorf("Headers[user-agent] = %q, want it to contain ai/<version>", e.Headers["user-agent"])
 	}
 }
 

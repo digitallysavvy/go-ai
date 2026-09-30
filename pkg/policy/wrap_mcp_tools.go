@@ -31,7 +31,7 @@ func WrapMCPTools(tools map[string]types.Tool, approval types.ToolApprovalConfig
 		filled := make(map[string]types.ToolApprovalValue, len(tools))
 		for name := range tools {
 			if value, ok := v[name]; ok && value != nil {
-				filled[name] = value
+				filled[name] = wrapPerToolApproval(value, fallback)
 			} else {
 				filled[name] = fallback
 			}
@@ -41,7 +41,7 @@ func WrapMCPTools(tools map[string]types.Tool, approval types.ToolApprovalConfig
 		filled := make(map[string]interface{}, len(tools))
 		for name := range tools {
 			if value, ok := v[name]; ok && value != nil {
-				filled[name] = value
+				filled[name] = wrapPerToolApproval(value, fallback)
 			} else {
 				filled[name] = string(fallback)
 			}
@@ -53,5 +53,34 @@ func WrapMCPTools(tools map[string]types.Tool, approval types.ToolApprovalConfig
 			filled[name] = string(fallback)
 		}
 		return WrappedMCPTools{Tools: tools, ToolApproval: filled}
+	}
+}
+
+// wrapPerToolApproval mirrors the generic-function form for per-tool approval
+// functions so a "no opinion" result (not-applicable or empty) is forced
+// through the fallback instead of letting the tool run unapproved (TS
+// 47bd0a6). Static statuses the user configured are kept as-is.
+func wrapPerToolApproval(value types.ToolApprovalValue, fallback types.ToolApprovalStatus) types.ToolApprovalValue {
+	orFallback := func(result types.ToolApprovalResult) types.ToolApprovalResult {
+		if result.Status == "" || result.Status == types.ToolApprovalStatusNotApplicable {
+			return types.ToolApprovalResult{Status: fallback}
+		}
+		return result
+	}
+	switch fn := value.(type) {
+	case types.SingleToolApprovalFunc:
+		return types.SingleToolApprovalFunc(func(args map[string]interface{}, opts types.SingleToolApprovalOptions) types.ToolApprovalResult {
+			return orFallback(fn(args, opts))
+		})
+	case types.GenericToolApprovalFunc:
+		return types.GenericToolApprovalFunc(func(opts types.ToolApprovalOptions) types.ToolApprovalResult {
+			return orFallback(fn(opts))
+		})
+	case types.ToolApprovalFunc:
+		return types.ToolApprovalFunc(func(toolCall types.ToolCall, tools []types.Tool, messages []types.Message, runtimeCtx interface{}, toolsCtx map[string]interface{}) types.ToolApprovalResult {
+			return orFallback(fn(toolCall, tools, messages, runtimeCtx, toolsCtx))
+		})
+	default:
+		return value
 	}
 }

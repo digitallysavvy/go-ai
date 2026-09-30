@@ -84,6 +84,7 @@ func (m *CompletionModel) DoStream(ctx context.Context, opts *provider.GenerateO
 	}
 
 	inner := newCompletionStreamWithMetadata(httpResp.Body, opts.IncludeRawChunks, m.Provider(), httpResp.Header)
+	inner.requestBody = body
 	return streaming.NewWarningsStream(inner, warnings), nil
 }
 
@@ -284,6 +285,7 @@ func (m *CompletionModel) convertCompletionResponse(response openAICompletionRes
 	result.Text = choice.Text
 	result.Content = []types.ContentPart{types.TextContent{Text: choice.Text}}
 	result.FinishReason = providerutils.MapOpenAIFinishReason(choice.FinishReason)
+	result.RawFinishReason = choice.FinishReason
 	if len(choice.Logprobs) > 0 && string(choice.Logprobs) != "null" {
 		result.ProviderMetadata["openai"].(map[string]interface{})["logprobs"] = json.RawMessage(choice.Logprobs)
 	}
@@ -365,11 +367,21 @@ type completionStream struct {
 	outputStarted    bool
 	finished         bool
 	finishReason     types.FinishReason
+	rawFinishReason  string
 	usage            *types.Usage
 	providerMetadata map[string]interface{}
 	providerName     string
 	responseHeaders  http.Header
+
+	// requestBody is the raw request body this stream was opened with,
+	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
+	// "stream request body field").
+	requestBody interface{}
 }
+
+// RequestBody implements provider.StreamRequestBody, exposing the raw
+// request body that was sent to open this stream.
+func (s *completionStream) RequestBody() interface{} { return s.requestBody }
 
 func newCompletionStream(reader io.ReadCloser, includeRawChunks bool) *completionStream {
 	return newCompletionStreamWithMetadata(reader, includeRawChunks, "openai.completion", nil)
@@ -461,6 +473,7 @@ func (s *completionStream) Next() (*provider.StreamChunk, error) {
 		choice := chunk.Choices[0]
 		if choice.FinishReason != nil {
 			s.finishReason = providerutils.MapOpenAIFinishReason(*choice.FinishReason)
+			s.rawFinishReason = *choice.FinishReason
 		}
 		if len(choice.Logprobs) > 0 && string(choice.Logprobs) != "null" {
 			s.providerMetadata["openai"].(map[string]interface{})["logprobs"] = json.RawMessage(choice.Logprobs)
@@ -501,6 +514,7 @@ func (s *completionStream) finish() {
 	s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 		Type:             provider.ChunkTypeFinish,
 		FinishReason:     s.finishReason,
+		RawFinishReason:  s.rawFinishReason,
 		Usage:            s.usage,
 		ProviderMetadata: mustMarshalCompletionProviderMetadata(s.providerMetadata),
 	})

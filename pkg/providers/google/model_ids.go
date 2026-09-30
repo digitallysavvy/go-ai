@@ -53,6 +53,10 @@ const (
 	ModelGemini31FlashLitePreview  = "gemini-3.1-flash-lite-preview"      // (#12883)
 	ModelGemini31FlashImagePreview = "gemini-3.1-flash-image-preview"     // image model (#12883)
 	ModelGemini35Flash             = "gemini-3.5-flash"
+	ModelGemini35FlashLite         = "gemini-3.5-flash-lite"
+	ModelGemini36Flash             = "gemini-3.6-flash"
+	ModelGemini37Flash             = "gemini-3.7-flash"
+	ModelGemini38Flash             = "gemini-3.8-flash"
 
 	// Latest alias models — added in #12819
 	ModelGeminiProLatest       = "gemini-pro-latest"
@@ -91,6 +95,39 @@ const (
 	ModelGeminiLive20FlashExp     = "gemini-live-2.0-flash-exp"
 )
 
+// Transcription model IDs (Gemini 3.5 Transcribe), served through the
+// Interactions API. Provider.TranscriptionModel() routes any model ID to
+// TranscriptionModel; the unary variant (ModelGemini35Transcribe) supports
+// DoTranscribe. The "-live" variant only supports streaming transcription
+// over a WebSocket (TS doStream), which the Go SDK's TranscriptionModel
+// interface does not yet expose (no DoStream) — DoTranscribe rejects it with
+// an explanatory error instead of silently doing the wrong thing.
+const (
+	ModelGemini35Transcribe     = "gemini-3.5-transcribe"
+	ModelGemini35TranscribeLive = "gemini-3.5-transcribe-live"
+)
+
+// Lyria-3 music generation model IDs, used via the Interactions API
+// (google.interactions()). See WG-G4 (Interactions) — model IDs only; the
+// music-generation-specific parts of the Interactions protocol are not
+// wired up in this cycle.
+const (
+	InteractionsModelLyria3ClipPreview = "lyria-3-clip-preview"
+	InteractionsModelLyria3ProPreview  = "lyria-3-pro-preview"
+)
+
+// Veo video generation model IDs, matching TS GoogleVideoModelId
+// (google-video-settings.ts).
+const (
+	ModelVeo31FastGeneratePreview = "veo-3.1-fast-generate-preview"
+	ModelVeo31GeneratePreview     = "veo-3.1-generate-preview"
+	ModelVeo31Generate            = "veo-3.1-generate"
+	ModelVeo31LiteGeneratePreview = "veo-3.1-lite-generate-preview"
+	ModelVeo30Generate001         = "veo-3.0-generate-001"
+	ModelVeo30FastGenerate001     = "veo-3.0-fast-generate-001"
+	ModelVeo20Generate001         = "veo-2.0-generate-001"
+)
+
 // Interactions API model IDs.
 const (
 	InteractionsModelGemini25Flash             = "gemini-2.5-flash"
@@ -105,13 +142,6 @@ const (
 	// InteractionsAgentDeepResearch is kept for source compatibility and maps to
 	// the current TS SDK deep-research pro preview agent name.
 	InteractionsAgentDeepResearch = InteractionsAgentDeepResearchProPreview
-)
-
-// Imagen model IDs for Google Generative AI image generation (use :predict API)
-const (
-	ModelImagen40Generate001      = "imagen-4.0-generate-001"
-	ModelImagen40UltraGenerate001 = "imagen-4.0-ultra-generate-001"
-	ModelImagen40FastGenerate001  = "imagen-4.0-fast-generate-001"
 )
 
 // Gemini image model IDs for Google Generative AI (use :generateContent API)

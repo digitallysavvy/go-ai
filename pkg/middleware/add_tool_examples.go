@@ -22,9 +22,22 @@ type AddToolInputExamplesOptions struct {
 	Format func(example types.ToolInputExample, index int) string
 
 	// Remove indicates whether to remove the InputExamples property
-	// after adding them to the description
-	// Default: true
-	Remove bool
+	// after adding them to the description.
+	// Default: true. nil means unset and defaults to true, matching
+	// TypeScript's `remove = true` destructuring default, which applies
+	// regardless of which other options are supplied. Use
+	// types.BoolPtr(false) to explicitly keep InputExamples.
+	Remove *bool
+}
+
+// removeInputExamples reports whether InputExamples should be stripped after
+// formatting, defaulting to true (matching TS's `remove = true` default) when
+// unset.
+func removeInputExamples(options *AddToolInputExamplesOptions) bool {
+	if options == nil || options.Remove == nil {
+		return true
+	}
+	return *options.Remove
 }
 
 // defaultFormatExample formats an example as JSON
@@ -46,15 +59,17 @@ func defaultFormatExample(example types.ToolInputExample, index int) string {
 //
 //	middleware := AddToolInputExamplesMiddleware(&AddToolInputExamplesOptions{
 //		Prefix: "Input Examples:",
-//		Remove: true,
 //	})
 //	wrapped := WrapLanguageModel(model, []*LanguageModelMiddleware{middleware}, nil, nil)
 func AddToolInputExamplesMiddleware(options *AddToolInputExamplesOptions) *LanguageModelMiddleware {
+	// Resolve the Remove default before options is mutated below, since
+	// removeInputExamples treats a nil *options* the same as an unset field.
+	remove := removeInputExamples(options)
+
 	if options == nil {
 		options = &AddToolInputExamplesOptions{
 			Prefix: "Input Examples:",
 			Format: defaultFormatExample,
-			Remove: true,
 		}
 	}
 
@@ -111,7 +126,7 @@ func AddToolInputExamplesMiddleware(options *AddToolInputExamplesOptions) *Langu
 				transformedTools[i].Description = toolDescription
 
 				// Remove InputExamples if requested
-				if options.Remove {
+				if remove {
 					transformedTools[i].InputExamples = nil
 				}
 			}

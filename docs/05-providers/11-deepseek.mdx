@@ -78,10 +78,65 @@ Optimized for programming tasks:
 ```go
 codeModel, err := provider.LanguageModel("deepseek-coder")
 
-result, err := ai.GenerateText(codeModel,
-    "Implement a thread-safe LRU cache in Go",
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  codeModel,
+    Prompt: "Implement a thread-safe LRU cache in Go",
+})
 ```
+
+### Vision (DeepSeek V4)
+
+`deepseek-v4*` models return `SupportsImageInput() == true`; image file
+parts are sent to the API instead of being rejected with an error, as on
+earlier DeepSeek models:
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model, // a deepseek-v4* model
+    Messages: []types.Message{{
+        Role: types.RoleUser,
+        Content: []types.ContentPart{
+            types.TextContent{Text: "Describe this image"},
+            types.FileContent{MediaType: "image/png", URL: "https://example.com/image.png"},
+        },
+    }},
+})
+```
+
+### Files API
+
+`provider.Files()` returns a `provider.FilesAPI`, or use the higher-level
+`ai.UploadFile` helper, to upload files that are later referenced from chat
+messages by `file_id`:
+
+```go
+uploaded, err := ai.UploadFile(ctx, ai.UploadFileOptions{
+    API:       provider,
+    Data:      fileBytes,
+    MediaType: "application/pdf",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Messages: []types.Message{{
+        Role: types.RoleUser,
+        Content: []types.ContentPart{
+            types.TextContent{Text: "Summarize this document."},
+            types.FileContent{FileData: types.FileData{
+                Type:      types.FileDataTypeReference,
+                Reference: uploaded.ProviderReference,
+            }},
+        },
+    }},
+})
+```
+
+DeepSeek has no batch API and no additional Files methods beyond upload —
+this matches the upstream TypeScript `@ai-sdk/deepseek` package, which has
+neither.
 
 ## Examples
 

@@ -10,10 +10,11 @@ import (
 type TimeoutReason string
 
 const (
-	TimeoutReasonTotal TimeoutReason = "total"
-	TimeoutReasonStep  TimeoutReason = "step"
-	TimeoutReasonChunk TimeoutReason = "chunk"
-	TimeoutReasonTool  TimeoutReason = "tool"
+	TimeoutReasonTotal      TimeoutReason = "total"
+	TimeoutReasonStep       TimeoutReason = "step"
+	TimeoutReasonChunk      TimeoutReason = "chunk"
+	TimeoutReasonFirstChunk TimeoutReason = "firstChunk"
+	TimeoutReasonTool       TimeoutReason = "tool"
 )
 
 // TimeoutError wraps timeout failures so callers can inspect the reason with
@@ -70,10 +71,24 @@ type TimeoutConfig struct {
 	// If a single step exceeds this duration, the operation fails
 	PerStep *time.Duration
 
-	// PerChunk is the timeout for receiving each chunk in streaming operations
-	// If no chunk is received within this duration, the stream is aborted
-	// This helps detect stalled streams and network issues
+	// PerChunk is the timeout for receiving each *semantic output* chunk in
+	// streaming operations (TS chunkMs). Only chunks that carry real output
+	// (non-empty text/reasoning/tool-input deltas, files, reasoning files,
+	// tool calls — see isOutputChunkForTiming) reset this timer; metadata,
+	// empty deltas and block boundary chunks do not, so a burst of
+	// non-output chunks can't mask a stalled stream. If no semantic output
+	// chunk is received within this duration, the stream is aborted with
+	// TimeoutReasonChunk (audit row 106ea59 / WG-TIMEOUT).
 	PerChunk *time.Duration
+
+	// FirstChunk is the timeout for the first semantic output chunk of each
+	// model-call step (TS firstChunkMs). It is armed fresh at the start of
+	// every step and disarmed (stops applying, for the rest of that step)
+	// as soon as the first chunk matching isOutputChunkForTiming arrives;
+	// PerChunk (if also set) then takes over from that point. Streaming
+	// only, like PerChunk (audit row 106ea59 / WG-TIMEOUT; GenerateText
+	// warns instead of applying it — audit row 349afe7).
+	FirstChunk *time.Duration
 
 	// ToolMs is the default timeout for all tool executions.
 	// If a tool execution exceeds this duration, it is cancelled.
@@ -132,6 +147,11 @@ func (tc *TimeoutConfig) HasPerChunk() bool {
 	return tc != nil && tc.PerChunk != nil
 }
 
+// HasFirstChunk returns true if a first-chunk timeout is configured
+func (tc *TimeoutConfig) HasFirstChunk() bool {
+	return tc != nil && tc.FirstChunk != nil
+}
+
 // NewTimeoutConfig creates a new TimeoutConfig with the specified timeouts
 // Pass nil for any timeout you don't want to set
 func NewTimeoutConfig(total, perStep, perChunk *time.Duration) *TimeoutConfig {
@@ -157,6 +177,12 @@ func (tc *TimeoutConfig) WithPerStep(duration time.Duration) *TimeoutConfig {
 // WithPerChunk sets the per-chunk timeout and returns the config (builder pattern)
 func (tc *TimeoutConfig) WithPerChunk(duration time.Duration) *TimeoutConfig {
 	tc.PerChunk = &duration
+	return tc
+}
+
+// WithFirstChunk sets the first-chunk timeout and returns the config (builder pattern)
+func (tc *TimeoutConfig) WithFirstChunk(duration time.Duration) *TimeoutConfig {
+	tc.FirstChunk = &duration
 	return tc
 }
 

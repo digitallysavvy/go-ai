@@ -104,7 +104,7 @@ func (s *MCPToolsServer) handleCallTool(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	result, err := tool.Execute(context.Background(), req.Parameters)
+	result, err := tool.Execute(context.Background(), req.Parameters, types.ToolExecutionOptions{})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

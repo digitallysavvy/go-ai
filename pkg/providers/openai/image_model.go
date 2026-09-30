@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -260,23 +261,20 @@ func (m *ImageModel) writeImageFilePart(ctx context.Context, writer *multipart.W
 		return err
 	}
 	if file.Type == "url" && file.URL != "" {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, file.URL, nil)
+		// file.URL is caller-supplied data (an image-edit input or mask
+		// URL), not the provider's own endpoint, so it must go through the
+		// same validated, DNS-pinned download path as any other
+		// response/caller-supplied URL (TS fileToBlob -> downloadBlob ->
+		// fetchWithValidatedRedirects) instead of the provider's plain HTTP
+		// client. Before this fix, an attacker-controlled URL here could
+		// reach an internal address (e.g. a cloud metadata endpoint) with no
+		// SSRF check, no DNS pinning and no size limit; its response body
+		// would be forwarded to OpenAI as image data.
+		data, err := fileutil.Download(ctx, file.URL, fileutil.DefaultDownloadOptions())
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to download image %s: %w", file.URL, err)
 		}
-		httpClient := http.DefaultClient
-		if m.provider != nil && m.provider.client != nil && m.provider.client.HTTPClient() != nil {
-			httpClient = m.provider.client.HTTPClient()
-		}
-		resp, err := httpClient.Do(req)
-		if err != nil {
-			return err
-		}
-		defer resp.Body.Close() //nolint:errcheck
-		if resp.StatusCode >= 400 {
-			return fmt.Errorf("failed to download image %s: HTTP %d", file.URL, resp.StatusCode)
-		}
-		_, err = io.Copy(part, resp.Body)
+		_, err = part.Write(data)
 		return err
 	}
 	_, err = part.Write(file.Data)
@@ -330,8 +328,8 @@ func extractOpenAIImageProviderOptions(providerOptions map[string]interface{}) O
 
 func validateOpenAIImageProviderOptions(providerOptions map[string]interface{}, edit bool) error {
 	opts := extractOpenAIImageProviderOptions(providerOptions)
-	if opts.Quality != "" && !oneOf(opts.Quality, "standard", "hd", "low", "medium", "high", "auto") {
-		return fmt.Errorf("openai image provider option quality must be one of standard, hd, low, medium, high, auto")
+	if opts.Quality != "" && !oneOf(opts.Quality, "standard", "hd", "low", "medium", "high", "xhigh", "max", "auto") {
+		return fmt.Errorf("openai image provider option quality must be one of standard, hd, low, medium, high, xhigh, max, auto")
 	}
 	if !edit && opts.Style != "" && !oneOf(opts.Style, "vivid", "natural") {
 		return fmt.Errorf("openai image provider option style must be one of vivid, natural")

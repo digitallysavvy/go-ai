@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -62,11 +63,53 @@ func TestLanguageModelNonStreamingRequest(t *testing.T) {
 	if gotBody["anthropic_version"] != DefaultVertexAPIVersion {
 		t.Fatalf("anthropic_version = %v, want %s", gotBody["anthropic_version"], DefaultVertexAPIVersion)
 	}
-	if gotBody["stream"] != false {
-		t.Fatalf("stream = %v, want false", gotBody["stream"])
+	// TS anthropic-language-model.ts sets `stream: stream === true ? true : undefined`,
+	// so a non-streaming request omits the "stream" key entirely rather than sending false.
+	if _, ok := gotBody["stream"]; ok {
+		t.Fatalf("stream = %v, want key absent for non-streaming request", gotBody["stream"])
 	}
 	if result.Text != "ok" {
 		t.Fatalf("Text = %q, want ok", result.Text)
+	}
+}
+
+// TestLanguageModelDoesNotTagAnthropicUserAgent covers the owner's 2026-09-30
+// User-Agent decision: TS google-vertex-anthropic-provider.ts builds its
+// AnthropicLanguageModel directly rather than through createAnthropic (the
+// only place @ai-sdk/anthropic's own "ai-sdk/anthropic/VERSION" tag is
+// added), so Vertex-Anthropic requests must not carry that tag -- only the
+// runtime tag the shared HTTP client appends downstream.
+func TestLanguageModelDoesNotTagAnthropicUserAgent(t *testing.T) {
+	var gotUserAgent string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUserAgent = r.Header.Get("User-Agent")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":2,"output_tokens":3}}`))
+	}))
+	defer server.Close()
+
+	p := NewGoogleVertexAnthropicProvider(Options{
+		BaseURL: server.URL,
+		AuthToken: func(context.Context) (string, error) {
+			return "test-token", nil
+		},
+		HTTPClient: server.Client(),
+	})
+	model, err := p.LanguageModel(string(ClaudeSonnet4_6))
+	if err != nil {
+		t.Fatalf("LanguageModel error = %v", err)
+	}
+	if _, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hello"},
+	}); err != nil {
+		t.Fatalf("DoGenerate error = %v", err)
+	}
+
+	if strings.Contains(gotUserAgent, "ai-sdk/anthropic/") {
+		t.Fatalf("User-Agent = %q, must not carry the ai-sdk/anthropic tag", gotUserAgent)
+	}
+	if strings.Contains(gotUserAgent, "ai-sdk/") {
+		t.Fatalf("User-Agent = %q, want no ai-sdk/... tag at all", gotUserAgent)
 	}
 }
 
@@ -354,6 +397,24 @@ func TestVertexAnthropicReportsImageInputSupportForVertexModelIDs(t *testing.T) 
 	}
 }
 
+// Ports the "supportedUrls returns empty object to force base64 conversion"
+// assertion in google-vertex-anthropic-provider.test.ts (ai@7.0.113):
+// Vertex-Anthropic never passes image/PDF URLs through directly.
+func TestVertexAnthropicSupportedURLsForcesBase64Conversion(t *testing.T) {
+	p := New(Options{BaseURL: "https://example.invalid"})
+	model, err := p.LanguageModel(string(ClaudeSonnet4_6))
+	if err != nil {
+		t.Fatalf("LanguageModel error = %v", err)
+	}
+	urlsProvider, ok := model.(interface{ SupportedURLs() map[string][]string })
+	if !ok {
+		t.Fatal("model does not implement SupportedURLs()")
+	}
+	if got := urlsProvider.SupportedURLs(); len(got) != 0 {
+		t.Errorf("SupportedURLs() = %v, want empty map", got)
+	}
+}
+
 func TestVertexAnthropicStrictToolWarningAndOmission(t *testing.T) {
 	var gotBody map[string]interface{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -380,7 +441,7 @@ func TestVertexAnthropicStrictToolWarningAndOmission(t *testing.T) {
 			Name:        "strict_tool",
 			Description: "strict",
 			Parameters:  map[string]interface{}{"type": "object"},
-			Strict:      true,
+			Strict:      types.BoolPtr(true),
 		}},
 	})
 	if err != nil {

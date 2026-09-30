@@ -5,11 +5,15 @@ import (
 	"errors"
 	"io"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
+	agentpkg "github.com/digitallysavvy/go-ai/pkg/agent"
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -101,6 +105,28 @@ func TestWorkflowActiveToolsFiltering(t *testing.T) {
 	}
 	if len(m2.opts) == 0 || len(m2.opts[0].Tools) != 1 || m2.opts[0].Tools[0].Name != "t1" {
 		t.Fatalf("expected filtered tools, got %+v", m2.opts[0].Tools)
+	}
+}
+
+// TestWorkflowActiveToolsEmptySliceDisablesAllTools mirrors TS's
+// experimental_filterActiveTools handling of an explicit empty activeTools
+// list (902ce3b): an empty (non-nil) slice must disable every tool, distinct
+// from a nil slice (no restriction).
+func TestWorkflowActiveToolsEmptySliceDisablesAllTools(t *testing.T) {
+	m := &wfMockModel{}
+	agent, err := NewWorkflowAgent(WorkflowAgent{
+		Model:       m,
+		Tools:       []types.Tool{{Name: "t1"}, {Name: "t2"}},
+		ActiveTools: []string{},
+	})
+	if err != nil {
+		t.Fatalf("NewWorkflowAgent() error = %v", err)
+	}
+	if _, err := agent.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "hello"}); err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+	if len(m.opts) == 0 || len(m.opts[0].Tools) != 0 {
+		t.Fatalf("expected an empty ActiveTools list to disable all tools, got %+v", m.opts[0].Tools)
 	}
 }
 
@@ -231,6 +257,89 @@ func TestWorkflowOnStepEndTakesPrecedenceOverDeprecatedOnStepFinish(t *testing.T
 	}
 }
 
+// TestWorkflowOnEndTakesPrecedenceOverDeprecatedOnFinish mirrors TS
+// workflow-agent.ts's stable `onEnd` (with `onFinish` as its deprecated
+// alias, matching generateText/streamText/ToolLoopAgent's onEnd/onFinish
+// pair) — see review addendum for P0-3b: WorkflowAgent previously only
+// exposed OnFinish (no stable OnEnd), which was the sole outlier vs the
+// OnStepEnd/OnStepFinish pair immediately above it.
+func TestWorkflowOnEndTakesPrecedenceOverDeprecatedOnFinish(t *testing.T) {
+	model := &wfMockModel{}
+	constructorEndCalls := 0
+	constructorFinishCalls := 0
+	callEndCalls := 0
+	callFinishCalls := 0
+
+	agent, _ := NewWorkflowAgent(WorkflowAgent{
+		Model: model,
+		Tools: []types.Tool{{
+			Name: "t1",
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				return "ok", nil
+			},
+		}},
+		StopWhen: []ai.StopCondition{ai.StepCountIs(1)},
+		OnEnd: func(context.Context, ai.OnFinishEvent) {
+			constructorEndCalls++
+		},
+		OnFinish: func(context.Context, ai.OnFinishEvent) {
+			constructorFinishCalls++
+		},
+	})
+
+	_, err := agent.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{
+		Prompt: "hello",
+		OnEnd: func(context.Context, ai.OnFinishEvent) {
+			callEndCalls++
+		},
+		OnFinish: func(context.Context, ai.OnFinishEvent) {
+			callFinishCalls++
+		},
+	})
+	if err != nil {
+		t.Fatalf("generate error: %v", err)
+	}
+	if constructorEndCalls == 0 || callEndCalls == 0 {
+		t.Fatalf("expected OnEnd callbacks, constructor=%d call=%d", constructorEndCalls, callEndCalls)
+	}
+	if constructorFinishCalls != 0 || callFinishCalls != 0 {
+		t.Fatalf("deprecated OnFinish should not run when OnEnd is set, constructor=%d call=%d", constructorFinishCalls, callFinishCalls)
+	}
+}
+
+// TestWorkflowAgentGenerateBridgesOnEndFromAgentGenerateOptions covers the
+// agent.AgentGenerateOptions -> WorkflowGenerateOptions bridge used by
+// WorkflowAgent.Generate/.Stream (the two-argument convenience methods):
+// before this fix it copied only the deprecated opts.OnFinish field, so a
+// caller setting the stable opts.OnEnd had it silently dropped.
+func TestWorkflowAgentGenerateBridgesOnEndFromAgentGenerateOptions(t *testing.T) {
+	model := &wfMockModel{}
+	agent, err := NewWorkflowAgent(WorkflowAgent{
+		Model: model,
+		Tools: []types.Tool{{
+			Name: "t1",
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				return "ok", nil
+			},
+		}},
+		StopWhen: []ai.StopCondition{ai.StepCountIs(1)},
+	})
+	if err != nil {
+		t.Fatalf("NewWorkflowAgent() error = %v", err)
+	}
+	var endCalled bool
+	_, err = agent.Generate(context.Background(), "hello", &agentpkg.AgentGenerateOptions{
+		Prompt: "hello",
+		OnEnd:  func(_ context.Context, _ ai.OnFinishEvent) { endCalled = true },
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if !endCalled {
+		t.Fatal("expected agent.AgentGenerateOptions.OnEnd to reach the underlying workflow call")
+	}
+}
+
 func TestWorkflowStructuredOutputGenerateAndToolSet(t *testing.T) {
 	model := &wfJSONModel{}
 	agent, err := NewWorkflowAgent(WorkflowAgent{
@@ -333,7 +442,14 @@ func TestWorkflowRejectsSystemMessagesByDefault(t *testing.T) {
 	if _, err := agent.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Messages: messages, AllowSystemInMessages: true}); err != nil {
 		t.Fatalf("allowSystemInMessages generate error: %v", err)
 	}
-	if _, err := agent.StreamWithOptions(context.Background(), WorkflowStreamOptions{Messages: messages}); err == nil {
+	// ai.StreamText (which WorkflowAgent.StreamWithOptions delegates to)
+	// returns immediately and normalizes the prompt in the background, so
+	// the rejection surfaces through ReadAll()/Err(), not the return value.
+	streamResult, err := agent.StreamWithOptions(context.Background(), WorkflowStreamOptions{Messages: messages})
+	if err != nil {
+		t.Fatalf("unexpected error starting stream: %v", err)
+	}
+	if _, err := streamResult.ReadAll(); err == nil {
 		t.Fatal("expected stream system message rejection by default")
 	}
 	if _, err := agent.StreamWithOptions(context.Background(), WorkflowStreamOptions{Messages: messages, AllowSystemInMessages: true}); err != nil {
@@ -838,5 +954,426 @@ func TestWorkflowErrorAndAbortCallbacks(t *testing.T) {
 	_, err = agent2.GenerateWithOptions(ctx, WorkflowGenerateOptions{Prompt: "hello"})
 	if err == nil || !abortCalled {
 		t.Fatalf("expected abort callback and error, called=%v err=%v", abortCalled, err)
+	}
+}
+
+// TestWorkflowAgentForwardsRepairToolCall verifies WorkflowAgent.RepairToolCall
+// (eb49d29 / HANDOFF.md item 5) reaches the underlying agent's tool-call
+// parsing, and that a per-call override (GenerateWithOptions) takes
+// precedence over the WorkflowAgent-level setting.
+// TestWorkflowAgentTagsUserAgent ports the TS "tags outgoing requests so
+// usage can be attributed to WorkflowAgent" case (audit row 75763b0): the
+// model call's User-Agent header must carry the "ai-sdk-agent/workflow"
+// segment, not the internal ToolLoopAgent's "ai-sdk-agent/tool-loop" one.
+func TestWorkflowAgentTagsUserAgent(t *testing.T) {
+	model := &wfMockModel{}
+	agent, err := NewWorkflowAgent(WorkflowAgent{
+		Model:   model,
+		Headers: map[string]string{"x-user": "custom"},
+	})
+	if err != nil {
+		t.Fatalf("NewWorkflowAgent() error = %v", err)
+	}
+	if _, err := agent.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "hello"}); err != nil {
+		t.Fatalf("GenerateWithOptions() error = %v", err)
+	}
+	if len(model.opts) == 0 {
+		t.Fatal("model was not called")
+	}
+	got := model.opts[0].Headers
+	if got["x-user"] != "custom" {
+		t.Fatalf("caller header lost: %#v", got)
+	}
+	ua := got["user-agent"]
+	if !strings.Contains(ua, "ai-sdk-agent/workflow") {
+		t.Fatalf("user-agent = %q, want it to contain ai-sdk-agent/workflow", ua)
+	}
+	if strings.Contains(ua, "ai-sdk-agent/tool-loop") {
+		t.Fatalf("user-agent = %q, should not also carry ai-sdk-agent/tool-loop", ua)
+	}
+}
+
+func TestWorkflowAgentForwardsRepairToolCall(t *testing.T) {
+	model := &wfMockModel{}
+	var agentLevelCalled bool
+	agent, err := NewWorkflowAgent(WorkflowAgent{
+		Model: model,
+		Tools: []types.Tool{{Name: "other"}},
+		RepairToolCall: func(context.Context, ai.ToolCallRepairOptions) (*types.ToolCall, error) {
+			agentLevelCalled = true
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewWorkflowAgent() error = %v", err)
+	}
+	if _, err := agent.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "hello"}); err != nil {
+		t.Fatalf("GenerateWithOptions() error = %v", err)
+	}
+	if !agentLevelCalled {
+		t.Fatal("expected WorkflowAgent.RepairToolCall to be invoked for the unknown tool call")
+	}
+
+	var callLevelCalled bool
+	agentLevelCalled = false
+	model2 := &wfMockModel{}
+	agent2, err := NewWorkflowAgent(WorkflowAgent{
+		Model: model2,
+		Tools: []types.Tool{{Name: "other"}},
+		RepairToolCall: func(context.Context, ai.ToolCallRepairOptions) (*types.ToolCall, error) {
+			agentLevelCalled = true
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewWorkflowAgent() error = %v", err)
+	}
+	if _, err := agent2.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{
+		Prompt: "hello",
+		RepairToolCall: func(context.Context, ai.ToolCallRepairOptions) (*types.ToolCall, error) {
+			callLevelCalled = true
+			return nil, nil
+		},
+	}); err != nil {
+		t.Fatalf("GenerateWithOptions() error = %v", err)
+	}
+	if agentLevelCalled {
+		t.Fatal("agent-level RepairToolCall must not fire when the per-call option is set")
+	}
+	if !callLevelCalled {
+		t.Fatal("expected the per-call RepairToolCall to fire")
+	}
+}
+
+// TestWorkflowAgentExperimentalRepairToolCallIsDeprecatedAliasOfRepairToolCall
+// mirrors TS workflow-agent.ts, which resolves
+// `options.repairToolCall ?? options.experimental_repairToolCall` at both the
+// constructor and per-call level (`repairToolCall` was added to
+// WorkflowAgent/WorkflowGenerateOptions/WorkflowStreamOptions without its
+// `experimental_repairToolCall` deprecated alias).
+func TestWorkflowAgentExperimentalRepairToolCallIsDeprecatedAliasOfRepairToolCall(t *testing.T) {
+	model := &wfMockModel{}
+	var experimentalCalled bool
+	agent, err := NewWorkflowAgent(WorkflowAgent{
+		Model: model,
+		Tools: []types.Tool{{Name: "other"}},
+		ExperimentalRepairToolCall: func(context.Context, ai.ToolCallRepairOptions) (*types.ToolCall, error) {
+			experimentalCalled = true
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewWorkflowAgent() error = %v", err)
+	}
+	if _, err := agent.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "hello"}); err != nil {
+		t.Fatalf("GenerateWithOptions() error = %v", err)
+	}
+	if !experimentalCalled {
+		t.Fatal("expected the deprecated ExperimentalRepairToolCall to fire when RepairToolCall is unset")
+	}
+
+	var stableCalled, experimentalCalled2 bool
+	model2 := &wfMockModel{}
+	agent2, err := NewWorkflowAgent(WorkflowAgent{
+		Model: model2,
+		Tools: []types.Tool{{Name: "other"}},
+		RepairToolCall: func(context.Context, ai.ToolCallRepairOptions) (*types.ToolCall, error) {
+			stableCalled = true
+			return nil, nil
+		},
+		ExperimentalRepairToolCall: func(context.Context, ai.ToolCallRepairOptions) (*types.ToolCall, error) {
+			experimentalCalled2 = true
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewWorkflowAgent() error = %v", err)
+	}
+	if _, err := agent2.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "hello"}); err != nil {
+		t.Fatalf("GenerateWithOptions() error = %v", err)
+	}
+	if !stableCalled {
+		t.Fatal("expected the stable RepairToolCall to fire")
+	}
+	if experimentalCalled2 {
+		t.Fatal("deprecated ExperimentalRepairToolCall must not fire when RepairToolCall is also set")
+	}
+}
+
+// TestWorkflowAgentForwardsMaxRetries mirrors TS WorkflowAgent's
+// `mergedGenerationSettings.maxRetries ?? 2` (e6064c5): WorkflowAgent.MaxRetries
+// and WorkflowGenerateOptions.MaxRetries reach ai.GenerateTextOptions.MaxRetries,
+// which only retries Gateway-provider transient failures (pkg/ai/generate.go
+// gatewayMaxRetries).
+func TestWorkflowAgentForwardsMaxRetries(t *testing.T) {
+	calls := 0
+	model := &testutil.MockLanguageModel{
+		ProviderName: "gateway",
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			calls++
+			if calls < 2 {
+				return nil, gatewayerrors.NewGatewayRateLimitError("", 429, nil, "")
+			}
+			return &types.GenerateResult{Text: "ok", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+	maxRetries := 1
+	agent, err := NewWorkflowAgent(WorkflowAgent{Model: model, MaxRetries: &maxRetries})
+	if err != nil {
+		t.Fatalf("NewWorkflowAgent() error = %v", err)
+	}
+	if _, err := agent.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "hi"}); err != nil {
+		t.Fatalf("GenerateWithOptions() error = %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("expected 2 calls (1 retry), got %d", calls)
+	}
+
+	// A zero call-level MaxRetries overrides the agent-level value and
+	// disables retries, so the same transient failure now fails the call.
+	calls2 := 0
+	model2 := &testutil.MockLanguageModel{
+		ProviderName: "gateway",
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			calls2++
+			return nil, gatewayerrors.NewGatewayRateLimitError("", 429, nil, "")
+		},
+	}
+	agent2, err := NewWorkflowAgent(WorkflowAgent{Model: model2, MaxRetries: &maxRetries})
+	if err != nil {
+		t.Fatalf("NewWorkflowAgent() error = %v", err)
+	}
+	zero := 0
+	if _, err := agent2.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "hi", MaxRetries: &zero}); err == nil {
+		t.Fatal("expected an error with retries disabled at the call level")
+	}
+	if calls2 != 1 {
+		t.Fatalf("expected exactly 1 call with retries disabled, got %d", calls2)
+	}
+}
+
+// TestWorkflowAgentForwardsTimeoutAndDownload mirrors TS WorkflowAgent's
+// absolute-deadline (e3325bd) and constructor-default download (eb49d29)
+// settings: WorkflowAgent.Timeout/ExperimentalDownload and their per-call
+// overrides reach agent.AgentConfig.Timeout/ExperimentalDownload, observable
+// on LanguageModelCallOptions inside PrepareCall.
+func TestWorkflowAgentForwardsTimeoutAndDownload(t *testing.T) {
+	model := &wfMockModel{}
+	agentTimeout := &ai.TimeoutConfig{Total: durationPtr(30 * time.Second)}
+	callTimeout := &ai.TimeoutConfig{Total: durationPtr(5 * time.Second)}
+	agentDownload := ai.DownloadFunction(func(context.Context, []ai.DownloadRequest) ([]*ai.DownloadResult, error) { return nil, nil })
+	callDownload := ai.DownloadFunction(func(context.Context, []ai.DownloadRequest) ([]*ai.DownloadResult, error) { return nil, nil })
+
+	var seenTimeout *ai.TimeoutConfig
+	var sawDownload bool
+	agent, err := NewWorkflowAgent(WorkflowAgent{
+		Model:                model,
+		Timeout:              agentTimeout,
+		ExperimentalDownload: agentDownload,
+		PrepareCall: func(ctx context.Context, opts LanguageModelCallOptions) (LanguageModelCallOptions, error) {
+			seenTimeout = opts.Timeout
+			sawDownload = opts.ExperimentalDownload != nil
+			return opts, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewWorkflowAgent() error = %v", err)
+	}
+	if _, err := agent.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "hi"}); err != nil {
+		t.Fatalf("GenerateWithOptions() error = %v", err)
+	}
+	if seenTimeout != agentTimeout {
+		t.Fatalf("expected PrepareCall to see the agent-level Timeout, got %+v", seenTimeout)
+	}
+	if !sawDownload {
+		t.Fatal("expected PrepareCall to see the agent-level ExperimentalDownload")
+	}
+
+	seenTimeout = nil
+	sawDownload = false
+	if _, err := agent.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{
+		Prompt:               "hi",
+		Timeout:              callTimeout,
+		ExperimentalDownload: callDownload,
+	}); err != nil {
+		t.Fatalf("GenerateWithOptions() error = %v", err)
+	}
+	if seenTimeout != callTimeout {
+		t.Fatalf("expected the per-call Timeout to override the agent-level one, got %+v", seenTimeout)
+	}
+	if !sawDownload {
+		t.Fatal("expected PrepareCall to see the per-call ExperimentalDownload")
+	}
+}
+
+// TestWorkflowAgentPrepareCallStopWhenActiveToolsParity mirrors TS
+// WorkflowAgent's prepareCall setting parity (d56638a): StopWhen, ActiveTools
+// and ExperimentalDownload are visible on LanguageModelCallOptions and a
+// PrepareCall mutation of ActiveTools is applied to the step's Tools.
+func TestWorkflowAgentPrepareCallStopWhenActiveToolsParity(t *testing.T) {
+	model := &wfMockModel{}
+	var sawStopWhen bool
+	agent, err := NewWorkflowAgent(WorkflowAgent{
+		Model:    model,
+		Tools:    []types.Tool{{Name: "t1"}, {Name: "t2"}},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(4)},
+		PrepareCall: func(ctx context.Context, opts LanguageModelCallOptions) (LanguageModelCallOptions, error) {
+			sawStopWhen = len(opts.StopWhen) == 1
+			// Restrict to a single tool via the hook, mirroring TS's
+			// experimental_activeTools override.
+			opts.ActiveTools = []string{"t1"}
+			return opts, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewWorkflowAgent() error = %v", err)
+	}
+	if _, err := agent.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "hi"}); err != nil {
+		t.Fatalf("GenerateWithOptions() error = %v", err)
+	}
+	if !sawStopWhen {
+		t.Fatal("expected PrepareCall to see the agent-level StopWhen")
+	}
+	if len(model.opts) == 0 {
+		t.Fatal("expected the model to be called")
+	}
+	if got := len(model.opts[0].Tools); got != 1 {
+		t.Fatalf("expected PrepareCall's ActiveTools mutation to filter to 1 tool, got %d", got)
+	}
+}
+
+// TestWorkflowAgentPrepareCallInitialInstructionsAndMessages mirrors TS
+// WorkflowAgent's initial-inputs prepareCall parity (b666f57):
+// LanguageModelCallOptions.InitialInstructions/InitialMessages carry the
+// original, unmutated call inputs even after PrepareCall/PrepareStep rewrite
+// System/Messages.
+func TestWorkflowAgentPrepareCallInitialInstructionsAndMessages(t *testing.T) {
+	model := &wfMockModel{}
+	origMessages := []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}}
+	var gotInitialInstructions string
+	var gotInitialMessages []types.Message
+	agent, err := NewWorkflowAgent(WorkflowAgent{
+		Model:  model,
+		System: "be nice",
+		PrepareCall: func(ctx context.Context, opts LanguageModelCallOptions) (LanguageModelCallOptions, error) {
+			gotInitialInstructions = opts.InitialInstructions
+			gotInitialMessages = opts.InitialMessages
+			opts.System = "overridden"
+			return opts, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewWorkflowAgent() error = %v", err)
+	}
+	if _, err := agent.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Messages: origMessages}); err != nil {
+		t.Fatalf("GenerateWithOptions() error = %v", err)
+	}
+	if gotInitialInstructions != "be nice" {
+		t.Fatalf("expected InitialInstructions %q, got %q", "be nice", gotInitialInstructions)
+	}
+	if len(gotInitialMessages) != 1 || gotInitialMessages[0].Content[0].(types.TextContent).Text != "hi" {
+		t.Fatalf("expected InitialMessages to carry the original messages, got %+v", gotInitialMessages)
+	}
+}
+
+func durationPtr(d time.Duration) *time.Duration { return &d }
+
+// wfToolSearchModel drives a two-step tool-discovery scenario: step 1 calls
+// ai.ToolSearch() to surface a tool marked DeferLoading, step 2 calls that
+// newly-discovered tool.
+type wfToolSearchModel struct {
+	calls         int
+	toolNamesSeen [][]string
+}
+
+func (m *wfToolSearchModel) SpecificationVersion() string   { return "v3" }
+func (m *wfToolSearchModel) Provider() string               { return "mock" }
+func (m *wfToolSearchModel) ModelID() string                { return "mock-model" }
+func (m *wfToolSearchModel) SupportsTools() bool            { return true }
+func (m *wfToolSearchModel) SupportsStructuredOutput() bool { return true }
+func (m *wfToolSearchModel) SupportsImageInput() bool       { return false }
+func (m *wfToolSearchModel) DoGenerate(_ context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	m.calls++
+	names := make([]string, 0, len(opts.Tools))
+	for _, tl := range opts.Tools {
+		names = append(names, tl.Name)
+	}
+	m.toolNamesSeen = append(m.toolNamesSeen, names)
+	switch m.calls {
+	case 1:
+		return &types.GenerateResult{FinishReason: types.FinishReasonToolCalls, ToolCalls: []types.ToolCall{
+			{ID: "c1", ToolName: "toolSearch", Arguments: map[string]interface{}{"query": "secret"}},
+		}}, nil
+	case 2:
+		return &types.GenerateResult{FinishReason: types.FinishReasonToolCalls, ToolCalls: []types.ToolCall{
+			{ID: "c2", ToolName: "secret", Arguments: map[string]interface{}{}},
+		}}, nil
+	default:
+		return &types.GenerateResult{Text: "done", FinishReason: types.FinishReasonStop}, nil
+	}
+}
+func (m *wfToolSearchModel) DoStream(_ context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	chunks := []provider.StreamChunk{{Type: provider.ChunkTypeText, Text: "ok"}, {Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop}}
+	return testutil.NewMockTextStream(chunks), nil
+}
+
+// TestWorkflowAgentDeferredToolDiscovery closes audit row #24
+// (state/parity/sep_23_2026/core-ai-part00.md): a WorkflowAgent tool marked
+// DeferLoading must be hidden from the model until ai.ToolSearch() surfaces
+// it, then callable on the very next step. Mirrors TS
+// workflow/stream-text-iterator.ts's createToolSearchState +
+// prepareToolSearch(filterActiveTools(...)), built on ai.NewToolSearchState
+// / ai.ToolSearch (pkg/ai/tool_search.go, merged by P1-2c).
+func TestWorkflowAgentDeferredToolDiscovery(t *testing.T) {
+	model := &wfToolSearchModel{}
+	secretExecuted := false
+	deferredTool := types.Tool{
+		Name:         "secret",
+		Description:  "a secret tool",
+		DeferLoading: true,
+		Type:         types.ToolTypeFunction,
+		Parameters:   map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+		Execute: func(_ context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			secretExecuted = true
+			return "ok", nil
+		},
+	}
+
+	wa, err := NewWorkflowAgent(WorkflowAgent{
+		Model:    model,
+		Tools:    []types.Tool{ai.ToolSearch(), deferredTool},
+		StopWhen: []ai.StopCondition{ai.StepCountIs(10)},
+	})
+	if err != nil {
+		t.Fatalf("NewWorkflowAgent() error = %v", err)
+	}
+
+	result, err := wa.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "hi"})
+	if err != nil {
+		t.Fatalf("GenerateWithOptions() error = %v", err)
+	}
+
+	if len(model.toolNamesSeen) < 2 {
+		t.Fatalf("expected at least 2 model calls, got %d", len(model.toolNamesSeen))
+	}
+	for _, name := range model.toolNamesSeen[0] {
+		if name == "secret" {
+			t.Fatalf("step 1 tools = %v, want secret hidden until discovered", model.toolNamesSeen[0])
+		}
+	}
+	var discoveredOnStep2 bool
+	for _, name := range model.toolNamesSeen[1] {
+		if name == "secret" {
+			discoveredOnStep2 = true
+		}
+	}
+	if !discoveredOnStep2 {
+		t.Fatalf("step 2 tools = %v, want secret discovered and visible", model.toolNamesSeen[1])
+	}
+	if !secretExecuted {
+		t.Fatal("expected the deferred tool to be executed once discovered")
+	}
+	if result.FinishReason != types.FinishReasonStop {
+		t.Fatalf("FinishReason = %v, want stop", result.FinishReason)
 	}
 }

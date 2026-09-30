@@ -159,7 +159,7 @@ func TestAdaptiveThinkingConfiguration(t *testing.T) {
 			},
 			wantThinkingKey: true,
 			wantType:        "enabled",
-			wantBudget:      false,
+			wantBudget:      true, // TS defaults the budget to 1024 with a warning
 		},
 		{
 			name: "disabled thinking",
@@ -224,8 +224,12 @@ func TestAdaptiveThinkingConfiguration(t *testing.T) {
 				}
 
 				if tt.wantBudget {
-					if thinkingMap["budget_tokens"] != *tt.thinking.BudgetTokens {
-						t.Errorf("thinking budget_tokens = %v, want %v", thinkingMap["budget_tokens"], *tt.thinking.BudgetTokens)
+					wantBudgetTokens := 1024
+					if tt.thinking.BudgetTokens != nil {
+						wantBudgetTokens = *tt.thinking.BudgetTokens
+					}
+					if thinkingMap["budget_tokens"] != wantBudgetTokens {
+						t.Errorf("thinking budget_tokens = %v, want %v", thinkingMap["budget_tokens"], wantBudgetTokens)
 					}
 				}
 			}

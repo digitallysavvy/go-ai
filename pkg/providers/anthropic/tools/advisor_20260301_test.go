@@ -34,3 +34,28 @@ func TestAdvisor20260301_ToolShape(t *testing.T) {
 		t.Fatal("provider-executed advisor tool should fail local execution")
 	}
 }
+
+// TestAdvisor20260301_MaxTokens verifies that MaxTokens is serialized as
+// max_tokens (TS advisor_20260301.ts / anthropic-prepare-tools.ts: "...(args.maxTokens
+// !== undefined && { max_tokens: args.maxTokens })").
+func TestAdvisor20260301_MaxTokens(t *testing.T) {
+	maxTokens := 2048
+	tool := Advisor20260301(Advisor20260301Args{
+		Model:     "claude-opus-4-7",
+		MaxTokens: &maxTokens,
+	})
+	mapper := tool.ProviderOptions.(interface{ ToAnthropicAPIMap() map[string]interface{} })
+	m := mapper.ToAnthropicAPIMap()
+	if m["max_tokens"] != 2048 {
+		t.Fatalf("max_tokens = %v, want 2048", m["max_tokens"])
+	}
+}
+
+func TestAdvisor20260301_MaxTokensAbsentByDefault(t *testing.T) {
+	tool := Advisor20260301(Advisor20260301Args{Model: "claude-opus-4-7"})
+	mapper := tool.ProviderOptions.(interface{ ToAnthropicAPIMap() map[string]interface{} })
+	m := mapper.ToAnthropicAPIMap()
+	if _, ok := m["max_tokens"]; ok {
+		t.Fatalf("max_tokens should be absent when MaxTokens is nil, got %v", m["max_tokens"])
+	}
+}

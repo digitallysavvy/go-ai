@@ -17,7 +17,7 @@ import (
 
 type interactionsStream struct {
 	ctx             context.Context
-	provider        *Provider
+	client          *internalhttp.Client
 	reader          io.ReadCloser
 	parser          *streaming.SSEParser
 	interactionID   string
@@ -37,7 +37,16 @@ type interactionsStream struct {
 	lastEventID     string
 	resumable       bool
 	finished        bool
+
+	// requestBody is the raw request body this stream was opened with,
+	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
+	// "stream request body field").
+	requestBody interface{}
 }
+
+// RequestBody implements provider.StreamRequestBody, exposing the raw
+// request body that was sent to open this stream.
+func (s *interactionsStream) RequestBody() interface{} { return s.requestBody }
 
 type interactionOpenBlock struct {
 	kind         string
@@ -57,10 +66,10 @@ type interactionOpenBlock struct {
 	startEmitted bool
 }
 
-func newInteractionsStream(ctx context.Context, p *Provider, interactionID string, headers map[string]string, warnings []types.Warning, responseHeaders map[string]string, timeoutMs int) (provider.TextStream, error) {
+func newInteractionsStream(ctx context.Context, client *internalhttp.Client, interactionID string, headers map[string]string, warnings []types.Warning, responseHeaders map[string]string, timeoutMs int) (provider.TextStream, error) {
 	s := &interactionsStream{
 		ctx:             ctx,
-		provider:        p,
+		client:          client,
 		interactionID:   interactionID,
 		headers:         headers,
 		responseHeaders: responseHeaders,
@@ -75,10 +84,10 @@ func newInteractionsStream(ctx context.Context, p *Provider, interactionID strin
 	return s, nil
 }
 
-func newInteractionsEventStream(ctx context.Context, p *Provider, reader io.ReadCloser, interactionID string, headers map[string]string, warnings []types.Warning, responseHeaders map[string]string, timeoutMs int) provider.TextStream {
+func newInteractionsEventStream(ctx context.Context, client *internalhttp.Client, reader io.ReadCloser, interactionID string, headers map[string]string, warnings []types.Warning, responseHeaders map[string]string, timeoutMs int) provider.TextStream {
 	return &interactionsStream{
 		ctx:             ctx,
-		provider:        p,
+		client:          client,
 		reader:          reader,
 		parser:          streaming.NewSSEParser(reader),
 		interactionID:   interactionID,
@@ -121,7 +130,7 @@ func newSynthesizedInteractionsStream(response interactionsResponse, warnings []
 			chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: p.ToolCallID, ToolName: p.ToolName, Arguments: p.Arguments, RawArguments: p.Input, ProviderExecuted: p.ProviderExecuted, ProviderMetadata: providerMetaMap(p.ThoughtSignature, normalizedInteractionID(response.ID)), ThoughtSignature: p.ThoughtSignature}, ProviderMetadata: p.ProviderMetadata})
 		}
 	}
-	chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: mapInteractionsFinishReason(response.Status, hasFunctionCall), Usage: usagePtr(convertInteractionsUsage(response.Usage)), ProviderMetadata: finishMetadata(response.ID, response.ServiceTier, response.Usage)})
+	chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: mapInteractionsFinishReason(response.Status, hasFunctionCall), RawFinishReason: response.Status, Usage: usagePtr(convertInteractionsUsage(response.Usage)), ProviderMetadata: finishMetadata(response.ID, response.ServiceTier, response.Usage)})
 	return &sliceTextStream{chunks: chunks}
 }
 
@@ -193,7 +202,7 @@ func (s *interactionsStream) Err() error {
 
 func (s *interactionsStream) Close() error {
 	if s.resumable && !s.completed && s.interactionID != "" {
-		_ = (&InteractionsLanguageModel{provider: s.provider}).cancelInteraction(context.Background(), s.interactionID, s.headers)
+		_ = (&InteractionsLanguageModel{cfg: InteractionsConfig{Client: s.client}}).cancelInteraction(context.Background(), s.interactionID, s.headers)
 	}
 	if s.reader == nil {
 		return nil
@@ -206,7 +215,7 @@ func (s *interactionsStream) openGETStream() error {
 	if s.lastEventID != "" {
 		query["last_event_id"] = s.lastEventID
 	}
-	resp, err := s.provider.client.DoStream(s.ctx, internalhttp.Request{
+	resp, err := s.client.DoStream(s.ctx, internalhttp.Request{
 		Method:  http.MethodGet,
 		Path:    "/interactions/" + url.PathEscape(s.interactionID),
 		Query:   query,
@@ -226,7 +235,7 @@ func (s *interactionsStream) reopenAfterEOF() error {
 	}
 	select {
 	case <-s.ctx.Done():
-		_ = (&InteractionsLanguageModel{provider: s.provider}).cancelInteraction(context.Background(), s.interactionID, s.headers)
+		_ = (&InteractionsLanguageModel{cfg: InteractionsConfig{Client: s.client}}).cancelInteraction(context.Background(), s.interactionID, s.headers)
 		return s.ctx.Err()
 	default:
 		return s.openGETStream()
@@ -319,6 +328,11 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 				open.data = firstNonEmpty(delta.Data, open.data)
 				open.mimeType = firstNonEmpty(delta.MimeType, open.mimeType)
 				open.uri = firstNonEmpty(delta.URI, open.uri)
+			case "video":
+				open.kind = "video"
+				open.data = firstNonEmpty(delta.Data, open.data)
+				open.mimeType = firstNonEmpty(delta.MimeType, open.mimeType)
+				open.uri = firstNonEmpty(delta.URI, open.uri)
 			}
 		case open.kind == "text" && delta.Type == "text":
 			if delta.Text != "" {
@@ -348,6 +362,20 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 			open.data = firstNonEmpty(delta.Data, open.data)
 			open.mimeType = firstNonEmpty(delta.MimeType, open.mimeType)
 			open.uri = firstNonEmpty(delta.URI, open.uri)
+		case open.kind == "video" && delta.Type == "video":
+			open.data = firstNonEmpty(delta.Data, open.data)
+			open.mimeType = firstNonEmpty(delta.MimeType, open.mimeType)
+			open.uri = firstNonEmpty(delta.URI, open.uri)
+		case open.kind == "processing_call" || open.kind == "processing_result":
+			if delta.Signature != "" {
+				open.signature = delta.Signature
+			}
+			if open.kind == "processing_call" && delta.ID != "" {
+				open.toolCallID = delta.ID
+			}
+			if open.kind == "processing_result" && delta.CallID != "" {
+				open.callID = delta.CallID
+			}
 		case open.kind == "function_call" && delta.Type == "arguments_delta":
 			s.hasFunction = true
 			var fragment string
@@ -434,6 +462,22 @@ func (s *interactionsStream) stopBlock(open *interactionOpenBlock) {
 			fileData := types.FileData{Type: types.FileDataTypeURL, URL: open.uri, MediaType: firstNonEmpty(open.mimeType, "image/png")}
 			s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeFile, GeneratedFileContent: &types.GeneratedFileContent{MediaType: fileData.MediaType, FileData: fileData, URL: open.uri, ProviderMetadata: meta}, ProviderMetadata: meta})
 		}
+	case "video":
+		if open.data != "" {
+			data, _ := base64.StdEncoding.DecodeString(open.data)
+			meta := providerMetaRaw("", s.interactionID)
+			s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeFile, GeneratedFileContent: &types.GeneratedFileContent{MediaType: firstNonEmpty(open.mimeType, "video/mp4"), Data: data, ProviderMetadata: meta}, ProviderMetadata: meta})
+		} else if open.uri != "" {
+			meta := providerMetaRaw("", s.interactionID)
+			fileData := types.FileData{Type: types.FileDataTypeURL, URL: open.uri, MediaType: firstNonEmpty(open.mimeType, "video/mp4")}
+			s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeFile, GeneratedFileContent: &types.GeneratedFileContent{MediaType: fileData.MediaType, FileData: fileData, URL: open.uri, ProviderMetadata: meta}, ProviderMetadata: meta})
+		}
+	case "processing_call":
+		meta := processingMeta(open.signature, s.interactionID, open.toolCallID, "")
+		s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeCustom, CustomContent: &types.CustomContent{Kind: "google.processing_call", ProviderMetadata: meta}, ProviderMetadata: meta})
+	case "processing_result":
+		meta := processingMeta(open.signature, s.interactionID, "", open.callID)
+		s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeCustom, CustomContent: &types.CustomContent{Kind: "google.processing_result", ProviderMetadata: meta}, ProviderMetadata: meta})
 	case "function_call":
 		var args map[string]interface{}
 		if open.argsString != "" {
@@ -489,6 +533,7 @@ func (s *interactionsStream) appendFinish() {
 	s.buffer = append(s.buffer, &provider.StreamChunk{
 		Type:             provider.ChunkTypeFinish,
 		FinishReason:     mapInteractionsFinishReason(s.finishStatus, s.hasFunction),
+		RawFinishReason:  s.finishStatus,
 		Usage:            usagePtr(convertInteractionsUsage(s.usage)),
 		ProviderMetadata: finishMetadata(s.interactionID, s.serviceTier, s.usage),
 	})
@@ -500,8 +545,9 @@ func usagePtr(u types.Usage) *types.Usage {
 
 func finishMetadata(interactionID, serviceTier string, usage *interactionsUsage) json.RawMessage {
 	google := pruneMap(map[string]interface{}{
-		"interactionId": emptyToNil(interactionID),
-		"serviceTier":   emptyToNil(serviceTier),
+		"interactionId":          emptyToNil(interactionID),
+		"serviceTier":            emptyToNil(serviceTier),
+		"outputTokensByModality": outputTokensByModalityMap(usage),
 	})
 	if google == nil {
 		google = map[string]interface{}{}
@@ -535,7 +581,16 @@ func stringsTrimSuffix(v, suffix string) string {
 type sliceTextStream struct {
 	chunks []*provider.StreamChunk
 	err    error
+
+	// requestBody is the raw request body this stream was opened with,
+	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
+	// "stream request body field").
+	requestBody interface{}
 }
+
+// RequestBody implements provider.StreamRequestBody, exposing the raw
+// request body that was sent to open this stream.
+func (s *sliceTextStream) RequestBody() interface{} { return s.requestBody }
 
 func (s *sliceTextStream) Next() (*provider.StreamChunk, error) {
 	if len(s.chunks) == 0 {

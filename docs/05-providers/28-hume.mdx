@@ -1,0 +1,96 @@
+---
+title: Hume Provider
+description: Setup and usage guide for Hume text-to-speech with Go-AI SDK
+---
+
+# Hume Provider
+
+Hume provides expressive text-to-speech synthesis. It does not offer
+language, embedding, image, or transcription models — `LanguageModel`,
+`EmbeddingModel`, `ImageModel`, and `TranscriptionModel` all return errors.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/hume"
+)
+```
+
+### Configuration
+
+```go
+provider := hume.New(hume.Config{
+    APIKey: os.Getenv("HUME_API_KEY"),
+})
+```
+
+`hume.Config` also accepts `BaseURL` (default `https://api.hume.ai`).
+
+### Get API Key
+
+```bash
+export HUME_API_KEY=...
+```
+
+## Speech Synthesis
+
+Hume has no selectable model ID — `SpeechModel`'s `modelID` argument is
+accepted for interface parity but ignored, matching the TypeScript SDK's
+`speech()` factory (which takes no model ID parameter):
+
+```go
+speechModel, err := provider.SpeechModel("")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+    Model: speechModel,
+    Text:  "Hello from Hume.",
+})
+```
+
+### Multi-Utterance Context
+
+Pass a list of utterances (each with its own voice, speed, description,
+and trailing silence), or continue a previous generation by ID, through
+`providerOptions.hume.context`:
+
+```go
+result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+    Model: speechModel,
+    Text:  "", // ignored when context.utterances is set
+    ProviderOptions: map[string]interface{}{
+        "hume": hume.SpeechModelOptions{
+            Context: &hume.Context{
+                Utterances: []hume.Utterance{
+                    {
+                        Text:        "Welcome to the show.",
+                        Description: "warm, welcoming tone",
+                        Voice:       &hume.UtteranceVoice{Name: "Ava Song", Provider: "HUME_AI"},
+                    },
+                },
+            },
+        },
+    },
+})
+```
+
+To continue a previous generation instead of specifying utterances, set
+`Context.GenerationID` (leave `Utterances` empty).
+
+## Workflow Serialization
+
+Hume speech models can cross a workflow boundary with
+`providerutils.SerializeModel` / `DeserializeModel`. See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
+for the mechanism.
+
+## See Also
+
+- [API Reference: GenerateSpeech](../07-reference/ai/generate-speech.mdx)
+- [Hume Documentation](https://dev.hume.ai)

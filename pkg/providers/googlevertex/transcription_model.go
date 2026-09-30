@@ -222,6 +222,12 @@ func convertVertexTranscriptionResponse(resp vertexTranscriptionResponse, modelI
 		Timestamps:        segments,
 		Language:          language,
 		DurationInSeconds: duration,
+		// TS always returns `warnings: []` (an empty array is declared and
+		// never populated in GoogleVertexTranscriptionModel.doGenerate) --
+		// matched explicitly here rather than leaving Warnings nil, since
+		// the shared Go type's `omitempty` tag would otherwise drop the key
+		// entirely instead of emitting an empty array like TS does.
+		Warnings: []types.Warning{},
 		Response: &types.ResponseMetadata{
 			Timestamp: time.Now(),
 			ModelID:   modelID,

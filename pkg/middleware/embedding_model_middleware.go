@@ -165,3 +165,23 @@ func (w *wrappedEmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string
 
 	return doEmbedMany()
 }
+
+// MaxInputBytesPerCall forwards the wrapped model's experimental UTF-8 input
+// byte budget (see provider.EmbeddingModelMaxInputBytesPerCall). Returns 0
+// (no limit) when the wrapped model does not expose one.
+func (w *wrappedEmbeddingModel) MaxInputBytesPerCall() int {
+	if m, ok := w.model.(provider.EmbeddingModelMaxInputBytesPerCall); ok {
+		return m.MaxInputBytesPerCall()
+	}
+	return 0
+}
+
+// TransformEmbeddingProviderOptions forwards the wrapped model's experimental
+// provider-options transformer (see provider.EmbeddingModelProviderOptionsTransformer).
+// Returns the options unchanged when the wrapped model does not expose one.
+func (w *wrappedEmbeddingModel) TransformEmbeddingProviderOptions(ctx context.Context, input provider.EmbeddingProviderOptionsTransformInput) (map[string]interface{}, error) {
+	if t, ok := w.model.(provider.EmbeddingModelProviderOptionsTransformer); ok {
+		return t.TransformEmbeddingProviderOptions(ctx, input)
+	}
+	return input.ProviderOptions, nil
+}

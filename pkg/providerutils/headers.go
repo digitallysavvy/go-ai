@@ -74,6 +74,16 @@ func (s *responseMetadataStream) Next() (*provider.StreamChunk, error) {
 func (s *responseMetadataStream) Err() error   { return s.inner.Err() }
 func (s *responseMetadataStream) Close() error { return s.inner.Close() }
 
+// RequestBody implements provider.StreamRequestBody by delegating to inner
+// when inner implements it, so wrapping a stream in WithResponseMetadata
+// doesn't hide the capability from pkg/ai/stream.go's type assertion.
+func (s *responseMetadataStream) RequestBody() interface{} {
+	if rb, ok := s.inner.(provider.StreamRequestBody); ok {
+		return rb.RequestBody()
+	}
+	return nil
+}
+
 // WithResponseMetadata wraps stream so that a ChunkTypeResponseMetadata chunk
 // carrying the given HTTP response headers is emitted before provider content.
 // A leading ChunkTypeStreamStart is kept first so warnings preserve TS ordering.

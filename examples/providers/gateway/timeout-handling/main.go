@@ -42,8 +42,8 @@ func main() {
 	defer cancel1()
 
 	_, err = ai.GenerateText(ctx1, ai.GenerateTextOptions{
-		Model: textModel,
-		Prompt: "Write a detailed essay about the history of artificial intelligence.",
+		Model:     textModel,
+		Prompt:    "Write a detailed essay about the history of artificial intelligence.",
 		MaxTokens: ptr(1000),
 	})
 
@@ -67,8 +67,8 @@ func main() {
 	defer cancel2()
 
 	result, err := ai.GenerateText(ctx2, ai.GenerateTextOptions{
-		Model: textModel,
-		Prompt: "Explain what the AI Gateway is in one sentence.",
+		Model:     textModel,
+		Prompt:    "Explain what the AI Gateway is in one sentence.",
 		MaxTokens: ptr(100),
 	})
 

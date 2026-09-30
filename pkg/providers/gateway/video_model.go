@@ -55,9 +55,9 @@ func (m *VideoModel) MaxVideosPerCall() *int {
 	return &maxVideos
 }
 
-// DoGenerate generates videos based on the given options via SSE stream
-func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3CallOptions) (*provider.VideoModelV3Response, error) {
-	// Build request body
+// buildRequestBody builds the shared JSON request body for DoGenerate and
+// DoStart from call options (TS GatewayVideoModel#buildRequestBody).
+func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions) (map[string]interface{}, error) {
 	body := map[string]interface{}{}
 
 	body["prompt"] = opts.Prompt
@@ -83,6 +83,14 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 		body["seed"] = *opts.Seed
 	}
 
+	if opts.GenerateAudio != nil {
+		body["generateAudio"] = *opts.GenerateAudio
+	}
+
+	if opts.ProviderOptions != nil {
+		body["providerOptions"] = opts.ProviderOptions
+	}
+
 	// Handle image file for image-to-video generation
 	if opts.Image != nil {
 		encodedImage, err := m.encodeVideoFile(opts.Image)
@@ -92,8 +100,42 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 		body["image"] = encodedImage
 	}
 
-	if opts.ProviderOptions != nil {
-		body["providerOptions"] = opts.ProviderOptions
+	if len(opts.FrameImages) > 0 {
+		frames := make([]map[string]interface{}, 0, len(opts.FrameImages))
+		for _, frame := range opts.FrameImages {
+			encodedImage, err := m.encodeVideoFile(&frame.Image)
+			if err != nil {
+				return nil, fmt.Errorf("failed to encode frame image: %w", err)
+			}
+			frames = append(frames, map[string]interface{}{
+				"frameType": frame.FrameType,
+				"image":     encodedImage,
+			})
+		}
+		body["frameImages"] = frames
+	}
+
+	if len(opts.InputReferences) > 0 {
+		refs := make([]interface{}, 0, len(opts.InputReferences))
+		for i := range opts.InputReferences {
+			encoded, err := m.encodeVideoFile(&opts.InputReferences[i])
+			if err != nil {
+				return nil, fmt.Errorf("failed to encode input reference: %w", err)
+			}
+			refs = append(refs, encoded)
+		}
+		body["inputReferences"] = refs
+	}
+
+	return body, nil
+}
+
+// DoGenerate generates videos based on the given options via SSE stream
+func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3CallOptions) (*provider.VideoModelV3Response, error) {
+	// Build request body
+	body, err := m.buildRequestBody(opts)
+	if err != nil {
+		return nil, err
 	}
 
 	// Build headers
@@ -143,6 +185,164 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 	}
 
 	return result, nil
+}
+
+// HandleWebhookOption signals that the Gateway natively supports webhooks for
+// the start/status flow: the Gateway notifies the caller's URL on completion
+// (DoStart maps it to the `callbackUrl` wire field), so the factory's URL and
+// `received` pass straight through (TS GatewayVideoModel#handleWebhookOption).
+func (m *VideoModel) HandleWebhookOption(ctx context.Context, factory provider.VideoWebhookFactory) (string, provider.VideoWebhookReceived, error) {
+	url, received, err := factory(ctx)
+	if err != nil {
+		return "", nil, err
+	}
+	return url, received, nil
+}
+
+// DoStart starts an asynchronous video generation via the Gateway's
+// /video-model/start endpoint and returns an opaque operation reference.
+func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3StartOptions) (*provider.VideoModelV3OperationStartResult, error) {
+	body, err := m.buildRequestBody(&opts.VideoModelV3CallOptions)
+	if err != nil {
+		return nil, err
+	}
+	// The spec option is webhookUrl; the Gateway's wire contract for a
+	// completion webhook is callbackUrl.
+	if opts.WebhookURL != "" {
+		body["callbackUrl"] = opts.WebhookURL
+	}
+
+	headers := m.getModelConfigHeaders()
+	AddO11yHeaders(headers, GetO11yHeaders(ctx))
+	for k, v := range opts.Headers {
+		headers[k] = v
+	}
+
+	var response gatewayVideoStartResponse
+	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+		Method:  http.MethodPost,
+		Path:    "/video-model/start",
+		Body:    body,
+		Headers: headers,
+	}, &response)
+	if err != nil {
+		return nil, m.handleErrorWithContext(ctx, err)
+	}
+
+	return &provider.VideoModelV3OperationStartResult{
+		Operation:        response.Operation,
+		Warnings:         convertWarningData(response.Warnings),
+		ProviderMetadata: response.ProviderMetadata,
+		Response: provider.VideoModelV3ResponseInfo{
+			Timestamp: time.Now(),
+			ModelID:   m.modelID,
+			Headers:   flattenHeaders(httpResp.Headers),
+		},
+	}, nil
+}
+
+// DoStatus checks the status of an asynchronous video generation started
+// with DoStart via the Gateway's /video-model/status endpoint.
+func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3StatusOptions) (*provider.VideoModelV3OperationStatusResult, error) {
+	headers := m.getModelConfigHeaders()
+	AddO11yHeaders(headers, GetO11yHeaders(ctx))
+	for k, v := range opts.Headers {
+		headers[k] = v
+	}
+
+	var response gatewayVideoStatusResponse
+	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+		Method:  http.MethodPost,
+		Path:    "/video-model/status",
+		Body:    map[string]interface{}{"operation": opts.Operation},
+		Headers: headers,
+	}, &response)
+	if err != nil {
+		return nil, m.handleErrorWithContext(ctx, err)
+	}
+
+	responseInfo := provider.VideoModelV3ResponseInfo{
+		Timestamp: time.Now(),
+		ModelID:   m.modelID,
+		Headers:   flattenHeaders(httpResp.Headers),
+	}
+
+	switch response.Status {
+	case "completed":
+		videos := make([]provider.VideoModelV3VideoData, 0, len(response.Videos))
+		for _, v := range response.Videos {
+			videos = append(videos, provider.VideoModelV3VideoData{
+				Type:      v.Type,
+				URL:       v.URL,
+				Data:      v.Data,
+				MediaType: v.MediaType,
+			})
+		}
+		return &provider.VideoModelV3OperationStatusResult{
+			Status:           provider.VideoOperationStatusCompleted,
+			Videos:           videos,
+			Warnings:         convertWarningData(response.Warnings),
+			ProviderMetadata: response.ProviderMetadata,
+			Response:         responseInfo,
+		}, nil
+
+	case "error":
+		return &provider.VideoModelV3OperationStatusResult{
+			Status:           provider.VideoOperationStatusError,
+			Error:            response.Error,
+			ProviderMetadata: response.ProviderMetadata,
+			Response:         responseInfo,
+		}, nil
+
+	case "cancelled":
+		// The Gateway reports cooperative cancellation as its own terminal
+		// status; the v4 operation union has no cancelled state, so surface
+		// it as a terminal error rather than polling forever.
+		return &provider.VideoModelV3OperationStatusResult{
+			Status:           provider.VideoOperationStatusError,
+			Error:            "Video generation was cancelled.",
+			ProviderMetadata: response.ProviderMetadata,
+			Response:         responseInfo,
+		}, nil
+
+	default:
+		return &provider.VideoModelV3OperationStatusResult{
+			Status:           provider.VideoOperationStatusPending,
+			Warnings:         convertWarningData(response.Warnings),
+			ProviderMetadata: response.ProviderMetadata,
+			Response:         responseInfo,
+		}, nil
+	}
+}
+
+// gatewayVideoStartResponse is the JSON body returned by /video-model/start.
+type gatewayVideoStartResponse struct {
+	Operation        json.RawMessage        `json:"operation"`
+	Warnings         []warningData          `json:"warnings,omitempty"`
+	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
+}
+
+// gatewayVideoStatusResponse is the JSON body returned by /video-model/status.
+type gatewayVideoStatusResponse struct {
+	Status           string                 `json:"status"`
+	Videos           []videoData            `json:"videos,omitempty"`
+	Warnings         []warningData          `json:"warnings,omitempty"`
+	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
+	Error            string                 `json:"error,omitempty"`
+}
+
+func convertWarningData(warnings []warningData) []types.Warning {
+	out := make([]types.Warning, 0, len(warnings))
+	for _, w := range warnings {
+		out = append(out, types.Warning{
+			Type:    w.Type,
+			Feature: w.Feature,
+			Setting: w.Setting,
+			Details: w.Details,
+			Message: w.Message,
+		})
+	}
+	return out
 }
 
 // SSEVideoEvent represents a result or error event in the gateway video SSE stream.
@@ -288,6 +488,7 @@ func (m *VideoModel) encodeVideoFile(file *provider.VideoModelV3File) (interface
 		if file.MediaType != "" {
 			result["mediaType"] = file.MediaType
 		}
+		addVideoFileProviderOptions(result, file.ProviderOptions)
 		return result, nil
 	}
 
@@ -300,10 +501,21 @@ func (m *VideoModel) encodeVideoFile(file *provider.VideoModelV3File) (interface
 		if file.MediaType != "" {
 			result["mediaType"] = file.MediaType
 		}
+		addVideoFileProviderOptions(result, file.ProviderOptions)
 		return result, nil
 	}
 
 	return nil, fmt.Errorf("invalid video file: must have either URL or binary data")
+}
+
+// addVideoFileProviderOptions copies file.ProviderOptions into the encoded
+// wire body, mirroring TS maybeEncodeVideoFile's `{...file, data: ...}`
+// spread, which preserves providerOptions (and any other keys) on the
+// original file object instead of dropping them.
+func addVideoFileProviderOptions(result map[string]interface{}, providerOptions map[string]interface{}) {
+	if providerOptions != nil {
+		result["providerOptions"] = providerOptions
+	}
 }
 
 // getModelConfigHeaders returns headers specific to the gateway model configuration

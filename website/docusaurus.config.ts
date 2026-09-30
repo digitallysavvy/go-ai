@@ -5,7 +5,7 @@ import type * as Preset from '@docusaurus/preset-classic';
 const config: Config = {
   title: 'Go AI SDK',
   tagline: 'Build production-grade AI applications in Go',
-  favicon: 'img/favicon.svg',
+  favicon: 'img/favicon.png',
 
   url: 'https://digitallysavvy.github.io',
   baseUrl: '/go-ai/',
@@ -13,7 +13,14 @@ const config: Config = {
   projectName: 'go-ai',
   trailingSlash: false,
 
-  onBrokenLinks: 'warn',
+  onBrokenLinks: 'throw',
+
+  stylesheets: [
+    {
+      href: 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap',
+      type: 'text/css',
+    },
+  ],
 
   markdown: {
     format: 'detect',
@@ -73,17 +80,26 @@ const config: Config = {
   ],
 
   themeConfig: {
+    image: 'img/social-card.png',
     colorMode: {
       defaultMode: 'dark',
       disableSwitch: false,
       respectPrefersColorScheme: true,
     },
+    announcementBar: {
+      id: 'star-on-github',
+      content:
+        '⭐️ Go AI SDK is under active development — <a target="_blank" rel="noopener noreferrer" href="https://github.com/digitallysavvy/go-ai">star us on GitHub</a> and check the <a href="/go-ai/docs/migration-guides/from-v0.4-to-v0.5">latest release notes</a>.',
+      backgroundColor: '#00acd7',
+      textColor: '#04121a',
+      isCloseable: true,
+    },
     navbar: {
       title: 'Go AI SDK',
       logo: {
         alt: 'Go AI SDK',
-        src: 'img/logo.svg',
-        srcDark: 'img/logo-dark.svg',
+        src: 'img/logo-mark.png',
+        srcDark: 'img/logo-mark.png',
       },
       items: [
         {

@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -133,9 +134,23 @@ func TestImageModel_DoGenerate_WithFilesUsesEditsMultipart(t *testing.T) {
 	}
 }
 
-func TestImageModel_DoGenerate_EditURLUsesConfiguredHTTPClient(t *testing.T) {
+// TestImageModel_DoGenerate_EditURLDoesNotUseConfiguredHTTPClient guards
+// against a P0 SSRF gap found in review round 2: writeImageFilePart used to
+// fetch a "url"-type edit/mask image (caller-supplied data, not the
+// provider's own endpoint) through the provider's configured HTTP client
+// directly -- no ValidateDownloadURL check, no DNS pinning, no redirect
+// protection and no size limit -- and forwarded the response body to OpenAI
+// as image data. TS's equivalent (fileToBlob -> downloadBlob ->
+// fetchWithValidatedRedirects) never uses the provider's configured fetch for
+// this call and always validates the target; matching that, the edit-image
+// URL must now go through the SSRF-safe download path. A loopback httptest
+// server is a disallowed target under that path, so the correct outcome is a
+// rejection, not a successful download through the configured transport.
+func TestImageModel_DoGenerate_EditURLDoesNotUseConfiguredHTTPClient(t *testing.T) {
 	var downloadHeader string
+	var imageServerHit bool
 	imageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		imageServerHit = true
 		downloadHeader = r.Header.Get("X-Custom-Download-Client")
 		w.Header().Set("Content-Type", "image/png")
 		_, _ = w.Write([]byte{137, 80, 78, 71})
@@ -168,11 +183,14 @@ func TestImageModel_DoGenerate_EditURLUsesConfiguredHTTPClient(t *testing.T) {
 			MediaType: "image/png",
 		}},
 	})
-	if err != nil {
-		t.Fatalf("DoGenerate error = %v", err)
+	if err == nil {
+		t.Fatal("expected the loopback edit-image URL to be rejected by the SSRF-safe download path")
 	}
-	if downloadHeader != "yes" {
-		t.Fatalf("image download did not use configured HTTP client transport; header = %q", downloadHeader)
+	if imageServerHit {
+		t.Fatal("image server was contacted; the disallowed target must be rejected before any request is made")
+	}
+	if downloadHeader == "yes" {
+		t.Fatal("image download used the provider's configured HTTP client transport; it must use the SSRF-safe default download path instead, like TS downloadBlob")
 	}
 }
 
@@ -189,6 +207,70 @@ func TestImageModel_DoGenerate_InvalidTypedProviderOptions(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("DoGenerate should reject invalid outputCompression before making a request")
+	}
+}
+
+// TestImageModel_DoGenerate_QualityXHighMax ports the TS test added in
+// 8487955ba4 (openai-image-model.test.ts) for GPT Image 2.5 Flare/Sunburst's
+// extra quality tiers: "xhigh" and "max" must be accepted (forwarded to the
+// wire, not rejected as invalid), in addition to the prior
+// standard|hd|low|medium|high|auto set.
+func TestImageModel_DoGenerate_QualityXHighMax(t *testing.T) {
+	for _, tc := range []struct {
+		modelID string
+		quality string
+	}{
+		{ModelGPTImage25Flare, "xhigh"},
+		{ModelGPTImage25Flare, "max"},
+		{ModelGPTImage25Sunburst, "xhigh"},
+		{ModelGPTImage25Sunburst, "max"},
+	} {
+		t.Run(tc.modelID+"/"+tc.quality, func(t *testing.T) {
+			var gotQuality string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]interface{}
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				if q, ok := body["quality"].(string); ok {
+					gotQuality = q
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"created":1,"data":[{"b64_json":"aGVsbG8="}]}`))
+			}))
+			defer server.Close()
+
+			p := New(Config{APIKey: "test-key", BaseURL: server.URL + "/v1"})
+			model := NewImageModel(p, tc.modelID)
+
+			_, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+				Prompt: "a cat",
+				ProviderOptions: map[string]interface{}{
+					"openai": OpenAIImageProviderOptions{Quality: tc.quality},
+				},
+			})
+			if err != nil {
+				t.Fatalf("DoGenerate error = %v, want quality %q accepted", err, tc.quality)
+			}
+			if gotQuality != tc.quality {
+				t.Fatalf("quality sent = %q, want %q", gotQuality, tc.quality)
+			}
+		})
+	}
+}
+
+// TestImageModel_DoGenerate_QualityInvalidStillRejected guards against the
+// xhigh/max whitelist addition accidentally becoming a no-op validator.
+func TestImageModel_DoGenerate_QualityInvalidStillRejected(t *testing.T) {
+	p := New(Config{APIKey: "test-key", BaseURL: "http://127.0.0.1:1/v1"})
+	model := NewImageModel(p, ModelGPTImage25Flare)
+
+	_, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt: "a cat",
+		ProviderOptions: map[string]interface{}{
+			"openai": OpenAIImageProviderOptions{Quality: "ultra"},
+		},
+	})
+	if err == nil {
+		t.Fatal("DoGenerate should reject an unknown quality value")
 	}
 }
 

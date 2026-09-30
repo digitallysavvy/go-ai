@@ -2,9 +2,11 @@ package deepgram
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // Provider implements the provider.Provider interface for Deepgram
@@ -15,7 +17,7 @@ type Provider struct {
 
 // Config contains configuration for the Deepgram provider
 type Config struct {
-	// APIKey is the Deepgram API key
+	// APIKey is the Deepgram API key. Falls back to DEEPGRAM_API_KEY.
 	APIKey string
 
 	// BaseURL is the base URL for the Deepgram API (optional)
@@ -28,13 +30,16 @@ func New(cfg Config) *Provider {
 	if baseURL == "" {
 		baseURL = "https://api.deepgram.com"
 	}
+	if cfg.APIKey == "" {
+		cfg.APIKey = os.Getenv("DEEPGRAM_API_KEY")
+	}
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: map[string]string{
+		Headers: version.WithUserAgentSuffix(map[string]string{
 			"Authorization": "Token " + cfg.APIKey,
 			"Content-Type":  "application/json",
-		},
+		}, version.ProviderUserAgent("deepgram")),
 	})
 
 	return &Provider{
@@ -65,7 +70,7 @@ func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
 
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("deepgram does not support speech synthesis")
+	return NewSpeechModel(p, modelID), nil
 }
 
 // TranscriptionModel returns a speech-to-text model by ID

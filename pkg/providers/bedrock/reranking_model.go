@@ -11,6 +11,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // RerankingModel implements provider.RerankingModel for Amazon Bedrock.
@@ -78,7 +79,7 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 		return nil, fmt.Errorf("failed to read rerank response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("AWS Bedrock rerank API returned status %d: %s", resp.StatusCode, string(respBody))
+		return nil, bedrockAPIError(resp.StatusCode, respBody, providerutils.ExtractHeaders(resp.Header))
 	}
 
 	var parsed struct {
@@ -128,8 +129,8 @@ func (m *RerankingModel) buildRequestBody(opts *provider.RerankOptions) (map[str
 			},
 		},
 		"rerankingConfiguration": map[string]interface{}{
-			"type":                                "BEDROCK_RERANKING_MODEL",
-			"amazonBedrockRerankingConfiguration": amazonConfig,
+			"type":                          "BEDROCK_RERANKING_MODEL",
+			"bedrockRerankingConfiguration": amazonConfig,
 		},
 		"sources": sources,
 	}

@@ -13,15 +13,20 @@ type Advisor20260301Caching struct {
 }
 
 type Advisor20260301Args struct {
-	Model   string                  `json:"model"`
-	MaxUses *int                    `json:"maxUses,omitempty"`
-	Caching *Advisor20260301Caching `json:"caching,omitempty"`
+	Model   string `json:"model"`
+	MaxUses *int   `json:"maxUses,omitempty"`
+	// MaxTokens is the maximum number of tokens the advisor can generate per
+	// call, including thinking and text. Minimum 1024. Serialized as
+	// max_tokens (TS advisor_20260301.ts).
+	MaxTokens *int                    `json:"maxTokens,omitempty"`
+	Caching   *Advisor20260301Caching `json:"caching,omitempty"`
 }
 
 type advisor20260301Options struct {
-	Model   string                  `json:"model"`
-	MaxUses *int                    `json:"max_uses,omitempty"`
-	Caching *Advisor20260301Caching `json:"caching,omitempty"`
+	Model     string                  `json:"model"`
+	MaxUses   *int                    `json:"max_uses,omitempty"`
+	MaxTokens *int                    `json:"max_tokens,omitempty"`
+	Caching   *Advisor20260301Caching `json:"caching,omitempty"`
 }
 
 func (a advisor20260301Options) ToAnthropicAPIMap() map[string]interface{} {
@@ -32,6 +37,9 @@ func (a advisor20260301Options) ToAnthropicAPIMap() map[string]interface{} {
 	}
 	if a.MaxUses != nil {
 		m["max_uses"] = *a.MaxUses
+	}
+	if a.MaxTokens != nil {
+		m["max_tokens"] = *a.MaxTokens
 	}
 	if a.Caching != nil {
 		m["caching"] = map[string]interface{}{
@@ -53,7 +61,7 @@ func Advisor20260301(args Advisor20260301Args) types.Tool {
 		Name:            "anthropic.advisor_20260301",
 		Description:     "Anthropic advisor tool for advisory sub-inference with optional per-request limits and caching.",
 		Parameters:      map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "additionalProperties": false},
-		ProviderOptions: advisor20260301Options{Model: args.Model, MaxUses: args.MaxUses, Caching: args.Caching},
+		ProviderOptions: advisor20260301Options{Model: args.Model, MaxUses: args.MaxUses, MaxTokens: args.MaxTokens, Caching: args.Caching},
 		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
 			return nil, fmt.Errorf("advisor tool must be executed by the provider (Anthropic). Set ProviderExecuted: true")
 		},

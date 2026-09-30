@@ -41,6 +41,29 @@ func TestGenerateImage_Basic(t *testing.T) {
 	}
 }
 
+// TestGenerateImage_AppendsAIUserAgent mirrors TS generate-image.ts, which
+// tags every call's headers with `ai/${VERSION}` via withUserAgentSuffix
+// before the model call.
+func TestGenerateImage_AppendsAIUserAgent(t *testing.T) {
+	var capturedHeaders map[string]string
+	m := &testutil.MockImageModel{
+		DoGenerateFunc: func(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
+			capturedHeaders = opts.Headers
+			return &types.ImageResult{Image: []byte("img"), MimeType: "image/png"}, nil
+		},
+	}
+	_, err := GenerateImage(context.Background(), GenerateImageOptions{
+		Model:  m,
+		Prompt: "cat",
+	})
+	if err != nil {
+		t.Fatalf("GenerateImage() error = %v", err)
+	}
+	if capturedHeaders["user-agent"] != "ai/0.5.0" {
+		t.Fatalf("user-agent = %q, want ai/0.5.0", capturedHeaders["user-agent"])
+	}
+}
+
 func TestGenerateImage_Base64ImagesDecodeToGeneratedFiles(t *testing.T) {
 	m := &testutil.MockImageModel{
 		DoGenerateFunc: func(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
@@ -152,6 +175,55 @@ func TestGenerateImage_BatchesByMaxImagesPerCallAndAggregatesResults(t *testing.
 	}
 }
 
+// TestGenerateImage_SumsGatewayCostAcrossSplitCalls ports TS generate-image.ts's
+// gateway cost-summation behavior (audit row dd32de2 / WG10): numeric/decimal-
+// string gateway cost fields must be summed across split multi-call requests,
+// not overwritten by the last call's metadata.
+func TestGenerateImage_SumsGatewayCostAcrossSplitCalls(t *testing.T) {
+	callIndex := 0
+	m := &testutil.MockImageModel{
+		MaxImages: 2,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
+			callIndex++
+			images := make([][]byte, *opts.N)
+			for i := range images {
+				images[i] = []byte{byte(callIndex), byte(i)}
+			}
+			costs := map[int]map[string]interface{}{
+				1: {"cost": "0.05", "marketCost": "1.5"},
+				2: {"cost": "0.025", "marketCost": "0.5"},
+			}
+			return &types.ImageResult{
+				Images:   images,
+				MimeType: "image/png",
+				ProviderMetadata: map[string]interface{}{
+					"gateway": costs[callIndex],
+				},
+			}, nil
+		},
+	}
+	n := 4
+
+	got, err := GenerateImage(context.Background(), GenerateImageOptions{
+		Model:  m,
+		Prompt: "cat",
+		N:      &n,
+	})
+	if err != nil {
+		t.Fatalf("GenerateImage() error = %v", err)
+	}
+	gateway, ok := got.ProviderMetadata["gateway"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("providerMetadata[gateway] = %#v, want map", got.ProviderMetadata["gateway"])
+	}
+	if gateway["cost"] != "0.075" {
+		t.Errorf("cost = %v, want 0.075", gateway["cost"])
+	}
+	if gateway["marketCost"] != "2" {
+		t.Errorf("marketCost = %v, want 2", gateway["marketCost"])
+	}
+}
+
 func TestGenerateImage_DetectsMediaTypeWhenProviderOmitsIt(t *testing.T) {
 	m := &testutil.MockImageModel{
 		DoGenerateFunc: func(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
@@ -244,6 +316,102 @@ func TestGenerateImage_MaxRetriesDoesNotRetryNonRetryableError(t *testing.T) {
 	}
 }
 
+// TestGenerateImage_RetriesUnclassifiedEmptyResult ports TS's
+// RetryableNoImageResultError behavior (audit row 45099daf24 / WG10): a call
+// that returns zero images without IsRetryable=false is retried.
+func TestGenerateImage_RetriesUnclassifiedEmptyResult(t *testing.T) {
+	attempts := 0
+	m := &testutil.MockImageModel{
+		DoGenerateFunc: func(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
+			attempts++
+			if attempts == 1 {
+				return &types.ImageResult{MimeType: "image/png"}, nil // no images, unclassified
+			}
+			return &types.ImageResult{Image: []byte("img"), MimeType: "image/png", Usage: types.ImageUsage{ImageCount: 1}}, nil
+		},
+	}
+	maxRetries := 1
+
+	got, err := GenerateImage(context.Background(), GenerateImageOptions{
+		Model:      m,
+		Prompt:     "cat",
+		MaxRetries: &maxRetries,
+	})
+	if err != nil {
+		t.Fatalf("GenerateImage() error = %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	if string(got.Image.Data) != "img" {
+		t.Fatalf("image = %q, want img", string(got.Image.Data))
+	}
+	// Diagnostics must still include the empty first attempt.
+	if len(got.Calls) != 2 {
+		t.Fatalf("len(Calls) = %d, want 2 (including the empty attempt)", len(got.Calls))
+	}
+	if len(got.Calls[0].Images) != 0 {
+		t.Fatalf("Calls[0].Images = %+v, want empty", got.Calls[0].Images)
+	}
+}
+
+// TestGenerateImage_DoesNotRetryWhenIsRetryableFalse ports TS's
+// `result.isRetryable !== false` check: a provider that marks an empty
+// result as terminal (e.g. content-filter block) must not be retried.
+func TestGenerateImage_DoesNotRetryWhenIsRetryableFalse(t *testing.T) {
+	attempts := 0
+	notRetryable := false
+	m := &testutil.MockImageModel{
+		DoGenerateFunc: func(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
+			attempts++
+			return &types.ImageResult{MimeType: "image/png", IsRetryable: &notRetryable}, nil
+		},
+	}
+	maxRetries := 2
+
+	_, err := GenerateImage(context.Background(), GenerateImageOptions{
+		Model:      m,
+		Prompt:     "cat",
+		MaxRetries: &maxRetries,
+	})
+	if !IsNoImageGeneratedError(err) {
+		t.Fatalf("GenerateImage() error = %v, want NoImageGeneratedError", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1 (no retry on IsRetryable=false)", attempts)
+	}
+}
+
+// TestGenerateImage_NoImageGeneratedErrorCarriesCallDiagnostics ports TS
+// NoImageGeneratedError({calls, responses}) (audit row fc8e8ac / WG10).
+func TestGenerateImage_NoImageGeneratedErrorCarriesCallDiagnostics(t *testing.T) {
+	m := &testutil.MockImageModel{
+		DoGenerateFunc: func(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
+			return &types.ImageResult{
+				MimeType: "image/png",
+				Response: &types.ResponseMetadata{ID: "resp-1", ModelID: "mock-image"},
+			}, nil
+		},
+	}
+	zero := 0
+
+	_, err := GenerateImage(context.Background(), GenerateImageOptions{
+		Model:      m,
+		Prompt:     "cat",
+		MaxRetries: &zero,
+	})
+	var noImg *NoImageGeneratedError
+	if !errors.As(err, &noImg) {
+		t.Fatalf("GenerateImage() error = %v, want *NoImageGeneratedError", err)
+	}
+	if len(noImg.Calls) != 1 || noImg.Calls[0].Response.ID != "resp-1" {
+		t.Fatalf("Calls = %+v", noImg.Calls)
+	}
+	if len(noImg.Responses) != 1 || noImg.Responses[0].ID != "resp-1" {
+		t.Fatalf("Responses = %+v", noImg.Responses)
+	}
+}
+
 func TestGenerateImage_MaxRetriesRejectsNegative(t *testing.T) {
 	maxRetries := -1
 
@@ -286,8 +454,8 @@ func TestGenerateSpeechAndTranscribe_Basic(t *testing.T) {
 			if opts.MimeType != "audio/wav" {
 				t.Fatalf("transcription media type = %q, want audio/wav", opts.MimeType)
 			}
-			if opts.Headers["user-agent"] != "go-ai/0.5.0" {
-				t.Fatalf("transcription user-agent = %q, want go-ai/0.5.0", opts.Headers["user-agent"])
+			if opts.Headers["user-agent"] != "ai/0.5.0" {
+				t.Fatalf("transcription user-agent = %q, want ai/0.5.0", opts.Headers["user-agent"])
 			}
 			if opts.ProviderOptions == nil || len(opts.ProviderOptions) != 0 {
 				t.Fatalf("provider options = %#v, want empty map", opts.ProviderOptions)
@@ -397,7 +565,7 @@ func TestTranscribe_AudioURLCustomDownloadMatchesTypeScript(t *testing.T) {
 			if opts.MimeType != "audio/wav" {
 				t.Fatalf("media type = %q, want detected audio/wav", opts.MimeType)
 			}
-			if opts.Headers["user-agent"] != "custom-agent go-ai/0.5.0" {
+			if opts.Headers["user-agent"] != "custom-agent ai/0.5.0" {
 				t.Fatalf("user-agent = %q", opts.Headers["user-agent"])
 			}
 			return &types.TranscriptionResult{
@@ -655,5 +823,29 @@ func TestCreateTextStreamResponse_ContentType(t *testing.T) {
 	}
 	if string(body) != "hello" {
 		t.Fatalf("body = %q, want hello", string(body))
+	}
+}
+
+func TestAddDecimalStrings(t *testing.T) {
+	tests := []struct {
+		v1, v2  interface{}
+		wantSum string
+		wantOK  bool
+	}{
+		{"0.05", "0.025", "0.075", true},
+		{"1.5", "0.5", "2", true},
+		{"0.9", "0.9", "1.8", true},
+		{"5", "3", "8", true},
+		{"1.25", "3", "4.25", true},
+		{"1.5", 0.5, "", false},    // non-string value
+		{"1.5", nil, "", false},    // missing value
+		{"-1.5", "0.5", "", false}, // negative not allowed (matches TS regex)
+		{"1.5", "abc", "", false},  // non-numeric string
+	}
+	for _, tt := range tests {
+		got, ok := addDecimalStrings(tt.v1, tt.v2)
+		if ok != tt.wantOK || (ok && got != tt.wantSum) {
+			t.Errorf("addDecimalStrings(%#v, %#v) = (%q, %v), want (%q, %v)", tt.v1, tt.v2, got, ok, tt.wantSum, tt.wantOK)
+		}
 	}
 }

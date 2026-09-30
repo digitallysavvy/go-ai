@@ -91,7 +91,9 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	return providerutils.WithResponseMetadata(newOllamaStream(httpResp.Body), httpResp.Header, m.ModelID()), nil
+	stream := newOllamaStream(httpResp.Body)
+	stream.SetRequestBody(reqBody)
+	return providerutils.WithResponseMetadata(stream, httpResp.Header, m.ModelID()), nil
 }
 
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
@@ -147,10 +149,11 @@ func (m *LanguageModel) convertResponse(response ollamaResponse) *types.Generate
 	}
 	choice := response.Choices[0]
 	result := &types.GenerateResult{
-		Text:         choice.Message.Content,
-		FinishReason: providerutils.MapOpenAIFinishReason(choice.FinishReason),
-		Usage:        convertOllamaUsage(response.Usage),
-		RawResponse:  response,
+		Text:            choice.Message.Content,
+		FinishReason:    providerutils.MapOpenAIFinishReason(choice.FinishReason),
+		RawFinishReason: choice.FinishReason,
+		Usage:           convertOllamaUsage(response.Usage),
+		RawResponse:     response,
 	}
 	if len(choice.Message.ToolCalls) > 0 {
 		result.ToolCalls = make([]types.ToolCall, len(choice.Message.ToolCalls))

@@ -24,7 +24,10 @@ func TestOpenAIReasoningHigh(t *testing.T) {
 	}
 }
 
-func TestOpenAIReasoningXHighMapsToHigh(t *testing.T) {
+// TestOpenAIReasoningXHighPassesThrough matches TS getArgs: resolvedReasoningEffort
+// is `openaiOptions.reasoningEffort ?? (isCustomReasoning(reasoning) ? reasoning : undefined)`
+// -- the top-level reasoning level is forwarded verbatim, never collapsed.
+func TestOpenAIReasoningXHighPassesThrough(t *testing.T) {
 	prov := makeTestOpenAIProvider()
 	model := NewLanguageModel(prov, "o3")
 
@@ -32,8 +35,8 @@ func TestOpenAIReasoningXHighMapsToHigh(t *testing.T) {
 	opts := &provider.GenerateOptions{Reasoning: &level}
 	body := model.buildRequestBody(opts, false)
 
-	if body["reasoning_effort"] != "high" {
-		t.Errorf("expected reasoning_effort 'high' for xhigh, got: %v", body["reasoning_effort"])
+	if body["reasoning_effort"] != "xhigh" {
+		t.Errorf("expected reasoning_effort 'xhigh', got: %v", body["reasoning_effort"])
 	}
 }
 
@@ -46,12 +49,12 @@ func TestOpenAIReasoningAllLevels(t *testing.T) {
 		want   string
 		hasKey bool
 	}{
-		{types.ReasoningNone, "disabled", true},
-		{types.ReasoningMinimal, "low", true},
+		{types.ReasoningNone, "none", true},
+		{types.ReasoningMinimal, "minimal", true},
 		{types.ReasoningLow, "low", true},
 		{types.ReasoningMedium, "medium", true},
 		{types.ReasoningHigh, "high", true},
-		{types.ReasoningXHigh, "high", true},
+		{types.ReasoningXHigh, "xhigh", true},
 		{types.ReasoningDefault, "", false},
 	}
 

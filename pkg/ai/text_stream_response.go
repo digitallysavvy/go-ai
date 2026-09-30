@@ -84,27 +84,55 @@ func PipeTextStreamToWriter(ctx context.Context, stream provider.TextStream, w i
 		return fmt.Errorf("writer is required")
 	}
 	bw := bufio.NewWriter(w)
-	defer bw.Flush()
+	// flusher is the Go equivalent of TS write-to-server-response.ts's
+	// `(response as FlushableServerResponse).flush` (e.g. a compressing
+	// ServerResponse middleware exposing a manual flush): an
+	// http.ResponseWriter wrapped by gzip/compression middleware commonly
+	// implements http.Flusher so a chunked/compressed write actually reaches
+	// the client instead of sitting in the compressor's internal buffer.
+	flusher, _ := w.(http.Flusher)
 
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		chunk, err := stream.Next()
-		if err != nil {
-			if err == io.EOF {
-				return nil
+	loopErr := func() error {
+		for {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
 			}
-			return err
-		}
-		if chunk.Type == provider.ChunkTypeText {
-			if _, err := bw.WriteString(chunk.Text); err != nil {
+			chunk, err := stream.Next()
+			if err != nil {
+				if err == io.EOF {
+					return nil
+				}
 				return err
 			}
+			if chunk.Type == provider.ChunkTypeText && chunk.Text != "" {
+				if _, err := bw.WriteString(chunk.Text); err != nil {
+					return err
+				}
+				// Flush after every chunk (audit row b9ac19f, WG-MISC): TS
+				// calls response.write()+flush() per chunk instead of
+				// buffering, so a consumer streaming this response sees
+				// output incrementally instead of in bufio's default 4 KiB
+				// blocks.
+				if err := bw.Flush(); err != nil {
+					return err
+				}
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
 		}
+	}()
+
+	// A failing writer must surface an error even on a short stream: the
+	// deferred bw.Flush() this replaced discarded its return value entirely
+	// (hand-off/WG-MISC item 7f6650b: "response piping returns [an error] so
+	// write errors are catchable").
+	if flushErr := bw.Flush(); flushErr != nil && loopErr == nil {
+		return flushErr
 	}
+	return loopErr
 }
 
 // ToTextStream converts a provider text stream into text delta and error

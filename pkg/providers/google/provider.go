@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/version"
@@ -121,6 +122,16 @@ func (p *Provider) InteractionsAgent(agent string) (provider.LanguageModel, erro
 	return NewInteractionsAgentModel(p, agent), nil
 }
 
+// InteractionsManagedAgent returns an Interactions API model for a
+// user-defined agent created via the Agent Builder API (TS
+// `google.interactions({ managedAgent: id })`).
+func (p *Provider) InteractionsManagedAgent(id string) (provider.LanguageModel, error) {
+	if id == "" {
+		return nil, fmt.Errorf("managed agent id cannot be empty")
+	}
+	return NewInteractionsManagedAgentModel(p, id), nil
+}
+
 // EmbeddingModel returns an embedding model by ID
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
 	// Validate model ID
@@ -151,16 +162,27 @@ func (p *Provider) Speech(modelID string) (provider.SpeechModel, error) {
 	return p.SpeechModel(modelID)
 }
 
-// TranscriptionModel returns a speech-to-text model by ID
+// TranscriptionModel returns a Gemini 3.5 Transcribe speech-to-text model by
+// ID (TS `provider.transcriptionModel`/`provider.transcription`), served
+// through the Interactions API. A "-live" model ID is accepted (matching TS
+// GoogleTranscriptionModelId) but DoTranscribe rejects it at call time: the
+// Go SDK's TranscriptionModel interface has no streaming counterpart yet.
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	// Google doesn't provide transcription through this API
-	return nil, fmt.Errorf("LGoogle does not support transcription through this API")
+	if modelID == "" {
+		return nil, fmt.Errorf("model ID cannot be empty")
+	}
+	return NewTranscriptionModel(p, modelID), nil
+}
+
+// Transcription is an alias for TranscriptionModel (TS `provider.transcription`).
+func (p *Provider) Transcription(modelID string) (provider.TranscriptionModel, error) {
+	return p.TranscriptionModel(modelID)
 }
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
 	// Google doesn't provide reranking models
-	return nil, fmt.Errorf("LGoogle does not support reranking")
+	return nil, fmt.Errorf("Google does not support reranking")
 }
 
 // VideoModel returns a video generation model by ID
@@ -188,4 +210,21 @@ func (p *Provider) APIKey() string {
 
 func (p *Provider) Files() provider.FilesAPI {
 	return &FilesAPI{provider: p}
+}
+
+// EvaluationModel returns an experimental evaluation model backed by the
+// Google Generative AI chat language model. Mirrors TypeScript's
+// GoogleGenerativeAIProvider.evaluationModel: `provider.evaluationModel =
+// (modelId) => new EvaluationLanguageModel({ model: createChatModel(modelId),
+// provider: providerName.replace(/\.generative-ai$/, "") + '.evaluation' })`.
+func (p *Provider) EvaluationModel(modelID string) (provider.EvaluationModel, error) {
+	model, err := p.LanguageModel(modelID)
+	if err != nil {
+		return nil, err
+	}
+	providerName := strings.TrimSuffix(p.Name(), ".generative-ai") + ".evaluation"
+	return ai.NewEvaluationLanguageModel(ai.EvaluationLanguageModelOptions{
+		Model:    model,
+		Provider: providerName,
+	})
 }

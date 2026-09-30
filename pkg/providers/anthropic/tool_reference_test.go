@@ -150,8 +150,8 @@ func TestExtractToolReferences(t *testing.T) {
 			wantNames: nil,
 		},
 		{
-			name: "old style result",
-			result: types.SimpleTextResult("call_def", "search", "simple text"),
+			name:      "old style result",
+			result:    types.SimpleTextResult("call_def", "search", "simple text"),
 			wantNames: nil,
 		},
 	}

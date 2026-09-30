@@ -15,7 +15,7 @@ func TestToAnthropicMessagesCustomContentWithOptions(t *testing.T) {
 			Role: types.RoleAssistant,
 			Content: []types.ContentPart{
 				types.CustomContent{
-					Kind: "anthropic-future-block",
+					Kind: "anthropic.future-block",
 					ProviderOptions: map[string]interface{}{
 						"anthropic": map[string]interface{}{
 							"type":  "future_block",
@@ -55,7 +55,7 @@ func TestToAnthropicMessagesCustomContentNoOptions(t *testing.T) {
 			Role: types.RoleAssistant,
 			Content: []types.ContentPart{
 				types.TextContent{Text: "Answer."},
-				types.CustomContent{Kind: "xai-citation"}, // no ProviderOptions
+				types.CustomContent{Kind: "xai.citation"}, // no ProviderOptions
 			},
 		},
 	}
@@ -127,7 +127,7 @@ func TestToOpenAIMessagesCustomContentWithOptions(t *testing.T) {
 			Role: types.RoleAssistant,
 			Content: []types.ContentPart{
 				types.CustomContent{
-					Kind: "openai-custom",
+					Kind: "openai.custom",
 					ProviderOptions: map[string]interface{}{
 						"openai": map[string]interface{}{
 							"type":  "custom_block",
@@ -164,7 +164,7 @@ func TestToOpenAIMessagesCustomContentNoOptions(t *testing.T) {
 			Role: types.RoleAssistant,
 			Content: []types.ContentPart{
 				types.TextContent{Text: "Hello."},
-				types.CustomContent{Kind: "xai-citation"}, // no openai options
+				types.CustomContent{Kind: "xai.citation"}, // no openai options
 			},
 		},
 	}
@@ -222,6 +222,119 @@ func TestToOpenAIMessagesAssistantToolCallsUseNullContentWhenNoText(t *testing.T
 	}
 }
 
+// TestToOpenAIMessagesAssistantToolCallContentModeText ports Groq's TS
+// converter behavior (convert-to-groq-chat-messages.ts): `content: text`
+// unconditionally, even when there is no text and tool calls are present --
+// never a literal null.
+func TestToOpenAIMessagesAssistantToolCallContentModeText(t *testing.T) {
+	msgs := []types.Message{
+		{
+			Role: types.RoleAssistant,
+			ToolCalls: []types.ToolCall{
+				{ID: "quux", ToolName: "thwomp", Arguments: map[string]interface{}{"foo": "bar"}},
+			},
+		},
+	}
+	result := ToOpenAIMessages(msgs, ToOpenAIMessagesOptions{AssistantToolCallContentMode: AssistantToolCallContentText})
+	if len(result) != 1 {
+		t.Fatalf("len(result) = %d, want 1", len(result))
+	}
+	content, ok := result[0]["content"]
+	if !ok {
+		t.Fatal("assistant content key missing")
+	}
+	if content != "" {
+		t.Fatalf("assistant content = %#v, want empty string", content)
+	}
+}
+
+// TestToOpenAIMessagesAssistantToolCallContentModeOmit ports Cohere's TS
+// converter behavior (convert-to-cohere-chat-prompt.ts):
+// `toolCalls.length > 0 ? undefined : text` -- the "content" key is left out
+// of the message entirely whenever any tool call is present, even if text
+// was also emitted.
+func TestToOpenAIMessagesAssistantToolCallContentModeOmit(t *testing.T) {
+	msgs := []types.Message{
+		{
+			Role:    types.RoleAssistant,
+			Content: []types.ContentPart{types.TextContent{Text: "thinking..."}},
+			ToolCalls: []types.ToolCall{
+				{ID: "quux", ToolName: "thwomp", Arguments: map[string]interface{}{"foo": "bar"}},
+			},
+		},
+	}
+	result := ToOpenAIMessages(msgs, ToOpenAIMessagesOptions{AssistantToolCallContentMode: AssistantToolCallContentOmit})
+	if len(result) != 1 {
+		t.Fatalf("len(result) = %d, want 1", len(result))
+	}
+	if _, ok := result[0]["content"]; ok {
+		t.Fatalf("assistant content = %#v, want key omitted", result[0]["content"])
+	}
+	if _, ok := result[0]["tool_calls"]; !ok {
+		t.Fatal("tool_calls key missing")
+	}
+}
+
+// TestToOpenAIMessagesToolResultOutputTypes ports the TS
+// convert-to-openai-chat-messages.ts tool-result output.type switch (audit
+// row 58a2ad7 / G6). Before this fix, every ToolResultContent using the
+// structured Output field (instead of the deprecated Result field) other
+// than "content" serialized to the literal string "<nil>", because Output
+// being set left the legacy Result field nil.
+func TestToOpenAIMessagesToolResultOutputTypes(t *testing.T) {
+	msg := func(output types.ToolResultOutput) map[string]interface{} {
+		result := ToOpenAIMessages([]types.Message{{
+			Role: types.RoleTool,
+			Content: []types.ContentPart{
+				types.ToolResultContent{ToolCallID: "c1", ToolName: "t", Output: &output},
+			},
+		}})
+		return result[0]
+	}
+
+	t.Run("text", func(t *testing.T) {
+		got := msg(types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "hello"})
+		if got["content"] != "hello" {
+			t.Fatalf("content = %#v, want %q", got["content"], "hello")
+		}
+	})
+
+	t.Run("json", func(t *testing.T) {
+		got := msg(types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: map[string]interface{}{"a": 1}})
+		if got["content"] != `{"a":1}` {
+			t.Fatalf("content = %#v, want JSON string", got["content"])
+		}
+	})
+
+	t.Run("error-text", func(t *testing.T) {
+		got := msg(types.ToolResultOutput{Type: types.ToolResultOutputError, Value: "boom"})
+		if got["content"] != "boom" {
+			t.Fatalf("content = %#v, want %q", got["content"], "boom")
+		}
+	})
+
+	t.Run("error-json", func(t *testing.T) {
+		got := msg(types.ToolResultOutput{Type: types.ToolResultOutputError, Value: map[string]interface{}{"code": 500}})
+		if got["content"] != `{"code":500}` {
+			t.Fatalf("content = %#v, want JSON string", got["content"])
+		}
+	})
+
+	t.Run("execution-denied with reason", func(t *testing.T) {
+		got := msg(types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: "policy"})
+		if got["content"] != "policy" {
+			t.Fatalf("content = %#v, want %q", got["content"], "policy")
+		}
+	})
+
+	t.Run("execution-denied without reason uses default", func(t *testing.T) {
+		got := msg(types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied})
+		if got["content"] != "Tool call execution denied." {
+			t.Fatalf("content = %#v, want default denial text", got["content"])
+		}
+	})
+}
+
 func TestToOpenAIMessagesAssistantWithoutToolCallsUsesEmptyStringContent(t *testing.T) {
 	result := ToOpenAIMessages([]types.Message{{Role: types.RoleAssistant}})
 	if len(result) != 1 {
@@ -255,6 +368,102 @@ func TestToOpenAIMessagesAssistantToolCallNilArgumentsDefaultToEmptyObject(t *te
 	}
 }
 
+// TestToOpenAIMessagesNonObjectRawArgumentsBecomeEmptyObject ports TS's
+// OpenAI-only serializeToolCallArguments (packages/openai/src/chat/convert-to-openai-chat-messages.ts,
+// 2523403): a replayed RawArguments string that doesn't parse to a JSON
+// object -- an array, a scalar, or invalid JSON -- is sent as "{}" rather
+// than forwarded verbatim. This sanitization is OpenAI (and Azure chat,
+// which wraps OpenAIChatLanguageModel in TS) specific, so the test opts in
+// via ToOpenAIMessagesOptions.SanitizeReplayedToolCallArguments.
+func TestToOpenAIMessagesNonObjectRawArgumentsBecomeEmptyObject(t *testing.T) {
+	tests := []struct {
+		name         string
+		rawArguments string
+	}{
+		{"array", `["a","b"]`},
+		{"string", `"just a string"`},
+		{"number", `42`},
+		{"invalid json", `{not valid`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ToOpenAIMessages([]types.Message{
+				{
+					Role: types.RoleAssistant,
+					ToolCalls: []types.ToolCall{
+						{ID: "call_1", ToolName: "tool", RawArguments: tt.rawArguments},
+					},
+				},
+			}, ToOpenAIMessagesOptions{SanitizeReplayedToolCallArguments: true})
+			toolCalls := result[0]["tool_calls"].([]map[string]interface{})
+			function := toolCalls[0]["function"].(map[string]interface{})
+			if function["arguments"] != "{}" {
+				t.Fatalf("arguments = %q, want {}", function["arguments"])
+			}
+		})
+	}
+}
+
+// TestToOpenAIMessagesObjectRawArgumentsPassThrough ensures a valid
+// object RawArguments string is still forwarded verbatim, with and without
+// the OpenAI-only sanitization opted in.
+func TestToOpenAIMessagesObjectRawArgumentsPassThrough(t *testing.T) {
+	for _, opt := range []ToOpenAIMessagesOptions{{}, {SanitizeReplayedToolCallArguments: true}} {
+		result := ToOpenAIMessages([]types.Message{
+			{
+				Role: types.RoleAssistant,
+				ToolCalls: []types.ToolCall{
+					{ID: "call_1", ToolName: "tool", RawArguments: `{"a":1}`},
+				},
+			},
+		}, opt)
+		toolCalls := result[0]["tool_calls"].([]map[string]interface{})
+		function := toolCalls[0]["function"].(map[string]interface{})
+		if function["arguments"] != `{"a":1}` {
+			t.Fatalf("arguments = %q, want {\"a\":1} (opt=%+v)", function["arguments"], opt)
+		}
+	}
+}
+
+// TestToOpenAIMessagesNonObjectRawArgumentsPassThroughByDefault confirms
+// that the default (no ToOpenAIMessagesOptions), used by every non-OpenAI
+// caller of ToOpenAIMessages (Groq, DeepSeek, the openai-compatible family --
+// Together/Fireworks/Mistral/Ollama/etc. -- and Alibaba), forwards
+// RawArguments verbatim even when it isn't a JSON object. TS's equivalents
+// for those providers (e.g. packages/groq/src/convert-to-groq-chat-messages.ts,
+// packages/deepseek/src/chat/convert-to-deepseek-chat-messages.ts,
+// packages/openai-compatible/src/chat/convert-to-openai-compatible-chat-messages.ts,
+// packages/alibaba/src/convert-to-alibaba-chat-messages.ts) all just do
+// `arguments: JSON.stringify(part.input)` with no OpenAI-style
+// sanitization, so only OpenAI's/Azure's own chat conversion should opt in.
+func TestToOpenAIMessagesNonObjectRawArgumentsPassThroughByDefault(t *testing.T) {
+	tests := []struct {
+		name         string
+		rawArguments string
+	}{
+		{"array", `["a","b"]`},
+		{"string", `"just a string"`},
+		{"number", `42`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ToOpenAIMessages([]types.Message{
+				{
+					Role: types.RoleAssistant,
+					ToolCalls: []types.ToolCall{
+						{ID: "call_1", ToolName: "tool", RawArguments: tt.rawArguments},
+					},
+				},
+			})
+			toolCalls := result[0]["tool_calls"].([]map[string]interface{})
+			function := toolCalls[0]["function"].(map[string]interface{})
+			if function["arguments"] != tt.rawArguments {
+				t.Fatalf("arguments = %q, want %q (unsanitized, non-OpenAI default)", function["arguments"], tt.rawArguments)
+			}
+		})
+	}
+}
+
 // TestToGoogleMessagesCustomContentWithOptions verifies that CustomContent
 // with Google-keyed ProviderOptions is forwarded to the parts array.
 func TestToGoogleMessagesCustomContentWithOptions(t *testing.T) {
@@ -263,7 +472,7 @@ func TestToGoogleMessagesCustomContentWithOptions(t *testing.T) {
 			Role: types.RoleAssistant,
 			Content: []types.ContentPart{
 				types.CustomContent{
-					Kind: "google-grounding",
+					Kind: "google.grounding",
 					ProviderOptions: map[string]interface{}{
 						"google": map[string]interface{}{
 							"type":  "grounding_metadata",
@@ -299,7 +508,7 @@ func TestCustomContentNilProviderOptionsNoCrash(t *testing.T) {
 		{
 			Role: types.RoleAssistant,
 			Content: []types.ContentPart{
-				types.CustomContent{Kind: "xai-citation"}, // ProviderOptions is nil
+				types.CustomContent{Kind: "xai.citation"}, // ProviderOptions is nil
 			},
 		},
 	}
@@ -320,7 +529,7 @@ func TestCustomContentProviderMetadataNotForwarded(t *testing.T) {
 			Content: []types.ContentPart{
 				types.TextContent{Text: "Answer."},
 				types.CustomContent{
-					Kind:             "xai-citation",
+					Kind:             "xai.citation",
 					ProviderMetadata: json.RawMessage(`{"url":"https://x.ai"}`),
 					// No ProviderOptions — should be dropped even though metadata is set.
 				},
@@ -605,8 +814,8 @@ func TestToGoogleMessagesExecutionDeniedNoReason(t *testing.T) {
 	fr := parts[0]["functionResponse"].(map[string]interface{})
 	resp := fr["response"].(map[string]interface{})
 	content, _ := resp["content"].(string)
-	if content != "Tool execution denied." {
-		t.Errorf("denial content = %q, want %q", content, "Tool execution denied.")
+	if content != "Tool call execution denied." {
+		t.Errorf("denial content = %q, want %q", content, "Tool call execution denied.")
 	}
 }
 
@@ -745,9 +954,12 @@ func TestToAnthropicMessagesProviderExecutedWebSearchResult(t *testing.T) {
 	}
 }
 
+// A locally executed tool that happens to be named web_search is replayed in a
+// tool message and must stay a generic tool_result (TS: only assistant-role
+// tool results are provider-executed results).
 func TestToAnthropicMessagesLocalWebSearchToolResultStaysGeneric(t *testing.T) {
 	msgs := []types.Message{{
-		Role: types.RoleAssistant,
+		Role: types.RoleTool,
 		Content: []types.ContentPart{
 			types.ToolResultContent{
 				ToolCallID: "call_search",
@@ -839,5 +1051,271 @@ func TestToOpenAIMessagesImageDetailProviderOption(t *testing.T) {
 	secondImage := content[1]["image_url"].(map[string]interface{})
 	if secondImage["detail"] != "low" {
 		t.Fatalf("file image detail: got %v, want low", secondImage["detail"])
+	}
+}
+
+// promptCacheBreakpoint tests below port TS
+// convert-to-openai-chat-messages.test.ts (b2b1bb9): promptCacheBreakpoint is
+// unique to OpenAI's (and Azure's, which wraps it) chat conversion, so these
+// only exercise ToOpenAIMessages with IncludePromptCacheBreakpoint: true.
+
+var breakpointOpts = ToOpenAIMessagesOptions{IncludePromptCacheBreakpoint: true}
+
+func promptCacheBreakpointOption() map[string]interface{} {
+	return map[string]interface{}{
+		"openai": map[string]interface{}{
+			"promptCacheBreakpoint": map[string]interface{}{"mode": "explicit"},
+		},
+	}
+}
+
+// TestToOpenAIMessagesPromptCacheBreakpointIgnoredWithoutOption verifies the
+// feature is inert unless the caller opts in (Groq/DeepSeek/openai-compatible/
+// Alibaba/etc. must never emit prompt_cache_breakpoint).
+func TestToOpenAIMessagesPromptCacheBreakpointIgnoredWithoutOption(t *testing.T) {
+	msgs := []types.Message{
+		{
+			Role: types.RoleUser,
+			Content: []types.ContentPart{
+				types.TextContent{Text: "Hello", ProviderOptions: promptCacheBreakpointOption()},
+			},
+		},
+	}
+	result := ToOpenAIMessages(msgs)
+	if _, isString := result[0]["content"].(string); !isString {
+		t.Fatalf("expected plain string content without the option, got %#v", result[0]["content"])
+	}
+}
+
+// TestToOpenAIMessagesPromptCacheBreakpointSystem ports "should add a prompt
+// cache breakpoint to a system message" (convert-to-openai-chat-messages.test.ts).
+// TS's system message content is a plain string, not a parts array, so its
+// providerOptions live on the MESSAGE itself (types.Message.ProviderOptions),
+// not on a content part -- unlike user/assistant/tool messages.
+func TestToOpenAIMessagesPromptCacheBreakpointSystem(t *testing.T) {
+	msgs := []types.Message{
+		{
+			Role:            types.RoleSystem,
+			Content:         []types.ContentPart{types.TextContent{Text: "You are a helpful assistant."}},
+			ProviderOptions: promptCacheBreakpointOption(),
+		},
+	}
+	result := ToOpenAIMessages(msgs, breakpointOpts)
+	if result[0]["role"] != "system" {
+		t.Fatalf("unexpected role: %#v", result[0]["role"])
+	}
+	content, ok := result[0]["content"].([]map[string]interface{})
+	if !ok {
+		t.Fatalf("expected array content, got %#v", result[0]["content"])
+	}
+	if len(content) != 1 || content[0]["text"] != "You are a helpful assistant." {
+		t.Fatalf("unexpected content: %#v", content)
+	}
+	bp, ok := content[0]["prompt_cache_breakpoint"].(map[string]interface{})
+	if !ok || bp["mode"] != "explicit" {
+		t.Fatalf("unexpected breakpoint: %#v", content[0]["prompt_cache_breakpoint"])
+	}
+}
+
+// TestToOpenAIMessagesPromptCacheBreakpointSystemWithoutBreakpoint ports
+// "should forward system messages": a system message with no breakpoint
+// stays a plain string even with IncludePromptCacheBreakpoint set.
+func TestToOpenAIMessagesPromptCacheBreakpointSystemWithoutBreakpoint(t *testing.T) {
+	msgs := []types.Message{
+		{
+			Role:    types.RoleSystem,
+			Content: []types.ContentPart{types.TextContent{Text: "You are a helpful assistant."}},
+		},
+	}
+	result := ToOpenAIMessages(msgs, breakpointOpts)
+	if result[0]["content"] != "You are a helpful assistant." {
+		t.Fatalf("expected plain string content, got %#v", result[0]["content"])
+	}
+}
+
+// TestToOpenAIMessagesPromptCacheBreakpointSystemIgnoresContentPartOption
+// verifies a system message's promptCacheBreakpoint carrier is the MESSAGE's
+// own providerOptions, not a content part's: TS's system content is a plain
+// string with no per-part providerOptions, so a breakpoint placed on a
+// content part (rather than the message) must not surface.
+func TestToOpenAIMessagesPromptCacheBreakpointSystemIgnoresContentPartOption(t *testing.T) {
+	msgs := []types.Message{
+		{
+			Role: types.RoleSystem,
+			Content: []types.ContentPart{
+				types.TextContent{Text: "You are a helpful assistant.", ProviderOptions: promptCacheBreakpointOption()},
+			},
+		},
+	}
+	result := ToOpenAIMessages(msgs, breakpointOpts)
+	if result[0]["content"] != "You are a helpful assistant." {
+		t.Fatalf("expected plain string content (part-level option ignored), got %#v", result[0]["content"])
+	}
+}
+
+// TestToOpenAIMessagesPromptCacheBreakpointUserContentBlocks ports "should add
+// prompt cache breakpoints to supported content blocks": text, image (via
+// FileContent), audio (via FileContent) and a referenced pdf file all carry
+// the breakpoint through.
+func TestToOpenAIMessagesPromptCacheBreakpointUserContentBlocks(t *testing.T) {
+	bp := promptCacheBreakpointOption()
+	msgs := []types.Message{
+		{
+			Role: types.RoleUser,
+			Content: []types.ContentPart{
+				types.TextContent{Text: "Hello", ProviderOptions: bp},
+				types.ImageContent{URL: "https://example.com/image.png", ProviderOptions: bp},
+				types.FileContent{
+					MediaType:       "audio/wav",
+					Data:            []byte{0, 1, 2, 3},
+					ProviderOptions: bp,
+				},
+				types.FileContent{
+					MediaType:       "application/pdf",
+					Reference:       "file-pdf-123",
+					ProviderOptions: bp,
+				},
+			},
+		},
+	}
+	result := ToOpenAIMessages(msgs, breakpointOpts)
+	content, ok := result[0]["content"].([]map[string]interface{})
+	if !ok || len(content) != 4 {
+		t.Fatalf("expected 4 content parts, got %#v", result[0]["content"])
+	}
+	for i, part := range content {
+		got, ok := part["prompt_cache_breakpoint"].(map[string]interface{})
+		if !ok || got["mode"] != "explicit" {
+			t.Fatalf("part %d missing breakpoint: %#v", i, part)
+		}
+	}
+	if content[0]["type"] != "text" {
+		t.Fatalf("part 0 type = %v, want text", content[0]["type"])
+	}
+	if content[1]["type"] != "image_url" {
+		t.Fatalf("part 1 type = %v, want image_url", content[1]["type"])
+	}
+	if content[2]["type"] != "input_audio" {
+		t.Fatalf("part 2 type = %v, want input_audio", content[2]["type"])
+	}
+	if content[3]["type"] != "file" {
+		t.Fatalf("part 3 type = %v, want file", content[3]["type"])
+	}
+	fileObj, ok := content[3]["file"].(map[string]interface{})
+	if !ok || fileObj["file_id"] != "file-pdf-123" {
+		t.Fatalf("part 3 file = %#v, want file_id file-pdf-123", content[3]["file"])
+	}
+}
+
+// TestToOpenAIMessagesPromptCacheBreakpointAssistantText ports "assistant text
+// content with promptCacheBreakpoint": the assistant message switches from a
+// flattened string to a textParts array when any text part has a breakpoint.
+func TestToOpenAIMessagesPromptCacheBreakpointAssistantText(t *testing.T) {
+	msgs := []types.Message{
+		{
+			Role: types.RoleAssistant,
+			Content: []types.ContentPart{
+				types.TextContent{Text: "Cached assistant content", ProviderOptions: promptCacheBreakpointOption()},
+			},
+		},
+	}
+	result := ToOpenAIMessages(msgs, breakpointOpts)
+	content, ok := result[0]["content"].([]map[string]interface{})
+	if !ok || len(content) != 1 {
+		t.Fatalf("expected array content, got %#v", result[0]["content"])
+	}
+	if content[0]["text"] != "Cached assistant content" {
+		t.Fatalf("unexpected text: %#v", content[0])
+	}
+	bp, ok := content[0]["prompt_cache_breakpoint"].(map[string]interface{})
+	if !ok || bp["mode"] != "explicit" {
+		t.Fatalf("unexpected breakpoint: %#v", content[0])
+	}
+}
+
+// TestToOpenAIMessagesPromptCacheBreakpointAssistantWithToolCalls verifies the
+// textParts array form is used even when the assistant message also made
+// tool calls (TS keeps tool_calls and content independent).
+func TestToOpenAIMessagesPromptCacheBreakpointAssistantWithToolCalls(t *testing.T) {
+	msgs := []types.Message{
+		{
+			Role: types.RoleAssistant,
+			Content: []types.ContentPart{
+				types.TextContent{Text: "thinking", ProviderOptions: promptCacheBreakpointOption()},
+			},
+			ToolCalls: []types.ToolCall{
+				{ID: "call_1", ToolName: "lookup", Arguments: map[string]interface{}{}},
+			},
+		},
+	}
+	result := ToOpenAIMessages(msgs, breakpointOpts)
+	if _, ok := result[0]["tool_calls"].([]map[string]interface{}); !ok {
+		t.Fatalf("expected tool_calls to be preserved, got %#v", result[0]["tool_calls"])
+	}
+	content, ok := result[0]["content"].([]map[string]interface{})
+	if !ok || len(content) != 1 || content[0]["text"] != "thinking" {
+		t.Fatalf("expected textParts content, got %#v", result[0]["content"])
+	}
+}
+
+// TestToOpenAIMessagesPromptCacheBreakpointToolResult ports "tool result
+// content with promptCacheBreakpoint": a tool role message's content is
+// wrapped in the array form when its output carries a breakpoint.
+func TestToOpenAIMessagesPromptCacheBreakpointToolResult(t *testing.T) {
+	msgs := []types.Message{
+		{
+			Role: types.RoleTool,
+			Content: []types.ContentPart{
+				types.ToolResultContent{
+					ToolCallID: "cached-tool",
+					ToolName:   "cached-tool",
+					Output: &types.ToolResultOutput{
+						Type:            types.ToolResultOutputText,
+						Value:           "Cached tool content",
+						ProviderOptions: promptCacheBreakpointOption(),
+					},
+				},
+			},
+		},
+	}
+	result := ToOpenAIMessages(msgs, breakpointOpts)
+	if result[0]["tool_call_id"] != "cached-tool" {
+		t.Fatalf("unexpected tool_call_id: %#v", result[0])
+	}
+	content, ok := result[0]["content"].([]map[string]interface{})
+	if !ok || len(content) != 1 {
+		t.Fatalf("expected array content, got %#v", result[0]["content"])
+	}
+	if content[0]["text"] != "Cached tool content" {
+		t.Fatalf("unexpected text: %#v", content[0])
+	}
+	bp, ok := content[0]["prompt_cache_breakpoint"].(map[string]interface{})
+	if !ok || bp["mode"] != "explicit" {
+		t.Fatalf("unexpected breakpoint: %#v", content[0])
+	}
+}
+
+// TestToOpenAIMessagesPromptCacheBreakpointToolResultWithoutOption verifies
+// tool results stay plain strings for non-OpenAI/Azure callers.
+func TestToOpenAIMessagesPromptCacheBreakpointToolResultWithoutOption(t *testing.T) {
+	msgs := []types.Message{
+		{
+			Role: types.RoleTool,
+			Content: []types.ContentPart{
+				types.ToolResultContent{
+					ToolCallID: "cached-tool",
+					ToolName:   "cached-tool",
+					Output: &types.ToolResultOutput{
+						Type:            types.ToolResultOutputText,
+						Value:           "Cached tool content",
+						ProviderOptions: promptCacheBreakpointOption(),
+					},
+				},
+			},
+		},
+	}
+	result := ToOpenAIMessages(msgs)
+	if _, isString := result[0]["content"].(string); !isString {
+		t.Fatalf("expected plain string content without the option, got %#v", result[0]["content"])
 	}
 }

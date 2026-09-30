@@ -52,23 +52,17 @@ func main() {
 	}
 
 	// Display results
-	fmt.Println("
-Video generated successfully!")
-	fmt.Printf("Video URL: %s
-", response.Videos[0].URL)
+	fmt.Println("\nVideo generated successfully!")
+	fmt.Printf("Video URL: %s\n", response.Videos[0].URL)
 
 	// Display metadata
 	if metadata, ok := response.ProviderMetadata["klingai"].(map[string]interface{}); ok {
-		fmt.Printf("
-KlingAI Metadata:
-")
-		fmt.Printf("  Task ID: %s
-", metadata["taskId"])
+		fmt.Printf("\nKlingAI Metadata:\n")
+		fmt.Printf("  Task ID: %s\n", metadata["taskId"])
 
 		if videos, ok := metadata["videos"].([]map[string]interface{}); ok && len(videos) > 0 {
 			if watermarkURL, ok := videos[0]["watermarkUrl"].(string); ok && watermarkURL != "" {
-				fmt.Printf("  Watermark URL: %s
-", watermarkURL)
+				fmt.Printf("  Watermark URL: %s\n", watermarkURL)
 			}
 		}
 	}
@@ -76,11 +70,9 @@ KlingAI Metadata:
 	// Motion control doesn't support custom duration or aspect ratio
 	// Output dimensions match the reference video
 	if len(response.Warnings) > 0 {
-		fmt.Println("
-Note: Motion control has specific constraints:")
+		fmt.Println("\nNote: Motion control has specific constraints:")
 		for _, warning := range response.Warnings {
-			fmt.Printf("  - %s
-", warning.Message)
+			fmt.Printf("  - %s\n", warning.Message)
 		}
 	}
 }

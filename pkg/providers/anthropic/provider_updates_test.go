@@ -132,7 +132,7 @@ func TestClaudeFable5CapabilitiesAndFallbacksRequest(t *testing.T) {
 	if got := anthropicMaxOutputTokens(ClaudeFable5); got != 128000 {
 		t.Fatalf("max output tokens = %d, want 128000", got)
 	}
-	if !anthropicSupportsAdaptiveThinking(ClaudeFable5) || !anthropicSupportsXHighEffort(ClaudeFable5) {
+	if !anthropicSupportsAdaptiveThinking(ClaudeFable5) || !GetModelCapabilities(ClaudeFable5).SupportsXHighEffort {
 		t.Fatal("claude-fable-5 should support adaptive thinking and xhigh effort")
 	}
 
@@ -191,7 +191,7 @@ func TestAnthropicFallbackResponsePreservesBlockAndIterations(t *testing.T) {
 		t.Fatalf("Text = %q", result.Text)
 	}
 	for _, part := range result.Content {
-		if custom, ok := part.(types.CustomContent); ok && custom.Kind == "anthropic-fallback" {
+		if custom, ok := part.(types.CustomContent); ok && (custom.Kind == "anthropic.fallback" || custom.Kind == "anthropic-fallback") {
 			t.Fatalf("fallback content block should be dropped like TS, got %#v", part)
 		}
 	}
@@ -1074,7 +1074,7 @@ func TestDisableParallelToolUse(t *testing.T) {
 	// Without any explicit tool_choice: should create tool_choice with just the flag
 	t.Run("creates tool_choice when none set", func(t *testing.T) {
 		model := NewLanguageModel(prov, ClaudeSonnet4_6, &ModelOptions{
-			DisableParallelToolUse: true,
+			DisableParallelToolUse: boolPtr(true),
 		})
 		opts := &provider.GenerateOptions{
 			Prompt: types.Prompt{Text: "test"},
@@ -1124,7 +1124,16 @@ func TestStreamingUsageCapturedFromMessageStart(t *testing.T) {
 
 	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)), false)
 
-	// First real chunk: text
+	// First chunk: text-start boundary.
+	textStart, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() text-start chunk error: %v", err)
+	}
+	if textStart.Type != provider.ChunkTypeTextStart {
+		t.Errorf("unexpected textStart: type=%v", textStart.Type)
+	}
+
+	// Next real chunk: text
 	chunk1, err := stream.Next()
 	if err != nil {
 		t.Fatalf("Next() text chunk error: %v", err)
@@ -1132,6 +1141,9 @@ func TestStreamingUsageCapturedFromMessageStart(t *testing.T) {
 	if chunk1.Type != provider.ChunkTypeText || chunk1.Text != "Hello" {
 		t.Errorf("unexpected chunk1: type=%v text=%q", chunk1.Type, chunk1.Text)
 	}
+
+	// Note: this fixture has no content_block_stop event, so no text-end
+	// chunk is emitted before the finish chunk.
 
 	// Finish chunk: should have full usage
 	finishChunk, err := stream.Next()

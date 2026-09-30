@@ -73,7 +73,7 @@ data: [DONE]
 	if m.SpecificationVersion() != "v3" || m.Provider() != "deepseek" || m.ModelID() != "deepseek-v4" {
 		t.Fatalf("metadata mismatch")
 	}
-	if !m.SupportsTools() || !m.SupportsStructuredOutput() || m.SupportsImageInput() {
+	if !m.SupportsTools() || !m.SupportsStructuredOutput() || !m.SupportsImageInput() {
 		t.Fatalf("capability mismatch")
 	}
 
@@ -127,7 +127,10 @@ func TestDeepseekHelpersAndErrorPath(t *testing.T) {
 			},
 		},
 	}
-	converted := m.toDeepSeekMessages(msgs)
+	converted, _, err := m.convertMessages(msgs)
+	if err != nil {
+		t.Fatalf("convertMessages error = %v", err)
+	}
 	if converted[0]["reasoning_content"] != "reason" {
 		t.Fatalf("reasoning_content mapping mismatch: %#v", converted[0])
 	}

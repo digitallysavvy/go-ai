@@ -1,12 +1,14 @@
 package gemini
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // --- convertResponse ---------------------------------------------------------
@@ -27,7 +29,7 @@ func TestConvertResponse_SkipsThoughtParts(t *testing.T) {
 		}},
 	}
 
-	result := m.convertResponse(resp)
+	result := m.convertResponse(resp, nil)
 	if result.Text != "The answer is 42." {
 		t.Errorf("Text: got %q, want %q", result.Text, "The answer is 42.")
 	}
@@ -49,7 +51,7 @@ func TestConvertResponse_AllThoughtPartsProducesEmptyText(t *testing.T) {
 		}},
 	}
 
-	result := m.convertResponse(resp)
+	result := m.convertResponse(resp, nil)
 	if result.Text != "" {
 		t.Errorf("Text: got %q, want empty (all thought parts)", result.Text)
 	}
@@ -65,17 +67,13 @@ func TestConvertResponse_ThoughtPartDoesNotBlockFunctionCall(t *testing.T) {
 				Role  string `json:"role"`
 			}{Parts: []Part{
 				{Text: "thinking", Thought: true},
-				{FunctionCall: &struct {
-					ID   string                 `json:"id,omitempty"`
-					Name string                 `json:"name"`
-					Args map[string]interface{} `json:"args"`
-				}{Name: "get_weather", Args: map[string]interface{}{"city": "SF"}}},
+				{FunctionCall: &FunctionCall{Name: "get_weather", Args: map[string]interface{}{"city": "SF"}, ArgsSet: true}},
 			}},
 			FinishReason: "STOP",
 		}},
 	}
 
-	result := m.convertResponse(resp)
+	result := m.convertResponse(resp, nil)
 	if len(result.ToolCalls) != 1 {
 		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
 	}
@@ -99,12 +97,12 @@ func TestConvertResponse_MetadataKeyUsed(t *testing.T) {
 		}},
 	}
 
-	googleResult := mGoogle.convertResponse(resp)
+	googleResult := mGoogle.convertResponse(resp, nil)
 	if _, ok := googleResult.ProviderMetadata["google"]; !ok {
 		t.Errorf("google result: expected 'google' key in ProviderMetadata")
 	}
 
-	vertexResult := mVertex.convertResponse(resp)
+	vertexResult := mVertex.convertResponse(resp, nil)
 	if _, ok := vertexResult.ProviderMetadata["vertex"]; !ok {
 		t.Errorf("vertex result: expected 'vertex' key in ProviderMetadata")
 	}
@@ -143,7 +141,7 @@ func TestBuildRequestBody_NonGemmaModelIncludesSystemInstruction(t *testing.T) {
 func TestBuildRequestBody_StrictToolsUsesValidatedMode(t *testing.T) {
 	m := makeTestModel("gemini-2.0-flash")
 	body := m.buildRequestBody(&provider.GenerateOptions{
-		Tools: []types.Tool{{Name: "search", Strict: true, Parameters: map[string]interface{}{"type": "object"}}},
+		Tools: []types.Tool{{Name: "search", Strict: types.BoolPtr(true), Parameters: map[string]interface{}{"type": "object"}}},
 	}, false)
 	toolConfig, ok := body["toolConfig"].(map[string]interface{})
 	if !ok {
@@ -158,7 +156,7 @@ func TestBuildRequestBody_StrictToolsUsesValidatedMode(t *testing.T) {
 func TestBuildRequestBody_NoStrictToolsOmitsToolConfig(t *testing.T) {
 	m := makeTestModel("gemini-2.0-flash")
 	body := m.buildRequestBody(&provider.GenerateOptions{
-		Tools: []types.Tool{{Name: "search", Strict: false, Parameters: map[string]interface{}{"type": "object"}}},
+		Tools: []types.Tool{{Name: "search", Strict: types.BoolPtr(false), Parameters: map[string]interface{}{"type": "object"}}},
 	}, false)
 	if _, ok := body["toolConfig"]; ok {
 		t.Error("toolConfig must NOT be present when no tool has Strict:true")
@@ -178,9 +176,9 @@ func TestBuildRequestBody_NoArgToolUsesEmptyObjectSchema(t *testing.T) {
 	if !ok || len(functionDecls) == 0 {
 		t.Fatalf("functionDeclarations missing: %#v", tools[0]["functionDeclarations"])
 	}
-	params, ok := functionDecls[0]["parameters"].(map[string]interface{})
+	params, ok := functionDecls[0]["parametersJsonSchema"].(map[string]interface{})
 	if !ok {
-		t.Fatalf("parameters type = %T", functionDecls[0]["parameters"])
+		t.Fatalf("parameters type = %T", functionDecls[0]["parametersJsonSchema"])
 	}
 	if params["type"] != "object" {
 		t.Errorf("parameters.type = %v, want object", params["type"])
@@ -239,20 +237,6 @@ func TestBuildRequestBody_VertexStreamFunctionCallArgumentsOnlyForStream(t *test
 	fccStream, _ := tcStream["functionCallingConfig"].(map[string]interface{})
 	if got, ok := fccStream["streamFunctionCallArguments"].(bool); !ok || !got {
 		t.Fatalf("streamFunctionCallArguments = %v (%T), want true", fccStream["streamFunctionCallArguments"], fccStream["streamFunctionCallArguments"])
-	}
-}
-
-// --- supportsFunctionResponseParts ------------------------------------------
-
-func TestSupportsFunctionResponseParts_Gemini3(t *testing.T) {
-	if !makeTestModel("gemini-3-pro-preview").supportsFunctionResponseParts() {
-		t.Error("gemini-3-pro-preview should support function response parts")
-	}
-}
-
-func TestSupportsFunctionResponseParts_Gemini2(t *testing.T) {
-	if makeTestModel("gemini-2.0-flash").supportsFunctionResponseParts() {
-		t.Error("gemini-2.0-flash should NOT support function response parts")
 	}
 }
 
@@ -396,6 +380,86 @@ func TestBuildRequestBody_Gemini2ImageToolResultFallsBackToText(t *testing.T) {
 	}
 }
 
+// TestBuildRequestBody_Gemini3VertexGCSToolResultForwardsFileData ports TS
+// "should convert supported tool result URLs into functionResponse file
+// data" (ai@7.0.118 commit bc49f786f0) end-to-end through
+// buildRequestBody: on Vertex (Config.SupportsGoogleCloudStorageUrls) with a
+// Gemini 3+ model, a tool-result file part with a gs:// URL is forwarded as
+// functionResponse.parts[].fileData instead of being downloaded or
+// JSON-stringified as text.
+func TestBuildRequestBody_Gemini3VertexGCSToolResultForwardsFileData(t *testing.T) {
+	m := NewLanguageModel(Config{
+		ProviderName:                   "google-vertex",
+		MetadataKey:                    "vertex",
+		ProviderOptionsKeys:            []string{"googleVertex", "vertex", "google"},
+		IsVertex:                       true,
+		SupportsGoogleCloudStorageUrls: true,
+	}, "gemini-3-pro-preview")
+
+	opts := &provider.GenerateOptions{
+		Prompt: types.Prompt{
+			Messages: []types.Message{
+				{Role: types.RoleUser, Content: []types.ContentPart{
+					types.TextContent{Text: "Describe this image"},
+				}},
+				{Role: types.RoleAssistant, ToolCalls: []types.ToolCall{
+					{ID: "call1", ToolName: "imageGenerator", Arguments: map[string]interface{}{}},
+				}},
+				{Role: types.RoleTool, Content: []types.ContentPart{
+					types.ToolResultContent{
+						ToolCallID: "call1",
+						ToolName:   "imageGenerator",
+						Output: &types.ToolResultOutput{
+							Type: types.ToolResultOutputContent,
+							Content: []types.ToolResultContentBlock{
+								types.FileContentBlock{
+									URL:       "gs://example-bucket/renditions/hero.png",
+									MediaType: "image/png",
+								},
+							},
+						},
+					},
+				}},
+			},
+		},
+	}
+
+	body := m.buildRequestBody(opts, false)
+	contents, ok := body["contents"].([]map[string]interface{})
+	if !ok {
+		t.Fatalf("contents type = %T", body["contents"])
+	}
+
+	var toolMsg map[string]interface{}
+	for _, c := range contents {
+		if c["role"] == "user" {
+			parts, _ := c["parts"].([]map[string]interface{})
+			for _, pt := range parts {
+				if _, hasFR := pt["functionResponse"]; hasFR {
+					toolMsg = c
+				}
+			}
+		}
+	}
+	if toolMsg == nil {
+		t.Fatal("no tool-result message (functionResponse) found in contents")
+	}
+
+	parts := toolMsg["parts"].([]map[string]interface{})
+	fr := parts[0]["functionResponse"].(map[string]interface{})
+	frParts, ok := fr["parts"].([]map[string]interface{})
+	if !ok || len(frParts) == 0 {
+		t.Fatalf("functionResponse.parts missing or empty; got %v", fr["parts"])
+	}
+	fileData, ok := frParts[0]["fileData"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("functionResponse.parts[0].fileData missing; got %v", frParts[0])
+	}
+	if fileData["mimeType"] != "image/png" || fileData["fileUri"] != "gs://example-bucket/renditions/hero.png" {
+		t.Errorf("fileData = %#v", fileData)
+	}
+}
+
 // --- convertResponse: detailed content types ---------------------------------
 
 func TestConvertResponse_ThoughtSignatureOnFunctionCall(t *testing.T) {
@@ -408,11 +472,7 @@ func TestConvertResponse_ThoughtSignatureOnFunctionCall(t *testing.T) {
 				Role  string `json:"role"`
 			}{Parts: []Part{
 				{
-					FunctionCall: &struct {
-						ID   string                 `json:"id,omitempty"`
-						Name string                 `json:"name"`
-						Args map[string]interface{} `json:"args"`
-					}{Name: "search", Args: map[string]interface{}{"q": "test"}},
+					FunctionCall:     &FunctionCall{Name: "search", Args: map[string]interface{}{"q": "test"}, ArgsSet: true},
 					ThoughtSignature: "sig-abc-123",
 				},
 			}},
@@ -420,7 +480,7 @@ func TestConvertResponse_ThoughtSignatureOnFunctionCall(t *testing.T) {
 		}},
 	}
 
-	result := m.convertResponse(resp)
+	result := m.convertResponse(resp, nil)
 
 	if len(result.ToolCalls) != 1 {
 		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
@@ -446,7 +506,7 @@ func TestConvertResponse_ThoughtPartsBecomesReasoningContent(t *testing.T) {
 		}},
 	}
 
-	result := m.convertResponse(resp)
+	result := m.convertResponse(resp, nil)
 
 	if result.Text != "Here is the answer." {
 		t.Errorf("Text = %q, want %q", result.Text, "Here is the answer.")
@@ -496,7 +556,7 @@ func TestConvertResponse_ReasoningFilesMarkedCorrectly(t *testing.T) {
 		}},
 	}
 
-	result := m.convertResponse(resp)
+	result := m.convertResponse(resp, nil)
 
 	if result.Text != "The answer." {
 		t.Errorf("Text = %q, want %q", result.Text, "The answer.")
@@ -528,7 +588,7 @@ func TestConvertResponse_GroundingMetadataInProviderMetadata(t *testing.T) {
 		}},
 	}
 
-	result := m.convertResponse(resp)
+	result := m.convertResponse(resp, nil)
 
 	if result.ProviderMetadata == nil {
 		t.Fatal("ProviderMetadata must be set when groundingMetadata is present")
@@ -583,7 +643,7 @@ func TestBuildRequest_VertexPayGoHeaders(t *testing.T) {
 			},
 		},
 	}
-	body, headers, warnings := m.buildRequest(opts, false)
+	body, headers, warnings, _ := m.buildRequest(context.Background(), opts, false)
 	if _, ok := body["serviceTier"]; ok {
 		t.Fatal("Vertex request body must not include serviceTier")
 	}
@@ -610,7 +670,7 @@ func TestConvertResponse_ServiceTierInMetadata(t *testing.T) {
 		}},
 		UsageMetadata: &UsageMetadata{ServiceTier: "SERVICE_TIER_PRIORITY"},
 	}
-	result := m.convertResponse(resp)
+	result := m.convertResponse(resp, nil)
 	if result.ProviderMetadata == nil {
 		t.Fatal("ProviderMetadata is nil")
 	}
@@ -638,7 +698,7 @@ func TestConvertResponse_ServiceTierAbsentInMetadataWhenNotSet(t *testing.T) {
 			FinishReason: "STOP",
 		}},
 	}
-	result := m.convertResponse(resp)
+	result := m.convertResponse(resp, nil)
 	// serviceTier is always emitted (as null) per TS SDK parity.
 	googleMeta, ok := result.ProviderMetadata["google"].(map[string]json.RawMessage)
 	if !ok {
@@ -655,7 +715,7 @@ func TestConvertResponse_ServiceTierAbsentInMetadataWhenNotSet(t *testing.T) {
 
 func TestBuildRequest_Gemini3InjectsThoughtSignatureSentinel(t *testing.T) {
 	model := makeTestModel("gemini-3-pro-preview")
-	body, _, warnings := model.buildRequest(&provider.GenerateOptions{
+	body, _, warnings, _ := model.buildRequest(context.Background(), &provider.GenerateOptions{
 		Prompt: types.Prompt{Messages: []types.Message{
 			{
 				Role: types.RoleAssistant,
@@ -670,56 +730,11 @@ func TestBuildRequest_Gemini3InjectsThoughtSignatureSentinel(t *testing.T) {
 
 	contents := body["contents"].([]map[string]interface{})
 	parts := contents[0]["parts"].([]map[string]interface{})
-	if parts[0]["thoughtSignature"] != skipThoughtSignatureValidator {
+	if parts[0]["thoughtSignature"] != prompt.GoogleSkipThoughtSignatureValidator {
 		t.Fatalf("thoughtSignature = %#v", parts[0]["thoughtSignature"])
 	}
 	if len(warnings) != 1 || !strings.Contains(warnings[0].Details, "skip_thought_signature_validator") {
 		t.Fatalf("warnings = %#v", warnings)
-	}
-}
-
-func TestConvertResponse_ModalityTokenCountsInMetadata(t *testing.T) {
-	m := makeTestModel("gemini-2.5-pro")
-	resp := Response{
-		Candidates: []Candidate{{
-			Content: struct {
-				Parts []Part `json:"parts"`
-				Role  string `json:"role"`
-			}{Parts: []Part{{Text: "Hello"}}},
-			FinishReason: "STOP",
-		}},
-		UsageMetadata: &UsageMetadata{
-			PromptTokenCount:     14,
-			CandidatesTokenCount: 9,
-			PromptTokensDetails: []struct {
-				Modality   string `json:"modality,omitempty"`
-				TokenCount int    `json:"tokenCount,omitempty"`
-			}{
-				{Modality: "TEXT", TokenCount: 5},
-				{Modality: "IMAGE", TokenCount: 7},
-				{Modality: "AUDIO", TokenCount: 2},
-			},
-			CandidatesTokensDetails: []struct {
-				Modality   string `json:"modality,omitempty"`
-				TokenCount int    `json:"tokenCount,omitempty"`
-			}{
-				{Modality: "TEXT", TokenCount: 6},
-				{Modality: "VIDEO", TokenCount: 3},
-			},
-		},
-	}
-
-	result := m.convertResponse(resp)
-	googleMeta, ok := result.ProviderMetadata["google"].(map[string]json.RawMessage)
-	if !ok {
-		t.Fatal("expected google providerMetadata")
-	}
-	var counts ModalityTokenCounts
-	if err := json.Unmarshal(googleMeta["modalityTokenCounts"], &counts); err != nil {
-		t.Fatalf("unmarshal modalityTokenCounts: %v", err)
-	}
-	if counts.TextTokens != 11 || counts.ImageTokens != 7 || counts.AudioTokens != 2 || counts.VideoTokens != 3 {
-		t.Errorf("modalityTokenCounts = %+v", counts)
 	}
 }
 
@@ -731,18 +746,14 @@ func TestConvertResponse_NoArgsToolCallPreservesThoughtSignatureMetadata(t *test
 				Parts []Part `json:"parts"`
 				Role  string `json:"role"`
 			}{Parts: []Part{{
-				FunctionCall: &struct {
-					ID   string                 `json:"id,omitempty"`
-					Name string                 `json:"name"`
-					Args map[string]interface{} `json:"args"`
-				}{Name: "read_screen"},
+				FunctionCall:     &FunctionCall{Name: "read_screen"},
 				ThoughtSignature: "sig-no-args",
 			}}},
 			FinishReason: "STOP",
 		}},
 	}
 
-	result := m.convertResponse(resp)
+	result := m.convertResponse(resp, nil)
 	if len(result.ToolCalls) != 1 {
 		t.Fatalf("ToolCalls len = %d, want 1", len(result.ToolCalls))
 	}
@@ -759,5 +770,99 @@ func TestConvertResponse_NoArgsToolCallPreservesThoughtSignatureMetadata(t *test
 	}
 	if googleMeta["thoughtSignature"] != "sig-no-args" {
 		t.Fatalf("thoughtSignature metadata = %v", googleMeta["thoughtSignature"])
+	}
+}
+
+// TestConvertResponse_ServerToolCallAndResult ports TS
+// google-language-model.test.ts's "server tool call/result" fixture
+// (~line 3255): a `toolCall`/`toolResponse` part pair (distinct from
+// `functionCall`, which is user-invoked) becomes a `server:<toolType>`
+// tool call (providerExecuted+dynamic true) and a matching tool result,
+// each carrying serverToolCallId/serverToolType/thoughtSignature in
+// providerMetadata.google.
+func TestConvertResponse_ServerToolCallAndResult(t *testing.T) {
+	m := makeTestModel("gemini-3-pro-preview")
+	resp := Response{
+		Candidates: []Candidate{{
+			Content: struct {
+				Parts []Part `json:"parts"`
+				Role  string `json:"role"`
+			}{Parts: []Part{
+				{
+					ToolCall: &struct {
+						ToolType string                 `json:"toolType"`
+						Args     map[string]interface{} `json:"args,omitempty"`
+						ID       string                 `json:"id"`
+					}{ToolType: "GOOGLE_SEARCH_WEB", Args: map[string]interface{}{"query": "San Francisco weather"}, ID: "server-call-1"},
+					ThoughtSignature: "sig-abc",
+				},
+				{
+					ToolResponse: &struct {
+						ToolType string                 `json:"toolType"`
+						Response map[string]interface{} `json:"response,omitempty"`
+						ID       string                 `json:"id"`
+					}{ToolType: "GOOGLE_SEARCH_WEB", Response: map[string]interface{}{"results": []interface{}{map[string]interface{}{"title": "Weather in SF"}}}, ID: "server-call-1"},
+					ThoughtSignature: "sig-def",
+				},
+				{Text: "The weather in San Francisco is sunny."},
+			}},
+			FinishReason: "STOP",
+		}},
+	}
+
+	result := m.convertResponse(resp, nil)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls len = %d, want 1: %#v", len(result.ToolCalls), result.ToolCalls)
+	}
+	call := result.ToolCalls[0]
+	if call.ID != "server-call-1" || call.ToolName != "server:GOOGLE_SEARCH_WEB" {
+		t.Fatalf("tool call = %#v", call)
+	}
+	if !call.ProviderExecuted || !call.Dynamic {
+		t.Fatalf("expected providerExecuted+dynamic, got %#v", call)
+	}
+	if call.Arguments["query"] != "San Francisco weather" {
+		t.Fatalf("Arguments = %#v", call.Arguments)
+	}
+	callMeta, _ := call.ProviderMetadata["google"].(map[string]interface{})
+	if callMeta["serverToolCallId"] != "server-call-1" || callMeta["serverToolType"] != "GOOGLE_SEARCH_WEB" || callMeta["thoughtSignature"] != "sig-abc" {
+		t.Fatalf("tool call provider metadata = %#v", callMeta)
+	}
+
+	// The tool-result and trailing text both land in result.Content, in
+	// order, alongside the tool call — mirroring TS's single flat `content`
+	// array for the assistant message.
+	var toolResult *types.ToolResultContent
+	var text string
+	for _, c := range result.Content {
+		switch v := c.(type) {
+		case types.ToolResultContent:
+			vv := v
+			toolResult = &vv
+		case types.TextContent:
+			text = v.Text
+		}
+	}
+	if toolResult == nil {
+		t.Fatalf("expected a ToolResultContent in result.Content: %#v", result.Content)
+	}
+	if toolResult.ToolCallID != "server-call-1" || toolResult.ToolName != "server:GOOGLE_SEARCH_WEB" {
+		t.Fatalf("tool result = %#v", toolResult)
+	}
+	resultMap, _ := toolResult.Result.(map[string]interface{})
+	results, _ := resultMap["results"].([]interface{})
+	if len(results) != 1 {
+		t.Fatalf("tool result.Result = %#v", toolResult.Result)
+	}
+	var resultMeta map[string]interface{}
+	_ = json.Unmarshal(toolResult.ProviderMetadata, &struct {
+		Google *map[string]interface{} `json:"google"`
+	}{Google: &resultMeta})
+	if resultMeta["serverToolCallId"] != "server-call-1" || resultMeta["thoughtSignature"] != "sig-def" {
+		t.Fatalf("tool result provider metadata = %s", toolResult.ProviderMetadata)
+	}
+	if text != "The weather in San Francisco is sunny." {
+		t.Fatalf("text = %q", text)
 	}
 }

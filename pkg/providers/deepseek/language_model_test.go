@@ -233,6 +233,9 @@ func TestDeepseekNonV4OmitsAssistantReasoningContent(t *testing.T) {
 	prov := New(Config{APIKey: "test-key"})
 	model := NewLanguageModel(prov, "deepseek-reasoner")
 
+	// The reasoning-bearing assistant message must precede the last user
+	// message for the "must not resend prior reasoning to R1" rule to apply
+	// (mirrors the TS SDK's `index <= lastUserMessageIndex` check).
 	body := model.buildRequestBody(&provider.GenerateOptions{
 		Prompt: types.Prompt{Messages: []types.Message{
 			{
@@ -241,6 +244,10 @@ func TestDeepseekNonV4OmitsAssistantReasoningContent(t *testing.T) {
 					types.ReasoningContent{Text: "Do not resend this to R1."},
 					types.TextContent{Text: "answer"},
 				},
+			},
+			{
+				Role:    types.RoleUser,
+				Content: []types.ContentPart{types.TextContent{Text: "follow up"}},
 			},
 		}},
 	}, false)

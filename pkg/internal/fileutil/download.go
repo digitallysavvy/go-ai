@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
+	neturl "net/url"
 	"strings"
 	"time"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 const (
@@ -39,13 +41,33 @@ type DownloadOptions struct {
 	// URLValidator is called before fetching and after each redirect to validate
 	// the URL. Return a non-nil error to abort the download. Nil means no validation.
 	URLValidator func(string) error
+
+	// Transport performs the HTTP requests. DefaultDownloadOptions sets it to
+	// SafeTransport(), which validates and pins DNS results at connect time
+	// (TS safe-node-fetch). A nil Transport uses http.DefaultTransport and
+	// performs no connect-time validation; a custom Transport is responsible
+	// for equivalent validation (TS: an injected fetch).
+	Transport http.RoundTripper
 }
 
 // DownloadResult contains downloaded file bytes and response metadata.
 type DownloadResult struct {
 	Data        []byte
 	ContentType string
+
+	// Headers are the successful response's HTTP headers, when the request
+	// reached an HTTP response (nil for data: URLs). PollJSON callers use
+	// this to surface a provider's response headers on the caller-visible
+	// result, matching TS getFromApi's responseHeaders.
+	Headers map[string][]string
 }
+
+// maxErrorBodyBytes bounds how much of a non-2xx response body
+// DownloadWithMetadata retains on providererrors.DownloadError, so JSON
+// status-poll callers (fileutil.PollJSON) can decode a provider's structured
+// error envelope without risking unbounded memory use from a hostile or
+// oversized error response.
+const maxErrorBodyBytes = 64 * 1024
 
 // DefaultDownloadOptions returns default download options
 func DefaultDownloadOptions() DownloadOptions {
@@ -54,6 +76,7 @@ func DefaultDownloadOptions() DownloadOptions {
 		Headers:      make(map[string]string),
 		MaxSize:      DefaultMaxDownloadSize,
 		URLValidator: ValidateDownloadURL,
+		Transport:    SafeTransport(),
 	}
 }
 
@@ -97,22 +120,7 @@ func DownloadWithMetadata(ctx context.Context, url string, opts DownloadOptions)
 		return &DownloadResult{Data: data, ContentType: dataURLMediaType(url)}, nil
 	}
 
-	// Create HTTP client with timeout and optional post-redirect URL validation.
-	client := &http.Client{
-		Timeout: opts.Timeout,
-	}
-	if opts.URLValidator != nil {
-		validator := opts.URLValidator
-		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-			if len(via) > 10 {
-				return providererrors.NewDownloadError(url, 0, "", "Too many redirects (max 10)", nil)
-			}
-			if err := validator(req.URL.String()); err != nil {
-				return err
-			}
-			return nil
-		}
-	}
+	client := NewDownloadClient(url, opts)
 
 	// Create request with context for cancellation support
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
@@ -120,10 +128,12 @@ func DownloadWithMetadata(ctx context.Context, url string, opts DownloadOptions)
 		return nil, providererrors.NewDownloadError(url, 0, "", "", err)
 	}
 
-	// Add custom headers
+	// Add custom headers (proxy/metadata/cookie/hop-by-hop headers stripped).
 	for k, v := range opts.Headers {
 		req.Header.Set(k, v)
 	}
+	SanitizeRequestHeaders(req.Header)
+	setDownloadUserAgent(req.Header)
 
 	// Execute request
 	resp, err := client.Do(req)
@@ -134,49 +144,29 @@ func DownloadWithMetadata(ctx context.Context, url string, opts DownloadOptions)
 
 	// Check status code
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 512))
-		return nil, providererrors.NewDownloadError(
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+		downloadErr := providererrors.NewDownloadError(
 			url,
 			resp.StatusCode,
 			responseStatusText(resp),
 			"",
 			nil,
 		)
+		downloadErr.Body = body
+		downloadErr.Headers = map[string][]string(resp.Header)
+		return nil, downloadErr
 	}
 
-	// Early rejection based on Content-Length header
-	if contentLength, ok := responseContentLength(resp); ok && contentLength > opts.MaxSize {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 512))
-		return nil, providererrors.NewDownloadError(
-			url,
-			0,
-			"",
-			fmt.Sprintf("Download of %s exceeded maximum size of %d bytes (Content-Length: %d).",
-				url, opts.MaxSize, contentLength),
-			nil,
-		)
-	}
-
-	// Read response body with size limit
-	// Use MaxSize+1 to detect when limit is exceeded
-	limitedReader := io.LimitReader(resp.Body, opts.MaxSize+1)
-	data, err := io.ReadAll(limitedReader)
+	data, err := ReadResponseWithSizeLimit(resp, url, opts.MaxSize)
 	if err != nil {
-		return nil, providererrors.NewDownloadError(url, 0, "", "", err)
+		return nil, err
 	}
 
-	// Check if we exceeded the size limit during download
-	if int64(len(data)) > opts.MaxSize {
-		return nil, providererrors.NewDownloadError(
-			url,
-			0,
-			"",
-			fmt.Sprintf("Download of %s exceeded maximum size of %d bytes.", url, opts.MaxSize),
-			nil,
-		)
-	}
-
-	return &DownloadResult{Data: data, ContentType: resp.Header.Get("Content-Type")}, nil
+	return &DownloadResult{
+		Data:        data,
+		ContentType: resp.Header.Get("Content-Type"),
+		Headers:     map[string][]string(resp.Header),
+	}, nil
 }
 
 // DownloadToWriter downloads a file from a URL and writes it to an io.Writer
@@ -208,22 +198,7 @@ func DownloadToWriter(ctx context.Context, url string, writer io.Writer, opts Do
 		return err
 	}
 
-	// Create HTTP client with timeout and optional post-redirect URL validation.
-	client := &http.Client{
-		Timeout: opts.Timeout,
-	}
-	if opts.URLValidator != nil {
-		validator := opts.URLValidator
-		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-			if len(via) > 10 {
-				return providererrors.NewDownloadError(url, 0, "", "Too many redirects (max 10)", nil)
-			}
-			if err := validator(req.URL.String()); err != nil {
-				return err
-			}
-			return nil
-		}
-	}
+	client := NewDownloadClient(url, opts)
 
 	// Create request with context for cancellation support
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
@@ -231,10 +206,12 @@ func DownloadToWriter(ctx context.Context, url string, writer io.Writer, opts Do
 		return providererrors.NewDownloadError(url, 0, "", "", err)
 	}
 
-	// Add custom headers
+	// Add custom headers (proxy/metadata/cookie/hop-by-hop headers stripped).
 	for k, v := range opts.Headers {
 		req.Header.Set(k, v)
 	}
+	SanitizeRequestHeaders(req.Header)
+	setDownloadUserAgent(req.Header)
 
 	// Execute request
 	resp, err := client.Do(req)
@@ -288,6 +265,162 @@ func DownloadToWriter(ctx context.Context, url string, writer io.Writer, opts Do
 	}
 
 	return nil
+}
+
+const maxDownloadRedirects = 10
+
+// NewDownloadClient builds a per-download HTTP client using opts.Transport. Every redirect hop is
+// validated with opts.URLValidator before it is requested, and all caller
+// headers except User-Agent are dropped when a redirect crosses origin (TS
+// fetchWithValidatedRedirects): providers authenticate with custom headers
+// too, and nothing else stops them from riding to a foreign host.
+func NewDownloadClient(rawURL string, opts DownloadOptions) *http.Client {
+	client := &http.Client{
+		Timeout:   opts.Timeout,
+		Transport: opts.Transport,
+	}
+	validator := opts.URLValidator
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) > maxDownloadRedirects {
+			return providererrors.NewDownloadError(rawURL, 0, "", fmt.Sprintf("Too many redirects (max %d)", maxDownloadRedirects), nil)
+		}
+		if validator != nil {
+			if err := validator(req.URL.String()); err != nil {
+				return err
+			}
+		}
+		// http.Client re-copies the ORIGINAL request's headers onto every hop,
+		// so once any hop in the chain has left the original origin, headers
+		// must stay stripped for the rest of the chain (TS keeps a sticky flag).
+		if len(via) > 0 && redirectChainCrossedOrigin(req, via) {
+			userAgent := req.Header.Get("User-Agent")
+			for k := range req.Header {
+				delete(req.Header, k)
+			}
+			if userAgent != "" {
+				req.Header.Set("User-Agent", userAgent)
+			}
+		}
+		return nil
+	}
+	return client
+}
+
+// redirectChainCrossedOrigin reports whether req or any earlier hop has a
+// different origin from the first request in the chain.
+func redirectChainCrossedOrigin(req *http.Request, via []*http.Request) bool {
+	origin := via[0].URL
+	if !sameOrigin(req.URL, origin) {
+		return true
+	}
+	for _, hop := range via[1:] {
+		if !sameOrigin(hop.URL, origin) {
+			return true
+		}
+	}
+	return false
+}
+
+// blockedRequestHeaders mirrors TS sanitize-request-headers.ts.
+var blockedRequestHeaders = []string{
+	// Hop-by-hop / transport (RFC 7230 §6.1)
+	"Connection", "Keep-Alive", "Te", "Trailer", "Transfer-Encoding", "Upgrade",
+	// Host / virtual-host routing
+	"Host",
+	// Proxy / origin spoofing
+	"Forwarded", "Proxy-Authorization", "Via", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-Ip",
+	// Cloud metadata
+	"Metadata", "Metadata-Flavor", "X-Aws-Ec2-Metadata-Token", "X-Metadata-Token",
+	// Session / cookie
+	"Cookie", "Set-Cookie",
+}
+
+// setDownloadUserAgent tags req's User-Agent with the SDK-wide tag plus the
+// runtime tag, appending to (not replacing) any caller-supplied value.
+// Matches TS packages/ai/src/util/download/download.ts's
+// `withUserAgentSuffix({}, ai-sdk/${VERSION}, getRuntimeEnvironmentUserAgent())`.
+func setDownloadUserAgent(h http.Header) {
+	merged := providerutils.WithUserAgentSuffix(
+		map[string]string{"user-agent": h.Get("User-Agent")},
+		version.SDKUserAgent(),
+		providerutils.RuntimeEnvironmentUserAgent(),
+	)
+	h.Set("User-Agent", merged["user-agent"])
+}
+
+// SanitizeRequestHeaders removes proxy, cloud-metadata, cookie and hop-by-hop
+// headers before fetching an untrusted URL (TS sanitizeRequestHeaders).
+// Credential headers are intentionally kept for the first hop; they are
+// dropped on cross-origin redirects instead.
+func SanitizeRequestHeaders(h http.Header) {
+	for _, name := range blockedRequestHeaders {
+		h.Del(name)
+	}
+}
+
+func sameOrigin(a, b *neturl.URL) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return originOf(a) == originOf(b)
+}
+
+func originOf(u *neturl.URL) string {
+	scheme := strings.ToLower(u.Scheme)
+	port := u.Port()
+	if port == "" {
+		switch scheme {
+		case "http":
+			port = "80"
+		case "https":
+			port = "443"
+		}
+	}
+	return scheme + "://" + strings.ToLower(u.Hostname()) + ":" + port
+}
+
+// ReadResponseWithSizeLimit reads resp.Body, rejecting early when
+// Content-Length exceeds maxBytes and aborting with a DownloadError once more
+// than maxBytes have been read (TS readResponseWithSizeLimit). maxBytes <= 0
+// uses DefaultMaxDownloadSize. The body is not closed.
+func ReadResponseWithSizeLimit(resp *http.Response, rawURL string, maxBytes int64) ([]byte, error) {
+	if maxBytes <= 0 {
+		maxBytes = DefaultMaxDownloadSize
+	}
+	if resp == nil || resp.Body == nil {
+		return []byte{}, nil
+	}
+	if contentLength, ok := responseContentLength(resp); ok && contentLength > maxBytes {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 512))
+		return nil, providererrors.NewDownloadError(
+			rawURL,
+			resp.StatusCode,
+			responseStatusText(resp),
+			fmt.Sprintf("Download of %s exceeded maximum size of %d bytes (Content-Length: %d).",
+				rawURL, maxBytes, contentLength),
+			nil,
+		)
+	}
+	// Preserve the real HTTP status code even when the body read/decode
+	// itself fails (e.g. a truncated 2xx response), so callers such as the
+	// gateway retry classifier (pkg/ai.isGatewayCallRetryable) see the
+	// status the provider actually returned instead of losing it to a
+	// generic body-read error (hand-off: "internal/http real status on
+	// body-read errors"; TS keeps e.g. 200 on a truncated 2xx).
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	if err != nil {
+		return nil, providererrors.NewDownloadError(rawURL, resp.StatusCode, responseStatusText(resp), "", err)
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, providererrors.NewDownloadError(
+			rawURL,
+			resp.StatusCode,
+			responseStatusText(resp),
+			fmt.Sprintf("Download of %s exceeded maximum size of %d bytes.", rawURL, maxBytes),
+			nil,
+		)
+	}
+	return data, nil
 }
 
 func responseStatusText(resp *http.Response) string {
@@ -361,7 +494,7 @@ func decodeDataURL(raw string) ([]byte, error) {
 		}
 		return data, nil
 	}
-	data, err := url.QueryUnescape(payload)
+	data, err := neturl.QueryUnescape(payload)
 	if err != nil {
 		return nil, providererrors.NewDownloadError(raw, 0, "", "", err)
 	}

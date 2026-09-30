@@ -5,7 +5,9 @@ package gladia
 import (
 	"fmt"
 
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // Config holds configuration for the Gladia provider
@@ -20,6 +22,7 @@ type Config struct {
 // Provider represents the Gladia AI provider
 type Provider struct {
 	config Config
+	client *internalhttp.Client
 }
 
 // New creates a new Gladia provider instance
@@ -28,9 +31,22 @@ func New(config Config) *Provider {
 		config.BaseURL = "https://api.gladia.io/v2"
 	}
 
+	client := internalhttp.NewClient(internalhttp.Config{
+		BaseURL: config.BaseURL,
+		Headers: version.WithUserAgentSuffix(map[string]string{
+			"x-gladia-key": config.APIKey,
+		}, version.ProviderUserAgent("gladia")),
+	})
+
 	return &Provider{
 		config: config,
+		client: client,
 	}
+}
+
+// Client returns the HTTP client for making API requests.
+func (p *Provider) Client() *internalhttp.Client {
+	return p.client
 }
 
 // Name returns the provider name

@@ -378,4 +378,4 @@ ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 
 - [Download Security Guide](../guides/download-security.md)
 - [Security Advisory](../security/ADVISORY-Download-DoS.md)
-- [Error Handling](../guides/error-handling.md)
+- [Error Handling](../03-ai-sdk-core/50-error-handling.mdx)

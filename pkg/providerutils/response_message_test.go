@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -60,7 +61,7 @@ func TestConvertToResponseMessageMapsProviderMetadataToProviderOptions(t *testin
 		types.ReasoningContent{Text: "thinking", ProviderMetadata: metadata},
 		types.FileContent{MediaType: "text/plain", Data: []byte("file"), ProviderMetadata: metadata},
 		types.GeneratedFileContent{MediaType: "image/png", Data: []byte("png"), ProviderMetadata: metadata},
-		types.CustomContent{Kind: "xai-citation", ProviderMetadata: metadata},
+		types.CustomContent{Kind: "xai.citation", ProviderMetadata: metadata},
 		types.ReasoningFileContent{MediaType: "text/plain", Data: []byte("reasoning"), ProviderMetadata: metadata},
 		types.ToolCallContent{ToolCallID: "call-1", ToolName: "lookup", ProviderMetadata: metadata},
 	})
@@ -116,7 +117,7 @@ func TestConvertToResponseMessageContentJSONUsesTSDiscriminators(t *testing.T) {
 		types.ReasoningContent{Text: "thinking"},
 		types.FileContent{MediaType: "text/plain", Data: []byte("file")},
 		types.GeneratedFileContent{MediaType: "image/png", Data: []byte("png")},
-		types.CustomContent{Kind: "xai-citation"},
+		types.CustomContent{Kind: "xai.citation"},
 		types.ReasoningFileContent{MediaType: "text/plain", Data: []byte("reasoning")},
 		types.ToolCallContent{ToolCallID: "call-1", ToolName: "lookup"},
 	})
@@ -196,7 +197,6 @@ func TestConvertToResponseMessageSanitizesToolCallContentInput(t *testing.T) {
 			ToolName:     "lookup",
 			Title:        "Lookup",
 			Input:        `{"q":`,
-			Arguments:    map[string]interface{}{"q": "stale"},
 			ToolMetadata: map[string]interface{}{"source": "catalog"},
 			Dynamic:      true,
 			Invalid:      true,
@@ -225,6 +225,42 @@ func TestConvertToResponseMessageSanitizesToolCallContentInput(t *testing.T) {
 	}
 	if got, want := string(goodJSON), `{"type":"tool-call","toolCallId":"good","toolName":"lookup","input":{"q":"docs"}}`; got != want {
 		t.Fatalf("tool-call content json = %s, want %s", got, want)
+	}
+}
+
+// TestConvertToResponseMessageKeepsRefinedArgumentsOverStaleInput guards
+// against F1: ExperimentalRefineToolInput only updates ToolCall.Arguments,
+// not the provider's original RawArguments/Input JSON string. When both are
+// present, the (possibly refined) Arguments must win so the persisted
+// tool-call part -- and message.ToolCalls, which the HMAC approval signature
+// and the resume-time schema revalidation both read -- reflect the refined
+// value, not the stale pre-refinement JSON. Mirrors the TS SDK, which has a
+// single `input` field carrying only the current (refined) value.
+func TestConvertToResponseMessageKeepsRefinedArgumentsOverStaleInput(t *testing.T) {
+	msg := ConvertToResponseMessage(
+		[]types.ToolCall{{
+			ID:           "call-1",
+			ToolName:     "tool1",
+			Arguments:    map[string]interface{}{"value": "trimmed"},
+			RawArguments: `{"value":" trimmed "}`,
+		}},
+		[]types.ContentPart{types.ToolCallContent{
+			ToolCallID: "call-1",
+			ToolName:   "tool1",
+			Input:      `{"value":" trimmed "}`,
+			Arguments:  map[string]interface{}{"value": "trimmed"},
+		}},
+	)
+
+	if len(msg.ToolCalls) != 1 || msg.ToolCalls[0].Arguments["value"] != "trimmed" {
+		t.Fatalf("message.ToolCalls = %+v, want refined value", msg.ToolCalls)
+	}
+	if len(msg.Content) != 1 {
+		t.Fatalf("content len = %d, want 1", len(msg.Content))
+	}
+	call := msg.Content[0].(types.ToolCallContent)
+	if call.Arguments["value"] != "trimmed" {
+		t.Fatalf("tool-call content arguments = %#v, want refined value \"trimmed\"", call.Arguments)
 	}
 }
 
@@ -338,6 +374,47 @@ func TestConvertToResponseMessagesUsesFullStepContent(t *testing.T) {
 	}
 	if !strings.Contains(string(resultJSON), `"type":"tool-result"`) {
 		t.Fatalf("tool result JSON missing TS type discriminator: %s", resultJSON)
+	}
+}
+
+// TestConvertToResponseMessageNormalizesStructToolOutput ports TS
+// createToolModelOutput's toJSONValue behavior (audit row 6aa7c54 / WG24): a
+// non-string tool result is round-tripped through JSON so structs, time.Time
+// and similar Go-only values match what the message actually serializes to
+// (e.g. time.Time -> its RFC3339 JSON string, not a Go %v representation).
+func TestConvertToResponseMessageNormalizesStructToolOutput(t *testing.T) {
+	type toolPayload struct {
+		City string    `json:"city"`
+		At   time.Time `json:"at"`
+	}
+	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+
+	messages := ConvertToResponseMessages(
+		nil,
+		[]types.ContentPart{
+			types.ToolResultContent{ToolCallID: "call-1", ToolName: "lookup", Result: toolPayload{City: "Tokyo", At: at}},
+		},
+		nil,
+	)
+	if len(messages) != 1 {
+		t.Fatalf("len(messages) = %d, want 1", len(messages))
+	}
+	tr, ok := messages[0].Content[0].(types.ToolResultContent)
+	if !ok {
+		t.Fatalf("content[0] = %T, want ToolResultContent", messages[0].Content[0])
+	}
+	if tr.Output == nil || tr.Output.Type != types.ToolResultOutputJSON {
+		t.Fatalf("output = %+v, want type json", tr.Output)
+	}
+	m, ok := tr.Output.Value.(map[string]interface{})
+	if !ok {
+		t.Fatalf("output.Value = %T (%#v), want map[string]interface{} (a struct must not leak through unnormalized)", tr.Output.Value, tr.Output.Value)
+	}
+	if m["city"] != "Tokyo" {
+		t.Fatalf("city = %v, want Tokyo", m["city"])
+	}
+	if m["at"] != at.Format(time.RFC3339) {
+		t.Fatalf("at = %v, want %s", m["at"], at.Format(time.RFC3339))
 	}
 }
 

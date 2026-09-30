@@ -1,216 +1,413 @@
 package google
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
 
-func TestVideoModel_SpecificationVersion(t *testing.T) {
+// floatPtr and intPtr are small test helpers shared across the google
+// package's test files.
+func floatPtr(f float64) *float64 { return &f }
+func intPtr(i int) *int           { return &i }
+
+// newTestVideoServer builds a Provider + httptest server that handles the
+// predictLongRunning submission and the operation status GET, mirroring
+// google-video-model.test.ts's createMockModel fetch stub.
+func newTestVideoServer(t *testing.T, handler http.HandlerFunc) (*VideoModel, *httptest.Server) {
+	t.Helper()
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+	p := New(Config{APIKey: "test-api-key", BaseURL: srv.URL})
+	return NewVideoModel(p, "veo-3.1-generate-preview"), srv
+}
+
+func TestVideoModel_ConstructorInfo(t *testing.T) {
 	prov := New(Config{APIKey: "test-key"})
-	model := NewVideoModel(prov, "gemini-2.0-flash")
+	model := NewVideoModel(prov, "veo-3.1-generate-preview")
 
 	if model.SpecificationVersion() != "v3" {
-		t.Errorf("Expected specification version v3, got %s", model.SpecificationVersion())
+		t.Errorf("SpecificationVersion() = %q", model.SpecificationVersion())
 	}
-}
-
-func TestVideoModel_Provider(t *testing.T) {
-	prov := New(Config{APIKey: "test-key"})
-	model := NewVideoModel(prov, "gemini-2.0-flash")
-
 	if model.Provider() != "google.generative-ai" {
-		t.Errorf("Expected provider 'google.generative-ai', got %s", model.Provider())
+		t.Errorf("Provider() = %q", model.Provider())
+	}
+	if model.ModelID() != "veo-3.1-generate-preview" {
+		t.Errorf("ModelID() = %q", model.ModelID())
+	}
+	if got := model.MaxVideosPerCall(); got == nil || *got != 4 {
+		t.Errorf("MaxVideosPerCall() = %v, want 4", got)
 	}
 }
 
-func TestVideoModel_ModelID(t *testing.T) {
-	prov := New(Config{APIKey: "test-key"})
-	modelID := "gemini-2.0-flash"
-	model := NewVideoModel(prov, modelID)
+func TestVideoModel_DoStart_RequestBody(t *testing.T) {
+	var captured map[string]interface{}
+	model, _ := newTestVideoServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/models/veo-3.1-generate-preview:predictLongRunning" {
+			_ = json.NewDecoder(r.Body).Decode(&captured)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"name": "operations/start-test-op", "done": false})
+			return
+		}
+		http.NotFound(w, r)
+	})
 
-	if model.ModelID() != modelID {
-		t.Errorf("Expected model ID %s, got %s", modelID, model.ModelID())
+	result, err := model.DoStart(context.Background(), &provider.VideoModelV3StartOptions{
+		VideoModelV3CallOptions: provider.VideoModelV3CallOptions{Prompt: "A futuristic city with flying cars", N: 1},
+	})
+	if err != nil {
+		t.Fatalf("DoStart() error = %v", err)
+	}
+	var op googleVideoOperation
+	if err := json.Unmarshal(result.Operation, &op); err != nil {
+		t.Fatalf("unmarshal operation: %v", err)
+	}
+	if op.OperationName != "operations/start-test-op" {
+		t.Errorf("OperationName = %q", op.OperationName)
+	}
+
+	want := map[string]interface{}{
+		"instances":  []interface{}{map[string]interface{}{"prompt": "A futuristic city with flying cars"}},
+		"parameters": map[string]interface{}{"sampleCount": float64(1)},
+	}
+	gotJSON, _ := json.Marshal(captured)
+	wantJSON, _ := json.Marshal(want)
+	if string(gotJSON) != string(wantJSON) {
+		t.Errorf("body = %s, want %s", gotJSON, wantJSON)
 	}
 }
 
-func TestVideoModel_MaxVideosPerCall(t *testing.T) {
-	prov := New(Config{APIKey: "test-key"})
-	model := NewVideoModel(prov, "gemini-2.0-flash")
+func TestVideoModel_DoStart_SeedAspectRatioResolutionDuration(t *testing.T) {
+	var captured map[string]interface{}
+	model, _ := newTestVideoServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&captured)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"name": "operations/x", "done": false})
+	})
 
-	maxVideos := model.MaxVideosPerCall()
-	if maxVideos != nil {
-		t.Errorf("Expected MaxVideosPerCall to be nil (default 1), got %v", *maxVideos)
+	seed := 42
+	duration := 5.0
+	_, err := model.DoStart(context.Background(), &provider.VideoModelV3StartOptions{
+		VideoModelV3CallOptions: provider.VideoModelV3CallOptions{
+			Prompt: "x", N: 1, Seed: &seed, AspectRatio: "16:9", Resolution: "1920x1080", Duration: &duration,
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoStart() error = %v", err)
+	}
+	params := captured["parameters"].(map[string]interface{})
+	if params["seed"] != float64(42) {
+		t.Errorf("seed = %v", params["seed"])
+	}
+	if params["aspectRatio"] != "16:9" {
+		t.Errorf("aspectRatio = %v", params["aspectRatio"])
+	}
+	if params["resolution"] != "1080p" {
+		t.Errorf("resolution = %v, want 1080p", params["resolution"])
+	}
+	if params["durationSeconds"] != float64(5) {
+		t.Errorf("durationSeconds = %v", params["durationSeconds"])
 	}
 }
 
-func TestVideoModel_BuildRequestBody(t *testing.T) {
-	prov := New(Config{APIKey: "test-key"})
-	model := NewVideoModel(prov, "gemini-2.0-flash")
+func TestVideoModel_DoStart_SampleCountFromN(t *testing.T) {
+	var captured map[string]interface{}
+	model, _ := newTestVideoServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&captured)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"name": "operations/x", "done": false})
+	})
 
-	tests := []struct {
-		name     string
-		opts     *provider.VideoModelV3CallOptions
-		validate func(t *testing.T, body map[string]interface{})
-	}{
-		{
-			name: "text-to-video with prompt",
-			opts: &provider.VideoModelV3CallOptions{
-				Prompt: "A cat playing piano",
-			},
-			validate: func(t *testing.T, body map[string]interface{}) {
-				if body["prompt"] != "A cat playing piano" {
-					t.Errorf("Expected prompt in body")
-				}
-			},
-		},
-		{
-			name: "with aspect ratio",
-			opts: &provider.VideoModelV3CallOptions{
-				Prompt:      "A dog running",
-				AspectRatio: "16:9",
-			},
-			validate: func(t *testing.T, body map[string]interface{}) {
-				config, ok := body["generationConfig"].(map[string]interface{})
-				if !ok {
-					t.Fatal("Expected generationConfig in body")
-				}
-				if config["aspectRatio"] != "16:9" {
-					t.Errorf("Expected aspectRatio 16:9 in config")
-				}
-			},
-		},
-		{
-			name: "with resolution mapping",
-			opts: &provider.VideoModelV3CallOptions{
-				Prompt:     "A bird flying",
-				Resolution: "1920x1080",
-			},
-			validate: func(t *testing.T, body map[string]interface{}) {
-				config, ok := body["generationConfig"].(map[string]interface{})
-				if !ok {
-					t.Fatal("Expected generationConfig in body")
-				}
-				// Should map 1920x1080 to "1080p"
-				if config["resolution"] != "1080p" {
-					t.Errorf("Expected resolution to be mapped to 1080p, got %v", config["resolution"])
-				}
-			},
-		},
-		{
-			name: "with duration",
-			opts: &provider.VideoModelV3CallOptions{
-				Prompt:   "A sunset",
-				Duration: floatPtr(5.0),
-			},
-			validate: func(t *testing.T, body map[string]interface{}) {
-				config, ok := body["generationConfig"].(map[string]interface{})
-				if !ok {
-					t.Fatal("Expected generationConfig in body")
-				}
-				if config["durationSeconds"] != 5.0 {
-					t.Errorf("Expected durationSeconds 5.0 in config")
-				}
-			},
-		},
-		{
-			name: "with seed",
-			opts: &provider.VideoModelV3CallOptions{
-				Prompt: "A mountain",
-				Seed:   intPtr(42),
-			},
-			validate: func(t *testing.T, body map[string]interface{}) {
-				config, ok := body["generationConfig"].(map[string]interface{})
-				if !ok {
-					t.Fatal("Expected generationConfig in body")
-				}
-				if config["seed"] != 42 {
-					t.Errorf("Expected seed 42 in config")
-				}
-			},
-		},
+	_, err := model.DoStart(context.Background(), &provider.VideoModelV3StartOptions{
+		VideoModelV3CallOptions: provider.VideoModelV3CallOptions{Prompt: "x", N: 2},
+	})
+	if err != nil {
+		t.Fatalf("DoStart() error = %v", err)
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			body := model.buildRequestBody(tt.opts)
-			tt.validate(t, body)
-		})
+	params := captured["parameters"].(map[string]interface{})
+	if params["sampleCount"] != float64(2) {
+		t.Errorf("sampleCount = %v, want 2", params["sampleCount"])
 	}
 }
 
-func TestVideoModel_GetPollOptions(t *testing.T) {
-	prov := New(Config{APIKey: "test-key"})
-	model := NewVideoModel(prov, "gemini-2.0-flash")
+func TestVideoModel_DoStart_Headers(t *testing.T) {
+	var capturedHeaders http.Header
+	model, _ := newTestVideoServer(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedHeaders = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"name": "operations/x", "done": false})
+	})
 
-	tests := []struct {
-		name             string
-		providerOpts     map[string]interface{}
-		expectedInterval int
-		expectedTimeout  int
-	}{
-		{
-			name:             "default options",
-			providerOpts:     nil,
-			expectedInterval: 2000,   // default
-			expectedTimeout:  300000, // default
+	_, err := model.DoStart(context.Background(), &provider.VideoModelV3StartOptions{
+		VideoModelV3CallOptions: provider.VideoModelV3CallOptions{
+			Prompt:  "x",
+			Headers: map[string]string{"x-custom-header": "custom-value"},
 		},
-		{
-			name: "custom polling options",
-			providerOpts: map[string]interface{}{
-				"google": map[string]interface{}{
-					"pollIntervalMs": 5000,
-					"pollTimeoutMs":  600000,
+	})
+	if err != nil {
+		t.Fatalf("DoStart() error = %v", err)
+	}
+	if capturedHeaders.Get("x-custom-header") != "custom-value" {
+		t.Errorf("x-custom-header = %q", capturedHeaders.Get("x-custom-header"))
+	}
+	if capturedHeaders.Get("x-goog-api-key") != "test-api-key" {
+		t.Errorf("x-goog-api-key = %q", capturedHeaders.Get("x-goog-api-key"))
+	}
+}
+
+func TestVideoModel_DoStart_NoOperationName(t *testing.T) {
+	model, _ := newTestVideoServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"done": false})
+	})
+
+	_, err := model.DoStart(context.Background(), &provider.VideoModelV3StartOptions{
+		VideoModelV3CallOptions: provider.VideoModelV3CallOptions{Prompt: "x"},
+	})
+	if err == nil {
+		t.Fatal("expected error for missing operation name")
+	}
+}
+
+func TestVideoModel_DoStart_ImageAsInlineData(t *testing.T) {
+	var captured map[string]interface{}
+	model, _ := newTestVideoServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&captured)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"name": "operations/x", "done": false})
+	})
+
+	_, err := model.DoStart(context.Background(), &provider.VideoModelV3StartOptions{
+		VideoModelV3CallOptions: provider.VideoModelV3CallOptions{
+			Prompt: "x",
+			Image:  &provider.VideoModelV3File{Type: "file", Data: []byte("base64-image-data"), MediaType: "image/png"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoStart() error = %v", err)
+	}
+	instances := captured["instances"].([]interface{})
+	instance := instances[0].(map[string]interface{})
+	image := instance["image"].(map[string]interface{})
+	if image["mimeType"] != "image/png" {
+		t.Errorf("mimeType = %v", image["mimeType"])
+	}
+	if _, ok := image["bytesBase64Encoded"]; !ok {
+		t.Error("expected bytesBase64Encoded")
+	}
+}
+
+func TestVideoModel_DoStart_URLImageWarns(t *testing.T) {
+	model, _ := newTestVideoServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"name": "operations/x", "done": false})
+	})
+
+	result, err := model.DoStart(context.Background(), &provider.VideoModelV3StartOptions{
+		VideoModelV3CallOptions: provider.VideoModelV3CallOptions{
+			Prompt: "x",
+			Image:  &provider.VideoModelV3File{Type: "url", URL: "https://example.com/image.png"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoStart() error = %v", err)
+	}
+	if len(result.Warnings) != 1 || result.Warnings[0].Feature != "URL-based image input" {
+		t.Errorf("Warnings = %#v", result.Warnings)
+	}
+}
+
+func TestVideoModel_DoStart_PersonGenerationNegativePromptReferenceImages(t *testing.T) {
+	var captured map[string]interface{}
+	model, _ := newTestVideoServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&captured)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"name": "operations/x", "done": false})
+	})
+
+	_, err := model.DoStart(context.Background(), &provider.VideoModelV3StartOptions{
+		VideoModelV3CallOptions: provider.VideoModelV3CallOptions{
+			Prompt: "x",
+			ProviderOptions: map[string]interface{}{"google": map[string]interface{}{
+				"personGeneration": "allow_adult",
+				"negativePrompt":   "blurry, low quality",
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoStart() error = %v", err)
+	}
+	params := captured["parameters"].(map[string]interface{})
+	if params["personGeneration"] != "allow_adult" {
+		t.Errorf("personGeneration = %v", params["personGeneration"])
+	}
+	if params["negativePrompt"] != "blurry, low quality" {
+		t.Errorf("negativePrompt = %v", params["negativePrompt"])
+	}
+
+	_, err = model.DoStart(context.Background(), &provider.VideoModelV3StartOptions{
+		VideoModelV3CallOptions: provider.VideoModelV3CallOptions{
+			Prompt: "x",
+			ProviderOptions: map[string]interface{}{"google": map[string]interface{}{
+				"referenceImages": []interface{}{
+					map[string]interface{}{"bytesBase64Encoded": "reference-image-data"},
+					map[string]interface{}{"gcsUri": "gs://bucket/reference.png"},
+				},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoStart() error = %v", err)
+	}
+	instances := captured["instances"].([]interface{})
+	instance := instances[0].(map[string]interface{})
+	refs := instance["referenceImages"].([]interface{})
+	if len(refs) != 2 {
+		t.Fatalf("referenceImages len = %d, want 2", len(refs))
+	}
+}
+
+func TestVideoModel_DoStatus_CompletedAppendsAPIKey(t *testing.T) {
+	var srvURL string
+	var model *VideoModel
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"name": "operations/status-test-op",
+			"done": true,
+			"response": map[string]interface{}{
+				"generateVideoResponse": map[string]interface{}{
+					"generatedSamples": []map[string]interface{}{
+						{"video": map[string]interface{}{"uri": srvURL + "/files/video-456.mp4"}},
+					},
 				},
 			},
-			expectedInterval: 5000,
-			expectedTimeout:  600000,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			opts := model.getPollOptions(tt.providerOpts)
-			if opts.PollIntervalMs != tt.expectedInterval {
-				t.Errorf("Expected interval %d, got %d", tt.expectedInterval, opts.PollIntervalMs)
-			}
-			if opts.PollTimeoutMs != tt.expectedTimeout {
-				t.Errorf("Expected timeout %d, got %d", tt.expectedTimeout, opts.PollTimeoutMs)
-			}
 		})
+	}))
+	t.Cleanup(srv.Close)
+	srvURL = srv.URL
+	p := New(Config{APIKey: "test-api-key", BaseURL: srv.URL})
+	model = NewVideoModel(p, "veo-3.1-generate-preview")
+
+	op, _ := json.Marshal(googleVideoOperation{OperationName: "operations/status-test-op"})
+	result, err := model.DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: op})
+	if err != nil {
+		t.Fatalf("DoStatus() error = %v", err)
+	}
+	if result.Status != provider.VideoOperationStatusCompleted {
+		t.Fatalf("Status = %q, want completed", result.Status)
+	}
+	if len(result.Videos) != 1 {
+		t.Fatalf("Videos = %#v", result.Videos)
+	}
+	if result.Videos[0].URL != srvURL+"/files/video-456.mp4?key=test-api-key" {
+		t.Errorf("URL = %q", result.Videos[0].URL)
 	}
 }
 
-// TestVideoModel_DoGenerate would require mocking the HTTP client
-// This is left as an integration test or requires adding mock support
+func TestVideoModel_DoStatus_Pending(t *testing.T) {
+	model, _ := newTestVideoServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"name": "operations/pending-op", "done": false})
+	})
 
-func TestProvider_VideoModel(t *testing.T) {
-	prov := New(Config{APIKey: "test-key"})
+	op, _ := json.Marshal(googleVideoOperation{OperationName: "operations/pending-op"})
+	result, err := model.DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: op})
+	if err != nil {
+		t.Fatalf("DoStatus() error = %v", err)
+	}
+	if result.Status != provider.VideoOperationStatusPending {
+		t.Fatalf("Status = %q, want pending", result.Status)
+	}
+}
 
-	t.Run("returns video model", func(t *testing.T) {
-		model, err := prov.VideoModel("gemini-2.0-flash")
-		if err != nil {
-			t.Fatalf("Expected no error, got %v", err)
-		}
-		if model == nil {
-			t.Fatal("Expected model, got nil")
+func TestVideoModel_DoStatus_Error(t *testing.T) {
+	model, _ := newTestVideoServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"name": "operations/error-op",
+			"done": true,
+			"error": map[string]interface{}{
+				"code": 400, "message": "Content policy violation", "status": "FAILED_PRECONDITION",
+			},
+		})
+	})
+
+	op, _ := json.Marshal(googleVideoOperation{OperationName: "operations/error-op"})
+	result, err := model.DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: op})
+	if err != nil {
+		t.Fatalf("DoStatus() error = %v", err)
+	}
+	if result.Status != provider.VideoOperationStatusError {
+		t.Fatalf("Status = %q, want error", result.Status)
+	}
+	if result.Error == "" {
+		t.Error("expected error message")
+	}
+}
+
+func TestVideoModel_DoStatus_NoVideos(t *testing.T) {
+	model, _ := newTestVideoServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"name": "operations/empty-op",
+			"done": true,
+			"response": map[string]interface{}{
+				"generateVideoResponse": map[string]interface{}{"generatedSamples": []interface{}{}},
+			},
+		})
+	})
+
+	op, _ := json.Marshal(googleVideoOperation{OperationName: "operations/empty-op"})
+	_, err := model.DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: op})
+	if err == nil {
+		t.Fatal("expected error for empty videos")
+	}
+}
+
+func TestVideoModel_DoGenerate_EndToEnd(t *testing.T) {
+	pollCount := 0
+	model, _ := newTestVideoServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/models/veo-3.1-generate-preview:predictLongRunning":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"name": "operations/test-op", "done": false})
+		case r.URL.Path == "/operations/test-op":
+			pollCount++
+			if pollCount == 1 {
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"name": "operations/test-op", "done": false})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"name": "operations/test-op",
+				"done": true,
+				"response": map[string]interface{}{
+					"generateVideoResponse": map[string]interface{}{
+						"generatedSamples": []map[string]interface{}{
+							{"video": map[string]interface{}{"uri": "https://example.com/video.mp4"}},
+						},
+					},
+				},
+			})
+		default:
+			http.NotFound(w, r)
 		}
 	})
 
-	t.Run("returns error for empty model ID", func(t *testing.T) {
-		_, err := prov.VideoModel("")
-		if err == nil {
-			t.Fatal("Expected error for empty model ID")
-		}
+	resp, err := model.DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{
+		Prompt: "A calm ocean at sunrise",
+		ProviderOptions: map[string]interface{}{
+			"google": map[string]interface{}{"pollIntervalMs": 1, "pollTimeoutMs": 5000},
+		},
 	})
-}
-
-// Helper functions
-
-func floatPtr(f float64) *float64 {
-	return &f
-}
-
-func intPtr(i int) *int {
-	return &i
+	if err != nil {
+		t.Fatalf("DoGenerate() error = %v", err)
+	}
+	if len(resp.Videos) != 1 {
+		t.Fatalf("Videos = %#v", resp.Videos)
+	}
 }

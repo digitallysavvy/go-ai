@@ -4,12 +4,26 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
-func (m *InteractionsLanguageModel) convertPrompt(p types.Prompt, opts GoogleInteractionsProviderOptions) (interface{}, string, []types.Warning, error) {
+// convertPrompt ports TS convertToGoogleInteractionsInput: the Interactions
+// wire request body has an `input` field that is ALWAYS a flat array of
+// discriminated step objects (`GoogleInteractionsInput = Array<
+// GoogleInteractionsStep>`) — never a `{role, content}` "turn" wrapper, and
+// never collapsed to a bare content array even for a single user message.
+//   - a user message becomes one `user_input` step (content = its text/file
+//     blocks, with adjacent text merged);
+//   - a tool message becomes one `user_input` step whose content holds one
+//     `function_result` block per tool-result part;
+//   - an assistant message fans out into potentially several steps: adjacent
+//     text/file content coalesces into one `model_output` step, while
+//     reasoning, tool-calls, and processing_call/processing_result custom
+//     parts each become their own top-level step (see convertAssistantSteps).
+func (m *InteractionsLanguageModel) convertPrompt(p types.Prompt, opts GoogleInteractionsProviderOptions) ([]map[string]interface{}, string, []types.Warning, error) {
 	warnings := make([]types.Warning, 0)
 	messages := p.Messages
 	if len(messages) == 0 && p.Text != "" {
@@ -27,7 +41,7 @@ func (m *InteractionsLanguageModel) convertPrompt(p types.Prompt, opts GoogleInt
 	}
 
 	var systemTexts []string
-	turns := make([]map[string]interface{}, 0, len(messages))
+	steps := make([]map[string]interface{}, 0, len(messages))
 	for _, msg := range messages {
 		switch msg.Role {
 		case types.RoleSystem:
@@ -44,17 +58,15 @@ func (m *InteractionsLanguageModel) convertPrompt(p types.Prompt, opts GoogleInt
 			warnings = append(warnings, ws...)
 			content = mergeAdjacentInteractionText(content)
 			if len(content) > 0 {
-				turns = append(turns, map[string]interface{}{"role": "user", "content": content})
+				steps = append(steps, map[string]interface{}{"type": "user_input", "content": content})
 			}
 		case types.RoleAssistant:
-			content, ws, err := m.convertAssistantParts(msg.Content, msg.ToolCalls, opts.MediaResolution)
+			assistantSteps, ws, err := m.convertAssistantSteps(msg.Content, msg.ToolCalls, opts.MediaResolution)
 			if err != nil {
 				return nil, "", nil, err
 			}
 			warnings = append(warnings, ws...)
-			if len(content) > 0 {
-				turns = append(turns, map[string]interface{}{"role": "model", "content": content})
-			}
+			steps = append(steps, assistantSteps...)
 		case types.RoleTool:
 			content, ws, err := convertToolResults(msg.Content)
 			if err != nil {
@@ -62,19 +74,13 @@ func (m *InteractionsLanguageModel) convertPrompt(p types.Prompt, opts GoogleInt
 			}
 			warnings = append(warnings, ws...)
 			if len(content) > 0 {
-				turns = append(turns, map[string]interface{}{"role": "user", "content": content})
+				steps = append(steps, map[string]interface{}{"type": "user_input", "content": content})
 			}
 		}
 	}
 
 	systemInstruction := strings.Join(systemTexts, "\n\n")
-	if len(turns) == 0 {
-		return "", systemInstruction, warnings, nil
-	}
-	if len(turns) == 1 && turns[0]["role"] == "user" {
-		return turns[0]["content"], systemInstruction, warnings, nil
-	}
-	return turns, systemInstruction, warnings, nil
+	return steps, systemInstruction, warnings, nil
 }
 
 func (m *InteractionsLanguageModel) convertContentParts(parts []types.ContentPart, mediaResolution string) ([]map[string]interface{}, []types.Warning, error) {
@@ -85,23 +91,23 @@ func (m *InteractionsLanguageModel) convertContentParts(parts []types.ContentPar
 		case types.TextContent:
 			content = append(content, map[string]interface{}{"type": "text", "text": p.Text})
 		case types.FileContent:
-			block, warning, err := fileContentToInteractionBlock(p, mediaResolution)
+			block, ws, err := fileContentToInteractionBlock(p, mediaResolution)
 			if err != nil {
 				return nil, nil, err
 			}
-			if warning != nil {
-				warnings = append(warnings, *warning)
+			warnings = append(warnings, ws...)
+			if block == nil {
 				continue
 			}
 			content = append(content, block)
 		case types.ImageContent:
 			file := types.FileContent{Data: p.Image, MediaType: p.MimeType, MimeType: p.MimeType, URL: p.URL, ProviderOptions: p.ProviderOptions}
-			block, warning, err := fileContentToInteractionBlock(file, mediaResolution)
+			block, ws, err := fileContentToInteractionBlock(file, mediaResolution)
 			if err != nil {
 				return nil, nil, err
 			}
-			if warning != nil {
-				warnings = append(warnings, *warning)
+			warnings = append(warnings, ws...)
+			if block == nil {
 				continue
 			}
 			content = append(content, block)
@@ -110,31 +116,56 @@ func (m *InteractionsLanguageModel) convertContentParts(parts []types.ContentPar
 	return content, warnings, nil
 }
 
-func (m *InteractionsLanguageModel) convertAssistantParts(parts []types.ContentPart, toolCalls []types.ToolCall, mediaResolution string) ([]map[string]interface{}, []types.Warning, error) {
+// convertAssistantSteps ports TS's assistant-message branch of
+// convertToGoogleInteractionsInput: adjacent text/file content blocks
+// coalesce into a single `model_output` step (flushed whenever a
+// non-coalescable part is encountered, and at the end), while reasoning,
+// tool-calls, and processing_call/processing_result custom parts each
+// become their own top-level step — never nested inside `model_output`.
+//
+// Tool calls may appear inline in `parts` (as types.ToolCallContent, for a
+// hand-built prompt) and/or in the separate `toolCalls` slice (as populated
+// by the SDK's own conversation history, see types.Message.ToolCalls). A
+// call ID seen inline is not duplicated from `toolCalls`.
+func (m *InteractionsLanguageModel) convertAssistantSteps(parts []types.ContentPart, toolCalls []types.ToolCall, mediaResolution string) ([]map[string]interface{}, []types.Warning, error) {
 	var warnings []types.Warning
-	content := make([]map[string]interface{}, 0, len(parts)+len(toolCalls))
+	var steps []map[string]interface{}
+	var pending []map[string]interface{}
+	seenToolCallIDs := map[string]bool{}
+
+	flush := func() {
+		if len(pending) > 0 {
+			steps = append(steps, map[string]interface{}{"type": "model_output", "content": pending})
+			pending = nil
+		}
+	}
+
 	for _, part := range parts {
 		switch p := part.(type) {
 		case types.TextContent:
-			content = append(content, map[string]interface{}{"type": "text", "text": p.Text})
+			pending = append(pending, map[string]interface{}{"type": "text", "text": p.Text})
 		case types.ReasoningContent:
-			block := pruneMap(map[string]interface{}{
+			flush()
+			steps = append(steps, pruneMap(map[string]interface{}{
 				"type":      "thought",
 				"signature": emptyToNil(firstNonEmpty(p.Signature, googleSignature(p.ProviderMetadata))),
 				"summary":   reasoningSummary(p.Text),
-			})
-			content = append(content, block)
+			}))
 		case types.FileContent:
-			block, warning, err := fileContentToInteractionBlock(p, mediaResolution)
+			block, ws, err := fileContentToInteractionBlock(p, mediaResolution)
 			if err != nil {
 				return nil, nil, err
 			}
-			if warning != nil {
-				warnings = append(warnings, *warning)
+			warnings = append(warnings, ws...)
+			if block == nil {
 				continue
 			}
-			content = append(content, block)
+			pending = append(pending, block)
 		case types.ToolCallContent:
+			flush()
+			if p.ToolCallID != "" {
+				seenToolCallIDs[p.ToolCallID] = true
+			}
 			args := p.Arguments
 			if args == nil && p.Input != "" {
 				_ = json.Unmarshal([]byte(p.Input), &args)
@@ -142,21 +173,54 @@ func (m *InteractionsLanguageModel) convertAssistantParts(parts []types.ContentP
 			if args == nil {
 				args = map[string]interface{}{}
 			}
-			content = append(content, pruneMap(map[string]interface{}{
+			steps = append(steps, pruneMap(map[string]interface{}{
 				"type":      "function_call",
 				"id":        p.ToolCallID,
 				"name":      p.ToolName,
 				"arguments": args,
 				"signature": emptyToNil(firstNonEmpty(p.ThoughtSignature, signatureFromRawMetadata(p.ProviderMetadata))),
 			}))
+		case types.CustomContent:
+			flush()
+			google := extractGoogleMetadata(p.ProviderMetadata)
+			signature, _ := google["signature"].(string)
+			switch p.Kind {
+			case "google.processing_call":
+				if processingID, _ := google["processingId"].(string); processingID != "" {
+					steps = append(steps, pruneMap(map[string]interface{}{
+						"type":      "processing_call",
+						"id":        processingID,
+						"signature": emptyToNil(signature),
+					}))
+					continue
+				}
+			case "google.processing_result":
+				if processingCallID, _ := google["processingCallId"].(string); processingCallID != "" {
+					steps = append(steps, pruneMap(map[string]interface{}{
+						"type":      "processing_result",
+						"call_id":   processingCallID,
+						"signature": emptyToNil(signature),
+					}))
+					continue
+				}
+			}
+			msg := fmt.Sprintf("google.interactions: unsupported or invalid custom assistant content part %q; part dropped.", p.Kind)
+			warnings = append(warnings, types.Warning{Type: "other", Message: msg, Details: msg})
+		default:
+			msg := fmt.Sprintf("google.interactions: unsupported assistant content part type %q; part dropped.", part.ContentType())
+			warnings = append(warnings, types.Warning{Type: "other", Message: msg, Details: msg})
 		}
 	}
 	for _, call := range toolCalls {
+		if call.ID != "" && seenToolCallIDs[call.ID] {
+			continue
+		}
+		flush()
 		args := call.Arguments
 		if args == nil {
 			args = map[string]interface{}{}
 		}
-		content = append(content, pruneMap(map[string]interface{}{
+		steps = append(steps, pruneMap(map[string]interface{}{
 			"type":      "function_call",
 			"id":        call.ID,
 			"name":      call.ToolName,
@@ -164,10 +228,11 @@ func (m *InteractionsLanguageModel) convertAssistantParts(parts []types.ContentP
 			"signature": emptyToNil(firstNonEmpty(call.ThoughtSignature, signatureFromMetadataMap(call.ProviderMetadata))),
 		}))
 	}
-	return content, warnings, nil
+	flush()
+	return steps, warnings, nil
 }
 
-func fileContentToInteractionBlock(part types.FileContent, mediaResolution string) (map[string]interface{}, *types.Warning, error) {
+func fileContentToInteractionBlock(part types.FileContent, mediaResolution string) (map[string]interface{}, []types.Warning, error) {
 	mediaType := firstNonEmpty(part.MediaType, part.MimeType, part.FileData.MediaType)
 	kind := interactionMediaKind(mediaType)
 	if part.FileData.Type == types.FileDataTypeText || part.Text != "" {
@@ -175,8 +240,9 @@ func fileContentToInteractionBlock(part types.FileContent, mediaResolution strin
 	}
 	if kind == "" {
 		msg := fmt.Sprintf("google.interactions: unsupported file media type %q; part dropped.", mediaType)
-		return nil, &types.Warning{Type: "other", Message: msg, Details: msg}, nil
+		return nil, []types.Warning{{Type: "other", Message: msg, Details: msg}}, nil
 	}
+	var warnings []types.Warning
 	block := map[string]interface{}{
 		"type": kind,
 	}
@@ -214,7 +280,88 @@ func fileContentToInteractionBlock(part types.FileContent, mediaResolution strin
 	if mediaResolution != "" && (kind == "image" || kind == "video") {
 		block["resolution"] = mediaResolution
 	}
-	return block, nil, nil
+	if kind == "video" {
+		processing, processingWarning := videoProcessingField(part.ProviderOptions)
+		if processing != nil {
+			block["processing"] = processing
+		}
+		if processingWarning != nil {
+			warnings = append(warnings, *processingWarning)
+		}
+	}
+	return block, warnings, nil
+}
+
+// videoProcessingField converts providerOptions.google.processing (TS
+// getVideoProcessingField) into the wire `processing` field for a video file
+// part: either the strings "agentic"/"static", or
+// `{type:"static", start_offset?, end_offset?, fps?}`. Returns (nil, nil)
+// when unset, and (nil, warning) for an invalid value (option dropped, block
+// still emitted).
+func videoProcessingField(providerOptions map[string]interface{}) (interface{}, *types.Warning) {
+	google, _ := providerOptions["google"].(map[string]interface{})
+	if google == nil {
+		return nil, nil
+	}
+	processing, ok := google["processing"]
+	if !ok || processing == nil {
+		return nil, nil
+	}
+	if s, ok := processing.(string); ok && (s == "agentic" || s == "static") {
+		return s, nil
+	}
+	if m, ok := processing.(map[string]interface{}); ok && stringValue(m["type"]) == "static" {
+		out := pruneMap(map[string]interface{}{
+			"type":         "static",
+			"start_offset": videoOffsetString(m["startOffset"]),
+			"end_offset":   videoOffsetString(m["endOffset"]),
+			"fps":          numericOrNil(m["fps"]),
+		})
+		if out == nil {
+			out = map[string]interface{}{"type": "static"}
+		}
+		return out, nil
+	}
+	msg := "google.interactions: invalid providerOptions.google.processing on video file part; expected \"agentic\", \"static\", or a static processing configuration. Option dropped."
+	return nil, &types.Warning{Type: "other", Message: msg, Details: msg}
+}
+
+// numericOrNil returns v when it is a JSON number type, otherwise nil (so
+// pruneMap drops the key).
+func numericOrNil(v interface{}) interface{} {
+	switch v.(type) {
+	case int, int32, int64, float32, float64:
+		return v
+	default:
+		return nil
+	}
+}
+
+// videoOffsetString formats a numeric video start/end offset as a duration
+// string like "10.5s", mirroring TS `${config.startOffset}s` (a template
+// literal, which coerces the number via JS's Number-to-string algorithm).
+// strconv.FormatFloat with precision -1 (shortest round-tripping decimal, no
+// exponential notation for this typical offset range) matches that output
+// for realistic values (no trailing zeros, no redundant decimal point for
+// whole numbers). Returns nil for non-numeric values so pruneMap drops the
+// key, matching TS's `typeof config.startOffset === 'number'` guard.
+func videoOffsetString(v interface{}) interface{} {
+	var f float64
+	switch n := v.(type) {
+	case int:
+		f = float64(n)
+	case int32:
+		f = float64(n)
+	case int64:
+		f = float64(n)
+	case float32:
+		f = float64(n)
+	case float64:
+		f = n
+	default:
+		return nil
+	}
+	return strconv.FormatFloat(f, 'f', -1, 64) + "s"
 }
 
 func convertToolResults(parts []types.ContentPart) ([]map[string]interface{}, []types.Warning, error) {
@@ -293,12 +440,12 @@ func toolResultContentBlocks(blocks []types.ToolResultContentBlock) ([]map[strin
 				continue
 			}
 			file := types.FileContent{FileData: b.FileData, Data: b.Data, MediaType: b.MediaType, URL: b.URL, Reference: b.Reference, Text: b.Text}
-			ib, warning, err := fileContentToInteractionBlock(file, "")
+			ib, ws, err := fileContentToInteractionBlock(file, "")
 			if err != nil {
 				return nil, nil, err
 			}
-			if warning != nil {
-				warnings = append(warnings, *warning)
+			warnings = append(warnings, ws...)
+			if ib == nil {
 				continue
 			}
 			out = append(out, ib)
@@ -337,6 +484,14 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 						mediaType := firstNonEmpty(inner.MimeType, "image/png")
 						content = append(content, types.GeneratedFileContent{MediaType: mediaType, FileData: types.FileData{Type: types.FileDataTypeURL, URL: inner.URI, MediaType: mediaType}, URL: inner.URI, ProviderMetadata: meta})
 					}
+				case "video":
+					if inner.Data != "" {
+						data, _ := base64.StdEncoding.DecodeString(inner.Data)
+						content = append(content, types.GeneratedFileContent{MediaType: firstNonEmpty(inner.MimeType, "video/mp4"), Data: data, ProviderMetadata: meta})
+					} else if inner.URI != "" {
+						mediaType := firstNonEmpty(inner.MimeType, "video/mp4")
+						content = append(content, types.GeneratedFileContent{MediaType: mediaType, FileData: types.FileData{Type: types.FileDataTypeURL, URL: inner.URI, MediaType: mediaType}, URL: inner.URI, ProviderMetadata: meta})
+					}
 				}
 			}
 		case "text":
@@ -355,6 +510,18 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 				mediaType := firstNonEmpty(block.MimeType, "image/png")
 				content = append(content, types.GeneratedFileContent{MediaType: mediaType, FileData: types.FileData{Type: types.FileDataTypeURL, URL: block.URI, MediaType: mediaType}, URL: block.URI, ProviderMetadata: meta})
 			}
+		case "processing_call":
+			processingID := firstNonEmpty(block.ID, fmt.Sprintf("processing_%d", len(content)+1))
+			content = append(content, types.CustomContent{
+				Kind:             "google.processing_call",
+				ProviderMetadata: processingMeta(block.Signature, interactionID, processingID, ""),
+			})
+		case "processing_result":
+			processingCallID := firstNonEmpty(block.CallID, fmt.Sprintf("processing_%d", len(content)+1))
+			content = append(content, types.CustomContent{
+				Kind:             "google.processing_result",
+				ProviderMetadata: processingMeta(block.Signature, interactionID, "", processingCallID),
+			})
 		case "function_call":
 			hasFunctionCall = true
 			var args map[string]interface{}
@@ -488,7 +655,7 @@ func interactionMediaKind(mediaType string) string {
 		return "audio"
 	case strings.HasPrefix(mediaType, "video"):
 		return "video"
-	case strings.HasPrefix(mediaType, "application"):
+	case strings.HasPrefix(mediaType, "application"), strings.HasPrefix(mediaType, "text"):
 		return "document"
 	default:
 		return ""

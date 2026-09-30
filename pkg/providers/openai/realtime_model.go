@@ -9,6 +9,7 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 type OpenAIRealtimeModel struct {
@@ -16,13 +17,56 @@ type OpenAIRealtimeModel struct {
 	modelID  string
 }
 
-type OpenAIRealtimeModelOptions struct{}
+// OpenAIRealtimeModelOptions selects between the GA Realtime API and the
+// experimental Live API. Mirrors the TypeScript SDK's
+// OpenAIRealtimeOptions.
+type OpenAIRealtimeModelOptions struct {
+	// API overrides model ID routing: "live" or "realtime". Nil (unset)
+	// routes known Live model IDs (e.g. "gpt-live-1") to Live and everything
+	// else to the GA Realtime API, matching TS resolveRealtimeApi, where an
+	// omitted (undefined) api is distinct from an explicit invalid value. A
+	// non-nil value that is neither "live" nor "realtime" (including "") is
+	// rejected, matching TS.
+	API *string
+}
 
 func NewRealtimeModel(p *Provider, modelID string) *OpenAIRealtimeModel {
 	return &OpenAIRealtimeModel{provider: p, modelID: modelID}
 }
 
-func (p *Provider) ExperimentalRealtimeModel(modelID string, _ ...OpenAIRealtimeModelOptions) (provider.Experimental_RealtimeModelV4, error) {
+// resolveRealtimeAPI mirrors TS openai-realtime-factory.ts
+// resolveRealtimeApi.
+func resolveRealtimeAPI(modelID string, opts OpenAIRealtimeModelOptions) (string, error) {
+	if opts.API == nil {
+		if knownLiveModelIDs[modelID] {
+			return "live", nil
+		}
+		return "realtime", nil
+	}
+	switch *opts.API {
+	case "live", "realtime":
+		return *opts.API, nil
+	default:
+		return "", &providererrors.InvalidArgumentError{Field: "api", Message: `OpenAI realtime api must be "live" or "realtime".`}
+	}
+}
+
+// ExperimentalRealtimeModel creates an OpenAI realtime model, routing known
+// Live model IDs (or an explicit api: "live" option) to
+// OpenAIRealtimeModelLive and everything else to the GA
+// OpenAIRealtimeModel. Mirrors TS createOpenAIRealtimeFactory.
+func (p *Provider) ExperimentalRealtimeModel(modelID string, opts ...OpenAIRealtimeModelOptions) (provider.Experimental_RealtimeModelV4, error) {
+	var o OpenAIRealtimeModelOptions
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+	api, err := resolveRealtimeAPI(modelID, o)
+	if err != nil {
+		return nil, err
+	}
+	if api == "live" {
+		return NewRealtimeModelLive(p, modelID), nil
+	}
 	return NewRealtimeModel(p, modelID), nil
 }
 
@@ -30,17 +74,46 @@ func (p *Provider) RealtimeModel(modelID string, opts ...OpenAIRealtimeModelOpti
 	return p.ExperimentalRealtimeModel(modelID, opts...)
 }
 
+// GetRealtimeToken mints a short-lived client secret for the GA Realtime
+// API. It rejects Live models with the same error TS
+// createOpenAIRealtimeFactory().getToken() throws (an explicit
+// `instanceof OpenAIRealtimeModelLive` check before calling
+// doCreateClientSecret): OpenAIRealtimeModelLive implements neither
+// DoCreateClientSecret nor GetWebSocketConfig in TS, so the Go model
+// doesn't either, and the RealtimeClientSecretCreator type assertion below
+// fails for it exactly like TS's instanceof check.
 func (p *Provider) GetRealtimeToken(ctx context.Context, opts provider.RealtimeFactoryGetTokenOptions) (provider.ClientSecretResult, error) {
-	model, err := p.ExperimentalRealtimeModel(opts.Model)
+	model, err := p.ExperimentalRealtimeModel(opts.Model, OpenAIRealtimeModelOptions{API: opts.API})
 	if err != nil {
 		return provider.ClientSecretResult{}, err
 	}
-	return model.DoCreateClientSecret(ctx, opts.ClientSecretOptions)
+	creator, ok := model.(provider.RealtimeClientSecretCreator)
+	if !ok {
+		return provider.ClientSecretResult{}, &providererrors.UnsupportedFunctionalityError{
+			Functionality: "Short-lived OpenAI credentials for the Live API. Use server WebSocket setup via GetServerWebSocketConfig() with a server-side API key instead.",
+		}
+	}
+	return creator.DoCreateClientSecret(ctx, opts.ClientSecretOptions)
 }
 
 func (m *OpenAIRealtimeModel) SpecificationVersion() string { return "v4" }
 func (m *OpenAIRealtimeModel) Provider() string             { return m.provider.Name() + ".realtime" }
 func (m *OpenAIRealtimeModel) ModelID() string              { return m.modelID }
+
+// Compile-time check that the GA *OpenAIRealtimeModel still implements both
+// optional client-secret-WebSocket capabilities (RealtimeClientSecretCreator
+// / RealtimeWebSocketConfigProvider) that DoCreateClientSecret/
+// GetWebSocketConfig moved into (hand-off: "realtime optional
+// capabilities"). GetRealtimeToken above relies on a
+// RealtimeClientSecretCreator type assertion succeeding for this type;
+// losing DoCreateClientSecret would otherwise only surface as a runtime
+// UnsupportedFunctionalityError matching the Live-model rejection path,
+// which would be wrong for the GA model.
+var (
+	_ provider.Experimental_RealtimeModelV4    = (*OpenAIRealtimeModel)(nil)
+	_ provider.RealtimeClientSecretCreator     = (*OpenAIRealtimeModel)(nil)
+	_ provider.RealtimeWebSocketConfigProvider = (*OpenAIRealtimeModel)(nil)
+)
 
 func (m *OpenAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.ClientSecretOptions) (provider.ClientSecretResult, error) {
 	if m.provider.config.APIKey == "" {

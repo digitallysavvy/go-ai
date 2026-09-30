@@ -212,3 +212,25 @@ func TestParallelSearchSchemaMatchesTSOptionalFields(t *testing.T) {
 		t.Fatalf("output result schema = %#v", resultProperties)
 	}
 }
+
+// TestParallelSearchSourcePolicyDescriptionsMatchTS covers 330f6e2: the
+// source_policy.include_domains/exclude_domains/after_date descriptions were
+// clarified so the model emits plain domain names and calendar dates.
+func TestParallelSearchSourcePolicyDescriptionsMatchTS(t *testing.T) {
+	tool := NewParallelSearch(ParallelSearchConfig{}).ToTool()
+	properties := tool.Parameters.(map[string]interface{})["properties"].(map[string]interface{})
+	sourcePolicy := properties["source_policy"].(map[string]interface{})["properties"].(map[string]interface{})
+
+	const domainDescription = "Limit results to these domains. Use plain domain names only — e.g. example.com or sub.example.gov, or a bare extension like .edu. Do not include a scheme, path, or port (e.g. not https://example.com/page)."
+	if got := sourcePolicy["include_domains"].(map[string]interface{})["description"]; got != domainDescription {
+		t.Fatalf("include_domains description = %q, want %q", got, domainDescription)
+	}
+	const excludeDescription = "Exclude results from these domains. Use plain domain names only — e.g. example.com or sub.example.gov, or a bare extension like .edu. Do not include a scheme, path, or port (e.g. not https://example.com/page)."
+	if got := sourcePolicy["exclude_domains"].(map[string]interface{})["description"]; got != excludeDescription {
+		t.Fatalf("exclude_domains description = %q, want %q", got, excludeDescription)
+	}
+	const afterDateDescription = "Only include results published after this date. Use an ISO 8601 calendar date formatted YYYY-MM-DD (e.g. 2025-01-01); do not include a time."
+	if got := sourcePolicy["after_date"].(map[string]interface{})["description"]; got != afterDateDescription {
+		t.Fatalf("after_date description = %q, want %q", got, afterDateDescription)
+	}
+}

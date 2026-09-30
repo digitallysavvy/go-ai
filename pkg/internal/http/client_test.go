@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	stdhttp "net/http"
 	"net/http/httptest"
 	"strings"
@@ -160,5 +161,28 @@ func TestClientErrorPaths(t *testing.T) {
 	var out map[string]interface{}
 	if err := c.DoJSON(context.Background(), Request{Method: stdhttp.MethodGet, Path: "/"}, &out); err == nil {
 		t.Fatal("DoJSON should fail for invalid response JSON")
+	}
+}
+
+func TestTransportErrorWording(t *testing.T) {
+	// Unroutable: a closed listener's address refuses connections.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	c := NewClient(Config{BaseURL: "http://" + addr})
+	_, err = c.Do(context.Background(), Request{Method: stdhttp.MethodGet, Path: "/x"})
+	if err == nil || !strings.HasPrefix(err.Error(), "Cannot connect to API: ") {
+		t.Fatalf("connection failure error = %v, want \"Cannot connect to API: \" prefix (TS handleFetchError)", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = c.Do(ctx, Request{Method: stdhttp.MethodGet, Path: "/x"})
+	if err == nil || !errors.Is(err, context.Canceled) || strings.HasPrefix(err.Error(), "Cannot connect to API") {
+		t.Fatalf("cancelled request error = %v, want unwrapped context.Canceled", err)
 	}
 }

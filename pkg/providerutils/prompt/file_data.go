@@ -52,6 +52,20 @@ func (e *UnsupportedSystemMessageError) Error() string {
 // the request: reject system messages by default, rewrite deprecated image parts
 // to file parts, normalize file data shorthands, and enforce reasoning-file
 // constraints.
+//
+// NormalizePrompt intentionally does NOT combine consecutive tool-role
+// messages (see MergeConsecutiveToolMessages): pkg/ai and pkg/agent also call
+// this (indirectly, via NormalizePromptWithDownloadSupport) to seed the
+// running conversation history used across an entire tool loop -- e.g.
+// resumeToolApprovals (pkg/ai/tool_approval_resume.go) scans that history
+// message-by-message to find and re-validate tool-approval-response parts by
+// their ORIGINAL message boundaries. TS's convertToLanguageModelPrompt (which
+// does merge) is called only once per model call, right before building the
+// LanguageModelV4Prompt handed to doGenerate -- never to prepare the
+// ModelMessage-shaped history used for approval bookkeeping. Go's equivalent
+// terminal point is NormalizePromptWithDownloadSupport, called fresh for each
+// step immediately before assembling the provider.GenerateOptions passed to
+// model.DoGenerate/DoStream; that is where the merge is applied.
 func NormalizePrompt(prompt types.Prompt, allowSystemMessages bool) (types.Prompt, error) {
 	messages, err := NormalizeMessages(prompt.Messages, allowSystemMessages)
 	if err != nil {
@@ -120,19 +134,28 @@ func NormalizePromptWithDownloads(ctx context.Context, prompt types.Prompt, allo
 // NormalizePromptWithDownloadSupport is NormalizePromptWithDownloads plus
 // TypeScript-compatible URL support planning. Supported URLs are left as URLs;
 // unsupported URLs are converted to inline data via download.
+//
+// This is the Go equivalent of TS's convertToLanguageModelPrompt: it is
+// called fresh for every step, immediately before the resulting Prompt is
+// handed to a provider's DoGenerate/DoStream (pkg/ai's per-step loop,
+// pkg/agent's executeStep), so it is the right place -- and, in the standard
+// pipeline, the ONLY place -- to combine consecutive tool-role messages
+// (MergeConsecutiveToolMessages) before ANY provider sees them, matching TS
+// where that combining happens once in the shared core for every provider.
 func NormalizePromptWithDownloadSupport(ctx context.Context, prompt types.Prompt, allowSystemMessages bool, download DownloadFunction, isURLSupported URLSupportChecker) (types.Prompt, error) {
 	normalized, err := NormalizePrompt(prompt, allowSystemMessages)
 	if err != nil {
 		return types.Prompt{}, err
 	}
 	if download == nil {
+		normalized.Messages = MergeConsecutiveToolMessages(normalized.Messages)
 		return normalized, nil
 	}
 	messages, err := DownloadUnsupportedFileURLs(ctx, normalized.Messages, download, isURLSupported)
 	if err != nil {
 		return types.Prompt{}, err
 	}
-	normalized.Messages = messages
+	normalized.Messages = MergeConsecutiveToolMessages(messages)
 	return normalized, nil
 }
 

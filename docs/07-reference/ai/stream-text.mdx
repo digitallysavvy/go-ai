@@ -49,6 +49,7 @@ The result provides methods to consume the stream:
 | Method | Returns | Description |
 |--------|---------|-------------|
 | Stream() | provider.TextStream | Underlying text stream |
+| FullStream() | provider.TextStream | Every chunk type, including lifecycle chunks (see below) |
 | Text() | string | Accumulated text so far |
 | FinishReason() | types.FinishReason | Finish reason (after stream ends) |
 | Usage() | types.Usage | Usage info (after stream ends) |
@@ -208,6 +209,41 @@ if err != nil {
 }
 ```
 
+## Full Stream Lifecycle
+
+`FullStream()` (and `OnChunk`) receive every chunk the call produces,
+including lifecycle chunks that bracket the call and each step:
+
+- `provider.ChunkTypeStart` opens the stream — emitted exactly once, before
+  the first step's provider chunks.
+- `provider.ChunkTypeStartStep` / `provider.ChunkTypeFinishStep` bracket each
+  step. `ChunkTypeFinishStep` carries that step's request, response, usage,
+  finish reason, and provider metadata.
+- `provider.ChunkTypeFinish` closes the call — emitted exactly once, after
+  the last step, carrying total usage across all steps.
+
+This differs from earlier SDK versions, where `ChunkTypeFinish` was forwarded
+once per step. Code that used to detect step boundaries by watching for
+`ChunkTypeFinish` must switch to `ChunkTypeFinishStep`; only the very last
+`ChunkTypeFinish` in a multi-step run signals the whole call is done.
+
+```go
+for chunk := range result.Chunks() {
+    switch chunk.Type {
+    case provider.ChunkTypeStart:
+        fmt.Println("stream started")
+    case provider.ChunkTypeStartStep:
+        fmt.Println("step started")
+    case provider.ChunkTypeText:
+        fmt.Print(chunk.Text)
+    case provider.ChunkTypeFinishStep:
+        fmt.Printf("\nstep finished: %s\n", chunk.FinishReason)
+    case provider.ChunkTypeFinish:
+        fmt.Printf("call finished, total usage: %d tokens\n", chunk.Usage.GetTotalTokens())
+    }
+}
+```
+
 ## Error Handling
 
 ```go
@@ -244,4 +280,4 @@ if result.Err() != nil {
 
 - [GenerateText](./generate-text.mdx) - Non-streaming text generation
 - [StreamObject](./stream-object.mdx) - Streaming structured output
-- [Streaming Guide](../../04-generation/streaming.mdx)
+- [Streaming Guide](../../02-foundations/05-streaming.mdx)

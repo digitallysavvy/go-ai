@@ -51,6 +51,15 @@ type ProviderError struct {
 
 	// Data is provider-specific structured error data, when available.
 	Data interface{}
+
+	// Retryable overrides the default status-code-based retryability
+	// classification in IsRetryable, when set. Providers use this for
+	// errors whose HTTP status isn't in the default retryable set but that
+	// TS still treats as retryable (e.g. Bedrock's modelStreamErrorException
+	// at 424), or the reverse (a normally-retryable status that a provider
+	// knows is not, in a given case). Hand-off: "ProviderError Retryable
+	// override".
+	Retryable *bool
 }
 
 // RetryErrorReason identifies why retrying stopped.
@@ -111,6 +120,9 @@ func (e *ProviderError) Unwrap() error {
 func (e *ProviderError) IsRetryable() bool {
 	if e == nil {
 		return false
+	}
+	if e.Retryable != nil {
+		return *e.Retryable
 	}
 	return e.StatusCode == 0 || e.StatusCode == 429 || e.StatusCode >= 500
 }
@@ -180,6 +192,12 @@ func (e *InvalidArgumentError) Error() string {
 }
 
 func (e *InvalidArgumentError) Unwrap() error { return e.Cause }
+
+// IsInvalidArgumentError checks if an error is an InvalidArgumentError.
+func IsInvalidArgumentError(err error) bool {
+	var target *InvalidArgumentError
+	return errors.As(err, &target)
+}
 
 // TooManyEmbeddingValuesForCallError signals that a provider embedding model
 // received more values than it supports in one request.
@@ -475,6 +493,18 @@ type DownloadError struct {
 
 	// Underlying cause
 	Cause error
+
+	// Body is a bounded prefix of the response body for non-2xx HTTP
+	// responses, when captured. Callers that poll a JSON status endpoint
+	// (e.g. fileutil.PollJSON) rather than download a binary file need this
+	// to decode a provider's structured error envelope; plain file/media
+	// downloads leave it nil. Nil also when the error never reached an HTTP
+	// response (network/validation errors).
+	Body []byte
+
+	// Headers are the response headers for non-2xx HTTP responses, when
+	// captured. See Body.
+	Headers map[string][]string
 }
 
 // SSRFError represents a blocked URL due to SSRF protections.

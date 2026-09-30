@@ -40,8 +40,8 @@ func TestVertexEmbeddingModel_MetadataAndCapabilities(t *testing.T) {
 	if got := m.ModelID(); got != "text-embedding-005" {
 		t.Fatalf("ModelID() = %q", got)
 	}
-	if got := m.MaxEmbeddingsPerCall(); got != 2048 {
-		t.Fatalf("MaxEmbeddingsPerCall() = %d, want 2048", got)
+	if got := m.MaxEmbeddingsPerCall(); got != 250 {
+		t.Fatalf("MaxEmbeddingsPerCall() = %d, want 250", got)
 	}
 	if !m.SupportsParallelCalls() {
 		t.Fatal("SupportsParallelCalls() = false, want true")
@@ -238,5 +238,62 @@ func TestVertexEmbeddingOptionsAndHeadersHelpers(t *testing.T) {
 
 	if got := embedOptsHeaders(nil); got != nil {
 		t.Fatalf("embedOptsHeaders(nil) = %#v, want nil", got)
+	}
+}
+
+// TestVertexEmbeddingModel_GeminiEmbedding2UsesEmbedContent ports TS
+// google-vertex-embedding-model.ts usesEmbedContentEndpoint behavior:
+// gemini-embedding-2(-preview) must use :embedContent (max 1 per call),
+// not the batch :predict endpoint.
+func TestVertexEmbeddingModel_GeminiEmbedding2UsesEmbedContent(t *testing.T) {
+	t.Parallel()
+
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		var body map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		content, _ := body["content"].(map[string]interface{})
+		parts, _ := content["parts"].([]interface{})
+		if len(parts) != 1 {
+			t.Fatalf("expected 1 part, got %+v", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"embedding":{"values":[0.1,0.2]},"usageMetadata":{"promptTokenCount":3}}`))
+	}))
+	defer server.Close()
+
+	p, err := New(Config{
+		Project:     "test-project",
+		Location:    "us-central1",
+		AccessToken: "test-token",
+		BaseURL:     server.URL,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	m := NewEmbeddingModel(p, EmbeddingModelGeminiEmbedding2)
+
+	if got := m.MaxEmbeddingsPerCall(); got != 1 {
+		t.Fatalf("MaxEmbeddingsPerCall() = %d, want 1", got)
+	}
+
+	res, err := m.DoEmbedMany(context.Background(), []string{"hello"}, nil)
+	if err != nil {
+		t.Fatalf("DoEmbedMany() error = %v", err)
+	}
+	if !strings.HasSuffix(gotPath, ":embedContent") {
+		t.Fatalf("path = %q, want suffix :embedContent", gotPath)
+	}
+	if len(res.Embeddings) != 1 || len(res.Embeddings[0]) != 2 {
+		t.Fatalf("unexpected embeddings: %+v", res.Embeddings)
+	}
+	if res.Usage.TotalTokens != 3 {
+		t.Fatalf("usage total tokens = %d, want 3", res.Usage.TotalTokens)
+	}
+
+	// Requesting more than 1 input errors before any request is made.
+	if _, err := m.DoEmbedMany(context.Background(), []string{"a", "b"}, nil); err == nil {
+		t.Fatal("expected error for >1 input with gemini-embedding-2")
 	}
 }
