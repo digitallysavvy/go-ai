@@ -1494,7 +1494,13 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				stepResult.Content,
 				toolResults,
 			)
-			currentMessages = append(currentMessages, stepResponseMsgs...)
+			// TS generate-text.ts: `messagesForNextStep = [...stepMessages,
+			// ...stepResponseMessages]` — stepMessages already carries this
+			// step's AppendToolCallerMessages announcement (line 1115 above),
+			// so that announcement persists into the next step's history.
+			// Using currentMessages here (the pre-announcement value) instead
+			// of stepMessages would drop it after one step.
+			currentMessages = append(append([]types.Message(nil), stepMessages...), stepResponseMsgs...)
 			stepResult.ResponseMessages = stepResponseMsgs
 			stepResult.Response.Messages = stepResponseMsgs
 		} else {
@@ -1525,6 +1531,11 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				stepResult.Content,
 				nil,
 			)
+			// Same rationale as the tool-calls branch above: TS updates
+			// messagesForNextStep unconditionally after every step, not only
+			// when there were tool calls (relevant if the loop continues past
+			// a tool-call-less step, e.g. a pending deferred provider tool).
+			currentMessages = append(append([]types.Message(nil), stepMessages...), finalMsgs...)
 			stepResult.ResponseMessages = finalMsgs
 			stepResult.Response.Messages = finalMsgs
 			result.Response.Messages = finalMsgs

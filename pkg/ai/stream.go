@@ -2688,12 +2688,18 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		nextExecutionTools, nextModelTools, nextToolCallerMessages := PrepareToolsForToolCallers(nextTools, r.resolvedToolCallers)
 		nextTools = nextModelTools
 		if len(nextToolCallerMessages) > 0 {
-			// Appended only to the prompt sent for this step, not persisted
-			// into currentMessages: each step recomputes its own caller
-			// announcement (TS appendToolCallerMessages is applied per-step,
-			// not accumulated into the conversation history).
 			nextMessages = AppendToolCallerMessages(nextMessages, nextToolCallerMessages)
 		}
+		// TS stream-text.ts: `currentStepMessages = stepMessages` (the
+		// result of appendToolCallerMessages) becomes the base for that
+		// step's `stepMessagesForNextStep = [...currentStepMessages,
+		// ...stepResponseMessages]` once the step finishes. Mirror that here
+		// by syncing currentMessages to nextMessages now, so when the next
+		// loop iteration processes this step's response and does
+		// `currentMessages = append(currentMessages, stepResponseMsgs...)`
+		// above, it builds on top of this step's own toolCaller
+		// announcement instead of dropping it after one step.
+		currentMessages = nextMessages
 
 		nextTools = resolveStepTools(ctx, nextTools, r.cbToolsCtx, nextSandbox)
 		nextTools = orderStepTools(nextTools, nextToolOrder)
