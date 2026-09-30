@@ -30,11 +30,24 @@ func main() {
 		log.Fatalf("create realtime model: %v", err)
 	}
 
-	secret, err := model.DoCreateClientSecret(ctx, provider.ClientSecretOptions{})
+	// DoCreateClientSecret and GetWebSocketConfig are optional
+	// Experimental_RealtimeModelV4 capabilities (provider.RealtimeClientSecretCreator
+	// / provider.RealtimeWebSocketConfigProvider). The GA OpenAI realtime
+	// model implements both; OpenAI's experimental Live API model does not
+	// (use GetServerWebSocketConfig with a server-side API key instead).
+	creator, ok := model.(provider.RealtimeClientSecretCreator)
+	if !ok {
+		log.Fatal("openai realtime model does not support minting a client secret")
+	}
+	secret, err := creator.DoCreateClientSecret(ctx, provider.ClientSecretOptions{})
 	if err != nil {
 		log.Fatalf("create client secret: %v", err)
 	}
-	ws := model.GetWebSocketConfig(secret.Token, secret.URL)
+	wsConfigProvider, ok := model.(provider.RealtimeWebSocketConfigProvider)
+	if !ok {
+		log.Fatal("openai realtime model does not support client-secret WebSocket configuration")
+	}
+	ws := wsConfigProvider.GetWebSocketConfig(secret.Token, secret.URL)
 
 	fmt.Printf("WebSocket URL: %s\n", ws.URL)
 	fmt.Printf("Protocols: %v\n", ws.Protocols)
