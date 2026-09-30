@@ -2,6 +2,7 @@ package codemode
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -464,6 +465,122 @@ func TestStripTypeScriptAnnotations_FunctionalViaRunCodeMode(t *testing.T) {
 				t.Fatalf("RunCodeMode(%q) returned error: %v", c.js, err)
 			}
 			assertDeepEqual(t, got, c.want)
+		})
+	}
+}
+
+// TestStripTypeScriptAnnotations_WrapperParity confirms that stripping a
+// snippet raw (as RunCodeMode does: strip first, then wrap -- see
+// run_code_mode.go) produces the same result as TypeScript's own
+// stripSnippetTypes, which wraps first (`async function __runUser__(){
+// <snippet>\n}`) and strips second, then slices the wrapper back off. This
+// matters because -- verified directly against Node (see strip_types.go's
+// doc comment) -- top-level `return`/`await` are only valid to Node's
+// underlying parser *inside* that wrapper; parsing the raw snippet on its
+// own throws ERR_INVALID_TYPESCRIPT_SYNTAX ("Return statement is not
+// allowed here"), which stripSnippetTypes's catch-all then silently falls
+// back from. Go's stripper works token-by-token rather than building a full
+// program AST, so it has no such requirement -- but that must be verified,
+// not assumed: this test simulates TS's wrapper/unwrap dance in Go terms
+// and checks the two approaches agree byte-for-byte for snippets that rely
+// on top-level `return` and `await`.
+func TestStripTypeScriptAnnotations_WrapperParity(t *testing.T) {
+	const prefix = "async function __runUser__(){\n"
+	const suffix = "\n}"
+
+	cases := []string{
+		"return 1;",
+		"const value: number = 7; return { value };",
+		"const x = await Promise.resolve(1); return x;",
+		"const f = <T,>(x: T) => x; return f(1);",
+		"interface Item { value: number }\nconst item = { value: 12 } satisfies Item;\nreturn item;",
+		"declare abstract class C { foo(): void; } return 1;",
+	}
+	for _, src := range cases {
+		t.Run(src, func(t *testing.T) {
+			unwrapped := strip(t, src)
+
+			wrapped, err := stripTypeScriptAnnotations(prefix + src + suffix)
+			if err != nil {
+				t.Fatalf("stripping the wrapped snippet returned unexpected error: %v", err)
+			}
+			if !strings.HasPrefix(wrapped, prefix) || !strings.HasSuffix(wrapped, suffix) {
+				t.Fatalf("stripped wrapped snippet lost its wrapper: %q", wrapped)
+			}
+			slicedBack := wrapped[len(prefix) : len(wrapped)-len(suffix)]
+
+			if unwrapped != slicedBack {
+				t.Fatalf("stripping raw disagrees with stripping wrapped-then-sliced:\n  raw:            %q\n  wrapped-sliced: %q", unwrapped, slicedBack)
+			}
+		})
+	}
+}
+
+// TestStripTypeScriptAnnotations_FuzzPlainJS takes ~30 real plain-JavaScript
+// code-mode snippets (containing no TypeScript-only syntax) lifted directly
+// from this package's other test files and asserts the stripper's output is
+// byte-identical to the input. This is the top-priority invariant for a
+// scanner that runs ahead of every code-mode execution: it must never
+// corrupt source that was already valid JavaScript.
+func TestStripTypeScriptAnnotations_FuzzPlainJS(t *testing.T) {
+	snippets := []string{
+		// Single-line snippets, run_code_mode_test.go / continuation_test.go
+		// / approval_continuation_test.go / stress_codemode_test.go /
+		// serialization_test.go / code_mode_tool_test.go.
+		"const value = 1 + 1;",
+		"globalThis.sharedValue = 123; return globalThis.sharedValue;",
+		"return 'abcdef';",
+		"return 'unused';",
+		"return { answer: 40 + 2 };",
+		"return { value: () => 1 };",
+		"return { value: Infinity };",
+		"return 1;",
+		"return 1n;",
+		"return 999 * 999;",
+		"return await tools.add({ a: 'wrong', b: 2 });",
+		"return await tools.add({});",
+		"return await tools.authorize({});",
+		"return await tools.catalog({});",
+		"return await tools.circular({});",
+		"return await tools.connection({});",
+		"return await tools.context({});",
+		"return await tools.date({});",
+		"return await tools.echo({ value: 'abcdef' });",
+		"return await tools.echo({});",
+		"return await tools.fail({});",
+		"return await tools.guarded({});",
+		"return await tools.large({});",
+		"return await tools.manual({});",
+		"return await tools.nope({});",
+		"return await tools.search({ query: 'widgets' });",
+		"return await tools.sensitive({});",
+		"return await tools.wait({});",
+		"return await tools['lookup-user']({ id: 'user-1' });",
+		"return globalThis.sharedValue ?? 'missing';",
+		"throw new Error('sandbox exploded');",
+		"while(true){}",
+		"const first = await tools.add({ a: 2, b: 3 }); return await tools.double(first);",
+		"const value = await tools.nothing({}); return { type: typeof value };",
+		// Multi-line snippets, lifted verbatim.
+		"\n          const parsed = JSON.parse('{\"count\":2,\"items\":[\"a\",\"b\"]}');\n          parsed.items.push(\"c\");\n          return JSON.stringify(parsed);\n        ",
+		"\n          const before = Date.now();\n          const toolResult = await tools.wait({});\n          const after = Date.now();\n          return { before, hostNow: toolResult.hostNow, after };\n        ",
+		"\n          const input = { value: \"x\" };\n          input.self = input;\n          return await tools.echo(input);\n        ",
+		"\n\t\tconst first = await tools.first({});\n\t\tconst second = await tools.second({});\n\t\treturn { first, second };\n\t",
+		"\n\t\tconst a = await tools.a({});\n\t\tconst b = await tools.b({});\n\t\treturn { a, b };\n\t",
+		"\n\t\tconst first = await tools.lookup({ id: 'item-1' });\n\t\tconst second = await tools.sensitive({ id: first.id });\n\t\treturn { first, second };\n\t",
+	}
+	if len(snippets) < 30 {
+		t.Fatalf("expected at least 30 fuzz snippets, got %d", len(snippets))
+	}
+	for _, src := range snippets {
+		t.Run(src, func(t *testing.T) {
+			got, err := stripTypeScriptAnnotations(src)
+			if err != nil {
+				t.Fatalf("stripTypeScriptAnnotations(%q) returned unexpected error: %v", src, err)
+			}
+			if got != src {
+				t.Fatalf("plain JS must be returned byte-identical:\ngot:  %q\nwant: %q", got, src)
+			}
 		})
 	}
 }
