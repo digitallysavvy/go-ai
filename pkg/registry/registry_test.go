@@ -229,7 +229,7 @@ func TestParseModelString_Valid(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		provider, modelID, err := parseModelString(tt.input)
+		provider, modelID, err := parseModelString(tt.input, ":")
 		if err != nil {
 			t.Errorf("parseModelString(%q) unexpected error: %v", tt.input, err)
 			continue
@@ -253,7 +253,7 @@ func TestParseModelString_Invalid(t *testing.T) {
 	}
 
 	for _, input := range tests {
-		_, _, err := parseModelString(input)
+		_, _, err := parseModelString(input, ":")
 		if err == nil {
 			t.Errorf("parseModelString(%q) expected error, got nil", input)
 		}
@@ -331,7 +331,7 @@ func TestParseModelString_EmptyParts(t *testing.T) {
 	t.Parallel()
 
 	// Test edge cases with colons
-	provider, modelID, err := parseModelString(":model")
+	provider, modelID, err := parseModelString(":model", ":")
 	if err != nil {
 		t.Errorf("parseModelString(':model') unexpected error: %v", err)
 	}
@@ -342,7 +342,7 @@ func TestParseModelString_EmptyParts(t *testing.T) {
 		t.Errorf("expected modelID 'model', got %q", modelID)
 	}
 
-	provider, modelID, err = parseModelString("provider:")
+	provider, modelID, err = parseModelString("provider:", ":")
 	if err != nil {
 		t.Errorf("parseModelString('provider:') unexpected error: %v", err)
 	}

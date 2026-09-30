@@ -25,5 +25,6 @@
 //				Headers: map[string]string{"Custom-Header": "value"},
 //			}),
 //		},
+//		nil, // no image model middleware
 //	)
 package middleware

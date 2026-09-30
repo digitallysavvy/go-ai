@@ -25,7 +25,7 @@ func TestMiddlewareAliases_WrapLanguageModel(t *testing.T) {
 
 func TestMiddlewareAliases_WrapProvider(t *testing.T) {
 	p := &testutil.MockProvider{}
-	wrapped := WrapProvider(p, []*LanguageModelMiddleware{}, []*EmbeddingModelMiddleware{})
+	wrapped := WrapProvider(p, []*LanguageModelMiddleware{}, []*EmbeddingModelMiddleware{}, nil)
 	if wrapped == nil {
 		t.Fatal("WrapProvider() = nil")
 	}

@@ -17,7 +17,7 @@ func TestWrapProvider_NoMiddleware(t *testing.T) {
 		ProviderName: "test-provider",
 	}
 
-	wrapped := WrapProvider(mockProvider, nil, nil)
+	wrapped := WrapProvider(mockProvider, nil, nil, nil)
 
 	if wrapped.Name() != "test-provider" {
 		t.Errorf("expected Name() to return 'test-provider', got %s", wrapped.Name())
@@ -48,7 +48,7 @@ func TestWrapProvider_NamePassthrough(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			wrapped := WrapProvider(tt.provider, nil, nil)
+			wrapped := WrapProvider(tt.provider, nil, nil, nil)
 			if wrapped.Name() != tt.want {
 				t.Errorf("Name() = %s, want %s", wrapped.Name(), tt.want)
 			}
@@ -60,7 +60,7 @@ func TestWrapProvider_LanguageModel_NoMiddleware(t *testing.T) {
 	t.Parallel()
 
 	mockProvider := &testutil.MockProvider{}
-	wrapped := WrapProvider(mockProvider, nil, nil)
+	wrapped := WrapProvider(mockProvider, nil, nil, nil)
 
 	model, err := wrapped.LanguageModel("test-model")
 	if err != nil {
@@ -92,7 +92,7 @@ func TestWrapProvider_LanguageModel_WithMiddleware(t *testing.T) {
 		},
 	}
 
-	wrapped := WrapProvider(mockProvider, []*LanguageModelMiddleware{middleware}, nil)
+	wrapped := WrapProvider(mockProvider, []*LanguageModelMiddleware{middleware}, nil, nil)
 
 	model, err := wrapped.LanguageModel("test-model")
 	if err != nil {
@@ -125,7 +125,7 @@ func TestWrapProvider_LanguageModel_ErrorPassthrough(t *testing.T) {
 		},
 	}
 
-	wrapped := WrapProvider(mockProvider, nil, nil)
+	wrapped := WrapProvider(mockProvider, nil, nil, nil)
 
 	model, err := wrapped.LanguageModel("nonexistent")
 	if err == nil {
@@ -143,7 +143,7 @@ func TestWrapProvider_EmbeddingModel_NoMiddleware(t *testing.T) {
 	t.Parallel()
 
 	mockProvider := &testutil.MockProvider{}
-	wrapped := WrapProvider(mockProvider, nil, nil)
+	wrapped := WrapProvider(mockProvider, nil, nil, nil)
 
 	model, err := wrapped.EmbeddingModel("test-embedding")
 	if err != nil {
@@ -174,7 +174,7 @@ func TestWrapProvider_EmbeddingModel_WithMiddleware(t *testing.T) {
 		},
 	}
 
-	wrapped := WrapProvider(mockProvider, nil, []*EmbeddingModelMiddleware{middleware})
+	wrapped := WrapProvider(mockProvider, nil, []*EmbeddingModelMiddleware{middleware}, nil)
 
 	model, err := wrapped.EmbeddingModel("test-embedding")
 	if err != nil {
@@ -205,7 +205,7 @@ func TestWrapProvider_EmbeddingModel_ErrorPassthrough(t *testing.T) {
 		},
 	}
 
-	wrapped := WrapProvider(mockProvider, nil, nil)
+	wrapped := WrapProvider(mockProvider, nil, nil, nil)
 
 	model, err := wrapped.EmbeddingModel("nonexistent")
 	if err == nil {
@@ -223,7 +223,7 @@ func TestWrapProvider_ImageModel_Passthrough(t *testing.T) {
 	t.Parallel()
 
 	mockProvider := &testutil.MockProvider{}
-	wrapped := WrapProvider(mockProvider, nil, nil)
+	wrapped := WrapProvider(mockProvider, nil, nil, nil)
 
 	model, err := wrapped.ImageModel("test-image")
 	if err != nil {
@@ -233,7 +233,7 @@ func TestWrapProvider_ImageModel_Passthrough(t *testing.T) {
 		t.Fatal("expected non-nil model")
 	}
 
-	// Image models should not have middleware applied
+	// No image middleware was provided, so the model should pass through unwrapped.
 	if model.Provider() != "mock" {
 		t.Errorf("expected provider 'mock', got %s", model.Provider())
 	}
@@ -242,11 +242,68 @@ func TestWrapProvider_ImageModel_Passthrough(t *testing.T) {
 	}
 }
 
+func TestWrapProvider_ImageModel_WithMiddleware(t *testing.T) {
+	t.Parallel()
+
+	mockProvider := &testutil.MockProvider{}
+	middlewareCalled := false
+
+	imgMiddleware := &ImageModelMiddleware{
+		WrapGenerate: func(ctx context.Context, doGenerate func() (*types.ImageResult, error), params *provider.ImageGenerateOptions, model provider.ImageModel) (*types.ImageResult, error) {
+			middlewareCalled = true
+			return doGenerate()
+		},
+	}
+
+	wrapped := WrapProvider(mockProvider, nil, nil, []*ImageModelMiddleware{imgMiddleware})
+
+	model, err := wrapped.ImageModel("test-image")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if model == nil {
+		t.Fatal("expected non-nil model")
+	}
+
+	_, err = model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "a cat"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !middlewareCalled {
+		t.Error("expected image model middleware to be called")
+	}
+}
+
+func TestWrapProvider_ImageModel_ErrorPassthrough(t *testing.T) {
+	t.Parallel()
+
+	testErr := errors.New("image model not found")
+	mockProvider := &testutil.MockProvider{
+		ImageModelFunc: func(modelID string) (provider.ImageModel, error) {
+			return nil, testErr
+		},
+	}
+
+	wrapped := WrapProvider(mockProvider, nil, nil, nil)
+
+	model, err := wrapped.ImageModel("nonexistent")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if err != testErr {
+		t.Errorf("expected error %v, got %v", testErr, err)
+	}
+	if model != nil {
+		t.Error("expected nil model on error")
+	}
+}
+
 func TestWrapProvider_SpeechModel_Passthrough(t *testing.T) {
 	t.Parallel()
 
 	mockProvider := &testutil.MockProvider{}
-	wrapped := WrapProvider(mockProvider, nil, nil)
+	wrapped := WrapProvider(mockProvider, nil, nil, nil)
 
 	model, err := wrapped.SpeechModel("test-speech")
 	if err != nil {
@@ -268,7 +325,7 @@ func TestWrapProvider_TranscriptionModel_Passthrough(t *testing.T) {
 	t.Parallel()
 
 	mockProvider := &testutil.MockProvider{}
-	wrapped := WrapProvider(mockProvider, nil, nil)
+	wrapped := WrapProvider(mockProvider, nil, nil, nil)
 
 	model, err := wrapped.TranscriptionModel("test-transcription")
 	if err != nil {
@@ -290,7 +347,7 @@ func TestWrapProvider_RerankingModel_Passthrough(t *testing.T) {
 	t.Parallel()
 
 	mockProvider := &testutil.MockProvider{}
-	wrapped := WrapProvider(mockProvider, nil, nil)
+	wrapped := WrapProvider(mockProvider, nil, nil, nil)
 
 	model, err := wrapped.RerankingModel("test-reranking")
 	if err != nil {
@@ -329,7 +386,7 @@ func TestWrapProvider_BothMiddlewares(t *testing.T) {
 		},
 	}
 
-	wrapped := WrapProvider(mockProvider, []*LanguageModelMiddleware{langMiddleware}, []*EmbeddingModelMiddleware{embedMiddleware})
+	wrapped := WrapProvider(mockProvider, []*LanguageModelMiddleware{langMiddleware}, []*EmbeddingModelMiddleware{embedMiddleware}, nil)
 
 	// Test language model middleware
 	langModel, err := wrapped.LanguageModel("test-lang")
@@ -364,7 +421,7 @@ func TestWrapProvider_EmptyMiddlewareSlices(t *testing.T) {
 	t.Parallel()
 
 	mockProvider := &testutil.MockProvider{}
-	wrapped := WrapProvider(mockProvider, []*LanguageModelMiddleware{}, []*EmbeddingModelMiddleware{})
+	wrapped := WrapProvider(mockProvider, []*LanguageModelMiddleware{}, []*EmbeddingModelMiddleware{}, nil)
 
 	// Should work the same as nil slices
 	langModel, err := wrapped.LanguageModel("test")
@@ -387,7 +444,7 @@ func TestWrapProvider_EmptyMiddlewareSlices(t *testing.T) {
 func TestWrapProvider_DoesNotAdvertiseUnsupportedFilesOrSkills(t *testing.T) {
 	t.Parallel()
 
-	wrapped := WrapProvider(&testutil.MockProvider{ProviderName: "plain"}, nil, nil)
+	wrapped := WrapProvider(&testutil.MockProvider{ProviderName: "plain"}, nil, nil, nil)
 
 	if _, ok := wrapped.(provider.FilesProvider); ok {
 		t.Fatal("wrapped provider should not implement FilesProvider when underlying provider does not")
@@ -401,7 +458,7 @@ func TestWrapProvider_PreservesSupportedFilesAndSkills(t *testing.T) {
 	t.Parallel()
 
 	base := registryBackedProvider{Provider: &testutil.MockProvider{ProviderName: "upload"}}
-	wrapped := WrapProvider(base, nil, nil)
+	wrapped := WrapProvider(base, nil, nil, nil)
 
 	if _, ok := wrapped.(provider.FilesProvider); !ok {
 		t.Fatal("wrapped provider should preserve FilesProvider support")
@@ -443,7 +500,7 @@ func TestWrapProvider_PreservesFilesV4OptionalCapabilities(t *testing.T) {
 	t.Parallel()
 
 	base := registryBackedProvider{Provider: &testutil.MockProvider{ProviderName: "upload"}, files: fullFilesAPI{}}
-	wrapped := WrapProvider(base, nil, nil)
+	wrapped := WrapProvider(base, nil, nil, nil)
 
 	fp, ok := wrapped.(provider.FilesProvider)
 	if !ok {

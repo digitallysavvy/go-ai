@@ -8,6 +8,7 @@ import (
 // Middleware type aliases exposed from the ai package for TS-style discoverability.
 type LanguageModelMiddleware = mw.LanguageModelMiddleware
 type EmbeddingModelMiddleware = mw.EmbeddingModelMiddleware
+type ImageModelMiddleware = mw.ImageModelMiddleware
 type ExtractReasoningOptions = mw.ExtractReasoningOptions
 type ExtractJSONOptions = mw.ExtractJSONOptions
 type AddToolInputExamplesOptions = mw.AddToolInputExamplesOptions
@@ -20,8 +21,12 @@ func WrapEmbeddingModel(model provider.EmbeddingModel, middleware []*EmbeddingMo
 	return mw.WrapEmbeddingModel(model, middleware, modelID, providerID)
 }
 
-func WrapProvider(p provider.Provider, languageModelMiddleware []*LanguageModelMiddleware, embeddingModelMiddleware []*EmbeddingModelMiddleware) provider.Provider {
-	return mw.WrapProvider(p, languageModelMiddleware, embeddingModelMiddleware)
+func WrapImageModel(model provider.ImageModel, middleware []*ImageModelMiddleware, modelID, providerID *string) provider.ImageModel {
+	return mw.WrapImageModel(model, middleware, modelID, providerID)
+}
+
+func WrapProvider(p provider.Provider, languageModelMiddleware []*LanguageModelMiddleware, embeddingModelMiddleware []*EmbeddingModelMiddleware, imageModelMiddleware []*ImageModelMiddleware) provider.Provider {
+	return mw.WrapProvider(p, languageModelMiddleware, embeddingModelMiddleware, imageModelMiddleware)
 }
 
 func SimulateStreamingMiddleware() *LanguageModelMiddleware {

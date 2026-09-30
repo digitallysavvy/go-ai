@@ -156,6 +156,7 @@ func exampleProviderMiddleware(p provider.Provider) error {
 		p,
 		[]*middleware.LanguageModelMiddleware{languageMiddleware},
 		nil, // No embedding middleware
+		nil, // No image middleware
 	)
 
 	// Now all language models from this provider will have the middleware applied
