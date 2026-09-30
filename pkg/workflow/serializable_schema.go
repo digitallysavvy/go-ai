@@ -134,7 +134,12 @@ func ResolveSerializableTools(defs map[string]SerializableToolDef) []types.Tool 
 	return tools
 }
 
-// ValidateSerializableToolInput validates a tool input against its serialized JSON Schema.
+// ValidateSerializableToolInput validates a tool input against its serialized
+// JSON Schema. Defaults declared on the schema are applied before
+// validating (matching pkg/ai/tool_call_pipeline.go's
+// applyToolCallInputDefaults and the rest of the codebase's
+// validate-after-ApplyDefaults convention): a field missing from input but
+// declared with a schema default must not fail validation.
 func ValidateSerializableToolInput(def SerializableToolDef, input interface{}) error {
 	params := def.InputSchema
 	if params == nil {
@@ -143,7 +148,9 @@ func ValidateSerializableToolInput(def SerializableToolDef, input interface{}) e
 	if params == nil {
 		return nil
 	}
-	if err := schema.NewSimpleJSONSchema(params).Validator().Validate(input); err != nil {
+	s := schema.NewSimpleJSONSchema(params)
+	defaulted := schema.ApplyDefaults(input, s)
+	if err := s.Validator().Validate(defaulted); err != nil {
 		name := def.Name
 		if name == "" {
 			name = "tool"

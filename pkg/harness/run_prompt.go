@@ -13,6 +13,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
 
@@ -1554,11 +1555,18 @@ func (d *turnDriver) executeHostToolAsync(tool types.Tool, raw *ToolCallPart, ex
 			toolCtx = ctxValue
 		}
 		if tool.ContextSchema != nil {
-			if err := tool.ContextSchema.Validator().Validate(toolCtx); err != nil {
+			// Apply schema defaults before validating (matching
+			// pkg/agent/toolloop.go's validateAgentToolContext and
+			// pkg/ai/tool_approval.go's identical check): a context
+			// field missing a schema default must not fail validation,
+			// and the tool sees the defaulted value.
+			normalizedToolCtx := schema.ApplyDefaults(toolCtx, tool.ContextSchema)
+			if err := tool.ContextSchema.Validator().Validate(normalizedToolCtx); err != nil {
 				_ = d.control.SubmitToolResult(d.ctx, ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: map[string]interface{}{"error": "Tool context validation failed."}, IsError: true})
 				d.recordExecError(raw.ToolCallID, err)
 				return
 			}
+			toolCtx = normalizedToolCtx
 		}
 		// Wrapped by telemetry.FireExecuteToolWithSettings so integrations
 		// can create nested spans for tool -> generateText chains (TS

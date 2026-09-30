@@ -1908,6 +1908,71 @@ func TestToolLoopAgent_CallOptionsSchemaBeforeModel(t *testing.T) {
 	}
 }
 
+// TestValidateAgentCallOptions_AppliesDefaultsBeforeValidating covers SC2
+// item 2: TS ToolLoopAgent.generate/stream validate per-call options
+// through validateTypes (a zod/standard-schema .parse()), which fills
+// .default() values as part of parsing -- so a required field missing a
+// default must not fail validation, and the returned value must carry the
+// default through (TS: `options = { ...options, options: validatedOptions
+// }`).
+func TestValidateAgentCallOptions_AppliesDefaultsBeforeValidating(t *testing.T) {
+	callOptionsSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"mode": map[string]interface{}{"type": "string", "default": "chat"},
+		},
+		"required": []interface{}{"mode"},
+	})
+
+	got, err := validateAgentCallOptions(callOptionsSchema, map[string]interface{}{})
+	if err != nil {
+		t.Fatalf("expected no error when a required field has a schema default, got %v", err)
+	}
+	m, ok := got.(map[string]interface{})
+	if !ok || m["mode"] != "chat" {
+		t.Fatalf("validateAgentCallOptions() = %#v, want the default filled in", got)
+	}
+
+	// A field with no default is still required.
+	if _, err := validateAgentCallOptions(schema.NewSimpleJSONSchema(map[string]interface{}{
+		"type":     "object",
+		"required": []interface{}{"ok"},
+	}), map[string]interface{}{}); err == nil {
+		t.Fatal("expected an error for a missing field with no schema default")
+	}
+}
+
+// TestToolLoopAgent_CallOptionsWithDefaultsDoesNotBlockExecution is the
+// end-to-end counterpart: a required call-options field with a schema
+// default, omitted by the caller, must not stop the agent from calling the
+// model (matching validateAgentCallOptions's defaults-before-validate
+// order).
+func TestToolLoopAgent_CallOptionsWithDefaultsDoesNotBlockExecution(t *testing.T) {
+	mock := &mockLanguageModel{}
+	agent := NewToolLoopAgent(AgentConfig{
+		Model:       mock,
+		CallOptions: map[string]interface{}{},
+		CallOptionsSchema: schema.NewSimpleJSONSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"mode": map[string]interface{}{"type": "string", "default": "chat"},
+			},
+			"required": []interface{}{"mode"},
+		}),
+	})
+
+	if _, err := agent.Execute(context.Background(), "test"); err != nil {
+		t.Fatalf("expected the defaulted call options to pass validation, got %v", err)
+	}
+	// mockLanguageModel.callCount only tracks how many of its preset
+	// `responses` were consumed (unset here); `options` is appended on
+	// every DoGenerate call regardless, so it is the right signal that the
+	// model was actually invoked.
+	if len(mock.options) != 1 {
+		t.Fatalf("model invocation count = %d, want 1", len(mock.options))
+	}
+}
+
 func TestToolLoopAgent_ApprovalNilAndDenied(t *testing.T) {
 	called := false
 	testTool := types.Tool{

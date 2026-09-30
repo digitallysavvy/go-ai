@@ -76,3 +76,29 @@ func TestSerializeToolSetRoundTripOmitsFunctions(t *testing.T) {
 		t.Fatal("expected validation error")
 	}
 }
+
+// TestValidateSerializableToolInputAppliesDefaultsBeforeValidating covers
+// SC2 item 2: a required field declared with a JSON-Schema default must not
+// fail validation just because the caller omitted it, matching
+// pkg/ai/tool_call_pipeline.go's applyToolCallInputDefaults and the rest of
+// the codebase's apply-defaults-before-validate convention.
+func TestValidateSerializableToolInputAppliesDefaultsBeforeValidating(t *testing.T) {
+	def := SerializableToolDef{
+		Name: "weather",
+		Parameters: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"city": map[string]interface{}{"type": "string"},
+				"unit": map[string]interface{}{"type": "string", "default": "celsius"},
+			},
+			"required": []interface{}{"city", "unit"},
+		},
+	}
+	if err := ValidateSerializableToolInput(def, map[string]interface{}{"city": "Tokyo"}); err != nil {
+		t.Fatalf("expected the missing defaulted field to pass validation, got %v", err)
+	}
+	// A field with no default is still required.
+	if err := ValidateSerializableToolInput(def, map[string]interface{}{"unit": "celsius"}); err == nil {
+		t.Fatal("expected validation error for a missing field with no schema default")
+	}
+}

@@ -177,6 +177,13 @@ func revalidateApprovedInput(ctx context.Context, approval CollectedToolApproval
 	if approval.ApprovalRequest.InputSchemaInput != nil {
 		value = approval.ApprovalRequest.InputSchemaInput
 	}
+	// TS's safeValidateTypes performs a zod/standard-schema parse, which
+	// fills .default() values as part of parsing and returns that defaulted
+	// value as validation.value -- the value that then feeds the refiner
+	// and the approved-input equality check below. Apply defaults before
+	// validating (not after), and use the defaulted value throughout, to
+	// match (see validate-tool-approvals.ts's use of `validation.value`).
+	value = applyDefaultsForValidator(value, validator)
 	if err := validator.Validate(value); err != nil {
 		return err
 	}

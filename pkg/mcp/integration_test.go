@@ -371,6 +371,58 @@ func TestMCPToolConverterSchemasFilterAndValidateOutput(t *testing.T) {
 	}
 }
 
+// TestMCPToolConverterOutputSchemaAppliesDefaultsBeforeValidating covers SC2
+// item 2: TS's mcp-client.ts extractStructuredContent validates through
+// safeValidateTypes/safeParseJSON (a zod/standard-schema parse), which fills
+// .default() values as part of parsing itself, so a required field missing
+// from a tool's result but declared with a schema default must not fail
+// validation -- and the value the caller receives must be the defaulted
+// one, not the raw one.
+func TestMCPToolConverterOutputSchemaAppliesDefaultsBeforeValidating(t *testing.T) {
+	outputSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+		"type":     "object",
+		"required": []interface{}{"temperature", "unit"},
+		"properties": map[string]interface{}{
+			"temperature": map[string]interface{}{"type": "number"},
+			"unit":        map[string]interface{}{"type": "string", "default": "celsius"},
+		},
+	})
+
+	t.Run("structuredContent missing a defaulted required field", func(t *testing.T) {
+		result, err := extractMCPStructuredOutput(CallToolResult{
+			StructuredContent: map[string]interface{}{"temperature": 22.5},
+		}, outputSchema, "weather-tool")
+		if err != nil {
+			t.Fatalf("extract structured content error: %v", err)
+		}
+		got, ok := result.(map[string]interface{})
+		if !ok || got["unit"] != "celsius" || got["temperature"] != 22.5 {
+			t.Fatalf("structured output = %#v, want defaulted unit=celsius", result)
+		}
+	})
+
+	t.Run("text content missing a defaulted required field", func(t *testing.T) {
+		result, err := extractMCPStructuredOutput(CallToolResult{
+			Content: []ToolResultContent{{Type: "text", Text: `{"temperature": 18}`}},
+		}, outputSchema, "weather-tool")
+		if err != nil {
+			t.Fatalf("extract structured content error: %v", err)
+		}
+		got, ok := result.(map[string]interface{})
+		if !ok || got["unit"] != "celsius" || got["temperature"] != float64(18) {
+			t.Fatalf("structured output = %#v, want defaulted unit=celsius", result)
+		}
+	})
+
+	t.Run("a field with no default is still required", func(t *testing.T) {
+		if _, err := extractMCPStructuredOutput(CallToolResult{
+			StructuredContent: map[string]interface{}{"unit": "fahrenheit"},
+		}, outputSchema, "weather-tool"); err == nil {
+			t.Fatal("expected an error for a missing field with no schema default")
+		}
+	})
+}
+
 func TestMCPToolConverterOutputSchemaParsesTextAndBypassesErrors(t *testing.T) {
 	outputSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
 		"type":     "object",

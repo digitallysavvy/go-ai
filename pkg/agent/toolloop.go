@@ -259,9 +259,11 @@ func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions)
 	if config.Model == nil {
 		return nil, fmt.Errorf("model is required")
 	}
-	if err := validateAgentCallOptions(config.CallOptionsSchema, config.CallOptions); err != nil {
+	defaultedCallOptions, err := validateAgentCallOptions(config.CallOptionsSchema, config.CallOptions)
+	if err != nil {
 		return nil, err
 	}
+	config.CallOptions = defaultedCallOptions
 
 	messages := opts.Messages
 	prompt := opts.Prompt
@@ -373,9 +375,11 @@ func (a *ToolLoopAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*a
 	if config.Model == nil {
 		return nil, fmt.Errorf("model is required")
 	}
-	if err := validateAgentCallOptions(config.CallOptionsSchema, config.CallOptions); err != nil {
+	defaultedCallOptions, err := validateAgentCallOptions(config.CallOptionsSchema, config.CallOptions)
+	if err != nil {
 		return nil, err
 	}
+	config.CallOptions = defaultedCallOptions
 	messages := opts.Messages
 	prompt := opts.Prompt
 	callConfig := (&ToolLoopAgent{config: config}).prepareStepCallConfig(ctx, 0, prompt, messages, nil, types.Usage{}, nil)
@@ -478,8 +482,20 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 	if a.config.Model.SpecificationVersion() == "" || a.config.Model.Provider() == "" || a.config.Model.ModelID() == "" {
 		return nil, fmt.Errorf("model must implement provider.LanguageModel metadata methods")
 	}
-	if err := validateAgentCallOptions(a.config.CallOptionsSchema, a.config.CallOptions); err != nil {
+	defaultedCallOptions, err := validateAgentCallOptions(a.config.CallOptionsSchema, a.config.CallOptions)
+	if err != nil {
 		return nil, err
+	}
+	if defaultedCallOptions != nil {
+		// Reassign the local receiver to a shallow copy carrying the
+		// defaulted call options, rather than mutating a.config in place:
+		// a is a shared *ToolLoopAgent that callers may reuse across
+		// concurrent calls, so writing through it here would be a data
+		// race. This only shadows the local variable for the rest of this
+		// call; the caller's agent is untouched.
+		localAgent := *a
+		localAgent.config.CallOptions = defaultedCallOptions
+		a = &localAgent
 	}
 
 	// Initialize run tracking in context if not already present
@@ -1170,18 +1186,27 @@ func (c AgentConfig) withGenerateOptions(opts AgentGenerateOptions) AgentConfig 
 	return c
 }
 
-func validateAgentCallOptions(callOptionsSchema schema.Schema, callOptions interface{}) error {
+// validateAgentCallOptions validates callOptions against callOptionsSchema
+// and returns the validated value. Mirrors TS ToolLoopAgent.generate/stream,
+// which run per-call options through validateTypes (a zod/standard-schema
+// .parse()): defaults declared on the schema are filled in as part of
+// parsing itself, so a field missing a default must not fail validation,
+// and the defaulted value -- not the raw one -- is what the rest of the
+// call sees (TS: `options = { ...options, options: validatedOptions }`).
+// Apply defaults before validating, not after.
+func validateAgentCallOptions(callOptionsSchema schema.Schema, callOptions interface{}) (interface{}, error) {
 	if callOptionsSchema == nil || callOptions == nil {
-		return nil
+		return callOptions, nil
 	}
-	if err := callOptionsSchema.Validator().Validate(callOptions); err != nil {
-		return &providererrors.InvalidArgumentError{
+	defaulted := schema.ApplyDefaults(callOptions, callOptionsSchema)
+	if err := callOptionsSchema.Validator().Validate(defaulted); err != nil {
+		return nil, &providererrors.InvalidArgumentError{
 			Field:   "options",
 			Message: fmt.Sprintf("call options failed schema validation: %v", err),
 			Cause:   err,
 		}
 	}
-	return nil
+	return defaulted, nil
 }
 
 func resolveAgentStepTools(ctx context.Context, tools []types.Tool, toolsContext map[string]interface{}, sandbox interface{}) []types.Tool {

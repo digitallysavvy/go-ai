@@ -179,6 +179,27 @@ func TestValidateUIMessages_Metadata(t *testing.T) {
 		})
 		require.Error(t, err)
 	})
+
+	// SC2 item 2: TS's validateTypes fills schema .default() values as part
+	// of parsing itself, so a required field missing a default must not
+	// fail validation -- and the value the caller receives must be the
+	// defaulted one.
+	t.Run("should apply schema defaults before validating metadata", func(t *testing.T) {
+		defaultingSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"userId": map[string]interface{}{"type": "string"},
+				"locale": map[string]interface{}{"type": "string", "default": "en-US"},
+			},
+			"required": []interface{}{"userId", "locale"},
+		})
+		msgs, err := ValidateUIMessages(context.Background(), ValidateUIMessagesOptions{
+			Messages:       json.RawMessage(`[{"id":"1","role":"user","metadata":{"userId":"u1"},"parts":[{"type":"text","text":"hi"}]}]`),
+			MetadataSchema: defaultingSchema,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, map[string]interface{}{"userId": "u1", "locale": "en-US"}, msgs[0].Metadata)
+	})
 }
 
 // ports describe('text parts') / describe('custom parts')
@@ -548,6 +569,73 @@ func TestValidateUIMessages_ToolParts(t *testing.T) {
 		require.NoError(t, err)
 		part := msgs[0].Parts[0].(*ToolUIPart)
 		assert.Equal(t, map[string]interface{}{"value": "trimmed"}, part.Input)
+	})
+}
+
+// TestValidateUIMessages_ToolPartsApplyDefaultsBeforeValidating covers SC2
+// item 2: a persisted tool part whose input or output is missing a field
+// declared with a schema default must not fail validation, and the
+// defaulted value should be what the caller receives -- matching TS's
+// validateTypes/safeValidateTypes (a zod/standard-schema parse, which fills
+// defaults as part of parsing itself).
+func TestValidateUIMessages_ToolPartsApplyDefaultsBeforeValidating(t *testing.T) {
+	defaultingTool := types.Tool{
+		Name: "foo",
+		Parameters: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"foo":  map[string]interface{}{"type": "string"},
+				"unit": map[string]interface{}{"type": "string", "default": "metric"},
+			},
+			"required": []interface{}{"foo", "unit"},
+		},
+		OutputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"result": map[string]interface{}{"type": "string"},
+				"status": map[string]interface{}{"type": "string", "default": "ok"},
+			},
+			"required": []interface{}{"result", "status"},
+		},
+	}
+	tools := []types.Tool{defaultingTool}
+
+	t.Run("input-available: missing defaulted field does not fail validation", func(t *testing.T) {
+		// Matches TS validate-ui-messages.ts's validateToolInput: outside
+		// the inputSchemaInput-reconstruction path, the raw toolPart.input
+		// is left as-is (TS never reassigns it there either) -- what this
+		// guards against is a required-with-default field spuriously
+		// *failing* validation, not the field being written back.
+		msgs, err := ValidateUIMessages(context.Background(), ValidateUIMessagesOptions{
+			Messages: json.RawMessage(`[{"id":"1","role":"assistant","parts":[
+				{"type":"tool-foo","toolCallId":"1","state":"input-available","input":{"foo":"bar"}}
+			]}]`),
+			Tools: tools,
+		})
+		require.NoError(t, err)
+		part := msgs[0].Parts[0].(*ToolUIPart)
+		assert.Equal(t, map[string]interface{}{"foo": "bar"}, part.Input)
+	})
+
+	t.Run("output-available: missing defaulted output field does not fail validation", func(t *testing.T) {
+		msgs, err := ValidateUIMessages(context.Background(), ValidateUIMessagesOptions{
+			Messages: json.RawMessage(`[{"id":"1","role":"assistant","parts":[
+				{"type":"tool-foo","toolCallId":"1","state":"output-available","input":{"foo":"bar","unit":"metric"},"output":{"result":"ok"}}
+			]}]`),
+			Tools: tools,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "tool-foo", msgs[0].Parts[0].UIPartType())
+	})
+
+	t.Run("a field with no default is still required", func(t *testing.T) {
+		_, err := ValidateUIMessages(context.Background(), ValidateUIMessagesOptions{
+			Messages: json.RawMessage(`[{"id":"1","role":"assistant","parts":[
+				{"type":"tool-foo","toolCallId":"1","state":"input-available","input":{"unit":"metric"}}
+			]}]`),
+			Tools: tools,
+		})
+		require.Error(t, err)
 	})
 }
 

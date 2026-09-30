@@ -2,11 +2,13 @@ package harness
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
 // Ports TS run-prompt.test.ts's "runPrompt host tool input validation" and
@@ -144,6 +146,74 @@ func TestRunPrompt_HostToolInputValidation_RejectsBeforeExecutingOrApproving(t *
 				t.Fatalf("submitted.Output = %+v, want {error: %q}", sub.Output, invalidToolInputMessage)
 			}
 		})
+	}
+}
+
+// TestRunPrompt_HostTool_ContextSchemaAppliesDefaultsBeforeValidating covers
+// SC2 item 2: executeHostToolAsync used to validate a host tool's
+// ToolsContext entry against ContextSchema before any schema defaults were
+// applied, so a required context field with a schema default -- but absent
+// from ToolsContext -- would incorrectly fail with "Tool context validation
+// failed." even though the tool never needed the caller to supply it. This
+// mirrors pkg/agent/toolloop.go's validateAgentToolContext and
+// pkg/ai/tool_approval.go's identical apply-then-validate order.
+func TestRunPrompt_HostTool_ContextSchemaAppliesDefaultsBeforeValidating(t *testing.T) {
+	contextSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"userId": map[string]interface{}{"type": "string"},
+			"locale": map[string]interface{}{"type": "string", "default": "en-US"},
+		},
+		"required": []interface{}{"userId", "locale"},
+	})
+
+	var mu sync.Mutex
+	var executedToolContext interface{}
+	tool := types.Tool{
+		Name: "greet",
+		Parameters: map[string]interface{}{
+			"type":       "object",
+			"required":   []interface{}{"name"},
+			"properties": map[string]interface{}{"name": map[string]interface{}{"type": "string"}},
+		},
+		ContextSchema: contextSchema,
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			mu.Lock()
+			executedToolContext = opts.ToolContext
+			mu.Unlock()
+			return map[string]interface{}{"ok": true}, nil
+		},
+	}
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(submit func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&StreamStartPart{},
+				&ToolCallPart{ToolCallID: "c1", ToolName: "greet", Input: `{"name":"world"}`},
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonToolCalls}, Usage: stringUsage(1, 1)},
+				&ToolResultPart{ToolCallID: "c1", ToolName: "greet", Result: map[string]interface{}{"ok": true}},
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)},
+				&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(2, 2)},
+			}
+		},
+	})
+	tools := map[string]types.Tool{"greet": tool}
+	out := runPrompt(context.Background(), runPromptInput{
+		Harness: mock.harness, Session: mock.session,
+		Prompt: TextPrompt("go"), Tools: tools, ActiveTools: tools,
+		SandboxSession: testSandbox(),
+		// "locale" is absent -- it only exists as a schema default.
+		ToolsContext: map[string]interface{}{"greet": map[string]interface{}{"userId": "u1"}},
+	})
+	chunks := drainRunPrompt(t, out)
+
+	if got := chunksOfType(chunks, provider.ChunkTypeToolResult); len(got) != 1 || got[0].ToolResult == nil || got[0].ToolResult.Error != nil {
+		t.Fatalf("tool-result chunks = %+v, want exactly one success (no context validation error)", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	ctxMap, ok := executedToolContext.(map[string]interface{})
+	if !ok || ctxMap["userId"] != "u1" || ctxMap["locale"] != "en-US" {
+		t.Fatalf("executed tool context = %#v, want the default locale filled in", executedToolContext)
 	}
 }
 
