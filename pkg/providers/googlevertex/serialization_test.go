@@ -176,17 +176,19 @@ func TestVertexSerializeAndDeserializeImageModel(t *testing.T) {
 }
 
 func TestVertexSerializeAndDeserializeTranscriptionModel(t *testing.T) {
+	// Chirp model ID: gemini* IDs route to GeminiTranscriptionModel (U10),
+	// whose serialization is tracked separately (SER2).
 	t.Parallel()
 	p, err := New(Config{Project: "test-project", Location: "us-central1", AccessToken: "token"})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	modelAny, err := p.TranscriptionModel("gemini-2.5-flash")
+	modelAny, err := p.TranscriptionModel("chirp_3")
 	if err != nil {
 		t.Fatalf("TranscriptionModel() error = %v", err)
 	}
 	serialized := modelAny.(*TranscriptionModel).Serialize()
-	if serialized.Provider != "google.vertex.transcription" || serialized.ModelID != "gemini-2.5-flash" {
+	if serialized.Provider != "google.vertex.transcription" || serialized.ModelID != "chirp_3" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 	if _, ok := serialized.Config["accessToken"]; ok {
@@ -195,7 +197,7 @@ func TestVertexSerializeAndDeserializeTranscriptionModel(t *testing.T) {
 
 	manual := provider.SerializedModel{
 		Provider: "google.vertex.transcription",
-		ModelID:  "gemini-2.5-flash",
+		ModelID:  "chirp_3",
 		Config: map[string]interface{}{
 			"project":     "test-project",
 			"location":    "us-central1",
@@ -206,7 +208,7 @@ func TestVertexSerializeAndDeserializeTranscriptionModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deserializeTranscriptionModel(manual) error = %v", err)
 	}
-	if restored.Provider() != "google.vertex.transcription" || restored.ModelID() != "gemini-2.5-flash" {
+	if restored.Provider() != "google.vertex.transcription" || restored.ModelID() != "chirp_3" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 
@@ -214,7 +216,7 @@ func TestVertexSerializeAndDeserializeTranscriptionModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("provider.DeserializeTranscriptionModel error = %v", err)
 	}
-	if viaRegistry.ModelID() != "gemini-2.5-flash" {
+	if viaRegistry.ModelID() != "chirp_3" {
 		t.Fatalf("registry restored mismatch: %#v", viaRegistry)
 	}
 }
