@@ -50,31 +50,27 @@ import "strings"
 //     function/method/arrow return types.
 //   - `as` and `satisfies` type assertions, including chained
 //     (`x as A as B`) and `as const`.
-//   - Type parameters/arguments on function and class declarations, arrow
-//     functions, and call/`new` expressions (`f<T>()`, `new Box<T>()`),
-//     disambiguated from `<`/`>` comparisons.
+//   - Type parameters/arguments on function and class declarations
+//     (including a default, `<T = number>`), a bare generic arrow function
+//     expression (`<T,>(x: T) => x`, `<T>(x: T): T => x` -- no trailing
+//     comma is required, since code-mode snippets are always parsed as
+//     `.ts`, which has no JSX to disambiguate from), and call/`new`
+//     expressions (`f<T>()`, `new Box<T>()`), disambiguated from `<`/`>`
+//     comparisons.
 //   - `interface Name { ... }` and `type Name = ...;` declarations
 //     (top-level only, not nested inside an expression).
 //   - Non-null assertions (`foo!.bar`) and definite assignment assertions
 //     (`let x!: number;`, a class field `x!: number;`).
 //   - Optional markers on parameters and class fields (`x?: number`).
+//   - A function/method's `this` parameter (`function f(this: Window, x:
+//     number)`), erased entirely -- name, type, and the comma that followed
+//     it -- since `this` can never legally be a JavaScript parameter name.
 //   - `import type ...;` / `export type ...;` statements.
 //   - Class member access modifiers (`public`/`private`/`protected`) and
 //     `readonly`/`override`/`declare`, plus bodyless (abstract or overload)
 //     member/function signatures, which are erased entirely.
-//   - `declare` ambient statements (`declare var/let/const/function/class`),
-//     erased entirely.
-//
-// Known gap: a generic arrow function written as a bare expression, e.g.
-// `const f = <T,>(x: T) => x;`, is not recognized (declaration-position
-// generics on `function`/`class`, and generics on a call/`new` expression,
-// are). Type parameters immediately followed by `(` at the very start of
-// an expression are inherently ambiguous with a JSX element in TypeScript
-// itself (resolved there only by the `.tsx` vs `.ts` file extension, which
-// code-mode snippets don't have); detecting it heuristically would risk
-// misreading a real less-than comparison. Code-mode snippets needing
-// generics on an arrow function can use a named `function` declaration
-// instead, which this stripper fully supports.
+//   - `declare` ambient statements (`declare var/let/const/function/class`,
+//     `declare abstract class`), erased entirely.
 //
 // String, template-literal, regular-expression-literal, and comment
 // contents are never inspected for TypeScript syntax.

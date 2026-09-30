@@ -256,6 +256,74 @@ func TestStripTypeScriptAnnotations_ErasableSyntax(t *testing.T) {
 			"class C { get(): number { return 1; } } return new C().get();",
 			"class C { get() { return 1; } } return new C().get();",
 		},
+		{
+			"generic arrow function with trailing comma",
+			"const f = <T,>(x: T) => x; return f(1);",
+			"const f = (x) => x; return f(1);",
+		},
+		{
+			"generic arrow function without trailing comma",
+			// No trailing comma is required to disambiguate from JSX (unlike
+			// `.tsx`), since code-mode snippets are always parsed as `.ts`
+			// (verified directly against Node -- see strip_types.go).
+			"const f = <T>(x: T) => x; return f(1);",
+			"const f = (x) => x; return f(1);",
+		},
+		{
+			"generic arrow function with extends bound",
+			"const f = <T extends object>(x: T) => x; return f({});",
+			"const f = (x) => x; return f({});",
+		},
+		{
+			"generic arrow function with multiple type params",
+			"const f = <T, U>(x: T, y: U) => x; return f(1, 2);",
+			"const f = (x, y) => x; return f(1, 2);",
+		},
+		{
+			"generic arrow function with return type",
+			"const f = <T>(x: T): T => x; return f(1);",
+			"const f = (x) => x; return f(1);",
+		},
+		{
+			"bare generic arrow expression at statement start",
+			"const f = (<T,>(x: T) => x); return f(1);",
+			"const f = ((x) => x); return f(1);",
+		},
+		{
+			"generic arrow function with default type parameter",
+			"const f = <T = number>(x: T) => x; return f(1);",
+			"const f = (x) => x; return f(1);",
+		},
+		{
+			"generic function declaration with default type parameter",
+			"function f<T = number>(x: T): T { return x; } return f(1);",
+			"function f(x) { return x; } return f(1);",
+		},
+		{
+			"class declaration with default type parameter",
+			"class C<T = number> { x: T; } return 1;",
+			"class C { x; } return 1;",
+		},
+		{
+			"this parameter erased entirely, not just its type",
+			"function f(this: object, x: number) { return x; } return f.call({}, 1);",
+			"function f( x) { return x; } return f.call({}, 1);",
+		},
+		{
+			"this parameter as sole parameter erased entirely",
+			"function f(this: object) { return 1; } return f.call({});",
+			"function f() { return 1; } return f.call({});",
+		},
+		{
+			"declare abstract class erased",
+			"declare abstract class C { foo(): void; } return 1;",
+			" return 1;",
+		},
+		{
+			"declare abstract class with field erased",
+			"declare abstract class C { x: number; abstract foo(): void; } return 1;",
+			" return 1;",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -270,7 +338,13 @@ func TestStripTypeScriptAnnotations_ErasableSyntax(t *testing.T) {
 // TestStripTypeScriptAnnotations_UnsupportedSyntax covers TypeScript syntax
 // that Node's stripTypeScriptTypes recognizes but rejects
 // (ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX in strip-only mode): enums,
-// namespaces, and constructor parameter properties.
+// namespaces, and constructor parameter properties. Per TS's own
+// stripSnippetTypes (run package, dist/utils/source-cache.js), which catches
+// *any* stripper error and returns the snippet unmodified rather than
+// rejecting it, stripTypeScriptAnnotations must do the same: return the
+// original source byte-for-byte unmodified, plus a non-nil error that
+// RunCodeMode discards (see TestRunCodeMode_UnsupportedSyntaxFallsBackToRawSource
+// in run_code_mode_test.go for the end-to-end behavior).
 func TestStripTypeScriptAnnotations_UnsupportedSyntax(t *testing.T) {
 	cases := []struct {
 		name string
@@ -367,6 +441,21 @@ func TestStripTypeScriptAnnotations_FunctionalViaRunCodeMode(t *testing.T) {
 			"const a = 3, b = 1, c = 2; return (a < b) === (b > c);",
 			true, // (3<1)===(1>2) -> false===false -> true; the point of this case is that it parses as comparisons at all, not the boolean value.
 		},
+		{"generic arrow function with trailing comma", "const f = <T,>(x: T) => x; return f(9);", float64(9)},
+		{"generic arrow function without trailing comma", "const f = <T>(x: T) => x; return f(9);", float64(9)},
+		{
+			// A same-named outer binding ("T") must not disqualify the
+			// arrow's own `<T>` from being recognized as its type
+			// parameter, mirroring Node's parser (which resolves this
+			// structurally, not by name) -- see the "bare generic arrow no
+			// comma ambiguous with comparison" probe case in strip_types.go.
+			"generic arrow function shadows an outer binding of the same name",
+			"const a = 1, T = 2; const f = <T>(x) => x; return f(9);",
+			float64(9),
+		},
+		{"declare abstract class is erased, runtime class unaffected", "declare abstract class C { foo(): void; } class D { foo() { return 3; } } return new D().foo();", float64(3)},
+		{"generic arrow function with default type parameter", "const f = <T = number>(x: T) => x; return f(9);", float64(9)},
+		{"this parameter is erased so the function still runs", "function f(this: object, x: number) { return x; } return f.call({}, 9);", float64(9)},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

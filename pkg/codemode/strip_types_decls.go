@@ -121,6 +121,22 @@ func handleDeclare(tokens []tsToken, i int, out *[]tsToken) (int, error) {
 			return skipBalancedBraces(tokens, idx), nil
 		}
 		return scanToStatementEnd(tokens, idx), nil
+	case "abstract":
+		// `declare abstract class C { ... }`: erased entirely, exactly like
+		// a plain `declare class` (verified directly against Node -- see
+		// strip_types_test.go). "abstract" is only a class-level modifier
+		// here (the `declare ...` grammar has no other use for it), so
+		// anything other than "abstract class" falls through to default.
+		if nextIdentIs(tokens, next+1, "class") {
+			classTok := nextSignificant(tokens, next+1)
+			idx := findBraceOrSemi(tokens, classTok+1)
+			if idx < len(tokens) && tokens[idx].kind == "punct" && tokens[idx].text == "{" {
+				return skipBalancedBraces(tokens, idx), nil
+			}
+			return scanToStatementEnd(tokens, idx), nil
+		}
+		*out = append(*out, tokens[i])
+		return i + 1, nil
 	default:
 		*out = append(*out, tokens[i])
 		return i + 1, nil

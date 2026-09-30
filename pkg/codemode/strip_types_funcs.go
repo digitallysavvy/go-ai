@@ -185,6 +185,34 @@ func stripOneParam(tokens []tsToken, i int, out *[]tsToken, isConstructor bool) 
 	if j < 0 {
 		return i, nil
 	}
+
+	// A TypeScript `this` parameter (the parameter must be literally named
+	// "this") types the function's `this` context and has no runtime
+	// representation -- unlike every other parameter, even its *name* must
+	// be erased along with its type annotation and the comma that followed
+	// it: `this` can never legally be a JavaScript parameter name (it's a
+	// reserved word), so leaving it in place the way an ordinary typed
+	// parameter's name survives would hand the engine invalid syntax
+	// instead of an erased no-op, unlike every other erasure in this
+	// package. It can't carry a rest marker, access modifier, "?", or
+	// default value (TypeScript's grammar disallows all of those on a
+	// `this` parameter), so this check runs before any of that handling.
+	// Verified directly against Node's stripTypeScriptTypes -- see
+	// strip_types_test.go.
+	if tokens[j].kind == "ident" && tokens[j].text == "this" {
+		for k := i; k < j; k++ {
+			*out = append(*out, tokens[k])
+		}
+		end := j + 1
+		if c := nextSignificant(tokens, end); c >= 0 && tokens[c].kind == "punct" && tokens[c].text == ":" {
+			end = consumeTypeExpr(tokens, c+1, false)
+		}
+		if comma := nextSignificant(tokens, end); comma >= 0 && tokens[comma].kind == "punct" && tokens[comma].text == "," {
+			end = comma + 1
+		}
+		return end, nil
+	}
+
 	for k := i; k < j; k++ {
 		*out = append(*out, tokens[k])
 	}

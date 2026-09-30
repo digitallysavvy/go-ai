@@ -84,8 +84,16 @@ func consumeTypeExprRaw(tokens []tsToken, i int, stopAtBrace bool) int {
 // resolving `a < b > c` (rejected: "c" follows with no disallowed token,
 // but the character after the close isn't "(" -- see consumeCallGenerics)
 // against `f<number>(1)` and `a < f<number>(b)` (accepted).
+//
+// A bare "=" is deliberately *not* in this set: at this nesting depth it can
+// only be a type parameter's default (`<T = number>`, `class C<T = number>`,
+// `<T = number>(x: T) => x`), never a real comparison -- a genuine `a < b =
+// c` isn't valid JavaScript without parentheses around `b = c` (assignment
+// binds looser than comparison), and parenthesizing it would put the "="
+// inside a nested "(" that already bumps the depth past 0. Verified
+// directly against Node's stripTypeScriptTypes -- see strip_types_test.go.
 var angleDisallowedAtDepth0 = map[string]bool{
-	";": true, "=": true, "&&": true, "||": true, "??": true,
+	";": true, "&&": true, "||": true, "??": true,
 	"++": true, "--": true, "==": true, "===": true, "!=": true, "!==": true,
 	"+=": true, "-=": true, "*=": true, "/=": true, "%=": true,
 	"&=": true, "|=": true, "^=": true, "<<=": true, ">>=": true, ">>>=": true,
@@ -249,6 +257,41 @@ func isArrowParamList(tokens []tsToken, closeParenIdx int) bool {
 		return arrow >= 0 && tokens[arrow].kind == "punct" && tokens[arrow].text == "=>"
 	}
 	return false
+}
+
+// tryGenericArrowTypeParams attempts to parse tokens[i] (a "<") as a generic
+// arrow function's own type parameter list -- `<T,>(x: T) => x`,
+// `<T extends U>(x: T): T => x` -- the same construct Node's
+// stripTypeScriptTypes recognizes when parsing a `.ts` source file. Unlike
+// `.tsx`, a `.ts` file has no JSX, so `<T>(x) => x` is unambiguous without a
+// trailing comma after "T" (verified directly against Node -- see
+// strip_types_test.go); code-mode snippets are always parsed as `.ts`, so
+// this scanner doesn't require one either.
+//
+// It requires: a balanced, non-empty `<...>` that cannot be a comparison
+// chain (see consumeAngleTypeArgsBalanced), followed directly by a
+// parenthesized parameter list that is itself an arrow function's parameter
+// list (isArrowParamList: followed by "=>", or by a `: ReturnType =>`). This
+// is exactly the same "must be followed by (" plus "the ( must be an arrow
+// param list" pair of checks consumeCallGenerics and isArrowParamList apply
+// for a call's type arguments; without both, `a < b` followed unrelatedly by
+// a parenthesized expression could be misread as generics. It returns the
+// index of the "(" that begins the parameter list and true on success, or
+// (i, false) if tokens[i] doesn't begin one.
+func tryGenericArrowTypeParams(tokens []tsToken, i int) (int, bool) {
+	end, ok := consumeAngleTypeArgsBalanced(tokens, i)
+	if !ok {
+		return i, false
+	}
+	open := nextSignificant(tokens, end)
+	if open < 0 || !(tokens[open].kind == "punct" && tokens[open].text == "(") {
+		return i, false
+	}
+	closeIdx := matchParen(tokens, open)
+	if closeIdx < 0 || !isArrowParamList(tokens, closeIdx) {
+		return i, false
+	}
+	return open, true
 }
 
 // scanUntilTopLevelBrace returns the index of the first "{" at bracket

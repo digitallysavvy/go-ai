@@ -131,6 +131,28 @@ func stripBody(tokens []tsToken, i int, out *[]tsToken, stop func(tsToken) bool)
 				*out = append(*out, t)
 				i++
 				continue
+			case "<":
+				// A generic arrow function's own type parameter list, e.g.
+				// `<T,>(x: T) => x` or `<T>(x: T): T => x` (see
+				// tryGenericArrowTypeParams). Only tried where a new
+				// expression can start -- the same guard `as`/`satisfies`
+				// use in reverse -- since a `<` that follows something
+				// ending an expression is an ordinary less-than comparison,
+				// never generics.
+				if !endsExpression(*out) {
+					if open, ok := tryGenericArrowTypeParams(tokens, i); ok {
+						var err error
+						i, err = stripParamList(tokens, open, out, false)
+						if err != nil {
+							return i, err
+						}
+						i = stripOptionalReturnType(tokens, i, out)
+						continue
+					}
+				}
+				*out = append(*out, t)
+				i++
+				continue
 			default:
 				*out = append(*out, t)
 				i++
