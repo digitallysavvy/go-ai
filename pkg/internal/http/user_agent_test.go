@@ -75,6 +75,48 @@ func TestClientDoAppendsToCallerSuppliedUserAgent(t *testing.T) {
 	}
 }
 
+// TestClientDoTwiceWithSameHeaderMapNoDuplicateRuntimeTag covers the
+// scenario called out in the owner's 2026-09-30 decision: a caller building
+// one Request.Headers map and reusing it across multiple Do() calls (or a
+// provider retrying the same request) must not accumulate additional
+// runtime tags, since applyUserAgentSuffix mutates only the per-request
+// http.Header built from that map, never the caller's map itself.
+func TestClientDoTwiceWithSameHeaderMapNoDuplicateRuntimeTag(t *testing.T) {
+	var capturedUAs []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedUAs = append(capturedUAs, r.Header.Get("User-Agent"))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	client := NewClient(Config{BaseURL: srv.URL})
+	sharedHeaders := map[string]string{"user-agent": version.ProviderUserAgent("openai")}
+	req := Request{Method: http.MethodGet, Path: "/", Headers: sharedHeaders}
+
+	if _, err := client.Do(context.Background(), req); err != nil {
+		t.Fatalf("first Do() error = %v", err)
+	}
+	if _, err := client.Do(context.Background(), req); err != nil {
+		t.Fatalf("second Do() error = %v", err)
+	}
+
+	if len(capturedUAs) != 2 {
+		t.Fatalf("got %d requests, want 2", len(capturedUAs))
+	}
+	if capturedUAs[0] != capturedUAs[1] {
+		t.Fatalf("User-Agent differs across calls: %q vs %q", capturedUAs[0], capturedUAs[1])
+	}
+	runtimeTag := providerutils.RuntimeEnvironmentUserAgent()
+	if n := strings.Count(capturedUAs[1], runtimeTag); n != 1 {
+		t.Fatalf("User-Agent = %q, want exactly one %q, got %d", capturedUAs[1], runtimeTag, n)
+	}
+	// The shared map passed as Request.Headers must not be mutated by Do().
+	if sharedHeaders["user-agent"] != version.ProviderUserAgent("openai") {
+		t.Fatalf("caller's Headers map was mutated: %q", sharedHeaders["user-agent"])
+	}
+}
+
 // TestClientDoStreamAppendsUserAgent covers the streaming dispatch path
 // (DoStream), which providers use for SSE responses.
 func TestClientDoStreamAppendsUserAgent(t *testing.T) {
