@@ -207,3 +207,34 @@ func TestOpenAISerializeAndDeserializeTranscriptionModel(t *testing.T) {
 		t.Fatalf("registry restored mismatch: %#v", viaRegistry)
 	}
 }
+
+func TestOpenAISerializeAndDeserializeSpeechTranslationModel(t *testing.T) {
+	p := New(Config{APIKey: "k", BaseURL: "https://api.openai.com/v1"})
+	modelAny, err := p.SpeechTranslationModel("gpt-realtime-translate")
+	if err != nil {
+		t.Fatalf("SpeechTranslationModel error = %v", err)
+	}
+	serialized := modelAny.(*SpeechTranslationModel).Serialize()
+	if serialized.Provider != "openai.speech-translation" || serialized.ModelID != "gpt-realtime-translate" {
+		t.Fatalf("serialize mismatch: %#v", serialized)
+	}
+	if _, ok := serialized.Config["apiKey"]; ok {
+		t.Fatalf("API key must be omitted from serializable config: %#v", serialized.Config)
+	}
+
+	restored, err := deserializeSpeechTranslationModel(serialized)
+	if err != nil {
+		t.Fatalf("deserializeSpeechTranslationModel error = %v", err)
+	}
+	if restored.Provider() != "openai.speech-translation" || restored.ModelID() != "gpt-realtime-translate" {
+		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
+	}
+
+	viaRegistry, err := provider.DeserializeSpeechTranslationModel(provider.SerializedModel{Provider: serialized.Provider, ModelID: serialized.ModelID, Config: serialized.Config})
+	if err != nil {
+		t.Fatalf("provider.DeserializeSpeechTranslationModel error = %v", err)
+	}
+	if viaRegistry.ModelID() != "gpt-realtime-translate" {
+		t.Fatalf("registry restored mismatch: %#v", viaRegistry)
+	}
+}

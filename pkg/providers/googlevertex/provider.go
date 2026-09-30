@@ -375,6 +375,9 @@ func (p *Provider) interactionsConfig() googleprovider.InteractionsConfig {
 	return googleprovider.InteractionsConfig{
 		ProviderName: "google.vertex.interactions",
 		Client:       client,
+		SerializableConfig: func() map[string]interface{} {
+			return provider.SerializableConfig(p.config)
+		},
 	}
 }
 
@@ -462,6 +465,14 @@ func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
 			return fmt.Sprintf("/models/%s:generateContent", id)
 		},
 		Client: p.client,
+		// Kind/SerializableConfig let Serialize()/deserializeSpeechModel
+		// (serialization.go) tell this Gemini TTS model apart from
+		// CloudTTSSpeechModel, which shares the same "google.vertex.speech"
+		// Provider() tag (see SER2 notes on SpeechModelConfig.Kind).
+		Kind: "gemini-tts",
+		SerializableConfig: func() map[string]interface{} {
+			return provider.SerializableConfig(p.config)
+		},
 	}), nil
 }
 

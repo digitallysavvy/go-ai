@@ -31,6 +31,31 @@ type SpeechModelConfig struct {
 	ProviderOptionsKeys []string
 	GeneratePath        func(modelID string) string
 	Client              *internalhttp.Client
+
+	// Kind is an optional discriminator embedded in the serialized model's
+	// Config["kind"] field, distinguishing this Gemini TTS model from a
+	// sibling model type that shares the same Provider() tag. Google Vertex
+	// tags both Chirp 3: HD voices (googlevertex.CloudTTSSpeechModel) and
+	// Gemini TTS (this shared type) "google.vertex.speech" -- unlike TS,
+	// where Vertex builds Gemini TTS by importing @ai-sdk/google's
+	// GoogleSpeechModel class directly (so both classes still carry
+	// distinct constructors that a workflow runtime -- external to this
+	// SDK -- could distinguish at the object level). Go's registry
+	// dispatches purely on the Provider() string, so the "kind" field lets
+	// the Vertex deserializer rebuild the right Go type. Left empty for
+	// Google's own "google.speech" tag, which is unambiguous (Google has
+	// no Chirp speech model).
+	Kind string
+
+	// SerializableConfig returns a JSON-friendly copy of the constructing
+	// provider's Config struct (credentials such as APIKey/AccessToken
+	// stripped, matching provider.SerializableConfig everywhere else in
+	// this SDK), used for workflow serialization. Set by the constructing
+	// provider (NewSpeechModel here, or googlevertex.Provider.SpeechModel);
+	// nil when a SpeechModel is built directly via
+	// NewSpeechModelWithConfig without a provider back-reference, in which
+	// case Serialize() returns a config containing only "kind" (if set).
+	SerializableConfig func() map[string]interface{}
 }
 
 // SpeechModel implements Gemini text-to-speech for Google and Vertex.
@@ -49,6 +74,9 @@ func NewSpeechModel(p *Provider, modelID string) *SpeechModel {
 			return fmt.Sprintf("/models/%s:generateContent", id)
 		},
 		Client: p.client,
+		SerializableConfig: func() map[string]interface{} {
+			return provider.SerializableConfig(p.config)
+		},
 	})
 }
 
