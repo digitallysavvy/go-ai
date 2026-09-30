@@ -6,6 +6,7 @@ import (
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // DefaultBaseURL is DeepInfra's OpenAI-compatible chat base URL. Image
@@ -56,7 +57,8 @@ func New(cfg Config) *Provider {
 		Headers: cfg.Headers,
 		// TS DeepInfraChatLanguageModel extends OpenAICompatibleChatLanguageModel,
 		// which supports video_url content parts (7dd9ec320c).
-		AllowVideo: true,
+		AllowVideo:    true,
+		UserAgentName: "deepinfra",
 	})
 
 	return &Provider{
@@ -116,6 +118,6 @@ func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
 func (p *Provider) imageClient(baseURL string) *internalhttp.Client {
 	return internalhttp.NewClient(internalhttp.Config{
 		BaseURL: baseURL,
-		Headers: p.requestHeaders(),
+		Headers: version.WithUserAgentSuffix(p.requestHeaders(), version.ProviderUserAgent("deepinfra")),
 	})
 }

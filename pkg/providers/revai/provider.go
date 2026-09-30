@@ -11,6 +11,7 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // Config holds configuration for the Rev.ai provider.
@@ -39,9 +40,9 @@ func New(config Config) *Provider {
 
 	client := internalhttp.NewClient(internalhttp.Config{
 		BaseURL: config.BaseURL,
-		Headers: map[string]string{
+		Headers: version.WithUserAgentSuffix(map[string]string{
 			"Authorization": "Bearer " + config.APIKey,
-		},
+		}, version.ProviderUserAgent("revai")),
 	})
 
 	return &Provider{

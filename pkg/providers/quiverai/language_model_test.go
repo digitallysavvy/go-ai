@@ -159,8 +159,8 @@ func TestLanguageModelGeneratesText(t *testing.T) {
 	if authHeader != "Bearer test-api-key" {
 		t.Fatalf("Authorization = %q", authHeader)
 	}
-	if !strings.Contains(userAgent, "go-ai/quiverai/") {
-		t.Fatalf("User-Agent = %q, want go-ai/quiverai/ substring", userAgent)
+	if !strings.Contains(userAgent, "ai-sdk/quiverai/") {
+		t.Fatalf("User-Agent = %q, want ai-sdk/quiverai/ substring", userAgent)
 	}
 	if requestBody["model"] != ModelArrow2 {
 		t.Fatalf("model = %v", requestBody["model"])

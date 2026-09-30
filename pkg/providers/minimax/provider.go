@@ -20,6 +20,7 @@ import (
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // DefaultBaseURL is MiniMax's Anthropic-compatible chat endpoint.
@@ -93,6 +94,7 @@ func New(cfg Config) *Provider {
 		SupportedURLs: func(string) map[string][]string {
 			return map[string][]string{}
 		},
+		UserAgentName: "minimax",
 	})
 
 	// No static headers: resolveVideoHeaders builds the Authorization header
@@ -134,7 +136,7 @@ func (p *Provider) resolveVideoHeaders(requestHeaders map[string]string) map[str
 	for k, v := range requestHeaders {
 		headers[k] = v
 	}
-	return headers
+	return version.WithUserAgentSuffix(headers, version.ProviderUserAgent("minimax"))
 }
 
 // CreateMiniMax creates a new MiniMax provider.

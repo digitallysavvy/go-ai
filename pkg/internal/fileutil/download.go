@@ -12,6 +12,8 @@ import (
 	"time"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 const (
@@ -131,6 +133,7 @@ func DownloadWithMetadata(ctx context.Context, url string, opts DownloadOptions)
 		req.Header.Set(k, v)
 	}
 	SanitizeRequestHeaders(req.Header)
+	setDownloadUserAgent(req.Header)
 
 	// Execute request
 	resp, err := client.Do(req)
@@ -208,6 +211,7 @@ func DownloadToWriter(ctx context.Context, url string, writer io.Writer, opts Do
 		req.Header.Set(k, v)
 	}
 	SanitizeRequestHeaders(req.Header)
+	setDownloadUserAgent(req.Header)
 
 	// Execute request
 	resp, err := client.Do(req)
@@ -329,6 +333,19 @@ var blockedRequestHeaders = []string{
 	"Metadata", "Metadata-Flavor", "X-Aws-Ec2-Metadata-Token", "X-Metadata-Token",
 	// Session / cookie
 	"Cookie", "Set-Cookie",
+}
+
+// setDownloadUserAgent tags req's User-Agent with the SDK-wide tag plus the
+// runtime tag, appending to (not replacing) any caller-supplied value.
+// Matches TS packages/ai/src/util/download/download.ts's
+// `withUserAgentSuffix({}, ai-sdk/${VERSION}, getRuntimeEnvironmentUserAgent())`.
+func setDownloadUserAgent(h http.Header) {
+	merged := providerutils.WithUserAgentSuffix(
+		map[string]string{"user-agent": h.Get("User-Agent")},
+		version.SDKUserAgent(),
+		providerutils.RuntimeEnvironmentUserAgent(),
+	)
+	h.Set("User-Agent", merged["user-agent"])
 }
 
 // SanitizeRequestHeaders removes proxy, cloud-metadata, cookie and hop-by-hop

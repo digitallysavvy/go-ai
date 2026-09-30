@@ -10,6 +10,7 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 type XAIRealtimeModel struct {
@@ -53,10 +54,10 @@ func (m *XAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts provid
 	}
 	client := internalhttp.NewClient(internalhttp.Config{
 		BaseURL: m.provider.realtimeBaseURL,
-		Headers: internalhttp.MergeHeaders(map[string]string{
+		Headers: version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{
 			"Authorization": "Bearer " + m.provider.config.APIKey,
 			"Content-Type":  "application/json",
-		}, m.provider.config.Headers),
+		}, m.provider.config.Headers), version.ProviderUserAgent("xai")),
 		HTTPClient: m.provider.client.HTTPClient(),
 	})
 	resp, err := client.Do(ctx, internalhttp.Request{

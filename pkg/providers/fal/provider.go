@@ -6,6 +6,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // defaultBaseURL matches the TS SDK's `defaultBaseURL = 'https://fal.run'`
@@ -72,10 +73,10 @@ func New(cfg Config) *Provider {
 		baseURL = defaultBaseURL
 	}
 
-	headers := http.MergeHeaders(map[string]string{
+	headers := version.WithUserAgentSuffix(http.MergeHeaders(map[string]string{
 		"Authorization": "Key " + cfg.APIKey,
 		"Content-Type":  "application/json",
-	}, cfg.Headers)
+	}, cfg.Headers), version.ProviderUserAgent("fal"))
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,

@@ -12,11 +12,25 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 const mcpHTTPAcceptHeader = "application/json, text/event-stream"
+
+// setMCPUserAgent tags req's User-Agent with the shared `ai-sdk/VERSION` tag
+// plus the runtime tag, appending to (not replacing) whatever req.Header
+// already carries. Matches TS mcp-http-transport.ts/mcp-sse-transport.ts's
+// `withUserAgentSuffix(headers, ai-sdk/${VERSION}, getRuntimeEnvironmentUserAgent())`.
+func setMCPUserAgent(h http.Header) {
+	merged := providerutils.WithUserAgentSuffix(
+		map[string]string{"user-agent": h.Get("User-Agent")},
+		version.SDKUserAgent(),
+		providerutils.RuntimeEnvironmentUserAgent(),
+	)
+	h.Set("User-Agent", merged["user-agent"])
+}
 
 // Inbound SSE reconnection backoff, matching TS HttpMCPTransport's
 // `reconnectionOptions` (mcp-http-transport.ts): 1s initial delay, 1.5x
@@ -277,7 +291,7 @@ func (t *HTTPTransport) applyStandardHeaders(req *http.Request, includeSessionID
 	for k, v := range t.config.Headers {
 		req.Header.Set(k, v)
 	}
-	req.Header.Set("User-Agent", version.UserAgent())
+	setMCPUserAgent(req.Header)
 	if includeSessionID && !t.isModernProtocol() {
 		if sessionID := t.SessionID(); sessionID != "" {
 			req.Header.Set("mcp-session-id", sessionID)
@@ -367,7 +381,7 @@ func (t *HTTPTransport) Close() error {
 			if protocolVersion != "" {
 				req.Header.Set("mcp-protocol-version", protocolVersion)
 			}
-			req.Header.Set("User-Agent", version.UserAgent())
+			setMCPUserAgent(req.Header)
 			client := SSEClient(httpClient)
 			if sseClient != nil {
 				client = sseClient
@@ -962,7 +976,7 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 	}
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("mcp-protocol-version", t.ProtocolVersion())
-	req.Header.Set("User-Agent", version.UserAgent())
+	setMCPUserAgent(req.Header)
 	if sessionIDForRequest != "" {
 		req.Header.Set("mcp-session-id", sessionIDForRequest)
 	}

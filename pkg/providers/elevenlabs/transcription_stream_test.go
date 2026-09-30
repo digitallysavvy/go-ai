@@ -77,8 +77,10 @@ func (s *chanAudioStream) wasCancelled() bool {
 type realtimeTestServer struct {
 	ts *httptest.Server
 
-	mu       sync.Mutex
-	received []map[string]interface{}
+	mu              sync.Mutex
+	received        []map[string]interface{}
+	handshakeUA     string
+	handshakeAPIKey string
 
 	toSend    chan interface{}
 	closeConn chan struct{}
@@ -88,6 +90,12 @@ func newRealtimeTestServer(t *testing.T) *realtimeTestServer {
 	t.Helper()
 	s := &realtimeTestServer{toSend: make(chan interface{}, 16), closeConn: make(chan struct{})}
 	wsHandlerFn := func(conn *websocket.Conn) {
+		if req := conn.Request(); req != nil {
+			s.mu.Lock()
+			s.handshakeUA = req.Header.Get("User-Agent")
+			s.handshakeAPIKey = req.Header.Get("xi-api-key")
+			s.mu.Unlock()
+		}
 		go func() {
 			for msg := range s.toSend {
 				encoded, err := json.Marshal(msg)
@@ -120,6 +128,12 @@ func newRealtimeTestServer(t *testing.T) *realtimeTestServer {
 	handler := websocket.Server{Handler: wsHandlerFn}
 	s.ts = httptest.NewServer(handler)
 	return s
+}
+
+func (s *realtimeTestServer) handshakeHeaders() (userAgent, apiKey string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.handshakeUA, s.handshakeAPIKey
 }
 
 func (s *realtimeTestServer) close() {
@@ -176,6 +190,40 @@ func drainUntilFinishOrError(t *testing.T, stream provider.TranscriptionStream) 
 }
 
 func rate(v int) *int { return &v }
+
+// TestTranscriptionModel_DoStream_WebSocketHandshakeCarriesUserAgent covers
+// TS elevenlabs-transcription-model.ts's WebSocket connect
+// (combineHeaders(this.config.headers?.(), options.headers)), which reuses
+// the same tagged getHeaders() as regular HTTP requests. Owner decision
+// 2026-09-30 (match TS): the handshake must carry the
+// `ai-sdk/elevenlabs/VERSION` tag, not a bare "xi-api-key"-only header set.
+func TestTranscriptionModel_DoStream_WebSocketHandshakeCarriesUserAgent(t *testing.T) {
+	server := newRealtimeTestServer(t)
+	defer server.close()
+
+	model := newRealtimeTestModel(server.ts.URL)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newChanAudioStream([]byte{1}),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: rate(16000)},
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+
+	server.toSend <- map[string]interface{}{"message_type": "session_started", "session_id": "session-1"}
+	if _, err := result.Stream.Next(); err != nil {
+		t.Fatalf("Stream.Next() (stream-start) error = %v", err)
+	}
+
+	ua, apiKey := server.handshakeHeaders()
+	if !strings.HasPrefix(ua, "ai-sdk/elevenlabs/") {
+		t.Fatalf("handshake User-Agent = %q, want ai-sdk/elevenlabs/... prefix", ua)
+	}
+	if apiKey != "test-api-key" {
+		t.Fatalf("handshake xi-api-key = %q, want test-api-key", apiKey)
+	}
+}
 
 func TestTranscriptionModel_DoStream_RejectsNonRealtimeModel(t *testing.T) {
 	p := New(Config{APIKey: "test-api-key"})

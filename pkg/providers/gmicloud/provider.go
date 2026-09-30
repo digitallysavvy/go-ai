@@ -13,6 +13,7 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // DefaultBaseURL is the default GMI Cloud API base URL.
@@ -57,10 +58,10 @@ func New(cfg Config) *Provider {
 
 	client := internalhttp.NewClient(internalhttp.Config{
 		BaseURL: baseURL,
-		Headers: internalhttp.MergeHeaders(map[string]string{
+		Headers: version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{
 			"Authorization": "Bearer " + apiKey,
 			"Content-Type":  "application/json",
-		}, cfg.Headers),
+		}, cfg.Headers), version.ProviderUserAgent("gmicloud")),
 		HTTPClient: withGmicloudIncludeUsage(cfg.HTTPClient),
 	})
 

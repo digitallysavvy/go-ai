@@ -129,6 +129,7 @@ func (p *BedrockMantleProvider) openaiProviderForModel(modelID string) (*openai.
 		Headers:          p.headers,
 		HTTPClient:       p.httpClient,
 		ChatProviderName: "bedrock-mantle.chat",
+		UserAgentName:    "amazon-bedrock",
 	}), nil
 }
 
@@ -167,6 +168,7 @@ func (p *BedrockMantleProvider) Responses(modelID string) (provider.LanguageMode
 		ChatProviderName:                "bedrock-mantle.chat",
 		ResponsesProviderName:           "bedrock-mantle.responses",
 		SupportsWebSearchSourcesInclude: &supportsWebSearchSourcesInclude,
+		UserAgentName:                   "amazon-bedrock",
 	})
 	return oai.ResponsesModel(modelID)
 }

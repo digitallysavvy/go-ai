@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -646,15 +647,53 @@ func TestHTTPTransportSetsUserAgentOnAllRequestKinds(t *testing.T) {
 		t.Fatalf("Close error: %v", err)
 	}
 
+	// Owner decision 2026-09-30 (match TS): mcp-http-transport.ts's
+	// commonHeaders() tags every request with `ai-sdk/${VERSION}` plus the
+	// runtime tag (packages/mcp/src/tool/mcp-http-transport.ts), reversing
+	// the earlier "no custom User-Agent" decision this test used to assert.
+	wantUA := providerutils.WithUserAgentSuffix(nil, version.SDKUserAgent(), providerutils.RuntimeEnvironmentUserAgent())["user-agent"]
 	sse.mu.Lock()
 	defer sse.mu.Unlock()
 	for _, req := range sse.requests {
-		if got := req.Header.Get("User-Agent"); got != version.UserAgent() {
-			t.Fatalf("%s User-Agent = %q, want %q", req.Method, got, version.UserAgent())
+		if got := req.Header.Get("User-Agent"); got != wantUA {
+			t.Fatalf("%s User-Agent = %q, want %q", req.Method, got, wantUA)
 		}
 	}
 	if len(sse.requests) < 2 {
 		t.Fatalf("expected at least a POST and a DELETE request, got %d", len(sse.requests))
+	}
+}
+
+// TestHTTPTransportUserAgentAppendsToCallerSuppliedValue covers a caller
+// that configured its own User-Agent header (HTTPTransportConfig.Headers):
+// TS's commonHeaders() spreads `this.headers` first, then calls
+// withUserAgentSuffix, which appends rather than replaces.
+func TestHTTPTransportUserAgentAppendsToCallerSuppliedValue(t *testing.T) {
+	sse := &userAgentRecordingSSEClient{}
+	transport := NewHTTPTransport(HTTPTransportConfig{
+		URL:              "http://localhost:9999/mcp",
+		SSEClient:        sse,
+		InitialSessionID: "session-abc",
+		Config:           TransportConfig{Headers: map[string]string{"User-Agent": "MyApp/1.0"}},
+	})
+	transport.connected = true
+
+	msg, err := CreateRequest(1, "ping", nil)
+	if err != nil {
+		t.Fatalf("CreateRequest error: %v", err)
+	}
+	if err := transport.Send(t.Context(), msg); err != nil {
+		t.Fatalf("Send error: %v", err)
+	}
+
+	sse.mu.Lock()
+	defer sse.mu.Unlock()
+	if len(sse.requests) == 0 {
+		t.Fatal("expected at least one request")
+	}
+	got := sse.requests[0].Header.Get("User-Agent")
+	if !strings.HasPrefix(got, "MyApp/1.0 ai-sdk/") {
+		t.Fatalf("User-Agent = %q, want MyApp/1.0 ai-sdk/... prefix", got)
 	}
 }
 

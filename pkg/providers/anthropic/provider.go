@@ -12,6 +12,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 const (
@@ -105,6 +106,15 @@ type Config struct {
 
 	// Headers are custom HTTP headers to include in requests.
 	Headers map[string]string `json:"headers,omitempty"`
+
+	// UserAgentName selects the `ai-sdk/<name>/VERSION` User-Agent tag this
+	// provider construction adds (version.ProviderUserAgent). Defaults to
+	// "anthropic". TS's anthropic-aws and minimax packages are each their
+	// own npm package with their own tag ("ai-sdk/anthropic-aws",
+	// "ai-sdk/minimax"); Go's anthropicaws and minimax packages implement
+	// this by reusing anthropic.New as their Messages-API transport, so they
+	// set this field to avoid inheriting the wrong "ai-sdk/anthropic" tag.
+	UserAgentName string `json:"userAgentName,omitempty"`
 }
 
 // DefaultSupportedURLs returns the URL patterns the direct Anthropic API and
@@ -142,9 +152,16 @@ func New(cfg Config) *Provider {
 		headers["anthropic-version"] = apiVersion
 	}
 
+	mergedHeaders := http.MergeHeaders(headers, cfg.Headers)
+	uaName := cfg.UserAgentName
+	if uaName == "" {
+		uaName = "anthropic"
+	}
+	mergedHeaders = version.WithUserAgentSuffix(mergedHeaders, version.ProviderUserAgent(uaName))
+
 	client := http.NewClient(http.Config{
 		BaseURL:    baseURL,
-		Headers:    http.MergeHeaders(headers, cfg.Headers),
+		Headers:    mergedHeaders,
 		HTTPClient: cfg.HTTPClient,
 	})
 

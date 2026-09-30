@@ -93,10 +93,11 @@ func New(cfg Config) (*Provider, error) {
 	}
 
 	inner := anthropic.New(anthropic.Config{
-		Name:       "anthropic-aws.messages",
-		BaseURL:    baseURL,
-		Headers:    headers,
-		HTTPClient: httpClient,
+		Name:          "anthropic-aws.messages",
+		BaseURL:       baseURL,
+		Headers:       headers,
+		HTTPClient:    httpClient,
+		UserAgentName: "anthropic-aws",
 	})
 
 	return &Provider{config: cfg, inner: inner, region: region, baseURL: baseURL, transport: transport}, nil
