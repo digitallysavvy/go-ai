@@ -328,8 +328,8 @@ func extractOpenAIImageProviderOptions(providerOptions map[string]interface{}) O
 
 func validateOpenAIImageProviderOptions(providerOptions map[string]interface{}, edit bool) error {
 	opts := extractOpenAIImageProviderOptions(providerOptions)
-	if opts.Quality != "" && !oneOf(opts.Quality, "standard", "hd", "low", "medium", "high", "auto") {
-		return fmt.Errorf("openai image provider option quality must be one of standard, hd, low, medium, high, auto")
+	if opts.Quality != "" && !oneOf(opts.Quality, "standard", "hd", "low", "medium", "high", "xhigh", "max", "auto") {
+		return fmt.Errorf("openai image provider option quality must be one of standard, hd, low, medium, high, xhigh, max, auto")
 	}
 	if !edit && opts.Style != "" && !oneOf(opts.Style, "vivid", "natural") {
 		return fmt.Errorf("openai image provider option style must be one of vivid, natural")
