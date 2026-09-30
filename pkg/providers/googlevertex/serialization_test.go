@@ -246,6 +246,9 @@ func TestVertexSerializeAndDeserializeGeminiTranscriptionModel(t *testing.T) {
 	if _, ok := serialized.Config["accessToken"]; ok {
 		t.Fatalf("access token must be omitted from serializable config: %#v", serialized.Config)
 	}
+	if _, ok := serialized.Config["AccessToken"]; ok {
+		t.Fatalf("access token must be omitted from serializable config: %#v", serialized.Config)
+	}
 
 	// The credential is stripped by design (see the transcription test
 	// above), so deserializing the auto-serialized config fails; a manual
@@ -311,6 +314,9 @@ func TestVertexSerializeAndDeserializeSpeechModel_GeminiTTS(t *testing.T) {
 	if _, ok := serialized.Config["accessToken"]; ok {
 		t.Fatalf("access token must be omitted from serializable config: %#v", serialized.Config)
 	}
+	if _, ok := serialized.Config["AccessToken"]; ok {
+		t.Fatalf("access token must be omitted from serializable config: %#v", serialized.Config)
+	}
 
 	if _, err := deserializeSpeechModel(serialized); err == nil {
 		t.Fatal("expected deserializeSpeechModel() to fail because serialized config omits auth tokens")
@@ -372,6 +378,9 @@ func TestVertexSerializeAndDeserializeSpeechModel_CloudTTS(t *testing.T) {
 	if _, ok := serialized.Config["accessToken"]; ok {
 		t.Fatalf("access token must be omitted from serializable config: %#v", serialized.Config)
 	}
+	if _, ok := serialized.Config["AccessToken"]; ok {
+		t.Fatalf("access token must be omitted from serializable config: %#v", serialized.Config)
+	}
 
 	if _, err := deserializeSpeechModel(serialized); err == nil {
 		t.Fatal("expected deserializeSpeechModel() to fail because serialized config omits auth tokens")
@@ -407,6 +416,52 @@ func TestVertexSerializeAndDeserializeSpeechModel_CloudTTS(t *testing.T) {
 	}
 }
 
+// TestVertexDeserializeSpeechModel_NoKindFallsBackToModelIDRouting covers a
+// serialized payload predating the "kind" discriminator (SER2): with
+// Config["kind"] absent entirely, deserializeSpeechModel must still route
+// correctly, using the same "chirp" ModelID prefix check
+// Provider.SpeechModel itself uses, rather than erroring or guessing wrong.
+func TestVertexDeserializeSpeechModel_NoKindFallsBackToModelIDRouting(t *testing.T) {
+	t.Parallel()
+
+	chirp := provider.SerializedModel{
+		Provider: "google.vertex.speech",
+		ModelID:  "chirp-3-hd",
+		Config: map[string]interface{}{
+			"project":     "test-project",
+			"location":    "us-central1",
+			"accessToken": "token",
+		},
+	}
+	restored, err := deserializeSpeechModel(chirp)
+	if err != nil {
+		t.Fatalf("deserializeSpeechModel(no kind, chirp ModelID) error = %v", err)
+	}
+	if _, ok := restored.(*CloudTTSSpeechModel); !ok {
+		t.Fatalf("expected *CloudTTSSpeechModel for a chirp-prefixed ModelID with no kind, got %T", restored)
+	}
+
+	gemini := provider.SerializedModel{
+		Provider: "google.vertex.speech",
+		ModelID:  SpeechModelGemini25FlashTTS,
+		Config: map[string]interface{}{
+			"project":     "test-project",
+			"location":    "us-central1",
+			"accessToken": "token",
+		},
+	}
+	restoredGemini, err := deserializeSpeechModel(gemini)
+	if err != nil {
+		t.Fatalf("deserializeSpeechModel(no kind, gemini ModelID) error = %v", err)
+	}
+	if _, ok := restoredGemini.(*CloudTTSSpeechModel); ok {
+		t.Fatalf("expected Gemini TTS (not CloudTTSSpeechModel) for a non-chirp ModelID with no kind")
+	}
+	if restoredGemini.ModelID() != SpeechModelGemini25FlashTTS {
+		t.Fatalf("restored mismatch: %#v", restoredGemini)
+	}
+}
+
 // TestVertexSerializeAndDeserializeInteractionsModel covers
 // InteractionsLanguageModel (shared with pkg/providers/google, see
 // interactions_model.go's SerializableConfig doc comment) tagged
@@ -430,6 +485,9 @@ func TestVertexSerializeAndDeserializeInteractionsModel(t *testing.T) {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 	if _, ok := serialized.Config["accessToken"]; ok {
+		t.Fatalf("access token must be omitted from serializable config: %#v", serialized.Config)
+	}
+	if _, ok := serialized.Config["AccessToken"]; ok {
 		t.Fatalf("access token must be omitted from serializable config: %#v", serialized.Config)
 	}
 

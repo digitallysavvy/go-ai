@@ -77,7 +77,10 @@ func TestGoogleSerializeAndDeserializeSpeechModel(t *testing.T) {
 	if _, ok := serialized.Config["kind"]; ok {
 		t.Fatalf("google's own speech tag is unambiguous; kind should be absent: %#v", serialized.Config)
 	}
-	if _, ok := serialized.Config["apiKey"]; ok {
+	// Config.APIKey has no `json` tag, so SerializableConfig keys it by the Go
+	// field name "APIKey" (PascalCase), not "apiKey" -- verified against the
+	// actual serialized map, not assumed.
+	if _, ok := serialized.Config["APIKey"]; ok {
 		t.Fatalf("API key must be omitted from serializable config: %#v", serialized.Config)
 	}
 
@@ -111,7 +114,7 @@ func TestGoogleSerializeAndDeserializeSpeechTranslationModel(t *testing.T) {
 	if serialized.Provider != "google.generative-ai.speech-translation" || serialized.ModelID != "gemini-live-2.5-flash-preview" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
-	if _, ok := serialized.Config["apiKey"]; ok {
+	if _, ok := serialized.Config["APIKey"]; ok {
 		t.Fatalf("API key must be omitted from serializable config: %#v", serialized.Config)
 	}
 
@@ -148,7 +151,7 @@ func TestGoogleSerializeAndDeserializeInteractionsModel(t *testing.T) {
 	if _, ok := serialized.Config["agent"]; ok {
 		t.Fatalf("plain model must not carry agent: %#v", serialized.Config)
 	}
-	if _, ok := serialized.Config["apiKey"]; ok {
+	if _, ok := serialized.Config["APIKey"]; ok {
 		t.Fatalf("API key must be omitted from serializable config: %#v", serialized.Config)
 	}
 

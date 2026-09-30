@@ -218,7 +218,10 @@ func TestOpenAISerializeAndDeserializeSpeechTranslationModel(t *testing.T) {
 	if serialized.Provider != "openai.speech-translation" || serialized.ModelID != "gpt-realtime-translate" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
-	if _, ok := serialized.Config["apiKey"]; ok {
+	// Config.APIKey has no `json` tag, so SerializableConfig's reflection-based
+	// sanitizer keys it by the Go field name "APIKey" (PascalCase), not
+	// "apiKey" -- verified against the actual serialized map, not assumed.
+	if _, ok := serialized.Config["APIKey"]; ok {
 		t.Fatalf("API key must be omitted from serializable config: %#v", serialized.Config)
 	}
 
