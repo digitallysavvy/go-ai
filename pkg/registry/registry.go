@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/middleware"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -162,7 +163,7 @@ func (r *Registry) ResolveLanguageModel(model string) (provider.LanguageModel, e
 	}
 
 	// Parse provider:model format
-	providerName, modelID, err := parseModelString(model, r.separator)
+	providerName, modelID, err := parseModelString(model, r.separator, "languageModel")
 	if err != nil {
 		return nil, err
 	}
@@ -199,7 +200,7 @@ func (r *Registry) ResolveEmbeddingModel(model string) (provider.EmbeddingModel,
 	}
 
 	// Parse provider:model format
-	providerName, modelID, err := parseModelString(model, r.separator)
+	providerName, modelID, err := parseModelString(model, r.separator, "embeddingModel")
 	if err != nil {
 		return nil, err
 	}
@@ -266,7 +267,7 @@ func (r *Registry) ResolveVideoModel(model string) (provider.VideoModelV3, error
 	if target, ok := r.aliases[model]; ok {
 		model = target
 	}
-	providerName, modelID, err := parseModelString(model, r.separator)
+	providerName, modelID, err := parseModelString(model, r.separator, "videoModel")
 	if err != nil {
 		return nil, err
 	}
@@ -294,7 +295,7 @@ func (r *Registry) ResolveEvaluationModel(model string) (provider.EvaluationMode
 	if target, ok := r.aliases[model]; ok {
 		model = target
 	}
-	providerName, modelID, err := parseModelString(model, r.separator)
+	providerName, modelID, err := parseModelString(model, r.separator, "evaluationModel")
 	if err != nil {
 		return nil, err
 	}
@@ -353,7 +354,7 @@ func (r *Registry) resolveProviderAndModel(model, modelType string) (provider.Pr
 	if target, ok := r.aliases[model]; ok {
 		model = target
 	}
-	providerName, modelID, err := parseModelString(model, r.separator)
+	providerName, modelID, err := parseModelString(model, r.separator, modelType)
 	if err != nil {
 		return nil, "", err
 	}
@@ -461,14 +462,26 @@ func cloneMap(in map[string]interface{}) map[string]interface{} {
 // the given separator (defaults to ":" when empty). Formats supported:
 //   - "provider<sep>model" -> ("provider", "model")
 //   - "model" -> error if the separator is not present
-func parseModelString(model, separator string) (providerID, modelID string, err error) {
+//
+// When the separator is missing, this returns a *providererrors.NoSuchModelError
+// with the same message shape as TypeScript's DefaultProviderRegistry.splitId:
+// `Invalid ${modelType} id for registry: ${id} (must be in the format
+// "providerId${separator}modelId")` (provider-registry.ts).
+func parseModelString(model, separator, modelType string) (providerID, modelID string, err error) {
 	if separator == "" {
 		separator = defaultSeparator
 	}
 
 	idx := strings.Index(model, separator)
 	if idx == -1 {
-		return "", "", fmt.Errorf("invalid model string format (expected 'provider%smodel'): %s", separator, model)
+		return "", "", &providererrors.NoSuchModelError{
+			ModelID:   model,
+			ModelType: modelType,
+			Message: fmt.Sprintf(
+				"Invalid %s id for registry: %s (must be in the format \"providerId%smodelId\")",
+				modelType, model, separator,
+			),
+		}
 	}
 
 	return model[:idx], model[idx+len(separator):], nil

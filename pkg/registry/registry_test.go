@@ -3,9 +3,11 @@ package registry
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -229,7 +231,7 @@ func TestParseModelString_Valid(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		provider, modelID, err := parseModelString(tt.input, ":")
+		provider, modelID, err := parseModelString(tt.input, ":", "languageModel")
 		if err != nil {
 			t.Errorf("parseModelString(%q) unexpected error: %v", tt.input, err)
 			continue
@@ -253,9 +255,25 @@ func TestParseModelString_Invalid(t *testing.T) {
 	}
 
 	for _, input := range tests {
-		_, _, err := parseModelString(input, ":")
+		_, _, err := parseModelString(input, ":", "languageModel")
 		if err == nil {
 			t.Errorf("parseModelString(%q) expected error, got nil", input)
+			continue
+		}
+		nsm, ok := err.(*providererrors.NoSuchModelError)
+		if !ok {
+			t.Errorf("parseModelString(%q) error = %T, want *providererrors.NoSuchModelError", input, err)
+			continue
+		}
+		if nsm.ModelID != input {
+			t.Errorf("parseModelString(%q) ModelID = %q, want %q", input, nsm.ModelID, input)
+		}
+		if nsm.ModelType != "languageModel" {
+			t.Errorf("parseModelString(%q) ModelType = %q, want %q", input, nsm.ModelType, "languageModel")
+		}
+		wantMsg := fmt.Sprintf(`Invalid languageModel id for registry: %s (must be in the format "providerId:modelId")`, input)
+		if nsm.Error() != wantMsg {
+			t.Errorf("parseModelString(%q) message = %q, want %q", input, nsm.Error(), wantMsg)
 		}
 	}
 }
@@ -331,7 +349,7 @@ func TestParseModelString_EmptyParts(t *testing.T) {
 	t.Parallel()
 
 	// Test edge cases with colons
-	provider, modelID, err := parseModelString(":model", ":")
+	provider, modelID, err := parseModelString(":model", ":", "languageModel")
 	if err != nil {
 		t.Errorf("parseModelString(':model') unexpected error: %v", err)
 	}
@@ -342,7 +360,7 @@ func TestParseModelString_EmptyParts(t *testing.T) {
 		t.Errorf("expected modelID 'model', got %q", modelID)
 	}
 
-	provider, modelID, err = parseModelString("provider:", ":")
+	provider, modelID, err = parseModelString("provider:", ":", "languageModel")
 	if err != nil {
 		t.Errorf("parseModelString('provider:') unexpected error: %v", err)
 	}
