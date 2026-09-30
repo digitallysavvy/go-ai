@@ -80,7 +80,17 @@ func RunCodeMode(ctx context.Context, input RunInput) (interface{}, error) {
 	}
 
 	bridge := newToolBridge(ctx, input, options, policy, outerToolCall, prepared.replayLedger, prepared.resumePendings, prepared.resumeResolutions)
-	source := wrapCodeModeSource(stripTypeScriptAnnotations(input.JS))
+	// Mirrors TypeScript's stripSnippetTypes (run package,
+	// dist/utils/source-cache.js), which catches *any* stripper error and
+	// falls back to the snippet unmodified rather than rejecting it: any
+	// TypeScript syntax the stripper can't erase (or genuinely can't parse)
+	// is handed to the JavaScript engine as-is, where it fails -- if it
+	// truly isn't valid JavaScript -- with an ordinary engine syntax error
+	// instead of a stripper-specific one. stripTypeScriptAnnotations already
+	// returns the original source unmodified on error, so the error itself
+	// is never surfaced here.
+	strippedJS, _ := stripTypeScriptAnnotations(input.JS)
+	source := wrapCodeModeSource(strippedJS)
 
 	resultJSON, isUndefined, err := runInSandbox(ctx, policy, source, func(jsCtx *qjs.Context) error {
 		return bindCodeModeDispatch(jsCtx, bridge)
