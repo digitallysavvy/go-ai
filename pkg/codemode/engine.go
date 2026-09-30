@@ -13,9 +13,13 @@ import (
 // This file wraps a vendored copy of github.com/fastschema/qjs v0.0.6
 // (QuickJS compiled to WebAssembly, executed with wazero -- pure Go, no
 // cgo), at pkg/internal/third_party/qjs, as the code-mode sandbox engine.
-// See that package's README.vendor.md for why it's vendored (a memory-safety
-// patch to Mem.ReadString) and the package doc for how this compares to
-// TypeScript's worker+quickjs-emscripten (now `run`) engine.
+// See that package's README.vendor.md for why it's vendored (memory-safety
+// patches to Mem.ReadString/Value.JSONStringify, and the job-queue-
+// quiescence exports concurrent approval batching depends on -- see
+// QJS_RunPendingJobs/QJS_PromiseState/QJS_PromiseResult, used from
+// driveCodeModeExecution in run_code_mode.go, this file's only caller of
+// note) and the package doc for how this compares to TypeScript's
+// worker+quickjs-emscripten (now `run`) engine.
 //
 // Two real, verified quirks in fastschema/qjs v0.0.6 shape this file:
 //
@@ -114,6 +118,7 @@ func warmUp() error {
 type sandboxOutcome struct {
 	resultJSON  string
 	isUndefined bool
+	interrupted bool
 	err         error
 }
 
@@ -126,18 +131,29 @@ type sandboxOutcome struct {
 // abandoned/leaked.
 const sandboxTimeoutGrace = 5 * time.Second
 
-// runInSandbox evaluates source as the body of an async IIFE (see
-// wrapCodeModeSource) in a fresh QuickJS sandbox, applying policy's
-// resource limits. bind, if non-nil, is called with the fresh context to
-// install host bindings (the `tools` object) before evaluation.
-func runInSandbox(ctx context.Context, policy resolvedPolicy, source string, bind func(jsCtx *qjs.Context) error) (resultJSON string, isUndefined bool, err error) {
+// runInSandbox creates a fresh QuickJS sandbox with policy's resource
+// limits applied and hands it to drive, which is responsible for
+// installing host bindings, evaluating source, and running it to
+// completion (or to a quiescent point worth pausing at -- see
+// driveCodeModeExecution in run_code_mode.go, drive's only caller).
+// runInSandbox itself only owns what every invocation needs regardless of
+// what drive does with the context: warm-up, the process-wide concurrency
+// slot, the timeout/cancellation goroutine plumbing, and panic recovery
+// for the two qjs v0.0.6 quirks documented above.
+//
+// drive returns (resultJSON, isUndefined, interrupted, err): interrupted
+// means drive stopped at a quiescent point with one or more host calls
+// newly pending (the caller inspects toolBridge.batchSnapshot for which
+// ones), not a completed result -- resultJSON/isUndefined are meaningless
+// when interrupted is true.
+func runInSandbox(ctx context.Context, policy resolvedPolicy, drive func(jsCtx *qjs.Context) (resultJSON string, isUndefined bool, interrupted bool, err error)) (resultJSON string, isUndefined bool, interrupted bool, err error) {
 	if werr := warmUp(); werr != nil {
-		return "", false, werr
+		return "", false, false, werr
 	}
 
 	release, werr := acquireWorkerSlot()
 	if werr != nil {
-		return "", false, werr
+		return "", false, false, werr
 	}
 	defer release()
 
@@ -175,42 +191,21 @@ func runInSandbox(ctx context.Context, policy resolvedPolicy, source string, bin
 		}()
 
 		jsCtx := rt.Context()
-		if bind != nil {
-			if berr := bind(jsCtx); berr != nil {
-				out.err = berr
-				return
-			}
-		}
-
-		value, eerr := jsCtx.Eval("code-mode.js", qjs.Code(source), qjs.FlagAsync())
-		if eerr != nil {
-			out.err = classifySandboxFailure(eerr, ctx, policy)
+		rJSON, isUndef, interruptedResult, derr := drive(jsCtx)
+		if derr != nil {
+			out.err = classifySandboxFailure(derr, ctx, policy)
 			return
 		}
-		if value.IsPromise() {
-			value, eerr = value.Await()
-			if eerr != nil {
-				out.err = classifySandboxFailure(eerr, ctx, policy)
-				return
-			}
-		}
-		if value.IsUndefined() {
-			out.isUndefined = true
-			return
-		}
-		js, jerr := value.JSONStringify()
-		if jerr != nil {
-			out.err = classifySandboxFailure(jerr, ctx, policy)
-			return
-		}
-		out.resultJSON = js
+		out.resultJSON = rJSON
+		out.isUndefined = isUndef
+		out.interrupted = interruptedResult
 	}()
 
 	select {
 	case out := <-ch:
-		return out.resultJSON, out.isUndefined, out.err
+		return out.resultJSON, out.isUndefined, out.interrupted, out.err
 	case <-time.After(timeout + sandboxTimeoutGrace):
-		return "", false, NewTimeoutError(policy.TimeoutMs)
+		return "", false, false, NewTimeoutError(policy.TimeoutMs)
 	}
 }
 

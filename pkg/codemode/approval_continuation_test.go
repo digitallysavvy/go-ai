@@ -13,12 +13,12 @@ import (
 // interrupting" is already covered by run_code_mode_test.go's
 // ApprovalModeCallback tests (this file is specifically about
 // ApprovalModeInterrupt continuations). "exposes run approval batches one
-// at a time" and "supports generic host interruptions" are ported in
-// continuation_test.go as TestContinueCodeModeApproval_ChainsTwoSequentialApprovals
-// and TestContinueCodeModeInterrupt_GenericHostInterruption respectively
-// (see the package doc's "Host tool bridge dispatch" section for why the
-// former is a chain of two single-item continuations here, not one
-// two-item batch).
+// at a time" is ported below as
+// TestContinueCodeModeApproval_PromiseAllBatchesBothCallsTogether (see the
+// package doc's "Host tool bridge dispatch" section for the concurrent
+// approval batching this exercises); "supports generic host
+// interruptions" is ported in continuation_test.go as
+// TestContinueCodeModeInterrupt_GenericHostInterruption.
 
 // "replays completed calls without repeating their side effects".
 func TestContinueCodeModeApproval_ReplaysCompletedCallsWithoutRepeatingSideEffects(t *testing.T) {
@@ -138,31 +138,18 @@ func TestContinueCodeModeApproval_DeniesWithoutExecutingPendingTool(t *testing.T
 
 // Literal port of "exposes run approval batches one at a time", using the
 // identical `Promise.all([tools.first({}), tools.second({})])` source
-// TypeScript's version uses (TestContinueCodeModeApproval_ChainsTwoSequentialApprovals
-// already covers the same chain with sequential `await`s; this confirms
-// the Promise.all spelling collapses to the exact same chain rather than
-// something subtly different, because -- per the package doc's "Host tool
-// bridge dispatch" section -- this port's `tools.x(input)` dispatch is
-// synchronous: `tools.first({})` and `tools.second({})` are still
-// evaluated strictly left to right as plain expressions before Promise.all
-// itself ever runs, so `tools.first({})` unwinds with its own interrupt
-// before `tools.second({})` is evaluated at all, exactly as if they had
-// been sequential `await`s).
-//
-// This intentionally reproduces, and documents inline, the one place its
-// *observable timing* still diverges from TypeScript despite an identical
-// final result: TypeScript defers executing either tool until the whole
-// two-entry batch is resolved (neither `first` nor `second` has run when
-// this test's TypeScript counterpart resolves the first approval -- see
-// its "run requires the complete interruption batch to be resolved
-// together" comment), because `run`'s continuation ledger already holds
-// both pending interruptions from the one job-queue-quiescence point where
-// they were collected together. This Go port cannot detect that
-// quiescence point at all (see the package doc), so its continuation for
-// "first" alone has no knowledge that "second" is coming; resolving it
-// resumes real execution immediately, which executes "first" for real
-// synchronously and only *then* reaches -- and pends on -- "second".
-func TestContinueCodeModeApproval_PromiseAllBatchChainsInsteadOfBatching(t *testing.T) {
+// TypeScript's version uses. Since CM3 (concurrent approval batching, see
+// the package doc's "Host tool bridge dispatch" section and
+// driveCodeModeExecution in run_code_mode.go), this port's `tools.x(input)`
+// dispatch is a genuine async host function: `tools.first({})` and
+// `tools.second({})` are both called synchronously while building the
+// Promise.all array (neither one's Promise is resolved/rejected/thrown
+// yet), so both land in the same pending-interruption batch once the
+// sandbox's job queue goes quiescent -- matching TypeScript's "run
+// requires the complete interruption batch to be resolved together"
+// behavior exactly: neither tool has run at all until *both* approvals are
+// given.
+func TestContinueCodeModeApproval_PromiseAllBatchesBothCallsTogether(t *testing.T) {
 	firstCalls, secondCalls := 0, 0
 	tools := ToolSet{
 		"first": {
@@ -203,7 +190,16 @@ func TestContinueCodeModeApproval_PromiseAllBatchChainsInsteadOfBatching(t *test
 	}
 	firstInterrupt := pendingFirst.(*Interrupt)
 	if firstInterrupt.ToolName != "first" {
-		t.Fatalf("expected 'first' to be evaluated (and pend) before 'second', got %#v", firstInterrupt)
+		t.Fatalf("expected 'first' to be the batch's first entry, got %#v", firstInterrupt)
+	}
+	if got := len(firstInterrupt.Continuation.PendingInterruptions); got != 2 {
+		t.Fatalf("expected a two-item pending-interruption batch, got %d", got)
+	}
+	if second := firstInterrupt.Continuation.PendingInterruptions[1]; second.ToolName != "second" {
+		t.Fatalf("expected 'second' as the batch's other entry, got %#v", second)
+	}
+	if firstCalls != 0 || secondCalls != 0 {
+		t.Fatalf("neither tool should have executed before any approval: first=%d second=%d", firstCalls, secondCalls)
 	}
 
 	pendingSecond, err := ContinueCodeModeApproval(context.Background(), *firstInterrupt, ApprovalResponse{ApprovalID: firstInterrupt.InterruptID, Approved: true}, tools, options, nil)
@@ -213,14 +209,11 @@ func TestContinueCodeModeApproval_PromiseAllBatchChainsInsteadOfBatching(t *test
 	if !IsCodeModeApprovalInterrupt(pendingSecond) {
 		t.Fatalf("expected a second pending approval interrupt, got %#v", pendingSecond)
 	}
-	// Diverges from TypeScript here: neither tool has run yet there, but
-	// this port already executed "first" for real (see the doc comment
-	// above).
-	if firstCalls != 1 {
-		t.Fatalf("'first' should already have executed once (Go's chained divergence from TS's batch), got %d", firstCalls)
-	}
-	if secondCalls != 0 {
-		t.Fatalf("'second' should not have executed yet, got %d", secondCalls)
+	// Resolving the first entry of an already-collected batch advances
+	// straight to the next entry of the *same* batch/continuation -- it
+	// does not re-enter the sandbox, so neither tool executes yet.
+	if firstCalls != 0 || secondCalls != 0 {
+		t.Fatalf("neither tool should have executed after only one approval: first=%d second=%d", firstCalls, secondCalls)
 	}
 
 	secondInterrupt := pendingSecond.(*Interrupt)

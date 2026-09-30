@@ -63,13 +63,23 @@ Only what's needed to build and run the Go package:
 - `qjs.wasm`, the prebuilt QuickJS WebAssembly binary embedded via
   `//go:embed qjs.wasm` in `runtime.go`.
 - `LICENSE` (MIT), unmodified.
+- `build/job-queue-quiescence.patch` and `build/build.sh`: the C patch and
+  build script this vendor copy's `qjs.wasm` was rebuilt with (see
+  "qjs.wasm rebuild" below). Upstream's `qjswasm/` C sources and quickjs-ng
+  submodule themselves are still *not* vendored in-tree (same reasoning as
+  the "Dropped" list below) — `build.sh` fetches them fresh, at the pinned
+  commits, into a scratch directory every time it runs, so this repository
+  only ever carries the diff against them, not a second copy of QuickJS's
+  own C sources.
 
 Dropped (not needed to build the vendored package): upstream `*_test.go`
 files, `README.md`, `go.mod`/`go.sum` (this is not a standalone module here),
 `.github/`, `.codecov.yml`, `.golangci.yml`, `.goreleaser.yaml`, `Makefile`,
-`test.sh`, `.gitmodules`, `testdata/`, and `qjswasm/` (the C sources and
-CMake config used to *build* `qjs.wasm` from QuickJS — irrelevant once the
-binary is embedded).
+`test.sh`, `.gitmodules`, `testdata/`, and `qjswasm/`'s own copy of the C
+sources and CMake config used to *build* `qjs.wasm` from QuickJS (not
+needed at `go build` time, since the binary is embedded — `build/build.sh`
+fetches a fresh copy of exactly these files whenever `qjs.wasm` actually
+needs rebuilding; see "qjs.wasm rebuild" below).
 
 ## Import path
 
@@ -231,7 +241,111 @@ the former. `Value.JSONStringify()`'s signature, error type, and observable
 behavior (including its `recover()`-based panic-to-error conversion) are
 unchanged; only its internal implementation and, incidentally, its result's
 correctness under the bug above changed. The `QJS_JSONStringify` C helper
-itself is left as-is in `qjs.wasm` (unused, unreachable from Go, harmless)
-since the binary cannot be edited without a full C/WASM rebuild toolchain —
-see "Why vendored" above for why patching the Go-level caller instead is
-the right fix here.
+itself is left as-is in `qjs.wasm` (unused, unreachable from Go, harmless):
+at the time this patch was written there was no reproducible way to rebuild
+the binary in this repository, so patching the Go-level caller instead was
+the right fix here — see "Why vendored" above. (A reproducible C/WASM
+rebuild pipeline was added later, for an unrelated patch — see "qjs.wasm
+rebuild" below — but `QJS_JSONStringify` was left exactly as-is rather than
+revisited, since it is still unused and harmless and touching it would
+widen an otherwise narrowly-scoped change.)
+
+## qjs.wasm rebuild (job-queue-quiescence patch)
+
+A second, C-level patch to `qjs.wasm` itself (not just to the Go bindings
+around it, unlike the two patches above) was added to support
+`pkg/codemode`'s concurrent tool-approval batching (a model-written
+`Promise.all([tools.a(x), tools.b(y)])` where more than one call needs
+approval surfacing as one batched interrupt instead of one at a time — see
+that package's doc comment, "Host tool bridge dispatch" section).
+
+**Why a rebuild was necessary.** The vendored binary already exposed real
+async host functions (`QJS_CreateFunctionProxy`) and `js_std_await`
+(`Value.Await`), which is enough to make every `tools.x(input)` dispatch
+return a genuine, independently-resolvable JS Promise. What was missing was
+a safe way to *drive* the engine to the point of collecting several such
+pending calls together: `js_std_await` loops calling
+`JS_ExecutePendingJob` while re-checking *one specific* promise's state,
+falling back to `js_os_poll` when no jobs remain — in this sandboxed build
+(no timers or sockets registered), that loop cannot tell a promise that
+will settle in a moment apart from one deliberately left pending forever
+(an interrupt awaiting approval), and spins hot on the latter instead of
+returning. Nothing else exported from `qjs.wasm` could run the job queue to
+exhaustion and simply report what happened, without that promise-shaped
+stopping condition. See `pkg/codemode/engine.go` and
+`pkg/codemode/run_code_mode.go` (`driveCodeModeExecution`,
+`bindCodeModeDispatch`) for the full design this rebuild enabled, which was
+prototyped and verified against the exports below (including the
+"genuinely-never-settles must not hang" case) before being wired into
+`pkg/codemode` itself.
+
+**The patch** (`build/job-queue-quiescence.patch`, applied to upstream's
+`qjswasm/` C sources — `helpers.c`, `eval.c`, `qjs.h`, `qjswasm.cmake` —
+before building) adds three new exports:
+
+- `QJS_RunPendingJobs(QJSRuntime *qjs) -> int`: calls
+  `JS_ExecutePendingJob` in a loop until it reports no more jobs runnable,
+  then returns the count executed (0 if the queue was already empty), or
+  -1 if a job threw (the Go binding then reads the exception off the
+  context, same as any other failing call). Unlike `js_std_await`, it has
+  no per-promise stopping condition and never polls for external events,
+  so it cannot hang on a promise left deliberately pending.
+- `QJS_PromiseState(JSContext *ctx, JSValue v) -> int`: thin wrapper
+  around `JS_PromiseState`, returning the `JSPromiseStateEnum` value as a
+  plain int (0 pending / 1 fulfilled / 2 rejected) instead of collapsing
+  it to a bool the way the existing `QJS_IsPromise` does.
+- `QJS_PromiseResult(JSContext *ctx, JSValue v) -> JSValue`: thin wrapper
+  around `JS_PromiseResult` (a promise's fulfillment value or rejection
+  reason, once settled).
+- `QJS_EvalNoAutoAwait(JSContext *ctx, QJSEvalOptions opts) -> JSValue`
+  (`eval.c`): runs the same evaluation `QJS_Eval` does for global,
+  non-compile-only, non-`JS_EVAL_FLAG_ASYNC` source, but returns its
+  result as-is — promise or not, settled or not — instead of
+  unconditionally calling `js_std_await` on a promise result first (which
+  is exactly the blocking/potentially-hanging behavior above). This is
+  what `pkg/codemode` now evaluates code-mode source through, driving it
+  itself via the three exports above instead.
+
+Go bindings: `Runtime.RunPendingJobs`/`Context.RunPendingJobs`,
+`Value.PromiseState`/`PromiseStateEnum`/`PromiseState{Pending,Fulfilled,Rejected}`,
+`Value.PromiseResult`, `Context.EvalNoAutoAwait`/`Runtime.EvalNoAutoAwait`
+(all in `runtime.go`/`context.go`/`value.go`/`eval.go`).
+
+**Provenance and reproducibility.** `build/build.sh` fetches:
+
+- `fastschema/qjs` at `461716f4f380f81ffd09378751f1812919cddbca` (this
+  vendor copy's own pinned upstream commit — see the top of this file) for
+  `qjswasm/`'s C sources.
+- `quickjs-ng/quickjs` at `d01ca4491fb24ccfeccb4c7394e28a3b21fd5986` (the
+  exact commit `fastschema/qjs`'s `qjswasm/quickjs` git submodule points at
+  this same upstream commit, read from GitHub's tree API rather than
+  assumed) for the underlying QuickJS engine `qjswasm/` builds against.
+
+applies `build/job-queue-quiescence.patch` (`patch -p1`), then builds with
+the official `ghcr.io/webassembly/wasi-sdk:wasi-sdk-24` image, pinned by
+digest —
+`sha256:ab1595b844d67f3e2a8b5f47c9983f5165e7ce58ca376685b2d6167e9e28a663` —
+running the same `cmake`/`make` invocation upstream's own `Makefile` uses
+(`-DQJS_BUILD_LIBC=ON -DQJS_BUILD_CLI_WITH_MIMALLOC=OFF
+-DCMAKE_TOOLCHAIN_FILE=/opt/wasi-sdk/share/cmake/wasi-sdk.cmake
+-DCMAKE_PROJECT_INCLUDE=../qjswasm.cmake`, then `make qjswasm`). One
+deliberate deviation from upstream's `Makefile`: it does not run
+`wasm-opt -O3` afterward (binaryen is not present in the pinned wasi-sdk
+image, and reaching for an additional, unpinned tool just to
+shrink/optimize an already-correct binary was judged not worth it) — the
+committed `qjs.wasm` is therefore a correct but not `wasm-opt`-optimized
+build. The baseline (unpatched) rebuild was verified byte-for-byte
+functionally equivalent to the previously-committed binary first — every
+existing test in this package and in `pkg/codemode` passed against it
+before the patch was applied — to isolate what the patch itself changed.
+
+`pkg/internal/third_party/qjs/qjs.wasm`'s sha256 (this patched build):
+
+```
+8047fb1d9b08686c7f2b7cd50f848c6f868a0a53e9c7cf1fbcd6dff952598bdd
+```
+
+**Verification.** Both pre-existing patch-regression tests
+(`mem_patch_test.go`, `jsonstringify_patch_test.go`) and every test in this
+package and in `pkg/codemode` (including `-race -count=3`) pass against
+this rebuilt binary.

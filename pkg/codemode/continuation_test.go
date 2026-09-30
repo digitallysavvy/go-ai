@@ -127,16 +127,31 @@ func TestContinueCodeModeInterrupt_GenericHostInterruption(t *testing.T) {
 // errors.go's DetachedBridgeRequestError doc comment for why it is
 // reachable here specifically through a caught-and-suppressed
 // interruption).
-func TestRunCodeMode_DetachedBridgeRequestWhenInterruptIsCaught(t *testing.T) {
+// A try/catch around `await tools.guarded({})` does not change anything:
+// since CM3, an approval-needing dispatch's Promise is never rejected or
+// thrown (see toolBridge.pendingBatch's doc comment) -- it is left
+// deliberately pending, exactly as TypeScript's context.interrupt(payload)
+// never settles its own Promise either -- so `await` just suspends the
+// script normally until the interrupt is resolved; there is nothing here
+// for a catch block to ever observe. This documents that the behavior is
+// an ordinary pending interrupt, not an error, with or without the
+// try/catch (this test predates CM3's genuine concurrent-dispatch bridge,
+// when the previous synchronous-unwind implementation made the catch
+// block observe a real JS exception -- see
+// TestRunCodeMode_DetachedBridgeRequestForAnUnawaitedInterruptedCall below
+// for the scenario *DetachedBridgeRequestError is actually for).
+func TestRunCodeMode_TryCatchAroundAnInterruptDoesNotObserveAnything(t *testing.T) {
+	executed := false
 	tools := ToolSet{"guarded": {
 		Name:          "guarded",
 		Parameters:    map[string]interface{}{"type": "object"},
 		NeedsApproval: true,
 		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
-			return "should not run", nil
+			executed = true
+			return "should not run yet", nil
 		},
 	}}
-	_, err := RunCodeMode(context.Background(), RunInput{
+	pending, err := RunCodeMode(context.Background(), RunInput{
 		JS: `
 			try {
 				return await tools.guarded({});
@@ -147,18 +162,57 @@ func TestRunCodeMode_DetachedBridgeRequestWhenInterruptIsCaught(t *testing.T) {
 		Tools:   tools,
 		Options: &Options{Approval: &ApprovalOptions{Mode: ApprovalModeInterrupt}},
 	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !IsCodeModeApprovalInterrupt(pending) {
+		t.Fatalf("expected a pending approval interrupt, got %#v", pending)
+	}
+	if executed {
+		t.Fatal("the guarded tool must not execute before approval")
+	}
+}
+
+// *DetachedBridgeRequestError is for a call whose Promise is never even
+// observed at all -- a fire-and-forget `tools.guarded({});` with no
+// `await`/`.then()`/anything -- so the script can complete (or, here,
+// return a value having nothing to do with it) while the interruption it
+// raised is left dangling, unresolved, forever. Mirrors TypeScript's
+// RunDetachedBridgeRequestError, produced by `run`'s own
+// __runAssertNoDetachedBridgeCalls (an unawaited bridge Promise).
+func TestRunCodeMode_DetachedBridgeRequestForAnUnawaitedInterruptedCall(t *testing.T) {
+	tools := ToolSet{"guarded": {
+		Name:          "guarded",
+		Parameters:    map[string]interface{}{"type": "object"},
+		NeedsApproval: true,
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "should not run", nil
+		},
+	}}
+	_, err := RunCodeMode(context.Background(), RunInput{
+		JS: `
+			tools.guarded({});
+			return 'done';
+		`,
+		Tools:   tools,
+		Options: &Options{Approval: &ApprovalOptions{Mode: ApprovalModeInterrupt}},
+	})
 	var detached *DetachedBridgeRequestError
 	if !errors.As(err, &detached) {
 		t.Fatalf("expected *DetachedBridgeRequestError, got %#v (%v)", err, err)
 	}
 }
 
-// Replays a completed call's recorded output without re-invoking the real
-// host tool, and short-circuits a second interruption from the same call
-// site chain-wise -- the sequential-dispatch analog of TypeScript's "exposes
-// run approval batches one at a time" (see the package doc's
-// "Host tool bridge dispatch" section for why this port produces two
-// single-item continuations, chained, instead of one two-item batch).
+// Genuinely sequential `await`s (as opposed to a concurrent
+// `Promise.all([...])`, see
+// TestContinueCodeModeApproval_PromiseAllBatchesBothCallsTogether in
+// approval_continuation_test.go) never dispatch "second" until "first"'s
+// interruption is resolved and real execution resumes past it -- the
+// sandbox's job queue is quiescent with only "first" pending the moment
+// `await tools.first({})` is reached, so this correctly produces two
+// single-item continuations chained together, exactly as TypeScript's own
+// genuinely sequential dispatch does (TypeScript's batching, too, only
+// ever collects calls dispatched within the same synchronous burst).
 func TestContinueCodeModeApproval_ChainsTwoSequentialApprovals(t *testing.T) {
 	firstCalls, secondCalls := 0, 0
 	tools := ToolSet{

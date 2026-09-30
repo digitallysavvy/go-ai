@@ -1,0 +1,92 @@
+--- a/qjswasm/helpers.c
++++ b/qjswasm/helpers.c
+@@ -643,3 +643,66 @@
+     fprintf(stderr, "QJS Panic: Unrecoverable error occurred\n");
+     abort();
+ }
++
++// QJS_RunPendingJobs drains the runtime's job queue to exhaustion: it calls
++// JS_ExecutePendingJob in a loop for as long as jobs remain runnable, then
++// returns as soon as the queue is empty -- regardless of whether any
++// promise a caller cares about has settled yet. This is deliberately
++// different from js_std_await (quickjs-libc.c), which loops calling
++// JS_ExecutePendingJob while ALSO re-checking one specific promise's state
++// and polling OS file descriptors via js_os_poll; in a sandboxed run with
++// no timers/sockets registered, js_std_await's loop never terminates on a
++// promise that is intentionally left pending forever (see
++// __codeModeCreatePending in the Go host bridge), so it is unsuitable for
++// detecting "no more synchronous progress is possible right now" (i.e.
++// every outstanding host call this pass is either settled or genuinely
++// parked waiting on something external). QJS_RunPendingJobs has no such
++// promise-shaped stopping condition: it always returns once
++// JS_ExecutePendingJob reports nothing left to run, which is exactly the
++// "job queue is quiescent" signal the Go host bridge polls for when
++// batching concurrent tool-approval interrupts (e.g. Promise.all).
++//
++// Returns the number of jobs executed (0 if the queue was already empty),
++// or -1 if a job threw an exception while running -- the exception is then
++// pending on the context JS_ExecutePendingJob reports via its out
++// parameter, which in this single-context-per-runtime build is always
++// qjs->context, so existing exception-checking call sites
++// (QJS_IsException/JS_GetException against ctx) see it exactly as they do
++// for any other failing call.
++int QJS_RunPendingJobs(QJSRuntime *qjs)
++{
++    JSContext *ctx1;
++    int ran = 0;
++    for (;;)
++    {
++        int err = JS_ExecutePendingJob(qjs->runtime, &ctx1);
++        if (err < 0)
++        {
++            return -1;
++        }
++        if (err == 0)
++        {
++            return ran;
++        }
++        ran++;
++    }
++}
++
++// QJS_PromiseState returns the JSPromiseStateEnum (quickjs.h) of v as a
++// plain int: 0 = pending, 1 = fulfilled, 2 = rejected. Callers first check
++// QJS_IsPromise(ctx, v) -- this mirrors that function's own use of
++// JS_PromiseState, just without collapsing the three states into a bool.
++int QJS_PromiseState(JSContext *ctx, JSValue v)
++{
++    return (int)JS_PromiseState(ctx, v);
++}
++
++// QJS_PromiseResult returns a promise's fulfillment value or rejection
++// reason (whichever slot JS_PromiseResult reports is populated for its
++// current state); callers only call this once QJS_PromiseState(ctx, v) has
++// reported fulfilled or rejected, exactly as JS_PromiseResult itself
++// requires.
++JSValue QJS_PromiseResult(JSContext *ctx, JSValue v)
++{
++    return JS_PromiseResult(ctx, v);
++}
+--- a/qjswasm/qjs.h
++++ b/qjswasm/qjs.h
+@@ -145,4 +145,8 @@
+ JSValue QJS_NewProxyValue(JSContext *ctx, int64_t proxyId);
+ QJSRuntime *QJS_GetRuntime();
+
++int QJS_RunPendingJobs(QJSRuntime *qjs);
++int QJS_PromiseState(JSContext *ctx, JSValue v);
++JSValue QJS_PromiseResult(JSContext *ctx, JSValue v);
++
+ void initialize();
+--- a/qjswasm/qjswasm.cmake
++++ b/qjswasm/qjswasm.cmake
+@@ -149,6 +149,9 @@
+     "LINKER:--export=QJS_Call"
+     "LINKER:--export=QJS_GetRuntime"
+     "LINKER:--export=QJS_Panic"
++    "LINKER:--export=QJS_RunPendingJobs"
++    "LINKER:--export=QJS_PromiseState"
++    "LINKER:--export=QJS_PromiseResult"
+
+     "LINKER:--export=malloc"
+     "LINKER:--export=free"

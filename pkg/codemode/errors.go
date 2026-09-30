@@ -120,13 +120,14 @@ func NewBridgeLimitError(message string, details interface{}) *BridgeLimitError 
 
 // DetachedBridgeRequestError is raised when sandboxed code starts host
 // bridge work and returns without awaiting or otherwise observing it.
-// Mirrors TypeScript's CodeModeDetachedBridgeRequestError. This Go port
-// dispatches every `tools.x(input)` call synchronously (see the package
-// doc), so an ordinary call can never be left unobserved -- but a call that
-// raises a code-mode interruption (RequestCodeModeInterrupt, or approval
-// under ApprovalModeInterrupt) propagates as a JS exception meant to unwind
-// the sandboxed script uncaught; if the script instead wraps it in
-// try/catch and completes normally anyway, that interruption was started
+// Mirrors TypeScript's CodeModeDetachedBridgeRequestError (`run`'s own
+// __runAssertNoDetachedBridgeCalls). A call that raises a code-mode
+// interruption (RequestCodeModeInterrupt, or approval under
+// ApprovalModeInterrupt) deliberately leaves its Promise unresolved (see
+// the package doc's "Host tool bridge dispatch" section) so the sandboxed
+// script can keep making synchronous progress; if the script never
+// `await`s (or otherwise observes) that Promise at all -- a fire-and-forget
+// `tools.x(input);` -- and completes anyway, that interruption was started
 // but never surfaced to the caller for resolution, and RunCodeMode raises
 // this error instead of silently returning a result that discards it.
 type DetachedBridgeRequestError struct{ *BaseError }
