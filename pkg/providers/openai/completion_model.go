@@ -84,6 +84,7 @@ func (m *CompletionModel) DoStream(ctx context.Context, opts *provider.GenerateO
 	}
 
 	inner := newCompletionStreamWithMetadata(httpResp.Body, opts.IncludeRawChunks, m.Provider(), httpResp.Header)
+	inner.requestBody = body
 	return streaming.NewWarningsStream(inner, warnings), nil
 }
 
@@ -371,7 +372,16 @@ type completionStream struct {
 	providerMetadata map[string]interface{}
 	providerName     string
 	responseHeaders  http.Header
+
+	// requestBody is the raw request body this stream was opened with,
+	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
+	// "stream request body field").
+	requestBody interface{}
 }
+
+// RequestBody implements provider.StreamRequestBody, exposing the raw
+// request body that was sent to open this stream.
+func (s *completionStream) RequestBody() interface{} { return s.requestBody }
 
 func newCompletionStream(reader io.ReadCloser, includeRawChunks bool) *completionStream {
 	return newCompletionStreamWithMetadata(reader, includeRawChunks, "openai.completion", nil)

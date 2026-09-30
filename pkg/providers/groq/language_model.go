@@ -102,6 +102,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		return nil, m.handleError(err)
 	}
 	inner := newGroqStream(httpResp.Body, opts.IncludeRawChunks)
+	inner.requestBody = reqBody
 	inner.responseHeaders = providerutils.ExtractHeaders(httpResp.Header)
 	return streaming.NewWarningsStream(inner, warnings), nil
 }
@@ -433,7 +434,15 @@ type groqStream struct {
 	includeRawChunks  bool
 	responseHeaders   map[string]string
 	metadataEmitted   bool
+	// requestBody is the raw request body this stream was opened with,
+	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
+	// "stream request body field").
+	requestBody interface{}
 }
+
+// RequestBody implements provider.StreamRequestBody, exposing the raw
+// request body that was sent to open this stream.
+func (s *groqStream) RequestBody() interface{} { return s.requestBody }
 
 func newGroqStream(reader io.ReadCloser, includeRawChunks ...bool) *groqStream {
 	emitRaw := len(includeRawChunks) > 0 && includeRawChunks[0]

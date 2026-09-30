@@ -115,7 +115,9 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 
 	// Create stream wrapper
-	return providerutils.WithResponseMetadata(newAzureStream(httpResp.Body), httpResp.Header, m.ModelID()), nil
+	stream := newAzureStream(httpResp.Body)
+	stream.SetRequestBody(reqBody)
+	return providerutils.WithResponseMetadata(stream, httpResp.Header, m.ModelID()), nil
 }
 
 // buildRequestBody builds the Azure OpenAI API request body

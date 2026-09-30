@@ -166,7 +166,9 @@ func (m *ResponsesLanguageModel) DoStream(ctx context.Context, opts *provider.Ge
 		return nil, m.wrapErr(err)
 	}
 
-	return streaming.NewWarningsStream(newXAIResponsesStream(httpResp.Body, opts.IncludeRawChunks), warnings), nil
+	stream := newXAIResponsesStream(httpResp.Body, opts.IncludeRawChunks)
+	stream.requestBody = body
+	return streaming.NewWarningsStream(stream, warnings), nil
 }
 
 func xaiResponsesWarnings(opts *provider.GenerateOptions) []types.Warning {
@@ -1032,7 +1034,16 @@ type xaiResponsesStream struct {
 	// response.output_item.done (not .added) and used to force the unified
 	// finish reason to 'tool-calls' regardless of response.status.
 	hasFunctionCall bool
+
+	// requestBody is the raw request body this stream was opened with,
+	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
+	// "stream request body field").
+	requestBody interface{}
 }
+
+// RequestBody implements provider.StreamRequestBody, exposing the raw
+// request body that was sent to open this stream.
+func (s *xaiResponsesStream) RequestBody() interface{} { return s.requestBody }
 
 func newXAIResponsesStream(r io.ReadCloser, includeRawChunks ...bool) *xaiResponsesStream {
 	emitRaw := len(includeRawChunks) > 0 && includeRawChunks[0]

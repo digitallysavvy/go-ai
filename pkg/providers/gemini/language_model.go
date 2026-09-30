@@ -103,6 +103,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		return nil, m.handleError(err)
 	}
 	stream := newStream(httpResp.Body, m.cfg, newToolNameMapping(opts.Tools), httpResp.Header, m.ModelID())
+	stream.requestBody = reqBody
 	return streaming.NewWarningsStream(stream, warnings), nil
 }
 

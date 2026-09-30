@@ -95,3 +95,13 @@ func (s *cerebrasStream) Next() (*provider.StreamChunk, error) {
 
 func (s *cerebrasStream) Close() error { return s.inner.Close() }
 func (s *cerebrasStream) Err() error   { return s.inner.Err() }
+
+// RequestBody implements provider.StreamRequestBody by delegating to inner
+// when inner implements it, so wrapping the base OpenAI-compatible stream
+// doesn't hide the capability (hand-off: "stream request body field").
+func (s *cerebrasStream) RequestBody() interface{} {
+	if rb, ok := s.inner.(provider.StreamRequestBody); ok {
+		return rb.RequestBody()
+	}
+	return nil
+}

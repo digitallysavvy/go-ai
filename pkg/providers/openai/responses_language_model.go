@@ -118,6 +118,7 @@ func (m *ResponsesLanguageModel) DoStream(ctx context.Context, opts *provider.Ge
 	}
 
 	stream := newResponsesStreamWithMetadata(httpResp.Body, opts.IncludeRawChunks, webSearchToolName, m.provider.responsesProviderOptionsName(), httpResp.Header)
+	stream.requestBody = body
 	stream.tools = opts.Tools
 	stream.store = responsesExplicitStore(body)
 	stream.approvalFromPrompt = extractApprovalRequestIDToToolCallIDFromPrompt(opts.Prompt)
@@ -2273,7 +2274,16 @@ type responsesStream struct {
 	// when the output_item.done event's own item omits phase (TS
 	// `activeMessagePhase`: `phase = value.item.phase ?? activeMessagePhase`).
 	activeMessagePhase *string
+
+	// requestBody is the raw request body this stream was opened with,
+	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
+	// "stream request body field").
+	requestBody interface{}
 }
+
+// RequestBody implements provider.StreamRequestBody, exposing the raw
+// request body that was sent to open this stream.
+func (s *responsesStream) RequestBody() interface{} { return s.requestBody }
 
 // responsesOngoingToolCall tracks per-output-index state for a tool call
 // whose input streams progressively across multiple SSE events. Mirrors

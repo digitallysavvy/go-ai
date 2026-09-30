@@ -50,3 +50,13 @@ func (s *quiverAIStream) Next() (*provider.StreamChunk, error) {
 
 func (s *quiverAIStream) Err() error   { return s.inner.Err() }
 func (s *quiverAIStream) Close() error { return s.inner.Close() }
+
+// RequestBody implements provider.StreamRequestBody by delegating to inner
+// when inner implements it, so wrapping the Open Responses stream doesn't
+// hide the capability (hand-off: "stream request body field").
+func (s *quiverAIStream) RequestBody() interface{} {
+	if rb, ok := s.inner.(provider.StreamRequestBody); ok {
+		return rb.RequestBody()
+	}
+	return nil
+}
