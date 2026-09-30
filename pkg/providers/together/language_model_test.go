@@ -210,3 +210,36 @@ func TestLanguageModelConvertResponseNoChoices(t *testing.T) {
 }
 
 func intPtr(v int) *int { return &v }
+
+// TestLanguageModelVideoContentPartBecomesVideoURL ports TS's
+// convert-to-openai-compatible-chat-messages.ts video_url branch
+// (7dd9ec320c): Together wraps @ai-sdk/openai-compatible's
+// OpenAICompatibleChatLanguageModel, so a video/* file part must become a
+// "video_url" content part, not the generic "file" fallback.
+func TestLanguageModelVideoContentPartBecomesVideoURL(t *testing.T) {
+	p := New(Config{APIKey: "k"})
+	m := NewLanguageModel(p, "meta-llama/test")
+
+	body, warnings := m.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{
+				Role: types.RoleUser,
+				Content: []types.ContentPart{
+					types.FileContent{URL: "https://example.com/video.mp4", MediaType: "video/mp4"},
+				},
+			},
+		}},
+	}, false)
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %+v", warnings)
+	}
+	messages := body["messages"].([]map[string]interface{})
+	content := messages[0]["content"].([]map[string]interface{})
+	if content[0]["type"] != "video_url" {
+		t.Fatalf("content part type = %v, want video_url", content[0]["type"])
+	}
+	videoURL := content[0]["video_url"].(map[string]interface{})
+	if videoURL["url"] != "https://example.com/video.mp4" {
+		t.Fatalf("video_url.url = %v", videoURL["url"])
+	}
+}

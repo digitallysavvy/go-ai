@@ -82,6 +82,9 @@ func New(cfg Config) *Provider {
 		Headers:          cfg.Headers,
 		HTTPClient:       cfg.HTTPClient,
 		ChatProviderName: "baseten.chat",
+		// TS createChatModel builds an OpenAICompatibleChatLanguageModel,
+		// which supports video_url content parts (7dd9ec320c).
+		AllowVideo: true,
 	})
 
 	p := &Provider{

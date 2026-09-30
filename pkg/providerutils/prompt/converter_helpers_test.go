@@ -83,7 +83,7 @@ func TestToolResultAndFilePartHelpers(t *testing.T) {
 		ProviderOptions: map[string]interface{}{
 			"openai": map[string]interface{}{"imageDetail": "high"},
 		},
-	})
+	}, false)
 	if imagePart["type"] != "image_url" {
 		t.Fatalf("openAI image part type = %v", imagePart["type"])
 	}
@@ -95,10 +95,44 @@ func TestToolResultAndFilePartHelpers(t *testing.T) {
 	filePart := openAIFileContentPart(types.FileContent{
 		Reference: "file_123",
 		MediaType: "application/pdf",
-	})
+	}, false)
 	fileMap := filePart["file"].(map[string]interface{})
 	if fileMap["file_id"] != "file_123" {
 		t.Fatalf("openAI file_id = %v", fileMap["file_id"])
+	}
+
+	// video/* falls back to the generic "file" shape when AllowVideo is
+	// false (OpenAI's own chat converter has no video support).
+	noVideoPart := openAIFileContentPart(types.FileContent{
+		URL:       "https://example.com/video.mp4",
+		MediaType: "video/mp4",
+	}, false)
+	if noVideoPart["type"] != "file" {
+		t.Fatalf("openAI video part type (AllowVideo=false) = %v, want file", noVideoPart["type"])
+	}
+
+	// video/* becomes "video_url" when AllowVideo is true (7dd9ec320c,
+	// @ai-sdk/openai-compatible's convertToOpenAICompatibleChatMessages).
+	videoURLPart := openAIFileContentPart(types.FileContent{
+		URL:       "https://example.com/video.mp4",
+		MediaType: "video/mp4",
+	}, true)
+	if videoURLPart["type"] != "video_url" {
+		t.Fatalf("openAI video part type (AllowVideo=true) = %v, want video_url", videoURLPart["type"])
+	}
+	videoURLMap := videoURLPart["video_url"].(map[string]interface{})
+	if videoURLMap["url"] != "https://example.com/video.mp4" {
+		t.Fatalf("video_url.url = %v", videoURLMap["url"])
+	}
+
+	videoDataPart := openAIFileContentPart(types.FileContent{
+		Data:      []byte{0x01, 0x02, 0x03},
+		MediaType: "video/mp4",
+	}, true)
+	videoDataMap := videoDataPart["video_url"].(map[string]interface{})
+	wantVideoDataURL := "data:video/mp4;base64," + base64.StdEncoding.EncodeToString([]byte{0x01, 0x02, 0x03})
+	if videoDataMap["url"] != wantVideoDataURL {
+		t.Fatalf("video_url.url (inline data) = %v, want %v", videoDataMap["url"], wantVideoDataURL)
 	}
 
 	c := &anthropicConverter{validator: NewAnthropicCacheControlValidator(), betaSet: map[string]bool{}}

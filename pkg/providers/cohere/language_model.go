@@ -196,7 +196,13 @@ func (m *LanguageModel) toCohereMessages(src []types.Message) ([]map[string]inte
 	documents := []map[string]interface{}{}
 	for _, msg := range src {
 		if msg.Role != types.RoleUser {
-			out = append(out, prompt.ToOpenAIMessages([]types.Message{msg})...)
+			// AssistantToolCallContentMode: Omit -- Cohere's own TS converter
+			// (convert-to-cohere-chat-prompt.ts) sets
+			// `content: toolCalls.length > 0 ? undefined : text`, leaving the
+			// "content" key out entirely whenever any tool call is present.
+			out = append(out, prompt.ToOpenAIMessages([]types.Message{msg}, prompt.ToOpenAIMessagesOptions{
+				AssistantToolCallContentMode: prompt.AssistantToolCallContentOmit,
+			})...)
 			continue
 		}
 		content := make([]map[string]interface{}, 0, len(msg.Content))
