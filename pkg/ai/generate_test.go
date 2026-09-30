@@ -53,6 +53,46 @@ func TestGenerateText_BasicPrompt(t *testing.T) {
 	}
 }
 
+// TestGenerateText_AppendsAIUserAgent mirrors TS generate-text.ts, which
+// tags every call's headers with `ai/${VERSION}` via withUserAgentSuffix
+// before invoking the model (and before the onStart callbacks fire).
+func TestGenerateText_AppendsAIUserAgent(t *testing.T) {
+	t.Parallel()
+
+	var capturedHeaders map[string]string
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			capturedHeaders = opts.Headers
+			return &types.GenerateResult{Text: "hi", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:  model,
+		Prompt: "hello",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedHeaders["user-agent"] != "ai/0.5.0" {
+		t.Fatalf("user-agent = %q, want ai/0.5.0", capturedHeaders["user-agent"])
+	}
+
+	// Existing user-agent values are kept as a prefix, not replaced.
+	capturedHeaders = nil
+	_, err = GenerateText(context.Background(), GenerateTextOptions{
+		Model:   model,
+		Prompt:  "hello",
+		Headers: map[string]string{"User-Agent": "custom-agent"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedHeaders["user-agent"] != "custom-agent ai/0.5.0" {
+		t.Fatalf("user-agent = %q, want custom-agent ai/0.5.0", capturedHeaders["user-agent"])
+	}
+}
+
 // TestGenerateText_CombinesConsecutiveToolMessagesForEveryProvider proves
 // that consecutive tool-role messages are merged into one before ANY
 // provider's DoGenerate is invoked -- mirroring TS convertToLanguageModelPrompt,

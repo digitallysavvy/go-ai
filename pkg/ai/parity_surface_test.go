@@ -41,6 +41,29 @@ func TestGenerateImage_Basic(t *testing.T) {
 	}
 }
 
+// TestGenerateImage_AppendsAIUserAgent mirrors TS generate-image.ts, which
+// tags every call's headers with `ai/${VERSION}` via withUserAgentSuffix
+// before the model call.
+func TestGenerateImage_AppendsAIUserAgent(t *testing.T) {
+	var capturedHeaders map[string]string
+	m := &testutil.MockImageModel{
+		DoGenerateFunc: func(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
+			capturedHeaders = opts.Headers
+			return &types.ImageResult{Image: []byte("img"), MimeType: "image/png"}, nil
+		},
+	}
+	_, err := GenerateImage(context.Background(), GenerateImageOptions{
+		Model:  m,
+		Prompt: "cat",
+	})
+	if err != nil {
+		t.Fatalf("GenerateImage() error = %v", err)
+	}
+	if capturedHeaders["user-agent"] != "ai/0.5.0" {
+		t.Fatalf("user-agent = %q, want ai/0.5.0", capturedHeaders["user-agent"])
+	}
+}
+
 func TestGenerateImage_Base64ImagesDecodeToGeneratedFiles(t *testing.T) {
 	m := &testutil.MockImageModel{
 		DoGenerateFunc: func(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {

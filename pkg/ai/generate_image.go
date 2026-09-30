@@ -13,6 +13,7 @@ import (
 	retryutil "github.com/digitallysavvy/go-ai/pkg/internal/retry"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // GenerateImageOptions contains options for image generation.
@@ -114,6 +115,9 @@ func GenerateImage(ctx context.Context, opts GenerateImageOptions) (*GenerateIma
 	if err := validateMaxRetries(opts.MaxRetries); err != nil {
 		return nil, err
 	}
+	// TS generate-image.ts tags every call's headers with `ai/${VERSION}`
+	// (`headersWithUserAgent = withUserAgentSuffix(headers ?? {}, ai/${VERSION})`).
+	opts.Headers = version.WithUserAgentSuffix(opts.Headers, version.UserAgent())
 
 	callImageCounts := imageCallCounts(opts.N, resolveMaxImagesPerCall(opts))
 
