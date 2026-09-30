@@ -140,6 +140,14 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 
 Telemetry integrations should implement `OnEnd`, `OnEmbedEnd`, and `OnRerankEnd`. The older `OnFinish`, `OnEmbedFinish`, and `OnRerankFinish` names are kept as deprecated compatibility fallbacks. Streaming `OnChunk` telemetry is no longer emitted; application-level `StreamTextOptions.OnChunk` callbacks still receive stream chunks.
 
+`OnEmbedEnd` and `OnRerankEnd` now also fire for a failed model-call attempt
+(a retry that errored), not only on success. `EmbeddingModelCallEndEvent` and
+`RerankingModelCallEndEvent` each gained an `Error error` field: when set,
+the built-in integrations record error status on the span instead of setting
+usage/embeddings/ranking attributes. Custom integrations that implement
+`OnEmbedEnd` / `OnRerankEnd` should check `event.Error` before assuming a
+successful call.
+
 Step lifecycle telemetry uses `OnStepEnd` as the canonical name. `OnStepFinish` is still emitted as a deprecated compatibility event for migration, and `OnStepEnd` takes precedence when both callback names are configured.
 
 ### Abort and Performance Events

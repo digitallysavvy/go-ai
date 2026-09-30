@@ -1,6 +1,6 @@
 ---
-title: GenerateID
-description: API reference for GenerateID function
+title: GenerateID / CreateIDGenerator
+description: API reference for GenerateID and CreateIDGenerator
 ---
 
 # GenerateID
@@ -13,9 +13,47 @@ Generates a unique identifier string. Useful for creating tool call IDs or reque
 func GenerateID() string
 ```
 
+Not cryptographically secure (uses `math/rand`, matching the TypeScript AI
+SDK's `Math.random()`-based implementation). Equivalent to calling
+`CreateIDGenerator()()` with default options — a 16-character random string
+from the alphabet `0-9A-Za-z`.
+
 ## Return Value
 
-Returns a unique string identifier (typically a UUID or nanoid).
+Returns a unique string identifier (16-character random alphanumeric string by default).
+
+## CreateIDGenerator
+
+Builds a custom ID generator function, mirroring the TypeScript AI SDK's
+`createIdGenerator` / `generateId` from `@ai-sdk/provider-utils`.
+
+```go
+func CreateIDGenerator(opts ...CreateIDGeneratorOptions) (IDGenerator, error)
+
+type CreateIDGeneratorOptions struct {
+    Prefix    string // prepended (with Separator) to every generated ID
+    Separator string // between Prefix and the random part; default "-"
+    Size      int    // length of the random part; default 16
+    Alphabet  string // character set for the random part; default "0-9A-Za-z"
+}
+```
+
+`CreateIDGenerator` returns a `*errors.InvalidArgumentError` if `Prefix` is
+set and `Separator` appears inside `Alphabet` (this would make prefix
+detection ambiguous — matches the TS SDK's synchronous throw at construction
+time).
+
+```go
+gen, err := ai.CreateIDGenerator(ai.CreateIDGeneratorOptions{
+    Prefix: "msg",
+    Size:   24,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+id := gen() // e.g. "msg-aB3dE7fG9hJ2kL4mN6pQ8rS"
+```
 
 ## Examples
 

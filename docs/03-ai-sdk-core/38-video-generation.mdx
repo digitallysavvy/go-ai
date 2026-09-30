@@ -196,15 +196,47 @@ model := replicate.NewVideoModel(prov, "minimax/video-01")
 
 ### Google Vertex AI
 
-<Note type="warning">
-  Google Vertex AI video generation support is planned for a future release. It requires additional Google Cloud authentication infrastructure not yet implemented in the Go SDK.
-</Note>
+```go
+prov := googlevertex.New(googlevertex.Config{
+    Project:  os.Getenv("GOOGLE_VERTEX_PROJECT"),
+    Location: "us-central1",
+})
+model, _ := prov.VideoModel(googlevertex.ModelVeo30Generate001)
+```
 
-Vertex AI will support:
-- Batch generation (up to 4 videos per call)
-- GCS output directory
-- Audio generation
-- Enterprise features and SLAs
+**Features:**
+- Veo video generation on Vertex AI
+- Batch generation (up to 4 videos per call, `MaxVideosPerCall`)
+- Text-to-video and image-to-video
+- Polling-based async generation, same options as Google Generative AI
+
+## Async Video: DoStart / DoStatus
+
+xAI, fal, Google, Google Vertex, and Replicate implement the optional
+`provider.VideoModelStarter` / `VideoModelStatusChecker` interfaces so you can
+start a job and poll (or receive a webhook) instead of blocking on
+`GenerateVideo` for the whole generation:
+
+```go
+started, err := ai.ExperimentalStartVideo(ctx, ai.StartVideoOptions{
+    Model:  model,
+    Prompt: ai.VideoPrompt{Text: "A cat playing piano in a jazz club"},
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// Persist started.Operation (json.RawMessage) and poll later, from any
+// process:
+status, err := ai.ExperimentalGetVideoStatus(ctx, model, ai.GetVideoStatusOptions{
+    Operation: started.Operation,
+})
+```
+
+fal and Replicate also support webhook-based completion via
+`HandleWebhookOption` instead of polling. Durable webhook suspension inside a
+workflow (TS's `experimental_generateVideo` Vercel Workflow DevKit
+integration) is not ported — see [Known Differences](../08-migration-guides/known-differences.mdx).
 
 ## API Reference
 
@@ -375,9 +407,10 @@ All video providers use async generation with polling:
 3. **Download**: URL video outputs are downloaded into `types.GeneratedFile.Data`
 4. **Return**: Complete video data returned to your code
 
-Default polling configuration:
-- **Interval**: 2 seconds
-- **Timeout**: 5 minutes
+Default polling configuration (fal, Google, Google Vertex, Replicate; matches
+the TypeScript AI SDK's `generateVideo` defaults):
+- **Interval**: 5 seconds
+- **Timeout**: 10 minutes
 - **Backoff**: None (configurable per provider)
 
 You can customize polling:

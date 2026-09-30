@@ -1,0 +1,106 @@
+---
+title: Known differences from the TypeScript AI SDK
+description: Behavior that is intentionally different in Go, and features that only exist in the TypeScript SDK.
+---
+
+# Known differences from the TypeScript AI SDK
+
+The Go AI SDK tracks the TypeScript AI SDK (`ai@7.0.113` as of v0.5.0) closely, but a
+few areas are intentionally different, either because the Go runtime has no
+equivalent primitive or because a decision was made to diverge. This page is
+the reference for both.
+
+## StreamObject is not lazy
+
+`StreamObject` is deprecated in both SDKs. In TypeScript, `streamObject`
+returns lazy streams immediately, before the model call completes. In Go,
+`StreamObject` returns only after the stream is fully consumed, and reports
+progress through `OnChunk` as the partial object is refined.
+
+For incremental partial objects or array elements, use `StreamText` with
+`Output` (`PartialOutput` / `ElementStream`) instead — this is also what the
+TypeScript SDK recommends going forward.
+
+```go
+// Not recommended: StreamObject blocks until the stream finishes.
+result, err := ai.StreamObject(ctx, ai.StreamObjectOptions{
+    Model:  model,
+    Prompt: "Generate a recipe",
+    Schema: recipeSchema,
+    OnChunk: func(partial interface{}) {
+        // Called incrementally as the partial object is refined.
+    },
+})
+
+// Recommended: StreamText + Output returns immediately and lets you read
+// the incrementally parsed value as chunks arrive, matching TS's lazy
+// streamObject.
+result, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Generate a recipe",
+    Output: ai.ObjectOutput[Recipe](ai.ObjectOutputOptions{Schema: recipeSchema}),
+})
+for chunk := range result.Chunks() {
+    if chunk.Type == provider.ChunkTypeText {
+        partial := result.PartialOutput() // latest parsed partial value
+        _ = partial
+    }
+}
+```
+
+## Video generation webhook suspension in workflows
+
+TypeScript's `experimental_generateVideo` can durably suspend a Vercel
+Workflow DevKit run until a provider webhook fires, resuming the workflow
+from durable storage when the video finishes. This depends on the Node-only
+Workflow DevKit runtime and has no Go equivalent.
+
+In Go, video generation polls until the job is done (`GenerateVideo`), or you
+drive the job yourself with `ai.ExperimentalStartVideo` /
+`ai.ExperimentalGetVideoStatus`, which support both polling and webhook
+completion (fal and Replicate) outside of a workflow.
+
+## Vercel Sandbox: no OIDC token refresh loop
+
+`pkg/harness/sandbox/vercel` (the Go port of `@vercel/sandbox`'s harness
+provider) does not run a background `@vercel/oidc` token refresh loop.
+`VERCEL_OIDC_TOKEN` is re-read from the environment on each call instead;
+explicit `Token` / `TeamID` / `ProjectID` credentials also work and bypass
+OIDC entirely.
+
+## Code-mode: concurrent approvals are not batched
+
+`pkg/codemode` runs model-written JavaScript in a QuickJS-on-WebAssembly
+sandbox (wazero). When model code requests several tool approvals
+concurrently inside one `Promise.all`, TypeScript's V8-based runtime can
+observe job-queue quiescence and batch them into a single interrupt. The
+embedded QuickJS build exposes no equivalent hook, so concurrent approvals
+come back as a chain of single interrupts instead of one batch. Approval
+*content* and *outcome* are unaffected — only the batching shape differs.
+
+## Features that are TypeScript-only (not ported)
+
+- **OpenAI Live over WebRTC** — the browser transport for OpenAI's realtime
+  API. The Go SDK only implements the server-side WebSocket transport
+  (`gpt-live-1` via `ai.ConnectRealtime`), which covers server-side and
+  backend use cases; WebRTC is a browser-only transport with no Go runtime
+  equivalent.
+- **`@ai-sdk/harness-cline` and `@ai-sdk/harness-pi`** — these harness
+  adapters run vendor Node SDKs in-process (they embed a Node.js runtime and
+  the vendor's own TypeScript SDK). There is no Go equivalent; use the
+  TypeScript SDK for Cline or Pi harness integrations.
+- **DeepSeek batch API / extra Files methods** — TS's `@ai-sdk/deepseek` does
+  not implement these either, so this is parity, not a gap; the existing
+  DeepSeek file support already matches TS.
+
+## Streaming pattern: Next() instead of io.Reader
+
+This is a longstanding, deliberate Go-idiom difference (not new in v0.5.0):
+`provider.TextStream` exposes `Next()` / `Err()` / `Close()`, not an
+`io.Reader`. See the [Streaming guide](../guides/STREAMING.md) for the
+rationale.
+
+## See Also
+
+- [Migrating from v0.4.x to v0.5.0](./from-v0.4-to-v0.5.mdx)
+- [Migrating from the TypeScript AI SDK](./from-typescript-ai-sdk.mdx)

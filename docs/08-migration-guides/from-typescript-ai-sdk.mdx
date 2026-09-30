@@ -1,0 +1,494 @@
+---
+title: Migrating from the TypeScript AI SDK
+description: Map Vercel AI SDK (ai@7.0.x) calls to their Go SDK equivalents, and see where the Go port has to diverge.
+---
+
+# Migrating from the TypeScript AI SDK
+
+This guide is for developers who know the [Vercel AI SDK](https://ai-sdk.dev) and are porting an app to Go, or building a new Go backend behind an existing TypeScript frontend. It assumes no Go SDK experience.
+
+The Go SDK (`github.com/digitallysavvy/go-ai`) targets 1:1 parity with TypeScript `ai@7.0.113`. Most concepts map directly: same function names in spirit, same option names where Go syntax allows, same wire formats for anything that crosses a network boundary (provider requests, UI message streams). The core package is `pkg/ai`, mirroring the `ai` package; individual providers live under `pkg/providers/*`, mirroring `@ai-sdk/*`.
+
+If you're coming from TypeScript v5 or v6 rather than v7, read [Coming from TS v5 or v6](#coming-from-ts-v5-or-v6) first — several TS names changed on the way to v7, and Go only implements the current (v7) names.
+
+## Core API mapping
+
+Import paths below all live under `github.com/digitallysavvy/go-ai/pkg/...`. Options in Go are structs (`ai.GenerateTextOptions`, not an object literal); results are pointers (`*ai.GenerateTextResult`) plus an `error`, not a `Promise`.
+
+### Text generation
+
+| TypeScript | Go | Note |
+|---|---|---|
+| `generateText({model, prompt})` | `ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: "..."})` | `pkg/ai/generate.go`. Returns `(*ai.GenerateTextResult, error)`. |
+| `streamText({model, prompt})` | `ai.StreamText(ctx, ai.StreamTextOptions{Model: model, Prompt: "..."})` | `pkg/ai/stream.go`. Returns `(*ai.StreamTextResult, error)` before the first model request, matching TS `streamText`; only option-validation errors come back from the call itself, everything else surfaces through `Err()`/`ReadAll()`/`Stream()`. |
+| `instructions` (`system` deprecated) | `System string` / `Instructions *string` | Go's canonical field is still the plain string `System`; `Instructions` is a pointer alias for code ported verbatim from TS. Either works; `Instructions` wins if both are set. |
+| `stopWhen: isStepCount(n)` | `StopWhen: []ai.StopCondition{ai.IsStepCount(n)}` | `pkg/ai/stop_condition.go`. Also `ai.HasToolCall(names...)`, `ai.IsLoopFinished()`. |
+| `prepareStep` | `PrepareStep func(ctx context.Context, step ai.PrepareStepOptions) ai.PrepareStepOptions` | `pkg/ai/generate.go`. |
+| `result.text` | `result.Text` (GenerateText) / `result.Text()` (StreamText) | StreamText exposes accessor **methods** because text accumulates as chunks arrive. |
+| `result.usage.inputTokens` | `result.Usage.GetInputTokens()` (or `.InputTokens` — a `*int64`) | `pkg/provider/types/usage.go`. Prefer the `Get*Tokens()` helpers; the struct fields are pointers and can be `nil`. |
+| `result.toolCalls` / `.toolResults` | `result.ToolCalls` / `.ToolResults` (GenerateText) or `.ToolCalls()` / `.ToolResults()` (StreamText) | |
+| `result.steps` / `.finalStep` | `result.Steps` / `.FinalStep` (GenerateText) or `.Steps()` / `.FinalStep()` (StreamText) | |
+| `result.stream` (full event stream) | `result.FullStream()` — every chunk, including `start`/`start-step`/`finish-step`/`finish` lifecycle chunks | `pkg/ai/stream.go`. `ChunkTypeFinish` fires once per call with total usage; each step is bracketed by `ChunkTypeStartStep`/`ChunkTypeFinishStep`. See [StreamText reference](../07-reference/ai/stream-text.mdx#full-stream-lifecycle). |
+
+Consuming a stream is the one place the two SDKs look structurally different — see [Promises and async iterables vs. return values and channels](#promises-and-async-iterables-vs-return-values-and-channels).
+
+### Structured output: generateObject / streamObject / Output
+
+Go ships two mechanisms. Prefer the `Output` one; `GenerateObject`/`StreamObject` are the legacy path (TS deprecated `generateObject`/`streamObject` the same way in 6.0, in favor of `generateText`/`streamText` with an `output` option).
+
+| TypeScript | Go | Note |
+|---|---|---|
+| `Output.object({schema, name, description})` | `ai.ObjectOutput[T](ai.ObjectOutputOptions{Schema: ai.SchemaFor[T](), Name: "...", Description: "..."})` | `pkg/ai/output.go`. `T` is a real Go generic type parameter — see [Generics](#generics-typed-tool-input-and-output). |
+| `Output.array({schema})` | `ai.ArrayOutput[ELEMENT](ai.ArrayOutputOptions[ELEMENT]{...})` | `output.go`. |
+| `Output.choice({values})` | `ai.ChoiceOutput[CHOICE](ai.ChoiceOutputOptions[CHOICE]{...})` | `output.go`. `CHOICE` must be a `~string` type. |
+| `Output.text()` | `ai.TextOutput()` | `output.go`. |
+| `Output.json()` | `ai.JSONOutput(ai.JSONOutputOptions{...})` | `output.go`. |
+| `generateText({output})` | `ai.GenerateTextOptions{Output: ai.ObjectOutput[T](...)}` | Result is `result.Output any` — type-assert to `T`. |
+| `streamText({output})`, `result.partialOutputStream` | `ai.StreamTextOptions{Output: ...}`, `result.PartialOutput()` | `PartialOutput()` returns the latest partial parse; `Output()` returns the final one after the stream drains. |
+| `generateObject({model, schema, prompt})` (deprecated) | `ai.GenerateObject(ctx, ai.GenerateObjectOptions{Model: model, Schema: mySchema, Prompt: "..."})` | `pkg/ai/object.go`. `Schema` is a `schema.Schema`, not a Go generic — `result.Object` is `interface{}`. |
+| — | `ai.GenerateObjectInto(ctx, opts, &target)` | Go-only convenience: unmarshals straight into a struct pointer via reflection, no type assertion needed. |
+
+`StreamObject` is one place Go and TS genuinely diverge: see [StreamObject is not lazy](#streamobject-is-not-lazy) below.
+
+### Embeddings and reranking
+
+| TypeScript | Go | Note |
+|---|---|---|
+| `embed({model, value})` | `ai.Embed(ctx, ai.EmbedOptions{Model: model, Input: "..."})` | `pkg/ai/embed.go`. Result: `EmbedResult.Embedding []float64`. `MaxRetries` is `*int` (nil = TS default of 2). |
+| `embedMany({model, values})` | `ai.EmbedMany(ctx, ai.EmbedManyOptions{Model: model, Inputs: []string{...}})` | `embed.go`. Result: `EmbedManyResult.Embeddings [][]float64`. An empty `Inputs` now returns an empty result instead of an error, matching TS. |
+| `rerank({model, query, documents})` | `ai.Rerank(ctx, ai.RerankOptions{Model: model, Query: "...", Documents: []string{...}})` | `pkg/ai/rerank.go`. `Documents` is `interface{}` (accepts `[]string` or `[]map[string]interface{}`); result is `RerankResult.Ranking []RerankItem`. |
+| `cosineSimilarity(a, b)` | `ai.CosineSimilarity(a, b)` | `pkg/ai/embed.go`. A zero or empty vector returns `(0, nil)`, not an error; only a length mismatch errors. |
+
+### Media: image, speech, video, transcription
+
+| TypeScript | Go | Note |
+|---|---|---|
+| `generateImage({model, prompt})` | `ai.GenerateImage(ctx, ai.GenerateImageOptions{Model: model, Prompt: "..."})` | `pkg/ai/generate_image.go`. Result: `.Images []types.GeneratedFile`, `.Image` (first one). |
+| `generateSpeech({model, text})` | `ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{Model: model, Text: "..."})` | `pkg/ai/generate_speech.go`. Result: `.Audio ai.GeneratedAudioFile`. |
+| `transcribe({model, audio})` | `ai.Transcribe(ctx, ai.TranscribeOptions{Model: model, Audio: audioBytes})` | `pkg/ai/transcribe.go`. Accepts `Audio []byte`, `AudioBase64 string`, or `AudioURL string`. |
+| `experimental_generateVideo({model, prompt})` | `ai.GenerateVideo(ctx, ai.GenerateVideoOptions{Model: model, Prompt: ai.VideoPrompt{Text: "..."}})` | `pkg/ai/generate_video.go`. Blocks until the video is ready. For the async job API, see the next row. |
+| `experimental_startVideo` / `experimental_getVideoStatus` | `ai.ExperimentalStartVideo(ctx, ai.StartVideoOptions{...})` / `ai.ExperimentalGetVideoStatus(ctx, model, ai.GetVideoStatusOptions{Operation: started.Operation})` | `pkg/ai/start_video.go`, `pkg/ai/get_video_status.go`. Implemented for fal, Google, Google Vertex, Replicate, and xAI. |
+| `experimental_streamTranscribe` | `ai.ExperimentalStreamTranscribe(ctx, ai.StreamTranscribeOptions{...})` | `pkg/ai/stream_transcribe.go`. Also `ai.ExperimentalStreamTranslate` for speech-to-speech translation. |
+
+### Tools and agents
+
+| TypeScript | Go | Note |
+|---|---|---|
+| `tool({description, inputSchema, execute})` | `types.Tool{Name: "...", Description: "...", Parameters: schemaValue, Execute: fn}` | `pkg/provider/types/tool.go`. No `tool()` constructor — you build the struct directly, and `Name` is a real field (TS infers it from the object key). |
+| `dynamicTool({...})` | `types.Tool{..., Type: types.ToolTypeDynamic}` | `tool.go`. Set `Type` explicitly instead of calling a separate constructor. |
+| `execute: async ({location}, {toolCallId}) => ...` | `Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error)` | `tool.go`. Three parameters, always: context, raw input map, and call metadata (`opts.ToolCallID`, `opts.RuntimeContext`, `opts.ToolContext`). |
+| `tools: {weather: weatherTool}` | `Tools: []types.Tool{weatherTool}` | Tools are a slice, not a map — the tool's `Name` field does the job the object key does in TS. |
+| `tool-search`, `experimental_toolCallers` | `ai.ToolSearch(...)`, `types.Tool.DeferLoading`, `GenerateTextOptions.ExperimentalToolCallers` | `pkg/ai/tool_search.go`, `pkg/provider/types/tool.go`. Native tool search with tools loaded on demand; tools may be called by other tools (Anthropic code execution, OpenAI programmatic tool calling act as callers). |
+| `new ToolLoopAgent({model, tools, instructions, stopWhen})` | `agent.NewToolLoopAgent(agent.AgentConfig{Model: model, Tools: tools, System: "...", StopWhen: ...})` | `pkg/agent/toolloop.go`, `pkg/agent/agent.go`. |
+| `agent.generate({prompt})` | `a.Generate(ctx, agent.AgentGenerateOptions{Prompt: "..."})` | `pkg/agent/agent.go` (interface method). Returns `*ai.GenerateTextResult`, matching TS exactly. Go also has `a.Execute(ctx, prompt)`, a convenience that returns a flatter `*agent.AgentResult` — not a TS export. |
+| `agent.stream({prompt})` | `a.Stream(ctx, agent.AgentStreamOptions{Prompt: "..."})` | Returns `*ai.StreamTextResult`. |
+| `prepareCall` (agent option) | `AgentConfig.PrepareCall func(ctx, agent.PrepareCallConfig) agent.PrepareCallConfig` | `agent.go`. Same name as TS; don't confuse with `PrepareStep` on the plain `GenerateText`/`StreamText` options. |
+
+### Middleware
+
+| TypeScript | Go | Note |
+|---|---|---|
+| `wrapLanguageModel({model, middleware})` | `middleware.WrapLanguageModel(model, []*middleware.LanguageModelMiddleware{mw}, nil, nil)` | `pkg/middleware/language_model_middleware.go`. The trailing `nil, nil` are optional model-ID/provider-ID overrides. |
+| `wrapImageModel({model, middleware})` | `middleware.WrapImageModel(model, []*middleware.ImageModelMiddleware{mw}, nil, nil)` | `pkg/middleware/wrap_image_model.go`, added this cycle. `WrapProvider(..., WithImageModelMiddleware(...))` applies it provider-wide. |
+| `middleware.transformParams` | `LanguageModelMiddleware.TransformParams func(ctx, callType string, params *provider.GenerateOptions, model) (*provider.GenerateOptions, error)` | `language_model_middleware.go`. |
+| `middleware.wrapGenerate` / `wrapStream` | `LanguageModelMiddleware.WrapGenerate` / `.WrapStream` | Same two-hook split as TS (no combined `wrapResult`). |
+| `middleware.overrideSupportedUrls` | `LanguageModelMiddleware.OverrideSupportedURLs func(model provider.LanguageModel) map[string][]string` | `language_model_middleware.go`. A wrapped model without this set forwards the underlying model's `SupportedURLs()` unchanged. |
+| `extractReasoningMiddleware`, `simulateStreamingMiddleware`, `defaultSettingsMiddleware` | `middleware.ExtractReasoningMiddleware(...)`, `middleware.SimulateStreamingMiddleware(...)`, `middleware.DefaultSettingsMiddleware(...)` | `pkg/middleware/*.go`, one file per built-in middleware. `DefaultSettingsMiddleware` now deep-merges `ProviderOptions` and preserves all call fields instead of rebuilding from a fixed field list. |
+
+### Providers and the registry
+
+| TypeScript | Go | Note |
+|---|---|---|
+| `import {openai} from '@ai-sdk/openai'; openai('gpt-4o')` | `p := openai.New(openai.Config{APIKey: "..."}); model, err := p.LanguageModel("gpt-4o")` | `pkg/providers/openai/provider.go`. Provider construction and model lookup are separate calls, and model lookup returns an error. |
+| `createProviderRegistry({openai, anthropic})` | `r := registry.NewRegistry(); r.RegisterProvider("openai", openai.New(...))` | `pkg/registry/registry.go`. `NewRegistry` also accepts `registry.WithSeparator`, `registry.WithLanguageModelMiddleware`, `registry.WithImageModelMiddleware`. |
+| `registry.languageModel('openai:gpt-4o')` | `r.ResolveLanguageModel("openai:gpt-4o")` | `registry.go`. Same `provider:model` string format. An unregistered or malformed ID returns a typed `*errors.NoSuchModelError`. |
+| `customProvider({languageModels: {...}, fallbackProvider})` | `registry.NewCustomProvider(registry.CustomProviderOptions{LanguageModels: map[string]provider.LanguageModel{...}, Fallback: p})` | `pkg/registry/custom_provider.go`. |
+
+### MCP client
+
+| TypeScript | Go | Note |
+|---|---|---|
+| `createMCPClient({transport})` | `mcp.CreateStdioMCPClient(cmd, args)` / `mcp.CreateHTTPMCPClient(url, oauth)` / `mcp.CreateSSEMCPClient(url, oauth)` | `pkg/mcp/integration.go`. One constructor per transport instead of a transport object. `experimental_createMCPClient` in TS is now a deprecated alias for the same thing. |
+| `await mcpClient.tools()` | `mcp.GetMCPToolsForAgent(ctx, client)` | `integration.go`. Returns `[]types.Tool`, ready to drop into `Tools:`. |
+| `client.on('elicitation/create', handler)` / server elicitation | `client.OnElicitationRequest(func(ctx, req mcp.ElicitationRequest) (mcp.ElicitResult, error) { ... })` | `pkg/mcp/client.go`. Register before `Connect`; an unregistered handler causes the client to reject `elicitation/create` requests automatically. |
+| `client.listResourceTemplates()` | `client.ListResourceTemplates(ctx)` | `pkg/mcp/client.go`. |
+| Stdio server env inheritance | `mcp.StdioTransportConfig.Env []string` | The child process no longer inherits the full parent environment — only `Env` plus a small safe allowlist (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`) are passed through. |
+
+### UI message streams
+
+| TypeScript | Go | Note |
+|---|---|---|
+| `validateUIMessages({messages})` | `ai.ValidateUIMessages(ctx, ai.ValidateUIMessagesOptions{Messages: messages})` | `pkg/ai/validate_ui_messages.go`. |
+| `await convertToModelMessages(uiMessages)` | `ai.ConvertToModelMessages(ctx, uiMessages)` | `pkg/ai/convert_to_model_messages.go`. Both are effectively async/fallible; Go returns `([]types.Message, error)` instead of a rejected promise. |
+| `result.toUIMessageStream()` (method, deprecated) / standalone `toUIMessageStream(result.stream)` | `result.ToUIMessageStream(ctx)` or `ai.ToUIMessageStream(ctx, stream)` | `pkg/ai/stream.go`, `pkg/ai/ui_message_stream.go`. |
+| `createUIMessageStreamResponse(...)` | `ai.CreateUIMessageStreamResponse(ctx, result)` | `ui_message_stream.go`. Returns `(*http.Response, error)` — copy its headers/status/body onto your `http.ResponseWriter` (see [Serving a TS frontend](#serving-a-ts-frontend-from-a-go-backend)). |
+| `pipeUIMessageStreamToResponse(response, ...)` | `ai.PipeUIMessageStreamToResponse(ctx, result, w)` | `ui_message_stream.go`. Writes SSE frames straight to any `io.Writer`, flushing after every event. |
+| `readUIMessageStream(stream)` | `ai.ReadUIMessageStream(r io.Reader)` | `ui_message_stream.go`. |
+| chunk-sequence error passed to `onError` | `ai.UIMessageStreamError` / `ai.IsUIMessageStreamError(err)` | Typed error for malformed UI message stream sequences. |
+| `lastAssistantMessageIsCompleteWithToolCalls` | `ai.LastAssistantMessageIsCompleteWithToolCalls(messages)` | Also `ai.LastAssistantMessageIsCompleteWithApprovalResponses`. |
+| `generateId()` / `createIdGenerator({...})` | `ai.GenerateID()` / `ai.CreateIDGenerator(ai.CreateIDGeneratorOptions{...})` | `pkg/ai/generate_id.go`. See [GenerateID reference](../07-reference/ai/generate-id.mdx). |
+
+### Stream transforms and message pruning
+
+| TypeScript | Go | Note |
+|---|---|---|
+| `smoothStream({delayInMs, chunking})` | `ai.SmoothStream(ai.SmoothStreamOptions{DelayInMs: ..., Chunking: "word"})` | `pkg/ai/smooth_stream.go`. Returns `(ai.StreamTransformFunc, error)`. An invalid `chunking` value now returns a typed `*errors.InvalidArgumentError`. |
+| `streamText({experimental_transform: [smoothStream(...)]})` | `ai.StreamTextOptions{ExperimentalTransform: []ai.StreamTransformFunc{transform}}` | `pkg/ai/stream.go`. Still `experimental_` in **both** SDKs — TS hasn't graduated this option in 7.0.113 either, so this isn't a Go gap. |
+| `pruneMessages({messages, toolCalls: [...]})` | `ai.PruneModelMessages(messages, ai.PruneModelMessagesOptions{ToolCalls: []ai.PruneToolCallsRule{{Type: "before-last-message"}}})` | `pkg/ai/prune_messages.go`. Doc comment explicitly mirrors TS `generate-text/prune-messages.ts`, quirks included. |
+
+### Telemetry
+
+| TypeScript | Go | Note |
+|---|---|---|
+| `registerTelemetry(new OpenTelemetry())` (`ai.* span names, from `@ai-sdk/otel`) | `telemetry.RegisterTelemetryIntegration(telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{}))` | `pkg/telemetry/registry.go`. `LegacyOpenTelemetry` is the current name; `OTelTelemetryIntegration` remains only as a deprecated type alias. |
+| `registerTelemetry(new OpenTelemetry({semconv: 'genai'}))` (`gen_ai.*` span names) | `telemetry.RegisterTelemetryIntegration(telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{}))` | Added this cycle: a second integration following the OpenTelemetry GenAI semantic conventions. Both integrations can be registered together. |
+| `generateText({telemetry: {functionId}})` | `ai.GenerateTextOptions{Telemetry: &telemetry.Options{FunctionID: "..."}}` | `pkg/telemetry/settings.go`. `telemetry.Settings` is a type alias for `telemetry.Options`; use `Options` in new code. Setting a tracer per call (`telemetry.Options.Tracer`) is removed — construct the integration with its tracer instead. |
+
+### Errors
+
+| TypeScript | Go | Note |
+|---|---|---|
+| `try { ... } catch (e) { if (e instanceof APICallError) ... }` | `result, err := ai.GenerateText(...); var apiErr *providererrors.ProviderError; if errors.As(err, &apiErr) { ... }` | `pkg/provider/errors/errors.go`. `ProviderError` is the Go name for TS `APICallError`. |
+| `RateLimitError`, `InvalidArgumentError`, `NoSuchModelError`, ... | `providererrors.RateLimitError`, `providererrors.InvalidArgumentError`, `providererrors.NoSuchModelError`, ... plus one `Is*Error(err) bool` helper per type | `errors.go` — every helper is a thin `errors.As` wrapper, e.g. `IsRateLimitError`. |
+| model ignores a forced/specific `toolChoice` | `providererrors.ToolChoiceViolationError` | New this cycle: returned from `GenerateText`/`StreamText` when the model ignores a required or specific tool choice. |
+
+### Harness
+
+| TypeScript | Go | Note |
+|---|---|---|
+| `@ai-sdk/harness` + `HarnessV1Session` | `pkg/harness`, `harness.Session` | `pkg/harness/spec.go`. The low-level adapter protocol: adapts an external coding-agent runtime (Claude Code, Codex, Cursor, ...) into the shared `harness-v1` session/lifecycle/bootstrap protocol; the in-sandbox bridge scripts are the unchanged TS ones. |
+| `Agent` / `AgentSession` (harness runtime) | `harness.Agent` / `harness.AgentSession` | Added this cycle: a higher-level session runtime on top of `harness.Session` — host/builtin tool approvals, client-side tool pauses, continuations, `StopWhen`, active/inactive tools, structured output, `ExperimentalSteer`. |
+| adapter packages (`@ai-sdk/harness-claude-code`, `-codex`, `-opencode`, `-deepagents`, `-acp`, `-cursor`, `-fx`, `-github-copilot`, `-grok-build`) | `pkg/harness/claudecode`, `codex`, `opencode`, `deepagents`, `acp`, and ACP-based Cursor/fx/GitHub Copilot/Grok Build adapters | File-based subscription credentials with OAuth refresh; disk-log replay and rerun reconnection. |
+| sandbox providers (`@vercel/sandbox`, ...) | `pkg/harness/sandbox/vercel` | Added this cycle: runs harness sandboxes on Vercel Sandbox. Credentials from `VERCEL_OIDC_TOKEN` or explicit `Token`/`TeamID`/`ProjectID` — see [Known differences](./known-differences.mdx#vercel-sandbox-no-oidc-token-refresh-loop). |
+| model-written-code tool execution (no direct TS equivalent shipped) | `pkg/codemode` | Added this cycle, experimental: runs model-written JavaScript in a QuickJS-on-WebAssembly sandbox with TS execution-policy limits. See [Known differences](./known-differences.mdx#code-mode-concurrent-approvals-are-not-batched). |
+
+### Batch, evaluate, and files
+
+| TypeScript | Go | Note |
+|---|---|---|
+| `experimental_startBatch` / `getBatchStatus` / `getBatchResults` / `cancelBatch` / `listBatches` | `ai.ExperimentalStartBatch` / `ExperimentalGetBatchStatus` / `ExperimentalGetBatchResults` / `ExperimentalCancelBatch` / `ExperimentalListBatches` | `pkg/ai/batch.go`. Implemented by Anthropic, OpenAI, and Google (including image requests), plus AI Gateway batch passthrough. |
+| `experimental_evaluate` | `ai.ExperimentalEvaluate` | `pkg/ai/evaluate.go`. Native `EvaluationModel()` on Anthropic, OpenAI, and Google; `ai.NewEvaluationLanguageModel` evaluates with any language model. |
+| `getFileMetadata` / `downloadFile` / `deleteFile` | `ai.GetFileMetadata` / `ai.DownloadFile` / `ai.DeleteFile` | Files API v4, with streamed multipart uploads; implemented for OpenAI (new this cycle), Anthropic, Google, DeepSeek. |
+
+## Where Go differs
+
+### Promises and async iterables vs. return values and channels
+
+TS awaits a promise and iterates `result.stream` with `for await`. Go returns `(*Result, error)` immediately and hands you a `provider.TextStream` you drain in a loop, or a `<-chan provider.StreamChunk` you `range` over. `provider.TextStream` only has `Next()`, `Err()`, and `Close()` — it does **not** implement `io.Reader` (`pkg/provider/language_model.go`).
+
+```typescript
+const result = streamText({ model, prompt: 'Count to five.' });
+for await (const chunk of result.stream) {
+  if (chunk.type === 'text-delta') process.stdout.write(chunk.text);
+}
+```
+
+```go
+stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Count to five.",
+})
+if err != nil {
+    log.Fatal(err)
+}
+for chunk := range stream.Chunks() {
+    if chunk.Type == provider.ChunkTypeText {
+        fmt.Print(chunk.Text)
+    }
+}
+if err := stream.Err(); err != nil { // check AFTER the range, not during
+    log.Fatal(err)
+}
+```
+
+### AbortSignal vs. context.Context
+
+TS cancels a call by passing an `AbortSignal`. Go threads a `context.Context` as the first argument everywhere and cancels or times it out the normal Go way; there's no separate signal object to construct or pass down.
+
+```typescript
+const controller = new AbortController();
+setTimeout(() => controller.abort(), 5000);
+await generateText({ model, prompt, abortSignal: controller.signal });
+```
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+_, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: prompt})
+```
+
+### zod / Standard Schema vs. pkg/schema
+
+TS accepts any [Standard Schema](https://standardschema.dev) value (zod, valibot, arktype) for `schema`/`inputSchema` and infers the TypeScript type from it. Go has no schema-inference library; `pkg/schema.Schema` (`pkg/schema/validator.go`) is a thin interface — `schema.NewSimpleJSONSchema(map[string]interface{}{...})` for a hand-written JSON Schema, or `ai.SchemaFor[T]()` (`pkg/ai/output.go`) to reflect one from a Go struct's `json` tags. `schema.ApplyDefaults` applies JSON Schema `default` values before validation, and a `$ref` cycle that never consumes input now returns a validation error instead of overflowing the stack — see [JSON Schema reference](../07-reference/schema/json-schema.mdx).
+
+```typescript
+const weatherTool = tool({
+  description: 'Get the weather',
+  inputSchema: z.object({ location: z.string() }),
+  execute: async ({ location }) => fetchWeather(location),
+});
+```
+
+```go
+weatherTool := types.Tool{
+    Name:        "get_weather",
+    Description: "Get the weather",
+    Parameters: map[string]interface{}{
+        "type":       "object",
+        "properties": map[string]interface{}{"location": map[string]interface{}{"type": "string"}},
+        "required":   []string{"location"},
+    },
+    Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+        return fetchWeather(input["location"].(string))
+    },
+}
+```
+
+### Generics: typed tool input and Output
+
+Go does have generics, and the modern `Output` API uses them: `ai.ObjectOutput[T any]`, `ai.ArrayOutput[ELEMENT any]`, `ai.ChoiceOutput[CHOICE ~string]` (`pkg/ai/output.go`). The gap is narrower than "no generics" — it's that generics give you a type-safe **spec**, not a type-safe **result**: `GenerateTextResult.Output` is still `any`, so you type-assert once after the call.
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Generate a lasagna recipe.",
+    Output: ai.ObjectOutput[Recipe](ai.ObjectOutputOptions{
+        Schema: ai.SchemaFor[Recipe](),
+        Name:   "recipe",
+    }),
+})
+recipe, ok := result.Output.(Recipe) // one assertion, not compile-time inference
+```
+
+Tool `Execute` functions have no generic input type at all — `input` is always `map[string]interface{}`, unmarshaled by hand or via `pkg/schema`'s struct validator.
+
+### StreamObject is not lazy
+
+TS's `streamObject` returns lazy streams immediately. Go's `StreamObject`
+blocks until the stream is fully consumed, reporting progress through
+`OnChunk` instead. Prefer `StreamText` with `Output` (`PartialOutput()` /
+`ai.ElementStreamWithOutput`), which streams incrementally in Go too and is
+also what TS recommends going forward, since `generateObject`/`streamObject`
+are deprecated in both SDKs. See [Known differences: StreamObject is not
+lazy](./known-differences.mdx#streamobject-is-not-lazy) for the full example.
+
+### Option structs and pointers for optional fields
+
+TS distinguishes "not passed" from "passed as zero" with `?`/`undefined`. Go structs give every field a zero value, so any option where `0`/`""`/`false` is a meaningful value the caller might explicitly want uses a pointer: `MaxRetries *int`, `Temperature *float64`, `TopP *float64`, `Instructions *string`, `types.Tool.Strict *bool`, Anthropic's `DisableParallelToolUse *bool`. Fields where zero is never meaningful (`Model`, `Prompt`, `Tools`) stay plain values.
+
+```go
+maxRetries := 0 // explicitly disable retries — nil would mean "use the default"
+ai.GenerateTextOptions{Model: model, Prompt: "...", MaxRetries: &maxRetries}
+```
+
+### camelCase JSON on the wire vs. PascalCase Go fields
+
+Anything that crosses a wire — provider requests, UI message stream chunks — keeps camelCase JSON tags for compatibility, even though the Go field name is PascalCase:
+
+```go
+// pkg/provider/types/message.go
+type TextContent struct {
+    Text            string                 `json:"text"`
+    ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
+}
+
+// pkg/provider/types/usage.go
+InputTokens *int64 `json:"inputTokens,omitempty"`
+```
+
+One field genuinely renamed rather than just re-cased: TS `toolCall.toolCallId` is Go `ToolCall.ID` (`json:"id"`) on the internal result type — but the UI-message-stream wire type (`ToolUIPart`) does use `json:"toolCallId"` (`pkg/ai/ui_message.go`), because that one has to match the protocol a TS frontend expects.
+
+Option structs (`GenerateTextOptions` and friends) carry no JSON tags at all — they're never serialized, so there's nothing to keep camelCase for. The one notable exception: `anthropic.ModelOptions` (provider-specific options that do get marshaled into `ProviderOptions` maps and round-tripped) uses camelCase JSON tags (`budgetTokens`, `contextManagement`, `automaticCaching`, ...) as of v0.5.0 — v0.4.0 used snake_case.
+
+### Callbacks vs. Go func fields
+
+Same shape, different syntax: TS object-literal callbacks become named `func` fields on the options struct.
+
+```typescript
+generateText({ model, prompt, onStepFinish: (step) => console.log(step.text) });
+```
+
+```go
+ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: prompt,
+    OnStepEnd: func(ctx context.Context, step types.StepResult, userContext interface{}) {
+        fmt.Println(step.Text)
+    },
+}
+```
+
+`GenerateTextOptions` has the cleanest 7.0-parity names: `OnStart`, `OnStepStart`, `OnStepEnd`, `OnEnd`, `OnToolExecutionStart`, `OnToolExecutionEnd` (`pkg/ai/generate.go`), with `OnFinish`/`OnStepFinish`/`OnToolCallStart` kept as deprecated aliases, same as TS. `StreamTextOptions` and `AgentConfig` haven't fully caught up: the structured step/finish events there are named `OnStepEndEvent`/`OnFinishEvent` rather than `OnStepEnd`/`OnEnd` (`pkg/ai/stream.go`, `pkg/agent/agent.go`), and `StreamTextOptions.OnEnd` itself is a separate, simpler callback (`func(result *StreamTextResult)`, no `ctx`) rather than the structured-event one. `Embed`/`EmbedMany`/`Rerank` are further behind still — their lifecycle callbacks are `ExperimentalOnStart`/`ExperimentalOnEnd` (`pkg/ai/embed.go`, `pkg/ai/rerank.go`) even though TS 7.0 renamed the equivalents to plain `onStart`/`onEnd`. Check the option struct you're actually using rather than assuming the name carries over.
+
+### Error handling: thrown errors vs. returned errors
+
+TS throws typed error classes you catch with `instanceof`. Go returns `error` from every call and gives you two ways to check the type: an `Is*Error(err) bool` helper per error type, or `errors.As` directly against the concrete type (`pkg/provider/errors/errors.go`).
+
+```go
+result, err := ai.GenerateText(ctx, opts)
+if err != nil {
+    var apiErr *providererrors.ProviderError
+    if errors.As(err, &apiErr) {
+        log.Printf("provider %s: HTTP %d: %s", apiErr.Provider, apiErr.StatusCode, apiErr.Message)
+    } else if providererrors.IsRateLimitError(err) {
+        // back off and retry
+    }
+    return err
+}
+```
+
+### experimental_ prefixes → Go naming
+
+Where TS 7.0 graduated an `experimental_` option to a stable name, Go uses the stable name too: `telemetry` (not `experimental_telemetry`), `output` (not `experimental_output`), `onStart`/`onEnd` on `generateText`/`streamText`. Where TS 7.0 has **not** graduated something, Go keeps the same prefix rather than getting ahead of upstream: `ExperimentalTransform` (`smoothStream` input), `ExperimentalRepairText`, the `Embed`/`Rerank` `ExperimentalOnStart`/`ExperimentalOnEnd` callbacks, and the newer additions this cycle — `ai.ExperimentalStartBatch`/`ExperimentalEvaluate`/`ExperimentalStartVideo`/`ExperimentalStreamTranscribe`/`ExperimentalToolCallers` — all mirror TS's own `experimental_` state rather than being stale Go naming.
+
+### Dependency injection of fetch vs. http.Client
+
+TS provider factories take a `fetch` function to override the HTTP layer (proxies, custom TLS, test doubles). Go providers take an `*http.Client` on their `Config` struct instead.
+
+```typescript
+createOpenAI({ apiKey, fetch: myCustomFetch });
+```
+
+```go
+openai.New(openai.Config{
+    APIKey:     "sk-...",
+    HTTPClient: myCustomClient, // *http.Client
+})
+```
+
+## Coming from TS v5 or v6
+
+Go implements the current (v7) names only. If your TS code still uses a v5 or v6 name, here's where it landed and the matching Go name to reach for. See the TS SDK's own [v5](https://ai-sdk.dev/docs/migration-guides/migration-guide-5-0), [v6](https://ai-sdk.dev/docs/migration-guides/migration-guide-6-0), and [v7](https://ai-sdk.dev/docs/migration-guides/migration-guide-7-0) guides for the full TS-side detail.
+
+| TS v5/v6 name | Current TS (v7) name | Go name |
+|---|---|---|
+| `maxTokens` | `maxOutputTokens` | `GenerateTextOptions.MaxTokens *int` (Go kept the shorter name) |
+| `maxSteps` | `stopWhen: isStepCount(n)` | `StopWhen: []ai.StopCondition{ai.IsStepCount(n)}` |
+| `stepCountIs` (was the canonical name in v6) | `isStepCount` (canonical in v7; `stepCountIs` now a deprecated alias) | `ai.IsStepCount` (`ai.StepCountIs` exists too, as a deprecated alias) |
+| `Experimental_Agent` | `ToolLoopAgent` | `agent.ToolLoopAgent` / `agent.NewToolLoopAgent` |
+| `system` | `instructions` | `System string` (canonical in Go) / `Instructions *string` (alias) |
+| `experimental_telemetry` | `telemetry` | `Telemetry *telemetry.Options` |
+| `experimental_prepareStep` | `prepareStep` (the `experimental_` alias was removed, not just deprecated) | `PrepareStep` |
+| `experimental_output` + `result.experimental_output` | `output` + `result.output` (old names removed entirely in 7.0) | `Output` + `result.Output` / `result.Output()` |
+| `experimental_createProviderRegistry` | `createProviderRegistry` | `registry.NewRegistry` |
+| `experimental_customProvider` (removed entirely in 7.0) | `customProvider` | `registry.NewCustomProvider` |
+| `experimental_createMCPClient` | `createMCPClient` (moved to `@ai-sdk/mcp`) | `mcp.CreateStdioMCPClient` / `CreateHTTPMCPClient` / `CreateSSEMCPClient` |
+| `onFinish` / `onStepFinish` | `onEnd` / `onStepEnd` | `OnEnd` / `OnStepEnd` (Go keeps `OnFinish`/`OnStepFinish` as deprecated aliases too) |
+| `convertToModelMessages()` (sync in v5) | `async convertToModelMessages()` | `ai.ConvertToModelMessages(ctx, messages)` returns `([]types.Message, error)` — always "awaited" |
+| `CoreMessage` | `ModelMessage` | `types.Message` |
+| tool `parameters` | `inputSchema` | `types.Tool.Parameters` (Go kept the v5 field name) |
+| tool `args` / `result` (call site) | `input` / `output` | `types.ToolCall.Arguments` / `types.ToolResult.Result` — Go did not rename the result field to `Output`; the JSON tag is still `"result"` |
+| `ToolCallOptions` | `ToolExecutionOptions` | `types.ToolExecutionOptions` |
+| system messages allowed inline in `prompt`/`messages` | rejected by default; opt in with `allowSystemInMessages` | `AllowSystemMessages` / `AllowSystemInMessages bool` |
+| `fullStream` | `stream` (`fullStream` kept as a deprecated alias) | `StreamTextResult.FullStream()` and `.Stream()` both exist and return the same thing |
+
+## Not available in Go
+
+These are TS-only by design — the Go SDK is a backend/CLI library, not a UI framework, and doesn't ship a browser runtime:
+
+- **React/Vue/Angular/Svelte hooks** (`useChat`, `useCompletion` from `@ai-sdk/react`, `@ai-sdk/vue`, `@ai-sdk/angular`, `@ai-sdk/svelte`) — client-side UI state management. Go serves the same UI message stream protocol these hooks consume; see [Serving a TS frontend](#serving-a-ts-frontend-from-a-go-backend).
+- **React Server Components streaming** (`@ai-sdk/rsc`) — an RSC-specific streaming mechanism with no Go analogue.
+- **`@ai-sdk/devtools`** — a browser-based UI for inspecting LLM requests/responses. Go's own [debugging guide](../03-ai-sdk-core/65-devtools.mdx) covers the same goal (`DebugMode` request logging), by different means.
+- **`@ai-sdk/codemod`** — jscodeshift-based automated upgrade transforms for TS source files; doesn't apply to Go source.
+- **`@ai-sdk/harness-cline`, `@ai-sdk/harness-pi`** — these load their vendor Node SDKs in-process with no TS bridge script to port; a Go port would need original work with no TS reference to mirror. Revisit on demand.
+- **Browser-only realtime transport** (`BrowserRealtimeTransport`, `BrowserRealtimeAudio`, `useRealtime`, OpenAI Live over WebRTC) — WebRTC/browser-audio glue. Go's [Realtime Sessions](../03-ai-sdk-core/39-realtime.mdx) support the same server-side WebSocket session API (`ai.ConnectRealtime`); only the in-browser/WebRTC transport is out of scope.
+- **StreamObject as a lazy stream** — see [StreamObject is not lazy](#streamobject-is-not-lazy) above; this is a behavior difference, not a missing feature.
+- **Durable webhook video suspension inside Vercel Workflow DevKit** — depends on the Node-only Workflow DevKit runtime. Go's video generation polls until the job is done, or you drive it yourself with `ai.ExperimentalStartVideo`/`ExperimentalGetVideoStatus` (which do support webhooks, just not durable workflow suspension).
+
+See [Known differences from the TypeScript AI SDK](./known-differences.mdx) for the complete, current list, including narrower runtime-level differences (Vercel Sandbox OIDC refresh, code-mode approval batching).
+
+## Recently landed (previously tracked as gaps)
+
+As of v0.5.0, all of the following shipped and are no longer gaps: the
+**Batch API** (`ai.ExperimentalStartBatch` and friends), **`evaluate`**
+(`ai.ExperimentalEvaluate`), **async video jobs**
+(`ai.ExperimentalStartVideo`/`ExperimentalGetVideoStatus`), **streaming
+transcription** (`ai.ExperimentalStreamTranscribe`, plus
+`ai.ExperimentalStreamTranslate` for speech translation), and **tool search /
+tool callers** (`ai.ToolSearch`, `types.Tool.DeferLoading`,
+`ExperimentalToolCallers`). See the mapping tables above for each.
+
+## Serving a TS frontend from a Go backend
+
+A `useChat` frontend posts `{ messages: UIMessage[] }` and expects a UI message stream back. This handler validates the incoming messages, converts them to model messages, streams a response, and pipes the result back in the same protocol:
+
+```go
+package main
+
+import (
+	"encoding/json"
+	"io"
+	"log"
+	"net/http"
+
+	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+)
+
+type chatRequest struct {
+	Messages []ai.UIMessage `json:"messages"`
+}
+
+func chatHandler(model provider.LanguageModel) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+
+		var req chatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		validated, err := ai.ValidateUIMessages(ctx, ai.ValidateUIMessagesOptions{
+			Messages: req.Messages,
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		modelMessages, err := ai.ConvertToModelMessages(ctx, validated)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		result, err := ai.StreamText(ctx, ai.StreamTextOptions{
+			Model:    model,
+			Messages: modelMessages,
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		resp, err := ai.CreateUIMessageStreamResponse(ctx, result)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer resp.Body.Close()
+
+		for key, values := range resp.Header {
+			for _, v := range values {
+				w.Header().Add(key, v)
+			}
+		}
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
+	}
+}
+
+func main() {
+	// model := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")}).LanguageModel("gpt-4o")
+	http.Handle("/api/chat", chatHandler(nil))
+	log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+`ai.CreateUIMessageStreamResponse` builds a full `*http.Response` with the same headers the TS SDK's response helpers set (`Content-Type: text/event-stream`, `X-Vercel-AI-UI-Message-Stream: v1`, and so on) — copy them onto `http.ResponseWriter` as shown, and any TS `useChat` client pointed at this endpoint works unmodified. If you'd rather write SSE frames directly without the intermediate `*http.Response`, use `ai.PipeUIMessageStreamToResponse(ctx, result, w)` and set those headers yourself.
+
+## See Also
+
+- [Migrating from v0.4.x to v0.5.0](./from-v0.4-to-v0.5.mdx)
+- [Known differences from the TypeScript AI SDK](./known-differences.mdx)

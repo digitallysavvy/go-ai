@@ -402,6 +402,31 @@ for _, template := range templates {
 }
 ```
 
+## Handling Elicitation Requests
+
+Some MCP servers pause a tool call to ask the client (your application) for
+additional user input mid-execution, using the `elicitation/create` request.
+Register a handler with `OnElicitationRequest` before calling `Connect`:
+
+```go
+client.OnElicitationRequest(func(ctx context.Context, req mcp.ElicitationRequest) (mcp.ElicitResult, error) {
+    fmt.Println("Server asks:", req.Message)
+    // req.RequestedSchema describes the JSON Schema for the expected input.
+
+    answer := promptUserSomehow(req)
+    return mcp.ElicitResult{
+        Action:  "accept", // or "decline" / "cancel"
+        Content: map[string]interface{}{"answer": answer},
+    }, nil
+})
+
+err := client.Connect(ctx)
+```
+
+If no handler is registered, the client rejects `elicitation/create` requests
+automatically. A handler error is reported through the client's `OnError`
+callback rather than propagating to the tool call.
+
 ## Using MCP Prompts
 
 <Note type="warning">
