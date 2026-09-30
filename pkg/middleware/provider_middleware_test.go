@@ -255,7 +255,7 @@ func TestWrapProvider_ImageModel_WithMiddleware(t *testing.T) {
 		},
 	}
 
-	wrapped := WrapProvider(mockProvider, nil, nil, []*ImageModelMiddleware{imgMiddleware})
+	wrapped := WrapProvider(mockProvider, nil, nil, WithImageModelMiddleware([]*ImageModelMiddleware{imgMiddleware}))
 
 	model, err := wrapped.ImageModel("test-image")
 	if err != nil {

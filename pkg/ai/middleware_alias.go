@@ -25,8 +25,15 @@ func WrapImageModel(model provider.ImageModel, middleware []*ImageModelMiddlewar
 	return mw.WrapImageModel(model, middleware, modelID, providerID)
 }
 
-func WrapProvider(p provider.Provider, languageModelMiddleware []*LanguageModelMiddleware, embeddingModelMiddleware []*EmbeddingModelMiddleware, imageModelMiddleware []*ImageModelMiddleware) provider.Provider {
-	return mw.WrapProvider(p, languageModelMiddleware, embeddingModelMiddleware, imageModelMiddleware)
+func WrapProvider(p provider.Provider, languageModelMiddleware []*LanguageModelMiddleware, embeddingModelMiddleware []*EmbeddingModelMiddleware, opts ...mw.ProviderMiddlewareOption) provider.Provider {
+	return mw.WrapProvider(p, languageModelMiddleware, embeddingModelMiddleware, opts...)
+}
+
+// WithImageModelMiddleware sets the middleware applied to every image model
+// resolved through a provider wrapped via WrapProvider, matching
+// TypeScript's wrapProvider options.imageModelMiddleware.
+func WithImageModelMiddleware(imageModelMiddleware []*ImageModelMiddleware) mw.ProviderMiddlewareOption {
+	return mw.WithImageModelMiddleware(imageModelMiddleware)
 }
 
 func SimulateStreamingMiddleware() *LanguageModelMiddleware {
