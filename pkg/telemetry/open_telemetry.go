@@ -747,7 +747,12 @@ func (i OpenTelemetry) OnRerankStart(ctx context.Context, e RerankingModelCallSt
 	}
 }
 
-// OnRerankEnd ends the reranking request span.
+// OnRerankEnd ends the reranking request span. When e.Error is set (a
+// failed retry attempt — rerank.go fires this event on every attempt's
+// outcome, not just the one that ultimately succeeds), the span is closed
+// with an error status instead, so it is never orphaned by the next
+// attempt's OnRerankStart overwriting st.rerankSpan — see the doc comment
+// on RerankingModelCallEndEvent.
 func (i OpenTelemetry) OnRerankEnd(_ context.Context, e RerankingModelCallEndEvent) {
 	callID := modelCallID(e.CallID, e.OperationID)
 	value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("reranking", callID))
@@ -763,6 +768,11 @@ func (i OpenTelemetry) OnRerankEnd(_ context.Context, e RerankingModelCallEndEve
 	}
 	entry, ok := value.(otelSpanEntry)
 	if !ok || !entry.span.IsRecording() {
+		return
+	}
+	if e.Error != nil {
+		RecordErrorOnSpan(entry.span, e.Error)
+		entry.span.End()
 		return
 	}
 	entry.span.SetAttributes(attribute.Int("ai.reranking.results.count", len(e.Ranking)))

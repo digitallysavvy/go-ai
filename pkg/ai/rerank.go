@@ -387,7 +387,22 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 		})
 		res, callErr := opts.Model.DoRerank(attemptCtx, rerankOpts)
 		if callErr != nil {
-			return callErr
+			wrappedErr := fmt.Errorf("reranking failed: %w", callErr)
+			// Close THIS attempt's span immediately, with error status, so a
+			// later retry attempt's success doesn't leave it orphaned forever
+			// (the next attempt's OnRerankStart unconditionally overwrites
+			// st.rerankSpan — see the doc comment on
+			// RerankingModelCallEndEvent).
+			telemetry.FireOnRerankEnd(attemptCtx, telemetry.RerankingModelCallEndEvent{
+				Settings:      opts.ExperimentalTelemetry,
+				CallID:        callID,
+				OperationID:   "ai.rerank.doRerank",
+				ModelProvider: opts.Model.Provider(),
+				ModelID:       opts.Model.ModelID(),
+				DocumentsType: documentsType,
+				Error:         wrappedErr,
+			})
+			return wrappedErr
 		}
 		telemetry.FireOnRerankEnd(attemptCtx, telemetry.RerankingModelCallEndEvent{
 			Settings:      opts.ExperimentalTelemetry,
@@ -402,9 +417,8 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 		return nil
 	})
 	if err != nil {
-		wrappedErr := fmt.Errorf("reranking failed: %w", err)
-		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: wrappedErr})
-		return nil, wrappedErr
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: err})
+		return nil, err
 	}
 
 	// TS rerank(): validateRankingIndices runs after the retry resolves and
