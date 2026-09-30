@@ -8,6 +8,7 @@ import (
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
@@ -166,16 +167,20 @@ func (m *LanguageModel) buildRequest(ctx context.Context, opts *provider.Generat
 	} else if opts.Prompt.IsSimple() {
 		messages = prompt.SimpleTextToMessages(opts.Prompt.Text)
 	}
+	var supportedFunctionResponseURLs map[string][]string
+	if caps.UsesGemini3Features && m.cfg.SupportsGoogleCloudStorageUrls {
+		supportedFunctionResponseURLs = googleCloudStorageFunctionResponseURLs
+	}
 	if m.cfg.ToolResultDownloadMaxBytes > 0 {
-		downloaded, err := m.downloadToolResultFiles(ctx, messages)
+		// TS google-language-model.ts passes the same supportedUrls to
+		// downloadToolResultFiles, so a supported gs:// URL is forwarded
+		// as fileData instead of being downloaded (or rejected by the
+		// download URL scheme check).
+		downloaded, err := m.downloadToolResultFiles(ctx, messages, providerutils.CompileSupportedURLPatterns(supportedFunctionResponseURLs))
 		if err != nil {
 			return nil, nil, nil, err
 		}
 		messages = downloaded
-	}
-	var supportedFunctionResponseURLs map[string][]string
-	if caps.UsesGemini3Features && m.cfg.SupportsGoogleCloudStorageUrls {
-		supportedFunctionResponseURLs = googleCloudStorageFunctionResponseURLs
 	}
 	converted, err := prompt.ConvertToGoogleMessages(messages, prompt.GoogleMessagesOptions{
 		System:                        opts.Prompt.System,

@@ -3,10 +3,12 @@ package gemini
 import (
 	"bytes"
 	"context"
+	"regexp"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // DefaultToolResultDownloadMaxBytes is the Vertex default cap for downloading
@@ -27,7 +29,7 @@ func defaultToolResultDownload(ctx context.Context, url string, maxBytes int64) 
 // responses only accept inline file data, so remote file URLs inside
 // tool-result content outputs (tool messages and assistant provider-executed
 // results) are downloaded before prompt conversion.
-func (m *LanguageModel) downloadToolResultFiles(ctx context.Context, messages []types.Message) ([]types.Message, error) {
+func (m *LanguageModel) downloadToolResultFiles(ctx context.Context, messages []types.Message, supportedURLs map[string][]*regexp.Regexp) ([]types.Message, error) {
 	download := m.cfg.ToolResultDownload
 	if download == nil {
 		download = defaultToolResultDownload
@@ -58,7 +60,7 @@ func (m *LanguageModel) downloadToolResultFiles(ctx context.Context, messages []
 			if tr.Output == nil || tr.Output.Type != types.ToolResultOutputContent {
 				continue
 			}
-			newBlocks, blockChanged, err := downloadContentBlocks(ctx, tr.Output.Content, download, maxBytes)
+			newBlocks, blockChanged, err := downloadContentBlocks(ctx, tr.Output.Content, download, maxBytes, supportedURLs)
 			if err != nil {
 				return nil, err
 			}
@@ -81,7 +83,7 @@ func (m *LanguageModel) downloadToolResultFiles(ctx context.Context, messages []
 	return out, nil
 }
 
-func downloadContentBlocks(ctx context.Context, blocks []types.ToolResultContentBlock, download func(context.Context, string, int64) ([]byte, string, error), maxBytes int64) ([]types.ToolResultContentBlock, bool, error) {
+func downloadContentBlocks(ctx context.Context, blocks []types.ToolResultContentBlock, download func(context.Context, string, int64) ([]byte, string, error), maxBytes int64, supportedURLs map[string][]*regexp.Regexp) ([]types.ToolResultContentBlock, bool, error) {
 	var out []types.ToolResultContentBlock
 	changed := false
 	for i, block := range blocks {
@@ -104,6 +106,12 @@ func downloadContentBlocks(ctx context.Context, blocks []types.ToolResultContent
 		if url == "" {
 			// No remote URL on this block at all (e.g. already-inline data) —
 			// nothing to validate or download.
+			continue
+		}
+		if providerutils.MatchesSupportedURL(supportedURLs, fb.MediaType, url) {
+			// Natively supported by the model (e.g. gs:// on Vertex Gemini
+			// 3+): forwarded as-is, never downloaded (TS isUrlSupported
+			// check in downloadToolResultOutput).
 			continue
 		}
 		// Validate the URL scheme before deciding whether to download it,

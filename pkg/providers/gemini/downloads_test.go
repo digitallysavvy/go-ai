@@ -3,9 +3,11 @@ package gemini
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -50,7 +52,7 @@ func TestDownloadToolResultFiles_InlinesRemoteFileURL(t *testing.T) {
 		},
 	}
 
-	out, err := m.downloadToolResultFiles(context.Background(), messages)
+	out, err := m.downloadToolResultFiles(context.Background(), messages, nil)
 	if err != nil {
 		t.Fatalf("downloadToolResultFiles: %v", err)
 	}
@@ -104,7 +106,7 @@ func TestDownloadToolResultFiles_NoOpWithoutRemoteURLs(t *testing.T) {
 	messages := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
 	}
-	out, err := m.downloadToolResultFiles(context.Background(), messages)
+	out, err := m.downloadToolResultFiles(context.Background(), messages, nil)
 	if err != nil {
 		t.Fatalf("downloadToolResultFiles: %v", err)
 	}
@@ -159,7 +161,7 @@ func TestDownloadToolResultFiles_RejectsUnsupportedURLScheme(t *testing.T) {
 		},
 	}
 
-	_, err := m.downloadToolResultFiles(context.Background(), messages)
+	_, err := m.downloadToolResultFiles(context.Background(), messages, nil)
 	if err == nil {
 		t.Fatal("expected an error for an unsupported URL scheme, got nil")
 	}
@@ -215,7 +217,7 @@ func TestDownloadToolResultFiles_DataURLIsNotDownloaded(t *testing.T) {
 		},
 	}
 
-	out, err := m.downloadToolResultFiles(context.Background(), messages)
+	out, err := m.downloadToolResultFiles(context.Background(), messages, nil)
 	if err != nil {
 		t.Fatalf("downloadToolResultFiles: %v", err)
 	}
@@ -229,5 +231,69 @@ func TestDownloadToolResultFiles_DataURLIsNotDownloaded(t *testing.T) {
 	}
 	if !strings.HasPrefix(fb.URL, "data:") {
 		t.Fatalf("test setup error: fb.URL = %q", fb.URL)
+	}
+}
+
+// TestBuildRequest_VertexGemini3GCSToolResultSkipsDownload: Vertex always
+// enables tool-result downloads, and TS passes the model's supported
+// function-response URLs to downloadToolResultFiles, so a supported gs://
+// file on Gemini 3+ is forwarded as fileData instead of being downloaded
+// or rejected by the download URL scheme check. An unsupported gs:// URL
+// (pre-Gemini-3 model) still fails the scheme check, as in TS.
+func TestBuildRequest_VertexGemini3GCSToolResultSkipsDownload(t *testing.T) {
+	newModel := func(modelID string, called *bool) *LanguageModel {
+		return NewLanguageModel(Config{
+			ProviderName:                   "google-vertex",
+			MetadataKey:                    "vertex",
+			ProviderOptionsKeys:            []string{"googleVertex", "vertex", "google"},
+			IsVertex:                       true,
+			SupportsGoogleCloudStorageUrls: true,
+			ToolResultDownloadMaxBytes:     DefaultToolResultDownloadMaxBytes,
+			ToolResultDownload: func(ctx context.Context, url string, maxBytes int64) ([]byte, string, error) {
+				*called = true
+				return []byte{0x89, 'P', 'N', 'G'}, "image/png", nil
+			},
+		}, modelID)
+	}
+	opts := &provider.GenerateOptions{
+		Prompt: types.Prompt{
+			Messages: []types.Message{
+				{Role: types.RoleAssistant, ToolCalls: []types.ToolCall{
+					{ID: "call1", ToolName: "imageGenerator", Arguments: map[string]interface{}{}},
+				}},
+				{Role: types.RoleTool, Content: []types.ContentPart{
+					types.ToolResultContent{
+						ToolCallID: "call1",
+						ToolName:   "imageGenerator",
+						Output: &types.ToolResultOutput{
+							Type: types.ToolResultOutputContent,
+							Content: []types.ToolResultContentBlock{
+								types.FileContentBlock{URL: "gs://example-bucket/hero.png", MediaType: "image/png"},
+							},
+						},
+					},
+				}},
+			},
+		},
+	}
+
+	called := false
+	body, _, _, err := newModel("gemini-3-pro-preview", &called).buildRequest(context.Background(), opts, false)
+	if err != nil {
+		t.Fatalf("buildRequest: %v", err)
+	}
+	if called {
+		t.Error("supported gs:// URL must not be downloaded")
+	}
+	if !strings.Contains(fmt.Sprint(body["contents"]), "gs://example-bucket/hero.png") {
+		t.Errorf("gs:// fileUri not forwarded; contents = %v", body["contents"])
+	}
+
+	called = false
+	if _, _, _, err := newModel("gemini-2.5-pro", &called).buildRequest(context.Background(), opts, false); err == nil {
+		t.Error("expected scheme error for gs:// on a pre-Gemini-3 model")
+	}
+	if called {
+		t.Error("unsupported gs:// URL must not reach the downloader")
 	}
 }
