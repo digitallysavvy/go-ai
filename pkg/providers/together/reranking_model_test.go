@@ -127,38 +127,43 @@ func TestTogetherRerankingModel_ModelIDAbsent(t *testing.T) {
 }
 
 // TestTogetherRerankingModel_RankFieldsProviderOption ports the rankFields
-// providerOptions field (togetheraiRerankingModelOptionsSchema).
+// providerOptions field (togetheraiRerankingModelOptionsSchema). TS reads it
+// under the "togetherai" key; "together" is accepted as a fallback.
 func TestTogetherRerankingModel_RankFieldsProviderOption(t *testing.T) {
-	var gotBody map[string]interface{}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewDecoder(r.Body).Decode(&gotBody)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"results": [{"index": 0, "relevance_score": 0.5}]}`))
-	}))
-	defer server.Close()
+	for _, key := range []string{"togetherai", "together"} {
+		t.Run(key, func(t *testing.T) {
+			var gotBody map[string]interface{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewDecoder(r.Body).Decode(&gotBody)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"results": [{"index": 0, "relevance_score": 0.5}]}`))
+			}))
+			defer server.Close()
 
-	p := New(Config{APIKey: "test-key", BaseURL: server.URL})
-	model := NewRerankingModel(p, "mixedbread-ai/Mxbai-Rerank-Large-V2")
+			p := New(Config{APIKey: "test-key", BaseURL: server.URL})
+			model := NewRerankingModel(p, "mixedbread-ai/Mxbai-Rerank-Large-V2")
 
-	_, err := model.DoRerank(context.Background(), &provider.RerankOptions{
-		Query:     "q",
-		Documents: []map[string]interface{}{{"title": "a", "text": "b"}},
-		ProviderOptions: map[string]interface{}{
-			"together": map[string]interface{}{
-				"rankFields": []interface{}{"title", "text"},
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("DoRerank() error: %v", err)
-	}
+			_, err := model.DoRerank(context.Background(), &provider.RerankOptions{
+				Query:     "q",
+				Documents: []map[string]interface{}{{"title": "a", "text": "b"}},
+				ProviderOptions: map[string]interface{}{
+					key: map[string]interface{}{
+						"rankFields": []interface{}{"title", "text"},
+					},
+				},
+			})
+			if err != nil {
+				t.Fatalf("DoRerank() error: %v", err)
+			}
 
-	rankFields, ok := gotBody["rank_fields"].([]interface{})
-	if !ok || len(rankFields) != 2 || rankFields[0] != "title" || rankFields[1] != "text" {
-		t.Errorf("rank_fields = %#v, want [title text]", gotBody["rank_fields"])
-	}
-	if _, ok := gotBody["top_n"]; ok {
-		t.Errorf("top_n should be omitted when TopN is nil, got %v", gotBody["top_n"])
+			rankFields, ok := gotBody["rank_fields"].([]interface{})
+			if !ok || len(rankFields) != 2 || rankFields[0] != "title" || rankFields[1] != "text" {
+				t.Errorf("rank_fields = %#v, want [title text]", gotBody["rank_fields"])
+			}
+			if _, ok := gotBody["top_n"]; ok {
+				t.Errorf("top_n should be omitted when TopN is nil, got %v", gotBody["top_n"])
+			}
+		})
 	}
 }
 

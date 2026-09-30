@@ -44,7 +44,12 @@ type togetherRerankingOptions struct {
 }
 
 func extractTogetherRerankingOptions(providerOptions map[string]interface{}) togetherRerankingOptions {
-	po, ok := providerOptions["together"].(map[string]interface{})
+	// TS parses providerOptions under the "togetherai" key (as does this
+	// package's image model); "together" is accepted as a fallback.
+	po, ok := providerOptions["togetherai"].(map[string]interface{})
+	if !ok {
+		po, ok = providerOptions["together"].(map[string]interface{})
+	}
 	if !ok {
 		return togetherRerankingOptions{}
 	}
