@@ -100,6 +100,41 @@ func TestGroqLanguageModelDoGenerateAndConvertUsage(t *testing.T) {
 	}
 }
 
+// TestGroqAssistantToolCallContentIsEmptyStringNotNull ports Groq's own TS
+// converter behavior (convert-to-groq-chat-messages.ts): `content: text`
+// unconditionally, even when there is no text and tool calls are present --
+// the wire message must carry "content":"" rather than a literal null.
+func TestGroqAssistantToolCallContentIsEmptyStringNotNull(t *testing.T) {
+	var seenBody map[string]interface{}
+	p := newGroqProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
+		_ = json.NewDecoder(r.Body).Decode(&seenBody)
+		return &http.Response{
+			StatusCode: 200,
+			Body:       io.NopCloser(strings.NewReader(`{"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"ok"}}],"usage":{}}`)),
+		}, nil
+	})
+	_, err := NewLanguageModel(p, "m").DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{{
+			Role: types.RoleAssistant,
+			ToolCalls: []types.ToolCall{
+				{ID: "call1", ToolName: "lookup", Arguments: map[string]interface{}{"q": "x"}},
+			},
+		}}},
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate error = %v", err)
+	}
+	msgs := seenBody["messages"].([]interface{})
+	msg := msgs[0].(map[string]interface{})
+	content, ok := msg["content"]
+	if !ok {
+		t.Fatal("assistant content key missing")
+	}
+	if content != "" {
+		t.Fatalf("assistant content = %#v, want empty string", content)
+	}
+}
+
 func TestGroqLanguageModelDoGenerateError(t *testing.T) {
 	p := newGroqProviderWithTransport(t, func(_ *http.Request) (*http.Response, error) {
 		return nil, errors.New("boom")

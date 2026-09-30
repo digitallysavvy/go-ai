@@ -78,6 +78,46 @@ func TestCohereImageURLMessageSerialization(t *testing.T) {
 	}
 }
 
+// TestCohereAssistantToolCallOmitsContentKey ports Cohere's own TS converter
+// behavior (convert-to-cohere-chat-prompt.ts):
+// `content: toolCalls.length > 0 ? undefined : text` -- the "content" key
+// must be left out of the wire message entirely whenever any tool call is
+// present, even when text was also generated alongside it.
+func TestCohereAssistantToolCallOmitsContentKey(t *testing.T) {
+	var got map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(cohereV2MockResponse))
+	}))
+	defer srv.Close()
+
+	prov := New(Config{BaseURL: srv.URL, APIKey: "test-key"})
+	model := NewLanguageModel(prov, "command-r-plus")
+	_, err := model.DoGenerate(t.Context(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{{
+			Role:    types.RoleAssistant,
+			Content: []types.ContentPart{types.TextContent{Text: "thinking..."}},
+			ToolCalls: []types.ToolCall{
+				{ID: "call1", ToolName: "lookup", Arguments: map[string]interface{}{"q": "x"}},
+			},
+		}}},
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate error: %v", err)
+	}
+
+	msgs := got["messages"].([]interface{})
+	msg := msgs[0].(map[string]interface{})
+	if _, ok := msg["content"]; ok {
+		t.Fatalf("assistant content = %#v, want key omitted", msg["content"])
+	}
+	if _, ok := msg["tool_calls"]; !ok {
+		t.Fatal("tool_calls key missing")
+	}
+}
+
 func TestCohereNonImageFileBecomesDocument(t *testing.T) {
 	model := &LanguageModel{modelID: "command-r-plus"}
 	body, err := model.buildRequestBody(&provider.GenerateOptions{

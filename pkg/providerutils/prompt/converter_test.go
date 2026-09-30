@@ -222,6 +222,59 @@ func TestToOpenAIMessagesAssistantToolCallsUseNullContentWhenNoText(t *testing.T
 	}
 }
 
+// TestToOpenAIMessagesAssistantToolCallContentModeText ports Groq's TS
+// converter behavior (convert-to-groq-chat-messages.ts): `content: text`
+// unconditionally, even when there is no text and tool calls are present --
+// never a literal null.
+func TestToOpenAIMessagesAssistantToolCallContentModeText(t *testing.T) {
+	msgs := []types.Message{
+		{
+			Role: types.RoleAssistant,
+			ToolCalls: []types.ToolCall{
+				{ID: "quux", ToolName: "thwomp", Arguments: map[string]interface{}{"foo": "bar"}},
+			},
+		},
+	}
+	result := ToOpenAIMessages(msgs, ToOpenAIMessagesOptions{AssistantToolCallContentMode: AssistantToolCallContentText})
+	if len(result) != 1 {
+		t.Fatalf("len(result) = %d, want 1", len(result))
+	}
+	content, ok := result[0]["content"]
+	if !ok {
+		t.Fatal("assistant content key missing")
+	}
+	if content != "" {
+		t.Fatalf("assistant content = %#v, want empty string", content)
+	}
+}
+
+// TestToOpenAIMessagesAssistantToolCallContentModeOmit ports Cohere's TS
+// converter behavior (convert-to-cohere-chat-prompt.ts):
+// `toolCalls.length > 0 ? undefined : text` -- the "content" key is left out
+// of the message entirely whenever any tool call is present, even if text
+// was also emitted.
+func TestToOpenAIMessagesAssistantToolCallContentModeOmit(t *testing.T) {
+	msgs := []types.Message{
+		{
+			Role:    types.RoleAssistant,
+			Content: []types.ContentPart{types.TextContent{Text: "thinking..."}},
+			ToolCalls: []types.ToolCall{
+				{ID: "quux", ToolName: "thwomp", Arguments: map[string]interface{}{"foo": "bar"}},
+			},
+		},
+	}
+	result := ToOpenAIMessages(msgs, ToOpenAIMessagesOptions{AssistantToolCallContentMode: AssistantToolCallContentOmit})
+	if len(result) != 1 {
+		t.Fatalf("len(result) = %d, want 1", len(result))
+	}
+	if _, ok := result[0]["content"]; ok {
+		t.Fatalf("assistant content = %#v, want key omitted", result[0]["content"])
+	}
+	if _, ok := result[0]["tool_calls"]; !ok {
+		t.Fatal("tool_calls key missing")
+	}
+}
+
 // TestToOpenAIMessagesToolResultOutputTypes ports the TS
 // convert-to-openai-chat-messages.ts tool-result output.type switch (audit
 // row 58a2ad7 / G6). Before this fix, every ToolResultContent using the
