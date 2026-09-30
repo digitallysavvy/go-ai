@@ -170,6 +170,21 @@ func newTestTranscriptionModel(baseURL string) *TranscriptionModel {
 	return NewTranscriptionModel(p, "gpt-realtime-whisper")
 }
 
+// TestTranscriptionModel_BaseWSHeadersCarryUserAgentTag mirrors TS
+// openai-transcription-model.ts's doStream, which reuses
+// `this.config.headers()` -- the same tagged getHeaders() closure used for
+// REST calls -- for the WebSocket handshake, so it carries the
+// `ai-sdk/openai/VERSION` tag too.
+func TestTranscriptionModel_BaseWSHeadersCarryUserAgentTag(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	m := NewTranscriptionModel(p, "gpt-realtime-whisper")
+
+	ua := m.baseWSHeaders()["user-agent"]
+	if !strings.HasPrefix(ua, "ai-sdk/openai/") {
+		t.Fatalf("user-agent = %q, want ai-sdk/openai/... prefix", ua)
+	}
+}
+
 func TestTranscriptionModel_DoStream_RejectsNonRealtimeModel(t *testing.T) {
 	p := New(Config{APIKey: "test-key"})
 	model := NewTranscriptionModel(p, "whisper-1")

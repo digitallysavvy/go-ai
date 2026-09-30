@@ -90,19 +90,14 @@ func realtimeSpeechTranslationWebSocketURL(baseURL, modelID string) string {
 // baseSpeechTranslationWSHeaders rebuilds the provider's default headers
 // (Authorization, organization, project, custom config headers) for the
 // WebSocket handshake, mirroring baseWSHeaders in transcription_stream.go.
+// baseSpeechTranslationWSHeaders returns the provider's default headers
+// (Authorization, organization, project, custom config headers, and the
+// `ai-sdk/openai/VERSION` User-Agent tag) for the WebSocket handshake,
+// mirroring TS openai-speech-translation-model.ts's doStream, which reuses
+// `this.config.headers()` -- the same tagged getHeaders() closure used for
+// REST calls -- rather than rebuilding an untagged header set.
 func (m *SpeechTranslationModel) baseSpeechTranslationWSHeaders() map[string]string {
-	cfg := m.provider.config
-	headers := map[string]string{}
-	if cfg.APIKey != "" {
-		headers["Authorization"] = "Bearer " + cfg.APIKey
-	}
-	if cfg.Organization != "" {
-		headers["OpenAI-Organization"] = cfg.Organization
-	}
-	if cfg.Project != "" {
-		headers["OpenAI-Project"] = cfg.Project
-	}
-	return internalhttp.MergeHeaders(headers, cfg.Headers)
+	return m.provider.client.Headers()
 }
 
 // DoStream streams a speech-to-speech translation over the OpenAI realtime

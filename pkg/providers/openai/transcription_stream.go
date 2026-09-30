@@ -87,22 +87,14 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 	}, nil
 }
 
-// baseWSHeaders rebuilds the provider's default headers (Authorization,
-// organization, project, custom config headers) for the WebSocket handshake,
-// mirroring the headers the internal HTTP client attaches to REST calls.
+// baseWSHeaders returns the provider's default headers (Authorization,
+// organization, project, custom config headers, and the
+// `ai-sdk/openai/VERSION` User-Agent tag) for the WebSocket handshake,
+// mirroring TS openai-transcription-model.ts's doStream, which reuses
+// `this.config.headers()` -- the same tagged getHeaders() closure used for
+// REST calls -- rather than rebuilding an untagged header set.
 func (m *TranscriptionModel) baseWSHeaders() map[string]string {
-	cfg := m.provider.config
-	headers := map[string]string{}
-	if cfg.APIKey != "" {
-		headers["Authorization"] = "Bearer " + cfg.APIKey
-	}
-	if cfg.Organization != "" {
-		headers["OpenAI-Organization"] = cfg.Organization
-	}
-	if cfg.Project != "" {
-		headers["OpenAI-Project"] = cfg.Project
-	}
-	return internalhttp.MergeHeaders(headers, cfg.Headers)
+	return m.provider.client.Headers()
 }
 
 func unsupportedStreamingTranscriptionWarning(option string) types.Warning {

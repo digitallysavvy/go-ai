@@ -129,13 +129,13 @@ func buildSpeechTranslationSetup(modelID, targetLanguage string, opts speechTran
 	}
 }
 
-// baseSpeechTranslationHeaders rebuilds the provider's default headers
-// (x-goog-api-key plus any configured custom headers), mirroring the
-// Resolvable config.headers TS combines with per-call options.headers.
+// baseSpeechTranslationHeaders returns the provider's default headers
+// (x-goog-api-key, configured custom headers, and the `ai-sdk/google/VERSION`
+// User-Agent tag), mirroring the Resolvable config.headers TS combines with
+// per-call options.headers -- the same tagged getHeaders() closure used for
+// REST calls, not a freshly rebuilt untagged header set.
 func (m *SpeechTranslationModel) baseSpeechTranslationHeaders() map[string]string {
-	return internalhttp.MergeHeaders(map[string]string{
-		"x-goog-api-key": m.prov.APIKey(),
-	}, m.prov.config.Headers)
+	return m.prov.client.Headers()
 }
 
 // getLiveSpeechTranslationWebSocketURL builds the wss:// Live API URL for
