@@ -243,3 +243,26 @@ func TestXAIRealtimeCreateClientSecretForcesJSONContentType(t *testing.T) {
 		t.Fatalf("content-type = %q", contentType)
 	}
 }
+
+// TestXAIGetRealtimeToken_UsesConcreteModel verifies Provider.GetRealtimeToken
+// still mints a client secret after DoCreateClientSecret moved to the
+// optional provider.RealtimeClientSecretCreator capability: xAI's
+// *XAIRealtimeModel always implements it, so GetRealtimeToken must call the
+// concrete model's DoCreateClientSecret directly rather than the general
+// provider.Experimental_RealtimeModelV4 interface (hand-off: "realtime
+// optional capabilities").
+func TestXAIGetRealtimeToken_UsesConcreteModel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"value": "secret", "expires_at": 123})
+	}))
+	defer srv.Close()
+
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	secret, err := p.GetRealtimeToken(context.Background(), provider.RealtimeFactoryGetTokenOptions{Model: "grok-voice-latest"})
+	if err != nil {
+		t.Fatalf("GetRealtimeToken: %v", err)
+	}
+	if secret.Token != "secret" {
+		t.Fatalf("secret = %+v", secret)
+	}
+}

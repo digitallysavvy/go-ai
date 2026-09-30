@@ -99,15 +99,25 @@ func TestOpenAIRealtimeFactory_DistinguishesUnsetFromExplicitEmptyAPI(t *testing
 	}
 }
 
-func TestOpenAIRealtimeModelLive_DoCreateClientSecretRejected(t *testing.T) {
+// TestOpenAIRealtimeModelLive_DoesNotImplementClientSecretOrWebSocketConfig
+// mirrors TS OpenAIRealtimeModelLive, which implements neither the optional
+// doCreateClientSecret nor getWebSocketConfig (both optional in
+// RealtimeModelV4): short-lived browser credentials are not supported over
+// the server-WebSocket flow. The rejection observable to callers is
+// GetRealtimeToken's UnsupportedFunctionalityError (see
+// TestOpenAIRealtimeFactory_GetRealtimeToken_RejectsLive), which mirrors TS
+// createOpenAIRealtimeFactory().getToken()'s explicit instanceof check.
+func TestOpenAIRealtimeModelLive_DoesNotImplementClientSecretOrWebSocketConfig(t *testing.T) {
 	p := New(Config{APIKey: "test-key"})
 	model := NewRealtimeModelLive(p, "gpt-live-1")
-	_, err := model.DoCreateClientSecret(context.Background(), provider.ClientSecretOptions{})
-	if err == nil || !strings.Contains(err.Error(), "Use server WebSocket setup via GetServerWebSocketConfig()") {
-		t.Fatalf("error = %v", err)
+	if _, ok := any(model).(provider.RealtimeClientSecretCreator); ok {
+		t.Fatal("OpenAIRealtimeModelLive must not implement provider.RealtimeClientSecretCreator")
 	}
-	if !providererrors.IsUnsupportedFunctionalityError(err) {
-		t.Fatalf("error = %v, want UnsupportedFunctionalityError", err)
+	if _, ok := any(model).(provider.RealtimeWebSocketConfigProvider); ok {
+		t.Fatal("OpenAIRealtimeModelLive must not implement provider.RealtimeWebSocketConfigProvider")
+	}
+	if _, ok := any(model).(provider.RealtimeServerWebSocketConfigProvider); !ok {
+		t.Fatal("OpenAIRealtimeModelLive must implement provider.RealtimeServerWebSocketConfigProvider")
 	}
 }
 

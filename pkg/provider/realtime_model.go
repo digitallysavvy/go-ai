@@ -8,16 +8,43 @@ import (
 // Experimental_RealtimeModelV4 is the experimental provider contract for
 // bidirectional realtime audio/text models. It mirrors the TypeScript AI SDK's
 // Experimental_RealtimeModelV4 surface while using Go method names.
+//
+// DoCreateClientSecret and GetWebSocketConfig are NOT part of this interface
+// (unlike an earlier version of this SDK): in TS's realtime-model-v4.ts both
+// doCreateClientSecret and getWebSocketConfig are optional (`?`), like
+// getServerWebSocketConfig and the WebRTC methods. Implement
+// RealtimeClientSecretCreator and RealtimeWebSocketConfigProvider to opt in.
 type Experimental_RealtimeModelV4 interface {
 	SpecificationVersion() string
 	Provider() string
 	ModelID() string
 
-	DoCreateClientSecret(ctx context.Context, opts ClientSecretOptions) (ClientSecretResult, error)
-	GetWebSocketConfig(token, url string) WebSocketConfig
 	BuildSessionConfig(config RealtimeSessionConfig) any
 	ParseServerEvent(raw json.RawMessage) ([]RealtimeServerEvent, error)
 	SerializeClientEvent(event RealtimeClientEvent) (json.RawMessage, error)
+}
+
+// RealtimeClientSecretCreator is an optional Experimental_RealtimeModelV4
+// capability for server-side minting of an ephemeral client secret used to
+// authenticate a browser-side WebSocket connection. Mirrors TS's optional
+// doCreateClientSecret?() (realtime-model-v4.ts). A model that authenticates
+// the connection itself (see RealtimeServerWebSocketConfigProvider) or that
+// only supports WebRTC need not implement this, matching TS
+// OpenAIRealtimeModelLive, which implements neither doCreateClientSecret nor
+// getWebSocketConfig.
+type RealtimeClientSecretCreator interface {
+	DoCreateClientSecret(ctx context.Context, opts ClientSecretOptions) (ClientSecretResult, error)
+}
+
+// RealtimeWebSocketConfigProvider is an optional Experimental_RealtimeModelV4
+// capability for browser-side construction of the WebSocket URL and
+// subprotocols to use when connecting with a client secret minted via
+// RealtimeClientSecretCreator. Mirrors TS's optional getWebSocketConfig?()
+// (realtime-model-v4.ts). Not implemented by a model that only supports a
+// server-authenticated connection (RealtimeServerWebSocketConfigProvider) or
+// WebRTC.
+type RealtimeWebSocketConfigProvider interface {
+	GetWebSocketConfig(token, url string) WebSocketConfig
 }
 
 // RealtimeHealthCheckResponder is an optional realtime model extension. It
