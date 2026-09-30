@@ -636,6 +636,9 @@ code.
   `StreamText`, and `GenerateObject`/`StreamObject` — they used to leak.
 - Text parts keep their `providerMetadata`; each `text-start` begins a new
   text part.
+- Tool-caller messages (for example code-mode's tool catalog) now persist
+  across steps in `GenerateText`, `StreamText` and `ToolLoopAgent`, and
+  `PrepareStep`'s `InitialMessages` stays the raw prompt, matching TS.
 
 ### Anthropic
 

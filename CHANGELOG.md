@@ -117,7 +117,8 @@ step-by-step upgrade instructions are in
   WebSocket connections now fail instead of finishing silently on a dropped
   connection; telemetry spans no longer leak on error/abort; harness
   Codex/host-tool/turn-release fixes; a stray leading "L" in ~88 error
-  strings. Full list in the release notes' Bug Fixes section.
+  strings; tool-caller messages (e.g. code-mode's tool catalog) persist
+  across steps. Full list in the release notes' Bug Fixes section.
 
 ### Security
 
