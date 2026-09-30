@@ -1,6 +1,10 @@
 package bedrock
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+)
 
 func TestBedrockSerializeDeserializeWithModelOptions(t *testing.T) {
 	budget := 2048
@@ -68,5 +72,93 @@ func TestBedrockThinkingAndReasoningConfigShapes(t *testing.T) {
 	}
 	if cfg.ReasoningConfig == nil || cfg.ReasoningConfig.MaxReasoningEffort != "high" || cfg.ServiceTier != "priority" {
 		t.Fatalf("reasoning config mismatch: %#v", cfg)
+	}
+}
+
+func TestBedrockEmbeddingModelSerializeRoundTrip(t *testing.T) {
+	p := New(Config{
+		AWSAccessKeyID:     "k",
+		AWSSecretAccessKey: "s",
+		Region:             "us-east-1",
+	})
+	modelAny, err := p.EmbeddingModelWithOptions("amazon.titan-embed-text-v2:0", &EmbeddingOptions{
+		ModelFamily: "titan",
+	})
+	if err != nil {
+		t.Fatalf("EmbeddingModelWithOptions error = %v", err)
+	}
+	model := modelAny.(*EmbeddingModel)
+
+	serialized := model.Serialize()
+	if serialized.Provider != "amazon-bedrock" || serialized.ModelID != "amazon.titan-embed-text-v2:0" {
+		t.Fatalf("serialized mismatch: %#v", serialized)
+	}
+	if _, ok := serialized.Config["awsAccessKeyID"]; ok {
+		t.Fatalf("serialized config should not include credentials: %#v", serialized.Config)
+	}
+	rawOpts, ok := serialized.Config["modelOptions"].(map[string]interface{})
+	if !ok || rawOpts["modelFamily"] != "titan" {
+		t.Fatalf("serialized model options missing: %#v", serialized.Config)
+	}
+
+	restored, err := deserializeEmbeddingModel(serialized)
+	if err != nil {
+		t.Fatalf("deserializeEmbeddingModel error = %v", err)
+	}
+	if restored.Provider() != "amazon-bedrock" || restored.ModelID() != "amazon.titan-embed-text-v2:0" {
+		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
+	}
+
+	viaRegistry, err := provider.DeserializeEmbeddingModel(provider.SerializedModel{
+		Provider: serialized.Provider,
+		ModelID:  serialized.ModelID,
+		Config:   serialized.Config,
+	})
+	if err != nil {
+		t.Fatalf("provider.DeserializeEmbeddingModel error = %v", err)
+	}
+	if viaRegistry.ModelID() != "amazon.titan-embed-text-v2:0" {
+		t.Fatalf("registry restored mismatch: %#v", viaRegistry)
+	}
+}
+
+func TestBedrockImageModelSerializeRoundTrip(t *testing.T) {
+	p := New(Config{
+		AWSAccessKeyID:     "k",
+		AWSSecretAccessKey: "s",
+		Region:             "us-east-1",
+	})
+	modelAny, err := p.ImageModel("amazon.titan-image-generator-v2:0")
+	if err != nil {
+		t.Fatalf("ImageModel error = %v", err)
+	}
+	model := modelAny.(*ImageModel)
+
+	serialized := model.Serialize()
+	if serialized.Provider != "amazon-bedrock" || serialized.ModelID != "amazon.titan-image-generator-v2:0" {
+		t.Fatalf("serialized mismatch: %#v", serialized)
+	}
+	if _, ok := serialized.Config["awsSecretAccessKey"]; ok {
+		t.Fatalf("serialized config should not include credentials: %#v", serialized.Config)
+	}
+
+	restored, err := deserializeImageModel(serialized)
+	if err != nil {
+		t.Fatalf("deserializeImageModel error = %v", err)
+	}
+	if restored.Provider() != "amazon-bedrock" || restored.ModelID() != "amazon.titan-image-generator-v2:0" {
+		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
+	}
+
+	viaRegistry, err := provider.DeserializeImageModel(provider.SerializedModel{
+		Provider: serialized.Provider,
+		ModelID:  serialized.ModelID,
+		Config:   serialized.Config,
+	})
+	if err != nil {
+		t.Fatalf("provider.DeserializeImageModel error = %v", err)
+	}
+	if viaRegistry.ModelID() != "amazon.titan-image-generator-v2:0" {
+		t.Fatalf("registry restored mismatch: %#v", viaRegistry)
 	}
 }
