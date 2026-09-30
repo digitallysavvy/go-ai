@@ -17,9 +17,9 @@ package's own `experimental_` naming convention on every exported entry
 point. Its API may change in a minor version. Go names drop the
 `experimental_` prefix.
 
-See [Known differences: code-mode concurrent approvals are not
-batched](../../08-migration-guides/known-differences.mdx#code-mode-concurrent-approvals-are-not-batched)
-for a behavior difference from the TypeScript (V8-based) runtime.
+See [Known differences: code-mode never-settling promises and in-flight
+limits](../../08-migration-guides/known-differences.mdx#code-mode-never-settling-promises-and-in-flight-limits)
+for the behavior differences from the TypeScript (V8-based) runtime.
 
 ## Package
 
@@ -103,7 +103,10 @@ random key is generated at process start if it's never called.
 ## Vendored dependency
 
 `pkg/codemode` vendors a patched copy of `fastschema/qjs` v0.0.6 at
-`pkg/internal/third_party/qjs` (MIT license) to fix two memory-read bugs;
+`pkg/internal/third_party/qjs` (MIT license) to fix two memory-read bugs
+and to add a job-queue quiescence hook (used to batch concurrent approval
+requests). `qjs.wasm` is rebuilt from pinned, checksum-verified sources by
+`pkg/internal/third_party/qjs/build/build.sh`.
 `github.com/tetratelabs/wazero` is a direct dependency.
 
 ## See Also

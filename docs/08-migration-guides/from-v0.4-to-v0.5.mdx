@@ -896,7 +896,7 @@ existing calls — review them if they're relevant to your application:
 - **Async video**: `ai.ExperimentalStartVideo` / `ExperimentalGetVideoStatus` for fal, Google, Google Vertex, Replicate, and xAI. See [Video Generation](../03-ai-sdk-core/38-video-generation.mdx).
 - **Speech translation (experimental)**: Google and OpenAI `SpeechTranslationModel`. See [Speech](../03-ai-sdk-core/37-speech.mdx#speech-translation-experimental).
 - **Batch API / Evaluation (experimental)**: `ai.ExperimentalStartBatch` family and `ai.ExperimentalEvaluate`, implemented by Anthropic, OpenAI, and Google.
-- **Code-mode (experimental)**: `pkg/codemode` runs model-written JavaScript in a QuickJS-on-WebAssembly sandbox. See [pkg/codemode reference](../07-reference/ai/code-mode.mdx) and [Known differences](./known-differences.mdx#code-mode-concurrent-approvals-are-not-batched).
+- **Code-mode (experimental)**: `pkg/codemode` runs model-written JavaScript in a QuickJS-on-WebAssembly sandbox. See [pkg/codemode reference](../07-reference/ai/code-mode.mdx) and [Known differences](./known-differences.mdx#code-mode-never-settling-promises-and-in-flight-limits).
 - **Harness**: `pkg/harness` (Go port of `@ai-sdk/harness`) with adapters for Claude Code, Codex, OpenCode, Deep Agents, ACP, Cursor, GitHub Copilot, Grok Build, and a Vercel Sandbox provider. See [pkg/harness/sandbox/vercel reference](../07-reference/ai/harness-sandbox-vercel.mdx).
 - **New providers**: GMI Cloud, Z.AI, MiniMax, TypeSafe AI, Fish Audio, Cartesia, Rev.ai, Hume, Luma.
 - **LlamaIndex**: `pkg/llamaindex.ToUIMessageStream` adapts a LlamaIndex chat-engine delta stream to UI message stream chunks. See [pkg/llamaindex reference](../07-reference/ai/llamaindex.mdx).

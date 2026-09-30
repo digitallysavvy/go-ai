@@ -477,12 +477,17 @@ code.
   `ToCodeModeApprovalMessages`); `SetCodeModeContinuationSigningKey`.
 - It vendors a patched copy of fastschema/qjs v0.0.6
   (`pkg/internal/third_party/qjs`, MIT license) to fix two memory-read
-  bugs.
+  bugs. `qjs.wasm` is rebuilt from pinned, checksum-verified upstream
+  sources with a job-queue quiescence patch, and can be reproduced with
+  `pkg/internal/third_party/qjs/build/build.sh`.
 - TypeScript annotations in model-written code are stripped with Node
   `stripTypeScriptTypes` semantics: generics, `as` / `satisfies`,
   interfaces and type aliases, class modifiers, non-null assertions and
   `import type`. Syntax the stripper doesn't support, such as `enum`, is
   passed to the JavaScript engine unchanged, as in TS.
+- Concurrent tool calls (`Promise.all`) that need approval are batched into
+  one interrupt, as in TS. Tool calls are real async host functions, and a
+  call awaiting approval stays pending until the job queue is idle.
 
 ### MCP
 
@@ -796,9 +801,10 @@ code.
 - Vercel Sandbox harness provider (`pkg/harness/sandbox/vercel`) has no
   `@vercel/oidc` token-refresh loop; `VERCEL_OIDC_TOKEN` is re-read on each
   call (explicit `Token`/`TeamID`/`ProjectID` also work).
-- Code-mode: approvals requested concurrently inside one `Promise.all`-style
-  batch come back as a chain of single interrupts rather than one batch,
-  because the embedded QuickJS build exposes no job-queue quiescence hook.
+- Code-mode: a promise that never settles and has no pending tool call
+  fails fast with a `ProtocolError`, where TS waits for its execution
+  timeout. `MaxInFlightBridgeRequests` counts the calls in an approval
+  batch.
 - See `docs/08-migration-guides/known-differences.mdx` for the full,
   maintained list, including Go-specific notes on Bedrock's lazy `fetch`
   resolution having no direct runtime equivalent.
@@ -826,8 +832,10 @@ From `go.mod`:
 | `golang.org/x/time` | v0.15.0 |
 
 `pkg/internal/third_party/qjs` vendors a patched copy of fastschema/qjs
-v0.0.6 (MIT license), fixing two memory-read bugs, compiled to
-`qjs.wasm` and run under `wazero`. It is not a Go module dependency; it
+v0.0.6 (MIT license), fixing two memory-read bugs and adding a job-queue
+quiescence patch, compiled to `qjs.wasm` (rebuilt reproducibly from
+pinned, checksum-verified sources by `build/build.sh`) and run under
+`wazero`. It is not a Go module dependency; it
 ships as source + WASM inside the repository.
 
 ## Requirements

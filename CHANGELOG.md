@@ -26,7 +26,8 @@ step-by-step upgrade instructions are in
 - **`pkg/codemode`** (experimental): runs model-written JavaScript in a
   QuickJS-on-WebAssembly sandbox, with signed continuations, interrupts, and
   approval flows; TypeScript annotations are stripped with Node
-  `stripTypeScriptTypes` semantics.
+  `stripTypeScriptTypes` semantics; concurrent tool calls (`Promise.all`)
+  that need approval are batched into one interrupt.
 - **`pkg/harness`** (Go port of `@ai-sdk/harness`): Agent/AgentSession,
   `StopWhen`, tool approvals, telemetry; adapters for Claude Code, Codex,
   OpenCode, Deep Agents, ACP, Cursor, fx, GitHub Copilot, Grok Build; a
@@ -82,6 +83,9 @@ step-by-step upgrade instructions are in
   (`ai-sdk/<provider>/<version> runtime/go/<goVersion>`, plus `ai/<version>`
   from the non-streaming `pkg/ai` calls; `StreamText`, `StreamObject` and
   `Rerank` add no `ai/` tag), matching the TypeScript SDK.
+- Vendored `qjs.wasm` rebuilt from pinned upstream sources with a job-queue
+  quiescence patch; reproducible via
+  `pkg/internal/third_party/qjs/build/build.sh`.
 - Internal refactor: the WebSocket transcription and translation streams
   share a session core in `pkg/providerutils/websocket` (`Session[T]`,
   `ReportError`, `PumpAudio`, `PumpAudioAfterReady`). No behavior change.
