@@ -251,7 +251,7 @@ If you encounter timeout errors, check the [troubleshooting guide](../troublesho
 - **Prerequisites**: "Before proceeding, ensure you understand..."
 - **Related topics**: "See also:"
 - **Deep dives**: "For more details, see..."
-- **API docs**: "API reference: [Type Name](path)"
+- **API docs**: "API reference: `[Type Name](path)`"
 
 ### Bidirectional Linking
 When creating new documentation:
