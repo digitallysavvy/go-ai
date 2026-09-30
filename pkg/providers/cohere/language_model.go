@@ -53,7 +53,7 @@ func (m *LanguageModel) SupportsTools() bool {
 
 // SupportsStructuredOutput returns whether the model supports structured output
 func (m *LanguageModel) SupportsStructuredOutput() bool {
-	return false
+	return true
 }
 
 // SupportsImageInput returns whether the model accepts image inputs
@@ -63,7 +63,7 @@ func (m *LanguageModel) SupportsImageInput() bool {
 
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-	reqBody, err := m.buildRequestBody(opts)
+	reqBody, warnings, err := m.buildRequestBodyWithWarnings(opts)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
@@ -72,12 +72,17 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	return m.convertV2Response(response)
+	result, err := m.convertV2Response(response)
+	if err != nil {
+		return nil, err
+	}
+	result.Warnings = append(warnings, result.Warnings...)
+	return result, nil
 }
 
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
-	reqBody, err := m.buildRequestBody(opts)
+	reqBody, warnings, err := m.buildRequestBodyWithWarnings(opts)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
@@ -90,10 +95,21 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	return newCohereV2Stream(httpResp.Body), nil
+	return streaming.NewWarningsStream(newCohereV2Stream(httpResp.Body), warnings), nil
 }
 
+// buildRequestBody builds the Cohere v2 chat request body without warnings.
+// Kept for callers (and tests) that don't need the warning slice.
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions) (map[string]interface{}, error) {
+	body, _, err := m.buildRequestBodyWithWarnings(opts)
+	return body, err
+}
+
+// buildRequestBodyWithWarnings builds the Cohere v2 chat request body,
+// mirroring TS CohereChatLanguageModel.getArgs: standardized settings
+// (frequency_penalty, presence_penalty, p, k, seed, stop_sequences),
+// response_format (json mode), tools/tool_choice, and thinking.
+func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOptions) (map[string]interface{}, []types.Warning, error) {
 	body := map[string]interface{}{"model": m.modelID}
 	var messages []map[string]interface{}
 	var documents []map[string]interface{}
@@ -111,7 +127,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions) (map[st
 	} else if opts.Prompt.IsMessages() {
 		cohereMsgs, cohereDocs, err := m.toCohereMessages(opts.Prompt.Messages)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		messages = append(messages, cohereMsgs...)
 		documents = append(documents, cohereDocs...)
@@ -120,16 +136,59 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions) (map[st
 	if len(documents) > 0 {
 		body["documents"] = documents
 	}
-	if opts.Temperature != nil {
-		body["temperature"] = *opts.Temperature
+
+	// standardized settings:
+	if opts.FrequencyPenalty != nil {
+		body["frequency_penalty"] = *opts.FrequencyPenalty
+	}
+	if opts.PresencePenalty != nil {
+		body["presence_penalty"] = *opts.PresencePenalty
 	}
 	if opts.MaxTokens != nil {
 		body["max_tokens"] = *opts.MaxTokens
 	}
+	if opts.Temperature != nil {
+		body["temperature"] = *opts.Temperature
+	}
+	if opts.TopP != nil {
+		body["p"] = *opts.TopP
+	}
+	if opts.TopK != nil {
+		body["k"] = *opts.TopK
+	}
+	if opts.Seed != nil {
+		body["seed"] = *opts.Seed
+	}
+	if len(opts.StopSequences) > 0 {
+		body["stop_sequences"] = opts.StopSequences
+	}
+
+	// response format:
+	if opts.ResponseFormat != nil && opts.ResponseFormat.Type == "json" {
+		responseFormat := map[string]interface{}{"type": "json_object"}
+		if opts.ResponseFormat.Schema != nil {
+			responseFormat["json_schema"] = opts.ResponseFormat.Schema
+		}
+		body["response_format"] = responseFormat
+	}
+
+	// tools:
+	cohereTools, cohereToolChoice, toolWarnings := prepareCohereTools(opts.Tools, opts.ToolChoice, opts.ToolChoice.Type != "")
+	var warnings []types.Warning
+	warnings = append(warnings, toolWarnings...)
+	if cohereTools != nil {
+		body["tools"] = cohereTools
+	}
+	if cohereToolChoice != nil {
+		body["tool_choice"] = cohereToolChoice
+	}
+
+	// reasoning:
 	if thinking := m.resolveThinking(opts); thinking != nil {
 		body["thinking"] = thinking
 	}
-	return body, nil
+
+	return body, warnings, nil
 }
 
 func (m *LanguageModel) toCohereMessages(src []types.Message) ([]map[string]interface{}, []map[string]interface{}, error) {
@@ -257,6 +316,24 @@ func cohereImageDetail(providerOptions map[string]interface{}) string {
 }
 
 func (m *LanguageModel) resolveThinking(opts *provider.GenerateOptions) map[string]interface{} {
+	// providerOptions.cohere.thinking takes precedence over top-level
+	// Reasoning (TS resolveCohereThinking: `if (cohereOptions.thinking) { ... }`).
+	if cohereOpts, ok := opts.ProviderOptions["cohere"].(map[string]interface{}); ok {
+		if thinkingRaw, present := cohereOpts["thinking"]; present && thinkingRaw != nil {
+			if thinkingMap, ok := thinkingRaw.(map[string]interface{}); ok {
+				thinkingType := "enabled"
+				if t, ok := thinkingMap["type"].(string); ok && t != "" {
+					thinkingType = t
+				}
+				result := map[string]interface{}{"type": thinkingType}
+				if tb, ok := thinkingMap["tokenBudget"]; ok && tb != nil {
+					result["token_budget"] = tb
+				}
+				return result
+			}
+		}
+	}
+
 	if opts.Reasoning == nil {
 		return nil
 	}
@@ -329,6 +406,40 @@ func (m *LanguageModel) convertV2Response(resp cohereV2Response) (*types.Generat
 			}
 		}
 	}
+
+	// citations -> source content parts, matching TS doGenerate's citation
+	// loop (cohere-chat-language-model.ts:196-214). Only doGenerate emits
+	// these; Cohere's streaming citation-start/citation-end events carry no
+	// accumulable citation payload in the TS SDK's limited chunk schema, so
+	// streaming intentionally ignores them (see cohereV2Stream.Next default
+	// case).
+	for _, citation := range resp.Message.Citations {
+		title := "Document"
+		if len(citation.Sources) > 0 && citation.Sources[0].Document != nil && citation.Sources[0].Document.Title != "" {
+			title = citation.Sources[0].Document.Title
+		}
+		cohereMeta := map[string]interface{}{
+			"start":   citation.Start,
+			"end":     citation.End,
+			"text":    citation.Text,
+			"sources": citation.Sources,
+		}
+		if citation.Type != "" {
+			cohereMeta["citationType"] = citation.Type
+		}
+		metaJSON, err := json.Marshal(map[string]interface{}{"cohere": cohereMeta})
+		if err != nil {
+			return nil, err
+		}
+		result.Content = append(result.Content, types.SourceContent{
+			SourceType:       "document",
+			ID:               streaming.GenerateID(),
+			MediaType:        "text/plain",
+			Title:            title,
+			ProviderMetadata: metaJSON,
+		})
+	}
+
 	for _, tc := range resp.Message.ToolCalls {
 		args, err := parseCohereToolArguments(tc.Function.Arguments)
 		if err != nil {
@@ -349,7 +460,7 @@ func (m *LanguageModel) handleError(err error) error {
 
 func mapCohereV2FinishReason(reason string) types.FinishReason {
 	switch reason {
-	case "COMPLETE":
+	case "COMPLETE", "STOP_SEQUENCE":
 		return types.FinishReasonStop
 	case "MAX_TOKENS":
 		return types.FinishReasonLength
@@ -379,9 +490,33 @@ type cohereV2Response struct {
 				Arguments string `json:"arguments"`
 			} `json:"function"`
 		} `json:"tool_calls"`
+		Citations []cohereCitation `json:"citations"`
 	} `json:"message"`
 	FinishReason string          `json:"finish_reason"`
 	Usage        json.RawMessage `json:"usage"`
+}
+
+// cohereCitation mirrors the Cohere v2 chat citation shape, matching TS
+// cohere-chat-language-model.ts's inline citation type used in the
+// `cohereChatResponseSchema.message.citations` field.
+type cohereCitation struct {
+	Start   int                    `json:"start"`
+	End     int                    `json:"end"`
+	Text    string                 `json:"text"`
+	Sources []cohereCitationSource `json:"sources"`
+	Type    string                 `json:"type,omitempty"`
+}
+
+type cohereCitationSource struct {
+	Type     string             `json:"type,omitempty"`
+	ID       string             `json:"id,omitempty"`
+	Document *cohereCitationDoc `json:"document,omitempty"`
+}
+
+type cohereCitationDoc struct {
+	ID    string `json:"id,omitempty"`
+	Text  string `json:"text"`
+	Title string `json:"title"`
 }
 
 type cohereV2Stream struct {
