@@ -9,6 +9,140 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
 
+// TestProviderAPIKeyFromEnv ports loadFalApiKey's precedence (fal-provider.ts:
+// explicit apiKey wins; otherwise FAL_API_KEY, falling back to FAL_KEY).
+func TestProviderAPIKeyFromEnv(t *testing.T) {
+	t.Run("explicit APIKey wins over env vars", func(t *testing.T) {
+		t.Setenv("FAL_API_KEY", "from-fal-api-key")
+		t.Setenv("FAL_KEY", "from-fal-key")
+		p := New(Config{APIKey: "explicit-key"})
+		if got := p.client.Headers()["Authorization"]; got != "Key explicit-key" {
+			t.Fatalf("Authorization = %q, want Key explicit-key", got)
+		}
+	})
+
+	t.Run("FAL_API_KEY used when APIKey unset", func(t *testing.T) {
+		t.Setenv("FAL_API_KEY", "from-fal-api-key")
+		t.Setenv("FAL_KEY", "from-fal-key")
+		p := New(Config{})
+		if got := p.client.Headers()["Authorization"]; got != "Key from-fal-api-key" {
+			t.Fatalf("Authorization = %q, want Key from-fal-api-key", got)
+		}
+	})
+
+	t.Run("falls back to FAL_KEY when FAL_API_KEY unset", func(t *testing.T) {
+		t.Setenv("FAL_API_KEY", "")
+		t.Setenv("FAL_KEY", "from-fal-key")
+		p := New(Config{})
+		if got := p.client.Headers()["Authorization"]; got != "Key from-fal-key" {
+			t.Fatalf("Authorization = %q, want Key from-fal-key", got)
+		}
+	})
+}
+
+// TestProviderConfigHeaders_AppliedToAllModelRequests verifies
+// FalProviderSettings.headers (Go: Config.Headers) is merged into every
+// model type's requests -- image, video, speech, transcription -- matching
+// the TS SDK's single getHeaders() shared by every model factory
+// (fal-provider.ts).
+func TestProviderConfigHeaders_AppliedToAllModelRequests(t *testing.T) {
+	var gotImageHeaders, gotSpeechHeaders, gotTranscriptionSubmitHeaders http.Header
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fal-ai/fast-sdxl", func(w http.ResponseWriter, r *http.Request) {
+		gotImageHeaders = r.Header
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"images":[{"url":"data:image/png;base64,ZmFrZQ==","content_type":"image/png"}]}`))
+	})
+	mux.HandleFunc("/fal-ai/minimax/speech-02-hd", func(w http.ResponseWriter, r *http.Request) {
+		gotSpeechHeaders = r.Header
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"audio":{"url":"http://` + r.Host + `/files/test.mp3"}}`))
+	})
+	mux.HandleFunc("/files/test.mp3", speechAudioHandler(make([]byte, 10), nil))
+	mux.HandleFunc("/fal-ai/wizper", func(w http.ResponseWriter, r *http.Request) {
+		gotTranscriptionSubmitHeaders = r.Header
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"request_id":"test-id"}`))
+	})
+	mux.HandleFunc("/fal-ai/wizper/requests/test-id", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"text":"hi"}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	p := New(Config{
+		APIKey:  "k",
+		BaseURL: srv.URL,
+		Headers: map[string]string{"X-Custom-Provider-Header": "provider-value"},
+	})
+	p.speechHost = srv.URL
+	p.queueHost = srv.URL
+
+	img := NewImageModel(p, "fal-ai/fast-sdxl")
+	if _, err := img.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "test"}); err != nil {
+		t.Fatalf("ImageModel.DoGenerate() error = %v", err)
+	}
+	if got := gotImageHeaders.Get("X-Custom-Provider-Header"); got != "provider-value" {
+		t.Fatalf("image request X-Custom-Provider-Header = %q", got)
+	}
+
+	speech := NewSpeechModel(p, "fal-ai/minimax/speech-02-hd")
+	if _, err := speech.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "hi"}); err != nil {
+		t.Fatalf("SpeechModel.DoGenerate() error = %v", err)
+	}
+	if got := gotSpeechHeaders.Get("X-Custom-Provider-Header"); got != "provider-value" {
+		t.Fatalf("speech request X-Custom-Provider-Header = %q", got)
+	}
+
+	transcription := NewTranscriptionModel(p, "wizper")
+	if _, err := transcription.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte("a"), MimeType: "audio/wav"}); err != nil {
+		t.Fatalf("TranscriptionModel.DoTranscribe() error = %v", err)
+	}
+	if got := gotTranscriptionSubmitHeaders.Get("X-Custom-Provider-Header"); got != "provider-value" {
+		t.Fatalf("transcription request X-Custom-Provider-Header = %q", got)
+	}
+}
+
+// TestProviderConfigHeaders_RequestHeadersOverrideProviderHeaders verifies
+// combineHeaders' precedence: a per-request header of the same name
+// overrides the provider-level Config.Headers value.
+func TestProviderConfigHeaders_RequestHeadersOverrideProviderHeaders(t *testing.T) {
+	var gotHeaders http.Header
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fal-ai/minimax/speech-02-hd", func(w http.ResponseWriter, r *http.Request) {
+		gotHeaders = r.Header
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"audio":{"url":"http://` + r.Host + `/files/test.mp3"}}`))
+	})
+	mux.HandleFunc("/files/test.mp3", speechAudioHandler(make([]byte, 10), nil))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	p := New(Config{
+		APIKey:  "k",
+		Headers: map[string]string{"X-Custom-Header": "provider-value"},
+	})
+	p.speechHost = srv.URL
+
+	speech := NewSpeechModel(p, "fal-ai/minimax/speech-02-hd")
+	_, err := speech.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{
+		Text:    "hi",
+		Headers: map[string]string{"X-Custom-Header": "request-value"},
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate() error = %v", err)
+	}
+	if got := gotHeaders.Get("X-Custom-Header"); got != "request-value" {
+		t.Fatalf("X-Custom-Header = %q, want request-value (request header should win)", got)
+	}
+}
+
 func TestProviderDefaultsAndUnsupportedModels(t *testing.T) {
 	p := New(Config{APIKey: "k"})
 	if p.Name() != "fal" || p.Client() == nil {

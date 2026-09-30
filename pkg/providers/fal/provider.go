@@ -2,6 +2,7 @@ package fal
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -42,24 +43,39 @@ type Provider struct {
 
 // Config contains configuration for the Fal.ai provider
 type Config struct {
-	// APIKey is the Fal.ai API key
+	// APIKey is the Fal.ai API key. Falls back to the FAL_API_KEY
+	// environment variable, then to FAL_KEY, matching the TS SDK's
+	// loadFalApiKey (fal-provider.ts).
 	APIKey string
 
 	// BaseURL is the base URL for the Fal.ai API (optional)
 	BaseURL string
+
+	// Headers are custom HTTP headers to include in every request, matching
+	// the TS SDK's FalProviderSettings.headers (fal-provider.ts). Applied to
+	// all model types (image, video, speech, transcription), mirroring the
+	// TS provider's single getHeaders() used by every model factory.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // New creates a new Fal.ai provider with the given configuration
 func New(cfg Config) *Provider {
+	if cfg.APIKey == "" {
+		cfg.APIKey = os.Getenv("FAL_API_KEY")
+	}
+	if cfg.APIKey == "" {
+		cfg.APIKey = os.Getenv("FAL_KEY")
+	}
+
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
 
-	headers := map[string]string{
+	headers := http.MergeHeaders(map[string]string{
 		"Authorization": "Key " + cfg.APIKey,
 		"Content-Type":  "application/json",
-	}
+	}, cfg.Headers)
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,

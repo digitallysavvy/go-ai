@@ -3,6 +3,7 @@ package fal
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -322,6 +323,54 @@ func TestFalTranscriptionModel_PollsThroughStillInProgress(t *testing.T) {
 	}
 	if attempts < 3 {
 		t.Fatalf("attempts = %d, want >= 3", attempts)
+	}
+}
+
+// TestFalTranscriptionModel_ContextCancellationDuringPolling verifies the
+// polling loop honors ctx cancellation instead of blocking for the full
+// pollInterval/timeout -- Go-specific behavior (the TS SDK relies on
+// AbortSignal instead of context.Context, but the equivalent guarantee is
+// that a caller-initiated cancellation stops the poll promptly).
+func TestFalTranscriptionModel_ContextCancellationDuringPolling(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fal-ai/wizper", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"request_id":"test-id"}`))
+	})
+	mux.HandleFunc("/fal-ai/wizper/requests/test-id", func(w http.ResponseWriter, r *http.Request) {
+		// Always report "still in progress" so the only way doTranscribe
+		// returns is via ctx cancellation or the (much longer) timeout.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(400)
+		_, _ = w.Write([]byte(`{"detail":"Request is still in progress"}`))
+	})
+
+	m, srv := newTestTranscriptionModel(t, mux)
+	defer srv.Close()
+
+	origInterval := falTranscriptionPollInterval
+	falTranscriptionPollInterval = 20 * time.Millisecond
+	defer func() { falTranscriptionPollInterval = origInterval }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := m.DoTranscribe(ctx, &provider.TranscriptionOptions{
+		Audio:    []byte("a"),
+		MimeType: "audio/wav",
+	})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error from ctx cancellation")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
+	}
+	if elapsed >= falTranscriptionPollTimeout {
+		t.Fatalf("elapsed = %v, want well under the %v poll timeout (ctx should cut polling short)", elapsed, falTranscriptionPollTimeout)
 	}
 }
 
