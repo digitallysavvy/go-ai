@@ -279,7 +279,12 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 		})
 		res, callErr := opts.Model.DoEmbed(callCtx, opts.Input, embedModelOpts)
 		if callErr != nil {
-			wrappedErr := fmt.Errorf("embedding failed: %w", callErr)
+			// TS embed()'s try/catch rethrows the doEmbed error unmodified
+			// (`catch (error) { ...; throw error; }`) — no "embedding
+			// failed: " message wrapping. Once retries are exhausted, the
+			// caller sees exactly the RetryError the retry utility builds
+			// around this raw error.
+			//
 			// Close THIS attempt's span immediately, with error status, so a
 			// later retry attempt's success doesn't leave it open forever
 			// (OnEnd never sweeps leftover per-attempt spans — see the doc
@@ -292,9 +297,9 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 				ModelProvider: opts.Model.Provider(),
 				ModelID:       opts.Model.ModelID(),
 				Values:        []string{opts.Input},
-				Error:         wrappedErr,
+				Error:         callErr,
 			})
-			return wrappedErr
+			return callErr
 		}
 		embeddings := [][]float64{}
 		var usage types.EmbeddingUsage

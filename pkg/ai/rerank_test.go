@@ -302,6 +302,55 @@ func TestRerank_RerankError(t *testing.T) {
 	}
 }
 
+// TestRerank_ExhaustedRetriesErrorIsUnwrappedRetryError verifies that once
+// retries are exhausted, the surfaced error is a RetryError built directly
+// around the provider's doRerank error, with no extra "reranking failed: "
+// (or similar) message wrapped around it anywhere in the chain. Mirrors TS
+// rerank.ts's `catch (error) { ...; throw error; }`, which rethrows the
+// doRerank/retry() error completely unmodified — before this fix, Go wrapped
+// the per-attempt error in `fmt.Errorf("reranking failed: %w", callErr)`
+// before handing it to the retry loop, so the exhausted-retries RetryError's
+// message read "...: reranking failed: <original>" instead of
+// "...: <original>".
+func TestRerank_ExhaustedRetriesErrorIsUnwrappedRetryError(t *testing.T) {
+	t.Parallel()
+
+	providerErr := providererrors.NewProviderError("mock", 500, "internal_error", "boom", nil)
+	model := &testutil.MockRerankingModel{
+		DoRerankFunc: func(ctx context.Context, opts *provider.RerankOptions) (*types.RerankResult, error) {
+			return nil, providerErr
+		},
+	}
+
+	maxRetries := 1
+	_, err := Rerank(context.Background(), RerankOptions{
+		Model:      model,
+		Documents:  []string{"doc1"},
+		Query:      "query",
+		MaxRetries: &maxRetries,
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+
+	var retryErr *providererrors.RetryError
+	if !errors.As(err, &retryErr) {
+		t.Fatalf("expected a *providererrors.RetryError, got: %T %v", err, err)
+	}
+	if !errors.Is(retryErr, providerErr) {
+		t.Errorf("RetryError does not unwrap to the original provider error: %v", retryErr)
+	}
+	if retryErr.LastError != providerErr {
+		t.Errorf("RetryError.LastError = %v, want the exact original provider error", retryErr.LastError)
+	}
+	if strings.Contains(err.Error(), "reranking failed") {
+		t.Errorf("error message must not contain the removed 'reranking failed' wrapper: %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "boom") {
+		t.Errorf("error message must still surface the original error text: %q", err.Error())
+	}
+}
+
 func TestRerank_RerankedDocuments(t *testing.T) {
 	t.Parallel()
 

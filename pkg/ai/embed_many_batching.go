@@ -62,7 +62,12 @@ func embedManyCalls(ctx context.Context, opts EmbedManyOptions, callID string, m
 				Headers:         opts.Headers,
 			})
 			if err != nil {
-				wrappedErr := fmt.Errorf("batch embedding failed: %w", err)
+				// TS embedMany()'s try/catch rethrows the doEmbed error
+				// unmodified (`catch (error) { ...; throw error; }`) — no
+				// "batch embedding failed: " message wrapping. Once retries
+				// are exhausted, the caller sees exactly the RetryError the
+				// retry utility builds around this raw error.
+				//
 				// Close THIS attempt's span immediately, with error status, so
 				// a later retry attempt's success doesn't leave it open forever
 				// (OnEnd never sweeps leftover per-attempt spans — see the doc
@@ -75,9 +80,9 @@ func embedManyCalls(ctx context.Context, opts EmbedManyOptions, callID string, m
 					ModelProvider: model.Provider(),
 					ModelID:       model.ModelID(),
 					Values:        values,
-					Error:         wrappedErr,
+					Error:         err,
 				})
-				return wrappedErr
+				return err
 			}
 			if res == nil {
 				res = &types.EmbeddingsResult{}
