@@ -277,8 +277,14 @@ code.
   tags requests with `ai-sdk/<provider>/<version> runtime/go/<goVersion>`
   (e.g. `ai-sdk/openai/0.5.0 runtime/go/go1.25.1`), appended to any
   `User-Agent` you set. This matches the TypeScript AI SDK and replaces the
-  previous behavior of sending no custom `User-Agent`. `pkg/ai` calls (for
-  example `Embed` / `EmbedMany`) add an `ai/<version>` segment.
+  previous behavior of sending no custom `User-Agent`. The non-streaming
+  `pkg/ai` calls (`GenerateText`, `GenerateObject`, `GenerateImage`,
+  `Embed` / `EmbedMany`, `Transcribe`, `GenerateSpeech`, `GenerateVideo`,
+  `Batch`, `Evaluate`) also add an `ai/<version>` segment; `StreamText`,
+  `StreamObject` and `Rerank` do not, matching TS. Wrapper providers can set
+  the tagged provider name with the new `anthropic.Config.UserAgentName` /
+  `openai.Config.UserAgentName`, or turn the Anthropic tag off with
+  `anthropic.Config.NoUserAgentTag`.
 - Consecutive tool messages are merged into one before every provider call,
   for all providers.
 - `MCPClient.Connect` rejects a negative `MaxRetries` with `MCPClientError`

@@ -75,7 +75,8 @@ step-by-step upgrade instructions are in
   `LegacyOpenTelemetry` span shape overhauled to match TS.
 - **Outgoing requests now carry a `User-Agent` header**
   (`ai-sdk/<provider>/<version> runtime/go/<goVersion>`, plus `ai/<version>`
-  from `pkg/ai`), matching the TypeScript SDK.
+  from the non-streaming `pkg/ai` calls; `StreamText`, `StreamObject` and
+  `Rerank` add no `ai/` tag), matching the TypeScript SDK.
 - Full list of breaking and behavior changes: release notes' Breaking
   Changes and Behavior Changes sections.
 
