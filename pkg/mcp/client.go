@@ -57,7 +57,7 @@ type MCPClient struct {
 	// DefaultMCPClient.elicitationRequestHandler). Only one handler may be
 	// registered at a time.
 	elicitationMu      sync.RWMutex
-	elicitationHandler func(ElicitationRequest) (ElicitResult, error)
+	elicitationHandler func(context.Context, ElicitationRequest) (ElicitResult, error)
 
 	// Client info
 	clientInfo ClientInfo
@@ -702,8 +702,11 @@ func (c *MCPClient) Complete(ctx context.Context, params CompleteRequestParams) 
 // TS MCPClient.onElicitationRequest (mcp-client.ts). Registering a new
 // handler replaces any previously registered one. When no handler is
 // registered, an incoming elicitation/create request is answered with a
-// "Method not found" (-32601) error, matching TS.
-func (c *MCPClient) OnElicitationRequest(handler func(ElicitationRequest) (ElicitResult, error)) {
+// "Method not found" (-32601) error, matching TS. The handler takes a
+// context.Context, following the rest of pkg/mcp's callback signatures (e.g.
+// MCPToolConfig.Execute); it runs on its own goroutine (not the transport's
+// receive loop), so it may safely make further calls on the client.
+func (c *MCPClient) OnElicitationRequest(handler func(context.Context, ElicitationRequest) (ElicitResult, error)) {
 	c.elicitationMu.Lock()
 	c.elicitationHandler = handler
 	c.elicitationMu.Unlock()
@@ -843,8 +846,14 @@ func (c *MCPClient) receiveLoop() {
 			// Handle notification (server -> client)
 			c.handleNotification(msg)
 		} else if IsRequest(msg) {
-			// Handle request (server -> client)
-			c.handleRequest(msg)
+			// Handle request (server -> client) on its own goroutine, matching
+			// TS's non-awaited `this.onRequestMessage(message)` dispatch
+			// (mcp-client.ts transport.onmessage). handleRequest can call a
+			// registered OnElicitationRequest handler, which may itself issue
+			// further client calls (e.g. list/read) whose responses are only
+			// delivered by this very receive loop; running it inline here
+			// would deadlock any such nested call against its own response.
+			go c.handleRequest(msg)
 		}
 	}
 }
@@ -908,12 +917,16 @@ func (c *MCPClient) handleElicitationRequest(msg *MCPMessage) {
 		return
 	}
 
-	result, err := handler(request)
+	result, err := handler(c.ctx, request)
 	if err == nil && result.Action != "accept" && result.Action != "decline" && result.Action != "cancel" {
 		err = fmt.Errorf(`invalid elicit result: action must be "accept", "decline", or "cancel"`)
 	}
 	if err != nil {
-		response := CreateErrorResponse(msg.ID, ErrorCodeInternalError, "Failed to handle elicitation request", nil)
+		// Matches TS: `error instanceof Error ? error.message : 'Failed to
+		// handle elicitation request'` — Go errors always carry a message,
+		// so the actual error text is always sent (never the generic
+		// fallback, which TS only reaches for a non-Error throw).
+		response := CreateErrorResponse(msg.ID, ErrorCodeInternalError, err.Error(), nil)
 		_ = c.transport.Send(c.ctx, response)
 		if c.config.OnError != nil {
 			c.config.OnError(err)

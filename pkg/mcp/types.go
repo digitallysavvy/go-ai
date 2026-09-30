@@ -631,19 +631,22 @@ type ResourceContent struct {
 // (`resources/templates/list`), matching TS ResourceTemplateSchema
 // (types.ts, hash 5d12eaa).
 type MCPResourceTemplate struct {
-	URITemplate string `json:"uriTemplate"`
-	Name        string `json:"name"`
-	Title       string `json:"title,omitempty"`
-	Description string `json:"description,omitempty"`
-	MimeType    string `json:"mimeType,omitempty"`
+	URITemplate string                 `json:"uriTemplate"`
+	Name        string                 `json:"name"`
+	Title       string                 `json:"title,omitempty"`
+	Description string                 `json:"description,omitempty"`
+	MimeType    string                 `json:"mimeType,omitempty"`
+	Meta        map[string]interface{} `json:"_meta,omitempty"`
 }
 
 // ListResourceTemplatesResult represents the result of listing resource
 // templates via `resources/templates/list`, matching TS
-// ListResourceTemplatesResultSchema (types.ts). Unlike ListResourcesResult,
-// this result is not paginated in the MCP spec (no nextCursor field).
+// ListResourceTemplatesResultSchema (types.ts: ResultSchema.extend({
+// resourceTemplates })). Unlike ListResourcesResult, this result is not
+// paginated in the MCP spec (no nextCursor field).
 type ListResourceTemplatesResult struct {
-	ResourceTemplates []MCPResourceTemplate `json:"resourceTemplates"`
+	ResourceTemplates []MCPResourceTemplate  `json:"resourceTemplates"`
+	Meta              map[string]interface{} `json:"_meta,omitempty"`
 }
 
 // ListPromptsParams represents parameters for listing prompts

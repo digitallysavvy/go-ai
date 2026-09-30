@@ -964,7 +964,7 @@ func TestMCPClientElicitationRequestRoundTrip(t *testing.T) {
 	defer client.Close() //nolint:errcheck
 
 	var gotRequest ElicitationRequest
-	client.OnElicitationRequest(func(req ElicitationRequest) (ElicitResult, error) {
+	client.OnElicitationRequest(func(ctx context.Context, req ElicitationRequest) (ElicitResult, error) {
 		gotRequest = req
 		return ElicitResult{Action: "accept", Content: map[string]interface{}{"name": "Ada"}}, nil
 	})
@@ -1025,7 +1025,7 @@ func TestMCPClientElicitationRequestInvalidParams(t *testing.T) {
 	}
 	defer client.Close() //nolint:errcheck
 
-	client.OnElicitationRequest(func(req ElicitationRequest) (ElicitResult, error) {
+	client.OnElicitationRequest(func(ctx context.Context, req ElicitationRequest) (ElicitResult, error) {
 		t.Fatal("handler should not be invoked for invalid params")
 		return ElicitResult{}, nil
 	})
@@ -1061,7 +1061,7 @@ func TestMCPClientElicitationRequestHandlerErrorRespondsInternalError(t *testing
 	}
 	defer client.Close() //nolint:errcheck
 
-	client.OnElicitationRequest(func(req ElicitationRequest) (ElicitResult, error) {
+	client.OnElicitationRequest(func(ctx context.Context, req ElicitationRequest) (ElicitResult, error) {
 		return ElicitResult{}, fmt.Errorf("handler boom")
 	})
 
@@ -1075,6 +1075,11 @@ func TestMCPClientElicitationRequestHandlerErrorRespondsInternalError(t *testing
 	response := awaitResponseTo(t, transport, "elicit-4")
 	if response.Error == nil || response.Error.Code != ErrorCodeInternalError {
 		t.Fatalf("response.Error = %#v, want code %d", response.Error, ErrorCodeInternalError)
+	}
+	// Matches TS: `error instanceof Error ? error.message : ...` — the
+	// handler's actual error message is sent, not a generic fallback.
+	if response.Error.Message != "handler boom" {
+		t.Fatalf("response.Error.Message = %q, want %q", response.Error.Message, "handler boom")
 	}
 
 	deadline := time.After(time.Second)
@@ -1105,7 +1110,7 @@ func TestMCPClientElicitationRequestInvalidActionRespondsInternalError(t *testin
 	}
 	defer client.Close() //nolint:errcheck
 
-	client.OnElicitationRequest(func(req ElicitationRequest) (ElicitResult, error) {
+	client.OnElicitationRequest(func(ctx context.Context, req ElicitationRequest) (ElicitResult, error) {
 		return ElicitResult{Action: "not-a-real-action"}, nil
 	})
 
@@ -1119,6 +1124,51 @@ func TestMCPClientElicitationRequestInvalidActionRespondsInternalError(t *testin
 	response := awaitResponseTo(t, transport, "elicit-5")
 	if response.Error == nil || response.Error.Code != ErrorCodeInternalError {
 		t.Fatalf("response.Error = %#v, want code %d", response.Error, ErrorCodeInternalError)
+	}
+}
+
+// TestMCPClientElicitationHandlerCanMakeNestedClientCall matches TS's
+// non-awaited `this.onRequestMessage(message)` dispatch (mcp-client.ts
+// transport.onmessage): the handler must not run on the transport's receive
+// loop, since a handler that issues its own client call (e.g. to fetch data
+// needed to build the elicitation prompt) depends on that same loop to
+// deliver the nested call's response. A short RequestTimeoutMS means this
+// test fails fast (via a timeout error from the nested call) if handleRequest
+// regresses to running inline on the receive loop.
+func TestMCPClientElicitationHandlerCanMakeNestedClientCall(t *testing.T) {
+	transport := newMockTransport()
+	client := NewMCPClient(transport, MCPClientConfig{RequestTimeoutMS: 500})
+	if err := client.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close() //nolint:errcheck
+
+	nestedCallErrCh := make(chan error, 1)
+	client.OnElicitationRequest(func(ctx context.Context, req ElicitationRequest) (ElicitResult, error) {
+		_, err := client.ListResourceTemplates(ctx)
+		nestedCallErrCh <- err
+		return ElicitResult{Action: "accept"}, nil
+	})
+
+	transport.messages <- &MCPMessage{
+		JSONRpc: "2.0",
+		ID:      "elicit-6",
+		Method:  "elicitation/create",
+		Params:  json.RawMessage(`{"message":"hi"}`),
+	}
+
+	select {
+	case err := <-nestedCallErrCh:
+		if err != nil {
+			t.Fatalf("nested ListResourceTemplates call from elicitation handler failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for nested call inside elicitation handler (handler is blocking the receive loop)")
+	}
+
+	response := awaitResponseTo(t, transport, "elicit-6")
+	if response.Error != nil {
+		t.Fatalf("elicitation response error = %#v", response.Error)
 	}
 }
 
