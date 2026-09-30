@@ -7,10 +7,37 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
 
+// defaultBaseURL matches the TS SDK's `defaultBaseURL = 'https://fal.run'`
+// (fal-provider.ts). Model IDs are used verbatim as the path suffix (e.g.
+// "fal-ai/kling-video/..."), so the base URL must NOT include a "/fal-ai"
+// segment or every fully-qualified model ID would be double-prefixed.
+const defaultBaseURL = "https://fal.run"
+
+// falRunHost and falQueueHost are the fixed hosts the TS SDK's
+// FalSpeechModel/FalTranscriptionModel/FalVideoModel hit directly
+// (`url: ({ path }) => path`), independent of the provider's configured
+// BaseURL (which only applies to FalImageModel). Kept as Provider fields
+// (defaulted here) so tests can redirect them to an httptest server.
+const (
+	falRunHost   = "https://fal.run"
+	falQueueHost = "https://queue.fal.run"
+)
+
 // Provider implements the provider.Provider interface for Fal.ai
 type Provider struct {
 	config Config
 	client *http.Client
+
+	// absClient issues requests against fully-qualified URLs (baseURL "").
+	// Used by the speech and transcription models, which hit falRunHost/
+	// falQueueHost directly rather than the configurable client baseURL.
+	absClient *http.Client
+
+	// speechHost/queueHost default to falRunHost/falQueueHost; overridable
+	// (in-package tests only) to redirect speech/transcription requests to
+	// an httptest server.
+	speechHost string
+	queueHost  string
 }
 
 // Config contains configuration for the Fal.ai provider
@@ -26,20 +53,30 @@ type Config struct {
 func New(cfg Config) *Provider {
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
-		baseURL = "https://fal.run/fal-ai"
+		baseURL = defaultBaseURL
+	}
+
+	headers := map[string]string{
+		"Authorization": "Key " + cfg.APIKey,
+		"Content-Type":  "application/json",
 	}
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: map[string]string{
-			"Authorization": "Key " + cfg.APIKey,
-			"Content-Type":  "application/json",
-		},
+		Headers: headers,
+	})
+
+	absClient := http.NewClient(http.Config{
+		BaseURL: "",
+		Headers: headers,
 	})
 
 	return &Provider{
-		config: cfg,
-		client: client,
+		config:     cfg,
+		client:     client,
+		absClient:  absClient,
+		speechHost: falRunHost,
+		queueHost:  falQueueHost,
 	}
 }
 
@@ -61,7 +98,7 @@ func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, erro
 // ImageModel returns an image generation model by ID
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
 	if modelID == "" {
-		modelID = "fast-sdxl"
+		modelID = "fal-ai/fast-sdxl"
 	}
 
 	return NewImageModel(p, modelID), nil
@@ -70,7 +107,7 @@ func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
 // VideoModel returns a video generation model by ID
 func (p *Provider) VideoModel(modelID string) (provider.VideoModelV3, error) {
 	if modelID == "" {
-		modelID = "luma-ray" // Default FAL video model
+		modelID = "fal-ai/luma-ray" // Default FAL video model
 	}
 
 	return NewVideoModel(p, modelID), nil
@@ -78,12 +115,12 @@ func (p *Provider) VideoModel(modelID string) (provider.VideoModelV3, error) {
 
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("Fal.ai does not support speech synthesis")
+	return NewSpeechModel(p, modelID), nil
 }
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("Fal.ai does not support transcription")
+	return NewTranscriptionModel(p, modelID), nil
 }
 
 // RerankingModel returns a reranking model by ID
