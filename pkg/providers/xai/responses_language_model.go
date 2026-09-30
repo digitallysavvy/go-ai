@@ -1026,6 +1026,12 @@ type xaiResponsesStream struct {
 	activeReasoning         map[string]struct{}
 	includeRawChunks        bool
 	responseMetadataEmitted bool
+	// hasFunctionCall is true only once a function_call output item has
+	// completed (response.output_item.done). Mirrors TS
+	// xai-responses-language-model.ts's hasFunctionCall, which is set on
+	// response.output_item.done (not .added) and used to force the unified
+	// finish reason to 'tool-calls' regardless of response.status.
+	hasFunctionCall bool
 }
 
 func newXAIResponsesStream(r io.ReadCloser, includeRawChunks ...bool) *xaiResponsesStream {
@@ -1311,7 +1317,16 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			return nil, io.EOF
 		}
 		usage := convertXAIResponsesUsage(e.Response.Usage)
-		finishReason := mapXAIResponsesFinishReason(e.Response.Status, e.Response.IncompleteDetails)
+		// Mirrors TS xai-responses-language-model.ts's response.completed/
+		// response.done branch: unified finish reason is forced to
+		// 'tool-calls' when a function_call item completed during the
+		// stream, regardless of what response.status reports.
+		var finishReason types.FinishReason
+		if s.hasFunctionCall {
+			finishReason = types.FinishReasonToolCalls
+		} else {
+			finishReason = mapXAIResponsesFinishReason(e.Response.Status, e.Response.IncompleteDetails)
+		}
 
 		var meta json.RawMessage
 		metaMap := map[string]interface{}{}
@@ -1440,6 +1455,7 @@ func (s *xaiResponsesStream) handleOutputItemDone(e responses.OutputItemDoneEven
 
 	switch itemType {
 	case "function_call":
+		s.hasFunctionCall = true
 		accum, ok := s.toolAccum[e.OutputIndex]
 		if !ok {
 			return s.Next()
