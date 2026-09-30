@@ -72,3 +72,71 @@ func TestDoStream_ImplementsStreamRequestBody(t *testing.T) {
 		})
 	}
 }
+
+// TestDoStream_RequestBodyReflectsPostTransform verifies that RequestBody()
+// exposes the request body *after* Cerebras's structural rewrite (TS
+// transformCerebrasRequestBody: max_tokens -> max_completion_tokens) rather
+// than the pre-transform OpenAI-compatible body. Before this hook was wired
+// as openai.Config.TransformRequestBody, the rewrite only happened inside
+// cerebrasTransformTransport at the HTTP RoundTripper layer, which runs
+// after DoStream already captured and exposed the pre-rewrite body.
+func TestDoStream_RequestBodyReflectsPostTransform(t *testing.T) {
+	var capturedBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&capturedBody); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	model, err := New(Config{APIKey: "test-key", BaseURL: server.URL}).LanguageModel("llama3.1-8b")
+	if err != nil {
+		t.Fatalf("LanguageModel error = %v", err)
+	}
+
+	maxTokens := 256
+	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{
+		Prompt:    types.Prompt{Text: "hi"},
+		MaxTokens: &maxTokens,
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer stream.Close() //nolint:errcheck
+
+	rb, ok := stream.(provider.StreamRequestBody)
+	if !ok {
+		t.Fatalf("stream (%T) does not implement provider.StreamRequestBody", stream)
+	}
+	body, ok := rb.RequestBody().(map[string]interface{})
+	if !ok {
+		t.Fatalf("RequestBody() = %#v, want a map[string]interface{}", rb.RequestBody())
+	}
+
+	// The exposed body must already reflect Cerebras's max_tokens ->
+	// max_completion_tokens rename, matching what was actually sent.
+	if _, present := body["max_tokens"]; present {
+		t.Errorf("RequestBody() still has max_tokens = %v, want it renamed to max_completion_tokens", body["max_tokens"])
+	}
+	// body comes straight from the Go request builder (pre-JSON), so
+	// max_completion_tokens is still an int there.
+	if mct, ok := body["max_completion_tokens"].(int); !ok || mct != maxTokens {
+		t.Errorf("RequestBody()[\"max_completion_tokens\"] = %#v, want %d", body["max_completion_tokens"], maxTokens)
+	}
+
+	if capturedBody == nil {
+		t.Fatal("server never received a request body")
+	}
+	if _, present := capturedBody["max_tokens"]; present {
+		t.Errorf("wire body still has max_tokens = %v", capturedBody["max_tokens"])
+	}
+	// capturedBody was decoded from the actual JSON sent over the wire, so
+	// numbers come back as float64.
+	if capturedBody["max_completion_tokens"] != float64(maxTokens) {
+		t.Errorf("wire body max_completion_tokens = %v, want %v", capturedBody["max_completion_tokens"], float64(maxTokens))
+	}
+}

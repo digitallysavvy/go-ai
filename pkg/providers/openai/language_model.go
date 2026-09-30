@@ -536,6 +536,10 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		body["verbosity"] = v
 	}
 
+	if m.provider.config.TransformRequestBody != nil {
+		body = m.provider.config.TransformRequestBody(body)
+	}
+
 	return body, warnings, nil
 }
 

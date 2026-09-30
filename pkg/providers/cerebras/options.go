@@ -9,10 +9,19 @@ import (
 // cerebrasRequestExtras carries the wire-format fields derived from
 // providerOptions.cerebras (CerebrasLanguageModelChatOptions in TS) that the
 // shared OpenAI-compatible chat model has no namespace for. LanguageModel
-// resolves these before delegating to the OpenAI-compatible base model, then
-// cerebrasTransformTransport merges them into the serialized request body —
-// the same way TS's transformRequestBody hook does — since the base model
-// only ever reads providerOptions["openai"].
+// resolves these before delegating to the OpenAI-compatible base model,
+// which has no per-call hook to receive them (openai.Config.TransformRequestBody
+// is a static, provider-construction-time function with no access to a
+// specific call's opts), so cerebrasTransformTransport merges them into the
+// serialized request body at the HTTP transport layer instead — the same
+// net effect as TS's transformRequestBody hook, which destructures
+// args.parallelToolCalls etc. directly since TS's shared getArgs() forwards
+// unrecognized providerOptions[namespace] keys into args as passthrough.
+// The structural half of TS's transformRequestBody (renaming max_tokens and
+// reasoning_content, which need no per-call data) runs earlier, as
+// openai.Config.TransformRequestBody (see transformCerebrasRequestBody in
+// provider.go) — since the base model only ever reads
+// providerOptions["openai"].
 type cerebrasRequestExtras map[string]interface{}
 
 // resolveCerebrasOptions builds cerebrasRequestExtras from
