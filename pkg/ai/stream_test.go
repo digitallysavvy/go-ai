@@ -645,8 +645,9 @@ func TestStreamText_OnChunkCallback(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if chunkCallbackCount != 5 { // firstChunk + 2 text chunks + finish chunk + streamFinish
-		t.Errorf("expected 5 chunk callbacks, got %d", chunkCallbackCount)
+	// start + start-step + firstChunk + 2 text chunks + finish-step + finish + streamFinish
+	if chunkCallbackCount != 8 {
+		t.Errorf("expected 8 chunk callbacks, got %d", chunkCallbackCount)
 	}
 }
 
@@ -686,9 +687,12 @@ func TestStreamText_FirstChunkEmittedBeforeFirstContentNotMetadata(t *testing.T)
 	mu.Lock()
 	defer mu.Unlock()
 	want := []provider.ChunkType{
+		provider.ChunkTypeStart,
+		provider.ChunkTypeStartStep,
 		provider.ChunkTypeResponseMetadata,
 		provider.ChunkTypeFirstChunk,
 		provider.ChunkTypeText,
+		provider.ChunkTypeFinishStep,
 		provider.ChunkTypeFinish,
 		provider.ChunkTypeStreamFinish,
 	}
@@ -746,9 +750,12 @@ func TestStreamText_SuppressesReasoningBoundariesWhenSendReasoningFalse(t *testi
 		}
 	}
 	want := []provider.ChunkType{
+		provider.ChunkTypeStart,
+		provider.ChunkTypeStartStep,
 		provider.ChunkTypeFirstChunk,
 		provider.ChunkTypeReasoning,
 		provider.ChunkTypeText,
+		provider.ChunkTypeFinishStep,
 		provider.ChunkTypeFinish,
 		provider.ChunkTypeStreamFinish,
 	}
@@ -3307,7 +3314,7 @@ func TestStreamTextResult_NoCallbacksStreamYieldsFullMultiStep(t *testing.T) {
 
 	stream := result.Stream()
 	var sawToolCall, sawToolResult, sawStep2Text bool
-	var finishCount int
+	var finishCount, finishStepCount int
 	for {
 		chunk, err := stream.Next()
 		if err == io.EOF {
@@ -3327,6 +3334,8 @@ func TestStreamTextResult_NoCallbacksStreamYieldsFullMultiStep(t *testing.T) {
 			}
 		case provider.ChunkTypeFinish:
 			finishCount++
+		case provider.ChunkTypeFinishStep:
+			finishStepCount++
 		}
 	}
 
@@ -3339,8 +3348,13 @@ func TestStreamTextResult_NoCallbacksStreamYieldsFullMultiStep(t *testing.T) {
 	if !sawStep2Text {
 		t.Error("expected Stream() to include step 2's text chunk")
 	}
-	if finishCount != 2 {
-		t.Errorf("expected 2 finish chunks (one per step), got %d", finishCount)
+	// Exactly one call-level finish chunk (mirrors TS's single top-level
+	// 'finish' fullStream part), plus one finish-step chunk per step.
+	if finishCount != 1 {
+		t.Errorf("expected 1 finish chunk (call-level), got %d", finishCount)
+	}
+	if finishStepCount != 2 {
+		t.Errorf("expected 2 finish-step chunks (one per step), got %d", finishStepCount)
 	}
 	if got := atomic.LoadInt32(&executeCalls); got != 1 {
 		t.Fatalf("expected tool Execute to run exactly once, got %d", got)

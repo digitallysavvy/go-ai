@@ -296,6 +296,22 @@ type StreamChunk struct {
 	// should set this instead of only Text, so streamRetries' retryability
 	// classification is accurate (audit row 35841f5 / WG8).
 	Err error
+
+	// Request carries this step's request metadata when Type is
+	// ChunkTypeStartStep. Mirrors the TS SDK's 'start-step' fullStream part's
+	// `request` field (LanguageModelRequestMetadata).
+	Request *types.StepRequest
+
+	// Response carries this step's response metadata when Type is
+	// ChunkTypeFinishStep. Does not include Response.Messages (populated
+	// later on the aggregated types.StepResult, not on this chunk), matching
+	// the TS SDK's 'finish-step' fullStream part's `response` field.
+	Response *types.StepResponse
+
+	// Performance carries this step's performance statistics when Type is
+	// ChunkTypeFinishStep. Mirrors the TS SDK's 'finish-step' fullStream
+	// part's `performance` field.
+	Performance *types.StepPerformance
 }
 
 // ResponseMetadata is the payload of a ChunkTypeResponseMetadata chunk.
@@ -334,18 +350,39 @@ const (
 	// ChunkTypeUsage indicates a usage information chunk
 	ChunkTypeUsage ChunkType = "usage"
 
-	// ChunkTypeFinish indicates the final chunk with finish reason
+	// ChunkTypeStart is emitted exactly once, before any step's stream is
+	// consumed, marking the beginning of the whole StreamText call. Carries
+	// no payload. Mirrors the TS SDK's "start" fullStream part
+	// (stream-text.ts:1855, `controller.enqueue({type:'start'})`).
+	ChunkTypeStart ChunkType = "start"
+
+	// ChunkTypeStartStep marks the start of one step in a multi-step stream,
+	// carrying that step's Request and Warnings. Emitted once per step,
+	// before that step's first other chunk. Mirrors the TS SDK's
+	// "start-step" fullStream part (stream-text.ts:2829-2838).
+	ChunkTypeStartStep ChunkType = "start-step"
+
+	// ChunkTypeFinish indicates the call is complete: the final chunk with
+	// the overall finish reason and total usage, emitted exactly once after
+	// the last step's ChunkTypeFinishStep. Mirrors the TS SDK's top-level
+	// "finish" fullStream part (stream-text.ts:3129-3136), which is distinct
+	// from and never repeated per step (see ChunkTypeFinishStep for the
+	// per-step signal).
 	ChunkTypeFinish ChunkType = "finish"
 
-	// ChunkTypeFinishStep marks the end of one step in a multi-step stream
-	// produced outside the normal provider.LanguageModel.DoStream loop (e.g.
-	// a harness bridge session that already ran its own model calls), when
-	// more steps follow. Unlike ChunkTypeFinish it never means the stream is
-	// over; consumers should expect another ChunkTypeStreamStart afterward.
-	// Carries the same Usage/FinishReason fields as ChunkTypeFinish, scoped
-	// to that one step. Mirrors TS harness-v1-stream-part.ts's "finish-step"
-	// (distinct from "finish"). See state/parity/sep_23_2026/harness.md §3
-	// ("P0 prerequisite").
+	// ChunkTypeFinishStep marks the end of one step in a multi-step stream,
+	// carrying that step's Response/Usage/Performance/FinishReason/
+	// RawFinishReason/ProviderMetadata. Emitted once per step — including
+	// the last one, immediately before the call-level ChunkTypeFinish —
+	// whether the stream comes from the normal provider.LanguageModel.
+	// DoStream loop or was produced outside it (e.g. a harness bridge
+	// session that already ran its own model calls). Unlike ChunkTypeFinish
+	// it never by itself means the whole call is over; a consumer should
+	// expect either another ChunkTypeStartStep or the call-level
+	// ChunkTypeFinish afterward. Mirrors the TS SDK's "finish-step"
+	// fullStream part (stream-text.ts:3020-3033) and TS harness-v1-stream-
+	// part.ts's "finish-step" (distinct from "finish"). See
+	// state/parity/sep_23_2026/harness.md §3 ("P0 prerequisite").
 	ChunkTypeFinishStep ChunkType = "finish-step"
 
 	// ChunkTypeError indicates an error occurred

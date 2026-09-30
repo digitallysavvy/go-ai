@@ -552,6 +552,17 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		sawTerminal := false
 		sawFinishChunk := false
 		sawOutput := false
+		// allowStepStartUI dedupes the UI "start-step" part within one step
+		// boundary: a stream produced by stream.go's own StreamText loop now
+		// carries BOTH the genuine, once-per-step ChunkTypeStartStep chunk
+		// AND (when a provider surfaces pre-stream warnings) the older
+		// ChunkTypeStreamStart chunk that used to be this package's only
+		// source for the "start-step" UI part before ChunkTypeStartStep
+		// existed — both map to "start-step". Only the first of either
+		// within a step boundary is converted; see the dedup switch below
+		// for why "finish-step" is handled differently (not deduped against
+		// itself the same way).
+		allowStepStartUI := true
 		activeTextIDs := map[string]bool{}
 		activeReasoningIDs := map[string]bool{}
 		textID := ""
@@ -633,10 +644,18 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				return
 			}
 
-			if chunk.Type == provider.ChunkTypeFinish {
+			if chunk.Type == provider.ChunkTypeFinish || chunk.Type == provider.ChunkTypeFinishStep {
 				sawTerminal = true
 				sawFinishChunk = true
 				finishReason = chunk.FinishReason
+			}
+			// The source outcome only goes Completed on the call-level,
+			// once-only ChunkTypeFinish — not on a per-step ChunkTypeFinishStep
+			// — because setSourceOutcome's guard ignores any update once the
+			// outcome is Completed, and an intermediate step's finish-step
+			// must not block a later real error in the same call from being
+			// recorded as Failed.
+			if chunk.Type == provider.ChunkTypeFinish {
 				setSourceOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeCompleted})
 			}
 			if chunk.Type == provider.ChunkTypeError {
@@ -707,11 +726,47 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			case provider.ChunkTypeFinish, provider.ChunkTypeFinishStep:
 				closeOpenParts()
 			}
-			converted := toUIMessageChunks(chunkForConversion, options)
-			for _, uiChunk := range converted {
-				processChunk(uiChunk)
+
+			// Dedupe the "start-step" UI part within one step boundary (see
+			// allowStepStartUI's doc comment above): a stream produced by
+			// stream.go's own StreamText loop now carries the genuine,
+			// once-per-step ChunkTypeStartStep chunk in addition to a
+			// provider's own ChunkTypeStreamStart chunk (when it has
+			// pre-stream warnings) — both map to "start-step" — so only the
+			// first of either within a step boundary is converted. Unlike
+			// "start-step", "finish-step" is intentionally NOT deduped here:
+			// a harness-produced stream (pkg/ai/stream_external.go's
+			// consumeExternalParts) legitimately emits one ChunkTypeFinishStep
+			// per real step PLUS a separate, content-less, terminal
+			// ChunkTypeFinish that closes the turn — both are meant to
+			// surface as their own "finish-step" UI part (existing,
+			// pinned behavior — see pkg/workflow/harness_test.go), and
+			// stream.go's own once-only call-level ChunkTypeFinish
+			// (following the last step's ChunkTypeFinishStep) follows the
+			// same convention. ChunkTypeStreamFinish is Go-only and always
+			// immediately follows a real ChunkTypeFinish, so its own
+			// "finish-step" mapping is always redundant and is skipped
+			// unconditionally.
+			skipStepBoundaryDup := false
+			switch chunk.Type {
+			case provider.ChunkTypeStartStep, provider.ChunkTypeStreamStart:
+				if allowStepStartUI {
+					allowStepStartUI = false
+				} else {
+					skipStepBoundaryDup = true
+				}
+			case provider.ChunkTypeFinishStep, provider.ChunkTypeFinish:
+				allowStepStartUI = true
+			case provider.ChunkTypeStreamFinish:
+				skipStepBoundaryDup = true
 			}
-			processMessageMetadata(*chunk)
+			if !skipStepBoundaryDup {
+				converted := toUIMessageChunks(chunkForConversion, options)
+				for _, uiChunk := range converted {
+					processChunk(uiChunk)
+				}
+				processMessageMetadata(*chunk)
+			}
 		}
 
 		if !sawTerminal {
