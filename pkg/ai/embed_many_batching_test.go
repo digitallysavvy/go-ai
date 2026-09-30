@@ -432,6 +432,37 @@ func TestEmbedMany_NonRetryableErrorsAreNotRetried(t *testing.T) {
 	}
 }
 
+// TestEmbedMany_ExhaustedRetriesErrorIsUnwrappedRetryError mirrors TS
+// embed-many.ts's `catch (error) { ...; throw error; }`: once retries are
+// exhausted, the surfaced error must be a RetryError built directly around
+// the provider's doEmbedMany error, with no "batch embedding failed: " (or
+// similar) wrapper anywhere in the chain.
+func TestEmbedMany_ExhaustedRetriesErrorIsUnwrappedRetryError(t *testing.T) {
+	t.Parallel()
+	providerErr := providererrors.NewProviderError("mock", 500, "internal_error", "boom", nil)
+	model := &batchEmbeddingModel{doEmbedMany: func(context.Context, []string, *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
+		return nil, providerErr
+	}}
+	_, err := EmbedMany(context.Background(), EmbedManyOptions{Model: model, Inputs: testEmbedValues, MaxRetries: intPtr(1)})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+
+	var retryErr *providererrors.RetryError
+	if !errors.As(err, &retryErr) {
+		t.Fatalf("expected a *providererrors.RetryError, got: %T %v", err, err)
+	}
+	if retryErr.LastError != providerErr {
+		t.Errorf("RetryError.LastError = %v, want the exact original provider error", retryErr.LastError)
+	}
+	if strings.Contains(err.Error(), "batch embedding failed") {
+		t.Errorf("error message must not contain the removed 'batch embedding failed' wrapper: %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "boom") {
+		t.Errorf("error message must still surface the original error text: %q", err.Error())
+	}
+}
+
 func TestEmbedMany_ProviderOptionsTransformerAlignment(t *testing.T) {
 	t.Parallel()
 	// TS embed-many-google.test.ts: "preserves content alignment through wrapped

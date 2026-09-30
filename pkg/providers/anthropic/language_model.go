@@ -593,6 +593,7 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 	default:
 		result.FinishReason = types.FinishReasonOther
 	}
+	result.RawFinishReason = response.StopReason
 
 	// Extract context management (check root level first, then usage block)
 	if response.ContextManagement != nil {
@@ -2343,9 +2344,10 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			usage := convertAnthropicUsage(s.usage)
 
 			chunk := &provider.StreamChunk{
-				Type:         provider.ChunkTypeFinish,
-				FinishReason: finishReason,
-				Usage:        &usage,
+				Type:            provider.ChunkTypeFinish,
+				FinishReason:    finishReason,
+				RawFinishReason: delta.Delta.StopReason,
+				Usage:           &usage,
 			}
 
 			// Extract context management (check root level first, then usage block)

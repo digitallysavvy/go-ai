@@ -392,9 +392,10 @@ func (s *OpenAICompatStream) endStream(err error) (*provider.StreamChunk, error)
 		s.pendingFinishReason = ""
 		s.err = err
 		return &provider.StreamChunk{
-			Type:         provider.ChunkTypeFinish,
-			FinishReason: s.finishReasonMapper(finishReason),
-			Usage:        convertOpenAICompatStreamUsage(usage),
+			Type:            provider.ChunkTypeFinish,
+			FinishReason:    s.finishReasonMapper(finishReason),
+			RawFinishReason: finishReason,
+			Usage:           convertOpenAICompatStreamUsage(usage),
 		}, nil
 	}
 	if err == io.EOF {

@@ -910,6 +910,7 @@ func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction
 	result.Usage = convertBedrockConverseUsage(resp.Usage)
 
 	result.FinishReason = mapBedrockFinishReason(resp.StopReason, isJSONResponseFromTool)
+	result.RawFinishReason = resp.StopReason
 
 	metadataPayload := map[string]interface{}{}
 	if len(resp.Trace) > 0 && string(resp.Trace) != "null" {

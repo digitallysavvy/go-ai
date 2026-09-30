@@ -417,11 +417,11 @@ func (m *LanguageModel) convertResponse(response *perplexityAgentResponse, rawBo
 		Content:          content,
 		ToolCalls:        toolCalls,
 		FinishReason:     mapPerplexityFinishReason(response.Status, incompleteReason, hasFunctionCall),
+		RawFinishReason:  rawFinishReason,
 		Usage:            convertPerplexityUsage(response.Usage, perplexityRawUsageBytes(rawBody)),
 		RawResponse:      response,
 		ProviderMetadata: getPerplexityProviderMetadata(response.Usage),
 	}
-	_ = rawFinishReason // surfaced via streaming chunks; GenerateResult has no raw-finish-reason field.
 	if len(textParts) > 0 {
 		var b strings.Builder
 		for _, t := range textParts {

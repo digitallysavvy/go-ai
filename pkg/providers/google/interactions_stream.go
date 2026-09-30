@@ -121,7 +121,7 @@ func newSynthesizedInteractionsStream(response interactionsResponse, warnings []
 			chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: p.ToolCallID, ToolName: p.ToolName, Arguments: p.Arguments, RawArguments: p.Input, ProviderExecuted: p.ProviderExecuted, ProviderMetadata: providerMetaMap(p.ThoughtSignature, normalizedInteractionID(response.ID)), ThoughtSignature: p.ThoughtSignature}, ProviderMetadata: p.ProviderMetadata})
 		}
 	}
-	chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: mapInteractionsFinishReason(response.Status, hasFunctionCall), Usage: usagePtr(convertInteractionsUsage(response.Usage)), ProviderMetadata: finishMetadata(response.ID, response.ServiceTier, response.Usage)})
+	chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: mapInteractionsFinishReason(response.Status, hasFunctionCall), RawFinishReason: response.Status, Usage: usagePtr(convertInteractionsUsage(response.Usage)), ProviderMetadata: finishMetadata(response.ID, response.ServiceTier, response.Usage)})
 	return &sliceTextStream{chunks: chunks}
 }
 
@@ -524,6 +524,7 @@ func (s *interactionsStream) appendFinish() {
 	s.buffer = append(s.buffer, &provider.StreamChunk{
 		Type:             provider.ChunkTypeFinish,
 		FinishReason:     mapInteractionsFinishReason(s.finishStatus, s.hasFunction),
+		RawFinishReason:  s.finishStatus,
 		Usage:            usagePtr(convertInteractionsUsage(s.usage)),
 		ProviderMetadata: finishMetadata(s.interactionID, s.serviceTier, s.usage),
 	})

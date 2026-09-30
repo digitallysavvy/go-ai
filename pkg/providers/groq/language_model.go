@@ -216,10 +216,11 @@ func (m *LanguageModel) convertResponse(response groqResponse) (*types.GenerateR
 	}
 	choice := response.Choices[0]
 	result := &types.GenerateResult{
-		Text:         choice.Message.Content,
-		FinishReason: providerutils.MapOpenAIFinishReason(choice.FinishReason),
-		Usage:        convertGroqUsage(response.Usage),
-		RawResponse:  response,
+		Text:            choice.Message.Content,
+		FinishReason:    providerutils.MapOpenAIFinishReason(choice.FinishReason),
+		RawFinishReason: choice.FinishReason,
+		Usage:           convertGroqUsage(response.Usage),
+		RawResponse:     response,
 	}
 	if choice.Message.Reasoning != "" {
 		result.Content = append(result.Content, types.ReasoningContent{Text: choice.Message.Reasoning})
@@ -605,8 +606,9 @@ func (s *groqStream) flushGroqToolCalls(finishReason string) {
 		s.flushQueue = append(s.flushQueue, &c)
 	}
 	finishChunk := &provider.StreamChunk{
-		Type:         provider.ChunkTypeFinish,
-		FinishReason: providerutils.MapOpenAIFinishReason(finishReason),
+		Type:            provider.ChunkTypeFinish,
+		FinishReason:    providerutils.MapOpenAIFinishReason(finishReason),
+		RawFinishReason: finishReason,
 	}
 	if s.pendingUsage != nil {
 		u := convertGroqUsage(*s.pendingUsage)

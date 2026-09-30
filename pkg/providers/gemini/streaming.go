@@ -79,8 +79,9 @@ type stream struct {
 	// finishReason/hasFinished hold the terminal finish reason. TS only
 	// enqueues the 'finish' chunk once, from the stream's flush handler, not
 	// per SSE event — so we track state here and emit at end-of-stream.
-	finishReason types.FinishReason
-	hasFinished  bool
+	finishReason    types.FinishReason
+	rawFinishReason string
+	hasFinished     bool
 
 	// confirmedPromptBlockReason freezes content processing once a genuine
 	// (non-"unspecified") promptFeedback.blockReason is seen: later chunks
@@ -229,6 +230,7 @@ func (s *stream) processSSEEvent(chunkData Response) {
 		if reason := promptFeedbackBlockReason(chunkData.PromptFeedback); isConfirmedPromptBlockReason(reason) {
 			s.confirmedPromptBlockReason = reason
 			s.finishReason = types.FinishReasonContentFilter
+			s.rawFinishReason = reason
 			s.hasFinished = true
 		}
 	}
@@ -286,6 +288,7 @@ func (s *stream) processSSEEvent(chunkData Response) {
 			fr = types.FinishReasonOther
 		}
 		s.finishReason = fr
+		s.rawFinishReason = candidate.FinishReason
 		s.hasFinished = true
 	}
 }
@@ -301,6 +304,7 @@ func (s *stream) buildFinishChunk() *provider.StreamChunk {
 	return &provider.StreamChunk{
 		Type:             provider.ChunkTypeFinish,
 		FinishReason:     fr,
+		RawFinishReason:  s.rawFinishReason,
 		Usage:            &usage,
 		ProviderMetadata: s.buildFinishMeta(),
 	}

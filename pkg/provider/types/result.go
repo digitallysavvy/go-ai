@@ -105,6 +105,12 @@ type GenerateResult struct {
 	// Reason why generation finished
 	FinishReason FinishReason `json:"finishReason"`
 
+	// RawFinishReason is the raw, provider-specific finish/incomplete reason
+	// string returned by the provider before normalization to FinishReason.
+	// Mirrors TS LanguageModelV4's `finishReason.raw`. Empty when the
+	// provider gave no raw reason (TS `raw: undefined`).
+	RawFinishReason string `json:"rawFinishReason,omitempty"`
+
 	// Token usage information
 	Usage Usage `json:"usage"`
 

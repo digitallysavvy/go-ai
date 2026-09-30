@@ -355,18 +355,64 @@ func TestMergeGenerateOptions_Messages(t *testing.T) {
 	}
 }
 
-func TestMergeGenerateOptions_PromptSystemFallsBackToDefault(t *testing.T) {
+// TestMergeGenerateOptions_PromptNeverFallsBackToDefault mirrors TS's
+// defaultSettingsMiddleware: its `settings` parameter is typed as a
+// `Partial<{...}>` that excludes `prompt` entirely (default-settings-
+// middleware.ts), so a prompt/messages/system default can never reach
+// mergeObjects(settings, params) in the first place. Go's
+// provider.GenerateOptions has no such per-field partial type, so
+// mergeGenerateOptions must instead simply never copy any Prompt.* field
+// from defaults into the result, regardless of whether overrides supplies a
+// prompt of its own. (Previously Go filled Prompt.Text/System/Messages from
+// defaults whenever the corresponding override field was the zero value,
+// which could silently inject a default prompt/system the caller never
+// asked for.)
+func TestMergeGenerateOptions_PromptNeverFallsBackToDefault(t *testing.T) {
 	t.Parallel()
 
 	defaults := &provider.GenerateOptions{
-		Prompt: types.Prompt{System: "default system prompt"},
+		Prompt: types.Prompt{
+			System:   "default system prompt",
+			Text:     "default text prompt",
+			Messages: []types.Message{{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: "default message"}}}},
+		},
 	}
 	overrides := &provider.GenerateOptions{}
 
 	result := mergeGenerateOptions(defaults, overrides)
 
-	if result.Prompt.System != "default system prompt" {
-		t.Errorf("expected default system prompt to survive, got %q", result.Prompt.System)
+	if result.Prompt.System != "" {
+		t.Errorf("expected no default system prompt to be pulled in, got %q", result.Prompt.System)
+	}
+	if result.Prompt.Text != "" {
+		t.Errorf("expected no default text prompt to be pulled in, got %q", result.Prompt.Text)
+	}
+	if result.Prompt.Messages != nil {
+		t.Errorf("expected no default messages to be pulled in, got %#v", result.Prompt.Messages)
+	}
+}
+
+// TestMergeGenerateOptions_PromptNeverFallsBackToDefault_CallerSuppliedOtherForm
+// covers the case explicitly called out alongside the primary rule: even
+// when the caller supplies some other prompt form (Text, not System), a
+// defaults-side System must still not leak in.
+func TestMergeGenerateOptions_PromptNeverFallsBackToDefault_CallerSuppliedOtherForm(t *testing.T) {
+	t.Parallel()
+
+	defaults := &provider.GenerateOptions{
+		Prompt: types.Prompt{System: "default system prompt"},
+	}
+	overrides := &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "caller text prompt"},
+	}
+
+	result := mergeGenerateOptions(defaults, overrides)
+
+	if result.Prompt.Text != "caller text prompt" {
+		t.Errorf("expected caller's text prompt to survive, got %q", result.Prompt.Text)
+	}
+	if result.Prompt.System != "" {
+		t.Errorf("expected no default system prompt to be pulled in alongside caller's text prompt, got %q", result.Prompt.System)
 	}
 }
 

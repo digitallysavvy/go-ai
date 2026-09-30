@@ -387,7 +387,13 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 		})
 		res, callErr := opts.Model.DoRerank(attemptCtx, rerankOpts)
 		if callErr != nil {
-			wrappedErr := fmt.Errorf("reranking failed: %w", callErr)
+			// TS rerank()'s try/catch rethrows the doRerank error unmodified
+			// (`catch (error) { ...; throw error; }`) — no "reranking
+			// failed: " (or similar) message wrapping. Once retries are
+			// exhausted, the caller sees exactly the RetryError the retry
+			// utility builds around this raw error, not a RetryError wrapped
+			// around an extra prefix.
+			//
 			// Close THIS attempt's span immediately, with error status, so a
 			// later retry attempt's success doesn't leave it orphaned forever
 			// (the next attempt's OnRerankStart unconditionally overwrites
@@ -400,9 +406,9 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 				ModelProvider: opts.Model.Provider(),
 				ModelID:       opts.Model.ModelID(),
 				DocumentsType: documentsType,
-				Error:         wrappedErr,
+				Error:         callErr,
 			})
-			return wrappedErr
+			return callErr
 		}
 		telemetry.FireOnRerankEnd(attemptCtx, telemetry.RerankingModelCallEndEvent{
 			Settings:      opts.ExperimentalTelemetry,

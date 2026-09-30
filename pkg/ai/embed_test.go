@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -84,6 +85,46 @@ func TestEmbed_Error(t *testing.T) {
 	}
 	if !errors.Is(err, expectedErr) {
 		t.Errorf("expected wrapped error, got: %v", err)
+	}
+}
+
+// TestEmbed_ExhaustedRetriesErrorIsUnwrappedRetryError mirrors TS embed.ts's
+// `catch (error) { ...; throw error; }`: once retries are exhausted, the
+// surfaced error must be a RetryError built directly around the provider's
+// doEmbed error, with no "embedding failed: " (or similar) wrapper anywhere
+// in the chain.
+func TestEmbed_ExhaustedRetriesErrorIsUnwrappedRetryError(t *testing.T) {
+	t.Parallel()
+
+	providerErr := providererrors.NewProviderError("mock", 500, "internal_error", "boom", nil)
+	model := &testutil.MockEmbeddingModel{
+		DoEmbedFunc: func(ctx context.Context, input string, _ *provider.EmbedModelOptions) (*types.EmbeddingResult, error) {
+			return nil, providerErr
+		},
+	}
+
+	maxRetries := 1
+	_, err := Embed(context.Background(), EmbedOptions{
+		Model:      model,
+		Input:      "Hello",
+		MaxRetries: &maxRetries,
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+
+	var retryErr *providererrors.RetryError
+	if !errors.As(err, &retryErr) {
+		t.Fatalf("expected a *providererrors.RetryError, got: %T %v", err, err)
+	}
+	if retryErr.LastError != providerErr {
+		t.Errorf("RetryError.LastError = %v, want the exact original provider error", retryErr.LastError)
+	}
+	if strings.Contains(err.Error(), "embedding failed") {
+		t.Errorf("error message must not contain the removed 'embedding failed' wrapper: %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "boom") {
+		t.Errorf("error message must still surface the original error text: %q", err.Error())
 	}
 }
 

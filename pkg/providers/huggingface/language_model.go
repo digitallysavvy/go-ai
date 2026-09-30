@@ -332,16 +332,19 @@ func (m *LanguageModel) convertResponse(resp hfResponse) *types.GenerateResult {
 	}
 
 	reason := "stop"
+	rawFinishReason := ""
 	if resp.IncompleteDetails != nil && resp.IncompleteDetails.Reason != "" {
 		reason = resp.IncompleteDetails.Reason
+		rawFinishReason = resp.IncompleteDetails.Reason
 	}
 
 	return &types.GenerateResult{
-		Text:         textBuilder.String(),
-		Content:      content,
-		ToolCalls:    toolCalls,
-		FinishReason: mapHuggingFaceResponsesFinishReason(reason),
-		Usage:        convertHuggingFaceResponsesUsage(resp.Usage),
+		Text:            textBuilder.String(),
+		Content:         content,
+		ToolCalls:       toolCalls,
+		FinishReason:    mapHuggingFaceResponsesFinishReason(reason),
+		RawFinishReason: rawFinishReason,
+		Usage:           convertHuggingFaceResponsesUsage(resp.Usage),
 	}
 }
 

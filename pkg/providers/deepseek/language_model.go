@@ -412,10 +412,11 @@ func (m *LanguageModel) convertResponse(response deepseekResponse) (*types.Gener
 	}
 	choice := response.Choices[0]
 	result := &types.GenerateResult{
-		Text:         choice.Message.Content,
-		FinishReason: providerutils.MapOpenAIFinishReason(choice.FinishReason),
-		Usage:        convertDeepseekUsage(response.Usage),
-		RawResponse:  response,
+		Text:            choice.Message.Content,
+		FinishReason:    providerutils.MapOpenAIFinishReason(choice.FinishReason),
+		RawFinishReason: choice.FinishReason,
+		Usage:           convertDeepseekUsage(response.Usage),
+		RawResponse:     response,
 	}
 	if choice.Message.ReasoningContent != "" {
 		result.Content = append(result.Content, types.ReasoningContent{Text: choice.Message.ReasoningContent})
@@ -895,8 +896,9 @@ func (s *deepseekStream) flushDeepseekToolCalls(finishReason string) {
 	// only actually emitted once the stream ends (see the IsStreamDone
 	// handling in Next()).
 	s.pendingFinish = &provider.StreamChunk{
-		Type:         provider.ChunkTypeFinish,
-		FinishReason: providerutils.MapOpenAIFinishReason(finishReason),
+		Type:            provider.ChunkTypeFinish,
+		FinishReason:    providerutils.MapOpenAIFinishReason(finishReason),
+		RawFinishReason: finishReason,
 	}
 }
 

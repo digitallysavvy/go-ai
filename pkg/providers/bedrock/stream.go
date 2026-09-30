@@ -66,10 +66,11 @@ type bedrockConverseStream struct {
 	contentBlocks map[int]*bedrockStreamContentBlock
 	queue         []*provider.StreamChunk
 
-	startEmitted bool
-	finishReason types.FinishReason
-	usage        types.Usage
-	hasUsage     bool
+	startEmitted    bool
+	finishReason    types.FinishReason
+	rawFinishReason string
+	usage           types.Usage
+	hasUsage        bool
 
 	providerMetadataPayload map[string]interface{}
 	isJSONResponseFromTool  bool
@@ -198,6 +199,7 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 	case "messageStop":
 		if stopReason, ok := payload["stopReason"].(string); ok {
 			s.finishReason = mapBedrockFinishReason(stopReason, s.isJSONResponseFromTool)
+			s.rawFinishReason = stopReason
 		}
 		if amf, ok := payload["additionalModelResponseFields"].(map[string]interface{}); ok {
 			if delta, ok := amf["delta"].(map[string]interface{}); ok {
@@ -479,9 +481,10 @@ func (s *bedrockConverseStream) flush() (*provider.StreamChunk, error) {
 	}
 
 	chunk := &provider.StreamChunk{
-		Type:         provider.ChunkTypeFinish,
-		FinishReason: s.finishReason,
-		Usage:        &usage,
+		Type:            provider.ChunkTypeFinish,
+		FinishReason:    s.finishReason,
+		RawFinishReason: s.rawFinishReason,
+		Usage:           &usage,
 	}
 	if s.providerMetadataPayload != nil {
 		data, _ := json.Marshal(map[string]interface{}{

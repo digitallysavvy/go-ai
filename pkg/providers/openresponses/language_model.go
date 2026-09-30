@@ -975,6 +975,7 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) (*types.
 		finishReason = response.IncompleteDetails.Reason
 	}
 	result.FinishReason = MapOpenResponsesFinishReason(finishReason, hasToolCalls)
+	result.RawFinishReason = finishReason
 
 	return result, nil
 }
@@ -1514,9 +1515,10 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 
 		s.err = io.EOF
 		finishChunk := &provider.StreamChunk{
-			Type:         provider.ChunkTypeFinish,
-			FinishReason: fr,
-			Usage:        usage,
+			Type:            provider.ChunkTypeFinish,
+			FinishReason:    fr,
+			RawFinishReason: finishReason,
+			Usage:           usage,
 		}
 		// Row 6fe187f: close an unfinished reasoning block (using its
 		// original item id) before the finish chunk, mirroring TS's

@@ -300,10 +300,11 @@ func (m *LanguageModel) convertResponse(response mistralResponse) *types.Generat
 	choice := response.Choices[0]
 	text, reasoningParts := parseMistralMessageContent(choice.Message.Content)
 	result := &types.GenerateResult{
-		Text:         text,
-		FinishReason: mapMistralFinishReason(choice.FinishReason),
-		Usage:        convertMistralUsage(response.Usage),
-		RawResponse:  response,
+		Text:            text,
+		FinishReason:    mapMistralFinishReason(choice.FinishReason),
+		RawFinishReason: choice.FinishReason,
+		Usage:           convertMistralUsage(response.Usage),
+		RawResponse:     response,
 	}
 	for _, reasoningText := range reasoningParts {
 		result.Content = append(result.Content, types.ReasoningContent{Text: reasoningText})
@@ -751,8 +752,9 @@ func (s *mistralStream) flushMistralToolCalls(finishReason string) {
 		s.flushQueue = append(s.flushQueue, &c)
 	}
 	s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-		Type:         provider.ChunkTypeFinish,
-		FinishReason: mapMistralFinishReason(finishReason),
+		Type:            provider.ChunkTypeFinish,
+		FinishReason:    mapMistralFinishReason(finishReason),
+		RawFinishReason: finishReason,
 	})
 }
 

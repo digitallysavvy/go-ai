@@ -49,15 +49,15 @@ func mergeGenerateOptions(defaults, overrides *provider.GenerateOptions) *provid
 	// "explicitly false"; they always come from the caller's own params).
 	result := *overrides
 
-	if result.Prompt.Messages == nil {
-		result.Prompt.Messages = defaults.Prompt.Messages
-	}
-	if result.Prompt.System == "" {
-		result.Prompt.System = defaults.Prompt.System
-	}
-	if result.Prompt.Text == "" {
-		result.Prompt.Text = defaults.Prompt.Text
-	}
+	// Prompt.* is deliberately never pulled from defaults. TS's
+	// defaultSettingsMiddleware types its `settings` parameter as a
+	// `Partial<{...}>` that excludes `prompt` entirely (see
+	// default-settings-middleware.ts) -- a prompt/messages/system default is
+	// not a representable defaultSettingsMiddleware setting in TS at all, so
+	// mergeObjects(settings, params) never has a prompt field on `settings`
+	// to merge in. result.Prompt therefore always stays exactly what the
+	// caller passed in overrides.Prompt, regardless of what defaults.Prompt
+	// contains.
 	if result.Temperature == nil {
 		result.Temperature = defaults.Temperature
 	}
