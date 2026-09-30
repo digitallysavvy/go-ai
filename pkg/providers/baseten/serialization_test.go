@@ -31,3 +31,29 @@ func TestBasetenSerializeAndDeserializeChatModel(t *testing.T) {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 }
+
+func TestBasetenSerializeAndDeserializeEmbeddingModel(t *testing.T) {
+	p := New(Config{APIKey: "k", ModelURL: "https://model-abc123.api.baseten.co/environments/production/sync"})
+	model, err := p.EmbeddingModel("")
+	if err != nil {
+		t.Fatalf("EmbeddingModel error = %v", err)
+	}
+	serialized, err := provider.SerializeEmbeddingModel(model)
+	if err != nil {
+		t.Fatalf("SerializeEmbeddingModel error = %v", err)
+	}
+	if serialized.Provider != "baseten.embedding" || serialized.ModelID != "embeddings" {
+		t.Fatalf("serialize mismatch: %#v", serialized)
+	}
+	if _, ok := serialized.Config["APIKey"]; ok {
+		t.Fatalf("APIKey should not be serialized: %#v", serialized.Config)
+	}
+
+	restored, err := provider.DeserializeEmbeddingModel(serialized)
+	if err != nil {
+		t.Fatalf("DeserializeEmbeddingModel error = %v", err)
+	}
+	if restored.Provider() != "baseten.embedding" || restored.ModelID() != "embeddings" {
+		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
+	}
+}

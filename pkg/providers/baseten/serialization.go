@@ -9,6 +9,7 @@ import (
 
 func init() {
 	provider.RegisterModelDeserializer("baseten.chat", deserializeModel)
+	provider.RegisterEmbeddingModelDeserializer("baseten.embedding", deserializeEmbeddingModel)
 }
 
 // deserializeModel restores a serialized Baseten chat model.
@@ -33,4 +34,25 @@ func deserializeModel(serialized provider.SerializedModel) (provider.LanguageMod
 		return nil, err
 	}
 	return New(Config{BaseURL: cfg.BaseURL, Headers: cfg.Headers}).LanguageModel(serialized.ModelID)
+}
+
+// deserializeEmbeddingModel restores a serialized Baseten embedding model.
+//
+// Provider.EmbeddingModel wraps a plain *openai.EmbeddingModel (embeddingModel
+// embeds it), so Serialize() is promoted from openai.EmbeddingModel and
+// already tags the result "baseten.embedding" (the Name set on the internal
+// openai.Provider used for embeddings). The serialized BaseURL is the
+// already-resolved embeddings endpoint (ModelURL run through
+// basetenEmbeddingURL); passing it back as ModelURL re-applies that
+// transform, which is idempotent for an already-resolved "/sync/v1" URL.
+func deserializeEmbeddingModel(serialized provider.SerializedModel) (provider.EmbeddingModel, error) {
+	var cfg openai.Config
+	data, err := json.Marshal(serialized.Config)
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+	return New(Config{ModelURL: cfg.BaseURL, Headers: cfg.Headers}).EmbeddingModel(serialized.ModelID)
 }
