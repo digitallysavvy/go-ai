@@ -81,13 +81,21 @@ export GOOGLE_GENERATIVE_AI_API_KEY=AI...
 
 ### Image Generation Models
 
+> **Breaking change:** non-Gemini Imagen models (`imagen-4.0-*`, etc.) were
+> removed from the Google provider, matching the TypeScript SDK. Calling
+> `provider.ImageModel(id)` with a model ID that doesn't start with
+> `gemini-` now fails with: "Google image models other than Gemini are no
+> longer supported. Use a model ID that starts with `gemini-`." Use Google
+> Vertex AI if you still need Imagen.
+
 | Model ID | Aspect Ratios | Price | Best For |
 |----------|--------------|-------|----------|
-| imagen-4.0-generate-001 | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | High-quality generation |
-| imagen-4.0-ultra-generate-001 | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | Highest quality |
-| imagen-4.0-fast-generate-001 | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | Fast generation |
 | gemini-2.5-flash-image | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | Fast Gemini generation |
 | gemini-3-pro-image-preview | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | Advanced generation |
+
+Gemini image models ignore `N` (they generate one image per call and are
+auto-batched by `ai.GenerateImage` to reach the requested count) instead of
+erroring on `N > 1`.
 
 Gemini image models can use Google Search grounding during image generation through provider options:
 
@@ -102,7 +110,7 @@ result, err := imageModel.DoGenerate(ctx, &provider.ImageGenerateOptions{
 })
 ```
 
-`googleSearch` is only supported for Gemini image models. Imagen models return an unsupported warning and omit it from the request.
+`googleSearch` is only supported for Gemini image models — the only image models this provider exposes now that Imagen has been removed.
 
 ### Embedding Models
 
@@ -168,6 +176,47 @@ TypeScript pieces such as `BrowserRealtimeTransport`, `BrowserRealtimeAudio`,
 and `useRealtime` are not part of the Go runtime.
 
 Gemini Live Translate configuration can be passed through `ProviderOptions["google"]["translationConfig"]`. The provider merges it into the realtime session `generationConfig.translationConfig`, matching the TypeScript Live Translate request shape.
+
+### Speech Translation (experimental)
+
+`Provider.SpeechTranslationModel(modelID)` (alias `Provider.Translation`)
+returns a speech-to-speech translation model over the same Live API
+`BidiGenerateContent` WebSocket, for use with `ai.ExperimentalStreamTranslate`:
+
+```go
+translationModel, err := googleProvider.SpeechTranslationModel("gemini-3.5-live-translate-preview")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.ExperimentalStreamTranslate(ctx, ai.StreamTranslateOptions{
+    Model:          translationModel,
+    Audio:          audioStream,
+    TargetLanguage: "es",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+stream, err := result.FullStream()
+if err != nil {
+    log.Fatal(err)
+}
+defer stream.Close()
+
+for {
+    part, err := stream.Next()
+    if err == io.EOF {
+        break
+    }
+    if err != nil {
+        log.Fatal(err)
+    }
+    if part.Type == "audio" {
+        // part.AudioData carries translated PCM audio.
+    }
+}
+```
 
 ## Provider-Specific Features
 
@@ -367,7 +416,9 @@ for _, source := range result.Sources {
 Structured output generation:
 
 ```go
-schema := map[string]interface{}{
+import "github.com/digitallysavvy/go-ai/pkg/schema"
+
+bookSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
     "type": "object",
     "properties": map[string]interface{}{
         "title":  map[string]string{"type": "string"},
@@ -379,11 +430,11 @@ schema := map[string]interface{}{
         },
     },
     "required": []string{"title", "author", "year"},
-}
+})
 
 result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
     Model:  model,
-    Schema: schema,
+    Schema: bookSchema,
     Prompt: "Extract book metadata: '1984 by George Orwell, published 1949'",
 })
 ```
@@ -432,7 +483,7 @@ Gemini 3 thinking and tool-call streams preserve `thoughtSignature` in provider 
 
 Usage includes per-modality token details when the API returns them. Text, image, audio, and video token counts are preserved in the result usage details rather than collapsed into only total input/output tokens.
 
-Use the `"google-vertex"` provider key for Vertex options and `"google"` for AI Studio options. Provider option keys are scoped to the model's provider name.
+Use the `"google"` provider key for AI Studio options. Vertex options use the `"googleVertex"` key (see the [Google Vertex AI provider](18-google-vertex.mdx#provider-specific-options) for its lookup order) — the hyphenated `"google-vertex"` string is only the Vertex model's `Provider()` identity, not a `ProviderOptions` key.
 
 ## Examples
 
@@ -648,29 +699,9 @@ result, err = ai.GenerateText(ctx, ai.GenerateTextOptions{
 
 ### Image Generation
 
-Google supports both **Imagen** and **Gemini** models for text-to-image generation:
-
-```go
-// Imagen 4.0 - High quality image generation
-imageModel, err := googleProvider.ImageModel("imagen-4.0-generate-001")
-if err != nil {
-    log.Fatal(err)
-}
-
-n := 1
-result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
-    Model:  imageModel,
-    Prompt: "A serene mountain landscape at sunset with dramatic clouds",
-    N:      &n,
-    Size:   "1024x1024", // Automatically converts to 1:1 aspect ratio
-})
-if err != nil {
-    log.Fatal(err)
-}
-
-// Save the image
-err = os.WriteFile("imagen_output.png", result.Images[0].Data, 0644)
-```
+Google's text-to-image generation is now **Gemini-only** — Imagen model IDs
+(`imagen-4.0-*`) were removed from this provider; use Google Vertex AI for
+Imagen.
 
 **Gemini Image Models** offer fast generation:
 
@@ -705,13 +736,41 @@ os.WriteFile("gemini_output.png", result.Images[0].Data, 0644)
 
 | Model | Speed | Quality | Use Case |
 |-------|-------|---------|----------|
-| imagen-4.0-ultra-generate-001 | Slower | Highest | Professional work |
-| imagen-4.0-generate-001 | Medium | High | General purpose |
-| imagen-4.0-fast-generate-001 | Fast | Good | Rapid prototyping |
 | gemini-2.5-flash-image | Very Fast | Good | Quick iterations |
 | gemini-3-pro-image-preview | Fast | High | Advanced generation |
 
-**Note:** Imagen models on Google Generative AI do not support image editing. For image editing capabilities, use Google Vertex AI.
+**Note:** For Imagen models and image editing, use Google Vertex AI.
+
+## Video Generation
+
+`provider.VideoModel(modelID)` submits to Veo's `:predictLongRunning`
+endpoint and polls the long-running operation until it completes
+(`MaxVideosPerCall()` returns 4 — Veo accepts up to 4 videos per call, and
+`ai.GenerateVideo` fans out across multiple calls automatically when you ask
+for more):
+
+```go
+videoModel, err := googleProvider.VideoModel("veo-3.1-generate-preview")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
+    Model:  videoModel,
+    Prompt: ai.VideoPrompt{Text: "A drone shot flying over a coastline at sunrise"},
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+for _, video := range result.Videos {
+    fmt.Println(video.URL)
+}
+```
+
+`VideoModel` also implements `provider.VideoModelStarter` /
+`VideoModelStatusChecker`, so it works with the async
+`ai.ExperimentalStartVideo` / `ai.ExperimentalGetVideoStatus` calls.
 
 ## Advanced Configuration
 
@@ -880,6 +939,15 @@ func calculateGeminiCost(inputTokens, outputTokens int, model string) float64 {
     return float64(inputTokens)*inputRate + float64(outputTokens)*outputRate
 }
 ```
+
+## Workflow Serialization
+
+Google embedding, image, and (unary) transcription models can cross a
+workflow boundary with `providerutils.SerializeModel` / `DeserializeModel`
+(language models could already be serialized). See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
+for the mechanism; speech, speech-translation, video, and realtime models are
+not yet serializable.
 
 ## See Also
 

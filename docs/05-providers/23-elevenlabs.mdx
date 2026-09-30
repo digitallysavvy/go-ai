@@ -84,6 +84,50 @@ Common model IDs include:
 | `eleven_flash_v2_5` | Low-latency speech |
 | `eleven_turbo_v2_5` | Fast speech synthesis |
 
+## Transcription
+
+`provider.TranscriptionModel(modelID)` supports both batch (`scribe_v1`,
+`scribe_v2`) and realtime (`scribe_v2_realtime`) models:
+
+```go
+transcriptionModel, err := provider.TranscriptionModel("scribe_v2")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
+    Model: transcriptionModel,
+    Audio: audioBytes,
+})
+```
+
+### Streaming Transcription (Scribe v2 Realtime)
+
+`scribe_v2_realtime` is a streaming-only model — `DoTranscribe` (the batch
+path) rejects it. Use `ai.ExperimentalStreamTranscribe` instead:
+
+```go
+liveModel, err := provider.TranscriptionModel("scribe_v2_realtime")
+if err != nil {
+    log.Fatal(err)
+}
+
+stream, err := ai.ExperimentalStreamTranscribe(ctx, ai.StreamTranscribeOptions{
+    Model: liveModel,
+    Audio: audioStream,
+})
+```
+
+`ELEVENLABS_API_KEY` is read automatically when no API key is passed to
+`Config`.
+
+## Workflow Serialization
+
+ElevenLabs speech and transcription models can cross a workflow boundary
+with `providerutils.SerializeModel` / `DeserializeModel`. See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
+for the mechanism.
+
 ## See Also
 
 - [API Reference: GenerateSpeech](../07-reference/ai/generate-speech.mdx)

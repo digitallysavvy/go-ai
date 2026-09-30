@@ -5,7 +5,7 @@ description: Complete guide to the Go-AI SDK provider architecture and capabilit
 
 # Provider System Overview
 
-The Go-AI SDK provides a unified interface for working with 28+ AI providers, from OpenAI and Anthropic to open-source platforms and specialized services.
+The Go-AI SDK provides a unified interface for working with 49 AI providers (`pkg/providers/*`, one shared internal package excluded), from OpenAI and Anthropic to open-source platforms and specialized services. Five of them — LMNT, Ollama, Stability AI, Vercel, and You.com (search tools) — are Go-only and have no upstream TypeScript SDK equivalent. See the [full provider index](index.mdx) for the complete list.
 
 ## Architecture
 
@@ -76,7 +76,10 @@ Providers offering text generation and chat capabilities:
 - Azure OpenAI
 - AWS Bedrock
 - Google Vertex AI
-- Cloudflare Workers AI
+
+> Cloudflare Workers AI is not implemented in the Go SDK (no
+> `pkg/providers/cloudflare` package exists) or in the upstream TypeScript
+> SDK; ignore the `19-cloudflare.mdx` page in this directory.
 
 ### 2. Embedding Providers
 
@@ -481,12 +484,15 @@ func (be *BatchEmbedder) EmbedBatch(texts []string) ([][]float64, error) {
         end := min(i+be.batchSize, len(texts))
         batch := texts[i:end]
 
-        embeddings, err := ai.Embed(be.model, batch...)
+        result, err := ai.EmbedMany(context.Background(), ai.EmbedManyOptions{
+            Model:  be.model,
+            Inputs: batch,
+        })
         if err != nil {
             return nil, err
         }
 
-        allEmbeddings = append(allEmbeddings, embeddings...)
+        allEmbeddings = append(allEmbeddings, result.Embeddings...)
     }
 
     return allEmbeddings, nil

@@ -27,4 +27,56 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 ```
 
-Assistant messages with tool calls use null content only for tool-call assistant turns, matching OpenAI-compatible APIs that require this shape.
+## Assistant Content Serialization
+
+Assistant messages with tool calls no longer use one shape for every
+OpenAI-compatible provider — each matches its own API's expectations:
+
+- **Groq** sends the text content verbatim, including an empty string
+  (`""`), never `null`.
+- **Cohere** omits the `content` key entirely on a tool-call assistant turn.
+- Other OpenAI-compatible providers keep the previous `null`-content shape
+  for tool-call turns.
+
+## Video Parts
+
+`video/*` file parts can now be sent as OpenAI-compatible `video_url`
+content parts. This is controlled internally by
+`prompt.ToOpenAIMessagesOptions.AllowVideo` (default `false` in the plain
+`openai` package, since not every OpenAI-compatible API accepts video
+content): Fireworks, GMI Cloud, Z.AI, Together, Baseten, Cerebras, and
+DeepInfra all set it to `true` for their own requests, so passing a
+`video/*` `types.FileContent` to those providers just works —
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model, // a Fireworks, GMI Cloud, Z.AI, Together, Baseten, Cerebras, or DeepInfra model
+    Messages: []types.Message{{
+        Role: types.RoleUser,
+        Content: []types.ContentPart{
+            types.TextContent{Text: "What happens in this clip?"},
+            types.FileContent{MediaType: "video/mp4", URL: "https://example.com/clip.mp4"},
+        },
+    }},
+})
+```
+
+— there is no per-call or per-provider `AllowVideo` setting to opt into; the
+plain `openai` package used directly against a custom `BaseURL` still omits
+video parts unless the endpoint is one of the providers above.
+
+## Streams Truncated Without A Finish Reason
+
+If the underlying SSE stream ends without ever sending a `finish_reason`
+(a truncated or misbehaving upstream), the shared `OpenAICompatStream` base
+(used by Fireworks, Together, Mistral, Ollama, XAI, Azure, Perplexity, and
+others) now emits an `InvalidResponseDataError` error chunk
+("Response stream ended without a finish reason.") followed by a finish
+chunk with reason `"error"`, instead of ending the stream silently as in
+v0.4.0.
+
+## Trailing Usage Chunks
+
+Streamed responses on providers built on the shared base now report token
+usage: the trailing `stream_options.include_usage` chunk that v0.4.0
+dropped is applied to the final usage totals.

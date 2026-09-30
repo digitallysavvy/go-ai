@@ -5,7 +5,9 @@ description: Complete guide to AI providers supported by the Go-AI SDK
 
 # Providers
 
-The Go-AI SDK supports 30+ AI providers, giving you access to the latest language models, embedding models, image generation, video generation, speech synthesis, and transcription services.
+The Go-AI SDK supports 49 AI providers (`pkg/providers/*`), giving you access to the latest language models, embedding models, image generation, video generation, speech synthesis, and transcription services. Five providers — **LMNT**, **Ollama**, **Stability AI**, **Vercel**, and **You.com** — are Go-only additions with no upstream TypeScript AI SDK equivalent.
+
+> **Not a real provider:** `19-cloudflare.mdx` documents a Cloudflare Workers AI provider that does not exist in this SDK (no `pkg/providers/cloudflare` package) or in the TypeScript SDK. Ignore that page.
 
 ## Provider Categories
 
@@ -18,28 +20,36 @@ The most popular and widely-used AI providers:
 - [Google](04-google.mdx) - Gemini models
 - [Azure OpenAI](05-azure.mdx) - Enterprise OpenAI deployment
 - [AWS Bedrock](06-bedrock.mdx) - Multi-model AWS platform
+- AWS Bedrock Anthropic (`pkg/providers/anthropicaws`, "anthropic-aws") - Claude on Bedrock, rebuilt on the shared Anthropic language model
 
 ### Popular Providers
 
 High-performance providers with specialized capabilities:
 
-- [Cohere](07-cohere.mdx) - Command and Embed models
+- [Cohere](07-cohere.mdx) - Command and Embed models, reranking
 - [Mistral AI](08-mistral.mdx) - Open-source language models
 - [Groq](09-groq.mdx) - Ultra-fast inference
-- [xAI](10-xai.mdx) - Grok models
+- [xAI](10-xai.mdx) - Grok models (Responses API, image, video, speech)
 - [DeepSeek](11-deepseek.mdx) - Advanced reasoning models
-- [Perplexity](12-perplexity.mdx) - Search-augmented AI
+- [Perplexity](12-perplexity.mdx) - Search-augmented Agent API
 
 ### Open Source & Serving
 
 Platforms for running open-source models:
 
-- [Together AI](13-together.mdx) - Open-source model hosting
+- [Together AI](13-together.mdx) - Open-source model hosting, reranking
 - [Fireworks AI](14-fireworks.mdx) - Fast open-source inference
 - [Replicate](15-replicate.mdx) - Run any open-source model
 - [HuggingFace](16-huggingface.mdx) - Router Responses API for HF models
-- [Ollama](17-ollama.mdx) - Local model deployment
+- [Ollama](17-ollama.mdx) - Local model deployment (**Go-only**)
 - [Google Vertex AI](18-google-vertex.mdx) - Enterprise AI platform
+- GMI Cloud (`pkg/providers/gmicloud`) - OpenAI-compatible chat hosting
+- Z.AI (`pkg/providers/zai`) - OpenAI-compatible chat hosting
+- MiniMax (`pkg/providers/minimax`) - Chat language models
+- Moonshot AI (`pkg/providers/moonshot`) - Kimi language models
+- DeepInfra (`28-deepinfra.mdx`) - Serverless GPU inference
+- Baseten (`26-baseten.mdx`) - ML model deployment
+- Cerebras (`27-cerebras.mdx`) - Ultra-fast inference
 
 ### Specialized Providers
 
@@ -47,19 +57,39 @@ Providers for specific use cases:
 
 - [Alibaba Cloud](29-alibaba.mdx) - Qwen language models & Wan video generation
 - [KlingAI](29-klingai.mdx) - Professional video generation with motion control
-- [Cloudflare Workers AI](19-cloudflare.mdx) - Edge AI inference
-- [Stability AI](20-stability.mdx) - Image generation (Stable Diffusion)
-- [Black Forest Labs](21-bfl.mdx) - FLUX image models
-- [FAL](22-fal.mdx) - Image and video generation
+- [Stability AI](20-stability.mdx) - Image generation (Stable Diffusion) (**Go-only**)
+- [Black Forest Labs](21-bfl.mdx) - FLUX image and video models
+- [FAL](22-fal.mdx) - Image, video, speech, and transcription
 - [QuiverAI](31-quiverai.mdx) - SVG generation and image vectorization
-- [ElevenLabs](23-elevenlabs.mdx) - Speech synthesis
+- Prodia (`33-prodia.mdx`) - Fast FLUX and Stable Diffusion image generation
+- ByteDance (`pkg/providers/bytedance`) - Seedance/Seedream video and image (Volcengine Ark)
+- Luma (`pkg/providers/luma`) - Async image generation
+- Replicate video, xAI video - see their provider pages
+
+### Speech, Transcription & Audio
+
+- [ElevenLabs](23-elevenlabs.mdx) - Speech synthesis and transcription
 - [Deepgram](24-deepgram.mdx) - Speech transcription
 - [AssemblyAI](25-assemblyai.mdx) - Audio intelligence
-- [Baseten](26-baseten.mdx) - ML model deployment
-- [Cerebras](27-cerebras.mdx) - Ultra-fast inference
-- [DeepInfra](28-deepinfra.mdx) - Serverless GPU inference
-- [Prodia](33-prodia.mdx) - Fast FLUX and Stable Diffusion image generation
-- [Voyage](34-voyage.mdx) - Embeddings and reranking models
+- Cartesia (`pkg/providers/cartesia`) - Speech and transcription
+- Fish Audio (`pkg/providers/fishaudio`) - Speech and transcription
+- Hume (`pkg/providers/hume`) - Speech synthesis
+- Rev.ai (`pkg/providers/revai`) - Transcription with validated job polling
+- Gladia (`31-gladia.mdx`) - Transcription
+- LMNT (`32-lmnt.mdx`) - Speech synthesis (**Go-only**)
+
+### Embeddings & Reranking
+
+- Voyage (`34-voyage.mdx`) - Embeddings and reranking models
+
+### Infrastructure & Tools
+
+- [AI Gateway](30-gateway.mdx) - Unified multi-provider routing, failover, batch, video, realtime
+- Vercel (`pkg/providers/vercel`) - OpenAI-compatible Vercel AI API (**Go-only**)
+- OpenResponses (`36-openresponses.mdx`) - Open Responses API protocol (custom tools, QuiverAI's transport)
+- [OpenAI-compatible providers](35-openai-compatible.mdx) - shared request/response conventions
+- TypeSafe AI (`pkg/providers/typesafeai`) - Evaluation models for `ai.ExperimentalEvaluate`
+- [You.com](youcom-tools.mdx) - Search, research, and contents tools (not a model provider) (**Go-only**)
 
 ## Quick Start
 
@@ -220,7 +250,20 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 Generate JSON conforming to a schema:
 
 ```go
-result, err := ai.GenerateObject(model, schema, "Describe a person")
+personSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+    "type": "object",
+    "properties": map[string]interface{}{
+        "name": map[string]string{"type": "string"},
+        "age":  map[string]string{"type": "number"},
+    },
+    "required": []string{"name", "age"},
+})
+
+result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+    Model:  model,
+    Schema: personSchema,
+    Prompt: "Describe a person",
+})
 ```
 
 ## Error Handling

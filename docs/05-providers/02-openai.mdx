@@ -136,9 +136,12 @@ Provider-level headers are forwarded to language, Responses, embeddings, image, 
 OpenAI supports native JSON mode for reliable structured output:
 
 ```go
-import "github.com/digitallysavvy/go-ai/pkg/ai"
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/schema"
+)
 
-schema := map[string]interface{}{
+personSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
     "type": "object",
     "properties": map[string]interface{}{
         "name": map[string]string{"type": "string"},
@@ -146,11 +149,11 @@ schema := map[string]interface{}{
         "email": map[string]string{"type": "string"},
     },
     "required": []string{"name", "age"},
-}
+})
 
 result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
     Model:  model,
-    Schema: schema,
+    Schema: personSchema,
     Prompt: "Extract person info: John Doe, 30 years old, john@example.com",
 })
 if err != nil {
@@ -445,6 +448,8 @@ if err != nil {
 fmt.Printf("Image bytes: %d\n", len(result.Images[0].Data))
 ```
 
+`Quality` accepts `"standard"`/`"hd"` (DALL-E) or `"low"`/`"medium"`/`"high"`/`"xhigh"`/`"max"`/`"auto"` (GPT Image models) — `"xhigh"` and `"max"` are new this cycle.
+
 ### Text Embeddings
 
 ```go
@@ -458,12 +463,15 @@ texts := []string{
     "jumps over the lazy dog",
 }
 
-embeddings, err := ai.Embed(embeddingModel, texts...)
+result, err := ai.EmbedMany(ctx, ai.EmbedManyOptions{
+    Model:  embeddingModel,
+    Inputs: texts,
+})
 if err != nil {
     log.Fatal(err)
 }
 
-for i, embedding := range embeddings {
+for i, embedding := range result.Embeddings {
     fmt.Printf("Text %d: %d dimensions\n", i, len(embedding))
 }
 ```
@@ -688,6 +696,66 @@ func estimateCost(promptTokens, completionTokens int, model string) float64 {
     return float64(promptTokens)*price[0] + float64(completionTokens)*price[1]
 }
 ```
+
+## Realtime
+
+`Provider.RealtimeModel(modelID)` / `ExperimentalRealtimeModel` route known
+Live model IDs (currently `"gpt-live-1"`) to the OpenAI Live WebSocket and
+everything else (e.g. `"gpt-realtime"`) to the classic Realtime API:
+
+```go
+import providerapi "github.com/digitallysavvy/go-ai/pkg/provider"
+
+model, err := provider.RealtimeModel("gpt-realtime")
+if err != nil {
+    log.Fatal(err)
+}
+
+secret, err := provider.GetRealtimeToken(ctx, providerapi.RealtimeFactoryGetTokenOptions{
+    Model: "gpt-realtime",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+ws := model.GetWebSocketConfig(secret.Token, secret.URL)
+```
+
+> **Fixed this cycle:** the WebSocket handshake's `Authorization` bearer
+> token is now extracted case-insensitively with any whitespace after the
+> scheme (`/^bearer\s+(.+)$/i`, TS parity). Previously `BEARER <key>` or a
+> tab after `Bearer` were not recognized and the connection silently
+> dropped the API key subprotocol. This also affects
+> `gpt-realtime-whisper` realtime transcription.
+
+## Speech Translation (experimental)
+
+`Provider.SpeechTranslationModel(modelID)` (alias `Provider.Translation`)
+streams speech-to-speech translation over `/realtime/translations`
+(default model `"gpt-realtime-translate"`), for use with
+`ai.ExperimentalStreamTranslate`:
+
+```go
+translationModel, err := provider.SpeechTranslationModel("gpt-realtime-translate")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.ExperimentalStreamTranslate(ctx, ai.StreamTranslateOptions{
+    Model:          translationModel,
+    Audio:          audioStream,
+    TargetLanguage: "es",
+})
+```
+
+## Workflow Serialization
+
+OpenAI embedding, image, speech, and transcription models can cross a
+workflow boundary with `providerutils.SerializeModel` / `DeserializeModel`
+(language models could already be serialized). See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
+for the mechanism; realtime and speech-translation models are not yet
+serializable.
 
 ## See Also
 

@@ -213,6 +213,39 @@ if err != nil {
 }
 ```
 
+## Transcription
+
+`provider.TranscriptionModel(modelID)` (default `"whisper-large-v3-turbo"`)
+wraps Groq's Whisper endpoint:
+
+```go
+transcriptionModel, err := provider.TranscriptionModel("whisper-large-v3-turbo")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
+    Model: transcriptionModel,
+    Audio: audioBytes,
+})
+```
+
+## Assistant Content With Tool Calls
+
+Groq sends the assistant message's text content verbatim on tool-call
+turns, including an empty string, rather than `null` — matching the
+TypeScript SDK. See
+[OpenAI-compatible providers: Assistant Content Serialization](35-openai-compatible.mdx#assistant-content-serialization)
+for how this compares across providers.
+
+## Workflow Serialization
+
+Groq transcription models can cross a workflow boundary with
+`providerutils.SerializeModel` / `DeserializeModel` (language models could
+already be serialized). See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
+for the mechanism.
+
 ## See Also
 
 - [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)

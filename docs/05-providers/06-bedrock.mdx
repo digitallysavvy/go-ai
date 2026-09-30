@@ -288,12 +288,15 @@ texts := []string{
     "Machine learning powers AI applications",
 }
 
-embeddings, err := ai.Embed(embeddingModel, texts...)
+result, err := ai.EmbedMany(ctx, ai.EmbedManyOptions{
+    Model:  embeddingModel,
+    Inputs: texts,
+})
 if err != nil {
     log.Fatal(err)
 }
 
-fmt.Printf("Generated %d embeddings\n", len(embeddings))
+fmt.Printf("Generated %d embeddings\n", len(result.Embeddings))
 ```
 
 ### Streaming with Claude
@@ -358,6 +361,7 @@ Anthropic-on-Bedrock supports native structured output when reasoning is not ena
 ```go
 model, _ := provider.LanguageModel("anthropic.claude-opus-4-7")
 
+// invoiceSchema is a schema.Schema, e.g. schema.NewSimpleJSONSchema(map[string]interface{}{...}).
 result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
     Model:  model,
     Prompt: "Extract the invoice total.",
