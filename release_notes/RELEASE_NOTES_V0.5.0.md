@@ -478,6 +478,11 @@ code.
 - It vendors a patched copy of fastschema/qjs v0.0.6
   (`pkg/internal/third_party/qjs`, MIT license) to fix two memory-read
   bugs.
+- TypeScript annotations in model-written code are stripped with Node
+  `stripTypeScriptTypes` semantics: generics, `as` / `satisfies`,
+  interfaces and type aliases, class modifiers, non-null assertions and
+  `import type`. Syntax the stripper doesn't support, such as `enum`, is
+  passed to the JavaScript engine unchanged, as in TS.
 
 ### MCP
 

@@ -25,7 +25,8 @@ step-by-step upgrade instructions are in
   implemented by two or more providers.
 - **`pkg/codemode`** (experimental): runs model-written JavaScript in a
   QuickJS-on-WebAssembly sandbox, with signed continuations, interrupts, and
-  approval flows.
+  approval flows; TypeScript annotations are stripped with Node
+  `stripTypeScriptTypes` semantics.
 - **`pkg/harness`** (Go port of `@ai-sdk/harness`): Agent/AgentSession,
   `StopWhen`, tool approvals, telemetry; adapters for Claude Code, Codex,
   OpenCode, Deep Agents, ACP, Cursor, fx, GitHub Copilot, Grok Build; a
