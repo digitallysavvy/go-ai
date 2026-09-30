@@ -1,0 +1,142 @@
+---
+title: Harness Sandbox: Vercel
+description: API reference for pkg/harness/sandbox/vercel, a Go port of the Vercel Sandbox harness provider
+---
+
+# Harness Sandbox: Vercel
+
+`pkg/harness/sandbox/vercel` runs [`pkg/harness`](#harness-docs) sandboxes on
+[Vercel Sandbox](https://vercel.com/docs/vercel-sandbox), with network
+policies and template snapshots. It is a Go port of the TypeScript harness's
+Vercel Sandbox provider.
+
+## Package
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/harness/sandbox/vercel"
+```
+
+## Auth options
+
+```go
+type Credentials struct {
+    Token     string
+    TeamID    string
+    ProjectID string
+}
+```
+
+`ResolveCredentials` mirrors the TypeScript provider's credential
+resolution: explicit `Token`/`TeamID`/`ProjectID` win when all three fields
+are set (setting only some of them is an error); otherwise
+`VERCEL_OIDC_TOKEN` is read from the environment and decoded as a JWT for
+its `owner_id`/`project_id` claims.
+
+```go
+func ResolveCredentials(explicit Credentials) (Credentials, error)
+func HasConfiguredCredentials(explicit Credentials) bool
+```
+
+`ErrNoCredentials` is returned when neither explicit credentials nor
+`VERCEL_OIDC_TOKEN` are available.
+
+See [Known differences: Vercel Sandbox has no OIDC token refresh
+loop](../../08-migration-guides/known-differences.mdx#vercel-sandbox-no-oidc-token-refresh-loop) —
+unlike the TypeScript provider, this port does not run a background
+`@vercel/oidc` refresh loop; `VERCEL_OIDC_TOKEN` is re-read from the
+environment on each call.
+
+## Creating a session
+
+```go
+func CreateNetworkSandboxSession(ctx context.Context, opts CreateSessionOptions) (harness.NetworkSandboxSession, error)
+
+type CreateSessionOptions struct {
+    Credentials Credentials
+    BaseURL     string // overrides the Vercel API base URL (tests only)
+
+    SandboxID string
+    Name      string
+
+    Runtime            string
+    Image              string
+    Source             *SnapshotSource
+    TimeoutMs          int64
+    Ports              []int
+    Persistent         *bool
+    NetworkPolicy      *NetworkPolicy
+    SnapshotExpiration *int64
+    Resources          *ResourcesParams
+    Env                map[string]string
+    Tags               map[string]string
+    Region             string
+    FailoverRegions    []string
+    KeepLastSnapshots  *KeepLastSnapshotsParams
+
+    Template *Template // one-time preparation recipe, cached by Template.Identity
+}
+```
+
+```go
+session, err := vercel.CreateNetworkSandboxSession(ctx, vercel.CreateSessionOptions{
+    Runtime:   "node22",
+    TimeoutMs: 10 * 60 * 1000,
+    Env:       map[string]string{"NODE_ENV": "production"},
+})
+```
+
+When `Template` is set, `CreateNetworkSandboxSession` reuses (or creates and
+caches) a snapshot for `Template.Identity`, running `Template.Prepare` only
+the first time that identity is seen, then forks a live sandbox from the
+snapshot — this is the template-snapshot behavior mentioned in the v0.5.0
+release notes.
+
+## Resuming a session
+
+```go
+func ResumeNetworkSandboxSession(ctx context.Context, opts ResumeSessionOptions) (harness.NetworkSandboxSession, error)
+
+type ResumeSessionOptions struct {
+    Credentials Credentials
+    BaseURL     string
+    SandboxID   string
+}
+```
+
+```go
+session, err := vercel.ResumeNetworkSandboxSession(ctx, vercel.ResumeSessionOptions{
+    SandboxID: existingSandboxID,
+})
+```
+
+## Wrapping an existing sandbox
+
+If you already created a `*vercel.Sandbox` through the lower-level
+`CreateSandbox`/`GetSandbox` client calls, wrap it instead of going through
+`CreateNetworkSandboxSession`:
+
+```go
+func NetworkSessionFromNativeSandbox(sandbox *Sandbox) harness.NetworkSandboxSession
+func SessionFromNativeSandbox(sandbox *Sandbox) providerutils.SandboxSession
+```
+
+`SessionFromNativeSandbox` returns the restricted (file I/O + exec only)
+session interface; `NetworkSessionFromNativeSandbox` returns the full
+network-capable session, including `SetNetworkPolicy`,
+`SetRequestTransformations`, and port endpoint resolution.
+
+## Harness docs {#harness-docs}
+
+There is no separate top-level reference page for `pkg/harness` itself yet.
+See the Harness section of [Migrating from the TypeScript AI
+SDK](../../08-migration-guides/from-typescript-ai-sdk.mdx#harness) for the
+mapping from `@ai-sdk/harness` concepts (`HarnessV1Session`,
+`Agent`/`AgentSession`, adapter packages, sandbox providers) to their Go
+equivalents, and the [Migrating from v0.4.x to
+v0.5.0](../../08-migration-guides/from-v0.4-to-v0.5.mdx) guide's "Provider
+updates to review" section for what's new this cycle.
+
+## See Also
+
+- [Known differences from the TypeScript AI SDK](../../08-migration-guides/known-differences.mdx)
+- [Migrating from the TypeScript AI SDK](../../08-migration-guides/from-typescript-ai-sdk.mdx)

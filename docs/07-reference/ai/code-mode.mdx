@@ -1,0 +1,112 @@
+---
+title: Code Mode
+description: API reference for pkg/codemode, a Go port of @ai-sdk/code-mode
+---
+
+# Code Mode
+
+`pkg/codemode` is a Go port of the TypeScript AI SDK's `@ai-sdk/code-mode`
+package. It lets a model write JavaScript that calls host tools
+programmatically instead of making one tool call per model turn ("code
+mode"). The model's source runs in an isolated QuickJS sandbox compiled to
+WebAssembly and executed with [wazero](https://wazero.io/) — no cgo
+required.
+
+**Experimental:** this package is experimental, mirroring the TypeScript
+package's own `experimental_` naming convention on every exported entry
+point. Its API may change in a minor version. Go names drop the
+`experimental_` prefix.
+
+See [Known differences: code-mode concurrent approvals are not
+batched](../../08-migration-guides/known-differences.mdx#code-mode-concurrent-approvals-are-not-batched)
+for a behavior difference from the TypeScript (V8-based) runtime.
+
+## Package
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/codemode"
+```
+
+## Entry points
+
+### RunCodeMode
+
+```go
+func RunCodeMode(ctx context.Context, input RunInput) (interface{}, error)
+```
+
+Runs code-mode JavaScript directly, without wrapping it as an AI SDK tool.
+The source runs as the body of an async function (top-level `await`/`return`
+are supported) inside a fresh QuickJS sandbox with `input.Options`'
+execution limits applied. Returns the sandboxed program's JSON-decoded
+return value on completion, a `*Interrupt` (as the returned `interface{}`,
+with a nil error) if execution paused on a host tool call, or an error.
+
+```go
+type RunInput struct {
+    JS                   string
+    Tools                ToolSet // map[string]types.Tool, reachable as tools.<name>(input)
+    ToolExecutionOptions *types.ToolExecutionOptions
+    Options              *Options
+    Continuation         *Continuation        // resumes a prior interrupt
+    InterruptResolution  *InterruptResolution // resolution for Continuation's next pending interrupt
+}
+```
+
+### CreateCodeModeTool
+
+```go
+func CreateCodeModeTool(tools ToolSet, options Options) types.Tool
+```
+
+Creates an AI SDK `types.Tool` (name `"codeMode"`) that executes code-mode
+JavaScript in an isolated sandbox, with `tools` reachable inside the
+sandbox as `tools.<name>(input)`. Drop the result straight into
+`GenerateTextOptions.Tools`.
+
+### CodeModeTool (tool caller)
+
+```go
+func CodeModeTool(options ToolCallerOptions) types.Tool
+```
+
+Creates a code-mode tool for use with `ai.ExperimentalToolCallers`, so other
+tools can invoke code-mode as a caller rather than the model calling it
+directly.
+
+## Interrupts and approvals (Code-mode part 2)
+
+Host tool calls made from inside the sandbox can pause execution (an
+interrupt) or require approval before running. These functions manage that
+lifecycle; see the package's Go doc comments for full semantics.
+
+```go
+func RequestCodeModeInterrupt(payload InterruptPayload) error
+func IsCodeModeInterrupt(value interface{}, security ...ContinuationSecurityOptions) bool
+func GetCodeModeInterrupt(result interface{}, security ...ContinuationSecurityOptions) *Interrupt
+func UnwrapCodeModeResult(result interface{}, security ...ContinuationSecurityOptions) UnwrappedResult
+func ContinueCodeModeInterrupt(ctx context.Context, interrupt Interrupt, resolution interface{}, tools ToolSet, options *Options, toolExecutionOptions *types.ToolExecutionOptions) (interface{}, error)
+
+func IsCodeModeApprovalInterrupt(value interface{}, security ...ContinuationSecurityOptions) bool
+func ContinueCodeModeApproval(ctx context.Context, interrupt ApprovalInterrupt, response ApprovalResponse, tools ToolSet, options *Options, toolExecutionOptions *types.ToolExecutionOptions) (interface{}, error)
+func GetCodeModeApprovalResponse(messages []types.Message, interrupt ApprovalInterrupt) *ApprovalResponse
+func ToCodeModeApprovalMessages(interrupt ApprovalInterrupt) []types.Message
+
+func SetCodeModeContinuationSigningKey(key []byte, maxAge time.Duration) error
+```
+
+Continuations are signed (HMAC-SHA256, TS-compatible canonical envelope) so
+they can safely round-trip through client-visible state between requests.
+`SetCodeModeContinuationSigningKey` sets the process-wide signing key; a
+random key is generated at process start if it's never called.
+
+## Vendored dependency
+
+`pkg/codemode` vendors a patched copy of `fastschema/qjs` v0.0.6 at
+`pkg/internal/third_party/qjs` (MIT license) to fix two memory-read bugs;
+`github.com/tetratelabs/wazero` is a direct dependency.
+
+## See Also
+
+- [Known differences from the TypeScript AI SDK](../../08-migration-guides/known-differences.mdx)
+- [Migrating from v0.4.x to v0.5.0](../../08-migration-guides/from-v0.4-to-v0.5.mdx)

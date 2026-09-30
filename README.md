@@ -387,7 +387,7 @@ We provide **50+ production-ready examples** covering every feature. See the [ex
 
 ## TypeScript Parity
 
-This SDK maintains 1:1 feature parity with the [Vercel AI SDK](https://ai-sdk.dev) **ai@7.0.113** for backend functionality:
+This SDK maintains 1:1 feature parity with the [Vercel AI SDK](https://ai-sdk.dev) **ai@7.0.118** for backend functionality:
 
 - Same public APIs and response shapes
 - Same provider interfaces and tool system

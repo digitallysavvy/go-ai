@@ -1,0 +1,121 @@
+---
+title: LlamaIndex Adapter
+description: API reference for pkg/llamaindex, a Go port of @ai-sdk/llamaindex
+---
+
+# LlamaIndex Adapter
+
+`pkg/llamaindex` adapts a LlamaIndex chat-engine response stream into AI SDK
+UI message stream chunks. It is a Go port of `@ai-sdk/llamaindex`.
+
+The TypeScript package has no dependency on the real `llamaindex` npm
+package: its `EngineResponse` is a locally-defined `{ delta: string }`
+shape, and the adapter only ever reads `.delta` off of it. Go has no
+LlamaIndex SDK to bind against either — this package defines the same
+minimal input contract. You bridge whatever LlamaIndex client you use (HTTP,
+gRPC, a wrapped Python subprocess, etc.) into a `<-chan EngineResponse` of
+delta chunks; the package does not talk to LlamaIndex itself.
+
+## Package
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/llamaindex"
+```
+
+## EngineResponse
+
+```go
+type EngineResponse struct {
+    Delta string
+}
+```
+
+The minimal Go analog of a LlamaIndex chat-engine streamed response chunk.
+
+## StreamCallbacks
+
+```go
+type StreamCallbacks struct {
+    // OnStart is called once, before any chunk is processed.
+    OnStart func() error
+
+    // OnToken is called for every delta chunk, including empty ones
+    // produced by leading-whitespace trimming.
+    OnToken func(token string) error
+
+    // OnText is called for every delta chunk, identically to OnToken.
+    OnText func(text string) error
+
+    // OnFinal is called once, with the full concatenation of every
+    // (possibly trimmed) delta chunk, after the input stream ends and
+    // before the "text-end" chunk is emitted.
+    OnFinal func(completion string) error
+}
+```
+
+## ToUIMessageStream
+
+```go
+func ToUIMessageStream(
+    ctx context.Context,
+    stream <-chan EngineResponse,
+    callbacks *StreamCallbacks,
+) (<-chan ai.UIMessageChunk, <-chan error)
+```
+
+Converts a LlamaIndex chat-engine response stream into AI SDK UI message
+stream chunks: a single text part (id `"1"`) spanning `text-start` →
+`text-delta` (one or more) → `text-end`.
+
+Leading whitespace is trimmed from the stream exactly once: every delta is
+trimmed until the first delta that is non-empty *after* trimming is seen;
+after that, deltas pass through unmodified, even if empty.
+
+`callbacks` may be `nil`. The returned error channel receives at most one
+error: a callback error (from `OnStart`/`OnToken`/`OnText`/`OnFinal`) or
+`ctx.Err()` if `ctx` is cancelled mid-stream. Both channels are closed when
+the stream is fully drained.
+
+### Example
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+
+    "github.com/digitallysavvy/go-ai/pkg/llamaindex"
+)
+
+func consumeEngineStream(ctx context.Context, engineDeltas <-chan llamaindex.EngineResponse) {
+    chunks, errs := llamaindex.ToUIMessageStream(ctx, engineDeltas, &llamaindex.StreamCallbacks{
+        OnFinal: func(completion string) error {
+            log.Printf("final completion: %s", completion)
+            return nil
+        },
+    })
+
+    for chunk := range chunks {
+        // chunk is an ai.UIMessageChunk (map[string]interface{}) with
+        // "type": "text-start" | "text-delta" | "text-end".
+        _ = chunk
+    }
+
+    if err := <-errs; err != nil {
+        log.Printf("stream error: %v", err)
+    }
+}
+```
+
+To serve these chunks over HTTP in the AI SDK's UI message stream protocol
+(so a TS `useChat` frontend can consume them directly), merge the returned
+channel into a stream built with `ai.CreateUIMessageStreamWithOptions` via
+`UIMessageStreamWriter.Merge`, the same integration point used for any
+non-`StreamText` chunk producer. See [UI message stream
+helpers](./stream-transport-helpers.mdx).
+
+## See Also
+
+- [UI message stream helpers](./stream-transport-helpers.mdx)
+- [Migrating from v0.4.x to v0.5.0](../../08-migration-guides/from-v0.4-to-v0.5.mdx)
