@@ -23,15 +23,12 @@ Bedrock provider on the Converse API; `StreamText` returning asynchronously
 with a redesigned full-stream chunk lifecycle (`ChunkTypeStart` /
 `ChunkTypeStartStep` / `ChunkTypeFinishStep` / `ChunkTypeFinish`); call-level
 tool approval with signed resume; a GenAI-semantic-convention OpenTelemetry
-integration; and nine new providers (Voyage AI, Fish Audio, Cartesia,
-Rev.ai, Hume, Luma, GMI Cloud, Z.AI, MiniMax, TypeSafe AI, QuiverAI).
+integration; and thirteen new providers (Voyage AI, Claude on AWS, Fish
+Audio, Cartesia, Rev.ai, Hume, Luma, GMI Cloud, Z.AI, MiniMax, TypeSafe AI,
+QuiverAI, and the Go-only You.com).
 
-Full per-commit detail for the September cycle lives in
-`state/parity/sep_23_2026/RELEASE_NOTES_DRAFT.md`; the May/June cycles are
-covered in `state/parity/parity_audit_may*.md`, `state/parity/jun_*_audit.md`,
-and the `*-ts-to-go-feature-matrix.md` files. The step-by-step upgrade guide,
-with before/after code for every breaking change below, is
-`docs/08-migration-guides/from-v0.4-to-v0.5.mdx`.
+The step-by-step upgrade guide, with before/after code for every breaking
+change below, is `docs/08-migration-guides/from-v0.4-to-v0.5.mdx`.
 
 ## Installation
 
@@ -498,7 +495,7 @@ code.
 ### Schema, embeddings, media
 
 - Signature-based media sniffing (AVIF/HEIC/ADTS AAC, no more false
-  `image/bmp`); `fileutil.PollJSON` validated-redirect poller;
+  `image/bmp`); validated-redirect polling for async results;
   `SerializationError`.
 - `Together AI`: `RerankingModel` (`POST /v1/rerank`).
 
