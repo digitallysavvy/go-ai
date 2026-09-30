@@ -567,9 +567,19 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 					// An abnormal disconnection (TS onSocketError) always
 					// fails the stream, regardless of whether the input audio
 					// had already ended — distinct from a clean close (TS
-					// onClose), which finishes successfully once audioEnded.
+					// onClose), which finishes successfully once a finish is
+					// pending.
 					fail(errors.New("Google Live transcription error"))
-				} else if audioEnded {
+				} else if finishTimer != nil {
+					// Gate on the pending finish-grace timer, not the
+					// audioEnded boolean directly: schedulePendingFinish only
+					// arms finishTimer once audioEnded is true (mirrors TS
+					// onClose's audioEnded check exactly, since
+					// schedulePendingFinish is invoked synchronously and
+					// unconditionally as soon as audioEnded transitions to
+					// true — see the matching gate in
+					// speech_translation_stream.go, which this mirrors for
+					// consistency across the two Live API streams).
 					finish()
 				} else {
 					fail(fmt.Errorf("Google Live transcription WebSocket closed unexpectedly before finishing"))
