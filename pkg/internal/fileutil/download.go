@@ -512,4 +512,3 @@ func dataURLMediaType(raw string) string {
 	}
 	return meta
 }
-
