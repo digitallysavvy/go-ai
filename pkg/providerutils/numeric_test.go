@@ -2,6 +2,7 @@ package providerutils
 
 import (
 	"encoding/json"
+	"math"
 	"testing"
 )
 
@@ -32,12 +33,81 @@ func TestCoerceInt(t *testing.T) {
 		{"bool", true, 0, false},
 		{"nil", nil, 0, false},
 		{"map", map[string]interface{}{}, 0, false},
+		{"negative int", int(-5), -5, true},
+		{"negative float64", float64(-5), -5, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, ok := CoerceInt(tt.in)
 			if ok != tt.wantOk || got != tt.want {
 				t.Fatalf("CoerceInt(%#v) = (%d, %v), want (%d, %v)", tt.in, got, ok, tt.want, tt.wantOk)
+			}
+		})
+	}
+}
+
+// TestCoerceInt_RejectsUnsafeFloats is a regression test: CoerceInt's
+// float32/float64 branches used to do a bare `int(n)` conversion with no
+// validation at all, which silently truncates a non-integral value (1.5 ->
+// 1) and produces an implementation-specific garbage value for NaN/+-Inf or
+// a magnitude that overflows int -- any of which could flow straight into
+// something like time.NewTicker (pollIntervalMs/pollTimeoutMs are both
+// CoerceInt callers) and panic on a non-positive interval, or silently poll
+// with the wrong cadence. CoerceInt must reject these instead.
+func TestCoerceInt_RejectsUnsafeFloats(t *testing.T) {
+	tests := []struct {
+		name string
+		in   interface{}
+	}{
+		{"non-integral float64", float64(1.5)},
+		{"non-integral float32", float32(1.5)},
+		{"NaN", math.NaN()},
+		{"+Inf", math.Inf(1)},
+		{"-Inf", math.Inf(-1)},
+		{"float64 overflow (2^63)", math.Ldexp(1, 63)},
+		{"float64 overflow (1e30)", float64(1e30)},
+		{"float64 underflow (-2^70)", -math.Ldexp(1, 70)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got, ok := CoerceInt(tt.in); ok {
+				t.Fatalf("CoerceInt(%v) = (%d, true), want (_, false)", tt.in, got)
+			}
+		})
+	}
+}
+
+// TestCoerceInt_RejectsOverflowingUnsignedInts is a regression test: a
+// uint/uint64 value above math.MaxInt silently wraps to a negative int via a
+// bare `int(n)` conversion instead of being rejected.
+func TestCoerceInt_RejectsOverflowingUnsignedInts(t *testing.T) {
+	tests := []struct {
+		name string
+		in   interface{}
+	}{
+		{"uint64 above MaxInt", uint64(math.MaxInt64) + 1},
+		{"uint64 max", uint64(math.MaxUint64)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got, ok := CoerceInt(tt.in); ok {
+				t.Fatalf("CoerceInt(%v) = (%d, true), want (_, false): overflow silently wrapped to a negative int", tt.in, got)
+			}
+		})
+	}
+}
+
+// TestCoerceInt_RejectsNonIntegralAndUnsafeJSONNumber mirrors the float
+// regression above for json.Number (used when a decoder is configured with
+// UseNumber()): Int64() fails for "1.5" (not pure base-10 digits), and the
+// previous code fell through to Float64() + a bare int(f) conversion,
+// silently truncating instead of rejecting.
+func TestCoerceInt_RejectsNonIntegralAndUnsafeJSONNumber(t *testing.T) {
+	tests := []string{"1.5", "NaN", "Inf", "-Inf", "1e400"}
+	for _, raw := range tests {
+		t.Run(raw, func(t *testing.T) {
+			if got, ok := CoerceInt(json.Number(raw)); ok {
+				t.Fatalf("CoerceInt(json.Number(%q)) = (%d, true), want (_, false)", raw, got)
 			}
 		})
 	}
