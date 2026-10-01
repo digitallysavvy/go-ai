@@ -1,7 +1,6 @@
 package codemode
 
 import (
-	"regexp"
 	"sync"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/third_party/qjs"
@@ -146,50 +145,112 @@ func installRuntimeHardening(jsCtx *qjs.Context) error {
 	return err
 }
 
-// dynamicImportPattern matches a JavaScript dynamic `import(...)` call
-// (ImportCall syntax: https://tc39.es/ecma262/#sec-import-calls) -- the
-// literal token `import` followed by optional whitespace or a block
-// comment, then `(`. It deliberately does not match `import.meta` (the
-// character after `import`+whitespace there is `.`, not `(`) or a static
-// `import ... from ...`/`export ... from ...` declaration (those are
-// already rejected by the engine itself with a SyntaxError, since
-// RunCodeMode always evaluates in script/global mode, never module mode --
-// see driveCodeModeExecution/EvalNoAutoAwait's doc comment -- verified by
-// sandbox_escape_routes_test.go's
+// assertNoDynamicImport rejects js if it contains a dynamic `import(...)`
+// call (ImportCall syntax: https://tc39.es/ecma262/#sec-import-calls)
+// anywhere in its text, paired with installRuntimeHardening blocking eval/
+// Function -- see that function's doc comment above for why this check is
+// necessary at all (quickjs-ng's module loader resolves the native
+// "qjs:std"/"qjs:os"/"qjs:bjson" specifiers to the same host-escape
+// primitives stripSandboxGlobals removes from the global object,
+// independently of it, with no Go-exposed hook to deny module specifiers --
+// see assertNoDynamicImport's reference to README.vendor.md below for why
+// that's true even after inspecting the vendored qjs.wasm binary's own
+// exports) and why it's *sufficient* once eval/Function are gone (the only
+// remaining way `import(` can reach the engine's parser is the literal
+// top-level script text this function scans).
+//
+// This reuses tokenizeTS (strip_types.go), CM1's TypeScript-stripper
+// tokenizer, rather than a regular expression: tokenizeTS already correctly
+// skips over string/template-literal contents, regular-expression
+// literals, and line/block comments (so `"import("`, “ `import(${x})` “,
+// `/import\(/`, and `// import(x)` never look like a call), which a plain
+// regex has no way to do. A naive `\bimport\s*\(` regex (this function's
+// first version) had exactly those false positives, plus one more: it
+// doesn't know what a dot-prefixed property access is, so it also
+// misflagged `tools.import(x)`/`obj?.import(x)` (a method literally named
+// "import", not the import keyword) -- there is nothing dynamic-import-like
+// about a property access, and quickjs never treats it as one.
+//
+// What IS flagged: the literal `import` identifier token, not immediately
+// preceded by `.`/`?.` (member access), followed -- skipping any amount of
+// whitespace and any number of line/block comments in between, exactly as
+// the real grammar allows -- by a `(` token. This correctly leaves
+// `import.meta` alone (the token after `import`+whitespace there is `.`,
+// not `(`) and leaves a static `import ... from ...`/`export ... from ...`
+// declaration alone (those are already rejected by the engine itself with
+// a SyntaxError, since RunCodeMode always evaluates in script/global mode,
+// never module mode -- see driveCodeModeExecution/EvalNoAutoAwait's doc
+// comment -- verified by sandbox_escape_routes_test.go's
 // TestSandboxEscapeRoutes_StaticImportDeclarationIsASyntaxError).
 //
-// This is a best-effort textual check, not a real parser: it can be
-// defeated by splitting the literal token `import` itself across string
-// concatenation fed to `eval`/`new Function` (e.g. `('imp'+'ort')(...)` is
-// not valid syntax, but `eval('imp'+'ort(...)')` very much is) -- which is
-// exactly why installRuntimeHardening (above) blocks eval/Function first:
-// once those are gone, the only way `import(` can appear in source the
-// engine will ever parse is the literal top-level script text this
-// function scans. It also cannot distinguish code from an `import(` that
-// merely appears inside a string/template literal or a comment, so it
-// fails closed (rejects) on syntactically-confusable text it does not need
-// to -- an acceptable trade-off for a security boundary mirroring
-// TypeScript's own sandbox, which supports no form of `import` at all (the
-// `run` package's worker runtime never registers a dynamic-import callback
-// with its JS engine).
-var dynamicImportPattern = regexp.MustCompile(`(?s)\bimport(?:\s|/\*.*?\*/)*\(`)
-
-// assertNoDynamicImport rejects js if it contains a dynamic `import(...)`
-// call anywhere in its text. See dynamicImportPattern's doc comment for
-// what this does and does not catch, and sandbox_hardening.go's package doc
-// comment on installRuntimeHardening for why this check, paired with
-// blocking eval/Function, closes the qjs:std/qjs:os/qjs:bjson native-module
-// escape that stripSandboxGlobals alone cannot (deleting globals does not
-// stop quickjs-ng's module loader from resolving those specifiers to fresh
-// module-namespace objects wrapping the same host-escape primitives).
+// Two things this deliberately does NOT special-case, both verified safe
+// by the engine itself rather than by this function (see
+// sandbox_escape_routes_test.go's TestSandboxEscapeRoutes_* for each):
+//   - A Unicode-escaped spelling of `import` (`import(...)`,
+//     `\u{69}mport(...)`, or an escape mid-word): this build's parser
+//     always rejects any identifier whose decoded value equals a reserved
+//     word with "SyntaxError: 'import' is a reserved identifier", for
+//     every escape form tried, before this check (or installRuntimeHardening)
+//     ever matters -- matching the ECMAScript rule that a ReservedWord's
+//     code points can never be expressed via UnicodeEscapeSequence. There
+//     is nothing for tokenizeTS to decode here because the engine never
+//     accepts the construct regardless.
+//   - An object-literal or class method literally named `import`
+//     (`{ import(x) { ... } }`): lexically indistinguishable from an
+//     ImportCall by a tokenizer that (like this one) doesn't track
+//     brace/object-literal parser state, so this function fails closed and
+//     rejects it too, same as the member-access case would be wrongly
+//     flagged by a plain regex. This is an acceptable, documented
+//     trade-off (and an exceedingly unlikely name for a code-mode tool
+//     method to begin with): TypeScript's own sandbox supports no form of
+//     `import` at all, so there is no parity requirement to accept this,
+//     only an implementation cost to do so correctly (full parser-level
+//     object-literal-context tracking) that isn't justified here.
 func assertNoDynamicImport(js string) error {
-	if loc := dynamicImportPattern.FindStringIndex(js); loc != nil {
-		return NewUnsupportedSyntaxError(
-			"Code mode does not support dynamic import(); remove it from the script.",
-			map[string]interface{}{"offset": loc[0]},
-		)
+	tokens := tokenizeTS(js)
+	var prevSignificant *tsToken
+	offset := 0
+	for i := range tokens {
+		tok := &tokens[i]
+		if tok.kind == "space" || tok.kind == "comment" {
+			offset += len(tok.text)
+			continue
+		}
+		if tok.kind == "ident" && tok.text == "import" &&
+			!isMemberAccessDot(prevSignificant) &&
+			nextSignificantIsOpenParen(tokens, i+1) {
+			return NewUnsupportedSyntaxError(
+				"Code mode does not support dynamic import(); remove it from the script.",
+				map[string]interface{}{"offset": offset},
+			)
+		}
+		prevSignificant = tok
+		offset += len(tok.text)
 	}
 	return nil
+}
+
+// isMemberAccessDot reports whether prev is the `.` or `?.` token
+// immediately preceding a property-access identifier (e.g. the `.` in
+// `tools.import(x)`), which rules out an ImportCall interpretation
+// regardless of what follows.
+func isMemberAccessDot(prev *tsToken) bool {
+	return prev != nil && prev.kind == "punct" && (prev.text == "." || prev.text == "?.")
+}
+
+// nextSignificantIsOpenParen reports whether the next non-space,
+// non-comment token starting at tokens[from] is a `(` punct -- i.e.
+// whether an `import` token at tokens[from-1] is immediately called,
+// modulo intervening whitespace/comments, exactly as ImportCall syntax
+// allows.
+func nextSignificantIsOpenParen(tokens []tsToken, from int) bool {
+	for i := from; i < len(tokens); i++ {
+		if tokens[i].kind == "space" || tokens[i].kind == "comment" {
+			continue
+		}
+		return tokens[i].kind == "punct" && tokens[i].text == "("
+	}
+	return false
 }
 
 // cappedConsoleBudget enforces a single shared byte budget across a

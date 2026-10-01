@@ -473,3 +473,129 @@ func TestSandboxEscapeRoutes_NoFSMountAndNoEnvHoldEvenIfModuleImportReopens(t *t
 		return JSON.stringify({content, envVal});
 	} catch (e) { return 'ERR:' + e.message; }`)
 }
+
+// --- Follow-up review round: hardening the dynamic-import defense ------
+//
+// A coordinator follow-up asked two things after the first round of this
+// review: (1) check whether the vendored qjs/quickjs-ng exposes a cheaper,
+// engine-level way to reject module imports instead of relying on a single
+// static check, and (2) replace that static check's regex with a real
+// tokenizer so it can't be fooled by -- or wrongly reject -- text that only
+// looks like `import(`.
+//
+// (1) is documented in README.vendor.md's "Sandbox hardening" section, not
+// tested here (there is nothing to assert about a hook that doesn't
+// exist): introspecting the vendored qjs.wasm binary's own exports
+// (`go run` against wazero's CompiledModule.ExportedFunctions(), listing
+// its ImportedFunctions()) shows a `QJS_ModuleLoader` export with no paired
+// setter to swap or disable it, and confirms module resolution for the
+// native "qjs:"-prefixed specifiers never calls back into the host at all
+// (the only host-callable imports are WASI preview1 syscalls plus one
+// `env.jsFunctionProxy`) -- so there is no cheap host-side hook, and the
+// only way to truly remove the qjs:std/os/bjson modules remains
+// `-DQJS_BUILD_LIBC=OFF`, which README.vendor.md already explains was
+// rejected (it risks losing `console`, which is quickjs-libc functionality
+// too). assertNoDynamicImport + installRuntimeHardening (both in
+// sandbox_hardening.go) remain the primary and only defense.
+//
+// (2)'s dedicated unit tests for assertNoDynamicImport itself (every true
+// positive, every false positive, and the two documented edge cases) live
+// in dynamic_import_test.go, run directly against the function without a
+// full RunCodeMode/WASM round trip. The tests below are the end-to-end
+// confirmation that the same routes behave correctly all the way through
+// RunCodeMode, plus the two engine-level findings (Unicode-escaped
+// `import`, object-literal method named `import`) that only a real
+// RunCodeMode invocation can demonstrate.
+
+// Every one of these previously-misflagged shapes must now reach the
+// engine and either succeed normally or fail for an unrelated reason --
+// never RunCodeMode's own *UnsupportedSyntaxError, which is what the old
+// regex-based assertNoDynamicImport incorrectly raised for all of them.
+func TestSandboxEscapeRoutes_DynamicImportLexerDoesNotFalsePositive(t *testing.T) {
+	cases := map[string]string{
+		"string_literal_containing_import_paren":   `return "import(";`,
+		"template_literal_containing_import_paren": "return `text import(x) more text`;",
+		"line_comment_containing_import_paren":     "// import(x)\nreturn 'ok';",
+		"block_comment_containing_import_paren":    "/* import(x) */\nreturn 'ok';",
+		"regex_literal_containing_import_paren":    `return /import\(/.test("import(x)") ? 'matched' : 'no-match';`,
+		"member_access_tools_import":               `return typeof tools.import;`,
+		"optional_member_access_import":            `return typeof tools?.import;`,
+	}
+	for name, js := range cases {
+		name, js := name, js
+		t.Run(name, func(t *testing.T) {
+			_, err := runSandboxProbe(t, js)
+			var unsupported *UnsupportedSyntaxError
+			if errors.As(err, &unsupported) {
+				t.Fatalf("false positive: RunCodeMode rejected non-dynamic-import source as unsupported syntax: %v", err)
+			}
+		})
+	}
+}
+
+// Confirms member access on the `tools` host-bridge Proxy (the one real,
+// legitimate object code-mode scripts call methods on) named something
+// that merely contains "import" as a substring, or literally "import" as a
+// property, is never confused with a dynamic import call end-to-end.
+func TestSandboxEscapeRoutes_ToolsProxyPropertyNamedImportIsNotConfusedWithImportCall(t *testing.T) {
+	got, err := runSandboxProbe(t, `return typeof tools.import;`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The tools Proxy's `get` trap returns a callable for any property name
+	// (see wrapCodeModeSource), so this is "function", not an import
+	// rejection or a ReferenceError.
+	if got != "function" {
+		t.Fatalf("expected 'function' (tools Proxy get trap), got %#v", got)
+	}
+}
+
+// A Unicode-escaped spelling of `import` (plain `\u` form, braced `\u{}`
+// form, and an escape mid-word) is not specially handled by
+// assertNoDynamicImport's tokenizer -- it doesn't need to be, because this
+// build's own parser unconditionally rejects any identifier whose decoded
+// value equals a reserved word, for every escape form, before
+// assertNoDynamicImport (or installRuntimeHardening) would ever matter.
+// This matches the ECMAScript rule that a ReservedWord's code points can
+// never be expressed via UnicodeEscapeSequence. If a future qjs.wasm
+// rebuild ever relaxed this (accepting the escape as the literal `import`
+// keyword), this test would start failing -- which is exactly the
+// early-warning this permanent regression test exists to give.
+func TestSandboxEscapeRoutes_UnicodeEscapedImportIsRejectedByTheEngineItself(t *testing.T) {
+	cases := map[string]string{
+		"plain_u_escape":  "try { const m = await \\u0069mport('qjs:std'); return 'IMPORTED:' + typeof m; } catch (e) { return 'ERR:' + e.message; }",
+		"braced_u_escape": "try { const m = await \\u{69}mport('qjs:std'); return 'IMPORTED:' + typeof m; } catch (e) { return 'ERR:' + e.message; }",
+		"mid_word_escape": "try { const m = await imp\\u006frt('qjs:std'); return 'IMPORTED:' + typeof m; } catch (e) { return 'ERR:' + e.message; }",
+	}
+	for name, js := range cases {
+		name, js := name, js
+		t.Run(name, func(t *testing.T) {
+			got, err := runSandboxProbe(t, js)
+			if got != nil {
+				t.Fatalf("expected a nil result, got %#v (err=%v)", got, err)
+			}
+			if err == nil || !strings.Contains(err.Error(), "reserved identifier") {
+				t.Fatalf("expected the engine's own 'reserved identifier' SyntaxError, got %v", err)
+			}
+			// And confirm it's a genuine engine SyntaxError, not
+			// RunCodeMode's own UnsupportedSyntaxError -- the point of
+			// this test is that the engine closes this route on its own,
+			// before assertNoDynamicImport's tokenizer logic is even
+			// relevant.
+			var unsupported *UnsupportedSyntaxError
+			if errors.As(err, &unsupported) {
+				t.Fatalf("expected an engine-level SyntaxError, not assertNoDynamicImport's UnsupportedSyntaxError: %v", err)
+			}
+		})
+	}
+}
+
+// An object-literal method literally named `import` is RunCodeMode's one
+// documented, deliberate over-rejection (see assertNoDynamicImport's doc
+// comment and dynamic_import_test.go's
+// TestAssertNoDynamicImport_ObjectLiteralMethodNamedImportFailsClosed for
+// the unit-level version) -- confirmed here end-to-end through
+// RunCodeMode.
+func TestSandboxEscapeRoutes_ObjectLiteralMethodNamedImportFailsClosedEndToEnd(t *testing.T) {
+	assertUnsupportedSyntax(t, `const obj = { import(x) { return x; } }; return obj.import(5);`)
+}
