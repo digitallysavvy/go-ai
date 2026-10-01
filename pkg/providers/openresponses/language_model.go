@@ -1151,40 +1151,47 @@ func (s *openResponsesStream) Close() error {
 
 // Next returns the next chunk in the stream
 func (s *openResponsesStream) Next() (*provider.StreamChunk, error) {
-	if len(s.pending) > 0 {
-		chunk := s.pending[0]
-		s.pending = s.pending[1:]
-		return chunk, nil
-	}
-	if s.err != nil {
-		return nil, s.err
-	}
+	for {
+		if len(s.pending) > 0 {
+			chunk := s.pending[0]
+			s.pending = s.pending[1:]
+			return chunk, nil
+		}
+		if s.err != nil {
+			return nil, s.err
+		}
 
-	// Get next SSE event
-	event, err := s.parser.Next()
-	if err != nil {
-		s.err = err
-		return nil, err
-	}
+		// Get next SSE event
+		event, err := s.parser.Next()
+		if err != nil {
+			s.err = err
+			return nil, err
+		}
 
-	// Check for stream completion
-	if streaming.IsStreamDone(event) {
-		s.err = io.EOF
-		return nil, io.EOF
-	}
+		// Check for stream completion
+		if streaming.IsStreamDone(event) {
+			s.err = io.EOF
+			return nil, io.EOF
+		}
 
-	// Parse the event data as JSON
-	var streamEvent StreamEvent
-	if err := json.Unmarshal([]byte(event.Data), &streamEvent); err != nil {
-		return nil, fmt.Errorf("failed to parse stream event: %w", err)
-	}
+		// Parse the event data as JSON
+		var streamEvent StreamEvent
+		if err := json.Unmarshal([]byte(event.Data), &streamEvent); err != nil {
+			return nil, fmt.Errorf("failed to parse stream event: %w", err)
+		}
 
-	// Handle different event types
-	return s.handleStreamEvent(&streamEvent)
+		// Handle different event types
+		chunk, ok := s.handleStreamEvent(&streamEvent)
+		if ok {
+			return chunk, nil
+		}
+		continue
+
+	}
 }
 
 // handleStreamEvent processes a stream event and returns appropriate chunk
-func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.StreamChunk, error) {
+func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.StreamChunk, bool) {
 	switch event.Type {
 	case "response.output_item.added":
 		// New output item started
@@ -1196,7 +1203,7 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 				ArgsJSON:         "",
 				ProviderMetadata: openResponsesToolCallMetadata(s.providerName, event.Item.ID, event.Item.Namespace),
 			}
-			return s.Next()
+			return nil, false
 		}
 		// Row a0d2e8c: a new reasoning block starts streaming its summary.
 		if event.Item != nil && event.Item.Type == "reasoning" {
@@ -1204,7 +1211,7 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			return &provider.StreamChunk{
 				Type: provider.ChunkTypeReasoningStart,
 				ID:   event.Item.ID,
-			}, nil
+			}, true
 		}
 		// A new message item starts streaming text content. Mirrors TS:
 		// `chunk.type === 'response.output_item.added' && chunk.item.type ===
@@ -1213,7 +1220,7 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			return &provider.StreamChunk{
 				Type: provider.ChunkTypeTextStart,
 				ID:   event.Item.ID,
-			}, nil
+			}, true
 		}
 		// A caller-executed "custom" tool call starts streaming its raw text
 		// input. Keyed by item id, mirroring the function_call accumulator.
@@ -1227,10 +1234,10 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 				Type:     provider.ChunkTypeToolInputStart,
 				ID:       event.Item.CallID,
 				ToolCall: &types.ToolCall{ID: event.Item.CallID, ToolName: event.Item.Name},
-			}, nil
+			}, true
 		}
 		// Don't emit a chunk for this event
-		return s.Next()
+		return nil, false
 
 	case "response.output_text.delta":
 		// Text delta. TS: `{type: 'text-delta', id: chunk.item_id, delta:
@@ -1239,7 +1246,7 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			Type: provider.ChunkTypeText,
 			ID:   event.ItemID,
 			Text: event.Delta,
-		}, nil
+		}, true
 
 	// Row a0d2e8c: reasoning summary/text deltas. response.reasoning_text.delta
 	// is an LM Studio extension not in the official Responses spec, but both
@@ -1249,7 +1256,7 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			Type:      provider.ChunkTypeReasoning,
 			ID:        event.ItemID,
 			Reasoning: event.Delta,
-		}, nil
+		}, true
 
 	case "response.function_call_arguments.delta":
 		// Tool call arguments delta. Row fb82a6c: create the accumulator
@@ -1262,7 +1269,7 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			s.toolCallsByItemID[event.ItemID] = state
 		}
 		state.ArgsJSON += event.Delta
-		return s.Next()
+		return nil, false
 
 	case "response.function_call_arguments.done":
 		// Tool call arguments complete. Row fb82a6c: create the accumulator
@@ -1278,7 +1285,7 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		if event.Arguments != "" {
 			state.ArgsJSON = event.Arguments
 		}
-		return s.Next()
+		return nil, false
 
 	case "response.custom_tool_call_input.delta":
 		// Caller-executed custom tool input delta (raw text, not JSON).
@@ -1298,7 +1305,7 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			Type: provider.ChunkTypeToolInputDelta,
 			ID:   id,
 			Text: event.Delta,
-		}, nil
+		}, true
 
 	case "response.custom_tool_call_input.done":
 		// Final raw input for a caller-executed custom tool call. No chunk is
@@ -1310,12 +1317,12 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			s.customToolCallsByItemID[event.ItemID] = state
 		}
 		state.ArgsJSON = event.Input
-		return s.Next()
+		return nil, false
 
 	case "response.output_item.done":
 		// Output item complete
 		if event.Item == nil {
-			return s.Next()
+			return nil, false
 		}
 		switch event.Item.Type {
 		case "function_call":
@@ -1357,7 +1364,7 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 					RawArguments:     argsJSON,
 					ProviderMetadata: providerMetadata,
 				},
-			}, nil
+			}, true
 		case "custom_tool_call":
 			// Row fb82a6c-equivalent: the done item's own id/call_id/name/input
 			// are authoritative; fall back to the accumulator (built from
@@ -1397,7 +1404,7 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			return &provider.StreamChunk{
 				Type: provider.ChunkTypeToolInputEnd,
 				ID:   customToolCallID,
-			}, nil
+			}, true
 		case "reasoning":
 			// Row a0d2e8c/6fe187f: close the reasoning block using its real
 			// item id (not a synthesized "reasoning-"+id), carrying full
@@ -1411,7 +1418,7 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 				Type:             provider.ChunkTypeReasoningEnd,
 				ID:               event.Item.ID,
 				ProviderMetadata: providerMeta,
-			}, nil
+			}, true
 
 		case "message":
 			// Close the text block started by output_item.added, carrying
@@ -1425,7 +1432,7 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 				Type:             provider.ChunkTypeTextEnd,
 				ID:               event.Item.ID,
 				ProviderMetadata: openResponsesTextProviderMetadata(s.providerName, event.Item),
-			}, nil
+			}, true
 
 		default:
 			// Row 9a68261 (OR-EXT): an unrecognized item type may be a
@@ -1437,7 +1444,7 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			if err != nil {
 				// Mirrors TS's try/catch around decodeExtensionItem: a
 				// decode failure doesn't abort the whole stream.
-				return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: err.Error()}, nil
+				return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: err.Error()}, true
 			}
 			for _, part := range decoded {
 				if tc, ok := part.(types.ToolCallContent); ok {
@@ -1506,9 +1513,9 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 					})
 				}
 			}
-			return s.Next()
+			return nil, false
 		}
-		return s.Next()
+		return nil, false
 
 	case "response.completed", "response.incomplete":
 		finishReason := ""
@@ -1537,9 +1544,9 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			reasoningEnd := &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: s.activeReasoningID}
 			s.activeReasoningID = ""
 			s.pending = append(s.pending, finishChunk)
-			return reasoningEnd, nil
+			return reasoningEnd, true
 		}
-		return finishChunk, nil
+		return finishChunk, true
 
 	case "response.failed":
 		// Response failed. The error lives inside the nested response object
@@ -1578,14 +1585,14 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		if respErr == nil {
 			first := tail[0]
 			s.pending = append(s.pending, tail[1:]...)
-			return first, nil
+			return first, true
 		}
 		s.pending = append(s.pending, tail...)
 		return &provider.StreamChunk{
 			Type: provider.ChunkTypeError,
 			Text: respErr.Message,
 			Err:  s.streamProviderError(respErr),
-		}, nil
+		}, true
 
 	case "error":
 		// A bare error event (no response wrapper). Mirrors TS: enqueued as a
@@ -1594,7 +1601,7 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		// block closed first, same as response.failed above) is queued
 		// behind it here too.
 		if event.Error == nil {
-			return s.Next()
+			return nil, false
 		}
 		s.finishReason = types.FinishReasonError
 		finishChunk := &provider.StreamChunk{
@@ -1607,19 +1614,19 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			Type: provider.ChunkTypeError,
 			Text: event.Error.Message,
 			Err:  s.streamProviderError(event.Error),
-		}, nil
+		}, true
 
 	default:
 		// Row 9a68261 (OR-EXT): an unrecognized event type may be a
 		// registered extension's namespaced streaming event.
 		decoded, handled, err := decodeExtensionEvent(s.extensionRegistry, event.Raw, s.extensionState)
 		if !handled {
-			return s.Next()
+			return nil, false
 		}
 		if err != nil {
 			// Mirrors TS's try/catch around extension.decodeEvent: a decode
 			// failure doesn't abort the whole stream.
-			return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: err.Error()}, nil
+			return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: err.Error()}, true
 		}
 		for _, chunk := range decoded {
 			if chunk.Type == provider.ChunkTypeToolCall || chunk.Type == provider.ChunkTypeToolInputStart {
@@ -1627,7 +1634,7 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			}
 			s.pending = append(s.pending, chunk)
 		}
-		return s.Next()
+		return nil, false
 	}
 }
 

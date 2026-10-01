@@ -488,9 +488,16 @@ func TestOpenResponsesExtensionItemDecodeStream(t *testing.T) {
 	s := newOpenResponsesStream(io.NopCloser(strings.NewReader("")), nil, "open-responses")
 	s.extensionRegistry = p.extensionRegistry
 
-	carrierChunk, err := s.handleStreamEvent(&StreamEvent{Type: "response.output_item.done", Item: &item})
+	// handleStreamEvent queues the decoded parts onto s.pending and reports
+	// ok=false (meaning "continue the loop"); draining s.pending is Next()'s
+	// job, so read the carrier chunk back through Next() as a real caller
+	// would, rather than through the no-longer-recursive internal call.
+	if _, ok := s.handleStreamEvent(&StreamEvent{Type: "response.output_item.done", Item: &item}); ok {
+		t.Fatalf("handleStreamEvent returned a chunk directly, want it queued via s.pending")
+	}
+	carrierChunk, err := s.Next()
 	if err != nil {
-		t.Fatalf("handleStreamEvent failed: %v", err)
+		t.Fatalf("Next() error = %v", err)
 	}
 	if carrierChunk.Type != provider.ChunkTypeCustom || carrierChunk.CustomContent == nil || carrierChunk.CustomContent.Kind != extensionReplayKind {
 		t.Fatalf("carrierChunk = %#v, want the extension replay carrier first", carrierChunk)
@@ -581,9 +588,16 @@ func TestOpenResponsesExtensionSourceContentStream(t *testing.T) {
 	s := newOpenResponsesStream(io.NopCloser(strings.NewReader("")), nil, "open-responses")
 	s.extensionRegistry = p.extensionRegistry
 
-	carrierChunk, err := s.handleStreamEvent(&StreamEvent{Type: "response.output_item.done", Item: &item})
+	// handleStreamEvent queues the decoded parts onto s.pending and reports
+	// ok=false (meaning "continue the loop"); draining s.pending is Next()'s
+	// job, so read the carrier chunk back through Next() as a real caller
+	// would, rather than through the no-longer-recursive internal call.
+	if _, ok := s.handleStreamEvent(&StreamEvent{Type: "response.output_item.done", Item: &item}); ok {
+		t.Fatalf("handleStreamEvent returned a chunk directly, want it queued via s.pending")
+	}
+	carrierChunk, err := s.Next()
 	if err != nil {
-		t.Fatalf("handleStreamEvent failed: %v", err)
+		t.Fatalf("Next() error = %v", err)
 	}
 	if carrierChunk.Type != provider.ChunkTypeCustom || carrierChunk.CustomContent == nil || carrierChunk.CustomContent.Kind != extensionReplayKind {
 		t.Fatalf("carrierChunk = %#v, want the extension replay carrier first", carrierChunk)
