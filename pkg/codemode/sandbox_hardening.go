@@ -1,6 +1,8 @@
 package codemode
 
 import (
+	"regexp"
+	"strings"
 	"sync"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/third_party/qjs"
@@ -219,10 +221,24 @@ func assertNoDynamicImport(js string) error {
 		if tok.kind == "ident" && tok.text == "import" &&
 			!isMemberAccessDot(prevSignificant) &&
 			nextSignificantIsOpenParen(tokens, i+1) {
-			return NewUnsupportedSyntaxError(
-				"Code mode does not support dynamic import(); remove it from the script.",
-				map[string]interface{}{"offset": offset},
-			)
+			return dynamicImportError(offset)
+		}
+		// A template literal is one "string" token, but its ${...}
+		// interpolations are code: check each one as a script of its own.
+		if tok.kind == "string" && strings.HasPrefix(tok.text, "`") {
+			for _, body := range templateInterpolations(tok.text) {
+				if err := assertNoDynamicImport(body); err != nil {
+					return dynamicImportError(offset)
+				}
+			}
+		}
+		// The tokenizer decides regex-vs-division heuristically. If it reads
+		// a "/" as starting a regex where the engine sees division, the
+		// "regex" text is really code, so reject any regex token that
+		// contains import(. A genuine regex with that text is rejected too,
+		// which is an acceptable false positive.
+		if tok.kind == "regex" && regexDynamicImport.MatchString(tok.text) {
+			return dynamicImportError(offset)
 		}
 		prevSignificant = tok
 		offset += len(tok.text)
@@ -326,4 +342,49 @@ func (w *cappedConsoleWriter) Write(p []byte) (int, error) {
 		w.budget.remaining -= n
 	}
 	return len(p), nil
+}
+
+// regexDynamicImport matches an import( call (allowing whitespace or a
+// comment before the parenthesis) inside a token the tokenizer classified
+// as a regular-expression literal.
+var regexDynamicImport = regexp.MustCompile(`\bimport\s*(?:/\*.*?\*/\s*)*\(`)
+
+func dynamicImportError(offset int) error {
+	return NewUnsupportedSyntaxError(
+		"Code mode does not support dynamic import(); remove it from the script.",
+		map[string]interface{}{"offset": offset},
+	)
+}
+
+// templateInterpolations returns the source of each top-level ${...}
+// interpolation in a template literal token (including the backticks),
+// using the same scanning rules as the tokenizer.
+func templateInterpolations(template string) []string {
+	runes := []rune(template)
+	n := len(runes)
+	var bodies []string
+	for j := 1; j < n; {
+		c := runes[j]
+		switch {
+		case c == '\\' && j+1 < n:
+			j += 2
+		case c == '`':
+			return bodies
+		case c == '$' && j+1 < n && runes[j+1] == '{':
+			start := j + 2
+			end := scanBalancedExpr(runes, start)
+			bodyEnd := end - 1
+			if bodyEnd < start {
+				bodyEnd = start
+			}
+			if bodyEnd > n {
+				bodyEnd = n
+			}
+			bodies = append(bodies, string(runes[start:bodyEnd]))
+			j = end
+		default:
+			j++
+		}
+	}
+	return bodies
 }
