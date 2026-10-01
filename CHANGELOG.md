@@ -27,7 +27,9 @@ step-by-step upgrade instructions are in
   QuickJS-on-WebAssembly sandbox, with signed continuations, interrupts, and
   approval flows; TypeScript annotations are stripped with Node
   `stripTypeScriptTypes` semantics; concurrent tool calls (`Promise.all`)
-  that need approval are batched into one interrupt.
+  that need approval are batched into one interrupt; the tool catalog lists
+  tools in declaration order (`ToolCallerDefinition.Bind` /
+  `PrepareModelMessage` take an ordered `[]types.Tool`).
 - **`pkg/harness`** (Go port of `@ai-sdk/harness`): Agent/AgentSession,
   `StopWhen`, tool approvals, telemetry; adapters for Claude Code, Codex,
   OpenCode, Deep Agents, ACP, Cursor, fx, GitHub Copilot, Grok Build; a

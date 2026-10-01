@@ -74,6 +74,39 @@ Creates a code-mode tool for use with `ai.ExperimentalToolCallers`, so other
 tools can invoke code-mode as a caller rather than the model calling it
 directly.
 
+Messages a tool caller adds to the conversation (for example the code-mode
+tool catalog with `ToolDiscoveryConversation`) persist across steps in
+`GenerateText`, `StreamText` and `ToolLoopAgent`, and `PrepareStep`'s
+`InitialMessages` stays the raw prompt, as in TS.
+
+## TypeScript in model-written code
+
+Before running, code-mode strips TypeScript annotations from the source with
+Node `stripTypeScriptTypes` semantics, as TS code-mode does:
+
+- type annotations, generics (including generic arrow functions such as
+  `<T,>(x: T) => x`) and default type parameters
+- `as` and `satisfies` expressions, and non-null assertions (`x!`)
+- `interface` and `type` declarations, `import type` / `export type`
+- class modifiers (`public`, `private`, `protected`, `readonly`,
+  `override`, `declare`, `abstract`), `declare` statements, and a
+  function's `this` parameter
+
+Syntax that has no type-only erasure, such as `enum`, isn't rewritten. If
+stripping fails for any reason, the source runs unchanged, and the
+JavaScript engine reports a syntax error if it isn't valid JavaScript.
+Plain JavaScript is never modified.
+
+## Tool catalog order
+
+The tool catalog and prompt that code-mode generates list tools in
+declaration order, matching TS. With `CodeModeTool` and
+`ai.ExperimentalToolCallers`, that is the order of the tools passed to the
+call: `types.ToolCallerDefinition.Bind` and `PrepareModelMessage` receive
+an ordered `[]types.Tool`. `CreateCodeModeTool`, `BuildCodeModeToolDescription`
+and `BuildCodeModeToolCatalogMessage` take a `ToolSet` (a Go map, which has
+no order), so they list tools alphabetically.
+
 ## Interrupts and approvals (Code-mode part 2)
 
 Host tool calls made from inside the sandbox can pause execution (an
@@ -94,6 +127,26 @@ func ToCodeModeApprovalMessages(interrupt ApprovalInterrupt) []types.Message
 
 func SetCodeModeContinuationSigningKey(key []byte, maxAge time.Duration) error
 ```
+
+### Concurrent approvals (`Promise.all`)
+
+With `Options.Approval` set to `&ApprovalOptions{Mode: ApprovalModeInterrupt}`,
+tool calls that need approval and start concurrently (for example inside one
+`Promise.all`) are batched, as in TS. Each such call stays pending until the
+sandbox's job queue is idle, and then all of them are returned together:
+
+- `RunCodeMode` (or the tool) returns an approval `*Interrupt` whose
+  `Continuation.PendingInterruptions` lists every call in the batch.
+- Resolve the entries one at a time with `ContinueCodeModeApproval`, passing
+  `ApprovalResponse{ApprovalID: interrupt.InterruptID, Approved: ...}`. Each
+  call returns the next pending `*Interrupt` until the batch is complete.
+- No tool in the batch runs until every entry is resolved. If any entry is
+  denied, none of them run, and the result is a `*ToolApprovalDeniedError`.
+
+Calls that don't need approval run immediately and aren't part of the
+batch. `MaxInFlightBridgeRequests` counts the calls in a batch. A promise
+that never settles while no tool call is pending fails fast with a
+`*ProtocolError` instead of waiting for the execution timeout.
 
 Continuations are signed (HMAC-SHA256, TS-compatible canonical envelope) so
 they can safely round-trip through client-visible state between requests.

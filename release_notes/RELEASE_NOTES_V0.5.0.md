@@ -485,6 +485,10 @@ code.
   interfaces and type aliases, class modifiers, non-null assertions and
   `import type`. Syntax the stripper doesn't support, such as `enum`, is
   passed to the JavaScript engine unchanged, as in TS.
+- The code-mode tool catalog and prompt list tools in declaration order,
+  matching TS. To support this, `types.ToolCallerDefinition.Bind` and
+  `PrepareModelMessage` take an ordered `[]types.Tool`. The type is new in
+  v0.5.0, so this isn't a change from v0.4.0.
 - Concurrent tool calls (`Promise.all`) that need approval are batched into
   one interrupt, as in TS. Tool calls are real async host functions, and a
   call awaiting approval stays pending until the job queue is idle.
