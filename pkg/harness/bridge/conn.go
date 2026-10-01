@@ -143,7 +143,7 @@ func Dial(ctx context.Context, endpoint harness.PortEndpoint, opts DialOptions) 
 		if cause := context.Cause(dialCtx); cause != nil && dialCtx.Err() != nil {
 			return nil, cause
 		}
-		return nil, err
+		return nil, sanitizeDialError(err)
 	}
 	writeTimeout := opts.WriteTimeout
 	if writeTimeout <= 0 {
@@ -249,6 +249,30 @@ func abortError(ctx context.Context) error {
 		return cause
 	}
 	return errConnectionAborted
+}
+
+// sanitizeDialError strips the dial target's query string out of a
+// golang.org/x/net/websocket *DialError before it is allowed to propagate.
+// Launch embeds the bridge's secret channel token into the dial URL's query
+// string via WithBridgeToken (the `agent_bridge_token` param). x/net's
+// DialError.Error() unconditionally renders the full dial URL
+// (config.Location.String()) for every kind of dial failure — DNS failure,
+// connection refused, TLS failure, a non-101 handshake response — so without
+// this, that token would leak into whatever this error's message reaches:
+// Channel.Open's returned error, OpenBridgeWebSocket's composed "last error"
+// message, and ChannelDebugEvent.Cause on a reconnect-failed event, any of
+// which calling code may log or display. Any other error shape (e.g. the
+// ctx-derived errors already handled above) is returned unchanged.
+func sanitizeDialError(err error) error {
+	var dialErr *websocket.DialError
+	if !errors.As(err, &dialErr) || dialErr.Config == nil || dialErr.Config.Location == nil {
+		return err
+	}
+	redactedURL := *dialErr.Config.Location
+	if redactedURL.RawQuery != "" {
+		redactedURL.RawQuery = "REDACTED"
+	}
+	return fmt.Errorf("websocket.Dial %s: %w", redactedURL.String(), dialErr.Err)
 }
 
 // OpenOptions configures OpenBridgeWebSocket.

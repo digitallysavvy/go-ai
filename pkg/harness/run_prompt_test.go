@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -451,5 +452,96 @@ func TestRunPrompt_HostTool_RevalidatesApprovedContinuationInput(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestRunPrompt_CtxCancellation_JoinsOutstandingHostToolExecutions is the
+// regression test for bug-review/R3.md's "Unverified" consumeLoop gap:
+// consumeLoop's `case <-d.ctx.Done()` branch used to return immediately,
+// without calling joinOutstandingExecutions first — unlike every other exit
+// path from the read loop (an ErrorPart, an invalid host tool call, a
+// finish-step, or the terminal finish). That left a host tool's Execute
+// goroutine (started by executeHostToolAsync) still running after the turn
+// had already been reported finished/failed to the caller: a goroutine
+// leak, and a window in which that goroutine's eventual SubmitToolResult
+// call lands on a turn (or, via AgentSession, a whole new turn on the same
+// session) that has already moved on. Mirrors TS run-prompt.ts, where every
+// exit from its read loop — including one driven by the caller's own
+// abortSignal — runs `await waitForOutstandingHostToolExecutions()` first.
+//
+// This drives a host tool whose Execute blocks until the test releases it,
+// cancels the turn's ctx while that execution is still outstanding (with
+// nothing else queued, so consumeLoop's read select is genuinely parked on
+// both the partsCh and ctx.Done() branches — promptDone keeps the mock's
+// PromptControl "running" so partsCh is never closed out from under the
+// race), and asserts runPrompt's Done signal does not fire until the tool
+// execution actually completes.
+func TestRunPrompt_CtxCancellation_JoinsOutstandingHostToolExecutions(t *testing.T) {
+	toolStarted := make(chan struct{})
+	release := make(chan struct{})
+	slow := types.Tool{
+		Name: "slow",
+		Parameters: map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		},
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			close(toolStarted)
+			<-release
+			return map[string]interface{}{"ok": true}, nil
+		},
+	}
+
+	// keepAlive holds the mock's PromptControl.Done() open past the point
+	// the script runs out of queued parts, so run_prompt's own
+	// `<-control.Done()` goroutine never closes partsCh during this test —
+	// otherwise that closure could race the ctx cancellation below for which
+	// branch of consumeLoop's select fires.
+	keepAlive := make(chan struct{})
+	t.Cleanup(func() { close(keepAlive) })
+
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(submit func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&StreamStartPart{},
+				&ToolCallPart{ToolCallID: "c1", ToolName: "slow", Input: `{}`},
+			}
+		},
+		promptDone: func() <-chan struct{} { return keepAlive },
+	})
+	tools := map[string]types.Tool{"slow": slow}
+	ctx, cancel := context.WithCancel(context.Background())
+	out := runPrompt(ctx, runPromptInput{
+		Harness: mock.harness, Session: mock.session,
+		Prompt: TextPrompt("go"), Tools: tools, ActiveTools: tools,
+		SandboxSession: testSandbox(),
+	})
+
+	select {
+	case <-toolStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("host tool execution never started")
+	}
+
+	cancel()
+
+	// With the fix, consumeLoop must block in joinOutstandingExecutions
+	// until the "slow" tool actually finishes, so Done must not fire yet.
+	select {
+	case <-out.Done:
+		t.Fatal("runPrompt settled before the outstanding host tool execution finished: ctx cancellation did not join it")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	close(release)
+
+	select {
+	case <-out.Done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runPrompt never settled after the outstanding host tool execution finished")
+	}
+
+	if err := out.Result.Err(); err == nil {
+		t.Fatal("Result.Err() = nil, want the ctx cancellation error")
 	}
 }
