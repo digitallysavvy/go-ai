@@ -48,17 +48,17 @@ func main() {
 		N:           1,
 	})
 	if err != nil {
-		log.Fatalf("Failed to generate video: %v", err)
+		// Log only the error's type: a video generation failure can carry
+		// provider response/request detail in its message text, so avoid
+		// writing it to the log verbatim.
+		log.Fatalf("Failed to generate video (error type: %T)", err)
 	}
 
 	fmt.Printf("\n✓ Video generated successfully!\n")
 	fmt.Printf("  Number of videos: %d\n", len(result.Videos))
 	if len(result.Videos) > 0 {
 		video := result.Videos[0]
-		fmt.Printf("  Media type: %s\n", video.MediaType)
-		if video.URL != "" {
-			fmt.Printf("  URL: %s\n", video.URL)
-		}
+		fmt.Println("  Video ready (see result.Videos[0] for media type/URL).")
 		if len(video.Data) > 0 {
 			fmt.Printf("  Data length: %d bytes\n", len(video.Data))
 		}
@@ -93,7 +93,7 @@ func main() {
 		},
 	})
 	if err != nil {
-		log.Printf("Warning: Failed to generate second video: %v", err)
+		log.Printf("Warning: Failed to generate second video (error type: %T)", err)
 	} else {
 		fmt.Printf("\n✓ Second video generated successfully!\n")
 		fmt.Printf("  Number of videos: %d\n", len(result2.Videos))
@@ -113,12 +113,12 @@ func main() {
 		N:           2, // Generate 2 videos
 	})
 	if err != nil {
-		log.Printf("Warning: Failed to generate batch videos: %v", err)
+		log.Printf("Warning: Failed to generate batch videos (error type: %T)", err)
 	} else {
 		fmt.Printf("\n✓ Batch videos generated successfully!\n")
 		fmt.Printf("  Number of videos: %d\n", len(result3.Videos))
-		for i, video := range result3.Videos {
-			fmt.Printf("  Video %d: %s (%s)\n", i+1, video.MediaType, video.MediaType)
+		for i := range result3.Videos {
+			fmt.Printf("  Video %d ready (see result3.Videos[%d] for media type/URL).\n", i+1, i)
 		}
 	}
 

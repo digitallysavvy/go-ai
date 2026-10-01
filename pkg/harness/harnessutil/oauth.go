@@ -45,6 +45,13 @@ func IsAccessTokenExpiringSoon(expiresAt, now, refreshWindowMs int64) bool {
 	return expiresAt <= now+refreshWindowMs
 }
 
+// refreshTokenRequestBody is the JSON body for a refresh_token grant.
+type refreshTokenRequestBody struct {
+	GrantType    string `json:"grant_type"`
+	ClientID     string `json:"client_id"`
+	RefreshToken string `json:"refresh_token"`
+}
+
 // RefreshOAuthAccessTokenOptions is the input of RefreshOAuthAccessToken.
 type RefreshOAuthAccessTokenOptions struct {
 	TokenURL     string
@@ -75,8 +82,18 @@ func RefreshOAuthAccessToken(ctx context.Context, opts RefreshOAuthAccessTokenOp
 	contentType := "application/x-www-form-urlencoded"
 	if opts.RequestFormat == "json" {
 		contentType = "application/json"
-		// Key order matches the TS object literal.
-		body = []byte(fmt.Sprintf(`{"grant_type":"refresh_token","client_id":%s,"refresh_token":%s}`, jsonString(opts.ClientID), jsonString(opts.RefreshToken)))
+		// Key order matches the TS object literal. Marshal a struct instead
+		// of splicing pre-escaped values between literal quote characters,
+		// so the request body is unambiguously valid JSON.
+		encoded, err := json.Marshal(refreshTokenRequestBody{
+			GrantType:    "refresh_token",
+			ClientID:     opts.ClientID,
+			RefreshToken: opts.RefreshToken,
+		})
+		if err != nil {
+			return nil, err
+		}
+		body = encoded
 	} else {
 		body = []byte("grant_type=refresh_token&client_id=" + url.QueryEscape(opts.ClientID) + "&refresh_token=" + url.QueryEscape(opts.RefreshToken))
 	}

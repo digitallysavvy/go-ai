@@ -35,7 +35,11 @@ func main() {
 	})
 
 	if err != nil {
-		log.Fatalf("Video generation failed: %v", err)
+		// Log only the error's type: some providers (e.g. Google) include
+		// the request URL -- which carries the API key as a query
+		// parameter -- in a failed HTTP request's error text, so avoid
+		// writing it to the log verbatim.
+		log.Fatalf("Video generation failed (error type: %T)", err)
 	}
 
 	// Save the generated video
@@ -45,7 +49,6 @@ func main() {
 			log.Fatalf("Failed to save video: %v", err)
 		}
 		fmt.Printf("Video saved to %s\n", outputPath)
-		fmt.Printf("Media type: %s\n", result.Video.MediaType)
 		fmt.Printf("Size: %d bytes\n", len(result.Video.Data))
 	}
 

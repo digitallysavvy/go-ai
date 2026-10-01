@@ -2723,7 +2723,19 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 						&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: callID},
 					)
 				} else {
-					prefix := `{"callId":"` + escapeJSONDelta(callID) + `","operation":{"type":"` + escapeJSONDelta(opType) + `","path":"` + escapeJSONDelta(opPath) + `","diff":"`
+					// Marshal the whole object with an empty diff (fields in
+					// streaming order, diff last), then drop the closing `"}}`
+					// so the prefix ends inside the open diff string.
+					type applyPatchOp struct {
+						Type string `json:"type"`
+						Path string `json:"path"`
+						Diff string `json:"diff"`
+					}
+					prefixJSON, _ := json.Marshal(struct {
+						CallID    string       `json:"callId"`
+						Operation applyPatchOp `json:"operation"`
+					}{CallID: callID, Operation: applyPatchOp{Type: opType, Path: opPath}})
+					prefix := strings.TrimSuffix(string(prefixJSON), `"}}`)
 					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: callID, Text: prefix})
 				}
 			}

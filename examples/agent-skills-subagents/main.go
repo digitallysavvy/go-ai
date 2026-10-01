@@ -215,7 +215,7 @@ func main() {
 		"Provide a complete analysis of this text: "+formattedText,
 	)
 	if err != nil {
-		log.Fatalf("Delegation failed: %v", err)
+		log.Fatalf("Delegation failed (error type: %T)", err)
 	}
 	fmt.Printf("Analysis: %s\n", analysisResult.Text)
 	fmt.Println()
@@ -228,7 +228,7 @@ func main() {
 		"Create a brief summary of this text: "+formattedText,
 	)
 	if err != nil {
-		log.Fatalf("Delegation failed: %v", err)
+		log.Fatalf("Delegation failed (error type: %T)", err)
 	}
 	fmt.Printf("Summary: %s\n", summaryResult.Text)
 	fmt.Println()

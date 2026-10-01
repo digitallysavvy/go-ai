@@ -62,8 +62,10 @@ func main() {
 
 	// Print results
 	fmt.Println("\n✅ Video generated successfully!")
-	fmt.Printf("Video URL: %s\n", resp.Videos[0].URL)
-	fmt.Printf("Media Type: %s\n", resp.Videos[0].MediaType)
+	// The video URL is a provider-hosted download link and may be
+	// time-limited/access-scoped; avoid writing it to logs verbatim,
+	// inspect resp.Videos[0].URL directly in your own code instead.
+	fmt.Println("Video ready (see resp.Videos[0].URL and .MediaType for details).")
 
 	// Print metadata
 	if metadata, ok := resp.ProviderMetadata["xai"].(map[string]interface{}); ok {

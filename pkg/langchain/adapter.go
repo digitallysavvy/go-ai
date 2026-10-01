@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -600,7 +601,7 @@ func namespaceAlreadyTagged(chunk ai.UIMessageChunk) bool {
 // without discarding any provider metadata (such as citation metadata)
 // already present.
 func tagNamespaceChunk(chunk ai.UIMessageChunk, ns []string) ai.UIMessageChunk {
-	out := make(ai.UIMessageChunk, len(chunk)+1)
+	out := make(ai.UIMessageChunk, intsafe.AddCap(len(chunk), 1))
 	for k, v := range chunk {
 		out[k] = v
 	}
