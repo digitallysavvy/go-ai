@@ -272,4 +272,9 @@ func (t *StdioTransport) logStderr() {
 	for scanner.Scan() {
 		fmt.Printf("MCP stderr: %s\n", scanner.Text())
 	}
+	// The scanner stops on a line over the limit (bufio.ErrTooLong) or a
+	// read error. Keep draining stderr anyway: if nothing reads the pipe,
+	// the child blocks once the OS pipe buffer fills and the MCP server
+	// hangs.
+	_, _ = io.Copy(io.Discard, t.stderr)
 }
