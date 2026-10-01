@@ -2726,13 +2726,19 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 						&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: callID},
 					)
 				} else {
-					// Build the quoted JSON fragments with json.Marshal directly
-					// (rather than splicing an escaped value between literal quote
-					// characters) so each value is unambiguously JSON-quoted.
-					callIDJSON, _ := json.Marshal(callID)
-					opTypeJSON, _ := json.Marshal(opType)
-					opPathJSON, _ := json.Marshal(opPath)
-					prefix := `{"callId":` + string(callIDJSON) + `,"operation":{"type":` + string(opTypeJSON) + `,"path":` + string(opPathJSON) + `,"diff":"`
+					// Marshal the whole object with an empty diff (fields in
+					// streaming order, diff last), then drop the closing `"}}`
+					// so the prefix ends inside the open diff string.
+					type applyPatchOp struct {
+						Type string `json:"type"`
+						Path string `json:"path"`
+						Diff string `json:"diff"`
+					}
+					prefixJSON, _ := json.Marshal(struct {
+						CallID    string       `json:"callId"`
+						Operation applyPatchOp `json:"operation"`
+					}{CallID: callID, Operation: applyPatchOp{Type: opType, Path: opPath}})
+					prefix := strings.TrimSuffix(string(prefixJSON), `"}}`)
 					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: callID, Text: prefix})
 				}
 			}
