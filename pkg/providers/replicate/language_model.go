@@ -180,7 +180,14 @@ func (m *LanguageModel) pollPrediction(ctx context.Context, predictionID string)
 			)
 		}
 
-		time.Sleep(pollInterval)
+		// select on ctx.Done() during the wait (not a plain time.Sleep), so
+		// cancellation/timeout is honored promptly instead of being delayed
+		// by up to a full poll interval (mirrors revai's pollJobStatus).
+		select {
+		case <-ctx.Done():
+			return replicatePrediction{}, ctx.Err()
+		case <-time.After(pollInterval):
+		}
 	}
 
 	return replicatePrediction{}, fmt.Errorf("prediction timed out after %d attempts", maxAttempts)

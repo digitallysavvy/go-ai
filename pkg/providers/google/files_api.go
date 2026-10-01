@@ -103,7 +103,14 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		if time.Since(start) > time.Duration(pollTimeoutMs)*time.Millisecond {
 			return nil, fmt.Errorf("file processing timed out after %dms", pollTimeoutMs)
 		}
-		time.Sleep(time.Duration(pollIntervalMs) * time.Millisecond)
+		// select on ctx.Done() during the wait (not a plain time.Sleep), so
+		// cancellation/timeout is honored promptly instead of being delayed
+		// by up to a full poll interval.
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(time.Duration(pollIntervalMs) * time.Millisecond):
+		}
 
 		pollReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/"+googleFilePath(file.Name), nil)
 		for k, v := range headers {
