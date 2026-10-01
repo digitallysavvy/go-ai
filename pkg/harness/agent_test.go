@@ -1732,7 +1732,13 @@ func TestAgentSession_SuspendTurn_DetachesLocalHandle(t *testing.T) {
 func TestAgent_ConcurrentStream_SecondCallerRejected(t *testing.T) {
 	var prepareCalls int32
 	gate := make(chan struct{})
+	// turnHold keeps the winning caller's turn running until both results
+	// are in. Without it the winner's turn could start and finish (the mock
+	// script completes immediately) before the loser reaches
+	// startTrackedTurn, and the loser would then legitimately succeed.
+	turnHold := make(chan struct{})
 	mock := newMockHarness(mockHarnessOptions{
+		promptDone: func() <-chan struct{} { return turnHold },
 		script: func(submit func(string, interface{})) []StreamPart {
 			return []StreamPart{
 				&StreamStartPart{},
@@ -1786,6 +1792,7 @@ func TestAgent_ConcurrentStream_SecondCallerRejected(t *testing.T) {
 
 	r1 := <-results
 	r2 := <-results
+	close(turnHold)
 
 	var succeeded, failed []callResult
 	for _, r := range []callResult{r1, r2} {
