@@ -95,149 +95,152 @@ func (s *bedrockConverseStream) enqueue(chunk *provider.StreamChunk) {
 }
 
 func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
-	if len(s.queue) > 0 {
-		chunk := s.queue[0]
-		s.queue = s.queue[1:]
-		return chunk, nil
-	}
-	if s.done {
-		return nil, io.EOF
-	}
-
-	if !s.startEmitted {
-		s.startEmitted = true
-		responseMetadata := &provider.ResponseMetadata{
-			ID:      s.requestID,
-			ModelID: s.modelID,
-			Headers: s.responseHeaders,
+	for {
+		if len(s.queue) > 0 {
+			chunk := s.queue[0]
+			s.queue = s.queue[1:]
+			return chunk, nil
 		}
-		if s.responseTimestamp != nil {
-			responseMetadata.Timestamp = *s.responseTimestamp
+		if s.done {
+			return nil, io.EOF
 		}
-		s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeStreamStart, Warnings: s.warnings})
-		s.enqueue(&provider.StreamChunk{
-			Type:             provider.ChunkTypeResponseMetadata,
-			ResponseMetadata: responseMetadata,
-		})
-		return s.Next()
-	}
 
-	event, err := s.decoder.Next()
-	if err != nil {
-		if err == io.EOF {
+		if !s.startEmitted {
+			s.startEmitted = true
+			responseMetadata := &provider.ResponseMetadata{
+				ID:      s.requestID,
+				ModelID: s.modelID,
+				Headers: s.responseHeaders,
+			}
+			if s.responseTimestamp != nil {
+				responseMetadata.Timestamp = *s.responseTimestamp
+			}
+			s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeStreamStart, Warnings: s.warnings})
+			s.enqueue(&provider.StreamChunk{
+				Type:             provider.ChunkTypeResponseMetadata,
+				ResponseMetadata: responseMetadata,
+			})
+			continue
+		}
+
+		event, err := s.decoder.Next()
+		if err != nil {
+			if err == io.EOF {
+				s.done = true
+				return s.flush()
+			}
+			s.err = err
 			s.done = true
-			return s.flush()
+			return nil, err
 		}
-		s.err = err
-		s.done = true
-		return nil, err
-	}
 
-	payloadType := ""
-	switch event.MessageType {
-	case "event":
-		payloadType = event.EventType
-	case "exception":
-		payloadType = event.ExceptionType
-	}
-	if payloadType == "" {
-		return s.Next()
-	}
-
-	var payload map[string]interface{}
-	if err := json.Unmarshal(event.Data, &payload); err != nil {
-		// Mirrors TS doStream's !chunk.success branch (amazon-bedrock-chat-
-		// language-model.ts): report the error but keep reading — the stream
-		// is not aborted — and mark finishReason as error in case the stream
-		// ends (via decoder EOF) before any later messageStop overwrites it.
-		s.finishReason = types.FinishReasonError
-		return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: fmt.Sprintf("failed to parse Amazon Bedrock stream event: %v", err)}, nil
-	}
-	delete(payload, "p") // AWS event-stream padding hint; irrelevant to consumers.
-
-	// Wrap the raw payload under its event/exception type key, mirroring TS
-	// amazon-bedrock-event-stream-response-handler.ts's
-	// `{ [payloadType]: parsedDataResult.value }`, so downstream handling
-	// matches the documented AmazonBedrockStreamSchema shape.
-	value := map[string]interface{}{payloadType: payload}
-
-	switch payloadType {
-	case "internalServerException", "modelStreamErrorException", "serviceUnavailableException", "throttlingException", "validationException":
-		s.finishReason = types.FinishReasonError
-		// Do NOT set s.done here. TS's enqueueError (amazon-bedrock-chat-
-		// language-model.ts) records the error and sets finishReason but lets
-		// the ReadableStream's own flush() run when the underlying connection
-		// closes, so a modeled exception is always followed by a terminal
-		// 'finish' part carrying finishReason:'error' and whatever usage/
-		// providerMetadata had accrued. Mirroring that: the next decoder.Next()
-		// call naturally returns io.EOF once AWS closes the stream after the
-		// exception frame, which drives s.done=true and s.flush() below.
-		message := fmt.Sprintf("Amazon Bedrock stream failed with %s", payloadType)
-		if m, ok := payload["message"].(string); ok && m != "" {
-			message = m
+		payloadType := ""
+		switch event.MessageType {
+		case "event":
+			payloadType = event.EventType
+		case "exception":
+			payloadType = event.ExceptionType
 		}
-		statusCode, isRetryable := bedrockStreamErrorMetadata(payloadType)
-		// Surface the modeled exception's status code (and, via ErrorCode, its
-		// type) on a structured error so callers inspecting stream.Err() after
-		// the stream ends get more than a bare message. modelStreamErrorException
-		// maps to HTTP 424 but is still retryable per TS
-		// getAmazonBedrockStreamErrorMetadata, so set Retryable explicitly
-		// (ProviderError.IsRetryable()'s generic 429/5xx heuristic would
-		// otherwise call 424 non-retryable) — TS parity, P1-1c part 2.
-		s.err = &providererrors.ProviderError{
-			Provider:   "amazon-bedrock",
-			StatusCode: statusCode,
-			ErrorCode:  payloadType,
-			Message:    message,
-			Data:       payload,
-			Retryable:  &isRetryable,
+		if payloadType == "" {
+			continue
 		}
-		// Attach the same structured error to the stream chunk (via
-		// StreamProviderError) so a mid-stream consumer inspecting the
-		// ChunkTypeError chunk itself (before the stream ends and Err() is
-		// read) also sees the correct type/statusCode/isRetryable, mirroring
-		// TS's typed AmazonBedrockStreamError on the enqueued 'error' part
-		// (P1-1c part 2: provider.StreamProviderError normalization).
-		// TS's createAmazonBedrockStreamError never sets `code` (only
-		// message/type/statusCode/isRetryable/data via
-		// `...getAmazonBedrockStreamErrorMetadata(type)`) — leave Code nil
-		// rather than duplicating the exception type into it.
-		chunkErr := providererrors.NewStreamProviderError(message, "amazon-bedrock", payloadType, nil, &statusCode, &isRetryable, payload)
-		return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: message, Err: chunkErr}, nil
 
-	case "messageStop":
-		if stopReason, ok := payload["stopReason"].(string); ok {
-			s.finishReason = mapBedrockFinishReason(stopReason, s.isJSONResponseFromTool)
-			s.rawFinishReason = stopReason
+		var payload map[string]interface{}
+		if err := json.Unmarshal(event.Data, &payload); err != nil {
+			// Mirrors TS doStream's !chunk.success branch (amazon-bedrock-chat-
+			// language-model.ts): report the error but keep reading — the stream
+			// is not aborted — and mark finishReason as error in case the stream
+			// ends (via decoder EOF) before any later messageStop overwrites it.
+			s.finishReason = types.FinishReasonError
+			return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: fmt.Sprintf("failed to parse Amazon Bedrock stream event: %v", err)}, nil
 		}
-		if amf, ok := payload["additionalModelResponseFields"].(map[string]interface{}); ok {
-			if delta, ok := amf["delta"].(map[string]interface{}); ok {
-				if ss, ok := delta["stop_sequence"].(string); ok {
-					s.stopSequence = &ss
-					s.stopSequenceSet = true
+		delete(payload, "p") // AWS event-stream padding hint; irrelevant to consumers.
+
+		// Wrap the raw payload under its event/exception type key, mirroring TS
+		// amazon-bedrock-event-stream-response-handler.ts's
+		// `{ [payloadType]: parsedDataResult.value }`, so downstream handling
+		// matches the documented AmazonBedrockStreamSchema shape.
+		value := map[string]interface{}{payloadType: payload}
+
+		switch payloadType {
+		case "internalServerException", "modelStreamErrorException", "serviceUnavailableException", "throttlingException", "validationException":
+			s.finishReason = types.FinishReasonError
+			// Do NOT set s.done here. TS's enqueueError (amazon-bedrock-chat-
+			// language-model.ts) records the error and sets finishReason but lets
+			// the ReadableStream's own flush() run when the underlying connection
+			// closes, so a modeled exception is always followed by a terminal
+			// 'finish' part carrying finishReason:'error' and whatever usage/
+			// providerMetadata had accrued. Mirroring that: the next decoder.Next()
+			// call naturally returns io.EOF once AWS closes the stream after the
+			// exception frame, which drives s.done=true and s.flush() below.
+			message := fmt.Sprintf("Amazon Bedrock stream failed with %s", payloadType)
+			if m, ok := payload["message"].(string); ok && m != "" {
+				message = m
+			}
+			statusCode, isRetryable := bedrockStreamErrorMetadata(payloadType)
+			// Surface the modeled exception's status code (and, via ErrorCode, its
+			// type) on a structured error so callers inspecting stream.Err() after
+			// the stream ends get more than a bare message. modelStreamErrorException
+			// maps to HTTP 424 but is still retryable per TS
+			// getAmazonBedrockStreamErrorMetadata, so set Retryable explicitly
+			// (ProviderError.IsRetryable()'s generic 429/5xx heuristic would
+			// otherwise call 424 non-retryable) — TS parity, P1-1c part 2.
+			s.err = &providererrors.ProviderError{
+				Provider:   "amazon-bedrock",
+				StatusCode: statusCode,
+				ErrorCode:  payloadType,
+				Message:    message,
+				Data:       payload,
+				Retryable:  &isRetryable,
+			}
+			// Attach the same structured error to the stream chunk (via
+			// StreamProviderError) so a mid-stream consumer inspecting the
+			// ChunkTypeError chunk itself (before the stream ends and Err() is
+			// read) also sees the correct type/statusCode/isRetryable, mirroring
+			// TS's typed AmazonBedrockStreamError on the enqueued 'error' part
+			// (P1-1c part 2: provider.StreamProviderError normalization).
+			// TS's createAmazonBedrockStreamError never sets `code` (only
+			// message/type/statusCode/isRetryable/data via
+			// `...getAmazonBedrockStreamErrorMetadata(type)`) — leave Code nil
+			// rather than duplicating the exception type into it.
+			chunkErr := providererrors.NewStreamProviderError(message, "amazon-bedrock", payloadType, nil, &statusCode, &isRetryable, payload)
+			return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: message, Err: chunkErr}, nil
+
+		case "messageStop":
+			if stopReason, ok := payload["stopReason"].(string); ok {
+				s.finishReason = mapBedrockFinishReason(stopReason, s.isJSONResponseFromTool)
+				s.rawFinishReason = stopReason
+			}
+			if amf, ok := payload["additionalModelResponseFields"].(map[string]interface{}); ok {
+				if delta, ok := amf["delta"].(map[string]interface{}); ok {
+					if ss, ok := delta["stop_sequence"].(string); ok {
+						s.stopSequence = &ss
+						s.stopSequenceSet = true
+					}
 				}
 			}
+			continue
+
+		case "metadata":
+			s.handleMetadata(payload)
+			continue
+
+		case "contentBlockStart":
+			s.handleContentBlockStart(value)
+			continue
+
+		case "contentBlockDelta":
+			s.handleContentBlockDelta(value)
+			continue
+
+		case "contentBlockStop":
+			s.handleContentBlockStop(value)
+			continue
 		}
-		return s.Next()
 
-	case "metadata":
-		s.handleMetadata(payload)
-		return s.Next()
+		continue
 
-	case "contentBlockStart":
-		s.handleContentBlockStart(value)
-		return s.Next()
-
-	case "contentBlockDelta":
-		s.handleContentBlockDelta(value)
-		return s.Next()
-
-	case "contentBlockStop":
-		s.handleContentBlockStop(value)
-		return s.Next()
 	}
-
-	return s.Next()
 }
 
 func (s *bedrockConverseStream) handleMetadata(metadata map[string]interface{}) {

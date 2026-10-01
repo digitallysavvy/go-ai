@@ -403,102 +403,105 @@ func newCompletionStreamWithMetadata(reader io.ReadCloser, includeRawChunks bool
 }
 
 func (s *completionStream) Next() (*provider.StreamChunk, error) {
-	if len(s.flushQueue) > 0 {
-		chunk := s.flushQueue[0]
-		s.flushQueue = s.flushQueue[1:]
-		return chunk, nil
-	}
-	if s.err != nil {
-		return nil, s.err
-	}
-
-	event, err := s.parser.Next()
-	if err != nil {
-		if err == io.EOF && !s.finished {
-			s.finish()
-			return s.Next()
+	for {
+		if len(s.flushQueue) > 0 {
+			chunk := s.flushQueue[0]
+			s.flushQueue = s.flushQueue[1:]
+			return chunk, nil
 		}
-		s.err = err
-		return nil, err
-	}
-	if streaming.IsStreamDone(event) {
-		s.finish()
-		return s.Next()
-	}
-	var chunk openAICompletionChunk
-	if err := json.Unmarshal([]byte(event.Data), &chunk); err != nil {
-		s.queueRawChunk(event.Data)
-		s.finishReason = types.FinishReasonError
-		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-			Type: provider.ChunkTypeError,
-			Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
-		})
-		return s.Next()
-	}
-	rawChunk := s.rawChunk(event.Data)
-	if len(chunk.Error) > 0 {
-		s.finishReason = types.FinishReasonError
-		if !s.outputStarted {
-			s.flushQueue = nil
-			s.pendingRaw = nil
-			s.pendingMetadata = nil
-			s.err = newOpenAIStreamProviderError(s.providerName, json.RawMessage(event.Data), s.responseHeaders)
+		if s.err != nil {
 			return nil, s.err
 		}
-		if rawChunk != nil {
-			s.flushQueue = append(s.flushQueue, rawChunk)
-		}
-		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-			Type: provider.ChunkTypeError,
-			Text: openAIStreamErrorText(chunk.Error),
-		})
-		return s.Next()
-	}
-	if !s.metadataEmitted {
-		s.metadataEmitted = true
-		s.pendingMetadata = &provider.StreamChunk{
-			Type: provider.ChunkTypeResponseMetadata,
-			ResponseMetadata: &provider.ResponseMetadata{
-				ID:        chunk.ID,
-				ModelID:   chunk.Model,
-				Timestamp: completionStreamTimestamp(chunk.Created),
-			},
-		}
-	}
-	if chunk.Usage != nil {
-		usage := convertOpenAICompletionUsage(chunk.Usage)
-		s.usage = &usage
-	}
-	if len(chunk.Choices) > 0 {
-		choice := chunk.Choices[0]
-		if choice.FinishReason != nil {
-			s.finishReason = providerutils.MapOpenAIFinishReason(*choice.FinishReason)
-			s.rawFinishReason = *choice.FinishReason
-		}
-		if len(choice.Logprobs) > 0 && string(choice.Logprobs) != "null" {
-			s.providerMetadata["openai"].(map[string]interface{})["logprobs"] = json.RawMessage(choice.Logprobs)
-		}
-		if choice.Text != "" {
-			s.outputStarted = true
-			if rawChunk != nil {
-				s.pendingRaw = append(s.pendingRaw, rawChunk)
+
+		event, err := s.parser.Next()
+		if err != nil {
+			if err == io.EOF && !s.finished {
+				s.finish()
+				continue
 			}
-			s.flushPendingMetadata()
-			if !s.textStarted {
-				s.textStarted = true
-				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "0"})
+			s.err = err
+			return nil, err
+		}
+		if streaming.IsStreamDone(event) {
+			s.finish()
+			continue
+		}
+		var chunk openAICompletionChunk
+		if err := json.Unmarshal([]byte(event.Data), &chunk); err != nil {
+			s.queueRawChunk(event.Data)
+			s.finishReason = types.FinishReasonError
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
+			})
+			continue
+		}
+		rawChunk := s.rawChunk(event.Data)
+		if len(chunk.Error) > 0 {
+			s.finishReason = types.FinishReasonError
+			if !s.outputStarted {
+				s.flushQueue = nil
+				s.pendingRaw = nil
+				s.pendingMetadata = nil
+				s.err = newOpenAIStreamProviderError(s.providerName, json.RawMessage(event.Data), s.responseHeaders)
+				return nil, s.err
+			}
+			if rawChunk != nil {
+				s.flushQueue = append(s.flushQueue, rawChunk)
 			}
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-				Type: provider.ChunkTypeText,
-				ID:   "0",
-				Text: choice.Text,
+				Type: provider.ChunkTypeError,
+				Text: openAIStreamErrorText(chunk.Error),
 			})
+			continue
 		}
+		if !s.metadataEmitted {
+			s.metadataEmitted = true
+			s.pendingMetadata = &provider.StreamChunk{
+				Type: provider.ChunkTypeResponseMetadata,
+				ResponseMetadata: &provider.ResponseMetadata{
+					ID:        chunk.ID,
+					ModelID:   chunk.Model,
+					Timestamp: completionStreamTimestamp(chunk.Created),
+				},
+			}
+		}
+		if chunk.Usage != nil {
+			usage := convertOpenAICompletionUsage(chunk.Usage)
+			s.usage = &usage
+		}
+		if len(chunk.Choices) > 0 {
+			choice := chunk.Choices[0]
+			if choice.FinishReason != nil {
+				s.finishReason = providerutils.MapOpenAIFinishReason(*choice.FinishReason)
+				s.rawFinishReason = *choice.FinishReason
+			}
+			if len(choice.Logprobs) > 0 && string(choice.Logprobs) != "null" {
+				s.providerMetadata["openai"].(map[string]interface{})["logprobs"] = json.RawMessage(choice.Logprobs)
+			}
+			if choice.Text != "" {
+				s.outputStarted = true
+				if rawChunk != nil {
+					s.pendingRaw = append(s.pendingRaw, rawChunk)
+				}
+				s.flushPendingMetadata()
+				if !s.textStarted {
+					s.textStarted = true
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "0"})
+				}
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+					Type: provider.ChunkTypeText,
+					ID:   "0",
+					Text: choice.Text,
+				})
+			}
+		}
+		if rawChunk != nil {
+			s.pendingRaw = append(s.pendingRaw, rawChunk)
+		}
+		continue
+
 	}
-	if rawChunk != nil {
-		s.pendingRaw = append(s.pendingRaw, rawChunk)
-	}
-	return s.Next()
 }
 
 func (s *completionStream) finish() {

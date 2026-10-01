@@ -141,203 +141,213 @@ func (s *OpenAICompatStream) RequestBody() interface{} {
 // only until function.name is available, then tool input start/delta chunks are
 // emitted live. When finish_reason is received, open tool inputs are closed and
 // finalized tool-call chunks are enqueued before the finish chunk.
+// Next is implemented as an explicit loop rather than self-recursion:
+// several branches below used to `return s.Next()` whenever an SSE event
+// produced no immediately-returnable chunk (an empty/unrecognised event, a
+// tool-call delta still accumulating, a finish event, etc). Go does not
+// eliminate that tail call, so a long run of such events within one external
+// Next() call could grow the goroutine stack without bound and crash the
+// process with an unrecoverable stack overflow. Every former
+// `return s.Next()` is now a `continue` back to the top of this loop; no
+// emitted chunk, error, or ordering changes.
 func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
-	// Drain any fully-assembled chunks before reading more SSE events.
-	if len(s.flushQueue) > 0 {
-		chunk := s.flushQueue[0]
-		s.flushQueue = s.flushQueue[1:]
-		return chunk, nil
-	}
+	for {
+		// Drain any fully-assembled chunks before reading more SSE events.
+		if len(s.flushQueue) > 0 {
+			chunk := s.flushQueue[0]
+			s.flushQueue = s.flushQueue[1:]
+			return chunk, nil
+		}
 
-	if s.err != nil {
-		return nil, s.err
-	}
+		if s.err != nil {
+			return nil, s.err
+		}
 
-	eventData := s.pendingEventData
-	if eventData != "" {
-		s.pendingEventData = ""
-	} else {
-		event, err := s.parser.Next()
-		if err != nil {
-			if err == io.EOF {
+		eventData := s.pendingEventData
+		if eventData != "" {
+			s.pendingEventData = ""
+		} else {
+			event, err := s.parser.Next()
+			if err != nil {
+				if err == io.EOF {
+					return s.endStream(io.EOF)
+				}
+				s.err = err
+				return nil, err
+			}
+
+			if IsStreamDone(event) {
 				return s.endStream(io.EOF)
 			}
-			s.err = err
-			return nil, err
-		}
 
-		if IsStreamDone(event) {
-			return s.endStream(io.EOF)
-		}
-
-		eventData = event.Data
-		if s.IncludeRawChunks {
-			s.pendingEventData = eventData
-			var raw interface{}
-			if err := json.Unmarshal([]byte(eventData), &raw); err != nil {
-				raw = eventData
+			eventData = event.Data
+			if s.IncludeRawChunks {
+				s.pendingEventData = eventData
+				var raw interface{}
+				if err := json.Unmarshal([]byte(eventData), &raw); err != nil {
+					raw = eventData
+				}
+				return &provider.StreamChunk{
+					Type: provider.ChunkTypeRaw,
+					Raw:  raw,
+				}, nil
 			}
+		}
+
+		// The OpenAI-compatible SSE format sends choices[0].delta for streaming.
+		// Tool call deltas include an "index" field used to correlate fragments
+		// belonging to the same tool call across multiple events.
+		var chunkData struct {
+			Choices []struct {
+				Delta struct {
+					Content   string `json:"content"`
+					ToolCalls []struct {
+						Index    *int    `json:"index"`
+						ID       string  `json:"id"`
+						Type     *string `json:"type"` // nullable mid-stream
+						Function struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+						ExtraContent map[string]interface{} `json:"extra_content,omitempty"`
+					} `json:"tool_calls,omitempty"`
+				} `json:"delta"`
+				FinishReason *string `json:"finish_reason"`
+			} `json:"choices"`
+			Error json.RawMessage          `json:"error,omitempty"`
+			Usage *openAICompatStreamUsage `json:"usage,omitempty"`
+		}
+
+		if err := json.Unmarshal([]byte(eventData), &chunkData); err != nil {
+			// Matches TS's chunk-schema-parse-failure branch (openai-compatible-
+			// chat-language-model.ts:574-575), which sets finishReason to the
+			// unified "error" reason right when this fires -- so endStream must
+			// not additionally treat a later clean EOF as a "truncated stream".
+			s.streamErrored = true
 			return &provider.StreamChunk{
-				Type: provider.ChunkTypeRaw,
-				Raw:  raw,
+				Type: provider.ChunkTypeError,
+				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
 			}, nil
 		}
-	}
-
-	// The OpenAI-compatible SSE format sends choices[0].delta for streaming.
-	// Tool call deltas include an "index" field used to correlate fragments
-	// belonging to the same tool call across multiple events.
-	var chunkData struct {
-		Choices []struct {
-			Delta struct {
-				Content   string `json:"content"`
-				ToolCalls []struct {
-					Index    *int    `json:"index"`
-					ID       string  `json:"id"`
-					Type     *string `json:"type"` // nullable mid-stream
-					Function struct {
-						Name      string `json:"name"`
-						Arguments string `json:"arguments"`
-					} `json:"function"`
-					ExtraContent map[string]interface{} `json:"extra_content,omitempty"`
-				} `json:"tool_calls,omitempty"`
-			} `json:"delta"`
-			FinishReason *string `json:"finish_reason"`
-		} `json:"choices"`
-		Error json.RawMessage          `json:"error,omitempty"`
-		Usage *openAICompatStreamUsage `json:"usage,omitempty"`
-	}
-
-	if err := json.Unmarshal([]byte(eventData), &chunkData); err != nil {
-		// Matches TS's chunk-schema-parse-failure branch (openai-compatible-
-		// chat-language-model.ts:574-575), which sets finishReason to the
-		// unified "error" reason right when this fires -- so endStream must
-		// not additionally treat a later clean EOF as a "truncated stream".
-		s.streamErrored = true
-		return &provider.StreamChunk{
-			Type: provider.ChunkTypeError,
-			Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
-		}, nil
-	}
-	if len(chunkData.Error) > 0 {
-		// Matches TS's `'error' in chunk.value` branch (line 582-586), which
-		// likewise sets finishReason to the unified "error" reason.
-		s.streamErrored = true
-		return &provider.StreamChunk{
-			Type: provider.ChunkTypeError,
-			Text: rawStreamErrorText(chunkData.Error),
-		}, nil
-	}
-
-	// Usage may arrive on the finish_reason event itself, or as a trailing
-	// choices-less event (stream_options.include_usage); the latest value
-	// wins, matching TS's `if (value.usage != null) { usage = value.usage; }`.
-	if chunkData.Usage != nil {
-		s.pendingUsage = chunkData.Usage
-	}
-
-	// Pre-delta hook: enqueue extra chunks (e.g. top-level citations) before
-	// standard processing. Prepend so they drain before the finish chunk.
-	if s.OnBeforeDelta != nil {
-		if extra := s.OnBeforeDelta([]byte(eventData)); len(extra) > 0 {
-			s.flushQueue = append(extra, s.flushQueue...)
-		}
-	}
-
-	// Provider-specific delta hook (e.g. xAI reasoning_content).
-	if s.OnExtraDelta != nil {
-		if chunk, handled := s.OnExtraDelta([]byte(eventData)); handled {
-			if chunk != nil && len(s.flushQueue) > 0 {
-				s.flushQueue = append(s.flushQueue, chunk)
-				return s.Next()
-			}
-			return chunk, nil
-		}
-	}
-
-	// Reasoning delta hook — manage start/end lifecycle.
-	if s.OnReasoningDelta != nil {
-		if rc, handled := s.OnReasoningDelta([]byte(eventData)); handled && rc != "" {
-			if !s.isActiveReasoning {
-				s.isActiveReasoning = true
-				// Append (not prepend): any chunks OnBeforeDelta already
-				// queued for this same event (e.g. a one-shot
-				// response-metadata chunk) must drain before this stream's
-				// own synthesized reasoning-start/delta, matching TS's
-				// order (response metadata is emitted by the core
-				// transform before provider-specific delta extraction).
-				s.flushQueue = append(s.flushQueue,
-					&provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"},
-					&provider.StreamChunk{Type: provider.ChunkTypeReasoning, Reasoning: rc, ID: "reasoning-0"},
-				)
-				return s.Next()
-			}
-			chunk := &provider.StreamChunk{
-				Type:      provider.ChunkTypeReasoning,
-				Reasoning: rc,
-				ID:        "reasoning-0",
-			}
-			if len(s.flushQueue) > 0 {
-				s.flushQueue = append(s.flushQueue, chunk)
-				return s.Next()
-			}
-			return chunk, nil
-		}
-	}
-
-	if len(chunkData.Choices) > 0 {
-		choice := chunkData.Choices[0]
-
-		// Text delta — emit immediately.
-		if choice.Delta.Content != "" {
-			if s.isActiveReasoning {
-				s.isActiveReasoning = false
-				// Append (not prepend): see the matching comment above for
-				// the reasoning-start case.
-				s.flushQueue = append(s.flushQueue,
-					&provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
-					&provider.StreamChunk{Type: provider.ChunkTypeText, Text: choice.Delta.Content},
-				)
-				return s.Next()
-			}
-			chunk := &provider.StreamChunk{
-				Type: provider.ChunkTypeText,
-				Text: choice.Delta.Content,
-			}
-			if len(s.flushQueue) > 0 {
-				s.flushQueue = append(s.flushQueue, chunk)
-				return s.Next()
-			}
-			return chunk, nil
+		if len(chunkData.Error) > 0 {
+			// Matches TS's `'error' in chunk.value` branch (line 582-586), which
+			// likewise sets finishReason to the unified "error" reason.
+			s.streamErrored = true
+			return &provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: rawStreamErrorText(chunkData.Error),
+			}, nil
 		}
 
-		// Tool call delta — accumulate arguments by index, never emit yet.
-		if len(choice.Delta.ToolCalls) > 0 {
-			for _, tc := range choice.Delta.ToolCalls {
-				chunks := s.toolCallTracker.TrackDelta(ToolCallDelta{
-					Index:            tc.Index,
-					ID:               tc.ID,
-					Name:             tc.Function.Name,
-					ArgumentsDelta:   tc.Function.Arguments,
-					ProviderMetadata: openAICompatToolCallMetadata(tc.ExtraContent),
-				})
-				s.enqueueChunks(chunks)
+		// Usage may arrive on the finish_reason event itself, or as a trailing
+		// choices-less event (stream_options.include_usage); the latest value
+		// wins, matching TS's `if (value.usage != null) { usage = value.usage; }`.
+		if chunkData.Usage != nil {
+			s.pendingUsage = chunkData.Usage
+		}
+
+		// Pre-delta hook: enqueue extra chunks (e.g. top-level citations) before
+		// standard processing. Prepend so they drain before the finish chunk.
+		if s.OnBeforeDelta != nil {
+			if extra := s.OnBeforeDelta([]byte(eventData)); len(extra) > 0 {
+				s.flushQueue = append(extra, s.flushQueue...)
 			}
+		}
+
+		// Provider-specific delta hook (e.g. xAI reasoning_content).
+		if s.OnExtraDelta != nil {
+			if chunk, handled := s.OnExtraDelta([]byte(eventData)); handled {
+				if chunk != nil && len(s.flushQueue) > 0 {
+					s.flushQueue = append(s.flushQueue, chunk)
+					continue
+				}
+				return chunk, nil
+			}
+		}
+
+		// Reasoning delta hook — manage start/end lifecycle.
+		if s.OnReasoningDelta != nil {
+			if rc, handled := s.OnReasoningDelta([]byte(eventData)); handled && rc != "" {
+				if !s.isActiveReasoning {
+					s.isActiveReasoning = true
+					// Append (not prepend): any chunks OnBeforeDelta already
+					// queued for this same event (e.g. a one-shot
+					// response-metadata chunk) must drain before this stream's
+					// own synthesized reasoning-start/delta, matching TS's
+					// order (response metadata is emitted by the core
+					// transform before provider-specific delta extraction).
+					s.flushQueue = append(s.flushQueue,
+						&provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"},
+						&provider.StreamChunk{Type: provider.ChunkTypeReasoning, Reasoning: rc, ID: "reasoning-0"},
+					)
+					continue
+				}
+				chunk := &provider.StreamChunk{
+					Type:      provider.ChunkTypeReasoning,
+					Reasoning: rc,
+					ID:        "reasoning-0",
+				}
+				if len(s.flushQueue) > 0 {
+					s.flushQueue = append(s.flushQueue, chunk)
+					continue
+				}
+				return chunk, nil
+			}
+		}
+
+		if len(chunkData.Choices) > 0 {
+			choice := chunkData.Choices[0]
+
+			// Text delta — emit immediately.
+			if choice.Delta.Content != "" {
+				if s.isActiveReasoning {
+					s.isActiveReasoning = false
+					// Append (not prepend): see the matching comment above for
+					// the reasoning-start case.
+					s.flushQueue = append(s.flushQueue,
+						&provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
+						&provider.StreamChunk{Type: provider.ChunkTypeText, Text: choice.Delta.Content},
+					)
+					continue
+				}
+				chunk := &provider.StreamChunk{
+					Type: provider.ChunkTypeText,
+					Text: choice.Delta.Content,
+				}
+				if len(s.flushQueue) > 0 {
+					s.flushQueue = append(s.flushQueue, chunk)
+					continue
+				}
+				return chunk, nil
+			}
+
+			// Tool call delta — accumulate arguments by index, never emit yet.
+			if len(choice.Delta.ToolCalls) > 0 {
+				for _, tc := range choice.Delta.ToolCalls {
+					chunks := s.toolCallTracker.TrackDelta(ToolCallDelta{
+						Index:            tc.Index,
+						ID:               tc.ID,
+						Name:             tc.Function.Name,
+						ArgumentsDelta:   tc.Function.Arguments,
+						ProviderMetadata: openAICompatToolCallMetadata(tc.ExtraContent),
+					})
+					s.enqueueChunks(chunks)
+				}
+				if choice.FinishReason != nil && *choice.FinishReason != "" {
+					s.flushToolCallsAndFinish(*choice.FinishReason)
+				}
+				continue
+			}
+
+			// Finish event — flush all accumulated tool calls, then emit finish.
 			if choice.FinishReason != nil && *choice.FinishReason != "" {
 				s.flushToolCallsAndFinish(*choice.FinishReason)
+				continue
 			}
-			return s.Next()
 		}
 
-		// Finish event — flush all accumulated tool calls, then emit finish.
-		if choice.FinishReason != nil && *choice.FinishReason != "" {
-			s.flushToolCallsAndFinish(*choice.FinishReason)
-			return s.Next()
-		}
+		// Empty or unrecognised event — skip and fetch the next one.
 	}
-
-	// Empty or unrecognised event — skip and fetch the next one.
-	return s.Next()
 }
 
 func rawStreamErrorText(raw json.RawMessage) string {
