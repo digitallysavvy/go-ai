@@ -108,7 +108,10 @@ func main() {
 		"Find information about Go programming language",
 	)
 	if err != nil {
-		log.Fatalf("Research delegation failed: %v", err)
+		// Log only the error's type: a failed delegation can carry
+		// provider request/response detail in its message text, so avoid
+		// writing it to the log verbatim.
+		log.Fatalf("Research delegation failed (error type: %T)", err)
 	}
 	fmt.Printf("Research result: %s\n\n", researchResult.Text)
 
@@ -120,7 +123,7 @@ func main() {
 		"Analyze the performance metrics of our application",
 	)
 	if err != nil {
-		log.Fatalf("Analysis delegation failed: %v", err)
+		log.Fatalf("Analysis delegation failed (error type: %T)", err)
 	}
 	fmt.Printf("Analysis result: %s\n\n", analysisResult.Text)
 
@@ -172,7 +175,7 @@ func main() {
 		"Investigate advanced Go concurrency patterns",
 	)
 	if err != nil {
-		log.Fatalf("Deep research delegation failed: %v", err)
+		log.Fatalf("Deep research delegation failed (error type: %T)", err)
 	}
 	fmt.Printf("Deep research result: %s\n\n", deepResult.Text)
 
