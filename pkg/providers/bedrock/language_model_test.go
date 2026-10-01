@@ -20,24 +20,6 @@ import (
 	anthropictools "github.com/digitallysavvy/go-ai/pkg/providers/anthropic/tools"
 )
 
-func newTestBedrockModel() *LanguageModel {
-	p := New(Config{
-		AWSAccessKeyID:     "test-key",
-		AWSSecretAccessKey: "test-secret",
-		Region:             "us-east-1",
-	})
-	return NewLanguageModel(p, "anthropic.claude-3-haiku-20240307-v1:0")
-}
-
-func newTestBedrockModelWithID(modelID string) *LanguageModel {
-	p := New(Config{
-		AWSAccessKeyID:     "test-key",
-		AWSSecretAccessKey: "test-secret",
-		Region:             "us-east-1",
-	})
-	return NewLanguageModel(p, modelID)
-}
-
 func TestResolveCredentialsConfigWinsOverEnv(t *testing.T) {
 	t.Setenv("AWS_ACCESS_KEY_ID", "env-key")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "env-secret")

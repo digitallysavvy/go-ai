@@ -423,7 +423,7 @@ func workflowToolNeedsApproval(ctx context.Context, tool *types.Tool, call types
 			toolContext = toolsContext[call.ToolName]
 		}
 		return v(ctx, call.Arguments, types.ToolNeedsApprovalOptions{ToolCallID: call.ID, Messages: messages, Context: toolContext})
-	case types.NeedsApprovalFunc:
+	case types.NeedsApprovalFunc: //nolint:staticcheck // legacy function type still accepted for backward compatibility
 		return v(ctx, call.Arguments)
 	default:
 		return false
@@ -557,8 +557,10 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 				ToolCallID: call.ID,
 				Input:      call.Arguments,
 				Output:     result,
-				Result:     result,
-				ToolCall:   &callCopy,
+				// Result is a deprecated alias of Output, kept for
+				// ToModelOutput implementations still reading it.
+				Result:   result, //nolint:staticcheck
+				ToolCall: &callCopy,
 			})
 			if err != nil {
 				return nil, nil, err
@@ -664,10 +666,14 @@ func executeWorkflowApprovedTool(ctx context.Context, tool *types.Tool, call typ
 	}
 	if opts.onToolStart != nil {
 		opts.onToolStart(ctx, ai.OnToolCallStartEvent{
-			ToolCallID:          call.ID,
-			ToolName:            call.ToolName,
-			Args:                call.Arguments,
-			StepNumber:          0,
+			ToolCallID: call.ID,
+			ToolName:   call.ToolName,
+			ToolCall:   call,
+			// Args/StepNumber are deprecated, JSON-excluded aliases kept for
+			// callbacks still reading the old fields; ToolCall.Arguments is
+			// the replacement for Args above.
+			Args:                call.Arguments, //nolint:staticcheck
+			StepNumber:          0,              //nolint:staticcheck
 			Messages:            opts.messages,
 			ExperimentalContext: opts.runtimeContext,
 			RuntimeContext:      opts.runtimeContext,
@@ -704,20 +710,31 @@ func executeWorkflowApprovedTool(ctx context.Context, tool *types.Tool, call typ
 		DurationMs: time.Since(start).Milliseconds(),
 	})
 	if opts.onToolEnd != nil {
+		toolExecutionMs := time.Since(start).Milliseconds()
+		toolOutput := types.ToolResult{ToolCallID: call.ID, ToolName: call.ToolName, Input: call.Arguments, Error: err}
+		if err == nil {
+			toolOutput.Result = result
+		}
 		finish := ai.OnToolCallFinishEvent{
-			ToolCallID:          call.ID,
-			ToolName:            call.ToolName,
-			Args:                call.Arguments,
-			Error:               err,
-			DurationMs:          time.Since(start).Milliseconds(),
-			StepNumber:          0,
+			ToolCallID:      call.ID,
+			ToolName:        call.ToolName,
+			ToolCall:        call,
+			ToolOutput:      toolOutput,
+			ToolExecutionMs: toolExecutionMs,
+			// Args/Error/DurationMs/StepNumber are deprecated, JSON-excluded
+			// aliases kept for callbacks still reading the old fields;
+			// ToolCall/ToolOutput/ToolExecutionMs above are the replacements.
+			Args:                call.Arguments,  //nolint:staticcheck
+			Error:               err,             //nolint:staticcheck
+			DurationMs:          toolExecutionMs, //nolint:staticcheck
+			StepNumber:          0,               //nolint:staticcheck
 			Messages:            opts.messages,
 			ExperimentalContext: opts.runtimeContext,
 			RuntimeContext:      opts.runtimeContext,
 			ToolsContext:        opts.toolsContext,
 		}
 		if err == nil {
-			finish.Result = result
+			finish.Result = result //nolint:staticcheck
 		}
 		opts.onToolEnd(ctx, finish)
 	}
@@ -1030,8 +1047,8 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		OnStepStartEvent:               mergeStepStart(w.OnStepStart, mergeStepStart(govr.OnStepStart, ovr.OnStepStart)),
 		OnToolExecutionStart:           mergeToolStart(w.OnToolExecutionStart, mergeToolStart(govr.OnToolExecutionStart, ovr.OnToolExecutionStart)),
 		OnToolExecutionEnd:             mergeToolEnd(w.OnToolExecutionEnd, mergeToolEnd(govr.OnToolExecutionEnd, ovr.OnToolExecutionEnd)),
-		OnStepFinishEvent:              mergeStepFinish(resolveStepEnd(w.OnStepEnd, w.OnStepFinish), mergeStepFinish(resolveStepEnd(govr.OnStepEnd, govr.OnStepFinish), resolveStepEnd(ovr.OnStepEnd, ovr.OnStepFinish))),
-		OnFinishEvent:                  mergeFinish(resolveEnd(w.OnEnd, w.OnFinish), mergeFinish(resolveEnd(govr.OnEnd, govr.OnFinish), resolveEnd(ovr.OnEnd, ovr.OnFinish))),
+		OnStepEndEvent:                 mergeStepFinish(resolveStepEnd(w.OnStepEnd, w.OnStepFinish), mergeStepFinish(resolveStepEnd(govr.OnStepEnd, govr.OnStepFinish), resolveStepEnd(ovr.OnStepEnd, ovr.OnStepFinish))),
+		OnEndEvent:                     mergeFinish(resolveEnd(w.OnEnd, w.OnFinish), mergeFinish(resolveEnd(govr.OnEnd, govr.OnFinish), resolveEnd(ovr.OnEnd, ovr.OnFinish))),
 	})
 }
 
@@ -1068,11 +1085,13 @@ func (w *WorkflowAgent) Generate(ctx context.Context, prompt string, opts *agent
 		legacy.OnStepStart = opts.OnStepStart
 		legacy.OnToolExecutionStart = opts.OnToolExecutionStart
 		if legacy.OnToolExecutionStart == nil {
-			legacy.OnToolExecutionStart = opts.OnToolCallStart
+			// opts.OnToolCallStart is a deprecated alias of OnToolExecutionStart, read here as a fallback for callers still setting it.
+			legacy.OnToolExecutionStart = opts.OnToolCallStart //nolint:staticcheck
 		}
 		legacy.OnToolExecutionEnd = opts.OnToolExecutionEnd
 		if legacy.OnToolExecutionEnd == nil {
-			legacy.OnToolExecutionEnd = opts.OnToolCallFinish
+			// opts.OnToolCallFinish is a deprecated alias of OnToolExecutionEnd, read here as a fallback for callers still setting it.
+			legacy.OnToolExecutionEnd = opts.OnToolCallFinish //nolint:staticcheck
 		}
 		legacy.OnStepEnd = opts.OnStepEnd
 		legacy.OnStepFinish = opts.OnStepFinish
@@ -1191,11 +1210,13 @@ func (w *WorkflowAgent) Stream(ctx context.Context, prompt string, opts *agent.A
 		legacy.OnStepStart = opts.OnStepStart
 		legacy.OnToolExecutionStart = opts.OnToolExecutionStart
 		if legacy.OnToolExecutionStart == nil {
-			legacy.OnToolExecutionStart = opts.OnToolCallStart
+			// opts.OnToolCallStart is a deprecated alias of OnToolExecutionStart, read here as a fallback for callers still setting it.
+			legacy.OnToolExecutionStart = opts.OnToolCallStart //nolint:staticcheck
 		}
 		legacy.OnToolExecutionEnd = opts.OnToolExecutionEnd
 		if legacy.OnToolExecutionEnd == nil {
-			legacy.OnToolExecutionEnd = opts.OnToolCallFinish
+			// opts.OnToolCallFinish is a deprecated alias of OnToolExecutionEnd, read here as a fallback for callers still setting it.
+			legacy.OnToolExecutionEnd = opts.OnToolCallFinish //nolint:staticcheck
 		}
 		legacy.OnStepEnd = opts.OnStepEnd
 		legacy.OnStepFinish = opts.OnStepFinish

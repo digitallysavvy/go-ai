@@ -63,7 +63,7 @@ By default this tool executes through the configured ExperimentalSandbox.`,
 				}
 				return sandbox.ExecuteCommand(ctx, command, restart)
 			}
-			return nil, fmt.Errorf("Sandbox is not available")
+			return nil, fmt.Errorf("Sandbox is not available") //nolint:staticcheck // matches TS SDK's exact error text
 		},
 	}
 }

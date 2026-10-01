@@ -341,8 +341,8 @@ func TestSandboxEscapeRoutes_FdWriteNeverReachesRealHostFds(t *testing.T) {
 		JS: `console.log('stdout-probe'); try { console.error('stderr-probe'); } catch (e) {} return 'ok';`,
 	})
 
-	wOut.Close()
-	wErr.Close()
+	_ = wOut.Close()
+	_ = wErr.Close()
 	os.Stdout, os.Stderr = realOut, realErr
 	capturedOut := <-doneOut
 	capturedErr := <-doneErr
@@ -449,11 +449,11 @@ func TestSandboxEscapeRoutes_NoFSMountAndNoEnvHoldEvenIfModuleImportReopens(t *t
 	if err := os.WriteFile(canary, []byte("CANARY-VIA-QJS-STD-MODULE"), 0o600); err != nil {
 		t.Fatalf("writing canary: %v", err)
 	}
-	defer os.Remove(canary)
+	defer func() { _ = os.Remove(canary) }()
 
 	const secretKey = "ZZ_CODEMODE_ESCAPE_ROUTES_SECRET"
-	os.Setenv(secretKey, "topsecret-via-qjs-std")
-	defer os.Unsetenv(secretKey)
+	_ = os.Setenv(secretKey, "topsecret-via-qjs-std")
+	defer func() { _ = os.Unsetenv(secretKey) }()
 
 	// assertNoDynamicImport rejects this before it runs today -- that
 	// rejection itself is the primary fix, asserted elsewhere in this

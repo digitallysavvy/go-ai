@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/agent"
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
@@ -32,7 +33,7 @@ func main() {
 	config := agent.AgentConfig{
 		Model:    model,
 		System:   "You are a helpful assistant with text processing skills.",
-		MaxSteps: 5,
+		StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 	}
 	agentInstance := agent.NewToolLoopAgent(config)
 

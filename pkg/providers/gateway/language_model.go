@@ -1057,11 +1057,6 @@ func (m *LanguageModel) getModelConfigHeaders(streaming bool) map[string]string 
 	}
 }
 
-// handleError converts errors to appropriate provider errors
-func (m *LanguageModel) handleError(err error) error {
-	return m.handleErrorWithContext(context.Background(), err)
-}
-
 func (m *LanguageModel) handleErrorWithContext(ctx context.Context, err error) error {
 	if err == nil {
 		return nil

@@ -913,12 +913,6 @@ func klingaiEncodeImage(img *provider.VideoModelV3File) (string, error) {
 	return "", fmt.Errorf("unsupported image type: %s", img.Type)
 }
 
-// encodeImage encodes an image file to the format expected by KlingAI
-// (method form retained for source compatibility; delegates to klingaiEncodeImage).
-func (m *VideoModel) encodeImage(img *provider.VideoModelV3File) (string, error) {
-	return klingaiEncodeImage(img)
-}
-
 // checkUnsupportedOptions checks for universally unsupported standard options
 func (m *VideoModel) checkUnsupportedOptions(opts *provider.VideoModelV3CallOptions) []types.Warning {
 	warnings := []types.Warning{}

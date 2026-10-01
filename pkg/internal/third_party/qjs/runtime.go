@@ -208,9 +208,12 @@ func (r *Runtime) Close() {
 		r.handle = nil
 	}
 
-	// Close WASM module
+	// Close WASM module. Close has no error return of its own (it mirrors
+	// io.Closer-style teardown used throughout this package), and a module
+	// close failure here is not actionable by any caller during runtime
+	// teardown, so the error is intentionally discarded.
 	if r.module != nil {
-		r.module.Close(r.context)
+		_ = r.module.Close(r.context)
 		r.module = nil
 	}
 

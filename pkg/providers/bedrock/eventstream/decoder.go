@@ -78,7 +78,7 @@ func (d *Decoder) Next() (*Event, error) {
 		if err != nil {
 			if err == io.EOF {
 				if len(d.buf) > 0 {
-					return nil, fmt.Errorf("Incomplete Amazon Bedrock event-stream frame: %d buffered bytes remain at end of stream.", len(d.buf))
+					return nil, fmt.Errorf("Incomplete Amazon Bedrock event-stream frame: %d buffered bytes remain at end of stream.", len(d.buf)) //nolint:staticcheck // matches TS SDK's exact error text
 				}
 				return nil, io.EOF
 			}

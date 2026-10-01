@@ -21,7 +21,7 @@ func TestWorkflowRunMultiplexerSSEAndResume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET error: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	runID := resp.Header.Get("X-Workflow-Run-ID")
 	if runID == "" {
 		t.Fatalf("missing run ID header")

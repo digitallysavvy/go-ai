@@ -36,7 +36,7 @@ type Harness struct {
 func New(settings Settings) (*Harness, error) {
 	if settings.MCPServers != nil {
 		if _, reserved := settings.MCPServers["harness-tools"]; reserved {
-			return nil, errors.New(`Claude Code MCP server name "harness-tools" is reserved for HarnessAgent tools.`)
+			return nil, errors.New(`Claude Code MCP server name "harness-tools" is reserved for HarnessAgent tools.`) //nolint:staticcheck // matches TS SDK exact error text
 		}
 	}
 	if settings.Thinking == nil {

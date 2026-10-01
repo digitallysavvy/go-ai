@@ -99,7 +99,7 @@ func (t *LangSmithDeploymentTransport) SendMessagesWithCallbacks(ctx context.Con
 func (t *LangSmithDeploymentTransport) ReconnectToStream(context.Context, ai.ChatTransportReconnectToStreamRequest) (<-chan ai.UIMessageChunk, <-chan error) {
 	out := closedChunkChannel()
 	errs := make(chan error, 1)
-	errs <- errors.New("Method not implemented.")
+	errs <- errors.New("Method not implemented.") //nolint:staticcheck // exact TS parity string (transport.ts)
 	close(errs)
 	return out, errs
 }
@@ -134,7 +134,7 @@ func (t *LangSmithDeploymentTransport) openStream(ctx context.Context, messages 
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("langchain: stream request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
 	}
@@ -145,7 +145,7 @@ func readRemoteGraphEvents(ctx context.Context, body io.ReadCloser) <-chan Strea
 	out := make(chan StreamEvent)
 	go func() {
 		defer close(out)
-		defer body.Close()
+		defer func() { _ = body.Close() }()
 		scanner := bufio.NewScanner(body)
 		scanner.Buffer(make([]byte, 1024), 1024*1024)
 		var sseData strings.Builder

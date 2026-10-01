@@ -209,8 +209,8 @@ func TestEvaluationModel_LoadsAPIKeyLazilyFromEnvironment(t *testing.T) {
 
 func TestEvaluationModel_MissingAPIKey(t *testing.T) {
 	old := os.Getenv("TYPESAFE_AI_API_KEY")
-	os.Unsetenv("TYPESAFE_AI_API_KEY")
-	defer os.Setenv("TYPESAFE_AI_API_KEY", old)
+	_ = os.Unsetenv("TYPESAFE_AI_API_KEY")
+	defer func() { _ = os.Setenv("TYPESAFE_AI_API_KEY", old) }()
 
 	p := New(Config{})
 	model, _ := p.EvaluationModel("jev-latest")

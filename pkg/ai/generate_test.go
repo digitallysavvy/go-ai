@@ -1582,7 +1582,7 @@ func TestGenerateText_ToolApprovalDeniedSkipsExecution(t *testing.T) {
 	result, err := GenerateText(context.Background(), GenerateTextOptions{
 		Model: model,
 		Tools: []types.Tool{tool},
-		ToolApproval: types.ToolApprovalFunc(func(toolCall types.ToolCall, tools []types.Tool, messages []types.Message, runtimeCtx interface{}, toolsCtx map[string]interface{}) types.ToolApprovalResult {
+		ToolApproval: types.ToolApprovalFunc(func(toolCall types.ToolCall, tools []types.Tool, messages []types.Message, runtimeCtx interface{}, toolsCtx map[string]interface{}) types.ToolApprovalResult { //nolint:staticcheck // exercises the legacy function-type approval path for backward compatibility
 			approvalCalled = true
 			return types.ToolApprovalResult{Status: types.ToolApprovalStatusDenied, Reason: &denyReason}
 		}),
@@ -1695,7 +1695,7 @@ func TestGenerateText_ToolApprovalUserApprovalWithReason(t *testing.T) {
 	result, err := GenerateText(context.Background(), GenerateTextOptions{
 		Model: model,
 		Tools: []types.Tool{tool},
-		ToolApproval: types.ToolApprovalFunc(func(toolCall types.ToolCall, tools []types.Tool, messages []types.Message, runtimeCtx interface{}, toolsCtx map[string]interface{}) types.ToolApprovalResult {
+		ToolApproval: types.ToolApprovalFunc(func(toolCall types.ToolCall, tools []types.Tool, messages []types.Message, runtimeCtx interface{}, toolsCtx map[string]interface{}) types.ToolApprovalResult { //nolint:staticcheck // exercises the legacy function-type approval path for backward compatibility
 			return types.ToolApprovalResult{Status: types.ToolApprovalStatusUserApproval, Reason: &reviewReason}
 		}),
 		StopWhen: []StopCondition{StepCountIs(3)},
@@ -1854,7 +1854,7 @@ func TestGenerateText_ProviderExecutedResolvesApproval(t *testing.T) {
 	result, err := GenerateText(context.Background(), GenerateTextOptions{
 		Model: model,
 		Tools: []types.Tool{tool},
-		ToolApproval: types.ToolApprovalFunc(func(toolCall types.ToolCall, tools []types.Tool, messages []types.Message, runtimeCtx interface{}, toolsCtx map[string]interface{}) types.ToolApprovalResult {
+		ToolApproval: types.ToolApprovalFunc(func(toolCall types.ToolCall, tools []types.Tool, messages []types.Message, runtimeCtx interface{}, toolsCtx map[string]interface{}) types.ToolApprovalResult { //nolint:staticcheck // exercises the legacy function-type approval path for backward compatibility
 			approvalCalls++
 			return types.ToolApprovalResult{Status: types.ToolApprovalStatusDenied}
 		}),

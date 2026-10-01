@@ -53,7 +53,7 @@ func evaluateApprovalConfig(approval types.ToolApprovalConfig, args types.ToolAp
 		return nil
 	case types.GenericToolApprovalFunc:
 		return v(args)
-	case types.ToolApprovalFunc:
+	case types.ToolApprovalFunc: //nolint:staticcheck // legacy function type still accepted for backward compatibility
 		return v(args.ToolCall, args.Tools, args.Messages, args.RuntimeContext, args.ToolsContext)
 	case map[string]types.ToolApprovalValue:
 		return evaluateApprovalValue(v[args.ToolCall.ToolName], args)
@@ -70,7 +70,7 @@ func evaluateApprovalValue(value any, args types.ToolApprovalOptions) any {
 		return nil
 	case types.GenericToolApprovalFunc:
 		return v(args)
-	case types.ToolApprovalFunc:
+	case types.ToolApprovalFunc: //nolint:staticcheck // legacy function type still accepted for backward compatibility
 		return v(args.ToolCall, args.Tools, args.Messages, args.RuntimeContext, args.ToolsContext)
 	case types.SingleToolApprovalFunc:
 		return v(args.ToolCall.Arguments, types.SingleToolApprovalOptions{

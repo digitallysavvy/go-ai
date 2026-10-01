@@ -34,20 +34,20 @@ import (
 // scope for H4 item 2, which is specifically about the step/model-call span
 // leak — see the H4 final report for details.
 
-func legacyOnlySettings(rec *tracetest.SpanRecorder) (*telemetry.Settings, func()) {
+func legacyOnlySettings(rec *tracetest.SpanRecorder) (*telemetry.Options, func()) {
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 	tracer := tp.Tracer("span-leak-legacy-test")
-	settings := &telemetry.Settings{
+	settings := &telemetry.Options{
 		IsEnabled:    telemetry.Bool(true),
 		Integrations: []telemetry.TelemetryIntegration{telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tracer})},
 	}
 	return settings, func() { _ = tp.Shutdown(context.Background()) }
 }
 
-func genAIOnlySettings(rec *tracetest.SpanRecorder) (*telemetry.Settings, func()) {
+func genAIOnlySettings(rec *tracetest.SpanRecorder) (*telemetry.Options, func()) {
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 	tracer := tp.Tracer("span-leak-genai-test")
-	settings := &telemetry.Settings{
+	settings := &telemetry.Options{
 		IsEnabled:    telemetry.Bool(true),
 		Integrations: []telemetry.TelemetryIntegration{telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{Tracer: tracer})},
 	}
@@ -85,7 +85,7 @@ func assertNoOpenSpans(t *testing.T, rec *tracetest.SpanRecorder) {
 func TestGenerateText_ProviderErrorClosesAllSpans(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
-		settings func(*tracetest.SpanRecorder) (*telemetry.Settings, func())
+		settings func(*tracetest.SpanRecorder) (*telemetry.Options, func())
 	}{
 		{"legacy", legacyOnlySettings},
 		{"genai", genAIOnlySettings},
@@ -120,7 +120,7 @@ func TestGenerateText_ProviderErrorClosesAllSpans(t *testing.T) {
 func TestStreamText_ProviderErrorClosesAllSpans(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
-		settings func(*tracetest.SpanRecorder) (*telemetry.Settings, func())
+		settings func(*tracetest.SpanRecorder) (*telemetry.Options, func())
 	}{
 		{"legacy", legacyOnlySettings},
 		{"genai", genAIOnlySettings},
@@ -158,7 +158,7 @@ func TestStreamText_ProviderErrorClosesAllSpans(t *testing.T) {
 func TestGenerateObject_ProviderErrorClosesAllSpans(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
-		settings func(*tracetest.SpanRecorder) (*telemetry.Settings, func())
+		settings func(*tracetest.SpanRecorder) (*telemetry.Options, func())
 	}{
 		{"legacy", legacyOnlySettings},
 		{"genai", genAIOnlySettings},
@@ -199,7 +199,7 @@ func TestGenerateObject_ProviderErrorClosesAllSpans(t *testing.T) {
 func TestStreamObject_ProviderErrorClosesAllSpans(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
-		settings func(*tracetest.SpanRecorder) (*telemetry.Settings, func())
+		settings func(*tracetest.SpanRecorder) (*telemetry.Options, func())
 	}{
 		{"legacy", legacyOnlySettings},
 		{"genai", genAIOnlySettings},

@@ -66,8 +66,8 @@ When answering questions:
 4. Cite your sources
 5. Fact-check important claims`,
 		Tools:    tools,
-		StopWhen: []ai.StopCondition{ai.StepCountIs(8)},
-		OnStepFinish: func(ctx context.Context, step types.StepResult, userContext interface{}) {
+		StopWhen: []ai.StopCondition{ai.IsStepCount(8)},
+		OnStepEnd: func(ctx context.Context, step types.StepResult, userContext interface{}) {
 			if len(step.ToolCalls) > 0 {
 				for _, tc := range step.ToolCalls {
 					fmt.Printf("  [Tool] %s: %v\n", tc.ToolName, tc.Arguments)

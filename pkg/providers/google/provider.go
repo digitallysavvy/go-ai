@@ -182,7 +182,7 @@ func (p *Provider) Transcription(modelID string) (provider.TranscriptionModel, e
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
 	// Google doesn't provide reranking models
-	return nil, fmt.Errorf("Google does not support reranking")
+	return nil, fmt.Errorf("Google does not support reranking") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 }
 
 // VideoModel returns a video generation model by ID

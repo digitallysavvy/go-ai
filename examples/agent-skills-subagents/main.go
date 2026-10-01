@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/agent"
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
@@ -34,7 +35,7 @@ func main() {
 	mainConfig := agent.AgentConfig{
 		Model:    model,
 		System:   "You are a main coordinator agent with text processing skills and specialized subagents.",
-		MaxSteps: 5,
+		StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 	}
 	mainAgent := agent.NewToolLoopAgent(mainConfig)
 
@@ -63,7 +64,7 @@ func main() {
 	contentConfig := agent.AgentConfig{
 		Model:    model,
 		System:   "You are a content analysis specialist. Analyze text content and provide detailed insights.",
-		MaxSteps: 3,
+		StopWhen: []ai.StopCondition{ai.IsStepCount(3)},
 	}
 	contentAgent := agent.NewToolLoopAgent(contentConfig)
 
@@ -112,7 +113,7 @@ func main() {
 	summaryConfig := agent.AgentConfig{
 		Model:    model,
 		System:   "You are a summarization specialist. Create concise summaries of text content.",
-		MaxSteps: 3,
+		StopWhen: []ai.StopCondition{ai.IsStepCount(3)},
 	}
 	summaryAgent := agent.NewToolLoopAgent(summaryConfig)
 

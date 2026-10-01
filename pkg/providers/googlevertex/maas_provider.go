@@ -318,15 +318,15 @@ func (p *MaaSProvider) ImageModel(modelID string) (provider.ImageModel, error) {
 }
 
 func (p *MaaSProvider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("Google Vertex MaaS does not support speech synthesis")
+	return nil, fmt.Errorf("Google Vertex MaaS does not support speech synthesis") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 }
 
 func (p *MaaSProvider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("Google Vertex MaaS does not support transcription")
+	return nil, fmt.Errorf("Google Vertex MaaS does not support transcription") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 }
 
 func (p *MaaSProvider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("Google Vertex MaaS does not support reranking")
+	return nil, fmt.Errorf("Google Vertex MaaS does not support reranking") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 }
 
 // VertexMaaS is the default Google Vertex MaaS provider instance.

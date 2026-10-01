@@ -449,7 +449,7 @@ func executeStartStatusFlow(ctx context.Context, opts startStatusFlowOptions) (*
 		}
 
 		if webhookReceived != nil {
-			return nil, errors.New("Video generation did not complete after webhook notification.")
+			return nil, errors.New("Video generation did not complete after webhook notification.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
 	}
 }
@@ -520,7 +520,7 @@ func waitForVideoWebhook(ctx context.Context, received provider.VideoWebhookRece
 			timerErrCh <- err
 			return
 		}
-		timerErrCh <- fmt.Errorf("Video generation timed out after %dms.", timeoutMs)
+		timerErrCh <- fmt.Errorf("Video generation timed out after %dms.", timeoutMs) //nolint:staticcheck // matches TS SDK's exact error text
 	}()
 
 	select {

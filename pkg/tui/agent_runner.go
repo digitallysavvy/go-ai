@@ -158,7 +158,7 @@ func (r *AgentTUIRunner) Run(ctx context.Context) error {
 				if hasRunTurn {
 					return nil
 				}
-				return fmt.Errorf("No prompt was provided and the renderer does not support prompt input.")
+				return fmt.Errorf("No prompt was provided and the renderer does not support prompt input.") //nolint:staticcheck // matches TS SDK's exact error text
 			}
 			var promptOK bool
 			var err error
@@ -230,7 +230,7 @@ func (r *AgentTUIRunner) Run(ctx context.Context) error {
 			if len(approvalRequests) > 0 {
 				approvalReader, ok := r.renderer.(AgentTUIToolApprovalReader)
 				if !ok {
-					return fmt.Errorf("Tool approval was requested, but the renderer does not support tool approval input.")
+					return fmt.Errorf("Tool approval was requested, but the renderer does not support tool approval input.") //nolint:staticcheck // matches TS SDK's exact error text
 				}
 				for _, request := range approvalRequests {
 					response, err := approvalReader.ReadToolApproval(ctx, request, TerminalSessionOptions{Title: r.title, TitleSet: r.title != ""})
@@ -304,15 +304,15 @@ func findPendingToolApprovalRequests(messages []types.Message) []AgentTUIToolApp
 
 func applyToolApprovalResponse(messages []types.Message, request AgentTUIToolApprovalRequest, response AgentTUIToolApprovalResponse) error {
 	if request.MessageIndex < 0 || request.MessageIndex >= len(messages) {
-		return fmt.Errorf("Could not find tool approval request %s.", request.ApprovalID)
+		return fmt.Errorf("Could not find tool approval request %s.", request.ApprovalID) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	message := &messages[request.MessageIndex]
 	if request.PartIndex < 0 || request.PartIndex >= len(message.Content) {
-		return fmt.Errorf("Could not find tool approval request %s.", request.ApprovalID)
+		return fmt.Errorf("Could not find tool approval request %s.", request.ApprovalID) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	part, ok := message.Content[request.PartIndex].(types.ToolApprovalRequestContent)
 	if !ok || nonEmpty(part.ToolCallID, part.ToolCall.ID) != request.ToolCallID {
-		return fmt.Errorf("Could not find tool approval request %s.", request.ApprovalID)
+		return fmt.Errorf("Could not find tool approval request %s.", request.ApprovalID) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	message.Content[request.PartIndex] = types.ToolApprovalResponseContent{
 		ApprovalID:       request.ApprovalID,

@@ -122,7 +122,7 @@ type CreateSessionOptions struct {
 // Mirrors TS `createVercelNetworkSandboxSession`.
 func CreateNetworkSandboxSession(ctx context.Context, opts CreateSessionOptions) (harness.NetworkSandboxSession, error) {
 	if opts.SandboxID != "" && opts.Name != "" && opts.SandboxID != opts.Name {
-		return nil, errors.New("createVercelNetworkSandboxSession: sandboxId and name must match when both are provided.")
+		return nil, errors.New("createVercelNetworkSandboxSession: sandboxId and name must match when both are provided.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	liveName := opts.SandboxID
 	if liveName == "" {
@@ -327,7 +327,7 @@ func pollForTemplateSnapshot(ctx context.Context, client *APIClient, name string
 		case <-time.After(snapshotPollInterval):
 		}
 	}
-	return "", fmt.Errorf("Timed out waiting for snapshot of template %q to publish.", name)
+	return "", fmt.Errorf("Timed out waiting for snapshot of template %q to publish.", name) //nolint:staticcheck // matches TS SDK's exact error text
 }
 
 // createLiveSandboxFromSnapshot forks a live sandbox from a prepared

@@ -165,7 +165,7 @@ func WaitForBridgeReady(ctx context.Context, opts WaitForBridgeReadyOptions) (Re
 			if opts.CreateTimeoutError != nil {
 				return ReadyResult{}, opts.CreateTimeoutError(errCtx())
 			}
-			return ReadyResult{}, errors.New("bridge did not become ready in time.")
+			return ReadyResult{}, errors.New("bridge did not become ready in time.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
 
 		if !metaPending && !time.Now().Before(nextMetaRead) {
@@ -204,7 +204,7 @@ func WaitForBridgeReady(ctx context.Context, opts WaitForBridgeReadyOptions) (Re
 				if opts.CreateExitError != nil {
 					return ReadyResult{}, opts.CreateExitError(errCtx())
 				}
-				return ReadyResult{}, errors.New("bridge exited before becoming ready.")
+				return ReadyResult{}, errors.New("bridge exited before becoming ready.") //nolint:staticcheck // matches TS SDK's exact error text
 			}
 			tail.Push(ev.line)
 			if ready, err := DecodeReady([]byte(ev.line)); err == nil {

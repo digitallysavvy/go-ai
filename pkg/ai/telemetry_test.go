@@ -10,7 +10,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
@@ -171,8 +170,8 @@ func setupTelemetryTest(t *testing.T) (*tracetest.SpanRecorder, func()) {
 	// Set as global tracer provider
 	otel.SetTracerProvider(tp)
 
-	// Register OTelTelemetryIntegration so generate.go/stream.go use OTel spans.
-	telemetry.RegisterTelemetryIntegration(telemetry.OTelTelemetryIntegration{})
+	// Register LegacyOpenTelemetry so generate.go/stream.go use OTel spans.
+	telemetry.RegisterTelemetryIntegration(telemetry.LegacyOpenTelemetry{})
 
 	cleanup := func() {
 		// Restore noop integration so other tests are not affected.
@@ -191,7 +190,7 @@ func TestGenerateText_Telemetry(t *testing.T) {
 
 	model := &mockTelemetryModel{}
 
-	telemetrySettings := &telemetry.Settings{
+	telemetrySettings := &telemetry.Options{
 		IsEnabled:     telemetry.Bool(true),
 		RecordInputs:  true,
 		RecordOutputs: true,
@@ -288,7 +287,7 @@ func TestGenerateText_TelemetryDisabled(t *testing.T) {
 	_, err := GenerateText(context.Background(), GenerateTextOptions{
 		Model:                 model,
 		Prompt:                "Test prompt",
-		ExperimentalTelemetry: &telemetry.Settings{IsEnabled: telemetry.Bool(false)},
+		ExperimentalTelemetry: &telemetry.Options{IsEnabled: telemetry.Bool(false)},
 	})
 
 	if err != nil {
@@ -308,7 +307,7 @@ func TestGenerateText_TelemetryRecordInputsDisabled(t *testing.T) {
 
 	model := &mockTelemetryModel{}
 
-	telemetrySettings := &telemetry.Settings{
+	telemetrySettings := &telemetry.Options{
 		IsEnabled:     telemetry.Bool(true),
 		RecordInputs:  false, // Don't record inputs
 		RecordOutputs: true,
@@ -348,7 +347,7 @@ func TestEmbed_Telemetry(t *testing.T) {
 
 	model := &mockEmbeddingModel{}
 
-	telemetrySettings := &telemetry.Settings{
+	telemetrySettings := &telemetry.Options{
 		IsEnabled:     telemetry.Bool(true),
 		RecordInputs:  true,
 		RecordOutputs: true,
@@ -436,21 +435,13 @@ func TestEmbed_Telemetry(t *testing.T) {
 // pkg/ai/evaluate_telemetry_test.go for the pkg/ai-level dispatch tests
 // (no span without an integration; exactly the expected spans with one).
 
-func attrsToMap(attrs []attribute.KeyValue) map[string]interface{} {
-	out := make(map[string]interface{}, len(attrs))
-	for _, a := range attrs {
-		out[string(a.Key)] = a.Value.AsInterface()
-	}
-	return out
-}
-
 func TestEmbedMany_Telemetry(t *testing.T) {
 	spanRecorder, cleanup := setupTelemetryTest(t)
 	defer cleanup()
 
 	model := &mockEmbeddingModel{}
 
-	telemetrySettings := &telemetry.Settings{
+	telemetrySettings := &telemetry.Options{
 		IsEnabled:     telemetry.Bool(true),
 		RecordInputs:  true,
 		RecordOutputs: true,
@@ -601,7 +592,7 @@ func TestGenerateTextWithMockTelemetry(t *testing.T) {
 	_, err := GenerateText(context.Background(), GenerateTextOptions{
 		Model:  model,
 		Prompt: "Hello",
-		ExperimentalTelemetry: &telemetry.Settings{
+		ExperimentalTelemetry: &telemetry.Options{
 			IsEnabled: telemetry.Bool(true),
 		},
 	})
@@ -637,7 +628,7 @@ func TestGenerateText_TelemetryOptionTakesPrecedence(t *testing.T) {
 			IsEnabled:    telemetry.Bool(true),
 			Integrations: []telemetry.TelemetryIntegration{local},
 		},
-		ExperimentalTelemetry: &telemetry.Settings{
+		ExperimentalTelemetry: &telemetry.Options{
 			IsEnabled: telemetry.Bool(true),
 		},
 	})

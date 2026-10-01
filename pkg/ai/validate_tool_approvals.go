@@ -212,7 +212,7 @@ func revalidateApprovedInput(ctx context.Context, approval CollectedToolApproval
 
 	// Revalidation must never change the operation that was approved.
 	if !isDeepEqualJSONData(revalidated, approvedInput) {
-		return errors.New("Approved tool input does not match the validated schema output.")
+		return errors.New("Approved tool input does not match the validated schema output.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	return nil
 }

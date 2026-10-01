@@ -53,7 +53,7 @@ func ExperimentalGetVideoStatus(ctx context.Context, model provider.VideoModelV3
 	}
 	checker, ok := model.(provider.VideoModelStatusChecker)
 	if !ok {
-		return nil, fmt.Errorf("Video model %s does not implement doStatus.", model.ModelID())
+		return nil, fmt.Errorf("Video model %s does not implement doStatus.", model.ModelID()) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 
 	statusOpts := &provider.VideoModelV3StatusOptions{

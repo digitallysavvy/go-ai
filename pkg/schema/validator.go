@@ -86,11 +86,11 @@ func (v *StructValidator) Validate(data interface{}) error {
 	}
 	if v.targetType != nil {
 		got := reflect.TypeOf(data)
-		if got.Kind() == reflect.Ptr {
+		if got.Kind() == reflect.Pointer {
 			got = got.Elem()
 		}
 		want := v.targetType
-		if want.Kind() == reflect.Ptr {
+		if want.Kind() == reflect.Pointer {
 			want = want.Elem()
 		}
 		if got != want && got.Kind() != reflect.Map {
@@ -558,7 +558,7 @@ func asMap(value interface{}) (map[string]interface{}, bool) {
 	if !rv.IsValid() {
 		return nil, false
 	}
-	if rv.Kind() == reflect.Ptr {
+	if rv.Kind() == reflect.Pointer {
 		if rv.IsNil() {
 			return nil, false
 		}

@@ -33,7 +33,7 @@ func TestSandboxHardening_FilesystemEscapeIsClosed(t *testing.T) {
 	if err := os.WriteFile(canary, []byte("CANARY-CONTENTS-12345"), 0o600); err != nil {
 		t.Fatalf("writing canary file: %v", err)
 	}
-	defer os.Remove(canary)
+	defer func() { _ = os.Remove(canary) }()
 
 	got, err := RunCodeMode(context.Background(), RunInput{JS: `return typeof std;`})
 	if err != nil {
@@ -83,7 +83,7 @@ func TestSandboxHardening_EnvironmentIsNotLeaked(t *testing.T) {
 	if err := os.Setenv(secretKey, "topsecret-value"); err != nil {
 		t.Fatalf("os.Setenv: %v", err)
 	}
-	defer os.Unsetenv(secretKey)
+	defer func() { _ = os.Unsetenv(secretKey) }()
 
 	got, err := RunCodeMode(context.Background(), RunInput{
 		JS: `try {
@@ -198,7 +198,7 @@ func TestSandboxHardening_ConsoleOutputIsCappedAndNeverReachesRealHostStdout(t *
 	js := `let big = 'A'.repeat(` + strconv.Itoa(over) + `); console.log(big); console.log(big); return 'ok';`
 	got, err := RunCodeMode(context.Background(), RunInput{JS: js})
 
-	w.Close()
+	_ = w.Close()
 	os.Stdout = realStdout
 	captured := <-done
 

@@ -171,10 +171,6 @@ func (s *xaiSTTTestServer) close() {
 	s.ts.Close()
 }
 
-func (s *xaiSTTTestServer) closeConnection() {
-	close(s.closeConn)
-}
-
 func (s *xaiSTTTestServer) send(v interface{}) {
 	s.toSend <- v
 }

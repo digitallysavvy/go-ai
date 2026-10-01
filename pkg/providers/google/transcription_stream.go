@@ -155,7 +155,7 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		apiKey = callAPIKey
 	}
 	if apiKey == "" {
-		return nil, errors.New("Google Generative AI API key is required for streaming transcription.")
+		return nil, errors.New("Google Generative AI API key is required for streaming transcription.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	wsHeaders := internalhttp.MergeHeaders(filteredBaseHeaders, filteredCallHeaders)
 
@@ -471,7 +471,7 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 					// had already ended — distinct from a clean close (TS
 					// onClose), which finishes successfully once a finish is
 					// pending.
-					fail(errors.New("Google Live transcription error"))
+					fail(errors.New("Google Live transcription error")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 				} else if finishTimer != nil {
 					// Gate on the pending finish-grace timer, not the
 					// audioEnded boolean directly: schedulePendingFinish only
@@ -484,7 +484,7 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 					// consistency across the two Live API streams).
 					finish()
 				} else {
-					fail(fmt.Errorf("Google Live transcription WebSocket closed unexpectedly before finishing"))
+					fail(fmt.Errorf("Google Live transcription WebSocket closed unexpectedly before finishing")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 				}
 				return
 			}

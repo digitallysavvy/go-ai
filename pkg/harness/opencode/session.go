@@ -51,7 +51,6 @@ type session struct {
 
 	mu                      sync.Mutex
 	stopped                 bool
-	stopDone                chan struct{}
 	latestOpenCodeSessionID string
 	pendingResumeSessionID  string
 	selectedModel           string
@@ -229,7 +228,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 			settleSuccess()
 			return
 		}
-		settleError(errors.New("OpenCode bridge closed before the turn finished."))
+		settleError(errors.New("OpenCode bridge closed before the turn finished.")) //nolint:staticcheck // matches TS SDK's exact error text
 	})
 
 	go func() {
@@ -446,7 +445,7 @@ func (s *session) DoSuspendTurn(ctx context.Context) (*harness.ContinueTurnState
 	s.mu.Lock()
 	if s.stopped {
 		s.mu.Unlock()
-		return nil, fmt.Errorf("OpenCode session %s is stopped; cannot suspend.", s.p.sessionID)
+		return nil, fmt.Errorf("OpenCode session %s is stopped; cannot suspend.", s.p.sessionID) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	s.stopped = true
 	latest := s.latestOpenCodeSessionID
@@ -464,7 +463,7 @@ func (s *session) DoDetach(ctx context.Context) (*harness.ResumeSessionState, er
 	s.mu.Lock()
 	if s.stopped {
 		s.mu.Unlock()
-		return nil, fmt.Errorf("OpenCode session %s is already stopped; cannot detach.", s.p.sessionID)
+		return nil, fmt.Errorf("OpenCode session %s is already stopped; cannot detach.", s.p.sessionID) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	s.stopped = true
 	latest := s.latestOpenCodeSessionID
@@ -482,7 +481,7 @@ func (s *session) DoStop(ctx context.Context) (*harness.ResumeSessionState, erro
 	s.mu.Lock()
 	if s.stopped {
 		s.mu.Unlock()
-		return nil, fmt.Errorf("OpenCode session %s is already stopped; cannot stop.", s.p.sessionID)
+		return nil, fmt.Errorf("OpenCode session %s is already stopped; cannot stop.", s.p.sessionID) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	s.stopped = true
 	s.mu.Unlock()
@@ -510,7 +509,7 @@ func (s *session) DoStop(ctx context.Context) (*harness.ResumeSessionState, erro
 			unsub()
 		case <-time.After(5 * time.Second):
 			unsub()
-			return nil, fmt.Errorf("OpenCode session %s did not reply to stop within 5s.", s.p.sessionID)
+			return nil, fmt.Errorf("OpenCode session %s did not reply to stop within 5s.", s.p.sessionID) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 	}
 

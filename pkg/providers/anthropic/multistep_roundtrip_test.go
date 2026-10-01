@@ -76,7 +76,7 @@ func TestMultiStepToolUseRoundTrip(t *testing.T) {
 				return map[string]interface{}{"temperature": 72}, nil
 			},
 		}},
-		StopWhen: []ai.StopCondition{ai.StepCountIs(2)},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(2)},
 	})
 	if err != nil {
 		t.Fatalf("GenerateText: %v", err)

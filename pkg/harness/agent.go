@@ -63,7 +63,7 @@ type Agent struct {
 // `HarnessAgent` constructor.
 func NewAgent(settings AgentSettings) (*Agent, error) {
 	if settings.Harness == nil {
-		return nil, errors.New("HarnessAgent: `harness` is required.")
+		return nil, errors.New("HarnessAgent: `harness` is required.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	if err := ValidateSandboxBootstrapSettings(settings.SandboxConfig); err != nil {
 		return nil, err
@@ -170,7 +170,7 @@ type CreateSessionOptions struct {
 // with Detach, Stop, or Destroy. Mirrors TS `HarnessAgent.createSession`.
 func (a *Agent) CreateSession(ctx context.Context, opts CreateSessionOptions) (*AgentSession, error) {
 	if opts.ResumeFrom != nil && opts.ContinueFrom != nil {
-		return nil, errors.New("HarnessAgent.CreateSession: pass either ResumeFrom or ContinueFrom, not both.")
+		return nil, errors.New("HarnessAgent.CreateSession: pass either ResumeFrom or ContinueFrom, not both.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	sessionID := opts.SessionID
 	if sessionID == "" {
@@ -196,7 +196,7 @@ func (a *Agent) CreateSession(ctx context.Context, opts CreateSessionOptions) (*
 		effectiveContinueFrom = validatedResumeFrom.ContinueFrom
 	}
 	if opts.ToolsContext != nil && effectiveContinueFrom == nil {
-		return nil, errors.New("HarnessAgent.CreateSession: `ToolsContext` can only rebind an unfinished turn from ContinueFrom or ResumeFrom.")
+		return nil, errors.New("HarnessAgent.CreateSession: `ToolsContext` can only rebind an unfinished turn from ContinueFrom or ResumeFrom.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	isResumedSession := validatedResumeFrom != nil || effectiveContinueFrom != nil
 
@@ -310,7 +310,7 @@ func (a *Agent) acquireSandboxSession(ctx context.Context, opts CreateSessionOpt
 	}
 
 	if a.settings.Sandbox == nil {
-		return nil, "", errors.New("HarnessAgent.CreateSession: configure `Sandbox` on the agent or pass `SandboxSession`.")
+		return nil, "", errors.New("HarnessAgent.CreateSession: configure `Sandbox` on the agent or pass `SandboxSession`.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	recipe, err := GetBootstrap(ctx, harness)
 	if err != nil {
@@ -407,7 +407,7 @@ func validateLifecycleStateData(h Harness, state LifecycleState) error {
 func (a *Agent) sessionFromOptions(opts agent.AgentGenerateOptions) (*AgentSession, error) {
 	session, ok := opts.HarnessSession.(*AgentSession)
 	if !ok || session == nil {
-		return nil, errors.New("HarnessAgent: AgentGenerateOptions.HarnessSession must be a *harness.AgentSession created via Agent.CreateSession.")
+		return nil, errors.New("HarnessAgent: AgentGenerateOptions.HarnessSession must be a *harness.AgentSession created via Agent.CreateSession.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	return session, nil
 }
@@ -701,7 +701,15 @@ func (a *Agent) ExecuteWithMessages(ctx context.Context, messages []types.Messag
 	}
 	return &agent.AgentResult{
 		Text: result.Text, Output: result.Output, Steps: result.Steps, ToolResults: result.ToolResults,
-		FinishReason: result.FinishReason, StopReason: result.StopReason, Usage: result.TotalUsage, Warnings: result.Warnings,
+		FinishReason: result.FinishReason, StopReason: result.StopReason,
+		// result.TotalUsage (not result.Usage) is the authoritative total
+		// here: streamResultToGenerateResult below sets this harness
+		// GenerateTextResult's Usage to the *final step's* usage and
+		// TotalUsage to the real cross-step/server-overridden total, unlike
+		// pkg/ai's own GenerateTextResult construction where the two are
+		// always equal.
+		Usage:    result.TotalUsage, //nolint:staticcheck
+		Warnings: result.Warnings,
 	}, nil
 }
 
@@ -716,11 +724,15 @@ func streamResultToGenerateResult(r *ai.StreamTextResult) *ai.GenerateTextResult
 		finalStep = steps[len(steps)-1]
 	}
 	return &ai.GenerateTextResult{
-		Content:            r.Content(),
-		Text:               r.Text(),
-		Output:             r.Output(),
-		Reasoning:          finalStep.Reasoning,
-		ReasoningText:      finalStep.ReasoningText,
+		Content: r.Content(),
+		Text:    r.Text(),
+		Output:  r.Output(),
+		// Reasoning/ReasoningText are deprecated aliases of
+		// FinalStep.Reasoning/FinalStep.ReasoningText, set here for callers
+		// still reading the old top-level fields (mirrors generate.go's own
+		// GenerateTextResult population).
+		Reasoning:          finalStep.Reasoning,     //nolint:staticcheck
+		ReasoningText:      finalStep.ReasoningText, //nolint:staticcheck
 		ToolCalls:          r.ToolCalls(),
 		StaticToolCalls:    r.StaticToolCalls(),
 		DynamicToolCalls:   r.DynamicToolCalls(),
@@ -730,11 +742,19 @@ func streamResultToGenerateResult(r *ai.StreamTextResult) *ai.GenerateTextResult
 		Steps:              steps,
 		FinalStep:          finalStep,
 		FinishReason:       r.FinishReason(),
-		Usage:              finalStep.Usage,
-		TotalUsage:         r.TotalUsage(),
-		Warnings:           r.Warnings(),
-		Sources:            r.Sources(),
-		Files:              r.Files(),
-		ResponseMessages:   r.ResponseMessages(),
+		// Usage is deliberately the final step's usage, not the total
+		// (unlike pkg/ai's own GenerateTextResult, where Usage is already
+		// the cross-step total and TotalUsage is just its deprecated
+		// alias): TotalUsage below carries the real aggregate/bridge-
+		// overridden total, and callers such as Agent.ExecuteWithMessages
+		// read TotalUsage, not Usage, for that total. r.Usage() (not the
+		// also-deprecated r.TotalUsage(), its pure alias) is used as the
+		// source value here.
+		Usage:            finalStep.Usage,
+		TotalUsage:       r.Usage(), //nolint:staticcheck
+		Warnings:         r.Warnings(),
+		Sources:          r.Sources(),
+		Files:            r.Files(),
+		ResponseMessages: r.ResponseMessages(),
 	}
 }

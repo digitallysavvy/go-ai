@@ -40,25 +40,25 @@ func validateImplementation(impl implementation) error {
 	switch impl.Source.Type {
 	case SourceNPMLocked:
 		if impl.Source.PackageJSON == "" {
-			return fmt.Errorf("ACP source.packageJson must not be empty.")
+			return fmt.Errorf("ACP source.packageJson must not be empty.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		if impl.Source.PnpmLockYAML == "" {
-			return fmt.Errorf("ACP source.pnpmLockYaml must not be empty.")
+			return fmt.Errorf("ACP source.pnpmLockYaml must not be empty.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
 	case SourceNPMSimple:
 		if !packageNameRegexp.MatchString(impl.Source.PackageName) {
-			return fmt.Errorf("ACP npm package name is invalid: %q.", impl.Source.PackageName)
+			return fmt.Errorf("ACP npm package name is invalid: %q.", impl.Source.PackageName) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		if impl.Source.PackageVersion != "" && !exactSemverRegexp.MatchString(impl.Source.PackageVersion) {
-			return fmt.Errorf("ACP npm package version must be an exact semantic version; received %q.", impl.Source.PackageVersion)
+			return fmt.Errorf("ACP npm package version must be an exact semantic version; received %q.", impl.Source.PackageVersion) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 	default:
 		if strings.TrimSpace(impl.Source.Command) == "" {
-			return fmt.Errorf("ACP source.command must not be empty.")
+			return fmt.Errorf("ACP source.command must not be empty.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
 	}
 	if !executableNameRegexp.MatchString(impl.Executable) {
-		return fmt.Errorf("ACP executable must be a bare command name without a path; received %q.", impl.Executable)
+		return fmt.Errorf("ACP executable must be a bare command name without a path; received %q.", impl.Executable) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	if err := validateForwardEnvironment(impl.ForwardEnv); err != nil {
 		return err
@@ -73,15 +73,15 @@ func validateImplementation(impl implementation) error {
 	credential := toSet(impl.CredentialEnv)
 	for k := range credential {
 		if forwarded[k] {
-			return fmt.Errorf("ACP runtime environment key %q cannot be configured in both forwardEnv and credentialEnv.", k)
+			return fmt.Errorf("ACP runtime environment key %q cannot be configured in both forwardEnv and credentialEnv.", k) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 	}
 	for k := range impl.Env {
 		if forwarded[k] {
-			return fmt.Errorf("ACP runtime environment key %q cannot be configured in both forwardEnv and env.", k)
+			return fmt.Errorf("ACP runtime environment key %q cannot be configured in both forwardEnv and env.", k) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		if credential[k] {
-			return fmt.Errorf("ACP runtime environment key %q cannot be configured in both credentialEnv and env.", k)
+			return fmt.Errorf("ACP runtime environment key %q cannot be configured in both credentialEnv and env.", k) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 	}
 	return nil
@@ -90,10 +90,10 @@ func validateImplementation(impl implementation) error {
 func validateEnvironment(env map[string]string) error {
 	for k, v := range env {
 		if !envVarNameRegexp.MatchString(k) {
-			return fmt.Errorf("ACP environment variable name is invalid: %q.", k)
+			return fmt.Errorf("ACP environment variable name is invalid: %q.", k) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		if strings.Contains(v, "\x00") {
-			return fmt.Errorf("ACP runtime environment value for %s contains NUL.", k)
+			return fmt.Errorf("ACP runtime environment value for %s contains NUL.", k) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 	}
 	return nil
@@ -102,7 +102,7 @@ func validateEnvironment(env map[string]string) error {
 func validateForwardEnvironment(names []string) error {
 	for _, name := range names {
 		if !envVarNameRegexp.MatchString(name) {
-			return fmt.Errorf("ACP environment variable name is invalid: %q.", name)
+			return fmt.Errorf("ACP environment variable name is invalid: %q.", name) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 	}
 	return nil

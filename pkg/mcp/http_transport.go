@@ -697,28 +697,6 @@ func parseMCPHTTPJSONMessages(body []byte) ([]*MCPMessage, error) {
 	return []*MCPMessage{&responseMsg}, nil
 }
 
-func parseMCPHTTPSSEMessages(body io.Reader) ([]*MCPMessage, error) {
-	parser := streaming.NewSSEParser(body)
-	var messages []*MCPMessage
-	for {
-		event, err := parser.Next()
-		if err == io.EOF {
-			return messages, nil
-		}
-		if err != nil {
-			return nil, err
-		}
-		if event.Event != "" && event.Event != "message" {
-			continue
-		}
-		var msg MCPMessage
-		if err := unmarshalSafeJSON([]byte(event.Data), &msg); err != nil {
-			return nil, err
-		}
-		messages = append(messages, &msg)
-	}
-}
-
 // readMCPHTTPSSEMessages parses a text/event-stream response returned from a
 // POST send() (as opposed to the standing inbound SSE GET listener), matching
 // TS send()'s `processEvents()`. A clean end-of-stream (EOF) returns

@@ -68,7 +68,7 @@ func RenderModelIDsGo(packageName, header string, models []ModelID) ([]byte, err
 	b.WriteString("package " + packageName + "\n\n")
 	b.WriteString("const (\n")
 	for _, model := range cleaned {
-		fmt.Fprintf(&b, "\t%s = %q\n", model.ConstName, model.ID)
+		_, _ = fmt.Fprintf(&b, "\t%s = %q\n", model.ConstName, model.ID)
 	}
 	b.WriteString(")\n")
 

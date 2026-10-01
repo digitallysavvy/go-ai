@@ -42,11 +42,11 @@ func rejectUnsafeJSONWalk(value interface{}, depth, maxDepth, maxFields int, fie
 	switch v := value.(type) {
 	case map[string]interface{}:
 		if _, ok := v["__proto__"]; ok {
-			return fmt.Errorf("Object contains forbidden prototype property")
+			return fmt.Errorf("Object contains forbidden prototype property") //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		if constructor, ok := v["constructor"].(map[string]interface{}); ok {
 			if _, hasPrototype := constructor["prototype"]; hasPrototype {
-				return fmt.Errorf("Object contains forbidden prototype property")
+				return fmt.Errorf("Object contains forbidden prototype property") //nolint:staticcheck // matches TS SDK's exact error text
 			}
 		}
 		for _, nested := range v {

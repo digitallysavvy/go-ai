@@ -1474,11 +1474,6 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				if onChunk != nil {
 					onChunk(c)
 				}
-				telemetry.FireOnChunk(ctx, telemetry.TelemetryChunkEvent{
-					Settings:  r.telemetrySettings,
-					ChunkType: string(c.Type),
-					Text:      c.Text,
-				})
 			}
 			return
 		}
@@ -1507,8 +1502,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			if pendingStepCancel != nil {
 				cancelStep = pendingStepCancel
 			}
-			pendingStepCtx = nil
-			pendingStepCancel = nil
+			// Not reset to nil here: every path through the loop body below
+			// either breaks (ending the function) or reassigns
+			// pendingStepCtx/pendingStepCancel to the next step's values
+			// before this branch is reached again.
 		} else if r.timeout != nil && r.timeout.HasPerStep() {
 			stepCtx, cancelStep = r.timeout.CreateTimeoutContext(ctx, "step")
 		}
@@ -1645,10 +1642,6 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				if onChunk != nil {
 					onChunk(*chunk)
 				}
-				telemetry.FireOnChunk(ctx, telemetry.TelemetryChunkEvent{
-					Settings:  r.telemetrySettings,
-					ChunkType: string(chunk.Type),
-				})
 				continue
 			}
 			remapDuplicateBlockID(chunk, usedTextIDs, stepTextIDRemap, provider.ChunkTypeTextStart, provider.ChunkTypeText, provider.ChunkTypeTextEnd, remapGenerateID)
@@ -1718,10 +1711,6 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				if onChunk != nil {
 					onChunk(first)
 				}
-				telemetry.FireOnChunk(ctx, telemetry.TelemetryChunkEvent{
-					Settings:  r.telemetrySettings,
-					ChunkType: string(provider.ChunkTypeFirstChunk),
-				})
 			}
 
 			if isModelOutputChunkType(chunk.Type) {
@@ -2178,11 +2167,6 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				if onChunk != nil {
 					onChunk(errorChunk)
 				}
-				telemetry.FireOnChunk(ctx, telemetry.TelemetryChunkEvent{
-					Settings:  r.telemetrySettings,
-					ChunkType: string(errorChunk.Type),
-					Text:      errorChunk.Text,
-				})
 				cancelStep()
 				break
 			}
@@ -2263,10 +2247,6 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				if onChunk != nil {
 					onChunk(resultChunk)
 				}
-				telemetry.FireOnChunk(ctx, telemetry.TelemetryChunkEvent{
-					Settings:  r.telemetrySettings,
-					ChunkType: string(resultChunk.Type),
-				})
 			}
 			switch tr.ApprovalStatus {
 			case types.ToolApprovalStatusUserApproval, types.ToolApprovalStatusApproved, types.ToolApprovalStatusDenied:
@@ -2640,7 +2620,6 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 			if prepared.Messages != nil {
 				nextMessages = prepared.Messages
-				currentMessages = prepared.Messages
 			}
 			if prepared.Tools != nil {
 				nextTools = prepared.Tools
@@ -2895,10 +2874,6 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		if onChunk != nil {
 			onChunk(finishChunk)
 		}
-		telemetry.FireOnChunk(ctx, telemetry.TelemetryChunkEvent{
-			Settings:  r.telemetrySettings,
-			ChunkType: string(provider.ChunkTypeStreamFinish),
-		})
 	}
 	if r.err != nil {
 		if isAbortErr(ctx, r.err) {
@@ -2973,7 +2948,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		_ = json.Unmarshal(r.providerMetadata, &streamProviderMeta)
 	}
 	r.mu.Unlock()
-	telemetry.FireOnFinish(r.telemetryCtx, telemetry.TelemetryFinishEvent{
+	telemetry.FireOnEnd(r.telemetryCtx, telemetry.TelemetryFinishEvent{
 		CallID:           r.cbCallID,
 		OperationType:    "ai.streamText",
 		FinishReason:     string(r.finishReason),
@@ -3144,9 +3119,11 @@ func enrichStreamedToolResultForModelOutput(ctx context.Context, result types.To
 		ToolCallID: result.ToolCallID,
 		Input:      input,
 		Output:     result.Result,
-		Result:     result.Result,
-		ToolCall:   &toolCall,
-		Usage:      usage,
+		// Result is a deprecated alias of Output, kept for ToModelOutput
+		// implementations still reading it.
+		Result:   result.Result, //nolint:staticcheck
+		ToolCall: &toolCall,
+		Usage:    usage,
 	})
 	if err != nil {
 		return result, err
@@ -3695,10 +3672,6 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 			r.mu.Lock()
 			r.status = StreamStatusStreaming
 			r.mu.Unlock()
-			telemetry.FireOnChunk(ctx, telemetry.TelemetryChunkEvent{
-				Settings:  r.telemetrySettings,
-				ChunkType: string(provider.ChunkTypeFirstChunk),
-			})
 		}
 
 		// Accumulate warnings from stream-start chunks
@@ -3845,12 +3818,6 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 	}
 
 	// Store collected tool calls.
-	telemetry.FireOnChunk(ctx, telemetry.TelemetryChunkEvent{
-		Settings:  r.telemetrySettings,
-		ChunkType: string(provider.ChunkTypeStreamFinish),
-	})
-
-	// Store collected tool calls.
 	if len(pendingToolCalls) > 0 {
 		stepContent = replaceToolCallContentParts(stepContent, pendingToolCalls)
 		stepContent = replaceToolResultContentParts(stepContent, pendingToolCalls)
@@ -3950,7 +3917,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 		_ = json.Unmarshal(r.providerMetadata, &readAllProviderMeta)
 	}
 	r.mu.Unlock()
-	telemetry.FireOnFinish(r.telemetryCtx, telemetry.TelemetryFinishEvent{
+	telemetry.FireOnEnd(r.telemetryCtx, telemetry.TelemetryFinishEvent{
 		CallID:           r.cbCallID,
 		OperationType:    "ai.streamText",
 		FinishReason:     string(r.finishReason),

@@ -152,14 +152,6 @@ func (c *MCPToolConverter) convertTool(mcpTool MCPTool, toolSchema *MCPToolSchem
 	}, nil
 }
 
-func stringFromMap(values map[string]interface{}, key string) string {
-	if values == nil {
-		return ""
-	}
-	value, _ := values[key].(string)
-	return value
-}
-
 func resolveMCPToolTitle(tool MCPTool) (string, bool) {
 	if tool.titlePresent || tool.Title != "" {
 		return tool.Title, true

@@ -404,7 +404,9 @@ func createUIToolModelOutput(ctx context.Context, toolCallID string, input, outp
 			ToolCallID: toolCallID,
 			Input:      args,
 			Output:     output,
-			Result:     output,
+			// Result is a deprecated alias of Output, kept for
+			// ToModelOutput implementations still reading it.
+			Result: output, //nolint:staticcheck
 		})
 	}
 	if s, ok := output.(string); ok {
@@ -482,7 +484,7 @@ func fileUIPartToModel(p *FileUIPart) (types.FileContent, error) {
 func validateUIPartURL(raw string) error {
 	parsed, err := url.Parse(raw)
 	if err != nil || parsed.Scheme == "" {
-		return fmt.Errorf("Invalid URL: %s", raw)
+		return fmt.Errorf("Invalid URL: %s", raw) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	return nil
 }

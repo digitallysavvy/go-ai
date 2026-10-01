@@ -52,7 +52,7 @@ func CreateOpenCode(settings ...Settings) (harness.Harness, error) {
 		s = settings[0]
 	}
 	if _, reserved := s.MCPServers["harness-tools"]; reserved {
-		return nil, errors.New(`OpenCode MCP server name "harness-tools" is reserved for HarnessAgent tools.`)
+		return nil, errors.New(`OpenCode MCP server name "harness-tools" is reserved for HarnessAgent tools.`) //nolint:staticcheck // matches TS SDK exact error text
 	}
 	return &openCodeHarness{settings: s}, nil
 }

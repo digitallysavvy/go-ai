@@ -473,5 +473,5 @@ func transportError(err error) error {
 	if errors.As(err, &netErr) && netErr.Timeout() {
 		return err
 	}
-	return fmt.Errorf("Cannot connect to API: %w", err)
+	return fmt.Errorf("Cannot connect to API: %w", err) //nolint:staticcheck // matches TS SDK's exact error text
 }

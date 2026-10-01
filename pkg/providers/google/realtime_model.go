@@ -69,7 +69,7 @@ var (
 func (m *GoogleRealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.ClientSecretOptions) (provider.ClientSecretResult, error) {
 	apiKey := m.googleRealtimeAPIKey()
 	if apiKey == "" {
-		return provider.ClientSecretResult{}, fmt.Errorf("Google Generative AI API key is required for realtime token creation.")
+		return provider.ClientSecretResult{}, fmt.Errorf("Google Generative AI API key is required for realtime token creation.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	seconds := 60
 	if opts.ExpiresAfterSeconds != nil {
@@ -101,7 +101,7 @@ func (m *GoogleRealtimeModel) DoCreateClientSecret(ctx context.Context, opts pro
 		return provider.ClientSecretResult{}, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return provider.ClientSecretResult{}, fmt.Errorf("Google realtime auth token request failed: %d %s", resp.StatusCode, string(respBody))
+		return provider.ClientSecretResult{}, fmt.Errorf("Google realtime auth token request failed: %d %s", resp.StatusCode, string(respBody)) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 	}
 	var data struct {
 		Name       string `json:"name"`

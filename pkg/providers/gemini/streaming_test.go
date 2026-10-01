@@ -745,11 +745,17 @@ func TestStreamServiceTierLastValueWins(t *testing.T) {
 		t.Fatal("no finish chunk or no metadata")
 	}
 	var meta map[string]json.RawMessage
-	json.Unmarshal(finishChunk.ProviderMetadata, &meta)
+	if err := json.Unmarshal(finishChunk.ProviderMetadata, &meta); err != nil {
+		t.Fatalf("unmarshal ProviderMetadata: %v", err)
+	}
 	var googleMeta map[string]json.RawMessage
-	json.Unmarshal(meta["google"], &googleMeta)
+	if err := json.Unmarshal(meta["google"], &googleMeta); err != nil {
+		t.Fatalf("unmarshal google metadata: %v", err)
+	}
 	var serviceTier string
-	json.Unmarshal(googleMeta["serviceTier"], &serviceTier)
+	if err := json.Unmarshal(googleMeta["serviceTier"], &serviceTier); err != nil {
+		t.Fatalf("unmarshal serviceTier: %v", err)
+	}
 	if serviceTier != "SERVICE_TIER_PRIORITY" {
 		t.Errorf("serviceTier = %q, want last value %q", serviceTier, "SERVICE_TIER_PRIORITY")
 	}

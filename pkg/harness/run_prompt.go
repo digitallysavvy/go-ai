@@ -24,7 +24,7 @@ import (
 // NoSuchToolError/InvalidToolInputError from validation is never sent back to
 // the runtime/model or exposed to the consumer; it exists only for local
 // diagnostics.
-const invalidToolInputMessage = "Tool input validation failed."
+const invalidToolInputMessage = "Tool input validation failed." //nolint:staticcheck // exact TS parity string (run-prompt.ts's invalidToolInputMessage)
 
 // nowMs returns the current wall-clock time in Unix milliseconds, used for
 // telemetry.go's model-call response-time measurement (mirrors TS
@@ -37,7 +37,7 @@ func nowMs() int64 { return time.Now().UnixMilli() }
 // `HarnessStreamTextResult.finish()`'s "received terminal finish with
 // unclosed step content" check: every harness-v1 adapter step must be closed
 // by an explicit finish-step before the turn-closing finish.
-const unclosedStepErrorMessage = "HarnessAgent: received terminal finish with unclosed step content. Harness adapters must emit `finish-step` before `finish`."
+const unclosedStepErrorMessage = "HarnessAgent: received terminal finish with unclosed step content. Harness adapters must emit `finish-step` before `finish`." //nolint:staticcheck // exact TS parity string (harness-stream-text-result.ts)
 
 // chunkChannelStream is a provider.TextStream backed by a Go channel, used to
 // feed ai.NewStreamTextResultFromParts from run_prompt's own translation
@@ -54,13 +54,6 @@ func newChunkChannelStream() *chunkChannelStream {
 
 func (s *chunkChannelStream) push(c provider.StreamChunk) { s.ch <- c }
 
-// fail records err and stops accepting more chunks; the next Next() call
-// after the buffered chunks are drained returns err instead of io.EOF.
-func (s *chunkChannelStream) fail(err error) {
-	s.err = err
-	close(s.ch)
-}
-
 func (s *chunkChannelStream) closeOK() { close(s.ch) }
 
 // fail settles the turn as a soft (data-preserving) failure: a
@@ -69,10 +62,9 @@ func (s *chunkChannelStream) closeOK() { close(s.ch) }
 // surfaces failures — a harness `error` part, a host tool execution
 // exception, an unclosed-step protocol violation — as a terminal `error`
 // stream part rather than rejecting/discarding whatever the turn already
-// produced. Distinct from chunkChannelStream.fail, which is a hard,
-// non-data-preserving channel failure reserved for driver-internal errors
-// that occur before or between chunks (e.g. ctx cancellation, DoPromptTurn
-// itself returning an error before any content exists to preserve).
+// produced. Every runPrompt failure path settles through this single helper
+// (via settleFailure below), so a separate hard, non-data-preserving
+// channel-level failure path is never needed.
 func (d *turnDriver) fail(err error) {
 	d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeError, Text: err.Error()})
 	d.stream.closeOK()
@@ -179,7 +171,7 @@ type runPromptInput struct {
 	// anyway, but a nil Settings also skips the per-call RecordInputs/
 	// RecordOutputs/IncludeRuntimeContext/IncludeToolsContext filtering).
 	// Mirrors TS `HarnessAgentSettings.telemetry`.
-	Telemetry *telemetry.Settings
+	Telemetry *telemetry.Options
 
 	Callbacks      Callbacks
 	StopConditions []ai.StopCondition
@@ -797,7 +789,7 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 			// Mirrors TS `HarnessStreamTextResult.finish()`'s
 			// `currentStepContent.length > 0` check.
 			if d.stepOpen {
-				return false, false, errors.New(unclosedStepErrorMessage)
+				return false, false, errors.New(unclosedStepErrorMessage) //nolint:staticcheck // invalidToolInputMessage/unclosedStepErrorMessage are exact TS parity strings
 			}
 			usage := harnessUsageToTypesUsage(fp.TotalUsage)
 			// TS's terminal `finish` handler ends the root telemetry span
@@ -954,7 +946,7 @@ func displayHostToolCall(call types.ToolCall, sessionWorkDir string) types.ToolC
 	out := call
 	out.Arguments, _ = stripParsedToolInputWorkDir(call.Arguments, sessionWorkDir).(map[string]interface{})
 	if call.Invalid {
-		out.Error = errors.New(invalidToolInputMessage)
+		out.Error = errors.New(invalidToolInputMessage) //nolint:staticcheck // invalidToolInputMessage/unclosedStepErrorMessage are exact TS parity strings
 	}
 	return out
 }
@@ -1520,7 +1512,7 @@ func (d *turnDriver) rejectInvalidHostToolCall(raw *ToolCallPart, displayCall ty
 			ToolCallID: raw.ToolCallID,
 			ToolName:   raw.ToolName,
 			Input:      displayCall.Arguments,
-			Error:      errors.New(invalidToolInputMessage),
+			Error:      errors.New(invalidToolInputMessage), //nolint:staticcheck // invalidToolInputMessage/unclosedStepErrorMessage are exact TS parity strings
 			Dynamic:    true,
 		},
 	}})
@@ -1736,7 +1728,7 @@ func (d *turnDriver) processApprovalContinuation(approval PendingToolApproval, c
 			Type: provider.ChunkTypeToolResult,
 			ToolResult: &types.ToolResult{
 				ToolCallID: approval.ToolCallID, ToolName: approval.ToolName,
-				Input: call.Arguments, Error: errors.New(invalidToolInputMessage), Dynamic: true,
+				Input: call.Arguments, Error: errors.New(invalidToolInputMessage), Dynamic: true, //nolint:staticcheck // invalidToolInputMessage/unclosedStepErrorMessage are exact TS parity strings
 			},
 		}})
 		return turnOutcomeContinue, nil

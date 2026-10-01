@@ -35,13 +35,13 @@ type acpHarness struct {
 // fx, GitHub Copilot, Grok Build — WG12).
 func CreateACP(settings Settings) (harness.Harness, error) {
 	if (settings.CredentialEnv == nil) != (settings.CredentialBrokering == nil) {
-		return nil, fmt.Errorf("ACP credentialEnv and credentialBrokering must be configured together.")
+		return nil, fmt.Errorf("ACP credentialEnv and credentialBrokering must be configured together.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	if _, reserved := settings.MCPServers[ReservedMCPServerName]; reserved {
-		return nil, fmt.Errorf("ACP MCP server name %q is reserved for HarnessAgent tools.", ReservedMCPServerName)
+		return nil, fmt.Errorf("ACP MCP server name %q is reserved for HarnessAgent tools.", ReservedMCPServerName) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	if !harnessIDRegexp.MatchString(settings.HarnessID) {
-		return nil, fmt.Errorf("ACP harnessId must be a stable kebab-case identifier; received %q.", settings.HarnessID)
+		return nil, fmt.Errorf("ACP harnessId must be a stable kebab-case identifier; received %q.", settings.HarnessID) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	impl := newImplementation(settings)
 	if err := validateImplementation(impl); err != nil {
@@ -222,16 +222,16 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 			return nil, fmt.Errorf("ACP lifecycle state data is invalid: %w", err)
 		}
 		if lifecycleHarnessID != settings.HarnessID {
-			return nil, fmt.Errorf("ACP lifecycle state was produced by harness %q, but this harness is %q.", lifecycleHarnessID, settings.HarnessID)
+			return nil, fmt.Errorf("ACP lifecycle state was produced by harness %q, but this harness is %q.", lifecycleHarnessID, settings.HarnessID) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		if resumeData.ImplementationIdentity != implementationIdentity {
-			return nil, fmt.Errorf("ACP lifecycle state is incompatible with the configured implementation.")
+			return nil, fmt.Errorf("ACP lifecycle state is incompatible with the configured implementation.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		if resumeData.AuthenticationProfile != nil && resumeData.AuthenticationProfile.Digest != authProfile.Digest {
-			return nil, fmt.Errorf("ACP lifecycle state is incompatible with the configured authentication profile.")
+			return nil, fmt.Errorf("ACP lifecycle state is incompatible with the configured authentication profile.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		if coords := resumeData.Bridge; coords != nil && coords.SandboxID != "" && sandboxID != "" && coords.SandboxID != sandboxID {
-			return nil, fmt.Errorf("ACP lifecycle state belongs to sandbox %q, not %q.", coords.SandboxID, sandboxID)
+			return nil, fmt.Errorf("ACP lifecycle state belongs to sandbox %q, not %q.", coords.SandboxID, sandboxID) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 	}
 
@@ -354,7 +354,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 	var respawnStrategy *acpRespawnStrategy
 	if isResume {
 		if len(lifecycleData) == 0 {
-			return nil, fmt.Errorf("ACP lifecycle state data is missing.")
+			return nil, fmt.Errorf("ACP lifecycle state data is missing.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		coords := resumeData.Bridge
 		if coords == nil && isContinue {

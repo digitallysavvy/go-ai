@@ -53,7 +53,7 @@ func TestExperimentalEvaluate_NoSpanWithoutIntegration(t *testing.T) {
 		Model:     model,
 		State:     "hello",
 		Questions: questions,
-		ExperimentalTelemetry: &telemetry.Settings{
+		ExperimentalTelemetry: &telemetry.Options{
 			IsEnabled: telemetry.Bool(true),
 			// A per-call integration list containing only Noop, so this test
 			// is independent of whatever is globally registered.
@@ -89,7 +89,7 @@ func TestExperimentalEvaluate_ExactSpansWithIntegration(t *testing.T) {
 		Model:     model,
 		State:     "hello",
 		Questions: questions,
-		ExperimentalTelemetry: &telemetry.Settings{
+		ExperimentalTelemetry: &telemetry.Options{
 			IsEnabled:     telemetry.Bool(true),
 			RecordInputs:  true,
 			RecordOutputs: true,
@@ -210,7 +210,7 @@ func TestExperimentalEvaluate_TelemetryDispatchShape(t *testing.T) {
 	questions, model := evaluateTelemetryFixture()
 	mock := &mockEvaluateDispatchIntegration{}
 
-	settings := &telemetry.Settings{
+	settings := &telemetry.Options{
 		IsEnabled:             telemetry.Bool(true),
 		RecordInputs:          true,
 		RecordOutputs:         true,
@@ -322,7 +322,7 @@ func TestExperimentalEvaluate_TelemetryDispatchShape_Error(t *testing.T) {
 		State:      "hello",
 		Questions:  questions,
 		MaxRetries: &zero,
-		ExperimentalTelemetry: &telemetry.Settings{
+		ExperimentalTelemetry: &telemetry.Options{
 			IsEnabled:    telemetry.Bool(true),
 			Integrations: []telemetry.TelemetryIntegration{mock},
 		},

@@ -37,9 +37,9 @@ func TestOAuthTokenResponseReadIsCapped(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"access_token":"`))
-		w.Write([]byte(oversizedOAuthBody(oversized)))
-		w.Write([]byte(`","token_type":"Bearer"}`))
+		_, _ = w.Write([]byte(`{"access_token":"`))
+		_, _ = w.Write([]byte(oversizedOAuthBody(oversized)))
+		_, _ = w.Write([]byte(`","token_type":"Bearer"}`))
 	}))
 	defer srv.Close()
 

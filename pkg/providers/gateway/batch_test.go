@@ -333,7 +333,7 @@ func TestGatewayBatch_DoGetBatchResults_StreamsNDJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoGetBatchResults() error = %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	item1, err := stream.Next()
 	if err != nil {

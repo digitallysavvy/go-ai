@@ -199,7 +199,7 @@ func (m *SpeechTranslationModel) DoStream(ctx context.Context, opts *provider.Sp
 		apiKey = callAPIKey
 	}
 	if apiKey == "" {
-		return nil, errors.New("Google Generative AI API key is required for streaming translation.")
+		return nil, errors.New("Google Generative AI API key is required for streaming translation.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	wsHeaders := internalhttp.MergeHeaders(filteredBaseHeaders, filteredCallHeaders)
 

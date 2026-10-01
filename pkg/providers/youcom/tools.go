@@ -132,7 +132,7 @@ func executeYouAPI(ctx context.Context, config YouToolsConfig, endpoint endpoint
 		apiKey = os.Getenv("YDC_API_KEY")
 	}
 	if apiKey == "" {
-		return nil, errors.New("YDC_API_KEY is required. Set it in environment variables or pass it in config.")
+		return nil, errors.New("YDC_API_KEY is required. Set it in environment variables or pass it in config.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 
 	requestURL := resolveEndpointURL(config, endpoint)
@@ -168,7 +168,7 @@ func executeYouAPI(ctx context.Context, config YouToolsConfig, endpoint endpoint
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, youAPIHTTPError(endpoint, resp)
 	}
@@ -290,7 +290,7 @@ func validateSearchInput(input map[string]interface{}) error {
 	}
 	if _, hasInclude := input["include_domains"]; hasInclude {
 		if _, hasExclude := input["exclude_domains"]; hasExclude {
-			return errors.New("Cannot combine include_domains and exclude_domains")
+			return errors.New("Cannot combine include_domains and exclude_domains") //nolint:staticcheck // matches TS SDK's exact error text
 		}
 	}
 	return nil
@@ -500,7 +500,7 @@ var languageValues = []string{
 func youAPIHTTPError(endpoint endpointKind, resp *http.Response) error {
 	code := resp.StatusCode
 	if code == http.StatusTooManyRequests {
-		return errors.New("Rate limited by You.com API. Please try again later.")
+		return errors.New("Rate limited by You.com API. Please try again later.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	if endpoint == endpointContents {
 		detail := fmt.Sprintf("Failed to fetch contents. HTTP %d", code)
@@ -512,21 +512,21 @@ func youAPIHTTPError(endpoint endpointKind, resp *http.Response) error {
 		}
 		switch code {
 		case http.StatusUnauthorized:
-			return fmt.Errorf("Authentication failed: %s. Please check your You.com API key.", detail)
+			return fmt.Errorf("Authentication failed: %s. Please check your You.com API key.", detail) //nolint:staticcheck // matches TS SDK's exact error text
 		case http.StatusForbidden:
-			return fmt.Errorf("Forbidden: %s. Your API key may not have access to the Contents API.", detail)
+			return fmt.Errorf("Forbidden: %s. Your API key may not have access to the Contents API.", detail) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		if code >= 500 {
-			return fmt.Errorf("You.com API server error: %s", detail)
+			return fmt.Errorf("You.com API server error: %s", detail) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 		}
 		return errors.New(detail)
 	}
 	if code == http.StatusForbidden {
-		return errors.New("Forbidden. Please check your You.com API key.")
+		return errors.New("Forbidden. Please check your You.com API key.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	if code == http.StatusPaymentRequired {
 		if endpoint == endpointResearch {
-			return errors.New("Free tier limit exceeded. Please upgrade at: https://you.com/platform")
+			return errors.New("Free tier limit exceeded. Please upgrade at: https://you.com/platform") //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		message := "Free tier limit exceeded. Please upgrade to continue."
 		upgradeURL := "https://you.com/platform"
@@ -545,9 +545,9 @@ func youAPIHTTPError(endpoint endpointKind, resp *http.Response) error {
 		return fmt.Errorf("%s Upgrade at: %s", message, upgradeURL)
 	}
 	if endpoint == endpointResearch {
-		return fmt.Errorf("Research API request failed. Error code: %d", code)
+		return fmt.Errorf("Research API request failed. Error code: %d", code) //nolint:staticcheck // matches TS SDK's exact error text
 	}
-	return fmt.Errorf("Failed to perform search. Error code: %d", code)
+	return fmt.Errorf("Failed to perform search. Error code: %d", code) //nolint:staticcheck // matches TS SDK's exact error text
 }
 
 func checkResponseForErrors(responseData interface{}) error {
@@ -557,13 +557,13 @@ func checkResponseForErrors(responseData interface{}) error {
 	}
 	if errValue, ok := m["error"]; ok {
 		if s, ok := errValue.(string); ok {
-			return fmt.Errorf("You.com API Error: %s", s)
+			return fmt.Errorf("You.com API Error: %s", s) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 		}
 		data, err := json.Marshal(errValue)
 		if err != nil {
-			return fmt.Errorf("You.com API Error: %v", errValue)
+			return fmt.Errorf("You.com API Error: %v", errValue) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 		}
-		return fmt.Errorf("You.com API Error: %s", data)
+		return fmt.Errorf("You.com API Error: %s", data) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 	}
 	return nil
 }

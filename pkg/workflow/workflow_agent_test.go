@@ -189,7 +189,7 @@ func TestWorkflowTelemetryOptionsOverrideConstructor(t *testing.T) {
 		Tools: []types.Tool{{Name: "t1", Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
 			return "ok", nil
 		}}},
-		StopWhen: []ai.StopCondition{ai.StepCountIs(1)},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(1)},
 	})
 	if _, err := agent.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "hello", Telemetry: generateTelemetry}); err != nil {
 		t.Fatalf("generate error: %v", err)
@@ -228,7 +228,7 @@ func TestWorkflowOnStepEndTakesPrecedenceOverDeprecatedOnStepFinish(t *testing.T
 				return "ok", nil
 			},
 		}},
-		StopWhen: []ai.StopCondition{ai.StepCountIs(1)},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(1)},
 		OnStepEnd: func(context.Context, ai.OnStepFinishEvent) {
 			constructorEndCalls++
 		},
@@ -278,7 +278,7 @@ func TestWorkflowOnEndTakesPrecedenceOverDeprecatedOnFinish(t *testing.T) {
 				return "ok", nil
 			},
 		}},
-		StopWhen: []ai.StopCondition{ai.StepCountIs(1)},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(1)},
 		OnEnd: func(context.Context, ai.OnFinishEvent) {
 			constructorEndCalls++
 		},
@@ -322,7 +322,7 @@ func TestWorkflowAgentGenerateBridgesOnEndFromAgentGenerateOptions(t *testing.T)
 				return "ok", nil
 			},
 		}},
-		StopWhen: []ai.StopCondition{ai.StepCountIs(1)},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(1)},
 	})
 	if err != nil {
 		t.Fatalf("NewWorkflowAgent() error = %v", err)
@@ -1342,7 +1342,7 @@ func TestWorkflowAgentDeferredToolDiscovery(t *testing.T) {
 	wa, err := NewWorkflowAgent(WorkflowAgent{
 		Model:    model,
 		Tools:    []types.Tool{ai.ToolSearch(), deferredTool},
-		StopWhen: []ai.StopCondition{ai.StepCountIs(10)},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(10)},
 	})
 	if err != nil {
 		t.Fatalf("NewWorkflowAgent() error = %v", err)

@@ -161,7 +161,7 @@ func NewExtensionRegistry(extensions []Extension) (*ExtensionRegistry, error) {
 
 		dotIndex := strings.Index(ext.ID, ".")
 		if dotIndex <= 0 {
-			return nil, fmt.Errorf("Open Responses extension ID %s must use <implementor>.<extension> format.", ext.ID)
+			return nil, fmt.Errorf("Open Responses extension ID %s must use <implementor>.<extension> format.", ext.ID) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		namespace := ext.ID[:dotIndex]
 
@@ -172,10 +172,10 @@ func NewExtensionRegistry(extensions []Extension) (*ExtensionRegistry, error) {
 		hasToolType := ext.ToolType != ""
 		hasToolEncoder := ext.EncodeTool != nil
 		if hasToolType != hasToolEncoder {
-			return nil, fmt.Errorf("Open Responses extension %s must provide toolType and encodeTool together.", ext.ID)
+			return nil, fmt.Errorf("Open Responses extension %s must provide toolType and encodeTool together.", ext.ID) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		if ext.EncodeToolChoice != nil && !hasToolEncoder {
-			return nil, fmt.Errorf("Open Responses extension %s cannot provide encodeToolChoice without toolType and encodeTool.", ext.ID)
+			return nil, fmt.Errorf("Open Responses extension %s cannot provide encodeToolChoice without toolType and encodeTool.", ext.ID) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		if hasToolType && hasToolEncoder {
 			if err := assertNamespacedExtensionType(ext.ID, namespace, ext.ToolType, "toolType"); err != nil {
@@ -198,14 +198,14 @@ func NewExtensionRegistry(extensions []Extension) (*ExtensionRegistry, error) {
 		itemTypesProvided := ext.ItemTypes != nil
 		hasItemDecoder := ext.DecodeItem != nil
 		if itemTypesProvided != hasItemDecoder {
-			return nil, fmt.Errorf("Open Responses extension %s must provide itemTypes and decodeItem together.", ext.ID)
+			return nil, fmt.Errorf("Open Responses extension %s must provide itemTypes and decodeItem together.", ext.ID) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		if ext.EncodeInputItem != nil && !hasItemDecoder {
-			return nil, fmt.Errorf("Open Responses extension %s cannot provide encodeInputItem without itemTypes and decodeItem.", ext.ID)
+			return nil, fmt.Errorf("Open Responses extension %s cannot provide encodeInputItem without itemTypes and decodeItem.", ext.ID) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		if itemTypesProvided && hasItemDecoder {
 			if len(ext.ItemTypes) == 0 {
-				return nil, fmt.Errorf("Open Responses extension %s must register at least one item type.", ext.ID)
+				return nil, fmt.Errorf("Open Responses extension %s must register at least one item type.", ext.ID) //nolint:staticcheck // matches TS SDK's exact error text
 			}
 			for _, itemType := range ext.ItemTypes {
 				if err := assertNamespacedExtensionType(ext.ID, namespace, itemType, "itemTypes"); err != nil {
@@ -220,11 +220,11 @@ func NewExtensionRegistry(extensions []Extension) (*ExtensionRegistry, error) {
 		eventTypesProvided := ext.EventTypes != nil
 		hasEventDecoder := ext.DecodeEvent != nil
 		if eventTypesProvided != hasEventDecoder {
-			return nil, fmt.Errorf("Open Responses extension %s must provide eventTypes and decodeEvent together.", ext.ID)
+			return nil, fmt.Errorf("Open Responses extension %s must provide eventTypes and decodeEvent together.", ext.ID) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		if eventTypesProvided && hasEventDecoder {
 			if len(ext.EventTypes) == 0 {
-				return nil, fmt.Errorf("Open Responses extension %s must register at least one event type.", ext.ID)
+				return nil, fmt.Errorf("Open Responses extension %s must register at least one event type.", ext.ID) //nolint:staticcheck // matches TS SDK's exact error text
 			}
 			for _, eventType := range ext.EventTypes {
 				if err := assertNamespacedExtensionType(ext.ID, namespace, eventType, "eventTypes"); err != nil {
@@ -237,7 +237,7 @@ func NewExtensionRegistry(extensions []Extension) (*ExtensionRegistry, error) {
 		}
 
 		if !hasToolEncoder && !hasItemDecoder && !hasEventDecoder {
-			return nil, fmt.Errorf("Open Responses extension %s must register a tool, item, or event capability.", ext.ID)
+			return nil, fmt.Errorf("Open Responses extension %s must register a tool, item, or event capability.", ext.ID) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 	}
 
@@ -247,14 +247,14 @@ func NewExtensionRegistry(extensions []Extension) (*ExtensionRegistry, error) {
 func assertNamespacedExtensionType(extensionID, namespace, wireType, field string) error {
 	colonIndex := strings.Index(wireType, ":")
 	if colonIndex < 0 || wireType[:colonIndex] != namespace {
-		return fmt.Errorf("Open Responses extension %s has invalid %s value %s. Extension wire types must use the %s: namespace.", extensionID, field, wireType, namespace)
+		return fmt.Errorf("Open Responses extension %s has invalid %s value %s. Extension wire types must use the %s: namespace.", extensionID, field, wireType, namespace) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	return nil
 }
 
 func registerUniqueExtension(m map[string]*Extension, key string, ext *Extension, field string) error {
 	if existing, ok := m[key]; ok {
-		return fmt.Errorf("Open Responses extension %s cannot register %s %s because it is already registered by %s.", ext.ID, field, key, existing.ID)
+		return fmt.Errorf("Open Responses extension %s cannot register %s %s because it is already registered by %s.", ext.ID, field, key, existing.ID) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	m[key] = ext
 	return nil

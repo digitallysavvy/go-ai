@@ -128,10 +128,6 @@ func newLiveTranscriptionTestServer(t *testing.T) *liveTranscriptionTestServer {
 	return s
 }
 
-func (s *liveTranscriptionTestServer) wsURL() string {
-	return "ws" + strings.TrimPrefix(s.ts.URL, "http")
-}
-
 func (s *liveTranscriptionTestServer) close() {
 	close(s.toSend)
 	s.ts.Close()
@@ -257,10 +253,10 @@ func TestTranscriptionModel_DoStream_RejectsNon16kHzPCM(t *testing.T) {
 
 func TestTranscriptionModel_DoStream_RequiresAPIKey(t *testing.T) {
 	old, hadOld := os.LookupEnv("GOOGLE_GENERATIVE_AI_API_KEY")
-	os.Unsetenv("GOOGLE_GENERATIVE_AI_API_KEY")
+	_ = os.Unsetenv("GOOGLE_GENERATIVE_AI_API_KEY")
 	defer func() {
 		if hadOld {
-			os.Setenv("GOOGLE_GENERATIVE_AI_API_KEY", old)
+			_ = os.Setenv("GOOGLE_GENERATIVE_AI_API_KEY", old)
 		}
 	}()
 

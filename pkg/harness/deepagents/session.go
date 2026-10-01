@@ -69,12 +69,11 @@ type promptControl struct {
 	channel    *bridge.Channel
 	checkpoint *bridge.CheckpointRecorder
 
-	mu        sync.Mutex
-	settled   bool
-	err       error
-	done      chan struct{}
-	unsub     []func()
-	onceClose sync.Once
+	mu      sync.Mutex
+	settled bool
+	err     error
+	done    chan struct{}
+	unsub   []func()
 }
 
 func (c *promptControl) settleSuccess() {
@@ -189,7 +188,7 @@ func wireTurn(ctx context.Context, channel *bridge.Channel, emit harness.EmitFun
 			c.settleSuccess()
 			return
 		}
-		c.settleError(errors.New("deepagents bridge closed before the turn finished."))
+		c.settleError(errors.New("deepagents bridge closed before the turn finished.")) //nolint:staticcheck // matches TS SDK's exact error text
 	})
 
 	go func() {
@@ -258,7 +257,7 @@ func (s *session) DoSuspendTurn(ctx context.Context) (*harness.ContinueTurnState
 	s.mu.Lock()
 	if s.stopped {
 		s.mu.Unlock()
-		return nil, fmt.Errorf("deepagents session %s is stopped; cannot suspend.", s.p.sessionID)
+		return nil, fmt.Errorf("deepagents session %s is stopped; cannot suspend.", s.p.sessionID) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	s.stopped = true
 	s.mu.Unlock()
@@ -277,7 +276,7 @@ func (s *session) DoDetach(ctx context.Context) (*harness.ResumeSessionState, er
 	s.mu.Lock()
 	if s.stopped {
 		s.mu.Unlock()
-		return nil, fmt.Errorf("deepagents session %s is already stopped; cannot detach.", s.p.sessionID)
+		return nil, fmt.Errorf("deepagents session %s is already stopped; cannot detach.", s.p.sessionID) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	s.stopped = true
 	s.mu.Unlock()
@@ -296,7 +295,7 @@ func (s *session) DoStop(ctx context.Context) (*harness.ResumeSessionState, erro
 	s.mu.Lock()
 	if s.stopped {
 		s.mu.Unlock()
-		return nil, fmt.Errorf("deepagents session %s is already stopped; cannot stop.", s.p.sessionID)
+		return nil, fmt.Errorf("deepagents session %s is already stopped; cannot stop.", s.p.sessionID) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	s.stopped = true
 	s.mu.Unlock()

@@ -221,7 +221,7 @@ func runInSandbox(ctx context.Context, policy resolvedPolicy, drive func(jsCtx *
 			return
 		}
 		defer func() {
-			defer func() { recover() }()
+			defer func() { _ = recover() }()
 			rt.Close()
 		}()
 

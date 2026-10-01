@@ -67,8 +67,8 @@ func solveProblem(ctx context.Context, model provider.LanguageModel, problem str
 Solve the problem step by step, using the tools as needed.
 Show your work and explain your reasoning.`,
 		Tools:    tools,
-		StopWhen: []ai.StopCondition{ai.StepCountIs(10)},
-		OnStepFinish: func(ctx context.Context, step types.StepResult, userContext interface{}) {
+		StopWhen: []ai.StopCondition{ai.IsStepCount(10)},
+		OnStepEnd: func(ctx context.Context, step types.StepResult, userContext interface{}) {
 			stepNum++
 			fmt.Printf("  Step %d:\n", stepNum)
 

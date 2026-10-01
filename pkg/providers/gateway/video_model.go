@@ -532,11 +532,6 @@ func (m *VideoModel) getModelConfigHeaders() map[string]string {
 	}
 }
 
-// handleError converts errors to appropriate provider errors
-func (m *VideoModel) handleError(err error) error {
-	return m.handleErrorWithContext(context.Background(), err)
-}
-
 func (m *VideoModel) handleErrorWithContext(ctx context.Context, err error) error {
 	if err == nil {
 		return nil

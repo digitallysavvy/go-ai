@@ -331,7 +331,7 @@ func encodeURIComponent(s string) string {
 		if isURIComponentUnreserved(c) {
 			b.WriteByte(c)
 		} else {
-			fmt.Fprintf(&b, "%%%02X", c)
+			_, _ = fmt.Fprintf(&b, "%%%02X", c)
 		}
 	}
 	return b.String()

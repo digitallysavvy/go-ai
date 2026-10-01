@@ -1583,9 +1583,15 @@ func convertAssistantContent(parts []types.ContentPart) LangChainMessage {
 		case types.TextContent:
 			textParts = append(textParts, p.Text)
 		case types.ToolCallContent:
-			args := interface{}(p.Arguments)
-			if args == nil {
+			// Compare the concrete map (not an interface{} wrapping it,
+			// which would never compare equal to nil even when the
+			// underlying map is nil) so the parseArgs(p.Input) fallback
+			// actually runs for tool calls without parsed Arguments.
+			var args interface{}
+			if p.Arguments == nil {
 				args = parseArgs(p.Input)
+			} else {
+				args = p.Arguments
 			}
 			toolCalls = append(toolCalls, map[string]interface{}{
 				"id":   p.ToolCallID,

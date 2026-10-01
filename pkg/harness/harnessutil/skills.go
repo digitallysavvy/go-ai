@@ -125,7 +125,7 @@ func WriteSkills(ctx context.Context, opts WriteSkillsOptions) (*WriteSkillsResu
 	posixpath.SortFunc(projected, func(p projectedSkill) string { return p.name })
 	for i := 1; i < len(projected); i++ {
 		if projected[i-1].name == projected[i].name {
-			return nil, fmt.Errorf("Duplicate skill name: %s", projected[i].name)
+			return nil, fmt.Errorf("Duplicate skill name: %s", projected[i].name) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 	}
 
@@ -223,7 +223,7 @@ func WriteSkills(ctx context.Context, opts WriteSkillsOptions) (*WriteSkillsResu
 			return nil, err
 		}
 		if result.ExitCode != 0 {
-			return nil, fmt.Errorf("Cannot write harness skill '%s': %s already exists and is not owned by the AI SDK harness.", name, skillDir)
+			return nil, fmt.Errorf("Cannot write harness skill '%s': %s already exists and is not owned by the AI SDK harness.", name, skillDir) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 	}
 
@@ -345,7 +345,7 @@ func readSkillsManifest(ctx context.Context, sandbox providerutils.SandboxSessio
 	if content == nil {
 		return nil, nil
 	}
-	invalid := fmt.Errorf("Invalid AI SDK harness skills manifest: %s", manifestPath)
+	invalid := fmt.Errorf("Invalid AI SDK harness skills manifest: %s", manifestPath) //nolint:staticcheck // matches TS SDK's exact error text
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(*content), &raw); err != nil || raw == nil {
 		return nil, invalid
@@ -452,12 +452,12 @@ func runSandboxCommand(ctx context.Context, sandbox providerutils.SandboxSession
 // normalized path without trailing slashes.
 func validateHomeRelativePath(homePath, rel, label string, extraInvalid bool) (string, error) {
 	if strings.TrimSpace(homePath) == "" {
-		return "", fmt.Errorf("Invalid homePath: expected a non-empty string.")
+		return "", fmt.Errorf("Invalid homePath: expected a non-empty string.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	if !posixpath.IsAbs(homePath) {
-		return "", fmt.Errorf("Invalid homePath %s: expected an absolute POSIX path.", jsonString(homePath))
+		return "", fmt.Errorf("Invalid homePath %s: expected an absolute POSIX path.", jsonString(homePath)) //nolint:staticcheck // matches TS SDK's exact error text
 	}
-	invalid := fmt.Errorf("Invalid %s %s: expected a relative POSIX path without traversal.", label, jsonString(rel))
+	invalid := fmt.Errorf("Invalid %s %s: expected a relative POSIX path without traversal.", label, jsonString(rel)) //nolint:staticcheck // matches TS SDK's exact error text
 	if strings.TrimSpace(rel) == "" {
 		return "", invalid
 	}

@@ -221,7 +221,7 @@ func jsEncodeURIComponent(s string) string {
 		if isJSURIUnreservedByte(c) {
 			b.WriteByte(c)
 		} else {
-			fmt.Fprintf(&b, "%%%02X", c)
+			_, _ = fmt.Fprintf(&b, "%%%02X", c)
 		}
 	}
 	return b.String()
@@ -252,7 +252,7 @@ func awsDoubleEncodeURIPath(raw string) string {
 		if c == '/' || isAWSURIUnreservedByte(c) {
 			b.WriteByte(c)
 		} else {
-			fmt.Fprintf(&b, "%%%02X", c)
+			_, _ = fmt.Fprintf(&b, "%%%02X", c)
 		}
 	}
 	return b.String()

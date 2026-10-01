@@ -98,16 +98,16 @@ func RefreshOAuthAccessToken(ctx context.Context, opts RefreshOAuthAccessTokenOp
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, fmt.Errorf("OAuth access token refresh failed with status %d.", resp.StatusCode)
+		return nil, fmt.Errorf("OAuth access token refresh failed with status %d.", resp.StatusCode) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 
 	var parsed map[string]any
 	if err := json.Unmarshal(responseText, &parsed); err != nil || parsed == nil {
-		return nil, errors.New("OAuth access token refresh returned invalid JSON.")
+		return nil, errors.New("OAuth access token refresh returned invalid JSON.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	accessToken, _ := parsed["access_token"].(string)
 	if accessToken == "" {
-		return nil, errors.New("OAuth access token refresh response is missing access_token.")
+		return nil, errors.New("OAuth access token refresh response is missing access_token.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 
 	var expiresAt int64
@@ -116,14 +116,14 @@ func RefreshOAuthAccessToken(ctx context.Context, opts RefreshOAuthAccessTokenOp
 	} else if jwtExpiresAt, ok := subscription.GetJWTExpiresAt(accessToken); ok {
 		expiresAt = jwtExpiresAt
 	} else {
-		return nil, errors.New("OAuth access token refresh response does not include a usable expiry.")
+		return nil, errors.New("OAuth access token refresh response does not include a usable expiry.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 
 	result := &RefreshOAuthAccessTokenResult{AccessToken: accessToken, ExpiresAt: expiresAt}
 	if rotated, present := parsed["refresh_token"]; present && rotated != nil {
 		s, ok := rotated.(string)
 		if !ok || s == "" {
-			return nil, errors.New("OAuth access token refresh response contains an invalid refresh_token.")
+			return nil, errors.New("OAuth access token refresh response contains an invalid refresh_token.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		result.RefreshToken = s
 	}

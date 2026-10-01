@@ -55,7 +55,7 @@ func CreateTextStreamResponseFromStream(ctx context.Context, stream provider.Tex
 	}
 	pr, pw := io.Pipe()
 	go func() {
-		defer pw.Close()
+		defer func() { _ = pw.Close() }()
 		_ = PipeTextStreamToWriter(ctx, stream, pw)
 	}()
 	return &http.Response{

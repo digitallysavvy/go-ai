@@ -60,7 +60,7 @@ var (
 
 func (m *XAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.ClientSecretOptions) (provider.ClientSecretResult, error) {
 	if m.provider.config.APIKey == "" {
-		return provider.ClientSecretResult{}, fmt.Errorf("xAI API key API key is missing. Pass it using the 'apiKey' parameter or the XAI_API_KEY environment variable.")
+		return provider.ClientSecretResult{}, fmt.Errorf("xAI API key API key is missing. Pass it using the 'apiKey' parameter or the XAI_API_KEY environment variable.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	body := map[string]interface{}{}
 	if opts.ExpiresAfterSeconds != nil {

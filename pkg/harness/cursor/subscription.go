@@ -83,7 +83,7 @@ func ReadSubscription(ctx context.Context, opts ReadSubscriptionOptions) (string
 	}
 	if expiresAt, ok := subscription.GetJWTExpiresAt(accessToken); ok {
 		if harnessutil.IsAccessTokenExpiringSoon(expiresAt, time.Now().UnixMilli(), 0) {
-			return "", errors.New("Cursor subscription access token is expiring soon. Run Cursor login again.")
+			return "", errors.New("Cursor subscription access token is expiring soon. Run Cursor login again.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
 	}
 	return accessToken, nil

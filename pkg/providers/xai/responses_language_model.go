@@ -1656,7 +1656,7 @@ func (s *xaiResponsesStream) handleOutputItemDone(e responses.OutputItemDoneEven
 			resultChunk = types.ToolResult{
 				ToolCallID: item.ID,
 				ToolName:   "xai.image_generation",
-				Error:      fmt.Errorf("Image generation failed (status: %s).", item.Status),
+				Error:      fmt.Errorf("Image generation failed (status: %s).", item.Status), //nolint:staticcheck // matches TS SDK's exact error text
 			}
 		}
 		s.flushQueue = append(s.flushQueue,

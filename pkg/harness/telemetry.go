@@ -112,14 +112,14 @@ func filterIncludedContext(contextValue interface{}, include map[string]bool) ma
 	return out
 }
 
-func telemetryRuntimeContext(settings *telemetry.Settings, contextValue interface{}) map[string]interface{} {
+func telemetryRuntimeContext(settings *telemetry.Options, contextValue interface{}) map[string]interface{} {
 	if settings == nil {
 		return nil
 	}
 	return filterIncludedContext(contextValue, settings.IncludeRuntimeContext)
 }
 
-func telemetryToolsContext(settings *telemetry.Settings, toolsContext map[string]interface{}) map[string]interface{} {
+func telemetryToolsContext(settings *telemetry.Options, toolsContext map[string]interface{}) map[string]interface{} {
 	if settings == nil || len(settings.IncludeToolsContext) == 0 || len(toolsContext) == 0 {
 		return nil
 	}
@@ -132,7 +132,7 @@ func telemetryToolsContext(settings *telemetry.Settings, toolsContext map[string
 	return out
 }
 
-func telemetryToolContext(settings *telemetry.Settings, toolName string, toolContext interface{}) map[string]interface{} {
+func telemetryToolContext(settings *telemetry.Options, toolName string, toolContext interface{}) map[string]interface{} {
 	if settings == nil {
 		return nil
 	}

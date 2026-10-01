@@ -366,14 +366,14 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 				if !wsutil.IsCleanClose(res.Err) {
 					// An abnormal disconnection (TS onSocketError) always
 					// fails the stream.
-					fail(errors.New("Google Live translation error"))
+					fail(errors.New("Google Live translation error")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 				} else if finishTimer != nil {
 					// A close while a finish is pending confirms that no
 					// further turn activity follows (TS onClose's
 					// `finishTimer != null` branch).
 					finish()
 				} else {
-					fail(errors.New("Google Live translation WebSocket closed unexpectedly before finishing."))
+					fail(errors.New("Google Live translation WebSocket closed unexpectedly before finishing.")) //nolint:staticcheck // matches TS SDK's exact error text
 				}
 				return
 			}

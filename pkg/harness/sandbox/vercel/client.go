@@ -460,7 +460,7 @@ func pathEscape(s string) string {
 			b.WriteByte(c)
 			continue
 		}
-		fmt.Fprintf(&b, "%%%02X", c)
+		_, _ = fmt.Fprintf(&b, "%%%02X", c)
 	}
 	return b.String()
 }

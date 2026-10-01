@@ -68,7 +68,7 @@ func (c *httpPolicyClient) Evaluate(ctx context.Context, policyPath string, inpu
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := fileutil.ReadResponseWithSizeLimit(resp, c.evaluateURL(policyPath), maxPolicyResponseBytes)
 	if err != nil {
 		return nil, err

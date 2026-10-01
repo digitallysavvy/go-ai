@@ -11,7 +11,11 @@ import (
 
 type ToolApprovalStatus = types.ToolApprovalStatus
 type ToolApprovalResult = types.ToolApprovalResult
-type ToolApprovalFunc = types.ToolApprovalFunc
+
+// ToolApprovalFunc re-exports the deprecated types.ToolApprovalFunc so
+// ai.ToolApprovalFunc remains valid for existing callers of this package's
+// own (equally deprecated, for the same reason) exported alias.
+type ToolApprovalFunc = types.ToolApprovalFunc //nolint:staticcheck
 type ToolApprovalValue = types.ToolApprovalValue
 type ToolApprovalConfig = types.ToolApprovalConfig
 
@@ -79,7 +83,7 @@ func resolveToolApproval(
 				RuntimeContext: runtimeCtx,
 				Messages:       messages,
 			})), nil
-		case types.ToolApprovalFunc:
+		case types.ToolApprovalFunc: //nolint:staticcheck // legacy function type still accepted for backward compatibility
 			return normalizeToolApprovalResult(v(call, tools, messages, runtimeCtx, toolsCtx)), nil
 		case map[string]interface{}:
 			if value, ok := v[call.ToolName]; ok {
@@ -121,7 +125,7 @@ func resolveToolApproval(
 			return types.ToolApprovalResult{Status: types.ToolApprovalStatusUserApproval}, nil
 		}
 		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}, nil
-	case types.NeedsApprovalFunc:
+	case types.NeedsApprovalFunc: //nolint:staticcheck // legacy function type still accepted for backward compatibility
 		if _, err := validateToolContextFor(tool, call.ToolName, toolsCtx[tool.Name]); err != nil {
 			return types.ToolApprovalResult{}, err
 		}
@@ -176,7 +180,7 @@ func normalizePerToolApprovalValue(
 			RuntimeContext: runtimeCtx,
 			Messages:       messages,
 		})), nil
-	case types.ToolApprovalFunc:
+	case types.ToolApprovalFunc: //nolint:staticcheck // legacy function type still accepted for backward compatibility
 		return normalizeToolApprovalResult(fn(call, tools, messages, runtimeCtx, toolsCtx)), nil
 	case types.ToolApprovalStatus:
 		return normalizeToolApprovalResult(fn), nil
@@ -201,10 +205,6 @@ func validateToolContextFor(tool *types.Tool, toolName string, ctxValue interfac
 		)
 	}
 	return normalized, nil
-}
-
-func strPtr(s string) *string {
-	return &s
 }
 
 func mergeProviderMetadataMaps(primary, fallback map[string]interface{}) map[string]interface{} {

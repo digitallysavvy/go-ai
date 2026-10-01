@@ -340,12 +340,13 @@ func TestAgent_SimpleTextTurn(t *testing.T) {
 	if len(result.Steps) != 1 {
 		t.Fatalf("Steps = %d, want 1", len(result.Steps))
 	}
-	if got := *result.TotalUsage.TotalTokens; got != 8 {
+	// Verifies the harness-constructed GenerateTextResult's TotalUsage
+	// (not Usage, which this package sets to only the final step's usage;
+	// see streamResultToGenerateResult) carries the FinishPart's usage.
+	if got := *result.TotalUsage.TotalTokens; got != 8 { //nolint:staticcheck
 		t.Fatalf("TotalUsage.TotalTokens = %d, want 8", got)
 	}
-	if !session.HasUnfinishedTurn() == false {
-		// turn should be idle (finished) afterward
-	}
+	// Turn should be idle (finished) afterward.
 	if session.HasUnfinishedTurn() {
 		t.Fatalf("session should be idle after a finished turn")
 	}
@@ -378,7 +379,10 @@ func TestAgent_TotalUsageOverridesLocalSum(t *testing.T) {
 	if len(result.Steps) != 2 {
 		t.Fatalf("Steps = %d, want 2 (no phantom step for the terminal boundary)", len(result.Steps))
 	}
-	if got := *result.TotalUsage.TotalTokens; got != 100 {
+	// Verifies the harness-constructed GenerateTextResult's TotalUsage
+	// (not Usage, which this package sets to only the final step's usage;
+	// see streamResultToGenerateResult) carries the bridge's override.
+	if got := *result.TotalUsage.TotalTokens; got != 100 { //nolint:staticcheck
 		t.Fatalf("TotalUsage.TotalTokens = %d, want 100 (overridden, not summed to 4)", got)
 	}
 }
@@ -613,7 +617,7 @@ func TestAgent_CallerCancelSettlesWithAbortNotError(t *testing.T) {
 	// Deliberately a fresh, non-cancelled ctx: reading back the already-
 	// buffered result (e.g. to finish writing an HTTP response) happens on
 	// its own live ctx, independent of the generation ctx that aborted.
-	uiChunks, errs := result.ToUIMessageStream(context.Background())
+	uiChunks, errs := ai.ToUIMessageStream(context.Background(), result.Stream())
 	var chunkTypes []string
 	for c := range uiChunks {
 		if ty, ok := c["type"].(string); ok {
@@ -674,7 +678,7 @@ func TestAgent_WireErrorWithoutCancelStaysAnError(t *testing.T) {
 		t.Fatal("Err() = nil, want a non-nil error")
 	}
 
-	uiChunks, _ := result.ToUIMessageStream(context.Background())
+	uiChunks, _ := ai.ToUIMessageStream(context.Background(), result.Stream())
 	sawAbort, sawError := false, false
 	for c := range uiChunks {
 		switch c["type"] {
@@ -1095,7 +1099,7 @@ func TestAgent_StopWhenReleasesCheckpointPinOnAbort(t *testing.T) {
 	// Drain the result to force the turn to fully settle before inspecting
 	// the mock control's counters, exactly like
 	// TestAgent_CallerCancelSettlesWithAbortNotError.
-	uiChunks, errs := result.ToUIMessageStream(context.Background())
+	uiChunks, errs := ai.ToUIMessageStream(context.Background(), result.Stream())
 	for range uiChunks {
 	}
 	<-errs
@@ -1812,7 +1816,7 @@ func TestAgent_ConcurrentStream_SecondCallerRejected(t *testing.T) {
 
 	// Drain the surviving stream so its turn settles cleanly instead of
 	// leaking the driver goroutine past the end of the test.
-	stream := succeeded[0].res.FullStream()
+	stream := succeeded[0].res.Stream()
 	for {
 		if _, err := stream.Next(); err != nil {
 			break

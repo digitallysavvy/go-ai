@@ -42,8 +42,8 @@ type pendingUserMessage struct {
 
 // Errors reported by the submitter.
 var (
-	ErrUserMessagesClosed  = errors.New("The bridge turn is no longer accepting user messages.")
-	ErrUserMessageTurnDone = errors.New("The bridge turn ended before accepting the user message.")
+	ErrUserMessagesClosed  = errors.New("The bridge turn is no longer accepting user messages.")    //nolint:staticcheck // matches TS SDK's exact error text
+	ErrUserMessageTurnDone = errors.New("The bridge turn ended before accepting the user message.") //nolint:staticcheck // matches TS SDK's exact error text
 )
 
 // NewExperimentalUserMessageSubmitter subscribes to responses and reconnects.

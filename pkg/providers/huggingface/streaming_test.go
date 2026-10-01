@@ -80,7 +80,7 @@ func TestDoStreamTextDeltas(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoStream: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	chunks := collectChunks(t, stream)
 
 	wantTypes := []provider.ChunkType{
@@ -133,7 +133,7 @@ func TestDoStreamWithoutUsage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoStream: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	chunks := collectChunks(t, stream)
 	finish := findChunk(chunks, provider.ChunkTypeFinish)
 	if finish == nil {
@@ -156,7 +156,7 @@ func TestDoStreamNonMessageItemTypes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoStream: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	chunks := collectChunks(t, stream)
 	if len(chunks) != 2 || chunks[0].Type != provider.ChunkTypeStreamStart || chunks[1].Type != provider.ChunkTypeFinish {
 		types := make([]provider.ChunkType, len(chunks))
@@ -178,7 +178,7 @@ func TestDoStreamMalformedJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoStream: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	chunks := collectChunks(t, stream)
 	errChunk := findChunk(chunks, provider.ChunkTypeError)
 	if errChunk == nil {
@@ -223,7 +223,7 @@ func TestDoStreamPreservesStreamErrors(t *testing.T) {
 			if err != nil {
 				t.Fatalf("DoStream: %v", err)
 			}
-			defer stream.Close()
+			defer func() { _ = stream.Close() }()
 			chunks := collectChunks(t, stream)
 
 			errChunk := findChunk(chunks, provider.ChunkTypeError)
@@ -266,7 +266,7 @@ func TestDoStreamRequestBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoStream: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	_ = collectChunks(t, stream)
 
 	want := map[string]interface{}{
@@ -295,7 +295,7 @@ func TestDoStreamToolCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoStream: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	chunks := collectChunks(t, stream)
 
 	wantTypes := []provider.ChunkType{
@@ -348,7 +348,7 @@ func TestDoStreamReasoningContent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoStream: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	chunks := collectChunks(t, stream)
 
 	wantTypes := []provider.ChunkType{

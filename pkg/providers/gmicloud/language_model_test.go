@@ -96,7 +96,7 @@ func TestDoGenerateAndDoStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoStream() error = %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	var sawText, sawFinish bool
 	for {

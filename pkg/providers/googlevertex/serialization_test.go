@@ -41,7 +41,7 @@ func TestVertexSerializeAndDeserializeModel(t *testing.T) {
 		t.Fatalf("access token must be omitted from serializable config: %#v", serialized.Config)
 	}
 
-	restored, err := deserializeModel(serialized)
+	_, err = deserializeModel(serialized)
 	if err == nil {
 		t.Fatal("expected deserializeModel() to fail because serialized config omits auth tokens")
 	}
@@ -57,7 +57,7 @@ func TestVertexSerializeAndDeserializeModel(t *testing.T) {
 		},
 	}
 
-	restored, err = deserializeModel(manual)
+	restored, err := deserializeModel(manual)
 	if err != nil {
 		t.Fatalf("deserializeModel(manual) error = %v", err)
 	}

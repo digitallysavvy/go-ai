@@ -13,7 +13,7 @@ import (
 // `resolveACPProviderAuthentication` when AI Gateway mode was explicitly
 // selected (or forced by an incompatibility check upstream) but no gateway
 // credential is available.
-var errGatewayCredentialMissing = errors.New("AI Gateway authentication was selected, but neither AI_GATEWAY_API_KEY nor VERCEL_OIDC_TOKEN is set.")
+var errGatewayCredentialMissing = errors.New("AI Gateway authentication was selected, but neither AI_GATEWAY_API_KEY nor VERCEL_OIDC_TOKEN is set.") //nolint:staticcheck // matches TS SDK's exact error text
 
 const defaultAIGatewayBaseURL = "https://ai-gateway.vercel.sh"
 

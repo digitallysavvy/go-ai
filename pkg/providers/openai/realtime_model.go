@@ -117,7 +117,7 @@ var (
 
 func (m *OpenAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.ClientSecretOptions) (provider.ClientSecretResult, error) {
 	if m.provider.config.APIKey == "" {
-		return provider.ClientSecretResult{}, fmt.Errorf("OpenAI API key is missing. Pass it using the 'apiKey' parameter or the OPENAI_API_KEY environment variable.")
+		return provider.ClientSecretResult{}, fmt.Errorf("OpenAI API key is missing. Pass it using the 'apiKey' parameter or the OPENAI_API_KEY environment variable.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	session := map[string]interface{}{"type": "realtime", "model": m.modelID}
 	if opts.SessionConfig != nil {

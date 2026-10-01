@@ -29,7 +29,7 @@ import (
 func drainRunPrompt(t *testing.T, out *runPromptOutput) []provider.StreamChunk {
 	t.Helper()
 	var chunks []provider.StreamChunk
-	stream := out.Result.FullStream()
+	stream := out.Result.Stream()
 	for {
 		c, err := stream.Next()
 		if err != nil {

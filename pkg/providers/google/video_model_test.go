@@ -10,10 +10,9 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
 
-// floatPtr and intPtr are small test helpers shared across the google
-// package's test files.
-func floatPtr(f float64) *float64 { return &f }
-func intPtr(i int) *int           { return &i }
+// intPtr is a small test helper shared across the google package's test
+// files.
+func intPtr(i int) *int { return &i }
 
 // newTestVideoServer builds a Provider + httptest server that handles the
 // predictLongRunning submission and the operation status GET, mirroring

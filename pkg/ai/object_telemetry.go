@@ -39,7 +39,7 @@ func fireObjectStepStart(
 	operationType, callID string,
 	model provider.LanguageModel,
 	genOpts *provider.GenerateOptions,
-	settings *telemetry.Settings,
+	settings *telemetry.Options,
 ) objectTelemetryStep {
 	stepCtx := telemetry.FireOnStepStart(ctx, telemetry.TelemetryStepStartEvent{
 		CallID:         callID,
@@ -75,7 +75,7 @@ func fireObjectStepStart(
 func fireObjectLanguageModelCallEnd(
 	step objectTelemetryStep,
 	model provider.LanguageModel,
-	settings *telemetry.Settings,
+	settings *telemetry.Options,
 	finishReason types.FinishReason,
 	usage types.Usage,
 	content []types.ContentPart,
@@ -103,7 +103,7 @@ func fireObjectLanguageModelCallEnd(
 // fireObjectLanguageModelCallEnd will ever run for this step (H4 item 2:
 // "span leak on provider error"). Pass a non-nil err to record an error
 // status on the closed span; nil just closes it (abort).
-func fireObjectStepError(step objectTelemetryStep, settings *telemetry.Settings, err error) {
+func fireObjectStepError(step objectTelemetryStep, settings *telemetry.Options, err error) {
 	telemetry.FireOnStepError(step.modelCallCtx, telemetry.TelemetryErrorEvent{
 		Settings: settings,
 		CallID:   step.callID,
@@ -124,7 +124,7 @@ func fireObjectStepError(step objectTelemetryStep, settings *telemetry.Settings,
 func fireObjectStepEnd(
 	step objectTelemetryStep,
 	operationType string,
-	settings *telemetry.Settings,
+	settings *telemetry.Options,
 	finishReason types.FinishReason,
 	usage types.Usage,
 	objectText string,

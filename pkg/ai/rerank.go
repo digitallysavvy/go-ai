@@ -503,7 +503,7 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 			opts.ExperimentalOnFinish(finishEvent)
 		}
 	}
-	telemetry.FireOnFinish(ctx, telemetry.TelemetryFinishEvent{
+	telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
 		CallID:        callID,
 		OperationType: "ai.rerank",
 		Settings:      opts.ExperimentalTelemetry,

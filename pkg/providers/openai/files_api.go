@@ -278,7 +278,7 @@ func (f *FilesAPI) DeleteFile(ctx context.Context, opts provider.DeleteFileOptio
 func openAIFileID(file types.ProviderReference) (string, error) {
 	fileID, ok := file["openai"]
 	if !ok || strings.TrimSpace(fileID) == "" {
-		return "", fmt.Errorf("file reference is missing an 'openai' file id.")
+		return "", fmt.Errorf("file reference is missing an 'openai' file id.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	return fileID, nil
 }

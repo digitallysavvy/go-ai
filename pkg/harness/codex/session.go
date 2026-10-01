@@ -224,7 +224,7 @@ func (s *session) DoDetach(ctx context.Context) (*harness.ResumeSessionState, er
 	s.mu.Lock()
 	if s.stopped {
 		s.mu.Unlock()
-		return nil, fmt.Errorf("codex session %s is already stopped; cannot detach.", s.opts.sessionID)
+		return nil, fmt.Errorf("codex session %s is already stopped; cannot detach.", s.opts.sessionID) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	s.stopped = true
 	s.mu.Unlock()
@@ -236,7 +236,7 @@ func (s *session) DoSuspendTurn(ctx context.Context) (*harness.ContinueTurnState
 	s.mu.Lock()
 	if s.stopped {
 		s.mu.Unlock()
-		return nil, fmt.Errorf("codex session %s is stopped; cannot suspend.", s.opts.sessionID)
+		return nil, fmt.Errorf("codex session %s is stopped; cannot suspend.", s.opts.sessionID) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	s.stopped = true
 	s.mu.Unlock()
@@ -279,7 +279,7 @@ func (s *session) DoStop(ctx context.Context) (*harness.ResumeSessionState, erro
 	s.mu.Lock()
 	if s.stopped {
 		s.mu.Unlock()
-		return nil, fmt.Errorf("codex session %s is already stopped; cannot stop.", s.opts.sessionID)
+		return nil, fmt.Errorf("codex session %s is already stopped; cannot stop.", s.opts.sessionID) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	s.stopped = true
 	s.mu.Unlock()
@@ -308,7 +308,7 @@ func (s *session) DoStop(ctx context.Context) (*harness.ResumeSessionState, erro
 			}
 		case <-time.After(5 * time.Second):
 			unsub()
-			return nil, fmt.Errorf("codex session %s did not reply to stop within 5s.", s.opts.sessionID)
+			return nil, fmt.Errorf("codex session %s did not reply to stop within 5s.", s.opts.sessionID) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 	}
 
@@ -404,7 +404,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 			pc.settleSuccess()
 			return
 		}
-		pc.settleError(errors.New("codex bridge closed before the turn finished."))
+		pc.settleError(errors.New("codex bridge closed before the turn finished.")) //nolint:staticcheck // matches TS SDK's exact error text
 	})
 
 	go func() {

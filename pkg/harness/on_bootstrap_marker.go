@@ -55,7 +55,7 @@ func WriteOnBootstrapMarker(ctx context.Context, session providerutils.SandboxSe
 		return err
 	}
 	if result.ExitCode != 0 {
-		return fmt.Errorf("Failed to create onBootstrap marker directory: %s", orString(result.Stderr, result.Stdout))
+		return fmt.Errorf("Failed to create onBootstrap marker directory: %s", orString(result.Stderr, result.Stdout)) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	return session.WriteTextFile(ctx, providerutils.SandboxWriteTextFileOptions{Path: path, Content: ""})
 }

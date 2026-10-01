@@ -185,12 +185,12 @@ func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("Open Responses provider does not support transcription")
+	return nil, fmt.Errorf("Open Responses provider does not support transcription") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 }
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("Open Responses provider does not support reranking")
+	return nil, fmt.Errorf("Open Responses provider does not support reranking") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 }
 
 // Client returns the HTTP client for making API requests

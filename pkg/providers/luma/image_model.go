@@ -208,7 +208,7 @@ func (m *ImageModel) pollForImageURL(ctx context.Context, generationID string, h
 	// TS reports the class-level default maxPollAttempts in this message
 	// even when a call overrode it for the loop itself; matched here for
 	// fidelity.
-	return "", fmt.Errorf("Image generation timed out after %d attempts.", defaultMaxPollAttempts)
+	return "", fmt.Errorf("Image generation timed out after %d attempts.", defaultMaxPollAttempts) //nolint:staticcheck // matches TS SDK's exact error text
 }
 
 // downloadImage downloads the generated image. imageUrl is provider-response
@@ -231,9 +231,9 @@ func (m *ImageModel) getEditingOptions(files []provider.ImageFile, mask *provide
 	options := map[string]interface{}{}
 
 	if mask != nil {
-		return nil, fmt.Errorf("Luma AI does not support mask-based image editing. " +
+		return nil, fmt.Errorf("Luma AI does not support mask-based image editing. ." + //nolint:staticcheck // matches TS SDK's exact error text
 			"Use the prompt to describe the changes you want to make, along with " +
-			"`prompt.images` containing the source image URL.")
+			"`prompt.images` containing the source image URL")
 	}
 
 	if len(files) == 0 {
@@ -242,9 +242,9 @@ func (m *ImageModel) getEditingOptions(files []provider.ImageFile, mask *provide
 
 	for _, f := range files {
 		if f.Type != "url" {
-			return nil, fmt.Errorf("Luma AI only supports URL-based images. " +
+			return nil, fmt.Errorf("Luma AI only supports URL-based images. ." + //nolint:staticcheck // matches TS SDK's exact error text
 				"Please provide image URLs using `prompt.images` with publicly accessible URLs. " +
-				"Base64 and Uint8Array data are not supported.")
+				"Base64 and Uint8Array data are not supported")
 		}
 	}
 
@@ -260,7 +260,7 @@ func (m *ImageModel) getEditingOptions(files []provider.ImageFile, mask *provide
 	switch referenceType {
 	case ReferenceTypeImage:
 		if len(files) > 4 {
-			return nil, fmt.Errorf("Luma AI image supports up to 4 reference images. You provided %d images.", len(files))
+			return nil, fmt.Errorf("Luma AI image supports up to 4 reference images. You provided %d images.", len(files)) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		images := make([]map[string]interface{}, 0, len(files))
 		for i, f := range files {
@@ -298,7 +298,7 @@ func (m *ImageModel) getEditingOptions(files []provider.ImageFile, mask *provide
 		}
 		for id, imgs := range identities {
 			if len(imgs) > 4 {
-				return nil, fmt.Errorf("Luma AI character supports up to 4 images per identity. Identity '%s' has %d images.", id, len(imgs))
+				return nil, fmt.Errorf("Luma AI character supports up to 4 images per identity. Identity '%s' has %d images.", id, len(imgs)) //nolint:staticcheck // matches TS SDK's exact error text
 			}
 		}
 		character := map[string]interface{}{}
@@ -309,7 +309,7 @@ func (m *ImageModel) getEditingOptions(files []provider.ImageFile, mask *provide
 
 	case ReferenceTypeModifyImage:
 		if len(files) > 1 {
-			return nil, fmt.Errorf("Luma AI modify_image only supports a single input image. You provided %d images.", len(files))
+			return nil, fmt.Errorf("Luma AI modify_image only supports a single input image. You provided %d images.", len(files)) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		weight := defaultWeights["modify_image"]
 		if cfg := lumaOpts.imageConfig(0); cfg.Weight != nil {

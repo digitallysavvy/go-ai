@@ -303,7 +303,7 @@ func TestDoStreamReasoningTextUsageToolStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoStream() error = %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	var types_ []provider.ChunkType
 	var finishChunk *provider.StreamChunk
@@ -400,7 +400,7 @@ func TestDoStreamIncrementalToolCallArguments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoStream() error = %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	var toolCallChunk *provider.StreamChunk
 	var finishChunk *provider.StreamChunk

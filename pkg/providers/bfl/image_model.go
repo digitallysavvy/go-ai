@@ -300,7 +300,7 @@ func (m *ImageModel) pollResult(ctx context.Context, createResp bflCreateRespons
 		body, err := m.getPollBody(pollCtx, pollURL, headers)
 		if err != nil {
 			if timedOut.Load() {
-				return bflResult{}, fmt.Errorf("Black Forest Labs generation timed out.")
+				return bflResult{}, fmt.Errorf("Black Forest Labs generation timed out.") //nolint:staticcheck // matches TS SDK's exact error text
 			}
 			return bflResult{}, err
 		}
@@ -315,19 +315,19 @@ func (m *ImageModel) pollResult(ctx context.Context, createResp bflCreateRespons
 
 		if result.Status == "Ready" {
 			if result.Result.Sample == "" {
-				return bflResult{}, fmt.Errorf("Black Forest Labs poll response is Ready but missing result.sample")
+				return bflResult{}, fmt.Errorf("Black Forest Labs poll response is Ready but missing result.sample") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 			}
 			return result, nil
 		}
 
 		if result.Status == "Error" || result.Status == "Failed" {
-			return bflResult{}, fmt.Errorf("Black Forest Labs generation failed.")
+			return bflResult{}, fmt.Errorf("Black Forest Labs generation failed.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
 
 		select {
 		case <-pollCtx.Done():
 			if timedOut.Load() {
-				return bflResult{}, fmt.Errorf("Black Forest Labs generation timed out.")
+				return bflResult{}, fmt.Errorf("Black Forest Labs generation timed out.") //nolint:staticcheck // matches TS SDK's exact error text
 			}
 			return bflResult{}, pollCtx.Err()
 		case <-time.After(pollInterval):

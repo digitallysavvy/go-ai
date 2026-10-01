@@ -129,7 +129,7 @@ func (s *openAIRealtimeSpeechTranslationStream) run(cfg openAIRealtimeSpeechTran
 				// TS does.
 				var failErr error
 				if wsutil.IsCleanClose(res.Err) {
-					failErr = errors.New("OpenAI realtime translation WebSocket closed unexpectedly before finishing.")
+					failErr = errors.New("OpenAI realtime translation WebSocket closed unexpectedly before finishing.") //nolint:staticcheck // matches TS SDK's exact error text
 				} else {
 					failErr = errors.New("OpenAI realtime translation error")
 				}

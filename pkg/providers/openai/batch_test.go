@@ -507,7 +507,7 @@ func TestOpenAIBatch_StreamsResults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoGetBatchResults: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	items := map[string]*provider.BatchV4ItemResult{}
 	for {
@@ -552,7 +552,7 @@ func TestOpenAIBatch_PreservesReasoningOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoGetBatchResults: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	item, err := stream.Next()
 	if err != nil {
@@ -596,7 +596,7 @@ func TestOpenAIBatch_ErrorsStreamOnMalformedJSONLine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoGetBatchResults: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	item, err := stream.Next()
 	if err != nil {
@@ -664,7 +664,7 @@ func TestOpenAIBatch_FailedResultsAndUnsupportedItemsDontStopStream(t *testing.T
 	if err != nil {
 		t.Fatalf("DoGetBatchResults: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	items := map[string]*provider.BatchV4ItemResult{}
 	for {
@@ -727,7 +727,7 @@ func TestOpenAIBatch_UnsupportedOutputItemTypeFailsItemWithoutStoppingStream(t *
 	if err != nil {
 		t.Fatalf("DoGetBatchResults: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	items := map[string]*provider.BatchV4ItemResult{}
 	for {

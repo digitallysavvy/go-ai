@@ -2146,9 +2146,7 @@ func TestCreateUIMessageStreamAcceptsPrototypeNameStateIDs(t *testing.T) {
 		},
 	})
 
-	var got []UIMessageChunk
-	for chunk := range chunks {
-		got = append(got, chunk)
+	for range chunks {
 	}
 	for err := range errs {
 		if err != nil {
@@ -2369,10 +2367,9 @@ func TestCreateUIMessageStreamWithOptions_Outcome_ConsumerCancellation(t *testin
 // firstThenBlockTextStream returns a fixed first chunk, then blocks on Next()
 // until release is closed, at which point it reports EOF.
 type firstThenBlockTextStream struct {
-	first    *provider.StreamChunk
-	sent     bool
-	release  chan struct{}
-	returned bool
+	first   *provider.StreamChunk
+	sent    bool
+	release chan struct{}
 }
 
 func (s *firstThenBlockTextStream) Next() (*provider.StreamChunk, error) {

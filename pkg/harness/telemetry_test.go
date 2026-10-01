@@ -53,7 +53,7 @@ func TestAgent_TelemetryNoSpanWithoutIntegration(t *testing.T) {
 	})
 	a, err := NewAgent(AgentSettings{
 		Harness: mock.harness,
-		Telemetry: &telemetry.Settings{
+		Telemetry: &telemetry.Options{
 			IsEnabled:    telemetry.Bool(true),
 			Integrations: []telemetry.TelemetryIntegration{telemetry.NoopTelemetryIntegration{}},
 		},
@@ -112,7 +112,7 @@ func TestAgent_TelemetrySpanNesting(t *testing.T) {
 	})
 	a, err := NewAgent(AgentSettings{
 		Harness: mock.harness, Model: "harness-model", UserTools: map[string]types.Tool{"getWeather": weatherTool},
-		Telemetry: &telemetry.Settings{
+		Telemetry: &telemetry.Options{
 			IsEnabled:    telemetry.Bool(true),
 			Integrations: []telemetry.TelemetryIntegration{telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{Tracer: tracer})},
 		},
@@ -204,7 +204,7 @@ func TestAgent_TelemetryEndsOnPause(t *testing.T) {
 	toolApproval := ToolApprovalConfiguration{"deleteFile": ai.ToolApprovalStatusUserApproval}
 	a, err := NewAgent(AgentSettings{
 		Harness: mock.harness, UserTools: map[string]types.Tool{"deleteFile": sensitiveTool}, ToolApproval: toolApproval,
-		Telemetry: &telemetry.Settings{
+		Telemetry: &telemetry.Options{
 			IsEnabled:    telemetry.Bool(true),
 			Integrations: []telemetry.TelemetryIntegration{telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{Tracer: tracer})},
 		},
@@ -256,7 +256,7 @@ func TestAgent_TelemetryWireErrorRecordsSpanStatus(t *testing.T) {
 	})
 	a, err := NewAgent(AgentSettings{
 		Harness: mock.harness,
-		Telemetry: &telemetry.Settings{
+		Telemetry: &telemetry.Options{
 			IsEnabled:    telemetry.Bool(true),
 			Integrations: []telemetry.TelemetryIntegration{telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{Tracer: tracer})},
 		},
@@ -309,7 +309,7 @@ func TestAgent_TelemetryAbortDoesNotRecordErrorStatus(t *testing.T) {
 	})
 	a, err := NewAgent(AgentSettings{
 		Harness: mock.harness,
-		Telemetry: &telemetry.Settings{
+		Telemetry: &telemetry.Options{
 			IsEnabled:    telemetry.Bool(true),
 			Integrations: []telemetry.TelemetryIntegration{telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{Tracer: tracer})},
 		},

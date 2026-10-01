@@ -267,7 +267,7 @@ func (tracker *Tracker[T]) convertReflectValue(c *Context, v any) (*Value, error
 	var ct CircularTracker[T]
 	defer ct.cleanup()
 
-	if rtype.Kind() == reflect.Ptr {
+	if rtype.Kind() == reflect.Pointer {
 		if rval.IsNil() {
 			return c.NewNull(), nil
 		}
@@ -397,7 +397,7 @@ func (tracker *Tracker[T]) processEmbeddedField(
 	switch fieldValue.Kind() {
 	case reflect.Struct:
 		return tracker.addStructFieldsToObject(c, obj, field.Type, fieldValue)
-	case reflect.Ptr:
+	case reflect.Pointer:
 		return tracker.processEmbeddedPointer(c, obj, field.Name, field.Type, fieldValue)
 	default:
 		return tracker.addEmbeddedPrimitive(c, obj, field.Name, fieldValue)

@@ -42,7 +42,7 @@ func TestGenerateObject_Telemetry(t *testing.T) {
 		"properties": map[string]interface{}{"name": map[string]interface{}{"type": "string"}},
 	})
 
-	telemetrySettings := &telemetry.Settings{
+	telemetrySettings := &telemetry.Options{
 		IsEnabled:     telemetry.Bool(true),
 		RecordInputs:  true,
 		RecordOutputs: true,
@@ -126,7 +126,7 @@ func TestStreamObject_Telemetry(t *testing.T) {
 		"properties": map[string]interface{}{"name": map[string]interface{}{"type": "string"}},
 	})
 
-	telemetrySettings := &telemetry.Settings{
+	telemetrySettings := &telemetry.Options{
 		IsEnabled:     telemetry.Bool(true),
 		RecordInputs:  true,
 		RecordOutputs: true,
@@ -187,7 +187,7 @@ func TestStreamObject_LanguageModelCallEndContent(t *testing.T) {
 	// the GenAI one so the "chat" span (which carries gen_ai.output.messages)
 	// gets created — LegacyOpenTelemetry no longer creates one at all
 	// (H4 item 1), so exactly one "chat test-model" span is expected below.
-	telemetry.RegisterTelemetryIntegration(telemetry.OTelTelemetryIntegration{}, telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{}))
+	telemetry.RegisterTelemetryIntegration(telemetry.LegacyOpenTelemetry{}, telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{}))
 
 	usage := types.Usage{InputTokens: int64Ptr(8), OutputTokens: int64Ptr(4)}
 	model := &testutil.MockLanguageModel{
@@ -211,7 +211,7 @@ func TestStreamObject_LanguageModelCallEndContent(t *testing.T) {
 		Model:  model,
 		Prompt: "Generate a person",
 		Schema: testSchema,
-		ExperimentalTelemetry: &telemetry.Settings{
+		ExperimentalTelemetry: &telemetry.Options{
 			IsEnabled:     telemetry.Bool(true),
 			RecordOutputs: true,
 		},

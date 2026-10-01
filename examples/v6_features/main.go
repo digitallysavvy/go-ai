@@ -237,14 +237,14 @@ func main() {
 		},
 
 		// v6.0: Updated callback signatures with user context
-		OnStepFinish: func(ctx context.Context, step types.StepResult, userContext interface{}) {
+		OnStepEnd: func(ctx context.Context, step types.StepResult, userContext interface{}) {
 			fmt.Printf("[Callback] Step %d completed\n", step.StepNumber)
 			if len(step.ToolCalls) > 0 {
 				fmt.Printf("[Callback] Tools called: %d\n", len(step.ToolCalls))
 			}
 		},
 
-		OnFinish: func(ctx context.Context, result *ai.GenerateTextResult, userContext interface{}) {
+		OnEnd: func(ctx context.Context, result *ai.GenerateTextResult, userContext interface{}) {
 			fmt.Printf("[Callback] Generation finished\n")
 			fmt.Printf("[Callback] Total steps: %d\n", len(result.Steps))
 

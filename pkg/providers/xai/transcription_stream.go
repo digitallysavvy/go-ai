@@ -374,7 +374,7 @@ func (s *xaiTranscriptionStream) run(cfg xaiTranscriptionStreamConfig) {
 					finished = true
 					return
 				}
-				fail(errors.New("xAI streaming transcription error."))
+				fail(errors.New("xAI streaming transcription error.")) //nolint:staticcheck // matches TS SDK's exact error text
 				return
 			}
 			if finished {

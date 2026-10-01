@@ -1740,7 +1740,7 @@ func CreateUIMessageStreamResponseWithInit(ctx context.Context, result *StreamTe
 
 	pr, pw := io.Pipe()
 	go func() {
-		defer pw.Close()
+		defer func() { _ = pw.Close() }()
 		_ = PipeUIMessageStreamToResponseWithInit(ctx, result, pw, init, opts...)
 	}()
 	return &http.Response{
@@ -1778,7 +1778,7 @@ func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTe
 		go func() {
 			closeSide <- init.ConsumeSSEStream(pr)
 		}()
-		defer pw.Close()
+		defer func() { _ = pw.Close() }()
 		teeWriter = io.MultiWriter(w, pw)
 	}
 
@@ -1825,7 +1825,7 @@ func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTe
 		return err
 	}
 	if sideWriter != nil {
-		sideWriter.Close()
+		_ = sideWriter.Close()
 		consumeErr = <-closeSide
 	}
 	select {

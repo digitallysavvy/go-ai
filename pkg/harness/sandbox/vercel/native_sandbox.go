@@ -179,7 +179,7 @@ func (s *Sandbox) Domain(port int) (string, error) {
 			return "https://" + r.Subdomain + ".vercel.run", nil
 		}
 	}
-	return "", fmt.Errorf("No route for port %d", port)
+	return "", fmt.Errorf("No route for port %d", port) //nolint:staticcheck // matches TS SDK's exact error text
 }
 
 // CurrentNetworkPolicy implements PolicySandbox: the running session's

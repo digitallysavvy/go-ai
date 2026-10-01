@@ -374,9 +374,17 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 			_ = s.p.channel.Send(bridge.ToolResultCommand{ToolCallID: f.RequestID, Output: map[string]any{"type": "unhandled"}})
 			return
 		}
-		if toolCall.ToolName != string(harness.BuiltinToolAskUserQuestions) || !toolCall.ProviderExecuted {
+		if toolCall.ToolName != string(harness.BuiltinToolAskUserQuestions) || toolCall.ProviderExecuted {
 			// ProviderExecuted must be false (client-executed); mirrors TS's
-			// thrown Error for a misconfigured settings.askUserQuestions.
+			// thrown Error for a misconfigured settings.askUserQuestions
+			// (acp-v1-harness.ts), which is caught and settles the turn
+			// with an error part, an abort command, and settle(error).
+			err := fmt.Errorf("%s ACP askUserQuestions.fromNativeRequest must return a client-executed askUserQuestions tool call", s.p.harnessID)
+			closeForwardedBlock()
+			forward(&harness.ErrorPart{Error: err.Error()})
+			_ = s.p.channel.Send(bridge.AbortCommand{})
+			settle(err)
+			return
 		}
 		withNative := *toolCall
 		if withNative.ProviderMetadata == nil {
@@ -528,7 +536,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 			return
 		}
 		closeForwardedBlock()
-		settle(fmt.Errorf("%s ACP bridge closed before turn end.", s.p.harnessID))
+		settle(fmt.Errorf("%s ACP bridge closed before turn end.", s.p.harnessID)) //nolint:staticcheck // matches TS SDK exact error text
 	})
 
 	if err := start(); err != nil {
@@ -560,7 +568,7 @@ func deserializeBridgeError(err any, harnessID string) error {
 			return unsupported(harnessID, message)
 		}
 	}
-	return fmt.Errorf("%v", err)
+	return fmt.Errorf("%v.", err) //nolint:staticcheck // matches TS SDK's exact error text
 }
 
 func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptions) (harness.PromptControl, error) {
@@ -568,7 +576,7 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 	replayOnly := s.replayOnly
 	s.mu.Unlock()
 	if replayOnly {
-		return nil, fmt.Errorf("%s recovered this turn through disk replay only and has no restored ACP process for a subsequent prompt.", s.p.harnessID)
+		return nil, fmt.Errorf("%s recovered this turn through disk replay only and has no restored ACP process for a subsequent prompt.", s.p.harnessID) //nolint:staticcheck // matches TS SDK exact error text
 	}
 	return s.doTurn(ctx, opts.Skills, opts.Instructions, opts.ResponseFormat, opts.Prompt, opts.Model, opts.Tools, opts.Emit, false)
 }
@@ -612,11 +620,11 @@ func (s *session) DoContinueTurn(ctx context.Context, opts harness.ContinueTurnO
 	recoveryStatus := s.recoveryStatus
 	s.mu.Unlock()
 	if !inFlight {
-		return nil, fmt.Errorf("%s has no in-flight ACP turn to continue.", s.p.harnessID)
+		return nil, fmt.Errorf("%s has no in-flight ACP turn to continue.", s.p.harnessID) //nolint:staticcheck // matches TS SDK exact error text
 	}
 	if lossyRerun {
 		if turnStartConfig == nil || acpSessionID == "" {
-			return nil, fmt.Errorf("%s cannot perform lossy ACP rerun without persisted start configuration and an ACP session identifier.", s.p.harnessID)
+			return nil, fmt.Errorf("%s cannot perform lossy ACP rerun without persisted start configuration and an ACP session identifier.", s.p.harnessID) //nolint:staticcheck // matches TS SDK exact error text
 		}
 		if err := assertRecoveryToolCatalog(turnStartConfig.Tools, nonNilToolSpecs(opts.Tools)); err != nil {
 			return nil, err
@@ -713,7 +721,7 @@ func (s *session) doTurn(ctx context.Context, skills []harness.Skill, instructio
 		s.mu.Lock()
 		if s.turnInFlight {
 			s.mu.Unlock()
-			return fmt.Errorf("%s cannot start a new ACP prompt while a turn is in flight.", s.p.harnessID)
+			return fmt.Errorf("%s cannot start a new ACP prompt while a turn is in flight.", s.p.harnessID) //nolint:staticcheck // matches TS SDK exact error text
 		}
 		s.turnInFlight = true
 		mappingIsFilesystem := s.p.instructionMapping != nil && s.p.instructionMapping.Type == InstructionMappingFilesystem
@@ -794,7 +802,7 @@ func (s *session) DoSuspendTurn(ctx context.Context) (*harness.ContinueTurnState
 	s.mu.Lock()
 	if s.stopped {
 		s.mu.Unlock()
-		return nil, fmt.Errorf("%s ACP session %s is stopped; cannot suspend.", s.p.harnessID, s.p.sessionID)
+		return nil, fmt.Errorf("%s ACP session %s is stopped; cannot suspend.", s.p.harnessID, s.p.sessionID) //nolint:staticcheck // matches TS SDK exact error text
 	}
 	s.stopped = true
 	s.mu.Unlock()
@@ -811,11 +819,11 @@ func (s *session) DoDetach(ctx context.Context) (*harness.ResumeSessionState, er
 	s.mu.Lock()
 	if s.stopped {
 		s.mu.Unlock()
-		return nil, fmt.Errorf("%s ACP session %s is stopped; cannot detach.", s.p.harnessID, s.p.sessionID)
+		return nil, fmt.Errorf("%s ACP session %s is stopped; cannot detach.", s.p.harnessID, s.p.sessionID) //nolint:staticcheck // matches TS SDK exact error text
 	}
 	if s.turnInFlight {
 		s.mu.Unlock()
-		return nil, fmt.Errorf("%s ACP session %s has an in-flight turn; suspend it instead.", s.p.harnessID, s.p.sessionID)
+		return nil, fmt.Errorf("%s ACP session %s has an in-flight turn; suspend it instead.", s.p.harnessID, s.p.sessionID) //nolint:staticcheck // matches TS SDK exact error text
 	}
 	s.stopped = true
 	s.mu.Unlock()
@@ -956,7 +964,7 @@ func restoreColdACPSession(ctx context.Context, channel *bridge.Channel, harness
 			return "", o.err
 		}
 		if o.method == "" {
-			return "", fmt.Errorf("%s ACP cold restoration completed without identifying the negotiated method.", harnessID)
+			return "", fmt.Errorf("%s ACP cold restoration completed without identifying the negotiated method.", harnessID) //nolint:staticcheck // matches TS SDK exact error text
 		}
 		return o.method, nil
 	case <-ctx.Done():

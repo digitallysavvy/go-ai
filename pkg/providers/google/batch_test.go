@@ -352,7 +352,7 @@ func TestGoogleBatch_ReadsInlineResults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoGetBatchResults: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	items := map[string]*provider.BatchV4ItemResult{}
 	for {
@@ -384,7 +384,7 @@ func TestGoogleBatch_MapsNumericCancellationError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoGetBatchResults: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	item, err := stream.Next()
 	if err != nil {
@@ -406,7 +406,7 @@ func TestGoogleBatch_ReturnsFailedItemForBlockedResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoGetBatchResults: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	item, err := stream.Next()
 	if err != nil {
@@ -433,7 +433,7 @@ func TestGoogleBatch_ReadsOutputFileFromOperationResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoGetBatchResults: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	item, err := stream.Next()
 	if err != nil {
 		t.Fatalf("Next: %v", err)
@@ -462,7 +462,7 @@ func TestGoogleBatch_EncodesResponseFilePathSegments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoGetBatchResults: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	if _, err := stream.Next(); err != nil {
 		t.Fatalf("Next: %v", err)
 	}
@@ -513,7 +513,7 @@ func TestGoogleBatch_StreamsResultsAcrossJSONLChunkBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoGetBatchResults: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	var items []*provider.BatchV4ItemResult
 	for {
@@ -553,7 +553,7 @@ func TestGoogleBatch_EmptyStreamForFailedBatchWithoutOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoGetBatchResults: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	if _, err := stream.Next(); err != io.EOF {
 		t.Fatalf("expected io.EOF for an empty stream, got %v", err)
 	}
@@ -612,7 +612,7 @@ func TestGoogleBatch_InlineImageContentSucceedsRegardlessOfRequestType(t *testin
 	if err != nil {
 		t.Fatalf("DoGetBatchResults: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	items := map[string]*provider.BatchV4ItemResult{}
 	for {
@@ -651,7 +651,7 @@ func TestGoogleBatch_ConvertsGeneratedImageResults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoGetBatchResults: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	item, err := stream.Next()
 	if err != nil {

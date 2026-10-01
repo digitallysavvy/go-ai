@@ -133,7 +133,7 @@ func transformGoogleEmbeddingProviderOptions(input provider.EmbeddingProviderOpt
 	}
 	checkLength := func(n int) error {
 		if n != len(input.Values) {
-			return fmt.Errorf("The number of multimodal content entries (%d) must match the number of values (%d).", n, len(input.Values))
+			return fmt.Errorf("The number of multimodal content entries (%d) must match the number of values (%d).", n, len(input.Values)) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		return nil
 	}

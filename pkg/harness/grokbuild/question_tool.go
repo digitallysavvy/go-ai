@@ -190,7 +190,7 @@ func parseQuestionsOutput(toolResult types.ToolResultContent) (*harness.Question
 	return harness.ParseQuestionsToolOutput(data)
 }
 
-var errInvalidToolResult = errors.New("Grok Build askUserQuestions requires a JSON tool result.")
+var errInvalidToolResult = errors.New("Grok Build askUserQuestions requires a JSON tool result.") //nolint:staticcheck // matches TS SDK's exact error text
 
 func matchesNativeRequest(previousNativeRequest, nativeRequest any) bool {
 	previous, ok1 := parseGrokBuildQuestionRequest(previousNativeRequest)

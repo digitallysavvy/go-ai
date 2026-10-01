@@ -97,10 +97,10 @@ func LogWarnings(options LogWarningsOptions) {
 	}
 	if !logWarningsState.hasLoggedBefore {
 		logWarningsState.hasLoggedBefore = true
-		fmt.Fprintln(out, FirstWarningInfoMessage)
+		_, _ = fmt.Fprintln(out, FirstWarningInfoMessage)
 	}
 	for _, warning := range options.Warnings {
-		fmt.Fprintln(out, FormatWarning(warning, options.Provider, options.Model))
+		_, _ = fmt.Fprintln(out, FormatWarning(warning, options.Provider, options.Model))
 	}
 }
 

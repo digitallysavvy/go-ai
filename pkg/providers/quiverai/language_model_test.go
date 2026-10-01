@@ -283,7 +283,7 @@ func TestLanguageModelOmitsReasoningNoneAndWarns(t *testing.T) {
 				if err != nil {
 					t.Fatalf("DoStream: %v", err)
 				}
-				defer stream.Close()
+				defer func() { _ = stream.Close() }()
 				chunk, err := stream.Next()
 				if err != nil {
 					t.Fatalf("Next: %v", err)
@@ -803,7 +803,7 @@ func TestLanguageModelWorkflowSerialization(t *testing.T) {
 // afterward.
 func drainStream(t *testing.T, stream provider.TextStream) []provider.StreamChunk {
 	t.Helper()
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	var chunks []provider.StreamChunk
 	for {
 		chunk, err := stream.Next()

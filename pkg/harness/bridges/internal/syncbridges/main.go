@@ -165,7 +165,7 @@ func main() {
 	for _, spec := range adapterSpecs {
 		info, err := syncAdapter(*tsDir, *outDir, spec)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "syncbridges: %s: %v\n", spec.dirName, err)
+			_, _ = fmt.Fprintf(os.Stderr, "syncbridges: %s: %v\n", spec.dirName, err)
 			os.Exit(1)
 		}
 		adapters[spec.dirName] = info
@@ -173,13 +173,13 @@ func main() {
 
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "syncbridges: marshal manifest: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "syncbridges: marshal manifest: %v\n", err)
 		os.Exit(1)
 	}
 	data = append(data, '\n')
 	versionsPath := filepath.Join(*outDir, "VERSIONS.json")
 	if err := os.WriteFile(versionsPath, data, 0o644); err != nil {
-		fmt.Fprintf(os.Stderr, "syncbridges: write %s: %v\n", versionsPath, err)
+		_, _ = fmt.Fprintf(os.Stderr, "syncbridges: write %s: %v\n", versionsPath, err)
 		os.Exit(1)
 	}
 	fmt.Printf("syncbridges: wrote %s and %d adapter director%s under %s\n", versionsPath, len(adapterSpecs), plural(len(adapterSpecs)), *outDir)
@@ -262,16 +262,19 @@ func copyFile(srcPath, destPath string) (sha256Hex string, err error) {
 	if err != nil {
 		return "", err
 	}
-	defer src.Close()
+	defer func() { _ = src.Close() }()
 
 	dest, err := os.Create(destPath)
 	if err != nil {
 		return "", err
 	}
-	defer dest.Close()
+	defer func() { _ = dest.Close() }()
 
 	hasher := sha256.New()
 	if _, err := io.Copy(io.MultiWriter(dest, hasher), src); err != nil {
+		return "", err
+	}
+	if err := dest.Close(); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(hasher.Sum(nil)), nil

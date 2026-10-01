@@ -38,7 +38,7 @@ func NewConfig(apiKey string) (Config, error) {
 	}
 
 	if apiKey == "" {
-		return Config{}, fmt.Errorf("Alibaba API key is required. Set ALIBABA_API_KEY environment variable or provide it in Config")
+		return Config{}, fmt.Errorf("Alibaba API key is required. Set ALIBABA_API_KEY environment variable or provide it in Config") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 	}
 
 	return Config{

@@ -109,14 +109,14 @@ func (p *Provider) ResponsesModel(modelID string) (provider.LanguageModel, error
 // support text embeddings (TS createHuggingFace throws NoSuchModelError with
 // this exact message for embeddingModel/textEmbeddingModel).
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("Hugging Face Responses API does not support text embeddings. Use the Hugging Face Inference API directly for embeddings.")
+	return nil, fmt.Errorf("Hugging Face Responses API does not support text embeddings. Use the Hugging Face Inference API directly for embeddings.") //nolint:staticcheck // matches TS SDK's exact error text
 }
 
 // ImageModel returns an error: the Hugging Face Responses API does not
 // support image generation (TS createHuggingFace throws NoSuchModelError
 // with this exact message for imageModel).
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("Hugging Face Responses API does not support image generation. Use the Hugging Face Inference API directly for image models.")
+	return nil, fmt.Errorf("Hugging Face Responses API does not support image generation. Use the Hugging Face Inference API directly for image models.") //nolint:staticcheck // matches TS SDK's exact error text
 }
 
 // SpeechModel returns an error: Hugging Face does not provide a unified

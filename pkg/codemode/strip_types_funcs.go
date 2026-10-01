@@ -69,7 +69,7 @@ func copyBindingTarget(tokens []tsToken, i int, out *[]tsToken) (int, bool, erro
 		*out = append(*out, t)
 		return j + 1, true, nil
 	case t.kind == "punct" && (t.text == "{" || t.text == "["):
-		close := ")"
+		var close string
 		if t.text == "{" {
 			close = "}"
 		} else {

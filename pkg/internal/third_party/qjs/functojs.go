@@ -20,7 +20,7 @@ func FuncToJS(c *Context, v any) (_ *Value, err error) {
 	rval := reflect.ValueOf(v)
 	rtype := reflect.TypeOf(v)
 
-	if rtype.Kind() == reflect.Ptr {
+	if rtype.Kind() == reflect.Pointer {
 		if rval.IsNil() {
 			return c.NewNull(), nil
 		}
@@ -133,7 +133,7 @@ func CreateNonNilSample(argType reflect.Type) any {
 		// use the default logic which can handle dynamic type inference
 		return nil
 
-	case reflect.Ptr:
+	case reflect.Pointer:
 		elemType := argType.Elem()
 		elemZero := reflect.Zero(elemType)
 		ptr := reflect.New(elemType)
@@ -178,7 +178,7 @@ func createDummyFunction(funcType reflect.Type) any {
 
 // JsArgToGo converts a single JS argument to a Go value with enhanced type handling.
 func JsArgToGo(jsArg *Value, argType reflect.Type) (reflect.Value, error) {
-	if argType.Kind() == reflect.Ptr {
+	if argType.Kind() == reflect.Pointer {
 		return handlePointerArgument(jsArg, argType)
 	}
 

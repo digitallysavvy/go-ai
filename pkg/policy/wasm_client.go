@@ -50,7 +50,7 @@ func (c *wasmPolicyClient) Evaluate(ctx context.Context, policyPath string, inpu
 		return nil, err
 	}
 	if len(results) == 0 {
-		return nil, errors.New("OPA WASM policy produced no result. Check that the bundle was built with the correct entrypoint (`opa build -t wasm -e <path>`).")
+		return nil, errors.New("OPA WASM policy produced no result. Check that the bundle was built with the correct entrypoint (`opa build -t wasm -e <path>`).") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	return results[0].Result, nil
 }

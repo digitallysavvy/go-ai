@@ -133,7 +133,7 @@ func safeValidateUIMessagesInternal(ctx context.Context, opts ValidateUIMessages
 				field := fmt.Sprintf("messages[%d].parts[%d].data", msgIdx, partIdx)
 				dataSchema := opts.DataSchemas[dataName]
 				if dataSchema == nil {
-					return fail(uiValidationError(dataPart.Data, fmt.Errorf("No data schema found for data part %s", dataName), field, dataName, dataPart.ID))
+					return fail(uiValidationError(dataPart.Data, fmt.Errorf("No data schema found for data part %s", dataName), field, dataName, dataPart.ID)) //nolint:staticcheck // matches TS SDK's exact error text
 				}
 				// Apply defaults before validating (see the metadata
 				// handling above for why): a missing field with a default
@@ -165,7 +165,7 @@ func safeValidateUIMessagesInternal(ctx context.Context, opts ValidateUIMessages
 
 			inputField := fmt.Sprintf("messages[%d].parts[%d].input", msgIdx, partIdx)
 			if tool == nil {
-				return fail(uiValidationError(toolPart.Input, fmt.Errorf("No tool schema found for tool part %s", toolName), inputField, toolName, toolPart.ToolCallID))
+				return fail(uiValidationError(toolPart.Input, fmt.Errorf("No tool schema found for tool part %s", toolName), inputField, toolName, toolPart.ToolCallID)) //nolint:staticcheck // matches TS SDK's exact error text
 			}
 
 			hasInputSchemaInput := toolPart.Approval != nil && toolPart.Approval.InputSchemaInput != nil
@@ -249,7 +249,7 @@ func validateUIToolInput(ctx context.Context, tool *types.Tool, toolPart *ToolUI
 		}
 	}
 	if !isDeepEqualJSONData(reconstructed, toolPart.Input) {
-		return uiValidationError(toolPart.Input, fmt.Errorf("Tool input does not match the output reconstructed from inputSchemaInput."), field, toolName, toolPart.ToolCallID)
+		return uiValidationError(toolPart.Input, fmt.Errorf("Tool input does not match the output reconstructed from inputSchemaInput."), field, toolName, toolPart.ToolCallID) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	return nil
 }

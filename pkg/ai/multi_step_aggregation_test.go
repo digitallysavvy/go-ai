@@ -94,7 +94,8 @@ func TestStreamTextContentAggregatesAcrossSteps(t *testing.T) {
 	}
 
 	done := make(chan *StreamTextResult, 1)
-	result, err := StreamText(context.Background(), StreamTextOptions{
+	var result *StreamTextResult
+	_, err := StreamText(context.Background(), StreamTextOptions{
 		Model:  model,
 		Prompt: "hi",
 		Tools: []types.Tool{{
@@ -172,7 +173,8 @@ func TestStreamTextRawFinishReasonResetsPerStep(t *testing.T) {
 	}
 
 	done := make(chan *StreamTextResult, 1)
-	result, err := StreamText(context.Background(), StreamTextOptions{
+	var result *StreamTextResult
+	_, err := StreamText(context.Background(), StreamTextOptions{
 		Model:  model,
 		Prompt: "hi",
 		Tools: []types.Tool{{
@@ -305,10 +307,11 @@ func TestGenerateTextAggregatesFilesSourcesWarningsAcrossSteps(t *testing.T) {
 	if finishResult == nil {
 		t.Fatal("OnFinish did not receive result")
 	}
-	if finishResult.TotalUsage.InputTokens != finishResult.Usage.InputTokens ||
-		finishResult.TotalUsage.OutputTokens != finishResult.Usage.OutputTokens ||
-		finishResult.TotalUsage.TotalTokens != finishResult.Usage.TotalTokens {
-		t.Fatalf("OnFinish TotalUsage = %+v, want %+v", finishResult.TotalUsage, finishResult.Usage)
+	// Verifies the deprecated TotalUsage field still mirrors Usage.
+	if finishResult.TotalUsage.InputTokens != finishResult.Usage.InputTokens || //nolint:staticcheck
+		finishResult.TotalUsage.OutputTokens != finishResult.Usage.OutputTokens || //nolint:staticcheck
+		finishResult.TotalUsage.TotalTokens != finishResult.Usage.TotalTokens { //nolint:staticcheck
+		t.Fatalf("OnFinish TotalUsage = %+v, want %+v", finishResult.TotalUsage, finishResult.Usage) //nolint:staticcheck
 	}
 	if finishResult.FinalStep.StepNumber != result.FinalStep.StepNumber {
 		t.Fatalf("OnFinish FinalStep = %+v, want %+v", finishResult.FinalStep, result.FinalStep)

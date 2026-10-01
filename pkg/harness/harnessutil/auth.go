@@ -100,7 +100,7 @@ func NormalizeHeaders(headers map[string]string) (map[string]string, error) {
 		lower := strings.ToLower(name)
 		for _, managed := range ManagedHeaderNames {
 			if lower == managed {
-				return nil, fmt.Errorf("HarnessAgent: `headers` must not include the managed header `%s`.", lower)
+				return nil, fmt.Errorf("HarnessAgent: `headers` must not include the managed header `%s`.", lower) //nolint:staticcheck // matches TS SDK's exact error text
 			}
 		}
 		normalized[lower] = value

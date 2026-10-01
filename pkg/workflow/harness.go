@@ -288,7 +288,7 @@ func RunHarnessAgent(ctx context.Context, opts RunHarnessAgentOptions) (HarnessW
 	// below needs the real message to recognize a suspend-induced closure,
 	// so this engine always supplies its own passthrough formatter (TS's
 	// `errorText` already carries the underlying error/rejection reason).
-	chunksCh, errCh := result.ToUIMessageStream(ctx, ai.UIMessageStreamResultOptions{
+	chunksCh, errCh := ai.ToUIMessageStream(ctx, result.Stream(), ai.UIMessageStreamResultOptions{
 		OnError: func(err error) string { return err.Error() },
 	})
 
@@ -395,7 +395,7 @@ func RunHarnessAgent(ctx context.Context, opts RunHarnessAgentOptions) (HarnessW
 	}
 
 	finishReason := result.FinishReason()
-	usage := result.TotalUsage()
+	usage := result.Usage()
 
 	if session.HasUnfinishedTurn() {
 		continueFrom, serr := session.SuspendTurn(ctx)

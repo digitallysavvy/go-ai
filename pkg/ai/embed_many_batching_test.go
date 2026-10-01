@@ -376,7 +376,7 @@ func TestEmbedMany_RetriedAttemptSpanEndsWithErrorStatus(t *testing.T) {
 		Model:      model,
 		Inputs:     testEmbedValues,
 		MaxRetries: intPtr(1),
-		Telemetry: &telemetry.Settings{
+		Telemetry: &telemetry.Options{
 			IsEnabled:    telemetry.Bool(true),
 			Integrations: []telemetry.TelemetryIntegration{telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{Tracer: tracer})},
 		},

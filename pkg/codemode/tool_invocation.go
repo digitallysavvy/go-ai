@@ -424,7 +424,7 @@ func resolveNeedsApproval(ctx context.Context, tool types.Tool, input map[string
 		return false, nil
 	case bool:
 		return v, nil
-	case types.NeedsApprovalFunc:
+	case types.NeedsApprovalFunc: //nolint:staticcheck // legacy function type still accepted for backward compatibility
 		return v(ctx, input), nil
 	case types.ToolNeedsApprovalFunc:
 		return v(ctx, input, types.ToolNeedsApprovalOptions{

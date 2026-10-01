@@ -71,7 +71,7 @@ func regexSmoothStreamDetector(re *regexp.Regexp) smoothStreamDetector {
 			return "", nil
 		}
 		if loc[1] == loc[0] {
-			return "", fmt.Errorf("Chunking RegExp must not match an empty string.")
+			return "", fmt.Errorf("Chunking RegExp must not match an empty string.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		return buffer[:loc[1]], nil
 	}
@@ -84,10 +84,10 @@ func customSmoothStreamDetector(fn ChunkDetector) smoothStreamDetector {
 			return "", nil
 		}
 		if match == "" {
-			return "", fmt.Errorf("Chunking function must return a non-empty string.")
+			return "", fmt.Errorf("Chunking function must return a non-empty string.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		if !strings.HasPrefix(buffer, match) {
-			return "", fmt.Errorf("Chunking function must return a match that is a prefix of the buffer. Received: %q expected to start with %q", match, buffer)
+			return "", fmt.Errorf("Chunking function must return a match that is a prefix of the buffer. Received: %q expected to start with %q", match, buffer) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		return match, nil
 	}

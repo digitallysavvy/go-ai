@@ -35,5 +35,9 @@ func main() {
 		}
 		log.Fatal(err)
 	}
-	defer client.Close()
+	defer func() {
+		if err := client.Close(); err != nil {
+			log.Printf("close MCP client: %v", err)
+		}
+	}()
 }
