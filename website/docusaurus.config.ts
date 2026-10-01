@@ -65,6 +65,8 @@ const config: Config = {
   ],
 
   plugins: [
+    // Publishes /docs/<page>.md, /llms.txt and /llms-full.txt for agents.
+    './plugins/markdown-export.js',
     [
       require.resolve('@easyops-cn/docusaurus-search-local'),
       {

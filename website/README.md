@@ -41,6 +41,16 @@ npm run serve
 - The landing page lives at `src/pages/index.tsx`; global styling is in `src/css/custom.css`.
 - Brand assets (favicon, navbar mark, social card) live in `static/img/`.
 
+## Markdown for agents
+
+`plugins/markdown-export.js` runs after the build and publishes a markdown copy of the docs:
+
+- `/docs/<page>.md`: any doc URL with `.md` appended returns that page as markdown. Links to other docs point at their `.md` URLs.
+- `/llms.txt`: an index of every page ([llmstxt.org](https://llmstxt.org) format).
+- `/llms-full.txt`: all pages in one file.
+
+The markdown is generated from the doc sources: frontmatter becomes a `# title` heading and `<Note>` becomes a blockquote. If you add a new MDX component, teach `flattenMdx` in the plugin to flatten it too.
+
 ## Deployment
 
 Deployment is fully automated via GitHub Actions (`.github/workflows/docs.yml`):
