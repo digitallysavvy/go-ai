@@ -158,7 +158,9 @@ random key is generated at process start if it's never called.
 `pkg/codemode` vendors a patched copy of `fastschema/qjs` v0.0.6 at
 `pkg/internal/third_party/qjs` (MIT license) to fix two memory-read bugs
 and to add a job-queue quiescence hook (used to batch concurrent approval
-requests). `qjs.wasm` is rebuilt from pinned, checksum-verified sources by
+requests) and an option that disables module imports in the engine (code-mode
+sandboxes run with it on, so `import()` and the native `qjs:*` modules are
+unavailable). `qjs.wasm` is rebuilt from pinned, checksum-verified sources by
 `pkg/internal/third_party/qjs/build/build.sh`.
 `github.com/tetratelabs/wazero` is a direct dependency.
 

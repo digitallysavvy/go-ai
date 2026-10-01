@@ -325,8 +325,11 @@ code.
   files under the host's working directory, read environment variables and
   call `exit`, and could write unbounded output to the host's stdout. The
   sandbox now mounts no filesystem, passes no environment, removes the libc
-  globals, blocks `eval` / `Function` and dynamic `import()`, and captures
-  console output in memory under `MaxConsoleOutputBytes`.
+  globals, and captures console output in memory under
+  `MaxConsoleOutputBytes`. The engine itself now refuses all module
+  imports: the native `qjs:*` modules are not registered and the module
+  loader rejects every specifier. A source-level dynamic `import()` check
+  and `eval` / `Function` blocking remain as additional layers.
 - MCP OAuth and the OPA policy client read at most 1 MiB of an HTTP
   response, so a hostile or broken server can't exhaust memory.
 - Bedrock: a crafted event-stream frame length could overflow the decoder
@@ -509,8 +512,8 @@ code.
 - It vendors a patched copy of fastschema/qjs v0.0.6
   (`pkg/internal/third_party/qjs`, MIT license) to fix two memory-read
   bugs. `qjs.wasm` is rebuilt from pinned, checksum-verified upstream
-  sources with a job-queue quiescence patch, and can be reproduced with
-  `pkg/internal/third_party/qjs/build/build.sh`.
+  sources with a job-queue quiescence patch and a module-disabling patch,
+  and can be reproduced with `pkg/internal/third_party/qjs/build/build.sh`.
 - TypeScript annotations in model-written code are stripped with Node
   `stripTypeScriptTypes` semantics: generics, `as` / `satisfies`,
   interfaces and type aliases, class modifiers, non-null assertions and
@@ -927,7 +930,7 @@ From `go.mod`:
 
 `pkg/internal/third_party/qjs` vendors a patched copy of fastschema/qjs
 v0.0.6 (MIT license), fixing two memory-read bugs and adding a job-queue
-quiescence patch, compiled to `qjs.wasm` (rebuilt reproducibly from
+quiescence patch and an option to disable module imports, compiled to `qjs.wasm` (rebuilt reproducibly from
 pinned, checksum-verified sources by `build/build.sh`) and run under
 `wazero`. It is not a Go module dependency; it
 ships as source + WASM inside the repository.

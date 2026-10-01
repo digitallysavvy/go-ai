@@ -85,8 +85,8 @@ step-by-step upgrade instructions are in
   (`ai-sdk/<provider>/<version> runtime/go/<goVersion>`, plus `ai/<version>`
   from the non-streaming `pkg/ai` calls; `StreamText`, `StreamObject` and
   `Rerank` add no `ai/` tag), matching the TypeScript SDK.
-- Vendored `qjs.wasm` rebuilt from pinned upstream sources with a job-queue
-  quiescence patch; reproducible via
+- Vendored `qjs.wasm` rebuilt from pinned upstream sources with job-queue
+  quiescence and module-disabling patches; reproducible via
   `pkg/internal/third_party/qjs/build/build.sh`.
 - Internal refactor: the WebSocket transcription and translation streams
   share a session core in `pkg/providerutils/websocket` (`Session[T]`,
@@ -145,8 +145,10 @@ step-by-step upgrade instructions are in
   reach QuickJS's `std` / `os` modules (host files under the working
   directory, environment variables, `exit`, unbounded stdout). The sandbox
   now mounts no filesystem, passes no environment, removes the libc
-  globals, blocks `eval` / `Function` and dynamic `import()`, and caps
-  console output.
+  globals and caps console output, and the QuickJS engine refuses all
+  module imports (no native `qjs:*` modules; the loader rejects every
+  specifier), with a source-level `import()` check and `eval` / `Function`
+  blocking as extra layers.
 - Tool approvals verified on resume (HMAC v1, TS-compatible).
 - Downloads: DNS pinning, synced blocklist, bounded reads, credential
   stripping across cross-origin redirects. MCP OAuth discovery SSRF-guarded.
