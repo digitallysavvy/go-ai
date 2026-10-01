@@ -144,6 +144,11 @@ step-by-step upgrade instructions are in
   `results_url` now fetched through the SSRF-safe download path.
 - Removed unused internal download helpers that skipped the SSRF checks.
 - Harness bridge dial errors no longer include the bridge token.
+- `provider.SerializableConfig` redacts credential headers (`Authorization`,
+  `Proxy-Authorization`, `X-Api-Key`, `Api-Key`, `X-Goog-Api-Key`,
+  `Cookie`, `Set-Cookie`, and any `*-api-key` / `*-token` / `*secret*`
+  name, case-insensitive) from a serialized model's `Config.Headers`, so
+  header-based credentials no longer end up in `SerializedModel.Config`.
 
 ## [0.4.0] - 2026-03-29
 

@@ -343,6 +343,17 @@ code.
   parameter in WebSocket dial errors.
 - Removed the unused internal helpers `fileutil.GetContentType` /
   `GetContentLength`, which fetched URLs without the SSRF checks.
+- `provider.SerializableConfig` redacts credential headers from a
+  serialized model's `Config.Headers`, case-insensitively: `Authorization`,
+  `Proxy-Authorization`, `X-Api-Key`, `Api-Key`, `X-Goog-Api-Key`, `Cookie`,
+  `Set-Cookie`, and any `*-api-key` / `*-token` / `*secret*` name. Before,
+  a model authenticated through a header (Anthropic `x-api-key`, Azure
+  `api-key`, Google `x-goog-api-key`, or `anthropicaws` API-key mode) had
+  the live credential embedded in `SerializedModel.Config`. Other headers
+  are unchanged. After deserializing, providers read their API key from the
+  environment as before; `anthropicaws` falls back to
+  `ANTHROPIC_AWS_API_KEY`. This goes further than TS, which keeps these
+  headers.
 
 ---
 

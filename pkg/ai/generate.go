@@ -2216,7 +2216,15 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 			if callbacks.toolExecutionMs != nil {
 				callbacks.toolExecutionMs[call.ID] = durationMs
 			}
-			timedOut := execCtx.Err() != nil
+			// Only the per-tool timeout's own deadline elapsing counts as a
+			// tool timeout. execCtx is a child of toolCtx/ctx: if the outer
+			// context is independently cancelled while the tool is still
+			// running, execCtx.Err() becomes context.Canceled (inherited
+			// from the parent), not context.DeadlineExceeded -- checking
+			// execCtx.Err() != nil would wrongly relabel that upstream
+			// cancellation as TimeoutReasonTool instead of surfacing the
+			// tool's actual error/cancellation.
+			timedOut := errors.Is(execCtx.Err(), context.DeadlineExceeded)
 			execCancel() // release timeout resources immediately after execution
 			if callbacks.timeout != nil && callbacks.timeout.GetToolTimeout(call.ToolName) != nil && timedOut {
 				if toolErr == nil {

@@ -150,6 +150,43 @@ func TestChunkBuffer_BlockedReaderWakesOnPush(t *testing.T) {
 	}
 }
 
+// TestChunkBufferReader_CloseWakesBlockedNext is the permanent regression
+// test for R1-4 (bug-review/R1.md): chunkBufferReader.Close() previously
+// only advanced the reader's local index under the buffer's mutex without
+// broadcasting on the shared cond, so a goroutine already blocked inside
+// Next() (because the buffer was empty and not yet closed) was not woken by
+// a concurrent Close() on that same reader -- it stayed blocked until the
+// writer side independently pushed a chunk or closed the whole buffer,
+// which could be much later or never. Close() must now broadcast so a
+// blocked Next returns promptly (as io.EOF, matching the already-closed
+// buffer case) instead of hanging.
+func TestChunkBufferReader_CloseWakesBlockedNext(t *testing.T) {
+	t.Parallel()
+
+	buf := newChunkBuffer()
+	reader := buf.reader()
+	done := make(chan error, 1)
+	go func() {
+		_, err := reader.Next() // blocks: buffer empty, not closed
+		done <- err
+	}()
+
+	// Give Next() a chance to actually block in cond.Wait() before closing.
+	time.Sleep(50 * time.Millisecond)
+	if err := reader.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err != io.EOF {
+			t.Fatalf("Next() returned error = %v after Close(), want io.EOF", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Next() did not return after reader.Close() -- blocked reader was not woken")
+	}
+}
+
 // TestChunkBufferReader_CloseDetachesWithoutAffectingOthers checks that
 // closing one reader's cursor doesn't disturb another reader over the same
 // buffer, matching the doc comment on chunkBuffer.reader().
