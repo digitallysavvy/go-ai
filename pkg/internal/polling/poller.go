@@ -3,6 +3,7 @@ package polling
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 )
 
@@ -97,21 +98,37 @@ func PollForCompletion(ctx context.Context, checker StatusChecker, opts PollOpti
 	interval := time.Duration(opts.PollIntervalMs) * time.Millisecond
 	timeout := time.Duration(opts.PollTimeoutMs) * time.Millisecond
 
+	// Derive a context bound to the overall poll timeout and cancel it when
+	// PollForCompletion returns, so a single in-flight checker call is
+	// aborted at the deadline instead of being able to run arbitrarily long
+	// past it. Previously PollTimeoutMs was only checked *between* checker
+	// calls via a separate timeoutTimer case in the select below, passing
+	// the raw caller ctx straight through to checker -- a single
+	// slow/hanging status call could block the whole poll loop arbitrarily
+	// far past the configured timeout. This mirrors the pollCtx +
+	// time.AfterFunc(cancel) pattern the BFL/Fireworks image pollers
+	// already use.
+	pollCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var timedOut atomic.Bool
+	timer := time.AfterFunc(timeout, func() {
+		timedOut.Store(true)
+		cancel()
+	})
+	defer timer.Stop()
+
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-
-	timeoutTimer := time.NewTimer(timeout)
-	defer timeoutTimer.Stop()
 
 	attempts := 0
 
 	for {
 		select {
-		case <-ctx.Done():
+		case <-pollCtx.Done():
+			if timedOut.Load() {
+				return nil, fmt.Errorf("polling timeout after %v", timeout)
+			}
 			return nil, ctx.Err()
-
-		case <-timeoutTimer.C:
-			return nil, fmt.Errorf("polling timeout after %v", timeout)
 
 		case <-ticker.C:
 			attempts++
@@ -121,9 +138,16 @@ func PollForCompletion(ctx context.Context, checker StatusChecker, opts PollOpti
 				return nil, fmt.Errorf("max polling attempts (%d) reached", opts.MaxAttempts)
 			}
 
-			// Check job status
-			result, err := checker(ctx)
+			// Check job status. Pass the deadline-bound pollCtx so this
+			// single call cannot outlive the configured timeout.
+			result, err := checker(pollCtx)
 			if err != nil {
+				if timedOut.Load() {
+					return nil, fmt.Errorf("polling timeout after %v", timeout)
+				}
+				if pollCtx.Err() != nil {
+					return nil, ctx.Err()
+				}
 				return nil, fmt.Errorf("status check failed: %w", err)
 			}
 
