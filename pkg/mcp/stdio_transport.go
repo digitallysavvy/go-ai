@@ -226,20 +226,31 @@ func (t *StdioTransport) Send(ctx context.Context, message *MCPMessage) error {
 
 // Receive receives a message from the MCP server
 func (t *StdioTransport) Receive(ctx context.Context) (*MCPMessage, error) {
-	if !t.connected {
+	// t.connected and t.reader are written under t.mu by Connect/Close;
+	// read them under the same lock rather than touching the fields
+	// directly, since Receive typically runs from a background receive
+	// loop that races a caller's concurrent Close() (R2-2). The lock is
+	// released before the blocking Scan() call below so a Close() that
+	// closes the underlying pipe mid-read is never blocked on Receive.
+	t.mu.Lock()
+	connected := t.connected
+	reader := t.reader
+	t.mu.Unlock()
+
+	if !connected {
 		return nil, NewTransportError("not connected", nil)
 	}
 
 	// Read line
-	if !t.reader.Scan() {
-		err := t.reader.Err()
+	if !reader.Scan() {
+		err := reader.Err()
 		if err == nil {
 			err = io.EOF
 		}
 		return nil, err
 	}
 
-	line := t.reader.Bytes()
+	line := reader.Bytes()
 
 	if t.config.EnableLogging {
 		fmt.Printf("MCP Receive: %s\n", string(line))
@@ -264,7 +275,17 @@ func (t *StdioTransport) IsConnected() bool {
 // logStderr logs stderr output from the command
 func (t *StdioTransport) logStderr() {
 	scanner := bufio.NewScanner(t.stderr)
+	// Match the main stdout reader's bound (see Connect) so a long stderr
+	// line (e.g. a long stack trace) from the child process doesn't exceed
+	// bufio.Scanner's default 64 KiB token limit and silently stop logging.
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
 	for scanner.Scan() {
 		fmt.Printf("MCP stderr: %s\n", scanner.Text())
 	}
+	// The scanner stops on a line over the limit (bufio.ErrTooLong) or a
+	// read error. Keep draining stderr anyway: if nothing reads the pipe,
+	// the child blocks once the OS pipe buffer fills and the MCP server
+	// hangs.
+	_, _ = io.Copy(io.Discard, t.stderr)
 }

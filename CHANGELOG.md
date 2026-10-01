@@ -25,7 +25,11 @@ step-by-step upgrade instructions are in
   implemented by two or more providers.
 - **`pkg/codemode`** (experimental): runs model-written JavaScript in a
   QuickJS-on-WebAssembly sandbox, with signed continuations, interrupts, and
-  approval flows.
+  approval flows; TypeScript annotations are stripped with Node
+  `stripTypeScriptTypes` semantics; concurrent tool calls (`Promise.all`)
+  that need approval are batched into one interrupt; the tool catalog lists
+  tools in declaration order (`ToolCallerDefinition.Bind` /
+  `PrepareModelMessage` take an ordered `[]types.Tool`).
 - **`pkg/harness`** (Go port of `@ai-sdk/harness`): Agent/AgentSession,
   `StopWhen`, tool approvals, telemetry; adapters for Claude Code, Codex,
   OpenCode, Deep Agents, ACP, Cursor, fx, GitHub Copilot, Grok Build; a
@@ -81,6 +85,12 @@ step-by-step upgrade instructions are in
   (`ai-sdk/<provider>/<version> runtime/go/<goVersion>`, plus `ai/<version>`
   from the non-streaming `pkg/ai` calls; `StreamText`, `StreamObject` and
   `Rerank` add no `ai/` tag), matching the TypeScript SDK.
+- Vendored `qjs.wasm` rebuilt from pinned upstream sources with job-queue
+  quiescence and module-disabling patches; reproducible via
+  `pkg/internal/third_party/qjs/build/build.sh`.
+- Internal refactor: the WebSocket transcription and translation streams
+  share a session core in `pkg/providerutils/websocket` (`Session[T]`,
+  `ReportError`, `PumpAudio`, `PumpAudioAfterReady`). No behavior change.
 - Full list of breaking and behavior changes: release notes' Breaking
   Changes and Behavior Changes sections.
 
@@ -113,10 +123,32 @@ step-by-step upgrade instructions are in
   WebSocket connections now fail instead of finishing silently on a dropped
   connection; telemetry spans no longer leak on error/abort; harness
   Codex/host-tool/turn-release fixes; a stray leading "L" in ~88 error
-  strings. Full list in the release notes' Bug Fixes section.
+  strings; tool-caller messages (e.g. code-mode's tool catalog) persist
+  across steps; a stack-overflow crash in streaming providers on long runs
+  of events with no output; Mistral thinking-mode deltas dropping their
+  text; a concurrent map crash in the shared HTTP client when
+  setting headers during in-flight requests; SSE lines over 64 KiB no
+  longer abort streams (32 MiB limit); a concurrent map write crash and a
+  late-write panic in `CreateUIMessageStreamWithOptions`; realtime session
+  goroutine leak and double-close panic; harness `AgentSession` concurrent
+  turn-start race and host tool executions leaked on cancel; concurrent map
+  crashes in the agent subagent/skill registries; MCP stdio, TUI and
+  workflow transport races and leaks; Azure system-only prompt panic;
+  poller timeouts and cancellation; JSON numeric provider options; Vercel
+  Sandbox `Wait` ctx handling and stream error causes. Full list in the
+  release notes' Bug
+  Fixes section.
 
 ### Security
 
+- `pkg/codemode`: closed a sandbox escape that let model-written JavaScript
+  reach QuickJS's `std` / `os` modules (host files under the working
+  directory, environment variables, `exit`, unbounded stdout). The sandbox
+  now mounts no filesystem, passes no environment, removes the libc
+  globals and caps console output, and the QuickJS engine refuses all
+  module imports (no native `qjs:*` modules; the loader rejects every
+  specifier), with a source-level `import()` check and `eval` / `Function`
+  blocking as extra layers.
 - Tool approvals verified on resume (HMAC v1, TS-compatible).
 - Downloads: DNS pinning, synced blocklist, bounded reads, credential
   stripping across cross-origin redirects. MCP OAuth discovery SSRF-guarded.
@@ -125,6 +157,17 @@ step-by-step upgrade instructions are in
   `govulncheck` reports no reachable vulnerabilities.
 - BFL poll URLs, OpenAI image-edit URL inputs, and Anthropic batch
   `results_url` now fetched through the SSRF-safe download path.
+- Removed unused internal download helpers that skipped the SSRF checks.
+- Harness bridge dial errors no longer include the bridge token.
+- MCP OAuth and OPA policy HTTP responses are read with a 1 MiB limit.
+- Bedrock event-stream decoder overflow panic on crafted frames;
+  `anthropicaws` SigV4 credential race; WebSocket dial errors no longer
+  include query strings or userinfo.
+- `provider.SerializableConfig` redacts credential headers (`Authorization`,
+  `Proxy-Authorization`, `X-Api-Key`, `Api-Key`, `X-Goog-Api-Key`,
+  `Cookie`, `Set-Cookie`, and any `*-api-key` / `*-token` / `*secret*`
+  name, case-insensitive) from a serialized model's `Config.Headers`, so
+  header-based credentials no longer end up in `SerializedModel.Config`.
 
 ## [0.4.0] - 2026-03-29
 

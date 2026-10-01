@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
@@ -238,22 +239,40 @@ func maasBaseURL(project, location string) string {
 	return fmt.Sprintf("https://%s/v1/projects/%s/locations/%s/endpoints/openapi", vertexHost(location), project, location)
 }
 
+// defaultMaasTokenCache caches the ADC access token used by
+// defaultMaasAuthToken, mirroring the main googlevertex.Provider's own
+// cachedTokenSource (provider.go) -- and the TS SDK's equivalent
+// createAuthTokenGenerator, which hands back a single `GoogleAuth` client
+// closed over once and reused for the life of the provider, relying on the
+// google-auth-library's own internal token caching rather than fetching a
+// fresh token on every call. Without this, defaultMaasAuthToken previously
+// called google.DefaultTokenSource(ctx, ...).Token() fresh on every single
+// outgoing HTTP request (via maasAuthTransport.RoundTrip), which re-reads/
+// re-parses credentials and can trip GCE metadata-server rate limits under a
+// busy workload. Package-scoped (not per-MaaSProvider) because
+// defaultMaasAuthToken is itself a free function with no provider receiver.
+var defaultMaasTokenCache = &cachedTokenSource{
+	resolve: func(ctx context.Context) (string, time.Time, error) {
+		tokenSource, err := google.DefaultTokenSource(ctx, "https://www.googleapis.com/auth/cloud-platform")
+		if err != nil {
+			return "", time.Time{}, fmt.Errorf("failed to load Google application default credentials: %w", err)
+		}
+		token, err := tokenSource.Token()
+		if err != nil {
+			return "", time.Time{}, fmt.Errorf("failed to fetch Google access token: %w", err)
+		}
+		if token == nil || token.AccessToken == "" {
+			return "", time.Time{}, fmt.Errorf("google application default credentials returned an empty access token")
+		}
+		return token.AccessToken, token.Expiry, nil
+	},
+}
+
 func defaultMaasAuthToken(ctx context.Context) (string, error) {
 	if token := os.Getenv("GOOGLE_VERTEX_ACCESS_TOKEN"); token != "" {
 		return token, nil
 	}
-	tokenSource, err := google.DefaultTokenSource(ctx, "https://www.googleapis.com/auth/cloud-platform")
-	if err != nil {
-		return "", fmt.Errorf("failed to load Google application default credentials: %w", err)
-	}
-	token, err := tokenSource.Token()
-	if err != nil {
-		return "", fmt.Errorf("failed to fetch Google access token: %w", err)
-	}
-	if token == nil || token.AccessToken == "" {
-		return "", fmt.Errorf("google application default credentials returned an empty access token")
-	}
-	return token.AccessToken, nil
+	return defaultMaasTokenCache.tokenFor(ctx)
 }
 
 func (p *MaaSProvider) LanguageModel(modelID string) (provider.LanguageModel, error) {

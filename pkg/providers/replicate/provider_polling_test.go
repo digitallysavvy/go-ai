@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -274,6 +275,70 @@ func TestReplicateImagePollingRespectsMaxPollAttempts(t *testing.T) {
 }
 
 type replicateRoundTripper func(*http.Request) (*http.Response, error)
+
+// TestPollPrediction_RespondsPromptlyToContextCancellation is a regression
+// test: pollPrediction checked ctx.Done() once per loop iteration, then
+// called a plain time.Sleep(pollInterval) (hardcoded 2s) instead of
+// selecting on ctx.Done() during the wait. Cancelling the context mid-sleep
+// went unnoticed until the next iteration, delaying cancellation by up to a
+// full poll interval.
+func TestPollPrediction_RespondsPromptlyToContextCancellation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"p1","status":"processing"}`))
+	}))
+	defer srv.Close()
+
+	p := New(Config{APIKey: "test", BaseURL: srv.URL})
+	m := NewLanguageModel(p, "owner/model:version")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	_, err := m.pollPrediction(ctx, "p1")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected context cancellation error")
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("pollPrediction took %v to notice ctx cancellation (expected <500ms)", elapsed)
+	}
+}
+
+// TestPollImagePrediction_RespondsPromptlyToContextCancellation is the
+// image-model analogue of TestPollPrediction_RespondsPromptlyToContextCancellation.
+func TestPollImagePrediction_RespondsPromptlyToContextCancellation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"p1","status":"processing"}`))
+	}))
+	defer srv.Close()
+
+	p := New(Config{APIKey: "test", BaseURL: srv.URL})
+	m := NewImageModel(p, "owner/model:version")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	_, err := m.pollImagePrediction(ctx, "p1", ReplicateImagePollOptions{})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected context cancellation error")
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("pollImagePrediction took %v to notice ctx cancellation (expected <500ms)", elapsed)
+	}
+}
 
 func (f replicateRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)

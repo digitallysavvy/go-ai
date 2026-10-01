@@ -372,6 +372,12 @@ type SSEVideoEvent struct {
 // Context cancellation is checked on each iteration to stop reading immediately.
 func (m *VideoModel) readSSEVideoResponse(ctx context.Context, body io.Reader) (*provider.VideoModelV3Response, error) {
 	scanner := bufio.NewScanner(body)
+	// A "result" event can carry an inline base64-encoded video, which is
+	// routinely well over bufio.Scanner's default 64 KiB token limit on a
+	// single unchunked `data: ` line. Raise it in line with the 64 KiB
+	// start / 32 MiB ceiling used for the shared SSEParser (R4-4) and the
+	// batch NDJSON scanners elsewhere in the codebase.
+	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
 
 	for scanner.Scan() {
 		// Check for context cancellation before processing each line

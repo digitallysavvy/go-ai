@@ -9,6 +9,18 @@ import (
 
 // Mem provides a safe interface for WebAssembly memory operations.
 // It wraps the underlying wazero api.Memory with bounds checking and error handling.
+//
+// Single-goroutine contract: mu is held only around UnpackPtr's and Write's
+// own read+use sequences, not around Read/ReadUint8/ReadUint32/ReadUint64/
+// ReadString/WriteUint8/WriteUint32/WriteUint64, so it does not make Mem
+// safe for concurrent use from multiple goroutines -- it only guards against
+// UnpackPtr and Write's internal multi-step sequences interleaving with each
+// other. Every Mem (and the Context/Runtime that owns it) must be driven by
+// a single goroutine at a time, which matches the current call graph: one
+// sandbox invocation is driven end-to-end by one goroutine
+// (driveCodeModeExecution in pkg/codemode). Do not share a Context/Runtime
+// across concurrent goroutines without first making every method here
+// consistently synchronized.
 type Mem struct {
 	mu  sync.Mutex
 	mem api.Memory

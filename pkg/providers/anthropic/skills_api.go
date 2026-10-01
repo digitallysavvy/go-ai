@@ -72,14 +72,19 @@ func (s *SkillsAPI) UploadSkill(ctx context.Context, opts types.UploadSkillOptio
 	}
 
 	if out.LatestVersion != "" {
+		// Matches the TS SDK (AnthropicSkills.uploadSkill): fetchVersionMetadata's
+		// getFromApi call uses anthropicFailedResponseHandler, which throws on a
+		// non-2xx response, and uploadSkill does not catch it -- the error
+		// propagates to the caller rather than being silently ignored.
 		meta, err := s.fetchVersionMetadata(ctx, out.ID, out.LatestVersion, headers)
-		if err == nil {
-			if meta.Name != "" {
-				out.Name = meta.Name
-			}
-			if meta.Description != "" {
-				out.Description = meta.Description
-			}
+		if err != nil {
+			return nil, err
+		}
+		if meta.Name != "" {
+			out.Name = meta.Name
+		}
+		if meta.Description != "" {
+			out.Description = meta.Description
 		}
 	}
 
@@ -109,8 +114,18 @@ func (s *SkillsAPI) fetchVersionMetadata(ctx context.Context, skillID, version s
 		Path:    fmt.Sprintf("/skills/%s/versions/%s", providerutils.EncodePathSegment(skillID), providerutils.EncodePathSegment(version)),
 		Headers: headers,
 	})
-	if err != nil || resp.StatusCode >= 400 {
+	if err != nil {
 		return nil, err
+	}
+	// Bug fix: this branch previously returned (nil, nil) for a non-2xx
+	// response here (the combined `err != nil || resp.StatusCode >= 400`
+	// check returned the transport `err`, which is nil on this path). The
+	// caller's `err == nil` check then treated that as success and
+	// dereferenced the nil *struct, panicking. Return a proper, non-nil API
+	// error instead, matching TS's anthropicFailedResponseHandler, which
+	// throws on any non-2xx response from this endpoint.
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("anthropic skill version metadata fetch failed: %d %s", resp.StatusCode, string(resp.Body))
 	}
 	var out struct {
 		Name        string `json:"name"`

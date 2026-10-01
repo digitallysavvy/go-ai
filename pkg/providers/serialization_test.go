@@ -20,7 +20,14 @@ import (
 )
 
 func TestOpenAIModelWorkflowSerializationRoundTrip(t *testing.T) {
-	p := openai.New(openai.Config{APIKey: "secret", BaseURL: "https://example.com/v1", Headers: map[string]string{"Authorization": "Bearer secret"}})
+	p := openai.New(openai.Config{
+		APIKey:  "secret",
+		BaseURL: "https://example.com/v1",
+		Headers: map[string]string{
+			"Authorization": "Bearer secret",
+			"X-Request-Id":  "non-sensitive",
+		},
+	})
 	model, err := p.LanguageModel("gpt-4o")
 	if err != nil {
 		t.Fatalf("LanguageModel() error: %v", err)
@@ -36,8 +43,18 @@ func TestOpenAIModelWorkflowSerializationRoundTrip(t *testing.T) {
 	if _, ok := serialized.Config["APIKey"]; ok {
 		t.Fatalf("APIKey should not be serialized: %#v", serialized.Config)
 	}
-	if headers, ok := serialized.Config["headers"].(map[string]interface{}); !ok || headers["Authorization"] != "Bearer secret" {
+	// R1-2: a credential-bearing header (Authorization) must never cross
+	// into the serialized config, while a non-sensitive header must still
+	// round-trip.
+	headers, ok := serialized.Config["headers"].(map[string]interface{})
+	if !ok {
 		t.Fatalf("Headers should be serialized when JSON-compatible: %#v", serialized.Config)
+	}
+	if _, leaked := headers["Authorization"]; leaked {
+		t.Fatalf("Authorization header leaked into serialized config: %#v", headers)
+	}
+	if headers["X-Request-Id"] != "non-sensitive" {
+		t.Fatalf("non-sensitive header dropped from serialized config: %#v", headers)
 	}
 	restored, err := provider.DeserializeModel(serialized)
 	if err != nil {

@@ -13,7 +13,7 @@ import (
 // Ports the "experimental_toolCallers" describe block from
 // ai/src/generate-text/generate-text.test.ts.
 
-func localCallerTool(name string, prepareModelMessage func(map[string]types.Tool) *string) types.Tool {
+func localCallerTool(name string, prepareModelMessage func([]types.Tool) *string) types.Tool {
 	return types.Tool{
 		Name:       name,
 		Parameters: map[string]interface{}{"type": "object"},
@@ -22,20 +22,20 @@ func localCallerTool(name string, prepareModelMessage func(map[string]types.Tool
 		},
 		ExperimentalToolCaller: &types.ToolCallerDefinition{
 			Type: types.ToolCallerTypeLocal,
-			Bind: func(tools map[string]types.Tool) types.Tool {
+			Bind: func(tools []types.Tool) types.Tool {
 				return types.Tool{
 					Name:       name,
 					Parameters: map[string]interface{}{"type": "object"},
 					Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 						names := make([]string, 0, len(tools))
-						for n := range tools {
-							names = append(names, n)
+						for _, tl := range tools {
+							names = append(names, tl.Name)
 						}
 						return names, nil
 					},
 				}
 			},
-			PrepareModelMessage: func(tools map[string]types.Tool) *string {
+			PrepareModelMessage: func(tools []types.Tool) *string {
 				if prepareModelMessage == nil {
 					return nil
 				}
@@ -168,7 +168,7 @@ func TestGenerateText_ToolCallers_AnnouncesLocalCallerInMessage(t *testing.T) {
 		StopWhen: []StopCondition{IsStepCount(1)},
 		Prompt:   "Check inventory.",
 		Tools: []types.Tool{
-			localCallerTool("code_mode", func(tools map[string]types.Tool) *string { return &msg }),
+			localCallerTool("code_mode", func(tools []types.Tool) *string { return &msg }),
 			{
 				Name:       "getInventory",
 				Parameters: map[string]interface{}{"type": "object"},
@@ -231,7 +231,7 @@ func TestGenerateText_ToolCallers_DoesNotRepeatCallerMessageAlreadyPresent(t *te
 			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: catalog}}},
 		},
 		Tools: []types.Tool{
-			localCallerTool("code_mode", func(map[string]types.Tool) *string { return &catalog }),
+			localCallerTool("code_mode", func([]types.Tool) *string { return &catalog }),
 			{
 				Name:       "nested",
 				Parameters: map[string]interface{}{"type": "object"},

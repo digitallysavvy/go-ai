@@ -80,43 +80,75 @@ func RunCodeMode(ctx context.Context, input RunInput) (interface{}, error) {
 	}
 
 	bridge := newToolBridge(ctx, input, options, policy, outerToolCall, prepared.replayLedger, prepared.resumePendings, prepared.resumeResolutions)
-	source := wrapCodeModeSource(stripTypeScriptAnnotations(input.JS))
+	// Mirrors TypeScript's stripSnippetTypes (run package,
+	// dist/utils/source-cache.js), which catches *any* stripper error and
+	// falls back to the snippet unmodified rather than rejecting it: any
+	// TypeScript syntax the stripper can't erase (or genuinely can't parse)
+	// is handed to the JavaScript engine as-is, where it fails -- if it
+	// truly isn't valid JavaScript -- with an ordinary engine syntax error
+	// instead of a stripper-specific one. stripTypeScriptAnnotations already
+	// returns the original source unmodified on error, so the error itself
+	// is never surfaced here.
+	strippedJS, _ := stripTypeScriptAnnotations(input.JS)
+	// Reject dynamic import() up front -- see assertNoDynamicImport's doc
+	// comment (sandbox_hardening.go) for why this, paired with
+	// installRuntimeHardening blocking eval/Function (engine.go), is the
+	// fix for the qjs:std/qjs:os/qjs:bjson native-module sandbox-escape
+	// gap: stripSandboxGlobals alone does not stop
+	// `await import('qjs:std')` from reaching the same host-escape
+	// primitives independently of the global object.
+	if ierr := assertNoDynamicImport(strippedJS); ierr != nil {
+		return nil, ierr
+	}
+	source := wrapCodeModeSource(strippedJS)
 
-	resultJSON, isUndefined, err := runInSandbox(ctx, policy, source, func(jsCtx *qjs.Context) error {
-		return bindCodeModeDispatch(jsCtx, bridge)
+	resultJSON, isUndefined, interrupted, err := runInSandbox(ctx, policy, func(jsCtx *qjs.Context) (string, bool, bool, error) {
+		if berr := bindCodeModeDispatch(jsCtx, bridge); berr != nil {
+			return "", false, false, berr
+		}
+		return driveCodeModeExecution(jsCtx, bridge, source)
 	})
 
-	bridge.mu.Lock()
-	pendingNew, pendingNewIndex := bridge.pendingNew, bridge.pendingNewIndex
-	codeModeErr, codeModeErrIndex := bridge.lastCodeModeErr, bridge.lastCodeModeErrIndex
-	committed := append([]replayRecord(nil), bridge.committed...)
-	bridge.mu.Unlock()
+	committed := bridge.committedSnapshot()
+
+	if interrupted {
+		// Quiescence was reached (runInSandbox's poll loop; see
+		// driveCodeModeExecution) with one or more host calls newly
+		// pending -- every entry collected in the same wave (e.g. a
+		// Promise.all([...]) where more than one call needed approval)
+		// surfaces together as a single multi-item Continuation. Mirrors
+		// TypeScript's run requiring the complete interruption batch to be
+		// resolved together, from the one job-queue-quiescence point where
+		// `run`'s manager.js collects them.
+		batch := bridge.batchSnapshot()
+		if len(batch) == 0 {
+			return nil, NewProtocolError("Code mode reported an interruption with no pending interruptions recorded.", nil)
+		}
+		return buildInterruptResult(input, options, outerToolCall, toolNames, committed, batch)
+	}
 
 	if err != nil {
-		// A genuine interrupt escaped the sandbox as a JS exception (see
-		// toolBridge.raiseInterrupt) and is the most recent bridge failure
-		// -- prefer it over a stale CodeModeError an earlier call in this
-		// same invocation already caught and the script continued past.
-		if pendingNew != nil && (codeModeErr == nil || pendingNewIndex >= codeModeErrIndex) {
-			return buildInterruptResult(input, options, outerToolCall, toolNames, committed, *pendingNew)
-		}
-		if codeModeErr != nil {
+		// Prefer a preserved *typed* CodeModeError a bridge call raised
+		// over the generic JavaScript exception text that comes back once
+		// it round-trips through the sandbox (e.g. a script that catches a
+		// rejected tool call's error and rethrows, or lets it propagate
+		// unchanged) -- mirrors TypeScript's findPreservedCodeModeError.
+		if codeModeErr := bridge.lastCodeModeErr(); codeModeErr != nil {
 			return nil, codeModeErr
 		}
 		return nil, err
 	}
 
-	if pendingNew != nil {
-		// The sandboxed script caught the interrupt's exception (see
-		// raiseInterrupt) and completed anyway instead of letting it
-		// unwind: the pending host bridge work was started but never
-		// surfaced to the caller for resolution. Mirrors TypeScript's
-		// CodeModeDetachedBridgeRequestError (code-mode/src/errors.ts),
-		// translated from the underlying `run` package's
-		// RUN_DETACHED_BRIDGE_REQUEST in toCodeModeRuntimeError.
+	if batch := bridge.batchSnapshot(); len(batch) > 0 {
+		// The sandboxed script never awaited (or otherwise observed) one
+		// or more deliberately-unresolved interrupt Promises and completed
+		// anyway. Mirrors TypeScript's CodeModeDetachedBridgeRequestError
+		// (code-mode/src/errors.ts), translated from the underlying `run`
+		// package's RUN_DETACHED_BRIDGE_REQUEST in toCodeModeRuntimeError.
+		first := batch[0]
 		return nil, NewDetachedBridgeRequestError(
-			"Code mode requested a host bridge interruption that was never observed: the sandboxed script must not catch the interruption and continue.",
-			map[string]interface{}{"toolName": pendingNew.ToolName, "toolCallId": pendingNew.ToolCallID},
+			"Code mode requested a host bridge interruption that was never observed: the sandboxed script must not let the interruption go undetected and complete anyway.",
+			map[string]interface{}{"toolName": first.ToolName, "toolCallId": first.ToolCallID},
 		)
 	}
 
@@ -149,10 +181,11 @@ type preparedContinuation struct {
 
 	// replayLedger/resumePendings/resumeResolutions feed newToolBridge when
 	// nextInterrupt is nil and (for a continuation input) every pending
-	// interruption has a resolution: see toolBridge's doc comment.
-	replayLedger      []replayRecord
-	resumePendings    []PendingInterruption
-	resumeResolutions []interface{}
+	// interruption has a resolution: see toolBridge's doc comment. Keyed
+	// by call index (see replayRecord's doc comment).
+	replayLedger      map[int]replayRecord
+	resumePendings    map[int]PendingInterruption
+	resumeResolutions map[int]interface{}
 }
 
 // prepareContinuation validates and advances input.Continuation, mirroring
@@ -242,14 +275,27 @@ func prepareContinuation(input RunInput, toolNames []string, maxToolOutputBytes 
 	if derr != nil {
 		return preparedContinuation{}, derr
 	}
-	resolutionValues := make([]interface{}, len(resolutions))
-	for i, r := range resolutions {
-		resolutionValues[i] = r.Value
+	// Index resumePendings/resumeResolutions by each pending interruption's
+	// own call index (not its position in the batch -- see
+	// callIndexForPending/replayRecord's doc comment): concurrent batching
+	// means the batch's entries are not necessarily contiguous with the
+	// replay ledger, or with each other.
+	resumePendings := make(map[int]PendingInterruption, len(continuation.PendingInterruptions))
+	resumeResolutions := make(map[int]interface{}, len(resolutions))
+	for i, pending := range continuation.PendingInterruptions {
+		callIdx, cerr := callIndexForPending(pending)
+		if cerr != nil {
+			return preparedContinuation{}, cerr
+		}
+		resumePendings[callIdx] = pending
+		if i < len(resolutions) {
+			resumeResolutions[callIdx] = resolutions[i].Value
+		}
 	}
 	return preparedContinuation{
 		replayLedger:      ledger,
-		resumePendings:    continuation.PendingInterruptions,
-		resumeResolutions: resolutionValues,
+		resumePendings:    resumePendings,
+		resumeResolutions: resumeResolutions,
 	}, nil
 }
 
@@ -289,11 +335,18 @@ func assertNoDeniedApproval(pendingInterruptions []PendingInterruption, resoluti
 }
 
 // buildInterruptResult signs a new Continuation covering every call
-// completed so far (committed) plus the newly pending interruption, and
-// returns the resulting *Interrupt. Mirrors the tail of TypeScript's
-// runCodeMode (the catch-free success path that builds a fresh
-// continuation from result.interruptions).
-func buildInterruptResult(input RunInput, options *Options, outerToolCall string, toolNames []string, committed []replayRecord, pending PendingInterruption) (interface{}, error) {
+// completed so far (committed) plus the newly pending interruption batch
+// (one or more entries collected together at the same job-queue-quiescence
+// point -- see driveCodeModeExecution/toolBridge.pendingBatch), and
+// returns an *Interrupt for the first of them. Mirrors the tail of
+// TypeScript's runCodeMode (the catch-free success path that builds a
+// fresh continuation from result.interruptions, which is likewise
+// potentially multi-entry). Resolving the returned Interrupt advances
+// through the rest of batch via the existing single-sandbox-call-free path
+// in prepareContinuation (run_code_mode.go's prepareContinuation/
+// toCodeModeInterrupt), exactly as it already does for a hypothetical
+// multi-entry continuation from any source.
+func buildInterruptResult(input RunInput, options *Options, outerToolCall string, toolNames []string, committed map[int]replayRecord, batch []PendingInterruption) (interface{}, error) {
 	token, err := encodeReplayLedger(committed)
 	if err != nil {
 		return nil, err
@@ -304,7 +357,7 @@ func buildInterruptResult(input RunInput, options *Options, outerToolCall string
 		OuterToolCallID:      outerToolCall,
 		ToolNames:            toolNames,
 		Token:                token,
-		PendingInterruptions: []PendingInterruption{pending},
+		PendingInterruptions: batch,
 		Resolutions:          []PendingResolution{},
 	}
 
@@ -371,7 +424,19 @@ func wrapCodeModeSource(js string) string {
 
 // bindCodeModeDispatch installs the single global host function that every
 // `tools.<name>(input)` call is routed through by the Proxy in
-// wrapCodeModeSource.
+// wrapCodeModeSource, as a genuine async host function (isAsync=true):
+// calling it returns a real JS Promise immediately, synchronously, without
+// blocking on bridge.invoke's outcome -- this is what lets a guest
+// `Promise.all([tools.a(x), tools.b(y)])` dispatch both calls before
+// either one's Promise settles, so Go can collect every call that decided
+// to interrupt in the same wave together (see
+// toolBridge.pendingBatch/driveCodeModeExecution) instead of surfacing
+// only the first one. See This.Promise's doc comment
+// (pkg/internal/third_party/qjs/value.go) and QJS_CreateFunctionProxy's
+// generated JS wrapper (the inline `async function QJS_AsyncFunctionProxy`
+// source in qjswasm/function.c) for how the underlying
+// async-function-returns-immediately-with-a-pending-promise mechanism
+// works.
 func bindCodeModeDispatch(jsCtx *qjs.Context, bridge *toolBridge) error {
 	dispatch := jsCtx.Function(func(this *qjs.This) (*qjs.Value, error) {
 		args := this.Args()
@@ -389,15 +454,149 @@ func bindCodeModeDispatch(jsCtx *qjs.Context, bridge *toolBridge) error {
 			inputJSON = js
 		}
 
+		promise := this.Promise()
+
 		outJSON, ierr := bridge.invoke(toolName, inputJSON)
 		if ierr != nil {
-			return nil, ierr
+			return settleDispatchFailure(jsCtx, bridge, promise, ierr)
 		}
+
+		var resultVal *qjs.Value
 		if outJSON == "" {
-			return jsCtx.NewUndefined(), nil
+			resultVal = jsCtx.NewUndefined()
+		} else {
+			resultVal = jsCtx.ParseJSON(outJSON)
 		}
-		return jsCtx.ParseJSON(outJSON), nil
-	})
+		if rerr := promise.Resolve(resultVal); rerr != nil {
+			return nil, rerr
+		}
+		return nil, nil
+	}, true)
 	jsCtx.Global().SetPropertyStr("__codeModeDispatch", dispatch)
 	return nil
+}
+
+// settleDispatchFailure decides how one failed `tools.x(input)` dispatch
+// affects the Promise __codeModeDispatch already returned for it,
+// mirroring the three-way split TypeScript's genuinely concurrent dispatch
+// gets for free by running each call as its own independent async host
+// function (code-mode/src/run-code-mode.ts's invokeCodeModeTool):
+//
+//   - *interruptUnwind (toolBridge.raiseInterrupt: approval needed, or a
+//     host tool called RequestCodeModeInterrupt): leave the Promise
+//     deliberately unresolved so the sandboxed script keeps making
+//     synchronous progress -- e.g. the rest of a concurrent Promise.all
+//     array -- until nothing more can run
+//     (driveCodeModeExecution's poll loop is what notices that and
+//     collects every such call from the same wave together).
+//   - *AbortedError/*BridgeLimitError: fatal to the whole invocation, not
+//     just this call -- mirrors TypeScript's failTerminal, which aborts
+//     the entire worker run for exactly these two conditions outside the
+//     per-call promise machinery entirely (run-code-mode.ts's
+//     markWorkerRequest, called before a call's promise even exists).
+//     Recording it on the bridge (toolBridge.setFatal) rather than
+//     rejecting the Promise is what lets driveCodeModeExecution notice it
+//     immediately even if the sandboxed script would otherwise catch -- or
+//     never even observe -- a plain rejection.
+//   - anything else (unknown tool, a failing tool.Execute, a denied
+//     callback-mode approval, an oversized payload, ...): reject this
+//     call's own Promise and let the sandbox's own Promise.all/await
+//     semantics decide what happens next, exactly as TypeScript's
+//     invokeCodeModeTool throwing inside one `__codeMode.toolN` async host
+//     function only rejects that one call's Promise.
+func settleDispatchFailure(jsCtx *qjs.Context, bridge *toolBridge, promise *qjs.Value, ierr error) (*qjs.Value, error) {
+	if _, ok := ierr.(*interruptUnwind); ok {
+		return nil, nil
+	}
+	switch fatal := ierr.(type) {
+	case *AbortedError:
+		bridge.setFatal(fatal)
+		return nil, nil
+	case *BridgeLimitError:
+		bridge.setFatal(fatal)
+		return nil, nil
+	}
+	errVal := jsCtx.NewError(ierr)
+	if rerr := promise.Reject(errVal); rerr != nil {
+		return nil, rerr
+	}
+	return nil, nil
+}
+
+// driveCodeModeExecution evaluates source (already wrapped by
+// wrapCodeModeSource) via qjs.Context.EvalNoAutoAwait -- which, unlike
+// plain Eval/QJS_Eval, never blocks draining the job queue waiting for a
+// promise to settle (see EvalNoAutoAwait's doc comment) -- and drives it
+// either to a completed result or to the first point where the job queue
+// goes quiescent with one or more host calls newly pending (interrupted
+// return value), using qjs.Context.RunPendingJobs/Value.PromiseState/
+// Value.PromiseResult instead of Value.Await. runInSandbox
+// (pkg/codemode/engine.go) calls this as its `drive` callback.
+//
+// Mirrors, at a much smaller scale, `run`'s own manager.js: its
+// settleInterruptionsIfQuiescent (pendingInterruptionIndexes.size > 0 &&
+// inFlightBridgeRequests === 0) is the same "nothing more can run, and at
+// least one call is pending" condition this checks once RunPendingJobs
+// reports no more jobs ran.
+func driveCodeModeExecution(jsCtx *qjs.Context, bridge *toolBridge, source string) (resultJSON string, isUndefined bool, interrupted bool, err error) {
+	value, eerr := jsCtx.EvalNoAutoAwait("code-mode.js", qjs.Code(source))
+	if eerr != nil {
+		return "", false, false, eerr
+	}
+
+	for {
+		if fatal := bridge.fatal(); fatal != nil {
+			return "", false, false, fatal
+		}
+
+		if !value.IsPromise() {
+			break
+		}
+
+		switch value.PromiseState() {
+		case qjs.PromiseStateFulfilled:
+			value = value.PromiseResult()
+			continue
+		case qjs.PromiseStateRejected:
+			reason := value.PromiseResult()
+			return "", false, false, reason.Exception()
+		default: // qjs.PromiseStatePending
+			ran, rerr := jsCtx.RunPendingJobs()
+			if rerr != nil {
+				return "", false, false, rerr
+			}
+			if ran > 0 {
+				// Something settled or ran further; re-check fatal/state
+				// from the top with fresh information.
+				continue
+			}
+
+			// The job queue is quiescent: nothing more can run right now
+			// without one of the deliberately-unresolved interrupt
+			// Promises settling.
+			if fatal := bridge.fatal(); fatal != nil {
+				return "", false, false, fatal
+			}
+			if len(bridge.batchSnapshot()) > 0 {
+				return "", false, true, nil
+			}
+			// Nothing pending, nothing fatal, yet the top-level promise
+			// never settled and nothing more can run: the script itself
+			// awaited a promise tied to no host call at all (e.g. `await
+			// new Promise(() => {})`), not anything the bridge produced.
+			return "", false, false, NewProtocolError(
+				"Code mode script awaited a promise that no pending host call will ever settle.",
+				nil,
+			)
+		}
+	}
+
+	if value.IsUndefined() {
+		return "", true, false, nil
+	}
+	js, jerr := value.JSONStringify()
+	if jerr != nil {
+		return "", false, false, jerr
+	}
+	return js, false, false, nil
 }

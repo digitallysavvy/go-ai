@@ -549,204 +549,200 @@ func (s *mistralStream) Err() error {
 }
 
 func (s *mistralStream) Next() (*provider.StreamChunk, error) {
-	if len(s.flushQueue) > 0 {
-		chunk := s.flushQueue[0]
-		s.flushQueue = s.flushQueue[1:]
-		return chunk, nil
-	}
-	if s.err != nil {
-		return nil, s.err
-	}
-	event, err := s.parser.Next()
-	if err != nil {
-		s.err = err
-		return nil, err
-	}
-	if streaming.IsStreamDone(event) {
-		s.err = io.EOF
-		return nil, io.EOF
-	}
-	rawQueued := false
-	if s.includeRawChunks {
-		var raw interface{}
-		if err := json.Unmarshal([]byte(event.Data), &raw); err != nil {
-			raw = event.Data
+	for {
+		if len(s.flushQueue) > 0 {
+			chunk := s.flushQueue[0]
+			s.flushQueue = s.flushQueue[1:]
+			return chunk, nil
 		}
-		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-			Type: provider.ChunkTypeRaw,
-			Raw:  raw,
-		})
-		rawQueued = true
-	}
+		if s.err != nil {
+			return nil, s.err
+		}
+		event, err := s.parser.Next()
+		if err != nil {
+			s.err = err
+			return nil, err
+		}
+		if streaming.IsStreamDone(event) {
+			s.err = io.EOF
+			return nil, io.EOF
+		}
+		rawQueued := false
+		if s.includeRawChunks {
+			var raw interface{}
+			if err := json.Unmarshal([]byte(event.Data), &raw); err != nil {
+				raw = event.Data
+			}
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+				Type: provider.ChunkTypeRaw,
+				Raw:  raw,
+			})
+			rawQueued = true
+		}
 
-	// Parse using a struct where content is json.RawMessage to handle
-	// both plain-string and content-array formats.
-	var chunkData struct {
-		ID      string `json:"id"`
-		Model   string `json:"model"`
-		Created int64  `json:"created"`
-		Choices []struct {
-			FinishReason string `json:"finish_reason"`
-			Delta        struct {
-				Content   json.RawMessage `json:"content"`
-				ToolCalls []struct {
-					// Index is nullish in TS's mistralChatChunkSchema
-					// (index: z.number().nullish()); a *int (rather than a
-					// bare int defaulting to 0) preserves "omitted" as
-					// distinct from index 0 for the tracker's lookup order.
-					Index    *int   `json:"index"`
-					ID       string `json:"id"`
-					Type     string `json:"type"`
-					Function struct {
-						Name      string `json:"name"`
-						Arguments string `json:"arguments"`
-					} `json:"function"`
-				} `json:"tool_calls"`
-			} `json:"delta"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal([]byte(event.Data), &chunkData); err != nil {
-		errorChunk := &provider.StreamChunk{
-			Type: provider.ChunkTypeError,
-			Text: fmt.Sprintf("mistral: failed to parse stream chunk: %v", err),
+		// Parse using a struct where content is json.RawMessage to handle
+		// both plain-string and content-array formats.
+		var chunkData struct {
+			ID      string `json:"id"`
+			Model   string `json:"model"`
+			Created int64  `json:"created"`
+			Choices []struct {
+				FinishReason string `json:"finish_reason"`
+				Delta        struct {
+					Content   json.RawMessage `json:"content"`
+					ToolCalls []struct {
+						// Index is nullish in TS's mistralChatChunkSchema
+						// (index: z.number().nullish()); a *int (rather than a
+						// bare int defaulting to 0) preserves "omitted" as
+						// distinct from index 0 for the tracker's lookup order.
+						Index    *int   `json:"index"`
+						ID       string `json:"id"`
+						Type     string `json:"type"`
+						Function struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
+				} `json:"delta"`
+			} `json:"choices"`
 		}
-		if rawQueued {
-			s.flushQueue = append(s.flushQueue, errorChunk)
-			return s.Next()
+		if err := json.Unmarshal([]byte(event.Data), &chunkData); err != nil {
+			errorChunk := &provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: fmt.Sprintf("mistral: failed to parse stream chunk: %v", err),
+			}
+			if rawQueued {
+				s.flushQueue = append(s.flushQueue, errorChunk)
+				continue
+			}
+			return errorChunk, nil
 		}
-		return errorChunk, nil
-	}
-	if !s.responseMetadataEmitted && (chunkData.ID != "" || chunkData.Model != "" || chunkData.Created != 0 || len(s.responseHeaders) > 0) {
-		s.responseMetadataEmitted = true
-		meta := &provider.ResponseMetadata{
-			ID:      chunkData.ID,
-			ModelID: chunkData.Model,
-			Headers: s.responseHeaders,
+		if !s.responseMetadataEmitted && (chunkData.ID != "" || chunkData.Model != "" || chunkData.Created != 0 || len(s.responseHeaders) > 0) {
+			s.responseMetadataEmitted = true
+			meta := &provider.ResponseMetadata{
+				ID:      chunkData.ID,
+				ModelID: chunkData.Model,
+				Headers: s.responseHeaders,
+			}
+			if chunkData.Created != 0 {
+				meta.Timestamp = time.Unix(chunkData.Created, 0)
+			}
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+				Type:             provider.ChunkTypeResponseMetadata,
+				ResponseMetadata: meta,
+			})
 		}
-		if chunkData.Created != 0 {
-			meta.Timestamp = time.Unix(chunkData.Created, 0)
-		}
-		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-			Type:             provider.ChunkTypeResponseMetadata,
-			ResponseMetadata: meta,
-		})
-	}
 
-	if len(chunkData.Choices) == 0 {
-		return s.Next()
-	}
-	choice := chunkData.Choices[0]
-
-	// Parse delta content: try plain string first, then array of parts.
-	contentRaw := choice.Delta.Content
-	if len(contentRaw) > 0 && contentRaw[0] == '[' {
-		// Array of content parts — used in thinking mode.
-		var parts []struct {
-			Type     string `json:"type"`
-			Text     string `json:"text"`
-			Thinking []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"thinking"`
+		if len(chunkData.Choices) == 0 {
+			continue
 		}
-		if err := json.Unmarshal(contentRaw, &parts); err == nil {
-			for _, part := range parts {
-				switch part.Type {
-				case "thinking":
-					// Collect thinking text
-					var thinkingText string
+		choice := chunkData.Choices[0]
+
+		// Parse delta content: try plain string first, then array of parts.
+		contentRaw := choice.Delta.Content
+		if len(contentRaw) > 0 && contentRaw[0] == '[' {
+			// Array of content parts — used in thinking mode.
+			var parts []struct {
+				Type     string `json:"type"`
+				Text     string `json:"text"`
+				Thinking []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"thinking"`
+			}
+			if err := json.Unmarshal(contentRaw, &parts); err == nil {
+				// Mirrors TS mistral-chat-language-model.ts: every thinking
+				// part in the delta is emitted as reasoning first, then all
+				// text parts are joined into one text delta (ending any
+				// active reasoning), and the delta's tool calls and finish
+				// reason are still processed below.
+				for _, part := range parts {
+					if part.Type != "thinking" {
+						continue
+					}
+					var thinkingText strings.Builder
 					for _, t := range part.Thinking {
-						thinkingText += t.Text
+						thinkingText.WriteString(t.Text)
 					}
-					if thinkingText != "" {
-						if !s.isActiveReasoning {
-							s.isActiveReasoning = true
-							s.flushQueue = append([]*provider.StreamChunk{
-								{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"},
-								{Type: provider.ChunkTypeReasoning, Reasoning: thinkingText, ID: "reasoning-0"},
-							}, s.flushQueue...)
-							return s.Next()
-						}
-						s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-							Type:      provider.ChunkTypeReasoning,
-							Reasoning: thinkingText,
-							ID:        "reasoning-0",
-						})
+					if thinkingText.Len() == 0 {
+						continue
 					}
-				case "text":
-					if part.Text != "" {
-						if s.isActiveReasoning {
-							s.isActiveReasoning = false
-							s.flushQueue = append(s.flushQueue,
-								&provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
-								&provider.StreamChunk{Type: provider.ChunkTypeText, Text: part.Text},
-							)
-						} else {
-							s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-								Type: provider.ChunkTypeText,
-								Text: part.Text,
-							})
-						}
+					if !s.isActiveReasoning {
+						s.isActiveReasoning = true
+						s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"})
+					}
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+						Type:      provider.ChunkTypeReasoning,
+						Reasoning: thinkingText.String(),
+						ID:        "reasoning-0",
+					})
+				}
+				var text strings.Builder
+				for _, part := range parts {
+					if part.Type == "text" {
+						text.WriteString(part.Text)
 					}
 				}
+				if text.Len() > 0 {
+					if s.isActiveReasoning {
+						s.isActiveReasoning = false
+						s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
+					}
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeText, Text: text.String()})
+				}
 			}
-			if len(s.flushQueue) > 0 {
+		} else if len(contentRaw) > 0 && contentRaw[0] == '"' {
+			// Plain string content.
+			var text string
+			if err := json.Unmarshal(contentRaw, &text); err == nil && text != "" {
+				if s.isActiveReasoning {
+					s.isActiveReasoning = false
+					s.flushQueue = append([]*provider.StreamChunk{
+						{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
+						{Type: provider.ChunkTypeText, Text: text},
+					}, s.flushQueue...)
+					if choice.FinishReason != "" {
+						s.flushMistralToolCalls(choice.FinishReason)
+					}
+					continue
+				}
 				if choice.FinishReason != "" {
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeText, Text: text})
 					s.flushMistralToolCalls(choice.FinishReason)
+					continue
 				}
-				return s.Next()
-			}
-		}
-	} else if len(contentRaw) > 0 && contentRaw[0] == '"' {
-		// Plain string content.
-		var text string
-		if err := json.Unmarshal(contentRaw, &text); err == nil && text != "" {
-			if s.isActiveReasoning {
-				s.isActiveReasoning = false
-				s.flushQueue = append([]*provider.StreamChunk{
-					{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
-					{Type: provider.ChunkTypeText, Text: text},
-				}, s.flushQueue...)
-				if choice.FinishReason != "" {
-					s.flushMistralToolCalls(choice.FinishReason)
+				textChunk := &provider.StreamChunk{Type: provider.ChunkTypeText, Text: text}
+				if len(s.flushQueue) > 0 {
+					s.flushQueue = append(s.flushQueue, textChunk)
+					continue
 				}
-				return s.Next()
-			}
-			if choice.FinishReason != "" {
-				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeText, Text: text})
-				s.flushMistralToolCalls(choice.FinishReason)
-				return s.Next()
-			}
-			textChunk := &provider.StreamChunk{Type: provider.ChunkTypeText, Text: text}
-			if len(s.flushQueue) > 0 {
-				s.flushQueue = append(s.flushQueue, textChunk)
-				return s.Next()
-			}
-			return textChunk, nil
-		}
-	}
-
-	// Tool call deltas — tracked via the shared StreamingToolCallTracker
-	// (TS mistral-chat-language-model.ts uses the same tracker), which emits
-	// tool-input-start/delta chunks as arguments arrive and only finalizes
-	// into a tool-call chunk on Flush (never mid-stream, matching Mistral's
-	// finish-time-only semantics).
-	if len(choice.Delta.ToolCalls) > 0 {
-		for _, tc := range choice.Delta.ToolCalls {
-			for _, chunk := range s.toolCallTracker.Track(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
-				c := chunk
-				s.flushQueue = append(s.flushQueue, &c)
+				return textChunk, nil
 			}
 		}
-	}
 
-	// Finish event — flush tool calls and emit finish chunk.
-	if choice.FinishReason != "" {
-		s.flushMistralToolCalls(choice.FinishReason)
-		return s.Next()
-	}
+		// Tool call deltas — tracked via the shared StreamingToolCallTracker
+		// (TS mistral-chat-language-model.ts uses the same tracker), which emits
+		// tool-input-start/delta chunks as arguments arrive and only finalizes
+		// into a tool-call chunk on Flush (never mid-stream, matching Mistral's
+		// finish-time-only semantics).
+		if len(choice.Delta.ToolCalls) > 0 {
+			for _, tc := range choice.Delta.ToolCalls {
+				for _, chunk := range s.toolCallTracker.Track(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
+					c := chunk
+					s.flushQueue = append(s.flushQueue, &c)
+				}
+			}
+		}
 
-	return s.Next()
+		// Finish event — flush tool calls and emit finish chunk.
+		if choice.FinishReason != "" {
+			s.flushMistralToolCalls(choice.FinishReason)
+			continue
+		}
+
+		continue
+
+	}
 }
 
 func (s *mistralStream) flushMistralToolCalls(finishReason string) {

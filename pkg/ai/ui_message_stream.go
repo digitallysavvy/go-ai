@@ -301,10 +301,49 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 			safeEnqueue(part)
 		}
 
+		// chunkCh fans every chunk -- whether written directly by Execute via
+		// writer.Write, or forwarded by a writer.Merge goroutine -- through a
+		// single serialized consumer below. uiState's activeText/
+		// activeReasoning/partialTools maps are only ever mutated from that
+		// one goroutine, matching TS's single-pipeline processing of merged
+		// streams and eliminating the concurrent map writes that otherwise
+		// occur when Execute merges more than one stream (R1-1).
+		chunkCh := make(chan UIMessageChunk)
+		consumerDone := make(chan struct{})
+		go func() {
+			defer close(consumerDone)
+			for chunk := range chunkCh {
+				processAndEnqueue(chunk)
+			}
+		}()
+		// chunkClosed guards chunkCh: a writer or merge goroutine the caller
+		// keeps running after Execute returns must not send on the closed
+		// channel. Late chunks are dropped, as safeEnqueue already does for
+		// the output stream (and as TS's safeEnqueue ignores them).
+		var chunkMu sync.RWMutex
+		chunkClosed := false
+		sendChunk := func(part UIMessageChunk) {
+			chunkMu.RLock()
+			defer chunkMu.RUnlock()
+			if chunkClosed {
+				return
+			}
+			select {
+			case chunkCh <- part:
+			case <-ctx.Done():
+			}
+		}
+
 		var wg sync.WaitGroup
 		merge := func(stream <-chan UIMessageChunk) {
 			if stream == nil {
 				enqueueError(errors.New("merge stream is nil"))
+				return
+			}
+			chunkMu.RLock()
+			lateMerge := chunkClosed
+			chunkMu.RUnlock()
+			if lateMerge {
 				return
 			}
 			wg.Add(1)
@@ -327,14 +366,14 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 						if !ok {
 							return
 						}
-						processAndEnqueue(chunk)
+						sendChunk(chunk)
 					}
 				}
 			}()
 		}
 
 		writer := UIMessageStreamWriter{
-			writeFn:      processAndEnqueue,
+			writeFn:      sendChunk,
 			mergeFn:      merge,
 			onError:      onError,
 			setOutcomeFn: setOutcome,
@@ -356,6 +395,11 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 		}()
 
 		wg.Wait()
+		chunkMu.Lock()
+		chunkClosed = true
+		close(chunkCh)
+		chunkMu.Unlock()
+		<-consumerDone
 
 		mu.Lock()
 		closed = true
@@ -1804,6 +1848,10 @@ func ReadUIMessageStream(r io.Reader) ([]UIMessageChunk, error) {
 		return nil, fmt.Errorf("reader is required")
 	}
 	sc := bufio.NewScanner(r)
+	// UI message chunks can carry inline file/image data well over
+	// bufio.Scanner's default 64 KiB token limit on a single `data: ` line.
+	// Match the bound used for the shared SSEParser (R4-4).
+	sc.Buffer(make([]byte, 64*1024), 32*1024*1024)
 	chunks := make([]UIMessageChunk, 0)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())

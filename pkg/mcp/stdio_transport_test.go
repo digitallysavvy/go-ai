@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -154,4 +155,33 @@ func TestStdioTransportReceiveEOF(t *testing.T) {
 	if !errors.Is(err, io.EOF) {
 		t.Fatalf("Receive() error = %v, want EOF", err)
 	}
+}
+
+// TestStdioTransportReceiveCloseRace is a permanent regression test for
+// R2-2: Receive read t.connected without t.mu, while Connect/Close write it
+// under the lock — a background receive loop (mirroring MCPClient.
+// receiveLoop) racing a caller's Close() tripped `go test -race`. Adapted
+// from the bug report's TestZZBugReviewStdioTransportReceiveCloseRace
+// (state/parity/sep_23_2026/bug-review/R2.md), with a bounded iteration
+// count instead of 2000000 so the test finishes promptly once Close wins.
+func TestStdioTransportReceiveCloseRace(t *testing.T) {
+	tr := NewStdioTransport(StdioTransportConfig{
+		Command: "sh",
+		Args:    []string{"-c", "while true; do echo hi; done"},
+	})
+	if err := tr.Connect(context.Background()); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 2000000; i++ {
+			if _, err := tr.Receive(context.Background()); err != nil {
+				return
+			}
+		}
+	}()
+	_ = tr.Close()
+	wg.Wait()
 }

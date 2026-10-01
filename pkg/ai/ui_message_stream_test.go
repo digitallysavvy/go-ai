@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"reflect"
@@ -2619,5 +2620,50 @@ func TestUIMessageStreamError_MissingReasoningEnd(t *testing.T) {
 	}
 	if target.ChunkType != "reasoning-end" || target.ChunkID != "reasoning_missing" {
 		t.Errorf("unexpected fields: ChunkType=%q ChunkID=%q", target.ChunkType, target.ChunkID)
+	}
+}
+
+// TestBugReview_UIMessageStream_ConcurrentMergeRace is the permanent
+// regression test for R1-1 (bug-review/R1.md): CreateUIMessageStreamWithOptions's
+// shared uiMessageCallbackState (plain maps, no lock) used to be mutated
+// directly by every writer.Merge(stream) goroutine via processAndEnqueue --
+// any Execute that merges two or more streams (the documented purpose of
+// Merge) raced on map writes to activeText/activeReasoning/partialTools,
+// which could crash the whole process with an unrecoverable "fatal error:
+// concurrent map writes". Every chunk -- from a direct writer.Write call or
+// from any merged stream -- must now funnel through a single serialized
+// consumer before touching uiState. Run with `go test -race -count=5` to
+// catch the race reliably.
+func TestBugReview_UIMessageStream_ConcurrentMergeRace(t *testing.T) {
+	ctx := context.Background()
+	makeStream := func(prefix string, n int) chan UIMessageChunk {
+		ch := make(chan UIMessageChunk)
+		go func() {
+			defer close(ch)
+			for i := 0; i < n; i++ {
+				id := fmt.Sprintf("%s-%d", prefix, i)
+				ch <- UIMessageChunk{"type": "text-start", "id": id}
+				ch <- UIMessageChunk{"type": "text-delta", "id": id, "delta": "x"}
+				ch <- UIMessageChunk{"type": "text-end", "id": id}
+			}
+		}()
+		return ch
+	}
+	out, errCh := CreateUIMessageStreamWithOptions(ctx, UIMessageStreamOptions{
+		Execute: func(writer UIMessageStreamWriter) {
+			writer.Merge(makeStream("a", 200))
+			writer.Merge(makeStream("b", 200))
+		},
+	})
+	var gotTypes int
+	for range out {
+		gotTypes++
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("unexpected stream error: %v", err)
+	}
+	// 2 streams * 200 iterations * 3 chunks each.
+	if want := 2 * 200 * 3; gotTypes != want {
+		t.Fatalf("got %d chunks, want %d", gotTypes, want)
 	}
 }

@@ -47,6 +47,42 @@ type Option struct {
 	ProxyFunction      any
 	Stdout             io.Writer
 	Stderr             io.Writer
+
+	// NoFSMount, when true, mounts no directory at all into the WASM
+	// module's filesystem: New skips WithDirMount entirely (no wazero
+	// preopen), so every guest file-I/O syscall (open/read/write/stat/
+	// readdir/...) fails as if the filesystem were empty, regardless of
+	// CWD. This is the safe choice for untrusted/sandboxed code execution
+	// (see pkg/codemode's engine.go, the only consumer of this package in
+	// this module): without it, New defaults CWD to the host process's
+	// real working directory (getRuntimeOption) and mounts it at "/",
+	// giving guest JavaScript -- via the quickjs-libc `std`/`os` globals --
+	// full read/write/delete access to every file under the host's CWD.
+	// When NoFSMount is true, CWD is never consulted (getRuntimeOption
+	// does not default it from os.Getwd either), so no implicit host path
+	// is ever named, let alone mounted.
+	NoFSMount bool
+
+	// DisableModules, when true, makes this runtime reject every ES module
+	// import with a clean JS error -- both the native qjs:std/qjs:os/
+	// qjs:bjson modules (quickjs-libc's host-escape primitives, reachable
+	// via `import('qjs:std')` etc. independently of the global object: see
+	// pkg/codemode's README.vendor.md, "Native-module import escape") and
+	// any file-based specifier (`import('./x')`, `import('/x')`), since
+	// this runtime mounts no filesystem for code-mode's use anyway.
+	//
+	// This is an engine-level (qjs.wasm) defense, not a Go-side string
+	// check: it is threaded through to New_QJS's disable_modules parameter
+	// (see runtime.go's initializeRuntime), which qjs.c's New_QJSContext
+	// and QJS_ModuleLoader both consult (via QJS_RuntimeModulesDisabled) --
+	// see build/disable-modules.patch and README.vendor.md. It holds even
+	// if a Go-side static scan for `import(` is ever bypassed, which is why
+	// pkg/codemode sets it unconditionally on both qjs.New call sites
+	// rather than relying solely on its static check.
+	//
+	// Default is false (modules behave exactly as upstream) so non-code-mode
+	// consumers of this vendored package are unaffected.
+	DisableModules bool
 }
 
 // EvalOption configures JavaScript evaluation behavior in QuickJS context.
@@ -221,7 +257,11 @@ func getRuntimeOption(registry *ProxyRegistry, options ...Option) (option Option
 		option = options[0]
 	}
 
-	if option.CWD == "" {
+	// NoFSMount callers never need a CWD at all (New skips WithDirMount
+	// entirely when it's set -- see runtime.go), so the host's real working
+	// directory is never looked up, let alone named, for a sandboxed
+	// invocation that asked for no filesystem.
+	if !option.NoFSMount && option.CWD == "" {
 		if option.CWD, err = os.Getwd(); err != nil {
 			return Option{}, fmt.Errorf("cannot get current working directory: %w", err)
 		}

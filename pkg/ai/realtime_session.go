@@ -47,6 +47,7 @@ type RealtimeSession struct {
 	conn      RealtimeWebSocketConn
 	mu        sync.Mutex
 	done      chan struct{}
+	closeOnce sync.Once
 	parser    func(raw json.RawMessage) ([]provider.RealtimeServerEvent, error)
 	lifecycle provider.RealtimeLifecycle
 }
@@ -123,9 +124,17 @@ func ConnectRealtime(ctx context.Context, model provider.Experimental_RealtimeMo
 			return nil, err
 		}
 	}
+	// Also select on s.done so this watcher goroutine is reaped as soon as
+	// the session is closed directly (e.g. `defer session.Close()`), not
+	// only when ctx is itself cancelled -- otherwise it leaks for the
+	// lifetime of ctx (forever for context.Background()), one per session
+	// (R1-3).
 	go func() {
-		<-ctx.Done()
-		_ = s.Close()
+		select {
+		case <-ctx.Done():
+			_ = s.Close()
+		case <-s.done:
+		}
 	}()
 	return s, nil
 }
@@ -242,11 +251,19 @@ func (s *RealtimeSession) Close() error {
 	if s == nil || s.conn == nil {
 		return nil
 	}
-	select {
-	case <-s.done:
-		return nil
-	default:
+	// closeOnce makes Close idempotent and safe to call concurrently (e.g.
+	// the caller's own `defer session.Close()` racing the ctx-cancellation
+	// watcher goroutine started in ConnectRealtime): a plain
+	// `select { case <-s.done: default: close(s.done) }` check-then-act is
+	// not atomic across goroutines and can double-close s.done, panicking
+	// with "close of closed channel".
+	alreadyClosed := true
+	s.closeOnce.Do(func() {
+		alreadyClosed = false
 		close(s.done)
+	})
+	if alreadyClosed {
+		return nil
 	}
 	if s.lifecycle.FinalizationEventType != "" {
 		// Best-effort: a graceful finalization event (e.g. OpenAI Live's
@@ -272,17 +289,50 @@ func (d WebSocketRealtimeDialer) Dial(ctx context.Context, config provider.WebSo
 	if err != nil {
 		return nil, err
 	}
-	return &xNetWebSocketConn{conn: conn}, nil
+	return newXNetWebSocketConn(conn), nil
 }
 
 type xNetWebSocketConn struct {
 	conn *websocket.Conn
-	mu   sync.Mutex
+	// sendSem is a buffered(1)-channel mutex substitute: unlike sync.Mutex,
+	// acquiring it can be selected against ctx.Done(), so a Send/SendBinary
+	// call with a short-deadline ctx observes its own timeout even while
+	// another Send/SendBinary call is mid-flight and holding it (R1
+	// Unverified item 1 -- previously c.mu.Lock() was taken unconditionally
+	// before the ctx select, so a stalled concurrent send could block a
+	// subsequent call's ctx cancellation indefinitely).
+	sendSem chan struct{}
+}
+
+func newXNetWebSocketConn(conn *websocket.Conn) *xNetWebSocketConn {
+	return &xNetWebSocketConn{conn: conn, sendSem: make(chan struct{}, 1)}
+}
+
+// lockSend acquires the send semaphore, respecting ctx cancellation while
+// waiting for a concurrent Send/SendBinary to finish.
+func (c *xNetWebSocketConn) lockSend(ctx context.Context) error {
+	select {
+	case c.sendSem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// unlockSend releases the send semaphore. Non-blocking: a double-release
+// (which should never happen) is a no-op rather than a panic.
+func (c *xNetWebSocketConn) unlockSend() {
+	select {
+	case <-c.sendSem:
+	default:
+	}
 }
 
 func (c *xNetWebSocketConn) Send(ctx context.Context, message []byte) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	if err := c.lockSend(ctx); err != nil {
+		return err
+	}
+	defer c.unlockSend()
 	return wsutil.Send(ctx, c.conn, string(message))
 }
 
@@ -309,10 +359,12 @@ func (c *xNetWebSocketConn) Close() error {
 // codec dispatches on the Go type given to Send: a string is a TextFrame, a
 // []byte is a BinaryFrame (see its marshal function).
 func (c *xNetWebSocketConn) SendBinary(ctx context.Context, message []byte) error {
+	if err := c.lockSend(ctx); err != nil {
+		return err
+	}
 	done := make(chan error, 1)
-	c.mu.Lock()
 	go func() {
-		defer c.mu.Unlock()
+		defer c.unlockSend()
 		done <- websocket.Message.Send(c.conn, message)
 	}()
 	select {

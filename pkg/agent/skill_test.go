@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestSkillRegistry_Register(t *testing.T) {
@@ -361,4 +363,58 @@ func TestSkill_WithInstructions(t *testing.T) {
 	if skill.Instructions != instructions {
 		t.Fatalf("expected instructions to be set, got: %s", skill.Instructions)
 	}
+}
+
+// TestSkillRegistryConcurrentAccess is a permanent regression test for the
+// same unsynchronized-map bug R2-1 flagged in SubagentRegistry
+// (state/parity/sep_23_2026/bug-review/R2.md): SkillRegistry had the
+// identical pattern (no mutex guarding its map), found during this slice's
+// required audit of pkg/agent for other shared maps.
+func TestSkillRegistryConcurrentAccess(t *testing.T) {
+	reg := NewSkillRegistry()
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		i := 0
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			name := fmt.Sprintf("skill-%d", i)
+			_ = reg.Register(&Skill{
+				Name:    name,
+				Handler: func(ctx context.Context, input string) (string, error) { return input, nil },
+			})
+			reg.Unregister(name)
+			i++
+		}
+	}()
+
+	for w := 0; w < 4; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				_ = reg.List()
+				_ = reg.Names()
+				_, _ = reg.Get("skill-0")
+				_ = reg.Has("skill-0")
+				_ = reg.Count()
+			}
+		}()
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	close(stop)
+	wg.Wait()
 }

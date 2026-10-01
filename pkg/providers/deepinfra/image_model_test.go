@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
@@ -135,6 +137,65 @@ func TestDeepInfraImageModel_Edit(t *testing.T) {
 	}
 	if len(result.Images) != 1 || string(result.Images[0]) != "edited" {
 		t.Fatalf("Images = %#v", result.Images)
+	}
+}
+
+// TestDeepInfraImageModel_EditDoesNotLeakPipeGoroutineOnDialFailure checks a
+// bug report's "Unverified" finding: buildEditMultipartBody writes the
+// multipart body on a goroutine via io.Pipe, piped straight into the
+// request body. If the underlying transport ever fails to read/close that
+// body without draining it, the writer goroutine could block forever on a
+// pw.Write() call that never gets a matching pr.Read().
+//
+// In practice this does not leak: net/http.Transport.RoundTrip's documented
+// contract is that it always closes the request body, including on dial
+// failure, even if it never reads from it. Closing the io.PipeReader side
+// unblocks any pending/future io.PipeWriter.Write() with io.ErrClosedPipe,
+// which the writer goroutine's error path turns into pw.CloseWithError and
+// returns from. This mirrors the equivalent, already-confirmed-safe pattern
+// in openai/image_model.go's doEdit/buildEditMultipartBody (same io.Pipe
+// shape, same net/http.Transport contract).
+//
+// This test confirms that behavior empirically for deepinfra specifically:
+// repeated edit calls against an address that fails to dial (connection
+// refused) must not leave any writer goroutines behind.
+func TestDeepInfraImageModel_EditDoesNotLeakPipeGoroutineOnDialFailure(t *testing.T) {
+	// A server that is immediately closed yields a deterministic, fast
+	// "connection refused" dial failure without needing a real network
+	// outage.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	unreachable := srv.URL
+	srv.Close()
+
+	runtime.GC()
+	time.Sleep(20 * time.Millisecond)
+	baseline := runtime.NumGoroutine()
+
+	p := New(Config{APIKey: "k", BaseURL: unreachable + "/openai"})
+	model, err := p.ImageModel("black-forest-labs/FLUX.1-Kontext-dev")
+	if err != nil {
+		t.Fatalf("ImageModel() error = %v", err)
+	}
+
+	const n = 10
+	for i := 0; i < n; i++ {
+		_, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+			Prompt: "make it blue",
+			Files: []provider.ImageFile{
+				{Type: "file", Data: []byte("source-image"), MediaType: "image/png"},
+			},
+		})
+		if err == nil {
+			t.Fatal("expected a dial error against a closed server")
+		}
+	}
+
+	runtime.GC()
+	time.Sleep(50 * time.Millisecond)
+	after := runtime.NumGoroutine()
+
+	if after-baseline >= n/2 {
+		t.Fatalf("goroutine leak: baseline=%d after=%d (leaked ~%d of %d buildEditMultipartBody calls)", baseline, after, after-baseline, n)
 	}
 }
 

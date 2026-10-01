@@ -50,61 +50,50 @@
 // # Host tool bridge dispatch
 //
 // The TypeScript implementation runs the sandbox in a worker thread and
-// bridges `tools.x(input)` calls to the host across a postMessage protocol,
-// which allows several bridge calls to be genuinely in flight at once (up
-// to CodeModeExecutionPolicy.MaxInFlightBridgeRequests). This Go port runs
-// QuickJS in-process (no worker) and dispatches each `tools.x(input)` call
-// as a synchronous Go host-function call: the sandbox blocks until the Go
-// tool's Execute function returns. This is semantically compatible
-// (Promise.all still resolves once every call completes) but not carbon
-// copy: it never actually executes bridge calls in parallel, so
-// MaxInFlightBridgeRequests is accepted for API/policy parity but is never
-// exceeded in practice, and -- the one behavior-visible consequence --
-// `Promise.all([tools.a(x), tools.b(y)])` can only ever produce one pending
-// Interrupt at a time (for whichever call is evaluated first), never a
-// multi-item interruption batch the way TypeScript's genuinely concurrent
-// dispatch can. Resolving that single interrupt resumes execution up to
-// the next bridge call, which itself may interrupt again; from the
-// caller's perspective the two tools still each require their own
-// approval/resolution before executing, just via a chain of one-interrupt
-// continuations instead of one two-item batch. RunInput.Continuation's
-// PendingInterruptions/Resolutions therefore always hold at most one entry
-// for continuations this package produces, though the code that consumes
-// them handles an arbitrary-length batch generically (needed to resume a
-// continuation produced by a hypothetical future concurrent
-// implementation, or, structurally, one from TypeScript, even though its
-// Token cannot be replayed here -- see above).
+// bridges `tools.x(input)` calls to the host across a postMessage protocol;
+// several bridge calls can be genuinely in flight at once (up to
+// CodeModeExecutionPolicy.MaxInFlightBridgeRequests), and when a
+// `Promise.all([tools.a(x), tools.b(y)])` (or any other concurrently
+// dispatched group) has more than one call pending approval at the moment
+// `run`'s job queue goes quiescent, TypeScript batches them into one
+// multi-item Interrupt instead of surfacing them one at a time.
 //
-// This was evaluated and rejected as fixable, not just accepted as a given.
-// The vendored qjs binding (pkg/internal/third_party/qjs) does expose real
-// async host functions and JS Promises: Context.Function's callback can
-// receive a pending Promise via This.Promise() and settle it later with
-// Value.Resolve/Value.Reject, which is the primitive true concurrent
-// dispatch would need -- return every `tools.x(input)` call's Promise
-// immediately, unresolved, and let the sandbox's own Promise.all keep
-// issuing further calls before any of them settle. What is missing is a way
-// to *drive* the engine to that point from Go: the only exposed way to make
-// progress on the job queue is Value.Await (`js_std_await`), which blocks
-// until one specific promise settles by internally running the runtime's
-// job queue to completion for it -- there is no exposed primitive to run
-// pending jobs until the queue goes quiescent (i.e. until every runnable
-// microtask has run and only externally-resolved promises are left) and
-// then report which host calls are pending, which is what batching several
-// concurrent tools.x() calls into one Interrupt requires. Adding that
-// primitive means adding a new WASM export to qjs.wasm itself, and the C
-// sources used to build it (QuickJS's own event-loop internals plus the
-// qjs wrapper's helpers.c) were deliberately not vendored (see
-// README.vendor.md's "What's included": "Dropped ... qjswasm/ (the C
-// sources and CMake config used to *build* qjs.wasm from QuickJS --
-// irrelevant once the binary is embedded)") -- there is no C toolchain or
-// source tree in this repository to rebuild it from, and this package
-// already vendors and binary-patches this exact dependency twice for
-// unrelated correctness bugs (see README.vendor.md); a third, much larger
-// change to its own event loop, enlarging the vendoring surface further to
-// chase a single edge case (multi-tool-call approval batching), was judged
-// to risk destabilizing the sandbox for every caller, not just interrupt
-// mode, for a behavior TypeScript callers can already tolerate as a
-// (documented) sequence of single interrupts instead of one batch.
+// This Go port runs QuickJS in-process (no worker), but reaches the same
+// result. `tools.<name>(input)` dispatches through a genuine async host
+// function (qjs.Context.Function's isAsync parameter): calling it returns
+// a real JS Promise immediately, synchronously, without blocking on the
+// underlying bridge call's outcome -- so `tools.a(x)` and `tools.b(y)` in
+// a `Promise.all([...])` array literal are both dispatched to Go before
+// either Promise settles, exactly as native concurrent dispatch would be.
+// A call that needs approval (or that a host tool itself pauses via
+// RequestCodeModeInterrupt) deliberately leaves its Promise unresolved --
+// mirroring TypeScript's context.interrupt(payload), whose Promise also
+// never settles -- instead of rejecting or resolving it, so the sandboxed
+// script keeps making synchronous progress (e.g. dispatching the rest of
+// the same array) until nothing more can run. driveCodeModeExecution
+// (run_code_mode.go) detects that point by draining the job queue to
+// exhaustion with qjs.Context.RunPendingJobs and checking
+// Value.PromiseState on the script's top-level result: once RunPendingJobs
+// reports no more jobs ran and the top-level Promise is still pending, the
+// job queue is quiescent, and every call collected in toolBridge.pendingBatch
+// up to that point surfaces together as one Interrupt whose
+// Continuation.PendingInterruptions holds every entry -- the same
+// multi-item batch TypeScript produces for the same source. See
+// driveCodeModeExecution/bindCodeModeDispatch's doc comments for the full
+// mechanism, and pkg/internal/third_party/qjs/README.vendor.md /
+// build/job-queue-quiescence.patch for the (rebuilt) qjs.wasm export this
+// relies on (QJS_RunPendingJobs/QJS_PromiseState/QJS_PromiseResult --
+// js_std_await/Value.Await, the only previously-exposed way to drive a
+// promise to settlement, blocks until ITS promise settles and cannot
+// safely be used to detect "no more progress possible, and at least one
+// call is still pending").
+//
+// A policy limit is enforced differently than in the single-in-process
+// call this package used to make before this batching existed:
+// MaxInFlightBridgeRequests now bounds how many calls may accumulate in
+// one pending-interruption batch at once, exceeding which fails the whole
+// invocation (mirrors TypeScript's RunBridgeLimitError, raised outside the
+// per-call promise machinery entirely for exactly this condition).
 //
 // # Deterministic replay
 //
@@ -112,20 +101,24 @@
 // source from the top in a fresh sandbox and short-circuiting every host
 // bridge call whose result was already observed with that recorded result,
 // instead of re-invoking the real host tool -- so side effects never repeat
-// -- until execution reaches the call being resumed (which receives the
+// -- until execution reaches each call being resumed (which receives the
 // resolution instead of interrupting again, via CodeModeInterrupt for a
 // custom kind or a skipped approval check for the approval kind) and then,
 // beyond that, genuinely fresh execution. This package implements the same
-// model on top of the synchronous bridge described above: every
-// invocation's toolBridge records each completed call's (tool name, input,
-// output) in call order; Continuation.Token is that recorded list,
-// JSON-encoded, for every call made before the (at most one, per above)
-// pending interruption. Resuming decodes it back into a replay ledger and
-// re-runs the identical source, short-circuiting calls 0..len(ledger)-1
-// from the ledger, applying resume semantics to the calls covering the
-// continuation's (possibly multi-entry, for a hypothetical future or
-// foreign continuation) PendingInterruptions, and executing every call
-// after that for real.
+// model on top of the bridge described above: every invocation's toolBridge
+// records each completed call's (tool name, input, output), keyed by its
+// 0-based call index rather than append order -- concurrent batching means
+// a later-dispatched call (e.g. one needing no approval, in the same
+// Promise.all as one that does) can settle before an earlier-dispatched one
+// still pending approval, so the ledger is sparse, not a "calls 0..N-1"
+// prefix. Continuation.Token is that sparse map, JSON-encoded, for every
+// call settled by the time the pending interruption batch was collected.
+// Resuming decodes it back into a replay ledger and re-runs the identical
+// source, short-circuiting whichever call indices are present in the
+// ledger, applying resume semantics (via each PendingInterruption's own
+// call index, recovered from its RunInterruptionID, not its position in
+// the batch) to the calls covering the continuation's PendingInterruptions,
+// and executing every other call for real.
 package codemode
 
 import (

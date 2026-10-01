@@ -34,10 +34,10 @@ func searchTestCaller() types.Tool {
 		Parameters: map[string]interface{}{"type": "object"},
 		ExperimentalToolCaller: &types.ToolCallerDefinition{
 			Type: types.ToolCallerTypeLocal,
-			Bind: func(tools map[string]types.Tool) types.Tool {
+			Bind: func(tools []types.Tool) types.Tool {
 				return types.Tool{Name: "code", Parameters: map[string]interface{}{"type": "object"}}
 			},
-			PrepareModelMessage: func(tools map[string]types.Tool) *string { return &msg },
+			PrepareModelMessage: func(tools []types.Tool) *string { return &msg },
 		},
 	}
 }
@@ -163,8 +163,8 @@ func TestToolSearchState_DoesNotDiscoverExcludedOrOtherCallerTools(t *testing.T)
 		Parameters: map[string]interface{}{"type": "object"},
 		ExperimentalToolCaller: &types.ToolCallerDefinition{
 			Type:                types.ToolCallerTypeLocal,
-			Bind:                func(tools map[string]types.Tool) types.Tool { return types.Tool{Name: "otherCode"} },
-			PrepareModelMessage: func(map[string]types.Tool) *string { return &msg },
+			Bind:                func(tools []types.Tool) types.Tool { return types.Tool{Name: "otherCode"} },
+			PrepareModelMessage: func([]types.Tool) *string { return &msg },
 		},
 	}
 	otherWeather := searchTestWeatherTool()
@@ -236,7 +236,7 @@ func TestToolSearchState_RejectsDescriptionDiscoveryCallers(t *testing.T) {
 		Parameters: map[string]interface{}{"type": "object"},
 		ExperimentalToolCaller: &types.ToolCallerDefinition{
 			Type: types.ToolCallerTypeLocal,
-			Bind: func(tools map[string]types.Tool) types.Tool { return types.Tool{Name: "code"} },
+			Bind: func(tools []types.Tool) types.Tool { return types.Tool{Name: "code"} },
 		},
 	}
 	// Provider caller.

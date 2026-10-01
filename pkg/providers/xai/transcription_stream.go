@@ -205,82 +205,20 @@ type xaiTranscriptionStreamConfig struct {
 
 // xaiTranscriptionStream implements provider.TranscriptionStream over xAI's
 // `/stt` streaming WebSocket, mirroring TS
-// createXaiStreamingTranscriptionStream.
+// createXaiStreamingTranscriptionStream. The Next/Err/Close/emit/setErr
+// plumbing is the shared wsutil.Session core; pumpAudio's binary-frame
+// framing and multi-channel `transcript.done` accounting don't fit the
+// shared wsutil.PumpAudio loop cleanly (no per-chunk encoding step, and an
+// unconditional post-EOF control-message send whose own error is ignored
+// rather than reported), so it stays local.
 type xaiTranscriptionStream struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	parts  chan provider.TranscriptionStreamPart
-
-	mu  sync.Mutex
-	err error
-
-	closeOnce sync.Once
-	connMu    sync.Mutex
-	conn      *websocket.Conn
+	*wsutil.Session[provider.TranscriptionStreamPart]
 }
 
 func newXAITranscriptionStream(parentCtx context.Context, cfg xaiTranscriptionStreamConfig) *xaiTranscriptionStream {
-	ctx, cancel := context.WithCancel(parentCtx)
-	s := &xaiTranscriptionStream{ctx: ctx, cancel: cancel, parts: make(chan provider.TranscriptionStreamPart)}
+	s := &xaiTranscriptionStream{Session: wsutil.NewSession[provider.TranscriptionStreamPart](parentCtx)}
 	go s.run(cfg)
 	return s
-}
-
-func (s *xaiTranscriptionStream) Next() (*provider.TranscriptionStreamPart, error) {
-	part, ok := <-s.parts
-	if !ok {
-		s.mu.Lock()
-		err := s.err
-		s.mu.Unlock()
-		if err != nil {
-			return nil, err
-		}
-		return nil, io.EOF
-	}
-	return &part, nil
-}
-
-func (s *xaiTranscriptionStream) Err() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.err
-}
-
-func (s *xaiTranscriptionStream) Close() error {
-	s.closeOnce.Do(func() {
-		s.cancel()
-		s.connMu.Lock()
-		if s.conn != nil {
-			_ = s.conn.Close()
-		}
-		s.connMu.Unlock()
-	})
-	return nil
-}
-
-func (s *xaiTranscriptionStream) setErr(err error) {
-	s.mu.Lock()
-	if s.err == nil {
-		s.err = err
-	}
-	s.mu.Unlock()
-}
-
-// emit sends part on s.parts, returning false when the stream's ctx is done
-// (so a blocked send unblocks instead of leaking when Close cancels ctx).
-func (s *xaiTranscriptionStream) emit(part provider.TranscriptionStreamPart) bool {
-	select {
-	case s.parts <- part:
-		return true
-	case <-s.ctx.Done():
-		return false
-	}
-}
-
-// receiveLoop continuously reads text frames from conn and forwards each one
-// (or the terminal error) on out, until an error occurs or s.ctx is done.
-func (s *xaiTranscriptionStream) receiveLoop(conn *websocket.Conn, out chan<- wsutil.Message) {
-	wsutil.ReceiveLoop(s.ctx, conn, out)
 }
 
 // xaiStreamingTranscriptionEvent is a server->client streaming transcription
@@ -306,27 +244,21 @@ type xaiStreamingTranscriptionEvent struct {
 // instead of ending it silently).
 func (s *xaiTranscriptionStream) pumpAudio(conn *websocket.Conn, audio provider.AudioStream, audioEnded chan<- struct{}, sendErrCh chan<- error) {
 	for {
-		chunk, err := audio.Next(s.ctx)
+		chunk, err := audio.Next(s.Context())
 		if err != nil {
 			if err == io.EOF {
 				_ = s.sendText(conn, `{"type":"audio.done"}`)
 				select {
 				case audioEnded <- struct{}{}:
-				case <-s.ctx.Done():
+				case <-s.Context().Done():
 				}
 				return
 			}
-			select {
-			case sendErrCh <- err:
-			case <-s.ctx.Done():
-			}
+			wsutil.ReportError(s.Context(), sendErrCh, err)
 			return
 		}
 		if err := s.sendBinary(conn, chunk); err != nil {
-			select {
-			case sendErrCh <- err:
-			case <-s.ctx.Done():
-			}
+			wsutil.ReportError(s.Context(), sendErrCh, err)
 			return
 		}
 	}
@@ -340,11 +272,11 @@ func xaiChannelID(channelIndex *int) string {
 }
 
 func (s *xaiTranscriptionStream) run(cfg xaiTranscriptionStreamConfig) {
-	defer close(s.parts)
-	// Release s.ctx's resources as soon as run() returns for any reason
-	// instead of only on an explicit Close() call, which a consumer that
-	// only drains Next() to io.EOF may never make.
-	defer s.cancel()
+	defer s.CloseParts()
+	// Release the session's resources as soon as run() returns for any
+	// reason instead of only on an explicit Close() call, which a consumer
+	// that only drains Next() to io.EOF may never make.
+	defer s.CancelContext()
 
 	// cancelAudio guarantees cfg.audio.Cancel is invoked exactly once no
 	// matter which path run() exits through, including a blocked emit()
@@ -354,10 +286,10 @@ func (s *xaiTranscriptionStream) run(cfg xaiTranscriptionStreamConfig) {
 	// audio.cancel()/audioReader.cancel().
 	var cancelAudioOnce sync.Once
 	cancelAudio := func(err error) { cancelAudioOnce.Do(func() { cfg.audio.Cancel(err) }) }
-	defer func() { cancelAudio(s.ctx.Err()) }()
+	defer func() { cancelAudio(s.Context().Err()) }()
 
 	fail := func(err error) {
-		s.setErr(err)
+		s.SetErr(err)
 		cancelAudio(err)
 	}
 
@@ -366,13 +298,11 @@ func (s *xaiTranscriptionStream) run(cfg xaiTranscriptionStreamConfig) {
 		fail(err)
 		return
 	}
-	s.connMu.Lock()
-	s.conn = conn
-	s.connMu.Unlock()
+	s.SetConn(conn)
 	defer conn.Close() //nolint:errcheck
 
 	msgCh := make(chan wsutil.Message)
-	go s.receiveLoop(conn, msgCh)
+	go wsutil.ReceiveLoop(s.Context(), conn, msgCh)
 
 	audioEndedCh := make(chan struct{})
 	sendErrCh := make(chan error, 1)
@@ -403,7 +333,7 @@ func (s *xaiTranscriptionStream) run(cfg xaiTranscriptionStreamConfig) {
 		for _, k := range keys {
 			texts = append(texts, doneTexts[k])
 		}
-		s.emit(provider.TranscriptionStreamPart{
+		s.Emit(provider.TranscriptionStreamPart{
 			Type:              provider.TranscriptionStreamPartTypeFinish,
 			FinishText:        strings.Join(texts, "\n"),
 			Segments:          []provider.TranscriptSegment{},
@@ -415,8 +345,8 @@ func (s *xaiTranscriptionStream) run(cfg xaiTranscriptionStreamConfig) {
 
 	for {
 		select {
-		case <-s.ctx.Done():
-			fail(s.ctx.Err())
+		case <-s.Context().Done():
+			fail(s.Context().Err())
 			return
 
 		case <-audioEndedCh:
@@ -459,14 +389,14 @@ func (s *xaiTranscriptionStream) run(cfg xaiTranscriptionStreamConfig) {
 			if cfg.includeRawChunks {
 				var rawValue interface{}
 				_ = json.Unmarshal([]byte(res.Text), &rawValue)
-				if !s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeRaw, RawValue: rawValue}) {
+				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeRaw, RawValue: rawValue}) {
 					return
 				}
 			}
 
 			switch raw.Type {
 			case "transcript.created":
-				if !s.emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart, Warnings: cfg.warnings}) {
+				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart, Warnings: cfg.warnings}) {
 					return
 				}
 				go s.pumpAudio(conn, cfg.audio, audioEndedCh, sendErrCh)
@@ -499,7 +429,7 @@ func (s *xaiTranscriptionStream) run(cfg xaiTranscriptionStreamConfig) {
 							part.EndSecond = &end
 						}
 					}
-					if !s.emit(part) {
+					if !s.Emit(part) {
 						return
 					}
 				} else {
@@ -512,7 +442,7 @@ func (s *xaiTranscriptionStream) run(cfg xaiTranscriptionStreamConfig) {
 						DurationInSeconds: raw.Duration,
 						ChannelIndex:      raw.ChannelIndex,
 					}
-					if !s.emit(part) {
+					if !s.Emit(part) {
 						return
 					}
 				}
@@ -554,7 +484,7 @@ func (s *xaiTranscriptionStream) run(cfg xaiTranscriptionStreamConfig) {
 }
 
 func (s *xaiTranscriptionStream) dial(wsURL *url.URL, headers map[string]string) (*websocket.Conn, error) {
-	return wsutil.Dial(s.ctx, wsURL.String(), wsutil.DialOptions{Headers: headers})
+	return wsutil.Dial(s.Context(), wsURL.String(), wsutil.DialOptions{Headers: headers})
 }
 
 func (s *xaiTranscriptionStream) sendText(conn *websocket.Conn, message string) error {
@@ -569,7 +499,7 @@ func (s *xaiTranscriptionStream) sendBinary(conn *websocket.Conn, data []byte) e
 // mirroring golang.org/x/net/websocket.Message's type-based framing so raw
 // audio chunks are sent unwrapped, exactly like TS's `socket.send(value)`.
 func (s *xaiTranscriptionStream) send(conn *websocket.Conn, v interface{}) error {
-	return wsutil.Send(s.ctx, conn, v)
+	return wsutil.Send(s.Context(), conn, v)
 }
 
 var (

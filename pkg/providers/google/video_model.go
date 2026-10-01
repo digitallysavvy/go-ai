@@ -501,10 +501,15 @@ func (m *VideoModel) getPollOptions(providerOpts map[string]interface{}) polling
 
 	if providerOpts != nil {
 		if googleOpts, ok := providerOpts["google"].(map[string]interface{}); ok {
-			if interval, ok := googleOpts["pollIntervalMs"].(int); ok {
+			// CoerceInt (not a bare `.(int)` assertion) because
+			// providerOpts commonly arrives via encoding/json.Unmarshal
+			// (a JSON config file, or a request body forwarded straight
+			// into ProviderOptions), which decodes JSON numbers as
+			// float64, not int.
+			if interval, ok := providerutils.CoerceInt(googleOpts["pollIntervalMs"]); ok {
 				opts.PollIntervalMs = interval
 			}
-			if timeout, ok := googleOpts["pollTimeoutMs"].(int); ok {
+			if timeout, ok := providerutils.CoerceInt(googleOpts["pollTimeoutMs"]); ok {
 				opts.PollTimeoutMs = timeout
 			}
 		}

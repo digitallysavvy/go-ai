@@ -1,0 +1,195 @@
+--- a/qjswasm/qjs.c
++++ b/qjswasm/qjs.c
+@@ -4,19 +4,49 @@
+ {
+   JSContext *ctx;
+   ctx = JS_NewContext(rt);
+-  js_init_module_std(ctx, "qjs:std");
+-  js_init_module_os(ctx, "qjs:os");
+-  js_init_module_bjson(ctx, "qjs:bjson");
++  /* QJS_RuntimeModulesDisabled(rt) reads back the disable_modules flag
++   * New_QJS stashed on this runtime via JS_SetRuntimeOpaque below. This
++   * context constructor also runs for Worker contexts spawned at runtime
++   * (js_std_set_worker_new_context_func, below) -- it has no parameter of
++   * its own to carry the flag, so the runtime-level opaque slot is how the
++   * flag survives to every context ever created on this runtime, not just
++   * the first one. When disabled, the qjs:std/qjs:os/qjs:bjson native
++   * modules are never registered at all, so they are absent from
++   * ctx->loaded_modules and an `import('qjs:std')` (etc.) falls through to
++   * QJS_ModuleLoader (eval.c), which -- for the same disabled runtime --
++   * rejects every specifier outright. See disable-modules.patch and
++   * README.vendor.md ("Native-module import escape") for the full defense
++   * this is part of. */
++  if (!QJS_RuntimeModulesDisabled(rt))
++  {
++    js_init_module_std(ctx, "qjs:std");
++    js_init_module_os(ctx, "qjs:os");
++    js_init_module_bjson(ctx, "qjs:bjson");
++  }
+   js_set_global_objs(ctx);
+ 
+   return ctx;
+ }
+ 
++/* QJS_RuntimeModulesDisabled reports whether disable_modules was set for
++ * this runtime at New_QJS time (see below). Stored via
++ * JS_SetRuntimeOpaque/JS_GetRuntimeOpaque -- unused by this codebase for
++ * anything else -- so it is visible from both New_QJSContext (module
++ * registration, above) and QJS_ModuleLoader (eval.c; rejects every import
++ * specifier when set), without threading a new parameter through
++ * New_QJSContext's fixed JSContext*(*)(JSRuntime*) callback signature
++ * (js_std_set_worker_new_context_func requires that exact shape). */
++int QJS_RuntimeModulesDisabled(JSRuntime *rt)
++{
++  return rt != NULL && JS_GetRuntimeOpaque(rt) != NULL;
++}
++
+ QJSRuntime *New_QJS(
+     size_t memory_limit,
+     size_t max_stack_size,
+     size_t max_execution_time,
+-    size_t gc_threshold)
++    size_t gc_threshold,
++    int disable_modules)
+ {
+   JSRuntime *runtime;
+   JSContext *ctx;
+@@ -39,6 +69,11 @@
+   if (max_stack_size > 0)
+     JS_SetMaxStackSize(runtime, max_stack_size);
+ 
++  /* Recorded before New_QJSContext (below) ever runs, and before any
++   * Worker context could spawn one later, so module registration always
++   * sees an already-decided flag -- see QJS_RuntimeModulesDisabled above. */
++  JS_SetRuntimeOpaque(runtime, disable_modules ? (void *)1 : NULL);
++
+   /* setup the the worker context */
+   js_std_set_worker_new_context_func(New_QJSContext);
+   /* initialize the standard objects */
+@@ -118,5 +153,5 @@
+   size_t memory_limit = 0;
+   size_t gc_threshold = 0;
+   size_t max_stack_size = 0;
+-  qjs = New_QJS(memory_limit, max_stack_size, 0, gc_threshold);
++  qjs = New_QJS(memory_limit, max_stack_size, 0, gc_threshold, 0);
+ }
+--- a/qjswasm/qjs.h
++++ b/qjswasm/qjs.h
+@@ -86,12 +86,14 @@
+ int init_qjs_proxy_value_class(JSContext *ctx);
+ 
+ JSContext *New_QJSContext(JSRuntime *rt);
++int QJS_RuntimeModulesDisabled(JSRuntime *rt);
+ // QJSRuntime *New_QJS(QJSRuntimeOptions);
+ QJSRuntime *New_QJS(
+     size_t memory_limit,
+     size_t max_stack_size,
+     size_t max_execution_time,
+-    size_t gc_threshold);
++    size_t gc_threshold,
++    int disable_modules);
+ void QJS_UpdateStackTop(QJSRuntime *qjs);
+ JSModuleDef *QJS_ModuleLoader(JSContext *ctx, const char *module_name, void *opaque);
+ JSValue QJS_Load(JSContext *ctx, QJSEvalOptions opts);
+--- a/qjswasm/eval.c
++++ b/qjswasm/eval.c
+@@ -201,9 +201,27 @@
+     return m;
+ }
+ 
+-/* Module loader with support for appending common suffixes and JSON modules */
++/* Module loader with support for appending common suffixes and JSON modules.
++ *
++ * When QJS_RuntimeModulesDisabled(JS_GetRuntime(ctx)) is set (see qjs.c's
++ * New_QJS / QJS_RuntimeModulesDisabled), this rejects every module
++ * specifier with a clean JS error before doing anything else -- no
++ * filesystem lookup, no JSON parsing, no delegation to js_module_loader.
++ * This is the second of two layers New_QJS's disable_modules flag drives:
++ * the qjs:std/qjs:os/qjs:bjson native modules are never *registered* in
++ * the first place (qjs.c's New_QJSContext), so they are never found via
++ * js_find_loaded_module and always reach this function; relative/absolute
++ * path imports (e.g. './x', '/x') never went through native-module
++ * registration at all and always reached this function anyway. Rejecting
++ * here closes both routes identically, with no partial allowlist. */
+ JSModuleDef *QJS_ModuleLoader(JSContext *ctx, const char *module_name, void *opaque)
+ {
++    if (QJS_RuntimeModulesDisabled(JS_GetRuntime(ctx)))
++    {
++        JS_ThrowTypeError(ctx, "module imports are disabled in this sandbox: '%s'", module_name);
++        return NULL;
++    }
++
+     module_name = detect_entry_point((char *)module_name);
+     if (!module_name)
+         return NULL;
+--- a/qjswasm/helpers.c
++++ b/qjswasm/helpers.c
+@@ -158,31 +158,45 @@
+ 
+     js_std_add_helpers(ctx, 0, 0);
+ 
+-    /* make 'std' and 'os' visible to non module code */
+-    const char *str =
+-        "import * as bjson from 'qjs:bjson';\n"
+-        "import * as std from 'qjs:std';\n"
+-        "import * as os from 'qjs:os';\n"
+-        "globalThis.bjson = bjson;\n"
+-        "globalThis.std = std;\n"
+-        "globalThis.os = os;\n"
+-        "globalThis.setTimeout = os.setTimeout;\n"
+-        "globalThis.setInterval = os.setInterval;\n"
+-        "globalThis.clearTimeout = os.clearTimeout;\n"
+-        "globalThis.clearInterval = os.clearInterval;\n";
+-
+-    QJSEvalOptions opts = {
+-        .buf = str,
+-        .filename = "<init_global>",
+-        .eval_flags = JS_EVAL_TYPE_MODULE};
+-
+-    JSValue val = QJS_Eval(ctx, opts);
+-    if (JS_IsException(val))
++    /* make 'std' and 'os' visible to non module code -- but only when this
++     * runtime has not asked to disable modules entirely
++     * (QJS_RuntimeModulesDisabled, qjs.c). When disabled, New_QJSContext
++     * (qjs.c) never registers the qjs:bjson/qjs:std/qjs:os native modules
++     * in the first place, so the `import` below would otherwise always
++     * throw (QJS_ModuleLoader, eval.c, rejects every specifier for a
++     * disabled runtime) and previously aborted this process outright (see
++     * the exit(1) below, which ran unconditionally on any exception from
++     * this eval -- including this one, not just a genuine internal setup
++     * failure). Skipping the block entirely for a disabled runtime avoids
++     * that false-positive abort and leaves no std/os/bjson global for user
++     * code to find either way. */
++    if (!QJS_RuntimeModulesDisabled(JS_GetRuntime(ctx)))
+     {
+-        js_std_dump_error(ctx);
+-        exit(1);
++        const char *str =
++            "import * as bjson from 'qjs:bjson';\n"
++            "import * as std from 'qjs:std';\n"
++            "import * as os from 'qjs:os';\n"
++            "globalThis.bjson = bjson;\n"
++            "globalThis.std = std;\n"
++            "globalThis.os = os;\n"
++            "globalThis.setTimeout = os.setTimeout;\n"
++            "globalThis.setInterval = os.setInterval;\n"
++            "globalThis.clearTimeout = os.clearTimeout;\n"
++            "globalThis.clearInterval = os.clearInterval;\n";
++
++        QJSEvalOptions opts = {
++            .buf = str,
++            .filename = "<init_global>",
++            .eval_flags = JS_EVAL_TYPE_MODULE};
++
++        JSValue val = QJS_Eval(ctx, opts);
++        if (JS_IsException(val))
++        {
++            js_std_dump_error(ctx);
++            exit(1);
++        }
++        JS_FreeValue(ctx, val);
+     }
+-    JS_FreeValue(ctx, val);
+ }
+ 
+ bool file_exists(const char *path)

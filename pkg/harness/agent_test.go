@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1705,5 +1706,119 @@ func TestAgentSession_SuspendTurn_DetachesLocalHandle(t *testing.T) {
 	close(finishPrompt)
 	if err := result.Err(); err != nil {
 		t.Fatalf("result.Err() = %v", err)
+	}
+}
+
+// TestAgent_ConcurrentStream_SecondCallerRejected is the regression test for
+// bug-review/R3-1: startTurn used to check session.requirePromptableTurn
+// long before the state transition (session.startTrackedTurn), with
+// unrelated work (PrepareCall, tool-filtering resolution,
+// resolveOutputResponseFormat) running in between, unguarded by session.mu.
+// Two concurrent Agent.Stream calls on the same *AgentSession could both
+// observe TurnStateIdle and both proceed into PrepareCall concurrently,
+// violating AgentSession's documented "exactly one turn may be in flight at
+// a time" invariant.
+//
+// This drives two concurrent Stream calls through a PrepareCall hook that
+// blocks both of them on a shared gate, proving they really do run
+// concurrently (prepareCalls reaches 2) before either is allowed to proceed
+// to session.startTrackedTurn — the TOCTOU window the bug report's deleted
+// TestZZBugReviewConcurrentGenerateStartsTwoTurns exploited. With the fix
+// (the guard-and-transition now atomic inside session.startTrackedTurn),
+// exactly one of the two must still go on to start a turn; the other must
+// fail with the same "already has a turn in progress" error TS's
+// `requirePromptableTurn` throws for a concurrent call
+// (harness-agent-session.ts).
+func TestAgent_ConcurrentStream_SecondCallerRejected(t *testing.T) {
+	var prepareCalls int32
+	gate := make(chan struct{})
+	// turnHold keeps the winning caller's turn running until both results
+	// are in. Without it the winner's turn could start and finish (the mock
+	// script completes immediately) before the loser reaches
+	// startTrackedTurn, and the loser would then legitimately succeed.
+	turnHold := make(chan struct{})
+	mock := newMockHarness(mockHarnessOptions{
+		promptDone: func() <-chan struct{} { return turnHold },
+		script: func(submit func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&StreamStartPart{},
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)},
+				&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(1, 1)},
+			}
+		},
+	})
+	a, err := NewAgent(AgentSettings{
+		Harness: mock.harness,
+		PrepareCall: func(ctx context.Context, opts PrepareCallOptions) (PrepareCallResult, error) {
+			atomic.AddInt32(&prepareCalls, 1)
+			<-gate
+			return PrepareCallResult{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewAgent: %v", err)
+	}
+	session, err := a.CreateSession(context.Background(), CreateSessionOptions{SandboxSession: testSandbox()})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	type callResult struct {
+		res *ai.StreamTextResult
+		err error
+	}
+	results := make(chan callResult, 2)
+	fire := func() {
+		res, err := a.Stream(context.Background(), agent.AgentStreamOptions{
+			AgentGenerateOptions: agent.AgentGenerateOptions{Prompt: "hi", HarnessSession: session},
+		})
+		results <- callResult{res, err}
+	}
+	go fire()
+	go fire()
+
+	// Wait until both callers have entered PrepareCall concurrently — proves
+	// both passed the idle check and are genuinely racing, exactly the
+	// window R3-1 reported.
+	deadline := time.After(2 * time.Second)
+	for atomic.LoadInt32(&prepareCalls) < 2 {
+		select {
+		case <-deadline:
+			t.Fatal("both concurrent Stream calls never reached PrepareCall concurrently")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	close(gate)
+
+	r1 := <-results
+	r2 := <-results
+	close(turnHold)
+
+	var succeeded, failed []callResult
+	for _, r := range []callResult{r1, r2} {
+		if r.err == nil {
+			succeeded = append(succeeded, r)
+		} else {
+			failed = append(failed, r)
+		}
+	}
+	if len(succeeded) != 1 || len(failed) != 1 {
+		t.Fatalf("got %d succeeded, %d failed (want exactly 1 of each); results = %+v", len(succeeded), len(failed), []callResult{r1, r2})
+	}
+	wantErr := "harness session '" + session.SessionID() + "' already has a turn in progress"
+	if got := failed[0].err.Error(); got != wantErr {
+		t.Fatalf("rejected caller's error = %q, want %q", got, wantErr)
+	}
+
+	// Drain the surviving stream so its turn settles cleanly instead of
+	// leaking the driver goroutine past the end of the test.
+	stream := succeeded[0].res.FullStream()
+	for {
+		if _, err := stream.Next(); err != nil {
+			break
+		}
+	}
+	if err := succeeded[0].res.Err(); err != nil {
+		t.Fatalf("surviving call's result.Err() = %v", err)
 	}
 }

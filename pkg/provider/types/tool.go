@@ -186,16 +186,23 @@ type ToolCallerDefinition struct {
 	Type string
 
 	// Bind creates the tool exposed to the model/runtime, given the tools
-	// routed through this caller. Only used when Type is
+	// routed through this caller, in caller declaration order. Mirrors
+	// TypeScript's bind(tools: ToolSet), whose tools argument is a plain
+	// object that iterates in insertion order; ai.PrepareToolsForToolCallers
+	// builds this slice in the same order (see its doc) so a caller that
+	// renders tools into a catalog/prompt -- e.g. pkg/codemode's
+	// CodeModeTool -- can reproduce that order exactly instead of a Go map's
+	// unspecified iteration order. Only used when Type is
 	// ToolCallerTypeLocal.
-	Bind func(tools map[string]Tool) Tool
+	Bind func(tools []Tool) Tool
 
 	// PrepareModelMessage optionally returns conversation content describing
-	// the tools available through this caller. When non-nil, the unbound
-	// caller tool remains model-visible (its definition stays stable) and
-	// the returned content is added to the conversation instead. Only used
-	// when Type is ToolCallerTypeLocal.
-	PrepareModelMessage func(tools map[string]Tool) *string
+	// the tools available through this caller, in the same caller
+	// declaration order as Bind. When non-nil, the unbound caller tool
+	// remains model-visible (its definition stays stable) and the returned
+	// content is added to the conversation instead. Only used when Type is
+	// ToolCallerTypeLocal.
+	PrepareModelMessage func(tools []Tool) *string
 
 	// PrepareProviderOptions augments a tool's provider options so the
 	// provider allows this caller to invoke it. Only used when Type is

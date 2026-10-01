@@ -68,15 +68,16 @@ provider) does not run a background `@vercel/oidc` token refresh loop.
 explicit `Token` / `TeamID` / `ProjectID` credentials also work and bypass
 OIDC entirely.
 
-## Code-mode: concurrent approvals are not batched
+## Code-mode: never-settling promises and in-flight limits
 
 `pkg/codemode` runs model-written JavaScript in a QuickJS-on-WebAssembly
-sandbox (wazero). When model code requests several tool approvals
-concurrently inside one `Promise.all`, TypeScript's V8-based runtime can
-observe job-queue quiescence and batch them into a single interrupt. The
-embedded QuickJS build exposes no equivalent hook, so concurrent approvals
-come back as a chain of single interrupts instead of one batch. Approval
-*content* and *outcome* are unaffected — only the batching shape differs.
+sandbox (wazero). Concurrent tool calls that need approval (for example
+inside one `Promise.all`) are batched into a single interrupt, as in TS.
+Two details differ:
+
+- A promise that never settles and has no pending tool call fails fast
+  with a `ProtocolError`. TypeScript waits for the execution timeout.
+- `MaxInFlightBridgeRequests` counts the calls in an approval batch.
 
 ## Features that are TypeScript-only (not ported)
 

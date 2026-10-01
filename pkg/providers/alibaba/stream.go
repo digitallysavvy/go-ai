@@ -56,94 +56,117 @@ func (s *alibabaStream) Close() error {
 	return s.reader.Close()
 }
 
-// Next returns the next chunk in the stream
+// Next returns the next chunk in the stream.
+//
+// Implemented as an explicit loop rather than self-recursion: Next() used to
+// tail-call processChunk(), which itself tail-called back into s.Next() (and
+// into emitParsedChunk(), which also tail-called s.Next()) whenever an event
+// produced no immediately-returnable chunk. Go does not eliminate tail
+// calls, so a long run of such events within one external Next() call could
+// grow the goroutine stack without bound and crash the process with an
+// unrecoverable stack overflow. processChunk and emitParsedChunk now return
+// (*provider.StreamChunk, bool) -- ok meaning "return this chunk" vs
+// continue-the-loop -- so this loop drives all looping without adding stack
+// frames through either helper.
 func (s *alibabaStream) Next() (*provider.StreamChunk, error) {
-	// Emit any fully-assembled chunks (tool calls + finish) before reading more SSE.
-	if len(s.flushQueue) > 0 {
-		chunk := s.flushQueue[0]
-		s.flushQueue = s.flushQueue[1:]
-		return chunk, nil
-	}
-
-	if s.err != nil {
-		return nil, s.err
-	}
-
-	// Get next SSE event
-	event, err := s.parser.Next()
-	if err != nil {
-		s.err = err
-		return nil, err
-	}
-
-	// Check for stream completion
-	if streaming.IsStreamDone(event) {
-		s.err = io.EOF
-		return nil, io.EOF
-	}
-	rawQueued := false
-	if s.includeRawChunks {
-		var raw interface{}
-		if err := json.Unmarshal([]byte(event.Data), &raw); err != nil {
-			raw = event.Data
+	for {
+		// Emit any fully-assembled chunks (tool calls + finish) before reading more SSE.
+		if len(s.flushQueue) > 0 {
+			chunk := s.flushQueue[0]
+			s.flushQueue = s.flushQueue[1:]
+			return chunk, nil
 		}
-		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-			Type: provider.ChunkTypeRaw,
-			Raw:  raw,
-		})
-		rawQueued = true
-	}
 
-	// Parse the event data as JSON
-	var chunk alibabaStreamChunk
-	if err := json.Unmarshal([]byte(event.Data), &chunk); err != nil {
-		errorChunk := &provider.StreamChunk{
-			Type: provider.ChunkTypeError,
-			Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
+		if s.err != nil {
+			return nil, s.err
 		}
-		if rawQueued {
-			s.flushQueue = append(s.flushQueue, errorChunk)
-			return s.Next()
-		}
-		return errorChunk, nil
-	}
-	if !s.metadataEmitted && (chunk.ID != "" || chunk.Model != "" || chunk.Created != 0 || len(s.responseHeaders) > 0) {
-		metadata := &provider.ResponseMetadata{
-			ID:      chunk.ID,
-			ModelID: chunk.Model,
-			Headers: s.responseHeaders,
-		}
-		if chunk.Created != 0 {
-			metadata.Timestamp = time.Unix(chunk.Created, 0)
-		}
-		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-			Type:             provider.ChunkTypeResponseMetadata,
-			ResponseMetadata: metadata,
-		})
-		s.metadataEmitted = true
-	}
 
-	// Process chunk and return appropriate StreamChunk
-	return s.processChunk(&chunk)
+		// Get next SSE event
+		event, err := s.parser.Next()
+		if err != nil {
+			s.err = err
+			return nil, err
+		}
+
+		// Check for stream completion
+		if streaming.IsStreamDone(event) {
+			s.err = io.EOF
+			return nil, io.EOF
+		}
+		rawQueued := false
+		if s.includeRawChunks {
+			var raw interface{}
+			if err := json.Unmarshal([]byte(event.Data), &raw); err != nil {
+				raw = event.Data
+			}
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+				Type: provider.ChunkTypeRaw,
+				Raw:  raw,
+			})
+			rawQueued = true
+		}
+
+		// Parse the event data as JSON
+		var chunk alibabaStreamChunk
+		if err := json.Unmarshal([]byte(event.Data), &chunk); err != nil {
+			errorChunk := &provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
+			}
+			if rawQueued {
+				s.flushQueue = append(s.flushQueue, errorChunk)
+				continue
+			}
+			return errorChunk, nil
+		}
+		if !s.metadataEmitted && (chunk.ID != "" || chunk.Model != "" || chunk.Created != 0 || len(s.responseHeaders) > 0) {
+			metadata := &provider.ResponseMetadata{
+				ID:      chunk.ID,
+				ModelID: chunk.Model,
+				Headers: s.responseHeaders,
+			}
+			if chunk.Created != 0 {
+				metadata.Timestamp = time.Unix(chunk.Created, 0)
+			}
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+				Type:             provider.ChunkTypeResponseMetadata,
+				ResponseMetadata: metadata,
+			})
+			s.metadataEmitted = true
+		}
+
+		// Process chunk and return appropriate StreamChunk.
+		result, ok := s.processChunk(&chunk)
+		if ok {
+			return result, nil
+		}
+	}
 }
 
-func (s *alibabaStream) emitParsedChunk(chunk *provider.StreamChunk) (*provider.StreamChunk, error) {
+// emitParsedChunk decides how a freshly built chunk should be delivered:
+// returned immediately (chunk, true) if nothing is queued ahead of it, or
+// appended behind the pending flushQueue (nil, false) for the caller's
+// Next() loop to continue draining.
+func (s *alibabaStream) emitParsedChunk(chunk *provider.StreamChunk) (*provider.StreamChunk, bool) {
 	if len(s.flushQueue) == 0 {
-		return chunk, nil
+		return chunk, true
 	}
 	s.flushQueue = append(s.flushQueue, chunk)
-	return s.Next()
+	return nil, false
 }
 
-// processChunk processes a single Alibaba stream chunk
-func (s *alibabaStream) processChunk(chunk *alibabaStreamChunk) (*provider.StreamChunk, error) {
+// processChunk processes a single Alibaba stream chunk. Returns
+// (*provider.StreamChunk, bool), where ok=true means Next() should return
+// the chunk immediately and ok=false means Next() should continue its loop
+// (see the comment on Next() for why this no longer recurses).
+func (s *alibabaStream) processChunk(chunk *alibabaStreamChunk) (*provider.StreamChunk, bool) {
 	// Handle usage-only chunks (final chunk with usage data)
 	if len(chunk.Choices) == 0 {
 		if chunk.Usage != nil {
 			s.usage = convertAlibabaUsageToTypes(chunk.Usage)
 		}
 		// No content, get next chunk
-		return s.Next()
+		return nil, false
 	}
 
 	choice := chunk.Choices[0]
@@ -176,11 +199,11 @@ func (s *alibabaStream) processChunk(chunk *alibabaStreamChunk) (*provider.Strea
 		if choice.FinishReason != "" {
 			s.isActiveReasoning = false
 			s.flushQueue = append(extra, reasoningChunk, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"}, s.buildFinishChunk())
-			return s.Next()
+			return nil, false
 		}
 		if len(extra) > 0 {
 			s.flushQueue = append(extra, reasoningChunk)
-			return s.Next()
+			return nil, false
 		}
 		return s.emitParsedChunk(reasoningChunk)
 	}
@@ -196,7 +219,7 @@ func (s *alibabaStream) processChunk(chunk *alibabaStreamChunk) (*provider.Strea
 			} else {
 				s.flushQueue = []*provider.StreamChunk{endChunk, textChunk}
 			}
-			return s.Next()
+			return nil, false
 		}
 		if choice.FinishReason != "" {
 			textChunk := &provider.StreamChunk{
@@ -205,10 +228,10 @@ func (s *alibabaStream) processChunk(chunk *alibabaStreamChunk) (*provider.Strea
 			}
 			if len(s.flushQueue) > 0 {
 				s.flushQueue = append(s.flushQueue, textChunk, s.buildFinishChunk())
-				return s.Next()
+				return nil, false
 			}
 			s.flushQueue = append(s.flushQueue, s.buildFinishChunk())
-			return textChunk, nil
+			return textChunk, true
 		}
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeText,
@@ -224,19 +247,19 @@ func (s *alibabaStream) processChunk(chunk *alibabaStreamChunk) (*provider.Strea
 		}
 		if choice.FinishReason != "" {
 			s.flushToolCalls()
-			return s.Next()
+			return nil, false
 		}
-		return s.Next()
+		return nil, false
 	}
 
 	// If we have a finish reason but no content, flush tool calls then finish.
 	if choice.FinishReason != "" {
 		s.flushToolCalls()
-		return s.Next()
+		return nil, false
 	}
 
 	// Empty chunk, get next
-	return s.Next()
+	return nil, false
 }
 
 // accumulateToolCall accumulates tool call data from a delta chunk.

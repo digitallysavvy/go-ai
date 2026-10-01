@@ -202,8 +202,15 @@ func (m *ImageModel) pollImagePrediction(ctx context.Context, predictionID strin
 			)
 		}
 
+		// select on ctx.Done() during the wait (not a plain time.Sleep), so
+		// cancellation/timeout is honored promptly instead of being delayed
+		// by up to a full poll interval (mirrors revai's pollJobStatus).
 		if i < maxAttempts-1 {
-			time.Sleep(pollInterval)
+			select {
+			case <-ctx.Done():
+				return replicateImagePrediction{}, ctx.Err()
+			case <-time.After(pollInterval):
+			}
 		}
 	}
 

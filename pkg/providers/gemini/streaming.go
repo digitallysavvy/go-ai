@@ -142,55 +142,63 @@ func (s *stream) Err() error {
 
 // Next returns the next chunk in the stream.
 // It drains the pre-converted chunk buffer before reading the next SSE event.
+//
+// Implemented as an explicit loop rather than self-recursion: an SSE event
+// that produces no bufferable chunk (e.g. a usageMetadata-only keep-alive
+// with no candidates) used to `return s.Next()`, and Go does not eliminate
+// that tail call, so a long run of such events grew the goroutine stack
+// without bound and could crash the process with an unrecoverable stack
+// overflow. Every former `return s.Next()` is now a loop iteration instead.
 func (s *stream) Next() (*provider.StreamChunk, error) {
-	if s.err != nil {
-		return nil, s.err
-	}
-
-	if len(s.chunkBuffer) > 0 {
-		chunk := s.chunkBuffer[0]
-		s.chunkBuffer = s.chunkBuffer[1:]
-		return chunk, nil
-	}
-
-	event, err := s.parser.Next()
-	if err != nil {
-		// The underlying reader can end without an explicit "[DONE]" SSE
-		// event (e.g. in tests, or providers that just close the connection).
-		// TS always calls its stream's flush() exactly once regardless of how
-		// the stream ends, so finalize here too.
-		if err == io.EOF && s.finalizeOnce() {
-			return s.Next()
+	for {
+		if s.err != nil {
+			return nil, s.err
 		}
-		s.err = err
-		return nil, err
-	}
-	if streaming.IsStreamDone(event) {
-		if s.finalizeOnce() {
-			return s.Next()
+
+		if len(s.chunkBuffer) > 0 {
+			chunk := s.chunkBuffer[0]
+			s.chunkBuffer = s.chunkBuffer[1:]
+			return chunk, nil
 		}
-		s.err = io.EOF
-		return nil, io.EOF
-	}
 
-	var chunkData Response
-	if err := json.Unmarshal([]byte(event.Data), &chunkData); err != nil {
-		// TS google-language-model.ts: `if (!chunk.success) { controller
-		// .enqueue({type:'error', error: chunk.error}); return; }` — a
-		// malformed chunk (schema/JSON failure) is surfaced as an error
-		// chunk and the transform CONTINUES reading, it does not terminate
-		// the stream. Previously Go returned this as a terminal Next()
-		// error, ending the stream outright (P1-1c part 2).
-		message := fmt.Sprintf("failed to parse stream chunk: %v", err)
-		return &provider.StreamChunk{
-			Type: provider.ChunkTypeError,
-			Text: message,
-			Err:  providererrors.NewStreamProviderError(message, s.cfg.ProviderName, "", nil, nil, nil, nil),
-		}, nil
-	}
+		event, err := s.parser.Next()
+		if err != nil {
+			// The underlying reader can end without an explicit "[DONE]" SSE
+			// event (e.g. in tests, or providers that just close the connection).
+			// TS always calls its stream's flush() exactly once regardless of how
+			// the stream ends, so finalize here too.
+			if err == io.EOF && s.finalizeOnce() {
+				continue
+			}
+			s.err = err
+			return nil, err
+		}
+		if streaming.IsStreamDone(event) {
+			if s.finalizeOnce() {
+				continue
+			}
+			s.err = io.EOF
+			return nil, io.EOF
+		}
 
-	s.processSSEEvent(chunkData)
-	return s.Next()
+		var chunkData Response
+		if err := json.Unmarshal([]byte(event.Data), &chunkData); err != nil {
+			// TS google-language-model.ts: `if (!chunk.success) { controller
+			// .enqueue({type:'error', error: chunk.error}); return; }` — a
+			// malformed chunk (schema/JSON failure) is surfaced as an error
+			// chunk and the transform CONTINUES reading, it does not terminate
+			// the stream. Previously Go returned this as a terminal Next()
+			// error, ending the stream outright (P1-1c part 2).
+			message := fmt.Sprintf("failed to parse stream chunk: %v", err)
+			return &provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: message,
+				Err:  providererrors.NewStreamProviderError(message, s.cfg.ProviderName, "", nil, nil, nil, nil),
+			}, nil
+		}
+
+		s.processSSEEvent(chunkData)
+	}
 }
 
 // finalizeOnce closes any open blocks/tool inputs and appends the single

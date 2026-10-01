@@ -3,6 +3,7 @@ package codemode
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -13,9 +14,13 @@ import (
 // This file wraps a vendored copy of github.com/fastschema/qjs v0.0.6
 // (QuickJS compiled to WebAssembly, executed with wazero -- pure Go, no
 // cgo), at pkg/internal/third_party/qjs, as the code-mode sandbox engine.
-// See that package's README.vendor.md for why it's vendored (a memory-safety
-// patch to Mem.ReadString) and the package doc for how this compares to
-// TypeScript's worker+quickjs-emscripten (now `run`) engine.
+// See that package's README.vendor.md for why it's vendored (memory-safety
+// patches to Mem.ReadString/Value.JSONStringify, and the job-queue-
+// quiescence exports concurrent approval batching depends on -- see
+// QJS_RunPendingJobs/QJS_PromiseState/QJS_PromiseResult, used from
+// driveCodeModeExecution in run_code_mode.go, this file's only caller of
+// note) and the package doc for how this compares to TypeScript's
+// worker+quickjs-emscripten (now `run`) engine.
 //
 // Two real, verified quirks in fastschema/qjs v0.0.6 shape this file:
 //
@@ -96,10 +101,20 @@ func acquireWorkerSlot() (func(), error) {
 
 func warmUp() error {
 	warmUpOnce.Do(func() {
+		// No code ever runs in the warm-up runtime, but it is hardened
+		// identically to every real invocation (NoFSMount, no Stdout/Stderr
+		// wired to the real host streams, DisableModules so the engine
+		// itself refuses every import()) as defense in depth -- see the
+		// matching qjs.New call in runInSandbox below and
+		// sandbox_hardening.go.
 		rt, err := qjs.New(qjs.Option{
 			MemoryLimit:        DefaultMemoryLimitBytes,
 			Context:            context.Background(),
 			CloseOnContextDone: true,
+			NoFSMount:          true,
+			DisableModules:     true,
+			Stdout:             io.Discard,
+			Stderr:             io.Discard,
 		})
 		if err != nil {
 			warmUpErr = fmt.Errorf("codemode: failed to initialize the QuickJS sandbox: %w", err)
@@ -114,6 +129,7 @@ func warmUp() error {
 type sandboxOutcome struct {
 	resultJSON  string
 	isUndefined bool
+	interrupted bool
 	err         error
 }
 
@@ -126,18 +142,29 @@ type sandboxOutcome struct {
 // abandoned/leaked.
 const sandboxTimeoutGrace = 5 * time.Second
 
-// runInSandbox evaluates source as the body of an async IIFE (see
-// wrapCodeModeSource) in a fresh QuickJS sandbox, applying policy's
-// resource limits. bind, if non-nil, is called with the fresh context to
-// install host bindings (the `tools` object) before evaluation.
-func runInSandbox(ctx context.Context, policy resolvedPolicy, source string, bind func(jsCtx *qjs.Context) error) (resultJSON string, isUndefined bool, err error) {
+// runInSandbox creates a fresh QuickJS sandbox with policy's resource
+// limits applied and hands it to drive, which is responsible for
+// installing host bindings, evaluating source, and running it to
+// completion (or to a quiescent point worth pausing at -- see
+// driveCodeModeExecution in run_code_mode.go, drive's only caller).
+// runInSandbox itself only owns what every invocation needs regardless of
+// what drive does with the context: warm-up, the process-wide concurrency
+// slot, the timeout/cancellation goroutine plumbing, and panic recovery
+// for the two qjs v0.0.6 quirks documented above.
+//
+// drive returns (resultJSON, isUndefined, interrupted, err): interrupted
+// means drive stopped at a quiescent point with one or more host calls
+// newly pending (the caller inspects toolBridge.batchSnapshot for which
+// ones), not a completed result -- resultJSON/isUndefined are meaningless
+// when interrupted is true.
+func runInSandbox(ctx context.Context, policy resolvedPolicy, drive func(jsCtx *qjs.Context) (resultJSON string, isUndefined bool, interrupted bool, err error)) (resultJSON string, isUndefined bool, interrupted bool, err error) {
 	if werr := warmUp(); werr != nil {
-		return "", false, werr
+		return "", false, false, werr
 	}
 
 	release, werr := acquireWorkerSlot()
 	if werr != nil {
-		return "", false, werr
+		return "", false, false, werr
 	}
 	defer release()
 
@@ -158,12 +185,36 @@ func runInSandbox(ctx context.Context, policy resolvedPolicy, source string, bin
 			}
 		}()
 
+		// Console output is capped and confined to the sandbox (see
+		// sandbox_hardening.go's cappedConsoleBudget doc comment): both
+		// Stdout and Stderr share one budget sized from the resolved
+		// policy, and neither ever writes to the real host process's
+		// os.Stdout/os.Stderr. NoFSMount means no host directory is
+		// mounted into the sandbox at all (see qjs.Option.NoFSMount's doc
+		// comment) -- this, together with stripSandboxGlobals below and
+		// never passing environment variables into the WASM module (see
+		// runtime.go), is the fix for the R4-1 sandbox-escape finding.
+		//
+		// DisableModules (BF1b) makes qjs.wasm itself refuse every ES
+		// module import with a clean JS error -- both the native
+		// qjs:std/qjs:os/qjs:bjson modules and any file-based specifier --
+		// regardless of whether the Go-side static check below
+		// (assertNoDynamicImport) is ever bypassed. See
+		// qjs.Option.DisableModules's doc comment and README.vendor.md's
+		// "Native-module import escape" section for why an engine-level fix
+		// was previously believed impossible without a C rebuild, and why
+		// this rebuild closes that gap.
+		consoleBudget := newCappedConsoleBudget(policy.MaxConsoleOutputBytes)
 		rt, nerr := qjs.New(qjs.Option{
 			MemoryLimit:        policy.MemoryLimitBytes,
 			MaxStackSize:       policy.MaxStackSizeBytes,
 			MaxExecutionTime:   policy.TimeoutMs,
 			Context:            runCtx,
 			CloseOnContextDone: true,
+			NoFSMount:          true,
+			DisableModules:     true,
+			Stdout:             consoleBudget.writer(),
+			Stderr:             consoleBudget.writer(),
 		})
 		if nerr != nil {
 			out.err = classifySandboxFailure(nerr, ctx, policy)
@@ -175,42 +226,38 @@ func runInSandbox(ctx context.Context, policy resolvedPolicy, source string, bin
 		}()
 
 		jsCtx := rt.Context()
-		if bind != nil {
-			if berr := bind(jsCtx); berr != nil {
-				out.err = berr
-				return
-			}
-		}
-
-		value, eerr := jsCtx.Eval("code-mode.js", qjs.Code(source), qjs.FlagAsync())
-		if eerr != nil {
-			out.err = classifySandboxFailure(eerr, ctx, policy)
+		// Strip every quickjs-libc host-escape global (std/os/print/
+		// scriptArgs/bjson) before any user source runs -- see
+		// stripSandboxGlobals's doc comment for why this is defense in
+		// depth on top of NoFSMount/no-env above, not a substitute for it.
+		stripSandboxGlobals(jsCtx)
+		// Block eval/Function (and the indirect paths to the Function
+		// constructor) before any user source runs -- see
+		// installRuntimeHardening's doc comment. This, together with
+		// assertNoDynamicImport (run_code_mode.go) statically rejecting any
+		// script that spells `import(` literally, is the fix for the
+		// post-R4-1 finding that stripSandboxGlobals alone does not close:
+		// `await import('qjs:std')`/`'qjs:os'`/`'qjs:bjson'` reach the same
+		// host-escape primitives independently of the global object.
+		if herr := installRuntimeHardening(jsCtx); herr != nil {
+			out.err = classifySandboxFailure(herr, ctx, policy)
 			return
 		}
-		if value.IsPromise() {
-			value, eerr = value.Await()
-			if eerr != nil {
-				out.err = classifySandboxFailure(eerr, ctx, policy)
-				return
-			}
-		}
-		if value.IsUndefined() {
-			out.isUndefined = true
+		rJSON, isUndef, interruptedResult, derr := drive(jsCtx)
+		if derr != nil {
+			out.err = classifySandboxFailure(derr, ctx, policy)
 			return
 		}
-		js, jerr := value.JSONStringify()
-		if jerr != nil {
-			out.err = classifySandboxFailure(jerr, ctx, policy)
-			return
-		}
-		out.resultJSON = js
+		out.resultJSON = rJSON
+		out.isUndefined = isUndef
+		out.interrupted = interruptedResult
 	}()
 
 	select {
 	case out := <-ch:
-		return out.resultJSON, out.isUndefined, out.err
+		return out.resultJSON, out.isUndefined, out.interrupted, out.err
 	case <-time.After(timeout + sandboxTimeoutGrace):
-		return "", false, NewTimeoutError(policy.TimeoutMs)
+		return "", false, false, NewTimeoutError(policy.TimeoutMs)
 	}
 }
 

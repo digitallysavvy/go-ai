@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -158,5 +159,44 @@ func TestWorkflowRunMultiplexerClientSendAndReconnect(t *testing.T) {
 	}
 	if !seenReconnect || !prepareReconnect || len(events) == 0 || events[0].Event != "finish" {
 		t.Fatalf("unexpected reconnect state: seen=%v prepare=%v events=%+v", seenReconnect, prepareReconnect, events)
+	}
+}
+
+// TestWorkflowRunMultiplexerAppendEventDropIsObservable is a permanent
+// regression test for R2-6: appendEvent's non-blocking fan-out to a
+// watcher's fixed-size buffer used to drop an event with a bare
+// `select { case ch <- re: default: }` and no trace of the drop anywhere.
+// TS has no equivalent server-side multiplexer (see the type doc on
+// WorkflowRunMultiplexer) to mirror a buffering/backpressure/drop policy
+// from, so this keeps the existing non-blocking fan-out (required so one
+// slow watcher can never stall the run or every other watcher) but makes a
+// drop observable: counted, logged once, and never lost from the replayable
+// history recorded in rs.events.
+func TestWorkflowRunMultiplexerAppendEventDropIsObservable(t *testing.T) {
+	tr := &WorkflowRunMultiplexer{}
+	runID := "run-drop-1"
+	watch := make(chan runEvent, 2) // tiny, intentionally never drained
+	rs := &runState{watchers: map[chan runEvent]struct{}{watch: {}}}
+	tr.Runs.Store(runID, rs)
+
+	const total = 5
+	for i := 0; i < total; i++ {
+		tr.appendEvent(runID, "progress", fmt.Sprintf(`{"i":%d}`, i))
+	}
+
+	rs.mu.Lock()
+	dropped := rs.droppedEvents
+	warned := rs.warnedDrop
+	recorded := len(rs.events)
+	rs.mu.Unlock()
+
+	if recorded != total {
+		t.Fatalf("rs.events recorded %d events, want %d: a watcher's buffer filling must never drop events from the replayable history", recorded, total)
+	}
+	if dropped == 0 {
+		t.Fatal("expected appendEvent to count at least one drop once the watcher's buffer filled")
+	}
+	if !warned {
+		t.Fatal("expected appendEvent to have logged the drop (warnedDrop)")
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,34 @@ import (
 // DefaultBaseURL is the production Vercel API base URL (TS `baseUrl:
 // 'https://vercel.com/api'`).
 const DefaultBaseURL = "https://vercel.com/api"
+
+// vercelNDJSONMaxLine bounds a single ndjson line read from a command/logs
+// stream (both RunCommandWait and GetLogs). The TS client has no such cap —
+// it hands the response body to the `jsonlines` package, which parses
+// incrementally rather than buffering whole lines — but bufio.Scanner, which
+// this client uses instead, requires a fixed maximum token size. 16MB
+// comfortably covers any realistic single log line (e.g. a base64-encoded
+// file dump) while still bounding per-command memory use; wrapScanError
+// below turns a line that exceeds it into a clearly-labeled error instead of
+// letting it read as an unexplained stream failure.
+const vercelNDJSONMaxLine = 16 * 1024 * 1024
+
+// wrapScanError clarifies a bufio.Scanner failure reading an ndjson stream —
+// most commonly bufio.ErrTooLong from a single line exceeding
+// vercelNDJSONMaxLine — instead of letting it propagate as an opaque error
+// indistinguishable from the stream simply ending. It wraps the original
+// error with %w so callers can still errors.Is(err, bufio.ErrTooLong) (or
+// unwrap any other underlying cause, such as a read timeout or a connection
+// reset) rather than losing it.
+func wrapScanError(err error, sessionID string) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, bufio.ErrTooLong) {
+		return fmt.Errorf("vercel sandbox session %q: a single ndjson stream line exceeded the %d-byte limit: %w", sessionID, vercelNDJSONMaxLine, err)
+	}
+	return fmt.Errorf("vercel sandbox session %q: ndjson stream read failed: %w", sessionID, err)
+}
 
 // linuxSignalMapping mirrors TS `resolveSignal`'s table.
 var linuxSignalMapping = map[string]int{
@@ -203,6 +232,15 @@ type RunCommandWaitResult struct {
 // logs=true and consumes the ndjson stream to completion, accumulating
 // stdout/stderr client-side (mirrors TS `Session.runCommand`'s non-detached
 // path).
+//
+// On a stream failure (an early end, an oversized line, or a sandbox-
+// reported "error" line) this still returns whatever stdout/stderr had
+// already been accumulated, alongside the error — never a nil result — so a
+// caller does not lose output the command had already produced just because
+// the stream failed before the command's own finish line arrived. This
+// mirrors how TS's `@vercel/sandbox` delivers stdout/stderr as they arrive,
+// over independent ReadableStreams that keep whatever was already pushed to
+// a reader even once the stream later errors.
 func (c *APIClient) RunCommandWait(ctx context.Context, sessionID string, req runCommandRequest) (*RunCommandWaitResult, error) {
 	req.Wait = true
 	req.Logs = true
@@ -215,21 +253,22 @@ func (c *APIClient) RunCommandWait(ctx context.Context, sessionID string, req ru
 	defer resp.Body.Close() //nolint:errcheck
 
 	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
+	scanner.Buffer(make([]byte, 64*1024), vercelNDJSONMaxLine)
+
+	result := &RunCommandWaitResult{}
 
 	if !scanner.Scan() {
-		return nil, streamEndedEarly(sessionID, scanner.Err())
+		return result, streamEndedEarly(sessionID, wrapScanError(scanner.Err(), sessionID))
 	}
 	var first ndjsonLine
 	if err := json.Unmarshal(scanner.Bytes(), &first); err != nil {
-		return nil, err
+		return result, err
 	}
 
-	result := &RunCommandWaitResult{}
 	for scanner.Scan() {
 		var line ndjsonLine
 		if err := json.Unmarshal(scanner.Bytes(), &line); err != nil {
-			return nil, err
+			return result, err
 		}
 		if line.Command != nil {
 			result.Command = *line.Command
@@ -237,14 +276,14 @@ func (c *APIClient) RunCommandWait(ctx context.Context, sessionID string, req ru
 		}
 		switch line.Stream {
 		case "error":
-			return nil, streamErrorFromData(line.Data, sessionID)
+			return result, streamErrorFromData(line.Data, sessionID)
 		case "stdout":
 			result.Stdout += dataString(line.Data)
 		case "stderr":
 			result.Stderr += dataString(line.Data)
 		}
 	}
-	return nil, streamEndedEarly(sessionID, scanner.Err())
+	return result, streamEndedEarly(sessionID, wrapScanError(scanner.Err(), sessionID))
 }
 
 // RunCommandDetached posts POST .../cmd without wait, returning immediately
@@ -309,7 +348,7 @@ func (c *APIClient) GetLogs(ctx context.Context, sessionID, cmdID string, onLog 
 	defer resp.Body.Close() //nolint:errcheck
 
 	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
+	scanner.Buffer(make([]byte, 64*1024), vercelNDJSONMaxLine)
 	for scanner.Scan() {
 		if len(bytes.TrimSpace(scanner.Bytes())) == 0 {
 			continue
@@ -325,7 +364,11 @@ func (c *APIClient) GetLogs(ctx context.Context, sessionID, cmdID string, onLog 
 			onLog(LogEntry{Stream: line.Stream, Data: dataString(line.Data)})
 		}
 	}
-	return scanner.Err()
+	// wrapScanError clarifies a bufio.ErrTooLong (or other scan failure) the
+	// same way RunCommandWait does, instead of returning it bare: see
+	// vercelNDJSONMaxLine's doc comment — this cap and RunCommandWait's are
+	// the same client-side limitation, not a sandbox-reported error.
+	return wrapScanError(scanner.Err(), sessionID)
 }
 
 // MkDir posts POST .../fs/mkdir.
@@ -428,14 +471,22 @@ func dataString(data interface{}) string {
 }
 
 // StreamError mirrors TS `StreamError`: a sandbox-reported error interleaved
-// in an ndjson stream (typically the sandbox stopping mid-stream).
+// in an ndjson stream (typically the sandbox stopping mid-stream), or a
+// client-side failure reading that stream (an early end, a read error, or an
+// oversized line). Cause, when set, is the underlying client-side error
+// (e.g. bufio.ErrTooLong or a network read error) — Unwrap exposes it so
+// callers can errors.Is/errors.As through it instead of it being swallowed
+// behind a generic "stream ended early" message.
 type StreamError struct {
 	Code      string
 	Message   string
 	SessionID string
+	Cause     error
 }
 
 func (e *StreamError) Error() string { return e.Message }
+
+func (e *StreamError) Unwrap() error { return e.Cause }
 
 func streamErrorFromData(data interface{}, sessionID string) error {
 	m, _ := data.(map[string]interface{})
@@ -444,6 +495,17 @@ func streamErrorFromData(data interface{}, sessionID string) error {
 	return &StreamError{Code: code, Message: message, SessionID: sessionID}
 }
 
+// streamEndedEarly reports that the ndjson command/log stream ended (or
+// failed) before the expected data was received. cause, when non-nil (a real
+// client-side scan error such as bufio.ErrTooLong, distinct from a clean EOF
+// with no error), is folded into Message so the real failure is visible
+// instead of being swallowed behind the generic message, and is also
+// preserved as Cause/Unwrap for callers that want to match on it
+// programmatically.
 func streamEndedEarly(sessionID string, cause error) error {
-	return &StreamError{Code: "stream_ended_early", Message: "Stream ended before command data was received", SessionID: sessionID}
+	message := "Stream ended before command data was received"
+	if cause != nil {
+		message = fmt.Sprintf("%s: %v", message, cause)
+	}
+	return &StreamError{Code: "stream_ended_early", Message: message, SessionID: sessionID, Cause: cause}
 }

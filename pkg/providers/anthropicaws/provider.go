@@ -12,6 +12,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -153,7 +154,7 @@ func (p *Provider) LastSigningCredentials() Credentials {
 	if p.transport == nil {
 		return Credentials{}
 	}
-	return p.transport.lastCredentials
+	return p.transport.getLastCredentials()
 }
 
 type sigV4Transport struct {
@@ -163,7 +164,27 @@ type sigV4Transport struct {
 	secretAccessKey    string
 	sessionToken       string
 	credentialProvider CredentialProvider
-	lastCredentials    Credentials
+
+	// lastCredentials and its mutex guard the diagnostic
+	// LastSigningCredentials() accessor against concurrent RoundTrip calls.
+	// Go's http.Client/http.Transport are documented safe for concurrent
+	// use, so two in-flight requests through the same *http.Client can call
+	// RoundTrip concurrently; without this mutex that was a data race on a
+	// plain struct field.
+	lastCredsMu     sync.Mutex
+	lastCredentials Credentials
+}
+
+func (t *sigV4Transport) getLastCredentials() Credentials {
+	t.lastCredsMu.Lock()
+	defer t.lastCredsMu.Unlock()
+	return t.lastCredentials
+}
+
+func (t *sigV4Transport) setLastCredentials(creds Credentials) {
+	t.lastCredsMu.Lock()
+	t.lastCredentials = creds
+	t.lastCredsMu.Unlock()
 }
 
 func (t *sigV4Transport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -182,7 +203,7 @@ func (t *sigV4Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	t.lastCredentials = creds
+	t.setLastCredentials(creds)
 	signAWSRequest(req, body, t.region, creds)
 	req.Body = io.NopCloser(bytes.NewReader(body))
 	return t.base.RoundTrip(req)

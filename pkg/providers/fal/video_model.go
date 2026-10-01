@@ -18,6 +18,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // VideoModel implements the provider.VideoModelV3 interface for Fal.ai.
@@ -370,10 +371,15 @@ func (m *VideoModel) getPollOptions(providerOpts map[string]interface{}) polling
 
 	if providerOpts != nil {
 		if falOpts, ok := providerOpts["fal"].(map[string]interface{}); ok {
-			if interval, ok := falOpts["pollIntervalMs"].(int); ok {
+			// CoerceInt (not a bare `.(int)` assertion) because
+			// providerOpts commonly arrives via encoding/json.Unmarshal
+			// (a JSON config file, or a request body forwarded straight
+			// into ProviderOptions), which decodes JSON numbers as
+			// float64, not int.
+			if interval, ok := providerutils.CoerceInt(falOpts["pollIntervalMs"]); ok {
 				opts.PollIntervalMs = interval
 			}
-			if timeout, ok := falOpts["pollTimeoutMs"].(int); ok {
+			if timeout, ok := providerutils.CoerceInt(falOpts["pollTimeoutMs"]); ok {
 				opts.PollTimeoutMs = timeout
 			}
 		}

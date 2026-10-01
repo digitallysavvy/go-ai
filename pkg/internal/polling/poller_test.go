@@ -94,6 +94,40 @@ func TestPollForCompletion_Timeout(t *testing.T) {
 	}
 }
 
+// TestPollForCompletion_BoundsInFlightCheckerCall is a regression test for a
+// bug where PollTimeoutMs was only checked *between* checker calls, with the
+// raw caller ctx (no derived deadline) passed straight through to checker.
+// A single slow/hanging status call could block the whole poll loop
+// arbitrarily far past the configured timeout. The fix derives a
+// context.WithCancel(ctx) bound to the timeout and passes it to checker, so
+// an in-flight call is aborted at the deadline.
+func TestPollForCompletion_BoundsInFlightCheckerCall(t *testing.T) {
+	checker := func(ctx context.Context) (*JobResult, error) {
+		select {
+		case <-time.After(1 * time.Second):
+			return &JobResult{Status: JobStatusProcessing}, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	opts := PollOptions{
+		PollIntervalMs: 10,
+		PollTimeoutMs:  100,
+	}
+
+	start := time.Now()
+	_, err := PollForCompletion(context.Background(), checker, opts)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected a timeout error, got nil")
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("PollForCompletion took %v to return after a 100ms timeout with a 1s-hanging checker call (expected well under 500ms)", elapsed)
+	}
+}
+
 func TestPollForCompletion_ContextCancellation(t *testing.T) {
 	checker := func(ctx context.Context) (*JobResult, error) {
 		return &JobResult{

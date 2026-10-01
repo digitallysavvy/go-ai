@@ -1,6 +1,7 @@
 package replicate
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -103,6 +104,28 @@ func TestReplicateVideoModelBuildInputAndPollOptions(t *testing.T) {
 	pollOpts := m.getPollOptions(map[string]interface{}{"replicate": map[string]interface{}{"pollIntervalMs": 250, "pollTimeoutMs": 9000}})
 	if pollOpts.PollIntervalMs != 250 || pollOpts.PollTimeoutMs != 9000 {
 		t.Fatalf("poll options mismatch: %#v", pollOpts)
+	}
+}
+
+// TestReplicateVideoModel_GetPollOptions_JSONNumbers is a regression test:
+// getPollOptions read pollIntervalMs/pollTimeoutMs via a bare `.(int)` type
+// assertion. ProviderOptions built via encoding/json.Unmarshal (a JSON
+// config file, or a request body forwarded straight into ProviderOptions)
+// decodes numbers as float64, so the assertion silently failed and the
+// user's poll interval/timeout was dropped in favor of the hardcoded
+// default, with no warning.
+func TestReplicateVideoModel_GetPollOptions_JSONNumbers(t *testing.T) {
+	m := NewVideoModel(New(Config{APIKey: "k"}), "owner/model")
+
+	raw := []byte(`{"replicate":{"pollIntervalMs":111,"pollTimeoutMs":222}}`)
+	var providerOpts map[string]interface{}
+	if err := json.Unmarshal(raw, &providerOpts); err != nil {
+		t.Fatal(err)
+	}
+
+	got := m.getPollOptions(providerOpts)
+	if got.PollIntervalMs != 111 || got.PollTimeoutMs != 222 {
+		t.Fatalf("JSON-sourced poll options were dropped: got %d/%d, want 111/222", got.PollIntervalMs, got.PollTimeoutMs)
 	}
 }
 

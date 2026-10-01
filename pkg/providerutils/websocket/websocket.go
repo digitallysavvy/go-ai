@@ -24,6 +24,7 @@ package websocket
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -78,7 +79,46 @@ func Dial(ctx context.Context, rawURL string, opts DialOptions) (*websocket.Conn
 		}
 	}
 
-	return wsConfig.DialContext(ctx)
+	conn, err := wsConfig.DialContext(ctx)
+	if err != nil {
+		return nil, redactDialError(rawURL, err)
+	}
+	return conn, nil
+}
+
+// redactDialError strips the query string and any embedded userinfo
+// (user:password@ or a bare token before the @) from rawURL before folding
+// it into a dial failure's error message. Some providers (e.g. Cartesia's
+// streaming transcription) place a bearer/access token directly in the
+// WebSocket URL's query string, since the handshake has no header-based
+// alternative, and a URL can just as easily carry credentials as userinfo
+// (wss://user:token@host/...); x/net/websocket's *websocket.DialError.Error()
+// includes the full dial URL verbatim (query string, userinfo and all), so
+// an unredacted dial error would put a live secret into an error that
+// calling code commonly logs or surfaces. The underlying cause (e.g. "dial
+// tcp ...: connection refused") is preserved via %w so errors.Is still
+// matches it.
+func redactDialError(rawURL string, err error) error {
+	redacted := redactURL(rawURL)
+	var dialErr *websocket.DialError
+	if errors.As(err, &dialErr) && dialErr.Err != nil {
+		return fmt.Errorf("websocket dial %s: %w", redacted, dialErr.Err)
+	}
+	return fmt.Errorf("websocket dial %s: %w", redacted, err)
+}
+
+// redactURL returns rawURL with its query string and any userinfo removed.
+// Falls back to returning rawURL unchanged if it fails to parse (defense in
+// depth only -- Dial itself already parses rawURL successfully before this
+// is reached).
+func redactURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	u.RawQuery = ""
+	u.User = nil
+	return u.String()
 }
 
 // deriveOrigin returns the http(s) origin (scheme + host, root path) for a

@@ -314,3 +314,27 @@ func TestVertexVideoModel_DoGenerate_EndToEnd(t *testing.T) {
 		t.Fatalf("Videos = %#v", resp.Videos)
 	}
 }
+
+// TestVideoModel_GetPollOptions_JSONNumbers is a regression test:
+// getPollOptions read pollIntervalMs/pollTimeoutMs via a bare `.(int)` type
+// assertion. ProviderOptions built via encoding/json.Unmarshal (a JSON
+// config file, or a request body forwarded straight into ProviderOptions)
+// decodes numbers as float64, so the assertion silently failed and the
+// user's poll interval/timeout was dropped in favor of the hardcoded
+// default, with no warning. Covers both the "googleVertex" and legacy
+// "vertex" provider-options keys.
+func TestVideoModel_GetPollOptions_JSONNumbers(t *testing.T) {
+	m := &VideoModel{}
+
+	for _, key := range []string{"googleVertex", "vertex"} {
+		raw := []byte(`{"` + key + `":{"pollIntervalMs":111,"pollTimeoutMs":222}}`)
+		var providerOpts map[string]interface{}
+		if err := json.Unmarshal(raw, &providerOpts); err != nil {
+			t.Fatal(err)
+		}
+		got := m.getPollOptions(providerOpts)
+		if got.PollIntervalMs != 111 || got.PollTimeoutMs != 222 {
+			t.Fatalf("[%s] JSON-sourced poll options were dropped: got PollIntervalMs=%d PollTimeoutMs=%d, want 111/222", key, got.PollIntervalMs, got.PollTimeoutMs)
+		}
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"sync"
@@ -25,6 +26,16 @@ type runState struct {
 	events   []runEvent
 	done     bool
 	watchers map[chan runEvent]struct{}
+
+	// droppedEvents counts live events a watcher's buffer couldn't accept
+	// (see appendEvent). TS has no equivalent server-side multiplexer to
+	// match (see the type doc above), so there is no upstream drop/
+	// backpressure/buffer-unbounded behavior to mirror here; this keeps
+	// appendEvent's existing non-blocking fan-out (a slow watcher must never
+	// stall every other watcher, or the run itself) while making a drop
+	// observable instead of silent (R2-6).
+	droppedEvents int
+	warnedDrop    bool
 }
 
 // WorkflowRunMultiplexer serves run-scoped SSE and resume handlers, plus a
@@ -138,6 +149,22 @@ func (t *WorkflowRunMultiplexer) appendEvent(runID, event, data string) {
 		select {
 		case ch <- re:
 		default:
+			// The watcher's fixed-size buffer (see serveRun's `watch`
+			// channel) is full. appendEvent must stay non-blocking here — a
+			// single slow SSE client must never stall every other watcher,
+			// or the run goroutine itself — so the event is dropped for
+			// this watcher's live tail. It is never lost for good: rs.events
+			// above still has it, so a client that reconnects (even this
+			// same one, after its SSE connection drops) replays it via
+			// Resume's startIndex-based snapshot. What must never happen is
+			// a *silent* drop (R2-6): count it, and log once per run so an
+			// operator can see a watcher is falling behind instead of
+			// losing events with no trace.
+			rs.droppedEvents++
+			if !rs.warnedDrop {
+				rs.warnedDrop = true
+				log.Printf("[WorkflowRunMultiplexer] run %s: a watcher's live event buffer is full; dropping event %q for that watcher (the full run history is still recorded and replayable via Resume's startIndex)", runID, event)
+			}
 		}
 	}
 }

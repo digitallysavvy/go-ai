@@ -90,9 +90,22 @@ func (c *Context) Eval(file string, flags ...EvalOptionFunc) (*Value, error) {
 	return eval(c, file, flags...)
 }
 
+// EvalNoAutoAwait evaluates a script within the current context without
+// automatically awaiting a promise result -- see evalNoAutoAwait's doc
+// comment and QJS_EvalNoAutoAwait (job-queue-quiescence.patch).
+func (c *Context) EvalNoAutoAwait(file string, flags ...EvalOptionFunc) (*Value, error) {
+	return evalNoAutoAwait(c, file, flags...)
+}
+
 // Compile compiles a script into bytecode.
 func (c *Context) Compile(file string, flags ...EvalOptionFunc) ([]byte, error) {
 	return compile(c, file, flags...)
+}
+
+// RunPendingJobs delegates to Runtime.RunPendingJobs for this context's
+// runtime -- see that method's doc comment.
+func (c *Context) RunPendingJobs() (int, error) {
+	return c.runtime.RunPendingJobs()
 }
 
 // Global returns the global object, caching it for subsequent calls.

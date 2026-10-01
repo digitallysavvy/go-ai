@@ -259,7 +259,10 @@ func vertexEmbeddingOptions(opts *provider.EmbedModelOptions) VertexEmbeddingPro
 				if t, ok := m["title"].(string); ok {
 					result.Title = t
 				}
-				if d, ok := m["outputDimensionality"].(int); ok {
+				// CoerceInt (not a bare `.(int)` assertion) because
+				// ProviderOptions commonly arrives via encoding/json.Unmarshal,
+				// which decodes JSON numbers as float64, not int.
+				if d, ok := providerutils.CoerceInt(m["outputDimensionality"]); ok {
 					result.OutputDimensionality = &d
 				}
 				if a, ok := m["autoTruncate"].(bool); ok {

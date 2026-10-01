@@ -24,9 +24,19 @@ func TestSerializableConfigDropsAuthAndHTTPClientButPreservesSerializableHeaders
 	}
 
 	got := SerializableConfig(cfg{
-		APIKey:     "secret",
-		BaseURL:    "https://example.com",
-		Headers:    map[string]string{"Authorization": "Bearer secret"},
+		APIKey:  "secret",
+		BaseURL: "https://example.com",
+		Headers: map[string]string{
+			"Authorization":       "Bearer secret",
+			"X-Api-Key":           "sk-live-secret",
+			"x-goog-api-key":      "goog-secret",
+			"Proxy-Authorization": "Basic secret",
+			"Cookie":              "session=secret",
+			"X-Custom-Secret":     "secret-value",
+			"X-Session-Token":     "token-value",
+			"X-Request-Id":        "non-sensitive",
+			"Content-Type":        "application/json",
+		},
 		HTTPClient: "client",
 		GenerateID: func() string { return "id" },
 		Tags:       []string{"a", "b"},
@@ -45,8 +55,26 @@ func TestSerializableConfigDropsAuthAndHTTPClientButPreservesSerializableHeaders
 		t.Fatalf("Plain not preserved: %#v", got)
 	}
 	headers, ok := got["Headers"].(map[string]interface{})
-	if !ok || headers["Authorization"] != "Bearer secret" {
+	if !ok {
 		t.Fatalf("Headers not preserved: %#v", got)
+	}
+	// Non-sensitive headers must still round-trip.
+	if headers["X-Request-Id"] != "non-sensitive" {
+		t.Fatalf("non-sensitive header X-Request-Id dropped: %#v", headers)
+	}
+	if headers["Content-Type"] != "application/json" {
+		t.Fatalf("non-sensitive header Content-Type dropped: %#v", headers)
+	}
+	// Credential-bearing headers (R1-2) must be redacted, case-insensitively,
+	// including provider-specific auth headers and generic secret/token
+	// patterns.
+	for _, key := range []string{
+		"Authorization", "X-Api-Key", "x-goog-api-key", "Proxy-Authorization",
+		"Cookie", "X-Custom-Secret", "X-Session-Token",
+	} {
+		if v, ok := headers[key]; ok {
+			t.Fatalf("sensitive header %q leaked into serialized config: %v", key, v)
+		}
 	}
 	for _, key := range []string{"APIKey", "HTTPClient", "GenerateID", "Nested", "BadPlain"} {
 		if _, ok := got[key]; ok {

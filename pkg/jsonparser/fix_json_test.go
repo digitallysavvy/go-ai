@@ -3,6 +3,7 @@ package jsonparser
 import (
 	"encoding/json"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestFixJSON(t *testing.T) {
@@ -220,6 +221,61 @@ func TestFixJSONComplexNested(t *testing.T) {
 	}
 }
 
+// TestFixJSONTruncatedMultiByteUTF8 is a permanent regression test for the
+// jsonparser UTF-8 truncation issue flagged as "Unverified" in the bug
+// report (state/parity/sep_23_2026/bug-review/R2.md): FixJSON indexes input
+// byte-by-byte, so a partial JSON string that ends mid-way through a
+// multi-byte UTF-8 rune (plausible for streamed non-ASCII tool-call
+// arguments cut off at an arbitrary chunk boundary) used to leave the
+// repaired output ending in an incomplete trailing byte sequence. That
+// survived into the closed JSON string and, since encoding/json does not
+// reject invalid UTF-8 in a string (it silently substitutes U+FFFD per bad
+// byte instead of erroring), decoded as mangled replacement characters
+// instead of simply omitting the not-yet-fully-streamed character.
+func TestFixJSONTruncatedMultiByteUTF8(t *testing.T) {
+	full := `{"a":"` + "日本語" + `"}`
+
+	// Truncate the input in the middle of "日" (E6 97 A5 in UTF-8): keep
+	// only its first two bytes.
+	cut := len(`{"a":"`) + 2
+	partial := full[:cut]
+	if utf8.ValidString(partial) {
+		t.Fatalf("test setup: partial input %q unexpectedly already valid UTF-8", partial)
+	}
+
+	result := FixJSON(partial)
+	if !utf8.ValidString(result) {
+		t.Fatalf("FixJSON(%q) = %q, which is not valid UTF-8", partial, result)
+	}
+
+	var v map[string]interface{}
+	if err := json.Unmarshal([]byte(result), &v); err != nil {
+		t.Fatalf("FixJSON() produced invalid JSON: %v\nResult: %q", err, result)
+	}
+	// The incomplete trailing rune must be dropped entirely, not replaced
+	// with a mangled U+FFFD.
+	if got := v["a"]; got != "" {
+		t.Fatalf(`v["a"] = %q, want "" (the incomplete trailing character dropped cleanly)`, got)
+	}
+}
+
+// TestFixJSONPreservesCompleteMultiByteUTF8 guards against an overzealous
+// fix: a string ending in a *complete* multi-byte rune must survive intact.
+func TestFixJSONPreservesCompleteMultiByteUTF8(t *testing.T) {
+	partial := `{"a":"` + "日本語"
+	result := FixJSON(partial)
+	if !utf8.ValidString(result) {
+		t.Fatalf("FixJSON(%q) = %q, which is not valid UTF-8", partial, result)
+	}
+	var v map[string]interface{}
+	if err := json.Unmarshal([]byte(result), &v); err != nil {
+		t.Fatalf("FixJSON() produced invalid JSON: %v\nResult: %q", err, result)
+	}
+	if got := v["a"]; got != "日本語" {
+		t.Fatalf(`v["a"] = %q, want "日本語"`, got)
+	}
+}
+
 // Benchmark FixJSON with different input sizes
 func BenchmarkFixJSON(b *testing.B) {
 	inputs := []string{
@@ -234,5 +290,25 @@ func BenchmarkFixJSON(b *testing.B) {
 				FixJSON(input)
 			}
 		})
+	}
+}
+
+// TestTrimIncompleteUTF8SuffixOnlyTrimsFinalRune checks that an invalid
+// byte earlier in the string doesn't cause trailing valid bytes to be
+// dropped; only an incomplete final rune is trimmed.
+func TestTrimIncompleteUTF8SuffixOnlyTrimsFinalRune(t *testing.T) {
+	cases := map[string]string{
+		"abc":             "abc",
+		"ab\xe2\x82":      "ab",       // "€" cut after two bytes
+		"ab\xf0\x9f\x98":  "ab",       // 4-byte emoji cut after three
+		"a\xffbcd":        "a\xffbcd", // invalid byte in the middle: keep the tail
+		"a\xffbc\xe2\x82": "a\xffbc",  // invalid middle byte plus a cut final rune
+		"\xe2\x82\xac":    "\xe2\x82\xac",
+		"":                "",
+	}
+	for in, want := range cases {
+		if got := trimIncompleteUTF8Suffix(in); got != want {
+			t.Errorf("trimIncompleteUTF8Suffix(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

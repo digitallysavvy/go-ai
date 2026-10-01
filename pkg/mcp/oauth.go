@@ -287,8 +287,12 @@ func DiscoverOAuthProtectedResourceMetadata(ctx context.Context, serverURL strin
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return OAuthProtectedResourceMetadata{}, fmt.Errorf("HTTP %d trying to load well-known OAuth protected resource metadata.", resp.StatusCode)
 	}
+	rawBody, err := readLimitedOAuthBody(resp)
+	if err != nil {
+		return OAuthProtectedResourceMetadata{}, err
+	}
 	var metadata OAuthProtectedResourceMetadata
-	if err := json.NewDecoder(resp.Body).Decode(&metadata); err != nil {
+	if err := json.Unmarshal(rawBody, &metadata); err != nil {
 		return OAuthProtectedResourceMetadata{}, err
 	}
 	if err := validateOAuthProtectedResourceMetadata(metadata); err != nil {
@@ -353,12 +357,15 @@ func DiscoverAuthorizationServerMetadata(ctx context.Context, authorizationServe
 			}
 			return nil, fmt.Errorf("HTTP %d trying to load %s metadata from %s", resp.StatusCode, label, candidate.URL)
 		}
+		rawBody, bodyErr := readLimitedOAuthBody(resp)
+		resp.Body.Close() //nolint:errcheck
+		if bodyErr != nil {
+			return nil, bodyErr
+		}
 		var metadata OAuthAuthorizationServerMetadata
-		if err := json.NewDecoder(resp.Body).Decode(&metadata); err != nil {
-			resp.Body.Close() //nolint:errcheck
+		if err := json.Unmarshal(rawBody, &metadata); err != nil {
 			return nil, err
 		}
-		resp.Body.Close() //nolint:errcheck
 		if err := validateOAuthAuthorizationServerMetadata(metadata, candidate.Type); err != nil {
 			return nil, err
 		}

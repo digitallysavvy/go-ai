@@ -1494,7 +1494,13 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				stepResult.Content,
 				toolResults,
 			)
-			currentMessages = append(currentMessages, stepResponseMsgs...)
+			// TS generate-text.ts: `messagesForNextStep = [...stepMessages,
+			// ...stepResponseMessages]` — stepMessages already carries this
+			// step's AppendToolCallerMessages announcement (line 1115 above),
+			// so that announcement persists into the next step's history.
+			// Using currentMessages here (the pre-announcement value) instead
+			// of stepMessages would drop it after one step.
+			currentMessages = append(append([]types.Message(nil), stepMessages...), stepResponseMsgs...)
 			stepResult.ResponseMessages = stepResponseMsgs
 			stepResult.Response.Messages = stepResponseMsgs
 		} else {
@@ -1525,6 +1531,11 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				stepResult.Content,
 				nil,
 			)
+			// Same rationale as the tool-calls branch above: TS updates
+			// messagesForNextStep unconditionally after every step, not only
+			// when there were tool calls (relevant if the loop continues past
+			// a tool-call-less step, e.g. a pending deferred provider tool).
+			currentMessages = append(append([]types.Message(nil), stepMessages...), finalMsgs...)
 			stepResult.ResponseMessages = finalMsgs
 			stepResult.Response.Messages = finalMsgs
 			result.Response.Messages = finalMsgs
@@ -2205,7 +2216,15 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 			if callbacks.toolExecutionMs != nil {
 				callbacks.toolExecutionMs[call.ID] = durationMs
 			}
-			timedOut := execCtx.Err() != nil
+			// Only the per-tool timeout's own deadline elapsing counts as a
+			// tool timeout. execCtx is a child of toolCtx/ctx: if the outer
+			// context is independently cancelled while the tool is still
+			// running, execCtx.Err() becomes context.Canceled (inherited
+			// from the parent), not context.DeadlineExceeded -- checking
+			// execCtx.Err() != nil would wrongly relabel that upstream
+			// cancellation as TimeoutReasonTool instead of surfacing the
+			// tool's actual error/cancellation.
+			timedOut := errors.Is(execCtx.Err(), context.DeadlineExceeded)
 			execCancel() // release timeout resources immediately after execution
 			if callbacks.timeout != nil && callbacks.timeout.GetToolTimeout(call.ToolName) != nil && timedOut {
 				if toolErr == nil {

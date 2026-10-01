@@ -319,6 +319,25 @@ code.
 
 ## Security Fixes
 
+- `pkg/codemode`: closed a sandbox escape. Model-written JavaScript could
+  reach QuickJS's `std` / `os` modules (through globals, `import('qjs:std')`,
+  or an `import()` inside a template literal interpolation), read and write
+  files under the host's working directory, read environment variables and
+  call `exit`, and could write unbounded output to the host's stdout. The
+  sandbox now mounts no filesystem, passes no environment, removes the libc
+  globals, and captures console output in memory under
+  `MaxConsoleOutputBytes`. The engine itself now refuses all module
+  imports: the native `qjs:*` modules are not registered and the module
+  loader rejects every specifier. A source-level dynamic `import()` check
+  and `eval` / `Function` blocking remain as additional layers.
+- MCP OAuth and the OPA policy client read at most 1 MiB of an HTTP
+  response, so a hostile or broken server can't exhaust memory.
+- Bedrock: a crafted event-stream frame length could overflow the decoder
+  and panic; lengths are now checked without overflow.
+- `anthropicaws`: concurrent requests no longer race on the cached SigV4
+  credentials.
+- WebSocket dial errors no longer include the URL's query string or
+  userinfo, where some providers put credentials.
 - Tool approvals are verified on resume (HMAC v1, byte-compatible with TS).
 - MCP OAuth state parameter comparison uses
   `crypto/subtle.ConstantTimeCompare` to prevent timing-based CSRF.
@@ -339,6 +358,21 @@ code.
   sent to trusted origins, bounded reads).
 - Alibaba video status polling now path-encodes the provider-returned task
   ID.
+- The harness bridge no longer includes the `agent_bridge_token` query
+  parameter in WebSocket dial errors.
+- Removed the unused internal helpers `fileutil.GetContentType` /
+  `GetContentLength`, which fetched URLs without the SSRF checks.
+- `provider.SerializableConfig` redacts credential headers from a
+  serialized model's `Config.Headers`, case-insensitively: `Authorization`,
+  `Proxy-Authorization`, `X-Api-Key`, `Api-Key`, `X-Goog-Api-Key`, `Cookie`,
+  `Set-Cookie`, and any `*-api-key` / `*-token` / `*secret*` name. Before,
+  a model authenticated through a header (Anthropic `x-api-key`, Azure
+  `api-key`, Google `x-goog-api-key`, or `anthropicaws` API-key mode) had
+  the live credential embedded in `SerializedModel.Config`. Other headers
+  are unchanged. After deserializing, providers read their API key from the
+  environment as before; `anthropicaws` falls back to
+  `ANTHROPIC_AWS_API_KEY`. This goes further than TS, which keeps these
+  headers.
 
 ---
 
@@ -456,7 +490,11 @@ code.
 - `CreateHarnessSandboxTemplate`, `Agent.GetSandboxTemplate`, an
   OnBootstrap marker so `onBootstrap` doesn't re-run.
 - `pkg/providerutils/websocket`, a shared helper used by every realtime and
-  streaming-transcription connection.
+  streaming-transcription connection. It also provides a shared session
+  core (`Session[T]`, `ReportError`, `PumpAudio`, `PumpAudioAfterReady`),
+  which the WebSocket transcription and translation streams (OpenAI,
+  Google, Google Vertex, xAI, Cartesia, ElevenLabs, Gateway) now use. This
+  is an internal refactor with no behavior change.
 
 ### Code-mode (experimental)
 
@@ -473,7 +511,21 @@ code.
   `ToCodeModeApprovalMessages`); `SetCodeModeContinuationSigningKey`.
 - It vendors a patched copy of fastschema/qjs v0.0.6
   (`pkg/internal/third_party/qjs`, MIT license) to fix two memory-read
-  bugs.
+  bugs. `qjs.wasm` is rebuilt from pinned, checksum-verified upstream
+  sources with a job-queue quiescence patch and a module-disabling patch,
+  and can be reproduced with `pkg/internal/third_party/qjs/build/build.sh`.
+- TypeScript annotations in model-written code are stripped with Node
+  `stripTypeScriptTypes` semantics: generics, `as` / `satisfies`,
+  interfaces and type aliases, class modifiers, non-null assertions and
+  `import type`. Syntax the stripper doesn't support, such as `enum`, is
+  passed to the JavaScript engine unchanged, as in TS.
+- The code-mode tool catalog and prompt list tools in declaration order,
+  matching TS. To support this, `types.ToolCallerDefinition.Bind` and
+  `PrepareModelMessage` take an ordered `[]types.Tool`. The type is new in
+  v0.5.0, so this isn't a change from v0.4.0.
+- Concurrent tool calls (`Promise.all`) that need approval are batched into
+  one interrupt, as in TS. Tool calls are real async host functions, and a
+  call awaiting approval stays pending until the job queue is idle.
 
 ### MCP
 
@@ -606,6 +658,34 @@ code.
 
 ### Core and streaming
 
+- Streaming providers no longer crash the process with a stack overflow
+  on a long run of events that produce no chunk (keep-alives, metadata,
+  empty deltas). `Next()` used to call itself for each skipped event; it
+  now loops. This covers OpenAI (Responses, chat, completion), xAI,
+  Anthropic, OpenResponses, Alibaba, Mistral, Cohere, the shared
+  OpenAI-compatible stream (and the providers built on it), Groq,
+  DeepSeek, Bedrock, Moonshot, Gemini/Vertex, Gateway and Google
+  Interactions.
+- Mistral (thinking mode): a delta that starts reasoning no longer drops
+  the rest of its content. Text, further thinking parts, tool calls and
+  the finish reason in the same delta are all emitted, in TS order.
+- The shared HTTP client no longer crashes with a concurrent map access
+  when a header is set while requests are in flight.
+- `CreateUIMessageStreamWithOptions`: concurrent `Write` / `Merge` calls no
+  longer crash with a concurrent map write (chunks go through one
+  consumer), and writes after the stream closes are dropped instead of
+  panicking.
+- `RealtimeSession`: the context watcher goroutine exits on `Close`,
+  `Close` can be called more than once, and WebSocket `Send` /
+  `SendBinary` honor ctx while waiting for the connection.
+- Closing a stream reader wakes any `Next` call blocked on it; a tool
+  execution timeout is reported as a timeout only when the deadline was
+  actually exceeded.
+- SSE lines longer than 64 KiB no longer abort the stream on streaming
+  providers. Lines up to 32 MiB are accepted, and longer ones fail with a
+  clear error. The same applies to the Gateway video event stream and
+  `ReadUIMessageStream`. MCP stdio stderr logging is bounded at 1 MiB per
+  line.
 - `schemaToMap` handles an empty item schema; `ShellSandbox` output race
   fixed; duplicate text/reasoning IDs are remapped across steps;
   `PipeTextStreamToWriter` flushes per chunk and returns write errors; the
@@ -627,6 +707,9 @@ code.
   `StreamText`, and `GenerateObject`/`StreamObject` — they used to leak.
 - Text parts keep their `providerMetadata`; each `text-start` begins a new
   text part.
+- Tool-caller messages (for example code-mode's tool catalog) now persist
+  across steps in `GenerateText`, `StreamText` and `ToolLoopAgent`, and
+  `PrepareStep`'s `InitialMessages` stays the raw prompt, matching TS.
 
 ### Anthropic
 
@@ -661,6 +744,27 @@ code.
 
 ### Providers (general)
 
+- Azure: a prompt with only a system message no longer panics. Anthropic
+  skills: a non-2xx version-metadata response returns an error instead of
+  `(nil, nil)`.
+- Polling: each status request is bounded by the poll timeout, and the
+  Replicate and Google pollers stop promptly when ctx is cancelled.
+- Provider options read as integers (poll intervals and timeouts, output
+  dimensionality, and similar) accept any JSON number, so values decoded
+  from JSON as `float64` are no longer ignored. Non-integral, NaN, infinite
+  and overflowing values are rejected.
+- Vertex Model-as-a-Service caches the Application Default Credentials
+  token instead of fetching a new one for every request.
+- Agents: concurrent use of `SubagentRegistry` and `SkillRegistry` no
+  longer crashes with a concurrent map access.
+- TUI: `StreamRenderSource` reads the stream from one goroutine, so `Close`
+  no longer races `Next`, and `Close` returns within 5s even if the stream
+  never does.
+- Workflow chat transport: the chunk pump exits when its context is
+  cancelled (goroutine leak), and chunks the multiplexer drops are counted
+  and logged instead of disappearing silently.
+- `jsonparser.FixJSON` drops an incomplete trailing UTF-8 sequence from
+  truncated input.
 - Cerebras and Vercel call Chat Completions, not Responses. Moonshot
   accepts any model ID. DeepSeek resolves provider file references and
   validates response fields, and drops temperature/topP with a warning
@@ -706,6 +810,9 @@ code.
   errors instead of hanging; `Connect` rejects a negative `MaxRetries`.
 - `StdioTransportConfig.Env` and `WorkingDir` are now actually applied to
   the child process (previously ignored).
+- Stdio transport: `Receive` reads the connection state under the lock
+  (data race with `Close`), and stderr keeps being drained after an
+  over-long line so the child process can't block on a full pipe.
 
 ### Realtime / WebSocket
 
@@ -730,6 +837,13 @@ code.
   report bridge diagnostics through `Observability.Report`; the ACP
   adapter forwards MCP-routed tool calls with `Dynamic: true` instead of
   dropping them; `StopWhen` looks ahead one event before suspending.
+- Two concurrent `Generate` / `Stream` calls on one `AgentSession` can no
+  longer both start a turn; the second fails with "already has a turn in
+  progress". Cancelling a prompt now waits for in-flight host tool
+  executions instead of leaking them.
+- Vercel Sandbox: `RemoteProcess.Wait` honors ctx while draining logs, and
+  stream failures keep the real cause and return the partial
+  stdout/stderr with the error.
 
 ### Other
 
@@ -784,9 +898,10 @@ code.
 - Vercel Sandbox harness provider (`pkg/harness/sandbox/vercel`) has no
   `@vercel/oidc` token-refresh loop; `VERCEL_OIDC_TOKEN` is re-read on each
   call (explicit `Token`/`TeamID`/`ProjectID` also work).
-- Code-mode: approvals requested concurrently inside one `Promise.all`-style
-  batch come back as a chain of single interrupts rather than one batch,
-  because the embedded QuickJS build exposes no job-queue quiescence hook.
+- Code-mode: a promise that never settles and has no pending tool call
+  fails fast with a `ProtocolError`, where TS waits for its execution
+  timeout. `MaxInFlightBridgeRequests` counts the calls in an approval
+  batch.
 - See `docs/08-migration-guides/known-differences.mdx` for the full,
   maintained list, including Go-specific notes on Bedrock's lazy `fetch`
   resolution having no direct runtime equivalent.
@@ -814,8 +929,10 @@ From `go.mod`:
 | `golang.org/x/time` | v0.15.0 |
 
 `pkg/internal/third_party/qjs` vendors a patched copy of fastschema/qjs
-v0.0.6 (MIT license), fixing two memory-read bugs, compiled to
-`qjs.wasm` and run under `wazero`. It is not a Go module dependency; it
+v0.0.6 (MIT license), fixing two memory-read bugs and adding a job-queue
+quiescence patch and an option to disable module imports, compiled to `qjs.wasm` (rebuilt reproducibly from
+pinned, checksum-verified sources by `build/build.sh`) and run under
+`wazero`. It is not a Go module dependency; it
 ships as source + WASM inside the repository.
 
 ## Requirements

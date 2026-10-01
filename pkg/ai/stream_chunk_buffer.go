@@ -58,12 +58,20 @@ func (b *chunkBuffer) reader() *chunkBufferReader {
 
 // chunkBufferReader implements provider.TextStream over a chunkBuffer.
 type chunkBufferReader struct {
-	buf   *chunkBuffer
-	index int
+	buf    *chunkBuffer
+	index  int
+	closed bool
 }
 
-// Next returns the next buffered chunk, blocking until one is available or
-// the buffer is closed.
+// Next returns the next buffered chunk, blocking until one is available, the
+// shared buffer is closed, or this reader's own Close is called. A
+// concurrent Close (e.g. a consumer cancelling a blocked read from another
+// goroutine) must wake a Next already waiting in cond.Wait below -- Close
+// broadcasts on the same cond for exactly this reason (R1-4). Close also
+// advances index to len(chunks) (see Close below), so a closed reader never
+// returns a chunk again even if it had unread ones buffered; Next simply
+// reports io.EOF once closed, the same terminal value a reader sees once the
+// whole shared buffer closes cleanly.
 func (r *chunkBufferReader) Next() (*provider.StreamChunk, error) {
 	r.buf.mu.Lock()
 	defer r.buf.mu.Unlock()
@@ -77,6 +85,9 @@ func (r *chunkBufferReader) Next() (*provider.StreamChunk, error) {
 			if r.buf.err != nil {
 				return nil, r.buf.err
 			}
+			return nil, io.EOF
+		}
+		if r.closed {
 			return nil, io.EOF
 		}
 		r.buf.cond.Wait()
@@ -94,10 +105,17 @@ func (r *chunkBufferReader) Err() error {
 }
 
 // Close detaches this reader. The shared buffer itself is not affected, so
-// other readers keep working.
+// other readers keep working. Broadcasting on the shared cond wakes any
+// goroutine currently blocked in this reader's Next (or any other reader's
+// Next -- each re-checks its own closed/index state and simply loops back to
+// sleep if it still has nothing to do), so a concurrent Close always causes
+// a blocked Next to return promptly instead of waiting for the next push or
+// buffer-wide close (R1-4).
 func (r *chunkBufferReader) Close() error {
 	r.buf.mu.Lock()
+	r.closed = true
 	r.index = len(r.buf.chunks)
+	r.buf.cond.Broadcast()
 	r.buf.mu.Unlock()
 	return nil
 }

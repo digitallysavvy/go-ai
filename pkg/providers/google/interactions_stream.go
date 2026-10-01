@@ -134,7 +134,21 @@ func newSynthesizedInteractionsStream(response interactionsResponse, warnings []
 	return &sliceTextStream{chunks: chunks}
 }
 
+// Next returns the next chunk in the stream.
+//
+// The two "buffer now has entries" exits below used to `return s.Next()`
+// to re-enter the function and drain the buffer from the top. Go does not
+// eliminate that tail call, so a long run of SSE events that each add to
+// the buffer without the caller draining it in between (e.g. a resumed
+// stream replaying many events before the next real chunk) could grow the
+// goroutine stack without bound and crash the process with an
+// unrecoverable stack overflow. `goto restart` replaces the recursive
+// call: it re-enters at the same point (the buffer/err/startEmitted
+// checks) without adding a stack frame. startEmitted is already true and
+// err is nil at both call sites, so this is exactly equivalent to the
+// prior recursive call.
 func (s *interactionsStream) Next() (*provider.StreamChunk, error) {
+restart:
 	if len(s.buffer) > 0 {
 		chunk := s.buffer[0]
 		s.buffer = s.buffer[1:]
@@ -163,7 +177,7 @@ func (s *interactionsStream) Next() (*provider.StreamChunk, error) {
 				s.closeAll()
 				s.appendFinish()
 				if len(s.buffer) > 0 {
-					return s.Next()
+					goto restart
 				}
 			}
 			if s.completed || !s.resumable || s.interactionID == "" {
@@ -188,7 +202,7 @@ func (s *interactionsStream) Next() (*provider.StreamChunk, error) {
 		}
 		s.processEvent(payload)
 		if len(s.buffer) > 0 {
-			return s.Next()
+			goto restart
 		}
 	}
 }

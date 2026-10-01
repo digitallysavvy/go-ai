@@ -456,137 +456,158 @@ func newGroqStream(reader io.ReadCloser, includeRawChunks ...bool) *groqStream {
 
 func (s *groqStream) Close() error { return s.reader.Close() }
 
-func (s *groqStream) emitParsedChunk(chunk *provider.StreamChunk) (*provider.StreamChunk, error) {
+// emitParsedChunk decides how a freshly built chunk should be delivered:
+// returned immediately (chunk, true) if nothing is queued ahead of it, or
+// appended behind the pending flushQueue (nil, false) for the caller's
+// Next() loop to continue draining. This used to recurse by calling
+// s.Next() directly in the queued case; see the comment on Next() for why
+// that could grow the goroutine stack without bound.
+func (s *groqStream) emitParsedChunk(chunk *provider.StreamChunk) (*provider.StreamChunk, bool) {
 	if len(s.flushQueue) == 0 {
-		return chunk, nil
+		return chunk, true
 	}
 	s.flushQueue = append(s.flushQueue, chunk)
-	return s.Next()
+	return nil, false
 }
 
 func (s *groqStream) Next() (*provider.StreamChunk, error) {
-	if len(s.flushQueue) > 0 {
-		chunk := s.flushQueue[0]
-		s.flushQueue = s.flushQueue[1:]
-		return chunk, nil
-	}
-	if s.err != nil {
-		return nil, s.err
-	}
-	event, err := s.parser.Next()
-	if err != nil {
-		s.err = err
-		return nil, err
-	}
-	if streaming.IsStreamDone(event) {
-		s.err = io.EOF
-		return nil, io.EOF
-	}
-	rawQueued := false
-	if s.includeRawChunks {
-		var raw interface{}
-		if err := json.Unmarshal([]byte(event.Data), &raw); err != nil {
-			raw = event.Data
+	for {
+		if len(s.flushQueue) > 0 {
+			chunk := s.flushQueue[0]
+			s.flushQueue = s.flushQueue[1:]
+			return chunk, nil
 		}
-		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-			Type: provider.ChunkTypeRaw,
-			Raw:  raw,
-		})
-		rawQueued = true
-	}
-	var chunkData groqStreamChunk
-	if err := json.Unmarshal([]byte(event.Data), &chunkData); err != nil {
-		errorChunk := &provider.StreamChunk{
-			Type: provider.ChunkTypeError,
-			Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
+		if s.err != nil {
+			return nil, s.err
 		}
-		if rawQueued {
-			s.flushQueue = append(s.flushQueue, errorChunk)
-			return s.Next()
+		event, err := s.parser.Next()
+		if err != nil {
+			s.err = err
+			return nil, err
 		}
-		return errorChunk, nil
-	}
-	if len(chunkData.Error) > 0 {
-		return s.emitParsedChunk(&provider.StreamChunk{
-			Type: provider.ChunkTypeError,
-			Text: groqStreamErrorText(chunkData.Error),
-			// P1-1c part 2: attach the structured StreamProviderError (TS
-			// createGroqStreamError) so streamRetries/IsRetryable see the
-			// real type/statusCode/isRetryable instead of generic inference.
-			Err: newGroqStreamProviderErrorChunk(chunkData.Error, json.RawMessage(event.Data)),
-		})
-	}
-	if !s.metadataEmitted && (chunkData.ID != "" || chunkData.Model != "" || chunkData.Created != 0 || len(s.responseHeaders) > 0) {
-		metadata := &provider.ResponseMetadata{
-			ID:      chunkData.ID,
-			ModelID: chunkData.Model,
-			Headers: s.responseHeaders,
+		if streaming.IsStreamDone(event) {
+			s.err = io.EOF
+			return nil, io.EOF
 		}
-		if chunkData.Created != 0 {
-			metadata.Timestamp = time.Unix(chunkData.Created, 0)
-		}
-		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-			Type:             provider.ChunkTypeResponseMetadata,
-			ResponseMetadata: metadata,
-		})
-		s.metadataEmitted = true
-	}
-	// Capture usage from x_groq envelope (Groq's streaming usage mechanism).
-	if chunkData.XGroq != nil && chunkData.XGroq.Usage != nil {
-		s.pendingUsage = chunkData.XGroq.Usage
-	}
-	if len(chunkData.Choices) > 0 {
-		choice := chunkData.Choices[0]
-
-		// Handle reasoning content.
-		if choice.Delta.Reasoning != "" {
-			if !s.isActiveReasoning {
-				s.isActiveReasoning = true
-				s.flushQueue = append([]*provider.StreamChunk{
-					{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"},
-					{Type: provider.ChunkTypeReasoning, Reasoning: choice.Delta.Reasoning, ID: "reasoning-0"},
-				}, s.flushQueue...)
-				return s.Next()
+		rawQueued := false
+		if s.includeRawChunks {
+			var raw interface{}
+			if err := json.Unmarshal([]byte(event.Data), &raw); err != nil {
+				raw = event.Data
 			}
-			return s.emitParsedChunk(&provider.StreamChunk{
-				Type:      provider.ChunkTypeReasoning,
-				Reasoning: choice.Delta.Reasoning,
-				ID:        "reasoning-0",
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+				Type: provider.ChunkTypeRaw,
+				Raw:  raw,
 			})
+			rawQueued = true
 		}
-
-		if choice.Delta.Content != "" {
-			if s.isActiveReasoning {
-				s.isActiveReasoning = false
-				s.flushQueue = append([]*provider.StreamChunk{
-					{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
-					{Type: provider.ChunkTypeText, Text: choice.Delta.Content},
-				}, s.flushQueue...)
-				return s.Next()
+		var chunkData groqStreamChunk
+		if err := json.Unmarshal([]byte(event.Data), &chunkData); err != nil {
+			errorChunk := &provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
 			}
-			return s.emitParsedChunk(&provider.StreamChunk{Type: provider.ChunkTypeText, Text: choice.Delta.Content})
+			if rawQueued {
+				s.flushQueue = append(s.flushQueue, errorChunk)
+				continue
+			}
+			return errorChunk, nil
 		}
-		// Tool call delta — accumulate partial arguments by index.
-		// Finalize only when finish_reason is received, never mid-stream.
-		if len(choice.Delta.ToolCalls) > 0 {
-			for _, tc := range choice.Delta.ToolCalls {
-				for _, chunk := range s.toolCallTracker.Track(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
-					c := chunk
-					s.flushQueue = append(s.flushQueue, &c)
+		if len(chunkData.Error) > 0 {
+			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: groqStreamErrorText(chunkData.Error),
+				// P1-1c part 2: attach the structured StreamProviderError (TS
+				// createGroqStreamError) so streamRetries/IsRetryable see the
+				// real type/statusCode/isRetryable instead of generic inference.
+				Err: newGroqStreamProviderErrorChunk(chunkData.Error, json.RawMessage(event.Data)),
+			})
+			if ok {
+				return chunk, nil
+			}
+			continue
+		}
+		if !s.metadataEmitted && (chunkData.ID != "" || chunkData.Model != "" || chunkData.Created != 0 || len(s.responseHeaders) > 0) {
+			metadata := &provider.ResponseMetadata{
+				ID:      chunkData.ID,
+				ModelID: chunkData.Model,
+				Headers: s.responseHeaders,
+			}
+			if chunkData.Created != 0 {
+				metadata.Timestamp = time.Unix(chunkData.Created, 0)
+			}
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+				Type:             provider.ChunkTypeResponseMetadata,
+				ResponseMetadata: metadata,
+			})
+			s.metadataEmitted = true
+		}
+		// Capture usage from x_groq envelope (Groq's streaming usage mechanism).
+		if chunkData.XGroq != nil && chunkData.XGroq.Usage != nil {
+			s.pendingUsage = chunkData.XGroq.Usage
+		}
+		if len(chunkData.Choices) > 0 {
+			choice := chunkData.Choices[0]
+
+			// Handle reasoning content.
+			if choice.Delta.Reasoning != "" {
+				if !s.isActiveReasoning {
+					s.isActiveReasoning = true
+					s.flushQueue = append([]*provider.StreamChunk{
+						{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"},
+						{Type: provider.ChunkTypeReasoning, Reasoning: choice.Delta.Reasoning, ID: "reasoning-0"},
+					}, s.flushQueue...)
+					continue
 				}
+				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
+					Type:      provider.ChunkTypeReasoning,
+					Reasoning: choice.Delta.Reasoning,
+					ID:        "reasoning-0",
+				})
+				if ok {
+					return chunk, nil
+				}
+				continue
+			}
+
+			if choice.Delta.Content != "" {
+				if s.isActiveReasoning {
+					s.isActiveReasoning = false
+					s.flushQueue = append([]*provider.StreamChunk{
+						{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
+						{Type: provider.ChunkTypeText, Text: choice.Delta.Content},
+					}, s.flushQueue...)
+					continue
+				}
+				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{Type: provider.ChunkTypeText, Text: choice.Delta.Content})
+				if ok {
+					return chunk, nil
+				}
+				continue
+			}
+			// Tool call delta — accumulate partial arguments by index.
+			// Finalize only when finish_reason is received, never mid-stream.
+			if len(choice.Delta.ToolCalls) > 0 {
+				for _, tc := range choice.Delta.ToolCalls {
+					for _, chunk := range s.toolCallTracker.Track(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
+						c := chunk
+						s.flushQueue = append(s.flushQueue, &c)
+					}
+				}
+				if choice.FinishReason != "" {
+					s.flushGroqToolCalls(choice.FinishReason)
+					continue
+				}
+				continue
 			}
 			if choice.FinishReason != "" {
 				s.flushGroqToolCalls(choice.FinishReason)
-				return s.Next()
+				continue
 			}
-			return s.Next()
 		}
-		if choice.FinishReason != "" {
-			s.flushGroqToolCalls(choice.FinishReason)
-			return s.Next()
-		}
+		continue
+
 	}
-	return s.Next()
 }
 
 func groqStreamErrorText(raw json.RawMessage) string {

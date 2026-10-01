@@ -49,6 +49,7 @@ var (
 	_ CodeModeError = (*AbortedError)(nil)
 	_ CodeModeError = (*ConcurrencyError)(nil)
 	_ CodeModeError = (*SourceTooLargeError)(nil)
+	_ CodeModeError = (*UnsupportedSyntaxError)(nil)
 	_ CodeModeError = (*BridgeLimitError)(nil)
 	_ CodeModeError = (*DetachedBridgeRequestError)(nil)
 	_ CodeModeError = (*ProtocolError)(nil)
@@ -107,6 +108,28 @@ func NewSourceTooLargeError(bytes, maxBytes int) *SourceTooLargeError {
 	)}
 }
 
+// UnsupportedSyntaxError is raised when the provided source uses JavaScript
+// syntax code-mode does not support. Currently this is only dynamic
+// `import(...)` (see assertNoDynamicImport in run_code_mode.go): TypeScript
+// code-mode's own sandbox (the `run` package's worker runtime) never
+// registers a dynamic-import callback with its JS engine, so `import(...)`
+// is unsupported there too -- Go rejects it up front instead, since the
+// vendored qjs.wasm binary's native module loader resolves
+// "qjs:std"/"qjs:os"/"qjs:bjson" to the same host-escape primitives
+// stripSandboxGlobals removes from the global object, independently of it,
+// with no Go-exposed hook to allowlist/deny module specifiers at that
+// layer. There is no TypeScript error class this mirrors one-to-one (there,
+// any import attempt simply throws the engine's own "no callback
+// registered" error at the point it's reached); this is a new error type
+// specific to the Go port's static, pre-execution enforcement of the same
+// restriction.
+type UnsupportedSyntaxError struct{ *BaseError }
+
+// NewUnsupportedSyntaxError creates an UnsupportedSyntaxError.
+func NewUnsupportedSyntaxError(message string, details interface{}) *UnsupportedSyntaxError {
+	return &UnsupportedSyntaxError{NewError(message, "CODE_MODE_UNSUPPORTED_SYNTAX", details)}
+}
+
 // BridgeLimitError is raised when sandboxed code exceeds bridge request
 // limits (ExecutionPolicy.MaxBridgeRequests /
 // MaxInFlightBridgeRequests). Mirrors TypeScript's
@@ -120,13 +143,14 @@ func NewBridgeLimitError(message string, details interface{}) *BridgeLimitError 
 
 // DetachedBridgeRequestError is raised when sandboxed code starts host
 // bridge work and returns without awaiting or otherwise observing it.
-// Mirrors TypeScript's CodeModeDetachedBridgeRequestError. This Go port
-// dispatches every `tools.x(input)` call synchronously (see the package
-// doc), so an ordinary call can never be left unobserved -- but a call that
-// raises a code-mode interruption (RequestCodeModeInterrupt, or approval
-// under ApprovalModeInterrupt) propagates as a JS exception meant to unwind
-// the sandboxed script uncaught; if the script instead wraps it in
-// try/catch and completes normally anyway, that interruption was started
+// Mirrors TypeScript's CodeModeDetachedBridgeRequestError (`run`'s own
+// __runAssertNoDetachedBridgeCalls). A call that raises a code-mode
+// interruption (RequestCodeModeInterrupt, or approval under
+// ApprovalModeInterrupt) deliberately leaves its Promise unresolved (see
+// the package doc's "Host tool bridge dispatch" section) so the sandboxed
+// script can keep making synchronous progress; if the script never
+// `await`s (or otherwise observes) that Promise at all -- a fire-and-forget
+// `tools.x(input);` -- and completes anyway, that interruption was started
 // but never surfaced to the caller for resolution, and RunCodeMode raises
 // this error instead of silently returning a result that discards it.
 type DetachedBridgeRequestError struct{ *BaseError }

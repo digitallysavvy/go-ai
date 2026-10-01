@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sync"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -112,88 +111,32 @@ type gatewayTranscriptionStreamConfig struct {
 }
 
 // gatewayTranscriptionStream implements provider.TranscriptionStream over the
-// AI Gateway's streaming transcription WebSocket.
+// AI Gateway's streaming transcription WebSocket. The Next/Err/Close/emit/
+// setErr plumbing is the shared wsutil.Session core; pumpAudio's max-frame-
+// size chunk splitting and its own server-error-triggered audioCtx (distinct
+// from the session's ctx, so a server "error" part can stop audio while the
+// receive loop keeps running) don't fit the shared wsutil.PumpAudio loop
+// cleanly, so it stays local.
 type gatewayTranscriptionStream struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	parts  chan provider.TranscriptionStreamPart
-
-	mu  sync.Mutex
-	err error
-
-	closeOnce sync.Once
-	connMu    sync.Mutex
-	conn      *websocket.Conn
+	*wsutil.Session[provider.TranscriptionStreamPart]
 }
 
 func newGatewayTranscriptionStream(parentCtx context.Context, cfg gatewayTranscriptionStreamConfig) *gatewayTranscriptionStream {
-	ctx, cancel := context.WithCancel(parentCtx)
-	s := &gatewayTranscriptionStream{ctx: ctx, cancel: cancel, parts: make(chan provider.TranscriptionStreamPart)}
+	s := &gatewayTranscriptionStream{Session: wsutil.NewSession[provider.TranscriptionStreamPart](parentCtx)}
 	go s.run(cfg)
 	return s
 }
 
-func (s *gatewayTranscriptionStream) Next() (*provider.TranscriptionStreamPart, error) {
-	part, ok := <-s.parts
-	if !ok {
-		s.mu.Lock()
-		err := s.err
-		s.mu.Unlock()
-		if err != nil {
-			return nil, err
-		}
-		return nil, io.EOF
-	}
-	return &part, nil
-}
-
-func (s *gatewayTranscriptionStream) Err() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.err
-}
-
-func (s *gatewayTranscriptionStream) Close() error {
-	s.closeOnce.Do(func() {
-		s.cancel()
-		s.connMu.Lock()
-		if s.conn != nil {
-			_ = s.conn.Close()
-		}
-		s.connMu.Unlock()
-	})
-	return nil
-}
-
-func (s *gatewayTranscriptionStream) setErr(err error) {
-	s.mu.Lock()
-	if s.err == nil {
-		s.err = err
-	}
-	s.mu.Unlock()
-}
-
-// emit sends part on s.parts, returning false when the stream's ctx is done
-// (so a blocked send unblocks instead of leaking when Close cancels ctx).
-func (s *gatewayTranscriptionStream) emit(part provider.TranscriptionStreamPart) bool {
-	select {
-	case s.parts <- part:
-		return true
-	case <-s.ctx.Done():
-		return false
-	}
-}
-
 func (s *gatewayTranscriptionStream) run(cfg gatewayTranscriptionStreamConfig) {
-	defer close(s.parts)
-	// Release s.ctx's resources as soon as run() returns for any reason
-	// (finish, error, or cancellation) instead of only on an explicit
-	// Close() call, which a consumer that only drains Next() to io.EOF may
-	// never make.
-	defer s.cancel()
+	defer s.CloseParts()
+	// Release the session's resources as soon as run() returns for any
+	// reason (finish, error, or cancellation) instead of only on an
+	// explicit Close() call, which a consumer that only drains Next() to
+	// io.EOF may never make.
+	defer s.CancelContext()
 
 	fail := func(err error) {
-		s.setErr(err)
+		s.SetErr(err)
 		cfg.audio.Cancel(err)
 	}
 
@@ -202,9 +145,7 @@ func (s *gatewayTranscriptionStream) run(cfg gatewayTranscriptionStreamConfig) {
 		fail(err)
 		return
 	}
-	s.connMu.Lock()
-	s.conn = conn
-	s.connMu.Unlock()
+	s.SetConn(conn)
 	defer conn.Close() //nolint:errcheck
 
 	startPayload, err := json.Marshal(cfg.startFrame)
@@ -217,16 +158,16 @@ func (s *gatewayTranscriptionStream) run(cfg gatewayTranscriptionStreamConfig) {
 		return
 	}
 
-	// audioCtx (rather than s.ctx directly) lets a server "error" part stop
-	// audio pumping while the receive loop below keeps running to observe
-	// the server's terminal close (TS stopAudio()).
-	audioCtx, stopAudio := context.WithCancel(s.ctx)
+	// audioCtx (rather than the session's ctx directly) lets a server
+	// "error" part stop audio pumping while the receive loop below keeps
+	// running to observe the server's terminal close (TS stopAudio()).
+	audioCtx, stopAudio := context.WithCancel(s.Context())
 	defer stopAudio()
 	audioErrCh := make(chan error, 1)
 	go s.pumpAudio(audioCtx, conn, cfg.audio, audioErrCh)
 
 	msgCh := make(chan wsutil.Message)
-	go wsutil.ReceiveLoop(s.ctx, conn, msgCh)
+	go wsutil.ReceiveLoop(s.Context(), conn, msgCh)
 
 	var lastServerError interface{}
 	hasServerError := false
@@ -234,11 +175,11 @@ func (s *gatewayTranscriptionStream) run(cfg gatewayTranscriptionStreamConfig) {
 
 	for {
 		select {
-		case <-s.ctx.Done():
+		case <-s.Context().Done():
 			if finished {
 				return
 			}
-			fail(s.ctx.Err())
+			fail(s.Context().Err())
 			return
 
 		case audioErr := <-audioErrCh:
@@ -283,7 +224,7 @@ func (s *gatewayTranscriptionStream) run(cfg gatewayTranscriptionStreamConfig) {
 
 			if part.Type == provider.TranscriptionStreamPartTypeFinish {
 				finished = true
-				if !s.emit(*part) {
+				if !s.Emit(*part) {
 					return
 				}
 				return
@@ -299,7 +240,7 @@ func (s *gatewayTranscriptionStream) run(cfg gatewayTranscriptionStreamConfig) {
 				cfg.audio.Cancel(nil)
 			}
 
-			if !s.emit(*part) {
+			if !s.Emit(*part) {
 				return
 			}
 		}
@@ -350,19 +291,19 @@ func gatewayTranscriptionServerError(payload interface{}, authMethod string) err
 // to the WebSocket — is reported on errCh, mirroring TS's
 // `void sendAudio(socket).catch(finishWithError)` (a rejected `reader.read()`
 // fails the stream exactly like a failed `socket.send`). A failure that stems
-// from ctx already being cancelled (either s.ctx, or stopAudio() pausing the
-// pump for a server error part) is not reported: run()'s own handling of that
-// cancellation already covers it.
+// from ctx already being cancelled (either the session's own ctx, or
+// stopAudio() pausing the pump for a server error part) is not reported:
+// run()'s own handling of that cancellation already covers it.
 func (s *gatewayTranscriptionStream) pumpAudio(ctx context.Context, conn *websocket.Conn, audio provider.AudioStream, errCh chan<- error) {
 	for {
 		chunk, err := audio.Next(ctx)
 		if err != nil {
 			if err == io.EOF {
 				if sendErr := s.sendText(conn, fmt.Sprintf(`{"type":%q}`, transcriptionStreamAudioDoneFrameType)); sendErr != nil && ctx.Err() == nil {
-					s.reportAudioError(ctx, errCh, sendErr)
+					wsutil.ReportError(ctx, errCh, sendErr)
 				}
 			} else if ctx.Err() == nil {
-				s.reportAudioError(ctx, errCh, err)
+				wsutil.ReportError(ctx, errCh, err)
 			}
 			return
 		}
@@ -373,7 +314,7 @@ func (s *gatewayTranscriptionStream) pumpAudio(ctx context.Context, conn *websoc
 			}
 			if err := s.sendBinary(conn, chunk[offset:end]); err != nil {
 				if ctx.Err() == nil {
-					s.reportAudioError(ctx, errCh, err)
+					wsutil.ReportError(ctx, errCh, err)
 				}
 				return
 			}
@@ -381,26 +322,16 @@ func (s *gatewayTranscriptionStream) pumpAudio(ctx context.Context, conn *websoc
 	}
 }
 
-// reportAudioError delivers err to errCh, falling back to ctx.Done() so a
-// send that no longer has a reader (run() already returned via a different
-// path) cannot block pumpAudio forever.
-func (s *gatewayTranscriptionStream) reportAudioError(ctx context.Context, errCh chan<- error, err error) {
-	select {
-	case errCh <- err:
-	case <-ctx.Done():
-	}
-}
-
 func (s *gatewayTranscriptionStream) dial(wsURL string, protocols []string, headers map[string]string) (*websocket.Conn, error) {
-	return wsutil.Dial(s.ctx, wsURL, wsutil.DialOptions{Headers: headers, Protocols: protocols})
+	return wsutil.Dial(s.Context(), wsURL, wsutil.DialOptions{Headers: headers, Protocols: protocols})
 }
 
 func (s *gatewayTranscriptionStream) sendText(conn *websocket.Conn, message string) error {
-	return wsutil.Send(s.ctx, conn, message)
+	return wsutil.Send(s.Context(), conn, message)
 }
 
 func (s *gatewayTranscriptionStream) sendBinary(conn *websocket.Conn, message []byte) error {
-	return wsutil.Send(s.ctx, conn, message)
+	return wsutil.Send(s.Context(), conn, message)
 }
 
 // parseGatewayTranscriptionStreamPart parses one server TEXT frame (a

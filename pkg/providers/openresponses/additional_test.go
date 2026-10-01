@@ -649,12 +649,12 @@ func TestOpenResponsesStreamHandleEvents(t *testing.T) {
 	_, _ = s.handleStreamEvent(&StreamEvent{Type: "response.function_call_arguments.delta", ItemID: "item-1", Delta: `{"city":"`})
 	_, _ = s.handleStreamEvent(&StreamEvent{Type: "response.function_call_arguments.done", ItemID: "item-1", Arguments: `{"city":"nyc"}`})
 
-	chunk, err := s.handleStreamEvent(&StreamEvent{
+	chunk, ok := s.handleStreamEvent(&StreamEvent{
 		Type: "response.output_item.done",
 		Item: &OutputItem{Type: "function_call", ID: "item-1"},
 	})
-	if err != nil {
-		t.Fatalf("function_call done error = %v", err)
+	if !ok {
+		t.Fatalf("function_call done did not return a chunk (ok=%v)", ok)
 	}
 	if chunk.Type != provider.ChunkTypeToolCall || chunk.ToolCall == nil || chunk.ToolCall.ToolName != "weather" {
 		t.Fatalf("unexpected tool call chunk: %+v", chunk)
@@ -663,12 +663,12 @@ func TestOpenResponsesStreamHandleEvents(t *testing.T) {
 	// A completed custom_tool_call enqueues tool-input-end then tool-call
 	// (mirrors TS: two separate stream parts), so the tool-call itself is
 	// read back via a follow-up Next() call from the pending queue.
-	customEndChunk, err := s.handleStreamEvent(&StreamEvent{
+	customEndChunk, ok := s.handleStreamEvent(&StreamEvent{
 		Type: "response.output_item.done",
 		Item: &OutputItem{Type: "custom_tool_call", CallID: "call-2", Name: "custom", Input: "raw"},
 	})
-	if err != nil || customEndChunk.Type != provider.ChunkTypeToolInputEnd || customEndChunk.ID != "call-2" {
-		t.Fatalf("custom_tool_call tool-input-end failed: chunk=%+v err=%v", customEndChunk, err)
+	if !ok || customEndChunk.Type != provider.ChunkTypeToolInputEnd || customEndChunk.ID != "call-2" {
+		t.Fatalf("custom_tool_call tool-input-end failed: chunk=%+v ok=%v", customEndChunk, ok)
 	}
 	customChunk, err := s.Next()
 	if err != nil || customChunk.ToolCall == nil || customChunk.ToolCall.Arguments["input"] != "raw" {
@@ -678,12 +678,12 @@ func TestOpenResponsesStreamHandleEvents(t *testing.T) {
 		t.Fatalf("custom_tool_call RawArguments = %q, want %q", customChunk.ToolCall.RawArguments, `"raw"`)
 	}
 
-	reasoningChunk, err := s.handleStreamEvent(&StreamEvent{
+	reasoningChunk, ok := s.handleStreamEvent(&StreamEvent{
 		Type: "response.output_item.done",
 		Item: &OutputItem{Type: "reasoning", ID: "r1", EncryptedContent: "enc"},
 	})
-	if err != nil || reasoningChunk.Type != provider.ChunkTypeReasoningEnd {
-		t.Fatalf("reasoning chunk failed: chunk=%+v err=%v", reasoningChunk, err)
+	if !ok || reasoningChunk.Type != provider.ChunkTypeReasoningEnd {
+		t.Fatalf("reasoning chunk failed: chunk=%+v ok=%v", reasoningChunk, ok)
 	}
 	if !json.Valid(reasoningChunk.ProviderMetadata) {
 		t.Fatalf("expected json provider metadata, got: %s", string(reasoningChunk.ProviderMetadata))
@@ -706,27 +706,27 @@ func TestOpenResponsesStreamHandleEvents(t *testing.T) {
 		t.Fatalf("provider metadata payload = %+v", currentMetadata)
 	}
 
-	finishChunk, err := s.handleStreamEvent(&StreamEvent{
+	finishChunk, ok := s.handleStreamEvent(&StreamEvent{
 		Type: "response.completed",
 		Response: &OpenResponsesResponse{
 			IncompleteDetails: &IncompleteDetails{Reason: "max_output_tokens"},
 			Usage:             &Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3},
 		},
 	})
-	if err != nil || finishChunk.Type != provider.ChunkTypeFinish || finishChunk.Usage == nil {
-		t.Fatalf("finish chunk failed: chunk=%+v err=%v", finishChunk, err)
+	if !ok || finishChunk.Type != provider.ChunkTypeFinish || finishChunk.Usage == nil {
+		t.Fatalf("finish chunk failed: chunk=%+v ok=%v", finishChunk, ok)
 	}
 
 	// A bare "error" event is surfaced as an in-band ChunkTypeError chunk
 	// (mirrors TS's controller.enqueue({type:'error',...})), not returned as
 	// a fatal Next()/handleStreamEvent error -- the stream still ends
 	// normally afterward.
-	errChunk, err := s.handleStreamEvent(&StreamEvent{
+	errChunk, ok := s.handleStreamEvent(&StreamEvent{
 		Type:  "error",
 		Error: &ResponseError{Code: "bad_request", Message: "boom"},
 	})
-	if err != nil {
-		t.Fatalf("unexpected error from stream error event: %v", err)
+	if !ok {
+		t.Fatalf("unexpected non-immediate return from stream error event (ok=%v)", ok)
 	}
 	if errChunk.Type != provider.ChunkTypeError || errChunk.Text != "boom" {
 		t.Fatalf("unexpected error chunk: %+v", errChunk)
@@ -746,22 +746,22 @@ func TestOpenResponsesStreamHandleEvents(t *testing.T) {
 func TestOpenResponsesStreamTextStartDeltaEnd(t *testing.T) {
 	s := newOpenResponsesStream(nopReadCloser{Reader: strings.NewReader("")}, nil)
 
-	startChunk, err := s.handleStreamEvent(&StreamEvent{
+	startChunk, ok := s.handleStreamEvent(&StreamEvent{
 		Type: "response.output_item.added",
 		Item: &OutputItem{Type: "message", ID: "msg_1"},
 	})
-	if err != nil || startChunk.Type != provider.ChunkTypeTextStart || startChunk.ID != "msg_1" {
-		t.Fatalf("text-start failed: chunk=%+v err=%v", startChunk, err)
+	if !ok || startChunk.Type != provider.ChunkTypeTextStart || startChunk.ID != "msg_1" {
+		t.Fatalf("text-start failed: chunk=%+v ok=%v", startChunk, ok)
 	}
 
-	deltaChunk, err := s.handleStreamEvent(&StreamEvent{
+	deltaChunk, ok := s.handleStreamEvent(&StreamEvent{
 		Type: "response.output_text.delta", ItemID: "msg_1", Delta: "hello",
 	})
-	if err != nil || deltaChunk.Type != provider.ChunkTypeText || deltaChunk.ID != "msg_1" || deltaChunk.Text != "hello" {
-		t.Fatalf("text delta failed: chunk=%+v err=%v", deltaChunk, err)
+	if !ok || deltaChunk.Type != provider.ChunkTypeText || deltaChunk.ID != "msg_1" || deltaChunk.Text != "hello" {
+		t.Fatalf("text delta failed: chunk=%+v ok=%v", deltaChunk, ok)
 	}
 
-	endChunk, err := s.handleStreamEvent(&StreamEvent{
+	endChunk, ok := s.handleStreamEvent(&StreamEvent{
 		Type: "response.output_item.done",
 		Item: &OutputItem{
 			Type: "message",
@@ -773,8 +773,8 @@ func TestOpenResponsesStreamTextStartDeltaEnd(t *testing.T) {
 			},
 		},
 	})
-	if err != nil || endChunk.Type != provider.ChunkTypeTextEnd || endChunk.ID != "msg_1" {
-		t.Fatalf("text-end failed: chunk=%+v err=%v", endChunk, err)
+	if !ok || endChunk.Type != provider.ChunkTypeTextEnd || endChunk.ID != "msg_1" {
+		t.Fatalf("text-end failed: chunk=%+v ok=%v", endChunk, ok)
 	}
 	var payload map[string]map[string]interface{}
 	if unmarshalErr := json.Unmarshal(endChunk.ProviderMetadata, &payload); unmarshalErr != nil {
@@ -807,12 +807,12 @@ func TestOpenResponsesStreamFunctionCallPreservesProviderMetadata(t *testing.T) 
 		ItemID:    "fc_item_1",
 		Arguments: `{"city":"nyc"}`,
 	})
-	chunk, err := s.handleStreamEvent(&StreamEvent{
+	chunk, ok := s.handleStreamEvent(&StreamEvent{
 		Type: "response.output_item.done",
 		Item: &OutputItem{Type: "function_call", ID: "fc_item_1"},
 	})
-	if err != nil {
-		t.Fatalf("function_call done error = %v", err)
+	if !ok {
+		t.Fatalf("function_call done did not return a chunk (ok=%v)", ok)
 	}
 	if chunk.ToolCall == nil {
 		t.Fatalf("expected tool call chunk, got %+v", chunk)
@@ -833,37 +833,37 @@ func TestOpenResponsesStreamFunctionCallPreservesProviderMetadata(t *testing.T) 
 func TestOpenResponsesStreamReasoningDeltaLifecycle(t *testing.T) {
 	s := newOpenResponsesStream(nopReadCloser{Reader: strings.NewReader("")}, nil)
 
-	start, err := s.handleStreamEvent(&StreamEvent{
+	start, ok := s.handleStreamEvent(&StreamEvent{
 		Type: "response.output_item.added",
 		Item: &OutputItem{Type: "reasoning", ID: "r1"},
 	})
-	if err != nil || start.Type != provider.ChunkTypeReasoningStart || start.ID != "r1" {
-		t.Fatalf("reasoning-start chunk = %+v, err=%v", start, err)
+	if !ok || start.Type != provider.ChunkTypeReasoningStart || start.ID != "r1" {
+		t.Fatalf("reasoning-start chunk = %+v, ok=%v", start, ok)
 	}
 	if s.activeReasoningID != "r1" {
 		t.Fatalf("activeReasoningID = %q, want r1", s.activeReasoningID)
 	}
 
-	delta1, err := s.handleStreamEvent(&StreamEvent{
+	delta1, ok := s.handleStreamEvent(&StreamEvent{
 		Type: "response.reasoning_summary_text.delta", ItemID: "r1", Delta: "thinking ",
 	})
-	if err != nil || delta1.Type != provider.ChunkTypeReasoning || delta1.ID != "r1" || delta1.Reasoning != "thinking " {
-		t.Fatalf("reasoning delta (summary) = %+v, err=%v", delta1, err)
+	if !ok || delta1.Type != provider.ChunkTypeReasoning || delta1.ID != "r1" || delta1.Reasoning != "thinking " {
+		t.Fatalf("reasoning delta (summary) = %+v, ok=%v", delta1, ok)
 	}
 
-	delta2, err := s.handleStreamEvent(&StreamEvent{
+	delta2, ok := s.handleStreamEvent(&StreamEvent{
 		Type: "response.reasoning_text.delta", ItemID: "r1", Delta: "harder",
 	})
-	if err != nil || delta2.Type != provider.ChunkTypeReasoning || delta2.ID != "r1" || delta2.Reasoning != "harder" {
-		t.Fatalf("reasoning delta (text, LM Studio extension) = %+v, err=%v", delta2, err)
+	if !ok || delta2.Type != provider.ChunkTypeReasoning || delta2.ID != "r1" || delta2.Reasoning != "harder" {
+		t.Fatalf("reasoning delta (text, LM Studio extension) = %+v, ok=%v", delta2, ok)
 	}
 
-	end, err := s.handleStreamEvent(&StreamEvent{
+	end, ok := s.handleStreamEvent(&StreamEvent{
 		Type: "response.output_item.done",
 		Item: &OutputItem{Type: "reasoning", ID: "r1", Summary: []ContentPart{{Type: "summary_text", Text: "thinking harder"}}},
 	})
-	if err != nil || end.Type != provider.ChunkTypeReasoningEnd || end.ID != "r1" {
-		t.Fatalf("reasoning-end chunk = %+v, err=%v", end, err)
+	if !ok || end.Type != provider.ChunkTypeReasoningEnd || end.ID != "r1" {
+		t.Fatalf("reasoning-end chunk = %+v, ok=%v", end, ok)
 	}
 	if s.activeReasoningID != "" {
 		t.Fatalf("activeReasoningID should be cleared after reasoning-end, got %q", s.activeReasoningID)
@@ -877,17 +877,17 @@ func TestOpenResponsesStreamReasoningDeltaLifecycle(t *testing.T) {
 func TestOpenResponsesStreamFlushClosesUnfinishedReasoning(t *testing.T) {
 	s := newOpenResponsesStream(nopReadCloser{Reader: strings.NewReader("")}, nil)
 
-	_, err := s.handleStreamEvent(&StreamEvent{
+	_, ok := s.handleStreamEvent(&StreamEvent{
 		Type: "response.output_item.added",
 		Item: &OutputItem{Type: "reasoning", ID: "r2"},
 	})
-	if err != nil {
-		t.Fatalf("output_item.added error = %v", err)
+	if !ok {
+		t.Fatalf("output_item.added did not return a chunk (ok=%v)", ok)
 	}
 
-	first, err := s.handleStreamEvent(&StreamEvent{Type: "response.completed", Response: &OpenResponsesResponse{}})
-	if err != nil {
-		t.Fatalf("response.completed error = %v", err)
+	first, ok := s.handleStreamEvent(&StreamEvent{Type: "response.completed", Response: &OpenResponsesResponse{}})
+	if !ok {
+		t.Fatalf("response.completed did not return a chunk (ok=%v)", ok)
 	}
 	if first.Type != provider.ChunkTypeReasoningEnd || first.ID != "r2" {
 		t.Fatalf("first chunk after unfinished reasoning = %+v, want reasoning-end for r2", first)
@@ -918,12 +918,12 @@ func TestOpenResponsesStreamToolCallOutOfOrder(t *testing.T) {
 		if _, ok := s.toolCallsByItemID["oo1"]; !ok {
 			t.Fatalf("expected a lazily-created accumulator for oo1")
 		}
-		chunk, err := s.handleStreamEvent(&StreamEvent{
+		chunk, ok := s.handleStreamEvent(&StreamEvent{
 			Type: "response.output_item.done",
 			Item: &OutputItem{Type: "function_call", ID: "oo1", CallID: "call-oo1", Name: "search"},
 		})
-		if err != nil {
-			t.Fatalf("output_item.done error = %v", err)
+		if !ok {
+			t.Fatalf("output_item.done did not return a chunk (ok=%v)", ok)
 		}
 		if chunk.ToolCall == nil || chunk.ToolCall.Arguments["q"] != "go" {
 			t.Fatalf("tool call = %+v, want arguments from the out-of-order delta", chunk.ToolCall)
@@ -932,12 +932,12 @@ func TestOpenResponsesStreamToolCallOutOfOrder(t *testing.T) {
 
 	t.Run("done with no prior state", func(t *testing.T) {
 		s := newOpenResponsesStream(nopReadCloser{Reader: strings.NewReader("")}, nil)
-		chunk, err := s.handleStreamEvent(&StreamEvent{
+		chunk, ok := s.handleStreamEvent(&StreamEvent{
 			Type: "response.output_item.done",
 			Item: &OutputItem{Type: "function_call", ID: "oo2", CallID: "call-oo2", Name: "lookup", Arguments: `{"x":1}`},
 		})
-		if err != nil {
-			t.Fatalf("output_item.done with no prior state error = %v", err)
+		if !ok {
+			t.Fatalf("output_item.done with no prior state did not return a chunk (ok=%v)", ok)
 		}
 		if chunk.ToolCall == nil || chunk.ToolCall.ID != "call-oo2" || chunk.ToolCall.ToolName != "lookup" {
 			t.Fatalf("tool call = %+v, want fallback from the done item's own fields", chunk.ToolCall)

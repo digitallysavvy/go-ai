@@ -152,6 +152,136 @@ func TestDecoder_MessageCRCMismatchErrors(t *testing.T) {
 	}
 }
 
+// TestDecoder_HeadersLengthOverflowDoesNotPanic is a regression test for a
+// uint32-overflow bug: decodeFrame's bounds check was
+// `totalLength < 12+headersLength+4`, computed entirely in uint32 arithmetic.
+// A crafted headersLength near the uint32 max (e.g. 0xFFFFFFF0) made
+// `12+headersLength+4` wrap around to a small value, so the check never
+// fired and the later `frame[12:headersEnd]` slice expression panicked with
+// a slice-bounds-out-of-range error. The fix does the comparison in int64,
+// which cannot overflow for any uint32 input.
+func TestDecoder_HeadersLengthOverflowDoesNotPanic(t *testing.T) {
+	var headersLength uint32 = 0xFFFFFFF0
+	totalLength := uint32(16)
+	buf := make([]byte, 8)
+	binary.BigEndian.PutUint32(buf[0:4], totalLength)
+	binary.BigEndian.PutUint32(buf[4:8], headersLength)
+	preludeCRC := crc32.ChecksumIEEE(buf[0:8])
+	frame := make([]byte, totalLength)
+	copy(frame[0:8], buf)
+	binary.BigEndian.PutUint32(frame[8:12], preludeCRC)
+	msgCRC := crc32.ChecksumIEEE(frame[0 : totalLength-4])
+	binary.BigEndian.PutUint32(frame[totalLength-4:totalLength], msgCRC)
+
+	d := NewDecoder(bytes.NewReader(frame))
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("Next() panicked instead of returning an error: %v", r)
+		}
+	}()
+
+	_, err := d.Next()
+	if err == nil {
+		t.Fatal("expected an error for the crafted overflow frame, got nil")
+	}
+	if !strings.Contains(err.Error(), "headers length") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// FuzzDecoder feeds arbitrary byte slices into the decoder. It must never
+// panic: all malformed/truncated/corrupt input should surface as an error
+// from Next(), never a runtime panic (slice-bounds, nil deref, etc).
+func FuzzDecoder(f *testing.F) {
+	// Seed: a valid, well-formed frame.
+	validFrame := func() []byte {
+		var headerBytes bytes.Buffer
+		name := ":message-type"
+		value := "event"
+		headerBytes.WriteByte(byte(len(name)))
+		headerBytes.WriteString(name)
+		headerBytes.WriteByte(7)
+		var lenBuf [2]byte
+		binary.BigEndian.PutUint16(lenBuf[:], uint16(len(value)))
+		headerBytes.Write(lenBuf[:])
+		headerBytes.WriteString(value)
+
+		payload := []byte(`{"n":1}`)
+		headersLen := uint32(headerBytes.Len())
+		totalLength := 12 + headersLen + uint32(len(payload)) + 4
+
+		var buf bytes.Buffer
+		prelude := make([]byte, 8)
+		binary.BigEndian.PutUint32(prelude[0:4], totalLength)
+		binary.BigEndian.PutUint32(prelude[4:8], headersLen)
+		buf.Write(prelude)
+		preludeCRC := crc32.ChecksumIEEE(prelude)
+		var crcBuf [4]byte
+		binary.BigEndian.PutUint32(crcBuf[:], preludeCRC)
+		buf.Write(crcBuf[:])
+		buf.Write(headerBytes.Bytes())
+		buf.Write(payload)
+		messageCRC := crc32.ChecksumIEEE(buf.Bytes())
+		binary.BigEndian.PutUint32(crcBuf[:], messageCRC)
+		buf.Write(crcBuf[:])
+		return buf.Bytes()
+	}()
+	f.Add(validFrame)
+
+	// Seed: the R5-1 crafted overflow frame (headersLength = 0xFFFFFFF0,
+	// totalLength = 16).
+	overflowFrame := func() []byte {
+		var headersLength uint32 = 0xFFFFFFF0
+		totalLength := uint32(16)
+		buf := make([]byte, 8)
+		binary.BigEndian.PutUint32(buf[0:4], totalLength)
+		binary.BigEndian.PutUint32(buf[4:8], headersLength)
+		preludeCRC := crc32.ChecksumIEEE(buf[0:8])
+		frame := make([]byte, totalLength)
+		copy(frame[0:8], buf)
+		binary.BigEndian.PutUint32(frame[8:12], preludeCRC)
+		msgCRC := crc32.ChecksumIEEE(frame[0 : totalLength-4])
+		binary.BigEndian.PutUint32(frame[totalLength-4:totalLength], msgCRC)
+		return frame
+	}()
+	f.Add(overflowFrame)
+
+	// Seed: headersLength == 0xFFFFFFFF (max uint32), totalLength small.
+	f.Add(func() []byte {
+		buf := make([]byte, 16)
+		binary.BigEndian.PutUint32(buf[0:4], 16)
+		binary.BigEndian.PutUint32(buf[4:8], 0xFFFFFFFF)
+		preludeCRC := crc32.ChecksumIEEE(buf[0:8])
+		binary.BigEndian.PutUint32(buf[8:12], preludeCRC)
+		return buf
+	}())
+
+	// Seed: too-short prelude.
+	f.Add([]byte{0, 0, 0, 16})
+
+	// Seed: empty input.
+	f.Add([]byte{})
+
+	// Seed: truncated valid frame.
+	f.Add(validFrame[:len(validFrame)-3])
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("Next() panicked on input %x: %v", data, r)
+			}
+		}()
+		d := NewDecoder(bytes.NewReader(data))
+		for {
+			_, err := d.Next()
+			if err != nil {
+				return
+			}
+		}
+	})
+}
+
 // chunkedReader returns data in small chunks to exercise the decoder's
 // incremental buffering.
 type chunkedReader struct {

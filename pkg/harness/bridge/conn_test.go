@@ -2,11 +2,13 @@ package bridge_test
 
 import (
 	"context"
+	"net"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
 )
@@ -142,4 +144,53 @@ func goroutineCountSettled() int {
 	runtime.GC()
 	time.Sleep(20 * time.Millisecond)
 	return runtime.NumGoroutine()
+}
+
+// TestDialDoesNotLeakBridgeTokenOnConnectionFailure is the regression test
+// for bug-review/R3.md's "Unverified" bridge-token-leak item: Launch embeds
+// the bridge's secret channel token into the dial URL's query string via
+// WithBridgeToken before handing it to Dial/NewConnectFunc. golang.org/x/net/
+// websocket's *Config.DialContext wraps every kind of dial failure (DNS
+// failure, connection refused, TLS failure, a non-101 handshake response) in
+// a *websocket.DialError whose Error() unconditionally renders the full dial
+// URL — including that token's query parameter — via
+// config.Location.String(). Dial used to return that error unchanged, so the
+// token could leak into Channel.Open's returned error,
+// OpenBridgeWebSocket's composed "last error" message, and
+// ChannelDebugEvent.Cause on a reconnect-failed event — anything calling
+// code logs.
+//
+// This dials an address nothing is listening on (a loopback port the test
+// opened and immediately closed, so the connection is refused deterministically
+// rather than timing out) with a bridge token embedded via WithBridgeToken,
+// and asserts the returned error string never contains the token.
+func TestDialDoesNotLeakBridgeTokenOnConnectionFailure(t *testing.T) {
+	const secretToken = "super-secret-bridge-token-must-never-leak-into-error-strings"
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	addr := l.Addr().String()
+	if err := l.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+
+	endpoint, err := bridge.WithBridgeToken(harness.PortEndpoint{URL: "ws://" + addr + "/bridge"}, secretToken)
+	if err != nil {
+		t.Fatalf("WithBridgeToken: %v", err)
+	}
+	if !strings.Contains(endpoint.URL, secretToken) {
+		t.Fatalf("test setup: endpoint.URL = %q, want it to contain the token (otherwise this test proves nothing)", endpoint.URL)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, dialErr := bridge.Dial(ctx, endpoint, bridge.DialOptions{OpenTimeout: 3 * time.Second})
+	if dialErr == nil {
+		t.Fatal("expected a connection failure against an address nothing is listening on")
+	}
+	if strings.Contains(dialErr.Error(), secretToken) {
+		t.Fatalf("Dial error leaked the bridge token: %v", dialErr)
+	}
 }
