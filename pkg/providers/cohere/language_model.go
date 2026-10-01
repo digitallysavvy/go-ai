@@ -598,189 +598,192 @@ func (s *cohereV2Stream) Err() error {
 }
 
 func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
-	if len(s.flushQueue) > 0 {
-		chunk := s.flushQueue[0]
-		s.flushQueue = s.flushQueue[1:]
-		return chunk, nil
-	}
-	if s.err != nil {
-		return nil, s.err
-	}
-	event, err := s.parser.Next()
-	if err != nil {
-		s.err = err
-		return nil, err
-	}
-	if streaming.IsStreamDone(event) {
-		s.err = io.EOF
-		return nil, io.EOF
-	}
-
-	// Cohere v2 SSE: each event has a type field plus a delta field.
-	var ev struct {
-		Type  string          `json:"type"`
-		Index int             `json:"index"`
-		Delta json.RawMessage `json:"delta"`
-	}
-	if err := json.Unmarshal([]byte(event.Data), &ev); err != nil {
-		return s.Next()
-	}
-
-	switch ev.Type {
-	case "message-start":
-		return s.Next()
-
-	case "content-start":
-		var delta struct {
-			Message struct {
-				Content struct {
-					Type string `json:"type"`
-				} `json:"content"`
-			} `json:"message"`
+	for {
+		if len(s.flushQueue) > 0 {
+			chunk := s.flushQueue[0]
+			s.flushQueue = s.flushQueue[1:]
+			return chunk, nil
 		}
-		if err := json.Unmarshal(ev.Delta, &delta); err == nil {
-			contentType := delta.Message.Content.Type
-			s.contentType[ev.Index] = contentType
-			if contentType == "thinking" {
-				s.isActiveReasoning = true
+		if s.err != nil {
+			return nil, s.err
+		}
+		event, err := s.parser.Next()
+		if err != nil {
+			s.err = err
+			return nil, err
+		}
+		if streaming.IsStreamDone(event) {
+			s.err = io.EOF
+			return nil, io.EOF
+		}
+
+		// Cohere v2 SSE: each event has a type field plus a delta field.
+		var ev struct {
+			Type  string          `json:"type"`
+			Index int             `json:"index"`
+			Delta json.RawMessage `json:"delta"`
+		}
+		if err := json.Unmarshal([]byte(event.Data), &ev); err != nil {
+			continue
+		}
+
+		switch ev.Type {
+		case "message-start":
+			continue
+
+		case "content-start":
+			var delta struct {
+				Message struct {
+					Content struct {
+						Type string `json:"type"`
+					} `json:"content"`
+				} `json:"message"`
+			}
+			if err := json.Unmarshal(ev.Delta, &delta); err == nil {
+				contentType := delta.Message.Content.Type
+				s.contentType[ev.Index] = contentType
+				if contentType == "thinking" {
+					s.isActiveReasoning = true
+					return &provider.StreamChunk{
+						Type: provider.ChunkTypeReasoningStart,
+						ID:   fmt.Sprintf("reasoning-%d", ev.Index),
+					}, nil
+				}
+			}
+			continue
+
+		case "content-delta":
+			ctype := s.contentType[ev.Index]
+			if ctype == "thinking" {
+				var delta struct {
+					Message struct {
+						Content struct {
+							Thinking string `json:"thinking"`
+						} `json:"content"`
+					} `json:"message"`
+				}
+				if err := json.Unmarshal(ev.Delta, &delta); err == nil && delta.Message.Content.Thinking != "" {
+					return &provider.StreamChunk{
+						Type:      provider.ChunkTypeReasoning,
+						Reasoning: delta.Message.Content.Thinking,
+						ID:        fmt.Sprintf("reasoning-%d", ev.Index),
+					}, nil
+				}
+			} else {
+				var delta struct {
+					Message struct {
+						Content struct {
+							Text string `json:"text"`
+						} `json:"content"`
+					} `json:"message"`
+				}
+				if err := json.Unmarshal(ev.Delta, &delta); err == nil && delta.Message.Content.Text != "" {
+					return &provider.StreamChunk{
+						Type: provider.ChunkTypeText,
+						Text: delta.Message.Content.Text,
+					}, nil
+				}
+			}
+			continue
+
+		case "content-end":
+			ctype := s.contentType[ev.Index]
+			if ctype == "thinking" {
+				s.isActiveReasoning = false
 				return &provider.StreamChunk{
-					Type: provider.ChunkTypeReasoningStart,
+					Type: provider.ChunkTypeReasoningEnd,
 					ID:   fmt.Sprintf("reasoning-%d", ev.Index),
 				}, nil
 			}
-		}
-		return s.Next()
+			continue
 
-	case "content-delta":
-		ctype := s.contentType[ev.Index]
-		if ctype == "thinking" {
+		case "tool-call-start":
 			var delta struct {
 				Message struct {
-					Content struct {
-						Thinking string `json:"thinking"`
-					} `json:"content"`
+					ToolCalls struct {
+						ID       string `json:"id"`
+						Function struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
 				} `json:"message"`
 			}
-			if err := json.Unmarshal(ev.Delta, &delta); err == nil && delta.Message.Content.Thinking != "" {
-				return &provider.StreamChunk{
-					Type:      provider.ChunkTypeReasoning,
-					Reasoning: delta.Message.Content.Thinking,
-					ID:        fmt.Sprintf("reasoning-%d", ev.Index),
-				}, nil
+			if err := json.Unmarshal(ev.Delta, &delta); err == nil {
+				id := delta.Message.ToolCalls.ID
+				s.pendingTools[id] = &cohereV2PendingTool{
+					id:        id,
+					name:      delta.Message.ToolCalls.Function.Name,
+					arguments: delta.Message.ToolCalls.Function.Arguments,
+				}
 			}
-		} else {
+			continue
+
+		case "tool-call-delta":
 			var delta struct {
 				Message struct {
-					Content struct {
-						Text string `json:"text"`
-					} `json:"content"`
+					ToolCalls struct {
+						Function struct {
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
 				} `json:"message"`
 			}
-			if err := json.Unmarshal(ev.Delta, &delta); err == nil && delta.Message.Content.Text != "" {
-				return &provider.StreamChunk{
-					Type: provider.ChunkTypeText,
-					Text: delta.Message.Content.Text,
-				}, nil
+			if err := json.Unmarshal(ev.Delta, &delta); err == nil {
+				// Cohere v2 supports only one pending tool call at a time; append to it.
+				for _, tc := range s.pendingTools {
+					if !tc.finished {
+						tc.arguments += delta.Message.ToolCalls.Function.Arguments
+						break
+					}
+				}
 			}
-		}
-		return s.Next()
+			continue
 
-	case "content-end":
-		ctype := s.contentType[ev.Index]
-		if ctype == "thinking" {
-			s.isActiveReasoning = false
-			return &provider.StreamChunk{
-				Type: provider.ChunkTypeReasoningEnd,
-				ID:   fmt.Sprintf("reasoning-%d", ev.Index),
-			}, nil
-		}
-		return s.Next()
-
-	case "tool-call-start":
-		var delta struct {
-			Message struct {
-				ToolCalls struct {
-					ID       string `json:"id"`
-					Function struct {
-						Name      string `json:"name"`
-						Arguments string `json:"arguments"`
-					} `json:"function"`
-				} `json:"tool_calls"`
-			} `json:"message"`
-		}
-		if err := json.Unmarshal(ev.Delta, &delta); err == nil {
-			id := delta.Message.ToolCalls.ID
-			s.pendingTools[id] = &cohereV2PendingTool{
-				id:        id,
-				name:      delta.Message.ToolCalls.Function.Name,
-				arguments: delta.Message.ToolCalls.Function.Arguments,
-			}
-		}
-		return s.Next()
-
-	case "tool-call-delta":
-		var delta struct {
-			Message struct {
-				ToolCalls struct {
-					Function struct {
-						Arguments string `json:"arguments"`
-					} `json:"function"`
-				} `json:"tool_calls"`
-			} `json:"message"`
-		}
-		if err := json.Unmarshal(ev.Delta, &delta); err == nil {
-			// Cohere v2 supports only one pending tool call at a time; append to it.
-			for _, tc := range s.pendingTools {
+		case "tool-call-end":
+			for id, tc := range s.pendingTools {
 				if !tc.finished {
-					tc.arguments += delta.Message.ToolCalls.Function.Arguments
-					break
+					tc.finished = true
+					args, err := parseCohereToolArguments(tc.arguments)
+					if err != nil {
+						// Streaming parity: keep the stream alive on malformed incremental
+						// tool JSON and emit an empty-args tool call.
+						args = map[string]interface{}{}
+					}
+					delete(s.pendingTools, id)
+					return &provider.StreamChunk{
+						Type: provider.ChunkTypeToolCall,
+						ToolCall: &types.ToolCall{
+							ID:        tc.id,
+							ToolName:  tc.name,
+							Arguments: args,
+						},
+					}, nil
 				}
 			}
-		}
-		return s.Next()
+			continue
 
-	case "tool-call-end":
-		for id, tc := range s.pendingTools {
-			if !tc.finished {
-				tc.finished = true
-				args, err := parseCohereToolArguments(tc.arguments)
-				if err != nil {
-					// Streaming parity: keep the stream alive on malformed incremental
-					// tool JSON and emit an empty-args tool call.
-					args = map[string]interface{}{}
-				}
-				delete(s.pendingTools, id)
+		case "message-end":
+			var delta struct {
+				FinishReason string          `json:"finish_reason"`
+				Usage        json.RawMessage `json:"usage"`
+			}
+			if err := json.Unmarshal(ev.Delta, &delta); err == nil {
+				usage := convertCohereUsage(delta.Usage)
 				return &provider.StreamChunk{
-					Type: provider.ChunkTypeToolCall,
-					ToolCall: &types.ToolCall{
-						ID:        tc.id,
-						ToolName:  tc.name,
-						Arguments: args,
-					},
+					Type:            provider.ChunkTypeFinish,
+					FinishReason:    mapCohereV2FinishReason(delta.FinishReason),
+					RawFinishReason: delta.FinishReason,
+					Usage:           &usage,
 				}, nil
 			}
-		}
-		return s.Next()
+			s.err = io.EOF
+			return nil, io.EOF
 
-	case "message-end":
-		var delta struct {
-			FinishReason string          `json:"finish_reason"`
-			Usage        json.RawMessage `json:"usage"`
+		default:
+			// citation-start, citation-end, tool-plan-delta, etc. — ignore
+			continue
 		}
-		if err := json.Unmarshal(ev.Delta, &delta); err == nil {
-			usage := convertCohereUsage(delta.Usage)
-			return &provider.StreamChunk{
-				Type:            provider.ChunkTypeFinish,
-				FinishReason:    mapCohereV2FinishReason(delta.FinishReason),
-				RawFinishReason: delta.FinishReason,
-				Usage:           &usage,
-			}, nil
-		}
-		s.err = io.EOF
-		return nil, io.EOF
 
-	default:
-		// citation-start, citation-end, tool-plan-delta, etc. — ignore
-		return s.Next()
 	}
 }
