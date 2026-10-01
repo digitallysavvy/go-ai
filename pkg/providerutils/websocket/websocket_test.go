@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/sha1" //nolint:gosec // required by the WebSocket handshake spec, not for security
 	"encoding/base64"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -56,6 +58,70 @@ func TestDial_SendsHeadersAndProtocols(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for server to observe the handshake headers")
+	}
+}
+
+// TestDial_FailureRedactsQueryStringFromError is a regression test: some
+// providers (e.g. Cartesia's streaming transcription) place a bearer/access
+// token directly in the WebSocket URL's query string. x/net/websocket's
+// *websocket.DialError.Error() includes the full dial URL verbatim, so any
+// dial failure (connection refused, DNS failure, TLS error, timeout) put the
+// live token into the error returned to the caller. Dial must strip the
+// query string before returning the error, while preserving the underlying
+// cause (e.g. "connection refused").
+func TestDial_FailureRedactsQueryStringFromError(t *testing.T) {
+	const secret = "super-secret-token-redact-me"
+	// Dialing a closed local port deterministically fails with "connection
+	// refused" without needing a real network outage.
+	wsURL := "ws://127.0.0.1:1/stt/turns/websocket?access_token=" + secret + "&model=ink-2"
+
+	_, err := Dial(context.Background(), wsURL, DialOptions{})
+	if err == nil {
+		t.Fatal("expected a dial error, got nil")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("dial error leaked the access token: %v", err)
+	}
+	if !strings.Contains(err.Error(), "connection refused") {
+		t.Fatalf("expected the underlying cause to be preserved, got: %v", err)
+	}
+}
+
+// TestDial_FailureRedactsUserinfoFromError is a regression test: a WebSocket
+// URL can carry credentials as userinfo (wss://user:token@host/...) instead
+// of (or in addition to) a query-string token. redactDialError must strip
+// that too, not just the query string.
+func TestDial_FailureRedactsUserinfoFromError(t *testing.T) {
+	const secret = "super-secret-userinfo-password"
+	wsURL := "ws://user:" + secret + "@127.0.0.1:1/stt/turns/websocket"
+
+	_, err := Dial(context.Background(), wsURL, DialOptions{})
+	if err == nil {
+		t.Fatal("expected a dial error, got nil")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("dial error leaked the userinfo password: %v", err)
+	}
+	if !strings.Contains(err.Error(), "connection refused") {
+		t.Fatalf("expected the underlying cause to be preserved, got: %v", err)
+	}
+}
+
+// TestDial_FailurePreservesUnderlyingCauseForErrorsIs is a regression test:
+// redactDialError must wrap the dial failure's underlying cause with %w so
+// errors.Is still matches it (e.g. callers checking for a specific net/
+// context error), not just produce a message that happens to contain the
+// right substring.
+func TestDial_FailurePreservesUnderlyingCauseForErrorsIs(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := Dial(ctx, "ws://127.0.0.1:1/stt/turns/websocket", DialOptions{})
+	if err == nil {
+		t.Fatal("expected a dial error, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected errors.Is(err, context.Canceled) to hold, got: %v", err)
 	}
 }
 

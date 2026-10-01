@@ -4,10 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
+	"os/exec"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -297,6 +301,73 @@ func TestDefaultMaasAuthToken_Missing(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
+}
+
+// TestDefaultMaasAuthToken_CachesAcrossCalls is a regression test: the ADC
+// path of defaultMaasAuthToken previously fetched a brand-new
+// google.DefaultTokenSource(ctx, scope).Token() on every single call instead
+// of caching the token near its expiry, unlike the main googlevertex
+// provider's own cachedTokenSource. Each GCE access token is normally valid
+// for ~1 hour, so re-fetching per call pays needless latency/I/O and risks
+// tripping the metadata server's documented rate limits under a busy
+// workload. Uses a fake GCE metadata server (GCE_METADATA_HOST) returning a
+// 3600s-valid token; 3 calls sharing that still-valid token must hit the
+// metadata server's token endpoint exactly once.
+//
+// Runs in a freshly spawned subprocess:
+// cloud.google.com/go/compute/metadata's OnGCE() memoizes its result for the
+// life of the process (a package-level sync.Once), so if any earlier test in
+// this binary already called google.DefaultTokenSource with no ADC
+// configured (e.g. TestDefaultMaasAuthToken_Missing), OnGCE() would already
+// be cached as false and our fake GCE_METADATA_HOST would never be
+// consulted. A child process guarantees OnGCE() is resolved fresh, against
+// the env this test sets up.
+func TestDefaultMaasAuthToken_CachesAcrossCalls(t *testing.T) {
+	if os.Getenv("GOOGLEVERTEX_MAAS_CACHE_TEST_CHILD") == "1" {
+		runDefaultMaasAuthTokenCacheChild()
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestDefaultMaasAuthToken_CachesAcrossCalls$", "-test.v")
+	cmd.Env = append(os.Environ(), "GOOGLEVERTEX_MAAS_CACHE_TEST_CHILD=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("child process failed: %v\noutput:\n%s", err, out)
+	}
+}
+
+func runDefaultMaasAuthTokenCacheChild() {
+	var tokenHits int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/computeMetadata/v1/project/project-id", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "test-project")
+	})
+	mux.HandleFunc("/computeMetadata/v1/instance/service-accounts/default/token", func(w http.ResponseWriter, r *http.Request) {
+		hits := atomic.AddInt32(&tokenHits, 1)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token": fmt.Sprintf("token-%d", hits), "expires_in": 3600, "token_type": "Bearer",
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	hostOnly, _ := url.Parse(srv.URL)
+
+	_ = os.Setenv("GCE_METADATA_HOST", hostOnly.Host)
+	_ = os.Unsetenv("GOOGLE_APPLICATION_CREDENTIALS")
+	_ = os.Unsetenv("GOOGLE_VERTEX_ACCESS_TOKEN")
+
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		if _, err := defaultMaasAuthToken(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "call %d failed: %v\n", i, err)
+			os.Exit(1)
+		}
+	}
+	if got := atomic.LoadInt32(&tokenHits); got != 1 {
+		fmt.Fprintf(os.Stderr, "hit metadata token endpoint %d times for 3 requests sharing a still-valid (3600s) token; expected 1 (cached), got %d\n", got, got)
+		os.Exit(1)
+	}
+	os.Exit(0)
 }
 
 func TestNewMaaS_ProviderErrorsUseVertexProviderName(t *testing.T) {

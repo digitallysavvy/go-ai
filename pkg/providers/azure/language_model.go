@@ -132,7 +132,18 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	// Convert messages. Azure's chat() factory wraps OpenAIChatLanguageModel
 	// in TS, so it inherits OpenAI's serializeToolCallArguments sanitization
 	// for replayed tool-call arguments (see ToOpenAIMessagesOptions doc).
+	// Default to an empty slice so the System-prepend branch below always has
+	// a concrete []map[string]interface{} to type-assert, even for a
+	// system-only prompt (IsMessages() and IsSimple() both false: no
+	// Messages, no Text). The core TS SDK rejects such a prompt earlier, in
+	// standardizePrompt ("messages must not be empty"), before any provider
+	// is reached; the Go SDK does not perform that upstream validation, so
+	// the provider must not panic on it. Degrading to "just the system
+	// message" rather than crashing is the closest match to TS's intent
+	// (the message set is never allowed to be empty once it does reach a
+	// provider).
 	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{SanitizeReplayedToolCallArguments: true, IncludePromptCacheBreakpoint: true}
+	body["messages"] = []map[string]interface{}{}
 	if opts.Prompt.IsMessages() {
 		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, toOpenAIMessagesOpts)
 	} else if opts.Prompt.IsSimple() {
@@ -141,7 +152,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 
 	// Add system message if present
 	if opts.Prompt.System != "" {
-		messages := body["messages"].([]map[string]interface{})
+		messages, _ := body["messages"].([]map[string]interface{})
 		systemMsg := map[string]interface{}{
 			"role":    "system",
 			"content": opts.Prompt.System,
