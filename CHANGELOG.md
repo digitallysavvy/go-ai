@@ -129,7 +129,9 @@ step-by-step upgrade instructions are in
   longer abort streams (32 MiB limit); a concurrent map write crash and a
   late-write panic in `CreateUIMessageStreamWithOptions`; realtime session
   goroutine leak and double-close panic; harness `AgentSession` concurrent
-  turn-start race and host tool executions leaked on cancel; Vercel
+  turn-start race and host tool executions leaked on cancel; concurrent map
+  crashes in the agent subagent/skill registries; MCP stdio, TUI and
+  workflow transport races and leaks; Vercel
   Sandbox `Wait` ctx handling and stream error causes. Full list in the
   release notes' Bug
   Fixes section.
@@ -152,6 +154,7 @@ step-by-step upgrade instructions are in
   `results_url` now fetched through the SSRF-safe download path.
 - Removed unused internal download helpers that skipped the SSRF checks.
 - Harness bridge dial errors no longer include the bridge token.
+- MCP OAuth and OPA policy HTTP responses are read with a 1 MiB limit.
 - `provider.SerializableConfig` redacts credential headers (`Authorization`,
   `Proxy-Authorization`, `X-Api-Key`, `Api-Key`, `X-Goog-Api-Key`,
   `Cookie`, `Set-Cookie`, and any `*-api-key` / `*-token` / `*secret*`

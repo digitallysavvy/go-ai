@@ -327,6 +327,8 @@ code.
   sandbox now mounts no filesystem, passes no environment, removes the libc
   globals, blocks `eval` / `Function` and dynamic `import()`, and captures
   console output in memory under `MaxConsoleOutputBytes`.
+- MCP OAuth and the OPA policy client read at most 1 MiB of an HTTP
+  response, so a hostile or broken server can't exhaust memory.
 - Tool approvals are verified on resume (HMAC v1, byte-compatible with TS).
 - MCP OAuth state parameter comparison uses
   `crypto/subtle.ConstantTimeCompare` to prevent timing-based CSRF.
@@ -722,6 +724,16 @@ code.
 
 ### Providers (general)
 
+- Agents: concurrent use of `SubagentRegistry` and `SkillRegistry` no
+  longer crashes with a concurrent map access.
+- TUI: `StreamRenderSource` reads the stream from one goroutine, so `Close`
+  no longer races `Next`, and `Close` returns within 5s even if the stream
+  never does.
+- Workflow chat transport: the chunk pump exits when its context is
+  cancelled (goroutine leak), and chunks the multiplexer drops are counted
+  and logged instead of disappearing silently.
+- `jsonparser.FixJSON` drops an incomplete trailing UTF-8 sequence from
+  truncated input.
 - Cerebras and Vercel call Chat Completions, not Responses. Moonshot
   accepts any model ID. DeepSeek resolves provider file references and
   validates response fields, and drops temperature/topP with a warning
@@ -767,6 +779,9 @@ code.
   errors instead of hanging; `Connect` rejects a negative `MaxRetries`.
 - `StdioTransportConfig.Env` and `WorkingDir` are now actually applied to
   the child process (previously ignored).
+- Stdio transport: `Receive` reads the connection state under the lock
+  (data race with `Close`), and stderr keeps being drained after an
+  over-long line so the child process can't block on a full pipe.
 
 ### Realtime / WebSocket
 
