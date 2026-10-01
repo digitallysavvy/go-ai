@@ -9,6 +9,12 @@ updates:
     labels:
       - "dependencies"
       - "go"
+    ignore:
+      # wazero >= 1.10 rejects instantiating a compiled module in another
+      # runtime, which pkg/internal/third_party/qjs relies on for fast
+      # sandbox startup. Bump deliberately once qjs shares one runtime.
+      - dependency-name: "github.com/tetratelabs/wazero"
+        versions: [">= 1.10.0"]
 
   # Maintain dependencies for GitHub Actions
   - package-ecosystem: "github-actions"

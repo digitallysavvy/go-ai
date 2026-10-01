@@ -24,16 +24,17 @@ from.
 
 ## Recommended migration process
 
-1. Upgrade on a clean branch and run `go vet ./...` and `go test ./...` before editing.
-2. Search your codebase for `xai.ChatCompletionsLanguageModel`, `xai.NewLanguageModel`, and Bedrock `CacheConfig` usage — these no longer compile.
-3. Search for `Strict: true` (tools), `DisableParallelToolUse:` (Anthropic), and `MaxRetries:` (Embed/EmbedMany/Rerank) — these fields changed from value to pointer types.
-4. Search for `ExperimentalContext`, `NeedsApproval`, `ToolNeedsApproval`, and `types.ImageContent` — these still compile as deprecated aliases, but new code should move to `RuntimeContext`/`ToolsContext`, call-level `ToolApproval`, and `types.FileContent`/`FileData`.
-5. If your code or wrappers still use TypeScript-style `experimental_*` option names (`experimental_output`, `experimental_activeTools`, `experimental_prepareStep`), map them to `Output`, `FilterActiveTools`, and `PrepareStep`.
-6. If you read/write `anthropic.ModelOptions` as JSON (config files, serialized state), update field names to camelCase.
-7. If you detect step boundaries in `StreamText`'s full stream by watching for `provider.ChunkTypeFinish`, switch to `provider.ChunkTypeFinishStep`.
-8. If you set `telemetry.Options.Tracer` per call, move the tracer to a registered `telemetry.TelemetryIntegration` instead.
-9. Move multi-step limits from `MaxSteps` to `StopWhen` where practical (`MaxSteps` still works as a compatibility shorthand).
-10. Re-run `go vet ./...` and `go test ./...`. For examples that use `//go:build ignore`, compile the specific example file you changed, e.g. `go build ./examples/upload-file/provider-reference/main.go`.
+1. Make sure you build with **Go 1.26 or later**. v0.5.0's `go.mod` declares `go 1.26.0`, up from 1.25 in v0.4.x, because Go 1.25 is end-of-life and the current `golang.org/x/*` modules require Go 1.26.
+2. Upgrade on a clean branch and run `go vet ./...` and `go test ./...` before editing.
+3. Search your codebase for `xai.ChatCompletionsLanguageModel`, `xai.NewLanguageModel`, and Bedrock `CacheConfig` usage — these no longer compile.
+4. Search for `Strict: true` (tools), `DisableParallelToolUse:` (Anthropic), and `MaxRetries:` (Embed/EmbedMany/Rerank) — these fields changed from value to pointer types.
+5. Search for `ExperimentalContext`, `NeedsApproval`, `ToolNeedsApproval`, and `types.ImageContent` — these still compile as deprecated aliases, but new code should move to `RuntimeContext`/`ToolsContext`, call-level `ToolApproval`, and `types.FileContent`/`FileData`.
+6. If your code or wrappers still use TypeScript-style `experimental_*` option names (`experimental_output`, `experimental_activeTools`, `experimental_prepareStep`), map them to `Output`, `FilterActiveTools`, and `PrepareStep`.
+7. If you read/write `anthropic.ModelOptions` as JSON (config files, serialized state), update field names to camelCase.
+8. If you detect step boundaries in `StreamText`'s full stream by watching for `provider.ChunkTypeFinish`, switch to `provider.ChunkTypeFinishStep`.
+9. If you set `telemetry.Options.Tracer` per call, move the tracer to a registered `telemetry.TelemetryIntegration` instead.
+10. Move multi-step limits from `MaxSteps` to `StopWhen` where practical (`MaxSteps` still works as a compatibility shorthand).
+11. Re-run `go vet ./...` and `go test ./...`. For examples that use `//go:build ignore`, compile the specific example file you changed, e.g. `go build ./examples/upload-file/provider-reference/main.go`.
 
 ## Breaking changes
 
