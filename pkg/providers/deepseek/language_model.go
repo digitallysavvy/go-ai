@@ -714,166 +714,187 @@ func newDeepseekStream(reader io.ReadCloser, includeRawChunks ...bool) *deepseek
 
 func (s *deepseekStream) Close() error { return s.reader.Close() }
 
-func (s *deepseekStream) emitParsedChunk(chunk *provider.StreamChunk) (*provider.StreamChunk, error) {
+// emitParsedChunk decides how a freshly built chunk should be delivered:
+// returned immediately (chunk, true) if nothing is queued ahead of it, or
+// appended behind the pending flushQueue (nil, false) for the caller's
+// Next() loop to continue draining. This used to recurse by calling
+// s.Next() directly in the queued case; see the comment on Next() for why
+// that could grow the goroutine stack without bound.
+func (s *deepseekStream) emitParsedChunk(chunk *provider.StreamChunk) (*provider.StreamChunk, bool) {
 	if len(s.flushQueue) == 0 {
-		return chunk, nil
+		return chunk, true
 	}
 	s.flushQueue = append(s.flushQueue, chunk)
-	return s.Next()
+	return nil, false
 }
 
 func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
-	if len(s.flushQueue) > 0 {
-		chunk := s.flushQueue[0]
-		s.flushQueue = s.flushQueue[1:]
-		return chunk, nil
-	}
-	if s.err != nil {
-		return nil, s.err
-	}
-	event, err := s.parser.Next()
-	if err != nil {
-		s.err = err
-		return nil, err
-	}
-	if streaming.IsStreamDone(event) {
-		if s.pendingFinish != nil {
-			finish := s.pendingFinish
-			s.pendingFinish = nil
-			s.attachFinishMetadata(finish)
+	for {
+		if len(s.flushQueue) > 0 {
+			chunk := s.flushQueue[0]
+			s.flushQueue = s.flushQueue[1:]
+			return chunk, nil
+		}
+		if s.err != nil {
+			return nil, s.err
+		}
+		event, err := s.parser.Next()
+		if err != nil {
+			s.err = err
+			return nil, err
+		}
+		if streaming.IsStreamDone(event) {
+			if s.pendingFinish != nil {
+				finish := s.pendingFinish
+				s.pendingFinish = nil
+				s.attachFinishMetadata(finish)
+				s.err = io.EOF
+				return finish, nil
+			}
 			s.err = io.EOF
-			return finish, nil
+			return nil, io.EOF
 		}
-		s.err = io.EOF
-		return nil, io.EOF
-	}
-	rawQueued := false
-	if s.includeRawChunks {
-		var raw interface{}
-		if err := json.Unmarshal([]byte(event.Data), &raw); err != nil {
-			raw = event.Data
-		}
-		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-			Type: provider.ChunkTypeRaw,
-			Raw:  raw,
-		})
-		rawQueued = true
-	}
-	var chunkData deepseekStreamChunk
-	if err := json.Unmarshal([]byte(event.Data), &chunkData); err != nil {
-		errorChunk := &provider.StreamChunk{
-			Type: provider.ChunkTypeError,
-			Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
-		}
-		if rawQueued {
-			s.flushQueue = append(s.flushQueue, errorChunk)
-			return s.Next()
-		}
-		return errorChunk, nil
-	}
-	if len(chunkData.Error) > 0 {
-		return s.emitParsedChunk(&provider.StreamChunk{
-			Type: provider.ChunkTypeError,
-			Text: deepseekStreamErrorText(chunkData.Error),
-			// P1-1c part 2: attach the structured StreamProviderError (TS
-			// createDeepSeekStreamError) so streamRetries/IsRetryable see the
-			// real type/code/statusCode/isRetryable instead of generic
-			// text-based inference.
-			Err: newDeepSeekStreamProviderErrorChunk(chunkData.Error, json.RawMessage(event.Data)),
-		})
-	}
-	if len(chunkData.Usage) > 0 && string(chunkData.Usage) != "null" {
-		s.usageRaw = chunkData.Usage
-	}
-	if chunkData.Object != "" {
-		s.responseObject = chunkData.Object
-	}
-	if chunkData.SystemFingerprint != "" {
-		s.systemFingerprint = chunkData.SystemFingerprint
-	}
-	if !s.metadataEmitted && (chunkData.ID != "" || chunkData.Model != "" || chunkData.Created != 0 || len(s.responseHeaders) > 0) {
-		metadata := &provider.ResponseMetadata{
-			ID:      chunkData.ID,
-			ModelID: chunkData.Model,
-			Headers: s.responseHeaders,
-		}
-		if chunkData.Created != 0 {
-			metadata.Timestamp = time.Unix(chunkData.Created, 0)
-		}
-		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-			Type:             provider.ChunkTypeResponseMetadata,
-			ResponseMetadata: metadata,
-		})
-		s.metadataEmitted = true
-	}
-	if len(chunkData.Choices) > 0 {
-		choice := chunkData.Choices[0]
-
-		idx := choice.Index
-		s.choiceIndex = &idx
-		if choice.Delta.Role != "" {
-			s.messageRole = choice.Delta.Role
-		}
-		if choice.Logprobs != nil {
-			s.contentLogprobs = append(s.contentLogprobs, choice.Logprobs.Content...)
-			s.reasoningLogprobs = append(s.reasoningLogprobs, choice.Logprobs.ReasoningContent...)
-		}
-		for _, tc := range choice.Delta.ToolCalls {
-			if tc.Type != "" && tc.Index != nil {
-				s.toolCallTypes[*tc.Index] = tc.Type
+		rawQueued := false
+		if s.includeRawChunks {
+			var raw interface{}
+			if err := json.Unmarshal([]byte(event.Data), &raw); err != nil {
+				raw = event.Data
 			}
-		}
-
-		// Handle reasoning content (emitted before text in DeepSeek thinking mode).
-		if choice.Delta.ReasoningContent != "" {
-			if !s.isActiveReasoning {
-				s.isActiveReasoning = true
-				s.flushQueue = append([]*provider.StreamChunk{
-					{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"},
-					{Type: provider.ChunkTypeReasoning, Reasoning: choice.Delta.ReasoningContent, ID: "reasoning-0"},
-				}, s.flushQueue...)
-				return s.Next()
-			}
-			return s.emitParsedChunk(&provider.StreamChunk{
-				Type:      provider.ChunkTypeReasoning,
-				Reasoning: choice.Delta.ReasoningContent,
-				ID:        "reasoning-0",
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+				Type: provider.ChunkTypeRaw,
+				Raw:  raw,
 			})
+			rawQueued = true
 		}
-
-		// End reasoning block when text content arrives.
-		if choice.Delta.Content != "" {
-			if s.isActiveReasoning {
-				s.isActiveReasoning = false
-				s.flushQueue = append([]*provider.StreamChunk{
-					{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
-					{Type: provider.ChunkTypeText, Text: choice.Delta.Content},
-				}, s.flushQueue...)
-				return s.Next()
+		var chunkData deepseekStreamChunk
+		if err := json.Unmarshal([]byte(event.Data), &chunkData); err != nil {
+			errorChunk := &provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
 			}
-			return s.emitParsedChunk(&provider.StreamChunk{Type: provider.ChunkTypeText, Text: choice.Delta.Content})
+			if rawQueued {
+				s.flushQueue = append(s.flushQueue, errorChunk)
+				continue
+			}
+			return errorChunk, nil
 		}
-		// Tool call delta — accumulate partial arguments by index.
-		// Finalize only when finish_reason is received, never mid-stream.
-		if len(choice.Delta.ToolCalls) > 0 {
+		if len(chunkData.Error) > 0 {
+			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: deepseekStreamErrorText(chunkData.Error),
+				// P1-1c part 2: attach the structured StreamProviderError (TS
+				// createDeepSeekStreamError) so streamRetries/IsRetryable see the
+				// real type/code/statusCode/isRetryable instead of generic
+				// text-based inference.
+				Err: newDeepSeekStreamProviderErrorChunk(chunkData.Error, json.RawMessage(event.Data)),
+			})
+			if ok {
+				return chunk, nil
+			}
+			continue
+		}
+		if len(chunkData.Usage) > 0 && string(chunkData.Usage) != "null" {
+			s.usageRaw = chunkData.Usage
+		}
+		if chunkData.Object != "" {
+			s.responseObject = chunkData.Object
+		}
+		if chunkData.SystemFingerprint != "" {
+			s.systemFingerprint = chunkData.SystemFingerprint
+		}
+		if !s.metadataEmitted && (chunkData.ID != "" || chunkData.Model != "" || chunkData.Created != 0 || len(s.responseHeaders) > 0) {
+			metadata := &provider.ResponseMetadata{
+				ID:      chunkData.ID,
+				ModelID: chunkData.Model,
+				Headers: s.responseHeaders,
+			}
+			if chunkData.Created != 0 {
+				metadata.Timestamp = time.Unix(chunkData.Created, 0)
+			}
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+				Type:             provider.ChunkTypeResponseMetadata,
+				ResponseMetadata: metadata,
+			})
+			s.metadataEmitted = true
+		}
+		if len(chunkData.Choices) > 0 {
+			choice := chunkData.Choices[0]
+
+			idx := choice.Index
+			s.choiceIndex = &idx
+			if choice.Delta.Role != "" {
+				s.messageRole = choice.Delta.Role
+			}
+			if choice.Logprobs != nil {
+				s.contentLogprobs = append(s.contentLogprobs, choice.Logprobs.Content...)
+				s.reasoningLogprobs = append(s.reasoningLogprobs, choice.Logprobs.ReasoningContent...)
+			}
 			for _, tc := range choice.Delta.ToolCalls {
-				for _, chunk := range s.toolCallTracker.Track(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
-					c := chunk
-					s.flushQueue = append(s.flushQueue, &c)
+				if tc.Type != "" && tc.Index != nil {
+					s.toolCallTypes[*tc.Index] = tc.Type
 				}
+			}
+
+			// Handle reasoning content (emitted before text in DeepSeek thinking mode).
+			if choice.Delta.ReasoningContent != "" {
+				if !s.isActiveReasoning {
+					s.isActiveReasoning = true
+					s.flushQueue = append([]*provider.StreamChunk{
+						{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"},
+						{Type: provider.ChunkTypeReasoning, Reasoning: choice.Delta.ReasoningContent, ID: "reasoning-0"},
+					}, s.flushQueue...)
+					continue
+				}
+				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
+					Type:      provider.ChunkTypeReasoning,
+					Reasoning: choice.Delta.ReasoningContent,
+					ID:        "reasoning-0",
+				})
+				if ok {
+					return chunk, nil
+				}
+				continue
+			}
+
+			// End reasoning block when text content arrives.
+			if choice.Delta.Content != "" {
+				if s.isActiveReasoning {
+					s.isActiveReasoning = false
+					s.flushQueue = append([]*provider.StreamChunk{
+						{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
+						{Type: provider.ChunkTypeText, Text: choice.Delta.Content},
+					}, s.flushQueue...)
+					continue
+				}
+				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{Type: provider.ChunkTypeText, Text: choice.Delta.Content})
+				if ok {
+					return chunk, nil
+				}
+				continue
+			}
+			// Tool call delta — accumulate partial arguments by index.
+			// Finalize only when finish_reason is received, never mid-stream.
+			if len(choice.Delta.ToolCalls) > 0 {
+				for _, tc := range choice.Delta.ToolCalls {
+					for _, chunk := range s.toolCallTracker.Track(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
+						c := chunk
+						s.flushQueue = append(s.flushQueue, &c)
+					}
+				}
+				if choice.FinishReason != "" {
+					s.flushDeepseekToolCalls(choice.FinishReason)
+					continue
+				}
+				continue
 			}
 			if choice.FinishReason != "" {
 				s.flushDeepseekToolCalls(choice.FinishReason)
-				return s.Next()
+				continue
 			}
-			return s.Next()
 		}
-		if choice.FinishReason != "" {
-			s.flushDeepseekToolCalls(choice.FinishReason)
-			return s.Next()
-		}
+		continue
+
 	}
-	return s.Next()
 }
 
 func deepseekStreamErrorText(raw json.RawMessage) string {
