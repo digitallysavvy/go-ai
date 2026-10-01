@@ -259,7 +259,7 @@ func convertUIAssistantBlock(ctx context.Context, message UIMessage, block []UIM
 				if resultProviderMetadata == nil {
 					resultProviderMetadata = p.CallProviderMetadata
 				}
-				var output interface{} = p.Output
+				var output = p.Output
 				errorMode := "none"
 				if p.State == ToolStateOutputError {
 					output = p.ErrorText
@@ -342,7 +342,7 @@ func convertUIToolBlock(ctx context.Context, block []UIMessagePart, options Conv
 				ProviderOptions: p.CallProviderMetadata,
 			})
 		case ToolStateOutputError, ToolStateOutputAvailable:
-			var output interface{} = p.Output
+			var output = p.Output
 			errorMode := "none"
 			if p.State == ToolStateOutputError {
 				output = p.ErrorText

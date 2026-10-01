@@ -142,7 +142,7 @@ func parseUnion(src, typeName string) ([]string, error) {
 func identSuffix(id string) string {
 	var b strings.Builder
 	for _, word := range strings.FieldsFunc(id, func(r rune) bool {
-		return !(r < unicode.MaxASCII && (unicode.IsLetter(r) || unicode.IsDigit(r)))
+		return r >= unicode.MaxASCII || !(unicode.IsLetter(r) || unicode.IsDigit(r))
 	}) {
 		b.WriteString(strings.ToUpper(word[:1]))
 		b.WriteString(word[1:])

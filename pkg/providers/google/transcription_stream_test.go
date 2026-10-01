@@ -185,7 +185,7 @@ func newLiveTestModel(t *testing.T, baseURL string) *TranscriptionModel {
 	// delivery on the httptest WebSocket server: under load (observed with
 	// `go test -race -count=10` on a busy machine), the timer could fire and
 	// finish the stream with truncated text before a same-tick server message
-	// was read and processed. Leaving finishGraceMs unset applies
+	// was read and processed. Leaving finishGrace unset applies
 	// defaultFinishGraceDuration (3s, matching TS's own production default
 	// and its 5000ms test default), which no real test scenario here comes
 	// close to hitting.
@@ -611,7 +611,7 @@ func TestTranscriptionModel_DoStream_FinishWhenCloseWhilePending(t *testing.T) {
 	defer server.close()
 
 	model := newLiveTestModel(t, server.ts.URL)
-	model.finishGraceMs = 10 * time.Second
+	model.finishGrace = 10 * time.Second
 	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
 		Audio:            newChanAudioStream([]byte{1, 2}),
 		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},

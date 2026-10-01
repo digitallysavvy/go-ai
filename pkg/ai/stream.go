@@ -1646,7 +1646,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 			remapDuplicateBlockID(chunk, usedTextIDs, stepTextIDRemap, provider.ChunkTypeTextStart, provider.ChunkTypeText, provider.ChunkTypeTextEnd, remapGenerateID)
 			remapDuplicateBlockID(chunk, usedReasoningIDs, stepReasoningIDRemap, provider.ChunkTypeReasoningStart, provider.ChunkTypeReasoning, provider.ChunkTypeReasoningEnd, remapGenerateID)
-			forwardChunk := !(suppressReasoningBoundaries && isReasoningBoundaryChunk(chunk.Type))
+			forwardChunk := !suppressReasoningBoundaries || !isReasoningBoundaryChunk(chunk.Type)
 			if chunk.Type == provider.ChunkTypeRaw && !includeRawChunksValue(r.cbInclude) {
 				forwardChunk = false
 			}
@@ -1982,7 +1982,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// this step's model call instead of terminating the stream
 			// (streamRetries, audit row 802af1e / 35841f5 / WG8).
 			if chunk.Type == provider.ChunkTypeError {
-				var rawErr error = errors.New(chunk.Text)
+				var rawErr = errors.New(chunk.Text)
 				if chunk.Err != nil {
 					rawErr = chunk.Err
 				}

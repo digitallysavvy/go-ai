@@ -166,7 +166,7 @@ func parseToolCallWithRepair(ctx context.Context, opts ParseToolCallOptions) (ty
 	if err == nil {
 		return parsed, nil
 	}
-	if opts.RepairToolCall == nil || !(IsNoSuchToolError(err) || IsInvalidToolInputError(err)) {
+	if opts.RepairToolCall == nil || (!IsNoSuchToolError(err) && !IsInvalidToolInputError(err)) {
 		return types.ToolCall{}, err
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {

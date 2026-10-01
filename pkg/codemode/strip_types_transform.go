@@ -415,7 +415,7 @@ func nextIdentIs(tokens []tsToken, i int, text string) bool {
 
 func looksLikeNamespaceDecl(tokens []tsToken, i int) bool {
 	next := nextSignificant(tokens, i+1)
-	if next < 0 || !(tokens[next].kind == "ident" || tokens[next].kind == "string") {
+	if next < 0 || (tokens[next].kind != "ident" && tokens[next].kind != "string") {
 		return false
 	}
 	after := nextSignificant(tokens, next+1)

@@ -902,7 +902,7 @@ func (d *turnDriver) classifyAndValidateToolCall(raw, display *ToolCallPart) (di
 	_, hasActiveToolEntry := d.in.ActiveTools[raw.ToolName]
 	_, harnessHasBuiltin := d.in.Harness.BuiltinTools()[raw.ToolName]
 	isHostTool := !raw.ProviderExecuted && hasActiveToolEntry &&
-		!(raw.ToolName == string(BuiltinToolAskUserQuestions) && harnessHasBuiltin)
+		(raw.ToolName != string(BuiltinToolAskUserQuestions) || !harnessHasBuiltin)
 
 	eventPart := display
 	if isHostTool {

@@ -148,7 +148,7 @@ func tokenizeTS(src string) []tsToken {
 
 		case c == '/' && i+1 < n && runes[i+1] == '*':
 			j := i + 2
-			for j+1 < n && !(runes[j] == '*' && runes[j+1] == '/') {
+			for j+1 < n && (runes[j] != '*' || runes[j+1] != '/') {
 				j++
 			}
 			end := j + 2
@@ -285,7 +285,7 @@ func scanBalancedExpr(runes []rune, j int) int {
 			}
 		case c == '/' && j+1 < n && runes[j+1] == '*':
 			j += 2
-			for j+1 < n && !(runes[j] == '*' && runes[j+1] == '/') {
+			for j+1 < n && (runes[j] != '*' || runes[j+1] != '/') {
 				j++
 			}
 			j += 2

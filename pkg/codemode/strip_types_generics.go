@@ -108,7 +108,7 @@ var angleDisallowedAtDepth0 = map[string]bool{
 // and true on success, or (i, false) if this doesn't look like a type
 // argument list.
 func consumeAngleTypeArgsBalanced(tokens []tsToken, i int) (int, bool) {
-	if !(tokens[i].kind == "punct" && tokens[i].text == "<") {
+	if tokens[i].kind != "punct" || tokens[i].text != "<" {
 		return i, false
 	}
 	depth := 1
@@ -284,7 +284,7 @@ func tryGenericArrowTypeParams(tokens []tsToken, i int) (int, bool) {
 		return i, false
 	}
 	open := nextSignificant(tokens, end)
-	if open < 0 || !(tokens[open].kind == "punct" && tokens[open].text == "(") {
+	if open < 0 || tokens[open].kind != "punct" || tokens[open].text != "(" {
 		return i, false
 	}
 	closeIdx := matchParen(tokens, open)

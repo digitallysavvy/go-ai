@@ -1766,7 +1766,7 @@ func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTe
 	}
 
 	var (
-		teeWriter  io.Writer = w
+		teeWriter  = w
 		sideWriter *io.PipeWriter
 		closeSide  chan error
 		consumeErr error

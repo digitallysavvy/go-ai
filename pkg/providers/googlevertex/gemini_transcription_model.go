@@ -42,10 +42,10 @@ type GeminiTranscriptionModel struct {
 	provider *Provider
 	modelID  string
 
-	// finishGraceMs overrides defaultGeminiFinishGraceDuration for tests
+	// finishGrace overrides defaultGeminiFinishGraceDuration for tests
 	// (mirrors TS config._internal.finishGraceMs). Zero means "use the
 	// default".
-	finishGraceMs time.Duration
+	finishGrace time.Duration
 }
 
 // NewGeminiTranscriptionModel creates a Google Vertex AI Gemini transcription model.

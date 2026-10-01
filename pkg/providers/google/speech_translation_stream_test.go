@@ -15,15 +15,15 @@ import (
 )
 
 // newSpeechTranslationTestModel builds a SpeechTranslationModel pointed at a
-// test server, with finishGraceMs overridden for fast, deterministic tests
-// (mirrors TS createModel's `_internal.finishGraceMs` override). graceMs <= 0
+// test server, with finishGrace overridden for fast, deterministic tests
+// (mirrors TS createModel's `_internal.finishGrace` override). grace <= 0
 // leaves the field unset (production default of
 // speechTranslationDefaultFinishGraceDuration applies).
-func newSpeechTranslationTestModel(t *testing.T, baseURL string, graceMs time.Duration) *SpeechTranslationModel {
+func newSpeechTranslationTestModel(t *testing.T, baseURL string, grace time.Duration) *SpeechTranslationModel {
 	t.Helper()
 	p := New(Config{APIKey: "test-api-key", BaseURL: baseURL})
 	m := NewSpeechTranslationModel(p, "gemini-3.5-live-translate-preview")
-	m.finishGraceMs = graceMs
+	m.finishGrace = grace
 	return m
 }
 

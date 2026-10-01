@@ -498,7 +498,7 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 	// string only once, below, after PrepareCall has had a chance to replace
 	// it (TS 4d1bf28: `HarnessAgentSettings.instructions: string |
 	// SystemModelMessage`).
-	var instructionsRaw interface{} = a.settings.Instructions
+	var instructionsRaw = a.settings.Instructions
 	toolsContext := a.settings.ToolsContext
 	if opts.ToolsContext != nil {
 		toolsContext = opts.ToolsContext

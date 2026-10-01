@@ -444,7 +444,7 @@ type workflowApprovalResumeOptions struct {
 	// OTel tool call span parented under ctx's current span (27d294d) — the
 	// caller is expected to have already started the workflow-level
 	// operation span so this has a root to parent under.
-	telemetrySettings *telemetrypkg.Settings
+	telemetrySettings *telemetrypkg.Options
 }
 
 // processWorkflowApprovalResume resolves tool approvals from the last tool
@@ -1094,9 +1094,9 @@ func (w *WorkflowAgent) Generate(ctx context.Context, prompt string, opts *agent
 			legacy.OnToolExecutionEnd = opts.OnToolCallFinish //nolint:staticcheck
 		}
 		legacy.OnStepEnd = opts.OnStepEnd
-		legacy.OnStepFinish = opts.OnStepFinish
+		legacy.OnStepFinish = opts.OnStepFinish //nolint:staticcheck // forwarding deprecated opts field to legacy's own deprecated field, for callers still using it
 		legacy.OnEnd = opts.OnEnd
-		legacy.OnFinish = opts.OnFinish
+		legacy.OnFinish = opts.OnFinish //nolint:staticcheck // forwarding deprecated opts field to legacy's own deprecated field, for callers still using it
 	}
 	return w.GenerateWithOptions(ctx, legacy)
 }
@@ -1219,9 +1219,9 @@ func (w *WorkflowAgent) Stream(ctx context.Context, prompt string, opts *agent.A
 			legacy.OnToolExecutionEnd = opts.OnToolCallFinish //nolint:staticcheck
 		}
 		legacy.OnStepEnd = opts.OnStepEnd
-		legacy.OnStepFinish = opts.OnStepFinish
+		legacy.OnStepFinish = opts.OnStepFinish //nolint:staticcheck // forwarding deprecated opts field to legacy's own deprecated field, for callers still using it
 		legacy.OnEnd = opts.OnEnd
-		legacy.OnFinish = opts.OnFinish
+		legacy.OnFinish = opts.OnFinish //nolint:staticcheck // forwarding deprecated opts field to legacy's own deprecated field, for callers still using it
 	}
 	return w.StreamWithOptions(ctx, legacy)
 }

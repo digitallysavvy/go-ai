@@ -545,7 +545,7 @@ func TestStreamTextPrepareStepToolOverrideAppliesToExecutionAndCallbacks(t *test
 		},
 	}
 	var executed bool
-	var callbackStep int = -1
+	var callbackStep = -1
 	preparedTool := types.Tool{
 		Name: "prepared",
 		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {

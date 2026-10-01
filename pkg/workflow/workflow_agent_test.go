@@ -400,8 +400,9 @@ func TestWorkflowToolToModelOutputPreservesRawResult(t *testing.T) {
 	if gotOptions.ToolCallID != "1" || !reflect.DeepEqual(gotOptions.Input, map[string]interface{}{}) || !reflect.DeepEqual(gotOptions.Output, raw) {
 		t.Fatalf("ToModelOutput TS-shaped options = %+v, want toolCallId/input/output", gotOptions)
 	}
-	if !reflect.DeepEqual(gotOptions.Result, raw) {
-		t.Fatalf("ToModelOutput result alias = %#v, want original map", gotOptions.Result)
+	// This specifically verifies the deprecated Result field still mirrors Output.
+	if !reflect.DeepEqual(gotOptions.Result, raw) { //nolint:staticcheck
+		t.Fatalf("ToModelOutput result alias = %#v, want original map", gotOptions.Result) //nolint:staticcheck
 	}
 	if len(res.ToolResults) != 1 || !reflect.DeepEqual(res.ToolResults[0].Result, raw) {
 		t.Fatalf("raw tool results = %#v, want original result", res.ToolResults)

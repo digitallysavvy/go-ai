@@ -381,7 +381,7 @@ func (c *Channel) Open(ctx context.Context, resume bool) error {
 	c.ws = conn
 	c.connected = true
 	c.wire(conn)
-	var seed float64 = c.lastSeen
+	var seed = c.lastSeen
 	c.mu.Unlock()
 	cancel(nil)
 

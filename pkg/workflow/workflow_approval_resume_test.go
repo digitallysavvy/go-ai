@@ -171,7 +171,7 @@ func TestWorkflowResumePassesMessagesAndFiresToolCallbacks(t *testing.T) {
 		Messages: messages,
 		OnToolExecutionEnd: func(_ context.Context, e ai.OnToolCallFinishEvent) {
 			ends = append(ends, e.ToolCallID)
-			endErr = e.Error
+			endErr = e.Error //nolint:staticcheck // ToolOutput.Error is the replacement, but this asserts the legacy field is still populated for callbacks not yet migrated
 		},
 	})
 	if err != nil {

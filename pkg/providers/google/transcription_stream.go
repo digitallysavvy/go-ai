@@ -180,9 +180,9 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		inputAudioRate = *opts.InputAudioFormat.Rate
 	}
 
-	finishGraceMs := m.finishGraceMs
-	if finishGraceMs <= 0 {
-		finishGraceMs = defaultFinishGraceDuration
+	finishGrace := m.finishGrace
+	if finishGrace <= 0 {
+		finishGrace = defaultFinishGraceDuration
 	}
 
 	wsURL := getLiveTranscriptionWebSocketURL(m.prov.config.BaseURL, apiKey)
@@ -197,7 +197,7 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		headers:          wsHeaders,
 		setup:            setup,
 		inputAudioRate:   inputAudioRate,
-		finishGraceMs:    finishGraceMs,
+		finishGrace:      finishGrace,
 		warnings:         []types.Warning{},
 		audio:            opts.Audio,
 		includeRawChunks: opts.IncludeRawChunks,
@@ -215,7 +215,7 @@ type googleLiveTranscriptionStreamConfig struct {
 	headers          map[string]string
 	setup            map[string]interface{}
 	inputAudioRate   int
-	finishGraceMs    time.Duration
+	finishGrace      time.Duration
 	warnings         []types.Warning
 	audio            provider.AudioStream
 	includeRawChunks bool
@@ -407,7 +407,7 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 			return
 		}
 		cancelPendingFinish()
-		finishTimer = time.NewTimer(cfg.finishGraceMs)
+		finishTimer = time.NewTimer(cfg.finishGrace)
 		finishTimerC = finishTimer.C
 	}
 

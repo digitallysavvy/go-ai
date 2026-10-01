@@ -225,7 +225,7 @@ func prepareBedrockTools(tools []types.Tool, toolChoice types.ToolChoice, hasToo
 	}
 
 	if isAnthropic && !usingAnthropicTools && disableParallelToolUse != nil && *disableParallelToolUse &&
-		len(bedrockTools) > 0 && !(hasPreparedToolChoice && preparedToolChoice.Type == types.ToolChoiceNone) {
+		len(bedrockTools) > 0 && (!hasPreparedToolChoice || preparedToolChoice.Type != types.ToolChoiceNone) {
 		var choice map[string]interface{}
 		switch {
 		case hasPreparedToolChoice && preparedToolChoice.Type == types.ToolChoiceRequired:

@@ -198,7 +198,7 @@ func readInstructionsMetadata(ctx context.Context, sandbox providerutils.Sandbox
 	}
 	var m instructionsMetadata
 	if err := json.Unmarshal([]byte(*content), &m); err != nil || m.Version != instructionsMetadataVersion ||
-		raw["originalContent"] == nil || !(string(raw["originalContent"]) == "null" || isString("originalContent")) ||
+		raw["originalContent"] == nil || (string(raw["originalContent"]) != "null" && !isString("originalContent")) ||
 		!isString("instructions") || !isString("appliedContent") {
 		return nil, invalid
 	}

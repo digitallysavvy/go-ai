@@ -252,7 +252,7 @@ func (s *session) DoStop(ctx context.Context) (*harness.ResumeSessionState, erro
 	s.mu.Unlock()
 
 	s.opts.channel.BeginClose()
-	var data json.RawMessage = json.RawMessage("{}")
+	var data = json.RawMessage("{}")
 	if !s.opts.channel.IsClosed() {
 		replied := make(chan json.RawMessage, 1)
 		unsub := s.opts.channel.On("bridge-stop", func(e bridge.Event) {
@@ -375,7 +375,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 			return
 		}
 		forward(f.Part)
-		var cause error = errors.New("claude-code bridge reported an error")
+		var cause = errors.New("claude-code bridge reported an error")
 		if ep, ok := f.Part.(*harness.ErrorPart); ok && ep.Error != nil {
 			cause = fmt.Errorf("%v", ep.Error)
 		}
