@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
 )
 
 // StreamPart is one event emitted by a harness adapter during a prompt turn.
@@ -313,7 +315,7 @@ func MarshalTagged(typ string, v any) ([]byte, error) {
 	if len(body) < 2 || body[0] != '{' {
 		return nil, fmt.Errorf("harness: %T does not encode to a JSON object", v)
 	}
-	out := make([]byte, 0, len(body)+len(typeJSON)+10)
+	out := make([]byte, 0, intsafe.AddCap(intsafe.AddCap(len(body), len(typeJSON)), 10))
 	out = append(out, `{"type":`...)
 	out = append(out, typeJSON...)
 	if len(body) > 2 {

@@ -4,6 +4,8 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
 )
 
 // WithUserAgentSuffix appends suffixParts to the "user-agent" header,
@@ -36,12 +38,12 @@ func WithUserAgentSuffix(headers map[string]string, suffixParts ...string) map[s
 	}
 	sort.Strings(keys)
 
-	normalized := make(map[string]string, len(headers)+1)
+	normalized := make(map[string]string, intsafe.AddCap(len(headers), 1))
 	for _, k := range keys {
 		normalized[strings.ToLower(k)] = headers[k]
 	}
 
-	parts := make([]string, 0, len(suffixParts)+1)
+	parts := make([]string, 0, intsafe.AddCap(len(suffixParts), 1))
 	if current := normalized["user-agent"]; current != "" {
 		parts = append(parts, current)
 	}

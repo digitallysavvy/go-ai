@@ -56,7 +56,10 @@ func newRetryError(reason providererrors.RetryErrorReason, errors []error) *prov
 	last := copied[len(copied)-1]
 	message := fmt.Sprintf("Failed after %d attempts. Last error: %s", len(copied), last.Error())
 	if reason == providererrors.RetryReasonErrorNotRetryable {
-		message = fmt.Sprintf("Failed after %d attempts with non-retryable error: '%s'", len(copied), last.Error())
+		// Use strconv.Quote (not hand-written quote characters) so an error
+		// message that itself contains a quote can't be mistaken for the
+		// end of the quoted span.
+		message = fmt.Sprintf("Failed after %d attempts with non-retryable error: %s", len(copied), strconv.Quote(last.Error()))
 	}
 	return &providererrors.RetryError{
 		Message:   message,

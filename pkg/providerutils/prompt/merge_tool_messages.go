@@ -1,6 +1,9 @@
 package prompt
 
-import "github.com/digitallysavvy/go-ai/pkg/provider/types"
+import (
+	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+)
 
 // MergeConsecutiveToolMessages combines consecutive tool-role messages into a
 // single tool message, mirroring TS convertToLanguageModelPrompt's "combine
@@ -104,7 +107,7 @@ func mergeProviderOptionsDeep(base, overrides map[string]interface{}) map[string
 		return base
 	}
 
-	result := make(map[string]interface{}, len(base)+len(overrides))
+	result := make(map[string]interface{}, intsafe.AddCap(len(base), len(overrides)))
 	for k, v := range base {
 		result[k] = v
 	}

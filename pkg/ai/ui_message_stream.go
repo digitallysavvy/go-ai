@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -1296,7 +1297,7 @@ func (s *uiMessageCallbackState) mergeMetadata(metadata interface{}) {
 
 func (s *uiMessageCallbackState) appendPart(part UIMessageChunk) {
 	if typedParts, ok := s.message["parts"].([]UIMessageChunk); ok {
-		parts := make([]interface{}, 0, len(typedParts)+1)
+		parts := make([]interface{}, 0, intsafe.AddCap(len(typedParts), 1))
 		for _, typedPart := range typedParts {
 			parts = append(parts, typedPart)
 		}
@@ -1683,7 +1684,7 @@ func asUIMap(value interface{}) (map[string]interface{}, bool) {
 }
 
 func mergeUIMaps(base, incoming map[string]interface{}) map[string]interface{} {
-	out := make(map[string]interface{}, len(base)+len(incoming))
+	out := make(map[string]interface{}, intsafe.AddCap(len(base), len(incoming)))
 	for key, value := range base {
 		out[key] = cloneUIValue(value)
 	}

@@ -2726,7 +2726,13 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 						&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: callID},
 					)
 				} else {
-					prefix := `{"callId":"` + escapeJSONDelta(callID) + `","operation":{"type":"` + escapeJSONDelta(opType) + `","path":"` + escapeJSONDelta(opPath) + `","diff":"`
+					// Build the quoted JSON fragments with json.Marshal directly
+					// (rather than splicing an escaped value between literal quote
+					// characters) so each value is unambiguously JSON-quoted.
+					callIDJSON, _ := json.Marshal(callID)
+					opTypeJSON, _ := json.Marshal(opType)
+					opPathJSON, _ := json.Marshal(opPath)
+					prefix := `{"callId":` + string(callIDJSON) + `,"operation":{"type":` + string(opTypeJSON) + `,"path":` + string(opPathJSON) + `,"diff":"`
 					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: callID, Text: prefix})
 				}
 			}

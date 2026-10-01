@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -422,7 +423,14 @@ func parseGeminiSampleRate(mimeType string) int {
 	if len(match) != 2 {
 		return 0
 	}
-	rate, _ := strconv.Atoi(match[1])
+	// strconv.Atoi clamps to math.MaxInt64/MinInt64 (with a non-nil, here
+	// ignored, error) rather than returning 0 when match[1] overflows an
+	// int, so an out-of-range value must be rejected explicitly instead of
+	// being treated as a real sample rate.
+	rate, err := strconv.Atoi(match[1])
+	if err != nil || rate < 0 || rate > math.MaxUint32 {
+		return 0
+	}
 	return rate
 }
 
@@ -432,6 +440,15 @@ func addGeminiWAVHeader(pcm []byte, sampleRate int) []byte {
 		bitsPerSample = 16
 		headerSize    = 44
 	)
+	// sampleRate is parsed from the API-provided mimeType (see
+	// parseGeminiSampleRate) via strconv.Atoi, which is architecture-sized
+	// and can exceed uint32's range (or, on a parse overflow, be clamped to
+	// math.MaxInt64). Guard the narrowing conversion below explicitly so an
+	// out-of-range value can't silently truncate into a bogus WAV header
+	// field instead of being treated as "unknown".
+	if sampleRate < 0 || sampleRate > math.MaxUint32 {
+		sampleRate = 0
+	}
 	blockAlign := numChannels * bitsPerSample / 8
 	byteRate := sampleRate * blockAlign
 	dataSize := len(pcm)

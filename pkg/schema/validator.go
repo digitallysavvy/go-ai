@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	playground "github.com/go-playground/validator/v10"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
 )
 
 // errCircularRef is wrapped into the error returned when a $ref cycle is
@@ -392,7 +394,7 @@ func applyDefaultsWithRoot(value interface{}, sch map[string]interface{}, root m
 		if !ok {
 			return value
 		}
-		out := make(map[string]interface{}, len(obj)+len(props))
+		out := make(map[string]interface{}, intsafe.AddCap(len(obj), len(props)))
 		for k, v := range obj {
 			out[k] = v
 		}
