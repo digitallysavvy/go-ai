@@ -131,7 +131,8 @@ step-by-step upgrade instructions are in
   goroutine leak and double-close panic; harness `AgentSession` concurrent
   turn-start race and host tool executions leaked on cancel; concurrent map
   crashes in the agent subagent/skill registries; MCP stdio, TUI and
-  workflow transport races and leaks; Vercel
+  workflow transport races and leaks; Azure system-only prompt panic;
+  poller timeouts and cancellation; JSON numeric provider options; Vercel
   Sandbox `Wait` ctx handling and stream error causes. Full list in the
   release notes' Bug
   Fixes section.
@@ -155,6 +156,9 @@ step-by-step upgrade instructions are in
 - Removed unused internal download helpers that skipped the SSRF checks.
 - Harness bridge dial errors no longer include the bridge token.
 - MCP OAuth and OPA policy HTTP responses are read with a 1 MiB limit.
+- Bedrock event-stream decoder overflow panic on crafted frames;
+  `anthropicaws` SigV4 credential race; WebSocket dial errors no longer
+  include query strings or userinfo.
 - `provider.SerializableConfig` redacts credential headers (`Authorization`,
   `Proxy-Authorization`, `X-Api-Key`, `Api-Key`, `X-Goog-Api-Key`,
   `Cookie`, `Set-Cookie`, and any `*-api-key` / `*-token` / `*secret*`

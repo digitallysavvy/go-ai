@@ -329,6 +329,12 @@ code.
   console output in memory under `MaxConsoleOutputBytes`.
 - MCP OAuth and the OPA policy client read at most 1 MiB of an HTTP
   response, so a hostile or broken server can't exhaust memory.
+- Bedrock: a crafted event-stream frame length could overflow the decoder
+  and panic; lengths are now checked without overflow.
+- `anthropicaws`: concurrent requests no longer race on the cached SigV4
+  credentials.
+- WebSocket dial errors no longer include the URL's query string or
+  userinfo, where some providers put credentials.
 - Tool approvals are verified on resume (HMAC v1, byte-compatible with TS).
 - MCP OAuth state parameter comparison uses
   `crypto/subtle.ConstantTimeCompare` to prevent timing-based CSRF.
@@ -724,6 +730,17 @@ code.
 
 ### Providers (general)
 
+- Azure: a prompt with only a system message no longer panics. Anthropic
+  skills: a non-2xx version-metadata response returns an error instead of
+  `(nil, nil)`.
+- Polling: each status request is bounded by the poll timeout, and the
+  Replicate and Google pollers stop promptly when ctx is cancelled.
+- Provider options read as integers (poll intervals and timeouts, output
+  dimensionality, and similar) accept any JSON number, so values decoded
+  from JSON as `float64` are no longer ignored. Non-integral, NaN, infinite
+  and overflowing values are rejected.
+- Vertex Model-as-a-Service caches the Application Default Credentials
+  token instead of fetching a new one for every request.
 - Agents: concurrent use of `SubagentRegistry` and `SkillRegistry` no
   longer crashes with a concurrent map access.
 - TUI: `StreamRenderSource` reads the stream from one goroutine, so `Close`
