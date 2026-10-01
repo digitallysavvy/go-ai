@@ -218,6 +218,18 @@ func runInSandbox(ctx context.Context, policy resolvedPolicy, drive func(jsCtx *
 		// stripSandboxGlobals's doc comment for why this is defense in
 		// depth on top of NoFSMount/no-env above, not a substitute for it.
 		stripSandboxGlobals(jsCtx)
+		// Block eval/Function (and the indirect paths to the Function
+		// constructor) before any user source runs -- see
+		// installRuntimeHardening's doc comment. This, together with
+		// assertNoDynamicImport (run_code_mode.go) statically rejecting any
+		// script that spells `import(` literally, is the fix for the
+		// post-R4-1 finding that stripSandboxGlobals alone does not close:
+		// `await import('qjs:std')`/`'qjs:os'`/`'qjs:bjson'` reach the same
+		// host-escape primitives independently of the global object.
+		if herr := installRuntimeHardening(jsCtx); herr != nil {
+			out.err = classifySandboxFailure(herr, ctx, policy)
+			return
+		}
 		rJSON, isUndef, interruptedResult, derr := drive(jsCtx)
 		if derr != nil {
 			out.err = classifySandboxFailure(derr, ctx, policy)

@@ -90,6 +90,16 @@ func RunCodeMode(ctx context.Context, input RunInput) (interface{}, error) {
 	// returns the original source unmodified on error, so the error itself
 	// is never surfaced here.
 	strippedJS, _ := stripTypeScriptAnnotations(input.JS)
+	// Reject dynamic import() up front -- see assertNoDynamicImport's doc
+	// comment (sandbox_hardening.go) for why this, paired with
+	// installRuntimeHardening blocking eval/Function (engine.go), is the
+	// fix for the qjs:std/qjs:os/qjs:bjson native-module sandbox-escape
+	// gap: stripSandboxGlobals alone does not stop
+	// `await import('qjs:std')` from reaching the same host-escape
+	// primitives independently of the global object.
+	if ierr := assertNoDynamicImport(strippedJS); ierr != nil {
+		return nil, ierr
+	}
 	source := wrapCodeModeSource(strippedJS)
 
 	resultJSON, isUndefined, interrupted, err := runInSandbox(ctx, policy, func(jsCtx *qjs.Context) (string, bool, bool, error) {

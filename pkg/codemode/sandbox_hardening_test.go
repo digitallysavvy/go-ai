@@ -2,6 +2,7 @@ package codemode
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -121,8 +122,31 @@ func TestSandboxHardening_ExitIsUnreachable(t *testing.T) {
 
 // R4-1e: import('std')/import('os') must not succeed as a dynamic-import
 // side channel around the deleted globals.
+//
+// TestSandboxHardening_DynamicImportOfLibcModulesFails is a permanent
+// regression test for the gap the original R4-1 fix (sandbox_hardening.go's
+// stripSandboxGlobals) left open: deleting std/os/print/scriptArgs/bjson
+// from the global object does not stop quickjs-ng's module loader from
+// resolving the native specifiers "qjs:std"/"qjs:os"/"qjs:bjson" to fresh
+// module-namespace objects wrapping those same host-escape primitives,
+// independently of the global object --
+// `const std = await import('qjs:std')` fully succeeded (returning
+// std.loadFile/writeFile/getenv/exit, os.open/read/write/remove/rename/
+// readdir/stat/mkdir/chdir/getcwd/signal, bjson.read/write) before
+// assertNoDynamicImport (sandbox_hardening.go) was added.
+//
+// RunCodeMode now rejects *any* dynamic import() in the submitted source
+// before it ever runs (TypeScript code-mode supports no form of import
+// either -- its worker runtime never registers a dynamic-import callback
+// with its JS engine), so every case here -- the dangerous "qjs:"-prefixed
+// native specifiers and the plain "std"/"os" specifiers that only ever
+// failed as a file-path lookup -- must now fail the same way: a
+// *UnsupportedSyntaxError from RunCodeMode itself, with no script code
+// executed at all (not a caught-and-returned string from the script's own
+// try/catch, which is what the plain "std"/"os" cases produced before this
+// test was tightened).
 func TestSandboxHardening_DynamicImportOfLibcModulesFails(t *testing.T) {
-	for _, mod := range []string{"std", "os"} {
+	for _, mod := range []string{"std", "os", "qjs:std", "qjs:os", "qjs:bjson"} {
 		mod := mod
 		t.Run(mod, func(t *testing.T) {
 			got, err := RunCodeMode(context.Background(), RunInput{
@@ -131,15 +155,15 @@ func TestSandboxHardening_DynamicImportOfLibcModulesFails(t *testing.T) {
 					return 'IMPORTED:' + typeof m;
 				} catch (e) { return 'ERR:' + e.message; }`,
 			})
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
+			if err == nil {
+				t.Fatalf("expected RunCodeMode to reject dynamic import(%q) before execution, got result=%#v, err=nil", mod, got)
 			}
-			s, ok := got.(string)
-			if !ok {
-				t.Fatalf("expected a string result, got %#v", got)
+			var unsupported *UnsupportedSyntaxError
+			if !errors.As(err, &unsupported) {
+				t.Fatalf("expected an *UnsupportedSyntaxError for import(%q), got %#v (%v)", mod, err, err)
 			}
-			if strings.HasPrefix(s, "IMPORTED:") {
-				t.Fatalf("import(%q) unexpectedly succeeded: %s", mod, s)
+			if got != nil {
+				t.Fatalf("expected a nil result alongside the rejection, got %#v", got)
 			}
 		})
 	}
