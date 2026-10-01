@@ -124,7 +124,9 @@ step-by-step upgrade instructions are in
   connection; telemetry spans no longer leak on error/abort; harness
   Codex/host-tool/turn-release fixes; a stray leading "L" in ~88 error
   strings; tool-caller messages (e.g. code-mode's tool catalog) persist
-  across steps; a concurrent map crash in the shared HTTP client when
+  across steps; a stack-overflow crash in streaming providers on long runs
+  of events with no output; Mistral thinking-mode deltas dropping their
+  text; a concurrent map crash in the shared HTTP client when
   setting headers during in-flight requests; SSE lines over 64 KiB no
   longer abort streams (32 MiB limit); a concurrent map write crash and a
   late-write panic in `CreateUIMessageStreamWithOptions`; realtime session

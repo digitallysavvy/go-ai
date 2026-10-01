@@ -655,6 +655,17 @@ code.
 
 ### Core and streaming
 
+- Streaming providers no longer crash the process with a stack overflow
+  on a long run of events that produce no chunk (keep-alives, metadata,
+  empty deltas). `Next()` used to call itself for each skipped event; it
+  now loops. This covers OpenAI (Responses, chat, completion), xAI,
+  Anthropic, OpenResponses, Alibaba, Mistral, Cohere, the shared
+  OpenAI-compatible stream (and the providers built on it), Groq,
+  DeepSeek, Bedrock, Moonshot, Gemini/Vertex, Gateway and Google
+  Interactions.
+- Mistral (thinking mode): a delta that starts reasoning no longer drops
+  the rest of its content. Text, further thinking parts, tool calls and
+  the finish reason in the same delta are all emitted, in TS order.
 - The shared HTTP client no longer crashes with a concurrent map access
   when a header is set while requests are in flight.
 - `CreateUIMessageStreamWithOptions`: concurrent `Write` / `Merge` calls no
