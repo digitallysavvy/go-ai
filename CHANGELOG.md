@@ -126,7 +126,9 @@ step-by-step upgrade instructions are in
   strings; tool-caller messages (e.g. code-mode's tool catalog) persist
   across steps; a concurrent map crash in the shared HTTP client when
   setting headers during in-flight requests; SSE lines over 64 KiB no
-  longer abort streams (32 MiB limit); harness `AgentSession` concurrent
+  longer abort streams (32 MiB limit); a concurrent map write crash and a
+  late-write panic in `CreateUIMessageStreamWithOptions`; realtime session
+  goroutine leak and double-close panic; harness `AgentSession` concurrent
   turn-start race and host tool executions leaked on cancel; Vercel
   Sandbox `Wait` ctx handling and stream error causes. Full list in the
   release notes' Bug

@@ -641,6 +641,16 @@ code.
 
 - The shared HTTP client no longer crashes with a concurrent map access
   when a header is set while requests are in flight.
+- `CreateUIMessageStreamWithOptions`: concurrent `Write` / `Merge` calls no
+  longer crash with a concurrent map write (chunks go through one
+  consumer), and writes after the stream closes are dropped instead of
+  panicking.
+- `RealtimeSession`: the context watcher goroutine exits on `Close`,
+  `Close` can be called more than once, and WebSocket `Send` /
+  `SendBinary` honor ctx while waiting for the connection.
+- Closing a stream reader wakes any `Next` call blocked on it; a tool
+  execution timeout is reported as a timeout only when the deadline was
+  actually exceeded.
 - SSE lines longer than 64 KiB no longer abort the stream on streaming
   providers. Lines up to 32 MiB are accepted, and longer ones fail with a
   clear error. The same applies to the Gateway video event stream and
