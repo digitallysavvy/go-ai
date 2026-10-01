@@ -241,6 +241,28 @@ func TestVertexEmbeddingOptionsAndHeadersHelpers(t *testing.T) {
 	}
 }
 
+// TestVertexEmbeddingOptions_OutputDimensionalityJSONNumber is a regression
+// test: vertexEmbeddingOptions read outputDimensionality via a bare
+// `.(int)` type assertion. ProviderOptions built via
+// encoding/json.Unmarshal (a JSON config file, or a request body forwarded
+// straight into ProviderOptions) decodes numbers as float64, so the
+// assertion silently failed and OutputDimensionality stayed nil, with no
+// warning.
+func TestVertexEmbeddingOptions_OutputDimensionalityJSONNumber(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte(`{"vertex":{"outputDimensionality":256}}`)
+	var providerOpts map[string]interface{}
+	if err := json.Unmarshal(raw, &providerOpts); err != nil {
+		t.Fatal(err)
+	}
+
+	got := vertexEmbeddingOptions(&provider.EmbedModelOptions{ProviderOptions: providerOpts})
+	if got.OutputDimensionality == nil || *got.OutputDimensionality != 256 {
+		t.Fatalf("JSON-sourced outputDimensionality was dropped: got %v, want 256", got.OutputDimensionality)
+	}
+}
+
 // TestVertexEmbeddingModel_GeminiEmbedding2UsesEmbedContent ports TS
 // google-vertex-embedding-model.ts usesEmbedContentEndpoint behavior:
 // gemini-embedding-2(-preview) must use :embedContent (max 1 per call),

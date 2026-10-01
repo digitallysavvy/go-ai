@@ -14,6 +14,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // VideoModel implements the provider.VideoModelV3 interface for Google
@@ -512,10 +513,15 @@ func (m *VideoModel) getPollOptions(providerOpts map[string]interface{}) polling
 		}
 		if ok {
 			if vertexOpts, ok := raw.(map[string]interface{}); ok {
-				if interval, ok := vertexOpts["pollIntervalMs"].(int); ok {
+				// CoerceInt (not a bare `.(int)` assertion) because
+				// providerOpts commonly arrives via encoding/json.Unmarshal
+				// (a JSON config file, or a request body forwarded straight
+				// into ProviderOptions), which decodes JSON numbers as
+				// float64, not int.
+				if interval, ok := providerutils.CoerceInt(vertexOpts["pollIntervalMs"]); ok {
 					opts.PollIntervalMs = interval
 				}
-				if timeout, ok := vertexOpts["pollTimeoutMs"].(int); ok {
+				if timeout, ok := providerutils.CoerceInt(vertexOpts["pollTimeoutMs"]); ok {
 					opts.PollTimeoutMs = timeout
 				}
 			}
