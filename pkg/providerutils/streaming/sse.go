@@ -3,6 +3,7 @@ package streaming
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -23,6 +24,28 @@ type SSEEvent struct {
 	Retry int
 }
 
+// sseScannerInitialBufferSize and sseScannerMaxLineSize bound the
+// per-line buffer bufio.Scanner uses while splitting an SSE stream.
+// bufio.Scanner otherwise caps every token (here, one SSE line) at
+// bufio.MaxScanTokenSize (64 KiB) with no way to opt out, which is far
+// smaller than realistic single-line SSE payloads: a large base64
+// image/audio chunk, a long tool-call-arguments or reasoning delta, or any
+// other sizeable JSON payload a provider emits unchunked on one `data: `
+// line. TS's SSE parser (eventsource-parser, vendored under
+// ai/packages/provider-utils/node_modules/eventsource-parser) has no
+// line-length limit at all, so without this a stream that TS handles fine
+// aborts in Go with "token too long" (bufio.ErrTooLong). We can't go
+// unbounded in Go the way a buffered string accumulator can, so this
+// mirrors the same 64 KiB start / 32 MiB ceiling already used for batch
+// result NDJSON scanning elsewhere in the codebase (see e.g.
+// pkg/providers/openai/batch.go, pkg/providers/anthropic/batch.go,
+// pkg/providers/google/batch.go, pkg/providers/gateway/batch.go) so memory
+// use stays bounded instead of growing per line without limit.
+const (
+	sseScannerInitialBufferSize = 64 * 1024
+	sseScannerMaxLineSize       = 32 * 1024 * 1024
+)
+
 // SSEParser parses Server-Sent Events from a stream
 type SSEParser struct {
 	scanner *bufio.Scanner
@@ -31,8 +54,10 @@ type SSEParser struct {
 
 // NewSSEParser creates a new SSE parser for the given reader
 func NewSSEParser(r io.Reader) *SSEParser {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, sseScannerInitialBufferSize), sseScannerMaxLineSize)
 	return &SSEParser{
-		scanner: bufio.NewScanner(r),
+		scanner: scanner,
 	}
 }
 
@@ -98,6 +123,9 @@ func (p *SSEParser) Next() (*SSEEvent, error) {
 
 	// Check for scanner error
 	if err := p.scanner.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			err = fmt.Errorf("sse: event line exceeds the %d byte maximum (%w)", sseScannerMaxLineSize, err)
+		}
 		p.err = err
 		return nil, err
 	}

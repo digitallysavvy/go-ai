@@ -1804,6 +1804,10 @@ func ReadUIMessageStream(r io.Reader) ([]UIMessageChunk, error) {
 		return nil, fmt.Errorf("reader is required")
 	}
 	sc := bufio.NewScanner(r)
+	// UI message chunks can carry inline file/image data well over
+	// bufio.Scanner's default 64 KiB token limit on a single `data: ` line.
+	// Match the bound used for the shared SSEParser (R4-4).
+	sc.Buffer(make([]byte, 64*1024), 32*1024*1024)
 	chunks := make([]UIMessageChunk, 0)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())

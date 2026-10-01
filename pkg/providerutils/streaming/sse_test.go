@@ -104,6 +104,45 @@ func TestSSEWriterAndHelpers(t *testing.T) {
 	}
 }
 
+// TestSSEParserHandlesLongDataLine is the permanent regression test for
+// R4-4: bufio.Scanner's default 64 KiB token limit used to make any single
+// SSE `data:` line over ~64 KiB (a large base64 image/audio chunk, a long
+// tool-call-arguments or reasoning delta, etc.) abort the whole stream with
+// bufio.ErrTooLong instead of delivering the event, even though TS's
+// eventsource-parser has no such limit. NewSSEParser now raises the
+// scanner's buffer to sseScannerMaxLineSize (32 MiB) so this parses cleanly.
+func TestSSEParserHandlesLongDataLine(t *testing.T) {
+	big := strings.Repeat("a", 80*1024)
+	stream := "data: " + big + "\n\n"
+
+	parser := NewSSEParser(strings.NewReader(stream))
+	event, err := parser.Next()
+	if err != nil {
+		t.Fatalf("Next() error = %v, want nil for an 80 KiB single-line event", err)
+	}
+	if event.Data != big {
+		t.Fatalf("event.Data length = %d, want %d", len(event.Data), len(big))
+	}
+}
+
+// TestSSEParserFailsClearlyOverMaxLineSize checks the other side of the
+// bound: memory must stay capped, so a line past sseScannerMaxLineSize still
+// fails, but with a clear, identifiable error rather than a bare
+// "token too long".
+func TestSSEParserFailsClearlyOverMaxLineSize(t *testing.T) {
+	huge := strings.Repeat("a", sseScannerMaxLineSize+1024)
+	stream := "data: " + huge + "\n\n"
+
+	parser := NewSSEParser(strings.NewReader(stream))
+	_, err := parser.Next()
+	if err == nil {
+		t.Fatal("Next() error = nil, want an error for a line over the bounded maximum")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("Next() error = %q, want a clear message about exceeding the line limit", err.Error())
+	}
+}
+
 func TestIsStreamDone(t *testing.T) {
 	if !IsStreamDone(&SSEEvent{Data: "[DONE]"}) {
 		t.Fatal("expected [DONE] to be recognized")
