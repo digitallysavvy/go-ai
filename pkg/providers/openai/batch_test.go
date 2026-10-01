@@ -77,11 +77,11 @@ func TestOpenAIBatch_CreatesBatchFromPreparedJSONL(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case r.URL.Path == "/files":
+		switch r.URL.Path {
+		case "/files":
 			uploadForm, uploadFileName, uploadFileContent = decodeMultipartFieldsAndFile(t, r)
 			_, _ = w.Write([]byte(`{"id":"file-input","object":"file","filename":"batch.jsonl","purpose":"batch","expires_at":1700172800}`))
-		case r.URL.Path == "/batches":
+		case "/batches":
 			_ = json.NewDecoder(r.Body).Decode(&batchCreateBody)
 			_, _ = w.Write([]byte(`{"id":"batch_123","status":"validating","output_file_id":null,"error_file_id":null,"created_at":1700000000,"expires_at":1700086400,"request_counts":{"total":2,"completed":0,"failed":0},"errors":null}`))
 		default:

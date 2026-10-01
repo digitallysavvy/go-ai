@@ -3,7 +3,6 @@ package fishaudio
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -443,7 +442,7 @@ func TestSpeechModel_ResponseMetadata(t *testing.T) {
 	p, _ := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "audio/mp3")
 		w.Header().Set("x-request-id", "test-request-id")
-		_, _ = io.WriteString(w, string(make([]byte, 100)))
+		_, _ = w.Write(make([]byte, 100))
 	})
 	model, _ := p.SpeechModel(ModelS1)
 

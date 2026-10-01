@@ -2082,7 +2082,7 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		if chunk.ToolCall.ProviderExecuted {
 			part["providerExecuted"] = true
 		}
-		if chunk.ToolCall.ToolMetadata != nil && len(chunk.ToolCall.ToolMetadata) > 0 {
+		if len(chunk.ToolCall.ToolMetadata) > 0 {
 			part["toolMetadata"] = chunk.ToolCall.ToolMetadata
 		}
 		if isDynamicTool(chunk.ToolCall.ToolName, chunk.ToolCall.Dynamic) {

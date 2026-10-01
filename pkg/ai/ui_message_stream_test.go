@@ -193,7 +193,7 @@ type recordingFlushWriter struct {
 }
 
 func (w *recordingFlushWriter) Flush() {
-	w.flushLens = append(w.flushLens, w.Buffer.Len())
+	w.flushLens = append(w.flushLens, w.Len())
 }
 
 func TestPipeUIMessageStreamToResponseWithInit_FlushesPerChunk(t *testing.T) {
@@ -214,8 +214,8 @@ func TestPipeUIMessageStreamToResponseWithInit_FlushesPerChunk(t *testing.T) {
 			t.Fatalf("flush lengths did not grow incrementally: %v", w.flushLens)
 		}
 	}
-	if last := w.flushLens[len(w.flushLens)-1]; last != w.Buffer.Len() {
-		t.Fatalf("final flush length %d != total written %d", last, w.Buffer.Len())
+	if last := w.flushLens[len(w.flushLens)-1]; last != w.Len() {
+		t.Fatalf("final flush length %d != total written %d", last, w.Len())
 	}
 }
 

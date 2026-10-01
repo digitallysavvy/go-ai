@@ -445,14 +445,14 @@ func gatewayTestReadClientFrame(r *bufio.Reader) ([]byte, error) {
 		return nil, err
 	}
 	payloadLen := int(header[1] &^ 0x80)
-	switch {
-	case payloadLen == 126:
+	switch payloadLen {
+	case 126:
 		ext := make([]byte, 2)
 		if _, err := io.ReadFull(r, ext); err != nil {
 			return nil, err
 		}
 		payloadLen = int(ext[0])<<8 | int(ext[1])
-	case payloadLen == 127:
+	case 127:
 		ext := make([]byte, 8)
 		if _, err := io.ReadFull(r, ext); err != nil {
 			return nil, err

@@ -193,7 +193,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 			fmt.Sprintf("No request_id returned from xAI API. Response: %+v", createResp), nil)
 	}
 
-	operation, _ := json.Marshal(xaiVideoOperation{RequestID: createResp.RequestID})
+	operation, _ := json.Marshal(xaiVideoOperation(createResp))
 
 	return &provider.VideoModelV3OperationStartResult{
 		Operation: operation,

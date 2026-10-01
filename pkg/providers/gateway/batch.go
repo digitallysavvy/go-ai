@@ -100,7 +100,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 	}
 
 	return &provider.BatchV4StartResult{
-		BatchV4Status: response.gatewayBatchStatusFields.toStatus(),
+		BatchV4Status: response.toStatus(),
 		BatchID:       response.BatchID,
 		Warnings:      warnings,
 	}, nil

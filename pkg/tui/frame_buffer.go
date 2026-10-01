@@ -113,7 +113,7 @@ func diffFrameLines(previous, next []string) string {
 		if prev == line {
 			continue
 		}
-		out.WriteString(fmt.Sprintf("%s[%d;1H%s%s", escape, i+1, clearLine, line))
+		_, _ = fmt.Fprintf(&out, "%s[%d;1H%s%s", escape, i+1, clearLine, line)
 	}
 	return out.String()
 }

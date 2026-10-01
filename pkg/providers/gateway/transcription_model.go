@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -188,7 +187,7 @@ func durationValue(duration *float64) float64 {
 func parseGatewayTranscriptionRawBody(body []byte) interface{} {
 	var raw interface{}
 	if err := json.Unmarshal(body, &raw); err != nil {
-		return fmt.Sprintf("%s", body)
+		return string(body)
 	}
 	return raw
 }

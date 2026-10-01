@@ -112,23 +112,7 @@ func (p *Provider) GetSpendReport(ctx context.Context, params SpendReportParams)
 
 	response := &SpendReportResponse{Results: make([]SpendReportRow, 0, len(wire.Results))}
 	for _, row := range wire.Results {
-		response.Results = append(response.Results, SpendReportRow{
-			Day:                      row.Day,
-			Hour:                     row.Hour,
-			User:                     row.User,
-			Model:                    row.Model,
-			Tag:                      row.Tag,
-			Provider:                 row.Provider,
-			CredentialType:           row.CredentialType,
-			TotalCost:                row.TotalCost,
-			MarketCost:               row.MarketCost,
-			InputTokens:              row.InputTokens,
-			OutputTokens:             row.OutputTokens,
-			CachedInputTokens:        row.CachedInputTokens,
-			CacheCreationInputTokens: row.CacheCreationInputTokens,
-			ReasoningTokens:          row.ReasoningTokens,
-			RequestCount:             row.RequestCount,
-		})
+		response.Results = append(response.Results, SpendReportRow(row))
 	}
 
 	return response, nil

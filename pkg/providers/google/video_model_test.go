@@ -372,10 +372,10 @@ func TestVideoModel_DoGenerate_EndToEnd(t *testing.T) {
 	pollCount := 0
 	model, _ := newTestVideoServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case r.URL.Path == "/models/veo-3.1-generate-preview:predictLongRunning":
+		switch r.URL.Path {
+		case "/models/veo-3.1-generate-preview:predictLongRunning":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"name": "operations/test-op", "done": false})
-		case r.URL.Path == "/operations/test-op":
+		case "/operations/test-op":
 			pollCount++
 			if pollCount == 1 {
 				_ = json.NewEncoder(w).Encode(map[string]interface{}{"name": "operations/test-op", "done": false})

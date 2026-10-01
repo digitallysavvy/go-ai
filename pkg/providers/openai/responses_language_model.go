@@ -393,10 +393,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	// = false (e.g. Amazon Bedrock Mantle, which rejects this include value)
 	// cannot have it re-enabled by a per-call providerOptions.openai.
 	// includeWebSearchSources = true.
-	includeWebSearchSources := true
-	if m.provider.config.SupportsWebSearchSourcesInclude != nil && !*m.provider.config.SupportsWebSearchSourcesInclude {
-		includeWebSearchSources = false
-	}
+	includeWebSearchSources := m.provider.config.SupportsWebSearchSourcesInclude == nil || *m.provider.config.SupportsWebSearchSourcesInclude
 	if v, ok := openaiOpts["includeWebSearchSources"].(bool); ok && !v {
 		includeWebSearchSources = false
 	}

@@ -89,7 +89,7 @@ func (c *mockPromptControl) SubmitToolResult(_ context.Context, r ToolResultSubm
 
 func (c *mockPromptControl) SubmitToolApproval(_ context.Context, a ToolApprovalSubmission) error {
 	c.mu.Lock()
-	*c.toolApprovals = append(*c.toolApprovals, recordedApproval{ApprovalID: a.ApprovalID, Approved: a.Approved, Reason: a.Reason})
+	*c.toolApprovals = append(*c.toolApprovals, recordedApproval(a))
 	c.mu.Unlock()
 	return nil
 }

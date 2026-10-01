@@ -275,7 +275,7 @@ func (s *session) startBase(turnModel string) (StartMessage, error) {
 		msg.ResumeSessionID = s.latestOpenCodeSessionID
 	}
 	if s.p.debug != nil {
-		msg.StartBase.Debug = s.p.debug
+		msg.Debug = s.p.debug
 	}
 	return msg, nil
 }

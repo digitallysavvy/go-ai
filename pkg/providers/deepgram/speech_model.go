@@ -280,8 +280,8 @@ func applyDeepgramSpeechOptions(query map[string]string, opts *SpeechModelOption
 
 		if opts.Container != "" {
 			container := strings.ToLower(opts.Container)
-			switch {
-			case newEncoding == "linear16" || newEncoding == "mulaw" || newEncoding == "alaw":
+			switch newEncoding {
+			case "linear16", "mulaw", "alaw":
 				if container != "wav" && container != "none" {
 					*warnings = append(*warnings, types.Warning{
 						Type:    "unsupported",
@@ -291,9 +291,9 @@ func applyDeepgramSpeechOptions(query map[string]string, opts *SpeechModelOption
 				} else {
 					query["container"] = container
 				}
-			case newEncoding == "opus":
+			case "opus":
 				query["container"] = "ogg"
-			case newEncoding == "mp3" || newEncoding == "flac" || newEncoding == "aac":
+			case "mp3", "flac", "aac":
 				*warnings = append(*warnings, types.Warning{
 					Type:    "unsupported",
 					Feature: "providerOptions",
