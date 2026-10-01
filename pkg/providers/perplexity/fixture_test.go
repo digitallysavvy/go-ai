@@ -121,9 +121,9 @@ func TestPerplexityDoStream_FixtureWebSearchEvents(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		for _, event := range events {
 			b, _ := json.Marshal(event)
-			fmt.Fprintf(w, "data: %s\n\n", b)
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", b)
 		}
-		fmt.Fprint(w, "data: [DONE]\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 	}))
 	defer srv.Close()
 
@@ -134,7 +134,7 @@ func TestPerplexityDoStream_FixtureWebSearchEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoStream() error = %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	chunks := collectChunks(t, stream)
 
 	for _, c := range chunks {

@@ -116,22 +116,22 @@ func (p *Provider) Embedding(modelID string) (provider.EmbeddingModel, error) {
 
 // ImageModel returns an image generation model by ID
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("Alibaba provider does not support image generation")
+	return nil, fmt.Errorf("Alibaba provider does not support image generation") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 }
 
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("Alibaba provider does not support speech synthesis")
+	return nil, fmt.Errorf("Alibaba provider does not support speech synthesis") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 }
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("Alibaba provider does not support transcription")
+	return nil, fmt.Errorf("Alibaba provider does not support transcription") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 }
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("Alibaba provider does not support reranking")
+	return nil, fmt.Errorf("Alibaba provider does not support reranking") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 }
 
 // Client returns the HTTP client for chat API requests

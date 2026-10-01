@@ -74,7 +74,7 @@ func TestResolveToolApproval_CallLevelDispatch(t *testing.T) {
 	})
 
 	t.Run("deprecated function", func(t *testing.T) {
-		got := mustResolveToolApproval(t, context.Background(), call, tools, messages, runtimeCtx, toolsCtx, types.ToolApprovalFunc(func(toolCall types.ToolCall, _ []types.Tool, _ []types.Message, _ interface{}, _ map[string]interface{}) types.ToolApprovalResult {
+		got := mustResolveToolApproval(t, context.Background(), call, tools, messages, runtimeCtx, toolsCtx, types.ToolApprovalFunc(func(toolCall types.ToolCall, _ []types.Tool, _ []types.Message, _ interface{}, _ map[string]interface{}) types.ToolApprovalResult { //nolint:staticcheck // this subtest specifically exercises the deprecated function type
 			if toolCall.ID != "call-1" {
 				t.Fatalf("unexpected call: %+v", toolCall)
 			}
@@ -218,7 +218,7 @@ func TestResolveToolApproval_ToolNeedsApprovalFallback(t *testing.T) {
 	t.Run("deprecated needs approval func true", func(t *testing.T) {
 		got := mustResolveToolApproval(t, context.Background(), call, []types.Tool{{
 			Name: "search",
-			ToolApproval: types.NeedsApprovalFunc(func(ctx context.Context, input map[string]interface{}) bool {
+			ToolApproval: types.NeedsApprovalFunc(func(ctx context.Context, input map[string]interface{}) bool { //nolint:staticcheck // this subtest specifically exercises the deprecated function type
 				return ctx != nil && input["q"] == "go"
 			}),
 		}}, messages, runtimeCtx, nil, nil)

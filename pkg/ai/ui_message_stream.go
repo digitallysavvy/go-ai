@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -1296,7 +1297,7 @@ func (s *uiMessageCallbackState) mergeMetadata(metadata interface{}) {
 
 func (s *uiMessageCallbackState) appendPart(part UIMessageChunk) {
 	if typedParts, ok := s.message["parts"].([]UIMessageChunk); ok {
-		parts := make([]interface{}, 0, len(typedParts)+1)
+		parts := make([]interface{}, 0, intsafe.AddCap(len(typedParts), 1))
 		for _, typedPart := range typedParts {
 			parts = append(parts, typedPart)
 		}
@@ -1683,7 +1684,7 @@ func asUIMap(value interface{}) (map[string]interface{}, bool) {
 }
 
 func mergeUIMaps(base, incoming map[string]interface{}) map[string]interface{} {
-	out := make(map[string]interface{}, len(base)+len(incoming))
+	out := make(map[string]interface{}, intsafe.AddCap(len(base), len(incoming)))
 	for key, value := range base {
 		out[key] = cloneUIValue(value)
 	}
@@ -1740,7 +1741,7 @@ func CreateUIMessageStreamResponseWithInit(ctx context.Context, result *StreamTe
 
 	pr, pw := io.Pipe()
 	go func() {
-		defer pw.Close()
+		defer func() { _ = pw.Close() }()
 		_ = PipeUIMessageStreamToResponseWithInit(ctx, result, pw, init, opts...)
 	}()
 	return &http.Response{
@@ -1766,7 +1767,7 @@ func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTe
 	}
 
 	var (
-		teeWriter  io.Writer = w
+		teeWriter  = w
 		sideWriter *io.PipeWriter
 		closeSide  chan error
 		consumeErr error
@@ -1778,7 +1779,7 @@ func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTe
 		go func() {
 			closeSide <- init.ConsumeSSEStream(pr)
 		}()
-		defer pw.Close()
+		defer func() { _ = pw.Close() }()
 		teeWriter = io.MultiWriter(w, pw)
 	}
 
@@ -1825,7 +1826,7 @@ func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTe
 		return err
 	}
 	if sideWriter != nil {
-		sideWriter.Close()
+		_ = sideWriter.Close()
 		consumeErr = <-closeSide
 	}
 	select {
@@ -2082,7 +2083,7 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		if chunk.ToolCall.ProviderExecuted {
 			part["providerExecuted"] = true
 		}
-		if chunk.ToolCall.ToolMetadata != nil && len(chunk.ToolCall.ToolMetadata) > 0 {
+		if len(chunk.ToolCall.ToolMetadata) > 0 {
 			part["toolMetadata"] = chunk.ToolCall.ToolMetadata
 		}
 		if isDynamicTool(chunk.ToolCall.ToolName, chunk.ToolCall.Dynamic) {

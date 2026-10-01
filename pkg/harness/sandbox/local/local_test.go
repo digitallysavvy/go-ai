@@ -85,7 +85,9 @@ func TestPortsAndEndpoints(t *testing.T) {
 	if err != nil || ep.URL != "ws://127.0.0.1:4000" {
 		t.Fatal(ep, err)
 	}
-	url, _ := s.GetPortURL(ctx, harness.PortEndpointOptions{Port: 4000})
+	// Verifies the deprecated GetPortURL still works for callers not yet
+	// migrated to GetPortEndpoint.
+	url, _ := s.GetPortURL(ctx, harness.PortEndpointOptions{Port: 4000}) //nolint:staticcheck
 	if url != "http://127.0.0.1:4000" {
 		t.Fatal(url)
 	}

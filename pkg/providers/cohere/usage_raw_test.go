@@ -75,7 +75,7 @@ func TestCohereDoStreamPreservesFullRawUsage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	var finish *provider.StreamChunk
 	for {

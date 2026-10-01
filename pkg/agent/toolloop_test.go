@@ -1598,7 +1598,7 @@ func TestToolLoopAgent_StopWhen_StepCountIs(t *testing.T) {
 	agent := NewToolLoopAgent(AgentConfig{
 		Model:    mock,
 		Tools:    []types.Tool{testTool},
-		StopWhen: []ai.StopCondition{ai.StepCountIs(3)},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(3)},
 	})
 
 	result, err := agent.Execute(context.Background(), "test")
@@ -1643,7 +1643,7 @@ func TestToolLoopAgent_StopWhen_OverridesMaxSteps(t *testing.T) {
 		Model:    mock,
 		Tools:    []types.Tool{testTool},
 		MaxSteps: 2,
-		StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 	})
 
 	result, err := agent.Execute(context.Background(), "test")
@@ -1685,7 +1685,7 @@ func TestToolLoopAgent_StopWhen_OnAgentFinishMetadata(t *testing.T) {
 	agent := NewToolLoopAgent(AgentConfig{
 		Model:    mock,
 		Tools:    []types.Tool{testTool},
-		StopWhen: []ai.StopCondition{ai.StepCountIs(3)},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(3)},
 		OnAgentFinish: func(finish AgentFinish) {
 			called = true
 			capturedFinish = finish
@@ -1991,7 +1991,7 @@ func TestToolLoopAgent_ApprovalNilAndDenied(t *testing.T) {
 	agent := NewToolLoopAgent(AgentConfig{
 		Model: mock,
 		Tools: []types.Tool{testTool},
-		ToolApproval: types.ToolApprovalFunc(func(types.ToolCall, []types.Tool, []types.Message, interface{}, map[string]interface{}) types.ToolApprovalResult {
+		ToolApproval: types.ToolApprovalFunc(func(types.ToolCall, []types.Tool, []types.Message, interface{}, map[string]interface{}) types.ToolApprovalResult { //nolint:staticcheck // exercises the legacy function-type approval path for backward compatibility
 			return types.ToolApprovalResult{}
 		}),
 		MaxSteps: 2,
@@ -2252,7 +2252,7 @@ func TestToolLoopAgent_ToolApprovalReceivesActiveToolsAndMessages(t *testing.T) 
 		FilterActiveTools: func(ctx context.Context, stepNumber int, tools []types.Tool) []types.Tool {
 			return []types.Tool{tool}
 		},
-		ToolApproval: types.ToolApprovalFunc(func(call types.ToolCall, tools []types.Tool, messages []types.Message, runtimeCtx interface{}, toolsCtx map[string]interface{}) types.ToolApprovalResult {
+		ToolApproval: types.ToolApprovalFunc(func(call types.ToolCall, tools []types.Tool, messages []types.Message, runtimeCtx interface{}, toolsCtx map[string]interface{}) types.ToolApprovalResult { //nolint:staticcheck // exercises the legacy function-type approval path for backward compatibility
 			for _, tool := range tools {
 				gotToolNames = append(gotToolNames, tool.Name)
 			}
@@ -2304,7 +2304,7 @@ func TestToolLoopAgent_PrepareCallContextForwardedToApprovalAndExecution(t *test
 			config.ToolsContext = map[string]interface{}{"ctx_tool": preparedCtx}
 			return config
 		},
-		ToolApproval: types.ToolApprovalFunc(func(call types.ToolCall, tools []types.Tool, messages []types.Message, runtimeCtx interface{}, toolsCtx map[string]interface{}) types.ToolApprovalResult {
+		ToolApproval: types.ToolApprovalFunc(func(call types.ToolCall, tools []types.Tool, messages []types.Message, runtimeCtx interface{}, toolsCtx map[string]interface{}) types.ToolApprovalResult { //nolint:staticcheck // exercises the legacy function-type approval path for backward compatibility
 			approvalRuntime = runtimeCtx
 			approvalToolsCtx = toolsCtx
 			return types.ToolApprovalResult{}
@@ -2358,7 +2358,7 @@ func TestToolLoopAgentGenerateReturnsCoreGenerateTextResult(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate() error = %v", err)
 	}
-	if result.FinalStep.Text != "ok" || result.TotalUsage.TotalTokens == nil || *result.TotalUsage.TotalTokens != 3 {
+	if result.FinalStep.Text != "ok" || result.Usage.TotalTokens == nil || *result.Usage.TotalTokens != 3 {
 		t.Fatalf("result = %#v, want core GenerateTextResult final step and total usage", result)
 	}
 }
@@ -2396,7 +2396,7 @@ func TestToolLoopAgentPrepareCallCanOverrideModelAndInclude(t *testing.T) {
 	if result.FinalStep.Model.ModelID != "override" {
 		t.Fatalf("final step model = %#v, want override", result.FinalStep.Model)
 	}
-	if result.Request.Body == nil {
+	if result.FinalStep.Request.Body == nil {
 		t.Fatal("PrepareCall include override did not retain request body")
 	}
 }
@@ -2573,8 +2573,8 @@ func TestToolLoopAgentGenerateForwardsHeadersTelemetryAndInternalFromPrepareCall
 	if startCallID != "agent-call-id" {
 		t.Fatalf("start call id = %q, want agent-call-id", startCallID)
 	}
-	if result.Response.ID != "agent-response-id" {
-		t.Fatalf("response id = %q, want agent-response-id", result.Response.ID)
+	if result.FinalStep.Response.ID != "agent-response-id" {
+		t.Fatalf("response id = %q, want agent-response-id", result.FinalStep.Response.ID)
 	}
 }
 
@@ -2703,7 +2703,7 @@ func TestToolLoopAgentExperimentalDownloadFunctionDownloadsBeforeNextStep(t *tes
 				}, nil
 			},
 		}},
-		StopWhen: []ai.StopCondition{ai.StepCountIs(2)},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(2)},
 		ExperimentalDownload: func(ctx context.Context, requests []ai.DownloadRequest) ([]*ai.DownloadResult, error) {
 			if len(requests) != 1 || requests[0].URL != "https://example.test/agent.txt" {
 				t.Fatalf("download requests = %#v", requests)
@@ -2778,7 +2778,7 @@ func TestToolLoopAgentPreservesToolMetadataOnResults(t *testing.T) {
 				return "ok", nil
 			},
 		}},
-		StopWhen: []ai.StopCondition{ai.StepCountIs(1)},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(1)},
 	})
 	result, err := agent.Execute(context.Background(), "start")
 	if err != nil {
@@ -2840,7 +2840,7 @@ func TestToolLoopAgentAddsToolDefinitionMetadataToNativeCalls(t *testing.T) {
 				return "ok", nil
 			},
 		}},
-		StopWhen: []ai.StopCondition{ai.StepCountIs(1)},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(1)},
 	})
 	result, err := agent.Execute(context.Background(), "start")
 	if err != nil {
@@ -2882,7 +2882,7 @@ func TestToolLoopAgentNativeApprovalSupportsGenericAndSingleFuncs(t *testing.T) 
 				}
 				return types.ToolApprovalResult{Status: types.ToolApprovalStatusDenied}
 			}),
-			StopWhen: []ai.StopCondition{ai.StepCountIs(1)},
+			StopWhen: []ai.StopCondition{ai.IsStepCount(1)},
 		})
 		result, err := agent.Execute(context.Background(), "start")
 		if err != nil {
@@ -2931,7 +2931,7 @@ func TestToolLoopAgentNativeApprovalSupportsGenericAndSingleFuncs(t *testing.T) 
 					return types.ToolApprovalResult{Status: types.ToolApprovalStatusApproved}
 				}),
 			},
-			StopWhen: []ai.StopCondition{ai.StepCountIs(1)},
+			StopWhen: []ai.StopCondition{ai.IsStepCount(1)},
 		})
 		result, err := agent.Execute(context.Background(), "start")
 		if err != nil {
@@ -2970,7 +2970,7 @@ func TestToolLoopAgentNativeApprovalSupportsGenericAndSingleFuncs(t *testing.T) 
 				}
 				return types.ToolApprovalResult{Status: types.ToolApprovalStatusDenied}
 			}),
-			StopWhen: []ai.StopCondition{ai.StepCountIs(1)},
+			StopWhen: []ai.StopCondition{ai.IsStepCount(1)},
 		})
 		result, err := agent.Execute(context.Background(), "start")
 		if err != nil {
@@ -3011,7 +3011,7 @@ func TestToolLoopAgentNativeApprovalSupportsGenericAndSingleFuncs(t *testing.T) 
 					return types.ToolApprovalResult{Status: types.ToolApprovalStatusApproved}
 				}),
 			},
-			StopWhen: []ai.StopCondition{ai.StepCountIs(1)},
+			StopWhen: []ai.StopCondition{ai.IsStepCount(1)},
 		})
 		result, err := agent.Execute(context.Background(), "start")
 		if err != nil {
@@ -3061,7 +3061,7 @@ func TestToolLoopAgentNativeApprovalSupportsGenericAndSingleFuncs(t *testing.T) 
 					return nil, nil
 				},
 			}},
-			StopWhen: []ai.StopCondition{ai.StepCountIs(1)},
+			StopWhen: []ai.StopCondition{ai.IsStepCount(1)},
 		})
 		result, err := agent.Execute(context.Background(), "start")
 		if err != nil {

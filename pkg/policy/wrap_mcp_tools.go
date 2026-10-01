@@ -16,7 +16,7 @@ func WrapMCPTools(tools map[string]types.Tool, approval types.ToolApprovalConfig
 		fallback = defaults[0]
 	}
 	switch v := approval.(type) {
-	case types.GenericToolApprovalFunc, types.ToolApprovalFunc:
+	case types.GenericToolApprovalFunc, types.ToolApprovalFunc: //nolint:staticcheck // legacy function type still accepted for backward compatibility
 		return WrappedMCPTools{
 			Tools: tools,
 			ToolApproval: types.GenericToolApprovalFunc(func(args types.ToolApprovalOptions) types.ToolApprovalResult {
@@ -76,8 +76,8 @@ func wrapPerToolApproval(value types.ToolApprovalValue, fallback types.ToolAppro
 		return types.GenericToolApprovalFunc(func(opts types.ToolApprovalOptions) types.ToolApprovalResult {
 			return orFallback(fn(opts))
 		})
-	case types.ToolApprovalFunc:
-		return types.ToolApprovalFunc(func(toolCall types.ToolCall, tools []types.Tool, messages []types.Message, runtimeCtx interface{}, toolsCtx map[string]interface{}) types.ToolApprovalResult {
+	case types.ToolApprovalFunc: //nolint:staticcheck // legacy function type still accepted for backward compatibility
+		return types.ToolApprovalFunc(func(toolCall types.ToolCall, tools []types.Tool, messages []types.Message, runtimeCtx interface{}, toolsCtx map[string]interface{}) types.ToolApprovalResult { //nolint:staticcheck
 			return orFallback(fn(toolCall, tools, messages, runtimeCtx, toolsCtx))
 		})
 	default:

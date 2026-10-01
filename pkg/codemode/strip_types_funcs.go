@@ -69,7 +69,7 @@ func copyBindingTarget(tokens []tsToken, i int, out *[]tsToken) (int, bool, erro
 		*out = append(*out, t)
 		return j + 1, true, nil
 	case t.kind == "punct" && (t.text == "{" || t.text == "["):
-		close := ")"
+		var close string
 		if t.text == "{" {
 			close = "}"
 		} else {
@@ -305,7 +305,7 @@ func handleFunctionSignature(tokens []tsToken, i int, out *[]tsToken) (int, erro
 	i = stripOptionalTypeParams(tokens, i, out)
 
 	open := nextSignificant(tokens, i)
-	if open < 0 || !(tokens[open].kind == "punct" && tokens[open].text == "(") {
+	if open < 0 || tokens[open].kind != "punct" || tokens[open].text != "(" {
 		return i, nil
 	}
 	for k := i; k < open; k++ {

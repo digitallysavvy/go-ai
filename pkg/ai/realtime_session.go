@@ -87,7 +87,7 @@ func ConnectRealtime(ctx context.Context, model provider.Experimental_RealtimeMo
 		}
 		wsConfigProvider, ok := model.(provider.RealtimeWebSocketConfigProvider)
 		if !ok {
-			return nil, errors.New("Realtime model does not support client-secret WebSocket configuration")
+			return nil, errors.New("Realtime model does not support client-secret WebSocket configuration") //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		cfg = wsConfigProvider.GetWebSocketConfig(secret.Token, secret.URL)
 	}

@@ -378,11 +378,6 @@ func bedrockCachePoint(providerOptions map[string]interface{}) (map[string]inter
 	return nil, false
 }
 
-func hasBedrockCachePoint(providerOptions map[string]interface{}) bool {
-	_, ok := bedrockCachePoint(providerOptions)
-	return ok
-}
-
 func appendCachePointBlock(blocks []map[string]interface{}, providerOptions map[string]interface{}) []map[string]interface{} {
 	cachePoint, ok := bedrockCachePoint(providerOptions)
 	if !ok {
@@ -869,7 +864,7 @@ func bedrockUserFileBlock(file types.FileContent, getDocumentName func(string) s
 			}
 			return map[string]interface{}{"video": map[string]interface{}{"format": format, "source": mediaSourceBlock(payload)}}, true, nil
 		default:
-			return nil, false, fmt.Errorf("File URL data is not supported for media type: %s", mediaType)
+			return nil, false, fmt.Errorf("File URL data is not supported for media type: %s", mediaType) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 	}
 	if file.URL != "" || file.FileData.Type == types.FileDataTypeURL {

@@ -166,7 +166,7 @@ func parseToolCallWithRepair(ctx context.Context, opts ParseToolCallOptions) (ty
 	if err == nil {
 		return parsed, nil
 	}
-	if opts.RepairToolCall == nil || !(IsNoSuchToolError(err) || IsInvalidToolInputError(err)) {
+	if opts.RepairToolCall == nil || (!IsNoSuchToolError(err) && !IsInvalidToolInputError(err)) {
 		return types.ToolCall{}, err
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
@@ -434,7 +434,7 @@ func invokeToolInputCallbacks(ctx context.Context, calls []types.ToolCall, tools
 		if tool.OnInputAvailable != nil {
 			if err := tool.OnInputAvailable(ctx, types.OnInputAvailableOptions{
 				Input:      call.Arguments,
-				Value:      call.Arguments,
+				Value:      call.Arguments, //nolint:staticcheck // deprecated alias of Input, kept for callbacks still reading it
 				ToolCallID: call.ID,
 				Messages:   messages,
 				Context:    toolContext,
@@ -536,7 +536,7 @@ func (s *streamToolInputCallbacks) handle(ctx context.Context, chunk provider.St
 			}
 			return tool.OnInputDelta(ctx, types.OnInputDeltaOptions{
 				InputTextDelta: chunk.Text,
-				Delta:          chunk.Text,
+				Delta:          chunk.Text, //nolint:staticcheck // deprecated alias of InputTextDelta, kept for callbacks still reading it
 				ToolCallID:     id,
 				Messages:       s.messages,
 				Context:        toolContext,
@@ -556,7 +556,7 @@ func (s *streamToolInputCallbacks) handle(ctx context.Context, chunk provider.St
 			}
 			return tool.OnInputAvailable(ctx, types.OnInputAvailableOptions{
 				Input:      call.Arguments,
-				Value:      call.Arguments,
+				Value:      call.Arguments, //nolint:staticcheck // deprecated alias of Input, kept for callbacks still reading it
 				ToolCallID: call.ID,
 				Messages:   s.messages,
 				Context:    toolContext,

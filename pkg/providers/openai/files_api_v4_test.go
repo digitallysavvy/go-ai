@@ -311,7 +311,7 @@ func TestFilesAPI_DownloadFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DownloadFile: %v", err)
 	}
-	defer result.Content.Close()
+	defer func() { _ = result.Content.Close() }()
 	content, err := io.ReadAll(result.Content)
 	if err != nil {
 		t.Fatalf("read content: %v", err)

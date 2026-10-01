@@ -30,7 +30,7 @@ func TestToolLoopAgentGenerate_ForwardsRepairToolCall(t *testing.T) {
 		// repair at all; with zero tools it fails closed as NoSuchToolError
 		// without ever calling RepairToolCall.
 		Tools:    []types.Tool{{Name: "someOtherTool"}},
-		StopWhen: []ai.StopCondition{ai.StepCountIs(1)},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(1)},
 		RepairToolCall: func(_ context.Context, o ai.ToolCallRepairOptions) (*types.ToolCall, error) {
 			repairCalled = true
 			return nil, nil
@@ -122,7 +122,7 @@ func TestToolLoopAgentGenerate_PerCallRepairToolCallOverridesConfig(t *testing.T
 	agentConfig := AgentConfig{
 		Model:    model,
 		Tools:    []types.Tool{{Name: "someOtherTool"}},
-		StopWhen: []ai.StopCondition{ai.StepCountIs(1)},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(1)},
 		RepairToolCall: func(context.Context, ai.ToolCallRepairOptions) (*types.ToolCall, error) {
 			configLevelCalled = true
 			return nil, nil
@@ -163,7 +163,7 @@ func TestToolLoopAgentExecute_InvalidProviderExecutedCallSkipsSynthesizedResult(
 	}
 	agentConfig := AgentConfig{
 		Model:    model,
-		StopWhen: []ai.StopCondition{ai.StepCountIs(1)},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(1)},
 	}
 	agent := NewToolLoopAgent(agentConfig)
 	result, err := agent.Execute(context.Background(), "hi")

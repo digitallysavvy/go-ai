@@ -395,7 +395,7 @@ func jsObjectOrMapToGoStruct[T any](
 
 // setupStructValue initializes the struct value for processing.
 func setupStructValue(targetType reflect.Type, temp *any) (reflect.Value, bool) {
-	isStructPtr := targetType.Kind() == reflect.Ptr
+	isStructPtr := targetType.Kind() == reflect.Pointer
 	if isStructPtr {
 		*temp = reflect.New(targetType.Elem()).Interface()
 
@@ -445,7 +445,7 @@ func processObjectFields(
 func getFieldValue(structValue reflect.Value, indices []int) reflect.Value {
 	fieldValue := structValue
 	for i, idx := range indices {
-		if fieldValue.Kind() == reflect.Ptr {
+		if fieldValue.Kind() == reflect.Pointer {
 			if fieldValue.IsNil() && fieldValue.CanSet() {
 				fieldValue.Set(reflect.New(fieldValue.Type().Elem()))
 			}
@@ -490,7 +490,7 @@ func setFieldWithJSONUnmarshaler(
 		unmarshalerValue reflect.Value
 	)
 
-	if fieldType.Kind() == reflect.Ptr {
+	if fieldType.Kind() == reflect.Pointer {
 		unmarshaler, _ = reflect.New(fieldType.Elem()).Interface().(json.Unmarshaler)
 		unmarshalerValue = reflect.ValueOf(unmarshaler)
 	} else {

@@ -266,7 +266,7 @@ func readSubscription(ctx context.Context, provider subscriptionProvider, fxDire
 		}
 	}
 	if refreshedAccountID != cred.AccountID {
-		return nil, fmt.Errorf("fx %s OAuth refresh changed accounts.", provider)
+		return nil, fmt.Errorf("fx %s OAuth refresh changed accounts.", provider) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	nextRefreshToken := cred.RefreshToken
 	if refreshed.RefreshToken != "" {
@@ -351,15 +351,15 @@ func fetchGrokAccountID(ctx context.Context, accessToken string, client *http.Cl
 		return "", err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return "", fmt.Errorf("fx Grok user info request failed with status %d.", resp.StatusCode)
+		return "", fmt.Errorf("fx Grok user info request failed with status %d.", resp.StatusCode) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	var parsed map[string]any
 	if err := json.Unmarshal(body, &parsed); err != nil {
-		return "", fmt.Errorf("fx Grok user info request returned an invalid account.")
+		return "", fmt.Errorf("fx Grok user info request returned an invalid account.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	sub, ok := parsed["sub"].(string)
 	if !ok || sub == "" {
-		return "", fmt.Errorf("fx Grok user info request returned an invalid account.")
+		return "", fmt.Errorf("fx Grok user info request returned an invalid account.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	return sub, nil
 }
@@ -371,7 +371,7 @@ func extractChatGPTAccountID(accessToken string) (string, error) {
 			return accountID, nil
 		}
 	}
-	return "", fmt.Errorf("fx ChatGPT access token does not contain an account ID.")
+	return "", fmt.Errorf("fx ChatGPT access token does not contain an account ID.") //nolint:staticcheck // matches TS SDK's exact error text
 }
 
 func createChatGPTSandboxAccessToken(credential, accountID string) string {

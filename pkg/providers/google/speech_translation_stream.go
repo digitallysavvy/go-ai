@@ -23,7 +23,7 @@ type googleLiveSpeechTranslationStreamConfig struct {
 	headers          map[string]string
 	setup            map[string]interface{}
 	inputAudioRate   int
-	finishGraceMs    time.Duration
+	finishGrace      time.Duration
 	warnings         []types.Warning
 	audio            provider.AudioStream
 	includeRawChunks bool
@@ -311,7 +311,7 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 		if finished || finishTimer != nil {
 			return
 		}
-		finishTimer = time.NewTimer(cfg.finishGraceMs)
+		finishTimer = time.NewTimer(cfg.finishGrace)
 		finishTimerC = finishTimer.C
 	}
 
@@ -366,14 +366,14 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 				if !wsutil.IsCleanClose(res.Err) {
 					// An abnormal disconnection (TS onSocketError) always
 					// fails the stream.
-					fail(errors.New("Google Live translation error"))
+					fail(errors.New("Google Live translation error")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 				} else if finishTimer != nil {
 					// A close while a finish is pending confirms that no
 					// further turn activity follows (TS onClose's
 					// `finishTimer != null` branch).
 					finish()
 				} else {
-					fail(errors.New("Google Live translation WebSocket closed unexpectedly before finishing."))
+					fail(errors.New("Google Live translation WebSocket closed unexpectedly before finishing.")) //nolint:staticcheck // matches TS SDK's exact error text
 				}
 				return
 			}
@@ -448,7 +448,7 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 					silenceMs, isSilence := pcm16SilenceDurationMs(part.InlineData.Data)
 					if audioEnded && isSilence {
 						trailingSilenceMs += silenceMs
-						if trailingSilenceMs >= float64(cfg.finishGraceMs.Milliseconds()) {
+						if trailingSilenceMs >= float64(cfg.finishGrace.Milliseconds()) {
 							finish()
 							return
 						}

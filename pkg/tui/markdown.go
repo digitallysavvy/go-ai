@@ -117,9 +117,7 @@ func parseMarkdownTableCells(line string) ([]string, bool) {
 		return nil, false
 	}
 	tableLine := strings.TrimSpace(line)
-	if strings.HasPrefix(tableLine, "|") {
-		tableLine = tableLine[1:]
-	}
+	tableLine = strings.TrimPrefix(tableLine, "|")
 	if strings.HasSuffix(tableLine, "|") && !strings.HasSuffix(tableLine, `\|`) {
 		tableLine = tableLine[:len(tableLine)-1]
 	}

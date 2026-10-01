@@ -434,7 +434,7 @@ func TestBatch_StreamsAllResultVariants(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoGetBatchResults: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	items := map[string]*provider.BatchV4ItemResult{}
 	for {
@@ -487,7 +487,7 @@ func TestBatch_ErroredResultRequiresErrorTypeLiteral(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoGetBatchResults: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	item, err := stream.Next()
 	if err != nil {
@@ -603,7 +603,7 @@ func TestBatch_FailsInvalidSucceededItemWithoutAbortingLaterResults(t *testing.T
 	if err != nil {
 		t.Fatalf("DoGetBatchResults: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	items := drainAnthropicBatchResults(t, stream)
 	if got := items["invalid"]; got == nil || got.Status != provider.BatchItemFailed || got.Error == nil ||
@@ -632,7 +632,7 @@ func TestBatch_FailsUnknownResultTypeWithoutAbortingLaterResults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoGetBatchResults: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	items := drainAnthropicBatchResults(t, stream)
 	if got := items["unknown"]; got == nil || got.Status != provider.BatchItemFailed || got.Error == nil || got.Error.Code != "invalid_response" {
@@ -668,7 +668,7 @@ func TestBatch_SkipsUnknownContentBlocksButFailsOnMalformedKnownBlock(t *testing
 	if err != nil {
 		t.Fatalf("DoGetBatchResults: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	items := drainAnthropicBatchResults(t, stream)
 	future := items["future-content"]
@@ -706,7 +706,7 @@ func TestBatch_PreservesRawCitationsWithoutMisattributingDocumentIndices(t *test
 	if err != nil {
 		t.Fatalf("DoGetBatchResults: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	items := drainAnthropicBatchResults(t, stream)
 	got := items["citation"]
@@ -788,7 +788,7 @@ func TestBatch_WebFetchToolResultNeverGrowsCitationDocuments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoGetBatchResults: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	items := drainAnthropicBatchResults(t, stream)
 	got := items["web-fetch-citation"]
@@ -837,7 +837,7 @@ func TestBatch_PreservesSignedCompactionBlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoGetBatchResults: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	items := drainAnthropicBatchResults(t, stream)
 	got := items["compaction"]
@@ -905,7 +905,7 @@ func TestBatch_PreservesClientAndProviderExecutedToolContent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoGetBatchResults: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	items := drainAnthropicBatchResults(t, stream)
 	got := items["tool-call"]
@@ -1019,7 +1019,7 @@ func TestBatch_NormalizesAdvisorToolResults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoGetBatchResults: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	items := drainAnthropicBatchResults(t, stream)
 	got := items["advisor-results"]

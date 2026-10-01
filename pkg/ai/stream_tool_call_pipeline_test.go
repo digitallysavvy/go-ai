@@ -422,16 +422,16 @@ func TestStreamTextInvalidToolCallErrorChunkOrder(t *testing.T) {
 	if bogusCall < 0 || validCall < 0 || toolCallsFinish < 0 || bogusResult < 0 || validResult < 0 || step2Text < 0 {
 		t.Fatalf("missing expected chunk(s), got order = %+v", order)
 	}
-	if !(bogusCall < validCall && validCall < bogusResult) {
+	if bogusCall >= validCall || validCall >= bogusResult {
 		t.Fatalf("expected both tool-call chunks before the tool-result chunks, got order = %+v", order)
 	}
 	if !order[bogusResult].hasError {
 		t.Fatalf("expected the invalid call's tool-result chunk to carry an error, got %+v", order[bogusResult])
 	}
-	if !(bogusResult < toolCallsFinish && validResult < toolCallsFinish) {
+	if bogusResult >= toolCallsFinish || validResult >= toolCallsFinish {
 		t.Fatalf("expected both tool-result chunks before step 1's finish-step chunk, got order = %+v", order)
 	}
-	if !(bogusResult < step2Text && validResult < step2Text) {
+	if bogusResult >= step2Text || validResult >= step2Text {
 		t.Fatalf("expected step 1's tool-result chunks (including the invalid call's synthesized error) before step 2's text — invalid calls must not be deferred past the stream, got order = %+v", order)
 	}
 }

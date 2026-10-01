@@ -61,7 +61,7 @@ func Advisor20260301(args Advisor20260301Args) types.Tool {
 		Name:            "anthropic.advisor_20260301",
 		Description:     "Anthropic advisor tool for advisory sub-inference with optional per-request limits and caching.",
 		Parameters:      map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "additionalProperties": false},
-		ProviderOptions: advisor20260301Options{Model: args.Model, MaxUses: args.MaxUses, MaxTokens: args.MaxTokens, Caching: args.Caching},
+		ProviderOptions: advisor20260301Options(args),
 		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
 			return nil, fmt.Errorf("advisor tool must be executed by the provider (Anthropic). Set ProviderExecuted: true")
 		},

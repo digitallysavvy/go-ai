@@ -45,6 +45,13 @@ func IsAccessTokenExpiringSoon(expiresAt, now, refreshWindowMs int64) bool {
 	return expiresAt <= now+refreshWindowMs
 }
 
+// refreshTokenRequestBody is the JSON body for a refresh_token grant.
+type refreshTokenRequestBody struct {
+	GrantType    string `json:"grant_type"`
+	ClientID     string `json:"client_id"`
+	RefreshToken string `json:"refresh_token"`
+}
+
 // RefreshOAuthAccessTokenOptions is the input of RefreshOAuthAccessToken.
 type RefreshOAuthAccessTokenOptions struct {
 	TokenURL     string
@@ -75,8 +82,18 @@ func RefreshOAuthAccessToken(ctx context.Context, opts RefreshOAuthAccessTokenOp
 	contentType := "application/x-www-form-urlencoded"
 	if opts.RequestFormat == "json" {
 		contentType = "application/json"
-		// Key order matches the TS object literal.
-		body = []byte(fmt.Sprintf(`{"grant_type":"refresh_token","client_id":%s,"refresh_token":%s}`, jsonString(opts.ClientID), jsonString(opts.RefreshToken)))
+		// Key order matches the TS object literal. Marshal a struct instead
+		// of splicing pre-escaped values between literal quote characters,
+		// so the request body is unambiguously valid JSON.
+		encoded, err := json.Marshal(refreshTokenRequestBody{
+			GrantType:    "refresh_token",
+			ClientID:     opts.ClientID,
+			RefreshToken: opts.RefreshToken,
+		})
+		if err != nil {
+			return nil, err
+		}
+		body = encoded
 	} else {
 		body = []byte("grant_type=refresh_token&client_id=" + url.QueryEscape(opts.ClientID) + "&refresh_token=" + url.QueryEscape(opts.RefreshToken))
 	}
@@ -98,16 +115,16 @@ func RefreshOAuthAccessToken(ctx context.Context, opts RefreshOAuthAccessTokenOp
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, fmt.Errorf("OAuth access token refresh failed with status %d.", resp.StatusCode)
+		return nil, fmt.Errorf("OAuth access token refresh failed with status %d.", resp.StatusCode) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 
 	var parsed map[string]any
 	if err := json.Unmarshal(responseText, &parsed); err != nil || parsed == nil {
-		return nil, errors.New("OAuth access token refresh returned invalid JSON.")
+		return nil, errors.New("OAuth access token refresh returned invalid JSON.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	accessToken, _ := parsed["access_token"].(string)
 	if accessToken == "" {
-		return nil, errors.New("OAuth access token refresh response is missing access_token.")
+		return nil, errors.New("OAuth access token refresh response is missing access_token.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 
 	var expiresAt int64
@@ -116,14 +133,14 @@ func RefreshOAuthAccessToken(ctx context.Context, opts RefreshOAuthAccessTokenOp
 	} else if jwtExpiresAt, ok := subscription.GetJWTExpiresAt(accessToken); ok {
 		expiresAt = jwtExpiresAt
 	} else {
-		return nil, errors.New("OAuth access token refresh response does not include a usable expiry.")
+		return nil, errors.New("OAuth access token refresh response does not include a usable expiry.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 
 	result := &RefreshOAuthAccessTokenResult{AccessToken: accessToken, ExpiresAt: expiresAt}
 	if rotated, present := parsed["refresh_token"]; present && rotated != nil {
 		s, ok := rotated.(string)
 		if !ok || s == "" {
-			return nil, errors.New("OAuth access token refresh response contains an invalid refresh_token.")
+			return nil, errors.New("OAuth access token refresh response contains an invalid refresh_token.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		result.RefreshToken = s
 	}

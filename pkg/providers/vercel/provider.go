@@ -48,5 +48,5 @@ func (p *Provider) Name() string {
 // (/chat/completions). The embedded openai.Provider.LanguageModel returns the
 // OpenAI Responses model, which OpenAI-compatible hosts do not implement.
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
-	return p.Provider.ChatModel(modelID)
+	return p.ChatModel(modelID)
 }

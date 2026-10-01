@@ -194,23 +194,23 @@ func (t *WorkflowChatTransport) sendMessages(ctx context.Context, req ai.ChatTra
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 || resp.Body == nil {
 		payload, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		errs <- fmt.Errorf("workflow chat transport: failed to fetch chat: %d %s", resp.StatusCode, strings.TrimSpace(string(payload)))
 		return
 	}
 
 	workflowRunID := resp.Header.Get("x-workflow-run-id")
 	if workflowRunID == "" {
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
 		errs <- fmt.Errorf(`workflow chat transport: workflow run ID not found in "x-workflow-run-id" response header`)
 		return
 	}
 
 	if t.onChatSendMessage != nil {
 		if err := t.onChatSendMessage(resp, req); err != nil {
-			io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
 			errs <- err
 			return
 		}
@@ -218,7 +218,7 @@ func (t *WorkflowChatTransport) sendMessages(ctx context.Context, req ai.ChatTra
 
 	normalizer := newUIStreamNormalizer()
 	chunkIndex, gotFinish := t.pumpChunkStream(ctx, resp.Body, normalizer, nil, out)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	if gotFinish {
 		t.finishChat(req.ChatID, chunkIndex, errs)
@@ -289,7 +289,7 @@ func (t *WorkflowChatTransport) reconnectLoop(ctx context.Context, chatID, runID
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 || resp.Body == nil {
 			payload, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			errs <- fmt.Errorf("workflow chat transport: failed to fetch chat: %d %s", resp.StatusCode, strings.TrimSpace(string(payload)))
 			return
 		}
@@ -315,11 +315,11 @@ func (t *WorkflowChatTransport) reconnectLoop(ctx context.Context, chatID, runID
 		useExplicitStartIndex = false
 
 		read, finished := t.pumpChunkStream(ctx, resp.Body, normalizer, orphans, out)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		chunkIndex += read
 		if finished {
-			gotFinish = true
-			consecutiveErrors = 0
+			// Not updating gotFinish/consecutiveErrors here: break ends the
+			// loop immediately, and neither is read again afterward.
 			break
 		}
 		consecutiveErrors++

@@ -180,7 +180,7 @@ type CreateCredentialRequestTransformationOptions struct {
 func CreateCredentialRequestTransformation(opts CreateCredentialRequestTransformationOptions) (harness.RequestTransformation, error) {
 	u, err := url.Parse(opts.MatchURL)
 	if err != nil || u.Host == "" {
-		return harness.RequestTransformation{}, fmt.Errorf("Invalid URL: %s", opts.MatchURL)
+		return harness.RequestTransformation{}, fmt.Errorf("Invalid URL: %s", opts.MatchURL) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	pathname := strings.TrimRight(u.EscapedPath(), "/")
 	match := harness.RequestTransformationMatch{

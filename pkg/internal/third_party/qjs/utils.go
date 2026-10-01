@@ -37,7 +37,7 @@ func GetGoTypeName(input any) string {
 	}
 
 	switch t.Kind() {
-	case reflect.Ptr:
+	case reflect.Pointer:
 		return "*" + GetGoTypeName(t.Elem())
 	case reflect.Slice:
 		return "[]" + GetGoTypeName(t.Elem())
@@ -99,7 +99,7 @@ func IsConvertibleToJs(rType reflect.Type, visited map[reflect.Type]bool, detail
 	}
 
 	visited[rType] = true
-	if rType.Kind() == reflect.Ptr {
+	if rType.Kind() == reflect.Pointer {
 		return IsConvertibleToJs(rType.Elem(), visited, detail)
 	}
 
@@ -162,7 +162,7 @@ func IsConvertibleToJs(rType reflect.Type, visited map[reflect.Type]bool, detail
 
 // IsNumericType checks if a reflect.Type represents a numeric type.
 func IsNumericType(t reflect.Type) bool {
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 

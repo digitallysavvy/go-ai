@@ -215,7 +215,7 @@ func agentExample(ctx context.Context) {
 		Model:    model,
 		System:   "You are a helpful assistant that can use tools to answer questions.",
 		Tools:    []types.Tool{calculatorTool, weatherTool},
-		MaxSteps: 5,
+		StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 	})
 
 	// Execute agent

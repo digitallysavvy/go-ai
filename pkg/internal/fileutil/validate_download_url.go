@@ -222,7 +222,7 @@ func numericLikeIPv4Part(part string) bool {
 	}
 	if len(part) >= 2 && part[0] == '0' && (part[1] == 'x' || part[1] == 'X') {
 		for _, r := range part[2:] {
-			if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			if (r < '0' || r > '9') && (r < 'a' || r > 'f') && (r < 'A' || r > 'F') {
 				return false
 			}
 		}

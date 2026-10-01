@@ -120,10 +120,6 @@ func newRealtimeTranscriptionTestServer(t *testing.T) *realtimeTranscriptionTest
 	return s
 }
 
-func (s *realtimeTranscriptionTestServer) wsURL() string {
-	return "ws" + strings.TrimPrefix(s.ts.URL, "http")
-}
-
 func (s *realtimeTranscriptionTestServer) close() {
 	close(s.toSend)
 	s.ts.Close()

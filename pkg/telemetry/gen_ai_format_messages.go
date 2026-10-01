@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -367,7 +368,11 @@ func formatOutputMessagesFromContent(content []types.ContentPart, finishReason s
 		}
 	}
 
-	parts := make([]semConvPart, 0, len(reasoningParts)+1+len(toolCallParts)+len(toolResultParts)+len(fileParts))
+	partsCap := intsafe.AddCap(len(reasoningParts), 1)
+	partsCap = intsafe.AddCap(partsCap, len(toolCallParts))
+	partsCap = intsafe.AddCap(partsCap, len(toolResultParts))
+	partsCap = intsafe.AddCap(partsCap, len(fileParts))
+	parts := make([]semConvPart, 0, partsCap)
 	parts = append(parts, reasoningParts...)
 	if textBuilder.Len() > 0 {
 		parts = append(parts, semConvPart{"type": "text", "content": textBuilder.String()})

@@ -291,8 +291,11 @@ func composeNetworkPolicy(accessPolicy networkAccessPolicy, requestTransformatio
 	for _, host := range allowedHosts {
 		if _, ok := rulesByHost[host]; !ok {
 			hostOrder = append(hostOrder, host)
+			// Ensure every allowed host has a map entry, even with no
+			// rules yet, so it's still present when rules are appended
+			// below or when the policy is serialized.
+			rulesByHost[host] = nil
 		}
-		rulesByHost[host] = rulesByHost[host]
 	}
 
 	for _, transformation := range requestTransformations {

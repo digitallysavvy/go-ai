@@ -326,7 +326,7 @@ func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions)
 		ExperimentalContext:            config.ExperimentalContext,
 		Output:                         callConfig.Output,
 		Telemetry:                      callConfig.Telemetry,
-		ExperimentalTelemetry:          callConfig.ExperimentalTelemetry,
+		ExperimentalTelemetry:          callConfig.ExperimentalTelemetry, //nolint:staticcheck // forwarded for callers still setting the deprecated field; Telemetry (set above) wins when both are present
 		Internal:                       callConfig.Internal,
 		OnStart:                        cbs.onStart,
 		OnStepStart:                    cbs.onStepStart,
@@ -441,7 +441,7 @@ func (a *ToolLoopAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*a
 		ExperimentalContext:            config.ExperimentalContext,
 		Output:                         callConfig.Output,
 		Telemetry:                      callConfig.Telemetry,
-		ExperimentalTelemetry:          callConfig.ExperimentalTelemetry,
+		ExperimentalTelemetry:          callConfig.ExperimentalTelemetry, //nolint:staticcheck // forwarded for callers still setting the deprecated field; Telemetry (set above) wins when both are present
 		Internal:                       callConfig.Internal,
 		OnChunk:                        opts.OnChunk,
 		InitialStreamChunks:            opts.InitialStreamChunks,
@@ -528,9 +528,14 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 
 	// CB-T23: Emit OnStartEvent
 	ai.Notify(ctx, ai.OnStartEvent{
-		ModelProvider:       a.config.Model.Provider(),
+		Provider: a.config.Model.Provider(),
+		// ModelProvider/System are deprecated aliases of Provider/Instructions;
+		// set for callbacks still reading the old fields (mirrors
+		// generate.go's OnStartEvent population).
+		ModelProvider:       a.config.Model.Provider(), //nolint:staticcheck
 		ModelID:             a.config.Model.ModelID(),
-		System:              a.config.System,
+		Instructions:        a.config.System,
+		System:              a.config.System, //nolint:staticcheck
 		Messages:            messages,
 		Tools:               a.config.Tools,
 		ToolChoice:          a.config.ToolChoice,
@@ -657,10 +662,15 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 
 		// CB-T23: Emit OnStepStartEvent
 		ai.Notify(ctx, ai.OnStepStartEvent{
-			StepNumber:          stepIndex,
-			ModelProvider:       callConfig.Model.Provider(),
+			StepNumber: stepIndex,
+			Provider:   callConfig.Model.Provider(),
+			// ModelProvider/System are deprecated aliases of Provider/
+			// Instructions; set for callbacks still reading the old fields
+			// (mirrors generate.go's OnStepStartEvent population).
+			ModelProvider:       callConfig.Model.Provider(), //nolint:staticcheck
 			ModelID:             callConfig.Model.ModelID(),
-			System:              callConfig.System,
+			Instructions:        callConfig.System,
+			System:              callConfig.System, //nolint:staticcheck
 			Messages:            callConfig.Messages,
 			Tools:               callConfig.Tools,
 			PreviousSteps:       result.Steps,
@@ -955,7 +965,7 @@ func (a *ToolLoopAgent) prepareStepCallConfig(ctx context.Context, stepNum int, 
 		StopWhen:                       a.config.StopWhen,
 		Output:                         a.config.Output,
 		Telemetry:                      a.config.Telemetry,
-		ExperimentalTelemetry:          a.config.ExperimentalTelemetry,
+		ExperimentalTelemetry:          a.config.ExperimentalTelemetry, //nolint:staticcheck // forwarded for callers still setting the deprecated field; Telemetry (set above) wins when both are present
 		Include:                        a.config.Include,
 		Internal:                       a.config.Internal,
 		ExperimentalSandbox:            a.config.ExperimentalSandbox,
@@ -1680,11 +1690,16 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 
 			// CB-T23: Emit OnToolCallStartEvent
 			ai.Notify(ctx, ai.OnToolCallStartEvent{
-				ToolCallID:          call.ID,
-				ToolName:            call.ToolName,
-				Args:                call.Arguments,
-				StepNumber:          stepNum,
-				ModelProvider:       a.config.Model.Provider(),
+				ToolCallID: call.ID,
+				ToolName:   call.ToolName,
+				ToolCall:   call,
+				// Args/StepNumber/ModelProvider are deprecated, JSON-excluded
+				// aliases kept for callbacks still reading the old fields
+				// (mirrors generate.go's OnToolCallStartEvent population);
+				// ToolCall.Arguments is the replacement for Args above.
+				Args:                call.Arguments,            //nolint:staticcheck
+				StepNumber:          stepNum,                   //nolint:staticcheck
+				ModelProvider:       a.config.Model.Provider(), //nolint:staticcheck
 				ModelID:             a.config.Model.ModelID(),
 				ExperimentalContext: a.config.ExperimentalContext,
 				RuntimeContext:      runtimeContext,
@@ -1708,7 +1723,9 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 					ToolCallID: call.ID,
 					Input:      call.Arguments,
 					Output:     toolResult,
-					Result:     toolResult,
+					// Result is a deprecated alias of Output, kept for
+					// ToModelOutput implementations still reading it.
+					Result: toolResult, //nolint:staticcheck
 					ToolCall: &types.ToolCall{
 						ID:               call.ID,
 						ToolName:         call.ToolName,
@@ -1742,14 +1759,22 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 
 			// CB-T23: Emit OnToolCallFinishEvent
 			ai.Notify(ctx, ai.OnToolCallFinishEvent{
-				ToolCallID:          call.ID,
-				ToolName:            call.ToolName,
-				Args:                call.Arguments,
-				Result:              toolResult,
-				Error:               toolErr,
-				DurationMs:          durationMs,
-				StepNumber:          stepNum,
-				ModelProvider:       a.config.Model.Provider(),
+				ToolCallID:      call.ID,
+				ToolName:        call.ToolName,
+				ToolCall:        call,
+				ToolOutput:      result,
+				ToolExecutionMs: durationMs,
+				// Args/Result/Error/DurationMs/StepNumber/ModelProvider are
+				// deprecated, JSON-excluded aliases kept for callbacks still
+				// reading the old fields (mirrors generate.go's
+				// OnToolCallFinishEvent population); ToolCall/ToolOutput/
+				// ToolExecutionMs above are the replacements.
+				Args:                call.Arguments,            //nolint:staticcheck
+				Result:              toolResult,                //nolint:staticcheck
+				Error:               toolErr,                   //nolint:staticcheck
+				DurationMs:          durationMs,                //nolint:staticcheck
+				StepNumber:          stepNum,                   //nolint:staticcheck
+				ModelProvider:       a.config.Model.Provider(), //nolint:staticcheck
 				ModelID:             a.config.Model.ModelID(),
 				ExperimentalContext: a.config.ExperimentalContext,
 				RuntimeContext:      runtimeContext,
@@ -2150,7 +2175,7 @@ func (a *ToolLoopAgent) resolveToolApproval(ctx context.Context, call types.Tool
 			return types.ToolApprovalResult{Status: types.ToolApprovalStatusUserApproval}, nil
 		}
 		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}, nil
-	case types.NeedsApprovalFunc:
+	case types.NeedsApprovalFunc: //nolint:staticcheck // legacy function type still accepted for backward compatibility
 		if _, err := validateAgentToolContext(tool, call.ToolName, toolsContext[tool.Name]); err != nil {
 			return types.ToolApprovalResult{}, err
 		}
@@ -2178,7 +2203,7 @@ func normalizeAgentToolApproval(call types.ToolCall, tool *types.Tool, tools []t
 			RuntimeContext: runtimeCtx,
 			Messages:       messages,
 		})), nil
-	case types.ToolApprovalFunc:
+	case types.ToolApprovalFunc: //nolint:staticcheck // legacy function type still accepted for backward compatibility
 		return normalizeAgentApprovalValue(v(call, tools, messages, runtimeCtx, toolsCtx)), nil
 	case map[string]interface{}:
 		return normalizeAgentToolApprovalValue(call, tool, tools, messages, v[call.ToolName], runtimeCtx, toolsCtx)
@@ -2210,7 +2235,7 @@ func normalizeAgentToolApprovalValue(call types.ToolCall, tool *types.Tool, tool
 			RuntimeContext: runtimeCtx,
 			Messages:       messages,
 		})), nil
-	case types.ToolApprovalFunc:
+	case types.ToolApprovalFunc: //nolint:staticcheck // legacy function type still accepted for backward compatibility
 		return normalizeAgentApprovalValue(fn(call, tools, messages, runtimeCtx, toolsCtx)), nil
 	}
 	return normalizeAgentApprovalValue(value), nil

@@ -32,7 +32,7 @@ type ResolveToolFilteringOptions struct {
 // meaning to TS's `NoSuchToolError` / plain `Error` throws.
 func ResolveToolFiltering(opts ResolveToolFilteringOptions) (ResolvedToolFiltering, error) {
 	if opts.ActiveTools != nil && opts.InactiveTools != nil {
-		return ResolvedToolFiltering{}, fmt.Errorf("HarnessAgent: pass either `activeTools` or `inactiveTools`, not both.")
+		return ResolvedToolFiltering{}, fmt.Errorf("HarnessAgent: pass either `activeTools` or `inactiveTools`, not both.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 
 	allToolNames := make([]string, 0, len(opts.AllTools))

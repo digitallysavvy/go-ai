@@ -133,6 +133,79 @@ func TestReadFrontmatterSlugAndID_NoFrontmatter(t *testing.T) {
 	}
 }
 
+func TestValidateFrontmatter_UnquotedColon(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "doc.mdx")
+	// Mirrors the real bug fixed on docs/07-reference/ai/harness-sandbox-vercel.mdx:
+	// an unquoted colon in a scalar value makes YAML read it as a nested
+	// mapping value, which is invalid at that position.
+	content := "---\ntitle: Harness Sandbox: Vercel\ndescription: test\n---\n\n# Test\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	v := &LinkValidator{docsRoot: dir, files: map[string]bool{"doc.mdx": true}}
+	if err := v.validateFrontmatter(); err != nil {
+		t.Fatal(err)
+	}
+	if len(v.frontmatterErrors) != 1 {
+		t.Fatalf("frontmatterErrors = %v, want 1 entry", v.frontmatterErrors)
+	}
+	if v.frontmatterErrors[0].File != "doc.mdx" {
+		t.Errorf("frontmatterErrors[0].File = %q, want %q", v.frontmatterErrors[0].File, "doc.mdx")
+	}
+}
+
+func TestValidateFrontmatter_QuotedColonIsValid(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "doc.mdx")
+	content := "---\ntitle: \"Harness Sandbox: Vercel\"\ndescription: test\n---\n\n# Test\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	v := &LinkValidator{docsRoot: dir, files: map[string]bool{"doc.mdx": true}}
+	if err := v.validateFrontmatter(); err != nil {
+		t.Fatal(err)
+	}
+	if len(v.frontmatterErrors) != 0 {
+		t.Errorf("frontmatterErrors = %v, want none", v.frontmatterErrors)
+	}
+}
+
+func TestValidateFrontmatter_NoFrontmatter(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "doc.mdx")
+	if err := os.WriteFile(path, []byte("# Just a heading\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	v := &LinkValidator{docsRoot: dir, files: map[string]bool{"doc.mdx": true}}
+	if err := v.validateFrontmatter(); err != nil {
+		t.Fatal(err)
+	}
+	if len(v.frontmatterErrors) != 0 {
+		t.Errorf("frontmatterErrors = %v, want none", v.frontmatterErrors)
+	}
+}
+
+func TestValidateFrontmatter_UnterminatedBlock(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "doc.mdx")
+	content := "---\ntitle: Missing closing delimiter\n\n# Test\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	v := &LinkValidator{docsRoot: dir, files: map[string]bool{"doc.mdx": true}}
+	if err := v.validateFrontmatter(); err != nil {
+		t.Fatal(err)
+	}
+	if len(v.frontmatterErrors) != 1 {
+		t.Fatalf("frontmatterErrors = %v, want 1 entry", v.frontmatterErrors)
+	}
+}
+
 func TestIsDocsExcluded(t *testing.T) {
 	cases := map[string]bool{
 		"README.md":                        true,

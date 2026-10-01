@@ -33,7 +33,7 @@ func prepareInteractionsTools(tools []types.Tool, toolChoice types.ToolChoice) (
 			out = append(out, mapped)
 			continue
 		}
-		msg := fmt.Sprintf("Only function tools and google.* provider-defined tools are supported by google.interactions; tool dropped.")
+		msg := "Only function tools and google.* provider-defined tools are supported by google.interactions; tool dropped."
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "tool of type " + t.Type, Details: msg, Message: msg})
 	}
 	var choice interface{}

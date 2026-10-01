@@ -15,7 +15,7 @@ const (
 
 // ErrInvalidAuthentication mirrors the TS TypeError message thrown for
 // non-flat authentication records.
-var ErrInvalidAuthentication = errors.New("Invalid auth: expected an authentication mode or a flat record with string values.")
+var ErrInvalidAuthentication = errors.New("Invalid auth: expected an authentication mode or a flat record with string values.") //nolint:staticcheck // matches TS SDK's exact error text
 
 // Authentication is an adapter `auth` setting: either a mode string ("auto",
 // "ai-gateway" or an adapter choice) or an isolated authentication

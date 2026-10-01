@@ -31,10 +31,10 @@ import (
 // evaluate, and a tool call — covering success, error, and abort.
 
 // dualIntegrationSettings creates one dedicated tracer/recorder pair per
-// integration and a *telemetry.Settings with both LegacyOpenTelemetry and
+// integration and a *telemetry.Options with both LegacyOpenTelemetry and
 // OpenTelemetry (GenAI) registered as per-call integrations, independent of
 // whatever is globally registered.
-func dualIntegrationSettings(t *testing.T) (legacyRec, genAIRec *tracetest.SpanRecorder, settings *telemetry.Settings) {
+func dualIntegrationSettings(t *testing.T) (legacyRec, genAIRec *tracetest.SpanRecorder, settings *telemetry.Options) {
 	t.Helper()
 	legacyRec = tracetest.NewSpanRecorder()
 	genAIRec = tracetest.NewSpanRecorder()
@@ -44,7 +44,7 @@ func dualIntegrationSettings(t *testing.T) (legacyRec, genAIRec *tracetest.SpanR
 		_ = legacyTP.Shutdown(context.Background())
 		_ = genAITP.Shutdown(context.Background())
 	})
-	settings = &telemetry.Settings{
+	settings = &telemetry.Options{
 		IsEnabled:     telemetry.Bool(true),
 		RecordInputs:  true,
 		RecordOutputs: true,

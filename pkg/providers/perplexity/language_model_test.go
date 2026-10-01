@@ -666,9 +666,9 @@ func streamHandler(t *testing.T, chunks []map[string]interface{}, capturedBody *
 		w.Header().Set("Content-Type", "text/event-stream")
 		for _, chunk := range chunks {
 			b, _ := json.Marshal(chunk)
-			fmt.Fprintf(w, "data: %s\n\n", b)
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", b)
 		}
-		fmt.Fprint(w, "data: [DONE]\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 	}
 }
 
@@ -710,7 +710,7 @@ func TestPerplexityDoStream_TypedEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoStream() error = %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	chunks := collectChunks(t, stream)
 
 	if chunks[0].Type != provider.ChunkTypeStreamStart {
@@ -772,7 +772,7 @@ func TestPerplexityDoStream_RequestBody(t *testing.T) {
 		t.Fatalf("DoStream() error = %v", err)
 	}
 	_ = collectChunks(t, stream)
-	stream.Close()
+	_ = stream.Close()
 
 	if captured["preset"] != "low" || captured["stream"] != true {
 		t.Fatalf("captured body = %+v, want preset=low stream=true", captured)
@@ -788,7 +788,7 @@ func TestPerplexityDoStream_IncludeRawChunks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoStream() error = %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	got := collectChunks(t, stream)
 
 	var rawCount int
@@ -819,7 +819,7 @@ func TestPerplexityDoStream_FunctionCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoStream() error = %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	got := collectChunks(t, stream)
 
 	var sawStart, sawDelta, sawEnd, sawCall bool
@@ -870,7 +870,7 @@ func TestPerplexityDoStream_ToleratesNullFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoStream() error = %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	got := collectChunks(t, stream)
 
 	for _, c := range got {
@@ -927,7 +927,7 @@ func TestPerplexityDoStream_FetchedURLUpgradedByLaterSearchResult(t *testing.T) 
 	if err != nil {
 		t.Fatalf("DoStream() error = %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	got := collectChunks(t, stream)
 
 	var sources []*provider.StreamChunk
@@ -957,7 +957,7 @@ func TestPerplexityDoStream_IncompleteTerminalEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoStream() error = %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	got := collectChunks(t, stream)
 
 	var finish *provider.StreamChunk
@@ -1003,7 +1003,7 @@ func TestPerplexityDoStream_AppendsOnlyMissingText(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoStream() error = %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	got := collectChunks(t, stream)
 
 	var textEvents []string
@@ -1048,7 +1048,7 @@ func TestPerplexityDoStream_EmitsFailureAsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoStream() error = %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	got := collectChunks(t, stream)
 
 	var sawError bool
@@ -1091,7 +1091,7 @@ func TestPerplexityDoStream_RecoversTextWithoutDeltas(t *testing.T) {
 			if err != nil {
 				t.Fatalf("DoStream() error = %v", err)
 			}
-			defer stream.Close()
+			defer func() { _ = stream.Close() }()
 			got := collectChunks(t, stream)
 
 			var events []string
@@ -1133,7 +1133,7 @@ func TestPerplexityDoStream_ReasoningThoughts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoStream() error = %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	got := collectChunks(t, stream)
 
 	var thoughts string
@@ -1187,7 +1187,7 @@ func TestPerplexityDoStream_DeduplicatesAcrossSources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoStream() error = %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	got := collectChunks(t, stream)
 
 	var sources []*provider.StreamChunk
@@ -1275,7 +1275,7 @@ func TestPerplexityDoStream_PreservesCitationAnnotationsAcrossTerminalEvents(t *
 			if err != nil {
 				t.Fatalf("DoStream() error = %v", err)
 			}
-			defer stream.Close()
+			defer func() { _ = stream.Close() }()
 			got := collectChunks(t, stream)
 
 			var sources []*provider.StreamChunk
@@ -1318,7 +1318,7 @@ func TestPerplexityDoStream_PreservesNativeToolTracesInRawChunks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoStream() error = %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	got := collectChunks(t, stream)
 
 	for _, c := range got {

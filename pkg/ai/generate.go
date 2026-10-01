@@ -392,7 +392,7 @@ type GenerateTextOptions struct {
 	//   result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 	//       Model: model,
 	//       Prompt: "Hello",
-	//       ExperimentalTelemetry: &telemetry.Settings{
+	//       ExperimentalTelemetry: &telemetry.Options{
 	//           IsEnabled: true,
 	//           RecordInputs: true,
 	//           RecordOutputs: true,
@@ -492,8 +492,11 @@ type GenerateTextOptions struct {
 }
 
 // TelemetrySettings configures OpenTelemetry tracing for AI operations
-// This is re-exported from pkg/telemetry for convenience
-type TelemetrySettings = telemetry.Settings
+// This is re-exported from pkg/telemetry for convenience. Aliased to
+// telemetry.Options (not the deprecated telemetry.Settings, which is itself
+// just `= Options`) so this package doesn't reference a deprecated symbol;
+// ai.TelemetrySettings itself is unaffected and remains valid to use.
+type TelemetrySettings = telemetry.Options
 
 // TelemetryOptions is the stable telemetry option type.
 type TelemetryOptions = telemetry.Options
@@ -1050,7 +1053,6 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			}
 			if prepared.Messages != nil {
 				stepMessages = prepared.Messages
-				currentMessages = prepared.Messages
 			}
 			if prepared.Tools != nil {
 				stepTools = prepared.Tools
@@ -1776,7 +1778,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		telUsage.OutputTextTokens = result.Usage.OutputDetails.TextTokens
 		telUsage.ReasoningTokens = result.Usage.OutputDetails.ReasoningTokens
 	}
-	telemetry.FireOnFinish(ctx, telemetry.TelemetryFinishEvent{
+	telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
 		CallID:           callID,
 		OperationType:    "ai.generateText",
 		FinishReason:     string(result.FinishReason),
@@ -2238,7 +2240,9 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 					ToolCallID: call.ID,
 					Input:      call.Arguments,
 					Output:     toolResult,
-					Result:     toolResult,
+					// Result is a deprecated alias of Output, kept for
+					// ToModelOutput implementations still reading it.
+					Result: toolResult, //nolint:staticcheck
 					ToolCall: &types.ToolCall{
 						ID:               call.ID,
 						ToolName:         call.ToolName,

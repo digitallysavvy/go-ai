@@ -476,8 +476,9 @@ func TestExecuteToolsAppliesToModelOutputWithTSShapedOptions(t *testing.T) {
 	if gotOptions.ToolCallID != "call-1" || gotOptions.Input["query"] != "docs" || !reflect.DeepEqual(gotOptions.Output, raw) {
 		t.Fatalf("ToModelOutput options = %+v, want TS-shaped toolCallId/input/output", gotOptions)
 	}
-	if !reflect.DeepEqual(gotOptions.Result, raw) {
-		t.Fatalf("ToModelOutput result alias = %#v, want original map", gotOptions.Result)
+	// This specifically verifies the deprecated Result field still mirrors Output.
+	if !reflect.DeepEqual(gotOptions.Result, raw) { //nolint:staticcheck
+		t.Fatalf("ToModelOutput result alias = %#v, want original map", gotOptions.Result) //nolint:staticcheck
 	}
 	if gotOptions.ToolCall == nil || gotOptions.ToolCall.ID != "call-1" || gotOptions.ToolCall.ToolName != "lookup" {
 		t.Fatalf("ToModelOutput ToolCall = %+v, want call-1/lookup", gotOptions.ToolCall)

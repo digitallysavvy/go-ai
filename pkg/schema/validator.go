@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	playground "github.com/go-playground/validator/v10"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
 )
 
 // errCircularRef is wrapped into the error returned when a $ref cycle is
@@ -86,11 +88,11 @@ func (v *StructValidator) Validate(data interface{}) error {
 	}
 	if v.targetType != nil {
 		got := reflect.TypeOf(data)
-		if got.Kind() == reflect.Ptr {
+		if got.Kind() == reflect.Pointer {
 			got = got.Elem()
 		}
 		want := v.targetType
-		if want.Kind() == reflect.Ptr {
+		if want.Kind() == reflect.Pointer {
 			want = want.Elem()
 		}
 		if got != want && got.Kind() != reflect.Map {
@@ -392,7 +394,7 @@ func applyDefaultsWithRoot(value interface{}, sch map[string]interface{}, root m
 		if !ok {
 			return value
 		}
-		out := make(map[string]interface{}, len(obj)+len(props))
+		out := make(map[string]interface{}, intsafe.AddCap(len(obj), len(props)))
 		for k, v := range obj {
 			out[k] = v
 		}
@@ -558,7 +560,7 @@ func asMap(value interface{}) (map[string]interface{}, bool) {
 	if !rv.IsValid() {
 		return nil, false
 	}
-	if rv.Kind() == reflect.Ptr {
+	if rv.Kind() == reflect.Pointer {
 		if rv.IsNil() {
 			return nil, false
 		}

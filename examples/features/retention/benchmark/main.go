@@ -42,7 +42,7 @@ func createLargePrompt() string {
 
 	// Add substantial content (simulate image metadata or large context)
 	for i := 0; i < 100; i++ {
-		fmt.Fprintf(&sb, "Data point %d: %s\n", i, strings.Repeat("x", 1000))
+		_, _ = fmt.Fprintf(&sb, "Data point %d: %s\n", i, strings.Repeat("x", 1000))
 	}
 
 	sb.WriteString("\nProvide a brief summary.")

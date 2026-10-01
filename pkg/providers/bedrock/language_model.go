@@ -659,9 +659,10 @@ func (e *jsonObjectTextExtractor) process(text string) string {
 		if e.inString {
 			continue
 		}
-		if ch == '{' {
+		switch ch {
+		case '{':
 			e.depth++
-		} else if ch == '}' {
+		case '}':
 			e.depth--
 			if e.depth == 0 {
 				e.completed = true

@@ -453,7 +453,7 @@ func TestMergeGenerateOptions_ScalarCallOptionFieldsSurviveWithoutDefaults(t *te
 		RuntimeContext:        "runtime-value",
 		ToolsContext:          map[string]interface{}{"tool1": "ctx"},
 		ProviderOptions:       map[string]interface{}{"anthropic": map[string]interface{}{"cacheControl": "ephemeral"}},
-		Telemetry:             &telemetry.Settings{FunctionID: "my-function"},
+		Telemetry:             &telemetry.Options{FunctionID: "my-function"},
 	}
 
 	result := mergeGenerateOptions(&provider.GenerateOptions{}, overrides)
@@ -647,7 +647,7 @@ func TestGenerateOptions_AllFieldsCoveredByMerge(t *testing.T) {
 		Reasoning:             &reasoning,
 		SendReasoning:         &sendReasoning,
 		ProviderOptions:       map[string]interface{}{"anthropic": map[string]interface{}{"k": "override"}},
-		Telemetry:             &telemetry.Settings{FunctionID: "override-fn"},
+		Telemetry:             &telemetry.Options{FunctionID: "override-fn"},
 	}
 
 	defaults := &provider.GenerateOptions{} // empty: overrides must win on every field

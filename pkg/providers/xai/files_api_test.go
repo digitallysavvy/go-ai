@@ -408,7 +408,7 @@ func TestFilesAPI_DownloadFile_OmitsMediaTypeWhenAbsent(t *testing.T) {
 			return
 		}
 		body := []byte("bytes")
-		fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Length: %d\r\nConnection: close\r\n\r\n", len(body))
+		_, _ = fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Length: %d\r\nConnection: close\r\n\r\n", len(body))
 		_, _ = conn.Write(body)
 	}()
 

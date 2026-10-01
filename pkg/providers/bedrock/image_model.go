@@ -268,7 +268,7 @@ func (m *ImageModel) convertResponse(body []byte, headers http.Header, warnings 
 				reasons = append(reasons, fmt.Sprint(reason))
 			}
 		}
-		return nil, fmt.Errorf("Amazon Bedrock request was moderated: %s", strings.Join(reasons, ", "))
+		return nil, fmt.Errorf("Amazon Bedrock request was moderated: %s", strings.Join(reasons, ", ")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 	}
 	if len(response.Images) == 0 {
 		message := "Amazon Bedrock returned no images."

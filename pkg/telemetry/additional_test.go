@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 type eventSpy struct {
@@ -326,7 +327,7 @@ func TestSettingsHelpersAndSpanUtilities(t *testing.T) {
 		t.Fatalf("expected model + function + safe header attrs, got %#v", attrs)
 	}
 
-	tracer := trace.NewNoopTracerProvider().Tracer("test")
+	tracer := noop.NewTracerProvider().Tracer("test")
 	got, err := RecordSpan(context.Background(), tracer, SpanOptions{Name: "x", EndWhenDone: true}, func(context.Context, trace.Span) (string, error) {
 		return "ok", nil
 	})

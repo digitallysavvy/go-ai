@@ -44,7 +44,7 @@ func resolveKlingAIAuthToken(apiKey, accessKey, secretKey string) (string, error
 		trimmedSettingPresent(secretKey, "KLINGAI_SECRET_KEY")
 
 	if !hasLegacyCredentials {
-		return "", fmt.Errorf("KlingAI API key is missing. Pass it using the 'apiKey' parameter " +
+		return "", fmt.Errorf("KlingAI API key is missing. Pass it using the 'apiKey' parameter " + //nolint:staticcheck // matches TS SDK's exact error text
 			"or the KLINGAI_API_KEY environment variable. Alternatively, pass the " +
 			"legacy 'accessKey' and 'secretKey' parameters or the " +
 			"KLINGAI_ACCESS_KEY and KLINGAI_SECRET_KEY environment variables.")

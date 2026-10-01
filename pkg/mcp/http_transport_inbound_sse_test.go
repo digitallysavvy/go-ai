@@ -77,16 +77,6 @@ func statusResponse(status int, body string) *http.Response {
 	}
 }
 
-func jsonRPCOKResponse() *http.Response {
-	h := make(http.Header)
-	h.Set("content-type", "application/json")
-	return &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     h,
-		Body:       io.NopCloser(strings.NewReader(`{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`)),
-	}
-}
-
 // newSSEStreamResponse returns a 200 text/event-stream response backed by an
 // io.Pipe the test can write to, plus a stop func that must be called once
 // the test is done with it. When req's context is canceled, any blocked Read

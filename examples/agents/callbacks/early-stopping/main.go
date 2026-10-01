@@ -12,7 +12,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
-// This example demonstrates how to use the OnStepFinish callback to implement
+// This example demonstrates how to use the OnStepEnd callback to implement
 // custom monitoring logic — tracking token usage, sending alerts, and logging
 // step-level metrics.
 //
@@ -70,8 +70,8 @@ func main() {
 		Tools: []types.Tool{
 			expensiveTool,
 		},
-		StopWhen: []ai.StopCondition{ai.StepCountIs(10)},
-		OnStepFinish: func(step types.StepResult) {
+		StopWhen: []ai.StopCondition{ai.IsStepCount(10)},
+		OnStepEnd: func(step types.StepResult) {
 			// Track cumulative token usage
 			stepTokens := step.Usage.GetTotalTokens()
 			totalTokensUsed += stepTokens

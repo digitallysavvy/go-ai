@@ -50,7 +50,7 @@ func (s *delayedTextStream) Close() error { return nil }
 func TestStreamText_FirstChunkTimeoutFiresOnNonOutputOnly(t *testing.T) {
 	t.Parallel()
 
-	firstChunkMs := 40 * time.Millisecond
+	firstChunk := 40 * time.Millisecond
 	model := &testutil.MockLanguageModel{
 		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
 			return &delayedTextStream{chunks: []delayedChunk{
@@ -66,7 +66,7 @@ func TestStreamText_FirstChunkTimeoutFiresOnNonOutputOnly(t *testing.T) {
 	result, err := StreamText(context.Background(), StreamTextOptions{
 		Model:   model,
 		Prompt:  "hi",
-		Timeout: &TimeoutConfig{FirstChunk: &firstChunkMs},
+		Timeout: &TimeoutConfig{FirstChunk: &firstChunk},
 	})
 	if err != nil {
 		t.Fatalf("StreamText() error = %v", err)
@@ -88,7 +88,7 @@ func TestStreamText_FirstChunkTimeoutFiresOnNonOutputOnly(t *testing.T) {
 func TestStreamText_FirstChunkTimeoutDisarmsOnFirstOutputChunk(t *testing.T) {
 	t.Parallel()
 
-	firstChunkMs := 40 * time.Millisecond
+	firstChunk := 40 * time.Millisecond
 	model := &testutil.MockLanguageModel{
 		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
 			return &delayedTextStream{chunks: []delayedChunk{
@@ -104,7 +104,7 @@ func TestStreamText_FirstChunkTimeoutDisarmsOnFirstOutputChunk(t *testing.T) {
 	result, err := StreamText(context.Background(), StreamTextOptions{
 		Model:   model,
 		Prompt:  "hi",
-		Timeout: &TimeoutConfig{FirstChunk: &firstChunkMs},
+		Timeout: &TimeoutConfig{FirstChunk: &firstChunk},
 	})
 	if err != nil {
 		t.Fatalf("StreamText() error = %v", err)
@@ -125,7 +125,7 @@ func TestStreamText_FirstChunkTimeoutDisarmsOnFirstOutputChunk(t *testing.T) {
 func TestStreamText_PerChunkTimeoutIgnoresNonOutputChunks(t *testing.T) {
 	t.Parallel()
 
-	perChunkMs := 60 * time.Millisecond
+	perChunk := 60 * time.Millisecond
 	model := &testutil.MockLanguageModel{
 		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
 			return &delayedTextStream{chunks: []delayedChunk{
@@ -144,7 +144,7 @@ func TestStreamText_PerChunkTimeoutIgnoresNonOutputChunks(t *testing.T) {
 	result, err := StreamText(context.Background(), StreamTextOptions{
 		Model:   model,
 		Prompt:  "hi",
-		Timeout: &TimeoutConfig{PerChunk: &perChunkMs},
+		Timeout: &TimeoutConfig{PerChunk: &perChunk},
 	})
 	if err != nil {
 		t.Fatalf("StreamText() error = %v", err)

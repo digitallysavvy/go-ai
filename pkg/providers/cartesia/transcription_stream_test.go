@@ -668,6 +668,9 @@ func TestTranscriptionModel_DoStream_AudioReadErrorSurfacesError(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "audio source failed") {
 		t.Fatalf("err = %v, want an error containing 'audio source failed'", err)
 	}
+	if !audio.wasCancelled() {
+		t.Fatal("expected the AudioStream to be cancelled when the audio read fails")
+	}
 }
 
 // TestTranscriptionModel_DoStream_ErrorMessage verifies the "error" event

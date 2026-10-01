@@ -3,7 +3,6 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -195,7 +194,7 @@ func TestMCPToolConverterExecuteReturnsRawCallToolResult(t *testing.T) {
 	if err := client.Connect(context.Background()); err != nil {
 		t.Fatalf("Connect error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	converter := NewMCPToolConverter(client)
 
 	tool, err := converter.convertTool(MCPTool{
@@ -480,12 +479,6 @@ func TestMCPToolConverterInvalidAppMetadataReturnsError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected invalid MCP App resource URI error")
 	}
-}
-
-type listToolErrorClient struct{}
-
-func (listToolErrorClient) ListTools(context.Context) ([]MCPTool, error) {
-	return nil, errors.New("boom")
 }
 
 func TestConvertToGoAIToolsErrorPath(t *testing.T) {

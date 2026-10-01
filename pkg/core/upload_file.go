@@ -33,9 +33,10 @@ func UploadFile(ctx context.Context, api interface{}, opts UploadFileOptions) (*
 
 	mediaType := opts.MediaType
 	if mediaType == "" {
-		if normalized.Type == types.FileDataTypeText {
+		switch normalized.Type {
+		case types.FileDataTypeText:
 			mediaType = "text/plain"
-		} else if normalized.Type == types.FileDataTypeData {
+		case types.FileDataTypeData:
 			dataBytes, derr := uploadDataBytes(normalized)
 			if derr != nil {
 				return nil, derr

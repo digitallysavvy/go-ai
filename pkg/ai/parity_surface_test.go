@@ -512,8 +512,11 @@ func TestSpeechAndTranscribeDeprecatedExperimentalAliases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExperimentalGenerateSpeech() error = %v", err)
 	}
-	var speechAlias *Experimental_SpeechResult = speech
-	var audioAlias GeneratedAudioFile = speechAlias.Audio
+	// Explicit type (not inferred) is the point: this verifies the
+	// deprecated Experimental_SpeechResult alias name still exists and is
+	// assignable from *GenerateSpeechResult.
+	var speechAlias *Experimental_SpeechResult = speech //nolint:staticcheck
+	var audioAlias = speechAlias.Audio
 	if string(audioAlias.Data) != "audio" {
 		t.Fatalf("audio = %q, want audio", string(audioAlias.Data))
 	}
@@ -544,7 +547,10 @@ func TestSpeechAndTranscribeDeprecatedExperimentalAliases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExperimentalTranscribe() error = %v", err)
 	}
-	var transcriptAlias *Experimental_TranscriptionResult = transcript
+	// Explicit type (not inferred) is the point: this verifies the
+	// deprecated Experimental_TranscriptionResult alias name still exists
+	// and is assignable from *TranscribeResult.
+	var transcriptAlias *Experimental_TranscriptionResult = transcript //nolint:staticcheck
 	if transcriptAlias.Text != "hello world" {
 		t.Fatalf("text = %q, want hello world", transcriptAlias.Text)
 	}

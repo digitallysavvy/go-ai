@@ -78,7 +78,7 @@ func (p *Provider) resolveHeaders() (map[string]string, error) {
 		apiKey = os.Getenv("TYPESAFE_AI_API_KEY")
 	}
 	if apiKey == "" {
-		return nil, fmt.Errorf("TypeSafe AI API key is missing. Pass it using the 'APIKey' config, or set the TYPESAFE_AI_API_KEY environment variable.")
+		return nil, fmt.Errorf("TypeSafe AI API key is missing. Pass it using the 'APIKey' config, or set the TYPESAFE_AI_API_KEY environment variable.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 
 	headers := map[string]string{"Authorization": "Bearer " + apiKey}

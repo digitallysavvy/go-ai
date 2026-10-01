@@ -257,15 +257,15 @@ func discoverTokenEndpoint(ctx context.Context, issuer string, client *http.Clie
 		return "", err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return "", fmt.Errorf("Grok OAuth discovery failed with status %d.", resp.StatusCode)
+		return "", fmt.Errorf("Grok OAuth discovery failed with status %d.", resp.StatusCode) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	var parsed map[string]any
 	if err := json.Unmarshal(body, &parsed); err != nil {
-		return "", fmt.Errorf("Grok OAuth discovery returned no token endpoint.")
+		return "", fmt.Errorf("Grok OAuth discovery returned no token endpoint.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	endpoint, ok := parsed["token_endpoint"].(string)
 	if !ok || endpoint == "" {
-		return "", fmt.Errorf("Grok OAuth discovery returned no token endpoint.")
+		return "", fmt.Errorf("Grok OAuth discovery returned no token endpoint.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	return endpoint, nil
 }

@@ -155,12 +155,15 @@ func TestGenerateObject_StableCallbacks_TakePrecedence(t *testing.T) {
 // check that the 29d8cf4 canonical event aliases are usable as their
 // underlying deprecated types, both directions.
 func TestCanonicalEventAliases_Embed_Rerank_Object(t *testing.T) {
-	var _ EmbedStartEvent = EmbedOnStartEvent{}
-	var _ EmbedEndEvent = EmbedOnFinishEvent{}
-	var _ RerankStartEvent = RerankOnStartEvent{}
-	var _ RerankEndEvent = RerankOnFinishEvent{}
-	var _ GenerateObjectStartEvent = ObjectOnStartEvent{}
-	var _ GenerateObjectStepStartEvent = ObjectOnStepStartEvent{}
-	var _ GenerateObjectStepEndEvent = ObjectOnStepFinishEvent{}
-	var _ GenerateObjectEndEvent = ObjectOnFinishEvent{}
+	// Each explicit interface-typed declaration here IS the check (that the
+	// concrete type satisfies the aliased interface); inferring the type
+	// from the right-hand side instead would silently defeat it.
+	var _ EmbedStartEvent = EmbedOnStartEvent{}                   //nolint:staticcheck
+	var _ EmbedEndEvent = EmbedOnFinishEvent{}                    //nolint:staticcheck
+	var _ RerankStartEvent = RerankOnStartEvent{}                 //nolint:staticcheck
+	var _ RerankEndEvent = RerankOnFinishEvent{}                  //nolint:staticcheck
+	var _ GenerateObjectStartEvent = ObjectOnStartEvent{}         //nolint:staticcheck
+	var _ GenerateObjectStepStartEvent = ObjectOnStepStartEvent{} //nolint:staticcheck
+	var _ GenerateObjectStepEndEvent = ObjectOnStepFinishEvent{}  //nolint:staticcheck
+	var _ GenerateObjectEndEvent = ObjectOnFinishEvent{}          //nolint:staticcheck
 }

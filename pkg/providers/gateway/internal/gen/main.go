@@ -94,7 +94,7 @@ func main() {
 }
 
 func fatalf(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "gateway gen: "+format+"\n", args...)
+	_, _ = fmt.Fprintf(os.Stderr, "gateway gen: "+format+"\n", args...)
 	os.Exit(1)
 }
 
@@ -142,7 +142,7 @@ func parseUnion(src, typeName string) ([]string, error) {
 func identSuffix(id string) string {
 	var b strings.Builder
 	for _, word := range strings.FieldsFunc(id, func(r rune) bool {
-		return !(r < unicode.MaxASCII && (unicode.IsLetter(r) || unicode.IsDigit(r)))
+		return r >= unicode.MaxASCII || (!unicode.IsLetter(r) && !unicode.IsDigit(r))
 	}) {
 		b.WriteString(strings.ToUpper(word[:1]))
 		b.WriteString(word[1:])
@@ -159,8 +159,8 @@ func render(catalog map[string][]string) ([]byte, error) {
 	buf.WriteString("// these types; the constants below are the suggested IDs.\n")
 	buf.WriteString("type (\n")
 	for _, k := range kinds {
-		fmt.Fprintf(&buf, "\t// Gateway%sModelID mirrors TS %s.\n", k.GoName, k.TSType)
-		fmt.Fprintf(&buf, "\tGateway%sModelID string\n", k.GoName)
+		_, _ = fmt.Fprintf(&buf, "\t// Gateway%sModelID mirrors TS %s.\n", k.GoName, k.TSType)
+		_, _ = fmt.Fprintf(&buf, "\tGateway%sModelID string\n", k.GoName)
 	}
 	buf.WriteString(")\n")
 
@@ -170,7 +170,7 @@ func render(catalog map[string][]string) ([]byte, error) {
 			continue
 		}
 		typ := "Gateway" + k.GoName + "ModelID"
-		fmt.Fprintf(&buf, "\n// %s constants mirror gateway-%s-model-settings.ts.\nconst (\n", typ, k.File)
+		_, _ = fmt.Fprintf(&buf, "\n// %s constants mirror gateway-%s-model-settings.ts.\nconst (\n", typ, k.File)
 		names := map[string]string{}
 		for _, id := range ids {
 			name := "Gateway" + k.GoName + "Model" + identSuffix(id)
@@ -178,17 +178,17 @@ func render(catalog map[string][]string) ([]byte, error) {
 				return nil, fmt.Errorf("identifier %s collides for %q and %q", name, prev, id)
 			}
 			names[name] = id
-			fmt.Fprintf(&buf, "\t%s %s = %q\n", name, typ, id)
+			_, _ = fmt.Fprintf(&buf, "\t%s %s = %q\n", name, typ, id)
 		}
 		buf.WriteString(")\n")
 	}
 
 	for _, k := range kinds {
 		typ := "Gateway" + k.GoName + "ModelID"
-		fmt.Fprintf(&buf, "\n// %ss lists the suggested gateway %s model IDs from gateway-%s-model-settings.ts.\n", typ, k.File, k.File)
-		fmt.Fprintf(&buf, "var %ss = []%s{\n", typ, typ)
+		_, _ = fmt.Fprintf(&buf, "\n// %ss lists the suggested gateway %s model IDs from gateway-%s-model-settings.ts.\n", typ, k.File, k.File)
+		_, _ = fmt.Fprintf(&buf, "var %ss = []%s{\n", typ, typ)
 		for _, id := range catalog[k.File] {
-			fmt.Fprintf(&buf, "\tGateway%sModel%s,\n", k.GoName, identSuffix(id))
+			_, _ = fmt.Fprintf(&buf, "\tGateway%sModel%s,\n", k.GoName, identSuffix(id))
 		}
 		buf.WriteString("}\n")
 	}

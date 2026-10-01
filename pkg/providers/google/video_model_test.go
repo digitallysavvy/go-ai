@@ -10,10 +10,9 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
 
-// floatPtr and intPtr are small test helpers shared across the google
-// package's test files.
-func floatPtr(f float64) *float64 { return &f }
-func intPtr(i int) *int           { return &i }
+// intPtr is a small test helper shared across the google package's test
+// files.
+func intPtr(i int) *int { return &i }
 
 // newTestVideoServer builds a Provider + httptest server that handles the
 // predictLongRunning submission and the operation status GET, mirroring
@@ -373,10 +372,10 @@ func TestVideoModel_DoGenerate_EndToEnd(t *testing.T) {
 	pollCount := 0
 	model, _ := newTestVideoServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case r.URL.Path == "/models/veo-3.1-generate-preview:predictLongRunning":
+		switch r.URL.Path {
+		case "/models/veo-3.1-generate-preview:predictLongRunning":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"name": "operations/test-op", "done": false})
-		case r.URL.Path == "/operations/test-op":
+		case "/operations/test-op":
 			pollCount++
 			if pollCount == 1 {
 				_ = json.NewEncoder(w).Encode(map[string]interface{}{"name": "operations/test-op", "done": false})

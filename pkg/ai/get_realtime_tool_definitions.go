@@ -46,7 +46,7 @@ func GetRealtimeToolDefinitionsWithOptions(opts RealtimeToolDefinitionsOptions) 
 		case types.ToolTypeProviderDefined:
 			continue
 		default:
-			return nil, fmt.Errorf("Unsupported tool type: %s", tool.Type)
+			return nil, fmt.Errorf("Unsupported tool type: %s", tool.Type) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 	}
 	return definitions, nil

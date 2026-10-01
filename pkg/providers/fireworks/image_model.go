@@ -70,7 +70,7 @@ func (m *ImageModel) doGenerateSync(ctx context.Context, opts *provider.ImageGen
 	}
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("Fireworks AI API returned status %d: %s", resp.StatusCode, string(resp.Body))
+		return nil, fmt.Errorf("Fireworks AI API returned status %d: %s", resp.StatusCode, string(resp.Body)) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 	}
 
 	return m.convertResponse(resp.Body)
@@ -101,11 +101,11 @@ func (m *ImageModel) submitAsyncRequest(ctx context.Context, opts *provider.Imag
 
 	var submitResp AsyncSubmitResponse
 	if err := m.provider.client.PostJSON(ctx, "/v1/workflows/"+m.modelID, body, &submitResp); err != nil {
-		return "", fmt.Errorf("Fireworks async submit failed: %w", err)
+		return "", fmt.Errorf("Fireworks async submit failed: %w", err) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 	}
 
 	if submitResp.RequestID == "" {
-		return "", fmt.Errorf("Fireworks async submit returned empty request_id")
+		return "", fmt.Errorf("Fireworks async submit returned empty request_id") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 	}
 
 	return submitResp.RequestID, nil
@@ -118,17 +118,17 @@ func (m *ImageModel) checkAsyncStatus(ctx context.Context, requestID string) (st
 
 	var pollResp AsyncPollResponse
 	if err := m.provider.client.PostJSON(ctx, "/v1/workflows/"+m.modelID+"/get_result", pollBody, &pollResp); err != nil {
-		return "", false, fmt.Errorf("Fireworks async status check failed: %w", err)
+		return "", false, fmt.Errorf("Fireworks async status check failed: %w", err) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 	}
 
 	switch pollResp.Status {
 	case "Ready":
 		if pollResp.Result == nil || pollResp.Result.Sample == nil {
-			return "", false, fmt.Errorf("Fireworks poll response is Ready but missing result.sample")
+			return "", false, fmt.Errorf("Fireworks poll response is Ready but missing result.sample") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 		}
 		return *pollResp.Result.Sample, true, nil
 	case "Error", "Failed":
-		return "", false, fmt.Errorf("Fireworks image generation failed with status: %s", pollResp.Status)
+		return "", false, fmt.Errorf("Fireworks image generation failed with status: %s", pollResp.Status) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 	default:
 		// Pending, Running, or any unknown status → continue polling
 		return "", false, nil
@@ -179,7 +179,7 @@ func (m *ImageModel) pollAsyncResult(ctx context.Context, requestID string) (*ty
 		imageURL, done, err := m.checkAsyncStatus(pollCtx, requestID)
 		if err != nil {
 			if timedOut.Load() {
-				return nil, fmt.Errorf("Fireworks image generation timed out after %dms", timeoutMs)
+				return nil, fmt.Errorf("Fireworks image generation timed out after %dms", timeoutMs) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 			}
 			return nil, err
 		}
@@ -196,7 +196,7 @@ func (m *ImageModel) pollAsyncResult(ctx context.Context, requestID string) (*ty
 		select {
 		case <-pollCtx.Done():
 			if timedOut.Load() {
-				return nil, fmt.Errorf("Fireworks image generation timed out after %dms", timeoutMs)
+				return nil, fmt.Errorf("Fireworks image generation timed out after %dms", timeoutMs) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 			}
 			return nil, pollCtx.Err()
 		case <-time.After(time.Duration(intervalMs) * time.Millisecond):
@@ -227,7 +227,7 @@ func (m *ImageModel) downloadImage(ctx context.Context, imageURL string) (*types
 
 	downloaded, err := fileutil.DownloadWithMetadata(ctx, imageURL, dlOpts)
 	if err != nil {
-		return nil, fmt.Errorf("Fireworks failed to download image: %w", err)
+		return nil, fmt.Errorf("Fireworks failed to download image: %w", err) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 	}
 	data := downloaded.Data
 

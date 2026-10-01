@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/agent"
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
@@ -43,7 +44,7 @@ func main() {
 	mainConfig := agent.AgentConfig{
 		Model:    mainModel,
 		System:   "You are a main coordinator agent that can delegate tasks to specialized subagents.",
-		MaxSteps: 5,
+		StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 	}
 	mainAgent := agent.NewToolLoopAgent(mainConfig)
 
@@ -51,7 +52,7 @@ func main() {
 	researchConfig := agent.AgentConfig{
 		Model:    researchModel,
 		System:   "You are a research specialist. Your task is to find and summarize information on requested topics.",
-		MaxSteps: 3,
+		StopWhen: []ai.StopCondition{ai.IsStepCount(3)},
 	}
 	researchAgent := agent.NewToolLoopAgent(researchConfig)
 
@@ -69,7 +70,7 @@ func main() {
 	analysisConfig := agent.AgentConfig{
 		Model:    analysisModel,
 		System:   "You are a data analysis specialist. Your task is to analyze data and provide insights.",
-		MaxSteps: 3,
+		StopWhen: []ai.StopCondition{ai.IsStepCount(3)},
 	}
 	analysisAgent := agent.NewToolLoopAgent(analysisConfig)
 
@@ -108,7 +109,10 @@ func main() {
 		"Find information about Go programming language",
 	)
 	if err != nil {
-		log.Fatalf("Research delegation failed: %v", err)
+		// Log only the error's type: a failed delegation can carry
+		// provider request/response detail in its message text, so avoid
+		// writing it to the log verbatim.
+		log.Fatalf("Research delegation failed (error type: %T)", err)
 	}
 	fmt.Printf("Research result: %s\n\n", researchResult.Text)
 
@@ -120,7 +124,7 @@ func main() {
 		"Analyze the performance metrics of our application",
 	)
 	if err != nil {
-		log.Fatalf("Analysis delegation failed: %v", err)
+		log.Fatalf("Analysis delegation failed (error type: %T)", err)
 	}
 	fmt.Printf("Analysis result: %s\n\n", analysisResult.Text)
 
@@ -154,7 +158,7 @@ func main() {
 	deepResearchConfig := agent.AgentConfig{
 		Model:    researchModel,
 		System:   "You are a deep research specialist focusing on technical details.",
-		MaxSteps: 2,
+		StopWhen: []ai.StopCondition{ai.IsStepCount(2)},
 	}
 	deepResearchAgent := agent.NewToolLoopAgent(deepResearchConfig)
 
@@ -172,7 +176,7 @@ func main() {
 		"Investigate advanced Go concurrency patterns",
 	)
 	if err != nil {
-		log.Fatalf("Deep research delegation failed: %v", err)
+		log.Fatalf("Deep research delegation failed (error type: %T)", err)
 	}
 	fmt.Printf("Deep research result: %s\n\n", deepResult.Text)
 

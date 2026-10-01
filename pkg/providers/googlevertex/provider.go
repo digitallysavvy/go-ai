@@ -315,7 +315,7 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 		return nil, fmt.Errorf("model ID cannot be empty")
 	}
 	if isEndpointModelID(modelID) && p.config.APIKey != "" {
-		return nil, fmt.Errorf("Google Vertex tuned models do not support Express Mode API keys. Use standard Google Cloud credentials instead.")
+		return nil, fmt.Errorf("Google Vertex tuned models do not support Express Mode API keys. Use standard Google Cloud credentials instead.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 
 	return NewLanguageModel(p, modelID), nil
@@ -332,7 +332,7 @@ func (p *Provider) Interactions(modelID string) (provider.LanguageModel, error) 
 		return nil, fmt.Errorf("model ID cannot be empty")
 	}
 	if p.config.APIKey != "" {
-		return nil, fmt.Errorf("Google Vertex Interactions models do not support Express Mode API keys. Use standard Google Cloud credentials instead.")
+		return nil, fmt.Errorf("Google Vertex Interactions models do not support Express Mode API keys. Use standard Google Cloud credentials instead.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	return googleprovider.NewInteractionsLanguageModelWithConfig(p.interactionsConfig(), modelID), nil
 }
@@ -344,7 +344,7 @@ func (p *Provider) InteractionsAgent(agent string) (provider.LanguageModel, erro
 		return nil, fmt.Errorf("agent cannot be empty")
 	}
 	if p.config.APIKey != "" {
-		return nil, fmt.Errorf("Google Vertex Interactions models do not support Express Mode API keys. Use standard Google Cloud credentials instead.")
+		return nil, fmt.Errorf("Google Vertex Interactions models do not support Express Mode API keys. Use standard Google Cloud credentials instead.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	return googleprovider.NewInteractionsAgentModelWithConfig(p.interactionsConfig(), agent), nil
 }
@@ -356,7 +356,7 @@ func (p *Provider) InteractionsManagedAgent(id string) (provider.LanguageModel, 
 		return nil, fmt.Errorf("managed agent id cannot be empty")
 	}
 	if p.config.APIKey != "" {
-		return nil, fmt.Errorf("Google Vertex Interactions models do not support Express Mode API keys. Use standard Google Cloud credentials instead.")
+		return nil, fmt.Errorf("Google Vertex Interactions models do not support Express Mode API keys. Use standard Google Cloud credentials instead.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	return googleprovider.NewInteractionsManagedAgentModelWithConfig(p.interactionsConfig(), id), nil
 }
@@ -453,7 +453,7 @@ func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
 	// `modelId.startsWith('chirp')`).
 	if strings.HasPrefix(modelID, "chirp") {
 		if p.config.APIKey != "" {
-			return nil, fmt.Errorf("Google Vertex Chirp speech models do not support Express Mode API keys. Use standard Google Cloud credentials instead.")
+			return nil, fmt.Errorf("Google Vertex Chirp speech models do not support Express Mode API keys. Use standard Google Cloud credentials instead.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		return NewCloudTTSSpeechModel(p, modelID), nil
 	}
@@ -492,7 +492,7 @@ func (p *Provider) Speech(modelID string) (provider.SpeechModel, error) {
 // predicate exactly.
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
 	if p.config.APIKey != "" {
-		return nil, fmt.Errorf("Google Vertex transcription models do not support Express Mode API keys. Use standard Google Cloud credentials instead.")
+		return nil, fmt.Errorf("Google Vertex transcription models do not support Express Mode API keys. Use standard Google Cloud credentials instead.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	if strings.HasPrefix(modelID, "gemini") {
 		return NewGeminiTranscriptionModel(p, modelID), nil
@@ -502,7 +502,7 @@ func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionMod
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("Google Vertex AI does not support reranking")
+	return nil, fmt.Errorf("Google Vertex AI does not support reranking") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 }
 
 // VideoModel returns a video generation model by ID

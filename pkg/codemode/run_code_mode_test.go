@@ -192,8 +192,8 @@ func TestRunCodeMode_ManyInvocationsRemainCorrect(t *testing.T) {
 	for i := 0; i < 250; i++ {
 		var js string
 		var want interface{}
-		switch {
-		case i%37 == 0:
+		switch i % 37 {
+		case 0:
 			js = "return await tools.echo({ n: " + fmt.Sprintf("%d", i) + " });"
 			want = map[string]interface{}{"n": float64(i)}
 		default:

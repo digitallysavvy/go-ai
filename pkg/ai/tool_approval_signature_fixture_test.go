@@ -3,6 +3,7 @@ package ai
 import (
 	"encoding/base64"
 	"encoding/json"
+	"math"
 	"testing"
 )
 
@@ -126,10 +127,14 @@ func TestCanonicalJSONNormalizesGoNumericAndStructTypes(t *testing.T) {
 		Count int    `json:"count"`
 	}
 	got, err := canonicalJSON(map[string]interface{}{
-		"s":   payload{Path: "<x>", Count: 3},
-		"i":   int64(7),
-		"f":   float32(1.5),
-		"neg": -0.0,
+		"s": payload{Path: "<x>", Count: 3},
+		"i": int64(7),
+		"f": float32(1.5),
+		// A literal -0.0 constant is indistinguishable from 0.0 in Go (no
+		// negative zero for untyped constants); math.Copysign forces an
+		// actual IEEE-754 negative zero at runtime, matching what TS's
+		// JSON.stringify(-0) === "0" test is really exercising.
+		"neg": math.Copysign(0, -1),
 		"n":   json.Number("2.50"),
 	})
 	if err != nil {

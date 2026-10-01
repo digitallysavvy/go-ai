@@ -107,7 +107,7 @@ type GenerateOptions struct {
 
 	// Telemetry configuration for observability
 	// Providers can use this to instrument their API calls with OpenTelemetry spans
-	Telemetry *telemetry.Settings
+	Telemetry *telemetry.Options
 }
 
 // ResponseFormat specifies the format of the response

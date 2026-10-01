@@ -183,7 +183,7 @@ func extractTextFromImage(ctx context.Context, model provider.LanguageModel) {
 		log.Printf("Error downloading image: %v", err)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	imageData, err := io.ReadAll(resp.Body)
 	if err != nil {

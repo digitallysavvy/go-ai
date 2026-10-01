@@ -62,7 +62,11 @@ func generateWithGoogle(ctx context.Context, prompt ai.VideoPrompt) {
 	})
 
 	if err != nil {
-		log.Printf("Google generation failed: %v", err)
+		// Log only the error's type: a failed request can carry
+		// provider-specific request/response detail (for some providers,
+		// including the request URL and its API key query parameter) in
+		// its message text, so avoid writing it to the log verbatim.
+		log.Printf("Google generation failed (error type: %T)", err)
 		return
 	}
 
@@ -83,7 +87,7 @@ func generateWithFAL(ctx context.Context, prompt ai.VideoPrompt) {
 	})
 
 	if err != nil {
-		log.Printf("FAL generation failed: %v", err)
+		log.Printf("FAL generation failed (error type: %T)", err)
 		return
 	}
 
@@ -104,7 +108,7 @@ func generateWithReplicate(ctx context.Context, prompt ai.VideoPrompt) {
 	})
 
 	if err != nil {
-		log.Printf("Replicate generation failed: %v", err)
+		log.Printf("Replicate generation failed (error type: %T)", err)
 		return
 	}
 
@@ -122,10 +126,9 @@ func saveVideo(result *ai.GenerateVideoResult, filename string) {
 		return
 	}
 
-	fmt.Printf("✓ Saved to %s (%d bytes, %s)\n",
+	fmt.Printf("✓ Saved to %s (%d bytes)\n",
 		filename,
 		len(result.Video.Data),
-		result.Video.MediaType,
 	)
 
 	if len(result.Warnings) > 0 {

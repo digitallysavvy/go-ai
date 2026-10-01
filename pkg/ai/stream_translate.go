@@ -219,9 +219,9 @@ func (r *StreamTranslationResult) FullStream() (TranslationStream, error) {
 	defer r.mu.Unlock()
 	switch r.streamOwner {
 	case "full-stream":
-		return nil, errors.New("fullStream can only be accessed once.")
+		return nil, errors.New("fullStream can only be accessed once.") //nolint:staticcheck // matches TS SDK's exact error text
 	case "result-promises":
-		return nil, errors.New("fullStream cannot be accessed after a result promise.")
+		return nil, errors.New("fullStream cannot be accessed after a result promise.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	r.streamOwner = "full-stream"
 	return &translationFullStream{result: r}, nil
@@ -369,7 +369,7 @@ func runTranslationStreamPipe(pipeCtx context.Context, opts StreamTranslateOptio
 				// pending send that loses to pipeCtx cancellation must still
 				// reject the result promises and cancel the caller's audio,
 				// mirroring TS stream-translate.ts's Transformer.cancel/catch.
-				fail(errors.New("Translation stream was cancelled."))
+				fail(errors.New("Translation stream was cancelled.")) //nolint:staticcheck // matches TS SDK's exact error text
 				return
 			}
 
@@ -381,7 +381,7 @@ func runTranslationStreamPipe(pipeCtx context.Context, opts StreamTranslateOptio
 			provider.SpeechTranslationStreamPartTypeRaw,
 			provider.SpeechTranslationStreamPartTypeError:
 			if !sendTranslationPart(pipeCtx, result.ch, translationPartFromProvider(part)) {
-				fail(errors.New("Translation stream was cancelled."))
+				fail(errors.New("Translation stream was cancelled.")) //nolint:staticcheck // matches TS SDK's exact error text
 				return
 			}
 

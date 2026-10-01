@@ -35,10 +35,10 @@ type TranscriptionModel struct {
 	prov    *Provider
 	modelID string
 
-	// finishGraceMs overrides defaultFinishGraceDuration for tests
+	// finishGrace overrides defaultFinishGraceDuration for tests
 	// (mirrors TS config._internal.finishGraceMs). Zero means "use the
 	// default".
-	finishGraceMs time.Duration
+	finishGrace time.Duration
 }
 
 // NewTranscriptionModel creates a Gemini 3.5 Transcribe model.

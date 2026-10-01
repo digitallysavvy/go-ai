@@ -373,7 +373,7 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 			opts.ExperimentalOnFinish(finishEvent)
 		}
 	}
-	telemetry.FireOnFinish(ctx, telemetry.TelemetryFinishEvent{
+	telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
 		CallID:        callID,
 		OperationType: "ai.embed",
 		Settings:      opts.ExperimentalTelemetry,
@@ -590,7 +590,7 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 			opts.ExperimentalOnFinish(finishEvent)
 		}
 	}
-	telemetry.FireOnFinish(ctx, telemetry.TelemetryFinishEvent{
+	telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
 		CallID:        callID,
 		OperationType: "ai.embedMany",
 		Settings:      opts.ExperimentalTelemetry,

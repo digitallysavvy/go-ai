@@ -35,7 +35,7 @@ func TestWorkflowApprovalResumeToolSpanParentedUnderRootSpan(t *testing.T) {
 				},
 			},
 		},
-		Telemetry: &telemetry.Settings{
+		Telemetry: &telemetry.Options{
 			IsEnabled:    telemetry.Bool(true),
 			Integrations: []telemetry.TelemetryIntegration{telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tracer})},
 		},

@@ -88,10 +88,6 @@ func (m *RerankingModel) getModelConfigHeaders() map[string]string {
 	}
 }
 
-func (m *RerankingModel) handleError(err error) error {
-	return m.handleErrorWithContext(context.Background(), err)
-}
-
 func (m *RerankingModel) handleErrorWithContext(ctx context.Context, err error) error {
 	lm := &LanguageModel{provider: m.provider, modelID: m.modelID}
 	return lm.handleErrorWithContext(ctx, err)

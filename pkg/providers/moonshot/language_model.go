@@ -133,12 +133,6 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	return providerutils.WithResponseMetadata(streaming.NewWarningsStream(inner, warnings), httpResp.Header, m.ModelID()), nil
 }
 
-// buildRequestBody builds the API request body
-func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
-	body, _, _ := m.buildRequestBodyWithWarnings(opts, stream)
-	return body
-}
-
 // buildRequestBodyWithWarnings builds the Moonshot Chat Completions request
 // body. Mirrors TS MoonshotAIChatLanguageModel.getArgs.
 func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning, error) {

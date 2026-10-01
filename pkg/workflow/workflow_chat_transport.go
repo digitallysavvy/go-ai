@@ -258,7 +258,7 @@ func (t *WorkflowRunMultiplexer) SendMessages(ctx context.Context, opts SendMess
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if t.OnChatSendMessage != nil {
 		if err := t.OnChatSendMessage(resp, opts); err != nil {
 			_, _ = io.Copy(io.Discard, resp.Body)
@@ -355,7 +355,7 @@ func (t *WorkflowRunMultiplexer) ReconnectToStream(ctx context.Context, opts Rec
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		payload, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("workflow chat transport: GET %s returned %d: %s", api, resp.StatusCode, string(payload))

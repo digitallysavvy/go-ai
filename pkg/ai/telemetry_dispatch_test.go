@@ -48,7 +48,7 @@ func TestEmbedNoSpanWithoutIntegration(t *testing.T) {
 	_, err := Embed(context.Background(), EmbedOptions{
 		Model: model,
 		Input: "hello",
-		Telemetry: &telemetry.Settings{
+		Telemetry: &telemetry.Options{
 			IsEnabled: telemetry.Bool(true),
 			// Explicit Noop isolates this test from any globally registered
 			// integration another test in this package may have left behind.
@@ -78,7 +78,7 @@ func TestEmbedExactlyOneSpanWithIntegration(t *testing.T) {
 	_, err := Embed(context.Background(), EmbedOptions{
 		Model: model,
 		Input: "hello",
-		Telemetry: &telemetry.Settings{
+		Telemetry: &telemetry.Options{
 			IsEnabled:    telemetry.Bool(true),
 			Integrations: []telemetry.TelemetryIntegration{telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tracer})},
 		},
@@ -105,7 +105,7 @@ func TestEmbedManyExactlyOneSpanWithIntegration(t *testing.T) {
 	_, err := EmbedMany(context.Background(), EmbedManyOptions{
 		Model:  model,
 		Inputs: []string{"a", "b"},
-		Telemetry: &telemetry.Settings{
+		Telemetry: &telemetry.Options{
 			IsEnabled:    telemetry.Bool(true),
 			Integrations: []telemetry.TelemetryIntegration{telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tracer})},
 		},
@@ -136,7 +136,7 @@ func TestGenerateObjectNoSpanWithoutIntegration(t *testing.T) {
 			"type":       "object",
 			"properties": map[string]interface{}{"ok": map[string]interface{}{"type": "boolean"}},
 		}),
-		Telemetry: &telemetry.Settings{
+		Telemetry: &telemetry.Options{
 			IsEnabled: telemetry.Bool(true),
 			// tracer is unused since Noop never creates spans.
 			Integrations: []telemetry.TelemetryIntegration{telemetry.NoopTelemetryIntegration{}},
@@ -169,7 +169,7 @@ func TestGenerateObjectExactlyOneSpanWithIntegration(t *testing.T) {
 			"type":       "object",
 			"properties": map[string]interface{}{"ok": map[string]interface{}{"type": "boolean"}},
 		}),
-		Telemetry: &telemetry.Settings{
+		Telemetry: &telemetry.Options{
 			IsEnabled:    telemetry.Bool(true),
 			Integrations: []telemetry.TelemetryIntegration{telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tracer})},
 		},
@@ -208,7 +208,7 @@ func TestGenerateTextModelCallRunsInsideChatSpan(t *testing.T) {
 	_, err := GenerateText(context.Background(), GenerateTextOptions{
 		Model:  model,
 		Prompt: "hello",
-		Telemetry: &telemetry.Settings{
+		Telemetry: &telemetry.Options{
 			IsEnabled:    telemetry.Bool(true),
 			Integrations: []telemetry.TelemetryIntegration{telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tracer})},
 		},
@@ -272,7 +272,7 @@ func TestGenerateTextModelCallRunsInsideGenAIChatSpan(t *testing.T) {
 	_, err := GenerateText(context.Background(), GenerateTextOptions{
 		Model:  model,
 		Prompt: "hello",
-		Telemetry: &telemetry.Settings{
+		Telemetry: &telemetry.Options{
 			IsEnabled:    telemetry.Bool(true),
 			Integrations: []telemetry.TelemetryIntegration{telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{Tracer: tracer})},
 		},
@@ -315,7 +315,7 @@ func TestStreamTextModelCallRunsInsideChatSpan(t *testing.T) {
 	stream, err := StreamText(context.Background(), StreamTextOptions{
 		Model:  model,
 		Prompt: "hello",
-		Telemetry: &telemetry.Settings{
+		Telemetry: &telemetry.Options{
 			IsEnabled:    telemetry.Bool(true),
 			Integrations: []telemetry.TelemetryIntegration{telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tracer})},
 		},
@@ -358,7 +358,7 @@ func TestStreamTextModelCallRunsInsideGenAIChatSpan(t *testing.T) {
 	stream, err := StreamText(context.Background(), StreamTextOptions{
 		Model:  model,
 		Prompt: "hello",
-		Telemetry: &telemetry.Settings{
+		Telemetry: &telemetry.Options{
 			IsEnabled:    telemetry.Bool(true),
 			Integrations: []telemetry.TelemetryIntegration{telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{Tracer: tracer})},
 		},
@@ -403,7 +403,7 @@ func TestStreamTextGenAIChatSpanNestsUnderStepSpanForFirstStep(t *testing.T) {
 	stream, err := StreamText(context.Background(), StreamTextOptions{
 		Model:  model,
 		Prompt: "hello",
-		Telemetry: &telemetry.Settings{
+		Telemetry: &telemetry.Options{
 			IsEnabled:    telemetry.Bool(true),
 			Integrations: []telemetry.TelemetryIntegration{telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{Tracer: tracer})},
 		},
@@ -496,7 +496,7 @@ func TestStreamTextMultiStepEventOrdering(t *testing.T) {
 		Model:  model,
 		Prompt: "weather?",
 		Tools:  []types.Tool{tool},
-		Telemetry: &telemetry.Settings{
+		Telemetry: &telemetry.Options{
 			IsEnabled:    telemetry.Bool(true),
 			Integrations: []telemetry.TelemetryIntegration{telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{Tracer: tracer})},
 		},

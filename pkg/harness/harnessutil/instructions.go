@@ -187,7 +187,7 @@ func readInstructionsMetadata(ctx context.Context, sandbox providerutils.Sandbox
 	if content == nil {
 		return nil, nil
 	}
-	invalid := fmt.Errorf("Invalid AI SDK harness instructions metadata: %s", metadataPath)
+	invalid := fmt.Errorf("Invalid AI SDK harness instructions metadata: %s", metadataPath) //nolint:staticcheck // matches TS SDK's exact error text
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(*content), &raw); err != nil || raw == nil {
 		return nil, invalid
@@ -198,7 +198,7 @@ func readInstructionsMetadata(ctx context.Context, sandbox providerutils.Sandbox
 	}
 	var m instructionsMetadata
 	if err := json.Unmarshal([]byte(*content), &m); err != nil || m.Version != instructionsMetadataVersion ||
-		raw["originalContent"] == nil || !(string(raw["originalContent"]) == "null" || isString("originalContent")) ||
+		raw["originalContent"] == nil || (string(raw["originalContent"]) != "null" && !isString("originalContent")) ||
 		!isString("instructions") || !isString("appliedContent") {
 		return nil, invalid
 	}

@@ -194,7 +194,7 @@ func TestFingerprintMCPAppResource(t *testing.T) {
 	}
 
 	t.Run("stable digest for equal resources", func(t *testing.T) {
-		if FingerprintMCPAppResource(base(nil)) != FingerprintMCPAppResource(base(nil)) {
+		if FingerprintMCPAppResource(base(nil)) != FingerprintMCPAppResource(base(nil)) { //nolint:staticcheck // deliberately comparing two separate base(nil) calls to verify the fingerprint is stable across equal-but-distinct resource values
 			t.Fatal("expected identical fingerprints for structurally equal resources")
 		}
 	})

@@ -91,7 +91,7 @@ func TestDownloadFile_ForwardsToProviderAndStreamsContent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DownloadFile() error = %v", err)
 	}
-	defer res.Content.Close()
+	defer func() { _ = res.Content.Close() }()
 	data, err := io.ReadAll(res.Content)
 	if err != nil {
 		t.Fatalf("ReadAll() error = %v", err)

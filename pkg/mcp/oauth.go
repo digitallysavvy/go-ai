@@ -281,11 +281,11 @@ func DiscoverOAuthProtectedResourceMetadata(ctx context.Context, serverURL strin
 	}
 	if resp == nil || resp.StatusCode == http.StatusNotFound {
 		closeResponse(resp)
-		return OAuthProtectedResourceMetadata{}, fmt.Errorf("Resource server does not implement OAuth 2.0 Protected Resource Metadata.")
+		return OAuthProtectedResourceMetadata{}, fmt.Errorf("Resource server does not implement OAuth 2.0 Protected Resource Metadata.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return OAuthProtectedResourceMetadata{}, fmt.Errorf("HTTP %d trying to load well-known OAuth protected resource metadata.", resp.StatusCode)
+		return OAuthProtectedResourceMetadata{}, fmt.Errorf("HTTP %d trying to load well-known OAuth protected resource metadata.", resp.StatusCode) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	rawBody, err := readLimitedOAuthBody(resp)
 	if err != nil {
@@ -373,7 +373,7 @@ func DiscoverAuthorizationServerMetadata(ctx context.Context, authorizationServe
 			return nil, NewMCPClientError(0, fmt.Sprintf("OAuth authorization server metadata issuer %s does not match expected issuer %s", metadata.Issuer, candidate.ExpectedIssuer), nil)
 		}
 		if candidate.Type == "oidc" && !containsOAuthString(metadata.CodeChallengeMethodsSupported, "S256") {
-			return nil, fmt.Errorf("Incompatible OIDC provider at %s: does not support S256 code challenge method required by MCP specification", candidate.URL)
+			return nil, fmt.Errorf("Incompatible OIDC provider at %s: does not support S256 code challenge method required by MCP specification", candidate.URL) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		return &metadata, nil
 	}

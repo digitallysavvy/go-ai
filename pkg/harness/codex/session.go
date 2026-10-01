@@ -224,7 +224,7 @@ func (s *session) DoDetach(ctx context.Context) (*harness.ResumeSessionState, er
 	s.mu.Lock()
 	if s.stopped {
 		s.mu.Unlock()
-		return nil, fmt.Errorf("codex session %s is already stopped; cannot detach.", s.opts.sessionID)
+		return nil, fmt.Errorf("codex session %s is already stopped; cannot detach.", s.opts.sessionID) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	s.stopped = true
 	s.mu.Unlock()
@@ -236,7 +236,7 @@ func (s *session) DoSuspendTurn(ctx context.Context) (*harness.ContinueTurnState
 	s.mu.Lock()
 	if s.stopped {
 		s.mu.Unlock()
-		return nil, fmt.Errorf("codex session %s is stopped; cannot suspend.", s.opts.sessionID)
+		return nil, fmt.Errorf("codex session %s is stopped; cannot suspend.", s.opts.sessionID) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	s.stopped = true
 	s.mu.Unlock()
@@ -279,13 +279,13 @@ func (s *session) DoStop(ctx context.Context) (*harness.ResumeSessionState, erro
 	s.mu.Lock()
 	if s.stopped {
 		s.mu.Unlock()
-		return nil, fmt.Errorf("codex session %s is already stopped; cannot stop.", s.opts.sessionID)
+		return nil, fmt.Errorf("codex session %s is already stopped; cannot stop.", s.opts.sessionID) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	s.stopped = true
 	s.mu.Unlock()
 
 	s.opts.channel.BeginClose()
-	var data json.RawMessage = json.RawMessage("{}")
+	var data = json.RawMessage("{}")
 	if !s.opts.channel.IsClosed() {
 		replied := make(chan json.RawMessage, 1)
 		unsub := s.opts.channel.On("bridge-stop", func(e bridge.Event) {
@@ -308,7 +308,7 @@ func (s *session) DoStop(ctx context.Context) (*harness.ResumeSessionState, erro
 			}
 		case <-time.After(5 * time.Second):
 			unsub()
-			return nil, fmt.Errorf("codex session %s did not reply to stop within 5s.", s.opts.sessionID)
+			return nil, fmt.Errorf("codex session %s did not reply to stop within 5s.", s.opts.sessionID) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 	}
 
@@ -388,7 +388,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 		pc.settleSuccess()
 	}))
 	unsubs = append(unsubs, s.opts.channel.On(harness.PartTypeError, func(e bridge.Event) {
-		var cause error = errors.New("codex bridge reported an error")
+		var cause = errors.New("codex bridge reported an error")
 		if f, ok := e.Message.(bridge.StreamPartFrame); ok {
 			pc.forward(f.Part)
 			if ep, ok := f.Part.(*harness.ErrorPart); ok && ep.Error != nil {
@@ -404,7 +404,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 			pc.settleSuccess()
 			return
 		}
-		pc.settleError(errors.New("codex bridge closed before the turn finished."))
+		pc.settleError(errors.New("codex bridge closed before the turn finished.")) //nolint:staticcheck // matches TS SDK's exact error text
 	})
 
 	go func() {

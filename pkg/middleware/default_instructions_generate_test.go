@@ -59,7 +59,7 @@ func TestDefaultInstructionsMiddleware_AppliesOnceToEveryStepOfMultiStepGenerati
 		Model:    wrapped,
 		Prompt:   "What is the weather?",
 		Tools:    []types.Tool{tool},
-		StopWhen: []ai.StopCondition{ai.StepCountIs(maxSteps)},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(maxSteps)},
 	})
 	if err != nil {
 		t.Fatalf("GenerateText() error = %v", err)

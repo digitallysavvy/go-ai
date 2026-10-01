@@ -46,7 +46,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer result.Close()
+	defer func() { _ = result.Close() }()
 
 	for chunk := range result.Chunks() {
 		fmt.Print(chunk.Text)

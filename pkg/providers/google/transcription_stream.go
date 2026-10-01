@@ -155,7 +155,7 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		apiKey = callAPIKey
 	}
 	if apiKey == "" {
-		return nil, errors.New("Google Generative AI API key is required for streaming transcription.")
+		return nil, errors.New("Google Generative AI API key is required for streaming transcription.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	wsHeaders := internalhttp.MergeHeaders(filteredBaseHeaders, filteredCallHeaders)
 
@@ -180,9 +180,9 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		inputAudioRate = *opts.InputAudioFormat.Rate
 	}
 
-	finishGraceMs := m.finishGraceMs
-	if finishGraceMs <= 0 {
-		finishGraceMs = defaultFinishGraceDuration
+	finishGrace := m.finishGrace
+	if finishGrace <= 0 {
+		finishGrace = defaultFinishGraceDuration
 	}
 
 	wsURL := getLiveTranscriptionWebSocketURL(m.prov.config.BaseURL, apiKey)
@@ -197,7 +197,7 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		headers:          wsHeaders,
 		setup:            setup,
 		inputAudioRate:   inputAudioRate,
-		finishGraceMs:    finishGraceMs,
+		finishGrace:      finishGrace,
 		warnings:         []types.Warning{},
 		audio:            opts.Audio,
 		includeRawChunks: opts.IncludeRawChunks,
@@ -215,7 +215,7 @@ type googleLiveTranscriptionStreamConfig struct {
 	headers          map[string]string
 	setup            map[string]interface{}
 	inputAudioRate   int
-	finishGraceMs    time.Duration
+	finishGrace      time.Duration
 	warnings         []types.Warning
 	audio            provider.AudioStream
 	includeRawChunks bool
@@ -407,7 +407,7 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 			return
 		}
 		cancelPendingFinish()
-		finishTimer = time.NewTimer(cfg.finishGraceMs)
+		finishTimer = time.NewTimer(cfg.finishGrace)
 		finishTimerC = finishTimer.C
 	}
 
@@ -471,7 +471,7 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 					// had already ended — distinct from a clean close (TS
 					// onClose), which finishes successfully once a finish is
 					// pending.
-					fail(errors.New("Google Live transcription error"))
+					fail(errors.New("Google Live transcription error")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 				} else if finishTimer != nil {
 					// Gate on the pending finish-grace timer, not the
 					// audioEnded boolean directly: schedulePendingFinish only
@@ -484,7 +484,7 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 					// consistency across the two Live API streams).
 					finish()
 				} else {
-					fail(fmt.Errorf("Google Live transcription WebSocket closed unexpectedly before finishing"))
+					fail(fmt.Errorf("Google Live transcription WebSocket closed unexpectedly before finishing")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 				}
 				return
 			}

@@ -238,7 +238,7 @@ func newFakeHarnessAgent(t *testing.T, opts fakeHarnessOptions, agentOpts ...fun
 
 func withStopWhenStepCount(n int) func(*harness.AgentSettings) {
 	return func(s *harness.AgentSettings) {
-		s.StopWhen = append(s.StopWhen, ai.StepCountIs(n))
+		s.StopWhen = append(s.StopWhen, ai.IsStepCount(n))
 	}
 }
 

@@ -265,10 +265,10 @@ func abortError(ctx context.Context) error {
 // ctx-derived errors already handled above) is returned unchanged.
 func sanitizeDialError(err error) error {
 	var dialErr *websocket.DialError
-	if !errors.As(err, &dialErr) || dialErr.Config == nil || dialErr.Config.Location == nil {
+	if !errors.As(err, &dialErr) || dialErr.Config == nil || dialErr.Location == nil {
 		return err
 	}
-	redactedURL := *dialErr.Config.Location
+	redactedURL := *dialErr.Location
 	if redactedURL.RawQuery != "" {
 		redactedURL.RawQuery = "REDACTED"
 	}

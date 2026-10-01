@@ -1869,13 +1869,13 @@ func TestDoGenerate_ComposesStartAndStatus(t *testing.T) {
 	pollCount := 0
 	model, server := newKlingAITestModel(t, "kling-v2.6-t2v", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case r.URL.Path == "/v1/videos/text2video":
+		switch r.URL.Path {
+		case "/v1/videos/text2video":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"code": 0, "message": "ok",
 				"data": map[string]interface{}{"task_id": "task-1", "task_status": "submitted"},
 			})
-		case r.URL.Path == "/v1/videos/text2video/task-1":
+		case "/v1/videos/text2video/task-1":
 			pollCount++
 			if pollCount < 2 {
 				_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -1919,13 +1919,13 @@ func TestDoGenerate_ComposesStartAndStatus(t *testing.T) {
 func TestDoGenerate_TaskFailed(t *testing.T) {
 	model, server := newKlingAITestModel(t, "kling-v2.6-t2v", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case r.URL.Path == "/v1/videos/text2video":
+		switch r.URL.Path {
+		case "/v1/videos/text2video":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"code": 0, "message": "ok",
 				"data": map[string]interface{}{"task_id": "task-fail", "task_status": "submitted"},
 			})
-		case r.URL.Path == "/v1/videos/text2video/task-fail":
+		case "/v1/videos/text2video/task-fail":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"code": 0, "message": "ok",
 				"data": map[string]interface{}{"task_id": "task-fail", "task_status": "failed", "task_status_msg": "content moderation"},

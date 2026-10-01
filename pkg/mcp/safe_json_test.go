@@ -65,7 +65,7 @@ func TestUnmarshalSafeJSONRejectsExcessFields(t *testing.T) {
 		if i > 0 {
 			b.WriteString(`,`)
 		}
-		b.WriteString(fmt.Sprintf(`"k%d":1`, i))
+		_, _ = fmt.Fprintf(&b, `"k%d":1`, i)
 	}
 	b.WriteString(`}`)
 

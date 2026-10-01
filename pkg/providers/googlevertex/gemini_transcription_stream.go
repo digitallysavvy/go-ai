@@ -147,9 +147,9 @@ func (m *GeminiTranscriptionModel) DoStream(ctx context.Context, opts *provider.
 		inputAudioRate = *opts.InputAudioFormat.Rate
 	}
 
-	finishGraceMs := m.finishGraceMs
-	if finishGraceMs <= 0 {
-		finishGraceMs = defaultGeminiFinishGraceDuration
+	finishGrace := m.finishGrace
+	if finishGrace <= 0 {
+		finishGrace = defaultGeminiFinishGraceDuration
 	}
 
 	wsURL := geminiLiveWebSocketURL(m.provider, location)
@@ -164,7 +164,7 @@ func (m *GeminiTranscriptionModel) DoStream(ctx context.Context, opts *provider.
 		headers:          wsHeaders,
 		setup:            setup,
 		inputAudioRate:   inputAudioRate,
-		finishGraceMs:    finishGraceMs,
+		finishGrace:      finishGrace,
 		warnings:         []types.Warning{},
 		audio:            opts.Audio,
 		includeRawChunks: opts.IncludeRawChunks,
@@ -182,7 +182,7 @@ type geminiLiveTranscriptionStreamConfig struct {
 	headers          map[string]string
 	setup            map[string]interface{}
 	inputAudioRate   int
-	finishGraceMs    time.Duration
+	finishGrace      time.Duration
 	warnings         []types.Warning
 	audio            provider.AudioStream
 	includeRawChunks bool
@@ -360,7 +360,7 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 			return
 		}
 		cancelPendingFinish()
-		finishTimer = time.NewTimer(cfg.finishGraceMs)
+		finishTimer = time.NewTimer(cfg.finishGrace)
 		finishTimerC = finishTimer.C
 	}
 
@@ -415,11 +415,11 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 					return
 				}
 				if !wsutil.IsCleanClose(res.Err) {
-					fail(errors.New("Google Vertex Live transcription error"))
+					fail(errors.New("Google Vertex Live transcription error")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 				} else if audioEnded {
 					finish()
 				} else {
-					fail(fmt.Errorf("Google Vertex Live transcription WebSocket closed unexpectedly before finishing"))
+					fail(fmt.Errorf("Google Vertex Live transcription WebSocket closed unexpectedly before finishing")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 				}
 				return
 			}

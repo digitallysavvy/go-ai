@@ -862,7 +862,7 @@ func TestInteractionsAgentStreamReconnectsAfterIntermittentEOF(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoStream: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	var text strings.Builder
 	var finish *provider.StreamChunk
@@ -908,7 +908,7 @@ func TestInteractionsStreamToolInputStartEmittedOnce(t *testing.T) {
 		``,
 	}, "\n")
 	stream := newInteractionsEventStream(context.Background(), New(Config{APIKey: "test-key"}).client, io.NopCloser(strings.NewReader(body)), "", nil, nil, nil, 0)
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	var startCount int
 	var call *types.ToolCall
@@ -949,7 +949,7 @@ func TestInteractionsStreamFlushesFinishWithoutComplete(t *testing.T) {
 		``,
 	}, "\n")
 	stream := newInteractionsEventStream(context.Background(), New(Config{APIKey: "test-key"}).client, io.NopCloser(strings.NewReader(body)), "", nil, nil, nil, 0)
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	var sawTextEnd bool
 	var finish *provider.StreamChunk
@@ -997,7 +997,7 @@ func TestInteractionsStreamImageURIAndBuiltinResultSources(t *testing.T) {
 		``,
 	}, "\n")
 	stream := newInteractionsEventStream(context.Background(), New(Config{APIKey: "test-key"}).client, io.NopCloser(strings.NewReader(body)), "", nil, nil, nil, 0)
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	var sawURLFile bool
 	var sawSource bool
@@ -1053,7 +1053,7 @@ func TestInteractionsStreamProcessingAndVideoSteps(t *testing.T) {
 		``,
 	}, "\n")
 	stream := newInteractionsEventStream(context.Background(), New(Config{APIKey: "test-key"}).client, io.NopCloser(strings.NewReader(body)), "", nil, nil, nil, 0)
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	var customChunks []*provider.StreamChunk
 	var videoChunk *provider.StreamChunk
@@ -1096,7 +1096,7 @@ func TestInteractionsStreamErrorEmitsErrorAndFinish(t *testing.T) {
 		``,
 	}, "\n")
 	stream := newInteractionsEventStream(context.Background(), New(Config{APIKey: "test-key"}).client, io.NopCloser(strings.NewReader(body)), "", nil, nil, nil, 0)
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	var sawError bool
 	var finish *provider.StreamChunk
@@ -1135,7 +1135,7 @@ func TestInteractionsStreamFinishMetadataAlwaysGoogleObject(t *testing.T) {
 
 	body := ""
 	stream := newInteractionsEventStream(context.Background(), New(Config{APIKey: "test-key"}).client, io.NopCloser(strings.NewReader(body)), "", nil, nil, nil, 0)
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	chunk, err := stream.Next()
 	if err != nil {

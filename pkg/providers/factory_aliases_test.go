@@ -36,7 +36,7 @@ func TestProviderFactoryAliasesMirrorTypeScriptCreateExports(t *testing.T) {
 	if google.CreateGoogle(google.Config{}) == nil {
 		t.Fatal("CreateGoogle returned nil")
 	}
-	if google.CreateGoogleGenerativeAI(google.Config{}) == nil {
+	if google.CreateGoogleGenerativeAI(google.Config{}) == nil { //nolint:staticcheck // deliberately testing the deprecated alias
 		t.Fatal("CreateGoogleGenerativeAI returned nil")
 	}
 	if bedrock.CreateAmazonBedrock(bedrock.Config{Region: "us-east-1"}) == nil {
@@ -96,13 +96,13 @@ func TestProviderFactoryAliasesMirrorTypeScriptCreateExports(t *testing.T) {
 	if p, err := googlevertex.CreateGoogleVertex(vertexCfg); err != nil || p == nil {
 		t.Fatalf("CreateGoogleVertex returned provider=%v err=%v", p, err)
 	}
-	if p, err := googlevertex.CreateVertex(vertexCfg); err != nil || p == nil {
+	if p, err := googlevertex.CreateVertex(vertexCfg); err != nil || p == nil { //nolint:staticcheck // deliberately testing the deprecated alias
 		t.Fatalf("CreateVertex returned provider=%v err=%v", p, err)
 	}
 	if p, err := gateway.CreateGateway(gateway.Config{APIKey: "test-key"}); err != nil || p == nil {
 		t.Fatalf("CreateGateway returned provider=%v err=%v", p, err)
 	}
-	if p, err := gateway.CreateGatewayProvider(gateway.Config{APIKey: "test-key"}); err != nil || p == nil {
+	if p, err := gateway.CreateGatewayProvider(gateway.Config{APIKey: "test-key"}); err != nil || p == nil { //nolint:staticcheck // deliberately testing the deprecated alias
 		t.Fatalf("CreateGatewayProvider returned provider=%v err=%v", p, err)
 	}
 }

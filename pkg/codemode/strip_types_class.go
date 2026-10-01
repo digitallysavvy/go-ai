@@ -16,7 +16,7 @@ func handleClassDecl(tokens []tsToken, i int, out *[]tsToken) (int, error) {
 	i = handleExtendsImplements(tokens, i, out)
 
 	open := nextSignificant(tokens, i)
-	if open < 0 || !(tokens[open].kind == "punct" && tokens[open].text == "{") {
+	if open < 0 || tokens[open].kind != "punct" || tokens[open].text != "{" {
 		return i, nil
 	}
 	for k := i; k < open; k++ {

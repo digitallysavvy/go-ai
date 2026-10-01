@@ -22,7 +22,7 @@ func TestNewMultipartStreamBody_FieldsPrecedeFilePart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMultipartStreamBody: %v", err)
 	}
-	defer body.Close()
+	defer func() { _ = body.Close() }()
 
 	if !strings.HasPrefix(contentType, "multipart/form-data; boundary=ai-sdk-multipart-") {
 		t.Fatalf("Content-Type = %q", contentType)
@@ -99,7 +99,7 @@ func TestNewMultipartStreamBody_DefaultsMediaType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMultipartStreamBody: %v", err)
 	}
-	defer body.Close()
+	defer func() { _ = body.Close() }()
 
 	_, params, _ := mime.ParseMediaType(contentType)
 	mr := multipart.NewReader(body, params["boundary"])
@@ -119,7 +119,7 @@ func TestNewMultipartStreamBody_PropagatesContentReadError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMultipartStreamBody: %v", err)
 	}
-	defer body.Close()
+	defer func() { _ = body.Close() }()
 
 	_, params, _ := mime.ParseMediaType(contentType)
 	mr := multipart.NewReader(body, params["boundary"])

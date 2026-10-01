@@ -128,10 +128,6 @@ func newLiveTranscriptionTestServer(t *testing.T) *liveTranscriptionTestServer {
 	return s
 }
 
-func (s *liveTranscriptionTestServer) wsURL() string {
-	return "ws" + strings.TrimPrefix(s.ts.URL, "http")
-}
-
 func (s *liveTranscriptionTestServer) close() {
 	close(s.toSend)
 	s.ts.Close()
@@ -189,7 +185,7 @@ func newLiveTestModel(t *testing.T, baseURL string) *TranscriptionModel {
 	// delivery on the httptest WebSocket server: under load (observed with
 	// `go test -race -count=10` on a busy machine), the timer could fire and
 	// finish the stream with truncated text before a same-tick server message
-	// was read and processed. Leaving finishGraceMs unset applies
+	// was read and processed. Leaving finishGrace unset applies
 	// defaultFinishGraceDuration (3s, matching TS's own production default
 	// and its 5000ms test default), which no real test scenario here comes
 	// close to hitting.
@@ -257,10 +253,10 @@ func TestTranscriptionModel_DoStream_RejectsNon16kHzPCM(t *testing.T) {
 
 func TestTranscriptionModel_DoStream_RequiresAPIKey(t *testing.T) {
 	old, hadOld := os.LookupEnv("GOOGLE_GENERATIVE_AI_API_KEY")
-	os.Unsetenv("GOOGLE_GENERATIVE_AI_API_KEY")
+	_ = os.Unsetenv("GOOGLE_GENERATIVE_AI_API_KEY")
 	defer func() {
 		if hadOld {
-			os.Setenv("GOOGLE_GENERATIVE_AI_API_KEY", old)
+			_ = os.Setenv("GOOGLE_GENERATIVE_AI_API_KEY", old)
 		}
 	}()
 
@@ -615,7 +611,7 @@ func TestTranscriptionModel_DoStream_FinishWhenCloseWhilePending(t *testing.T) {
 	defer server.close()
 
 	model := newLiveTestModel(t, server.ts.URL)
-	model.finishGraceMs = 10 * time.Second
+	model.finishGrace = 10 * time.Second
 	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
 		Audio:            newChanAudioStream([]byte{1, 2}),
 		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},

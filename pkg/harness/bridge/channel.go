@@ -231,7 +231,7 @@ type cancelHandle struct{ cancel context.CancelCauseFunc }
 var ErrChannelAborted = errors.New("SandboxChannel connection aborted")
 
 // errReconnectDeadline is the cause of an exhausted reconnect budget.
-var errReconnectDeadline = errors.New("Reconnect deadline expired")
+var errReconnectDeadline = errors.New("Reconnect deadline expired") //nolint:staticcheck // matches TS SDK's exact error text
 
 // Channel is the host-side typed wrapper around the bridge connection (TS
 // `SandboxChannel`).
@@ -360,7 +360,7 @@ func (c *Channel) Open(ctx context.Context, resume bool) error {
 	c.mu.Lock()
 	if c.terminal {
 		c.mu.Unlock()
-		return errors.New("SandboxChannel: cannot open a closed channel.")
+		return errors.New("SandboxChannel: cannot open a closed channel.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	connectCtx, cancel := context.WithCancelCause(ctx)
 	handle := &cancelHandle{cancel: cancel}
@@ -381,7 +381,7 @@ func (c *Channel) Open(ctx context.Context, resume bool) error {
 	c.ws = conn
 	c.connected = true
 	c.wire(conn)
-	var seed float64 = c.lastSeen
+	var seed = c.lastSeen
 	c.mu.Unlock()
 	cancel(nil)
 
@@ -490,7 +490,7 @@ func (c *Channel) Send(cmd InboundCommand) error {
 	terminal := c.terminal
 	c.mu.Unlock()
 	if terminal {
-		return fmt.Errorf("SandboxChannel: cannot send %s — channel is closed.", cmd.FrameType())
+		return fmt.Errorf("SandboxChannel: cannot send %s — channel is closed.", cmd.FrameType()) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	data, err := MarshalInbound(cmd)
 	if err != nil {

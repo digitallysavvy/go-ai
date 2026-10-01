@@ -29,7 +29,7 @@ var GoogleVertexAnthropicTools = struct {
 	Bash20250124:            anthropictools.Bash20250124,
 	TextEditor20241022:      anthropictools.TextEditor20241022,
 	TextEditor20250124:      anthropictools.TextEditor20250124,
-	TextEditor20250429:      anthropictools.TextEditor20250429,
+	TextEditor20250429:      anthropictools.TextEditor20250429, //nolint:staticcheck // re-exported for source compatibility with this package's own TextEditor20250429
 	TextEditor20250728:      anthropictools.TextEditor20250728,
 	Computer20241022:        anthropictools.Computer20241022,
 	WebSearch20250305:       anthropictools.WebSearch20250305,
@@ -46,7 +46,9 @@ func TextEditor20241022() types.Tool { return anthropictools.TextEditor20241022(
 
 func TextEditor20250124() types.Tool { return anthropictools.TextEditor20250124() }
 
-func TextEditor20250429() types.Tool { return anthropictools.TextEditor20250429() }
+// TextEditor20250429 re-exports anthropictools.TextEditor20250429 for source
+// compatibility; it is deprecated upstream in favor of TextEditor20250728.
+func TextEditor20250429() types.Tool { return anthropictools.TextEditor20250429() } //nolint:staticcheck
 
 func TextEditor20250728(args TextEditor20250728Args) types.Tool {
 	return anthropictools.TextEditor20250728(args)

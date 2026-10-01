@@ -172,7 +172,7 @@ type AgentSettings struct {
 	// run_prompt.go's telemetry.go): a turn span nests step spans, which
 	// nest model-call and tool-execution spans. Nil disables it. Mirrors TS
 	// `HarnessAgentSettings.telemetry`.
-	Telemetry *telemetry.Settings
+	Telemetry *telemetry.Options
 }
 
 var forbiddenAgentHeaders = map[string]struct{}{
@@ -192,7 +192,7 @@ func normalizeAgentHeaders(headers map[string]string) (map[string]string, error)
 	for name, value := range headers {
 		lower := strings.ToLower(name)
 		if _, forbidden := forbiddenAgentHeaders[lower]; forbidden {
-			return nil, fmt.Errorf("HarnessAgent: `headers` must not include the managed header `%s`.", lower)
+			return nil, fmt.Errorf("HarnessAgent: `headers` must not include the managed header `%s`.", lower) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		out[lower] = value
 	}
@@ -243,7 +243,7 @@ func assertNoReservedQuestionTool(harness Harness, userTools map[string]types.To
 	_, harnessHasIt := harness.BuiltinTools()[string(BuiltinToolAskUserQuestions)]
 	_, userHasIt := userTools[string(BuiltinToolAskUserQuestions)]
 	if harnessHasIt && userHasIt {
-		return errors.New("HarnessAgent tool name 'askUserQuestions' is reserved for harness question requests.")
+		return errors.New("HarnessAgent tool name 'askUserQuestions' is reserved for harness question requests.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	return nil
 }

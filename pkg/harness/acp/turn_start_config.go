@@ -143,7 +143,7 @@ func validateTurnStartConfig(turnStartConfig TurnStartConfig, in validateTurnSta
 		OutputSchemaMapping: in.OutputSchemaMapping, Model: turnStartConfig.Model, ModelMapping: in.ModelMapping,
 	})
 	if current.ConfigurationFingerprint != turnStartConfig.ConfigurationFingerprint {
-		return fmt.Errorf("The persisted ACP turn start configuration is incompatible with the current non-secret start configuration.")
+		return fmt.Errorf("The persisted ACP turn start configuration is incompatible with the current non-secret start configuration.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	return nil
 }
@@ -182,7 +182,7 @@ func validateColdSessionConfiguration(coldSession ColdSessionState, in validateC
 		OutputSchemaMapping: in.OutputSchemaMapping, Model: "", ModelMapping: in.ModelMapping,
 	})
 	if current.ConfigurationFingerprint != coldSession.ConfigurationFingerprint || coldSession.PermissionMode != in.PermissionMode {
-		return TurnStartConfig{}, fmt.Errorf("ACP cold-session state is incompatible with the current non-secret session configuration.")
+		return TurnStartConfig{}, fmt.Errorf("ACP cold-session state is incompatible with the current non-secret session configuration.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	return current, nil
 }
@@ -193,7 +193,7 @@ func validateColdSessionConfiguration(coldSession ColdSessionState, in validateC
 // start.
 func assertRecoveryToolCatalog(persisted, current []harness.ToolSpec) error {
 	if fingerprintValue(persisted) != fingerprintValue(current) {
-		return fmt.Errorf("ACP lossy rerun requires the same active host tool catalog as the original turn.")
+		return fmt.Errorf("ACP lossy rerun requires the same active host tool catalog as the original turn.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	return nil
 }

@@ -55,7 +55,7 @@ func stripJSONCComments(text string) string {
 			}
 		case c == '/' && i+1 < n && text[i+1] == '*':
 			i += 2
-			for i+1 < n && !(text[i] == '*' && text[i+1] == '/') {
+			for i+1 < n && (text[i] != '*' || text[i+1] != '/') {
 				i++
 			}
 			i += 2

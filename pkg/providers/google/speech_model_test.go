@@ -3,6 +3,7 @@ package google
 import (
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -209,4 +210,72 @@ func TestGoogleSpeechModelInvalidProviderOptionsUseInvalidArgumentError(t *testi
 	if invalid.Field != "providerOptions" || invalid.Message != "invalid google provider options" {
 		t.Fatalf("invalid argument error = %#v", invalid)
 	}
+}
+
+// TestParseGeminiSampleRate covers out-of-range / malformed sample rates in
+// the API-provided mimeType, including a value that overflows an int64 (CWE
+// style go/incorrect-integer-conversion regression: strconv.Atoi clamps to
+// math.MaxInt64 with a non-nil error on overflow instead of returning 0, so
+// parseGeminiSampleRate must check the error and bound the result itself
+// rather than relying on the caller to notice).
+func TestParseGeminiSampleRate(t *testing.T) {
+	tests := []struct {
+		name     string
+		mimeType string
+		want     int
+	}{
+		{"typical", "audio/L16;rate=24000", 24000},
+		{"no match", "audio/L16", 0},
+		{"overflows int64", "audio/L16;rate=99999999999999999999999999999999", 0},
+		{"exceeds uint32 range", "audio/L16;rate=4294967296", 0},
+		{"at uint32 max", "audio/L16;rate=4294967295", 4294967295},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseGeminiSampleRate(tt.mimeType); got != tt.want {
+				t.Fatalf("parseGeminiSampleRate(%q) = %d, want %d", tt.mimeType, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestAddGeminiWAVHeaderClampsOutOfRangeSampleRate ensures a sample rate
+// that can't be represented as a uint32 (or is negative) is written as 0
+// into the WAV header's sample-rate and byte-rate fields instead of
+// silently truncating/wrapping via uint32(sampleRate).
+func TestAddGeminiWAVHeaderClampsOutOfRangeSampleRate(t *testing.T) {
+	pcm := []byte{1, 2, 3, 4}
+
+	tests := []struct {
+		name       string
+		sampleRate int
+		wantRate   uint32
+	}{
+		{"negative", -1, 0},
+		{"overflows uint32", int64Max(), 0},
+		{"valid", 24000, 24000},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := addGeminiWAVHeader(pcm, tt.sampleRate)
+			if len(out) < 28 {
+				t.Fatalf("wav header too short: %d bytes", len(out))
+			}
+			gotRate := binary.LittleEndian.Uint32(out[24:28])
+			if gotRate != tt.wantRate {
+				t.Fatalf("sample rate field = %d, want %d", gotRate, tt.wantRate)
+			}
+			gotByteRate := binary.LittleEndian.Uint32(out[28:32])
+			wantByteRate := tt.wantRate * 2 // numChannels=1, bitsPerSample=16 -> blockAlign=2
+			if gotByteRate != wantByteRate {
+				t.Fatalf("byte rate field = %d, want %d", gotByteRate, wantByteRate)
+			}
+		})
+	}
+}
+
+// int64Max returns math.MaxInt64 as an int, without adding a "math" import
+// just for one constant.
+func int64Max() int {
+	return 1<<63 - 1
 }

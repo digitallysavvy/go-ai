@@ -1373,12 +1373,12 @@ func (c *anthropicConverter) convertProviderToolResult(content *[]map[string]int
 		return c.convertCodeExecutionResult(part, output, push, unsupportedOutput)
 	}
 
-	switch {
-	case providerToolName == "code_execution":
+	switch providerToolName {
+	case "code_execution":
 		// Only reachable after an mcp result (TS falls through to the final warning).
 		c.warn(fmt.Sprintf("provider executed tool result for tool %s is not supported", part.ToolName))
 
-	case providerToolName == "web_fetch":
+	case "web_fetch":
 		if output.kind == "error-json" {
 			push(map[string]interface{}{
 				"type":        "web_fetch_tool_result",
@@ -1400,7 +1400,7 @@ func (c *anthropicConverter) convertProviderToolResult(content *[]map[string]int
 			"content":     anthropicWebFetchResultContent(output.value),
 		}, true)
 
-	case providerToolName == "web_search":
+	case "web_search":
 		if output.kind == "error-json" {
 			push(map[string]interface{}{
 				"type":        "web_search_tool_result",
@@ -1422,7 +1422,7 @@ func (c *anthropicConverter) convertProviderToolResult(content *[]map[string]int
 			"content":     anthropicWebSearchResultContent(output.value),
 		}, true)
 
-	case providerToolName == "tool_search_tool_regex" || providerToolName == "tool_search_tool_bm25":
+	case "tool_search_tool_regex", "tool_search_tool_bm25":
 		if output.kind != "json" {
 			unsupportedOutput()
 			return nil
@@ -1442,7 +1442,7 @@ func (c *anthropicConverter) convertProviderToolResult(content *[]map[string]int
 			},
 		}, false)
 
-	case providerToolName == "advisor":
+	case "advisor":
 		if output.kind != "json" && output.kind != "error-json" {
 			unsupportedOutput()
 			return nil

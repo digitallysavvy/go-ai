@@ -358,7 +358,7 @@ func TestWorkflowChatTransportPumpChunkStreamGoroutineLeak(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		flusher := w.(http.Flusher)
 		for i := 0; i < 50; i++ {
-			fmt.Fprintf(w, "data: {\"type\":\"text-delta\",\"id\":\"t1\",\"delta\":\"chunk-%d\"}\n\n", i)
+			_, _ = fmt.Fprintf(w, "data: {\"type\":\"text-delta\",\"id\":\"t1\",\"delta\":\"chunk-%d\"}\n\n", i)
 			flusher.Flush()
 			time.Sleep(2 * time.Millisecond)
 		}

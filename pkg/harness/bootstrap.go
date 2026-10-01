@@ -177,7 +177,7 @@ func ApplyBootstrapRecipe(ctx context.Context, session providerutils.SandboxSess
 		return err
 	}
 	if mkdir.ExitCode != 0 {
-		return fmt.Errorf("Failed to create bootstrap directory for harness '%s' (exit %d): %s\n%s",
+		return fmt.Errorf("Failed to create bootstrap directory for harness '%s' (exit %d): %s\n%s", //nolint:staticcheck // matches TS SDK's exact error text
 			recipe.HarnessID, mkdir.ExitCode, bootstrapDir, orString(mkdir.Stderr, mkdir.Stdout))
 	}
 
@@ -239,7 +239,7 @@ type SandboxConfig struct {
 // ValidateSandboxBootstrapSettings mirrors TS `validateSandboxBootstrapSettings`.
 func ValidateSandboxBootstrapSettings(cfg SandboxConfig) error {
 	if (cfg.OnBootstrap == nil) != (cfg.BootstrapHash == "") {
-		return errors.New("HarnessAgent: `sandboxConfig.onBootstrap` and `sandboxConfig.bootstrapHash` must be provided together.")
+		return errors.New("HarnessAgent: `sandboxConfig.onBootstrap` and `sandboxConfig.bootstrapHash` must be provided together.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	if cfg.WorkDir != "" {
 		if _, err := NormalizeSandboxWorkDir(cfg.WorkDir); err != nil {
@@ -253,20 +253,20 @@ func ValidateSandboxBootstrapSettings(cfg SandboxConfig) error {
 // Mirrors TS `normalizeSandboxWorkDir`.
 func NormalizeSandboxWorkDir(workDir string) (string, error) {
 	if workDir == "" {
-		return "", errors.New("HarnessAgent: `sandboxConfig.workDir` must not be empty.")
+		return "", errors.New("HarnessAgent: `sandboxConfig.workDir` must not be empty.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	if strings.Contains(workDir, "\x00") {
-		return "", errors.New("HarnessAgent: `sandboxConfig.workDir` must not contain NUL.")
+		return "", errors.New("HarnessAgent: `sandboxConfig.workDir` must not contain NUL.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	if strings.Contains(workDir, `\`) {
-		return "", errors.New("HarnessAgent: `sandboxConfig.workDir` must use POSIX path separators.")
+		return "", errors.New("HarnessAgent: `sandboxConfig.workDir` must use POSIX path separators.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	if posixpath.IsAbs(workDir) {
-		return "", errors.New("HarnessAgent: `sandboxConfig.workDir` must be relative.")
+		return "", errors.New("HarnessAgent: `sandboxConfig.workDir` must be relative.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	normalized := posixpath.Normalize(workDir)
 	if normalized == "." || normalized == ".." || strings.HasPrefix(normalized, "../") {
-		return "", errors.New("HarnessAgent: `sandboxConfig.workDir` must stay inside the sandbox default working directory.")
+		return "", errors.New("HarnessAgent: `sandboxConfig.workDir` must stay inside the sandbox default working directory.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	return normalized, nil
 }
@@ -419,7 +419,7 @@ func EnsureSandboxDirectory(ctx context.Context, session providerutils.SandboxSe
 		return err
 	}
 	if result.ExitCode != 0 {
-		return fmt.Errorf("Failed to create sandbox work directory %s (exit %d): %s", workDir, result.ExitCode, orString(result.Stderr, result.Stdout))
+		return fmt.Errorf("Failed to create sandbox work directory %s (exit %d): %s", workDir, result.ExitCode, orString(result.Stderr, result.Stdout)) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	return nil
 }

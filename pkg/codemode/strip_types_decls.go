@@ -6,7 +6,7 @@ package codemode
 // "interface" token itself is skipped.
 func skipInterfaceDecl(tokens []tsToken, i int) int {
 	j := i + 1
-	for j < len(tokens) && !(tokens[j].kind == "punct" && tokens[j].text == "{") {
+	for j < len(tokens) && (tokens[j].kind != "punct" || tokens[j].text != "{") {
 		j++
 	}
 	if j >= len(tokens) {

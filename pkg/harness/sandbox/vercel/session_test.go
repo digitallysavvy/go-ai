@@ -192,7 +192,7 @@ func TestSessionReadWriteFileRoundTripThroughStreams(t *testing.T) {
 	if rc == nil {
 		t.Fatal("expected a non-nil reader")
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	got, err := io.ReadAll(rc)
 	if err != nil {
 		t.Fatal(err)

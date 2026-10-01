@@ -14,11 +14,11 @@ import (
 func TestFilesAPI_UploadFile(t *testing.T) {
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/upload/v1beta/files":
+		switch r.URL.Path {
+		case "/upload/v1beta/files":
 			w.Header().Set("x-goog-upload-url", srv.URL+"/upload-session")
 			w.WriteHeader(http.StatusOK)
-		case r.URL.Path == "/upload-session":
+		case "/upload-session":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"file": map[string]interface{}{
 					"name":      "files/abc123",
@@ -60,18 +60,18 @@ func TestFilesAPI_UploadFile(t *testing.T) {
 func TestFilesAPI_UploadFile_RespondsPromptlyToContextCancellation(t *testing.T) {
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/upload/v1beta/files":
+		switch r.URL.Path {
+		case "/upload/v1beta/files":
 			w.Header().Set("x-goog-upload-url", srv.URL+"/upload-session")
 			w.WriteHeader(http.StatusOK)
-		case r.URL.Path == "/upload-session":
+		case "/upload-session":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"file": map[string]interface{}{
 					"name":  "files/abc123",
 					"state": "PROCESSING",
 				},
 			})
-		case r.URL.Path == "/files/abc123":
+		case "/files/abc123":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"name":  "files/abc123",
 				"state": "PROCESSING",

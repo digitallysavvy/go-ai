@@ -8,16 +8,26 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // LinkValidator validates internal links in documentation files
 type LinkValidator struct {
-	docsRoot    string
-	files       map[string]bool
-	docRoutes   map[string]string // Docusaurus route suffix (no leading/trailing slash) -> file path relative to docsRoot
-	links       []Link
-	brokenLinks []BrokenLink
-	verbose     bool
+	docsRoot          string
+	files             map[string]bool
+	docRoutes         map[string]string // Docusaurus route suffix (no leading/trailing slash) -> file path relative to docsRoot
+	links             []Link
+	brokenLinks       []BrokenLink
+	frontmatterErrors []FrontmatterError
+	verbose           bool
+}
+
+// FrontmatterError represents a documentation file whose YAML frontmatter
+// block failed to parse.
+type FrontmatterError struct {
+	File  string
+	Error string
 }
 
 // Link represents a markdown link found in documentation
@@ -102,7 +112,7 @@ func main() {
 
 	// Validate docs path exists
 	if _, err := os.Stat(*docsPath); os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "Error: Documentation path does not exist: %s\n", *docsPath)
+		_, _ = fmt.Fprintf(os.Stderr, "Error: Documentation path does not exist: %s\n", *docsPath)
 		os.Exit(1)
 	}
 
@@ -119,7 +129,7 @@ func main() {
 
 	// Step 1: Discover all documentation files
 	if err := validator.discoverFiles(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error discovering files: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "Error discovering files: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -132,7 +142,7 @@ func main() {
 	// resolves them: numeric-prefix stripping, index files, and frontmatter
 	// slug/id overrides.
 	if err := validator.buildDocRoutes(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error building doc routes: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "Error building doc routes: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -140,9 +150,19 @@ func main() {
 		fmt.Printf("Resolved %d Docusaurus doc routes\n\n", len(validator.docRoutes))
 	}
 
+	// Step 1c: Validate every file's YAML frontmatter. An unquoted value
+	// containing ": " (e.g. "title: Harness Sandbox: Vercel"), a stray
+	// leading "#", or similar YAML gotchas don't fail buildDocRoutes'
+	// targeted slug/id scan, but they do fail the real Docusaurus site
+	// build, so catch them here with a strict YAML parse of the whole block.
+	if err := validator.validateFrontmatter(); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "Error validating frontmatter: %v\n", err)
+		os.Exit(1)
+	}
+
 	// Step 2: Extract all links from documentation
 	if err := validator.extractLinks(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error extracting links: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "Error extracting links: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -156,8 +176,8 @@ func main() {
 	// Step 4: Generate report
 	validator.printReport()
 
-	// Exit with error code if broken links found
-	if len(validator.brokenLinks) > 0 {
+	// Exit with error code if broken links or invalid frontmatter found
+	if len(validator.brokenLinks) > 0 || len(validator.frontmatterErrors) > 0 {
 		os.Exit(1)
 	}
 }
@@ -270,11 +290,9 @@ func routeForFile(relPath, slug, id string) string {
 	}
 
 	// Relative override: keep the directory portion, replace the last segment.
-	dir := defaultRoute
+	var dir string
 	if idx := strings.LastIndex(defaultRoute, "/"); idx != -1 {
 		dir = defaultRoute[:idx]
-	} else {
-		dir = ""
 	}
 	if dir == "" {
 		return strings.Trim(override, "/")
@@ -334,6 +352,86 @@ func readFrontmatterSlugAndID(fullPath string) (slug string, id string, err erro
 		}
 	}
 	return slug, id, scanner.Err()
+}
+
+// readFrontmatterBlock returns the raw YAML text between a doc file's
+// opening and closing "---" delimiters (exclusive of the delimiters
+// themselves), and whether the file has a frontmatter block at all.
+func readFrontmatterBlock(fullPath string) (block string, hasFrontmatter bool, err error) {
+	file, err := os.Open(fullPath)
+	if err != nil {
+		return "", false, err
+	}
+	defer file.Close() //nolint:errcheck
+
+	scanner := bufio.NewScanner(file)
+	// Doc pages can have long single-line content (e.g. a very long
+	// description); match extractLinksFromFile's generous buffer so a long
+	// first line can't be mistaken for "no frontmatter".
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	if !scanner.Scan() {
+		return "", false, scanner.Err()
+	}
+	if !frontmatterDelimiterRegex.MatchString(scanner.Text()) {
+		return "", false, nil // no frontmatter
+	}
+
+	var lines []string
+	closed := false
+	for scanner.Scan() {
+		line := scanner.Text()
+		if frontmatterDelimiterRegex.MatchString(line) {
+			closed = true
+			break
+		}
+		lines = append(lines, line)
+	}
+	if err := scanner.Err(); err != nil {
+		return "", false, err
+	}
+	if !closed {
+		return "", true, fmt.Errorf("unterminated frontmatter block (no closing \"---\")")
+	}
+	return strings.Join(lines, "\n"), true, nil
+}
+
+// validateFrontmatter strictly YAML-parses every discovered file's
+// frontmatter block and records files whose frontmatter doesn't parse. This
+// catches the error class that breaks the real Docusaurus site build but
+// that readFrontmatterSlugAndID's narrow slug/id regexes don't notice: an
+// unquoted value containing ": " (YAML reads the rest as a nested mapping),
+// a value starting with an unquoted "#" (YAML reads it as a comment and
+// silently truncates the value), tabs, duplicate keys, and so on.
+func (v *LinkValidator) validateFrontmatter() error {
+	for relPath := range v.files {
+		fullPath := filepath.Join(v.docsRoot, relPath)
+		block, hasFrontmatter, err := readFrontmatterBlock(fullPath)
+		if err != nil {
+			if !hasFrontmatter {
+				return fmt.Errorf("error reading frontmatter for %s: %w", relPath, err)
+			}
+			// Unterminated frontmatter block: report it like a parse error
+			// rather than aborting the whole run.
+			v.frontmatterErrors = append(v.frontmatterErrors, FrontmatterError{
+				File:  relPath,
+				Error: err.Error(),
+			})
+			continue
+		}
+		if !hasFrontmatter {
+			continue
+		}
+
+		var parsed map[string]interface{}
+		if err := yaml.Unmarshal([]byte(block), &parsed); err != nil {
+			v.frontmatterErrors = append(v.frontmatterErrors, FrontmatterError{
+				File:  relPath,
+				Error: err.Error(),
+			})
+		}
+	}
+	return nil
 }
 
 // extractLinks scans all files and extracts markdown links
@@ -528,10 +626,25 @@ func (v *LinkValidator) printReport() {
 	fmt.Println("----------")
 	fmt.Printf("Total files scanned:   %d\n", len(v.files))
 	fmt.Printf("Total links found:     %d\n", len(v.links))
-	fmt.Printf("Broken links:          %d\n\n", len(v.brokenLinks))
+	fmt.Printf("Broken links:          %d\n", len(v.brokenLinks))
+	fmt.Printf("Invalid frontmatter:   %d\n\n", len(v.frontmatterErrors))
+
+	if len(v.frontmatterErrors) > 0 {
+		fmt.Println("❌ Invalid Frontmatter Found:")
+		fmt.Println("-----------------------------")
+		for _, fe := range v.frontmatterErrors {
+			fmt.Printf("\n📄 %s\n", fe.File)
+			fmt.Printf("   Error: %s\n", fe.Error)
+		}
+		fmt.Println("\n💡 Frontmatter values containing \": \", a leading \"#\", or other YAML")
+		fmt.Println("   special characters must be quoted, e.g. title: \"Harness Sandbox: Vercel\"")
+		fmt.Println()
+	}
 
 	if len(v.brokenLinks) == 0 {
-		fmt.Println("✅ All links are valid!")
+		if len(v.frontmatterErrors) == 0 {
+			fmt.Println("✅ All links are valid!")
+		}
 		return
 	}
 

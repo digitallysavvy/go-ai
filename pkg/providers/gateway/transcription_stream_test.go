@@ -445,14 +445,14 @@ func gatewayTestReadClientFrame(r *bufio.Reader) ([]byte, error) {
 		return nil, err
 	}
 	payloadLen := int(header[1] &^ 0x80)
-	switch {
-	case payloadLen == 126:
+	switch payloadLen {
+	case 126:
 		ext := make([]byte, 2)
 		if _, err := io.ReadFull(r, ext); err != nil {
 			return nil, err
 		}
 		payloadLen = int(ext[0])<<8 | int(ext[1])
-	case payloadLen == 127:
+	case 127:
 		ext := make([]byte, 8)
 		if _, err := io.ReadFull(r, ext); err != nil {
 			return nil, err
@@ -629,6 +629,15 @@ func TestTranscriptionModel_DoStream_AudioReadErrorSurfacesError(t *testing.T) {
 	if !strings.Contains(err.Error(), "audio source failed") {
 		t.Fatalf("err = %v, want an error containing 'audio source failed'", err)
 	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if audio.wasCancelled() {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatal("expected the AudioStream to be cancelled when the audio read fails")
 }
 
 // TestTranscriptionModel_DoStream_TeamHeaderPerCallOverride verifies the

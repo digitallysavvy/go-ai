@@ -83,7 +83,7 @@ func TestTranscriptionModel_Base64Audio(t *testing.T) {
 		if err != nil {
 			t.Fatalf("FormFile: %v", err)
 		}
-		defer file.Close()
+		defer func() { _ = file.Close() }()
 		buf := make([]byte, 16)
 		n, _ := file.Read(buf)
 		seenBytes = buf[:n]

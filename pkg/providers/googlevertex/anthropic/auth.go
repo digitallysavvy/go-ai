@@ -69,7 +69,15 @@ func (p *GoogleVertexAnthropicProvider) lazyAuthToken() func(ctx context.Context
 
 func (p *GoogleVertexAnthropicProvider) tokenSource(ctx context.Context) (oauth2.TokenSource, error) {
 	if len(p.options.CredentialsJSON) > 0 {
-		creds, err := google.CredentialsFromJSON(ctx, p.options.CredentialsJSON, defaultCloudPlatformAuth)
+		// CredentialsFromJSON is deprecated upstream in favor of a
+		// credential-type-restricted loader (CredentialsFromJSONWithType),
+		// since it does not validate the credential configuration's type.
+		// Restricting the accepted type(s) here is a behavior change (it
+		// would reject credential JSON shapes developers may legitimately
+		// be passing today, e.g. authorized_user) that needs a deliberate
+		// product decision rather than a blind lint fix, so this is
+		// intentionally left as-is for now.
+		creds, err := google.CredentialsFromJSON(ctx, p.options.CredentialsJSON, defaultCloudPlatformAuth) //nolint:staticcheck
 		if err != nil {
 			return nil, fmt.Errorf("failed to load Google credentials JSON: %w", err)
 		}
@@ -80,7 +88,9 @@ func (p *GoogleVertexAnthropicProvider) tokenSource(ctx context.Context) (oauth2
 		if err != nil {
 			return nil, fmt.Errorf("failed to read Google credentials file: %w", err)
 		}
-		creds, err := google.CredentialsFromJSON(ctx, data, defaultCloudPlatformAuth)
+		// See the CredentialsJSON branch above for why this deprecated call
+		// is intentionally not narrowed to a specific credential type.
+		creds, err := google.CredentialsFromJSON(ctx, data, defaultCloudPlatformAuth) //nolint:staticcheck
 		if err != nil {
 			return nil, fmt.Errorf("failed to load Google credentials file: %w", err)
 		}

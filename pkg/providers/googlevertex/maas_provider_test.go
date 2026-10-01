@@ -45,7 +45,7 @@ func TestNewMaaS_DefaultLocationAndEnvFallback(t *testing.T) {
 	if p.provider == nil {
 		t.Fatal("expected provider to be initialized")
 	}
-	if got := p.provider.Client().Do; got == nil {
+	if p.provider.Client() == nil {
 		t.Fatal("expected initialized client")
 	}
 }
@@ -340,7 +340,7 @@ func runDefaultMaasAuthTokenCacheChild() {
 	var tokenHits int32
 	mux := http.NewServeMux()
 	mux.HandleFunc("/computeMetadata/v1/project/project-id", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, "test-project")
+		_, _ = fmt.Fprint(w, "test-project")
 	})
 	mux.HandleFunc("/computeMetadata/v1/instance/service-accounts/default/token", func(w http.ResponseWriter, r *http.Request) {
 		hits := atomic.AddInt32(&tokenHits, 1)
@@ -359,12 +359,12 @@ func runDefaultMaasAuthTokenCacheChild() {
 	ctx := context.Background()
 	for i := 0; i < 3; i++ {
 		if _, err := defaultMaasAuthToken(ctx); err != nil {
-			fmt.Fprintf(os.Stderr, "call %d failed: %v\n", i, err)
+			_, _ = fmt.Fprintf(os.Stderr, "call %d failed: %v\n", i, err)
 			os.Exit(1)
 		}
 	}
 	if got := atomic.LoadInt32(&tokenHits); got != 1 {
-		fmt.Fprintf(os.Stderr, "hit metadata token endpoint %d times for 3 requests sharing a still-valid (3600s) token; expected 1 (cached), got %d\n", got, got)
+		_, _ = fmt.Fprintf(os.Stderr, "hit metadata token endpoint %d times for 3 requests sharing a still-valid (3600s) token; expected 1 (cached), got %d\n", got, got)
 		os.Exit(1)
 	}
 	os.Exit(0)

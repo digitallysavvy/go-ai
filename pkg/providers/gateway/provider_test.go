@@ -736,7 +736,7 @@ func TestProvider_GetCredits_PropagatesGatewayErrorDetails(t *testing.T) {
 }
 
 func TestGetO11yHeaders_RequestIDFromContext(t *testing.T) {
-	ctx := context.WithValue(context.Background(), "x-vercel-id", "req_123")
+	ctx := context.WithValue(context.Background(), "x-vercel-id", "req_123") //nolint:staticcheck // "x-vercel-id" is a raw-string context key by design: it's the external Vercel platform integration contract GetO11yHeaders/DoGenerate read via ctx.Value("x-vercel-id") in provider.go, not an internal key we control
 	headers := GetO11yHeaders(ctx)
 	if headers.RequestID != "req_123" {
 		t.Fatalf("RequestID = %q", headers.RequestID)
@@ -763,7 +763,7 @@ func TestProvider_LanguageModel_DoGenerate_IncludesRequestIDHeader(t *testing.T)
 		t.Fatalf("LanguageModel error = %v", err)
 	}
 
-	ctx := context.WithValue(context.Background(), "x-vercel-id", "req_from_ctx")
+	ctx := context.WithValue(context.Background(), "x-vercel-id", "req_from_ctx") //nolint:staticcheck // "x-vercel-id" is a raw-string context key by design: it's the external Vercel platform integration contract GetO11yHeaders/DoGenerate read via ctx.Value("x-vercel-id") in provider.go, not an internal key we control
 	_, err = model.DoGenerate(ctx, &provider.GenerateOptions{
 		Prompt: types.Prompt{
 			Messages: []types.Message{{

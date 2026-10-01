@@ -58,7 +58,7 @@ func main() {
 	flag.Parse()
 
 	if _, err := os.Stat(*docsPath); os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "Error: Documentation path does not exist: %s\n", *docsPath)
+		_, _ = fmt.Fprintf(os.Stderr, "Error: Documentation path does not exist: %s\n", *docsPath)
 		os.Exit(1)
 	}
 
@@ -78,7 +78,7 @@ func main() {
 	fmt.Println()
 
 	if err := extractor.extractExamples(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error extracting examples: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "Error extracting examples: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -88,7 +88,7 @@ func main() {
 
 	if !*testOnly {
 		if err := extractor.writeExamples(); err != nil {
-			fmt.Fprintf(os.Stderr, "Error writing examples: %v\n", err)
+			_, _ = fmt.Fprintf(os.Stderr, "Error writing examples: %v\n", err)
 			os.Exit(1)
 		}
 		fmt.Printf("Extracted examples to: %s\n\n", *outputDir)
@@ -140,7 +140,7 @@ func (e *ExampleExtractor) extractExamplesFromFile(relPath, fullPath string) err
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	scanner := bufio.NewScanner(file)
 	lineNumber := 0
@@ -237,7 +237,7 @@ func (e *ExampleExtractor) testExample(example CodeExample) TestResult {
 		result.Error = fmt.Sprintf("failed to create temp file: %v", err)
 		return result
 	}
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	if _, err := tmpFile.WriteString(example.Code); err != nil {
 		result.Error = fmt.Sprintf("failed to write code: %v", err)

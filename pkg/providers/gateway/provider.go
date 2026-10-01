@@ -615,10 +615,6 @@ func (p *Provider) originClient() (*internalhttp.Client, error) {
 	}), nil
 }
 
-func (p *Provider) handleError(err error) error {
-	return p.handleErrorWithContext(context.Background(), err)
-}
-
 func (p *Provider) handleErrorWithContext(ctx context.Context, err error) error {
 	if err == nil {
 		return nil
@@ -657,10 +653,6 @@ func (p *Provider) doOriginRequest(ctx context.Context, path string) ([]byte, er
 		return nil, p.gatewayAPIErrorWithContext(ctx, resp)
 	}
 	return resp.Body, nil
-}
-
-func (p *Provider) gatewayAPIError(resp *internalhttp.Response) error {
-	return p.gatewayAPIErrorWithContext(context.Background(), resp)
 }
 
 func (p *Provider) gatewayAPIErrorWithAuthMethod(resp *internalhttp.Response, authMethod string) error {

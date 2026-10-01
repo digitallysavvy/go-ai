@@ -39,7 +39,7 @@ func PrepareSandboxForHarness(ctx context.Context, opts PrepareSandboxForHarness
 		return nil, err
 	}
 	if len(opts.Harnesses) == 0 {
-		return nil, errors.New("prepareSandboxForHarness: at least one harness must be provided.")
+		return nil, errors.New("prepareSandboxForHarness: at least one harness must be provided.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 
 	// Dedupe by id (last wins, keeping first-seen insertion order like a JS
@@ -225,7 +225,7 @@ type CreateHarnessSandboxTemplateOptions struct {
 // TS `createHarnessSandboxTemplate` (31742b9a1b).
 func CreateHarnessSandboxTemplate(ctx context.Context, opts CreateHarnessSandboxTemplateOptions) (*HarnessSandboxTemplate, error) {
 	if len(opts.Harnesses) == 0 {
-		return nil, errors.New("CreateHarnessSandboxTemplate: at least one harness must be provided.")
+		return nil, errors.New("CreateHarnessSandboxTemplate: at least one harness must be provided.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	cfg := SandboxConfig{}
 	if opts.SandboxConfig != nil {

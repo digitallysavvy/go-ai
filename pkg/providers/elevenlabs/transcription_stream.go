@@ -516,11 +516,11 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 					// receivedPostInputCommit — distinct from a clean close
 					// (TS onClose), which finishes successfully once the
 					// post-input commit has been observed.
-					fail(errors.New("ElevenLabs realtime transcription error."))
+					fail(errors.New("ElevenLabs realtime transcription error.")) //nolint:staticcheck // matches TS SDK's exact error text
 				} else if endOfInput && receivedPostInputCommit {
 					finish()
 				} else {
-					fail(errors.New("ElevenLabs realtime transcription stream closed before completion."))
+					fail(errors.New("ElevenLabs realtime transcription stream closed before completion.")) //nolint:staticcheck // matches TS SDK's exact error text
 				}
 				return
 			}
@@ -543,7 +543,9 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 
 			if raw.MessageType != "" && elevenLabsRealtimeErrorTypes[raw.MessageType] {
 				if endOfInput && (committedEventCount > 0 || timestampedCommitCount > 0) && elevenLabsLateFinalizationErrorTypes[raw.MessageType] {
-					receivedPostInputCommit = true
+					// Not setting receivedPostInputCommit here: finish()
+					// below ends the stream immediately, so nothing reads
+					// the flag again before the function returns.
 					finish()
 					return
 				}

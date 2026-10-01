@@ -57,13 +57,6 @@ func (m *LanguageModel) SupportsTools() bool {
 	return true
 }
 
-// isJsonToolMode reports whether a request uses the synthetic 'json' tool
-// for structured output (TS usesJsonResponseTool).
-func (m *LanguageModel) isJsonToolMode(opts *provider.GenerateOptions) bool {
-	req, err := m.prepareRequest(opts, false)
-	return err == nil && req.usesJSONResponseTool
-}
-
 // SupportsStructuredOutput returns whether the model supports structured output
 // via output_config.format (TS getModelCapabilities().supportsStructuredOutput,
 // gated by the provider config).
@@ -1344,7 +1337,7 @@ type anthropicStream struct {
 }
 
 // newAnthropicStream creates a new Anthropic stream.
-// usesJsonResponseTool must match the value computed in DoStream from isJsonToolMode.
+// usesJsonResponseTool must match the req.usesJSONResponseTool value DoStream computed via prepareRequest.
 func newAnthropicStream(reader io.ReadCloser, usesJsonResponseTool bool, toolsOpt ...[]types.Tool) *anthropicStream {
 	var tools []types.Tool
 	if len(toolsOpt) > 0 {

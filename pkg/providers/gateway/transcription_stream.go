@@ -208,7 +208,7 @@ func (s *gatewayTranscriptionStream) run(cfg gatewayTranscriptionStreamConfig) {
 				// falls through to the remembered server error, then to the
 				// generic "closed before a finish part" message.
 				if !wsutil.IsCleanClose(res.Err) {
-					fail(errors.New("Connection error on AI Gateway transcription stream"))
+					fail(errors.New("Connection error on AI Gateway transcription stream")) //nolint:staticcheck // matches TS SDK's exact error text
 				} else if hasServerError {
 					fail(gatewayTranscriptionServerError(lastServerError, cfg.authMethod))
 				} else {
@@ -223,7 +223,8 @@ func (s *gatewayTranscriptionStream) run(cfg gatewayTranscriptionStreamConfig) {
 			}
 
 			if part.Type == provider.TranscriptionStreamPartTypeFinish {
-				finished = true
+				// Not setting finished here: both branches below return
+				// immediately, so nothing reads the flag again.
 				if !s.Emit(*part) {
 					return
 				}

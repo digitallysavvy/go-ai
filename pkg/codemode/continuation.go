@@ -170,12 +170,6 @@ func verifyContinuation(continuation Continuation, opts ContinuationSecurityOpti
 	return nil
 }
 
-// hasValidContinuationCapability reports whether verifyContinuation
-// succeeds, mirroring TypeScript's hasValidCodeModeContinuationCapability.
-func hasValidContinuationCapability(continuation Continuation, opts ContinuationSecurityOptions) bool {
-	return verifyContinuation(continuation, opts) == nil
-}
-
 // assertAuthShape mirrors TypeScript's assertAuthShape.
 func assertAuthShape(auth ContinuationAuth) error {
 	if auth.Alg != signatureAlgorithm ||

@@ -416,7 +416,7 @@ func (s *cartesiaTranscriptionStream) run(cfg cartesiaTranscriptionStreamConfig)
 				if wsutil.IsCleanClose(res.Err) {
 					finish()
 				} else {
-					fail(errors.New("Cartesia streaming transcription error"))
+					fail(errors.New("Cartesia streaming transcription error")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 				}
 				return
 			}

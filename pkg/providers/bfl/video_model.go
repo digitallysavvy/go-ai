@@ -680,18 +680,18 @@ func (m *VideoModel) handleVideoPollError(err error) error {
 		}
 		if jsonErr := json.Unmarshal(dlErr.Body, &envelope); jsonErr == nil {
 			if s, ok := envelope.Detail.(string); ok && s != "" {
-				return fmt.Errorf("Black Forest Labs API error: %s", s)
+				return fmt.Errorf("Black Forest Labs API error: %s", s) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 			}
 			if envelope.Detail != nil {
 				if b, mErr := json.Marshal(envelope.Detail); mErr == nil {
-					return fmt.Errorf("Black Forest Labs API error: %s", string(b))
+					return fmt.Errorf("Black Forest Labs API error: %s", string(b)) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 				}
 			}
 			if envelope.Message != "" {
-				return fmt.Errorf("Black Forest Labs API error: %s", envelope.Message)
+				return fmt.Errorf("Black Forest Labs API error: %s", envelope.Message) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 			}
 		}
-		return fmt.Errorf("Black Forest Labs API error: status check returned %d: %s", dlErr.StatusCode, string(dlErr.Body))
+		return fmt.Errorf("Black Forest Labs API error: status check returned %d: %s", dlErr.StatusCode, string(dlErr.Body)) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 	}
 	return fmt.Errorf("failed to check status: %w", err)
 }
@@ -727,7 +727,7 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 		}
 
 		if time.Since(startTime) > pollTimeout {
-			return nil, fmt.Errorf("Black Forest Labs video generation timed out after %dms. Request id: %s", pollTimeout.Milliseconds(), op.RequestID)
+			return nil, fmt.Errorf("Black Forest Labs video generation timed out after %dms. Request id: %s", pollTimeout.Milliseconds(), op.RequestID) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 		}
 
 		status, err := m.DoStatus(ctx, &provider.VideoModelV3StatusOptions{

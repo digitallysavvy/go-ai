@@ -176,7 +176,7 @@ func (c *mockBinaryRealtimeConn) ReceiveFrame(ctx context.Context) ([]byte, bool
 	if len(c.incomingBinary) > 0 {
 		c.incomingBinary = c.incomingBinary[1:]
 	}
-	data, err := c.mockRealtimeConn.Receive(ctx)
+	data, err := c.Receive(ctx)
 	if err != nil {
 		return nil, false, err
 	}

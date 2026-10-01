@@ -54,7 +54,7 @@ func allocHeavyWorkload(stop <-chan struct{}, wg *sync.WaitGroup) {
 		sb.Reset()
 		sb.WriteString("package stress\n\n")
 		for j := 0; j < 200; j++ {
-			fmt.Fprintf(&sb, "var v%d_%d = %d\nfunc f%d_%d() int { return v%d_%d * %d }\n", i, j, j, i, j, i, j, j)
+			_, _ = fmt.Fprintf(&sb, "var v%d_%d = %d\nfunc f%d_%d() int { return v%d_%d * %d }\n", i, j, j, i, j, i, j, j)
 		}
 		_, _ = parser.ParseFile(fset, "", sb.String(), parser.AllErrors)
 

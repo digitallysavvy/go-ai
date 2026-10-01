@@ -47,10 +47,10 @@ type SpeechTranslationModel struct {
 	prov    *Provider
 	modelID string
 
-	// finishGraceMs overrides speechTranslationDefaultFinishGraceDuration for
+	// finishGrace overrides speechTranslationDefaultFinishGraceDuration for
 	// tests (mirrors TS config._internal.finishGraceMs). Zero means "use the
 	// default".
-	finishGraceMs time.Duration
+	finishGrace time.Duration
 }
 
 // NewSpeechTranslationModel creates a Gemini Live speech translation model.
@@ -199,7 +199,7 @@ func (m *SpeechTranslationModel) DoStream(ctx context.Context, opts *provider.Sp
 		apiKey = callAPIKey
 	}
 	if apiKey == "" {
-		return nil, errors.New("Google Generative AI API key is required for streaming translation.")
+		return nil, errors.New("Google Generative AI API key is required for streaming translation.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	wsHeaders := internalhttp.MergeHeaders(filteredBaseHeaders, filteredCallHeaders)
 
@@ -210,9 +210,9 @@ func (m *SpeechTranslationModel) DoStream(ctx context.Context, opts *provider.Sp
 		inputAudioRate = *opts.InputAudioFormat.Rate
 	}
 
-	finishGraceMs := m.finishGraceMs
-	if finishGraceMs <= 0 {
-		finishGraceMs = speechTranslationDefaultFinishGraceDuration
+	finishGrace := m.finishGrace
+	if finishGrace <= 0 {
+		finishGrace = speechTranslationDefaultFinishGraceDuration
 	}
 
 	wsURL := getLiveSpeechTranslationWebSocketURL(m.prov.config.BaseURL, apiKey)
@@ -227,7 +227,7 @@ func (m *SpeechTranslationModel) DoStream(ctx context.Context, opts *provider.Sp
 		headers:          wsHeaders,
 		setup:            setup,
 		inputAudioRate:   inputAudioRate,
-		finishGraceMs:    finishGraceMs,
+		finishGrace:      finishGrace,
 		warnings:         warnings,
 		audio:            opts.Audio,
 		includeRawChunks: opts.IncludeRawChunks,

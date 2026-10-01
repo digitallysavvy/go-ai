@@ -247,7 +247,7 @@ func readOpenCodeSubscriptionWithOptions(ctx context.Context, providerID string,
 	}
 	if providerID == string(SubscriptionPoe) {
 		if harnessutil.IsAccessTokenExpiringSoon(expires, time.Now().UnixMilli(), 0) {
-			return nil, errors.New("OpenCode Poe subscription API key is expiring soon. Run OpenCode login again.")
+			return nil, errors.New("OpenCode Poe subscription API key is expiring soon. Run OpenCode login again.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		return &Subscription{ProviderID: SubscriptionPoe, AccessToken: access}, nil
 	}
@@ -326,22 +326,22 @@ func requestOpenCodeGitLabDirectAccess(ctx context.Context, httpClient *http.Cli
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, fmt.Errorf("OpenCode GitLab direct access request failed with status %d.", resp.StatusCode)
+		return nil, fmt.Errorf("OpenCode GitLab direct access request failed with status %d.", resp.StatusCode) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	var parsed map[string]any
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return nil, errors.New("OpenCode GitLab direct access returned invalid JSON.")
+		return nil, errors.New("OpenCode GitLab direct access returned invalid JSON.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	token, _ := parsed["token"].(string)
 	headersRaw, headersOK := parsed["headers"].(map[string]any)
 	if token == "" || !headersOK {
-		return nil, errors.New("OpenCode GitLab direct access returned invalid credentials.")
+		return nil, errors.New("OpenCode GitLab direct access returned invalid credentials.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	headers := map[string]string{}
 	for k, v := range headersRaw {
 		s, ok := v.(string)
 		if !ok {
-			return nil, errors.New("OpenCode GitLab direct access returned invalid credentials.")
+			return nil, errors.New("OpenCode GitLab direct access returned invalid credentials.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		headers[k] = s
 	}

@@ -622,10 +622,7 @@ func TestTerminalRendererCtrlCAtExitPromptDoesNotInterruptCompletedStream(t *tes
 	}()
 
 	deadline := time.After(time.Second)
-	for {
-		if strings.Contains(stripANSI(frame.LastFrame()), "Done") {
-			break
-		}
+	for !strings.Contains(stripANSI(frame.LastFrame()), "Done") {
 		select {
 		case <-deadline:
 			t.Fatalf("renderer did not reach done state:\n%s", stripANSI(frame.LastFrame()))

@@ -58,17 +58,6 @@ func convertMCPOpaqueContentToAISDK(item ToolResultContent) (types.ContentPart, 
 	return types.TextContent{Text: string(data)}, nil
 }
 
-func convertMCPResourceLinkToAISDK(item ToolResultContent) types.ContentPart {
-	text := item.URI
-	if item.Name != "" {
-		text = item.Name + ": " + item.URI
-	}
-	if item.Description != "" {
-		text += "\n" + item.Description
-	}
-	return types.TextContent{Text: text}
-}
-
 // convertMCPTextToAISDK converts MCP text content to AI SDK TextContent
 func convertMCPTextToAISDK(item ToolResultContent) types.TextContent {
 	return types.TextContent{

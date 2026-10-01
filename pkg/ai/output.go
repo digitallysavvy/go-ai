@@ -90,7 +90,7 @@ func reflectJSONSchema(t reflect.Type) map[string]interface{} {
 		return map[string]interface{}{"type": "object"}
 	}
 	// Dereference pointers
-	for t.Kind() == reflect.Ptr {
+	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	switch t.Kind() {
