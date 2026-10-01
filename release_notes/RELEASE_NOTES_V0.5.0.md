@@ -319,6 +319,14 @@ code.
 
 ## Security Fixes
 
+- `pkg/codemode`: closed a sandbox escape. Model-written JavaScript could
+  reach QuickJS's `std` / `os` modules (through globals, `import('qjs:std')`,
+  or an `import()` inside a template literal interpolation), read and write
+  files under the host's working directory, read environment variables and
+  call `exit`, and could write unbounded output to the host's stdout. The
+  sandbox now mounts no filesystem, passes no environment, removes the libc
+  globals, blocks `eval` / `Function` and dynamic `import()`, and captures
+  console output in memory under `MaxConsoleOutputBytes`.
 - Tool approvals are verified on resume (HMAC v1, byte-compatible with TS).
 - MCP OAuth state parameter comparison uses
   `crypto/subtle.ConstantTimeCompare` to prevent timing-based CSRF.

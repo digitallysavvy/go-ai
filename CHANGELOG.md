@@ -136,6 +136,12 @@ step-by-step upgrade instructions are in
 
 ### Security
 
+- `pkg/codemode`: closed a sandbox escape that let model-written JavaScript
+  reach QuickJS's `std` / `os` modules (host files under the working
+  directory, environment variables, `exit`, unbounded stdout). The sandbox
+  now mounts no filesystem, passes no environment, removes the libc
+  globals, blocks `eval` / `Function` and dynamic `import()`, and caps
+  console output.
 - Tool approvals verified on resume (HMAC v1, TS-compatible).
 - Downloads: DNS pinning, synced blocklist, bounded reads, credential
   stripping across cross-origin redirects. MCP OAuth discovery SSRF-guarded.

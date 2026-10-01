@@ -566,3 +566,15 @@ jointly sufficient:
   literally named `import`, which fails closed since TypeScript's sandbox
   supports no form of `import` either, so there is no parity reason to
   special-case it).
+
+  Integration follow-up (2026-10-01): the token scan missed `import(`
+  inside a template literal interpolation. `tokenizeTS` returns a whole
+  template literal as one string token, so `` `${await import('qjs:std')}` ``
+  was never scanned as code and still loaded `qjs:std` at run time (the
+  NoFSMount, no-env and captured-console layers held). The check now
+  scans each `${...}` body as its own script, and it also rejects a regex
+  token containing `import(`, in case the tokenizer's regex-or-division
+  guess differs from the engine's. Because this defense is still a lexer
+  heuristic, a runtime layer (a module loader that refuses `qjs:*`
+  specifiers, or a build that doesn't register those modules) would be
+  more robust.
