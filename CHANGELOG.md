@@ -124,7 +124,10 @@ step-by-step upgrade instructions are in
   connection; telemetry spans no longer leak on error/abort; harness
   Codex/host-tool/turn-release fixes; a stray leading "L" in ~88 error
   strings; tool-caller messages (e.g. code-mode's tool catalog) persist
-  across steps. Full list in the release notes' Bug Fixes section.
+  across steps; a concurrent map crash in the shared HTTP client when
+  setting headers during in-flight requests; SSE lines over 64 KiB no
+  longer abort streams (32 MiB limit). Full list in the release notes' Bug
+  Fixes section.
 
 ### Security
 
@@ -136,6 +139,7 @@ step-by-step upgrade instructions are in
   `govulncheck` reports no reachable vulnerabilities.
 - BFL poll URLs, OpenAI image-edit URL inputs, and Anthropic batch
   `results_url` now fetched through the SSRF-safe download path.
+- Removed unused internal download helpers that skipped the SSRF checks.
 
 ## [0.4.0] - 2026-03-29
 

@@ -339,6 +339,8 @@ code.
   sent to trusted origins, bounded reads).
 - Alibaba video status polling now path-encodes the provider-returned task
   ID.
+- Removed the unused internal helpers `fileutil.GetContentType` /
+  `GetContentLength`, which fetched URLs without the SSRF checks.
 
 ---
 
@@ -624,6 +626,13 @@ code.
 
 ### Core and streaming
 
+- The shared HTTP client no longer crashes with a concurrent map access
+  when a header is set while requests are in flight.
+- SSE lines longer than 64 KiB no longer abort the stream on streaming
+  providers. Lines up to 32 MiB are accepted, and longer ones fail with a
+  clear error. The same applies to the Gateway video event stream and
+  `ReadUIMessageStream`. MCP stdio stderr logging is bounded at 1 MiB per
+  line.
 - `schemaToMap` handles an empty item schema; `ShellSandbox` output race
   fixed; duplicate text/reasoning IDs are remapped across steps;
   `PipeTextStreamToWriter` flushes per chunk and returns write errors; the
