@@ -2330,7 +2330,11 @@ func (s *responsesStream) resolveOutputItemID(outputIndex int, itemID string) st
 // emitDecodeError reports a decode failure for a known Responses API SSE
 // event type: emits a ChunkTypeError chunk (instead of silently skipping the
 // event) and marks the eventual finish reason to be forced to "error".
-func (s *responsesStream) emitDecodeError(eventType string, err error) (*provider.StreamChunk, error) {
+//
+// Returns (chunk, true) when the caller should return chunk immediately, or
+// (nil, false) when the caller should continue its Next() loop instead (see
+// emitParsedChunk below for why this no longer recurses into Next()).
+func (s *responsesStream) emitDecodeError(eventType string, err error) (*provider.StreamChunk, bool) {
 	s.hadDecodeError = true
 	return s.emitParsedChunk(&provider.StreamChunk{
 		Type: provider.ChunkTypeError,
@@ -2390,15 +2394,28 @@ func (s *responsesStream) Err() error {
 	return s.err
 }
 
-func (s *responsesStream) emitParsedChunk(chunk *provider.StreamChunk) (*provider.StreamChunk, error) {
+// emitParsedChunk decides how a freshly built chunk should be delivered: if
+// nothing is queued ahead of it, it is returned immediately (chunk, true);
+// otherwise it is appended behind the pending flushQueue and the caller
+// should continue its Next() loop to drain the queue (nil, false). A nil
+// chunk likewise means "nothing to deliver, continue the loop".
+//
+// This used to recurse by calling s.Next() directly in both of those cases.
+// Go does not eliminate that tail call, and Next()'s own loop can call this
+// method on almost every SSE event, so a long run of skip-worthy events
+// could grow the goroutine stack without bound. Returning a "continue"
+// signal instead lets Next()'s single top-level loop (and
+// handleOutputItemDone's, which shares this same signal shape) do the
+// looping without adding stack frames.
+func (s *responsesStream) emitParsedChunk(chunk *provider.StreamChunk) (*provider.StreamChunk, bool) {
 	if chunk == nil {
-		return s.Next()
+		return nil, false
 	}
 	if len(s.flushQueue) == 0 {
-		return chunk, nil
+		return chunk, true
 	}
 	s.flushQueue = append(s.flushQueue, chunk)
-	return s.Next()
+	return nil, false
 }
 
 // Next implements provider.TextStream. It reads SSE events and converts them to
@@ -2414,714 +2431,833 @@ func (s *responsesStream) emitParsedChunk(chunk *provider.StreamChunk) (*provide
 //   - response.completed            → ChunkTypeFinish with usage
 //   - error                         → ChunkTypeError
 func (s *responsesStream) Next() (*provider.StreamChunk, error) {
-	// Drain any queued chunks first.
-	if len(s.flushQueue) > 0 {
-		chunk := s.flushQueue[0]
-		s.flushQueue = s.flushQueue[1:]
-		return chunk, nil
-	}
+	for {
+		// Drain any queued chunks first.
+		if len(s.flushQueue) > 0 {
+			chunk := s.flushQueue[0]
+			s.flushQueue = s.flushQueue[1:]
+			return chunk, nil
+		}
 
-	if s.err != nil {
-		return nil, s.err
-	}
-
-	event, err := s.parser.Next()
-	if err != nil {
-		s.err = err
-		return nil, err
-	}
-
-	// Standard [DONE] terminator (some OpenAI SSE streams still send it).
-	if streaming.IsStreamDone(event) {
-		s.err = io.EOF
-		return nil, io.EOF
-	}
-	// Parse the "type" discriminator.
-	var peek responses.ResponsesStreamEvent
-	if err := json.Unmarshal([]byte(event.Data), &peek); err != nil {
-		s.queueRawChunk(event.Data)
-		return s.emitParsedChunk(&provider.StreamChunk{
-			Type: provider.ChunkTypeError,
-			Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
-		})
-	}
-	// Row 1ead90c: a Chat Completions-shaped chunk (top-level "choices"
-	// array, no "type" discriminator) means the configured baseURL points
-	// at a Chat Completions-compatible endpoint instead of the Responses
-	// API. Surface a helpful error instead of silently skipping it.
-	if peek.Type == "" && len(peek.Choices) > 0 {
-		var isArray bool
-		trimmed := bytes.TrimSpace(peek.Choices)
-		isArray = len(trimmed) > 0 && trimmed[0] == '['
-		if isArray {
-			s.err = providererrors.NewProviderError(s.providerName, 0, "", chatCompletionsMismatchMessage, nil)
+		if s.err != nil {
 			return nil, s.err
 		}
-	}
-	var eventRawChunk *provider.StreamChunk
-	if s.includeRawChunks {
-		eventRawChunk = openAIResponsesRawChunk(event.Data)
-		if !s.outputStarted && peek.Type == "response.created" {
-			s.pendingRaw = append(s.pendingRaw, eventRawChunk)
-		} else if !s.outputStarted && (peek.Type == "error" || peek.Type == "response.failed") {
-			// TS checks early errors before exposing raw chunks.
-		} else if !s.outputStarted {
-			// First output raw is queued after pending metadata in the handler.
-		} else {
-			s.flushQueue = append(s.flushQueue, eventRawChunk)
-		}
-	}
 
-	switch peek.Type {
+		event, err := s.parser.Next()
+		if err != nil {
+			s.err = err
+			return nil, err
+		}
 
-	case "response.created":
-		var e responses.ResponseCreatedEvent
-		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-			return s.emitDecodeError(peek.Type, err)
+		// Standard [DONE] terminator (some OpenAI SSE streams still send it).
+		if streaming.IsStreamDone(event) {
+			s.err = io.EOF
+			return nil, io.EOF
 		}
-		if e.Response.ID != "" {
-			s.responseID = e.Response.ID
-		}
-		metadata := &provider.ResponseMetadata{
-			ID:      e.Response.ID,
-			ModelID: e.Response.Model,
-		}
-		if e.Response.CreatedAt != 0 {
-			metadata.Timestamp = time.Unix(e.Response.CreatedAt, 0)
-		}
-		s.pendingMetadata = &provider.StreamChunk{
-			Type:             provider.ChunkTypeResponseMetadata,
-			ResponseMetadata: metadata,
-		}
-		return s.Next()
-
-	case "response.output_item.added":
-		var e responses.OutputItemAddedEvent
-		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-			return s.emitDecodeError(peek.Type, err)
-		}
-		s.itemTypes[e.OutputIndex] = e.Item.Type
-		if e.Item.ID != "" {
-			if _, seen := s.firstItemIDByOutputIndex[e.OutputIndex]; !seen {
-				s.firstItemIDByOutputIndex[e.OutputIndex] = e.Item.ID
-			}
-		}
-		s.markOutputStarted()
-		if eventRawChunk != nil {
-			s.flushQueue = append(s.flushQueue, eventRawChunk)
-		}
-		switch e.Item.Type {
-		case "function_call":
-			s.toolAccum[e.OutputIndex] = &responsesToolAccum{
-				id:        e.Item.CallID,
-				itemID:    e.Item.ID,
-				name:      e.Item.Name,
-				namespace: e.Item.Namespace,
-			}
-		case "web_search_call":
-			s.flushQueue = append(s.flushQueue,
-				&provider.StreamChunk{
-					Type: provider.ChunkTypeToolInputStart,
-					ToolCall: &types.ToolCall{
-						ID:               e.Item.ID,
-						ToolName:         s.webSearchToolName,
-						ProviderExecuted: true,
-					},
-				},
-				&provider.StreamChunk{
-					Type: provider.ChunkTypeToolInputEnd,
-					ToolCall: &types.ToolCall{
-						ID:               e.Item.ID,
-						ToolName:         s.webSearchToolName,
-						ProviderExecuted: true,
-					},
-				},
-				&provider.StreamChunk{
-					Type: provider.ChunkTypeToolCall,
-					ToolCall: &types.ToolCall{
-						ID:               e.Item.ID,
-						ToolName:         s.webSearchToolName,
-						Arguments:        map[string]interface{}{},
-						ProviderExecuted: true,
-					},
-				},
-			)
-			return s.Next()
-		case "message":
-			// TS: `ongoingAnnotations.splice(0)` then emit text-start with
-			// providerMetadata {itemId, phase?} (no annotations yet).
-			s.ongoingAnnotations = nil
-			s.activeMessagePhase = e.Item.Phase
-			var meta json.RawMessage
-			if m := openAIResponsesMessageProviderOptions(s.providerName, e.Item.ID, e.Item.Phase, nil); m != nil {
-				meta, _ = json.Marshal(m)
-			}
-			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-				Type:             provider.ChunkTypeTextStart,
-				ID:               e.Item.ID,
-				ProviderMetadata: meta,
+		// Parse the "type" discriminator.
+		var peek responses.ResponsesStreamEvent
+		if err := json.Unmarshal([]byte(event.Data), &peek); err != nil {
+			s.queueRawChunk(event.Data)
+			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
 			})
-			return s.Next()
-
-		case "reasoning":
-			accum := &responsesReasoningAccum{
-				encryptedContent: e.Item.EncryptedContent,
-				summaryParts:     map[int]string{0: "active"},
+			if ok {
+				return chunk, nil
 			}
-			s.reasoningAccum[e.Item.ID] = accum
-			var encMeta interface{}
-			if e.Item.EncryptedContent != "" {
-				encMeta = e.Item.EncryptedContent
+			continue
+		}
+		// Row 1ead90c: a Chat Completions-shaped chunk (top-level "choices"
+		// array, no "type" discriminator) means the configured baseURL points
+		// at a Chat Completions-compatible endpoint instead of the Responses
+		// API. Surface a helpful error instead of silently skipping it.
+		if peek.Type == "" && len(peek.Choices) > 0 {
+			var isArray bool
+			trimmed := bytes.TrimSpace(peek.Choices)
+			isArray = len(trimmed) > 0 && trimmed[0] == '['
+			if isArray {
+				s.err = providererrors.NewProviderError(s.providerName, 0, "", chatCompletionsMismatchMessage, nil)
+				return nil, s.err
 			}
-			meta, _ := json.Marshal(map[string]interface{}{
-				s.providerName: map[string]interface{}{
-					"itemId":                    e.Item.ID,
-					"reasoningEncryptedContent": encMeta,
-				},
-			})
-			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-				Type:             provider.ChunkTypeReasoningStart,
-				ID:               e.Item.ID + ":0",
-				ProviderMetadata: meta,
-			})
-			return s.Next()
-		case "file_search_call":
-			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-				Type: provider.ChunkTypeToolCall,
-				ToolCall: &types.ToolCall{
-					ID:               e.Item.ID,
-					ToolName:         openAIProviderToolDisplayName(s.tools, "openai.file_search", "file_search"),
-					Arguments:        map[string]interface{}{},
-					ProviderExecuted: true,
-				},
-			})
-			return s.Next()
-		case "image_generation_call":
-			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-				Type: provider.ChunkTypeToolCall,
-				ToolCall: &types.ToolCall{
-					ID:               e.Item.ID,
-					ToolName:         openAIProviderToolDisplayName(s.tools, "openai.image_generation", "image_generation"),
-					Arguments:        map[string]interface{}{},
-					ProviderExecuted: true,
-				},
-			})
-			return s.Next()
-		case "code_interpreter_call":
-			codeInterpreterName := openAIProviderToolDisplayName(s.tools, "openai.code_interpreter", "code_interpreter")
-			s.ongoingToolCalls[e.OutputIndex] = &responsesOngoingToolCall{
-				toolName:        codeInterpreterName,
-				toolCallID:      e.Item.ID,
-				codeInterpreter: &codeInterpreterStreamState{containerID: e.Item.ContainerID},
-			}
-			s.flushQueue = append(s.flushQueue,
-				&provider.StreamChunk{
-					Type: provider.ChunkTypeToolInputStart,
-					ToolCall: &types.ToolCall{
-						ID:               e.Item.ID,
-						ToolName:         codeInterpreterName,
-						ProviderExecuted: true,
-					},
-				},
-				&provider.StreamChunk{
-					Type: provider.ChunkTypeToolInputDelta,
-					ID:   e.Item.ID,
-					Text: `{"containerId":"` + e.Item.ContainerID + `","code":"`,
-				},
-			)
-			return s.Next()
-		case "tool_search_call":
-			execution := e.Item.Execution
-			if execution == "" {
-				execution = "server"
-			}
-			s.ongoingToolCalls[e.OutputIndex] = &responsesOngoingToolCall{
-				toolName:            s.toolSearchToolName,
-				toolCallID:          e.Item.ID,
-				toolSearchExecution: execution,
-			}
-			if execution == "server" {
-				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-					Type: provider.ChunkTypeToolInputStart,
-					ToolCall: &types.ToolCall{
-						ID:               e.Item.ID,
-						ToolName:         s.toolSearchToolName,
-						ProviderExecuted: true,
-					},
-				})
-			}
-			return s.Next()
-		case "custom_tool_call":
-			s.ongoingToolCalls[e.OutputIndex] = &responsesOngoingToolCall{
-				toolName:   e.Item.Name,
-				toolCallID: e.Item.CallID,
-			}
-			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-				Type: provider.ChunkTypeToolInputStart,
-				ToolCall: &types.ToolCall{
-					ID:       e.Item.CallID,
-					ToolName: e.Item.Name,
-				},
-			})
-			return s.Next()
-		case "apply_patch_call":
-			// Row 45f2b6a / item 9: progressive tool-input streaming, mirroring
-			// TS's ongoingToolCalls[output_index].applyPatch tracking.
-			callID := e.Item.CallID
-			opType, opPath := "", ""
-			if e.Item.Operation != nil {
-				opType = e.Item.Operation.Type
-				opPath = e.Item.Operation.Path
-			}
-			isDelete := opType == "delete_file"
-			s.ongoingToolCalls[e.OutputIndex] = &responsesOngoingToolCall{
-				toolName:   "openai.apply_patch",
-				toolCallID: callID,
-				applyPatch: &applyPatchStreamState{hasDiff: isDelete, endEmitted: isDelete},
-			}
-			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-				Type: provider.ChunkTypeToolInputStart,
-				ToolCall: &types.ToolCall{
-					ID:       callID,
-					ToolName: "openai.apply_patch",
-				},
-			})
-			if isDelete {
-				inputStr, _ := json.Marshal(map[string]interface{}{
-					"callId":    callID,
-					"operation": map[string]interface{}{"type": opType, "path": opPath},
-				})
-				s.flushQueue = append(s.flushQueue,
-					&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: callID, Text: string(inputStr)},
-					&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: callID},
-				)
+		}
+		var eventRawChunk *provider.StreamChunk
+		if s.includeRawChunks {
+			eventRawChunk = openAIResponsesRawChunk(event.Data)
+			if !s.outputStarted && peek.Type == "response.created" {
+				s.pendingRaw = append(s.pendingRaw, eventRawChunk)
+			} else if !s.outputStarted && (peek.Type == "error" || peek.Type == "response.failed") {
+				// TS checks early errors before exposing raw chunks.
+			} else if !s.outputStarted {
+				// First output raw is queued after pending metadata in the handler.
 			} else {
-				prefix := `{"callId":"` + escapeJSONDelta(callID) + `","operation":{"type":"` + escapeJSONDelta(opType) + `","path":"` + escapeJSONDelta(opPath) + `","diff":"`
-				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: callID, Text: prefix})
+				s.flushQueue = append(s.flushQueue, eventRawChunk)
 			}
 		}
-		return s.Next()
 
-	case "response.output_text.delta":
-		var e responses.OutputTextDeltaEvent
-		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-			return s.emitDecodeError(peek.Type, err)
-		}
-		if e.Delta == "" {
-			return s.Next()
-		}
-		s.markOutputStarted()
-		if eventRawChunk != nil {
-			s.flushQueue = append(s.flushQueue, eventRawChunk)
-		}
-		return s.emitParsedChunk(&provider.StreamChunk{
-			Type: provider.ChunkTypeText,
-			ID:   s.firstItemIDByOutputIndex[e.OutputIndex],
-			Text: e.Delta,
-		})
+		switch peek.Type {
 
-	case "response.function_call_arguments.delta":
-		var e responses.FunctionCallArgumentsDeltaEvent
-		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-			return s.emitDecodeError(peek.Type, err)
-		}
-		s.markOutputStarted()
-		if eventRawChunk != nil {
-			s.flushQueue = append(s.flushQueue, eventRawChunk)
-		}
-		if accum, ok := s.toolAccum[e.OutputIndex]; ok {
-			accum.arguments += e.Delta
-		}
-		return s.Next()
-
-	case "response.reasoning_summary_text.delta":
-		var e responses.ReasoningSummaryTextDeltaEvent
-		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-			return s.emitDecodeError(peek.Type, err)
-		}
-		s.markOutputStarted()
-		if eventRawChunk != nil {
-			s.flushQueue = append(s.flushQueue, eventRawChunk)
-		}
-		// TS unconditionally enqueues reasoning-delta here, even for an
-		// empty-string delta -- no guard.
-		itemID := s.resolveOutputItemID(e.OutputIndex, e.ItemID)
-		meta, _ := json.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"itemId": itemID}})
-		return s.emitParsedChunk(&provider.StreamChunk{
-			Type:             provider.ChunkTypeReasoning,
-			ID:               fmt.Sprintf("%s:%d", itemID, e.SummaryIndex),
-			Reasoning:        e.Delta,
-			ProviderMetadata: meta,
-		})
-
-	case "response.reasoning_summary_part.added":
-		var e responses.ReasoningSummaryPartAddedEvent
-		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-			return s.emitDecodeError(peek.Type, err)
-		}
-		s.markOutputStarted()
-		if eventRawChunk != nil {
-			s.flushQueue = append(s.flushQueue, eventRawChunk)
-		}
-		// The first summary part's reasoning-start was already emitted from
-		// output_item.added; only summary_index > 0 needs boundary handling
-		// here (row a0d2e8c/6fe187f area).
-		if e.SummaryIndex > 0 {
-			itemID := s.resolveOutputItemID(e.OutputIndex, e.ItemID)
-			if accum := s.reasoningAccum[itemID]; accum != nil {
-				accum.summaryParts[e.SummaryIndex] = "active"
-				// A new active summary part means every "can-conclude" part
-				// (its own .done arrived under store=false, waiting for the
-				// final encrypted_content) can now be concluded. Close them
-				// in ascending index order, matching TS's Object.keys
-				// (ascending for numeric-string keys).
-				var canConclude []int
-				for idx, status := range accum.summaryParts {
-					if status == "can-conclude" {
-						canConclude = append(canConclude, idx)
-					}
+		case "response.created":
+			var e responses.ResponseCreatedEvent
+			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+				chunk, ok := s.emitDecodeError(peek.Type, err)
+				if ok {
+					return chunk, nil
 				}
-				sort.Ints(canConclude)
-				for _, idx := range canConclude {
-					endMeta, _ := json.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"itemId": itemID}})
-					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-						Type:             provider.ChunkTypeReasoningEnd,
-						ID:               fmt.Sprintf("%s:%d", itemID, idx),
-						ProviderMetadata: endMeta,
-					})
-					accum.summaryParts[idx] = "concluded"
+				continue
+			}
+			if e.Response.ID != "" {
+				s.responseID = e.Response.ID
+			}
+			metadata := &provider.ResponseMetadata{
+				ID:      e.Response.ID,
+				ModelID: e.Response.Model,
+			}
+			if e.Response.CreatedAt != 0 {
+				metadata.Timestamp = time.Unix(e.Response.CreatedAt, 0)
+			}
+			s.pendingMetadata = &provider.StreamChunk{
+				Type:             provider.ChunkTypeResponseMetadata,
+				ResponseMetadata: metadata,
+			}
+			continue
+
+		case "response.output_item.added":
+			var e responses.OutputItemAddedEvent
+			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+				chunk, ok := s.emitDecodeError(peek.Type, err)
+				if ok {
+					return chunk, nil
 				}
-				startMeta, _ := json.Marshal(map[string]interface{}{
+				continue
+			}
+			s.itemTypes[e.OutputIndex] = e.Item.Type
+			if e.Item.ID != "" {
+				if _, seen := s.firstItemIDByOutputIndex[e.OutputIndex]; !seen {
+					s.firstItemIDByOutputIndex[e.OutputIndex] = e.Item.ID
+				}
+			}
+			s.markOutputStarted()
+			if eventRawChunk != nil {
+				s.flushQueue = append(s.flushQueue, eventRawChunk)
+			}
+			switch e.Item.Type {
+			case "function_call":
+				s.toolAccum[e.OutputIndex] = &responsesToolAccum{
+					id:        e.Item.CallID,
+					itemID:    e.Item.ID,
+					name:      e.Item.Name,
+					namespace: e.Item.Namespace,
+				}
+			case "web_search_call":
+				s.flushQueue = append(s.flushQueue,
+					&provider.StreamChunk{
+						Type: provider.ChunkTypeToolInputStart,
+						ToolCall: &types.ToolCall{
+							ID:               e.Item.ID,
+							ToolName:         s.webSearchToolName,
+							ProviderExecuted: true,
+						},
+					},
+					&provider.StreamChunk{
+						Type: provider.ChunkTypeToolInputEnd,
+						ToolCall: &types.ToolCall{
+							ID:               e.Item.ID,
+							ToolName:         s.webSearchToolName,
+							ProviderExecuted: true,
+						},
+					},
+					&provider.StreamChunk{
+						Type: provider.ChunkTypeToolCall,
+						ToolCall: &types.ToolCall{
+							ID:               e.Item.ID,
+							ToolName:         s.webSearchToolName,
+							Arguments:        map[string]interface{}{},
+							ProviderExecuted: true,
+						},
+					},
+				)
+				continue
+			case "message":
+				// TS: `ongoingAnnotations.splice(0)` then emit text-start with
+				// providerMetadata {itemId, phase?} (no annotations yet).
+				s.ongoingAnnotations = nil
+				s.activeMessagePhase = e.Item.Phase
+				var meta json.RawMessage
+				if m := openAIResponsesMessageProviderOptions(s.providerName, e.Item.ID, e.Item.Phase, nil); m != nil {
+					meta, _ = json.Marshal(m)
+				}
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+					Type:             provider.ChunkTypeTextStart,
+					ID:               e.Item.ID,
+					ProviderMetadata: meta,
+				})
+				continue
+
+			case "reasoning":
+				accum := &responsesReasoningAccum{
+					encryptedContent: e.Item.EncryptedContent,
+					summaryParts:     map[int]string{0: "active"},
+				}
+				s.reasoningAccum[e.Item.ID] = accum
+				var encMeta interface{}
+				if e.Item.EncryptedContent != "" {
+					encMeta = e.Item.EncryptedContent
+				}
+				meta, _ := json.Marshal(map[string]interface{}{
 					s.providerName: map[string]interface{}{
-						"itemId":                    itemID,
-						"reasoningEncryptedContent": nonEmptyOrNil(accum.encryptedContent),
+						"itemId":                    e.Item.ID,
+						"reasoningEncryptedContent": encMeta,
 					},
 				})
 				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 					Type:             provider.ChunkTypeReasoningStart,
-					ID:               fmt.Sprintf("%s:%d", itemID, e.SummaryIndex),
-					ProviderMetadata: startMeta,
-				})
-			}
-		}
-		return s.Next()
-
-	case "response.reasoning_summary_part.done":
-		var e responses.ReasoningSummaryPartDoneEvent
-		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-			return s.emitDecodeError(peek.Type, err)
-		}
-		s.markOutputStarted()
-		if eventRawChunk != nil {
-			s.flushQueue = append(s.flushQueue, eventRawChunk)
-		}
-		itemID := s.resolveOutputItemID(e.OutputIndex, e.ItemID)
-		if accum := s.reasoningAccum[itemID]; accum != nil {
-			if s.store {
-				// The response is stored server-side, so no encrypted_content
-				// needs to be attached: the reasoning block can close now.
-				meta, _ := json.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"itemId": itemID}})
-				accum.summaryParts[e.SummaryIndex] = "concluded"
-				return s.emitParsedChunk(&provider.StreamChunk{
-					Type:             provider.ChunkTypeReasoningEnd,
-					ID:               fmt.Sprintf("%s:%d", itemID, e.SummaryIndex),
+					ID:               e.Item.ID + ":0",
 					ProviderMetadata: meta,
 				})
-			}
-			// store=false: keep the block open until output_item.done, which
-			// carries the final encrypted_content.
-			accum.summaryParts[e.SummaryIndex] = "can-conclude"
-		}
-		return s.Next()
-
-	case "response.output_text.annotation.added":
-		var e responses.OutputTextAnnotationAddedEvent
-		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-			return s.emitDecodeError(peek.Type, err)
-		}
-		s.markOutputStarted()
-		if eventRawChunk != nil {
-			s.flushQueue = append(s.flushQueue, eventRawChunk)
-		}
-		// TS: `ongoingAnnotations.push(value.annotation)` -- surfaced on the
-		// owning message item's text-end providerMetadata.openai.annotations.
-		s.ongoingAnnotations = append(s.ongoingAnnotations, e.Annotation)
-		if src, ok := openAIAnnotationToSource(s.providerName, e.Annotation); ok {
-			return s.emitParsedChunk(&provider.StreamChunk{
-				Type:          provider.ChunkTypeSource,
-				SourceContent: &src,
-			})
-		}
-		return s.Next()
-
-	case "response.custom_tool_call_input.delta":
-		var e responses.CustomToolCallInputDeltaEvent
-		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-			return s.emitDecodeError(peek.Type, err)
-		}
-		s.markOutputStarted()
-		if eventRawChunk != nil {
-			s.flushQueue = append(s.flushQueue, eventRawChunk)
-		}
-		if toolCall, ok := s.ongoingToolCalls[e.OutputIndex]; ok {
-			return s.emitParsedChunk(&provider.StreamChunk{
-				Type: provider.ChunkTypeToolInputDelta,
-				ID:   toolCall.toolCallID,
-				Text: e.Delta,
-			})
-		}
-		return s.Next()
-
-	case "response.apply_patch_call_operation_diff.delta":
-		var e responses.ApplyPatchCallOperationDiffDeltaEvent
-		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-			return s.emitDecodeError(peek.Type, err)
-		}
-		s.markOutputStarted()
-		if eventRawChunk != nil {
-			s.flushQueue = append(s.flushQueue, eventRawChunk)
-		}
-		if toolCall, ok := s.ongoingToolCalls[e.OutputIndex]; ok && toolCall.applyPatch != nil {
-			toolCall.applyPatch.hasDiff = true
-			return s.emitParsedChunk(&provider.StreamChunk{
-				Type: provider.ChunkTypeToolInputDelta,
-				ID:   toolCall.toolCallID,
-				Text: escapeJSONDelta(e.Delta),
-			})
-		}
-		return s.Next()
-
-	case "response.apply_patch_call_operation_diff.done":
-		var e responses.ApplyPatchCallOperationDiffDoneEvent
-		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-			return s.emitDecodeError(peek.Type, err)
-		}
-		s.markOutputStarted()
-		if eventRawChunk != nil {
-			s.flushQueue = append(s.flushQueue, eventRawChunk)
-		}
-		if toolCall, ok := s.ongoingToolCalls[e.OutputIndex]; ok && toolCall.applyPatch != nil && !toolCall.applyPatch.endEmitted {
-			if !toolCall.applyPatch.hasDiff {
+				continue
+			case "file_search_call":
 				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-					Type: provider.ChunkTypeToolInputDelta,
-					ID:   toolCall.toolCallID,
-					Text: escapeJSONDelta(e.Diff),
-				})
-				toolCall.applyPatch.hasDiff = true
-			}
-			toolCall.applyPatch.endEmitted = true
-			s.flushQueue = append(s.flushQueue,
-				&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: toolCall.toolCallID, Text: `"}}`},
-				&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: toolCall.toolCallID},
-			)
-		}
-		return s.Next()
-
-	case "response.image_generation_call.partial_image":
-		var e responses.ImageGenerationPartialImageEvent
-		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-			return s.emitDecodeError(peek.Type, err)
-		}
-		s.markOutputStarted()
-		if eventRawChunk != nil {
-			s.flushQueue = append(s.flushQueue, eventRawChunk)
-		}
-		return s.emitParsedChunk(&provider.StreamChunk{
-			Type: provider.ChunkTypeToolResult,
-			ToolResult: &types.ToolResult{
-				ToolCallID:  e.ItemID,
-				ToolName:    openAIProviderToolDisplayName(s.tools, "openai.image_generation", "image_generation"),
-				Result:      map[string]interface{}{"result": e.PartialImageB64},
-				Preliminary: true,
-			},
-		})
-
-	case "response.code_interpreter_call_code.delta":
-		var e responses.CodeInterpreterCallCodeDeltaEvent
-		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-			return s.emitDecodeError(peek.Type, err)
-		}
-		s.markOutputStarted()
-		if eventRawChunk != nil {
-			s.flushQueue = append(s.flushQueue, eventRawChunk)
-		}
-		if toolCall, ok := s.ongoingToolCalls[e.OutputIndex]; ok {
-			return s.emitParsedChunk(&provider.StreamChunk{
-				Type: provider.ChunkTypeToolInputDelta,
-				ID:   toolCall.toolCallID,
-				Text: escapeJSONDelta(e.Delta),
-			})
-		}
-		return s.Next()
-
-	case "response.code_interpreter_call_code.done":
-		var e responses.CodeInterpreterCallCodeDoneEvent
-		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-			return s.emitDecodeError(peek.Type, err)
-		}
-		s.markOutputStarted()
-		if eventRawChunk != nil {
-			s.flushQueue = append(s.flushQueue, eventRawChunk)
-		}
-		if toolCall, ok := s.ongoingToolCalls[e.OutputIndex]; ok {
-			delete(s.ongoingToolCalls, e.OutputIndex)
-			containerID := ""
-			if toolCall.codeInterpreter != nil {
-				containerID = toolCall.codeInterpreter.containerID
-			}
-			inputStr, _ := json.Marshal(map[string]interface{}{"code": e.Code, "containerId": containerID})
-			s.flushQueue = append(s.flushQueue,
-				&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: toolCall.toolCallID, Text: `"}`},
-				&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: toolCall.toolCallID},
-				&provider.StreamChunk{
 					Type: provider.ChunkTypeToolCall,
 					ToolCall: &types.ToolCall{
-						ID:               toolCall.toolCallID,
-						ToolName:         toolCall.toolName,
-						RawArguments:     string(inputStr),
+						ID:               e.Item.ID,
+						ToolName:         openAIProviderToolDisplayName(s.tools, "openai.file_search", "file_search"),
+						Arguments:        map[string]interface{}{},
 						ProviderExecuted: true,
 					},
-				},
-			)
-		}
-		return s.Next()
+				})
+				continue
+			case "image_generation_call":
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+					Type: provider.ChunkTypeToolCall,
+					ToolCall: &types.ToolCall{
+						ID:               e.Item.ID,
+						ToolName:         openAIProviderToolDisplayName(s.tools, "openai.image_generation", "image_generation"),
+						Arguments:        map[string]interface{}{},
+						ProviderExecuted: true,
+					},
+				})
+				continue
+			case "code_interpreter_call":
+				codeInterpreterName := openAIProviderToolDisplayName(s.tools, "openai.code_interpreter", "code_interpreter")
+				s.ongoingToolCalls[e.OutputIndex] = &responsesOngoingToolCall{
+					toolName:        codeInterpreterName,
+					toolCallID:      e.Item.ID,
+					codeInterpreter: &codeInterpreterStreamState{containerID: e.Item.ContainerID},
+				}
+				s.flushQueue = append(s.flushQueue,
+					&provider.StreamChunk{
+						Type: provider.ChunkTypeToolInputStart,
+						ToolCall: &types.ToolCall{
+							ID:               e.Item.ID,
+							ToolName:         codeInterpreterName,
+							ProviderExecuted: true,
+						},
+					},
+					&provider.StreamChunk{
+						Type: provider.ChunkTypeToolInputDelta,
+						ID:   e.Item.ID,
+						Text: `{"containerId":"` + e.Item.ContainerID + `","code":"`,
+					},
+				)
+				continue
+			case "tool_search_call":
+				execution := e.Item.Execution
+				if execution == "" {
+					execution = "server"
+				}
+				s.ongoingToolCalls[e.OutputIndex] = &responsesOngoingToolCall{
+					toolName:            s.toolSearchToolName,
+					toolCallID:          e.Item.ID,
+					toolSearchExecution: execution,
+				}
+				if execution == "server" {
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+						Type: provider.ChunkTypeToolInputStart,
+						ToolCall: &types.ToolCall{
+							ID:               e.Item.ID,
+							ToolName:         s.toolSearchToolName,
+							ProviderExecuted: true,
+						},
+					})
+				}
+				continue
+			case "custom_tool_call":
+				s.ongoingToolCalls[e.OutputIndex] = &responsesOngoingToolCall{
+					toolName:   e.Item.Name,
+					toolCallID: e.Item.CallID,
+				}
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+					Type: provider.ChunkTypeToolInputStart,
+					ToolCall: &types.ToolCall{
+						ID:       e.Item.CallID,
+						ToolName: e.Item.Name,
+					},
+				})
+				continue
+			case "apply_patch_call":
+				// Row 45f2b6a / item 9: progressive tool-input streaming, mirroring
+				// TS's ongoingToolCalls[output_index].applyPatch tracking.
+				callID := e.Item.CallID
+				opType, opPath := "", ""
+				if e.Item.Operation != nil {
+					opType = e.Item.Operation.Type
+					opPath = e.Item.Operation.Path
+				}
+				isDelete := opType == "delete_file"
+				s.ongoingToolCalls[e.OutputIndex] = &responsesOngoingToolCall{
+					toolName:   "openai.apply_patch",
+					toolCallID: callID,
+					applyPatch: &applyPatchStreamState{hasDiff: isDelete, endEmitted: isDelete},
+				}
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+					Type: provider.ChunkTypeToolInputStart,
+					ToolCall: &types.ToolCall{
+						ID:       callID,
+						ToolName: "openai.apply_patch",
+					},
+				})
+				if isDelete {
+					inputStr, _ := json.Marshal(map[string]interface{}{
+						"callId":    callID,
+						"operation": map[string]interface{}{"type": opType, "path": opPath},
+					})
+					s.flushQueue = append(s.flushQueue,
+						&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: callID, Text: string(inputStr)},
+						&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: callID},
+					)
+				} else {
+					prefix := `{"callId":"` + escapeJSONDelta(callID) + `","operation":{"type":"` + escapeJSONDelta(opType) + `","path":"` + escapeJSONDelta(opPath) + `","diff":"`
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: callID, Text: prefix})
+				}
+			}
+			continue
 
-	case "response.output_item.done":
-		var e responses.OutputItemDoneEvent
-		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-			return s.emitDecodeError(peek.Type, err)
-		}
-		s.markOutputStarted()
-		if eventRawChunk != nil {
-			s.flushQueue = append(s.flushQueue, eventRawChunk)
-		}
-		return s.handleOutputItemDone(e)
-
-	case "response.completed", "response.incomplete":
-		var e responses.ResponseCompletedEvent
-		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-			return s.emitDecodeError(peek.Type, err)
-		}
-		usage := convertResponsesUsage(e.Response.Usage)
-		finishReason := mapResponsesFinishReason(e.Response.IncompleteDetails, false)
-		rawFinishReason := ""
-		if e.Response.IncompleteDetails != nil {
-			rawFinishReason = e.Response.IncompleteDetails.Reason
-		}
-		// Row eee6200: an earlier known-event decode failure forces the
-		// finish reason to "error", regardless of what this event reports.
-		if s.hadDecodeError {
-			finishReason = types.FinishReasonError
-		}
-		s.markOutputStarted()
-		if eventRawChunk != nil {
-			s.flushQueue = append(s.flushQueue, eventRawChunk)
-		}
-
-		var meta json.RawMessage
-		responseID := s.responseID
-		if responseID == "" {
-			responseID = e.Response.ID
-		}
-		if responseID != "" {
-			meta, _ = json.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"responseId": responseID}})
-		}
-
-		s.err = io.EOF
-		return s.emitParsedChunk(&provider.StreamChunk{
-			Type:             provider.ChunkTypeFinish,
-			FinishReason:     finishReason,
-			RawFinishReason:  rawFinishReason,
-			Usage:            &usage,
-			ProviderMetadata: meta,
-		})
-
-	case "response.failed":
-		var e responses.ResponseFailedEvent
-		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-			s.err = io.EOF
-			return nil, io.EOF
-		}
-		if !s.outputStarted && e.Response.Error != nil {
-			s.flushQueue = nil
-			s.pendingRaw = nil
-			s.pendingMetadata = nil
-			s.err = newOpenAIStreamProviderError(s.providerName, json.RawMessage(event.Data), s.responseHeaders)
-			return nil, s.err
-		}
-		usage := convertResponsesUsage(e.Response.Usage)
-		finishReason := types.FinishReason("error")
-		rawFinishReason := "error"
-		if e.Response.IncompleteDetails != nil && e.Response.IncompleteDetails.Reason != "" {
-			finishReason = mapResponsesFinishReason(e.Response.IncompleteDetails, false)
-			rawFinishReason = e.Response.IncompleteDetails.Reason
-		}
-
-		metaMap := map[string]interface{}{}
-		responseID := s.responseID
-		if responseID == "" {
-			responseID = e.Response.ID
-		}
-		if responseID != "" {
-			metaMap["responseId"] = responseID
-		}
-		if e.Response.ServiceTier != "" {
-			metaMap["serviceTier"] = e.Response.ServiceTier
-		}
-		var meta json.RawMessage
-		if len(metaMap) > 0 {
-			meta, _ = json.Marshal(map[string]interface{}{s.providerName: metaMap})
-		}
-
-		// Output already started (encounteredStreamError branch, TS
-		// openai-responses-language-model.ts ~line 2737): a response.failed
-		// with a response.error surfaces as a ChunkTypeError chunk (built via
-		// createOpenAIProviderStreamError from the same synthetic
-		// {type:'response.failed', response:{error,...}} frame TS
-		// constructs), enqueued before the terminal finish chunk. Previously
-		// Go only emitted the finish chunk here and silently dropped the
-		// error entirely (P1-1c part 2).
-		if e.Response.Error != nil {
-			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-				Type: provider.ChunkTypeError,
-				Text: e.Response.Error.Message,
-				Err:  newOpenAIStreamProviderErrorChunk(s.providerName, json.RawMessage(event.Data)),
+		case "response.output_text.delta":
+			var e responses.OutputTextDeltaEvent
+			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+				chunk, ok := s.emitDecodeError(peek.Type, err)
+				if ok {
+					return chunk, nil
+				}
+				continue
+			}
+			if e.Delta == "" {
+				continue
+			}
+			s.markOutputStarted()
+			if eventRawChunk != nil {
+				s.flushQueue = append(s.flushQueue, eventRawChunk)
+			}
+			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
+				Type: provider.ChunkTypeText,
+				ID:   s.firstItemIDByOutputIndex[e.OutputIndex],
+				Text: e.Delta,
 			})
+			if ok {
+				return chunk, nil
+			}
+			continue
+
+		case "response.function_call_arguments.delta":
+			var e responses.FunctionCallArgumentsDeltaEvent
+			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+				chunk, ok := s.emitDecodeError(peek.Type, err)
+				if ok {
+					return chunk, nil
+				}
+				continue
+			}
+			s.markOutputStarted()
+			if eventRawChunk != nil {
+				s.flushQueue = append(s.flushQueue, eventRawChunk)
+			}
+			if accum, ok := s.toolAccum[e.OutputIndex]; ok {
+				accum.arguments += e.Delta
+			}
+			continue
+
+		case "response.reasoning_summary_text.delta":
+			var e responses.ReasoningSummaryTextDeltaEvent
+			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+				chunk, ok := s.emitDecodeError(peek.Type, err)
+				if ok {
+					return chunk, nil
+				}
+				continue
+			}
+			s.markOutputStarted()
+			if eventRawChunk != nil {
+				s.flushQueue = append(s.flushQueue, eventRawChunk)
+			}
+			// TS unconditionally enqueues reasoning-delta here, even for an
+			// empty-string delta -- no guard.
+			itemID := s.resolveOutputItemID(e.OutputIndex, e.ItemID)
+			meta, _ := json.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"itemId": itemID}})
+			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
+				Type:             provider.ChunkTypeReasoning,
+				ID:               fmt.Sprintf("%s:%d", itemID, e.SummaryIndex),
+				Reasoning:        e.Delta,
+				ProviderMetadata: meta,
+			})
+			if ok {
+				return chunk, nil
+			}
+			continue
+
+		case "response.reasoning_summary_part.added":
+			var e responses.ReasoningSummaryPartAddedEvent
+			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+				chunk, ok := s.emitDecodeError(peek.Type, err)
+				if ok {
+					return chunk, nil
+				}
+				continue
+			}
+			s.markOutputStarted()
+			if eventRawChunk != nil {
+				s.flushQueue = append(s.flushQueue, eventRawChunk)
+			}
+			// The first summary part's reasoning-start was already emitted from
+			// output_item.added; only summary_index > 0 needs boundary handling
+			// here (row a0d2e8c/6fe187f area).
+			if e.SummaryIndex > 0 {
+				itemID := s.resolveOutputItemID(e.OutputIndex, e.ItemID)
+				if accum := s.reasoningAccum[itemID]; accum != nil {
+					accum.summaryParts[e.SummaryIndex] = "active"
+					// A new active summary part means every "can-conclude" part
+					// (its own .done arrived under store=false, waiting for the
+					// final encrypted_content) can now be concluded. Close them
+					// in ascending index order, matching TS's Object.keys
+					// (ascending for numeric-string keys).
+					var canConclude []int
+					for idx, status := range accum.summaryParts {
+						if status == "can-conclude" {
+							canConclude = append(canConclude, idx)
+						}
+					}
+					sort.Ints(canConclude)
+					for _, idx := range canConclude {
+						endMeta, _ := json.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"itemId": itemID}})
+						s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+							Type:             provider.ChunkTypeReasoningEnd,
+							ID:               fmt.Sprintf("%s:%d", itemID, idx),
+							ProviderMetadata: endMeta,
+						})
+						accum.summaryParts[idx] = "concluded"
+					}
+					startMeta, _ := json.Marshal(map[string]interface{}{
+						s.providerName: map[string]interface{}{
+							"itemId":                    itemID,
+							"reasoningEncryptedContent": nonEmptyOrNil(accum.encryptedContent),
+						},
+					})
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+						Type:             provider.ChunkTypeReasoningStart,
+						ID:               fmt.Sprintf("%s:%d", itemID, e.SummaryIndex),
+						ProviderMetadata: startMeta,
+					})
+				}
+			}
+			continue
+
+		case "response.reasoning_summary_part.done":
+			var e responses.ReasoningSummaryPartDoneEvent
+			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+				chunk, ok := s.emitDecodeError(peek.Type, err)
+				if ok {
+					return chunk, nil
+				}
+				continue
+			}
+			s.markOutputStarted()
+			if eventRawChunk != nil {
+				s.flushQueue = append(s.flushQueue, eventRawChunk)
+			}
+			itemID := s.resolveOutputItemID(e.OutputIndex, e.ItemID)
+			if accum := s.reasoningAccum[itemID]; accum != nil {
+				if s.store {
+					// The response is stored server-side, so no encrypted_content
+					// needs to be attached: the reasoning block can close now.
+					meta, _ := json.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"itemId": itemID}})
+					accum.summaryParts[e.SummaryIndex] = "concluded"
+					chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
+						Type:             provider.ChunkTypeReasoningEnd,
+						ID:               fmt.Sprintf("%s:%d", itemID, e.SummaryIndex),
+						ProviderMetadata: meta,
+					})
+					if ok {
+						return chunk, nil
+					}
+					continue
+				}
+				// store=false: keep the block open until output_item.done, which
+				// carries the final encrypted_content.
+				accum.summaryParts[e.SummaryIndex] = "can-conclude"
+			}
+			continue
+
+		case "response.output_text.annotation.added":
+			var e responses.OutputTextAnnotationAddedEvent
+			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+				chunk, ok := s.emitDecodeError(peek.Type, err)
+				if ok {
+					return chunk, nil
+				}
+				continue
+			}
+			s.markOutputStarted()
+			if eventRawChunk != nil {
+				s.flushQueue = append(s.flushQueue, eventRawChunk)
+			}
+			// TS: `ongoingAnnotations.push(value.annotation)` -- surfaced on the
+			// owning message item's text-end providerMetadata.openai.annotations.
+			s.ongoingAnnotations = append(s.ongoingAnnotations, e.Annotation)
+			if src, ok := openAIAnnotationToSource(s.providerName, e.Annotation); ok {
+				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
+					Type:          provider.ChunkTypeSource,
+					SourceContent: &src,
+				})
+				if ok {
+					return chunk, nil
+				}
+				continue
+			}
+			continue
+
+		case "response.custom_tool_call_input.delta":
+			var e responses.CustomToolCallInputDeltaEvent
+			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+				chunk, ok := s.emitDecodeError(peek.Type, err)
+				if ok {
+					return chunk, nil
+				}
+				continue
+			}
+			s.markOutputStarted()
+			if eventRawChunk != nil {
+				s.flushQueue = append(s.flushQueue, eventRawChunk)
+			}
+			if toolCall, ok := s.ongoingToolCalls[e.OutputIndex]; ok {
+				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
+					Type: provider.ChunkTypeToolInputDelta,
+					ID:   toolCall.toolCallID,
+					Text: e.Delta,
+				})
+				if ok {
+					return chunk, nil
+				}
+				continue
+			}
+			continue
+
+		case "response.apply_patch_call_operation_diff.delta":
+			var e responses.ApplyPatchCallOperationDiffDeltaEvent
+			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+				chunk, ok := s.emitDecodeError(peek.Type, err)
+				if ok {
+					return chunk, nil
+				}
+				continue
+			}
+			s.markOutputStarted()
+			if eventRawChunk != nil {
+				s.flushQueue = append(s.flushQueue, eventRawChunk)
+			}
+			if toolCall, ok := s.ongoingToolCalls[e.OutputIndex]; ok && toolCall.applyPatch != nil {
+				toolCall.applyPatch.hasDiff = true
+				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
+					Type: provider.ChunkTypeToolInputDelta,
+					ID:   toolCall.toolCallID,
+					Text: escapeJSONDelta(e.Delta),
+				})
+				if ok {
+					return chunk, nil
+				}
+				continue
+			}
+			continue
+
+		case "response.apply_patch_call_operation_diff.done":
+			var e responses.ApplyPatchCallOperationDiffDoneEvent
+			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+				chunk, ok := s.emitDecodeError(peek.Type, err)
+				if ok {
+					return chunk, nil
+				}
+				continue
+			}
+			s.markOutputStarted()
+			if eventRawChunk != nil {
+				s.flushQueue = append(s.flushQueue, eventRawChunk)
+			}
+			if toolCall, ok := s.ongoingToolCalls[e.OutputIndex]; ok && toolCall.applyPatch != nil && !toolCall.applyPatch.endEmitted {
+				if !toolCall.applyPatch.hasDiff {
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+						Type: provider.ChunkTypeToolInputDelta,
+						ID:   toolCall.toolCallID,
+						Text: escapeJSONDelta(e.Diff),
+					})
+					toolCall.applyPatch.hasDiff = true
+				}
+				toolCall.applyPatch.endEmitted = true
+				s.flushQueue = append(s.flushQueue,
+					&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: toolCall.toolCallID, Text: `"}}`},
+					&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: toolCall.toolCallID},
+				)
+			}
+			continue
+
+		case "response.image_generation_call.partial_image":
+			var e responses.ImageGenerationPartialImageEvent
+			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+				chunk, ok := s.emitDecodeError(peek.Type, err)
+				if ok {
+					return chunk, nil
+				}
+				continue
+			}
+			s.markOutputStarted()
+			if eventRawChunk != nil {
+				s.flushQueue = append(s.flushQueue, eventRawChunk)
+			}
+			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
+				Type: provider.ChunkTypeToolResult,
+				ToolResult: &types.ToolResult{
+					ToolCallID:  e.ItemID,
+					ToolName:    openAIProviderToolDisplayName(s.tools, "openai.image_generation", "image_generation"),
+					Result:      map[string]interface{}{"result": e.PartialImageB64},
+					Preliminary: true,
+				},
+			})
+			if ok {
+				return chunk, nil
+			}
+			continue
+
+		case "response.code_interpreter_call_code.delta":
+			var e responses.CodeInterpreterCallCodeDeltaEvent
+			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+				chunk, ok := s.emitDecodeError(peek.Type, err)
+				if ok {
+					return chunk, nil
+				}
+				continue
+			}
+			s.markOutputStarted()
+			if eventRawChunk != nil {
+				s.flushQueue = append(s.flushQueue, eventRawChunk)
+			}
+			if toolCall, ok := s.ongoingToolCalls[e.OutputIndex]; ok {
+				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
+					Type: provider.ChunkTypeToolInputDelta,
+					ID:   toolCall.toolCallID,
+					Text: escapeJSONDelta(e.Delta),
+				})
+				if ok {
+					return chunk, nil
+				}
+				continue
+			}
+			continue
+
+		case "response.code_interpreter_call_code.done":
+			var e responses.CodeInterpreterCallCodeDoneEvent
+			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+				chunk, ok := s.emitDecodeError(peek.Type, err)
+				if ok {
+					return chunk, nil
+				}
+				continue
+			}
+			s.markOutputStarted()
+			if eventRawChunk != nil {
+				s.flushQueue = append(s.flushQueue, eventRawChunk)
+			}
+			if toolCall, ok := s.ongoingToolCalls[e.OutputIndex]; ok {
+				delete(s.ongoingToolCalls, e.OutputIndex)
+				containerID := ""
+				if toolCall.codeInterpreter != nil {
+					containerID = toolCall.codeInterpreter.containerID
+				}
+				inputStr, _ := json.Marshal(map[string]interface{}{"code": e.Code, "containerId": containerID})
+				s.flushQueue = append(s.flushQueue,
+					&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: toolCall.toolCallID, Text: `"}`},
+					&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: toolCall.toolCallID},
+					&provider.StreamChunk{
+						Type: provider.ChunkTypeToolCall,
+						ToolCall: &types.ToolCall{
+							ID:               toolCall.toolCallID,
+							ToolName:         toolCall.toolName,
+							RawArguments:     string(inputStr),
+							ProviderExecuted: true,
+						},
+					},
+				)
+			}
+			continue
+
+		case "response.output_item.done":
+			var e responses.OutputItemDoneEvent
+			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+				chunk, ok := s.emitDecodeError(peek.Type, err)
+				if ok {
+					return chunk, nil
+				}
+				continue
+			}
+			s.markOutputStarted()
+			if eventRawChunk != nil {
+				s.flushQueue = append(s.flushQueue, eventRawChunk)
+			}
+			chunk, ok := s.handleOutputItemDone(e)
+			if ok {
+				return chunk, nil
+			}
+			continue
+
+		case "response.completed", "response.incomplete":
+			var e responses.ResponseCompletedEvent
+			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+				chunk, ok := s.emitDecodeError(peek.Type, err)
+				if ok {
+					return chunk, nil
+				}
+				continue
+			}
+			usage := convertResponsesUsage(e.Response.Usage)
+			finishReason := mapResponsesFinishReason(e.Response.IncompleteDetails, false)
+			rawFinishReason := ""
+			if e.Response.IncompleteDetails != nil {
+				rawFinishReason = e.Response.IncompleteDetails.Reason
+			}
+			// Row eee6200: an earlier known-event decode failure forces the
+			// finish reason to "error", regardless of what this event reports.
+			if s.hadDecodeError {
+				finishReason = types.FinishReasonError
+			}
+			s.markOutputStarted()
+			if eventRawChunk != nil {
+				s.flushQueue = append(s.flushQueue, eventRawChunk)
+			}
+
+			var meta json.RawMessage
+			responseID := s.responseID
+			if responseID == "" {
+				responseID = e.Response.ID
+			}
+			if responseID != "" {
+				meta, _ = json.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"responseId": responseID}})
+			}
+
+			s.err = io.EOF
+			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
+				Type:             provider.ChunkTypeFinish,
+				FinishReason:     finishReason,
+				RawFinishReason:  rawFinishReason,
+				Usage:            &usage,
+				ProviderMetadata: meta,
+			})
+			if ok {
+				return chunk, nil
+			}
+			continue
+
+		case "response.failed":
+			var e responses.ResponseFailedEvent
+			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+				s.err = io.EOF
+				return nil, io.EOF
+			}
+			if !s.outputStarted && e.Response.Error != nil {
+				s.flushQueue = nil
+				s.pendingRaw = nil
+				s.pendingMetadata = nil
+				s.err = newOpenAIStreamProviderError(s.providerName, json.RawMessage(event.Data), s.responseHeaders)
+				return nil, s.err
+			}
+			usage := convertResponsesUsage(e.Response.Usage)
+			finishReason := types.FinishReason("error")
+			rawFinishReason := "error"
+			if e.Response.IncompleteDetails != nil && e.Response.IncompleteDetails.Reason != "" {
+				finishReason = mapResponsesFinishReason(e.Response.IncompleteDetails, false)
+				rawFinishReason = e.Response.IncompleteDetails.Reason
+			}
+
+			metaMap := map[string]interface{}{}
+			responseID := s.responseID
+			if responseID == "" {
+				responseID = e.Response.ID
+			}
+			if responseID != "" {
+				metaMap["responseId"] = responseID
+			}
+			if e.Response.ServiceTier != "" {
+				metaMap["serviceTier"] = e.Response.ServiceTier
+			}
+			var meta json.RawMessage
+			if len(metaMap) > 0 {
+				meta, _ = json.Marshal(map[string]interface{}{s.providerName: metaMap})
+			}
+
+			// Output already started (encounteredStreamError branch, TS
+			// openai-responses-language-model.ts ~line 2737): a response.failed
+			// with a response.error surfaces as a ChunkTypeError chunk (built via
+			// createOpenAIProviderStreamError from the same synthetic
+			// {type:'response.failed', response:{error,...}} frame TS
+			// constructs), enqueued before the terminal finish chunk. Previously
+			// Go only emitted the finish chunk here and silently dropped the
+			// error entirely (P1-1c part 2).
+			if e.Response.Error != nil {
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+					Type: provider.ChunkTypeError,
+					Text: e.Response.Error.Message,
+					Err:  newOpenAIStreamProviderErrorChunk(s.providerName, json.RawMessage(event.Data)),
+				})
+			}
+
+			s.err = io.EOF
+			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
+				Type:             provider.ChunkTypeFinish,
+				FinishReason:     finishReason,
+				RawFinishReason:  rawFinishReason,
+				Usage:            &usage,
+				ProviderMetadata: meta,
+			})
+			if ok {
+				return chunk, nil
+			}
+			continue
+
+		case "error":
+			var e responses.ResponsesStreamErrorEvent
+			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+				continue
+			}
+			if !s.outputStarted {
+				s.flushQueue = nil
+				s.pendingRaw = nil
+				s.pendingMetadata = nil
+				s.err = newOpenAIStreamProviderError(s.providerName, json.RawMessage(event.Data), s.responseHeaders)
+				return nil, s.err
+			}
+			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: e.Message,
+				// P1-1c part 2: attach the structured StreamProviderError (TS
+				// createOpenAIProviderStreamError(value)) instead of only Text.
+				Err: newOpenAIStreamProviderErrorChunk(s.providerName, json.RawMessage(event.Data)),
+			})
+			if ok {
+				return chunk, nil
+			}
+			continue
+
+		default:
+			// Unknown event types (web_search_call, code_interpreter_call, etc.) —
+			// skip silently; they are provider-internal and require no client action.
+			continue
 		}
 
-		s.err = io.EOF
-		return s.emitParsedChunk(&provider.StreamChunk{
-			Type:             provider.ChunkTypeFinish,
-			FinishReason:     finishReason,
-			RawFinishReason:  rawFinishReason,
-			Usage:            &usage,
-			ProviderMetadata: meta,
-		})
-
-	case "error":
-		var e responses.ResponsesStreamErrorEvent
-		if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-			return s.Next()
-		}
-		if !s.outputStarted {
-			s.flushQueue = nil
-			s.pendingRaw = nil
-			s.pendingMetadata = nil
-			s.err = newOpenAIStreamProviderError(s.providerName, json.RawMessage(event.Data), s.responseHeaders)
-			return nil, s.err
-		}
-		return s.emitParsedChunk(&provider.StreamChunk{
-			Type: provider.ChunkTypeError,
-			Text: e.Message,
-			// P1-1c part 2: attach the structured StreamProviderError (TS
-			// createOpenAIProviderStreamError(value)) instead of only Text.
-			Err: newOpenAIStreamProviderErrorChunk(s.providerName, json.RawMessage(event.Data)),
-		})
-
-	default:
-		// Unknown event types (web_search_call, code_interpreter_call, etc.) —
-		// skip silently; they are provider-internal and require no client action.
-		return s.Next()
 	}
 }
 
@@ -3161,14 +3297,14 @@ func openAIResponsesRawChunk(data string) *provider.StreamChunk {
 // For function_call items it emits a ChunkTypeToolCall.
 // For compaction items it emits a ChunkTypeCustom.
 // All other item types were emitted incrementally and need no action here.
-func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) (*provider.StreamChunk, error) {
+func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) (*provider.StreamChunk, bool) {
 	itemType := s.itemTypes[e.OutputIndex]
 
 	switch itemType {
 	case "function_call":
 		accum, ok := s.toolAccum[e.OutputIndex]
 		if !ok {
-			return s.Next()
+			return nil, false
 		}
 		delete(s.toolAccum, e.OutputIndex)
 		delete(s.itemTypes, e.OutputIndex)
@@ -3202,7 +3338,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 					ToolCall: &tc,
 				})
 			}
-			return s.Next()
+			return nil, false
 		}
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeToolCall,
@@ -3217,7 +3353,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 	case "compaction":
 		var item responses.CompactionEvent
 		if err := json.Unmarshal(e.Item, &item); err != nil {
-			return s.Next()
+			return nil, false
 		}
 		chunk := responses.CompactionEventToChunk(item)
 		return s.emitParsedChunk(chunk)
@@ -3232,7 +3368,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			Phase *string `json:"phase,omitempty"`
 		}
 		if err := json.Unmarshal(e.Item, &item); err != nil {
-			return s.Next()
+			return nil, false
 		}
 		itemID := s.firstItemIDByOutputIndex[e.OutputIndex]
 		if itemID == "" {
@@ -3274,7 +3410,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			EncryptedContent string `json:"encrypted_content,omitempty"`
 		}
 		if err := json.Unmarshal(e.Item, &item); err != nil || (item.ID == "" && item.EncryptedContent == "") {
-			return s.Next()
+			return nil, false
 		}
 		id := firstID
 		if id == "" {
@@ -3309,7 +3445,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		}
 		sort.Ints(indices)
 		if len(indices) == 0 {
-			return s.Next()
+			return nil, false
 		}
 		for _, idx := range indices[:len(indices)-1] {
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
@@ -3432,7 +3568,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		delete(s.ongoingToolCalls, e.OutputIndex)
 		var item responses.CustomToolCallItem
 		if err := json.Unmarshal(e.Item, &item); err != nil {
-			return s.Next()
+			return nil, false
 		}
 		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 			Type:     provider.ChunkTypeToolInputEnd,
@@ -3452,7 +3588,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		delete(s.itemTypes, e.OutputIndex)
 		var item WebSearchCallItem
 		if err := json.Unmarshal(e.Item, &item); err != nil {
-			return s.Next()
+			return nil, false
 		}
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeToolResult,
@@ -3470,7 +3606,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		delete(s.itemTypes, e.OutputIndex)
 		var item responses.ProgramItem
 		if err := json.Unmarshal(e.Item, &item); err != nil {
-			return s.Next()
+			return nil, false
 		}
 		args, rawArgs := programCallArguments(item)
 		return s.emitParsedChunk(&provider.StreamChunk{
@@ -3490,7 +3626,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		delete(s.itemTypes, e.OutputIndex)
 		var item responses.ProgramOutputItem
 		if err := json.Unmarshal(e.Item, &item); err != nil {
-			return s.Next()
+			return nil, false
 		}
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeToolResult,
@@ -3505,7 +3641,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		delete(s.itemTypes, e.OutputIndex)
 		var item responses.ImageGenerationCallItem
 		if err := json.Unmarshal(e.Item, &item); err != nil {
-			return s.Next()
+			return nil, false
 		}
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeToolResult,
@@ -3520,7 +3656,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		delete(s.itemTypes, e.OutputIndex)
 		var item responses.FileSearchCallItem
 		if err := json.Unmarshal(e.Item, &item); err != nil {
-			return s.Next()
+			return nil, false
 		}
 		var results interface{}
 		if item.Results != nil {
@@ -3557,7 +3693,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		delete(s.ongoingToolCalls, e.OutputIndex)
 		var item responses.CodeInterpreterCallItem
 		if err := json.Unmarshal(e.Item, &item); err != nil {
-			return s.Next()
+			return nil, false
 		}
 		outputs := make([]map[string]interface{}, 0, len(item.Outputs))
 		for _, o := range item.Outputs {
@@ -3587,10 +3723,10 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		delete(s.ongoingToolCalls, e.OutputIndex)
 		var item responses.ToolSearchCallItem
 		if err := json.Unmarshal(e.Item, &item); err != nil {
-			return s.Next()
+			return nil, false
 		}
 		if toolCall == nil {
-			return s.Next()
+			return nil, false
 		}
 		isHosted := item.Execution == "server"
 		toolCallID := toolCall.toolCallID
@@ -3632,7 +3768,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		delete(s.itemTypes, e.OutputIndex)
 		var item responses.ToolSearchOutputItem
 		if err := json.Unmarshal(e.Item, &item); err != nil {
-			return s.Next()
+			return nil, false
 		}
 		toolCallID := item.ID
 		if item.CallID != nil && *item.CallID != "" {
@@ -3661,7 +3797,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		delete(s.itemTypes, e.OutputIndex)
 		var item responses.McpCallItem
 		if err := json.Unmarshal(e.Item, &item); err != nil {
-			return s.Next()
+			return nil, false
 		}
 		toolCallID := item.ID
 		if item.ApprovalRequestID != nil {
@@ -3714,13 +3850,13 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 	case "mcp_list_tools":
 		// TS: skipped entirely -- not exposed to the caller or replayed.
 		delete(s.itemTypes, e.OutputIndex)
-		return s.Next()
+		return nil, false
 
 	case "mcp_approval_request":
 		delete(s.itemTypes, e.OutputIndex)
 		var item responses.McpApprovalRequestItem
 		if err := json.Unmarshal(e.Item, &item); err != nil {
-			return s.Next()
+			return nil, false
 		}
 		approvalRequestID := item.ID
 		if item.ApprovalRequestID != nil && *item.ApprovalRequestID != "" {
@@ -3755,7 +3891,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 
 	default:
 		delete(s.itemTypes, e.OutputIndex)
-		return s.Next()
+		return nil, false
 	}
 }
 

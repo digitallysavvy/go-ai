@@ -841,169 +841,172 @@ func (s *openAIStream) Close() error {
 
 // Next returns the next chunk in the stream
 func (s *openAIStream) Next() (*provider.StreamChunk, error) {
-	// Emit any fully-assembled chunks before reading more SSE events.
-	if len(s.flushQueue) > 0 {
-		chunk := s.flushQueue[0]
-		s.flushQueue = s.flushQueue[1:]
-		return chunk, nil
-	}
-
-	if s.err != nil {
-		return nil, s.err
-	}
-
-	// Get next SSE event
-	event, err := s.parser.Next()
-	if err != nil {
-		s.err = err
-		return nil, err
-	}
-
-	// Check for stream completion
-	if streaming.IsStreamDone(event) {
-		s.err = io.EOF
-		return nil, io.EOF
-	}
-	// Parse the event data as JSON.
-	// Tool call deltas carry an "index" field not present in non-streaming responses,
-	// so we use an inline struct here instead of the shared openAIToolCall type.
-	var chunkData struct {
-		ID      string `json:"id"`
-		Model   string `json:"model"`
-		Created int64  `json:"created"`
-		Choices []struct {
-			Delta struct {
-				Content   string `json:"content"`
-				ToolCalls []struct {
-					Index    *int    `json:"index"`
-					ID       string  `json:"id"`
-					Type     *string `json:"type"` // nullable: OpenAI may send null for type in streaming deltas (#12901)
-					Function struct {
-						Name      string `json:"name"`
-						Arguments string `json:"arguments"`
-					} `json:"function"`
-				} `json:"tool_calls,omitempty"`
-			} `json:"delta"`
-			FinishReason *string `json:"finish_reason"`
-		} `json:"choices"`
-		Error json.RawMessage `json:"error,omitempty"`
-	}
-
-	if err := json.Unmarshal([]byte(event.Data), &chunkData); err != nil {
-		s.queueRawChunk(event.Data)
-		errorChunk := &provider.StreamChunk{
-			Type: provider.ChunkTypeError,
-			Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
-		}
+	for {
+		// Emit any fully-assembled chunks before reading more SSE events.
 		if len(s.flushQueue) > 0 {
-			s.flushQueue = append(s.flushQueue, errorChunk)
-			return s.Next()
+			chunk := s.flushQueue[0]
+			s.flushQueue = s.flushQueue[1:]
+			return chunk, nil
 		}
-		return errorChunk, nil
-	}
-	rawChunk := s.rawChunk(event.Data)
-	if len(chunkData.Error) > 0 {
-		if !s.outputStarted {
-			s.flushQueue = nil
-			s.pendingRaw = nil
-			s.pendingMetadata = nil
-			s.err = newOpenAIStreamProviderError(s.providerName, json.RawMessage(event.Data), s.responseHeaders)
+
+		if s.err != nil {
 			return nil, s.err
 		}
-		if rawChunk != nil {
-			s.flushQueue = append(s.flushQueue, rawChunk)
-		}
-		errorChunk := &provider.StreamChunk{
-			Type: provider.ChunkTypeError,
-			Text: openAIStreamErrorText(chunkData.Error),
-			// P1-1c part 2: attach a structured StreamProviderError (mirrors
-			// TS createOpenAIProviderStreamError) so streamRetries/IsRetryable
-			// see the real type/code/statusCode/isRetryable instead of
-			// falling back to generic text-based inference.
-			Err: newOpenAIStreamProviderErrorChunk(s.providerName, chunkData.Error),
-		}
-		if len(s.flushQueue) > 0 {
-			s.flushQueue = append(s.flushQueue, errorChunk)
-			return s.Next()
-		}
-		return errorChunk, nil
-	}
 
-	if !s.metadataEmitted && (chunkData.ID != "" || chunkData.Model != "" || chunkData.Created != 0) {
-		metadata := &provider.ResponseMetadata{
-			ID:      chunkData.ID,
-			ModelID: chunkData.Model,
+		// Get next SSE event
+		event, err := s.parser.Next()
+		if err != nil {
+			s.err = err
+			return nil, err
 		}
-		if chunkData.Created != 0 {
-			metadata.Timestamp = time.Unix(chunkData.Created, 0)
-		}
-		s.pendingMetadata = &provider.StreamChunk{
-			Type:             provider.ChunkTypeResponseMetadata,
-			ResponseMetadata: metadata,
-		}
-		s.metadataEmitted = true
-	}
 
-	if len(chunkData.Choices) > 0 {
-		choice := chunkData.Choices[0]
+		// Check for stream completion
+		if streaming.IsStreamDone(event) {
+			s.err = io.EOF
+			return nil, io.EOF
+		}
+		// Parse the event data as JSON.
+		// Tool call deltas carry an "index" field not present in non-streaming responses,
+		// so we use an inline struct here instead of the shared openAIToolCall type.
+		var chunkData struct {
+			ID      string `json:"id"`
+			Model   string `json:"model"`
+			Created int64  `json:"created"`
+			Choices []struct {
+				Delta struct {
+					Content   string `json:"content"`
+					ToolCalls []struct {
+						Index    *int    `json:"index"`
+						ID       string  `json:"id"`
+						Type     *string `json:"type"` // nullable: OpenAI may send null for type in streaming deltas (#12901)
+						Function struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls,omitempty"`
+				} `json:"delta"`
+				FinishReason *string `json:"finish_reason"`
+			} `json:"choices"`
+			Error json.RawMessage `json:"error,omitempty"`
+		}
 
-		// Text chunk
-		if choice.Delta.Content != "" {
-			s.outputStarted = true
-			if rawChunk != nil {
-				s.pendingRaw = append(s.pendingRaw, rawChunk)
-			}
-			s.flushPendingMetadata()
-			textChunk := &provider.StreamChunk{
-				Type: provider.ChunkTypeText,
-				Text: choice.Delta.Content,
+		if err := json.Unmarshal([]byte(event.Data), &chunkData); err != nil {
+			s.queueRawChunk(event.Data)
+			errorChunk := &provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
 			}
 			if len(s.flushQueue) > 0 {
-				s.flushQueue = append(s.flushQueue, textChunk)
-				return s.Next()
+				s.flushQueue = append(s.flushQueue, errorChunk)
+				continue
 			}
-			return textChunk, nil
+			return errorChunk, nil
 		}
-
-		// Tool call delta — accumulate partial arguments by index.
-		// OpenAI sends: first delta has id + name + empty/partial args;
-		// subsequent deltas for the same index carry argument fragments only.
-		if len(choice.Delta.ToolCalls) > 0 {
+		rawChunk := s.rawChunk(event.Data)
+		if len(chunkData.Error) > 0 {
+			if !s.outputStarted {
+				s.flushQueue = nil
+				s.pendingRaw = nil
+				s.pendingMetadata = nil
+				s.err = newOpenAIStreamProviderError(s.providerName, json.RawMessage(event.Data), s.responseHeaders)
+				return nil, s.err
+			}
 			if rawChunk != nil {
-				s.pendingRaw = append(s.pendingRaw, rawChunk)
+				s.flushQueue = append(s.flushQueue, rawChunk)
 			}
-			for _, tc := range choice.Delta.ToolCalls {
-				for _, chunk := range s.toolCallTracker.Track(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
-					c := chunk
-					s.flushPendingMetadata()
-					s.flushQueue = append(s.flushQueue, &c)
-					s.outputStarted = true
+			errorChunk := &provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: openAIStreamErrorText(chunkData.Error),
+				// P1-1c part 2: attach a structured StreamProviderError (mirrors
+				// TS createOpenAIProviderStreamError) so streamRetries/IsRetryable
+				// see the real type/code/statusCode/isRetryable instead of
+				// falling back to generic text-based inference.
+				Err: newOpenAIStreamProviderErrorChunk(s.providerName, chunkData.Error),
+			}
+			if len(s.flushQueue) > 0 {
+				s.flushQueue = append(s.flushQueue, errorChunk)
+				continue
+			}
+			return errorChunk, nil
+		}
+
+		if !s.metadataEmitted && (chunkData.ID != "" || chunkData.Model != "" || chunkData.Created != 0) {
+			metadata := &provider.ResponseMetadata{
+				ID:      chunkData.ID,
+				ModelID: chunkData.Model,
+			}
+			if chunkData.Created != 0 {
+				metadata.Timestamp = time.Unix(chunkData.Created, 0)
+			}
+			s.pendingMetadata = &provider.StreamChunk{
+				Type:             provider.ChunkTypeResponseMetadata,
+				ResponseMetadata: metadata,
+			}
+			s.metadataEmitted = true
+		}
+
+		if len(chunkData.Choices) > 0 {
+			choice := chunkData.Choices[0]
+
+			// Text chunk
+			if choice.Delta.Content != "" {
+				s.outputStarted = true
+				if rawChunk != nil {
+					s.pendingRaw = append(s.pendingRaw, rawChunk)
 				}
+				s.flushPendingMetadata()
+				textChunk := &provider.StreamChunk{
+					Type: provider.ChunkTypeText,
+					Text: choice.Delta.Content,
+				}
+				if len(s.flushQueue) > 0 {
+					s.flushQueue = append(s.flushQueue, textChunk)
+					continue
+				}
+				return textChunk, nil
 			}
+
+			// Tool call delta — accumulate partial arguments by index.
+			// OpenAI sends: first delta has id + name + empty/partial args;
+			// subsequent deltas for the same index carry argument fragments only.
+			if len(choice.Delta.ToolCalls) > 0 {
+				if rawChunk != nil {
+					s.pendingRaw = append(s.pendingRaw, rawChunk)
+				}
+				for _, tc := range choice.Delta.ToolCalls {
+					for _, chunk := range s.toolCallTracker.Track(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
+						c := chunk
+						s.flushPendingMetadata()
+						s.flushQueue = append(s.flushQueue, &c)
+						s.outputStarted = true
+					}
+				}
+				if choice.FinishReason != nil {
+					s.flushOpenAIToolCalls(*choice.FinishReason)
+				}
+				// No chunk to emit yet — keep accumulating.
+				continue
+			}
+
+			// Finish chunk — flush all accumulated tool calls first.
 			if choice.FinishReason != nil {
+				if rawChunk != nil && !s.outputStarted {
+					s.pendingRaw = append(s.pendingRaw, rawChunk)
+				}
+				s.flushPendingMetadata()
 				s.flushOpenAIToolCalls(*choice.FinishReason)
+				s.outputStarted = true
+				continue
 			}
-			// No chunk to emit yet — keep accumulating.
-			return s.Next()
 		}
 
-		// Finish chunk — flush all accumulated tool calls first.
-		if choice.FinishReason != nil {
-			if rawChunk != nil && !s.outputStarted {
-				s.pendingRaw = append(s.pendingRaw, rawChunk)
-			}
-			s.flushPendingMetadata()
-			s.flushOpenAIToolCalls(*choice.FinishReason)
-			s.outputStarted = true
-			return s.Next()
+		if rawChunk != nil {
+			s.pendingRaw = append(s.pendingRaw, rawChunk)
 		}
-	}
+		// Empty chunk, get next
+		continue
 
-	if rawChunk != nil {
-		s.pendingRaw = append(s.pendingRaw, rawChunk)
 	}
-	// Empty chunk, get next
-	return s.Next()
 }
 
 func (s *openAIStream) flushPendingMetadata() {
