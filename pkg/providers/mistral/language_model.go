@@ -549,7 +549,6 @@ func (s *mistralStream) Err() error {
 }
 
 func (s *mistralStream) Next() (*provider.StreamChunk, error) {
-nextLoop:
 	for {
 		if len(s.flushQueue) > 0 {
 			chunk := s.flushQueue[0]
@@ -652,56 +651,44 @@ nextLoop:
 				} `json:"thinking"`
 			}
 			if err := json.Unmarshal(contentRaw, &parts); err == nil {
+				// Mirrors TS mistral-chat-language-model.ts: every thinking
+				// part in the delta is emitted as reasoning first, then all
+				// text parts are joined into one text delta (ending any
+				// active reasoning), and the delta's tool calls and finish
+				// reason are still processed below.
 				for _, part := range parts {
-					switch part.Type {
-					case "thinking":
-						// Collect thinking text
-						var thinkingText string
-						for _, t := range part.Thinking {
-							thinkingText += t.Text
-						}
-						if thinkingText != "" {
-							if !s.isActiveReasoning {
-								s.isActiveReasoning = true
-								s.flushQueue = append([]*provider.StreamChunk{
-									{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"},
-									{Type: provider.ChunkTypeReasoning, Reasoning: thinkingText, ID: "reasoning-0"},
-								}, s.flushQueue...)
-								// Must re-enter Next()'s outer loop now (matching the
-								// old `return s.Next()`), not just continue the
-								// `range parts` loop: base behavior abandons any
-								// remaining parts in this same content array once
-								// the first reasoning-start fires.
-								continue nextLoop
-							}
-							s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-								Type:      provider.ChunkTypeReasoning,
-								Reasoning: thinkingText,
-								ID:        "reasoning-0",
-							})
-						}
-					case "text":
-						if part.Text != "" {
-							if s.isActiveReasoning {
-								s.isActiveReasoning = false
-								s.flushQueue = append(s.flushQueue,
-									&provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
-									&provider.StreamChunk{Type: provider.ChunkTypeText, Text: part.Text},
-								)
-							} else {
-								s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-									Type: provider.ChunkTypeText,
-									Text: part.Text,
-								})
-							}
-						}
+					if part.Type != "thinking" {
+						continue
+					}
+					var thinkingText strings.Builder
+					for _, t := range part.Thinking {
+						thinkingText.WriteString(t.Text)
+					}
+					if thinkingText.Len() == 0 {
+						continue
+					}
+					if !s.isActiveReasoning {
+						s.isActiveReasoning = true
+						s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"})
+					}
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+						Type:      provider.ChunkTypeReasoning,
+						Reasoning: thinkingText.String(),
+						ID:        "reasoning-0",
+					})
+				}
+				var text strings.Builder
+				for _, part := range parts {
+					if part.Type == "text" {
+						text.WriteString(part.Text)
 					}
 				}
-				if len(s.flushQueue) > 0 {
-					if choice.FinishReason != "" {
-						s.flushMistralToolCalls(choice.FinishReason)
+				if text.Len() > 0 {
+					if s.isActiveReasoning {
+						s.isActiveReasoning = false
+						s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
 					}
-					continue
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeText, Text: text.String()})
 				}
 			}
 		} else if len(contentRaw) > 0 && contentRaw[0] == '"' {
