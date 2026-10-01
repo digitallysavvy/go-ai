@@ -266,53 +266,74 @@ func (s *gatewayTextStream) Close() error {
 }
 
 // Next returns the next chunk in the stream
+// Next returns the next chunk in the stream.
+//
+// Implemented as an explicit loop rather than self-recursion: Next()
+// tail-called convertChunk(), which itself tail-called back into s.Next()
+// whenever a chunk type produced no deliverable chunk (raw chunks when
+// includeRawChunks is off, empty usage chunks, unknown chunk types). Go does
+// not eliminate tail calls, so a long run of such chunks within one external
+// Next() call could grow the goroutine stack without bound and crash the
+// process with an unrecoverable stack overflow. convertChunk now returns a
+// third bool -- ok meaning "deliver (chunk, err) now" vs continue-the-loop
+// -- so this loop drives all looping without adding stack frames through
+// the helper.
 func (s *gatewayTextStream) Next() (*provider.StreamChunk, error) {
-	if s.err != nil {
-		return nil, s.err
-	}
+	for {
+		if s.err != nil {
+			return nil, s.err
+		}
 
-	// Get next SSE event
-	event, err := s.parser.Next()
-	if err != nil {
-		s.err = err
-		return nil, err
-	}
+		// Get next SSE event
+		event, err := s.parser.Next()
+		if err != nil {
+			s.err = err
+			return nil, err
+		}
 
-	// Check for stream completion
-	if streaming.IsStreamDone(event) {
-		s.err = io.EOF
-		return nil, io.EOF
-	}
+		// Check for stream completion
+		if streaming.IsStreamDone(event) {
+			s.err = io.EOF
+			return nil, io.EOF
+		}
 
-	// Parse the JSON data from the SSE event
-	var chunk gatewayStreamChunk
-	if err := json.Unmarshal([]byte(event.Data), &chunk); err != nil {
-		s.err = fmt.Errorf("failed to parse stream chunk: %w", err)
-		return nil, s.err
-	}
-	_ = json.Unmarshal([]byte(event.Data), &chunk.raw)
+		// Parse the JSON data from the SSE event
+		var chunk gatewayStreamChunk
+		if err := json.Unmarshal([]byte(event.Data), &chunk); err != nil {
+			s.err = fmt.Errorf("failed to parse stream chunk: %w", err)
+			return nil, s.err
+		}
+		_ = json.Unmarshal([]byte(event.Data), &chunk.raw)
 
-	// Convert Gateway chunk to provider StreamChunk
-	return s.convertChunk(&chunk)
+		// Convert Gateway chunk to provider StreamChunk.
+		result, convertErr, ok := s.convertChunk(&chunk)
+		if ok {
+			return result, convertErr
+		}
+	}
 }
 
-// convertChunk converts a Gateway stream chunk to a provider StreamChunk
-func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.StreamChunk, error) {
+// convertChunk converts a Gateway stream chunk to a provider StreamChunk.
+// The returned bool is false when the chunk carries nothing deliverable
+// (e.g. a suppressed raw chunk, an empty usage chunk, or an unrecognized
+// chunk type); Next()'s loop continues to the next SSE event in that case
+// instead of recursing (see the comment on Next()).
+func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.StreamChunk, error, bool) {
 	switch chunk.Type {
 	case "stream-start":
 		return &provider.StreamChunk{
 			Type:     provider.ChunkTypeStreamStart,
 			Warnings: chunk.Warnings,
-		}, nil
+		}, nil, true
 
 	case "raw":
 		if !s.includeRawChunks {
-			return s.Next()
+			return nil, nil, false
 		}
 		return &provider.StreamChunk{
 			Type: provider.ChunkTypeRaw,
 			Raw:  chunk.raw,
-		}, nil
+		}, nil, true
 
 	case "response-metadata":
 		metadata := &provider.ResponseMetadata{
@@ -327,14 +348,14 @@ func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.S
 		return &provider.StreamChunk{
 			Type:             provider.ChunkTypeResponseMetadata,
 			ResponseMetadata: metadata,
-		}, nil
+		}, nil, true
 
 	case "text-start":
 		return &provider.StreamChunk{
 			Type:             provider.ChunkTypeTextStart,
 			ID:               chunk.ID,
 			ProviderMetadata: chunk.ProviderMetadata,
-		}, nil
+		}, nil, true
 
 	case "text-delta":
 		text := chunk.TextDelta
@@ -346,21 +367,21 @@ func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.S
 			ID:               chunk.ID,
 			Text:             text,
 			ProviderMetadata: chunk.ProviderMetadata,
-		}, nil
+		}, nil, true
 
 	case "text-end":
 		return &provider.StreamChunk{
 			Type:             provider.ChunkTypeTextEnd,
 			ID:               chunk.ID,
 			ProviderMetadata: chunk.ProviderMetadata,
-		}, nil
+		}, nil, true
 
 	case "reasoning-start":
 		return &provider.StreamChunk{
 			Type:             provider.ChunkTypeReasoningStart,
 			ID:               chunk.ID,
 			ProviderMetadata: chunk.ProviderMetadata,
-		}, nil
+		}, nil, true
 
 	case "reasoning-delta":
 		reasoning := chunk.ReasoningDelta
@@ -372,14 +393,14 @@ func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.S
 			ID:               chunk.ID,
 			Reasoning:        reasoning,
 			ProviderMetadata: chunk.ProviderMetadata,
-		}, nil
+		}, nil, true
 
 	case "reasoning-end":
 		return &provider.StreamChunk{
 			Type:             provider.ChunkTypeReasoningEnd,
 			ID:               chunk.ID,
 			ProviderMetadata: chunk.ProviderMetadata,
-		}, nil
+		}, nil, true
 
 	case "tool-call", "tool-call-delta":
 		// Parse tool call arguments if present
@@ -397,7 +418,7 @@ func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.S
 				ToolName:  chunk.ToolCallName,
 				Arguments: args,
 			},
-		}, nil
+		}, nil, true
 
 	case "finish":
 		result := &provider.StreamChunk{
@@ -414,7 +435,7 @@ func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.S
 			}
 		}
 
-		return result, nil
+		return result, nil, true
 
 	case "source":
 		sourceID := chunk.SourceID
@@ -432,7 +453,7 @@ func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.S
 				Filename:         chunk.Filename,
 				ProviderMetadata: chunk.ProviderMetadata,
 			},
-		}, nil
+		}, nil, true
 
 	case "file":
 		file := &types.GeneratedFileContent{
@@ -456,7 +477,7 @@ func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.S
 		return &provider.StreamChunk{
 			Type:                 provider.ChunkTypeFile,
 			GeneratedFileContent: file,
-		}, nil
+		}, nil, true
 
 	case "custom":
 		return &provider.StreamChunk{
@@ -466,7 +487,7 @@ func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.S
 				ProviderOptions:  chunk.ProviderOptions,
 				ProviderMetadata: chunk.ProviderMetadata,
 			},
-		}, nil
+		}, nil, true
 
 	case "usage":
 		if chunk.Usage != nil {
@@ -477,14 +498,14 @@ func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.S
 					OutputTokens: chunk.Usage.CompletionTokens,
 					TotalTokens:  chunk.Usage.TotalTokens,
 				},
-			}, nil
+			}, nil, true
 		}
 		// Skip empty usage chunks
-		return s.Next()
+		return nil, nil, false
 
 	case "error":
 		if chunk.Error == nil {
-			return &provider.StreamChunk{Type: provider.ChunkTypeError}, fmt.Errorf("stream error")
+			return &provider.StreamChunk{Type: provider.ChunkTypeError}, fmt.Errorf("stream error"), true
 		}
 		var code interface{}
 		if len(chunk.Error.Code) > 0 {
@@ -516,11 +537,11 @@ func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.S
 			Text:        chunk.Error.Message,
 			AbortReason: chunk.Error.Message,
 			Err:         streamErr,
-		}, fmt.Errorf("stream error: %s", chunk.Error.Message)
+		}, fmt.Errorf("stream error: %s", chunk.Error.Message), true
 
 	default:
 		// Skip unknown chunk types and get next chunk
-		return s.Next()
+		return nil, nil, false
 	}
 }
 
