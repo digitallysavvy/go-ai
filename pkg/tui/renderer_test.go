@@ -576,8 +576,24 @@ func TestTerminalRendererInterruptsStreamingWhileWaitingForNextChunk(t *testing.
 	case <-time.After(time.Second):
 		t.Fatal("RenderStream did not interrupt")
 	}
-	if !stream.closed {
-		t.Fatal("stream was not closed after interrupt")
+	// The underlying stream is now closed by StreamRenderSource's owning
+	// pump goroutine (pkg/tui/stream_source.go, R2-3) only once its
+	// in-flight Next() call returns, rather than concurrently from this
+	// call's own goroutine -- so it may close shortly after RenderStream
+	// itself returns, not necessarily before. Poll instead of asserting it
+	// synchronously.
+	deadlineClosed := time.Now().Add(time.Second)
+	for {
+		stream.mu.Lock()
+		closed := stream.closed
+		stream.mu.Unlock()
+		if closed {
+			break
+		}
+		if time.Now().After(deadlineClosed) {
+			t.Fatal("stream was not closed after interrupt")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 	if !strings.Contains(stripANSI(frame.LastFrame()), "Interrupted") {
 		t.Fatalf("missing interrupted status:\n%s", stripANSI(frame.LastFrame()))
@@ -730,7 +746,15 @@ func newBlockingTextStream() *blockingTextStream {
 
 func (s *blockingTextStream) Next() (*provider.StreamChunk, error) {
 	s.once.Do(func() { close(s.started) })
-	for {
+	// Bounded like a real provider stream would eventually be (e.g. by its
+	// own underlying request context, independent of this wrapper's Close):
+	// StreamRenderSource's owning pump (pkg/tui/stream_source.go, R2-3)
+	// never calls Close() while this call is in flight, to avoid racing a
+	// provider.TextStream implementation that -- like this fixture, absent
+	// this bound -- shares state between Next/Close with no synchronization
+	// of its own. An unbounded loop here would therefore block the pump
+	// (and this call) forever instead of just until the next poll.
+	for i := 0; i < 100; i++ {
 		s.mu.Lock()
 		closed := s.closed
 		s.mu.Unlock()
@@ -739,6 +763,7 @@ func (s *blockingTextStream) Next() (*provider.StreamChunk, error) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+	return &provider.StreamChunk{}, nil
 }
 
 func (s *blockingTextStream) Err() error {

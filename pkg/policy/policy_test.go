@@ -247,6 +247,37 @@ func TestHTTPPolicyClientNon2xxRejects(t *testing.T) {
 	}
 }
 
+// TestHTTPPolicyClientResponseReadIsCapped is a permanent regression test
+// for the policy-client half of R2.md's "Unverified" findings:
+// pkg/policy/http_client.go used an unbounded io.ReadAll(resp.Body) against
+// the OPA server response, the same memory-exhaustion hazard as the R2-5
+// MCP OAuth reads, just against a typically-trusted internal policy server
+// rather than an attacker-reachable OAuth authorization server. Capped the
+// same way (fileutil.ReadResponseWithSizeLimit), so a misbehaving or
+// compromised OPA server can no longer make Evaluate buffer an unbounded
+// response.
+func TestHTTPPolicyClientResponseReadIsCapped(t *testing.T) {
+	t.Parallel()
+	const oversized = maxPolicyResponseBytes + (1 << 20) // 1 MiB over the cap.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"result":{"decision":"`)) //nolint:errcheck
+		chunk := make([]byte, 1<<16)
+		for i := range chunk {
+			chunk[i] = 'a'
+		}
+		for written := 0; written < oversized; written += len(chunk) {
+			w.Write(chunk) //nolint:errcheck
+		}
+		w.Write([]byte(`"}}`)) //nolint:errcheck
+	}))
+	defer server.Close()
+
+	_, err := HTTPPolicyClient(server.URL).Evaluate(context.Background(), "p", nil)
+	if err == nil {
+		t.Fatal("expected Evaluate to reject an oversized OPA response instead of fully buffering it")
+	}
+}
+
 type fakeWASMPolicy struct {
 	results []WASMPolicyResult
 }
