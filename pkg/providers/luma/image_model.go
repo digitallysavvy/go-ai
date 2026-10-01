@@ -231,9 +231,9 @@ func (m *ImageModel) getEditingOptions(files []provider.ImageFile, mask *provide
 	options := map[string]interface{}{}
 
 	if mask != nil {
-		return nil, fmt.Errorf("Luma AI does not support mask-based image editing. ." + //nolint:staticcheck // matches TS SDK's exact error text
+		return nil, fmt.Errorf("Luma AI does not support mask-based image editing. " + //nolint:staticcheck // matches TS SDK's exact error text
 			"Use the prompt to describe the changes you want to make, along with " +
-			"`prompt.images` containing the source image URL")
+			"`prompt.images` containing the source image URL.")
 	}
 
 	if len(files) == 0 {
@@ -242,9 +242,9 @@ func (m *ImageModel) getEditingOptions(files []provider.ImageFile, mask *provide
 
 	for _, f := range files {
 		if f.Type != "url" {
-			return nil, fmt.Errorf("Luma AI only supports URL-based images. ." + //nolint:staticcheck // matches TS SDK's exact error text
+			return nil, fmt.Errorf("Luma AI only supports URL-based images. " + //nolint:staticcheck // matches TS SDK's exact error text
 				"Please provide image URLs using `prompt.images` with publicly accessible URLs. " +
-				"Base64 and Uint8Array data are not supported")
+				"Base64 and Uint8Array data are not supported.")
 		}
 	}
 

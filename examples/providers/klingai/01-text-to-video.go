@@ -48,7 +48,7 @@ func main() {
 	// The video URL is a provider-hosted download link and may be
 	// time-limited/access-scoped; avoid writing it to logs verbatim,
 	// inspect response.Videos[0].URL directly in your own code instead.
-	fmt.Println("Video ready (see response.Videos[0].URL and .MediaType for details).")
+	fmt.Printf("Media Type: %s\n", response.Videos[0].MediaType)
 
 	// Display metadata
 	if metadata, ok := response.ProviderMetadata["klingai"].(map[string]interface{}); ok {

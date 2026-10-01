@@ -568,7 +568,7 @@ func deserializeBridgeError(err any, harnessID string) error {
 			return unsupported(harnessID, message)
 		}
 	}
-	return fmt.Errorf("%v.", err) //nolint:staticcheck // matches TS SDK's exact error text
+	return fmt.Errorf("%v", err)
 }
 
 func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptions) (harness.PromptControl, error) {
