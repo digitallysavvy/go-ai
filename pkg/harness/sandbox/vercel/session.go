@@ -34,12 +34,14 @@ func (s *Session) Description() string {
 }
 
 // Run runs opts.Command via `bash -c`, blocking until it exits.
+//
+// On error, the returned result still carries whatever stdout/stderr
+// RunCommand had already accumulated (mirrors the local sandbox's Session.Run,
+// which likewise returns accumulated output alongside a non-nil error rather
+// than a zero value) — see Sandbox.RunCommand / APIClient.RunCommandWait.
 func (s *Session) Run(ctx context.Context, opts providerutils.SandboxProcessOptions) (providerutils.SandboxRunResult, error) {
 	result, err := s.sandbox.RunCommand(ctx, "bash", []string{"-c", opts.Command}, opts.WorkingDirectory, opts.Env)
-	if err != nil {
-		return providerutils.SandboxRunResult{}, err
-	}
-	return providerutils.SandboxRunResult{Stdout: result.Stdout, Stderr: result.Stderr, ExitCode: result.ExitCode}, nil
+	return providerutils.SandboxRunResult{Stdout: result.Stdout, Stderr: result.Stderr, ExitCode: result.ExitCode}, err
 }
 
 // Spawn starts opts.Command via `bash -c`, detached, streaming output live.

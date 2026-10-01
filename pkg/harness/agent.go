@@ -479,15 +479,18 @@ func (a *Agent) ExperimentalSteer(ctx context.Context, session *AgentSession, te
 }
 
 func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent.AgentGenerateOptions, mode string, toolApprovalContinuations []types.ToolApprovalResponseContent, toolResultContinuations []types.ToolResultContent) (*ai.StreamTextResult, error) {
-	if mode == "continue" {
-		if err := session.requireContinuableTurn(); err != nil {
-			return nil, err
-		}
-	} else {
-		if err := session.requirePromptableTurn(); err != nil {
-			return nil, err
-		}
-	}
+	// No early idle/continuable check here: the guard against a turn already
+	// in flight is performed atomically with the state transition in
+	// session.startTrackedTurn below, immediately before runPrompt is
+	// invoked. Checking here instead (before PrepareCall/tool-filtering,
+	// which can take non-zero time and does not hold session.mu) would leave
+	// a TOCTOU window in which two concurrent callers on the same session
+	// could both observe an idle/continuable turnState and both proceed to
+	// start a turn. See session.startTrackedTurn's doc comment and TS
+	// `HarnessAgentSession.promptTurn`/`continueTurn`, which likewise call
+	// requirePromptableTurn/requireContinuableTurn only immediately before
+	// startTrackedTurn (after any async prepareCall work has already
+	// resolved), not before it.
 
 	model := a.settings.Model
 	// instructionsRaw carries either a string or a *types.Message (system
@@ -616,7 +619,10 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 		return nil, fmt.Errorf("harness: output.ResponseFormat failed: %w", err)
 	}
 
-	turnID := session.startTrackedTurn()
+	turnID, err := session.startTrackedTurn(mode)
+	if err != nil {
+		return nil, err
+	}
 
 	out := runPrompt(ctx, runPromptInput{
 		Harness: a.settings.Harness, Session: session.underlying,

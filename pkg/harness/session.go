@@ -162,8 +162,9 @@ func (s *AgentSession) HasUnfinishedTurn() bool {
 	return s.turnState != TurnStateIdle
 }
 
-// requirePromptableTurn mirrors TS `requirePromptableTurn`.
-func (s *AgentSession) requirePromptableTurn() error {
+// requirePromptableTurnLocked mirrors TS `requirePromptableTurn`. Callers
+// must hold s.mu.
+func (s *AgentSession) requirePromptableTurnLocked() error {
 	switch s.turnState {
 	case TurnStateIdle:
 		return nil
@@ -174,8 +175,9 @@ func (s *AgentSession) requirePromptableTurn() error {
 	}
 }
 
-// requireContinuableTurn mirrors TS `requireContinuableTurn`.
-func (s *AgentSession) requireContinuableTurn() error {
+// requireContinuableTurnLocked mirrors TS `requireContinuableTurn`. Callers
+// must hold s.mu.
+func (s *AgentSession) requireContinuableTurnLocked() error {
 	switch s.turnState {
 	case TurnStateAwaitingApproval, TurnStateAwaitingResult, TurnStateSuspended:
 		return nil
@@ -186,14 +188,40 @@ func (s *AgentSession) requireContinuableTurn() error {
 	}
 }
 
-// startTrackedTurn transitions the session to "running" for the duration of
-// one runPrompt call and returns a turn id: every later
-// setActivePromptControl/finishTrackedTurn call for this turn must pass it
-// back, so a call that arrives after a newer turn has already started (or
-// after this one already ended) is a safe no-op. Mirrors TS
-// `startTrackedTurn`.
-func (s *AgentSession) startTrackedTurn() int {
+// startTrackedTurn atomically checks that the session may accept this turn
+// (requirePromptableTurnLocked for a fresh prompt, requireContinuableTurnLocked
+// for a continuation — selected by mode == "continue") and, only if the guard
+// passes, transitions the session to "running" and returns a turn id: every
+// later setActivePromptControl/finishTrackedTurn call for this turn must pass
+// it back, so a call that arrives after a newer turn has already started (or
+// after this one already ended) is a safe no-op.
+//
+// The guard check and the state transition happen under a single critical
+// section (s.mu held throughout) so two concurrent callers can never both
+// observe an idle/continuable turnState and both start a turn: whichever
+// caller acquires s.mu first flips turnState to "running", and the other
+// caller's guard check (now serialized behind the same lock) necessarily
+// observes "running" and is rejected. This mirrors TS `promptTurn`/
+// `continueTurn`, where `requirePromptableTurn()`/`requireContinuableTurn()`
+// and `startTrackedTurn()` are adjacent synchronous statements with no
+// `await` between them — JS's run-to-completion semantics make that pairing
+// atomic for free. Go has real concurrency, so the equivalent atomicity must
+// be provided explicitly, by performing both steps while holding s.mu rather
+// than checking early (e.g. before PrepareCall/tool-filtering work) and
+// transitioning only afterward, which leaves a window where two calls can
+// both pass the guard.
+func (s *AgentSession) startTrackedTurn(mode string) (int, error) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	var err error
+	if mode == "continue" {
+		err = s.requireContinuableTurnLocked()
+	} else {
+		err = s.requirePromptableTurnLocked()
+	}
+	if err != nil {
+		return 0, err
+	}
 	s.turnState = TurnStateRunning
 	s.turnSeq++
 	turnID := s.turnSeq
@@ -201,8 +229,7 @@ func (s *AgentSession) startTrackedTurn() int {
 	s.clearActiveHandoffLocked()
 	s.activeHandoff = &steerHandoff{turnID: turnID, ready: make(chan struct{})}
 	s.suspendedState = nil
-	s.mu.Unlock()
-	return turnID
+	return turnID, nil
 }
 
 // setActivePromptControl hands the running turn's PromptControl to any

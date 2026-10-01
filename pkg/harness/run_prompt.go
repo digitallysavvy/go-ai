@@ -594,6 +594,27 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 		select {
 		case part, ok = <-partsCh:
 		case <-d.ctx.Done():
+			// Join outstanding host tool executions before returning, exactly
+			// like every other error/exit path in this loop (ErrorPart,
+			// invalid tool-call, finish-step, finish) — this is the one path
+			// that read d.ctx.Done() directly instead of discovering the
+			// cancellation through a stream part, so it used to skip the
+			// join entirely. Without it, run()'s caller (Agent.startTurn via
+			// OnTurnFailed) settles the turn and flips the session back to
+			// idle while a host tool.Execute goroutine started by
+			// executeHostToolAsync is still running: a second Generate/
+			// Stream call could then start a new turn on the same session
+			// while that stale goroutine is still alive, and its eventual
+			// SubmitToolResult call would land on a turn it no longer
+			// belongs to. Mirrors TS run-prompt.ts, where every exit from the
+			// read loop — including one driven by the caller's own
+			// abortSignal, which surfaces as an `error` part from the
+			// harness's own stream rather than a side-channel signal — goes
+			// through `await waitForOutstandingHostToolExecutions()` first.
+			// The join error is intentionally discarded (as in the other
+			// `_ = d.joinOutstandingExecutions()` sites): the ctx
+			// cancellation is the turn's real, already-decided outcome.
+			_ = d.joinOutstandingExecutions()
 			return false, false, d.ctx.Err()
 		}
 		if !ok {

@@ -19,6 +19,11 @@ type RunResult struct {
 // RunCommand runs cmd to completion, mirroring TS `Session.runCommand`'s
 // non-detached (wait=true, logs=true) path: stdout/stderr are accumulated
 // client-side from the interleaved log stream.
+//
+// On error, result still carries whatever stdout/stderr RunCommandWait had
+// already accumulated before the stream failed (ExitCode -1, since the
+// command never reported one) rather than being zeroed out — see
+// RunCommandWait's doc comment.
 func (s *Sandbox) RunCommand(ctx context.Context, cmd string, args []string, cwd string, env map[string]string) (RunResult, error) {
 	result, err := s.client.RunCommandWait(ctx, s.sessionID, runCommandRequest{
 		Command: cmd,
@@ -27,7 +32,10 @@ func (s *Sandbox) RunCommand(ctx context.Context, cmd string, args []string, cwd
 		Env:     env,
 	})
 	if err != nil {
-		return RunResult{}, err
+		if result != nil {
+			return RunResult{Stdout: result.Stdout, Stderr: result.Stderr, ExitCode: -1}, err
+		}
+		return RunResult{ExitCode: -1}, err
 	}
 	exitCode := 0
 	if result.Command.ExitCode != nil {
@@ -101,13 +109,23 @@ func (p *RemoteProcess) Stderr() io.Reader { return p.stderr }
 
 // Wait blocks until the command exits (GET .../cmd/{id}?wait=true), then
 // waits for the log stream to drain so all output has been delivered before
-// returning.
+// returning. Both waits honor ctx: the log stream was started by
+// SpawnCommand against its own (typically longer-lived) context, so draining
+// it can outlast — or simply outlive a cancellation of — whatever ctx this
+// particular Wait call was given. Without the select below, a cancelled or
+// expired ctx here would still block until the independent log-draining
+// goroutine finishes, instead of returning ctx.Err() promptly as callers
+// expect from a context-aware blocking call.
 func (p *RemoteProcess) Wait(ctx context.Context) (int, error) {
 	command, err := p.client.GetCommand(ctx, p.sessionID, p.cmdID, true)
 	if err != nil {
 		return 0, err
 	}
-	<-p.logsDone
+	select {
+	case <-p.logsDone:
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return 0, ctxErr
 	}
