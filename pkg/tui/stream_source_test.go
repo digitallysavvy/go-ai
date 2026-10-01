@@ -5,6 +5,7 @@ import (
 	"io"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -133,6 +134,74 @@ func TestStreamRenderSourceNoGoroutineLeak(t *testing.T) {
 	}
 	if got := runtime.NumGoroutine(); got > before {
 		t.Fatalf("goroutine count after Close() = %d, want <= baseline %d (leaked pump goroutine)", got, before)
+	}
+}
+
+// neverReturningStream.Next never returns on its own and Close is a no-op
+// that does not unblock it -- genuinely non-cooperative, unlike
+// realisticTextStream (whose Next bails out after its own internal ~50ms
+// timeout regardless of Close, which is exactly what would mask a Close()
+// that never actually bounds its wait).
+type neverReturningStream struct {
+	closeCalls int32
+}
+
+func (s *neverReturningStream) Next() (*provider.StreamChunk, error) {
+	select {}
+}
+func (s *neverReturningStream) Err() error { return nil }
+func (s *neverReturningStream) Close() error {
+	atomic.AddInt32(&s.closeCalls, 1)
+	return nil
+}
+
+// TestStreamRenderSourceCloseBoundedWhenStreamNextNeverReturns is a
+// permanent regression test for the "Close must not block forever" gap: if
+// the underlying provider.TextStream's Next() call never returns and Close()
+// does not unblock it, StreamRenderSource.Close() must still return within
+// streamCloseTimeout rather than hang its caller forever. Without a bound,
+// this test would hang permanently (caught by the test's own timeout).
+func TestStreamRenderSourceCloseBoundedWhenStreamNextNeverReturns(t *testing.T) {
+	orig := streamCloseTimeout
+	streamCloseTimeout = 50 * time.Millisecond
+	defer func() { streamCloseTimeout = orig }()
+
+	stream := &neverReturningStream{}
+	src := NewStreamRenderSourceFromTextStream(stream, nil, types.StepResult{})
+
+	nextStarted := make(chan struct{})
+	go func() {
+		close(nextStarted)
+		_, _ = src.Next(context.Background())
+	}()
+	<-nextStarted
+	time.Sleep(10 * time.Millisecond) // let the pump actually call stream.Next()
+
+	done := make(chan struct{})
+	go func() {
+		_ = src.Close()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close() blocked forever waiting on a stream whose Next() never returns")
+	}
+	if calls := atomic.LoadInt32(&stream.closeCalls); calls != 0 {
+		t.Fatalf("stream.Close() was called %d times; this fixture's Next() never returns, so the pump never reaches its own stream.Close() call -- Close() returned by timing out, not by actually closing anything", calls)
+	}
+
+	// A second Close() (idempotent path) must also stay bounded.
+	done2 := make(chan struct{})
+	go func() {
+		_ = src.Close()
+		close(done2)
+	}()
+	select {
+	case <-done2:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second Close() blocked forever waiting on a stream whose Next() never returns")
 	}
 }
 

@@ -4,11 +4,31 @@ import (
 	"context"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
+
+// streamCloseTimeout bounds how long Close waits for the owning pump
+// goroutine to finish closing the underlying stream itself (see runPump).
+// In the expected case, a provider.TextStream's Close() is able to
+// interrupt its own in-flight Next() call (e.g. a stream backed by an HTTP
+// response body, where closing the body unblocks a pending Read), or the
+// Next() call simply returns promptly once the caller's deeper context
+// (the one actually used to drive the request) is cancelled. But
+// StreamRenderSource has no way to force a non-cooperative
+// provider.TextStream implementation's Next() call to return -- one that
+// ignores Close() and never observes any cancellation -- and must not hang
+// its own caller (e.g. a TUI goroutine, or a test) forever waiting for
+// that. Once streamCloseTimeout elapses, Close gives up waiting and
+// returns; the pump keeps running in the background and still closes the
+// stream whenever its Next() call eventually does return.
+//
+// A var (not a const) solely so tests can shrink it rather than waiting out
+// the real bound.
+var streamCloseTimeout = 5 * time.Second
 
 // streamPumpResult is one stream.Next() outcome, handed from the owning pump
 // goroutine (see runPump) back to a waiting Next(ctx) caller.
@@ -139,6 +159,16 @@ func (s *StreamRenderSource) runPump(stream provider.TextStream, resultCh chan s
 	}
 }
 
+// waitForPumpStop waits for stoppedCh to close, bounded by
+// streamCloseTimeout so a non-cooperative stream's never-returning Next()
+// call cannot hang Close() (and thus its caller) forever.
+func (s *StreamRenderSource) waitForPumpStop(stoppedCh chan struct{}) {
+	select {
+	case <-stoppedCh:
+	case <-time.After(streamCloseTimeout):
+	}
+}
+
 // requestStop asks the pump (if one has been started) to stop, exactly once.
 func (s *StreamRenderSource) requestStop() {
 	s.mu.Lock()
@@ -165,7 +195,7 @@ func (s *StreamRenderSource) Close() error {
 
 	if alreadyClosed {
 		if started {
-			<-stoppedCh
+			s.waitForPumpStop(stoppedCh)
 		}
 		return nil
 	}
@@ -173,9 +203,10 @@ func (s *StreamRenderSource) Close() error {
 	if started {
 		// The pump owns the stream; ask it to stop and wait for it to
 		// finish closing the stream itself (runPump always closes
-		// stoppedCh, exactly once, right before it returns).
+		// stoppedCh, exactly once, right before it returns) -- but never
+		// wait past streamCloseTimeout (see its doc comment).
 		s.requestStop()
-		<-stoppedCh
+		s.waitForPumpStop(stoppedCh)
 	} else if directStream != nil {
 		// Next was never called, so no pump exists and no Next() call can
 		// be in flight: it is safe to close the stream directly here.
