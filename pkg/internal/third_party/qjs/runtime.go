@@ -132,9 +132,24 @@ func New(options ...Option) (runtime *Runtime, err error) {
 		return nil, fmt.Errorf("failed to setup host module: %w", err)
 	}
 
-	fsConfig := wazero.
-		NewFSConfig().
-		WithDirMount(runtime.option.CWD, "/")
+	// fsConfig mounts nothing by default. Option.NoFSMount (the safe
+	// default for untrusted sandboxed code -- see pkg/codemode's engine.go)
+	// leaves it this way: no wazero preopen at all means every guest
+	// file-I/O syscall fails as if the filesystem were empty. Only a
+	// caller that explicitly opts out of NoFSMount gets its CWD mounted at
+	// "/".
+	fsConfig := wazero.NewFSConfig()
+	if !runtime.option.NoFSMount {
+		fsConfig = fsConfig.WithDirMount(runtime.option.CWD, "/")
+	}
+	// wazero.NewModuleConfig's environ is empty unless WithEnv is called,
+	// which New never does -- so the WASI module (and therefore
+	// quickjs-libc's std.getenv/std.getenviron, when std is reachable at
+	// all) never observes any of the host process's environment variables.
+	// Deliberately not calling WithEnv here is itself the fix for that part
+	// of the sandbox-escape surface; see pkg/codemode's
+	// TestSandboxHardening_EnvironmentIsNotLeaked for the regression
+	// coverage.
 	if runtime.module, err = runtime.wrt.InstantiateModule(
 		option.Context,
 		compiledQJSModule,

@@ -49,6 +49,7 @@ var (
 	_ CodeModeError = (*AbortedError)(nil)
 	_ CodeModeError = (*ConcurrencyError)(nil)
 	_ CodeModeError = (*SourceTooLargeError)(nil)
+	_ CodeModeError = (*UnsupportedSyntaxError)(nil)
 	_ CodeModeError = (*BridgeLimitError)(nil)
 	_ CodeModeError = (*DetachedBridgeRequestError)(nil)
 	_ CodeModeError = (*ProtocolError)(nil)
@@ -105,6 +106,28 @@ func NewSourceTooLargeError(bytes, maxBytes int) *SourceTooLargeError {
 		"CODE_MODE_SOURCE_TOO_LARGE",
 		map[string]interface{}{"bytes": bytes, "maxBytes": maxBytes},
 	)}
+}
+
+// UnsupportedSyntaxError is raised when the provided source uses JavaScript
+// syntax code-mode does not support. Currently this is only dynamic
+// `import(...)` (see assertNoDynamicImport in run_code_mode.go): TypeScript
+// code-mode's own sandbox (the `run` package's worker runtime) never
+// registers a dynamic-import callback with its JS engine, so `import(...)`
+// is unsupported there too -- Go rejects it up front instead, since the
+// vendored qjs.wasm binary's native module loader resolves
+// "qjs:std"/"qjs:os"/"qjs:bjson" to the same host-escape primitives
+// stripSandboxGlobals removes from the global object, independently of it,
+// with no Go-exposed hook to allowlist/deny module specifiers at that
+// layer. There is no TypeScript error class this mirrors one-to-one (there,
+// any import attempt simply throws the engine's own "no callback
+// registered" error at the point it's reached); this is a new error type
+// specific to the Go port's static, pre-execution enforcement of the same
+// restriction.
+type UnsupportedSyntaxError struct{ *BaseError }
+
+// NewUnsupportedSyntaxError creates an UnsupportedSyntaxError.
+func NewUnsupportedSyntaxError(message string, details interface{}) *UnsupportedSyntaxError {
+	return &UnsupportedSyntaxError{NewError(message, "CODE_MODE_UNSUPPORTED_SYNTAX", details)}
 }
 
 // BridgeLimitError is raised when sandboxed code exceeds bridge request

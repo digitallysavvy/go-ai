@@ -3,6 +3,7 @@ package codemode
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -100,10 +101,18 @@ func acquireWorkerSlot() (func(), error) {
 
 func warmUp() error {
 	warmUpOnce.Do(func() {
+		// No code ever runs in the warm-up runtime, but it is hardened
+		// identically to every real invocation (NoFSMount, no Stdout/Stderr
+		// wired to the real host streams) as defense in depth -- see the
+		// matching qjs.New call in runInSandbox below and
+		// sandbox_hardening.go.
 		rt, err := qjs.New(qjs.Option{
 			MemoryLimit:        DefaultMemoryLimitBytes,
 			Context:            context.Background(),
 			CloseOnContextDone: true,
+			NoFSMount:          true,
+			Stdout:             io.Discard,
+			Stderr:             io.Discard,
 		})
 		if err != nil {
 			warmUpErr = fmt.Errorf("codemode: failed to initialize the QuickJS sandbox: %w", err)
@@ -174,12 +183,25 @@ func runInSandbox(ctx context.Context, policy resolvedPolicy, drive func(jsCtx *
 			}
 		}()
 
+		// Console output is capped and confined to the sandbox (see
+		// sandbox_hardening.go's cappedConsoleBudget doc comment): both
+		// Stdout and Stderr share one budget sized from the resolved
+		// policy, and neither ever writes to the real host process's
+		// os.Stdout/os.Stderr. NoFSMount means no host directory is
+		// mounted into the sandbox at all (see qjs.Option.NoFSMount's doc
+		// comment) -- this, together with stripSandboxGlobals below and
+		// never passing environment variables into the WASM module (see
+		// runtime.go), is the fix for the R4-1 sandbox-escape finding.
+		consoleBudget := newCappedConsoleBudget(policy.MaxConsoleOutputBytes)
 		rt, nerr := qjs.New(qjs.Option{
 			MemoryLimit:        policy.MemoryLimitBytes,
 			MaxStackSize:       policy.MaxStackSizeBytes,
 			MaxExecutionTime:   policy.TimeoutMs,
 			Context:            runCtx,
 			CloseOnContextDone: true,
+			NoFSMount:          true,
+			Stdout:             consoleBudget.writer(),
+			Stderr:             consoleBudget.writer(),
 		})
 		if nerr != nil {
 			out.err = classifySandboxFailure(nerr, ctx, policy)
@@ -191,6 +213,23 @@ func runInSandbox(ctx context.Context, policy resolvedPolicy, drive func(jsCtx *
 		}()
 
 		jsCtx := rt.Context()
+		// Strip every quickjs-libc host-escape global (std/os/print/
+		// scriptArgs/bjson) before any user source runs -- see
+		// stripSandboxGlobals's doc comment for why this is defense in
+		// depth on top of NoFSMount/no-env above, not a substitute for it.
+		stripSandboxGlobals(jsCtx)
+		// Block eval/Function (and the indirect paths to the Function
+		// constructor) before any user source runs -- see
+		// installRuntimeHardening's doc comment. This, together with
+		// assertNoDynamicImport (run_code_mode.go) statically rejecting any
+		// script that spells `import(` literally, is the fix for the
+		// post-R4-1 finding that stripSandboxGlobals alone does not close:
+		// `await import('qjs:std')`/`'qjs:os'`/`'qjs:bjson'` reach the same
+		// host-escape primitives independently of the global object.
+		if herr := installRuntimeHardening(jsCtx); herr != nil {
+			out.err = classifySandboxFailure(herr, ctx, policy)
+			return
+		}
 		rJSON, isUndef, interruptedResult, derr := drive(jsCtx)
 		if derr != nil {
 			out.err = classifySandboxFailure(derr, ctx, policy)

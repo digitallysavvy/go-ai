@@ -383,3 +383,186 @@ Timing (`go test -run
 un-optimized binary ~9.45s for the 5-run batch; `wasm-opt -O3`'d binary
 ~8.22s for the same batch (~13% faster) — `wasm-opt -O3` is a net win on
 both size and runtime here, not just size.
+
+## Sandbox hardening (R4-1/R4-2 security fix) — qjs.wasm NOT rebuilt
+
+A 2026-09-30 security review (state/parity/sep_23_2026/bug-review/R4.md,
+findings R4-1/R4-2) found that `pkg/codemode`'s two `qjs.New` call sites
+left the sandbox's `std`/`os` quickjs-libc globals fully reachable
+(filesystem read/write/delete, `getenv`/`getenviron`, `std.exit`), mounted
+the *host process's real working directory* at the sandbox's `/`
+(`getRuntimeOption` defaulting `CWD` to `os.Getwd()`, `runtime.go`'s
+`WithDirMount`), and wired `Stdout`/`Stderr` straight to the real host
+process's `os.Stdout`/`os.Stderr` with no cap, despite
+`ExecutionPolicy.MaxConsoleOutputBytes` documenting (and
+`resolveExecutionPolicy` validating) a byte cap on captured console output.
+
+**The fix** (`pkg/internal/third_party/qjs/options.go`'s new
+`Option.NoFSMount`, `runtime.go`'s corresponding `WithDirMount` skip and
+`getRuntimeOption`'s matching `CWD` fallback skip, plus
+`pkg/codemode/sandbox_hardening.go`'s `stripSandboxGlobals` and
+`cappedConsoleBudget`, wired into both `qjs.New` calls in `engine.go`) does
+**not** rebuild `qjs.wasm`. `-DQJS_BUILD_LIBC=OFF` was considered (per the
+task that produced this fix) and deliberately not pursued, for two
+reasons:
+
+1. **The job-queue-quiescence patch itself doesn't need libc**, so a
+   rebuild wouldn't have been blocked on that count: `QJS_RunPendingJobs`/
+   `QJS_PromiseState`/`QJS_PromiseResult`/`QJS_EvalNoAutoAwait` (see
+   "qjs.wasm rebuild" above) call only core QuickJS engine entry points
+   (`JS_ExecutePendingJob`, `JS_PromiseState`, `JS_PromiseResult`,
+   `JS_Eval`), never `js_std_await`/`js_os_poll`. The one Go binding that
+   *does* call a quickjs-libc function directly, `Value.Await`
+   (`value.go`, `js_std_await`), is unused by `pkg/codemode` in production
+   (`EvalNoAutoAwait`/`RunPendingJobs` replaced it for exactly this reason
+   — see "qjs.wasm rebuild" above) and unused in any test in this module,
+   so losing it to `-DQJS_BUILD_LIBC=OFF` would cost nothing today.
+2. **`console` would very likely go with it, and that's a real behavior
+   regression, not just a lost nicety.** This build's `console.log` (the
+   sandbox's only console method — `Object.keys(console)` returns just
+   `["log"]`) is quickjs-libc functionality, not QuickJS core; disabling
+   libc entirely risks removing `console` along with `std`/`os`/`print`,
+   which would silently break `ExecutionPolicy.MaxConsoleOutputBytes`'s
+   documented contract ("bounds captured console.\* output") by leaving
+   nothing for it to bound. TypeScript's own code-mode sandbox (the `run`
+   package's worker runtime) keeps `console` intentionally reachable
+   (frozen, not deleted — see `ai/packages/code-mode/node_modules/run/
+   dist/runtime/guest-sources.js`'s global-freezing IIFE) specifically so
+   guest scripts can still log; matching that means `console` has to
+   survive whatever this fix does.
+
+Verifying which of those two outcomes actually holds would require
+running the full `build/build.sh` pipeline with `-DQJS_BUILD_LIBC=OFF`
+substituted in, confirming the resulting binary still links/runs at all,
+and then manually re-adding a `console` implementation if it didn't
+survive — a materially larger, riskier change (a new pinned Docker-built
+binary, a new sha256 to commit and re-verify) than the alternative. Given
+the task's own guidance to "document that and rely on a–c" when a rebuild
+isn't clearly warranted, this fix instead relies entirely on three
+defense-in-depth layers that need no C rebuild at all and were each
+independently verified (`pkg/codemode/sandbox_hardening_test.go`):
+
+- **(a)** `Option.NoFSMount` — no host directory mounted into the sandbox
+  at all (not even an empty temp directory), for every code-mode
+  invocation (`engine.go`'s warm-up and real `qjs.New` calls alike).
+- **(b)** No environment variables passed into the WASI module — true by
+  construction, since `runtime.go` never calls wazero's `WithEnv`
+  (verified: `std.getenv`/`std.getenviron` return nothing even when `std`
+  is artificially left reachable).
+- **(c)** `stripSandboxGlobals` deletes `std`, `os`, `print`, `scriptArgs`,
+  and `bjson` from the global object before any user source evaluates.
+
+  > **Correction (2026-10-01 adversarial review, see next section):** the
+  > claim originally made here — that `import('std')`/`import('os')`
+  > independently fail because "this build's module loader is file-based,
+  > not a native-module registry" — was **wrong**. It conflated the plain
+  > specifiers `'std'`/`'os'` (which *do* fail, as a file lookup, because
+  > (a) mounts nothing) with the native-module specifiers
+  > `'qjs:std'`/`'qjs:os'`/`'qjs:bjson'`, which this build's module loader
+  > resolves directly from its linked-in quickjs-libc code, with no file
+  > access and independently of the global object (a)–(c) all strip. See
+  > "Native-module import escape" below for the real fix.
+
+If a future contributor revisits `-DQJS_BUILD_LIBC=OFF` (e.g. to shrink
+`qjs.wasm` further), they must first confirm whether `console` survives
+the rebuild and, if not, reimplement it as a Go-bound host function (the
+same pattern `bindCodeModeDispatch` in `pkg/codemode/run_code_mode.go`
+already uses for `tools.*`) before removing libc — not after.
+
+## Native-module import escape (adversarial review follow-up, 2026-10-01) — qjs.wasm still NOT rebuilt
+
+A follow-up adversarial security review of the fix above found that (c)'s
+claim was incomplete: deleting `std`/`os`/`print`/`scriptArgs`/`bjson` from
+the global object only removes *existing references* to them. It does
+nothing to quickjs-ng's module loader, which independently resolves the
+native specifiers `'qjs:std'`/`'qjs:os'`/`'qjs:bjson'` to fresh
+module-namespace objects wrapping those exact same host-escape primitives.
+`const std = await import('qjs:std')` fully succeeded post-(c), returning
+`std.loadFile`/`writeFile`/`getenv`/`exit`, the complete `os` module
+(`open`/`read`/`write`/`remove`/`rename`/`readdir`/`stat`/`mkdir`/`chdir`/
+`getcwd`/`signal`), and `bjson.read`/`write` — a live sandbox escape,
+independent of (c). ((a) NoFSMount and (b) no-env did still hold even
+through this route: `std.loadFile`/`std.open` on the reimported module came
+back `null`, `std.getenv` came back empty. `std.exit()` was reachable via
+the module and wasn't fatal to the host process, but did hang the one
+invocation until its timeout — a bounded per-invocation DoS, not a crash.)
+
+**Could this be closed at the engine level instead of a Go-side static
+check?** This review's first task was to find out, rather than assume (a)
+Go option or (b) a rebuild were the only choices. Two things were
+inspected directly against the vendored `qjs.wasm` binary itself (not
+assumed from source, since the upstream C sources aren't vendored in this
+repo — they're fetched by `build/build.sh` at build time):
+
+1. **The wrapper's runtime setup** (`runtime.go`'s `New`): `New_QJS` (the
+   one WASM export that creates a runtime+context) takes only
+   `MemoryLimit`/`MaxStackSize`/`MaxExecutionTime`/`GCThreshold` — no flag
+   or callback for module-loader behavior. There is no `Option` field, nor
+   any WASM export, for "create a runtime with no module loader" or "create
+   a runtime with only these modules registered."
+2. **What `qjs.wasm` actually exports and imports**, via wazero
+   introspection (`wazero.Runtime.CompileModule` +
+   `CompiledModule.ExportedFunctions()`/`ImportedFunctions()` — no
+   `wasm-objdump`/`wasm2wat` needed, and none was available in the review
+   environment anyway): the binary exports a `QJS_ModuleLoader` function
+   (confirming the module loader is a real, named function in the linked
+   quickjs-libc code — not just an inline anonymous callback), but there is
+   **no paired setter** exported to swap, parameterize, or disable it (no
+   `QJS_SetModuleLoader`, no flag threaded through `New_QJS`). Its imports
+   are exactly 23 WASI preview1 syscalls plus the one `env.jsFunctionProxy`
+   host bridge this package already uses for `ProxyFunction` — confirming
+   resolving a `'qjs:'`-prefixed specifier never calls back into the host
+   at all (no `path_open`/`fd_read` is triggered for it, matching the empty
+   `std.loadFile`/`getenv` results above): it's resolved entirely inside
+   the WASM binary's own linked code, with nothing a host-side wazero
+   `HostModuleBuilder` could intercept or deny.
+
+**Conclusion: no cheap engine-level primary defense exists without
+rebuilding `qjs.wasm`.** The only way to truly remove the `qjs:std`/
+`qjs:os`/`qjs:bjson` modules remains `-DQJS_BUILD_LIBC=OFF` — already
+evaluated and rejected above, for the same reason (it risks losing
+`console`, itself quickjs-libc functionality, which would silently break
+`ExecutionPolicy.MaxConsoleOutputBytes`'s documented contract). That
+conclusion stands; this review did not find new information that changes
+it, only confirmed via direct binary introspection (rather than assumption)
+that no lighter-weight alternative exists either.
+
+**The fix instead stays entirely in `pkg/codemode`**
+(`sandbox_hardening.go`), as two layers that are each necessary and only
+jointly sufficient:
+
+- `installRuntimeHardening` evaluates a prelude that blocks the global
+  `eval` function and the `Function` constructor (including the indirect
+  `(function(){}).constructor`/async-function-constructor paths to it),
+  mirroring TypeScript's own sandbox hardening
+  (`ai/packages/code-mode/node_modules/run/dist/runtime/
+  guest-sources.js`'s `HARDENING_SOURCE`, which blocks both identically).
+- `assertNoDynamicImport` statically rejects any script containing a
+  dynamic `import(...)` call before it ever runs. This is necessary
+  *because* no engine-level allowlist exists (see above), and it is
+  *sufficient* only because of the first layer: pre-fix, sandboxed code
+  could build the string `"import('qjs:std')"` from pieces that never
+  appear contiguously in the submitted source (defeating any textual scan)
+  and hand it to `eval`/`new Function` to run as freshly-parsed top-level
+  code. With both global builtins gone, the only way `import(` can ever
+  reach the engine's parser is the literal top-level script text
+  `assertNoDynamicImport` scans.
+
+  This check was originally a regular expression (`\bimport\s*\(`), which
+  both over- and under-matched: it flagged `"import("` inside a string, a
+  `// import(x)` comment, a `/import\(/` regex literal, and
+  `tools.import(x)` (an ordinary property-access method call, not
+  dynamic import) as false positives, while contributing nothing to the
+  real defense (the eval/Function block is what actually matters once
+  those are gone). It was rewritten to reuse `tokenizeTS`
+  (`pkg/codemode/strip_types.go`, CM1's TypeScript-stripper tokenizer),
+  which already correctly skips string/template/regex-literal contents and
+  comments, and to track whether an `import` identifier token is itself
+  preceded by a `.`/`?.` member-access token before treating a following
+  `(` as an ImportCall. See `assertNoDynamicImport`'s doc comment
+  (`sandbox_hardening.go`) for the two intentionally-unhandled edge cases
+  this still leaves (a Unicode-escaped `import`, verified to be rejected by
+  this engine's own parser regardless; and an object-literal/class method
+  literally named `import`, which fails closed since TypeScript's sandbox
+  supports no form of `import` either, so there is no parity reason to
+  special-case it).

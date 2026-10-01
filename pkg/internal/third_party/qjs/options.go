@@ -47,6 +47,21 @@ type Option struct {
 	ProxyFunction      any
 	Stdout             io.Writer
 	Stderr             io.Writer
+
+	// NoFSMount, when true, mounts no directory at all into the WASM
+	// module's filesystem: New skips WithDirMount entirely (no wazero
+	// preopen), so every guest file-I/O syscall (open/read/write/stat/
+	// readdir/...) fails as if the filesystem were empty, regardless of
+	// CWD. This is the safe choice for untrusted/sandboxed code execution
+	// (see pkg/codemode's engine.go, the only consumer of this package in
+	// this module): without it, New defaults CWD to the host process's
+	// real working directory (getRuntimeOption) and mounts it at "/",
+	// giving guest JavaScript -- via the quickjs-libc `std`/`os` globals --
+	// full read/write/delete access to every file under the host's CWD.
+	// When NoFSMount is true, CWD is never consulted (getRuntimeOption
+	// does not default it from os.Getwd either), so no implicit host path
+	// is ever named, let alone mounted.
+	NoFSMount bool
 }
 
 // EvalOption configures JavaScript evaluation behavior in QuickJS context.
@@ -221,7 +236,11 @@ func getRuntimeOption(registry *ProxyRegistry, options ...Option) (option Option
 		option = options[0]
 	}
 
-	if option.CWD == "" {
+	// NoFSMount callers never need a CWD at all (New skips WithDirMount
+	// entirely when it's set -- see runtime.go), so the host's real working
+	// directory is never looked up, let alone named, for a sandboxed
+	// invocation that asked for no filesystem.
+	if !option.NoFSMount && option.CWD == "" {
 		if option.CWD, err = os.Getwd(); err != nil {
 			return Option{}, fmt.Errorf("cannot get current working directory: %w", err)
 		}
