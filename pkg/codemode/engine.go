@@ -103,7 +103,8 @@ func warmUp() error {
 	warmUpOnce.Do(func() {
 		// No code ever runs in the warm-up runtime, but it is hardened
 		// identically to every real invocation (NoFSMount, no Stdout/Stderr
-		// wired to the real host streams) as defense in depth -- see the
+		// wired to the real host streams, DisableModules so the engine
+		// itself refuses every import()) as defense in depth -- see the
 		// matching qjs.New call in runInSandbox below and
 		// sandbox_hardening.go.
 		rt, err := qjs.New(qjs.Option{
@@ -111,6 +112,7 @@ func warmUp() error {
 			Context:            context.Background(),
 			CloseOnContextDone: true,
 			NoFSMount:          true,
+			DisableModules:     true,
 			Stdout:             io.Discard,
 			Stderr:             io.Discard,
 		})
@@ -192,6 +194,16 @@ func runInSandbox(ctx context.Context, policy resolvedPolicy, drive func(jsCtx *
 		// comment) -- this, together with stripSandboxGlobals below and
 		// never passing environment variables into the WASM module (see
 		// runtime.go), is the fix for the R4-1 sandbox-escape finding.
+		//
+		// DisableModules (BF1b) makes qjs.wasm itself refuse every ES
+		// module import with a clean JS error -- both the native
+		// qjs:std/qjs:os/qjs:bjson modules and any file-based specifier --
+		// regardless of whether the Go-side static check below
+		// (assertNoDynamicImport) is ever bypassed. See
+		// qjs.Option.DisableModules's doc comment and README.vendor.md's
+		// "Native-module import escape" section for why an engine-level fix
+		// was previously believed impossible without a C rebuild, and why
+		// this rebuild closes that gap.
 		consoleBudget := newCappedConsoleBudget(policy.MaxConsoleOutputBytes)
 		rt, nerr := qjs.New(qjs.Option{
 			MemoryLimit:        policy.MemoryLimitBytes,
@@ -200,6 +212,7 @@ func runInSandbox(ctx context.Context, policy resolvedPolicy, drive func(jsCtx *
 			Context:            runCtx,
 			CloseOnContextDone: true,
 			NoFSMount:          true,
+			DisableModules:     true,
 			Stdout:             consoleBudget.writer(),
 			Stderr:             consoleBudget.writer(),
 		})

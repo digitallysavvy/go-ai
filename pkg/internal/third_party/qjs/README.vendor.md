@@ -63,14 +63,15 @@ Only what's needed to build and run the Go package:
 - `qjs.wasm`, the prebuilt QuickJS WebAssembly binary embedded via
   `//go:embed qjs.wasm` in `runtime.go`.
 - `LICENSE` (MIT), unmodified.
-- `build/job-queue-quiescence.patch` and `build/build.sh`: the C patch and
-  build script this vendor copy's `qjs.wasm` was rebuilt with (see
-  "qjs.wasm rebuild" below). Upstream's `qjswasm/` C sources and quickjs-ng
-  submodule themselves are still *not* vendored in-tree (same reasoning as
-  the "Dropped" list below) — `build.sh` fetches them fresh, at the pinned
-  commits, into a scratch directory every time it runs, so this repository
-  only ever carries the diff against them, not a second copy of QuickJS's
-  own C sources.
+- `build/job-queue-quiescence.patch`, `build/disable-modules.patch`, and
+  `build/build.sh`: the C patches (applied in that order) and build script
+  this vendor copy's `qjs.wasm` was rebuilt with (see "qjs.wasm rebuild" and
+  "Engine-level module-import lockdown (BF1b)" below). Upstream's
+  `qjswasm/` C sources and quickjs-ng submodule themselves are still *not*
+  vendored in-tree (same reasoning as the "Dropped" list below) —
+  `build.sh` fetches them fresh, at the pinned commits, into a scratch
+  directory every time it runs, so this repository only ever carries the
+  diff against them, not a second copy of QuickJS's own C sources.
 
 Dropped (not needed to build the vendored package): upstream `*_test.go`
 files, `README.md`, `go.mod`/`go.sum` (this is not a standalone module here),
@@ -566,3 +567,112 @@ jointly sufficient:
   literally named `import`, which fails closed since TypeScript's sandbox
   supports no form of `import` either, so there is no parity reason to
   special-case it).
+
+## Engine-level module-import lockdown (BF1b, 2026-10-01) — qjs.wasm REBUILT
+
+The section above ("Native-module import escape") concluded that no
+engine-level primary defense existed without rebuilding `qjs.wasm`, because
+`New_QJS` took no flag for module-loader behavior and exported no setter for
+it, and because the native `qjs:std`/`qjs:os`/`qjs:bjson` modules are
+registered directly into `ctx->loaded_modules` at context-creation time
+(`qjswasm/qjs.c`'s `New_QJSContext`, via `js_init_module_std`/`_os`/
+`_bjson`) -- found, by inspecting `quickjs-ng/quickjs`'s
+`js_host_resolve_imported_module`, to be checked *before* the module loader
+callback (`QJS_ModuleLoader`) is ever consulted at all
+(`js_find_loaded_module` short-circuits on a name match). That conclusion
+was correct as stated (no *setter* existed, and the native modules bypass
+the loader callback entirely) but incomplete: it did not rule out adding a
+flag to `New_QJS` itself and changing what gets registered and what the
+loader rejects. This is a required, defense-in-depth closure of BF1 (the
+Go-side `assertNoDynamicImport` static scan): that scan has already been
+bypassed twice in production (a bare `'qjs:'` specifier that the scan
+missed; then a template-literal interpolation it also missed -- see
+`pkg/codemode/dynamic_import_test.go` and `dynamic_import_template_test.go`
+for both). BF1b makes the engine itself refuse every import, so a third
+Go-side bypass -- found or not -- no longer matters.
+
+**The patch** (`build/disable-modules.patch`, applied to upstream's
+`qjswasm/` C sources -- `qjs.c`, `qjs.h`, `eval.c`, `helpers.c` -- *after*
+`build/job-queue-quiescence.patch`):
+
+- `New_QJS` gains a fifth parameter, `int disable_modules`, which it stores
+  on the new `JSRuntime` via `JS_SetRuntimeOpaque` (a slot this codebase
+  does not otherwise use) before anything else runs. A new helper,
+  `QJS_RuntimeModulesDisabled(JSRuntime *rt)`, reads it back
+  (`JS_GetRuntimeOpaque(rt) != NULL`); it is declared in `qjs.h` so both
+  `qjs.c` and `eval.c` can call it.
+- `New_QJSContext` (`qjs.c`) -- which also runs for every Worker context
+  spawned at runtime via `js_std_set_worker_new_context_func`, hence the
+  runtime-opaque slot rather than a parameter of its own -- skips
+  `js_init_module_std`/`js_init_module_os`/`js_init_module_bjson` entirely
+  when `QJS_RuntimeModulesDisabled(rt)` is true. The three native modules
+  are then simply never registered, for any context ever created on that
+  runtime.
+- `QJS_ModuleLoader` (`eval.c`) rejects every module specifier outright --
+  with `JS_ThrowTypeError`, before any filename normalization, JSON check,
+  or delegation to `js_module_loader` -- when
+  `QJS_RuntimeModulesDisabled(JS_GetRuntime(ctx))` is true. Since the native
+  modules are no longer pre-registered, `import('qjs:std')` (etc.) now falls
+  through to this loader exactly like any relative/absolute file specifier
+  already did, and both are rejected identically.
+- `js_set_global_objs` (`helpers.c`) unconditionally evaluated
+  `import * as std from 'qjs:std'; globalThis.std = std; ...` (plus `os`/
+  `bjson`) during context setup, calling `exit(1)` on any exception from
+  that eval. With the two changes above, that eval would now always throw
+  for a disabled runtime -- so this block is skipped entirely when
+  `QJS_RuntimeModulesDisabled` is true, rather than aborting the process.
+  (This duplicates what `pkg/codemode`'s `stripSandboxGlobals` already does
+  at the Go/JS-global level for defense in depth, but doing it at the C
+  level too means a disabled runtime never even transiently creates a
+  `std`/`os`/`bjson` reference before Go gets a chance to strip it.)
+
+**Go side.** `qjs.Option` gains `DisableModules bool` (`options.go`),
+threaded through to `New_QJS`'s new fifth argument in
+`Runtime.initializeRuntime` (`runtime.go`). Default `false`, so existing
+non-code-mode consumers of this vendored package are unaffected.
+`pkg/codemode/engine.go` sets `DisableModules: true` on both `qjs.New`
+calls (the warm-up runtime and the real per-invocation sandbox), alongside
+the existing `NoFSMount: true`. BF1's `assertNoDynamicImport` static scan
+and `installRuntimeHardening`'s eval/Function blocking are both left in
+place unchanged -- this is an added layer, not a replacement for either.
+
+**Provenance and reproducibility.** Built with the same `build/build.sh`
+pipeline as the job-queue-quiescence patch (same pinned `fastschema/qjs`
+and `quickjs-ng/quickjs` commits/tarball hashes, same pinned
+`wasi-sdk-24` image digest, same pinned binaryen `version_133`
+`wasm-opt -O3`), with `job-queue-quiescence.patch` and then
+`disable-modules.patch` applied in sequence. Both patches were verified to
+apply cleanly and the patched C sources to compile (`clang -fsyntax-only`
+against the fetched sources, before ever touching Docker) prior to the
+real build. `build.sh` was run twice independently (fresh `mktemp -d` work
+dirs, fresh downloads, fresh Docker container each run) and produced a
+byte-for-byte identical `qjs.wasm` both times.
+
+`pkg/internal/third_party/qjs/qjs.wasm`'s sha256 (this patched, `wasm-opt
+-O3`'d build -- supersedes the sha256 in "qjs.wasm rebuild" above, which
+predates `disable-modules.patch`):
+
+```
+c91dd469f46646a16ff2a9a34526490dc7b852d6c1e16f0a64214229ba787d19
+```
+
+Size: 1,283,463 bytes (vs. 1,283,303 bytes for the job-queue-quiescence-only
+build this supersedes -- a 160-byte increase, consistent with one new
+runtime-opaque flag, one new helper function, and a handful of new branch
+guards; no new WASM exports were needed, since `New_QJS`'s existing export
+just gained a parameter).
+
+**Verification.** `go test -race -count=3` on both
+`pkg/internal/third_party/qjs` (including the existing patch-regression
+tests -- `mem_patch_test.go`, `jsonstringify_patch_test.go`,
+`job_queue_quiescence_patch_test.go` -- plus the new
+`disable_modules_patch_test.go`, which calls the engine directly with the
+Go-side static check bypassed entirely) and `pkg/codemode` (including
+`sandbox_escape_routes_test.go`, `dynamic_import_test.go`,
+`dynamic_import_template_test.go`, and the new
+`disable_modules_defense_in_depth_test.go`, which drives `runInSandbox`
+directly -- the same sandbox construction `RunCodeMode` uses in production
+-- bypassing `assertNoDynamicImport` to prove the engine-level rejection
+holds independently of it) all pass against this rebuilt binary, as does
+the full repository `go build ./...`, `go vet ./...`, `go test ./pkg/...`,
+and example build/vet gate.

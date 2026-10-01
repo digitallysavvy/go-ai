@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Rebuilds qjs.wasm (the file embedded one directory up, via go:embed in
 # runtime.go) from upstream fastschema/qjs's qjswasm/ C sources plus its
-# pinned quickjs-ng submodule, with job-queue-quiescence.patch (this
-# directory) applied on top. See ../README.vendor.md for why this patch
-# exists (concurrent code-mode tool-approval batching) and the exact
-# provenance of everything this script fetches.
+# pinned quickjs-ng submodule, with job-queue-quiescence.patch and then
+# disable-modules.patch (both in this directory) applied on top, in that
+# order. See ../README.vendor.md for why these patches exist (concurrent
+# code-mode tool-approval batching; rejecting every module import for
+# code-mode's sandbox) and the exact provenance of everything this script
+# fetches.
 #
 # Requires: curl, tar, patch, shasum or sha256sum (all preinstalled on
 # macOS/most Linux), and a running Docker daemon. Network access is
@@ -123,6 +125,9 @@ cp -R "$WORK_DIR"/extract/quickjs-* "$BUILD_ROOT/qjswasm/quickjs"
 
 echo "==> Applying ${SCRIPT_DIR}/job-queue-quiescence.patch ..."
 patch -p1 -d "$BUILD_ROOT" < "$SCRIPT_DIR/job-queue-quiescence.patch"
+
+echo "==> Applying ${SCRIPT_DIR}/disable-modules.patch ..."
+patch -p1 -d "$BUILD_ROOT" < "$SCRIPT_DIR/disable-modules.patch"
 
 echo "==> Configuring (wasi-sdk image: ${WASI_SDK_IMAGE}) ..."
 "$DOCKER_BIN" run --rm \

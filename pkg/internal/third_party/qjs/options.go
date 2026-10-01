@@ -62,6 +62,27 @@ type Option struct {
 	// does not default it from os.Getwd either), so no implicit host path
 	// is ever named, let alone mounted.
 	NoFSMount bool
+
+	// DisableModules, when true, makes this runtime reject every ES module
+	// import with a clean JS error -- both the native qjs:std/qjs:os/
+	// qjs:bjson modules (quickjs-libc's host-escape primitives, reachable
+	// via `import('qjs:std')` etc. independently of the global object: see
+	// pkg/codemode's README.vendor.md, "Native-module import escape") and
+	// any file-based specifier (`import('./x')`, `import('/x')`), since
+	// this runtime mounts no filesystem for code-mode's use anyway.
+	//
+	// This is an engine-level (qjs.wasm) defense, not a Go-side string
+	// check: it is threaded through to New_QJS's disable_modules parameter
+	// (see runtime.go's initializeRuntime), which qjs.c's New_QJSContext
+	// and QJS_ModuleLoader both consult (via QJS_RuntimeModulesDisabled) --
+	// see build/disable-modules.patch and README.vendor.md. It holds even
+	// if a Go-side static scan for `import(` is ever bypassed, which is why
+	// pkg/codemode sets it unconditionally on both qjs.New call sites
+	// rather than relying solely on its static check.
+	//
+	// Default is false (modules behave exactly as upstream) so non-code-mode
+	// consumers of this vendored package are unaffected.
+	DisableModules bool
 }
 
 // EvalOption configures JavaScript evaluation behavior in QuickJS context.
