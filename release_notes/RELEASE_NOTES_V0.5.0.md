@@ -339,6 +339,24 @@ code.
   sent to trusted origins, bounded reads).
 - Alibaba video status polling now path-encodes the provider-returned task
   ID.
+- `provider.SerializableConfig` redacts credential-bearing HTTP header names
+  from a serialized model's `Config.Headers` map, case-insensitively:
+  `Authorization`, `Proxy-Authorization`, `X-Api-Key`, `Api-Key`,
+  `X-Goog-Api-Key`, `Cookie`, `Set-Cookie`, and any `*-api-key` / `*-token` /
+  `*secret*` pattern. This closes the same durability-boundary leak the
+  existing `APIKey`/`AccessToken`/AWS-credential/`HTTPClient` redaction
+  already covered for struct fields, but for headers: a model authenticated
+  via a custom header (Anthropic's `x-api-key`, Azure's `api-key`, Google's
+  `x-goog-api-key`, or `anthropicaws`'s API-key mode, which bakes
+  `x-api-key` into the inner Anthropic config's `Headers`) no longer embeds
+  the live credential in `SerializedModel.Config`. Non-sensitive headers are
+  unaffected. Deserialization is unchanged: a provider whose `Config.APIKey`
+  resolves from an environment variable in `New()` (e.g. OpenAI, Azure)
+  continues to do so after a round trip; a provider that previously relied
+  on a baked-in header credential surviving serialization (there is no
+  current example in this SDK of one that required it) needs to supply a
+  fresh credential after deserializing, exactly as already required for the
+  `APIKey` field.
 
 ---
 

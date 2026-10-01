@@ -27,10 +27,14 @@ func init() {
 // AnthropicMessagesLanguageModel drops it from `config` the same way Go's
 // SerializableConfig excludes HTTPClient, so this is parity behavior, not a
 // regression. This reconstructs a plain Anthropic model from the surviving
-// BaseURL/Headers (which already carry a baked-in "x-api-key" header if
-// API-key auth was used). A workflow step that needs freshly-signed SigV4
-// requests after resuming should build a new anthropicaws.Provider instead
-// of relying on the deserialized model directly.
+// BaseURL/Headers. Note that Headers no longer carries a baked-in
+// "x-api-key" value even when API-key auth was used: SerializableConfig
+// redacts credential-bearing header names (R1-2, pkg/provider/serialization.go's
+// isSensitiveHeaderName) the same way it already redacted the APIKey struct
+// field, since both equally cross a durability boundary. A workflow step
+// resuming API-key auth (or needing freshly-signed SigV4 requests) should
+// build a new anthropicaws.Provider with a fresh credential instead of
+// relying on the deserialized model directly.
 func deserializeModel(serialized provider.SerializedModel) (provider.LanguageModel, error) {
 	var cfg anthropic.Config
 	data, err := json.Marshal(serialized.Config)

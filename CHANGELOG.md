@@ -136,6 +136,16 @@ step-by-step upgrade instructions are in
   `govulncheck` reports no reachable vulnerabilities.
 - BFL poll URLs, OpenAI image-edit URL inputs, and Anthropic batch
   `results_url` now fetched through the SSRF-safe download path.
+- `provider.SerializableConfig` now redacts credential-bearing HTTP header
+  names (case-insensitive) from a model's `Config.Headers` map before it
+  crosses a workflow/queue durability boundary — `Authorization`,
+  `Proxy-Authorization`, `X-Api-Key`, `Api-Key`, `X-Goog-Api-Key`, `Cookie`,
+  `Set-Cookie`, and any `*-api-key` / `*-token` / `*secret*` pattern — the
+  same way it already redacted the `APIKey`/`AccessToken` struct fields.
+  Previously a provider authenticated via a custom header (e.g.
+  `anthropicaws`'s API-key mode, which bakes `x-api-key` directly into the
+  inner Anthropic config's `Headers` map) would have its live credential
+  embedded verbatim in `SerializedModel.Config`.
 
 ## [0.4.0] - 2026-03-29
 

@@ -301,6 +301,28 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 			safeEnqueue(part)
 		}
 
+		// chunkCh fans every chunk -- whether written directly by Execute via
+		// writer.Write, or forwarded by a writer.Merge goroutine -- through a
+		// single serialized consumer below. uiState's activeText/
+		// activeReasoning/partialTools maps are only ever mutated from that
+		// one goroutine, matching TS's single-pipeline processing of merged
+		// streams and eliminating the concurrent map writes that otherwise
+		// occur when Execute merges more than one stream (R1-1).
+		chunkCh := make(chan UIMessageChunk)
+		consumerDone := make(chan struct{})
+		go func() {
+			defer close(consumerDone)
+			for chunk := range chunkCh {
+				processAndEnqueue(chunk)
+			}
+		}()
+		sendChunk := func(part UIMessageChunk) {
+			select {
+			case chunkCh <- part:
+			case <-ctx.Done():
+			}
+		}
+
 		var wg sync.WaitGroup
 		merge := func(stream <-chan UIMessageChunk) {
 			if stream == nil {
@@ -327,14 +349,14 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 						if !ok {
 							return
 						}
-						processAndEnqueue(chunk)
+						sendChunk(chunk)
 					}
 				}
 			}()
 		}
 
 		writer := UIMessageStreamWriter{
-			writeFn:      processAndEnqueue,
+			writeFn:      sendChunk,
 			mergeFn:      merge,
 			onError:      onError,
 			setOutcomeFn: setOutcome,
@@ -356,6 +378,8 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 		}()
 
 		wg.Wait()
+		close(chunkCh)
+		<-consumerDone
 
 		mu.Lock()
 		closed = true

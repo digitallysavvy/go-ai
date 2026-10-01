@@ -28,6 +28,7 @@ package provider
 import (
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -557,7 +558,37 @@ func isSensitiveConfigField(key string) bool {
 		"AWSSecretAccessKey", "awsSecretAccessKey", "SessionToken", "sessionToken",
 		"HTTPClient", "httpClient":
 		return true
-	default:
-		return false
 	}
+	// sanitizeSerializableValue calls isSensitiveConfigField with both
+	// struct field names (e.g. "Headers", "APIKey") and, for a
+	// map[string]string field such as Config.Headers, each individual map
+	// key (e.g. "Authorization", "X-Api-Key") -- see the map case in
+	// sanitizeSerializableValue below. Many provider Config structs accept
+	// custom auth via a Headers map, so without this check a credential
+	// header would cross straight into SerializedModel.Config verbatim
+	// (R1-2): isSensitiveHeaderName catches those by name/pattern
+	// regardless of which field the map came from.
+	return isSensitiveHeaderName(key)
+}
+
+// isSensitiveHeaderName reports whether key is a credential-bearing HTTP
+// header name, matching (case-insensitively) both the literal header names
+// go-ai's own providers actually send -- Anthropic's "x-api-key", Azure's
+// "api-key", Google's "x-goog-api-key", and the standard
+// "Authorization"/"Proxy-Authorization"/"Cookie"/"Set-Cookie" -- and the
+// generic "*-api-key" / "*-token" / "*secret*" patterns a custom or
+// provider-specific header might use. A redacted header is simply dropped
+// from the serialized config, exactly like the APIKey/AccessToken struct
+// fields above; non-sensitive headers are unaffected.
+func isSensitiveHeaderName(key string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(key))
+	switch normalized {
+	case "authorization", "proxy-authorization", "x-api-key", "api-key",
+		"x-goog-api-key", "cookie", "set-cookie":
+		return true
+	}
+	if strings.Contains(normalized, "secret") {
+		return true
+	}
+	return strings.HasSuffix(normalized, "-api-key") || strings.HasSuffix(normalized, "-token")
 }

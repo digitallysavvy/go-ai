@@ -10,8 +10,10 @@ import (
 	"net"
 	stdhttp "net/http"
 	"net/http/httptest"
+	"runtime"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -394,4 +396,87 @@ func realtimeComputeWebSocketAccept(key string) string {
 	h := sha1.New() //nolint:gosec // required by the WebSocket handshake spec, not for security
 	h.Write([]byte(key + magicGUID))
 	return base64.StdEncoding.EncodeToString(h.Sum(nil))
+}
+
+// TestConnectRealtime_CloseReapsWatcherGoroutine is the permanent
+// regression test for R1-3 (bug-review/R1.md): ConnectRealtime used to
+// unconditionally spawn `go func() { <-ctx.Done(); _ = s.Close() }()`. A
+// caller that manages the session's lifecycle via session.Close() (e.g.
+// `defer session.Close()`) rather than cancelling ctx never caused that
+// goroutine to return -- it leaked for the lifetime of ctx (forever for
+// context.Background()), one per session. Close() must now also release
+// the watcher via the session's own done channel.
+func TestConnectRealtime_CloseReapsWatcherGoroutine(t *testing.T) {
+	// Let any unrelated background goroutines from earlier tests settle.
+	for i := 0; i < 3; i++ {
+		runtime.GC()
+	}
+	before := runtime.NumGoroutine()
+
+	const n = 20
+	for i := 0; i < n; i++ {
+		conn := &mockRealtimeConn{}
+		dialer := &mockRealtimeDialer{conn: conn}
+		session, err := ConnectRealtime(context.Background(), mockRealtimeModel{}, RealtimeSessionOptions{Dialer: dialer})
+		if err != nil {
+			t.Fatalf("ConnectRealtime: %v", err)
+		}
+		if err := session.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	var after int
+	for {
+		runtime.GC()
+		after = runtime.NumGoroutine()
+		if after <= before || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if leaked := after - before; leaked > 0 {
+		t.Fatalf("ConnectRealtime+Close leaked %d goroutines (before=%d after=%d); the ctx.Done() watcher was not reaped by Close()", leaked, before, after)
+	}
+}
+
+// TestXNetWebSocketConn_LockSendRespectsContext is the regression test for
+// R1 Unverified item 1 (bug-review/R1.md): xNetWebSocketConn.SendBinary
+// (and Send) used to acquire a plain sync.Mutex unconditionally before
+// selecting on ctx.Done(), so a call with a short-deadline ctx blocked on
+// lock acquisition itself -- never observing its own timeout -- whenever
+// another Send/SendBinary call was already mid-flight and holding the lock
+// (e.g. a stalled connection with no OS-level write timeout). lockSend's
+// buffered-channel semaphore can be selected against ctx.Done() while
+// waiting, so a blocked acquirer now returns ctx.Err() promptly instead of
+// hanging indefinitely.
+func TestXNetWebSocketConn_LockSendRespectsContext(t *testing.T) {
+	c := &xNetWebSocketConn{sendSem: make(chan struct{}, 1)}
+
+	// Simulate another Send/SendBinary call already in flight and holding
+	// the send lock.
+	if err := c.lockSend(context.Background()); err != nil {
+		t.Fatalf("initial lockSend: %v", err)
+	}
+	defer c.unlockSend()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	err := c.lockSend(ctx)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("lockSend returned nil error while the lock was held elsewhere, want ctx.Err()")
+	}
+	if ctxErr := ctx.Err(); err != ctxErr {
+		t.Fatalf("lockSend error = %v, want %v", err, ctxErr)
+	}
+	// Generous upper bound: the call must return close to the 50ms
+	// deadline, not block indefinitely waiting on the held lock.
+	if elapsed > time.Second {
+		t.Fatalf("lockSend blocked for %v past a 50ms ctx deadline; it did not respect context cancellation while waiting for the lock", elapsed)
+	}
 }
