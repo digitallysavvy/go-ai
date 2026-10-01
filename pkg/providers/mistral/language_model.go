@@ -549,6 +549,7 @@ func (s *mistralStream) Err() error {
 }
 
 func (s *mistralStream) Next() (*provider.StreamChunk, error) {
+nextLoop:
 	for {
 		if len(s.flushQueue) > 0 {
 			chunk := s.flushQueue[0]
@@ -666,7 +667,12 @@ func (s *mistralStream) Next() (*provider.StreamChunk, error) {
 									{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"},
 									{Type: provider.ChunkTypeReasoning, Reasoning: thinkingText, ID: "reasoning-0"},
 								}, s.flushQueue...)
-								continue
+								// Must re-enter Next()'s outer loop now (matching the
+								// old `return s.Next()`), not just continue the
+								// `range parts` loop: base behavior abandons any
+								// remaining parts in this same content array once
+								// the first reasoning-start fires.
+								continue nextLoop
 							}
 							s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 								Type:      provider.ChunkTypeReasoning,
