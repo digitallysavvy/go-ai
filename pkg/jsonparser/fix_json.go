@@ -285,8 +285,16 @@ func FixJSON(input string) string {
 // invalidity can only be a dangling sequence at the very end; bounded to
 // utf8.UTFMax iterations (the longest possible encoded rune).
 func trimIncompleteUTF8Suffix(s string) string {
-	for i := 0; i < utf8.UTFMax && s != "" && !utf8.ValidString(s); i++ {
-		s = s[:len(s)-1]
+	// Only the final rune can be cut off by truncation: find where it
+	// starts and drop it if its bytes are incomplete. Invalid bytes
+	// elsewhere in the string are left alone.
+	for i := 1; i <= utf8.UTFMax && i <= len(s); i++ {
+		if utf8.RuneStart(s[len(s)-i]) {
+			if !utf8.FullRuneInString(s[len(s)-i:]) {
+				return s[:len(s)-i]
+			}
+			return s
+		}
 	}
 	return s
 }

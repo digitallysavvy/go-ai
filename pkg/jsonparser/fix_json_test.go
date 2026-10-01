@@ -292,3 +292,23 @@ func BenchmarkFixJSON(b *testing.B) {
 		})
 	}
 }
+
+// TestTrimIncompleteUTF8SuffixOnlyTrimsFinalRune checks that an invalid
+// byte earlier in the string doesn't cause trailing valid bytes to be
+// dropped; only an incomplete final rune is trimmed.
+func TestTrimIncompleteUTF8SuffixOnlyTrimsFinalRune(t *testing.T) {
+	cases := map[string]string{
+		"abc":             "abc",
+		"ab\xe2\x82":      "ab",       // "€" cut after two bytes
+		"ab\xf0\x9f\x98":  "ab",       // 4-byte emoji cut after three
+		"a\xffbcd":        "a\xffbcd", // invalid byte in the middle: keep the tail
+		"a\xffbc\xe2\x82": "a\xffbc",  // invalid middle byte plus a cut final rune
+		"\xe2\x82\xac":    "\xe2\x82\xac",
+		"":                "",
+	}
+	for in, want := range cases {
+		if got := trimIncompleteUTF8Suffix(in); got != want {
+			t.Errorf("trimIncompleteUTF8Suffix(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
