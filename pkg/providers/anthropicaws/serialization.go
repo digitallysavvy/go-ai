@@ -2,6 +2,7 @@ package anthropicaws
 
 import (
 	"encoding/json"
+	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
@@ -34,7 +35,16 @@ func init() {
 // field, since both equally cross a durability boundary. A workflow step
 // resuming API-key auth (or needing freshly-signed SigV4 requests) should
 // build a new anthropicaws.Provider with a fresh credential instead of
-// relying on the deserialized model directly.
+// relying on the deserialized model directly. As a best effort, API-key auth
+// specifically recovers automatically the same way anthropicaws.New() itself
+// resolves a missing Config.APIKey: from the ANTHROPIC_AWS_API_KEY
+// environment variable. Without this, a model that originally authenticated
+// via API-key mode (its credential living ONLY in the redacted
+// Headers["x-api-key"], never in a struct field) would silently deserialize
+// into an unauthenticated model that only fails once a real request hits the
+// Anthropic API, instead of recovering the same way every other
+// Headers-or-APIKey provider's deserializeModel already does via its own
+// New().
 func deserializeModel(serialized provider.SerializedModel) (provider.LanguageModel, error) {
 	var cfg anthropic.Config
 	data, err := json.Marshal(serialized.Config)
@@ -43,6 +53,9 @@ func deserializeModel(serialized provider.SerializedModel) (provider.LanguageMod
 	}
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, err
+	}
+	if cfg.APIKey == "" && cfg.Headers["x-api-key"] == "" {
+		cfg.APIKey = os.Getenv("ANTHROPIC_AWS_API_KEY")
 	}
 	return anthropic.New(cfg).LanguageModel(serialized.ModelID)
 }

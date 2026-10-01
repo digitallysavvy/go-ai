@@ -47,6 +47,7 @@ type RealtimeSession struct {
 	conn      RealtimeWebSocketConn
 	mu        sync.Mutex
 	done      chan struct{}
+	closeOnce sync.Once
 	parser    func(raw json.RawMessage) ([]provider.RealtimeServerEvent, error)
 	lifecycle provider.RealtimeLifecycle
 }
@@ -250,11 +251,19 @@ func (s *RealtimeSession) Close() error {
 	if s == nil || s.conn == nil {
 		return nil
 	}
-	select {
-	case <-s.done:
-		return nil
-	default:
+	// closeOnce makes Close idempotent and safe to call concurrently (e.g.
+	// the caller's own `defer session.Close()` racing the ctx-cancellation
+	// watcher goroutine started in ConnectRealtime): a plain
+	// `select { case <-s.done: default: close(s.done) }` check-then-act is
+	// not atomic across goroutines and can double-close s.done, panicking
+	// with "close of closed channel".
+	alreadyClosed := true
+	s.closeOnce.Do(func() {
+		alreadyClosed = false
 		close(s.done)
+	})
+	if alreadyClosed {
+		return nil
 	}
 	if s.lifecycle.FinalizationEventType != "" {
 		// Best-effort: a graceful finalization event (e.g. OpenAI Live's
