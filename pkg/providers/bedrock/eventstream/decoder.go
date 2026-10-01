@@ -60,7 +60,9 @@ func (d *Decoder) Next() (*Event, error) {
 			if totalLength < 16 {
 				return nil, fmt.Errorf("amazon bedrock event-stream: invalid frame length %d", totalLength)
 			}
-			if uint32(len(d.buf)) >= totalLength {
+			// Compare in uint64 so a totalLength near the uint32 max can
+			// never wrap around when compared against the buffered length.
+			if uint64(len(d.buf)) >= uint64(totalLength) {
 				frame := d.buf[:totalLength]
 				d.buf = d.buf[totalLength:]
 				return decodeFrame(frame)
@@ -99,14 +101,24 @@ func decodeFrame(frame []byte) (*Event, error) {
 		return nil, fmt.Errorf("amazon bedrock event-stream: prelude CRC mismatch: expected %d, got %d", preludeCRC, calculatedPreludeCRC)
 	}
 
-	if uint32(len(frame)) != totalLength {
+	// Compare lengths in int64 (len(frame) is a valid int, totalLength and
+	// headersLength are uint32 <= 2^32-1): no combination of these values
+	// can overflow int64, unlike the original uint32 arithmetic
+	// (12+headersLength+4), which could wrap to a small/zero value for a
+	// crafted headersLength near the uint32 max and let an out-of-range
+	// headersEnd slip through to the slice expression below.
+	frameLen64 := int64(len(frame))
+	if frameLen64 != int64(totalLength) {
 		return nil, fmt.Errorf("amazon bedrock event-stream: frame length mismatch: header says %d, got %d", totalLength, len(frame))
 	}
-	if totalLength < 12+headersLength+4 {
+	if int64(totalLength) < int64(headersLength)+16 {
 		return nil, fmt.Errorf("amazon bedrock event-stream: headers length %d exceeds frame", headersLength)
 	}
 
-	headersEnd := 12 + headersLength
+	// headersLength is now known to be <= totalLength-16 == len(frame)-16,
+	// so converting it to int and adding 12 cannot overflow or exceed
+	// len(frame).
+	headersEnd := 12 + int(headersLength)
 	headersBytes := frame[12:headersEnd]
 	payload := frame[headersEnd : totalLength-4]
 	messageCRC := binary.BigEndian.Uint32(frame[totalLength-4 : totalLength])
