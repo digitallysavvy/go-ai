@@ -736,168 +736,171 @@ func (s *moonshotStream) Close() error {
 
 // Next returns the next chunk in the stream
 func (s *moonshotStream) Next() (*provider.StreamChunk, error) {
-	if len(s.flushQueue) > 0 {
-		chunk := s.flushQueue[0]
-		s.flushQueue = s.flushQueue[1:]
-		return chunk, nil
-	}
-	if s.err != nil {
-		return nil, s.err
-	}
-	if s.done {
-		return nil, io.EOF
-	}
-
-	event, err := s.parser.Next()
-	if err != nil {
-		s.err = err
-		return nil, err
-	}
-
-	if streaming.IsStreamDone(event) {
-		s.done = true
-		s.flushQueue = s.buildFlushChunks()
-		return s.Next()
-	}
-
-	if s.includeRawChunks {
-		var raw interface{}
-		if err := json.Unmarshal([]byte(event.Data), &raw); err != nil {
-			raw = event.Data
-		}
-		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: raw})
-	}
-
-	var chunk moonshotStreamChunk
-	if err := json.Unmarshal([]byte(event.Data), &chunk); err != nil {
-		errChunk := &provider.StreamChunk{Type: provider.ChunkTypeError, Text: fmt.Sprintf("failed to parse stream chunk: %v", err)}
+	for {
 		if len(s.flushQueue) > 0 {
-			s.flushQueue = append(s.flushQueue, errChunk)
-			return s.Next()
+			chunk := s.flushQueue[0]
+			s.flushQueue = s.flushQueue[1:]
+			return chunk, nil
 		}
-		return errChunk, nil
-	}
-
-	if chunk.Error != nil {
-		s.err = newMoonshotStreamProviderError(*chunk.Error, []byte(event.Data))
-		s.finishReason = types.FinishReasonError
-		// P1-1c part 2: attach the structured StreamProviderError (TS
-		// createMoonshotAIStreamError) so streamRetries/IsRetryable see the
-		// real type/code/statusCode/isRetryable instead of generic inference.
-		errChunk := &provider.StreamChunk{
-			Type: provider.ChunkTypeError,
-			Text: chunk.Error.Message,
-			Err:  newMoonshotStreamProviderErrorChunk(*chunk.Error, json.RawMessage(event.Data)),
+		if s.err != nil {
+			return nil, s.err
 		}
-		if len(s.flushQueue) > 0 {
-			s.flushQueue = append(s.flushQueue, errChunk)
-			return s.Next()
+		if s.done {
+			return nil, io.EOF
 		}
-		return errChunk, nil
-	}
 
-	if s.isFirstChunk {
-		s.isFirstChunk = false
-		meta := &provider.ResponseMetadata{ID: chunk.ID, ModelID: chunk.Model}
-		if chunk.Created != 0 {
-			meta.Timestamp = time.Unix(chunk.Created, 0)
+		event, err := s.parser.Next()
+		if err != nil {
+			s.err = err
+			return nil, err
 		}
-		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: meta})
-	}
 
-	if len(chunk.Usage) > 0 && string(chunk.Usage) != "null" {
-		s.topLevelUsage = chunk.Usage
-	}
-	if chunk.Object != "" {
-		s.responseObject = chunk.Object
-	}
-
-	if len(chunk.Choices) == 0 {
-		return s.Next()
-	}
-	choice := chunk.Choices[0]
-
-	if len(choice.Usage) > 0 && string(choice.Usage) != "null" {
-		s.choiceUsage = choice.Usage
-	}
-	if choice.Index != nil {
-		s.choiceIndex = choice.Index
-	}
-	if choice.FinishReason != nil && *choice.FinishReason != "" {
-		s.finishReason = providerutils.MapOpenAIFinishReason(*choice.FinishReason)
-		s.rawFinishReason = *choice.FinishReason
-	}
-	if len(choice.Logprobs) > 0 && string(choice.Logprobs) != "null" {
-		var lp moonshotLogprobsContent
-		if err := json.Unmarshal(choice.Logprobs, &lp); err == nil {
-			s.contentLogprobs = append(s.contentLogprobs, lp.Content...)
+		if streaming.IsStreamDone(event) {
+			s.done = true
+			s.flushQueue = s.buildFlushChunks()
+			continue
 		}
-	}
 
-	delta := choice.Delta
-	if delta.Role != "" {
-		s.messageRole = delta.Role
-	}
-
-	if delta.ReasoningContent != "" {
-		if !s.isActiveReasoning {
-			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"})
-			s.isActiveReasoning = true
-		}
-		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoning, ID: "reasoning-0", Reasoning: delta.ReasoningContent})
-	}
-
-	if delta.Content != "" {
-		if !s.isActiveText {
-			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "txt-0"})
-			s.isActiveText = true
-		}
-		if s.isActiveReasoning {
-			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
-			s.isActiveReasoning = false
-		}
-		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeText, ID: "txt-0", Text: delta.Content})
-	}
-
-	if len(delta.ToolCalls) > 0 {
-		if s.isActiveReasoning {
-			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
-			s.isActiveReasoning = false
-		}
-		for i, tc := range delta.ToolCalls {
-			// d53589a (TS moonshotai-chat-language-model.ts: `const
-			// toolCallIndex = toolCallDelta.index ?? index`): when a delta
-			// omits "index", TS derives it from the tool call's position
-			// within THAT delta's tool_calls array -- it does not rely on
-			// StreamingToolCallTracker's id/latest-call fallback for
-			// Moonshot. This position is stable because Moonshot always
-			// repeats every in-flight tool call at its original array
-			// position on each continuation delta (see the
-			// moonshotai-stream-indexless-tool-calls fixture: two calls
-			// started together at positions 0/1 are continued together at
-			// positions 0/1). Used for both toolCallTypes bookkeeping and
-			// the tracker correlation key below.
-			idx := i
-			if tc.Index != nil {
-				idx = *tc.Index
+		if s.includeRawChunks {
+			var raw interface{}
+			if err := json.Unmarshal([]byte(event.Data), &raw); err != nil {
+				raw = event.Data
 			}
-			if tc.Type != "" {
-				if s.toolCallTypes == nil {
-					s.toolCallTypes = map[int]string{}
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: raw})
+		}
+
+		var chunk moonshotStreamChunk
+		if err := json.Unmarshal([]byte(event.Data), &chunk); err != nil {
+			errChunk := &provider.StreamChunk{Type: provider.ChunkTypeError, Text: fmt.Sprintf("failed to parse stream chunk: %v", err)}
+			if len(s.flushQueue) > 0 {
+				s.flushQueue = append(s.flushQueue, errChunk)
+				continue
+			}
+			return errChunk, nil
+		}
+
+		if chunk.Error != nil {
+			s.err = newMoonshotStreamProviderError(*chunk.Error, []byte(event.Data))
+			s.finishReason = types.FinishReasonError
+			// P1-1c part 2: attach the structured StreamProviderError (TS
+			// createMoonshotAIStreamError) so streamRetries/IsRetryable see the
+			// real type/code/statusCode/isRetryable instead of generic inference.
+			errChunk := &provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: chunk.Error.Message,
+				Err:  newMoonshotStreamProviderErrorChunk(*chunk.Error, json.RawMessage(event.Data)),
+			}
+			if len(s.flushQueue) > 0 {
+				s.flushQueue = append(s.flushQueue, errChunk)
+				continue
+			}
+			return errChunk, nil
+		}
+
+		if s.isFirstChunk {
+			s.isFirstChunk = false
+			meta := &provider.ResponseMetadata{ID: chunk.ID, ModelID: chunk.Model}
+			if chunk.Created != 0 {
+				meta.Timestamp = time.Unix(chunk.Created, 0)
+			}
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: meta})
+		}
+
+		if len(chunk.Usage) > 0 && string(chunk.Usage) != "null" {
+			s.topLevelUsage = chunk.Usage
+		}
+		if chunk.Object != "" {
+			s.responseObject = chunk.Object
+		}
+
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+		choice := chunk.Choices[0]
+
+		if len(choice.Usage) > 0 && string(choice.Usage) != "null" {
+			s.choiceUsage = choice.Usage
+		}
+		if choice.Index != nil {
+			s.choiceIndex = choice.Index
+		}
+		if choice.FinishReason != nil && *choice.FinishReason != "" {
+			s.finishReason = providerutils.MapOpenAIFinishReason(*choice.FinishReason)
+			s.rawFinishReason = *choice.FinishReason
+		}
+		if len(choice.Logprobs) > 0 && string(choice.Logprobs) != "null" {
+			var lp moonshotLogprobsContent
+			if err := json.Unmarshal(choice.Logprobs, &lp); err == nil {
+				s.contentLogprobs = append(s.contentLogprobs, lp.Content...)
+			}
+		}
+
+		delta := choice.Delta
+		if delta.Role != "" {
+			s.messageRole = delta.Role
+		}
+
+		if delta.ReasoningContent != "" {
+			if !s.isActiveReasoning {
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"})
+				s.isActiveReasoning = true
+			}
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoning, ID: "reasoning-0", Reasoning: delta.ReasoningContent})
+		}
+
+		if delta.Content != "" {
+			if !s.isActiveText {
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "txt-0"})
+				s.isActiveText = true
+			}
+			if s.isActiveReasoning {
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
+				s.isActiveReasoning = false
+			}
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeText, ID: "txt-0", Text: delta.Content})
+		}
+
+		if len(delta.ToolCalls) > 0 {
+			if s.isActiveReasoning {
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
+				s.isActiveReasoning = false
+			}
+			for i, tc := range delta.ToolCalls {
+				// d53589a (TS moonshotai-chat-language-model.ts: `const
+				// toolCallIndex = toolCallDelta.index ?? index`): when a delta
+				// omits "index", TS derives it from the tool call's position
+				// within THAT delta's tool_calls array -- it does not rely on
+				// StreamingToolCallTracker's id/latest-call fallback for
+				// Moonshot. This position is stable because Moonshot always
+				// repeats every in-flight tool call at its original array
+				// position on each continuation delta (see the
+				// moonshotai-stream-indexless-tool-calls fixture: two calls
+				// started together at positions 0/1 are continued together at
+				// positions 0/1). Used for both toolCallTypes bookkeeping and
+				// the tracker correlation key below.
+				idx := i
+				if tc.Index != nil {
+					idx = *tc.Index
 				}
-				s.toolCallTypes[idx] = tc.Type
-			}
-			for _, tcc := range s.toolCallTracker.Track(&idx, tc.ID, tc.Function.Name, tc.Function.Arguments) {
-				c := tcc
-				s.flushQueue = append(s.flushQueue, &c)
+				if tc.Type != "" {
+					if s.toolCallTypes == nil {
+						s.toolCallTypes = map[int]string{}
+					}
+					s.toolCallTypes[idx] = tc.Type
+				}
+				for _, tcc := range s.toolCallTracker.Track(&idx, tc.ID, tc.Function.Name, tc.Function.Arguments) {
+					c := tcc
+					s.flushQueue = append(s.flushQueue, &c)
+				}
 			}
 		}
-	}
 
-	if len(s.flushQueue) > 0 {
-		return s.Next()
+		if len(s.flushQueue) > 0 {
+			continue
+		}
+		continue
+
 	}
-	return s.Next()
 }
 
 // buildFlushChunks closes any open text/reasoning blocks, flushes accumulated
