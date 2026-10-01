@@ -126,7 +126,10 @@ step-by-step upgrade instructions are in
   strings; tool-caller messages (e.g. code-mode's tool catalog) persist
   across steps; a concurrent map crash in the shared HTTP client when
   setting headers during in-flight requests; SSE lines over 64 KiB no
-  longer abort streams (32 MiB limit). Full list in the release notes' Bug
+  longer abort streams (32 MiB limit); harness `AgentSession` concurrent
+  turn-start race and host tool executions leaked on cancel; Vercel
+  Sandbox `Wait` ctx handling and stream error causes. Full list in the
+  release notes' Bug
   Fixes section.
 
 ### Security
@@ -140,6 +143,7 @@ step-by-step upgrade instructions are in
 - BFL poll URLs, OpenAI image-edit URL inputs, and Anthropic batch
   `results_url` now fetched through the SSRF-safe download path.
 - Removed unused internal download helpers that skipped the SSRF checks.
+- Harness bridge dial errors no longer include the bridge token.
 
 ## [0.4.0] - 2026-03-29
 

@@ -339,6 +339,8 @@ code.
   sent to trusted origins, bounded reads).
 - Alibaba video status polling now path-encodes the provider-returned task
   ID.
+- The harness bridge no longer includes the `agent_bridge_token` query
+  parameter in WebSocket dial errors.
 - Removed the unused internal helpers `fileutil.GetContentType` /
   `GetContentLength`, which fetched URLs without the SSRF checks.
 
@@ -760,6 +762,13 @@ code.
   report bridge diagnostics through `Observability.Report`; the ACP
   adapter forwards MCP-routed tool calls with `Dynamic: true` instead of
   dropping them; `StopWhen` looks ahead one event before suspending.
+- Two concurrent `Generate` / `Stream` calls on one `AgentSession` can no
+  longer both start a turn; the second fails with "already has a turn in
+  progress". Cancelling a prompt now waits for in-flight host tool
+  executions instead of leaking them.
+- Vercel Sandbox: `RemoteProcess.Wait` honors ctx while draining logs, and
+  stream failures keep the real cause and return the partial
+  stdout/stderr with the error.
 
 ### Other
 
