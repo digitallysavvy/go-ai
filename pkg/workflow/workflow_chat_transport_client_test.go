@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -335,5 +337,58 @@ func TestWorkflowChatTransportOnChatSendMessageCallback(t *testing.T) {
 	}
 	if sawChatID != "chat-6" {
 		t.Fatalf("expected OnChatSendMessage to see chat-6, got %q", sawChatID)
+	}
+}
+
+// TestWorkflowChatTransportPumpChunkStreamGoroutineLeak is a permanent
+// regression test for R2-4: pumpChunkStream used to send repaired chunks
+// with an unconditional blocking `out <- repaired`, never selecting on
+// ctx.Done(). A consumer that stops draining the channel SendMessages
+// returns -- without separately cancelling ctx -- left the goroutine running
+// t.sendMessages permanently blocked. Adapted from the bug report's
+// TestZZBugReviewWorkflowChatTransportPumpChunkStreamGoroutineLeak
+// (state/parity/sep_23_2026/bug-review/R2.md): this asserts the *fixed*
+// behavior (cancelling ctx unblocks the pump) rather than the original
+// leak repro (which asserted a `runtime.Stack` dump still showed
+// "pumpChunkStream" 150ms after the consumer stopped reading).
+func TestWorkflowChatTransportPumpChunkStreamGoroutineLeak(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("x-workflow-run-id", "run-leak")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		for i := 0; i < 50; i++ {
+			fmt.Fprintf(w, "data: {\"type\":\"text-delta\",\"id\":\"t1\",\"delta\":\"chunk-%d\"}\n\n", i)
+			flusher.Flush()
+			time.Sleep(2 * time.Millisecond)
+		}
+	}))
+	defer srv.Close()
+
+	transport := NewWorkflowChatTransport(WorkflowChatTransportOptions{API: srv.URL})
+	ctx, cancel := context.WithCancel(context.Background())
+	out, _ := transport.SendMessages(ctx, ai.ChatTransportSendMessagesRequest{ChatID: "c1"})
+	<-out // read one chunk, then stop draining.
+
+	// Before the fix, no amount of waiting here would unblock the pump: it
+	// had no ctx.Done() case on its `out <-` send at all. The fix makes
+	// cancelling ctx -- the normal way a ChatTransport consumer gives up on
+	// a stream -- unblock it. Confirm the pump goroutine is gone afterward
+	// (rather than asserting the old test's "still blocked" negative) by
+	// checking the stack no longer mentions pumpChunkStream, bounded by a
+	// retry loop instead of one fixed sleep.
+	cancel()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		buf := make([]byte, 1<<20)
+		n := runtime.Stack(buf, true)
+		if !strings.Contains(string(buf[:n]), "pumpChunkStream") {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("pumpChunkStream goroutine is still blocked after cancelling ctx")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

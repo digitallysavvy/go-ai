@@ -5,13 +5,21 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"path"
 	"strings"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 )
+
+// maxPolicyResponseBytes caps the OPA REST API response body this client
+// reads. The policy server is typically trusted/internal, but an unbounded
+// io.ReadAll is the same memory-exhaustion hazard as any other inbound HTTP
+// body (see pkg/mcp's OAuth response reads), so it gets the same limit
+// pattern as pkg/internal/fileutil/download.go.
+const maxPolicyResponseBytes = 1 << 20 // 1 MiB
 
 // HTTPClientOptions configures HTTPPolicyClient.
 type HTTPClientOptions struct {
@@ -61,7 +69,7 @@ func (c *httpPolicyClient) Evaluate(ctx context.Context, policyPath string, inpu
 		return nil, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	body, err := fileutil.ReadResponseWithSizeLimit(resp, c.evaluateURL(policyPath), maxPolicyResponseBytes)
 	if err != nil {
 		return nil, err
 	}

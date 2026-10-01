@@ -769,8 +769,12 @@ func RegisterOAuthClient(ctx context.Context, authorizationServerURL string, met
 		return nil, ParseOAuthErrorResponse(resp)
 	}
 	defer resp.Body.Close() //nolint:errcheck
+	rawBody, err := readLimitedOAuthBody(resp)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read dynamic client registration response: %w", err)
+	}
 	var full OAuthClientInformationFull
-	if err := json.NewDecoder(resp.Body).Decode(&full); err != nil {
+	if err := json.Unmarshal(rawBody, &full); err != nil {
 		return nil, fmt.Errorf("failed to decode dynamic client registration response: %w", err)
 	}
 	return &full, nil
@@ -863,8 +867,12 @@ func decodeOAuthTokenResponse(resp *http.Response) (*OAuthTokens, error) {
 		return nil, ParseOAuthErrorResponse(resp)
 	}
 	defer resp.Body.Close() //nolint:errcheck
+	rawBody, err := readLimitedOAuthBody(resp)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read OAuth token response: %w", err)
+	}
 	var tokens OAuthTokens
-	if err := json.NewDecoder(resp.Body).Decode(&tokens); err != nil {
+	if err := json.Unmarshal(rawBody, &tokens); err != nil {
 		return nil, fmt.Errorf("failed to decode OAuth token response: %w", err)
 	}
 	return &tokens, nil

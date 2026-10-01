@@ -1,5 +1,7 @@
 package jsonparser
 
+import "unicode/utf8"
+
 type fixJSONState string
 
 const (
@@ -239,6 +241,17 @@ func FixJSON(input string) string {
 	if lastValidIndex >= 0 {
 		result = input[:lastValidIndex+1]
 	}
+	// input is indexed byte-by-byte above, so a partial JSON string that
+	// ends mid-way through a multi-byte UTF-8 rune (plausible for streamed
+	// non-ASCII text cut off at an arbitrary chunk boundary) leaves result
+	// ending in an incomplete trailing sequence. Left alone, that sequence
+	// would survive into the repaired JSON and decode (e.g. via
+	// encoding/json, which does not reject invalid UTF-8 in a string) as
+	// mangled U+FFFD replacement characters instead of simply omitting the
+	// not-yet-fully-streamed character. Trimming it here instead means the
+	// repaired string ends at the last complete rune the input actually
+	// contained.
+	result = trimIncompleteUTF8Suffix(result)
 
 	for i := len(stack) - 1; i >= 0; i-- {
 		switch stack[i] {
@@ -264,6 +277,18 @@ func FixJSON(input string) string {
 	}
 
 	return result
+}
+
+// trimIncompleteUTF8Suffix drops trailing bytes that form an incomplete
+// multi-byte UTF-8 sequence. Everything before the truncation point is
+// assumed to already be valid UTF-8 (FixJSON's input is a Go string), so any
+// invalidity can only be a dangling sequence at the very end; bounded to
+// utf8.UTFMax iterations (the longest possible encoded rune).
+func trimIncompleteUTF8Suffix(s string) string {
+	for i := 0; i < utf8.UTFMax && s != "" && !utf8.ValidString(s); i++ {
+		s = s[:len(s)-1]
+	}
+	return s
 }
 
 func isHexDigit(ch byte) bool {

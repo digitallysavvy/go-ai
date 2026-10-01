@@ -217,7 +217,7 @@ func (t *WorkflowChatTransport) sendMessages(ctx context.Context, req ai.ChatTra
 	}
 
 	normalizer := newUIStreamNormalizer()
-	chunkIndex, gotFinish := t.pumpChunkStream(resp.Body, normalizer, nil, out)
+	chunkIndex, gotFinish := t.pumpChunkStream(ctx, resp.Body, normalizer, nil, out)
 	resp.Body.Close()
 
 	if gotFinish {
@@ -314,7 +314,7 @@ func (t *WorkflowChatTransport) reconnectLoop(ctx context.Context, chatID, runID
 		}
 		useExplicitStartIndex = false
 
-		read, finished := t.pumpChunkStream(resp.Body, normalizer, orphans, out)
+		read, finished := t.pumpChunkStream(ctx, resp.Body, normalizer, orphans, out)
 		resp.Body.Close()
 		chunkIndex += read
 		if finished {
@@ -348,7 +348,13 @@ func (t *WorkflowChatTransport) finishChat(chatID string, chunkIndex int, errs c
 // mid-stream (rather than a clean EOF) simply stops the pump — the caller
 // treats an incomplete stream the same as a dropped connection and
 // reconnects, matching TS's `catch { console.error(...) }` fallthrough.
-func (t *WorkflowChatTransport) pumpChunkStream(body io.Reader, normalizer *uiStreamNormalizer, orphans *orphanFilter, out chan<- ai.UIMessageChunk) (read int, gotFinish bool) {
+//
+// Every send on out also selects on ctx.Done() (R2-4): without it, a
+// consumer that stops draining the channel returned by SendMessages /
+// ReconnectToStream — without separately cancelling ctx — leaves this
+// goroutine permanently blocked on `out <- repaired`, leaking it for the
+// life of the process.
+func (t *WorkflowChatTransport) pumpChunkStream(ctx context.Context, body io.Reader, normalizer *uiStreamNormalizer, orphans *orphanFilter, out chan<- ai.UIMessageChunk) (read int, gotFinish bool) {
 	parser := streaming.NewSSEParser(body)
 	for {
 		event, err := parser.Next()
@@ -380,7 +386,11 @@ func (t *WorkflowChatTransport) pumpChunkStream(body io.Reader, normalizer *uiSt
 		// mask the very orphan it was meant to catch.
 		if orphans == nil || !orphans.shouldDrop(chunk) {
 			for _, repaired := range normalizer.normalize(chunk) {
-				out <- repaired
+				select {
+				case out <- repaired:
+				case <-ctx.Done():
+					return read, gotFinish
+				}
 			}
 		}
 		if stringField(chunk, "type") == "finish" {

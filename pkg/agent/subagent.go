@@ -3,13 +3,21 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // SubagentRegistry manages a collection of subagents
 // It allows an agent to delegate tasks to specialized subagents
+//
+// SubagentRegistry is safe for concurrent use: all access to the underlying
+// map is guarded by mu. A long-running agent process may register/unregister
+// subagents (e.g. hot-loaded plugins/skills) concurrently with requests that
+// call Get/Has/List/Execute, which otherwise races (and, for concurrent
+// map iteration + write, crashes the process outright).
 type SubagentRegistry struct {
+	mu        sync.RWMutex
 	subagents map[string]Agent
 }
 
@@ -31,6 +39,9 @@ func (r *SubagentRegistry) Register(name string, agent Agent) error {
 		return fmt.Errorf("subagent cannot be nil")
 	}
 
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	if _, exists := r.subagents[name]; exists {
 		return fmt.Errorf("subagent '%s' already registered", name)
 	}
@@ -41,24 +52,34 @@ func (r *SubagentRegistry) Register(name string, agent Agent) error {
 
 // Unregister removes a subagent from the registry
 func (r *SubagentRegistry) Unregister(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	delete(r.subagents, name)
 }
 
 // Get retrieves a subagent by name
 // Returns the subagent and true if found, nil and false otherwise
 func (r *SubagentRegistry) Get(name string) (Agent, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	agent, exists := r.subagents[name]
 	return agent, exists
 }
 
 // Has checks if a subagent exists in the registry
 func (r *SubagentRegistry) Has(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	_, exists := r.subagents[name]
 	return exists
 }
 
-// List returns all registered subagent names
+// List returns all registered subagent names. The returned slice is a copy:
+// mutating it, or a subsequent Register/Unregister, never affects the
+// registry or a previously returned List result.
 func (r *SubagentRegistry) List() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	names := make([]string, 0, len(r.subagents))
 	for name := range r.subagents {
 		names = append(names, name)
@@ -69,7 +90,9 @@ func (r *SubagentRegistry) List() []string {
 // Execute delegates execution to a named subagent
 // Returns an error if the subagent is not found or execution fails
 func (r *SubagentRegistry) Execute(ctx context.Context, name string, prompt string) (*AgentResult, error) {
+	r.mu.RLock()
 	agent, exists := r.subagents[name]
+	r.mu.RUnlock()
 	if !exists {
 		return nil, fmt.Errorf("subagent '%s' not found", name)
 	}
@@ -80,7 +103,9 @@ func (r *SubagentRegistry) Execute(ctx context.Context, name string, prompt stri
 // ExecuteWithMessages delegates execution to a named subagent with message history
 // Returns an error if the subagent is not found or execution fails
 func (r *SubagentRegistry) ExecuteWithMessages(ctx context.Context, name string, messages []types.Message) (*AgentResult, error) {
+	r.mu.RLock()
 	agent, exists := r.subagents[name]
+	r.mu.RUnlock()
 	if !exists {
 		return nil, fmt.Errorf("subagent '%s' not found", name)
 	}
@@ -90,11 +115,15 @@ func (r *SubagentRegistry) ExecuteWithMessages(ctx context.Context, name string,
 
 // Clear removes all subagents from the registry
 func (r *SubagentRegistry) Clear() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.subagents = make(map[string]Agent)
 }
 
 // Count returns the number of registered subagents
 func (r *SubagentRegistry) Count() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return len(r.subagents)
 }
 

@@ -3,7 +3,9 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -422,5 +424,82 @@ func TestSubagentRegistry_ExecuteWithError(t *testing.T) {
 
 	if err.Error() != "execution error" {
 		t.Fatalf("expected 'execution error', got: %v", err)
+	}
+}
+
+// TestSubagentRegistryConcurrentAccess is a permanent regression test for
+// R2-1: SubagentRegistry's map used to have no synchronization at all, so a
+// goroutine concurrently calling Register/Unregister while others called
+// Get/Has/List crashed the process outright with "fatal error: concurrent
+// map iteration and map write" (a fatal error, not a recoverable panic) and
+// produced numerous `go test -race` data races. Adapted from the bug
+// report's TestZZBugReviewSubagentRegistryConcurrentAccess
+// (state/parity/sep_23_2026/bug-review/R2.md).
+func TestSubagentRegistryConcurrentAccess(t *testing.T) {
+	reg := NewSubagentRegistry()
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		i := 0
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			name := fmt.Sprintf("sub-%d", i)
+			_ = reg.Register(name, &mockAgent{id: name})
+			reg.Unregister(name)
+			i++
+		}
+	}()
+
+	for w := 0; w < 4; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				names := reg.List()
+				_, _ = reg.Get("sub-0")
+				_ = reg.Has("sub-0")
+				_ = reg.Count()
+				// List must always be a safe-to-mutate copy: mutating it
+				// here must never corrupt the registry's own map.
+				if len(names) > 0 {
+					names[0] = "mutated"
+				}
+			}
+		}()
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+}
+
+// TestSubagentRegistryListReturnsCopy guards List's documented copy
+// semantics directly (R2-1): a second List call, or the registry's own
+// state, must be unaffected by mutating a previously returned slice.
+func TestSubagentRegistryListReturnsCopy(t *testing.T) {
+	reg := NewSubagentRegistry()
+	_ = reg.Register("a", &mockAgent{id: "a"})
+
+	names := reg.List()
+	if len(names) != 1 || names[0] != "a" {
+		t.Fatalf("List() = %v, want [a]", names)
+	}
+	names[0] = "mutated"
+
+	again := reg.List()
+	if len(again) != 1 || again[0] != "a" {
+		t.Fatalf("List() after mutating a prior result = %v, want [a]", again)
 	}
 }

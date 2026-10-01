@@ -3,9 +3,34 @@ package mcp
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 )
+
+// maxOAuthResponseBytes caps every OAuth metadata/token/registration response
+// body this package reads. An MCP server's OAuth authorization server is
+// attacker-reachable (via metadata-driven discovery or a redirect), so
+// reading `resp.Body` without a limit — unlike every other inbound body
+// this SDK reads (see pkg/internal/fileutil/download.go) — would let a
+// malicious or compromised authorization server exhaust memory with an
+// oversized response. 1 MiB comfortably fits real-world OAuth metadata,
+// token, and dynamic client registration responses.
+const maxOAuthResponseBytes = 1 << 20 // 1 MiB
+
+// readLimitedOAuthBody reads resp.Body capped at maxOAuthResponseBytes,
+// matching the size-limit pattern pkg/internal/fileutil/download.go already
+// applies to every other inbound download. It does not close resp.Body.
+func readLimitedOAuthBody(resp *http.Response) ([]byte, error) {
+	if resp == nil || resp.Body == nil {
+		return nil, nil
+	}
+	rawURL := ""
+	if resp.Request != nil && resp.Request.URL != nil {
+		rawURL = resp.Request.URL.String()
+	}
+	return fileutil.ReadResponseWithSizeLimit(resp, rawURL, maxOAuthResponseBytes)
+}
 
 // OAuth 2.0 error codes that Auth's retry-once logic special-cases, matching
 // TS's OAUTH_ERRORS map (error/oauth-error.ts).
@@ -81,9 +106,18 @@ type oauthErrorResponseBody struct {
 // consumed and closed.
 func ParseOAuthErrorResponse(resp *http.Response) *MCPClientOAuthError {
 	var body []byte
+	var readErr error
 	if resp.Body != nil {
-		body, _ = io.ReadAll(resp.Body)
+		body, readErr = readLimitedOAuthBody(resp)
 		resp.Body.Close() //nolint:errcheck
+	}
+	if readErr != nil {
+		return &MCPClientOAuthError{
+			Code:       OAuthErrorCodeServerError,
+			StatusCode: resp.StatusCode,
+			Message:    fmt.Sprintf("HTTP %d: OAuth error response exceeded the %d byte limit: %v", resp.StatusCode, maxOAuthResponseBytes, readErr),
+			Cause:      readErr,
+		}
 	}
 
 	var parsed oauthErrorResponseBody
