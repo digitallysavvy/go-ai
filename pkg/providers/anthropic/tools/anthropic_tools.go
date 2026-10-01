@@ -11,8 +11,9 @@
 //   - Search the web for current information (WebSearch)
 //   - Fetch and read content from URLs (WebFetch)
 //
-// All tools in this package are executed by the Anthropic API, not locally.
-// They must have ProviderExecuted set to true.
+// Most tools in this package are executed by the Anthropic API. Bash tools are
+// provider-defined but can execute locally through the configured sandbox, matching
+// the TypeScript SDK default behavior.
 package tools
 
 import "github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -62,6 +63,22 @@ var AnthropicTools = struct {
 	// Supported models: Claude Opus 4.5, Claude Sonnet 4.5
 	ToolSearchRegex20251119 func() types.Tool
 
+	// WebSearch20260318 creates an Anthropic web search tool (version 2026-03-18).
+	// Superset of WebSearch20260209 that adds ResponseInclusion. No beta header
+	// is required.
+	WebSearch20260318 func(WebSearch20260318Config) types.Tool
+
+	// WebFetch20260318 creates an Anthropic web fetch tool (version 2026-03-18).
+	// Superset of WebFetch20260209 that adds UseCache and ResponseInclusion. No
+	// beta header is required.
+	WebFetch20260318 func(WebFetch20260318Config) types.Tool
+
+	// ComputerToolset20260801 creates the Anthropic computer toolset tool
+	// (version 2026-08-01). Each member action Claude invokes is returned as a
+	// separate tool_use block with toolset_name "computer"; the Go SDK exposes
+	// it as a single "computer" tool call.
+	ComputerToolset20260801 func(ComputerToolset20260801Config) types.Tool
+
 	// WebSearch20260209 creates an Anthropic web search tool (version 2026-02-09).
 	// Enables Claude to search the web for current information with configurable domain
 	// filters and user location context. Results include EncryptedContent for multi-turn citations.
@@ -71,6 +88,10 @@ var AnthropicTools = struct {
 	// Enables Claude to fetch and read content from URLs, returning either base64-encoded
 	// PDF or plain text content.
 	WebFetch20260209 func(WebFetch20260209Config) types.Tool
+
+	// Advisor20260301 creates an Anthropic advisor tool.
+	// Requires beta header: advisor-tool-2026-03-01 (injected automatically).
+	Advisor20260301 func(Advisor20260301Args) types.Tool
 
 	// Legacy versions
 
@@ -129,8 +150,12 @@ var AnthropicTools = struct {
 	Memory20250818:          Memory20250818,
 	ToolSearchBm2520251119:  ToolSearchBm2520251119,
 	ToolSearchRegex20251119: ToolSearchRegex20251119,
+	WebSearch20260318:       WebSearch20260318,
+	WebFetch20260318:        WebFetch20260318,
+	ComputerToolset20260801: ComputerToolset20260801,
 	WebSearch20260209:       WebSearch20260209,
 	WebFetch20260209:        WebFetch20260209,
+	Advisor20260301:         Advisor20260301,
 	Computer20241022:        Computer20241022,
 	Computer20250124:        Computer20250124,
 	Bash20241022:            Bash20241022,

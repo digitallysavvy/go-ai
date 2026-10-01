@@ -7,7 +7,9 @@ The AI Gateway provider enables unified access to multiple LLM providers through
 - **Unified Model Access**: Access models from multiple providers through a single interface
 - **Zero Data Retention**: Optional mode that prevents request logging
 - **Model Routing**: Intelligent routing to different model providers
-- **Search Tools**: Built-in Parallel Search and Perplexity Search tools
+- **Search Tools**: Built-in Exa, Parallel Search, and Perplexity Search tools
+- **Realtime Runtime Auth**: Mint short-lived realtime client secrets for browser WebSocket sessions
+- **Audio Models**: Speech synthesis and transcription through Gateway model routing
 - **Automatic Failover**: Gateway handles provider failover automatically
 - **Usage Tracking**: Track API usage and credits
 
@@ -49,7 +51,8 @@ func main() {
     }
 
     // Generate text
-    result, err := ai.GenerateText(context.Background(), model, ai.GenerateTextOptions{
+    result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+        Model:  model,
         Prompt: "What is the capital of France?",
     })
     if err != nil {
@@ -69,6 +72,36 @@ provider, err := gateway.New(gateway.Config{
 })
 ```
 
+### Routing and Compliance Options
+
+Gateway routing options can be configured globally on the provider or per call under
+`ProviderOptions["gateway"]`.
+
+```go
+provider, err := gateway.New(gateway.Config{
+    APIKey:                  "your-api-key",
+    DisallowPromptTraining:  true,
+    QuotaEntityID:           "tenant-123",
+})
+
+result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Summarize the care plan",
+    ProviderOptions: map[string]interface{}{
+        "gateway": map[string]interface{}{
+            "only":  []string{"anthropic", "openai"},
+            "order": []string{"anthropic", "openai"},
+            "sort":  "cost", // "cost", "ttft", or "tps"
+            // Restrict routing to models with given capabilities/weight formats.
+            "has": []string{
+                gateway.GatewayHasReasoning,
+                gateway.GatewayHasQuantization("fp8"),
+            },
+        },
+    },
+})
+```
+
 ### Get Available Models
 
 ```go
@@ -77,11 +110,9 @@ if err != nil {
     log.Fatal(err)
 }
 
-for _, provider := range metadata.Providers {
-    fmt.Printf("Provider: %s\n", provider.Name)
-    for _, model := range provider.Models {
-        fmt.Printf("  - %s (%s)\n", model.Name, model.ID)
-    }
+for _, model := range metadata.Models {
+    fmt.Printf("Provider: %s\n", model.Specification.Provider)
+    fmt.Printf("  - %s (%s)\n", model.Name, model.ID)
 }
 ```
 
@@ -93,13 +124,166 @@ if err != nil {
     log.Fatal(err)
 }
 
-fmt.Printf("Available Credits: %d\n", credits.Available)
-fmt.Printf("Used Credits: %d\n", credits.Used)
+fmt.Printf("Balance: %s\n", credits.Balance)
+fmt.Printf("Total Used: %s\n", credits.TotalUsed)
 ```
+
+### Reranking
+
+```go
+import goprovider "github.com/digitallysavvy/go-ai/pkg/provider"
+
+reranker, err := provider.RerankingModel("cohere/rerank-v3.5")
+if err != nil {
+    log.Fatal(err)
+}
+
+topN := 3
+result, err := reranker.DoRerank(context.Background(), &goprovider.RerankOptions{
+    Query: "gateway routing",
+    Documents: []string{
+        "Provider fallback order can reduce latency variance.",
+        "Embedding vectors power semantic search.",
+        "HIPAA compliance restricts provider choice.",
+    },
+    TopN: &topN,
+})
+```
+
+### Speech Synthesis
+
+```go
+speech, err := provider.SpeechModel("openai/tts-1")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := speech.DoGenerate(context.Background(), &goprovider.SpeechGenerateOptions{
+    Text:         "Welcome to the demo.",
+    Voice:        "alloy",
+    OutputFormat: "mp3",
+    Instructions: "Speak clearly and warmly.",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("generated %d audio bytes\n", len(result.Audio))
+```
+
+Gateway sends speech requests to `/speech-model` with `ai-speech-model-specification-version: 4` and `ai-model-id`.
+
+### Transcription
+
+```go
+transcriber, err := provider.TranscriptionModel("openai/whisper-1")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := transcriber.DoTranscribe(context.Background(), &goprovider.TranscriptionOptions{
+    Audio:    audioBytes,
+    MimeType: "audio/wav",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println(result.Text)
+```
+
+Gateway sends transcription requests to `/transcription-model` with `ai-transcription-model-specification-version: 4` and `ai-model-id`.
+
+## Realtime Runtime Client Secrets
+
+Gateway realtime clients use a short-lived `vcst_` token instead of exposing the
+long-lived Gateway credential to browsers. Server code mints the token, returns
+it to the client, and the browser connects with Gateway WebSocket subprotocols.
+
+```go
+provider, err := gateway.New(gateway.Config{
+    APIKey:       "your-api-key",
+    TeamIDOrSlug: "team-slug", // optional
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+expires := 60
+token, err := provider.GetRealtimeToken(context.Background(), "openai/gpt-realtime", &gateway.RealtimeClientSecretOptions{
+    ExpiresAfterSeconds: &expires,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+model := provider.ExperimentalRealtime("openai/gpt-realtime")
+ws := model.GetWebSocketConfig(token.Token, token.URL)
+fmt.Println(ws.URL, ws.Protocols)
+```
+
+`MintRealtimeClientSecret` sends `POST /v1/realtime/client-secrets` at the
+Gateway origin with `{"model": "...", "expiresIn": ...}` and the normal Gateway
+auth headers. Realtime event parsing and client event serialization are identity
+codecs because Gateway speaks the normalized AI SDK realtime protocol.
+
+### Transcription Client Secrets
+
+The same mechanism mints a token bound to the streaming transcription surface
+by setting `routeKind: "transcription"` in the mint request body:
+
+```go
+expires := 60
+token, err := provider.GetTranscriptionToken(context.Background(), "openai/gpt-realtime-whisper", &gateway.TranscriptionClientSecretOptions{
+    ExpiresAfterSeconds: &expires,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println(token.Token, token.URL) // token.URL: wss://.../v4/ai/transcription-model?ai-model-id=openai%2Fgpt-realtime-whisper
+
+model := provider.ExperimentalTranscription("openai/gpt-realtime-whisper")
+```
+
+`gateway.ToGatewayTranscriptionURL(baseURL, modelID)` builds the streaming
+transcription WebSocket URL directly (HTTP(S) base upgraded to WS(S), model
+id passed as the `ai-model-id` query parameter). Streaming transcription
+itself (`TranscriptionModel.DoStream` over WebSocket) is not yet implemented;
+`TranscriptionModel.DoTranscribe` (non-streaming, HTTP) is available today.
 
 ## Provider-Executed Tools
 
-The Gateway provider includes two powerful search tools that are executed server-side by the gateway.
+The Gateway provider includes search tools that are executed server-side by the gateway.
+
+### Exa Search
+
+Search the web using Exa for current information and token-efficient excerpts.
+
+```go
+exaSearch := tools.NewExaSearch(tools.ExaSearchConfig{
+    Type:       "auto",
+    NumResults: intPtr(8),
+    Category:   "news",
+    Contents: &tools.ExaSearchContentsConfig{
+        Text: true,
+        Extras: &tools.ExaSearchExtrasConfig{
+            Links: intPtr(2),
+        },
+    },
+})
+
+result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Find recent product launches in AI developer tools",
+    Tools: []types.Tool{
+        exaSearch.ToTool(),
+    },
+})
+```
+
+Numeric provider tool config fields use `*int`: `nil` omits the field like
+TypeScript `undefined`, while `intPtr(0)` sends an explicit zero.
 
 ### Parallel Search
 
@@ -126,14 +310,15 @@ func main() {
     // Create parallel search tool
     parallelSearch := tools.NewParallelSearch(tools.ParallelSearchConfig{
         Mode:       "one-shot", // or "agentic"
-        MaxResults: 10,
+        MaxResults: intPtr(10),
         SourcePolicy: &tools.ParallelSearchSourcePolicy{
             IncludeDomains: []string{"wikipedia.org", "nature.com"},
             AfterDate:      "2024-01-01",
         },
     })
 
-    result, err := ai.GenerateText(context.Background(), model, ai.GenerateTextOptions{
+    result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+        Model:  model,
         Prompt: "Search for the latest developments in quantum computing",
         Tools: []types.Tool{
             parallelSearch.ToTool(),
@@ -159,17 +344,46 @@ Search using Perplexity's API for real-time information and news.
 ```go
 // Create perplexity search tool
 perplexitySearch := tools.NewPerplexitySearch(tools.PerplexitySearchConfig{
-    MaxResults:       10,
-    MaxTokensPerPage: 2048,
+    MaxResults:       intPtr(10),
+    MaxTokensPerPage: intPtr(2048),
     Country:          "US",
     SearchDomainFilter: []string{"nature.com", "science.org"},
     SearchRecencyFilter: "week",
 })
 
-result, err := ai.GenerateText(context.Background(), model, ai.GenerateTextOptions{
+result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+    Model:  model,
     Prompt: "What are the latest AI research papers?",
     Tools: []types.Tool{
         perplexitySearch.ToTool(),
+    },
+})
+```
+
+### Tako Search
+
+Search Tako's curated Data Graph and the web for entities, metrics, and time series,
+returning rendered data cards and web results.
+
+```go
+takoSearch := tools.NewTakoSearch(tools.TakoSearchConfig{
+    Effort: "fast",
+    Sources: &tools.TakoSearchSources{
+        Data: &tools.TakoDataSourceConfig{
+            Count: intPtr(5),
+        },
+        Web: &tools.TakoWebSourceConfig{
+            Count:    intPtr(5),
+            Category: "finance",
+        },
+    },
+})
+
+result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "What has Tesla's stock price done this year?",
+    Tools: []types.Tool{
+        takoSearch.ToTool(),
     },
 })
 ```
@@ -268,12 +482,36 @@ the `ai-o11y-project-id` header alongside other Vercel observability headers.
 ### Provider Config
 
 - `APIKey` (string): AI Gateway API key (or set `AI_GATEWAY_API_KEY` env var)
-- `BaseURL` (string): Gateway API base URL (default: `https://ai-gateway.vercel.sh/v3/ai`)
+- `BaseURL` (string): Gateway API base URL (default: `https://ai-gateway.vercel.sh/v4/ai`)
 - `Headers` (map[string]string): Custom headers
 - `MetadataCacheRefreshMillis` (int64): Metadata cache refresh interval in milliseconds (default: 300000)
 - `HTTPClient` (*http.Client): Custom HTTP client
 - `ZeroDataRetention` (bool): Enable zero data retention mode
+- `DisallowPromptTraining` (bool): Restrict routing to providers that do not train on prompt data
+- `QuotaEntityID` (string): Entity ID for quota tracking and tenant/account attribution
 - `ProjectID` (*string): Project identifier forwarded as `ai-o11y-project-id` for observability (or set `VERCEL_PROJECT_ID` env var)
+
+### Gateway Provider Options
+
+- `only` ([]string): Restrict candidate providers
+- `order` ([]string): Preferred provider order
+- `sort` (string): Gateway routing sort strategy: `cost`, `ttft`, or `tps`
+- `tags` ([]string): Routing tags
+- `models` ([]string): Fallback model list
+- `zeroDataRetention` (bool): Per-call zero data retention
+- `disallowPromptTraining` (bool): Per-call no-prompt-training restriction
+- `quotaEntityId` (string): Per-call quota identity
+- `has` ([]string): Restrict routing to models with all given capability tags
+  (`GatewayHasImplicitCaching`, `GatewayHasReasoning`, `GatewayHasToolUse`,
+  `GatewayHasVision`) or weight-format conditions built with
+  `GatewayHasQuantization("fp8")` / `GatewayHasNotQuantization("fp8")`
+- `idempotencyKey` (string): Idempotency key for `experimental_startBatch` retries
+- `caching` (string): Enables automatic caching behavior when supported by the Gateway (only valid value: `"auto"`, see `GatewayCachingAuto`)
+
+> **Breaking change:** the `hipaaCompliant` provider option and `Config.HIPAACompliant`
+> field were removed to match the upstream TypeScript SDK (`hipaaCompliant` was dropped
+> from `@ai-sdk/gateway` in the Sep 23 2026 cycle). Callers relying on it should remove
+> the field; the Gateway service no longer recognizes it.
 
 ### Parallel Search Config
 
@@ -293,6 +531,25 @@ the `ai-o11y-project-id` header alongside other Vercel observability headers.
 - `SearchLanguageFilter` ([]string): ISO 639-1 language codes
 - `SearchRecencyFilter` (string): "day", "week", "month", or "year"
 
+### Exa Search Config
+
+- `Type` (string): `auto`, `fast`, or `instant`
+- `NumResults` (int): Maximum results (1-100, default: 10)
+- `Category` (string): `company`, `people`, `research paper`, `news`, `personal site`, or `financial report`
+- `UserLocation` (string): Two-letter ISO country code
+- `IncludeDomains` / `ExcludeDomains` ([]string): Domain filters
+- `StartPublishedDate` / `EndPublishedDate` (string): ISO 8601 published date filters
+- `Contents` (*ExaSearchContentsConfig): Text, highlight, freshness, subpage, and extras controls
+
+### Tako Search Config
+
+- `Effort` (string): `deep`, `fast` (default), or `instant`
+- `Sources` (*TakoSearchSources): `Data` (*TakoDataSourceConfig) and/or `Web` (*TakoWebSourceConfig); omit to search both
+- `Location` (*TakoSearchLocation): End-user latitude/longitude for localized results
+- `CountryCode` / `Locale` / `Timezone` (string): ISO 3166-1 country code, BCP-47 locale, IANA timezone
+- `OutputSettings` (*TakoSearchOutputSettings): `ImageDarkMode`, `ForceRefresh` (instant effort only)
+- `IncludeRelated` (*int): Maximum related search suggestions to include (1-20)
+
 ## Environment Variables
 
 - `AI_GATEWAY_API_KEY`: API key for authentication
@@ -303,18 +560,59 @@ the `ai-o11y-project-id` header alongside other Vercel observability headers.
 
 ## Model IDs
 
-Model IDs use the format `provider/model`. Examples:
+Model IDs use the format `provider/model`. The package exports refreshed
+model ID constants and catalog slices that mirror the TypeScript AI SDK gateway
+settings unions:
 
-- `openai/gpt-4`
-- `anthropic/claude-3-opus-20240229`
-- `google/gemini-pro`
-- `mistral/mistral-large-latest`
+- `GatewayLanguageModelID` / `GatewayLanguageModelIDs`
+- `GatewayEmbeddingModelID` / `GatewayEmbeddingModelIDs`
+- `GatewayImageModelID` / `GatewayImageModelIDs`
+- `GatewayVideoModelID` / `GatewayVideoModelIDs`
+- `GatewayRerankingModelID` / `GatewayRerankingModelIDs`
+- `GatewaySpeechModelID` / `GatewaySpeechModelIDs`
+- `GatewayTranscriptionModelID` / `GatewayTranscriptionModelIDs`
+
+Examples:
+
+- `gateway.GatewayLanguageModelOpenaiGpt55`
+- `gateway.GatewayLanguageModelOpenaiGpt52`
+- `gateway.GatewayLanguageModelAnthropicClaudeOpus48`
+- `gateway.GatewayLanguageModelMoonshotaiKimiK27Code`
+- `gateway.GatewayLanguageModelZaiGlm52`
+- `gateway.GatewayEmbeddingModelGoogleGeminiEmbedding2`
+- `gateway.GatewayImageModelBflFlux2Pro`
+- `gateway.GatewayVideoModelAlibabaWanV26T2v`
+- `gateway.GatewayRerankingModelCohereRerankV4Pro`
+
+June 21 catalog evidence is generated from the TypeScript Gateway settings:
+196 language IDs, 24 embedding IDs, 30 image IDs, 27 video IDs, 5 reranking IDs,
+and unconstrained speech/transcription ID types.
 
 Check available models using `provider.GetAvailableModels()`.
 
+## Inline File Encoding
+
+Inline `[]byte` file data in Gateway language-model requests is base64-encoded exactly once for file, reasoning-file, and tool-result file parts. URL, provider-reference, and text file data are preserved in their provider-native form. This matches the TypeScript Gateway provider's June 6 file-part behavior.
+
 ## Error Handling
 
-The gateway provider returns standard provider errors:
+Gateway response errors are decoded into typed errors under `pkg/providers/gateway/errors`. The common `GatewayError` interface exposes status code, public type, generation ID, and retryability. Unknown Gateway error types preserve the raw type through `GatewayErrorDetails`.
+
+- `GatewayForbiddenError.RuleID` identifies which routing rule denied the request, when the Gateway reports one.
+- `GatewayNotFoundError` (type `not_found`) is returned for unknown Gateway resources (e.g. an async batch/video job id) and is distinct from `GatewayModelNotFoundError`, which is model-specific.
+
+```go
+var gatewayErr gatewayerrors.GatewayError
+if errors.As(err, &gatewayErr) {
+    log.Printf("gateway type=%s status=%d retryable=%v",
+        gatewayErr.GetType(),
+        gatewayErr.GetStatusCode(),
+        gatewayErr.IsRetryable(),
+    )
+}
+```
+
+The gateway provider also returns standard provider errors:
 
 - `AuthenticationError`: Invalid or missing API key
 - `RateLimitError`: Rate limit exceeded
@@ -324,7 +622,8 @@ The gateway provider returns standard provider errors:
 ```go
 import "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 
-result, err := ai.GenerateText(ctx, model, opts)
+opts.Model = model
+result, err := ai.GenerateText(ctx, opts)
 if err != nil {
     switch e := err.(type) {
     case *errors.AuthenticationError:

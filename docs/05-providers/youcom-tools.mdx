@@ -1,0 +1,18 @@
+---
+title: You.com Tools
+description: You.com search, research, and content extraction tools.
+---
+
+# You.com Tools
+
+The `pkg/providers/youcom` package mirrors the TypeScript `@youdotcom-oss/ai-sdk-plugin` exports:
+
+```go
+tools := []types.Tool{
+    youcom.YouSearch(),
+    youcom.YouResearch(),
+    youcom.YouContents(),
+}
+```
+
+These tools execute locally through the You.com API, use `YDC_API_KEY` by default, and carry `ProviderName="you.com"` plus provider metadata keyed by `you`.

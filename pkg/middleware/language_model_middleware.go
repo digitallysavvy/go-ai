@@ -19,6 +19,11 @@ type LanguageModelMiddleware struct {
 	// OverrideModelID allows overriding the model ID
 	OverrideModelID func(model provider.LanguageModel) string
 
+	// OverrideSupportedURLs allows overriding the URL patterns (regular
+	// expressions keyed by media type) the wrapped model reports supporting
+	// directly. Mirrors TypeScript's overrideSupportedUrls middleware hook.
+	OverrideSupportedURLs func(model provider.LanguageModel) map[string][]string
+
 	// TransformParams transforms the parameters before they are passed to the language model
 	TransformParams func(ctx context.Context, callType string, params *provider.GenerateOptions, model provider.LanguageModel) (*provider.GenerateOptions, error)
 
@@ -67,7 +72,7 @@ func doWrapLanguageModel(model provider.LanguageModel, middleware *LanguageModel
 
 // SpecificationVersion returns the specification version
 func (w *wrappedLanguageModel) SpecificationVersion() string {
-	return "v3"
+	return w.model.SpecificationVersion()
 }
 
 // Provider returns the provider name
@@ -90,6 +95,29 @@ func (w *wrappedLanguageModel) ModelID() string {
 		return w.middleware.OverrideModelID(w.model)
 	}
 	return w.model.ModelID()
+}
+
+// languageModelSupportedURLs is the optional capability interface implemented
+// by language models that report which URL patterns they accept directly
+// without downloading first. Matches the pattern used elsewhere in this
+// codebase (e.g. pkg/ai's supportedURLsProvider) for TS's model.supportedUrls.
+type languageModelSupportedURLs interface {
+	SupportedURLs() map[string][]string
+}
+
+// SupportedURLs returns the URL patterns (regular expressions keyed by media
+// type) the wrapped model accepts directly. Checks
+// middleware.OverrideSupportedURLs first, then forwards the wrapped model's
+// own SupportedURLs() when it implements the optional capability, else
+// returns nil (matching TS's model.supportedUrls ?? undefined passthrough).
+func (w *wrappedLanguageModel) SupportedURLs() map[string][]string {
+	if w.middleware.OverrideSupportedURLs != nil {
+		return w.middleware.OverrideSupportedURLs(w.model)
+	}
+	if m, ok := w.model.(languageModelSupportedURLs); ok {
+		return m.SupportedURLs()
+	}
+	return nil
 }
 
 // SupportsTools returns whether the model supports tool calling

@@ -62,6 +62,47 @@ func TestProviderError_Unwrap(t *testing.T) {
 	}
 }
 
+func TestProviderError_IsRetryable(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		status int
+		want   bool
+	}{
+		{status: 0, want: true},
+		{status: 400, want: false},
+		{status: 429, want: true},
+		{status: 500, want: true},
+		{status: 503, want: true},
+	}
+	for _, tt := range tests {
+		err := &ProviderError{StatusCode: tt.status}
+		if got := err.IsRetryable(); got != tt.want {
+			t.Fatalf("IsRetryable(%d) = %v, want %v", tt.status, got, tt.want)
+		}
+	}
+}
+
+func TestProviderError_IsRetryable_Override(t *testing.T) {
+	t.Parallel()
+
+	trueVal, falseVal := true, false
+
+	// A status the default classification treats as non-retryable (424),
+	// overridden to retryable (e.g. Bedrock modelStreamErrorException).
+	err := &ProviderError{StatusCode: 424, Retryable: &trueVal}
+	if !err.IsRetryable() {
+		t.Fatal("expected Retryable override to force IsRetryable() = true for a normally non-retryable status")
+	}
+
+	// A status the default classification treats as retryable (500),
+	// overridden to non-retryable.
+	err2 := &ProviderError{StatusCode: 500, Retryable: &falseVal}
+	if err2.IsRetryable() {
+		t.Fatal("expected Retryable override to force IsRetryable() = false for a normally retryable status")
+	}
+}
+
 func TestIsProviderError(t *testing.T) {
 	t.Parallel()
 
@@ -73,6 +114,35 @@ func TestIsProviderError(t *testing.T) {
 	}
 	if IsProviderError(regularErr) {
 		t.Error("expected IsProviderError to return false for regular error")
+	}
+}
+
+func TestRetryError(t *testing.T) {
+	t.Parallel()
+
+	first := errors.New("first")
+	last := errors.New("last")
+	err := &RetryError{
+		Message:   "Failed after 2 attempts. Last error: last",
+		Reason:    RetryReasonMaxRetriesExceeded,
+		LastError: last,
+		Errors:    []error{first, last},
+	}
+
+	if err.Error() != "Failed after 2 attempts. Last error: last" {
+		t.Fatalf("Error() = %q", err.Error())
+	}
+	if err.Unwrap() != last {
+		t.Fatal("Unwrap() did not return last error")
+	}
+	if !errors.Is(err, last) {
+		t.Fatal("errors.Is did not match last error")
+	}
+	if !IsRetryError(err) {
+		t.Fatal("IsRetryError should identify RetryError")
+	}
+	if IsRetryError(errors.New("regular error")) {
+		t.Fatal("IsRetryError should reject regular errors")
 	}
 }
 
@@ -96,6 +166,32 @@ func TestNewProviderError(t *testing.T) {
 	}
 	if err.Cause != cause {
 		t.Error("expected cause to be set")
+	}
+}
+
+func TestSSRFError(t *testing.T) {
+	t.Parallel()
+
+	cause := errors.New("lookup failed")
+	err := NewSSRFError("http://169.254.169.254/latest", "private network address", cause)
+
+	if err.URL != "http://169.254.169.254/latest" {
+		t.Errorf("expected URL to be set, got %q", err.URL)
+	}
+	if err.Reason != "private network address" {
+		t.Errorf("expected reason to be set, got %q", err.Reason)
+	}
+	if err.Unwrap() != cause {
+		t.Error("expected Unwrap to return cause")
+	}
+	if !IsSSRFError(err) {
+		t.Error("expected IsSSRFError to return true for SSRFError")
+	}
+	if !IsSSRFError(NewDownloadError("download failed", 0, "", "", err)) {
+		t.Error("expected IsSSRFError to find SSRFError through wrapping")
+	}
+	if IsSSRFError(errors.New("regular error")) {
+		t.Error("expected IsSSRFError to return false for regular error")
 	}
 }
 

@@ -119,7 +119,8 @@ if err != nil {
 maxRetries := 3
 for i := 0; i < maxRetries; i++ {
     ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-    result, err := ai.GenerateText(ctx, model, options)
+    options.Model = model
+    result, err := ai.GenerateText(ctx, options)
     cancel()
 
     if err == nil {

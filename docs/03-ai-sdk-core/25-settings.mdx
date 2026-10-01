@@ -382,11 +382,14 @@ result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
 Transcription settings:
 
 ```go
+maxRetries := 2
+
 result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
-    Model:      transcriptionModel,
-    Audio:      audioData,
-    Language:   "en",
-    Timestamps: true,
+    Model:       transcriptionModel,
+    Audio:       audioData,
+    Language:    "en",
+    Timestamps:  true,
+    MaxRetries:  &maxRetries,
 })
 ```
 
@@ -551,4 +554,4 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 - [Generating Text](./05-generating-text.mdx)
 - [Prompts](../02-foundations/03-prompts.mdx)
 - [Error Handling](./50-error-handling.mdx)
-- [Provider Documentation](../providers/01-overview.md)
+- [Provider Documentation](../05-providers/01-overview.mdx)

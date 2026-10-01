@@ -1,9 +1,15 @@
 package moonshot
 
-import "github.com/digitallysavvy/go-ai/pkg/provider/types"
+import (
+	"encoding/json"
 
-// MoonshotUsage represents token usage information from Moonshot API responses
-// Supports prompt caching and thinking/reasoning token tracking
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+)
+
+// MoonshotUsage represents token usage information from Moonshot API responses.
+// Kept for callers that want to construct a typed usage value directly (e.g.
+// tests); ConvertMoonshotUsage marshals it to JSON and delegates to
+// ConvertMoonshotUsageRaw so behavior matches the wire-parsed path exactly.
 type MoonshotUsage struct {
 	// Standard token counts
 	PromptTokens     int `json:"prompt_tokens"`
@@ -14,7 +20,7 @@ type MoonshotUsage struct {
 	CachedTokens *int `json:"cached_tokens,omitempty"`
 
 	// Detailed token breakdowns
-	PromptTokensDetails *PromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+	PromptTokensDetails     *PromptTokensDetails     `json:"prompt_tokens_details,omitempty"`
 	CompletionTokensDetails *CompletionTokensDetails `json:"completion_tokens_details,omitempty"`
 }
 
@@ -30,59 +36,106 @@ type CompletionTokensDetails struct {
 	ReasoningTokens *int `json:"reasoning_tokens,omitempty"`
 }
 
-// ConvertMoonshotUsage converts Moonshot usage to SDK usage format
-// Handles thinking tokens, cached tokens, and detailed token breakdowns
+// moonshotUsageKnownFields decodes the subset of the usage object the SDK
+// interprets. Type mismatches on these fields (e.g. a string where a number
+// is expected) produce a decode error, mirroring TS's Zod-validated
+// tokenUsageSchema rejecting malformed usage payloads.
+type moonshotUsageKnownFields struct {
+	PromptTokens        *float64 `json:"prompt_tokens"`
+	CompletionTokens    *float64 `json:"completion_tokens"`
+	TotalTokens         *float64 `json:"total_tokens"`
+	CachedTokens        *float64 `json:"cached_tokens"`
+	PromptTokensDetails *struct {
+		CachedTokens *float64 `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
+	CompletionTokensDetails *struct {
+		ReasoningTokens *float64 `json:"reasoning_tokens"`
+	} `json:"completion_tokens_details"`
+}
+
+// ConvertMoonshotUsage converts a typed MoonshotUsage value to SDK usage
+// format. Provided for callers constructing usage directly (e.g. tests); the
+// wire-parsing path uses ConvertMoonshotUsageRaw so unknown fields survive
+// into Usage.Raw.
 func ConvertMoonshotUsage(usage MoonshotUsage) types.Usage {
-	// Convert to int64 pointers
-	inputTokens := int64(usage.PromptTokens)
-	outputTokens := int64(usage.CompletionTokens)
-	totalTokens := int64(usage.TotalTokens)
+	raw, err := json.Marshal(usage)
+	if err != nil {
+		return types.Usage{}
+	}
+	result, err := ConvertMoonshotUsageRaw(raw)
+	if err != nil {
+		return types.Usage{}
+	}
+	return result
+}
+
+// ConvertMoonshotUsageRaw converts a raw JSON usage object into SDK usage
+// format. Usage.Raw preserves the FULL decoded object -- including fields the
+// SDK doesn't model -- mirroring TS convertMoonshotAIChatUsage, which returns
+// `raw: usage` (the whole parsed, loosely-typed object) rather than a
+// hand-built subset. Output text-token counts are clamped to zero when
+// reasoning tokens exceed completion tokens.
+func ConvertMoonshotUsageRaw(raw json.RawMessage) (types.Usage, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return types.Usage{}, nil
+	}
+
+	var known moonshotUsageKnownFields
+	if err := json.Unmarshal(raw, &known); err != nil {
+		return types.Usage{}, err
+	}
+
+	var rawMap map[string]interface{}
+	if err := json.Unmarshal(raw, &rawMap); err != nil {
+		return types.Usage{}, err
+	}
+
+	promptTokens := int64(derefFloat(known.PromptTokens))
+	completionTokens := int64(derefFloat(known.CompletionTokens))
+	totalTokens := int64(derefFloat(known.TotalTokens))
 
 	result := types.Usage{
-		InputTokens:  &inputTokens,
-		OutputTokens: &outputTokens,
+		InputTokens:  &promptTokens,
+		OutputTokens: &completionTokens,
 		TotalTokens:  &totalTokens,
-		Raw:          make(map[string]interface{}),
+		Raw:          rawMap,
 	}
 
-	// Calculate cache read tokens from either top-level or nested field
-	var cacheReadTokens int64 = 0
-	if usage.CachedTokens != nil && *usage.CachedTokens > 0 {
-		cacheReadTokens = int64(*usage.CachedTokens)
-	} else if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens != nil && *usage.PromptTokensDetails.CachedTokens > 0 {
-		cacheReadTokens = int64(*usage.PromptTokensDetails.CachedTokens)
+	var cacheReadTokens int64
+	if known.CachedTokens != nil {
+		cacheReadTokens = int64(*known.CachedTokens)
+	} else if known.PromptTokensDetails != nil && known.PromptTokensDetails.CachedTokens != nil {
+		cacheReadTokens = int64(*known.PromptTokensDetails.CachedTokens)
 	}
-
-	// Add input details for cache tokens
 	if cacheReadTokens > 0 {
-		result.InputDetails = &types.InputTokenDetails{
-			CacheReadTokens: &cacheReadTokens,
-		}
-
-		// Calculate no-cache tokens (total - cached)
-		noCacheTokens := inputTokens - cacheReadTokens
+		result.InputDetails = &types.InputTokenDetails{CacheReadTokens: &cacheReadTokens}
+		noCacheTokens := promptTokens - cacheReadTokens
 		if noCacheTokens > 0 {
 			result.InputDetails.NoCacheTokens = &noCacheTokens
 		}
-
-		result.Raw["cachedTokens"] = cacheReadTokens
 	}
 
-	// Add output details for reasoning/thinking tokens
-	if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens != nil && *usage.CompletionTokensDetails.ReasoningTokens > 0 {
-		reasoningTokens := int64(*usage.CompletionTokensDetails.ReasoningTokens)
+	var reasoningTokens int64
+	if known.CompletionTokensDetails != nil && known.CompletionTokensDetails.ReasoningTokens != nil {
+		reasoningTokens = int64(*known.CompletionTokensDetails.ReasoningTokens)
+	}
+	if reasoningTokens > 0 {
+		textTokens := completionTokens - reasoningTokens
+		if textTokens < 0 {
+			textTokens = 0
+		}
 		result.OutputDetails = &types.OutputTokenDetails{
 			ReasoningTokens: &reasoningTokens,
+			TextTokens:      &textTokens,
 		}
-
-		// Calculate text tokens (total output - reasoning)
-		textTokens := outputTokens - reasoningTokens
-		if textTokens > 0 {
-			result.OutputDetails.TextTokens = &textTokens
-		}
-
-		result.Raw["reasoningTokens"] = *usage.CompletionTokensDetails.ReasoningTokens
 	}
 
-	return result
+	return result, nil
+}
+
+func derefFloat(f *float64) float64 {
+	if f == nil {
+		return 0
+	}
+	return *f
 }

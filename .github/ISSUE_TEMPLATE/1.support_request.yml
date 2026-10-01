@@ -1,5 +1,5 @@
 name: Support Request
-description: Report a bug, feature request or other issue with the AI SDK.
+description: Report a bug, feature request or other issue with Go-AI.
 labels: ['support']
 body:
   - type: markdown
@@ -16,20 +16,20 @@ body:
       required: true
   - type: textarea
     attributes:
-      label: AI SDK Version
-      description: Which version of the AI SDK are you using?
+      label: Go-AI Version
+      description: Which version of Go-AI are you using?
       placeholder: |
         Examples:
-        - ai: 4.1.2
-        - @ai-sdk/react: 2.1.0
-        - @ai-sdk/openai: 0.5.2
+        - github.com/digitallysavvy/go-ai: v0.5.0
+        - Go: 1.24.0
+        - Provider package/module versions used in your project
     validations:
       required: false
   - type: checkboxes
     id: terms
     attributes:
       label: Code of Conduct
-      description: By submitting this issue, you agree to follow our [Code of Conduct](https://community.vercel.com/guidelines)
+      description: By submitting this issue, you agree to follow our [Code of Conduct](https://github.com/digitallysavvy/go-ai/blob/main/CODE_OF_CONDUCT.md)
       options:
         - label: I agree to follow this project's Code of Conduct
           required: true

@@ -24,8 +24,8 @@ func TestVideoModel_SpecificationVersion(t *testing.T) {
 	}
 
 	model := NewVideoModel(p, "google/veo-3.1")
-	if got := model.SpecificationVersion(); got != "v3" {
-		t.Errorf("SpecificationVersion() = %v, want %v", got, "v3")
+	if got := model.SpecificationVersion(); got != "v4" {
+		t.Errorf("SpecificationVersion() = %v, want %v", got, "v4")
 	}
 }
 
@@ -91,14 +91,14 @@ func TestVideoModel_DoGenerate_SSE(t *testing.T) {
 				AspectRatio: "16:9",
 				Duration:    floatPtr(4.0),
 			},
-			resultEvent: `{"type":"result","videos":[{"type":"url","url":"https://example.com/video.mp4","mediaType":"video/mp4"}]}`,
+			resultEvent:  `{"type":"result","videos":[{"type":"url","url":"https://example.com/video.mp4","mediaType":"video/mp4"}]}`,
 			serverStatus: http.StatusOK,
 			wantErr:      false,
 			wantVideos:   1,
 			checkAccept:  true,
 		},
 		{
-			name: "SSE with heartbeat events before result",
+			name: "SSE with heartbeat events before result errors like TS schema validation",
 			opts: &provider.VideoModelV3CallOptions{
 				Prompt: "A dog running",
 			},
@@ -114,11 +114,10 @@ data: {"type":"heartbeat","timestamp":1234567891}
 			},
 			resultEvent:  `{"type":"result","videos":[{"type":"url","url":"https://example.com/video2.mp4","mediaType":"video/mp4"}]}`,
 			serverStatus: http.StatusOK,
-			wantErr:      false,
-			wantVideos:   1,
+			wantErr:      true,
 		},
 		{
-			name: "SSE with progress events before result",
+			name: "SSE with progress events before result errors like TS schema validation",
 			opts: &provider.VideoModelV3CallOptions{
 				Prompt: "A landscape",
 			},
@@ -128,11 +127,10 @@ data: {"type":"heartbeat","timestamp":1234567891}
 			},
 			resultEvent:  `{"type":"result","videos":[{"type":"url","url":"https://example.com/landscape.mp4","mediaType":"video/mp4"}]}`,
 			serverStatus: http.StatusOK,
-			wantErr:      false,
-			wantVideos:   1,
+			wantErr:      true,
 		},
 		{
-			name: "SSE with heartbeat, progress, then result",
+			name: "SSE with heartbeat, progress, then result errors on first event like TS",
 			opts: &provider.VideoModelV3CallOptions{
 				Prompt: "Ocean waves",
 			},
@@ -143,16 +141,15 @@ data: {"type":"heartbeat","timestamp":1234567891}
 			},
 			resultEvent:  `{"type":"result","videos":[{"type":"url","url":"https://example.com/ocean.mp4","mediaType":"video/mp4"},{"type":"url","url":"https://example.com/ocean2.mp4","mediaType":"video/mp4"}]}`,
 			serverStatus: http.StatusOK,
-			wantErr:      false,
-			wantVideos:   2,
+			wantErr:      true,
 		},
 		{
-			name: "SSE with warnings in result",
+			name: "SSE with deprecated warnings in result",
 			opts: &provider.VideoModelV3CallOptions{
 				Prompt:   "A cat playing",
 				Duration: floatPtr(10.0),
 			},
-			resultEvent:  `{"type":"result","videos":[{"type":"url","url":"https://example.com/video.mp4","mediaType":"video/mp4"}],"warnings":[{"type":"unsupported","feature":"duration","details":"Duration capped at 8 seconds"}]}`,
+			resultEvent:  `{"type":"result","videos":[{"type":"url","url":"https://example.com/video.mp4","mediaType":"video/mp4"}],"warnings":[{"type":"deprecated","setting":"duration","message":"Use seconds instead"}]}`,
 			serverStatus: http.StatusOK,
 			wantErr:      false,
 			wantVideos:   1,
@@ -189,7 +186,7 @@ data: {"type":"heartbeat","timestamp":1234567891}
 				}
 
 				// Verify spec version header and model ID header
-				if r.Header.Get("ai-video-model-specification-version") != "3" {
+				if r.Header.Get("ai-video-model-specification-version") != "4" {
 					t.Errorf("Missing or incorrect specification version header")
 				}
 				if r.Header.Get("ai-model-id") == "" {
@@ -258,6 +255,11 @@ data: {"type":"heartbeat","timestamp":1234567891}
 			}
 			if len(result.Warnings) != tt.wantWarnings {
 				t.Errorf("DoGenerate() returned %d warnings, want %d", len(result.Warnings), tt.wantWarnings)
+			}
+			if tt.name == "SSE with deprecated warnings in result" {
+				if result.Warnings[0].Type != "deprecated" || result.Warnings[0].Setting != "duration" || result.Warnings[0].Message != "Use seconds instead" {
+					t.Fatalf("warning fields should match TS shape, got %#v", result.Warnings[0])
+				}
 			}
 		})
 	}
@@ -439,14 +441,22 @@ func TestVideoModel_EncodeVideoFile(t *testing.T) {
 		name    string
 		file    *provider.VideoModelV3File
 		wantErr bool
+		assert  func(t *testing.T, result interface{})
 	}{
 		{
 			name: "URL file",
 			file: &provider.VideoModelV3File{
-				Type: "url",
-				URL:  "https://example.com/image.jpg",
+				Type:      "url",
+				URL:       "https://example.com/image.jpg",
+				MediaType: "image/jpeg",
 			},
 			wantErr: false,
+			assert: func(t *testing.T, result interface{}) {
+				got := result.(map[string]interface{})
+				if got["type"] != "url" || got["url"] != "https://example.com/image.jpg" || got["mediaType"] != "image/jpeg" {
+					t.Fatalf("url file = %#v", got)
+				}
+			},
 		},
 		{
 			name: "binary file",
@@ -456,6 +466,29 @@ func TestVideoModel_EncodeVideoFile(t *testing.T) {
 				MediaType: "image/jpeg",
 			},
 			wantErr: false,
+			assert: func(t *testing.T, result interface{}) {
+				got := result.(map[string]interface{})
+				if got["type"] != "file" || got["data"] != "dGVzdCBkYXRh" || got["mediaType"] != "image/jpeg" {
+					t.Fatalf("binary file = %#v", got)
+				}
+			},
+		},
+		{
+			name: "empty binary file preserves empty base64 data and omits default media type",
+			file: &provider.VideoModelV3File{
+				Type: "file",
+				Data: []byte{},
+			},
+			wantErr: false,
+			assert: func(t *testing.T, result interface{}) {
+				got := result.(map[string]interface{})
+				if got["type"] != "file" || got["data"] != "" {
+					t.Fatalf("empty binary file = %#v", got)
+				}
+				if _, ok := got["mediaType"]; ok {
+					t.Fatalf("mediaType should not be defaulted when absent, got %#v", got)
+				}
+			},
 		},
 		{
 			name: "invalid file - no data",
@@ -463,6 +496,49 @@ func TestVideoModel_EncodeVideoFile(t *testing.T) {
 				Type: "file",
 			},
 			wantErr: true,
+		},
+		{
+			// TS gateway-video-model.ts maybeEncodeVideoFile spreads the
+			// whole file object ({...file, data: base64(...)}), so
+			// providerOptions (and any other keys) survive encoding.
+			name: "URL file preserves providerOptions",
+			file: &provider.VideoModelV3File{
+				Type:            "url",
+				URL:             "https://example.com/image.jpg",
+				ProviderOptions: map[string]interface{}{"fal": map[string]interface{}{"enhanceImage": true}},
+			},
+			wantErr: false,
+			assert: func(t *testing.T, result interface{}) {
+				got := result.(map[string]interface{})
+				po, ok := got["providerOptions"].(map[string]interface{})
+				if !ok {
+					t.Fatalf("providerOptions missing from encoded url file = %#v", got)
+				}
+				fal, ok := po["fal"].(map[string]interface{})
+				if !ok || fal["enhanceImage"] != true {
+					t.Fatalf("providerOptions.fal = %#v", po["fal"])
+				}
+			},
+		},
+		{
+			name: "binary file preserves providerOptions",
+			file: &provider.VideoModelV3File{
+				Type:            "file",
+				Data:            []byte("test data"),
+				ProviderOptions: map[string]interface{}{"fal": map[string]interface{}{"enhanceImage": true}},
+			},
+			wantErr: false,
+			assert: func(t *testing.T, result interface{}) {
+				got := result.(map[string]interface{})
+				po, ok := got["providerOptions"].(map[string]interface{})
+				if !ok {
+					t.Fatalf("providerOptions missing from encoded binary file = %#v", got)
+				}
+				fal, ok := po["fal"].(map[string]interface{})
+				if !ok || fal["enhanceImage"] != true {
+					t.Fatalf("providerOptions.fal = %#v", po["fal"])
+				}
+			},
 		},
 	}
 
@@ -476,6 +552,9 @@ func TestVideoModel_EncodeVideoFile(t *testing.T) {
 
 			if !tt.wantErr && result == nil {
 				t.Error("encodeVideoFile() returned nil result")
+			}
+			if !tt.wantErr && tt.assert != nil {
+				tt.assert(t, result)
 			}
 		})
 	}
@@ -561,7 +640,7 @@ func TestGatewayVideoGenerationSSE_Integration(t *testing.T) {
 	}
 }
 
-// TestVideoModel_ModelIDHeader confirms the correct ai-model-id header is sent (not ai-video-model-id).
+// TestVideoModel_ModelIDHeader confirms the shared ai-model-id header is sent.
 func TestVideoModel_ModelIDHeader(t *testing.T) {
 	var capturedModelID string
 
@@ -592,29 +671,29 @@ func TestVideoModel_ModelIDHeader(t *testing.T) {
 	}
 }
 
-// TestVideoModel_ProviderOptionsAlwaysSent confirms providerOptions is always sent, even when empty.
-func TestVideoModel_ProviderOptionsAlwaysSent(t *testing.T) {
+// TestVideoModel_ProviderOptionsWireParity confirms providerOptions follows the TS spread behavior.
+func TestVideoModel_ProviderOptionsWireParity(t *testing.T) {
 	tests := []struct {
 		name            string
 		providerOptions map[string]interface{}
-		wantKey         string
+		wantPresent     bool
 	}{
 		{
 			name:            "empty provider options still sent",
 			providerOptions: map[string]interface{}{},
-			wantKey:         "providerOptions",
+			wantPresent:     true,
 		},
 		{
-			name:            "nil provider options still sent",
+			name:            "nil provider options omitted",
 			providerOptions: nil,
-			wantKey:         "providerOptions",
+			wantPresent:     false,
 		},
 		{
 			name: "non-empty provider options sent",
 			providerOptions: map[string]interface{}{
 				"fal": map[string]interface{}{"loop": true},
 			},
-			wantKey: "providerOptions",
+			wantPresent: true,
 		},
 	}
 
@@ -645,10 +724,50 @@ func TestVideoModel_ProviderOptionsAlwaysSent(t *testing.T) {
 				t.Fatalf("DoGenerate() error: %v", err)
 			}
 
-			if _, ok := capturedBody[tt.wantKey]; !ok {
-				t.Errorf("Expected request body to contain %q key, but it was absent. body: %v", tt.wantKey, capturedBody)
+			_, ok := capturedBody["providerOptions"]
+			if ok != tt.wantPresent {
+				t.Errorf("providerOptions presence = %v, want %v. body: %v", ok, tt.wantPresent, capturedBody)
 			}
 		})
+	}
+}
+
+func TestVideoModel_ZeroNumericOptionsWireParity(t *testing.T) {
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&capturedBody); err != nil {
+			t.Errorf("Failed to decode request body: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", `{"type":"result","videos":[{"type":"url","url":"https://example.com/v.mp4","mediaType":"video/mp4"}]}`)
+	}))
+	defer server.Close()
+
+	p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	zeroFloat := 0.0
+	zeroInt := 0
+	_, err = NewVideoModel(p, "google/veo-3.1").DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{
+		Prompt:   "",
+		N:        0,
+		Duration: &zeroFloat,
+		FPS:      &zeroInt,
+		Seed:     &zeroInt,
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate() error: %v", err)
+	}
+	if capturedBody["prompt"] != "" || capturedBody["n"] != float64(0) {
+		t.Fatalf("prompt and n should be sent unconditionally like TS: %v", capturedBody)
+	}
+	for _, key := range []string{"duration", "fps", "seed"} {
+		if _, ok := capturedBody[key]; ok {
+			t.Fatalf("%s=0 should be omitted to match TS truthy spread behavior: %v", key, capturedBody)
+		}
 	}
 }
 

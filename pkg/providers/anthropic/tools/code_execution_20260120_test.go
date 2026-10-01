@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -727,4 +728,49 @@ func TestParseExecutionResults_AllResultTypes(t *testing.T) {
 			assert.Equal(t, tt.wantType, result.GetResultType())
 		})
 	}
+}
+
+// Ports the intent of ai/packages/anthropic/src/tool/code-execution_20260120.ts's
+// experimental_toolCaller wiring (prepareProviderOptions appends
+// "code_execution_20260120" to providerOptions.anthropic.allowedCallers).
+func TestCodeExecution20260120_ToolCaller(t *testing.T) {
+	tool := CodeExecution20260120()
+	require.NotNil(t, tool.ExperimentalToolCaller)
+	assert.Equal(t, types.ToolCallerTypeProvider, tool.ExperimentalToolCaller.Type)
+
+	t.Run("adds allowedCallers to empty providerOptions", func(t *testing.T) {
+		out := tool.ExperimentalToolCaller.PrepareProviderOptions(nil)
+		anthropicOpts, ok := out["anthropic"].(map[string]interface{})
+		require.True(t, ok)
+		assert.Equal(t, []string{"code_execution_20260120"}, anthropicOpts["allowedCallers"])
+	})
+
+	t.Run("appends without duplicating and preserves other options", func(t *testing.T) {
+		in := map[string]interface{}{
+			"anthropic": map[string]interface{}{
+				"allowedCallers": []string{"code_execution_20260120", "direct"},
+				"other":          "keep",
+			},
+			"unrelated": "value",
+		}
+		out := tool.ExperimentalToolCaller.PrepareProviderOptions(in)
+		assert.Equal(t, "value", out["unrelated"])
+		anthropicOpts, ok := out["anthropic"].(map[string]interface{})
+		require.True(t, ok)
+		assert.Equal(t, "keep", anthropicOpts["other"])
+		assert.Equal(t, []string{"code_execution_20260120", "direct"}, anthropicOpts["allowedCallers"])
+	})
+
+	// TS: [...new Set([...existing, allowedCallerName])] -- existing
+	// entries keep their original order and the new caller is appended at
+	// the end, not prepended.
+	t.Run("appends the new caller after existing callers, not before", func(t *testing.T) {
+		in := map[string]interface{}{
+			"anthropic": map[string]interface{}{"allowedCallers": []string{"direct"}},
+		}
+		out := tool.ExperimentalToolCaller.PrepareProviderOptions(in)
+		anthropicOpts, ok := out["anthropic"].(map[string]interface{})
+		require.True(t, ok)
+		assert.Equal(t, []string{"direct", "code_execution_20260120"}, anthropicOpts["allowedCallers"])
+	})
 }

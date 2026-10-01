@@ -45,8 +45,8 @@ func main() {
 			Edits: []anthropic.ContextManagementEdit{
 				anthropic.NewClearToolUsesEdit().
 					WithInputTokensTrigger(10000). // Clear when > 10K tokens
-					WithKeepToolUses(3).            // Keep last 3 tool uses
-					WithClearAtLeast(5000),         // Clear at least 5K tokens
+					WithKeepToolUses(3).           // Keep last 3 tool uses
+					WithClearAtLeast(5000),        // Clear at least 5K tokens
 			},
 		},
 	})

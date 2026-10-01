@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"encoding/base64"
-	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -206,6 +205,21 @@ func TestConvertMCPResourceToAISDK_URIOnly(t *testing.T) {
 	assert.Equal(t, "https://example.com/document.pdf", textContent.Text)
 }
 
+func TestConvertMCPResourceLinkToAISDK(t *testing.T) {
+	results, err := ConvertMCPContentToAISDK([]ToolResultContent{{
+		Type:        "resource_link",
+		URI:         "file:///report.pdf",
+		Name:        "Quarterly report",
+		Description: "PDF report",
+		MimeType:    "application/pdf",
+	}})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	textContent, ok := results[0].(types.TextContent)
+	require.True(t, ok)
+	assert.JSONEq(t, `{"type":"resource_link","uri":"file:///report.pdf","name":"Quarterly report","description":"PDF report","mimeType":"application/pdf"}`, textContent.Text)
+}
+
 // Test converting mixed content (text + image)
 func TestConvertMCPContentToAISDK_MixedContent(t *testing.T) {
 	imageData := "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
@@ -277,7 +291,20 @@ func TestConvertMCPContentToAISDK_UnknownType(t *testing.T) {
 	// Should fall back to text content
 	textContent, ok := results[0].(types.TextContent)
 	require.True(t, ok)
-	assert.True(t, strings.Contains(textContent.Text, "Unknown content type"))
+	assert.JSONEq(t, `{"type":"unknown-type","text":"Some data"}`, textContent.Text)
+}
+
+func TestConvertMCPContentToAISDK_ImageMissingPropertiesFallsBackToJSONText(t *testing.T) {
+	results, err := ConvertMCPContentToAISDK([]ToolResultContent{{
+		Type: "image",
+		Data: "iVBORw0KGgo=",
+	}})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+
+	textContent, ok := results[0].(types.TextContent)
+	require.True(t, ok)
+	assert.JSONEq(t, `{"type":"image","data":"iVBORw0KGgo="}`, textContent.Text)
 }
 
 // Test that image conversion prevents token explosion

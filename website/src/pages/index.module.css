@@ -1,0 +1,6 @@
+/* Page-level wrapper for the landing page. Section styles live in
+   src/components/landing/landing.module.css so the components own them. */
+
+.main {
+  min-width: 0;
+}

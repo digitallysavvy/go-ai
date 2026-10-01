@@ -1,0 +1,32 @@
+---
+title: Agent UI Stream Helpers
+description: Reference for pkg/agent UI stream helper functions.
+---
+
+# Agent UI Stream Helpers
+
+These helper APIs live in `pkg/agent` and bridge `ToolLoopAgent` streams to UI transport-friendly forms.
+
+## `CreateAgentUIStream`
+
+```go
+func CreateAgentUIStream(ctx context.Context, agent *agent.ToolLoopAgent, opts agent.AgentStreamOptions) (<-chan ai.UIMessageChunk, <-chan error, error)
+```
+
+Creates UI message chunks from an agent stream.
+
+## `CreateAgentUIStreamResponse`
+
+```go
+func CreateAgentUIStreamResponse(ctx context.Context, agent *agent.ToolLoopAgent, opts agent.AgentStreamOptions) (*http.Response, error)
+```
+
+Returns a Server-Sent Events (`text/event-stream`) HTTP response for agent UI chunks.
+
+## `PipeAgentUIStreamToResponse`
+
+```go
+func PipeAgentUIStreamToResponse(ctx context.Context, agent *agent.ToolLoopAgent, opts agent.AgentStreamOptions, w io.Writer) error
+```
+
+Writes agent UI chunks to a writer as Server-Sent Events.

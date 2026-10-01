@@ -163,8 +163,8 @@ func detectLeaks() {
     printGoroutineCount("After stream start")
 
     // IMPORTANT: Consume the stream completely
-    for chunk := range stream.TextChannel {
-        fmt.Print(chunk)
+    for chunk := range stream.Chunks() {
+        fmt.Print(chunk.Text)
     }
 
     printGoroutineCount("After stream complete")
@@ -328,7 +328,7 @@ func debugStream(ctx context.Context, model interface{}, prompt string) error {
 
     log.Println("Waiting for chunks...")
 
-    for chunk := range stream.FullChannel {
+    for chunk := range stream.Chunks() {
         if chunkCount == 0 {
             firstChunkTime = time.Since(startTime)
             log.Printf("Time to first chunk: %v", firstChunkTime)
@@ -502,6 +502,10 @@ type MockLanguageModel struct {
     ErrorToReturn error
 }
 
+func int64Ptr(v int64) *int64 {
+    return &v
+}
+
 func (m *MockLanguageModel) Generate(ctx context.Context, messages []types.Message, options *provider.GenerateOptions) (*provider.GenerateResult, error) {
     if m.ShouldError {
         return nil, m.ErrorToReturn
@@ -510,42 +514,32 @@ func (m *MockLanguageModel) Generate(ctx context.Context, messages []types.Messa
     return &provider.GenerateResult{
         Text: m.Response,
         Usage: types.Usage{
-            PromptTokens:     10,
-            CompletionTokens: 20,
-            TotalTokens:      30,
+            InputTokens:  int64Ptr(10),
+            OutputTokens: int64Ptr(20),
+            TotalTokens:  int64Ptr(30),
         },
         FinishReason: "stop",
     }, nil
 }
 
-func (m *MockLanguageModel) Stream(ctx context.Context, messages []types.Message, options *provider.GenerateOptions) (*provider.StreamResult, error) {
-    // Mock streaming implementation
-    textChan := make(chan string)
-    fullChan := make(chan provider.StreamChunk)
+func (m *MockLanguageModel) DoStream(ctx context.Context, options *provider.GenerateOptions) (provider.TextStream, error) {
+    if m.ShouldError {
+        return nil, m.ErrorToReturn
+    }
 
-    go func() {
-        defer close(textChan)
-        defer close(fullChan)
+    chunks := make([]provider.StreamChunk, 0, len(m.Response)+1)
+    for _, char := range m.Response {
+        chunks = append(chunks, provider.StreamChunk{
+            Type: provider.ChunkTypeText,
+            Text: string(char),
+        })
+    }
+    chunks = append(chunks, provider.StreamChunk{
+        Type:         provider.ChunkTypeFinish,
+        FinishReason: types.FinishReasonStop,
+    })
 
-        if m.ShouldError {
-            return
-        }
-
-        // Send mock chunks
-        for _, char := range m.Response {
-            chunk := string(char)
-            textChan <- chunk
-            fullChan <- provider.StreamChunk{
-                Type: provider.ChunkTypeText,
-                Text: chunk,
-            }
-        }
-    }()
-
-    return &provider.StreamResult{
-        TextChannel: textChan,
-        FullChannel: fullChan,
-    }, nil
+    return testutil.NewMockTextStream(chunks), nil
 }
 
 func TestGeneration(t *testing.T) {

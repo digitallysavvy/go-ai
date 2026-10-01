@@ -43,7 +43,8 @@ func (m *mockLanguageModelForRetention) DoStream(ctx context.Context, opts *prov
 	return nil, nil
 }
 
-// TestRetentionSettings_Default tests that nil retention retains everything
+// TestRetentionSettings_Default tests that nil retention follows the stable
+// TypeScript include defaults and excludes large bodies.
 func TestRetentionSettings_Default(t *testing.T) {
 	ctx := context.Background()
 
@@ -59,12 +60,11 @@ func TestRetentionSettings_Default(t *testing.T) {
 		t.Fatalf("GenerateText failed: %v", err)
 	}
 
-	// Both request and response should be retained by default
-	if result.RawRequest == nil {
-		t.Error("Expected RawRequest to be retained by default, but it was nil")
+	if result.RawRequest != nil {
+		t.Error("Expected RawRequest to be excluded by default")
 	}
-	if result.RawResponse == nil {
-		t.Error("Expected RawResponse to be retained by default, but it was nil")
+	if result.RawResponse != nil {
+		t.Error("Expected RawResponse to be excluded by default")
 	}
 }
 
@@ -193,30 +193,31 @@ func TestRetentionSettings_ExplicitRetain(t *testing.T) {
 	}
 }
 
-// TestRetentionSettings_BackwardsCompatibility tests that existing code still works
-func TestRetentionSettings_BackwardsCompatibility(t *testing.T) {
+func TestIncludeOptions_ExplicitRetain(t *testing.T) {
 	ctx := context.Background()
 
 	model := &mockLanguageModelForRetention{}
 
-	// Old code without ExperimentalRetention should work unchanged
 	result, err := GenerateText(ctx, GenerateTextOptions{
 		Model:       model,
 		Prompt:      "test",
 		Temperature: floatPtr(0.7),
 		MaxTokens:   intPtr(100),
+		Include: &IncludeOptions{
+			RequestBody:  true,
+			ResponseBody: true,
+		},
 	})
 
 	if err != nil {
 		t.Fatalf("GenerateText failed: %v", err)
 	}
 
-	// Everything should be retained by default
 	if result.RawRequest == nil {
-		t.Error("Expected RawRequest to be retained for backwards compatibility")
+		t.Error("Expected RawRequest to be retained with Include.RequestBody")
 	}
 	if result.RawResponse == nil {
-		t.Error("Expected RawResponse to be retained for backwards compatibility")
+		t.Error("Expected RawResponse to be retained with Include.ResponseBody")
 	}
 	if result.Text == "" {
 		t.Error("Expected Text to be present")

@@ -3,12 +3,13 @@ package fireworks
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
@@ -64,11 +65,17 @@ func (m *LanguageModel) SupportsImageInput() bool {
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
 	reqBody := m.buildRequestBody(opts, false)
 	var response fireworksResponse
-	err := m.provider.client.PostJSON(ctx, "/v1/chat/completions", reqBody, &response)
+	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+		Method: http.MethodPost,
+		Path:   "/v1/chat/completions",
+		Body:   reqBody,
+	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	return m.convertResponse(response), nil
+	result := m.convertResponse(response)
+	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	return result, nil
 }
 
 // DoStream performs streaming text generation
@@ -85,18 +92,27 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	return newFireworksStream(httpResp.Body), nil
+	stream := newFireworksStream(httpResp.Body)
+	stream.SetRequestBody(reqBody)
+	return providerutils.WithResponseMetadata(stream, httpResp.Header, m.ModelID()), nil
 }
 
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
 	body := map[string]interface{}{
-		"model":  m.modelID,
-		"stream": stream,
+		"model": m.modelID,
 	}
+	if stream {
+		body["stream"] = true
+		body["stream_options"] = map[string]interface{}{"include_usage": true}
+	}
+	// AllowVideo: true -- Fireworks wraps @ai-sdk/openai-compatible's
+	// OpenAICompatibleChatLanguageModel in TS, which supports video_url
+	// content parts (7dd9ec320c).
+	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{AllowVideo: true}
 	if opts.Prompt.IsMessages() {
-		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages)
+		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, toOpenAIMessagesOpts)
 	} else if opts.Prompt.IsSimple() {
-		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text))
+		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text), toOpenAIMessagesOpts)
 	}
 	if opts.Prompt.System != "" {
 		messages := body["messages"].([]map[string]interface{})
@@ -124,53 +140,94 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(opts.ToolChoice)
 		}
 	}
-	if opts.ResponseFormat != nil {
-		body["response_format"] = map[string]interface{}{
-			"type": opts.ResponseFormat.Type,
-		}
+	// Response format (TS openai-compatible chat model with
+	// supportsStructuredOutputs: true): json_schema when a schema is present,
+	// strictJsonSchema (default true) from the fireworks provider options.
+	fireworksOptions, _ := providerutils.ResolveOpenAICompatibleProviderOptions("fireworks", opts.ProviderOptions)
+	if format, _ := providerutils.ChatResponseFormat(opts.ResponseFormat, providerutils.ChatResponseFormatOptions{
+		StructuredOutputs: true,
+		StrictJSONSchema:  providerutils.BoolOption(fireworksOptions, "strictJsonSchema", true),
+	}); format != nil {
+		body["response_format"] = format
 	}
 	// Map top-level Reasoning to Fireworks reasoning_effort.
-	// none and provider-default → omit (Fireworks passes through the raw level string
-	// and only accepts supported values; none is excluded at the base layer).
-	// minimal/low → "low", medium → "medium", high/xhigh → "high".
-	if opts.Reasoning != nil {
+	// TS (openai-compatible-chat-language-model.ts:310-312): reasoning_effort
+	// is `compatibleOptions.reasoningEffort ?? (isCustomReasoning(reasoning)
+	// ? reasoning : undefined)` -- an explicit providerOptions.fireworks.
+	// reasoningEffort always wins over the unified Reasoning field.
+	// isCustomReasoning excludes only undefined/'provider-default', NOT
+	// 'none', so 'none' is forwarded as "none", not omitted. Fireworks' own
+	// transformRequestBody then remaps only minimal→low and xhigh→high,
+	// passing every other value (including an override with an
+	// unrecognized/custom string) straight through
+	// (fireworks-provider.ts:169-177).
+	reasoningEffort, hasReasoningEffort := providerutils.OpenAICompatibleStringOption(fireworksOptions, "reasoningEffort")
+	if !hasReasoningEffort && opts.Reasoning != nil {
 		switch *opts.Reasoning {
-		case types.ReasoningMinimal, types.ReasoningLow:
-			body["reasoning_effort"] = "low"
+		case types.ReasoningNone:
+			reasoningEffort, hasReasoningEffort = "none", true
+		case types.ReasoningMinimal:
+			reasoningEffort, hasReasoningEffort = "minimal", true
+		case types.ReasoningLow:
+			reasoningEffort, hasReasoningEffort = "low", true
 		case types.ReasoningMedium:
-			body["reasoning_effort"] = "medium"
-		case types.ReasoningHigh, types.ReasoningXHigh:
-			body["reasoning_effort"] = "high"
-		// ReasoningNone and ReasoningDefault: omit
+			reasoningEffort, hasReasoningEffort = "medium", true
+		case types.ReasoningHigh:
+			reasoningEffort, hasReasoningEffort = "high", true
+		case types.ReasoningXHigh:
+			reasoningEffort, hasReasoningEffort = "xhigh", true
+			// ReasoningDefault: omit
+		}
+	}
+	if hasReasoningEffort {
+		switch reasoningEffort {
+		case "minimal":
+			reasoningEffort = "low"
+		case "xhigh":
+			reasoningEffort = "high"
+		}
+		body["reasoning_effort"] = reasoningEffort
+	}
+
+	// Fireworks-specific options (providerOptions.fireworks; TS
+	// fireworksLanguageModelOptions/fireworks-provider.ts's
+	// transformRequestBody). All of these previously read from
+	// opts.ProviderOptions[...] directly (the top-level namespace) instead of
+	// the "fireworks" provider-options namespace resolved above, so they were
+	// silently ignored whenever a caller correctly namespaced them under
+	// providerOptions.fireworks.
+	if thinking, ok := fireworksOptions["thinking"].(map[string]interface{}); ok {
+		thinkingBody := make(map[string]interface{})
+
+		if thinkingType, ok := thinking["type"].(string); ok {
+			thinkingBody["type"] = thinkingType
+		}
+
+		// Convert budgetTokens (camelCase) to budget_tokens (snake_case)
+		if budgetTokens, ok := providerutils.OpenAICompatibleIntOption(thinking, "budgetTokens"); ok {
+			thinkingBody["budget_tokens"] = budgetTokens
+		}
+
+		if len(thinkingBody) > 0 {
+			body["thinking"] = thinkingBody
 		}
 	}
 
-	// Handle Fireworks-specific options (thinking and reasoning for Kimi K2.5)
-	if opts.ProviderOptions != nil {
-		// Extract thinking options
-		if thinking, ok := opts.ProviderOptions["thinking"].(map[string]interface{}); ok {
-			thinkingBody := make(map[string]interface{})
+	// Extract reasoningHistory and convert to snake_case (reasoning_history)
+	if reasoningHistory, ok := providerutils.OpenAICompatibleStringOption(fireworksOptions, "reasoningHistory"); ok {
+		body["reasoning_history"] = reasoningHistory
+	}
 
-			if thinkingType, ok := thinking["type"].(string); ok {
-				thinkingBody["type"] = thinkingType
-			}
+	// A stable key for routing requests with shared prompt prefixes to the
+	// same prompt cache.
+	if promptCacheKey, ok := providerutils.OpenAICompatibleStringOption(fireworksOptions, "promptCacheKey"); ok {
+		body["prompt_cache_key"] = promptCacheKey
+	}
 
-			// Convert budgetTokens (camelCase) to budget_tokens (snake_case)
-			if budgetTokens, ok := thinking["budgetTokens"].(int); ok {
-				thinkingBody["budget_tokens"] = budgetTokens
-			} else if budgetTokens, ok := thinking["budgetTokens"].(float64); ok {
-				thinkingBody["budget_tokens"] = int(budgetTokens)
-			}
-
-			if len(thinkingBody) > 0 {
-				body["thinking"] = thinkingBody
-			}
-		}
-
-		// Extract reasoningHistory and convert to snake_case (reasoning_history)
-		if reasoningHistory, ok := opts.ProviderOptions["reasoningHistory"].(string); ok {
-			body["reasoning_history"] = reasoningHistory
-		}
+	// Fireworks Priority serving path for higher reliability during peak
+	// traffic.
+	if serviceTier, ok := providerutils.OpenAICompatibleStringOption(fireworksOptions, "serviceTier"); ok {
+		body["service_tier"] = serviceTier
 	}
 
 	return body
@@ -185,10 +242,11 @@ func (m *LanguageModel) convertResponse(response fireworksResponse) *types.Gener
 	}
 	choice := response.Choices[0]
 	result := &types.GenerateResult{
-		Text:         choice.Message.Content,
-		FinishReason: providerutils.MapOpenAIFinishReason(choice.FinishReason),
-		Usage:        convertFireworksUsage(response.Usage),
-		RawResponse:  response,
+		Text:            choice.Message.Content,
+		FinishReason:    providerutils.MapOpenAIFinishReason(choice.FinishReason),
+		RawFinishReason: choice.FinishReason,
+		Usage:           convertFireworksUsage(response.Usage),
+		RawResponse:     response,
 	}
 	if choice.Message.ReasoningContent != "" {
 		result.Content = append(result.Content, types.ReasoningContent{Text: choice.Message.ReasoningContent})
@@ -211,7 +269,19 @@ func (m *LanguageModel) convertResponse(response fireworksResponse) *types.Gener
 }
 
 func (m *LanguageModel) handleError(err error) error {
-	return providererrors.NewProviderError("fireworks", 0, "", err.Error(), err)
+	if parsed := parseFireworksProviderError(err); parsed != nil {
+		return parsed
+	}
+	// TS createJsonErrorResponseHandler always sets statusCode: response.status
+	// even in its catch-all branch; preserve the real HTTP status here too
+	// instead of hardcoding 0 (which several retry-classification paths treat
+	// as "unknown", i.e. retryable).
+	statusCode := 0
+	var statusErr *internalhttp.HTTPStatusError
+	if errors.As(err, &statusErr) {
+		statusCode = statusErr.StatusCode
+	}
+	return providererrors.NewProviderError("fireworks", statusCode, "", err.Error(), err)
 }
 
 // convertFireworksUsage converts Fireworks usage to detailed Usage struct
@@ -275,7 +345,6 @@ func convertFireworksUsage(usage fireworksUsage) types.Usage {
 	return result
 }
 
-
 type fireworksResponse struct {
 	ID      string `json:"id"`
 	Object  string `json:"object"`
@@ -303,9 +372,9 @@ type fireworksResponse struct {
 
 // fireworksUsage represents Fireworks usage information with detailed token tracking
 type fireworksUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens        int `json:"prompt_tokens"`
+	CompletionTokens    int `json:"completion_tokens"`
+	TotalTokens         int `json:"total_tokens"`
 	PromptTokensDetails *struct {
 		CachedTokens *int `json:"cached_tokens,omitempty"`
 		AudioTokens  *int `json:"audio_tokens,omitempty"`

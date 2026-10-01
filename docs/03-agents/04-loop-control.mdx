@@ -86,8 +86,8 @@ Return a non-empty string to stop, or an empty string to continue.
 // Because evaluation is eager (all conditions run before the first match is
 // returned), this condition fires even if StepCountIs would also match.
 tokenBudget := func(state ai.StopConditionState) string {
-    if state.Usage.TotalTokens != nil && *state.Usage.TotalTokens > 5000 {
-        return fmt.Sprintf("token budget exceeded (%d tokens)", *state.Usage.TotalTokens)
+    if state.Usage.GetTotalTokens() > 5000 {
+        return fmt.Sprintf("token budget exceeded (%d tokens)", state.Usage.GetTotalTokens())
     }
     return ""
 }

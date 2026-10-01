@@ -1,0 +1,118 @@
+package gateway
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"time"
+
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+)
+
+// SpeechModel implements the provider.SpeechModel interface for AI Gateway.
+type SpeechModel struct {
+	provider *Provider
+	modelID  string
+}
+
+// NewSpeechModel creates a new AI Gateway speech model.
+func NewSpeechModel(provider *Provider, modelID string) *SpeechModel {
+	return &SpeechModel{provider: provider, modelID: modelID}
+}
+
+func (m *SpeechModel) SpecificationVersion() string { return "v4" }
+func (m *SpeechModel) Provider() string             { return "gateway" }
+func (m *SpeechModel) ModelID() string              { return m.modelID }
+
+// DoGenerate generates speech via the Gateway speech-model endpoint.
+func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGenerateOptions) (*types.SpeechResult, error) {
+	if opts == nil {
+		opts = &provider.SpeechGenerateOptions{}
+	}
+	body := map[string]interface{}{
+		"text": opts.Text,
+	}
+	if opts.Voice != "" {
+		body["voice"] = opts.Voice
+	}
+	if opts.OutputFormat != "" {
+		body["outputFormat"] = opts.OutputFormat
+	}
+	if opts.Instructions != "" {
+		body["instructions"] = opts.Instructions
+	}
+	if opts.Speed != nil {
+		body["speed"] = *opts.Speed
+	}
+	if opts.Language != "" {
+		body["language"] = opts.Language
+	}
+	if opts.ProviderOptions != nil {
+		body["providerOptions"] = opts.ProviderOptions
+	}
+
+	headers := m.getModelConfigHeaders()
+	AddO11yHeaders(headers, GetO11yHeaders(ctx))
+	headers = internalhttp.MergeHeaders(headers, opts.Headers)
+
+	var response gatewaySpeechResponse
+	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+		Method:  http.MethodPost,
+		Path:    "/speech-model",
+		Body:    body,
+		Headers: headers,
+	}, &response)
+	if err != nil {
+		return nil, (&LanguageModel{provider: m.provider, modelID: m.modelID}).handleErrorWithContext(ctx, err)
+	}
+
+	audio, err := base64.StdEncoding.DecodeString(response.Audio)
+	if err != nil {
+		return nil, err
+	}
+	responseBody, err := parseGatewaySpeechRawBody(httpResp.Body)
+	if err != nil {
+		return nil, err
+	}
+	warnings := response.Warnings
+	if warnings == nil {
+		warnings = []types.Warning{}
+	}
+	return &types.SpeechResult{
+		Audio:            audio,
+		Warnings:         warnings,
+		ProviderMetadata: response.ProviderMetadata,
+		Response: &types.ResponseMetadata{
+			Timestamp: time.Now(),
+			ModelID:   m.modelID,
+			Headers:   providerutils.ExtractHeaders(httpResp.Headers),
+			Body:      responseBody,
+		},
+	}, nil
+}
+
+func (m *SpeechModel) getModelConfigHeaders() map[string]string {
+	return map[string]string{
+		"ai-speech-model-specification-version": "4",
+		"ai-model-id":                           m.modelID,
+	}
+}
+
+type gatewaySpeechResponse struct {
+	Audio            string                 `json:"audio"`
+	Warnings         []types.Warning        `json:"warnings,omitempty"`
+	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
+}
+
+func parseGatewaySpeechRawBody(body []byte) (interface{}, error) {
+	var raw interface{}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("failed to parse Gateway speech response metadata: %w", err)
+	}
+	return raw, nil
+}

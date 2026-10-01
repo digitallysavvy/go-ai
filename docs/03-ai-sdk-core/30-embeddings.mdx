@@ -9,7 +9,7 @@ Embeddings are a way to represent words, phrases, or images as vectors in a high
 
 ## Embedding a Single Value
 
-The Go AI SDK provides the [`ai.Embed()`](../07-reference/ai/embed.md) function to embed single values, which is useful for tasks such as finding similar words or phrases or clustering text.
+The Go AI SDK provides the [`ai.Embed()`](../07-reference/ai/embed.mdx) function to embed single values, which is useful for tasks such as finding similar words or phrases or clustering text.
 
 ```go
 package main
@@ -48,7 +48,7 @@ func main() {
 
 When loading data, e.g. when preparing a data store for retrieval-augmented generation (RAG), it is often useful to embed many values at once (batch embedding).
 
-The Go AI SDK provides the [`ai.EmbedMany()`](../07-reference/ai/embed-many.md) function for this purpose.
+The Go AI SDK provides the [`ai.EmbedMany()`](../07-reference/ai/embed-many.mdx) function for this purpose.
 
 ```go
 package main
@@ -205,7 +205,7 @@ if err != nil {
     log.Fatal(err)
 }
 
-fmt.Printf("Tokens used: %d\n", result.Usage.Tokens)
+fmt.Printf("Tokens used: %d\n", result.Usage.GetTotalTokens())
 ```
 
 For `EmbedMany`:
@@ -219,7 +219,7 @@ if err != nil {
     log.Fatal(err)
 }
 
-fmt.Printf("Total tokens used: %d\n", result.Usage.Tokens)
+fmt.Printf("Total tokens used: %d\n", result.Usage.GetTotalTokens())
 ```
 
 ## Settings
@@ -235,6 +235,92 @@ result, err := ai.Embed(ctx, ai.EmbedOptions{
     ProviderOptions: map[string]interface{}{
         "openai": map[string]interface{}{
             "dimensions": 512, // Reduce embedding dimensions
+        },
+    },
+})
+```
+
+### Google Multimodal Embeddings
+
+Google embedding models accept AI SDK-compatible provider options under the `"google"` key. `google.GoogleEmbeddingProviderOptions` supports `TaskType`, `OutputDimensionality`, and multimodal `Content` entries for each embedded value.
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/google"
+)
+
+func main() {
+    ctx := context.Background()
+
+    provider := google.New(google.Config{APIKey: os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY")})
+    embeddingModel, _ := provider.EmbeddingModel(google.EmbeddingModelGeminiEmbedding001)
+
+    dimensions := 768
+    result, err := ai.Embed(ctx, ai.EmbedOptions{
+        Model: embeddingModel,
+        Input: "retrieval document about mountain weather",
+        ProviderOptions: map[string]interface{}{
+            "google": google.GoogleEmbeddingProviderOptions{
+                TaskType:             "RETRIEVAL_DOCUMENT",
+                OutputDimensionality: &dimensions,
+            },
+        },
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("Embedding dimensions: %d\n", len(result.Embedding))
+}
+```
+
+Use `Content` for per-value multimodal input. This matches the TypeScript SDK `providerOptions.google.content` behavior and is validated to have the same length as the embedded values.
+
+```go
+result, err := ai.Embed(ctx, ai.EmbedOptions{
+    Model: embeddingModel,
+    Input: "summarize the attached document for retrieval",
+    ProviderOptions: map[string]interface{}{
+        "google": google.GoogleEmbeddingProviderOptions{
+            TaskType: "RETRIEVAL_DOCUMENT",
+            Content: [][]google.EmbeddingPart{
+                {
+                    google.FileDataEmbeddingPart{
+                        MimeType: "application/pdf",
+                        FileURI:  "files/abc123",
+                    },
+                },
+            },
+        },
+    },
+})
+```
+
+For batch embeddings, provide one `Content` entry for each input value. Nil entries are text-only:
+
+```go
+result, err := ai.EmbedMany(ctx, ai.EmbedManyOptions{
+    Model:  embeddingModel,
+    Inputs: []string{"first document", "second document"},
+    ProviderOptions: map[string]interface{}{
+        "google": google.GoogleEmbeddingProviderOptions{
+            Content: [][]google.EmbeddingPart{
+                nil,
+                {
+                    google.FileDataEmbeddingPart{
+                        MimeType: "application/pdf",
+                        FileURI:  "files/abc123",
+                    },
+                },
+            },
         },
     },
 })
@@ -429,7 +515,7 @@ func main() {
 Group similar texts together:
 
 ```go
-func clusterTexts(ctx context.Context, texts []string, embeddingModel ai.EmbeddingModel, threshold float64) [][]int {
+func clusterTexts(ctx context.Context, texts []string, embeddingModel provider.EmbeddingModel, threshold float64) [][]int {
     // Embed all texts
     result, _ := ai.EmbedMany(ctx, ai.EmbedManyOptions{
         Model:  embeddingModel,
@@ -478,7 +564,7 @@ func clusterTexts(ctx context.Context, texts []string, embeddingModel ai.Embeddi
 Combine embeddings with text generation:
 
 ```go
-func answerWithRAG(ctx context.Context, query string, documents []Document, model ai.LanguageModel, embeddingModel ai.EmbeddingModel) (string, error) {
+func answerWithRAG(ctx context.Context, query string, documents []Document, model provider.LanguageModel, embeddingModel provider.EmbeddingModel) (string, error) {
     // Embed query
     queryResult, err := ai.Embed(ctx, ai.EmbedOptions{
         Model: embeddingModel,
@@ -537,7 +623,7 @@ Several providers offer embedding models:
 | **OpenAI** | `text-embedding-3-small` | 1536 |
 | **OpenAI** | `text-embedding-ada-002` | 1536 |
 | **Google** | `gemini-embedding-001` | 3072 |
-| **Google** | `text-embedding-004` | 768 |
+| **Google** | `gemini-embedding-2-preview` | Provider-defined |
 | **Mistral** | `mistral-embed` | 1024 |
 | **Cohere** | `embed-english-v3.0` | 1024 |
 | **Cohere** | `embed-multilingual-v3.0` | 1024 |
@@ -554,7 +640,7 @@ openaiProvider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
 openaiModel, _ := openaiProvider.EmbeddingModel("text-embedding-3-small")
 
 // Google
-googleProvider := google.New(google.Config{APIKey: os.Getenv("GOOGLE_API_KEY")})
+googleProvider := google.New(google.Config{APIKey: os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY")})
 googleModel, _ := googleProvider.EmbeddingModel("gemini-embedding-001")
 
 // Mistral
@@ -575,7 +661,7 @@ result, _ := ai.Embed(ctx, ai.EmbedOptions{
 Process large datasets efficiently:
 
 ```go
-func embedLargeDataset(ctx context.Context, texts []string, embeddingModel ai.EmbeddingModel, batchSize int) ([][]float64, error) {
+func embedLargeDataset(ctx context.Context, texts []string, embeddingModel provider.EmbeddingModel, batchSize int) ([][]float64, error) {
     var allEmbeddings [][]float64
 
     for i := 0; i < len(texts); i += batchSize {
@@ -626,7 +712,7 @@ func (c *EmbeddingCache) Set(text string, embedding []float64) {
     c.cache[text] = embedding
 }
 
-func (c *EmbeddingCache) EmbedWithCache(ctx context.Context, text string, model ai.EmbeddingModel) ([]float64, error) {
+func (c *EmbeddingCache) EmbedWithCache(ctx context.Context, text string, model provider.EmbeddingModel) ([]float64, error) {
     // Check cache first
     if embedding, ok := c.Get(text); ok {
         return embedding, nil
@@ -662,14 +748,14 @@ func (c *EmbeddingCache) EmbedWithCache(ctx context.Context, text string, model 
 
 ## Next Steps
 
-- Learn about [Reranking](./06-reranking.md)
-- Explore [RAG Patterns](../06-advanced/01-prompt-engineering.md)
-- See [Embedding Examples](../examples/05-embeddings.md)
+- Learn about [Reranking](./31-reranking.mdx)
+- Explore [RAG Patterns](../06-advanced/01-prompt-engineering.mdx)
+- See [Embedding Examples](https://github.com/digitallysavvy/go-ai/tree/main/examples)
 
 ## See Also
 
-- [Similarity Functions](../07-reference/ai/similarity-functions.md)
-- [Providers](../providers/01-overview.md)
-- [Middleware](./11-middleware.md)
-- [API Reference: Embed](../07-reference/ai/embed.md)
-- [API Reference: EmbedMany](../07-reference/ai/embed-many.md)
+- [Similarity Functions](../07-reference/ai/cosine-similarity.mdx)
+- [Providers](../05-providers/01-overview.mdx)
+- [Middleware](./40-middleware.mdx)
+- [API Reference: Embed](../07-reference/ai/embed.mdx)
+- [API Reference: EmbedMany](../07-reference/ai/embed-many.mdx)

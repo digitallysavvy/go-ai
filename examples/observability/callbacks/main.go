@@ -18,10 +18,10 @@ import (
 // Structured callbacks fire at each lifecycle stage of generation:
 //   - OnStart:           once, before any LLM request
 //   - OnStepStart:       once per step (LLM call)
-//   - OnToolCallStart:   once per tool, before execution
-//   - OnToolCallFinish:  once per tool, after execution (success or error)
-//   - OnStepFinish:      once per step, after all tools for that step run
-//   - OnFinish:          once, after all steps complete
+//   - OnToolExecutionStart: once per tool, before execution
+//   - OnToolExecutionEnd:   once per tool, after execution (success or error)
+//   - OnStepEnd:         once per step, after all tools for that step run
+//   - OnEnd:             once, after all steps complete
 //
 // Usage:
 //
@@ -66,6 +66,11 @@ func main() {
 	// metrics library, tracing SDK (OpenTelemetry, Datadog, etc.), or
 	// structured logger (zap, slog, etc.).
 	start := time.Now()
+	// currentStep tracks the step number for the tool-execution callbacks:
+	// OnToolCallStartEvent/OnToolCallFinishEvent no longer carry StepNumber
+	// (removed from the TypeScript event), so it's correlated here from the
+	// most recent OnStepStart instead.
+	currentStep := 0
 
 	ctx := context.Background()
 
@@ -78,30 +83,31 @@ func main() {
 
 		OnStart: func(_ context.Context, e ai.OnStartEvent) {
 			log.Printf("[OnStart] provider=%s model=%s prompt=%q tools=%d",
-				e.ModelProvider, e.ModelID, e.Prompt, len(e.Tools))
+				e.Provider, e.ModelID, e.Prompt, len(e.Tools))
 		},
 
 		OnStepStart: func(_ context.Context, e ai.OnStepStartEvent) {
+			currentStep = e.StepNumber
 			log.Printf("[OnStepStart] step=%d messages=%d",
 				e.StepNumber, len(e.Messages))
 		},
 
-		OnToolCallStart: func(_ context.Context, e ai.OnToolCallStartEvent) {
-			log.Printf("[OnToolCallStart] step=%d tool=%s id=%s args=%v",
-				e.StepNumber, e.ToolName, e.ToolCallID, e.Args)
+		OnToolExecutionStart: func(_ context.Context, e ai.OnToolCallStartEvent) {
+			log.Printf("[OnToolExecutionStart] step=%d tool=%s id=%s args=%v",
+				currentStep, e.ToolName, e.ToolCallID, e.ToolCall.Arguments)
 		},
 
-		OnToolCallFinish: func(_ context.Context, e ai.OnToolCallFinishEvent) {
-			if e.Error != nil {
-				log.Printf("[OnToolCallFinish] step=%d tool=%s ERROR: %v",
-					e.StepNumber, e.ToolName, e.Error)
+		OnToolExecutionEnd: func(_ context.Context, e ai.OnToolCallFinishEvent) {
+			if e.ToolOutput.Error != nil {
+				log.Printf("[OnToolExecutionEnd] step=%d tool=%s ERROR: %v",
+					currentStep, e.ToolName, e.ToolOutput.Error)
 				return
 			}
-			log.Printf("[OnToolCallFinish] step=%d tool=%s result=%v",
-				e.StepNumber, e.ToolName, e.Result)
+			log.Printf("[OnToolExecutionEnd] step=%d tool=%s result=%v",
+				currentStep, e.ToolName, e.ToolOutput.Result)
 		},
 
-		OnStepFinishEvent: func(_ context.Context, e ai.OnStepFinishEvent) {
+		OnStepEndEvent: func(_ context.Context, e ai.OnStepFinishEvent) {
 			inputTok := int64(0)
 			if e.Usage.InputTokens != nil {
 				inputTok = *e.Usage.InputTokens
@@ -114,7 +120,7 @@ func main() {
 				e.StepNumber, e.FinishReason, len(e.ToolCalls), inputTok, outputTok)
 		},
 
-		OnFinishEvent: func(_ context.Context, e ai.OnFinishEvent) {
+		OnEndEvent: func(_ context.Context, e ai.OnFinishEvent) {
 			totalTok := int64(0)
 			if e.TotalUsage.TotalTokens != nil {
 				totalTok = *e.TotalUsage.TotalTokens

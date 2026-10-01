@@ -62,68 +62,151 @@ export COHERE_API_KEY=...
 
 ## Provider-Specific Features
 
+### Vision Input (Image Parts)
+
+Cohere chat models support image input in user messages.
+
+```go
+prompt := types.Prompt{
+  Messages: []types.Message{
+    {
+      Role: types.RoleUser,
+      Content: []types.ContentPart{
+        types.TextContent{Text: "Describe this image"},
+        types.FileContent{
+          FileData: types.FileData{
+            Type:      types.FileDataTypeURL,
+            URL:       "https://example.com/cat.png",
+            MediaType: "image/png",
+          },
+        },
+      },
+    },
+  },
+}
+result, err := model.DoGenerate(ctx, &provider.GenerateOptions{Prompt: prompt})
+```
+
 ### RAG Optimization
 
 Cohere models are optimized for retrieval-augmented generation:
 
 ```go
-documents := []ai.Document{
-    {Content: "Go was created at Google in 2007", Metadata: map[string]string{"source": "wiki"}},
-    {Content: "Go is known for concurrency support", Metadata: map[string]string{"source": "docs"}},
-}
-
-result, err := ai.GenerateText(model,
-    "Who created Go?",
-    ai.WithDocuments(documents...),
-)
-
-// Response includes citations
-for _, citation := range result.Citations {
-    fmt.Printf("Source: %s\n", citation.DocumentID)
-}
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Messages: []types.Message{
+        {
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.FileContent{
+                    Data:      []byte("Go was created at Google in 2007"),
+                    MediaType: "text/plain",
+                },
+                types.TextContent{Text: "Who created Go?"},
+            },
+        },
+    },
+})
 ```
 
 ### Tool Use
 
+Tool calling, `TopP`/`TopK`/penalties/`Seed`/`StopSequences`, and JSON
+`response_format` are all forwarded to Cohere's v2 chat API:
+
 ```go
-searchTool := ai.Tool{
-    Type: "function",
-    Function: ai.FunctionDefinition{
-        Name: "search_products",
-        Description: "Search product database",
-        Parameters: map[string]interface{}{
-            "type": "object",
-            "properties": map[string]interface{}{
-                "query": map[string]string{"type": "string"},
-            },
-            "required": []string{"query"},
+searchTool := types.Tool{
+    Name:        "search_products",
+    Description: "Search product database",
+    Parameters: map[string]interface{}{
+        "type": "object",
+        "properties": map[string]interface{}{
+            "query": map[string]string{"type": "string"},
         },
+        "required": []string{"query"},
     },
 }
 
-result, err := ai.GenerateText(model,
-    "Find laptop under $1000",
-    ai.WithTools(searchTool),
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Find laptop under $1000",
+    Tools:  []types.Tool{searchTool},
+})
+
+for _, call := range result.ToolCalls {
+    fmt.Printf("Tool: %s Args: %v\n", call.ToolName, call.Arguments)
+}
 ```
+
+`providerOptions.cohere.thinking` takes precedence over the standardized
+`Reasoning` call option when both are set. Unsupported provider-defined
+tools produce warnings instead of being silently dropped.
+
+### Structured Output
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Extract the person's name and age from: John is 30.",
+    ResponseFormat: &provider.ResponseFormat{
+        Type: "json",
+        Schema: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "name": map[string]string{"type": "string"},
+                "age":  map[string]string{"type": "integer"},
+            },
+            "required": []string{"name", "age"},
+        },
+    },
+})
+```
+
+### Citations
+
+`DoGenerate` (non-streaming) surfaces Cohere's inline citations as ordered
+`types.SourceContent` parts in `result.Content` (`SourceType: "document"`),
+with citation span, text, and source detail under
+`ProviderMetadata["cohere"]`. Streaming does not accumulate citations —
+Cohere's `citation-start` / `citation-end` stream events carry no payload to
+reconstruct them from.
+
+```go
+for _, part := range result.Content {
+    if source, ok := part.(types.SourceContent); ok {
+        fmt.Printf("Cited: %s\n", source.Title)
+    }
+}
+```
+
+`STOP_SEQUENCE` maps to `types.FinishReasonStop`.
 
 ### Reranking
 
 Improve search results with reranking:
 
 ```go
-reranker := cohere.NewReranker(cohere.RerankerConfig{
-    Model: "rerank-english-v3.0",
-})
+reranker, err := provider.RerankingModel("rerank-english-v3.0")
+if err != nil {
+    log.Fatal(err)
+}
 
-results := reranker.Rerank("machine learning", []string{
-    "ML is a subset of AI",
-    "Weather forecast for today",
-    "Neural networks learn patterns",
+topN := 2
+result, err := reranker.DoRerank(ctx, &provider.RerankOptions{
+    Query: "machine learning",
+    Documents: []string{
+        "ML is a subset of AI",
+        "Weather forecast for today",
+        "Neural networks learn patterns",
+    },
+    TopN: &topN,
 })
+if err != nil {
+    log.Fatal(err)
+}
 
-for i, result := range results {
-    fmt.Printf("%d. Score: %.2f - %s\n", i+1, result.Score, result.Text)
+for i, doc := range result.Ranking {
+    fmt.Printf("%d. Score: %.2f - Index: %d\n", i+1, doc.RelevanceScore, doc.Index)
 }
 ```
 
@@ -153,7 +236,7 @@ func main() {
         log.Fatal(err)
     }
 
-    result, err := ai.GenerateText(model, "Explain vector databases")
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: "Explain vector databases"})
     if err != nil {
         log.Fatal(err)
     }
@@ -177,14 +260,19 @@ docs := []string{
     "JavaScript runs in browsers",
 }
 
-docEmbeddings, err := ai.Embed(embeddingModel, docs...)
+docResult, err := ai.EmbedMany(ctx, ai.EmbedManyOptions{
+    Model:  embeddingModel,
+    Inputs: docs,
+})
 
 // Embed query
-query := "Tell me about Go programming"
-queryEmbedding, err := ai.Embed(embeddingModel, query)
+queryResult, err := ai.Embed(ctx, ai.EmbedOptions{
+    Model: embeddingModel,
+    Input: "Tell me about Go programming",
+})
 
 // Find most similar
-bestMatch := findMostSimilar(queryEmbedding[0], docEmbeddings)
+bestMatch := findMostSimilar(queryResult.Embedding, docResult.Embeddings)
 ```
 
 ## Best Practices
@@ -213,7 +301,40 @@ bestMatch := findMostSimilar(queryEmbedding[0], docEmbeddings)
 | Trial | 100 | 40K |
 | Production | 10K | 10M |
 
+## Workflow Serialization
+
+Cohere embedding models can cross a workflow boundary with
+`providerutils.SerializeModel` / `DeserializeModel` (language models could
+already be serialized). See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
+for the mechanism; reranking models are not yet serializable.
+
 ## See Also
 
 - [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
 - [Cohere API Documentation](https://docs.cohere.com)
+
+## May 2026 parity updates
+
+### Image input
+
+Cohere chat models support image input. Use `types.FileContent` for new code, or `types.ImageContent` for compatibility. Provider option `imageDetail` is forwarded when present under the `cohere` key.
+
+```go
+messages := []types.Message{{
+    Role: types.RoleUser,
+    Content: []types.ContentPart{
+        types.TextContent{Text: "What is in this image?"},
+        types.FileContent{
+            FileData: types.FileData{
+                Type:      types.FileDataTypeURL,
+                URL:       "https://example.com/image.png",
+                MediaType: "image/png",
+            },
+            ProviderOptions: map[string]interface{}{
+                "cohere": map[string]interface{}{"imageDetail": "auto"},
+            },
+        },
+    },
+}}
+```

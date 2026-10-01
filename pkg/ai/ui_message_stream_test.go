@@ -1,0 +1,2666 @@
+package ai
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"reflect"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/testutil"
+)
+
+func TestReadUIMessageStream_RoundTrip(t *testing.T) {
+	input := []byte("data: {\"type\":\"text\",\"value\":\"hi\"}\n\ndata: {\"type\":\"finish\"}\n\ndata: [DONE]\n\n")
+	chunks, err := ReadUIMessageStream(bytes.NewReader(input))
+	if err != nil {
+		t.Fatalf("ReadUIMessageStream() error = %v", err)
+	}
+	if len(chunks) != 2 || chunks[0]["type"] != "text" || chunks[1]["type"] != "finish" {
+		t.Fatalf("chunks = %#v", chunks)
+	}
+}
+
+func TestCreateUIMessageStream_OnStepEndTakesPrecedenceOverDeprecatedOnStepFinish(t *testing.T) {
+	var stepEndCalls int
+	var stepFinishCalls int
+	stream, errCh := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
+		Execute: func(writer UIMessageStreamWriter) {
+			writer.Write(UIMessageChunk{"type": "finish-step"})
+		},
+		OnStepEnd: func(event map[string]interface{}) {
+			stepEndCalls++
+		},
+		OnStepFinish: func(event map[string]interface{}) {
+			stepFinishCalls++
+		},
+	})
+	for range stream {
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("stream error = %v", err)
+	}
+	if stepEndCalls != 1 || stepFinishCalls != 0 {
+		t.Fatalf("callbacks: OnStepEnd=%d OnStepFinish=%d", stepEndCalls, stepFinishCalls)
+	}
+}
+
+func TestCreateUIMessageStream_OnStepEndRunsBeforeFinishStepChunk(t *testing.T) {
+	stepEndCalls := make(chan struct{}, 1)
+	stream, errCh := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
+		Execute: func(writer UIMessageStreamWriter) {
+			writer.Write(UIMessageChunk{"type": "finish-step"})
+		},
+		OnStepEnd: func(event map[string]interface{}) {
+			stepEndCalls <- struct{}{}
+		},
+	})
+
+	chunk, ok := <-stream
+	if !ok {
+		t.Fatal("stream closed before finish-step")
+	}
+	if chunk["type"] != "finish-step" {
+		t.Fatalf("chunk type = %v, want finish-step", chunk["type"])
+	}
+	select {
+	case <-stepEndCalls:
+	default:
+		t.Fatal("OnStepEnd had not run before finish-step chunk was observed")
+	}
+
+	for range stream {
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("stream error = %v", err)
+	}
+}
+
+func TestCreateUIMessageStream_OnEndTakesPrecedenceOverDeprecatedOnFinish(t *testing.T) {
+	var endCalls int
+	var finishCalls int
+	stream, errCh := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
+		Execute: func(writer UIMessageStreamWriter) {
+			writer.Write(UIMessageChunk{"type": "text-start", "id": "text-1"})
+			writer.Write(UIMessageChunk{"type": "text-delta", "id": "text-1", "delta": "Hello"})
+			writer.Write(UIMessageChunk{"type": "text-end", "id": "text-1"})
+		},
+		OnEnd: func(event map[string]interface{}) {
+			endCalls++
+			if event["isAborted"] != false {
+				t.Fatalf("isAborted = %v, want false", event["isAborted"])
+			}
+		},
+		OnFinish: func(event map[string]interface{}) {
+			finishCalls++
+		},
+		GenerateMessageID: func() string { return "response-message-id" },
+	})
+	for range stream {
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("stream error = %v", err)
+	}
+	if endCalls != 1 || finishCalls != 0 {
+		t.Fatalf("callbacks: OnEnd=%d OnFinish=%d", endCalls, finishCalls)
+	}
+}
+
+func TestToUIMessageStream_OnEndTakesPrecedenceOverDeprecatedOnFinish(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, ID: "text-1", Text: "Hello"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	})
+	var endCalls int
+	var finishCalls int
+	chunks, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{
+		GenerateMessageID: func() string { return "msg-123" },
+		OnEnd: func(event map[string]interface{}) {
+			endCalls++
+			if event["finishReason"] != types.FinishReasonStop {
+				t.Fatalf("finishReason = %v, want %s", event["finishReason"], types.FinishReasonStop)
+			}
+		},
+		OnFinish: func(event map[string]interface{}) {
+			finishCalls++
+		},
+	})
+	for range chunks {
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if endCalls != 1 || finishCalls != 0 {
+		t.Fatalf("callbacks: OnEnd=%d OnFinish=%d", endCalls, finishCalls)
+	}
+}
+
+func TestPipeUIMessageStreamToResponse_AppendsDoneSentinel(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: "hello"},
+		{Type: provider.ChunkTypeFinish},
+	})
+	res := &StreamTextResult{stream: stream}
+	buf := &bytes.Buffer{}
+
+	if err := PipeUIMessageStreamToResponse(context.Background(), res, buf); err != nil {
+		t.Fatalf("PipeUIMessageStreamToResponse() error = %v", err)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("data: [DONE]\n\n")) {
+		t.Fatalf("missing DONE sentinel in %q", buf.String())
+	}
+}
+
+// alwaysFailingWriter always fails its Write call. Before the fix for audit
+// row #56, PipeUIMessageStreamToResponseWithInit buffered every chunk write
+// in a bufio.Writer and only touched the underlying writer via a *deferred*
+// bw.Flush() whose error was discarded, so a writer that fails every real
+// Write() call would still make the function return nil. This type proves
+// the fix: the underlying writer's error now propagates.
+type alwaysFailingWriter struct{}
+
+func (alwaysFailingWriter) Write(p []byte) (int, error) {
+	return 0, errors.New("write failed")
+}
+
+func TestPipeUIMessageStreamToResponseWithInit_PropagatesFlushError(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: "hello"},
+		{Type: provider.ChunkTypeFinish},
+	})
+	res := &StreamTextResult{stream: stream}
+	err := PipeUIMessageStreamToResponseWithInit(context.Background(), res, alwaysFailingWriter{}, nil)
+	if err == nil {
+		t.Fatal("expected the writer's error to propagate instead of being silently discarded (audit row #56)")
+	}
+}
+
+// recordingFlushWriter implements http.Flusher and records a snapshot of the
+// bytes written so far every time Flush is called, so the test can tell
+// whether output is flushed incrementally (audit row #76) rather than only
+// once, in one big batch, at the end.
+type recordingFlushWriter struct {
+	bytes.Buffer
+	flushLens []int
+}
+
+func (w *recordingFlushWriter) Flush() {
+	w.flushLens = append(w.flushLens, w.Len())
+}
+
+func TestPipeUIMessageStreamToResponseWithInit_FlushesPerChunk(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: "hello"},
+		{Type: provider.ChunkTypeFinish},
+	})
+	res := &StreamTextResult{stream: stream}
+	w := &recordingFlushWriter{}
+	if err := PipeUIMessageStreamToResponseWithInit(context.Background(), res, w, nil); err != nil {
+		t.Fatalf("PipeUIMessageStreamToResponseWithInit() error = %v", err)
+	}
+	if len(w.flushLens) < 2 {
+		t.Fatalf("expected multiple incremental Flush calls, got %d: %v", len(w.flushLens), w.flushLens)
+	}
+	for i := 1; i < len(w.flushLens); i++ {
+		if w.flushLens[i] <= w.flushLens[i-1] {
+			t.Fatalf("flush lengths did not grow incrementally: %v", w.flushLens)
+		}
+	}
+	if last := w.flushLens[len(w.flushLens)-1]; last != w.Len() {
+		t.Fatalf("final flush length %d != total written %d", last, w.Len())
+	}
+}
+
+func TestToUIMessageChunk_StandaloneParity(t *testing.T) {
+	meta := json.RawMessage(`{"testProvider":{"signature":"sig-1"}}`)
+	reasoning, ok := ToUIMessageChunk(provider.StreamChunk{
+		Type:             provider.ChunkTypeReasoning,
+		ID:               "reasoning-1",
+		Reasoning:        "thinking",
+		ProviderMetadata: meta,
+	}, UIMessageStreamResultOptions{})
+	if !ok {
+		t.Fatal("reasoning chunk was suppressed")
+	}
+	if reasoning["type"] != "reasoning-delta" || reasoning["delta"] != "thinking" {
+		t.Fatalf("reasoning chunk = %#v", reasoning)
+	}
+	if _, ok := reasoning["providerMetadata"].(map[string]interface{}); !ok {
+		t.Fatalf("provider metadata missing: %#v", reasoning)
+	}
+
+	sendReasoning := false
+	if chunk, ok := ToUIMessageChunk(provider.StreamChunk{
+		Type: provider.ChunkTypeReasoning,
+		ID:   "reasoning-1",
+		Text: "hidden",
+	}, UIMessageStreamResultOptions{SendReasoning: &sendReasoning}); ok || chunk != nil {
+		t.Fatalf("reasoning disabled chunk = %#v, %v", chunk, ok)
+	}
+
+	sendSources := true
+	source, ok := ToUIMessageChunk(provider.StreamChunk{
+		Type: provider.ChunkTypeSource,
+		SourceContent: &types.SourceContent{
+			SourceType: "url",
+			ID:         "source-1",
+			URL:        "https://example.com",
+			Title:      "Example",
+		},
+	}, UIMessageStreamResultOptions{SendSources: &sendSources})
+	if !ok || source["type"] != "source-url" || source["sourceId"] != "source-1" {
+		t.Fatalf("source chunk = %#v, %v", source, ok)
+	}
+
+	sourceWithoutTitle, ok := ToUIMessageChunk(provider.StreamChunk{
+		Type: provider.ChunkTypeSource,
+		SourceContent: &types.SourceContent{
+			SourceType: "url",
+			ID:         "source-no-title",
+			URL:        "https://example.com/no-title",
+		},
+	}, UIMessageStreamResultOptions{SendSources: &sendSources})
+	if !ok || sourceWithoutTitle["type"] != "source-url" {
+		t.Fatalf("source without title chunk = %#v, %v", sourceWithoutTitle, ok)
+	}
+	if _, exists := sourceWithoutTitle["title"]; exists {
+		t.Fatalf("source without title emitted title key: %#v", sourceWithoutTitle)
+	}
+
+	documentWithoutFilename, ok := ToUIMessageChunk(provider.StreamChunk{
+		Type: provider.ChunkTypeSource,
+		SourceContent: &types.SourceContent{
+			SourceType: "document",
+			ID:         "doc-1",
+			MediaType:  "application/pdf",
+			Title:      "Document",
+		},
+	}, UIMessageStreamResultOptions{SendSources: &sendSources})
+	if !ok || documentWithoutFilename["type"] != "source-document" {
+		t.Fatalf("document source chunk = %#v, %v", documentWithoutFilename, ok)
+	}
+	if _, exists := documentWithoutFilename["filename"]; exists {
+		t.Fatalf("document without filename emitted filename key: %#v", documentWithoutFilename)
+	}
+
+	file, ok := ToUIMessageChunk(provider.StreamChunk{
+		Type: provider.ChunkTypeFile,
+		GeneratedFileContent: &types.GeneratedFileContent{
+			MediaType: "text/plain",
+			Data:      []byte("Hello"),
+		},
+	}, UIMessageStreamResultOptions{})
+	if !ok || file["type"] != "file" || file["url"] != "data:text/plain;base64,SGVsbG8=" {
+		t.Fatalf("file chunk = %#v, %v", file, ok)
+	}
+
+	urlFile, ok := ToUIMessageChunk(provider.StreamChunk{
+		Type: provider.ChunkTypeFile,
+		GeneratedFileContent: &types.GeneratedFileContent{
+			MediaType: "text/plain",
+			FileData:  types.FileData{Type: types.FileDataTypeURL, URL: "https://example.com/file.txt"},
+		},
+	}, UIMessageStreamResultOptions{})
+	if !ok || urlFile["url"] != "data:text/plain;base64,https://example.com/file.txt" {
+		t.Fatalf("url file chunk = %#v, %v", urlFile, ok)
+	}
+
+	emptyToolDelta, ok := ToUIMessageChunk(provider.StreamChunk{
+		Type: provider.ChunkTypeToolInputDelta,
+		ID:   "call-empty",
+		Text: "",
+	}, UIMessageStreamResultOptions{})
+	if !ok || emptyToolDelta["type"] != "tool-input-delta" || emptyToolDelta["inputTextDelta"] != "" {
+		t.Fatalf("empty tool delta chunk = %#v, %v", emptyToolDelta, ok)
+	}
+
+	tool, ok := ToUIMessageChunk(provider.StreamChunk{
+		Type: provider.ChunkTypeToolCall,
+		ToolCall: &types.ToolCall{
+			ID:               "call-1",
+			ToolName:         "lookup",
+			Arguments:        map[string]interface{}{"q": "x"},
+			ProviderExecuted: true,
+			Dynamic:          true,
+			ToolMetadata:     map[string]interface{}{"clientName": "test-client"},
+		},
+	}, UIMessageStreamResultOptions{})
+	if !ok || tool["type"] != "tool-input-available" || tool["providerExecuted"] != true || tool["dynamic"] != true {
+		t.Fatalf("tool chunk = %#v, %v", tool, ok)
+	}
+
+	dynamicFromTools, ok := ToUIMessageChunk(provider.StreamChunk{
+		Type: provider.ChunkTypeToolCall,
+		ToolCall: &types.ToolCall{
+			ID:        "call-dynamic",
+			ToolName:  "runtime",
+			Arguments: map[string]interface{}{"q": "x"},
+		},
+	}, UIMessageStreamResultOptions{
+		Tools: []types.Tool{{Name: "runtime", Type: types.ToolTypeDynamic}},
+	})
+	if !ok || dynamicFromTools["dynamic"] != true {
+		t.Fatalf("dynamic tool chunk = %#v, %v", dynamicFromTools, ok)
+	}
+
+	providerExecutedError, ok := ToUIMessageChunk(provider.StreamChunk{
+		Type: provider.ChunkTypeToolResult,
+		ToolResult: &types.ToolResult{
+			ToolCallID:       "call-provider-error",
+			ToolName:         "providerTool",
+			Error:            errors.New("provider failed"),
+			ProviderExecuted: true,
+		},
+	}, UIMessageStreamResultOptions{
+		OnError: func(error) string { return "should not be used" },
+	})
+	if !ok || providerExecutedError["errorText"] != "provider failed" {
+		t.Fatalf("provider executed error chunk = %#v, %v", providerExecutedError, ok)
+	}
+
+	if raw, ok := ToUIMessageChunk(provider.StreamChunk{
+		Type: provider.ChunkTypeRaw,
+		Raw:  map[string]interface{}{"provider": "raw"},
+	}, UIMessageStreamResultOptions{}); ok || raw != nil {
+		t.Fatalf("raw chunk = %#v, %v; want suppressed", raw, ok)
+	}
+
+	if metadata, ok := ToUIMessageChunk(provider.StreamChunk{
+		Type:             provider.ChunkTypeResponseMetadata,
+		ResponseMetadata: &provider.ResponseMetadata{ID: "response-1", ModelID: "model-1"},
+	}, UIMessageStreamResultOptions{}); ok || metadata != nil {
+		t.Fatalf("response metadata chunk = %#v, %v; want suppressed", metadata, ok)
+	}
+
+	if unknown, ok := ToUIMessageChunk(provider.StreamChunk{
+		Type: provider.ChunkType("provider-only"),
+		Text: "internal",
+	}, UIMessageStreamResultOptions{}); ok || unknown != nil {
+		t.Fatalf("unknown provider chunk = %#v, %v; want suppressed", unknown, ok)
+	}
+
+	sendSourcesForDocument := true
+	sourceDocument, ok := ToUIMessageChunk(provider.StreamChunk{
+		Type: provider.ChunkTypeSource,
+		SourceContent: &types.SourceContent{
+			SourceType: "document",
+			ID:         "source-1",
+			MediaType:  "text/plain",
+		},
+	}, UIMessageStreamResultOptions{SendSources: &sendSourcesForDocument})
+	if !ok || sourceDocument["type"] != "source-document" {
+		t.Fatalf("source document chunk = %#v, %v", sourceDocument, ok)
+	}
+	if _, ok := sourceDocument["title"]; ok {
+		t.Fatalf("source document title should be omitted when unset: %#v", sourceDocument)
+	}
+	if _, ok := sourceDocument["filename"]; ok {
+		t.Fatalf("source document filename should be omitted when unset: %#v", sourceDocument)
+	}
+
+	if toolInputEnd, ok := ToUIMessageChunk(provider.StreamChunk{
+		Type: provider.ChunkTypeToolInputEnd,
+		ID:   "call-1",
+	}, UIMessageStreamResultOptions{}); ok || toolInputEnd != nil {
+		t.Fatalf("tool input end chunk = %#v, %v; want suppressed", toolInputEnd, ok)
+	}
+
+	sendStart := false
+	if start, ok := ToUIMessageChunk(provider.StreamChunk{
+		Type: provider.ChunkTypeStreamStart,
+	}, UIMessageStreamResultOptions{SendStart: &sendStart}); !ok || start["type"] != "start-step" {
+		t.Fatalf("start-step chunk = %#v, %v", start, ok)
+	}
+
+	sendFinish := false
+	if finish, ok := ToUIMessageChunk(provider.StreamChunk{
+		Type: provider.ChunkTypeFinish,
+	}, UIMessageStreamResultOptions{SendFinish: &sendFinish}); !ok || finish["type"] != "finish-step" {
+		t.Fatalf("finish-step chunk = %#v, %v", finish, ok)
+	}
+
+	abort, ok := ToUIMessageChunk(provider.StreamChunk{Type: provider.ChunkTypeAbort, AbortReason: "user"}, UIMessageStreamResultOptions{})
+	if !ok || abort["type"] != "abort" || abort["reason"] != "user" {
+		t.Fatalf("abort chunk = %#v, %v", abort, ok)
+	}
+}
+
+func TestToUIMessageStream_Standalone(t *testing.T) {
+	sendSources := true
+	sendStart := true
+	sendFinish := true
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, ID: "text-1", Text: "hello"},
+		{Type: provider.ChunkTypeSource, SourceContent: &types.SourceContent{SourceType: "url", ID: "s1", URL: "https://example.com"}},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	})
+	chunks, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{
+		ResponseMessageID: "msg-1",
+		SendSources:       &sendSources,
+		SendStart:         &sendStart,
+		SendFinish:        &sendFinish,
+	})
+	var got []UIMessageChunk
+	for chunk := range chunks {
+		got = append(got, chunk)
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	var hasStart, hasText, hasSource, hasFinish bool
+	for _, chunk := range got {
+		switch chunk["type"] {
+		case "start":
+			hasStart = chunk["messageId"] == "msg-1"
+		case "text-delta":
+			hasText = chunk["delta"] == "hello"
+		case "source-url":
+			hasSource = true
+		case "finish":
+			hasFinish = chunk["finishReason"] == string(types.FinishReasonStop)
+		}
+	}
+	if !hasStart || !hasText || !hasSource || !hasFinish {
+		t.Fatalf("chunks = %#v", got)
+	}
+}
+
+func TestToUIMessageStream_MessageIDParity(t *testing.T) {
+	t.Run("no message ID by default", func(t *testing.T) {
+		stream := testutil.NewMockTextStream([]provider.StreamChunk{
+			{Type: provider.ChunkTypeText, ID: "text-1", Text: "hello"},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+		})
+		chunks, errs := ToUIMessageStream(context.Background(), stream)
+		var start UIMessageChunk
+		for chunk := range chunks {
+			if chunk["type"] == "start" {
+				start = chunk
+			}
+		}
+		if err, ok := <-errs; ok && err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		if start == nil {
+			t.Fatal("missing start chunk")
+		}
+		if _, ok := start["messageId"]; ok {
+			t.Fatalf("default start chunk should not include messageId: %#v", start)
+		}
+	})
+
+	t.Run("generate message ID without original messages is injected into start and callback state", func(t *testing.T) {
+		stream := testutil.NewMockTextStream([]provider.StreamChunk{
+			{Type: provider.ChunkTypeText, ID: "text-1", Text: "hello"},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+		})
+		finishEvent := make(chan map[string]interface{}, 1)
+		chunks, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{
+			GenerateMessageID: func() string { return "msg-generated" },
+			OnFinish: func(event map[string]interface{}) {
+				finishEvent <- event
+			},
+		})
+		var start UIMessageChunk
+		for chunk := range chunks {
+			if chunk["type"] == "start" {
+				start = chunk
+			}
+		}
+		if err, ok := <-errs; ok && err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		if start["messageId"] != "msg-generated" {
+			t.Fatalf("start chunk messageId = %v, want msg-generated: %#v", start["messageId"], start)
+		}
+		finish := <-finishEvent
+		responseMessage, ok := finish["responseMessage"].(UIMessageChunk)
+		if !ok || responseMessage["id"] != "msg-generated" {
+			t.Fatalf("finish event = %#v", finish)
+		}
+		if _, hasContent := responseMessage["content"]; hasContent {
+			t.Fatalf("responseMessage should use TS UIMessage parts, not content: %#v", responseMessage)
+		}
+		if parts, ok := responseMessage["parts"].([]interface{}); !ok || len(parts) != 1 {
+			t.Fatalf("responseMessage parts = %#v", responseMessage["parts"])
+		}
+	})
+
+	t.Run("generate message ID with original messages", func(t *testing.T) {
+		stream := testutil.NewMockTextStream([]provider.StreamChunk{
+			{Type: provider.ChunkTypeText, ID: "text-1", Text: "hello"},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+		})
+		chunks, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{
+			OriginalMessages:  []UIMessageChunk{},
+			GenerateMessageID: func() string { return "msg-generated" },
+		})
+		var start UIMessageChunk
+		for chunk := range chunks {
+			if chunk["type"] == "start" {
+				start = chunk
+			}
+		}
+		if err, ok := <-errs; ok && err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		if start["messageId"] != "msg-generated" {
+			t.Fatalf("start chunk = %#v", start)
+		}
+	})
+
+	t.Run("reuse last assistant message ID", func(t *testing.T) {
+		stream := testutil.NewMockTextStream([]provider.StreamChunk{
+			{Type: provider.ChunkTypeText, ID: "text-1", Text: "continued"},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+		})
+		chunks, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{
+			OriginalMessages: []UIMessageChunk{
+				{"id": "msg-existing", "role": "assistant"},
+			},
+			GenerateMessageID: func() string { return "msg-new" },
+		})
+		var start UIMessageChunk
+		for chunk := range chunks {
+			if chunk["type"] == "start" {
+				start = chunk
+			}
+		}
+		if err, ok := <-errs; ok && err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		if start["messageId"] != "msg-existing" {
+			t.Fatalf("start chunk = %#v", start)
+		}
+	})
+}
+
+func TestToUIMessageStream_SynthesizesContentBoundariesForGoProviderChunks(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: "hello"},
+		{Type: provider.ChunkTypeReasoning, Reasoning: "thinking"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	})
+	chunks, errs := ToUIMessageStream(context.Background(), stream)
+	var got []string
+	for chunk := range chunks {
+		if typ, _ := chunk["type"].(string); typ != "" {
+			got = append(got, typ)
+		}
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	wantOrder := []string{"start", "text-start", "text-delta", "reasoning-start", "reasoning-delta", "text-end", "reasoning-end", "finish-step", "finish"}
+	if len(got) != len(wantOrder) {
+		t.Fatalf("chunks = %#v, want %#v", got, wantOrder)
+	}
+	for i, want := range wantOrder {
+		if got[i] != want {
+			t.Fatalf("chunks = %#v, want %#v", got, wantOrder)
+		}
+	}
+}
+
+func TestToUIMessageStream_SuppressesSyntheticReasoningWhenDisabled(t *testing.T) {
+	sendReasoning := false
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-1"},
+		{Type: provider.ChunkTypeReasoning, ID: "reasoning-1", Reasoning: "hidden"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	})
+	chunks, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{
+		SendReasoning: &sendReasoning,
+	})
+	for chunk := range chunks {
+		if typ, _ := chunk["type"].(string); strings.HasPrefix(typ, "reasoning") {
+			t.Fatalf("reasoning chunk leaked with sendReasoning=false: %#v", chunk)
+		}
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestCreateUIMessageStream_FromStreamTextResult(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: "hello"},
+		{Type: provider.ChunkTypeFinish},
+	})
+	res := &StreamTextResult{stream: stream}
+	chunks, errs := CreateUIMessageStream(context.Background(), res)
+
+	var got []UIMessageChunk
+	for ch := range chunks {
+		got = append(got, ch)
+	}
+	if len(got) == 0 {
+		t.Fatalf("expected chunks, got none")
+	}
+	hasStart := false
+	hasText := false
+	for _, c := range got {
+		switch c["type"] {
+		case "start":
+			hasStart = true
+		case "text-delta":
+			hasText = true
+		}
+	}
+	if !hasStart || !hasText {
+		t.Fatalf("unexpected chunks: %#v", got)
+	}
+	select {
+	case err := <-errs:
+		if err != nil {
+			t.Fatalf("unexpected err = %v", err)
+		}
+	default:
+	}
+}
+
+func TestCreateUIMessageStreamResponse_Headers(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: "hello"},
+		{Type: provider.ChunkTypeFinish},
+	})
+	res := &StreamTextResult{stream: stream}
+	httpRes, err := CreateUIMessageStreamResponse(context.Background(), res)
+	if err != nil {
+		t.Fatalf("CreateUIMessageStreamResponse() error = %v", err)
+	}
+	if got := httpRes.Header.Get("Content-Type"); got != "text/event-stream" {
+		t.Fatalf("content-type = %q", got)
+	}
+}
+
+func TestCreateUIMessageStreamResponse_WithInit(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: "hello"},
+		{Type: provider.ChunkTypeFinish},
+	})
+	res := &StreamTextResult{stream: stream}
+	httpRes, err := CreateUIMessageStreamResponseWithInit(context.Background(), res, &UIMessageStreamResponseInit{
+		Status:     http.StatusCreated,
+		StatusText: "Created",
+		Headers:    map[string]string{"X-Test": "go"},
+	})
+	if err != nil {
+		t.Fatalf("CreateUIMessageStreamResponseWithInit() error = %v", err)
+	}
+	if got := httpRes.StatusCode; got != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", got, http.StatusCreated)
+	}
+	if got := httpRes.Status; got != "Created" {
+		t.Fatalf("status text = %q, want %q", got, "Created")
+	}
+	if got := httpRes.Header.Get("X-Test"); got != "go" {
+		t.Fatalf("header X-Test = %q, want go", got)
+	}
+}
+
+// ports the "preserve multiple Set-Cookie headers" requirement (audit row
+// #29): map[string]string can only carry one value per header key, so
+// UIMessageStreamResponseInit.Header (http.Header) exists for headers that
+// need repeated values.
+func TestCreateUIMessageStreamResponse_MultipleSetCookieHeaders(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: "hello"},
+		{Type: provider.ChunkTypeFinish},
+	})
+	res := &StreamTextResult{stream: stream}
+	httpRes, err := CreateUIMessageStreamResponseWithInit(context.Background(), res, &UIMessageStreamResponseInit{
+		Header: http.Header{"Set-Cookie": []string{"a=1", "b=2"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateUIMessageStreamResponseWithInit() error = %v", err)
+	}
+	got := httpRes.Header.Values("Set-Cookie")
+	if len(got) != 2 || got[0] != "a=1" || got[1] != "b=2" {
+		t.Fatalf("Set-Cookie values = %#v, want [a=1 b=2]", got)
+	}
+}
+
+func TestStreamTextResult_ToUIMessageStreamResponse(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: "hello"},
+		{Type: provider.ChunkTypeFinish},
+	})
+	res := &StreamTextResult{stream: stream}
+	httpRes, err := res.ToUIMessageStreamResponse(context.Background(), &UIMessageStreamResponseInit{
+		Headers: map[string]string{"X-Method": "stream"},
+	})
+	if err != nil {
+		t.Fatalf("ToUIMessageStreamResponse() error = %v", err)
+	}
+	if got := httpRes.Header.Get("X-Method"); got != "stream" {
+		t.Fatalf("header X-Method = %q, want stream", got)
+	}
+}
+
+func TestStreamTextResult_ToUIMessageStream(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: "hello"},
+		{Type: provider.ChunkTypeFinish},
+	})
+	res := &StreamTextResult{stream: stream}
+	chunks, errs := res.ToUIMessageStream(context.Background())
+
+	var got []UIMessageChunk
+	for ch := range chunks {
+		got = append(got, ch)
+	}
+	if len(got) == 0 {
+		t.Fatalf("expected chunks, got none")
+	}
+	hasStart := false
+	for _, c := range got {
+		if c["type"] == "start" {
+			hasStart = true
+		}
+	}
+	if !hasStart {
+		t.Fatalf("missing start chunk: %#v", got)
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestStreamTextResult_ToUIMessageStream_OptionsAndCallbacks(t *testing.T) {
+	sendReasoning := false
+	sendSources := false
+	sendFinish := false
+	sendStart := true
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: "one"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+		{Type: provider.ChunkTypeSource, SourceContent: &types.SourceContent{SourceType: "url", ID: "s1", URL: "https://example.com"}},
+	})
+	res := &StreamTextResult{stream: stream}
+	stepCalled := make(chan map[string]interface{}, 1)
+	finishCalled := make(chan map[string]interface{}, 1)
+
+	var metadata []map[string]interface{}
+	chunks, errs := res.ToUIMessageStream(context.Background(), UIMessageStreamResultOptions{
+		SendReasoning: &sendReasoning,
+		SendSources:   &sendSources,
+		SendStart:     &sendStart,
+		SendFinish:    &sendFinish,
+		OriginalMessages: []UIMessageChunk{
+			{"id": "msg-1", "role": "user", "content": []interface{}{}},
+		},
+		MessageMetadata: func(part map[string]interface{}) map[string]interface{} {
+			metadata = append(metadata, part)
+			return map[string]interface{}{"source": "test"}
+		},
+		OnStepFinish: func(event map[string]interface{}) {
+			stepCalled <- event
+		},
+		OnFinish: func(event map[string]interface{}) {
+			finishCalled <- event
+		},
+	})
+
+	var got []UIMessageChunk
+	for chunk := range chunks {
+		got = append(got, chunk)
+	}
+	var hasFinishStep bool
+	hasStart := false
+	hasMetadata := false
+	hasSource := false
+	for _, c := range got {
+		switch c["type"] {
+		case "start":
+			hasStart = true
+		case "finish-step":
+			hasFinishStep = true
+		case "message-metadata":
+			hasMetadata = true
+		case "source-url":
+			hasSource = true
+		}
+	}
+	if !hasStart {
+		t.Fatalf("expected start chunk: %#v", got)
+	}
+	if hasSource {
+		t.Fatalf("did not expect source-url chunk when sendSources=false: %#v", got)
+	}
+	if !hasMetadata || len(metadata) == 0 {
+		t.Fatalf("expected message-metadata: %#v", got)
+	}
+	stepMessageReceived := <-stepCalled
+	finishMessageReceived := <-finishCalled
+
+	if len(stepCalled) != 0 || len(finishCalled) != 0 {
+		t.Fatalf("callbacks should fire exactly once")
+	}
+	if responseMessage, ok := stepMessageReceived["responseMessage"].(UIMessageChunk); !ok {
+		t.Fatalf("step callback responseMessage missing: %#v", stepMessageReceived["responseMessage"])
+	} else if _, hasParts := responseMessage["parts"].([]interface{}); !hasParts {
+		t.Fatalf("step callback responseMessage should contain parts: %#v", responseMessage)
+	}
+	if responseMessage, ok := finishMessageReceived["responseMessage"].(UIMessageChunk); !ok {
+		t.Fatalf("finish callback responseMessage missing: %#v", finishMessageReceived["responseMessage"])
+	} else if _, hasParts := responseMessage["parts"].([]interface{}); !hasParts {
+		t.Fatalf("finish callback responseMessage should contain parts: %#v", responseMessage)
+	}
+	if isContinuation, ok := stepMessageReceived["isContinuation"].(bool); !ok || isContinuation {
+		t.Fatalf("step callback should report continuation false for new message: %#v", stepMessageReceived["isContinuation"])
+	}
+	if isContinuation, ok := finishMessageReceived["isContinuation"].(bool); !ok || isContinuation {
+		t.Fatalf("finish callback should report continuation false for new message: %#v", finishMessageReceived["isContinuation"])
+	}
+	if gotReason, ok := finishMessageReceived["finishReason"].(types.FinishReason); !ok || gotReason != types.FinishReasonStop {
+		t.Fatalf("finish callback finishReason = %#v", finishMessageReceived["finishReason"])
+	}
+	if gotMessages, ok := stepMessageReceived["messages"].([]UIMessageChunk); !ok || len(gotMessages) != 2 {
+		t.Fatalf("step callback messages shape = %#v", stepMessageReceived["messages"])
+	}
+	if gotMessages, ok := finishMessageReceived["messages"].([]UIMessageChunk); !ok || len(gotMessages) != 2 {
+		t.Fatalf("finish callback messages shape = %#v", finishMessageReceived["messages"])
+	}
+	if !hasMetadata || len(metadata) == 0 {
+		t.Fatalf("expected message-metadata: %#v", got)
+	}
+	if hasSource {
+		t.Fatalf("did not expect source-url chunk when sendSources=false: %#v", got)
+	}
+	if !hasStart {
+		t.Fatalf("expected start chunk: %#v", got)
+	}
+	if !hasFinishStep {
+		t.Fatalf("expected finish-step from finish chunk: %#v", got)
+	}
+	select {
+	case err := <-errs:
+		if err != nil {
+			t.Fatalf("unexpected err = %v", err)
+		}
+	default:
+	}
+}
+
+func TestToUIMessageStream_MessageMetadataReceivesUIPartTypes(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeText, ID: "text-1", Text: "hello"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	})
+	var callbackTypes []string
+	chunks, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{
+		MessageMetadata: func(input map[string]interface{}) map[string]interface{} {
+			part, ok := input["part"].(provider.StreamChunk)
+			if !ok {
+				t.Fatalf("metadata input part = %#v, want provider.StreamChunk", input["part"])
+			}
+			partType := string(part.Type)
+			if input["type"] != partType {
+				t.Fatalf("metadata input type = %#v, part type = %q", input["type"], partType)
+			}
+			callbackTypes = append(callbackTypes, partType)
+			return map[string]interface{}{"partType": partType}
+		},
+	})
+
+	var metadataTypes []string
+	var startMetadataType string
+	var finishMetadataType string
+	for chunk := range chunks {
+		switch chunk["type"] {
+		case "start":
+			if metadata, ok := chunk["messageMetadata"].(map[string]interface{}); ok {
+				startMetadataType, _ = metadata["partType"].(string)
+			}
+		case "finish":
+			if metadata, ok := chunk["messageMetadata"].(map[string]interface{}); ok {
+				finishMetadataType, _ = metadata["partType"].(string)
+			}
+		case "message-metadata":
+			metadata, ok := chunk["messageMetadata"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("message metadata chunk = %#v", chunk)
+			}
+			partType, _ := metadata["partType"].(string)
+			metadataTypes = append(metadataTypes, partType)
+		}
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	wantCallbackTypes := []string{"start", "start-step", "text-delta", "finish-step", "finish"}
+	if !reflect.DeepEqual(callbackTypes, wantCallbackTypes) {
+		t.Fatalf("callback part types = %#v, want %#v", callbackTypes, wantCallbackTypes)
+	}
+	if startMetadataType != "start" {
+		t.Fatalf("start metadata type = %q, want start", startMetadataType)
+	}
+	if finishMetadataType != "finish" {
+		t.Fatalf("finish metadata type = %q, want finish", finishMetadataType)
+	}
+	wantMetadataTypes := []string{"start-step", "text-delta", "finish-step"}
+	if !reflect.DeepEqual(metadataTypes, wantMetadataTypes) {
+		t.Fatalf("message metadata types = %#v, want %#v", metadataTypes, wantMetadataTypes)
+	}
+}
+
+func TestToUIMessageStream_MessageMetadataRunsForSuppressedStartAndFinish(t *testing.T) {
+	sendStart := false
+	sendFinish := false
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, ID: "text-1", Text: "hello"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	})
+	var callbackTypes []string
+	chunks, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{
+		SendStart:  &sendStart,
+		SendFinish: &sendFinish,
+		MessageMetadata: func(input map[string]interface{}) map[string]interface{} {
+			callbackTypes = append(callbackTypes, input["type"].(string))
+			return map[string]interface{}{"partType": input["type"]}
+		},
+	})
+
+	var gotTypes []string
+	for chunk := range chunks {
+		gotTypes = append(gotTypes, chunk["type"].(string))
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	for _, disallowed := range []string{"start", "finish"} {
+		for _, got := range gotTypes {
+			if got == disallowed {
+				t.Fatalf("chunks include suppressed %q: %#v", disallowed, gotTypes)
+			}
+		}
+	}
+	wantCallbackTypes := []string{"start", "text-delta", "finish-step", "finish"}
+	if !reflect.DeepEqual(callbackTypes, wantCallbackTypes) {
+		t.Fatalf("callback part types = %#v, want %#v", callbackTypes, wantCallbackTypes)
+	}
+}
+
+func TestToUIMessageStream_FiltersEmptyTextDeltas(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeTextStart, ID: "1"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: ""},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "Hello"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: ""},
+		{Type: provider.ChunkTypeText, ID: "1", Text: ", "},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "world!"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: ""},
+		{Type: provider.ChunkTypeTextEnd, ID: "1"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	})
+	chunks, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{
+		MessageMetadata: func(part map[string]interface{}) map[string]interface{} {
+			return map[string]interface{}{"partType": part["type"]}
+		},
+	})
+
+	var textDeltas []string
+	var textMetadataCount int
+	for chunk := range chunks {
+		switch chunk["type"] {
+		case "text-delta":
+			textDeltas = append(textDeltas, chunk["delta"].(string))
+		case "message-metadata":
+			metadata := chunk["messageMetadata"].(map[string]interface{})
+			if metadata["partType"] == "text-delta" {
+				textMetadataCount++
+			}
+		}
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v", err)
+	}
+
+	want := []string{"Hello", ", ", "world!"}
+	if !reflect.DeepEqual(textDeltas, want) {
+		t.Fatalf("text deltas = %#v, want %#v", textDeltas, want)
+	}
+	if textMetadataCount != len(want) {
+		t.Fatalf("text metadata count = %d, want %d", textMetadataCount, len(want))
+	}
+}
+
+func TestToUIMessageStream_GenerateMessageIDInjectsStartMessageIDWithoutOriginalMessages(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, ID: "text-1", Text: "hello"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	})
+
+	finishEvent := make(chan map[string]interface{}, 1)
+	chunks, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{
+		GenerateMessageID: func() string { return "msg-generated" },
+		OnEnd: func(event map[string]interface{}) {
+			finishEvent <- event
+		},
+	})
+
+	var got []UIMessageChunk
+	for chunk := range chunks {
+		got = append(got, chunk)
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(got) == 0 || got[0]["type"] != "start" || got[0]["messageId"] != "msg-generated" {
+		t.Fatalf("start chunk = %#v", got)
+	}
+
+	event := <-finishEvent
+	message, ok := event["responseMessage"].(UIMessageChunk)
+	if !ok {
+		t.Fatalf("responseMessage = %#v", event["responseMessage"])
+	}
+	if message["id"] != "msg-generated" {
+		t.Fatalf("response message id = %v, want msg-generated", message["id"])
+	}
+}
+
+func TestStreamTextResult_ToUIMessageStream_OnEndTakesPrecedenceOverDeprecatedOnFinish(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, ID: "text-1", Text: "Hello"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	})
+	res := &StreamTextResult{stream: stream}
+
+	var endCalls int
+	var finishCalls int
+	chunks, errs := res.ToUIMessageStream(context.Background(), UIMessageStreamResultOptions{
+		GenerateMessageID: func() string { return "msg-123" },
+		OnEnd: func(event map[string]interface{}) {
+			endCalls++
+			if event["finishReason"] != types.FinishReasonStop {
+				t.Fatalf("finishReason = %v, want %s", event["finishReason"], types.FinishReasonStop)
+			}
+		},
+		OnFinish: func(event map[string]interface{}) {
+			finishCalls++
+		},
+	})
+	for range chunks {
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if endCalls != 1 || finishCalls != 0 {
+		t.Fatalf("callbacks: OnEnd=%d OnFinish=%d", endCalls, finishCalls)
+	}
+}
+
+func TestToUIMessageStream_OnFinishBuildsTSUIMessageParts(t *testing.T) {
+	sendSources := true
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeTextStart, ID: "text-1"},
+		{Type: provider.ChunkTypeText, ID: "text-1", Text: "hello"},
+		{Type: provider.ChunkTypeTextEnd, ID: "text-1"},
+		{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-1"},
+		{Type: provider.ChunkTypeReasoning, ID: "reasoning-1", Reasoning: "thinking"},
+		{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-1"},
+		{Type: provider.ChunkTypeSource, SourceContent: &types.SourceContent{SourceType: "url", ID: "source-1", URL: "https://example.com", Title: "Example"}},
+		{Type: provider.ChunkTypeFile, GeneratedFileContent: &types.GeneratedFileContent{MediaType: "text/plain", Data: []byte("file")}},
+		{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "lookup", Arguments: map[string]interface{}{"q": "go"}}},
+		{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "call-1", ToolName: "lookup", Result: map[string]interface{}{"ok": true}}},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	})
+	finishEvent := make(chan map[string]interface{}, 1)
+	chunks, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{
+		OriginalMessages: []UIMessageChunk{},
+		SendSources:      &sendSources,
+		MessageMetadata: func(part map[string]interface{}) map[string]interface{} {
+			if part["type"] == "finish" {
+				return map[string]interface{}{"done": true}
+			}
+			return nil
+		},
+		OnFinish: func(event map[string]interface{}) {
+			finishEvent <- event
+		},
+	})
+	for range chunks {
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	event := <-finishEvent
+	message, ok := event["responseMessage"].(UIMessageChunk)
+	if !ok {
+		t.Fatalf("responseMessage = %#v", event["responseMessage"])
+	}
+	if _, hasContent := message["content"]; hasContent {
+		t.Fatalf("responseMessage should not contain legacy content field: %#v", message)
+	}
+	metadata, ok := message["metadata"].(UIMessageChunk)
+	if !ok {
+		if m, mapOK := message["metadata"].(map[string]interface{}); mapOK {
+			metadata = UIMessageChunk(m)
+			ok = true
+		}
+	}
+	if !ok || metadata["done"] != true {
+		t.Fatalf("metadata = %#v", message["metadata"])
+	}
+	parts, ok := message["parts"].([]interface{})
+	if !ok {
+		t.Fatalf("parts = %#v", message["parts"])
+	}
+	seen := map[string]bool{}
+	for _, raw := range parts {
+		part, ok := raw.(UIMessageChunk)
+		if !ok {
+			t.Fatalf("part = %#v", raw)
+		}
+		if typ, _ := part["type"].(string); typ != "" {
+			seen[typ] = true
+		}
+	}
+	for _, typ := range []string{"text", "reasoning", "source-url", "file", "tool-lookup"} {
+		if !seen[typ] {
+			t.Fatalf("missing %s part in %#v", typ, parts)
+		}
+	}
+}
+
+func TestCreateUIMessageStreamWithOptions_MetadataDeepMergeAndInvalidToolOutput(t *testing.T) {
+	var errorsSeen []string
+	finishEvent := make(chan map[string]interface{}, 1)
+
+	chunks, errs := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
+		Execute: func(writer UIMessageStreamWriter) {
+			writer.Write(UIMessageChunk{
+				"type": "start",
+				"messageMetadata": UIMessageChunk{
+					"nested": UIMessageChunk{"a": 1},
+					"keep":   true,
+				},
+			})
+			writer.Write(UIMessageChunk{
+				"type": "message-metadata",
+				"messageMetadata": map[string]interface{}{
+					"nested": map[string]interface{}{"b": 2},
+				},
+			})
+			writer.Write(UIMessageChunk{
+				"type":       "tool-output-available",
+				"toolCallId": "missing-call",
+				"output":     "ignored",
+			})
+		},
+		OnError: func(err error) string {
+			errorsSeen = append(errorsSeen, err.Error())
+			return err.Error()
+		},
+		OnFinish: func(event map[string]interface{}) {
+			finishEvent <- event
+		},
+	})
+
+	for range chunks {
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(errorsSeen) != 1 || errorsSeen[0] != `No tool invocation found for tool call ID "missing-call".` {
+		t.Fatalf("errorsSeen = %#v", errorsSeen)
+	}
+	event := <-finishEvent
+	message, ok := event["responseMessage"].(UIMessageChunk)
+	if !ok {
+		t.Fatalf("responseMessage = %#v", event["responseMessage"])
+	}
+	metadata, ok := message["metadata"].(map[string]interface{})
+	if !ok {
+		if typed, typedOK := message["metadata"].(UIMessageChunk); typedOK {
+			metadata = map[string]interface{}(typed)
+			ok = true
+		}
+	}
+	if !ok {
+		t.Fatalf("metadata = %#v", message["metadata"])
+	}
+	nested, ok := metadata["nested"].(map[string]interface{})
+	if !ok {
+		if typed, typedOK := metadata["nested"].(UIMessageChunk); typedOK {
+			nested = map[string]interface{}(typed)
+			ok = true
+		}
+	}
+	if !ok || nested["a"] != 1 || nested["b"] != 2 || metadata["keep"] != true {
+		t.Fatalf("merged metadata = %#v", metadata)
+	}
+}
+
+// ports "make input optional on input-streaming UIMessagePart variants"
+// (audit row 2852a84): TS sets `input: undefined` on tool-input-start, which
+// JSON.stringify omits entirely. Go must delete the key rather than storing
+// Go nil (which would marshal as JSON null).
+func TestCreateUIMessageStreamWithOptions_InputStreamingOmitsInputKey(t *testing.T) {
+	finishEvent := make(chan map[string]interface{}, 1)
+	chunks, _ := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
+		Execute: func(writer UIMessageStreamWriter) {
+			writer.Write(UIMessageChunk{"type": "start"})
+			writer.Write(UIMessageChunk{"type": "tool-input-start", "toolCallId": "call-1", "toolName": "search"})
+		},
+		OnFinish: func(event map[string]interface{}) { finishEvent <- event },
+	})
+	for range chunks {
+	}
+	event := <-finishEvent
+	message := event["responseMessage"].(UIMessageChunk)
+	parts := uiParts(message)
+	var toolPart map[string]interface{}
+	for _, raw := range parts {
+		if p := asUIPartChunk(raw); p != nil && p["type"] == "tool-search" {
+			toolPart = p
+		}
+	}
+	if toolPart == nil {
+		t.Fatalf("tool part not found in %#v", parts)
+	}
+	if _, exists := toolPart["input"]; exists {
+		t.Fatalf("input key should be absent during input-streaming, got %#v", toolPart["input"])
+	}
+	b, err := json.Marshal(toolPart)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if strings.Contains(string(b), `"input"`) {
+		t.Fatalf("marshaled tool part should omit \"input\": %s", b)
+	}
+}
+
+func TestCreateUIMessageStreamWithOptions_DataPartsUpdateCallbackState(t *testing.T) {
+	finishEvent := make(chan map[string]interface{}, 1)
+
+	chunks, errs := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
+		Execute: func(writer UIMessageStreamWriter) {
+			writer.Write(UIMessageChunk{
+				"type": "data-weather",
+				"id":   "part-1",
+				"data": map[string]interface{}{"city": "NYC"},
+			})
+			writer.Write(UIMessageChunk{
+				"type": "data-weather",
+				"id":   "part-1",
+				"data": map[string]interface{}{"city": "Boston"},
+			})
+			writer.Write(UIMessageChunk{
+				"type":      "data-weather",
+				"id":        "transient",
+				"data":      map[string]interface{}{"city": "Hidden"},
+				"transient": true,
+			})
+		},
+		OnFinish: func(event map[string]interface{}) {
+			finishEvent <- event
+		},
+	})
+	for range chunks {
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	event := <-finishEvent
+	message, ok := event["responseMessage"].(UIMessageChunk)
+	if !ok {
+		t.Fatalf("responseMessage = %#v", event["responseMessage"])
+	}
+	parts, ok := message["parts"].([]interface{})
+	if !ok || len(parts) != 1 {
+		t.Fatalf("parts = %#v", message["parts"])
+	}
+	part, ok := parts[0].(UIMessageChunk)
+	if !ok {
+		t.Fatalf("part = %#v", parts[0])
+	}
+	data, ok := part["data"].(UIMessageChunk)
+	if !ok {
+		if mapped, mapOK := part["data"].(map[string]interface{}); mapOK {
+			data = UIMessageChunk(mapped)
+			ok = true
+		}
+	}
+	if !ok || part["type"] != "data-weather" || part["id"] != "part-1" || data["city"] != "Boston" {
+		t.Fatalf("data part = %#v", part)
+	}
+}
+
+func TestToUIMessageStream_OnFinishReportsAbortChunk(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, ID: "text-1", Text: "before"},
+		{Type: provider.ChunkTypeAbort, AbortReason: "manual abort"},
+	})
+	finishEvent := make(chan map[string]interface{}, 1)
+	chunks, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{
+		OnFinish: func(event map[string]interface{}) {
+			finishEvent <- event
+		},
+	})
+	var sawAbort bool
+	for chunk := range chunks {
+		if chunk["type"] == "abort" && chunk["reason"] == "manual abort" {
+			sawAbort = true
+		}
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if !sawAbort {
+		t.Fatal("missing abort chunk")
+	}
+	event := <-finishEvent
+	if event["isAborted"] != true {
+		t.Fatalf("isAborted = %#v, want true", event["isAborted"])
+	}
+}
+
+func TestToUIMessageStream_AbortErrorProducesAbortChunk(t *testing.T) {
+	stream := &errorTextStream{err: context.Canceled}
+	chunks, errs := ToUIMessageStream(context.Background(), stream)
+	var got []UIMessageChunk
+	for chunk := range chunks {
+		got = append(got, chunk)
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v, want nil for abort stream", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("chunks = %#v, want start and abort", got)
+	}
+	if got[1]["type"] != "abort" || got[1]["reason"] != context.Canceled.Error() {
+		t.Fatalf("abort chunk = %#v", got[1])
+	}
+}
+
+func TestToUIMessageStream_AbortErrorProducesMessageMetadata(t *testing.T) {
+	stream := &errorTextStream{err: context.Canceled}
+	chunks, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{
+		MessageMetadata: func(part map[string]interface{}) map[string]interface{} {
+			return UIMessageChunk{"partType": part["type"]}
+		},
+	})
+	var sawAbortMetadata bool
+	for chunk := range chunks {
+		if chunk["type"] != "message-metadata" {
+			continue
+		}
+		metadata, ok := chunk["messageMetadata"].(map[string]interface{})
+		if ok && metadata["partType"] == string(provider.ChunkTypeAbort) {
+			sawAbortMetadata = true
+		}
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v, want nil for abort stream", err)
+	}
+	if !sawAbortMetadata {
+		t.Fatal("missing abort message metadata")
+	}
+}
+
+func TestToUIMessageStream_IncompleteMetadataOnlyStreamProducesErrorChunk(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "id-0", ModelID: "mock"}},
+	})
+	chunks, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{
+		OnError: func(error) string { return "handled incomplete" },
+	})
+	var got []UIMessageChunk
+	for chunk := range chunks {
+		got = append(got, chunk)
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	last := got[len(got)-1]
+	if last["type"] != "error" || last["errorText"] != "handled incomplete" {
+		t.Fatalf("last chunk = %#v, want handled error", last)
+	}
+	for _, chunk := range got {
+		if chunk["type"] == string(provider.ChunkTypeResponseMetadata) {
+			t.Fatalf("response metadata leaked into UI stream: %#v", got)
+		}
+	}
+}
+
+func TestToUIMessageStream_IncompleteMetadataOnlyStreamProducesErrorMessageMetadata(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "id-0", ModelID: "mock"}},
+	})
+	chunks, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{
+		MessageMetadata: func(part map[string]interface{}) map[string]interface{} {
+			return UIMessageChunk{"partType": part["type"]}
+		},
+	})
+	var sawErrorMetadata bool
+	for chunk := range chunks {
+		if chunk["type"] != "message-metadata" {
+			continue
+		}
+		metadata, ok := chunk["messageMetadata"].(map[string]interface{})
+		if ok && metadata["partType"] == string(provider.ChunkTypeError) {
+			sawErrorMetadata = true
+		}
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if !sawErrorMetadata {
+		t.Fatal("missing error message metadata")
+	}
+}
+
+func TestToUIMessageStream_IncompletePartialOutputFinishesOther(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeTextStart, ID: "text-1"},
+		{Type: provider.ChunkTypeText, ID: "text-1", Text: "hello"},
+	})
+	chunks, errs := ToUIMessageStream(context.Background(), stream)
+	var finish UIMessageChunk
+	for chunk := range chunks {
+		if chunk["type"] == "finish" {
+			finish = chunk
+		}
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if finish["finishReason"] != string(types.FinishReasonOther) {
+		t.Fatalf("finish chunk = %#v, want finishReason other", finish)
+	}
+}
+
+type errorTextStream struct {
+	err error
+}
+
+func (s *errorTextStream) Next() (*provider.StreamChunk, error) {
+	return nil, s.err
+}
+
+func (s *errorTextStream) Close() error {
+	return nil
+}
+
+func (s *errorTextStream) Err() error {
+	return s.err
+}
+
+func TestCreateUIMessageStreamWithOptions_AsyncErrorEmission(t *testing.T) {
+	streamErr := errors.New("boom")
+	chunks, errs := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
+		Execute: func(writer UIMessageStreamWriter) {
+			panic(streamErr)
+		},
+		OnError: func(err error) string {
+			return "ui-error-" + err.Error()
+		},
+	})
+	var got []UIMessageChunk
+	for c := range chunks {
+		got = append(got, c)
+	}
+	if len(got) == 0 {
+		t.Fatalf("expected error chunk")
+	}
+	hasError := false
+	for _, c := range got {
+		if c["type"] == "error" {
+			hasError = true
+		}
+	}
+	if !hasError {
+		t.Fatalf("expected error chunk, got %#v", got)
+	}
+	select {
+	case err := <-errs:
+		if err != nil {
+			t.Fatalf("handled stream error should be emitted as chunk only, got err = %v", err)
+		}
+	default:
+	}
+}
+
+func TestStreamTextResult_ToUIMessageStream_ToolInputAndOutputEventShapes(t *testing.T) {
+	approvalReason := "policy-blocked"
+	toolInputStartMeta, _ := json.Marshal(map[string]interface{}{"provider": "search"})
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{
+			Type: provider.ChunkTypeToolInputStart,
+			ToolCall: &types.ToolCall{
+				ID:               "call-1",
+				ToolName:         "search",
+				Title:            "Search tool",
+				Arguments:        map[string]interface{}{"query": "go"},
+				ProviderExecuted: true,
+				ToolMetadata:     map[string]interface{}{"category": "docs"},
+				Dynamic:          true,
+			},
+			ProviderMetadata: toolInputStartMeta,
+		},
+		{
+			Type: provider.ChunkTypeToolInputDelta,
+			ID:   "call-1",
+			Text: `{"query":"g`,
+		},
+		{
+			Type: provider.ChunkTypeToolInputEnd,
+			ID:   "call-1",
+		},
+		{
+			Type: provider.ChunkTypeToolCall,
+			ToolCall: &types.ToolCall{
+				ID:               "call-1",
+				ToolName:         "search",
+				Title:            "Search tool",
+				Arguments:        map[string]interface{}{"query": "go"},
+				ProviderMetadata: map[string]interface{}{"provider": "search"},
+				ToolMetadata:     map[string]interface{}{"category": "docs"},
+				Dynamic:          true,
+			},
+		},
+		{
+			Type: provider.ChunkTypeToolResult,
+			ToolResult: &types.ToolResult{
+				ToolCallID:       "call-1",
+				Result:           map[string]interface{}{"text": "ok"},
+				ProviderExecuted: false,
+				ProviderMetadata: map[string]interface{}{"provider": "search"},
+				ToolMetadata:     map[string]interface{}{"category": "docs"},
+				Dynamic:          true,
+				Preliminary:      true,
+			},
+		},
+		{
+			Type: provider.ChunkTypeToolResult,
+			ToolResult: &types.ToolResult{
+				ToolCallID:     "call-denied",
+				ApprovalStatus: types.ToolApprovalStatusDenied,
+				ApprovalReason: &approvalReason,
+			},
+		},
+		{
+			Type: provider.ChunkTypeFinish,
+			ID:   "ignored",
+		},
+	})
+	res := &StreamTextResult{stream: stream}
+	chunks, errs := res.ToUIMessageStream(context.Background())
+
+	var got []UIMessageChunk
+	for chunk := range chunks {
+		got = append(got, chunk)
+	}
+	var (
+		toolInputStart      UIMessageChunk
+		toolInputDelta      UIMessageChunk
+		toolInputAvailable  UIMessageChunk
+		toolOutputAvailable UIMessageChunk
+		toolOutputDenied    UIMessageChunk
+		finishStepCount     int
+	)
+	for _, chunk := range got {
+		switch chunk["type"] {
+		case "tool-input-start":
+			toolInputStart = chunk
+		case "tool-input-delta":
+			toolInputDelta = chunk
+		case "tool-input-available":
+			toolInputAvailable = chunk
+		case "tool-output-available":
+			toolOutputAvailable = chunk
+		case "tool-output-denied":
+			toolOutputDenied = chunk
+		case "finish-step":
+			finishStepCount++
+		}
+	}
+	if gotStep := toolInputStart["toolCallId"]; gotStep != "call-1" {
+		t.Fatalf("tool-input-start.toolCallId = %v, want call-1", gotStep)
+	}
+	if gotStep := toolInputDelta["toolCallId"]; gotStep != "call-1" {
+		t.Fatalf("tool-input-delta.toolCallId = %v, want call-1", gotStep)
+	}
+	if gotDelta := toolInputDelta["inputTextDelta"]; gotDelta != "{\"query\":\"g" {
+		t.Fatalf("tool-input-delta.inputTextDelta = %v, want {\\\"query\\\":\\\"g", gotDelta)
+	}
+	if gotMeta, ok := toolInputStart["providerMetadata"].(map[string]interface{}); !ok || gotMeta["provider"] != "search" {
+		t.Fatalf("tool-input-start.providerMetadata = %#v", gotMeta)
+	}
+	if gotMeta, ok := toolInputStart["toolMetadata"].(map[string]interface{}); !ok || gotMeta["category"] != "docs" {
+		t.Fatalf("tool-input-start.toolMetadata = %#v", gotMeta)
+	}
+	if gotDynamic := toolInputStart["dynamic"]; gotDynamic != true {
+		t.Fatalf("tool-input-start.dynamic = %v, want true", gotDynamic)
+	}
+	if gotTitle := toolInputStart["title"]; gotTitle != "Search tool" {
+		t.Fatalf("tool-input-start.title = %v, want Search tool", gotTitle)
+	}
+	if gotInput := toolInputAvailable["input"]; gotInput == nil {
+		t.Fatalf("tool-input-available.input = %#v", gotInput)
+	}
+	if gotMeta, ok := toolOutputAvailable["providerMetadata"].(map[string]interface{}); !ok || gotMeta["provider"] != "search" {
+		t.Fatalf("tool-output-available.providerMetadata = %#v", gotMeta)
+	}
+	if gotMeta, ok := toolOutputAvailable["toolMetadata"].(map[string]interface{}); !ok || gotMeta["category"] != "docs" {
+		t.Fatalf("tool-output-available.toolMetadata = %#v", gotMeta)
+	}
+	if gotOutput := toolOutputAvailable["output"]; gotOutput == nil {
+		t.Fatalf("tool-output-available.output = %#v", gotOutput)
+	}
+	if gotPreliminary := toolOutputAvailable["preliminary"]; gotPreliminary != true {
+		t.Fatalf("tool-output-available.preliminary = %v, want true", gotPreliminary)
+	}
+	if _, ok := toolOutputDenied["toolCallId"]; !ok {
+		t.Fatalf("tool-output-denied.toolCallId missing: %#v", toolOutputDenied)
+	}
+	if finishStepCount != 1 {
+		t.Fatalf("finish-step count = %d, want 1", finishStepCount)
+	}
+	select {
+	case err := <-errs:
+		if err != nil {
+			t.Fatalf("unexpected err = %v", err)
+		}
+	default:
+	}
+}
+
+func TestStreamTextResult_ToUIMessageStream_ContinuationCallbackState(t *testing.T) {
+	genID := "msg-continuation"
+	sendStart := true
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: "hello"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	})
+	res := &StreamTextResult{stream: stream}
+	finishEvent := make(chan map[string]interface{}, 1)
+	stepEvent := make(chan map[string]interface{}, 1)
+
+	chunks, errs := res.ToUIMessageStream(context.Background(), UIMessageStreamResultOptions{
+		SendStart: &sendStart,
+		GenerateMessageID: func() string {
+			return genID
+		},
+		OriginalMessages: []UIMessageChunk{
+			{
+				"id":    genID,
+				"role":  "assistant",
+				"parts": []interface{}{UIMessageChunk{"type": "text", "text": "old", "state": "done"}},
+			},
+		},
+		OnStepFinish: func(event map[string]interface{}) {
+			stepEvent <- event
+		},
+		OnFinish: func(event map[string]interface{}) {
+			finishEvent <- event
+		},
+	})
+
+	var got []UIMessageChunk
+	for chunk := range chunks {
+		got = append(got, chunk)
+	}
+	if len(got) == 0 {
+		t.Fatalf("expected chunks, got none")
+	}
+	events := 0
+	if msg := <-stepEvent; msg["isContinuation"] != true {
+		t.Fatalf("step.isContinuation = %v, want true", msg["isContinuation"])
+	} else {
+		events++
+	}
+	if msg := <-finishEvent; msg["isContinuation"] != true {
+		t.Fatalf("finish.isContinuation = %v, want true", msg["isContinuation"])
+	} else {
+		events++
+	}
+	if events != 2 {
+		t.Fatalf("expected both callbacks to fire, got %d", events)
+	}
+	select {
+	case err := <-errs:
+		if err != nil {
+			t.Fatalf("unexpected err = %v", err)
+		}
+	default:
+	}
+}
+
+func TestCreateUIMessageStreamWithOptions_WriteAndCallbacks(t *testing.T) {
+	ch1 := make(chan UIMessageChunk)
+	go func() {
+		ch1 <- UIMessageChunk{"type": "merged"}
+		close(ch1)
+	}()
+
+	stepDone := make(chan struct{}, 1)
+	finishDone := make(chan struct{}, 1)
+
+	chunks, errs := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
+		Execute: func(writer UIMessageStreamWriter) {
+			writer.Write(UIMessageChunk{"type": "start"})
+			writer.Merge(ch1)
+			writer.Write(UIMessageChunk{"type": "finish-step"})
+		},
+		OnError: func(err error) string {
+			return err.Error()
+		},
+		OnStepFinish: func(_ map[string]interface{}) {
+			stepDone <- struct{}{}
+		},
+		OnFinish: func(_ map[string]interface{}) {
+			finishDone <- struct{}{}
+		},
+	})
+
+	var got []UIMessageChunk
+	for chunk := range chunks {
+		got = append(got, chunk)
+	}
+	if len(got) != 3 {
+		t.Fatalf("len(chunks) = %d, want 3", len(got))
+	}
+	select {
+	case err := <-errs:
+		if err != nil {
+			t.Fatalf("unexpected err = %v", err)
+		}
+	default:
+	}
+	<-stepDone
+	<-finishDone
+}
+
+func TestPipeUIMessageStreamToResponse_WithConsumeSSEStream(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: "hello"},
+		{Type: provider.ChunkTypeFinish},
+	})
+	res := &StreamTextResult{stream: stream}
+
+	buf := &bytes.Buffer{}
+	var consumeBuf bytes.Buffer
+	httpRes, err := CreateUIMessageStreamResponseWithInit(context.Background(), res, &UIMessageStreamResponseInit{
+		ConsumeSSEStream: func(r io.Reader) error {
+			_, err := io.Copy(&consumeBuf, r)
+			return err
+		},
+		StatusText: "OK",
+	})
+	if err != nil {
+		t.Fatalf("CreateUIMessageStreamResponseWithInit() error = %v", err)
+	}
+	if httpRes.Status != "OK" {
+		t.Fatalf("status text = %q", httpRes.Status)
+	}
+	_, err = io.Copy(buf, httpRes.Body)
+	if err != nil {
+		t.Fatalf("copy body = %v", err)
+	}
+	if got := buf.Len(); got == 0 {
+		t.Fatalf("response body is empty")
+	}
+	if got := consumeBuf.Len(); got == 0 {
+		t.Fatalf("consume stream body is empty")
+	}
+}
+
+func TestToUIMessageChunkRedactsErrorByDefault(t *testing.T) {
+	chunk, ok := ToUIMessageChunk(provider.StreamChunk{
+		Type: provider.ChunkTypeError,
+		Text: "database password leaked",
+	}, UIMessageStreamResultOptions{})
+	if !ok {
+		t.Fatal("expected error chunk")
+	}
+	if chunk["errorText"] != "An error occurred." {
+		t.Fatalf("errorText = %#v, want redacted default", chunk["errorText"])
+	}
+
+	chunk, ok = ToUIMessageChunk(provider.StreamChunk{
+		Type: provider.ChunkTypeError,
+		Text: "database password leaked",
+	}, UIMessageStreamResultOptions{OnError: func(err error) string { return "handled: " + err.Error() }})
+	if !ok {
+		t.Fatal("expected error chunk")
+	}
+	if chunk["errorText"] != "handled: database password leaked" {
+		t.Fatalf("custom errorText = %#v", chunk["errorText"])
+	}
+}
+
+func TestToUIMessageStream_ErrorChunkEmitsFinishStep(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeTextStart, ID: "1"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "Hello"},
+		{Type: provider.ChunkTypeError, Text: "chunk error"},
+	})
+	chunks, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{
+		OnError: func(error) string { return "handled chunk error" },
+	})
+	var got []UIMessageChunk
+	for chunk := range chunks {
+		got = append(got, chunk)
+	}
+	if err := <-errs; err != nil {
+		t.Fatalf("unexpected stream error = %v", err)
+	}
+	var sawError bool
+	var sawFinishStepAfterError bool
+	for _, chunk := range got {
+		switch chunk["type"] {
+		case "error":
+			sawError = true
+		case "finish-step":
+			if sawError {
+				sawFinishStepAfterError = true
+			}
+		}
+	}
+	if !sawFinishStepAfterError {
+		t.Fatalf("UI chunks after error did not include finish-step: %#v", got)
+	}
+	last := got[len(got)-1]
+	if last["type"] != "finish" || last["finishReason"] != string(types.FinishReasonError) {
+		t.Fatalf("final finish chunk = %#v, want finish reason error", last)
+	}
+}
+
+func TestToUIMessageStream_IncompletePartialOutputEmitsFinishStep(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeTextStart, ID: "1"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "Hello"},
+	})
+	chunks, errs := ToUIMessageStream(context.Background(), stream)
+	var got []UIMessageChunk
+	for chunk := range chunks {
+		got = append(got, chunk)
+	}
+	if err := <-errs; err != nil {
+		t.Fatalf("unexpected stream error = %v", err)
+	}
+	var sawFinishStep bool
+	for _, chunk := range got {
+		if chunk["type"] == "finish-step" {
+			sawFinishStep = true
+			break
+		}
+	}
+	if !sawFinishStep {
+		t.Fatalf("UI chunks did not include finish-step: %#v", got)
+	}
+	last := got[len(got)-1]
+	if last["type"] != "finish" || last["finishReason"] != string(types.FinishReasonOther) {
+		t.Fatalf("final finish chunk = %#v, want finish reason other", last)
+	}
+}
+
+func TestCreateUIMessageStreamPropagatesApprovalSignature(t *testing.T) {
+	var responseMessage UIMessageChunk
+	chunks, errs := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
+		OnFinish: func(event map[string]interface{}) {
+			responseMessage, _ = event["responseMessage"].(UIMessageChunk)
+		},
+		Execute: func(writer UIMessageStreamWriter) {
+			writer.Write(UIMessageChunk{"type": "tool-input-available", "toolCallId": "call-1", "toolName": "lookup", "input": map[string]interface{}{"q": "docs"}})
+			writer.Write(UIMessageChunk{"type": "tool-approval-request", "toolCallId": "call-1", "approvalId": "approval-1", "signature": "test-sig"})
+		},
+	})
+
+	for range chunks {
+	}
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("unexpected stream error: %v", err)
+		}
+	}
+	for _, part := range uiParts(responseMessage) {
+		m, _ := part.(UIMessageChunk)
+		if m == nil {
+			if asMap, ok := part.(map[string]interface{}); ok {
+				m = UIMessageChunk(asMap)
+			}
+		}
+		if m == nil || m["type"] != "tool-lookup" {
+			continue
+		}
+		approval, ok := m["approval"].(UIMessageChunk)
+		if !ok {
+			if asMap, ok := m["approval"].(map[string]interface{}); ok {
+				approval = UIMessageChunk(asMap)
+			}
+		}
+		if approval == nil || approval["signature"] != "test-sig" {
+			t.Fatalf("approval signature not propagated: %#v", m["approval"])
+		}
+		return
+	}
+	t.Fatalf("tool part not found in response message: %#v", responseMessage)
+}
+
+func TestToolApprovalResultExpandsToTSUIChunks(t *testing.T) {
+	reason := "policy"
+	tests := []struct {
+		name   string
+		result types.ToolResult
+		want   []UIMessageChunk
+	}{
+		{
+			name: "user approval request",
+			result: types.ToolResult{
+				ToolCallID:        "call-1",
+				ApprovalID:        "approval-1",
+				ToolName:          "lookup",
+				Input:             map[string]interface{}{"q": "docs"},
+				ApprovalStatus:    types.ToolApprovalStatusUserApproval,
+				ApprovalSignature: "sig-1",
+			},
+			want: []UIMessageChunk{{
+				"type":       "tool-approval-request",
+				"approvalId": "approval-1",
+				"toolCallId": "call-1",
+				"signature":  "sig-1",
+			}},
+		},
+		{
+			name: "automatic approval",
+			result: types.ToolResult{
+				ToolCallID:        "call-2",
+				ApprovalID:        "approval-2",
+				ToolName:          "lookup",
+				Result:            map[string]interface{}{"ok": true},
+				ApprovalStatus:    types.ToolApprovalStatusApproved,
+				ApprovalReason:    &reason,
+				ApprovalSignature: "sig-2",
+			},
+			want: []UIMessageChunk{
+				{
+					"type":        "tool-approval-request",
+					"approvalId":  "approval-2",
+					"toolCallId":  "call-2",
+					"isAutomatic": true,
+					"signature":   "sig-2",
+				},
+				{
+					"type":       "tool-approval-response",
+					"approvalId": "approval-2",
+					"approved":   true,
+					"reason":     "policy",
+				},
+				{
+					"type":       "tool-output-available",
+					"toolCallId": "call-2",
+					"output":     map[string]interface{}{"ok": true},
+				},
+			},
+		},
+		{
+			name: "automatic denial",
+			result: types.ToolResult{
+				ToolCallID:        "call-3",
+				ApprovalID:        "approval-3",
+				ToolName:          "lookup",
+				ApprovalStatus:    types.ToolApprovalStatusDenied,
+				ApprovalReason:    &reason,
+				ApprovalSignature: "sig-3",
+			},
+			want: []UIMessageChunk{
+				{
+					"type":        "tool-approval-request",
+					"approvalId":  "approval-3",
+					"toolCallId":  "call-3",
+					"isAutomatic": true,
+					"signature":   "sig-3",
+				},
+				{
+					"type":       "tool-approval-response",
+					"approvalId": "approval-3",
+					"approved":   false,
+					"reason":     "policy",
+				},
+				{
+					"type":       "tool-output-denied",
+					"toolCallId": "call-3",
+				},
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := toUIMessageChunks(provider.StreamChunk{
+				Type:       provider.ChunkTypeToolResult,
+				ToolResult: &tc.result,
+			}, UIMessageStreamResultOptions{})
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("chunks = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
+// ports #105: a user-approval ToolResult with an ApprovalReason must expand
+// to a tool-approval-request UI chunk carrying "reason" (request reason,
+// shown to the approver), distinct from the approval response reason.
+func TestToolApprovalResultUserApprovalReasonExpandsToUIChunkReason(t *testing.T) {
+	reason := "requires operator review"
+	got := toUIMessageChunks(provider.StreamChunk{
+		Type: provider.ChunkTypeToolResult,
+		ToolResult: &types.ToolResult{
+			ToolCallID:     "call-1",
+			ApprovalID:     "approval-1",
+			ToolName:       "lookup",
+			Input:          map[string]interface{}{"q": "docs"},
+			ApprovalStatus: types.ToolApprovalStatusUserApproval,
+			ApprovalReason: &reason,
+		},
+	}, UIMessageStreamResultOptions{})
+	want := []UIMessageChunk{{
+		"type":       "tool-approval-request",
+		"approvalId": "approval-1",
+		"toolCallId": "call-1",
+		"reason":     reason,
+	}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("chunks = %#v, want %#v", got, want)
+	}
+}
+
+// End-to-end: StreamText -> ToUIMessageStream carries the request reason
+// through to the tool part's approval.reason in the final response message.
+func TestStreamTextResult_ToUIMessageStream_ApprovalRequestReasonSurvives(t *testing.T) {
+	reason := "requires operator review"
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{
+			Type: provider.ChunkTypeToolResult,
+			ToolResult: &types.ToolResult{
+				ToolCallID:     "call-1",
+				ApprovalID:     "approval-1",
+				ToolName:       "needs_human",
+				Input:          map[string]interface{}{},
+				ApprovalStatus: types.ToolApprovalStatusUserApproval,
+				ApprovalReason: &reason,
+			},
+		},
+		{Type: provider.ChunkTypeFinish},
+	})
+	res := &StreamTextResult{stream: stream}
+	chunks, errs := res.ToUIMessageStream(context.Background())
+
+	var toolPart UIMessageChunk
+	for chunk := range chunks {
+		if chunk["type"] != "tool-approval-request" {
+			continue
+		}
+		if r, ok := chunk["reason"].(string); !ok || r != reason {
+			t.Fatalf("tool-approval-request.reason = %#v, want %q", chunk["reason"], reason)
+		}
+		toolPart = chunk
+	}
+	if toolPart == nil {
+		t.Fatal("expected a tool-approval-request chunk")
+	}
+	select {
+	case err := <-errs:
+		if err != nil {
+			t.Fatalf("unexpected err = %v", err)
+		}
+	default:
+	}
+}
+
+func TestCreateUIMessageStreamAcceptsPrototypeNameStateIDs(t *testing.T) {
+	var seenErrors []string
+	var responseMessage UIMessageChunk
+	chunks, errs := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
+		OnError: func(err error) string {
+			seenErrors = append(seenErrors, err.Error())
+			return "redacted"
+		},
+		OnFinish: func(event map[string]interface{}) {
+			responseMessage, _ = event["responseMessage"].(UIMessageChunk)
+		},
+		Execute: func(writer UIMessageStreamWriter) {
+			writer.Write(UIMessageChunk{"type": "text-start", "id": "__proto__"})
+			writer.Write(UIMessageChunk{"type": "text-delta", "id": "__proto__", "delta": "polluted"})
+			writer.Write(UIMessageChunk{"type": "text-end", "id": "__proto__"})
+			writer.Write(UIMessageChunk{"type": "reasoning-start", "id": "constructor"})
+			writer.Write(UIMessageChunk{"type": "reasoning-delta", "id": "constructor", "delta": "because"})
+			writer.Write(UIMessageChunk{"type": "reasoning-end", "id": "constructor"})
+			writer.Write(UIMessageChunk{"type": "tool-input-start", "toolCallId": "prototype", "toolName": "lookup"})
+			writer.Write(UIMessageChunk{"type": "tool-input-delta", "toolCallId": "prototype", "inputTextDelta": `{"q":"docs"}`})
+		},
+	})
+
+	for range chunks {
+	}
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("unexpected stream error: %v", err)
+		}
+	}
+	if len(seenErrors) != 0 {
+		t.Fatalf("prototype-name IDs should be accepted like TS null-prototype maps, got errors: %v", seenErrors)
+	}
+	var sawText, sawReasoning, sawTool bool
+	for _, part := range uiParts(responseMessage) {
+		m, _ := part.(UIMessageChunk)
+		if m == nil {
+			if asMap, ok := part.(map[string]interface{}); ok {
+				m = UIMessageChunk(asMap)
+			}
+		}
+		if m == nil {
+			continue
+		}
+		switch m["type"] {
+		case "text":
+			sawText = m["text"] == "polluted" && m["state"] == "done"
+		case "reasoning":
+			sawReasoning = m["text"] == "because" && m["state"] == "done"
+		case "tool-lookup":
+			input := map[string]interface{}{}
+			switch v := m["input"].(type) {
+			case UIMessageChunk:
+				input = v
+			case map[string]interface{}:
+				input = v
+			}
+			sawTool = m["toolCallId"] == "prototype" && m["state"] == "input-streaming" && input["q"] == "docs"
+		}
+	}
+	if !sawText || !sawReasoning || !sawTool {
+		t.Fatalf("prototype-name IDs were not stored as ordinary map keys: %#v", responseMessage)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Ports of create-ui-message-stream.test.ts's operation-level outcome cases
+// (audit rows #103/#10). collectOutcome drains the stream and returns what
+// OnEnd observed.
+// ---------------------------------------------------------------------------
+
+func collectOutcome(t *testing.T, execute func(writer UIMessageStreamWriter)) map[string]interface{} {
+	t.Helper()
+	var end map[string]interface{}
+	chunks, errs := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
+		Execute: execute,
+		OnError: func(err error) string { return err.Error() },
+		OnEnd:   func(event map[string]interface{}) { end = event },
+	})
+	for range chunks {
+	}
+	<-errs
+	if end == nil {
+		t.Fatal("OnEnd was not called")
+	}
+	return end
+}
+
+func outcomeStatus(t *testing.T, end map[string]interface{}) string {
+	t.Helper()
+	outcome, ok := end["outcome"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("outcome missing or wrong type: %#v", end["outcome"])
+	}
+	status, _ := outcome["status"].(string)
+	return status
+}
+
+// ports "undeclaredEof" from the outcome inline-snapshot test: no outcome
+// declared, no error -> status stays unknown.
+func TestCreateUIMessageStreamWithOptions_Outcome_UndeclaredEOF(t *testing.T) {
+	end := collectOutcome(t, func(writer UIMessageStreamWriter) {})
+	if got := outcomeStatus(t, end); got != "unknown" {
+		t.Fatalf("status = %q, want unknown", got)
+	}
+	if end["isAborted"] != false {
+		t.Fatalf("isAborted = %v, want false", end["isAborted"])
+	}
+}
+
+// ports "errorChunk": writing a literal {type:'error'} chunk (not a real Go
+// panic) does not by itself declare a failed outcome.
+func TestCreateUIMessageStreamWithOptions_Outcome_ErrorChunkDoesNotFail(t *testing.T) {
+	end := collectOutcome(t, func(writer UIMessageStreamWriter) {
+		writer.Write(UIMessageChunk{"type": "error", "errorText": "recoverable error"})
+	})
+	if got := outcomeStatus(t, end); got != "unknown" {
+		t.Fatalf("status = %q, want unknown", got)
+	}
+}
+
+// ports "declaredCompleted".
+func TestCreateUIMessageStreamWithOptions_Outcome_DeclaredCompleted(t *testing.T) {
+	end := collectOutcome(t, func(writer UIMessageStreamWriter) {
+		writer.SetOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeCompleted})
+	})
+	if got := outcomeStatus(t, end); got != "completed" {
+		t.Fatalf("status = %q, want completed", got)
+	}
+	if end["isAborted"] != false {
+		t.Fatalf("isAborted = %v, want false", end["isAborted"])
+	}
+}
+
+// ports "declaredCompletedBeforeFailed": the first non-unknown declared
+// outcome wins; a later SetOutcome is ignored.
+func TestCreateUIMessageStreamWithOptions_Outcome_FirstDeclaredWins(t *testing.T) {
+	end := collectOutcome(t, func(writer UIMessageStreamWriter) {
+		writer.SetOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeCompleted})
+		writer.SetOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeFailed, Error: errors.New("ignored")})
+	})
+	if got := outcomeStatus(t, end); got != "completed" {
+		t.Fatalf("status = %q, want completed", got)
+	}
+}
+
+// ports "declaredFailed".
+func TestCreateUIMessageStreamWithOptions_Outcome_DeclaredFailed(t *testing.T) {
+	end := collectOutcome(t, func(writer UIMessageStreamWriter) {
+		writer.SetOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeFailed, Error: errors.New("declared failure")})
+	})
+	if got := outcomeStatus(t, end); got != "failed" {
+		t.Fatalf("status = %q, want failed", got)
+	}
+	outcome := end["outcome"].(map[string]interface{})
+	if err, _ := outcome["error"].(error); err == nil || err.Error() != "declared failure" {
+		t.Fatalf("outcome error = %#v, want declared failure", outcome["error"])
+	}
+}
+
+// ports "declaredAborted".
+func TestCreateUIMessageStreamWithOptions_Outcome_DeclaredAborted(t *testing.T) {
+	end := collectOutcome(t, func(writer UIMessageStreamWriter) {
+		writer.SetOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeAborted})
+	})
+	if got := outcomeStatus(t, end); got != "aborted" {
+		t.Fatalf("status = %q, want aborted", got)
+	}
+	if end["isAborted"] != true {
+		t.Fatalf("isAborted = %v, want true", end["isAborted"])
+	}
+}
+
+// ports "executeRejection": an Execute panic always reports failed.
+func TestCreateUIMessageStreamWithOptions_Outcome_ExecutePanicFails(t *testing.T) {
+	end := collectOutcome(t, func(writer UIMessageStreamWriter) {
+		panic(errors.New("execute failure"))
+	})
+	if got := outcomeStatus(t, end); got != "failed" {
+		t.Fatalf("status = %q, want failed", got)
+	}
+}
+
+// ports "executeRejectionAfterCompleted": a fatal failure always overrides an
+// already-declared outcome, even "completed".
+func TestCreateUIMessageStreamWithOptions_Outcome_FatalFailureOverridesDeclared(t *testing.T) {
+	end := collectOutcome(t, func(writer UIMessageStreamWriter) {
+		writer.SetOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeCompleted})
+		panic(errors.New("execute failure after completion"))
+	})
+	if got := outcomeStatus(t, end); got != "failed" {
+		t.Fatalf("status = %q, want failed", got)
+	}
+}
+
+// ports the "should report consumer cancellation when the consumer cancels
+// before an outcome is declared" case. Go has no reader.cancel(); the
+// closest analog is the caller cancelling ctx before Execute returns.
+func TestCreateUIMessageStreamWithOptions_Outcome_ConsumerCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	release := make(chan struct{})
+	var end map[string]interface{}
+	chunks, errs := CreateUIMessageStreamWithOptions(ctx, UIMessageStreamOptions{
+		Execute: func(writer UIMessageStreamWriter) {
+			writer.Write(UIMessageChunk{"type": "start"})
+			<-release
+		},
+		OnError: func(err error) string { return err.Error() },
+		OnEnd:   func(event map[string]interface{}) { end = event },
+	})
+
+	if _, ok := <-chunks; !ok {
+		t.Fatal("expected a start chunk")
+	}
+	cancel()
+	close(release)
+
+	for range chunks {
+	}
+	<-errs
+
+	if end == nil {
+		t.Fatal("OnEnd was not called")
+	}
+	if got := outcomeStatus(t, end); got != "unknown" {
+		t.Fatalf("status = %q, want unknown", got)
+	}
+	if end["isAborted"] != false {
+		t.Fatalf("isAborted = %v, want false", end["isAborted"])
+	}
+	if end["isCancelled"] != true {
+		t.Fatalf("isCancelled = %v, want true", end["isCancelled"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Ports of to-ui-message-stream.ts's setSourceOutcome/failOutcome cases
+// (audit row #103): ToUIMessageStream derives completed/failed/aborted from
+// the source stream's own finish/abort/error parts.
+// ---------------------------------------------------------------------------
+
+// firstThenBlockTextStream returns a fixed first chunk, then blocks on Next()
+// until release is closed, at which point it reports EOF.
+type firstThenBlockTextStream struct {
+	first   *provider.StreamChunk
+	sent    bool
+	release chan struct{}
+}
+
+func (s *firstThenBlockTextStream) Next() (*provider.StreamChunk, error) {
+	if !s.sent {
+		s.sent = true
+		return s.first, nil
+	}
+	<-s.release
+	return nil, io.EOF
+}
+
+func (s *firstThenBlockTextStream) Close() error { return nil }
+func (s *firstThenBlockTextStream) Err() error   { return nil }
+
+// TestToUIMessageStream_ConsumerCancellationSetsIsCancelled ports the
+// consumer-cancellation case (audit row #10) to ToUIMessageStream: cancelling
+// ctx while the source stream is still open must call OnEnd with
+// isCancelled: true and isAborted: false, not report isAborted: true.
+func TestToUIMessageStream_ConsumerCancellationSetsIsCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	release := make(chan struct{})
+	stream := &firstThenBlockTextStream{
+		first:   &provider.StreamChunk{Type: provider.ChunkTypeText, ID: "t1", Text: "hi"},
+		release: release,
+	}
+
+	var end map[string]interface{}
+	var mu sync.Mutex
+	chunks, errs := ToUIMessageStream(ctx, stream, UIMessageStreamResultOptions{
+		OnEnd: func(event map[string]interface{}) {
+			mu.Lock()
+			end = event
+			mu.Unlock()
+		},
+	})
+
+	// Drain the start + text chunks that precede the block.
+	<-chunks
+	<-chunks
+
+	cancel()
+	close(release)
+
+	for range chunks {
+	}
+	<-errs
+
+	mu.Lock()
+	defer mu.Unlock()
+	if end == nil {
+		t.Fatal("OnEnd was not called")
+	}
+	if end["isAborted"] != false {
+		t.Fatalf("isAborted = %v, want false", end["isAborted"])
+	}
+	if end["isCancelled"] != true {
+		t.Fatalf("isCancelled = %v, want true", end["isCancelled"])
+	}
+}
+
+// ports setSourceOutcome({status: 'completed'}) on part.type === 'finish'.
+func TestToUIMessageStream_Outcome_CompletedOnFinishChunk(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, ID: "text-1", Text: "Hello"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	})
+	var end map[string]interface{}
+	chunks, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{
+		OnEnd: func(event map[string]interface{}) { end = event },
+	})
+	for range chunks {
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if got := outcomeStatus(t, end); got != "completed" {
+		t.Fatalf("status = %q, want completed", got)
+	}
+	if end["isAborted"] != false {
+		t.Fatalf("isAborted = %v, want false", end["isAborted"])
+	}
+}
+
+// ports setSourceOutcome({status: 'aborted'}) on part.type === 'abort'.
+func TestToUIMessageStream_Outcome_AbortedOnAbortError(t *testing.T) {
+	stream := &errorTextStream{err: context.Canceled}
+	var end map[string]interface{}
+	chunks, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{
+		OnEnd: func(event map[string]interface{}) { end = event },
+	})
+	for range chunks {
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if got := outcomeStatus(t, end); got != "aborted" {
+		t.Fatalf("status = %q, want aborted", got)
+	}
+	if end["isAborted"] != true {
+		t.Fatalf("isAborted = %v, want true", end["isAborted"])
+	}
+}
+
+// ports setSourceOutcome({status: 'failed', error}) on part.type === 'error'.
+func TestToUIMessageStream_Outcome_FailedOnErrorChunk(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeTextStart, ID: "1"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "Hello"},
+		{Type: provider.ChunkTypeError, Text: "chunk error"},
+	})
+	var end map[string]interface{}
+	chunks, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{
+		OnError: func(error) string { return "handled chunk error" },
+		OnEnd:   func(event map[string]interface{}) { end = event },
+	})
+	for range chunks {
+	}
+	if err := <-errs; err != nil {
+		t.Fatalf("unexpected stream error = %v", err)
+	}
+	if got := outcomeStatus(t, end); got != "failed" {
+		t.Fatalf("status = %q, want failed", got)
+	}
+	outcome := end["outcome"].(map[string]interface{})
+	if err, _ := outcome["error"].(error); err == nil || err.Error() != "chunk error" {
+		t.Fatalf("outcome error = %#v, want chunk error", outcome["error"])
+	}
+}
+
+// ports failOutcome on a fatal transport-level stream error (not an abort).
+func TestToUIMessageStream_Outcome_FailedOnTransportError(t *testing.T) {
+	streamErr := errors.New("transport failure")
+	stream := &errorTextStream{err: streamErr}
+	var end map[string]interface{}
+	chunks, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{
+		OnError: func(error) string { return "handled" },
+		OnEnd:   func(event map[string]interface{}) { end = event },
+	})
+	for range chunks {
+	}
+	if err, ok := <-errs; !ok || err != streamErr {
+		t.Fatalf("err = %v, want %v", err, streamErr)
+	}
+	if got := outcomeStatus(t, end); got != "failed" {
+		t.Fatalf("status = %q, want failed", got)
+	}
+}
+
+// TestUIMessageStreamError_MissingToolInput ports the "no tool-input-start
+// before tool-input-delta" case from TS process-ui-message-stream.ts, and
+// asserts the typed AI_UIMessageStreamError parity fields (A2-6).
+func TestUIMessageStreamError_MissingToolInput(t *testing.T) {
+	var captured error
+	stream, errCh := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
+		Execute: func(writer UIMessageStreamWriter) {
+			writer.Write(UIMessageChunk{
+				"type":           "tool-input-delta",
+				"toolCallId":     "call_missing",
+				"inputTextDelta": "{",
+			})
+		},
+		OnError: func(err error) string {
+			captured = err
+			return err.Error()
+		},
+	})
+	for range stream {
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("unexpected stream error: %v", err)
+	}
+
+	if captured == nil {
+		t.Fatal("expected OnError to be called")
+	}
+	if !IsUIMessageStreamError(captured) {
+		t.Fatalf("expected *UIMessageStreamError, got %T: %v", captured, captured)
+	}
+	var target *UIMessageStreamError
+	if !errors.As(captured, &target) {
+		t.Fatalf("errors.As failed for %T", captured)
+	}
+	if target.ChunkType != "tool-input-delta" {
+		t.Errorf("ChunkType = %q, want %q", target.ChunkType, "tool-input-delta")
+	}
+	if target.ChunkID != "call_missing" {
+		t.Errorf("ChunkID = %q, want %q", target.ChunkID, "call_missing")
+	}
+	wantMsg := `Received tool-input-delta for missing tool call with ID "call_missing". Ensure a "tool-input-start" chunk is sent before any "tool-input-delta" chunks.`
+	if target.Error() != wantMsg {
+		t.Errorf("Error() = %q, want %q", target.Error(), wantMsg)
+	}
+}
+
+// TestUIMessageStreamError_MissingTextDelta ports the "no text-start before
+// text-delta" case from TS process-ui-message-stream.ts (A2-6).
+func TestUIMessageStreamError_MissingTextDelta(t *testing.T) {
+	var captured error
+	stream, errCh := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
+		Execute: func(writer UIMessageStreamWriter) {
+			writer.Write(UIMessageChunk{"type": "text-delta", "id": "text_missing", "delta": "hi"})
+		},
+		OnError: func(err error) string {
+			captured = err
+			return err.Error()
+		},
+	})
+	for range stream {
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("unexpected stream error: %v", err)
+	}
+
+	var target *UIMessageStreamError
+	if !errors.As(captured, &target) {
+		t.Fatalf("expected *UIMessageStreamError, got %T", captured)
+	}
+	if target.ChunkType != "text-delta" || target.ChunkID != "text_missing" {
+		t.Errorf("unexpected fields: ChunkType=%q ChunkID=%q", target.ChunkType, target.ChunkID)
+	}
+}
+
+// TestUIMessageStreamError_MissingReasoningEnd ports the "no reasoning-start
+// before reasoning-end" case from TS process-ui-message-stream.ts (A2-6).
+func TestUIMessageStreamError_MissingReasoningEnd(t *testing.T) {
+	var captured error
+	stream, errCh := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
+		Execute: func(writer UIMessageStreamWriter) {
+			writer.Write(UIMessageChunk{"type": "reasoning-end", "id": "reasoning_missing"})
+		},
+		OnError: func(err error) string {
+			captured = err
+			return err.Error()
+		},
+	})
+	for range stream {
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("unexpected stream error: %v", err)
+	}
+
+	var target *UIMessageStreamError
+	if !errors.As(captured, &target) {
+		t.Fatalf("expected *UIMessageStreamError, got %T", captured)
+	}
+	if target.ChunkType != "reasoning-end" || target.ChunkID != "reasoning_missing" {
+		t.Errorf("unexpected fields: ChunkType=%q ChunkID=%q", target.ChunkType, target.ChunkID)
+	}
+}
+
+// TestBugReview_UIMessageStream_ConcurrentMergeRace is the permanent
+// regression test for R1-1 (bug-review/R1.md): CreateUIMessageStreamWithOptions's
+// shared uiMessageCallbackState (plain maps, no lock) used to be mutated
+// directly by every writer.Merge(stream) goroutine via processAndEnqueue --
+// any Execute that merges two or more streams (the documented purpose of
+// Merge) raced on map writes to activeText/activeReasoning/partialTools,
+// which could crash the whole process with an unrecoverable "fatal error:
+// concurrent map writes". Every chunk -- from a direct writer.Write call or
+// from any merged stream -- must now funnel through a single serialized
+// consumer before touching uiState. Run with `go test -race -count=5` to
+// catch the race reliably.
+func TestBugReview_UIMessageStream_ConcurrentMergeRace(t *testing.T) {
+	ctx := context.Background()
+	makeStream := func(prefix string, n int) chan UIMessageChunk {
+		ch := make(chan UIMessageChunk)
+		go func() {
+			defer close(ch)
+			for i := 0; i < n; i++ {
+				id := fmt.Sprintf("%s-%d", prefix, i)
+				ch <- UIMessageChunk{"type": "text-start", "id": id}
+				ch <- UIMessageChunk{"type": "text-delta", "id": id, "delta": "x"}
+				ch <- UIMessageChunk{"type": "text-end", "id": id}
+			}
+		}()
+		return ch
+	}
+	out, errCh := CreateUIMessageStreamWithOptions(ctx, UIMessageStreamOptions{
+		Execute: func(writer UIMessageStreamWriter) {
+			writer.Merge(makeStream("a", 200))
+			writer.Merge(makeStream("b", 200))
+		},
+	})
+	var gotTypes int
+	for range out {
+		gotTypes++
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("unexpected stream error: %v", err)
+	}
+	// 2 streams * 200 iterations * 3 chunks each.
+	if want := 2 * 200 * 3; gotTypes != want {
+		t.Fatalf("got %d chunks, want %d", gotTypes, want)
+	}
+}

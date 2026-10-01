@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -12,6 +13,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 )
 
@@ -62,21 +64,27 @@ func (m *LanguageModel) SupportsImageInput() bool {
 
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-	reqBody := m.buildRequestBody(opts, false)
+	reqBody, warnings := m.buildRequestBodyWithWarnings(opts, false)
 
 	var response alibabaResponse
-	err := m.prov.client.PostJSON(ctx, "/chat/completions", reqBody, &response)
+	resp, err := m.prov.client.DoJSONResponse(ctx, internalhttp.Request{
+		Method: http.MethodPost,
+		Path:   "/chat/completions",
+		Body:   reqBody,
+	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-
-	return m.convertResponse(response), nil
+	result := m.convertResponse(response)
+	result.Warnings = append(warnings, result.Warnings...)
+	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	return result, nil
 }
 
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
 	// Build request body with streaming enabled
-	reqBody := m.buildRequestBody(opts, true)
+	reqBody, warnings := m.buildRequestBodyWithWarnings(opts, true)
 
 	// Make streaming API request
 	httpResp, err := m.prov.client.DoStream(ctx, internalhttp.Request{
@@ -95,50 +103,108 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	if httpResp.StatusCode != 200 {
 		body, _ := io.ReadAll(httpResp.Body)
 		httpResp.Body.Close() //nolint:errcheck
-		return nil, fmt.Errorf("LAPI returned status %d: %s", httpResp.StatusCode, string(body))
+		return nil, fmt.Errorf("API returned status %d: %s", httpResp.StatusCode, string(body))
 	}
 
 	// Create stream wrapper
-	return newAlibabaStream(httpResp.Body), nil
+	inner := newAlibabaStream(httpResp.Body, opts.IncludeRawChunks)
+	inner.requestBody = reqBody
+	inner.responseHeaders = providerutils.ExtractHeaders(httpResp.Header)
+	return streaming.NewWarningsStream(inner, warnings), nil
 }
 
 // buildRequestBody builds the API request body
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
+	body, _ := m.buildRequestBodyWithWarnings(opts, stream)
+	return body
+}
+
+func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning) {
 	body := map[string]interface{}{
 		"model":  m.modelID,
 		"stream": stream,
 	}
 
+	alibabaOpts, warnings := providerutils.ResolveOpenAICompatibleProviderOptions("alibaba", opts.ProviderOptions)
+	warnings = append(warnings, providerutils.OpenAICompatibleCommonOptionWarnings(alibabaOpts)...)
+	warnings = append(warnings, providerutils.DeprecatedOpenAICompatibleOptionWarnings(alibabaOpts, map[string]string{
+		"enable-thinking":     "enableThinking",
+		"enable_thinking":     "enableThinking",
+		"thinking-budget":     "thinkingBudget",
+		"thinking_budget":     "thinkingBudget",
+		"parallel-tool-calls": "parallelToolCalls",
+		"parallel_tool_calls": "parallelToolCalls",
+	})...)
+
 	// Extract Alibaba-level cache control (applies to all message types).
 	// When enabled, a CacheControlValidator enforces the 4-breakpoint limit and
 	// accumulates warnings when the limit is exceeded.
 	var validator *CacheControlValidator
-	if opts.ProviderOptions != nil {
-		if alibabaOpts, ok := opts.ProviderOptions["alibaba"].(map[string]interface{}); ok {
-			if cc, ok := alibabaOpts["cacheControl"]; ok && cc != nil {
-				validator = NewCacheControlValidator()
-			}
-		}
+	if cc, ok := alibabaOpts["cacheControl"]; ok && cc != nil {
+		validator = NewCacheControlValidator()
+	}
+
+	// Preserved thinking defaults to on for models that support it; an
+	// explicit option always overrides. Unsupported models without an
+	// explicit option omit the wire field entirely (TS: preserveThinking).
+	var preserveThinkingValue *bool
+	if v, ok := providerutils.OpenAICompatibleBoolOption(alibabaOpts, "preserveThinking", "preserve_thinking", "preserve-thinking"); ok {
+		preserveThinkingValue = &v
+	} else if supportsPreservedThinking(m.modelID) {
+		v := true
+		preserveThinkingValue = &v
+	}
+	preserveThinkingForConverter := preserveThinkingValue != nil && *preserveThinkingValue
+
+	// JSON Schema output is only supported on a subset of models
+	// (supportsJsonSchemaOutput). Elsewhere, JSON mode falls back to
+	// json_object with the schema injected into the system message as a
+	// plain-text instruction (TS: useJsonSchema/useJsonObject).
+	useJsonSchema := false
+	useJsonObject := false
+	var responseSchema map[string]interface{}
+	if opts.ResponseFormat != nil && opts.ResponseFormat.Type == "json" {
+		responseSchema, _ = providerutils.ResponseFormatJSONSchema(opts.ResponseFormat.Schema).(map[string]interface{})
+		useJsonSchema = responseSchema != nil && supportsJsonSchemaOutput(m.modelID)
+		useJsonObject = !useJsonSchema
+	}
+
+	// Build the unified prompt (system message, if any, followed by the rest)
+	// before conversion, matching TS's resolvedPrompt/convertToAlibabaChatMessages
+	// split: JSON-mode injection happens on the LanguageModelV4Prompt, not on
+	// the already-converted wire messages.
+	var promptMessages []types.Message
+	if opts.Prompt.System != "" {
+		promptMessages = append(promptMessages, types.Message{
+			Role:    types.RoleSystem,
+			Content: []types.ContentPart{types.TextContent{Text: opts.Prompt.System}},
+		})
+	}
+	if opts.Prompt.IsMessages() {
+		promptMessages = append(promptMessages, opts.Prompt.Messages...)
+	}
+
+	if useJsonObject && responseSchema != nil {
+		details := fmt.Sprintf(
+			"Alibaba does not support JSON Schema output for model %s. "+
+				"JSON Object mode is used instead. The schema was injected into the system message and will only be validated locally.",
+			m.modelID,
+		)
+		warnings = append(warnings, types.Warning{
+			Type:    "compatibility",
+			Feature: "responseFormat JSON schema",
+			Details: details,
+			Message: details,
+		})
+		promptMessages = providerutils.InjectJSONInstructionIntoMessages(promptMessages, responseSchema, providerutils.InjectJSONInstructionOptions{})
 	}
 
 	// Convert prompt to messages with optional cache control support
 	var allMessages []map[string]interface{}
 
-	if opts.Prompt.System != "" {
-		// Prepend system message (with cache control if set)
+	if len(promptMessages) > 0 {
 		allMessages = append(allMessages,
-			ConvertToAlibabaChatMessages([]types.Message{
-				{
-					Role:    types.RoleSystem,
-					Content: []types.ContentPart{types.TextContent{Text: opts.Prompt.System}},
-				},
-			}, validator)...,
-		)
-	}
-
-	if opts.Prompt.IsMessages() {
-		allMessages = append(allMessages,
-			ConvertToAlibabaChatMessages(opts.Prompt.Messages, validator)...,
+			ConvertToAlibabaChatMessages(promptMessages, validator, preserveThinkingForConverter)...,
 		)
 	} else if opts.Prompt.IsSimple() {
 		allMessages = append(allMessages,
@@ -181,22 +247,26 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["seed"] = *opts.Seed
 	}
 
-	// Response format (structured output)
-	if opts.ResponseFormat != nil {
-		if opts.ResponseFormat.Type == "json" {
-			if opts.ResponseFormat.Schema != nil {
-				body["response_format"] = map[string]interface{}{
-					"type": "json_schema",
-					"json_schema": map[string]interface{}{
-						"schema":      opts.ResponseFormat.Schema,
-						"name":        opts.ResponseFormat.Name,
-						"description": opts.ResponseFormat.Description,
-					},
-				}
-			} else {
-				body["response_format"] = map[string]interface{}{
-					"type": "json_object",
-				}
+	// Response format (structured output). useJsonSchema/useJsonObject were
+	// resolved above (before message conversion) since useJsonObject also
+	// controls whether the schema is injected into the system message.
+	if opts.ResponseFormat != nil && opts.ResponseFormat.Type == "json" {
+		if useJsonSchema {
+			name := opts.ResponseFormat.Name
+			if name == "" {
+				name = "response"
+			}
+			body["response_format"] = map[string]interface{}{
+				"type": "json_schema",
+				"json_schema": map[string]interface{}{
+					"schema":      responseSchema,
+					"name":        name,
+					"description": opts.ResponseFormat.Description,
+				},
+			}
+		} else {
+			body["response_format"] = map[string]interface{}{
+				"type": "json_object",
 			}
 		}
 	}
@@ -234,26 +304,31 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		case types.ReasoningXHigh:
 			body["enable_thinking"] = true
 			body["thinking_budget"] = 14746
-		// ReasoningDefault: omit
+			// ReasoningDefault: omit
 		}
 	}
 
+	providerutils.ApplyOpenAICompatibleCommonRequestOptions(body, alibabaOpts)
 	// Alibaba-specific options from provider metadata
-	if opts.ProviderOptions != nil {
-		if alibabaOpts, ok := opts.ProviderOptions["alibaba"].(map[string]interface{}); ok {
-			// Thinking/reasoning support (overrides top-level Reasoning if both set)
-			if enableThinking, ok := alibabaOpts["enable_thinking"].(bool); ok {
-				body["enable_thinking"] = enableThinking
-			}
-			if thinkingBudget, ok := alibabaOpts["thinking_budget"].(int); ok {
-				body["thinking_budget"] = thinkingBudget
-			}
+	// Thinking/reasoning support (overrides top-level Reasoning if both set)
+	if enableThinking, ok := providerutils.OpenAICompatibleBoolOption(alibabaOpts, "enableThinking", "enable_thinking", "enable-thinking"); ok {
+		body["enable_thinking"] = enableThinking
+	}
+	if thinkingBudget, ok := providerutils.OpenAICompatibleIntOption(alibabaOpts, "thinkingBudget", "thinking_budget", "thinking-budget"); ok {
+		body["thinking_budget"] = thinkingBudget
+	}
 
-			// Parallel tool calls
-			if parallelToolCalls, ok := alibabaOpts["parallel_tool_calls"].(bool); ok {
-				body["parallel_tool_calls"] = parallelToolCalls
-			}
-		}
+	// Parallel tool calls
+	if parallelToolCalls, ok := providerutils.OpenAICompatibleBoolOption(alibabaOpts, "parallelToolCalls", "parallel_tool_calls", "parallel-tool-calls"); ok {
+		body["parallel_tool_calls"] = parallelToolCalls
+	}
+
+	// preserve_thinking is only sent when resolved to a concrete value (an
+	// explicit option, or a supported model's default); unsupported models
+	// without an explicit option omit the field so Alibaba applies its own
+	// default (TS: preserveThinking != null ? {preserve_thinking} : {}).
+	if preserveThinkingValue != nil {
+		body["preserve_thinking"] = *preserveThinkingValue
 	}
 
 	// Streaming options
@@ -263,7 +338,11 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		}
 	}
 
-	return body
+	if validator != nil {
+		warnings = append(warnings, validator.Warnings()...)
+	}
+
+	return body, warnings
 }
 
 // convertResponse converts Alibaba API response to SDK format
@@ -278,10 +357,11 @@ func (m *LanguageModel) convertResponse(resp alibabaResponse) *types.GenerateRes
 
 	choice := resp.Choices[0]
 	result := &types.GenerateResult{
-		Text:         choice.Message.Content,
-		FinishReason: providerutils.MapOpenAIFinishReason(choice.FinishReason),
-		Usage:        ConvertAlibabaUsage(resp.Usage),
-		RawResponse:  resp,
+		Text:            choice.Message.Content,
+		FinishReason:    providerutils.MapOpenAIFinishReason(choice.FinishReason),
+		RawFinishReason: choice.FinishReason,
+		Usage:           ConvertAlibabaUsage(resp.Usage),
+		RawResponse:     resp,
 	}
 	if choice.Message.ReasoningContent != "" {
 		result.Content = append(result.Content, types.ReasoningContent{Text: choice.Message.ReasoningContent})
@@ -300,8 +380,15 @@ func (m *LanguageModel) convertResponse(resp alibabaResponse) *types.GenerateRes
 			} else {
 				args = make(map[string]interface{})
 			}
+			id := tc.ID
+			if id == "" {
+				// Some Alibaba-compatible endpoints omit tool call IDs on
+				// non-streaming responses; generate one rather than sending
+				// an empty tool_call_id back on the next turn.
+				id = streaming.GenerateID()
+			}
 			result.ToolCalls[i] = types.ToolCall{
-				ID:        tc.ID,
+				ID:        id,
 				ToolName:  tc.Function.Name,
 				Arguments: args,
 			}
@@ -315,7 +402,6 @@ func (m *LanguageModel) convertResponse(resp alibabaResponse) *types.GenerateRes
 func (m *LanguageModel) handleError(err error) error {
 	return providererrors.NewProviderError("alibaba", 0, "", err.Error(), err)
 }
-
 
 // alibabaResponse represents the response from Alibaba chat API
 type alibabaResponse struct {

@@ -85,7 +85,7 @@ func (stt *OpenAISTT) Transcribe(ctx context.Context, audioFile string, options 
 	if err != nil {
 		return nil, fmt.Errorf("failed to open audio file: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	part, err := writer.CreateFormFile("file", filepath.Base(audioFile))
 	if err != nil {
@@ -128,11 +128,11 @@ func (stt *OpenAISTT) Transcribe(ctx context.Context, audioFile string, options 
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("LAPI error (%d): %s", resp.StatusCode, string(bodyBytes))
+		return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(bodyBytes))
 	}
 
 	// Parse response
@@ -154,7 +154,7 @@ func (stt *OpenAISTT) Translate(ctx context.Context, audioFile string) (*Transcr
 	if err != nil {
 		return nil, fmt.Errorf("failed to open audio file: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	part, err := writer.CreateFormFile("file", filepath.Base(audioFile))
 	if err != nil {
@@ -187,11 +187,11 @@ func (stt *OpenAISTT) Translate(ctx context.Context, audioFile string) (*Transcr
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("LAPI error (%d): %s", resp.StatusCode, string(bodyBytes))
+		return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(bodyBytes))
 	}
 
 	// Parse response

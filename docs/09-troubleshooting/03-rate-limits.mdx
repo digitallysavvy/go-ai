@@ -323,7 +323,7 @@ func (g *TokenAwareGenerator) Generate(ctx context.Context, prompt string, maxTo
     }
 
     // Update bucket with actual token usage
-    actualTokens := result.Usage.TotalTokens
+    actualTokens := result.Usage.GetTotalTokens()
     difference := actualTokens - estimatedTotalTokens
     if difference > 0 {
         // We used more than estimated, remove additional tokens
@@ -621,7 +621,7 @@ func main() {
             continue
         }
 
-        tracker.RecordRequest(result.Usage.TotalTokens)
+        tracker.RecordRequest(result.Usage.GetTotalTokens())
         time.Sleep(2 * time.Second) // Space out requests
     }
 }

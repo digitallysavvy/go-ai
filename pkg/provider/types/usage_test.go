@@ -1,6 +1,9 @@
 package types
 
 import (
+	"encoding/json"
+	"math"
+	"strings"
 	"testing"
 )
 
@@ -81,6 +84,25 @@ func TestWarning_Fields(t *testing.T) {
 	}
 }
 
+func TestSpeechResultOmitEmptyRequest(t *testing.T) {
+	t.Parallel()
+
+	data, err := json.Marshal(SpeechResult{
+		Audio:    []byte("audio"),
+		Warnings: []Warning{},
+		Response: &ResponseMetadata{ModelID: "model"},
+	})
+	if err != nil {
+		t.Fatalf("marshal SpeechResult: %v", err)
+	}
+	if strings.Contains(string(data), `"request"`) {
+		t.Fatalf("unexpected request field for unset request: %s", data)
+	}
+	if !strings.Contains(string(data), `"warnings":[]`) {
+		t.Fatalf("warnings should be present as an empty array: %s", data)
+	}
+}
+
 func TestEmbeddingUsage_Fields(t *testing.T) {
 	t.Parallel()
 
@@ -94,6 +116,18 @@ func TestEmbeddingUsage_Fields(t *testing.T) {
 	}
 }
 
+func TestEmbeddingUsageMarshalNaNTokensAsNull(t *testing.T) {
+	t.Parallel()
+
+	raw, err := json.Marshal(EmbeddingUsage{Tokens: math.NaN()})
+	if err != nil {
+		t.Fatalf("Marshal EmbeddingUsage with NaN tokens: %v", err)
+	}
+	if string(raw) != `{"tokens":null,"inputTokens":0,"totalTokens":0}` {
+		t.Fatalf("json = %s", raw)
+	}
+}
+
 func TestImageUsage_Fields(t *testing.T) {
 	t.Parallel()
 
@@ -101,16 +135,6 @@ func TestImageUsage_Fields(t *testing.T) {
 
 	if iu.ImageCount != 3 {
 		t.Errorf("expected ImageCount 3, got %d", iu.ImageCount)
-	}
-}
-
-func TestSpeechUsage_Fields(t *testing.T) {
-	t.Parallel()
-
-	su := SpeechUsage{CharacterCount: 500}
-
-	if su.CharacterCount != 500 {
-		t.Errorf("expected CharacterCount 500, got %d", su.CharacterCount)
 	}
 }
 

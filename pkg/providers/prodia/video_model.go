@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // ProdiaVideoModel implements the provider.VideoModelV3 interface for the
@@ -28,8 +29,8 @@ func NewVideoModel(prov *Provider, modelID string) *ProdiaVideoModel {
 	return &ProdiaVideoModel{prov: prov, modelID: modelID}
 }
 
-// SpecificationVersion returns "v3" to match the Go VideoModelV3 interface.
-func (m *ProdiaVideoModel) SpecificationVersion() string { return "v3" }
+// SpecificationVersion returns "v4" to match the TypeScript Prodia video model.
+func (m *ProdiaVideoModel) SpecificationVersion() string { return "v4" }
 
 // Provider returns the provider identifier for this model type.
 // Matches the TypeScript SDK's config.provider value: "prodia.video".
@@ -78,30 +79,17 @@ func extractVideoProviderOptions(opts *provider.VideoModelV3CallOptions) *Prodia
 // When opts.Image is non-nil, an image-to-video request is sent as
 // multipart/form-data.
 func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3CallOptions) (*provider.VideoModelV3Response, error) {
-	// Validate aspect ratio if provided.
-	if opts.AspectRatio != "" && !validAspectRatios[opts.AspectRatio] {
-		return nil, fmt.Errorf("prodia: unsupported aspectRatio %q; valid values: 1:1, 2:3, 3:2, 4:5, 5:4, 4:7, 7:4, 9:16, 16:9, 9:21, 21:9", opts.AspectRatio)
-	}
-
 	provOpts := extractVideoProviderOptions(opts)
 
 	jobConfig := map[string]interface{}{}
-	if opts.Prompt != "" {
+	if opts.PromptSet || opts.Prompt != "" {
 		jobConfig["prompt"] = opts.Prompt
 	}
 	if opts.Seed != nil {
 		jobConfig["seed"] = *opts.Seed
 	}
-	if opts.AspectRatio != "" {
-		jobConfig["aspect_ratio"] = opts.AspectRatio
-	}
-	// Resolution: prefer the standard field; fall back to provider options.
-	resolution := opts.Resolution
-	if resolution == "" && provOpts != nil && provOpts.Resolution != "" {
-		resolution = provOpts.Resolution
-	}
-	if resolution != "" {
-		jobConfig["resolution"] = resolution
+	if provOpts != nil && provOpts.Resolution != "" {
+		jobConfig["resolution"] = provOpts.Resolution
 	}
 
 	body := map[string]interface{}{
@@ -143,7 +131,7 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 		if err != nil {
 			reqErr = fmt.Errorf("prodia API request failed: %w", err)
 		} else if resp.StatusCode != 200 {
-			reqErr = fmt.Errorf("prodia API returned status %d: %s", resp.StatusCode, string(resp.Body))
+			reqErr = newProdiaProviderError(resp.StatusCode, resp.Body, resp.Headers)
 		} else {
 			respBodyBytes = resp.Body
 			respHeaders = resp.Headers
@@ -208,6 +196,45 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 	}, nil
 }
 
+func newProdiaProviderError(statusCode int, body []byte, headers http.Header) *providererrors.ProviderError {
+	message := prodiaErrorMessage(body)
+	err := providererrors.NewProviderError("prodia", statusCode, "", message, nil)
+	err.ResponseBody = string(body)
+	err.ResponseHeaders = map[string]string{}
+	for k, vals := range headers {
+		if len(vals) > 0 {
+			err.ResponseHeaders[k] = vals[0]
+		}
+	}
+	return err
+}
+
+func prodiaErrorMessage(body []byte) string {
+	var parsed struct {
+		Message interface{} `json:"message"`
+		Detail  interface{} `json:"detail"`
+		Error   interface{} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return "Unknown Prodia error"
+	}
+	if detail, ok := parsed.Detail.(string); ok {
+		return detail
+	}
+	if parsed.Detail != nil {
+		if b, err := json.Marshal(parsed.Detail); err == nil {
+			return string(b)
+		}
+	}
+	if errorField, ok := parsed.Error.(string); ok {
+		return errorField
+	}
+	if message, ok := parsed.Message.(string); ok {
+		return message
+	}
+	return "Unknown Prodia error"
+}
+
 // resolveVideoImage resolves a VideoModelV3File to raw bytes and a MIME type.
 // For "file" type the data is used directly.
 // For "url" type the URL is fetched using the shared DefaultHTTPClient.
@@ -220,24 +247,15 @@ func resolveVideoImage(ctx context.Context, file *provider.VideoModelV3File) ([]
 		}
 		return file.Data, mimeType, nil
 	case "url":
-		req, err := http.NewRequestWithContext(ctx, "GET", file.URL, nil)
-		if err != nil {
-			return nil, "", fmt.Errorf("failed to create URL fetch request: %w", err)
-		}
-		resp, err := internalhttp.DefaultHTTPClient.Do(req)
+		download, err := fileutil.DownloadWithMetadata(ctx, file.URL, fileutil.DefaultDownloadOptions())
 		if err != nil {
 			return nil, "", fmt.Errorf("failed to fetch image URL: %w", err)
 		}
-		defer resp.Body.Close() //nolint:errcheck
-		data, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return nil, "", fmt.Errorf("failed to read image URL response: %w", err)
-		}
-		mimeType := resp.Header.Get("Content-Type")
+		mimeType := download.ContentType
 		if mimeType == "" {
 			mimeType = "application/octet-stream"
 		}
-		return data, mimeType, nil
+		return download.Data, mimeType, nil
 	default:
 		return nil, "", fmt.Errorf("unsupported image file type %q", file.Type)
 	}

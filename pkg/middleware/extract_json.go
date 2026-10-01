@@ -4,6 +4,7 @@ import (
 	"context"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -19,10 +20,51 @@ type ExtractJSONOptions struct {
 // defaultJSONTransform strips markdown code fences from text
 func defaultJSONTransform(text string) string {
 	// Remove opening fence: ```json or ```
-	text = regexp.MustCompile(`^` + "```" + `(?:json)?\s*\n?`).ReplaceAllString(text, "")
+	text = regexp.MustCompile(`^`+"```"+`(?:json)?\s*\n?`).ReplaceAllString(text, "")
 	// Remove closing fence: ```
-	text = regexp.MustCompile(`\n?` + "```" + `\s*$`).ReplaceAllString(text, "")
+	text = regexp.MustCompile(`\n?`+"```"+`\s*$`).ReplaceAllString(text, "")
 	return strings.TrimSpace(text)
+}
+
+// jsonFenceSuffixRe matches a trailing markdown code fence, mirroring TS
+// stripMarkdownCodeFenceSuffix's regex.
+var jsonFenceSuffixRe = regexp.MustCompile(`\n?` + "```" + `\s*$`)
+
+// stripMarkdownCodeFenceSuffix removes a trailing markdown code fence (with
+// an optional leading newline) and trims trailing whitespace only — it must
+// never trim leading whitespace, since earlier text may already have
+// streamed out.
+func stripMarkdownCodeFenceSuffix(text string) string {
+	return strings.TrimRight(jsonFenceSuffixRe.ReplaceAllString(text, ""), " \t\n\r")
+}
+
+// getPotentialSuffixStart returns the byte offset from which text could
+// still turn into trailing whitespace or a markdown code fence suffix (up to
+// three backticks, plus any whitespace on either side). Streaming callers
+// hold back everything from this offset onward so a fence split across
+// chunks is never leaked into already-emitted output. Mirrors TS
+// getPotentialSuffixStart (audit row 1058ed5 / WG12).
+func getPotentialSuffixStart(text string) int {
+	runes := []rune(text)
+	index := len(runes)
+
+	for index > 0 && unicode.IsSpace(runes[index-1]) {
+		index--
+	}
+
+	backtickCount := 0
+	for index > 0 && backtickCount < 3 && runes[index-1] == '`' {
+		index--
+		backtickCount++
+	}
+
+	if backtickCount > 0 {
+		for index > 0 && unicode.IsSpace(runes[index-1]) {
+			index--
+		}
+	}
+
+	return len(string(runes[:index]))
 }
 
 // ExtractJSONMiddleware returns middleware that extracts JSON from text content
@@ -89,8 +131,6 @@ func ExtractJSONMiddleware(options *ExtractJSONOptions) *LanguageModelMiddleware
 	}
 }
 
-const suffixBufferSize = 12
-
 // streamingExtractJSONWrapper wraps a TextStream and handles the final chunk transformation
 type streamingExtractJSONWrapper struct {
 	stream             provider.TextStream
@@ -130,15 +170,22 @@ func (w *streamingExtractJSONWrapper) Next() (*provider.StreamChunk, error) {
 				w.finalized = true
 
 				var remaining string
-				if w.hasCustomTransform {
+				switch {
+				case w.hasCustomTransform:
 					remaining = w.transform(w.buffer)
-				} else if w.prefixStripped {
-					// Strip suffix since prefix was already handled
-					remaining = regexp.MustCompile(`\n?` + "```" + `\s*$`).ReplaceAllString(w.buffer, "")
-					remaining = strings.TrimRight(remaining, " \t\n\r")
-				} else {
-					// Apply full transform
+				case w.prefixStripped:
+					// Strip suffix since prefix was already handled.
+					remaining = stripMarkdownCodeFenceSuffix(w.buffer)
+				case w.phase == "prefix":
+					// No text has streamed yet, so the full transform is safe.
 					remaining = w.transform(w.buffer)
+				default:
+					// Only strip the suffix. Since earlier text may already
+					// have streamed, trimming the remaining suffix with the
+					// full transform (which also trims leading whitespace)
+					// would remove valid leading whitespace at the stream
+					// boundary.
+					remaining = stripMarkdownCodeFenceSuffix(w.buffer)
 				}
 
 				if len(remaining) > 0 {
@@ -186,14 +233,18 @@ func (w *streamingExtractJSONWrapper) Next() (*provider.StreamChunk, error) {
 			}
 		}
 
-		// Stream with suffix buffering
-		if w.phase == "streaming" && len(w.buffer) > suffixBufferSize {
-			toStream := w.buffer[:len(w.buffer)-suffixBufferSize]
-			w.buffer = w.buffer[len(w.buffer)-suffixBufferSize:]
-			return &provider.StreamChunk{
-				Type: provider.ChunkTypeText,
-				Text: toStream,
-			}, nil
+		// Stream content while retaining anything that could still become
+		// trailing whitespace or a markdown fence suffix.
+		if w.phase == "streaming" {
+			potentialSuffixStart := getPotentialSuffixStart(w.buffer)
+			toStream := w.buffer[:potentialSuffixStart]
+			w.buffer = w.buffer[potentialSuffixStart:]
+			if len(toStream) > 0 {
+				return &provider.StreamChunk{
+					Type: provider.ChunkTypeText,
+					Text: toStream,
+				}, nil
+			}
 		}
 	}
 }

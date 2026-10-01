@@ -109,7 +109,22 @@ func TestWithToolCache(t *testing.T) {
 	}
 }
 
-func TestToAnthropicFormatWithCache(t *testing.T) {
+// testPrepareToolsWire runs toolList through the real request-building path
+// (LanguageModel.prepareRequest, which calls prepareTools — the production
+// function that replaced the removed test-only ToAnthropicFormatWithCache
+// helper) and returns the resulting wire tool definitions.
+func testPrepareToolsWire(t *testing.T, toolList []types.Tool) []map[string]interface{} {
+	t.Helper()
+	m := NewLanguageModel(New(Config{APIKey: "test-key"}), "claude-sonnet-4-6", nil)
+	req, err := m.prepareRequest(&provider.GenerateOptions{Tools: toolList}, false)
+	if err != nil {
+		t.Fatalf("prepareRequest() error: %v", err)
+	}
+	wire, _ := req.body["tools"].([]map[string]interface{})
+	return wire
+}
+
+func TestPrepareToolsCacheControl(t *testing.T) {
 	tests := []struct {
 		name               string
 		tools              []types.Tool
@@ -214,7 +229,7 @@ func TestToAnthropicFormatWithCache(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ToAnthropicFormatWithCache(tt.tools)
+			result := testPrepareToolsWire(t, tt.tools)
 
 			if len(result) != len(tt.tools) {
 				t.Fatalf("Expected %d tools, got %d", len(tt.tools), len(result))
@@ -283,7 +298,7 @@ func TestToolOptionsNilSafety(t *testing.T) {
 		},
 	}
 
-	result := ToAnthropicFormatWithCache(toolList)
+	result := testPrepareToolsWire(t, toolList)
 
 	if len(result) != 1 {
 		t.Fatalf("Expected 1 tool, got %d", len(result))
@@ -302,7 +317,7 @@ func TestToolOptionsNilSafety(t *testing.T) {
 // and web_fetch_20260209 inject the code-execution-web-tools-2026-02-09 beta header,
 // matching the TypeScript SDK behaviour in anthropic-prepare-tools.ts.
 func TestAnthropicWebTools20260209BetaHeaderInjected(t *testing.T) {
-	m := &LanguageModel{}
+	m := NewLanguageModel(New(Config{APIKey: "test-key"}), "claude-sonnet-4-6", nil)
 	tests := []struct {
 		name string
 		tool types.Tool
@@ -322,7 +337,7 @@ func TestAnthropicWebTools20260209BetaHeaderInjected(t *testing.T) {
 }
 
 func TestWebToolsBetaHeaderAbsentForOtherTools(t *testing.T) {
-	m := &LanguageModel{}
+	m := NewLanguageModel(New(Config{APIKey: "test-key"}), "claude-sonnet-4-6", nil)
 	opts := &provider.GenerateOptions{
 		Tools: []types.Tool{
 			{Name: "my_fn", Parameters: map[string]interface{}{"type": "object"}},
@@ -345,7 +360,7 @@ func TestDeferLoadingTrueSerializedInTool(t *testing.T) {
 		Parameters:      map[string]interface{}{"type": "object"},
 		ProviderOptions: &ToolOptions{DeferLoading: &deferLoad},
 	}
-	converted := ToAnthropicFormatWithCache([]types.Tool{tool})
+	converted := testPrepareToolsWire(t, []types.Tool{tool})
 	if converted[0]["defer_loading"] != true {
 		t.Errorf("defer_loading = %v, want true", converted[0]["defer_loading"])
 	}
@@ -358,7 +373,7 @@ func TestDeferLoadingFalseSerializedInTool(t *testing.T) {
 		Parameters:      map[string]interface{}{"type": "object"},
 		ProviderOptions: &ToolOptions{DeferLoading: &deferLoad},
 	}
-	converted := ToAnthropicFormatWithCache([]types.Tool{tool})
+	converted := testPrepareToolsWire(t, []types.Tool{tool})
 	if converted[0]["defer_loading"] != false {
 		t.Errorf("defer_loading = %v, want false", converted[0]["defer_loading"])
 	}
@@ -366,7 +381,7 @@ func TestDeferLoadingFalseSerializedInTool(t *testing.T) {
 
 func TestDeferLoadingAbsentByDefault(t *testing.T) {
 	tool := types.Tool{Name: "my_function", Parameters: map[string]interface{}{"type": "object"}}
-	converted := ToAnthropicFormatWithCache([]types.Tool{tool})
+	converted := testPrepareToolsWire(t, []types.Tool{tool})
 	if _, ok := converted[0]["defer_loading"]; ok {
 		t.Error("defer_loading should not be present when DeferLoading is nil")
 	}
@@ -384,7 +399,7 @@ func TestAllowedCallersSerializedInTool(t *testing.T) {
 			AllowedCallers: []string{"direct", "code_execution_20260120"},
 		},
 	}
-	converted := ToAnthropicFormatWithCache([]types.Tool{tool})
+	converted := testPrepareToolsWire(t, []types.Tool{tool})
 	callers, ok := converted[0]["allowed_callers"].([]string)
 	if !ok {
 		t.Fatalf("allowed_callers type = %T, want []string", converted[0]["allowed_callers"])
@@ -396,14 +411,14 @@ func TestAllowedCallersSerializedInTool(t *testing.T) {
 
 func TestAllowedCallersAbsentByDefault(t *testing.T) {
 	tool := types.Tool{Name: "my_function", Parameters: map[string]interface{}{"type": "object"}}
-	converted := ToAnthropicFormatWithCache([]types.Tool{tool})
+	converted := testPrepareToolsWire(t, []types.Tool{tool})
 	if _, ok := converted[0]["allowed_callers"]; ok {
 		t.Error("allowed_callers should not be present when AllowedCallers is empty")
 	}
 }
 
 func TestAllowedCallersBetaHeaderInjected(t *testing.T) {
-	m := &LanguageModel{}
+	m := NewLanguageModel(New(Config{APIKey: "test-key"}), "claude-sonnet-4-6", nil)
 	opts := &provider.GenerateOptions{
 		Tools: []types.Tool{{
 			Name:            "my_function",
@@ -418,7 +433,7 @@ func TestAllowedCallersBetaHeaderInjected(t *testing.T) {
 }
 
 func TestAllowedCallersBetaAbsentWhenEmpty(t *testing.T) {
-	m := &LanguageModel{}
+	m := NewLanguageModel(New(Config{APIKey: "test-key"}), "claude-sonnet-4-6", nil)
 	opts := &provider.GenerateOptions{
 		Tools: []types.Tool{{Name: "my_function", Parameters: map[string]interface{}{"type": "object"}}},
 	}
@@ -441,7 +456,7 @@ func TestInputExamplesSerializedInTool(t *testing.T) {
 			{Input: map[string]interface{}{"query": "foo bar"}},
 		},
 	}
-	converted := ToAnthropicFormatWithCache([]types.Tool{tool})
+	converted := testPrepareToolsWire(t, []types.Tool{tool})
 	examples, ok := converted[0]["input_examples"].([]interface{})
 	if !ok {
 		t.Fatalf("input_examples type = %T, want []interface{}", converted[0]["input_examples"])
@@ -457,14 +472,14 @@ func TestInputExamplesSerializedInTool(t *testing.T) {
 
 func TestInputExamplesAbsentByDefault(t *testing.T) {
 	tool := types.Tool{Name: "my_function", Parameters: map[string]interface{}{"type": "object"}}
-	converted := ToAnthropicFormatWithCache([]types.Tool{tool})
+	converted := testPrepareToolsWire(t, []types.Tool{tool})
 	if _, ok := converted[0]["input_examples"]; ok {
 		t.Error("input_examples should not be present when InputExamples is empty")
 	}
 }
 
 func TestInputExamplesBetaHeaderInjected(t *testing.T) {
-	m := &LanguageModel{}
+	m := NewLanguageModel(New(Config{APIKey: "test-key"}), "claude-sonnet-4-6", nil)
 	opts := &provider.GenerateOptions{
 		Tools: []types.Tool{{
 			Name:          "my_function",
@@ -482,7 +497,7 @@ func TestInputExamplesNotOnProviderTools(t *testing.T) {
 	// Provider tools self-serialize; InputExamples must not bleed into their map.
 	tool := tools.WebSearch20260209(tools.WebSearch20260209Config{})
 	tool.InputExamples = []types.ToolInputExample{{Input: map[string]interface{}{"query": "test"}}}
-	converted := ToAnthropicFormatWithCache([]types.Tool{tool})
+	converted := testPrepareToolsWire(t, []types.Tool{tool})
 	if _, ok := converted[0]["input_examples"]; ok {
 		t.Error("input_examples must not appear on provider tools (they self-serialize)")
 	}

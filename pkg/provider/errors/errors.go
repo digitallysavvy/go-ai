@@ -42,6 +42,60 @@ type ProviderError struct {
 
 	// Underlying cause
 	Cause error
+
+	// ResponseHeaders are response headers from the failed provider call, when available.
+	ResponseHeaders map[string]string
+
+	// ResponseBody is the raw provider response body or stream error frame, when available.
+	ResponseBody string
+
+	// Data is provider-specific structured error data, when available.
+	Data interface{}
+
+	// Retryable overrides the default status-code-based retryability
+	// classification in IsRetryable, when set. Providers use this for
+	// errors whose HTTP status isn't in the default retryable set but that
+	// TS still treats as retryable (e.g. Bedrock's modelStreamErrorException
+	// at 424), or the reverse (a normally-retryable status that a provider
+	// knows is not, in a given case). Hand-off: "ProviderError Retryable
+	// override".
+	Retryable *bool
+}
+
+// RetryErrorReason identifies why retrying stopped.
+type RetryErrorReason string
+
+const (
+	// RetryReasonMaxRetriesExceeded means all retry attempts were exhausted.
+	RetryReasonMaxRetriesExceeded RetryErrorReason = "maxRetriesExceeded"
+	// RetryReasonErrorNotRetryable means a later attempt failed with a
+	// non-retryable error after at least one retryable failure.
+	RetryReasonErrorNotRetryable RetryErrorReason = "errorNotRetryable"
+	// RetryReasonAbort means retrying stopped because the operation was aborted.
+	RetryReasonAbort RetryErrorReason = "abort"
+)
+
+// RetryError mirrors the TypeScript AI SDK RetryError shape for callers that
+// need to inspect retry failure reason and attempt history.
+type RetryError struct {
+	Message   string
+	Reason    RetryErrorReason
+	LastError error
+	Errors    []error
+}
+
+func (e *RetryError) Error() string {
+	return e.Message
+}
+
+func (e *RetryError) Unwrap() error {
+	return e.LastError
+}
+
+// IsRetryError checks if an error is a RetryError.
+func IsRetryError(err error) bool {
+	var retryErr *RetryError
+	return errors.As(err, &retryErr)
 }
 
 // Error implements the error interface
@@ -57,6 +111,20 @@ func (e *ProviderError) Error() string {
 // Unwrap returns the underlying cause
 func (e *ProviderError) Unwrap() error {
 	return e.Cause
+}
+
+// IsRetryable reports whether the provider error represents a retryable
+// condition. Unknown/no-status errors preserve the SDK's historical generic
+// retry behavior, while HTTP responses follow the TypeScript SDK default:
+// rate limits and transient server errors are retryable.
+func (e *ProviderError) IsRetryable() bool {
+	if e == nil {
+		return false
+	}
+	if e.Retryable != nil {
+		return *e.Retryable
+	}
+	return e.StatusCode == 0 || e.StatusCode == 429 || e.StatusCode >= 500
 }
 
 // IsProviderError checks if an error is a ProviderError
@@ -104,6 +172,70 @@ type ValidationError struct {
 
 	// Value that failed validation (for debugging)
 	Value interface{}
+}
+
+// TypeValidationError is a compatibility alias used by TS parity docs.
+type TypeValidationError = ValidationError
+
+// InvalidArgumentError signals invalid caller-provided arguments/options.
+type InvalidArgumentError struct {
+	Field   string
+	Message string
+	Cause   error
+}
+
+func (e *InvalidArgumentError) Error() string {
+	if e.Field == "" {
+		return "invalid argument: " + e.Message
+	}
+	return fmt.Sprintf("invalid argument for %s: %s", e.Field, e.Message)
+}
+
+func (e *InvalidArgumentError) Unwrap() error { return e.Cause }
+
+// IsInvalidArgumentError checks if an error is an InvalidArgumentError.
+func IsInvalidArgumentError(err error) bool {
+	var target *InvalidArgumentError
+	return errors.As(err, &target)
+}
+
+// TooManyEmbeddingValuesForCallError signals that a provider embedding model
+// received more values than it supports in one request.
+type TooManyEmbeddingValuesForCallError struct {
+	Provider             string
+	ModelID              string
+	MaxEmbeddingsPerCall int
+	Values               []string
+}
+
+func (e *TooManyEmbeddingValuesForCallError) Error() string {
+	return fmt.Sprintf("Too many values for a single embedding call. The %s model %q can only embed up to %d values per call, but %d values were provided.", e.Provider, e.ModelID, e.MaxEmbeddingsPerCall, len(e.Values))
+}
+
+// IsTooManyEmbeddingValuesForCallError checks if an error is a TooManyEmbeddingValuesForCallError.
+func IsTooManyEmbeddingValuesForCallError(err error) bool {
+	var target *TooManyEmbeddingValuesForCallError
+	return errors.As(err, &target)
+}
+
+// UnsupportedFunctionalityError signals that the requested SDK/provider
+// functionality cannot be represented by the current interface.
+type UnsupportedFunctionalityError struct {
+	Functionality string
+	Message       string
+}
+
+func (e *UnsupportedFunctionalityError) Error() string {
+	if e.Message != "" {
+		return e.Message
+	}
+	return fmt.Sprintf("%q functionality not supported.", e.Functionality)
+}
+
+// IsUnsupportedFunctionalityError checks if an error is an UnsupportedFunctionalityError.
+func IsUnsupportedFunctionalityError(err error) bool {
+	var target *UnsupportedFunctionalityError
+	return errors.As(err, &target)
 }
 
 // Error implements the error interface
@@ -361,6 +493,61 @@ type DownloadError struct {
 
 	// Underlying cause
 	Cause error
+
+	// Body is a bounded prefix of the response body for non-2xx HTTP
+	// responses, when captured. Callers that poll a JSON status endpoint
+	// (e.g. fileutil.PollJSON) rather than download a binary file need this
+	// to decode a provider's structured error envelope; plain file/media
+	// downloads leave it nil. Nil also when the error never reached an HTTP
+	// response (network/validation errors).
+	Body []byte
+
+	// Headers are the response headers for non-2xx HTTP responses, when
+	// captured. See Body.
+	Headers map[string][]string
+}
+
+// SSRFError represents a blocked URL due to SSRF protections.
+type SSRFError struct {
+	// URL that was rejected.
+	URL string
+
+	// Reason explains which SSRF rule triggered the block.
+	Reason string
+
+	// Underlying cause, if any.
+	Cause error
+}
+
+// Error implements the error interface.
+func (e *SSRFError) Error() string {
+	if e.Reason != "" {
+		return e.Reason
+	}
+	if e.Cause != nil {
+		return fmt.Sprintf("url %s blocked by SSRF protection: %v", e.URL, e.Cause)
+	}
+	return fmt.Sprintf("url %s blocked by SSRF protection", e.URL)
+}
+
+// Unwrap returns the underlying cause.
+func (e *SSRFError) Unwrap() error {
+	return e.Cause
+}
+
+// IsSSRFError checks if an error is an SSRFError.
+func IsSSRFError(err error) bool {
+	var ssrfErr *SSRFError
+	return errors.As(err, &ssrfErr)
+}
+
+// NewSSRFError creates a new SSRF error.
+func NewSSRFError(url, reason string, cause error) *SSRFError {
+	return &SSRFError{
+		URL:    url,
+		Reason: reason,
+		Cause:  cause,
+	}
 }
 
 // Error implements the error interface
@@ -369,12 +556,12 @@ func (e *DownloadError) Error() string {
 		return e.Message
 	}
 	if e.StatusCode > 0 {
-		return fmt.Sprintf("failed to download %s: %d %s", e.URL, e.StatusCode, e.StatusText)
+		return fmt.Sprintf("Failed to download %s: %d %s", e.URL, e.StatusCode, e.StatusText)
 	}
 	if e.Cause != nil {
-		return fmt.Sprintf("failed to download %s: %v", e.URL, e.Cause)
+		return fmt.Sprintf("Failed to download %s: %v", e.URL, e.Cause)
 	}
-	return fmt.Sprintf("failed to download %s", e.URL)
+	return fmt.Sprintf("Failed to download %s", e.URL)
 }
 
 // Unwrap returns the underlying cause

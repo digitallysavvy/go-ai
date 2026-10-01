@@ -3,13 +3,15 @@ package groq
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
@@ -63,18 +65,31 @@ func (m *LanguageModel) SupportsImageInput() bool {
 
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-	reqBody := m.buildRequestBody(opts, false)
+	reqBody, warnings := m.buildRequestBodyWithWarnings(opts, false)
 	var response groqResponse
-	err := m.provider.client.PostJSON(ctx, "/v1/chat/completions", reqBody, &response)
+	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+		Method: http.MethodPost,
+		Path:   "/v1/chat/completions",
+		Body:   reqBody,
+	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	return m.convertResponse(response), nil
+	result, err := m.convertResponse(response)
+	if err != nil {
+		return nil, err
+	}
+	result.Warnings = append(warnings, result.Warnings...)
+	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	responseMetadata := providerutils.BuildResponseMetadata(response.ID, response.Model, response.Created)
+	responseMetadata.Headers = result.ResponseHeaders
+	result.ResponseMetadata = responseMetadata
+	return result, nil
 }
 
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
-	reqBody := m.buildRequestBody(opts, true)
+	reqBody, warnings := m.buildRequestBodyWithWarnings(opts, true)
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
 		Method: http.MethodPost,
 		Path:   "/v1/chat/completions",
@@ -86,18 +101,31 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	return newGroqStream(httpResp.Body), nil
+	inner := newGroqStream(httpResp.Body, opts.IncludeRawChunks)
+	inner.requestBody = reqBody
+	inner.responseHeaders = providerutils.ExtractHeaders(httpResp.Header)
+	return streaming.NewWarningsStream(inner, warnings), nil
 }
 
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
+	body, _ := m.buildRequestBodyWithWarnings(opts, stream)
+	return body
+}
+
+func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning) {
 	body := map[string]interface{}{
 		"model":  m.modelID,
 		"stream": stream,
 	}
+	// AssistantToolCallContentMode: Text -- Groq's own TS converter
+	// (convert-to-groq-chat-messages.ts) always sets `content: text`
+	// unconditionally, never null, even when tool calls are present and no
+	// text was generated.
+	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{AssistantToolCallContentMode: prompt.AssistantToolCallContentText}
 	if opts.Prompt.IsMessages() {
-		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages)
+		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, toOpenAIMessagesOpts)
 	} else if opts.Prompt.IsSimple() {
-		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text))
+		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text), toOpenAIMessagesOpts)
 	}
 	if opts.Prompt.System != "" {
 		messages := body["messages"].([]map[string]interface{})
@@ -128,41 +156,72 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(opts.ToolChoice)
 		}
 	}
-	if opts.ResponseFormat != nil {
-		body["response_format"] = map[string]interface{}{
-			"type": opts.ResponseFormat.Type,
-		}
-	}
-	// Map top-level Reasoning to Groq reasoning_effort.
-	// none and provider-default → omit (Groq does not accept "disabled" for none).
+	compatibleOptions, warnings := providerutils.ResolveOpenAICompatibleProviderOptions("groq", opts.ProviderOptions)
+	warnings = append(warnings, providerutils.OpenAICompatibleCommonOptionWarnings(compatibleOptions)...)
+	// Map top-level Reasoning to Groq reasoning_effort. An explicit
+	// providerOptions.groq.reasoningEffort always wins (applied below via
+	// ApplyOpenAICompatibleCommonRequestOptions, which runs after this).
+	// provider-default → omit. none → "none" for qwen/qwen3.6-27b (the only
+	// model that accepts it), else an "unsupported" warning (Groq otherwise
+	// has no way to disable reasoning on a reasoning model).
 	// minimal/low → "low", medium → "medium", high/xhigh → "high".
-	if opts.Reasoning != nil {
+	if _, hasExplicitReasoningEffort := providerutils.OpenAICompatibleStringOption(compatibleOptions, "reasoningEffort", "reasoning_effort", "reasoning-effort"); !hasExplicitReasoningEffort && opts.Reasoning != nil {
 		switch *opts.Reasoning {
+		case types.ReasoningNone:
+			if m.modelID == "qwen/qwen3.6-27b" {
+				body["reasoning_effort"] = "none"
+			} else {
+				warnings = append(warnings, types.Warning{
+					Type:    "unsupported",
+					Feature: "reasoning",
+					Details: `reasoning "none" is not supported by this model.`,
+				})
+			}
 		case types.ReasoningMinimal, types.ReasoningLow:
 			body["reasoning_effort"] = "low"
 		case types.ReasoningMedium:
 			body["reasoning_effort"] = "medium"
 		case types.ReasoningHigh, types.ReasoningXHigh:
 			body["reasoning_effort"] = "high"
-		// ReasoningNone and ReasoningDefault: omit
+			// ReasoningDefault: omit
 		}
 	}
-	return body
+	// Response format (TS groq-chat-language-model.ts): structuredOutputs and
+	// strictJsonSchema both default to true; a dropped schema is warned about.
+	responseFormat, formatWarnings := providerutils.ChatResponseFormat(opts.ResponseFormat, providerutils.ChatResponseFormatOptions{
+		StructuredOutputs:         providerutils.BoolOption(compatibleOptions, "structuredOutputs", true),
+		StrictJSONSchema:          providerutils.BoolOption(compatibleOptions, "strictJsonSchema", true),
+		WarnWhenSchemaUnsupported: true,
+	})
+	if responseFormat != nil {
+		body["response_format"] = responseFormat
+	}
+	warnings = append(warnings, formatWarnings...)
+	providerutils.ApplyOpenAICompatibleCommonRequestOptions(body, compatibleOptions)
+	// Groq performance service tier: on_demand/flex/auto/performance.
+	if serviceTier, ok := providerutils.OpenAICompatibleStringOption(compatibleOptions, "serviceTier", "service_tier", "service-tier"); ok {
+		body["service_tier"] = serviceTier
+	}
+	if parallelToolCalls, ok := providerutils.OpenAICompatibleBoolOption(compatibleOptions, "parallelToolCalls", "parallel_tool_calls", "parallel-tool-calls"); ok {
+		body["parallel_tool_calls"] = parallelToolCalls
+	}
+	if reasoningFormat, ok := providerutils.OpenAICompatibleStringOption(compatibleOptions, "reasoningFormat", "reasoning_format", "reasoning-format"); ok {
+		body["reasoning_format"] = reasoningFormat
+	}
+	return body, warnings
 }
 
-func (m *LanguageModel) convertResponse(response groqResponse) *types.GenerateResult {
+func (m *LanguageModel) convertResponse(response groqResponse) (*types.GenerateResult, error) {
 	if len(response.Choices) == 0 {
-		return &types.GenerateResult{
-			Text:         "",
-			FinishReason: types.FinishReasonOther,
-		}
+		return nil, providererrors.NewInvalidResponseDataError(response, "Response did not contain any choices.")
 	}
 	choice := response.Choices[0]
 	result := &types.GenerateResult{
-		Text:         choice.Message.Content,
-		FinishReason: providerutils.MapOpenAIFinishReason(choice.FinishReason),
-		Usage:        convertGroqUsage(response.Usage),
-		RawResponse:  response,
+		Text:            choice.Message.Content,
+		FinishReason:    providerutils.MapOpenAIFinishReason(choice.FinishReason),
+		RawFinishReason: choice.FinishReason,
+		Usage:           convertGroqUsage(response.Usage),
+		RawResponse:     response,
 	}
 	if choice.Message.Reasoning != "" {
 		result.Content = append(result.Content, types.ReasoningContent{Text: choice.Message.Reasoning})
@@ -174,14 +233,21 @@ func (m *LanguageModel) convertResponse(response groqResponse) *types.GenerateRe
 			if tc.Function.Arguments != "" {
 				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args) //nolint:errcheck
 			}
+			id := tc.ID
+			if id == "" {
+				// e6087c9/f807e45: some Groq-compatible endpoints omit tool
+				// call IDs on non-streaming responses; generate one rather
+				// than sending an empty tool_call_id back on the next turn.
+				id = streaming.GenerateID()
+			}
 			result.ToolCalls[i] = types.ToolCall{
-				ID:        tc.ID,
+				ID:        id,
 				ToolName:  tc.Function.Name,
 				Arguments: args,
 			}
 		}
 	}
-	return result
+	return result, nil
 }
 
 func convertGroqUsage(usage groqUsage) types.Usage {
@@ -234,9 +300,14 @@ func convertGroqUsage(usage groqUsage) types.Usage {
 		}
 	}
 
-	// Set output details
+	// Set output details. 2214258: clamp to zero -- some providers report
+	// reasoning tokens that exceed the completion token count (TS
+	// convertGroqUsage: Math.max(0, completionTokens - reasoningTokens)).
 	if reasoningTokens > 0 {
 		textOutputTokens := completionTokens - reasoningTokens
+		if textOutputTokens < 0 {
+			textOutputTokens = 0
+		}
 		result.OutputDetails = &types.OutputTokenDetails{
 			TextTokens:      &textOutputTokens,
 			ReasoningTokens: &reasoningTokens,
@@ -265,9 +336,16 @@ func convertGroqUsage(usage groqUsage) types.Usage {
 }
 
 func (m *LanguageModel) handleError(err error) error {
-	return providererrors.NewProviderError("groq", 0, "", err.Error(), err)
+	if parsed := parseGroqProviderError(err); parsed != nil {
+		return parsed
+	}
+	statusCode := 0
+	var statusErr *internalhttp.HTTPStatusError
+	if errors.As(err, &statusErr) {
+		statusCode = statusErr.StatusCode
+	}
+	return providererrors.NewProviderError("groq", statusCode, "", err.Error(), err)
 }
-
 
 type groqResponse struct {
 	ID      string `json:"id"`
@@ -315,10 +393,11 @@ type groqUsage struct {
 }
 
 type groqStreamChunk struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	Model   string `json:"model"`
+	ID      string          `json:"id"`
+	Object  string          `json:"object"`
+	Created int64           `json:"created"`
+	Model   string          `json:"model"`
+	Error   json.RawMessage `json:"error,omitempty"`
 	Choices []struct {
 		Index        int    `json:"index"`
 		FinishReason string `json:"finish_reason"`
@@ -327,7 +406,7 @@ type groqStreamChunk struct {
 			Content   string `json:"content"`
 			Reasoning string `json:"reasoning"` // Groq uses "reasoning" field
 			ToolCalls []struct {
-				Index    int    `json:"index"`
+				Index    *int   `json:"index"`
 				ID       string `json:"id"`
 				Type     string `json:"type"`
 				Function struct {
@@ -344,118 +423,205 @@ type groqStreamChunk struct {
 	} `json:"x_groq,omitempty"`
 }
 
-// groqStreamAccumToolCall holds partial tool call state accumulated across SSE deltas.
-type groqStreamAccumToolCall struct {
-	id        string
-	name      string
-	arguments string
-}
-
 type groqStream struct {
 	reader            io.ReadCloser
 	parser            *streaming.SSEParser
 	err               error
-	toolCallAccum     map[int]*groqStreamAccumToolCall
+	toolCallTracker   *streaming.StreamingToolCallTracker
 	flushQueue        []*provider.StreamChunk
 	isActiveReasoning bool
 	pendingUsage      *groqUsage // captured from x_groq.usage
+	includeRawChunks  bool
+	responseHeaders   map[string]string
+	metadataEmitted   bool
+	// requestBody is the raw request body this stream was opened with,
+	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
+	// "stream request body field").
+	requestBody interface{}
 }
 
-func newGroqStream(reader io.ReadCloser) *groqStream {
+// RequestBody implements provider.StreamRequestBody, exposing the raw
+// request body that was sent to open this stream.
+func (s *groqStream) RequestBody() interface{} { return s.requestBody }
+
+func newGroqStream(reader io.ReadCloser, includeRawChunks ...bool) *groqStream {
+	emitRaw := len(includeRawChunks) > 0 && includeRawChunks[0]
 	return &groqStream{
-		reader:        reader,
-		parser:        streaming.NewSSEParser(reader),
-		toolCallAccum: make(map[int]*groqStreamAccumToolCall),
+		reader:           reader,
+		parser:           streaming.NewSSEParser(reader),
+		toolCallTracker:  streaming.NewStreamingToolCallTracker(),
+		includeRawChunks: emitRaw,
 	}
 }
 
 func (s *groqStream) Close() error { return s.reader.Close() }
+
+// emitParsedChunk decides how a freshly built chunk should be delivered:
+// returned immediately (chunk, true) if nothing is queued ahead of it, or
+// appended behind the pending flushQueue (nil, false) for the caller's
+// Next() loop to continue draining. This used to recurse by calling
+// s.Next() directly in the queued case; see the comment on Next() for why
+// that could grow the goroutine stack without bound.
+func (s *groqStream) emitParsedChunk(chunk *provider.StreamChunk) (*provider.StreamChunk, bool) {
+	if len(s.flushQueue) == 0 {
+		return chunk, true
+	}
+	s.flushQueue = append(s.flushQueue, chunk)
+	return nil, false
+}
+
 func (s *groqStream) Next() (*provider.StreamChunk, error) {
-	if len(s.flushQueue) > 0 {
-		chunk := s.flushQueue[0]
-		s.flushQueue = s.flushQueue[1:]
-		return chunk, nil
-	}
-	if s.err != nil {
-		return nil, s.err
-	}
-	event, err := s.parser.Next()
-	if err != nil {
-		s.err = err
-		return nil, err
-	}
-	if streaming.IsStreamDone(event) {
-		s.err = io.EOF
-		return nil, io.EOF
-	}
-	var chunkData groqStreamChunk
-	if err := json.Unmarshal([]byte(event.Data), &chunkData); err != nil {
-		return nil, fmt.Errorf("failed to parse stream chunk: %w", err)
-	}
-	// Capture usage from x_groq envelope (Groq's streaming usage mechanism).
-	if chunkData.XGroq != nil && chunkData.XGroq.Usage != nil {
-		s.pendingUsage = chunkData.XGroq.Usage
-	}
-	if len(chunkData.Choices) > 0 {
-		choice := chunkData.Choices[0]
-
-		// Handle reasoning content.
-		if choice.Delta.Reasoning != "" {
-			if !s.isActiveReasoning {
-				s.isActiveReasoning = true
-				s.flushQueue = append([]*provider.StreamChunk{
-					{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"},
-					{Type: provider.ChunkTypeReasoning, Reasoning: choice.Delta.Reasoning, ID: "reasoning-0"},
-				}, s.flushQueue...)
-				return s.Next()
-			}
-			return &provider.StreamChunk{
-				Type:      provider.ChunkTypeReasoning,
-				Reasoning: choice.Delta.Reasoning,
-				ID:        "reasoning-0",
-			}, nil
+	for {
+		if len(s.flushQueue) > 0 {
+			chunk := s.flushQueue[0]
+			s.flushQueue = s.flushQueue[1:]
+			return chunk, nil
 		}
-
-		if choice.Delta.Content != "" {
-			if s.isActiveReasoning {
-				s.isActiveReasoning = false
-				s.flushQueue = append([]*provider.StreamChunk{
-					{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
-					{Type: provider.ChunkTypeText, Text: choice.Delta.Content},
-				}, s.flushQueue...)
-				return s.Next()
-			}
-			return &provider.StreamChunk{Type: provider.ChunkTypeText, Text: choice.Delta.Content}, nil
+		if s.err != nil {
+			return nil, s.err
 		}
-		// Tool call delta — accumulate partial arguments by index.
-		// Finalize only when finish_reason is received, never mid-stream.
-		if len(choice.Delta.ToolCalls) > 0 {
-			for _, tc := range choice.Delta.ToolCalls {
-				accum, ok := s.toolCallAccum[tc.Index]
-				if !ok {
-					accum = &groqStreamAccumToolCall{}
-					s.toolCallAccum[tc.Index] = accum
+		event, err := s.parser.Next()
+		if err != nil {
+			s.err = err
+			return nil, err
+		}
+		if streaming.IsStreamDone(event) {
+			s.err = io.EOF
+			return nil, io.EOF
+		}
+		rawQueued := false
+		if s.includeRawChunks {
+			var raw interface{}
+			if err := json.Unmarshal([]byte(event.Data), &raw); err != nil {
+				raw = event.Data
+			}
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+				Type: provider.ChunkTypeRaw,
+				Raw:  raw,
+			})
+			rawQueued = true
+		}
+		var chunkData groqStreamChunk
+		if err := json.Unmarshal([]byte(event.Data), &chunkData); err != nil {
+			errorChunk := &provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
+			}
+			if rawQueued {
+				s.flushQueue = append(s.flushQueue, errorChunk)
+				continue
+			}
+			return errorChunk, nil
+		}
+		if len(chunkData.Error) > 0 {
+			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: groqStreamErrorText(chunkData.Error),
+				// P1-1c part 2: attach the structured StreamProviderError (TS
+				// createGroqStreamError) so streamRetries/IsRetryable see the
+				// real type/statusCode/isRetryable instead of generic inference.
+				Err: newGroqStreamProviderErrorChunk(chunkData.Error, json.RawMessage(event.Data)),
+			})
+			if ok {
+				return chunk, nil
+			}
+			continue
+		}
+		if !s.metadataEmitted && (chunkData.ID != "" || chunkData.Model != "" || chunkData.Created != 0 || len(s.responseHeaders) > 0) {
+			metadata := &provider.ResponseMetadata{
+				ID:      chunkData.ID,
+				ModelID: chunkData.Model,
+				Headers: s.responseHeaders,
+			}
+			if chunkData.Created != 0 {
+				metadata.Timestamp = time.Unix(chunkData.Created, 0)
+			}
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+				Type:             provider.ChunkTypeResponseMetadata,
+				ResponseMetadata: metadata,
+			})
+			s.metadataEmitted = true
+		}
+		// Capture usage from x_groq envelope (Groq's streaming usage mechanism).
+		if chunkData.XGroq != nil && chunkData.XGroq.Usage != nil {
+			s.pendingUsage = chunkData.XGroq.Usage
+		}
+		if len(chunkData.Choices) > 0 {
+			choice := chunkData.Choices[0]
+
+			// Handle reasoning content.
+			if choice.Delta.Reasoning != "" {
+				if !s.isActiveReasoning {
+					s.isActiveReasoning = true
+					s.flushQueue = append([]*provider.StreamChunk{
+						{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"},
+						{Type: provider.ChunkTypeReasoning, Reasoning: choice.Delta.Reasoning, ID: "reasoning-0"},
+					}, s.flushQueue...)
+					continue
 				}
-				if tc.ID != "" {
-					accum.id = tc.ID
+				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
+					Type:      provider.ChunkTypeReasoning,
+					Reasoning: choice.Delta.Reasoning,
+					ID:        "reasoning-0",
+				})
+				if ok {
+					return chunk, nil
 				}
-				if tc.Function.Name != "" {
-					accum.name = tc.Function.Name
+				continue
+			}
+
+			if choice.Delta.Content != "" {
+				if s.isActiveReasoning {
+					s.isActiveReasoning = false
+					s.flushQueue = append([]*provider.StreamChunk{
+						{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
+						{Type: provider.ChunkTypeText, Text: choice.Delta.Content},
+					}, s.flushQueue...)
+					continue
 				}
-				accum.arguments += tc.Function.Arguments
+				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{Type: provider.ChunkTypeText, Text: choice.Delta.Content})
+				if ok {
+					return chunk, nil
+				}
+				continue
+			}
+			// Tool call delta — accumulate partial arguments by index.
+			// Finalize only when finish_reason is received, never mid-stream.
+			if len(choice.Delta.ToolCalls) > 0 {
+				for _, tc := range choice.Delta.ToolCalls {
+					for _, chunk := range s.toolCallTracker.Track(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
+						c := chunk
+						s.flushQueue = append(s.flushQueue, &c)
+					}
+				}
+				if choice.FinishReason != "" {
+					s.flushGroqToolCalls(choice.FinishReason)
+					continue
+				}
+				continue
 			}
 			if choice.FinishReason != "" {
 				s.flushGroqToolCalls(choice.FinishReason)
-				return s.Next()
+				continue
 			}
-			return s.Next()
 		}
-		if choice.FinishReason != "" {
-			s.flushGroqToolCalls(choice.FinishReason)
-			return s.Next()
-		}
+		continue
+
 	}
-	return s.Next()
+}
+
+func groqStreamErrorText(raw json.RawMessage) string {
+	var withMessage struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(raw, &withMessage); err == nil && withMessage.Message != "" {
+		return withMessage.Message
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return text
+	}
+	return string(raw)
 }
 
 func (s *groqStream) flushGroqToolCalls(finishReason string) {
@@ -465,27 +631,14 @@ func (s *groqStream) flushGroqToolCalls(finishReason string) {
 			{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
 		}, s.flushQueue...)
 	}
-	for i := 0; i < len(s.toolCallAccum); i++ {
-		accum, ok := s.toolCallAccum[i]
-		if !ok {
-			continue
-		}
-		var args map[string]interface{}
-		if accum.arguments != "" {
-			_ = json.Unmarshal([]byte(accum.arguments), &args) //nolint:errcheck
-		}
-		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-			Type: provider.ChunkTypeToolCall,
-			ToolCall: &types.ToolCall{
-				ID:        accum.id,
-				ToolName:  accum.name,
-				Arguments: args,
-			},
-		})
+	for _, chunk := range s.toolCallTracker.Flush() {
+		c := chunk
+		s.flushQueue = append(s.flushQueue, &c)
 	}
 	finishChunk := &provider.StreamChunk{
-		Type:         provider.ChunkTypeFinish,
-		FinishReason: providerutils.MapOpenAIFinishReason(finishReason),
+		Type:            provider.ChunkTypeFinish,
+		FinishReason:    providerutils.MapOpenAIFinishReason(finishReason),
+		RawFinishReason: finishReason,
 	}
 	if s.pendingUsage != nil {
 		u := convertGroqUsage(*s.pendingUsage)

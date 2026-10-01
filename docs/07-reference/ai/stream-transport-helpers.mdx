@@ -1,0 +1,64 @@
+---
+title: Stream Transport Helpers
+description: Reference for stream transport helper APIs in pkg/ai.
+---
+
+# Stream Transport Helpers
+
+The Go AI SDK provides transport-oriented helpers for converting stream results into HTTP-friendly payloads and reading them back.
+
+## `CreateTextStreamResponse`
+
+```go
+func CreateTextStreamResponse(ctx context.Context, result *ai.StreamTextResult) (*http.Response, error)
+```
+
+Returns an `*http.Response` with a plain text body (`text/plain; charset=utf-8`) built from text chunks.
+
+## `PipeTextStreamToResponse`
+
+```go
+func PipeTextStreamToResponse(ctx context.Context, result *ai.StreamTextResult, w io.Writer) error
+```
+
+Writes text chunks to `w` as plain UTF-8 text.
+
+## `CreateUIMessageStream`
+
+```go
+func CreateUIMessageStream(ctx context.Context, result *ai.StreamTextResult) (<-chan ai.UIMessageChunk, <-chan error)
+```
+
+Converts stream chunks to UI message chunks.
+
+## `CreateUIMessageStreamResponse`
+
+```go
+func CreateUIMessageStreamResponse(ctx context.Context, result *ai.StreamTextResult) (*http.Response, error)
+```
+
+Returns an `*http.Response` with Server-Sent Events (`text/event-stream`) UI message chunks.
+
+## `PipeUIMessageStreamToResponse`
+
+```go
+func PipeUIMessageStreamToResponse(ctx context.Context, result *ai.StreamTextResult, w io.Writer) error
+```
+
+Writes UI message chunks as Server-Sent Events.
+
+## `ReadUIMessageStream`
+
+```go
+func ReadUIMessageStream(r io.Reader) ([]ai.UIMessageChunk, error)
+```
+
+Reads Server-Sent Events UI chunk payloads from a reader.
+
+## `ConsumeStream`
+
+```go
+func ConsumeStream(ctx context.Context, stream provider.TextStream) error
+```
+
+Consumes a stream until completion or context cancellation.

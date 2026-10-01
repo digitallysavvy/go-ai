@@ -5,6 +5,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 const (
@@ -25,6 +26,9 @@ type Config struct {
 
 	// BaseURL is the base URL for the Cohere API (default: https://api.cohere.ai/v1)
 	BaseURL string
+
+	// Headers are custom HTTP headers to include in requests.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // New creates a new Cohere provider with the given configuration
@@ -41,13 +45,21 @@ func New(cfg Config) *Provider {
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: headers,
+		Headers: version.WithUserAgentSuffix(http.MergeHeaders(headers, cfg.Headers), version.ProviderUserAgent("cohere")),
 	})
 
 	return &Provider{
 		config: cfg,
 		client: client,
 	}
+}
+
+// CreateCohere creates a new Cohere provider.
+//
+// It mirrors the TypeScript SDK createCohere export while New remains the
+// idiomatic Go constructor.
+func CreateCohere(cfg Config) *Provider {
+	return New(cfg)
 }
 
 // Name returns the provider name
@@ -84,17 +96,17 @@ func (p *Provider) EmbeddingModelWithOptions(modelID string, options EmbeddingOp
 
 // ImageModel returns an image generation model by ID
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("LCohere does not support image generation")
+	return nil, fmt.Errorf("cohere does not support image generation")
 }
 
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("LCohere does not support speech synthesis")
+	return nil, fmt.Errorf("cohere does not support speech synthesis")
 }
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("LCohere does not support transcription")
+	return nil, fmt.Errorf("cohere does not support transcription")
 }
 
 // RerankingModel returns a reranking model by ID

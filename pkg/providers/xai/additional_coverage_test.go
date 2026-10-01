@@ -1,0 +1,212 @@
+package xai
+
+import (
+	"context"
+	"errors"
+	"io"
+	"strings"
+	"testing"
+
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+)
+
+func TestXAIProvider_WrappersAndDefaults(t *testing.T) {
+	t.Parallel()
+
+	p := CreateXai(Config{APIKey: "test-key"})
+	if p == nil || p.Client() == nil {
+		t.Fatal("CreateXai returned nil provider or nil client")
+	}
+	if p.Files() == nil {
+		t.Fatal("Files() returned nil")
+	}
+
+	lm, err := p.LanguageModel("")
+	if err != nil {
+		t.Fatalf("LanguageModel() error = %v", err)
+	}
+	if lm.ModelID() != "grok-beta" {
+		t.Fatalf("default responses model ID = %q, want grok-beta", lm.ModelID())
+	}
+
+	img, err := p.ImageModel("")
+	if err != nil {
+		t.Fatalf("ImageModel() error = %v", err)
+	}
+	if img.ModelID() != ModelGrokImagineImage {
+		t.Fatalf("default image model ID = %q, want %s", img.ModelID(), ModelGrokImagineImage)
+	}
+
+	video, err := p.VideoModel("")
+	if err != nil {
+		t.Fatalf("VideoModel() error = %v", err)
+	}
+	if video.ModelID() != "grok-imagine-video" {
+		t.Fatalf("default video model ID = %q, want grok-imagine-video", video.ModelID())
+	}
+
+	if _, err := p.EmbeddingModel("x"); err == nil {
+		t.Fatal("EmbeddingModel expected unsupported error")
+	}
+	if model, err := p.SpeechModel("x"); err != nil || model.Provider() != "xai.speech" || model.ModelID() != "" {
+		t.Fatalf("SpeechModel = %v, %v; want xai.speech model with empty model ID", model, err)
+	}
+	if model, err := p.TranscriptionModel("x"); err != nil || model.Provider() != "xai.transcription" || model.ModelID() != "" {
+		t.Fatalf("TranscriptionModel = %v, %v; want xai.transcription model with empty model ID", model, err)
+	}
+	if _, err := p.RerankingModel("x"); err == nil {
+		t.Fatal("RerankingModel expected unsupported error")
+	}
+}
+
+func TestXAIToolBuildersAndProviderExecutedBehavior(t *testing.T) {
+	t.Parallel()
+
+	date := "2026-05-01"
+	enableImage := true
+	enableVideo := true
+
+	tools := []types.Tool{
+		CodeExecution(),
+		ViewImage(),
+		XSearch(XSearchConfig{
+			AllowedXHandles:          []string{"digitallysavvy"},
+			ExcludedXHandles:         []string{"spam"},
+			FromDate:                 &date,
+			EnableImageUnderstanding: &enableImage,
+			EnableVideoUnderstanding: &enableVideo,
+		}),
+	}
+
+	for _, tool := range tools {
+		if !tool.ProviderExecuted {
+			t.Fatalf("%s must be provider-executed", tool.Name)
+		}
+		if tool.Execute == nil {
+			t.Fatalf("%s Execute must be set", tool.Name)
+		}
+		_, err := tool.Execute(context.Background(), map[string]interface{}{"q": "test"}, types.ToolExecutionOptions{ToolCallID: "tc"})
+		if err == nil {
+			t.Fatalf("%s execute expected provider-executed noop error", tool.Name)
+		}
+		var te *types.ToolExecutionError
+		if !errors.As(err, &te) || !te.ProviderExecuted {
+			t.Fatalf("%s execute error type mismatch: %T", tool.Name, err)
+		}
+	}
+}
+
+func TestXAIPrepareResponsesToolsCoverage(t *testing.T) {
+	t.Parallel()
+
+	max := 3
+	tools := []types.Tool{
+		WebSearch(WebSearchConfig{AllowedDomains: []string{"example.com"}}),
+		XSearch(XSearchConfig{AllowedXHandles: []string{"digitallysavvy"}}),
+		CodeExecution(),
+		ViewImage(),
+		ViewXVideo(),
+		FileSearch(FileSearchConfig{VectorStoreIDs: []string{"vs_1"}, MaxNumResults: max}),
+		MCPServer(MCPServerConfig{
+			ServerURL:         "https://mcp.example.com",
+			ServerLabel:       "mcp",
+			ServerDescription: "desc",
+			AllowedTools:      []string{"search"},
+			Headers:           map[string]string{"x": "1"},
+			Authorization:     "Bearer abc",
+		}),
+		{
+			Name:        "my_fn",
+			Description: "custom",
+			Parameters:  map[string]interface{}{"type": "object"},
+		},
+	}
+
+	wire := prepareXAIResponsesTools(tools)
+	if len(wire) != len(tools) {
+		t.Fatalf("wire tools length = %d, want %d", len(wire), len(tools))
+	}
+
+	codeTool := wire[2].(map[string]interface{})
+	if codeTool["type"] != "code_interpreter" {
+		t.Fatalf("xai.code_execution should map to code_interpreter, got %#v", codeTool)
+	}
+	fnTool := wire[len(wire)-1].(map[string]interface{})
+	if fnTool["type"] != "function" || fnTool["name"] != "my_fn" {
+		t.Fatalf("function fallback mapping mismatch: %#v", fnTool)
+	}
+}
+
+func TestXAIModelMetadataAndErrorHelpers(t *testing.T) {
+	t.Parallel()
+
+	p := New(Config{APIKey: "test-key"})
+	im := NewImageModel(p, ModelGrokImagineImage)
+	if im.SpecificationVersion() != "v4" {
+		t.Fatalf("image spec = %q", im.SpecificationVersion())
+	}
+	if im.Provider() != "xai.image" {
+		t.Fatalf("image provider = %q", im.Provider())
+	}
+	if im.ModelID() != ModelGrokImagineImage {
+		t.Fatalf("image model ID = %q", im.ModelID())
+	}
+	ierr := im.handleError(errors.New("image fail"))
+	var ipErr *providererrors.ProviderError
+	if !errors.As(ierr, &ipErr) || ipErr.Provider != "xai.image" {
+		t.Fatalf("image handleError mismatch: %v", ierr)
+	}
+}
+
+func TestXAIResponsesToolNameResolutionHelpers(t *testing.T) {
+	t.Parallel()
+
+	toolNames := resolveProviderToolNames([]types.Tool{
+		{Name: "xai.web_search"},
+		{Name: "xai.code_execution"},
+		{Name: "custom-tool"},
+	})
+	if toolNames["xai.web_search"] != "xai.web_search" {
+		t.Fatalf("resolveProviderToolNames missing web_search: %#v", toolNames)
+	}
+
+	if got := resolvedToolName("web_search_call", "", toolNames); got != "xai.web_search" {
+		t.Fatalf("resolvedToolName(web_search_call) = %q", got)
+	}
+	if got := resolvedToolName("x_search_call", "x_keyword_search", toolNames); got != "xai.x_search" {
+		t.Fatalf("resolvedToolName(x_search subtool) = %q", got)
+	}
+	if got := resolvedToolName("code_execution_call", "", toolNames); got != "xai.code_execution" {
+		t.Fatalf("resolvedToolName(code_execution_call) = %q", got)
+	}
+	if got := resolvedToolName("unknown_call", "", toolNames); got != "unknown_call" {
+		t.Fatalf("resolvedToolName(default) = %q", got)
+	}
+	if got := providerToolNameFromType("view_image_call"); got != "xai.view_image" {
+		t.Fatalf("providerToolNameFromType(view_image_call) = %q", got)
+	}
+}
+
+func TestXAIResponsesStreamHelpers(t *testing.T) {
+	t.Parallel()
+
+	respStream := newXAIResponsesStream(io.NopCloser(strings.NewReader("data: [DONE]\n\n")))
+	_, err := respStream.Next()
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("xaiResponsesStream Next() err = %v, want EOF", err)
+	}
+	if respStream.Err() != nil {
+		t.Fatalf("xaiResponsesStream.Err() = %v, want nil after EOF", respStream.Err())
+	}
+	if err := respStream.Close(); err != nil {
+		t.Fatalf("xaiResponsesStream.Close() error = %v", err)
+	}
+
+	rm := NewResponsesLanguageModel(New(Config{APIKey: "k"}), "grok-3")
+	wrapped := rm.wrapErr(errors.New("boom"))
+	var pErr *providererrors.ProviderError
+	if !errors.As(wrapped, &pErr) || pErr.Provider != "xai.responses" {
+		t.Fatalf("wrapErr mismatch: %v", wrapped)
+	}
+}

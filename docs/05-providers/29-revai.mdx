@@ -1,0 +1,104 @@
+---
+title: Rev.ai Provider
+description: Setup and usage guide for Rev.ai transcription with Go-AI SDK
+---
+
+# Rev.ai Provider
+
+Rev.ai provides asynchronous, job-based speech-to-text transcription. It
+does not offer language, embedding, image, speech, or reranking models —
+only `TranscriptionModel` is supported.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/revai"
+)
+```
+
+### Configuration
+
+```go
+provider := revai.New(revai.Config{
+    APIKey: os.Getenv("REVAI_API_KEY"),
+})
+```
+
+`revai.Config` also accepts `BaseURL` (default `https://api.rev.ai`).
+
+### Get API Key
+
+```bash
+export REVAI_API_KEY=...
+```
+
+## Transcription
+
+`ai.Transcribe` submits a job (`POST /speechtotext/v1/jobs`), polls its
+status, then fetches the transcript once complete — the whole async job
+lifecycle is handled for you:
+
+```go
+transcriptionModel, err := provider.TranscriptionModel(revai.ModelMachine)
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
+    Model: transcriptionModel,
+    Audio: audioBytes,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println(result.Text)
+```
+
+Model IDs (the "transcriber" job field): `revai.ModelMachine`
+(`"machine"`), `ModelLowCost` (`"low_cost"`), `ModelFusion` (`"fusion"`).
+
+## Provider Options
+
+Rev.ai-specific job options are passed under the `"revai"`
+`ProviderOptions` key. Unlike most providers, these field names
+intentionally match Rev.ai's own snake_case job submission API rather than
+the SDK's usual camelCase convention:
+
+```go
+verbatim := true
+result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
+    Model: transcriptionModel,
+    Audio: audioBytes,
+    ProviderOptions: map[string]interface{}{
+        "revai": revai.TranscriptionModelOptions{
+            Verbatim:        &verbatim,
+            SkipDiarization: types.BoolPtr(false),
+            Language:        "en",
+        },
+    },
+})
+```
+
+Notable options: `verbatim`, `rush`, `skip_diarization`,
+`skip_punctuation`, `remove_disfluencies`, `speakers_count`,
+`custom_vocabulary_id`, `summarization_config`, `translation_config`,
+`notification_config` (webhook on completion), and `delete_after_seconds`.
+See `pkg/providers/revai/transcription_model_options.go` for the complete
+field list.
+
+## Workflow Serialization
+
+Rev.ai transcription models can cross a workflow boundary with
+`providerutils.SerializeModel` / `DeserializeModel`. See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
+for the mechanism.
+
+## See Also
+
+- [API Reference: Transcribe](../07-reference/ai/transcribe.mdx)
+- [Rev.ai Documentation](https://docs.rev.ai)

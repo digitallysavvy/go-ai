@@ -75,8 +75,8 @@ func runStreamingAgent(ctx context.Context, model provider.LanguageModel, query 
 		System: `You are a thorough research assistant. Break down complex queries into steps.
 Use available tools to gather information. Think step by step and explain your process.`,
 		Tools:    tools,
-		StopWhen: []ai.StopCondition{ai.StepCountIs(6)},
-		OnStepFinish: func(ctx context.Context, step types.StepResult, userContext interface{}) {
+		StopWhen: []ai.StopCondition{ai.IsStepCount(6)},
+		OnStepEnd: func(ctx context.Context, step types.StepResult, userContext interface{}) {
 			stepCount++
 			fmt.Printf("\n[Step %d]\n", stepCount)
 

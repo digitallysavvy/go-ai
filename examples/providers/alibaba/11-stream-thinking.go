@@ -45,7 +45,7 @@ func main() {
 		Prompt: prompt,
 		ProviderOptions: map[string]interface{}{
 			"alibaba": map[string]interface{}{
-				"enable_thinking":  true,
+				"enable_thinking": true,
 				"thinking_budget": 5000, // Max tokens for reasoning
 			},
 		},
@@ -53,7 +53,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	// Process stream chunks
 	fmt.Println("Question:")
@@ -101,7 +101,7 @@ func main() {
 	}
 
 	// Print summary
-	fmt.Println("\n")
+	fmt.Println()
 	fmt.Println("---")
 	fmt.Printf("Finish Reason: %s\n", finishReason)
 

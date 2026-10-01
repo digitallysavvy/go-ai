@@ -21,11 +21,20 @@ type ListToolsResult struct {
 }
 
 type MCPTool struct {
-    Name        string                 `json:"name"`
-    Description string                 `json:"description"`
-    InputSchema map[string]interface{} `json:"inputSchema"`
+    Name         string                 `json:"name"`
+    Title        string                 `json:"title,omitempty"`
+    Description  string                 `json:"description,omitempty"`
+    InputSchema  map[string]interface{} `json:"inputSchema"`
+    OutputSchema map[string]interface{} `json:"outputSchema,omitempty"`
+    Annotations  map[string]interface{} `json:"annotations,omitempty"`
+    Meta         map[string]interface{} `json:"_meta,omitempty"`
 }
 ```
+
+`MCPTool` preserves the current MCP tool JSON shape, including `title`,
+`outputSchema`, `annotations`, and `_meta`. MCP Apps metadata is stored in
+`_meta.ui` or the legacy flat `_meta["ui/resourceUri"]` field and can be
+normalized with `mcp.GetMCPAppToolMeta`.
 
 ## Basic Usage
 
@@ -173,12 +182,9 @@ func getAllTools(client *mcp.MCPClient, ctx context.Context) ([]mcp.MCPTool, err
 
     allTools = append(allTools, result.Tools...)
 
-    // Handle pagination if present
-    // Note: Current implementation doesn't support cursor-based pagination yet
-    // This is a placeholder for future enhancement
+    // Handle pagination if present.
     if result.NextCursor != "" {
         log.Printf("More tools available (cursor: %s)", result.NextCursor)
-        // TODO: Implement pagination when available in SDK
     }
 
     return allTools, nil
@@ -300,6 +306,6 @@ if err != nil {
 
 ## See Also
 
-- [MCP Integration Guide](./mcp-integration.md)
-- [MCP Client API](./mcp-client.md)
-- [Tool Execution](./tool-execution.md)
+- [MCP Integration Guide](./03-ai-sdk-core/16-mcp-tools.mdx)
+- [MCP Client API](./03-ai-sdk-core/16-mcp-tools.mdx)
+- [Tool Execution](./03-ai-sdk-core/15-tools-and-tool-calling.mdx)

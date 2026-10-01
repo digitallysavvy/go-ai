@@ -321,4 +321,4 @@ loadPluginTools() // Returns references to dynamically loaded tools
 
 - [Tool Result Content Arrays Guide](./tool-result-content-arrays.md) - General guide on content blocks
 - [Anthropic Advanced Features](../providers/anthropic-advanced-features.md) - Other Anthropic-specific features
-- [Tools Guide](./tools.md) - General tool development guide
+- [Tools Guide](../03-ai-sdk-core/15-tools-and-tool-calling.mdx) - General tool development guide

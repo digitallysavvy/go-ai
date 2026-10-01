@@ -27,6 +27,7 @@ type FileSearchConfig struct {
 //	    VectorStoreIDs: []string{"vs_123", "vs_456"},
 //	    MaxNumResults:  5,
 //	})
+//
 // FileSearchOptions holds the config used by prepareXAIResponsesTools to serialize
 // the file_search tool into the Responses API request body.
 type FileSearchOptions struct {

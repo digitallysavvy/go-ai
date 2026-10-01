@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
@@ -31,6 +32,14 @@ type GenerateOptions struct {
 	// Prompt for the model (either text or messages)
 	Prompt types.Prompt
 
+	// AllowSystemMessages permits system-role messages in Prompt.Messages.
+	// Defaults to false, matching the TypeScript SDK's messages conversion.
+	AllowSystemMessages bool
+
+	// AllowSystemInMessages is a TypeScript-compatible alias for
+	// AllowSystemMessages. Either field enables system-role messages.
+	AllowSystemInMessages bool
+
 	// Temperature controls randomness (0.0 to 2.0, typically)
 	Temperature *float64
 
@@ -55,8 +64,17 @@ type GenerateOptions struct {
 	// Tools available for the model to call
 	Tools []types.Tool
 
+	// IncludeRawChunks requests provider raw chunks in streams when supported.
+	IncludeRawChunks bool
+
 	// Tool choice strategy
 	ToolChoice types.ToolChoice
+
+	// RuntimeContext is user-defined runtime data for the call.
+	RuntimeContext interface{}
+
+	// ToolsContext is per-tool execution context for the call.
+	ToolsContext map[string]interface{}
 
 	// Response format (for structured output)
 	ResponseFormat *ResponseFormat
@@ -76,6 +94,12 @@ type GenerateOptions struct {
 	// Providers map this to their native reasoning APIs (see types.ReasoningLevel).
 	Reasoning *types.ReasoningLevel
 
+	// SendReasoning controls whether reasoning/thinking stream parts are exposed
+	// to consumers. nil and false both mean reasoning boundary chunks are
+	// suppressed at the core stream layer; providers may additionally use this
+	// to suppress reasoning deltas in their native APIs.
+	SendReasoning *bool
+
 	// Provider-specific options
 	// These are passed directly to the provider and can contain any provider-specific settings
 	// Example: map[string]interface{}{"openai": map[string]interface{}{"promptCacheRetention": "24h"}}
@@ -83,7 +107,7 @@ type GenerateOptions struct {
 
 	// Telemetry configuration for observability
 	// Providers can use this to instrument their API calls with OpenTelemetry spans
-	Telemetry *telemetry.Settings
+	Telemetry *telemetry.Options
 }
 
 // ResponseFormat specifies the format of the response
@@ -154,6 +178,21 @@ type TextStream interface {
 	Close() error
 }
 
+// StreamRequestBody is an optional capability a TextStream implementation
+// can additionally provide to expose the raw serialized request body sent
+// to the provider for that stream, mirroring types.StepRequest.Body on the
+// non-streaming DoGenerate path (TS doStream() resolves {request: {body}}
+// alongside {stream}). pkg/ai/stream.go checks for this via a type
+// assertion after opening the stream and, when present, copies it into the
+// step's types.StepRequest.Body (hand-off: "stream request body field").
+// A TextStream that doesn't implement this simply has an empty
+// StepRequest.Body for streaming calls, as before.
+type StreamRequestBody interface {
+	// RequestBody returns the raw request body that was sent to open this
+	// stream, or nil if unavailable.
+	RequestBody() interface{}
+}
+
 // StreamChunk represents a single chunk in a text stream
 type StreamChunk struct {
 	// Type of chunk
@@ -174,6 +213,10 @@ type StreamChunk struct {
 	// ChunkTypeReasoningStart and ChunkTypeReasoningEnd carry only an ID, no text.
 	Reasoning string
 
+	// Raw carries an unmodified provider chunk when Type is ChunkTypeRaw and the
+	// caller requested Include.RawChunks / IncludeRawChunks.
+	Raw interface{}
+
 	// Tool call (when Type is ChunkTypeToolCall)
 	ToolCall *types.ToolCall
 
@@ -181,11 +224,25 @@ type StreamChunk struct {
 	// Synthetic chunks emitted by streamText after deferred tool execution.
 	ToolResult *types.ToolResult
 
+	// Tool approval request (when Type is ChunkTypeToolApprovalRequest).
+	ToolApprovalRequest *types.ToolApprovalRequestContent
+
+	// Tool approval response (when Type is ChunkTypeToolApprovalResponse).
+	ToolApprovalResponse *types.ToolApprovalResponseContent
+
 	// Usage information (when Type is ChunkTypeUsage or ChunkTypeFinish)
 	Usage *types.Usage
 
 	// Finish reason (when Type is ChunkTypeFinish)
 	FinishReason types.FinishReason
+
+	// RawFinishReason is the raw, provider-specific finish/incomplete reason
+	// string (when Type is ChunkTypeFinish), before normalization to
+	// FinishReason. It mirrors types.GenerateResult.RawFinishReason for the
+	// non-streaming path and is surfaced by StreamTextResult.RawFinishReason()
+	// (TS raw finish reason passthrough). For a Responses response.failed
+	// event it carries the failure's raw reason, or "error" if none was given.
+	RawFinishReason string
 
 	// Context management information (Anthropic-specific)
 	// Contains statistics about automatic conversation history cleanup
@@ -223,6 +280,58 @@ type StreamChunk struct {
 	// optional `providerMetadata?: SharedV4ProviderMetadata` field on those
 	// stream part types.
 	ProviderMetadata json.RawMessage
+
+	// ResponseMetadata is set when Type == ChunkTypeResponseMetadata.
+	// Carries the provider-level HTTP response metadata emitted early in the
+	// stream (after headers arrive, before content begins).
+	ResponseMetadata *ResponseMetadata
+
+	// Err optionally carries a structured error for a ChunkTypeError chunk
+	// (e.g. a *providererrors.ProviderError or a pre-built
+	// *providererrors.StreamProviderError with provider-specific type/code/
+	// statusCode/isRetryable already resolved). When nil, core falls back to
+	// wrapping Text as a plain error and normalizing it generically
+	// (pkg/ai/stream.go, providererrors.NormalizeStreamProviderError). A
+	// provider that can distinguish real error metadata from a bare message
+	// should set this instead of only Text, so streamRetries' retryability
+	// classification is accurate (audit row 35841f5 / WG8).
+	Err error
+
+	// Request carries this step's request metadata when Type is
+	// ChunkTypeStartStep. Mirrors the TS SDK's 'start-step' fullStream part's
+	// `request` field (LanguageModelRequestMetadata).
+	Request *types.StepRequest
+
+	// Response carries this step's response metadata when Type is
+	// ChunkTypeFinishStep. Does not include Response.Messages (populated
+	// later on the aggregated types.StepResult, not on this chunk), matching
+	// the TS SDK's 'finish-step' fullStream part's `response` field.
+	Response *types.StepResponse
+
+	// Performance carries this step's performance statistics when Type is
+	// ChunkTypeFinishStep. Mirrors the TS SDK's 'finish-step' fullStream
+	// part's `performance` field.
+	Performance *types.StepPerformance
+}
+
+// ResponseMetadata is the payload of a ChunkTypeResponseMetadata chunk.
+// Providers that know their response ID / model / timestamp before streaming
+// content should emit exactly one of these as the first meaningful chunk.
+// Mirrors the 'response-metadata' chunk type in the TypeScript SDK.
+type ResponseMetadata struct {
+	// ID is the provider-assigned response ID (e.g. "chatcmpl-abc123").
+	ID string
+
+	// Timestamp is when the provider started generating the response.
+	// Zero value means the provider did not supply a timestamp.
+	Timestamp time.Time
+
+	// ModelID is the model that handled the request. May differ from the
+	// model requested (e.g. when using model aliases).
+	ModelID string
+
+	// Headers are the raw HTTP response headers.
+	Headers map[string]string
 }
 
 // ChunkType represents the type of stream chunk
@@ -241,17 +350,65 @@ const (
 	// ChunkTypeUsage indicates a usage information chunk
 	ChunkTypeUsage ChunkType = "usage"
 
-	// ChunkTypeFinish indicates the final chunk with finish reason
+	// ChunkTypeStart is emitted exactly once, before any step's stream is
+	// consumed, marking the beginning of the whole StreamText call. Carries
+	// no payload. Mirrors the TS SDK's "start" fullStream part
+	// (stream-text.ts:1855, `controller.enqueue({type:'start'})`).
+	ChunkTypeStart ChunkType = "start"
+
+	// ChunkTypeStartStep marks the start of one step in a multi-step stream,
+	// carrying that step's Request and Warnings. Emitted once per step,
+	// before that step's first other chunk. Mirrors the TS SDK's
+	// "start-step" fullStream part (stream-text.ts:2829-2838).
+	ChunkTypeStartStep ChunkType = "start-step"
+
+	// ChunkTypeFinish indicates the call is complete: the final chunk with
+	// the overall finish reason and total usage, emitted exactly once after
+	// the last step's ChunkTypeFinishStep. Mirrors the TS SDK's top-level
+	// "finish" fullStream part (stream-text.ts:3129-3136), which is distinct
+	// from and never repeated per step (see ChunkTypeFinishStep for the
+	// per-step signal).
 	ChunkTypeFinish ChunkType = "finish"
+
+	// ChunkTypeFinishStep marks the end of one step in a multi-step stream,
+	// carrying that step's Response/Usage/Performance/FinishReason/
+	// RawFinishReason/ProviderMetadata. Emitted once per step — including
+	// the last one, immediately before the call-level ChunkTypeFinish —
+	// whether the stream comes from the normal provider.LanguageModel.
+	// DoStream loop or was produced outside it (e.g. a harness bridge
+	// session that already ran its own model calls). Unlike ChunkTypeFinish
+	// it never by itself means the whole call is over; a consumer should
+	// expect either another ChunkTypeStartStep or the call-level
+	// ChunkTypeFinish afterward. Mirrors the TS SDK's "finish-step"
+	// fullStream part (stream-text.ts:3020-3033) and TS harness-v1-stream-
+	// part.ts's "finish-step" (distinct from "finish"). See
+	// state/parity/sep_23_2026/harness.md §3 ("P0 prerequisite").
+	ChunkTypeFinishStep ChunkType = "finish-step"
 
 	// ChunkTypeError indicates an error occurred
 	ChunkTypeError ChunkType = "error"
+
+	// ChunkTypeAbort indicates the stream was aborted by cancellation or timeout.
+	// Mirrors the TypeScript SDK's "abort" stream part.
+	ChunkTypeAbort ChunkType = "abort"
 
 	// ChunkTypeToolResult is a synthetic chunk emitted by streamText after
 	// deferred tool execution.  It carries the result of a tool call and is
 	// forwarded to OnChunk consumers just like any other chunk, matching the
 	// TypeScript AI SDK's tool-result forwarding behaviour.
 	ChunkTypeToolResult ChunkType = "tool-result"
+
+	// ChunkTypeToolApprovalRequest indicates that a tool call requires
+	// approval before execution.
+	ChunkTypeToolApprovalRequest ChunkType = "tool-approval-request"
+
+	// ChunkTypeToolApprovalResponse indicates that a tool approval was granted
+	// or denied.
+	ChunkTypeToolApprovalResponse ChunkType = "tool-approval-response"
+
+	// ChunkTypeToolOutputDenied indicates that a denied approval prevented tool
+	// execution.
+	ChunkTypeToolOutputDenied ChunkType = "tool-output-denied"
 
 	// ChunkTypeTextStart marks the beginning of a text content block.
 	// ID identifies which block subsequent ChunkTypeText and ChunkTypeTextEnd
@@ -289,6 +446,11 @@ const (
 	// GeneratedFileContent part.
 	ChunkTypeFile ChunkType = "file"
 
+	// ChunkTypeRaw carries the unmodified provider chunk requested by
+	// Include.RawChunks. Providers should only emit this when GenerateOptions
+	// IncludeRawChunks is true.
+	ChunkTypeRaw ChunkType = "raw"
+
 	// ChunkTypeToolInputStart marks the beginning of streaming tool input for a
 	// custom function tool call.  The ToolCall field contains the tool call ID and
 	// name.  Subsequent ChunkTypeToolInputDelta chunks carry incremental JSON and
@@ -314,6 +476,21 @@ const (
 	// The Warnings field carries the warnings; the chunk has no text content.
 	// Consumers check chunk.Type == ChunkTypeStreamStart and read chunk.Warnings.
 	ChunkTypeStreamStart ChunkType = "stream-start"
+
+	// ChunkTypeResponseMetadata carries provider-level response metadata emitted
+	// early in the stream (e.g. after HTTP response headers are received).
+	// Providers that know their response ID / model / timestamp before streaming
+	// content should emit exactly one of these as the first meaningful chunk.
+	// Mirrors the 'response-metadata' chunk type in the TypeScript SDK.
+	ChunkTypeResponseMetadata ChunkType = "response-metadata"
+
+	// ChunkTypeFirstChunk is a synthetic stream lifecycle marker emitted before
+	// the first meaningful stream chunk is forwarded.
+	ChunkTypeFirstChunk ChunkType = "ai.stream.firstChunk"
+
+	// ChunkTypeStreamFinish is a synthetic stream lifecycle marker emitted when
+	// the stream has been fully consumed.
+	ChunkTypeStreamFinish ChunkType = "ai.stream.finish"
 )
 
 // EmbedModelOptions contains options forwarded to the embedding provider on each call.
@@ -432,8 +609,23 @@ type SpeechGenerateOptions struct {
 	// Voice to use
 	Voice string
 
+	// OutputFormat requests a specific audio container/codec.
+	OutputFormat string
+
+	// Instructions tune style, tone, accent, or other model-specific behavior.
+	Instructions string
+
 	// Speed of speech (0.25 to 4.0)
 	Speed *float64
+
+	// Language hint for multilingual speech models.
+	Language string
+
+	// ProviderOptions contains provider-specific request options.
+	ProviderOptions map[string]interface{}
+
+	// Additional HTTP headers
+	Headers map[string]string
 }
 
 // TranscriptionModel represents a speech-to-text model
@@ -452,6 +644,11 @@ type TranscriptionOptions struct {
 	// Audio data to transcribe
 	Audio []byte
 
+	// AudioBase64 is an already base64-encoded audio payload. When set, providers
+	// that send base64 request content use it directly, matching the TypeScript
+	// SDK's string audio input path.
+	AudioBase64 string
+
 	// MIME type of the audio
 	MimeType string
 
@@ -460,4 +657,10 @@ type TranscriptionOptions struct {
 
 	// Whether to include timestamps
 	Timestamps bool
+
+	// ProviderOptions contains provider-specific request options.
+	ProviderOptions map[string]interface{}
+
+	// Additional HTTP headers
+	Headers map[string]string
 }

@@ -41,7 +41,10 @@ func main() {
     }
 
     // Generate text with fast mode
-    result, err := ai.GenerateText(context.Background(), model, "Quick question: What is 2+2?")
+    result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Quick question: What is 2+2?",
+    })
     if err != nil {
         log.Fatal(err)
     }
@@ -128,8 +131,10 @@ func main() {
     }
 
     // Ask a complex question
-    result, err := ai.GenerateText(context.Background(), model,
-        "Solve this logic puzzle: Three switches control three light bulbs in another room...")
+    result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Solve this logic puzzle: Three switches control three light bulbs in another room...",
+    })
     if err != nil {
         log.Fatal(err)
     }
@@ -239,7 +244,10 @@ model, err := provider.LanguageModelWithOptions(
 The SDK handles various error conditions:
 
 ```go
-result, err := ai.GenerateText(ctx, model, prompt)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: prompt,
+})
 if err != nil {
     if providererrors.IsRateLimitError(err) {
         // Handle rate limit

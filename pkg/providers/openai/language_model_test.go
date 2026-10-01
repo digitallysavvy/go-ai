@@ -3,14 +3,43 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
+
+// nextNonMeta reads and discards stream lifecycle metadata chunks, returning
+// the first content chunk.
+func nextNonMeta(t *testing.T, stream provider.TextStream) *provider.StreamChunk {
+	t.Helper()
+	for {
+		chunk, err := stream.Next()
+		if err != nil {
+			t.Fatalf("stream.Next failed: %v", err)
+		}
+		if chunk.Type != provider.ChunkTypeResponseMetadata && chunk.Type != provider.ChunkTypeStreamStart {
+			return chunk
+		}
+	}
+}
+
+func nextChunkOfType(t *testing.T, stream provider.TextStream, chunkType provider.ChunkType) *provider.StreamChunk {
+	t.Helper()
+	for {
+		chunk := nextNonMeta(t, stream)
+		if chunk.Type == chunkType {
+			return chunk
+		}
+	}
+}
 
 // TestPromptCacheRetention tests the prompt cache retention feature
 func TestPromptCacheRetention(t *testing.T) {
@@ -189,12 +218,8 @@ func TestPromptCacheRetentionWithStreaming(t *testing.T) {
 	}
 	defer stream.Close() //nolint:errcheck
 
-	// Read chunks
-	chunk, err := stream.Next()
-	if err != nil {
-		t.Fatalf("stream.Next failed: %v", err)
-	}
-
+	// Read first non-metadata chunk (response-metadata is emitted first with HTTP headers).
+	chunk := nextNonMeta(t, stream)
 	if chunk.Text != "Hello" {
 		t.Errorf("expected text=Hello, got %s", chunk.Text)
 	}
@@ -203,7 +228,7 @@ func TestPromptCacheRetentionWithStreaming(t *testing.T) {
 // TestPromptCacheRetentionModels tests cache retention with different models
 func TestPromptCacheRetentionModels(t *testing.T) {
 	models := []struct {
-		modelID         string
+		modelID          string
 		supportsCache24h bool
 	}{
 		{"gpt-5.1", true},
@@ -223,8 +248,8 @@ func TestPromptCacheRetentionModels(t *testing.T) {
 
 				// Return success response
 				response := openAIResponse{
-					ID:     "test-id",
-					Model:  tt.modelID,
+					ID:    "test-id",
+					Model: tt.modelID,
 					Choices: []struct {
 						Index        int           `json:"index"`
 						Message      openAIMessage `json:"message"`
@@ -306,6 +331,9 @@ func TestBuildRequestBodyWithPromptCacheRetention(t *testing.T) {
 	}
 
 	body := model.buildRequestBody(opts, false)
+	if _, ok := body["stream"]; ok {
+		t.Fatalf("stream = %#v, want omitted for non-streaming request", body["stream"])
+	}
 
 	// Verify prompt_cache_retention is present
 	retention, ok := body["prompt_cache_retention"]
@@ -584,11 +612,8 @@ func TestDoStreamFinishReasonMapping(t *testing.T) {
 			}
 			defer stream.Close() //nolint:errcheck
 
-			// Read text chunk
-			chunk, err := stream.Next()
-			if err != nil {
-				t.Fatalf("stream.Next (text) failed: %v", err)
-			}
+			// Read text chunk (skip response-metadata first chunk from HTTP headers).
+			chunk := nextNonMeta(t, stream)
 			if chunk.Type != provider.ChunkTypeText || chunk.Text != "Hi" {
 				t.Errorf("expected text chunk 'Hi', got type=%q text=%q", chunk.Type, chunk.Text)
 			}
@@ -605,6 +630,50 @@ func TestDoStreamFinishReasonMapping(t *testing.T) {
 				t.Errorf("FinishReason = %q, want %q", chunk.FinishReason, tt.expectedReason)
 			}
 		})
+	}
+}
+
+// TestDoStream_ImplementsStreamRequestBody verifies that the TextStream
+// returned by DoStream exposes the raw request body it sent via the
+// optional provider.StreamRequestBody capability (hand-off: "stream request
+// body field"), through the streaming.WarningsStream wrapper.
+func TestDoStream_ImplementsStreamRequestBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}` + "\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model := NewLanguageModel(p, "gpt-4")
+
+	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{
+			Messages: []types.Message{
+				{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Hello"}}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoStream failed: %v", err)
+	}
+	defer stream.Close() //nolint:errcheck
+
+	rb, ok := stream.(provider.StreamRequestBody)
+	if !ok {
+		t.Fatalf("stream (%T) does not implement provider.StreamRequestBody", stream)
+	}
+	body, ok := rb.RequestBody().(map[string]interface{})
+	if !ok {
+		t.Fatalf("RequestBody() = %#v, want a map[string]interface{}", rb.RequestBody())
+	}
+	if body["model"] != "gpt-4" {
+		t.Errorf("RequestBody()[\"model\"] = %v, want %q", body["model"], "gpt-4")
+	}
+	if body["stream"] != true {
+		t.Errorf("RequestBody()[\"stream\"] = %v, want true", body["stream"])
 	}
 }
 
@@ -652,20 +721,14 @@ func TestDoStreamToolCallChunks(t *testing.T) {
 	}
 	defer stream.Close() //nolint:errcheck
 
-	// Chunk 1: text
-	chunk, err := stream.Next()
-	if err != nil {
-		t.Fatalf("Next (text) failed: %v", err)
-	}
+	// Chunk 1: text (skip response-metadata first chunk from HTTP headers).
+	chunk := nextNonMeta(t, stream)
 	if chunk.Type != provider.ChunkTypeText || chunk.Text != "Sure!" {
 		t.Errorf("expected text chunk 'Sure!', got type=%q text=%q", chunk.Type, chunk.Text)
 	}
 
 	// Chunk 2: tool call (fully assembled from three deltas)
-	chunk, err = stream.Next()
-	if err != nil {
-		t.Fatalf("Next (tool call) failed: %v", err)
-	}
+	chunk = nextChunkOfType(t, stream, provider.ChunkTypeToolCall)
 	if chunk.Type != provider.ChunkTypeToolCall {
 		t.Fatalf("expected ChunkTypeToolCall, got %q", chunk.Type)
 	}
@@ -728,11 +791,8 @@ func TestDoStreamToolCallDeltaNullType(t *testing.T) {
 	}
 	defer stream.Close() //nolint:errcheck
 
-	// Expect a tool call chunk assembled from the two deltas.
-	chunk, err := stream.Next()
-	if err != nil {
-		t.Fatalf("stream.Next failed: %v", err)
-	}
+	// Expect a tool call chunk assembled from the two deltas (skip leading response-metadata).
+	chunk := nextChunkOfType(t, stream, provider.ChunkTypeToolCall)
 	if chunk.Type != provider.ChunkTypeToolCall {
 		t.Fatalf("expected ChunkTypeToolCall, got %q", chunk.Type)
 	}
@@ -750,6 +810,250 @@ func TestDoStreamToolCallDeltaNullType(t *testing.T) {
 	_, err = stream.Next()
 	if err != nil {
 		t.Fatalf("unexpected error on finish chunk: %v", err)
+	}
+}
+
+func TestDoStreamToolCallAndFinishSameChunk(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_same","type":"function","function":{"name":"calc","arguments":"{\"op\":\"add\"}"}}]},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`
+	stream := newOpenAIStream(io.NopCloser(strings.NewReader(sseData)))
+	defer stream.Close() //nolint:errcheck
+
+	chunk := nextChunkOfType(t, stream, provider.ChunkTypeToolCall)
+	if chunk.ToolCall == nil {
+		t.Fatal("ToolCall is nil")
+	}
+	if chunk.ToolCall.ID != "call_same" {
+		t.Fatalf("ToolCall.ID = %q, want call_same", chunk.ToolCall.ID)
+	}
+	if chunk.ToolCall.Arguments["op"] != "add" {
+		t.Fatalf("argument op = %v, want add", chunk.ToolCall.Arguments["op"])
+	}
+
+	chunk = nextChunkOfType(t, stream, provider.ChunkTypeFinish)
+	if chunk.FinishReason != types.FinishReasonToolCalls {
+		t.Fatalf("FinishReason = %q, want %q", chunk.FinishReason, types.FinishReasonToolCalls)
+	}
+}
+
+func TestOpenAIStreamIncludeRawChunksMatchesTypeScript(t *testing.T) {
+	sseData := `data: {"id":"raw-1","created":1702657020,"model":"gpt-3.5-turbo-0613","choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}
+
+data: {"id":"raw-2","created":1702657020,"model":"gpt-3.5-turbo-0613","choices":[{"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+`
+	stream := newOpenAIStream(io.NopCloser(strings.NewReader(sseData)), true)
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("first chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeRaw {
+		t.Fatalf("first chunk type = %v, want raw", chunk.Type)
+	}
+	raw, ok := chunk.Raw.(map[string]interface{})
+	if !ok || raw["id"] != "raw-1" {
+		t.Fatalf("raw chunk = %#v, want id raw-1", chunk.Raw)
+	}
+
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("second chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeResponseMetadata {
+		t.Fatalf("second chunk type = %v, want response-metadata", chunk.Type)
+	}
+	if chunk.ResponseMetadata == nil || chunk.ResponseMetadata.ID != "raw-1" || chunk.ResponseMetadata.ModelID != "gpt-3.5-turbo-0613" {
+		t.Fatalf("response metadata = %#v, want first provider event metadata", chunk.ResponseMetadata)
+	}
+
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("third chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeText || chunk.Text != "Hello" {
+		t.Fatalf("third chunk = %#v, want text Hello", chunk)
+	}
+}
+
+func TestOpenAIStreamParseErrorEmitsErrorChunkAfterRaw(t *testing.T) {
+	sseData := `data: {"choices":[
+
+data: [DONE]
+
+`
+	stream := newOpenAIStream(io.NopCloser(strings.NewReader(sseData)), true)
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("first chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeRaw {
+		t.Fatalf("first chunk type = %v, want raw", chunk.Type)
+	}
+
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("second chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeError {
+		t.Fatalf("second chunk type = %v, want error", chunk.Type)
+	}
+	if !strings.Contains(chunk.Text, "failed to parse stream chunk") {
+		t.Fatalf("error text = %q, want parse failure", chunk.Text)
+	}
+}
+
+func TestOpenAIStreamEarlyProviderErrorEventReturnsError(t *testing.T) {
+	sseData := `data: {"error":{"message":"provider failed"}}
+
+data: [DONE]
+
+`
+	stream := newOpenAIStream(io.NopCloser(strings.NewReader(sseData)), true)
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err == nil {
+		t.Fatalf("stream.Next error = nil, chunk = %#v", chunk)
+	}
+	if !strings.Contains(err.Error(), "provider failed") {
+		t.Fatalf("error = %v, want provider failed", err)
+	}
+}
+
+func TestOpenAIStreamEarlyProviderErrorPreservesStatusCode(t *testing.T) {
+	sseData := `data: {"error":{"message":"bad request","type":"provider_error","param":null,"code":400}}
+
+data: [DONE]
+
+`
+	stream := newOpenAIStream(io.NopCloser(strings.NewReader(sseData)), true)
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err == nil {
+		t.Fatalf("stream.Next error = nil, chunk = %#v", chunk)
+	}
+	var providerErr *providererrors.ProviderError
+	if !errors.As(err, &providerErr) {
+		t.Fatalf("error = %T %[1]v, want ProviderError", err)
+	}
+	if providerErr.StatusCode != 400 || providerErr.Message != "bad request" || providerErr.ResponseBody == "" {
+		t.Fatalf("provider error = %#v", providerErr)
+	}
+}
+
+// TestOpenAIStreamMidStreamErrorAttachesStructuredPayload is a P1-1c part 2
+// regression test: once output has started, a mid-stream `error` frame must
+// carry a structured *providererrors.StreamProviderError on the chunk's Err
+// field (TS createOpenAIProviderStreamError), not just a bare Text message.
+// rate_limit_exceeded infers statusCode 429 (discriminator match) and is
+// retryable per isRetryableStatusCode.
+func TestOpenAIStreamMidStreamErrorAttachesStructuredPayload(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"content":"hi"}}]}
+
+data: {"error":{"message":"Rate limit exceeded","type":"rate_limit_exceeded","code":"rate_limit_exceeded"}}
+
+data: [DONE]
+
+`
+	stream := newOpenAIStream(io.NopCloser(strings.NewReader(sseData)), true)
+	defer stream.Close() //nolint:errcheck
+
+	// First chunk: raw passthrough (includeRawChunks=true).
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("first chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeRaw {
+		t.Fatalf("first chunk type = %v, want raw", chunk.Type)
+	}
+
+	// Second chunk: the text delta that sets outputStarted.
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("second chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeText {
+		t.Fatalf("second chunk type = %v, want text", chunk.Type)
+	}
+
+	// Drain until the error chunk (raw passthrough may interleave).
+	var errChunk *provider.StreamChunk
+	for i := 0; i < 5; i++ {
+		chunk, err = stream.Next()
+		if err != nil {
+			t.Fatalf("Next() error: %v", err)
+		}
+		if chunk.Type == provider.ChunkTypeError {
+			errChunk = chunk
+			break
+		}
+	}
+	if errChunk == nil {
+		t.Fatal("expected a ChunkTypeError chunk for the mid-stream error frame")
+	}
+	var streamErr *providererrors.StreamProviderError
+	if !errors.As(errChunk.Err, &streamErr) {
+		t.Fatalf("chunk.Err = %v (%T), want *providererrors.StreamProviderError", errChunk.Err, errChunk.Err)
+	}
+	if streamErr.Type != "rate_limit_exceeded" {
+		t.Errorf("Type = %q, want rate_limit_exceeded", streamErr.Type)
+	}
+	if streamErr.StatusCode == nil || *streamErr.StatusCode != 429 {
+		t.Errorf("StatusCode = %v, want 429 (rate_limit discriminator)", streamErr.StatusCode)
+	}
+	if !streamErr.IsRetryable {
+		t.Error("IsRetryable = false, want true for a 429")
+	}
+}
+
+// TestOpenAIStreamMidStreamInsufficientQuotaNeverRetryable ports TS
+// isRetryableStreamError's special case: insufficient_quota is never
+// retryable even though its inferred statusCode (429) normally would be.
+func TestOpenAIStreamMidStreamInsufficientQuotaNeverRetryable(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"content":"hi"}}]}
+
+data: {"error":{"message":"You exceeded your quota","type":"insufficient_quota","code":"insufficient_quota"}}
+
+data: [DONE]
+
+`
+	stream := newOpenAIStream(io.NopCloser(strings.NewReader(sseData)), false)
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("first chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeText {
+		t.Fatalf("first chunk type = %v, want text", chunk.Type)
+	}
+
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("Next() error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeError {
+		t.Fatalf("chunk.Type = %v, want ChunkTypeError", chunk.Type)
+	}
+	var streamErr *providererrors.StreamProviderError
+	if !errors.As(chunk.Err, &streamErr) {
+		t.Fatalf("chunk.Err = %v (%T), want *providererrors.StreamProviderError", chunk.Err, chunk.Err)
+	}
+	if streamErr.StatusCode == nil || *streamErr.StatusCode != 429 {
+		t.Errorf("StatusCode = %v, want 429", streamErr.StatusCode)
+	}
+	if streamErr.IsRetryable {
+		t.Error("IsRetryable = true, want false for insufficient_quota (TS special-case)")
 	}
 }
 
@@ -910,6 +1214,12 @@ func TestIsReasoningModel(t *testing.T) {
 		{"gpt-5.4", true},
 		{"gpt-5.4-pro", true},
 		{"gpt-5.4-2026-03-05", true},
+		{"gpt-5.4-mini", true},
+		{"gpt-5.4-mini-2026-03-17", true},
+		{"gpt-5.4-nano", true},
+		{"gpt-5.4-nano-2026-03-17", true},
+		{"gpt-5.5", true},
+		{"gpt-5.5-2026-04-23", true},
 		// Non-reasoning models — expect false
 		{"gpt-5-chat-latest", false},
 		{"gpt-5.1-chat-latest", true}, // gpt-5.1-chat-latest starts with gpt-5 but NOT gpt-5-chat
@@ -931,6 +1241,45 @@ func TestIsReasoningModel(t *testing.T) {
 	}
 }
 
+func TestSupportsNonReasoningParametersMatchesOpenAICapabilityTable(t *testing.T) {
+	tests := []struct {
+		modelID  string
+		expected bool
+	}{
+		{"gpt-5.1", true},
+		{"gpt-5.1-chat-latest", true},
+		{"gpt-5.1-codex-mini", true},
+		{"gpt-5.1-codex", true},
+		{"gpt-5.2", true},
+		{"gpt-5.2-pro", true},
+		{"gpt-5.2-chat-latest", true},
+		{"gpt-5.3-chat-latest", true},
+		{"gpt-5.4", true},
+		{"gpt-5.4-mini", true},
+		{"gpt-5.4-nano", true},
+		{"gpt-5.4-pro", true},
+		{"gpt-5.4-2026-03-05", true},
+		{"gpt-5.4-mini-2026-03-17", true},
+		{"gpt-5.4-nano-2026-03-17", true},
+		{"gpt-5.5", true},
+		{"gpt-5.5-2026-04-23", true},
+		{"gpt-5", false},
+		{"gpt-5-mini", false},
+		{"gpt-5-nano", false},
+		{"gpt-5-pro", false},
+		{"gpt-5-chat-latest", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.modelID, func(t *testing.T) {
+			got := supportsNonReasoningParameters(tt.modelID)
+			if got != tt.expected {
+				t.Errorf("supportsNonReasoningParameters(%q) = %v, want %v", tt.modelID, got, tt.expected)
+			}
+		})
+	}
+}
+
 // TestSystemMessageRoleForReasoningModels verifies that the "developer" role is sent
 // for reasoning models and "system" role is sent for non-reasoning models.
 func TestSystemMessageRoleForReasoningModels(t *testing.T) {
@@ -942,6 +1291,8 @@ func TestSystemMessageRoleForReasoningModels(t *testing.T) {
 		{"o4-mini", "developer"},
 		{"gpt-5.4", "developer"},
 		{"gpt-5.4-pro", "developer"},
+		{"gpt-5.5", "developer"},
+		{"gpt-5.5-2026-04-23", "developer"},
 		{"gpt-5", "developer"},
 		{"gpt-5-mini", "developer"},
 		{"gpt-5-chat-latest", "system"}, // only prefix gpt-5-chat is excluded

@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -36,6 +37,10 @@ func TestMCPTransportRedirectDefaultError(t *testing.T) {
 	err := transport.Send(context.Background(), msg)
 	if err == nil {
 		t.Fatal("expected error when server redirects and Redirect is default (error), got nil")
+	}
+	var transportErr *TransportError
+	if !errors.As(err, &transportErr) {
+		t.Fatalf("expected TransportError, got %T: %v", err, err)
 	}
 	if !strings.Contains(err.Error(), "redirect") && !strings.Contains(err.Error(), "mcp") {
 		t.Logf("got error: %v", err)

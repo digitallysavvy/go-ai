@@ -7,6 +7,10 @@ import (
 // TestGeminiEmbedding2PreviewModel verifies the embedding model ID constant exists
 // and that the model routes to the correct API path.
 func TestGeminiEmbedding2PreviewModel(t *testing.T) {
+	if EmbeddingModelGeminiEmbedding2 != "gemini-embedding-2" {
+		t.Errorf("EmbeddingModelGeminiEmbedding2 = %q, want %q",
+			EmbeddingModelGeminiEmbedding2, "gemini-embedding-2")
+	}
 	if EmbeddingModelGeminiEmbedding2Preview != "gemini-embedding-2-preview" {
 		t.Errorf("EmbeddingModelGeminiEmbedding2Preview = %q, want %q",
 			EmbeddingModelGeminiEmbedding2Preview, "gemini-embedding-2-preview")
@@ -18,8 +22,8 @@ func TestGeminiEmbedding2PreviewModel(t *testing.T) {
 	if m.ModelID() != "gemini-embedding-2-preview" {
 		t.Errorf("ModelID() = %q, want %q", m.ModelID(), "gemini-embedding-2-preview")
 	}
-	if m.Provider() != "google" {
-		t.Errorf("Provider() = %q, want %q", m.Provider(), "google")
+	if m.Provider() != "google.generative-ai" {
+		t.Errorf("Provider() = %q, want %q", m.Provider(), "google.generative-ai")
 	}
 }
 
@@ -32,7 +36,10 @@ func TestGeminiMultimodalEmbedding(t *testing.T) {
 		ImageEmbeddingPart{MimeType: "image/jpeg", Data: imageBytes},
 	}
 
-	apiParts := buildEmbeddingAPIParts("describe this image", parts)
+	apiParts, err := buildEmbeddingAPIParts("describe this image", parts)
+	if err != nil {
+		t.Fatalf("buildEmbeddingAPIParts() error = %v", err)
+	}
 
 	if len(apiParts) != 2 {
 		t.Fatalf("expected 2 API parts (text + image), got %d", len(apiParts))
@@ -62,7 +69,10 @@ func TestEmbeddingPartTextOnly(t *testing.T) {
 		TextEmbeddingPart{Text: "extra context"},
 	}
 
-	apiParts := buildEmbeddingAPIParts("primary text", parts)
+	apiParts, err := buildEmbeddingAPIParts("primary text", parts)
+	if err != nil {
+		t.Fatalf("buildEmbeddingAPIParts() error = %v", err)
+	}
 
 	if len(apiParts) != 2 {
 		t.Fatalf("expected 2 parts, got %d", len(apiParts))
@@ -72,5 +82,29 @@ func TestEmbeddingPartTextOnly(t *testing.T) {
 	}
 	if apiParts[1]["text"] != "extra context" {
 		t.Errorf("part[1].text = %v, want %q", apiParts[1]["text"], "extra context")
+	}
+}
+
+func TestEmbeddingPartFileData(t *testing.T) {
+	parts := []EmbeddingPart{
+		FileDataEmbeddingPart{MimeType: "application/pdf", FileURI: "files/sample"},
+	}
+
+	apiParts, err := buildEmbeddingAPIParts("primary text", parts)
+	if err != nil {
+		t.Fatalf("buildEmbeddingAPIParts() error = %v", err)
+	}
+	if len(apiParts) != 2 {
+		t.Fatalf("expected 2 parts, got %d", len(apiParts))
+	}
+	fileData, ok := apiParts[1]["fileData"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("part[1].fileData is not map, got %T", apiParts[1]["fileData"])
+	}
+	if fileData["mimeType"] != "application/pdf" {
+		t.Fatalf("fileData.mimeType = %v", fileData["mimeType"])
+	}
+	if fileData["fileUri"] != "files/sample" {
+		t.Fatalf("fileData.fileUri = %v", fileData["fileUri"])
 	}
 }

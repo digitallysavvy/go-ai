@@ -52,7 +52,7 @@ func runWithStepCount(ctx context.Context, model provider.LanguageModel) {
 		Prompt: "Search for information about Go programming, then summarize what you found.",
 		Tools:  []types.Tool{makeSearchTool()},
 		StopWhen: []ai.StopCondition{
-			ai.StepCountIs(3), // stop after 3 tool-calling rounds
+			ai.IsStepCount(3), // stop after 3 tool-calling rounds
 		},
 	})
 	if err != nil {
@@ -78,7 +78,7 @@ When you are satisfied with your research, call the finish tool with your conclu
 		},
 		StopWhen: []ai.StopCondition{
 			ai.HasToolCall("finish"), // stop when model signals completion
-			ai.StepCountIs(10),       // safety ceiling in case model never calls finish
+			ai.IsStepCount(10),       // safety ceiling in case model never calls finish
 		},
 	})
 	if err != nil {
@@ -116,7 +116,7 @@ func runWithTokenBudget(ctx context.Context, model provider.LanguageModel) {
 		Tools:  []types.Tool{makeSearchTool()},
 		StopWhen: []ai.StopCondition{
 			tokenBudget,        // side-effectful condition comes first
-			ai.StepCountIs(10), // safety ceiling last
+			ai.IsStepCount(10), // safety ceiling last
 		},
 	})
 	if err != nil {
@@ -125,8 +125,8 @@ func runWithTokenBudget(ctx context.Context, model provider.LanguageModel) {
 	}
 
 	fmt.Printf("Steps: %d\n", len(result.Steps))
-	if result.Usage.TotalTokens != nil {
-		fmt.Printf("Total tokens: %d\n", *result.Usage.TotalTokens)
+	if result.Usage.GetTotalTokens() > 0 {
+		fmt.Printf("Total tokens: %d\n", result.Usage.GetTotalTokens())
 	}
 	fmt.Printf("StopReason: %q\n", result.StopReason)
 	fmt.Printf("Answer: %s\n", result.Text)

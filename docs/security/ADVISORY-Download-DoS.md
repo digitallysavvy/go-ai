@@ -67,8 +67,8 @@ data, err := fileutil.Download(ctx, url, fileutil.DefaultDownloadOptions())
 Applications can configure custom size limits:
 
 ```go
-// Create download function with custom 100 MB limit
-customDownload := ai.CreateDownload(&ai.DownloadOptions{
+// Create single-URL download function with custom 100 MB limit
+customDownload := ai.CreateURLDownloadWithMetadata(&ai.DownloadOptions{
     MaxBytes: 100 * 1024 * 1024, // 100 MB
 })
 
@@ -76,7 +76,7 @@ customDownload := ai.CreateDownload(&ai.DownloadOptions{
 result, err := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
     Model: model,
     Prompt: videoPrompt,
-    Download: customDownload,
+    DownloadWithMetadata: customDownload,
 })
 ```
 

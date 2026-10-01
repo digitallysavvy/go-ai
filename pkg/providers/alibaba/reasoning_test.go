@@ -125,3 +125,32 @@ func TestAlibabaProviderOptionsOverrideReasoning(t *testing.T) {
 		t.Errorf("provider options should override top-level Reasoning; expected enable_thinking=false")
 	}
 }
+
+func TestAlibabaCamelCaseProviderOptions(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(prov, "qwen-plus")
+
+	opts := &provider.GenerateOptions{
+		ProviderOptions: map[string]interface{}{
+			"alibaba": map[string]interface{}{
+				"enableThinking":    true,
+				"thinkingBudget":    4096,
+				"parallelToolCalls": false,
+			},
+		},
+	}
+	body, warnings := model.buildRequestBodyWithWarnings(opts, false)
+
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings for camelCase provider options, got %#v", warnings)
+	}
+	if body["enable_thinking"] != true {
+		t.Errorf("expected enableThinking to serialize as enable_thinking=true, got %v", body["enable_thinking"])
+	}
+	if body["thinking_budget"] != 4096 {
+		t.Errorf("expected thinkingBudget to serialize as thinking_budget=4096, got %v", body["thinking_budget"])
+	}
+	if body["parallel_tool_calls"] != false {
+		t.Errorf("expected parallelToolCalls to serialize as parallel_tool_calls=false, got %v", body["parallel_tool_calls"])
+	}
+}

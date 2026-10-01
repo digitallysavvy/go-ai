@@ -73,7 +73,7 @@ func CacheMiddleware(client *redis.Client, ttl time.Duration) *middleware.Langua
             model provider.LanguageModel,
             next middleware.StreamFunc,
             options *provider.GenerateOptions,
-        ) (*provider.StreamResult, error) {
+        ) (provider.TextStream, error) {
             // Create cache key
             cacheKey := createCacheKey(options)
 
@@ -81,40 +81,20 @@ func CacheMiddleware(client *redis.Client, ttl time.Duration) *middleware.Langua
             cached, err := client.Get(ctx, cacheKey).Result()
             if err == nil {
                 // Cache hit - return simulated stream
-                var parts []types.StreamPart
-                if err := json.Unmarshal([]byte(cached), &parts); err == nil {
+                var chunks []provider.StreamChunk
+                if err := json.Unmarshal([]byte(cached), &chunks); err == nil {
                     fmt.Println("Cache hit for stream")
-                    return simulateStream(parts), nil
+                    return testutil.NewMockTextStream(chunks), nil
                 }
             }
 
             // Cache miss - call the model
-            result, err := next(ctx, options)
+            stream, err := next(ctx, options)
             if err != nil {
                 return nil, err
             }
 
-            // Collect stream parts for caching
-            var collectedParts []types.StreamPart
-            wrappedChan := make(chan types.StreamPart)
-
-            go func() {
-                defer close(wrappedChan)
-                for part := range result.Stream {
-                    collectedParts = append(collectedParts, part)
-                    wrappedChan <- part
-                }
-
-                // Cache the complete stream after it finishes
-                if len(collectedParts) > 0 {
-                    data, _ := json.Marshal(collectedParts)
-                    client.Set(context.Background(), cacheKey, data, ttl)
-                }
-            }()
-
-            return &provider.StreamResult{
-                Stream: wrappedChan,
-            }, nil
+            return stream, nil
         },
     }
 }
@@ -124,27 +104,6 @@ func createCacheKey(options *provider.GenerateOptions) string {
     data, _ := json.Marshal(options)
     hash := sha256.Sum256(data)
     return "cache:" + hex.EncodeToString(hash[:])
-}
-
-func simulateStream(parts []types.StreamPart) *provider.StreamResult {
-    ch := make(chan types.StreamPart)
-
-    go func() {
-        defer close(ch)
-
-        // Initial delay
-        time.Sleep(10 * time.Millisecond)
-
-        // Send parts with small delay between them
-        for _, part := range parts {
-            ch <- part
-            time.Sleep(10 * time.Millisecond)
-        }
-    }()
-
-    return &provider.StreamResult{
-        Stream: ch,
-    }
 }
 
 func main() {
@@ -597,7 +556,7 @@ func streamHandler(w http.ResponseWriter, r *http.Request) {
 
     flusher, _ := w.(http.Flusher)
 
-    for chunk := range stream.TextChannel {
+    for chunk := range stream.Chunks() {
         fmt.Fprintf(w, "data: %s\n\n", chunk)
         flusher.Flush()
     }

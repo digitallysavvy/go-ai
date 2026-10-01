@@ -1,0 +1,89 @@
+---
+title: Z.AI Provider
+description: Setup and usage guide for Z.AI GLM models with Go-AI SDK
+---
+
+# Z.AI Provider
+
+Z.AI provides GLM chat models over an OpenAI-compatible API. It only
+supports language models — `EmbeddingModel`, `ImageModel`, `SpeechModel`,
+`TranscriptionModel`, and `RerankingModel` all return errors.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/zai"
+)
+```
+
+### Configuration
+
+```go
+provider := zai.New(zai.Config{
+    APIKey: os.Getenv("ZAI_API_KEY"),
+})
+
+model, err := provider.LanguageModel(zai.ModelGLM53)
+```
+
+`zai.Config` also accepts `BaseURL` (default
+`https://api.z.ai/api/paas/v4`) and `Headers`.
+
+### Get API Key
+
+```bash
+export ZAI_API_KEY=...
+```
+
+## Available Models
+
+| Model ID | Go constant |
+|----------|-------------|
+| `glm-5.3` | `zai.ModelGLM53` |
+| `glm-5.2` | `zai.ModelGLM52` |
+| `glm-5.1` | `zai.ModelGLM51` |
+| `glm-5-turbo` | `zai.ModelGLM5Turbo` |
+| `glm-5` | `zai.ModelGLM5` |
+| `glm-4.7` | `zai.ModelGLM47` |
+| `glm-4.7-flash` | `zai.ModelGLM47Flash` |
+| `glm-4.7-flashx` | `zai.ModelGLM47FlashX` |
+| `glm-4.6` | `zai.ModelGLM46` |
+| `glm-4.5` | `zai.ModelGLM45` |
+| `glm-4.5-air` | `zai.ModelGLM45Air` |
+
+See `pkg/providers/zai/model_ids.go` for the full catalog, including
+dated/legacy variants.
+
+`ChatModel` is an alias for `LanguageModel`.
+
+## Basic Usage
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Explain the GLM model family in one paragraph",
+})
+```
+
+## Provider Options
+
+Z.AI-specific options are passed under the `"zai"` `ProviderOptions` key,
+resolved through the same OpenAI-compatible option resolver used by the
+other OpenAI-compatible providers in this SDK (see
+[OpenAI-compatible providers](47-openai-compatible.mdx)).
+
+## Workflow Serialization
+
+Z.AI language models can cross a workflow boundary with
+`providerutils.SerializeModel` / `DeserializeModel`. See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
+for the mechanism.
+
+## See Also
+
+- [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
+- [Z.AI Documentation](https://docs.z.ai)

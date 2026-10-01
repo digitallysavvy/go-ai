@@ -3,15 +3,18 @@ package xai
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // Provider implements the provider.Provider interface for xAI (Grok)
 type Provider struct {
-	config Config
-	client *http.Client
+	config          Config
+	client          *http.Client
+	realtimeBaseURL string
 }
 
 // Config contains configuration for the xAI provider
@@ -21,6 +24,9 @@ type Config struct {
 
 	// BaseURL is the base URL for the xAI API (optional)
 	BaseURL string
+
+	// Headers are custom HTTP headers to include in requests.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // getAPIKey resolves the xAI API key.
@@ -38,25 +44,45 @@ func getAPIKey(apiKey string) string {
 // If Config.APIKey is empty, the API key is loaded from the XAI_API_KEY
 // environment variable.
 func New(cfg Config) *Provider {
-	baseURL := cfg.BaseURL
-	if baseURL == "" {
-		baseURL = "https://api.x.ai"
+	realtimeBaseURL := strings.TrimRight(cfg.BaseURL, "/")
+	if realtimeBaseURL == "" {
+		realtimeBaseURL = "https://api.x.ai/v1"
 	}
 
+	baseURL := normalizeBaseURL(cfg.BaseURL)
+	cfg.BaseURL = baseURL
+
 	apiKey := getAPIKey(cfg.APIKey)
+	cfg.APIKey = apiKey
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: map[string]string{
+		Headers: version.WithUserAgentSuffix(http.MergeHeaders(map[string]string{
 			"Authorization": "Bearer " + apiKey,
 			"Content-Type":  "application/json",
-		},
+		}, cfg.Headers), version.ProviderUserAgent("xai")),
 	})
 
 	return &Provider{
-		config: cfg,
-		client: client,
+		config:          cfg,
+		client:          client,
+		realtimeBaseURL: realtimeBaseURL,
 	}
+}
+
+func normalizeBaseURL(baseURL string) string {
+	if baseURL == "" {
+		baseURL = "https://api.x.ai/v1"
+	}
+	return strings.TrimRight(baseURL, "/")
+}
+
+// CreateXai creates a new xAI provider.
+//
+// It mirrors the TypeScript SDK createXai export while New remains the
+// idiomatic Go constructor.
+func CreateXai(cfg Config) *Provider {
+	return New(cfg)
 }
 
 // Name returns the provider name
@@ -64,25 +90,19 @@ func (p *Provider) Name() string {
 	return "xai"
 }
 
-// LanguageModel returns a language model by ID using the Responses API (default).
-// Use ChatCompletionsLanguageModel for the legacy Chat Completions API.
+// LanguageModel returns a language model by ID using the Responses API.
+//
+// BREAKING (row 1f20dba, ai@7.0.113): the xAI Chat Completions API
+// (/v1/chat/completions) has been removed, matching the TypeScript SDK's
+// removal of XaiChatLanguageModel. The Responses API is now the only
+// language model path for xAI; ChatCompletionsLanguageModel() has been
+// removed. See RELEASE_NOTES for migration guidance.
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
 	if modelID == "" {
 		modelID = "grok-beta"
 	}
 
 	return NewResponsesLanguageModel(p, modelID), nil
-}
-
-// ChatCompletionsLanguageModel returns a language model that uses the Chat Completions
-// API (/v1/chat/completions). This is the legacy API path; prefer LanguageModel() for
-// new code which uses the Responses API by default.
-func (p *Provider) ChatCompletionsLanguageModel(modelID string) (provider.LanguageModel, error) {
-	if modelID == "" {
-		modelID = "grok-beta"
-	}
-
-	return NewLanguageModel(p, modelID), nil
 }
 
 // EmbeddingModel returns an embedding model by ID
@@ -93,19 +113,21 @@ func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, erro
 // ImageModel returns an image generation model by ID
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
 	if modelID == "" {
-		modelID = "grok-image-1"
+		modelID = ModelGrokImagineImage
 	}
 	return NewImageModel(p, modelID), nil
 }
 
-// SpeechModel returns a speech synthesis model by ID
+// SpeechModel returns the xAI speech synthesis model. The TypeScript provider
+// has no speech model ID parameter, so Go ignores modelID for parity.
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("xAI does not support speech synthesis")
+	return NewSpeechModel(p, ""), nil
 }
 
-// TranscriptionModel returns a speech-to-text model by ID
+// TranscriptionModel returns the xAI speech-to-text model. The TypeScript
+// provider has no transcription model ID parameter, so Go ignores modelID for parity.
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("xAI does not support transcription")
+	return NewTranscriptionModel(p, ""), nil
 }
 
 // RerankingModel returns a reranking model by ID
@@ -124,4 +146,8 @@ func (p *Provider) VideoModel(modelID string) (provider.VideoModelV3, error) {
 // Client returns the HTTP client for making API requests
 func (p *Provider) Client() *http.Client {
 	return p.client
+}
+
+func (p *Provider) Files() provider.FilesAPI {
+	return &FilesAPI{provider: p}
 }

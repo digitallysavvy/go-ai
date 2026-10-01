@@ -1,0 +1,85 @@
+---
+title: Upload File and Upload Skill
+description: Upload provider files and multi-file skills for later reference in model calls.
+---
+
+# Upload File and Upload Skill
+
+The Go SDK provides top-level helpers for uploading files and skills through provider upload APIs:
+
+- `ai.UploadFile(...)`
+- `ai.UploadSkill(...)`
+
+Both helpers accept either:
+
+1. A provider upload API directly (`provider.FilesAPI` / `provider.SkillsAPI`)
+2. A provider implementing `Files()` / `Skills()`
+
+## UploadFile
+
+```go
+result, err := ai.UploadFile(ctx, ai.UploadFileOptions{
+    API:       openaiProvider,
+    Data:      []byte("hello world"),
+    Filename:  "hello.txt",
+    MediaType: "text/plain",
+    ProviderOptions: map[string]interface{}{
+        "openai": map[string]interface{}{"purpose": "assistants"},
+    },
+})
+if err != nil {
+    panic(err)
+}
+
+fileID := result.ProviderReference["openai"]
+```
+
+`UploadFile` normalizes shorthand data inputs (`[]byte`, `string`) into `types.FileData`, resolves the target files API, and auto-detects media type when omitted. String data is treated as a TypeScript-compatible base64 data string and decoded by the provider upload implementation.
+
+Use the returned provider reference in later prompts without downloading or
+inlining the file:
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Messages: []types.Message{
+        {
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.TextContent{Text: "Summarize this file."},
+                types.FileContent{
+                    MediaType: upload.MediaType,
+                    Filename:  upload.Filename,
+                    FileData: types.FileData{
+                        Type:      types.FileDataTypeReference,
+                        Reference: upload.ProviderReference,
+                        MediaType: upload.MediaType,
+                    },
+                },
+            },
+        },
+    },
+})
+```
+
+See `examples/upload-file/provider-reference` for a complete upload-then-reference flow.
+
+## UploadSkill
+
+```go
+result, err := ai.UploadSkill(ctx, ai.UploadSkillOptions{
+    API:          openaiProvider,
+    DisplayTitle: "My Skill",
+    Files: []ai.UploadSkillFile{
+        {Path: "index.ts", Data: []byte("export default {}")},
+        {Path: "README.md", Data: "# Skill"},
+    },
+})
+if err != nil {
+    panic(err)
+}
+
+skillID := result.ProviderReference["openai"]
+```
+
+`UploadSkill` normalizes shorthand file data and delegates to the provider skills API.

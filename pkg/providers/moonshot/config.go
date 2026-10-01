@@ -12,7 +12,7 @@ type Config struct {
 	APIKey string
 
 	// BaseURL is the base URL for the API (optional)
-	// Default: https://api.moonshot.cn/v1
+	// Default: https://api.moonshot.ai/v1
 	BaseURL string
 }
 
@@ -35,7 +35,7 @@ func NewConfig(apiKey string) (Config, error) {
 // Validate checks if the configuration is valid
 func (c Config) Validate() error {
 	if c.APIKey == "" {
-		return fmt.Errorf("LAPI key is required")
+		return fmt.Errorf("API key is required")
 	}
 	return nil
 }

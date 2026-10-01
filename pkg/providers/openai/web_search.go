@@ -29,6 +29,9 @@ type WebSearchAction struct {
 	// Query is the search query (for "search" type).
 	Query *string `json:"query,omitempty"`
 
+	// Queries are the search queries returned by newer Responses API events.
+	Queries []string `json:"queries,omitempty"`
+
 	// URL is the page URL (for "open_page" and "find_in_page" types).
 	URL *string `json:"url,omitempty"`
 

@@ -58,16 +58,26 @@ go.work.sum
 .DS_Store
 coverage.out
 
-# Example compiled binaries
-examples/*/[a-z]*[!.]*
-!examples/*/main.go
-!examples/*/go.mod
-!examples/*/go.sum
-!examples/*/*.go
-!examples/*/*.md
+# Example compiled binaries. `go build` in an example directory writes an
+# extensionless binary named after the directory, at any depth. Ignore
+# extensionless lowercase files under examples/, but keep every directory
+# traversable (git cannot re-include a file whose parent directory is
+# excluded) and keep every file that has an extension: sources, nested
+# go.mod/go.sum, READMEs, assets.
+examples/**/[a-z]*
+!examples/**/
+!examples/**/*.*
+!examples/**/go.mod
+!examples/**/go.sum
+examples/**/.DS_Store
+
+# Docs website
+website/node_modules/
+website/build/
+website/.docusaurus/
 
 # Claude Code project files
 CLAUDE.md
 VERIFICATION_PLAN.md
 PROGRESS.md
-logging
+/logging

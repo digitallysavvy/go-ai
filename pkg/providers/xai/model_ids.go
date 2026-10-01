@@ -7,6 +7,8 @@ package xai
 // Removed model IDs (XAI shut down their APIs — do not re-add):
 //   - "grok-2"              (use grok-3 or later)
 //   - "grok-2-vision-1212"  (use a current multimodal model instead)
+//   - "grok-2-image"        (use grok-imagine-image instead)
+//   - "grok-2-image-1212"   (use grok-imagine-image instead)
 const (
 	// ModelGrokBeta — Grok Beta language model (default)
 	ModelGrokBeta = "grok-beta"
@@ -64,21 +66,48 @@ const (
 
 	// ModelGrok4200309Reasoning — Grok 4.20 reasoning dated release (2025-03-09)
 	ModelGrok4200309Reasoning = "grok-4.20-0309-reasoning"
+
+	// ModelGrok43 — Grok 4.3 language model
+	ModelGrok43 = "grok-4.3"
+
+	// ModelGrok45 — Grok 4.5 language model
+	ModelGrok45 = "grok-4.5"
+
+	// ModelGrok46 — Grok 4.6 language model
+	ModelGrok46 = "grok-4.6"
+
+	// ModelGrok47 — Grok 4.7 language model
+	ModelGrok47 = "grok-4.7"
+
+	// ModelGrokLatest — latest Grok language model alias
+	ModelGrokLatest = "grok-latest"
+)
+
+// Realtime model ID constants for xAI realtime models. The TypeScript SDK keeps
+// realtime model IDs flexible; this starting-point constant is provided for
+// callers that want a named default while RealtimeModel accepts any string.
+const (
+	ModelGrok3Realtime = "grok-3"
 )
 
 // Image model ID constants for xAI Grok image generation models.
 // Use these constants instead of raw strings to avoid typos and get IDE support.
 // See https://docs.x.ai/docs for the full list.
 const (
-	// ModelGrok2Image — Grok 2 image generation model (latest alias)
-	ModelGrok2Image = "grok-2-image"
-
-	// ModelGrok2Image1212 — Grok 2 image generation model (dated release)
-	ModelGrok2Image1212 = "grok-2-image-1212"
-
 	// ModelGrokImagineImage — Grok Imagine standard image generation model
 	ModelGrokImagineImage = "grok-imagine-image"
 
 	// ModelGrokImagineImagePro — Grok Imagine Pro image generation model (higher quality)
 	ModelGrokImagineImagePro = "grok-imagine-image-pro"
+)
+
+// Video model ID constants for xAI Grok video generation models.
+// Use these constants instead of raw strings to avoid typos and get IDE support.
+// See https://docs.x.ai/docs for the full list.
+const (
+	// ModelGrokImagineVideo — Grok Imagine standard video generation model
+	ModelGrokImagineVideo = "grok-imagine-video"
+
+	// ModelGrokImagineVideo15 — Grok Imagine video generation model v1.5 (adds native 1080p support)
+	ModelGrokImagineVideo15 = "grok-imagine-video-1.5"
 )

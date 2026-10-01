@@ -23,7 +23,7 @@ This example showcases multiple features of the Go AI SDK in a single applicatio
 ```bash
 export OPENAI_API_KEY=sk-...
 export ANTHROPIC_API_KEY=sk-ant-...  # Optional
-export GOOGLE_API_KEY=...            # Optional
+export GOOGLE_GENERATIVE_AI_API_KEY=...            # Optional
 ```
 
 2. Run the example:

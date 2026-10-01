@@ -55,29 +55,33 @@ Simply type your messages and press Enter. The AI will respond with streaming te
 The application maintains a slice of messages representing the full conversation:
 
 \`\`\`go
-messages := []ai.Message{}
+messages := []types.Message{}
 
 // Add user message
-messages = append(messages, ai.Message{
-    Role:    ai.RoleUser,
-    Content: userInput,
+messages = append(messages, types.Message{
+    Role: types.RoleUser,
+    Content: []types.ContentPart{
+        types.TextContent{Text: userInput},
+    },
 })
 
 // Add assistant response
-messages = append(messages, ai.Message{
-    Role:    ai.RoleAssistant,
-    Content: fullResponse.String(),
+messages = append(messages, types.Message{
+    Role: types.RoleAssistant,
+    Content: []types.ContentPart{
+        types.TextContent{Text: fullResponse.String()},
+    },
 })
 \`\`\`
 
 ### Streaming Response
 
-Responses stream in real-time using the TextChannel:
+Responses stream in real-time using stream chunks:
 
 \`\`\`go
-for chunk := range stream.TextChannel {
-    fmt.Print(chunk)
-    fullResponse.WriteString(chunk)
+for chunk := range stream.Chunks() {
+    fmt.Print(chunk.Text)
+    fullResponse.WriteString(chunk.Text)
 }
 \`\`\`
 

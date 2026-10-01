@@ -11,18 +11,18 @@ const (
 	TracerName = "ai-sdk"
 )
 
-// GetTracer returns an appropriate tracer based on the settings.
-// If telemetry is disabled, returns a no-op tracer.
-// If a custom tracer is provided in settings, returns that.
-// Otherwise, returns the global tracer.
+// GetTracer returns the global tracer, or a no-op tracer when telemetry is
+// explicitly disabled. This is the legacy fallback used by LegacyOpenTelemetry
+// when it was not constructed with its own tracer (NewLegacyOpenTelemetry);
+// new code should configure a tracer on the integration itself
+// (LegacyOpenTelemetryOptions.Tracer / OpenTelemetryOptions.Tracer) rather
+// than through Options, which no longer carries a Tracer field (9b47dea):
+// telemetry.Options.Tracer/WithTracer were removed because a single
+// process-wide field could not express "each integration gets its own
+// tracer" once more than one integration can be registered at once.
 func GetTracer(settings *Settings) trace.Tracer {
-	if settings == nil || !settings.IsEnabled {
+	if !Enabled(settings) {
 		return noop.NewTracerProvider().Tracer(TracerName)
 	}
-
-	if settings.Tracer != nil {
-		return settings.Tracer
-	}
-
 	return otel.Tracer(TracerName)
 }

@@ -11,11 +11,11 @@ import (
 
 func TestExtractReasoningMiddleware_Generate(t *testing.T) {
 	tests := []struct {
-		name              string
-		input             string
-		tagName           string
+		name               string
+		input              string
+		tagName            string
 		startWithReasoning bool
-		expectedText      string
+		expectedText       string
 	}{
 		{
 			name:         "single reasoning block",
@@ -128,9 +128,13 @@ func TestExtractReasoningMiddleware_Stream(t *testing.T) {
 				{Type: provider.ChunkTypeText, Text: "reason2"},
 				{Type: provider.ChunkTypeText, Text: "</think>"},
 			},
-			tagName:           "think",
-			expectedReasoning: []string{"reason1", "reason2"},
-			expectedText:      []string{"text1", "text2"},
+			tagName: "think",
+			// TS extractReasoningMiddleware inserts the separator between
+			// sibling blocks of the same kind once the first one has
+			// published (matches the non-streaming path, which joins
+			// "text1"+"\n"+"text2" and "reason1"+"\n"+"reason2").
+			expectedReasoning: []string{"reason1", "\nreason2"},
+			expectedText:      []string{"text1", "\ntext2"},
 		},
 		{
 			name: "partial tag buffering",
@@ -262,6 +266,166 @@ func TestGetPotentialStartIndex(t *testing.T) {
 				t.Errorf("expected %d, got %d", tt.expected, result)
 			}
 		})
+	}
+}
+
+// TestExtractReasoningMiddleware_Stream_OverlappingTextBlocks ports the TS
+// "should preserve overlapping text parts" case (audit row 2b105fa / WG12):
+// two interleaved text blocks with distinct IDs must not share extraction
+// state, and their deltas must reassemble in full without dropped parts.
+func TestExtractReasoningMiddleware_Stream_OverlappingTextBlocks(t *testing.T) {
+	chunks := []*provider.StreamChunk{
+		{Type: provider.ChunkTypeTextStart, ID: "a"},
+		{Type: provider.ChunkTypeTextStart, ID: "b"},
+		{Type: provider.ChunkTypeText, ID: "a", Text: "Alpha."},
+		{Type: provider.ChunkTypeText, ID: "b", Text: "Beta."},
+		{Type: provider.ChunkTypeTextEnd, ID: "a"},
+		{Type: provider.ChunkTypeTextEnd, ID: "b"},
+	}
+	mockStream := &mockTextStream{chunks: chunks}
+	mockModel := &mockLanguageModel{stream: mockStream}
+
+	middleware := ExtractReasoningMiddleware(&ExtractReasoningOptions{TagName: "think", Separator: "\n"})
+	wrapped := WrapLanguageModel(mockModel, []*LanguageModelMiddleware{middleware}, nil, nil)
+
+	stream, err := wrapped.DoStream(context.Background(), &provider.GenerateOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var textByID = map[string]string{}
+	var order []string
+	seenStart := map[string]bool{}
+	seenEnd := map[string]bool{}
+	for {
+		chunk, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("unexpected error during streaming: %v", err)
+		}
+		switch chunk.Type {
+		case provider.ChunkTypeTextStart:
+			seenStart[chunk.ID] = true
+			order = append(order, "start:"+chunk.ID)
+		case provider.ChunkTypeTextEnd:
+			seenEnd[chunk.ID] = true
+			order = append(order, "end:"+chunk.ID)
+		case provider.ChunkTypeText:
+			textByID[chunk.ID] += chunk.Text
+			order = append(order, "delta:"+chunk.ID)
+		}
+	}
+
+	if textByID["a"] != "Alpha." {
+		t.Errorf("text[a] = %q, want %q", textByID["a"], "Alpha.")
+	}
+	if textByID["b"] != "Beta." {
+		t.Errorf("text[b] = %q, want %q", textByID["b"], "Beta.")
+	}
+	if !seenStart["a"] || !seenStart["b"] {
+		t.Errorf("missing text-start chunk(s): %v", order)
+	}
+	if !seenEnd["a"] || !seenEnd["b"] {
+		t.Errorf("missing text-end chunk(s): %v", order)
+	}
+}
+
+// TestExtractReasoningMiddleware_Stream_ReasoningBoundaryIDs verifies that
+// each reasoning block gets its own stream-wide "reasoning-N" ID with
+// matching start/end chunks (audit row 2b105fa / WG12).
+func TestExtractReasoningMiddleware_Stream_ReasoningBoundaryIDs(t *testing.T) {
+	chunks := []*provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: "text1<think>reason1</think>text2<think>reason2</think>"},
+	}
+	mockStream := &mockTextStream{chunks: chunks}
+	mockModel := &mockLanguageModel{stream: mockStream}
+
+	middleware := ExtractReasoningMiddleware(&ExtractReasoningOptions{TagName: "think", Separator: "\n"})
+	wrapped := WrapLanguageModel(mockModel, []*LanguageModelMiddleware{middleware}, nil, nil)
+
+	stream, err := wrapped.DoStream(context.Background(), &provider.GenerateOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var startIDs, endIDs []string
+	for {
+		chunk, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("unexpected error during streaming: %v", err)
+		}
+		switch chunk.Type {
+		case provider.ChunkTypeReasoningStart:
+			startIDs = append(startIDs, chunk.ID)
+		case provider.ChunkTypeReasoningEnd:
+			endIDs = append(endIDs, chunk.ID)
+		}
+	}
+
+	wantStart := []string{"reasoning-0", "reasoning-1"}
+	wantEnd := []string{"reasoning-0", "reasoning-1"}
+	if len(startIDs) != len(wantStart) || startIDs[0] != wantStart[0] || startIDs[1] != wantStart[1] {
+		t.Errorf("reasoning-start IDs = %v, want %v", startIDs, wantStart)
+	}
+	if len(endIDs) != len(wantEnd) || endIDs[0] != wantEnd[0] || endIDs[1] != wantEnd[1] {
+		t.Errorf("reasoning-end IDs = %v, want %v", endIDs, wantEnd)
+	}
+}
+
+// TestExtractReasoningMiddleware_Stream_DelayedTextStart verifies that a
+// text-start chunk is withheld until after any leading reasoning-start,
+// matching TS's fix for https://github.com/vercel/ai/issues/7774.
+func TestExtractReasoningMiddleware_Stream_DelayedTextStart(t *testing.T) {
+	chunks := []*provider.StreamChunk{
+		{Type: provider.ChunkTypeTextStart, ID: "1"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "<think>"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "reasoning"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "</think>"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "answer"},
+		{Type: provider.ChunkTypeTextEnd, ID: "1"},
+	}
+	mockStream := &mockTextStream{chunks: chunks}
+	mockModel := &mockLanguageModel{stream: mockStream}
+
+	middleware := ExtractReasoningMiddleware(&ExtractReasoningOptions{TagName: "think", Separator: "\n"})
+	wrapped := WrapLanguageModel(mockModel, []*LanguageModelMiddleware{middleware}, nil, nil)
+
+	stream, err := wrapped.DoStream(context.Background(), &provider.GenerateOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var order []string
+	for {
+		chunk, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("unexpected error during streaming: %v", err)
+		}
+		order = append(order, string(chunk.Type))
+	}
+
+	textStartIdx, reasoningStartIdx := -1, -1
+	for i, ty := range order {
+		if ty == string(provider.ChunkTypeTextStart) && textStartIdx == -1 {
+			textStartIdx = i
+		}
+		if ty == string(provider.ChunkTypeReasoningStart) && reasoningStartIdx == -1 {
+			reasoningStartIdx = i
+		}
+	}
+	if reasoningStartIdx == -1 || textStartIdx == -1 {
+		t.Fatalf("missing reasoning-start or text-start in %v", order)
+	}
+	if textStartIdx < reasoningStartIdx {
+		t.Errorf("text-start (index %d) emitted before reasoning-start (index %d): %v", textStartIdx, reasoningStartIdx, order)
 	}
 }
 

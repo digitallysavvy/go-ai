@@ -68,7 +68,7 @@ func multiProviderExample(ctx context.Context) {
 	}
 
 	// Try Google
-	if apiKey := os.Getenv("GOOGLE_API_KEY"); apiKey != "" {
+	if apiKey := os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY"); apiKey != "" {
 		fmt.Println("  Using Google (Gemini):")
 		provider := google.New(google.Config{APIKey: apiKey})
 		model, _ := provider.LanguageModel(google.ModelGemini20Flash)
@@ -215,7 +215,7 @@ func agentExample(ctx context.Context) {
 		Model:    model,
 		System:   "You are a helpful assistant that can use tools to answer questions.",
 		Tools:    []types.Tool{calculatorTool, weatherTool},
-		MaxSteps: 5,
+		StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 	})
 
 	// Execute agent

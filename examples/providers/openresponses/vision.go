@@ -40,41 +40,28 @@ func main() {
 
 	ctx := context.Background()
 
-	fmt.Println("=== Image Understanding with Local Vision Model ===
-")
+	fmt.Println("=== Image Understanding with Local Vision Model ===")
 
 	// Example 1: Analyze image from URL
 	fmt.Println("Example 1: Analyze Image from URL")
 	analyzeImageFromURL(ctx, model)
 
-	fmt.Println("
-
-" + strings.Repeat("=", 50))
+	fmt.Println("\n\n" + strings.Repeat("=", 50))
 
 	// Example 2: Analyze local image file
-	fmt.Println("
-
-Example 2: Analyze Local Image")
+	fmt.Println("\n\nExample 2: Analyze Local Image")
 	analyzeLocalImage(ctx, model)
 
-	fmt.Println("
-
-" + strings.Repeat("=", 50))
+	fmt.Println("\n\n" + strings.Repeat("=", 50))
 
 	// Example 3: Compare multiple images
-	fmt.Println("
-
-Example 3: Compare Multiple Images")
+	fmt.Println("\n\nExample 3: Compare Multiple Images")
 	compareImages(ctx, model)
 
-	fmt.Println("
-
-" + strings.Repeat("=", 50))
+	fmt.Println("\n\n" + strings.Repeat("=", 50))
 
 	// Example 4: OCR - Extract text from image
-	fmt.Println("
-
-Example 4: Extract Text (OCR)")
+	fmt.Println("\n\nExample 4: Extract Text (OCR)")
 	extractTextFromImage(ctx, model)
 }
 
@@ -106,8 +93,7 @@ func analyzeImageFromURL(ctx context.Context, model provider.LanguageModel) {
 	}
 
 	fmt.Println("Image URL:", imageURL)
-	fmt.Println("
-Description:")
+	fmt.Println("\nDescription:")
 	fmt.Println(result.Text)
 }
 
@@ -148,13 +134,10 @@ func analyzeLocalImage(ctx context.Context, model provider.LanguageModel) {
 	}
 
 	fmt.Println("Local file: example.jpg")
-	fmt.Println("
-Analysis:")
+	fmt.Println("\nAnalysis:")
 	fmt.Println(result.Text)
 
-	fmt.Printf("
-Token usage: %d
-", result.Usage.GetTotalTokens())
+	fmt.Printf("\nToken usage: %d\n", result.Usage.GetTotalTokens())
 }
 
 func compareImages(ctx context.Context, model provider.LanguageModel) {
@@ -189,8 +172,7 @@ func compareImages(ctx context.Context, model provider.LanguageModel) {
 	}
 
 	fmt.Println("Comparing two landscape images...")
-	fmt.Println("
-Comparison:")
+	fmt.Println("\nComparison:")
 	fmt.Println(result.Text)
 }
 
@@ -201,7 +183,7 @@ func extractTextFromImage(ctx context.Context, model provider.LanguageModel) {
 		log.Printf("Error downloading image: %v", err)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	imageData, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -236,10 +218,7 @@ func extractTextFromImage(ctx context.Context, model provider.LanguageModel) {
 	}
 
 	fmt.Println("Extracting text from image...")
-	fmt.Println("
-Extracted Text:")
+	fmt.Println("\nExtracted Text:")
 	fmt.Println(result.Text)
-	fmt.Printf("
-Finish reason: %s
-", result.FinishReason)
+	fmt.Printf("\nFinish reason: %s\n", result.FinishReason)
 }

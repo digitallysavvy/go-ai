@@ -3,13 +3,12 @@ package azure
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
@@ -33,12 +32,12 @@ func NewLanguageModel(provider *Provider, deploymentID string) *LanguageModel {
 
 // SpecificationVersion returns the specification version
 func (m *LanguageModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
 func (m *LanguageModel) Provider() string {
-	return "azure-openai"
+	return "azure.chat"
 }
 
 // ModelID returns the deployment ID (Azure's equivalent of model ID)
@@ -68,17 +67,27 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	reqBody := m.buildRequestBody(opts, false)
 
 	// Make API request to Azure-specific endpoint
-	path := fmt.Sprintf("/openai/deployments/%s/chat/completions?api-version=%s",
-		m.deploymentID, m.provider.APIVersion())
+	path := m.provider.endpointPath(m.deploymentID, "/chat/completions")
+	headers, err := m.provider.requestHeaders(ctx, opts.Headers)
+	if err != nil {
+		return nil, m.handleError(err)
+	}
 
 	var response azureResponse
-	err := m.provider.client.PostJSON(ctx, path, reqBody, &response)
+	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+		Method:  http.MethodPost,
+		Path:    path,
+		Body:    reqBody,
+		Headers: headers,
+	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
 
 	// Convert response to GenerateResult
-	return m.convertResponse(response), nil
+	result := m.convertResponse(response)
+	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	return result, nil
 }
 
 // DoStream performs streaming text generation
@@ -87,41 +96,63 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	reqBody := m.buildRequestBody(opts, true)
 
 	// Make streaming API request to Azure-specific endpoint
-	path := fmt.Sprintf("/openai/deployments/%s/chat/completions?api-version=%s",
-		m.deploymentID, m.provider.APIVersion())
+	path := m.provider.endpointPath(m.deploymentID, "/chat/completions")
+	headers, err := m.provider.requestHeaders(ctx, internalhttp.MergeHeaders(opts.Headers, map[string]string{
+		"Accept": "text/event-stream",
+	}))
+	if err != nil {
+		return nil, m.handleError(err)
+	}
 
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   path,
-		Body:   reqBody,
-		Headers: map[string]string{
-			"Accept": "text/event-stream",
-		},
+		Method:  http.MethodPost,
+		Path:    path,
+		Body:    reqBody,
+		Headers: headers,
 	})
 	if err != nil {
 		return nil, m.handleError(err)
 	}
 
 	// Create stream wrapper
-	return newAzureStream(httpResp.Body), nil
+	stream := newAzureStream(httpResp.Body)
+	stream.SetRequestBody(reqBody)
+	return providerutils.WithResponseMetadata(stream, httpResp.Header, m.ModelID()), nil
 }
 
 // buildRequestBody builds the Azure OpenAI API request body
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
 	body := map[string]interface{}{
-		"stream": stream,
+		"model": m.deploymentID,
+	}
+	if stream {
+		body["stream"] = true
 	}
 
-	// Convert messages
+	// Convert messages. Azure's chat() factory wraps OpenAIChatLanguageModel
+	// in TS, so it inherits OpenAI's serializeToolCallArguments sanitization
+	// for replayed tool-call arguments (see ToOpenAIMessagesOptions doc).
+	// Default to an empty slice so the System-prepend branch below always has
+	// a concrete []map[string]interface{} to type-assert, even for a
+	// system-only prompt (IsMessages() and IsSimple() both false: no
+	// Messages, no Text). The core TS SDK rejects such a prompt earlier, in
+	// standardizePrompt ("messages must not be empty"), before any provider
+	// is reached; the Go SDK does not perform that upstream validation, so
+	// the provider must not panic on it. Degrading to "just the system
+	// message" rather than crashing is the closest match to TS's intent
+	// (the message set is never allowed to be empty once it does reach a
+	// provider).
+	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{SanitizeReplayedToolCallArguments: true, IncludePromptCacheBreakpoint: true}
+	body["messages"] = []map[string]interface{}{}
 	if opts.Prompt.IsMessages() {
-		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages)
+		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, toOpenAIMessagesOpts)
 	} else if opts.Prompt.IsSimple() {
-		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text))
+		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text), toOpenAIMessagesOpts)
 	}
 
 	// Add system message if present
 	if opts.Prompt.System != "" {
-		messages := body["messages"].([]map[string]interface{})
+		messages, _ := body["messages"].([]map[string]interface{})
 		systemMsg := map[string]interface{}{
 			"role":    "system",
 			"content": opts.Prompt.System,
@@ -184,10 +215,11 @@ func (m *LanguageModel) convertResponse(response azureResponse) *types.GenerateR
 
 	choice := response.Choices[0]
 	result := &types.GenerateResult{
-		Text:         choice.Message.Content,
-		FinishReason: providerutils.MapOpenAIFinishReason(choice.FinishReason),
-		Usage:        convertAzureUsage(response.Usage),
-		RawResponse:  response,
+		Text:            choice.Message.Content,
+		FinishReason:    providerutils.MapOpenAIFinishReason(choice.FinishReason),
+		RawFinishReason: choice.FinishReason,
+		Usage:           convertAzureUsage(response.Usage),
+		RawResponse:     response,
 	}
 
 	// Add tool calls if present
@@ -211,7 +243,7 @@ func (m *LanguageModel) convertResponse(response azureResponse) *types.GenerateR
 
 // handleError converts errors to provider errors
 func (m *LanguageModel) handleError(err error) error {
-	return providererrors.NewProviderError("azure-openai", 0, "", err.Error(), err)
+	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 }
 
 // convertAzureUsage converts Azure OpenAI usage to detailed Usage struct
@@ -291,7 +323,6 @@ func convertAzureUsage(usage azureUsage) types.Usage {
 	return result
 }
 
-
 // Azure OpenAI response types (same as OpenAI)
 // Updated in v6.0 to support detailed usage tracking
 type azureResponse struct {
@@ -333,9 +364,9 @@ type azureUsage struct {
 	} `json:"prompt_tokens_details,omitempty"`
 
 	CompletionTokensDetails *struct {
-		ReasoningTokens             *int `json:"reasoning_tokens,omitempty"`
-		AcceptedPredictionTokens    *int `json:"accepted_prediction_tokens,omitempty"`
-		RejectedPredictionTokens    *int `json:"rejected_prediction_tokens,omitempty"`
+		ReasoningTokens          *int `json:"reasoning_tokens,omitempty"`
+		AcceptedPredictionTokens *int `json:"accepted_prediction_tokens,omitempty"`
+		RejectedPredictionTokens *int `json:"rejected_prediction_tokens,omitempty"`
 	} `json:"completion_tokens_details,omitempty"`
 }
 

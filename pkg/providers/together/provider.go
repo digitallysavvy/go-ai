@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // Provider implements the provider.Provider interface for Together AI
@@ -22,6 +23,9 @@ type Config struct {
 
 	// BaseURL is the base URL for the Together AI API (optional)
 	BaseURL string
+
+	// Headers are custom HTTP headers to include in requests.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // getAPIKey resolves the Together AI API key.
@@ -59,16 +63,24 @@ func New(cfg Config) *Provider {
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: map[string]string{
+		Headers: version.WithUserAgentSuffix(http.MergeHeaders(map[string]string{
 			"Authorization": "Bearer " + apiKey,
 			"Content-Type":  "application/json",
-		},
+		}, cfg.Headers), version.ProviderUserAgent("togetherai")),
 	})
 
 	return &Provider{
 		config: cfg,
 		client: client,
 	}
+}
+
+// CreateTogetherAI creates a new Together AI provider.
+//
+// It mirrors the TypeScript SDK createTogetherAI export while New remains the
+// idiomatic Go constructor.
+func CreateTogetherAI(cfg Config) *Provider {
+	return New(cfg)
 }
 
 // Name returns the provider name
@@ -115,7 +127,11 @@ func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionMod
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("LTogether AI does not support reranking")
+	if modelID == "" {
+		modelID = "Salesforce/Llama-Rank-v1"
+	}
+
+	return NewRerankingModel(p, modelID), nil
 }
 
 // Client returns the HTTP client for making API requests

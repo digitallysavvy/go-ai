@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"sync/atomic"
@@ -118,7 +119,7 @@ func ParseParams(msg *MCPMessage, target interface{}) error {
 		return nil
 	}
 
-	return json.Unmarshal(msg.Params, target)
+	return unmarshalSafeJSON(msg.Params, target)
 }
 
 // ParseResult parses the result from a message into the target type
@@ -127,7 +128,80 @@ func ParseResult(msg *MCPMessage, target interface{}) error {
 		return nil
 	}
 
-	return json.Unmarshal(msg.Result, target)
+	return unmarshalSafeJSON(msg.Result, target)
+}
+
+// ValidateJSONRPCMessage validates that raw is a well-formed JSON-RPC 2.0
+// message shaped as a request, notification, response, or error object,
+// mirroring TS validateJSONRPCMessage / JSONRPCMessageSchema
+// (json-rpc-message.ts, hash 3c30eb4). The id, when present, must be a
+// string or an integer (matching z.union([z.string(), z.number().int()])).
+func ValidateJSONRPCMessage(raw []byte) (*MCPMessage, error) {
+	var generic struct {
+		JSONRpc string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Method  string          `json:"method"`
+		Params  json.RawMessage `json:"params"`
+		Result  json.RawMessage `json:"result"`
+		Error   json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &generic); err != nil {
+		return nil, fmt.Errorf("invalid JSON-RPC message: %w", err)
+	}
+	if generic.JSONRpc != "2.0" {
+		return nil, fmt.Errorf(`invalid JSON-RPC message: jsonrpc must be "2.0"`)
+	}
+
+	hasID := len(generic.ID) > 0 && string(generic.ID) != "null"
+	var id interface{}
+	if hasID {
+		var decoded interface{}
+		dec := json.NewDecoder(bytes.NewReader(generic.ID))
+		dec.UseNumber()
+		if err := dec.Decode(&decoded); err != nil {
+			return nil, fmt.Errorf("invalid JSON-RPC message: invalid id")
+		}
+		switch v := decoded.(type) {
+		case string:
+			id = v
+		case json.Number:
+			n, err := v.Int64()
+			if err != nil {
+				return nil, fmt.Errorf("invalid JSON-RPC message: id must be a string or integer")
+			}
+			id = n
+		default:
+			return nil, fmt.Errorf("invalid JSON-RPC message: id must be a string or integer")
+		}
+	}
+
+	hasMethod := generic.Method != ""
+	hasResult := len(generic.Result) > 0 && string(generic.Result) != "null"
+	hasError := len(generic.Error) > 0 && string(generic.Error) != "null"
+
+	switch {
+	case hasMethod && hasID:
+		return &MCPMessage{JSONRpc: "2.0", ID: id, Method: generic.Method, Params: generic.Params}, nil
+	case hasMethod && !hasID:
+		return &MCPMessage{JSONRpc: "2.0", Method: generic.Method, Params: generic.Params}, nil
+	case hasError:
+		var errObj MCPError
+		if err := json.Unmarshal(generic.Error, &errObj); err != nil {
+			return nil, fmt.Errorf("invalid JSON-RPC message: invalid error object: %w", err)
+		}
+		if errObj.Message == "" {
+			return nil, fmt.Errorf("invalid JSON-RPC message: error.message is required")
+		}
+		msg := &MCPMessage{JSONRpc: "2.0", Error: &errObj}
+		if hasID {
+			msg.ID = id
+		}
+		return msg, nil
+	case hasResult && hasID:
+		return &MCPMessage{JSONRpc: "2.0", ID: id, Result: generic.Result}, nil
+	default:
+		return nil, fmt.Errorf("invalid JSON-RPC message: does not match request, notification, response, or error shape")
+	}
 }
 
 // GetError extracts the error from a message

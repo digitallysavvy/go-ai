@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/agent"
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
@@ -32,14 +33,14 @@ func main() {
 	config := agent.AgentConfig{
 		Model:    model,
 		System:   "You are a helpful assistant with text processing skills.",
-		MaxSteps: 5,
+		StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 	}
 	agentInstance := agent.NewToolLoopAgent(config)
 
 	// Define text processing skills
 	uppercaseSkill := &agent.Skill{
-		Name:        "uppercase",
-		Description: "Converts text to uppercase",
+		Name:         "uppercase",
+		Description:  "Converts text to uppercase",
 		Instructions: "Use this skill when you need to convert text to all uppercase letters",
 		Handler: func(ctx context.Context, input string) (string, error) {
 			return strings.ToUpper(input), nil
@@ -47,8 +48,8 @@ func main() {
 	}
 
 	lowercaseSkill := &agent.Skill{
-		Name:        "lowercase",
-		Description: "Converts text to lowercase",
+		Name:         "lowercase",
+		Description:  "Converts text to lowercase",
 		Instructions: "Use this skill when you need to convert text to all lowercase letters",
 		Handler: func(ctx context.Context, input string) (string, error) {
 			return strings.ToLower(input), nil
@@ -56,8 +57,8 @@ func main() {
 	}
 
 	reverseSkill := &agent.Skill{
-		Name:        "reverse",
-		Description: "Reverses the text",
+		Name:         "reverse",
+		Description:  "Reverses the text",
 		Instructions: "Use this skill when you need to reverse the order of characters in text",
 		Handler: func(ctx context.Context, input string) (string, error) {
 			runes := []rune(input)
@@ -69,8 +70,8 @@ func main() {
 	}
 
 	wordCountSkill := &agent.Skill{
-		Name:        "word_count",
-		Description: "Counts the number of words in text",
+		Name:         "word_count",
+		Description:  "Counts the number of words in text",
 		Instructions: "Use this skill when you need to count how many words are in a piece of text",
 		Handler: func(ctx context.Context, input string) (string, error) {
 			words := strings.Fields(input)

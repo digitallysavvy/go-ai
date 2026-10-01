@@ -68,6 +68,32 @@ func TestToolChoiceType_Constants(t *testing.T) {
 	}
 }
 
+func TestToolApprovalStatus_Constants(t *testing.T) {
+	t.Parallel()
+
+	statuses := []ToolApprovalStatus{
+		ToolApprovalStatusNotApplicable,
+		ToolApprovalStatusApproved,
+		ToolApprovalStatusDenied,
+		ToolApprovalStatusUserApproval,
+	}
+	if len(statuses) != 4 {
+		t.Fatalf("expected exactly 4 statuses, got %d", len(statuses))
+	}
+	if ToolApprovalStatusNotApplicable != "not-applicable" {
+		t.Errorf("expected not-applicable, got %s", ToolApprovalStatusNotApplicable)
+	}
+	if ToolApprovalStatusApproved != "approved" {
+		t.Errorf("expected approved, got %s", ToolApprovalStatusApproved)
+	}
+	if ToolApprovalStatusDenied != "denied" {
+		t.Errorf("expected denied, got %s", ToolApprovalStatusDenied)
+	}
+	if ToolApprovalStatusUserApproval != "user-approval" {
+		t.Errorf("expected user-approval, got %s", ToolApprovalStatusUserApproval)
+	}
+}
+
 func TestTool_Execute(t *testing.T) {
 	t.Parallel()
 

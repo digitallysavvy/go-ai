@@ -1,5 +1,11 @@
 package types
 
+import (
+	"encoding/json"
+	"math"
+	"time"
+)
+
 // Usage represents token or resource usage for an API call
 // Updated to match TypeScript AI SDK v6.0 with detailed token tracking
 type Usage struct {
@@ -171,6 +177,11 @@ func (u Usage) GetTotalTokens() int64 {
 
 // EmbeddingUsage represents usage for embedding operations
 type EmbeddingUsage struct {
+	// Tokens matches the TypeScript EmbeddingModelV4 usage field.
+	// It is float64 so providers can surface JavaScript number semantics such
+	// as NaN when the TypeScript SDK does.
+	Tokens float64 `json:"tokens,omitempty"`
+
 	// Number of tokens in the input text
 	InputTokens int `json:"inputTokens"`
 
@@ -178,16 +189,36 @@ type EmbeddingUsage struct {
 	TotalTokens int `json:"totalTokens"`
 }
 
+func (u EmbeddingUsage) MarshalJSON() ([]byte, error) {
+	type alias struct {
+		Tokens      interface{} `json:"tokens"`
+		InputTokens int         `json:"inputTokens"`
+		TotalTokens int         `json:"totalTokens"`
+	}
+	var tokens interface{}
+	switch {
+	case math.IsNaN(u.Tokens), math.IsInf(u.Tokens, 0):
+		tokens = nil
+	default:
+		tokens = u.Tokens
+	}
+	return json.Marshal(alias{
+		Tokens:      tokens,
+		InputTokens: u.InputTokens,
+		TotalTokens: u.TotalTokens,
+	})
+}
+
 // ImageUsage represents usage for image generation operations
 type ImageUsage struct {
 	// Number of images generated
 	ImageCount int `json:"imageCount"`
-}
 
-// SpeechUsage represents usage for speech synthesis operations
-type SpeechUsage struct {
-	// Number of characters processed
-	CharacterCount int `json:"characterCount"`
+	// Token usage, when reported by image providers that use language-model
+	// style accounting.
+	InputTokens  int `json:"inputTokens,omitempty"`
+	OutputTokens int `json:"outputTokens,omitempty"`
+	TotalTokens  int `json:"totalTokens,omitempty"`
 }
 
 // TranscriptionUsage represents usage for speech-to-text operations
@@ -206,13 +237,15 @@ type VideoUsage struct {
 }
 
 // Warning represents a warning message from the provider.
-// Mirrors the TS SDK SharedV4Warning shape: { type, feature, details }.
 type Warning struct {
 	// Type of warning (e.g. "unsupported")
 	Type string `json:"type"`
 
 	// Feature is the specific feature that caused the warning (e.g. "image", "resolution").
 	Feature string `json:"feature,omitempty"`
+
+	// Setting is the deprecated setting name for warnings of type "deprecated".
+	Setting string `json:"setting,omitempty"`
 
 	// Details is the human-readable description of the warning.
 	Details string `json:"details,omitempty"`
@@ -237,6 +270,9 @@ const (
 	// FinishReasonToolCalls indicates the model wants to call tools
 	FinishReasonToolCalls FinishReason = "tool-calls"
 
+	// FinishReasonUserApproval indicates execution paused for human approval.
+	FinishReasonUserApproval FinishReason = "user-approval"
+
 	// FinishReasonError indicates an error occurred
 	FinishReasonError FinishReason = "error"
 
@@ -246,9 +282,18 @@ const (
 
 // ResponseMetadata contains metadata about the model's response
 type ResponseMetadata struct {
+	// ID is the provider-assigned response ID.
+	ID string `json:"id,omitempty"`
+
+	// Timestamp is when the provider started generating the response.
+	Timestamp time.Time `json:"timestamp,omitempty"`
+
 	// Model ID that generated the response
 	ModelID string `json:"modelId,omitempty"`
 
-	// Provider-specific metadata
-	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
+	// Headers are the raw HTTP response headers when available.
+	Headers map[string]string `json:"headers,omitempty"`
+
+	// Body is the raw response body when the provider exposes it.
+	Body interface{} `json:"body,omitempty"`
 }

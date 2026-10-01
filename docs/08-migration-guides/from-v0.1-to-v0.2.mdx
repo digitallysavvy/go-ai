@@ -1,0 +1,204 @@
+---
+title: Migrating from v0.1.x to v0.2.0
+description: Breaking changes in Go AI SDK v0.2.0, the TypeScript AI SDK v6.0 parity release.
+---
+
+# Migrate Go AI SDK v0.1.x to v0.2.0
+
+Go AI SDK v0.2.0 aligned the public API with TypeScript AI SDK v6.0: pointer-based usage tracking, a `ToolExecutionOptions` parameter on tool execution, request-scoped context in callbacks, and a typed `Output` system. This guide is for anyone still on v0.1.0.
+
+If you're upgrading from a later version instead, see [migrating from v0.3.x to v0.4.0](/docs/migration-guides/from-v0.3-to-v0.4) or [migrating from v0.4.x to v0.5.0](/docs/migration-guides/from-v0.4-to-v0.5), which cover the `RuntimeContext`/`ToolsContext` split and other renames introduced after this release.
+
+## Recommended migration process
+
+1. Update: `go get github.com/digitallysavvy/go-ai@v0.2.0`
+2. Update `Usage` field access to handle `nil`, or switch to the `Get*Tokens()` helpers.
+3. Add the `opts types.ToolExecutionOptions` parameter to every tool `Execute` function.
+4. Add `ctx context.Context` and `userContext interface{}` parameters to `OnStepFinish`/`OnFinish` callbacks on `GenerateText` and `GenerateObject`.
+5. Build and test: `go build ./...` and `go test ./...`.
+
+## Breaking changes
+
+### Usage fields are pointers
+
+**Impact:** breaking
+
+`Usage.InputTokens`, `OutputTokens`, and `TotalTokens` changed from plain integers to `*int64`, so `nil` can mean "not reported" instead of `0`. `Usage` also gained `InputDetails`, `OutputDetails`, and `Raw`.
+
+**Before (v0.1.0 — no longer compiles):**
+
+```go
+usage := types.Usage{
+    InputTokens:  10,
+    OutputTokens: 20,
+    TotalTokens:  30,
+}
+
+if result.Usage.TotalTokens > 0 {
+    fmt.Printf("Used %d tokens\n", result.Usage.TotalTokens)
+}
+```
+
+**After (v0.2.0):**
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Hello",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+if result.Usage.GetTotalTokens() > 0 {
+    fmt.Printf("Used %d tokens\n", result.Usage.GetTotalTokens())
+}
+```
+
+`GetInputTokens()`, `GetOutputTokens()`, and `GetTotalTokens()` return `0` for `nil`, so most call sites only need this one change.
+
+### ToolExecutor takes a ToolExecutionOptions parameter
+
+**Impact:** breaking
+
+`types.ToolExecutor` gained a third parameter carrying the tool call ID, accumulated usage, and any value passed through `ExperimentalContext`.
+
+**Before (v0.1.0 — no longer compiles):**
+
+```go
+weatherTool := types.Tool{
+    Name:        "weather",
+    Description: "Get weather for a location",
+    Parameters: map[string]interface{}{
+        "type": "object",
+        "properties": map[string]interface{}{
+            "location": map[string]interface{}{"type": "string"},
+        },
+        "required": []string{"location"},
+    },
+    Execute: func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+        location := input["location"].(string)
+        return map[string]interface{}{"temperature": 72, "condition": "sunny"}, nil
+    },
+}
+```
+
+**After (v0.2.0):**
+
+```go
+weatherTool := types.Tool{
+    Name:        "weather",
+    Description: "Get weather for a location",
+    Parameters: map[string]interface{}{
+        "type": "object",
+        "properties": map[string]interface{}{
+            "location": map[string]interface{}{"type": "string"},
+        },
+        "required": []string{"location"},
+    },
+    Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+        location := input["location"].(string)
+        log.Printf("executing tool call %s for %s", opts.ToolCallID, location)
+        return map[string]interface{}{"temperature": 72, "condition": "sunny"}, nil
+    },
+}
+```
+
+### OnStepFinish and OnFinish add ctx and userContext
+
+**Impact:** breaking
+
+`GenerateTextOptions.OnStepFinish`, `OnFinish`, and the matching callbacks on `GenerateObjectOptions` now take a leading `ctx context.Context` and a trailing `userContext interface{}`. `userContext` is whatever you pass through the new `ExperimentalContext` option.
+
+**`StreamTextOptions.OnFinish` did not change** — it still takes only `*StreamTextResult`. Don't add parameters to it.
+
+**Before (v0.1.0 — no longer compiles):**
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Solve this problem",
+    Tools:  tools,
+    OnStepFinish: func(step types.StepResult) {
+        fmt.Printf("Step %d complete\n", step.StepNumber)
+    },
+})
+```
+
+**After (v0.2.0):**
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Solve this problem",
+    Tools:  tools,
+    ExperimentalContext: map[string]interface{}{
+        "userId": "user123",
+    },
+    OnStepFinish: func(ctx context.Context, step types.StepResult, userContext interface{}) {
+        fmt.Printf("Step %d complete\n", step.StepNumber)
+    },
+    OnFinish: func(ctx context.Context, result *ai.GenerateTextResult, userContext interface{}) {
+        if data, ok := userContext.(map[string]interface{}); ok {
+            log.Printf("user %v finished", data["userId"])
+        }
+    },
+})
+```
+
+`OnStepFinish` and `OnFinish` are now deprecated aliases for `OnStepEnd` and `OnEnd`, added in a later release — both spellings take the same arguments.
+
+## New in v0.2.0
+
+These are additive; existing code keeps compiling without them.
+
+**Detailed usage.** `Usage.InputDetails` and `OutputDetails` expose cache and reasoning token counts when a provider reports them; `Usage.Raw` carries the provider's raw usage payload.
+
+```go
+if result.Usage.InputDetails != nil && result.Usage.InputDetails.CacheReadTokens != nil {
+    fmt.Printf("cache read tokens: %d\n", *result.Usage.InputDetails.CacheReadTokens)
+}
+```
+
+**New tool fields.** `Tool.Title`, `Strict`, `NeedsApproval`, and `InputExamples` (`[]types.ToolInputExample`, not `[]map[string]interface{}`):
+
+```go
+weatherTool := types.Tool{
+    Name:   "weather",
+    Title:  "Weather Lookup",
+    Strict: types.BoolPtr(true),
+    InputExamples: []types.ToolInputExample{
+        {Input: map[string]interface{}{"location": "San Francisco, CA"}},
+    },
+    // Parameters, Execute, ...
+}
+```
+
+**Typed `Output` system.** `ai.ObjectOutput[T]`, `ai.ArrayOutput[T]`, and `ai.ChoiceOutput[T]` build an `Output` value for `GenerateTextOptions.Output` — an alternative to `ai.GenerateObject` that returns a typed result directly from `GenerateText`. Note that the options types are themselves generic:
+
+```go
+tasksOutput := ai.ArrayOutput[Task](ai.ArrayOutputOptions[Task]{
+    ElementSchema: taskSchema,
+    Name:          "tasks",
+})
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Generate 3 tasks",
+    Output: tasksOutput,
+})
+if err != nil {
+    log.Fatal(err)
+}
+tasks := result.Output.([]Task)
+```
+
+## Common compile errors
+
+| Error | Fix |
+|---|---|
+| `cannot use 10 (untyped int constant) as *int64 value in struct literal` | Take the address of a variable: `n := int64(10); usage.InputTokens = &n`. |
+| `cannot use func(ctx context.Context, input map[string]interface{}) (interface{}, error) {…} as types.ToolExecutor value` | Add the third parameter: `func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error)`. |
+| `cannot use func(step types.StepResult) {…} as func(ctx context.Context, step types.StepResult, userContext interface{}) value` | Add `ctx context.Context` and `userContext interface{}` to the callback signature. |
+| `unknown field Output in struct literal of type ai.GenerateObjectOptions` | `Output` is a field on `GenerateTextOptions` (the new typed-output system), not `GenerateObjectOptions`. `GenerateObjectOptions` still takes `Schema`. |
+| `cannot use generic type ai.ArrayOutputOptions[ELEMENT any] without instantiation` | Supply the type parameter: `ai.ArrayOutputOptions[Task]{...}` (same for `ChoiceOutputOptions[T]`). |

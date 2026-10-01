@@ -11,9 +11,9 @@ import (
 type CodeExecution20250825InputType string
 
 const (
-	InputTypeProgrammaticToolCall       CodeExecution20250825InputType = "programmatic-tool-call"
-	InputTypeBashCodeExecution          CodeExecution20250825InputType = "bash_code_execution"
-	InputTypeTextEditorCodeExecution    CodeExecution20250825InputType = "text_editor_code_execution"
+	InputTypeProgrammaticToolCall    CodeExecution20250825InputType = "programmatic-tool-call"
+	InputTypeBashCodeExecution       CodeExecution20250825InputType = "bash_code_execution"
+	InputTypeTextEditorCodeExecution CodeExecution20250825InputType = "text_editor_code_execution"
 )
 
 // CodeExecution20250825TextEditorCommand represents text editor command types
@@ -98,16 +98,26 @@ Error codes: invalid_tool_input, unavailable, too_many_requests, execution_time_
 output_file_too_large, file_not_found
 
 Important: This tool must be executed by the Anthropic API, not locally.`,
-		Parameters:       parameters,
+		Parameters: parameters,
 		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
 			return nil, fmt.Errorf("code execution tool must be executed by the provider (Anthropic). Set ProviderExecuted: true")
 		},
 		ProviderExecuted:        true,
 		SupportsDeferredResults: true,
+		// ExperimentalToolCaller lets other tools opt into programmatic
+		// tool calling through code_execution_20250825 via
+		// ai.ExperimentalToolCallers, mirroring the TypeScript SDK's
+		// codeExecution_20250825() (experimental_toolCaller wrapper).
+		ExperimentalToolCaller: codeExecutionToolCaller(codeExecution20250825AllowedCaller),
 	}
 
 	return tool
 }
+
+// codeExecution20250825AllowedCaller is the value the Anthropic API expects
+// in providerOptions.anthropic.allowedCallers for a tool routed through
+// code_execution_20250825.
+const codeExecution20250825AllowedCaller = "code_execution_20250825"
 
 func buildCodeExecution20250825Schema() map[string]interface{} {
 	// Build a discriminated union schema

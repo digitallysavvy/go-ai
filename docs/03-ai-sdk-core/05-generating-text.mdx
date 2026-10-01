@@ -12,11 +12,11 @@ The Go AI SDK Core provides two functions to generate text from LLMs:
 - [`ai.GenerateText()`](#generatetext) - Generates text for a given prompt and model.
 - [`ai.StreamText()`](#streamtext) - Streams text from a given prompt and model.
 
-Advanced LLM features such as [tool calling](./04-tools-and-tool-calling.md) and [structured data generation](./03-generating-structured-data.md) are built on top of text generation.
+Advanced LLM features such as [tool calling](./15-tools-and-tool-calling.mdx) and [structured data generation](./10-generating-structured-data.mdx) are built on top of text generation.
 
 ## GenerateText
 
-You can generate text using the [`ai.GenerateText()`](../07-reference/ai/generate-text.md) function. This function is ideal for non-interactive use cases where you need to write text (e.g. drafting email or summarizing web pages) and for agents that use tools.
+You can generate text using the [`ai.GenerateText()`](../07-reference/ai/generate-text.mdx) function. This function is ideal for non-interactive use cases where you need to write text (e.g. drafting email or summarizing web pages) and for agents that use tools.
 
 ```go
 package main
@@ -49,7 +49,7 @@ func main() {
 }
 ```
 
-You can use more [advanced prompts](../02-foundations/03-prompts.md) to generate text with more complex instructions and content:
+You can use more [advanced prompts](../02-foundations/03-prompts.mdx) to generate text with more complex instructions and content:
 
 ```go
 article := "..." // your article text
@@ -75,6 +75,11 @@ The result object of `GenerateText` contains several fields that provide informa
 type GenerateTextResult struct {
     // The generated text
     Text string
+
+    // Ordered output content from all completed steps. Includes text,
+    // reasoning, tool calls, tool results, files, sources, and provider
+    // metadata-bearing parts in the same order emitted by the model/tool loop.
+    Content []types.ContentPart
 
     // Output contains the parsed output when a WithOutput option was provided.
     // Type-assert to the concrete type, e.g.: recipe := result.Output.(Recipe)
@@ -145,11 +150,39 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 ```
 
+### ToolOrder
+
+`ToolOrder` controls the order tools are sent to providers after active-tool filtering, middleware transforms, and `PrepareStep` updates. Listed names are sent first in the provided order; unlisted tools follow alphabetically.
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:     model,
+    Prompt:    "Inspect the user account.",
+    Tools:     tools,
+    ToolOrder: []string{"readProfile", "listOrders"},
+})
+```
+
+### OnStepEnd
+
+`OnStepEnd` is the canonical callback name for step completion. `OnStepFinish` remains as a deprecated compatibility alias; when both are set, `OnStepEnd` wins. The same migration applies to typed event callbacks: use `OnStepEndEvent` instead of `OnStepFinishEvent`.
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Use a tool, then summarize.",
+    Tools:  tools,
+    OnStepEnd: func(ctx context.Context, step types.StepResult, userContext interface{}) {
+        fmt.Println(step.StepNumber, step.FinishReason, step.Usage)
+    },
+})
+```
+
 ## StreamText
 
 Depending on your model and prompt, it can take a large language model (LLM) up to a minute to finish generating its response. This delay can be unacceptable for interactive use cases such as chatbots or real-time applications, where users expect immediate responses.
 
-The Go AI SDK Core provides the [`ai.StreamText()`](../07-reference/ai/stream-text.md) function which simplifies streaming text from LLMs:
+The Go AI SDK Core provides the [`ai.StreamText()`](../07-reference/ai/stream-text.mdx) function which simplifies streaming text from LLMs:
 
 ```go
 result, err := ai.StreamText(ctx, ai.StreamTextOptions{
@@ -185,6 +218,7 @@ result.ReadAll() (string, error)             // Read all text (blocks until comp
 
 // Accessor methods (available after stream completes)
 result.Text() string                         // Complete generated text
+result.Content() []types.ContentPart         // Ordered content across all steps
 result.FinishReason() types.FinishReason     // Reason the model finished
 result.Usage() types.Usage                   // Token usage information
 result.ToolCalls() []types.ToolCall          // Tool calls made during streaming
@@ -192,6 +226,22 @@ result.ToolResults() []types.ToolResult      // Tool results from executed tools
 result.ContextManagement() interface{}       // Context management stats (Anthropic)
 result.Err() error                           // Error if stream failed
 ```
+
+### Standalone Stream Helpers
+
+For new code, use `result.Stream()` with the package-level helpers. The result-bound helpers are retained only as deprecated compatibility wrappers.
+
+```go
+textStream, errStream := ai.ToTextStream(ctx, result.Stream())
+for text := range textStream {
+    fmt.Print(text)
+}
+if err := <-errStream; err != nil {
+    log.Fatal(err)
+}
+```
+
+Use `ai.ToUIMessageStream(ctx, result.Stream(), ...)` to convert provider stream chunks into UI message chunks. `result.FullStream()` remains as a deprecated alias for `result.Stream()`.
 
 ### Channel-Based Streaming
 
@@ -371,7 +421,7 @@ fmt.Println(result.Text)
 // Output: The weather in London is sunny with a temperature of 72°F.
 ```
 
-See [Tools and Tool Calling](./04-tools-and-tool-calling.md) for more details.
+See [Tools and Tool Calling](./15-tools-and-tool-calling.mdx) for more details.
 
 ### Step-by-Step Processing
 
@@ -486,7 +536,7 @@ result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 ```
 
-See [Settings](./10-settings.md) for all available options.
+See [Settings](./25-settings.mdx) for all available options.
 
 ## Error Handling
 
@@ -511,7 +561,7 @@ if err != nil {
 }
 ```
 
-See [Error Handling](./13-error-handling.md) for comprehensive error handling strategies.
+See [Error Handling](./50-error-handling.mdx) for comprehensive error handling strategies.
 
 ## Best Practices
 
@@ -586,7 +636,9 @@ for i, result := range results {
 
 ## Custom Content Types
 
-Some providers return content that does not map to standard text, reasoning, or tool call types. The Go AI SDK represents these as `CustomContent` and `ReasoningFileContent`.
+Some providers return ordered content that carries provider-specific metadata. The Go AI SDK preserves that metadata on output content as `ProviderMetadata`; when the content is replayed to a provider as response messages, it is converted to provider-facing `ProviderOptions`, matching the TypeScript SDK.
+
+This applies to standard content such as text, reasoning, tool-call, tool-result, and tool-error parts, and to provider-specific content that does not map to standard text, reasoning, or tool call types. The Go AI SDK represents provider-specific parts as `CustomContent` and `ReasoningFileContent`.
 
 ### CustomContent
 
@@ -597,13 +649,13 @@ import "github.com/digitallysavvy/go-ai/pkg/provider/types"
 
 // CustomContent is emitted by providers for unknown/provider-specific parts
 type CustomContent struct {
-    Kind             string                 // e.g. "xai-citation", "openai-compaction"
+    Kind             string                 // e.g. "xai.citation", "openai.compaction"
     ProviderOptions  map[string]interface{} // input: provider-specific options to forward
     ProviderMetadata json.RawMessage        // output: raw JSON from provider
 }
 ```
 
-- `Kind` identifies the content type using the format `"{provider}-{type}"` (e.g., `"xai-citation"`)
+- `Kind` identifies the content type using the format `"{provider}.{type}"` (e.g., `"xai.citation"`)
 - `ProviderMetadata` carries the raw JSON returned by the provider (output direction)
 - `ProviderOptions` carries provider-specific options keyed by provider name (input direction)
 
@@ -672,15 +724,15 @@ In multi-turn conversations, `CustomContent` and `ReasoningFileContent` appear i
 
 ## Next Steps
 
-- Learn about [Generating Structured Data](./03-generating-structured-data.md)
-- Explore [Tools and Tool Calling](./04-tools-and-tool-calling.md)
-- Build [Agents](../03-agents/01-overview.md)
+- Learn about [Generating Structured Data](./10-generating-structured-data.mdx)
+- Explore [Tools and Tool Calling](./15-tools-and-tool-calling.mdx)
+- Build [Agents](../03-agents/01-overview.mdx)
 
 ## See Also
 
-- [Prompts](../02-foundations/03-prompts.md)
-- [Streaming](../02-foundations/05-streaming.md)
-- [Settings](./10-settings.md)
-- [Error Handling](./13-error-handling.md)
-- [API Reference: GenerateText](../07-reference/ai/generate-text.md)
-- [API Reference: StreamText](../07-reference/ai/stream-text.md)
+- [Prompts](../02-foundations/03-prompts.mdx)
+- [Streaming](../02-foundations/05-streaming.mdx)
+- [Settings](./25-settings.mdx)
+- [Error Handling](./50-error-handling.mdx)
+- [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
+- [API Reference: StreamText](../07-reference/ai/stream-text.mdx)

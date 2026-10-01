@@ -1,0 +1,128 @@
+package ai
+
+import (
+	"context"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+)
+
+// IncludeOptions controls which large request/response details are retained
+// in step results. The default matches the TypeScript SDK: bodies and request
+// messages are excluded unless explicitly enabled.
+type IncludeOptions struct {
+	RequestBody     bool
+	RequestMessages bool
+	ResponseBody    bool
+	// RawChunks controls whether raw provider stream chunks are forwarded.
+	// Nil preserves the deprecated IncludeRawChunks fallback.
+	RawChunks *bool
+}
+
+func effectiveInclude(include, experimental *IncludeOptions, includeRawChunks bool) IncludeOptions {
+	if include == nil {
+		include = experimental
+	}
+	if include == nil {
+		return IncludeOptions{RawChunks: includeBoolPtr(includeRawChunks)}
+	}
+	resolved := *include
+	if resolved.RawChunks == nil {
+		resolved.RawChunks = includeBoolPtr(includeRawChunks)
+	}
+	return resolved
+}
+
+func includeRawChunksValue(include IncludeOptions) bool {
+	return include.RawChunks != nil && *include.RawChunks
+}
+
+func includeBoolPtr(v bool) *bool {
+	return &v
+}
+
+func effectiveDownload(download DownloadFunction) DownloadFunction {
+	if download != nil {
+		return download
+	}
+	return DefaultDownload
+}
+
+type supportedURLsProvider interface {
+	SupportedURLs() map[string][]string
+}
+
+func supportedURLChecker(model provider.LanguageModel) func(mediaType, rawURL string) bool {
+	return SupportedURLCheckerForModel(model)
+}
+
+// SupportedURLCheckerForModel returns a prompt URL support checker for models
+// that expose SupportedURLs. Models without that optional capability are treated
+// as not supporting direct URLs, matching TypeScript's empty supportedUrls map.
+func SupportedURLCheckerForModel(model provider.LanguageModel) func(mediaType, rawURL string) bool {
+	supported, ok := model.(supportedURLsProvider)
+	if !ok {
+		return nil
+	}
+	return SupportedURLCheckerFromPatterns(supported.SupportedURLs())
+}
+
+// SupportedURLCheckerFromPatterns compiles a raw SupportedURLs()-style map
+// (regexp patterns keyed by media type) into a prompt URL support checker,
+// matching TypeScript's isUrlSupported. Use this when the pattern map is
+// already available without a provider.LanguageModel instance to type-assert
+// against (e.g. the batch API, whose supportedUrls comes from the batch
+// interface rather than a per-request model).
+//
+// The matching algorithm itself lives in providerutils.MatchesSupportedURL
+// (shared with pkg/providerutils/prompt's Google functionResponse fileData
+// forwarding, which cannot import this package without an import cycle).
+func SupportedURLCheckerFromPatterns(patternsByMediaType map[string][]string) func(mediaType, rawURL string) bool {
+	compiled := providerutils.CompileSupportedURLPatterns(patternsByMediaType)
+	if len(compiled) == 0 {
+		return nil
+	}
+	return func(mediaType, rawURL string) bool {
+		return providerutils.MatchesSupportedURL(compiled, mediaType, rawURL)
+	}
+}
+
+// Experimental_SandboxSession mirrors the TypeScript SDK's exported
+// Experimental_SandboxSession alias.
+type Experimental_SandboxSession = providerutils.SandboxSession
+
+// SandboxProcessOptions are passed to Experimental_SandboxSession.Run and
+// Experimental_SandboxSession.Spawn.
+type SandboxProcessOptions = providerutils.SandboxProcessOptions
+
+// SandboxRunResult is returned by Experimental_SandboxSession.Run.
+type SandboxRunResult = providerutils.SandboxRunResult
+
+// SandboxProcess is a handle to a process started by Experimental_SandboxSession.Spawn.
+type SandboxProcess = providerutils.SandboxProcess
+
+// Experimental_SandboxProcess mirrors the TypeScript SDK's exported
+// Experimental_SandboxProcess alias.
+type Experimental_SandboxProcess = SandboxProcess
+
+// SandboxProcessResult is returned by SandboxProcess.Wait.
+type SandboxProcessResult = providerutils.SandboxProcessResult
+
+// SandboxReadTextFileOptions controls text file reads.
+type SandboxReadTextFileOptions = providerutils.SandboxReadTextFileOptions
+
+// SandboxWriteTextFileOptions controls text file writes.
+type SandboxWriteTextFileOptions = providerutils.SandboxWriteTextFileOptions
+
+// ToolInputRefiner can adjust parsed tool input before approval, callbacks,
+// telemetry, tool execution, and response-message construction.
+type ToolInputRefiner func(ctx context.Context, opts ToolInputRefinementOptions) (map[string]interface{}, error)
+
+// ToolInputRefinementOptions contains the data passed to a tool input refiner.
+type ToolInputRefinementOptions struct {
+	ToolCall       types.ToolCall
+	Tool           *types.Tool
+	RuntimeContext interface{}
+	ToolsContext   map[string]interface{}
+}

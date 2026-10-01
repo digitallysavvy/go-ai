@@ -7,13 +7,19 @@ import (
 	"fmt"
 	"net/http"
 
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
-// ImageModel implements image generation for Google Vertex AI
-// Supports both Imagen models (via :predict API) and Gemini image models (via :generateContent API)
+// imagenRemovedError matches TS google-image-model.ts / google-vertex-image-model.ts
+// exactly: "Google image models other than Gemini are no longer supported. Use a
+// model ID that starts with `gemini-`."
+const imagenRemovedError = "Google image models other than Gemini are no longer supported. Use a model ID that starts with `gemini-`."
+
+// ImageModel implements image generation for Google Vertex AI.
+// Only Gemini image models (model IDs starting with "gemini-") are supported;
+// Imagen (:predict API) was removed to match TS `ai@7.0.113`.
 type ImageModel struct {
 	prov    *Provider
 	modelID string
@@ -29,7 +35,7 @@ func NewImageModel(prov *Provider, modelID string) *ImageModel {
 
 // SpecificationVersion returns the specification version
 func (m *ImageModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
@@ -42,161 +48,28 @@ func (m *ImageModel) ModelID() string {
 	return m.modelID
 }
 
-// DoGenerate performs image generation
-func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
-	// Determine if this is a Gemini model or Imagen model
-	if isGeminiModel(m.modelID) {
-		return m.doGenerateGemini(ctx, opts)
-	}
-	return m.doGenerateImagen(ctx, opts)
+// MaxImagesPerCall returns the maximum number of images generated per
+// DoGenerate call. Gemini image models generate exactly one image per call;
+// the core GenerateImage helper splits a larger request into multiple calls.
+func (m *ImageModel) MaxImagesPerCall() int {
+	return 1
 }
 
-// doGenerateImagen generates images using the Imagen API (:predict endpoint)
-// Supports both text-to-image and image editing (inpainting, outpainting, etc.)
-func (m *ImageModel) doGenerateImagen(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
-	// Build instance — negativePrompt is an instance-level field (not a parameter).
-	instance := map[string]interface{}{
-		"prompt": opts.Prompt,
+// DoGenerate performs image generation using Gemini models via the
+// generateContent API. Non-Gemini model IDs are rejected, matching TS.
+func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
+	if !isGeminiModel(m.modelID) {
+		return nil, providererrors.NewProviderError("google-vertex", 0, "", imagenRemovedError, nil)
 	}
-
-	vertexOpts := extractVertexOptions(opts.ProviderOptions)
-
-	if negPrompt, ok := vertexOpts["negativePrompt"].(string); ok && negPrompt != "" {
-		instance["negativePrompt"] = negPrompt
-	}
-
-	parameters := map[string]interface{}{
-		"sampleCount": getIntValue(opts.N, 1),
-	}
-
-	// Add aspect ratio if specified.
-	// Prefer opts.AspectRatio directly; fall back to converting from opts.Size.
-	if aspectRatio := resolveAspectRatio(opts.AspectRatio, opts.Size); aspectRatio != "" {
-		parameters["aspectRatio"] = aspectRatio
-	}
-
-	// sampleImageSize provider option (e.g., VertexImageSize1K, VertexImageSize2K)
-	if imageSize := resolveVertexImageSize(opts.ProviderOptions); imageSize != "" {
-		parameters["sampleImageSize"] = imageSize
-	}
-
-	// Seed for reproducible generation.
-	if opts.Seed != nil {
-		parameters["seed"] = *opts.Seed
-	}
-
-	// Additional Vertex AI provider options.
-	if pgen, ok := vertexOpts["personGeneration"].(string); ok && pgen != "" {
-		parameters["personGeneration"] = pgen
-	}
-	if safetySetting, ok := vertexOpts["safetySetting"].(string); ok && safetySetting != "" {
-		parameters["safetySetting"] = safetySetting
-	}
-	if addWatermark, ok := vertexOpts["addWatermark"].(bool); ok {
-		parameters["addWatermark"] = addWatermark
-	}
-	if storageUri, ok := vertexOpts["storageUri"].(string); ok && storageUri != "" {
-		parameters["storageUri"] = storageUri
-	}
-
-	// TODO: Image editing support
-	// To fully implement image editing, the provider.ImageGenerateOptions struct needs to be extended with:
-	// - Files []ImageFile - reference images for editing
-	// - Mask *ImageFile - mask image for inpainting/outpainting
-	// - ProviderOptions map[string]interface{} - for provider-specific settings
-	//
-	// Vertex AI Imagen supports these edit modes:
-	// - EDIT_MODE_INPAINT_INSERTION - Insert objects into masked region
-	// - EDIT_MODE_INPAINT_REMOVAL - Remove objects from masked region
-	// - EDIT_MODE_OUTPAINT - Extend image beyond boundaries
-	// - EDIT_MODE_CONTROLLED_EDITING - Controlled editing with guidance
-	// - EDIT_MODE_PRODUCT_IMAGE - Product-specific image editing
-	// - EDIT_MODE_BGSWAP - Background replacement
-	//
-	// Example of what the editing request would look like:
-	// if len(files) > 0 {
-	//     referenceImages := []map[string]interface{}{}
-	//     for i, file := range files {
-	//         referenceImages = append(referenceImages, map[string]interface{}{
-	//             "referenceType": "REFERENCE_TYPE_RAW",
-	//             "referenceId": i + 1,
-	//             "referenceImage": map[string]interface{}{
-	//                 "bytesBase64Encoded": base64.StdEncoding.EncodeToString(file.Data),
-	//             },
-	//         })
-	//     }
-	//     if mask != nil {
-	//         referenceImages = append(referenceImages, map[string]interface{}{
-	//             "referenceType": "REFERENCE_TYPE_MASK",
-	//             "referenceId": len(files) + 1,
-	//             "referenceImage": map[string]interface{}{
-	//                 "bytesBase64Encoded": base64.StdEncoding.EncodeToString(mask.Data),
-	//             },
-	//             "maskImageConfig": map[string]interface{}{
-	//                 "maskMode": "MASK_MODE_USER_PROVIDED",
-	//                 "dilation": 0.01,
-	//             },
-	//         })
-	//     }
-	//     instances[0]["referenceImages"] = referenceImages
-	//     parameters["editMode"] = "EDIT_MODE_INPAINT_INSERTION"
-	// }
-
-	reqBody := map[string]interface{}{
-		"instances":  []map[string]interface{}{instance},
-		"parameters": parameters,
-	}
-
-	// Build URL
-	path := fmt.Sprintf("/models/%s:predict", m.modelID)
-
-	// Make request
-	resp, err := m.prov.client.Post(ctx, path, reqBody)
-	if err != nil {
-		return nil, providererrors.NewProviderError("google-vertex", 0, "", "failed to generate image: "+err.Error(), err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, providererrors.NewProviderError("google-vertex", resp.StatusCode, "",
-			fmt.Sprintf("API returned status %d: %s", resp.StatusCode, string(resp.Body)), nil)
-	}
-
-	// Parse response
-	var imagenResp vertexImagenResponse
-	if err := json.Unmarshal(resp.Body, &imagenResp); err != nil {
-		return nil, providererrors.NewProviderError("google-vertex", 0, "", "failed to parse response: "+err.Error(), err)
-	}
-
-	if len(imagenResp.Predictions) == 0 {
-		return nil, providererrors.NewProviderError("google-vertex", 0, "", "no images in response", nil)
-	}
-
-	// Decode first image (Vertex AI returns base64)
-	imageData, err := base64.StdEncoding.DecodeString(imagenResp.Predictions[0].BytesBase64Encoded)
-	if err != nil {
-		return nil, providererrors.NewProviderError("google-vertex", 0, "", "failed to decode image: "+err.Error(), err)
-	}
-
-	return &types.ImageResult{
-		Image:    imageData,
-		MimeType: imagenResp.Predictions[0].MimeType,
-		Usage: types.ImageUsage{
-			ImageCount: len(imagenResp.Predictions),
-		},
-	}, nil
+	return m.doGenerateGemini(ctx, opts)
 }
 
 // doGenerateGemini generates images using Gemini models via the generateContent API
 func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
 	// Image editing with masks is not supported for Gemini image models.
 	if opts.Mask != nil {
-		return nil, fmt.Errorf("image editing with masks is not supported for Gemini image models")
+		return nil, providererrors.NewProviderError("google-vertex", 0, "", "Gemini image models do not support mask-based image editing.", nil)
 	}
-	// Gemini image models only support generating a single image at a time.
-	if opts.N != nil && *opts.N > 1 {
-		return nil, fmt.Errorf("LGemini image models do not support generating multiple images. Use Imagen models for multiple image generation")
-	}
-
 	// Gemini image models use the language model API with responseModalities: ["IMAGE"]
 	genConfig := map[string]interface{}{
 		"responseModalities": []string{"IMAGE"},
@@ -207,31 +80,32 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 		genConfig["seed"] = *opts.Seed
 	}
 
+	parts := vertexGeminiImageParts(opts)
 	reqBody := map[string]interface{}{
 		"contents": []map[string]interface{}{
 			{
-				"role": "user",
-				"parts": []map[string]interface{}{
-					{
-						"text": opts.Prompt,
-					},
-				},
+				"role":  "user",
+				"parts": parts,
 			},
 		},
 		"generationConfig": genConfig,
 	}
 
 	// Add aspect ratio and/or imageSize if specified.
-	// Prefer opts.AspectRatio directly; fall back to converting from opts.Size.
 	imageConfig := map[string]interface{}{}
-	if aspectRatio := resolveAspectRatio(opts.AspectRatio, opts.Size); aspectRatio != "" {
-		imageConfig["aspectRatio"] = aspectRatio
+	if opts.AspectRatio != "" {
+		imageConfig["aspectRatio"] = opts.AspectRatio
 	}
 	if imageSize := resolveVertexImageSize(opts.ProviderOptions); imageSize != "" {
 		imageConfig["imageSize"] = imageSize
 	}
 	if len(imageConfig) > 0 {
 		genConfig["imageConfig"] = imageConfig
+	}
+	for key, value := range extractVertexOptions(opts.ProviderOptions) {
+		if value != nil {
+			genConfig[key] = value
+		}
 	}
 
 	// Build URL
@@ -261,6 +135,7 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 
 	// Find the image part (inlineData with image/* mimeType)
 	var imageData []byte
+	var base64Image string
 	var mimeType string
 	for _, part := range geminiResp.Candidates[0].Content.Parts {
 		if part.InlineData != nil && len(part.InlineData.MimeType) >= 6 && part.InlineData.MimeType[:6] == "image/" {
@@ -269,6 +144,7 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 				return nil, providererrors.NewProviderError("google-vertex", 0, "", "failed to decode image: "+err.Error(), err)
 			}
 			imageData = data
+			base64Image = part.InlineData.Data
 			mimeType = part.InlineData.MimeType
 			break
 		}
@@ -279,12 +155,56 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 	}
 
 	return &types.ImageResult{
-		Image:    imageData,
-		MimeType: mimeType,
+		Image:        imageData,
+		Images:       [][]byte{imageData},
+		Base64Image:  base64Image,
+		Base64Images: []string{base64Image},
+		MimeType:     mimeType,
 		Usage: types.ImageUsage{
 			ImageCount: 1,
 		},
+		Warnings: vertexImageWarnings(opts),
+		ProviderMetadata: map[string]interface{}{
+			"googleVertex": map[string]interface{}{"images": []map[string]interface{}{{}}},
+			"vertex":       map[string]interface{}{"images": []map[string]interface{}{{}}},
+		},
 	}, nil
+}
+
+func vertexGeminiImageParts(opts *provider.ImageGenerateOptions) []map[string]interface{} {
+	parts := []map[string]interface{}{}
+	if opts.Prompt != "" {
+		parts = append(parts, map[string]interface{}{"text": opts.Prompt})
+	}
+	for _, file := range opts.Files {
+		if file.Type == "url" || file.URL != "" {
+			parts = append(parts, map[string]interface{}{
+				"fileData": map[string]interface{}{
+					"fileUri":  file.URL,
+					"mimeType": "image/*",
+				},
+			})
+			continue
+		}
+		parts = append(parts, map[string]interface{}{
+			"inlineData": map[string]interface{}{
+				"mimeType": file.MediaType,
+				"data":     base64.StdEncoding.EncodeToString(file.Data),
+			},
+		})
+	}
+	return parts
+}
+
+func vertexImageWarnings(opts *provider.ImageGenerateOptions) []types.Warning {
+	if opts == nil || opts.Size == "" {
+		return nil
+	}
+	return []types.Warning{{
+		Type:    "unsupported",
+		Feature: "size",
+		Details: "This model does not support the `size` option. Use `aspectRatio` instead.",
+	}}
 }
 
 // isGeminiModel checks if the model ID is a Gemini image model
@@ -326,7 +246,10 @@ func extractVertexOptions(providerOptions map[string]interface{}) map[string]int
 	if providerOptions == nil {
 		return map[string]interface{}{}
 	}
-	opts, _ := providerOptions["vertex"].(map[string]interface{})
+	opts, _ := providerOptions["googleVertex"].(map[string]interface{})
+	if opts == nil {
+		opts, _ = providerOptions["vertex"].(map[string]interface{})
+	}
 	if opts == nil {
 		return map[string]interface{}{}
 	}
@@ -348,15 +271,6 @@ func getIntValue(ptr *int, defaultVal int) int {
 		return *ptr
 	}
 	return defaultVal
-}
-
-// Response types for Vertex AI Imagen API
-type vertexImagenResponse struct {
-	Predictions []struct {
-		BytesBase64Encoded string `json:"bytesBase64Encoded"`
-		MimeType           string `json:"mimeType"`
-		Prompt             string `json:"prompt,omitempty"` // Revised prompt if available
-	} `json:"predictions"`
 }
 
 // Response types for Vertex AI Gemini image API

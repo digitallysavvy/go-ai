@@ -30,6 +30,7 @@ import (
     "os"
 
     "github.com/digitallysavvy/go-ai/pkg/agent"
+    "github.com/digitallysavvy/go-ai/pkg/ai"
     "github.com/digitallysavvy/go-ai/pkg/provider/types"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
@@ -88,7 +89,7 @@ func main() {
                 },
             },
         },
-        MaxSteps: 20, // Agent stops after maximum of 20 steps (default: 10)
+        StopWhen: []ai.StopCondition{ai.IsStepCount(20)}, // Agent stops after maximum of 20 steps
     })
 
     // Execute agent
@@ -202,7 +203,7 @@ When you call `agent.Execute()`, the following happens:
 
 Agents stop when:
 
-1. **MaxSteps reached**: Agent hits the configured step limit (default: 10)
+1. **StopWhen reached**: Agent hits the configured step limit (default: `ai.IsStepCount(20)`)
 2. **No tool calls**: Model returns text without requesting tool calls
 3. **Error occurs**: Tool execution or generation fails
 4. **Context canceled**: Context deadline or cancellation
@@ -211,7 +212,7 @@ Agents stop when:
 config := agent.AgentConfig{
     Model:    model,
     Tools:    tools,
-    MaxSteps: 20, // Stop after 20 iterations
+    StopWhen: []ai.StopCondition{ai.IsStepCount(20)}, // Stop after 20 iterations
 }
 ```
 

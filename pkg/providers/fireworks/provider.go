@@ -5,6 +5,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // Provider implements the provider.Provider interface for Fireworks AI
@@ -28,6 +29,9 @@ type Config struct {
 	// ImagePollTimeoutMs is the maximum duration to wait for async image generation
 	// to complete. Defaults to 120000ms (2 minutes).
 	ImagePollTimeoutMs int
+
+	// Headers are custom HTTP headers to include in requests.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // New creates a new Fireworks AI provider with the given configuration
@@ -39,16 +43,24 @@ func New(cfg Config) *Provider {
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: map[string]string{
+		Headers: version.WithUserAgentSuffix(http.MergeHeaders(map[string]string{
 			"Authorization": "Bearer " + cfg.APIKey,
 			"Content-Type":  "application/json",
-		},
+		}, cfg.Headers), version.ProviderUserAgent("fireworks")),
 	})
 
 	return &Provider{
 		config: cfg,
 		client: client,
 	}
+}
+
+// CreateFireworks creates a new Fireworks AI provider.
+//
+// It mirrors the TypeScript SDK createFireworks export while New remains the
+// idiomatic Go constructor.
+func CreateFireworks(cfg Config) *Provider {
+	return New(cfg)
 }
 
 // Name returns the provider name
@@ -85,17 +97,17 @@ func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
 
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("LFireworks AI does not support speech synthesis")
+	return nil, fmt.Errorf("Fireworks AI does not support speech synthesis") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 }
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("LFireworks AI does not support transcription")
+	return nil, fmt.Errorf("Fireworks AI does not support transcription") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 }
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("LFireworks AI does not support reranking")
+	return nil, fmt.Errorf("Fireworks AI does not support reranking") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 }
 
 // Client returns the HTTP client for making API requests

@@ -374,7 +374,7 @@ auditLog := AuditEntry{
     Timestamp:    time.Now(),
     UserID:       user.ID,
     Model:        model.ModelID(),
-    TokensUsed:   result.Usage.TotalTokens,
+    TokensUsed:   result.Usage.GetTotalTokens(),
     FinishReason: result.FinishReason,
     // No sensitive content stored
 }
@@ -382,18 +382,18 @@ auditLog := AuditEntry{
 
 ## Examples
 
-See the [retention examples](../../examples/features/retention) for complete working code:
+See the [retention examples](https://github.com/digitallysavvy/go-ai/tree/main/examples/features/retention) for complete working code:
 
-- **[Basic Usage](../../examples/features/retention/basic)** - Simple examples of retention settings
-- **[Memory Benchmark](../../examples/features/retention/benchmark)** - Measure memory savings
+- **[Basic Usage](https://github.com/digitallysavvy/go-ai/tree/main/examples/features/retention/basic)** - Simple examples of retention settings
+- **[Memory Benchmark](https://github.com/digitallysavvy/go-ai/tree/main/examples/features/retention/benchmark)** - Measure memory savings
 
 ## API Reference
 
-See [RetentionSettings API Reference](../07-reference/types/retention-settings.md) for complete type documentation.
+See RetentionSettings API Reference for complete type documentation.
 
 ## Related Topics
 
-- [Context Management](./01-prompt-engineering.md)
+- [Context Management](./01-prompt-engineering.mdx)
 - [Error Handling](../03-ai-sdk-core/50-error-handling.mdx)
 - [Testing](../03-ai-sdk-core/55-testing.mdx)
 

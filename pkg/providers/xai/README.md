@@ -4,14 +4,14 @@ Complete Go implementation of the xAI (Grok) AI provider with support for:
 - **Language Models** - Chat completion with tool calling and structured output
 - **Video Generation** - Text-to-video, image-to-video, and video editing
 - **Image Generation** - Text-to-image, editing, inpainting, outpainting, and variations
-- **Provider-Executed Tools** - FileSearch and MCP Server integration
+- **Provider-Executed Tools** - FileSearch, MCP Server, web/X search, code execution, and media viewing
 
 ## Table of Contents
 
 - [Language Models](#language-models)
 - [Video Generation](#video-generation)
 - [Image Generation](#image-generation)
-- [Provider-Executed Tools](#provider-executed-tools-filesearch--mcp-server)
+- [Provider-Executed Tools](#provider-executed-tools)
   - [FileSearch Tool](#filesearch-tool)
   - [MCPServer Tool](#mcpserver-tool)
 - [Usage Tracking](#usage-tracking)
@@ -50,6 +50,8 @@ Generate and edit videos with the `grok-imagine-video` model.
 - **Text-to-Video**: Generate videos from text prompts
 - **Image-to-Video**: Animate static images
 - **Video Editing**: Modify existing videos
+- **Video Extension**: Continue a source video with `mode: "extend-video"`
+- **Reference-to-Video**: Guide generation with 1-7 reference image URLs
 - **Duration & Resolution Control**: 480p/720p output, custom duration
 - **Async Polling**: Automatic status polling with configurable timeouts
 
@@ -94,6 +96,40 @@ resp, err := model.DoGenerate(ctx, &provider.VideoModelV3CallOptions{
 })
 ```
 
+### Video Extension
+
+```go
+videoURL := "https://example.com/source-video.mp4"
+duration := 6.0
+resp, err := model.DoGenerate(ctx, &provider.VideoModelV3CallOptions{
+    Prompt:   "Continue the scene naturally",
+    Duration: &duration,
+    ProviderOptions: map[string]interface{}{
+        "xai": map[string]interface{}{
+            "mode":     "extend-video",
+            "videoUrl": videoURL,
+        },
+    },
+})
+```
+
+### Reference-to-Video
+
+```go
+resp, err := model.DoGenerate(ctx, &provider.VideoModelV3CallOptions{
+    Prompt: "Create a video using these visual references",
+    ProviderOptions: map[string]interface{}{
+        "xai": map[string]interface{}{
+            "mode": "reference-to-video",
+            "referenceImageUrls": []string{
+                "https://example.com/ref-1.jpg",
+                "https://example.com/ref-2.jpg",
+            },
+        },
+    },
+})
+```
+
 ### Custom Polling
 
 ```go
@@ -112,7 +148,7 @@ resp, err := model.DoGenerate(ctx, &provider.VideoModelV3CallOptions{
 
 ## Image Generation
 
-Generate and edit images with the dedicated `grok-image-1` model.
+Generate and edit images with the dedicated `grok-imagine-image` and `grok-imagine-image-pro` models.
 
 ### Features
 
@@ -126,7 +162,7 @@ Generate and edit images with the dedicated `grok-image-1` model.
 ### Text-to-Image
 
 ```go
-model, _ := prov.ImageModel("grok-image-1")
+model, _ := prov.ImageModel("grok-imagine-image")
 
 n := 1
 result, err := model.DoGenerate(ctx, &provider.ImageGenerateOptions{
@@ -184,12 +220,15 @@ result, err := model.DoGenerate(ctx, &provider.ImageGenerateOptions{
 
 ---
 
-## Provider-Executed Tools (FileSearch & MCP Server)
+## Provider-Executed Tools
 
-The xAI provider supports two specialized provider-executed tools:
+The xAI provider supports specialized provider-executed tools:
 
 1. **FileSearch** - Search vector stores for relevant information (RAG applications)
 2. **MCPServer** - Connect to remote Model Context Protocol (MCP) servers
+3. **WebSearch / XSearch** - Search the web or X from xAI's servers
+4. **CodeExecution** - Run code through xAI's hosted execution environment
+5. **ViewImage / ViewXVideo** - Let xAI inspect image URLs or X video URLs
 
 These tools are executed by xAI's servers (not locally), enabling powerful integrations without requiring local implementation.
 
@@ -424,7 +463,7 @@ Key concepts:
 
 ## Provider-Executed Tools
 
-Both FileSearch and MCPServer are **provider-executed tools**, meaning:
+xAI provider-executed tools are executed by xAI's servers, meaning:
 
 1. **No Local Implementation**: You don't need to implement the Execute function
 2. **Server-Side Execution**: xAI's servers handle execution
@@ -439,7 +478,7 @@ tool := xai.FileSearch(xai.FileSearchConfig{
     MaxNumResults:  5,
 })
 
-// The tool has ProviderExecuted = true
+// Provider-executed tools have ProviderExecuted = true
 fmt.Println(tool.ProviderExecuted) // true
 
 // When used with a model, xAI's servers execute the tool
@@ -665,7 +704,7 @@ if result.Usage.Raw != nil {
 |------|----------|-------------|
 | Language | `grok-beta` | Chat with tools and structured output |
 | Video | `grok-imagine-video` | Video generation and editing |
-| Image | `grok-image-1` | Dedicated image generation and editing |
+| Image | `grok-imagine-image` | Dedicated image generation and editing |
 
 ---
 

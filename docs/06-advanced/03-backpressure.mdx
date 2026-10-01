@@ -207,7 +207,7 @@ Perfect! The generator stops cleanly when we signal cancellation.
 
 The Go AI SDK uses these principles for efficient streaming:
 
-### TextChannel - Natural Backpressure
+### Chunks - Natural Backpressure
 
 ```go
 package main
@@ -240,8 +240,8 @@ func main() {
     }
 
     // Slow consumer - the producer automatically slows down
-    for chunk := range stream.TextChannel {
-        fmt.Print(chunk)
+    for chunk := range stream.Chunks() {
+        fmt.Print(chunk.Text)
 
         // Simulate slow processing
         time.Sleep(100 * time.Millisecond)
@@ -255,7 +255,7 @@ func main() {
 }
 ```
 
-The `TextChannel` is an unbuffered channel, so:
+The stream chunk channel is consumed as chunks arrive, so:
 - Each chunk blocks until read
 - The SDK doesn't buffer unlimited data
 - Memory usage stays constant
@@ -296,8 +296,8 @@ func main() {
     }
 
     // Read for a while
-    for chunk := range stream.TextChannel {
-        fmt.Print(chunk)
+    for chunk := range stream.Chunks() {
+        fmt.Print(chunk.Text)
     }
 
     // Check if cancelled
@@ -358,8 +358,8 @@ func main() {
 
     // Process chunks
     chunkCount := 0
-    for chunk := range stream.TextChannel {
-        fmt.Print(chunk)
+    for chunk := range stream.Chunks() {
+        fmt.Print(chunk.Text)
         chunkCount++
     }
 
@@ -420,7 +420,7 @@ func streamHandler(w http.ResponseWriter, r *http.Request) {
     }
 
     // Stream to client
-    for chunk := range stream.TextChannel {
+    for chunk := range stream.Chunks() {
         select {
         case <-ctx.Done():
             // Client disconnected - context cancelled
@@ -501,7 +501,7 @@ ch := make(chan string, 10000)
 
 ```go
 // Good - Check for cancellation
-for chunk := range stream.TextChannel {
+for chunk := range stream.Chunks() {
     select {
     case <-ctx.Done():
         return ctx.Err()
@@ -511,7 +511,7 @@ for chunk := range stream.TextChannel {
 }
 
 // Better - Context check is automatic with range
-for chunk := range stream.TextChannel {
+for chunk := range stream.Chunks() {
     process(chunk)
 }
 // Channel closes when context cancelled
@@ -531,8 +531,8 @@ return result, err
 ### 6. Handle Errors Properly
 
 ```go
-for chunk := range stream.TextChannel {
-    fmt.Print(chunk)
+for chunk := range stream.Chunks() {
+    fmt.Print(chunk.Text)
 }
 
 // Always check for errors after stream completes

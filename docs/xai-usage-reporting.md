@@ -254,7 +254,7 @@ func main() {
 
     // Print detailed breakdown
     fmt.Println("=== Token Usage ===")
-    fmt.Printf("Total tokens: %d\n", *result.Usage.TotalTokens)
+    fmt.Printf("Total tokens: %d\n", result.Usage.GetTotalTokens())
 
     if result.Usage.InputDetails != nil {
         fmt.Println("\nInput breakdown:")
@@ -475,7 +475,7 @@ The cached token inclusivity logic and reasoning token additive behavior match t
 
 ## See Also
 
-- [XAI Provider](./providers/xai.md)
-- [Cost Optimization](./cost-optimization.md)
-- [Usage Tracking](./usage-tracking.md)
-- [Prompt Caching](./prompt-caching.md)
+- [XAI Provider](./05-providers/10-xai.mdx)
+- Cost Optimization
+- [Usage Tracking](./07-reference/types/usage.mdx)
+- [Prompt Caching](./06-advanced/04-caching.mdx)

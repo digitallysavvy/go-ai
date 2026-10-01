@@ -7,8 +7,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestStepCountIs_StopsAtN(t *testing.T) {
-	cond := StepCountIs(3)
+func TestIsStepCount_StopsAtExactlyN(t *testing.T) {
+	cond := IsStepCount(3)
 
 	// Below threshold: should continue
 	state := StopConditionState{
@@ -20,9 +20,9 @@ func TestStepCountIs_StopsAtN(t *testing.T) {
 	state.Steps = make([]types.StepResult, 3)
 	assert.NotEmpty(t, cond(state), "should return reason when steps >= n")
 
-	// Above threshold: should stop
+	// Above threshold: should continue, matching the TypeScript SDK's exact match.
 	state.Steps = make([]types.StepResult, 5)
-	assert.NotEmpty(t, cond(state), "should return reason when steps > n")
+	assert.Empty(t, cond(state), "should return empty when steps > n")
 }
 
 func TestStepCountIs_ReasonFormat(t *testing.T) {
@@ -40,6 +40,12 @@ func TestStepCountIs_ZeroSteps(t *testing.T) {
 		Steps: []types.StepResult{},
 	}
 	assert.Empty(t, cond(state), "should continue with zero steps")
+}
+
+func TestIsLoopFinished_AlwaysContinues(t *testing.T) {
+	cond := IsLoopFinished()
+	assert.Empty(t, cond(StopConditionState{}))
+	assert.Empty(t, cond(StopConditionState{Steps: []types.StepResult{{}}}))
 }
 
 func TestEvaluateStopConditions_FirstWins(t *testing.T) {
@@ -135,4 +141,19 @@ func TestHasToolCall_ReasonFormat(t *testing.T) {
 	}
 	reason := cond(state)
 	assert.Equal(t, "tool 'my_tool' was called", reason)
+}
+
+func TestHasToolCall_MatchesAnyToolName(t *testing.T) {
+	cond := HasToolCall("search", "final_answer")
+	state := StopConditionState{
+		Steps: []types.StepResult{
+			{
+				ToolCalls: []types.ToolCall{
+					{ToolName: "final_answer"},
+				},
+			},
+		},
+	}
+	reason := cond(state)
+	assert.Equal(t, "tool 'final_answer' was called", reason)
 }

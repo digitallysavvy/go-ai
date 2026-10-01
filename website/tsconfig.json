@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "jsx": "react-jsx",
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "moduleResolution": "node",
+    "lib": ["ES2017", "DOM"],
+    "skipLibCheck": true,
+    "noEmit": true,
+    "strict": false
+  }
+}

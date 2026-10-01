@@ -35,7 +35,7 @@ func main() {
 			fmt.Println("Generation started:", event.ModelID)
 		},
 		OnFinishEvent: func(ctx context.Context, event ai.OnFinishEvent) {
-			fmt.Println("Total tokens:", event.TotalUsage.TotalTokens)
+			fmt.Println("Total tokens:", event.TotalUsage.GetTotalTokens())
 		},
 	})
 	if err != nil {
@@ -54,12 +54,12 @@ func main() {
 |----------|-----------|-------------|
 | `OnStart` | `OnStartEvent` | Called when generation begins, before any LLM calls. |
 | `OnStepStart` | `OnStepStartEvent` | Called when a step (LLM call) begins, before the provider is called. |
-| `OnToolCallStart` | `OnToolCallStartEvent` | Called when a tool's Execute function is about to run. |
-| `OnToolCallFinish` | `OnToolCallFinishEvent` | Called when a tool's Execute function completes or errors. |
+| `OnToolExecutionStart` | `OnToolCallStartEvent` | Called when a tool's Execute function is about to run. |
+| `OnToolExecutionEnd` | `OnToolCallFinishEvent` | Called when a tool's Execute function completes or errors. |
 | `OnStepFinishEvent` | `OnStepFinishEvent` | Called when a step (LLM call) completes. |
 | `OnFinishEvent` | `OnFinishEvent` | Called when the entire generation completes (all steps finished). |
 
-All six callbacks receive `(ctx context.Context, event <EventType>)` and are panic-safe. They fire in addition to the legacy `OnStepFinish` and `OnFinish` callbacks.
+All six callbacks receive `(ctx context.Context, event <EventType>)` and are panic-safe. They fire in addition to the legacy `OnStepFinish` and `OnFinish` callbacks. `OnToolCallStart` and `OnToolCallFinish` remain as deprecated aliases for `OnToolExecutionStart` and `OnToolExecutionEnd`.
 
 ### Embed / EmbedMany
 
@@ -309,12 +309,12 @@ func main() {
 		OnStepFinishEvent: func(ctx context.Context, event ai.OnStepFinishEvent) {
 			fmt.Printf("[%s] Step %d finished: reason=%s tokens=%d\n",
 				time.Now().Format(time.RFC3339), event.StepNumber,
-				event.FinishReason, event.Usage.TotalTokens)
+				event.FinishReason, event.Usage.GetTotalTokens())
 		},
 		OnFinishEvent: func(ctx context.Context, event ai.OnFinishEvent) {
 			fmt.Printf("[%s] Generation complete: steps=%d totalTokens=%d\n",
 				time.Now().Format(time.RFC3339), len(event.Steps),
-				event.TotalUsage.TotalTokens)
+				event.TotalUsage.GetTotalTokens())
 		},
 	})
 	if err != nil {
@@ -350,10 +350,10 @@ func main() {
 		Model:  model,
 		Prompt: "What is the weather?",
 		// Tools: []types.Tool{getWeather},
-		OnToolCallStart: func(ctx context.Context, event ai.OnToolCallStartEvent) {
+		OnToolExecutionStart: func(ctx context.Context, event ai.OnToolCallStartEvent) {
 			fmt.Printf("Tool %q starting...\n", event.ToolName)
 		},
-		OnToolCallFinish: func(ctx context.Context, event ai.OnToolCallFinishEvent) {
+		OnToolExecutionEnd: func(ctx context.Context, event ai.OnToolCallFinishEvent) {
 			if event.Error == nil {
 				fmt.Printf("Tool %q completed in %dms\n",
 					event.ToolName, event.DurationMs)
@@ -401,7 +401,7 @@ func main() {
 		},
 		ExperimentalOnFinish: func(event ai.EmbedOnFinishEvent) {
 			fmt.Printf("Embedding complete (%s): tokens=%d vectors=%d\n",
-				event.OperationID, event.Usage.Tokens, len(event.Embeddings))
+				event.OperationID, event.Usage.GetTotalTokens(), len(event.Embeddings))
 		},
 	})
 	if err != nil {

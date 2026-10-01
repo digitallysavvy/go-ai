@@ -47,3 +47,14 @@ func TestWebSearchCallItem_ActionPresent(t *testing.T) {
 		t.Errorf("Action.Query = %v, want %q", item.Action.Query, query)
 	}
 }
+
+func TestWebSearchCallItem_ActionQueries(t *testing.T) {
+	raw := `{"type":"web_search_call","id":"ws_789","status":"completed","action":{"type":"search","queries":["golang generics","go type parameters"]}}`
+	var item WebSearchCallItem
+	if err := json.Unmarshal([]byte(raw), &item); err != nil {
+		t.Fatalf("json.Unmarshal error = %v", err)
+	}
+	if item.Action == nil || len(item.Action.Queries) != 2 || item.Action.Queries[0] != "golang generics" {
+		t.Fatalf("queries = %#v", item.Action)
+	}
+}

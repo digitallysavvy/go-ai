@@ -1,17 +1,20 @@
 package anthropic
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // ============================================================================
-// P1-6: MCP Client tests
+// MCP Client tests
 // ============================================================================
 
 // MCP-T11: MCPServers option adds mcp-client-2025-04-04 beta header.
@@ -265,6 +268,78 @@ func TestMCPToolUseResponseParsed(t *testing.T) {
 	}
 }
 
+// TestMCPToolResultResponseParsed_ResolvesPairedToolName ports TS's
+// mcp_tool_use/mcp_tool_result doGenerate handling: the paired
+// mcp_tool_result resolves toolName from the earlier mcp_tool_use block,
+// sets dynamic:true, and reuses the same providerMetadata (TS
+// mcpToolCalls[part.tool_use_id]).
+func TestMCPToolResultResponseParsed_ResolvesPairedToolName(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(prov, ClaudeSonnet4_6, nil)
+
+	response := anthropicResponse{
+		ID:   "msg_mcp_2",
+		Type: "message",
+		Role: "assistant",
+		Content: []anthropicContent{
+			{
+				Type:       "mcp_tool_use",
+				ID:         "mcp_123",
+				Name:       "lookup",
+				ServerName: "weather",
+				Input:      map[string]interface{}{"city": "Paris"},
+			},
+			{
+				Type:      "mcp_tool_result",
+				ToolUseID: "mcp_123",
+				IsError:   false,
+				Content:   json.RawMessage(`"sunny"`),
+			},
+		},
+		StopReason: "tool_use",
+		Usage:      anthropicUsage{InputTokens: 10, OutputTokens: 5},
+	}
+
+	result := model.convertResponse(response, false)
+
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	call := result.ToolCalls[0]
+	if !call.ProviderExecuted || !call.Dynamic {
+		t.Errorf("ToolCall providerExecuted/dynamic = %v/%v, want true/true", call.ProviderExecuted, call.Dynamic)
+	}
+
+	var trc *types.ToolResultContent
+	for i := range result.Content {
+		if c, ok := result.Content[i].(types.ToolResultContent); ok {
+			trc = &c
+		}
+	}
+	if trc == nil {
+		t.Fatalf("expected a ToolResultContent in result.Content, got %+v", result.Content)
+	}
+	if trc.ToolCallID != "mcp_123" {
+		t.Errorf("ToolCallID = %q, want mcp_123", trc.ToolCallID)
+	}
+	if trc.ToolName != "lookup" {
+		t.Errorf("ToolName = %q, want lookup (resolved from paired mcp_tool_use)", trc.ToolName)
+	}
+	if !trc.Dynamic {
+		t.Error("ToolResultContent.Dynamic should be true")
+	}
+	var meta map[string]map[string]interface{}
+	if err := json.Unmarshal(trc.ProviderMetadata, &meta); err != nil {
+		t.Fatalf("decode ProviderMetadata: %v", err)
+	}
+	if meta["anthropic"]["type"] != "mcp-tool-use" || meta["anthropic"]["serverName"] != "weather" {
+		t.Errorf("ProviderMetadata.anthropic = %+v, want same as the paired call's", meta["anthropic"])
+	}
+	if trc.Result != "sunny" {
+		t.Errorf("Result = %v, want sunny", trc.Result)
+	}
+}
+
 // MCP-T13b: mcp_tool_use alongside regular tool_use in response.
 func TestMCPToolUseAlongsideRegularToolUse(t *testing.T) {
 	prov := New(Config{APIKey: "test-key"})
@@ -341,7 +416,7 @@ func TestMCPToolUseStreamingEmitsImmediately(t *testing.T) {
 }
 
 // MCP streaming: mcp_tool_result in content_block_start emits a ChunkTypeToolResult
-// chunk so the SDK's pendingDeferredToolCalls map is cleared (P0-4).
+// chunk so the SDK's pendingDeferredToolCalls map is cleared.
 func TestMCPToolResultStreamingEmitsToolResult(t *testing.T) {
 	sseData := "" +
 		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"mcp_tool_result\",\"tool_use_id\":\"mcp-stream-001\",\"is_error\":false,\"content\":{\"results\":[]}}}\n\n" +
@@ -384,8 +459,60 @@ func TestMCPIntegration(t *testing.T) {
 	t.Skip("Integration test: run manually with ANTHROPIC_API_KEY and a live MCP server")
 }
 
+// TestMCPToolUseAndResultStreaming_ResolvesPairedToolName ports TS's
+// mcp_tool_use/mcp_tool_result streaming pair: the mcp_tool_use content_block
+// emits a provider-executed, dynamic tool-call chunk carrying
+// providerMetadata.anthropic{type:'mcp-tool-use', serverName}, and the paired
+// mcp_tool_result resolves the same toolName/providerMetadata and sets
+// dynamic:true (TS mcpToolCalls[part.tool_use_id]).
+func TestMCPToolUseAndResultStreaming_ResolvesPairedToolName(t *testing.T) {
+	sseData := "" +
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"mcp_tool_use\",\"id\":\"mcp_123\",\"name\":\"lookup\",\"server_name\":\"weather\",\"input\":{\"city\":\"Paris\"}}}\n\n" +
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"mcp_tool_result\",\"tool_use_id\":\"mcp_123\",\"is_error\":false,\"content\":\"sunny\"}}\n\n" +
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+
+	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)), false)
+
+	callChunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() tool-call error: %v", err)
+	}
+	if callChunk.Type != provider.ChunkTypeToolCall {
+		t.Fatalf("chunk.Type = %v, want ChunkTypeToolCall", callChunk.Type)
+	}
+	if !callChunk.ToolCall.ProviderExecuted || !callChunk.ToolCall.Dynamic {
+		t.Errorf("ToolCall providerExecuted/dynamic = %v/%v, want true/true", callChunk.ToolCall.ProviderExecuted, callChunk.ToolCall.Dynamic)
+	}
+	callMeta, _ := callChunk.ToolCall.ProviderMetadata["anthropic"].(map[string]interface{})
+	if callMeta["type"] != "mcp-tool-use" || callMeta["serverName"] != "weather" {
+		t.Errorf("ToolCall.ProviderMetadata = %+v", callChunk.ToolCall.ProviderMetadata)
+	}
+
+	resultChunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() tool-result error: %v", err)
+	}
+	if resultChunk.Type != provider.ChunkTypeToolResult {
+		t.Fatalf("chunk.Type = %v, want ChunkTypeToolResult", resultChunk.Type)
+	}
+	tr := resultChunk.ToolResult
+	if tr.ToolCallID != "mcp_123" {
+		t.Errorf("ToolCallID = %q, want mcp_123", tr.ToolCallID)
+	}
+	if tr.ToolName != "lookup" {
+		t.Errorf("ToolName = %q, want lookup (resolved from paired mcp_tool_use)", tr.ToolName)
+	}
+	if !tr.Dynamic {
+		t.Error("ToolResult.Dynamic should be true")
+	}
+	resultMeta, _ := tr.ProviderMetadata["anthropic"].(map[string]interface{})
+	if resultMeta["type"] != "mcp-tool-use" || resultMeta["serverName"] != "weather" {
+		t.Errorf("ToolResult.ProviderMetadata = %+v, want same as the paired call's", tr.ProviderMetadata)
+	}
+}
+
 // ============================================================================
-// P1-7: Container & Skills tests
+// Container & Skills tests
 // ============================================================================
 
 // ACT-T07: container with skills adds all three beta headers.
@@ -429,8 +556,8 @@ func TestContainerSkillsBetaHeaders(t *testing.T) {
 			wantAbsent:  []string{BetaHeaderCodeExecution20250825, BetaHeaderSkills, BetaHeaderFilesAPI},
 		},
 		{
-			name:        "no container adds no headers",
-			wantAbsent:  []string{BetaHeaderCodeExecution20250825, BetaHeaderSkills, BetaHeaderFilesAPI},
+			name:       "no container adds no headers",
+			wantAbsent: []string{BetaHeaderCodeExecution20250825, BetaHeaderSkills, BetaHeaderFilesAPI},
 		},
 	}
 
@@ -518,7 +645,7 @@ func TestContainerBodySerialization(t *testing.T) {
 				ID: "container-abc",
 				Skills: []ContainerSkill{
 					{Type: "anthropic", SkillID: "web_search", Version: "1.0"},
-					{Type: "custom", SkillID: "my_tool"},
+					{Type: "custom", ProviderReference: types.ProviderReference{"anthropic": "my_tool"}},
 				},
 			},
 		})
@@ -618,6 +745,75 @@ func TestContainerBodySerialization(t *testing.T) {
 		}
 		if container != "string-id" {
 			t.Errorf("container = %q, want string-id", container)
+		}
+	})
+}
+
+// TestContainerCustomSkillProviderReference: a "custom" skill resolves its
+// wire skill_id from ProviderReference["anthropic"] (TS
+// resolveProviderReference in anthropic-language-model.ts), matching the TS
+// "should serialize container object with multiple skills" fixture in
+// anthropic-language-model.test.ts (skill_01Xud7kLMsjLfc7Aa6RvigZf).
+func TestContainerCustomSkillProviderReference(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+
+	t.Run("resolves skill_id from ProviderReference[anthropic]", func(t *testing.T) {
+		model := NewLanguageModel(prov, ClaudeSonnet4_6, &ModelOptions{
+			Container: &ContainerConfig{
+				ID: "test-container-id",
+				Skills: []ContainerSkill{
+					{Type: "anthropic", SkillID: "pptx", Version: "latest"},
+					{
+						Type:              "custom",
+						ProviderReference: types.ProviderReference{"anthropic": "skill_01Xud7kLMsjLfc7Aa6RvigZf"},
+						Version:           "1.0",
+					},
+				},
+			},
+		})
+		body := model.buildRequestBody(&provider.GenerateOptions{
+			Prompt: types.Prompt{Text: "test"},
+		}, false)
+
+		containerMap, ok := body["container"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("container should be map, got %T", body["container"])
+		}
+		skills, ok := containerMap["skills"].([]map[string]interface{})
+		if !ok || len(skills) != 2 {
+			t.Fatalf("container.skills = %#v, want 2 skills", containerMap["skills"])
+		}
+		if skills[1]["type"] != "custom" {
+			t.Errorf("skills[1].type = %v, want custom", skills[1]["type"])
+		}
+		if skills[1]["skill_id"] != "skill_01Xud7kLMsjLfc7Aa6RvigZf" {
+			t.Errorf("skills[1].skill_id = %v, want skill_01Xud7kLMsjLfc7Aa6RvigZf", skills[1]["skill_id"])
+		}
+		if skills[1]["version"] != "1.0" {
+			t.Errorf("skills[1].version = %v, want 1.0", skills[1]["version"])
+		}
+	})
+
+	t.Run("errors when ProviderReference has no anthropic entry", func(t *testing.T) {
+		model := NewLanguageModel(prov, ClaudeSonnet4_6, &ModelOptions{
+			Container: &ContainerConfig{
+				Skills: []ContainerSkill{
+					{Type: "custom", ProviderReference: types.ProviderReference{"bedrock": "some-id"}},
+				},
+			},
+		})
+		_, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
+			Prompt: types.Prompt{Text: "test"},
+		})
+		if err == nil {
+			t.Fatal("expected error when custom skill has no anthropic provider reference")
+		}
+		var refErr *providererrors.NoSuchProviderReferenceError
+		if !errors.As(err, &refErr) {
+			t.Fatalf("error = %v (%T), want *providererrors.NoSuchProviderReferenceError", err, err)
+		}
+		if refErr.Provider != "anthropic" {
+			t.Errorf("refErr.Provider = %q, want anthropic", refErr.Provider)
 		}
 	})
 }

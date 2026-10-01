@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sync"
 	"testing"
 
@@ -115,6 +116,65 @@ func TestGenerateText_EventOrder(t *testing.T) {
 	}
 }
 
+func TestGenerateText_OnEndTakesPrecedenceOverDeprecatedOnFinish(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(_ context.Context, _ *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{Text: "done", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+
+	var calls []string
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:  model,
+		Prompt: "hello",
+		OnEnd: func(_ context.Context, result *GenerateTextResult, _ interface{}) {
+			calls = append(calls, "OnEnd:"+result.Text)
+		},
+		OnFinish: func(_ context.Context, _ *GenerateTextResult, _ interface{}) {
+			calls = append(calls, "OnFinish")
+		},
+	})
+	if err != nil {
+		t.Fatalf("GenerateText returned error: %v", err)
+	}
+	if result.Text != "done" {
+		t.Fatalf("result text = %q, want done", result.Text)
+	}
+	if !reflect.DeepEqual(calls, []string{"OnEnd:done"}) {
+		t.Fatalf("calls = %#v, want OnEnd only", calls)
+	}
+}
+
+func TestGenerateText_OnEndEventTakesPrecedenceOverDeprecatedOnFinishEvent(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(_ context.Context, _ *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{Text: "done", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+
+	var calls []string
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:  model,
+		Prompt: "hello",
+		OnEndEvent: func(_ context.Context, e OnFinishEvent) {
+			calls = append(calls, "OnEndEvent:"+e.Text)
+		},
+		OnFinishEvent: func(_ context.Context, _ OnFinishEvent) {
+			calls = append(calls, "OnFinishEvent")
+		},
+	})
+	if err != nil {
+		t.Fatalf("GenerateText returned error: %v", err)
+	}
+	if !reflect.DeepEqual(calls, []string{"OnEndEvent:done"}) {
+		t.Fatalf("calls = %#v, want OnEndEvent only", calls)
+	}
+}
+
 // CB-T25: Test that a panicking listener does NOT abort generation.
 func TestGenerateText_PanicInCallbackDoesNotAbortGeneration(t *testing.T) {
 	t.Parallel()
@@ -189,9 +249,9 @@ func TestGenerateText_ToolCallFinishEventErrorPopulated(t *testing.T) {
 	}
 
 	_, err := GenerateText(context.Background(), GenerateTextOptions{
-		Model:  model,
-		Prompt: "Call fail tool",
-		Tools:  []types.Tool{failTool},
+		Model:    model,
+		Prompt:   "Call fail tool",
+		Tools:    []types.Tool{failTool},
 		StopWhen: []StopCondition{StepCountIs(5)},
 		OnToolCallFinish: func(_ context.Context, e OnToolCallFinishEvent) {
 			mu.Lock()
@@ -258,6 +318,9 @@ func TestGenerateText_OnStartEventFields(t *testing.T) {
 	if captured.ModelID == "" {
 		t.Error("OnStartEvent.ModelID should not be empty")
 	}
+	if captured.MaxRetries != 2 {
+		t.Errorf("OnStartEvent.MaxRetries = %d, want TypeScript default 2", captured.MaxRetries)
+	}
 }
 
 // CB-T24: OnFinishEvent aggregates all steps and total usage.
@@ -282,7 +345,7 @@ func TestGenerateText_OnFinishEventAggregation(t *testing.T) {
 			callCount++
 			if callCount == 1 {
 				return &types.GenerateResult{
-					ToolCalls: []types.ToolCall{{ID: "tc1", ToolName: "calc", Arguments: map[string]interface{}{}}},
+					ToolCalls:    []types.ToolCall{{ID: "tc1", ToolName: "calc", Arguments: map[string]interface{}{}}},
 					FinishReason: types.FinishReasonToolCalls,
 					Usage:        types.Usage{InputTokens: &in, OutputTokens: &out, TotalTokens: &tot},
 				}, nil

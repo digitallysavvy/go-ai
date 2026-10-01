@@ -3,15 +3,70 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // mockAgent is a simple mock implementation of the Agent interface
 type mockAgent struct {
-	executeFunc            func(ctx context.Context, prompt string) (*AgentResult, error)
+	executeFunc             func(ctx context.Context, prompt string) (*AgentResult, error)
 	executeWithMessagesFunc func(ctx context.Context, messages []types.Message) (*AgentResult, error)
+	generateFunc            func(ctx context.Context, opts AgentGenerateOptions) (*ai.GenerateTextResult, error)
+	streamFunc              func(ctx context.Context, opts AgentStreamOptions) (*ai.StreamTextResult, error)
+	id                      string
+	tools                   []types.Tool
+}
+
+func (m *mockAgent) Version() string {
+	return "agent-v1"
+}
+
+func (m *mockAgent) ID() string {
+	return m.id
+}
+
+func (m *mockAgent) Tools() []types.Tool {
+	if len(m.tools) == 0 {
+		return nil
+	}
+	tools := make([]types.Tool, len(m.tools))
+	copy(tools, m.tools)
+	return tools
+}
+
+func (m *mockAgent) Generate(ctx context.Context, opts AgentGenerateOptions) (*ai.GenerateTextResult, error) {
+	if m.generateFunc != nil {
+		return m.generateFunc(ctx, opts)
+	}
+	result := &AgentResult{}
+	var err error
+	if len(opts.Messages) > 0 {
+		result, err = m.ExecuteWithMessages(ctx, opts.Messages)
+	} else {
+		result, err = m.Execute(ctx, opts.Prompt)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &ai.GenerateTextResult{
+		Text:         result.Text,
+		Steps:        result.Steps,
+		ToolResults:  result.ToolResults,
+		FinishReason: result.FinishReason,
+		Usage:        result.Usage,
+		Warnings:     result.Warnings,
+	}, nil
+}
+
+func (m *mockAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*ai.StreamTextResult, error) {
+	if m.streamFunc != nil {
+		return m.streamFunc(ctx, opts)
+	}
+	return nil, fmt.Errorf("streaming not implemented")
 }
 
 func (m *mockAgent) Execute(ctx context.Context, prompt string) (*AgentResult, error) {
@@ -369,5 +424,82 @@ func TestSubagentRegistry_ExecuteWithError(t *testing.T) {
 
 	if err.Error() != "execution error" {
 		t.Fatalf("expected 'execution error', got: %v", err)
+	}
+}
+
+// TestSubagentRegistryConcurrentAccess is a permanent regression test for
+// R2-1: SubagentRegistry's map used to have no synchronization at all, so a
+// goroutine concurrently calling Register/Unregister while others called
+// Get/Has/List crashed the process outright with "fatal error: concurrent
+// map iteration and map write" (a fatal error, not a recoverable panic) and
+// produced numerous `go test -race` data races. Adapted from the bug
+// report's TestZZBugReviewSubagentRegistryConcurrentAccess
+// (state/parity/sep_23_2026/bug-review/R2.md).
+func TestSubagentRegistryConcurrentAccess(t *testing.T) {
+	reg := NewSubagentRegistry()
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		i := 0
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			name := fmt.Sprintf("sub-%d", i)
+			_ = reg.Register(name, &mockAgent{id: name})
+			reg.Unregister(name)
+			i++
+		}
+	}()
+
+	for w := 0; w < 4; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				names := reg.List()
+				_, _ = reg.Get("sub-0")
+				_ = reg.Has("sub-0")
+				_ = reg.Count()
+				// List must always be a safe-to-mutate copy: mutating it
+				// here must never corrupt the registry's own map.
+				if len(names) > 0 {
+					names[0] = "mutated"
+				}
+			}
+		}()
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+}
+
+// TestSubagentRegistryListReturnsCopy guards List's documented copy
+// semantics directly (R2-1): a second List call, or the registry's own
+// state, must be unaffected by mutating a previously returned slice.
+func TestSubagentRegistryListReturnsCopy(t *testing.T) {
+	reg := NewSubagentRegistry()
+	_ = reg.Register("a", &mockAgent{id: "a"})
+
+	names := reg.List()
+	if len(names) != 1 || names[0] != "a" {
+		t.Fatalf("List() = %v, want [a]", names)
+	}
+	names[0] = "mutated"
+
+	again := reg.List()
+	if len(again) != 1 || again[0] != "a" {
+		t.Fatalf("List() after mutating a prior result = %v, want [a]", again)
 	}
 }

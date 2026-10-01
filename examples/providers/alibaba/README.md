@@ -86,6 +86,16 @@ This directory contains examples demonstrating the Alibaba Cloud provider for th
     ```
     Demonstrates: Streaming with visible reasoning process, thinking tokens
 
+### Embeddings
+
+Use `examples/embed/alibaba_embedding.go` for the June 6 DashScope embedding surface:
+
+```bash
+GO_AI_RUN_LIVE_EXAMPLES=1 ALIBABA_API_KEY=... go run ../../embed/alibaba_embedding.go
+```
+
+It uses `Provider.EmbeddingModel(alibaba.AlibabaEmbeddingTextV4)` with `AlibabaEmbeddingModelOptions` under `ProviderOptions["alibaba"]`, matching the TypeScript `text-embedding-v4` request shape.
+
 ## Supported Models
 
 ### Qwen Chat Models
@@ -102,6 +112,11 @@ This directory contains examples demonstrating the Alibaba Cloud provider for th
 - `wan2.6-i2v-flash` - Image-to-video (faster)
 - `wan2.6-r2v` - Reference-to-video (style transfer)
 - `wan2.6-r2v-flash` - Reference-to-video (faster)
+
+### Embedding Models
+
+- `text-embedding-v4` - Dense, sparse, or dense+sparse text embeddings
+- `text-embedding-v3` - Dense text embeddings
 
 ## Features Demonstrated
 
@@ -121,6 +136,7 @@ This directory contains examples demonstrating the Alibaba Cloud provider for th
 ✅ Duration control (5-6 seconds)
 ✅ Provider-specific options
 ✅ Flash variants for faster generation
+✅ Text embeddings with `textType`, `dimension`, and `outputType`
 
 ## Notes
 

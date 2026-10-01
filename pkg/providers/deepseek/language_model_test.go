@@ -9,6 +9,16 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
+func deepseekChunksOfType(chunks []*provider.StreamChunk, chunkType provider.ChunkType) []*provider.StreamChunk {
+	var filtered []*provider.StreamChunk
+	for _, chunk := range chunks {
+		if chunk.Type == chunkType {
+			filtered = append(filtered, chunk)
+		}
+	}
+	return filtered
+}
+
 func TestDeepseekStream_TextChunks(t *testing.T) {
 	sseData := `data: {"choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":""}]}
 
@@ -48,6 +58,47 @@ data: [DONE]
 	}
 }
 
+func TestDeepseekStream_IncludeRawChunksMatchesTypeScript(t *testing.T) {
+	sseData := `data: {"id":"raw-1","created":1702657020,"model":"deepseek-chat","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":""}]}
+
+data: {"id":"raw-2","created":1702657020,"model":"deepseek-chat","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+`
+	stream := newDeepseekStream(io.NopCloser(strings.NewReader(sseData)), true)
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("first chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeRaw {
+		t.Fatalf("first chunk type = %v, want raw", chunk.Type)
+	}
+	raw, ok := chunk.Raw.(map[string]interface{})
+	if !ok || raw["id"] != "raw-1" {
+		t.Fatalf("raw chunk = %#v, want id raw-1", chunk.Raw)
+	}
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("second chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeResponseMetadata {
+		t.Fatalf("second chunk type = %v, want response-metadata", chunk.Type)
+	}
+	if chunk.ResponseMetadata == nil || chunk.ResponseMetadata.ID != "raw-1" || chunk.ResponseMetadata.ModelID != "deepseek-chat" {
+		t.Fatalf("response metadata = %#v, want first provider event metadata", chunk.ResponseMetadata)
+	}
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("third chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeText || chunk.Text != "Hello" {
+		t.Fatalf("third chunk = %#v, want text Hello", chunk)
+	}
+}
+
 // TestDeepseekStream_ToolCallPartialJSONNotFinalized verifies tool calls are accumulated
 // across deltas and only emitted at finish_reason, never based on JSON parsability.
 func TestDeepseekStream_ToolCallPartialJSONNotFinalized(t *testing.T) {
@@ -78,26 +129,25 @@ data: [DONE]
 		chunks = append(chunks, chunk)
 	}
 
-	if len(chunks) != 2 {
-		t.Fatalf("expected 2 chunks (tool_call + finish), got %d", len(chunks))
+	toolCalls := deepseekChunksOfType(chunks, provider.ChunkTypeToolCall)
+	if len(toolCalls) != 1 {
+		t.Fatalf("expected 1 tool-call chunk, got %d", len(toolCalls))
 	}
-	if chunks[0].Type != provider.ChunkTypeToolCall {
-		t.Fatalf("chunk[0]: expected tool_call, got %v", chunks[0].Type)
+	if toolCalls[0].ToolCall.ID != "call_1" {
+		t.Errorf("tool call id: got %q", toolCalls[0].ToolCall.ID)
 	}
-	if chunks[0].ToolCall.ID != "call_1" {
-		t.Errorf("tool call id: got %q", chunks[0].ToolCall.ID)
+	if toolCalls[0].ToolCall.ToolName != "fn" {
+		t.Errorf("tool call name: got %q", toolCalls[0].ToolCall.ToolName)
 	}
-	if chunks[0].ToolCall.ToolName != "fn" {
-		t.Errorf("tool call name: got %q", chunks[0].ToolCall.ToolName)
+	if toolCalls[0].ToolCall.Arguments["ready"] != true {
+		t.Errorf("tool call arg ready: got %v", toolCalls[0].ToolCall.Arguments["ready"])
 	}
-	if chunks[0].ToolCall.Arguments["ready"] != true {
-		t.Errorf("tool call arg ready: got %v", chunks[0].ToolCall.Arguments["ready"])
+	finishes := deepseekChunksOfType(chunks, provider.ChunkTypeFinish)
+	if len(finishes) != 1 {
+		t.Fatalf("expected 1 finish chunk, got %d", len(finishes))
 	}
-	if chunks[1].Type != provider.ChunkTypeFinish {
-		t.Errorf("chunk[1]: expected finish, got %v", chunks[1].Type)
-	}
-	if chunks[1].FinishReason != types.FinishReasonToolCalls {
-		t.Errorf("finish reason: got %v", chunks[1].FinishReason)
+	if finishes[0].FinishReason != types.FinishReasonToolCalls {
+		t.Errorf("finish reason: got %v", finishes[0].FinishReason)
 	}
 }
 
@@ -127,16 +177,83 @@ data: [DONE]
 		chunks = append(chunks, chunk)
 	}
 
-	if len(chunks) != 2 {
-		t.Fatalf("expected 2 chunks, got %d", len(chunks))
+	toolCalls := deepseekChunksOfType(chunks, provider.ChunkTypeToolCall)
+	if len(toolCalls) != 1 {
+		t.Fatalf("expected 1 tool-call chunk, got %d", len(toolCalls))
 	}
-	if chunks[0].Type != provider.ChunkTypeToolCall {
-		t.Fatalf("expected tool_call chunk, got %v", chunks[0].Type)
+	if toolCalls[0].ToolCall.Arguments["op"] != "add" {
+		t.Errorf("expected op=add, got %v", toolCalls[0].ToolCall.Arguments["op"])
 	}
-	if chunks[0].ToolCall.Arguments["op"] != "add" {
-		t.Errorf("expected op=add, got %v", chunks[0].ToolCall.Arguments["op"])
+	if finishes := deepseekChunksOfType(chunks, provider.ChunkTypeFinish); len(finishes) != 1 {
+		t.Fatalf("expected 1 finish chunk, got %d", len(finishes))
 	}
-	if chunks[1].Type != provider.ChunkTypeFinish {
-		t.Errorf("expected finish chunk, got %v", chunks[1].Type)
+}
+
+func TestDeepseekV4PreservesAssistantReasoningContent(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(prov, "deepseek-v4")
+
+	body := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{
+				Role: types.RoleUser,
+				Content: []types.ContentPart{
+					types.TextContent{Text: "How many r's are in strawberry?"},
+				},
+			},
+			{
+				Role: types.RoleAssistant,
+				Content: []types.ContentPart{
+					types.ReasoningContent{Text: "Count each letter. "},
+					types.ReasoningContent{Text: "There are three."},
+					types.TextContent{Text: "3"},
+				},
+			},
+			{
+				Role: types.RoleAssistant,
+				Content: []types.ContentPart{
+					types.TextContent{Text: "No hidden reasoning here."},
+				},
+			},
+		}},
+	}, false)
+
+	messages := body["messages"].([]map[string]interface{})
+	firstAssistant := messages[1]
+	if got := firstAssistant["reasoning_content"]; got != "Count each letter. There are three." {
+		t.Fatalf("first assistant reasoning_content: got %q", got)
+	}
+	secondAssistant := messages[2]
+	if got := secondAssistant["reasoning_content"]; got != "" {
+		t.Fatalf("second assistant reasoning_content should be backfilled empty string, got %q", got)
+	}
+}
+
+func TestDeepseekNonV4OmitsAssistantReasoningContent(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(prov, "deepseek-reasoner")
+
+	// The reasoning-bearing assistant message must precede the last user
+	// message for the "must not resend prior reasoning to R1" rule to apply
+	// (mirrors the TS SDK's `index <= lastUserMessageIndex` check).
+	body := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{
+				Role: types.RoleAssistant,
+				Content: []types.ContentPart{
+					types.ReasoningContent{Text: "Do not resend this to R1."},
+					types.TextContent{Text: "answer"},
+				},
+			},
+			{
+				Role:    types.RoleUser,
+				Content: []types.ContentPart{types.TextContent{Text: "follow up"}},
+			},
+		}},
+	}, false)
+
+	messages := body["messages"].([]map[string]interface{})
+	if _, ok := messages[0]["reasoning_content"]; ok {
+		t.Fatalf("non-v4 DeepSeek messages should omit reasoning_content, got %#v", messages[0]["reasoning_content"])
 	}
 }

@@ -18,8 +18,8 @@ func TestNewPerplexitySearch(t *testing.T) {
 		{
 			name: "with basic filters",
 			config: PerplexitySearchConfig{
-				MaxResults:       10,
-				MaxTokensPerPage: 2048,
+				MaxResults:       intPtr(10),
+				MaxTokensPerPage: intPtr(2048),
 				Country:          "US",
 			},
 		},
@@ -39,9 +39,9 @@ func TestNewPerplexitySearch(t *testing.T) {
 		{
 			name: "all options",
 			config: PerplexitySearchConfig{
-				MaxResults:           20,
-				MaxTokensPerPage:     1024,
-				MaxTokens:            10000,
+				MaxResults:           intPtr(20),
+				MaxTokensPerPage:     intPtr(1024),
+				MaxTokens:            intPtr(10000),
 				Country:              "GB",
 				SearchDomainFilter:   []string{"example.com"},
 				SearchLanguageFilter: []string{"en"},
@@ -58,8 +58,11 @@ func TestNewPerplexitySearch(t *testing.T) {
 			typesTool := tool.ToTool()
 
 			// Check tool name
-			if typesTool.Name != "gateway.perplexity_search" {
-				t.Errorf("Expected tool name 'gateway.perplexity_search', got %s", typesTool.Name)
+			if typesTool.Name != "perplexity_search" {
+				t.Errorf("Expected tool name 'perplexity_search', got %s", typesTool.Name)
+			}
+			if typesTool.Type != types.ToolTypeProviderDefined || typesTool.ProviderID != "gateway.perplexity_search" {
+				t.Fatalf("provider tool identity = type:%q id:%q", typesTool.Type, typesTool.ProviderID)
 			}
 
 			// Check provider executed flag
@@ -70,6 +73,9 @@ func TestNewPerplexitySearch(t *testing.T) {
 			// Check parameters exist
 			if typesTool.Parameters == nil {
 				t.Error("Expected Parameters to be set")
+			}
+			if typesTool.OutputSchema == nil {
+				t.Fatal("Expected OutputSchema to be set for TS provider-executed tool parity")
 			}
 
 			// Verify parameters structure
@@ -103,7 +109,7 @@ func TestNewPerplexitySearch(t *testing.T) {
 
 func TestPerplexitySearchTool_ToTool(t *testing.T) {
 	config := PerplexitySearchConfig{
-		MaxResults: 10,
+		MaxResults: intPtr(10),
 	}
 
 	tool := NewPerplexitySearch(config)
@@ -120,6 +126,19 @@ func TestPerplexitySearchTool_ToTool(t *testing.T) {
 
 	if typesTool.Execute == nil {
 		t.Error("Expected Execute function to be set")
+	}
+}
+
+func TestPerplexitySearchProviderArgsPreserveExplicitZeroNumericConfig(t *testing.T) {
+	tool := NewPerplexitySearch(PerplexitySearchConfig{
+		MaxResults:       intPtr(0),
+		MaxTokensPerPage: intPtr(0),
+		MaxTokens:        intPtr(0),
+	}).ToTool()
+	for _, name := range []string{"maxResults", "maxTokensPerPage", "maxTokens"} {
+		if got, ok := tool.ProviderArgs[name]; !ok || got != 0 {
+			t.Fatalf("provider args = %#v, want explicit %s:0", tool.ProviderArgs, name)
+		}
 	}
 }
 
@@ -145,5 +164,38 @@ func TestPerplexitySearch_ProviderExecuted(t *testing.T) {
 
 	if !toolErr.ProviderExecuted {
 		t.Error("Expected ProviderExecuted to be true in error")
+	}
+}
+
+func TestPerplexitySearchSchemaMatchesTSNumericFields(t *testing.T) {
+	tool := NewPerplexitySearch(PerplexitySearchConfig{}).ToTool()
+	properties := tool.Parameters.(map[string]interface{})["properties"].(map[string]interface{})
+	for _, name := range []string{"max_results", "max_tokens_per_page", "max_tokens"} {
+		field := properties[name].(map[string]interface{})
+		if field["type"] != "number" {
+			t.Fatalf("%s schema = %#v", name, field)
+		}
+		if _, ok := field["minimum"]; ok {
+			t.Fatalf("%s should not include non-TS minimum: %#v", name, field)
+		}
+		if _, ok := field["maximum"]; ok {
+			t.Fatalf("%s should not include non-TS maximum: %#v", name, field)
+		}
+	}
+	query := properties["query"].(map[string]interface{})
+	for _, option := range query["oneOf"].([]map[string]interface{}) {
+		if _, ok := option["maxItems"]; ok {
+			t.Fatalf("query schema should not include non-TS maxItems: %#v", query)
+		}
+	}
+	output := tool.OutputSchema.(map[string]interface{})
+	variants := output["oneOf"].([]interface{})
+	if len(variants) != 2 {
+		t.Fatalf("output schema should match TS success/error union: %#v", output)
+	}
+	errorProperties := variants[1].(map[string]interface{})["properties"].(map[string]interface{})
+	errorEnum := errorProperties["error"].(map[string]interface{})["enum"].([]string)
+	if containsString(errorEnum, "configuration_error") {
+		t.Fatalf("perplexity output error enum should match TS: %#v", errorEnum)
 	}
 }

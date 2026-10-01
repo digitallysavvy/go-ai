@@ -6,9 +6,10 @@ import (
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // EmbeddingModel implements the provider.EmbeddingModel interface for Azure OpenAI
@@ -27,12 +28,12 @@ func NewEmbeddingModel(provider *Provider, deploymentID string) *EmbeddingModel 
 
 // SpecificationVersion returns the specification version
 func (m *EmbeddingModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
 func (m *EmbeddingModel) Provider() string {
-	return "azure-openai"
+	return "azure.embeddings"
 }
 
 // ModelID returns the deployment ID
@@ -46,6 +47,13 @@ func (m *EmbeddingModel) MaxEmbeddingsPerCall() int {
 	return 2048
 }
 
+// MaxInputBytesPerCall returns the conservative UTF-8 input byte budget for a
+// single embeddings request. ai.EmbedMany uses it to split large requests.
+// Mirrors the TS SDK's EXPERIMENTAL_EMBEDDING_MODEL_MAX_INPUT_BYTES_PER_CALL = 300_000.
+func (m *EmbeddingModel) MaxInputBytesPerCall() int {
+	return 300_000
+}
+
 // SupportsParallelCalls returns whether parallel calls are supported
 func (m *EmbeddingModel) SupportsParallelCalls() bool {
 	return true
@@ -55,16 +63,20 @@ func (m *EmbeddingModel) SupportsParallelCalls() bool {
 func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provider.EmbedModelOptions) (*types.EmbeddingResult, error) {
 	reqBody := map[string]interface{}{
 		"input": input,
+		"model": m.deploymentID,
 	}
-	path := fmt.Sprintf("/openai/deployments/%s/embeddings?api-version=%s",
-		m.deploymentID, m.provider.APIVersion())
+	path := m.provider.endpointPath(m.deploymentID, "/embeddings")
+	headers, err := m.provider.requestHeaders(ctx, optsHeaders(opts))
+	if err != nil {
+		return nil, m.handleError(err)
+	}
 
 	var response azureEmbeddingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    path,
 		Body:    reqBody,
-		Headers: optsHeaders(opts),
+		Headers: headers,
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -77,10 +89,11 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 	return &types.EmbeddingResult{
 		Embedding: response.Data[0].Embedding,
 		Usage: types.EmbeddingUsage{
+			Tokens:      float64(response.Usage.PromptTokens),
 			InputTokens: response.Usage.PromptTokens,
 			TotalTokens: response.Usage.TotalTokens,
 		},
-		Response: types.EmbeddingResponse{Headers: map[string][]string(httpResp.Headers)},
+		Response: types.EmbeddingResponse{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: response},
 	}, nil
 }
 
@@ -88,16 +101,20 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
 	reqBody := map[string]interface{}{
 		"input": inputs,
+		"model": m.deploymentID,
 	}
-	path := fmt.Sprintf("/openai/deployments/%s/embeddings?api-version=%s",
-		m.deploymentID, m.provider.APIVersion())
+	path := m.provider.endpointPath(m.deploymentID, "/embeddings")
+	headers, err := m.provider.requestHeaders(ctx, optsHeaders(opts))
+	if err != nil {
+		return nil, m.handleError(err)
+	}
 
 	var response azureEmbeddingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    path,
 		Body:    reqBody,
-		Headers: optsHeaders(opts),
+		Headers: headers,
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -111,16 +128,17 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	return &types.EmbeddingsResult{
 		Embeddings: embeddings,
 		Usage: types.EmbeddingUsage{
+			Tokens:      float64(response.Usage.PromptTokens),
 			InputTokens: response.Usage.PromptTokens,
 			TotalTokens: response.Usage.TotalTokens,
 		},
-		Responses: []types.EmbeddingResponse{{Headers: map[string][]string(httpResp.Headers)}},
+		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: response}},
 	}, nil
 }
 
 // handleError converts errors to provider errors
 func (m *EmbeddingModel) handleError(err error) error {
-	return providererrors.NewProviderError("azure-openai", 0, "", err.Error(), err)
+	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 }
 
 // optsHeaders extracts the Headers map from EmbedModelOptions (nil-safe).

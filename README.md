@@ -9,26 +9,25 @@ The [Go AI SDK](https://github.com/digitallysavvy/go-ai) is a comprehensive tool
 
 To learn more about how to use the Go AI SDK, check out our [Documentation](./docs).
 
-### What's new in v0.4.0
+### What's new in v0.5.0
 
-- **Top-level reasoning** — portable `Reasoning` parameter across 10+ providers
-- **Deferred provider tools** — step loop continues for async server-side tools (web search, code execution)
-- **Streaming refactor** — tools execute after stream end, telemetry via global registry
-- **Security** — SSRF redirect protection, constant-time OAuth state validation
-- **Anthropic** — webSearch/webFetch 20260209, eager input streaming
-- **OpenAI** — GPT-5.4, Responses API compaction, ToolSearch
-- **XAI** — Responses API as default, logprobs, ReasoningSummary
-- **Google** — VALIDATED tool mode, native Vertex tools, multimodal embeddings
-- **New providers** — Prodia (image + video), KlingAI v3.0 motion control
+- **StreamText lifecycle** — `ChunkTypeFinish` now fires once per call (not once per step); each step is bracketed by new `ChunkTypeStartStep` / `ChunkTypeFinishStep` chunks, and `StreamText` itself returns before the first model request
+- **xAI Responses-only** — the Chat Completions API is removed; `LanguageModel()` (Responses API) is the only xAI language model
+- **Bedrock Converse** — `bedrock.LanguageModel` now calls the Converse API instead of `/invoke`; Bedrock-Anthropic is rebuilt on `anthropic.LanguageModel`
+- **Async video** — `ai.ExperimentalStartVideo` / `ExperimentalGetVideoStatus` for fal, Google, Google Vertex, Replicate and xAI, plus Google Vertex Veo support
+- **Code-mode (experimental)** — `pkg/codemode` runs model-written JavaScript in a QuickJS-on-WebAssembly sandbox with TS execution-policy limits
+- **Harness** — `pkg/harness` (Go port of `@ai-sdk/harness`) with adapters for Claude Code, Codex, OpenCode, Deep Agents, ACP, Cursor, GitHub Copilot, Grok Build, and a Vercel Sandbox provider
+- **New providers** — GMI Cloud, Z.AI, MiniMax, TypeSafe AI, Fish Audio, Cartesia, Rev.ai, Hume, Luma
+- **Security** — tool approvals verified on resume (HMAC v1), DNS-pinned downloads, MCP OAuth SSRF guards
 
-See the full [release notes](./release_notes/RELEASE_NOTES_V0.4.0.md) and [changelog](./CHANGELOG.md).
+See the full [release notes](./release_notes/) and [changelog](./CHANGELOG.md), and the [v0.4 → v0.5 migration guide](./docs/08-migration-guides/from-v0.4-to-v0.5.mdx).
 
 ## Installation
 
-You will need Go 1.21+ installed on your local development machine.
+You will need Go 1.25+ installed on your local development machine.
 
 ```bash
-go get github.com/digitallysavvy/go-ai@v0.4.0
+go get github.com/digitallysavvy/go-ai@v0.5.0
 ```
 
 ## Unified Provider Architecture
@@ -79,9 +78,12 @@ stream, _ := ai.StreamText(ctx, ai.StreamTextOptions{
     Model:  model,
     Prompt: "Write a story about Go programming",
 })
+defer stream.Close()
 
-for chunk := range stream.TextChannel {
-    fmt.Print(chunk)
+for chunk := range stream.Chunks() {
+    if chunk.Type == provider.ChunkTypeText {
+        fmt.Print(chunk.Text)
+    }
 }
 ```
 
@@ -127,9 +129,9 @@ import (
     "github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
-myAgent := agent.New(agent.Config{
-    Model:        model,
-    Instructions: "You are a helpful research assistant.",
+myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
+    Model:  model,
+    System: "You are a helpful research assistant.",
     Tools: []types.Tool{
         searchTool,
         calculatorTool,
@@ -258,7 +260,7 @@ See [examples/features/retention](./examples/features/retention) for detailed us
 
 ## Supported Providers
 
-The Go AI SDK supports 30+ providers:
+The Go AI SDK supports 45+ providers:
 
 | Provider         | Language Models              | Embeddings | Images / Video   | Speech       |
 | ---------------- | ---------------------------- | ---------- | ---------------- | ------------ |
@@ -277,11 +279,12 @@ The Go AI SDK supports 30+ providers:
 | **Perplexity**   | Sonar models                 | -          | -                | -            |
 | **DeepSeek**     | DeepSeek R1, Chat            | -          | -                | -            |
 | **Alibaba**      | Qwen models                  | ✓          | -                | -            |
+| **QuiverAI**     | SVG generation/vectorization | -          | SVG              | -            |
 | **KlingAI**      | -                            | -          | Video (v3.0)     | -            |
 | **Prodia**       | img2img                      | -          | Video (T2V/I2V)  | -            |
 | **Ollama**       | Local models                 | ✓          | -                | -            |
 
-And more (Replicate, Hugging Face, Stability, ElevenLabs, Deepgram, Gladia, LMNT, ByteDance, Baseten, Cerebras, DeepInfra, Gateway)...
+And more (Replicate, Hugging Face, Stability, ElevenLabs, Deepgram, Gladia, LMNT, ByteDance, Baseten, Cerebras, DeepInfra, Gateway, GMI Cloud, Z.AI, MiniMax, TypeSafe AI, Fish Audio, Cartesia, Rev.ai, Hume, Luma, BFL, Voyage, AssemblyAI, Vercel, Moonshot, Anthropic AWS, Google Vertex xAI, Open Responses, QuiverAI)...
 
 ## Features
 
@@ -303,6 +306,18 @@ And more (Replicate, Hugging Face, Stability, ElevenLabs, Deepgram, Gladia, LMNT
 - ✅ **Registry** — resolve models by string ID (e.g., `"openai:gpt-5.4"`)
 - ✅ **Context Support** — native Go context cancellation and timeouts
 - ✅ **Streaming** — deferred tool execution, real-time responses with backpressure
+
+### Parity Helpers
+
+- `pkg/ai` stream transport helpers:
+  - `CreateTextStreamResponse()`, `PipeTextStreamToResponse()`, `CreateUIMessageStream()`, `CreateUIMessageStreamResponse()`, `PipeUIMessageStreamToResponse()`, `ReadUIMessageStream()`
+- `pkg/ai` utility compatibility helpers:
+  - `ConsumeStream()`, `ParsePartialJSON()`, `SimulateReadableStream()`
+- `pkg/ai` middleware aliases:
+  - `WrapLanguageModel()`, `WrapEmbeddingModel()`, `WrapProvider()`
+  - `DefaultSettingsMiddleware()`, `SimulateStreamingMiddleware()`, `ExtractJSONMiddleware()`, `ExtractReasoningMiddleware()`, `AddToolInputExamplesMiddleware()`
+- `pkg/agent` UI stream helpers:
+  - `CreateAgentUIStream()`, `CreateAgentUIStreamResponse()`, `PipeAgentUIStreamToResponse()`
 
 ## Why Go for AI?
 
@@ -372,13 +387,18 @@ We provide **50+ production-ready examples** covering every feature. See the [ex
 
 ## TypeScript Parity
 
-This SDK maintains 1:1 feature parity with the [Vercel AI SDK](https://ai-sdk.dev) **v6.0.137** for backend functionality:
+This SDK maintains 1:1 feature parity with the [Vercel AI SDK](https://ai-sdk.dev) **ai@7.0.118** for backend functionality:
 
 - Same public APIs and response shapes
 - Same provider interfaces and tool system
 - Same middleware and telemetry patterns
-- Compatible workflows across all 30+ providers
+- Compatible workflows across all 45+ providers
 - Feature complete for server-side use
+
+A handful of features are intentionally TS-only (browser WebRTC realtime, the
+`@ai-sdk/harness-cline` / `@ai-sdk/harness-pi` Node-SDK-in-process harnesses,
+durable webhook video suspension inside workflows) — see
+[Known Differences](./docs/08-migration-guides/known-differences.mdx).
 
 **Not included:** React/UI components (`@ai-sdk/react`, `@ai-sdk/vue`, etc.) — these are client-side only in the TypeScript SDK.
 

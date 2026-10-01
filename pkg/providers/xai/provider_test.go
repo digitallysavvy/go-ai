@@ -49,6 +49,29 @@ func TestNewUsesEnvVar(t *testing.T) {
 	}
 }
 
+func TestNormalizeBaseURLMatchesTypeScriptBaseURLShape(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"default", "", "https://api.x.ai/v1"},
+		{"root", "https://api.x.ai", "https://api.x.ai"},
+		{"root trailing slash", "https://api.x.ai/", "https://api.x.ai"},
+		{"typescript v1 base url", "https://api.x.ai/v1", "https://api.x.ai/v1"},
+		{"typescript v1 base url trailing slash", "https://api.x.ai/v1/", "https://api.x.ai/v1"},
+		{"custom v1 base url", "https://example.test/proxy/v1", "https://example.test/proxy/v1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeBaseURL(tt.in); got != tt.want {
+				t.Fatalf("normalizeBaseURL(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestXAIDefaultUsesResponsesAPI verifies that LanguageModel() returns a Responses API model.
 func TestXAIDefaultUsesResponsesAPI(t *testing.T) {
 	p := New(Config{APIKey: "test-key"})
@@ -67,36 +90,16 @@ func TestXAIDefaultUsesResponsesAPI(t *testing.T) {
 	}
 }
 
-// TestXAIChatCompletionsLanguageModelIsLegacy verifies that ChatCompletionsLanguageModel()
-// returns a Chat Completions model, not a Responses API model.
-func TestXAIChatCompletionsLanguageModelIsLegacy(t *testing.T) {
-	p := New(Config{APIKey: "test-key"})
-
-	model, err := p.ChatCompletionsLanguageModel("grok-3")
-	if err != nil {
-		t.Fatalf("ChatCompletionsLanguageModel() error: %v", err)
-	}
-
-	if model.Provider() != "xai" {
-		t.Errorf("ChatCompletionsLanguageModel().Provider() = %q, want %q", model.Provider(), "xai")
-	}
-	if _, ok := model.(*LanguageModel); !ok {
-		t.Errorf("ChatCompletionsLanguageModel() returned %T, want *LanguageModel", model)
-	}
-}
-
 // TestRemovedModelsNotInList verifies that removed model IDs are not present in model_ids.go.
-// grok-2 and grok-2-vision-1212 were shut down by XAI and must not be re-added.
+// Grok 2 IDs were shut down by XAI and must not be re-added.
 func TestRemovedModelsNotInList(t *testing.T) {
-	removed := []string{"grok-2", "grok-2-vision-1212"}
+	removed := []string{"grok-2", "grok-2-vision-1212", "grok-2-image", "grok-2-image-1212"}
 
 	// Collect all defined model ID constant values.
 	defined := []string{
 		ModelGrokBeta,
 		ModelGrok3,
 		ModelGrok3Mini,
-		ModelGrok2Image,
-		ModelGrok2Image1212,
 		ModelGrokImagineImage,
 		ModelGrokImagineImagePro,
 	}
@@ -107,5 +110,25 @@ func TestRemovedModelsNotInList(t *testing.T) {
 				t.Errorf("removed model ID %q should not be in model_ids.go (got constant value %q)", removedID, id)
 			}
 		}
+	}
+}
+
+func TestCurrentChatModelIDConstants(t *testing.T) {
+	tests := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"Grok420NonReasoning", ModelGrok420NonReasoning, "grok-4.20-non-reasoning"},
+		{"Grok420Reasoning", ModelGrok420Reasoning, "grok-4.20-reasoning"},
+		{"Grok43", ModelGrok43, "grok-4.3"},
+		{"GrokLatest", ModelGrokLatest, "grok-latest"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Fatalf("model ID = %q, want %q", tt.got, tt.want)
+			}
+		})
 	}
 }

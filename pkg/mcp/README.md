@@ -202,6 +202,112 @@ transport := mcp.NewHTTPTransport(mcp.HTTPTransportConfig{
 })
 ```
 
+### HTTP/SSE Custom Clients
+
+Use `HTTPClient` or `SSEClient` when the MCP transport needs custom TLS roots,
+proxy configuration, request-local clients, or custom dialers.
+
+```go
+httpClient := &http.Client{
+    Timeout: 30 * time.Second,
+    Transport: &http.Transport{
+        Proxy: http.ProxyFromEnvironment,
+    },
+}
+
+transport := mcp.NewHTTPTransport(mcp.HTTPTransportConfig{
+    URL:        "https://mcp.example.com",
+    HTTPClient: httpClient,
+})
+```
+
+`SSEClient` accepts any type with `Do(*http.Request) (*http.Response, error)` and is used instead of
+`HTTPClient` when supplied.
+
+### Server Info and Instructions
+
+After `Connect`, the client exposes server metadata returned by the MCP initialize handshake.
+
+```go
+info := client.ServerInfo()
+fmt.Printf("Connected to %s %s\n", info.Name, info.Version)
+
+instructions := client.ServerInstructions()
+if instructions != "" {
+    fmt.Println(instructions)
+}
+```
+
+Converted MCP tools include TypeScript-compatible MCP provider metadata under the
+`"mcp"` key. The metadata includes `clientName`, `toolName`, optional `title`,
+and optional MCP Apps `app` metadata when the tool advertises a `ui://` resource.
+
+The default client name is `ai-sdk-mcp-client`, matching the TypeScript SDK. Use
+`ClientName` to override it; `Name` remains as a deprecated compatibility alias.
+
+```go
+client := mcp.NewMCPClient(transport, mcp.MCPClientConfig{
+    ClientName: "my-mcp-host",
+})
+```
+
+HTTP transports send the negotiated MCP protocol version in the
+`mcp-protocol-version` request header after initialization.
+
+### MCP Apps
+
+Hosts that can render MCP Apps can advertise the MCP Apps client capability:
+
+```go
+client := mcp.NewMCPClient(transport, mcp.MCPClientConfig{
+    ClientName:   "my-mcp-host",
+    Capabilities: mcp.MCPAppClientCapabilities(),
+})
+```
+
+Use the MCP Apps helpers to inspect app metadata, split model-visible and
+app-visible tools, and read app HTML resources:
+
+```go
+definitions, err := client.GetSerializableTools(ctx)
+if err != nil {
+    return err
+}
+
+modelVisible, appVisible, err := mcp.SplitMCPAppTools(*definitions)
+if err != nil {
+    return err
+}
+
+uris, err := mcp.GetMCPAppResourceURIs(appVisible)
+if err != nil {
+    return err
+}
+for _, uri := range uris {
+    resource, err := mcp.ReadMCPAppResource(ctx, client, uri)
+    if err != nil {
+        return err
+    }
+    fmt.Println(resource.HTML)
+}
+
+_ = modelVisible
+```
+
+MCP tool results and prompt content accept `resource_link` content parts. Unknown
+tool result content still falls back to text for compatibility.
+
+### Secure JSON Parsing
+
+All MCP JSON-RPC responses are decoded through a safe parser that rejects:
+
+- Object keys that can trigger prototype-pollution style issues, such as `__proto__`
+- JSON nesting deeper than 64 levels
+- JSON payloads with more than 4096 object fields
+
+This matches the TypeScript SDK's defensive parsing posture and prevents resource-exhaustion
+payloads from being accepted.
+
 ## Testing
 
 The package includes comprehensive tests for image content conversion:

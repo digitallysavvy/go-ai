@@ -82,7 +82,7 @@ func TestRerankOnStartHeadersAndMaxRetries(t *testing.T) {
 		Model:      model,
 		Documents:  []string{"doc1"},
 		Query:      "query",
-		MaxRetries: 2,
+		MaxRetries: intPtr(2),
 		Headers:    map[string]string{"X-Custom": "hdr"},
 		ExperimentalOnStart: func(e RerankOnStartEvent) {
 			mu.Lock()

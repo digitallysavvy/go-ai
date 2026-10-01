@@ -49,6 +49,8 @@ export MISTRAL_API_KEY=...
 |----------|---------|-------------|--------------|----------|
 | mistral-large-latest | 128K | $3.00/1M | $9.00/1M | Complex reasoning, code |
 | mistral-small-latest | 32K | $1.00/1M | $3.00/1M | Fast, cost-effective |
+| mistral-medium-3 | 128K | Varies | Varies | Balanced quality/latency |
+| mistral-medium-3.5 | 128K | Varies | Varies | Balanced quality/latency |
 | pixtral-large-latest | 128K | $3.00/1M | $9.00/1M | Multimodal (vision) |
 | codestral-latest | 32K | $1.00/1M | $3.00/1M | Code generation |
 | mistral-nemo | 128K | $0.30/1M | $0.30/1M | Open-source |
@@ -59,34 +61,76 @@ export MISTRAL_API_KEY=...
 |----------|-----------|-------|----------|
 | mistral-embed | 1024 | $0.10/1M | Semantic search |
 
+`mistral.EmbeddingModel` batches at most 32 inputs per call
+(`MaxEmbeddingsPerCall() == 32`) and does not support parallel calls
+(`SupportsParallelCalls() == false`), matching the Mistral API's own
+limits — `ai.EmbedMany` automatically splits larger input sets into
+sequential batched requests.
+
+### Speech and Transcription (Voxtral)
+
+```go
+speechModel, err := provider.SpeechModel("voxtral-mini-tts-latest") // default when empty
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+    Model: speechModel,
+    Text:  "Hello from Mistral.",
+})
+```
+
+```go
+transcriptionModel, err := provider.TranscriptionModel("voxtral-mini-latest") // default when empty
+if err != nil {
+    log.Fatal(err)
+}
+
+transcript, err := ai.Transcribe(ctx, ai.TranscribeOptions{
+    Model: transcriptionModel,
+    Audio: audioBytes,
+})
+```
+
+Other Voxtral model IDs include `mistral.ModelVoxtralSmall2507` /
+`voxtral-small-2507` and `mistral.ModelVoxtralSmallLatest`.
+
 ## Provider-Specific Features
+
+### Cached Token Usage
+
+Mistral usage responses can include cache fields such as:
+- `num_cached_tokens`
+- `cache_read_input_tokens`
+- `cache_creation_input_tokens`
+
+These are mapped into `Usage.InputDetails.CacheReadTokens`, `Usage.InputDetails.CacheWriteTokens`, and `Usage.Raw`.
 
 ### Function Calling
 
 Mistral supports parallel function calling:
 
 ```go
-tools := []ai.Tool{
+tools := []types.Tool{
     {
-        Type: "function",
-        Function: ai.FunctionDefinition{
-            Name: "get_weather",
-            Description: "Get weather for location",
-            Parameters: map[string]interface{}{
-                "type": "object",
-                "properties": map[string]interface{}{
-                    "location": map[string]string{"type": "string"},
-                },
-                "required": []string{"location"},
+        Name:        "get_weather",
+        Description: "Get weather for location",
+        Parameters: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "location": map[string]string{"type": "string"},
             },
+            "required": []string{"location"},
         },
     },
 }
 
-result, err := ai.GenerateText(model,
-    "What's the weather in Paris and London?",
-    ai.WithTools(tools...),
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "What's the weather in Paris and London?",
+    Tools:  tools,
+})
 
 // Processes both calls in parallel
 ```
@@ -96,9 +140,11 @@ result, err := ai.GenerateText(model,
 Structured output generation:
 
 ```go
-result, err := ai.GenerateText(model, "Extract: John, 30, engineer",
-    ai.WithResponseFormat(ai.ResponseFormat{Type: "json_object"}),
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Extract: John, 30, engineer",
+    ResponseFormat: &provider.ResponseFormat{Type: "json_object"},
+})
 ```
 
 ### Code Generation
@@ -108,9 +154,10 @@ Codestral is optimized for code:
 ```go
 codeModel, err := provider.LanguageModel("codestral-latest")
 
-result, err := ai.GenerateText(codeModel,
-    "Write a binary search function in Go",
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  codeModel,
+    Prompt: "Write a binary search function in Go",
+})
 ```
 
 ## Examples
@@ -139,8 +186,10 @@ func main() {
         log.Fatal(err)
     }
 
-    result, err := ai.GenerateText(model,
-        "Explain Mistral AI advantages")
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Explain Mistral AI advantages",
+    })
     if err != nil {
         log.Fatal(err)
     }
@@ -175,7 +224,31 @@ func main() {
 | Free | 10 | 10K |
 | Premium | 1000 | 1M |
 
+## Workflow Serialization
+
+Mistral embedding, speech, and transcription models can cross a workflow
+boundary with `providerutils.SerializeModel` / `DeserializeModel` (language
+models could already be serialized). See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
+for the mechanism.
+
 ## See Also
 
 - [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
 - [Mistral AI Documentation](https://docs.mistral.ai)
+
+## May 2026 parity updates
+
+### Mistral Medium 3 and 3.5
+
+Use `mistral.ModelMistralMedium3` for `mistral-medium-3` and
+`mistral.ModelMistralMedium35` for `mistral-medium-3.5`.
+
+```go
+p := mistral.New(mistral.Config{APIKey: os.Getenv("MISTRAL_API_KEY")})
+model, err := p.LanguageModel(mistral.ModelMistralMedium35)
+```
+
+### Cached token usage
+
+Mistral cached token counts map into `types.Usage.InputDetails.CacheReadTokens` when returned by the provider.

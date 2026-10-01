@@ -3,11 +3,16 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"reflect"
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/sdk/trace"
+
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -72,6 +77,148 @@ func TestStreamProviderMetadataAbsent(t *testing.T) {
 
 	if got := result.ProviderMetadata(); len(got) != 0 {
 		t.Errorf("expected nil ProviderMetadata, got %s", got)
+	}
+}
+
+func TestStreamReadAllProviderInlineToolResultUsesToModelOutputAndPreservesRawResult(t *testing.T) {
+	t.Parallel()
+
+	raw := map[string]interface{}{"public": "provider result", "secret": "hide me"}
+	input := map[string]interface{}{"query": "docs"}
+	var gotOptions types.ToModelOutputOptions
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(_ context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "web-search", Arguments: input, ProviderExecuted: true}},
+				{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "call-1", ToolName: "web-search", Result: raw, ProviderExecuted: true}},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "search",
+		Tools: []types.Tool{{
+			Name:             "web-search",
+			ProviderExecuted: true,
+			ToModelOutput: func(_ context.Context, opts types.ToModelOutputOptions) (*types.ToolResultOutput, error) {
+				gotOptions = opts
+				return &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "model sees: provider result"}, nil
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("StreamText error = %v", err)
+	}
+	if _, err := result.ReadAll(); err != nil {
+		t.Fatalf("ReadAll error = %v", err)
+	}
+	if gotOptions.ToolCallID != "call-1" || !reflect.DeepEqual(gotOptions.Input, input) || !reflect.DeepEqual(gotOptions.Output, raw) {
+		t.Fatalf("ToModelOutput options = %+v, want TS-shaped provider result options", gotOptions)
+	}
+	toolResults := result.ToolResults()
+	if len(toolResults) != 1 || !reflect.DeepEqual(toolResults[0].Result, raw) {
+		t.Fatalf("ToolResults = %#v, want raw provider result", toolResults)
+	}
+	if !toolResults[0].ProviderExecuted || !reflect.DeepEqual(toolResults[0].Input, input) {
+		t.Fatalf("ToolResults[0] = %+v, want provider-executed result with original input", toolResults[0])
+	}
+	steps := result.Steps()
+	if len(steps) != 1 {
+		t.Fatalf("Steps len = %d, want 1", len(steps))
+	}
+	var contentResult types.ToolResultContent
+	found := false
+	for _, part := range steps[0].Content {
+		if tr, ok := part.(types.ToolResultContent); ok && tr.ToolCallID == "call-1" {
+			contentResult = tr
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing tool result content in step: %#v", steps[0].Content)
+	}
+	if contentResult.Result != nil || contentResult.Output == nil || contentResult.Output.Type != types.ToolResultOutputText || contentResult.Output.Value != "model sees: provider result" {
+		t.Fatalf("tool result content = %+v, want converted model output", contentResult)
+	}
+}
+
+func TestStreamProcessProviderInlineToolResultUsesToModelOutputAndPreservesRawResult(t *testing.T) {
+	t.Parallel()
+
+	raw := map[string]interface{}{"public": "provider result", "secret": "hide me"}
+	input := map[string]interface{}{"query": "docs"}
+	var gotOptions types.ToModelOutputOptions
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(_ context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "web-search", Arguments: input, ProviderExecuted: true}},
+				{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "call-1", ToolName: "web-search", Result: raw, ProviderExecuted: true}},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "search",
+		Tools: []types.Tool{{
+			Name:             "web-search",
+			ProviderExecuted: true,
+			ToModelOutput: func(_ context.Context, opts types.ToModelOutputOptions) (*types.ToolResultOutput, error) {
+				gotOptions = opts
+				return &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "model sees: provider result"}, nil
+			},
+		}},
+		OnChunk: func(provider.StreamChunk) {},
+	})
+	if err != nil {
+		t.Fatalf("StreamText error = %v", err)
+	}
+	toolResults := result.ToolResults()
+	if gotOptions.ToolCallID != "call-1" || !reflect.DeepEqual(gotOptions.Input, input) || !reflect.DeepEqual(gotOptions.Output, raw) {
+		t.Fatalf("ToModelOutput options = %+v, want TS-shaped provider result options", gotOptions)
+	}
+	if len(toolResults) != 1 || !reflect.DeepEqual(toolResults[0].Result, raw) {
+		t.Fatalf("ToolResults = %#v, want raw provider result", toolResults)
+	}
+	if !toolResults[0].ProviderExecuted || !reflect.DeepEqual(toolResults[0].Input, input) {
+		t.Fatalf("ToolResults[0] = %+v, want provider-executed result with original input", toolResults[0])
+	}
+}
+
+func TestStreamReadAllProviderInlineToModelOutputErrorPropagates(t *testing.T) {
+	t.Parallel()
+
+	convertErr := errors.New("conversion failed")
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(_ context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "web-search", Arguments: map[string]interface{}{"query": "docs"}, ProviderExecuted: true}},
+				{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "call-1", ToolName: "web-search", Result: "raw", ProviderExecuted: true}},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "search",
+		Tools: []types.Tool{{
+			Name:             "web-search",
+			ProviderExecuted: true,
+			ToModelOutput: func(context.Context, types.ToModelOutputOptions) (*types.ToolResultOutput, error) {
+				return nil, convertErr
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("StreamText error = %v", err)
+	}
+	_, err = result.ReadAll()
+	if !errors.Is(err, convertErr) {
+		t.Fatalf("ReadAll error = %v, want conversion error", err)
+	}
+	if err.Error() != "conversion failed" {
+		t.Fatalf("ReadAll error string = %q, want original conversion error", err.Error())
 	}
 }
 
@@ -183,7 +330,7 @@ func TestTelemetryUsageAttributesComplete(t *testing.T) {
 		Model:  model,
 		Prompt: "test",
 		ExperimentalTelemetry: &TelemetrySettings{
-			IsEnabled:  true,
+			IsEnabled:  telemetry.Bool(true),
 			FunctionID: "usage-test",
 		},
 	})
@@ -199,9 +346,19 @@ func TestTelemetryUsageAttributesComplete(t *testing.T) {
 		t.Fatal("expected at least one span")
 	}
 
+	// The real span name is no longer suffixed with functionID (TS never
+	// renames the span itself — see legacyOperationNameAttrs); functionID is
+	// looked up via the operation.name attribute instead.
 	var found bool
 	for _, span := range spans {
-		if span.Name() == "ai.generateText.usage-test" {
+		var isTarget bool
+		for _, a := range span.Attributes() {
+			if string(a.Key) == "operation.name" && a.Value.AsString() == "ai.generateText usage-test" {
+				isTarget = true
+				break
+			}
+		}
+		if span.Name() == "ai.generateText" && isTarget {
 			found = true
 			attrMap := map[string]int64{}
 			for _, a := range span.Attributes() {
@@ -217,9 +374,16 @@ func TestTelemetryUsageAttributesComplete(t *testing.T) {
 					t.Errorf("attribute %q = %d, want %d", key, got, want)
 				}
 			}
-			// Gen AI semantic convention attributes
-			check("gen_ai.usage.input_tokens", input)
-			check("gen_ai.usage.output_tokens", output)
+			// gen_ai.usage.* is intentionally NOT on the root span (H3 follow-up
+			// 3, 2026-09-27): TS's onGenerateEnd never dual-emits gen_ai.usage.*
+			// here (only the nested doGenerate/doStream step span does — see
+			// OnStepEnd). Only the legacy ai.usage.* namespace lives on root.
+			if _, ok := attrMap["gen_ai.usage.input_tokens"]; ok {
+				t.Errorf("gen_ai.usage.input_tokens should not be set on the root span")
+			}
+			if _, ok := attrMap["gen_ai.usage.output_tokens"]; ok {
+				t.Errorf("gen_ai.usage.output_tokens should not be set on the root span")
+			}
 			// Legacy ai.usage.* attributes (TS SDK emits both namespaces)
 			check("ai.usage.inputTokens", input)
 			check("ai.usage.outputTokens", output)
@@ -233,8 +397,16 @@ func TestTelemetryUsageAttributesComplete(t *testing.T) {
 	}
 }
 
-// TestTelemetryModelAttributesFlattened verifies that the OTel span uses
-// gen_ai.system and gen_ai.request.model (not ai.model.provider/ai.model.id).
+// TestTelemetryModelAttributesFlattened verifies the root "ai.generateText"
+// span uses ai.model.provider/ai.model.id (matching TS's onGenerateStart —
+// legacy-open-telemetry.ts — which never puts gen_ai.system/
+// gen_ai.request.model on the root span), while the nested doGenerate step
+// span carries the gen_ai.system/gen_ai.request.model dual-emission alongside
+// its own ai.model.provider/ai.model.id (follow-up H1, 2026-09-27: this
+// inverts the test's previous assertion, which encoded the pre-fix,
+// non-TS-parity shape). The real span name is no longer suffixed with
+// functionID either — TS never renames the span itself — so functionID is
+// looked up via the operation.name attribute instead.
 // Not parallel — uses global OTel tracer provider.
 func TestTelemetryModelAttributesFlattened(t *testing.T) {
 	spanRecorder, cleanup := setupTelemetryTest(t)
@@ -249,7 +421,7 @@ func TestTelemetryModelAttributesFlattened(t *testing.T) {
 		Model:  model,
 		Prompt: "test",
 		ExperimentalTelemetry: &TelemetrySettings{
-			IsEnabled:  true,
+			IsEnabled:  telemetry.Bool(true),
 			FunctionID: "flat-test",
 		},
 	})
@@ -258,31 +430,65 @@ func TestTelemetryModelAttributesFlattened(t *testing.T) {
 	}
 
 	spans := spanRecorder.Ended()
+	var rootSpan, stepSpan trace.ReadOnlySpan
 	for _, span := range spans {
-		if span.Name() == "ai.generateText.flat-test" {
-			for _, a := range span.Attributes() {
-				key := string(a.Key)
-				if key == "ai.model.provider" || key == "ai.model.id" {
-					t.Errorf("found deprecated attribute %q; should use gen_ai.system / gen_ai.request.model", key)
-				}
+		if span.Name() != "ai.generateText" {
+			continue
+		}
+		for _, a := range span.Attributes() {
+			if string(a.Key) == "operation.name" && a.Value.AsString() == "ai.generateText flat-test" {
+				rootSpan = span
 			}
-			var hasSystem, hasModel bool
-			for _, a := range span.Attributes() {
-				switch string(a.Key) {
-				case "gen_ai.system":
-					hasSystem = true
-				case "gen_ai.request.model":
-					hasModel = true
-				}
-			}
-			if !hasSystem {
-				t.Error("attribute gen_ai.system not found")
-			}
-			if !hasModel {
-				t.Error("attribute gen_ai.request.model not found")
-			}
-			return
 		}
 	}
-	t.Error("span ai.generateText.flat-test not found")
+	for _, span := range spans {
+		if span.Name() == "ai.generateText.doGenerate" {
+			stepSpan = span
+		}
+	}
+	if rootSpan == nil {
+		t.Fatal("expected an 'ai.generateText' root span with operation.name 'ai.generateText flat-test'")
+	}
+
+	var rootHasModelProvider, rootHasModelID, rootHasGenAISystem, rootHasGenAIModel bool
+	for _, a := range rootSpan.Attributes() {
+		switch string(a.Key) {
+		case "ai.model.provider":
+			rootHasModelProvider = true
+		case "ai.model.id":
+			rootHasModelID = true
+		case "gen_ai.system":
+			rootHasGenAISystem = true
+		case "gen_ai.request.model":
+			rootHasGenAIModel = true
+		}
+	}
+	if !rootHasModelProvider {
+		t.Error("root span missing ai.model.provider")
+	}
+	if !rootHasModelID {
+		t.Error("root span missing ai.model.id")
+	}
+	if rootHasGenAISystem || rootHasGenAIModel {
+		t.Error("root span should not carry gen_ai.system/gen_ai.request.model (TS's onGenerateStart never sets them on the root span)")
+	}
+
+	if stepSpan == nil {
+		t.Fatal("expected an 'ai.generateText.doGenerate' nested step span")
+	}
+	var stepHasGenAISystem, stepHasGenAIModel bool
+	for _, a := range stepSpan.Attributes() {
+		switch string(a.Key) {
+		case "gen_ai.system":
+			stepHasGenAISystem = true
+		case "gen_ai.request.model":
+			stepHasGenAIModel = true
+		}
+	}
+	if !stepHasGenAISystem {
+		t.Error("step span missing gen_ai.system")
+	}
+	if !stepHasGenAIModel {
+		t.Error("step span missing gen_ai.request.model")
+	}
 }

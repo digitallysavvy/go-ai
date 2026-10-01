@@ -4,10 +4,36 @@ import (
 	"context"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
-// DownloadFunction is a function that downloads a file from a URL.
-type DownloadFunction func(ctx context.Context, url string) ([]byte, error)
+var downloadURLValidator = validateDownloadURL
+
+// downloadTransport returns the transport used by default downloads. It
+// validates and pins DNS results at connect time (TS safe-node-fetch).
+// Tests replace it to reach loopback fixtures.
+var downloadTransport = fileutil.SafeTransport
+
+// DownloadRequest describes one remote file URL discovered during prompt
+// preparation. IsURLSupportedByModel indicates whether the selected model can
+// consume the URL directly; returning nil for that request leaves the URL in the
+// prompt, matching the TypeScript SDK's experimental_download contract.
+type DownloadRequest = promptutils.DownloadRequest
+
+// DownloadResult contains downloaded file bytes and an optional media type.
+type DownloadResult = promptutils.DownloadResult
+
+// DownloadFunction receives all remote file URLs planned for a prompt and
+// returns one result per request. A nil result leaves the original URL intact.
+type DownloadFunction = promptutils.DownloadFunction
+
+// URLDownloadFunction downloads a single URL. It is useful for non-prompt APIs
+// and for adapting existing single-file download implementations.
+type URLDownloadFunction func(ctx context.Context, url string) ([]byte, error)
+
+// URLDownloadWithMetadataFunction downloads a single URL and returns bytes plus
+// an optional media type, matching TypeScript generateVideo's download result.
+type URLDownloadWithMetadataFunction func(ctx context.Context, url string) (*DownloadResult, error)
 
 // DownloadOptions contains options for creating a custom download function.
 type DownloadOptions struct {
@@ -19,31 +45,31 @@ type DownloadOptions struct {
 	Headers map[string]string
 }
 
-// CreateDownload creates a download function with configurable options.
+// CreateURLDownload creates a single-URL download function with configurable
+// options.
 //
-// The default download function enforces a 2 GiB size limit to prevent
+// The default URL download function enforces a 2 GiB size limit to prevent
 // memory exhaustion from unbounded downloads. You can customize the
 // size limit by passing DownloadOptions.
-//
-// Example:
-//
-//	// Create a custom download function with 100 MB limit
-//	customDownload := ai.CreateDownload(&ai.DownloadOptions{
-//	    MaxBytes: 100 * 1024 * 1024, // 100 MB
-//	})
-//
-//	// Use with generate functions that support custom downloads
-//	result, err := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
-//	    Model: model,
-//	    Prompt: prompt,
-//	    Download: customDownload,
-//	})
-func CreateDownload(options *DownloadOptions) DownloadFunction {
+func CreateURLDownload(options *DownloadOptions) URLDownloadFunction {
+	download := CreateURLDownloadWithMetadata(options)
+	return func(ctx context.Context, url string) ([]byte, error) {
+		result, err := download(ctx, url)
+		if err != nil {
+			return nil, err
+		}
+		return result.Data, nil
+	}
+}
+
+// CreateURLDownloadWithMetadata creates a single-URL download function that
+// returns downloaded bytes and response media type metadata.
+func CreateURLDownloadWithMetadata(options *DownloadOptions) URLDownloadWithMetadataFunction {
 	if options == nil {
 		options = &DownloadOptions{}
 	}
 
-	return func(ctx context.Context, url string) ([]byte, error) {
+	return func(ctx context.Context, url string) (*DownloadResult, error) {
 		opts := fileutil.DefaultDownloadOptions()
 
 		if options.MaxBytes > 0 {
@@ -54,9 +80,47 @@ func CreateDownload(options *DownloadOptions) DownloadFunction {
 			opts.Headers = options.Headers
 		}
 
-		opts.URLValidator = validateDownloadURL
+		opts.URLValidator = downloadURLValidator
+		opts.Transport = downloadTransport()
 
-		return fileutil.Download(ctx, url, opts)
+		result, err := fileutil.DownloadWithMetadata(ctx, url, opts)
+		if err != nil {
+			return nil, err
+		}
+		return &DownloadResult{Data: result.Data, MediaType: result.ContentType}, nil
+	}
+}
+
+// CreateDownload creates a TypeScript-compatible batch download function.
+//
+// Example:
+//
+//	// Create a custom download function with 100 MB limit
+//	customDownload := ai.CreateDownload(&ai.DownloadOptions{
+//	    MaxBytes: 100 * 1024 * 1024, // 100 MB
+//	})
+//
+//	// Use with prompt APIs that support batch URL downloads.
+//	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+//	    Model: model,
+//	    Prompt: prompt,
+//	    ExperimentalDownload: customDownload,
+//	})
+func CreateDownload(options *DownloadOptions) DownloadFunction {
+	urlDownload := CreateURLDownloadWithMetadata(options)
+	return func(ctx context.Context, requests []DownloadRequest) ([]*DownloadResult, error) {
+		results := make([]*DownloadResult, len(requests))
+		for i, request := range requests {
+			if request.IsURLSupportedByModel {
+				continue
+			}
+			result, err := urlDownload(ctx, request.URL)
+			if err != nil {
+				return nil, err
+			}
+			results[i] = result
+		}
+		return results, nil
 	}
 }
 

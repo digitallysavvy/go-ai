@@ -2,10 +2,12 @@ package middleware
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -350,5 +352,316 @@ func TestMergeGenerateOptions_Messages(t *testing.T) {
 	// Override messages should take precedence
 	if len(result.Prompt.Messages) != 1 || result.Prompt.Messages[0].Role != types.RoleUser {
 		t.Error("expected override messages to take precedence")
+	}
+}
+
+// TestMergeGenerateOptions_PromptNeverFallsBackToDefault mirrors TS's
+// defaultSettingsMiddleware: its `settings` parameter is typed as a
+// `Partial<{...}>` that excludes `prompt` entirely (default-settings-
+// middleware.ts), so a prompt/messages/system default can never reach
+// mergeObjects(settings, params) in the first place. Go's
+// provider.GenerateOptions has no such per-field partial type, so
+// mergeGenerateOptions must instead simply never copy any Prompt.* field
+// from defaults into the result, regardless of whether overrides supplies a
+// prompt of its own. (Previously Go filled Prompt.Text/System/Messages from
+// defaults whenever the corresponding override field was the zero value,
+// which could silently inject a default prompt/system the caller never
+// asked for.)
+func TestMergeGenerateOptions_PromptNeverFallsBackToDefault(t *testing.T) {
+	t.Parallel()
+
+	defaults := &provider.GenerateOptions{
+		Prompt: types.Prompt{
+			System:   "default system prompt",
+			Text:     "default text prompt",
+			Messages: []types.Message{{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: "default message"}}}},
+		},
+	}
+	overrides := &provider.GenerateOptions{}
+
+	result := mergeGenerateOptions(defaults, overrides)
+
+	if result.Prompt.System != "" {
+		t.Errorf("expected no default system prompt to be pulled in, got %q", result.Prompt.System)
+	}
+	if result.Prompt.Text != "" {
+		t.Errorf("expected no default text prompt to be pulled in, got %q", result.Prompt.Text)
+	}
+	if result.Prompt.Messages != nil {
+		t.Errorf("expected no default messages to be pulled in, got %#v", result.Prompt.Messages)
+	}
+}
+
+// TestMergeGenerateOptions_PromptNeverFallsBackToDefault_CallerSuppliedOtherForm
+// covers the case explicitly called out alongside the primary rule: even
+// when the caller supplies some other prompt form (Text, not System), a
+// defaults-side System must still not leak in.
+func TestMergeGenerateOptions_PromptNeverFallsBackToDefault_CallerSuppliedOtherForm(t *testing.T) {
+	t.Parallel()
+
+	defaults := &provider.GenerateOptions{
+		Prompt: types.Prompt{System: "default system prompt"},
+	}
+	overrides := &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "caller text prompt"},
+	}
+
+	result := mergeGenerateOptions(defaults, overrides)
+
+	if result.Prompt.Text != "caller text prompt" {
+		t.Errorf("expected caller's text prompt to survive, got %q", result.Prompt.Text)
+	}
+	if result.Prompt.System != "" {
+		t.Errorf("expected no default system prompt to be pulled in alongside caller's text prompt, got %q", result.Prompt.System)
+	}
+}
+
+func TestMergeGenerateOptions_PromptSystemOverride(t *testing.T) {
+	t.Parallel()
+
+	defaults := &provider.GenerateOptions{
+		Prompt: types.Prompt{System: "default system prompt"},
+	}
+	overrides := &provider.GenerateOptions{
+		Prompt: types.Prompt{System: "override system prompt"},
+	}
+
+	result := mergeGenerateOptions(defaults, overrides)
+
+	if result.Prompt.System != "override system prompt" {
+		t.Errorf("expected override system prompt to win, got %q", result.Prompt.System)
+	}
+}
+
+func TestMergeGenerateOptions_ScalarCallOptionFieldsSurviveWithoutDefaults(t *testing.T) {
+	t.Parallel()
+
+	// Regression test for A2-2: fields not in the old hand-picked copy list
+	// (ProviderOptions, Reasoning, SendReasoning, RuntimeContext,
+	// ToolsContext, IncludeRawChunks, AllowSystemMessages/
+	// AllowSystemInMessages, Telemetry) must survive from the caller's own
+	// params even when no defaults are configured.
+	reasoning := types.ReasoningLevel("high")
+	sendReasoning := true
+
+	overrides := &provider.GenerateOptions{
+		AllowSystemMessages:   true,
+		AllowSystemInMessages: true,
+		IncludeRawChunks:      true,
+		Reasoning:             &reasoning,
+		SendReasoning:         &sendReasoning,
+		RuntimeContext:        "runtime-value",
+		ToolsContext:          map[string]interface{}{"tool1": "ctx"},
+		ProviderOptions:       map[string]interface{}{"anthropic": map[string]interface{}{"cacheControl": "ephemeral"}},
+		Telemetry:             &telemetry.Options{FunctionID: "my-function"},
+	}
+
+	result := mergeGenerateOptions(&provider.GenerateOptions{}, overrides)
+
+	if !result.AllowSystemMessages {
+		t.Error("expected AllowSystemMessages to survive")
+	}
+	if !result.AllowSystemInMessages {
+		t.Error("expected AllowSystemInMessages to survive")
+	}
+	if !result.IncludeRawChunks {
+		t.Error("expected IncludeRawChunks to survive")
+	}
+	if result.Reasoning == nil || *result.Reasoning != reasoning {
+		t.Error("expected Reasoning to survive")
+	}
+	if result.SendReasoning == nil || !*result.SendReasoning {
+		t.Error("expected SendReasoning to survive")
+	}
+	if result.RuntimeContext != "runtime-value" {
+		t.Error("expected RuntimeContext to survive")
+	}
+	if result.ToolsContext["tool1"] != "ctx" {
+		t.Error("expected ToolsContext to survive")
+	}
+	if result.ProviderOptions == nil {
+		t.Fatal("expected ProviderOptions to survive")
+	}
+	anthropic, ok := result.ProviderOptions["anthropic"].(map[string]interface{})
+	if !ok || anthropic["cacheControl"] != "ephemeral" {
+		t.Error("expected ProviderOptions nested value to survive")
+	}
+	if result.Telemetry == nil || result.Telemetry.FunctionID != "my-function" {
+		t.Error("expected Telemetry to survive")
+	}
+}
+
+func TestMergeGenerateOptions_ProviderOptionsMergeFromDefaults(t *testing.T) {
+	t.Parallel()
+
+	defaults := &provider.GenerateOptions{
+		ProviderOptions: map[string]interface{}{
+			"anthropic": map[string]interface{}{
+				"cacheControl": map[string]interface{}{"type": "ephemeral"},
+			},
+		},
+	}
+	overrides := &provider.GenerateOptions{}
+
+	result := mergeGenerateOptions(defaults, overrides)
+
+	anthropic, ok := result.ProviderOptions["anthropic"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected default provider options to survive when overrides has none")
+	}
+	cacheControl, ok := anthropic["cacheControl"].(map[string]interface{})
+	if !ok || cacheControl["type"] != "ephemeral" {
+		t.Error("expected nested default provider option value to survive")
+	}
+}
+
+func TestMergeGenerateOptions_ProviderOptionsDeepMerge(t *testing.T) {
+	t.Parallel()
+
+	// Mirrors TS defaultSettingsMiddleware.test.ts "should handle nested
+	// provider metadata objects correctly".
+	defaults := &provider.GenerateOptions{
+		ProviderOptions: map[string]interface{}{
+			"anthropic": map[string]interface{}{
+				"tools": map[string]interface{}{
+					"retrieval": map[string]interface{}{"enabled": true},
+					"math":      map[string]interface{}{"enabled": true},
+				},
+			},
+		},
+	}
+	overrides := &provider.GenerateOptions{
+		ProviderOptions: map[string]interface{}{
+			"anthropic": map[string]interface{}{
+				"tools": map[string]interface{}{
+					"retrieval": map[string]interface{}{"enabled": false},
+					"code":      map[string]interface{}{"enabled": true},
+				},
+			},
+		},
+	}
+
+	result := mergeGenerateOptions(defaults, overrides)
+
+	anthropic := result.ProviderOptions["anthropic"].(map[string]interface{})
+	tools := anthropic["tools"].(map[string]interface{})
+
+	retrieval := tools["retrieval"].(map[string]interface{})
+	if retrieval["enabled"] != false {
+		t.Error("expected override retrieval.enabled=false to win")
+	}
+	math := tools["math"].(map[string]interface{})
+	if math["enabled"] != true {
+		t.Error("expected default math.enabled=true to be preserved")
+	}
+	code := tools["code"].(map[string]interface{})
+	if code["enabled"] != true {
+		t.Error("expected override-only code.enabled=true to be present")
+	}
+}
+
+// TestGenerateOptions_AllFieldsCoveredByMerge enumerates provider.GenerateOptions'
+// fields by reflection so that a field added in the future without updating
+// this test (and mergeGenerateOptions) fails loudly instead of being
+// silently dropped by the default-settings middleware, per A2-2.
+func TestGenerateOptions_AllFieldsCoveredByMerge(t *testing.T) {
+	t.Parallel()
+
+	// Every field currently on provider.GenerateOptions must appear here.
+	knownFields := map[string]bool{
+		"Prompt":                true,
+		"AllowSystemMessages":   true,
+		"AllowSystemInMessages": true,
+		"Temperature":           true,
+		"MaxTokens":             true,
+		"TopP":                  true,
+		"TopK":                  true,
+		"FrequencyPenalty":      true,
+		"PresencePenalty":       true,
+		"StopSequences":         true,
+		"Tools":                 true,
+		"IncludeRawChunks":      true,
+		"ToolChoice":            true,
+		"RuntimeContext":        true,
+		"ToolsContext":          true,
+		"ResponseFormat":        true,
+		"Seed":                  true,
+		"Headers":               true,
+		"MaxSteps":              true,
+		"Reasoning":             true,
+		"SendReasoning":         true,
+		"ProviderOptions":       true,
+		"Telemetry":             true,
+	}
+
+	rt := reflect.TypeOf(provider.GenerateOptions{})
+	for i := 0; i < rt.NumField(); i++ {
+		name := rt.Field(i).Name
+		if !knownFields[name] {
+			t.Fatalf(
+				"provider.GenerateOptions gained a new field %q that this test (and likely mergeGenerateOptions) doesn't account for; "+
+					"update TestGenerateOptions_AllFieldsCoveredByMerge and mergeGenerateOptions in pkg/middleware/default_settings.go",
+				name,
+			)
+		}
+	}
+
+	// Now verify every one of those fields actually survives a merge where
+	// overrides sets every field and defaults sets none, i.e. nothing is
+	// silently dropped by mergeGenerateOptions.
+	reasoning := types.ReasoningLevel("high")
+	sendReasoning := true
+	temp := 1.5
+	maxTokens := 111
+	topP := 0.11
+	topK := 22
+	freq := 0.33
+	pres := 0.44
+	seed := 999
+	maxSteps := 7
+
+	overrides := &provider.GenerateOptions{
+		Prompt: types.Prompt{
+			Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}},
+			System:   "override-system",
+			Text:     "override-text",
+		},
+		AllowSystemMessages:   true,
+		AllowSystemInMessages: true,
+		Temperature:           &temp,
+		MaxTokens:             &maxTokens,
+		TopP:                  &topP,
+		TopK:                  &topK,
+		FrequencyPenalty:      &freq,
+		PresencePenalty:       &pres,
+		StopSequences:         []string{"override-stop"},
+		Tools:                 []types.Tool{{Name: "override-tool"}},
+		IncludeRawChunks:      true,
+		ToolChoice:            types.ToolChoice{Type: "required"},
+		RuntimeContext:        "override-runtime",
+		ToolsContext:          map[string]interface{}{"tool": "override"},
+		ResponseFormat:        &provider.ResponseFormat{Type: "json"},
+		Seed:                  &seed,
+		Headers:               map[string]string{"X-Override": "1"},
+		MaxSteps:              &maxSteps,
+		Reasoning:             &reasoning,
+		SendReasoning:         &sendReasoning,
+		ProviderOptions:       map[string]interface{}{"anthropic": map[string]interface{}{"k": "override"}},
+		Telemetry:             &telemetry.Options{FunctionID: "override-fn"},
+	}
+
+	defaults := &provider.GenerateOptions{} // empty: overrides must win on every field
+
+	result := mergeGenerateOptions(defaults, overrides)
+
+	rv := reflect.ValueOf(*result)
+	ov := reflect.ValueOf(*overrides)
+	for i := 0; i < rt.NumField(); i++ {
+		name := rt.Field(i).Name
+		got := rv.Field(i).Interface()
+		want := ov.Field(i).Interface()
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("field %s was dropped or altered by mergeGenerateOptions: got %#v, want %#v", name, got, want)
+		}
 	}
 }

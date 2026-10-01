@@ -34,6 +34,10 @@ type AssistantMessageContent struct {
 
 	// Text is the text content.
 	Text string `json:"text"`
+
+	// Annotations holds citations attached to this text part (url_citation,
+	// file_citation, container_file_citation, file_path).
+	Annotations []TextAnnotation `json:"annotations,omitempty"`
 }
 
 // FunctionCallItem represents a function call output item.
@@ -50,8 +54,75 @@ type FunctionCallItem struct {
 	// Name is the function name.
 	Name string `json:"name"`
 
+	// Namespace identifies the deferred tool namespace when a function call
+	// came from Responses API tool search.
+	Namespace string `json:"namespace,omitempty"`
+
+	// Async indicates the model continued generating without waiting for
+	// this call's result (row 4a09793).
+	Async *bool `json:"async,omitempty"`
+
+	// Caller identifies whether this call was made directly by the model or
+	// by generated code running inside a programmatic tool calling "program"
+	// (row 1f6dd3a).
+	Caller *ToolCaller `json:"caller,omitempty"`
+
 	// Arguments is the JSON-encoded argument string.
 	Arguments string `json:"arguments"`
+}
+
+// ToolCaller identifies who invoked a function/custom tool call: either the
+// model directly ("direct"), or generated code running inside a hosted
+// programmatic-tool-calling "program" ("program", carrying the generating
+// program call's id). Mirrors TS OpenAIResponsesToolCaller (row 1f6dd3a).
+type ToolCaller struct {
+	// Type is "direct" or "program".
+	Type string `json:"type"`
+
+	// CallerID is the call_id of the generating "program" item. Only set
+	// when Type is "program".
+	CallerID string `json:"caller_id,omitempty"`
+}
+
+// ProgramItem represents a "program" output item: JavaScript code OpenAI's
+// hosted programmatic tool calling generated and is executing, which may in
+// turn invoke declared function tools with generated arguments (row
+// 1f6dd3a).
+type ProgramItem struct {
+	// Type is always "program".
+	Type string `json:"type"`
+
+	// ID is the unique identifier for this output item.
+	ID string `json:"id,omitempty"`
+
+	// CallID links this program to its ProgramOutputItem.
+	CallID string `json:"call_id"`
+
+	// Code is the JavaScript source generated and executed by OpenAI.
+	Code string `json:"code"`
+
+	// Fingerprint is an opaque replay fingerprint that must be preserved
+	// across requests.
+	Fingerprint string `json:"fingerprint"`
+}
+
+// ProgramOutputItem represents the result of a ProgramItem's hosted
+// execution (row 1f6dd3a).
+type ProgramOutputItem struct {
+	// Type is always "program_output".
+	Type string `json:"type"`
+
+	// ID is the unique identifier for this output item.
+	ID string `json:"id,omitempty"`
+
+	// CallID matches the originating ProgramItem.CallID.
+	CallID string `json:"call_id"`
+
+	// Result is the result emitted by the hosted JavaScript program.
+	Result string `json:"result"`
+
+	// Status is "completed" or "incomplete".
+	Status string `json:"status"`
 }
 
 // CustomToolCallItem represents a custom tool call output item.
@@ -67,6 +138,15 @@ type CustomToolCallItem struct {
 
 	// Name is the custom tool name.
 	Name string `json:"name"`
+
+	// Async indicates the model continued generating without waiting for
+	// this call's result (row 4a09793).
+	Async *bool `json:"async,omitempty"`
+
+	// Caller identifies whether this call was made directly by the model or
+	// by generated code running inside a programmatic tool calling "program"
+	// (row 1f6dd3a).
+	Caller *ToolCaller `json:"caller,omitempty"`
 
 	// Input is the raw input string for the custom tool.
 	Input string `json:"input"`
@@ -100,17 +180,26 @@ type CustomToolCallOutputPart struct {
 	// ImageURL is the image URL (input_image only).
 	ImageURL string `json:"image_url,omitempty"`
 
-	// Filename is the file name (input_file only).
+	// Detail controls OpenAI image processing detail (input_image only).
+	Detail string `json:"detail,omitempty"`
+
+	// Filename is the file name (input_file with inline data only).
 	Filename string `json:"filename,omitempty"`
 
-	// FileData is the base64-encoded file content (input_file only).
+	// FileData is the base64-encoded file content (input_file with inline data only).
 	FileData string `json:"file_data,omitempty"`
+
+	// FileURL is a remote URL reference to a file (input_file with URL only).
+	FileURL string `json:"file_url,omitempty"`
+
+	// FileID is a provider file reference (input_file with uploaded file id).
+	FileID string `json:"file_id,omitempty"`
 }
 
 // CompactionEvent is received in the Responses API SSE stream when the server
 // has compacted the conversation context. Callers should forward the
 // EncryptedContent in subsequent requests to maintain conversation continuity.
-// Surface this to consumers as a CustomContent{Kind: "openai-compaction"} chunk.
+// Surface this to consumers as a CustomContent{Kind: "openai.compaction"} chunk.
 type CompactionEvent struct {
 	// Type is always "compaction".
 	Type string `json:"type"`
@@ -195,6 +284,30 @@ type FunctionToolDef struct {
 
 	// Strict enables strict schema validation.
 	Strict *bool `json:"strict,omitempty"`
+
+	// DeferLoading marks the function as deferred for OpenAI tool_search.
+	DeferLoading *bool `json:"defer_loading,omitempty"`
+
+	// Async, when true, lets the model continue generating after calling
+	// this tool without waiting for its result (row 4a09793). Only
+	// supported by GPT-6 and later models.
+	Async *bool `json:"async,omitempty"`
+
+	// AllowedCallers restricts which callers ("direct"/"programmatic") may
+	// invoke this tool (programmatic tool calling).
+	AllowedCallers []string `json:"allowed_callers,omitempty"`
+
+	// OutputSchema, when set, tells OpenAI to parse the function's
+	// function_call_output.output as JSON against this schema.
+	OutputSchema interface{} `json:"output_schema,omitempty"`
+}
+
+// NamespaceToolDef groups function tools under an OpenAI Responses namespace.
+type NamespaceToolDef struct {
+	Type        string            `json:"type"`
+	Name        string            `json:"name"`
+	Description string            `json:"description"`
+	Tools       []FunctionToolDef `json:"tools"`
 }
 
 // LocalShellToolDef represents the local_shell tool in an API request.
@@ -208,6 +321,22 @@ type LocalShellToolDef struct {
 type ApplyPatchToolDef struct {
 	// Type is always "apply_patch".
 	Type string `json:"type"`
+}
+
+// WebSearchToolDef represents the stable web_search tool in a Responses request.
+type WebSearchToolDef struct {
+	Type              string                 `json:"type"`
+	Filters           map[string]interface{} `json:"filters,omitempty"`
+	ExternalWebAccess *bool                  `json:"external_web_access,omitempty"`
+	SearchContextSize string                 `json:"search_context_size,omitempty"`
+	UserLocation      interface{}            `json:"user_location,omitempty"`
+}
+
+// WebSearchPreviewToolDef represents the web_search_preview tool in a Responses request.
+type WebSearchPreviewToolDef struct {
+	Type              string      `json:"type"`
+	SearchContextSize string      `json:"search_context_size,omitempty"`
+	UserLocation      interface{} `json:"user_location,omitempty"`
 }
 
 // ShellToolDef represents the shell container tool in an API request.
@@ -253,6 +382,11 @@ type CustomToolDef struct {
 
 	// Format specifies output format constraints.
 	Format *CustomToolDefFormat `json:"format,omitempty"`
+
+	// Async, when true, lets the model continue generating after calling
+	// this tool without waiting for its result (row 4a09793). Only
+	// supported by GPT-6 and later models.
+	Async *bool `json:"async,omitempty"`
 }
 
 // CustomToolDefFormat specifies the output format constraints for a custom tool.
@@ -286,14 +420,31 @@ type ToolSearchToolDef struct {
 	Parameters map[string]interface{} `json:"parameters,omitempty"`
 }
 
+// AllowedToolsToolChoice restricts callable tools while preserving the full
+// tools list in the request for prompt caching parity with the TS SDK.
+type AllowedToolsToolChoice struct {
+	Type  string                  `json:"type"`
+	Mode  string                  `json:"mode"`
+	Tools []AllowedToolsToolEntry `json:"tools"`
+}
+
+type AllowedToolsToolEntry struct {
+	Type string `json:"type"`
+	Name string `json:"name,omitempty"`
+	// ServerLabel identifies an "mcp" entry (mutually exclusive with Name).
+	ServerLabel string `json:"server_label,omitempty"`
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Responses API input types (sent in requests to /v1/responses)
 // ─────────────────────────────────────────────────────────────────────────────
 
 // SystemMessage is sent as the first input item for system/developer prompts.
 type SystemMessage struct {
-	Type    string `json:"type,omitempty"` // omit; legacy field
-	Role    string `json:"role"`           // "system" or "developer"
+	// Type is set to "message" only for Azure AI Foundry projects
+	// (ExplicitMessageItemType); otherwise omitted.
+	Type    string `json:"type,omitempty"`
+	Role    string `json:"role"` // "system" or "developer"
 	Content string `json:"content"`
 }
 
@@ -301,6 +452,9 @@ type SystemMessage struct {
 // Content is either a plain string (for text-only messages) or a slice of
 // UserTextPart / UserImageURLPart / UserFilePart for multi-modal input.
 type UserMessage struct {
+	// Type is set to "message" only for Azure AI Foundry projects
+	// (ExplicitMessageItemType); otherwise omitted.
+	Type    string      `json:"type,omitempty"`
 	Role    string      `json:"role"` // "user"
 	Content interface{} `json:"content"`
 }
@@ -313,22 +467,169 @@ type UserTextPart struct {
 
 // UserImageURLPart is an image content part in a user message.
 type UserImageURLPart struct {
-	Type     string `json:"type"`      // "input_image"
+	Type     string `json:"type"` // "input_image"
 	ImageURL string `json:"image_url"`
+	Detail   string `json:"detail,omitempty"`
 }
 
 // UserFilePart references a file by URL in a user message.
 type UserFilePart struct {
-	Type    string `json:"type"`     // "input_file"
+	Type    string `json:"type"` // "input_file"
 	FileURL string `json:"file_url"`
 }
 
 // FunctionCallOutputItem sends a function tool result back to the Responses API.
 // It pairs with a FunctionCallItem via CallID.
 type FunctionCallOutputItem struct {
-	Type   string      `json:"type"`   // "function_call_output"
+	Type   string      `json:"type"` // "function_call_output"
 	CallID string      `json:"call_id"`
 	Output interface{} `json:"output"` // string or []CustomToolCallOutputPart
+}
+
+// ImageGenerationCallItem represents a hosted image_generation tool call
+// output item. Result (the base64-encoded generated image) is only present
+// on the output_item.done / non-streaming shape.
+type ImageGenerationCallItem struct {
+	// Type is always "image_generation_call".
+	Type string `json:"type"`
+
+	// ID is the unique identifier for this output item.
+	ID string `json:"id,omitempty"`
+
+	// Result is the base64-encoded generated image. Absent at
+	// output_item.added time.
+	Result string `json:"result,omitempty"`
+}
+
+// FileSearchResult is a single matched document from a file_search_call.
+type FileSearchResult struct {
+	Attributes map[string]interface{} `json:"attributes,omitempty"`
+	FileID     string                 `json:"file_id"`
+	Filename   string                 `json:"filename"`
+	Score      float64                `json:"score"`
+	Text       string                 `json:"text"`
+}
+
+// FileSearchCallItem represents a hosted file_search tool call output item.
+// Queries/Results are only present on the output_item.done / non-streaming
+// shape.
+type FileSearchCallItem struct {
+	// Type is always "file_search_call".
+	Type string `json:"type"`
+
+	// ID is the unique identifier for this output item.
+	ID string `json:"id,omitempty"`
+
+	Queries []string           `json:"queries,omitempty"`
+	Results []FileSearchResult `json:"results,omitempty"`
+}
+
+// CodeInterpreterOutput is a single output artifact from a code_interpreter
+// tool call: either a text log or a generated image URL.
+type CodeInterpreterOutput struct {
+	// Type is "logs" or "image".
+	Type string `json:"type"`
+	Logs string `json:"logs,omitempty"`
+	URL  string `json:"url,omitempty"`
+}
+
+// CodeInterpreterCallItem represents a hosted code_interpreter tool call
+// output item.
+type CodeInterpreterCallItem struct {
+	// Type is always "code_interpreter_call".
+	Type string `json:"type"`
+
+	// ID is the unique identifier for this output item.
+	ID string `json:"id,omitempty"`
+
+	// ContainerID identifies the sandbox container running the code.
+	ContainerID string `json:"container_id,omitempty"`
+
+	// Code is the code executed, or nil if not yet available.
+	Code *string `json:"code,omitempty"`
+
+	// Outputs holds the logs/images produced by execution. Only present at
+	// output_item.done / non-streaming time.
+	Outputs []CodeInterpreterOutput `json:"outputs,omitempty"`
+
+	// Status is "in_progress", "completed", or "incomplete".
+	Status string `json:"status,omitempty"`
+}
+
+// McpErrorValue is either a plain string or a structured error object,
+// mirroring the Responses API's loose mcp_call/mcp_list_tools error shape.
+type McpErrorValue struct {
+	// Message holds the error when it was a plain string.
+	Message string
+	// Raw holds the full structured error object when the API returned one.
+	Raw json.RawMessage
+}
+
+// UnmarshalJSON accepts either a JSON string or an arbitrary JSON object for
+// the mcp error field.
+func (e *McpErrorValue) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		e.Message = s
+		e.Raw = nil
+		return nil
+	}
+	e.Raw = append(json.RawMessage(nil), data...)
+	return nil
+}
+
+// MarshalJSON re-emits the original string or object form.
+func (e McpErrorValue) MarshalJSON() ([]byte, error) {
+	if e.Raw != nil {
+		return e.Raw, nil
+	}
+	return json.Marshal(e.Message)
+}
+
+// AsJSONValue returns the error as a value suitable for a tool-result JSON
+// payload: the raw structured object when present, otherwise the string.
+func (e McpErrorValue) AsJSONValue() interface{} {
+	if e.Raw != nil {
+		var v interface{}
+		if err := json.Unmarshal(e.Raw, &v); err == nil {
+			return v
+		}
+		return string(e.Raw)
+	}
+	return e.Message
+}
+
+// McpCallItem represents an MCP tool invocation resolved by the Responses
+// API's hosted MCP integration.
+type McpCallItem struct {
+	// Type is always "mcp_call".
+	Type string `json:"type"`
+
+	// ID is the unique identifier for this output item.
+	ID string `json:"id,omitempty"`
+
+	Status            string         `json:"status,omitempty"`
+	Arguments         string         `json:"arguments,omitempty"`
+	Name              string         `json:"name,omitempty"`
+	ServerLabel       string         `json:"server_label,omitempty"`
+	Output            *string        `json:"output,omitempty"`
+	Error             *McpErrorValue `json:"error,omitempty"`
+	ApprovalRequestID *string        `json:"approval_request_id,omitempty"`
+}
+
+// McpApprovalRequestItem is emitted when a hosted MCP tool call requires
+// user approval before execution.
+type McpApprovalRequestItem struct {
+	// Type is always "mcp_approval_request".
+	Type string `json:"type"`
+
+	// ID is the unique identifier for this output item.
+	ID string `json:"id,omitempty"`
+
+	ServerLabel       string  `json:"server_label,omitempty"`
+	Name              string  `json:"name,omitempty"`
+	Arguments         string  `json:"arguments,omitempty"`
+	ApprovalRequestID *string `json:"approval_request_id,omitempty"`
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -337,25 +638,89 @@ type FunctionCallOutputItem struct {
 
 // ResponsesAPIResponse is the body returned by a non-streaming POST /responses.
 type ResponsesAPIResponse struct {
-	ID                string             `json:"id"`
-	CreatedAt         int64              `json:"created_at"`
-	Model             string             `json:"model"`
-	ServiceTier       string             `json:"service_tier,omitempty"`
-	Output            []json.RawMessage  `json:"output"`
-	Usage             ResponsesAPIUsage  `json:"usage"`
+	ID          string `json:"id"`
+	CreatedAt   int64  `json:"created_at"`
+	Model       string `json:"model"`
+	ServiceTier string `json:"service_tier,omitempty"`
+
+	// PromptCacheKey and SafetyIdentifier are echoed back verbatim when the
+	// request set them (xAI Responses API; row 0a5dd0f9c3).
+	PromptCacheKey   string `json:"prompt_cache_key,omitempty"`
+	SafetyIdentifier string `json:"safety_identifier,omitempty"`
+	// Status is the terminal state: "completed", "incomplete", "failed".
+	// Primary signal for finish reason; use IncompleteDetails for truncation details.
+	Status string            `json:"status,omitempty"`
+	Output []json.RawMessage `json:"output"`
+	// Usage is a pointer so a JSON `null`/absent usage field can be
+	// distinguished from an explicit all-zero usage object (row f6fac50).
+	Usage             *ResponsesAPIUsage `json:"usage,omitempty"`
 	IncompleteDetails *IncompleteDetails `json:"incomplete_details,omitempty"`
+
+	// Reasoning carries the effective reasoning configuration echoed back by
+	// the API (row b2b1bb9, Responses half: GPT-5.6 reasoningContext).
+	Reasoning *ResponsesReasoningInfo `json:"reasoning,omitempty"`
+
+	// Error is populated for a 200 response that failed at the API level
+	// (row 75f86f4): non-nil means the request must fail with the embedded
+	// message, mapped to HTTP status 400.
+	Error *ResponsesAPIError `json:"error,omitempty"`
+}
+
+// ResponsesReasoningInfo is the `reasoning` object echoed back on a
+// Responses API response, carrying the effective reasoning context
+// (row b2b1bb9: GPT-5.6 `reasoningContext`).
+type ResponsesReasoningInfo struct {
+	Context string `json:"context,omitempty"`
+}
+
+// ResponsesAPIError is the `error` object embedded in an otherwise-200
+// Responses API response body.
+type ResponsesAPIError struct {
+	Message string `json:"message"`
+	Type    string `json:"type,omitempty"`
+	Param   string `json:"param,omitempty"`
+	Code    string `json:"code,omitempty"`
 }
 
 // ResponsesAPIUsage holds token counts from a Responses API response.
 type ResponsesAPIUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens        int      `json:"input_tokens"`
+	OutputTokens       int      `json:"output_tokens"`
+	CostInUsdTicks     *int64   `json:"cost_in_usd_ticks,omitempty"`
+	InputTokensCost    *float64 `json:"input_tokens_cost,omitempty"`
+	OutputTokensCost   *float64 `json:"output_tokens_cost,omitempty"`
 	InputTokensDetails *struct {
-		CachedTokens int `json:"cached_tokens,omitempty"`
+		CachedTokens     int  `json:"cached_tokens,omitempty"`
+		CacheWriteTokens *int `json:"cache_write_tokens,omitempty"`
 	} `json:"input_tokens_details,omitempty"`
 	OutputTokensDetails *struct {
 		ReasoningTokens int `json:"reasoning_tokens,omitempty"`
 	} `json:"output_tokens_details,omitempty"`
+
+	// Raw holds the complete usage JSON object as a generic map, capturing
+	// any provider-specific fields not modeled by the typed fields above
+	// (e.g. xAI's total_tokens/num_sources_used/num_server_side_tools_used,
+	// OpenAI's orchestration_* fields). Populated by UnmarshalJSON below.
+	// Row 41e7760 (xAI) / 7243530 (OpenAI): consumers should assign this to
+	// types.Usage.Raw instead of hand-picking individual fields.
+	Raw map[string]interface{} `json:"-"`
+}
+
+// UnmarshalJSON decodes the typed fields as usual, then separately decodes
+// the same bytes into Raw so no field present in the response is lost, even
+// ones not modeled above.
+func (u *ResponsesAPIUsage) UnmarshalJSON(data []byte) error {
+	type responsesAPIUsageAlias ResponsesAPIUsage
+	var alias responsesAPIUsageAlias
+	if err := json.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+	*u = ResponsesAPIUsage(alias)
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err == nil {
+		u.Raw = raw
+	}
+	return nil
 }
 
 // IncompleteDetails explains why a Responses API response was cut short.
@@ -371,14 +736,21 @@ type IncompleteDetails struct {
 // before full parsing.
 type ResponsesStreamEvent struct {
 	Type string `json:"type"`
+
+	// Choices is only ever populated for a Chat Completions-shaped chunk
+	// (row 1ead90c): a Responses API event always has a "type" discriminator
+	// and never a top-level "choices" array. Used to detect a caller
+	// pointing this model at a Chat Completions-compatible endpoint.
+	Choices json.RawMessage `json:"choices,omitempty"`
 }
 
 // ResponseCreatedEvent is emitted at the start of a streaming response.
 type ResponseCreatedEvent struct {
 	Type     string `json:"type"` // "response.created"
 	Response struct {
-		ID    string `json:"id"`
-		Model string `json:"model"`
+		ID        string `json:"id"`
+		CreatedAt int64  `json:"created_at"`
+		Model     string `json:"model"`
 	} `json:"response"`
 }
 
@@ -391,6 +763,26 @@ type OutputItemAddedEvent struct {
 		ID     string `json:"id,omitempty"`
 		CallID string `json:"call_id,omitempty"` // function_call
 		Name   string `json:"name,omitempty"`    // function_call
+		// Namespace is present for function_call items produced by tool search.
+		Namespace string `json:"namespace,omitempty"`
+		// EncryptedContent is present on "reasoning" items.
+		EncryptedContent string `json:"encrypted_content,omitempty"`
+		// Phase is present on "message" items.
+		Phase *string `json:"phase,omitempty"`
+		// Execution is present on "tool_search_call" items ("server"/"client").
+		Execution string `json:"execution,omitempty"`
+		// ContainerID is present on "code_interpreter_call" items.
+		ContainerID string `json:"container_id,omitempty"`
+		// Async is present on "function_call" and "custom_tool_call" items.
+		Async *bool `json:"async,omitempty"`
+		// Operation is present on "apply_patch_call" items. Diff is omitted
+		// here: at output_item.added it may be empty/partial and the
+		// operation type/path are all that's needed to build the opening
+		// JSON prefix for progressive tool-input-delta streaming.
+		Operation *struct {
+			Type string `json:"type"`
+			Path string `json:"path,omitempty"`
+		} `json:"operation,omitempty"`
 	} `json:"item"`
 }
 
@@ -408,12 +800,113 @@ type FunctionCallArgumentsDeltaEvent struct {
 	Delta       string `json:"delta"`
 }
 
+// ReasoningSummaryPartAddedEvent is emitted when a new reasoning summary part begins.
+// Signals that a reasoning block has started for the given item.
+type ReasoningSummaryPartAddedEvent struct {
+	Type         string `json:"type"` // "response.reasoning_summary_part.added"
+	ItemID       string `json:"item_id"`
+	OutputIndex  int    `json:"output_index"`
+	SummaryIndex int    `json:"summary_index"`
+}
+
 // ReasoningSummaryTextDeltaEvent carries an incremental reasoning text chunk.
 type ReasoningSummaryTextDeltaEvent struct {
-	Type        string `json:"type"` // "response.reasoning_summary_text.delta"
+	Type         string `json:"type"` // "response.reasoning_summary_text.delta"
+	ItemID       string `json:"item_id"`
+	OutputIndex  int    `json:"output_index"`
+	SummaryIndex int    `json:"summary_index"`
+	Delta        string `json:"delta"`
+}
+
+// ReasoningSummaryPartDoneEvent is emitted when a reasoning summary part
+// finishes. Whether it immediately closes the reasoning block or waits for
+// output_item.done depends on whether the request used store=false (so the
+// encrypted_content on the final item can still be attached).
+type ReasoningSummaryPartDoneEvent struct {
+	Type         string `json:"type"` // "response.reasoning_summary_part.done"
+	ItemID       string `json:"item_id"`
+	OutputIndex  int    `json:"output_index"`
+	SummaryIndex int    `json:"summary_index"`
+}
+
+// ImageGenerationPartialImageEvent carries a partial (in-progress) base64
+// image while a hosted image_generation tool call streams progressive
+// previews.
+type ImageGenerationPartialImageEvent struct {
+	Type            string `json:"type"` // "response.image_generation_call.partial_image"
+	ItemID          string `json:"item_id"`
+	OutputIndex     int    `json:"output_index"`
+	PartialImageB64 string `json:"partial_image_b64"`
+}
+
+// CodeInterpreterCallCodeDeltaEvent carries an incremental chunk of code
+// being written by a hosted code_interpreter tool call.
+type CodeInterpreterCallCodeDeltaEvent struct {
+	Type        string `json:"type"` // "response.code_interpreter_call_code.delta"
 	ItemID      string `json:"item_id"`
 	OutputIndex int    `json:"output_index"`
 	Delta       string `json:"delta"`
+}
+
+// CodeInterpreterCallCodeDoneEvent carries the fully assembled code for a
+// hosted code_interpreter tool call.
+type CodeInterpreterCallCodeDoneEvent struct {
+	Type        string `json:"type"` // "response.code_interpreter_call_code.done"
+	ItemID      string `json:"item_id"`
+	OutputIndex int    `json:"output_index"`
+	Code        string `json:"code"`
+}
+
+// CustomToolCallInputDeltaEvent carries an incremental chunk of a custom
+// tool call's raw input string.
+type CustomToolCallInputDeltaEvent struct {
+	Type        string `json:"type"` // "response.custom_tool_call_input.delta"
+	ItemID      string `json:"item_id"`
+	OutputIndex int    `json:"output_index"`
+	Delta       string `json:"delta"`
+}
+
+// ApplyPatchCallOperationDiffDeltaEvent carries an incremental chunk of an
+// apply_patch call's diff text.
+type ApplyPatchCallOperationDiffDeltaEvent struct {
+	Type        string `json:"type"` // "response.apply_patch_call_operation_diff.delta"
+	ItemID      string `json:"item_id"`
+	OutputIndex int    `json:"output_index"`
+	Delta       string `json:"delta"`
+}
+
+// ApplyPatchCallOperationDiffDoneEvent carries the fully assembled diff for
+// an apply_patch call.
+type ApplyPatchCallOperationDiffDoneEvent struct {
+	Type        string `json:"type"` // "response.apply_patch_call_operation_diff.done"
+	ItemID      string `json:"item_id"`
+	OutputIndex int    `json:"output_index"`
+	Diff        string `json:"diff"`
+}
+
+// OutputTextAnnotationAddedEvent carries one citation/annotation as it is
+// attached to the currently streaming text part.
+type OutputTextAnnotationAddedEvent struct {
+	Type       string         `json:"type"` // "response.output_text.annotation.added"
+	Annotation TextAnnotation `json:"annotation"`
+}
+
+// TextAnnotation is a single citation attached to assistant message text:
+// url_citation, file_citation, container_file_citation, or file_path.
+type TextAnnotation struct {
+	Type string `json:"type"`
+
+	// url_citation
+	StartIndex int    `json:"start_index,omitempty"`
+	EndIndex   int    `json:"end_index,omitempty"`
+	URL        string `json:"url,omitempty"`
+	Title      string `json:"title,omitempty"`
+
+	// file_citation / container_file_citation / file_path
+	FileID      string `json:"file_id,omitempty"`
+	Filename    string `json:"filename,omitempty"`
+	Index       int    `json:"index,omitempty"`
+	ContainerID string `json:"container_id,omitempty"`
 }
 
 // OutputItemDoneEvent is emitted when an output item is fully assembled.
@@ -428,9 +921,15 @@ type OutputItemDoneEvent struct {
 type ResponseCompletedEvent struct {
 	Type     string `json:"type"` // "response.completed"
 	Response struct {
-		ID                string             `json:"id"`
-		Usage             ResponsesAPIUsage  `json:"usage"`
-		IncompleteDetails *IncompleteDetails `json:"incomplete_details,omitempty"`
+		ID string `json:"id"`
+		// Status is "completed", "incomplete", or "failed". Primary finish-reason signal.
+		Status            string                  `json:"status,omitempty"`
+		Usage             *ResponsesAPIUsage      `json:"usage,omitempty"`
+		IncompleteDetails *IncompleteDetails      `json:"incomplete_details,omitempty"`
+		ServiceTier       string                  `json:"service_tier,omitempty"`
+		PromptCacheKey    string                  `json:"prompt_cache_key,omitempty"`
+		SafetyIdentifier  string                  `json:"safety_identifier,omitempty"`
+		Reasoning         *ResponsesReasoningInfo `json:"reasoning,omitempty"`
 	} `json:"response"`
 }
 
@@ -440,12 +939,13 @@ type ResponseFailedEvent struct {
 	Response struct {
 		ID          string             `json:"id"`
 		ServiceTier string             `json:"service_tier,omitempty"`
-		Usage       ResponsesAPIUsage  `json:"usage"`
+		Usage       *ResponsesAPIUsage `json:"usage,omitempty"`
 		Error       *struct {
 			Code    string `json:"code,omitempty"`
 			Message string `json:"message,omitempty"`
 		} `json:"error,omitempty"`
-		IncompleteDetails *IncompleteDetails `json:"incomplete_details,omitempty"`
+		IncompleteDetails *IncompleteDetails      `json:"incomplete_details,omitempty"`
+		Reasoning         *ResponsesReasoningInfo `json:"reasoning,omitempty"`
 	} `json:"response"`
 }
 

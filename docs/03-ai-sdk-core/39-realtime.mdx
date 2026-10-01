@@ -1,0 +1,47 @@
+---
+title: Realtime Sessions
+description: Provider-neutral realtime session helpers for Go-AI.
+---
+
+# Realtime Sessions
+
+The Go SDK exposes the TypeScript AI SDK experimental realtime model surface through `provider.Experimental_RealtimeModelV4` and the provider-neutral helper `ai.ConnectRealtime`.
+
+```go
+model, err := openaiProvider.RealtimeModel(openai.ModelGPT4oRealtimePreview)
+if err != nil {
+    log.Fatal(err)
+}
+
+instructions := "Answer briefly."
+
+session, err := ai.ConnectRealtime(ctx, model, ai.RealtimeSessionOptions{
+    SessionConfig: &provider.RealtimeSessionConfig{
+        Instructions: &instructions,
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer session.Close()
+```
+
+The helper creates a provider client secret, opens the provider WebSocket, sends an initial session update when `SessionConfig` is supplied, and normalizes provider server events. Unknown provider events are preserved on `RealtimeServerEvent.Raw` with their raw provider event type so callers can handle new provider events before the SDK adds first-class fields.
+
+## Providers
+
+- OpenAI realtime: `openai.Provider.RealtimeModel`, `ExperimentalRealtimeModel`, and `GetRealtimeToken`.
+- Google Gemini Live: `google.Provider.RealtimeModel`, `ExperimentalRealtimeModel`, and `GetRealtimeToken`.
+- xAI realtime: `xai.Provider.RealtimeModel`, `ExperimentalRealtimeModel`, and `GetRealtimeToken`.
+
+Gateway realtime is not exposed because the June 6 TypeScript range did not include a Gateway realtime model, factory, tests, or changeset.
+
+## Not Applicable Browser Pieces
+
+The TypeScript SDK also ships browser-only realtime transports and React helpers. They are intentionally not implemented in Go:
+
+- `BrowserRealtimeTransport`
+- `BrowserRealtimeAudio`
+- `useRealtime`
+
+Go callers provide a server-side WebSocket dialer through `RealtimeSessionOptions.Dialer` when they need custom transport behavior.

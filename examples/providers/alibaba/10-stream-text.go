@@ -47,7 +47,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	// Process stream chunks
 	fmt.Println("Streaming response:")
@@ -86,7 +86,7 @@ func main() {
 	}
 
 	// Print summary
-	fmt.Println("\n")
+	fmt.Println()
 	fmt.Println("---")
 	fmt.Printf("Finish Reason: %s\n", finishReason)
 

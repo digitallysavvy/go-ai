@@ -2,14 +2,28 @@ package anthropic
 
 import (
 	"fmt"
+	"io"
+	stdhttp "net/http"
+	"os"
+	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 const (
-	// DefaultBaseURL is the default Anthropic API base URL
-	DefaultBaseURL = "https://api.anthropic.com"
+	// DefaultBaseURL is the default Anthropic API base URL. Like the TS SDK,
+	// the base URL includes the /v1 version prefix; request paths are
+	// relative to it ("/messages", "/files", "/skills").
+	DefaultBaseURL = "https://api.anthropic.com/v1"
+
+	// anthropicAPIURL is the unversioned API host. A base URL equal to it is
+	// normalized to DefaultBaseURL.
+	anthropicAPIURL = "https://api.anthropic.com"
 
 	// DefaultAPIVersion is the default Anthropic API version
 	DefaultAPIVersion = "2023-06-01"
@@ -26,16 +40,111 @@ type Config struct {
 	// APIKey is the Anthropic API key
 	APIKey string
 
-	// BaseURL is the base URL for the Anthropic API (default: https://api.anthropic.com)
+	// Name overrides the provider name returned by Provider.Name() and
+	// LanguageModel.Provider(). Defaults to "anthropic".
+	Name string
+
+	// BaseURL is the URL prefix for API calls, including the version path
+	// (default: https://api.anthropic.com/v1, or ANTHROPIC_BASE_URL). The bare
+	// host https://api.anthropic.com is normalized to .../v1. A base URL that
+	// is set but empty after trimming whitespace makes New panic, matching the
+	// TS validateBaseURL error ("baseURL must be a non-empty string.").
 	BaseURL string
 
 	// APIVersion is the Anthropic API version (default: 2023-06-01)
 	APIVersion string
+
+	// OmitAPIVersionHeader disables the anthropic-version HTTP header. This is
+	// used by Vertex Anthropic, which sends anthropic_version in the JSON body.
+	OmitAPIVersionHeader bool
+
+	// HTTPClient overrides the HTTP client used for all requests.
+	HTTPClient *stdhttp.Client `json:"-"`
+
+	// MessagesPath builds the request path for messages API calls. Defaults to
+	// "/messages" (relative to BaseURL).
+	MessagesPath func(modelID string, stream bool) string `json:"-"`
+
+	// TransformRequestBody can rewrite the Anthropic messages request body before
+	// it is sent. It is used by Vertex Anthropic to remove the model field and
+	// inject anthropic_version in the JSON body.
+	TransformRequestBody func(body map[string]interface{}, stream bool) map[string]interface{} `json:"-"`
+
+	// TransformRequestBodyWithBetas rewrites the request body with access to
+	// the request's anthropic-beta flags (TS transformRequestBody(args, betas)).
+	// It runs before TransformRequestBody. Bedrock-Anthropic uses it.
+	TransformRequestBodyWithBetas func(body map[string]interface{}, betas []string, stream bool) map[string]interface{} `json:"-"`
+
+	// TransformStreamBody wraps the streaming response body before SSE
+	// parsing (for example to convert an AWS event stream into SSE).
+	TransformStreamBody func(body io.ReadCloser, header stdhttp.Header) io.ReadCloser `json:"-"`
+
+	// TransformErrorBody rewrites a non-2xx response body into the Anthropic
+	// error shape before it is parsed.
+	TransformErrorBody func(body []byte) []byte `json:"-"`
+
+	// SupportsNativeStructuredOutput gates native structured output. A nil
+	// value means true; the model capability must also allow it.
+	SupportsNativeStructuredOutput *bool
+
+	// SupportsImageInput overrides model capability detection. A nil value
+	// preserves the default Anthropic model-based behavior.
+	SupportsImageInput *bool
+
+	// SupportsStrictTools controls whether strict mode on function tools is sent
+	// to Anthropic. A nil value means true; the model capability must also
+	// allow it.
+	SupportsStrictTools *bool
+
+	// SupportedURLs overrides the URL patterns the model accepts directly
+	// without downloading first (TS languageModelConfig.supportedUrls). A nil
+	// value falls back to DefaultSupportedURLs (https image/* and
+	// application/pdf), matching the direct Anthropic and anthropic-aws
+	// providers. Vertex-Anthropic and Bedrock-Anthropic set this to a function
+	// that returns an empty map to force base64 conversion, matching TS.
+	SupportedURLs func(modelID string) map[string][]string `json:"-"`
+
+	// Headers are custom HTTP headers to include in requests.
+	Headers map[string]string `json:"headers,omitempty"`
+
+	// UserAgentName selects the `ai-sdk/<name>/VERSION` User-Agent tag this
+	// provider construction adds (version.ProviderUserAgent). Defaults to
+	// "anthropic". TS's anthropic-aws and minimax packages are each their
+	// own npm package with their own tag ("ai-sdk/anthropic-aws",
+	// "ai-sdk/minimax"); Go's anthropicaws and minimax packages implement
+	// this by reusing anthropic.New as their Messages-API transport, so they
+	// set this field to avoid inheriting the wrong "ai-sdk/anthropic" tag.
+	UserAgentName string `json:"userAgentName,omitempty"`
+
+	// NoUserAgentTag disables the `ai-sdk/<name>/VERSION` tag entirely
+	// (UserAgentName is ignored when this is true). TS's
+	// google-vertex-anthropic-provider.ts builds its
+	// AnthropicLanguageModel directly instead of going through
+	// createAnthropic (the only place TS's own `ai-sdk/anthropic/VERSION`
+	// tag is added), so Vertex-Anthropic requests carry no
+	// anthropic-package tag at all -- only the runtime tag the shared HTTP
+	// client appends downstream. pkg/providers/googlevertex/anthropic sets
+	// this to match.
+	NoUserAgentTag bool `json:"noUserAgentTag,omitempty"`
+}
+
+// DefaultSupportedURLs returns the URL patterns the direct Anthropic API and
+// anthropic-aws accept without downloading first: https URLs for image and
+// PDF content. Mirrors the supportedUrls map in TS anthropic-provider.ts /
+// anthropic-aws-provider.ts.
+func DefaultSupportedURLs() map[string][]string {
+	return map[string][]string{
+		"image/*":         {`^https?://.*$`},
+		"application/pdf": {`^https?://.*$`},
+	}
 }
 
 // New creates a new Anthropic provider with the given configuration
 func New(cfg Config) *Provider {
-	baseURL := cfg.BaseURL
+	baseURL, err := NormalizeBaseURL(cfg.BaseURL)
+	if err != nil {
+		panic(err)
+	}
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
@@ -46,14 +155,27 @@ func New(cfg Config) *Provider {
 	}
 
 	// Create HTTP client with default headers
-	headers := map[string]string{
-		"x-api-key":         cfg.APIKey,
-		"anthropic-version": apiVersion,
+	headers := map[string]string{}
+	if cfg.APIKey != "" {
+		headers["x-api-key"] = cfg.APIKey
+	}
+	if !cfg.OmitAPIVersionHeader {
+		headers["anthropic-version"] = apiVersion
+	}
+
+	mergedHeaders := http.MergeHeaders(headers, cfg.Headers)
+	if !cfg.NoUserAgentTag {
+		uaName := cfg.UserAgentName
+		if uaName == "" {
+			uaName = "anthropic"
+		}
+		mergedHeaders = version.WithUserAgentSuffix(mergedHeaders, version.ProviderUserAgent(uaName))
 	}
 
 	client := http.NewClient(http.Config{
-		BaseURL: baseURL,
-		Headers: headers,
+		BaseURL:    baseURL,
+		Headers:    mergedHeaders,
+		HTTPClient: cfg.HTTPClient,
 	})
 
 	return &Provider{
@@ -62,8 +184,40 @@ func New(cfg Config) *Provider {
 	}
 }
 
+// NormalizeBaseURL validates and normalizes an Anthropic base URL (TS
+// normalizeBaseURL): whitespace-only values are rejected, a trailing slash is
+// removed and the bare https://api.anthropic.com host gains the /v1 prefix.
+// An empty value falls back to ANTHROPIC_BASE_URL and otherwise returns "".
+func NormalizeBaseURL(baseURL string) (string, error) {
+	if baseURL == "" {
+		baseURL = os.Getenv("ANTHROPIC_BASE_URL")
+		if baseURL == "" {
+			return "", nil
+		}
+	}
+	if err := providerutils.ValidateBaseURL(baseURL); err != nil {
+		return "", err
+	}
+	baseURL = strings.TrimRight(baseURL, "/")
+	if baseURL == anthropicAPIURL {
+		return DefaultBaseURL, nil
+	}
+	return baseURL, nil
+}
+
+// CreateAnthropic creates a new Anthropic provider.
+//
+// It mirrors the TypeScript SDK createAnthropic export while New remains the
+// idiomatic Go constructor.
+func CreateAnthropic(cfg Config) *Provider {
+	return New(cfg)
+}
+
 // Name returns the provider name
 func (p *Provider) Name() string {
+	if p.config.Name != "" {
+		return p.config.Name
+	}
 	return "anthropic"
 }
 
@@ -108,16 +262,40 @@ func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
 	// Anthropic doesn't provide transcription models
-	return nil, fmt.Errorf("LAnthropic does not support transcription")
+	return nil, fmt.Errorf("Anthropic does not support transcription") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 }
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
 	// Anthropic doesn't provide reranking models
-	return nil, fmt.Errorf("LAnthropic does not support reranking")
+	return nil, fmt.Errorf("Anthropic does not support reranking") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 }
 
 // Client returns the HTTP client for making API requests
 func (p *Provider) Client() *http.Client {
 	return p.client
+}
+
+func (p *Provider) Files() provider.FilesAPI {
+	return &FilesAPI{provider: p}
+}
+
+func (p *Provider) Skills() provider.SkillsAPI {
+	return &SkillsAPI{provider: p}
+}
+
+// EvaluationModel returns an experimental evaluation model backed by the
+// Anthropic Messages API language model. Mirrors TypeScript's
+// AnthropicProvider.evaluationModel: `provider.evaluationModel = (modelId) =>
+// new EvaluationLanguageModel({ model: createChatModel(modelId), provider:
+// providerName + '.evaluation' })`.
+func (p *Provider) EvaluationModel(modelID string) (provider.EvaluationModel, error) {
+	model, err := p.LanguageModel(modelID)
+	if err != nil {
+		return nil, err
+	}
+	return ai.NewEvaluationLanguageModel(ai.EvaluationLanguageModelOptions{
+		Model:    model,
+		Provider: p.Name() + ".evaluation",
+	})
 }

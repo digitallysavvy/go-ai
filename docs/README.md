@@ -45,102 +45,108 @@ func main() {
 
 ## Documentation Sections
 
-### [Foundations](./foundations/01-overview.md)
+### [Introduction](./00-introduction/index.mdx)
+
+What the Go AI SDK is and how it maps to the Vercel AI SDK.
+
+### [Foundations](./02-foundations/index.mdx)
 
 Core concepts for understanding the Go AI SDK:
 
-- [**Overview**](./foundations/01-overview.md) - Introduction to AI concepts
-- [**Providers and Models**](./foundations/02-providers-and-models.md) - Available providers and model capabilities
-- [**Prompts**](./foundations/03-prompts.md) - Text, message, and system prompts
-- [**Tools**](./foundations/04-tools.md) - Function calling and tool usage
-- [**Streaming**](./foundations/05-streaming.md) - Why and how to use streaming
+- [**Overview**](./02-foundations/01-overview.mdx) - Introduction to AI concepts
+- [**Providers and Models**](./02-foundations/02-providers-and-models.mdx) - Available providers and model capabilities
+- [**Prompts**](./02-foundations/03-prompts.mdx) - Text, message, and system prompts
+- [**Tools**](./02-foundations/04-tools.mdx) - Function calling and tool usage
+- [**Streaming**](./02-foundations/05-streaming.mdx) - Why and how to use streaming
 
-### [Core API](./core/01-overview.md)
+### [Getting Started](./02-getting-started/index.mdx)
+
+Installation and your first request with the Go AI SDK.
+
+### [Core API](./03-ai-sdk-core/index.mdx)
 
 Main SDK functionality for building AI applications:
 
-- [**Overview**](./core/01-overview.md) - Core API introduction
-- [**Generating Text**](./core/02-generating-text.md) - `GenerateText` and `StreamText`
-- [**Generating Structured Data**](./core/03-generating-structured-data.md) - `GenerateObject` and `StreamObject`
-- [**Tools and Tool Calling**](./core/04-tools-and-tool-calling.md) - Multi-step tool execution
-- [**Embeddings**](./core/05-embeddings.md) - `Embed` and `EmbedMany` with similarity functions
-- [**Reranking**](./core/06-reranking.md) - Document reranking
-- [**Image Generation**](./core/07-image-generation.md) - Text-to-image generation
-- [**Speech Generation**](./core/08-speech-generation.md) - Text-to-speech
-- [**Transcription**](./core/09-transcription.md) - Speech-to-text
-- [**Settings**](./core/10-settings.md) - Model parameters and configuration
-- [**Middleware**](./core/11-middleware.md) - Model wrapping and middleware
-- [**Provider Management**](./core/12-provider-management.md) - Registry and dynamic model selection
-- [**Error Handling**](./core/13-error-handling.md) - Error types and handling patterns
-- [**Testing**](./core/14-testing.md) - Testing strategies
-- [**Telemetry**](./core/15-telemetry.md) - OpenTelemetry integration
+- [**Overview**](./03-ai-sdk-core/01-overview.mdx) - Core API introduction
+- [**Generating Text**](./03-ai-sdk-core/05-generating-text.mdx) - `GenerateText` and `StreamText`
+- [**Generating Structured Data**](./03-ai-sdk-core/10-generating-structured-data.mdx) - `GenerateObject` and `StreamObject`
+- [**Tools and Tool Calling**](./03-ai-sdk-core/15-tools-and-tool-calling.mdx) - Multi-step tool execution
+- [**Embeddings**](./03-ai-sdk-core/30-embeddings.mdx) - `Embed` and `EmbedMany` with similarity functions
+- [**Reranking**](./03-ai-sdk-core/31-reranking.mdx) - Document reranking
+- [**Image Generation**](./03-ai-sdk-core/35-image-generation.mdx) - Text-to-image generation
+- [**Speech Generation**](./03-ai-sdk-core/37-speech.mdx) - Text-to-speech
+- [**Transcription**](./03-ai-sdk-core/36-transcription.mdx) - Speech-to-text
+- [**Settings**](./03-ai-sdk-core/25-settings.mdx) - Model parameters and configuration
+- [**Middleware**](./03-ai-sdk-core/40-middleware.mdx) - Model wrapping and middleware
+- [**Provider Management**](./03-ai-sdk-core/45-provider-management.mdx) - Registry and dynamic model selection
+- [**Error Handling**](./03-ai-sdk-core/50-error-handling.mdx) - Error types and handling patterns
+- [**Testing**](./03-ai-sdk-core/55-testing.mdx) - Testing strategies
+- [**Telemetry**](./03-ai-sdk-core/60-telemetry.mdx) - OpenTelemetry integration
 
-### [Agents](./agents/01-overview.md)
+### [Agents](./03-agents/index.mdx)
 
 Build autonomous agents:
 
-- [**Overview**](./agents/01-overview.md) - Agent concepts
-- [**Tool Loop Agent**](./agents/02-tool-loop-agent.md) - Multi-step reasoning
-- [**Advanced Patterns**](./agents/03-advanced-patterns.md) - Complex agent workflows
+- [**Overview**](./03-agents/01-overview.mdx) - Agent concepts
+- [**Building Agents**](./03-agents/02-building-agents.mdx) - `ToolLoopAgent` and multi-step reasoning
+- [**Workflows**](./03-agents/03-workflows.mdx) - Composing agents into workflows
 
-### [Advanced Topics](./advanced/01-prompt-engineering.md)
+### [Advanced Guides](./04-advanced/index.mdx)
 
-Advanced patterns and optimizations:
+In-depth application patterns:
 
-- [**Prompt Engineering**](./advanced/01-prompt-engineering.md) - Effective prompting strategies
-- [**Caching**](./advanced/02-caching.md) - Response caching
-- [**Rate Limiting**](./advanced/03-rate-limiting.md) - Rate limit handling
-- [**Backpressure**](./advanced/04-backpressure.md) - Stream backpressure
-- [**Sequential Generations**](./advanced/05-sequential-generations.md) - Chaining generations
-- [**Model as Router**](./advanced/06-model-as-router.md) - Dynamic model selection
+- [**Memory Management**](./04-advanced/memory-management.mdx) - Sliding window, compaction, and external memory stores
+- [**Coding Agents**](./04-advanced/coding-agents.mdx) - Generate, execute, and refine code
 
-### [Providers](./providers/01-overview.md)
+### [Providers](./05-providers/index.mdx)
 
-Provider-specific documentation for 26+ providers:
+Provider-specific documentation for 45+ providers:
 
 - OpenAI, Anthropic, Google, Azure, Bedrock, Cohere, Mistral, Groq, and more
 - Configuration and setup
 - Provider-specific features
 - Model capabilities
 
-### [API Reference](./reference/)
+### [Advanced](./06-advanced/index.mdx)
+
+Advanced topics and concepts:
+
+- [**Prompt Engineering**](./06-advanced/01-prompt-engineering.mdx) - Effective prompting strategies
+- [**Caching**](./06-advanced/04-caching.mdx) - Response caching
+- [**Rate Limiting**](./06-advanced/06-rate-limiting.mdx) - Rate limit handling
+- [**Backpressure**](./06-advanced/03-backpressure.mdx) - Stream backpressure
+- [**Sequential Generations**](./06-advanced/09-sequential-generations.mdx) - Chaining generations
+- [**Model as Router**](./06-advanced/08-model-as-router.mdx) - Dynamic model selection
+
+### [API Reference](./07-reference/index.mdx)
 
 Complete API documentation:
 
-- **[AI Package](./reference/ai/)** - Core functions (GenerateText, StreamText, etc.)
-- **[Provider Interfaces](./reference/providers/)** - LanguageModel, EmbeddingModel, etc.
-- **[Middleware](./reference/middleware/)** - Middleware types and functions
-- **[Registry](./reference/registry/)** - Provider registry
-- **[Schema](./reference/schema/)** - Schema validation
-- **[Types](./reference/types/)** - Message, Tool, Error types
+- **[AI Package](./07-reference/ai/)** - Core functions (GenerateText, StreamText, etc.)
+- **[Provider Interfaces](./07-reference/providers/)** - LanguageModel, EmbeddingModel, etc.
+- **[Middleware](./07-reference/middleware/)** - Middleware types and functions
+- **[Registry](./07-reference/registry/)** - Provider registry
+- **[Schema](./07-reference/schema/)** - Schema validation
+- **[Types](./07-reference/types/)** - Message, Tool, Error types
 
-### [Examples](./examples/)
+### [Examples](../examples/)
 
-Practical examples:
+Practical, runnable examples live in the [`examples/`](../examples/) directory at the
+repository root, organized by feature (`generate-text/`, `agents/`, `embed/`, `mcp/`,
+and more).
 
-- [**Text Generation**](./examples/01-text-generation.md)
-- [**Streaming**](./examples/02-streaming.md)
-- [**Structured Output**](./examples/03-structured-output.md)
-- [**Tool Calling**](./examples/04-tool-calling.md)
-- [**Embeddings**](./examples/05-embeddings.md)
-- [**Agents**](./examples/06-agents.md)
-- [**Middleware**](./examples/07-middleware.md)
-- [**Multi-Provider**](./examples/08-multi-provider.md)
+### [Migration Guides](./08-migration-guides/)
 
-### [Migration](./migration/)
+- [**From TypeScript AI SDK**](./08-migration-guides/from-typescript-ai-sdk.mdx)
+- [**From v0.4.x to v0.5.0**](./08-migration-guides/from-v0.4-to-v0.5.mdx)
 
-Migration guides:
-
-- [**From TypeScript AI SDK**](./migration/from-typescript.md)
-- [**From LangChain**](./migration/from-langchain.md)
-
-### [Troubleshooting](./troubleshooting/)
+### [Troubleshooting](./09-troubleshooting/index.mdx)
 
 Common issues and solutions:
 
-- [**Common Errors**](./troubleshooting/common-errors.md)
-- [**Rate Limits**](./troubleshooting/rate-limits.md)
-- [**Debugging**](./troubleshooting/debugging.md)
+- [**Common Errors**](./09-troubleshooting/01-common-errors.mdx)
+- [**Rate Limits**](./09-troubleshooting/03-rate-limits.mdx)
+- [**Debugging**](./09-troubleshooting/09-debugging.mdx)
 
 ## Key Features
 
@@ -209,7 +215,7 @@ Apache 2.0 - See [LICENSE](../LICENSE) for details.
 
 ## Navigation
 
-- **New to AI development?** Start with [Foundations](./foundations/01-overview.md)
-- **Ready to build?** Jump to [Core API](./core/01-overview.md)
-- **Coming from TypeScript?** Check the [Migration Guide](./migration/from-typescript.md)
-- **Need specific functionality?** Browse the [API Reference](./reference/)
+- **New to AI development?** Start with [Foundations](./02-foundations/01-overview.mdx)
+- **Ready to build?** Jump to [Core API](./03-ai-sdk-core/01-overview.mdx)
+- **Coming from TypeScript?** Check the [Migration Guide](./08-migration-guides/from-typescript-ai-sdk.mdx)
+- **Need specific functionality?** Browse the [API Reference](./07-reference/)

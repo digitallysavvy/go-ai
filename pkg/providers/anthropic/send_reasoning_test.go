@@ -397,76 +397,26 @@ func TestSendReasoning_Integration(t *testing.T) {
 	t.Log("Integration test for send_reasoning is a manual test — run with a real API key")
 }
 
-// --- filterReasoningContent helper tests ---
+// --- sendReasoning=false warning (TS: 'sending reasoning content is disabled for this model') ---
 
-func TestFilterReasoningContent_RemovesReasoningParts(t *testing.T) {
-	messages := []types.Message{
-		{
-			Role: types.RoleAssistant,
-			Content: []types.ContentPart{
-				types.ReasoningContent{Text: "thinking", Signature: "s1"},
-				types.TextContent{Text: "visible text"},
-			},
-		},
-		{
-			Role: types.RoleUser,
-			Content: []types.ContentPart{
-				types.TextContent{Text: "user message"},
-			},
-		},
+func TestConvertPrompt_SendReasoningFalse_Warns(t *testing.T) {
+	opts := &provider.GenerateOptions{Prompt: types.Prompt{Messages: []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "q"}}},
+		{Role: types.RoleAssistant, Content: []types.ContentPart{
+			types.ReasoningContent{Text: "thinking", Signature: "s1"},
+			types.TextContent{Text: "visible text"},
+		}},
+		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "next"}}},
+	}}}
+	converted, err := ConvertPrompt(opts, boolPtr(false))
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	filtered := filterReasoningContent(messages)
-
-	if len(filtered) != 2 {
-		t.Fatalf("expected 2 messages, got %d", len(filtered))
+	assistant := converted.Messages[1]["content"].([]map[string]interface{})
+	if len(assistant) != 1 || assistant[0]["type"] != "text" {
+		t.Fatalf("assistant content = %#v, want only text", assistant)
 	}
-
-	// First message should have only text content
-	if len(filtered[0].Content) != 1 {
-		t.Errorf("expected 1 content part in filtered message, got %d", len(filtered[0].Content))
-	}
-	if filtered[0].Content[0].ContentType() != "text" {
-		t.Errorf("expected text content part, got %s", filtered[0].Content[0].ContentType())
-	}
-
-	// Original is not modified
-	if len(messages[0].Content) != 2 {
-		t.Error("filterReasoningContent should not modify original slice")
-	}
-}
-
-func TestFilterReasoningContent_MessageAllReasoningKeepsEmptyContent(t *testing.T) {
-	messages := []types.Message{
-		{
-			Role: types.RoleAssistant,
-			Content: []types.ContentPart{
-				types.ReasoningContent{Text: "only thinking", Signature: "sig"},
-			},
-		},
-	}
-
-	filtered := filterReasoningContent(messages)
-
-	// Message is kept but with empty content slice
-	if len(filtered) != 1 {
-		t.Fatalf("expected 1 message kept, got %d", len(filtered))
-	}
-	if len(filtered[0].Content) != 0 {
-		t.Errorf("expected empty content for all-reasoning message, got %d parts", len(filtered[0].Content))
-	}
-}
-
-func TestFilterReasoningContent_NoReasoningUnchanged(t *testing.T) {
-	messages := []types.Message{
-		{
-			Role:    types.RoleUser,
-			Content: []types.ContentPart{types.TextContent{Text: "hello"}},
-		},
-	}
-
-	filtered := filterReasoningContent(messages)
-	if len(filtered) != 1 || len(filtered[0].Content) != 1 {
-		t.Error("messages without reasoning should pass through unchanged")
+	if len(converted.Warnings) != 1 || converted.Warnings[0].Message != "sending reasoning content is disabled for this model" {
+		t.Fatalf("warnings = %#v", converted.Warnings)
 	}
 }

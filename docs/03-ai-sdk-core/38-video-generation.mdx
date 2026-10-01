@@ -25,7 +25,7 @@ func main() {
 
     // Create provider
     prov := google.New(google.Config{
-        APIKey: os.Getenv("GOOGLE_API_KEY"),
+        APIKey: os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY"),
     })
 
     // Get video model
@@ -143,7 +143,7 @@ model, _ := prov.VideoModel("grok-imagine-video")
 
 ```go
 prov := google.New(google.Config{
-    APIKey: os.Getenv("GOOGLE_API_KEY"),
+    APIKey: os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY"),
 })
 model, _ := prov.VideoModel("gemini-2.0-flash")
 ```
@@ -196,15 +196,47 @@ model := replicate.NewVideoModel(prov, "minimax/video-01")
 
 ### Google Vertex AI
 
-<Note type="warning">
-  Google Vertex AI video generation support is planned for a future release. It requires additional Google Cloud authentication infrastructure not yet implemented in the Go SDK.
-</Note>
+```go
+prov := googlevertex.New(googlevertex.Config{
+    Project:  os.Getenv("GOOGLE_VERTEX_PROJECT"),
+    Location: "us-central1",
+})
+model, _ := prov.VideoModel(googlevertex.ModelVeo30Generate001)
+```
 
-Vertex AI will support:
-- Batch generation (up to 4 videos per call)
-- GCS output directory
-- Audio generation
-- Enterprise features and SLAs
+**Features:**
+- Veo video generation on Vertex AI
+- Batch generation (up to 4 videos per call, `MaxVideosPerCall`)
+- Text-to-video and image-to-video
+- Polling-based async generation, same options as Google Generative AI
+
+## Async Video: DoStart / DoStatus
+
+xAI, fal, Google, Google Vertex, and Replicate implement the optional
+`provider.VideoModelStarter` / `VideoModelStatusChecker` interfaces so you can
+start a job and poll (or receive a webhook) instead of blocking on
+`GenerateVideo` for the whole generation:
+
+```go
+started, err := ai.ExperimentalStartVideo(ctx, ai.StartVideoOptions{
+    Model:  model,
+    Prompt: ai.VideoPrompt{Text: "A cat playing piano in a jazz club"},
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// Persist started.Operation (json.RawMessage) and poll later, from any
+// process:
+status, err := ai.ExperimentalGetVideoStatus(ctx, model, ai.GetVideoStatusOptions{
+    Operation: started.Operation,
+})
+```
+
+fal and Replicate also support webhook-based completion via
+`HandleWebhookOption` instead of polling. Durable webhook suspension inside a
+workflow (TS's `experimental_generateVideo` Vercel Workflow DevKit
+integration) is not ported — see [Known Differences](../08-migration-guides/known-differences.mdx).
 
 ## API Reference
 
@@ -220,6 +252,9 @@ type GenerateVideoOptions struct {
 
     // Number of videos to generate (default: 1)
     N int
+
+    // Maximum videos per API call. If unset, uses the model default.
+    MaxVideosPerCall *int
 
     // Aspect ratio in format "width:height" (e.g., "16:9", "9:16", "1:1")
     AspectRatio string
@@ -239,11 +274,17 @@ type GenerateVideoOptions struct {
     // Provider-specific options
     ProviderOptions map[string]interface{}
 
-    // Maximum retries per call (default: 2)
-    MaxRetries int
+    // Maximum retries per call (default: 2). Set to 0 to disable retries.
+    MaxRetries *int
 
     // Additional HTTP headers
     Headers map[string]string
+
+    // Custom bytes-only download function for URL video outputs
+    Download URLDownloadFunction
+
+    // Custom download function for URL video outputs that also returns media type
+    DownloadWithMetadata URLDownloadWithMetadataFunction
 }
 ```
 
@@ -261,6 +302,9 @@ type VideoPrompt struct {
 type VideoPromptImage struct {
     // URL to image (or)
     URL string
+
+    // Base64, base64url, or data URL image string
+    DataString string
 
     // Raw image data
     Data []byte
@@ -289,6 +333,20 @@ type GenerateVideoResult struct {
     // Provider-specific metadata
     ProviderMetadata map[string]interface{}
 }
+
+type VideoModelResponseMetadata struct {
+    Timestamp time.Time `json:"timestamp"`
+    ModelID string `json:"modelId"`
+    Headers map[string]string `json:"headers,omitempty"`
+    ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
+}
+```
+
+`types.GeneratedFile` contains the generated video bytes in `Data`, the detected `MediaType`, and TypeScript-compatible helper methods:
+
+```go
+base64Data := result.Video.Base64()
+videoBytes := result.Video.Uint8Array()
 ```
 
 ## Provider-Specific Options
@@ -346,12 +404,13 @@ All video providers use async generation with polling:
 
 1. **Submit Request**: Initial API call submits the generation job
 2. **Polling**: SDK automatically polls for completion
-3. **Download**: Video is downloaded when ready
+3. **Download**: URL video outputs are downloaded into `types.GeneratedFile.Data`
 4. **Return**: Complete video data returned to your code
 
-Default polling configuration:
-- **Interval**: 2 seconds
-- **Timeout**: 5 minutes
+Default polling configuration (fal, Google, Google Vertex, Replicate; matches
+the TypeScript AI SDK's `generateVideo` defaults):
+- **Interval**: 5 seconds
+- **Timeout**: 10 minutes
 - **Backoff**: None (configurable per provider)
 
 You can customize polling:
@@ -374,6 +433,9 @@ result, err := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
 ```go
 result, err := ai.GenerateVideo(ctx, opts)
 if err != nil {
+    if noVideo, ok := err.(*ai.NoVideoGeneratedError); ok {
+        fmt.Printf("No video generated; responses: %d\n", len(noVideo.Responses))
+    }
     if videoErr, ok := err.(*providererrors.VideoGenerationError); ok {
         fmt.Printf("Provider: %s\n", videoErr.Provider)
         fmt.Printf("Model: %s\n", videoErr.ModelID)
@@ -464,13 +526,13 @@ Track usage and set appropriate timeouts.
 
 ## Examples
 
-See complete examples in the [examples/video](/examples/video) directory:
-- [Text-to-Video](/examples/video/text-to-video)
-- [Image-to-Video](/examples/video/image-to-video)
-- [Multi-Provider](/examples/video/multi-provider)
+See complete examples in the [examples/video](https://github.com/digitallysavvy/go-ai/tree/main/examples/video) directory:
+- [Text-to-Video](https://github.com/digitallysavvy/go-ai/tree/main/examples/video/text-to-video)
+- [Image-to-Video](https://github.com/digitallysavvy/go-ai/tree/main/examples/video/image-to-video)
+- [Multi-Provider](https://github.com/digitallysavvy/go-ai/tree/main/examples/video/multi-provider)
 
 ## See Also
 
-- [Image Generation](/docs/03-ai-sdk-core/35-image-generation)
-- [Provider Management](/docs/03-ai-sdk-core/45-provider-management)
-- [Error Handling](/docs/03-ai-sdk-core/50-error-handling)
+- [Image Generation](/docs/ai-sdk-core/image-generation)
+- [Provider Management](/docs/ai-sdk-core/provider-management)
+- [Error Handling](/docs/ai-sdk-core/error-handling)

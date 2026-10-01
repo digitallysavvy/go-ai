@@ -99,6 +99,22 @@ if err != nil {
 defer client.Close()
 ```
 
+### HTTP Error Handling
+
+HTTP transport failures return `*mcp.MCPClientError` with structured transport fields. `Code` remains the JSON-RPC application error code; `StatusCode`, `URL`, and `ResponseBody` describe the HTTP failure.
+
+```go
+err := client.Connect(ctx)
+if err != nil {
+    var clientErr *mcp.MCPClientError
+    if errors.As(err, &clientErr) && clientErr.StatusCode == http.StatusUnauthorized {
+        log.Printf("MCP auth failed for %s: %s", clientErr.URL, clientErr.ResponseBody)
+        return
+    }
+    log.Fatal(err)
+}
+```
+
 ### Stdio Transport (Local Servers Only)
 
 <Note type="warning">
@@ -237,25 +253,25 @@ import (
 )
 
 // Define tool schema
-weatherTool := ai.Tool{
+weatherTool := types.Tool{
     Name:        "get-weather",
     Description: "Get weather information for a location",
-    Parameters: types.JSONSchema{
-        Type: "object",
-        Properties: map[string]types.JSONSchema{
-            "location": {
-                Type:        "string",
-                Description: "City name",
+    Parameters: map[string]interface{}{
+        "type": "object",
+        "properties": map[string]interface{}{
+            "location": map[string]string{
+                "type":        "string",
+                "description": "City name",
             },
-            "units": {
-                Type: "string",
-                Enum: []string{"celsius", "fahrenheit"},
-                Description: "Temperature units",
+            "units": map[string]interface{}{
+                "type":        "string",
+                "enum":        []string{"celsius", "fahrenheit"},
+                "description": "Temperature units",
             },
         },
-        Required: []string{"location"},
+        "required": []string{"location"},
     },
-    Execute: func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+    Execute: func(ctx context.Context, args map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
         // Call MCP tool manually
         result, err := client.CallTool(ctx, &mcp.CallToolRequest{
             Name: "get-weather",
@@ -274,7 +290,7 @@ weatherTool := ai.Tool{
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "What's the temperature in Paris?",
-    Tools:  []ai.Tool{weatherTool},
+    Tools:  []types.Tool{weatherTool},
 })
 ```
 
@@ -385,6 +401,31 @@ for _, template := range templates {
     fmt.Printf("  Description: %s\n", template.Description)
 }
 ```
+
+## Handling Elicitation Requests
+
+Some MCP servers pause a tool call to ask the client (your application) for
+additional user input mid-execution, using the `elicitation/create` request.
+Register a handler with `OnElicitationRequest` before calling `Connect`:
+
+```go
+client.OnElicitationRequest(func(ctx context.Context, req mcp.ElicitationRequest) (mcp.ElicitResult, error) {
+    fmt.Println("Server asks:", req.Message)
+    // req.RequestedSchema describes the JSON Schema for the expected input.
+
+    answer := promptUserSomehow(req)
+    return mcp.ElicitResult{
+        Action:  "accept", // or "decline" / "cancel"
+        Content: map[string]interface{}{"answer": answer},
+    }, nil
+})
+
+err := client.Connect(ctx)
+```
+
+If no handler is registered, the client rejects `elicitation/create` requests
+automatically. A handler error is reported through the client's `OnError`
+callback rather than propagating to the tool call.
 
 ## Using MCP Prompts
 
@@ -561,8 +602,8 @@ func main() {
 
     // Display usage statistics
     fmt.Printf("\nUsage: %d input tokens, %d output tokens\n",
-        result.Usage.PromptTokens,
-        result.Usage.CompletionTokens)
+        result.Usage.GetInputTokens(),
+        result.Usage.GetOutputTokens())
 }
 ```
 
@@ -689,9 +730,9 @@ if err != nil {
 }
 
 // Check if image handling is working correctly
-if result.Usage.PromptTokens > 100000 {
+if result.Usage.GetInputTokens() > 100000 {
     log.Printf("WARNING: High token usage (%d) - possible image handling issue",
-        result.Usage.PromptTokens)
+        result.Usage.GetInputTokens())
 }
 ```
 
@@ -784,4 +825,21 @@ for _, content := range result.Content {
 - [Generating Text](./05-generating-text.mdx)
 - [Tools](../02-foundations/04-tools.mdx)
 - [Error Handling](./50-error-handling.mdx)
-- [Advanced: Tool Calling](../06-advanced/07-tool-calling.mdx)
+- [Advanced: Tool Calling](./15-tools-and-tool-calling.mdx)
+
+## May 2026 parity updates
+
+MCP JSON parsing uses secure parsing to avoid prototype-pollution style payloads when consuming remote server data. MCP clients expose server instructions and attach TypeScript-compatible MCP provider metadata to converted tools under the `"mcp"` key: `clientName`, `toolName`, optional `title`, and optional MCP Apps `app` metadata. The default client name is `ai-sdk-mcp-client`; `ClientName` overrides it, and `Name` remains as a deprecated alias.
+
+MCP Apps hosts can advertise app-rendering support with `mcp.MCPAppClientCapabilities()`, inspect `_meta.ui` using `GetMCPAppToolMeta`, split tools with `SplitMCPAppTools`, and read `ui://` app resources with `ReadMCPAppResource`. MCP tool and prompt content also accept `resource_link` parts, matching the current MCP schema.
+
+Custom transports remain supported through the transport interfaces in `pkg/mcp`. Use explicit redirect handling for HTTP transports and prefer the default redirect error mode unless the server is trusted.
+
+```go
+transport := mcp.NewHTTPTransport(mcp.HTTPTransportConfig{
+    URL: "https://mcp.example.com",
+    Config: mcp.TransportConfig{
+        Redirect: mcp.MCPRedirectError,
+    },
+})
+```

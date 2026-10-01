@@ -244,18 +244,19 @@ import (
     "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/provider/types"
     "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 )
 
 // CodeRefinementSession manages a multi-step code refinement workflow.
 type CodeRefinementSession struct {
-    model    ai.LanguageModel
+    model    provider.LanguageModel
     history  []types.Message
     maxRounds int
 }
 
-func NewCodeRefinementSession(model ai.LanguageModel, maxRounds int) *CodeRefinementSession {
+func NewCodeRefinementSession(model provider.LanguageModel, maxRounds int) *CodeRefinementSession {
     return &CodeRefinementSession{model: model, maxRounds: maxRounds}
 }
 

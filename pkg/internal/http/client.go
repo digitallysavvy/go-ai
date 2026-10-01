@@ -4,11 +4,39 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"sync"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
+
+// applyUserAgentSuffix appends the Go runtime tag to whatever "User-Agent"
+// value is already present on req (set by the client's default headers
+// and/or request-specific headers — normally each provider's own
+// `ai-sdk/<provider>/VERSION` tag, added via version.ProviderUserAgent at
+// provider construction). The final shape matches the owner's 2026-09-30
+// decision: `ai-sdk/<provider>/<version> runtime/go/<goVersion>`.
+//
+// TS's provider-utils postToApi/getFromApi additionally chain in their own
+// package's `ai-sdk/provider-utils/VERSION` tag here (TS has no single Go
+// module equivalent of that internal package, and the owner's decision
+// specifies the two-segment shape above), so this only adds the runtime
+// tag, not a third "shared layer" segment. http.Header canonicalizes the
+// header name for us, so this is case-insensitive with respect to however
+// upstream code set it.
+func applyUserAgentSuffix(h http.Header) {
+	merged := providerutils.WithUserAgentSuffix(
+		map[string]string{"user-agent": h.Get("User-Agent")},
+		providerutils.RuntimeEnvironmentUserAgent(),
+	)
+	h.Set("User-Agent", merged["user-agent"])
+}
 
 // DefaultHTTPClient is a shared HTTP client with sensible defaults
 var DefaultHTTPClient = &http.Client{
@@ -22,10 +50,21 @@ var DefaultHTTPClient = &http.Client{
 }
 
 // Client wraps an HTTP client with additional utilities
+//
+// mu guards baseURL and headers, the only fields mutated after
+// construction (via SetBaseURL and SetHeader respectively). Providers may
+// legitimately call SetHeader to refresh an auth token on a *Client shared
+// across concurrent in-flight requests (e.g. a token refresh racing a
+// request goroutine); without synchronization that is a fatal, unrecoverable
+// concurrent map read/write that crashes the process, not a catchable panic.
 type Client struct {
 	client  *http.Client
 	baseURL string
 	headers map[string]string
+
+	maxBodyBytes int64
+
+	mu sync.RWMutex
 }
 
 // Config contains configuration for an HTTP client
@@ -42,6 +81,22 @@ type Config struct {
 	// HTTPClient is the underlying HTTP client to use
 	// If nil, DefaultHTTPClient will be used
 	HTTPClient *http.Client
+
+	// MaxResponseBytes bounds buffered response body reads. Zero uses
+	// fileutil.DefaultMaxDownloadSize (2 GiB), the TS response-handler limit.
+	MaxResponseBytes int64
+}
+
+// MergeHeaders returns a new map containing each header map in order. Later
+// maps override earlier maps, matching the TypeScript SDK combineHeaders helper.
+func MergeHeaders(headers ...map[string]string) map[string]string {
+	merged := make(map[string]string)
+	for _, h := range headers {
+		for k, v := range h {
+			merged[k] = v
+		}
+	}
+	return merged
 }
 
 // NewClient creates a new HTTP client with the given config
@@ -67,7 +122,23 @@ func NewClient(cfg Config) *Client {
 		client:  client,
 		baseURL: cfg.BaseURL,
 		headers: cfg.Headers,
+
+		maxBodyBytes: cfg.MaxResponseBytes,
 	}
+}
+
+func (c *Client) maxResponseBytes() int64 {
+	if c.maxBodyBytes > 0 {
+		return c.maxBodyBytes
+	}
+	return fileutil.DefaultMaxDownloadSize
+}
+
+// HTTPClient returns the underlying HTTP client. It is intended for provider
+// code that must make auxiliary requests while preserving configured transport,
+// proxy, timeout, and middleware behavior.
+func (c *Client) HTTPClient() *http.Client {
+	return c.client
 }
 
 // Request represents an HTTP request
@@ -86,10 +157,41 @@ type Response struct {
 	Body       []byte
 }
 
+// HTTPStatusError preserves non-2xx/3xx response metadata for provider error
+// adapters while keeping the historical error string stable.
+type HTTPStatusError struct {
+	StatusCode int
+	Headers    http.Header
+	Body       []byte
+}
+
+func (e *HTTPStatusError) Error() string {
+	if e == nil {
+		return "HTTP <nil>"
+	}
+	return fmt.Sprintf("HTTP %d: %s", e.StatusCode, string(e.Body))
+}
+
+// snapshot returns a point-in-time copy of the mutable client state (base
+// URL and default headers) under the read lock, so callers never range over
+// or concatenate the live fields while SetHeader/SetBaseURL may be running
+// on another goroutine.
+func (c *Client) snapshot() (string, map[string]string) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	headers := make(map[string]string, len(c.headers))
+	for k, v := range c.headers {
+		headers[k] = v
+	}
+	return c.baseURL, headers
+}
+
 // Do performs an HTTP request
 func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
+	baseURL, defaultHeaders := c.snapshot()
+
 	// Build full URL
-	url := c.baseURL + req.Path
+	url := baseURL + req.Path
 	if len(req.Query) > 0 {
 		url += "?"
 		first := true
@@ -105,11 +207,18 @@ func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 	// Serialize body if present
 	var bodyReader io.Reader
 	if req.Body != nil {
-		bodyBytes, err := json.Marshal(req.Body)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal request body: %w", err)
+		switch body := req.Body.(type) {
+		case io.Reader:
+			bodyReader = body
+		case []byte:
+			bodyReader = bytes.NewReader(body)
+		default:
+			bodyBytes, err := json.Marshal(req.Body)
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal request body: %w", err)
+			}
+			bodyReader = bytes.NewReader(bodyBytes)
 		}
-		bodyReader = bytes.NewReader(bodyBytes)
 	}
 
 	// Create HTTP request
@@ -119,7 +228,7 @@ func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 	}
 
 	// Add default headers
-	for k, v := range c.headers {
+	for k, v := range defaultHeaders {
 		httpReq.Header.Set(k, v)
 	}
 
@@ -128,22 +237,28 @@ func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 		httpReq.Header.Set(k, v)
 	}
 
+	// Tag the request's User-Agent, appending to (not replacing) whatever
+	// the headers above already set. See applyUserAgentSuffix.
+	applyUserAgentSuffix(httpReq.Header)
+
 	// Set content type for JSON body
-	if req.Body != nil {
+	if req.Body != nil && httpReq.Header.Get("Content-Type") == "" {
 		httpReq.Header.Set("Content-Type", "application/json")
 	}
 
 	// Perform request
 	httpResp, err := c.client.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("LHTTP request failed: %w", err)
+		return nil, transportError(err)
 	}
 	defer httpResp.Body.Close() //nolint:errcheck
 
-	// Read response body
-	respBody, err := io.ReadAll(httpResp.Body)
+	// Read response body with the TS size limit (response-handler.ts
+	// readResponseBodyAsText → readResponseWithSizeLimit, 2 GiB default) so a
+	// hostile or broken endpoint cannot exhaust memory.
+	respBody, err := fileutil.ReadResponseWithSizeLimit(httpResp, url, c.maxResponseBytes())
 	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
+		return nil, err
 	}
 
 	return &Response{
@@ -162,7 +277,11 @@ func (c *Client) DoJSON(ctx context.Context, req Request, result interface{}) er
 
 	// Check for error status codes
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("LHTTP %d: %s", resp.StatusCode, string(resp.Body))
+		return &HTTPStatusError{
+			StatusCode: resp.StatusCode,
+			Headers:    resp.Headers,
+			Body:       resp.Body,
+		}
 	}
 
 	// Decode JSON response
@@ -183,7 +302,11 @@ func (c *Client) DoJSONResponse(ctx context.Context, req Request, result interfa
 		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("LHTTP %d: %s", resp.StatusCode, string(resp.Body))
+		return nil, &HTTPStatusError{
+			StatusCode: resp.StatusCode,
+			Headers:    resp.Headers,
+			Body:       resp.Body,
+		}
 	}
 	if err := json.Unmarshal(resp.Body, result); err != nil {
 		return nil, fmt.Errorf("failed to decode JSON response: %w", err)
@@ -193,8 +316,10 @@ func (c *Client) DoJSONResponse(ctx context.Context, req Request, result interfa
 
 // DoStream performs an HTTP request that returns a streaming response
 func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, error) {
+	baseURL, defaultHeaders := c.snapshot()
+
 	// Build full URL
-	url := c.baseURL + req.Path
+	url := baseURL + req.Path
 	if len(req.Query) > 0 {
 		url += "?"
 		first := true
@@ -210,11 +335,18 @@ func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, err
 	// Serialize body if present
 	var bodyReader io.Reader
 	if req.Body != nil {
-		bodyBytes, err := json.Marshal(req.Body)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal request body: %w", err)
+		switch body := req.Body.(type) {
+		case io.Reader:
+			bodyReader = body
+		case []byte:
+			bodyReader = bytes.NewReader(body)
+		default:
+			bodyBytes, err := json.Marshal(req.Body)
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal request body: %w", err)
+			}
+			bodyReader = bytes.NewReader(bodyBytes)
 		}
-		bodyReader = bytes.NewReader(bodyBytes)
 	}
 
 	// Create HTTP request
@@ -224,7 +356,7 @@ func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, err
 	}
 
 	// Add default headers
-	for k, v := range c.headers {
+	for k, v := range defaultHeaders {
 		httpReq.Header.Set(k, v)
 	}
 
@@ -233,22 +365,30 @@ func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, err
 		httpReq.Header.Set(k, v)
 	}
 
+	// Tag the request's User-Agent, appending to (not replacing) whatever
+	// the headers above already set. See applyUserAgentSuffix.
+	applyUserAgentSuffix(httpReq.Header)
+
 	// Set content type for JSON body
-	if req.Body != nil {
+	if req.Body != nil && httpReq.Header.Get("Content-Type") == "" {
 		httpReq.Header.Set("Content-Type", "application/json")
 	}
 
 	// Perform request
 	httpResp, err := c.client.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("LHTTP request failed: %w", err)
+		return nil, transportError(err)
 	}
 
 	// Check for error status codes
 	if httpResp.StatusCode >= 400 {
 		defer httpResp.Body.Close() //nolint:errcheck
-		errBody, _ := io.ReadAll(httpResp.Body)
-		return nil, fmt.Errorf("LHTTP %d: %s", httpResp.StatusCode, string(errBody))
+		errBody, _ := fileutil.ReadResponseWithSizeLimit(httpResp, url, c.maxResponseBytes())
+		return nil, &HTTPStatusError{
+			StatusCode: httpResp.StatusCode,
+			Headers:    httpResp.Header,
+			Body:       errBody,
+		}
 	}
 
 	// Return the response for streaming (caller must close Body)
@@ -291,13 +431,47 @@ func (c *Client) GetJSON(ctx context.Context, path string, result interface{}) e
 
 // SetHeader sets a default header for all requests
 func (c *Client) SetHeader(key, value string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.headers == nil {
 		c.headers = make(map[string]string)
 	}
 	c.headers[key] = value
 }
 
+// Headers returns a copy of the client's default headers (e.g.
+// Authorization, provider-specific auth headers, and any custom headers
+// merged in at construction). Used by callers that need to authenticate a
+// non-HTTP connection (e.g. a WebSocket handshake) the same way the client
+// authenticates its own requests.
+func (c *Client) Headers() map[string]string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make(map[string]string, len(c.headers))
+	for k, v := range c.headers {
+		out[k] = v
+	}
+	return out
+}
+
 // SetBaseURL updates the base URL
 func (c *Client) SetBaseURL(baseURL string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.baseURL = baseURL
+}
+
+// transportError wraps a failure from http.Client.Do. Mirrors TS
+// provider-utils handleFetchError: cancellation and timeouts (TS abort
+// errors) are returned unchanged, and other transport failures read
+// "Cannot connect to API: <cause>". The cause stays wrapped for errors.Is/As.
+func transportError(err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return err
+	}
+	return fmt.Errorf("Cannot connect to API: %w", err) //nolint:staticcheck // matches TS SDK's exact error text
 }

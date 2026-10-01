@@ -77,8 +77,8 @@ func main() {
 
 		// Explain the fix
 		if result1.Usage.OutputDetails != nil &&
-		   result1.Usage.OutputDetails.ReasoningTokens != nil &&
-		   *result1.Usage.OutputDetails.ReasoningTokens > 0 {
+			result1.Usage.OutputDetails.ReasoningTokens != nil &&
+			*result1.Usage.OutputDetails.ReasoningTokens > 0 {
 			fmt.Println("ℹ️  Token counting was automatically corrected:")
 			fmt.Println("   DeepInfra's API doesn't include reasoning_tokens in completion_tokens")
 			fmt.Println("   for Gemini/Gemma models. This SDK automatically fixes the count.")

@@ -5,7 +5,7 @@ description: Learn about tool calling and multi-step calls with the Go AI SDK.
 
 # Tool Calling
 
-As covered under [Foundations](../02-foundations/04-tools.md), [tools](../02-foundations/04-tools.md) are objects that can be called by the model to perform a specific task.
+As covered under [Foundations](../02-foundations/04-tools.mdx), [tools](../02-foundations/04-tools.mdx) are objects that can be called by the model to perform a specific task.
 
 Go AI SDK Core tools contain several core elements:
 
@@ -80,7 +80,7 @@ func main() {
 
 When enabled, language model providers that support strict tool calling will only generate tool calls that are valid according to your defined `Parameters` schema. This increases the reliability of tool calling. However, not all schemas may be supported in strict mode, and what is supported depends on the specific provider.
 
-By default, strict mode is disabled. You can enable it per-tool by setting `Strict: true`:
+By default, strict mode is disabled. You can enable it per-tool by setting `Strict: types.BoolPtr(true)`:
 
 ```go
 weatherTool := types.Tool{
@@ -93,7 +93,7 @@ weatherTool := types.Tool{
         },
         "required": []string{"location"},
     },
-    Strict: true, // Enable strict validation for this tool
+    Strict: types.BoolPtr(true), // Enable strict validation for this tool
     Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
         // ...
         return nil, nil
@@ -879,14 +879,14 @@ result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
 
 ## Next Steps
 
-- Learn about [Embeddings](./05-embeddings.md)
-- Explore [Agents](../03-agents/01-overview.md)
-- See [Tool Examples](../examples/04-tool-calling.md)
+- Learn about [Embeddings](./30-embeddings.mdx)
+- Explore [Agents](../03-agents/01-overview.mdx)
+- See [Tool Examples](https://github.com/digitallysavvy/go-ai/tree/main/examples)
 
 ## See Also
 
-- [Foundations: Tools](../02-foundations/04-tools.md)
-- [Generating Text](./02-generating-text.md)
-- [Settings](./10-settings.md)
-- [Error Handling](./13-error-handling.md)
-- [API Reference: Tool Types](../07-reference/types/tools.md)
+- [Foundations: Tools](../02-foundations/04-tools.mdx)
+- [Generating Text](./05-generating-text.mdx)
+- [Settings](./25-settings.mdx)
+- [Error Handling](./50-error-handling.mdx)
+- [API Reference: Tool Types](../07-reference/types/tools.mdx)

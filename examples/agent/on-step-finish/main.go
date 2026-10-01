@@ -11,7 +11,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
-// Example demonstrating the OnStepFinish callback for monitoring multi-step agent execution
+// Example demonstrating the OnStepEnd callback for monitoring multi-step agent execution
 // The callback is triggered after each step in the agent's tool loop, allowing you to:
 // - Track progress in real-time
 // - Log intermediate results
@@ -62,15 +62,15 @@ func main() {
 	var totalSteps int
 	var totalInputTokens, totalOutputTokens int64
 
-	// Create agent with OnStepFinish callback
+	// Create agent with OnStepEnd callback
 	agentInstance := agent.NewToolLoopAgent(agent.AgentConfig{
 		Model:  model,
 		System: "You are a helpful assistant that can check the weather.",
 		Tools:  []types.Tool{weatherTool},
 
-		// OnStepFinish is called after EACH step in the agent's execution
+		// OnStepEnd is called after EACH step in the agent's execution
 		// This allows you to monitor progress, log results, and track usage
-		OnStepFinish: func(step types.StepResult) {
+		OnStepEnd: func(step types.StepResult) {
 			totalSteps++
 
 			// Track token usage

@@ -131,9 +131,9 @@ func main() {
 
 ### Loop Control
 
-By default, agents run for 10 steps (`MaxSteps: 10`). In each step, the model either generates text or calls a tool. If it generates text, the agent completes. If it calls a tool, the SDK executes that tool.
+By default, agents stop after 20 completed steps (`StopWhen: []ai.StopCondition{ai.IsStepCount(20)}`). In each step, the model either generates text or calls a tool. If it generates text, the agent completes. If it calls a tool, the SDK executes that tool.
 
-To let agents call multiple tools in sequence, configure `MaxSteps` to allow more steps. After each tool execution, the agent triggers a new generation where the model can call another tool or generate text:
+To let agents call multiple tools in sequence, configure `StopWhen` with `ai.IsStepCount`. After each tool execution, the agent triggers a new generation where the model can call another tool or generate text:
 
 ```go
 package main
@@ -142,6 +142,7 @@ import (
     "os"
 
     "github.com/digitallysavvy/go-ai/pkg/agent"
+    "github.com/digitallysavvy/go-ai/pkg/ai"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
@@ -153,7 +154,7 @@ func main() {
 
     myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
         Model:    model,
-        MaxSteps: 20, // Allow up to 20 steps
+        StopWhen: []ai.StopCondition{ai.IsStepCount(20)}, // Allow up to 20 steps
     })
 }
 ```
@@ -163,9 +164,9 @@ Each step represents one generation (which results in either text or a tool call
 - A finish reason other than `FinishReasonToolCalls` is returned, or
 - A tool execution fails, or
 - A tool call needs approval (if `ToolApprovalRequired` is true), or
-- The step limit (`MaxSteps`) is reached
+- The step limit configured with `StopWhen` is reached
 
-Learn more about [loop control](/docs/03-agents/04-loop-control.mdx).
+Learn more about [loop control](/docs/agents/loop-control).
 
 ### Generation Settings
 
@@ -452,8 +453,8 @@ func main() {
 
         OnStepFinish: func(step types.StepResult) {
             fmt.Printf("Step %d complete: %s\n", step.StepNumber, step.Text)
-            if step.Usage.TotalTokens != nil {
-                fmt.Printf("  Tokens used: %d\n", *step.Usage.TotalTokens)
+            if step.Usage.GetTotalTokens() > 0 {
+                fmt.Printf("  Tokens used: %d\n", step.Usage.GetTotalTokens())
             }
         },
 
@@ -472,8 +473,8 @@ func main() {
 
         OnFinish: func(result *agent.AgentResult) {
             fmt.Printf("Agent complete after %d steps\n", len(result.Steps))
-            if result.Usage.TotalTokens != nil {
-                fmt.Printf("Total tokens used: %d\n", *result.Usage.TotalTokens)
+            if result.Usage.GetTotalTokens() > 0 {
+                fmt.Printf("Total tokens used: %d\n", result.Usage.GetTotalTokens())
             }
         },
     })
@@ -516,7 +517,7 @@ OnStepFinish: func(step types.StepResult) {
     log.Printf("[Step %d] Tool calls: %d, Tokens: %d",
         step.StepNumber,
         len(step.ToolCalls),
-        getTokens(step.Usage.TotalTokens))
+        getTokens(step.Usage.GetTotalTokens()))
 }
 ```
 
@@ -526,13 +527,13 @@ OnStepFinish: func(step types.StepResult) {
 totalTokens := int64(0)
 
 OnStepFinish: func(step types.StepResult) {
-    if step.Usage.TotalTokens != nil {
-        totalTokens += *step.Usage.TotalTokens
+    if step.Usage.GetTotalTokens() > 0 {
+        totalTokens += step.Usage.GetTotalTokens()
     }
 
     fmt.Printf("Step %d: %d tokens (total: %d)\n",
         step.StepNumber,
-        getTokens(step.Usage.TotalTokens),
+        getTokens(step.Usage.GetTotalTokens()),
         totalTokens)
 
     if totalTokens > 10000 {
@@ -570,7 +571,7 @@ OnStepFinish: func(step types.StepResult) {
 }
 ```
 
-See the [OnStepFinish examples](../../examples/agents/callbacks/) for complete working examples.
+See the [OnStepFinish examples](https://github.com/digitallysavvy/go-ai/tree/main/examples/agents/callbacks) for complete working examples.
 
 **Helper function for safely accessing token counts:**
 
@@ -815,8 +816,8 @@ func main() {
     if result.Usage.OutputTokens != nil {
         fmt.Printf("  Output tokens: %d\n", *result.Usage.OutputTokens)
     }
-    if result.Usage.TotalTokens != nil {
-        fmt.Printf("  Total tokens: %d\n", *result.Usage.TotalTokens)
+    if result.Usage.GetTotalTokens() > 0 {
+        fmt.Printf("  Total tokens: %d\n", result.Usage.GetTotalTokens())
     }
 
     // Check finish reason
@@ -959,8 +960,8 @@ Guidelines:
 
         OnFinish: func(result *agent.AgentResult) {
             fmt.Printf("\n[Agent] Completed in %d steps\n", len(result.Steps))
-            if result.Usage.TotalTokens != nil {
-                fmt.Printf("[Agent] Total tokens: %d\n", *result.Usage.TotalTokens)
+            if result.Usage.GetTotalTokens() > 0 {
+                fmt.Printf("[Agent] Total tokens: %d\n", result.Usage.GetTotalTokens())
             }
         },
     })
@@ -981,8 +982,8 @@ Guidelines:
     fmt.Println("\n=== Agent Statistics ===")
     fmt.Printf("Steps: %d\n", len(result.Steps))
     fmt.Printf("Tools used: %d\n", len(result.ToolResults))
-    if result.Usage.TotalTokens != nil {
-        fmt.Printf("Total tokens: %d\n", *result.Usage.TotalTokens)
+    if result.Usage.GetTotalTokens() > 0 {
+        fmt.Printf("Total tokens: %d\n", result.Usage.GetTotalTokens())
     }
     fmt.Printf("Finish reason: %s\n", result.FinishReason)
 }

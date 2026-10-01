@@ -2,9 +2,17 @@ package perplexity
 
 import (
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/version"
+)
+
+const (
+	DefaultBaseURL = "https://api.perplexity.ai"
+	DefaultModelID = string(ModelSonar)
 )
 
 // Provider implements the provider.Provider interface for Perplexity
@@ -20,27 +28,43 @@ type Config struct {
 
 	// BaseURL is the base URL for the Perplexity API (optional)
 	BaseURL string
+
+	// Headers are custom HTTP headers to include in requests.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // New creates a new Perplexity provider with the given configuration
 func New(cfg Config) *Provider {
-	baseURL := cfg.BaseURL
+	baseURL := strings.TrimRight(cfg.BaseURL, "/")
 	if baseURL == "" {
-		baseURL = "https://api.perplexity.ai"
+		baseURL = DefaultBaseURL
+	}
+	cfg.BaseURL = baseURL
+	apiKey := cfg.APIKey
+	if apiKey == "" {
+		apiKey = os.Getenv("PERPLEXITY_API_KEY")
 	}
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: map[string]string{
-			"Authorization": "Bearer " + cfg.APIKey,
+		Headers: version.WithUserAgentSuffix(http.MergeHeaders(map[string]string{
+			"Authorization": "Bearer " + apiKey,
 			"Content-Type":  "application/json",
-		},
+		}, cfg.Headers), version.ProviderUserAgent("perplexity")),
 	})
 
 	return &Provider{
 		config: cfg,
 		client: client,
 	}
+}
+
+// CreatePerplexity creates a new Perplexity provider.
+//
+// It mirrors the TypeScript SDK createPerplexity export while New remains the
+// idiomatic Go constructor.
+func CreatePerplexity(cfg Config) *Provider {
+	return New(cfg)
 }
 
 // Name returns the provider name
@@ -51,7 +75,7 @@ func (p *Provider) Name() string {
 // LanguageModel returns a language model by ID
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
 	if modelID == "" {
-		modelID = "llama-3.1-sonar-small-128k-online"
+		modelID = DefaultModelID
 	}
 
 	return NewLanguageModel(p, modelID), nil
@@ -59,27 +83,30 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 
 // EmbeddingModel returns an embedding model by ID
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("LPerplexity does not support embeddings")
+	if modelID == "" {
+		modelID = string(ModelEmbedV1_4B)
+	}
+	return NewEmbeddingModel(p, modelID), nil
 }
 
 // ImageModel returns an image generation model by ID
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("LPerplexity does not support image generation")
+	return nil, fmt.Errorf("perplexity does not support image generation")
 }
 
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("LPerplexity does not support speech synthesis")
+	return nil, fmt.Errorf("perplexity does not support speech synthesis")
 }
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("LPerplexity does not support transcription")
+	return nil, fmt.Errorf("perplexity does not support transcription")
 }
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("LPerplexity does not support reranking")
+	return nil, fmt.Errorf("perplexity does not support reranking")
 }
 
 // Client returns the HTTP client for making API requests

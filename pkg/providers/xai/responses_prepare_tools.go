@@ -27,6 +27,9 @@ func convertXAIResponsesTool(t types.Tool) interface{} {
 		if len(cfg.ExcludedDomains) > 0 {
 			m["excluded_domains"] = cfg.ExcludedDomains
 		}
+		if cfg.EnableImageSearch != nil {
+			m["enable_image_search"] = *cfg.EnableImageSearch
+		}
 		if cfg.EnableImageUnderstanding != nil {
 			m["enable_image_understanding"] = *cfg.EnableImageUnderstanding
 		}
@@ -76,6 +79,14 @@ func convertXAIResponsesTool(t types.Tool) interface{} {
 		}
 		return m
 
+	case "xai.image_generation":
+		cfg, _ := t.ProviderOptions.(ImageGenerationConfig)
+		m := map[string]interface{}{"type": "image_generation"}
+		if cfg.Action != "" {
+			m["action"] = cfg.Action
+		}
+		return m
+
 	case "xai.mcp":
 		cfg, _ := t.ProviderOptions.(MCPServerOptions)
 		m := map[string]interface{}{"type": "mcp", "server_url": cfg.ServerURL}
@@ -97,12 +108,22 @@ func convertXAIResponsesTool(t types.Tool) interface{} {
 		return m
 
 	default:
-		// Regular function tool
-		return map[string]interface{}{
+		// Regular function tool. Parameters are sent unchanged, including any
+		// `additionalProperties: false` in the JSON schema (row 6e405ae:
+		// xAI's upstream removal of the additionalProperties flag was itself
+		// reverted, so the SDK must stop stripping it).
+		m := map[string]interface{}{
 			"type":        "function",
 			"name":        t.Name,
 			"description": t.Description,
 			"parameters":  t.Parameters,
 		}
+		// TS xai-responses-prepare-tools.ts: `...(tool.strict != null ?
+		// {strict: tool.strict} : {})` — forward the explicit value,
+		// including `false`.
+		if t.Strict != nil {
+			m["strict"] = *t.Strict
+		}
+		return m
 	}
 }

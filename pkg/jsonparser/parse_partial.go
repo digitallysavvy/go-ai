@@ -8,7 +8,7 @@ import (
 type ParseState string
 
 const (
-	// ParseStateUndefinedInput indicates the input was undefined/empty
+	// ParseStateUndefinedInput indicates the input was undefined.
 	ParseStateUndefinedInput ParseState = "undefined-input"
 
 	// ParseStateSuccessful indicates JSON was parsed successfully without repair
@@ -37,15 +37,6 @@ type ParseResult struct {
 // It first tries to parse the JSON as-is, and if that fails, uses FixJSON
 // to repair incomplete structures before parsing again
 func ParsePartialJSON(jsonText string) ParseResult {
-	// Handle empty/undefined input
-	if jsonText == "" {
-		return ParseResult{
-			Value: nil,
-			State: ParseStateUndefinedInput,
-			Error: nil,
-		}
-	}
-
 	// Phase 1: Try direct parsing
 	var value interface{}
 	err := json.Unmarshal([]byte(jsonText), &value)

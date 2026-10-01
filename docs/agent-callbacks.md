@@ -128,8 +128,8 @@ func (p *ProgressTracker) OnStepFinish(step types.StepResult) {
     p.steps = append(p.steps, step)
     p.currentStep = step.StepNumber
 
-    if step.Usage.TotalTokens != nil {
-        p.totalTokens += *step.Usage.TotalTokens
+    if step.Usage.GetTotalTokens() > 0 {
+        p.totalTokens += step.Usage.GetTotalTokens()
     }
 
     // Update UI (simplified example)
@@ -284,6 +284,6 @@ The `StepResult` structure matches the TypeScript `StreamStep` with all the same
 
 ## See Also
 
-- [Agent Guide](./agents.md)
-- [Tool Integration](./tools.md)
+- [Agent Guide](./03-agents/index.mdx)
+- [Tool Integration](./03-ai-sdk-core/15-tools-and-tool-calling.mdx)
 - [Example: OnStepFinish](../examples/agent/on-step-finish/main.go)

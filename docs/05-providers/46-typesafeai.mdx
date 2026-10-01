@@ -1,0 +1,92 @@
+---
+title: TypeSafe AI Provider
+description: Setup and usage guide for TypeSafe AI evaluation models with Go-AI SDK
+---
+
+# TypeSafe AI Provider
+
+TypeSafe AI provides evaluation models for use with the experimental
+`ai.ExperimentalEvaluate` API — judging free-form output against a set of
+questions (choice, score, or boolean) rather than generating text. It's
+the only capability this provider implements: `LanguageModel`,
+`EmbeddingModel`, `ImageModel`, `SpeechModel`, and `TranscriptionModel` all
+return errors.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    goprovider "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/providers/typesafeai"
+)
+```
+
+### Configuration
+
+```go
+provider := typesafeai.New(typesafeai.Config{
+    APIKey: os.Getenv("TYPESAFE_AI_API_KEY"),
+})
+```
+
+`typesafeai.Config` also accepts `BaseURL` (default
+`https://api.typesafe.ai/v1`), `Headers`, and `HTTPClient`. If `APIKey` is
+left empty, it is read from `TYPESAFE_AI_API_KEY` lazily on each request
+(so setting the environment variable after `New()` still works).
+
+### Get API Key
+
+```bash
+export TYPESAFE_AI_API_KEY=...
+```
+
+## Evaluation
+
+```go
+evalModel, err := provider.EvaluationModel("jev-latest")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.ExperimentalEvaluate(ctx, ai.EvaluateOptions{
+    Model: evalModel,
+    State: "The capital of France is Paris.",
+    Questions: map[string]goprovider.EvaluationQuestion{
+        "factual": {
+            Type:         "boolean",
+            Instructions: "Is this statement factually correct?",
+        },
+        "helpfulness": {
+            Type:         "score",
+            Instructions: "How helpful is this response?",
+            Criteria:     []interface{}{"poor", "fair", "good", "excellent"},
+        },
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+for id, answer := range result.Answers {
+    fmt.Printf("%s: %v\n", id, answer)
+}
+```
+
+`ai.ExperimentalEvaluate` also accepts any `provider.EvaluationModel`
+instance (or a model ID string, resolved via `Provider`, falling back to
+the AI Gateway when `Provider` is nil) — you are not limited to
+TypeSafe AI as the judge model.
+
+## Workflow Serialization
+
+TypeSafe AI evaluation models can cross a workflow boundary with
+`providerutils.SerializeModel` / `DeserializeModel`. See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
+for the mechanism.
+
+## See Also
+
+- [TypeSafe AI Documentation](https://typesafe.ai)

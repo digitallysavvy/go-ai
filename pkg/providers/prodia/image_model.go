@@ -27,7 +27,7 @@ func NewImageModel(prov *Provider, modelID string) *ImageModel {
 
 // SpecificationVersion returns the specification version
 func (m *ImageModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider identifier for this model type.
@@ -114,7 +114,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("prodia API returned status %d: %s", resp.StatusCode, string(resp.Body))
+		return nil, newProdiaProviderError(resp.StatusCode, resp.Body, resp.Headers)
 	}
 
 	contentType := resp.Headers.Get("Content-Type")
@@ -196,4 +196,3 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions, provO
 func (m *ImageModel) buildQuery() map[string]string {
 	return map[string]string{"price": "true"}
 }
-

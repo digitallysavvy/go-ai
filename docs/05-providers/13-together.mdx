@@ -11,19 +11,20 @@ Together AI provides fast inference for open-source models including Llama, Mixt
 
 ### Installation
 
+Together has its own dedicated package — it is not built on top of the generic `openai` package:
+
 ```go
 import (
     "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/providers/openai" // Together uses OpenAI-compatible API
+    "github.com/digitallysavvy/go-ai/pkg/providers/together"
 )
 ```
 
 ### Configuration
 
 ```go
-provider := openai.New(openai.Config{
-    APIKey:  os.Getenv("TOGETHER_API_KEY"),
-    BaseURL: "https://api.together.xyz/v1",
+provider := together.New(together.Config{
+    APIKey: os.Getenv("TOGETHER_API_KEY"),
 })
 
 model, err := provider.LanguageModel("meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo")
@@ -32,11 +33,16 @@ if err != nil {
 }
 ```
 
+`together.Config` also accepts `BaseURL` (default `https://api.together.xyz`) and `Headers`.
+
 ### Get API Key
 
 ```bash
 export TOGETHER_API_KEY=...
 ```
+
+`TOGETHER_AI_API_KEY` is accepted as a deprecated fallback and logs a
+deprecation warning; prefer `TOGETHER_API_KEY`.
 
 ## Available Models
 
@@ -56,6 +62,66 @@ export TOGETHER_API_KEY=...
 | stabilityai/stable-diffusion-xl-base-1.0 | High | $0.025/image | Images |
 | black-forest-labs/FLUX.1-schnell | High | $0.025/image | Fast generation |
 
+### Embeddings
+
+```go
+embeddingModel, err := provider.EmbeddingModel("togethercomputer/m2-bert-80M-8k-retrieval")
+```
+
+### Reranking
+
+`provider.RerankingModel(modelID)` calls `POST /rerank`:
+
+```go
+reranker, err := provider.RerankingModel("Salesforce/Llama-Rank-v1")
+if err != nil {
+    log.Fatal(err)
+}
+
+topN := 3
+result, err := reranker.DoRerank(ctx, &provider.RerankOptions{
+    Query:     "What is the capital of France?",
+    Documents: []string{"Paris is the capital of France.", "Berlin is the capital of Germany."},
+    TopN:      &topN,
+    ProviderOptions: map[string]interface{}{
+        "togetherai": map[string]interface{}{
+            // RankFields selects which keys of a JSON-object document to
+            // rank on; defaults to every supplied key.
+            "rankFields": []string{"text"},
+        },
+    },
+})
+```
+
+## Provider Options
+
+Together-specific chat options go under the `"togetherai"` key (the TS
+provider options name); the Go package's own name, `"together"`, is also
+accepted as a fallback:
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Explain open-source AI",
+    ProviderOptions: map[string]interface{}{
+        "togetherai": map[string]interface{}{
+            "topK": 40,
+        },
+    },
+})
+```
+
+Together does not support speech synthesis or transcription — those model
+factories return an error.
+
+## Workflow Serialization
+
+Together image models can cross a workflow boundary with
+`providerutils.SerializeModel` / `DeserializeModel` (language models could
+already be serialized). See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
+for the mechanism; embedding and reranking models are not yet serializable.
+
 ## Examples
 
 ### Basic Text Generation
@@ -69,13 +135,12 @@ import (
     "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/together"
 )
 
 func main() {
-    provider := openai.New(openai.Config{
-        APIKey:  os.Getenv("TOGETHER_API_KEY"),
-        BaseURL: "https://api.together.xyz/v1",
+    provider := together.New(together.Config{
+        APIKey: os.Getenv("TOGETHER_API_KEY"),
     })
 
     model, err := provider.LanguageModel("meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo")
@@ -83,7 +148,7 @@ func main() {
         log.Fatal(err)
     }
 
-    result, err := ai.GenerateText(model, "Explain open-source AI")
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: "Explain open-source AI"})
     if err != nil {
         log.Fatal(err)
     }

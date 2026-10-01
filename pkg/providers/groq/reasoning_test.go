@@ -71,3 +71,61 @@ func TestGroqReasoningPropagated(t *testing.T) {
 		t.Errorf("expected reasoning_effort 'low', got: %v", body["reasoning_effort"])
 	}
 }
+
+func TestGroqCamelCaseProviderOptionsOverrideReasoning(t *testing.T) {
+	prov := makeTestGroqProvider()
+	model := NewLanguageModel(prov, "deepseek-r1-distill-llama-70b")
+
+	level := types.ReasoningLow
+	opts := &provider.GenerateOptions{
+		Reasoning: &level,
+		ProviderOptions: map[string]interface{}{
+			"groq": map[string]interface{}{
+				"reasoningEffort": "high",
+				"textVerbosity":   "low",
+				"user":            "user-123",
+			},
+		},
+	}
+	body, warnings := model.buildRequestBodyWithWarnings(opts, false)
+
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings for camelCase provider options, got %#v", warnings)
+	}
+	if body["reasoning_effort"] != "high" {
+		t.Errorf("expected provider reasoningEffort to override reasoning, got %v", body["reasoning_effort"])
+	}
+	if body["verbosity"] != "low" {
+		t.Errorf("expected textVerbosity to serialize as verbosity, got %v", body["verbosity"])
+	}
+	if body["user"] != "user-123" {
+		t.Errorf("expected user option, got %v", body["user"])
+	}
+}
+
+func TestGroqDeprecatedOpenAICompatibleProviderOptionsWarning(t *testing.T) {
+	prov := makeTestGroqProvider()
+	model := NewLanguageModel(prov, "deepseek-r1-distill-llama-70b")
+
+	opts := &provider.GenerateOptions{
+		ProviderOptions: map[string]interface{}{
+			"openai-compatible": map[string]interface{}{
+				"reasoning-effort": "medium",
+			},
+		},
+	}
+	body, warnings := model.buildRequestBodyWithWarnings(opts, false)
+
+	if body["reasoning_effort"] != "medium" {
+		t.Errorf("expected deprecated reasoning-effort to be accepted, got %v", body["reasoning_effort"])
+	}
+	if len(warnings) != 2 {
+		t.Fatalf("expected two deprecation warnings, got %#v", warnings)
+	}
+	if warnings[0].Type != "deprecated" || warnings[0].Feature != "providerOptions key 'openai-compatible'" {
+		t.Fatalf("unexpected warning: %#v", warnings[0])
+	}
+	if warnings[1].Type != "deprecated" || warnings[1].Feature != "provider option key 'reasoning-effort'" {
+		t.Fatalf("unexpected option warning: %#v", warnings[1])
+	}
+}

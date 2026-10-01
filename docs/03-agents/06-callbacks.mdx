@@ -173,8 +173,8 @@ config := agent.AgentConfig{
     Tools: tools,
 
     OnStepFinish: func(step types.StepResult) {
-        if step.Usage.TotalTokens != nil {
-            tracker.addUsage(*step.Usage.TotalTokens)
+        if step.Usage.GetTotalTokens() > 0 {
+            tracker.addUsage(step.Usage.GetTotalTokens())
         }
     },
 

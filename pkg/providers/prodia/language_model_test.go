@@ -5,6 +5,8 @@ import (
 	"context"
 	"io"
 	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
 	"net/textproto"
 	"strings"
 	"testing"
@@ -282,6 +284,42 @@ func TestDoGenerateUnsupportedWarnings(t *testing.T) {
 	// real API call in unit tests, verify that the field is readable instead.
 	if opts.Temperature == nil || *opts.Temperature != 0.7 {
 		t.Errorf("unexpected temperature value: %v", opts.Temperature)
+	}
+}
+
+// TestDoGenerateWarnsOnUnsupportedSeed verifies that DoGenerate emits an
+// "unsupported" warning when the caller sets Seed, mirroring the TS SDK's
+// `options.seed !== undefined` check in prodia-language-model.ts.
+func TestDoGenerateWarnsOnUnsupportedSeed(t *testing.T) {
+	fakeImage := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A}
+	body, ct := buildTestMultipartBody(`{"id":"job-seed-1"}`, fakeImage, "image/png")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", ct)
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	prov := New(Config{APIKey: "test-key", BaseURL: srv.URL})
+	model := NewLanguageModel(prov, LanguageModelNanoBananaImgToImgV2)
+
+	seed := 42
+	result, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "a cat"},
+		Seed:   &seed,
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate() error = %v", err)
+	}
+
+	var sawSeedWarning bool
+	for _, w := range result.Warnings {
+		if w.Type == "unsupported" && strings.Contains(w.Message, "seed") {
+			sawSeedWarning = true
+		}
+	}
+	if !sawSeedWarning {
+		t.Fatalf("warnings = %+v, want an unsupported seed warning", result.Warnings)
 	}
 }
 

@@ -1,5 +1,7 @@
 package anthropic
 
+import "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
+
 // ContextManagementEdit represents a single context management edit configuration.
 // The Anthropic API supports different types of edits for managing conversation context:
 // - clear_tool_uses_20250919: Removes old tool calls and results
@@ -132,18 +134,18 @@ type AppliedEdit interface {
 
 // AppliedClearToolUsesEdit indicates that tool uses were cleared
 type AppliedClearToolUsesEdit struct {
-	Type                string `json:"type"`                  // "clear_tool_uses_20250919"
-	ClearedToolUses     int    `json:"cleared_tool_uses"`     // Number of tool uses cleared
-	ClearedInputTokens  int    `json:"cleared_input_tokens"`  // Tokens cleared
+	Type               string `json:"type"`                 // "clear_tool_uses_20250919"
+	ClearedToolUses    int    `json:"cleared_tool_uses"`    // Number of tool uses cleared
+	ClearedInputTokens int    `json:"cleared_input_tokens"` // Tokens cleared
 }
 
 func (e *AppliedClearToolUsesEdit) appliedEdit() {}
 
 // AppliedClearThinkingEdit indicates that thinking blocks were cleared
 type AppliedClearThinkingEdit struct {
-	Type                  string `json:"type"`                    // "clear_thinking_20251015"
-	ClearedThinkingTurns  int    `json:"cleared_thinking_turns"`  // Number of thinking turns cleared
-	ClearedInputTokens    int    `json:"cleared_input_tokens"`    // Tokens cleared
+	Type                 string `json:"type"`                   // "clear_thinking_20251015"
+	ClearedThinkingTurns int    `json:"cleared_thinking_turns"` // Number of thinking turns cleared
+	ClearedInputTokens   int    `json:"cleared_input_tokens"`   // Tokens cleared
 }
 
 func (e *AppliedClearThinkingEdit) appliedEdit() {}
@@ -160,8 +162,15 @@ const (
 	// BetaHeaderContextManagement is required for clear_tool_uses and clear_thinking edits
 	BetaHeaderContextManagement = "context-management-2025-06-27"
 
-	// BetaHeaderCompact is required for compact edits
+	// BetaHeaderCompact is required for compact_20260112 context management edits
 	BetaHeaderCompact = "compact-2026-01-12"
+
+	// BetaHeaderCompaction is required for the request-level Compaction option
+	// (on-demand summarization) and for replaying signed compaction blocks
+	// from message history. Distinct from BetaHeaderCompact.
+	// It is the same flag the prompt converter adds when replaying compaction
+	// blocks, so it references that constant rather than repeating the literal.
+	BetaHeaderCompaction = prompt.AnthropicBetaCompact
 
 	// BetaHeaderFastMode is required for fast mode (Opus 4.6)
 	BetaHeaderFastMode = "fast-mode-2026-02-01"
@@ -173,12 +182,14 @@ const (
 	// It is automatically injected when the code execution tool is present in the tool list.
 	BetaHeaderCodeExecution = "code-execution-20260120"
 
-	// BetaHeaderEffort is required when the Effort model option is set.
-	BetaHeaderEffort = "effort-2025-11-24"
-
-	// BetaHeaderFineGrainedToolStreaming enables incremental tool call streaming.
-	// Automatically injected on streaming requests unless ToolStreaming is disabled.
+	// BetaHeaderFineGrainedToolStreaming is obsolete and retained only for
+	// source compatibility with older callers.
+	//
+	// Deprecated: the provider no longer injects this header.
 	BetaHeaderFineGrainedToolStreaming = "fine-grained-tool-streaming-2025-05-14"
+
+	// BetaHeaderTaskBudgets is required when TaskBudget is set.
+	BetaHeaderTaskBudgets = "task-budgets-2026-03-13"
 
 	// BetaHeaderMCPClient is required for native MCP server support.
 	// It is automatically injected when MCPServers is non-empty.
@@ -224,6 +235,13 @@ const (
 	// BetaHeaderAdvancedToolUse is required when tools use AllowedCallers or InputExamples.
 	// Automatically injected when any tool in the list has either field set.
 	BetaHeaderAdvancedToolUse = "advanced-tool-use-2025-11-20"
+
+	// BetaHeaderAdvisorTool is required for advisor_20260301.
+	// Automatically injected when that tool is present in the tool list.
+	BetaHeaderAdvisorTool = "advisor-tool-2026-03-01"
+
+	// BetaHeaderServerSideFallback is required when fallbacks are configured.
+	BetaHeaderServerSideFallback = "server-side-fallback-2026-06-01"
 )
 
 // Helper functions for creating edit configurations

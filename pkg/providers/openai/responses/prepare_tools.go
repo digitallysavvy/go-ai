@@ -1,6 +1,10 @@
 package responses
 
 import (
+	"fmt"
+	"strings"
+
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	openaitool "github.com/digitallysavvy/go-ai/pkg/providers/openai/tool"
 )
@@ -17,15 +21,50 @@ import (
 // The returned slice is ready to be marshaled as the "tools" field in an
 // OpenAI Responses API request body.
 func PrepareTools(tools []types.Tool) []interface{} {
+	result, _ := PrepareToolsWithError(tools)
+	return result
+}
+
+// PrepareToolsWithError converts SDK tools to OpenAI Responses API tool
+// definitions and reports TS-parity unsupported functionality errors.
+func PrepareToolsWithError(tools []types.Tool) ([]interface{}, error) {
 	if len(tools) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	result := make([]interface{}, 0, len(tools))
+	namespaces := map[string]*NamespaceToolDef{}
 	for _, t := range tools {
-		result = append(result, convertTool(t))
+		def := convertTool(t)
+		if def != nil {
+			if functionDef, ok := def.(FunctionToolDef); ok {
+				namespace, ok := functionToolNamespace(t.ProviderOptions)
+				if ok {
+					namespaceDef := namespaces[namespace.Name]
+					if namespaceDef == nil {
+						namespaceDef = &NamespaceToolDef{
+							Type:        "namespace",
+							Name:        namespace.Name,
+							Description: namespace.Description,
+							Tools:       []FunctionToolDef{},
+						}
+						namespaces[namespace.Name] = namespaceDef
+						result = append(result, namespaceDef)
+					} else if namespaceDef.Description != namespace.Description {
+						functionality := fmt.Sprintf("conflicting descriptions for OpenAI tool namespace %q", namespace.Name)
+						return nil, &providererrors.UnsupportedFunctionalityError{
+							Functionality: functionality,
+							Message:       fmt.Sprintf("'%s' functionality not supported.", functionality),
+						}
+					}
+					namespaceDef.Tools = append(namespaceDef.Tools, functionDef)
+					continue
+				}
+			}
+			result = append(result, def)
+		}
 	}
-	return result
+	return result, nil
 }
 
 // convertTool converts a single types.Tool to its Responses API representation.
@@ -35,16 +74,39 @@ func convertTool(t types.Tool) interface{} {
 	if _, ok := t.ProviderOptions.(openaitool.CustomTool); ok {
 		return convertCustomTool(t)
 	}
-	switch t.Name {
+	toolID := t.ProviderID
+	if toolID == "" {
+		toolID = t.Name
+	}
+	switch toolID {
 	case "openai.local_shell":
 		return LocalShellToolDef{Type: "local_shell"}
 	case "openai.shell":
 		return convertShellTool(t)
 	case "openai.apply_patch":
 		return ApplyPatchToolDef{Type: "apply_patch"}
+	case "openai.computer":
+		return map[string]interface{}{"type": "computer"}
+	case "openai.code_interpreter":
+		return convertCodeInterpreterTool(t)
+	case "openai.file_search":
+		return convertFileSearchTool(t)
+	case "openai.image_generation":
+		return convertImageGenerationTool(t)
+	case "openai.web_search":
+		return convertWebSearchTool(t)
+	case "openai.web_search_preview":
+		return convertWebSearchPreviewTool(t)
+	case "openai.mcp":
+		return convertMCPTool(t)
 	case "openai.tool_search":
 		return convertToolSearchTool(t)
+	case "openai.programmatic_tool_calling":
+		return map[string]interface{}{"type": "programmatic_tool_calling"}
 	default:
+		if t.Type == types.ToolTypeProviderDefined {
+			return nil
+		}
 		return convertFunctionTool(t)
 	}
 }
@@ -72,8 +134,237 @@ func convertCustomTool(t types.Tool) CustomToolDef {
 		}
 		def.Format = f
 	}
+	if ct.Async != nil {
+		def.Async = ct.Async
+	}
 
 	return def
+}
+
+func convertCodeInterpreterTool(t types.Tool) map[string]interface{} {
+	def := map[string]interface{}{"type": "code_interpreter"}
+	cfg, _ := t.ProviderOptions.(openaitool.CodeInterpreterConfig)
+	switch container := cfg.Container.(type) {
+	case string:
+		if container != "" {
+			def["container"] = container
+		} else {
+			def["container"] = map[string]interface{}{"type": "auto"}
+		}
+	case openaitool.CodeInterpreterContainer:
+		containerDef := map[string]interface{}{"type": "auto"}
+		if len(container.FileIDs) > 0 {
+			containerDef["file_ids"] = container.FileIDs
+		}
+		def["container"] = containerDef
+	case *openaitool.CodeInterpreterContainer:
+		containerDef := map[string]interface{}{"type": "auto"}
+		if container != nil && len(container.FileIDs) > 0 {
+			containerDef["file_ids"] = container.FileIDs
+		}
+		def["container"] = containerDef
+	default:
+		def["container"] = map[string]interface{}{"type": "auto"}
+	}
+	return def
+}
+
+func convertFileSearchTool(t types.Tool) map[string]interface{} {
+	def := map[string]interface{}{"type": "file_search"}
+	cfg, _ := t.ProviderOptions.(openaitool.FileSearchConfig)
+	def["vector_store_ids"] = cfg.VectorStoreIDs
+	if cfg.MaxNumResults != nil {
+		def["max_num_results"] = *cfg.MaxNumResults
+	}
+	if cfg.Ranking != nil {
+		ranking := map[string]interface{}{}
+		if cfg.Ranking.Ranker != "" {
+			ranking["ranker"] = cfg.Ranking.Ranker
+		}
+		if cfg.Ranking.ScoreThreshold != nil {
+			ranking["score_threshold"] = *cfg.Ranking.ScoreThreshold
+		}
+		def["ranking_options"] = ranking
+	}
+	if cfg.Filters != nil {
+		def["filters"] = cfg.Filters
+	}
+	return def
+}
+
+func convertImageGenerationTool(t types.Tool) map[string]interface{} {
+	def := map[string]interface{}{"type": "image_generation"}
+	cfg, _ := t.ProviderOptions.(openaitool.ImageGenerationConfig)
+	if cfg.Action != "" {
+		def["action"] = cfg.Action
+	}
+	if cfg.Background != "" {
+		def["background"] = cfg.Background
+	}
+	if cfg.InputFidelity != "" {
+		def["input_fidelity"] = cfg.InputFidelity
+	}
+	if cfg.InputImageMask != nil {
+		mask := map[string]interface{}{}
+		if cfg.InputImageMask.FileID != "" {
+			mask["file_id"] = cfg.InputImageMask.FileID
+		}
+		if cfg.InputImageMask.ImageURL != "" {
+			mask["image_url"] = cfg.InputImageMask.ImageURL
+		}
+		def["input_image_mask"] = mask
+	}
+	if cfg.Model != "" {
+		def["model"] = cfg.Model
+	}
+	if cfg.Moderation != "" {
+		def["moderation"] = cfg.Moderation
+	}
+	if cfg.OutputCompression != nil {
+		def["output_compression"] = *cfg.OutputCompression
+	}
+	if cfg.OutputFormat != "" {
+		def["output_format"] = cfg.OutputFormat
+	}
+	if cfg.PartialImages != nil {
+		def["partial_images"] = *cfg.PartialImages
+	}
+	if cfg.Quality != "" {
+		def["quality"] = cfg.Quality
+	}
+	if cfg.Size != "" {
+		def["size"] = cfg.Size
+	}
+	return def
+}
+
+func convertWebSearchTool(t types.Tool) WebSearchToolDef {
+	def := WebSearchToolDef{Type: "web_search"}
+	cfg, _ := t.ProviderOptions.(openaitool.WebSearchConfig)
+	if cfg.Filters != nil && (len(cfg.Filters.AllowedDomains) > 0 || len(cfg.Filters.BlockedDomains) > 0) {
+		filters := map[string]interface{}{}
+		if len(cfg.Filters.AllowedDomains) > 0 {
+			filters["allowed_domains"] = cfg.Filters.AllowedDomains
+		}
+		if len(cfg.Filters.BlockedDomains) > 0 {
+			filters["blocked_domains"] = cfg.Filters.BlockedDomains
+		}
+		def.Filters = filters
+	}
+	def.ExternalWebAccess = cfg.ExternalWebAccess
+	def.SearchContextSize = cfg.SearchContextSize
+	def.UserLocation = webSearchLocation(cfg.UserLocation)
+	return def
+}
+
+func convertWebSearchPreviewTool(t types.Tool) WebSearchPreviewToolDef {
+	def := WebSearchPreviewToolDef{Type: "web_search_preview"}
+	cfg, _ := t.ProviderOptions.(openaitool.WebSearchPreviewConfig)
+	def.SearchContextSize = cfg.SearchContextSize
+	def.UserLocation = webSearchLocation(cfg.UserLocation)
+	return def
+}
+
+func convertMCPTool(t types.Tool) map[string]interface{} {
+	cfg, _ := t.ProviderOptions.(openaitool.MCPConfig)
+	def := map[string]interface{}{
+		"type":             "mcp",
+		"server_label":     cfg.ServerLabel,
+		"require_approval": "never",
+	}
+	if cfg.AllowedTools != nil {
+		def["allowed_tools"] = mcpAllowedTools(cfg.AllowedTools)
+	}
+	if cfg.Authorization != "" {
+		def["authorization"] = cfg.Authorization
+	}
+	if cfg.ConnectorID != "" {
+		def["connector_id"] = cfg.ConnectorID
+	}
+	if len(cfg.Headers) > 0 {
+		def["headers"] = cfg.Headers
+	}
+	if cfg.RequireApproval != nil {
+		def["require_approval"] = mcpRequireApproval(cfg.RequireApproval)
+	}
+	if cfg.ServerDescription != "" {
+		def["server_description"] = cfg.ServerDescription
+	}
+	if cfg.ServerURL != "" {
+		def["server_url"] = cfg.ServerURL
+	}
+	return def
+}
+
+func mcpAllowedTools(value interface{}) interface{} {
+	switch v := value.(type) {
+	case []string:
+		return v
+	case openaitool.MCPAllowedTools:
+		out := map[string]interface{}{}
+		if v.ReadOnly != nil {
+			out["read_only"] = *v.ReadOnly
+		}
+		if v.ToolNames != nil {
+			out["tool_names"] = v.ToolNames
+		}
+		return out
+	case *openaitool.MCPAllowedTools:
+		if v == nil {
+			return nil
+		}
+		return mcpAllowedTools(*v)
+	default:
+		return v
+	}
+}
+
+func mcpRequireApproval(value interface{}) interface{} {
+	switch v := value.(type) {
+	case string:
+		return v
+	case openaitool.MCPRequireApproval:
+		if v.Never == nil {
+			return "never"
+		}
+		never := map[string]interface{}{}
+		if v.Never.ToolNames != nil {
+			never["tool_names"] = v.Never.ToolNames
+		}
+		out := map[string]interface{}{"never": never}
+		return out
+	case *openaitool.MCPRequireApproval:
+		if v == nil {
+			return "never"
+		}
+		return mcpRequireApproval(*v)
+	default:
+		return v
+	}
+}
+
+func webSearchLocation(loc *openaitool.WebSearchLocation) interface{} {
+	if loc == nil {
+		return nil
+	}
+	locationType := loc.Type
+	if locationType == "" {
+		locationType = "approximate"
+	}
+	out := map[string]interface{}{"type": locationType}
+	if loc.Country != "" {
+		out["country"] = loc.Country
+	}
+	if loc.City != "" {
+		out["city"] = loc.City
+	}
+	if loc.Region != "" {
+		out["region"] = loc.Region
+	}
+	if loc.Timezone != "" {
+		out["timezone"] = loc.Timezone
+	}
+	return out
 }
 
 // convertToolSearchTool builds a ToolSearchToolDef from a tool_search tool.
@@ -140,13 +431,374 @@ func convertFunctionTool(t types.Tool) FunctionToolDef {
 		Type:        "function",
 		Name:        t.Name,
 		Description: t.Description,
-		Parameters:  t.Parameters,
+		Parameters:  defaultFunctionParameters(t.Parameters),
 	}
 
-	if t.Strict {
-		strict := true
-		def.Strict = &strict
+	// TS openai-responses-prepare-tools.ts: `strict: tool.strict ?? false` —
+	// always sent, defaulting the wire value to false when the caller left
+	// it unset (row 2abd503e95; previously omitted entirely).
+	strict := false
+	if t.Strict != nil {
+		strict = *t.Strict
+	}
+	def.Strict = &strict
+	if deferLoading, ok := functionToolDeferLoading(t.ProviderOptions); ok {
+		def.DeferLoading = &deferLoading
+	}
+	// Row 4a09793: async is read here without model-capability gating --
+	// the caller (responses_language_model.go, which knows the model id)
+	// is responsible for warning and stripping it when unsupported, since
+	// this package has no model ID to check against.
+	if async, ok := functionToolAsync(t.ProviderOptions); ok {
+		def.Async = &async
+	}
+	if allowedCallers, ok := functionToolAllowedCallers(t.ProviderOptions); ok {
+		def.AllowedCallers = allowedCallers
+	}
+	if outputSchema, ok := functionToolOutputSchema(t.ProviderOptions); ok {
+		def.OutputSchema = outputSchema
 	}
 
 	return def
+}
+
+func functionToolDeferLoading(providerOptions interface{}) (bool, bool) {
+	openaiOptions, ok := functionToolOpenAIOptions(providerOptions)
+	if !ok {
+		return false, false
+	}
+	deferLoading, ok := openaiOptions["deferLoading"].(bool)
+	return deferLoading, ok
+}
+
+func functionToolAsync(providerOptions interface{}) (bool, bool) {
+	openaiOptions, ok := functionToolOpenAIOptions(providerOptions)
+	if !ok {
+		return false, false
+	}
+	async, ok := openaiOptions["async"].(bool)
+	return async, ok
+}
+
+func functionToolAllowedCallers(providerOptions interface{}) ([]string, bool) {
+	openaiOptions, ok := functionToolOpenAIOptions(providerOptions)
+	if !ok {
+		return nil, false
+	}
+	raw, ok := openaiOptions["allowedCallers"]
+	if !ok {
+		return nil, false
+	}
+	switch v := raw.(type) {
+	case []string:
+		return v, len(v) > 0
+	case []interface{}:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out, len(out) > 0
+	default:
+		return nil, false
+	}
+}
+
+func functionToolOutputSchema(providerOptions interface{}) (interface{}, bool) {
+	openaiOptions, ok := functionToolOpenAIOptions(providerOptions)
+	if !ok {
+		return nil, false
+	}
+	schema, ok := openaiOptions["outputSchema"]
+	return schema, ok && schema != nil
+}
+
+type functionToolNamespaceOption struct {
+	Name        string
+	Description string
+}
+
+func functionToolNamespace(providerOptions interface{}) (functionToolNamespaceOption, bool) {
+	openaiOptions, ok := functionToolOpenAIOptions(providerOptions)
+	if !ok {
+		return functionToolNamespaceOption{}, false
+	}
+	rawNamespace, ok := openaiOptions["namespace"]
+	if !ok || rawNamespace == nil {
+		return functionToolNamespaceOption{}, false
+	}
+	namespace, ok := rawNamespace.(map[string]interface{})
+	if !ok {
+		return functionToolNamespaceOption{}, false
+	}
+	name, _ := namespace["name"].(string)
+	description, _ := namespace["description"].(string)
+	if name == "" {
+		return functionToolNamespaceOption{}, false
+	}
+	return functionToolNamespaceOption{Name: name, Description: description}, true
+}
+
+func functionToolOpenAIOptions(providerOptions interface{}) (map[string]interface{}, bool) {
+	options, ok := providerOptions.(map[string]interface{})
+	if !ok {
+		return nil, false
+	}
+	openaiRaw, ok := options["openai"]
+	if !ok {
+		return nil, false
+	}
+	openaiOptions, ok := openaiRaw.(map[string]interface{})
+	if !ok {
+		return nil, false
+	}
+	return openaiOptions, true
+}
+
+// allowedToolResolution mirrors TS AllowedToolResolution: a requested
+// allowedTools name either resolves to a concrete tool_choice.allowed_tools
+// entry, or is unsupported (with a reason) and gets dropped with a warning.
+type allowedToolResolution struct {
+	supported bool
+	entry     AllowedToolsToolEntry
+	reason    string
+}
+
+// resolveAllowedToolForTool determines the tool_choice.allowed_tools entry
+// shape for a single SDK tool, mirroring TS `toAllowedToolResolution` plus
+// the "custom" and "function" cases from `openai-responses-prepare-tools.ts`.
+func resolveAllowedToolForTool(t types.Tool) allowedToolResolution {
+	if _, ok := t.ProviderOptions.(openaitool.CustomTool); ok {
+		return allowedToolResolution{supported: true, entry: AllowedToolsToolEntry{Type: "custom", Name: t.Name}}
+	}
+	toolID := t.ProviderID
+	if toolID == "" {
+		toolID = t.Name
+	}
+	switch toolID {
+	case "openai.mcp":
+		cfg, _ := t.ProviderOptions.(openaitool.MCPConfig)
+		return allowedToolResolution{supported: true, entry: AllowedToolsToolEntry{Type: "mcp", ServerLabel: cfg.ServerLabel}}
+	case "openai.file_search", "openai.web_search", "openai.web_search_preview",
+		"openai.image_generation", "openai.code_interpreter", "openai.computer",
+		"openai.apply_patch", "openai.shell", "openai.local_shell",
+		"openai.programmatic_tool_calling":
+		return allowedToolResolution{supported: true, entry: AllowedToolsToolEntry{Type: normalizeOpenAIToolName(toolID)}}
+	}
+	if t.Type == types.ToolTypeProviderDefined {
+		return allowedToolResolution{
+			supported: false,
+			reason:    fmt.Sprintf("OpenAI does not support %s tools in tool_choice.allowed_tools", toolID),
+		}
+	}
+	if _, ok := functionToolNamespace(t.ProviderOptions); ok {
+		return allowedToolResolution{
+			supported: false,
+			reason:    "tools inside an OpenAI tool namespace are not visible to tool_choice.allowed_tools",
+		}
+	}
+	if deferLoading, ok := functionToolDeferLoading(t.ProviderOptions); ok && deferLoading {
+		return allowedToolResolution{
+			supported: false,
+			reason:    "deferred tools are not visible to tool_choice.allowed_tools",
+		}
+	}
+	return allowedToolResolution{supported: true, entry: AllowedToolsToolEntry{Type: "function", Name: t.Name}}
+}
+
+// allowedToolKey returns a comparison key for an AllowedToolsToolEntry,
+// mirroring TS `allowedToolKey`: two entries are "the same allowed tool" iff
+// their keys match.
+func allowedToolKey(entry AllowedToolsToolEntry) string {
+	switch entry.Type {
+	case "mcp":
+		return "mcp:" + entry.ServerLabel
+	case "function", "custom":
+		return entry.Type + ":" + entry.Name
+	default:
+		return entry.Type
+	}
+}
+
+// isSameAllowedTool mirrors TS `isSameAllowedTool`.
+func isSameAllowedTool(a, b allowedToolResolution) bool {
+	if a.supported && b.supported {
+		return allowedToolKey(a.entry) == allowedToolKey(b.entry)
+	}
+	if !a.supported && !b.supported {
+		return a.reason == b.reason
+	}
+	return false
+}
+
+// canonicalAllowedToolName returns the "provider tool name" a resolved
+// allowedTools entry would be known by on the wire, independent of the SDK
+// tool's own (possibly custom) Name -- mirrors TS's static
+// `providerToolNames` table (id -> fixed provider tool name, e.g.
+// "openai.mcp" -> "mcp") consulted through
+// `toolNameMapping.toProviderToolName`. This is deliberately just the
+// resolved entry's Type, NOT `allowedToolKey(entry)`: TS's canonical name for
+// every MCP tool is the single fixed string "mcp" regardless of
+// server_label (all "openai.mcp" tools share one entry in providerToolNames),
+// whereas allowedToolKey intentionally differentiates MCP entries by
+// server_label for the *equality* check in isSameAllowedTool. Reusing
+// allowedToolKey here would make the canonical key already unique per
+// server_label, so two different MCP servers could never collide on it --
+// silently making the "ambiguous" case below unreachable. Function/custom
+// tools have no separate wire identity distinct from their own name, so they
+// return "" (no alias is recorded for them, matching TS passing `undefined`
+// as canonicalName in the function-tool branch).
+func canonicalAllowedToolName(entry AllowedToolsToolEntry) string {
+	switch entry.Type {
+	case "function", "custom":
+		return ""
+	default:
+		return entry.Type
+	}
+}
+
+// allowedToolAlias is either a resolved allowedToolResolution or the
+// "ambiguous" marker (aliasAmbiguous == true), mirroring TS's
+// `AllowedToolResolution | 'ambiguous'` union.
+type allowedToolAlias struct {
+	resolution     allowedToolResolution
+	aliasAmbiguous bool
+}
+
+// ResolveAllowedTools implements the TS openai-responses-prepare-tools.ts
+// `allowedTools` handling (row a062795): each requested tool name is
+// resolved against the actual tool list by exact name match to determine
+// whether it needs a "function", "custom", "mcp" (by server_label), or
+// built-in provider tool_choice.allowed_tools entry — sending the wrong
+// shape (e.g. `{type:"function"}` for an actual built-in web_search tool) is
+// rejected by the API. Unknown names are sent through as a function tool
+// with a warning; unsupported tools (namespaced/deferred/provider-defined
+// without an allow-list entry) are dropped with a warning. If every
+// requested name is dropped, this returns an error (TS throws
+// UnsupportedFunctionalityError).
+//
+// A requested name that doesn't match any tool's own SDK Name is also
+// checked against each provider-defined tool's canonical wire identity (row
+// a062795 alias layer): e.g. "file_search" resolves to a tool registered
+// under a custom Name whose ProviderID is "openai.file_search". If two
+// different tools in the request share the same canonical identity, the
+// alias is "ambiguous" and dropped with a warning directing the caller to
+// use the tool's own Name instead. If a name matches BOTH a tool's own Name
+// and another tool's canonical alias, the direct match wins with a warning.
+//
+// This is reachable in Go the same way it is in TS: two different MCP tools
+// (distinct ProviderOptions.ServerLabel, and therefore distinct SDK Names)
+// both canonicalize to the fixed alias "mcp" (see canonicalAllowedToolName),
+// so an allowedTools entry of "mcp" is genuinely ambiguous between them and
+// is dropped with a warning -- the caller must use each tool's own Name
+// instead.
+func ResolveAllowedTools(tools []types.Tool, toolNames []string, mode string) (*AllowedToolsToolChoice, []types.Warning, error) {
+	if len(toolNames) == 0 {
+		return nil, nil, nil
+	}
+	if mode == "" {
+		mode = "auto"
+	}
+
+	resolutions := make(map[string]allowedToolResolution, len(tools))
+	aliases := make(map[string]allowedToolAlias)
+	for _, t := range tools {
+		resolution := resolveAllowedToolForTool(t)
+		resolutions[t.Name] = resolution
+
+		canonical := ""
+		if resolution.supported {
+			canonical = canonicalAllowedToolName(resolution.entry)
+		}
+		if canonical == "" || canonical == t.Name {
+			continue
+		}
+		if existing, ok := aliases[canonical]; !ok {
+			aliases[canonical] = allowedToolAlias{resolution: resolution}
+		} else if !existing.aliasAmbiguous && !isSameAllowedTool(existing.resolution, resolution) {
+			aliases[canonical] = allowedToolAlias{aliasAmbiguous: true}
+		}
+	}
+
+	var warnings []types.Warning
+	var entries []AllowedToolsToolEntry
+	var dropped []string
+	for _, name := range toolNames {
+		directResolution, hasDirect := resolutions[name]
+		alias, hasAlias := aliases[name]
+
+		if hasDirect && hasAlias {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: fmt.Sprintf("allowedTools entry %q", name),
+				Details: "this name is both a tool name and the provider tool name of another tool in this request; the tool with this name is allowed",
+			})
+		}
+
+		if !hasDirect && hasAlias && alias.aliasAmbiguous {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: fmt.Sprintf("allowedTools entry %q", name),
+				Details: "several tools in this request share this provider tool name; use the tool name from the tools for this request instead",
+			})
+			dropped = append(dropped, name)
+			continue
+		}
+
+		resolution, ok := directResolution, hasDirect
+		if !ok && hasAlias {
+			resolution, ok = alias.resolution, true
+		}
+
+		if !ok {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: fmt.Sprintf("allowedTools entry %q", name),
+				Details: "the tool is not part of the tools for this request and is sent as a function tool",
+			})
+			entries = append(entries, AllowedToolsToolEntry{Type: "function", Name: name})
+			continue
+		}
+		if !resolution.supported {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: fmt.Sprintf("allowedTools entry %q", name),
+				Details: resolution.reason + "; the tool is removed from the allowed tools",
+			})
+			dropped = append(dropped, name)
+			continue
+		}
+		entries = append(entries, resolution.entry)
+	}
+
+	if len(entries) == 0 {
+		functionality := fmt.Sprintf("allowedTools with only tools that cannot be allow-listed (%s)", strings.Join(dropped, ", "))
+		return nil, warnings, &providererrors.UnsupportedFunctionalityError{
+			Functionality: functionality,
+			Message:       fmt.Sprintf("'%s' functionality not supported.", functionality),
+		}
+	}
+
+	return &AllowedToolsToolChoice{Type: "allowed_tools", Mode: mode, Tools: entries}, warnings, nil
+}
+
+func defaultFunctionParameters(parameters interface{}) interface{} {
+	if parameters == nil {
+		return map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		}
+	}
+	if schema, ok := parameters.(map[string]interface{}); ok {
+		if _, hasType := schema["type"]; !hasType {
+			copied := make(map[string]interface{}, len(schema)+1)
+			for key, value := range schema {
+				copied[key] = value
+			}
+			copied["type"] = "object"
+			return copied
+		}
+	}
+	return parameters
 }

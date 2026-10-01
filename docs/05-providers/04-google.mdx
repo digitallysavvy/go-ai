@@ -16,6 +16,7 @@ The Google provider is included in the Go-AI SDK:
 ```go
 import (
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    providerapi "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/providers/google"
 )
 ```
@@ -23,11 +24,11 @@ import (
 ### Configuration
 
 ```go
-provider := google.New(google.Config{
-    APIKey: os.Getenv("GOOGLE_API_KEY"),
+googleProvider := google.New(google.Config{
+    APIKey: os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY"),
 })
 
-model, err := provider.LanguageModel("gemini-2.0-flash")
+model, err := googleProvider.LanguageModel("gemini-2.0-flash")
 if err != nil {
     log.Fatal(err)
 }
@@ -40,12 +41,24 @@ if err != nil {
 3. Set environment variable:
 
 ```bash
-export GOOGLE_API_KEY=AI...
+export GOOGLE_GENERATIVE_AI_API_KEY=AI...
 ```
 
 ## Available Models
 
-### Gemini 2.0 Series (Latest)
+### Gemini 3 / 2.5 Series
+
+| Model ID | Best For |
+|----------|----------|
+| gemini-3.1-pro-preview | Advanced text generation |
+| gemini-3.1-pro-preview-customtools | Advanced text generation with custom tools |
+| gemini-3-flash-preview | Fast preview generation |
+| gemini-3-pro-preview | Advanced preview generation |
+| gemini-2.5-pro | Complex reasoning and multimodal tasks |
+| gemini-2.5-flash | Fast multimodal tasks |
+| gemini-2.5-flash-lite | Cost-effective high-volume tasks |
+
+### Gemini 2.0 Series
 
 | Model ID | Context | Input Price | Output Price | Best For |
 |----------|---------|-------------|--------------|----------|
@@ -68,22 +81,160 @@ export GOOGLE_API_KEY=AI...
 
 ### Image Generation Models
 
+> **Breaking change:** non-Gemini Imagen models (`imagen-4.0-*`, etc.) were
+> removed from the Google provider, matching the TypeScript SDK. Calling
+> `provider.ImageModel(id)` with a model ID that doesn't start with
+> `gemini-` now fails with: "Google image models other than Gemini are no
+> longer supported. Use a model ID that starts with `gemini-`." Use Google
+> Vertex AI if you still need Imagen.
+
 | Model ID | Aspect Ratios | Price | Best For |
 |----------|--------------|-------|----------|
-| imagen-4.0-generate-001 | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | High-quality generation |
-| imagen-4.0-ultra-generate-001 | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | Highest quality |
-| imagen-4.0-fast-generate-001 | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | Fast generation |
 | gemini-2.5-flash-image | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | Fast Gemini generation |
 | gemini-3-pro-image-preview | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | Advanced generation |
+
+Gemini image models ignore `N` (they generate one image per call and are
+auto-batched by `ai.GenerateImage` to reach the requested count) instead of
+erroring on `N > 1`.
+
+Gemini image models can use Google Search grounding during image generation through provider options:
+
+```go
+result, err := imageModel.DoGenerate(ctx, &provider.ImageGenerateOptions{
+    Prompt: "create a current-events infographic",
+    ProviderOptions: map[string]interface{}{
+        "google": map[string]interface{}{
+            "googleSearch": map[string]interface{}{},
+        },
+    },
+})
+```
+
+`googleSearch` is only supported for Gemini image models — the only image models this provider exposes now that Imagen has been removed.
 
 ### Embedding Models
 
 | Model ID | Dimensions | Price | Best For |
 |----------|-----------|-------|----------|
-| text-embedding-004 | 768 | Free | Semantic search |
-| textembedding-gecko@003 | 768 | Free | Legacy embeddings |
+| gemini-embedding-001 | 3072 | See Google pricing | Multimodal semantic search |
+| gemini-embedding-2 | 3072 | See Google pricing | Stable Gemini embedding workloads |
+| gemini-embedding-2-preview | Provider-defined | See Google pricing | Preview embedding workloads |
+
+### Gemini TTS Speech Models
+
+Google Gemini TTS is exposed through `Provider.SpeechModel` and `Provider.Speech`.
+
+| Model ID | Go constant |
+|----------|-------------|
+| gemini-2.5-flash-preview-tts | `google.ModelGemini25FlashTTS` |
+| gemini-2.5-pro-preview-tts | `google.ModelGemini25ProTTS` |
+| gemini-3.1-flash-tts-preview | `google.ModelGemini31FlashTTSPreview` |
+
+```go
+speechModel, err := googleProvider.SpeechModel(google.ModelGemini25FlashTTS)
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+    Model: speechModel,
+    Text:  "Welcome to Go-AI.",
+    Voice: "Kore",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println(result.Audio.MediaType)
+```
+
+Gemini TTS defaults to the `Kore` voice when no voice is supplied. Use `ProviderOptions["google"]` with `google.GoogleSpeechModelOptions` to pass Gemini-specific speech options such as multi-speaker voice configuration.
+
+### Realtime Models
+
+Gemini Live is exposed through `Provider.RealtimeModel`,
+`ExperimentalRealtimeModel`, and `GetRealtimeToken`. Model IDs are strings, matching
+the TypeScript `GoogleRealtimeModelId` surface.
+
+```go
+model, err := googleProvider.RealtimeModel("gemini-3.1-flash-live-preview")
+if err != nil {
+    log.Fatal(err)
+}
+
+token, err := model.DoCreateClientSecret(ctx, providerapi.ClientSecretOptions{})
+if err != nil {
+    log.Fatal(err)
+}
+
+ws := model.GetWebSocketConfig(token.Token, token.URL)
+fmt.Println(ws.URL)
+```
+
+Use `ai.ConnectRealtime` for a provider-neutral Go session helper. Browser-only
+TypeScript pieces such as `BrowserRealtimeTransport`, `BrowserRealtimeAudio`,
+and `useRealtime` are not part of the Go runtime.
+
+Gemini Live Translate configuration can be passed through `ProviderOptions["google"]["translationConfig"]`. The provider merges it into the realtime session `generationConfig.translationConfig`, matching the TypeScript Live Translate request shape.
+
+### Speech Translation (experimental)
+
+`Provider.SpeechTranslationModel(modelID)` (alias `Provider.Translation`)
+returns a speech-to-speech translation model over the same Live API
+`BidiGenerateContent` WebSocket, for use with `ai.ExperimentalStreamTranslate`:
+
+```go
+translationModel, err := googleProvider.SpeechTranslationModel("gemini-3.5-live-translate-preview")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.ExperimentalStreamTranslate(ctx, ai.StreamTranslateOptions{
+    Model:          translationModel,
+    Audio:          audioStream,
+    TargetLanguage: "es",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+stream, err := result.FullStream()
+if err != nil {
+    log.Fatal(err)
+}
+defer stream.Close()
+
+for {
+    part, err := stream.Next()
+    if err == io.EOF {
+        break
+    }
+    if err != nil {
+        log.Fatal(err)
+    }
+    if part.Type == "audio" {
+        // part.AudioData carries translated PCM audio.
+    }
+}
+```
 
 ## Provider-Specific Features
+
+### Service Tier
+
+For the Gemini API, pass `serviceTier` in Google provider options:
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "hello",
+    ProviderOptions: map[string]interface{}{
+        "google": map[string]interface{}{
+            "serviceTier": "priority",
+        },
+    },
+})
+```
 
 ### Massive Context Windows
 
@@ -93,8 +244,10 @@ Gemini supports up to 2M tokens of context:
 // Process entire codebases or books
 hugeDocument := loadDocument("book.txt") // up to 2M tokens
 
-result, err := ai.GenerateText(model,
-    fmt.Sprintf("Summarize this book:\n\n%s", hugeDocument))
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: fmt.Sprintf("Summarize this book:\n\n%s", hugeDocument),
+})
 ```
 
 ### Multimodal Capabilities
@@ -103,32 +256,59 @@ Gemini excels at processing text, images, video, and audio together:
 
 ```go
 // Image understanding
-result, err := ai.GenerateText(model,
-    ai.WithMessages(
-        ai.UserMessage("Describe this image in detail",
-            ai.WithImageURL("https://example.com/photo.jpg"),
-        ),
-    ),
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Messages: []types.Message{
+        {
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.TextContent{Text: "Describe this image in detail"},
+                types.FileContent{
+                    URL:       "https://example.com/photo.jpg",
+                    MediaType: "image/jpeg",
+                },
+            },
+        },
+    },
+})
 
 // Multiple images
-result, err = ai.GenerateText(model,
-    ai.WithMessages(
-        ai.UserMessage("Compare these images",
-            ai.WithImageURL("https://example.com/before.jpg"),
-            ai.WithImageURL("https://example.com/after.jpg"),
-        ),
-    ),
-)
+result, err = ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Messages: []types.Message{
+        {
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.TextContent{Text: "Compare these images"},
+                types.FileContent{
+                    URL:       "https://example.com/before.jpg",
+                    MediaType: "image/jpeg",
+                },
+                types.FileContent{
+                    URL:       "https://example.com/after.jpg",
+                    MediaType: "image/jpeg",
+                },
+            },
+        },
+    },
+})
 
 // Video understanding
-result, err = ai.GenerateText(model,
-    ai.WithMessages(
-        ai.UserMessage("What happens in this video?",
-            ai.WithVideoURL("https://example.com/video.mp4"),
-        ),
-    ),
-)
+result, err = ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Messages: []types.Message{
+        {
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.TextContent{Text: "What happens in this video?"},
+                types.FileContent{
+                    URL:       "https://example.com/video.mp4",
+                    MediaType: "video/mp4",
+                },
+            },
+        },
+    },
+})
 ```
 
 ### Function Calling
@@ -136,53 +316,98 @@ result, err = ai.GenerateText(model,
 Gemini supports sophisticated function calling:
 
 ```go
-weatherTool := ai.Tool{
-    Type: "function",
-    Function: ai.FunctionDefinition{
-        Name:        "get_weather",
-        Description: "Get current weather for a location",
-        Parameters: map[string]interface{}{
-            "type": "object",
-            "properties": map[string]interface{}{
-                "location": map[string]interface{}{
-                    "type":        "string",
-                    "description": "City and country",
-                },
-                "unit": map[string]interface{}{
-                    "type": "string",
-                    "enum": []string{"celsius", "fahrenheit"},
-                },
+weatherTool := types.Tool{
+    Name:        "get_weather",
+    Description: "Get current weather for a location",
+    Parameters: map[string]interface{}{
+        "type": "object",
+        "properties": map[string]interface{}{
+            "location": map[string]interface{}{
+                "type":        "string",
+                "description": "City and country",
             },
-            "required": []string{"location"},
+            "unit": map[string]interface{}{
+                "type": "string",
+                "enum": []string{"celsius", "fahrenheit"},
+            },
         },
+        "required": []string{"location"},
     },
 }
 
-result, err := ai.GenerateText(model,
-    "What's the weather in Tokyo?",
-    ai.WithTools(weatherTool),
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "What's the weather in Tokyo?",
+    Tools:  []types.Tool{weatherTool},
+})
 
 for _, call := range result.ToolCalls {
-    fmt.Printf("Function: %s\nArgs: %v\n", call.Function.Name, call.Function.Arguments)
+    fmt.Printf("Function: %s\nArgs: %v\n", call.ToolName, call.Arguments)
 }
 ```
+
+### Interactions API
+
+The Google provider exposes the Gemini Interactions API through `Provider.Interactions(modelID)` and agent presets through `Provider.InteractionsAgent(agent)`. Interactions models implement the standard `provider.LanguageModel` interface, so they can be used with `DoGenerate`, `DoStream`, and higher-level AI SDK helpers.
+
+```go
+store := false
+interactionsModel, err := googleProvider.Interactions(google.InteractionsModelGemini25Flash)
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := interactionsModel.DoGenerate(ctx, &provider.GenerateOptions{
+    Prompt: types.Prompt{Text: "Give a concise answer."},
+    ProviderOptions: map[string]interface{}{
+        "google": google.GoogleInteractionsProviderOptions{
+            Store:              &store,
+            ResponseModalities: []string{"text"},
+            ThinkingLevel:      "low",
+        },
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println(result.Text)
+```
+
+Use `PreviousInteractionID` with `Store` for stateful follow-up calls. Agent models run as background interactions and are polled until a terminal status; `PollingTimeoutMs` controls that wait. Agent model IDs include `deep-research-pro-preview-12-2025`, `deep-research-preview-04-2026`, `deep-research-max-preview-04-2026`, and `antigravity-preview-05-2026`.
+
+```go
+agentModel, err := googleProvider.InteractionsAgent(google.InteractionsAgentDeepResearchProPreview)
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := agentModel.DoGenerate(ctx, &provider.GenerateOptions{
+    Prompt: types.Prompt{Text: "Research the main tradeoffs in retrieval augmented generation."},
+    ProviderOptions: map[string]interface{}{
+        "google": google.GoogleInteractionsProviderOptions{
+            PollingTimeoutMs: 120000,
+        },
+    },
+})
+```
+
+Interactions responses preserve ordered text, reasoning, files, sources, and tool-call content. Google metadata is available under `ProviderMetadata["google"]`, including the `interactionId` when returned by the API.
 
 ### Grounding with Google Search
 
 Connect Gemini to real-time web information:
 
 ```go
-result, err := ai.GenerateText(model,
-    "What are the latest developments in quantum computing?",
-    ai.WithGrounding(ai.Grounding{
-        GoogleSearch: true,
-    }),
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "What are the latest developments in quantum computing?",
+    Tools:  []types.Tool{google.GoogleSearchTool()},
+})
 
 // Response includes citations
-for _, citation := range result.Citations {
-    fmt.Printf("Source: %s\n", citation.URL)
+for _, source := range result.Sources {
+    fmt.Printf("Source: %s\n", source.URL)
 }
 ```
 
@@ -191,7 +416,9 @@ for _, citation := range result.Citations {
 Structured output generation:
 
 ```go
-schema := map[string]interface{}{
+import "github.com/digitallysavvy/go-ai/pkg/schema"
+
+bookSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
     "type": "object",
     "properties": map[string]interface{}{
         "title":  map[string]string{"type": "string"},
@@ -203,10 +430,13 @@ schema := map[string]interface{}{
         },
     },
     "required": []string{"title", "author", "year"},
-}
+})
 
-result, err := ai.GenerateObject(model, schema,
-    "Extract book metadata: '1984 by George Orwell, published 1949'")
+result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+    Model:  model,
+    Schema: bookSchema,
+    Prompt: "Extract book metadata: '1984 by George Orwell, published 1949'",
+})
 ```
 
 ### Streaming
@@ -214,14 +444,17 @@ result, err := ai.GenerateObject(model, schema,
 Real-time response streaming:
 
 ```go
-stream, err := ai.StreamText(model, "Write a long story")
+stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Write a long story",
+})
 if err != nil {
     log.Fatal(err)
 }
 defer stream.Close()
 
-for chunk := range stream.TextChannel() {
-    fmt.Print(chunk)
+for chunk := range stream.Chunks() {
+    fmt.Print(chunk.Text)
 }
 ```
 
@@ -230,17 +463,27 @@ for chunk := range stream.TextChannel() {
 Gemini 2.0 Flash Thinking uses extended reasoning:
 
 ```go
-model, err := provider.LanguageModel("gemini-2.0-flash-thinking")
+model, err := googleProvider.LanguageModel(google.ModelGemini20FlashThinkingExp)
 
-result, err := ai.GenerateText(model,
-    "Solve this logic puzzle: Three friends...")
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Solve this logic puzzle: Three friends...",
+})
 
-// Response includes reasoning steps
-if result.Thinking != "" {
-    fmt.Println("Reasoning:", result.Thinking)
+// Reasoning content is preserved in ordered content parts when returned.
+for _, part := range result.Content {
+    if reasoning, ok := part.(types.ReasoningContent); ok {
+        fmt.Println("Reasoning:", reasoning.Text)
+    }
 }
 fmt.Println("Answer:", result.Text)
 ```
+
+Gemini 3 thinking and tool-call streams preserve `thoughtSignature` in provider metadata so multi-step calls can safely round-trip model-generated reasoning and function calls. Streaming no-argument function calls are emitted with `{}` input instead of being dropped.
+
+Usage includes per-modality token details when the API returns them. Text, image, audio, and video token counts are preserved in the result usage details rather than collapsed into only total input/output tokens.
+
+Use the `"google"` provider key for AI Studio options. Vertex options use the `"googleVertex"` key (see the [Google Vertex AI provider](18-google-vertex.mdx#provider-specific-options) for its lookup order) — the hyphenated `"google-vertex"` string is only the Vertex model's `Provider()` identity, not a `ProviderOptions` key.
 
 ## Examples
 
@@ -259,23 +502,25 @@ import (
 )
 
 func main() {
-    provider := google.New(google.Config{
-        APIKey: os.Getenv("GOOGLE_API_KEY"),
+    googleProvider := google.New(google.Config{
+        APIKey: os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY"),
     })
 
-    model, err := provider.LanguageModel("gemini-2.0-flash")
+    model, err := googleProvider.LanguageModel("gemini-2.0-flash")
     if err != nil {
         log.Fatal(err)
     }
 
-    result, err := ai.GenerateText(model,
-        "Explain machine learning in simple terms")
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Explain machine learning in simple terms",
+    })
     if err != nil {
         log.Fatal(err)
     }
 
     fmt.Println(result.Text)
-    fmt.Printf("Tokens: %d\n", result.Usage.TotalTokens)
+    fmt.Printf("Tokens: %d\n", result.Usage.GetTotalTokens())
 }
 ```
 
@@ -287,16 +532,21 @@ if err != nil {
     log.Fatal(err)
 }
 
-result, err := ai.GenerateText(model,
-    ai.WithMessages(
-        ai.UserMessage("Analyze this chart and extract key insights",
-            ai.WithImageData(
-                base64.StdEncoding.EncodeToString(imageData),
-                "image/png",
-            ),
-        ),
-    ),
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Messages: []types.Message{
+        {
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.TextContent{Text: "Analyze this chart and extract key insights"},
+                types.FileContent{
+                    Data:      imageData,
+                    MediaType: "image/png",
+                },
+            },
+        },
+    },
+})
 
 fmt.Println(result.Text)
 ```
@@ -310,16 +560,21 @@ if err != nil {
     log.Fatal(err)
 }
 
-result, err := ai.GenerateText(model,
-    ai.WithMessages(
-        ai.UserMessage("Describe what happens in this video",
-            ai.WithVideoData(
-                base64.StdEncoding.EncodeToString(videoData),
-                "video/mp4",
-            ),
-        ),
-    ),
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Messages: []types.Message{
+        {
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.TextContent{Text: "Describe what happens in this video"},
+                types.FileContent{
+                    Data:      videoData,
+                    MediaType: "video/mp4",
+                },
+            },
+        },
+    },
+})
 
 fmt.Println(result.Text)
 ```
@@ -335,99 +590,124 @@ docs := []string{
 }
 combined := strings.Join(docs, "\n\n---\n\n")
 
-result, err := ai.GenerateText(model,
-    fmt.Sprintf("Analyze these documents and identify common themes:\n\n%s", combined))
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: fmt.Sprintf("Analyze these documents and identify common themes:\n\n%s", combined),
+})
 ```
 
 ### Grounded Search Responses
 
 ```go
-result, err := ai.GenerateText(model,
-    "What are the current COVID-19 vaccination rates in major countries?",
-    ai.WithGrounding(ai.Grounding{
-        GoogleSearch: true,
-    }),
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "What are the current COVID-19 vaccination rates in major countries?",
+    Tools:  []types.Tool{google.GoogleSearchTool()},
+})
 
 fmt.Println("Answer:", result.Text)
 
 fmt.Println("\nSources:")
-for _, citation := range result.Citations {
-    fmt.Printf("- %s: %s\n", citation.Title, citation.URL)
+for _, source := range result.Sources {
+    fmt.Printf("- %s: %s\n", source.Title, source.URL)
 }
 ```
 
 ### Text Embeddings
 
 ```go
-embeddingModel, err := provider.EmbeddingModel("text-embedding-004")
+embeddingModel, err := googleProvider.EmbeddingModel(google.EmbeddingModelGeminiEmbedding001)
 if err != nil {
     log.Fatal(err)
 }
 
-texts := []string{
-    "Go is a programming language",
-    "Python is popular for AI",
-    "JavaScript runs in browsers",
-}
-
-embeddings, err := ai.Embed(embeddingModel, texts...)
-if err != nil {
-    log.Fatal(err)
-}
-
-// Calculate similarity
-similarity := cosineSimilarity(embeddings[0], embeddings[1])
-fmt.Printf("Similarity: %.2f\n", similarity)
-```
-
-### Multi-Turn Conversation
-
-```go
-messages := []ai.Message{
-    ai.UserMessage("What is the capital of France?"),
-}
-
-result, err := ai.GenerateText(model, ai.WithMessages(messages...))
-messages = append(messages,
-    ai.AssistantMessage(result.Text),
-    ai.UserMessage("What's the population?"),
-)
-
-result, err = ai.GenerateText(model, ai.WithMessages(messages...))
-```
-
-### Image Generation
-
-Google supports both **Imagen** and **Gemini** models for text-to-image generation:
-
-```go
-// Imagen 4.0 - High quality image generation
-imageModel, err := provider.ImageModel("imagen-4.0-generate-001")
-if err != nil {
-    log.Fatal(err)
-}
-
-n := 1
-result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
-    Model:  imageModel,
-    Prompt: "A serene mountain landscape at sunset with dramatic clouds",
-    N:      &n,
-    Size:   "1024x1024", // Automatically converts to 1:1 aspect ratio
+dimensions := 768
+result, err := embeddingModel.DoEmbed(ctx, "Go is a programming language", &provider.EmbedModelOptions{
+    ProviderOptions: map[string]interface{}{
+        "google": google.GoogleEmbeddingProviderOptions{
+            TaskType:             "RETRIEVAL_DOCUMENT",
+            OutputDimensionality: &dimensions,
+        },
+    },
 })
 if err != nil {
     log.Fatal(err)
 }
 
-// Save the image
-err = os.WriteFile("imagen_output.png", result.Image, 0644)
+fmt.Printf("Dimensions: %d\n", len(result.Embedding))
 ```
+
+Google embeddings also support multimodal content and provider-hosted files through `fileData`:
+
+```go
+result, err := embeddingModel.DoEmbed(ctx, "Summarize this document for retrieval.", &provider.EmbedModelOptions{
+    ProviderOptions: map[string]interface{}{
+        "google": google.GoogleEmbeddingProviderOptions{
+            TaskType: "RETRIEVAL_DOCUMENT",
+            Content: [][]google.EmbeddingPart{
+                {
+                    google.FileDataEmbeddingPart{
+                        MimeType: "application/pdf",
+                        FileURI:  "files/abc123",
+                    },
+                },
+            },
+        },
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### Multi-Turn Conversation
+
+```go
+messages := []types.Message{
+    {
+        Role: types.RoleUser,
+        Content: []types.ContentPart{
+            types.TextContent{Text: "What is the capital of France?"},
+        },
+    },
+}
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:    model,
+    Messages: messages,
+})
+messages = append(messages,
+    types.Message{
+        Role: types.RoleAssistant,
+        Content: []types.ContentPart{
+            types.TextContent{Text: result.Text},
+        },
+    },
+    types.Message{
+        Role: types.RoleUser,
+        Content: []types.ContentPart{
+            types.TextContent{Text: "What's the population?"},
+        },
+    },
+)
+
+result, err = ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:    model,
+    Messages: messages,
+})
+```
+
+### Image Generation
+
+Google's text-to-image generation is now **Gemini-only** — Imagen model IDs
+(`imagen-4.0-*`) were removed from this provider; use Google Vertex AI for
+Imagen.
 
 **Gemini Image Models** offer fast generation:
 
 ```go
 // Gemini 2.5 Flash - Fast image generation
-geminiImageModel, err := provider.ImageModel("gemini-2.5-flash-image")
+geminiImageModel, err := googleProvider.ImageModel("gemini-2.5-flash-image")
 if err != nil {
     log.Fatal(err)
 }
@@ -441,8 +721,8 @@ if err != nil {
     log.Fatal(err)
 }
 
-fmt.Printf("Image generated: %d bytes\n", len(result.Image))
-os.WriteFile("gemini_output.png", result.Image, 0644)
+fmt.Printf("Image generated: %d bytes\n", len(result.Images[0].Data))
+os.WriteFile("gemini_output.png", result.Images[0].Data, 0644)
 ```
 
 **Supported Aspect Ratios:**
@@ -456,21 +736,49 @@ os.WriteFile("gemini_output.png", result.Image, 0644)
 
 | Model | Speed | Quality | Use Case |
 |-------|-------|---------|----------|
-| imagen-4.0-ultra-generate-001 | Slower | Highest | Professional work |
-| imagen-4.0-generate-001 | Medium | High | General purpose |
-| imagen-4.0-fast-generate-001 | Fast | Good | Rapid prototyping |
 | gemini-2.5-flash-image | Very Fast | Good | Quick iterations |
 | gemini-3-pro-image-preview | Fast | High | Advanced generation |
 
-**Note:** Imagen models on Google Generative AI do not support image editing. For image editing capabilities, use Google Vertex AI.
+**Note:** For Imagen models and image editing, use Google Vertex AI.
+
+## Video Generation
+
+`provider.VideoModel(modelID)` submits to Veo's `:predictLongRunning`
+endpoint and polls the long-running operation until it completes
+(`MaxVideosPerCall()` returns 4 — Veo accepts up to 4 videos per call, and
+`ai.GenerateVideo` fans out across multiple calls automatically when you ask
+for more):
+
+```go
+videoModel, err := googleProvider.VideoModel("veo-3.1-generate-preview")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
+    Model:  videoModel,
+    Prompt: ai.VideoPrompt{Text: "A drone shot flying over a coastline at sunrise"},
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+for _, video := range result.Videos {
+    fmt.Println(video.URL)
+}
+```
+
+`VideoModel` also implements `provider.VideoModelStarter` /
+`VideoModelStatusChecker`, so it works with the async
+`ai.ExperimentalStartVideo` / `ai.ExperimentalGetVideoStatus` calls.
 
 ## Advanced Configuration
 
 ### Custom HTTP Client
 
 ```go
-provider := google.New(google.Config{
-    APIKey: os.Getenv("GOOGLE_API_KEY"),
+googleProvider := google.New(google.Config{
+    APIKey: os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY"),
     HTTPClient: &http.Client{
         Timeout: time.Minute * 5,
         Transport: &http.Transport{
@@ -484,25 +792,37 @@ provider := google.New(google.Config{
 ### Safety Settings
 
 ```go
-result, err := ai.GenerateText(model, prompt,
-    ai.WithSafetySettings(ai.SafetySettings{
-        HarmCategoryHateSpeech:          ai.BlockLowAndAbove,
-        HarmCategoryDangerousContent:    ai.BlockMediumAndAbove,
-        HarmCategorySexuallyExplicit:    ai.BlockMediumAndAbove,
-        HarmCategoryHarassment:          ai.BlockMediumAndAbove,
-    }),
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: prompt,
+    ProviderOptions: map[string]interface{}{
+        "google": map[string]interface{}{
+            "safetySettings": []map[string]string{
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_LOW_AND_ABOVE"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+            },
+        },
+    },
+})
 ```
 
 ### Generation Config
 
 ```go
-result, err := ai.GenerateText(model, prompt,
-    ai.WithTemperature(0.9),
-    ai.WithTopP(0.95),
-    ai.WithTopK(40),
-    ai.WithMaxTokens(2048),
-)
+temperature := 0.9
+topP := 0.95
+topK := 40
+maxTokens := 2048
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:       model,
+    Prompt:      prompt,
+    Temperature: &temperature,
+    TopP:        &topP,
+    TopK:        &topK,
+    MaxTokens:   &maxTokens,
+})
 ```
 
 ## Error Handling
@@ -510,12 +830,16 @@ result, err := ai.GenerateText(model, prompt,
 ### Common Errors
 
 ```go
-result, err := ai.GenerateText(model, prompt)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: prompt,
+})
 if err != nil {
-    if googleErr, ok := err.(*google.Error); ok {
-        switch googleErr.Code {
+    var providerErr *providererrors.ProviderError
+    if errors.As(err, &providerErr) {
+        switch providerErr.StatusCode {
         case 400:
-            log.Printf("Invalid request: %s", googleErr.Message)
+            log.Printf("Invalid request: %s", providerErr.Message)
         case 401:
             log.Fatal("Invalid API key")
         case 403:
@@ -529,7 +853,7 @@ if err != nil {
             log.Println("Service error, retrying...")
             time.Sleep(time.Second * 10)
         default:
-            log.Printf("Google AI error: %d - %s", googleErr.Code, googleErr.Message)
+            log.Printf("Google AI error: %d - %s", providerErr.StatusCode, providerErr.Message)
         }
     }
     return nil, err
@@ -539,10 +863,14 @@ if err != nil {
 ### Content Filtering
 
 ```go
-result, err := ai.GenerateText(model, prompt)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: prompt,
+})
 if err != nil {
-    if googleErr, ok := err.(*google.Error); ok {
-        if googleErr.Code == 400 && strings.Contains(googleErr.Message, "SAFETY") {
+    var providerErr *providererrors.ProviderError
+    if errors.As(err, &providerErr) {
+        if providerErr.StatusCode == 400 && strings.Contains(providerErr.Message, "SAFETY") {
             log.Println("Content blocked by safety filters")
             // Try with adjusted safety settings
         }
@@ -612,9 +940,47 @@ func calculateGeminiCost(inputTokens, outputTokens int, model string) float64 {
 }
 ```
 
+## Workflow Serialization
+
+Google embedding, image, and (unary) transcription models can cross a
+workflow boundary with `providerutils.SerializeModel` / `DeserializeModel`
+(language models could already be serialized). See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
+for the mechanism; speech, speech-translation, video, and realtime models are
+not yet serializable.
+
 ## See Also
 
 - [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
 - [Google Vertex AI Provider](18-google-vertex.mdx) - Enterprise deployment
 - [Google AI Studio Documentation](https://ai.google.dev/docs)
 - [Gemini API Reference](https://ai.google.dev/api/rest)
+
+## May 2026 parity updates
+
+### Model refresh and token usage
+
+The Google provider tracks the refreshed Gemini model IDs in `pkg/providers/google/model_ids.go`. Usage details include per-modality token fields through `types.Usage.InputDetails.TextTokens` and `types.Usage.InputDetails.ImageTokens` when Google returns modality-specific counts.
+
+### Thought signatures and no-arg tool calls
+
+The provider preserves Google `thoughtSignature` metadata on text and tool-call parts so multi-turn requests can forward model reasoning state. Streaming tool calls with no arguments are emitted with an empty argument object, matching the TypeScript SDK.
+
+### Provider options
+
+Use the standard `ProviderOptions` map for Google-specific options such as thinking configuration. The current Go provider accepts the same nested `thinkingConfig` request shape that the TypeScript provider sends to Gemini.
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Use Google search if useful.",
+    ProviderOptions: map[string]interface{}{
+        "google": map[string]interface{}{
+            "thinkingConfig": map[string]interface{}{
+                "thinkingBudget": 512,
+                "includeThoughts": true,
+            },
+        },
+    },
+})
+```

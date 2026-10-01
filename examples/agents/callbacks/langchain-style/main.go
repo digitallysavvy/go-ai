@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/agent"
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
@@ -96,7 +97,7 @@ func main() {
 			weatherTool,
 			calculatorTool,
 		},
-		MaxSteps: 5,
+		StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 
 		// =================================================================
 		// Chain Lifecycle Callbacks
@@ -226,7 +227,7 @@ func main() {
 			fmt.Printf("\n>>> Step %d starting...\n", stepNum)
 		},
 
-		OnStepFinish: func(step types.StepResult) {
+		OnStepEnd: func(step types.StepResult) {
 			fmt.Printf(">>> Step %d finished (reason: %s)\n", step.StepNumber, step.FinishReason)
 		},
 	})

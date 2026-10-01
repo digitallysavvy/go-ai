@@ -9,6 +9,16 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
+func groqChunksOfType(chunks []*provider.StreamChunk, chunkType provider.ChunkType) []*provider.StreamChunk {
+	var filtered []*provider.StreamChunk
+	for _, chunk := range chunks {
+		if chunk.Type == chunkType {
+			filtered = append(filtered, chunk)
+		}
+	}
+	return filtered
+}
+
 func TestGroqStream_TextChunks(t *testing.T) {
 	sseData := `data: {"choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":""}]}
 
@@ -48,6 +58,47 @@ data: [DONE]
 	}
 }
 
+func TestGroqStream_IncludeRawChunksMatchesTypeScript(t *testing.T) {
+	sseData := `data: {"id":"raw-1","created":1702657020,"model":"llama-3.1-8b-instant","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":""}]}
+
+data: {"id":"raw-2","created":1702657020,"model":"llama-3.1-8b-instant","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+`
+	stream := newGroqStream(io.NopCloser(strings.NewReader(sseData)), true)
+	defer stream.Close() //nolint:errcheck
+
+	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("first chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeRaw {
+		t.Fatalf("first chunk type = %v, want raw", chunk.Type)
+	}
+	raw, ok := chunk.Raw.(map[string]interface{})
+	if !ok || raw["id"] != "raw-1" {
+		t.Fatalf("raw chunk = %#v, want id raw-1", chunk.Raw)
+	}
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("second chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeResponseMetadata {
+		t.Fatalf("second chunk type = %v, want response-metadata", chunk.Type)
+	}
+	if chunk.ResponseMetadata == nil || chunk.ResponseMetadata.ID != "raw-1" || chunk.ResponseMetadata.ModelID != "llama-3.1-8b-instant" {
+		t.Fatalf("response metadata = %#v, want first provider event metadata", chunk.ResponseMetadata)
+	}
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("third chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeText || chunk.Text != "Hello" {
+		t.Fatalf("third chunk = %#v, want text Hello", chunk)
+	}
+}
+
 // TestGroqStream_ToolCallPartialJSONNotFinalized verifies tool calls are accumulated
 // across deltas and only emitted at finish_reason, never based on JSON parsability.
 func TestGroqStream_ToolCallPartialJSONNotFinalized(t *testing.T) {
@@ -78,26 +129,25 @@ data: [DONE]
 		chunks = append(chunks, chunk)
 	}
 
-	if len(chunks) != 2 {
-		t.Fatalf("expected 2 chunks (tool_call + finish), got %d", len(chunks))
+	toolCalls := groqChunksOfType(chunks, provider.ChunkTypeToolCall)
+	if len(toolCalls) != 1 {
+		t.Fatalf("expected 1 tool-call chunk, got %d", len(toolCalls))
 	}
-	if chunks[0].Type != provider.ChunkTypeToolCall {
-		t.Fatalf("chunk[0]: expected tool_call, got %v", chunks[0].Type)
+	if toolCalls[0].ToolCall.ID != "call_1" {
+		t.Errorf("tool call id: got %q", toolCalls[0].ToolCall.ID)
 	}
-	if chunks[0].ToolCall.ID != "call_1" {
-		t.Errorf("tool call id: got %q", chunks[0].ToolCall.ID)
+	if toolCalls[0].ToolCall.ToolName != "fn" {
+		t.Errorf("tool call name: got %q", toolCalls[0].ToolCall.ToolName)
 	}
-	if chunks[0].ToolCall.ToolName != "fn" {
-		t.Errorf("tool call name: got %q", chunks[0].ToolCall.ToolName)
+	if toolCalls[0].ToolCall.Arguments["ready"] != true {
+		t.Errorf("tool call arg ready: got %v", toolCalls[0].ToolCall.Arguments["ready"])
 	}
-	if chunks[0].ToolCall.Arguments["ready"] != true {
-		t.Errorf("tool call arg ready: got %v", chunks[0].ToolCall.Arguments["ready"])
+	finishes := groqChunksOfType(chunks, provider.ChunkTypeFinish)
+	if len(finishes) != 1 {
+		t.Fatalf("expected 1 finish chunk, got %d", len(finishes))
 	}
-	if chunks[1].Type != provider.ChunkTypeFinish {
-		t.Errorf("chunk[1]: expected finish, got %v", chunks[1].Type)
-	}
-	if chunks[1].FinishReason != types.FinishReasonToolCalls {
-		t.Errorf("finish reason: got %v", chunks[1].FinishReason)
+	if finishes[0].FinishReason != types.FinishReasonToolCalls {
+		t.Errorf("finish reason: got %v", finishes[0].FinishReason)
 	}
 }
 
@@ -127,16 +177,14 @@ data: [DONE]
 		chunks = append(chunks, chunk)
 	}
 
-	if len(chunks) != 2 {
-		t.Fatalf("expected 2 chunks, got %d", len(chunks))
+	toolCalls := groqChunksOfType(chunks, provider.ChunkTypeToolCall)
+	if len(toolCalls) != 1 {
+		t.Fatalf("expected 1 tool-call chunk, got %d", len(toolCalls))
 	}
-	if chunks[0].Type != provider.ChunkTypeToolCall {
-		t.Fatalf("expected tool_call chunk, got %v", chunks[0].Type)
+	if toolCalls[0].ToolCall.Arguments["city"] != "NYC" {
+		t.Errorf("expected city=NYC, got %v", toolCalls[0].ToolCall.Arguments["city"])
 	}
-	if chunks[0].ToolCall.Arguments["city"] != "NYC" {
-		t.Errorf("expected city=NYC, got %v", chunks[0].ToolCall.Arguments["city"])
-	}
-	if chunks[1].Type != provider.ChunkTypeFinish {
-		t.Errorf("expected finish chunk, got %v", chunks[1].Type)
+	if finishes := groqChunksOfType(chunks, provider.ChunkTypeFinish); len(finishes) != 1 {
+		t.Fatalf("expected 1 finish chunk, got %d", len(finishes))
 	}
 }

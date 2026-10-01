@@ -57,6 +57,31 @@ export REPLICATE_API_KEY=r8_...
 |----------|---------|-------|----------|
 | stability-ai/stable-video-diffusion | Medium | $0.10/run | Video from image |
 
+`provider.VideoModel(modelID)` accepts both forms Replicate uses:
+
+- **Unversioned** — `"owner/model"` (no `:version`). Requests go to
+  `POST /models/{owner}/{model}/predictions`, which always runs the
+  model's latest version. This is now supported; previously only versioned
+  IDs worked.
+- **Versioned** — `"owner/model:version-hash"`. Requests go to
+  `POST /predictions` with `version` in the body, pinning an exact version.
+
+```go
+videoModel, err := provider.VideoModel("stability-ai/stable-video-diffusion")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
+    Model:  videoModel,
+    Prompt: ai.VideoPrompt{Text: "A boat sailing across a calm lake"},
+})
+```
+
+`VideoModel` also implements `provider.VideoModelStarter` /
+`VideoModelStatusChecker` for the async `ai.ExperimentalStartVideo` /
+`ai.ExperimentalGetVideoStatus` calls.
+
 ## Examples
 
 ### Basic Text Generation
@@ -83,7 +108,7 @@ func main() {
         log.Fatal(err)
     }
 
-    result, err := ai.GenerateText(model, "Explain Replicate")
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: "Explain Replicate"})
     fmt.Println(result.Text)
 }
 ```
@@ -96,12 +121,13 @@ if err != nil {
     log.Fatal(err)
 }
 
-result, err := ai.GenerateImage(imageModel,
-    "A cyberpunk city at night",
-    ai.WithImageSize("1024x1024"),
-)
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  imageModel,
+    Prompt: "A cyberpunk city at night",
+    Size:   "1024x1024",
+})
 
-fmt.Printf("Image URL: %s\n", result.Images[0].URL)
+fmt.Printf("Image bytes: %d\n", len(result.Images[0].Data))
 ```
 
 ## Best Practices
@@ -120,6 +146,13 @@ fmt.Printf("Image URL: %s\n", result.Images[0].URL)
    - Experimentation and testing
    - Specialized model access
    - Image/video generation
+
+## Workflow Serialization
+
+Replicate image models can cross a workflow boundary with
+`providerutils.SerializeModel` / `DeserializeModel`. See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
+for the mechanism; video models are not yet serializable.
 
 ## See Also
 

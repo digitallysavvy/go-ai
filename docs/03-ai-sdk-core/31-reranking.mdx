@@ -9,7 +9,7 @@ Reranking is a technique used to improve search relevance by reordering a set of
 
 ## Reranking Documents
 
-The Go AI SDK provides the [`ai.Rerank()`](../07-reference/ai/rerank.md) function to rerank documents based on their relevance to a query.
+The Go AI SDK provides the [`ai.Rerank()`](../07-reference/ai/rerank.mdx) function to rerank documents based on their relevance to a query.
 
 ```go
 package main
@@ -270,8 +270,8 @@ func retrieveWithReranking(
     ctx context.Context,
     query string,
     documents []string,
-    embeddingModel ai.EmbeddingModel,
-    rerankModel ai.RerankingModel,
+    embeddingModel provider.EmbeddingModel,
+    rerankModel provider.RerankingModel,
 ) ([]string, error) {
     // Step 1: Embed query and documents
     queryResult, err := ai.Embed(ctx, ai.EmbedOptions{
@@ -347,8 +347,8 @@ type Document struct {
 type SearchEngine struct {
     documents     []Document
     embeddings    [][]float64
-    embeddingModel ai.EmbeddingModel
-    rerankModel    ai.RerankingModel
+    embeddingModel provider.EmbeddingModel
+    rerankModel    provider.RerankingModel
 }
 
 func (se *SearchEngine) Search(ctx context.Context, query string, limit int) ([]Document, error) {
@@ -417,7 +417,7 @@ func rerankWithMultipleQueries(
     ctx context.Context,
     queries []string,
     documents []string,
-    rerankModel ai.RerankingModel,
+    rerankModel provider.RerankingModel,
 ) ([]string, error) {
     // Aggregate scores from multiple queries
     scoreMap := make(map[int]float64)
@@ -473,7 +473,7 @@ func searchWithFiltering(
     query string,
     documents []Document,
     filters map[string]interface{},
-    rerankModel ai.RerankingModel,
+    rerankModel provider.RerankingModel,
 ) ([]Document, error) {
     // Filter documents first
     var filtered []Document
@@ -575,7 +575,7 @@ func rerankLargeDataset(
     ctx context.Context,
     query string,
     documents []string,
-    rerankModel ai.RerankingModel,
+    rerankModel provider.RerankingModel,
     batchSize int,
 ) ([]string, error) {
     var allResults []RankItem
@@ -652,12 +652,12 @@ func rerankLargeDataset(
 
 ## Next Steps
 
-- Learn about [Image Generation](./07-image-generation.md)
-- Explore [Advanced RAG Patterns](../06-advanced/01-prompt-engineering.md)
-- See [Embeddings](./05-embeddings.md)
+- Learn about [Image Generation](./35-image-generation.mdx)
+- Explore [Advanced RAG Patterns](../06-advanced/01-prompt-engineering.mdx)
+- See [Embeddings](./30-embeddings.mdx)
 
 ## See Also
 
-- [Embeddings](./05-embeddings.md)
-- [Providers](../providers/01-overview.md)
-- [API Reference: Rerank](../07-reference/ai/rerank.md)
+- [Embeddings](./30-embeddings.mdx)
+- [Providers](../05-providers/01-overview.mdx)
+- [API Reference: Rerank](../07-reference/ai/rerank.mdx)

@@ -14,6 +14,13 @@ const defaultBaseURL = "https://ark.ap-southeast.bytepluses.com/api/v3"
 type Provider struct {
 	config Config
 	client *internalhttp.Client
+
+	// reqHeaders are the default headers (Authorization, Content-Type, plus
+	// any Config.Headers) applied to every request. VideoModel.DoStatus
+	// polls status through fileutil (not the internalhttp.Client), so it
+	// needs these to forward credentials the same way DoStart's client-based
+	// POST does.
+	reqHeaders map[string]string
 }
 
 // Config contains configuration for the ByteDance provider
@@ -40,7 +47,7 @@ func New(cfg Config) (*Provider, error) {
 		apiKey = os.Getenv("ARK_API_KEY")
 	}
 	if apiKey == "" {
-		return nil, fmt.Errorf("LByteDance API key is required (set BYTEDANCE_API_KEY, ARK_API_KEY, or provide Config.APIKey)")
+		return nil, fmt.Errorf("ByteDance API key is required (set BYTEDANCE_API_KEY, ARK_API_KEY, or provide Config.APIKey)")
 	}
 
 	baseURL := cfg.BaseURL
@@ -65,8 +72,9 @@ func New(cfg Config) (*Provider, error) {
 	})
 
 	return &Provider{
-		config: cfg,
-		client: client,
+		config:     cfg,
+		client:     client,
+		reqHeaders: headers,
 	}, nil
 }
 
@@ -77,17 +85,20 @@ func (p *Provider) Name() string {
 
 // LanguageModel returns a language model by ID
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
-	return nil, fmt.Errorf("LByteDance provider does not support language models")
+	return nil, fmt.Errorf("ByteDance provider does not support language models")
 }
 
 // EmbeddingModel returns an embedding model by ID
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("LByteDance provider does not support embedding models")
+	return nil, fmt.Errorf("ByteDance provider does not support embedding models")
 }
 
-// ImageModel returns an image generation model by ID
+// ImageModel returns a Seedream image generation model by ID
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("LByteDance provider does not support image generation")
+	if modelID == "" {
+		return nil, fmt.Errorf("model ID is required")
+	}
+	return newImageModel(p, modelID), nil
 }
 
 // VideoModel returns a video generation model by ID
@@ -100,15 +111,15 @@ func (p *Provider) VideoModel(modelID string) (provider.VideoModelV3, error) {
 
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("LByteDance provider does not support speech synthesis")
+	return nil, fmt.Errorf("ByteDance provider does not support speech synthesis")
 }
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("LByteDance provider does not support transcription")
+	return nil, fmt.Errorf("ByteDance provider does not support transcription")
 }
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("LByteDance provider does not support reranking")
+	return nil, fmt.Errorf("ByteDance provider does not support reranking")
 }

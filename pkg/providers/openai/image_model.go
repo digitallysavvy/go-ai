@@ -3,10 +3,17 @@ package openai
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io"
+	"mime/multipart"
+	"net/http"
+	"strings"
 
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -15,6 +22,22 @@ type ImageModel struct {
 	provider *Provider
 	modelID  string
 }
+
+// OpenAIImageModelOptions contains OpenAI image-generation specific options.
+type OpenAIImageModelOptions struct {
+	Quality           string `json:"quality,omitempty"`
+	Size              string `json:"size,omitempty"`
+	Style             string `json:"style,omitempty"`
+	Background        string `json:"background,omitempty"`
+	Moderation        string `json:"moderation,omitempty"`
+	OutputFormat      string `json:"outputFormat,omitempty"`
+	OutputCompression *int   `json:"outputCompression,omitempty"`
+	InputFidelity     string `json:"inputFidelity,omitempty"`
+	User              string `json:"user,omitempty"`
+}
+
+// OpenAIImageProviderOptions is kept as an alias for backward compatibility.
+type OpenAIImageProviderOptions = OpenAIImageModelOptions
 
 // NewImageModel creates a new OpenAI image generation model
 func NewImageModel(provider *Provider, modelID string) *ImageModel {
@@ -26,12 +49,12 @@ func NewImageModel(provider *Provider, modelID string) *ImageModel {
 
 // SpecificationVersion returns the specification version
 func (m *ImageModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
 func (m *ImageModel) Provider() string {
-	return "openai"
+	return m.provider.Name()
 }
 
 // ModelID returns the model ID
@@ -41,13 +64,36 @@ func (m *ImageModel) ModelID() string {
 
 // DoGenerate performs image generation
 func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
+	if opts == nil {
+		opts = &provider.ImageGenerateOptions{}
+	}
+	if len(opts.Files) > 0 {
+		if err := validateOpenAIImageProviderOptions(opts.ProviderOptions, true); err != nil {
+			return nil, err
+		}
+		return m.doEdit(ctx, opts)
+	}
+
+	if err := validateOpenAIImageProviderOptions(opts.ProviderOptions, false); err != nil {
+		return nil, err
+	}
 	reqBody := m.buildRequestBody(opts)
 	var response openaiImageResponse
-	err := m.provider.client.PostJSON(ctx, "/v1/images/generations", reqBody, &response)
+	_, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+		Method:  http.MethodPost,
+		Path:    "/images/generations",
+		Body:    reqBody,
+		Headers: opts.Headers,
+	}, &response)
 	if err != nil {
-		return nil, providererrors.NewProviderError("openai", 0, "", err.Error(), err)
+		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 	}
-	return m.convertResponse(response)
+	result, err := m.convertResponse(response)
+	if err != nil {
+		return nil, err
+	}
+	result.Warnings = imageWarnings(opts)
+	return result, nil
 }
 
 // defaultResponseFormatPrefixes lists model ID prefixes that have their own
@@ -59,6 +105,7 @@ var defaultResponseFormatPrefixes = []string{
 	"gpt-image-1-mini",
 	"gpt-image-1.5",
 	"gpt-image-1",
+	"gpt-image-2",
 }
 
 // hasDefaultResponseFormat returns true when the model has its own built-in
@@ -73,6 +120,7 @@ func hasDefaultResponseFormat(modelID string) bool {
 }
 
 func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) map[string]interface{} {
+	openaiOpts := extractOpenAIImageProviderOptions(opts.ProviderOptions)
 	body := map[string]interface{}{
 		"model":  m.modelID,
 		"prompt": opts.Prompt,
@@ -86,16 +134,240 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) map[s
 	if opts.N != nil {
 		body["n"] = *opts.N
 	}
-	if opts.Size != "" {
-		body["size"] = opts.Size
+	if size := firstNonEmpty(openaiOpts.Size, opts.Size); size != "" {
+		body["size"] = size
 	}
-	if opts.Quality != "" {
-		body["quality"] = opts.Quality
+	if quality := firstNonEmpty(openaiOpts.Quality, opts.Quality); quality != "" {
+		body["quality"] = quality
 	}
-	if opts.Style != "" {
-		body["style"] = opts.Style
+	if style := firstNonEmpty(openaiOpts.Style, opts.Style); style != "" {
+		body["style"] = style
+	}
+	if openaiOpts.Background != "" {
+		body["background"] = openaiOpts.Background
+	}
+	if openaiOpts.Moderation != "" {
+		body["moderation"] = openaiOpts.Moderation
+	}
+	if openaiOpts.OutputFormat != "" {
+		body["output_format"] = openaiOpts.OutputFormat
+	}
+	if openaiOpts.OutputCompression != nil {
+		body["output_compression"] = *openaiOpts.OutputCompression
+	}
+	if openaiOpts.User != "" {
+		body["user"] = openaiOpts.User
 	}
 	return body
+}
+
+func (m *ImageModel) doEdit(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
+	body, contentType, err := m.buildEditMultipartBody(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	var response openaiImageResponse
+	_, err = m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+		Method:  http.MethodPost,
+		Path:    "/images/edits",
+		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
+		Body:    body,
+	}, &response)
+	if err != nil {
+		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
+	}
+	result, err := m.convertResponse(response)
+	if err != nil {
+		return nil, err
+	}
+	result.Warnings = imageWarnings(opts)
+	return result, nil
+}
+
+func (m *ImageModel) buildEditMultipartBody(ctx context.Context, opts *provider.ImageGenerateOptions) (io.Reader, string, error) {
+	openaiOpts := extractOpenAIImageProviderOptions(opts.ProviderOptions)
+	pr, pw := io.Pipe()
+	writer := multipart.NewWriter(pw)
+
+	go func() {
+		err := func() error {
+			if err := writer.WriteField("model", m.modelID); err != nil {
+				return err
+			}
+			if opts.Prompt != "" {
+				if err := writer.WriteField("prompt", opts.Prompt); err != nil {
+					return err
+				}
+			}
+			if opts.N != nil {
+				if err := writer.WriteField("n", fmt.Sprintf("%d", *opts.N)); err != nil {
+					return err
+				}
+			}
+			if size := firstNonEmpty(openaiOpts.Size, opts.Size); size != "" {
+				if err := writer.WriteField("size", size); err != nil {
+					return err
+				}
+			}
+			for key, value := range map[string]string{
+				"quality":        openaiOpts.Quality,
+				"background":     openaiOpts.Background,
+				"output_format":  openaiOpts.OutputFormat,
+				"input_fidelity": openaiOpts.InputFidelity,
+				"user":           openaiOpts.User,
+			} {
+				if value != "" {
+					if err := writer.WriteField(key, value); err != nil {
+						return err
+					}
+				}
+			}
+			if openaiOpts.OutputCompression != nil {
+				if err := writer.WriteField("output_compression", fmt.Sprintf("%d", *openaiOpts.OutputCompression)); err != nil {
+					return err
+				}
+			}
+
+			imageField := "image"
+			if len(opts.Files) > 1 {
+				imageField = "image[]"
+			}
+			for i, file := range opts.Files {
+				if err := m.writeImageFilePart(ctx, writer, imageField, fmt.Sprintf("image-%d%s", i, imageExtension(file.MediaType)), file); err != nil {
+					return err
+				}
+			}
+			if opts.Mask != nil {
+				if err := m.writeImageFilePart(ctx, writer, "mask", "mask"+imageExtension(opts.Mask.MediaType), *opts.Mask); err != nil {
+					return err
+				}
+			}
+			return writer.Close()
+		}()
+		if err != nil {
+			_ = pw.CloseWithError(err)
+			return
+		}
+		_ = pw.Close()
+	}()
+
+	return pr, writer.FormDataContentType(), nil
+}
+
+func (m *ImageModel) writeImageFilePart(ctx context.Context, writer *multipart.Writer, fieldName, filename string, file provider.ImageFile) error {
+	part, err := writer.CreateFormFile(fieldName, filename)
+	if err != nil {
+		return err
+	}
+	if file.Type == "url" && file.URL != "" {
+		// file.URL is caller-supplied data (an image-edit input or mask
+		// URL), not the provider's own endpoint, so it must go through the
+		// same validated, DNS-pinned download path as any other
+		// response/caller-supplied URL (TS fileToBlob -> downloadBlob ->
+		// fetchWithValidatedRedirects) instead of the provider's plain HTTP
+		// client. Before this fix, an attacker-controlled URL here could
+		// reach an internal address (e.g. a cloud metadata endpoint) with no
+		// SSRF check, no DNS pinning and no size limit; its response body
+		// would be forwarded to OpenAI as image data.
+		data, err := fileutil.Download(ctx, file.URL, fileutil.DefaultDownloadOptions())
+		if err != nil {
+			return fmt.Errorf("failed to download image %s: %w", file.URL, err)
+		}
+		_, err = part.Write(data)
+		return err
+	}
+	_, err = part.Write(file.Data)
+	return err
+}
+
+func imageExtension(mediaType string) string {
+	switch strings.ToLower(mediaType) {
+	case "image/jpeg", "image/jpg":
+		return ".jpg"
+	case "image/webp":
+		return ".webp"
+	case "image/gif":
+		return ".gif"
+	default:
+		return ".png"
+	}
+}
+
+func imageWarnings(opts *provider.ImageGenerateOptions) []types.Warning {
+	warnings := []types.Warning{}
+	if opts.AspectRatio != "" {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "aspectRatio",
+			Details: "This model does not support aspect ratio. Use `size` instead.",
+		})
+	}
+	if opts.Seed != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "seed"})
+	}
+	return warnings
+}
+
+func extractOpenAIImageProviderOptions(providerOptions map[string]interface{}) OpenAIImageModelOptions {
+	if providerOptions == nil {
+		return OpenAIImageModelOptions{}
+	}
+	raw, ok := providerOptions["openai"]
+	if !ok {
+		return OpenAIImageModelOptions{}
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return OpenAIImageModelOptions{}
+	}
+	var opts OpenAIImageModelOptions
+	_ = json.Unmarshal(data, &opts)
+	return opts
+}
+
+func validateOpenAIImageProviderOptions(providerOptions map[string]interface{}, edit bool) error {
+	opts := extractOpenAIImageProviderOptions(providerOptions)
+	if opts.Quality != "" && !oneOf(opts.Quality, "standard", "hd", "low", "medium", "high", "xhigh", "max", "auto") {
+		return fmt.Errorf("openai image provider option quality must be one of standard, hd, low, medium, high, xhigh, max, auto")
+	}
+	if !edit && opts.Style != "" && !oneOf(opts.Style, "vivid", "natural") {
+		return fmt.Errorf("openai image provider option style must be one of vivid, natural")
+	}
+	if opts.Background != "" && !oneOf(opts.Background, "transparent", "opaque", "auto") {
+		return fmt.Errorf("openai image provider option background must be one of transparent, opaque, auto")
+	}
+	if !edit && opts.Moderation != "" && !oneOf(opts.Moderation, "auto", "low") {
+		return fmt.Errorf("openai image provider option moderation must be one of auto, low")
+	}
+	if opts.OutputFormat != "" && !oneOf(opts.OutputFormat, "png", "jpeg", "webp") {
+		return fmt.Errorf("openai image provider option outputFormat must be one of png, jpeg, webp")
+	}
+	if opts.OutputCompression != nil && (*opts.OutputCompression < 0 || *opts.OutputCompression > 100) {
+		return fmt.Errorf("openai image provider option outputCompression must be between 0 and 100")
+	}
+	if edit && opts.InputFidelity != "" && !oneOf(opts.InputFidelity, "high", "low") {
+		return fmt.Errorf("openai image provider option inputFidelity must be one of high, low")
+	}
+	return nil
+}
+
+func oneOf(value string, allowed ...string) bool {
+	for _, candidate := range allowed {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func (m *ImageModel) convertResponse(response openaiImageResponse) (*types.ImageResult, error) {
@@ -120,8 +392,8 @@ func (m *ImageModel) convertResponse(response openaiImageResponse) (*types.Image
 type openaiImageResponse struct {
 	Created int64 `json:"created"`
 	Data    []struct {
-		B64JSON         string `json:"b64_json"`
-		URL             string `json:"url"`
-		RevisedPrompt   string `json:"revised_prompt"`
+		B64JSON       string `json:"b64_json"`
+		URL           string `json:"url"`
+		RevisedPrompt string `json:"revised_prompt"`
 	} `json:"data"`
 }

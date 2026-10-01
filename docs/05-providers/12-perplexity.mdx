@@ -1,11 +1,18 @@
 ---
 title: Perplexity Provider
-description: Setup and usage guide for Perplexity search-augmented AI with Go-AI SDK
+description: Setup and usage guide for Perplexity's Agent API with Go-AI SDK
 ---
 
 # Perplexity Provider
 
-Perplexity provides AI models with real-time web search integration, delivering up-to-date answers with citations. Perfect for research, current events, and fact-based queries.
+Perplexity's **Agent API** (`/v1/agent`) combines LLM reasoning with real-time
+web search, URL fetching, and other native tools, returning cited answers.
+
+> **Breaking change:** as of this release, the Go SDK's Perplexity provider
+> targets the Agent API instead of the pre-migration Sonar Chat Completions
+> API (`/chat/completions`). This mirrors an equivalent breaking migration in
+> the upstream TypeScript AI SDK. See [Migrating from the Chat Completions
+> API](#migrating-from-the-chat-completions-api) below.
 
 ## Setup
 
@@ -14,19 +21,18 @@ Perplexity provides AI models with real-time web search integration, delivering 
 ```go
 import (
     "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/providers/openai" // Perplexity uses OpenAI-compatible API
+    "github.com/digitallysavvy/go-ai/pkg/providers/perplexity"
 )
 ```
 
 ### Configuration
 
 ```go
-provider := openai.New(openai.Config{
-    APIKey:  os.Getenv("PERPLEXITY_API_KEY"),
-    BaseURL: "https://api.perplexity.ai",
+provider := perplexity.New(perplexity.Config{
+    APIKey: os.Getenv("PERPLEXITY_API_KEY"),
 })
 
-model, err := provider.LanguageModel("llama-3.1-sonar-large-128k-online")
+model, err := provider.LanguageModel("low")
 if err != nil {
     log.Fatal(err)
 }
@@ -35,170 +41,213 @@ if err != nil {
 ### Get API Key
 
 1. Sign up at [perplexity.ai](https://www.perplexity.ai)
-2. Get API key from settings
-3. Set environment variable:
+2. Get an API key from settings
+3. Set the environment variable:
 
 ```bash
 export PERPLEXITY_API_KEY=pplx-...
 ```
 
-## Available Models
+## Model Selection
 
-### Sonar Models (Online - with search)
+The Agent API accepts either a **routing preset** or a **direct model ID**.
 
-| Model ID | Context | Input Price | Output Price | Best For |
-|----------|---------|-------------|--------------|----------|
-| llama-3.1-sonar-large-128k-online | 128K | $1.00/1M | $1.00/1M | Current events, research |
-| llama-3.1-sonar-small-128k-online | 128K | $0.20/1M | $0.20/1M | Fast, cost-effective |
+### Presets
 
-### Sonar Models (Offline - no search)
+Presets (`fast`, `low`, `medium`, `high`, `xhigh`) let Perplexity choose the
+underlying model for you, trading off latency/cost against quality:
 
-| Model ID | Context | Input Price | Output Price | Best For |
-|----------|---------|-------------|--------------|----------|
-| llama-3.1-sonar-large-128k-chat | 128K | $1.00/1M | $1.00/1M | General chat |
-| llama-3.1-sonar-small-128k-chat | 128K | $0.20/1M | $0.20/1M | Simple tasks |
+```go
+model, _ := provider.LanguageModel("low")
+```
+
+A preset is sent as `{"preset": "low"}` in the request body.
+
+### Direct model IDs
+
+Any other string (e.g. an upstream model like `"openai/gpt-5.1"`, or a legacy
+Sonar model like `"sonar-pro"`) is sent as `{"model": "<id>"}`:
+
+```go
+model, _ := provider.LanguageModel("sonar-pro")
+```
+
+Legacy Sonar model IDs (`sonar`, `sonar-pro`, `sonar-reasoning`,
+`sonar-reasoning-pro`, `sonar-deep-research` — exposed as
+`perplexity.ModelSonar`, `perplexity.ModelSonarPro`, etc.) remain valid model
+IDs on the Agent API; they are **not** automatically mapped to a preset.
 
 ## Provider-Specific Features
 
-### Web Search Integration
+### Web Search and Citations
 
-Automatic web search with citations:
-
-```go
-result, err := ai.GenerateText(model,
-    "What are the latest developments in quantum computing?",
-)
-
-// Response includes web citations
-for _, citation := range result.Citations {
-    fmt.Printf("[%d] %s\n", citation.Index, citation.URL)
-}
-```
-
-### Return Citations
-
-Get structured citation data:
+Search-augmented answers return citations as `source` content parts:
 
 ```go
-result, err := ai.GenerateText(model, prompt,
-    ai.WithReturnCitations(true),
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "What are the latest developments in quantum computing?",
+})
 
-for _, citation := range result.Citations {
-    fmt.Printf("Title: %s\nURL: %s\nSnippet: %s\n\n",
-        citation.Title, citation.URL, citation.Snippet)
-}
-```
-
-### Return Images
-
-Include relevant images in responses:
-
-```go
-result, err := ai.GenerateText(model, "Show me Mars rovers",
-    ai.WithReturnImages(true),
-)
-
-for _, image := range result.Images {
-    fmt.Printf("Image: %s\n", image.URL)
-}
-```
-
-## Examples
-
-### Basic Search-Augmented Query
-
-```go
-package main
-
-import (
-    "fmt"
-    "log"
-    "os"
-
-    "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
-)
-
-func main() {
-    provider := openai.New(openai.Config{
-        APIKey:  os.Getenv("PERPLEXITY_API_KEY"),
-        BaseURL: "https://api.perplexity.ai",
-    })
-
-    model, err := provider.LanguageModel("llama-3.1-sonar-large-128k-online")
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    result, err := ai.GenerateText(model,
-        "What are today's top technology news?",
-        ai.WithReturnCitations(true),
-    )
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    fmt.Println(result.Text)
-    fmt.Println("\nSources:")
-    for i, citation := range result.Citations {
-        fmt.Printf("%d. %s\n", i+1, citation.URL)
+for _, part := range result.Content {
+    if source, ok := part.(types.SourceContent); ok {
+        fmt.Printf("%s: %s\n", source.Title, source.URL)
     }
 }
 ```
 
-### Research Assistant
+### Native Agent API Tools
+
+Enable Perplexity's built-in tools (`web_search`, `fetch_url`, `people_search`,
+`finance_search`, `sandbox`, `mcp`, `connector`) via `providerOptions.perplexity.tools`:
 
 ```go
-func researchTopic(model ai.LanguageModel, topic string) {
-    result, err := ai.GenerateText(model,
-        fmt.Sprintf("Research and summarize: %s", topic),
-        ai.WithReturnCitations(true),
-    )
-    if err != nil {
-        log.Fatal(err)
-    }
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "What's Apple's current stock price?",
+    ProviderOptions: map[string]interface{}{
+        "perplexity": map[string]interface{}{
+            "tools": []interface{}{
+                map[string]interface{}{"type": "finance_search"},
+            },
+        },
+    },
+})
+```
 
-    fmt.Printf("Summary:\n%s\n\n", result.Text)
-    fmt.Println("References:")
-    for _, citation := range result.Citations {
-        fmt.Printf("- %s (%s)\n", citation.Title, citation.URL)
+### AI SDK Function Tools
+
+Regular AI SDK function tools are also supported and are sent alongside any
+native tools:
+
+```go
+weatherTool := types.Tool{
+    Name:        "weather",
+    Description: "Get the current weather for a city",
+    Parameters: map[string]interface{}{
+        "type":       "object",
+        "properties": map[string]interface{}{"city": map[string]interface{}{"type": "string"}},
+        "required":   []interface{}{"city"},
+    },
+}
+```
+
+### Reasoning Effort
+
+Use the standardized `Reasoning` call option, or set
+`providerOptions.perplexity.reasoning.effort` directly (`"minimal"`, `"low"`,
+`"medium"`, `"high"`, or `"xhigh"`) — the provider option takes precedence:
+
+```go
+reasoning := types.ReasoningHigh
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:     model,
+    Prompt:    prompt,
+    Reasoning: &reasoning,
+})
+```
+
+### Structured Output
+
+`response_format` with a JSON schema maps to the Agent API's
+`response_format.json_schema`:
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: prompt,
+    ResponseFormat: &provider.ResponseFormat{
+        Type:   "json",
+        Name:   "answer",
+        Schema: mySchema,
+    },
+})
+```
+
+### Other Agent API Options
+
+`providerOptions.perplexity` also accepts: `instructions`, `models` (a
+fallback model list), `max_steps`, `max_tool_calls`, `previous_response_id`
+(continue an earlier Agent API response), `store`, `language_preference`, and
+`skills`. Unrecognized keys are forwarded verbatim so new Agent API options
+work without an SDK update.
+
+### Provider Metadata
+
+`result.ProviderMetadata["perplexity"]` carries usage/cost details as a
+`perplexity.PerplexityMetadata` value:
+
+```go
+if meta, ok := result.ProviderMetadata["perplexity"].(perplexity.PerplexityMetadata); ok {
+    fmt.Printf("search queries: %v\n", meta.Usage.NumSearchQueries)
+    if meta.Cost != nil {
+        fmt.Printf("total cost: %v %v\n", *meta.Cost.TotalCost, *meta.Cost.Currency)
+    }
+    for name, tc := range meta.ToolCalls {
+        fmt.Printf("%s invoked %v times\n", name, *tc.Invocation)
     }
 }
 ```
 
-## Best Practices
+## Image Input
 
-1. **Model Selection**
-   - Use online models for current information
-   - Use chat models for general conversation
-   - Use large for complex research
-   - Use small for simple queries
+The Agent API accepts image input only — PDFs and other document types
+supported by the pre-migration Sonar Chat Completions API are rejected:
 
-2. **Citations**
-   - Always include citations for transparency
-   - Verify critical information from sources
-   - Use citations for academic/research work
+```go
+messages := []types.Message{
+    {Role: types.RoleUser, Content: []types.ContentPart{
+        types.TextContent{Text: "Describe this image"},
+        types.FileContent{MediaType: "image/png", URL: "https://example.com/image.png"},
+    }},
+}
+```
 
-3. **Search Optimization**
-   - Be specific in queries
-   - Include relevant context
-   - Frame questions clearly
+## Embeddings
 
-## Rate Limits & Pricing
+Embeddings are unaffected by the Agent API migration — see
+`perplexity.PerplexityEmbeddingModelID` (`pplx-embed-v1-0.6b`,
+`pplx-embed-v1-4b`).
 
-### Rate Limits
+## Migrating from the Chat Completions API
 
-| Model | RPM | Tokens/Min |
-|-------|-----|------------|
-| Sonar Large | 50 | 100K |
-| Sonar Small | 100 | 200K |
+If you were using the pre-migration Sonar Chat Completions provider, the
+following changed:
 
-### Search Requests
-
-Online models include 5 search requests per query.
+- **Endpoint**: `/chat/completions` → `/v1/agent`.
+- **`SupportsTools()`**, **`SupportsStructuredOutput()`**, and
+  **`SupportsImageInput()`** now all return `true` (previously `false`).
+- **`providerOptions.perplexity`**: every field from the old Sonar options
+  (`search_recency_filter`, `search_domain_filter`, `web_search_options`,
+  `return_images`, `return_related_questions`, `disable_search`,
+  `reasoning_effort`, `media_response`, `stream_mode`, etc.) is **removed and
+  not aliased**. Use the new Agent API option shape (`instructions`, `tools`,
+  `models`, `max_steps`, `max_tool_calls`, `previous_response_id`, `store`,
+  `language_preference`, `reasoning.effort`, `skills`).
+- **`PerplexityMetadata`** (`result.ProviderMetadata["perplexity"]`) shape
+  changed:
+  - `Images` is now always `nil` (previously populated from
+    `response.images`; the Agent API does not expose image results through
+    this SDK version).
+  - `Cost` gained `Currency`, `CacheCreationCost`, `CacheReadCost`, and
+    `ToolCallsCost` fields.
+  - A new `ToolCalls map[string]PerplexityToolCallUsage` field surfaces
+    per-tool invocation counts.
+  - `Usage.CitationTokens` is now always `nil` (the Agent API does not report
+    a citation-token count); `Usage.NumSearchQueries` is now derived from
+    `usage.tool_calls_details` instead of a flat `num_search_queries` field.
+- **Usage semantics**: reasoning tokens are now a **subset** of
+  `outputTokens.total` (standard convention), not additional to it as in the
+  pre-migration Sonar usage shape.
+- **PDF/document input** is no longer supported; only images.
+- **Sources**: `result.Content` now carries `types.SourceContent` parts (with
+  `sourceType: "url"`) built from search results, fetched URLs, and message
+  annotations, instead of a flat `Citations []string` list.
+- Tool calls and native tool results now appear as ordered `ToolCallContent`
+  / `SourceContent` parts in `result.Content`, matching every other
+  tool-calling provider in this SDK.
 
 ## See Also
 
 - [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
-- [Perplexity API Documentation](https://docs.perplexity.ai)
+- [Perplexity Agent API Documentation](https://docs.perplexity.ai)

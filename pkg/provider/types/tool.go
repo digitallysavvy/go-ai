@@ -1,6 +1,25 @@
 package types
 
-import "context"
+import (
+	"context"
+
+	"github.com/digitallysavvy/go-ai/pkg/schema"
+)
+
+const (
+	// ToolTypeFunction is the default locally executed function tool.
+	ToolTypeFunction = "function"
+
+	// ToolTypeDynamic is a dynamic tool whose schema can vary at runtime.
+	ToolTypeDynamic = "dynamic"
+
+	// ToolTypeProviderDefined is a provider-defined native tool. The wire value
+	// remains "provider" to match the TypeScript SDK shape.
+	ToolTypeProviderDefined = "provider"
+
+	// ToolTypeProviderExecuted is a provider-executed tool.
+	ToolTypeProviderExecuted = "provider-executed"
+)
 
 // Tool represents a tool that can be called by the model
 // Tools allow the model to perform actions or retrieve information
@@ -12,11 +31,20 @@ type Tool struct {
 	// Description of what the tool does (helps the model decide when to use it)
 	Description string `json:"description"`
 
+	// DescriptionFunc resolves the tool description dynamically at call-prep
+	// time using the active per-tool context and sandbox.
+	DescriptionFunc func(ctx context.Context, options ToolDescriptionOptions) string `json:"-"`
+
 	// Title is a short, human-readable title for the tool (optional)
 	Title string `json:"title,omitempty"`
 
 	// Parameters schema for the tool input
 	Parameters interface{} `json:"parameters"`
+
+	// OutputSchema is the schema for provider-executed tool output. It mirrors
+	// TypeScript provider tool outputSchema and is not sent as part of function
+	// tool definitions.
+	OutputSchema interface{} `json:"outputSchema,omitempty"`
 
 	// Execute function that runs the tool
 	// This is not serialized to JSON
@@ -35,13 +63,27 @@ type Tool struct {
 	// These examples can improve the model's ability to use the tool correctly
 	InputExamples []ToolInputExample `json:"inputExamples,omitempty"`
 
-	// Strict enables strict schema enforcement for tool parameters
-	// When true, the model must follow the schema exactly
-	Strict bool `json:"strict,omitempty"`
+	// Strict enables strict schema enforcement for tool parameters. When
+	// true, the model must follow the schema exactly. A *bool (rather than
+	// bool) lets callers distinguish "unset" from "explicitly false", so a
+	// provider can forward/warn about an explicit strict: false the same
+	// way TS does (TS checks `strict != null`), instead of only ever seeing
+	// the zero value (hand-off: "Tool.Strict bool -> *bool").
+	Strict *bool `json:"strict,omitempty"`
 
-	// NeedsApproval indicates whether tool execution requires user approval
-	// Can be a boolean or a function that determines approval based on input
-	NeedsApproval interface{} `json:"-"` // bool or NeedsApprovalFunc
+	// ContextSchema optionally validates the tool-specific context passed to the
+	// tool execution and approval callbacks.
+	ContextSchema schema.Schema `json:"-"`
+
+	// ToolApproval indicates whether tool execution requires user approval.
+	// Can be a boolean, ToolApprovalStatus string, ToolNeedsApprovalFunc, or
+	// deprecated NeedsApprovalFunc.
+	ToolApproval interface{} `json:"-"`
+
+	// NeedsApproval is a deprecated alias for ToolApproval.
+	// Can be a boolean or a function that determines approval based on input.
+	// Deprecated: use ToolApproval.
+	NeedsApproval interface{} `json:"-"`
 
 	// ProviderExecuted indicates whether this tool is executed by the provider (not locally)
 	// When true, the tool is executed by the LLM provider (e.g., Anthropic tool-search, xAI file-search)
@@ -62,8 +104,25 @@ type Tool struct {
 	// The value should be provider-specific types (e.g., anthropic.ToolOptions)
 	ProviderOptions interface{} `json:"-"`
 
-	// Type is "function" (default) or "provider" for provider-defined native tools.
-	// When Type is "provider", ProviderID and ProviderArgs specify the native tool.
+	// ProviderMetadata carries provider-specific metadata for the tool and is
+	// propagated onto tool calls and results produced for this tool.
+	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
+
+	// Metadata carries tool-specific metadata that is not sent to models and is
+	// propagated via ToolCall.ToolMetadata and ToolResult.ToolMetadata.
+	Metadata map[string]interface{} `json:"-"`
+
+	// Meta preserves provider/tool-definition metadata fields such as MCP
+	// `_meta`. It is exposed for callers that need the raw provider metadata
+	// but is not sent to models.
+	Meta map[string]interface{} `json:"_meta,omitempty"`
+
+	// ProviderName identifies the provider that owns a provider-defined tool.
+	ProviderName string `json:"providerName,omitempty"`
+
+	// Type is "function" (default), "dynamic", or "provider" for
+	// provider-defined native tools. When Type is "provider", ProviderID and
+	// ProviderArgs specify the native tool.
 	Type string `json:"type,omitempty"`
 
 	// ProviderID is the identifier for provider-defined tools.
@@ -86,6 +145,69 @@ type Tool struct {
 
 	// OnInputAvailable is called when complete tool input is available
 	OnInputAvailable OnInputAvailableFunc `json:"-"`
+
+	// ========================================================================
+	// Tool Search / Deferred Tools / Tool Callers
+	// ========================================================================
+
+	// DeferLoading defers exposing this tool to the model until it is
+	// discovered by a toolSearch tool (see ai.ToolSearch). Deferred tools
+	// still support direct calls and local callers that announce tools in
+	// conversation messages. Discovered tools become available on the next
+	// model step.
+	DeferLoading bool `json:"deferLoading,omitempty"`
+
+	// ExperimentalToolCaller marks this tool as usable as a tool caller for
+	// other tools (TS experimental_toolCaller / ToolCallerTool). Nil means
+	// this tool is not a caller.
+	ExperimentalToolCaller *ToolCallerDefinition `json:"-"`
+
+	// IsToolSearch marks this tool as the native tool search tool created by
+	// ai.ToolSearch(). It mirrors the TypeScript SDK's internal
+	// vercel.ai.toolSearch symbol tag and must not be set directly.
+	IsToolSearch bool `json:"-"`
+}
+
+// ToolCallerType identifies the wiring style of a ToolCallerDefinition.
+const (
+	// ToolCallerTypeLocal routes calls through a locally bound tool.
+	ToolCallerTypeLocal = "local"
+
+	// ToolCallerTypeProvider routes calls by augmenting provider options on
+	// the callee tool so the provider itself allows this caller.
+	ToolCallerTypeProvider = "provider"
+)
+
+// ToolCallerDefinition describes how a tool can act as a caller for other
+// tools, mirroring the TypeScript SDK's ToolCallerDefinition
+// (experimental_toolCaller).
+type ToolCallerDefinition struct {
+	// Type is ToolCallerTypeLocal or ToolCallerTypeProvider.
+	Type string
+
+	// Bind creates the tool exposed to the model/runtime, given the tools
+	// routed through this caller, in caller declaration order. Mirrors
+	// TypeScript's bind(tools: ToolSet), whose tools argument is a plain
+	// object that iterates in insertion order; ai.PrepareToolsForToolCallers
+	// builds this slice in the same order (see its doc) so a caller that
+	// renders tools into a catalog/prompt -- e.g. pkg/codemode's
+	// CodeModeTool -- can reproduce that order exactly instead of a Go map's
+	// unspecified iteration order. Only used when Type is
+	// ToolCallerTypeLocal.
+	Bind func(tools []Tool) Tool
+
+	// PrepareModelMessage optionally returns conversation content describing
+	// the tools available through this caller, in the same caller
+	// declaration order as Bind. When non-nil, the unbound caller tool
+	// remains model-visible (its definition stays stable) and the returned
+	// content is added to the conversation instead. Only used when Type is
+	// ToolCallerTypeLocal.
+	PrepareModelMessage func(tools []Tool) *string
+
+	// PrepareProviderOptions augments a tool's provider options so the
+	// provider allows this caller to invoke it. Only used when Type is
+	// ToolCallerTypeProvider.
+	PrepareProviderOptions func(providerOptions map[string]interface{}) map[string]interface{}
 }
 
 // ToolExecutor is a function that executes a tool
@@ -93,20 +215,59 @@ type Tool struct {
 // Updated in v6.0 to include options with ToolCallID
 type ToolExecutor func(ctx context.Context, input map[string]interface{}, options ToolExecutionOptions) (interface{}, error)
 
+// ToolDescriptionOptions contains context for dynamic tool descriptions.
+// It mirrors the TypeScript SDK's description options object.
+type ToolDescriptionOptions struct {
+	// Context is the per-tool context value from ToolsContext[toolName].
+	Context interface{}
+
+	// ExperimentalSandbox is the sandbox environment for this call.
+	ExperimentalSandbox interface{}
+}
+
 // ToolExecutionOptions contains options passed to tool execution
 type ToolExecutionOptions struct {
 	// ToolCallID is the unique ID of this tool call
 	ToolCallID string
 
-	// UserContext is optional user-defined context that flows through the conversation
-	// This is set from GenerateTextOptions.ExperimentalContext
+	// UserContext is optional user-defined context that flows through the conversation.
+	// Deprecated: use RuntimeContext.
 	UserContext interface{}
+
+	// RuntimeContext is the user-defined runtime context for the generation call.
+	RuntimeContext interface{}
+
+	// ToolContext is the per-tool context validated against the tool's ContextSchema.
+	ToolContext interface{}
 
 	// Usage contains token usage information up to this point
 	Usage *Usage
 
 	// Metadata contains additional metadata
 	Metadata map[string]interface{}
+
+	// ToolMetadata contains metadata attached to the tool call by the provider.
+	ToolMetadata map[string]interface{}
+
+	// Messages are the model messages sent to the language model to initiate
+	// the response that contained the tool call (TS ToolExecutionOptions.messages).
+	Messages []Message
+
+	// ExperimentalSandbox is the sandbox environment for this tool execution.
+	// It is intentionally typed as interface{} so applications can provide their
+	// own sandbox implementation while core APIs preserve TypeScript parity.
+	ExperimentalSandbox interface{}
+
+	// CodeModeInterrupt carries resume metadata from pkg/codemode when this
+	// tool execution is deterministically replaying after a prior
+	// codemode.RequestCodeModeInterrupt call from within this same tool's
+	// Execute function. It holds a *codemode.InterruptExecutionContext and
+	// is nil on every other call (including the first attempt, before any
+	// interrupt was requested). Typed as interface{} to avoid an import
+	// cycle: pkg/codemode imports this package for Tool/ToolSet. Mirrors
+	// TypeScript's CodeModeToolExecutionOptions.codeModeInterrupt
+	// (code-mode/src/types.ts).
+	CodeModeInterrupt interface{}
 }
 
 // ToModelOutputFunc converts a tool result to model-readable output
@@ -116,7 +277,21 @@ type ToModelOutputFunc func(ctx context.Context, options ToModelOutputOptions) (
 
 // ToModelOutputOptions contains options for converting tool results
 type ToModelOutputOptions struct {
-	// Result is the raw result from tool execution
+	// ToolCallID is the unique ID of the tool call. It matches the TypeScript
+	// SDK toModelOutput option name.
+	ToolCallID string
+
+	// Input is the original tool input. It matches the TypeScript SDK
+	// toModelOutput option name.
+	Input map[string]interface{}
+
+	// Output is the raw result from tool execution. It matches the TypeScript
+	// SDK toModelOutput option name.
+	Output interface{}
+
+	// Result is a deprecated alias for Output.
+	//
+	// Deprecated: use Output.
 	Result interface{}
 
 	// ToolCall is the original tool call
@@ -138,22 +313,75 @@ type ToolInputExample struct {
 	Description string
 }
 
-// NeedsApprovalFunc determines if a tool call needs approval based on input
+// ToolNeedsApprovalOptions contains the callback options for tool-defined
+// approval, matching the TypeScript ToolNeedsApprovalFunction options object.
+type ToolNeedsApprovalOptions struct {
+	// ToolCallID is the unique identifier for this tool call.
+	ToolCallID string
+
+	// Messages are the messages sent to the model before the assistant response
+	// that contained this tool call.
+	Messages []Message
+
+	// Context is the per-tool context validated against the tool's ContextSchema.
+	Context interface{}
+}
+
+// ToolNeedsApprovalFunc determines if a tool call needs approval based on input
+// and the validated tool context.
+type ToolNeedsApprovalFunc func(ctx context.Context, input map[string]interface{}, options ToolNeedsApprovalOptions) bool
+
+// NeedsApprovalFunc determines if a tool call needs approval based on input.
+//
+// Deprecated: use ToolNeedsApprovalFunc.
 type NeedsApprovalFunc func(ctx context.Context, input map[string]interface{}) bool
 
-// OnInputStartFunc is called when tool input streaming starts
-type OnInputStartFunc func(ctx context.Context) error
+// OnInputStartFunc is called when tool input starts. In streaming calls it
+// fires on the tool-input-start chunk; in non-streaming calls it fires right
+// before OnInputAvailable for each valid tool call (TS onInputStart).
+type OnInputStartFunc func(ctx context.Context, options OnInputStartOptions) error
+
+// OnInputStartOptions contains options for input start callbacks. Cancellation
+// is signalled through the ctx argument (TS abortSignal).
+type OnInputStartOptions struct {
+	// ToolCallID is the ID of the tool call whose input is starting.
+	ToolCallID string
+
+	// Messages are the messages sent to the model for the step that produced
+	// the tool call (TS messages).
+	Messages []Message
+
+	// Context is the per-tool context (ToolsContext[toolName]) validated
+	// against the tool's ContextSchema.
+	Context interface{}
+}
 
 // OnInputDeltaFunc is called for each delta during tool input streaming
 type OnInputDeltaFunc func(ctx context.Context, options OnInputDeltaOptions) error
 
 // OnInputDeltaOptions contains options for input delta callbacks
 type OnInputDeltaOptions struct {
-	// Delta is the incremental text change
+	// InputTextDelta is the incremental tool input text (TS inputTextDelta).
+	InputTextDelta string
+
+	// Delta is the incremental text change.
+	//
+	// Deprecated: use InputTextDelta.
 	Delta string
 
-	// Value is the current accumulated value (may be partial)
+	// Value is not populated by the SDK; it is kept for backward compatibility.
+	//
+	// Deprecated: accumulate InputTextDelta instead.
 	Value interface{}
+
+	// ToolCallID is the ID of the tool call whose input is streaming.
+	ToolCallID string
+
+	// Messages are the messages sent to the model for this step.
+	Messages []Message
+
+	// Context is the validated per-tool context.
+	Context interface{}
 }
 
 // OnInputAvailableFunc is called when complete tool input is available
@@ -161,8 +389,22 @@ type OnInputAvailableFunc func(ctx context.Context, options OnInputAvailableOpti
 
 // OnInputAvailableOptions contains options for input available callbacks
 type OnInputAvailableOptions struct {
-	// Value is the complete tool input value
+	// Input is the complete, parsed tool input (TS input).
+	Input map[string]interface{}
+
+	// Value is the complete tool input value.
+	//
+	// Deprecated: use Input.
 	Value map[string]interface{}
+
+	// ToolCallID is the ID of the tool call.
+	ToolCallID string
+
+	// Messages are the messages sent to the model for this step.
+	Messages []Message
+
+	// Context is the validated per-tool context.
+	Context interface{}
 }
 
 // ToolCall represents a tool call made by the model
@@ -173,12 +415,26 @@ type ToolCall struct {
 	// Name of the tool to call
 	ToolName string `json:"toolName"`
 
+	// Title is a short, human-readable title for the tool call.
+	Title string `json:"title,omitempty"`
+
 	// Arguments to pass to the tool
 	Arguments map[string]interface{} `json:"arguments"`
+
+	// RawArguments preserves the provider's raw streamed JSON input when it is
+	// available. Response-message conversion uses it to skip invalid streamed
+	// tool inputs instead of sending malformed arguments back to a provider.
+	RawArguments string `json:"-"`
 
 	// ProviderExecuted indicates if this tool was executed by the provider (not locally).
 	// When true, the provider handled execution server-side (e.g., xAI file_search, web_search).
 	ProviderExecuted bool `json:"providerExecuted,omitempty"`
+
+	// ProviderMetadata carries provider-specific metadata associated with this tool call.
+	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
+
+	// ToolMetadata carries tool-specific metadata associated with this tool call.
+	ToolMetadata map[string]interface{} `json:"toolMetadata,omitempty"`
 
 	// ThoughtSignature is Google's cryptographic token that seals the model's
 	// thinking chain across tool calls. Populated by the Google/Vertex providers
@@ -186,6 +442,17 @@ type ToolCall struct {
 	// forwarded verbatim when re-sending the assistant message in multi-turn
 	// conversations so the API can verify the reasoning chain was not modified.
 	ThoughtSignature string `json:"thoughtSignature,omitempty"`
+
+	// Dynamic indicates this tool call came from a dynamically registered (untyped) tool.
+	// Mirrors the dynamic/static tool call split in the TypeScript SDK.
+	Dynamic bool `json:"dynamic,omitempty"`
+
+	// Invalid marks a tool call whose input could not be parsed or validated.
+	// Invalid calls are preserved as error tool results instead of being dropped.
+	Invalid bool `json:"invalid,omitempty"`
+
+	// Error is the validation/parsing error associated with an invalid tool call.
+	Error error `json:"-"`
 }
 
 // ToolResult represents the result of executing a tool
@@ -196,20 +463,59 @@ type ToolResult struct {
 	// Name of the tool that was executed
 	ToolName string `json:"toolName"`
 
+	// Title is a short, human-readable title for the tool result.
+	Title string `json:"title,omitempty"`
+
 	// Input contains the arguments that were passed to the tool
 	Input map[string]interface{} `json:"input,omitempty"`
 
 	// Result of the tool execution
 	Result interface{} `json:"result"`
 
+	// ModelOutput is the optional model-facing representation of Result. It is
+	// populated from Tool.ToModelOutput and deliberately omitted from JSON so
+	// user-facing tool results preserve the raw Result value.
+	ModelOutput *ToolResultOutput `json:"-"`
+
 	// Error if tool execution failed
 	Error error `json:"error,omitempty"`
+
+	// ApprovalStatus captures approval-driven outcomes such as denied or
+	// user-approval pending tool calls.
+	ApprovalStatus ToolApprovalStatus `json:"approvalStatus,omitempty"`
+
+	// ApprovalID identifies the approval request associated with this tool
+	// result. It is distinct from ToolCallID when the request was created by
+	// the SDK, matching the TypeScript SDK's generated approval IDs.
+	ApprovalID string `json:"approvalId,omitempty"`
+
+	// ApprovalSignature carries the server-issued signature for approval
+	// requests when a tool approval secret is configured.
+	ApprovalSignature string `json:"-"`
+
+	// ApprovalReason contains the optional approval reason for denied or
+	// approved tool calls.
+	ApprovalReason *string `json:"approvalReason,omitempty"`
+
+	// Dynamic indicates this tool result came from a dynamically registered (untyped) tool.
+	// Mirrors the dynamic/static tool result split in the TypeScript SDK.
+	Dynamic bool `json:"dynamic,omitempty"`
+
+	// Preliminary indicates this is an intermediate streamed result rather than
+	// the final result for the tool call.
+	Preliminary bool `json:"preliminary,omitempty"`
 
 	// ProviderExecuted indicates if this tool was executed by the provider (not locally)
 	// When true, the tool was executed by the LLM provider (e.g., Anthropic tool-search, xAI file-search)
 	// When false or unset, the tool was executed locally by the client
 	// This affects error handling and validation behavior
 	ProviderExecuted bool `json:"providerExecuted,omitempty"`
+
+	// ProviderMetadata carries provider-specific metadata associated with this tool result.
+	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
+
+	// ToolMetadata carries tool-specific metadata associated with this tool result.
+	ToolMetadata map[string]interface{} `json:"toolMetadata,omitempty"`
 }
 
 // ToolChoice specifies how the model should choose tools

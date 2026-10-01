@@ -56,9 +56,9 @@ func streamConcurrently(ctx context.Context, model interface{}, prompts []string
             }
 
             // Collect all chunks
-            for chunk := range stream.TextChannel {
+            for chunk := range stream.Chunks() {
                 fullText += chunk
-                fmt.Printf("[Stream %d] %s", index, chunk)
+                fmt.Printf("[Stream %d] %s", index, chunk.Text)
             }
 
             // Check for streaming errors
@@ -177,7 +177,7 @@ func worker(ctx context.Context, id int, model interface{}, requests <-chan Requ
             continue
         }
 
-        for chunk := range stream.TextChannel {
+        for chunk := range stream.Chunks() {
             fullText += chunk
         }
 
@@ -333,7 +333,7 @@ func (s *RateLimitedStreamer) Stream(ctx context.Context, prompt string, resultC
     }
 
     var fullText string
-    for chunk := range stream.TextChannel {
+    for chunk := range stream.Chunks() {
         fullText += chunk
     }
 
@@ -474,7 +474,7 @@ func aggregateStreams(ctx context.Context, model interface{}, prompts []string) 
             }
 
             // Forward chunks to aggregated channel
-            for chunk := range stream.TextChannel {
+            for chunk := range stream.Chunks() {
                 select {
                 case aggregated <- StreamChunk{
                     SourceID: sourceID,
@@ -576,7 +576,7 @@ func streamWithMonitoring(ctx context.Context, id int, model interface{}, prompt
         return status
     }
 
-    for chunk := range stream.TextChannel {
+    for chunk := range stream.Chunks() {
         status.Text += chunk
         status.ChunkCount++
 

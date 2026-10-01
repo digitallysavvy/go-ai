@@ -42,8 +42,8 @@ func main() {
 	defer cancel1()
 
 	_, err = ai.GenerateText(ctx1, ai.GenerateTextOptions{
-		Model: textModel,
-		Prompt: "Write a detailed essay about the history of artificial intelligence.",
+		Model:     textModel,
+		Prompt:    "Write a detailed essay about the history of artificial intelligence.",
 		MaxTokens: ptr(1000),
 	})
 
@@ -67,8 +67,8 @@ func main() {
 	defer cancel2()
 
 	result, err := ai.GenerateText(ctx2, ai.GenerateTextOptions{
-		Model: textModel,
-		Prompt: "Explain what the AI Gateway is in one sentence.",
+		Model:     textModel,
+		Prompt:    "Explain what the AI Gateway is in one sentence.",
 		MaxTokens: ptr(100),
 	})
 
@@ -111,11 +111,13 @@ func main() {
 		fmt.Println("\n❌ Error occurred (as expected):")
 		if gatewayerrors.IsGatewayTimeoutError(err) {
 			fmt.Println("   Detected: GatewayTimeoutError")
-			fmt.Println("   The error message includes troubleshooting guidance:")
-			fmt.Printf("\n%v\n", err)
+			// The error's own message can include provider-specific
+			// troubleshooting detail (and, for some providers, request
+			// metadata); don't echo it verbatim here, inspect err directly
+			// in your own environment if you need the full text.
+			fmt.Println("   The error message includes troubleshooting guidance (inspect err in your own code to see it).")
 		} else {
 			fmt.Printf("   Error type: %T\n", err)
-			fmt.Printf("   Message: %v\n", err)
 		}
 	}
 
@@ -142,16 +144,17 @@ func main() {
 			fmt.Println("\n❌ Timeout Error:")
 			fmt.Printf("   Even with 10 minutes timeout, the request timed out.\n")
 			fmt.Printf("   Consider increasing the timeout further or checking your connection.\n")
-			fmt.Printf("   Error: %v\n", err)
 		} else {
-			log.Printf("Failed to generate video: %v", err)
+			// Log only the error's type, not its message: a video
+			// generation failure can carry provider response detail in its
+			// text, so avoid writing it to the log verbatim.
+			log.Printf("Failed to generate video (error type: %T)", err)
 		}
 	} else {
 		fmt.Println("\n✓ Video generated successfully!")
 		fmt.Printf("  Number of videos: %d\n", len(result4.Videos))
 		if len(result4.Videos) > 0 {
-			fmt.Printf("  Video type: %s\n", result4.Videos[0].MediaType)
-			fmt.Printf("  Media type: %s\n", result4.Videos[0].MediaType)
+			fmt.Println("  Video ready (see result4.Videos[0] for media type/URL).")
 		}
 	}
 

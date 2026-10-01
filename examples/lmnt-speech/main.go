@@ -52,6 +52,4 @@ func main() {
 	fmt.Println("\n=== Speech Generation Result ===")
 	fmt.Printf("Audio saved to: %s\n", outputFile)
 	fmt.Printf("Audio size: %d bytes\n", len(result.Audio))
-	fmt.Printf("MIME type: %s\n", result.MimeType)
-	fmt.Printf("Character count: %d\n", result.Usage.CharacterCount)
 }

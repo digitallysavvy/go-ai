@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"reflect"
 	"sync"
 	"testing"
 
@@ -103,12 +104,12 @@ func TestMergeCallbacks_AllFieldsMerged(t *testing.T) {
 	}
 
 	settings := AgentConfig{
-		OnStart:           func(_ context.Context, _ ai.OnStartEvent) { inc() },
-		OnStepStartEvent:  func(_ context.Context, _ ai.OnStepStartEvent) { inc() },
-		OnToolCallStart:   func(_ context.Context, _ ai.OnToolCallStartEvent) { inc() },
-		OnToolCallFinish:  func(_ context.Context, _ ai.OnToolCallFinishEvent) { inc() },
-		OnStepFinishEvent: func(_ context.Context, _ ai.OnStepFinishEvent) { inc() },
-		OnFinishEvent:     func(_ context.Context, _ ai.OnFinishEvent) { inc() },
+		OnStart:              func(_ context.Context, _ ai.OnStartEvent) { inc() },
+		OnStepStartEvent:     func(_ context.Context, _ ai.OnStepStartEvent) { inc() },
+		OnToolExecutionStart: func(_ context.Context, _ ai.OnToolCallStartEvent) { inc() },
+		OnToolExecutionEnd:   func(_ context.Context, _ ai.OnToolCallFinishEvent) { inc() },
+		OnStepFinishEvent:    func(_ context.Context, _ ai.OnStepFinishEvent) { inc() },
+		OnFinishEvent:        func(_ context.Context, _ ai.OnFinishEvent) { inc() },
 	}
 	callOpts := agentCallbacks{
 		onStart:          func(_ context.Context, _ ai.OnStartEvent) { inc() },
@@ -134,6 +135,82 @@ func TestMergeCallbacks_AllFieldsMerged(t *testing.T) {
 	// 6 event types × 2 callbacks each = 12
 	if count != 12 {
 		t.Errorf("expected 12 callback invocations, got %d", count)
+	}
+}
+
+func TestMergeCallbacks_OnStepEndTakesPrecedenceOverDeprecatedOnStepFinishEvent(t *testing.T) {
+	t.Parallel()
+
+	var settingsEndCalls int
+	var settingsFinishCalls int
+	var callEndCalls int
+	settings := AgentConfig{
+		OnStepEndEvent: func(_ context.Context, _ ai.OnStepFinishEvent) {
+			settingsEndCalls++
+		},
+		OnStepFinishEvent: func(_ context.Context, _ ai.OnStepFinishEvent) {
+			settingsFinishCalls++
+		},
+	}
+	callOpts := agentCallbacks{
+		onStepFinish: func(_ context.Context, _ ai.OnStepFinishEvent) {
+			callEndCalls++
+		},
+	}
+
+	merged := mergeCallbacks(settings, callOpts)
+	merged.onStepFinish(context.Background(), ai.OnStepFinishEvent{})
+	if settingsEndCalls != 1 || settingsFinishCalls != 0 || callEndCalls != 1 {
+		t.Fatalf("callbacks: settingsEnd=%d settingsFinish=%d callEnd=%d", settingsEndCalls, settingsFinishCalls, callEndCalls)
+	}
+}
+
+func TestMergeCallbacksPrefersToolExecutionNames(t *testing.T) {
+	var calls []string
+	settings := AgentConfig{
+		OnToolExecutionStart: func(_ context.Context, _ ai.OnToolCallStartEvent) {
+			calls = append(calls, "settings-execution-start")
+		},
+		OnToolCallStart: func(_ context.Context, _ ai.OnToolCallStartEvent) {
+			calls = append(calls, "settings-call-start")
+		},
+		OnToolExecutionEnd: func(_ context.Context, _ ai.OnToolCallFinishEvent) {
+			calls = append(calls, "settings-execution-end")
+		},
+		OnToolCallFinish: func(_ context.Context, _ ai.OnToolCallFinishEvent) {
+			calls = append(calls, "settings-call-finish")
+		},
+	}
+	callOpts := AgentGenerateOptions{
+		OnToolExecutionStart: func(_ context.Context, _ ai.OnToolCallStartEvent) {
+			calls = append(calls, "call-execution-start")
+		},
+		OnToolCallStart: func(_ context.Context, _ ai.OnToolCallStartEvent) {
+			calls = append(calls, "call-call-start")
+		},
+		OnToolExecutionEnd: func(_ context.Context, _ ai.OnToolCallFinishEvent) {
+			calls = append(calls, "call-execution-end")
+		},
+		OnToolCallFinish: func(_ context.Context, _ ai.OnToolCallFinishEvent) {
+			calls = append(calls, "call-call-finish")
+		},
+	}
+
+	merged := mergeCallbacks(settings, agentCallbacks{
+		onToolCallStart:  resolveAgentToolExecutionStart(callOpts),
+		onToolCallFinish: resolveAgentToolExecutionEnd(callOpts),
+	})
+	merged.onToolCallStart(context.Background(), ai.OnToolCallStartEvent{})
+	merged.onToolCallFinish(context.Background(), ai.OnToolCallFinishEvent{})
+
+	want := []string{
+		"settings-execution-start",
+		"call-execution-start",
+		"settings-execution-end",
+		"call-execution-end",
+	}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("calls = %#v, want %#v", calls, want)
 	}
 }
 
@@ -185,11 +262,11 @@ func TestToolLoopAgent_StructuredEventsFireDuringExecution(t *testing.T) {
 		OnStepStartEvent: func(_ context.Context, _ ai.OnStepStartEvent) {
 			record("OnStepStart")
 		},
-		OnToolCallStart: func(_ context.Context, e ai.OnToolCallStartEvent) {
-			record("OnToolCallStart:" + e.ToolName)
+		OnToolExecutionStart: func(_ context.Context, e ai.OnToolCallStartEvent) {
+			record("OnToolExecutionStart:" + e.ToolName)
 		},
-		OnToolCallFinish: func(_ context.Context, e ai.OnToolCallFinishEvent) {
-			record("OnToolCallFinish:" + e.ToolName)
+		OnToolExecutionEnd: func(_ context.Context, e ai.OnToolCallFinishEvent) {
+			record("OnToolExecutionEnd:" + e.ToolName)
 		},
 		OnStepFinishEvent: func(_ context.Context, _ ai.OnStepFinishEvent) {
 			record("OnStepFinish")
@@ -210,8 +287,8 @@ func TestToolLoopAgent_StructuredEventsFireDuringExecution(t *testing.T) {
 	expected := []string{
 		"OnStart",
 		"OnStepStart",
-		"OnToolCallStart:calc",
-		"OnToolCallFinish:calc",
+		"OnToolExecutionStart:calc",
+		"OnToolExecutionEnd:calc",
 		"OnStepFinish",
 		"OnStepStart",
 		"OnStepFinish",

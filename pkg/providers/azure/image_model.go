@@ -5,8 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -26,12 +27,12 @@ func NewImageModel(provider *Provider, deploymentID string) *ImageModel {
 
 // SpecificationVersion returns the specification version
 func (m *ImageModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
 func (m *ImageModel) Provider() string {
-	return "azure-openai"
+	return "azure.image"
 }
 
 // ModelID returns the model ID (deployment ID for Azure)
@@ -44,13 +45,20 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	reqBody := m.buildRequestBody(opts)
 
 	// Azure OpenAI image generation endpoint
-	path := fmt.Sprintf("/openai/deployments/%s/images/generations?api-version=%s",
-		m.deploymentID,
-		m.provider.APIVersion())
-
-	resp, err := m.provider.client.Post(ctx, path, reqBody)
+	path := m.provider.endpointPath(m.deploymentID, "/images/generations")
+	headers, err := m.provider.requestHeaders(ctx, opts.Headers)
 	if err != nil {
-		return nil, providererrors.NewProviderError("azure-openai", 0, "", err.Error(), err)
+		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
+	}
+
+	resp, err := m.provider.client.Do(ctx, internalhttp.Request{
+		Method:  "POST",
+		Path:    path,
+		Body:    reqBody,
+		Headers: headers,
+	})
+	if err != nil {
+		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 	}
 
 	if resp.StatusCode != 200 {
@@ -63,6 +71,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) map[string]interface{} {
 	reqBody := map[string]interface{}{
 		"prompt": opts.Prompt,
+		"model":  m.deploymentID,
 	}
 
 	if opts.N != nil {

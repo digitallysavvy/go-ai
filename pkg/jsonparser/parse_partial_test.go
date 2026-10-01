@@ -6,51 +6,51 @@ import (
 
 func TestParsePartialJSON(t *testing.T) {
 	tests := []struct {
-		name          string
-		input         string
-		expectedState ParseState
+		name            string
+		input           string
+		expectedState   ParseState
 		shouldHaveValue bool
 	}{
 		{
-			name:          "empty string",
-			input:         "",
-			expectedState: ParseStateUndefinedInput,
+			name:            "empty string",
+			input:           "",
+			expectedState:   ParseStateFailed,
 			shouldHaveValue: false,
 		},
 		{
-			name:          "valid complete object",
-			input:         `{"name":"John"}`,
-			expectedState: ParseStateSuccessful,
+			name:            "valid complete object",
+			input:           `{"name":"John"}`,
+			expectedState:   ParseStateSuccessful,
 			shouldHaveValue: true,
 		},
 		{
-			name:          "valid complete array",
-			input:         `[1,2,3]`,
-			expectedState: ParseStateSuccessful,
+			name:            "valid complete array",
+			input:           `[1,2,3]`,
+			expectedState:   ParseStateSuccessful,
 			shouldHaveValue: true,
 		},
 		{
-			name:          "incomplete object - repaired",
-			input:         `{"name":"John"`,
-			expectedState: ParseStateRepaired,
+			name:            "incomplete object - repaired",
+			input:           `{"name":"John"`,
+			expectedState:   ParseStateRepaired,
 			shouldHaveValue: true,
 		},
 		{
-			name:          "incomplete array - repaired",
-			input:         `[1,2,3`,
-			expectedState: ParseStateRepaired,
+			name:            "incomplete array - repaired",
+			input:           `[1,2,3`,
+			expectedState:   ParseStateRepaired,
 			shouldHaveValue: true,
 		},
 		{
-			name:          "incomplete nested - repaired",
-			input:         `{"user":{"name":"Alice"`,
-			expectedState: ParseStateRepaired,
+			name:            "incomplete nested - repaired",
+			input:           `{"user":{"name":"Alice"`,
+			expectedState:   ParseStateRepaired,
 			shouldHaveValue: true,
 		},
 		{
-			name:          "incomplete literal - repaired",
-			input:         `{"active":tr`,
-			expectedState: ParseStateRepaired,
+			name:            "incomplete literal - repaired",
+			input:           `{"active":tr`,
+			expectedState:   ParseStateRepaired,
 			shouldHaveValue: true,
 		},
 	}
@@ -168,8 +168,8 @@ func TestParsePartialJSONValues(t *testing.T) {
 
 func TestParsePartialJSONStreamingScenario(t *testing.T) {
 	// Simulate streaming scenario where JSON is built up progressively
-	chunks := []struct{
-		json string
+	chunks := []struct {
+		json        string
 		shouldParse bool
 	}{
 		{`{`, true},

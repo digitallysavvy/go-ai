@@ -1,11 +1,11 @@
 ---
 title: Transcribe
-description: API reference for Transcribe function
+description: API reference for Transcribe
 ---
 
 # Transcribe
 
-Converts speech audio to text using speech recognition models.
+Converts audio to text using a transcription model.
 
 ## Signature
 
@@ -13,172 +13,86 @@ Converts speech audio to text using speech recognition models.
 func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult, error)
 ```
 
-## Parameters
-
-### TranscribeOptions
+## TranscribeOptions
 
 | Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| Model | provider.TranscriptionModel | Yes | Transcription model to use |
-| Audio | []byte | Yes | Audio data in binary format |
-| AudioFormat | string | No | Audio format (wav, mp3, m4a, etc.) |
-| Language | string | No | Language code (e.g., "en", "es", "fr") |
-| Prompt | string | No | Optional context to guide transcription |
-| Temperature | *float64 | No | Sampling temperature for generation |
-| TimestampGranularity | string | No | "word" or "segment" timestamps |
-| ProviderOptions | map[string]interface{} | No | Provider-specific options |
+|---|---|---|---|
+| `Model` | `provider.TranscriptionModel` | Yes | Transcription model |
+| `Audio` | `[]byte` | Yes* | Audio bytes |
+| `AudioBase64` | `string` | Yes* | Base64 or base64url audio data, matching TypeScript `DataContent` string input |
+| `AudioURL` | `string` | Yes* | Remote audio URL to download before transcription |
+| `MimeType` | `string` | No | Audio MIME type. When omitted, `Transcribe` detects it from the audio bytes and falls back to `audio/wav` |
+| `ProviderOptions` | `map[string]interface{}` | No | Provider-specific options keyed by provider name |
+| `Headers` | `map[string]string` | No | Extra request headers |
+| `Download` | `ai.URLDownloadFunction` | No | Custom single-URL downloader for `AudioURL`; defaults to `CreateURLDownload(nil)` |
+| `MaxRetries` | `*int` | No | Maximum retries per transcription call. Defaults to 2; set to 0 to disable |
 
-## Return Value
+*Provide one of `Audio`, `AudioBase64`, or `AudioURL`.
 
-### TranscribeResult
+## TranscribeResult
 
 | Field | Type | Description |
-|-------|------|-------------|
-| Text | string | Transcribed text |
-| Segments | []TranscriptSegment | Timestamped segments |
-| Words | []TranscriptWord | Word-level timestamps |
-| Language | string | Detected language |
-| Duration | float64 | Audio duration in seconds |
-| Response | types.TranscriptionResponse | Response metadata |
+|---|---|---|
+| `Text` | `string` | Transcribed text |
+| `Segments` | `[]TranscriptionSegment` | Segment-level timing entries |
+| `Language` | `string` | Detected language when returned by the provider |
+| `DurationInSeconds` | `*float64` | Optional duration (provider-dependent) |
+| `Warnings` | `[]types.Warning` | Provider warnings (if exposed) |
+| `Responses` | `[]ai.TranscriptionModelResponseMetadata` | Response metadata entries (`timestamp`, `modelId`, optional `headers`, optional `body`) |
+| `ProviderMetadata` | `map[string]interface{}` | Provider-specific metadata |
 
-## Examples
+## Deprecated Compatibility Aliases
 
-### Basic Transcription
+The TypeScript SDK still exports deprecated `experimental_transcribe` and
+`Experimental_TranscriptionResult` names. Go exposes equivalent migration
+aliases:
 
 ```go
-package main
-
-import (
-    "context"
-    "fmt"
-    "log"
-    "os"
-
-    "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
-)
-
-func main() {
-    provider := openai.New(openai.Config{
-        APIKey: "your-api-key",
-    })
-    model, err := provider.TranscriptionModel("whisper-1")
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    // Read audio file
-    audioData, err := os.ReadFile("audio.mp3")
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    result, err := ai.Transcribe(context.Background(), ai.TranscribeOptions{
-        Model:       model,
-        Audio:       audioData,
-        AudioFormat: "mp3",
-    })
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    fmt.Println("Transcription:", result.Text)
-}
+func ExperimentalTranscribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult, error)
+type Experimental_TranscriptionResult = TranscribeResult
 ```
 
-### With Language Specification
+## Example
+
+```go
+audioData, _ := os.ReadFile("audio.mp3")
+
+result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
+    Model:    transcriptionModel,
+    Audio:    audioData,
+    MimeType: "audio/mpeg",
+})
+if err != nil {
+    // handle
+}
+
+fmt.Println(result.Text)
+```
+
+## URL and Base64 Input
 
 ```go
 result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
-    Model:       model,
-    Audio:       audioData,
-    AudioFormat: "wav",
-    Language:    "en",
+    Model:    transcriptionModel,
+    AudioURL: "https://example.com/audio.wav",
 })
-if err != nil {
-    log.Fatal(err)
-}
-
-fmt.Printf("Text: %s\n", result.Text)
-fmt.Printf("Detected language: %s\n", result.Language)
 ```
-
-### With Timestamps
 
 ```go
 result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
-    Model:                model,
-    Audio:                audioData,
-    TimestampGranularity: "segment",
+    Model:       transcriptionModel,
+    AudioBase64: "UklGRi...",
 })
-if err != nil {
-    log.Fatal(err)
-}
-
-fmt.Println("Segments:")
-for _, segment := range result.Segments {
-    fmt.Printf("[%.2fs - %.2fs]: %s\n",
-        segment.Start, segment.End, segment.Text)
-}
 ```
 
-### Word-level Timestamps
+## Errors
 
-```go
-result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
-    Model:                model,
-    Audio:                audioData,
-    TimestampGranularity: "word",
-})
-if err != nil {
-    log.Fatal(err)
-}
-
-fmt.Println("Words:")
-for _, word := range result.Words {
-    fmt.Printf("[%.2fs]: %s\n", word.Start, word.Word)
-}
-```
-
-### With Context Prompt
-
-```go
-result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
-    Model:       model,
-    Audio:       audioData,
-    AudioFormat: "m4a",
-    Prompt:      "Discussion about machine learning and AI",
-})
-if err != nil {
-    log.Fatal(err)
-}
-
-fmt.Println("Transcription:", result.Text)
-```
-
-## Error Handling
+When the provider response contains no transcript text, `Transcribe` returns a
+typed `NoTranscriptGeneratedError` with response metadata:
 
 ```go
 result, err := ai.Transcribe(ctx, opts)
-if err != nil {
-    switch {
-    case strings.Contains(err.Error(), "model is required"):
-        log.Println("Missing required model parameter")
-    case strings.Contains(err.Error(), "audio is required"):
-        log.Println("Missing required audio data")
-    case strings.Contains(err.Error(), "unsupported format"):
-        log.Println("Audio format not supported")
-    case strings.Contains(err.Error(), "audio too long"):
-        log.Println("Audio file exceeds maximum duration")
-    default:
-        log.Println("Unknown error:", err)
-    }
-    return
+if ai.IsNoTranscriptGeneratedError(err) {
+    // inspect err.(*ai.NoTranscriptGeneratedError).Responses if needed
 }
 ```
-
-## See Also
-
-- [GenerateSpeech](./generate-speech.mdx) - Text-to-speech generation
-- [Transcription Models Guide](../../03-providers/transcription-models.mdx)
-- [Audio Processing Guide](../../06-media/audio.mdx)

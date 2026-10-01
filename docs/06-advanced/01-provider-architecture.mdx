@@ -121,12 +121,16 @@ result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
 ```
 
 ```go
-// Vertex AI — provider key is "google-vertex"
+// Vertex AI — the ProviderOptions key is "googleVertex" (checked first),
+// with "vertex" and then "google" honored as fallbacks for compatibility.
+// "google-vertex" (with a hyphen) is the provider's identity string
+// (Provider().Name(), used for model IDs like "google-vertex:gemini-..."),
+// not a ProviderOptions key — it is never read here.
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  vertexModel,
     Prompt: "Summarize this document.",
     ProviderOptions: map[string]interface{}{
-        "google-vertex": map[string]interface{}{
+        "googleVertex": map[string]interface{}{
             "safetySettings": []map[string]interface{}{
                 {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_ONLY_HIGH"},
             },
@@ -136,6 +140,21 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 ```
 
 The provider's `DoGenerate` method extracts its own key from `ProviderOptions` and ignores others — so the same call can carry options for multiple providers safely.
+
+OpenAI-compatible providers use camelCase provider option keys, matching the TypeScript SDK public API. Deprecated kebab-case or snake_case keys are still accepted for migration compatibility, but they emit warnings so callers can move to camelCase.
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  groqModel,
+    Prompt: "Explain tool calling.",
+    ProviderOptions: map[string]interface{}{
+        "groq": map[string]interface{}{
+            "reasoningEffort": "high", // preferred
+            "parallelToolCalls": true,
+        },
+    },
+})
+```
 
 ## Implementing a Custom Provider
 

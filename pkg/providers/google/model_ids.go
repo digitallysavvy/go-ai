@@ -5,17 +5,17 @@ package google
 // Updated to include all models from commit #12819 and #12695.
 const (
 	// Gemini 1.5 series
-	ModelGemini15Flash          = "gemini-1.5-flash"
-	ModelGemini15FlashLatest    = "gemini-1.5-flash-latest"
-	ModelGemini15Flash001       = "gemini-1.5-flash-001"
-	ModelGemini15Flash002       = "gemini-1.5-flash-002"
-	ModelGemini15Flash8B        = "gemini-1.5-flash-8b"
-	ModelGemini15Flash8BLatest  = "gemini-1.5-flash-8b-latest"
-	ModelGemini15Flash8B001     = "gemini-1.5-flash-8b-001"
-	ModelGemini15Pro            = "gemini-1.5-pro"
-	ModelGemini15ProLatest      = "gemini-1.5-pro-latest"
-	ModelGemini15Pro001         = "gemini-1.5-pro-001"
-	ModelGemini15Pro002         = "gemini-1.5-pro-002"
+	ModelGemini15Flash         = "gemini-1.5-flash"
+	ModelGemini15FlashLatest   = "gemini-1.5-flash-latest"
+	ModelGemini15Flash001      = "gemini-1.5-flash-001"
+	ModelGemini15Flash002      = "gemini-1.5-flash-002"
+	ModelGemini15Flash8B       = "gemini-1.5-flash-8b"
+	ModelGemini15Flash8BLatest = "gemini-1.5-flash-8b-latest"
+	ModelGemini15Flash8B001    = "gemini-1.5-flash-8b-001"
+	ModelGemini15Pro           = "gemini-1.5-pro"
+	ModelGemini15ProLatest     = "gemini-1.5-pro-latest"
+	ModelGemini15Pro001        = "gemini-1.5-pro-001"
+	ModelGemini15Pro002        = "gemini-1.5-pro-002"
 
 	// Gemini 2.0 series
 	ModelGemini20Flash            = "gemini-2.0-flash"
@@ -24,24 +24,23 @@ const (
 	ModelGemini20FlashLite        = "gemini-2.0-flash-lite"
 	ModelGemini20FlashLite001     = "gemini-2.0-flash-lite-001"
 	ModelGemini20FlashExp         = "gemini-2.0-flash-exp"
-	ModelGemini20FlashExpImage    = "gemini-2.0-flash-exp-image-generation"
 	ModelGemini20FlashThinkingExp = "gemini-2.0-flash-thinking-exp-01-21"
 	ModelGemini20ProExp           = "gemini-2.0-pro-exp-02-05"
 
 	// Gemini 2.5 series
-	ModelGemini25Pro                      = "gemini-2.5-pro"
-	ModelGemini25Flash                    = "gemini-2.5-flash"
-	ModelGemini25FlashImage               = "gemini-2.5-flash-image"
-	ModelGemini25FlashLite                = "gemini-2.5-flash-lite"
-	ModelGemini25FlashLitePreview0925     = "gemini-2.5-flash-lite-preview-09-2025"
-	ModelGemini25FlashPreview0417         = "gemini-2.5-flash-preview-04-17"
-	ModelGemini25FlashPreview0925         = "gemini-2.5-flash-preview-09-2025"
-	ModelGemini25FlashPreviewTTS          = "gemini-2.5-flash-preview-tts"
-	ModelGemini25ProPreviewTTS            = "gemini-2.5-pro-preview-tts"
-	ModelGemini25FlashNativeAudioLatest   = "gemini-2.5-flash-native-audio-latest"
-	ModelGemini25FlashNativeAudio0925     = "gemini-2.5-flash-native-audio-preview-09-2025"
-	ModelGemini25FlashNativeAudio1225     = "gemini-2.5-flash-native-audio-preview-12-2025"
-	ModelGemini25ComputerUsePreview       = "gemini-2.5-computer-use-preview-10-2025"
+	ModelGemini25Pro                    = "gemini-2.5-pro"
+	ModelGemini25Flash                  = "gemini-2.5-flash"
+	ModelGemini25FlashImage             = "gemini-2.5-flash-image"
+	ModelGemini25FlashLite              = "gemini-2.5-flash-lite"
+	ModelGemini25FlashLitePreview0925   = "gemini-2.5-flash-lite-preview-09-2025"
+	ModelGemini25FlashPreview0417       = "gemini-2.5-flash-preview-04-17"
+	ModelGemini25FlashPreview0925       = "gemini-2.5-flash-preview-09-2025"
+	ModelGemini25FlashPreviewTTS        = "gemini-2.5-flash-preview-tts"
+	ModelGemini25ProPreviewTTS          = "gemini-2.5-pro-preview-tts"
+	ModelGemini25FlashNativeAudioLatest = "gemini-2.5-flash-native-audio-latest"
+	ModelGemini25FlashNativeAudio0925   = "gemini-2.5-flash-native-audio-preview-09-2025"
+	ModelGemini25FlashNativeAudio1225   = "gemini-2.5-flash-native-audio-preview-12-2025"
+	ModelGemini25ComputerUsePreview     = "gemini-2.5-computer-use-preview-10-2025"
 
 	// Gemini 3 series — added in #12819
 	ModelGemini3ProPreview      = "gemini-3-pro-preview"
@@ -49,10 +48,15 @@ const (
 	ModelGemini3FlashPreview    = "gemini-3-flash-preview"
 
 	// Gemini 3.1 series — added in #12695 and #12883
-	ModelGemini31ProPreview        = "gemini-3.1-pro-preview"              // language model (#12695)
-	ModelGemini31ProPreviewCustom  = "gemini-3.1-pro-preview-customtools"  // (#12819)
-	ModelGemini31FlashLitePreview  = "gemini-3.1-flash-lite-preview"       // (#12883)
-	ModelGemini31FlashImagePreview = "gemini-3.1-flash-image-preview"      // image model (#12883)
+	ModelGemini31ProPreview        = "gemini-3.1-pro-preview"             // language model (#12695)
+	ModelGemini31ProPreviewCustom  = "gemini-3.1-pro-preview-customtools" // (#12819)
+	ModelGemini31FlashLitePreview  = "gemini-3.1-flash-lite-preview"      // (#12883)
+	ModelGemini31FlashImagePreview = "gemini-3.1-flash-image-preview"     // image model (#12883)
+	ModelGemini35Flash             = "gemini-3.5-flash"
+	ModelGemini35FlashLite         = "gemini-3.5-flash-lite"
+	ModelGemini36Flash             = "gemini-3.6-flash"
+	ModelGemini37Flash             = "gemini-3.7-flash"
+	ModelGemini38Flash             = "gemini-3.8-flash"
 
 	// Latest alias models — added in #12819
 	ModelGeminiProLatest       = "gemini-pro-latest"
@@ -62,16 +66,16 @@ const (
 	// Specialized models — added in #12819
 	ModelDeepResearchProPreview = "deep-research-pro-preview-12-2025"
 	ModelNanaBananaProPreview   = "nano-banana-pro-preview"
-	ModelAQA                   = "aqa"
+	ModelAQA                    = "aqa"
 
 	// Experimental models — added in #12819
-	ModelGemini25ProExp0325          = "gemini-2.5-pro-exp-03-25"
-	ModelGeminiExp1206               = "gemini-exp-1206"
-	ModelGeminiRoboticsER15Preview   = "gemini-robotics-er-1.5-preview"
+	ModelGemini25ProExp0325        = "gemini-2.5-pro-exp-03-25"
+	ModelGeminiExp1206             = "gemini-exp-1206"
+	ModelGeminiRoboticsER15Preview = "gemini-robotics-er-1.5-preview"
 
 	// Gemma open models — added in #12819
-	ModelGemma31BIt  = "gemma-3-1b-it"
-	ModelGemma34BIt  = "gemma-3-4b-it"
+	ModelGemma31BIt   = "gemma-3-1b-it"
+	ModelGemma34BIt   = "gemma-3-4b-it"
 	ModelGemma3NE4BIt = "gemma-3n-e4b-it"
 	ModelGemma3NE2BIt = "gemma-3n-e2b-it"
 	ModelGemma312BIt  = "gemma-3-12b-it"
@@ -81,14 +85,63 @@ const (
 // Embedding model IDs for Google Generative AI
 const (
 	EmbeddingModelGeminiEmbedding001      = "gemini-embedding-001"
+	EmbeddingModelGeminiEmbedding2        = "gemini-embedding-2"
 	EmbeddingModelGeminiEmbedding2Preview = "gemini-embedding-2-preview"
 )
 
-// Imagen model IDs for Google Generative AI image generation (use :predict API)
+// Realtime model ID constants for Gemini Live models.
 const (
-	ModelImagen40Generate001      = "imagen-4.0-generate-001"
-	ModelImagen40UltraGenerate001 = "imagen-4.0-ultra-generate-001"
-	ModelImagen40FastGenerate001  = "imagen-4.0-fast-generate-001"
+	ModelGeminiLive25FlashPreview = "gemini-live-2.5-flash-preview"
+	ModelGeminiLive20FlashExp     = "gemini-live-2.0-flash-exp"
+)
+
+// Transcription model IDs (Gemini 3.5 Transcribe), served through the
+// Interactions API. Provider.TranscriptionModel() routes any model ID to
+// TranscriptionModel; the unary variant (ModelGemini35Transcribe) supports
+// DoTranscribe. The "-live" variant only supports streaming transcription
+// over a WebSocket (TS doStream), which the Go SDK's TranscriptionModel
+// interface does not yet expose (no DoStream) — DoTranscribe rejects it with
+// an explanatory error instead of silently doing the wrong thing.
+const (
+	ModelGemini35Transcribe     = "gemini-3.5-transcribe"
+	ModelGemini35TranscribeLive = "gemini-3.5-transcribe-live"
+)
+
+// Lyria-3 music generation model IDs, used via the Interactions API
+// (google.interactions()). See WG-G4 (Interactions) — model IDs only; the
+// music-generation-specific parts of the Interactions protocol are not
+// wired up in this cycle.
+const (
+	InteractionsModelLyria3ClipPreview = "lyria-3-clip-preview"
+	InteractionsModelLyria3ProPreview  = "lyria-3-pro-preview"
+)
+
+// Veo video generation model IDs, matching TS GoogleVideoModelId
+// (google-video-settings.ts).
+const (
+	ModelVeo31FastGeneratePreview = "veo-3.1-fast-generate-preview"
+	ModelVeo31GeneratePreview     = "veo-3.1-generate-preview"
+	ModelVeo31Generate            = "veo-3.1-generate"
+	ModelVeo31LiteGeneratePreview = "veo-3.1-lite-generate-preview"
+	ModelVeo30Generate001         = "veo-3.0-generate-001"
+	ModelVeo30FastGenerate001     = "veo-3.0-fast-generate-001"
+	ModelVeo20Generate001         = "veo-2.0-generate-001"
+)
+
+// Interactions API model IDs.
+const (
+	InteractionsModelGemini25Flash             = "gemini-2.5-flash"
+	InteractionsModelGemini25Pro               = "gemini-2.5-pro"
+	InteractionsModelGemini3ProImage           = "gemini-3-pro-image-preview"
+	InteractionsModelGemini35Flash             = "gemini-3.5-flash"
+	InteractionsAgentDeepResearchProPreview    = "deep-research-pro-preview-12-2025"
+	InteractionsAgentDeepResearchPreview042026 = "deep-research-preview-04-2026"
+	InteractionsAgentDeepResearchMax042026     = "deep-research-max-preview-04-2026"
+	InteractionsAgentAntigravityPreview052026  = "antigravity-preview-05-2026"
+
+	// InteractionsAgentDeepResearch is kept for source compatibility and maps to
+	// the current TS SDK deep-research pro preview agent name.
+	InteractionsAgentDeepResearch = InteractionsAgentDeepResearchProPreview
 )
 
 // Gemini image model IDs for Google Generative AI (use :generateContent API)

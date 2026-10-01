@@ -1,5 +1,94 @@
 package types
 
+import (
+	"encoding/base64"
+	"encoding/json"
+	"time"
+)
+
+// StepModel identifies the model that produced a generation step.
+type StepModel struct {
+	Provider string `json:"provider"`
+	ModelID  string `json:"modelId"`
+}
+
+// StepRequest contains metadata about the HTTP request sent to the provider.
+type StepRequest struct {
+	// Body is the raw request body sent to the provider (for debugging).
+	Body interface{} `json:"body,omitempty"`
+
+	// Messages are the model messages sent in this step when explicitly included.
+	Messages []Message `json:"messages,omitempty"`
+}
+
+// StepResponse contains metadata about the response received from the provider.
+type StepResponse struct {
+	// ID is the provider-assigned response identifier.
+	ID string `json:"id,omitempty"`
+
+	// Timestamp is when the provider started generating the response.
+	Timestamp time.Time `json:"timestamp,omitempty"`
+
+	// ModelID is the model that handled the request.
+	ModelID string `json:"modelId,omitempty"`
+
+	// Headers are the raw HTTP response headers from the provider.
+	Headers map[string]string `json:"headers,omitempty"`
+
+	// Messages are the response messages generated in this step (assistant + tool messages).
+	Messages []Message `json:"messages,omitempty"`
+
+	// Body is the raw response body from the provider (for debugging).
+	Body interface{} `json:"body,omitempty"`
+}
+
+// OutputChunkTimingStats contains timing statistics for gaps between generated
+// output chunks in milliseconds.
+type OutputChunkTimingStats struct {
+	Min    int64   `json:"min"`
+	P10    int64   `json:"p10"`
+	Median int64   `json:"median"`
+	Avg    float64 `json:"avg"`
+	P90    int64   `json:"p90"`
+	Max    int64   `json:"max"`
+}
+
+// StepPerformance contains deterministic performance statistics for a model step.
+// It mirrors the TypeScript AI SDK StepResult.performance shape.
+type StepPerformance struct {
+	// StepTimeMs is total wall-clock time spent on the step, including client-side tool execution.
+	StepTimeMs int64 `json:"stepTimeMs"`
+
+	// ResponseTimeMs is the wall-clock duration of the model response in milliseconds.
+	ResponseTimeMs int64 `json:"responseTimeMs"`
+
+	// ToolExecutionMs contains client-side tool execution durations keyed by tool call ID.
+	ToolExecutionMs map[string]int64 `json:"toolExecutionMs"`
+
+	// EffectiveOutputTokensPerSecond is outputTokens / requestSeconds. It is 0
+	// when the value cannot be represented as a finite number.
+	EffectiveOutputTokensPerSecond float64 `json:"effectiveOutputTokensPerSecond"`
+
+	// OutputTokensPerSecond is outputTokens / outputStreamSeconds for streaming
+	// responses. It is nil for non-streaming responses.
+	OutputTokensPerSecond *float64 `json:"outputTokensPerSecond,omitempty"`
+
+	// InputTokensPerSecond is inputTokens / ttftSeconds for streaming responses.
+	// It is nil for non-streaming responses.
+	InputTokensPerSecond *float64 `json:"inputTokensPerSecond,omitempty"`
+
+	// EffectiveTotalTokensPerSecond is (inputTokens + outputTokens) / requestSeconds.
+	EffectiveTotalTokensPerSecond float64 `json:"effectiveTotalTokensPerSecond"`
+
+	// TimeToFirstOutputMs is populated for streaming steps when the first
+	// generated output chunk timing is known.
+	TimeToFirstOutputMs *int64 `json:"timeToFirstOutputMs,omitempty"`
+
+	// TimeBetweenOutputChunksMs contains timing statistics for gaps between
+	// generated output chunks.
+	TimeBetweenOutputChunksMs *OutputChunkTimingStats `json:"timeBetweenOutputChunksMs,omitempty"`
+}
+
 // GenerateResult contains the result of a text generation operation
 type GenerateResult struct {
 	// Generated text content
@@ -15,6 +104,12 @@ type GenerateResult struct {
 
 	// Reason why generation finished
 	FinishReason FinishReason `json:"finishReason"`
+
+	// RawFinishReason is the raw, provider-specific finish/incomplete reason
+	// string returned by the provider before normalization to FinishReason.
+	// Mirrors TS LanguageModelV4's `finishReason.raw`. Empty when the
+	// provider gave no raw reason (TS `raw: undefined`).
+	RawFinishReason string `json:"rawFinishReason,omitempty"`
 
 	// Token usage information
 	Usage Usage `json:"usage"`
@@ -35,12 +130,20 @@ type GenerateResult struct {
 	// ProviderMetadata holds provider-specific metadata keyed by provider name.
 	// Example: map[string]interface{}{"googleVertex": map[string]interface{}{"finishMessage": "..."}}
 	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
+
+	// ResponseHeaders are the raw HTTP response headers from the provider.
+	// Populated for HTTP-based providers; nil for others.
+	ResponseHeaders map[string]string `json:"responseHeaders,omitempty"`
+
+	// ResponseMetadata contains normalized response metadata when the provider
+	// exposes it on non-streaming calls.
+	ResponseMetadata *ResponseMetadata `json:"response,omitempty"`
 }
 
 // EmbeddingResponse contains metadata about the HTTP response from the embedding provider.
 type EmbeddingResponse struct {
 	// Headers are the raw response headers from the provider.
-	Headers map[string][]string `json:"headers,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
 
 	// Body is the raw response body from the provider (for debugging).
 	Body interface{} `json:"body,omitempty"`
@@ -59,6 +162,9 @@ type EmbeddingResult struct {
 
 	// Response holds provider HTTP response metadata (headers, body).
 	Response EmbeddingResponse `json:"response,omitempty"`
+
+	// ProviderMetadata holds provider-specific metadata keyed by provider name.
+	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
 }
 
 // EmbeddingsResult contains the results of a batch embedding operation
@@ -75,12 +181,28 @@ type EmbeddingsResult struct {
 	// Responses holds per-request HTTP response metadata. One entry per batch call
 	// (most providers make a single call for the whole batch).
 	Responses []EmbeddingResponse `json:"responses,omitempty"`
+
+	// ProviderMetadata holds provider-specific metadata keyed by provider name.
+	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
 }
 
 // ImageResult contains the result of an image generation operation
 type ImageResult struct {
 	// Generated image data
 	Image []byte `json:"image"`
+
+	// Generated images. Providers that support multiple images should return
+	// all images here while keeping Image populated with the first image for
+	// compatibility.
+	Images [][]byte `json:"images,omitempty"`
+
+	// Base64Image is the first generated image as a provider-returned base64
+	// string, when the provider returns base64 directly.
+	Base64Image string `json:"base64Image,omitempty"`
+
+	// Base64Images contains all provider-returned base64 image strings, when
+	// the provider returns base64 directly.
+	Base64Images []string `json:"base64Images,omitempty"`
 
 	// MIME type of the image
 	MimeType string `json:"mimeType"`
@@ -97,6 +219,17 @@ type ImageResult struct {
 	// ProviderMetadata holds provider-specific metadata (e.g. cost tracking).
 	// Keyed by provider name (e.g. "xai").
 	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
+
+	// Response contains provider response metadata such as model ID and headers.
+	Response *ResponseMetadata `json:"response,omitempty"`
+
+	// IsRetryable classifies whether an empty result (no images) may be
+	// retried. Nil means "unclassified" (the caller decides, e.g. by
+	// retrying up to MaxRetries); false means the provider knows the empty
+	// result is terminal (e.g. a content-filter block) and it must not be
+	// retried. Mirrors TS ImageModelV4Result.isRetryable (audit row
+	// 45099daf24 / WG10).
+	IsRetryable *bool `json:"-"`
 }
 
 // SpeechResult contains the result of a speech synthesis operation
@@ -104,11 +237,28 @@ type SpeechResult struct {
 	// Audio data
 	Audio []byte `json:"audio"`
 
-	// MIME type of the audio
-	MimeType string `json:"mimeType"`
+	// Warnings from the provider
+	Warnings []Warning `json:"warnings"`
 
-	// Usage information
-	Usage SpeechUsage `json:"usage"`
+	// ProviderMetadata holds provider-specific metadata.
+	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
+
+	// Request contains metadata about the provider request.
+	Request *StepRequest `json:"request,omitempty"`
+
+	// Response contains metadata about the provider response.
+	Response *ResponseMetadata `json:"response,omitempty"`
+}
+
+// MarshalJSON preserves the TypeScript SpeechModelV4Result shape where
+// warnings is always present as an array.
+func (r SpeechResult) MarshalJSON() ([]byte, error) {
+	type alias SpeechResult
+	out := alias(r)
+	if out.Warnings == nil {
+		out.Warnings = []Warning{}
+	}
+	return json.Marshal(out)
 }
 
 // TranscriptionResult contains the result of a speech-to-text operation
@@ -116,11 +266,29 @@ type TranscriptionResult struct {
 	// Transcribed text
 	Text string `json:"text"`
 
+	// Segments are timestamped transcript segments.
+	Segments []TranscriptionTimestamp `json:"segments,omitempty"`
+
+	// Detected or requested language.
+	Language string `json:"language,omitempty"`
+
+	// DurationInSeconds is the audio duration when provided by the model.
+	DurationInSeconds *float64 `json:"durationInSeconds,omitempty"`
+
 	// Optional timestamps for words or segments
 	Timestamps []TranscriptionTimestamp `json:"timestamps,omitempty"`
 
 	// Usage information
 	Usage TranscriptionUsage `json:"usage"`
+
+	// Warnings from the provider
+	Warnings []Warning `json:"warnings,omitempty"`
+
+	// ProviderMetadata holds provider-specific metadata.
+	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
+
+	// Response contains provider response metadata such as model ID and headers.
+	Response *ResponseMetadata `json:"response,omitempty"`
 }
 
 // TranscriptionTimestamp represents a timestamp in a transcription
@@ -165,20 +333,61 @@ type GeneratedFile struct {
 	MediaType string `json:"mediaType"`
 }
 
-// StepResult represents the result of a single step in multi-step generation
-// Used for tool calling loops and agent workflows
+// Base64 returns the generated file bytes as a base64 string, matching the
+// TypeScript GeneratedFile base64 accessor.
+func (f GeneratedFile) Base64() string {
+	return base64.StdEncoding.EncodeToString(f.Data)
+}
+
+// Uint8Array returns the generated file bytes, matching the TypeScript
+// GeneratedFile uint8Array accessor.
+func (f GeneratedFile) Uint8Array() []byte {
+	return f.Data
+}
+
+// StepResult represents the result of a single step in multi-step generation.
 type StepResult struct {
-	// Step number (1-indexed)
+	// CallID uniquely identifies the generateText/streamText call this step belongs to.
+	CallID string `json:"callId,omitempty"`
+
+	// Step number (0-indexed), matching the TypeScript SDK.
 	StepNumber int `json:"stepNumber"`
+
+	// Model identifies the provider and model ID that produced this step.
+	Model StepModel `json:"model"`
 
 	// Text generated in this step
 	Text string `json:"text"`
 
+	// Content contains all standardized content parts generated in this step.
+	Content []ContentPart `json:"content,omitempty"`
+
+	// Reasoning holds the reasoning/thinking content parts produced in this step.
+	Reasoning []ReasoningContent `json:"reasoning,omitempty"`
+
+	// ReasoningText is the concatenated text of all reasoning parts in this step.
+	ReasoningText string `json:"reasoningText,omitempty"`
+
+	// Files contains model-generated output files from this step.
+	Files []GeneratedFileContent `json:"files,omitempty"`
+
 	// Tool calls made in this step
 	ToolCalls []ToolCall `json:"toolCalls,omitempty"`
 
+	// StaticToolCalls are tool calls from non-dynamic (typed) tools.
+	StaticToolCalls []ToolCall `json:"staticToolCalls,omitempty"`
+
+	// DynamicToolCalls are tool calls from dynamically registered tools.
+	DynamicToolCalls []ToolCall `json:"dynamicToolCalls,omitempty"`
+
 	// Tool results from this step
 	ToolResults []ToolResult `json:"toolResults,omitempty"`
+
+	// StaticToolResults are results from non-dynamic (typed) tools.
+	StaticToolResults []ToolResult `json:"staticToolResults,omitempty"`
+
+	// DynamicToolResults are results from dynamically registered tools.
+	DynamicToolResults []ToolResult `json:"dynamicToolResults,omitempty"`
 
 	// Finish reason for this step
 	FinishReason FinishReason `json:"finishReason"`
@@ -189,18 +398,34 @@ type StepResult struct {
 	// Usage for this step
 	Usage Usage `json:"usage"`
 
+	// Performance contains deterministic timing and token-rate statistics for this step.
+	Performance StepPerformance `json:"performance"`
+
 	// Context management information (Anthropic-specific)
-	// Contains statistics about automatic conversation history cleanup
 	ContextManagement interface{} `json:"contextManagement,omitempty"`
 
 	// Warnings from this step
 	Warnings []Warning `json:"warnings,omitempty"`
 
 	// Sources contains citation or grounding references for this step.
-	// Populated by filtering SourceContent parts from the provider response.
 	Sources []SourceContent `json:"sources,omitempty"`
 
-	// Response messages generated in this step
-	// Contains the assistant message with any text and tool calls
+	// Request contains metadata about the request sent to the provider.
+	Request StepRequest `json:"request,omitempty"`
+
+	// Response contains metadata about the response from the provider.
+	Response StepResponse `json:"response,omitempty"`
+
+	// ResponseMessages contains the assistant and tool messages generated in this step.
+	// Deprecated: use Response.Messages instead.
 	ResponseMessages []Message `json:"responseMessages,omitempty"`
+
+	// ProviderMetadata holds provider-specific metadata for this step.
+	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
+
+	// ToolsContext is the per-tool context map in effect for this step.
+	ToolsContext map[string]interface{} `json:"toolsContext,omitempty"`
+
+	// RuntimeContext is the user-defined context in effect for this step.
+	RuntimeContext interface{} `json:"runtimeContext,omitempty"`
 }

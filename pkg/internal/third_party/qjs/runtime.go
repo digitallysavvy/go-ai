@@ -1,0 +1,493 @@
+package qjs
+
+import (
+	"context"
+	_ "embed"
+	"errors"
+	"fmt"
+	"runtime/debug"
+	"sync"
+
+	"github.com/tetratelabs/wazero"
+	"github.com/tetratelabs/wazero/api"
+	wsp1 "github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
+)
+
+//go:embed qjs.wasm
+var wasmBytes []byte
+
+var (
+	compiledQJSModule   wazero.CompiledModule
+	cachedRuntimeConfig wazero.RuntimeConfig
+	cachedBytesHash     uint64
+	compilationMutex    sync.Mutex
+)
+
+// Runtime wraps a QuickJS WebAssembly runtime with memory management.
+type Runtime struct {
+	wrt      wazero.Runtime
+	module   api.Module
+	malloc   api.Function
+	free     api.Function
+	mem      *Mem
+	option   Option
+	handle   *Handle
+	context  *Context
+	registry *ProxyRegistry
+}
+
+func createGlobalCompiledModule(
+	ctx context.Context,
+	closeOnContextDone bool,
+	disableBuildCache bool,
+	cacheDir string,
+	quickjsWasmBytes ...[]byte,
+) (err error) {
+	// Protect global compilation state with mutex
+	compilationMutex.Lock()
+	defer compilationMutex.Unlock()
+
+	var qjsBytes []byte
+	if len(quickjsWasmBytes) > 0 && len(quickjsWasmBytes[0]) > 0 {
+		qjsBytes = quickjsWasmBytes[0]
+	} else {
+		qjsBytes = wasmBytes
+	}
+
+	// Calculate hash of the bytes to check if we need to recompile
+	currentHash := hashBytes(qjsBytes)
+
+	// Check if we need to compile or recompile
+	if compiledQJSModule == nil || cachedBytesHash != currentHash || disableBuildCache {
+		var cache wazero.CompilationCache
+		if cacheDir == "" {
+			cache = wazero.NewCompilationCache()
+		} else if cache, err = wazero.NewCompilationCacheWithDir(cacheDir); err != nil {
+			return fmt.Errorf("failed to create compilation cache with dir %s: %w", cacheDir, err)
+		}
+
+		cachedRuntimeConfig = wazero.
+			NewRuntimeConfig().
+			WithCompilationCache(cache).
+			WithCloseOnContextDone(closeOnContextDone)
+		wrt := wazero.NewRuntimeWithConfig(ctx, cachedRuntimeConfig)
+
+		if compiledQJSModule, err = wrt.CompileModule(ctx, qjsBytes); err != nil {
+			return fmt.Errorf("failed to compile qjs module: %w", err)
+		}
+
+		cachedBytesHash = currentHash
+	}
+
+	return nil
+}
+
+// New creates a QuickJS runtime with optional configuration.
+func New(options ...Option) (runtime *Runtime, err error) {
+	defer func() {
+		rerr := AnyToError(recover())
+		if rerr != nil {
+			runtime = nil
+			err = fmt.Errorf("failed to create QJS runtime: %w", rerr)
+		}
+	}()
+
+	proxyRegistry := NewProxyRegistry()
+
+	option, err := getRuntimeOption(proxyRegistry, options...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get runtime options: %w", err)
+	}
+
+	if err := createGlobalCompiledModule(
+		option.Context,
+		option.CloseOnContextDone,
+		option.DisableBuildCache,
+		option.CacheDir,
+		option.QuickJSWasmBytes,
+	); err != nil {
+		return nil, fmt.Errorf("failed to create global compiled module: %w", err)
+	}
+
+	runtime = &Runtime{
+		option:   option,
+		context:  &Context{Context: option.Context},
+		registry: proxyRegistry,
+	}
+
+	runtime.wrt = wazero.NewRuntimeWithConfig(
+		option.Context,
+		cachedRuntimeConfig,
+	)
+
+	if _, err := wsp1.Instantiate(option.Context, runtime.wrt); err != nil {
+		return nil, fmt.Errorf("failed to instantiate WASI: %w", err)
+	}
+
+	if _, err := runtime.wrt.NewHostModuleBuilder("env").
+		NewFunctionBuilder().
+		WithFunc(option.ProxyFunction).
+		Export("jsFunctionProxy").
+		Instantiate(option.Context); err != nil {
+		return nil, fmt.Errorf("failed to setup host module: %w", err)
+	}
+
+	// fsConfig mounts nothing by default. Option.NoFSMount (the safe
+	// default for untrusted sandboxed code -- see pkg/codemode's engine.go)
+	// leaves it this way: no wazero preopen at all means every guest
+	// file-I/O syscall fails as if the filesystem were empty. Only a
+	// caller that explicitly opts out of NoFSMount gets its CWD mounted at
+	// "/".
+	fsConfig := wazero.NewFSConfig()
+	if !runtime.option.NoFSMount {
+		fsConfig = fsConfig.WithDirMount(runtime.option.CWD, "/")
+	}
+	// wazero.NewModuleConfig's environ is empty unless WithEnv is called,
+	// which New never does -- so the WASI module (and therefore
+	// quickjs-libc's std.getenv/std.getenviron, when std is reachable at
+	// all) never observes any of the host process's environment variables.
+	// Deliberately not calling WithEnv here is itself the fix for that part
+	// of the sandbox-escape surface; see pkg/codemode's
+	// TestSandboxHardening_EnvironmentIsNotLeaked for the regression
+	// coverage.
+	if runtime.module, err = runtime.wrt.InstantiateModule(
+		option.Context,
+		compiledQJSModule,
+		wazero.NewModuleConfig().
+			WithStartFunctions(option.StartFunctionName).
+			WithSysWalltime().
+			WithSysNanotime().
+			WithSysNanosleep().
+			WithFSConfig(fsConfig).
+			WithStdout(option.Stdout).
+			WithStderr(option.Stderr),
+	); err != nil {
+		return nil, fmt.Errorf("failed to instantiate module: %w", err)
+	}
+
+	runtime.initializeRuntime()
+
+	return runtime, nil
+}
+
+func (r *Runtime) Raw() uint64 {
+	return r.handle.raw
+}
+
+// FreeQJSRuntime frees the QJS runtime.
+func (r *Runtime) FreeQJSRuntime() {
+	defer func() {
+		err := AnyToError(recover())
+		if err != nil {
+			panic(fmt.Errorf("failed to free QJS runtime: %w", err))
+		}
+	}()
+
+	r.Call("QJS_Free", r.handle.raw)
+}
+
+// Mem returns the WebAssembly memory interface for this runtime.
+func (r *Runtime) Mem() *Mem {
+	return r.mem
+}
+
+// String returns a string representation of the runtime.
+func (r *Runtime) String() string {
+	return fmt.Sprintf("QJSRuntime: %p", r)
+}
+
+// Close cleanly shuts down the runtime and frees all associated resources.
+func (r *Runtime) Close() {
+	if r == nil {
+		return
+	}
+
+	// Free QJS runtime handle
+	if r.handle != nil {
+		r.FreeQJSRuntime()
+		r.handle = nil
+	}
+
+	// Close WASM module. Close has no error return of its own (it mirrors
+	// io.Closer-style teardown used throughout this package), and a module
+	// close failure here is not actionable by any caller during runtime
+	// teardown, so the error is intentionally discarded.
+	if r.module != nil {
+		_ = r.module.Close(r.context)
+		r.module = nil
+	}
+
+	// Clear references
+	if r.context != nil {
+		r.context = nil
+	}
+
+	if r.registry != nil {
+		r.registry.Clear()
+		r.registry = nil
+	}
+
+	// Clear function references
+	r.malloc = nil
+	r.free = nil
+	r.mem = nil
+}
+
+// Load executes a JavaScript file in the runtime's context.
+func (r *Runtime) Load(file string, flags ...EvalOptionFunc) (*Value, error) {
+	return r.context.Load(file, flags...)
+}
+
+// Eval executes JavaScript code in the runtime's context.
+func (r *Runtime) Eval(file string, flags ...EvalOptionFunc) (*Value, error) {
+	return r.context.Eval(file, flags...)
+}
+
+// EvalNoAutoAwait executes JavaScript code in the runtime's context
+// without automatically awaiting a promise result -- see
+// Context.EvalNoAutoAwait.
+func (r *Runtime) EvalNoAutoAwait(file string, flags ...EvalOptionFunc) (*Value, error) {
+	return r.context.EvalNoAutoAwait(file, flags...)
+}
+
+// Compile compiles JavaScript code to bytecode without executing it.
+func (r *Runtime) Compile(file string, flags ...EvalOptionFunc) ([]byte, error) {
+	return r.context.Compile(file, flags...)
+}
+
+// Context returns the JavaScript execution context for this runtime.
+func (r *Runtime) Context() *Context {
+	return r.context
+}
+
+// Call invokes a WebAssembly function by name with the given arguments.
+func (r *Runtime) Call(name string, args ...uint64) *Handle {
+	return NewHandle(r, r.call(name, args...))
+}
+
+// CallUnPack calls a WebAssembly function and unpacks the returned pointer.
+func (r *Runtime) CallUnPack(name string, args ...uint64) (uint32, uint32) {
+	return r.mem.UnpackPtr(r.Call(name, args...).raw)
+}
+
+// RunPendingJobs drains the runtime's job queue to exhaustion: it runs
+// every currently-runnable job (promise reaction callbacks, thenable
+// resolution jobs, etc.) until none remain, then returns -- regardless of
+// whether any particular promise a caller cares about has settled yet.
+// Returns the number of jobs executed (0 if the queue was already empty),
+// or an error if a job threw while running (the triggering exception is
+// left pending on r.Context(), exactly as any other failing qjs call
+// leaves it -- callers check r.Context().HasException()/Exception() the
+// same way).
+//
+// This is the Go binding for QJS_RunPendingJobs, added to qjs.wasm by
+// pkg/internal/third_party/qjs/build/job-queue-quiescence.patch (see
+// README.vendor.md). Unlike Value.Await (js_std_await), RunPendingJobs
+// never blocks waiting for one specific promise to settle and never polls
+// for external events, so it cannot hang on a promise that is
+// intentionally left pending forever. It is the primitive the code-mode
+// host bridge (pkg/codemode) polls to detect that no more synchronous
+// progress is possible in the sandbox -- every host function call
+// dispatched so far is either settled or genuinely parked awaiting
+// approval -- before batching concurrent tool-approval interrupts
+// together (e.g. from a guest `Promise.all([...])`).
+func (r *Runtime) RunPendingJobs() (int, error) {
+	ran := r.Call("QJS_RunPendingJobs", r.handle.raw).Int32()
+	if ran < 0 {
+		if r.context.HasException() {
+			return 0, r.context.Exception()
+		}
+		return 0, fmt.Errorf("qjs: a pending job failed without recording an exception")
+	}
+	return int(ran), nil
+}
+
+// Malloc allocates memory in the WebAssembly linear memory and return a pointer to it.
+func (r *Runtime) Malloc(size uint64) uint64 {
+	ptrs, err := r.malloc.Call(r.context, size)
+	if err != nil {
+		panic(fmt.Errorf("failed to allocate memory: %w", err))
+	}
+
+	return ptrs[0]
+}
+
+// FreeHandle releases memory allocated in WebAssembly linear memory.
+func (r *Runtime) FreeHandle(ptr uint64) {
+	if _, err := r.free.Call(r.context, ptr); err != nil {
+		panic(fmt.Errorf("failed to free memory: %w", err))
+	}
+}
+
+// FreeJsValue frees a JavaScript value in the QuickJS runtime.
+func (r *Runtime) FreeJsValue(val uint64) {
+	r.Call("QJS_FreeValue", r.context.Raw(), val)
+}
+
+// NewBytesHandle creates a handle for byte data in WebAssembly memory.
+func (r *Runtime) NewBytesHandle(b []byte) *Handle {
+	if len(b) == 0 {
+		return nil
+	}
+
+	ptr := r.Malloc(uint64(len(b)))
+	r.mem.MustWrite(uint32(ptr), b)
+
+	return NewHandle(r, ptr)
+}
+
+// NewStringHandle creates a handle for string data with null termination.
+func (r *Runtime) NewStringHandle(v string) *Handle {
+	// Allocate len+1 for null terminator
+	ptr := r.Malloc(uint64(len(v) + 1))
+
+	// Write string data
+	r.mem.MustWrite(uint32(ptr), []byte(v))
+	// Add null terminator
+	r.mem.MustWrite(uint32(ptr)+uint32(len(v)), []byte{0})
+
+	return NewHandle(r, ptr)
+}
+
+// initializeRuntime sets up the runtime components after module instantiation.
+func (r *Runtime) initializeRuntime() {
+	r.malloc = r.module.ExportedFunction("malloc")
+	r.free = r.module.ExportedFunction("free")
+	r.mem = &Mem{mem: r.module.Memory()}
+	disableModules := uint64(0)
+	if r.option.DisableModules {
+		disableModules = 1
+	}
+	r.handle = r.Call(
+		"New_QJS",
+		uint64(r.option.MemoryLimit),
+		uint64(r.option.MaxStackSize),
+		uint64(r.option.MaxExecutionTime),
+		uint64(r.option.GCThreshold),
+		disableModules,
+	)
+
+	r.context.handle = r.Call("QJS_GetContext", r.handle.raw)
+	r.context.runtime = r
+}
+
+func (r *Runtime) call(name string, args ...uint64) uint64 {
+	fn := r.module.ExportedFunction(name)
+	if fn == nil {
+		panic(fmt.Errorf("WASM function %s not found", name))
+	}
+
+	results, err := fn.Call(r.context, args...)
+	if err != nil {
+		stack := debug.Stack()
+		panic(fmt.Errorf("failed to call %s: %w\nstack: %s", name, err, stack))
+	}
+
+	if len(results) == 0 {
+		return 0
+	}
+
+	return results[0]
+}
+
+// Pool manages a collection of reusable QuickJS runtimes.
+type Pool struct {
+	pools      chan *Runtime
+	size       int
+	option     Option
+	setupFuncs []func(*Runtime) error
+	mu         sync.Mutex
+}
+
+// NewPool creates a new runtime pool with the specified size and configuration.
+func NewPool(size int, option Option, setupFuncs ...func(*Runtime) error) *Pool {
+	if size <= 0 {
+		panic("pool size must be greater than 0")
+	}
+
+	p := &Pool{
+		pools:      make(chan *Runtime, size),
+		size:       size,
+		option:     option,
+		setupFuncs: setupFuncs,
+	}
+
+	return p
+}
+
+// Get returns a runtime from the pool or creates a new one if the pool is empty.
+// The caller must call Put() to return the runtime when finished.
+func (p *Pool) Get() (*Runtime, error) {
+	if p == nil {
+		return nil, errors.New("pool is nil")
+	}
+
+	// Try to get from pool first
+	select {
+	case rt := <-p.pools:
+		return p.prepareRuntimeForUse(rt), nil
+	// Pool is empty, need to create new runtime
+	default:
+	}
+
+	// Double-check with lock to avoid race conditions
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	select {
+	case rt := <-p.pools:
+		return p.prepareRuntimeForUse(rt), nil
+	default:
+		return p.createNewRuntime()
+	}
+}
+
+// Put returns the runtime back to the pool for reuse.
+// If the pool is full, the runtime is closed to prevent resource leaks.
+func (p *Pool) Put(rt *Runtime) {
+	if rt == nil {
+		return
+	}
+
+	// Update stack top before returning to pool
+	if rt.handle != nil {
+		rt.Call("QJS_UpdateStackTop", rt.handle.raw)
+	}
+
+	select {
+	case p.pools <- rt:
+		// Successfully returned to pool
+	default:
+		// Pool is full, close the runtime
+		rt.Close()
+	}
+}
+
+// prepareRuntimeForUse prepares a pooled runtime for use.
+func (p *Pool) prepareRuntimeForUse(rt *Runtime) *Runtime {
+	if rt != nil && rt.handle != nil {
+		rt.Call("QJS_UpdateStackTop", rt.handle.raw)
+	}
+
+	return rt
+}
+
+// createNewRuntime creates a new runtime with setup functions applied.
+func (p *Pool) createNewRuntime() (*Runtime, error) {
+	rt, err := New(p.option)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create new runtime: %w", err)
+	}
+
+	// Apply setup functions
+	for i, setupFunc := range p.setupFuncs {
+		err := setupFunc(rt)
+		if err != nil {
+			rt.Close()
+
+			return nil, fmt.Errorf("setup function %d failed: %w", i, err)
+		}
+	}
+
+	return rt, nil
+}

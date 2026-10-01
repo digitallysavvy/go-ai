@@ -1,12 +1,24 @@
 package klingai
 
 import (
-	"os"
+	"encoding/json"
+	"strings"
 	"testing"
 )
 
+// clearKlingAICredentialEnv resets all three KlingAI credential environment
+// variables for the duration of the test (via t.Setenv), so a test's
+// intended credential source is the only one available.
+func clearKlingAICredentialEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("KLINGAI_API_KEY", "")
+	t.Setenv("KLINGAI_ACCESS_KEY", "")
+	t.Setenv("KLINGAI_SECRET_KEY", "")
+}
+
 func TestNew(t *testing.T) {
 	t.Run("creates provider with explicit config", func(t *testing.T) {
+		clearKlingAICredentialEnv(t)
 		cfg := Config{
 			AccessKey: "test-access-key",
 			SecretKey: "test-secret-key",
@@ -31,7 +43,26 @@ func TestNew(t *testing.T) {
 		}
 	})
 
+	t.Run("creates provider with a single API key", func(t *testing.T) {
+		clearKlingAICredentialEnv(t)
+		cfg := Config{APIKey: "test-api-key"}
+
+		prov, err := New(cfg)
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+
+		token, err := prov.GenerateAuthToken()
+		if err != nil {
+			t.Fatalf("GenerateAuthToken() error: %v", err)
+		}
+		if token != "test-api-key" {
+			t.Errorf("token = %q, want %q", token, "test-api-key")
+		}
+	})
+
 	t.Run("uses default base URL when not provided", func(t *testing.T) {
+		clearKlingAICredentialEnv(t)
 		cfg := Config{
 			AccessKey: "test-access-key",
 			SecretKey: "test-secret-key",
@@ -48,12 +79,9 @@ func TestNew(t *testing.T) {
 	})
 
 	t.Run("loads credentials from environment variables", func(t *testing.T) {
-		_ = os.Setenv("KLINGAI_ACCESS_KEY", "env-access-key")
-		_ = os.Setenv("KLINGAI_SECRET_KEY", "env-secret-key")
-		defer func() {
-			_ = os.Unsetenv("KLINGAI_ACCESS_KEY")
-			_ = os.Unsetenv("KLINGAI_SECRET_KEY")
-		}()
+		clearKlingAICredentialEnv(t)
+		t.Setenv("KLINGAI_ACCESS_KEY", "env-access-key")
+		t.Setenv("KLINGAI_SECRET_KEY", "env-secret-key")
 
 		cfg := Config{}
 		prov, err := New(cfg)
@@ -61,22 +89,48 @@ func TestNew(t *testing.T) {
 			t.Fatalf("expected no error, got %v", err)
 		}
 
-		if prov.config.AccessKey != "env-access-key" {
-			t.Errorf("expected access key from env, got %s", prov.config.AccessKey)
+		token, err := prov.GenerateAuthToken()
+		if err != nil {
+			t.Fatalf("GenerateAuthToken() error: %v", err)
 		}
+		parts := strings.Split(token, ".")
+		if len(parts) != 3 {
+			t.Fatalf("expected a JWT, got %q", token)
+		}
+		payloadJSON, err := base64urlDecode(parts[1])
+		if err != nil {
+			t.Fatalf("failed to decode payload: %v", err)
+		}
+		var payload map[string]interface{}
+		if err := json.Unmarshal(payloadJSON, &payload); err != nil {
+			t.Fatalf("failed to unmarshal payload: %v", err)
+		}
+		if payload["iss"] != "env-access-key" {
+			t.Errorf("iss = %v, want %q", payload["iss"], "env-access-key")
+		}
+	})
 
-		if prov.config.SecretKey != "env-secret-key" {
-			t.Errorf("expected secret key from env, got %s", prov.config.SecretKey)
+	t.Run("loads a single API key from the environment", func(t *testing.T) {
+		clearKlingAICredentialEnv(t)
+		t.Setenv("KLINGAI_API_KEY", "env-api-key")
+
+		prov, err := New(Config{})
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		token, err := prov.GenerateAuthToken()
+		if err != nil {
+			t.Fatalf("GenerateAuthToken() error: %v", err)
+		}
+		if token != "env-api-key" {
+			t.Errorf("token = %q, want %q", token, "env-api-key")
 		}
 	})
 
 	t.Run("explicit config takes precedence over env variables", func(t *testing.T) {
-		_ = os.Setenv("KLINGAI_ACCESS_KEY", "env-access-key")
-		_ = os.Setenv("KLINGAI_SECRET_KEY", "env-secret-key")
-		defer func() {
-			_ = os.Unsetenv("KLINGAI_ACCESS_KEY")
-			_ = os.Unsetenv("KLINGAI_SECRET_KEY")
-		}()
+		clearKlingAICredentialEnv(t)
+		t.Setenv("KLINGAI_ACCESS_KEY", "env-access-key")
+		t.Setenv("KLINGAI_SECRET_KEY", "env-secret-key")
 
 		cfg := Config{
 			AccessKey: "explicit-access-key",
@@ -94,8 +148,7 @@ func TestNew(t *testing.T) {
 	})
 
 	t.Run("returns error when access key is missing", func(t *testing.T) {
-		_ = os.Unsetenv("KLINGAI_ACCESS_KEY")
-		_ = os.Unsetenv("KLINGAI_SECRET_KEY")
+		clearKlingAICredentialEnv(t)
 
 		cfg := Config{
 			SecretKey: "test-secret-key",
@@ -108,8 +161,7 @@ func TestNew(t *testing.T) {
 	})
 
 	t.Run("returns error when secret key is missing", func(t *testing.T) {
-		_ = os.Unsetenv("KLINGAI_ACCESS_KEY")
-		_ = os.Unsetenv("KLINGAI_SECRET_KEY")
+		clearKlingAICredentialEnv(t)
 
 		cfg := Config{
 			AccessKey: "test-access-key",
@@ -118,6 +170,18 @@ func TestNew(t *testing.T) {
 		_, err := New(cfg)
 		if err == nil {
 			t.Error("expected error when secret key is missing")
+		}
+	})
+
+	t.Run("returns an api-key-centric error when no credentials at all are configured", func(t *testing.T) {
+		clearKlingAICredentialEnv(t)
+
+		_, err := New(Config{})
+		if err == nil {
+			t.Fatal("expected an error")
+		}
+		if !strings.Contains(err.Error(), "'apiKey'") {
+			t.Errorf("unexpected error message: %v", err)
 		}
 	})
 }

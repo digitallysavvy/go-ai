@@ -4,9 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
@@ -34,9 +38,14 @@ type stream struct {
 	// so that a STOP finish reason can be mapped to tool-calls.
 	hasToolCalls bool
 
-	// Code execution state (used only when cfg.SupportsCodeExecution is true).
+	// Code execution state. TS parses these parts for both Google and Vertex.
 	codeExecCount  int
 	lastCodeExecID string
+
+	// lastServerToolCallID associates a server-executed built-in tool's
+	// toolResponse part with its preceding toolCall part (TS
+	// lastServerToolCallId), mirroring lastCodeExecID above.
+	lastServerToolCallID string
 
 	// Metadata accumulated across SSE events, emitted on the finish chunk.
 	lastGroundingMetadata  json.RawMessage
@@ -45,14 +54,78 @@ type stream struct {
 	lastFinishMessage      string
 	lastPromptFeedback     json.RawMessage
 	lastUsageMetadata      *UsageMetadata
+	// lastServiceTier accumulates serviceTier across chunks; last non-empty value wins.
+	lastServiceTier string
+
+	// activeStreamingToolCalls is a LIFO stack of in-progress streamed
+	// function calls, mirroring TS `activeStreamingToolCalls`. A continuation
+	// chunk that carries `partialArgs` but no `name` always applies to the
+	// top of the stack (TS: `activeStreamingToolCalls[length - 1]`).
+	activeStreamingToolCalls []*activeStreamingToolCall
+	drainedOnDone            bool
+
+	// tnm maps provider tool names (e.g. "code_execution") to caller-chosen
+	// custom names, mirroring TS createToolNameMapping.
+	tnm toolNameMapping
+
+	// httpHeaders/modelID feed the single response-metadata chunk emitted on
+	// the first SSE event (previously done by an external
+	// providerutils.WithResponseMetadata wrapper; now internal so the Gemini
+	// responseId, TS "hasEmittedResponseMetadata", can be included too).
+	httpHeaders             http.Header
+	modelID                 string
+	emittedResponseMetadata bool
+
+	// finishReason/hasFinished hold the terminal finish reason. TS only
+	// enqueues the 'finish' chunk once, from the stream's flush handler, not
+	// per SSE event — so we track state here and emit at end-of-stream.
+	finishReason    types.FinishReason
+	rawFinishReason string
+	hasFinished     bool
+
+	// confirmedPromptBlockReason freezes content processing once a genuine
+	// (non-"unspecified") promptFeedback.blockReason is seen: later chunks
+	// still contribute usage/metadata but no more content (TS: "A confirmed
+	// prompt block is terminal for generated content, but later chunks can
+	// still contribute usage and provider metadata.").
+	confirmedPromptBlockReason string
+
+	// requestBody is the raw request body this stream was opened with,
+	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
+	// "stream request body field").
+	requestBody interface{}
+}
+
+// RequestBody implements provider.StreamRequestBody, exposing the raw
+// request body that was sent to open this stream.
+func (s *stream) RequestBody() interface{} { return s.requestBody }
+
+// activeStreamingToolCall tracks one in-progress streamed function call,
+// mirroring the anonymous entries TS pushes onto `activeStreamingToolCalls`.
+type activeStreamingToolCall struct {
+	toolCallID       string
+	toolName         string
+	accumulator      *GoogleJSONAccumulator
+	providerMetadata json.RawMessage
+
+	// thoughtSignature is a Go-SDK convenience mirror of the last non-empty
+	// thoughtSignature seen for this call, promoted onto types.ToolCall's
+	// dedicated field (TS carries it only inside providerMetadata).
+	thoughtSignature string
 }
 
 // newStream creates a stream with the given reader and provider configuration.
-func newStream(reader io.ReadCloser, cfg Config) *stream {
+// httpHeaders/modelID are used for the single response-metadata chunk; both
+// may be zero-valued (e.g. in tests constructing the stream directly).
+func newStream(reader io.ReadCloser, cfg Config, tnm toolNameMapping, httpHeaders http.Header, modelID string) *stream {
 	return &stream{
-		reader: reader,
-		parser: streaming.NewSSEParser(reader),
-		cfg:    cfg,
+		reader:       reader,
+		parser:       streaming.NewSSEParser(reader),
+		cfg:          cfg,
+		tnm:          tnm,
+		httpHeaders:  httpHeaders,
+		modelID:      modelID,
+		finishReason: types.FinishReasonOther,
 	}
 }
 
@@ -69,46 +142,119 @@ func (s *stream) Err() error {
 
 // Next returns the next chunk in the stream.
 // It drains the pre-converted chunk buffer before reading the next SSE event.
+//
+// Implemented as an explicit loop rather than self-recursion: an SSE event
+// that produces no bufferable chunk (e.g. a usageMetadata-only keep-alive
+// with no candidates) used to `return s.Next()`, and Go does not eliminate
+// that tail call, so a long run of such events grew the goroutine stack
+// without bound and could crash the process with an unrecoverable stack
+// overflow. Every former `return s.Next()` is now a loop iteration instead.
 func (s *stream) Next() (*provider.StreamChunk, error) {
-	if s.err != nil {
-		return nil, s.err
-	}
+	for {
+		if s.err != nil {
+			return nil, s.err
+		}
 
-	if len(s.chunkBuffer) > 0 {
-		chunk := s.chunkBuffer[0]
-		s.chunkBuffer = s.chunkBuffer[1:]
-		return chunk, nil
-	}
+		if len(s.chunkBuffer) > 0 {
+			chunk := s.chunkBuffer[0]
+			s.chunkBuffer = s.chunkBuffer[1:]
+			return chunk, nil
+		}
 
-	event, err := s.parser.Next()
-	if err != nil {
-		s.err = err
-		return nil, err
-	}
-	if streaming.IsStreamDone(event) {
-		s.err = io.EOF
-		return nil, io.EOF
-	}
+		event, err := s.parser.Next()
+		if err != nil {
+			// The underlying reader can end without an explicit "[DONE]" SSE
+			// event (e.g. in tests, or providers that just close the connection).
+			// TS always calls its stream's flush() exactly once regardless of how
+			// the stream ends, so finalize here too.
+			if err == io.EOF && s.finalizeOnce() {
+				continue
+			}
+			s.err = err
+			return nil, err
+		}
+		if streaming.IsStreamDone(event) {
+			if s.finalizeOnce() {
+				continue
+			}
+			s.err = io.EOF
+			return nil, io.EOF
+		}
 
-	var chunkData Response
-	if err := json.Unmarshal([]byte(event.Data), &chunkData); err != nil {
-		return nil, fmt.Errorf("failed to parse stream chunk: %w", err)
-	}
+		var chunkData Response
+		if err := json.Unmarshal([]byte(event.Data), &chunkData); err != nil {
+			// TS google-language-model.ts: `if (!chunk.success) { controller
+			// .enqueue({type:'error', error: chunk.error}); return; }` — a
+			// malformed chunk (schema/JSON failure) is surfaced as an error
+			// chunk and the transform CONTINUES reading, it does not terminate
+			// the stream. Previously Go returned this as a terminal Next()
+			// error, ending the stream outright (P1-1c part 2).
+			message := fmt.Sprintf("failed to parse stream chunk: %v", err)
+			return &provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: message,
+				Err:  providererrors.NewStreamProviderError(message, s.cfg.ProviderName, "", nil, nil, nil, nil),
+			}, nil
+		}
 
-	s.processSSEEvent(chunkData)
-	return s.Next()
+		s.processSSEEvent(chunkData)
+	}
+}
+
+// finalizeOnce closes any open blocks/tool inputs and appends the single
+// 'finish' chunk, exactly once. Returns true the first time it runs (in
+// which case the caller should drain s.chunkBuffer via s.Next()), false on
+// any subsequent call.
+func (s *stream) finalizeOnce() bool {
+	if s.drainedOnDone {
+		return false
+	}
+	s.closeOpenBlocks()
+	s.chunkBuffer = append(s.chunkBuffer, s.buildFinishChunk())
+	s.drainedOnDone = true
+	return true
 }
 
 // processSSEEvent converts one SSE event into structured chunks appended to
-// s.chunkBuffer. Mirrors the TS SDK TransformStream transform + flush handlers.
+// s.chunkBuffer. Mirrors the TS SDK TransformStream transform handler; the
+// 'finish' chunk itself is only enqueued once, from flush (see Next/EOF).
 func (s *stream) processSSEEvent(chunkData Response) {
-	if chunkData.PromptFeedback != nil {
-		s.lastPromptFeedback = chunkData.PromptFeedback
+	if !s.emittedResponseMetadata {
+		s.emittedResponseMetadata = true
+		headers := providerutils.ExtractHeaders(s.httpHeaders)
+		s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
+			Type: provider.ChunkTypeResponseMetadata,
+			ResponseMetadata: &provider.ResponseMetadata{
+				ID:        chunkData.ResponseID,
+				Headers:   headers,
+				ModelID:   s.modelID,
+				Timestamp: time.Now(),
+			},
+		})
 	}
+
 	if chunkData.UsageMetadata != nil {
 		s.lastUsageMetadata = chunkData.UsageMetadata
+		if chunkData.UsageMetadata.ServiceTier != "" {
+			s.lastServiceTier = chunkData.UsageMetadata.ServiceTier
+		}
+	} else if chunkData.ServiceTier != "" {
+		s.lastServiceTier = chunkData.ServiceTier
 	}
-	if len(chunkData.Candidates) == 0 {
+
+	if chunkData.PromptFeedback != nil && s.confirmedPromptBlockReason == "" {
+		s.lastPromptFeedback = chunkData.PromptFeedback
+		if reason := promptFeedbackBlockReason(chunkData.PromptFeedback); isConfirmedPromptBlockReason(reason) {
+			s.confirmedPromptBlockReason = reason
+			s.finishReason = types.FinishReasonContentFilter
+			s.rawFinishReason = reason
+			s.hasFinished = true
+		}
+	}
+
+	// A confirmed prompt block is terminal for generated content, but later
+	// chunks can still contribute usage and provider metadata (handled above).
+	if s.confirmedPromptBlockReason != "" || len(chunkData.Candidates) == 0 {
 		return
 	}
 	candidate := chunkData.Candidates[0]
@@ -140,10 +286,7 @@ func (s *stream) processSSEEvent(chunkData Response) {
 		}
 	}
 
-	// Finish reason: close open blocks, then emit the finish chunk.
 	if candidate.FinishReason != "" {
-		s.closeOpenBlocks()
-
 		var fr types.FinishReason
 		switch candidate.FinishReason {
 		case "STOP":
@@ -161,16 +304,90 @@ func (s *stream) processSSEEvent(chunkData Response) {
 		default:
 			fr = types.FinishReasonOther
 		}
-
-		finishChunk := &provider.StreamChunk{
-			Type:         provider.ChunkTypeFinish,
-			FinishReason: fr,
-		}
-		if provMeta := s.buildFinishMeta(); provMeta != nil {
-			finishChunk.ProviderMetadata = provMeta
-		}
-		s.chunkBuffer = append(s.chunkBuffer, finishChunk)
+		s.finishReason = fr
+		s.rawFinishReason = candidate.FinishReason
+		s.hasFinished = true
 	}
+}
+
+// buildFinishChunk builds the single 'finish' chunk emitted at end-of-stream
+// (TS: flush(controller)), after any open blocks/tool inputs are closed.
+func (s *stream) buildFinishChunk() *provider.StreamChunk {
+	fr := s.finishReason
+	if !s.hasFinished {
+		fr = types.FinishReasonOther
+	}
+	usage := convertUsage(s.lastUsageMetadata)
+	return &provider.StreamChunk{
+		Type:             provider.ChunkTypeFinish,
+		FinishReason:     fr,
+		RawFinishReason:  s.rawFinishReason,
+		Usage:            &usage,
+		ProviderMetadata: s.buildFinishMeta(),
+	}
+}
+
+// generateID returns a fresh tool-call ID, using the configured generator
+// when set (TS: `config.generateId()`), falling back to the shared streaming
+// ID generator otherwise.
+func (s *stream) generateID() string {
+	if s.cfg.GenerateID != nil {
+		return s.cfg.GenerateID()
+	}
+	return streaming.GenerateID()
+}
+
+// finishActiveStreamingToolCall pops the most recently opened streaming tool
+// call and emits its closing delta (if any), tool-input-end, and tool-call
+// chunks. Mirrors TS `finishActiveStreamingToolCall`.
+func (s *stream) finishActiveStreamingToolCall() {
+	n := len(s.activeStreamingToolCalls)
+	if n == 0 {
+		return
+	}
+	active := s.activeStreamingToolCalls[n-1]
+	s.activeStreamingToolCalls = s.activeStreamingToolCalls[:n-1]
+
+	finalJSON, closingDelta := active.accumulator.Finalize()
+
+	if closingDelta != "" {
+		s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
+			Type:             provider.ChunkTypeToolInputDelta,
+			ID:               active.toolCallID,
+			Text:             closingDelta,
+			ProviderMetadata: active.providerMetadata,
+		})
+	}
+
+	s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
+		Type:             provider.ChunkTypeToolInputEnd,
+		ToolCall:         &types.ToolCall{ID: active.toolCallID},
+		ProviderMetadata: active.providerMetadata,
+	})
+
+	var args map[string]interface{}
+	if tree, err := decodeOrderedJSON([]byte(finalJSON)); err == nil {
+		if m, ok := toPlainJSON(tree).(map[string]interface{}); ok {
+			args = m
+		}
+	}
+	if args == nil {
+		args = map[string]interface{}{}
+	}
+
+	s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
+		Type: provider.ChunkTypeToolCall,
+		ToolCall: &types.ToolCall{
+			ID:               active.toolCallID,
+			ToolName:         active.toolName,
+			Arguments:        args,
+			RawArguments:     finalJSON,
+			ThoughtSignature: active.thoughtSignature,
+		},
+		ProviderMetadata: active.providerMetadata,
+	})
+
+	s.hasToolCalls = true
 }
 
 // closeOpenBlocks emits end chunks for any open text or reasoning block.
@@ -192,43 +409,45 @@ func (s *stream) closeOpenBlocks() {
 }
 
 // buildFinishMeta assembles the ProviderMetadata JSON for the finish chunk.
-// Returns nil if there is nothing to include.
+// Always fully populated (null for absent fields), matching TS
+// GoogleProviderMetadata, and written under every configured metadata key.
 func (s *stream) buildFinishMeta() json.RawMessage {
-	meta := map[string]json.RawMessage{}
-	if s.lastPromptFeedback != nil {
-		meta["promptFeedback"] = s.lastPromptFeedback
-	}
-	if s.lastGroundingMetadata != nil {
-		meta["groundingMetadata"] = s.lastGroundingMetadata
-	}
-	if s.lastUrlContextMetadata != nil {
-		meta["urlContextMetadata"] = s.lastUrlContextMetadata
-	}
-	if s.lastSafetyRatings != nil {
-		meta["safetyRatings"] = s.lastSafetyRatings
+	meta := map[string]json.RawMessage{
+		"promptFeedback":     rawOrNull(s.lastPromptFeedback),
+		"groundingMetadata":  rawOrNull(s.lastGroundingMetadata),
+		"urlContextMetadata": rawOrNull(s.lastUrlContextMetadata),
+		"safetyRatings":      rawOrNull(s.lastSafetyRatings),
 	}
 	if s.lastFinishMessage != "" {
-		if fm, err := json.Marshal(s.lastFinishMessage); err == nil {
-			meta["finishMessage"] = fm
-		}
+		fm, _ := json.Marshal(s.lastFinishMessage)
+		meta["finishMessage"] = fm
+	} else {
+		meta["finishMessage"] = json.RawMessage("null")
 	}
 	if s.lastUsageMetadata != nil {
 		if um, err := json.Marshal(s.lastUsageMetadata); err == nil {
 			meta["usageMetadata"] = um
 		}
+	} else {
+		meta["usageMetadata"] = json.RawMessage("null")
 	}
-	if len(meta) == 0 {
-		return nil
+	// serviceTier is always emitted (null when absent) to match TS SDK behavior.
+	if s.lastServiceTier != "" {
+		if st, err := json.Marshal(s.lastServiceTier); err == nil {
+			meta["serviceTier"] = st
+		}
+	} else {
+		meta["serviceTier"] = json.RawMessage("null")
 	}
-	provMeta, _ := json.Marshal(map[string]interface{}{s.cfg.MetadataKey: meta})
+	provMeta, _ := json.Marshal(s.cfg.wrapProviderMetadata(meta))
 	return provMeta
 }
 
 // processNonFuncPart converts a non-function-call part into chunks.
 // Handles code execution, inlineData, and text/reasoning block management.
 func (s *stream) processNonFuncPart(part Part) {
-	// Code execution (Google only).
-	if s.cfg.SupportsCodeExecution {
+	// Code execution. TS parses these for both Google and Vertex.
+	{
 		if part.ExecutableCode != nil && part.ExecutableCode.Code != "" {
 			s.codeExecCount++
 			toolCallID := fmt.Sprintf("code-exec-%d", s.codeExecCount)
@@ -237,7 +456,7 @@ func (s *stream) processNonFuncPart(part Part) {
 				Type: provider.ChunkTypeToolCall,
 				ToolCall: &types.ToolCall{
 					ID:               toolCallID,
-					ToolName:         "code_execution",
+					ToolName:         s.tnm.toCustomToolName("code_execution"),
 					Arguments:        map[string]interface{}{"code": part.ExecutableCode.Code, "language": part.ExecutableCode.Language},
 					ProviderExecuted: true,
 				},
@@ -245,13 +464,15 @@ func (s *stream) processNonFuncPart(part Part) {
 			return
 		}
 		if part.CodeExecutionResult != nil && s.lastCodeExecID != "" {
+			// Do not clear lastCodeExecID: TS associates a result only with the
+			// most recently seen executable code part, but does not reset the
+			// pointer after emitting the result.
 			toolCallID := s.lastCodeExecID
-			s.lastCodeExecID = ""
 			s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
 				Type: provider.ChunkTypeToolResult,
 				ToolResult: &types.ToolResult{
 					ToolCallID: toolCallID,
-					ToolName:   "code_execution",
+					ToolName:   s.tnm.toCustomToolName("code_execution"),
 					Result: map[string]interface{}{
 						"outcome": part.CodeExecutionResult.Outcome,
 						"output":  part.CodeExecutionResult.Output,
@@ -260,6 +481,73 @@ func (s *stream) processNonFuncPart(part Part) {
 			})
 			return
 		}
+	}
+
+	// Server-executed built-in tool call/result (distinct from a
+	// (user-invoked) functionCall part). TS: `'toolCall' in part` /
+	// `'toolResponse' in part`.
+	if part.ToolCall != nil {
+		toolCallID := part.ToolCall.ID
+		if toolCallID == "" {
+			toolCallID = s.generateID()
+		}
+		s.lastServerToolCallID = toolCallID
+		args := part.ToolCall.Args
+		if args == nil {
+			args = map[string]interface{}{}
+		}
+		meta := map[string]interface{}{
+			"serverToolCallId": toolCallID,
+			"serverToolType":   part.ToolCall.ToolType,
+		}
+		if part.ThoughtSignature != "" {
+			meta["thoughtSignature"] = part.ThoughtSignature
+		}
+		metaJSON, _ := json.Marshal(s.cfg.wrapProviderMetadata(meta))
+		s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
+			Type: provider.ChunkTypeToolCall,
+			ToolCall: &types.ToolCall{
+				ID:               toolCallID,
+				ToolName:         "server:" + part.ToolCall.ToolType,
+				Arguments:        args,
+				ProviderExecuted: true,
+				Dynamic:          true,
+			},
+			ProviderMetadata: metaJSON,
+		})
+		return
+	}
+	if part.ToolResponse != nil {
+		toolCallID := s.lastServerToolCallID
+		if toolCallID == "" {
+			toolCallID = part.ToolResponse.ID
+		}
+		if toolCallID == "" {
+			toolCallID = s.generateID()
+		}
+		resultValue := part.ToolResponse.Response
+		if resultValue == nil {
+			resultValue = map[string]interface{}{}
+		}
+		meta := map[string]interface{}{
+			"serverToolCallId": toolCallID,
+			"serverToolType":   part.ToolResponse.ToolType,
+		}
+		if part.ThoughtSignature != "" {
+			meta["thoughtSignature"] = part.ThoughtSignature
+		}
+		metaJSON, _ := json.Marshal(s.cfg.wrapProviderMetadata(meta))
+		s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
+			Type: provider.ChunkTypeToolResult,
+			ToolResult: &types.ToolResult{
+				ToolCallID: toolCallID,
+				ToolName:   "server:" + part.ToolResponse.ToolType,
+				Result:     resultValue,
+			},
+			ProviderMetadata: metaJSON,
+		})
+		s.lastServerToolCallID = ""
+		return
 	}
 
 	// InlineData → close open blocks, emit reasoning-file or file chunk.
@@ -290,11 +578,9 @@ func (s *stream) processNonFuncPart(part Part) {
 	// Build provider metadata for thoughtSignature, if present.
 	var sigMeta json.RawMessage
 	if part.ThoughtSignature != "" {
-		sigMeta, _ = json.Marshal(map[string]interface{}{
-			s.cfg.MetadataKey: map[string]interface{}{
-				"thoughtSignature": part.ThoughtSignature,
-			},
-		})
+		sigMeta, _ = json.Marshal(s.cfg.wrapProviderMetadata(map[string]interface{}{
+			"thoughtSignature": part.ThoughtSignature,
+		}))
 	}
 
 	// Empty text + thoughtSignature on an open text block → text-delta with metadata only.
@@ -362,55 +648,210 @@ func (s *stream) processNonFuncPart(part Part) {
 	}
 }
 
-// processFuncCallPart emits the tool-input-start/delta/end + tool-call sequence
-// for one function call part. Matches TS getToolCallsFromParts output.
+// processFuncCallPart classifies and handles one functionCall part, mirroring
+// TS google-language-model.ts's per-chunk state machine exactly:
+//
+//   - isStreamingChunk: partialArgs present, or a named call explicitly
+//     signals more chunks are coming (willContinue == true with no args yet).
+//   - isTerminalChunk: an empty `{}` functionCall that only signals "the
+//     active streaming call is done" (no name/args/partialArgs/willContinue).
+//   - isCompleteCall: a single chunk carries the full name + args already.
+//   - isNoArgsCompleteCall: a single chunk names a zero-argument tool call.
+//
+// Each streamed function call gets its own GoogleJSONAccumulator (per-chunk
+// independent function-call model), replacing the old whole-value diffing
+// that assumed one growing JSON blob per tool-call ID.
 func (s *stream) processFuncCallPart(part Part) {
-	if part.FunctionCall == nil {
+	fc := part.FunctionCall
+	if fc == nil {
 		return
 	}
-	s.hasToolCalls = true
-	toolCallID := part.FunctionCall.Name // Gemini does not provide separate call IDs
 
 	var sigMeta json.RawMessage
 	if part.ThoughtSignature != "" {
-		sigMeta, _ = json.Marshal(map[string]interface{}{
-			s.cfg.MetadataKey: map[string]interface{}{
-				"thoughtSignature": part.ThoughtSignature,
+		sigMeta, _ = json.Marshal(s.cfg.wrapProviderMetadata(map[string]interface{}{
+			"thoughtSignature": part.ThoughtSignature,
+		}))
+	}
+
+	willContinueTrue := fc.WillContinue != nil && *fc.WillContinue
+
+	isStreamingChunk := fc.PartialArgsSet || (fc.Name != "" && willContinueTrue)
+	isTerminalChunk := fc.Name == "" && !fc.ArgsSet && !fc.PartialArgsSet && fc.WillContinue == nil
+	isCompleteCall := fc.Name != "" && fc.ArgsSet && !fc.PartialArgsSet
+	isNoArgsCompleteCall := fc.Name != "" && !fc.ArgsSet && !fc.PartialArgsSet && !willContinueTrue
+
+	switch {
+	case isStreamingChunk:
+		if fc.Name != "" {
+			toolCallID := fc.ID
+			if toolCallID == "" {
+				toolCallID = s.generateID()
+			}
+			accumulator := NewGoogleJSONAccumulator()
+			s.activeStreamingToolCalls = append(s.activeStreamingToolCalls, &activeStreamingToolCall{
+				toolCallID:       toolCallID,
+				toolName:         fc.Name,
+				accumulator:      accumulator,
+				providerMetadata: sigMeta,
+				thoughtSignature: part.ThoughtSignature,
+			})
+
+			s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
+				Type: provider.ChunkTypeToolInputStart,
+				ToolCall: &types.ToolCall{
+					ID:       toolCallID,
+					ToolName: fc.Name,
+				},
+				ProviderMetadata: sigMeta,
+			})
+
+			if fc.PartialArgsSet {
+				s.applyPartialArgsAndMaybeFinish(accumulator, toolCallID, fc.PartialArgs, willContinueTrue, sigMeta)
+			}
+		} else if fc.PartialArgsSet && len(s.activeStreamingToolCalls) > 0 {
+			// TS never rewrites `active.providerMetadata` (or, by extension, our
+			// convenience thoughtSignature mirror) from a continuation chunk: the
+			// finish/tool-call chunk always carries whatever metadata was present
+			// when the call was first pushed. A continuation chunk's own
+			// thoughtSignature only affects the tool-input-delta emitted for it
+			// (via the local `sigMeta` passed below), never the stored `active`.
+			active := s.activeStreamingToolCalls[len(s.activeStreamingToolCalls)-1]
+			s.applyPartialArgsAndMaybeFinish(active.accumulator, active.toolCallID, fc.PartialArgs, willContinueTrue, sigMeta)
+		}
+
+	case isTerminalChunk && len(s.activeStreamingToolCalls) > 0:
+		s.finishActiveStreamingToolCall()
+
+	case isCompleteCall:
+		toolCallID := fc.ID
+		if toolCallID == "" {
+			toolCallID = s.generateID()
+		}
+		toolName := fc.Name
+		argsJSON := completeCallArgsJSON(fc)
+		args := fc.Args
+		if fc.ArgsIsString {
+			// Best-effort: the raw wire "args" was itself a JSON string (see
+			// FunctionCall.UnmarshalJSON); if it happens to decode to an
+			// object, expose it structurally too. TS has no equivalent field
+			// here (its tool-call chunk only carries `input` text).
+			var m map[string]interface{}
+			if json.Unmarshal([]byte(argsJSON), &m) == nil {
+				args = m
+			}
+		}
+		if args == nil {
+			args = map[string]interface{}{}
+		}
+
+		s.chunkBuffer = append(s.chunkBuffer,
+			&provider.StreamChunk{
+				Type:             provider.ChunkTypeToolInputStart,
+				ToolCall:         &types.ToolCall{ID: toolCallID, ToolName: toolName},
+				ProviderMetadata: sigMeta,
 			},
+			&provider.StreamChunk{
+				Type:             provider.ChunkTypeToolInputDelta,
+				ID:               toolCallID,
+				Text:             argsJSON,
+				ProviderMetadata: sigMeta,
+			},
+			&provider.StreamChunk{
+				Type:             provider.ChunkTypeToolInputEnd,
+				ToolCall:         &types.ToolCall{ID: toolCallID},
+				ProviderMetadata: sigMeta,
+			},
+			&provider.StreamChunk{
+				Type: provider.ChunkTypeToolCall,
+				ToolCall: &types.ToolCall{
+					ID:               toolCallID,
+					ToolName:         toolName,
+					Arguments:        args,
+					RawArguments:     argsJSON,
+					ThoughtSignature: part.ThoughtSignature,
+				},
+				ProviderMetadata: sigMeta,
+			},
+		)
+		s.hasToolCalls = true
+
+	case isNoArgsCompleteCall:
+		toolCallID := fc.ID
+		if toolCallID == "" {
+			toolCallID = s.generateID()
+		}
+		toolName := fc.Name
+
+		s.chunkBuffer = append(s.chunkBuffer,
+			&provider.StreamChunk{
+				Type:             provider.ChunkTypeToolInputStart,
+				ToolCall:         &types.ToolCall{ID: toolCallID, ToolName: toolName},
+				ProviderMetadata: sigMeta,
+			},
+			&provider.StreamChunk{
+				Type:             provider.ChunkTypeToolInputEnd,
+				ToolCall:         &types.ToolCall{ID: toolCallID},
+				ProviderMetadata: sigMeta,
+			},
+			&provider.StreamChunk{
+				Type: provider.ChunkTypeToolCall,
+				ToolCall: &types.ToolCall{
+					ID:               toolCallID,
+					ToolName:         toolName,
+					Arguments:        map[string]interface{}{},
+					RawArguments:     "{}",
+					ThoughtSignature: part.ThoughtSignature,
+				},
+				ProviderMetadata: sigMeta,
+			},
+		)
+		s.hasToolCalls = true
+	}
+}
+
+// applyPartialArgsAndMaybeFinish feeds partialArgs into accumulator, emits
+// the resulting tool-input-delta (if non-empty), and finishes the streaming
+// tool call when neither the functionCall-level willContinue nor any
+// individual partial arg's willContinue is true.
+func (s *stream) applyPartialArgsAndMaybeFinish(accumulator *GoogleJSONAccumulator, toolCallID string, partialArgs []PartialArg, functionCallWillContinue bool, sigMeta json.RawMessage) {
+	result := accumulator.ProcessPartialArgs(partialArgs)
+	if result.TextDelta != "" {
+		s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
+			Type:             provider.ChunkTypeToolInputDelta,
+			ID:               toolCallID,
+			Text:             result.TextDelta,
+			ProviderMetadata: sigMeta,
 		})
 	}
 
-	argsJSON, _ := json.Marshal(part.FunctionCall.Args)
+	allArgsDone := true
+	for _, arg := range partialArgs {
+		if arg.WillContinue != nil && *arg.WillContinue {
+			allArgsDone = false
+			break
+		}
+	}
 
-	s.chunkBuffer = append(s.chunkBuffer,
-		&provider.StreamChunk{
-			Type: provider.ChunkTypeToolInputStart,
-			ToolCall: &types.ToolCall{
-				ID:       toolCallID,
-				ToolName: part.FunctionCall.Name,
-			},
-			ProviderMetadata: sigMeta,
-		},
-		&provider.StreamChunk{
-			Type:             provider.ChunkTypeToolInputDelta,
-			ID:               toolCallID,
-			Text:             string(argsJSON),
-			ProviderMetadata: sigMeta,
-		},
-		&provider.StreamChunk{
-			Type:             provider.ChunkTypeToolInputEnd,
-			ToolCall:         &types.ToolCall{ID: toolCallID},
-			ProviderMetadata: sigMeta,
-		},
-		&provider.StreamChunk{
-			Type: provider.ChunkTypeToolCall,
-			ToolCall: &types.ToolCall{
-				ID:               toolCallID,
-				ToolName:         part.FunctionCall.Name,
-				Arguments:        part.FunctionCall.Args,
-				ThoughtSignature: part.ThoughtSignature,
-			},
-			ProviderMetadata: sigMeta,
-		},
-	)
+	if !functionCallWillContinue && allArgsDone {
+		s.finishActiveStreamingToolCall()
+	}
+}
+
+// completeCallArgsJSON returns the JSON text for a single-chunk complete
+// function call's arguments, preserving the original wire key order (TS:
+// `JSON.stringify(part.functionCall.args ?? {})`, where args was already
+// parsed from JSON text that preserves object key insertion order).
+func completeCallArgsJSON(fc *FunctionCall) string {
+	if fc.ArgsIsString {
+		return fc.ArgsString
+	}
+	if !fc.ArgsSet {
+		return "{}"
+	}
+	tree, err := decodeOrderedJSON(fc.ArgsRaw)
+	if err != nil {
+		return marshalJSONCompact(fc.Args)
+	}
+	return marshalOrdered(tree)
 }

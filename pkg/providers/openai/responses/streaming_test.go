@@ -9,7 +9,7 @@ import (
 
 // TestCompactionEventToChunk_EmitsCustomContent verifies that a compaction event
 // from the Responses API streaming parser is converted to a CustomContent chunk
-// with Kind "openai-compaction" and the correct metadata fields.
+// with Kind "openai.compaction" and the correct metadata fields.
 func TestCompactionEventToChunk_EmitsCustomContent(t *testing.T) {
 	event := CompactionEvent{
 		Type:             "compaction",
@@ -26,8 +26,8 @@ func TestCompactionEventToChunk_EmitsCustomContent(t *testing.T) {
 	if chunk.CustomContent == nil {
 		t.Fatal("chunk.CustomContent is nil")
 	}
-	if chunk.CustomContent.Kind != "openai-compaction" {
-		t.Errorf("Kind = %q, want %q", chunk.CustomContent.Kind, "openai-compaction")
+	if chunk.CustomContent.Kind != "openai.compaction" {
+		t.Errorf("Kind = %q, want %q", chunk.CustomContent.Kind, "openai.compaction")
 	}
 	if chunk.CustomContent.ProviderMetadata == nil {
 		t.Fatal("ProviderMetadata is nil")

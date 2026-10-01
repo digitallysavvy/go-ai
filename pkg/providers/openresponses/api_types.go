@@ -1,5 +1,7 @@
 package openresponses
 
+import "encoding/json"
+
 // OpenResponsesRequestBody represents the request body for the Open Responses API
 type OpenResponsesRequestBody struct {
 	// Model is the model ID to use (e.g., "llama-2-7b", "mistral-7b")
@@ -50,7 +52,17 @@ type FunctionTool struct {
 	Name        string                 `json:"name"`
 	Description string                 `json:"description,omitempty"`
 	Parameters  map[string]interface{} `json:"parameters,omitempty"`
-	Strict      bool                   `json:"strict,omitempty"`
+	Strict      *bool                  `json:"strict,omitempty"`
+}
+
+// CustomToolItem represents a caller-executed "custom" tool definition sent
+// in the request `tools` array, matched via Config.CustomToolID. Mirrors the
+// TS Open Responses `CustomTool` wire shape (type/name/description/format).
+type CustomToolItem struct {
+	Type        string                 `json:"type"`
+	Name        string                 `json:"name"`
+	Description string                 `json:"description,omitempty"`
+	Format      map[string]interface{} `json:"format,omitempty"`
 }
 
 // Message item types for input
@@ -59,13 +71,21 @@ type FunctionTool struct {
 // Used to forward reasoning blocks from previous response turns back to the API
 // so multi-turn reasoning works when store=false or itemId is unavailable (#12869).
 type ReasoningInputItem struct {
-	Type             string        `json:"type"`
-	EncryptedContent string        `json:"encrypted_content,omitempty"`
-	Summary          []SummaryPart `json:"summary,omitempty"`
+	Type             string              `json:"type"`
+	ID               string              `json:"id,omitempty"`
+	EncryptedContent string              `json:"encrypted_content,omitempty"`
+	Summary          []SummaryPart       `json:"summary,omitempty"`
+	Content          []ReasoningTextPart `json:"content,omitempty"`
 }
 
 // SummaryPart is a single entry in a reasoning item's summary array.
 type SummaryPart struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+// ReasoningTextPart is a single entry in a reasoning item's content array.
+type ReasoningTextPart struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
 }
@@ -92,10 +112,25 @@ type InputImageContent struct {
 	Detail   string `json:"detail,omitempty"`
 }
 
+// InputFileContent represents non-image file input.
+type InputFileContent struct {
+	Type     string `json:"type"`
+	FileURL  string `json:"file_url,omitempty"`
+	FileID   string `json:"file_id,omitempty"`
+	FileData string `json:"file_data,omitempty"`
+	Filename string `json:"filename,omitempty"`
+}
+
 // OutputTextContent represents text output
 type OutputTextContent struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
+
+	// Annotations and Logprobs are only populated when replaying assistant
+	// history under strictResponseInput, mirroring the TS SDK's complete
+	// output-text item shape.
+	Annotations []Annotation  `json:"annotations,omitempty"`
+	Logprobs    []interface{} `json:"logprobs,omitempty"`
 }
 
 // FunctionCallItem represents a function call
@@ -104,6 +139,7 @@ type FunctionCallItem struct {
 	CallID    string `json:"call_id"`
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
+	Namespace string `json:"namespace,omitempty"`
 	ID        string `json:"id,omitempty"`
 	Status    string `json:"status,omitempty"`
 }
@@ -115,6 +151,31 @@ type FunctionCallOutputItem struct {
 	Output interface{} `json:"output"`
 	ID     string      `json:"id,omitempty"`
 	Status string      `json:"status,omitempty"`
+}
+
+// CustomToolCallItem replays a caller-executed "custom" tool call back into
+// request input, matched via Config.CustomToolID. Mirrors the TS Open
+// Responses `custom_tool_call` request input item
+// (CustomToolCallItemParam): id?/call_id/name/input, where Input is the raw
+// (unescaped) text the model originally produced.
+type CustomToolCallItem struct {
+	Type   string `json:"type"`
+	ID     string `json:"id,omitempty"`
+	CallID string `json:"call_id"`
+	Name   string `json:"name"`
+	Input  string `json:"input"`
+}
+
+// CustomToolCallOutputItem replays a caller-executed "custom" tool result
+// back into request input, matched via Config.CustomToolID. Mirrors the TS
+// Open Responses `custom_tool_call_output` request input item
+// (CustomToolCallOutputItemParam): id?/call_id/output, using the same
+// Output shape as FunctionCallOutputItem.
+type CustomToolCallOutputItem struct {
+	Type   string      `json:"type"`
+	CallID string      `json:"call_id"`
+	Output interface{} `json:"output"`
+	ID     string      `json:"id,omitempty"`
 }
 
 // OpenResponsesResponse represents the non-streaming response
@@ -159,13 +220,34 @@ type OutputItem struct {
 	CallID    string `json:"call_id,omitempty"`
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
 
 	// For custom_tool_call type
 	Input string `json:"input,omitempty"`
 
 	// For reasoning type
-	Summary           []ContentPart `json:"summary,omitempty"`
-	EncryptedContent  string        `json:"encrypted_content,omitempty"`
+	Summary          []ContentPart `json:"summary,omitempty"`
+	EncryptedContent string        `json:"encrypted_content,omitempty"`
+
+	// Raw preserves this item's original JSON bytes, including any fields
+	// not modeled above (e.g. a namespaced Open Responses extension item's
+	// custom fields). Used for extension item decode/replay (row 9a68261,
+	// OR-EXT). Populated by UnmarshalJSON.
+	Raw json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON decodes the known OutputItem fields via a type alias (so the
+// default struct-tag-driven decoding still applies), then separately
+// preserves the item's original bytes in Raw.
+func (o *OutputItem) UnmarshalJSON(data []byte) error {
+	type outputItemAlias OutputItem
+	var alias outputItemAlias
+	if err := json.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+	*o = OutputItem(alias)
+	o.Raw = append(json.RawMessage(nil), data...)
+	return nil
 }
 
 // ContentPart represents a part of message content
@@ -215,22 +297,50 @@ type IncompleteDetails struct {
 type ResponseError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+
+	// StatusCode is an endpoint-specific HTTP status carried inside the
+	// error payload itself (e.g. QuiverAI's `error.status_code`), distinct
+	// from the transport-level HTTP status of the response envelope. Used
+	// by Config.GetResponseErrorMetadata to classify retryability.
+	StatusCode *int `json:"status_code,omitempty"`
 }
 
 // Streaming event types
 
 // StreamEvent represents a server-sent event
 type StreamEvent struct {
-	Type           string          `json:"type"`
-	SequenceNumber int             `json:"sequence_number,omitempty"`
+	Type           string                 `json:"type"`
+	SequenceNumber int                    `json:"sequence_number,omitempty"`
 	Response       *OpenResponsesResponse `json:"response,omitempty"`
-	OutputIndex    int             `json:"output_index,omitempty"`
-	Item           *OutputItem     `json:"item,omitempty"`
-	ItemID         string          `json:"item_id,omitempty"`
-	ContentIndex   int             `json:"content_index,omitempty"`
-	Delta          string          `json:"delta,omitempty"`
-	Text           string          `json:"text,omitempty"`
-	CallID         string          `json:"call_id,omitempty"`
-	Arguments      string          `json:"arguments,omitempty"`
-	Error          *ResponseError  `json:"error,omitempty"`
+	OutputIndex    int                    `json:"output_index,omitempty"`
+	Item           *OutputItem            `json:"item,omitempty"`
+	ItemID         string                 `json:"item_id,omitempty"`
+	ContentIndex   int                    `json:"content_index,omitempty"`
+	Delta          string                 `json:"delta,omitempty"`
+	Text           string                 `json:"text,omitempty"`
+	CallID         string                 `json:"call_id,omitempty"`
+	Arguments      string                 `json:"arguments,omitempty"`
+	Input          string                 `json:"input,omitempty"`
+	Error          *ResponseError         `json:"error,omitempty"`
+
+	// Raw preserves this event's original JSON bytes, including any fields
+	// not modeled above (e.g. a namespaced Open Responses extension event's
+	// custom fields). Used for extension event decode (row 9a68261,
+	// OR-EXT). Populated by UnmarshalJSON; left nil for StreamEvent values
+	// constructed directly (e.g. in tests) rather than decoded from JSON.
+	Raw json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON decodes the known StreamEvent fields via a type alias (so
+// the default struct-tag-driven decoding still applies), then separately
+// preserves the event's original bytes in Raw.
+func (e *StreamEvent) UnmarshalJSON(data []byte) error {
+	type streamEventAlias StreamEvent
+	var alias streamEventAlias
+	if err := json.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+	*e = StreamEvent(alias)
+	e.Raw = append(json.RawMessage(nil), data...)
+	return nil
 }

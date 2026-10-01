@@ -28,7 +28,7 @@ func NewImageModel(provider *Provider, modelID string) *ImageModel {
 
 // SpecificationVersion returns the specification version
 func (m *ImageModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name

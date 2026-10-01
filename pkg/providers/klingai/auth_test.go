@@ -202,6 +202,165 @@ func TestBase64urlEncode(t *testing.T) {
 	})
 }
 
+// TestResolveKlingAIAuthToken ports klingai-auth.test.ts's
+// "resolveKlingAIAuthToken" describe block, covering the single-API-key /
+// legacy-pair precedence added in TS 29a7a58.
+func TestResolveKlingAIAuthToken(t *testing.T) {
+	t.Run("returns the api key verbatim when passed explicitly", func(t *testing.T) {
+		token, err := resolveKlingAIAuthToken("test-api-key", "", "")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if token != "test-api-key" {
+			t.Errorf("token = %q, want %q", token, "test-api-key")
+		}
+	})
+
+	t.Run("trims the api key", func(t *testing.T) {
+		token, err := resolveKlingAIAuthToken("  test-api-key  ", "", "")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if token != "test-api-key" {
+			t.Errorf("token = %q, want %q", token, "test-api-key")
+		}
+	})
+
+	t.Run("loads the api key from the environment", func(t *testing.T) {
+		t.Setenv("KLINGAI_API_KEY", "env-api-key")
+		token, err := resolveKlingAIAuthToken("", "", "")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if token != "env-api-key" {
+			t.Errorf("token = %q, want %q", token, "env-api-key")
+		}
+	})
+
+	t.Run("prefers an explicit api key over the environment variable", func(t *testing.T) {
+		t.Setenv("KLINGAI_API_KEY", "env-api-key")
+		token, err := resolveKlingAIAuthToken("explicit-api-key", "", "")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if token != "explicit-api-key" {
+			t.Errorf("token = %q, want %q", token, "explicit-api-key")
+		}
+	})
+
+	t.Run("prefers an explicit api key over explicit legacy credentials", func(t *testing.T) {
+		token, err := resolveKlingAIAuthToken("explicit-api-key", "test-ak", "test-sk")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if token != "explicit-api-key" {
+			t.Errorf("token = %q, want %q", token, "explicit-api-key")
+		}
+	})
+
+	t.Run("prefers explicit legacy credentials over the api key environment variable", func(t *testing.T) {
+		t.Setenv("KLINGAI_API_KEY", "env-api-key")
+		token, err := resolveKlingAIAuthToken("", "test-ak", "test-sk")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		parts := strings.Split(token, ".")
+		if len(parts) != 3 {
+			t.Fatalf("expected a JWT, got %q", token)
+		}
+		payloadJSON, err := base64urlDecode(parts[1])
+		if err != nil {
+			t.Fatalf("failed to decode payload: %v", err)
+		}
+		var payload map[string]interface{}
+		if err := json.Unmarshal(payloadJSON, &payload); err != nil {
+			t.Fatalf("failed to unmarshal payload: %v", err)
+		}
+		if payload["iss"] != "test-ak" {
+			t.Errorf("iss = %v, want %q", payload["iss"], "test-ak")
+		}
+	})
+
+	t.Run("prefers the api key environment variable over legacy environment variables", func(t *testing.T) {
+		t.Setenv("KLINGAI_API_KEY", "env-api-key")
+		t.Setenv("KLINGAI_ACCESS_KEY", "env-access-key")
+		t.Setenv("KLINGAI_SECRET_KEY", "env-secret-key")
+		token, err := resolveKlingAIAuthToken("", "", "")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if token != "env-api-key" {
+			t.Errorf("token = %q, want %q", token, "env-api-key")
+		}
+	})
+
+	t.Run("falls back to a signed JWT when only legacy environment variables are set", func(t *testing.T) {
+		t.Setenv("KLINGAI_ACCESS_KEY", "env-access-key")
+		t.Setenv("KLINGAI_SECRET_KEY", "env-secret-key")
+		token, err := resolveKlingAIAuthToken("", "", "")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		parts := strings.Split(token, ".")
+		if len(parts) != 3 {
+			t.Fatalf("expected a JWT, got %q", token)
+		}
+		payloadJSON, err := base64urlDecode(parts[1])
+		if err != nil {
+			t.Fatalf("failed to decode payload: %v", err)
+		}
+		var payload map[string]interface{}
+		if err := json.Unmarshal(payloadJSON, &payload); err != nil {
+			t.Fatalf("failed to unmarshal payload: %v", err)
+		}
+		if payload["iss"] != "env-access-key" {
+			t.Errorf("iss = %v, want %q", payload["iss"], "env-access-key")
+		}
+	})
+
+	t.Run("ignores a blank api key and falls back to legacy credentials", func(t *testing.T) {
+		t.Setenv("KLINGAI_API_KEY", "   ")
+		t.Setenv("KLINGAI_ACCESS_KEY", "env-access-key")
+		t.Setenv("KLINGAI_SECRET_KEY", "env-secret-key")
+		token, err := resolveKlingAIAuthToken("", "", "")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		parts := strings.Split(token, ".")
+		payloadJSON, err := base64urlDecode(parts[1])
+		if err != nil {
+			t.Fatalf("failed to decode payload: %v", err)
+		}
+		var payload map[string]interface{}
+		if err := json.Unmarshal(payloadJSON, &payload); err != nil {
+			t.Fatalf("failed to unmarshal payload: %v", err)
+		}
+		if payload["iss"] != "env-access-key" {
+			t.Errorf("iss = %v, want %q", payload["iss"], "env-access-key")
+		}
+	})
+
+	t.Run("throws an api-key-centric error when no credentials are available", func(t *testing.T) {
+		_, err := resolveKlingAIAuthToken("", "", "")
+		if err == nil {
+			t.Fatal("expected an error")
+		}
+		if !strings.Contains(err.Error(), "KlingAI API key is missing") ||
+			!strings.Contains(err.Error(), "'apiKey'") ||
+			!strings.Contains(err.Error(), "KLINGAI_API_KEY") {
+			t.Errorf("unexpected error message: %v", err)
+		}
+	})
+
+	t.Run("still reports the missing secret key when only an access key is set", func(t *testing.T) {
+		t.Setenv("KLINGAI_ACCESS_KEY", "env-access-key")
+		_, err := resolveKlingAIAuthToken("", "", "")
+		if err == nil || !strings.Contains(err.Error(), "KlingAI secret key") {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+}
+
 // Helper function to decode base64url
 func base64urlDecode(encoded string) ([]byte, error) {
 	// Add padding if needed

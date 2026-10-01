@@ -1,0 +1,490 @@
+package ai
+
+import (
+	"context"
+	"sync"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+)
+
+// toolApprovalResumeOptions carries the call settings needed to resume tool
+// approvals found at the end of the input messages.
+type toolApprovalResumeOptions struct {
+	messages       []types.Message
+	tools          []types.Tool
+	toolApproval   types.ToolApprovalConfig
+	toolsContext   map[string]interface{}
+	runtimeContext interface{}
+	secret         []byte
+	refine         map[string]ToolInputRefiner
+	usage          *types.Usage
+	callbacks      toolCallEventCallbacks
+	// streaming selects the streamText variant: denied provider-executed
+	// approvals are not answered with execution-denied tool results (they are
+	// forwarded to the provider as approval responses instead), and stream
+	// chunks are produced for every outcome.
+	streaming bool
+}
+
+// toolApprovalResumeResult is the outcome of resuming approvals before the
+// first model call.
+type toolApprovalResumeResult struct {
+	// responseMessages is the initial response (a single tool message) that
+	// is prepended to the call's response messages and appended to the
+	// messages sent to the model.
+	responseMessages []types.Message
+	// chunks are the full-stream parts for the resumed tools (streamText).
+	chunks []provider.StreamChunk
+}
+
+// resumeToolApprovals ports the pre-step approval handling of TS
+// generateText/streamText: collect approval responses from the last tool
+// message, re-validate approved ones (signature, input schema, approval
+// policy), execute approved local tools, report invalid inputs as tool
+// errors, and synthesize execution-denied results for denials.
+func resumeToolApprovals(ctx context.Context, opts toolApprovalResumeOptions) (toolApprovalResumeResult, error) {
+	var out toolApprovalResumeResult
+
+	collected, err := CollectToolApprovals(opts.messages)
+	if err != nil {
+		return out, err
+	}
+	if len(collected.ApprovedToolApprovals) == 0 && len(collected.DeniedToolApprovals) == 0 {
+		return out, nil
+	}
+
+	localApproved := make([]CollectedToolApproval, 0, len(collected.ApprovedToolApprovals))
+	for _, approval := range collected.ApprovedToolApprovals {
+		if !approval.ToolCall.ProviderExecuted {
+			localApproved = append(localApproved, approval)
+		}
+	}
+	validated, err := ValidateApprovedToolApprovals(ctx, ValidateApprovedToolApprovalsOptions{
+		ApprovedToolApprovals: localApproved,
+		Tools:                 opts.tools,
+		ToolApproval:          opts.toolApproval,
+		Messages:              opts.messages,
+		ToolsContext:          opts.toolsContext,
+		RuntimeContext:        opts.runtimeContext,
+		ToolApprovalSecret:    opts.secret,
+		RefineToolInput:       opts.refine,
+	})
+	if err != nil {
+		return out, err
+	}
+
+	var denied []CollectedToolApproval
+	var deniedProviderExecuted []CollectedToolApproval
+	for _, approval := range collected.DeniedToolApprovals {
+		if opts.streaming && approval.ToolCall.ProviderExecuted {
+			deniedProviderExecuted = append(deniedProviderExecuted, approval)
+			continue
+		}
+		denied = append(denied, approval)
+	}
+	denied = append(denied, validated.DeniedToolApprovals...)
+	var deniedWithoutResults []CollectedToolApproval
+	for _, approval := range denied {
+		if approval.ExistingToolResult == nil {
+			deniedWithoutResults = append(deniedWithoutResults, approval)
+		}
+	}
+
+	if opts.streaming {
+		for _, approval := range append(append([]CollectedToolApproval(nil), denied...), deniedProviderExecuted...) {
+			call := approval.ToolCall
+			out.chunks = append(out.chunks, provider.StreamChunk{
+				Type: provider.ChunkTypeToolOutputDenied,
+				ToolResult: &types.ToolResult{
+					ToolCallID: call.ID,
+					ToolName:   call.ToolName,
+					Input:      call.Arguments,
+					Dynamic:    call.Dynamic,
+				},
+			})
+		}
+	}
+
+	var invalidResults []types.ToolResult
+	for _, invalid := range validated.InvalidToolApprovals {
+		call := invalid.ToolCall
+		invalidResults = append(invalidResults, types.ToolResult{
+			ToolCallID:   call.ID,
+			ToolName:     call.ToolName,
+			Title:        call.Title,
+			Input:        call.Arguments,
+			Error:        invalid.Error,
+			ToolMetadata: call.ToolMetadata,
+			Dynamic:      call.Dynamic,
+		})
+	}
+	if opts.streaming {
+		for i := range invalidResults {
+			out.chunks = append(out.chunks, provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &invalidResults[i]})
+		}
+	}
+
+	// Execute approved local tools. Tools that are missing or have no
+	// execute function produce no output (TS executeToolCall returns
+	// undefined for them).
+	var executable []types.ToolCall
+	for _, approval := range validated.ApprovedToolApprovals {
+		tool := findToolForCall(approval.ToolCall, opts.tools)
+		if tool == nil || tool.Execute == nil || tool.ProviderExecuted {
+			continue
+		}
+		executable = append(executable, approval.ToolCall)
+	}
+	var executed []types.ToolResult
+	if len(executable) > 0 {
+		// Approval was already resolved (and re-validated) above, so the
+		// executor must not request approval again.
+		noApproval := types.GenericToolApprovalFunc(func(types.ToolApprovalOptions) types.ToolApprovalResult {
+			return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
+		})
+		if opts.streaming {
+			// TS streamText's initial tool-execution stream runs resumed
+			// approvals in parallel (Promise.all); generateText's resume
+			// stays sequential, matching executeTools elsewhere.
+			executed, err = executeToolsParallel(ctx, executable, opts.tools, opts.runtimeContext, opts.toolsContext, noApproval, opts.usage, opts.callbacks)
+		} else {
+			executed, err = executeTools(ctx, executable, opts.tools, opts.runtimeContext, opts.toolsContext, noApproval, opts.usage, opts.callbacks)
+		}
+		if err != nil {
+			return out, err
+		}
+		if opts.streaming {
+			for i := range executed {
+				out.chunks = append(out.chunks, provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &executed[i]})
+			}
+		}
+	}
+
+	if len(executed) == 0 && len(invalidResults) == 0 && len(deniedWithoutResults) == 0 {
+		return out, nil
+	}
+
+	results := make([]types.ToolResult, 0, len(executed)+len(invalidResults)+len(deniedWithoutResults))
+	results = append(results, executed...)
+	results = append(results, invalidResults...)
+	for _, approval := range deniedWithoutResults {
+		call := approval.ToolCall
+		output := types.ToolResultOutput{
+			Type:   types.ToolResultOutputExecutionDenied,
+			Reason: approval.ApprovalResponse.Reason,
+		}
+		if call.ProviderExecuted {
+			// Provider-executed tools carry the approval ID so the provider
+			// can correlate the denial.
+			output.ProviderOptions = map[string]interface{}{
+				"openai": map[string]interface{}{"approvalId": approval.ApprovalResponse.ApprovalID},
+			}
+		}
+		results = append(results, types.ToolResult{
+			ToolCallID: call.ID,
+			ToolName:   call.ToolName,
+			Input:      call.Arguments,
+			Result:     output,
+		})
+	}
+	out.responseMessages = providerutils.ConvertToResponseMessages(nil, nil, results)
+	return out, nil
+}
+
+// messagesForModel prepares model messages for a language model call the way
+// TS convertToLanguageModelPrompt does for approval parts: tool approval
+// requests are removed from assistant messages, tool approval responses are
+// removed from tool messages unless they belong to provider-executed tools,
+// consecutive tool messages are combined, and empty tool messages dropped.
+func messagesForModel(messages []types.Message) []types.Message {
+	hasApprovalParts := false
+	for _, message := range messages {
+		for _, part := range message.Content {
+			switch part.(type) {
+			case types.ToolApprovalRequestContent, *types.ToolApprovalRequestContent,
+				types.ToolApprovalResponseContent, *types.ToolApprovalResponseContent:
+				hasApprovalParts = true
+			}
+		}
+	}
+	if !hasApprovalParts {
+		return messages
+	}
+
+	// Approval responses without the providerExecuted flag are still kept
+	// when their request references a provider-executed tool call, so
+	// hand-built Go histories keep working with provider-side approvals.
+	providerExecutedCalls := map[string]bool{}
+	approvalToolCall := map[string]string{}
+	for _, message := range messages {
+		if message.Role != types.RoleAssistant {
+			continue
+		}
+		for _, call := range message.ToolCalls {
+			if call.ProviderExecuted {
+				providerExecutedCalls[call.ID] = true
+			}
+		}
+		for _, part := range message.Content {
+			switch p := part.(type) {
+			case types.ToolCallContent:
+				if p.ProviderExecuted {
+					providerExecutedCalls[p.ToolCallID] = true
+				}
+			case *types.ToolCallContent:
+				if p != nil && p.ProviderExecuted {
+					providerExecutedCalls[p.ToolCallID] = true
+				}
+			case types.ToolApprovalRequestContent:
+				approvalToolCall[p.ApprovalID] = normalizeApprovalRequest(p).ToolCallID
+				if p.ToolCall.ProviderExecuted {
+					providerExecutedCalls[p.ToolCall.ID] = true
+				}
+			case *types.ToolApprovalRequestContent:
+				if p != nil {
+					approvalToolCall[p.ApprovalID] = normalizeApprovalRequest(*p).ToolCallID
+					if p.ToolCall.ProviderExecuted {
+						providerExecutedCalls[p.ToolCall.ID] = true
+					}
+				}
+			}
+		}
+	}
+	keepResponse := func(response types.ToolApprovalResponseContent) (types.ToolApprovalResponseContent, bool) {
+		if response.ProviderExecuted {
+			return response, true
+		}
+		if providerExecutedCalls[approvalToolCall[response.ApprovalID]] || response.ToolCall.ProviderExecuted {
+			response.ProviderExecuted = true
+			return response, true
+		}
+		return response, false
+	}
+
+	out := make([]types.Message, 0, len(messages))
+	for _, message := range messages {
+		switch message.Role {
+		case types.RoleAssistant:
+			filtered := make([]types.ContentPart, 0, len(message.Content))
+			for _, part := range message.Content {
+				switch part.(type) {
+				case types.ToolApprovalRequestContent, *types.ToolApprovalRequestContent:
+					continue
+				}
+				filtered = append(filtered, part)
+			}
+			message.Content = filtered
+			out = append(out, message)
+		case types.RoleTool:
+			filtered := make([]types.ContentPart, 0, len(message.Content))
+			for _, part := range message.Content {
+				switch p := part.(type) {
+				case types.ToolApprovalResponseContent:
+					if kept, ok := keepResponse(p); ok {
+						filtered = append(filtered, kept)
+					}
+					continue
+				case *types.ToolApprovalResponseContent:
+					if p != nil {
+						if kept, ok := keepResponse(*p); ok {
+							filtered = append(filtered, kept)
+						}
+					}
+					continue
+				}
+				filtered = append(filtered, part)
+			}
+			message.Content = filtered
+			if n := len(out); n > 0 && out[n-1].Role == types.RoleTool && len(out[n-1].ProviderOptions) == 0 && len(message.ProviderOptions) == 0 {
+				merged := append(append([]types.ContentPart(nil), out[n-1].Content...), message.Content...)
+				out[n-1].Content = merged
+				continue
+			}
+			out = append(out, message)
+		default:
+			out = append(out, message)
+		}
+	}
+
+	// Drop tool messages that became empty.
+	final := out[:0]
+	for _, message := range out {
+		if message.Role == types.RoleTool && len(message.Content) == 0 {
+			continue
+		}
+		final = append(final, message)
+	}
+	return final
+}
+
+// inputSchemaInputs maps tool call IDs to their pre-refinement input for calls
+// whose input refinement changed the input. The approval request carries it
+// as inputSchemaInput so revalidation can re-run the refinement (TS
+// to-response-messages / to-ui-message-chunk).
+func inputSchemaInputs(before, after []types.ToolCall) map[string]interface{} {
+	if len(before) == 0 {
+		return nil
+	}
+	original := make(map[string]map[string]interface{}, len(before))
+	for _, call := range before {
+		original[call.ID] = call.Arguments
+	}
+	var out map[string]interface{}
+	for _, call := range after {
+		pre, ok := original[call.ID]
+		if !ok || isDeepEqualJSONData(pre, call.Arguments) {
+			continue
+		}
+		if out == nil {
+			out = map[string]interface{}{}
+		}
+		out[call.ID] = pre
+	}
+	return out
+}
+
+// attachInputSchemaInputs sets InputSchemaInput on approval request parts.
+func attachInputSchemaInputs(parts []types.ContentPart, inputs map[string]interface{}) []types.ContentPart {
+	if len(inputs) == 0 {
+		return parts
+	}
+	for i, part := range parts {
+		request, ok := part.(types.ToolApprovalRequestContent)
+		if !ok {
+			continue
+		}
+		if input, ok := inputs[normalizeApprovalRequest(request).ToolCallID]; ok {
+			request.InputSchemaInput = input
+			parts[i] = request
+		}
+	}
+	return parts
+}
+
+// executeToolsParallel runs each of calls through executeTools independently
+// and concurrently, collecting results in the original call order (TS
+// Promise.all semantics for the initial resumed-approval tool execution in
+// streamText — see collect-tool-approvals.ts / stream-text.ts). Each call
+// gets its own *types.Usage accumulator so concurrent tool Execute functions
+// never race on the same pointer; the totals are merged into usage once every
+// goroutine has finished.
+func executeToolsParallel(ctx context.Context, calls []types.ToolCall, tools []types.Tool, runtimeContext interface{}, toolsContext map[string]interface{}, toolApproval interface{}, usage *types.Usage, callbacks toolCallEventCallbacks) ([]types.ToolResult, error) {
+	if len(calls) <= 1 {
+		return executeTools(ctx, calls, tools, runtimeContext, toolsContext, toolApproval, usage, callbacks)
+	}
+
+	perCallResults := make([][]types.ToolResult, len(calls))
+	perCallUsage := make([]types.Usage, len(calls))
+	errs := make([]error, len(calls))
+
+	var wg sync.WaitGroup
+	wg.Add(len(calls))
+	for i, call := range calls {
+		go func(i int, call types.ToolCall) {
+			defer wg.Done()
+			results, err := executeTools(ctx, []types.ToolCall{call}, tools, runtimeContext, toolsContext, toolApproval, &perCallUsage[i], callbacks)
+			perCallResults[i] = results
+			errs[i] = err
+		}(i, call)
+	}
+	wg.Wait()
+
+	merged := usage.Add(types.Usage{})
+	out := make([]types.ToolResult, 0, len(calls))
+	for i := range calls {
+		merged = merged.Add(perCallUsage[i])
+		out = append(out, perCallResults[i]...)
+	}
+	*usage = merged
+
+	for _, err := range errs {
+		if err != nil {
+			return out, err
+		}
+	}
+	return out, nil
+}
+
+// ResumeToolApprovalsOptions configures ResumeToolApprovals, the exported
+// entry point other packages (e.g. pkg/agent's legacy tool-loop) use to
+// resume tool approvals collected from the tail of a message history:
+// re-validate approved calls (signature, input schema, approval policy),
+// execute approved local tools, report invalid inputs as tool errors, and
+// synthesize execution-denied results for denials.
+type ResumeToolApprovalsOptions struct {
+	// Messages is the input history to scan for a trailing
+	// tool-approval-response message.
+	Messages []types.Message
+	// Tools are the tools available to resolve approved calls against.
+	Tools []types.Tool
+	// ToolApproval configures automatic approval handling.
+	ToolApproval types.ToolApprovalConfig
+	// ToolsContext contains per-tool execution context keyed by tool name.
+	ToolsContext map[string]interface{}
+	// RuntimeContext is user-defined context passed to callbacks and tools.
+	RuntimeContext interface{}
+	// Secret verifies (and, when re-signing, produces) approval signatures.
+	// Nil disables signature verification.
+	Secret []byte
+	// RefineToolInput refines parsed tool inputs by tool name before
+	// re-validation and execution.
+	RefineToolInput map[string]ToolInputRefiner
+	// CallID correlates emitted tool execution events with the caller's call.
+	CallID string
+	// ModelProvider and ModelID identify the model for emitted events.
+	ModelProvider string
+	ModelID       string
+	// OnToolExecutionStart/OnToolExecutionEnd are notified around each
+	// approved tool's execution.
+	OnToolExecutionStart func(ctx context.Context, e OnToolCallStartEvent)
+	OnToolExecutionEnd   func(ctx context.Context, e OnToolCallFinishEvent)
+}
+
+// ResumeToolApprovalsResult is the outcome of ResumeToolApprovals.
+type ResumeToolApprovalsResult struct {
+	// ResponseMessages is the tool message (if any) produced by resuming
+	// approvals: executed results, invalid-input errors, and
+	// execution-denied outputs. Empty when the history had no pending or
+	// resolved approvals to resume.
+	ResponseMessages []types.Message
+	// Usage is the token usage consumed by any tools that ran.
+	Usage types.Usage
+}
+
+// ResumeToolApprovals resumes tool approvals found at the end of messages.
+// It is the exported form of the same logic GenerateText/StreamText apply
+// to their input messages before the first model call, for callers (such as
+// pkg/agent's legacy ToolLoopAgent.Execute/ExecuteWithMessages/GenerateAgent
+// loop) that implement their own generation loop instead of delegating to
+// GenerateText/StreamText (review finding F5,
+// state/parity/sep_23_2026/review-p0-1-p0-2-round1.md).
+func ResumeToolApprovals(ctx context.Context, opts ResumeToolApprovalsOptions) (ResumeToolApprovalsResult, error) {
+	var usage types.Usage
+	resumed, err := resumeToolApprovals(ctx, toolApprovalResumeOptions{
+		messages:       opts.Messages,
+		tools:          opts.Tools,
+		toolApproval:   opts.ToolApproval,
+		toolsContext:   opts.ToolsContext,
+		runtimeContext: opts.RuntimeContext,
+		secret:         opts.Secret,
+		refine:         opts.RefineToolInput,
+		usage:          &usage,
+		callbacks: toolCallEventCallbacks{
+			callID:              opts.CallID,
+			onStart:             opts.OnToolExecutionStart,
+			onFinish:            opts.OnToolExecutionEnd,
+			modelProvider:       opts.ModelProvider,
+			modelID:             opts.ModelID,
+			messages:            opts.Messages,
+			experimentalContext: opts.RuntimeContext,
+			runtimeContext:      opts.RuntimeContext,
+			toolsContext:        opts.ToolsContext,
+		},
+	})
+	if err != nil {
+		return ResumeToolApprovalsResult{}, err
+	}
+	return ResumeToolApprovalsResult{ResponseMessages: resumed.responseMessages, Usage: usage}, nil
+}

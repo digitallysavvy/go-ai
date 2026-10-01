@@ -5,9 +5,9 @@ description: An overview of foundational concepts critical to understanding the 
 
 # Overview
 
-> **Note:** This page is a beginner-friendly introduction to high-level artificial intelligence (AI) concepts. To dive right into implementing the Go AI SDK, feel free to skip ahead to the [Generating Text guide](../03-ai-sdk-core/02-generating-text.md) or learn about our [supported models and providers](./02-providers-and-models.md).
+> **Note:** This page is a beginner-friendly introduction to high-level artificial intelligence (AI) concepts. To dive right into implementing the Go AI SDK, feel free to skip ahead to the [Generating Text guide](../03-ai-sdk-core/05-generating-text.mdx) or learn about our [supported models and providers](./02-providers-and-models.mdx).
 
-The Go AI SDK standardizes integrating artificial intelligence (AI) models across [supported providers](./02-providers-and-models.md). This enables developers to focus on building great AI applications in Go, not waste time on technical details.
+The Go AI SDK standardizes integrating artificial intelligence (AI) models across [supported providers](./02-providers-and-models.mdx). This enables developers to focus on building great AI applications in Go, not waste time on technical details.
 
 For example, here's how you can generate text with various models using the Go AI SDK:
 
@@ -38,7 +38,7 @@ func main() {
     claude, _ := anthropicProvider.LanguageModel("claude-3-sonnet-20240229")
 
     // Google
-    googleProvider := google.New(google.Config{APIKey: os.Getenv("GOOGLE_API_KEY")})
+    googleProvider := google.New(google.Config{APIKey: os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY")})
     gemini, _ := googleProvider.LanguageModel("gemini-pro")
 
     // Same API for all providers
@@ -97,7 +97,7 @@ In the next section, you will learn about the difference between model providers
 
 ## See Also
 
-- [Providers and Models](./02-providers-and-models.md)
-- [Prompts](./03-prompts.md)
-- [Tools](./04-tools.md)
-- [Streaming](./05-streaming.md)
+- [Providers and Models](./02-providers-and-models.mdx)
+- [Prompts](./03-prompts.mdx)
+- [Tools](./04-tools.mdx)
+- [Streaming](./05-streaming.mdx)

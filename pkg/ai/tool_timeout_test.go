@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -62,6 +63,13 @@ func TestToolTimeoutGlobalMs(t *testing.T) {
 	if err == nil && capturedErr == nil {
 		t.Fatal("expected a timeout error but got none")
 	}
+	var timeoutErr *TimeoutError
+	if !errors.As(capturedErr, &timeoutErr) {
+		t.Fatalf("expected captured TimeoutError, got %T: %v", capturedErr, capturedErr)
+	}
+	if timeoutErr.Reason != TimeoutReasonTool {
+		t.Fatalf("Reason = %q, want %q", timeoutErr.Reason, TimeoutReasonTool)
+	}
 }
 
 // TestToolTimeoutPerToolOverride verifies that a per-tool entry in Tools
@@ -69,8 +77,8 @@ func TestToolTimeoutGlobalMs(t *testing.T) {
 func TestToolTimeoutPerToolOverride(t *testing.T) {
 	t.Parallel()
 
-	globalTimeout := 20 * time.Millisecond  // very short global timeout
-	overrideTimeout := 5 * time.Second      // generous per-tool override
+	globalTimeout := 20 * time.Millisecond // very short global timeout
+	overrideTimeout := 5 * time.Second     // generous per-tool override
 
 	model := &testutil.MockLanguageModel{
 		DoGenerateFunc: func(_ context.Context, _ *provider.GenerateOptions) (*types.GenerateResult, error) {
@@ -209,5 +217,88 @@ func TestGetToolTimeout(t *testing.T) {
 	emptyTC := &TimeoutConfig{}
 	if emptyTC.GetToolTimeout("any") != nil {
 		t.Error("GetToolTimeout on empty config should return nil")
+	}
+}
+
+// TestToolTimeout_OuterCancellationNotMislabeledAsToolTimeout is the
+// permanent regression test for R1's "tool-timeout mislabeling on outer
+// cancellation" Unverified item (bug-review/R1.md): a per-tool timeout's
+// execCtx is a child of the outer call ctx, so when the outer ctx is
+// independently cancelled (e.g. the caller aborts the whole GenerateText
+// call) while a tool is still running -- well before that tool's own,
+// much longer per-tool timeout would ever fire -- execCtx.Err() becomes
+// context.Canceled (inherited from the parent), not context.DeadlineExceeded.
+// generate.go used to check `execCtx.Err() != nil` to decide "did this tool
+// time out", which could not tell the two apart and wrapped a plain upstream
+// cancellation as TimeoutReasonTool. It must only do so when the tool's own
+// deadline is what actually elapsed.
+func TestToolTimeout_OuterCancellationNotMislabeledAsToolTimeout(t *testing.T) {
+	t.Parallel()
+
+	// Generous per-tool timeout: it must never fire during this test. If
+	// the outer cancellation were ever wrongly attributed to it, this wide
+	// margin makes that unambiguous.
+	toolTimeout := 5 * time.Second
+
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(_ context.Context, _ *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				ToolCalls:    []types.ToolCall{{ID: "tc1", ToolName: "ctxAwareTool", Arguments: map[string]interface{}{}}},
+				FinishReason: types.FinishReasonToolCalls,
+			}, nil
+		},
+	}
+
+	toolStarted := make(chan struct{})
+	ctxAwareTool := types.Tool{
+		Name: "ctxAwareTool",
+		Execute: func(ctx context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			close(toolStarted)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+
+	var toolErrMu sync.Mutex
+	var toolErr error
+
+	outerCtx, outerCancel := context.WithCancel(context.Background())
+	go func() {
+		<-toolStarted
+		// Cancel the OUTER call context directly -- not the per-tool
+		// timeout -- simulating an upstream abort unrelated to the tool's
+		// own (much longer) timeout budget.
+		outerCancel()
+	}()
+
+	_, err := GenerateText(outerCtx, GenerateTextOptions{
+		Model:    model,
+		Prompt:   "go",
+		Tools:    []types.Tool{ctxAwareTool},
+		StopWhen: []StopCondition{StepCountIs(1)},
+		Timeout:  &TimeoutConfig{Tools: map[string]time.Duration{"ctxAwareTool": toolTimeout}},
+		OnToolCallFinish: func(_ context.Context, e OnToolCallFinishEvent) {
+			toolErrMu.Lock()
+			toolErr = e.Error
+			toolErrMu.Unlock()
+		},
+	})
+
+	toolErrMu.Lock()
+	capturedErr := toolErr
+	toolErrMu.Unlock()
+
+	if err == nil && capturedErr == nil {
+		t.Fatal("expected an error from the outer cancellation but got none")
+	}
+	var timeoutErr *TimeoutError
+	if errors.As(capturedErr, &timeoutErr) && timeoutErr.Reason == TimeoutReasonTool {
+		t.Fatalf("outer context cancellation was mislabeled as TimeoutReasonTool: %v", timeoutErr)
+	}
+	if errors.As(err, &timeoutErr) && timeoutErr.Reason == TimeoutReasonTool {
+		t.Fatalf("outer context cancellation was mislabeled as TimeoutReasonTool: %v", timeoutErr)
+	}
+	if !errors.Is(capturedErr, context.Canceled) && !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled to surface somewhere; toolErr=%v err=%v", capturedErr, err)
 	}
 }

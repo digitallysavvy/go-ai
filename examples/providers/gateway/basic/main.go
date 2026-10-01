@@ -30,11 +30,8 @@ func main() {
 	}
 
 	fmt.Println("\nAvailable Providers and Models:")
-	for _, prov := range metadata.Providers {
-		fmt.Printf("\n%s:\n", prov.Name)
-		for _, model := range prov.Models {
-			fmt.Printf("  - %s (%s)\n", model.Name, model.ID)
-		}
+	for _, model := range metadata.Models {
+		fmt.Printf("  - %s (%s) via %s\n", model.Name, model.ID, model.Specification.Provider)
 	}
 
 	// Check credits
@@ -43,8 +40,8 @@ func main() {
 	if err != nil {
 		log.Printf("Warning: Failed to get credits: %v", err)
 	} else {
-		fmt.Printf("Available Credits: %d\n", credits.Available)
-		fmt.Printf("Used Credits: %d\n", credits.Used)
+		fmt.Printf("Balance: %s\n", credits.Balance)
+		fmt.Printf("Total Used: %s\n", credits.TotalUsed)
 	}
 
 	// Create a language model
@@ -60,8 +57,8 @@ func main() {
 
 	// Generate text
 	result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
-		Model: model,
-		Prompt: "Explain what the AI Gateway is in one paragraph.",
+		Model:     model,
+		Prompt:    "Explain what the AI Gateway is in one paragraph.",
 		MaxTokens: ptr(200),
 	})
 	if err != nil {

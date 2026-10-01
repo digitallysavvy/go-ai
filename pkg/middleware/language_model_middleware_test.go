@@ -60,6 +60,46 @@ func TestWrapLanguageModel_TransformParams(t *testing.T) {
 	}
 }
 
+func TestWrapLanguageModel_TransformParamsDoStream(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{}
+	temp := 0.33
+	middleware := &LanguageModelMiddleware{
+		TransformParams: func(ctx context.Context, callType string, params *provider.GenerateOptions, model provider.LanguageModel) (*provider.GenerateOptions, error) {
+			if callType != "stream" {
+				t.Fatalf("callType = %q, want stream", callType)
+			}
+			cloned := *params
+			cloned.Temperature = &temp
+			return &cloned, nil
+		},
+		WrapStream: func(ctx context.Context, doGenerate func() (*types.GenerateResult, error), doStream func() (provider.TextStream, error), params *provider.GenerateOptions, model provider.LanguageModel) (provider.TextStream, error) {
+			if params.Temperature == nil || *params.Temperature != temp {
+				t.Fatalf("WrapStream params temperature = %#v, want %f", params.Temperature, temp)
+			}
+			return doStream()
+		},
+	}
+
+	wrapped := WrapLanguageModel(model, []*LanguageModelMiddleware{middleware}, nil, nil)
+	originalTemp := 0.9
+	opts := &provider.GenerateOptions{
+		Temperature: &originalTemp,
+	}
+	_, err := wrapped.DoStream(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(model.StreamCalls) != 1 {
+		t.Fatalf("expected 1 stream call, got %d", len(model.StreamCalls))
+	}
+	if model.StreamCalls[0].Temperature == nil || *model.StreamCalls[0].Temperature != temp {
+		t.Fatalf("stream temperature = %#v, want %f", model.StreamCalls[0].Temperature, temp)
+	}
+}
+
 func TestWrapLanguageModel_WrapGenerate(t *testing.T) {
 	t.Parallel()
 
@@ -240,6 +280,24 @@ func TestWrappedModel_SpecificationVersion(t *testing.T) {
 	}
 }
 
+type specLanguageModel struct {
+	testutil.MockLanguageModel
+	spec string
+}
+
+func (m *specLanguageModel) SpecificationVersion() string { return m.spec }
+
+func TestWrappedModel_PreservesSpecificationVersion(t *testing.T) {
+	t.Parallel()
+
+	model := &specLanguageModel{spec: "v4"}
+	wrapped := WrapLanguageModel(model, []*LanguageModelMiddleware{{}}, nil, nil)
+
+	if wrapped.SpecificationVersion() != "v4" {
+		t.Errorf("expected wrapped model to preserve 'v4', got %s", wrapped.SpecificationVersion())
+	}
+}
+
 func TestWrapLanguageModel_ProviderIDParam(t *testing.T) {
 	t.Parallel()
 
@@ -332,5 +390,77 @@ func TestWrapLanguageModel_NoWrapStream(t *testing.T) {
 
 	if stream == nil {
 		t.Error("expected non-nil stream")
+	}
+}
+
+// supportedURLsLanguageModel is a mock LanguageModel that implements the
+// optional SupportedURLs() capability, used to test A2-4 forwarding.
+type supportedURLsLanguageModel struct {
+	testutil.MockLanguageModel
+	urls map[string][]string
+}
+
+func (m *supportedURLsLanguageModel) SupportedURLs() map[string][]string {
+	return m.urls
+}
+
+// A2-4: wrapping a model that implements the optional SupportedURLs()
+// capability with no OverrideSupportedURLs middleware hook should forward
+// the wrapped model's own SupportedURLs(), matching TS's
+// `supportedUrls: overrideSupportedUrls?.({ model }) ?? model.supportedUrls`.
+func TestWrapLanguageModel_SupportedURLs_ForwardsWrappedModel(t *testing.T) {
+	t.Parallel()
+
+	want := map[string][]string{"image/*": {"^https://.*"}}
+	model := &supportedURLsLanguageModel{urls: want}
+
+	wrapped := WrapLanguageModel(model, []*LanguageModelMiddleware{{}}, nil, nil)
+
+	withURLs, ok := wrapped.(interface{ SupportedURLs() map[string][]string })
+	if !ok {
+		t.Fatal("expected wrapped model to expose SupportedURLs()")
+	}
+	got := withURLs.SupportedURLs()
+	if len(got) != 1 || len(got["image/*"]) != 1 || got["image/*"][0] != "^https://.*" {
+		t.Errorf("SupportedURLs() = %v, want %v", got, want)
+	}
+}
+
+// A2-4: OverrideSupportedURLs, when set, takes precedence over the wrapped
+// model's own SupportedURLs().
+func TestWrapLanguageModel_OverrideSupportedURLs(t *testing.T) {
+	t.Parallel()
+
+	model := &supportedURLsLanguageModel{urls: map[string][]string{"image/*": {"^https://.*"}}}
+
+	middleware := &LanguageModelMiddleware{
+		OverrideSupportedURLs: func(model provider.LanguageModel) map[string][]string {
+			return map[string][]string{"application/pdf": {"^https://.*"}}
+		},
+	}
+	wrapped := WrapLanguageModel(model, []*LanguageModelMiddleware{middleware}, nil, nil)
+
+	withURLs := wrapped.(interface{ SupportedURLs() map[string][]string })
+	got := withURLs.SupportedURLs()
+	if len(got) != 1 || len(got["application/pdf"]) != 1 {
+		t.Errorf("SupportedURLs() = %v, want override to take precedence", got)
+	}
+}
+
+// A2-4: a wrapped model that does NOT implement the optional SupportedURLs()
+// capability should report nil (no supported URLs), matching TS's fallback
+// to `model.supportedUrls` being empty/undefined for such models.
+func TestWrapLanguageModel_SupportedURLs_NilWhenNotImplemented(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{}
+	wrapped := WrapLanguageModel(model, []*LanguageModelMiddleware{{}}, nil, nil)
+
+	withURLs, ok := wrapped.(interface{ SupportedURLs() map[string][]string })
+	if !ok {
+		t.Fatal("expected wrapped model to expose SupportedURLs()")
+	}
+	if got := withURLs.SupportedURLs(); got != nil {
+		t.Errorf("SupportedURLs() = %v, want nil", got)
 	}
 }

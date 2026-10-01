@@ -7,20 +7,30 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/middleware"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
 func main() {
+	apiKey := os.Getenv("OPENAI_API_KEY")
+	if apiKey == "" {
+		log.Fatal("OPENAI_API_KEY environment variable is required")
+	}
+
 	// Create OpenAI provider
 	openaiProvider := openai.New(openai.Config{
-		APIKey: "your-api-key-here",
+		APIKey: apiKey,
 	})
 
 	// Get a language model
-	model := openaiProvider.LanguageModel("gpt-4")
+	model, err := openaiProvider.LanguageModel("gpt-4")
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// Apply extractJson middleware
 	// This automatically strips markdown code fences from JSON responses
@@ -37,7 +47,7 @@ func main() {
 	// If the model responds with: ```json\n{"name": "John"}\n```
 	// The middleware will extract: {"name": "John"}
 	result, err := wrappedModel.DoGenerate(context.Background(), &provider.GenerateOptions{
-		Prompt: provider.Prompt{
+		Prompt: types.Prompt{
 			Text: "Generate a JSON object with a name field",
 		},
 	})
@@ -65,7 +75,7 @@ func main() {
 	)
 
 	result2, err := wrappedModel2.DoGenerate(context.Background(), &provider.GenerateOptions{
-		Prompt: provider.Prompt{
+		Prompt: types.Prompt{
 			Text: "Generate another JSON object",
 		},
 	})

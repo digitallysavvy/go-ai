@@ -1,22 +1,30 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providers/gateway/tools"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 const (
 	// DefaultBaseURL is the default AI Gateway API base URL
-	DefaultBaseURL = "https://ai-gateway.vercel.sh/v3/ai"
+	DefaultBaseURL = "https://ai-gateway.vercel.sh/v4/ai"
 
 	// AIGatewayProtocolVersion is the protocol version for the AI Gateway
 	AIGatewayProtocolVersion = "0.0.1"
@@ -25,10 +33,25 @@ const (
 	DefaultMetadataCacheRefresh = 5 * time.Minute
 )
 
+var knownGatewayModelTypes = map[string]struct{}{
+	"embedding":     {},
+	"evaluation":    {},
+	"image":         {},
+	"language":      {},
+	"realtime":      {},
+	"reranking":     {},
+	"speech":        {},
+	"transcription": {},
+	"video":         {},
+}
+
 // Provider implements the provider.Provider interface for AI Gateway
 type Provider struct {
 	config           Config
 	client           *internalhttp.Client
+	baseURL          string
+	headers          map[string]string
+	authResolver     gatewayAuthResolver
 	metadataCache    *MetadataResponse
 	metadataMutex    sync.RWMutex
 	lastFetchTime    time.Time
@@ -36,18 +59,74 @@ type Provider struct {
 	cacheRefreshTime time.Duration
 }
 
+type gatewayAuthResolver func(ctx context.Context) (token string, authMethod string, err error)
+
+type gatewayAuthTransport struct {
+	base     http.RoundTripper
+	resolver gatewayAuthResolver
+}
+
+func (t *gatewayAuthTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	token, authMethod, err := t.resolver(req.Context())
+	if err != nil {
+		return nil, err
+	}
+	clone := req.Clone(req.Context())
+	clone.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+	clone.Header.Set("ai-gateway-auth-method", authMethod)
+	return t.base.RoundTrip(clone)
+}
+
+func newGatewayHTTPClient(baseClient *http.Client, resolver gatewayAuthResolver) *http.Client {
+	var httpClient *http.Client
+	if baseClient != nil {
+		clone := *baseClient
+		httpClient = &clone
+	} else {
+		httpClient = &http.Client{}
+	}
+	baseTransport := http.RoundTripper(http.DefaultTransport)
+	if httpClient.Transport != nil {
+		baseTransport = httpClient.Transport
+	}
+	if transport, ok := baseTransport.(*http.Transport); ok {
+		baseTransport = transport.Clone()
+	}
+	httpClient.Transport = &gatewayAuthTransport{
+		base:     baseTransport,
+		resolver: resolver,
+	}
+	return httpClient
+}
+
+func gatewayRequestID(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if requestID, ok := ctx.Value("x-vercel-id").(string); ok {
+		return requestID
+	}
+	if requestID, ok := ctx.Value("X-Vercel-Id").(string); ok {
+		return requestID
+	}
+	return ""
+}
+
 // Config contains configuration for the AI Gateway provider
 type Config struct {
 	// APIKey is the AI Gateway API key
-	// Can also be set via AI_GATEWAY_API_KEY environment variable
+	// or Vercel access token. Can also be set via AI_GATEWAY_API_KEY.
 	APIKey string
 
+	// TeamIDOrSlug scopes Vercel access-token requests to a team.
+	TeamIDOrSlug string
+
 	// BaseURL is the base URL for the AI Gateway API
-	// Default: https://ai-gateway.vercel.sh/v3/ai
+	// Default: https://ai-gateway.vercel.sh/v4/ai
 	BaseURL string
 
 	// Headers are custom headers to include in requests
-	Headers map[string]string
+	Headers map[string]string `json:"headers,omitempty"`
 
 	// MetadataCacheRefreshMillis is how frequently to refresh the metadata cache in milliseconds
 	// Default: 300000 (5 minutes)
@@ -64,6 +143,143 @@ type Config struct {
 	// When set, it is forwarded as the "ai-o11y-project-id" header on all requests.
 	// Can also be set via the VERCEL_PROJECT_ID environment variable.
 	ProjectID *string
+
+	// DisallowPromptTraining filters routing to providers that do not train on
+	// prompt data. It is forwarded as providerOptions.gateway.disallowPromptTraining.
+	DisallowPromptTraining bool
+
+	// QuotaEntityID identifies the entity against which quota is tracked. It is
+	// forwarded as providerOptions.gateway.quotaEntityId.
+	QuotaEntityID string
+}
+
+// GatewayProviderOptions contains AI Gateway request-scoped routing,
+// compliance, quota, and BYOK settings.
+type GatewayProviderOptions struct {
+	Only  []string `json:"only,omitempty"`
+	Order []string `json:"order,omitempty"`
+	Sort  string   `json:"sort,omitempty"`
+	User  string   `json:"user,omitempty"`
+	Tags  []string `json:"tags,omitempty"`
+
+	// Models is the ordered list of fallback models to try. On evaluation
+	// requests, the first entry may be a conditional GatewayModelFallback
+	// (built with GatewayConditionalModelFallback) that reruns the
+	// evaluation against a different model when its When condition matches
+	// the primary answers; every other entry (and every entry for
+	// non-evaluation requests) must be a plain model ID (built with
+	// GatewayModel).
+	Models                 []GatewayModelFallback         `json:"models,omitempty"`
+	BYOK                   map[string][]map[string]any    `json:"byok,omitempty"`
+	ZeroDataRetention      *bool                          `json:"zeroDataRetention,omitempty"`
+	DisallowPromptTraining *bool                          `json:"disallowPromptTraining,omitempty"`
+	QuotaEntityID          string                         `json:"quotaEntityId,omitempty"`
+	ProviderTimeouts       *GatewayProviderTimeoutOptions `json:"providerTimeouts,omitempty"`
+	ServiceTier            string                         `json:"serviceTier,omitempty"`
+
+	// Has restricts routing to provider models that satisfy every given
+	// entry. Entries are capability tags (GatewayHasImplicitCaching,
+	// GatewayHasReasoning, GatewayHasStructuredOutput, GatewayHasToolUse,
+	// GatewayHasVision) or weight-format conditions built with
+	// GatewayHasQuantization / GatewayHasNotQuantization.
+	Has []string `json:"has,omitempty"`
+
+	// IdempotencyKey is used by experimental_startBatch: retries with the
+	// same key replay the original batch instead of creating a duplicate.
+	IdempotencyKey string `json:"idempotencyKey,omitempty"`
+
+	// Caching enables automatic caching behavior when supported by the
+	// Gateway. The only valid value is GatewayCachingAuto ("auto").
+	Caching string `json:"caching,omitempty"`
+}
+
+// Gateway `has` capability tags. See GatewayProviderOptions.Has.
+const (
+	GatewayHasImplicitCaching  = "implicit-caching"
+	GatewayHasReasoning        = "reasoning"
+	GatewayHasStructuredOutput = "structured-output"
+	GatewayHasToolUse          = "tool-use"
+	GatewayHasVision           = "vision"
+)
+
+// GatewayCachingAuto is the only valid value for GatewayProviderOptions.Caching.
+const GatewayCachingAuto = "auto"
+
+// GatewayHasQuantization returns a `has` entry that requires the serving
+// provider to report the given weight format (e.g. "fp8").
+func GatewayHasQuantization(format string) string {
+	return "quantization:" + format
+}
+
+// GatewayHasNotQuantization returns a `has` entry that excludes the given
+// weight format. Providers with no recorded format still pass this exclusion.
+func GatewayHasNotQuantization(format string) string {
+	return "!quantization:" + format
+}
+
+// GatewayProviderTimeoutOptions contains Gateway provider timeout settings.
+type GatewayProviderTimeoutOptions struct {
+	BYOK map[string]int `json:"byok,omitempty"`
+}
+
+// ToProviderOptions returns a GenerateOptions.ProviderOptions map containing
+// these Gateway options under the "gateway" key.
+func (o GatewayProviderOptions) ToProviderOptions() map[string]interface{} {
+	return map[string]interface{}{"gateway": o.toMap()}
+}
+
+func (o GatewayProviderOptions) toMap() map[string]interface{} {
+	out := map[string]interface{}{}
+	if len(o.Only) > 0 {
+		out["only"] = o.Only
+	}
+	if len(o.Order) > 0 {
+		out["order"] = o.Order
+	}
+	if o.Sort != "" {
+		out["sort"] = o.Sort
+	}
+	if o.User != "" {
+		out["user"] = o.User
+	}
+	if len(o.Tags) > 0 {
+		out["tags"] = o.Tags
+	}
+	if len(o.Models) > 0 {
+		models := make([]interface{}, len(o.Models))
+		for i, m := range o.Models {
+			models[i] = m.toWire()
+		}
+		out["models"] = models
+	}
+	if len(o.BYOK) > 0 {
+		out["byok"] = o.BYOK
+	}
+	if o.ZeroDataRetention != nil {
+		out["zeroDataRetention"] = *o.ZeroDataRetention
+	}
+	if o.DisallowPromptTraining != nil {
+		out["disallowPromptTraining"] = *o.DisallowPromptTraining
+	}
+	if o.QuotaEntityID != "" {
+		out["quotaEntityId"] = o.QuotaEntityID
+	}
+	if o.ProviderTimeouts != nil && len(o.ProviderTimeouts.BYOK) > 0 {
+		out["providerTimeouts"] = map[string]interface{}{"byok": o.ProviderTimeouts.BYOK}
+	}
+	if o.ServiceTier != "" {
+		out["serviceTier"] = o.ServiceTier
+	}
+	if len(o.Has) > 0 {
+		out["has"] = o.Has
+	}
+	if o.IdempotencyKey != "" {
+		out["idempotencyKey"] = o.IdempotencyKey
+	}
+	if o.Caching != "" {
+		out["caching"] = o.Caching
+	}
+	return out
 }
 
 // WithProjectID returns a Config option that sets the project ID for observability.
@@ -76,28 +292,62 @@ func WithProjectID(id string) func(*Config) {
 
 // MetadataResponse contains available models and providers from the gateway
 type MetadataResponse struct {
-	Providers []ProviderMetadata `json:"providers"`
-	Credits   *CreditsInfo       `json:"credits,omitempty"`
-}
-
-// ProviderMetadata contains information about a provider
-type ProviderMetadata struct {
-	ID     string          `json:"id"`
-	Name   string          `json:"name"`
 	Models []ModelMetadata `json:"models"`
 }
 
 // ModelMetadata contains information about a model
 type ModelMetadata struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	Capabilities []string `json:"capabilities"`
+	ID            string             `json:"id"`
+	Name          string             `json:"name"`
+	Description   *string            `json:"description,omitempty"`
+	Pricing       *ModelPricing      `json:"pricing,omitempty"`
+	Specification ModelSpecification `json:"specification"`
+	ModelType     string             `json:"modelType,omitempty"`
+}
+
+type ModelPricing struct {
+	Input                    string `json:"input"`
+	Output                   string `json:"output"`
+	CachedInputTokens        string `json:"cachedInputTokens,omitempty"`
+	CacheCreationInputTokens string `json:"cacheCreationInputTokens,omitempty"`
+}
+
+type ModelSpecification struct {
+	SpecificationVersion string `json:"specificationVersion"`
+	Provider             string `json:"provider"`
+	ModelID              string `json:"modelId"`
+}
+
+type metadataResponseWire struct {
+	Models []modelMetadataWire `json:"models"`
+}
+
+type modelMetadataWire struct {
+	ID            string                 `json:"id"`
+	Name          string                 `json:"name"`
+	Description   *string                `json:"description"`
+	Pricing       *modelPricingWire      `json:"pricing"`
+	Specification modelSpecificationWire `json:"specification"`
+	ModelType     string                 `json:"modelType"`
+}
+
+type modelPricingWire struct {
+	Input           string `json:"input"`
+	Output          string `json:"output"`
+	InputCacheRead  string `json:"input_cache_read"`
+	InputCacheWrite string `json:"input_cache_write"`
+}
+
+type modelSpecificationWire struct {
+	SpecificationVersion string `json:"specificationVersion"`
+	Provider             string `json:"provider"`
+	ModelID              string `json:"modelId"`
 }
 
 // CreditsInfo contains credit information for the authenticated user
 type CreditsInfo struct {
-	Available int `json:"available"`
-	Used      int `json:"used"`
+	Balance   string `json:"balance"`
+	TotalUsed string `json:"totalUsed"`
 }
 
 // New creates a new AI Gateway provider with the given configuration.
@@ -112,22 +362,15 @@ func New(cfg Config, opts ...func(*Config)) (*Provider, error) {
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
+	baseURL = strings.TrimRight(baseURL, "/")
 
-	// Get API key from config or environment
-	apiKey := cfg.APIKey
-	if apiKey == "" {
-		apiKey = os.Getenv("AI_GATEWAY_API_KEY")
-	}
-
-	if apiKey == "" {
-		return nil, fmt.Errorf("LAI Gateway API key is required (set via Config.APIKey or AI_GATEWAY_API_KEY environment variable)")
+	authResolver := func(ctx context.Context) (string, string, error) {
+		return resolveGatewayAuthToken(ctx, cfg)
 	}
 
 	// Create headers with authentication
 	headers := map[string]string{
-		"Authorization":               fmt.Sprintf("Bearer %s", apiKey),
 		"ai-gateway-protocol-version": AIGatewayProtocolVersion,
-		"ai-gateway-auth-method":      "api-key",
 	}
 
 	// Add custom headers
@@ -144,12 +387,18 @@ func New(cfg Config, opts ...func(*Config)) (*Provider, error) {
 	if cfg.ProjectID != nil {
 		headers["ai-o11y-project-id"] = *cfg.ProjectID
 	}
+	if cfg.TeamIDOrSlug != "" {
+		headers["x-vercel-ai-gateway-team"] = cfg.TeamIDOrSlug
+	}
+	headers = version.WithUserAgentSuffix(headers, version.ProviderUserAgent("gateway"))
+
+	httpClient := newGatewayHTTPClient(cfg.HTTPClient, authResolver)
 
 	// Create HTTP client
 	client := internalhttp.NewClient(internalhttp.Config{
 		BaseURL:    baseURL,
 		Headers:    headers,
-		HTTPClient: cfg.HTTPClient,
+		HTTPClient: httpClient,
 	})
 
 	// Set cache refresh time
@@ -161,9 +410,43 @@ func New(cfg Config, opts ...func(*Config)) (*Provider, error) {
 	return &Provider{
 		config:           cfg,
 		client:           client,
+		baseURL:          baseURL,
+		headers:          headers,
+		authResolver:     authResolver,
 		cacheRefreshTime: cacheRefreshTime,
 		pendingMetadata:  &sync.Once{},
 	}, nil
+}
+
+// CreateGateway creates a new AI Gateway provider.
+//
+// It mirrors the TypeScript SDK createGateway export while New remains the
+// idiomatic Go constructor.
+func CreateGateway(cfg Config, opts ...func(*Config)) (*Provider, error) {
+	return New(cfg, opts...)
+}
+
+// CreateGatewayProvider creates a new AI Gateway provider.
+//
+// Deprecated: use CreateGateway.
+func CreateGatewayProvider(cfg Config, opts ...func(*Config)) (*Provider, error) {
+	return CreateGateway(cfg, opts...)
+}
+
+func resolveGatewayAuthToken(ctx context.Context, cfg Config) (token string, authMethod string, err error) {
+	apiKey := cfg.APIKey
+	if apiKey == "" {
+		apiKey = os.Getenv("AI_GATEWAY_API_KEY")
+	}
+	if apiKey != "" {
+		return apiKey, "api-key", nil
+	}
+
+	if oidcToken := strings.TrimSpace(os.Getenv("VERCEL_OIDC_TOKEN")); oidcToken != "" {
+		return oidcToken, "oidc", nil
+	}
+
+	return "", "", gatewayerrors.CreateContextualAuthenticationError(false, false, http.StatusUnauthorized, fmt.Errorf("no API key or OIDC token configured"), "")
 }
 
 // Name returns the provider name
@@ -209,17 +492,33 @@ func (p *Provider) VideoModel(modelID string) (provider.VideoModelV3, error) {
 
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("LGateway provider does not directly support speech synthesis models")
+	if modelID == "" {
+		return nil, fmt.Errorf("model ID cannot be empty")
+	}
+	return NewSpeechModel(p, modelID), nil
 }
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("LGateway provider does not directly support transcription models")
+	if modelID == "" {
+		return nil, fmt.Errorf("model ID cannot be empty")
+	}
+	return NewTranscriptionModel(p, modelID), nil
 }
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("LGateway provider does not directly support reranking models")
+	if modelID == "" {
+		return nil, fmt.Errorf("model ID cannot be empty")
+	}
+	return NewRerankingModel(p, modelID), nil
+}
+
+// Reranking returns a reranking model by ID.
+//
+// It mirrors the TypeScript SDK reranking alias for rerankingModel.
+func (p *Provider) Reranking(modelID string) (provider.RerankingModel, error) {
+	return p.RerankingModel(modelID)
 }
 
 // GetAvailableModels returns available providers and models from the gateway
@@ -234,10 +533,46 @@ func (p *Provider) GetAvailableModels(ctx context.Context) (*MetadataResponse, e
 	p.metadataMutex.RUnlock()
 
 	// Fetch fresh metadata
-	var metadata MetadataResponse
-	err := p.client.GetJSON(ctx, "/metadata", &metadata)
+	resp, err := p.client.Get(ctx, "/config")
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch available models: %w", err)
+		return nil, p.handleErrorWithContext(ctx, err)
+	}
+	if resp.StatusCode >= http.StatusBadRequest {
+		return nil, p.gatewayAPIErrorWithContext(ctx, resp)
+	}
+	var wire metadataResponseWire
+	if err := json.Unmarshal(resp.Body, &wire); err != nil {
+		return nil, p.handleErrorWithContext(ctx, err)
+	}
+	metadata := MetadataResponse{Models: make([]ModelMetadata, 0, len(wire.Models))}
+	for _, model := range wire.Models {
+		if model.ModelType != "" {
+			if _, ok := knownGatewayModelTypes[model.ModelType]; !ok {
+				// TS parity: unknown modelType entries are filtered out instead of failing parsing.
+				continue
+			}
+		}
+		var pricing *ModelPricing
+		if model.Pricing != nil {
+			pricing = &ModelPricing{
+				Input:                    model.Pricing.Input,
+				Output:                   model.Pricing.Output,
+				CachedInputTokens:        model.Pricing.InputCacheRead,
+				CacheCreationInputTokens: model.Pricing.InputCacheWrite,
+			}
+		}
+		metadata.Models = append(metadata.Models, ModelMetadata{
+			ID:          model.ID,
+			Name:        model.Name,
+			Description: model.Description,
+			Pricing:     pricing,
+			Specification: ModelSpecification{
+				SpecificationVersion: model.Specification.SpecificationVersion,
+				Provider:             model.Specification.Provider,
+				ModelID:              model.Specification.ModelID,
+			},
+			ModelType: model.ModelType,
+		})
 	}
 
 	// Update cache
@@ -251,12 +586,211 @@ func (p *Provider) GetAvailableModels(ctx context.Context) (*MetadataResponse, e
 
 // GetCredits returns credit information for the authenticated user
 func (p *Provider) GetCredits(ctx context.Context) (*CreditsInfo, error) {
-	var credits CreditsInfo
-	err := p.client.GetJSON(ctx, "/credits", &credits)
+	body, err := p.doOriginRequest(ctx, "/v1/credits")
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch credits: %w", err)
+		return nil, err
 	}
-	return &credits, nil
+	var wire struct {
+		Balance   string `json:"balance"`
+		TotalUsed string `json:"total_used"`
+	}
+	if err := json.Unmarshal(body, &wire); err != nil {
+		return nil, p.handleErrorWithContext(ctx, err)
+	}
+	return &CreditsInfo{
+		Balance:   wire.Balance,
+		TotalUsed: wire.TotalUsed,
+	}, nil
+}
+
+func (p *Provider) originClient() (*internalhttp.Client, error) {
+	base, err := url.Parse(p.baseURL)
+	if err != nil {
+		return nil, err
+	}
+	return internalhttp.NewClient(internalhttp.Config{
+		BaseURL:    base.Scheme + "://" + base.Host,
+		Headers:    p.headers,
+		HTTPClient: newGatewayHTTPClient(p.config.HTTPClient, p.authResolver),
+	}), nil
+}
+
+func (p *Provider) handleErrorWithContext(ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+	if gatewayerrors.IsTimeoutError(err) {
+		return gatewayerrors.ConvertToGatewayTimeoutError(err, "gateway")
+	}
+	if gatewayerrors.IsGatewayError(err) {
+		return err
+	}
+	if providererrors.IsProviderError(err) {
+		return err
+	}
+	var httpStatusErr *internalhttp.HTTPStatusError
+	if errors.As(err, &httpStatusErr) {
+		return p.gatewayAPIErrorWithContext(ctx, &internalhttp.Response{
+			StatusCode: httpStatusErr.StatusCode,
+			Headers:    httpStatusErr.Headers,
+			Body:       httpStatusErr.Body,
+		})
+	}
+	return p.gatewayUnknownError(err)
+}
+
+func (p *Provider) doOriginRequest(ctx context.Context, path string) ([]byte, error) {
+	client, err := p.originClient()
+	if err != nil {
+		return nil, p.handleErrorWithContext(ctx, err)
+	}
+
+	resp, err := client.Get(ctx, path)
+	if err != nil {
+		return nil, p.handleErrorWithContext(ctx, err)
+	}
+	if resp.StatusCode >= http.StatusBadRequest {
+		return nil, p.gatewayAPIErrorWithContext(ctx, resp)
+	}
+	return resp.Body, nil
+}
+
+func (p *Provider) gatewayAPIErrorWithAuthMethod(resp *internalhttp.Response, authMethod string) error {
+	if resp == nil {
+		return gatewayerrors.NewGatewayResponseError("Gateway request failed", 0, nil, nil, nil, "")
+	}
+	cause := &providererrors.ProviderError{
+		Provider:        "gateway",
+		StatusCode:      resp.StatusCode,
+		Message:         gatewayErrorMessage(resp.Body, resp.StatusCode),
+		ResponseHeaders: providerutils.ExtractHeaders(resp.Headers),
+		ResponseBody:    string(resp.Body),
+		Data:            gatewayErrorData(resp.Body),
+	}
+	return gatewayerrors.CreateGatewayErrorFromResponse(resp.Body, resp.StatusCode, "Gateway request failed", cause, authMethod)
+}
+
+// gatewayErrorMessage mirrors TS provider-utils createJsonErrorResponseHandler
+// + getErrorMessage (@ai-sdk/provider): an empty response body or one that
+// fails to parse as JSON falls back to the HTTP status text (TS
+// `response.statusText`); a JSON string body is used as-is; a JSON `null`
+// body yields "unknown error" (TS getErrorMessage(null)); any other JSON
+// value is re-serialized. Used to populate the nested cause's message with
+// the full error body instead of the generic "Gateway request failed"
+// placeholder.
+func gatewayErrorMessage(body []byte, statusCode int) string {
+	if len(bytes.TrimSpace(body)) == 0 {
+		return gatewayStatusTextFallback(statusCode)
+	}
+	var value interface{}
+	if err := json.Unmarshal(body, &value); err != nil {
+		return gatewayStatusTextFallback(statusCode)
+	}
+	if value == nil {
+		return "unknown error"
+	}
+	if str, ok := value.(string); ok {
+		return str
+	}
+	serialized, err := json.Marshal(value)
+	if err != nil {
+		return gatewayStatusTextFallback(statusCode)
+	}
+	return string(serialized)
+}
+
+// gatewayStatusTextFallback returns the standard HTTP status text for
+// statusCode (TS `response.statusText`), or "unknown error" for codes with
+// no standard text (e.g. 0, from a response the SDK never received).
+func gatewayStatusTextFallback(statusCode int) string {
+	if text := http.StatusText(statusCode); text != "" {
+		return text
+	}
+	return "unknown error"
+}
+
+// gatewayErrorData best-effort decodes the response body into a generic
+// value for ProviderError.Data, mirroring the parsed error body TS providers
+// attach to their APICallError.data.
+func gatewayErrorData(body []byte) interface{} {
+	if len(body) == 0 {
+		return nil
+	}
+	var value interface{}
+	if err := json.Unmarshal(body, &value); err != nil {
+		return nil
+	}
+	return value
+}
+
+func (p *Provider) gatewayAPIErrorWithContext(ctx context.Context, resp *internalhttp.Response) error {
+	if resp == nil {
+		return gatewayerrors.NewGatewayResponseError("Gateway request failed", 0, nil, nil, nil, "")
+	}
+	authMethod := ""
+	if p.authResolver != nil {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		_, authMethod, _ = p.authResolver(ctx)
+	}
+	cause := &providererrors.ProviderError{
+		Provider:        "gateway",
+		StatusCode:      resp.StatusCode,
+		Message:         gatewayErrorMessage(resp.Body, resp.StatusCode),
+		ResponseHeaders: providerutils.ExtractHeaders(resp.Headers),
+		ResponseBody:    string(resp.Body),
+		Data:            gatewayErrorData(resp.Body),
+	}
+	return gatewayerrors.CreateGatewayErrorFromResponse(resp.Body, resp.StatusCode, "Gateway request failed", cause, authMethod)
+}
+
+func (p *Provider) gatewayUnknownError(err error) error {
+	if err == nil {
+		return nil
+	}
+	// TS parity: asGatewayError's fallback path (opaque, non-APICallError
+	// errors) marks the resulting error's retryability explicitly rather than
+	// relying purely on the (unknown, defaulted-to-500) status code. A JSON
+	// decode failure is a permanent error (the body will never parse
+	// differently on retry); a transient network/body-read error is
+	// retryable. See 90192f1.
+	retryable := !isGatewayJSONDecodeError(err)
+	return gatewayerrors.NewGatewayResponseErrorWithRetryable(
+		fmt.Sprintf("Invalid error response format: Gateway request failed: %s", err.Error()),
+		http.StatusInternalServerError,
+		map[string]interface{}{},
+		fmt.Errorf("invalid gateway error response"),
+		err,
+		"",
+		&retryable,
+	)
+}
+
+// isGatewayJSONDecodeError reports whether err originates from a JSON
+// decode/parse failure (as opposed to a network or body-read error). Such
+// errors are never retryable: the same malformed body will fail identically
+// on retry.
+//
+// NOTE: recovering the *real* HTTP status code for a body-read failure that
+// occurs after a successful (2xx) response — so it can be preserved instead
+// of defaulted to 500, matching TS's `statusCode < 400` check in
+// asGatewayError — requires internal/http/client.go to surface the status
+// code on read errors from Do(). That is a core dependency outside this
+// package's scope (see state/parity/sep_23_2026/gateway.md row 90192f1).
+func isGatewayJSONDecodeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var syntaxErr *json.SyntaxError
+	if errors.As(err, &syntaxErr) {
+		return true
+	}
+	var typeErr *json.UnmarshalTypeError
+	if errors.As(err, &typeErr) {
+		return true
+	}
+	return strings.Contains(err.Error(), "failed to decode JSON response")
 }
 
 // Client returns the HTTP client for making API requests
@@ -275,6 +809,28 @@ func (t *Tools) ParallelSearch(config tools.ParallelSearchConfig) tools.Parallel
 // PerplexitySearch creates a perplexity search tool with the given configuration
 func (t *Tools) PerplexitySearch(config tools.PerplexitySearchConfig) tools.PerplexitySearchTool {
 	return tools.NewPerplexitySearch(config)
+}
+
+// ExaSearch creates an Exa search tool with the given configuration.
+func (t *Tools) ExaSearch(config tools.ExaSearchConfig) tools.ExaSearchTool {
+	return tools.NewExaSearch(config)
+}
+
+// TakoSearch creates a Tako search tool with the given configuration.
+func (t *Tools) TakoSearch(config tools.TakoSearchConfig) tools.TakoSearchTool {
+	return tools.NewTakoSearch(config)
+}
+
+// BrowserbaseSearch creates a Browserbase search tool with the given
+// configuration.
+func (t *Tools) BrowserbaseSearch(config tools.BrowserbaseSearchConfig) tools.BrowserbaseSearchTool {
+	return tools.NewBrowserbaseSearch(config)
+}
+
+// BrowserbaseFetch creates a Browserbase fetch tool with the given
+// configuration.
+func (t *Tools) BrowserbaseFetch(config tools.BrowserbaseFetchConfig) tools.BrowserbaseFetchTool {
+	return tools.NewBrowserbaseFetch(config)
 }
 
 // NewTools creates a new Tools instance for accessing gateway-specific tools
@@ -309,11 +865,12 @@ type O11yHeaders struct {
 }
 
 // GetO11yHeaders returns observability headers from the environment
-func GetO11yHeaders() O11yHeaders {
+func GetO11yHeaders(ctx context.Context) O11yHeaders {
 	return O11yHeaders{
 		DeploymentID: os.Getenv("VERCEL_DEPLOYMENT_ID"),
 		Environment:  os.Getenv("VERCEL_ENV"),
 		Region:       os.Getenv("VERCEL_REGION"),
+		RequestID:    gatewayRequestID(ctx),
 		ProjectID:    os.Getenv("VERCEL_PROJECT_ID"),
 	}
 }

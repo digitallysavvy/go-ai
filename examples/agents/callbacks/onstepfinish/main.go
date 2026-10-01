@@ -7,11 +7,12 @@ import (
 	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/agent"
-	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
-// This example demonstrates how to use the OnStepFinish callback
+// This example demonstrates how to use the OnStepEnd callback
 // to track agent execution step by step.
 
 func main() {
@@ -83,8 +84,8 @@ func main() {
 			searchTool,
 			calculatorTool,
 		},
-		MaxSteps: 5,
-		OnStepFinish: func(step types.StepResult) {
+		StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
+		OnStepEnd: func(step types.StepResult) {
 			stepCount++
 			fmt.Printf("\n=== Step %d Completed ===\n", stepCount)
 			fmt.Printf("Tool calls: %d\n", len(step.ToolCalls))

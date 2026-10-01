@@ -33,10 +33,8 @@ func main() {
 	endImageURL := "https://raw.githubusercontent.com/vercel/ai/refs/heads/main/examples/ai-functions/data/comic-dog.png"
 
 	fmt.Println("Generating video with start and end frame control...")
-	fmt.Printf("Start frame: %s
-", startImageURL)
-	fmt.Printf("End frame: %s
-", endImageURL)
+	fmt.Printf("Start frame: %s\n", startImageURL)
+	fmt.Printf("End frame: %s\n", endImageURL)
 
 	response, err := model.DoGenerate(ctx, &provider.VideoModelV3CallOptions{
 		Prompt: "The cat walks across the scene and transforms into a dog by the end, in a playful and cartoonish style.",
@@ -47,10 +45,10 @@ func main() {
 		Duration: &duration,
 		ProviderOptions: map[string]interface{}{
 			"klingai": map[string]interface{}{
-				"mode":      "pro", // Pro mode required for start/end frame control
-				"imageTail": endImageURL, // End frame for precise control
-				"sound":     "on", // Enable audio generation (V2.6+ pro only)
-				"pollTimeoutMs": 600000, // 10 minutes for pro mode
+				"mode":          "pro",       // Pro mode required for start/end frame control
+				"imageTail":     endImageURL, // End frame for precise control
+				"sound":         "on",        // Enable audio generation (V2.6+ pro only)
+				"pollTimeoutMs": 600000,      // 10 minutes for pro mode
 			},
 		},
 	})
@@ -59,42 +57,32 @@ func main() {
 	}
 
 	// Display results
-	fmt.Println("
-Video generated successfully!")
-	fmt.Printf("Video URL: %s
-", response.Videos[0].URL)
-	fmt.Printf("Media Type: %s
-", response.Videos[0].MediaType)
+	fmt.Println("\nVideo generated successfully!")
+	fmt.Printf("Video URL: %s\n", response.Videos[0].URL)
+	fmt.Printf("Media Type: %s\n", response.Videos[0].MediaType)
 
 	// Display metadata including watermark URL if available
 	if metadata, ok := response.ProviderMetadata["klingai"].(map[string]interface{}); ok {
-		fmt.Printf("
-KlingAI Metadata:
-")
+		fmt.Printf("\nKlingAI Metadata:\n")
 		if taskID, ok := metadata["taskId"].(string); ok {
-			fmt.Printf("  Task ID: %s
-", taskID)
+			fmt.Printf("  Task ID: %s\n", taskID)
 		}
 
 		if videos, ok := metadata["videos"].([]map[string]interface{}); ok && len(videos) > 0 {
 			if watermarkURL, ok := videos[0]["watermarkUrl"].(string); ok && watermarkURL != "" {
-				fmt.Printf("  Watermark Video URL: %s
-", watermarkURL)
+				fmt.Printf("  Watermark Video URL: %s\n", watermarkURL)
 			}
 			if dur, ok := videos[0]["duration"].(string); ok && dur != "" {
-				fmt.Printf("  Duration: %s seconds
-", dur)
+				fmt.Printf("  Duration: %s seconds\n", dur)
 			}
 		}
 	}
 
 	// Display warnings if any
 	if len(response.Warnings) > 0 {
-		fmt.Println("
-Warnings:")
+		fmt.Println("\nWarnings:")
 		for _, warning := range response.Warnings {
-			fmt.Printf("  - %s
-", warning.Message)
+			fmt.Printf("  - %s\n", warning.Message)
 		}
 	}
 }

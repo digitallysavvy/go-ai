@@ -145,8 +145,19 @@ func TestProvider_VideoModel(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if model.SpecificationVersion() != "v3" {
-			t.Errorf("expected specification version 'v3', got '%s'", model.SpecificationVersion())
+		if model.SpecificationVersion() != "v4" {
+			t.Errorf("expected specification version 'v4', got '%s'", model.SpecificationVersion())
+		}
+	})
+
+	t.Run("model has max videos per call", func(t *testing.T) {
+		model, err := prov.VideoModel(string(ModelSeedance10Pro))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		maxVideos := model.MaxVideosPerCall()
+		if maxVideos == nil || *maxVideos != 1 {
+			t.Fatalf("expected max videos per call 1, got %#v", maxVideos)
 		}
 	})
 }
@@ -171,10 +182,23 @@ func TestProvider_UnsupportedModels(t *testing.T) {
 		}
 	})
 
-	t.Run("image model returns error", func(t *testing.T) {
-		_, err := prov.ImageModel("dalle-3")
+	t.Run("image model returns a Seedream model", func(t *testing.T) {
+		model, err := prov.ImageModel(string(ModelSeedream50))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if model.ModelID() != string(ModelSeedream50) {
+			t.Errorf("ModelID() = %q, want %q", model.ModelID(), ModelSeedream50)
+		}
+		if model.Provider() != "bytedance.image" {
+			t.Errorf("Provider() = %q, want %q", model.Provider(), "bytedance.image")
+		}
+	})
+
+	t.Run("image model requires a model ID", func(t *testing.T) {
+		_, err := prov.ImageModel("")
 		if err == nil {
-			t.Error("expected error for image model")
+			t.Error("expected error for empty model ID")
 		}
 	})
 
@@ -201,17 +225,24 @@ func TestProvider_UnsupportedModels(t *testing.T) {
 }
 
 func TestModelConstants(t *testing.T) {
-	expectedModels := map[ByteDanceVideoModelID]string{
-		ModelSeedance15Pro:     "seedance-1-5-pro-251215",
-		ModelSeedance10Pro:     "seedance-1-0-pro-250528",
-		ModelSeedance10ProFast: "seedance-1-0-pro-fast-251015",
-		ModelSeedance10LiteT2V: "seedance-1-0-lite-t2v-250428",
-		ModelSeedance10LiteI2V: "seedance-1-0-lite-i2v-250428",
+	expectedModels := []struct {
+		model    ByteDanceVideoModelID
+		expected string
+	}{
+		{ModelSeedance20Fast, "dreamina-seedance-2-0-fast-260128"},
+		{ModelSeedance20, "dreamina-seedance-2-0-260128"},
+		{ModelDreaminaSeedance20Fast, "dreamina-seedance-2-0-fast-260128"},
+		{ModelDreaminaSeedance20, "dreamina-seedance-2-0-260128"},
+		{ModelSeedance15Pro, "seedance-1-5-pro-251215"},
+		{ModelSeedance10Pro, "seedance-1-0-pro-250528"},
+		{ModelSeedance10ProFast, "seedance-1-0-pro-fast-251015"},
+		{ModelSeedance10LiteT2V, "seedance-1-0-lite-t2v-250428"},
+		{ModelSeedance10LiteI2V, "seedance-1-0-lite-i2v-250428"},
 	}
 
-	for model, expected := range expectedModels {
-		if string(model) != expected {
-			t.Errorf("model constant %v: expected %s, got %s", model, expected, string(model))
+	for _, tt := range expectedModels {
+		if string(tt.model) != tt.expected {
+			t.Errorf("model constant %v: expected %s, got %s", tt.model, tt.expected, string(tt.model))
 		}
 	}
 }

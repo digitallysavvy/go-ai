@@ -5,6 +5,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // Provider implements the provider.Provider interface for Groq
@@ -20,6 +21,9 @@ type Config struct {
 
 	// BaseURL is the base URL for the Groq API (optional)
 	BaseURL string
+
+	// Headers are custom HTTP headers to include in requests.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // New creates a new Groq provider with the given configuration
@@ -31,16 +35,24 @@ func New(cfg Config) *Provider {
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: map[string]string{
+		Headers: version.WithUserAgentSuffix(http.MergeHeaders(map[string]string{
 			"Authorization": "Bearer " + cfg.APIKey,
 			"Content-Type":  "application/json",
-		},
+		}, cfg.Headers), version.ProviderUserAgent("groq")),
 	})
 
 	return &Provider{
 		config: cfg,
 		client: client,
 	}
+}
+
+// CreateGroq creates a new Groq provider.
+//
+// It mirrors the TypeScript SDK createGroq export while New remains the
+// idiomatic Go constructor.
+func CreateGroq(cfg Config) *Provider {
+	return New(cfg)
 }
 
 // Name returns the provider name
@@ -72,14 +84,18 @@ func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
 	return nil, fmt.Errorf("groq does not support speech synthesis")
 }
 
-// TranscriptionModel returns a speech-to-text model by ID
+// TranscriptionModel returns a speech-to-text model by ID (Groq Whisper,
+// POST /audio/transcriptions). Batch/non-streaming only.
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("LGroq does not support transcription")
+	if modelID == "" {
+		modelID = "whisper-large-v3-turbo"
+	}
+	return NewTranscriptionModel(p, modelID), nil
 }
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("LGroq does not support reranking")
+	return nil, fmt.Errorf("Groq does not support reranking") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 }
 
 // Client returns the HTTP client for making API requests

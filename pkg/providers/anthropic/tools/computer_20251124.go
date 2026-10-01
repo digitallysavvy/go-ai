@@ -11,23 +11,23 @@ import (
 type Computer20251124Action string
 
 const (
-	ActionKey               Computer20251124Action = "key"
-	ActionHoldKey           Computer20251124Action = "hold_key"
-	ActionType              Computer20251124Action = "type"
-	ActionCursorPosition    Computer20251124Action = "cursor_position"
-	ActionMouseMove         Computer20251124Action = "mouse_move"
-	ActionLeftMouseDown     Computer20251124Action = "left_mouse_down"
-	ActionLeftMouseUp       Computer20251124Action = "left_mouse_up"
-	ActionLeftClick         Computer20251124Action = "left_click"
-	ActionLeftClickDrag     Computer20251124Action = "left_click_drag"
-	ActionRightClick        Computer20251124Action = "right_click"
-	ActionMiddleClick       Computer20251124Action = "middle_click"
-	ActionDoubleClick       Computer20251124Action = "double_click"
-	ActionTripleClick       Computer20251124Action = "triple_click"
-	ActionScroll            Computer20251124Action = "scroll"
-	ActionWait              Computer20251124Action = "wait"
-	ActionScreenshot        Computer20251124Action = "screenshot"
-	ActionZoom              Computer20251124Action = "zoom"
+	ActionKey            Computer20251124Action = "key"
+	ActionHoldKey        Computer20251124Action = "hold_key"
+	ActionType           Computer20251124Action = "type"
+	ActionCursorPosition Computer20251124Action = "cursor_position"
+	ActionMouseMove      Computer20251124Action = "mouse_move"
+	ActionLeftMouseDown  Computer20251124Action = "left_mouse_down"
+	ActionLeftMouseUp    Computer20251124Action = "left_mouse_up"
+	ActionLeftClick      Computer20251124Action = "left_click"
+	ActionLeftClickDrag  Computer20251124Action = "left_click_drag"
+	ActionRightClick     Computer20251124Action = "right_click"
+	ActionMiddleClick    Computer20251124Action = "middle_click"
+	ActionDoubleClick    Computer20251124Action = "double_click"
+	ActionTripleClick    Computer20251124Action = "triple_click"
+	ActionScroll         Computer20251124Action = "scroll"
+	ActionWait           Computer20251124Action = "wait"
+	ActionScreenshot     Computer20251124Action = "screenshot"
+	ActionZoom           Computer20251124Action = "zoom"
 )
 
 // ScrollDirection represents the scroll direction
@@ -116,6 +116,7 @@ type Computer20251124Args struct {
 //	    DisplayHeightPx: 1080,
 //	    EnableZoom: true,
 //	})
+//
 // computer20251124Opts holds the per-instance configuration for computer_20251124 and
 // implements anthropicAPIMapper so the Anthropic converter sends display params to the API.
 type computer20251124Opts struct {
@@ -179,8 +180,8 @@ func buildComputer20251124Schema(enableZoom bool) map[string]interface{} {
 		"type": "object",
 		"properties": map[string]interface{}{
 			"action": map[string]interface{}{
-				"type": "string",
-				"enum": actions,
+				"type":        "string",
+				"enum":        actions,
 				"description": "The action to perform. See tool description for details on each action.",
 			},
 			"coordinate": map[string]interface{}{

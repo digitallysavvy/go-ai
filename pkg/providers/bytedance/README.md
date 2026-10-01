@@ -1,6 +1,6 @@
 # ByteDance Provider for Go-AI SDK
 
-The ByteDance (Volcengine) provider implements video generation capabilities for the Go-AI SDK, supporting text-to-video and image-to-video generation via the Ark API.
+The ByteDance (Volcengine) provider implements video and image generation capabilities for the Go-AI SDK: text-to-video and image-to-video via the Ark video API, and text-to-image / image editing via the Seedream image models, both through the Ark API.
 
 ## Installation
 
@@ -77,6 +77,10 @@ prov, err := bytedance.New(bytedance.Config{
 
 | Constant | Model ID | Description |
 |---|---|---|
+| `ModelSeedance20Fast` | `dreamina-seedance-2-0-fast-260128` | Dreamina Seedance 2.0 Fast |
+| `ModelSeedance20` | `dreamina-seedance-2-0-260128` | Dreamina Seedance 2.0 |
+| `ModelDreaminaSeedance20Fast` | `dreamina-seedance-2-0-fast-260128` | Dreamina Seedance 2.0 Fast |
+| `ModelDreaminaSeedance20` | `dreamina-seedance-2-0-260128` | Dreamina Seedance 2.0 |
 | `ModelSeedance15Pro` | `seedance-1-5-pro-251215` | Seedance 1.5 Pro (latest) |
 | `ModelSeedance10Pro` | `seedance-1-0-pro-250528` | Seedance 1.0 Pro |
 | `ModelSeedance10ProFast` | `seedance-1-0-pro-fast-251015` | Seedance 1.0 Pro Fast |
@@ -88,6 +92,58 @@ You may also pass any model ID string directly:
 ```go
 model, err := prov.VideoModel("seedance-1-5-pro-251215")
 ```
+
+### Image Models (Seedream)
+
+| Constant | Model ID | Description |
+|---|---|---|
+| `ModelDolaSeedream50Pro` | `dola-seedream-5-0-pro-260628` | Dola Seedream 5.0 Pro |
+| `ModelSeedream50` | `seedream-5-0-260128` | Seedream 5.0 |
+| `ModelSeedream50Lite` | `seedream-5-0-lite-260128` | Seedream 5.0 Lite |
+| `ModelSeedream45` | `seedream-4-5-251128` | Seedream 4.5 |
+| `ModelSeedream40` | `seedream-4-0-250828` | Seedream 4.0 |
+
+```go
+model, err := prov.ImageModel(string(bytedance.ModelSeedream50))
+```
+
+## Image Generation (Seedream)
+
+```go
+response, err := model.DoGenerate(ctx, &provider.ImageGenerateOptions{
+    Prompt: "A cherry blossom tree in a Japanese garden at sunrise",
+    Size:   "2048x2048", // pixel dimensions, or use providerOptions.bytedance.size for a resolution level (e.g. "2K")
+    ProviderOptions: map[string]interface{}{
+        "bytedance": map[string]interface{}{
+            "watermark": false,
+        },
+    },
+})
+```
+
+Provide `Files` to edit an existing image (a single file is sent as `image`; multiple files are sent as an array):
+
+```go
+response, err := model.DoGenerate(ctx, &provider.ImageGenerateOptions{
+    Prompt: "Change the background to a snowy mountain",
+    Files: []provider.ImageFile{
+        {Type: "file", Data: pngBytes, MediaType: "image/png"},
+    },
+})
+```
+
+Generated images are returned as base64 strings in `response.Base64Images` (and `response.Base64Image` for the first one). `aspectRatio`, `seed`, and a separate `mask` are not supported by Seedream and generate warnings when set.
+
+### Image Provider Options
+
+| Option | Type | Description |
+|---|---|---|
+| `watermark` | `bool` | Add an "AI generated" watermark to the bottom-right corner |
+| `outputFormat` | `string` | `"png"` or `"jpeg"` (seedream-5-0 / dola-seedream-5-0-pro only; others always return jpeg) |
+| `size` | `string` | A resolution level (e.g. `"1K"`, `"2K"`, `"3K"`, `"4K"`), overriding the top-level `Size` |
+| `sequentialImageGeneration` | `string` | `"auto"` to generate a batch of related images, or `"disabled"` (default) |
+| `maxImages` | `int` | Maximum images to generate when `sequentialImageGeneration` is `"auto"` |
+| `optimizePromptMode` | `string` | `"standard"` or `"fast"` (seedream-4-0 only supports both) |
 
 ## Text-to-Video
 
@@ -142,6 +198,8 @@ Configure generation with `ProviderOptions["bytedance"]`:
 | `draft` | `bool` | Draft mode (faster, lower quality) |
 | `lastFrameImage` | `string` | URL for end-frame in start+end generation |
 | `referenceImages` | `[]string` | Reference image URLs |
+| `referenceVideos` | `[]string` | Reference video URLs |
+| `referenceAudio` | `[]string` | Reference audio URLs |
 | `pollIntervalMs` | `int` | Polling interval (default: 3000ms) |
 | `pollTimeoutMs` | `int` | Max wait time (default: 300000ms = 5 minutes) |
 
@@ -269,6 +327,7 @@ Attempting to use `FPS` or `N > 1` generates a warning but does not fail.
 See `examples/providers/bytedance/` for complete working examples:
 
 - `01-text-to-video.go` — Basic text-to-video generation
+- `02-image-generation.go` — Seedream text-to-image generation
 
 Run any example with:
 ```bash

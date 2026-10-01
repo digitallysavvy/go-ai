@@ -93,6 +93,9 @@ func (m *ProdiaLanguageModel) DoGenerate(ctx context.Context, opts *provider.Gen
 	if opts.TopK != nil {
 		warnings = append(warnings, types.Warning{Type: "unsupported", Message: "topK is not supported"})
 	}
+	if opts.Seed != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Message: "seed is not supported"})
+	}
 	if opts.MaxTokens != nil {
 		warnings = append(warnings, types.Warning{Type: "unsupported", Message: "maxOutputTokens is not supported"})
 	}

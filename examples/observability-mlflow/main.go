@@ -70,21 +70,28 @@ func main() {
 		log.Fatalf("Failed to create language model: %v", err)
 	}
 
-	// Create telemetry settings with MLflow tracer
-	telemetrySettings := &telemetry.Settings{
-		IsEnabled:     true,
+	// Register a LegacyOpenTelemetry integration configured with the MLflow
+	// tracer. telemetry.Options no longer carries a Tracer field directly
+	// (each registered integration configures its own tracer instead), so
+	// the tracer is passed to the integration's constructor.
+	telemetry.RegisterTelemetryIntegration(
+		telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tracker.Tracer()}),
+	)
+
+	// Create telemetry settings
+	telemetrySettings := &telemetry.Options{
+		IsEnabled:     telemetry.Bool(true),
 		RecordInputs:  true,
 		RecordOutputs: true,
 		FunctionID:    "example-generation",
-		Tracer:        tracker.Tracer(),
 	}
 
 	// Example 1: Simple text generation with telemetry
 	fmt.Println("=== Example 1: Simple Text Generation ===")
 	result1, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
-		Model:                 model,
-		Prompt:                "Explain what MLflow is in one sentence.",
-		ExperimentalTelemetry: telemetrySettings,
+		Model:     model,
+		Prompt:    "Explain what MLflow is in one sentence.",
+		Telemetry: telemetrySettings,
 	})
 	if err != nil {
 		log.Fatalf("GenerateText failed: %v", err)
@@ -101,11 +108,11 @@ func main() {
 	temp := 0.7
 	maxTokens := 150
 	result2, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
-		Model:                 model,
-		Prompt:                "Write a haiku about observability in AI systems.",
-		Temperature:           &temp,
-		MaxTokens:             &maxTokens,
-		ExperimentalTelemetry: telemetrySettings,
+		Model:       model,
+		Prompt:      "Write a haiku about observability in AI systems.",
+		Temperature: &temp,
+		MaxTokens:   &maxTokens,
+		Telemetry:   telemetrySettings,
 	})
 	if err != nil {
 		log.Fatalf("GenerateText failed: %v", err)

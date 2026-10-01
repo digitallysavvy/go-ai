@@ -1,0 +1,70 @@
+---
+title: Middleware Aliases
+description: Reference for middleware aliases exposed by pkg/ai.
+---
+
+# Middleware Aliases
+
+The `pkg/ai` package re-exports middleware APIs for parity-oriented discoverability.
+
+## Type aliases
+
+- `ai.LanguageModelMiddleware`
+- `ai.EmbeddingModelMiddleware`
+- `ai.ImageModelMiddleware`
+- `ai.ExtractReasoningOptions`
+- `ai.ExtractJSONOptions`
+- `ai.AddToolInputExamplesOptions`
+
+## Wrapper functions
+
+```go
+func WrapLanguageModel(model provider.LanguageModel, middleware []*ai.LanguageModelMiddleware, modelID, providerID *string) provider.LanguageModel
+func WrapEmbeddingModel(model provider.EmbeddingModel, middleware []*ai.EmbeddingModelMiddleware, modelID, providerID *string) provider.EmbeddingModel
+func WrapImageModel(model provider.ImageModel, middleware []*ai.ImageModelMiddleware, modelID, providerID *string) provider.ImageModel
+func WrapProvider(p provider.Provider, languageModelMiddleware []*ai.LanguageModelMiddleware, embeddingModelMiddleware []*ai.EmbeddingModelMiddleware) provider.Provider
+```
+
+`WrapProvider` accepts image model middleware through the variadic
+`WithImageModelMiddleware(...)` option (see `pkg/registry` for the same
+option on `NewRegistry`):
+
+```go
+wrapped := ai.WrapProvider(baseProvider,
+    languageModelMiddleware,
+    embeddingModelMiddleware,
+    ai.WithImageModelMiddleware([]*ai.ImageModelMiddleware{myImageMiddleware}),
+)
+```
+
+## Built-in middleware constructors
+
+```go
+func SimulateStreamingMiddleware() *ai.LanguageModelMiddleware
+func DefaultSettingsMiddleware(settings *provider.GenerateOptions) *ai.LanguageModelMiddleware
+func ExtractReasoningMiddleware(options *ai.ExtractReasoningOptions) *ai.LanguageModelMiddleware
+func ExtractJSONMiddleware(options *ai.ExtractJSONOptions) *ai.LanguageModelMiddleware
+func AddToolInputExamplesMiddleware(options *ai.AddToolInputExamplesOptions) *ai.LanguageModelMiddleware
+```
+
+### AddToolInputExamplesOptions.Remove
+
+`Remove` is `*bool`, not `bool`. `nil` means "remove the examples" (the TS
+default); pass an explicit pointer to keep them:
+
+```go
+// Removes InputExamples from the tool schema (nil == remove, the default).
+ai.AddToolInputExamplesMiddleware(&ai.AddToolInputExamplesOptions{})
+
+// Explicitly keeps InputExamples.
+keep := false
+ai.AddToolInputExamplesMiddleware(&ai.AddToolInputExamplesOptions{Remove: &keep})
+```
+
+### LanguageModelMiddleware.OverrideSupportedURLs
+
+`OverrideSupportedURLs func(model provider.LanguageModel) map[string][]string`
+lets middleware override which URL patterns (by media type) a wrapped model
+reports as natively supported. A wrapped model without this field set
+forwards the underlying model's `SupportedURLs()` unchanged.
+

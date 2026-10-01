@@ -20,6 +20,14 @@ type Config struct {
 	// Default: https://dashscope-intl.aliyuncs.com
 	// This is the DashScope native endpoint for Wan video models
 	VideoBaseURL string
+
+	// EmbeddingBaseURL is the base URL for the embedding API (optional)
+	// Default: https://dashscope-intl.aliyuncs.com/api/v1
+	// This is the DashScope native endpoint for embedding models
+	EmbeddingBaseURL string
+
+	// Headers are custom HTTP headers to include in requests.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // NewConfig creates a new Alibaba Cloud provider configuration
@@ -30,7 +38,7 @@ func NewConfig(apiKey string) (Config, error) {
 	}
 
 	if apiKey == "" {
-		return Config{}, fmt.Errorf("LAlibaba API key is required. Set ALIBABA_API_KEY environment variable or provide it in Config")
+		return Config{}, fmt.Errorf("Alibaba API key is required. Set ALIBABA_API_KEY environment variable or provide it in Config") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 	}
 
 	return Config{
@@ -41,7 +49,7 @@ func NewConfig(apiKey string) (Config, error) {
 // Validate checks if the configuration is valid
 func (c Config) Validate() error {
 	if c.APIKey == "" {
-		return fmt.Errorf("LAPI key is required")
+		return fmt.Errorf("API key is required")
 	}
 	return nil
 }

@@ -291,8 +291,38 @@ Common JSON Schema property types:
 "maxProperties": 10,
 ```
 
+## Applying Schema Defaults
+
+`schema.ApplyDefaults` returns a copy of a value with JSON Schema object
+defaults applied, walking object properties and array items recursively. The
+SDK runs this before validation wherever it validates externally-supplied
+input against a JSON Schema — MCP structured tool output, `ValidateUIMessages`,
+tool-approval revalidation, agent call options, harness tool `ContextSchema`,
+and `workflow.ValidateSerializableToolInput` — so a missing field that has a
+`default` in the schema no longer fails validation.
+
+```go
+func ApplyDefaults(value interface{}, schema Schema) interface{}
+```
+
+```go
+withDefaults := schema.ApplyDefaults(input, mySchema)
+if err := mySchema.Validator().Validate(withDefaults); err != nil {
+    return err
+}
+```
+
+## Circular $ref Detection
+
+A `$ref` cycle that never consumes input — for example two schemas that
+reference each other only through `allOf`/`anyOf`/`oneOf`/`not` with no
+concrete `type` in between — now returns a validation error instead of
+overflowing the stack. This applies to both `Validate` and `ApplyDefaults`.
+A `not`/`anyOf`/`oneOf` branch that simply fails to match its subschema is
+unaffected; only a genuine reference cycle is rejected.
+
 ## See Also
 
 - [GenerateObject](../ai/generate-object.mdx) - Structured object generation
 - [StreamObject](../ai/stream-object.mdx) - Streaming structured output
-- [Structured Output Guide](../../04-generation/structured-output.mdx)
+- [Structured Output Guide](../../03-ai-sdk-core/10-generating-structured-data.mdx)

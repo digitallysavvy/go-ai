@@ -25,5 +25,7 @@
 //				Headers: map[string]string{"Custom-Header": "value"},
 //			}),
 //		},
+//		// optional trailing middleware.ProviderMiddlewareOption values, e.g.:
+//		// middleware.WithImageModelMiddleware([]*middleware.ImageModelMiddleware{...}),
 //	)
 package middleware

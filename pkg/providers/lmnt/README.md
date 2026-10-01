@@ -68,7 +68,6 @@ func main() {
     }
 
     fmt.Println("Audio generated successfully!")
-    fmt.Printf("Character count: %d\n", result.Usage.CharacterCount)
 }
 ```
 

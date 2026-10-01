@@ -28,7 +28,7 @@ type LocalShellCall struct {
 	Type string `json:"type"`
 
 	// ID is the unique identifier for this output item.
-	ID string `json:"id"`
+	ID string `json:"id,omitempty"`
 
 	// CallID links this call to its output.
 	CallID string `json:"call_id"`
@@ -80,7 +80,7 @@ type ShellCall struct {
 	Type string `json:"type"`
 
 	// ID is the unique identifier for this output item.
-	ID string `json:"id"`
+	ID string `json:"id,omitempty"`
 
 	// CallID links this call to its output.
 	CallID string `json:"call_id"`

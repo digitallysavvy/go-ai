@@ -21,8 +21,17 @@ type EmbeddingModel interface {
     SupportsParallelCalls() bool
 
     // Embedding methods
-    DoEmbed(ctx context.Context, input string) (*types.EmbeddingResult, error)
-    DoEmbedMany(ctx context.Context, inputs []string) (*types.EmbeddingsResult, error)
+    DoEmbed(ctx context.Context, input string, opts *provider.EmbedModelOptions) (*types.EmbeddingResult, error)
+    DoEmbedMany(ctx context.Context, inputs []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error)
+}
+```
+
+`opts` may be `nil`. Use `provider.EmbedModelOptions` when forwarding provider-specific options or custom headers.
+
+```go
+type EmbedModelOptions struct {
+    ProviderOptions map[string]interface{}
+    Headers         map[string]string
 }
 ```
 
@@ -47,8 +56,8 @@ type EmbeddingModel interface {
 
 | Method | Parameters | Returns | Description |
 |--------|------------|---------|-------------|
-| DoEmbed() | ctx, string | *types.EmbeddingResult, error | Generate single embedding |
-| DoEmbedMany() | ctx, []string | *types.EmbeddingsResult, error | Generate multiple embeddings |
+| DoEmbed() | ctx, string, opts | *types.EmbeddingResult, error | Generate single embedding |
+| DoEmbedMany() | ctx, []string, opts | *types.EmbeddingsResult, error | Generate multiple embeddings |
 
 ## Examples
 
@@ -83,7 +92,7 @@ func main() {
     fmt.Printf("Supports parallel calls: %v\n", model.SupportsParallelCalls())
 
     // Generate embedding
-    result, err := model.DoEmbed(context.Background(), "Hello, world!")
+    result, err := model.DoEmbed(context.Background(), "Hello, world!", nil)
     if err != nil {
         log.Fatal(err)
     }
@@ -101,7 +110,7 @@ texts := []string{
     "Third text",
 }
 
-result, err := model.DoEmbedMany(ctx, texts)
+result, err := model.DoEmbedMany(ctx, texts, nil)
 if err != nil {
     log.Fatal(err)
 }
@@ -110,6 +119,22 @@ fmt.Printf("Generated %d embeddings\n", len(result.Embeddings))
 for i, emb := range result.Embeddings {
     fmt.Printf("Text %d: %d dimensions\n", i+1, len(emb))
 }
+```
+
+### Provider Options
+
+Provider-specific embedding options use the same provider-keyed shape as generation APIs:
+
+```go
+dimensions := 768
+result, err := model.DoEmbed(ctx, "document text", &provider.EmbedModelOptions{
+    ProviderOptions: map[string]interface{}{
+        "google": google.GoogleEmbeddingProviderOptions{
+            TaskType:             "RETRIEVAL_DOCUMENT",
+            OutputDimensionality: &dimensions,
+        },
+    },
+})
 ```
 
 ### Respecting Max Embeddings Limit
@@ -130,7 +155,7 @@ func embedLargeDataset(model provider.EmbeddingModel, texts []string) ([][]float
         }
 
         batch := texts[i:end]
-        result, err := model.DoEmbedMany(ctx, batch)
+        result, err := model.DoEmbedMany(ctx, batch, nil)
         if err != nil {
             return nil, err
         }

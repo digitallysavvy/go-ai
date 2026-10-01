@@ -7,8 +7,8 @@ import (
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
@@ -64,11 +64,17 @@ func (m *LanguageModel) SupportsImageInput() bool {
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
 	reqBody := m.buildRequestBody(opts, false)
 	var response ollamaResponse
-	err := m.provider.client.PostJSON(ctx, "/v1/chat/completions", reqBody, &response)
+	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+		Method: http.MethodPost,
+		Path:   "/v1/chat/completions",
+		Body:   reqBody,
+	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	return m.convertResponse(response), nil
+	result := m.convertResponse(response)
+	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	return result, nil
 }
 
 // DoStream performs streaming text generation
@@ -85,7 +91,9 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	return newOllamaStream(httpResp.Body), nil
+	stream := newOllamaStream(httpResp.Body)
+	stream.SetRequestBody(reqBody)
+	return providerutils.WithResponseMetadata(stream, httpResp.Header, m.ModelID()), nil
 }
 
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
@@ -141,10 +149,11 @@ func (m *LanguageModel) convertResponse(response ollamaResponse) *types.Generate
 	}
 	choice := response.Choices[0]
 	result := &types.GenerateResult{
-		Text:         choice.Message.Content,
-		FinishReason: providerutils.MapOpenAIFinishReason(choice.FinishReason),
-		Usage:        convertOllamaUsage(response.Usage),
-		RawResponse:  response,
+		Text:            choice.Message.Content,
+		FinishReason:    providerutils.MapOpenAIFinishReason(choice.FinishReason),
+		RawFinishReason: choice.FinishReason,
+		Usage:           convertOllamaUsage(response.Usage),
+		RawResponse:     response,
 	}
 	if len(choice.Message.ToolCalls) > 0 {
 		result.ToolCalls = make([]types.ToolCall, len(choice.Message.ToolCalls))
@@ -213,7 +222,6 @@ func convertOllamaUsage(usage ollamaUsage) types.Usage {
 	return result
 }
 
-
 type ollamaResponse struct {
 	ID      string `json:"id"`
 	Object  string `json:"object"`
@@ -239,9 +247,9 @@ type ollamaResponse struct {
 }
 
 type ollamaUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens        int `json:"prompt_tokens"`
+	CompletionTokens    int `json:"completion_tokens"`
+	TotalTokens         int `json:"total_tokens"`
 	PromptTokensDetails *struct {
 		CachedTokens *int `json:"cached_tokens,omitempty"`
 	} `json:"prompt_tokens_details,omitempty"`

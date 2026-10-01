@@ -67,8 +67,10 @@ stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
     Prompt: "Write a long essay...",
 })
 
-for chunk := range stream.TextChannel {
-    fmt.Print(chunk)
+for chunk := range stream.Chunks() {
+    if chunk.Type == provider.ChunkTypeText {
+        fmt.Print(chunk.Text)
+    }
 }
 ```
 
@@ -114,10 +116,10 @@ For complex, multi-step workflows:
 agent := agents.New(agents.Config{
     Model:        model,
     Instructions: "You are a customer support agent.",
-    Tools: map[string]ai.Tool{
-        "searchKB":     searchKnowledgeBase,
-        "createTicket": createSupportTicket,
-        "checkStatus":  checkOrderStatus,
+    Tools: []types.Tool{
+        searchKnowledgeBase,
+        createSupportTicket,
+        checkOrderStatus,
     },
     MaxSteps: 10,
 })
@@ -323,6 +325,6 @@ if isComplexTask {
 ## Next Steps
 
 - **[Go Quick Start](./02-golang.mdx)** - Build your first AI application
-- **[Foundations](../02-foundations)** - Learn core concepts
-- **[AI SDK Core](../03-ai-sdk-core)** - Explore the complete API
-- **[Agents](../03-agents)** - Build autonomous agents
+- **[Foundations](../02-foundations/index.mdx)** - Learn core concepts
+- **[AI SDK Core](../03-ai-sdk-core/index.mdx)** - Explore the complete API
+- **[Agents](../03-agents/index.mdx)** - Build autonomous agents

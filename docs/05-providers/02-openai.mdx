@@ -33,6 +33,13 @@ if err != nil {
 }
 ```
 
+`LanguageModel` matches the TypeScript OpenAI provider default and returns a Responses API model. Use `ChatModel` when you need the Chat Completions endpoint or `CompletionModel` for legacy instruct-style completions:
+
+```go
+chatModel, err := provider.ChatModel("gpt-4o")
+completionModel, err := provider.CompletionModel("gpt-3.5-turbo-instruct")
+```
+
 ### Get API Key
 
 1. Sign up at [platform.openai.com](https://platform.openai.com)
@@ -60,6 +67,8 @@ export OPENAI_API_KEY=sk-...
 | Model ID | Context | Input Price | Output Price | Best For |
 |----------|---------|-------------|--------------|----------|
 | gpt-5 | 200K | TBA | TBA | Next-generation reasoning |
+| gpt-5.5 | 200K | TBA | TBA | Frontier reasoning and coding |
+| gpt-5.5-2026-04-23 | 200K | TBA | TBA | Pinned GPT-5.5 release |
 
 ### o-Series (Reasoning Models)
 
@@ -88,6 +97,8 @@ export OPENAI_API_KEY=sk-...
 
 | Model ID | Quality | Speed | Price | Best For |
 |----------|---------|-------|-------|----------|
+| gpt-image-2 | Excellent | Medium | Per image | Latest image generation |
+| gpt-image-1 | Excellent | Medium | Per image | Multimodal image generation |
 | dall-e-3 | Excellent | Medium | $0.040/image | High-quality images |
 | dall-e-2 | Good | Fast | $0.020/image | Quick generations |
 
@@ -101,14 +112,36 @@ export OPENAI_API_KEY=sk-...
 
 ## Provider-Specific Features
 
+### Transport and Headers
+
+OpenAI provider configuration supports the same transport flexibility as the TypeScript SDK: custom base URL, custom HTTP client, custom provider name, organization/project headers, and additional headers.
+
+```go
+provider := openai.New(openai.Config{
+    APIKey:       os.Getenv("OPENAI_API_KEY"),
+    BaseURL:      "https://proxy.example.com/v1",
+    Organization: "org_...",
+    Project:      "proj_...",
+    Headers: map[string]string{
+        "X-Trace-ID": "trace-123",
+    },
+    HTTPClient: http.DefaultClient,
+})
+```
+
+Provider-level headers are forwarded to language, Responses, embeddings, image, speech, and transcription requests. Request-level headers override provider-level headers when both are present, matching TypeScript `headers` merge behavior.
+
 ### Structured Output (JSON Mode)
 
 OpenAI supports native JSON mode for reliable structured output:
 
 ```go
-import "github.com/digitallysavvy/go-ai/pkg/ai"
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/schema"
+)
 
-schema := map[string]interface{}{
+personSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
     "type": "object",
     "properties": map[string]interface{}{
         "name": map[string]string{"type": "string"},
@@ -116,10 +149,13 @@ schema := map[string]interface{}{
         "email": map[string]string{"type": "string"},
     },
     "required": []string{"name", "age"},
-}
+})
 
-result, err := ai.GenerateObject(model, schema,
-    "Extract person info: John Doe, 30 years old, john@example.com")
+result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+    Model:  model,
+    Schema: personSchema,
+    Prompt: "Extract person info: John Doe, 30 years old, john@example.com",
+})
 if err != nil {
     log.Fatal(err)
 }
@@ -132,13 +168,35 @@ fmt.Printf("Structured data: %+v\n", result.Object)
 GPT-4o and GPT-4-turbo support image understanding:
 
 ```go
-result, err := ai.GenerateText(model,
-    ai.WithMessages(
-        ai.UserMessage("What's in this image?",
-            ai.WithImageURL("https://example.com/image.jpg"),
-        ),
-    ),
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Messages: []types.Message{
+        {
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.TextContent{Text: "What's in this image?"},
+                types.FileContent{
+                    URL:       "https://example.com/image.jpg",
+                    MediaType: "image/jpeg",
+                },
+            },
+        },
+    },
+})
+```
+
+For OpenAI Responses image/file parts, set the provider option `imageDetail` to forward the API `detail` field:
+
+```go
+types.FileContent{
+    URL:       "https://example.com/chart.png",
+    MediaType: "image/png",
+    ProviderOptions: map[string]interface{}{
+        "openai": map[string]interface{}{
+            "imageDetail": "high",
+        },
+    },
+}
 ```
 
 ### Function Calling
@@ -146,38 +204,81 @@ result, err := ai.GenerateText(model,
 Define tools that the model can call:
 
 ```go
-weatherTool := ai.Tool{
-    Type: "function",
-    Function: ai.FunctionDefinition{
-        Name:        "get_weather",
-        Description: "Get current weather for a location",
-        Parameters: map[string]interface{}{
-            "type": "object",
-            "properties": map[string]interface{}{
-                "location": map[string]string{
-                    "type":        "string",
-                    "description": "City name",
-                },
-                "unit": map[string]interface{}{
-                    "type": "string",
-                    "enum": []string{"celsius", "fahrenheit"},
-                },
+weatherTool := types.Tool{
+    Name:        "get_weather",
+    Description: "Get current weather for a location",
+    Parameters: map[string]interface{}{
+        "type": "object",
+        "properties": map[string]interface{}{
+            "location": map[string]string{
+                "type":        "string",
+                "description": "City name",
             },
-            "required": []string{"location"},
+            "unit": map[string]interface{}{
+                "type": "string",
+                "enum": []string{"celsius", "fahrenheit"},
+            },
         },
+        "required": []string{"location"},
     },
 }
 
-result, err := ai.GenerateText(model,
-    "What's the weather in San Francisco?",
-    ai.WithTools(weatherTool),
-)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "What's the weather in San Francisco?",
+    Tools:  []types.Tool{weatherTool},
+})
 
 if result.ToolCalls != nil {
     for _, call := range result.ToolCalls {
-        fmt.Printf("Tool: %s, Args: %v\n", call.Function.Name, call.Function.Arguments)
+        fmt.Printf("Tool: %s, Args: %v\n", call.ToolName, call.Arguments)
     }
 }
+```
+
+Responses API tool calls preserve OpenAI provider metadata, including `function_call.namespace`. Tool calls with no input serialize `{}` rather than `null`, and assistant messages serialize `content: null` only when tool calls are present and no text content is available. Non-tool assistant turns are not sent as null-content messages.
+
+Function tools can be grouped into OpenAI Responses namespaces by setting `providerOptions.openai.namespace` on the tool definition. Go serializes the namespace wrapper exactly as the TypeScript provider does and rejects conflicting namespace descriptions. When a reasoning effort is set for Responses models and no summary is provided, Go defaults `reasoning.summary` to `"detailed"`, matching the OpenAI provider default.
+
+For Responses API calls, use `ProviderOptions["openai"]["allowedTools"]` to
+restrict callable function tools while keeping the full `tools` array in the
+request. This preserves prompt caching behavior across different allowlists and
+overrides request-level `ToolChoice`, matching the TypeScript SDK.
+
+```go
+result, err := model.DoGenerate(ctx, &provider.GenerateOptions{
+    Prompt: prompt,
+    Tools:  tools,
+    ProviderOptions: map[string]interface{}{
+        "openai": map[string]interface{}{
+            "allowedTools": map[string]interface{}{
+                "toolNames": []string{"weather"},
+                "mode":      "auto", // optional: "auto" or "required"
+            },
+        },
+    },
+})
+```
+
+### Image Generation Options
+
+Use `OpenAIImageModelOptions` under the `"openai"` provider key for typed image options. The struct maps camelCase Go JSON names to the OpenAI wire fields used by the TypeScript SDK.
+
+```go
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:  imageModel,
+    Prompt: "A studio product photo of a matte ceramic cup",
+    ProviderOptions: map[string]interface{}{
+        "openai": openai.OpenAIImageModelOptions{
+            Size:              "1024x1024",
+            Quality:           "high",
+            OutputFormat:      "png",
+            OutputCompression: ptr(80),
+            Background:        "transparent",
+            Moderation:        "auto",
+        },
+    },
+})
 ```
 
 ### Reasoning Models (o1/o3)
@@ -188,8 +289,10 @@ o1 and o3 models use extended thinking for complex problems:
 // o1 uses internal reasoning tokens (not visible in response)
 model, err := provider.LanguageModel("o1")
 
-result, err := ai.GenerateText(model,
-    "Solve this complex math problem: Find the derivative of f(x) = x^3 * sin(x)")
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Solve this complex math problem: Find the derivative of f(x) = x^3 * sin(x)",
+})
 
 fmt.Println(result.Text)
 // Output includes detailed step-by-step reasoning
@@ -206,14 +309,17 @@ Note: o1 models do not support:
 Stream text generation for real-time output:
 
 ```go
-stream, err := ai.StreamText(model, "Write a long story about AI")
+stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Write a long story about AI",
+})
 if err != nil {
     log.Fatal(err)
 }
 defer stream.Close()
 
-for chunk := range stream.TextChannel() {
-    fmt.Print(chunk)
+for chunk := range stream.Chunks() {
+    fmt.Print(chunk.Text)
 }
 
 if stream.Error() != nil {
@@ -226,11 +332,13 @@ if stream.Error() != nil {
 Control output format:
 
 ```go
-result, err := ai.GenerateText(model, "Generate a JSON object",
-    ai.WithResponseFormat(ai.ResponseFormat{
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Generate a JSON object",
+    ResponseFormat: &provider.ResponseFormat{
         Type: "json_object",
-    }),
-)
+    },
+})
 ```
 
 ## Examples
@@ -259,25 +367,36 @@ func main() {
         log.Fatal(err)
     }
 
-    result, err := ai.GenerateText(model, "Explain quantum computing in simple terms")
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Explain quantum computing in simple terms",
+    })
     if err != nil {
         log.Fatal(err)
     }
 
     fmt.Println(result.Text)
-    fmt.Printf("Tokens used: %d\n", result.Usage.TotalTokens)
+    fmt.Printf("Tokens used: %d\n", result.Usage.GetTotalTokens())
 }
 ```
 
 ### Chat Conversation
 
 ```go
-messages := []ai.Message{
-    ai.SystemMessage("You are a helpful coding assistant"),
-    ai.UserMessage("How do I reverse a string in Go?"),
+messages := []types.Message{
+    {
+        Role: types.RoleUser,
+        Content: []types.ContentPart{
+            types.TextContent{Text: "How do I reverse a string in Go?"},
+        },
+    },
 }
 
-result, err := ai.GenerateText(model, ai.WithMessages(messages...))
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    System: "You are a helpful coding assistant",
+    Messages: messages,
+})
 if err != nil {
     log.Fatal(err)
 }
@@ -286,11 +405,25 @@ fmt.Println(result.Text)
 
 // Continue conversation
 messages = append(messages,
-    ai.AssistantMessage(result.Text),
-    ai.UserMessage("Can you make it more efficient?"),
+    types.Message{
+        Role: types.RoleAssistant,
+        Content: []types.ContentPart{
+            types.TextContent{Text: result.Text},
+        },
+    },
+    types.Message{
+        Role: types.RoleUser,
+        Content: []types.ContentPart{
+            types.TextContent{Text: "Can you make it more efficient?"},
+        },
+    },
 )
 
-result, err = ai.GenerateText(model, ai.WithMessages(messages...))
+result, err = ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    System: "You are a helpful coding assistant",
+    Messages: messages,
+})
 ```
 
 ### Image Generation with DALL-E
@@ -301,17 +434,21 @@ if err != nil {
     log.Fatal(err)
 }
 
-result, err := ai.GenerateImage(imageModel, "A futuristic city with flying cars",
-    ai.WithImageSize("1024x1024"),
-    ai.WithImageQuality("hd"),
-    ai.WithImageStyle("vivid"),
-)
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:   imageModel,
+    Prompt:  "A futuristic city with flying cars",
+    Size:    "1024x1024",
+    Quality: "hd",
+    Style:   "vivid",
+})
 if err != nil {
     log.Fatal(err)
 }
 
-fmt.Printf("Image URL: %s\n", result.Images[0].URL)
+fmt.Printf("Image bytes: %d\n", len(result.Images[0].Data))
 ```
+
+`Quality` accepts `"standard"`/`"hd"` (DALL-E) or `"low"`/`"medium"`/`"high"`/`"xhigh"`/`"max"`/`"auto"` (GPT Image models) — `"xhigh"` and `"max"` are new this cycle.
 
 ### Text Embeddings
 
@@ -326,12 +463,15 @@ texts := []string{
     "jumps over the lazy dog",
 }
 
-embeddings, err := ai.Embed(embeddingModel, texts...)
+result, err := ai.EmbedMany(ctx, ai.EmbedManyOptions{
+    Model:  embeddingModel,
+    Inputs: texts,
+})
 if err != nil {
     log.Fatal(err)
 }
 
-for i, embedding := range embeddings {
+for i, embedding := range result.Embeddings {
     fmt.Printf("Text %d: %d dimensions\n", i, len(embedding))
 }
 ```
@@ -344,16 +484,18 @@ if err != nil {
     log.Fatal(err)
 }
 
-audio, err := ai.GenerateSpeech(ttsModel, "Hello, welcome to Go-AI SDK",
-    ai.WithVoice("alloy"),
-    ai.WithSpeechFormat("mp3"),
-)
+result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+    Model:        ttsModel,
+    Text:         "Hello, welcome to Go-AI SDK",
+    Voice:        "alloy",
+    OutputFormat: "mp3",
+})
 if err != nil {
     log.Fatal(err)
 }
 
 // Save audio file
-os.WriteFile("output.mp3", audio, 0644)
+os.WriteFile("output.mp3", result.Audio.Data, 0644)
 ```
 
 ### Transcription with Whisper
@@ -364,16 +506,21 @@ if err != nil {
     log.Fatal(err)
 }
 
-audioFile, err := os.Open("audio.mp3")
+audioData, err := os.ReadFile("audio.mp3")
 if err != nil {
     log.Fatal(err)
 }
-defer audioFile.Close()
 
-result, err := ai.Transcribe(transcriptionModel, audioFile,
-    ai.WithTranscriptionLanguage("en"),
-    ai.WithTranscriptionPrompt("Technical discussion about AI"),
-)
+result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
+    Model:    transcriptionModel,
+    Audio:    audioData,
+    MimeType: "audio/mpeg",
+    ProviderOptions: map[string]interface{}{
+        "openai": map[string]interface{}{
+            "language": "en",
+        },
+    },
+})
 if err != nil {
     log.Fatal(err)
 }
@@ -425,10 +572,14 @@ provider := openai.New(openai.Config{
 ### Common Errors
 
 ```go
-result, err := ai.GenerateText(model, prompt)
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: prompt,
+})
 if err != nil {
-    if openaiErr, ok := err.(*openai.Error); ok {
-        switch openaiErr.Code {
+    var providerErr *providererrors.ProviderError
+    if errors.As(err, &providerErr) {
+        switch providerErr.ErrorCode {
         case "invalid_api_key":
             log.Fatal("Invalid API key")
         case "model_not_found":
@@ -441,7 +592,7 @@ if err != nil {
         case "insufficient_quota":
             log.Fatal("Insufficient quota")
         default:
-            log.Printf("OpenAI error: %s - %s", openaiErr.Code, openaiErr.Message)
+            log.Printf("OpenAI error: %s - %s", providerErr.ErrorCode, providerErr.Message)
         }
     }
     log.Fatal(err)
@@ -453,17 +604,21 @@ if err != nil {
 ```go
 import "github.com/digitallysavvy/go-ai/pkg/ai"
 
-func generateWithBackoff(model ai.LanguageModel, prompt string) (*ai.GenerateTextResult, error) {
+func generateWithBackoff(ctx context.Context, model provider.LanguageModel, prompt string) (*ai.GenerateTextResult, error) {
     maxRetries := 3
     baseDelay := time.Second
 
     for i := 0; i < maxRetries; i++ {
-        result, err := ai.GenerateText(model, prompt)
+        result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:  model,
+            Prompt: prompt,
+        })
         if err == nil {
             return result, nil
         }
 
-        if errors.Is(err, ai.ErrRateLimitExceeded) {
+        var providerErr *providererrors.ProviderError
+        if errors.As(err, &providerErr) && providerErr.StatusCode == 429 {
             delay := baseDelay * time.Duration(math.Pow(2, float64(i)))
             log.Printf("Rate limited, waiting %v", delay)
             time.Sleep(delay)
@@ -542,9 +697,143 @@ func estimateCost(promptTokens, completionTokens int, model string) float64 {
 }
 ```
 
+## Realtime
+
+`Provider.RealtimeModel(modelID)` / `ExperimentalRealtimeModel` route known
+Live model IDs (currently `"gpt-live-1"`) to the OpenAI Live WebSocket and
+everything else (e.g. `"gpt-realtime"`) to the classic Realtime API:
+
+```go
+import providerapi "github.com/digitallysavvy/go-ai/pkg/provider"
+
+model, err := provider.RealtimeModel("gpt-realtime")
+if err != nil {
+    log.Fatal(err)
+}
+
+secret, err := provider.GetRealtimeToken(ctx, providerapi.RealtimeFactoryGetTokenOptions{
+    Model: "gpt-realtime",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+ws := model.GetWebSocketConfig(secret.Token, secret.URL)
+```
+
+> **Fixed this cycle:** the WebSocket handshake's `Authorization` bearer
+> token is now extracted case-insensitively with any whitespace after the
+> scheme (`/^bearer\s+(.+)$/i`, TS parity). Previously `BEARER <key>` or a
+> tab after `Bearer` were not recognized and the connection silently
+> dropped the API key subprotocol. This also affects
+> `gpt-realtime-whisper` realtime transcription.
+
+## Speech Translation (experimental)
+
+`Provider.SpeechTranslationModel(modelID)` (alias `Provider.Translation`)
+streams speech-to-speech translation over `/realtime/translations`
+(default model `"gpt-realtime-translate"`), for use with
+`ai.ExperimentalStreamTranslate`:
+
+```go
+translationModel, err := provider.SpeechTranslationModel("gpt-realtime-translate")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.ExperimentalStreamTranslate(ctx, ai.StreamTranslateOptions{
+    Model:          translationModel,
+    Audio:          audioStream,
+    TargetLanguage: "es",
+})
+```
+
+## Workflow Serialization
+
+OpenAI embedding, image, speech, and transcription models can cross a
+workflow boundary with `providerutils.SerializeModel` / `DeserializeModel`
+(language models could already be serialized). See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
+for the mechanism; realtime and speech-translation models are not yet
+serializable.
+
 ## See Also
 
 - [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
-- [Core Concepts: Language Models](../02-core-concepts/language-models.mdx)
+- [Core Concepts: Language Models](../02-foundations/02-providers-and-models.mdx)
 - [OpenAI API Documentation](https://platform.openai.com/docs/api-reference)
 - [Azure OpenAI Provider](05-azure.mdx) - For enterprise deployment
+
+## May 2026 parity updates
+
+### Model IDs
+
+The OpenAI provider includes GPT-5.5 chat model constants and `gpt-image-2` image generation support.
+
+| Capability | Go constant | Model ID |
+| --- | --- | --- |
+| Chat | `openai.ModelGPT55` | `gpt-5.5` |
+| Chat | `openai.ModelGPT552026_04_23` | `gpt-5.5-2026-04-23` |
+| Image | `openai.ModelGPTImage2` | `gpt-image-2` |
+
+```go
+p := openai.New(openai.Config{
+    APIKey: os.Getenv("OPENAI_API_KEY"),
+    Headers: map[string]string{
+        "OpenAI-Beta": "example",
+    },
+})
+
+model, err := p.LanguageModel(openai.ModelGPT55)
+```
+
+### Responses API metadata
+
+`LanguageModel` and `ResponsesModel` both use OpenAI Responses API behavior. The provider preserves response IDs, headers, provider metadata, encrypted reasoning, function-call namespace values, and generated files in the standard result fields.
+
+```go
+model, err := p.ResponsesModel(openai.ModelGPT55)
+```
+
+Continue an OpenAI Conversation by passing the conversation ID through provider options. This is distinct from `previousResponseId`; if both are set, the request forwards both fields and returns an unsupported warning matching the TypeScript SDK.
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Messages: messages,
+    ProviderOptions: map[string]interface{}{
+        "openai": map[string]interface{}{
+            "conversation": "conv_123",
+        },
+    },
+})
+```
+
+### Image detail and file content
+
+Image detail provider options are forwarded on image parts, including tool-result image content. Prefer `types.FileContent` with tagged `types.FileData` for new multimodal code. `types.ImageContent` remains available for compatibility.
+
+For OpenAI Responses compatibility, string file data with the default `file-` prefix is sent as a `file_id` reference instead of inline base64 data, matching the TypeScript provider. To disable or customize this deprecated compatibility path, set `openai.Config.FileIDPrefixes`.
+
+```go
+messages := []types.Message{{
+    Role: types.RoleUser,
+    Content: []types.ContentPart{
+        types.TextContent{Text: "Describe the image."},
+        types.FileContent{
+            FileData: types.FileData{
+                Type:      types.FileDataTypeURL,
+                URL:       "https://example.com/chart.png",
+                MediaType: "image/png",
+            },
+            ProviderOptions: map[string]interface{}{
+                "openai": map[string]interface{}{"imageDetail": "high"},
+            },
+        },
+    },
+}}
+```
+
+### Assistant null content behavior
+
+Assistant messages with tool calls serialize `content: null` only when the target OpenAI-compatible API requires it for tool-call assistant turns. Plain assistant messages keep their text content.

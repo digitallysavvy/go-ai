@@ -2,8 +2,12 @@ package ai
 
 import (
 	"context"
+	"errors"
+	"io"
 	"testing"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
 
 func TestTimeoutConfig_CreateTimeoutContext_Total(t *testing.T) {
@@ -357,6 +361,57 @@ func TestTimeoutConfig_ContextCancellation(t *testing.T) {
 		t.Error("context should have been cancelled due to timeout")
 	}
 }
+
+func TestTimeoutError_AsReason(t *testing.T) {
+	t.Parallel()
+
+	err := wrapTimeoutError(TimeoutReasonTotal, context.DeadlineExceeded)
+	var timeoutErr *TimeoutError
+	if !errors.As(err, &timeoutErr) {
+		t.Fatal("expected TimeoutError")
+	}
+	if timeoutErr.Reason != TimeoutReasonTotal {
+		t.Fatalf("Reason = %q, want %q", timeoutErr.Reason, TimeoutReasonTotal)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal("expected wrapped DeadlineExceeded")
+	}
+}
+
+func TestStreamText_PerChunkTimeoutHasReason(t *testing.T) {
+	t.Parallel()
+
+	perChunk := 10 * time.Millisecond
+	result := &StreamTextResult{
+		stream:  slowTextStream{delay: time.Second},
+		timeout: &TimeoutConfig{PerChunk: &perChunk},
+	}
+
+	_, err := result.nextChunk(context.Background())
+	if err == nil {
+		t.Fatal("expected chunk timeout")
+	}
+	var timeoutErr *TimeoutError
+	if !errors.As(err, &timeoutErr) {
+		t.Fatalf("expected TimeoutError, got %T: %v", err, err)
+	}
+	if timeoutErr.Reason != TimeoutReasonChunk {
+		t.Fatalf("Reason = %q, want %q", timeoutErr.Reason, TimeoutReasonChunk)
+	}
+}
+
+type slowTextStream struct {
+	delay time.Duration
+}
+
+func (s slowTextStream) Next() (*provider.StreamChunk, error) {
+	time.Sleep(s.delay)
+	return nil, io.EOF
+}
+
+func (s slowTextStream) Close() error { return nil }
+
+func (s slowTextStream) Err() error { return nil }
 
 func TestTimeoutConfig_ManualCancellation(t *testing.T) {
 	t.Parallel()

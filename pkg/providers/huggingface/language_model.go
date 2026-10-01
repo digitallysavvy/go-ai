@@ -3,231 +3,400 @@ package huggingface
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"net/http"
+	"strings"
+	"time"
 
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
-// LanguageModel implements the provider.LanguageModel interface for Hugging Face
+// LanguageModel implements provider.LanguageModel using the Hugging Face
+// Router Responses API (POST /responses), mirroring TS
+// HuggingFaceResponsesLanguageModel.
 type LanguageModel struct {
 	provider *Provider
 	modelID  string
 }
 
-// NewLanguageModel creates a new Hugging Face language model
-func NewLanguageModel(provider *Provider, modelID string) *LanguageModel {
-	return &LanguageModel{
-		provider: provider,
-		modelID:  modelID,
+// NewLanguageModel creates a new Hugging Face Responses language model.
+func NewLanguageModel(p *Provider, modelID string) *LanguageModel {
+	return &LanguageModel{provider: p, modelID: modelID}
+}
+
+// SpecificationVersion returns the specification version ("v4", matching TS
+// LanguageModelV4).
+func (m *LanguageModel) SpecificationVersion() string { return "v4" }
+
+// Provider returns the provider identifier (TS config.provider =
+// 'huggingface.responses').
+func (m *LanguageModel) Provider() string { return "huggingface.responses" }
+
+// ModelID returns the model ID.
+func (m *LanguageModel) ModelID() string { return m.modelID }
+
+// SupportsTools reports whether the model supports tool calling.
+func (m *LanguageModel) SupportsTools() bool { return true }
+
+// SupportsStructuredOutput reports whether the model supports JSON schema output.
+func (m *LanguageModel) SupportsStructuredOutput() bool { return true }
+
+// SupportsImageInput reports whether the model accepts image inputs.
+func (m *LanguageModel) SupportsImageInput() bool { return true }
+
+// SupportedURLs reports the URL patterns this model can receive directly
+// (TS `supportedUrls: {'image/*': [/^https?:\/\/.*$/]}`).
+func (m *LanguageModel) SupportedURLs() map[string][]string {
+	return map[string][]string{"image/*": {`^https?://.*$`}}
+}
+
+// hfProviderOptions mirrors TS HuggingFaceLanguageModelResponsesOptions.
+type hfProviderOptions struct {
+	Metadata         map[string]string `json:"metadata,omitempty"`
+	Instructions     string            `json:"instructions,omitempty"`
+	StrictJSONSchema *bool             `json:"strictJsonSchema,omitempty"`
+	ReasoningEffort  string            `json:"reasoningEffort,omitempty"`
+}
+
+func extractHFProviderOptions(raw map[string]interface{}) *hfProviderOptions {
+	if raw == nil {
+		return nil
 	}
-}
-
-// SpecificationVersion returns the specification version
-func (m *LanguageModel) SpecificationVersion() string {
-	return "v3"
-}
-
-// Provider returns the provider name
-func (m *LanguageModel) Provider() string {
-	return "huggingface"
-}
-
-// ModelID returns the model ID
-func (m *LanguageModel) ModelID() string {
-	return m.modelID
-}
-
-// SupportsTools returns whether the model supports tool calling
-func (m *LanguageModel) SupportsTools() bool {
-	return false
-}
-
-// SupportsStructuredOutput returns whether the model supports structured output
-func (m *LanguageModel) SupportsStructuredOutput() bool {
-	return false
-}
-
-// SupportsImageInput returns whether the model accepts image inputs
-func (m *LanguageModel) SupportsImageInput() bool {
-	// Some models like LLaVA support images, but we'll default to false
-	return false
-}
-
-// DoGenerate performs non-streaming text generation
-func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-	reqBody := m.buildRequestBody(opts)
-
-	path := fmt.Sprintf("/models/%s", m.modelID)
-	resp, err := m.provider.client.Post(ctx, path, reqBody)
+	value, ok := raw[hfProviderOptionsKey]
+	if !ok {
+		return nil
+	}
+	data, err := json.Marshal(value)
 	if err != nil {
-		return nil, providererrors.NewProviderError("huggingface", 0, "", err.Error(), err)
+		return nil
 	}
-
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("LHugging Face API returned status %d: %s", resp.StatusCode, string(resp.Body))
+	var opts hfProviderOptions
+	if err := json.Unmarshal(data, &opts); err != nil {
+		return nil
 	}
-
-	return m.convertResponse(resp.Body)
+	return &opts
 }
 
-// DoStream performs streaming text generation
-func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
-	// Hugging Face Inference API doesn't have native streaming for all models
-	// We'll simulate it by chunking the response
-	result, err := m.DoGenerate(ctx, opts)
+// getArgs mirrors TS getArgs: it builds the request body shared by
+// doGenerate/doStream (before the "stream" flag is added) plus warnings.
+func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (map[string]interface{}, []types.Warning, error) {
+	var warnings []types.Warning
+
+	if opts.TopK != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "topK"})
+	}
+	if opts.Seed != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "seed"})
+	}
+	if opts.PresencePenalty != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "presencePenalty"})
+	}
+	if opts.FrequencyPenalty != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "frequencyPenalty"})
+	}
+	if len(opts.StopSequences) > 0 {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "stopSequences"})
+	}
+
+	input, messageWarnings, err := convertToHuggingFaceResponsesInput(opts.Prompt)
+	if err != nil {
+		return nil, warnings, err
+	}
+	warnings = append(warnings, messageWarnings...)
+
+	hfOpts := extractHFProviderOptions(opts.ProviderOptions)
+
+	hfTools, toolsPresent, mappedToolChoice, toolWarnings := prepareResponsesTools(opts.Tools, opts.ToolChoice)
+	warnings = append(warnings, toolWarnings...)
+
+	body := map[string]interface{}{
+		"model": m.modelID,
+		"input": input,
+	}
+	if opts.Temperature != nil {
+		body["temperature"] = *opts.Temperature
+	}
+	if opts.TopP != nil {
+		body["top_p"] = *opts.TopP
+	}
+	if opts.MaxTokens != nil {
+		body["max_output_tokens"] = *opts.MaxTokens
+	}
+
+	// Hugging Face Responses API uses text.format for structured output.
+	if opts.ResponseFormat != nil && opts.ResponseFormat.Type == "json" && opts.ResponseFormat.Schema != nil {
+		strict := false
+		if hfOpts != nil && hfOpts.StrictJSONSchema != nil {
+			strict = *hfOpts.StrictJSONSchema
+		}
+		name := opts.ResponseFormat.Name
+		if name == "" {
+			name = "response"
+		}
+		format := map[string]interface{}{
+			"type":   "json_schema",
+			"strict": strict,
+			"name":   name,
+			"schema": opts.ResponseFormat.Schema,
+		}
+		if opts.ResponseFormat.Description != "" {
+			format["description"] = opts.ResponseFormat.Description
+		}
+		body["text"] = map[string]interface{}{"format": format}
+	}
+
+	if hfOpts != nil && len(hfOpts.Metadata) > 0 {
+		body["metadata"] = hfOpts.Metadata
+	}
+	if hfOpts != nil && hfOpts.Instructions != "" {
+		body["instructions"] = hfOpts.Instructions
+	}
+
+	if toolsPresent {
+		body["tools"] = hfTools
+	}
+	if mappedToolChoice != nil {
+		body["tool_choice"] = mappedToolChoice
+	}
+
+	if hfOpts != nil && hfOpts.ReasoningEffort != "" {
+		body["reasoning"] = map[string]interface{}{"effort": hfOpts.ReasoningEffort}
+	}
+
+	return body, warnings, nil
+}
+
+// DoGenerate performs non-streaming generation via POST /responses.
+func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	args, warnings, err := m.getArgs(opts)
 	if err != nil {
 		return nil, err
 	}
+	body := map[string]interface{}{}
+	for k, v := range args {
+		body[k] = v
+	}
+	body["stream"] = false
 
-	stream := &huggingfaceStream{
-		result:   result,
-		position: 0,
-		done:     false,
+	var resp hfResponse
+	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+		Method:  http.MethodPost,
+		Path:    "/responses",
+		Body:    body,
+		Headers: opts.Headers,
+	}, &resp)
+	if err != nil {
+		if converted := parseHuggingFaceError(err); converted != nil {
+			return nil, converted
+		}
+		return nil, providererrors.NewProviderError("huggingface", 0, "", err.Error(), err)
 	}
 
-	return stream, nil
+	responseHeaders := providerutils.ExtractHeaders(httpResp.Headers)
+
+	if resp.Error != nil {
+		retryable := false
+		return nil, &providererrors.ProviderError{
+			Provider:        "huggingface",
+			StatusCode:      400,
+			Message:         resp.Error.Message,
+			ResponseHeaders: responseHeaders,
+			ResponseBody:    string(httpResp.Body),
+			Retryable:       &retryable,
+		}
+	}
+
+	result := m.convertResponse(resp)
+	result.Warnings = warnings
+	result.RawRequest = body
+	result.RawResponse = resp
+	result.ResponseHeaders = responseHeaders
+	result.ResponseMetadata = &types.ResponseMetadata{
+		ID:        resp.ID,
+		Timestamp: time.Unix(resp.CreatedAt, 0).UTC(),
+		ModelID:   resp.Model,
+		Headers:   responseHeaders,
+		Body:      json.RawMessage(httpResp.Body),
+	}
+	result.ProviderMetadata = map[string]interface{}{
+		hfProviderOptionsKey: map[string]interface{}{"responseId": resp.ID},
+	}
+	return result, nil
 }
 
-func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions) map[string]interface{} {
-	// Build prompt from messages
-	var promptText string
-	if opts.Prompt.IsMessages() {
-		for _, msg := range opts.Prompt.Messages {
-			content := ""
-			for _, c := range msg.Content {
-				if tc, ok := c.(types.TextContent); ok {
-					content += tc.Text
+// convertResponse mirrors TS doGenerate's output-array processing.
+func (m *LanguageModel) convertResponse(resp hfResponse) *types.GenerateResult {
+	var content []types.ContentPart
+	var toolCalls []types.ToolCall
+	var textBuilder strings.Builder
+
+	for _, item := range resp.Output {
+		switch item.Type {
+		case "message":
+			for _, part := range item.Content {
+				textBuilder.WriteString(part.Text)
+				content = append(content, types.TextContent{
+					Text:             part.Text,
+					ProviderMetadata: hfItemMetadata(item.ID),
+				})
+				for _, ann := range part.Annotations {
+					content = append(content, types.SourceContent{
+						SourceType: "url",
+						ID:         m.provider.generateID(),
+						URL:        ann.URL,
+						Title:      ann.Title,
+					})
 				}
 			}
 
-			switch msg.Role {
-			case "system":
-				promptText += fmt.Sprintf("System: %s\n", content)
-			case "user":
-				promptText += fmt.Sprintf("User: %s\n", content)
-			case "assistant":
-				promptText += fmt.Sprintf("Assistant: %s\n", content)
+		case "reasoning":
+			for _, part := range item.Content {
+				content = append(content, types.ReasoningContent{
+					Text:             part.Text,
+					ProviderMetadata: hfItemMetadata(item.ID),
+				})
+			}
+
+		case "mcp_call":
+			var args map[string]interface{}
+			_ = json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
+			content = append(content, types.ToolCallContent{
+				ToolCallID:       item.ID,
+				ToolName:         item.Name,
+				Input:            item.Arguments,
+				ProviderExecuted: true,
+			})
+			toolCalls = append(toolCalls, types.ToolCall{
+				ID:               item.ID,
+				ToolName:         item.Name,
+				Arguments:        args,
+				RawArguments:     item.Arguments,
+				ProviderExecuted: true,
+			})
+			if item.Output != "" {
+				content = append(content, types.ToolResultContent{
+					ToolCallID: item.ID,
+					ToolName:   item.Name,
+					Result:     item.Output,
+				})
+			}
+
+		case "mcp_list_tools":
+			inputJSON, _ := json.Marshal(map[string]interface{}{"server_label": item.ServerLabel})
+			content = append(content, types.ToolCallContent{
+				ToolCallID:       item.ID,
+				ToolName:         "list_tools",
+				Input:            string(inputJSON),
+				ProviderExecuted: true,
+			})
+			toolCalls = append(toolCalls, types.ToolCall{
+				ID:               item.ID,
+				ToolName:         "list_tools",
+				Arguments:        map[string]interface{}{"server_label": item.ServerLabel},
+				RawArguments:     string(inputJSON),
+				ProviderExecuted: true,
+			})
+			if len(item.Tools) > 0 {
+				content = append(content, types.ToolResultContent{
+					ToolCallID: item.ID,
+					ToolName:   "list_tools",
+					Result:     map[string]interface{}{"tools": item.Tools},
+				})
+			}
+
+		case "function_call":
+			var args map[string]interface{}
+			_ = json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
+			content = append(content, types.ToolCallContent{
+				ToolCallID: item.CallID,
+				ToolName:   item.Name,
+				Input:      item.Arguments,
+			})
+			toolCalls = append(toolCalls, types.ToolCall{
+				ID:           item.CallID,
+				ToolName:     item.Name,
+				Arguments:    args,
+				RawArguments: item.Arguments,
+			})
+			if item.Output != "" {
+				content = append(content, types.ToolResultContent{
+					ToolCallID: item.CallID,
+					ToolName:   item.Name,
+					Result:     item.Output,
+				})
 			}
 		}
-		promptText += "Assistant: "
-	} else if opts.Prompt.IsSimple() {
-		promptText = opts.Prompt.Text
 	}
 
-	reqBody := map[string]interface{}{
-		"inputs": promptText,
+	reason := "stop"
+	rawFinishReason := ""
+	if resp.IncompleteDetails != nil && resp.IncompleteDetails.Reason != "" {
+		reason = resp.IncompleteDetails.Reason
+		rawFinishReason = resp.IncompleteDetails.Reason
 	}
 
-	parameters := make(map[string]interface{})
-
-	if opts.Temperature != nil {
-		parameters["temperature"] = *opts.Temperature
+	return &types.GenerateResult{
+		Text:            textBuilder.String(),
+		Content:         content,
+		ToolCalls:       toolCalls,
+		FinishReason:    mapHuggingFaceResponsesFinishReason(reason),
+		RawFinishReason: rawFinishReason,
+		Usage:           convertHuggingFaceResponsesUsage(resp.Usage),
 	}
-
-	if opts.MaxTokens != nil {
-		parameters["max_new_tokens"] = *opts.MaxTokens
-	}
-
-	if opts.TopP != nil {
-		parameters["top_p"] = *opts.TopP
-	}
-
-	if opts.TopK != nil {
-		parameters["top_k"] = *opts.TopK
-	}
-
-	if len(parameters) > 0 {
-		reqBody["parameters"] = parameters
-	}
-
-	return reqBody
 }
 
-func (m *LanguageModel) convertResponse(body []byte) (*types.GenerateResult, error) {
-	// Hugging Face returns different formats depending on the model
-	// Try to parse as array first (most common format)
-	var responses []hfTextGenerationResponse
-	if err := json.Unmarshal(body, &responses); err == nil && len(responses) > 0 {
-		return &types.GenerateResult{
-			Text:         responses[0].GeneratedText,
-			FinishReason: types.FinishReasonStop,
-			Usage:        types.Usage{}, // HF doesn't return token counts
-		}, nil
+// hfItemMetadata builds the {huggingface: {itemId}} provider metadata carried
+// on text/reasoning content parts.
+func hfItemMetadata(itemID string) json.RawMessage {
+	raw, err := json.Marshal(map[string]interface{}{
+		hfProviderOptionsKey: map[string]interface{}{"itemId": itemID},
+	})
+	if err != nil {
+		return nil
 	}
-
-	// Try single object format
-	var response hfTextGenerationResponse
-	if err := json.Unmarshal(body, &response); err == nil && response.GeneratedText != "" {
-		return &types.GenerateResult{
-			Text:         response.GeneratedText,
-			FinishReason: types.FinishReasonStop,
-			Usage:        types.Usage{},
-		}, nil
-	}
-
-	// Try error format
-	var errorResp hfErrorResponse
-	if err := json.Unmarshal(body, &errorResp); err == nil && errorResp.Error != "" {
-		return nil, fmt.Errorf("LHugging Face API error: %s", errorResp.Error)
-	}
-
-	return nil, fmt.Errorf("unexpected response format from Hugging Face: %s", string(body))
+	return raw
 }
 
-type hfTextGenerationResponse struct {
-	GeneratedText string `json:"generated_text"`
-}
+// DoStream performs streaming generation via POST /responses (stream: true),
+// returning a real SSE-backed TextStream.
+func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	args, warnings, err := m.getArgs(opts)
+	if err != nil {
+		return nil, err
+	}
+	body := map[string]interface{}{}
+	for k, v := range args {
+		body[k] = v
+	}
+	body["stream"] = true
 
-type hfErrorResponse struct {
-	Error string `json:"error"`
-}
+	headers := internalhttp.MergeHeaders(map[string]string{"Accept": "text/event-stream"}, opts.Headers)
 
-type huggingfaceStream struct {
-	result   *types.GenerateResult
-	position int
-	done     bool
-}
-
-func (s *huggingfaceStream) Next() (*provider.StreamChunk, error) {
-	if s.done {
-		return nil, fmt.Errorf("stream exhausted")
+	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
+		Method:  http.MethodPost,
+		Path:    "/responses",
+		Body:    body,
+		Headers: headers,
+	})
+	if err != nil {
+		if converted := parseHuggingFaceError(err); converted != nil {
+			return nil, converted
+		}
+		return nil, providererrors.NewProviderError("huggingface", 0, "", err.Error(), err)
 	}
 
-	// Emit text in chunks
-	chunkSize := 10
-	text := s.result.Text
-
-	if s.position >= len(text) {
-		s.done = true
-		return &provider.StreamChunk{
-			Type:         provider.ChunkTypeFinish,
-			Text:         "",
-			FinishReason: s.result.FinishReason,
-			Usage:        &s.result.Usage,
-		}, nil
-	}
-
-	end := s.position + chunkSize
-	if end > len(text) {
-		end = len(text)
-	}
-
-	chunk := text[s.position:end]
-	s.position = end
-
-	return &provider.StreamChunk{
-		Type: provider.ChunkTypeText,
-		Text: chunk,
-	}, nil
+	s := newHFStream(httpResp.Body, warnings, m.provider.responsesProviderName())
+	s.requestBody = body
+	s.responseHeaders = providerutils.ExtractHeaders(httpResp.Header)
+	return s, nil
 }
 
-func (s *huggingfaceStream) Err() error {
-	return nil
-}
-
-func (s *huggingfaceStream) Close() error {
-	s.done = true
-	return nil
+// responsesProviderName returns the provider name attached to
+// StreamProviderError values built for this model's streams (TS's `this
+// .provider`).
+func (p *Provider) responsesProviderName() string {
+	return "huggingface.responses"
 }

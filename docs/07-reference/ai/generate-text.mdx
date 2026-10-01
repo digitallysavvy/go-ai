@@ -55,6 +55,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 | ToolCalls | []types.ToolCall | Tool calls made during generation |
 | ToolResults | []types.ToolResult | Results from executed tools |
 | Steps | []types.StepResult | Steps taken during generation |
+| FinalStep | types.StepResult | Last step, including `Performance` statistics |
 | FinishReason | types.FinishReason | Why generation finished |
 | StopReason | string | Reason string from the `StopCondition` that stopped the loop; empty if no condition fired |
 | Usage | types.Usage | Token usage information |
@@ -62,6 +63,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 | Warnings | []types.Warning | Provider warnings |
 | RawRequest | interface{} | Raw request for debugging |
 | RawResponse | interface{} | Raw response for debugging |
+
+Each `types.StepResult` includes `Performance` with `StepTimeMs`, `ResponseTimeMs`, `ToolExecutionMs`, `EffectiveOutputTokensPerSecond`, `EffectiveTotalTokensPerSecond`, and streaming-only `OutputTokensPerSecond`, `InputTokensPerSecond`, `TimeToFirstOutputMs`, and `TimeBetweenOutputChunksMs`.
 
 ## Examples
 
@@ -99,7 +102,7 @@ func main() {
     }
 
     fmt.Println(result.Text)
-    fmt.Printf("Tokens used: %d\n", result.Usage.TotalTokens)
+    fmt.Printf("Tokens used: %d\n", result.Usage.GetTotalTokens())
 }
 ```
 
@@ -218,4 +221,4 @@ if err != nil {
 - [StreamText](./stream-text.mdx) - Streaming text generation
 - [GenerateObject](./generate-object.mdx) - Structured object generation
 - [Tool Definition](./tool.mdx) - Defining custom tools
-- [Language Models Guide](../../03-providers/language-models.mdx)
+- [Language Models Guide](../../02-foundations/02-providers-and-models.mdx)

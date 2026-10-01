@@ -14,17 +14,21 @@ Google Vertex AI provides enterprise-grade AI platform with Gemini models, custo
 ```go
 import (
     "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/providers/vertex"
+    "github.com/digitallysavvy/go-ai/pkg/providers/googlevertex"
 )
 ```
 
 ### Configuration
 
 ```go
-provider := vertex.New(vertex.Config{
-    ProjectID: os.Getenv("GOOGLE_CLOUD_PROJECT"),
-    Location:  "us-central1",
+provider, err := googlevertex.New(googlevertex.Config{
+    Project:     os.Getenv("GOOGLE_VERTEX_PROJECT"),
+    Location:    "us-central1",
+    AccessToken: os.Getenv("GOOGLE_VERTEX_ACCESS_TOKEN"),
 })
+if err != nil {
+    log.Fatal(err)
+}
 
 model, err := provider.LanguageModel("gemini-2.0-flash")
 ```
@@ -44,6 +48,8 @@ gcloud auth application-default login
 export GOOGLE_CLOUD_PROJECT=your-project-id
 ```
 
+The Vertex provider reuses auth per provider instance. You can provide an explicit access token or token generator to override default Google credential discovery, which is useful for tests, service-account impersonation, and custom credential brokers.
+
 ## Available Models
 
 ### Gemini Models
@@ -53,6 +59,8 @@ export GOOGLE_CLOUD_PROJECT=your-project-id
 | gemini-2.0-flash | 1M | $0.075/1M (≤128K) | Fast, multimodal |
 | gemini-1.5-pro | 2M | $1.25/1M (≤128K) | Complex tasks |
 | gemini-1.5-flash | 1M | $0.075/1M (≤128K) | General purpose |
+| publishers/xai/models/grok-4 | Provider-defined | MaaS pricing | Grok via Vertex Model Garden |
+| publishers/xai/models/grok-4-latest | Provider-defined | MaaS pricing | Latest Grok alias via Vertex |
 
 ### PaLM Models (Legacy)
 
@@ -67,27 +75,131 @@ export GOOGLE_CLOUD_PROJECT=your-project-id
 |----------|-----------|-------|----------|
 | textembedding-gecko | 768 | Free | Semantic search |
 
+### Gemini TTS Speech Models
+
+Vertex reuses the Gemini speech model implementation and exposes it through `Provider.SpeechModel` and `Provider.Speech`.
+
+Vertex Chirp transcription is exposed through `Provider.TranscriptionModel` and `Provider.Transcription`. Chirp requests use the Vertex Speech-to-Text v2 `recognize` endpoint and support language codes, word time offsets, punctuation, and billed-duration metadata.
+
+| Model ID | Go constant |
+|----------|-------------|
+| `gemini-2.5-flash-tts` | `googlevertex.SpeechModelGemini25FlashTTS` |
+| `gemini-2.5-pro-tts` | `googlevertex.SpeechModelGemini25ProTTS` |
+| `gemini-2.5-flash-lite-preview-tts` | `googlevertex.SpeechModelGemini25FlashLitePreviewTTS` |
+| `gemini-3.1-flash-tts-preview` | `googlevertex.SpeechModelGemini31FlashTTSPreview` |
+
+```go
+provider, err := googlevertex.New(googlevertex.Config{
+    Project:     os.Getenv("GOOGLE_VERTEX_PROJECT"),
+    Location:    "us-central1",
+    AccessToken: os.Getenv("GOOGLE_VERTEX_ACCESS_TOKEN"),
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+speechModel, err := provider.SpeechModel(googlevertex.SpeechModelGemini25FlashTTS)
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+    Model: speechModel,
+    Text:  "Vertex Gemini can synthesize speech.",
+    Voice: "Kore",
+})
+```
+
+Provider metadata for Vertex speech is keyed as `google`, matching the TypeScript SDK's reuse of `GoogleSpeechModel`.
+
 ### Image Generation Models
+
+> **Breaking change:** non-Gemini Imagen models (`imagen-3.0-*`, etc.) were
+> removed from the Vertex provider too, matching the TypeScript SDK. Calling
+> `provider.ImageModel(id)` with a model ID that doesn't start with
+> `gemini-` now fails with: "Google image models other than Gemini are no
+> longer supported. Use a model ID that starts with `gemini-`."
 
 | Model ID | Aspect Ratios | Price | Best For |
 |----------|--------------|-------|----------|
-| imagen-3.0-generate-001 | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | High quality |
-| imagen-3.0-fast-generate-001 | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | Fast generation |
-| imagen-3.0-capability-001 | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | Enhanced capabilities |
 | gemini-2.5-flash-image | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | Fast Gemini generation |
 | gemini-3-pro-image-preview | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | Advanced generation |
 
+### Gemini Transcription
+
+`Provider.TranscriptionModel(modelID)` (alias `Provider.Transcription`)
+dispatches on the model ID: any ID beginning with `gemini` uses a Gemini
+transcription model instead of Chirp.
+
+- Unary (`gemini-3.5-transcribe`): calls `generateContent` once and returns
+  the full transcript, usable with `ai.Transcribe`.
+- Live (any `-live` suffix, e.g. `gemini-3.5-transcribe-live`): streams over
+  the Vertex Live WebSocket and only supports `ai.ExperimentalStreamTranscribe`
+  (`DoStream`); it returns an error if you call the unary path.
+- Any other model ID still routes to Chirp (Speech-to-Text v2 `recognize`).
+
+```go
+transcriptionModel, err := provider.TranscriptionModel("gemini-3.5-transcribe")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
+    Model: transcriptionModel,
+    Audio: audioBytes,
+})
+```
+
+```go
+liveModel, err := provider.TranscriptionModel("gemini-3.5-transcribe-live")
+if err != nil {
+    log.Fatal(err)
+}
+
+stream, err := ai.ExperimentalStreamTranscribe(ctx, ai.StreamTranscribeOptions{
+    Model: liveModel,
+    Audio: audioStream,
+})
+```
+
+> Vertex transcription (Chirp and Gemini) does not support Express Mode API
+> keys — use standard Google Cloud credentials.
+
 ## Provider-Specific Features
+
+### EU And US Multi-Region Routing
+
+When `Location` is `eu` or `us`, standard Gemini, MaaS, and Anthropic-on-Vertex requests use the regional REP hosts:
+
+- `aiplatform.eu.rep.googleapis.com`
+- `aiplatform.us.rep.googleapis.com`
+
+Explicit `BaseURL` values still take precedence.
+
+### PayGo Request Type
+
+Vertex AI uses request headers for PayGo tier selection. Set `sharedRequestType` and optionally `requestType` in Vertex provider options:
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "hello",
+    ProviderOptions: map[string]interface{}{
+        "vertex": map[string]interface{}{
+            "sharedRequestType": "priority",
+            "requestType":       "shared",
+        },
+    },
+})
+```
+
+`serviceTier` is a Gemini API body option and is ignored for Vertex requests with a warning.
 
 ### Enterprise Security
 
-```go
-provider := vertex.New(vertex.Config{
-    ProjectID: os.Getenv("GOOGLE_CLOUD_PROJECT"),
-    Location:  "us-central1",
-    VPCNetwork: "projects/my-project/global/networks/my-vpc",
-})
-```
+Configure IAM, VPC Service Controls, CMEK, and audit logging in Google Cloud.
+The SDK sends requests through the Vertex endpoint selected by `Project`,
+`Location`, and optional `BaseURL`.
 
 ### Model Garden
 
@@ -98,37 +210,17 @@ Access hundreds of models from Model Garden:
 model, err := provider.LanguageModel("publishers/google/models/gemini-2.0-flash")
 ```
 
-### Batch Prediction
+### Batch Prediction And Custom Training
 
-Process large datasets efficiently:
-
-```go
-batch := vertex.NewBatchPrediction(vertex.BatchConfig{
-    InputURI:  "gs://bucket/input.jsonl",
-    OutputURI: "gs://bucket/output/",
-    Model:     "gemini-2.0-flash",
-})
-
-job, err := batch.Create()
-```
-
-### Custom Training
-
-Fine-tune models on your data:
-
-```go
-training := vertex.NewTrainingJob(vertex.TrainingConfig{
-    DisplayName:    "my-fine-tune",
-    BaseModel:      "gemini-2.0-flash",
-    TrainingDataURI: "gs://bucket/training-data/",
-})
-
-job, err := training.Create()
-```
+Use Google Cloud Vertex AI client libraries for batch prediction and custom
+training jobs. Go-AI focuses on the AI SDK provider surfaces for generation,
+embedding, image, speech, MaaS, and Anthropic-on-Vertex requests.
 
 ### Image Generation
 
-Vertex AI provides enterprise-grade image generation with Imagen models:
+Vertex AI's text-to-image generation is now **Gemini-only** — Imagen model
+IDs (`imagen-3.0-*`) were removed from this provider, matching the
+TypeScript SDK.
 
 ```go
 // Create Vertex AI provider
@@ -140,27 +232,6 @@ provider, err := googlevertex.New(googlevertex.Config{
 if err != nil {
     log.Fatal(err)
 }
-
-// Imagen 3.0 - Text-to-image generation
-imageModel, err := provider.ImageModel("imagen-3.0-generate-001")
-if err != nil {
-    log.Fatal(err)
-}
-
-n := 1
-result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
-    Model:  imageModel,
-    Prompt: "A futuristic cityscape at night with neon lights and flying cars",
-    N:      &n,
-    Size:   "1920x1080", // Converts to 16:9 aspect ratio
-})
-if err != nil {
-    log.Fatal(err)
-}
-
-// Save the generated image
-os.WriteFile("vertex_imagen.png", result.Image, 0644)
-fmt.Printf("Generated image: %d bytes\n", len(result.Image))
 ```
 
 **Gemini Image Generation:**
@@ -181,7 +252,7 @@ if err != nil {
     log.Fatal(err)
 }
 
-os.WriteFile("vertex_gemini_image.png", result.Image, 0644)
+os.WriteFile("vertex_gemini_image.png", result.Image.Data, 0644)
 ```
 
 **Supported Aspect Ratios:**
@@ -195,9 +266,6 @@ os.WriteFile("vertex_gemini_image.png", result.Image, 0644)
 
 | Model | Speed | Quality | Best For |
 |-------|-------|---------|----------|
-| imagen-3.0-capability-001 | Medium | Very High | Enhanced features |
-| imagen-3.0-generate-001 | Medium | High | Production use |
-| imagen-3.0-fast-generate-001 | Fast | Good | Rapid iteration |
 | gemini-2.5-flash-image | Very Fast | Good | Quick generation |
 | gemini-3-pro-image-preview | Fast | High | Advanced generation |
 
@@ -208,16 +276,80 @@ os.WriteFile("vertex_gemini_image.png", result.Image, 0644)
 - Regional data residency
 - Batch image generation for large-scale operations
 
+## Video Generation
+
+`provider.VideoModel(modelID)` submits to Veo's `:predictLongRunning`
+endpoint (`MaxVideosPerCall()` returns 4) and works with both the polling
+`ai.GenerateVideo` and the async `ai.ExperimentalStartVideo` /
+`ai.ExperimentalGetVideoStatus` calls:
+
+```go
+videoModel, err := provider.VideoModel("veo-3.1-generate-preview")
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
+    Model:  videoModel,
+    Prompt: ai.VideoPrompt{Text: "An aerial shot of a mountain range at dawn"},
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+for _, video := range result.Videos {
+    fmt.Println(video.URL)
+}
+```
+
+## xAI (Grok) Sub-Provider
+
+`pkg/providers/googlevertex/xai` is a standalone package (mirroring TS's
+separate `@ai-sdk/google-vertex/xai`) that serves Grok models through
+Vertex's Model-as-a-Service OpenAI-compatible endpoint. It is not reachable
+from `googlevertex.Provider` — construct it directly:
+
+```go
+import vertexxai "github.com/digitallysavvy/go-ai/pkg/providers/googlevertex/xai"
+
+xaiProvider, err := vertexxai.New(vertexxai.Config{
+    Project:  os.Getenv("GOOGLE_VERTEX_PROJECT"),
+    Location: "global", // MaaS Grok endpoint default
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+model, err := xaiProvider.LanguageModel(vertexxai.ModelGrok420Reasoning)
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Explain the Vertex MaaS Grok endpoint.",
+})
+```
+
+Auth resolves the same way as `googlevertex.Config`: `AccessToken`,
+`AuthToken`, or `TokenSource`, falling back to Application Default
+Credentials when none are set. This is a separate code path from the
+generic `googlevertex.NewMaaS` wrapper below — either works for Grok, but
+`googlevertex/xai` is the TS-parity implementation for new code.
+
 ## Provider-Specific Options
 
-Use the `"google-vertex"` key (not `"google"`) to pass Vertex AI-specific options through `ProviderOptions`. The key is the provider name returned by the model's `Provider()` method.
+Pass Vertex AI-specific options through `ProviderOptions` under the
+`"googleVertex"` key (the model's `Provider()` method itself still returns
+`"google-vertex"`, which is only the model identity/error-wrapping name —
+not the options map key).
 
 ```go
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "Analyze this document for compliance issues.",
     ProviderOptions: map[string]interface{}{
-        "google-vertex": map[string]interface{}{
+        "googleVertex": map[string]interface{}{
             // Vertex-specific safety settings
             "safetySettings": []map[string]interface{}{
                 {
@@ -230,12 +362,29 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 ```
 
-> **Important:** Use `"google-vertex"` as the key — not `"google"`. The `"google"` key is reserved for the Google Generative AI (AI Studio) provider. Using the wrong key will silently ignore your options.
+Vertex-specific options are read from the `googleVertex` key (falling back
+to `vertex`, then `google`), matching the TypeScript SDK's own
+`providerOptions.googleVertex` convention. The legacy `"vertex"` key is
+still accepted, and a plain `"google"` key works as the last fallback so
+options shared between the AI Studio and Vertex providers don't need
+duplicating. Note that the hyphenated `"google-vertex"` string is only the
+model's `Provider()` identity/error-wrapping name — it was never a
+`ProviderOptions` key.
 
-| Provider | `ProviderOptions` key |
+| Provider | `ProviderOptions` key(s), in lookup order |
 |----------|----------------------|
 | Google AI Studio (`providers/google`) | `"google"` |
-| Google Vertex AI (`providers/googlevertex`) | `"google-vertex"` |
+| Google Vertex AI (`providers/googlevertex`) | `"googleVertex"` → `"vertex"` → `"google"` |
+
+Vertex streaming can request function-call argument deltas with `streamFunctionCallArguments`; the SDK only sends this field for streaming Vertex requests. It is omitted for non-streaming `DoGenerate` calls, matching the TypeScript provider.
+
+```go
+ProviderOptions: map[string]interface{}{
+    "googleVertex": map[string]interface{}{
+        "streamFunctionCallArguments": true,
+    },
+}
+```
 
 ## Examples
 
@@ -250,21 +399,25 @@ import (
     "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/providers/vertex"
+    "github.com/digitallysavvy/go-ai/pkg/providers/googlevertex"
 )
 
 func main() {
-    provider := vertex.New(vertex.Config{
-        ProjectID: os.Getenv("GOOGLE_CLOUD_PROJECT"),
-        Location:  "us-central1",
+    provider, err := googlevertex.New(googlevertex.Config{
+        Project:     os.Getenv("GOOGLE_VERTEX_PROJECT"),
+        Location:    "us-central1",
+        AccessToken: os.Getenv("GOOGLE_VERTEX_ACCESS_TOKEN"),
     })
+    if err != nil {
+        log.Fatal(err)
+    }
 
     model, err := provider.LanguageModel("gemini-2.0-flash")
     if err != nil {
         log.Fatal(err)
     }
 
-    result, err := ai.GenerateText(model, "Explain Vertex AI")
+    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: "Explain Vertex AI"})
     if err != nil {
         log.Fatal(err)
     }
@@ -277,15 +430,23 @@ func main() {
 
 ```go
 // Deploy across regions for high availability
-usProvider := vertex.New(vertex.Config{
-    ProjectID: os.Getenv("GOOGLE_CLOUD_PROJECT"),
-    Location:  "us-central1",
+usProvider, err := googlevertex.New(googlevertex.Config{
+    Project:     os.Getenv("GOOGLE_VERTEX_PROJECT"),
+    Location:    "us",
+    AccessToken: os.Getenv("GOOGLE_VERTEX_ACCESS_TOKEN"),
 })
+if err != nil {
+    log.Fatal(err)
+}
 
-euProvider := vertex.New(vertex.Config{
-    ProjectID: os.Getenv("GOOGLE_CLOUD_PROJECT"),
-    Location:  "europe-west4",
+euProvider, err := googlevertex.New(googlevertex.Config{
+    Project:     os.Getenv("GOOGLE_VERTEX_PROJECT"),
+    Location:    "eu",
+    AccessToken: os.Getenv("GOOGLE_VERTEX_ACCESS_TOKEN"),
 })
+if err != nil {
+    log.Fatal(err)
+}
 
 // Try primary region first
 result, err := generateWithFallback(usProvider, euProvider, prompt)
@@ -326,8 +487,40 @@ Varies by model and quota:
 
 Request quota increases through Cloud Console.
 
+## Workflow Serialization
+
+Vertex embedding, image, and transcription models can cross a workflow
+boundary with `providerutils.SerializeModel` / `DeserializeModel` (language
+models could already be serialized). See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
+for the mechanism; speech, video, and the xai sub-provider are not yet
+serializable.
+
 ## See Also
 
 - [Google Provider](04-google.mdx) - Google AI Studio
 - [Vertex AI Documentation](https://cloud.google.com/vertex-ai/docs)
 - [Model Garden](https://console.cloud.google.com/vertex-ai/model-garden)
+
+## May 2026 parity updates
+
+### Auth reuse
+
+Vertex providers reuse Google authentication per provider instance. Configure `googlevertex.New` once and reuse it for language, embedding, and image models instead of creating a new provider for every call.
+
+### Vertex MaaS and Grok
+
+Use `googlevertex.NewMaaS` for Vertex Model-as-a-Service models. Grok MaaS constants include `MaaSModelGrok420Reasoning`, `MaaSModelGrok420NonReasoning`, `MaaSModelGrok41FastReasoning`, and `MaaSModelGrok41FastNonReasoning`.
+
+```go
+maas := googlevertex.NewMaaS(googlevertex.MaaSConfig{
+    Project:  os.Getenv("GOOGLE_VERTEX_PROJECT"),
+    Location: "us-central1",
+})
+
+model, err := maas.LanguageModel(string(googlevertex.MaaSModelGrok420Reasoning))
+```
+
+### Auth token overrides
+
+Vertex Anthropic auth token generation can be overridden through MaaS configuration when a custom token source is required.

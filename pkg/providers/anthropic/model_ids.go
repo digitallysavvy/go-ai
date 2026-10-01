@@ -4,6 +4,27 @@ package anthropic
 // Use these constants instead of raw strings to avoid typos and get IDE support.
 // See https://docs.anthropic.com/en/docs/about-claude/models/overview for the full list.
 const (
+	// Claude Opus 5.5 — always-adaptive-thinking flagship model
+	ClaudeOpus5_5 = "claude-opus-5-5"
+
+	// Claude Opus 5 — supports fallbacks:'default' and rejectsThinkingDisabledAboveHighEffort
+	ClaudeOpus5 = "claude-opus-5"
+
+	// Claude Sonnet 5 — current-generation Sonnet
+	ClaudeSonnet5 = "claude-sonnet-5"
+
+	// Claude Fable 5.1 — always-adaptive-thinking model with system-message clearAt/effort
+	ClaudeFable5_1 = "claude-fable-5-1"
+
+	// Claude Fable 5 — model with server-side fallbacks support
+	ClaudeFable5 = "claude-fable-5"
+
+	// Claude Opus 4.8 — Most capable model with native structured output support
+	ClaudeOpus4_8 = "claude-opus-4-8"
+
+	// Claude Opus 4.7 — Most capable model with x-high effort support
+	ClaudeOpus4_7 = "claude-opus-4-7"
+
 	// Claude Opus 4.6 — Most capable model with adaptive thinking and fast mode
 	ClaudeOpus4_6 = "claude-opus-4-6"
 
@@ -16,8 +37,17 @@ const (
 	// Claude Opus 4.5 — Previous Opus generation
 	ClaudeOpus4_5 = "claude-opus-4-5"
 
+	// Claude Opus 4.1 — Dated Opus 4.1 release
+	ClaudeOpus4_1_20250805 = "claude-opus-4-1-20250805"
+
+	// Claude Opus 4.1 — Undated Opus 4.1 alias
+	ClaudeOpus4_1 = "claude-opus-4-1"
+
 	// Claude Opus 4 — Dated Opus 4 release
 	ClaudeOpus4_20250514 = "claude-opus-4-20250514"
+
+	// Claude Opus 4 — Undated Opus 4 alias
+	ClaudeOpus4_0 = "claude-opus-4-0"
 
 	// Claude Sonnet 4.5 — Previous Sonnet generation with date stamp
 	ClaudeSonnet4_5_20250929 = "claude-sonnet-4-5-20250929"
@@ -27,6 +57,9 @@ const (
 
 	// Claude Sonnet 4 — Dated Sonnet 4 release
 	ClaudeSonnet4_20250514 = "claude-sonnet-4-20250514"
+
+	// Claude Sonnet 4 — Undated Sonnet 4 alias
+	ClaudeSonnet4_0 = "claude-sonnet-4-0"
 
 	// Claude Haiku 4.5 — Fast and cost-effective model with date stamp
 	ClaudeHaiku4_5_20251001 = "claude-haiku-4-5-20251001"

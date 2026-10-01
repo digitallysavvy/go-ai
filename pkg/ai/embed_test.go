@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
@@ -86,6 +88,46 @@ func TestEmbed_Error(t *testing.T) {
 	}
 }
 
+// TestEmbed_ExhaustedRetriesErrorIsUnwrappedRetryError mirrors TS embed.ts's
+// `catch (error) { ...; throw error; }`: once retries are exhausted, the
+// surfaced error must be a RetryError built directly around the provider's
+// doEmbed error, with no "embedding failed: " (or similar) wrapper anywhere
+// in the chain.
+func TestEmbed_ExhaustedRetriesErrorIsUnwrappedRetryError(t *testing.T) {
+	t.Parallel()
+
+	providerErr := providererrors.NewProviderError("mock", 500, "internal_error", "boom", nil)
+	model := &testutil.MockEmbeddingModel{
+		DoEmbedFunc: func(ctx context.Context, input string, _ *provider.EmbedModelOptions) (*types.EmbeddingResult, error) {
+			return nil, providerErr
+		},
+	}
+
+	maxRetries := 1
+	_, err := Embed(context.Background(), EmbedOptions{
+		Model:      model,
+		Input:      "Hello",
+		MaxRetries: &maxRetries,
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+
+	var retryErr *providererrors.RetryError
+	if !errors.As(err, &retryErr) {
+		t.Fatalf("expected a *providererrors.RetryError, got: %T %v", err, err)
+	}
+	if retryErr.LastError != providerErr {
+		t.Errorf("RetryError.LastError = %v, want the exact original provider error", retryErr.LastError)
+	}
+	if strings.Contains(err.Error(), "embedding failed") {
+		t.Errorf("error message must not contain the removed 'embedding failed' wrapper: %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "boom") {
+		t.Errorf("error message must still surface the original error text: %q", err.Error())
+	}
+}
+
 func TestEmbedMany_Basic(t *testing.T) {
 	t.Parallel()
 
@@ -120,21 +162,25 @@ func TestEmbedMany_NilModel(t *testing.T) {
 	}
 }
 
+// TestEmbedMany_EmptyInputs mirrors TS embedMany, which does not special-case
+// an empty values array: it calls through to the model and returns an empty
+// result rather than erroring (see embed-many.ts, splitByEmbeddingLimits
+// returning [] for values.length === 0).
 func TestEmbedMany_EmptyInputs(t *testing.T) {
 	t.Parallel()
 
 	model := &testutil.MockEmbeddingModel{}
 
-	_, err := EmbedMany(context.Background(), EmbedManyOptions{
+	result, err := EmbedMany(context.Background(), EmbedManyOptions{
 		Model:  model,
 		Inputs: []string{},
 	})
 
-	if err == nil {
-		t.Fatal("expected error for empty inputs")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if err.Error() != "at least one input is required" {
-		t.Errorf("unexpected error message: %v", err)
+	if len(result.Embeddings) != 0 {
+		t.Errorf("expected 0 embeddings, got %d", len(result.Embeddings))
 	}
 }
 
@@ -219,17 +265,70 @@ func TestCosineSimilarity_DimensionMismatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for dimension mismatch")
 	}
+	if !providererrors.IsInvalidArgumentError(err) {
+		t.Errorf("expected InvalidArgumentError, got %T: %v", err, err)
+	}
 }
 
+// TestCosineSimilarity_ZeroVector mirrors TS cosine-similarity.test.ts
+// "should give 0 when one of the vectors is a zero vector": a zero vector on
+// either side must return similarity 0 with no error, not an error (A2-3).
 func TestCosineSimilarity_ZeroVector(t *testing.T) {
 	t.Parallel()
 
-	a := []float64{0.0, 0.0, 0.0}
-	b := []float64{1.0, 2.0, 3.0}
+	a := []float64{0.0, 1.0, 2.0}
+	b := []float64{0.0, 0.0, 0.0}
 
-	_, err := CosineSimilarity(a, b)
-	if err == nil {
-		t.Fatal("expected error for zero vector")
+	sim, err := CosineSimilarity(a, b)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sim != 0 {
+		t.Errorf("expected similarity 0, got %f", sim)
+	}
+
+	sim2, err2 := CosineSimilarity(b, a)
+	if err2 != nil {
+		t.Fatalf("unexpected error: %v", err2)
+	}
+	if sim2 != 0 {
+		t.Errorf("expected similarity 0, got %f", sim2)
+	}
+}
+
+// TestCosineSimilarity_EmptyVectors mirrors TS behavior: n === 0 returns 0,
+// not an error, when no length mismatch is thrown.
+func TestCosineSimilarity_EmptyVectors(t *testing.T) {
+	t.Parallel()
+
+	sim, err := CosineSimilarity([]float64{}, []float64{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sim != 0 {
+		t.Errorf("expected similarity 0 for empty vectors, got %f", sim)
+	}
+}
+
+// TestCosineSimilarity_SmallMagnitudes mirrors TS cosine-similarity.test.ts
+// "should handle vectors with very small magnitudes".
+func TestCosineSimilarity_SmallMagnitudes(t *testing.T) {
+	t.Parallel()
+
+	sim, err := CosineSimilarity([]float64{1e-10, 0, 0}, []float64{2e-10, 0, 0})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if math.Abs(sim-1.0) > 1e-9 {
+		t.Errorf("expected similarity 1.0, got %f", sim)
+	}
+
+	sim2, err2 := CosineSimilarity([]float64{1e-10, 0, 0}, []float64{-1e-10, 0, 0})
+	if err2 != nil {
+		t.Fatalf("unexpected error: %v", err2)
+	}
+	if math.Abs(sim2-(-1.0)) > 1e-9 {
+		t.Errorf("expected similarity -1.0, got %f", sim2)
 	}
 }
 
@@ -350,10 +449,10 @@ func TestFindMostSimilar_Basic(t *testing.T) {
 
 	query := []float64{1.0, 0.0}
 	candidates := [][]float64{
-		{0.0, 1.0},   // orthogonal
-		{1.0, 0.0},   // identical
-		{-1.0, 0.0},  // opposite
-		{0.5, 0.5},   // partial
+		{0.0, 1.0},  // orthogonal
+		{1.0, 0.0},  // identical
+		{-1.0, 0.0}, // opposite
+		{0.5, 0.5},  // partial
 	}
 
 	index, similarity, err := FindMostSimilar(query, candidates)
@@ -386,9 +485,9 @@ func TestRankBySimilarity_Basic(t *testing.T) {
 
 	query := []float64{1.0, 0.0}
 	candidates := [][]float64{
-		{0.0, 1.0},   // orthogonal - 0.0
-		{1.0, 0.0},   // identical - 1.0
-		{-1.0, 0.0},  // opposite - -1.0
+		{0.0, 1.0},  // orthogonal - 0.0
+		{1.0, 0.0},  // identical - 1.0
+		{-1.0, 0.0}, // opposite - -1.0
 	}
 
 	indices, similarities, err := RankBySimilarity(query, candidates)
