@@ -483,20 +483,33 @@ func TestSandboxEscapeRoutes_NoFSMountAndNoEnvHoldEvenIfModuleImportReopens(t *t
 // tokenizer so it can't be fooled by -- or wrongly reject -- text that only
 // looks like `import(`.
 //
-// (1) is documented in README.vendor.md's "Sandbox hardening" section, not
-// tested here (there is nothing to assert about a hook that doesn't
-// exist): introspecting the vendored qjs.wasm binary's own exports
-// (`go run` against wazero's CompiledModule.ExportedFunctions(), listing
-// its ImportedFunctions()) shows a `QJS_ModuleLoader` export with no paired
-// setter to swap or disable it, and confirms module resolution for the
+// (1) was, at the time of that follow-up, documented in
+// README.vendor.md's "Sandbox hardening" section as a dead end, not tested
+// here (there was nothing to assert about a hook that didn't exist):
+// introspecting the vendored qjs.wasm binary's own exports (`go run`
+// against wazero's CompiledModule.ExportedFunctions(), listing its
+// ImportedFunctions()) showed a `QJS_ModuleLoader` export with no paired
+// setter to swap or disable it, and confirmed module resolution for the
 // native "qjs:"-prefixed specifiers never calls back into the host at all
 // (the only host-callable imports are WASI preview1 syscalls plus one
-// `env.jsFunctionProxy`) -- so there is no cheap host-side hook, and the
-// only way to truly remove the qjs:std/os/bjson modules remains
-// `-DQJS_BUILD_LIBC=OFF`, which README.vendor.md already explains was
-// rejected (it risks losing `console`, which is quickjs-libc functionality
-// too). assertNoDynamicImport + installRuntimeHardening (both in
-// sandbox_hardening.go) remain the primary and only defense.
+// `env.jsFunctionProxy`) -- so there was no *existing* host-side hook, and
+// the only way to truly remove the qjs:std/os/bjson modules without a C
+// rebuild was `-DQJS_BUILD_LIBC=OFF`, which README.vendor.md already
+// explained was rejected (it risks losing `console`, which is
+// quickjs-libc functionality too).
+//
+// That conclusion held only for a hook reachable without touching C
+// sources. BF1b (build/disable-modules.patch, see README.vendor.md's
+// "Engine-level module-import lockdown (BF1b)" section and
+// pkg/internal/third_party/qjs/disable_modules_patch_test.go) adds one by
+// rebuilding qjs.wasm: a `disable_modules` flag threaded through `New_QJS`
+// that skips registering qjs:std/os/bjson entirely and makes
+// `QJS_ModuleLoader` itself reject every specifier. assertNoDynamicImport
+// + installRuntimeHardening (both in sandbox_hardening.go) remain in place
+// unchanged and are still exercised end-to-end by the tests in this file,
+// but they are no longer the only defense -- see
+// disable_modules_defense_in_depth_test.go for the regression coverage
+// that drives the engine directly with the Go-side static check bypassed.
 //
 // (2)'s dedicated unit tests for assertNoDynamicImport itself (every true
 // positive, every false positive, and the two documented edge cases) live

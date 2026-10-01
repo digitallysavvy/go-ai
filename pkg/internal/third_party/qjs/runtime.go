@@ -351,12 +351,17 @@ func (r *Runtime) initializeRuntime() {
 	r.malloc = r.module.ExportedFunction("malloc")
 	r.free = r.module.ExportedFunction("free")
 	r.mem = &Mem{mem: r.module.Memory()}
+	disableModules := uint64(0)
+	if r.option.DisableModules {
+		disableModules = 1
+	}
 	r.handle = r.Call(
 		"New_QJS",
 		uint64(r.option.MemoryLimit),
 		uint64(r.option.MaxStackSize),
 		uint64(r.option.MaxExecutionTime),
 		uint64(r.option.GCThreshold),
+		disableModules,
 	)
 
 	r.context.handle = r.Call("QJS_GetContext", r.handle.raw)
