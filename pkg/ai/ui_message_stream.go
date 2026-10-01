@@ -316,7 +316,18 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 				processAndEnqueue(chunk)
 			}
 		}()
+		// chunkClosed guards chunkCh: a writer or merge goroutine the caller
+		// keeps running after Execute returns must not send on the closed
+		// channel. Late chunks are dropped, as safeEnqueue already does for
+		// the output stream (and as TS's safeEnqueue ignores them).
+		var chunkMu sync.RWMutex
+		chunkClosed := false
 		sendChunk := func(part UIMessageChunk) {
+			chunkMu.RLock()
+			defer chunkMu.RUnlock()
+			if chunkClosed {
+				return
+			}
 			select {
 			case chunkCh <- part:
 			case <-ctx.Done():
@@ -327,6 +338,12 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 		merge := func(stream <-chan UIMessageChunk) {
 			if stream == nil {
 				enqueueError(errors.New("merge stream is nil"))
+				return
+			}
+			chunkMu.RLock()
+			lateMerge := chunkClosed
+			chunkMu.RUnlock()
+			if lateMerge {
 				return
 			}
 			wg.Add(1)
@@ -378,7 +395,10 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 		}()
 
 		wg.Wait()
+		chunkMu.Lock()
+		chunkClosed = true
 		close(chunkCh)
+		chunkMu.Unlock()
 		<-consumerDone
 
 		mu.Lock()
