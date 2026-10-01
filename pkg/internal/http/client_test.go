@@ -9,6 +9,7 @@ import (
 	stdhttp "net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -185,4 +186,71 @@ func TestTransportErrorWording(t *testing.T) {
 	if err == nil || !errors.Is(err, context.Canceled) || strings.HasPrefix(err.Error(), "Cannot connect to API") {
 		t.Fatalf("cancelled request error = %v, want unwrapped context.Canceled", err)
 	}
+}
+
+// TestClientSetHeaderRace is the permanent regression test for R4-3: calling
+// SetHeader concurrently with Do used to be a fatal, unrecoverable
+// "concurrent map read and map write" (the headers map had no
+// synchronization at all), which `go test -race` reports as a data race and
+// which can crash the whole process outside of -race. Guarded by
+// Client.mu now.
+func TestClientSetHeaderRace(t *testing.T) {
+	srv := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{BaseURL: srv.URL})
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			c.SetHeader("Authorization", "Bearer token")
+		}()
+		go func() {
+			defer wg.Done()
+			_, _ = c.Do(context.Background(), Request{Method: stdhttp.MethodGet, Path: "/"})
+		}()
+	}
+	wg.Wait()
+}
+
+// TestClientHeadersAndBaseURLRace extends the R4-3 regression coverage to
+// the other two mutation points on *Client (Headers() and SetBaseURL),
+// alongside DoStream, so every reader/writer pair over the guarded fields is
+// exercised under -race.
+func TestClientHeadersAndBaseURLRace(t *testing.T) {
+	srv := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{BaseURL: srv.URL, Headers: map[string]string{"X-Initial": "1"}})
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(4)
+		go func() {
+			defer wg.Done()
+			c.SetHeader("X-Token", "value")
+		}()
+		go func() {
+			defer wg.Done()
+			_ = c.Headers()
+		}()
+		go func() {
+			defer wg.Done()
+			c.SetBaseURL(srv.URL)
+		}()
+		go func() {
+			defer wg.Done()
+			resp, err := c.DoStream(context.Background(), Request{Method: stdhttp.MethodGet, Path: "/"})
+			if err == nil {
+				_ = resp.Body.Close()
+			}
+		}()
+	}
+	wg.Wait()
 }

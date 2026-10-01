@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
@@ -49,12 +50,21 @@ var DefaultHTTPClient = &http.Client{
 }
 
 // Client wraps an HTTP client with additional utilities
+//
+// mu guards baseURL and headers, the only fields mutated after
+// construction (via SetBaseURL and SetHeader respectively). Providers may
+// legitimately call SetHeader to refresh an auth token on a *Client shared
+// across concurrent in-flight requests (e.g. a token refresh racing a
+// request goroutine); without synchronization that is a fatal, unrecoverable
+// concurrent map read/write that crashes the process, not a catchable panic.
 type Client struct {
 	client  *http.Client
 	baseURL string
 	headers map[string]string
 
 	maxBodyBytes int64
+
+	mu sync.RWMutex
 }
 
 // Config contains configuration for an HTTP client
@@ -162,10 +172,26 @@ func (e *HTTPStatusError) Error() string {
 	return fmt.Sprintf("HTTP %d: %s", e.StatusCode, string(e.Body))
 }
 
+// snapshot returns a point-in-time copy of the mutable client state (base
+// URL and default headers) under the read lock, so callers never range over
+// or concatenate the live fields while SetHeader/SetBaseURL may be running
+// on another goroutine.
+func (c *Client) snapshot() (string, map[string]string) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	headers := make(map[string]string, len(c.headers))
+	for k, v := range c.headers {
+		headers[k] = v
+	}
+	return c.baseURL, headers
+}
+
 // Do performs an HTTP request
 func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
+	baseURL, defaultHeaders := c.snapshot()
+
 	// Build full URL
-	url := c.baseURL + req.Path
+	url := baseURL + req.Path
 	if len(req.Query) > 0 {
 		url += "?"
 		first := true
@@ -202,7 +228,7 @@ func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 	}
 
 	// Add default headers
-	for k, v := range c.headers {
+	for k, v := range defaultHeaders {
 		httpReq.Header.Set(k, v)
 	}
 
@@ -290,8 +316,10 @@ func (c *Client) DoJSONResponse(ctx context.Context, req Request, result interfa
 
 // DoStream performs an HTTP request that returns a streaming response
 func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, error) {
+	baseURL, defaultHeaders := c.snapshot()
+
 	// Build full URL
-	url := c.baseURL + req.Path
+	url := baseURL + req.Path
 	if len(req.Query) > 0 {
 		url += "?"
 		first := true
@@ -328,7 +356,7 @@ func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, err
 	}
 
 	// Add default headers
-	for k, v := range c.headers {
+	for k, v := range defaultHeaders {
 		httpReq.Header.Set(k, v)
 	}
 
@@ -403,6 +431,8 @@ func (c *Client) GetJSON(ctx context.Context, path string, result interface{}) e
 
 // SetHeader sets a default header for all requests
 func (c *Client) SetHeader(key, value string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.headers == nil {
 		c.headers = make(map[string]string)
 	}
@@ -415,6 +445,8 @@ func (c *Client) SetHeader(key, value string) {
 // non-HTTP connection (e.g. a WebSocket handshake) the same way the client
 // authenticates its own requests.
 func (c *Client) Headers() map[string]string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	out := make(map[string]string, len(c.headers))
 	for k, v := range c.headers {
 		out[k] = v
@@ -424,6 +456,8 @@ func (c *Client) Headers() map[string]string {
 
 // SetBaseURL updates the base URL
 func (c *Client) SetBaseURL(baseURL string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.baseURL = baseURL
 }
 

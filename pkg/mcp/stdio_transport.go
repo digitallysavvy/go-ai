@@ -264,6 +264,11 @@ func (t *StdioTransport) IsConnected() bool {
 // logStderr logs stderr output from the command
 func (t *StdioTransport) logStderr() {
 	scanner := bufio.NewScanner(t.stderr)
+	// Match the main stdout reader's bound (see Connect) so a long stderr
+	// line (e.g. a long stack trace) from the child process doesn't exceed
+	// bufio.Scanner's default 64 KiB token limit and silently stop logging.
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
 	for scanner.Scan() {
 		fmt.Printf("MCP stderr: %s\n", scanner.Text())
 	}
