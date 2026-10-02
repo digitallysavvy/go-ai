@@ -194,7 +194,7 @@ func New(cfg Config) (*Provider, error) {
 			if !providerutils.IsValidHostnamePart(cfg.Location) {
 				return nil, &providererrors.InvalidArgumentError{
 					Field:   "location",
-					Message: "Invalid Google Vertex location. Expected a single DNS label (letters, digits, and hyphens). Use `BaseURL` for custom endpoints.",
+					Message: "Invalid Google Vertex location. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.",
 				}
 			}
 			baseURL = fmt.Sprintf("https://%s/v1beta1/projects/%s/locations/%s/publishers/google",

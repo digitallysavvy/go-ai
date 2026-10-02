@@ -206,7 +206,7 @@ func validateAzureResourceName(resourceName string) error {
 	if !providerutils.IsValidHostnamePart(resourceName) {
 		return &providererrors.InvalidArgumentError{
 			Field:   "resourceName",
-			Message: "Invalid Azure resource name. Expected a single DNS label (letters, digits, and hyphens). Use `BaseURL` for custom endpoints.",
+			Message: "Invalid Azure resource name. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.",
 		}
 	}
 	return nil

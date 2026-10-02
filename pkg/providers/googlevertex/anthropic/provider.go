@@ -194,7 +194,7 @@ func (p *GoogleVertexAnthropicProvider) baseURL() (string, error) {
 	if !providerutils.IsValidHostnamePart(location) {
 		return "", &providererrors.InvalidArgumentError{
 			Field:   "location",
-			Message: "Invalid Google Vertex location. Expected a single DNS label (letters, digits, and hyphens). Use `BaseURL` for custom endpoints.",
+			Message: "Invalid Google Vertex location. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.",
 		}
 	}
 

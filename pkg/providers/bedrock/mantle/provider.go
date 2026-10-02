@@ -114,7 +114,7 @@ func (p *BedrockMantleProvider) baseURLForModel(modelID string) (string, error) 
 	if !providerutils.IsValidHostnamePart(p.region) {
 		return "", &providererrors.InvalidArgumentError{
 			Field:   "region",
-			Message: "Invalid AWS region. Expected a single DNS label (letters, digits, and hyphens). Use `BaseURL` for custom endpoints.",
+			Message: "Invalid AWS region. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.",
 		}
 	}
 	path := "v1"
