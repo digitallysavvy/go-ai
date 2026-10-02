@@ -62,9 +62,9 @@ import (
     "fmt"
     "strings"
 
+    goprovider "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/provider/types"
     "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
-    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic/client"
 )
 
 // Define your actual tools
@@ -183,7 +183,10 @@ func main() {
     })
 
     // Create model
-    model := provider.LanguageModel("claude-3-5-sonnet-20241022", nil)
+    model, err := provider.LanguageModel("claude-3-5-sonnet-20241022")
+    if err != nil {
+        panic(err)
+    }
 
     // Define all available tools (including search)
     mathToolsList := mathTools()
@@ -200,9 +203,9 @@ func main() {
     }
 
     // Generate response
-    result, err := model.DoGenerate(ctx, &client.GenerateOptions{
-        Messages: messages,
-        Tools:    allTools,
+    result, err := model.DoGenerate(ctx, &goprovider.GenerateOptions{
+        Prompt: types.Prompt{Messages: messages},
+        Tools:  allTools,
     })
 
     if err != nil {
