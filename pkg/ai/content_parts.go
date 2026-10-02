@@ -64,18 +64,31 @@ func startNewTextPart(parts []types.ContentPart, metadata json.RawMessage) []typ
 	return append(parts, types.TextContent{ProviderMetadata: metadata})
 }
 
-func appendReasoningPart(parts []types.ContentPart, text string) []types.ContentPart {
-	if text == "" {
+// appendReasoningPart accumulates a ChunkTypeReasoning delta into stepContent,
+// merging consecutive deltas into a single trailing ReasoningContent part.
+// metadata is the delta chunk's ProviderMetadata (e.g. Anthropic's
+// signature_delta, which arrives as its own chunk with empty text and
+// non-nil metadata -- the cryptographic signature required to replay a
+// thinking block in a later turn); when non-nil it overwrites the
+// accumulated part's ProviderMetadata, mirroring appendTextPart's "latest
+// non-nil metadata wins" rule (TS stream-text.ts's
+// `activeReasoning.providerMetadata = part.providerMetadata ??
+// activeReasoning.providerMetadata`).
+func appendReasoningPart(parts []types.ContentPart, text string, metadata json.RawMessage) []types.ContentPart {
+	if text == "" && len(metadata) == 0 {
 		return parts
 	}
 	if n := len(parts); n > 0 {
 		if last, ok := parts[n-1].(types.ReasoningContent); ok {
 			last.Text += text
+			if len(metadata) > 0 {
+				last.ProviderMetadata = metadata
+			}
 			parts[n-1] = last
 			return parts
 		}
 	}
-	return append(parts, types.ReasoningContent{Text: text})
+	return append(parts, types.ReasoningContent{Text: text, ProviderMetadata: metadata})
 }
 
 func generateResultContentParts(result *types.GenerateResult) []types.ContentPart {

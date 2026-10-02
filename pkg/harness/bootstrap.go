@@ -265,7 +265,8 @@ func NormalizeSandboxWorkDir(workDir string) (string, error) {
 		return "", errors.New("HarnessAgent: `sandboxConfig.workDir` must be relative.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	normalized := posixpath.Normalize(workDir)
-	if normalized == "." || normalized == ".." || strings.HasPrefix(normalized, "../") {
+	if ((normalized == "." || normalized == "./") && workDir != ".") ||
+		normalized == ".." || strings.HasPrefix(normalized, "../") {
 		return "", errors.New("HarnessAgent: `sandboxConfig.workDir` must stay inside the sandbox default working directory.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	return normalized, nil

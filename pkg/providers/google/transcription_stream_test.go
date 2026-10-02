@@ -281,14 +281,14 @@ func TestTranscriptionModel_DoStream_RequiresAPIKey(t *testing.T) {
 // TestTranscriptionModel_BaseHeadersCarryUserAgentTag mirrors TS
 // google-transcription-model.ts's doStream, which reuses `this.config.headers()`
 // -- the same tagged getHeaders() closure used for REST calls -- for the
-// WebSocket handshake, so it carries the `ai-sdk/google/VERSION` tag too.
+// WebSocket handshake, so it carries the `ai-sdk-google/VERSION` tag too.
 func TestTranscriptionModel_BaseHeadersCarryUserAgentTag(t *testing.T) {
 	p := New(Config{APIKey: "provider-level-key"})
 	m := NewTranscriptionModel(p, ModelGemini35TranscribeLive)
 
 	ua := m.baseTranscriptionHeaders()["user-agent"]
-	if !strings.HasPrefix(ua, "ai-sdk/google/") {
-		t.Fatalf("user-agent = %q, want ai-sdk/google/... prefix", ua)
+	if !strings.HasPrefix(ua, "ai-sdk-google/") {
+		t.Fatalf("user-agent = %q, want ai-sdk-google/... prefix", ua)
 	}
 }
 
@@ -438,6 +438,13 @@ func TestTranscriptionModel_DoStream_StreamsTranscriptEndToEnd(t *testing.T) {
 	wantMetaJSON, _ := json.Marshal(wantMeta)
 	if string(gotMeta) != string(wantMetaJSON) {
 		t.Fatalf("providerMetadata = %s, want %s", gotMeta, wantMetaJSON)
+	}
+	// Ported from TS google-transcription-model.test.ts doStream "should
+	// surface usage metadata" assertion (TS 8c659885c5 / #21427): the finish
+	// part's usage field mirrors usageMetadata directly, not just nested
+	// under providerMetadata.
+	if got := finish.Usage["promptTokenCount"]; got != float64(7) {
+		t.Fatalf("finish.Usage[promptTokenCount] = %v, want 7", got)
 	}
 }
 

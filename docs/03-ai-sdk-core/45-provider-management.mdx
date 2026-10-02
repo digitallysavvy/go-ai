@@ -24,6 +24,8 @@ The provider registry allows you to register multiple providers and access their
 package main
 
 import (
+    "os"
+
     "github.com/digitallysavvy/go-ai/pkg/registry"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
     "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
@@ -441,7 +443,6 @@ package main
 import (
     "context"
     "fmt"
-    "log"
     "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
@@ -566,8 +567,12 @@ func main() {
 
 ### List Registered Providers
 
+`ListProviders` and `ListAliases` are methods on a `*registry.Registry`, not
+package-level functions. Use `registry.GetGlobalRegistry()` to reach the
+global registry that `registry.RegisterProvider` et al. populate:
+
 ```go
-providers := registry.ListProviders()
+providers := registry.GetGlobalRegistry().ListProviders()
 fmt.Println("Available providers:", providers)
 // Output: Available providers: [openai anthropic google]
 ```
@@ -575,7 +580,7 @@ fmt.Println("Available providers:", providers)
 ### List Registered Aliases
 
 ```go
-aliases := registry.ListAliases()
+aliases := registry.GetGlobalRegistry().ListAliases()
 for alias, target := range aliases {
     fmt.Printf("%s -> %s\n", alias, target)
 }

@@ -108,6 +108,18 @@ func TestTranscription_SendsTranscriptionConfig(t *testing.T) {
 	if !ok || usage["total_tokens"] != float64(10) {
 		t.Fatalf("usage = %#v", usage)
 	}
+	// Ported from TS google-transcription-model.test.ts "should return
+	// usage" (TS 8c659885c5 / #21427): result.usage is the raw response
+	// usage object, not just the providerMetadata.google.usage copy.
+	if got := result.ProviderUsage["total_tokens"]; got != float64(10) {
+		t.Fatalf("ProviderUsage[total_tokens] = %v, want 10", got)
+	}
+	if got := result.ProviderUsage["total_input_tokens"]; got != float64(10) {
+		t.Fatalf("ProviderUsage[total_input_tokens] = %v, want 10", got)
+	}
+	if got := result.ProviderUsage["total_output_tokens"]; got != float64(0) {
+		t.Fatalf("ProviderUsage[total_output_tokens] = %v, want 0", got)
+	}
 }
 
 func TestTranscription_MapsDiarizationAndWordTimestampsIntoMode(t *testing.T) {

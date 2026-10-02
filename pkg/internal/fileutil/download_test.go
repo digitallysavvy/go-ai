@@ -59,8 +59,8 @@ func TestDownload_SetsSDKUserAgent(t *testing.T) {
 	if !strings.HasPrefix(capturedUA, "ai-sdk/") {
 		t.Fatalf("User-Agent = %q, want ai-sdk/... prefix", capturedUA)
 	}
-	if !strings.Contains(capturedUA, "runtime/go/") {
-		t.Fatalf("User-Agent = %q, want a runtime/go/... suffix", capturedUA)
+	if !strings.Contains(capturedUA, "go/go") {
+		t.Fatalf("User-Agent = %q, want a go/go... suffix", capturedUA)
 	}
 }
 

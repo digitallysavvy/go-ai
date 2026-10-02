@@ -7,6 +7,7 @@ const (
 	HarnessErrorName                     = "AI_HarnessError"
 	CapabilityUnsupportedErrorName       = "AI_HarnessCapabilityUnsupportedError"
 	SandboxAuthenticationErrorName       = "AI_HarnessSandboxAuthenticationError"
+	HistoryUnavailableErrorName          = "AI_HarnessHistoryUnavailableError"
 	defaultHarnessClientSafeErrorMessage = "An error occurred."
 )
 
@@ -81,6 +82,35 @@ func NewSandboxAuthenticationError(message, sandboxProviderID string, cause erro
 		HarnessError:      HarnessError{Name: SandboxAuthenticationErrorName, Message: message, Cause: cause},
 		SandboxProviderID: sandboxProviderID,
 	}
+}
+
+// HistoryUnavailableError is thrown by AgentSession.ReadHistory when the
+// adapter supports history reads but cannot reach the runtime's store from
+// the current environment — for example the store lives inside a remote
+// sandbox, or the transcript directory is missing or unreadable.
+//
+// Distinct from CapabilityUnsupportedError (the adapter does not implement
+// history reads at all) so hosts can retry or degrade differently. A
+// conversation with no recorded messages yet is not an error; it resolves to
+// an empty result instead. Mirrors TS `HarnessHistoryUnavailableError`.
+type HistoryUnavailableError struct {
+	HarnessError
+	// HarnessID is optional structured context.
+	HarnessID string
+}
+
+// NewHistoryUnavailableError builds a HistoryUnavailableError.
+func NewHistoryUnavailableError(message, harnessID string, cause error) *HistoryUnavailableError {
+	return &HistoryUnavailableError{
+		HarnessError: HarnessError{Name: HistoryUnavailableErrorName, Message: message, Cause: cause},
+		HarnessID:    harnessID,
+	}
+}
+
+// IsHistoryUnavailableError mirrors `HarnessHistoryUnavailableError.isInstance`.
+func IsHistoryUnavailableError(err error) bool {
+	var e *HistoryUnavailableError
+	return errors.As(err, &e)
 }
 
 // IsHarnessError reports whether err is (or wraps) a HarnessError or any error

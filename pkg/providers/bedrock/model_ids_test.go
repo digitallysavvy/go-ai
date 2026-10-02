@@ -13,6 +13,7 @@ func TestBedrockAnthropicModelIDs(t *testing.T) {
 		// Non-cross-region Anthropic models
 		{"ClaudeOpus4_6V1", ModelAnthropicClaudeOpus4_6V1, "anthropic.claude-opus-4-6-v1"},
 		{"ClaudeSonnet4_6V1", ModelAnthropicClaudeSonnet4_6V1, "anthropic.claude-sonnet-4-6-v1"},
+		{"ClaudeSonnet5_5", ModelAnthropicClaudeSonnet5_5, "anthropic.claude-sonnet-5-5"},
 		{"ClaudeOpus45_V1", ModelAnthropicClaudeOpus45_V1, "anthropic.claude-opus-4-5-20251101-v1:0"},
 		{"ClaudeHaiku45_V1", ModelAnthropicClaudeHaiku45_V1, "anthropic.claude-haiku-4-5-20251001-v1:0"},
 		{"ClaudeSonnet45_V1", ModelAnthropicClaudeSonnet45_V1, "anthropic.claude-sonnet-4-5-20250929-v1:0"},
@@ -30,6 +31,7 @@ func TestBedrockAnthropicModelIDs(t *testing.T) {
 		// US cross-region Anthropic models (latest/new ones)
 		{"USClaudeOpus4_6V1", ModelUSAnthropicClaudeOpus4_6V1, "us.anthropic.claude-opus-4-6-v1"},
 		{"USClaudeSonnet4_6V1", ModelUSAnthropicClaudeSonnet4_6V1, "us.anthropic.claude-sonnet-4-6-v1"},
+		{"USClaudeSonnet5_5", ModelUSAnthropicClaudeSonnet5_5, "us.anthropic.claude-sonnet-5-5"},
 		{"USClaudeOpus45_V1", ModelUSAnthropicClaudeOpus45_V1, "us.anthropic.claude-opus-4-5-20251101-v1:0"},
 		{"USClaudeHaiku45_V1", ModelUSAnthropicClaudeHaiku45_V1, "us.anthropic.claude-haiku-4-5-20251001-v1:0"},
 		{"USClaudeSonnet45_V1", ModelUSAnthropicClaudeSonnet45_V1, "us.anthropic.claude-sonnet-4-5-20250929-v1:0"},
@@ -82,6 +84,7 @@ func TestBedrockModelIDsAcceptedByProvider(t *testing.T) {
 	modelIDs := []string{
 		ModelUSAnthropicClaudeOpus4_6V1,
 		ModelUSAnthropicClaudeSonnet4_6V1,
+		ModelUSAnthropicClaudeSonnet5_5,
 		ModelUSAnthropicClaude37Sonnet_V1,
 		ModelUSAnthropicClaude35Haiku_V1,
 		ModelAmazonNovaProV1,

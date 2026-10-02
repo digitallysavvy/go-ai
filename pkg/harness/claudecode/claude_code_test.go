@@ -219,6 +219,48 @@ func TestDoPromptTurn_SendsStartFields(t *testing.T) {
 	}
 }
 
+// TS: "sends configured subagent activity options to the bridge"
+// (claude-code-harness.test.ts)
+func TestDoPromptTurn_SendsSubagentActivityOptions(t *testing.T) {
+	var captured map[string]any
+	captureDone := make(chan struct{})
+	_, sess := startedHarness(t, claudecode.Settings{
+		AgentProgressSummaries: true, ForwardSubagentText: true,
+	}, func(turn *bridgetest.Turn, start map[string]any) {
+		captured = start
+		close(captureDone)
+		turn.Emit(map[string]any{
+			"type": "finish", "finishReason": map[string]any{"unified": "stop", "raw": "stop"},
+			"totalUsage": map[string]any{"inputTokens": map[string]any{"total": 1}, "outputTokens": map[string]any{"total": 1}},
+		})
+	})
+
+	control, err := sess.DoPromptTurn(context.Background(), harness.PromptTurnOptions{
+		Prompt: harness.TextPrompt("hi"),
+		Emit:   func(harness.StreamPart) {},
+	})
+	if err != nil {
+		t.Fatalf("DoPromptTurn: %v", err)
+	}
+	select {
+	case <-captureDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("bridge never received a start frame")
+	}
+	select {
+	case <-control.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("turn never finished")
+	}
+
+	if captured["agentProgressSummaries"] != true {
+		t.Errorf("agentProgressSummaries = %v, want true", captured["agentProgressSummaries"])
+	}
+	if captured["forwardSubagentText"] != true {
+		t.Errorf("forwardSubagentText = %v, want true", captured["forwardSubagentText"])
+	}
+}
+
 // TS: "does not start a bridge turn when the signal is already aborted"
 func TestDoPromptTurn_AbortedContextSkipsStart(t *testing.T) {
 	started := make(chan struct{}, 1)
@@ -575,8 +617,8 @@ func TestDoStart_ClientAppSetForAIGatewayAuth(t *testing.T) {
 	}
 
 	env, _ := captured["env"].(map[string]any)
-	if env["CLAUDE_AGENT_SDK_CLIENT_APP"] != "ai-sdk/harness-claude-code/1.0.127" {
-		t.Errorf("env.CLAUDE_AGENT_SDK_CLIENT_APP = %v, want ai-sdk/harness-claude-code/1.0.127", env["CLAUDE_AGENT_SDK_CLIENT_APP"])
+	if env["CLAUDE_AGENT_SDK_CLIENT_APP"] != "ai-sdk/harness-claude-code/1.0.142" {
+		t.Errorf("env.CLAUDE_AGENT_SDK_CLIENT_APP = %v, want ai-sdk/harness-claude-code/1.0.142", env["CLAUDE_AGENT_SDK_CLIENT_APP"])
 	}
 }
 

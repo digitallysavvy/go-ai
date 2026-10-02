@@ -14,6 +14,7 @@ JavaScript overloads.
 - `workflow.WorkflowAgent`
 - `workflow.WorkflowResult`
 - `workflow.WorkflowStreamResult`
+- `workflow.WorkflowRunMultiplexer`
 - `workflow.WorkflowChatTransport`
 - `workflow.StreamTextIterator`
 - `workflow.SerializableToolDef`
@@ -73,36 +74,76 @@ if err != nil {
 }
 ```
 
-## Chat Transport
-
-`WorkflowChatTransport` is an `http.Handler` that emits run-scoped SSE and supports reattaching to a run:
+`ExperimentalTransform` applies an ordered list of `ai.StreamTransformFunc` to raw model stream chunks before they reach `OnChunk` or the returned stream, letting you rewrite or drop chunks (e.g. smoothing text, or replacing an oversized provider tool result):
 
 ```go
-transport := &workflow.WorkflowChatTransport{}
+redactLargeResults := func(ctx context.Context, chunk provider.StreamChunk) []provider.StreamChunk {
+  if chunk.Type == provider.ChunkTypeToolResult && chunk.ToolResult != nil {
+    if s, ok := chunk.ToolResult.Result.(string); ok && len(s) > 2048 {
+      replaced := *chunk.ToolResult
+      replaced.Result = map[string]interface{}{"reason": "too_large_for_stream"}
+      chunk.ToolResult = &replaced
+    }
+  }
+  return []provider.StreamChunk{chunk}
+}
+
+streamResult, err := agent.StreamWithOptions(ctx, workflow.WorkflowStreamOptions{
+  Prompt:                "Walk me through this fix",
+  ExperimentalTransform: []ai.StreamTransformFunc{redactLargeResults},
+})
+if err != nil {
+  return err
+}
+```
+
+## Chat Transport
+
+`WorkflowRunMultiplexer` is the server-side `http.Handler` that emits run-scoped SSE and
+supports reattaching to a run:
+
+```go
+transport := workflow.NewWorkflowRunMultiplexer()
 http.Handle("/api/workflow", transport)
 http.Handle("/api/workflow/resume", transport.Resume(runID))
 ```
 
-`Resume` supports `startIndex` query parameter (including negative tail-relative offsets).
-
-The same transport can act as the Go client-side equivalent of the TypeScript
-`WorkflowChatTransport`:
+`Resume` supports a `startIndex` query parameter (including negative tail-relative offsets).
+`SendMessages`/`ReconnectToStream` on `WorkflowRunMultiplexer` return `([]*streaming.SSEEvent, error)`
+and take `workflow.SendMessagesOptions`/`workflow.ReconnectToStreamOptions` respectively:
 
 ```go
-transport := workflow.NewWorkflowChatTransport(workflow.WorkflowChatTransportOptions{
-  API: "https://example.com/api/chat",
-})
-
 events, err := transport.SendMessages(ctx, workflow.SendMessagesOptions{
-  ChatID: "chat-1",
+  ChatID:  "chat-1",
   Trigger: "submit-message",
   Messages: messages,
 })
 
 events, err = transport.ReconnectToStream(ctx, workflow.ReconnectToStreamOptions{
-  RunID: "run-1",
-  ChatID: "chat-1",
+  RunID:      "run-1",
+  ChatID:     "chat-1",
   StartIndex: -10,
+})
+```
+
+`WorkflowChatTransport` is the separate Go client-side equivalent of the TypeScript
+`WorkflowChatTransport`: it implements `ai.ChatTransport`, POSTing a chat's message history to a
+workflow endpoint and streaming the response as `ai.UIMessageChunk` values over channels:
+
+```go
+transport := workflow.NewWorkflowChatTransport(workflow.WorkflowChatTransportOptions{
+  API:               "https://example.com/api/chat",
+  InitialStartIndex: -10, // tail-relative offset used on reconnect
+})
+
+chunks, errs := transport.SendMessages(ctx, ai.ChatTransportSendMessagesRequest{
+  ChatID:   "chat-1",
+  Trigger:  "submit-message",
+  Messages: messages,
+})
+
+chunks, errs = transport.ReconnectToStream(ctx, ai.ChatTransportReconnectToStreamRequest{
+  ChatID: "chat-1",
 })
 ```
 

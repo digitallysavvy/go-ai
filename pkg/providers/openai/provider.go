@@ -104,18 +104,18 @@ type Config struct {
 	// as its OpenAI-compatible base (baseten, cerebras, deepinfra).
 	AllowVideo bool
 
-	// UserAgentName selects the `ai-sdk/<name>/VERSION` User-Agent tag this
+	// UserAgentName selects the `ai-sdk-<name>/VERSION` User-Agent tag this
 	// provider construction adds (version.ProviderUserAgent). Every wrapper
 	// provider whose TS counterpart is its own distinct npm package (and
-	// therefore its own `ai-sdk/<name>` tag) but is implemented in Go by
+	// therefore its own `ai-sdk-<name>` tag) but is implemented in Go by
 	// reusing openai.New as an OpenAI-Chat-Completions-compatible transport
 	// (cerebras, deepinfra, baseten, vercel, amazon-bedrock's Mantle gateway,
 	// google-vertex's MaaS models) must set this to that TS package's name;
 	// leaving it empty here would wrongly tag those providers' requests
-	// "ai-sdk/openai". Defaults to "openai" — unless Headers already carries
+	// "ai-sdk-openai". Defaults to "openai" — unless Headers already carries
 	// a "user-agent" entry (case-insensitive), meaning the caller (e.g. the
 	// azure package, whose own TS package already applies its own
-	// `ai-sdk/azure` tag before reaching here) has already tagged the
+	// `ai-sdk-azure` tag before reaching here) has already tagged the
 	// request and no further tag should be appended.
 	UserAgentName string
 

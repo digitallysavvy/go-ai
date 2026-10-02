@@ -23,10 +23,11 @@ func (a *Agent) Process(ctx context.Context, task string) (string, error) {
 	fmt.Printf("\n[%s] Processing: %s\n", a.name, task)
 
 	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-		Model:  a.model,
-		Prompt: task,
-		System: fmt.Sprintf("You are %s. %s", a.name, a.role),
-		Tools:  a.tools,
+		Model:    a.model,
+		Prompt:   task,
+		System:   fmt.Sprintf("You are %s. %s", a.name, a.role),
+		Tools:    a.tools,
+		StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 	})
 
 	if err != nil {

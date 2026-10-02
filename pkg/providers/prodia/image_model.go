@@ -41,6 +41,22 @@ func (m *ImageModel) ModelID() string {
 	return m.modelID
 }
 
+// SupportsFileInputs always reports false: Prodia's image models are
+// text-to-image only (TS ProdiaImageModel#supportsFileInputs).
+func (m *ImageModel) SupportsFileInputs() *bool {
+	return boolPtr(false)
+}
+
+// SupportsMaskInputs always reports false, for the same reason as
+// SupportsFileInputs.
+func (m *ImageModel) SupportsMaskInputs() *bool {
+	return boolPtr(false)
+}
+
+func boolPtr(b bool) *bool {
+	return &b
+}
+
 // ProdiaImageProviderOptions contains Prodia-specific image generation options.
 type ProdiaImageProviderOptions struct {
 	// Steps is the number of computational iterations (1–4).

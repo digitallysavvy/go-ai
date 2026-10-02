@@ -493,9 +493,10 @@ func TestStreamTextMultiStepEventOrdering(t *testing.T) {
 	}
 
 	stream, err := StreamText(context.Background(), StreamTextOptions{
-		Model:  model,
-		Prompt: "weather?",
-		Tools:  []types.Tool{tool},
+		StopWhen: []StopCondition{IsLoopFinished()},
+		Model:    model,
+		Prompt:   "weather?",
+		Tools:    []types.Tool{tool},
 		Telemetry: &telemetry.Options{
 			IsEnabled:    telemetry.Bool(true),
 			Integrations: []telemetry.TelemetryIntegration{telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{Tracer: tracer})},

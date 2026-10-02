@@ -13,7 +13,7 @@ parity cycle (removing the xAI Chat Completions API, rebuilding
 Bedrock-Anthropic and Bedrock on shared code paths, changing `StreamText`'s
 full-stream chunk lifecycle, and a long list of provider-specific parity
 fixes). Both cycles land together in v0.5.0. TS SDK parity now tracks
-`ai@7.0.118`.
+`ai@7.0.127`.
 
 This guide is organized by area rather than by cycle, since most applications
 only care about what changed in the areas they use. See [Known differences
@@ -164,7 +164,7 @@ to `PrepareStep`.
 opts := ai.GenerateTextOptions{
     Model: model,
     Prompt: "Return JSON.",
-    Output: ai.JSONOutput(),
+    Output: ai.JSONOutput(ai.JSONOutputOptions{}),
     PrepareStep: func(ctx context.Context, step ai.PrepareStepOptions) ai.PrepareStepOptions {
         return step
     },
@@ -877,7 +877,9 @@ The GenAI `OpenTelemetry` integration's root span is now named
 
 **Impact:** low
 
-v0.4.x deliberately sent no custom `User-Agent` header. v0.5.0 reverses that decision to match the TypeScript SDK: every provider request now carries `ai-sdk/<provider>/<version> runtime/go/<goVersion>` (for example `ai-sdk/openai/0.5.0 runtime/go/go1.25.1`), appended to any `User-Agent` value you already set via `Headers` rather than replacing it. `pkg/ai` call-level functions (`GenerateText`, `GenerateObject`, `GenerateImage`, `Embed`, `EmbedMany`, `Transcribe`, `GenerateSpeech`, `GenerateVideo`, `Batch`, `Evaluate`) additionally tag their own headers with `ai/<version>` before the request reaches the model, matching the TS SDK's `ai` package. `StreamText`, `StreamObject`, and `Rerank` do not add this `ai/<version>` tag, matching TS.
+v0.4.x deliberately sent no custom `User-Agent` header. v0.5.0 reverses that decision to match the TypeScript SDK: every provider request now carries `ai-sdk-<provider>/<version> go/<goVersion>` (for example `ai-sdk-openai/0.5.0 go/go1.25.1`), appended to any `User-Agent` value you already set via `Headers` rather than replacing it. `pkg/ai` call-level functions (`GenerateText`, `GenerateObject`, `GenerateImage`, `Embed`, `EmbedMany`, `Transcribe`, `GenerateSpeech`, `GenerateVideo`, `Batch`, `Evaluate`) additionally tag their own headers with `ai/<version>` before the request reaches the model, matching the TS SDK's `ai` package. `StreamText`, `StreamObject`, and `Rerank` do not add this `ai/<version>` tag, matching TS.
+
+Each product identifier carries exactly one `/`, per [RFC 9110's `product` grammar](https://www.rfc-editor.org/rfc/rfc9110.html#section-10.1.5) (`token ["/" version]`); some servers, including Azure, reject a `User-Agent` with more than one `/` in a single identifier. Earlier builds sent `ai-sdk/<provider>/<version> runtime/go/<goVersion>` (two slashes in each identifier); update any code that parses or matches on the old format.
 
 If you filter or allowlist outbound headers at a proxy or egress gateway, update that configuration to permit `User-Agent`, since requests that previously had no custom value now do.
 

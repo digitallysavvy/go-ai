@@ -5,4 +5,4 @@ package deepagents
 // harness-deepagents/src/version.ts, generated at publish time). Pinned to
 // the embedded bridge's source package version (see
 // pkg/harness/bridges.VERSIONS.json, adapters.deepagents.sourceVersion).
-const Version = "1.0.128"
+const Version = "1.0.138"

@@ -36,7 +36,7 @@ func main() {
     ctx := context.Background()
 
     provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
-    model, _ := provider.LanguageModel("gpt-5.4")
+    model, _ := provider.LanguageModel("gpt-5.2")
 
     weatherTool := types.Tool{
         Name:        "weather",
@@ -60,10 +60,11 @@ func main() {
         },
     }
 
+    maxSteps := 5
     result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
         Model:    model,
         Tools:    []types.Tool{weatherTool},
-        MaxSteps: 5,
+        MaxSteps: &maxSteps,
         Prompt:   "What is the weather in San Francisco?",
     })
     if err != nil {
@@ -127,6 +128,8 @@ In the following example, there are two steps:
    2. The model generates a response considering the tool result
 
 ```go
+maxSteps := 5
+
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model: model,
     Tools: []types.Tool{
@@ -152,7 +155,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
             },
         },
     },
-    MaxSteps: 5, // Stop after a maximum of 5 steps if tools were called
+    MaxSteps: &maxSteps, // Stop after a maximum of 5 steps if tools were called
     Prompt:   "What is the weather in San Francisco?",
 })
 ```
@@ -166,9 +169,10 @@ To access intermediate tool calls and results, you can use the `Steps` field in 
 #### Example: Extract tool results from all steps
 
 ```go
+maxSteps := 10
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:    model,
-    MaxSteps: 10,
+    MaxSteps: &maxSteps,
     Tools:    tools,
     Prompt:   "What's the weather in Tokyo and Paris?",
 })
@@ -190,10 +194,11 @@ fmt.Printf("Total tool calls: %d\n", len(allToolCalls))
 When using `GenerateText` or `StreamText`, you can provide an `OnStepFinish` callback that is triggered when a step is finished, i.e. all text deltas, tool calls, and tool results for the step are available. When you have multiple steps, the callback is triggered for each step.
 
 ```go
+maxSteps := 5
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:    model,
     Tools:    tools,
-    MaxSteps: 5,
+    MaxSteps: &maxSteps,
     Prompt:   "What's the weather in multiple cities?",
     OnStepFinish: func(ctx context.Context, step types.StepResult, userContext interface{}) {
         // Your own logic, e.g. for saving the chat history or recording usage
@@ -218,15 +223,17 @@ The `Response.Messages` field contains a slice of `Message` objects that you can
 ```go
 import "github.com/digitallysavvy/go-ai/pkg/provider/types"
 
+maxSteps := 5
+
 messages := []types.Message{
-    {Role: "user", Content: types.TextContent{Text: "What's the weather?"}},
+    {Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "What's the weather?"}}},
 }
 
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:    model,
     Messages: messages,
     Tools:    tools,
-    MaxSteps: 5,
+    MaxSteps: &maxSteps,
 })
 if err != nil {
     log.Fatal(err)
@@ -243,7 +250,7 @@ result2, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:    model,
     Messages: messages,
     Tools:    tools,
-    MaxSteps: 5,
+    MaxSteps: &maxSteps,
 })
 ```
 
@@ -372,6 +379,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "What's the weather?",
     Tools:  []types.Tool{weatherTool},
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
     Timeout: &ai.TimeoutConfig{
         ToolMs: &fiveSeconds, // 5 second timeout for all tools
     },
@@ -396,6 +404,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "Search for weather and news",
     Tools:  []types.Tool{weatherTool, searchTool},
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
     Timeout: &ai.TimeoutConfig{
         ToolMs: &fiveSeconds, // Default: 5s for all tools
         Tools: map[string]time.Duration{
@@ -529,12 +538,13 @@ searchTool := types.Tool{
     },
 }
 
+maxSteps := 5
 result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model: model,
     Tools: []types.Tool{calculatorTool, searchTool, weatherTool},
     Prompt: "Search for the population of Tokyo, then calculate what " +
         "percentage it is of Japan's total population (125 million)",
-    MaxSteps: 5,
+    MaxSteps: &maxSteps,
 })
 
 fmt.Println(result.Text)
@@ -733,6 +743,7 @@ calcTool := weathertools.NewCalculatorTool()
 result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Tools:  []types.Tool{weatherTool, calcTool},
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
     Prompt: "What's the weather and calculate something",
 })
 ```
@@ -742,17 +753,20 @@ result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
 Handle tool execution errors:
 
 ```go
+maxSteps := 5
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:    model,
     Tools:    tools,
-    MaxSteps: 5,
+    MaxSteps: &maxSteps,
     Prompt:   "Use tools",
 })
 if err != nil {
     // Check for specific error types
-    if errors.Is(err, provider.ErrNoSuchTool) {
+    var noSuchToolErr *ai.NoSuchToolError
+    var invalidInputErr *ai.InvalidToolInputError
+    if errors.As(err, &noSuchToolErr) {
         fmt.Println("Model tried to call unknown tool")
-    } else if errors.Is(err, provider.ErrInvalidToolInput) {
+    } else if errors.As(err, &invalidInputErr) {
         fmt.Println("Model called tool with invalid inputs")
     } else {
         fmt.Printf("Error: %v\n", err)
@@ -857,6 +871,7 @@ func getAvailableTools(userRole string) []types.Tool {
 result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Tools:  getAvailableTools(user.Role),
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
     Prompt: prompt,
 })
 ```
@@ -866,15 +881,50 @@ result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
 Chain tool results:
 
 ```go
+maxSteps := 10
 result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model: model,
     Tools: []types.Tool{searchTool, summarizeTool, translateTool},
     Prompt: "Search for AI news, summarize it, then translate to Spanish",
-    MaxSteps: 10,
+    MaxSteps: &maxSteps,
     OnStepFinish: func(ctx context.Context, step types.StepResult, userContext interface{}) {
         fmt.Printf("Step %d: Used %d tools\n", step.StepNumber, len(step.ToolCalls))
     },
 })
+```
+
+### Deferred Tool Search
+
+For large tool registries, mark tools `DeferLoading: true` and add `ai.ToolSearch()` so the model discovers only the tools it needs, instead of seeing every definition up front. By default, `ai.ToolSearch()` ranks deferred tools with built-in keyword scoring over their names and descriptions, returning up to five matches per call:
+
+```go
+tools := []types.Tool{
+    ai.ToolSearch(),
+    {
+        Name:         "getWeather",
+        DeferLoading: true,
+        Description:  "Get the current weather for a city",
+        // ...
+    },
+}
+```
+
+Use `ToolSearchConfig.MaxResults` to change how many matches a search returns (must be a positive integer; omitted or zero defaults to five), and `ToolSearchConfig.Search` to replace the built-in keyword scoring with your own ranking function:
+
+```go
+tools := []types.Tool{
+    ai.ToolSearch(ai.ToolSearchConfig{
+        MaxResults: 10,
+        Search: func(ctx context.Context, query string, candidates []ai.ToolSearchCandidate) ([]string, error) {
+            // Return matching tool names in ranked order, e.g. from a
+            // vector search or external index. Unknown names and
+            // duplicates are ignored, and the result is capped at
+            // MaxResults.
+            return rankToolsByEmbedding(ctx, query, candidates)
+        },
+    }),
+    // ... deferred tools
+}
 ```
 
 ## Next Steps

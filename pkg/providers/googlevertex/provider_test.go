@@ -2,11 +2,13 @@ package googlevertex
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"golang.org/x/oauth2"
 )
@@ -81,6 +83,44 @@ func TestNewProvider_ValidationErrors(t *testing.T) {
 				t.Errorf("Expected error '%s', got '%s'", tt.expectedErr, err.Error())
 			}
 		})
+	}
+}
+
+// TestNewProvider_RejectsLocationThatWouldRewriteHost ports TS
+// google-vertex-location-validation.test.ts (TS #21842): location is
+// interpolated directly into the request host, so a value that isn't a
+// single DNS label must be rejected with an InvalidArgumentError.
+func TestNewProvider_RejectsLocationThatWouldRewriteHost(t *testing.T) {
+	for _, location := range []string{"user@internal:8080/#", "evil.example.com/#", "us central 1"} {
+		t.Run(location, func(t *testing.T) {
+			_, err := New(Config{Project: "test-project", Location: location, AccessToken: "test-token"})
+			var invalid *providererrors.InvalidArgumentError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("New(location=%q) error = %v, want InvalidArgumentError", location, err)
+			}
+			if invalid.Field != "location" {
+				t.Fatalf("Field = %q, want location", invalid.Field)
+			}
+		})
+	}
+}
+
+// TestNewProvider_DoesNotValidateUnusedLocationWithCustomBaseURL ports TS
+// "does not validate an unused location with a custom endpoint": location
+// is irrelevant once BaseURL is set, so a garbage value must not block
+// provider construction.
+func TestNewProvider_DoesNotValidateUnusedLocationWithCustomBaseURL(t *testing.T) {
+	prov, err := New(Config{
+		Project:     "test-project",
+		Location:    "user@internal:8080/#",
+		AccessToken: "test-token",
+		BaseURL:     "https://proxy.example/v1",
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v, want success (location unused with explicit BaseURL)", err)
+	}
+	if prov == nil {
+		t.Fatal("expected provider to be created")
 	}
 }
 

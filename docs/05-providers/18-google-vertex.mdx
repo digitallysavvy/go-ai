@@ -59,8 +59,11 @@ The Vertex provider reuses auth per provider instance. You can provide an explic
 | gemini-2.0-flash | 1M | $0.075/1M (≤128K) | Fast, multimodal |
 | gemini-1.5-pro | 2M | $1.25/1M (≤128K) | Complex tasks |
 | gemini-1.5-flash | 1M | $0.075/1M (≤128K) | General purpose |
-| publishers/xai/models/grok-4 | Provider-defined | MaaS pricing | Grok via Vertex Model Garden |
-| publishers/xai/models/grok-4-latest | Provider-defined | MaaS pricing | Latest Grok alias via Vertex |
+
+Grok models are not reachable through `Provider.LanguageModel` — see
+[xAI (Grok) Sub-Provider](#xai-grok-sub-provider) and
+[Vertex MaaS and Grok](#vertex-maas-and-grok) below for the MaaS model IDs
+(e.g. `xai/grok-4.20-reasoning`).
 
 ### PaLM Models (Legacy)
 
@@ -79,7 +82,7 @@ The Vertex provider reuses auth per provider instance. You can provide an explic
 
 Vertex reuses the Gemini speech model implementation and exposes it through `Provider.SpeechModel` and `Provider.Speech`.
 
-Vertex Chirp transcription is exposed through `Provider.TranscriptionModel` and `Provider.Transcription`. Chirp requests use the Vertex Speech-to-Text v2 `recognize` endpoint and support language codes, word time offsets, punctuation, and billed-duration metadata.
+Vertex Chirp transcription is exposed through `Provider.TranscriptionModel`. Chirp requests use the Vertex Speech-to-Text v2 `recognize` endpoint and support language codes, word time offsets, punctuation, and billed-duration metadata.
 
 | Model ID | Go constant |
 |----------|-------------|
@@ -127,8 +130,7 @@ Provider metadata for Vertex speech is keyed as `google`, matching the TypeScrip
 
 ### Gemini Transcription
 
-`Provider.TranscriptionModel(modelID)` (alias `Provider.Transcription`)
-dispatches on the model ID: any ID beginning with `gemini` uses a Gemini
+`Provider.TranscriptionModel(modelID)` dispatches on the model ID: any ID beginning with `gemini` uses a Gemini
 transcription model instead of Chirp.
 
 - Unary (`gemini-3.5-transcribe`): calls `generateContent` once and returns
@@ -175,6 +177,8 @@ When `Location` is `eu` or `us`, standard Gemini, MaaS, and Anthropic-on-Vertex 
 - `aiplatform.us.rep.googleapis.com`
 
 Explicit `BaseURL` values still take precedence.
+
+`Location` (and the Cloud Speech-to-Text `region` transcription option) is interpolated directly into the request host. A value that isn't a single DNS label (letters, digits, and hyphens) is rejected with an `InvalidArgumentError` before any request is sent; this only applies when no explicit `BaseURL` is configured, since that makes `Location` unused.
 
 ### PayGo Request Type
 
@@ -394,6 +398,7 @@ ProviderOptions: map[string]interface{}{
 package main
 
 import (
+    "context"
     "fmt"
     "log"
     "os"
@@ -403,6 +408,7 @@ import (
 )
 
 func main() {
+    ctx := context.Background()
     provider, err := googlevertex.New(googlevertex.Config{
         Project:     os.Getenv("GOOGLE_VERTEX_PROJECT"),
         Location:    "us-central1",

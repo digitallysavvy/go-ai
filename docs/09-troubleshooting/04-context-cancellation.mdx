@@ -124,7 +124,6 @@ import (
     "os"
     "os/signal"
     "syscall"
-    "time"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
@@ -287,10 +286,11 @@ import (
     "time"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
-func streamWithTimeout(ctx context.Context, model interface{}, prompt string) error {
+func streamWithTimeout(ctx context.Context, model provider.LanguageModel, prompt string) error {
     stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
         Model:  model,
         Prompt: prompt,
@@ -364,10 +364,11 @@ import (
     "time"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
-func processPrompts(ctx context.Context, model interface{}, prompts []string) []string {
+func processPrompts(ctx context.Context, model provider.LanguageModel, prompts []string) []string {
     results := make([]string, len(prompts))
     var wg sync.WaitGroup
 

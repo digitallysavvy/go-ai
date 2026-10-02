@@ -96,7 +96,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		return nil, fmt.Errorf("deepgram: failed to marshal speech request metadata: %w", err)
 	}
 
-	return &types.SpeechResult{
+	result := &types.SpeechResult{
 		Audio:            resp.Body,
 		Warnings:         warnings,
 		ProviderMetadata: map[string]interface{}{"deepgram": buildSpeechProviderMetadata(resp.Headers)},
@@ -109,7 +109,12 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 			Headers:   providerutils.ExtractHeaders(resp.Headers),
 			Body:      resp.Body,
 		},
-	}, nil
+	}
+	// TS: `...(charCount != null ? { usage: { characters: charCount } } : {})`.
+	if charCount := headerInt(resp.Headers, "Dg-Char-Count"); charCount != nil {
+		result.Usage = map[string]interface{}{"characters": *charCount}
+	}
+	return result, nil
 }
 
 func (m *SpeechModel) buildArgs(opts *provider.SpeechGenerateOptions) (map[string]string, []types.Warning, error) {

@@ -57,10 +57,10 @@ import (
 )
 
 func main() {
-    provider := openai.New(openai.Config{
+    p := openai.New(openai.Config{
         APIKey: "your-api-key",
     })
-    model, err := provider.SpeechModel("tts-1")
+    model, err := p.SpeechModel("tts-1")
     if err != nil {
         log.Fatal(err)
     }

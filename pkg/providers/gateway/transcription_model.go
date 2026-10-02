@@ -152,6 +152,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		Usage: types.TranscriptionUsage{
 			DurationSeconds: durationValue(response.DurationInSeconds),
 		},
+		ProviderUsage: response.Usage,
 	}, nil
 }
 
@@ -168,6 +169,7 @@ type gatewayTranscriptionResponse struct {
 	Language          string                 `json:"language,omitempty"`
 	DurationInSeconds *float64               `json:"durationInSeconds,omitempty"`
 	Warnings          []types.Warning        `json:"warnings,omitempty"`
+	Usage             map[string]interface{} `json:"usage,omitempty"`
 	ProviderMetadata  map[string]interface{} `json:"providerMetadata,omitempty"`
 }
 

@@ -180,6 +180,11 @@ type AgentStreamOptions struct {
 
 	OnChunk             func(chunk provider.StreamChunk)
 	InitialStreamChunks []provider.StreamChunk
+
+	// ExperimentalTransform is an ordered list of transforms applied to
+	// stream chunks before they reach OnChunk and the returned
+	// StreamTextResult, forwarded to ai.StreamTextOptions.ExperimentalTransform.
+	ExperimentalTransform []ai.StreamTransformFunc
 }
 
 // AgentAction represents an action the agent has decided to take

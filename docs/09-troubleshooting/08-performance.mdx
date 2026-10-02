@@ -23,7 +23,6 @@ package main
 import (
     "context"
     "fmt"
-    "log"
     "os"
     "time"
 
@@ -41,10 +40,18 @@ func useFasterModels() {
     // SLOW: GPT-4 (high quality, slower)
     slowModel, _ := provider.LanguageModel("gpt-4")
 
+    start := time.Now()
+    slowResult, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  slowModel,
+        Prompt: "Explain quantum computing in one sentence",
+    })
+    fmt.Printf("Slow model took: %v\n", time.Since(start))
+    fmt.Println(slowResult.Text)
+
     // FAST: GPT-4o-mini (good quality, much faster)
     fastModel, _ := provider.LanguageModel("gpt-4o-mini")
 
-    start := time.Now()
+    start = time.Now()
     result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
         Model:  fastModel,
         Prompt: "Explain quantum computing in one sentence",
@@ -92,10 +99,11 @@ func limitTokens() {
     model, _ := provider.LanguageModel("gpt-4")
 
     start := time.Now()
+    maxTokens := 100 // Limit response length
     result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
         Model:     model,
         Prompt:    "Explain quantum computing",
-        MaxTokens: 100, // Limit response length
+        MaxTokens: &maxTokens,
     })
     fmt.Printf("Limited response took: %v\n", time.Since(start))
     fmt.Println(result.Text)
@@ -135,11 +143,12 @@ import (
     "runtime"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
 // BAD: Accumulating all results in memory
-func memoryHeavy(ctx context.Context, model interface{}, prompts []string) []string {
+func memoryHeavy(ctx context.Context, model provider.LanguageModel, prompts []string) []string {
     results := make([]string, 0, len(prompts))
 
     for _, prompt := range prompts {
@@ -155,7 +164,7 @@ func memoryHeavy(ctx context.Context, model interface{}, prompts []string) []str
 }
 
 // GOOD: Process and discard results immediately
-func memoryEfficient(ctx context.Context, model interface{}, prompts []string) {
+func memoryEfficient(ctx context.Context, model provider.LanguageModel, prompts []string) {
     for i, prompt := range prompts {
         result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
             Model:  model,
@@ -235,7 +244,6 @@ import (
     "context"
     "crypto/sha256"
     "encoding/hex"
-    "encoding/json"
     "fmt"
     "log"
     "os"
@@ -243,12 +251,13 @@ import (
     "time"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
 // CachedGenerator caches AI responses
 type CachedGenerator struct {
-    model     interface{}
+    model     provider.LanguageModel
     cache     map[string]*CacheEntry
     mu        sync.RWMutex
     ttl       time.Duration
@@ -261,7 +270,7 @@ type CacheEntry struct {
     Timestamp time.Time
 }
 
-func NewCachedGenerator(model interface{}, ttl time.Duration) *CachedGenerator {
+func NewCachedGenerator(model provider.LanguageModel, ttl time.Duration) *CachedGenerator {
     return &CachedGenerator{
         model: model,
         cache: make(map[string]*CacheEntry),
@@ -419,11 +428,12 @@ import (
     "time"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
 // Process prompts concurrently
-func processConcurrently(ctx context.Context, model interface{}, prompts []string, maxConcurrent int) []string {
+func processConcurrently(ctx context.Context, model provider.LanguageModel, prompts []string, maxConcurrent int) []string {
     results := make([]string, len(prompts))
     var wg sync.WaitGroup
 

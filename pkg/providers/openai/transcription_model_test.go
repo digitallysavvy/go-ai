@@ -253,6 +253,33 @@ func TestTranscriptionDoTranscribeSuccessAndErrors(t *testing.T) {
 	}
 }
 
+// TestTranscriptionExtractsUsage is ported from TS
+// openai-transcription-model.test.ts "should extract usage" (TS 8c659885c5 /
+// #21427): the response's usage object (whatever shape OpenAI reports) is
+// surfaced verbatim on the result.
+func TestTranscriptionExtractsUsage(t *testing.T) {
+	serverURL, closeServer := newOpenAIIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text":"hello","duration":37,"usage":{"type":"duration","seconds":37}}`))
+	}))
+	defer closeServer()
+
+	p := New(Config{APIKey: "k", BaseURL: serverURL + "/v1"})
+	m := NewTranscriptionModel(p, "whisper-1")
+
+	result, err := m.DoTranscribe(context.Background(), &provider.TranscriptionOptions{
+		Audio:    []byte("audio"),
+		MimeType: "audio/mpeg",
+	})
+	if err != nil {
+		t.Fatalf("DoTranscribe error = %v", err)
+	}
+	want := map[string]interface{}{"type": "duration", "seconds": float64(37)}
+	if got := result.ProviderUsage; got["type"] != want["type"] || got["seconds"] != want["seconds"] {
+		t.Fatalf("ProviderUsage = %#v, want %#v", got, want)
+	}
+}
+
 // TestTranscriptionWhisper1AlwaysUsesVerboseJSON ports TS getArgs: whisper-1
 // unconditionally gets response_format=verbose_json regardless of whether
 // timestamps were requested, and a providerOptions.openai.responseFormat

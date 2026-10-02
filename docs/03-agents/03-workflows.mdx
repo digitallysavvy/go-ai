@@ -44,12 +44,14 @@ package main
 
 import (
     "context"
+    "encoding/json"
     "fmt"
     "log"
     "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
 type QualityMetrics struct {
@@ -77,7 +79,7 @@ func generateMarketingCopy(ctx context.Context, input string) (string, QualityMe
     // Step 2: Perform quality check on copy
     qualityResult, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
         Model: model,
-        Schema: map[string]interface{}{
+        Schema: schema.NewSimpleJSONSchema(map[string]interface{}{
             "type": "object",
             "properties": map[string]interface{}{
                 "hasCallToAction": map[string]interface{}{
@@ -98,7 +100,7 @@ func generateMarketingCopy(ctx context.Context, input string) (string, QualityMe
                 },
             },
             "required": []string{"hasCallToAction", "emotionalAppeal", "clarity"},
-        },
+        }),
         Prompt: fmt.Sprintf(`Evaluate this marketing copy for:
 1. Presence of call to action (true/false)
 2. Emotional appeal (1-10)
@@ -111,7 +113,11 @@ Copy to evaluate: %s`, copy),
     }
 
     var metrics QualityMetrics
-    if err := qualityResult.Object.Unmarshal(&metrics); err != nil {
+    objBytes, err := json.Marshal(qualityResult.Object)
+    if err != nil {
+        return "", QualityMetrics{}, err
+    }
+    if err := json.Unmarshal(objBytes, &metrics); err != nil {
         return "", QualityMetrics{}, err
     }
 
@@ -166,12 +172,14 @@ package main
 
 import (
     "context"
+    "encoding/json"
     "fmt"
     "log"
     "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
 type Classification struct {
@@ -189,7 +197,7 @@ func handleCustomerQuery(ctx context.Context, query string) (string, Classificat
     // Step 1: Classify the query type
     classificationResult, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
         Model: model,
-        Schema: map[string]interface{}{
+        Schema: schema.NewSimpleJSONSchema(map[string]interface{}{
             "type": "object",
             "properties": map[string]interface{}{
                 "reasoning": map[string]interface{}{
@@ -208,7 +216,7 @@ func handleCustomerQuery(ctx context.Context, query string) (string, Classificat
                 },
             },
             "required": []string{"reasoning", "type", "complexity"},
-        },
+        }),
         Prompt: fmt.Sprintf(`Classify this customer query:
 %s
 
@@ -222,7 +230,11 @@ Determine:
     }
 
     var classification Classification
-    if err := classificationResult.Object.Unmarshal(&classification); err != nil {
+    classificationBytes, err := json.Marshal(classificationResult.Object)
+    if err != nil {
+        return "", Classification{}, err
+    }
+    if err := json.Unmarshal(classificationBytes, &classification); err != nil {
         return "", Classification{}, err
     }
 
@@ -280,6 +292,7 @@ package main
 
 import (
     "context"
+    "encoding/json"
     "fmt"
     "log"
     "os"
@@ -287,6 +300,7 @@ import (
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
 type SecurityReview struct {
@@ -327,7 +341,7 @@ func parallelCodeReview(ctx context.Context, code string) (string, error) {
         result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
             Model:  model,
             System: "You are an expert in code security. Focus on identifying security vulnerabilities, injection risks, and authentication issues.",
-            Schema: map[string]interface{}{
+            Schema: schema.NewSimpleJSONSchema(map[string]interface{}{
                 "type": "object",
                 "properties": map[string]interface{}{
                     "vulnerabilities": map[string]interface{}{
@@ -344,14 +358,19 @@ func parallelCodeReview(ctx context.Context, code string) (string, error) {
                     },
                 },
                 "required": []string{"vulnerabilities", "riskLevel", "suggestions"},
-            },
+            }),
             Prompt: fmt.Sprintf("Review this code:\n%s", code),
         })
         if err != nil {
             errChan <- err
             return
         }
-        if err := result.Object.Unmarshal(&securityReview); err != nil {
+        securityBytes, err := json.Marshal(result.Object)
+        if err != nil {
+            errChan <- err
+            return
+        }
+        if err := json.Unmarshal(securityBytes, &securityReview); err != nil {
             errChan <- err
         }
     }()
@@ -363,7 +382,7 @@ func parallelCodeReview(ctx context.Context, code string) (string, error) {
         result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
             Model:  model,
             System: "You are an expert in code performance. Focus on identifying performance bottlenecks, memory leaks, and optimization opportunities.",
-            Schema: map[string]interface{}{
+            Schema: schema.NewSimpleJSONSchema(map[string]interface{}{
                 "type": "object",
                 "properties": map[string]interface{}{
                     "issues": map[string]interface{}{
@@ -380,14 +399,19 @@ func parallelCodeReview(ctx context.Context, code string) (string, error) {
                     },
                 },
                 "required": []string{"issues", "impact", "optimizations"},
-            },
+            }),
             Prompt: fmt.Sprintf("Review this code:\n%s", code),
         })
         if err != nil {
             errChan <- err
             return
         }
-        if err := result.Object.Unmarshal(&performanceReview); err != nil {
+        performanceBytes, err := json.Marshal(result.Object)
+        if err != nil {
+            errChan <- err
+            return
+        }
+        if err := json.Unmarshal(performanceBytes, &performanceReview); err != nil {
             errChan <- err
         }
     }()
@@ -399,7 +423,7 @@ func parallelCodeReview(ctx context.Context, code string) (string, error) {
         result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
             Model:  model,
             System: "You are an expert in code quality. Focus on code structure, readability, and adherence to best practices.",
-            Schema: map[string]interface{}{
+            Schema: schema.NewSimpleJSONSchema(map[string]interface{}{
                 "type": "object",
                 "properties": map[string]interface{}{
                     "concerns": map[string]interface{}{
@@ -417,14 +441,19 @@ func parallelCodeReview(ctx context.Context, code string) (string, error) {
                     },
                 },
                 "required": []string{"concerns", "qualityScore", "recommendations"},
-            },
+            }),
             Prompt: fmt.Sprintf("Review this code:\n%s", code),
         })
         if err != nil {
             errChan <- err
             return
         }
-        if err := result.Object.Unmarshal(&maintainabilityReview); err != nil {
+        maintainabilityBytes, err := json.Marshal(result.Object)
+        if err != nil {
+            errChan <- err
+            return
+        }
+        if err := json.Unmarshal(maintainabilityBytes, &maintainabilityReview); err != nil {
             errChan <- err
         }
     }()
@@ -502,6 +531,7 @@ package main
 
 import (
     "context"
+    "encoding/json"
     "fmt"
     "log"
     "os"
@@ -509,6 +539,7 @@ import (
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
 type FileChange struct {
@@ -542,7 +573,7 @@ func implementFeature(ctx context.Context, featureRequest string) (Implementatio
     planResult, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
         Model:  model,
         System: "You are a senior software architect planning feature implementations.",
-        Schema: map[string]interface{}{
+        Schema: schema.NewSimpleJSONSchema(map[string]interface{}{
             "type": "object",
             "properties": map[string]interface{}{
                 "files": map[string]interface{}{
@@ -572,7 +603,7 @@ func implementFeature(ctx context.Context, featureRequest string) (Implementatio
                 },
             },
             "required": []string{"files", "estimatedComplexity"},
-        },
+        }),
         Prompt: fmt.Sprintf("Analyze this feature request and create an implementation plan:\n%s", featureRequest),
     })
     if err != nil {
@@ -580,7 +611,11 @@ func implementFeature(ctx context.Context, featureRequest string) (Implementatio
     }
 
     var plan ImplementationPlan
-    if err := planResult.Object.Unmarshal(&plan); err != nil {
+    planBytes, err := json.Marshal(planResult.Object)
+    if err != nil {
+        return ImplementationPlan{}, nil, err
+    }
+    if err := json.Unmarshal(planBytes, &plan); err != nil {
         return ImplementationPlan{}, nil, err
     }
 
@@ -606,7 +641,7 @@ func implementFeature(ctx context.Context, featureRequest string) (Implementatio
             changeResult, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
                 Model:  model,
                 System: systemPrompts[f.ChangeType],
-                Schema: map[string]interface{}{
+                Schema: schema.NewSimpleJSONSchema(map[string]interface{}{
                     "type": "object",
                     "properties": map[string]interface{}{
                         "explanation": map[string]interface{}{
@@ -619,7 +654,7 @@ func implementFeature(ctx context.Context, featureRequest string) (Implementatio
                         },
                     },
                     "required": []string{"explanation", "code"},
-                },
+                }),
                 Prompt: fmt.Sprintf(`Implement the changes for %s to support:
 %s
 
@@ -632,7 +667,12 @@ Consider the overall feature context:
             }
 
             var impl CodeImplementation
-            if err := changeResult.Object.Unmarshal(&impl); err != nil {
+            implBytes, err := json.Marshal(changeResult.Object)
+            if err != nil {
+                errChan <- err
+                return
+            }
+            if err := json.Unmarshal(implBytes, &impl); err != nil {
                 errChan <- err
                 return
             }
@@ -691,12 +731,14 @@ package main
 
 import (
     "context"
+    "encoding/json"
     "fmt"
     "log"
     "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
 type TranslationEvaluation struct {
@@ -736,7 +778,7 @@ func translateWithFeedback(ctx context.Context, text, targetLanguage string) (st
         evalResult, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
             Model:  model,
             System: "You are an expert in evaluating literary translations.",
-            Schema: map[string]interface{}{
+            Schema: schema.NewSimpleJSONSchema(map[string]interface{}{
                 "type": "object",
                 "properties": map[string]interface{}{
                     "qualityScore": map[string]interface{}{
@@ -769,7 +811,7 @@ func translateWithFeedback(ctx context.Context, text, targetLanguage string) (st
                     },
                 },
                 "required": []string{"qualityScore", "preservesTone", "preservesNuance", "culturallyAccurate", "specificIssues", "improvementSuggestions"},
-            },
+            }),
             Prompt: fmt.Sprintf(`Evaluate this translation:
 
 Original: %s
@@ -786,7 +828,11 @@ Consider:
         }
 
         var evaluation TranslationEvaluation
-        if err := evalResult.Object.Unmarshal(&evaluation); err != nil {
+        evalBytes, err := json.Marshal(evalResult.Object)
+        if err != nil {
+            return "", 0, err
+        }
+        if err := json.Unmarshal(evalBytes, &evaluation); err != nil {
             return "", 0, err
         }
 
@@ -860,6 +906,7 @@ package main
 
 import (
     "context"
+    "encoding/json"
     "fmt"
     "log"
     "os"
@@ -867,6 +914,7 @@ import (
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
 type TaskType struct {
@@ -883,7 +931,7 @@ func intelligentTaskProcessor(ctx context.Context, task string) (string, error) 
     // Step 1: Route - Classify the task
     classificationResult, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
         Model: model,
-        Schema: map[string]interface{}{
+        Schema: schema.NewSimpleJSONSchema(map[string]interface{}{
             "type": "object",
             "properties": map[string]interface{}{
                 "type": map[string]interface{}{
@@ -896,7 +944,7 @@ func intelligentTaskProcessor(ctx context.Context, task string) (string, error) 
                 },
             },
             "required": []string{"type", "complexity"},
-        },
+        }),
         Prompt: fmt.Sprintf("Classify this task:\n%s", task),
     })
     if err != nil {
@@ -904,7 +952,11 @@ func intelligentTaskProcessor(ctx context.Context, task string) (string, error) 
     }
 
     var taskType TaskType
-    if err := classificationResult.Object.Unmarshal(&taskType); err != nil {
+    taskTypeBytes, err := json.Marshal(classificationResult.Object)
+    if err != nil {
+        return "", err
+    }
+    if err := json.Unmarshal(taskTypeBytes, &taskType); err != nil {
         return "", err
     }
 

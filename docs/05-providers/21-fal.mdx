@@ -245,7 +245,9 @@ Check dashboard for current limits and pricing.
 ## Workflow Serialization
 
 Fal image, speech, and transcription models can cross a workflow boundary
-with `providerutils.SerializeModel` / `DeserializeModel`. See
+with `provider.SerializeImageModel` / `DeserializeImageModel`,
+`provider.SerializeSpeechModel` / `DeserializeSpeechModel`, and
+`provider.SerializeTranscriptionModel` / `DeserializeTranscriptionModel`. See
 [Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
 for the mechanism; video models are not yet serializable.
 

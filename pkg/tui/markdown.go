@@ -23,9 +23,12 @@ var (
 	numberedListPattern     = regexp.MustCompile(`^(\d+)\. (.*)$`)
 )
 
-// RenderMarkdown renders lightweight Markdown as ANSI terminal text.
+// RenderMarkdown renders lightweight Markdown as ANSI terminal text. input
+// is untrusted (agent text, tool content, errors) and is escaped of control
+// characters before any Markdown styling is added (hash 8e0fbcc10a),
+// multiline so its own newlines still split it into lines below.
 func RenderMarkdown(input string) string {
-	lines := strings.Split(input, "\n")
+	lines := strings.Split(sanitizeTerminalText(input, true), "\n")
 	out := make([]string, 0, len(lines))
 	for index := 0; index < len(lines); index++ {
 		line := lines[index]

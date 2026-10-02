@@ -31,10 +31,12 @@ type sessionOptions struct {
 	// reachable from this port — see package doc: DoStart never attaches).
 	proc providerutils.SandboxProcess
 
-	maxTurns int
-	env      map[string]string
-	thinking ThinkingConfig
-	effort   string
+	maxTurns               int
+	agentProgressSummaries bool
+	forwardSubagentText    bool
+	env                    map[string]string
+	thinking               ThinkingConfig
+	effort                 string
 
 	isResume              bool
 	continueOnFirstPrompt bool
@@ -162,6 +164,8 @@ func (s *session) buildStartFrame(prompt string, ts harness.TurnSettings, rf *ha
 	if s.opts.maxTurns > 0 {
 		frame.MaxTurns = &s.opts.maxTurns
 	}
+	frame.AgentProgressSummaries = s.opts.agentProgressSummaries
+	frame.ForwardSubagentText = s.opts.forwardSubagentText
 	if len(s.opts.env) > 0 {
 		frame.Env = s.opts.env
 	}

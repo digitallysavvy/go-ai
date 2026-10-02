@@ -563,7 +563,7 @@ func TestCredentialForwarding(t *testing.T) {
 	}
 
 	calls = nil
-	sandboxEnv, err := CreateSandboxCredentialEnvironment(ctx, CredentialForwardingOptions{
+	sandboxEnv, err := ResolveSandboxCredentialEnvironment(ctx, CredentialForwardingOptions{
 		Environment:                    map[string]string{"API_KEY": "real-secret", "SECOND_API_KEY": "second", "BASE_URL": "x"},
 		CredentialEnvironmentVariables: []string{"API_KEY", "SECOND_API_KEY"},
 		CredentialForwarding: func(_ context.Context, o harness.CredentialForwardingOptions) (string, error) {
@@ -582,10 +582,100 @@ func TestCredentialForwarding(t *testing.T) {
 	if !strings.HasPrefix(sandboxEnv["API_KEY"], "wrapped-aisdkhc_") || !strings.HasPrefix(sandboxEnv["SECOND_API_KEY"], "wrapped-aisdkhc_") {
 		t.Fatal(sandboxEnv)
 	}
-	empty, _ := CreateSandboxCredentialEnvironment(ctx, CredentialForwardingOptions{Environment: map[string]string{"BASE_URL": "x"}, CredentialEnvironmentVariables: []string{"API_KEY"}})
+	empty, _ := ResolveSandboxCredentialEnvironment(ctx, CredentialForwardingOptions{Environment: map[string]string{"BASE_URL": "x"}, CredentialEnvironmentVariables: []string{"API_KEY"}})
 	if len(empty) != 0 {
 		t.Fatal(empty)
 	}
+}
+
+// TS "resolveSandboxCredentialEnvironment" describe block (credential-forwarding.test.ts).
+func TestResolveSandboxCredentialEnvironment(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("reuses only current credentials and creates placeholders for new names", func(t *testing.T) {
+		previous := map[string]string{"API_KEY": "saved-placeholder", "REMOVED_API_KEY": "removed-placeholder"}
+		var calls []harness.CredentialForwardingOptions
+		result, err := ResolveSandboxCredentialEnvironment(ctx, CredentialForwardingOptions{
+			Environment: map[string]string{
+				"API_KEY": "rotated-secret", "NEW_API_KEY": "new-secret", "BASE_URL": "https://api.example.com",
+			},
+			CredentialEnvironmentVariables:       []string{"API_KEY", "NEW_API_KEY", "NEW_API_KEY", "REMOVED_API_KEY"},
+			PreviousSandboxCredentialEnvironment: previous,
+			CredentialForwarding: func(_ context.Context, o harness.CredentialForwardingOptions) (string, error) {
+				calls = append(calls, o)
+				return "wrapped-" + o.Credential, nil
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result["API_KEY"] != "saved-placeholder" {
+			t.Errorf("API_KEY = %q, want reused saved-placeholder", result["API_KEY"])
+		}
+		if !strings.HasPrefix(result["NEW_API_KEY"], "wrapped-aisdkhc_") {
+			t.Errorf("NEW_API_KEY = %q, want fresh wrapped placeholder", result["NEW_API_KEY"])
+		}
+		if _, ok := result["REMOVED_API_KEY"]; ok {
+			t.Errorf("REMOVED_API_KEY should be absent (not in Environment): %v", result)
+		}
+		if len(calls) != 1 || calls[0].EnvironmentVariableName != "NEW_API_KEY" {
+			t.Fatalf("CredentialForwarding calls = %+v, want exactly one for NEW_API_KEY", calls)
+		}
+		if !reflect.DeepEqual(previous, map[string]string{"API_KEY": "saved-placeholder", "REMOVED_API_KEY": "removed-placeholder"}) {
+			t.Errorf("previous map mutated: %v", previous)
+		}
+	})
+
+	t.Run("keeps saved credentials with custom formats without forwarding them again", func(t *testing.T) {
+		called := false
+		result, err := ResolveSandboxCredentialEnvironment(ctx, CredentialForwardingOptions{
+			Environment:                          map[string]string{"GITHUB_TOKEN": "rotated-secret"},
+			CredentialEnvironmentVariables:       []string{"GITHUB_TOKEN"},
+			PreviousSandboxCredentialEnvironment: map[string]string{"GITHUB_TOKEN": "gho_saved-placeholder"},
+			CredentialForwarding: func(context.Context, harness.CredentialForwardingOptions) (string, error) {
+				called = true
+				return "another-placeholder", nil
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result["GITHUB_TOKEN"] != "gho_saved-placeholder" {
+			t.Errorf("GITHUB_TOKEN = %q, want reused gho_saved-placeholder", result["GITHUB_TOKEN"])
+		}
+		if called {
+			t.Error("CredentialForwarding should not have been called")
+		}
+	})
+
+	t.Run("generates placeholders when older lifecycle state has no saved map", func(t *testing.T) {
+		result, err := ResolveSandboxCredentialEnvironment(ctx, CredentialForwardingOptions{
+			Environment:                    map[string]string{"API_KEY": "host-secret"},
+			CredentialEnvironmentVariables: []string{"API_KEY"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !IsSandboxCredentialPlaceholder(result["API_KEY"]) {
+			t.Errorf("API_KEY = %q, want a generated placeholder", result["API_KEY"])
+		}
+		if strings.Contains(result["API_KEY"], "host-secret") {
+			t.Errorf("result leaks the real secret: %v", result)
+		}
+	})
+
+	t.Run("propagates forwarding failures before returning a partial environment", func(t *testing.T) {
+		_, err := ResolveSandboxCredentialEnvironment(ctx, CredentialForwardingOptions{
+			Environment:                    map[string]string{"API_KEY": "host-secret"},
+			CredentialEnvironmentVariables: []string{"API_KEY"},
+			CredentialForwarding: func(context.Context, harness.CredentialForwardingOptions) (string, error) {
+				return "", errors.New("forwarding failed")
+			},
+		})
+		if err == nil || err.Error() != "forwarding failed" {
+			t.Fatalf("err = %v, want forwarding failed", err)
+		}
+	})
 }
 
 func TestCredentialBrokering(t *testing.T) {

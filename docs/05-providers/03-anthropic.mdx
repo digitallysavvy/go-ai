@@ -27,7 +27,7 @@ provider := anthropic.New(anthropic.Config{
     APIKey: os.Getenv("ANTHROPIC_API_KEY"),
 })
 
-model, err := provider.LanguageModel("claude-sonnet-4.5")
+model, err := provider.LanguageModel("claude-sonnet-4-5")
 if err != nil {
     log.Fatal(err)
 }
@@ -77,7 +77,7 @@ provider, err := anthropicaws.New(anthropicaws.Config{
 })
 ```
 
-The default base URL is `https://aws-external-anthropic.{region}.api.aws`. `WorkspaceID` is required and is sent as `anthropic-workspace-id`.
+The default base URL is `https://aws-external-anthropic.{region}.api.aws/v1`. `WorkspaceID` is required and is sent as `anthropic-workspace-id`.
 
 ## Available Models
 
@@ -88,9 +88,9 @@ The default base URL is `https://aws-external-anthropic.{region}.api.aws`. `Work
 | claude-opus-4-7 | 200K | TBA | TBA | Latest Opus reasoning and coding |
 | claude-opus-4-6 | 200K | TBA | TBA | Complex tasks, fast mode |
 | claude-sonnet-4-6 | 200K | TBA | TBA | Balanced performance and capability |
-| claude-opus-4.5 | 200K | $15.00/1M | $75.00/1M | Most capable, complex tasks |
-| claude-sonnet-4.5 | 200K | $3.00/1M | $15.00/1M | Best balance of speed & quality |
-| claude-haiku-4.5 | 200K | $0.80/1M | $4.00/1M | Fast, cost-effective |
+| claude-opus-4-5 | 200K | $15.00/1M | $75.00/1M | Most capable, complex tasks |
+| claude-sonnet-4-5 | 200K | $3.00/1M | $15.00/1M | Best balance of speed & quality |
+| claude-haiku-4-5 | 200K | $0.80/1M | $4.00/1M | Fast, cost-effective |
 
 ### Claude 4 Series
 
@@ -209,6 +209,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "Find all active customers who signed up in 2024",
     Tools:  []types.Tool{searchTool},
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 })
 
 for _, call := range result.ToolCalls {
@@ -276,6 +277,19 @@ for _, part := range result.Content {
     }
 }
 fmt.Println("Final answer:", result.Text)
+```
+
+When streaming (`ai.StreamText`) extended thinking together with tool calls across multiple steps, each thinking block's cryptographic signature streams as its own `signature_delta` event, after the block's text deltas. The provider carries it through as the reasoning content part's `Signature`, so a later step's request replays the thinking block with its signature intact (required for Anthropic to accept the replayed block) instead of dropping it.
+
+#### Between-Tools Thinking (Claude Sonnet 5.5)
+
+`anthropic.ClaudeSonnet5_5` rejects `thinking.type` `"disabled"` and budget-based thinking, and adds `anthropic.ThinkingTypeBetweenTools`, its lowest thinking setting: no upfront thinking, but short progress notes between tool calls stream back as summarized thinking blocks. It's only accepted at `"low"`, `"medium"`, and `"high"` effort — `"xhigh"`/`"max"` is lowered to `"high"` with a warning. `Reasoning: types.ReasoningNone` and `ThinkingConfig{Type: anthropic.ThinkingTypeDisabled}` both map to `between_tools` automatically for this model, with a warning in the latter case.
+
+```go
+model, err := provider.LanguageModelWithOptions(anthropic.ClaudeSonnet5_5, &anthropic.ModelOptions{
+    Thinking: &anthropic.ThinkingConfig{Type: anthropic.ThinkingTypeBetweenTools},
+    Effort:   anthropic.EffortMedium,
+})
 ```
 
 ### Context Management (Beta)
@@ -366,8 +380,8 @@ for chunk := range stream.Chunks() {
     fmt.Print(chunk.Text)
 }
 
-if stream.Error() != nil {
-    log.Fatal(stream.Error())
+if stream.Err() != nil {
+    log.Fatal(stream.Err())
 }
 ```
 
@@ -379,6 +393,7 @@ if stream.Error() != nil {
 package main
 
 import (
+    "context"
     "fmt"
     "log"
     "os"
@@ -388,11 +403,12 @@ import (
 )
 
 func main() {
+    ctx := context.Background()
     provider := anthropic.New(anthropic.Config{
         APIKey: os.Getenv("ANTHROPIC_API_KEY"),
     })
 
-    model, err := provider.LanguageModel("claude-sonnet-4.5")
+    model, err := provider.LanguageModel("claude-sonnet-4-5")
     if err != nil {
         log.Fatal(err)
     }
@@ -522,6 +538,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "Read main.go, add error handling, and save the improved version",
     Tools:  []types.Tool{fileReadTool, fileWriteTool},
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 })
 
 // Process tool calls
@@ -614,13 +631,15 @@ provider := anthropic.New(anthropic.Config{
 
 ### Beta Features
 
+Most beta headers (prompt caching, extended thinking, context management, and so on) are added automatically based on the `ModelOptions` you set. To send an additional `anthropic-beta` flag that isn't covered by a dedicated option, set `AnthropicBeta` on `ModelOptions`:
+
 ```go
 provider := anthropic.New(anthropic.Config{
     APIKey: os.Getenv("ANTHROPIC_API_KEY"),
-    BetaHeaders: []string{
-        "prompt-caching-2024-07-31",
-        "extended-thinking-2024-12-01",
-    },
+})
+
+model, err := provider.LanguageModelWithOptions("claude-sonnet-4-5", &anthropic.ModelOptions{
+    AnthropicBeta: []string{"some-other-beta-flag"},
 })
 ```
 
@@ -695,9 +714,9 @@ func generateWithRetry(ctx context.Context, model provider.LanguageModel, prompt
 ## Best Practices
 
 1. **Model Selection**
-   - Use `claude-sonnet-4.5` for best balance of quality and speed
-   - Use `claude-opus-4.5` for most complex tasks requiring deep analysis
-   - Use `claude-haiku-4.5` for high-volume, latency-sensitive applications
+   - Use `claude-sonnet-4-5` for best balance of quality and speed
+   - Use `claude-opus-4-5` for most complex tasks requiring deep analysis
+   - Use `claude-haiku-4-5` for high-volume, latency-sensitive applications
 
 2. **Prompt Engineering**
    - Be specific and detailed in instructions
@@ -745,11 +764,11 @@ func estimateTokens(text string) int {
 }
 
 // Calculate cost
-func calculateCost(usage ai.Usage, model string) float64 {
+func calculateCost(usage types.Usage, model string) float64 {
     rates := map[string][2]float64{
-        "claude-opus-4.5":   {15.00 / 1_000_000, 75.00 / 1_000_000},
-        "claude-sonnet-4.5": {3.00 / 1_000_000, 15.00 / 1_000_000},
-        "claude-haiku-4.5":  {0.80 / 1_000_000, 4.00 / 1_000_000},
+        "claude-opus-4-5":   {15.00 / 1_000_000, 75.00 / 1_000_000},
+        "claude-sonnet-4-5": {3.00 / 1_000_000, 15.00 / 1_000_000},
+        "claude-haiku-4-5":  {0.80 / 1_000_000, 4.00 / 1_000_000},
     }
 
     rate := rates[model]
@@ -803,6 +822,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "Run some Python to analyze this data, then summarize.",
     Tools:  tools,
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
     PrepareStep: func(ctx context.Context, step ai.PrepareStepOptions) ai.PrepareStepOptions {
         if opts := anthropic.ForwardContainerIDFromLastStep(step.Steps); opts != nil {
             step.ProviderOptions = opts
@@ -811,6 +831,10 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     },
 })
 ```
+
+### Pruned Programmatic Tool History
+
+If history is pruned between steps (e.g. to control context size) and that removes a code-execution source call (`code_execution_20250825`/`code_execution_20260120`) while a dependent tool call still references it via `caller`, the provider now omits that dangling `caller` metadata — rather than sending it as-is and having Anthropic reject the request with "source tool ... not found" — and returns one warning per affected tool call. The call, its result, ordering, and cache controls are otherwise unchanged; a caller that still resolves to an emitted `server_tool_use` block, or that is in an active continuation not yet followed by a new user message, is left untouched.
 
 ## Finish Reasons
 

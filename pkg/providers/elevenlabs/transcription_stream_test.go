@@ -196,7 +196,7 @@ func rate(v int) *int { return &v }
 // (combineHeaders(this.config.headers?.(), options.headers)), which reuses
 // the same tagged getHeaders() as regular HTTP requests. Owner decision
 // 2026-09-30 (match TS): the handshake must carry the
-// `ai-sdk/elevenlabs/VERSION` tag, not a bare "xi-api-key"-only header set.
+// `ai-sdk-elevenlabs/VERSION` tag, not a bare "xi-api-key"-only header set.
 func TestTranscriptionModel_DoStream_WebSocketHandshakeCarriesUserAgent(t *testing.T) {
 	server := newRealtimeTestServer(t)
 	defer server.close()
@@ -217,8 +217,8 @@ func TestTranscriptionModel_DoStream_WebSocketHandshakeCarriesUserAgent(t *testi
 	}
 
 	ua, apiKey := server.handshakeHeaders()
-	if !strings.HasPrefix(ua, "ai-sdk/elevenlabs/") {
-		t.Fatalf("handshake User-Agent = %q, want ai-sdk/elevenlabs/... prefix", ua)
+	if !strings.HasPrefix(ua, "ai-sdk-elevenlabs/") {
+		t.Fatalf("handshake User-Agent = %q, want ai-sdk-elevenlabs/... prefix", ua)
 	}
 	if apiKey != "test-api-key" {
 		t.Fatalf("handshake xi-api-key = %q, want test-api-key", apiKey)

@@ -253,6 +253,12 @@ func ConvertToAnthropicPrompt(messages []types.Message, opts AnthropicPromptOpti
 	blocks := groupAnthropicBlocks(MergeConsecutiveToolMessages(messages))
 	var system []map[string]interface{}
 	out := make([]map[string]interface{}, 0, len(blocks))
+	// lastUserMessageIndex tracks the out[] index of the last combined
+	// user-block message that contains at least one genuine (non-tool-result)
+	// user message with non-empty content -- used below to normalize dangling
+	// programmatic caller metadata only in history BEFORE that point (TS
+	// commit 8373a22603, #21623).
+	lastUserMessageIndex := -1
 
 	for i, block := range blocks {
 		isLastBlock := i == len(blocks)-1
@@ -273,6 +279,16 @@ func ConvertToAnthropicPrompt(messages []types.Message, opts AnthropicPromptOpti
 			}
 
 		default:
+			// A tool-result sub-message does not end a turn -- only an
+			// actual non-empty user message does -- so lastUserMessageIndex
+			// is set from the original per-message roles inside this
+			// (already tool+user merged) block, not from the block itself.
+			for _, msg := range block.messages {
+				if msg.Role != types.RoleTool && len(msg.Content) > 0 {
+					lastUserMessageIndex = len(out)
+					break
+				}
+			}
 			content, err := c.convertUserBlock(block)
 			if err != nil {
 				return nil, err
@@ -283,6 +299,8 @@ func ConvertToAnthropicPrompt(messages []types.Message, opts AnthropicPromptOpti
 			})
 		}
 	}
+
+	normalizeOrphanedAnthropicCallers(out, lastUserMessageIndex, c)
 
 	warnings := append(c.warnings, c.validator.Warnings()...)
 	if opts.CacheControlValidator != nil {
@@ -296,6 +314,81 @@ func ConvertToAnthropicPrompt(messages []types.Message, opts AnthropicPromptOpti
 		Betas:    c.betas,
 		Warnings: warnings,
 	}, nil
+}
+
+// normalizeOrphanedAnthropicCallers omits dangling programmatic `caller`
+// metadata (added by convertAssistantBlock via anthropicCaller) from
+// converted assistant messages before lastUserMessageIndex, mirroring TS
+// commit 8373a22603 (#21623). Pruning a multi-step conversation can remove a
+// code execution source call while retaining a dependent tool call that
+// still references it via caller.tool_id; Anthropic then rejects the next
+// request with "source tool ... not found for tool use block ...". This
+// retains the tool calls, results, ordering, and cache controls, and emits
+// one warning per affected tool call -- it does not restore deleted
+// execution history, so a historical call with a missing source is simply
+// replayed without programmatic provenance.
+//
+// Only history strictly before lastUserMessageIndex is normalized: a
+// tool-result message does not end a turn, so callers in an active
+// continuation (not yet followed by a genuine user message) must keep their
+// source intact so Anthropic can resume it. lastUserMessageIndex == -1
+// (no genuine user message in the prompt) means nothing is normalized.
+func normalizeOrphanedAnthropicCallers(out []map[string]interface{}, lastUserMessageIndex int, c *anthropicConverter) {
+	// Resolve source IDs against actual emitted code execution
+	// server_tool_use blocks (including custom tool names already resolved
+	// to "code_execution" during conversion).
+	codeExecutionToolCallIDs := map[string]bool{}
+	for _, m := range out {
+		if m["role"] != "assistant" {
+			continue
+		}
+		contentParts, _ := m["content"].([]map[string]interface{})
+		for _, part := range contentParts {
+			if part["type"] == "server_tool_use" && part["name"] == "code_execution" {
+				if id, ok := part["id"].(string); ok {
+					codeExecutionToolCallIDs[id] = true
+				}
+			}
+		}
+	}
+
+	warnedToolCallIDs := map[string]bool{}
+	limit := lastUserMessageIndex
+	if limit > len(out) {
+		limit = len(out)
+	}
+	for i := 0; i < limit; i++ {
+		m := out[i]
+		if m["role"] != "assistant" {
+			continue
+		}
+		contentParts, _ := m["content"].([]map[string]interface{})
+		for _, part := range contentParts {
+			callerRaw, hasCaller := part["caller"]
+			if !hasCaller {
+				continue
+			}
+			caller, ok := callerRaw.(map[string]interface{})
+			if !ok || caller == nil {
+				continue
+			}
+			callerType, _ := caller["type"].(string)
+			toolID, _ := caller["tool_id"].(string)
+			if callerType == "direct" || codeExecutionToolCallIDs[toolID] {
+				continue
+			}
+
+			toolCallID, _ := part["id"].(string)
+			if toolCallID == "" {
+				toolCallID, _ = part["tool_use_id"].(string)
+			}
+			delete(part, "caller")
+			if !warnedToolCallIDs[toolCallID] {
+				warnedToolCallIDs[toolCallID] = true
+				c.warn(fmt.Sprintf("Omitted caller metadata for tool %s because source code execution tool %s is missing from the conversation history.", toolCallID, toolID))
+			}
+		}
+	}
 }
 
 // ToAnthropicMessages converts messages to Anthropic wire messages using the
@@ -1152,14 +1245,43 @@ func (c *anthropicConverter) convertAssistantBlock(block anthropicBlock, isLastB
 				}
 
 			case types.CustomContent:
-				// Go extension: forward anthropic-keyed custom blocks verbatim.
-				if anthropicOpts, ok := p.ProviderOptions["anthropic"].(map[string]interface{}); ok {
-					forwarded := make(map[string]interface{}, len(anthropicOpts))
-					for key, value := range anthropicOpts {
-						forwarded[key] = value
-					}
-					content = append(content, forwarded)
+				// Go extension: forward anthropic-keyed custom blocks verbatim,
+				// reading from ProviderOptions (caller-constructed) or falling
+				// back to ProviderMetadata (round-tripped from a previous
+				// response), mirroring convertReasoning's same fallback.
+				opts := p.ProviderOptions
+				if opts == nil {
+					opts = rawMetadataMap(p.ProviderMetadata)
 				}
+				anthropicOpts, ok := opts["anthropic"].(map[string]interface{})
+				if !ok {
+					break
+				}
+				if p.Kind == "anthropic.fallback" {
+					// Fallback blocks require from.model and to.model to
+					// round-trip; anything else is dropped with a warning
+					// rather than sent malformed (TS commit a587f554f7,
+					// #21736).
+					from, _ := anthropicOpts["from"].(map[string]interface{})
+					to, _ := anthropicOpts["to"].(map[string]interface{})
+					fromModel, _ := from["model"].(string)
+					toModel, _ := to["model"].(string)
+					if fromModel == "" || toModel == "" {
+						c.warn("anthropic fallback metadata must include from.model and to.model")
+						break
+					}
+					content = append(content, map[string]interface{}{
+						"type": "fallback",
+						"from": map[string]interface{}{"model": fromModel},
+						"to":   map[string]interface{}{"model": toModel},
+					})
+					break
+				}
+				forwarded := make(map[string]interface{}, len(anthropicOpts))
+				for key, value := range anthropicOpts {
+					forwarded[key] = value
+				}
+				content = append(content, forwarded)
 			}
 			// file and reasoning-file parts are not sent back to Anthropic.
 		}
@@ -1306,18 +1428,29 @@ func (c *anthropicConverter) convertToolCall(content *[]map[string]interface{}, 
 	}
 
 	if toolsetName := c.toolsetName(part.toolName, part.providerOptions); toolsetName != "" {
-		memberInput := toAnthropicToolInput(part.input)
-		action, ok := memberInput["action"].(string)
-		if !ok {
+		// toolset member call: the `action` is the member tool name. A
+		// malformed call (action missing, null, or not a string -- e.g. the
+		// raw input isn't even an object) is preserved rather than dropped,
+		// using the toolset name itself as a placeholder `name`, so Anthropic
+		// still receives a tool_use block matching any already-converted
+		// tool-result/error for this call; otherwise Anthropic rejects the
+		// request for a dangling result with no matching call (TS commit
+		// c35458eac5, #21875).
+		rawInput := toAnthropicToolInput(part.input)
+		action, hasAction := rawInput["action"].(string)
+		if !hasAction {
 			c.warn(fmt.Sprintf("toolset tool call for tool %s is missing the action", part.toolName))
-			return
+		}
+		name := toolsetName
+		if hasAction {
+			name = action
 		}
 		block := map[string]interface{}{
 			"type":         "tool_use",
 			"id":           part.id,
-			"name":         action,
+			"name":         name,
 			"toolset_name": toolsetName,
-			"input":        withoutKey(memberInput, "action"),
+			"input":        rawInput,
 		}
 		if caller != nil {
 			block["caller"] = caller
@@ -1585,7 +1718,12 @@ func moveToolUseBlocksToEnd(content []map[string]interface{}) []map[string]inter
 		segment = nil
 	}
 	for _, part := range content {
-		if part["type"] == "thinking" || part["type"] == "redacted_thinking" {
+		if part["type"] == "thinking" || part["type"] == "redacted_thinking" || part["type"] == "fallback" {
+			// fallback blocks are a boundary between thinking blocks from
+			// different models, same as thinking/redacted_thinking itself
+			// (TS commit a587f554f7, #21736): they must stay in their
+			// original position rather than being swept to the end with
+			// tool_use blocks.
 			flush()
 			result = append(result, part)
 		} else {

@@ -223,9 +223,10 @@ func main() {
 	weatherTool := &WeatherTool{}
 
 	toolResult, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-		Model:  model,
-		Prompt: "What's the weather like in San Francisco?",
-		Tools:  []types.Tool{weatherTool.Definition()},
+		Model:    model,
+		Prompt:   "What's the weather like in San Francisco?",
+		Tools:    []types.Tool{weatherTool.Definition()},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 
 		// v6.0: Context flows through tool execution
 		ExperimentalContext: UserContext{

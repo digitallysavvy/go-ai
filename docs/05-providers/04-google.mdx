@@ -162,12 +162,20 @@ if err != nil {
     log.Fatal(err)
 }
 
-token, err := model.DoCreateClientSecret(ctx, providerapi.ClientSecretOptions{})
+secretCreator, ok := model.(providerapi.RealtimeClientSecretCreator)
+if !ok {
+    log.Fatal("model does not support client secret creation")
+}
+token, err := secretCreator.DoCreateClientSecret(ctx, providerapi.ClientSecretOptions{})
 if err != nil {
     log.Fatal(err)
 }
 
-ws := model.GetWebSocketConfig(token.Token, token.URL)
+wsConfigProvider, ok := model.(providerapi.RealtimeWebSocketConfigProvider)
+if !ok {
+    log.Fatal("model does not support client-side WebSocket config")
+}
+ws := wsConfigProvider.GetWebSocketConfig(token.Token, token.URL)
 fmt.Println(ws.URL)
 ```
 
@@ -176,6 +184,21 @@ TypeScript pieces such as `BrowserRealtimeTransport`, `BrowserRealtimeAudio`,
 and `useRealtime` are not part of the Go runtime.
 
 Gemini Live Translate configuration can be passed through `ProviderOptions["google"]["translationConfig"]`. The provider merges it into the realtime session `generationConfig.translationConfig`, matching the TypeScript Live Translate request shape.
+
+Background-reasoning Live models (model IDs matching `gemini-<major>.<minor>-live...thinking`, e.g. `gemini-3.8-live-extended-thinking`) require a `thinkingLevel` or `thinkingBudget` in the session setup. When neither is set — via the typed `ProviderOptions["google"]["thinkingConfig"]` or a raw `ProviderOptions["generationConfig"]["thinkingConfig"]` — the provider adds `thinkingLevel: "low"` while keeping any other fields (e.g. `includeThoughts`) and without disturbing an explicit `thinkingBudget: 0`:
+
+```go
+setup := map[string]interface{}{
+    "providerOptions": map[string]interface{}{
+        "google": map[string]interface{}{
+            "thinkingConfig": map[string]interface{}{"includeThoughts": true},
+        },
+    },
+}
+// -> generationConfig.thinkingConfig == {"includeThoughts": true, "thinkingLevel": "low"}
+```
+
+Input transcription events (`input-transcription-completed`) accumulate consecutive fragments for one user utterance under a stable synthetic item ID, and allocate a new ID once Google signals the utterance is finished or the turn completes; this keeps multi-turn and barge-in (interrupted) conversations from overwriting or misgrouping earlier user messages.
 
 ### Speech Translation (experimental)
 
@@ -339,6 +362,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "What's the weather in Tokyo?",
     Tools:  []types.Tool{weatherTool},
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 })
 
 for _, call := range result.ToolCalls {
@@ -493,6 +517,7 @@ Use the `"google"` provider key for AI Studio options. Vertex options use the `"
 package main
 
 import (
+    "context"
     "fmt"
     "log"
     "os"
@@ -502,6 +527,7 @@ import (
 )
 
 func main() {
+    ctx := context.Background()
     googleProvider := google.New(google.Config{
         APIKey: os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY"),
     })

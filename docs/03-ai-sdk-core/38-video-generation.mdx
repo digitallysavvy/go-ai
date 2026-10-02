@@ -181,7 +181,7 @@ model := fal.NewVideoModel(prov, "fal-ai/luma-dream-machine")
 
 ```go
 prov := replicate.New(replicate.Config{
-    APIToken: os.Getenv("REPLICATE_API_TOKEN"),
+    APIKey: os.Getenv("REPLICATE_API_TOKEN"),
 })
 model := replicate.NewVideoModel(prov, "minimax/video-01")
 ```

@@ -107,20 +107,20 @@ type Config struct {
 	// Headers are custom HTTP headers to include in requests.
 	Headers map[string]string `json:"headers,omitempty"`
 
-	// UserAgentName selects the `ai-sdk/<name>/VERSION` User-Agent tag this
+	// UserAgentName selects the `ai-sdk-<name>/VERSION` User-Agent tag this
 	// provider construction adds (version.ProviderUserAgent). Defaults to
 	// "anthropic". TS's anthropic-aws and minimax packages are each their
-	// own npm package with their own tag ("ai-sdk/anthropic-aws",
-	// "ai-sdk/minimax"); Go's anthropicaws and minimax packages implement
+	// own npm package with their own tag ("ai-sdk-anthropic-aws",
+	// "ai-sdk-minimax"); Go's anthropicaws and minimax packages implement
 	// this by reusing anthropic.New as their Messages-API transport, so they
-	// set this field to avoid inheriting the wrong "ai-sdk/anthropic" tag.
+	// set this field to avoid inheriting the wrong "ai-sdk-anthropic" tag.
 	UserAgentName string `json:"userAgentName,omitempty"`
 
-	// NoUserAgentTag disables the `ai-sdk/<name>/VERSION` tag entirely
+	// NoUserAgentTag disables the `ai-sdk-<name>/VERSION` tag entirely
 	// (UserAgentName is ignored when this is true). TS's
 	// google-vertex-anthropic-provider.ts builds its
 	// AnthropicLanguageModel directly instead of going through
-	// createAnthropic (the only place TS's own `ai-sdk/anthropic/VERSION`
+	// createAnthropic (the only place TS's own `ai-sdk-anthropic/VERSION`
 	// tag is added), so Vertex-Anthropic requests carry no
 	// anthropic-package tag at all -- only the runtime tag the shared HTTP
 	// client appends downstream. pkg/providers/googlevertex/anthropic sets

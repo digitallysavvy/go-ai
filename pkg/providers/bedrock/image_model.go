@@ -55,6 +55,24 @@ func (m *ImageModel) MaxImagesPerCall() int {
 	return 1
 }
 
+// SupportsFileInputs reports whether the model accepts file inputs for image
+// editing. Returns nil when support is unknown for the model ID.
+func (m *ImageModel) SupportsFileInputs() *bool {
+	if m.modelID == "amazon.nova-canvas-v1:0" {
+		return boolPtr(true)
+	}
+	return nil
+}
+
+// SupportsMaskInputs reports whether the model accepts a mask input for
+// inpainting. Returns nil when support is unknown for the model ID.
+func (m *ImageModel) SupportsMaskInputs() *bool {
+	if m.modelID == "amazon.nova-canvas-v1:0" {
+		return boolPtr(true)
+	}
+	return nil
+}
+
 // DoGenerate performs image generation
 func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
 	reqBody, warnings, err := m.buildRequestBody(opts)
@@ -347,6 +365,10 @@ func numberOption(value interface{}) (interface{}, bool) {
 	default:
 		return nil, false
 	}
+}
+
+func boolPtr(b bool) *bool {
+	return &b
 }
 
 func flattenHeaders(headers http.Header) map[string]string {

@@ -240,6 +240,13 @@ type SpeechResult struct {
 	// Warnings from the provider
 	Warnings []Warning `json:"warnings"`
 
+	// Usage is provider-reported usage information in the provider's native
+	// JSON-compatible shape (TS SpeechModelV4Result.usage, added in TS
+	// 8c659885c5 / #21427). Unlike other result types' structured Usage
+	// fields, this is a raw passthrough consumed generically by telemetry's
+	// getProviderUsageAttributes.
+	Usage map[string]interface{} `json:"usage,omitempty"`
+
 	// ProviderMetadata holds provider-specific metadata.
 	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
 
@@ -280,6 +287,15 @@ type TranscriptionResult struct {
 
 	// Usage information
 	Usage TranscriptionUsage `json:"usage"`
+
+	// ProviderUsage is provider-reported usage information in the provider's
+	// native JSON-compatible shape (TS TranscriptionModelV4Result.usage,
+	// added in TS 8c659885c5 / #21427). Unlike the structured Usage field
+	// above (a Go-specific DurationSeconds accounting helper), this is a raw
+	// passthrough consumed generically by telemetry's
+	// getProviderUsageAttributes. Named distinctly from TS's `usage` field to
+	// avoid colliding with the existing Usage field's "usage" JSON key.
+	ProviderUsage map[string]interface{} `json:"providerUsage,omitempty"`
 
 	// Warnings from the provider
 	Warnings []Warning `json:"warnings,omitempty"`

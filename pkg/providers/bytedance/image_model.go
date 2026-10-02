@@ -48,6 +48,38 @@ func (m *ImageModel) MaxImagesPerCall() *int {
 	return &one
 }
 
+// byteDanceFileInputModels lists the known ByteDance model IDs that accept
+// file inputs for image editing (TS ByteDanceImageModel#supportsFileInputs).
+var byteDanceFileInputModels = map[string]bool{
+	"dola-seedream-5-0-pro-260628": true,
+	"seedream-5-0-260128":          true,
+	"seedream-5-0-lite-260128":     true,
+	"seedream-4-5-251128":          true,
+	"seedream-4-0-250828":          true,
+}
+
+// SupportsFileInputs reports whether the model accepts file inputs for image
+// editing. Returns nil when support is unknown for the model ID.
+func (m *ImageModel) SupportsFileInputs() *bool {
+	if byteDanceFileInputModels[m.modelID] {
+		return boolPtr(true)
+	}
+	return nil
+}
+
+// SupportsMaskInputs reports whether the model accepts a mask input for
+// inpainting. ByteDance's file-input models do not support masks.
+func (m *ImageModel) SupportsMaskInputs() *bool {
+	if v := m.SupportsFileInputs(); v != nil && *v {
+		return boolPtr(false)
+	}
+	return nil
+}
+
+func boolPtr(b bool) *bool {
+	return &b
+}
+
 // DoGenerate generates an image via ByteDance's /images/generations endpoint
 // (TS ByteDanceImageModel#doGenerate).
 func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {

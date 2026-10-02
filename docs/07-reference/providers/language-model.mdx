@@ -93,10 +93,10 @@ import (
 
 func main() {
     // Get a language model
-    provider := openai.New(openai.Config{
+    p := openai.New(openai.Config{
         APIKey: "your-api-key",
     })
-    model, err := provider.LanguageModel("gpt-4")
+    model, err := p.LanguageModel("gpt-4")
     if err != nil {
         log.Fatal(err)
     }

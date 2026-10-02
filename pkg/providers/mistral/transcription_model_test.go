@@ -108,6 +108,16 @@ func TestMistralTranscriptionModelDoTranscribe(t *testing.T) {
 	if !ok || usage["promptTokens"] != 5 {
 		t.Fatalf("provider metadata usage = %#v", metadata["usage"])
 	}
+	// Ported from TS mistral-transcription-model.test.ts
+	// "expect(result.usage).toStrictEqual(transcriptionResponse.usage)" (TS
+	// 8c659885c5 / #21427): the raw wire-format usage object (snake_case
+	// keys), distinct from the camelCased providerMetadata.mistral.usage.
+	if got, want := result.ProviderUsage["prompt_tokens"], 5; got != want {
+		t.Fatalf("ProviderUsage[prompt_tokens] = %v, want %v", got, want)
+	}
+	if got, want := result.ProviderUsage["prompt_audio_seconds"], 1.5; got != want {
+		t.Fatalf("ProviderUsage[prompt_audio_seconds] = %v, want %v", got, want)
+	}
 }
 
 // TestMistralTranscriptionLanguageAndTimestampGranularitiesMutuallyExclusive

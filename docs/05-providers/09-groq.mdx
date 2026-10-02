@@ -14,16 +14,15 @@ Groq provides the fastest AI inference in the world using custom Language Proces
 ```go
 import (
     "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/providers/openai" // Groq uses OpenAI-compatible API
+    "github.com/digitallysavvy/go-ai/pkg/providers/groq"
 )
 ```
 
 ### Configuration
 
 ```go
-provider := openai.New(openai.Config{
-    APIKey:  os.Getenv("GROQ_API_KEY"),
-    BaseURL: "https://api.groq.com/openai/v1",
+provider := groq.New(groq.Config{
+    APIKey: os.Getenv("GROQ_API_KEY"),
 })
 
 model, err := provider.LanguageModel("llama-3.3-70b-versatile")
@@ -31,6 +30,8 @@ if err != nil {
     log.Fatal(err)
 }
 ```
+
+Groq has its own provider package (`pkg/providers/groq`); it does not support embeddings, image generation, or speech synthesis — `EmbeddingModel`, `ImageModel`, and `SpeechModel` all return errors. `LanguageModel` defaults to `"mixtral-8x7b-32768"` when the model ID is empty.
 
 ### Get API Key
 
@@ -97,6 +98,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "What is 234 * 567?",
     Tools:  tools,
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 })
 ```
 
@@ -118,19 +120,20 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 package main
 
 import (
+    "context"
     "fmt"
     "log"
     "os"
     "time"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/groq"
 )
 
 func main() {
-    provider := openai.New(openai.Config{
-        APIKey:  os.Getenv("GROQ_API_KEY"),
-        BaseURL: "https://api.groq.com/openai/v1",
+    ctx := context.Background()
+    provider := groq.New(groq.Config{
+        APIKey: os.Getenv("GROQ_API_KEY"),
     })
 
     model, err := provider.LanguageModel("llama-3.3-70b-versatile")

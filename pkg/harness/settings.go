@@ -42,7 +42,15 @@ type PrepareCallResult struct {
 	HasInstructions bool
 	Tools           map[string]types.Tool
 	ToolsContext    map[string]interface{}
-	Prompt          Prompt
+	// RuntimeContext replaces the turn's runtime context when
+	// HasRuntimeContext is true (including clearing it, by leaving
+	// RuntimeContext nil) — mirrors TS `prepareCall`'s result spreading its
+	// own `runtimeContext` key (even `undefined`) over the configured
+	// default. See HasInstructions for why Go needs this flag where TS uses
+	// `undefined`.
+	RuntimeContext    interface{}
+	HasRuntimeContext bool
+	Prompt            Prompt
 }
 
 // PrepareCallOptions is passed to Settings.PrepareCall.
@@ -57,6 +65,11 @@ type PrepareCallOptions struct {
 	Instructions interface{}
 	Tools        map[string]types.Tool
 	ToolsContext map[string]interface{}
+	// RuntimeContext is the turn's runtime context before PrepareCall runs:
+	// AgentSettings.RuntimeContext, or a per-call
+	// agent.AgentGenerateOptions.RuntimeContext override when the caller
+	// supplied one. Mirrors TS `prepareCall`'s `runtimeContext` input field.
+	RuntimeContext interface{}
 }
 
 // Callbacks are the lifecycle callbacks a HarnessAgent invokes for every
@@ -101,6 +114,12 @@ type AgentSettings struct {
 
 	// ToolsContext is per-tool context passed to host-executed tools.
 	ToolsContext map[string]interface{}
+
+	// RuntimeContext is user-defined context passed to lifecycle callbacks
+	// and telemetry (subject to Telemetry.IncludeRuntimeContext). A per-call
+	// agent.AgentGenerateOptions.RuntimeContext takes precedence when set.
+	// Mirrors TS `HarnessAgentSettings.runtimeContext`.
+	RuntimeContext interface{}
 
 	// Skills made available to the underlying runtime.
 	Skills []Skill

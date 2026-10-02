@@ -52,6 +52,7 @@ export const PROVIDER_PACKAGES: ProviderEntry[] = [
   { pkg: 'revai', docs: '/docs/providers/revai' },
   { pkg: 'stability', docs: '/docs/providers/stability' },
   { pkg: 'together', docs: '/docs/providers/together' },
+  { pkg: 'topaz', docs: '/docs/providers/topaz' },
   { pkg: 'typesafeai', docs: '/docs/providers/typesafeai' },
   { pkg: 'vercel', docs: '/docs/providers/vercel' },
   { pkg: 'voyage', docs: '/docs/providers/voyage' },

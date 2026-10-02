@@ -678,7 +678,7 @@ func convertToolsToOpenResponses(tools []types.Tool, registry *ExtensionRegistry
 					for k, v := range fields {
 						encoded[k] = v
 					}
-					encoded["type"] = ext.ToolType
+					encoded["type"] = ExtensionToolType(ext)
 				}
 			}
 
@@ -797,7 +797,7 @@ func convertToolChoiceToOpenResponses(toolChoice types.ToolChoice, encodedProvid
 					for k, v := range fields {
 						result[k] = v
 					}
-					result["type"] = ext.ToolType
+					result["type"] = ExtensionToolType(ext)
 					return result, nil
 				}
 				return nil, []types.Warning{{
@@ -805,7 +805,7 @@ func convertToolChoiceToOpenResponses(toolChoice types.ToolChoice, encodedProvid
 					Feature: fmt.Sprintf("tool choice for provider-defined tool %s", ext.ID),
 				}}
 			}
-			return map[string]interface{}{"type": ext.ToolType}, nil
+			return map[string]interface{}{"type": ExtensionToolType(ext)}, nil
 		}
 		return map[string]interface{}{
 			"type": "function",

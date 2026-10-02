@@ -19,8 +19,19 @@ const SubscriptionAccessTokenEnvironmentVariable = "AI_SDK_OPENCODE_NATIVE_ACCES
 // `OPENCODE_CREDENTIAL_ENVIRONMENT_VARIABLES`.
 var CredentialEnvironmentVariables = []string{
 	"AI_GATEWAY_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+	"GOOGLE_GENERATIVE_AI_API_KEY",
 	"XAI_API_KEY", "GITHUB_TOKEN", "GITHUB_COPILOT_TOKEN", "POE_API_KEY", "OPENCODE_API_KEY",
 	"GITLAB_TOKEN", SubscriptionAccessTokenEnvironmentVariable,
+}
+
+// nonGoogleDirectCredentialEnvironmentVariables are the direct-provider
+// credential variables that must all be absent/empty for automatic startup
+// inference to select Google. Mirrors TS
+// `NON_GOOGLE_DIRECT_CREDENTIAL_ENVIRONMENT_VARIABLES`.
+var nonGoogleDirectCredentialEnvironmentVariables = []string{
+	"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+	"XAI_API_KEY", "GITHUB_TOKEN", "GITHUB_COPILOT_TOKEN", "POE_API_KEY", "OPENCODE_API_KEY",
+	"GITLAB_TOKEN",
 }
 
 // ResolvedAuthenticationMode is the concrete provider OpenCode resolved to.
@@ -30,6 +41,7 @@ type ResolvedAuthenticationMode string
 const (
 	AuthAnthropic     ResolvedAuthenticationMode = "anthropic"
 	AuthOpenAI        ResolvedAuthenticationMode = "openai"
+	AuthGoogle        ResolvedAuthenticationMode = "google"
 	AuthXAI           ResolvedAuthenticationMode = "xai"
 	AuthGitHubCopilot ResolvedAuthenticationMode = "github-copilot"
 	AuthPoe           ResolvedAuthenticationMode = "poe"
@@ -44,7 +56,7 @@ type AuthenticationMode = harness.Authentication
 
 func isDirectProvider(v string) bool {
 	switch ResolvedAuthenticationMode(v) {
-	case AuthAnthropic, AuthOpenAI, AuthXAI, AuthGitHubCopilot, AuthPoe, AuthOpenCodeGo, AuthGitLab:
+	case AuthAnthropic, AuthOpenAI, AuthGoogle, AuthXAI, AuthGitHubCopilot, AuthPoe, AuthOpenCodeGo, AuthGitLab:
 		return true
 	}
 	return false
@@ -89,7 +101,7 @@ func resolveEnv(auth AuthenticationMode, model, provider string, processEnv map[
 	if auth.IsEnvironment() {
 		authEnv = auth.Environment
 	}
-	selected := resolveProvider(model, provider)
+	selected := resolveAuthenticationProvider(auth, model, provider, authEnv)
 	if (selected == AuthOpenAI && auth.Mode == "openai") || (selected == AuthAnthropic && auth.Mode == "anthropic") {
 		return pickDirectProvider(selected, authEnv)
 	}
@@ -106,9 +118,9 @@ func resolveAuthenticationMode(auth AuthenticationMode, model, provider string, 
 		if harnessutil.GetAIGatewayAuthFromEnv(auth.Environment).APIKey != "" {
 			return AuthAIGateway
 		}
-		return resolveProvider(model, provider)
+		return resolveAuthenticationProvider(auth, model, provider, auth.Environment)
 	}
-	selected := resolveProvider(model, provider)
+	selected := resolveAuthenticationProvider(auth, model, provider, processEnv)
 	if selected == AuthOpenAI && auth.Mode == "openai" {
 		return AuthOpenAI
 	}
@@ -122,6 +134,32 @@ func resolveAuthenticationMode(auth AuthenticationMode, model, provider string, 
 		return AuthAIGateway
 	}
 	return selected
+}
+
+// resolveAuthenticationProvider mirrors TS
+// `resolveOpenCodeAuthenticationProvider`: explicit anthropic/openai auth
+// modes stay authoritative over any ambient Google credential, and
+// automatic startup inference (no explicit model/provider) selects Google
+// only when a non-empty GOOGLE_GENERATIVE_AI_API_KEY is present with no
+// non-empty competing direct-provider credential (TS #21568).
+func resolveAuthenticationProvider(auth AuthenticationMode, model, provider string, environment map[string]string) ResolvedAuthenticationMode {
+	selected := resolveProvider(model, provider)
+	if model == "" && provider == "" && !auth.IsEnvironment() && (auth.Mode == "anthropic" || auth.Mode == "openai") {
+		return ResolvedAuthenticationMode(auth.Mode)
+	}
+	if model == "" && provider == "" && environment["GOOGLE_GENERATIVE_AI_API_KEY"] != "" && !hasAnyNonGoogleDirectCredential(environment) {
+		return AuthGoogle
+	}
+	return selected
+}
+
+func hasAnyNonGoogleDirectCredential(environment map[string]string) bool {
+	for _, name := range nonGoogleDirectCredentialEnvironmentVariables {
+		if environment[name] != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func pickOpenAI(env map[string]string) map[string]string {
@@ -153,6 +191,8 @@ func pickDirectProvider(provider ResolvedAuthenticationMode, env map[string]stri
 	}
 	var names []string
 	switch provider {
+	case AuthGoogle:
+		names = []string{"GOOGLE_GENERATIVE_AI_API_KEY"}
 	case AuthXAI:
 		names = []string{"XAI_API_KEY", "XAI_BASE_URL"}
 	case AuthGitHubCopilot:
@@ -281,6 +321,18 @@ func createOpenCodeRequestTransformations(in createRequestTransformationsInput) 
 			out = append(out, t)
 		}
 		return out, nil
+	case AuthGoogle:
+		if in.Env["GOOGLE_GENERATIVE_AI_API_KEY"] == "" || in.SandboxEnv["GOOGLE_GENERATIVE_AI_API_KEY"] == "" {
+			return nil, nil
+		}
+		t, err := harnessutil.CreateCredentialRequestTransformation(harnessutil.CreateCredentialRequestTransformationOptions{
+			MatchURL: "https://generativelanguage.googleapis.com", MatchHeaders: map[string]string{"x-goog-api-key": in.SandboxEnv["GOOGLE_GENERATIVE_AI_API_KEY"]},
+			TransformHeaders: map[string]string{"x-goog-api-key": in.Env["GOOGLE_GENERATIVE_AI_API_KEY"]},
+		})
+		if err != nil {
+			return nil, err
+		}
+		return []harness.RequestTransformation{t}, nil
 	case AuthXAI:
 		base := in.Env["XAI_BASE_URL"]
 		if base == "" {

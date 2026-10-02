@@ -41,12 +41,13 @@ const (
 	ModelAnthropicClaude3Haiku_V1     = "anthropic.claude-3-haiku-20240307-v1:0"
 	ModelAnthropicClaude3Opus_V1      = "anthropic.claude-3-opus-20240229-v1:0"
 
-	// Sonnet 5 / Fable 5 / Fable 5.1 / Opus 5 / Opus 5.5 (Sep 23 2026 cycle).
-	ModelAnthropicClaudeSonnet5  = "anthropic.claude-sonnet-5"
-	ModelAnthropicClaudeFable5   = "anthropic.claude-fable-5"
-	ModelAnthropicClaudeFable5_1 = "anthropic.claude-fable-5-1"
-	ModelAnthropicClaudeOpus5    = "anthropic.claude-opus-5"
-	ModelAnthropicClaudeOpus5_5  = "anthropic.claude-opus-5-5"
+	// Sonnet 5 / Sonnet 5.5 / Fable 5 / Fable 5.1 / Opus 5 / Opus 5.5 (Sep 23 2026 cycle).
+	ModelAnthropicClaudeSonnet5   = "anthropic.claude-sonnet-5"
+	ModelAnthropicClaudeSonnet5_5 = "anthropic.claude-sonnet-5-5"
+	ModelAnthropicClaudeFable5    = "anthropic.claude-fable-5"
+	ModelAnthropicClaudeFable5_1  = "anthropic.claude-fable-5-1"
+	ModelAnthropicClaudeOpus5     = "anthropic.claude-opus-5"
+	ModelAnthropicClaudeOpus5_5   = "anthropic.claude-opus-5-5"
 
 	// ─── Anthropic Claude (us cross-region) ──────────────────────────────────
 
@@ -68,6 +69,7 @@ const (
 	ModelUSAnthropicClaudeOpus41_V1     = "us.anthropic.claude-opus-4-1-20250805-v1:0"
 	ModelUSAnthropicClaudeHaiku45_V1    = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 	ModelUSAnthropicClaudeSonnet5       = "us.anthropic.claude-sonnet-5"
+	ModelUSAnthropicClaudeSonnet5_5     = "us.anthropic.claude-sonnet-5-5"
 	ModelUSAnthropicClaudeFable5        = "us.anthropic.claude-fable-5"
 	ModelUSAnthropicClaudeFable5_1      = "us.anthropic.claude-fable-5-1"
 	ModelUSAnthropicClaudeOpus5         = "us.anthropic.claude-opus-5"

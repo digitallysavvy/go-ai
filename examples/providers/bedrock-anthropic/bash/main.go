@@ -64,9 +64,10 @@ func main() {
 
 	// Generate text with bash tool
 	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-		Model:  model,
-		Prompt: "List all files in the current directory using bash",
-		Tools:  []types.Tool{bashTool},
+		Model:    model,
+		Prompt:   "List all files in the current directory using bash",
+		Tools:    []types.Tool{bashTool},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 	})
 	if err != nil {
 		log.Fatalf("Failed to generate text: %v", err)

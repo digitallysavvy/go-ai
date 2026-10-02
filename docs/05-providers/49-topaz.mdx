@@ -1,0 +1,296 @@
+---
+title: Topaz Provider
+description: "Setup and usage guide for Topaz Labs image and video enhancement with the Go AI SDK."
+---
+
+# Topaz Provider
+
+[Topaz Labs](https://www.topazlabs.com) enhances media the caller already
+has — upscale, denoise, sharpen, restore — rather than generating from a
+text prompt. `topaz.image("wonder-3.5")` enhances a single input image;
+`topaz.video("proteus")` and `topaz.video("starlight-precise-2.6")` enhance
+a single input video through Topaz's async operation protocol
+(`DoStart`/`DoStatus`). Topaz has no language, embedding, speech,
+transcription, or reranking model.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/providers/topaz"
+)
+```
+
+### Configuration
+
+```go
+prov := topaz.New(topaz.Config{
+    APIKey: os.Getenv("TOPAZ_API_KEY"),
+})
+
+model, err := prov.ImageModel(topaz.ImageModelWonder35)
+```
+
+`topaz.Config` accepts:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `APIKey` | `string` | Topaz Labs API key. Falls back to the `TOPAZ_API_KEY` environment variable when empty. |
+| `BaseURL` | `string` | Base URL for the Topaz API. Defaults to `https://api.topazlabs.com`. |
+| `Headers` | `map[string]string` | Custom headers merged into every request. |
+| `VideoPollIntervalMillis` | `int` | Interval between status checks used by `VideoModel.DoGenerate`'s synchronous start+poll wrapper. Defaults to 2000ms. Only relevant for a direct `DoGenerate` call — `ai.GenerateVideo` always prefers the `DoStart`/`DoStatus` pair below. |
+| `VideoPollTimeoutMillis` | `int` | Total timeout for that same wrapper. Defaults to 600000ms (10 minutes). |
+
+`topaz.CreateTopaz(cfg)` is an alias for `topaz.New(cfg)`, mirroring the
+TypeScript SDK's `createTopaz` export.
+
+### Get an API key
+
+```bash
+export TOPAZ_API_KEY=...
+```
+
+See [Topaz's API key setup guide](https://developer.topazlabs.com/getting-started/api-key-setup).
+
+## Image model: Wonder 3.5
+
+`topaz.ImageModelWonder35` (`"wonder-3.5"`) submits an async enhance job,
+polls it, and downloads the result. Pass the input image through `Files`
+(exactly one image is processed per call — `MaxImagesPerCall() == 1`); a
+`url`-type file is forwarded to Topaz as `source_url` (Topaz fetches it
+itself), and a `file`-type file is uploaded as multipart form data.
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/providers/topaz"
+)
+
+func main() {
+    prov := topaz.New(topaz.Config{APIKey: os.Getenv("TOPAZ_API_KEY")})
+
+    model, err := prov.ImageModel(topaz.ImageModelWonder35)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+        Files: []provider.ImageFile{
+            {Type: "url", URL: "https://example.com/input.png"},
+        },
+        Size: "4000x3000",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    os.WriteFile("enhanced.png", result.Image, 0o644)
+}
+```
+
+Unsupported call options (`Prompt`, `AspectRatio`, `Seed`, `Mask`, and
+`N` above 1) surface as `result.Warnings` rather than errors — Wonder 3.5
+enhances one existing image per call and does not take a text prompt.
+
+### Image model options
+
+Pass these under `ProviderOptions["topaz"]` as a `topaz.ImageModelOptions`
+value (or an equivalent `map[string]interface{}`). Documented request
+fields are sent to Topaz in snake_case; model-specific settings are sent
+in camelCase, matching the Topaz API itself — the Go field names and JSON
+tags below are camelCase either way, since that's the user-facing option
+surface.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `EnhancementStrength` | `*string` | `"low"`, `"medium"`, or `"high"` (default `"high"`). |
+| `Grain` | `*bool` | Add grain to the output (default `false`). |
+| `GrainDensity` | `*float64` | Grain intensity, 0.0–1.0 (default 0.5). |
+| `GrainModel` | `*string` | `"silver"`, `"gaussian"`, or `"grey"` (default `"silver"`). |
+| `GrainSize` | `*float64` | Grain particle size, 1–5 (default 1). |
+| `GrainStrength` | `*float64` | Grain effect strength, 0.0–1.0 (default 0.5). |
+| `InputWidth` / `InputHeight` | `*int` | Input image dimensions. Topaz infers these from the upload when omitted. |
+| `OutputWidth` / `OutputHeight` | `*int` | Output dimensions, 1–32000. Take precedence over the `Size` call option. |
+| `OutputFormat` | `*string` | `"jpeg"`, `"jpg"`, `"png"`, `"tiff"`, or `"tif"`. |
+| `CropToFill` | `*bool` | Crop the output to fill the requested dimensions (default `false`). |
+| `WebhookURL` | `*string` | URL to receive job-status webhooks. |
+| `PollIntervalMillis` | `*int` | Status-poll interval, in milliseconds (default 2000). |
+| `PollTimeoutMillis` | `*int` | Total poll timeout, in milliseconds, before the job is canceled and the call fails (default 600000, 10 minutes). |
+
+```go
+strength := "medium"
+result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+    Files: []provider.ImageFile{{Type: "url", URL: "https://example.com/input.png"}},
+    ProviderOptions: map[string]interface{}{
+        "topaz": topaz.ImageModelOptions{
+            EnhancementStrength: &strength,
+        },
+    },
+})
+```
+
+### Image provider metadata
+
+`result.ProviderMetadata["topaz"]` holds `{"images": [...]}`, with one
+entry (`processId`, and when Topaz reports them, `credits`, `width`,
+`height`, `format`) for the single enhanced image — `credits` is the
+number of credits Topaz billed for the completed job.
+
+## Video models: Proteus and Starlight Precise 2.6
+
+`topaz.VideoModelProteus` (`"proteus"`) and
+`topaz.VideoModelStarlightPrecise26` (`"starlight-precise-2.6"`)
+implement Topaz's express async operation protocol through `DoStart` and
+`DoStatus` (`MaxVideosPerCall() == 1`). Pass the input video through
+`InputReferences`; a `url`-type reference is forwarded to Topaz as
+`source.external` (Topaz fetches it itself), and a `file`-type reference
+is uploaded to the URL Topaz returns from `DoStart`. `Resolution` (or the
+`Output` provider option) sets the output resolution, which Topaz
+requires one way or another.
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/topaz"
+)
+
+func main() {
+    prov := topaz.New(topaz.Config{APIKey: os.Getenv("TOPAZ_API_KEY")})
+
+    model, err := prov.VideoModel(topaz.VideoModelProteus)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := ai.GenerateVideo(context.Background(), ai.GenerateVideoOptions{
+        Model: model,
+        InputReferences: []ai.VideoReferenceInput{
+            {Data: ai.VideoPromptImage{URL: "https://example.com/input.mp4", MediaType: "video/mp4"}},
+        },
+        Resolution: "1920x1080",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    for _, video := range result.Videos {
+        log.Println(video.URL)
+    }
+}
+```
+
+`ai.GenerateVideo` uses `DoStart`/`DoStatus` directly (Topaz implements
+`provider.VideoModelStarter` and `provider.VideoModelStatusChecker`), so
+it also works with `ai.ExperimentalStartVideo` / `ai.ExperimentalGetVideoStatus`
+for a decoupled start-then-poll flow. `VideoModel.DoGenerate` exists only
+because Go's `provider.VideoModelV3` interface requires it directly (the
+TypeScript provider has no `doGenerate` of its own); calling it submits
+the request and polls to completion in one call, governed by
+`Config.VideoPollIntervalMillis` / `VideoPollTimeoutMillis`.
+
+Unsupported call options (`Prompt` when non-empty, `AspectRatio`, `Seed`,
+`Duration`, `GenerateAudio`, `FrameImages`, and `N` above 1) surface as
+warnings rather than errors.
+
+### Source metadata
+
+Starlight models require source metadata (`width`, `height`, `duration`,
+`frameRate` — Topaz prices them from these values); other models accept
+it optionally, where it lets Topaz estimate the cost up front. The AI SDK
+never inspects the video bytes, so these values must come from the
+caller. Setting any one of them requires all four:
+
+```go
+width, height, duration, frameRate := 1920, 1080, 10.0, 30.0
+
+startResult, err := ai.ExperimentalStartVideo(context.Background(), ai.StartVideoOptions{
+    Model: model,
+    InputReferences: []ai.VideoReferenceInput{
+        {Data: ai.VideoPromptImage{Data: videoBytes, MediaType: "video/mp4"}},
+    },
+    Resolution: "1920x1080",
+    ProviderOptions: map[string]interface{}{
+        "topaz": topaz.VideoModelOptions{
+            Source: &topaz.VideoSource{
+                Width: &width, Height: &height,
+                Duration: &duration, FrameRate: &frameRate,
+            },
+        },
+    },
+})
+```
+
+### Video model options
+
+Pass these under `ProviderOptions["topaz"]` as a `topaz.VideoModelOptions`
+value.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `Source` | `*topaz.VideoSource` | Input video metadata (`Width`, `Height`, `Duration`, `FrameRate`, `FrameCount`, `Container`). See above. |
+| `Output` | `*topaz.VideoOutput` | Output settings: `Width`/`Height` (precede `Resolution`), `FrameRate` (precedes `FPS`), `AudioCodec` (`"AAC"`/`"AC3"`/`"PCM"`, default `"AAC"`), `AudioBitrate`, `AudioTransfer` (`"Copy"`/`"Convert"`/`"None"`, default `"Copy"`), `VideoEncoder` (`"AV1"`/`"H264"`/`"H265"`/`"ProRes"`/`"VP9"`; `"ProRes"` forces a `mov` container, `"AV1"`/`"VP9"` force `mp4`), `VideoProfile`, `VideoBitrate`, `DynamicCompressionLevel` (`"Low"`/`"Mid"`/`"High"`), `CropToFit`, `Container` (`"mp4"`/`"mov"`/`"mkv"`/`"avi"`/`"webm"`). |
+| `AdditionalFilters` | `[]map[string]interface{}` | Extra `filters[]` entries alongside the model's own filter, e.g. a frame-interpolation filter. Each entry must include a `"model"` key. |
+| `Filter` | `map[string]interface{}` | Escape hatch merged into the model's filter entry, taking precedence over the typed settings below. |
+
+Proteus-specific settings (sent as filter fields): `VideoType`, `Auto`,
+`FieldOrder`, `FocusFixLevel`, `Compression`, `Details`, `Prenoise`,
+`Noise`, `Halo`, `Preblur`, `Blur`, `Grain`, `GrainSigma`, `GrainSize`,
+`GrainType`, `RecoverOriginalDetailValue`.
+
+Starlight Precise-specific settings: `Sharpness` (1.0–5.0, default 5.0),
+`VideoBitDepth`, `VideoCodec` (`"ffv1"`/`"prores"`/`"vp9"`), `VideoProfile`
+(`"420"`/`"422"`/`"444"`), `Watermark` (default `false`).
+
+See the [Proteus](https://developer.topazlabs.com/video-models/proteus/proteus-1)
+and [Starlight Precise 2.6](https://developer.topazlabs.com/video-models/starlight/starlight-precise-2.6)
+model references for the full field semantics.
+
+### Video provider metadata
+
+- `DoStart`'s result carries `ProviderMetadata["topaz"]["requestId"]` and,
+  when Topaz can estimate the cost up front (source metadata was
+  supplied), `["estimatedCredits"]` — a `[lowerBound, upperBound]` pair.
+- A completed `DoStatus` result carries `requestId`, `credits` (the lower
+  bound of Topaz's post-upload `estimates.cost`, which is what Topaz
+  invoices), the full `estimatedCredits` range, `outputSize`, and
+  `expiresAt`.
+- A failed or canceled `DoStatus` result's `Error` includes Topaz's
+  `errorCode` (e.g. `CREDIT_DIFFERENCE`, which Topaz refunds) when
+  present, and the metadata map carries `requestId` and `errorCode`.
+
+## Errors
+
+Both models report Topaz API errors (`{"message": ...}` on the image
+API, `{"message": ..., "errorCode": ...}` on the video API, or the
+FastAPI `{"detail": [...]}` validation-error shape) as a
+`providererrors.ProviderError`, with Topaz's `errorCode` (when present)
+appended to the message in parentheses and any field-validation messages
+joined after a colon.
+
+## Workflow Serialization
+
+Topaz image and video models can cross a workflow boundary with
+`providerutils.SerializeModel` / `DeserializeModel`. See
+[Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
+for the mechanism.
+
+## See Also
+
+- [API Reference: GenerateImage](../07-reference/ai/generate-image.mdx)
+- [API Reference: GenerateVideo](../03-ai-sdk-core/38-video-generation.mdx)
+- [Topaz Labs developer documentation](https://developer.topazlabs.com)

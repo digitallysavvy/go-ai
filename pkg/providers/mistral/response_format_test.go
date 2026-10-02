@@ -3,6 +3,7 @@ package mistral
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -60,6 +61,30 @@ func TestChatResponseFormatMapping(t *testing.T) {
 	messages := body["messages"].([]map[string]interface{})
 	if messages[0]["role"] != "system" || messages[0]["content"] != "You MUST answer with JSON." {
 		t.Fatalf("messages[0] = %#v, want injected JSON instruction", messages[0])
+	}
+}
+
+// TestChatResponseFormatMappingPreservesSchemaWhenStructuredOutputsDisabled
+// ports the TS regression from 5fa97cd0af (#21744): JSON Object mode
+// (structuredOutputs: false) must inject the supplied schema into the
+// system message rather than discarding it, so the model still sees the
+// intended response shape even though response_format itself carries no
+// schema.
+func TestChatResponseFormatMappingPreservesSchemaWhenStructuredOutputsDisabled(t *testing.T) {
+	m := NewLanguageModel(New(Config{APIKey: "k"}), "mistral-small-latest")
+	schemaRF := &provider.ResponseFormat{Type: "json", Schema: responseFormatTestSchema}
+	body := m.buildRequestBody(responseFormatOpts(schemaRF, map[string]interface{}{"mistral": map[string]interface{}{"structuredOutputs": false}}), false)
+	assertResponseFormat(t, body, wantJSONObject)
+
+	messages := body["messages"].([]map[string]interface{})
+	content, ok := messages[0]["content"].(string)
+	if !ok || messages[0]["role"] != "system" {
+		t.Fatalf("messages[0] = %#v, want an injected system message", messages[0])
+	}
+	if !strings.Contains(content, "JSON schema:") ||
+		!strings.Contains(content, `"properties"`) ||
+		!strings.Contains(content, "You MUST answer with a JSON object that matches the JSON schema above.") {
+		t.Fatalf("system message = %q, want the schema injected into the JSON instruction", content)
 	}
 }
 

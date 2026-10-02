@@ -150,6 +150,8 @@ successful call.
 
 Step lifecycle telemetry uses `OnStepEnd` as the canonical name. `OnStepFinish` is still emitted as a deprecated compatibility event for migration, and `OnStepEnd` takes precedence when both callback names are configured.
 
+The built-in `telemetry.OpenTelemetry` and `telemetry.LegacyOpenTelemetry` integrations set the OTel span status to `codes.Error` on the language-model-call, step, and root spans whenever the corresponding event's `FinishReason` is `"error"` (for example a provider stream that ends with an error chunk), even when no separate `OnError`/`OnStepError` event fires. Spans finishing with any other reason keep the default `Unset` status.
+
 ### Abort and Performance Events
 
 Telemetry integrations can implement `OnAbort(context.Context, telemetry.TelemetryAbortEvent)`. The SDK emits this event when generation is canceled or aborted and closes the active OpenTelemetry span so traces do not remain open.
@@ -429,6 +431,36 @@ Records the following spans:
 - Individual provider call
 - May be multiple spans if batching occurs
 
+### Speech and Transcription
+
+`GenerateSpeech`, `Transcribe`, and `ExperimentalStreamTranscribe` emit a single root span covering the whole call (including retries for the non-streaming calls) — there is no nested per-attempt span, unlike `ai.embed`/`ai.generateText`. All three accept a `Telemetry`/`ExperimentalTelemetry` option, dispatch `OnStart`/`OnEnd`/`OnError` to every registered integration, and publish the same diagnostics-channel events (`onStart`, `onEnd`, `onError`) as every other operation.
+
+**`ai.generateSpeech` span:**
+- Attributes:
+  - `operation.name`: `ai.generateSpeech` + function ID
+  - `ai.operationId`: `"ai.generateSpeech"`
+  - `gen_ai.output.type`: `"speech"` (GenAI integration only)
+  - `ai.request.text`: Input text (if RecordInputs is true)
+  - `ai.response.audio.size` / `ai.response.audio.mediaType` / `ai.response.audio.format`: Generated audio metadata (if RecordOutputs is true)
+  - `ai.usage.<key>` / `gen_ai.usage.<key>`: Provider-reported usage, flattened to numeric attributes (e.g. `ai.usage.characters` for Deepgram TTS; see "Provider usage attributes" below)
+  - `ai.response.usage`: Raw provider usage object, JSON-encoded
+  - `ai.response.providerMetadata`: Provider-specific metadata (if enabled)
+- Ends with `codes.Error` status on failure, including a provider response with no audio.
+
+**`ai.transcribe` / `ai.streamTranscribe` spans:**
+- Attributes:
+  - `operation.name`: `ai.transcribe`/`ai.streamTranscribe` + function ID
+  - `ai.operationId`: `"ai.transcribe"` / `"ai.streamTranscribe"`
+  - `gen_ai.request.stream`: `true` for `ai.streamTranscribe`, `false` for `ai.transcribe` (GenAI integration only)
+  - `ai.request.audio.size` / `ai.request.audio.mediaType`: Input audio metadata (if RecordInputs is true). For `ai.streamTranscribe`, the byte count accumulates as audio chunks are read and is only set once the stream reaches its final part.
+  - `ai.response.text`: Transcript text (if RecordOutputs is true)
+  - `ai.usage.<key>` / `gen_ai.usage.<key>`: Provider-reported usage, flattened to numeric attributes
+  - `ai.response.usage`: Raw provider usage object, JSON-encoded
+  - `ai.response.providerMetadata`: Provider-specific metadata (if enabled)
+- Ends with `codes.Error` status on failure, including a provider response with no transcript.
+
+**Provider usage attributes:** Speech/transcription providers report usage in their own native shape (e.g. Deepgram TTS: `{"characters": N}`; Deepgram transcription: `{"seconds": N}`; Google: `{"promptTokenCount": N, ...}`). The telemetry layer flattens this generically: common field spellings (`inputTokens`, `promptTokens`, `promptTokenCount`, `totalInputTokens` → `input_tokens`; `outputTokens`, `completionTokens`, `completionTokenCount`, `candidatesTokenCount` → `output_tokens`; `totalTokens`, `totalTokenCount` → `total_tokens`) are aliased to a shared attribute name, and everything else is converted from camelCase to `snake_case` (e.g. `characters` stays `characters`, `promptAudioSeconds` becomes `prompt_audio_seconds`). Nested usage objects are flattened with dotted paths.
+
 ### Tool Calls
 
 When tools are executed, `ai.toolCall` spans are recorded:
@@ -457,7 +489,6 @@ import (
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
     "github.com/digitallysavvy/go-ai/pkg/telemetry"
     "go.opentelemetry.io/otel"
-    "go.opentelemetry.io/otel/attribute"
     "go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
     "go.opentelemetry.io/otel/sdk/trace"
 )

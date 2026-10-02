@@ -70,6 +70,69 @@ func TestPipeTextStreamToWriter_SurfacesWriteError(t *testing.T) {
 	}
 }
 
+// closeTrackingTextStream wraps a provider.TextStream and records how many
+// times Close was called, so tests can verify a write failure releases the
+// underlying stream instead of silently abandoning it mid-stream.
+type closeTrackingTextStream struct {
+	provider.TextStream
+	closeCalls int
+}
+
+func (s *closeTrackingTextStream) Close() error {
+	s.closeCalls++
+	return s.TextStream.Close()
+}
+
+// Ported from TS 33e94baaf4 (#21578): a write failure (the Go analog of a
+// client disconnect) must close/cancel the source stream so any upstream
+// resources it holds are released, instead of abandoning it mid-stream.
+func TestPipeTextStreamToWriter_ClosesStreamOnWriteFailure(t *testing.T) {
+	stream := &closeTrackingTextStream{
+		TextStream: testutil.NewMockTextStream([]provider.StreamChunk{
+			{Type: provider.ChunkTypeText, Text: "a"},
+			{Type: provider.ChunkTypeText, Text: "b"},
+			{Type: provider.ChunkTypeFinish},
+		}),
+	}
+
+	if err := PipeTextStreamToWriter(context.Background(), stream, failingWriter{}); err == nil {
+		t.Fatal("expected a write error, got nil")
+	}
+	if stream.closeCalls != 1 {
+		t.Fatalf("Close() calls = %d, want 1", stream.closeCalls)
+	}
+}
+
+// Ported from TS 33e94baaf4 (#21578), the ctx-cancellation analog of
+// TestPipeTextStreamToWriter_ClosesStreamOnWriteFailure: a caller commonly
+// passes an *http.Request's Context() here, which net/http cancels the
+// moment the client disconnects -- the Go-idiomatic signal for exactly the
+// client-disconnect condition TS's fix addresses, distinct from (and more
+// reliable than) a failed Write call. Returning on ctx.Done() without
+// closing stream would leak its upstream resources (e.g. an open provider
+// HTTP connection) for as long as the provider keeps producing.
+func TestPipeTextStreamToWriter_ClosesStreamOnContextCancellation(t *testing.T) {
+	stream := &closeTrackingTextStream{
+		TextStream: testutil.NewMockTextStream([]provider.StreamChunk{
+			{Type: provider.ChunkTypeText, Text: "a"},
+			{Type: provider.ChunkTypeText, Text: "b"},
+			{Type: provider.ChunkTypeFinish},
+		}),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var buf bytes.Buffer
+	err := PipeTextStreamToWriter(ctx, stream, &buf)
+	if err == nil {
+		t.Fatal("expected a context error, got nil")
+	}
+	if stream.closeCalls != 1 {
+		t.Fatalf("Close() calls = %d, want 1", stream.closeCalls)
+	}
+}
+
 // flushRecorder wraps a bytes.Buffer and implements http.Flusher, recording
 // the buffer's content at each Flush() call, so tests can verify writes
 // reach the consumer incrementally (per SSE chunk / text delta) rather than

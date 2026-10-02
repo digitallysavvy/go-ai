@@ -47,6 +47,10 @@ type CustomToolFormat struct {
 type CustomTool struct {
     Description *string
     Format      *CustomToolFormat
+
+    // Async, when true, lets the model continue generating after calling
+    // this tool without waiting for its result (GPT-6+ only).
+    Async *bool
 }
 ```
 
@@ -61,6 +65,7 @@ Available options:
 ```go
 openaitool.WithDescription(desc string) CustomToolOption
 openaitool.WithFormat(format CustomToolFormat) CustomToolOption
+openaitool.WithAsync(async bool) CustomToolOption
 ```
 
 The tool name is **not** stored in `CustomTool`. Supply it when calling `ToTool("name")` so
@@ -272,7 +277,7 @@ tool := responses.NewShellTool()
 
 ```go
 type ShellNetworkPolicy struct {
-    Type           string             // "allowlist" or "none"
+    Type           string             // "allowlist" or "disabled"
     AllowedDomains []string           // allowed hostnames
     DomainSecrets  []ShellDomainSecret
 }
@@ -401,7 +406,7 @@ type ShellCallOutputEntry struct {
 }
 
 type ShellOutcome struct {
-    Type     string // "exit_code" or "timeout"
+    Type     string // "exit" or "timeout"
     ExitCode *int
 }
 ```

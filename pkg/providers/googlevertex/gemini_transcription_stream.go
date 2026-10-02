@@ -118,7 +118,7 @@ func (m *GeminiTranscriptionModel) DoStream(ctx context.Context, opts *provider.
 	}
 	// TS google-vertex-gemini-transcription-model.ts reuses
 	// this.config.headers() -- the same tagged getHeaders() closure used for
-	// REST calls -- so the WS handshake carries the `ai-sdk/google-vertex/
+	// REST calls -- so the WS handshake carries the `ai-sdk-google-vertex/
 	// VERSION` tag too.
 	wsHeaders = version.WithUserAgentSuffix(wsHeaders, version.ProviderUserAgent("google-vertex"))
 	for k, v := range opts.Headers {
@@ -380,6 +380,7 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 			FinishText:       fullText,
 			Segments:         []provider.TranscriptSegment{},
 			Language:         language,
+			Usage:            usageMetadata,
 			ProviderMetadata: providerMetadata,
 		})
 		cfg.audio.Cancel(nil)

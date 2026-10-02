@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -67,13 +69,119 @@ func TestGoogleRealtimeUnknownAndHealthCheck(t *testing.T) {
 	if len(events) != 1 || events[0].Type != "custom" || events[0].RawType != "setupComplete" {
 		t.Fatalf("null setup event = %+v", events)
 	}
+	// An empty, non-finished input transcription must not allocate an
+	// utterance or emit an empty user message (TS #21549): it falls through
+	// to a custom event instead.
 	events, err = model.ParseServerEvent(json.RawMessage(`{"inputTranscription":{"text":""}}`))
 	if err != nil {
 		t.Fatalf("ParseServerEvent empty transcript: %v", err)
 	}
-	if len(events) != 1 || events[0].Type != "input-transcription-completed" || events[0].Transcript != "" {
+	if len(events) != 1 || events[0].Type != "custom" || events[0].RawType != "inputTranscription" {
 		t.Fatalf("empty transcript event = %+v", events)
 	}
+}
+
+// TestGoogleRealtimeInputTranscriptionAccumulatesFragments ports TS
+// "accumulates consecutive input transcription fragments into one
+// utterance": Google streams input transcription as non-accumulating
+// fragments; they must concatenate under one stable synthetic id.
+func TestGoogleRealtimeInputTranscriptionAccumulatesFragments(t *testing.T) {
+	model := NewRealtimeModel(New(Config{APIKey: "k"}), "gemini-2.0-flash-live-001")
+
+	for _, tt := range []struct {
+		text string
+		want string
+	}{
+		{"The quick brown fox", "The quick brown fox"},
+		{" jumps over the", "The quick brown fox jumps over the"},
+		{" lazy dog.", "The quick brown fox jumps over the lazy dog."},
+	} {
+		raw := json.RawMessage(`{"serverContent":{"inputTranscription":{"text":` + strconv.Quote(tt.text) + `}}}`)
+		events, err := model.ParseServerEvent(raw)
+		if err != nil {
+			t.Fatalf("ParseServerEvent: %v", err)
+		}
+		if len(events) != 1 || events[0].Type != "input-transcription-completed" || events[0].ItemID != "google-input-0" || events[0].Transcript != tt.want {
+			t.Fatalf("events = %+v, want itemId=google-input-0 transcript=%q", events, tt.want)
+		}
+	}
+}
+
+// TestGoogleRealtimeInputTranscriptionIncrementsAfterTurnComplete ports TS
+// "increments input transcription IDs after turnComplete": a new utterance
+// after a completed turn gets the next synthetic id.
+func TestGoogleRealtimeInputTranscriptionIncrementsAfterTurnComplete(t *testing.T) {
+	model := NewRealtimeModel(New(Config{APIKey: "k"}), "gemini-2.0-flash-live-001")
+
+	mustEvents(t, model, `{"serverContent":{"inputTranscription":{"text":"What time is it?"}}}`)
+	mustEvents(t, model, `{"serverContent":{"modelTurn":{"parts":[{"inlineData":{"data":"audio1"}}]}}}`)
+	mustEvents(t, model, `{"serverContent":{"turnComplete":true}}`)
+
+	events, err := model.ParseServerEvent(json.RawMessage(`{"serverContent":{"inputTranscription":{"text":"And the date?"}}}`))
+	if err != nil {
+		t.Fatalf("ParseServerEvent: %v", err)
+	}
+	if len(events) != 1 || events[0].ItemID != "google-input-1" || events[0].Transcript != "And the date?" {
+		t.Fatalf("events = %+v, want google-input-1", events)
+	}
+}
+
+// TestGoogleRealtimeInputTranscriptionSurvivesInterruptionAcrossTurnComplete
+// ports TS "keeps an interrupting utterance together across the trailing
+// turnComplete": the interrupting utterance must not be split by the
+// interrupted response's own trailing turnComplete.
+func TestGoogleRealtimeInputTranscriptionSurvivesInterruptionAcrossTurnComplete(t *testing.T) {
+	model := NewRealtimeModel(New(Config{APIKey: "k"}), "gemini-2.0-flash-live-001")
+
+	mustEvents(t, model, `{"serverContent":{"inputTranscription":{"text":"Tell me a story."}}}`)
+	mustEvents(t, model, `{"serverContent":{"modelTurn":{"parts":[{"inlineData":{"data":"audio1"}}]}}}`)
+	mustEvents(t, model, `{"serverContent":{"interrupted":true}}`)
+
+	events := mustEvents(t, model, `{"serverContent":{"inputTranscription":{"text":"Stop","finished":false}}}`)
+	if len(events) != 1 || events[0].ItemID != "google-input-1" || events[0].Transcript != "Stop" {
+		t.Fatalf("events = %+v, want google-input-1 'Stop'", events)
+	}
+
+	mustEvents(t, model, `{"serverContent":{"turnComplete":true}}`)
+
+	events = mustEvents(t, model, `{"serverContent":{"inputTranscription":{"text":" now.","finished":true}}}`)
+	if len(events) != 1 || events[0].ItemID != "google-input-1" || events[0].Transcript != "Stop now." {
+		t.Fatalf("events = %+v, want google-input-1 'Stop now.' (not split by the interrupted turnComplete)", events)
+	}
+}
+
+// TestGoogleRealtimeInputTranscriptionStandaloneCompletionMarker ports TS
+// "honors a standalone completion marker ... after turnComplete" / "does not
+// allocate an utterance for empty input": a `finished` marker with no text
+// must not create an empty user message or consume an id.
+func TestGoogleRealtimeInputTranscriptionStandaloneCompletionMarker(t *testing.T) {
+	model := NewRealtimeModel(New(Config{APIKey: "k"}), "gemini-2.0-flash-live-001")
+
+	for _, raw := range []string{
+		`{"serverContent":{"inputTranscription":{}}}`,
+		`{"serverContent":{"inputTranscription":{"finished":false}}}`,
+		`{"serverContent":{"inputTranscription":{"finished":true}}}`,
+		`{"serverContent":{"inputTranscription":{"text":"","finished":true}}}`,
+	} {
+		events := mustEvents(t, model, raw)
+		if len(events) != 1 || events[0].Type != "custom" {
+			t.Fatalf("raw=%s events = %+v, want a custom event (no utterance allocated)", raw, events)
+		}
+	}
+
+	events := mustEvents(t, model, `{"serverContent":{"inputTranscription":{"text":"First"}}}`)
+	if len(events) != 1 || events[0].ItemID != "google-input-0" || events[0].Transcript != "First" {
+		t.Fatalf("events = %+v, want google-input-0 'First'", events)
+	}
+}
+
+func mustEvents(t *testing.T, model *GoogleRealtimeModel, raw string) []provider.RealtimeServerEvent {
+	t.Helper()
+	events, err := model.ParseServerEvent(json.RawMessage(raw))
+	if err != nil {
+		t.Fatalf("ParseServerEvent(%s): %v", raw, err)
+	}
+	return events
 }
 
 func TestGoogleRealtimeBuildSessionAndSerialize(t *testing.T) {
@@ -378,6 +486,154 @@ func TestGoogleRealtimeNoThinkingConfigForNonBackgroundModel(t *testing.T) {
 	generation := setup["generationConfig"].(map[string]interface{})
 	if _, ok := generation["thinkingConfig"]; ok {
 		t.Fatalf("expected no thinkingConfig, got %#v", generation["thinkingConfig"])
+	}
+}
+
+// TestGoogleRealtimeThinkingConfigDefaultAddedWhenNeitherLevelNorBudgetSet
+// ports TS "adds the default thinkingLevel when thinkingConfig sets neither
+// thinkingLevel nor thinkingBudget": a typed thinkingConfig with only
+// includeThoughts (or an empty object) still gets the default thinkingLevel
+// merged in, keeping its other fields.
+func TestGoogleRealtimeThinkingConfigDefaultAddedWhenNeitherLevelNorBudgetSet(t *testing.T) {
+	for _, modelID := range []string{"gemini-3.8-live-extended-thinking", "models/gemini-3.8-live-extended-thinking"} {
+		model := NewRealtimeModel(New(Config{APIKey: "k"}), modelID)
+		setup := model.BuildSessionConfig(provider.RealtimeSessionConfig{
+			ProviderOptions: map[string]interface{}{
+				"google": map[string]interface{}{
+					"thinkingConfig": map[string]interface{}{"includeThoughts": true},
+				},
+			},
+		}).(map[string]interface{})
+		generation := setup["generationConfig"].(map[string]interface{})
+		thinkingConfig, ok := generation["thinkingConfig"].(map[string]interface{})
+		if !ok || thinkingConfig["includeThoughts"] != true || thinkingConfig["thinkingLevel"] != "low" {
+			t.Fatalf("modelID=%s thinkingConfig = %#v, want {includeThoughts:true, thinkingLevel:low}", modelID, thinkingConfig)
+		}
+	}
+
+	model := NewRealtimeModel(New(Config{APIKey: "k"}), "gemini-3.8-live-extended-thinking")
+	setup := model.BuildSessionConfig(provider.RealtimeSessionConfig{
+		ProviderOptions: map[string]interface{}{
+			"google": map[string]interface{}{"thinkingConfig": map[string]interface{}{}},
+		},
+	}).(map[string]interface{})
+	generation := setup["generationConfig"].(map[string]interface{})
+	thinkingConfig, ok := generation["thinkingConfig"].(map[string]interface{})
+	if !ok || thinkingConfig["thinkingLevel"] != "low" || len(thinkingConfig) != 1 {
+		t.Fatalf("empty thinkingConfig = %#v, want {thinkingLevel:low}", thinkingConfig)
+	}
+}
+
+// TestGoogleRealtimeThinkingBudgetZeroKeptWithoutDefaultLevel ports TS "keeps
+// thinkingBudget: 0 without adding a default thinkingLevel": a budget of 0 is
+// an explicit value, not absence, so no default thinkingLevel is merged in.
+func TestGoogleRealtimeThinkingBudgetZeroKeptWithoutDefaultLevel(t *testing.T) {
+	model := NewRealtimeModel(New(Config{APIKey: "k"}), "gemini-3.8-live-extended-thinking")
+	setup := model.BuildSessionConfig(provider.RealtimeSessionConfig{
+		ProviderOptions: map[string]interface{}{
+			"google": map[string]interface{}{
+				"thinkingConfig": map[string]interface{}{"thinkingBudget": float64(0)},
+			},
+		},
+	}).(map[string]interface{})
+	generation := setup["generationConfig"].(map[string]interface{})
+	thinkingConfig, ok := generation["thinkingConfig"].(map[string]interface{})
+	if !ok || thinkingConfig["thinkingBudget"] != float64(0) {
+		t.Fatalf("thinkingConfig = %#v, want {thinkingBudget: 0}", thinkingConfig)
+	}
+	if _, has := thinkingConfig["thinkingLevel"]; has {
+		t.Fatalf("thinkingLevel should not be added when thinkingBudget is 0: %#v", thinkingConfig)
+	}
+}
+
+// TestGoogleRealtimeRawThinkingConfigWithLevelOrBudgetUntouched ports TS
+// "does not overwrite a raw generationConfig.thinkingConfig that sets
+// thinkingLevel or thinkingBudget".
+func TestGoogleRealtimeRawThinkingConfigWithLevelOrBudgetUntouched(t *testing.T) {
+	cases := []map[string]interface{}{
+		{"thinkingLevel": "high"},
+		{"thinkingBudget": float64(1024), "includeThoughts": true},
+	}
+	for _, tc := range cases {
+		model := NewRealtimeModel(New(Config{APIKey: "k"}), "gemini-3.8-live-extended-thinking")
+		setup := model.BuildSessionConfig(provider.RealtimeSessionConfig{
+			ProviderOptions: map[string]interface{}{
+				"generationConfig": map[string]interface{}{
+					"responseModalities": []interface{}{"AUDIO"},
+					"thinkingConfig":     tc,
+				},
+			},
+		}).(map[string]interface{})
+		generation := setup["generationConfig"].(map[string]interface{})
+		thinkingConfig, _ := generation["thinkingConfig"].(map[string]interface{})
+		if !reflect.DeepEqual(thinkingConfig, tc) {
+			t.Fatalf("thinkingConfig = %#v, want untouched %#v", thinkingConfig, tc)
+		}
+	}
+}
+
+// TestGoogleRealtimeRawThinkingConfigGetsDefaultWhenNeitherSet ports TS "adds
+// the default thinkingLevel to a raw generationConfig.thinkingConfig that
+// sets neither".
+func TestGoogleRealtimeRawThinkingConfigGetsDefaultWhenNeitherSet(t *testing.T) {
+	model := NewRealtimeModel(New(Config{APIKey: "k"}), "gemini-3.8-live-extended-thinking")
+	setup := model.BuildSessionConfig(provider.RealtimeSessionConfig{
+		ProviderOptions: map[string]interface{}{
+			"generationConfig": map[string]interface{}{
+				"temperature":    float64(0.2),
+				"thinkingConfig": map[string]interface{}{"includeThoughts": true},
+			},
+		},
+	}).(map[string]interface{})
+	generation := setup["generationConfig"].(map[string]interface{})
+	if generation["temperature"] != float64(0.2) {
+		t.Fatalf("temperature = %#v, want 0.2 preserved", generation["temperature"])
+	}
+	thinkingConfig, ok := generation["thinkingConfig"].(map[string]interface{})
+	if !ok || thinkingConfig["includeThoughts"] != true || thinkingConfig["thinkingLevel"] != "low" {
+		t.Fatalf("thinkingConfig = %#v, want {includeThoughts:true, thinkingLevel:low}", thinkingConfig)
+	}
+}
+
+// TestGoogleRealtimeTypedThinkingConfigWinsOverRaw ports TS "prefers a typed
+// thinkingConfig over a raw generationConfig.thinkingConfig": the typed
+// option replaces the raw one wholesale, even without a level of its own
+// (the default is not applied here because the typed path short-circuits).
+func TestGoogleRealtimeTypedThinkingConfigWinsOverRaw(t *testing.T) {
+	model := NewRealtimeModel(New(Config{APIKey: "k"}), "gemini-3.8-live-extended-thinking")
+	setup := model.BuildSessionConfig(provider.RealtimeSessionConfig{
+		ProviderOptions: map[string]interface{}{
+			"generationConfig": map[string]interface{}{
+				"thinkingConfig": map[string]interface{}{"thinkingLevel": "high"},
+			},
+			"google": map[string]interface{}{
+				"thinkingConfig": map[string]interface{}{"thinkingBudget": float64(512)},
+			},
+		},
+	}).(map[string]interface{})
+	generation := setup["generationConfig"].(map[string]interface{})
+	thinkingConfig, ok := generation["thinkingConfig"].(map[string]interface{})
+	if !ok || thinkingConfig["thinkingBudget"] != float64(512) || len(thinkingConfig) != 1 {
+		t.Fatalf("thinkingConfig = %#v, want {thinkingBudget: 512}", thinkingConfig)
+	}
+}
+
+// TestGoogleRealtimeNoDefaultThinkingLevelOnNonBackgroundLiveModel ports TS
+// "does not add a default thinkingLevel on Live models without background
+// reasoning".
+func TestGoogleRealtimeNoDefaultThinkingLevelOnNonBackgroundLiveModel(t *testing.T) {
+	model := NewRealtimeModel(New(Config{APIKey: "k"}), "gemini-3.8-live")
+	setup := model.BuildSessionConfig(provider.RealtimeSessionConfig{
+		ProviderOptions: map[string]interface{}{
+			"google": map[string]interface{}{
+				"thinkingConfig": map[string]interface{}{"includeThoughts": true},
+			},
+		},
+	}).(map[string]interface{})
+	generation := setup["generationConfig"].(map[string]interface{})
+	thinkingConfig, ok := generation["thinkingConfig"].(map[string]interface{})
+	if !ok || thinkingConfig["includeThoughts"] != true || len(thinkingConfig) != 1 {
+		t.Fatalf("thinkingConfig = %#v, want {includeThoughts:true} only", thinkingConfig)
 	}
 }
 

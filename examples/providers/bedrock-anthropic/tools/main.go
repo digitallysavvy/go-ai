@@ -68,9 +68,10 @@ func main() {
 
 	// Generate text with tool calling
 	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-		Model:  model,
-		Prompt: "What's the weather like in San Francisco?",
-		Tools:  []types.Tool{getWeatherTool},
+		Model:    model,
+		Prompt:   "What's the weather like in San Francisco?",
+		Tools:    []types.Tool{getWeatherTool},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 		ToolChoice: types.ToolChoice{
 			Type: "auto",
 		},

@@ -88,6 +88,37 @@ func (m *ImageModel) MaxImagesPerCall() int {
 	return 1
 }
 
+// googleImageModelsWithFileInputSupport lists Gemini image model IDs known
+// to accept file inputs for image editing (TS
+// GoogleImageModel#supportsFileInputs).
+var googleImageModelsWithFileInputSupport = map[string]bool{
+	"gemini-2.5-flash-image":         true,
+	"gemini-3-pro-image-preview":     true,
+	"gemini-3.1-flash-image-preview": true,
+}
+
+// SupportsFileInputs reports whether the model accepts file inputs for image
+// editing. Returns nil when support is unknown for the model ID.
+func (m *ImageModel) SupportsFileInputs() *bool {
+	if googleImageModelsWithFileInputSupport[m.modelID] {
+		return boolPtr(true)
+	}
+	return nil
+}
+
+// SupportsMaskInputs reports whether the model accepts a mask input for
+// inpainting. Gemini image-capable models do not support masks.
+func (m *ImageModel) SupportsMaskInputs() *bool {
+	if v := m.SupportsFileInputs(); v != nil && *v {
+		return boolPtr(false)
+	}
+	return nil
+}
+
+func boolPtr(b bool) *bool {
+	return &b
+}
+
 // DoGenerate performs image generation using Gemini models via the
 // generateContent API. Non-Gemini model IDs are rejected, matching TS.
 func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {

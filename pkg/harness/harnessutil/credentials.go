@@ -49,11 +49,20 @@ func uniqueNames(names []string) []string {
 }
 
 // CredentialForwardingOptions is the input of ApplyCredentialForwarding and
-// CreateSandboxCredentialEnvironment.
+// ResolveSandboxCredentialEnvironment.
 type CredentialForwardingOptions struct {
 	Environment                    map[string]string
 	CredentialEnvironmentVariables []string
 	CredentialForwarding           harness.CredentialForwarding
+	// PreviousSandboxCredentialEnvironment is the sandbox credential
+	// environment persisted by an earlier lifecycle state, when resuming a
+	// session. A credential variable name present here is reused verbatim
+	// (not re-forwarded, not given a fresh placeholder) so a resumed session
+	// keeps using the exact sandbox-side value (including any
+	// adapter-specific format, such as a GitHub token prefix) it was already
+	// using. Names absent here — new credential variables introduced since
+	// the session was last persisted — still get a fresh placeholder.
+	PreviousSandboxCredentialEnvironment map[string]string
 }
 
 // ApplyCredentialForwarding returns a copy of Environment where each present
@@ -85,15 +94,28 @@ func ApplyCredentialForwarding(ctx context.Context, opts CredentialForwardingOpt
 	return forwarded, nil
 }
 
-// CreateSandboxCredentialEnvironment returns, for each present credential
-// variable, a fresh placeholder (passed through CredentialForwarding when set)
-// for use inside the sandbox while the real value is injected by a request
-// transformation. Mirrors TS `createSandboxCredentialEnvironment`.
-func CreateSandboxCredentialEnvironment(ctx context.Context, opts CredentialForwardingOptions) (map[string]string, error) {
+// ResolveSandboxCredentialEnvironment returns, for each present credential
+// variable, either the value saved in PreviousSandboxCredentialEnvironment
+// (when resuming a session that already forwarded it) or a fresh placeholder
+// (passed through CredentialForwarding when set) for use inside the sandbox
+// while the real value is injected by a request transformation. Replaces TS
+// `createSandboxCredentialEnvironment` (removed), whose callers used to
+// reuse a previous lifecycle state's whole map verbatim or regenerate
+// everything from scratch; this resolves per credential-variable name
+// instead, so a session resumed with new or removed credential variables
+// still gets the right environment. Mirrors TS
+// `resolveSandboxCredentialEnvironment`.
+func ResolveSandboxCredentialEnvironment(ctx context.Context, opts CredentialForwardingOptions) (map[string]string, error) {
 	out := map[string]string{}
 	for _, name := range uniqueNames(opts.CredentialEnvironmentVariables) {
 		if _, ok := opts.Environment[name]; !ok {
 			continue
+		}
+		if opts.PreviousSandboxCredentialEnvironment != nil {
+			if previous, ok := opts.PreviousSandboxCredentialEnvironment[name]; ok {
+				out[name] = previous
+				continue
+			}
 		}
 		placeholder := GenerateSandboxCredentialPlaceholder()
 		if opts.CredentialForwarding == nil {

@@ -5,41 +5,107 @@ description: "API reference for Go AI SDK error types, covering common errors re
 
 # Error Types
 
-Error types returned by Go-AI SDK functions.
+Error types returned by Go AI SDK functions.
 
-## Common Errors
+## Typed Errors
 
-The SDK uses standard Go errors with descriptive messages. Common error patterns include:
+Many SDK functions return specific error types instead of (or in addition to)
+plain `errors.New`/`fmt.Errorf` values. Use `errors.As` to detect them. Most
+live in `pkg/ai`; a few tool/provider-level ones live in `pkg/provider/types`
+and `pkg/provider`.
 
-### Validation Errors
+| Type | Package | Key Fields | When it's returned |
+|------|---------|------------|---------------------|
+| `NoSuchToolError` | ai | ToolName, AvailableTools | Model called a tool that isn't available |
+| `InvalidToolInputError` | ai | ToolName, ToolInput, Cause | Tool input doesn't satisfy the tool's schema |
+| `ToolCallRepairError` | ai | Cause, OriginalError | `RepairToolCall` failed to fix a bad tool call |
+| `ToolChoiceViolationError` | ai | ToolChoice, FinishReason, Provider, ModelID | Response didn't honor a required/specific `ToolChoice` |
+| `ToolCallNotFoundForApprovalError` | ai | ToolCallID, ApprovalID | Approval references a tool call missing from history |
+| `InvalidToolApprovalError` | ai | ApprovalID | Approval response has no matching request |
+| `InvalidToolApprovalSignatureError` | ai | ApprovalID, ToolCallID, Reason | Signed approval could not be verified |
+| `NoObjectGeneratedError` | ai | Message, Cause, Text, Response, Usage, FinishReason | `GenerateObject`/`StreamObject` produced no valid object |
+| `NoOutputGeneratedError` | ai | Message, Cause | Stream ended before any output or finish chunk |
+| `NoImageGeneratedError` | ai | Responses, Calls | `GenerateImage` produced zero images |
+| `NoSpeechGeneratedError` | ai | Responses | `GenerateSpeech` produced no audio |
+| `NoVideoGeneratedError` | ai | Responses | `GenerateVideo` produced no videos |
+| `NoTranscriptGeneratedError` | ai | Responses | `Transcribe` produced no text |
+| `NoTranslationGeneratedError` | ai | Response | Speech translation produced no audio or text |
+| `MessageConversionError` | ai | OriginalMessage, Message, Cause | A UI message couldn't convert to a model message |
+| `TimeoutError` | ai | Reason, Err | A configured `TimeoutConfig` deadline was hit |
+| `UIMessageStreamError` | ai | ChunkType, ChunkID, Message | A UI message stream received an out-of-sequence chunk |
+| `types.MissingToolResultError` | provider/types | ToolCallID, ToolName, Message | A provider-executed tool didn't return a result |
+| `types.MissingToolResultsError` | provider/types | ToolCallIDs, Message | Multiple provider-executed tools are missing results |
+| `types.ToolExecutionError` | provider/types | ToolCallID, ToolName, Err, ProviderExecuted | A tool's `Execute` function returned an error |
+| `provider.BatchError` | provider | Message, Type, Code, StatusCode | Serializable error info for a failed batch item |
+| `provider.NoSuchUploadAPIError` | provider | API | Provider has no upload API of the requested kind |
+
+The SDK also exposes `Is*Error(err) bool` helper functions for most of the
+types above as an alternative to `errors.As`, for example
+`ai.IsNoSuchToolError`, `ai.IsInvalidToolInputError`,
+`ai.IsToolChoiceViolationError`, `ai.IsNoImageGeneratedError`,
+`ai.IsNoOutputGeneratedError`, and `ai.IsMessageConversionError`.
+`NoObjectGeneratedError` and `TimeoutError` have no `Is*` helper; use
+`errors.As` for those.
+
+### Example: errors.As
 
 ```go
-- "model is required"
-- "prompt is required"
-- "input is required"
-- "documents are required"
-- "query is required"
-- "schema is required"
+package main
+
+import (
+    "context"
+    "errors"
+    "fmt"
+    "log"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    p := openai.New(openai.Config{APIKey: "your-api-key"})
+    model, _ := p.LanguageModel("gpt-4")
+
+    weatherTool := types.Tool{Name: "get_weather"}
+
+    result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Use the weather tool",
+        Tools:  []types.Tool{weatherTool},
+        StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
+    })
+    if err != nil {
+        var noSuchTool *ai.NoSuchToolError
+        var invalidInput *ai.InvalidToolInputError
+        switch {
+        case errors.As(err, &noSuchTool):
+            log.Printf("model tried calling unknown tool %q", noSuchTool.ToolName)
+        case errors.As(err, &invalidInput):
+            log.Printf("tool %q got invalid input: %v", invalidInput.ToolName, invalidInput.Cause)
+        default:
+            log.Fatal(err)
+        }
+        return
+    }
+
+    fmt.Println(result.Text)
+}
 ```
 
-### Execution Errors
+## Untyped Errors
 
-```go
-- "generation failed: ..."
-- "embedding failed: ..."
-- "reranking failed: ..."
-- "tool execution failed: ..."
-- "stream error: ..."
+Many lower-level validation and provider failures are still plain Go errors
+with descriptive messages rather than a dedicated type, for example:
+
+```text
+"model is required"
+"prompt is required"
+provider-specific HTTP errors wrapped from the provider's API response
 ```
 
-### Provider Errors
-
-```go
-- "API key not found"
-- "rate limit exceeded"
-- "invalid model"
-- "content policy violation"
-```
+Check these with `strings.Contains(err.Error(), "...")` as shown below, or
+prefer the typed errors above and `ai.Is*Error` helpers where one exists.
 
 ## Error Handling Patterns
 
@@ -50,18 +116,23 @@ package main
 
 import (
     "context"
-    "errors"
     "log"
-    "strings"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
 func main() {
-    result, err := ai.GenerateText(ctx, opts)
+    p := openai.New(openai.Config{APIKey: "your-api-key"})
+    model, _ := p.LanguageModel("gpt-4")
+
+    opts := ai.GenerateTextOptions{Model: model, Prompt: "Hello"}
+
+    result, err := ai.GenerateText(context.Background(), opts)
     if err != nil {
         log.Fatal(err)
     }
+    log.Println(result.Text)
 }
 ```
 
@@ -194,6 +265,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "What's the weather?",
     Tools:  []types.Tool{weatherTool},
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 })
 if err != nil {
     if strings.Contains(err.Error(), "tool execution failed") {

@@ -18,8 +18,8 @@ import (
 const HarnessID = "codex"
 
 // version is used in the client-app attribution string, mirroring TS
-// `VERSION` pinned to the ai@7.0.118 release this port targets.
-const version = "1.0.130"
+// `VERSION` pinned to the ai@7.0.127 release this port targets.
+const version = "1.0.140"
 
 var _ harness.Harness = (*Harness)(nil)
 var _ harness.BootstrapProvider = (*Harness)(nil)
@@ -132,15 +132,13 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 	credentialsBrokered := false
 	if adder, ok := sandboxSession.(harness.RequestTransformationAdder); ok {
 		var err error
-		sandboxCredentialEnv = resumeData.SandboxCredentialEnvironment
-		if sandboxCredentialEnv == nil {
-			sandboxCredentialEnv, err = harnessutil.CreateSandboxCredentialEnvironment(ctx, harnessutil.CredentialForwardingOptions{
-				Environment: resolvedAuthEnv, CredentialEnvironmentVariables: CredentialEnvironmentVariables,
-				CredentialForwarding: settings.CredentialForwarding,
-			})
-			if err != nil {
-				return nil, err
-			}
+		sandboxCredentialEnv, err = harnessutil.ResolveSandboxCredentialEnvironment(ctx, harnessutil.CredentialForwardingOptions{
+			Environment: resolvedAuthEnv, CredentialEnvironmentVariables: CredentialEnvironmentVariables,
+			CredentialForwarding:                 settings.CredentialForwarding,
+			PreviousSandboxCredentialEnvironment: resumeData.SandboxCredentialEnvironment,
+		})
+		if err != nil {
+			return nil, err
 		}
 		sandboxAuthEnv = map[string]string{}
 		for k, v := range resolvedAuthEnv {

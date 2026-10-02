@@ -130,9 +130,10 @@ func TestStreamText_OnStepFinishEventFiresPerStep(t *testing.T) {
 
 	stepFinishCount := 0
 	result, err := StreamText(context.Background(), StreamTextOptions{
-		Model:  model,
-		Prompt: "go",
-		Tools:  []types.Tool{tool},
+		StopWhen: []StopCondition{IsLoopFinished()},
+		Model:    model,
+		Prompt:   "go",
+		Tools:    []types.Tool{tool},
 		OnStepStart: func(_ context.Context, _ OnStepStartEvent) {
 			stepStartCount++
 		},
@@ -221,9 +222,10 @@ func TestStreamText_OnStepStartOnlyStartsProcessingLoop(t *testing.T) {
 
 	stepStartCount := 0
 	result, err := StreamText(context.Background(), StreamTextOptions{
-		Model:  model,
-		Prompt: "go",
-		Tools:  []types.Tool{tool},
+		StopWhen: []StopCondition{IsLoopFinished()},
+		Model:    model,
+		Prompt:   "go",
+		Tools:    []types.Tool{tool},
 		OnStepStart: func(_ context.Context, _ OnStepStartEvent) {
 			stepStartCount++
 		},
@@ -335,9 +337,10 @@ func TestStreamText_OnStepFinishEventIncludesResponseMessagesAndStepLocalSources
 
 	var stepEvents []OnStepFinishEvent
 	result, err := StreamText(context.Background(), StreamTextOptions{
-		Model:  model,
-		Prompt: "go",
-		Tools:  []types.Tool{tool},
+		StopWhen: []StopCondition{IsLoopFinished()},
+		Model:    model,
+		Prompt:   "go",
+		Tools:    []types.Tool{tool},
 		OnStepFinishEvent: func(_ context.Context, e OnStepFinishEvent) {
 			stepEvents = append(stepEvents, e)
 		},

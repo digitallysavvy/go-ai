@@ -243,7 +243,7 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 	// `this.config.headers()` (combineHeaders(this.config.headers?.(),
 	// options.headers) at elevenlabs-transcription-model.ts:313) -- the same
 	// tagged getHeaders() used for regular HTTP requests, which carries the
-	// `ai-sdk/elevenlabs/VERSION` tag. Match that here instead of building a
+	// `ai-sdk-elevenlabs/VERSION` tag. Match that here instead of building a
 	// fresh, untagged header set.
 	headers := version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{
 		"xi-api-key": m.provider.config.APIKey,

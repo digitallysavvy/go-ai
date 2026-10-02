@@ -2,12 +2,14 @@ package anthropic
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -63,6 +65,27 @@ func TestRuntimeBaseURL_UsesSharedPartitionAwareResolver(t *testing.T) {
 	}
 }
 
+// TestRuntimeBaseURL_RejectsRegionThatWouldRewriteHost ports TS
+// region-validation.test.ts "rejects %j before fetching" for the
+// bedrock-anthropic provider (TS #21842): region is interpolated into the
+// request host via the shared resolver, so a non-DNS-label value must be
+// rejected with an InvalidArgumentError.
+func TestRuntimeBaseURL_RejectsRegionThatWouldRewriteHost(t *testing.T) {
+	for _, region := range []string{"user@internal:8080/#", "evil.example.com/#", "us-east-1/../.."} {
+		t.Run(region, func(t *testing.T) {
+			p := New(Config{Region: region, BearerToken: "token"})
+			_, err := p.runtimeBaseURL()
+			var invalid *providererrors.InvalidArgumentError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("runtimeBaseURL(region=%q) error = %v, want InvalidArgumentError", region, err)
+			}
+			if invalid.Field != "region" {
+				t.Fatalf("Field = %q, want region", invalid.Field)
+			}
+		})
+	}
+}
+
 // TestRuntimeBaseURL_RespectsEndpointEnvVar verifies the shared resolver's
 // AWS_ENDPOINT_URL_BEDROCK_RUNTIME / AWS_ENDPOINT_URL support now applies to
 // Bedrock-Anthropic too.
@@ -106,8 +129,8 @@ func TestBuildRequestURL_NonStreaming(t *testing.T) {
 
 // TestUserAgentTaggedAmazonBedrockNotAnthropic covers the owner's 2026-09-30
 // User-Agent decision: TS amazon-bedrock-anthropic-provider.ts tags requests
-// with its own package's "ai-sdk/amazon-bedrock/VERSION" tag (shared with the
-// Converse-API amazon-bedrock provider), never "ai-sdk/anthropic" -- even
+// with its own package's "ai-sdk-amazon-bedrock/VERSION" tag (shared with the
+// Converse-API amazon-bedrock provider), never "ai-sdk-anthropic" -- even
 // though this Go package reuses pkg/providers/anthropic as its transport.
 func TestUserAgentTaggedAmazonBedrockNotAnthropic(t *testing.T) {
 	var gotUserAgent string
@@ -126,10 +149,10 @@ func TestUserAgentTaggedAmazonBedrockNotAnthropic(t *testing.T) {
 	if _, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hello"}}); err != nil {
 		t.Fatalf("DoGenerate: %v", err)
 	}
-	if !strings.HasPrefix(gotUserAgent, "ai-sdk/amazon-bedrock/") {
-		t.Fatalf("User-Agent = %q, want ai-sdk/amazon-bedrock/... prefix", gotUserAgent)
+	if !strings.HasPrefix(gotUserAgent, "ai-sdk-amazon-bedrock/") {
+		t.Fatalf("User-Agent = %q, want ai-sdk-amazon-bedrock/... prefix", gotUserAgent)
 	}
-	if strings.Contains(gotUserAgent, "ai-sdk/anthropic/") {
+	if strings.Contains(gotUserAgent, "ai-sdk-anthropic/") {
 		t.Fatalf("User-Agent = %q, must not carry the ai-sdk/anthropic tag", gotUserAgent)
 	}
 }

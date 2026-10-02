@@ -2,7 +2,9 @@ package harness
 
 import (
 	"context"
+	"sync"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -83,8 +85,8 @@ func TestAgent_TelemetryNoSpanWithoutIntegration(t *testing.T) {
 // registered, a one-step turn with a single host tool call produces exactly
 // one "ai.harness harness-model" turn span, one "step 1" span nested under it, one "chat"
 // model-call span nested under the step, and one "execute_tool getWeather"
-// span (from OnToolExecutionStart/End, fired by recordToolResult) also
-// nested under the step.
+// span (opened by ensureToolExecutionStarted as soon as the host tool's
+// execution begins, TS #21696) also nested under the step it ran in.
 func TestAgent_TelemetrySpanNesting(t *testing.T) {
 	rec := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
@@ -167,13 +169,165 @@ func TestAgent_TelemetrySpanNesting(t *testing.T) {
 	if len(toolSpans) != 1 {
 		t.Fatalf("execute_tool getWeather spans = %d, want 1", len(toolSpans))
 	}
-	// The scripted `tool-result` part arrives after step 0's `finish-step`
-	// (mirrors the equivalent non-telemetry TestAgent_HostToolExecution
-	// script), so recordToolResult (and the telToolExecution span pair it
-	// fires) runs once step 1 has already been lazily opened — nesting the
-	// execute_tool span under step 1's span, not step 0's.
-	if toolSpans[0].Parent().SpanID() != step1[0].SpanContext().SpanID() {
-		t.Fatalf("execute_tool span is not nested under the step it was recorded in (step 1)")
+	// TS #21696: toolExecutionStart (and so the execute_tool span) now
+	// fires as soon as the host tool's own execution begins — while step 0
+	// is still open, since getWeather's ToolCallPart arrives before step
+	// 0's `finish-step` — rather than being deferred until its result is
+	// observed (which, per the scripted `tool-result` part arriving after
+	// step 0's `finish-step`, would be once step 1 has already opened).
+	// The execute_tool span is therefore nested under step 0, the step the
+	// tool call actually ran in, not step 1 (where its result happened to
+	// stream).
+	if toolSpans[0].Parent().SpanID() != step0[0].SpanContext().SpanID() {
+		t.Fatalf("execute_tool span is not nested under the step it started executing in (step 0)")
+	}
+}
+
+// slowToolTurnSession is a minimal Session for
+// TestAgent_TelemetryToolExecutionStartFiresWhileToolRunning, modeled on
+// run_prompt_test.go's concurrentToolsSession: it emits only stream-start +
+// the tool-call event upfront, and defers finish-step/finish until
+// SubmitToolResult reports the (single) host tool's result — so finish-step
+// can never arrive while the tool is still executing, the same real-world
+// guarantee a harness with no host tools mid-step would give.
+type slowToolTurnSession struct {
+	toolName string
+
+	mu   sync.Mutex
+	emit EmitFunc
+	done chan struct{}
+}
+
+func (s *slowToolTurnSession) SessionID() string { return "slow-tool-telemetry" }
+func (s *slowToolTurnSession) IsResume() bool    { return false }
+
+func (s *slowToolTurnSession) DoPromptTurn(_ context.Context, opts PromptTurnOptions) (PromptControl, error) {
+	s.mu.Lock()
+	s.emit = opts.Emit
+	s.done = make(chan struct{})
+	done := s.done
+	s.mu.Unlock()
+	go func() {
+		opts.Emit(&StreamStartPart{})
+		opts.Emit(&ToolCallPart{ToolCallID: "call_1", ToolName: s.toolName, Input: "{}"})
+	}()
+	return &slowToolTurnControl{session: s, done: done}, nil
+}
+func (s *slowToolTurnSession) DoContinueTurn(context.Context, ContinueTurnOptions) (PromptControl, error) {
+	return nil, nil
+}
+func (s *slowToolTurnSession) DoCompact(context.Context, string) error { return nil }
+func (s *slowToolTurnSession) DoSuspendTurn(context.Context) (*ContinueTurnState, error) {
+	return nil, nil
+}
+func (s *slowToolTurnSession) DoDetach(context.Context) (*ResumeSessionState, error) {
+	return nil, nil
+}
+func (s *slowToolTurnSession) DoStop(context.Context) (*ResumeSessionState, error) {
+	return nil, nil
+}
+func (s *slowToolTurnSession) DoDestroy(context.Context) error { return nil }
+
+type slowToolTurnControl struct {
+	session *slowToolTurnSession
+	done    chan struct{}
+}
+
+func (c *slowToolTurnControl) SubmitToolResult(_ context.Context, r ToolResultSubmission) error {
+	s := c.session
+	s.emit(&ToolResultPart{ToolCallID: r.ToolCallID, ToolName: s.toolName, Result: r.Output, IsError: r.IsError})
+	s.emit(&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonToolCalls}, Usage: stringUsage(1, 1)})
+	s.emit(&FinishPart{FinishReason: FinishReason{Unified: FinishReasonToolCalls}, TotalUsage: stringUsage(1, 1)})
+	close(c.done)
+	return nil
+}
+func (c *slowToolTurnControl) Done() <-chan struct{} { return c.done }
+func (c *slowToolTurnControl) Err() error            { return nil }
+
+// TestAgent_TelemetryToolExecutionStartFiresWhileToolRunning proves TS
+// #21696's real-time semantics apply to telemetry too, not just
+// ai.Callbacks.OnToolExecutionStart: the "execute_tool" span must already
+// be started (recorded by the SpanRecorder's OnStart, not merely OnEnd)
+// while a slow host tool is still blocked mid-execution, rather than only
+// appearing once the tool finishes and recordToolResult fires both
+// telemetry events back-to-back (the pre-fix, TS-divergent behavior this
+// test would have caught).
+func TestAgent_TelemetryToolExecutionStartFiresWhileToolRunning(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	tracer := tp.Tracer("harness-telemetry-slow-tool-test")
+
+	release := make(chan struct{})
+	started := make(chan struct{})
+	slowTool := types.Tool{
+		Name: "slowTool", Description: "a slow tool", Parameters: map[string]any{"type": "object"},
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			close(started)
+			<-release
+			return "done", nil
+		},
+	}
+	tools := map[string]types.Tool{"slowTool": slowTool}
+	session := &slowToolTurnSession{toolName: "slowTool"}
+
+	out := runPrompt(context.Background(), runPromptInput{
+		Harness: &mockHarnessAdapter{id: "mock", session: session}, Session: session,
+		Prompt: TextPrompt("go slow"), Tools: tools, ActiveTools: tools,
+		SandboxSession: testSandbox(), Model: "harness-model",
+		Telemetry: &telemetry.Options{
+			IsEnabled:    telemetry.Bool(true),
+			Integrations: []telemetry.TelemetryIntegration{telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{Tracer: tracer})},
+		},
+	})
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("slowTool never started executing")
+	}
+
+	// The tool is now blocked mid-execution. Its execute_tool span must
+	// already have been started (not just ended) — proving the telemetry
+	// start event fired in real time rather than being deferred until the
+	// tool's outcome is known.
+	var sawStartedUnended bool
+	deadline := time.After(2 * time.Second)
+	for !sawStartedUnended {
+		for _, s := range rec.Started() {
+			if s.Name() == "execute_tool slowTool" {
+				sawStartedUnended = true
+				break
+			}
+		}
+		if sawStartedUnended {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("execute_tool slowTool span was not started while the tool was still running")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	if got := spansNamed(rec, "execute_tool slowTool"); len(got) != 0 {
+		t.Fatalf("execute_tool slowTool should not have ENDED yet (tool still blocked), ended spans = %d", len(got))
+	}
+
+	close(release)
+
+	stream := out.Result.Stream()
+	for {
+		if _, err := stream.Next(); err != nil {
+			break
+		}
+	}
+	<-out.Done
+	if out.Result.Err() != nil {
+		t.Fatalf("turn error: %v", out.Result.Err())
+	}
+
+	if got := spansNamed(rec, "execute_tool slowTool"); len(got) != 1 {
+		t.Fatalf("execute_tool slowTool ended spans = %d, want 1 once the tool finished", len(got))
 	}
 }
 

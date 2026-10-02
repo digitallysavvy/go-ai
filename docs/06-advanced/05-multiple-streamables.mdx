@@ -17,11 +17,11 @@ package main
 import (
     "context"
     "fmt"
-    "log"
     "os"
     "sync"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
@@ -31,7 +31,7 @@ type StreamResult struct {
     Error error
 }
 
-func streamConcurrently(ctx context.Context, model interface{}, prompts []string) []StreamResult {
+func streamConcurrently(ctx context.Context, model provider.LanguageModel, prompts []string) []StreamResult {
     results := make([]StreamResult, len(prompts))
     var wg sync.WaitGroup
 
@@ -57,7 +57,7 @@ func streamConcurrently(ctx context.Context, model interface{}, prompts []string
 
             // Collect all chunks
             for chunk := range stream.Chunks() {
-                fullText += chunk
+                fullText += chunk.Text
                 fmt.Printf("[Stream %d] %s", index, chunk.Text)
             }
 
@@ -127,6 +127,7 @@ import (
     "sync"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
@@ -160,7 +161,7 @@ func fanOut(ctx context.Context, prompts []Request, numWorkers int) <-chan Reque
 }
 
 // Worker: Process requests
-func worker(ctx context.Context, id int, model interface{}, requests <-chan Request, responses chan<- Response) {
+func worker(ctx context.Context, id int, model provider.LanguageModel, requests <-chan Request, responses chan<- Response) {
     for req := range requests {
         log.Printf("Worker %d processing request %d", id, req.ID)
 
@@ -178,7 +179,7 @@ func worker(ctx context.Context, id int, model interface{}, requests <-chan Requ
         }
 
         for chunk := range stream.Chunks() {
-            fullText += chunk
+            fullText += chunk.Text
         }
 
         if err := stream.Err(); err != nil {
@@ -198,7 +199,7 @@ func worker(ctx context.Context, id int, model interface{}, requests <-chan Requ
 }
 
 // Fan-in: Collect results from workers
-func fanIn(ctx context.Context, numWorkers int, model interface{}, requests <-chan Request) <-chan Response {
+func fanIn(ctx context.Context, numWorkers int, model provider.LanguageModel, requests <-chan Request) <-chan Response {
     responses := make(chan Response, numWorkers)
     var wg sync.WaitGroup
 
@@ -288,17 +289,18 @@ import (
     "time"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
     "golang.org/x/time/rate"
 )
 
 type RateLimitedStreamer struct {
-    model       interface{}
-    limiter     *rate.Limiter
-    semaphore   chan struct{}
+    model     provider.LanguageModel
+    limiter   *rate.Limiter
+    semaphore chan struct{}
 }
 
-func NewRateLimitedStreamer(model interface{}, requestsPerMinute float64, maxConcurrent int) *RateLimitedStreamer {
+func NewRateLimitedStreamer(model provider.LanguageModel, requestsPerMinute float64, maxConcurrent int) *RateLimitedStreamer {
     return &RateLimitedStreamer{
         model:     model,
         limiter:   rate.NewLimiter(rate.Limit(requestsPerMinute/60.0), 1),
@@ -334,7 +336,7 @@ func (s *RateLimitedStreamer) Stream(ctx context.Context, prompt string, resultC
 
     var fullText string
     for chunk := range stream.Chunks() {
-        fullText += chunk
+        fullText += chunk.Text
     }
 
     if err := stream.Err(); err != nil {
@@ -446,6 +448,7 @@ import (
     "sync"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
@@ -454,7 +457,7 @@ type StreamChunk struct {
     Text     string
 }
 
-func aggregateStreams(ctx context.Context, model interface{}, prompts []string) <-chan StreamChunk {
+func aggregateStreams(ctx context.Context, model provider.LanguageModel, prompts []string) <-chan StreamChunk {
     aggregated := make(chan StreamChunk, 100)
     var wg sync.WaitGroup
 
@@ -478,7 +481,7 @@ func aggregateStreams(ctx context.Context, model interface{}, prompts []string) 
                 select {
                 case aggregated <- StreamChunk{
                     SourceID: sourceID,
-                    Text:     chunk,
+                    Text:     chunk.Text,
                 }:
                 case <-ctx.Done():
                     return
@@ -546,20 +549,21 @@ import (
     "time"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
 type StreamStatus struct {
-    ID          int
-    Prompt      string
-    Text        string
-    Error       error
-    StartTime   time.Time
-    EndTime     time.Time
-    ChunkCount  int
+    ID         int
+    Prompt     string
+    Text       string
+    Error      error
+    StartTime  time.Time
+    EndTime    time.Time
+    ChunkCount int
 }
 
-func streamWithMonitoring(ctx context.Context, id int, model interface{}, prompt string) StreamStatus {
+func streamWithMonitoring(ctx context.Context, id int, model provider.LanguageModel, prompt string) StreamStatus {
     status := StreamStatus{
         ID:        id,
         Prompt:    prompt,
@@ -577,7 +581,7 @@ func streamWithMonitoring(ctx context.Context, id int, model interface{}, prompt
     }
 
     for chunk := range stream.Chunks() {
-        status.Text += chunk
+        status.Text += chunk.Text
         status.ChunkCount++
 
         // Check for context cancellation

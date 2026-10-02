@@ -30,7 +30,7 @@ type MyAgent struct{}
 func (a *MyAgent) Version() string { return "agent-v1" }
 func (a *MyAgent) ID() string { return "support-agent" }
 func (a *MyAgent) Tools() []types.Tool { return nil }
-func (a *MyAgent) Generate(ctx context.Context, opts agent.AgentGenerateOptions) (*agent.AgentResult, error) {
+func (a *MyAgent) Generate(ctx context.Context, opts agent.AgentGenerateOptions) (*ai.GenerateTextResult, error) {
     /* ... */
 }
 func (a *MyAgent) Stream(ctx context.Context, opts agent.AgentStreamOptions) (*ai.StreamTextResult, error) {
@@ -264,4 +264,4 @@ System instructions should be passed via `System` or agent `Prompt`. Passing sys
 
 ## Upload APIs
 
-Use `core.UploadFile` and `core.UploadSkill` with providers or registry-resolved `Files()` / `Skills()` APIs. Unsupported providers return explicit capability errors rather than nil API panics.
+Use `ai.UploadFile` and `ai.UploadSkill` with providers or registry-resolved `Files()` / `Skills()` APIs. Unsupported providers return explicit capability errors rather than nil API panics.

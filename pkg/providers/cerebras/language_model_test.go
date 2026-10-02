@@ -123,13 +123,13 @@ func TestCerebrasLanguageModelUsesChatCompletions(t *testing.T) {
 		}
 		// Cerebras is implemented by reusing pkg/providers/openai as its
 		// Chat-Completions-compatible transport, but TS cerebras-provider.ts
-		// has its own `ai-sdk/cerebras/VERSION` tag, distinct from
-		// @ai-sdk/openai's own `ai-sdk/openai/VERSION`. openai.Config's
+		// has its own `ai-sdk-cerebras/VERSION` tag, distinct from
+		// @ai-sdk/openai's own `ai-sdk-openai/VERSION`. openai.Config's
 		// UserAgentName field is what makes that distinction reach the wire.
-		if !strings.HasPrefix(gotUserAgent, "ai-sdk/cerebras/") {
-			t.Fatalf("%s User-Agent = %q, want ai-sdk/cerebras/... prefix", factory, gotUserAgent)
+		if !strings.HasPrefix(gotUserAgent, "ai-sdk-cerebras/") {
+			t.Fatalf("%s User-Agent = %q, want ai-sdk-cerebras/... prefix", factory, gotUserAgent)
 		}
-		if strings.Contains(gotUserAgent, "ai-sdk/openai/") {
+		if strings.Contains(gotUserAgent, "ai-sdk-openai/") {
 			t.Fatalf("%s User-Agent = %q, must not carry the ai-sdk/openai tag", factory, gotUserAgent)
 		}
 	}

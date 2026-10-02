@@ -134,6 +134,12 @@ func TestGeminiTranscriptionModel_RequestShape(t *testing.T) {
 			},
 		},
 	}, result.ProviderMetadata)
+	// Ported from TS google-vertex-gemini-transcription-model.test.ts "should
+	// return usage" (TS 8c659885c5 / #21427).
+	assert.Equal(t, map[string]interface{}{
+		"promptTokenCount":     float64(10),
+		"candidatesTokenCount": float64(4),
+	}, result.ProviderUsage)
 
 	contents := capturedBody["contents"].([]interface{})
 	require.Len(t, contents, 1)

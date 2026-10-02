@@ -97,7 +97,17 @@ ProviderOptions: map[string]interface{}{
 }
 ```
 
-**Important**: `budgetTokens` must be at least 1024. The SDK automatically enforces this minimum.
+**Important**: `budgetTokens` must be at least 1024. Values passed directly
+through `ProviderOptions` as shown above are sent to Fireworks as-is — the
+SDK does **not** clamp them. If you want the 1024-token floor enforced
+client-side, build the option with `fireworks.WithThinkingBudget(n)` instead,
+which clamps any value below 1024 up to 1024:
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/providers/fireworks"
+
+thinking := fireworks.WithThinkingBudget(512) // clamped to 1024
+```
 
 ## Reasoning History Modes
 

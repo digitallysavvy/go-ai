@@ -406,6 +406,68 @@ func TestConvertToModelMessages_IgnoreIncompleteToolCalls(t *testing.T) {
 	})
 }
 
+// ports convert-to-model-messages.test.ts > describe('pending tool approvals')
+// (TS #21776): a later user message supersedes an earlier unresolved
+// approval request, which must be dropped (not just when
+// IgnoreIncompleteToolCalls is set) so the user message doesn't leave an
+// unmatched tool call at that boundary.
+func TestConvertToModelMessages_PendingToolApprovals(t *testing.T) {
+	t.Run("should ignore a pending approval when followed by a user message", func(t *testing.T) {
+		result, err := ConvertToModelMessages(context.Background(), []UIMessage{
+			{Role: UIMessageRoleAssistant, Parts: []UIMessagePart{
+				&ToolUIPart{
+					Type: "tool-weather", State: ToolStateApprovalRequested, ToolCallID: "call-awaiting-approval",
+					Input:    map[string]interface{}{"city": "Tokyo"},
+					Approval: &ToolUIPartApproval{ID: "approval-1"},
+				},
+			}},
+			{Role: UIMessageRoleUser, Parts: []UIMessagePart{TextUIPart{Text: "Use a different city instead."}}},
+		})
+		require.NoError(t, err)
+		require.Len(t, result, 1)
+		assert.Equal(t, types.RoleUser, result[0].Role)
+		require.Len(t, result[0].Content, 1)
+		text, ok := result[0].Content[0].(types.TextContent)
+		require.True(t, ok)
+		assert.Equal(t, "Use a different city instead.", text.Text)
+	})
+
+	t.Run("should keep a pending approval with no later user message", func(t *testing.T) {
+		result, err := ConvertToModelMessages(context.Background(), []UIMessage{
+			{Role: UIMessageRoleUser, Parts: []UIMessagePart{TextUIPart{Text: "What is the weather in Tokyo?"}}},
+			{Role: UIMessageRoleAssistant, Parts: []UIMessagePart{
+				&ToolUIPart{
+					Type: "tool-weather", State: ToolStateApprovalRequested, ToolCallID: "call-awaiting-approval",
+					Input:    map[string]interface{}{"city": "Tokyo"},
+					Approval: &ToolUIPartApproval{ID: "approval-1"},
+				},
+			}},
+		})
+		require.NoError(t, err)
+		require.Len(t, result, 2)
+		_, ok := result[1].Content[1].(types.ToolApprovalRequestContent)
+		require.True(t, ok)
+	})
+
+	t.Run("should keep a pending approval that comes after the last user message, even once the filter runs", func(t *testing.T) {
+		result, err := ConvertToModelMessages(context.Background(), []UIMessage{
+			{Role: UIMessageRoleAssistant, Parts: []UIMessagePart{StepStartUIPart{}}},
+			{Role: UIMessageRoleUser, Parts: []UIMessagePart{TextUIPart{Text: "What is the weather in Tokyo?"}}},
+			{Role: UIMessageRoleAssistant, Parts: []UIMessagePart{
+				&ToolUIPart{
+					Type: "tool-weather", State: ToolStateApprovalRequested, ToolCallID: "call-awaiting-approval",
+					Input:    map[string]interface{}{"city": "Tokyo"},
+					Approval: &ToolUIPartApproval{ID: "approval-1"},
+				},
+			}},
+		})
+		require.NoError(t, err)
+		require.Len(t, result, 2)
+		_, ok := result[1].Content[1].(types.ToolApprovalRequestContent)
+		require.True(t, ok)
+	})
+}
+
 // ports convert-to-model-messages.test.ts > describe('when converting dynamic tool invocations')
 func TestConvertToModelMessages_DynamicToolInvocation(t *testing.T) {
 	result, err := ConvertToModelMessages(context.Background(), []UIMessage{
