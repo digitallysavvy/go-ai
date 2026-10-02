@@ -151,6 +151,76 @@ func TestWrapImageModel_OverrideMaxImagesPerCall(t *testing.T) {
 	}
 }
 
+func boolPtr(b bool) *bool { return &b }
+
+// Ports wrap-image-model.test.ts's file/mask capability-propagation cases
+// (TS #19230): the wrapped model passes through the underlying model's
+// advertised capability when no override is configured.
+func TestWrapImageModel_SupportsFileAndMaskInputs_PassThrough(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockImageModel{SupportsFiles: boolPtr(true), SupportsMasks: boolPtr(false)}
+	wrapped := WrapImageModel(model, []*ImageModelMiddleware{{}}, nil, nil)
+
+	wrappedModel, ok := wrapped.(interface {
+		SupportsFileInputs() *bool
+		SupportsMaskInputs() *bool
+	})
+	if !ok {
+		t.Fatal("expected wrapped model to expose SupportsFileInputs/SupportsMaskInputs")
+	}
+	if got := wrappedModel.SupportsFileInputs(); got == nil || *got != true {
+		t.Errorf("SupportsFileInputs() = %v, want true", got)
+	}
+	if got := wrappedModel.SupportsMaskInputs(); got == nil || *got != false {
+		t.Errorf("SupportsMaskInputs() = %v, want false", got)
+	}
+}
+
+// A model that doesn't implement the optional capability methods at all
+// (e.g. a legacy adapter) reports unknown (nil) through the wrapper too.
+func TestWrapImageModel_SupportsFileAndMaskInputs_UnknownWhenUnset(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockImageModel{}
+	wrapped := WrapImageModel(model, []*ImageModelMiddleware{{}}, nil, nil)
+
+	wrappedModel := wrapped.(interface {
+		SupportsFileInputs() *bool
+		SupportsMaskInputs() *bool
+	})
+	if got := wrappedModel.SupportsFileInputs(); got != nil {
+		t.Errorf("SupportsFileInputs() = %v, want nil (unknown)", *got)
+	}
+	if got := wrappedModel.SupportsMaskInputs(); got != nil {
+		t.Errorf("SupportsMaskInputs() = %v, want nil (unknown)", *got)
+	}
+}
+
+// "should use middleware overrideSupportsFileInputs/overrideSupportsMaskInputs
+// if provided", including overriding to explicit unknown (nil).
+func TestWrapImageModel_OverrideSupportsFileAndMaskInputs(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockImageModel{SupportsFiles: boolPtr(false), SupportsMasks: boolPtr(false)}
+	middleware := &ImageModelMiddleware{
+		OverrideSupportsFileInputs: func(model provider.ImageModel) *bool { return boolPtr(true) },
+		OverrideSupportsMaskInputs: func(model provider.ImageModel) *bool { return nil },
+	}
+	wrapped := WrapImageModel(model, []*ImageModelMiddleware{middleware}, nil, nil)
+
+	wrappedModel := wrapped.(interface {
+		SupportsFileInputs() *bool
+		SupportsMaskInputs() *bool
+	})
+	if got := wrappedModel.SupportsFileInputs(); got == nil || *got != true {
+		t.Errorf("SupportsFileInputs() = %v, want true (override)", got)
+	}
+	if got := wrappedModel.SupportsMaskInputs(); got != nil {
+		t.Errorf("SupportsMaskInputs() = %v, want nil (overridden to unknown)", *got)
+	}
+}
+
 // "should call transformParams middleware for doGenerate"
 func TestWrapImageModel_TransformParams(t *testing.T) {
 	t.Parallel()

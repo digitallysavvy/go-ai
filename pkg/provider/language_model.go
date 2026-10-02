@@ -536,6 +536,51 @@ type ImageModel interface {
 	DoGenerate(ctx context.Context, opts *ImageGenerateOptions) (*types.ImageResult, error)
 }
 
+// imageModelSupportsFileInputs and imageModelSupportsMaskInputs are optional
+// capability interfaces an ImageModel may implement to advertise whether it
+// consumes ImageGenerateOptions.Files / .Mask for image editing. They are
+// not part of the ImageModel interface itself (unlike TS's ImageModelV4,
+// whose optional fields don't force every implementer to declare them, a Go
+// interface method is never optional), so a model that doesn't implement
+// them simply reports "unknown" via ImageModelSupportsFileInputs /
+// ImageModelSupportsMaskInputs below. Mirrors the TypeScript SDK's
+// ImageModelV4.supportsFileInputs / .supportsMaskInputs, resolved
+// synchronously (a model needing asynchronous resolution does that work
+// before returning, since Go has no promise type to mirror
+// `PromiseLike<boolean | undefined>`).
+type imageModelSupportsFileInputs interface {
+	SupportsFileInputs() *bool
+}
+
+type imageModelSupportsMaskInputs interface {
+	SupportsMaskInputs() *bool
+}
+
+// ImageModelSupportsFileInputs reports whether model advertises support for
+// image file inputs (ImageGenerateOptions.Files) in image editing. It
+// returns nil when the model does not implement the optional
+// SupportsFileInputs() *bool capability, or when the model reports unknown
+// support itself — both mean "unknown"; callers should only route file-input
+// edit requests to the model when this resolves to a non-nil true.
+func ImageModelSupportsFileInputs(model ImageModel) *bool {
+	if m, ok := model.(imageModelSupportsFileInputs); ok {
+		return m.SupportsFileInputs()
+	}
+	return nil
+}
+
+// ImageModelSupportsMaskInputs reports whether model advertises support for
+// mask inputs (ImageGenerateOptions.Mask) in image editing. Mask support is
+// advertised separately from file-input support because some models accept
+// image file inputs without masks. Returns nil (unknown) when the model
+// does not implement the optional SupportsMaskInputs() *bool capability.
+func ImageModelSupportsMaskInputs(model ImageModel) *bool {
+	if m, ok := model.(imageModelSupportsMaskInputs); ok {
+		return m.SupportsMaskInputs()
+	}
+	return nil
+}
+
 // ImageGenerateOptions contains options for image generation
 type ImageGenerateOptions struct {
 	// Text prompt for image generation (optional for some operations like upscaling)
