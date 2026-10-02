@@ -133,7 +133,7 @@ Go ships two mechanisms. Prefer the `Output` one; `GenerateObject`/`StreamObject
 | TypeScript | Go | Note |
 |---|---|---|
 | `smoothStream({delayInMs, chunking})` | `ai.SmoothStream(ai.SmoothStreamOptions{DelayInMs: ..., Chunking: "word"})` | `pkg/ai/smooth_stream.go`. Returns `(ai.StreamTransformFunc, error)`. An invalid `chunking` value now returns a typed `*errors.InvalidArgumentError`. |
-| `streamText({experimental_transform: [smoothStream(...)]})` | `ai.StreamTextOptions{ExperimentalTransform: []ai.StreamTransformFunc{transform}}` | `pkg/ai/stream.go`. Still `experimental_` in **both** SDKs — TS hasn't graduated this option in 7.0.118 either, so this isn't a Go gap. |
+| `streamText({experimental_transform: [smoothStream(...)]})` | `ai.StreamTextOptions{ExperimentalTransform: []ai.StreamTransformFunc{transform}}` | `pkg/ai/stream.go`. Still `experimental_` in **both** SDKs — TS hasn't graduated this option as of 7.0.127 either, so this isn't a Go gap. |
 | `pruneMessages({messages, toolCalls: [...]})` | `ai.PruneModelMessages(messages, ai.PruneModelMessagesOptions{ToolCalls: []ai.PruneToolCallsRule{{Type: "before-last-message"}}})` | `pkg/ai/prune_messages.go`. Doc comment explicitly mirrors TS `generate-text/prune-messages.ts`, quirks included. |
 
 ### Telemetry
