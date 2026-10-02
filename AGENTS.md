@@ -40,7 +40,7 @@ go vet ./...
 go test -race ./...
 .github/scripts/build-examples.sh            # every example compiles and vets
 go run docs/scripts/validate-links.go -docs=docs/   # docs links + frontmatter
-golangci-lint run ./...                      # CI uses golangci-lint v2
+golangci-lint run ./...                      # v2.14.0 (pinned in CI), config in .golangci.yml
 ```
 
 For docs-site changes, also run `npm ci && npm run build` in `website/`.
