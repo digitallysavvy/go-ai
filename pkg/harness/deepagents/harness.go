@@ -157,18 +157,15 @@ func (h *deepAgentsHarness) DoStart(ctx context.Context, opts harness.StartOptio
 	credentialsBrokered := false
 
 	if adder, ok := sandboxSession.(harness.RequestTransformationAdder); ok {
-		if resumeData.SandboxCredentialEnvironment != nil {
-			sandboxCredentialEnvironment = resumeData.SandboxCredentialEnvironment
-		} else {
-			var err error
-			sandboxCredentialEnvironment, err = harnessutil.CreateSandboxCredentialEnvironment(ctx, harnessutil.CredentialForwardingOptions{
-				Environment:                    resolvedAuthEnvironment,
-				CredentialEnvironmentVariables: CredentialEnvironmentVariables,
-				CredentialForwarding:           settings.CredentialForwarding,
-			})
-			if err != nil {
-				return nil, err
-			}
+		var err error
+		sandboxCredentialEnvironment, err = harnessutil.ResolveSandboxCredentialEnvironment(ctx, harnessutil.CredentialForwardingOptions{
+			Environment:                          resolvedAuthEnvironment,
+			CredentialEnvironmentVariables:       CredentialEnvironmentVariables,
+			CredentialForwarding:                 settings.CredentialForwarding,
+			PreviousSandboxCredentialEnvironment: resumeData.SandboxCredentialEnvironment,
+		})
+		if err != nil {
+			return nil, err
 		}
 		merged := map[string]string{}
 		for k, v := range resolvedAuthEnvironment {

@@ -154,15 +154,13 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 	var sandboxCredentialEnv map[string]string
 	if adder, ok := sandboxSession.(harness.RequestTransformationAdder); ok {
 		var err error
-		sandboxCredentialEnv = resumeData.SandboxCredentialEnvironment
-		if sandboxCredentialEnv == nil {
-			sandboxCredentialEnv, err = harnessutil.CreateSandboxCredentialEnvironment(ctx, harnessutil.CredentialForwardingOptions{
-				Environment: claudeEnv, CredentialEnvironmentVariables: CredentialEnvironmentVariables,
-				CredentialForwarding: settings.CredentialForwarding,
-			})
-			if err != nil {
-				return nil, err
-			}
+		sandboxCredentialEnv, err = harnessutil.ResolveSandboxCredentialEnvironment(ctx, harnessutil.CredentialForwardingOptions{
+			Environment: claudeEnv, CredentialEnvironmentVariables: CredentialEnvironmentVariables,
+			CredentialForwarding:                 settings.CredentialForwarding,
+			PreviousSandboxCredentialEnvironment: resumeData.SandboxCredentialEnvironment,
+		})
+		if err != nil {
+			return nil, err
 		}
 		sandboxClaudeEnv = map[string]string{}
 		for k, v := range claudeEnv {

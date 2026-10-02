@@ -139,16 +139,13 @@ func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions
 	credentialsBrokered := false
 
 	if adder, ok := sandboxSession.(harness.RequestTransformationAdder); ok {
-		if resumeData.SandboxCredentialEnvironment != nil {
-			sandboxCredentialEnvironment = resumeData.SandboxCredentialEnvironment
-		} else {
-			sandboxCredentialEnvironment, err = harnessutil.CreateSandboxCredentialEnvironment(ctx, harnessutil.CredentialForwardingOptions{
-				Environment: resolvedAuthEnvironment, CredentialEnvironmentVariables: CredentialEnvironmentVariables,
-				CredentialForwarding: settings.CredentialForwarding,
-			})
-			if err != nil {
-				return nil, err
-			}
+		sandboxCredentialEnvironment, err = harnessutil.ResolveSandboxCredentialEnvironment(ctx, harnessutil.CredentialForwardingOptions{
+			Environment: resolvedAuthEnvironment, CredentialEnvironmentVariables: CredentialEnvironmentVariables,
+			CredentialForwarding:                 settings.CredentialForwarding,
+			PreviousSandboxCredentialEnvironment: resumeData.SandboxCredentialEnvironment,
+		})
+		if err != nil {
+			return nil, err
 		}
 		merged := map[string]string{}
 		for k, v := range resolvedAuthEnvironment {
