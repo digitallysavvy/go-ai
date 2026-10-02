@@ -99,10 +99,12 @@ result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
 `GenerateImage` supports generating multiple images at once:
 
 ```go
+n := 4 // Number of images to generate
+
 result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
     Model:  imageModel,
     Prompt: "Santa Claus driving a Cadillac",
-    N:      4, // Number of images to generate
+    N:      &n,
 })
 if err != nil {
     log.Fatal(err)
@@ -111,7 +113,7 @@ if err != nil {
 // Access all images
 for i, image := range result.Images {
     filename := fmt.Sprintf("image-%d.png", i+1)
-    err := os.WriteFile(filename, image, 0644)
+    err := os.WriteFile(filename, image.Data, 0644)
     if err != nil {
         log.Fatal(err)
     }
@@ -126,11 +128,13 @@ Each image model has an internal limit on how many images it can generate in a s
 You can override this behavior using `MaxImagesPerCall`:
 
 ```go
+n := 10 // Will make 2 calls of 5 images each
+
 result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
-    Model:             imageModel,
-    Prompt:            "Santa Claus driving a Cadillac",
-    MaxImagesPerCall:  5,  // Override default batch size
-    N:                 10, // Will make 2 calls of 5 images each
+    Model:            imageModel,
+    Prompt:           "Santa Claus driving a Cadillac",
+    MaxImagesPerCall: 5, // Override default batch size
+    N:                &n,
 })
 ```
 
@@ -139,10 +143,12 @@ result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
 You can provide a seed to control the output of the image generation process. If supported by the model, the same seed will always produce the same image.
 
 ```go
+seed := 1234567890
+
 result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
     Model:  imageModel,
     Prompt: "Santa Claus driving a Cadillac",
-    Seed:   1234567890,
+    Seed:   &seed,
 })
 ```
 
@@ -248,15 +254,19 @@ if metadata, ok := result.ProviderMetadata["openai"].(map[string]interface{}); o
 Handle image generation errors:
 
 ```go
+import providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+
 result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
     Model:  imageModel,
     Prompt: "Generate an image",
 })
 if err != nil {
     // Check for specific error types
-    if errors.Is(err, provider.ErrNoImageGenerated) {
+    var noImageErr *ai.NoImageGeneratedError
+    var rateLimitErr *providererrors.RateLimitError
+    if errors.As(err, &noImageErr) {
         fmt.Println("No image was generated")
-    } else if errors.Is(err, provider.ErrRateLimit) {
+    } else if errors.As(err, &rateLimitErr) {
         fmt.Println("Rate limit exceeded")
     } else {
         fmt.Printf("Error: %v\n", err)
