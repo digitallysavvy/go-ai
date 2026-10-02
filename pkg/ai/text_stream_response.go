@@ -76,6 +76,13 @@ func PipeTextStreamToResponse(ctx context.Context, result *StreamTextResult, w i
 
 // PipeTextStreamToWriter writes text delta chunks from a provider stream to w as
 // UTF-8 text.
+//
+// If writing to w fails (the Go analog of a client disconnecting mid
+// response), stream is closed before the error is returned so any upstream
+// resources it holds (for example an open provider HTTP connection) are
+// released instead of being silently abandoned mid-stream. Mirrors TS
+// write-to-server-response.ts's client-disconnect handling, which cancels
+// the source reader on a premature close (TS #21578).
 func PipeTextStreamToWriter(ctx context.Context, stream provider.TextStream, w io.Writer) error {
 	if stream == nil {
 		return fmt.Errorf("stream is required")
@@ -108,6 +115,7 @@ func PipeTextStreamToWriter(ctx context.Context, stream provider.TextStream, w i
 			}
 			if chunk.Type == provider.ChunkTypeText && chunk.Text != "" {
 				if _, err := bw.WriteString(chunk.Text); err != nil {
+					_ = stream.Close()
 					return err
 				}
 				// Flush after every chunk (audit row b9ac19f, WG-MISC): TS
@@ -116,6 +124,7 @@ func PipeTextStreamToWriter(ctx context.Context, stream provider.TextStream, w i
 				// output incrementally instead of in bufio's default 4 KiB
 				// blocks.
 				if err := bw.Flush(); err != nil {
+					_ = stream.Close()
 					return err
 				}
 				if flusher != nil {
@@ -130,6 +139,7 @@ func PipeTextStreamToWriter(ctx context.Context, stream provider.TextStream, w i
 	// (hand-off/WG-MISC item 7f6650b: "response piping returns [an error] so
 	// write errors are catchable").
 	if flushErr := bw.Flush(); flushErr != nil && loopErr == nil {
+		_ = stream.Close()
 		return flushErr
 	}
 	return loopErr
