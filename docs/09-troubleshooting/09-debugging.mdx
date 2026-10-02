@@ -9,29 +9,37 @@ This guide covers debugging techniques and tools for troubleshooting Go AI appli
 
 ## Enable Debug Logging
 
-### SDK Debug Mode
+### SDK Warning Logging
+
+The SDK has no global debug/log-level switch. What it does provide is a
+warnings logger: every call that returns provider warnings (unsupported
+settings, compatibility fallbacks, etc.) is routed through `ai.LogWarnings`,
+which writes to stderr by default. Install your own sink with
+`ai.SetLogWarnings`, or silence it with `ai.DisableLogWarnings()` (or the
+`AI_SDK_LOG_WARNINGS=false` environment variable):
 
 ```go
 package main
 
 import (
     "log"
-    "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
 )
 
 func main() {
-    // Enable debug logging
-    log.SetOutput(os.Stdout)
-    log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
-
-    // Set SDK log level
-    ai.SetLogLevel(ai.LogLevelDebug)
+    // Route SDK warnings into your own logger instead of stderr.
+    ai.SetLogWarnings(func(opts ai.LogWarningsOptions) {
+        for _, w := range opts.Warnings {
+            log.Printf("[%s/%s] %s", opts.Provider, opts.Model, ai.FormatWarning(w, opts.Provider, opts.Model))
+        }
+    })
 
     // Your code here...
 }
 ```
+
+For full HTTP request/response visibility, wrap the HTTP client instead — see below.
 
 ### Request/Response Logging
 
@@ -310,7 +318,7 @@ import (
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
-func debugStream(ctx context.Context, model interface{}, prompt string) error {
+func debugStream(ctx context.Context, model provider.LanguageModel, prompt string) error {
     log.Printf("Starting stream for prompt: %s", prompt)
 
     stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
@@ -344,10 +352,10 @@ func debugStream(ctx context.Context, model interface{}, prompt string) error {
 
         case provider.ChunkTypeToolCall:
             log.Printf("Chunk %d: tool call %s (id: %s)",
-                chunkCount, chunk.ToolCall.ToolName, chunk.ToolCall.ToolCallID)
+                chunkCount, chunk.ToolCall.ToolName, chunk.ToolCall.ID)
 
         case provider.ChunkTypeError:
-            log.Printf("Chunk %d: ERROR - %v", chunkCount, chunk.Error)
+            log.Printf("Chunk %d: ERROR - %v", chunkCount, chunk.Err)
 
         case provider.ChunkTypeFinish:
             log.Printf("Chunk %d: FINISH - reason: %s", chunkCount, chunk.FinishReason)
@@ -396,9 +404,7 @@ import (
     "context"
     "encoding/json"
     "errors"
-    "fmt"
     "log"
-    "os"
     "time"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
@@ -441,7 +447,6 @@ func logError(err error, operation string, prompt string) {
     if errors.As(err, &rateLimitErr) {
         errorLog.ErrorType = "rate_limit_error"
         errorLog.Provider = rateLimitErr.Provider
-        errorLog.StatusCode = rateLimitErr.StatusCode
         if rateLimitErr.RetryAfterSeconds != nil {
             errorLog.Additional["retry_after_seconds"] = *rateLimitErr.RetryAfterSeconds
         }
@@ -486,65 +491,32 @@ package main
 
 import (
     "context"
-    "encoding/json"
     "fmt"
     "testing"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
     "github.com/digitallysavvy/go-ai/pkg/provider"
-    "github.com/digitallysavvy/go-ai/pkg/types"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/testutil"
 )
-
-// MockLanguageModel for testing
-type MockLanguageModel struct {
-    Response      string
-    ShouldError   bool
-    ErrorToReturn error
-}
 
 func int64Ptr(v int64) *int64 {
     return &v
 }
 
-func (m *MockLanguageModel) Generate(ctx context.Context, messages []types.Message, options *provider.GenerateOptions) (*provider.GenerateResult, error) {
-    if m.ShouldError {
-        return nil, m.ErrorToReturn
-    }
-
-    return &provider.GenerateResult{
-        Text: m.Response,
-        Usage: types.Usage{
-            InputTokens:  int64Ptr(10),
-            OutputTokens: int64Ptr(20),
-            TotalTokens:  int64Ptr(30),
-        },
-        FinishReason: "stop",
-    }, nil
-}
-
-func (m *MockLanguageModel) DoStream(ctx context.Context, options *provider.GenerateOptions) (provider.TextStream, error) {
-    if m.ShouldError {
-        return nil, m.ErrorToReturn
-    }
-
-    chunks := make([]provider.StreamChunk, 0, len(m.Response)+1)
-    for _, char := range m.Response {
-        chunks = append(chunks, provider.StreamChunk{
-            Type: provider.ChunkTypeText,
-            Text: string(char),
-        })
-    }
-    chunks = append(chunks, provider.StreamChunk{
-        Type:         provider.ChunkTypeFinish,
-        FinishReason: types.FinishReasonStop,
-    })
-
-    return testutil.NewMockTextStream(chunks), nil
-}
-
 func TestGeneration(t *testing.T) {
-    mock := &MockLanguageModel{
-        Response: "Test response",
+    mock := &testutil.MockLanguageModel{
+        DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+            return &types.GenerateResult{
+                Text:         "Test response",
+                FinishReason: types.FinishReasonStop,
+                Usage: types.Usage{
+                    InputTokens:  int64Ptr(10),
+                    OutputTokens: int64Ptr(20),
+                    TotalTokens:  int64Ptr(30),
+                },
+            }, nil
+        },
     }
 
     result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
@@ -562,9 +534,10 @@ func TestGeneration(t *testing.T) {
 }
 
 func TestGenerationError(t *testing.T) {
-    mock := &MockLanguageModel{
-        ShouldError:   true,
-        ErrorToReturn: fmt.Errorf("mock error"),
+    mock := &testutil.MockLanguageModel{
+        DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+            return nil, fmt.Errorf("mock error")
+        },
     }
 
     _, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
@@ -577,6 +550,10 @@ func TestGenerationError(t *testing.T) {
     }
 }
 ```
+
+`testutil.MockLanguageModel` implements `provider.LanguageModel` for you — see
+[Testing](../03-ai-sdk-core/55-testing.mdx) for its other hooks (`DoStreamFunc`,
+call tracking, etc.).
 
 ## Best Practices
 
@@ -611,7 +588,7 @@ go func() {
 ### 5. Test with Mocks
 
 ```go
-mock := &MockLanguageModel{Response: "test"}
+mock := &testutil.MockLanguageModel{}
 result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: mock})
 ```
 
