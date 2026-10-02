@@ -26,8 +26,13 @@ func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult,
 | `Headers` | `map[string]string` | No | Extra request headers |
 | `Download` | `ai.URLDownloadFunction` | No | Custom single-URL downloader for `AudioURL`; defaults to `CreateURLDownload(nil)` |
 | `MaxRetries` | `*int` | No | Maximum retries per transcription call. Defaults to 2; set to 0 to disable |
+| `Telemetry` | `*ai.TelemetrySettings` | No | Observability configuration for this call. `ExperimentalTelemetry` is a deprecated alias; `Telemetry` wins when both are set |
 
 *Provide one of `Audio`, `AudioBase64`, or `AudioURL`.
+
+### Telemetry
+
+When a telemetry integration is registered (global via `telemetry.RegisterTelemetryIntegration`, or per-call via `Telemetry.Integrations`), `Transcribe` emits an `ai.transcribe` root span covering the whole call (including retries), with the input audio's size/media type (`ai.request.audio.*`, input-gated), the transcript text (`ai.response.text`, output-gated), and the provider-reported audio duration (`ai.usage.duration_seconds` / `gen_ai.usage.duration_seconds`). A failed call — including a provider response with no transcript — ends the span with `codes.Error` status.
 
 ## TranscribeResult
 

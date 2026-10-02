@@ -27,6 +27,11 @@ func GenerateSpeech(ctx context.Context, opts GenerateSpeechOptions) (*GenerateS
 | `ProviderOptions` | `map[string]interface{}` | No | Provider-specific options keyed by provider name |
 | `Headers` | `map[string]string` | No | Extra request headers |
 | `MaxRetries` | `*int` | No | Maximum retries per speech call. Defaults to 2; set to 0 to disable |
+| `Telemetry` | `*ai.TelemetrySettings` | No | Observability configuration for this call. `ExperimentalTelemetry` is a deprecated alias; `Telemetry` wins when both are set |
+
+### Telemetry
+
+When a telemetry integration is registered (global via `telemetry.RegisterTelemetryIntegration`, or per-call via `Telemetry.Integrations`), `GenerateSpeech` emits an `ai.generateSpeech` root span covering the whole call (including retries), with `gen_ai.output.type: "speech"`, the input text (`ai.request.text`, input-gated), and the generated audio's size/media type/format (`ai.response.audio.*`, output-gated). A failed call — including a provider response with no audio — ends the span with `codes.Error` status.
 
 ## GenerateSpeechResult
 

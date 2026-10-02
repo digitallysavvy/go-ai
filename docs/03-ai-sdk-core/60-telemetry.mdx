@@ -431,6 +431,30 @@ Records the following spans:
 - Individual provider call
 - May be multiple spans if batching occurs
 
+### Speech and Transcription
+
+`GenerateSpeech` and `Transcribe` emit a single root span covering the whole call (including retries) — there is no nested per-attempt span, unlike `ai.embed`/`ai.generateText`.
+
+**`ai.generateSpeech` span:**
+- Attributes:
+  - `operation.name`: `ai.generateSpeech` + function ID
+  - `ai.operationId`: `"ai.generateSpeech"`
+  - `gen_ai.output.type`: `"speech"` (GenAI integration only)
+  - `ai.request.text`: Input text (if RecordInputs is true)
+  - `ai.response.audio.size` / `ai.response.audio.mediaType` / `ai.response.audio.format`: Generated audio metadata (if RecordOutputs is true)
+  - `ai.response.providerMetadata`: Provider-specific metadata (if enabled)
+- Ends with `codes.Error` status on failure, including a provider response with no audio.
+
+**`ai.transcribe` span:**
+- Attributes:
+  - `operation.name`: `ai.transcribe` + function ID
+  - `ai.operationId`: `"ai.transcribe"`
+  - `ai.request.audio.size` / `ai.request.audio.mediaType`: Input audio metadata (if RecordInputs is true)
+  - `ai.response.text`: Transcript text (if RecordOutputs is true)
+  - `ai.usage.duration_seconds` / `gen_ai.usage.duration_seconds`: Provider-reported input audio duration
+  - `ai.response.providerMetadata`: Provider-specific metadata (if enabled)
+- Ends with `codes.Error` status on failure, including a provider response with no transcript.
+
 ### Tool Calls
 
 When tools are executed, `ai.toolCall` spans are recorded:
