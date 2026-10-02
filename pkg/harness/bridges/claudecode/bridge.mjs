@@ -712,6 +712,13 @@ function createClaudeStreamEventState() {
 }
 var UNRECOVERABLE_API_RETRY_STATUSES = /* @__PURE__ */ new Set([401, 403, 404]);
 var HOST_TOOL_PREFIX = "mcp__harness-tools__";
+var RAW_TASK_MESSAGE_SUBTYPES = /* @__PURE__ */ new Set([
+  "background_tasks_changed",
+  "task_started",
+  "task_progress",
+  "task_updated",
+  "task_notification"
+]);
 function isExternalMcpTool(nativeName) {
   return nativeName.startsWith("mcp__") && !nativeName.startsWith(HOST_TOOL_PREFIX);
 }
@@ -766,7 +773,12 @@ function createEmitStreamEvent({
       }
       return;
     }
+    if (type === "system" && msg.subtype != null && RAW_TASK_MESSAGE_SUBTYPES.has(msg.subtype)) {
+      emit({ type: "raw", rawValue: msg });
+      return;
+    }
     if (msg.parent_tool_use_id != null) {
+      emit({ type: "raw", rawValue: msg });
       return;
     }
     if (type === "stream_event") {
@@ -1581,6 +1593,8 @@ async function runTurn(start, turn) {
     options: {
       ...start.model ? { model: start.model } : {},
       ...start.maxTurns !== void 0 ? { maxTurns: start.maxTurns } : {},
+      ...start.agentProgressSummaries !== void 0 ? { agentProgressSummaries: start.agentProgressSummaries } : {},
+      ...start.forwardSubagentText !== void 0 ? { forwardSubagentText: start.forwardSubagentText } : {},
       ...start.env !== void 0 ? { env: { ...procEnv2, ...start.env } } : {},
       ...skillsOption ? { skills: skillsOption } : {},
       ...nativeTools !== void 0 ? { tools: nativeTools } : {},
