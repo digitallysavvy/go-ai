@@ -209,7 +209,8 @@ for _, video := range result.Videos {
 ## Workflow Serialization
 
 BFL image and video models can cross a workflow boundary with
-`providerutils.SerializeModel` / `DeserializeModel`. See
+`provider.SerializeImageModel` / `DeserializeImageModel` and
+`provider.SerializeVideoModel` / `DeserializeVideoModel`. See
 [Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
 for the mechanism.
 

@@ -512,8 +512,10 @@ type Config struct {
 ## Workflow Serialization
 
 Gateway embedding and image models can cross a workflow boundary with
-`providerutils.SerializeModel` / `DeserializeModel` (language models could
-already be serialized). See
+`provider.SerializeEmbeddingModel` / `DeserializeEmbeddingModel` and
+`provider.SerializeImageModel` / `DeserializeImageModel` (language models
+could already be serialized with `providerutils.SerializeModel` /
+`DeserializeModel`). See
 [Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
 for the mechanism; speech, transcription, and video models are not yet
 serializable.

@@ -146,8 +146,9 @@ func main() {
 ## Workflow Serialization
 
 Baseten embedding models can cross a workflow boundary with
-`providerutils.SerializeModel` / `DeserializeModel` (language models could
-already be serialized). See
+`provider.SerializeEmbeddingModel` / `DeserializeEmbeddingModel` (language
+models could already be serialized with `providerutils.SerializeModel` /
+`DeserializeModel`). See
 [Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
 for the mechanism.
 

@@ -321,8 +321,9 @@ if prodiaMeta, ok := result.ProviderMetadata["prodia"].(map[string]interface{});
 ## Workflow Serialization
 
 Prodia image models can cross a workflow boundary with
-`providerutils.SerializeModel` / `DeserializeModel` (language models could
-already be serialized). See
+`provider.SerializeImageModel` / `DeserializeImageModel` (language models
+could already be serialized with `providerutils.SerializeModel` /
+`DeserializeModel`). See
 [Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
 for the mechanism; video models are not yet serializable.
 
