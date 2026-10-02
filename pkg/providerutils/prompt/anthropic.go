@@ -1306,18 +1306,29 @@ func (c *anthropicConverter) convertToolCall(content *[]map[string]interface{}, 
 	}
 
 	if toolsetName := c.toolsetName(part.toolName, part.providerOptions); toolsetName != "" {
-		memberInput := toAnthropicToolInput(part.input)
-		action, ok := memberInput["action"].(string)
-		if !ok {
+		// toolset member call: the `action` is the member tool name. A
+		// malformed call (action missing, null, or not a string -- e.g. the
+		// raw input isn't even an object) is preserved rather than dropped,
+		// using the toolset name itself as a placeholder `name`, so Anthropic
+		// still receives a tool_use block matching any already-converted
+		// tool-result/error for this call; otherwise Anthropic rejects the
+		// request for a dangling result with no matching call (TS commit
+		// c35458eac5, #21875).
+		rawInput := toAnthropicToolInput(part.input)
+		action, hasAction := rawInput["action"].(string)
+		if !hasAction {
 			c.warn(fmt.Sprintf("toolset tool call for tool %s is missing the action", part.toolName))
-			return
+		}
+		name := toolsetName
+		if hasAction {
+			name = action
 		}
 		block := map[string]interface{}{
 			"type":         "tool_use",
 			"id":           part.id,
-			"name":         action,
+			"name":         name,
 			"toolset_name": toolsetName,
-			"input":        withoutKey(memberInput, "action"),
+			"input":        rawInput,
 		}
 		if caller != nil {
 			block["caller"] = caller

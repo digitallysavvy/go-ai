@@ -887,18 +887,58 @@ func TestConvertToAnthropicPrompt_Golden(t *testing.T) {
 				}},
 			},
 			wantMessages: `[
-				{"role":"assistant","content":[{"type":"tool_use","id":"toolu_click","name":"left_click","toolset_name":"computer","input":{"coordinate":[640,60]}}]},
+				{"role":"assistant","content":[{"type":"tool_use","id":"toolu_click","name":"left_click","toolset_name":"computer","input":{"action":"left_click","coordinate":[640,60]}}]},
 				{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_click","toolset_name":"computer","content":"OK"}]}
 			]`,
 		},
+		// TS commit c35458eac5 (#21875): a malformed toolset call (no action, a
+		// null action, or non-object input) is retained -- with its existing
+		// error result -- instead of being dropped, using the toolset name
+		// itself as the tool_use block's `name` so Anthropic still accepts the
+		// (now matched) result.
 		{
-			name: "warn and skip toolset tool calls without an action",
+			name: "retain malformed toolset call missing the action, with its error result",
+			opts: AnthropicPromptOptions{ToolsetNames: map[string]string{"computer": "computer"}},
+			messages: []types.Message{
+				{Role: types.RoleAssistant, Content: []types.ContentPart{
+					types.ToolCallContent{ToolCallID: "toolu_bad", ToolName: "computer", Arguments: map[string]interface{}{"coordinate": []interface{}{1, 2}}},
+				}},
+				{Role: types.RoleTool, Content: []types.ContentPart{
+					types.ToolResultContent{ToolCallID: "toolu_bad", ToolName: "computer", Output: &types.ToolResultOutput{Type: types.ToolResultOutputError, Value: "Invalid input for tool computer"}},
+				}},
+			},
+			wantMessages: `[
+				{"role":"assistant","content":[{"type":"tool_use","id":"toolu_bad","name":"computer","toolset_name":"computer","input":{"coordinate":[1,2]}}]},
+				{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_bad","toolset_name":"computer","content":"Invalid input for tool computer","is_error":true}]}
+			]`,
+			wantWarnings: []string{"toolset tool call for tool computer is missing the action"},
+		},
+		{
+			name: "retain malformed toolset call with a null action",
 			opts: AnthropicPromptOptions{ToolsetNames: map[string]string{"computer": "computer"}},
 			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
-				types.ToolCallContent{ToolCallID: "toolu_bad", ToolName: "computer", Arguments: map[string]interface{}{"coordinate": []interface{}{1, 2}}},
+				types.ToolCallContent{ToolCallID: "toolu_bad", ToolName: "computer", Arguments: map[string]interface{}{"action": nil, "coordinate": []interface{}{1, 2}}},
 			}}},
-			wantMessages: `[]`,
+			wantMessages: `[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_bad","name":"computer","toolset_name":"computer","input":{"action":null,"coordinate":[1,2]}}]}]`,
 			wantWarnings: []string{"toolset tool call for tool computer is missing the action"},
+		},
+		{
+			name: "retain malformed toolset call with non-object input",
+			opts: AnthropicPromptOptions{ToolsetNames: map[string]string{"computer": "computer"}},
+			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.ToolCallContent{ToolCallID: "toolu_bad", ToolName: "computer", Input: "invalid JSON"},
+			}}},
+			wantMessages: `[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_bad","name":"computer","toolset_name":"computer","input":{"rawInvalidInput":"invalid JSON"}}]}]`,
+			wantWarnings: []string{"toolset tool call for tool computer is missing the action"},
+		},
+		{
+			name: "retain malformed toolset call for a differently-named toolset tool",
+			opts: AnthropicPromptOptions{ToolsetNames: map[string]string{"desktop": "computer"}},
+			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.ToolCallContent{ToolCallID: "toolu_bad", ToolName: "desktop", Arguments: map[string]interface{}{"action": nil}},
+			}}},
+			wantMessages: `[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_bad","name":"computer","toolset_name":"computer","input":{"action":null}}]}]`,
+			wantWarnings: []string{"toolset tool call for tool desktop is missing the action"},
 		},
 	}
 
