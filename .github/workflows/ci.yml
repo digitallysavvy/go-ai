@@ -12,6 +12,9 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    permissions:
+      # Pushes the coverage badge JSON to the `badges` branch (main only).
+      contents: write
     strategy:
       matrix:
         go-version: ['1.26', '1.27']
@@ -53,6 +56,28 @@ jobs:
             echo
             echo "</details>"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # README badge: shields.io reads badges/coverage.json from the `badges` branch.
+      - name: Publish coverage badge
+        if: matrix.go-version == '1.26' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        continue-on-error: true
+        run: |
+          pct=$(go tool cover -func=sdk.cov | awk '/^total:/ {sub("%", "", $3); print $3}')
+          color=$(awk -v p="$pct" 'BEGIN { print (p >= 80 ? "brightgreen" : p >= 60 ? "yellow" : "orange") }')
+          wt="$RUNNER_TEMP/badges"
+          if git ls-remote --exit-code --heads origin badges >/dev/null; then
+            git fetch -q origin badges
+            git worktree add -q -B badges "$wt" FETCH_HEAD
+          else
+            git worktree add -q --orphan -b badges "$wt"
+          fi
+          printf '{"schemaVersion":1,"label":"coverage","message":"%s%%","color":"%s"}\n' "$pct" "$color" > "$wt/coverage.json"
+          cd "$wt"
+          git add coverage.json
+          if git diff --cached --quiet; then exit 0; fi
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "coverage: ${pct}%"
+          git push -q origin badges
 
   lint:
     name: Lint

@@ -18,6 +18,7 @@
 
 <p align="center">
   <a href="https://github.com/digitallysavvy/go-ai/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/digitallysavvy/go-ai/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/digitallysavvy/go-ai/actions/workflows/ci.yml?query=branch%3Amain"><img alt="Coverage" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fdigitallysavvy%2Fgo-ai%2Fbadges%2Fcoverage.json"></a>
   <a href="https://pkg.go.dev/github.com/digitallysavvy/go-ai"><img alt="Go Reference" src="https://pkg.go.dev/badge/github.com/digitallysavvy/go-ai.svg"></a>
   <a href="./go.mod"><img alt="Go version" src="https://img.shields.io/github/go-mod/go-version/digitallysavvy/go-ai"></a>
   <a href="https://github.com/digitallysavvy/go-ai/releases"><img alt="Release" src="https://img.shields.io/github/v/release/digitallysavvy/go-ai"></a>
