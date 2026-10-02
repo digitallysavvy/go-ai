@@ -275,6 +275,15 @@ code.
 
 ## Behavior Changes
 
+- **Default step limit is one step (unchanged from v0.4.0, matches TS)**:
+  `GenerateText` and `StreamText` without `StopWhen` (or the deprecated
+  `MaxSteps`) stop after one model call, as TypeScript's
+  `stopWhen: isStepCount(1)` does. A tool call in that step still executes
+  and its result is returned, but the model is not called again. For a
+  tool-calling loop, set `StopWhen` (for example
+  `[]ai.StopCondition{ai.StepCountIs(5)}`) or use `agent.NewToolLoopAgent`,
+  which defaults to 20 steps. Pre-release builds of v0.5.0 had dropped this
+  default and looped until the model stopped calling tools; that is fixed.
 - **Outgoing requests now carry a `User-Agent` header**: every provider
   tags requests with `ai-sdk/<provider>/<version> runtime/go/<goVersion>`
   (e.g. `ai-sdk/openai/0.5.0 runtime/go/go1.26.0`), appended to any

@@ -61,6 +61,16 @@ step-by-step upgrade instructions are in
 
 ### Changed
 
+- **`GenerateText` / `StreamText` run a single step unless you set
+  `StopWhen`** (same as v0.4.0 and the TypeScript SDK's default
+  `stopWhen: isStepCount(1)`). If the model calls a tool, the tool runs and its
+  result is returned, but the model is not called again. To keep calling
+  tools until the model answers, set a stop condition, for example
+  `StopWhen: []ai.StopCondition{ai.StepCountIs(5)}`, or use
+  `agent.NewToolLoopAgent` (default 20 steps). Pre-release builds of v0.5.0
+  briefly looped with no default limit (up to a 1,000-step safety ceiling);
+  that regression is fixed, and the docs and examples now set `StopWhen`
+  wherever they expect a final answer after a tool call.
 - **Minimum Go version is now 1.26** (`go.mod` declares `go 1.26.0`). Go 1.25 is
   end-of-life, and the current `golang.org/x/*` modules require Go 1.26. CI tests
   Go 1.26 and 1.27.
