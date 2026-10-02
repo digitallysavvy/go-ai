@@ -34,11 +34,19 @@ func SDKUserAgent() string {
 
 // ProviderUserAgent returns the user-agent suffix for a given provider
 // package name, matching every TS provider's own
-// `ai-sdk/<name>/${VERSION}` tag (e.g. `ai-sdk/openai/${VERSION}` in
+// `ai-sdk-<name>/${VERSION}` tag (e.g. `ai-sdk-openai/${VERSION}` in
 // packages/openai/src/openai-provider.ts). TS versions each provider
 // package independently; Go uses the single SDK Version for all of them.
+//
+// TS #21344 ("use standards-compliant User-Agent header") changed this
+// from `ai-sdk/<name>/${VERSION}` to `ai-sdk-<name>/${VERSION}`: an RFC
+// 9110 product identifier is `token ["/" version]`, which allows only one
+// "/", so the old two-slash form (e.g. "ai-sdk/openai/0.5.0") was invalid
+// and rejected by some servers that validate User-Agent strictly (e.g.
+// Azure). The hyphenated name keeps the "ai-sdk" identity visible while
+// leaving exactly one "/" before the version.
 func ProviderUserAgent(provider string) string {
-	return "ai-sdk/" + provider + "/" + Version
+	return "ai-sdk-" + provider + "/" + Version
 }
 
 // WithUserAgentSuffix appends suffix to the "user-agent" header (creating it

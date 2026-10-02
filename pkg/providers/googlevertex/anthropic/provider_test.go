@@ -76,7 +76,7 @@ func TestLanguageModelNonStreamingRequest(t *testing.T) {
 // TestLanguageModelDoesNotTagAnthropicUserAgent covers the owner's 2026-09-30
 // User-Agent decision: TS google-vertex-anthropic-provider.ts builds its
 // AnthropicLanguageModel directly rather than through createAnthropic (the
-// only place @ai-sdk/anthropic's own "ai-sdk/anthropic/VERSION" tag is
+// only place @ai-sdk/anthropic's own "ai-sdk-anthropic/VERSION" tag is
 // added), so Vertex-Anthropic requests must not carry that tag -- only the
 // runtime tag the shared HTTP client appends downstream.
 func TestLanguageModelDoesNotTagAnthropicUserAgent(t *testing.T) {
@@ -105,11 +105,11 @@ func TestLanguageModelDoesNotTagAnthropicUserAgent(t *testing.T) {
 		t.Fatalf("DoGenerate error = %v", err)
 	}
 
-	if strings.Contains(gotUserAgent, "ai-sdk/anthropic/") {
-		t.Fatalf("User-Agent = %q, must not carry the ai-sdk/anthropic tag", gotUserAgent)
+	if strings.Contains(gotUserAgent, "ai-sdk-anthropic/") {
+		t.Fatalf("User-Agent = %q, must not carry the ai-sdk-anthropic tag", gotUserAgent)
 	}
-	if strings.Contains(gotUserAgent, "ai-sdk/") {
-		t.Fatalf("User-Agent = %q, want no ai-sdk/... tag at all", gotUserAgent)
+	if strings.Contains(gotUserAgent, "ai-sdk-") {
+		t.Fatalf("User-Agent = %q, want no ai-sdk-... tag at all", gotUserAgent)
 	}
 }
 

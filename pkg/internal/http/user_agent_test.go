@@ -11,12 +11,18 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
-// Owner decision (2026-09-30): match the TS SDK's User-Agent behavior —
-// `ai-sdk/<provider>/<version> runtime/go/<goVersion>`, appended to any
-// caller-supplied User-Agent. This reverses the earlier (2026-03-29) "send
-// no custom User-Agent" decision: every provider now tags its requests the
-// way TS providers do, and this shared dispatch layer appends the runtime
-// tag downstream of each provider's own tag.
+// Owner decision (2026-09-30, updated for TS #21344 on 2026-10-01): match
+// the TS SDK's User-Agent behavior — `ai-sdk-<provider>/<version>
+// go/<goVersion>`, appended to any caller-supplied User-Agent. This
+// reverses the earlier (2026-03-29) "send no custom User-Agent" decision:
+// every provider now tags its requests the way TS providers do, and this
+// shared dispatch layer appends the runtime tag downstream of each
+// provider's own tag. TS #21344 ("use standards-compliant User-Agent
+// header") fixed both tags to carry exactly one "/" each, since an RFC
+// 9110 product identifier allows only one: the provider tag's separator
+// changed from "/" to "-" (`ai-sdk/<provider>` -> `ai-sdk-<provider>`),
+// and the runtime tag dropped its "runtime/" prefix (`runtime/go/<ver>` ->
+// `go/<ver>`).
 
 // TestClientDoAppendsUserAgent verifies the base HTTP client always appends
 // the runtime tag to whatever User-Agent the request already carries.
@@ -42,11 +48,11 @@ func TestClientDoAppendsUserAgent(t *testing.T) {
 }
 
 // TestClientDoAppendsToCallerSuppliedUserAgent covers a provider that has
-// already set its own `ai-sdk/<name>/VERSION` tag in its default headers
+// already set its own `ai-sdk-<name>/VERSION` tag in its default headers
 // (via version.ProviderUserAgent/WithUserAgentSuffix at construction) — the
 // shared dispatch layer must append the runtime tag, not replace the
 // existing value. The final shape is the owner's
-// `ai-sdk/<provider>/<version> runtime/go/<goVersion>`.
+// `ai-sdk-<provider>/<version> go/<goVersion>`.
 func TestClientDoAppendsToCallerSuppliedUserAgent(t *testing.T) {
 	var capturedUA string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -70,8 +76,8 @@ func TestClientDoAppendsToCallerSuppliedUserAgent(t *testing.T) {
 	if capturedUA != want {
 		t.Errorf("User-Agent = %q, want %q", capturedUA, want)
 	}
-	if !strings.HasPrefix(capturedUA, "ai-sdk/openai/") {
-		t.Errorf("User-Agent = %q, want ai-sdk/openai/... prefix", capturedUA)
+	if !strings.HasPrefix(capturedUA, "ai-sdk-openai/") {
+		t.Errorf("User-Agent = %q, want ai-sdk-openai/... prefix", capturedUA)
 	}
 }
 

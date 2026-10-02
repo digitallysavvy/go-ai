@@ -96,10 +96,10 @@ func TestBatch_StartsBatchAndCombinesBetas(t *testing.T) {
 		t.Fatalf("RequestCounts = %+v", result.RequestCounts)
 	}
 	// Owner decision 2026-09-30 (match TS): every provider now tags its own
-	// `ai-sdk/<name>/VERSION` User-Agent, with the shared HTTP dispatch layer
+	// `ai-sdk-<name>/VERSION` User-Agent, with the shared HTTP dispatch layer
 	// appending its own tag plus the Go runtime tag downstream.
-	if !strings.HasPrefix(capturedUserAgent, "ai-sdk/anthropic/") {
-		t.Fatalf("User-Agent = %q, want ai-sdk/anthropic/... prefix", capturedUserAgent)
+	if !strings.HasPrefix(capturedUserAgent, "ai-sdk-anthropic/") {
+		t.Fatalf("User-Agent = %q, want ai-sdk-anthropic/... prefix", capturedUserAgent)
 	}
 	requests, ok := capturedBody["requests"].([]interface{})
 	if !ok || len(requests) != 2 {

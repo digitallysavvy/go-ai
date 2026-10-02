@@ -226,7 +226,7 @@ func (a *ToolLoopAgent) Tools() []types.Tool {
 
 // agentHeaders tags outgoing requests so usage can be attributed to
 // ToolLoopAgent. Chains with the "ai/<version>" and
-// "ai-sdk/<provider>/<version>" suffixes added downstream by
+// "ai-sdk-<provider>/<version>" suffixes added downstream by
 // GenerateText/StreamText and the provider (TS ToolLoopAgent.agentHeaders).
 //
 // If the headers already carry an "ai-sdk-agent/*" segment (for example,
