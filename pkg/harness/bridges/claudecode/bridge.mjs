@@ -703,6 +703,7 @@ function createClaudeStreamEventState() {
     pendingStepAssistantUsage: void 0,
     pendingStepDeltaUsage: void 0,
     pendingStepUsage: void 0,
+    pendingResponseUsage: void 0,
     stepOpen: false,
     mcpToolUseIds: /* @__PURE__ */ new Set(),
     externalMcpToolUseIds: /* @__PURE__ */ new Set(),
@@ -712,6 +713,13 @@ function createClaudeStreamEventState() {
 }
 var UNRECOVERABLE_API_RETRY_STATUSES = /* @__PURE__ */ new Set([401, 403, 404]);
 var HOST_TOOL_PREFIX = "mcp__harness-tools__";
+var RAW_TASK_MESSAGE_SUBTYPES = /* @__PURE__ */ new Set([
+  "background_tasks_changed",
+  "task_started",
+  "task_progress",
+  "task_updated",
+  "task_notification"
+]);
 function isExternalMcpTool(nativeName) {
   return nativeName.startsWith("mcp__") && !nativeName.startsWith(HOST_TOOL_PREFIX);
 }
@@ -766,12 +774,18 @@ function createEmitStreamEvent({
       }
       return;
     }
+    if (type === "tool_progress" || type === "system" && msg.subtype != null && RAW_TASK_MESSAGE_SUBTYPES.has(msg.subtype)) {
+      emit({ type: "raw", rawValue: msg });
+      return;
+    }
     if (msg.parent_tool_use_id != null) {
+      emit({ type: "raw", rawValue: msg });
       return;
     }
     if (type === "stream_event") {
       handleStreamEvent({
         event: msg.event,
+        message: msg,
         state,
         send: emit,
         toCommonName: toCommonName2
@@ -923,20 +937,40 @@ function formatApiRetryWarning(msg) {
 }
 function handleStreamEvent({
   event,
+  message,
   state,
   send,
   toCommonName: toCommonName2
 }) {
   if (!event) return;
+  if (event.type === "message_start") {
+    state.pendingResponseUsage = toUsageRecord(event.message?.usage);
+    return;
+  }
   if (event.type === "message_delta") {
     const usage = toUsageRecord(event.usage);
     if (usage) {
+      state.pendingResponseUsage = mergeNonNullUsage(
+        state.pendingResponseUsage,
+        usage
+      );
       state.pendingStepDeltaUsage = mergeNonNullUsage(
         state.pendingStepDeltaUsage,
         usage
       );
       updatePendingStepUsage(state);
     }
+    return;
+  }
+  if (event.type === "message_stop") {
+    send({
+      type: "raw",
+      rawValue: {
+        ...message,
+        usage: state.pendingResponseUsage ?? {}
+      }
+    });
+    state.pendingResponseUsage = void 0;
     return;
   }
   if (typeof event.index !== "number") return;
@@ -1581,6 +1615,8 @@ async function runTurn(start, turn) {
     options: {
       ...start.model ? { model: start.model } : {},
       ...start.maxTurns !== void 0 ? { maxTurns: start.maxTurns } : {},
+      ...start.agentProgressSummaries !== void 0 ? { agentProgressSummaries: start.agentProgressSummaries } : {},
+      ...start.forwardSubagentText !== void 0 ? { forwardSubagentText: start.forwardSubagentText } : {},
       ...start.env !== void 0 ? { env: { ...procEnv2, ...start.env } } : {},
       ...skillsOption ? { skills: skillsOption } : {},
       ...nativeTools !== void 0 ? { tools: nativeTools } : {},

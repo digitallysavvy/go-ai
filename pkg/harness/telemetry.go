@@ -245,15 +245,18 @@ func (d *turnDriver) telLanguageModelCallEnd(finishReason FinishReason, usage Us
 }
 
 // telToolExecution fires a toolExecutionStart+toolExecutionEnd telemetry
-// event pair for one completed tool call, mirroring TS's
+// event pair for one completed tool call, always from recordToolResult (the
+// main goroutine), once the tool's outcome is known. Unlike the Go-visible
+// ai.Callbacks.OnToolExecutionStart (see ensureToolExecutionStarted), this
+// is deliberately NOT split to fire an early, real-time start from a host
+// tool's own exec goroutine: the OpenTelemetry integration resolves a tool
+// span's parent from its own live per-turn step-span state (keyed by
+// CallID, mutated by OnStepStart/OnStepEnd as the main goroutine advances
+// steps — see OnToolExecutionStart's doc), not from a ctx this call would
+// pass across goroutines; firing it from a concurrently-scheduled exec
+// goroutine would race that state non-deterministically. Mirrors TS's
 // `publishToolExecutions` (which likewise fires both back-to-back once a
-// tool's outcome — success or error — is already known, rather than
-// bracketing the execution live). Called from recordToolResult, for every
-// tool result regardless of who executed it (host tool, harness builtin, or
-// provider-executed), matching TS's `toolExecutions` map, which is
-// populated the same way. The actual host-tool Execute call is separately
-// wrapped for nested-span chaining by executeHostToolAsync via
-// telemetry.FireExecuteToolWithSettings (TS 59a2306's `wrappedExecuteTool`).
+// tool's outcome — success or error — is already known).
 func (d *turnDriver) telToolExecution(call types.ToolCall, result types.ToolResult, durationMs int64) {
 	if d.telStepCtx == nil {
 		return

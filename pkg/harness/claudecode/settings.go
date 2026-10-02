@@ -50,6 +50,14 @@ type Settings struct {
 	// MaxTurns caps how many internal turns the CLI can take before yielding
 	// back to the caller. Zero means the CLI's default.
 	MaxTurns int
+	// AgentProgressSummaries enables periodic AI-generated progress
+	// summaries for running subagents. The summaries are forwarded in raw
+	// `task_progress` stream parts.
+	AgentProgressSummaries bool
+	// ForwardSubagentText forwards subagent text and thinking messages in
+	// addition to tool activity. Subagent messages are exposed as raw
+	// stream parts.
+	ForwardSubagentText bool
 	// Env are additional environment variables for the Claude Code process,
 	// merged over the resolved authentication environment.
 	Env map[string]string
