@@ -349,7 +349,6 @@ import (
     "fmt"
     "log"
     "os"
-    "time"
 
     "github.com/digitallysavvy/go-ai/pkg/agent"
     "github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -519,7 +518,7 @@ import (
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
-type RouteHandler func(context.Context, map[string]interface{}) (interface{}, error)
+type RouteHandler func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error)
 
 type Route struct {
     Name        string
@@ -547,7 +546,7 @@ func createApplicationRoutes() []types.Tool {
                 },
                 "required": []string{"amount", "currency"},
             },
-            Handler: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+            Handler: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
                 amount := params["amount"].(float64)
                 currency := params["currency"].(string)
 
@@ -573,7 +572,7 @@ func createApplicationRoutes() []types.Tool {
                 },
                 "required": []string{"orderId"},
             },
-            Handler: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+            Handler: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
                 orderId := params["orderId"].(string)
 
                 return map[string]interface{}{
@@ -598,7 +597,7 @@ func createApplicationRoutes() []types.Tool {
                 },
                 "required": []string{"orderId", "reason"},
             },
-            Handler: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+            Handler: func(ctx context.Context, params map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
                 orderId := params["orderId"].(string)
                 reason := params["reason"].(string)
 
@@ -620,7 +619,7 @@ func createApplicationRoutes() []types.Tool {
             Name:        r.Name,
             Description: r.Description,
             Parameters:  r.Parameters,
-            Execute:     r.Handler,
+            Execute:     types.ToolExecutor(r.Handler),
         })
     }
 
