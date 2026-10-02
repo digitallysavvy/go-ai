@@ -351,3 +351,47 @@ func TestReadUIMessages_ContinuesHydratedPartialStaticToolCall(t *testing.T) {
 	assert.Equal(t, map[string]interface{}{"title": "Hello"}, final.Input)
 	assert.Nil(t, final.RawInput)
 }
+
+// Ported from TS b032d70bf1 (#21615): tool-output-available/tool-output-error
+// must prefer the output chunk's own toolMetadata over the stale metadata
+// recorded when the tool's input became available, for both static and
+// dynamic tools, while still falling back to the existing metadata when the
+// output chunk omits it.
+func TestReadUIMessages_ToolOutputChunkMetadataOverridesInputMetadata(t *testing.T) {
+	snapshots, err := sendChunks(t, nil, []UIMessageChunk{
+		{"type": "start", "messageId": "msg-123"},
+		{"type": "start-step"},
+		{"type": "tool-input-available", "toolCallId": "dynamic-success", "toolName": "tool-name", "input": map[string]interface{}{"query": "test"}, "dynamic": true},
+		{"type": "tool-output-available", "toolCallId": "dynamic-success", "output": map[string]interface{}{"result": "provider-result"}, "dynamic": true, "toolMetadata": map[string]interface{}{"phase": "dynamic-output-available"}},
+		{"type": "tool-input-available", "toolCallId": "dynamic-error", "toolName": "tool-name", "input": map[string]interface{}{"query": "test"}, "dynamic": true, "toolMetadata": map[string]interface{}{"phase": "dynamic-input"}},
+		{"type": "tool-output-error", "toolCallId": "dynamic-error", "errorText": "error-text", "dynamic": true, "toolMetadata": map[string]interface{}{"phase": "dynamic-output-error"}},
+		{"type": "tool-input-available", "toolCallId": "static-success", "toolName": "tool-name", "input": map[string]interface{}{"query": "test"}},
+		{"type": "tool-output-available", "toolCallId": "static-success", "output": map[string]interface{}{"result": "provider-result"}, "toolMetadata": map[string]interface{}{"phase": "static-output-available"}},
+		{"type": "tool-input-available", "toolCallId": "static-error", "toolName": "tool-name", "input": map[string]interface{}{"query": "test"}, "toolMetadata": map[string]interface{}{"phase": "static-input"}},
+		{"type": "tool-output-error", "toolCallId": "static-error", "errorText": "error-text", "toolMetadata": map[string]interface{}{"phase": "static-output-error"}},
+		{"type": "finish-step"},
+		{"type": "finish"},
+	})
+	require.NoError(t, err)
+	final := snapshots[len(snapshots)-1]
+
+	cases := []struct {
+		toolCallID, toolType, wantPhase string
+	}{
+		{"dynamic-success", "dynamic-tool", "dynamic-output-available"},
+		{"dynamic-error", "dynamic-tool", "dynamic-output-error"},
+		{"static-success", "tool-tool-name", "static-output-available"},
+		{"static-error", "tool-tool-name", "static-output-error"},
+	}
+	for _, c := range cases {
+		part := findToolUIMessagePart(final, c.toolType)
+		for _, p := range final.Parts {
+			if tool, ok := AsToolUIPart(p); ok && tool.ToolCallID == c.toolCallID {
+				part = tool
+			}
+		}
+		require.NotNil(t, part, "missing part for %s", c.toolCallID)
+		require.NotNil(t, part.ToolMetadata, "missing toolMetadata for %s", c.toolCallID)
+		assert.Equal(t, c.wantPhase, part.ToolMetadata["phase"], "unexpected toolMetadata for %s", c.toolCallID)
+	}
+}
