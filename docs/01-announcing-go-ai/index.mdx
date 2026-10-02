@@ -47,7 +47,7 @@ The Go AI SDK provides everything you need:
 - **Image Generation**: Create images with AI
 - **Speech & Transcription**: Audio capabilities
 - **Agent Framework**: Build autonomous agents
-- **Middleware**: Logging, tracing, retry logic
+- **Middleware**: Default settings/instructions, JSON/reasoning extraction, simulated streaming
 - **Testing Utilities**: Mock providers and responses
 
 ### Built for Go's Strengths
@@ -123,14 +123,17 @@ type ProductReview struct {
     Summary   string   `json:"summary"`
 }
 
-result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "Analyze this product review...",
-    Output: &ProductReview{},
+    Output: ai.ObjectOutput[ProductReview](ai.ObjectOutputOptions{
+        Schema: schema.NewSimpleStructSchema(reflect.TypeOf(ProductReview{})),
+    }),
 })
 
-// result.Object is fully typed!
-fmt.Printf("Rating: %d/5\n", result.Object.Rating)
+// result.Output is fully typed!
+review := result.Output.(ProductReview)
+fmt.Printf("Rating: %d/5\n", review.Rating)
 ```
 
 ### Powerful Agent Framework
@@ -138,9 +141,9 @@ fmt.Printf("Rating: %d/5\n", result.Object.Rating)
 Build autonomous agents with full control:
 
 ```go
-agent := agents.New(agents.Config{
-    Model:        model,
-    Instructions: "You are a customer support agent.",
+myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
+    Model:  model,
+    System: "You are a customer support agent.",
     Tools: []types.Tool{
         searchDocsTool,
         getUserInfoTool,
@@ -149,21 +152,25 @@ agent := agents.New(agents.Config{
     MaxSteps: 10,
 })
 
-result, err := agent.Execute(ctx, "Help me reset my password")
+result, err := myAgent.Execute(ctx, "Help me reset my password")
 ```
 
 ### Production-Ready Features
 
 #### Middleware Support
 
-Add logging, tracing, and retry logic:
+Wrap models with default settings, instructions, and other cross-cutting behavior:
 
 ```go
 wrappedModel := middleware.WrapLanguageModel(
     baseModel,
-    middleware.NewLoggingMiddleware(),
-    middleware.NewRetryMiddleware(3),
-    middleware.NewTelemetryMiddleware(),
+    []*middleware.LanguageModelMiddleware{
+        middleware.DefaultSettingsMiddleware(&provider.GenerateOptions{
+            Temperature: floatPtr(0.7),
+        }),
+    },
+    nil,
+    nil,
 )
 ```
 
@@ -174,13 +181,13 @@ Comprehensive error types for robust applications:
 ```go
 result, err := ai.GenerateText(ctx, options)
 if err != nil {
-    switch e := err.(type) {
-    case *ai.APIConnectionError:
-        // Handle network issues
-    case *ai.InvalidPromptError:
-        // Handle invalid inputs
-    case *ai.RateLimitError:
+    var rateLimitErr *providererrors.RateLimitError
+    var validationErr *providererrors.ValidationError
+    switch {
+    case errors.As(err, &rateLimitErr):
         // Implement backoff
+    case errors.As(err, &validationErr):
+        // Handle invalid inputs
     default:
         // Handle other errors
     }
@@ -192,12 +199,17 @@ if err != nil {
 Mock providers for unit tests:
 
 ```go
-mockProvider := testing.NewMockProvider()
-mockProvider.SetResponse("Hello, I'm a mock response!")
+mockModel := &testutil.MockLanguageModel{
+    DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+        return &types.GenerateResult{
+            Text:         "Hello, I'm a mock response!",
+            FinishReason: types.FinishReasonStop,
+        }, nil
+    },
+}
 
-model, _ := mockProvider.LanguageModel("mock-model")
 result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
-    Model:  model,
+    Model:  mockModel,
     Prompt: "Test prompt",
 })
 ```

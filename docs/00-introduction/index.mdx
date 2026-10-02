@@ -105,11 +105,15 @@ type Recipe struct {
     Instructions []string `json:"instructions"`
 }
 
-result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "Generate a recipe for chocolate chip cookies.",
-    Output: &Recipe{},
+    Output: ai.ObjectOutput[Recipe](ai.ObjectOutputOptions{
+        Schema: schema.NewSimpleStructSchema(reflect.TypeOf(Recipe{})),
+    }),
 })
+
+recipe := result.Output.(Recipe)
 ```
 
 ### Tool Calling
@@ -138,14 +142,14 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 Build autonomous agents with workflow support:
 
 ```go
-agent := agents.New(agents.Config{
-    Model:        model,
-    Instructions: "You are a helpful assistant.",
-    Tools:        tools,
-    MaxSteps:     10,
+myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
+    Model:    model,
+    System:   "You are a helpful assistant.",
+    Tools:    tools,
+    MaxSteps: 10,
 })
 
-result, err := agent.Execute(ctx, "Help me plan a trip to Japan")
+result, err := myAgent.Execute(ctx, "Help me plan a trip to Japan")
 ```
 
 ## Model Providers
