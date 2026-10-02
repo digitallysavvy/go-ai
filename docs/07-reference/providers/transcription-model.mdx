@@ -59,10 +59,10 @@ import (
 )
 
 func main() {
-    provider := openai.New(openai.Config{
+    p := openai.New(openai.Config{
         APIKey: "your-api-key",
     })
-    model, err := provider.TranscriptionModel("whisper-1")
+    model, err := p.TranscriptionModel("whisper-1")
     if err != nil {
         log.Fatal(err)
     }
