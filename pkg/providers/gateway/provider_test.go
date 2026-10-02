@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -430,6 +431,90 @@ func TestProvider_GetCredits(t *testing.T) {
 	}
 	if string(payload) != `{"balance":"1000","totalUsed":"250"}` {
 		t.Fatalf("Marshal payload = %s", payload)
+	}
+}
+
+// TestProvider_GetCredits_NoTeamHeaderLeavesURLUnchanged ports TS "should
+// not add team query parameters without a team header".
+func TestProvider_GetCredits_NoTeamHeaderLeavesURLUnchanged(t *testing.T) {
+	var gotURL string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotURL = r.URL.String()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"balance": "1.00", "total_used": "0.00"}`))
+	}))
+	defer server.Close()
+
+	provider, err := New(Config{APIKey: "test-key", BaseURL: server.URL + "/v3/ai"})
+	if err != nil {
+		t.Fatalf("Failed to create provider: %v", err)
+	}
+	if _, err := provider.GetCredits(context.Background()); err != nil {
+		t.Fatalf("GetCredits() error = %v", err)
+	}
+	if gotURL != "/v1/credits" {
+		t.Fatalf("request URL = %q, want /v1/credits", gotURL)
+	}
+}
+
+// TestProvider_GetCredits_ScopesToTeamID ports TS "should forward a team ID
+// from the team header as the teamId query parameter": a team ID
+// (`team_...`) from TeamIDOrSlug must be forwarded as `teamId`, since
+// /v1/credits reads the team from the query string rather than the
+// x-vercel-ai-gateway-team header that every other endpoint uses.
+func TestProvider_GetCredits_ScopesToTeamID(t *testing.T) {
+	var gotURL string
+	var gotTeamHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotURL = r.URL.String()
+		gotTeamHeader = r.Header.Get("x-vercel-ai-gateway-team")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"balance": "1.00", "total_used": "0.00"}`))
+	}))
+	defer server.Close()
+
+	provider, err := New(Config{APIKey: "test-key", BaseURL: server.URL + "/v3/ai", TeamIDOrSlug: "team_123"})
+	if err != nil {
+		t.Fatalf("Failed to create provider: %v", err)
+	}
+	if _, err := provider.GetCredits(context.Background()); err != nil {
+		t.Fatalf("GetCredits() error = %v", err)
+	}
+	if gotURL != "/v1/credits?teamId=team_123" {
+		t.Fatalf("request URL = %q, want /v1/credits?teamId=team_123", gotURL)
+	}
+	if gotTeamHeader != "team_123" {
+		t.Fatalf("team header = %q, want team_123 (still sent)", gotTeamHeader)
+	}
+}
+
+// TestProvider_GetCredits_ScopesToTeamSlug ports TS "should forward a team
+// slug from the team header as the slug query parameter": a non-`team_`
+// value is a slug and goes in `slug`, not `teamId`.
+func TestProvider_GetCredits_ScopesToTeamSlug(t *testing.T) {
+	var gotQuery url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"balance": "1.00", "total_used": "0.00"}`))
+	}))
+	defer server.Close()
+
+	provider, err := New(Config{APIKey: "test-key", BaseURL: server.URL + "/v3/ai", TeamIDOrSlug: "team-o'brien"})
+	if err != nil {
+		t.Fatalf("Failed to create provider: %v", err)
+	}
+	if _, err := provider.GetCredits(context.Background()); err != nil {
+		t.Fatalf("GetCredits() error = %v", err)
+	}
+	if gotQuery.Get("slug") != "team-o'brien" {
+		t.Fatalf("slug query param = %q, want team-o'brien", gotQuery.Get("slug"))
+	}
+	if gotQuery.Has("teamId") {
+		t.Fatalf("teamId query param should not be set: %v", gotQuery)
 	}
 }
 

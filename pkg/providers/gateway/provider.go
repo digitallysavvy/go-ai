@@ -584,9 +584,25 @@ func (p *Provider) GetAvailableModels(ctx context.Context) (*MetadataResponse, e
 	return &metadata, nil
 }
 
-// GetCredits returns credit information for the authenticated user
+// GetCredits returns credit information for the authenticated user.
+//
+// Unlike other Gateway endpoints, /v1/credits selects the team from a
+// `teamId` or `slug` query parameter rather than the
+// x-vercel-ai-gateway-team header, so forward the resolved team there too
+// (TS getTeamIdOrSlug in gateway-fetch-metadata.ts). Without this, a
+// credential that can access multiple teams (e.g. a Vercel access token)
+// has no default team and the request is rejected with 401, even though
+// the same team header works for model calls and getSpendReport.
 func (p *Provider) GetCredits(ctx context.Context) (*CreditsInfo, error) {
-	body, err := p.doOriginRequest(ctx, "/v1/credits")
+	path := "/v1/credits"
+	if teamIDOrSlug := gatewayTeamFromHeaders(p.headers); teamIDOrSlug != "" {
+		key := "slug"
+		if strings.HasPrefix(teamIDOrSlug, "team_") {
+			key = "teamId"
+		}
+		path += "?" + key + "=" + url.QueryEscape(teamIDOrSlug)
+	}
+	body, err := p.doOriginRequest(ctx, path)
 	if err != nil {
 		return nil, err
 	}
