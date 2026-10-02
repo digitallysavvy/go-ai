@@ -1,5 +1,5 @@
 // Package workflow's harness.go ports TS `@ai-sdk/workflow-harness`
-// (packages/workflow-harness/src/*.ts at ai@7.0.118): helpers for running a
+// (packages/workflow-harness/src/*.ts at ai@7.0.127): helpers for running a
 // pkg/harness.Agent turn as one execution of a durable workflow step,
 // suspending and resuming across executions (a tool-approval pause, a
 // time-slice budget, or a semantic step boundary), and persisting the turn's
@@ -475,13 +475,21 @@ func RunHarnessAgent(ctx context.Context, opts RunHarnessAgentOptions) (HarnessW
 	// Capture resume state for the *next user turn* before ending this
 	// local session handle. Detach parks the session without stopping the
 	// sandbox; a one-shot consumer opts into DestroyOnFinish instead.
+	// A detach failure must propagate, not be swallowed in favor of the
+	// previous (now stale) turn's resumeFrom: silently returning success
+	// with outdated resume state would resume the WRONG point (TS #21591,
+	// "workflow harness suppressing detach failures and returning stale
+	// resume state"). Mirrors TS `run-harness-agent.ts`'s
+	// `resumeFrom = await session.detach();` (no `.catch` fallback).
 	var resumeFrom *harness.ResumeSessionState
 	if destroyOnFinish {
 		_ = session.Destroy(ctx)
-	} else if rf, derr := session.Detach(ctx); derr == nil {
-		resumeFrom = rf
 	} else {
-		resumeFrom = state.ResumeFrom
+		rf, derr := session.Detach(ctx)
+		if derr != nil {
+			return HarnessWorkflowState{}, derr
+		}
+		resumeFrom = rf
 	}
 
 	finalResult := &HarnessWorkflowFinalResult{SessionID: state.SessionID, FinishReason: string(finishReason), Usage: toUsageSummary(usage)}

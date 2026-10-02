@@ -22,7 +22,9 @@ import (
 // tool part outside the protected window is pruned unconditionally.
 //
 // Mirrors the TS pruneMessages toolCalls rule object
-// (generate-text/prune-messages.ts).
+// (generate-text/prune-messages.ts). "before-last-0-messages" behaves
+// exactly like "all" (TS #21732): it protects no trailing messages and
+// contributes no IDs to the kept-ID scan.
 type PruneToolCallsRule struct {
 	Type  string
 	Tools []string
@@ -55,20 +57,20 @@ type PruneModelMessagesOptions struct {
 // content (reasoning, tool calls/results/approvals) regardless of size, to
 // keep replayed history small or avoid re-sending stale tool context.
 //
-// # The "before-last-0-messages" quirk
+// # "before-last-0-messages" equals "all" (TS #21732)
 //
-// TS's pruneMessages computes the protected window as
+// TS's pruneMessages used to compute the protected window as
 // `messages.slice(-keepLastMessagesCount)`. For N == 0, JavaScript's
 // `slice(-0)` is `slice(0)` (negative zero equals positive zero), which
-// returns the *entire* array — not an empty one. So identifying which tool
-// call/approval IDs to keep scans every message, as if nothing were pruned.
-// But the later "is this message in the protected window" check
-// (`keepLastMessagesCount && messageIndex >= ...`) treats 0 as falsy, so no
-// message is actually skipped from filtering either. The net effect is that
-// "before-last-0-messages" ends up keeping virtually every tool call anyway
-// (because the ID was already collected from the full-array scan), making
-// the rule close to a no-op. This is reproduced verbatim rather than fixed,
-// since matching TS behavior (bugs included) is the porting goal.
+// returned the *entire* array — not an empty one — so the kept-ID scan
+// collected every tool call/approval ID, as if nothing were pruned, even
+// though the later "is this message in the protected window" check already
+// treated N == 0 as falsy (protecting no message from filtering). The net
+// effect was that "before-last-0-messages" kept virtually every tool call
+// anyway, making the rule close to a no-op. TS #21732 fixed this by also
+// skipping the kept-ID scan when the parsed count is zero, so
+// "before-last-0-messages" now behaves exactly like "all". Go mirrors the
+// fixed behavior.
 func PruneModelMessages(messages []types.Message, opts PruneModelMessagesOptions) ([]types.Message, error) {
 	reasoning := opts.Reasoning
 	if reasoning == "" {
@@ -172,15 +174,13 @@ func applyPruneToolCallsRule(messages []types.Message, rule PruneToolCallsRule) 
 	keptToolCallIDs := map[string]bool{}
 	keptApprovalIDs := map[string]bool{}
 
-	if keepLast != nil {
-		// TS quirk: slice(-0) scans the whole array. See the doc comment on
-		// PruneModelMessages.
-		scanFrom := 0
-		if *keepLast > 0 {
-			scanFrom = len(messages) - *keepLast
-			if scanFrom < 0 {
-				scanFrom = 0
-			}
+	if keepLast != nil && *keepLast != 0 {
+		// *keepLast > 0 here (resolveKeepLastMessagesCount never returns a
+		// negative value, and the zero case is excluded above per TS #21732:
+		// see the doc comment on PruneModelMessages).
+		scanFrom := len(messages) - *keepLast
+		if scanFrom < 0 {
+			scanFrom = 0
 		}
 		for _, msg := range messages[scanFrom:] {
 			if msg.Role != types.RoleAssistant && msg.Role != types.RoleTool {

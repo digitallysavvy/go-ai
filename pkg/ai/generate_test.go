@@ -1933,7 +1933,9 @@ func TestGenerateText_StopWhen_NaturalStopFirst(t *testing.T) {
 	}
 }
 
-func TestGenerateText_NoDefaultStopWhen(t *testing.T) {
+// TS: generateText defaults to stopWhen = isStepCount(1), so without
+// StopWhen/MaxSteps a tool call runs its tool but does not start a second step.
+func TestGenerateText_DefaultStopWhenIsOneStep(t *testing.T) {
 	t.Parallel()
 
 	tools := []types.Tool{
@@ -1969,14 +1971,17 @@ func TestGenerateText_NoDefaultStopWhen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if callCount != 2 {
-		t.Fatalf("expected 2 model calls, got %d", callCount)
+	if callCount != 1 {
+		t.Fatalf("expected 1 model call, got %d", callCount)
 	}
-	if len(result.Steps) != 2 {
-		t.Errorf("expected 2 steps, got %d", len(result.Steps))
+	if len(result.Steps) != 1 {
+		t.Errorf("expected 1 step, got %d", len(result.Steps))
 	}
-	if result.StopReason != "" {
-		t.Errorf("expected empty stop reason, got %q", result.StopReason)
+	if len(result.ToolResults) != 1 {
+		t.Errorf("expected the tool to run once, got %d tool results", len(result.ToolResults))
+	}
+	if result.StopReason == "" {
+		t.Errorf("expected a step-count stop reason, got none")
 	}
 }
 

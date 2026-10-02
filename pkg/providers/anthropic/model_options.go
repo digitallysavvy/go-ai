@@ -67,6 +67,12 @@ const (
 
 	// ThinkingTypeDisabled disables thinking
 	ThinkingTypeDisabled ThinkingType = "disabled"
+
+	// ThinkingTypeBetweenTools enables between-tools thinking
+	// (claude-sonnet-5-5+): no upfront thinking, but progress notes between
+	// tool calls are returned as summarized thinking blocks. Only supported
+	// at "low", "medium", and "high" effort.
+	ThinkingTypeBetweenTools ThinkingType = "between_tools"
 )
 
 // Speed represents the inference speed mode

@@ -3,6 +3,7 @@ package googlevertex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 func TestVertexProvider_CreateAliasesAndClient(t *testing.T) {
@@ -166,6 +168,75 @@ func TestVertexChirpTranscriptionRequestAndResponse(t *testing.T) {
 	body, ok := result.Response.Body.(map[string]interface{})
 	if !ok || body["metadata"] == nil {
 		t.Fatalf("response body = %#v, want decoded raw response", result.Response.Body)
+	}
+}
+
+// TestVertexTranscriptionRejectsRegionThatWouldRewriteHost ports TS
+// google-vertex-transcription-model.test.ts's region validation (TS
+// #21842): region (from providerOptions.googleVertex.region, falling back
+// to the provider's location) is interpolated directly into the Cloud
+// Speech-to-Text request host, so a value that isn't a single DNS label
+// must be rejected with no request sent.
+func TestVertexTranscriptionRejectsRegionThatWouldRewriteHost(t *testing.T) {
+	calls := 0
+	p, err := New(Config{
+		Project:     "test-project",
+		Location:    "us-central1",
+		AccessToken: "token",
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			calls++
+			return jsonResponse(200, `{}`), nil
+		})},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	model, err := p.TranscriptionModel("chirp_2")
+	if err != nil {
+		t.Fatalf("TranscriptionModel: %v", err)
+	}
+	_, err = model.DoTranscribe(context.Background(), &provider.TranscriptionOptions{
+		AudioBase64: "AQIDBAUGBwg=",
+		ProviderOptions: map[string]interface{}{
+			"googleVertex": map[string]interface{}{"region": "user@internal:8080/#"},
+		},
+	})
+	var invalid *providererrors.InvalidArgumentError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("DoTranscribe error = %v, want InvalidArgumentError", err)
+	}
+	if invalid.Field != "region" {
+		t.Fatalf("Field = %q, want region", invalid.Field)
+	}
+	if calls != 0 {
+		t.Fatalf("calls = %d, want 0 (no request sent)", calls)
+	}
+}
+
+// TestVertexTranscriptionRejectsInvalidLocationFallback ports the
+// location-fallback half of the same fix: an invalid provider-level
+// Location is also rejected when no per-call region overrides it.
+func TestVertexTranscriptionRejectsInvalidLocationFallback(t *testing.T) {
+	p, err := New(Config{
+		Project:     "test-project",
+		Location:    "user@internal:8080/#",
+		BaseURL:     "https://proxy.example/v1beta1/projects/test-project/locations/x/publishers/google",
+		AccessToken: "token",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	model, err := p.TranscriptionModel("chirp_2")
+	if err != nil {
+		t.Fatalf("TranscriptionModel: %v", err)
+	}
+	_, err = model.DoTranscribe(context.Background(), &provider.TranscriptionOptions{AudioBase64: "AQIDBAUGBwg="})
+	var invalid *providererrors.InvalidArgumentError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("DoTranscribe error = %v, want InvalidArgumentError", err)
+	}
+	if invalid.Field != "location" {
+		t.Fatalf("Field = %q, want location", invalid.Field)
 	}
 }
 

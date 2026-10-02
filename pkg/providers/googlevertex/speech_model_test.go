@@ -56,7 +56,7 @@ func TestVertexSpeechModelUsesVertexAuthAndOptions(t *testing.T) {
 	if capturedAuth != "Bearer vertex-token" {
 		t.Fatalf("Authorization = %q", capturedAuth)
 	}
-	if !strings.HasPrefix(capturedUserAgent, "ai-sdk/google-vertex/0.5.0 ") {
+	if !strings.HasPrefix(capturedUserAgent, "ai-sdk-google-vertex/0.5.0 ") {
 		t.Fatalf("User-Agent = %q", capturedUserAgent)
 	}
 	gen := capturedBody["generationConfig"].(map[string]interface{})

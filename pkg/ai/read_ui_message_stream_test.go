@@ -275,12 +275,15 @@ func TestReadUIMessages_FinishStepPreservesActiveTextAndReasoning(t *testing.T) 
 	assert.Equal(t, "step-start", final.Parts[2].UIPartType())
 }
 
-// ports the tool-input-error branch of process-ui-message-stream.ts, which
-// calls warnIfUIMessageHasDeprecatedRawInput([state.message]) only for
-// static (non-dynamic) tool parts, since the deprecated field is only set on
-// those.
-func TestReadUIMessages_ToolInputErrorRawInputDeprecationWarning(t *testing.T) {
-	t.Run("static tool part logs the deprecation warning", func(t *testing.T) {
+// ports the tool-input-error branch of process-ui-message-stream.ts (TS
+// #21539): SDK-generated static tool input errors store the failed input in
+// Input directly, with no deprecated RawInput field and no deprecation
+// warning, matching the dynamic-tool branch. Persisted-stream compatibility
+// for a legacy rawInput field is a separate path (ValidateUIMessages /
+// ConvertToModelMessages' warnIfUIMessagesHaveDeprecatedRawInput), unchanged
+// and covered by TestValidateUIMessages_WarnsOnDeprecatedRawInput.
+func TestReadUIMessages_ToolInputErrorStoresInputWithoutDeprecationWarning(t *testing.T) {
+	t.Run("static tool part stores input and does not warn", func(t *testing.T) {
 		buf := setupLogWarnings(t)
 		snapshots, err := sendChunks(t, nil, []UIMessageChunk{
 			{"type": "start"},
@@ -294,13 +297,14 @@ func TestReadUIMessages_ToolInputErrorRawInputDeprecationWarning(t *testing.T) {
 		part := findToolUIMessagePart(final, "tool-search")
 		require.NotNil(t, part)
 		assert.Equal(t, ToolStateOutputError, part.State)
-		assert.Equal(t, "bad json", part.RawInput)
-		assert.Contains(t, buf.String(), `Deprecated: "rawInput in output-error UI message parts". Use the "input" field instead. The "rawInput" field will be removed in the next major version.`)
+		assert.Equal(t, "bad json", part.Input)
+		assert.Nil(t, part.RawInput)
+		assert.Empty(t, buf.String())
 	})
 
-	t.Run("dynamic tool part does not set rawInput and does not warn", func(t *testing.T) {
+	t.Run("dynamic tool part stores input and does not warn", func(t *testing.T) {
 		buf := setupLogWarnings(t)
-		_, err := sendChunks(t, nil, []UIMessageChunk{
+		snapshots, err := sendChunks(t, nil, []UIMessageChunk{
 			{"type": "start"},
 			{"type": "start-step"},
 			{"type": "tool-input-error", "toolCallId": "call-1", "toolName": "search", "dynamic": true, "input": "bad json", "errorText": "parse error"},
@@ -308,6 +312,96 @@ func TestReadUIMessages_ToolInputErrorRawInputDeprecationWarning(t *testing.T) {
 			{"type": "finish"},
 		})
 		require.NoError(t, err)
+		final := snapshots[len(snapshots)-1]
+		part := findToolUIMessagePart(final, "dynamic-tool")
+		require.NotNil(t, part)
+		assert.Equal(t, ToolStateOutputError, part.State)
+		assert.Equal(t, "bad json", part.Input)
+		assert.Nil(t, part.RawInput)
 		assert.Empty(t, buf.String())
 	})
+}
+
+// Ported from TS c5e90bb137 (#21480): resuming a hydrated message whose last
+// tool part is still in the input-streaming state must continue accumulating
+// its input from that part's RawInput, instead of starting from an empty
+// accumulator (which previously raised a "missing tool call" error on the
+// very next tool-input-delta after reconnecting).
+func TestReadUIMessages_ContinuesHydratedPartialStaticToolCall(t *testing.T) {
+	message := &UIMessage{
+		ID:   "msg-123",
+		Role: UIMessageRoleAssistant,
+		Parts: []UIMessagePart{
+			&ToolUIPart{
+				Type:       "tool-createDocument",
+				ToolCallID: "tool-1",
+				State:      ToolStateInputStreaming,
+				Input:      map[string]interface{}{"title": "Hel"},
+				RawInput:   `{"title":"Hel`,
+			},
+		},
+	}
+
+	snapshots, err := sendChunks(t, message, []UIMessageChunk{
+		{"type": "tool-input-delta", "toolCallId": "tool-1", "inputTextDelta": `lo"}`},
+		{"type": "tool-input-available", "toolCallId": "tool-1", "toolName": "createDocument", "input": map[string]interface{}{"title": "Hello"}},
+	})
+	require.NoError(t, err)
+	require.Len(t, snapshots, 2)
+
+	deltaPart := findToolUIMessagePart(snapshots[0], "tool-createDocument")
+	require.NotNil(t, deltaPart)
+	assert.Equal(t, ToolStateInputStreaming, deltaPart.State)
+	assert.Equal(t, map[string]interface{}{"title": "Hello"}, deltaPart.Input)
+	assert.Equal(t, `{"title":"Hello"}`, deltaPart.RawInput)
+
+	final := findToolUIMessagePart(snapshots[1], "tool-createDocument")
+	require.NotNil(t, final)
+	assert.Equal(t, ToolStateInputAvailable, final.State)
+	assert.Equal(t, map[string]interface{}{"title": "Hello"}, final.Input)
+	assert.Nil(t, final.RawInput)
+}
+
+// Ported from TS b032d70bf1 (#21615): tool-output-available/tool-output-error
+// must prefer the output chunk's own toolMetadata over the stale metadata
+// recorded when the tool's input became available, for both static and
+// dynamic tools, while still falling back to the existing metadata when the
+// output chunk omits it.
+func TestReadUIMessages_ToolOutputChunkMetadataOverridesInputMetadata(t *testing.T) {
+	snapshots, err := sendChunks(t, nil, []UIMessageChunk{
+		{"type": "start", "messageId": "msg-123"},
+		{"type": "start-step"},
+		{"type": "tool-input-available", "toolCallId": "dynamic-success", "toolName": "tool-name", "input": map[string]interface{}{"query": "test"}, "dynamic": true},
+		{"type": "tool-output-available", "toolCallId": "dynamic-success", "output": map[string]interface{}{"result": "provider-result"}, "dynamic": true, "toolMetadata": map[string]interface{}{"phase": "dynamic-output-available"}},
+		{"type": "tool-input-available", "toolCallId": "dynamic-error", "toolName": "tool-name", "input": map[string]interface{}{"query": "test"}, "dynamic": true, "toolMetadata": map[string]interface{}{"phase": "dynamic-input"}},
+		{"type": "tool-output-error", "toolCallId": "dynamic-error", "errorText": "error-text", "dynamic": true, "toolMetadata": map[string]interface{}{"phase": "dynamic-output-error"}},
+		{"type": "tool-input-available", "toolCallId": "static-success", "toolName": "tool-name", "input": map[string]interface{}{"query": "test"}},
+		{"type": "tool-output-available", "toolCallId": "static-success", "output": map[string]interface{}{"result": "provider-result"}, "toolMetadata": map[string]interface{}{"phase": "static-output-available"}},
+		{"type": "tool-input-available", "toolCallId": "static-error", "toolName": "tool-name", "input": map[string]interface{}{"query": "test"}, "toolMetadata": map[string]interface{}{"phase": "static-input"}},
+		{"type": "tool-output-error", "toolCallId": "static-error", "errorText": "error-text", "toolMetadata": map[string]interface{}{"phase": "static-output-error"}},
+		{"type": "finish-step"},
+		{"type": "finish"},
+	})
+	require.NoError(t, err)
+	final := snapshots[len(snapshots)-1]
+
+	cases := []struct {
+		toolCallID, toolType, wantPhase string
+	}{
+		{"dynamic-success", "dynamic-tool", "dynamic-output-available"},
+		{"dynamic-error", "dynamic-tool", "dynamic-output-error"},
+		{"static-success", "tool-tool-name", "static-output-available"},
+		{"static-error", "tool-tool-name", "static-output-error"},
+	}
+	for _, c := range cases {
+		part := findToolUIMessagePart(final, c.toolType)
+		for _, p := range final.Parts {
+			if tool, ok := AsToolUIPart(p); ok && tool.ToolCallID == c.toolCallID {
+				part = tool
+			}
+		}
+		require.NotNil(t, part, "missing part for %s", c.toolCallID)
+		require.NotNil(t, part.ToolMetadata, "missing toolMetadata for %s", c.toolCallID)
+		assert.Equal(t, c.wantPhase, part.ToolMetadata["phase"], "unexpected toolMetadata for %s", c.toolCallID)
+	}
 }

@@ -156,6 +156,7 @@ func TestStreamTextLanguageModelCallCallbacks(t *testing.T) {
 				Prompt:      "hi",
 				Tools:       []types.Tool{tool},
 				Temperature: ptrFloat(0.5),
+				StopWhen:    []StopCondition{IsLoopFinished()},
 				OnStepStart: func(context.Context, OnStepStartEvent) { record("stepStart") },
 			}
 			if useAlias {
@@ -360,9 +361,10 @@ func TestStreamTextInvalidToolCallErrorChunkOrder(t *testing.T) {
 	})
 
 	result, err := StreamText(context.Background(), StreamTextOptions{
-		Model:  model,
-		Prompt: "hi",
-		Tools:  []types.Tool{tool},
+		StopWhen: []StopCondition{IsLoopFinished()},
+		Model:    model,
+		Prompt:   "hi",
+		Tools:    []types.Tool{tool},
 	})
 	if err != nil {
 		t.Fatalf("StreamText() error = %v", err)

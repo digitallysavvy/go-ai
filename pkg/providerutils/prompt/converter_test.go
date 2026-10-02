@@ -1,7 +1,9 @@
 package prompt
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -333,6 +335,90 @@ func TestToOpenAIMessagesToolResultOutputTypes(t *testing.T) {
 			t.Fatalf("content = %#v, want default denial text", got["content"])
 		}
 	})
+}
+
+// TestToOpenAIMessagesMultiPartToolContent ports the TS repro from commit
+// 04be48fbf3 (#21857, issue #10850): a "content" kind tool-result output
+// with a text block and an inline image file block must retain the image
+// as structured image_url content -- not a JSON string -- when
+// SupportsMultiPartToolContent is enabled, so a multimodal model can
+// actually see it. The default (disabled) behavior is unchanged.
+func TestToOpenAIMessagesMultiPartToolContent(t *testing.T) {
+	imageData := []byte("fake-png-bytes")
+	output := types.ToolResultOutput{
+		Type: types.ToolResultOutputContent,
+		Content: []types.ToolResultContentBlock{
+			types.TextContentBlock{Text: "image result"},
+			types.FileContentBlock{Data: imageData, MediaType: "image/png"},
+		},
+	}
+	msg := func(opts ToOpenAIMessagesOptions) map[string]interface{} {
+		result := ToOpenAIMessages([]types.Message{{
+			Role: types.RoleTool,
+			Content: []types.ContentPart{
+				types.ToolResultContent{ToolCallID: "c1", ToolName: "t", Output: &output},
+			},
+		}}, opts)
+		return result[0]
+	}
+
+	t.Run("disabled (default) stringifies the whole block array", func(t *testing.T) {
+		got := msg(ToOpenAIMessagesOptions{})
+		text, ok := got["content"].(string)
+		if !ok {
+			t.Fatalf("content = %#v (%T), want a string", got["content"], got["content"])
+		}
+		if strings.Contains(text, "image_url") {
+			t.Fatalf("content = %q, want no structured image_url part when disabled", text)
+		}
+	})
+
+	t.Run("enabled emits structured content parts", func(t *testing.T) {
+		got := msg(ToOpenAIMessagesOptions{SupportsMultiPartToolContent: true})
+		parts, ok := got["content"].([]map[string]interface{})
+		if !ok {
+			t.Fatalf("content = %#v (%T), want a content-part array", got["content"], got["content"])
+		}
+		if len(parts) != 2 {
+			t.Fatalf("content parts = %#v, want 2", parts)
+		}
+		if parts[0]["type"] != "text" || parts[0]["text"] != "image result" {
+			t.Fatalf("parts[0] = %#v, want the text part", parts[0])
+		}
+		if parts[1]["type"] != "image_url" {
+			t.Fatalf("parts[1] = %#v, want an image_url part", parts[1])
+		}
+		imageURL, ok := parts[1]["image_url"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("parts[1][\"image_url\"] = %#v, want a map", parts[1]["image_url"])
+		}
+		wantURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(imageData)
+		if imageURL["url"] != wantURL {
+			t.Fatalf("image_url.url = %#v, want %q", imageURL["url"], wantURL)
+		}
+	})
+}
+
+// TestToOpenAIMessagesMultiPartToolContentFallsBackOnUnsupportedBlock
+// documents the one intentional deviation from TS: a block type this
+// shared converter cannot represent as a structured part (a custom block)
+// falls back to the whole output's JSON string, since ToOpenAIMessages has
+// no error return to surface TS's UnsupportedFunctionalityError through.
+func TestToOpenAIMessagesMultiPartToolContentFallsBackOnUnsupportedBlock(t *testing.T) {
+	output := types.ToolResultOutput{
+		Type:    types.ToolResultOutputContent,
+		Content: []types.ToolResultContentBlock{types.RawToolResultContentBlock{Type: "custom"}},
+	}
+	result := ToOpenAIMessages([]types.Message{{
+		Role: types.RoleTool,
+		Content: []types.ContentPart{
+			types.ToolResultContent{ToolCallID: "c1", ToolName: "t", Output: &output},
+		},
+	}}, ToOpenAIMessagesOptions{SupportsMultiPartToolContent: true})
+
+	if _, ok := result[0]["content"].(string); !ok {
+		t.Fatalf("content = %#v (%T), want a fallback string", result[0]["content"], result[0]["content"])
+	}
 }
 
 func TestToOpenAIMessagesAssistantWithoutToolCallsUsesEmptyStringContent(t *testing.T) {

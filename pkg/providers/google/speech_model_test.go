@@ -57,7 +57,7 @@ func TestGoogleSpeechModelRequestAndWAVResponse(t *testing.T) {
 	if capturedKey != "test-key" {
 		t.Fatalf("x-goog-api-key = %q", capturedKey)
 	}
-	if !strings.HasPrefix(capturedUserAgent, "ai-sdk/google/0.5.0 ") {
+	if !strings.HasPrefix(capturedUserAgent, "ai-sdk-google/0.5.0 ") {
 		t.Fatalf("User-Agent = %q", capturedUserAgent)
 	}
 	contents := capturedBody["contents"].([]interface{})
@@ -99,6 +99,37 @@ func TestGoogleSpeechModelRequestAndWAVResponse(t *testing.T) {
 	body, ok := result.Response.Body.(map[string]interface{})
 	if !ok || body["candidates"] == nil {
 		t.Fatalf("response body = %#v, want parsed JSON object", result.Response.Body)
+	}
+}
+
+// TestGoogleSpeechModelUsageMetadata is ported from TS
+// google-speech-model.test.ts "should include usage metadata" (TS
+// 8c659885c5 / #21427): result.usage mirrors the response's usageMetadata
+// object verbatim.
+func TestGoogleSpeechModelUsageMetadata(t *testing.T) {
+	pcm := []byte{1, 0, 2, 0}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"audio/L16;rate=24000","data":"` +
+			base64.StdEncoding.EncodeToString(pcm) +
+			`"}}]}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":4}}`))
+	}))
+	defer server.Close()
+
+	p := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	model, err := p.SpeechModel(ModelGemini25FlashTTS)
+	if err != nil {
+		t.Fatalf("SpeechModel: %v", err)
+	}
+	result, err := model.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "Hello."})
+	if err != nil {
+		t.Fatalf("DoGenerate: %v", err)
+	}
+	if got, want := result.Usage["promptTokenCount"], float64(10); got != want {
+		t.Fatalf("Usage[promptTokenCount] = %v, want %v", got, want)
+	}
+	if got, want := result.Usage["candidatesTokenCount"], float64(4); got != want {
+		t.Fatalf("Usage[candidatesTokenCount] = %v, want %v", got, want)
 	}
 }
 

@@ -260,13 +260,20 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	// defaults to true, strictJsonSchema defaults to false. JSON mode without a
 	// schema also injects a JSON instruction into the system message.
 	mistralOptions, _ := opts.ProviderOptions["mistral"].(map[string]interface{})
+	structuredOutputs := providerutils.BoolOption(mistralOptions, "structuredOutputs", true)
 	if format, _ := providerutils.ChatResponseFormat(opts.ResponseFormat, providerutils.ChatResponseFormatOptions{
-		StructuredOutputs: providerutils.BoolOption(mistralOptions, "structuredOutputs", true),
+		StructuredOutputs: structuredOutputs,
 		StrictJSONSchema:  providerutils.BoolOption(mistralOptions, "strictJsonSchema", false),
 	}); format != nil {
 		body["response_format"] = format
-		if providerutils.ResponseFormatJSONSchema(opts.ResponseFormat.Schema) == nil || opts.ResponseFormat.Type == "json_object" {
-			injectMistralJSONInstruction(body)
+		// JSON Object mode is used whenever structuredOutputs is disabled
+		// (even with a schema) or no schema was supplied; the schema is then
+		// discarded from response_format, so inject it into the prompt
+		// instead so the model still sees the intended shape (TS commit
+		// 5fa97cd0af, #21744).
+		schema, _ := providerutils.ResponseFormatJSONSchema(opts.ResponseFormat.Schema).(map[string]interface{})
+		if !structuredOutputs || schema == nil || opts.ResponseFormat.Type == "json_object" {
+			injectMistralJSONInstruction(body, schema)
 		}
 	}
 	// Map top-level Reasoning to Mistral reasoning_effort.
@@ -399,12 +406,18 @@ func convertMistralUsage(raw json.RawMessage) types.Usage {
 }
 
 // mapMistralFinishReason extends the standard OpenAI finish reason mapping with
-// "model_length", a Mistral-specific variant of "length".
+// "model_length", a Mistral-specific variant of "length", and "error", which
+// maps to the unified "error" value rather than falling through to "other"
+// (TS commit c636bb4453, #21745).
 func mapMistralFinishReason(reason string) types.FinishReason {
-	if reason == "model_length" {
+	switch reason {
+	case "model_length":
 		return types.FinishReasonLength
+	case "error":
+		return types.FinishReasonError
+	default:
+		return providerutils.MapOpenAIFinishReason(reason)
 	}
-	return providerutils.MapOpenAIFinishReason(reason)
 }
 
 type mistralResponse struct {
@@ -764,8 +777,10 @@ func (s *mistralStream) flushMistralToolCalls(finishReason string) {
 }
 
 // injectMistralJSONInstruction mirrors injectJsonInstructionIntoMessages
-// (provider-utils) for JSON mode without a schema: the generic JSON
-// instruction is merged into the leading system message (or a new one).
+// (provider-utils): the JSON-mode instruction -- with the supplied schema
+// serialized into it when non-nil (TS commit 5fa97cd0af, #21744), or a
+// generic "answer with JSON" instruction otherwise -- is merged into the
+// leading system message (or a new one).
 //
 // TS always merges into a single system message because its
 // LanguageModelV4Message system role only ever carries string content. Go's
@@ -775,25 +790,22 @@ func (s *mistralStream) flushMistralToolCalls(finishReason string) {
 // must still be merged into the existing leading system message -- by
 // appending a text part -- rather than falling through to prepending a
 // second system message.
-func injectMistralJSONInstruction(body map[string]interface{}) {
-	const instruction = "You MUST answer with JSON."
+func injectMistralJSONInstruction(body map[string]interface{}, schema map[string]interface{}) {
 	messages, _ := body["messages"].([]map[string]interface{})
 	if len(messages) > 0 && messages[0]["role"] == "system" {
 		switch content := messages[0]["content"].(type) {
 		case string:
-			if content != "" {
-				messages[0]["content"] = content + "\n\n" + instruction
-			} else {
-				messages[0]["content"] = instruction
-			}
+			messages[0]["content"] = providerutils.InjectJSONInstruction(content, schema, providerutils.InjectJSONInstructionOptions{})
 			return
 		case []map[string]interface{}:
+			instruction := providerutils.InjectJSONInstruction("", schema, providerutils.InjectJSONInstructionOptions{})
 			messages[0]["content"] = append(content, map[string]interface{}{"type": "text", "text": instruction})
 			return
 		case nil:
-			messages[0]["content"] = instruction
+			messages[0]["content"] = providerutils.InjectJSONInstruction("", schema, providerutils.InjectJSONInstructionOptions{})
 			return
 		}
 	}
+	instruction := providerutils.InjectJSONInstruction("", schema, providerutils.InjectJSONInstructionOptions{})
 	body["messages"] = append([]map[string]interface{}{{"role": "system", "content": instruction}}, messages...)
 }

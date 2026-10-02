@@ -29,7 +29,9 @@ const (
 // EvaluationFallbackCondition.
 type EvaluationFallbackCondition struct {
 	// Question narrows the condition to a specific question ID. Used with
-	// ConfidenceBelow or ProbabilityBetween.
+	// ConfidenceBelow or ProbabilityBetween. When left empty, ConfidenceBelow
+	// checks every Choice and Score question and ProbabilityBetween checks
+	// every Boolean question (TS #21625).
 	Question string
 
 	// ConfidenceBelow triggers the fallback when the named question's
@@ -233,9 +235,17 @@ func evaluationFallbackConditionListFromValue(v interface{}) ([]EvaluationFallba
 func (c EvaluationFallbackCondition) toWire() map[string]interface{} {
 	switch {
 	case c.ConfidenceBelow != nil:
-		return map[string]interface{}{"question": c.Question, "confidenceBelow": *c.ConfidenceBelow}
+		w := map[string]interface{}{"confidenceBelow": *c.ConfidenceBelow}
+		if c.Question != "" {
+			w["question"] = c.Question
+		}
+		return w
 	case c.ProbabilityBetween != nil:
-		return map[string]interface{}{"question": c.Question, "probabilityBetween": []interface{}{c.ProbabilityBetween[0], c.ProbabilityBetween[1]}}
+		w := map[string]interface{}{"probabilityBetween": []interface{}{c.ProbabilityBetween[0], c.ProbabilityBetween[1]}}
+		if c.Question != "" {
+			w["question"] = c.Question
+		}
+		return w
 	case c.Any != nil:
 		return map[string]interface{}{"any": conditionsToWire(c.Any)}
 	case c.All != nil:
@@ -380,16 +390,22 @@ func validateEvaluationFallbackCondition(value interface{}, depth int) error {
 	}
 }
 
+// isDirectCondition mirrors TS directConditionSchema: `question` is
+// optional (TS #21625 -- a question-less condition checks every matching
+// question of the implied type), and exactly one of confidenceBelow /
+// probabilityBetween must be present, with no other keys.
 func isDirectCondition(m map[string]interface{}) bool {
-	if len(m) != 2 {
-		return false
-	}
-	if _, ok := m["question"]; !ok {
-		return false
-	}
 	_, hasConfidenceBelow := m["confidenceBelow"]
 	_, hasProbabilityBetween := m["probabilityBetween"]
-	return hasConfidenceBelow != hasProbabilityBetween
+	if hasConfidenceBelow == hasProbabilityBetween {
+		// Neither or both set: not a valid direct condition.
+		return false
+	}
+	wantLen := 1
+	if _, hasQuestion := m["question"]; hasQuestion {
+		wantLen = 2
+	}
+	return len(m) == wantLen
 }
 
 func hasOnlyKey(m map[string]interface{}, key string) bool {
@@ -401,9 +417,11 @@ func hasOnlyKey(m map[string]interface{}, key string) bool {
 }
 
 func validateDirectCondition(m map[string]interface{}) error {
-	question, ok := m["question"].(string)
-	if !ok || len(question) < 1 || len(question) > EvaluationFallbackMaxQuestionLength {
-		return fmt.Errorf("condition question must be between 1 and %d characters", EvaluationFallbackMaxQuestionLength)
+	if q, hasQuestion := m["question"]; hasQuestion {
+		question, ok := q.(string)
+		if !ok || len(question) < 1 || len(question) > EvaluationFallbackMaxQuestionLength {
+			return fmt.Errorf("condition question must be between 1 and %d characters", EvaluationFallbackMaxQuestionLength)
+		}
 	}
 	if cb, ok := m["confidenceBelow"]; ok {
 		v, ok := toFloat64(cb)

@@ -538,6 +538,161 @@ func TestToUIMessageStreamPreservesReusedToolCallIDAcrossSteps(t *testing.T) {
 	}
 }
 
+// TestToUIMessageStreamSynthesizesStartForBareToolMessage ports TS "should
+// preserve bare tool lifecycles when tool call ids repeat across steps"
+// (adapter.test.ts, TS #21552 "preserve ordered bare LangChain tool
+// lifecycles when tool-call IDs are reused"): a bare messages-mode
+// ToolMessage with no preceding tool-call lifecycle ever observed for its
+// id must still get a synthesized tool-input-start before its output.
+func TestToUIMessageStreamSynthesizesStartForBareToolMessage(t *testing.T) {
+	events := make(chan StreamEvent, 1)
+	events <- StreamEvent{Mode: "messages", Data: []interface{}{
+		map[string]interface{}{
+			"id": "tool-message-1", "type": "tool", "tool_call_id": "call-1",
+			"content": "Sunny, 72°F", "name": "get_weather",
+		},
+		map[string]interface{}{"langgraph_step": 1},
+	}}
+	close(events)
+
+	chunks := collectChunks(t, events)
+	starts := chunksOfType(chunks, "tool-input-start")
+	outputs := chunksOfType(chunks, "tool-output-available")
+	if len(starts) != 1 || starts[0]["toolCallId"] != "call-1" || starts[0]["toolName"] != "get_weather" {
+		t.Fatalf("tool-input-start = %#v, want one synthesized start for call-1/get_weather", starts)
+	}
+	if len(outputs) != 1 || outputs[0]["toolCallId"] != "call-1" || outputs[0]["output"] != "Sunny, 72°F" {
+		t.Fatalf("tool-output-available = %#v", outputs)
+	}
+	startIdx, outputIdx := -1, -1
+	for i, c := range chunks {
+		if c["type"] == "tool-input-start" {
+			startIdx = i
+		}
+		if c["type"] == "tool-output-available" {
+			outputIdx = i
+		}
+	}
+	if startIdx == -1 || outputIdx == -1 || startIdx >= outputIdx {
+		t.Fatalf("tool-input-start (%d) must precede tool-output-available (%d); chunks=%#v", startIdx, outputIdx, chunks)
+	}
+}
+
+// TestToUIMessageStreamSynthesizesStartForBareToolMessageAcrossSteps ports
+// TS "should preserve bare tool lifecycles when tool call ids repeat
+// across steps" for the bare-ToolMessage (not tool_call_chunks) path: the
+// same provider-scoped id reused by two unrelated bare ToolMessages in two
+// different steps must get two independent synthesized lifecycles.
+func TestToUIMessageStreamSynthesizesStartForBareToolMessageAcrossSteps(t *testing.T) {
+	events := make(chan StreamEvent, 2)
+	events <- StreamEvent{Mode: "messages", Data: []interface{}{
+		map[string]interface{}{"id": "tool-message-1", "type": "tool", "tool_call_id": "call-reused", "content": "first result", "name": "first_tool"},
+		map[string]interface{}{"langgraph_step": 1},
+	}}
+	events <- StreamEvent{Mode: "messages", Data: []interface{}{
+		map[string]interface{}{"id": "tool-message-2", "type": "tool", "tool_call_id": "call-reused", "content": "second result", "name": "second_tool"},
+		map[string]interface{}{"langgraph_step": 2},
+	}}
+	close(events)
+
+	chunks := collectChunks(t, events)
+	starts := chunksOfType(chunks, "tool-input-start")
+	outputs := chunksOfType(chunks, "tool-output-available")
+	if len(starts) != 2 {
+		t.Fatalf("tool-input-start = %#v, want 2 (one per step)", starts)
+	}
+	if starts[0]["toolCallId"] != "call-reused" || starts[0]["toolName"] != "first_tool" {
+		t.Fatalf("first start = %#v", starts[0])
+	}
+	if starts[1]["toolCallId"] != "call-reused" || starts[1]["toolName"] != "second_tool" {
+		t.Fatalf("second start = %#v", starts[1])
+	}
+	if len(outputs) != 2 || outputs[0]["output"] != "first result" || outputs[1]["output"] != "second result" {
+		t.Fatalf("outputs = %#v", outputs)
+	}
+}
+
+// TestToUIMessageStreamKeepsUnfinishedToolCallSeparateAcrossNamespaces ports
+// TS "should keep an unfinished tool call separate from a bare same-id
+// lifecycle in another namespace" (adapter.test.ts, TS #21552): a tool call
+// started (via tool_call_chunks) but never completed in one namespace must
+// not block a bare ToolMessage reusing the same provider-scoped id in a
+// DIFFERENT namespace from getting its own synthesized lifecycle. This is
+// the regression a namespace-unaware "has this id ever been started"
+// check (rather than a namespace-scoped unfinished-call check) would fail.
+func TestToUIMessageStreamKeepsUnfinishedToolCallSeparateAcrossNamespaces(t *testing.T) {
+	events := make(chan StreamEvent, 2)
+	events <- StreamEvent{Mode: "messages", Namespace: []string{"tools:first"}, HasNamespace: true, Data: []interface{}{
+		map[string]interface{}{
+			"id": "message-1", "type": "ai", "content": "",
+			"tool_call_chunks": []interface{}{
+				map[string]interface{}{"id": "call-reused", "name": "first_tool", "args": `{"query":"first"}`, "index": 0},
+			},
+		},
+		map[string]interface{}{"langgraph_step": 1},
+	}}
+	events <- StreamEvent{Mode: "messages", Namespace: []string{"tools:second"}, HasNamespace: true, Data: []interface{}{
+		map[string]interface{}{"id": "tool-message-2", "type": "tool", "tool_call_id": "call-reused", "content": "second result", "name": "second_tool"},
+		map[string]interface{}{"langgraph_step": 1},
+	}}
+	close(events)
+
+	chunks := collectChunks(t, events)
+	starts := chunksOfType(chunks, "tool-input-start")
+	outputs := chunksOfType(chunks, "tool-output-available")
+	if len(starts) != 2 {
+		t.Fatalf("tool-input-start = %#v, want 2 (the first namespace's never-finished call, plus the second namespace's own)", starts)
+	}
+	if starts[0]["toolCallId"] != "call-reused" || starts[0]["toolName"] != "first_tool" {
+		t.Fatalf("first namespace start = %#v", starts[0])
+	}
+	if starts[1]["toolCallId"] != "call-reused" || starts[1]["toolName"] != "second_tool" {
+		t.Fatalf("second namespace start = %#v", starts[1])
+	}
+	if len(outputs) != 1 || outputs[0]["toolCallId"] != "call-reused" || outputs[0]["output"] != "second result" {
+		t.Fatalf("outputs = %#v, want exactly the second namespace's output", outputs)
+	}
+}
+
+// TestToUIMessageStreamAttachesDelayedBareToolMessageToUnfinishedLifecycle
+// ports TS "should attach a delayed bare tool message to an unfinished
+// lifecycle in the same namespace" (utils.test.ts, TS #21552): a tool call
+// started via tool_call_chunks in one step, still unfinished when the step
+// advances, must have its later bare ToolMessage output recognized as a
+// delayed completion of that SAME lifecycle — no second (duplicate)
+// synthesized start.
+func TestToUIMessageStreamAttachesDelayedBareToolMessageToUnfinishedLifecycle(t *testing.T) {
+	events := make(chan StreamEvent, 3)
+	events <- StreamEvent{Mode: "messages", Data: []interface{}{
+		map[string]interface{}{
+			"id": "msg-1", "type": "ai", "content": "",
+			"tool_call_chunks": []interface{}{
+				map[string]interface{}{"id": "call-1", "name": "get_weather", "args": `{"city":"SF"}`, "index": 0},
+			},
+		},
+		map[string]interface{}{"langgraph_step": 1},
+	}}
+	events <- StreamEvent{Mode: "messages", Data: []interface{}{
+		map[string]interface{}{"id": "msg-2", "type": "ai", "content": "Waiting"},
+		map[string]interface{}{"langgraph_step": 2},
+	}}
+	events <- StreamEvent{Mode: "messages", Data: []interface{}{
+		map[string]interface{}{"id": "tool-message-1", "type": "tool", "tool_call_id": "call-1", "content": "Sunny", "name": "get_weather"},
+		map[string]interface{}{"langgraph_step": 2},
+	}}
+	close(events)
+
+	chunks := collectChunks(t, events)
+	starts := chunksOfType(chunks, "tool-input-start")
+	outputs := chunksOfType(chunks, "tool-output-available")
+	if len(starts) != 1 || starts[0]["toolCallId"] != "call-1" || starts[0]["toolName"] != "get_weather" {
+		t.Fatalf("tool-input-start = %#v, want exactly one (step 1's, not a duplicate)", starts)
+	}
+	if len(outputs) != 1 || outputs[0]["toolCallId"] != "call-1" || outputs[0]["output"] != "Sunny" {
+		t.Fatalf("tool-output-available = %#v", outputs)
+	}
+}
+
 // mirrors TS test "should emit completed tool lifecycles from values-only
 // streams" (adapter.test.ts)
 func TestToUIMessageStreamEmitsCompletedToolLifecycleFromValuesOnlyStream(t *testing.T) {

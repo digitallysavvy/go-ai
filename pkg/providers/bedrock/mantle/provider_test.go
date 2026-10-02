@@ -201,6 +201,46 @@ func TestBaseURLForModel_RoutesOpenAIOnlyModelsToOpenAIPath(t *testing.T) {
 	}
 }
 
+// TestBaseURLForModel_RejectsRegionThatWouldRewriteHost ports TS
+// bedrock-mantle-provider's region validation (TS #21842): region is
+// interpolated directly into the request host
+// (https://bedrock-mantle.{region}.api.aws/...), so a value that isn't a
+// single DNS label must be rejected before any request is sent.
+func TestBaseURLForModel_RejectsRegionThatWouldRewriteHost(t *testing.T) {
+	for _, region := range []string{"user@internal:8080/#", "evil.example.com/#", "us east 1"} {
+		t.Run(region, func(t *testing.T) {
+			p := CreateBedrockMantle(ProviderSettings{Region: region, APIKey: "bearer"})
+			_, err := p.baseURLForModel("anthropic.claude-sonnet-5")
+			var invalid *providererrors.InvalidArgumentError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("baseURLForModel(region=%q) error = %v, want InvalidArgumentError", region, err)
+			}
+			if invalid.Field != "region" {
+				t.Fatalf("Field = %q, want region", invalid.Field)
+			}
+		})
+	}
+}
+
+// TestBaseURLForModel_DoesNotValidateUnusedRegionWithCustomBaseURL ports TS
+// "does not validate an unused region with an explicit endpoint": region is
+// irrelevant once BaseURL is set, so a garbage value must not block the
+// request.
+func TestBaseURLForModel_DoesNotValidateUnusedRegionWithCustomBaseURL(t *testing.T) {
+	p := CreateBedrockMantle(ProviderSettings{
+		Region:  "user@internal:8080/#",
+		APIKey:  "bearer",
+		BaseURL: "https://custom.example.com/v1",
+	})
+	got, err := p.baseURLForModel("anthropic.claude-sonnet-5")
+	if err != nil {
+		t.Fatalf("baseURLForModel error = %v, want success (region unused with explicit BaseURL)", err)
+	}
+	if got != "https://custom.example.com/v1" {
+		t.Fatalf("baseURLForModel = %q, want explicit override", got)
+	}
+}
+
 func TestBaseURLForModel_ExplicitBaseURLAlwaysWins(t *testing.T) {
 	p := CreateBedrockMantle(ProviderSettings{Region: "us-east-1", APIKey: "bearer", BaseURL: "https://custom.example.com/v1"})
 	got, err := p.baseURLForModel("openai.gpt-4o-mantle")

@@ -560,6 +560,16 @@ result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
 })
 ```
 
+### Checking File and Mask Support
+
+Not every model that accepts `Files` / `Mask` actually consumes them for editing; some silently ignore them and return an unrelated fresh generation. A model can optionally advertise support through `SupportsFileInputs() *bool` / `SupportsMaskInputs() *bool`, read via `provider.ImageModelSupportsFileInputs` / `provider.ImageModelSupportsMaskInputs`. `nil` means unknown — only route an editing request to a model when the result is a non-nil `true`:
+
+```go
+if supported := provider.ImageModelSupportsFileInputs(model); supported != nil && *supported {
+    // safe to pass Files for image editing
+}
+```
+
 ### Image Inpainting
 
 Fill specific areas of an image with new content using masks:

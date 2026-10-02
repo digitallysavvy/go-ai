@@ -164,6 +164,18 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		openaiOpts, _ = opts.ProviderOptions["openai"].(map[string]interface{})
 	}
 
+	// reasoningSummary is a Responses API option; the chat options schema has
+	// no field for it, so it would otherwise be silently dropped. Warn
+	// instead (TS commit 5b8e63bad8, #21178). The message is provider-neutral
+	// because azure.chat() shares this code path.
+	if v, ok := openaiOpts["reasoningSummary"]; ok && v != nil {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "reasoningSummary",
+			Details: "reasoningSummary is only supported by the Responses API, not the Chat Completions API",
+		})
+	}
+
 	// Extract store flag early — needed before message conversion so we can
 	// filter unencrypted reasoning parts from assistant messages when store=false.
 	// storeExplicit tracks whether the caller set the flag (so we only send it

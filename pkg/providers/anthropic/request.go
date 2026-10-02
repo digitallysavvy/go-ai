@@ -239,9 +239,15 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 	if caps.RejectsThinkingDisabled && th.set {
 		switch th.typ {
 		case ThinkingTypeDisabled:
-			warnUnsupported(&warnings, "providerOptions.anthropic.thinking", fmt.Sprintf(
-				"thinking cannot be disabled for %s; it always uses adaptive thinking. The thinking setting has been removed. Lower 'effort' to reduce thinking.", m.modelID))
-			th = effectiveThinking{}
+			if caps.SupportsBetweenToolsThinking {
+				warnUnsupported(&warnings, "providerOptions.anthropic.thinking", fmt.Sprintf(
+					"thinking cannot be disabled for %s. Using 'between_tools' thinking, the lowest thinking setting, instead.", m.modelID))
+				th = effectiveThinking{typ: ThinkingTypeBetweenTools, set: true}
+			} else {
+				warnUnsupported(&warnings, "providerOptions.anthropic.thinking", fmt.Sprintf(
+					"thinking cannot be disabled for %s; it always uses adaptive thinking. The thinking setting has been removed. Lower 'effort' to reduce thinking.", m.modelID))
+				th = effectiveThinking{}
+			}
 		case ThinkingTypeEnabled:
 			warnUnsupported(&warnings, "providerOptions.anthropic.thinking", fmt.Sprintf(
 				"budget-based thinking is not supported by %s; it always uses adaptive thinking. Using adaptive thinking instead. Use 'effort' to control how much the model thinks.", m.modelID))
@@ -255,7 +261,16 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 		effort = "high"
 	}
 
-	isThinking := th.typ == ThinkingTypeEnabled || th.typ == ThinkingTypeAdaptive
+	// `between_tools` thinking is only accepted at "low", "medium", and
+	// "high" effort. Lower the effort to "high" to keep the minimal
+	// thinking setting instead of sending a request the API would reject.
+	if th.typ == ThinkingTypeBetweenTools && (effort == "xhigh" || effort == "max") {
+		warnUnsupported(&warnings, "providerOptions.anthropic.effort", fmt.Sprintf(
+			"effort '%s' is not supported with 'between_tools' thinking. The effort has been lowered to 'high'.", effort))
+		effort = "high"
+	}
+
+	isThinking := th.typ == ThinkingTypeEnabled || th.typ == ThinkingTypeAdaptive || th.typ == ThinkingTypeBetweenTools
 	sendThinking := isThinking || th.typ == ThinkingTypeDisabled || th.blockBinding != nil
 	var thinkingBudget *int
 	if th.typ == ThinkingTypeEnabled {
@@ -547,6 +562,12 @@ func (m *LanguageModel) configBool(v *bool) bool {
 // call-level reasoning level to thinking and effort.
 func resolveReasoningConfig(level types.ReasoningLevel, modelID string, caps ModelCapabilities, warnings *[]types.Warning) (*effectiveThinking, string) {
 	if level == types.ReasoningNone {
+		// `between_tools` is the lowest thinking setting on models that
+		// support it: no upfront thinking, only short progress notes
+		// between tool calls (claude-sonnet-5-5+).
+		if caps.SupportsBetweenToolsThinking {
+			return &effectiveThinking{typ: ThinkingTypeBetweenTools, set: true}, ""
+		}
 		if caps.RejectsThinkingDisabled {
 			*warnings = append(*warnings, types.Warning{
 				Type:    "compatibility",

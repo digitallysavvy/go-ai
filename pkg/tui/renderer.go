@@ -1071,10 +1071,10 @@ func renderSectionLines(section chatSection, width int) []string {
 	width = maxInt(8, width)
 	styleColor, border := sectionStyle(section.kind)
 	contentWidth := maxInt(1, width-4)
-	title := " " + section.title + " "
+	title := " " + sanitizeTerminalText(section.title, false) + " "
 	right := ""
 	if section.rightTitle != "" {
-		right = " " + section.rightTitle + " "
+		right = " " + sanitizeTerminalText(section.rightTitle, false) + " "
 	}
 	borderWidth := maxInt(0, width-2-visibleLength(title)-visibleLength(right))
 	top := styleColor + "╭" + title + strings.Repeat(border, borderWidth) + right + "╮" + ansiReset
@@ -1162,15 +1162,17 @@ func statusLine(state screenViewportState) string {
 		if !state.cursorVisible {
 			cursor = " "
 		}
-		return "> " + state.input + cursor
+		return "> " + sanitizeTerminalText(state.input, false) + cursor
 	}
 	if state.status != "" {
-		return state.status
+		return sanitizeTerminalText(state.status, false)
 	}
-	return streamingStatus
+	return sanitizeTerminalText(streamingStatus, false)
 }
 
 func topBorder(width int, title, rightTitle string) string {
+	title = sanitizeTerminalText(title, false)
+	rightTitle = sanitizeTerminalText(rightTitle, false)
 	contentWidth := maxInt(0, width-2)
 	label := ""
 	if title != "" {

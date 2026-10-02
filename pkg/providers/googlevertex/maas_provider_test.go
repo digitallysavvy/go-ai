@@ -74,6 +74,43 @@ func TestNewMaaS_CustomBaseURLDoesNotRequireProject(t *testing.T) {
 	}
 }
 
+// TestNewMaaS_RejectsLocationThatWouldRewriteHost ports TS
+// google-vertex-location-validation.test.ts for the MaaS provider (TS
+// #21842): location is interpolated directly into the request host, so a
+// value that isn't a single DNS label must be rejected before init.
+func TestNewMaaS_RejectsLocationThatWouldRewriteHost(t *testing.T) {
+	for _, location := range []string{"user@internal:8080/#", "evil.example.com/#", "us central 1"} {
+		t.Run(location, func(t *testing.T) {
+			p := NewMaaS(MaaSConfig{
+				Project:           "test-project",
+				Location:          location,
+				GoogleAuthOptions: &GoogleAuthOptions{TokenSource: staticTokenSource("token")},
+			})
+			_, err := p.LanguageModel("test-model")
+			var invalid *providererrors.InvalidArgumentError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("LanguageModel(location=%q) error = %v, want InvalidArgumentError", location, err)
+			}
+			if invalid.Field != "location" {
+				t.Fatalf("Field = %q, want location", invalid.Field)
+			}
+		})
+	}
+}
+
+// TestNewMaaS_DoesNotValidateUnusedLocationWithCustomBaseURL ports TS "does
+// not validate an unused location with a custom endpoint".
+func TestNewMaaS_DoesNotValidateUnusedLocationWithCustomBaseURL(t *testing.T) {
+	p := NewMaaS(MaaSConfig{
+		Location:          "user@internal:8080/#",
+		BaseURL:           "https://custom-endpoint.example.com",
+		GoogleAuthOptions: &GoogleAuthOptions{TokenSource: staticTokenSource("token")},
+	})
+	if _, err := p.LanguageModel("test-model"); err != nil {
+		t.Fatalf("LanguageModel error = %v, want success (location unused with explicit BaseURL)", err)
+	}
+}
+
 func TestMaaSBaseURLUsesMultiRegionHosts(t *testing.T) {
 	tests := []struct {
 		location string
@@ -127,8 +164,8 @@ func TestVertexMaaS_DefaultProvider(t *testing.T) {
 // TestNewMaaS_UserAgentTaggedOpenAICompatibleNotGoogleVertex mirrors TS
 // google-vertex-maas-provider.ts, which builds on @ai-sdk/openai-compatible's
 // createOpenAICompatible (not @ai-sdk/google-vertex), so its requests carry
-// openai-compatible's own "ai-sdk/openai-compatible/VERSION" tag, never
-// "ai-sdk/google-vertex".
+// openai-compatible's own "ai-sdk-openai-compatible/VERSION" tag, never
+// "ai-sdk-google-vertex".
 func TestNewMaaS_UserAgentTaggedOpenAICompatibleNotGoogleVertex(t *testing.T) {
 	var gotUserAgent string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -152,10 +189,10 @@ func TestNewMaaS_UserAgentTaggedOpenAICompatibleNotGoogleVertex(t *testing.T) {
 	if _, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{}}); err != nil {
 		t.Fatalf("DoGenerate error = %v", err)
 	}
-	if !strings.HasPrefix(gotUserAgent, "ai-sdk/openai-compatible/") {
-		t.Fatalf("User-Agent = %q, want ai-sdk/openai-compatible/... prefix", gotUserAgent)
+	if !strings.HasPrefix(gotUserAgent, "ai-sdk-openai-compatible/") {
+		t.Fatalf("User-Agent = %q, want ai-sdk-openai-compatible/... prefix", gotUserAgent)
 	}
-	if strings.Contains(gotUserAgent, "ai-sdk/google-vertex/") {
+	if strings.Contains(gotUserAgent, "ai-sdk-google-vertex/") {
 		t.Fatalf("User-Agent = %q, must not carry the ai-sdk/google-vertex tag", gotUserAgent)
 	}
 }

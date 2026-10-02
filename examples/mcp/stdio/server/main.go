@@ -212,9 +212,10 @@ func (s *MCPServer) handleGenerate(req MCPRequest) MCPResponse {
 
 	// Generate text
 	result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
-		Model:  model,
-		Prompt: prompt,
-		Tools:  toolsArray,
+		Model:    model,
+		Prompt:   prompt,
+		Tools:    toolsArray,
+		StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 	})
 
 	if err != nil {

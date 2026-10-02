@@ -166,7 +166,36 @@ type Tool struct {
 	// ai.ToolSearch(). It mirrors the TypeScript SDK's internal
 	// vercel.ai.toolSearch symbol tag and must not be set directly.
 	IsToolSearch bool `json:"-"`
+
+	// ToolSearchMaxResults caps the number of matching tools a toolSearch
+	// tool (ai.ToolSearch()) returns per search. Zero means unset, in which
+	// case ai.ToolSearch applies its own default (5). Set only by
+	// ai.ToolSearch(); must not be set directly.
+	ToolSearchMaxResults int `json:"-"`
+
+	// ToolSearchRank optionally selects and ranks eligible deferred tools
+	// for a toolSearch tool (ai.ToolSearch()) instead of its built-in
+	// keyword scoring. Mirrors the TypeScript SDK's toolSearch({ search })
+	// callback. Set only by ai.ToolSearch(); must not be set directly.
+	ToolSearchRank ToolSearchRankFunc `json:"-"`
 }
+
+// ToolSearchCandidate describes one eligible deferred tool passed to a
+// custom tool-search ranking function (ai.ToolSearch's Search config).
+// Mirrors the TypeScript SDK's { name, description? } search candidate.
+type ToolSearchCandidate struct {
+	Name string
+
+	// Description is empty when the candidate tool has no description.
+	Description string
+}
+
+// ToolSearchRankFunc selects and ranks eligible deferred tools for a single
+// search query, returning their names in ranked order. Mirrors the
+// TypeScript SDK's toolSearch({ search }) callback. Unknown names and
+// duplicates are ignored before the result-count limit is applied.
+// Returning an error aborts the search without discovering any tools.
+type ToolSearchRankFunc func(ctx context.Context, query string, tools []ToolSearchCandidate) ([]string, error)
 
 // ToolCallerType identifies the wiring style of a ToolCallerDefinition.
 const (

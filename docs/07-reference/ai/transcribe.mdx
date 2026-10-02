@@ -26,8 +26,13 @@ func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult,
 | `Headers` | `map[string]string` | No | Extra request headers |
 | `Download` | `ai.URLDownloadFunction` | No | Custom single-URL downloader for `AudioURL`; defaults to `CreateURLDownload(nil)` |
 | `MaxRetries` | `*int` | No | Maximum retries per transcription call. Defaults to 2; set to 0 to disable |
+| `Telemetry` | `*ai.TelemetrySettings` | No | Observability configuration for this call. `ExperimentalTelemetry` is a deprecated alias; `Telemetry` wins when both are set |
 
 *Provide one of `Audio`, `AudioBase64`, or `AudioURL`.
+
+### Telemetry
+
+When a telemetry integration is registered (global via `telemetry.RegisterTelemetryIntegration`, or per-call via `Telemetry.Integrations`), `Transcribe` emits an `ai.transcribe` root span covering the whole call (including retries), with the input audio's size/media type (`ai.request.audio.*`, input-gated), the transcript text (`ai.response.text`, output-gated), and the provider's reported usage flattened into numeric `ai.usage.*` / `gen_ai.usage.*` attributes (e.g. `ai.usage.seconds` for a provider that reports `{"seconds": N}`; see the [Telemetry guide](/docs/ai-sdk-core/telemetry#speech-and-transcription) for the key-normalization rules). A failed call — including a provider response with no transcript — ends the span with `codes.Error` status. `ExperimentalStreamTranscribe` (below) emits the analogous `ai.streamTranscribe` span.
 
 ## TranscribeResult
 
@@ -95,4 +100,49 @@ result, err := ai.Transcribe(ctx, opts)
 if ai.IsNoTranscriptGeneratedError(err) {
     // inspect err.(*ai.NoTranscriptGeneratedError).Responses if needed
 }
+```
+
+## ExperimentalStreamTranscribe
+
+Streams transcripts using a transcription model that implements `provider.TranscriptionStreamer`.
+
+### Signature
+
+```go
+func ExperimentalStreamTranscribe(ctx context.Context, opts StreamTranscribeOptions) (*StreamTranscriptionResult, error)
+```
+
+### StreamTranscribeOptions
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `Model` | `provider.TranscriptionModel` | Yes | Must also implement `provider.TranscriptionStreamer` |
+| `Audio` | `provider.AudioStream` | Yes | Source of raw audio chunks to transcribe |
+| `InputAudioFormat` | `provider.AudioFormat` | No | Input audio format for the raw chunks |
+| `ProviderOptions` | `map[string]interface{}` | No | Provider-specific options keyed by provider name |
+| `Headers` | `map[string]string` | No | Extra HTTP/WebSocket headers when supported by the provider |
+| `IncludeRawChunks` | `bool` | No | Request provider raw chunks in the stream |
+| `Telemetry` | `*ai.TelemetrySettings` | No | Observability configuration for this call. `ExperimentalTelemetry` is a deprecated alias; `Telemetry` wins when both are set |
+
+### Telemetry
+
+When a telemetry integration is registered, `ExperimentalStreamTranscribe` emits an `ai.streamTranscribe` root span spanning the whole stream (from before `DoStream` is called until the final `finish` part), with `gen_ai.request.stream: true`, the input audio's accumulated byte length/media type, the final transcript text, and the provider's reported usage flattened into `ai.usage.*` / `gen_ai.usage.*` attributes — the same shape as `Transcribe`'s `ai.transcribe` span (see the [Telemetry guide](/docs/ai-sdk-core/telemetry#speech-and-transcription)). The span ends with `codes.Error` status, and `OnError` fires, if the stream fails or is cancelled before a `finish` part arrives.
+
+### Example
+
+```go
+sampleRate := 16000
+result, err := ai.ExperimentalStreamTranscribe(ctx, ai.StreamTranscribeOptions{
+    Model:            streamingTranscriptionModel,
+    Audio:            audioStream,
+    InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: &sampleRate},
+    Telemetry: &ai.TelemetrySettings{
+        IsEnabled: telemetry.Bool(true),
+    },
+})
+if err != nil {
+    // handle
+}
+
+text, err := result.Text()
 ```

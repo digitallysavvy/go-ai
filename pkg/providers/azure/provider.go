@@ -13,6 +13,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providers/deepseek"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -109,6 +110,18 @@ type Config struct {
 
 	// HTTPClient overrides the HTTP client used for requests.
 	HTTPClient *stdhttp.Client `json:"-"`
+
+	// SpeechBaseURL is the URL prefix for Azure Speech (MAI-Transcribe
+	// transcription and MAI-Voice speech), e.g. a regional endpoint like
+	// "https://eastus.api.cognitive.microsoft.com". Defaults to
+	// "https://{ResourceName}.cognitiveservices.azure.com". Speech requests
+	// do not use BaseURL or APIVersion.
+	SpeechBaseURL string
+
+	// MaiBaseURL is the URL prefix for MAI realtime APIs
+	// (MAI-Transcribe-2-Streaming). Defaults to
+	// "https://{ResourceName}.services.ai.azure.com/mai/v1".
+	MaiBaseURL string
 }
 
 // New creates a new Azure OpenAI provider with the given configuration.
@@ -134,6 +147,9 @@ func New(cfg Config) (*Provider, error) {
 	// Build base URL if not provided
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
+		if err := validateAzureResourceName(cfg.ResourceName); err != nil {
+			return nil, err
+		}
 		// Standard Azure OpenAI endpoint format
 		baseURL = fmt.Sprintf("https://%s.openai.azure.com/openai", cfg.ResourceName)
 	}
@@ -161,11 +177,39 @@ func New(cfg Config) (*Provider, error) {
 			UseDeploymentBasedURLs: cfg.UseDeploymentBasedURLs,
 			Headers:                cfg.Headers,
 			HTTPClient:             cfg.HTTPClient,
+			SpeechBaseURL:          cfg.SpeechBaseURL,
+			MaiBaseURL:             cfg.MaiBaseURL,
 		},
 		client:     client,
 		httpClient: httpClient,
 		urlInfo:    getAzureOpenAIBaseURLInfo(cfg.BaseURL),
 	}, nil
+}
+
+// validateAzureResourceName rejects a resourceName that would rewrite the
+// request host. resourceName is interpolated directly into the request host
+// (https://{resourceName}.openai.azure.com/... and, for Azure Speech,
+// https://{resourceName}.cognitiveservices.azure.com/...), so a value that
+// isn't a single DNS label -- e.g. "user@internal:8080/#" -- could steer the
+// request to an attacker-controlled host. Mirrors TS createAzure's
+// getResourceName validation (ports TS #21640, #21842).
+func validateAzureResourceName(resourceName string) error {
+	// An empty resourceName is left to fail naturally wherever it's
+	// actually used (it was already tolerated, unvalidated, before this
+	// check existed); only a non-empty value that could rewrite the
+	// request host is rejected here. TS's equivalent "required" check
+	// lives in loadSetting, a separate, pre-existing concern this port
+	// does not introduce.
+	if resourceName == "" {
+		return nil
+	}
+	if !providerutils.IsValidHostnamePart(resourceName) {
+		return &providererrors.InvalidArgumentError{
+			Field:   "resourceName",
+			Message: "Invalid Azure resource name. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.",
+		}
+	}
+	return nil
 }
 
 // CreateAzure creates a new Azure OpenAI provider.
@@ -344,6 +388,77 @@ func (p *Provider) requestHeaders(_ context.Context, extra map[string]string) (m
 	return extra, nil
 }
 
+// speechHTTPClient returns the *http.Client to use for direct Azure Speech
+// REST calls (p.httpClient is nil when no ADTokenProvider and no custom
+// HTTPClient were configured -- internalhttp.Client handles that nil
+// internally, but the raw *stdhttp.Client used by the Speech/MAI backends
+// cannot, so fall back explicitly here).
+func (p *Provider) speechHTTPClient() *stdhttp.Client {
+	if p.httpClient != nil {
+		return p.httpClient
+	}
+	return http.DefaultHTTPClient
+}
+
+// speechBaseURL resolves the Azure Speech endpoint prefix for MAI-Transcribe
+// transcription and MAI-Voice speech, mirroring TS's `speechBaseURL()`
+// closure in createAzure. ResourceName is only validated here (not
+// unconditionally in New), since an explicit SpeechBaseURL makes it unused.
+func (p *Provider) speechBaseURL() (string, error) {
+	if p.config.SpeechBaseURL != "" {
+		return strings.TrimRight(p.config.SpeechBaseURL, "/"), nil
+	}
+	if err := validateAzureResourceName(p.config.ResourceName); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("https://%s.cognitiveservices.azure.com", p.config.ResourceName), nil
+}
+
+// maiBaseURL resolves the MAI realtime API endpoint prefix for
+// MAI-Transcribe-2-Streaming, mirroring TS's maiBaseURL provider setting
+// default. ResourceName is only validated here, for the same reason as
+// speechBaseURL.
+func (p *Provider) maiBaseURL() (string, error) {
+	if p.config.MaiBaseURL != "" {
+		return strings.TrimRight(p.config.MaiBaseURL, "/"), nil
+	}
+	if err := validateAzureResourceName(p.config.ResourceName); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("https://%s.services.ai.azure.com/mai/v1", p.config.ResourceName), nil
+}
+
+// speechAPIHeaders builds headers for the Azure Speech REST APIs
+// (transcription and TTS), mirroring TS getHeaders('speech'). REST calls run
+// through p.httpClient, whose azureTokenTransport already injects
+// "Authorization: Bearer <token>" when ADTokenProvider is set, so no key
+// header is added in that case.
+func (p *Provider) speechAPIHeaders() map[string]string {
+	headers := map[string]string{}
+	if p.config.ADTokenProvider == nil {
+		headers["Ocp-Apim-Subscription-Key"] = p.config.APIKey
+	}
+	return version.WithUserAgentSuffix(http.MergeHeaders(headers, p.config.Headers), version.ProviderUserAgent("azure"))
+}
+
+// maiAPIHeaders builds headers for the MAI realtime WebSocket, mirroring TS
+// getHeaders('mai'). Unlike the REST backends, a WebSocket dial does not go
+// through p.httpClient's transport, so the bearer token is resolved and set
+// explicitly here when ADTokenProvider is configured.
+func (p *Provider) maiAPIHeaders(ctx context.Context) (map[string]string, error) {
+	headers := map[string]string{}
+	if p.config.ADTokenProvider != nil {
+		token, err := p.config.ADTokenProvider(ctx)
+		if err != nil {
+			return nil, err
+		}
+		headers["authorization"] = "Bearer " + token
+	} else {
+		headers["api-key"] = p.config.APIKey
+	}
+	return version.WithUserAgentSuffix(http.MergeHeaders(headers, p.config.Headers), version.ProviderUserAgent("azure")), nil
+}
+
 func azureHTTPClient(base *stdhttp.Client, tokenProvider func(context.Context) (string, error)) *stdhttp.Client {
 	if tokenProvider == nil {
 		return base
@@ -411,9 +526,26 @@ func (p *Provider) Image(modelID string) (provider.ImageModel, error) {
 	return p.ImageModel(modelID)
 }
 
-// SpeechModel returns a speech synthesis model by ID
+// SpeechModel returns a speech synthesis model by ID. MAI-Voice models use
+// the Azure Speech API by default; other IDs use OpenAI. Override with
+// providerOptions.azure.api.
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return NewSpeechModel(p, modelID), nil
+	return newAzureSpeechDispatchModel(
+		modelID,
+		p.config,
+		NewSpeechModel(p, modelID),
+		newAzureSpeechSpeechModel(modelID,
+			func() (string, error) {
+				base, err := p.speechBaseURL()
+				if err != nil {
+					return "", err
+				}
+				return base + "/tts/cognitiveservices/v1", nil
+			},
+			func(context.Context) (map[string]string, error) { return p.speechAPIHeaders(), nil },
+			p.speechHTTPClient(),
+		),
+	), nil
 }
 
 // Speech returns a speech synthesis model by ID.
@@ -421,9 +553,37 @@ func (p *Provider) Speech(modelID string) (provider.SpeechModel, error) {
 	return p.SpeechModel(modelID)
 }
 
-// TranscriptionModel returns a speech-to-text model by ID
+// TranscriptionModel returns a speech-to-text model by ID. MAI-Transcribe
+// models use the Azure Speech API, and MAI-Transcribe-2-Streaming the MAI
+// realtime API, by default; other IDs use OpenAI. Override with
+// providerOptions.azure.api.
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return NewTranscriptionModel(p, modelID), nil
+	return newAzureTranscriptionDispatchModel(
+		modelID,
+		p.config,
+		NewTranscriptionModel(p, modelID),
+		newAzureSpeechTranscriptionModel(modelID,
+			func() (string, error) {
+				base, err := p.speechBaseURL()
+				if err != nil {
+					return "", err
+				}
+				return base + "/speechtotext/transcriptions:transcribe?api-version=2025-10-15", nil
+			},
+			func(context.Context) (map[string]string, error) { return p.speechAPIHeaders(), nil },
+			p.speechHTTPClient(),
+		),
+		newAzureMaiTranscriptionModel(modelID,
+			func() (string, error) {
+				base, err := p.maiBaseURL()
+				if err != nil {
+					return "", err
+				}
+				return base + "/realtime?intent=transcription", nil
+			},
+			p.maiAPIHeaders,
+		),
+	), nil
 }
 
 // Transcription returns a speech-to-text model by ID.

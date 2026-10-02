@@ -40,8 +40,9 @@ func TestGenerateTextAggregatesContentAcrossSteps(t *testing.T) {
 	}
 
 	result, err := GenerateText(context.Background(), GenerateTextOptions{
-		Model:  model,
-		Prompt: "hi",
+		StopWhen: []StopCondition{IsLoopFinished()},
+		Model:    model,
+		Prompt:   "hi",
 		Tools: []types.Tool{{
 			Name: "calc",
 			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
@@ -241,8 +242,9 @@ func TestGenerateTextAggregatesFilesSourcesWarningsAcrossSteps(t *testing.T) {
 	var finishEvent OnFinishEvent
 	var finishResult *GenerateTextResult
 	result, err := GenerateText(context.Background(), GenerateTextOptions{
-		Model:  model,
-		Prompt: "hi",
+		StopWhen: []StopCondition{IsLoopFinished()},
+		Model:    model,
+		Prompt:   "hi",
 		Tools: []types.Tool{{
 			Name: "calc",
 			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {

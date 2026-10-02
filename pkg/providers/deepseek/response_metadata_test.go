@@ -120,6 +120,38 @@ func TestDeepSeekUsageRawClampsNegativeTextTokens(t *testing.T) {
 	}
 }
 
+func TestDeepSeekUsageCachedTokensFallsBackToPromptTokensDetails(t *testing.T) {
+	// No native prompt_cache_hit_tokens: fall back to the OpenAI-compatible
+	// prompt_tokens_details.cached_tokens (e.g. Azure-hosted DeepSeek).
+	raw := json.RawMessage(`{"prompt_tokens":100,"completion_tokens":10,"prompt_tokens_details":{"cached_tokens":80}}`)
+	usage := convertDeepseekUsage(raw)
+	if usage.InputDetails == nil || usage.InputDetails.CacheReadTokens == nil {
+		t.Fatalf("InputDetails missing: %#v", usage.InputDetails)
+	}
+	if *usage.InputDetails.CacheReadTokens != 80 {
+		t.Fatalf("CacheReadTokens = %d, want 80", *usage.InputDetails.CacheReadTokens)
+	}
+	if usage.InputDetails.NoCacheTokens == nil || *usage.InputDetails.NoCacheTokens != 20 {
+		t.Fatalf("NoCacheTokens = %v, want 20", usage.InputDetails.NoCacheTokens)
+	}
+}
+
+func TestDeepSeekUsageCachedTokensPrefersNativeHitTokens(t *testing.T) {
+	// Both native prompt_cache_hit_tokens and prompt_tokens_details.cached_tokens
+	// present: the native DeepSeek counter must win.
+	raw := json.RawMessage(`{"prompt_tokens":100,"completion_tokens":10,"prompt_cache_hit_tokens":60,"prompt_tokens_details":{"cached_tokens":80}}`)
+	usage := convertDeepseekUsage(raw)
+	if usage.InputDetails == nil || usage.InputDetails.CacheReadTokens == nil {
+		t.Fatalf("InputDetails missing: %#v", usage.InputDetails)
+	}
+	if *usage.InputDetails.CacheReadTokens != 60 {
+		t.Fatalf("CacheReadTokens = %d, want 60", *usage.InputDetails.CacheReadTokens)
+	}
+	if usage.InputDetails.NoCacheTokens == nil || *usage.InputDetails.NoCacheTokens != 40 {
+		t.Fatalf("NoCacheTokens = %v, want 40", usage.InputDetails.NoCacheTokens)
+	}
+}
+
 func TestDeepSeekStreamFinishChunkCarriesUsageAndMetadata(t *testing.T) {
 	sseData := `data: {"id":"chatcmpl-2","object":"chat.completion.chunk","created":1700000001,"model":"deepseek-chat","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":""}]}
 

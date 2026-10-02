@@ -47,6 +47,28 @@ func (m *ImageModel) ModelID() string { return m.modelID }
 // matching TS LumaImageModel's `readonly maxImagesPerCall = 1`).
 func (m *ImageModel) MaxImagesPerCall() int { return 1 }
 
+// SupportsFileInputs reports whether the model accepts file inputs for image
+// editing. Returns nil when support is unknown for the model ID.
+func (m *ImageModel) SupportsFileInputs() *bool {
+	if m.modelID == "photon-1" || m.modelID == "photon-flash-1" {
+		return boolPtr(true)
+	}
+	return nil
+}
+
+// SupportsMaskInputs reports whether the model accepts a mask input for
+// inpainting. Luma's photon models do not support masks.
+func (m *ImageModel) SupportsMaskInputs() *bool {
+	if v := m.SupportsFileInputs(); v != nil && *v {
+		return boolPtr(false)
+	}
+	return nil
+}
+
+func boolPtr(b bool) *bool {
+	return &b
+}
+
 // DoGenerate submits a generation request, polls until it completes, and
 // downloads the resulting image (TS LumaImageModel#doGenerate).
 func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {

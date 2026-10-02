@@ -16,6 +16,18 @@ import (
 // empty or omitted.
 const ToolSearchDefaultName = "toolSearch"
 
+// ToolSearchDefaultMaxResults is the number of matching tools ToolSearch
+// returns per search when config.MaxResults is left unset.
+const ToolSearchDefaultMaxResults = 5
+
+// ToolSearchCandidate re-exports types.ToolSearchCandidate so callers can
+// write ai.ToolSearchCandidate.
+type ToolSearchCandidate = types.ToolSearchCandidate
+
+// ToolSearchRankFunc re-exports types.ToolSearchRankFunc so callers can
+// write ai.ToolSearchRankFunc.
+type ToolSearchRankFunc = types.ToolSearchRankFunc
+
 // ToolSearchConfig configures ai.ToolSearch. All fields are optional.
 type ToolSearchConfig struct {
 	// Name overrides the tool's registered name (default:
@@ -26,6 +38,17 @@ type ToolSearchConfig struct {
 	// ExperimentalToolCallers and the tools list passed to
 	// GenerateText/StreamText.
 	Name string
+
+	// MaxResults caps the number of matching tools returned per search.
+	// Zero (the default) uses ToolSearchDefaultMaxResults (5). A negative
+	// value panics with an InvalidArgumentError, mirroring the TypeScript
+	// SDK's toolSearch({ maxResults }) synchronous validation throw.
+	MaxResults int
+
+	// Search optionally selects and ranks eligible deferred tools, instead
+	// of the built-in keyword scoring over tool names and descriptions.
+	// Mirrors the TypeScript SDK's toolSearch({ search }) callback.
+	Search ToolSearchRankFunc
 }
 
 // ToolSearch returns the native tool-search tool, alongside tools marked
@@ -37,16 +60,49 @@ type ToolSearchConfig struct {
 // the tools-object key the caller chooses; Go tools are a flat slice keyed
 // by Name, so ToolSearchConfig.Name plays the same role (mirroring
 // MCPConfig.Name for the same reason).
+//
+// Panics with a *providererrors.InvalidArgumentError if config.MaxResults is
+// negative.
 func ToolSearch(config ...ToolSearchConfig) types.Tool {
 	name := ToolSearchDefaultName
-	if len(config) > 0 && config[0].Name != "" {
-		name = config[0].Name
+	maxResults := ToolSearchDefaultMaxResults
+	var search ToolSearchRankFunc
+	if len(config) > 0 {
+		if config[0].Name != "" {
+			name = config[0].Name
+		}
+		if config[0].MaxResults != 0 {
+			maxResults = config[0].MaxResults
+		}
+		search = config[0].Search
 	}
+	if maxResults < 1 {
+		panic(&providererrors.InvalidArgumentError{
+			Field:   "maxResults",
+			Message: "maxResults must be a positive safe integer.",
+		})
+	}
+
+	description := "Search for tools by keywords in their names and descriptions."
+	if search != nil {
+		description = "Search for tools matching a query."
+	}
+	resultsPhrase := "five"
+	if maxResults != ToolSearchDefaultMaxResults {
+		resultsPhrase = fmt.Sprintf("%d", maxResults)
+	}
+	description += fmt.Sprintf(
+		" Returns up to %s matching tools. Matches become available on the next model step, after this execution "+
+			"finishes. Wait for their tool definitions before calling the discovered tools. If no tools match, try "+
+			"different keywords.",
+		resultsPhrase,
+	)
+
 	return types.Tool{
-		Name: name,
-		Description: "Search for tools by keywords in their names and descriptions. Returns up to five matching tools. " +
-			"Matches become available on the next model step, after this execution finishes. Wait for their tool " +
-			"definitions before calling the discovered tools. If no tools match, try different keywords.",
+		Name:                 name,
+		Description:          description,
+		ToolSearchMaxResults: maxResults,
+		ToolSearchRank:       search,
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -207,8 +263,12 @@ func (s *ToolSearchState) Apply(activeTools []types.Tool, toolsContext map[strin
 			}
 		}
 
+		maxResults := t.ToolSearchMaxResults
+		if maxResults < 1 {
+			maxResults = ToolSearchDefaultMaxResults
+		}
 		searchTool := t
-		searchTool.Execute = s.newSearchExecute(candidates, toolsContext, sandbox)
+		searchTool.Execute = s.newSearchExecute(candidates, toolsContext, sandbox, maxResults, t.ToolSearchRank)
 		out = append(out, searchTool)
 	}
 	return out
@@ -237,55 +297,90 @@ func callerSetsOverlap(a, b []string) bool {
 	return false
 }
 
-type toolSearchMatch struct {
-	name        string
-	description string
-	hasDesc     bool
-	score       int
+type toolSearchNameScore struct {
+	name  string
+	score int
 }
 
-func (s *ToolSearchState) newSearchExecute(candidates []types.Tool, toolsContext map[string]interface{}, sandbox interface{}) types.ToolExecutor {
+// newSearchExecute builds the Execute function bound to one toolSearch
+// tool's step. It mirrors the TypeScript SDK's prepare-tool-search.ts
+// execute: resolve each candidate's current description, rank candidates
+// (via rank when set, else built-in keyword scoring), then deduplicate and
+// cap the ranked names before looking them up and marking them discovered.
+func (s *ToolSearchState) newSearchExecute(candidates []types.Tool, toolsContext map[string]interface{}, sandbox interface{}, maxResults int, rank types.ToolSearchRankFunc) types.ToolExecutor {
 	return func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
 		query, _ := input["query"].(string)
-		terms := uniqueTokens(tokenizeSearchText(query))
 
-		matches := make([]toolSearchMatch, 0, len(candidates))
+		available := make([]types.ToolSearchCandidate, 0, len(candidates))
 		for _, cand := range candidates {
-			description := resolveCandidateDescription(ctx, cand, toolsContext, sandbox)
-			nameTerms := tokenizeSearchText(cand.Name)
-			descTerms := tokenizeSearchText(description)
-			score := 0
-			for _, term := range terms {
-				if containsToken(nameTerms, term) {
-					score += 2
+			available = append(available, types.ToolSearchCandidate{
+				Name:        cand.Name,
+				Description: resolveCandidateDescription(ctx, cand, toolsContext, sandbox),
+			})
+		}
+		byName := make(map[string]types.ToolSearchCandidate, len(available))
+		for _, a := range available {
+			byName[a.Name] = a
+		}
+
+		var rankedNames []string
+		if rank != nil {
+			// Pass a copy of the candidates so a callback that mutates its
+			// slice or entries cannot affect byName, mirroring the
+			// TypeScript SDK's shallow-copied `tools` argument.
+			cp := make([]types.ToolSearchCandidate, len(available))
+			copy(cp, available)
+			names, err := rank(ctx, query, cp)
+			if err != nil {
+				return nil, err
+			}
+			rankedNames = names
+		} else {
+			terms := uniqueTokens(tokenizeSearchText(query))
+			scoredMatches := make([]toolSearchNameScore, 0, len(available))
+			for _, a := range available {
+				nameTerms := tokenizeSearchText(a.Name)
+				descTerms := tokenizeSearchText(a.Description)
+				score := 0
+				for _, term := range terms {
+					if containsToken(nameTerms, term) {
+						score += 2
+					}
+					if containsToken(descTerms, term) {
+						score++
+					}
 				}
-				if containsToken(descTerms, term) {
-					score += 1
+				if score > 0 {
+					scoredMatches = append(scoredMatches, toolSearchNameScore{name: a.Name, score: score})
 				}
 			}
-			if score > 0 {
-				matches = append(matches, toolSearchMatch{
-					name:        cand.Name,
-					description: description,
-					hasDesc:     description != "",
-					score:       score,
-				})
+			sort.SliceStable(scoredMatches, func(i, j int) bool {
+				return scoredMatches[i].score > scoredMatches[j].score
+			})
+			rankedNames = make([]string, len(scoredMatches))
+			for i, m := range scoredMatches {
+				rankedNames[i] = m.name
 			}
 		}
 
-		sort.SliceStable(matches, func(i, j int) bool {
-			return matches[i].score > matches[j].score
-		})
-		if len(matches) > 5 {
-			matches = matches[:5]
-		}
-
-		results := make([]map[string]interface{}, 0, len(matches))
-		for _, m := range matches {
-			s.markDiscovered(m.name)
-			entry := map[string]interface{}{"name": m.name}
-			if m.hasDesc {
-				entry["description"] = m.description
+		seen := make(map[string]bool, len(rankedNames))
+		results := make([]map[string]interface{}, 0, len(rankedNames))
+		for _, name := range rankedNames {
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			cand, ok := byName[name]
+			if !ok {
+				continue
+			}
+			if len(results) >= maxResults {
+				break
+			}
+			s.markDiscovered(cand.Name)
+			entry := map[string]interface{}{"name": cand.Name}
+			if cand.Description != "" {
+				entry["description"] = cand.Description
 			}
 			results = append(results, entry)
 		}

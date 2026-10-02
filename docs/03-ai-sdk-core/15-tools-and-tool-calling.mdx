@@ -877,6 +877,40 @@ result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 ```
 
+### Deferred Tool Search
+
+For large tool registries, mark tools `DeferLoading: true` and add `ai.ToolSearch()` so the model discovers only the tools it needs, instead of seeing every definition up front. By default, `ai.ToolSearch()` ranks deferred tools with built-in keyword scoring over their names and descriptions, returning up to five matches per call:
+
+```go
+tools := []types.Tool{
+    ai.ToolSearch(),
+    {
+        Name:         "getWeather",
+        DeferLoading: true,
+        Description:  "Get the current weather for a city",
+        // ...
+    },
+}
+```
+
+Use `ToolSearchConfig.MaxResults` to change how many matches a search returns (must be a positive integer; omitted or zero defaults to five), and `ToolSearchConfig.Search` to replace the built-in keyword scoring with your own ranking function:
+
+```go
+tools := []types.Tool{
+    ai.ToolSearch(ai.ToolSearchConfig{
+        MaxResults: 10,
+        Search: func(ctx context.Context, query string, candidates []ai.ToolSearchCandidate) ([]string, error) {
+            // Return matching tool names in ranked order, e.g. from a
+            // vector search or external index. Unknown names and
+            // duplicates are ignored, and the result is capped at
+            // MaxResults.
+            return rankToolsByEmbedding(ctx, query, candidates)
+        },
+    }),
+    // ... deferred tools
+}
+```
+
 ## Next Steps
 
 - Learn about [Embeddings](./30-embeddings.mdx)

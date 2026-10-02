@@ -67,6 +67,23 @@ func (e *MCPClientOAuthError) Unwrap() error {
 	return e.Cause
 }
 
+// OAuthErrorCodeAuthorizationServerMismatch is the error code used when
+// rediscovered authorization server metadata does not match the metadata
+// that issued the stored credentials, matching TS
+// AuthorizationServerMismatchError.errorCode. Unlike the codes above, this
+// is a client-side check, not a server-reported wire code, so it is not
+// part of OAUTH_ERRORS.
+const OAuthErrorCodeAuthorizationServerMismatch = "authorization_server_mismatch"
+
+// IsAuthorizationServerMismatchError reports whether err is an
+// AuthorizationServerMismatchError: rediscovered OAuth authorization server
+// metadata did not match the metadata that issued the stored credentials.
+// Callers should treat this as permanent (drop credentials, reconnect)
+// rather than retry, matching TS AuthorizationServerMismatchError.isInstance.
+func IsAuthorizationServerMismatchError(err error) bool {
+	return oauthErrorCodeIs(err, OAuthErrorCodeAuthorizationServerMismatch)
+}
+
 // IsInvalidClientError reports whether err is an OAuth invalid_client error
 // (TS InvalidClientError).
 func IsInvalidClientError(err error) bool {

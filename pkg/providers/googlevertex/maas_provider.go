@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 )
@@ -170,6 +172,16 @@ func (p *MaaSProvider) init() error {
 		if location == "" {
 			location = "global"
 		}
+		// Location is interpolated directly into the request host, so only a
+		// single DNS label is accepted; ports TS
+		// google-vertex-maas-provider.ts (TS #21842).
+		if !providerutils.IsValidHostnamePart(location) {
+			p.initErr = &providererrors.InvalidArgumentError{
+				Field:   "location",
+				Message: "Invalid Google Vertex location. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.",
+			}
+			return p.initErr
+		}
 
 		baseURL = maasBaseURL(project, location)
 	}
@@ -229,7 +241,7 @@ func (p *MaaSProvider) init() error {
 		ChatProviderName: "vertex.maas",
 		// TS google-vertex-maas-provider.ts builds on @ai-sdk/openai-compatible's
 		// createOpenAICompatible, which tags requests with its own
-		// `ai-sdk/openai-compatible/VERSION` (not `ai-sdk/google-vertex`).
+		// `ai-sdk-openai-compatible/VERSION` (not `ai-sdk-google-vertex`).
 		UserAgentName: "openai-compatible",
 	})
 	return nil

@@ -241,6 +241,37 @@ func TestVertexEmbeddingOptionsAndHeadersHelpers(t *testing.T) {
 	}
 }
 
+// TestVertexEmbeddingOptions_GoogleVertexKeyTakesPriority is a regression
+// test for a parity gap vs TS google-vertex-embedding-model.ts's doEmbed,
+// which resolves providerOptions in the order "googleVertex", then
+// "vertex", then "google" -- the same order the Vertex language model uses
+// (ProviderOptionsKeys). vertexEmbeddingOptions previously checked only
+// "vertex" then "google", silently ignoring "googleVertex" entirely.
+func TestVertexEmbeddingOptions_GoogleVertexKeyTakesPriority(t *testing.T) {
+	t.Parallel()
+
+	fromGoogleVertex := vertexEmbeddingOptions(&provider.EmbedModelOptions{
+		ProviderOptions: map[string]interface{}{
+			"googleVertex": map[string]interface{}{"taskType": "googleVertex-value"},
+			"vertex":       map[string]interface{}{"taskType": "vertex-value"},
+			"google":       map[string]interface{}{"taskType": "google-value"},
+		},
+	})
+	if fromGoogleVertex.TaskType != "googleVertex-value" {
+		t.Fatalf("TaskType = %q, want the googleVertex key to win", fromGoogleVertex.TaskType)
+	}
+
+	fromVertex := vertexEmbeddingOptions(&provider.EmbedModelOptions{
+		ProviderOptions: map[string]interface{}{
+			"vertex": map[string]interface{}{"taskType": "vertex-value"},
+			"google": map[string]interface{}{"taskType": "google-value"},
+		},
+	})
+	if fromVertex.TaskType != "vertex-value" {
+		t.Fatalf("TaskType = %q, want the vertex key to win over google when googleVertex is absent", fromVertex.TaskType)
+	}
+}
+
 // TestVertexEmbeddingOptions_OutputDimensionalityJSONNumber is a regression
 // test: vertexEmbeddingOptions read outputDimensionality via a bare
 // `.(int)` type assertion. ProviderOptions built via

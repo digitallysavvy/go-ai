@@ -50,6 +50,34 @@ func (m *ImageModel) ModelID() string {
 	return m.modelID
 }
 
+// SupportsFileInputs reports whether the model accepts file inputs for image
+// editing. Returns nil when support is unknown for the model ID.
+func (m *ImageModel) SupportsFileInputs() *bool {
+	switch m.modelID {
+	case "flux-kontext-pro", "flux-kontext-max", "flux-pro-1.0-fill":
+		return boolPtr(true)
+	case "flux-pro-1.1-ultra", "flux-pro-1.1":
+		return boolPtr(false)
+	}
+	return nil
+}
+
+// SupportsMaskInputs reports whether the model accepts a mask input for
+// inpainting. Returns nil when support is unknown for the model ID.
+func (m *ImageModel) SupportsMaskInputs() *bool {
+	if m.modelID == "flux-pro-1.0-fill" {
+		return boolPtr(true)
+	}
+	if m.SupportsFileInputs() == nil {
+		return nil
+	}
+	return boolPtr(false)
+}
+
+func boolPtr(b bool) *bool {
+	return &b
+}
+
 // DoGenerate performs image generation
 func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
 	if opts == nil {

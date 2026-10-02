@@ -3,6 +3,7 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	anthropicprovider "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 	"golang.org/x/oauth2"
@@ -76,7 +78,7 @@ func TestLanguageModelNonStreamingRequest(t *testing.T) {
 // TestLanguageModelDoesNotTagAnthropicUserAgent covers the owner's 2026-09-30
 // User-Agent decision: TS google-vertex-anthropic-provider.ts builds its
 // AnthropicLanguageModel directly rather than through createAnthropic (the
-// only place @ai-sdk/anthropic's own "ai-sdk/anthropic/VERSION" tag is
+// only place @ai-sdk/anthropic's own "ai-sdk-anthropic/VERSION" tag is
 // added), so Vertex-Anthropic requests must not carry that tag -- only the
 // runtime tag the shared HTTP client appends downstream.
 func TestLanguageModelDoesNotTagAnthropicUserAgent(t *testing.T) {
@@ -105,11 +107,11 @@ func TestLanguageModelDoesNotTagAnthropicUserAgent(t *testing.T) {
 		t.Fatalf("DoGenerate error = %v", err)
 	}
 
-	if strings.Contains(gotUserAgent, "ai-sdk/anthropic/") {
-		t.Fatalf("User-Agent = %q, must not carry the ai-sdk/anthropic tag", gotUserAgent)
+	if strings.Contains(gotUserAgent, "ai-sdk-anthropic/") {
+		t.Fatalf("User-Agent = %q, must not carry the ai-sdk-anthropic tag", gotUserAgent)
 	}
-	if strings.Contains(gotUserAgent, "ai-sdk/") {
-		t.Fatalf("User-Agent = %q, want no ai-sdk/... tag at all", gotUserAgent)
+	if strings.Contains(gotUserAgent, "ai-sdk-") {
+		t.Fatalf("User-Agent = %q, want no ai-sdk-... tag at all", gotUserAgent)
 	}
 }
 
@@ -210,6 +212,43 @@ func TestBaseURLEUMultiRegionLocation(t *testing.T) {
 	want := "https://aiplatform.eu.rep.googleapis.com/v1/projects/test-project/locations/eu/publishers/anthropic/models"
 	if got != want {
 		t.Fatalf("baseURL = %q, want %q", got, want)
+	}
+}
+
+// TestBaseURLRejectsLocationThatWouldRewriteHost ports TS
+// google-vertex-location-validation.test.ts for the anthropic subprovider
+// (TS #21842): location is interpolated directly into the request host, so
+// a value that isn't a single DNS label must be rejected.
+func TestBaseURLRejectsLocationThatWouldRewriteHost(t *testing.T) {
+	for _, location := range []string{"user@internal:8080/#", "evil.example.com/#", "us east 5"} {
+		t.Run(location, func(t *testing.T) {
+			p := New(Options{Project: "test-project", Location: location, AuthToken: staticAuthToken("token")})
+			_, err := p.baseURL()
+			var invalid *providererrors.InvalidArgumentError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("baseURL(location=%q) error = %v, want InvalidArgumentError", location, err)
+			}
+			if invalid.Field != "location" {
+				t.Fatalf("Field = %q, want location", invalid.Field)
+			}
+		})
+	}
+}
+
+// TestBaseURLDoesNotValidateUnusedLocationWithCustomBaseURL ports TS "does
+// not validate an unused location with a custom endpoint".
+func TestBaseURLDoesNotValidateUnusedLocationWithCustomBaseURL(t *testing.T) {
+	p := New(Options{
+		Location:  "user@internal:8080/#",
+		BaseURL:   "https://proxy.example/v1",
+		AuthToken: staticAuthToken("token"),
+	})
+	got, err := p.baseURL()
+	if err != nil {
+		t.Fatalf("baseURL error = %v, want success (location unused with explicit BaseURL)", err)
+	}
+	if got != "https://proxy.example/v1" {
+		t.Fatalf("baseURL = %q, want explicit override", got)
 	}
 }
 

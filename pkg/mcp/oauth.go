@@ -126,7 +126,10 @@ func AssertOAuthAuthorizationServerInformationMatches(stored, current OAuthAutho
 	if (stored.Issuer != "" && current.Issuer != "" && stored.Issuer != current.Issuer) ||
 		normalizeOAuthURL(stored.AuthorizationServerURL) != normalizeOAuthURL(current.AuthorizationServerURL) ||
 		normalizeOAuthURL(stored.TokenEndpoint) != normalizeOAuthURL(current.TokenEndpoint) {
-		return NewMCPClientError(0, "OAuth authorization server metadata does not match the metadata that issued the stored credentials", nil)
+		return &MCPClientOAuthError{
+			Code:    OAuthErrorCodeAuthorizationServerMismatch,
+			Message: "OAuth authorization server metadata does not match the metadata that issued the stored credentials",
+		}
 	}
 	return nil
 }

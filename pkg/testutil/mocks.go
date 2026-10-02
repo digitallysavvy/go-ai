@@ -283,6 +283,13 @@ type MockImageModel struct {
 	ProviderName   string
 	ModelName      string
 	MaxImages      int
+
+	// SupportsFiles / SupportsMasks back the optional SupportsFileInputs() /
+	// SupportsMaskInputs() capability methods below. nil (the default)
+	// means unknown, mirroring TS MockImageModelV4's unset
+	// supportsFileInputs/supportsMaskInputs fields.
+	SupportsFiles *bool
+	SupportsMasks *bool
 }
 
 func (m *MockImageModel) SpecificationVersion() string { return "v3" }
@@ -298,6 +305,9 @@ func (m *MockImageModel) ModelID() string {
 	}
 	return m.ModelName
 }
+
+func (m *MockImageModel) SupportsFileInputs() *bool { return m.SupportsFiles }
+func (m *MockImageModel) SupportsMaskInputs() *bool { return m.SupportsMasks }
 
 func (m *MockImageModel) MaxImagesPerCall() int {
 	return m.MaxImages

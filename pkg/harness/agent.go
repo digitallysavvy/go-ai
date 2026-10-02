@@ -158,6 +158,11 @@ type CreateSessionOptions struct {
 	// resumed with ContinueFrom (directly or nested in ResumeFrom). Only
 	// valid together with one of those.
 	ToolsContext map[string]interface{}
+	// RuntimeContext rebinds host-only runtime context for an unfinished
+	// turn resumed with ContinueFrom (directly or nested in ResumeFrom).
+	// Runtime context is not serialized into lifecycle state. Mirrors TS
+	// `HarnessAgent.createSession`'s `options.runtimeContext`.
+	RuntimeContext interface{}
 	// SandboxSession is a caller-owned sandbox session. When set, the caller
 	// retains ownership of its lifecycle; Agent.Sandbox is not consulted.
 	SandboxSession providerutils.SandboxSession
@@ -251,7 +256,7 @@ func (a *Agent) CreateSession(ctx context.Context, opts CreateSessionOptions) (*
 		SandboxSession: sandboxSession, OwnsSandboxLifecycle: ownsSandboxLifecycle,
 		SessionWorkDir: sessionWorkDir, ToolApproval: a.settings.ToolApproval,
 		PendingToolApprovals: pendingApprovals, PendingToolResults: pendingResults,
-		TurnSettings: turnSettings, ResumedToolsContext: opts.ToolsContext, TurnState: turnState,
+		TurnSettings: turnSettings, ResumedToolsContext: opts.ToolsContext, ResumedRuntimeContext: opts.RuntimeContext, TurnState: turnState,
 	}), nil
 }
 
@@ -503,6 +508,14 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 	if opts.ToolsContext != nil {
 		toolsContext = opts.ToolsContext
 	}
+	// RuntimeContext mirrors TS `this.settings.runtimeContext ?? {}`
+	// (HarnessAgent.generate/stream/continueGenerate/continueStream): the
+	// agent-level default, overridden by a per-call value when the caller
+	// supplies one.
+	runtimeContext := a.settings.RuntimeContext
+	if opts.RuntimeContext != nil {
+		runtimeContext = opts.RuntimeContext
+	}
 	skills := a.settings.Skills
 	tools := a.tools
 
@@ -530,6 +543,7 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 		prepared, err := a.settings.PrepareCall(ctx, PrepareCallOptions{
 			CallOptions: opts.CallOptions, Prompt: prompt, Model: model,
 			Skills: skills, Instructions: instructionsRaw, Tools: tools, ToolsContext: toolsContext,
+			RuntimeContext: runtimeContext,
 		})
 		if err != nil {
 			return nil, err
@@ -548,6 +562,9 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 		}
 		if prepared.ToolsContext != nil {
 			toolsContext = prepared.ToolsContext
+		}
+		if prepared.HasRuntimeContext {
+			runtimeContext = prepared.RuntimeContext
 		}
 		if mode != "continue" && (prepared.Prompt.Text != "" || prepared.Prompt.Message != nil) {
 			prompt = prepared.Prompt
@@ -609,6 +626,24 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 			instructions = turnSettings.Instructions
 		}
 	}
+	// Continuing an unfinished turn from a session created via
+	// CreateSession's ContinueFrom/ResumeFrom (rather than one still
+	// in-process from an earlier promptTurn/continueTurn call) rebinds
+	// host-only tools/runtime context from whatever CreateSessionOptions
+	// passed, in preference to this call's own options. Mirrors TS
+	// `HarnessAgentSession.resolveActiveTurnSettings`'s
+	// `this.resumedToolsContext ?? options.toolsContext` /
+	// `this.resumedRuntimeContext ?? options.runtimeContext`, which only
+	// ever applies on the continueTurn path (a fresh promptTurn has nothing
+	// to resume).
+	if mode == "continue" {
+		if session.resumedToolsContext != nil {
+			toolsContext = session.resumedToolsContext
+		}
+		if session.resumedRuntimeContext != nil {
+			runtimeContext = session.resumedRuntimeContext
+		}
+	}
 
 	// Resolved fresh for every turn (TS `_resolveResponseFormat`, called from
 	// both the fresh-prompt and continue paths) rather than cached at
@@ -665,7 +700,7 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 		OnStopConditionMet: func(ctx context.Context) (*ContinueTurnState, error) {
 			return session.captureStopConditionBoundary(ctx, turnID)
 		},
-		RuntimeContext: opts.RuntimeContext,
+		RuntimeContext: runtimeContext,
 	})
 
 	return out.Result, nil

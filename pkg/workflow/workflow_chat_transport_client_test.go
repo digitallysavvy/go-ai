@@ -392,3 +392,54 @@ func TestWorkflowChatTransportPumpChunkStreamGoroutineLeak(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// Ported from TS 27ab8d4b32 (#21649): a literal "." or ".." chat/run ID must
+// be rejected before any request is made when the default reconnect URL is
+// used, since url.PathEscape leaves dot segments unchanged and URL parsers
+// normalize them even when percent-encoded.
+func TestWorkflowChatTransportReconnectRejectsDotSegmentChatID(t *testing.T) {
+	for _, chatID := range []string{".", ".."} {
+		t.Run(chatID, func(t *testing.T) {
+			requested := false
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requested = true
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer srv.Close()
+
+			tr := NewWorkflowChatTransport(WorkflowChatTransportOptions{API: srv.URL})
+			out, errs := tr.ReconnectToStream(context.Background(), ai.ChatTransportReconnectToStreamRequest{ChatID: chatID})
+			_, err := collectChunks(out, errs, 2*time.Second)
+			if err == nil {
+				t.Fatal("expected an error for a dot-segment chat ID, got nil")
+			}
+			if requested {
+				t.Fatal("expected no HTTP request to be made for a dot-segment chat ID")
+			}
+		})
+	}
+}
+
+// A custom prepareReconnectToStreamRequest that supplies its own API
+// overrides the dot-segment guard entirely, since the unsafe default URL is
+// never built from the raw chat ID in that case.
+func TestWorkflowChatTransportReconnectAllowsDotSegmentChatIDWithCustomAPI(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		sse := streaming.NewSSEWriter(w)
+		writeChunk(t, sse, map[string]interface{}{"type": "finish"})
+	}))
+	defer srv.Close()
+
+	tr := NewWorkflowChatTransport(WorkflowChatTransportOptions{
+		API: srv.URL,
+		PrepareReconnectToStreamRequest: func(WorkflowChatTransportReconnectContext) (PreparedChatRequest, error) {
+			return PreparedChatRequest{API: srv.URL + "/custom-stream"}, nil
+		},
+	})
+	out, errs := tr.ReconnectToStream(context.Background(), ai.ChatTransportReconnectToStreamRequest{ChatID: ".."})
+	_, err := collectChunks(out, errs, 2*time.Second)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

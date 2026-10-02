@@ -86,7 +86,7 @@ func TestToUIMessageStream_MultiStepFinishStepAndFinishCounts(t *testing.T) {
 			return "ok", nil
 		},
 	}
-	result, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "hi", Tools: []types.Tool{tool}})
+	result, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "hi", Tools: []types.Tool{tool}, StopWhen: []StopCondition{IsLoopFinished()}})
 	if err != nil {
 		t.Fatalf("StreamText() error = %v", err)
 	}

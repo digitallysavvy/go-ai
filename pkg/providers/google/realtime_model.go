@@ -207,15 +207,30 @@ func (m *GoogleRealtimeModel) BuildSessionConfig(config provider.RealtimeSession
 		setup["outputAudioTranscription"] = map[string]interface{}{}
 	}
 
-	// Default to the lowest-latency thinking level so a session on a
-	// background-reasoning model works without provider options. Applied
-	// last (after providerOptions are merged below) so it survives a raw
-	// providerOptions.generationConfig.
+	// Background-reasoning models require a thinkingLevel or thinkingBudget.
+	// Default to the lowest-latency level when the effective thinking config
+	// (the typed option, else a raw providerOptions.generationConfig.
+	// thinkingConfig) sets neither. Applied last (after providerOptions are
+	// merged below) so it survives a raw providerOptions.generationConfig,
+	// while an explicit level/budget (typed or raw) is never replaced.
+	rawGenerationConfig, _ := config.ProviderOptions["generationConfig"].(map[string]interface{})
+	googleThinkingConfig, hasGoogleThinkingConfig := googleOptions["thinkingConfig"]
+	var explicitThinkingConfig map[string]interface{}
+	if hasGoogleThinkingConfig {
+		explicitThinkingConfig, _ = googleThinkingConfig.(map[string]interface{})
+	} else if rawGenerationConfig != nil {
+		explicitThinkingConfig, _ = rawGenerationConfig["thinkingConfig"].(map[string]interface{})
+	}
 	var thinkingConfig interface{}
-	if tc, ok := googleOptions["thinkingConfig"]; ok {
-		thinkingConfig = tc
-	} else if isThinkingLiveModel(m.modelID) {
-		thinkingConfig = map[string]interface{}{"thinkingLevel": "low"}
+	if isThinkingLiveModel(m.modelID) && explicitThinkingConfig["thinkingLevel"] == nil && explicitThinkingConfig["thinkingBudget"] == nil {
+		merged := map[string]interface{}{}
+		for k, v := range explicitThinkingConfig {
+			merged[k] = v
+		}
+		merged["thinkingLevel"] = "low"
+		thinkingConfig = merged
+	} else if hasGoogleThinkingConfig {
+		thinkingConfig = googleThinkingConfig
 	}
 	applyThinkingConfig := func() {
 		if thinkingConfig == nil {
@@ -260,6 +275,13 @@ type googleRealtimeEventMapper struct {
 	hasTranscript  bool
 	turnClosed     bool
 	inputAudioRate int
+
+	// Input transcription accumulates independently of turnCounter (see
+	// accumulateInputTranscription), mirroring TS GoogleRealtimeEventMapper.
+	inputTranscriptionCounter                    int
+	inputTranscriptionBuffer                     string
+	inputTranscriptionBoundary                   string // "none" | "interrupted" | "turn-complete"
+	preserveInputTranscriptionAcrossTurnComplete bool
 }
 
 func (m *googleRealtimeEventMapper) responseID() string {
@@ -278,6 +300,63 @@ func (m *googleRealtimeEventMapper) beginTurnIfClosed() {
 	m.hasText = false
 	m.hasTranscript = false
 	m.turnClosed = false
+	// Once the next response starts, its completion must delimit its own
+	// input even if the interrupted response never sent a turnComplete.
+	m.preserveInputTranscriptionAcrossTurnComplete = false
+}
+
+// accumulateInputTranscription concatenates consecutive input-transcription
+// fragments for a single user utterance under one stable synthetic id,
+// mirroring TS GoogleRealtimeEventMapper.accumulateInputTranscription.
+// Google's `finished` signal is the authoritative utterance boundary; for
+// older payloads without it, response boundaries (interrupted/turnComplete)
+// are a fallback. Returns ok=false when nothing should be emitted (e.g. a
+// standalone completion marker with no text).
+func (m *googleRealtimeEventMapper) accumulateInputTranscription(text string, finished *bool) (itemID, transcript string, ok bool) {
+	if text == "" {
+		if finished != nil && *finished {
+			m.finishInputTranscription()
+		}
+		return "", "", false
+	}
+
+	hasFinishedSignal := finished != nil
+	if m.inputTranscriptionBuffer != "" &&
+		(m.inputTranscriptionBoundary == "interrupted" ||
+			(m.inputTranscriptionBoundary == "turn-complete" && !hasFinishedSignal)) {
+		m.finishInputTranscription()
+	}
+	m.inputTranscriptionBoundary = "none"
+	m.inputTranscriptionBuffer += text
+	itemID = fmt.Sprintf("google-input-%d", m.inputTranscriptionCounter)
+	transcript = m.inputTranscriptionBuffer
+	if finished != nil && *finished {
+		m.finishInputTranscription()
+	}
+	return itemID, transcript, true
+}
+
+func (m *googleRealtimeEventMapper) finishInputTranscription() {
+	if m.inputTranscriptionBuffer == "" {
+		return
+	}
+	m.inputTranscriptionCounter++
+	m.inputTranscriptionBuffer = ""
+}
+
+// googleOptionalBool reads an optional boolean field, distinguishing "absent"
+// (nil) from an explicit `false`, mirroring TS's `finished?: boolean` which
+// accumulateInputTranscription checks with `!= null`.
+func googleOptionalBool(m map[string]interface{}, key string) *bool {
+	v, ok := m[key]
+	if !ok || v == nil {
+		return nil
+	}
+	b, ok := v.(bool)
+	if !ok {
+		return nil
+	}
+	return &b
 }
 
 func (m *googleRealtimeEventMapper) parseServerEvent(raw json.RawMessage) []provider.RealtimeServerEvent {
@@ -316,9 +395,12 @@ func (m *googleRealtimeEventMapper) parseServerEvent(raw json.RawMessage) []prov
 		return m.parseServerContent(serverContent, raw)
 	}
 	if inputTranscription, ok := data["inputTranscription"].(map[string]interface{}); ok {
-		if rawText, exists := inputTranscription["text"]; exists && rawText != nil {
-			text, _ := rawText.(string)
-			return []provider.RealtimeServerEvent{{Type: "input-transcription-completed", ItemID: fmt.Sprintf("google-input-%d", m.turnCounter), Transcript: text, Raw: raw}}
+		itemID, transcript, emitted := m.accumulateInputTranscription(
+			googleString(inputTranscription, "text"),
+			googleOptionalBool(inputTranscription, "finished"),
+		)
+		if emitted {
+			return []provider.RealtimeServerEvent{{Type: "input-transcription-completed", ItemID: itemID, Transcript: transcript, Raw: raw}}
 		}
 	}
 	return []provider.RealtimeServerEvent{{Type: "custom", RawType: firstGoogleRawType(raw), Raw: raw}}
@@ -327,6 +409,13 @@ func (m *googleRealtimeEventMapper) parseServerEvent(raw json.RawMessage) []prov
 func (m *googleRealtimeEventMapper) parseServerContent(serverContent map[string]interface{}, raw json.RawMessage) []provider.RealtimeServerEvent {
 	var events []provider.RealtimeServerEvent
 	if interrupted, _ := serverContent["interrupted"].(bool); interrupted {
+		// A barge-in ends the current user utterance; the next input
+		// transcription fragment belongs to a fresh utterance. The
+		// interrupted response's trailing turnComplete must not split that
+		// new utterance.
+		m.inputTranscriptionBoundary = "interrupted"
+		m.preserveInputTranscriptionAcrossTurnComplete = true
+		m.turnClosed = true
 		events = append(events, provider.RealtimeServerEvent{Type: "speech-started", Raw: raw})
 	}
 	if modelTurn, ok := serverContent["modelTurn"].(map[string]interface{}); ok {
@@ -354,8 +443,12 @@ func (m *googleRealtimeEventMapper) parseServerContent(serverContent map[string]
 		}
 	}
 	if transcription, ok := serverContent["inputTranscription"].(map[string]interface{}); ok {
-		if text := googleString(transcription, "text"); text != "" {
-			events = append(events, provider.RealtimeServerEvent{Type: "input-transcription-completed", ItemID: fmt.Sprintf("google-input-%d", m.turnCounter), Transcript: text, Raw: raw})
+		itemID, transcript, emitted := m.accumulateInputTranscription(
+			googleString(transcription, "text"),
+			googleOptionalBool(transcription, "finished"),
+		)
+		if emitted {
+			events = append(events, provider.RealtimeServerEvent{Type: "input-transcription-completed", ItemID: itemID, Transcript: transcript, Raw: raw})
 		}
 	}
 	// generationComplete means generation has stopped, but playback and the
@@ -389,6 +482,18 @@ func (m *googleRealtimeEventMapper) parseServerContent(serverContent map[string]
 		}
 		events = append(events, provider.RealtimeServerEvent{Type: "response-done", ResponseID: m.responseID(), Status: "completed", Raw: raw})
 		m.turnClosed = true
+		if m.preserveInputTranscriptionAcrossTurnComplete {
+			m.preserveInputTranscriptionAcrossTurnComplete = false
+		} else {
+			// For payloads without `finished`, the completed response
+			// remains the fallback signal that the next transcription is a
+			// new utterance. A transcription carrying `finished` can still
+			// arrive late and close the preceding utterance after this
+			// response boundary.
+			if m.inputTranscriptionBoundary != "interrupted" {
+				m.inputTranscriptionBoundary = "turn-complete"
+			}
+		}
 	}
 	if len(events) == 0 {
 		return []provider.RealtimeServerEvent{{Type: "custom", RawType: "serverContent", Raw: raw}}

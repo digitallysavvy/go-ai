@@ -13,6 +13,16 @@ func TestGetModelCapabilities(t *testing.T) {
 		want    ModelCapabilities
 	}{
 		{
+			name:    "claude-sonnet-5-5",
+			modelID: "claude-sonnet-5-5",
+			want: ModelCapabilities{
+				MaxOutputTokens: 128000, SupportsStructuredOutput: true, SupportsAdaptiveThinking: true,
+				RejectsSamplingParameters: true, SupportsXHighEffort: true,
+				RejectsThinkingDisabledAboveHighEffort: true, RejectsThinkingDisabled: true,
+				RejectsForcedToolUse: true, SupportsBetweenToolsThinking: true, IsKnownModel: true,
+			},
+		},
+		{
 			name:    "claude-opus-5-5",
 			modelID: "claude-opus-5-5",
 			want: ModelCapabilities{

@@ -46,7 +46,7 @@ func getLiveTranscriptionWebSocketURL(baseURL, apiKey string) string {
 }
 
 // baseTranscriptionHeaders returns the provider's default headers
-// (x-goog-api-key, configured custom headers, and the `ai-sdk/google/VERSION`
+// (x-goog-api-key, configured custom headers, and the `ai-sdk-google/VERSION`
 // User-Agent tag), mirroring the Resolvable config.headers TS combines with
 // per-call options.headers -- the same tagged getHeaders() closure used for
 // REST calls, not a freshly rebuilt untagged header set.
@@ -427,6 +427,7 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 			FinishText:       fullText,
 			Segments:         []provider.TranscriptSegment{},
 			Language:         language,
+			Usage:            usageMetadata,
 			ProviderMetadata: providerMetadata,
 		})
 		cfg.audio.Cancel(nil)

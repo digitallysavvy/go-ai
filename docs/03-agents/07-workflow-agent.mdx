@@ -73,6 +73,29 @@ if err != nil {
 }
 ```
 
+`ExperimentalTransform` applies an ordered list of `ai.StreamTransformFunc` to raw model stream chunks before they reach `OnChunk` or the returned stream, letting you rewrite or drop chunks (e.g. smoothing text, or replacing an oversized provider tool result):
+
+```go
+redactLargeResults := func(ctx context.Context, chunk provider.StreamChunk) []provider.StreamChunk {
+  if chunk.Type == provider.ChunkTypeToolResult && chunk.ToolResult != nil {
+    if s, ok := chunk.ToolResult.Result.(string); ok && len(s) > 2048 {
+      replaced := *chunk.ToolResult
+      replaced.Result = map[string]interface{}{"reason": "too_large_for_stream"}
+      chunk.ToolResult = &replaced
+    }
+  }
+  return []provider.StreamChunk{chunk}
+}
+
+streamResult, err := agent.StreamWithOptions(ctx, workflow.WorkflowStreamOptions{
+  Prompt:                "Walk me through this fix",
+  ExperimentalTransform: []ai.StreamTransformFunc{redactLargeResults},
+})
+if err != nil {
+  return err
+}
+```
+
 ## Chat Transport
 
 `WorkflowChatTransport` is an `http.Handler` that emits run-scoped SSE and supports reattaching to a run:

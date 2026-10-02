@@ -338,9 +338,10 @@ func (s *MCPAuthServer) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
-		Model:  model,
-		Prompt: fmt.Sprintf("User %s asks: %s", username, req.Prompt),
-		Tools:  tools,
+		Model:    model,
+		Prompt:   fmt.Sprintf("User %s asks: %s", username, req.Prompt),
+		Tools:    tools,
+		StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 	})
 
 	if err != nil {

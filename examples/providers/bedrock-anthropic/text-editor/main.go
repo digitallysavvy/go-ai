@@ -82,9 +82,10 @@ func main() {
 
 	// Generate text with text editor tool
 	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-		Model:  model,
-		Prompt: "Replace the word 'hello' with 'goodbye' in the file test.txt",
-		Tools:  []types.Tool{textEditorTool},
+		Model:    model,
+		Prompt:   "Replace the word 'hello' with 'goodbye' in the file test.txt",
+		Tools:    []types.Tool{textEditorTool},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 	})
 	if err != nil {
 		log.Fatalf("Failed to generate text: %v", err)

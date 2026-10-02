@@ -53,6 +53,7 @@ func main() {
 				return map[string]interface{}{"status": "healthy"}, nil
 			},
 		}},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 	})
 	if err != nil {
 		log.Fatal(err)

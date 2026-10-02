@@ -62,6 +62,44 @@ func (m *ImageModel) ModelID() string {
 	return m.modelID
 }
 
+// openaiFileInputSupportedModels lists OpenAI image model IDs known to
+// accept file inputs for image editing (TS
+// OpenAIImageModel#supportsFileInputs).
+var openaiFileInputSupportedModels = map[string]bool{
+	"dall-e-2":                          true,
+	"gpt-image-1":                       true,
+	"gpt-image-1-mini":                  true,
+	"gpt-image-1.5":                     true,
+	"gpt-image-2":                       true,
+	"gpt-image-2.5-flare":               true,
+	"gpt-image-2.5-flare-2026-09-08":    true,
+	"gpt-image-2.5-sunburst":            true,
+	"gpt-image-2.5-sunburst-2026-09-08": true,
+	"chatgpt-image-latest":              true,
+}
+
+// SupportsFileInputs reports whether the model accepts file inputs for image
+// editing. Returns nil when support is unknown for the model ID.
+func (m *ImageModel) SupportsFileInputs() *bool {
+	if openaiFileInputSupportedModels[m.modelID] {
+		return boolPtr(true)
+	}
+	if m.modelID == "dall-e-3" {
+		return boolPtr(false)
+	}
+	return nil
+}
+
+// SupportsMaskInputs mirrors SupportsFileInputs (TS returns the same value
+// for both capabilities).
+func (m *ImageModel) SupportsMaskInputs() *bool {
+	return m.SupportsFileInputs()
+}
+
+func boolPtr(b bool) *bool {
+	return &b
+}
+
 // DoGenerate performs image generation
 func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
 	if opts == nil {
