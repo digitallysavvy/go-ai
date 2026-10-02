@@ -79,7 +79,7 @@
       "bridgeEntry": "bridge.mjs",
       "builtFrom": "packages/harness-opencode/dist/bridge (tsup bundle of packages/harness-opencode/src/bridge)",
       "files": {
-        "bridge.mjs": "c3208dcfa9a780b554809ce4a8d851bd7c81c0b178fa1666c95f108b70018cf7",
+        "bridge.mjs": "00fa023f4a170b0f35f7ada22e732e76ebef146ad2ff0fe00fe32170588a5e16",
         "host-tool-mcp.mjs": "f98f9b1ab07059d61625cec9d4661587cd6a9c6b174376c5990e0018c23987db",
         "package.json": "2c81a49f00f3583fbe970ee120a6518fad5e9397c9b91649aba8ba37e1b02add",
         "pnpm-lock.yaml": "858dfb8cd93eff94dc1333e17cd1b365d4dda32bf13bcc7dab6f4daad7c18e82",

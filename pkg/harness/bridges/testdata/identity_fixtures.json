@@ -51,7 +51,7 @@
         "command": "./node_modules/.bin/opencode --version"
       }
     ],
-    "identity": "25a5758678df0d1c"
+    "identity": "fbecd2865b5ef006"
   },
   "deepagents": {
     "harnessId": "deepagents",

@@ -276,6 +276,205 @@ func TestDoStartFullRoundTrip(t *testing.T) {
 	}
 }
 
+// TestDoPromptTurn_DrainsAbortedTurnBeforeNextTurn ports TS "drains an
+// aborted turn through error and finish before attaching the next turn"
+// (opencode-harness.test.ts, TS #21683 "stop aborted OpenCode turns before
+// starting the next turn"): a replacement DoPromptTurn call must wait for an
+// aborted turn to fully drain (its stray post-abort events dropped, a
+// draining error swallowed, then the trailing finish) before the bridge
+// ever sees the replacement turn's own `start` frame.
+func TestDoPromptTurn_DrainsAbortedTurnBeforeNextTurn(t *testing.T) {
+	const token = "fixed-test-token"
+	var mu sync.Mutex
+	var turns []*bridgetest.Turn
+	srv := newServer(t, token, func(turn *bridgetest.Turn, _ map[string]any) {
+		mu.Lock()
+		turns = append(turns, turn)
+		mu.Unlock()
+	})
+	sandbox := newFakeSandbox(srv)
+	h, err := CreateOpenCode(Settings{MintBridgeToken: func(string) string { return token }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{
+		SessionID: "test-session", SessionWorkDir: "/vercel/sandbox/opencode-test-session",
+		SandboxSession: sandbox,
+	})
+	if err != nil {
+		t.Fatalf("DoStart: %v", err)
+	}
+	defer func() { _ = sess.DoDestroy(context.Background()) }()
+
+	waitForTurn := func(n int) *bridgetest.Turn {
+		deadline := time.After(2 * time.Second)
+		for {
+			mu.Lock()
+			if len(turns) >= n {
+				turn := turns[n-1]
+				mu.Unlock()
+				return turn
+			}
+			mu.Unlock()
+			select {
+			case <-deadline:
+				t.Fatalf("timed out waiting for start frame #%d", n)
+			case <-time.After(5 * time.Millisecond):
+			}
+		}
+	}
+
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	var firstMu sync.Mutex
+	var firstEvents []harness.StreamPart
+	control1, err := sess.DoPromptTurn(ctx1, harness.PromptTurnOptions{
+		Prompt: harness.TextPrompt("Write a long response."),
+		Emit: func(p harness.StreamPart) {
+			firstMu.Lock()
+			firstEvents = append(firstEvents, p)
+			firstMu.Unlock()
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoPromptTurn (first): %v", err)
+	}
+	turn1 := waitForTurn(1)
+	turn1.Emit(map[string]any{"type": "text-delta", "id": "first", "delta": "first"})
+
+	// Wait for the delta to actually arrive at the host before cancelling:
+	// bridgetest's emit is a fire-and-forget websocket write with no
+	// delivery acknowledgement, so nothing otherwise orders it before the
+	// cancellation below.
+	deadline := time.After(2 * time.Second)
+	for {
+		firstMu.Lock()
+		n := len(firstEvents)
+		firstMu.Unlock()
+		if n >= 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for the first text-delta to arrive")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	cancel1()
+	select {
+	case <-control1.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("first turn did not settle after cancel")
+	}
+	if err := control1.Err(); err == nil {
+		t.Fatal("control1.Err() = nil, want a cancellation error")
+	}
+
+	// A stale event delivered after the abort must not reach firstEvents
+	// (forward checks isSettled) — and the second turn has not started yet,
+	// so it cannot reach it either.
+	turn1.Emit(map[string]any{"type": "text-delta", "id": "first", "delta": " stale"})
+
+	var secondMu sync.Mutex
+	var secondEvents []harness.StreamPart
+	secondDone := make(chan struct{})
+	var control2 harness.PromptControl
+	var control2Err error
+	go func() {
+		control2, control2Err = sess.DoPromptTurn(context.Background(), harness.PromptTurnOptions{
+			Prompt: harness.TextPrompt("Reply with banana."),
+			Emit: func(p harness.StreamPart) {
+				secondMu.Lock()
+				secondEvents = append(secondEvents, p)
+				secondMu.Unlock()
+			},
+		})
+		close(secondDone)
+	}()
+
+	// The replacement turn must still be blocked on the drain: no second
+	// start frame yet.
+	time.Sleep(20 * time.Millisecond)
+	mu.Lock()
+	startCount := len(turns)
+	mu.Unlock()
+	if startCount != 1 {
+		t.Fatalf("start frames observed = %d, want 1 (the second turn must wait for the first to drain)", startCount)
+	}
+	select {
+	case <-secondDone:
+		t.Fatal("DoPromptTurn (second) returned before the first turn drained")
+	default:
+	}
+
+	// An error while draining is swallowed: the bridge's own finally block
+	// emits the trailing finish, and only that may finish the drain.
+	turn1.Emit(map[string]any{"type": "error", "error": "OpenCode session abort failed"})
+	time.Sleep(20 * time.Millisecond)
+	select {
+	case <-secondDone:
+		t.Fatal("DoPromptTurn (second) returned on the draining error; it must stay blocked")
+	default:
+	}
+
+	turn1.Emit(map[string]any{
+		"type":         "finish",
+		"finishReason": map[string]any{"unified": "stop", "raw": "stop"},
+		"totalUsage": map[string]any{
+			"inputTokens": map[string]any{"total": 1}, "outputTokens": map[string]any{"total": 1},
+		},
+	})
+	select {
+	case <-secondDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("DoPromptTurn (second) never unblocked after the first turn's trailing finish")
+	}
+	if control2Err != nil {
+		t.Fatalf("DoPromptTurn (second): %v", control2Err)
+	}
+
+	turn2 := waitForTurn(2)
+	turn2.Emit(map[string]any{"type": "text-delta", "id": "second", "delta": "banana"})
+	turn2.Emit(map[string]any{
+		"type":         "finish",
+		"finishReason": map[string]any{"unified": "stop", "raw": "stop"},
+		"totalUsage": map[string]any{
+			"inputTokens": map[string]any{"total": 1}, "outputTokens": map[string]any{"total": 1},
+		},
+	})
+	select {
+	case <-control2.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("second turn never finished")
+	}
+	if err := control2.Err(); err != nil {
+		t.Fatalf("control2.Err() = %v", err)
+	}
+
+	firstMu.Lock()
+	gotFirst := firstEvents
+	firstMu.Unlock()
+	if len(gotFirst) != 1 {
+		t.Fatalf("firstEvents = %+v, want exactly one text-delta", gotFirst)
+	}
+	if d, ok := gotFirst[0].(*harness.TextDeltaPart); !ok || d.Delta != "first" {
+		t.Fatalf("firstEvents[0] = %+v, want text-delta %q", gotFirst[0], "first")
+	}
+
+	secondMu.Lock()
+	gotSecond := secondEvents
+	secondMu.Unlock()
+	if len(gotSecond) != 2 {
+		t.Fatalf("secondEvents = %+v, want [text-delta, finish]", gotSecond)
+	}
+	if d, ok := gotSecond[0].(*harness.TextDeltaPart); !ok || d.Delta != "banana" {
+		t.Fatalf("secondEvents[0] = %+v, want text-delta %q", gotSecond[0], "banana")
+	}
+	if _, ok := gotSecond[1].(*harness.FinishPart); !ok {
+		t.Fatalf("secondEvents[1] = %+v, want a finish part", gotSecond[1])
+	}
+}
+
 func TestDoStartSpawnsBridgeWithSkillsDirFlag(t *testing.T) {
 	srv := newServer(t, "", func(*bridgetest.Turn, map[string]any) {})
 	sandbox := newFakeSandbox(srv)
