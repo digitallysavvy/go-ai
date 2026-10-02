@@ -348,6 +348,20 @@ type turnDriver struct {
 	execMu  sync.Mutex
 	execErr error
 
+	// startedToolExecutions backs ensureToolExecutionStarted's idempotent
+	// ai.Callbacks.OnToolExecutionStart (TS #21696 "Start/end callbacks and
+	// fast tool results were delayed behind slower tools in the same
+	// step"): it may be called once per tool call from either goroutine —
+	// a host tool's own exec goroutine when its execution begins, or the
+	// main loop when a provider-executed tool call is observed or a
+	// tool-result arrives for a call that never got an explicit early
+	// start (e.g. a client-submitted result) — and must fire the start
+	// callback exactly once regardless of which caller gets there first.
+	// Guarded by execMu like every other field a host tool execution
+	// touches from its own goroutine. Telemetry's own start+end pair stays
+	// combined at recordToolResult time (see telToolExecution's doc).
+	startedToolExecutions map[string]bool
+
 	closingResumedStep bool
 
 	// pendingStopBoundary is set at a finish-step whose completed step might
@@ -405,6 +419,7 @@ func (d *turnDriver) run() {
 	d.continuationsByApprovalID = map[string]types.ToolApprovalResponseContent{}
 	d.continuationsByToolCallID = map[string]types.ToolResultContent{}
 	d.toolExecMs = map[string]int64{}
+	d.startedToolExecutions = map[string]bool{}
 	d.stripToolInput = NewToolInputWorkDirStripper(d.in.SessionWorkDir)
 
 	d.activeToolSet = map[string]struct{}{}
@@ -717,6 +732,14 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 			d.toolCallsByID[tc.ToolCallID] = displayCall
 			d.validatedHostCallsByID[tc.ToolCallID] = hostCall
 			d.providerExecByID[tc.ToolCallID] = tc.ProviderExecuted
+			if tc.ProviderExecuted {
+				// TS #21696: a provider-executed tool call has no host
+				// exec goroutine to fire the early start from — the
+				// runtime is already executing it by the time this event
+				// arrives — so fire it here instead of waiting for
+				// recordToolResult's end-of-execution fallback.
+				d.ensureToolExecutionStarted(displayCall)
+			}
 			d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &displayCall})
 			d.stepToolCalls = append(d.stepToolCalls, displayCall)
 			// TS 32349cc: counted for every tool call in the step (not only
@@ -728,9 +751,17 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 				d.expectedStepToolCallCount = tc.StepToolCallCount
 			}
 		} else if tr, isResult := display.(*ToolResultPart); isResult {
+			// TS #21696: publish per tool as each result arrives instead of
+			// buffering until finish-step, so a fast tool's result and its
+			// OnToolExecutionEnd callback are no longer held back by a
+			// slower sibling tool in the same step. recordToolResult (which
+			// fires OnToolExecutionEnd) runs before the chunk is pushed,
+			// matching TS's "End callbacks precede streamed results."
 			chunks := TranslatePart(tr, d.translateOpts())
-			d.bufferedResultChunks = append(d.bufferedResultChunks, chunks)
 			d.recordToolResult(tr)
+			for _, c := range chunks {
+				d.stream.push(c)
+			}
 		} else {
 			for _, c := range TranslatePart(display, d.translateOpts()) {
 				d.stream.push(c)
@@ -1032,11 +1063,46 @@ func (d *turnDriver) flushBufferedResultChunks() {
 	d.bufferedResultChunks = nil
 }
 
+// ensureToolExecutionStarted fires ai.Callbacks.OnToolExecutionStart for
+// call the first time it is invoked for call.ID, idempotently — mirrors
+// TS's (TS #21696) `publishToolExecutionStart`
+// (`execution.startNotification ??= ...`). Called as soon as a tool's
+// execution actually begins (a host tool's own exec goroutine;
+// consumeLoop when a provider-executed tool call is first observed), so
+// OnToolExecutionStart no longer waits behind slower sibling tools in the
+// same step the way the combined start+end firing in recordToolResult used
+// to. recordToolResult also calls this (idempotently) right before firing
+// OnToolExecutionEnd, as a fallback for any tool-result that never got an
+// earlier explicit start (e.g. a client-submitted result for a call the
+// host never executed itself) — this matches TS's `publishToolExecutionEnd`
+// always calling `publishToolExecutionStart` first.
+//
+// Telemetry's own tool-execution span is deliberately NOT split the same
+// way — see telToolExecution's doc for why firing it early from a host
+// tool's own exec goroutine would race the OpenTelemetry integration's
+// live per-turn step-span state.
+func (d *turnDriver) ensureToolExecutionStarted(call types.ToolCall) {
+	d.execMu.Lock()
+	if d.startedToolExecutions[call.ID] {
+		d.execMu.Unlock()
+		return
+	}
+	d.startedToolExecutions[call.ID] = true
+	d.execMu.Unlock()
+
+	if d.in.Callbacks.OnToolExecutionStart != nil {
+		d.in.Callbacks.OnToolExecutionStart(d.ctx, ai.OnToolCallStartEvent{
+			ToolCallID: call.ID, ToolName: call.ToolName, ToolCall: call,
+			RuntimeContext: d.in.RuntimeContext, ToolsContext: d.in.ToolsContext,
+		})
+	}
+}
+
 // recordToolResult correlates a tool-result event with its originating call
-// for step accounting and OnToolExecutionStart/End callback data. Mirrors
-// TS's `toolExecutions` map, populated for every tool call regardless of who
-// executed it (host or the runtime's own builtin), and flushed at each step
-// boundary via `publishToolExecutions`.
+// for step accounting and fires OnToolExecutionEnd (ensuring
+// OnToolExecutionStart has fired first). Mirrors TS's `toolExecutions` map,
+// populated for every tool call regardless of who executed it (host or the
+// runtime's own builtin).
 func (d *turnDriver) recordToolResult(tr *ToolResultPart) {
 	call, ok := d.toolCallsByID[tr.ToolCallID]
 	if !ok {
@@ -1050,12 +1116,8 @@ func (d *turnDriver) recordToolResult(tr *ToolResultPart) {
 	}
 	d.stepToolResults = append(d.stepToolResults, toolResult)
 
-	if d.in.Callbacks.OnToolExecutionStart != nil {
-		d.in.Callbacks.OnToolExecutionStart(d.ctx, ai.OnToolCallStartEvent{
-			ToolCallID: tr.ToolCallID, ToolName: tr.ToolName, ToolCall: call,
-			RuntimeContext: d.in.RuntimeContext, ToolsContext: d.in.ToolsContext,
-		})
-	}
+	d.ensureToolExecutionStarted(call)
+
 	if d.in.Callbacks.OnToolExecutionEnd != nil {
 		d.in.Callbacks.OnToolExecutionEnd(d.ctx, ai.OnToolCallFinishEvent{
 			ToolCallID: tr.ToolCallID, ToolName: tr.ToolName, ToolCall: call, ToolOutput: toolResult,
@@ -1489,7 +1551,7 @@ func (d *turnDriver) handleHostToolCall(raw *ToolCallPart) (awaiting bool, err e
 			}
 			return true, nil
 		}
-		d.executeHostToolAsync(tool, raw, hostCall.Arguments)
+		d.executeHostToolAsync(tool, raw, call, hostCall.Arguments)
 		return false, nil
 	}
 }
@@ -1547,7 +1609,7 @@ func (d *turnDriver) recordPendingResult(raw *ToolCallPart) {
 // display value. Mirrors TS `maybeExecuteHostTool`'s
 // `input.parsedToolCall.input` (the raw-validated `validatedHostToolCall`,
 // not the display `parsedToolCall`).
-func (d *turnDriver) executeHostToolAsync(tool types.Tool, raw *ToolCallPart, execArgs map[string]interface{}) {
+func (d *turnDriver) executeHostToolAsync(tool types.Tool, raw *ToolCallPart, call types.ToolCall, execArgs map[string]interface{}) {
 	// Snapshotted here, synchronously in the caller's (turnDriver.run's)
 	// goroutine, rather than read as d.telStepCtx from inside the spawned
 	// goroutine below: d.telStepCtx is mutated by the main goroutine at
@@ -1562,6 +1624,10 @@ func (d *turnDriver) executeHostToolAsync(tool types.Tool, raw *ToolCallPart, ex
 	d.execWG.Add(1)
 	go func() {
 		defer d.execWG.Done()
+		// TS #21696: fire OnToolExecutionStart as execution actually
+		// begins, not buffered behind this step's slower sibling tool
+		// executions.
+		d.ensureToolExecutionStarted(call)
 		start := time.Now()
 		var toolCtx interface{}
 		if ctxValue, ok := d.in.ToolsContext[raw.ToolName]; ok {
@@ -1742,7 +1808,7 @@ func (d *turnDriver) processApprovalContinuation(approval PendingToolApproval, c
 		}
 		return turnOutcomeAwaitingToolResult, nil
 	}
-	d.executeHostToolAsync(tool, &ToolCallPart{ToolCallID: approval.ToolCallID, ToolName: approval.ToolName, Input: approval.Input}, validatedHostToolCall.Arguments)
+	d.executeHostToolAsync(tool, &ToolCallPart{ToolCallID: approval.ToolCallID, ToolName: approval.ToolName, Input: approval.Input}, call, validatedHostToolCall.Arguments)
 	return turnOutcomeContinue, nil
 }
 
