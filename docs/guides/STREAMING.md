@@ -15,6 +15,7 @@ import (
     "fmt"
 
     "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 func streamExample(model provider.LanguageModel) error {
