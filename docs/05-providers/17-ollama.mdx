@@ -20,19 +20,22 @@ ollama pull llama3.1
 
 ### Configuration
 
+Ollama has its own provider package; no API key is needed:
+
 ```go
 import (
     "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/ollama"
 )
 
-provider := openai.New(openai.Config{
-    APIKey:  "ollama", // Not used but required
-    BaseURL: "http://localhost:11434/v1",
+provider := ollama.New(ollama.Config{
+    // BaseURL defaults to http://localhost:11434
 })
 
 model, err := provider.LanguageModel("llama3.1")
 ```
+
+Ollama does not support image generation, speech synthesis, transcription, or reranking — `ImageModel`, `SpeechModel`, `TranscriptionModel`, and `RerankingModel` all return errors.
 
 ## Available Models
 
@@ -63,18 +66,17 @@ model, err := provider.LanguageModel("llama3.1")
 package main
 
 import (
+    "context"
     "fmt"
     "log"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/ollama"
 )
 
 func main() {
-    provider := openai.New(openai.Config{
-        APIKey:  "ollama",
-        BaseURL: "http://localhost:11434/v1",
-    })
+    ctx := context.Background()
+    provider := ollama.New(ollama.Config{})
 
     model, err := provider.LanguageModel("llama3.1")
     if err != nil {
@@ -234,9 +236,8 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 ### Remote Ollama
 
 ```go
-provider := openai.New(openai.Config{
-    APIKey:  "ollama",
-    BaseURL: "http://remote-server:11434/v1",
+provider := ollama.New(ollama.Config{
+    BaseURL: "http://remote-server:11434",
 })
 ```
 

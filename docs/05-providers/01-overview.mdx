@@ -32,11 +32,13 @@ Every provider implements the `Provider` interface:
 
 ```go
 type Provider interface {
+    Name() string
     LanguageModel(modelID string) (LanguageModel, error)
     EmbeddingModel(modelID string) (EmbeddingModel, error)
     ImageModel(modelID string) (ImageModel, error)
     SpeechModel(modelID string) (SpeechModel, error)
     TranscriptionModel(modelID string) (TranscriptionModel, error)
+    RerankingModel(modelID string) (RerankingModel, error)
 }
 ```
 
@@ -141,8 +143,7 @@ provider := anthropic.New(anthropic.Config{
     HTTPClient: &http.Client{
         Timeout: time.Second * 60,
     },
-    MaxRetries: 3,
-    DefaultHeaders: map[string]string{
+    Headers: map[string]string{
         "X-Custom-Header": "value",
     },
 })
@@ -164,8 +165,8 @@ if err != nil {
 // AWS Bedrock with region
 provider := bedrock.New(bedrock.Config{
     Region: "us-west-2",
-    AccessKeyID: os.Getenv("AWS_ACCESS_KEY_ID"),
-    SecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
+    AWSAccessKeyID: os.Getenv("AWS_ACCESS_KEY_ID"),
+    AWSSecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
 })
 ```
 

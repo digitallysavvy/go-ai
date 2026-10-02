@@ -162,12 +162,20 @@ if err != nil {
     log.Fatal(err)
 }
 
-token, err := model.DoCreateClientSecret(ctx, providerapi.ClientSecretOptions{})
+secretCreator, ok := model.(providerapi.RealtimeClientSecretCreator)
+if !ok {
+    log.Fatal("model does not support client secret creation")
+}
+token, err := secretCreator.DoCreateClientSecret(ctx, providerapi.ClientSecretOptions{})
 if err != nil {
     log.Fatal(err)
 }
 
-ws := model.GetWebSocketConfig(token.Token, token.URL)
+wsConfigProvider, ok := model.(providerapi.RealtimeWebSocketConfigProvider)
+if !ok {
+    log.Fatal("model does not support client-side WebSocket config")
+}
+ws := wsConfigProvider.GetWebSocketConfig(token.Token, token.URL)
 fmt.Println(ws.URL)
 ```
 
@@ -493,6 +501,7 @@ Use the `"google"` provider key for AI Studio options. Vertex options use the `"
 package main
 
 import (
+    "context"
     "fmt"
     "log"
     "os"
@@ -502,6 +511,7 @@ import (
 )
 
 func main() {
+    ctx := context.Background()
     googleProvider := google.New(google.Config{
         APIKey: os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY"),
     })
