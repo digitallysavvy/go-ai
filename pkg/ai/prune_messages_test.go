@@ -247,9 +247,10 @@ func TestPruneModelMessages_RetainsOriginatingCallForKeptApproval(t *testing.T) 
 	}
 }
 
-// TS prune-messages.test.ts "toolCalls > before-last-2-messages": N == 0 is
-// a TS quirk (slice(-0) scans everything) that ends up keeping virtually
-// every tool call; N > 0 behaves like a normal protected window.
+// TS prune-messages.test.ts "toolCalls > before-last-2-messages": N > 0
+// behaves like a normal protected window. N == 0 behaves exactly like "all"
+// (TS #21732): see the PruneModelMessages doc comment for the slice(-0)
+// quirk this fixed.
 func TestPruneModelMessages_BeforeLastNMessages(t *testing.T) {
 	t.Parallel()
 
@@ -284,20 +285,31 @@ func TestPruneModelMessages_BeforeLastNMessages(t *testing.T) {
 		}
 	})
 
-	t.Run("N=0 quirk keeps everything", func(t *testing.T) {
-		out, err := PruneModelMessages(messages, PruneModelMessagesOptions{
+	t.Run("N=0 behaves exactly like all (TS #21732)", func(t *testing.T) {
+		zero, err := PruneModelMessages(messages, PruneModelMessagesOptions{
 			ToolCalls:     []PruneToolCallsRule{{Type: "before-last-0-messages"}},
 			EmptyMessages: "keep",
 		})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if len(out) != len(messages) {
-			t.Fatalf("expected all messages to survive, got %d", len(out))
+		all, err := PruneModelMessages(messages, PruneModelMessagesOptions{
+			ToolCalls:     []PruneToolCallsRule{{Type: "all"}},
+			EmptyMessages: "keep",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
 		}
-		for i, msg := range out {
-			if len(msg.Content) != len(messages[i].Content) {
-				t.Errorf("message %d: expected content untouched, got %+v", i, msg.Content)
+		if !reflect.DeepEqual(zero, all) {
+			t.Fatalf("before-last-0-messages = %+v, want same as all = %+v", zero, all)
+		}
+		// Every tool-related part across all four messages is pruned, since
+		// no message is protected and the kept-ID scan contributes nothing.
+		for i, msg := range zero {
+			for _, part := range msg.Content {
+				if _, _, ok := isToolCallPart(part); ok {
+					t.Errorf("message %d: expected no tool-call parts to survive, got %+v", i, part)
+				}
 			}
 		}
 	})
