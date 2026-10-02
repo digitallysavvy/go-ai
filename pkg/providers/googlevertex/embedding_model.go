@@ -243,13 +243,16 @@ type vertexEmbedContentResponse struct {
 	} `json:"usageMetadata,omitempty"`
 }
 
-// vertexEmbeddingOptions extracts Vertex embedding provider options from EmbedModelOptions.
-// It checks the "vertex" key first, then "google" for cross-provider compatibility.
+// vertexEmbeddingOptions extracts Vertex embedding provider options from
+// EmbedModelOptions. It checks "googleVertex" first, then "vertex", then
+// "google" for cross-provider compatibility, matching TS
+// google-vertex-embedding-model.ts's doEmbed (and the language model's own
+// ProviderOptionsKeys order, from which this previously diverged).
 func vertexEmbeddingOptions(opts *provider.EmbedModelOptions) VertexEmbeddingProviderOptions {
 	if opts == nil || opts.ProviderOptions == nil {
 		return VertexEmbeddingProviderOptions{}
 	}
-	for _, key := range []string{"vertex", "google"} {
+	for _, key := range []string{"googleVertex", "vertex", "google"} {
 		if v, ok := opts.ProviderOptions[key]; ok {
 			if m, ok := v.(map[string]interface{}); ok {
 				result := VertexEmbeddingProviderOptions{}
