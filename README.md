@@ -1,11 +1,33 @@
-# Go AI SDK
+<p align="center">
+  <a href="https://digitallysavvy.github.io/go-ai/">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="./.github/assets/readme-banner-dark.png">
+      <source media="(prefers-color-scheme: light)" srcset="./.github/assets/readme-banner-light.png">
+      <img alt="Go AI SDK: the AI SDK, in Go. LLMs, tools, agents and MCP." src="./.github/assets/readme-banner-light.png" width="100%">
+    </picture>
+  </a>
+</p>
 
-[![CI](https://github.com/digitallysavvy/go-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/digitallysavvy/go-ai/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/digitallysavvy/go-ai/graph/badge.svg)](https://codecov.io/gh/digitallysavvy/go-ai)
-[![Go Version](https://img.shields.io/github/go-mod/go-version/digitallysavvy/go-ai)](./go.mod)
-[![Release](https://img.shields.io/github/v/release/digitallysavvy/go-ai)](https://github.com/digitallysavvy/go-ai/releases)
-[![Go Reference](https://pkg.go.dev/badge/github.com/digitallysavvy/go-ai.svg)](https://pkg.go.dev/github.com/digitallysavvy/go-ai)
-[![License](https://img.shields.io/github/license/digitallysavvy/go-ai)](./LICENSE)
+<p align="center">
+  <a href="https://github.com/digitallysavvy/go-ai/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/digitallysavvy/go-ai/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://codecov.io/gh/digitallysavvy/go-ai"><img alt="Coverage" src="https://codecov.io/gh/digitallysavvy/go-ai/graph/badge.svg"></a>
+  <a href="https://pkg.go.dev/github.com/digitallysavvy/go-ai"><img alt="Go Reference" src="https://pkg.go.dev/badge/github.com/digitallysavvy/go-ai.svg"></a>
+  <a href="./go.mod"><img alt="Go version" src="https://img.shields.io/github/go-mod/go-version/digitallysavvy/go-ai"></a>
+  <a href="https://github.com/digitallysavvy/go-ai/releases"><img alt="Release" src="https://img.shields.io/github/v/release/digitallysavvy/go-ai"></a>
+  <a href="./LICENSE"><img alt="License" src="https://img.shields.io/github/license/digitallysavvy/go-ai"></a>
+</p>
+
+<p align="center">
+  <a href="https://digitallysavvy.github.io/go-ai/docs/getting-started"><b>Get started</b></a>
+  &nbsp;·&nbsp;
+  <a href="https://digitallysavvy.github.io/go-ai/">Docs</a>
+  &nbsp;·&nbsp;
+  <a href="./examples">Examples</a>
+  &nbsp;·&nbsp;
+  <a href="https://digitallysavvy.github.io/go-ai/llms.txt">llms.txt</a>
+  &nbsp;·&nbsp;
+  <a href="./CHANGELOG.md">Changelog</a>
+</p>
 
 The [Go AI SDK](https://github.com/digitallysavvy/go-ai) is a comprehensive toolkit designed to help you build AI-powered applications and agents using Go. It provides 1:1 feature parity with the [Vercel AI SDK](https://ai-sdk.dev) for backend functionality.
 
