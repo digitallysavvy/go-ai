@@ -13,7 +13,7 @@
 <p align="center">
   <b>The AI SDK, in Go.</b><br>
   Generate and stream text, call tools, run agents and connect to MCP servers<br>
-  across 48 providers, with one API that tracks the TypeScript AI SDK.
+  across 49 providers, with one API that tracks the TypeScript AI SDK.
 </p>
 
 <p align="center">
@@ -53,7 +53,7 @@ To learn more about how to use the Go AI SDK, check out the [documentation](http
 - **Async video** — `ai.ExperimentalStartVideo` / `ExperimentalGetVideoStatus` for fal, Google, Google Vertex, Replicate and xAI, plus Google Vertex Veo support
 - **Code-mode (experimental)** — `pkg/codemode` runs model-written JavaScript in a QuickJS-on-WebAssembly sandbox with TS execution-policy limits
 - **Harness** — `pkg/harness` (Go port of `@ai-sdk/harness`) with adapters for Claude Code, Codex, OpenCode, Deep Agents, ACP, Cursor, GitHub Copilot, Grok Build, and a Vercel Sandbox provider
-- **New providers** — GMI Cloud, Z.AI, MiniMax, TypeSafe AI, Fish Audio, Cartesia, Rev.ai, Hume, Luma
+- **New providers** — GMI Cloud, Z.AI, MiniMax, TypeSafe AI, Fish Audio, Cartesia, Rev.ai, Hume, Luma, Topaz Labs
 - **Security** — tool approvals verified on resume (HMAC v1), DNS-pinned downloads, MCP OAuth SSRF guards
 
 See the full [release notes](./release_notes/) and [changelog](./CHANGELOG.md), and the [v0.4 → v0.5 migration guide](./docs/08-migration-guides/from-v0.4-to-v0.5.mdx).
@@ -314,7 +314,7 @@ See [examples/features/retention](./examples/features/retention) for detailed us
 
 ## Supported Providers
 
-The Go AI SDK supports 48 providers:
+The Go AI SDK supports 49 providers:
 
 | Provider         | Language Models              | Embeddings | Images / Video   | Speech       |
 | ---------------- | ---------------------------- | ---------- | ---------------- | ------------ |
@@ -338,11 +338,11 @@ The Go AI SDK supports 48 providers:
 | **Prodia**       | img2img                      | -          | Video (T2V/I2V)  | -            |
 | **Ollama**       | Local models                 | ✓          | -                | -            |
 
-And more (Replicate, Hugging Face, Stability, ElevenLabs, Deepgram, Gladia, LMNT, ByteDance, Baseten, Cerebras, DeepInfra, Gateway, GMI Cloud, Z.AI, MiniMax, TypeSafe AI, Fish Audio, Cartesia, Rev.ai, Hume, Luma, BFL, Voyage, AssemblyAI, Vercel, Moonshot, Anthropic AWS, Google Vertex xAI, Open Responses, QuiverAI)...
+And more (Replicate, Hugging Face, Stability, ElevenLabs, Deepgram, Gladia, LMNT, ByteDance, Baseten, Cerebras, DeepInfra, Gateway, GMI Cloud, Z.AI, MiniMax, TypeSafe AI, Fish Audio, Cartesia, Rev.ai, Hume, Luma, BFL, Voyage, AssemblyAI, Vercel, Moonshot, Anthropic AWS, Google Vertex xAI, Open Responses, QuiverAI, Topaz Labs)...
 
 ## Features
 
-- ✅ **Unified API** — one interface for 48 providers
+- ✅ **Unified API** — one interface for 49 providers
 - ✅ **Text Generation** — `GenerateText()` and `StreamText()`
 - ✅ **Structured Output** — type-safe `GenerateObject()` with JSON validation
 - ✅ **Tool Calling** — custom functions with per-tool timeouts
@@ -455,7 +455,7 @@ This SDK maintains 1:1 feature parity with the [Vercel AI SDK](https://ai-sdk.de
 - Same public APIs and response shapes
 - Same provider interfaces and tool system
 - Same middleware and telemetry patterns
-- Compatible workflows across all 48 providers
+- Compatible workflows across all 49 providers
 - Feature complete for server-side use
 
 A handful of features are intentionally TS-only (browser WebRTC realtime, the
