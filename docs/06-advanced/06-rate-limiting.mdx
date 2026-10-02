@@ -15,7 +15,6 @@ Go's `golang.org/x/time/rate` package provides a simple token bucket rate limite
 package main
 
 import (
-    "context"
     "encoding/json"
     "fmt"
     "log"
@@ -238,7 +237,7 @@ func rateLimitHandler(w http.ResponseWriter, r *http.Request) {
         return
     }
 
-    fmt.Fprintf(w, result.Text)
+    fmt.Fprint(w, result.Text)
 }
 
 func main() {
@@ -259,6 +258,7 @@ import (
     "fmt"
     "net/http"
     "sync"
+    "time"
 
     "golang.org/x/time/rate"
 )
@@ -471,7 +471,6 @@ Implement both per-user and global limits:
 package main
 
 import (
-    "context"
     "fmt"
     "net/http"
     "sync"
@@ -480,15 +479,19 @@ import (
 )
 
 type MultiTierRateLimiter struct {
-    perUser  map[string]*rate.Limiter
-    global   *rate.Limiter
-    mu       sync.RWMutex
+    perUser   map[string]*rate.Limiter
+    userRate  rate.Limit
+    userBurst int
+    global    *rate.Limiter
+    mu        sync.RWMutex
 }
 
 func NewMultiTierRateLimiter(globalRate rate.Limit, globalBurst int, userRate rate.Limit, userBurst int) *MultiTierRateLimiter {
     return &MultiTierRateLimiter{
-        perUser: make(map[string]*rate.Limiter),
-        global:  rate.NewLimiter(globalRate, globalBurst),
+        perUser:   make(map[string]*rate.Limiter),
+        userRate:  userRate,
+        userBurst: userBurst,
+        global:    rate.NewLimiter(globalRate, globalBurst),
     }
 }
 
@@ -501,7 +504,7 @@ func (m *MultiTierRateLimiter) Allow(userID string) (bool, string) {
     // Check per-user limit
     m.mu.Lock()
     if _, exists := m.perUser[userID]; !exists {
-        m.perUser[userID] = rate.NewLimiter(rate.Limit(10.0/60.0), 10) // 10 per minute
+        m.perUser[userID] = rate.NewLimiter(m.userRate, m.userBurst)
     }
     limiter := m.perUser[userID]
     m.mu.Unlock()
@@ -561,7 +564,6 @@ Handle rate limits for streaming AI responses:
 package main
 
 import (
-    "context"
     "fmt"
     "net/http"
     "os"
@@ -603,7 +605,7 @@ func streamHandler(w http.ResponseWriter, r *http.Request) {
     flusher, _ := w.(http.Flusher)
 
     for chunk := range stream.Chunks() {
-        fmt.Fprintf(w, "data: %s\n\n", chunk)
+        fmt.Fprintf(w, "data: %s\n\n", chunk.Text)
         flusher.Flush()
     }
 
