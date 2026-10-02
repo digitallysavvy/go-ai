@@ -1,3 +1,8 @@
+---
+title: "XAI Advanced Usage Reporting"
+description: "Explains advanced token usage tracking for xAI models in the Go-AI SDK, covering cached tokens, reasoning tokens, multi-modal inputs, and cost tracking."
+---
+
 # XAI Advanced Usage Reporting
 
 The Go-AI SDK provides sophisticated token usage tracking for XAI (formerly Twitter/X AI) models, including support for cached tokens, reasoning tokens, and multi-modal inputs.

@@ -1,3 +1,8 @@
+---
+title: "Agent Callbacks"
+description: "Legacy reference for Go-AI SDK agent callback support, covering the OnStepFinish callback, other callbacks, a complete example, and TypeScript comparison."
+---
+
 # Agent Callbacks
 
 The Go-AI SDK provides comprehensive callback support for monitoring and controlling agent execution. Callbacks allow you to track progress, log intermediate results, monitor resource usage, and build real-time UI updates.

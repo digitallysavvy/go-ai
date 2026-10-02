@@ -1,3 +1,8 @@
+---
+title: "May 2026 Migration Guide"
+description: "Covers agent, registry, middleware, and operational API changes from the Go AI SDK's May 2026 parity cycle, including tool approval and sandbox API."
+---
+
 # May 2026 Migration Guide
 
 This guide covers the agent, registry, middleware, and operational API changes from the May 2026 parity cycle.
