@@ -119,6 +119,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 package main
 
 import (
+    "context"
     "fmt"
     "log"
     "os"
@@ -129,6 +130,7 @@ import (
 )
 
 func main() {
+    ctx := context.Background()
     provider := groq.New(groq.Config{
         APIKey: os.Getenv("GROQ_API_KEY"),
     })

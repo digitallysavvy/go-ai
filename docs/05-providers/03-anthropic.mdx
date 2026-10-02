@@ -379,6 +379,7 @@ if stream.Err() != nil {
 package main
 
 import (
+    "context"
     "fmt"
     "log"
     "os"
@@ -388,6 +389,7 @@ import (
 )
 
 func main() {
+    ctx := context.Background()
     provider := anthropic.New(anthropic.Config{
         APIKey: os.Getenv("ANTHROPIC_API_KEY"),
     })

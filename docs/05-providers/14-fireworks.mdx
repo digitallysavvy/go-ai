@@ -65,6 +65,7 @@ export FIREWORKS_API_KEY=fw_...
 package main
 
 import (
+    "context"
     "fmt"
     "log"
     "os"
@@ -74,6 +75,7 @@ import (
 )
 
 func main() {
+    ctx := context.Background()
     prov := fireworks.New(fireworks.Config{
         APIKey: os.Getenv("FIREWORKS_API_KEY"),
     })

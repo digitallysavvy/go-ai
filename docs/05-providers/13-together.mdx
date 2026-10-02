@@ -130,6 +130,7 @@ for the mechanism; embedding and reranking models are not yet serializable.
 package main
 
 import (
+    "context"
     "fmt"
     "log"
     "os"
@@ -139,6 +140,7 @@ import (
 )
 
 func main() {
+    ctx := context.Background()
     provider := together.New(together.Config{
         APIKey: os.Getenv("TOGETHER_API_KEY"),
     })

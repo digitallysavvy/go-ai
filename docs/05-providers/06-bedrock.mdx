@@ -156,6 +156,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 package main
 
 import (
+    "context"
     "fmt"
     "log"
     "os"
@@ -165,6 +166,7 @@ import (
 )
 
 func main() {
+    ctx := context.Background()
     provider := bedrock.New(bedrock.Config{
         Region:             "us-east-1",
         AWSAccessKeyID:     os.Getenv("AWS_ACCESS_KEY_ID"),

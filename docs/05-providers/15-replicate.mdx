@@ -90,6 +90,7 @@ result, err := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
 package main
 
 import (
+    "context"
     "fmt"
     "log"
     "os"
@@ -99,6 +100,7 @@ import (
 )
 
 func main() {
+    ctx := context.Background()
     provider := replicate.New(replicate.Config{
         APIKey: os.Getenv("REPLICATE_API_KEY"),
     })
@@ -109,6 +111,9 @@ func main() {
     }
 
     result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: "Explain Replicate"})
+    if err != nil {
+        log.Fatal(err)
+    }
     fmt.Println(result.Text)
 }
 ```
