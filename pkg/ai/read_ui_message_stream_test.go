@@ -311,3 +311,43 @@ func TestReadUIMessages_ToolInputErrorRawInputDeprecationWarning(t *testing.T) {
 		assert.Empty(t, buf.String())
 	})
 }
+
+// Ported from TS c5e90bb137 (#21480): resuming a hydrated message whose last
+// tool part is still in the input-streaming state must continue accumulating
+// its input from that part's RawInput, instead of starting from an empty
+// accumulator (which previously raised a "missing tool call" error on the
+// very next tool-input-delta after reconnecting).
+func TestReadUIMessages_ContinuesHydratedPartialStaticToolCall(t *testing.T) {
+	message := &UIMessage{
+		ID:   "msg-123",
+		Role: UIMessageRoleAssistant,
+		Parts: []UIMessagePart{
+			&ToolUIPart{
+				Type:       "tool-createDocument",
+				ToolCallID: "tool-1",
+				State:      ToolStateInputStreaming,
+				Input:      map[string]interface{}{"title": "Hel"},
+				RawInput:   `{"title":"Hel`,
+			},
+		},
+	}
+
+	snapshots, err := sendChunks(t, message, []UIMessageChunk{
+		{"type": "tool-input-delta", "toolCallId": "tool-1", "inputTextDelta": `lo"}`},
+		{"type": "tool-input-available", "toolCallId": "tool-1", "toolName": "createDocument", "input": map[string]interface{}{"title": "Hello"}},
+	})
+	require.NoError(t, err)
+	require.Len(t, snapshots, 2)
+
+	deltaPart := findToolUIMessagePart(snapshots[0], "tool-createDocument")
+	require.NotNil(t, deltaPart)
+	assert.Equal(t, ToolStateInputStreaming, deltaPart.State)
+	assert.Equal(t, map[string]interface{}{"title": "Hello"}, deltaPart.Input)
+	assert.Equal(t, `{"title":"Hello"}`, deltaPart.RawInput)
+
+	final := findToolUIMessagePart(snapshots[1], "tool-createDocument")
+	require.NotNil(t, final)
+	assert.Equal(t, ToolStateInputAvailable, final.State)
+	assert.Equal(t, map[string]interface{}{"title": "Hello"}, final.Input)
+	assert.Nil(t, final.RawInput)
+}

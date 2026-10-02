@@ -174,9 +174,13 @@ type ToolUIPart struct {
 	Input interface{}
 	// Output is the tool output (output-available).
 	Output interface{}
-	// RawInput is the deprecated raw input of output-error parts.
+	// RawInput serves two purposes depending on State:
+	//   - input-streaming: the accumulated raw (partial-JSON) tool input text
+	//     received so far. Used to continue input streaming when a message is
+	//     persisted and later resumed (see seedPartialToolCalls).
+	//   - output-error: the deprecated raw input of an output-error part.
 	//
-	// Deprecated: use Input.
+	// Deprecated: for output-error, use Input instead.
 	RawInput               interface{}
 	ErrorText              string
 	Preliminary            *bool

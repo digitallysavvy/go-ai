@@ -1008,9 +1008,44 @@ func newUIMessageCallbackState(original []UIMessageChunk, messageID string) *uiM
 			if _, ok := state.message["parts"]; !ok {
 				state.message["parts"] = []interface{}{}
 			}
+			state.partialTools = seedPartialToolCalls(state.message)
 		}
 	}
 	return state
+}
+
+// seedPartialToolCalls reconstructs the partial-tool-call accumulator for
+// any tool part in message's last step that is still in the
+// "input-streaming" state, keyed by toolCallId. This lets a resumed stream
+// continue a "tool-input-delta" sequence for a tool call that was already
+// partially streamed before a disconnect (the part's "rawInput" carries the
+// accumulated raw text) -- the part itself was hydrated from persisted
+// history, so no "tool-input-start" chunk precedes the resumed deltas.
+// Mirrors TS process-ui-message-stream.ts's createStreamingUIMessageState
+// (audit: TS #21480).
+func seedPartialToolCalls(message UIMessageChunk) map[string]*uiPartialToolCall {
+	partials := map[string]*uiPartialToolCall{}
+	parts := uiParts(message)
+	start := currentStepStartIndex(parts)
+	for _, raw := range parts[start:] {
+		part := asUIPartChunk(raw)
+		if !isToolPartChunk(part) || stringValue(part["state"]) != "input-streaming" {
+			continue
+		}
+		toolCallID := stringValue(part["toolCallId"])
+		if toolCallID == "" {
+			continue
+		}
+		toolName, dynamic := toolInfoFromPart(part)
+		partials[toolCallID] = &uiPartialToolCall{
+			text:         stringValue(part["rawInput"]),
+			toolName:     toolName,
+			dynamic:      dynamic,
+			title:        part["title"],
+			toolMetadata: part["toolMetadata"],
+		}
+	}
+	return partials
 }
 
 func (s *uiMessageCallbackState) responseMessage() UIMessageChunk {
@@ -1149,8 +1184,9 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 			toolMetadata: chunk["toolMetadata"],
 		}
 		s.updateToolPart(toolCallID, toolName, dynamic, UIMessageChunk{
-			"state": "input-streaming",
-			"input": uiOmitField,
+			"state":    "input-streaming",
+			"input":    uiOmitField,
+			"rawInput": uiOmitField,
 		}, chunk)
 	case "tool-input-delta":
 		toolCallID := stringValue(chunk["toolCallId"])
@@ -1160,17 +1196,24 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 			return
 		}
 		partial.text += stringValue(chunk["inputTextDelta"])
+		// rawInput carries the accumulated raw text onto the part itself (not
+		// just the in-memory partialTools accumulator) so a persisted/hydrated
+		// message can later re-seed partialTools via seedPartialToolCalls and
+		// continue streaming after a disconnect. Mirrors TS
+		// process-ui-message-stream.ts's tool-input-delta handling (TS #21480).
 		s.updateToolPart(toolCallID, partial.toolName, partial.dynamic, UIMessageChunk{
-			"state": "input-streaming",
-			"input": parseToolInputPartial(partial.text),
+			"state":    "input-streaming",
+			"input":    parseToolInputPartial(partial.text),
+			"rawInput": partial.text,
 		}, UIMessageChunk{"title": partial.title, "toolMetadata": partial.toolMetadata})
 	case "tool-input-available":
 		toolCallID := stringValue(chunk["toolCallId"])
 		toolName := stringValue(chunk["toolName"])
 		dynamic, _ := chunk["dynamic"].(bool)
 		s.updateToolPart(toolCallID, toolName, dynamic, UIMessageChunk{
-			"state": "input-available",
-			"input": chunk["input"],
+			"state":    "input-available",
+			"input":    chunk["input"],
+			"rawInput": uiOmitField,
 		}, chunk)
 	case "tool-input-error":
 		toolCallID := stringValue(chunk["toolCallId"])
