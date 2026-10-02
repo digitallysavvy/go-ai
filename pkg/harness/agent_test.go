@@ -138,6 +138,12 @@ type mockHarnessOptions struct {
 	onControl func(*mockPromptControl)
 	// onPin, when set, becomes every turn's mockPromptControl.onPin hook.
 	onPin func()
+	// doReadHistory, when set, makes the mock session additionally
+	// implement HistoryReader (mirrors TS mockHarness's optional
+	// `doReadHistory` property — Go expresses "an adapter that does/doesn't
+	// support a capability" as two distinct types rather than a nullable
+	// method, see mockSteerablePromptControl).
+	doReadHistory func(context.Context, string) (*ReadHistoryResult, error)
 }
 
 type mockHarnessResult struct {
@@ -222,9 +228,13 @@ func newMockHarness(opts mockHarnessOptions) *mockHarnessResult {
 			return control, nil
 		},
 	}
-	res.session = sess
+	var session Session = sess
+	if opts.doReadHistory != nil {
+		session = &mockSessionWithHistory{mockSession: sess, doReadHistory: opts.doReadHistory}
+	}
+	res.session = session
 
-	h := &mockHarnessAdapter{id: "mock", builtinTools: opts.builtinTools, session: sess, supportsApproval: opts.supportsApproval}
+	h := &mockHarnessAdapter{id: "mock", builtinTools: opts.builtinTools, session: session, supportsApproval: opts.supportsApproval}
 	res.harness = h
 	return res
 }
@@ -262,6 +272,20 @@ func (s *mockSession) DoStop(context.Context) (*ResumeSessionState, error) {
 	return NewResumeSessionState("mock", map[string]any{})
 }
 func (s *mockSession) DoDestroy(context.Context) error { return nil }
+
+// mockSessionWithHistory wraps mockSession and additionally implements
+// HistoryReader, mirroring TS mockHarness's optional `doReadHistory`
+// property. See mockHarnessOptions.doReadHistory.
+type mockSessionWithHistory struct {
+	*mockSession
+	doReadHistory func(context.Context, string) (*ReadHistoryResult, error)
+}
+
+func (s *mockSessionWithHistory) DoReadHistory(ctx context.Context, since string) (*ReadHistoryResult, error) {
+	return s.doReadHistory(ctx, since)
+}
+
+var _ HistoryReader = (*mockSessionWithHistory)(nil)
 
 type mockHarnessAdapter struct {
 	id               string
