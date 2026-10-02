@@ -236,6 +236,9 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "What's the weather in Brooklyn, NY?",
     Tools:  tools, // All MCP tools are available
+    // Allow a follow-up step so the model can turn the tool result into a
+    // final answer (GenerateText/StreamText default to a single step).
+    StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
 })
 
 if err != nil {
@@ -297,6 +300,9 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "What's the temperature in Paris?",
     Tools:  []types.Tool{weatherTool},
+    // Allow a follow-up step so the model can turn the tool result into a
+    // final answer (GenerateText/StreamText default to a single step).
+    StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
 })
 ```
 
@@ -327,9 +333,10 @@ When MCP tools return images (screenshots, charts, diagrams), the SDK properly c
 tools, _ := converter.ConvertToGoAITools(ctx)
 
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-    Model:  model,
-    Prompt: "Create a sales chart and analyze it",
-    Tools:  tools, // Tool may return image
+    Model:    model,
+    Prompt:   "Create a sales chart and analyze it",
+    Tools:    tools, // Tool may return image
+    StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
 })
 
 // Images in results are properly handled

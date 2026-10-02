@@ -82,6 +82,9 @@ func main() {
         Model:  model,
         Prompt: "What's the weather in San Francisco?",
         Tools:  []types.Tool{weatherTool},
+        // Allow a follow-up step so the model can turn the tool result into
+        // a final answer (GenerateText/StreamText default to a single step).
+        StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
     })
     if err != nil {
         log.Fatal(err)
