@@ -1,10 +1,10 @@
 {
   "compilerOptions": {
-    "baseUrl": ".",
     "jsx": "react-jsx",
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
-    "moduleResolution": "node",
+    "module": "esnext",
+    "moduleResolution": "bundler",
     "lib": ["ES2017", "DOM"],
     "skipLibCheck": true,
     "noEmit": true,

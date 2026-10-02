@@ -914,19 +914,19 @@ From `go.mod`:
 
 | Module | Version |
 |---|---|
-| `github.com/labstack/echo/v4` | v4.15.4 |
-| `github.com/go-chi/chi/v5` | v5.3.0 |
-| `github.com/gofiber/fiber/v2` | v2.52.13 |
-| `go.opentelemetry.io/otel` (+ `sdk`, `trace`, `otlptrace`, `otlptracehttp`) | v1.44.0 |
-| `google.golang.org/grpc` | v1.83.2 |
-| `github.com/quic-go/quic-go` | v0.59.1 |
+| `github.com/labstack/echo/v4` | v4.16.0 |
+| `github.com/go-chi/chi/v5` | v5.3.2 |
+| `github.com/gofiber/fiber/v2` | v2.52.15 |
+| `go.opentelemetry.io/otel` (+ `sdk`, `trace`, `otlptrace`, `otlptracehttp`) | v1.46.0 |
+| `google.golang.org/grpc` | v1.84.0 |
+| `github.com/quic-go/quic-go` | v0.63.0 |
 | `github.com/tetratelabs/wazero` | v1.9.0 |
-| `golang.org/x/net` | v0.58.0 |
-| `golang.org/x/sys` | v0.47.0 |
-| `golang.org/x/text` | v0.41.0 |
-| `golang.org/x/crypto` | v0.55.0 |
-| `golang.org/x/oauth2` | v0.36.0 |
-| `golang.org/x/time` | v0.15.0 |
+| `golang.org/x/net` | v0.59.0 |
+| `golang.org/x/sys` | v0.48.0 |
+| `golang.org/x/text` | v0.42.0 |
+| `golang.org/x/crypto` | v0.57.0 |
+| `golang.org/x/oauth2` | v0.37.0 |
+| `golang.org/x/time` | v0.16.0 |
 
 `pkg/internal/third_party/qjs` vendors a patched copy of fastschema/qjs
 v0.0.6 (MIT license), fixing two memory-read bugs and adding a job-queue
@@ -937,7 +937,7 @@ ships as source + WASM inside the repository.
 
 ## Requirements
 
-- **Go 1.25 or later** (`go.mod` declares `go 1.25.0`).
+- **Go 1.26 or later** (`go.mod` declares `go 1.26.0`; Go 1.25 is end-of-life).
 
 ---
 

@@ -24,7 +24,7 @@ See the full [release notes](./release_notes/) and [changelog](./CHANGELOG.md), 
 
 ## Installation
 
-You will need Go 1.25+ installed on your local development machine.
+You will need Go 1.26+ installed on your local development machine.
 
 ```bash
 go get github.com/digitallysavvy/go-ai@v0.5.0

@@ -55,6 +55,14 @@ step-by-step upgrade instructions are in
 
 ### Changed
 
+- **Minimum Go version is now 1.26** (`go.mod` declares `go 1.26.0`). Go 1.25 is
+  end-of-life, and the current `golang.org/x/*` modules require Go 1.26. CI tests
+  Go 1.26 and 1.27.
+- **Dependencies updated to latest**: OpenTelemetry v1.46.0, echo v4.16.0, chi
+  v5.3.2, fiber v2.52.15, grpc v1.84.0, quic-go v0.63.0, and the `golang.org/x/*`
+  modules. See the release notes for the full table. wazero stays at v1.9.0:
+  v1.10+ cannot reuse a compiled module across runtimes, which the code-mode
+  sandbox relies on, and the workaround makes each sandbox start about 5x slower.
 - **`StreamText` is now asynchronous**, matching TS: it returns before the
   first model request, and only option-validation errors return from the
   call itself.
