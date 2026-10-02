@@ -1,5 +1,7 @@
 # Go AI SDK v0.5.0 Release Notes
 
+Released 2026-10-02.
+
 ## Overview
 
 v0.5.0 tracks TypeScript AI SDK parity target **`ai@7.0.118`** (up from
@@ -275,7 +277,7 @@ code.
 
 - **Outgoing requests now carry a `User-Agent` header**: every provider
   tags requests with `ai-sdk/<provider>/<version> runtime/go/<goVersion>`
-  (e.g. `ai-sdk/openai/0.5.0 runtime/go/go1.25.1`), appended to any
+  (e.g. `ai-sdk/openai/0.5.0 runtime/go/go1.26.0`), appended to any
   `User-Agent` you set. This matches the TypeScript AI SDK and replaces the
   previous behavior of sending no custom `User-Agent`. The non-streaming
   `pkg/ai` calls (`GenerateText`, `GenerateObject`, `GenerateImage`,
@@ -345,13 +347,19 @@ code.
   and credential stripping for the rest of a redirect chain after any
   cross-origin hop.
 - MCP OAuth discovery is now SSRF-guarded; policy-opa fails closed.
-- Dependency bumps: `github.com/labstack/echo/v4` → v4.15.4 (fixes
+- Dependency bumps: `github.com/labstack/echo/v4` → v4.16.0 (v4.15.4 fixed
   GHSA-vfp3-v2gw-7wfq / CVE-2026-55677 — encoded `%2F` bypassed
   route-level middleware and could disclose static files); `go-chi/chi` →
-  v5.3.0; OpenTelemetry → v1.44.0; `google.golang.org/grpc` → v1.83.2
-  (GO-2026-6348, GO-2026-6061, GO-2026-6443); `golang.org/x/text` → v0.41.0
-  (GO-2026-5970); `github.com/quic-go/quic-go` → v0.59.1 (GO-2026-5676).
-  `govulncheck` reports no reachable vulnerabilities.
+  v5.3.2; OpenTelemetry → v1.46.0; `google.golang.org/grpc` → v1.84.0
+  (GO-2026-6348, GO-2026-6061); `golang.org/x/text` → v0.42.0
+  (GO-2026-5970); `github.com/quic-go/quic-go` → v0.63.0 (GO-2026-5676);
+  the other `golang.org/x` modules to their latest releases. `govulncheck`
+  reports no reachable vulnerabilities.
+- CodeQL clean (44 alerts fixed): allocation sizes are overflow-checked
+  (`pkg/internal/intsafe`), JSON fragments are built with the encoder
+  instead of string splicing, Google speech validates the sample rate
+  before converting it, and the examples no longer log raw errors, URLs or
+  response fields that can carry credentials.
 - The Black Forest Labs poll URL, the OpenAI image-edit `url` file input,
   and the Anthropic batch `results_url` are now fetched through the
   SSRF-safe download path (DNS-pinned per redirect hop, credentials only
@@ -654,6 +662,21 @@ code.
 
 ---
 
+### Documentation and agent access
+
+- Every docs page is published as markdown: append `.md` to any docs URL.
+  `llms.txt` indexes every page and `llms-full.txt` holds the whole
+  documentation in one file.
+- Each docs page has Copy page, View as Markdown, Open in ChatGPT and Open
+  in Claude actions, and links its markdown copy
+  (`<link rel="alternate" type="text/markdown">`).
+- Per-page Open Graph images, `robots.txt`, sitemap `lastmod` dates and
+  schema.org structured data (`TechArticle`, `SoftwareSourceCode`,
+  `FAQPage`) for search engines and AI answer engines.
+- `AGENTS.md` for coding agents working in the repository.
+- `docs/scripts/validate-links.go` also validates every page's YAML
+  frontmatter, so CI catches a broken docs build early.
+
 ## Bug Fixes
 
 ### Core and streaming
@@ -853,6 +876,19 @@ code.
 - Error messages no longer start with a stray "L" (a lint-cleanup
   regression from v0.4.0, ~88 strings); transport failures now read
   `Cannot connect to API: <cause>` like TS.
+- ACP: a misconfigured `askUserQuestions.FromNativeRequest` that returns a
+  provider-executed tool call now fails the turn with the TS error text
+  (the check was inverted and the error branch was empty).
+- LangChain adapter: a tool call with no parsed `Arguments` now falls back
+  to parsing `Input` (a typed-nil comparison meant the fallback never ran).
+- `pkg/agent` and `pkg/workflow` lifecycle events now fill in the new
+  fields (`ToolCall`, `ToolOutput`, `ToolExecutionMs`, `Provider`,
+  `Instructions`) alongside the deprecated ones, as `pkg/ai` already did.
+- Google speech rejects sample rates outside the valid range instead of
+  overflowing on conversion.
+- Docs: pages that showed functions, types or options that don't exist in
+  the SDK were corrected against the code, and every complete example
+  program was compiled.
 
 ---
 

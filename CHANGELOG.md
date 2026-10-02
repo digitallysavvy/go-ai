@@ -5,7 +5,7 @@ All notable changes to the Go AI SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.0] - Unreleased
+## [0.5.0] - 2026-10-02
 
 TS SDK parity target: `ai@7.0.118` (was `ai@6.0.137` in v0.4.0). Ships
 everything merged since the v0.4.0 tag — about 1,000 commits across the May,
@@ -52,6 +52,12 @@ step-by-step upgrade instructions are in
   Vertex, Bedrock, Gateway, and Cohere feature additions;
   `openai.Config.TransformRequestBody`; Groq model ID constants; see the
   release notes' New Features section for the per-provider breakdown.
+- **Docs for agents and search**: every docs page is published as markdown
+  (append `.md` to its URL), with `llms.txt` and `llms-full.txt` indexes,
+  Copy page / Open in ChatGPT / Open in Claude actions, per-page Open Graph
+  images, `robots.txt`, sitemap dates and schema.org structured data;
+  `AGENTS.md` for coding agents; the docs validator now checks YAML
+  frontmatter; new logo.
 
 ### Changed
 
@@ -143,9 +149,14 @@ step-by-step upgrade instructions are in
   crashes in the agent subagent/skill registries; MCP stdio, TUI and
   workflow transport races and leaks; Azure system-only prompt panic;
   poller timeouts and cancellation; JSON numeric provider options; Vercel
-  Sandbox `Wait` ctx handling and stream error causes. Full list in the
-  release notes' Bug
-  Fixes section.
+  Sandbox `Wait` ctx handling and stream error causes; ACP now rejects a
+  misconfigured `askUserQuestions` that returns a provider-executed tool
+  call instead of silently accepting it; the LangChain adapter's argument
+  fallback (it never ran); agent and workflow lifecycle events now fill in
+  the new `ToolCall`/`ToolOutput`/`Provider`/`Instructions` fields, not
+  only the deprecated ones; Google speech rejects out-of-range sample
+  rates. Docs pages that showed APIs that don't exist were corrected
+  against the code. Full list in the release notes' Bug Fixes section.
 
 ### Security
 
@@ -160,9 +171,13 @@ step-by-step upgrade instructions are in
 - Tool approvals verified on resume (HMAC v1, TS-compatible).
 - Downloads: DNS pinning, synced blocklist, bounded reads, credential
   stripping across cross-origin redirects. MCP OAuth discovery SSRF-guarded.
-- Dependency bumps: `echo` v4.15.4 (CVE-2026-55677), `chi` v5.3.0, OTel
-  v1.44.0, `grpc` v1.83.2, `x/text` v0.41.0, `quic-go` v0.59.1 —
-  `govulncheck` reports no reachable vulnerabilities.
+- Dependency bumps: `echo` v4.16.0 (includes the CVE-2026-55677 fix from
+  v4.15.4), `chi` v5.3.2, OTel v1.46.0, `grpc` v1.84.0, `x/text` v0.42.0,
+  `quic-go` v0.63.0 and the other `golang.org/x` modules — `govulncheck`
+  reports no reachable vulnerabilities.
+- CodeQL clean: allocation sizes are overflow-checked, JSON fragments are
+  built with the encoder instead of string splicing, and the examples no
+  longer log raw errors or URLs that can carry credentials.
 - BFL poll URLs, OpenAI image-edit URL inputs, and Anthropic batch
   `results_url` now fetched through the SSRF-safe download path.
 - Removed unused internal download helpers that skipped the SSRF checks.
