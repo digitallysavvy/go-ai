@@ -374,6 +374,55 @@ func TestLastAssistantMessageIsCompleteWithToolCalls(t *testing.T) {
 			t.Error("expected false for a user message")
 		}
 	})
+
+	// Ported from TS 9941f32ab9 (#21622): a completed backend tool output
+	// followed by terminal text lacking a completed stream state must not
+	// be treated as a resumption signal.
+	t.Run("false when trailing text has no completed stream state", func(t *testing.T) {
+		got := LastAssistantMessageIsCompleteWithToolCalls([]UIMessage{
+			{
+				ID:   "1",
+				Role: UIMessageRoleAssistant,
+				Parts: []UIMessagePart{
+					&StepStartUIPart{},
+					&ToolUIPart{
+						Type:       "tool-getWeatherInformation",
+						ToolCallID: "call_6iy0GxZ9R4VDI5MKohXxV48y",
+						State:      ToolStateOutputAvailable,
+						Input:      map[string]interface{}{"city": "New York"},
+						Output:     map[string]interface{}{"success": true, "queryResult": "large result"},
+					},
+					&TextUIPart{Text: "Prompt is too long"},
+				},
+			},
+		})
+		if got != false {
+			t.Errorf("got %v, want false", got)
+		}
+	})
+
+	t.Run("true when text precedes the last completed tool call", func(t *testing.T) {
+		got := LastAssistantMessageIsCompleteWithToolCalls([]UIMessage{
+			{
+				ID:   "1",
+				Role: UIMessageRoleAssistant,
+				Parts: []UIMessagePart{
+					&StepStartUIPart{},
+					&TextUIPart{Text: "I will check the weather.", State: UIPartStateDone},
+					&ToolUIPart{
+						Type:       "tool-getWeatherInformation",
+						ToolCallID: "call_1",
+						State:      ToolStateOutputAvailable,
+						Input:      map[string]interface{}{"city": "New York"},
+						Output:     "windy",
+					},
+				},
+			},
+		})
+		if got != true {
+			t.Errorf("got %v, want true", got)
+		}
+	})
 }
 
 // Ported from TS ui/last-assistant-message-is-complete-with-approval-responses.test.ts.
