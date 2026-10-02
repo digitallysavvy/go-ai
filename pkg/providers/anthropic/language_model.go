@@ -408,6 +408,24 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 				Kind:             "anthropic.container_upload",
 				ProviderMetadata: metadata,
 			})
+		case "fallback":
+			// Server-side model-hop marker (a mid-output decline fell back
+			// to another model): preserved as anthropic.fallback custom
+			// content with from/to metadata, round-tripped verbatim through
+			// prompt conversion on the next turn so replayed signed
+			// thinking blocks stay correctly bounded (TS commit a587f554f7,
+			// #21736; previously dropped entirely).
+			metadata, _ := json.Marshal(map[string]interface{}{
+				"anthropic": map[string]interface{}{
+					"type": "fallback",
+					"from": content.From,
+					"to":   content.To,
+				},
+			})
+			result.Content = append(result.Content, types.CustomContent{
+				Kind:             "anthropic.fallback",
+				ProviderMetadata: metadata,
+			})
 		}
 	}
 
@@ -1446,6 +1464,9 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 					Content   json.RawMessage `json:"content"`
 					// compaction fields
 					Signature string `json:"signature"`
+					// fallback fields
+					From map[string]interface{} `json:"from"`
+					To   map[string]interface{} `json:"to"`
 				} `json:"content_block"`
 			}
 			if err := json.Unmarshal([]byte(event.Data), &start); err != nil {
@@ -1744,6 +1765,31 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				return &provider.StreamChunk{
 					Type:       provider.ChunkTypeToolResult,
 					ToolResult: tr,
+				}, nil
+
+			case "fallback":
+				// Server-side model-hop marker, streamed as a single
+				// content_block_start with no following deltas before its
+				// content_block_stop. Preserved as an anthropic.fallback
+				// custom chunk with from/to metadata (TS commit a587f554f7,
+				// #21736; previously dropped entirely) so the next request's
+				// prompt conversion can round-trip the fallback boundary
+				// between signed thinking blocks. No contentBlocks entry is
+				// needed: content_block_stop is already a no-op for an
+				// unregistered index.
+				metadata, _ := json.Marshal(map[string]interface{}{
+					"anthropic": map[string]interface{}{
+						"type": "fallback",
+						"from": start.ContentBlock.From,
+						"to":   start.ContentBlock.To,
+					},
+				})
+				return &provider.StreamChunk{
+					Type: provider.ChunkTypeCustom,
+					CustomContent: &types.CustomContent{
+						Kind:             "anthropic.fallback",
+						ProviderMetadata: metadata,
+					},
 				}, nil
 
 			default:
