@@ -220,7 +220,7 @@ func (m *AzureSpeechTranscriptionModel) DoGenerate(ctx context.Context, opts *pr
 		}
 		words := make([]AzureSpeechWord, 0, len(phrase.Words))
 		for _, w := range phrase.Words {
-			words = append(words, AzureSpeechWord{Text: w.Text, OffsetMilliseconds: w.OffsetMilliseconds, DurationMilliseconds: w.DurationMilliseconds})
+			words = append(words, AzureSpeechWord(w))
 		}
 		phrases = append(phrases, AzureSpeechPhrase{
 			Text:                 phrase.Text,
