@@ -2225,6 +2225,138 @@ function canonicalizeJSON({ value }) {
     ])
   );
 }
+var DEFAULT_AUTHORIZATION_WAIT_MS = 1e4;
+function createHostToolRelayAuthorization({
+  serverName,
+  toolNames,
+  ttlMs = DEFAULT_AUTHORIZATION_WAIT_MS
+}) {
+  const observedCalls = /* @__PURE__ */ new Map();
+  const authorizations = /* @__PURE__ */ new Map();
+  const pendingRequests = [];
+  let closed = false;
+  const observe = ({ toolCall }) => {
+    if (closed) return;
+    const previous = observedCalls.get(toolCall.toolCallId);
+    if (previous?.consumed || previous?.terminal) return;
+    const merged = {
+      ...previous?.toolCall,
+      ...toolCall,
+      ...toolCall.name == null && previous?.toolCall.name != null ? { name: previous.toolCall.name } : {},
+      ...toolCall.rawInput === void 0 && previous?.toolCall.rawInput !== void 0 ? { rawInput: previous.toolCall.rawInput } : {},
+      ...toolCall.title == null && previous?.toolCall.title != null ? { title: previous.toolCall.title } : {},
+      ...toolCall._meta == null && previous?.toolCall._meta != null ? { _meta: previous.toolCall._meta } : {}
+    };
+    const observed = {
+      toolCall: merged,
+      consumed: false,
+      terminal: merged.status === "completed" || merged.status === "failed"
+    };
+    observedCalls.set(toolCall.toolCallId, observed);
+    if (observed.terminal) {
+      authorizations.delete(toolCall.toolCallId);
+      return;
+    }
+    const call = resolveHostToolCall({ toolCall: merged, serverName, toolNames });
+    if (call == null) {
+      authorizations.delete(toolCall.toolCallId);
+      return;
+    }
+    const key = callKey(call);
+    authorizations.set(toolCall.toolCallId, key);
+    const pendingIndex = pendingRequests.findIndex((request) => request.key === key);
+    if (pendingIndex !== -1) {
+      const [pending] = pendingRequests.splice(pendingIndex, 1);
+      clearTimeout(pending.timeout);
+      authorizations.delete(toolCall.toolCallId);
+      observed.consumed = true;
+      pending.resolve(true);
+    }
+  };
+  return {
+    observeUpdate: ({ update }) => {
+      if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
+        observe({ toolCall: update });
+      }
+    },
+    observeAllowedPermission: ({ toolCall }) => observe({ toolCall }),
+    waitForToolCallAuthorization: ({ toolName, input }) => {
+      if (closed) return Promise.resolve(false);
+      const key = callKey({ toolName, input });
+      for (const [toolCallId, authorizationKey] of authorizations) {
+        if (authorizationKey !== key) continue;
+        authorizations.delete(toolCallId);
+        observedCalls.get(toolCallId).consumed = true;
+        return Promise.resolve(true);
+      }
+      return new Promise((resolve) => {
+        const pending = {
+          key,
+          timeout: setTimeout(() => {
+            const index = pendingRequests.indexOf(pending);
+            if (index !== -1) pendingRequests.splice(index, 1);
+            resolve(false);
+          }, ttlMs),
+          resolve
+        };
+        pendingRequests.push(pending);
+      });
+    },
+    close: () => {
+      if (closed) return;
+      closed = true;
+      observedCalls.clear();
+      authorizations.clear();
+      for (const request of pendingRequests.splice(0)) {
+        clearTimeout(request.timeout);
+        request.resolve(false);
+      }
+    }
+  };
+}
+function resolveHostToolCall({
+  toolCall,
+  serverName,
+  toolNames
+}) {
+  const rawInput = toolCall.rawInput;
+  if (!isRecord8(rawInput)) return void 0;
+  const isDeferred = "tool_name" in rawInput;
+  const isProvider = "providerIdentifier" in rawInput && "toolName" in rawInput && "args" in rawInput;
+  const isOrigin = "origin" in rawInput && "operation" in rawInput && "arguments" in rawInput;
+  const isCodex = "server" in rawInput && "tool" in rawInput && "arguments" in rawInput;
+  if ([isDeferred, isProvider, isOrigin, isCodex].filter(Boolean).length > 1) {
+    return void 0;
+  }
+  const matches = [];
+  for (const toolName of toolNames) {
+    const qualifiedNames = [
+      `mcp__${serverName}__${toolName}`,
+      `${serverName}__${toolName}`,
+      `mcp_${serverName}_${toolName}`
+    ];
+    const isQualified = (value) => typeof value === "string" && qualifiedNames.includes(value);
+    const isDirect = toolCall.name === toolName && isRecord8(toolCall._meta) && toolCall._meta.serverName === serverName;
+    if (isDeferred && isQualified(rawInput.tool_name) && isRecord8(rawInput.tool_input) && (toolCall.name == null || toolCall.name === "use_tool" || isQualified(toolCall.name))) {
+      matches.push({ toolName, input: rawInput.tool_input });
+    } else if (isProvider && rawInput.providerIdentifier === serverName && rawInput.toolName === toolName && isRecord8(rawInput.args) && (toolCall.name == null || isQualified(toolCall.name))) {
+      matches.push({ toolName, input: rawInput.args });
+    } else if (isCodex && rawInput.server === serverName && rawInput.tool === toolName && isRecord8(rawInput.arguments) && (toolCall.name == null || isQualified(toolCall.name))) {
+      matches.push({ toolName, input: rawInput.arguments });
+    } else if (isOrigin && rawInput.origin === serverName && rawInput.operation === toolName && isRecord8(rawInput.arguments) && (toolCall.name == null || toolCall.name === toolName || isQualified(toolCall.name))) {
+      matches.push({ toolName, input: rawInput.arguments });
+    } else if (!isDeferred && !isProvider && !isOrigin && !isCodex && (isDirect || isQualified(toolCall.name) || toolCall.name == null && (isQualified(toolCall.title) || toolCall.title === `${serverName}-${toolName}`))) {
+      matches.push({ toolName, input: rawInput });
+    }
+  }
+  return matches.length === 1 ? matches[0] : void 0;
+}
+function callKey({ toolName, input }) {
+  return `${toolName}\0${canonicalFingerprint({ value: input })}`;
+}
+function isRecord8(value) {
+  return value != null && typeof value === "object" && !Array.isArray(value);
+}
 function getProperty({
   value,
   property
@@ -2894,6 +3026,12 @@ async function handleInvocation({
       message: `Host tool ${body.toolName} is not active in catalog revision ${state.revision}.`
     });
   }
+  if (!await turn.waitForToolCallAuthorization({ toolName: tool.name, input: body.input })) {
+    throw new RelayRequestError({
+      status: 401,
+      message: "Unauthorized host tool relay request."
+    });
+  }
   const correlationToken = randomBytes(32).toString("hex");
   turn.registerCorrelationInvocation({
     token: correlationToken,
@@ -3153,7 +3291,8 @@ function createACPPermissionController({
   permissionMode,
   hasPermissionModeMapping,
   emitToolCall,
-  claimHostToolPermission
+  claimHostToolPermission,
+  onHostToolPermissionAllowed
 }) {
   const pendingPermissions = /* @__PURE__ */ new Map();
   return {
@@ -3181,6 +3320,7 @@ function createACPPermissionController({
         return cancelled();
       }
       if (claimHostToolPermission({ toolCall: request.toolCall })) {
+        onHostToolPermissionAllowed?.({ toolCall: request.toolCall });
         return {
           outcome: {
             outcome: "selected",
@@ -3718,9 +3858,14 @@ async function runTurn(start, turn) {
   });
   let cancellationRequested = false;
   let cancellationFailureError;
+  const hostToolAuthorization = createHostToolRelayAuthorization({
+    serverName: HOST_TOOL_MCP_SERVER_NAME,
+    toolNames: (start.tools ?? []).map((tool) => tool.name)
+  });
   const cancel = async () => {
     if (cancellationRequested) return;
     cancellationRequested = true;
+    hostToolAuthorization.close();
     activePermissionController?.cancelAll();
     try {
       if (connection == null) {
@@ -3772,10 +3917,12 @@ async function runTurn(start, turn) {
     permissionMode: start.permissionMode ?? "allow-all",
     hasPermissionModeMapping: start.permissionModeMapping != null,
     emitToolCall: emitStreamEvent.permissionToolCall,
-    claimHostToolPermission: emitStreamEvent.claimHostToolPermission
+    claimHostToolPermission: emitStreamEvent.claimHostToolPermission,
+    onHostToolPermissionAllowed: hostToolAuthorization.observeAllowedPermission
   });
   activePermissionController = permissionController;
   const relayTurn = {
+    waitForToolCallAuthorization: hostToolAuthorization.waitForToolCallAuthorization,
     emitToolCall: emitStreamEvent.hostToolCall,
     emitToolResult: emitStreamEvent.hostToolResult,
     requestToolResult: (toolCallId) => turn.requestToolResult(toolCallId),
@@ -3840,6 +3987,7 @@ async function runTurn(start, turn) {
         const captured = streamCapture?.takeForUpdate({
           update: message.update
         });
+        hostToolAuthorization.observeUpdate({ update: message.update });
         for (const rawValue of captured?.precedingRawValues ?? []) {
           emitStreamEvent.raw({ rawValue });
         }
@@ -3855,6 +4003,7 @@ async function runTurn(start, turn) {
       if (emitStreamEvent.message({ message })) return;
     }
   } finally {
+    hostToolAuthorization.close();
     if (activeQuestionRequest?.turn === turn) {
       activeQuestionRequest = void 0;
     }

@@ -148,6 +148,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	return &types.SpeechResult{
 		Audio:    audio,
 		Warnings: warnings,
+		Usage:    response.UsageMetadata,
 		ProviderMetadata: map[string]interface{}{
 			m.cfg.MetadataKey: map[string]interface{}{
 				"sampleRate": sampleRate,
@@ -400,6 +401,7 @@ type googleSpeechResponse struct {
 			} `json:"parts"`
 		} `json:"content"`
 	} `json:"candidates"`
+	UsageMetadata map[string]interface{} `json:"usageMetadata,omitempty"`
 }
 
 func firstGoogleSpeechAudio(response googleSpeechResponse) (string, string) {

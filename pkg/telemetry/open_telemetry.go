@@ -213,18 +213,18 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 			span.SetAttributes(attribute.String("gen_ai.input.messages", string(b)))
 		}
 	}
-	// onAudioOperationStart (TS open-telemetry.ts): "ai.generateSpeech" and
-	// "ai.transcribe" additionally carry gen_ai.output.type/request.stream
-	// and the text/audio request content, none of which apply to any other
-	// operation type.
-	if e.OperationType == "ai.generateSpeech" || e.OperationType == "ai.transcribe" {
+	// onAudioOperationStart (TS open-telemetry.ts): "ai.generateSpeech",
+	// "ai.transcribe", and "ai.streamTranscribe" additionally carry
+	// gen_ai.output.type/request.stream and the text/audio request content,
+	// none of which apply to any other operation type.
+	if e.OperationType == "ai.generateSpeech" || e.OperationType == "ai.transcribe" || e.OperationType == "ai.streamTranscribe" {
 		outputType := "text"
 		if e.OperationType == "ai.generateSpeech" {
 			outputType = "speech"
 		}
 		span.SetAttributes(
 			attribute.String("gen_ai.output.type", outputType),
-			attribute.Bool("gen_ai.request.stream", false),
+			attribute.Bool("gen_ai.request.stream", e.OperationType == "ai.streamTranscribe"),
 		)
 		if recordInputs && e.Text != "" {
 			span.SetAttributes(attribute.String("ai.request.text", e.Text))
@@ -982,7 +982,7 @@ func (i OpenTelemetry) OnEnd(ctx context.Context, e TelemetryFinishEvent) {
 	if e.FinishReason == string(types.FinishReasonError) {
 		span.SetStatus(codes.Error, "")
 	}
-	if e.OperationType == "ai.generateSpeech" || e.OperationType == "ai.transcribe" {
+	if e.OperationType == "ai.generateSpeech" || e.OperationType == "ai.transcribe" || e.OperationType == "ai.streamTranscribe" {
 		// onAudioOperationEnd (TS open-telemetry.ts): a completely different
 		// attribute set from every other operation — no
 		// gen_ai.response.finish_reasons (audio operations have no finish
@@ -1026,15 +1026,15 @@ func spanNameLooksLikeEmbed(e TelemetryFinishEvent) bool {
 }
 
 // onAudioOperationEnd sets the final attributes for "ai.generateSpeech"/
-// "ai.transcribe" on the root span, mirroring TS's onAudioOperationEnd
-// (open-telemetry.ts): ai.request.audio.* for the transcribe input audio
-// (input-gated), ai.response.text/gen_ai.output.messages for the transcript
-// and ai.response.audio.* for the generated speech audio (both
-// output-gated), gen_ai.usage.duration_seconds (unconditional, mirroring
-// TS's getProviderUsageAttributes spread), and ai.response.providerMetadata
-// (gated by OpenTelemetryOptions.ProviderMetadata, not recordOutputs,
-// matching every other operation's providerMetadata attribute in this
-// file).
+// "ai.transcribe"/"ai.streamTranscribe" on the root span, mirroring TS's
+// onAudioOperationEnd (open-telemetry.ts): ai.request.audio.* for the
+// transcribe/streamTranscribe input audio (input-gated), ai.response.text/
+// gen_ai.output.messages for the transcript and ai.response.audio.* for the
+// generated speech audio (both output-gated), gen_ai.usage.* (unconditional,
+// via getProviderUsageAttributes), ai.response.usage (gated by
+// OpenTelemetryOptions.Usage), and ai.response.providerMetadata (gated by
+// OpenTelemetryOptions.ProviderMetadata, not recordOutputs, matching every
+// other operation's providerMetadata attribute in this file).
 func (i OpenTelemetry) onAudioOperationEnd(span trace.Span, e TelemetryFinishEvent) {
 	isSpeech := e.OperationType == "ai.generateSpeech"
 	recordInputs := e.Settings == nil || e.Settings.RecordInputs
@@ -1073,8 +1073,13 @@ func (i OpenTelemetry) onAudioOperationEnd(span trace.Span, e TelemetryFinishEve
 			}
 		}
 	}
-	if e.DurationSeconds != nil {
-		span.SetAttributes(attribute.Float64("gen_ai.usage.duration_seconds", *e.DurationSeconds))
+	if attrs := getProviderUsageAttributes(e.ProviderUsage, "gen_ai.usage"); len(attrs) > 0 {
+		span.SetAttributes(attrs...)
+	}
+	if i.opts.Usage && e.ProviderUsage != nil {
+		if b, err := json.Marshal(e.ProviderUsage); err == nil {
+			span.SetAttributes(attribute.String("ai.response.usage", string(b)))
+		}
 	}
 	if i.opts.ProviderMetadata && e.ProviderMetadata != nil {
 		if b, err := json.Marshal(e.ProviderMetadata); err == nil {

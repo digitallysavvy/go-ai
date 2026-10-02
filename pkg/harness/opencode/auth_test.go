@@ -228,3 +228,140 @@ func TestCreateOpenCodeRequestTransformations_Anthropic(t *testing.T) {
 		t.Errorf("transformations[1] = %+v", got[1])
 	}
 }
+
+// TS: "brokers the Google API key header" (TS #21568).
+func TestCreateOpenCodeRequestTransformations_Google(t *testing.T) {
+	got, err := createOpenCodeRequestTransformations(createRequestTransformationsInput{
+		Env:        map[string]string{"GOOGLE_GENERATIVE_AI_API_KEY": "google-secret"},
+		SandboxEnv: map[string]string{"GOOGLE_GENERATIVE_AI_API_KEY": "sandbox-google-secret"},
+		Auth:       AuthGoogle,
+	})
+	if err != nil {
+		t.Fatalf("createOpenCodeRequestTransformations: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len(transformations) = %d, want 1: %+v", len(got), got)
+	}
+	tr := got[0]
+	if tr.Match.Host != "generativelanguage.googleapis.com" {
+		t.Errorf("Match.Host = %q, want generativelanguage.googleapis.com", tr.Match.Host)
+	}
+	if len(tr.Match.Headers) != 1 || tr.Match.Headers[0].Key == nil || tr.Match.Headers[0].Key.Exact != "x-goog-api-key" ||
+		tr.Match.Headers[0].Value == nil || tr.Match.Headers[0].Value.Exact != "sandbox-google-secret" {
+		t.Errorf("Match.Headers = %+v", tr.Match.Headers)
+	}
+	if tr.Transform.Headers["x-goog-api-key"] != "google-secret" {
+		t.Errorf("Transform.Headers[x-goog-api-key] = %q, want google-secret", tr.Transform.Headers["x-goog-api-key"])
+	}
+}
+
+// TS opencode-auth.test.ts Google coverage (TS #21568 "OpenCode fails to
+// authenticate google/* models with Google API keys"): resolveProvider,
+// resolveEnv and resolveAuthenticationMode all need to know about the
+// google direct provider, and automatic startup inference must select it
+// only when no other direct-provider credential is present.
+
+func TestResolveProvider_Google(t *testing.T) {
+	if got := resolveProvider("google/gemini-3.8-flash", ""); got != AuthGoogle {
+		t.Fatalf("resolveProvider = %q, want google", got)
+	}
+}
+
+// TS: "resolves Google credentials from a supplied authentication environment"
+func TestResolveEnv_GoogleSuppliedEnvironment(t *testing.T) {
+	auth := harness.AuthEnvironment(map[string]string{"GOOGLE_GENERATIVE_AI_API_KEY": "programmatic-google-key"})
+	want := map[string]string{"GOOGLE_GENERATIVE_AI_API_KEY": "programmatic-google-key"}
+	if got := resolveEnv(auth, "", "", nil); !mapsEqual(got, want) {
+		t.Errorf("resolveEnv = %v, want %v", got, want)
+	}
+	if got := resolveAuthenticationMode(auth, "", "", nil); got != AuthGoogle {
+		t.Errorf("resolveAuthenticationMode = %q, want google", got)
+	}
+}
+
+// TS: "ignores an empty ambient Google credential when selecting the fallback provider"
+func TestResolveEnv_IgnoresEmptyAmbientGoogleCredential(t *testing.T) {
+	processEnv := map[string]string{"GOOGLE_GENERATIVE_AI_API_KEY": ""}
+	if got := resolveEnv(harness.Authentication{}, "", "", processEnv); len(got) != 0 {
+		t.Errorf("resolveEnv = %v, want empty", got)
+	}
+	if got := resolveAuthenticationMode(harness.Authentication{}, "", "", processEnv); got != AuthAnthropic {
+		t.Errorf("resolveAuthenticationMode = %q, want anthropic", got)
+	}
+}
+
+// TS: "selects a valid Google credential when unrelated provider credentials are empty"
+func TestResolveEnv_SelectsGoogleWithEmptyCompetingCredentials(t *testing.T) {
+	processEnv := map[string]string{
+		"GOOGLE_GENERATIVE_AI_API_KEY": "google-key",
+		"OPENAI_API_KEY":               "",
+		"ANTHROPIC_API_KEY":            "",
+		"ANTHROPIC_AUTH_TOKEN":         "",
+		"XAI_API_KEY":                  "",
+		"GITHUB_TOKEN":                 "",
+		"GITHUB_COPILOT_TOKEN":         "",
+		"POE_API_KEY":                  "",
+		"OPENCODE_API_KEY":             "",
+		"GITLAB_TOKEN":                 "",
+	}
+	want := map[string]string{"GOOGLE_GENERATIVE_AI_API_KEY": "google-key"}
+	if got := resolveEnv(harness.Authentication{}, "", "", processEnv); !mapsEqual(got, want) {
+		t.Errorf("resolveEnv = %v, want %v", got, want)
+	}
+	if got := resolveAuthenticationMode(harness.Authentication{}, "", "", processEnv); got != AuthGoogle {
+		t.Errorf("resolveAuthenticationMode = %q, want google", got)
+	}
+}
+
+// TS: "keeps explicit %s authentication authoritative over ambient Google credentials"
+func TestResolveEnv_ExplicitAuthBeatsAmbientGoogleCredential(t *testing.T) {
+	processEnv := map[string]string{
+		"ANTHROPIC_API_KEY":            "anthropic-key",
+		"OPENAI_API_KEY":               "openai-key",
+		"GOOGLE_GENERATIVE_AI_API_KEY": "google-key",
+	}
+	for _, mode := range []ResolvedAuthenticationMode{AuthAnthropic, AuthOpenAI} {
+		t.Run(string(mode), func(t *testing.T) {
+			auth := harness.AuthMode(string(mode))
+			var want map[string]string
+			if mode == AuthAnthropic {
+				want = map[string]string{"ANTHROPIC_API_KEY": "anthropic-key"}
+			} else {
+				want = map[string]string{"OPENAI_API_KEY": "openai-key"}
+			}
+			if got := resolveEnv(auth, "", "", processEnv); !mapsEqual(got, want) {
+				t.Errorf("resolveEnv = %v, want %v", got, want)
+			}
+			if got := resolveAuthenticationMode(auth, "", "", processEnv); got != mode {
+				t.Errorf("resolveAuthenticationMode = %q, want %q", got, mode)
+			}
+		})
+	}
+}
+
+// TS: "preserves the Anthropic fallback for mixed direct-provider credentials"
+func TestResolveEnv_PreservesAnthropicFallbackForMixedCredentials(t *testing.T) {
+	processEnv := map[string]string{
+		"ANTHROPIC_API_KEY":            "anthropic-key",
+		"GOOGLE_GENERATIVE_AI_API_KEY": "google-key",
+	}
+	want := map[string]string{"ANTHROPIC_API_KEY": "anthropic-key"}
+	if got := resolveEnv(harness.Authentication{}, "", "", processEnv); !mapsEqual(got, want) {
+		t.Errorf("resolveEnv = %v, want %v", got, want)
+	}
+	if got := resolveAuthenticationMode(harness.Authentication{}, "", "", processEnv); got != AuthAnthropic {
+		t.Errorf("resolveAuthenticationMode = %q, want anthropic", got)
+	}
+}
+
+func mapsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
+}

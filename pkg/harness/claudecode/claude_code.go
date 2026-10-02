@@ -154,15 +154,13 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 	var sandboxCredentialEnv map[string]string
 	if adder, ok := sandboxSession.(harness.RequestTransformationAdder); ok {
 		var err error
-		sandboxCredentialEnv = resumeData.SandboxCredentialEnvironment
-		if sandboxCredentialEnv == nil {
-			sandboxCredentialEnv, err = harnessutil.CreateSandboxCredentialEnvironment(ctx, harnessutil.CredentialForwardingOptions{
-				Environment: claudeEnv, CredentialEnvironmentVariables: CredentialEnvironmentVariables,
-				CredentialForwarding: settings.CredentialForwarding,
-			})
-			if err != nil {
-				return nil, err
-			}
+		sandboxCredentialEnv, err = harnessutil.ResolveSandboxCredentialEnvironment(ctx, harnessutil.CredentialForwardingOptions{
+			Environment: claudeEnv, CredentialEnvironmentVariables: CredentialEnvironmentVariables,
+			CredentialForwarding:                 settings.CredentialForwarding,
+			PreviousSandboxCredentialEnvironment: resumeData.SandboxCredentialEnvironment,
+		})
+		if err != nil {
+			return nil, err
 		}
 		sandboxClaudeEnv = map[string]string{}
 		for k, v := range claudeEnv {
@@ -233,7 +231,7 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 		if sess := h.tryAttach(ctx, attachOptions{
 			coords: coords, sandboxSession: sandboxSession, settings: settings, timeout: timeout,
 			sessionID: opts.SessionID, isContinue: opts.ContinueFrom != nil,
-			maxTurns: settings.MaxTurns, env: sandboxClaudeEnv, thinking: *settings.Thinking, effort: settings.Effort,
+			maxTurns: settings.MaxTurns, agentProgressSummaries: settings.AgentProgressSummaries, forwardSubagentText: settings.ForwardSubagentText, env: sandboxClaudeEnv, thinking: *settings.Thinking, effort: settings.Effort,
 			resumeSessionID:              resumeData.ClaudeSessionID,
 			sandboxCredentialEnvironment: sandboxCredentialEnv,
 			permissionMode:               opts.PermissionMode, builtinToolFiltering: opts.BuiltinToolFiltering,
@@ -323,7 +321,7 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 
 	return newSession(sessionOptions{
 		sessionID: opts.SessionID, channel: channel, proc: launched.Proc,
-		maxTurns: settings.MaxTurns, env: sandboxClaudeEnv, thinking: *settings.Thinking, effort: settings.Effort,
+		maxTurns: settings.MaxTurns, agentProgressSummaries: settings.AgentProgressSummaries, forwardSubagentText: settings.ForwardSubagentText, env: sandboxClaudeEnv, thinking: *settings.Thinking, effort: settings.Effort,
 		isResume: isResume, continueOnFirstPrompt: isResume, rerunContinue: isResume,
 		resumeSessionID: resumeData.ClaudeSessionID,
 		bridgePort:      port, bridgeToken: token, sandboxID: sandboxID,
@@ -344,6 +342,8 @@ type attachOptions struct {
 	isContinue     bool
 
 	maxTurns                     int
+	agentProgressSummaries       bool
+	forwardSubagentText          bool
 	env                          map[string]string
 	thinking                     ThinkingConfig
 	effort                       string
@@ -400,7 +400,7 @@ func (h *Harness) tryAttach(ctx context.Context, opts attachOptions) *session {
 	}
 	return newSession(sessionOptions{
 		sessionID: opts.sessionID, channel: channel, proc: nil,
-		maxTurns: opts.maxTurns, env: opts.env, thinking: opts.thinking, effort: opts.effort,
+		maxTurns: opts.maxTurns, agentProgressSummaries: opts.agentProgressSummaries, forwardSubagentText: opts.forwardSubagentText, env: opts.env, thinking: opts.thinking, effort: opts.effort,
 		isResume: true, continueOnFirstPrompt: false, rerunContinue: false,
 		resumeSessionID: opts.resumeSessionID,
 		bridgePort:      opts.coords.Port, bridgeToken: opts.coords.Token, sandboxID: opts.coords.SandboxID,

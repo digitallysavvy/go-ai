@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -234,6 +235,34 @@ func TestDeepgramSpeechModel_ProviderMetadata(t *testing.T) {
 	uuids, ok := meta["additionalModelUuids"].([]string)
 	if !ok || len(uuids) != 2 {
 		t.Fatalf("additionalModelUuids = %#v", meta["additionalModelUuids"])
+	}
+	// Ported from TS deepgram-speech-model.test.ts "should include usage
+	// info" (TS 8c659885c5 / #21427): Dg-Char-Count becomes
+	// result.usage.characters.
+	if want := map[string]interface{}{"characters": 69}; !reflect.DeepEqual(result.Usage, want) {
+		t.Fatalf("result.Usage = %#v, want %#v", result.Usage, want)
+	}
+}
+
+// TestDeepgramSpeechModel_UsageAbsentWithoutCharCountHeader mirrors TS
+// "should return empty provider metadata when Deepgram headers are absent":
+// result.usage must be nil/undefined, not a zero-valued usage object.
+func TestDeepgramSpeechModel_UsageAbsentWithoutCharCountHeader(t *testing.T) {
+	srv := speechTestServer(t, nil, nil)
+	defer srv.Close()
+
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	m, _ := p.SpeechModel("aura-2")
+
+	result, err := m.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{
+		Text:  "hello",
+		Voice: "helena",
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate: %v", err)
+	}
+	if result.Usage != nil {
+		t.Fatalf("result.Usage = %#v, want nil", result.Usage)
 	}
 }
 

@@ -31,7 +31,7 @@ func GenerateSpeech(ctx context.Context, opts GenerateSpeechOptions) (*GenerateS
 
 ### Telemetry
 
-When a telemetry integration is registered (global via `telemetry.RegisterTelemetryIntegration`, or per-call via `Telemetry.Integrations`), `GenerateSpeech` emits an `ai.generateSpeech` root span covering the whole call (including retries), with `gen_ai.output.type: "speech"`, the input text (`ai.request.text`, input-gated), and the generated audio's size/media type/format (`ai.response.audio.*`, output-gated). A failed call — including a provider response with no audio — ends the span with `codes.Error` status.
+When a telemetry integration is registered (global via `telemetry.RegisterTelemetryIntegration`, or per-call via `Telemetry.Integrations`), `GenerateSpeech` emits an `ai.generateSpeech` root span covering the whole call (including retries), with `gen_ai.output.type: "speech"`, the input text (`ai.request.text`, input-gated), the generated audio's size/media type/format (`ai.response.audio.*`, output-gated), and the provider's reported usage flattened into numeric `ai.usage.*` / `gen_ai.usage.*` attributes (e.g. `ai.usage.characters` for a provider that reports `{"characters": N}`; see the [Telemetry guide](/docs/ai-sdk-core/telemetry#speech-and-transcription) for the key-normalization rules). A failed call — including a provider response with no audio — ends the span with `codes.Error` status.
 
 ## GenerateSpeechResult
 

@@ -83,6 +83,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		Usage: types.TranscriptionUsage{
 			DurationSeconds: response.Duration,
 		},
+		ProviderUsage: response.Usage,
 	}
 
 	// Timestamped segments/words (abb9ebf: diarized segments carry an extra
@@ -337,9 +338,10 @@ func getExtensionFromMimeType(mimeType string) string {
 }
 
 type openaiTranscriptionResponse struct {
-	Text     string  `json:"text"`
-	Duration float64 `json:"duration"`
-	Language string  `json:"language,omitempty"`
+	Text     string                 `json:"text"`
+	Duration float64                `json:"duration"`
+	Language string                 `json:"language,omitempty"`
+	Usage    map[string]interface{} `json:"usage,omitempty"`
 	Segments []struct {
 		Text    string  `json:"text"`
 		Start   float64 `json:"start"`

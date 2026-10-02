@@ -5,7 +5,7 @@
       "bridgeEntry": "bridge.mjs",
       "builtFrom": "packages/harness-acp/dist/bridge (tsup bundle of packages/harness-acp/src/v1/bridge)",
       "files": {
-        "bridge.mjs": "62793e93bf34154f0ec00d50efaceade3b736fb91de73b3c4fa74e8a02acc39a",
+        "bridge.mjs": "3eb23b489dfbeb622301c01444ff78f831bf99382e68f79b8f9c97b71edaa1a7",
         "host-tool-mcp.mjs": "f1233d429089063a0aa79b4a474e0cd33cf0a9111655fa259a1135ab09c9a00e",
         "package.json": "33a1cf383ce385379c403fe26a94158f44a40b09a72151b99aa75ae9286046b3",
         "pnpm-lock.yaml": "f8bef47bb6398e4b0a78259c9bab3098a798f33e37e7e746713a9bd8fd3c79af"
@@ -18,10 +18,10 @@
       "bridgeEntry": "bridge.mjs",
       "builtFrom": "packages/harness-claude-code/dist/bridge (tsup bundle of packages/harness-claude-code/src/bridge)",
       "files": {
-        "bridge.mjs": "4f2077cd8daf92c40cba0404416f998f96273a8b01885c9ef9d53cf9d36aaaff",
-        "package.json": "afe03f855d75974ec50fffa011c6adaed1609c70f4ac3e95b95d00f015d222c0",
-        "pnpm-lock.yaml": "b1c7e96a7f34208383e0abae7445a68728661a04709f4d7b30419f2d41f06831",
-        "pnpm-workspace.yaml": "7e65fc9b9a67ac54f22b69f8b5be22b7d88260ca60204840cff46f39ebef2649"
+        "bridge.mjs": "fb6963e3c4ed3239e09919e39776c52161ca68d89ea75a27f801a97608c07b5e",
+        "package.json": "1f32e78334fbb185715ee24b1c0ec1ae86ddf113a37a92c3845b999eb320953f",
+        "pnpm-lock.yaml": "b823c0ddb82ec2451e507924b4ed7b0d189fe0440c7f4aa9cecedfbb8a15af7b",
+        "pnpm-workspace.yaml": "39a78bfb0ce481fb4a9d32e654841bc2a2f82b7f754b19098b41f9716b7d2f7c"
       },
       "sourceDir": "packages/harness-claude-code/src/bridge",
       "sourcePackage": "@ai-sdk/harness-claude-code",
@@ -31,7 +31,7 @@
       "bridgeEntry": "bridge.mjs",
       "builtFrom": "packages/harness-codex/dist/bridge (tsup bundle of packages/harness-codex/src/bridge)",
       "files": {
-        "bridge.mjs": "66b97fc97e8ffd5abd187f2bbb0b4804711318028a7f6f19613c5e47fe4912af",
+        "bridge.mjs": "9e003bd1398fd628728c62c609b767cf4f8cababbc0ba59fa7c9226c45c4363a",
         "package.json": "a2fdd9ef99c5542562c218d3970d141e33882e6ddf459e3d2cbdca39cd41c32e",
         "pnpm-lock.yaml": "07dbe58883d4062dac45dd2f33f586dbfed3a3bd27990d7332ec731d33ed4b42"
       },
@@ -79,7 +79,7 @@
       "bridgeEntry": "bridge.mjs",
       "builtFrom": "packages/harness-opencode/dist/bridge (tsup bundle of packages/harness-opencode/src/bridge)",
       "files": {
-        "bridge.mjs": "c3208dcfa9a780b554809ce4a8d851bd7c81c0b178fa1666c95f108b70018cf7",
+        "bridge.mjs": "00fa023f4a170b0f35f7ada22e732e76ebef146ad2ff0fe00fe32170588a5e16",
         "host-tool-mcp.mjs": "f98f9b1ab07059d61625cec9d4661587cd6a9c6b174376c5990e0018c23987db",
         "package.json": "2c81a49f00f3583fbe970ee120a6518fad5e9397c9b91649aba8ba37e1b02add",
         "pnpm-lock.yaml": "858dfb8cd93eff94dc1333e17cd1b365d4dda32bf13bcc7dab6f4daad7c18e82",

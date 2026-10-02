@@ -88,8 +88,9 @@ var operationNameMapping = map[string]string{
 	// yet, so TS maps them to themselves (identity); mapOperationName's
 	// default fallback already does this without an explicit entry, but
 	// these are listed for parity with TS's mapping object.
-	"ai.generateSpeech": "ai.generateSpeech",
-	"ai.transcribe":     "ai.transcribe",
+	"ai.generateSpeech":   "ai.generateSpeech",
+	"ai.transcribe":       "ai.transcribe",
+	"ai.streamTranscribe": "ai.streamTranscribe",
 }
 
 // mapOperationName maps a go-ai operationId to a gen_ai.operation.name value,

@@ -1912,6 +1912,10 @@ var NATIVE_TO_COMMON = {
 function toCommonName(nativeName) {
   return NATIVE_TO_COMMON[nativeName] ?? nativeName;
 }
+function getMcpToolName(item) {
+  const toolName = item.tool ?? "unknown";
+  return item.server != null && item.server.length > 0 ? `mcp__${item.server}__${toolName}` : toolName;
+}
 function createEmitStreamEvent({
   send,
   stepTracker,
@@ -2031,12 +2035,13 @@ function createEmitStreamEvent({
       return;
     }
     if (item.type === "mcp_tool_call") {
+      const mcpToolName = getMcpToolName(item);
       if (event.type === "item.started") {
         send({
           type: "tool-call",
           toolCallId: id,
-          toolName: item.tool ?? "unknown",
-          nativeName: item.tool ?? "unknown",
+          toolName: mcpToolName,
+          nativeName: mcpToolName,
           input: JSON.stringify(item.arguments ?? {}),
           providerExecuted: true,
           dynamic: true
@@ -2045,7 +2050,7 @@ function createEmitStreamEvent({
         send({
           type: "tool-result",
           toolCallId: id,
-          toolName: item.tool ?? "unknown",
+          toolName: mcpToolName,
           result: extractMcpToolCallResult(item),
           dynamic: true
         });

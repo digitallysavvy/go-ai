@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
 
 // StreamTranscribeOptions configures ExperimentalStreamTranscribe.
@@ -32,6 +34,15 @@ type StreamTranscribeOptions struct {
 
 	// IncludeRawChunks requests provider raw chunks in the stream.
 	IncludeRawChunks bool
+
+	// Telemetry configures observability for this operation.
+	// When both Telemetry and ExperimentalTelemetry are set, Telemetry wins.
+	Telemetry *TelemetrySettings
+
+	// ExperimentalTelemetry configures observability for this operation.
+	//
+	// Deprecated: use Telemetry.
+	ExperimentalTelemetry *TelemetrySettings
 }
 
 // TranscriptionStreamPart is one part of ExperimentalStreamTranscribe's
@@ -236,6 +247,8 @@ func ExperimentalStreamTranscribe(ctx context.Context, opts StreamTranscribeOpti
 			),
 		}
 	}
+	opts.ExperimentalTelemetry = effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
+	callID := newCallID()
 
 	pipeCtx, cancel := context.WithCancel(ctx)
 
@@ -252,29 +265,77 @@ func ExperimentalStreamTranscribe(ctx context.Context, opts StreamTranscribeOpti
 		cancel:            cancel,
 	}
 
-	go runTranscriptionStreamPipe(pipeCtx, streamer, opts, result)
+	go runTranscriptionStreamPipe(pipeCtx, streamer, opts, callID, result)
 
 	return result, nil
 }
 
-func runTranscriptionStreamPipe(pipeCtx context.Context, streamer provider.TranscriptionStreamer, opts StreamTranscribeOptions, result *StreamTranscriptionResult) {
+// telemetryCountingAudioStream wraps a provider.AudioStream, accumulating the
+// byte length of every chunk read into total (mirrors TS stream-transcribe.ts
+// createByteCountingStream, used to populate the "ai.streamTranscribe"
+// StreamTranscriptionEndEvent's audio.byteLength). total is only read after
+// the wrapped Next() calls have all returned (from runTranscriptionStreamPipe
+// and whatever goroutine(s) the provider's DoStream uses internally to drain
+// it), so atomic access guards against a provider that reads audio
+// concurrently with telemetry inspecting the running total.
+type telemetryCountingAudioStream struct {
+	inner provider.AudioStream
+	total *int64
+}
+
+func (s telemetryCountingAudioStream) Next(ctx context.Context) ([]byte, error) {
+	chunk, err := s.inner.Next(ctx)
+	if len(chunk) > 0 {
+		atomic.AddInt64(s.total, int64(len(chunk)))
+	}
+	return chunk, err
+}
+
+func (s telemetryCountingAudioStream) Cancel(reason error) { s.inner.Cancel(reason) }
+
+func runTranscriptionStreamPipe(pipeCtx context.Context, streamer provider.TranscriptionStreamer, opts StreamTranscribeOptions, callID string, result *StreamTranscriptionResult) {
 	defer close(result.ch)
 
 	startedAt := time.Now()
 	response := &TranscriptionModelResponseMetadata{Timestamp: startedAt, ModelID: opts.Model.ModelID()}
 	warningsResolved := false
+	telemetrySettled := false
+
+	var audioByteLength int64
+	audio := opts.Audio
+	if telemetry.Enabled(opts.ExperimentalTelemetry) {
+		audio = telemetryCountingAudioStream{inner: opts.Audio, total: &audioByteLength}
+	}
+
+	ctx := telemetry.FireOnStart(pipeCtx, telemetry.TelemetryStartEvent{
+		CallID:         callID,
+		OperationType:  "ai.streamTranscribe",
+		ModelProvider:  opts.Model.Provider(),
+		ModelID:        opts.Model.ModelID(),
+		Settings:       opts.ExperimentalTelemetry,
+		AudioMediaType: opts.InputAudioFormat.Type,
+		Headers:        opts.Headers,
+	})
 
 	fail := func(err error) {
+		// Settle telemetry before rejecting result promises, for the same
+		// race-avoidance reason as the "finish" case below: a goroutine
+		// blocked in Text()/etc must never observe the error before the span
+		// has already been ended.
+		if !telemetrySettled {
+			telemetrySettled = true
+			telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{CallID: callID, Settings: opts.ExperimentalTelemetry, Error: err})
+		}
 		result.setFinalErr(err)
 		result.rejectAll(err)
 		opts.Audio.Cancel(err)
 	}
 
-	streamResult, err := streamer.DoStream(pipeCtx, &provider.TranscriptionStreamOptions{
-		Audio:            opts.Audio,
+	streamResult, err := streamer.DoStream(ctx, &provider.TranscriptionStreamOptions{
+		Audio:            audio,
 		InputAudioFormat: opts.InputAudioFormat,
 		ProviderOptions:  opts.ProviderOptions,
-		AbortSignal:      pipeCtx,
+		AbortSignal:      ctx,
 		Headers:          transcribeHeadersWithUserAgent(opts.Headers),
 		IncludeRawChunks: opts.IncludeRawChunks,
 	})
@@ -334,10 +395,11 @@ func runTranscriptionStreamPipe(pipeCtx context.Context, streamer provider.Trans
 			provider.TranscriptionStreamPartTypeFinal,
 			provider.TranscriptionStreamPartTypeRaw,
 			provider.TranscriptionStreamPartTypeError:
-			if !sendTranscriptionPart(pipeCtx, result.ch, transcriptionPartFromProvider(part)) {
-				// pipeCtx was cancelled while a send was pending (FullStream
-				// was closed, or the caller's ctx was cancelled) while parts
-				// were still flowing. Mirror the TS SDK's Transformer.cancel
+			if !sendTranscriptionPart(ctx, result.ch, transcriptionPartFromProvider(part)) {
+				// ctx (derived from pipeCtx by FireOnStart) was cancelled
+				// while a send was pending (FullStream was closed, or the
+				// caller's ctx was cancelled) while parts were still
+				// flowing. Mirror the TS SDK's Transformer.cancel
 				// path: reject the still-pending result promises and cancel
 				// the caller's audio stream instead of leaving them to block
 				// forever (TS stream-transcribe.ts cancel()/catch()).
@@ -361,6 +423,28 @@ func runTranscriptionStreamPipe(pipeCtx context.Context, streamer provider.Trans
 			if providerMetadata == nil {
 				providerMetadata = map[string]interface{}{}
 			}
+			// Settle telemetry (ending the OTel span synchronously inside
+			// FireOnEnd) before resolving any result promise. Unlike TS —
+			// where a single-threaded microtask queue makes resolve-then-
+			// notify safe because nothing else can run until the producer
+			// yields — resolving first here would let a goroutine blocked in
+			// Text()/etc race the span-ending code below, which the harness
+			// explicitly calls out as a bug class to avoid.
+			telemetrySettled = true
+			finalAudioByteLength := atomic.LoadInt64(&audioByteLength)
+			telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
+				CallID:           callID,
+				OperationType:    "ai.streamTranscribe",
+				ModelProvider:    opts.Model.Provider(),
+				ModelID:          opts.Model.ModelID(),
+				Settings:         opts.ExperimentalTelemetry,
+				Text:             part.FinishText,
+				AudioByteLength:  &finalAudioByteLength,
+				AudioMediaType:   opts.InputAudioFormat.Type,
+				ProviderMetadata: providerMetadata,
+				ProviderUsage:    part.Usage,
+			})
+
 			result.textP.resolve(part.FinishText)
 			result.segmentsP.resolve(segments)
 			result.languageP.resolve(part.Language)

@@ -36,13 +36,15 @@ func (c ThinkingConfig) MarshalJSON() ([]byte, error) {
 // `claude-code-bridge-protocol.ts` `startMessageSchema`.
 type StartFrame struct {
 	bridge.StartBase
-	Instructions    string            `json:"instructions,omitempty"`
-	Thinking        *ThinkingConfig   `json:"thinking,omitempty"`
-	Effort          string            `json:"effort,omitempty"`
-	MaxTurns        *int              `json:"maxTurns,omitempty"`
-	Env             map[string]string `json:"env,omitempty"`
-	Skills          []string          `json:"skills,omitempty"`
-	MCPServers      map[string]any    `json:"mcpServers,omitempty"`
-	Continue        bool              `json:"continue,omitempty"`
-	ResumeSessionID string            `json:"resumeSessionId,omitempty"`
+	Instructions           string            `json:"instructions,omitempty"`
+	Thinking               *ThinkingConfig   `json:"thinking,omitempty"`
+	Effort                 string            `json:"effort,omitempty"`
+	MaxTurns               *int              `json:"maxTurns,omitempty"`
+	AgentProgressSummaries bool              `json:"agentProgressSummaries,omitempty"`
+	ForwardSubagentText    bool              `json:"forwardSubagentText,omitempty"`
+	Env                    map[string]string `json:"env,omitempty"`
+	Skills                 []string          `json:"skills,omitempty"`
+	MCPServers             map[string]any    `json:"mcpServers,omitempty"`
+	Continue               bool              `json:"continue,omitempty"`
+	ResumeSessionID        string            `json:"resumeSessionId,omitempty"`
 }

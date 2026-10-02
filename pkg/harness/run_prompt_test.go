@@ -545,3 +545,193 @@ func TestRunPrompt_CtxCancellation_JoinsOutstandingHostToolExecutions(t *testing
 		t.Fatal("Result.Err() = nil, want the ctx cancellation error")
 	}
 }
+
+// concurrentToolsSession is a minimal Session for
+// TestRunPrompt_PublishesConcurrentHostToolLifecycleAndResultsPerTool,
+// mirroring TS run-prompt.test.ts's inline mock session exactly: it emits
+// only stream-start + the two tool-call events upfront. SubmitToolResult
+// (called concurrently from each host tool's own exec goroutine) echoes
+// that tool's result back as a tool-result StreamPart immediately, and
+// only emits the step/turn-finishing parts once BOTH tools have reported —
+// finish-step never arrives mid-execution, so it can never race
+// run_prompt.go's own joinOutstandingExecutions barrier the way emitting it
+// right after the tool-call events would.
+type concurrentToolsSession struct {
+	toolNames map[string]string
+
+	mu        sync.Mutex
+	completed map[string]bool
+	emit      EmitFunc
+	done      chan struct{}
+}
+
+func (s *concurrentToolsSession) SessionID() string { return "concurrent-tools" }
+func (s *concurrentToolsSession) IsResume() bool    { return false }
+
+func (s *concurrentToolsSession) DoPromptTurn(_ context.Context, opts PromptTurnOptions) (PromptControl, error) {
+	s.mu.Lock()
+	s.completed = map[string]bool{}
+	s.emit = opts.Emit
+	s.done = make(chan struct{})
+	done := s.done
+	s.mu.Unlock()
+	go func() {
+		opts.Emit(&StreamStartPart{})
+		opts.Emit(&ToolCallPart{ToolCallID: "c-fast", ToolName: "fast", Input: "{}", StepToolCallCount: intPtr(2)})
+		opts.Emit(&ToolCallPart{ToolCallID: "c-slow", ToolName: "slow", Input: "{}", StepToolCallCount: intPtr(2)})
+	}()
+	return &concurrentToolsControl{session: s, done: done}, nil
+}
+
+func (s *concurrentToolsSession) DoContinueTurn(context.Context, ContinueTurnOptions) (PromptControl, error) {
+	return nil, nil
+}
+func (s *concurrentToolsSession) DoCompact(context.Context, string) error { return nil }
+func (s *concurrentToolsSession) DoSuspendTurn(context.Context) (*ContinueTurnState, error) {
+	return nil, nil
+}
+func (s *concurrentToolsSession) DoDetach(context.Context) (*ResumeSessionState, error) {
+	return nil, nil
+}
+func (s *concurrentToolsSession) DoStop(context.Context) (*ResumeSessionState, error) {
+	return nil, nil
+}
+func (s *concurrentToolsSession) DoDestroy(context.Context) error { return nil }
+
+func intPtr(n int) *int { return &n }
+
+type concurrentToolsControl struct {
+	session *concurrentToolsSession
+	done    chan struct{}
+	mu      sync.Mutex
+	err     error
+}
+
+func (c *concurrentToolsControl) SubmitToolResult(_ context.Context, r ToolResultSubmission) error {
+	s := c.session
+	s.emit(&ToolResultPart{ToolCallID: r.ToolCallID, ToolName: s.toolNames[r.ToolCallID], Result: r.Output, IsError: r.IsError})
+
+	s.mu.Lock()
+	s.completed[r.ToolCallID] = true
+	allDone := len(s.completed) == 2
+	s.mu.Unlock()
+	if allDone {
+		s.emit(&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(2, 2)})
+		s.emit(&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(2, 2)})
+		close(c.done)
+	}
+	return nil
+}
+func (c *concurrentToolsControl) Done() <-chan struct{} { return c.done }
+func (c *concurrentToolsControl) Err() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.err
+}
+
+// TestRunPrompt_PublishesConcurrentHostToolLifecycleAndResultsPerTool ports
+// TS "publishes concurrent host tool lifecycle events and results as each
+// tool runs" (run-prompt.test.ts, TS #21696 "Start/end callbacks and fast
+// tool results were delayed behind slower tools in the same step"): two
+// host tools in the same step run concurrently; the fast one's
+// OnToolExecutionEnd and streamed tool-result must not wait for the slow
+// one to finish, and both tools' OnToolExecutionStart must fire while
+// execution is still in progress, not only once an outcome is known.
+func TestRunPrompt_PublishesConcurrentHostToolLifecycleAndResultsPerTool(t *testing.T) {
+	releaseSlow := make(chan struct{})
+	slowStarted := make(chan struct{})
+	fast := types.Tool{
+		Name:       "fast",
+		Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "fast-done", nil
+		},
+	}
+	slow := types.Tool{
+		Name:       "slow",
+		Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+		Execute: func(ctx context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			close(slowStarted)
+			select {
+			case <-releaseSlow:
+			case <-ctx.Done():
+			}
+			return "slow-done", nil
+		},
+	}
+	tools := map[string]types.Tool{"fast": fast, "slow": slow}
+	session := &concurrentToolsSession{toolNames: map[string]string{"c-fast": "fast", "c-slow": "slow"}}
+
+	var cbMu sync.Mutex
+	var startEvents, endEvents []string
+	callbacks := Callbacks{
+		OnToolExecutionStart: func(_ context.Context, e ai.OnToolCallStartEvent) {
+			cbMu.Lock()
+			startEvents = append(startEvents, e.ToolCallID)
+			cbMu.Unlock()
+		},
+		OnToolExecutionEnd: func(_ context.Context, e ai.OnToolCallFinishEvent) {
+			cbMu.Lock()
+			endEvents = append(endEvents, e.ToolCallID)
+			cbMu.Unlock()
+		},
+	}
+
+	out := runPrompt(context.Background(), runPromptInput{
+		Harness: &mockHarnessAdapter{id: "mock", session: session}, Session: session,
+		Prompt: TextPrompt("go"), Tools: tools, ActiveTools: tools,
+		SandboxSession: testSandbox(), Callbacks: callbacks,
+	})
+
+	select {
+	case <-slowStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("slow tool never started executing")
+	}
+
+	// Both starts must have fired by the time the slow tool is merely
+	// mid-execution — in real time, not deferred behind either outcome.
+	deadline := time.After(2 * time.Second)
+	for {
+		cbMu.Lock()
+		n := len(startEvents)
+		cbMu.Unlock()
+		if n == 2 {
+			break
+		}
+		select {
+		case <-deadline:
+			cbMu.Lock()
+			got := append([]string(nil), startEvents...)
+			cbMu.Unlock()
+			t.Fatalf("OnToolExecutionStart events while the slow tool is still running = %v, want both c-fast and c-slow", got)
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	stream := out.Result.Stream()
+	sawFastResult := false
+	for {
+		c, err := stream.Next()
+		if err != nil {
+			break
+		}
+		if c.Type == provider.ChunkTypeToolResult && c.ToolResult != nil && c.ToolResult.ToolCallID == "c-fast" {
+			sawFastResult = true
+			// The fast tool's end callback must have already fired, and
+			// the slow tool's must not have — it's still blocked on
+			// releaseSlow at this very point in the stream.
+			cbMu.Lock()
+			got := append([]string(nil), endEvents...)
+			cbMu.Unlock()
+			if len(got) != 1 || got[0] != "c-fast" {
+				t.Fatalf("OnToolExecutionEnd events when the fast tool's result streamed = %v, want exactly [c-fast] (not delayed behind the slow tool)", got)
+			}
+			close(releaseSlow)
+		}
+	}
+	<-out.Done
+	if !sawFastResult {
+		t.Fatal("the fast tool's tool-result chunk never streamed")
+	}
+}

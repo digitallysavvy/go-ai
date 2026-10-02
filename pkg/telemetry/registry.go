@@ -447,13 +447,15 @@ type TelemetryFinishEvent struct {
 	// AudioFormat is the generated audio format for "ai.generateSpeech"
 	// only, emitted as ai.response.audio.format.
 	AudioFormat string
-	// DurationSeconds is the input audio duration reported by a
-	// transcription provider (types.TranscriptionUsage.DurationSeconds),
-	// emitted as ai.usage.duration_seconds / gen_ai.usage.duration_seconds,
-	// mirroring TS onAudioOperationEnd's generic provider-usage passthrough
-	// (getProviderUsageAttributes) narrowed to the one usage value go-ai's
-	// transcription models currently report.
-	DurationSeconds *float64
+	// ProviderUsage is the provider's raw, JSON-compatible usage object for
+	// "ai.generateSpeech"/"ai.transcribe"/"ai.streamTranscribe" (TS
+	// GenerateSpeechEndEvent/TranscriptionEndEvent/
+	// StreamTranscriptionEndEvent's `usage` field, added in TS 8c659885c5 /
+	// #21427). Flattened into numeric span attributes by
+	// getProviderUsageAttributes (provider_usage_attributes.go) and emitted
+	// as a raw JSON string on ai.response.usage, mirroring TS's
+	// onAudioOperationEnd.
+	ProviderUsage map[string]interface{}
 }
 
 // TelemetryErrorEvent is passed to TelemetryIntegration.OnError.
@@ -1210,10 +1212,11 @@ func (i LegacyOpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent)
 				span.SetAttributes(attribute.StringSlice("ai.documents", docs))
 			}
 		}
-	case "ai.generateSpeech", "ai.transcribe":
+	case "ai.generateSpeech", "ai.transcribe", "ai.streamTranscribe":
 		// TS onAudioOperationStart: ai.request.text (generateSpeech) and
-		// ai.request.audio.size/mediaType (transcribe), all input-gated. No
-		// ai.prompt/ai.settings.* attributes for audio operations.
+		// ai.request.audio.size/mediaType (transcribe/streamTranscribe), all
+		// input-gated. No ai.prompt/ai.settings.* attributes for audio
+		// operations.
 		if recordInputs && e.Text != "" {
 			span.SetAttributes(attribute.String("ai.request.text", e.Text))
 		}
@@ -2169,7 +2172,7 @@ func (i LegacyOpenTelemetry) OnEnd(ctx context.Context, e TelemetryFinishEvent) 
 		// TS onRerankOperationEnd sets nothing beyond ending the span.
 	case "ai.generateObject", "ai.streamObject":
 		i.legacyOnObjectOperationEnd(span, e, recordOutputs)
-	case "ai.generateSpeech", "ai.transcribe":
+	case "ai.generateSpeech", "ai.transcribe", "ai.streamTranscribe":
 		recordInputs := e.Settings == nil || e.Settings.RecordInputs
 		i.legacyOnAudioOperationEnd(span, e, recordInputs, recordOutputs)
 	default:
@@ -2212,9 +2215,11 @@ func (i LegacyOpenTelemetry) legacyOnAudioOperationEnd(span trace.Span, e Teleme
 			}
 		}
 	}
-	if e.DurationSeconds != nil {
-		span.SetAttributes(attribute.Float64("ai.usage.duration_seconds", *e.DurationSeconds))
-		if b, err := json.Marshal(map[string]interface{}{"duration_seconds": *e.DurationSeconds}); err == nil {
+	if attrs := getProviderUsageAttributes(e.ProviderUsage, "ai.usage"); len(attrs) > 0 {
+		span.SetAttributes(attrs...)
+	}
+	if e.ProviderUsage != nil {
+		if b, err := json.Marshal(e.ProviderUsage); err == nil {
 			span.SetAttributes(attribute.String("ai.response.usage", string(b)))
 		}
 	}
