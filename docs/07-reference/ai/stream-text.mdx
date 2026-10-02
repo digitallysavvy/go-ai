@@ -81,10 +81,10 @@ import (
 )
 
 func main() {
-    provider := openai.New(openai.Config{
+    p := openai.New(openai.Config{
         APIKey: "your-api-key",
     })
-    model, err := provider.LanguageModel("gpt-4")
+    model, err := p.LanguageModel("gpt-4")
     if err != nil {
         log.Fatal(err)
     }
@@ -114,7 +114,7 @@ func main() {
         }
     }
 
-    fmt.Printf("\n\nTotal tokens: %d\n", result.Usage().TotalTokens)
+    fmt.Printf("\n\nTotal tokens: %d\n", result.Usage().GetTotalTokens())
 }
 ```
 
@@ -130,7 +130,7 @@ result, err := ai.StreamText(ctx, ai.StreamTextOptions{
         }
     },
     OnFinish: func(result *ai.StreamTextResult) {
-        fmt.Printf("\n\nDone! Tokens: %d\n", result.Usage().TotalTokens)
+        fmt.Printf("\n\nDone! Tokens: %d\n", result.Usage().GetTotalTokens())
     },
 })
 if err != nil {
@@ -157,7 +157,7 @@ if err != nil {
 }
 
 fmt.Println(text)
-fmt.Printf("Tokens: %d\n", result.Usage().TotalTokens)
+fmt.Printf("Tokens: %d\n", result.Usage().GetTotalTokens())
 ```
 
 ### Using Channel-based Consumption
