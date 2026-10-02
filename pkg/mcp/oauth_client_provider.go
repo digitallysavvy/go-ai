@@ -135,6 +135,21 @@ type OAuthCredentialInvalidator interface {
 	InvalidateCredentials(ctx context.Context, scope OAuthCredentialInvalidationScope) error
 }
 
+// OAuthTokenInvalidator extends OAuthCredentialInvalidator so a provider can
+// receive the specific token generation being invalidated for
+// OAuthInvalidateTokens, matching TS OAuthClientProvider.invalidateCredentials'
+// optional `context: { tokens: OAuthTokens }` parameter (hash 4d0500e). If two
+// clients share storage and one refresh succeeds while a concurrent one
+// fails, the failing client identifies exactly which (now stale) tokens it
+// tried so the provider can atomically compare-and-delete only that
+// generation, keeping the winner's newer tokens intact. Auth calls
+// InvalidateCredentialsForTokens instead of InvalidateCredentials when both
+// the provider implements this interface and the token generation being
+// invalidated is known; otherwise it falls back to the unconditional form.
+type OAuthTokenInvalidator interface {
+	InvalidateCredentialsForTokens(ctx context.Context, tokens OAuthTokens) error
+}
+
 // OAuthDynamicRegistrationReporter reports whether the current client
 // information came from Dynamic Client Registration rather than being
 // pre-registered by the developer (TS

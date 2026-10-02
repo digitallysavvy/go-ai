@@ -233,8 +233,15 @@ func TestOAuthCredentialPinningAndResourceMetadataOrigin(t *testing.T) {
 		AuthorizationServerURL: "https://evil.example/",
 		TokenEndpoint:          "https://evil.example/token",
 	}
-	if err := AssertOAuthAuthorizationServerInformationMatches(stored, current); err == nil || !strings.Contains(err.Error(), "does not match the metadata that issued the stored credentials") {
+	err := AssertOAuthAuthorizationServerInformationMatches(stored, current)
+	if err == nil || !strings.Contains(err.Error(), "does not match the metadata that issued the stored credentials") {
 		t.Fatalf("pinning error = %v", err)
+	}
+	if !IsAuthorizationServerMismatchError(err) {
+		t.Fatalf("expected AuthorizationServerMismatchError, got %#v", err)
+	}
+	if IsAuthorizationServerMismatchError(&MCPClientOAuthError{Code: OAuthErrorCodeServerError, Message: "other oauth failure"}) {
+		t.Fatalf("expected unrelated oauth error to not match")
 	}
 }
 
