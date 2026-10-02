@@ -144,17 +144,12 @@ func main() {
         log.Fatal(err)
     }
 
-    // The response includes thinking content in the raw response
     fmt.Println("Answer:", result.Text)
 
-    // Access thinking content from raw response
-    if resp, ok := result.RawResponse.(anthropic.anthropicResponse); ok {
-        for _, content := range resp.Content {
-            if content.Type == "thinking" {
-                fmt.Println("\nClaude's thinking:")
-                fmt.Println(content.Thinking)
-            }
-        }
+    // Access thinking content from the result's Reasoning field
+    for _, reasoning := range result.Reasoning {
+        fmt.Println("\nClaude's thinking:")
+        fmt.Println(reasoning.Text)
     }
 }
 ```
@@ -184,19 +179,15 @@ config := &anthropic.ThinkingConfig{
 
 ### Response Structure
 
-When thinking is enabled, the response includes thinking content blocks:
+When thinking is enabled, `ai.GenerateTextResult` carries the thinking
+content in its `Reasoning` field (`[]types.ReasoningContent`, deprecated in
+favor of `FinalStep.Reasoning`):
 
 ```go
-type anthropicResponse struct {
-    Content []anthropicContent
+type ReasoningContent struct {
+    Text      string // Thinking content
+    Signature string // Cryptographic signature, required to replay the block
     // ... other fields
-}
-
-type anthropicContent struct {
-    Type      string  // "thinking", "text", etc.
-    Thinking  string  // Thinking content
-    Signature string  // Thinking signature
-    Text      string  // Regular text content
 }
 ```
 
@@ -256,7 +247,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 if err != nil {
     if providererrors.IsRateLimitError(err) {
         // Handle rate limit
-    } else if providererrors.IsInvalidRequestError(err) {
+    } else if providererrors.IsInvalidArgumentError(err) {
         // Handle invalid request (e.g., wrong model for fast mode)
     } else {
         // Handle other errors
@@ -277,7 +268,7 @@ if err != nil {
 1. **Complex tasks**: Use thinking for logic puzzles, math problems, strategic planning
 2. **Debugging**: The thinking content helps understand Claude's reasoning
 3. **Token budget**: For enabled mode, set budget based on task complexity
-4. **Raw response**: Access thinking content through `result.RawResponse`
+4. **Reasoning field**: Access thinking content through `result.Reasoning`
 
 ### Combined Features
 
@@ -296,7 +287,7 @@ if err != nil {
 ### Thinking Content Missing
 
 - Verify thinking is enabled in model options
-- Check `result.RawResponse` for thinking content
+- Check `result.Reasoning` for thinking content
 - Ensure model supports thinking (Claude 3+)
 
 ### Budget Token Issues
@@ -376,12 +367,23 @@ tool is included in the tool list.
 import (
     "context"
     "encoding/json"
+    "fmt"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
     "github.com/digitallysavvy/go-ai/pkg/provider/types"
     "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
     anthropicTools "github.com/digitallysavvy/go-ai/pkg/providers/anthropic/tools"
 )
+
+// runBash and handleTextEditor are placeholders for your own
+// sandboxed command/file-operation implementations.
+func runBash(command string) (stdout, stderr string, returnCode int) {
+    return "", "", 0
+}
+
+func handleTextEditor(v *anthropicTools.TextEditorInput) interface{} {
+    return nil
+}
 
 func main() {
     prov := anthropic.New(anthropic.Config{APIKey: "your-api-key"})
