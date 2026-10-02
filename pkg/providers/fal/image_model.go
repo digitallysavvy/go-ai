@@ -41,6 +41,63 @@ func (m *ImageModel) ModelID() string {
 	return m.modelID
 }
 
+// falFileInputSupportedModels lists Fal model IDs known to accept file
+// inputs for image-to-image editing (TS FalImageModel#supportsFileInputs).
+var falFileInputSupportedModels = map[string]bool{
+	"fal-ai/flux-2/edit":                 true,
+	"fal-ai/flux-pro/kontext":            true,
+	"fal-ai/flux-pro/kontext/max":        true,
+	"fal-ai/flux-general/image-to-image": true,
+	"fal-ai/flux-general/inpainting":     true,
+	"fal-ai/flux-lora/image-to-image":    true,
+	"fal-ai/flux-lora/inpainting":        true,
+	"fal-ai/flux/dev/image-to-image":     true,
+	"fal-ai/flux/krea/image-to-image":    true,
+	"fal-ai/recraft/v3/image-to-image":   true,
+}
+
+// falFileInputUnsupportedModels lists Fal model IDs known to be text-to-image
+// only, so they explicitly report no file-input support.
+var falFileInputUnsupportedModels = map[string]bool{
+	"bria/text-to-image/3.2":                       true,
+	"fal-ai/bria/text-to-image/base":               true,
+	"fal-ai/bria/text-to-image/fast":               true,
+	"fal-ai/bria/text-to-image/hd":                 true,
+	"fal-ai/bytedance/dreamina/v3.1/text-to-image": true,
+	"fal-ai/flux-kontext-lora/text-to-image":       true,
+	"fal-ai/recraft/v3/text-to-image":              true,
+	"fal-ai/wan/v2.2-5b/text-to-image":             true,
+	"fal-ai/wan/v2.2-a14b/text-to-image":           true,
+}
+
+// SupportsFileInputs reports whether the model accepts file inputs for image
+// editing. Returns nil when support is unknown for the model ID.
+func (m *ImageModel) SupportsFileInputs() *bool {
+	if falFileInputSupportedModels[m.modelID] {
+		return boolPtr(true)
+	}
+	if falFileInputUnsupportedModels[m.modelID] {
+		return boolPtr(false)
+	}
+	return nil
+}
+
+// SupportsMaskInputs reports whether the model accepts a mask input for
+// inpainting. Returns nil when support is unknown for the model ID.
+func (m *ImageModel) SupportsMaskInputs() *bool {
+	if m.modelID == "fal-ai/flux-general/inpainting" || m.modelID == "fal-ai/flux-lora/inpainting" {
+		return boolPtr(true)
+	}
+	if m.SupportsFileInputs() == nil {
+		return nil
+	}
+	return boolPtr(false)
+}
+
+func boolPtr(b bool) *bool {
+	return &b
+}
+
 // DoGenerate performs image generation
 func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
 	reqBody := m.buildRequestBody(opts)
