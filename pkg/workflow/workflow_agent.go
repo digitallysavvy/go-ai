@@ -268,6 +268,14 @@ type WorkflowStreamOptions struct {
 	// ExperimentalDownload overrides the agent's ExperimentalDownload for this call.
 	ExperimentalDownload ai.DownloadFunction
 
+	// ExperimentalTransform is an ordered list of transforms applied to raw
+	// model stream chunks before they reach OnChunk or the returned
+	// WorkflowStreamResult, matching TS WorkflowAgent's
+	// `experimental_transform` stream option (hash 165455d). Previously
+	// declared-but-unused in TS; this forwards it through to the underlying
+	// ai.StreamText call so it actually runs.
+	ExperimentalTransform []ai.StreamTransformFunc
+
 	OnChunk              func(chunk provider.StreamChunk)
 	OnStart              StartCallback
 	OnStepStart          StepStartCallback
@@ -1205,6 +1213,7 @@ func (w *WorkflowAgent) Stream(ctx context.Context, prompt string, opts *agent.A
 		legacy.System = opts.System
 		legacy.AllowSystemInMessages = opts.AllowSystemInMessages
 		legacy.StopWhen = opts.StopWhen
+		legacy.ExperimentalTransform = opts.ExperimentalTransform
 		legacy.OnChunk = opts.OnChunk
 		legacy.OnStart = opts.OnStart
 		legacy.OnStepStart = opts.OnStepStart
@@ -1286,9 +1295,10 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		}
 	}
 	call := agent.AgentStreamOptions{
-		AgentGenerateOptions: agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: opts.StopWhen, Output: w.Output, Telemetry: telemetrySettings},
-		OnChunk:              opts.OnChunk,
-		InitialStreamChunks:  prefixChunks,
+		AgentGenerateOptions:  agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: opts.StopWhen, Output: w.Output, Telemetry: telemetrySettings},
+		OnChunk:               opts.OnChunk,
+		InitialStreamChunks:   prefixChunks,
+		ExperimentalTransform: opts.ExperimentalTransform,
 	}
 	stream, err := a.Stream(ctx, call)
 	if err != nil {
