@@ -1872,9 +1872,10 @@ func TestStreamText_ContinuesWhenToolCallFinishesWithStop(t *testing.T) {
 
 	done := make(chan struct{})
 	result, err := StreamText(context.Background(), StreamTextOptions{
-		Model:  model,
-		Prompt: "weather?",
-		Tools:  []types.Tool{tool},
+		StopWhen: []StopCondition{IsLoopFinished()},
+		Model:    model,
+		Prompt:   "weather?",
+		Tools:    []types.Tool{tool},
 		OnFinish: func(r *StreamTextResult) {
 			close(done)
 		},
@@ -2067,9 +2068,10 @@ func TestStreamText_UsesStepTextForContinuedPrompt(t *testing.T) {
 
 	done := make(chan *StreamTextResult, 1)
 	_, err := StreamText(context.Background(), StreamTextOptions{
-		Model:  model,
-		Prompt: "start",
-		Tools:  []types.Tool{tool},
+		StopWhen: []StopCondition{IsLoopFinished()},
+		Model:    model,
+		Prompt:   "start",
+		Tools:    []types.Tool{tool},
 		OnFinish: func(r *StreamTextResult) {
 			done <- r
 		},
@@ -2359,9 +2361,10 @@ func TestStreamTextResult_FilesAccumulatesAcrossSteps(t *testing.T) {
 
 	done := make(chan struct{})
 	result, err := StreamText(context.Background(), StreamTextOptions{
-		Model:  model,
-		Prompt: "make two files",
-		Tools:  []types.Tool{tool},
+		StopWhen: []StopCondition{IsLoopFinished()},
+		Model:    model,
+		Prompt:   "make two files",
+		Tools:    []types.Tool{tool},
 		OnFinish: func(r *StreamTextResult) {
 			close(done)
 		},
@@ -3230,9 +3233,10 @@ func TestStreamTextResult_NoCallbacksToolsExecuteAndContinue(t *testing.T) {
 
 	// Deliberately no callbacks of any kind — the plain Go-idiomatic API.
 	result, err := StreamText(context.Background(), StreamTextOptions{
-		Model:  model,
-		Prompt: "What's the weather in NY?",
-		Tools:  []types.Tool{tool},
+		StopWhen: []StopCondition{IsLoopFinished()},
+		Model:    model,
+		Prompt:   "What's the weather in NY?",
+		Tools:    []types.Tool{tool},
 	})
 	if err != nil {
 		t.Fatalf("StreamText() error = %v", err)
@@ -3304,9 +3308,10 @@ func TestStreamTextResult_NoCallbacksStreamYieldsFullMultiStep(t *testing.T) {
 
 	// No callbacks — consume exclusively via Stream().
 	result, err := StreamText(context.Background(), StreamTextOptions{
-		Model:  model,
-		Prompt: "weather?",
-		Tools:  []types.Tool{tool},
+		StopWhen: []StopCondition{IsLoopFinished()},
+		Model:    model,
+		Prompt:   "weather?",
+		Tools:    []types.Tool{tool},
 	})
 	if err != nil {
 		t.Fatalf("StreamText() error = %v", err)
@@ -3403,9 +3408,10 @@ func TestStreamTextResult_NoCallbacksChunksChannelYieldsFullMultiStep(t *testing
 	}
 
 	result, err := StreamText(context.Background(), StreamTextOptions{
-		Model:  model,
-		Prompt: "go",
-		Tools:  []types.Tool{tool},
+		StopWhen: []StopCondition{IsLoopFinished()},
+		Model:    model,
+		Prompt:   "go",
+		Tools:    []types.Tool{tool},
 	})
 	if err != nil {
 		t.Fatalf("StreamText() error = %v", err)
@@ -3473,5 +3479,44 @@ func TestStreamText_PanickingOnChunkDoesNotAbortStream(t *testing.T) {
 	// The panic must not be misreported as a stream error.
 	if onErrorCalls != 0 {
 		t.Fatalf("onErrorCalls = %d, want 0", onErrorCalls)
+	}
+}
+
+// TS: streamText defaults to stopWhen = isStepCount(1), like generateText.
+func TestStreamText_DefaultStopWhenIsOneStep(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	calls := 0
+	model := &testutil.MockLanguageModel{
+		ToolSupport: true,
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			mu.Lock()
+			calls++
+			mu.Unlock()
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call_1", ToolName: "tool", Arguments: map[string]interface{}{}}},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+			}), nil
+		},
+	}
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "Loop",
+		Tools: []types.Tool{{Name: "tool", Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "ok", nil
+		}}},
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	_ = result.Text()
+	if steps := result.Steps(); len(steps) != 1 {
+		t.Errorf("expected 1 step, got %d", len(steps))
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Errorf("expected 1 model call, got %d", calls)
 	}
 }
