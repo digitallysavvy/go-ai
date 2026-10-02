@@ -26,7 +26,7 @@ Writes text chunks to `w` as plain UTF-8 text.
 ## `CreateUIMessageStream`
 
 ```go
-func CreateUIMessageStream(ctx context.Context, result *ai.StreamTextResult) (<-chan ai.UIMessageChunk, <-chan error)
+func CreateUIMessageStream(ctx context.Context, result *ai.StreamTextResult, opts ...ai.UIMessageStreamResultOptions) (<-chan ai.UIMessageChunk, <-chan error)
 ```
 
 Converts stream chunks to UI message chunks.
@@ -34,7 +34,7 @@ Converts stream chunks to UI message chunks.
 ## `CreateUIMessageStreamResponse`
 
 ```go
-func CreateUIMessageStreamResponse(ctx context.Context, result *ai.StreamTextResult) (*http.Response, error)
+func CreateUIMessageStreamResponse(ctx context.Context, result *ai.StreamTextResult, opts ...ai.UIMessageStreamResultOptions) (*http.Response, error)
 ```
 
 Returns an `*http.Response` with Server-Sent Events (`text/event-stream`) UI message chunks.
@@ -42,7 +42,7 @@ Returns an `*http.Response` with Server-Sent Events (`text/event-stream`) UI mes
 ## `PipeUIMessageStreamToResponse`
 
 ```go
-func PipeUIMessageStreamToResponse(ctx context.Context, result *ai.StreamTextResult, w io.Writer) error
+func PipeUIMessageStreamToResponse(ctx context.Context, result *ai.StreamTextResult, w io.Writer, opts ...ai.UIMessageStreamResultOptions) error
 ```
 
 Writes UI message chunks as Server-Sent Events.

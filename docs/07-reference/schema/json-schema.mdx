@@ -62,6 +62,12 @@ Creates a validator from a Go struct type.
 package main
 
 import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
     "github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
@@ -84,16 +90,27 @@ func main() {
                 "description": "Email address",
             },
         },
-        "required": []string{"name", "age"},
+        "required":             []string{"name", "age"},
         "additionalProperties": false,
     })
 
+    p := openai.New(openai.Config{APIKey: "your-api-key"})
+    model, err := p.LanguageModel("gpt-4")
+    if err != nil {
+        log.Fatal(err)
+    }
+
     // Use with GenerateObject
-    result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+    result, err := ai.GenerateObject(context.Background(), ai.GenerateObjectOptions{
         Model:  model,
         Prompt: "Generate a person",
         Schema: personSchema,
     })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("%+v\n", result.Object)
 }
 ```
 

@@ -9,17 +9,14 @@ description: "API reference for the Go-AI SDK's Download API, which fetches file
 
 The Download API provides secure file downloading with built-in size limits to prevent memory exhaustion attacks.
 
-## Constants
+## Default Size Limit
 
-### DefaultMaxDownloadSize
+The default maximum download size is **2 GiB** (2,147,483,648 bytes), used by
+`ai.CreateDownload(nil)`, `ai.CreateURLDownload(nil)`, and
+`ai.CreateURLDownloadWithMetadata(nil)` when `options` is `nil` or
+`MaxBytes` is `0`.
 
-```go
-const DefaultMaxDownloadSize = 2 * 1024 * 1024 * 1024 // 2 GiB
-```
-
-The default maximum download size: **2 GiB** (2,147,483,648 bytes).
-
-This limit prevents memory exhaustion from unbounded downloads while allowing legitimate large files. All download operations use this limit by default.
+This limit prevents memory exhaustion from unbounded downloads while allowing legitimate large files. All download operations use this limit by default. There is no exported constant for this value in `pkg/ai`; pass an explicit `MaxBytes` on `ai.DownloadOptions` to override it.
 
 ## Types
 
@@ -199,66 +196,18 @@ download := ai.CreateURLDownload(nil)
 data, err := download(ctx, url)
 ```
 
-## Low-Level API
+## Internal Implementation
 
-### fileutil.Download
-
-```go
-func Download(ctx context.Context, url string, opts DownloadOptions) ([]byte, error)
-```
-
-Low-level download function with size limits to prevent memory exhaustion.
-
-Checks the `Content-Length` header for early rejection, then reads the body incrementally and aborts with a DownloadError when the limit is exceeded.
-
-**Parameters:**
-- `ctx`: Context for cancellation
-- `url`: URL to download from
-- `opts`: Download options
-
-**Returns:**
-- `[]byte`: Downloaded data
-- `error`: DownloadError if download fails or exceeds limit
-
-**Example:**
-
-```go
-import "github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
-
-opts := fileutil.DefaultDownloadOptions()
-opts.MaxSize = 50 * 1024 * 1024  // 50 MB
-
-data, err := fileutil.Download(ctx, url, opts)
-```
-
-### fileutil.DownloadOptions
-
-```go
-type DownloadOptions struct {
-    // Timeout for the download operation
-    Timeout time.Duration
-
-    // Headers to include in the request
-    Headers map[string]string
-
-    // MaxSize limits the size of the download (in bytes)
-    // Default: 2 GiB (DefaultMaxDownloadSize)
-    MaxSize int64
-}
-```
-
-Low-level download configuration.
-
-### fileutil.DefaultDownloadOptions
-
-```go
-func DefaultDownloadOptions() DownloadOptions
-```
-
-Returns default download options:
-- Timeout: 60 seconds
-- MaxSize: 2 GiB
-- Headers: empty map
+The actual HTTP download logic (Content-Length checking, incremental
+reads with an abort once the limit is exceeded, timeouts) lives in
+`pkg/internal/fileutil`. That package is under an `internal/` path, so it
+is **not importable from outside this module** — attempting to import
+`github.com/digitallysavvy/go-ai/pkg/internal/fileutil` from your own code
+fails to build with `use of internal package ... not allowed`. Use the
+public `ai.CreateDownload`, `ai.CreateURLDownload`, and
+`ai.CreateURLDownloadWithMetadata` constructors above instead; they wrap
+`fileutil`'s behavior (Content-Length pre-check, incremental read limit,
+`*providererrors.DownloadError` on failure) behind the public API.
 
 ## Error Handling
 

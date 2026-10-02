@@ -1,47 +1,83 @@
 ---
 title: ToolLoopAgent
-description: "API reference for ToolLoopAgent, the Go AI SDK function that creates an agent continuously using tools in a loop until the task completes."
+description: "API reference for agent.ToolLoopAgent, the Go AI SDK type that creates an agent continuously using tools in a loop until the task completes."
 ---
 
 # ToolLoopAgent
 
-Creates an agent that continuously uses tools in a loop until the task is complete or max steps is reached.
+`ToolLoopAgent` is an agent that loops through tool calls until the task
+completes. It lives in `github.com/digitallysavvy/go-ai/pkg/agent` (not
+`pkg/ai`) and implements the [`agent.Agent`](./agent.mdx) interface.
 
 ## Signature
 
 ```go
-func ToolLoopAgent(ctx context.Context, opts ToolLoopAgentOptions) (*ToolLoopAgentResult, error)
+func NewToolLoopAgent(config AgentConfig) *ToolLoopAgent
 ```
 
 ## Parameters
 
-### ToolLoopAgentOptions
+### AgentConfig (selected fields)
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| Model | provider.LanguageModel | Yes | Language model for the agent |
-| Task | string | Yes | Task description |
-| Tools | []types.Tool | Yes | Available tools |
-| StopWhen | []ai.StopCondition | No | Stable multi-step stop conditions, for example `[]ai.StopCondition{ai.IsStepCount(10)}` |
-| MaxSteps | int | No | Deprecated compatibility shorthand for `StopWhen: []ai.StopCondition{ai.IsStepCount(n)}` |
-| SystemPrompt | string | No | Custom system instructions |
-| StopCondition | func(AgentState) bool | No | Custom stop condition |
-| OnToolCall | func(ToolCallEvent) | No | Called before each tool call |
-| OnToolResult | func(ToolResultEvent) | No | Called after each tool execution |
-| OnComplete | func(*ToolLoopAgentResult) | No | Called when loop completes |
-
-## Return Value
-
-### ToolLoopAgentResult
+`AgentConfig` has many fields; these are the ones most commonly used.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| Success | bool | Whether task completed successfully |
-| FinalAnswer | string | Agent's final answer |
-| Steps | []ToolLoopStep | All steps in the loop |
-| TotalToolCalls | int | Total number of tool calls made |
-| Usage | types.Usage | Total token usage |
+| Model | provider.LanguageModel | Language model for the agent |
+| System | string | System prompt for the agent |
+| Tools | []types.Tool | Tools available to the agent |
+| ActiveTools | []string | Restricts the available tools by name before model calls |
+| StopWhen | []ai.StopCondition | Conditions that terminate the tool-calling loop, e.g. `[]ai.StopCondition{ai.IsStepCount(20)}` (default) |
+| MaxSteps | int | **Deprecated** — use `StopWhen` with `ai.IsStepCount` instead |
+| Temperature | *float64 | Sampling temperature |
+| MaxTokens | *int | Maximum tokens per generation |
+| ToolChoice | types.ToolChoice | Controls how the model may call tools |
+| ProviderOptions | map[string]interface{} | Provider-specific options |
+| Skills | *SkillRegistry | Reusable agent behaviors, registered with `AddSkill` |
+| Subagents | *SubagentRegistry | Specialized agents that can be delegated to |
+| PrepareCall | func(ctx, PrepareCallConfig) PrepareCallConfig | Called before each generation step to adjust settings dynamically |
+| OnStepEnd | func(types.StepResult) | Called after each step completes |
+| OnFinish | func(*AgentResult) | Called when agent execution completes |
+| ToolApprovalRequired | bool | Whether tools require approval before execution |
+
+See `go doc ./pkg/agent AgentConfig` for the complete field list, including
+telemetry, retry, timeout, and callback-event options.
+
+## Methods
+
+```go
+func (a *ToolLoopAgent) Execute(ctx context.Context, prompt string) (*AgentResult, error)
+func (a *ToolLoopAgent) ExecuteWithMessages(ctx context.Context, messages []types.Message) (*AgentResult, error)
+func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions) (*ai.GenerateTextResult, error)
+func (a *ToolLoopAgent) GenerateAgent(ctx context.Context, opts AgentGenerateOptions) (*AgentResult, error)
+func (a *ToolLoopAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*ai.StreamTextResult, error)
+func (a *ToolLoopAgent) AddTool(tool types.Tool)
+func (a *ToolLoopAgent) RemoveTool(toolName string)
+func (a *ToolLoopAgent) Tools() []types.Tool
+func (a *ToolLoopAgent) AddSkill(skill *Skill) error
+func (a *ToolLoopAgent) AddSubagent(name string, subagent Agent) error
+func (a *ToolLoopAgent) DelegateToSubagent(ctx context.Context, name string, prompt string) (*AgentResult, error)
+func (a *ToolLoopAgent) SetMaxSteps(maxSteps int)
+func (a *ToolLoopAgent) SetStopConditions(conditions []ai.StopCondition)
+func (a *ToolLoopAgent) SetSystem(system string)
+func (a *ToolLoopAgent) ID() string
+func (a *ToolLoopAgent) Version() string
+```
+
+## Return Value
+
+### AgentResult
+
+| Field | Type | Description |
+|-------|------|-------------|
+| Text | string | Agent's final text output |
+| Output | interface{} | Parsed/structured output when an output strategy is configured |
+| Steps | []types.StepResult | All steps in the loop |
+| ToolResults | []types.ToolResult | All tool results from execution |
+| FinishReason | types.FinishReason | Final finish reason |
 | StopReason | string | Why the loop stopped |
+| Usage | types.Usage | Total token usage |
+| Warnings | []types.Warning | Warnings from any step |
 
 ## Examples
 
@@ -55,69 +91,72 @@ import (
     "fmt"
     "log"
 
-    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/agent"
     "github.com/digitallysavvy/go-ai/pkg/provider/types"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
 func main() {
-    provider := openai.New(openai.Config{
+    p := openai.New(openai.Config{
         APIKey: "your-api-key",
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := p.LanguageModel("gpt-4")
 
-    result, err := ai.ToolLoopAgent(context.Background(), ai.ToolLoopAgentOptions{
+    searchTool := types.Tool{Name: "search"}
+    priceCompareTool := types.Tool{Name: "price_compare"}
+
+    a := agent.NewToolLoopAgent(agent.AgentConfig{
         Model: model,
-        Task:  "Find and compare prices of three popular smartphones",
         Tools: []types.Tool{searchTool, priceCompareTool},
     })
+
+    result, err := a.Execute(context.Background(), "Find and compare prices of three popular smartphones")
     if err != nil {
         log.Fatal(err)
     }
 
-    fmt.Printf("Answer: %s\n", result.FinalAnswer)
-    fmt.Printf("Tool calls: %d\n", result.TotalToolCalls)
+    fmt.Printf("Answer: %s\n", result.Text)
+    fmt.Printf("Tool calls: %d\n", len(result.ToolResults))
 }
 ```
 
-### With Custom Stop Condition
+### With a Custom Stop Condition
 
 ```go
-stopCondition := func(state ai.AgentState) bool {
-    // Stop if we've found what we need
-    return state.HasResult && state.ToolCallCount >= 3
-}
-
-result, err := ai.ToolLoopAgent(ctx, ai.ToolLoopAgentOptions{
-    Model:         model,
-    Task:          "Research topic and gather 3 key facts",
-    Tools:         tools,
-    StopCondition: stopCondition,
-})
-```
-
-### With Tool Call Monitoring
-
-```go
-result, err := ai.ToolLoopAgent(ctx, ai.ToolLoopAgentOptions{
+a := agent.NewToolLoopAgent(agent.AgentConfig{
     Model: model,
-    Task:  "Complex multi-step research task",
     Tools: tools,
-    OnToolCall: func(event ai.ToolCallEvent) {
-        fmt.Printf("Calling tool: %s\n", event.ToolName)
-        fmt.Printf("Arguments: %+v\n", event.Arguments)
+    StopWhen: []ai.StopCondition{
+        ai.HasToolCall("final_answer"),
+        ai.IsStepCount(5),
     },
-    OnToolResult: func(event ai.ToolResultEvent) {
-        fmt.Printf("Tool result: %+v\n", event.Result)
-        if event.Error != nil {
-            fmt.Printf("Tool error: %v\n", event.Error)
+})
+
+result, err := a.Execute(ctx, "Research topic and gather 3 key facts")
+```
+
+### With Step and Tool Callbacks
+
+```go
+a := agent.NewToolLoopAgent(agent.AgentConfig{
+    Model: model,
+    Tools: tools,
+    OnStepEnd: func(step types.StepResult) {
+        fmt.Printf("Step finished, %d tool calls\n", len(step.ToolCalls))
+    },
+    OnToolResult: func(result types.ToolResult) {
+        fmt.Printf("Tool result: %+v\n", result.Result)
+        if result.Error != nil {
+            fmt.Printf("Tool error: %v\n", result.Error)
         }
     },
 })
+
+result, err := a.Execute(ctx, "Complex multi-step research task")
 ```
 
 ## See Also
 
-- [Agent](./agent.mdx) - Basic agent function
+- [Agent](./agent.mdx) - The `agent.Agent` interface
 - [Tool](./tool.mdx) - Tool definition
 - [Agents Guide](../../03-agents/01-overview.mdx)

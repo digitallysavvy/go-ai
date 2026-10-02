@@ -203,7 +203,7 @@ if err != nil {
     log.Fatal(err)
 }
 
-candidates := vectorDB.Search(queryEmbed.Embedding, topK=100)
+candidates := vectorDB.Search(queryEmbed.Embedding, 100) // top 100 candidates
 
 // Stage 2: Precise reranking
 result, err := ai.Rerank(ctx, ai.RerankOptions{

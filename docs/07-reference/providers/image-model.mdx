@@ -59,10 +59,10 @@ import (
 )
 
 func main() {
-    provider := openai.New(openai.Config{
+    p := openai.New(openai.Config{
         APIKey: "your-api-key",
     })
-    model, err := provider.ImageModel("dall-e-3")
+    model, err := p.ImageModel("dall-e-3")
     if err != nil {
         log.Fatal(err)
     }

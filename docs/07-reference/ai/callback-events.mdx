@@ -15,32 +15,30 @@ All callbacks are **optional** and **panic-safe** — a panicking callback never
 
 ### OnStartEvent
 
-Fired once at the beginning of a `GenerateText` or `StreamText` call, before any LLM request is made.
+Fired once at the beginning of a `GenerateText` or `StreamText` call, before any LLM request is made. Each struct below shows selected fields; see `go doc ./pkg/ai <Type>` for the complete list.
 
 ```go
 type OnStartEvent struct {
+    CallID        string // correlates this event with other events for the same call
     ModelProvider string
     ModelID       string
     Prompt        string
-    System        string
+    System        string // Deprecated: use Instructions
     Messages      []types.Message
     Tools         []types.Tool
-    // Telemetry
-    FunctionID string
-    Metadata   map[string]any
+    // ... generation parameters, ProviderOptions, RuntimeContext, etc.
 }
 ```
 
 | Field | Description |
 |-------|-------------|
+| CallID | Unique ID for this generation call; correlates `OnStart`/`OnStepStart`/`OnStepFinish`/`OnFinish` events |
 | ModelProvider | Provider name (e.g., `"openai"`, `"anthropic"`) |
 | ModelID | Model identifier (e.g., `"gpt-4o"`) |
 | Prompt | The user prompt string |
-| System | The system prompt string |
+| System | The system prompt string (deprecated alias for `Instructions`) |
 | Messages | Initial conversation messages |
 | Tools | Tools available for the call |
-| FunctionID | Telemetry function identifier |
-| Metadata | Telemetry metadata key-value pairs |
 
 ---
 
@@ -50,17 +48,18 @@ Fired at the beginning of each generation step (each LLM call in a multi-step to
 
 ```go
 type OnStepStartEvent struct {
-    StepNumber int
+    CallID     string
+    StepNumber int // 0-indexed
     Messages   []types.Message
     Tools      []types.Tool
-    FunctionID string
-    Metadata   map[string]any
+    // ... ToolChoice, ActiveTools, Steps (prior step results), etc.
 }
 ```
 
 | Field | Description |
 |-------|-------------|
-| StepNumber | 1-based step counter |
+| CallID | Correlates this event with the other events for this call |
+| StepNumber | 0-indexed step counter |
 | Messages | Messages sent to the LLM for this step |
 | Tools | Tools available for this step |
 
@@ -72,45 +71,50 @@ Fired before each individual tool is executed. Use this event with `OnToolExecut
 
 ```go
 type OnToolCallStartEvent struct {
+    CallID     string
     ToolCallID string
     ToolName   string
-    Args       map[string]any
-    StepNumber int
-    FunctionID string
-    Metadata   map[string]any
+    ToolCall   types.ToolCall
+    Messages   []types.Message
+    // Args and StepNumber are deprecated; use ToolCall.Arguments and
+    // correlate with step events via CallID instead.
 }
 ```
 
 | Field | Description |
 |-------|-------------|
+| CallID | Correlates this event with the generation call that triggered it |
 | ToolCallID | Unique identifier for this tool call |
 | ToolName | Name of the tool being called |
-| Args | Arguments passed to the tool |
-| StepNumber | Step in which this tool call occurs |
+| ToolCall | The full tool call, including `Arguments` |
 
 ---
 
 ### OnToolCallFinishEvent
 
-Fired after each tool completes (success or failure). Use this event with `OnToolExecutionEnd`. This is a discriminated union: either `Result` or `Error` is non-nil.
+Fired after each tool completes (success or failure). Use this event with `OnToolExecutionEnd`.
 
 ```go
 type OnToolCallFinishEvent struct {
-    ToolCallID string
-    ToolName   string
-    Args       map[string]any
-    Result     any    // non-nil on success
-    Error      error  // non-nil on failure
-    StepNumber int
-    FunctionID string
-    Metadata   map[string]any
+    CallID          string
+    ToolCallID      string
+    ToolName        string
+    ToolCall        types.ToolCall
+    ToolOutput      types.ToolResult // exactly one of ToolOutput.Result / ToolOutput.Error is meaningful
+    ToolExecutionMs int64
+    Messages        []types.Message
+    // Result, Error, Args, StepNumber, DurationMs are deprecated aliases
+    // for ToolOutput.Result, ToolOutput.Error, ToolCall.Arguments,
+    // CallID-based correlation, and ToolExecutionMs respectively.
 }
 ```
 
 | Field | Description |
 |-------|-------------|
-| Result | Tool output on success (`nil` on failure) |
-| Error | Execution error on failure (`nil` on success) |
+| ToolOutput | Tool result; `ToolOutput.Result` is non-nil on success, `ToolOutput.Error` on failure |
+| ToolExecutionMs | Tool execution time in milliseconds |
+| Result (deprecated) | Tool output on success (`nil` on failure) |
+| Error (deprecated) | Execution error on failure (`nil` on success) |
 
 ---
 
@@ -120,19 +124,21 @@ Fired after each generation step completes, including after all tools for that s
 
 ```go
 type OnStepFinishEvent struct {
-    StepNumber   int
+    CallID       string
+    StepNumber   int // 0-indexed
     Text         string
     ToolCalls    []types.ToolCall
     ToolResults  []types.ToolResult
     FinishReason types.FinishReason
     Usage        types.Usage
-    FunctionID   string
-    Metadata     map[string]any
+    Warnings     []types.Warning
+    // ... Reasoning, Sources, Files, ProviderMetadata, Request, Response, etc.
 }
 ```
 
 | Field | Description |
 |-------|-------------|
+| StepNumber | 0-indexed step counter |
 | Text | LLM text output for this step |
 | ToolCalls | Tool calls made during this step |
 | ToolResults | Results from tool executions in this step |
@@ -147,20 +153,23 @@ Fired once when generation completes (after all steps).
 
 ```go
 type OnFinishEvent struct {
+    CallID       string
     Text         string
+    ToolCalls    []types.ToolCall
     ToolResults  []types.ToolResult
     FinishReason types.FinishReason
     Steps        []types.StepResult
-    TotalUsage   types.Usage
-    FunctionID   string
-    Metadata     map[string]any
+    Usage        types.Usage      // usage of the final step
+    TotalUsage   types.Usage      // sum across all steps
+    Output       interface{}      // parsed structured output, if configured
+    // ... Reasoning, Sources, Files, Warnings, ProviderMetadata, etc.
 }
 ```
 
 | Field | Description |
 |-------|-------------|
 | Text | Final generated text |
-| ToolResults | All tool results across all steps |
+| ToolResults | Tool results from the final step |
 | FinishReason | Final finish reason |
 | Steps | All steps taken during generation |
 | TotalUsage | Aggregated token usage across all steps |

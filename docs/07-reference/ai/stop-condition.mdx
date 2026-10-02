@@ -68,7 +68,7 @@ stopOnError := func(state ai.StopConditionState) string {
     }
     last := state.Steps[len(state.Steps)-1]
     for _, result := range last.ToolResults {
-        if result.IsError {
+        if result.Error != nil {
             return "tool returned an error"
         }
     }
@@ -90,7 +90,7 @@ Stop before the model runs out of context by inspecting `state.Usage`:
 ```go
 tokenBudget := func(maxTokens int) ai.StopCondition {
     return func(state ai.StopConditionState) string {
-        if int(state.Usage.TotalTokens) >= maxTokens {
+        if int(state.Usage.GetTotalTokens()) >= maxTokens {
             return fmt.Sprintf("token budget of %d reached", maxTokens)
         }
         return ""
@@ -121,7 +121,7 @@ in a `StopCondition` without worrying about evaluation order:
 
 ```go
 recordStepMetric := func(state ai.StopConditionState) string {
-    metrics.RecordStep(len(state.Steps), int(state.Usage.TotalTokens))
+    metrics.RecordStep(len(state.Steps), int(state.Usage.GetTotalTokens()))
     return "" // never stops the loop on its own
 }
 

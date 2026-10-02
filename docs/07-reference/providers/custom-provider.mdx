@@ -157,6 +157,11 @@ func main() {
 
 ## Implementing Streaming
 
+`provider.TextStream` only has `Next`, `Err`, and `Close` — it does **not**
+implement `io.Reader`. Don't add a `Read` method to a stream wrapper; consume
+chunks with `Next()` in a loop, as shown in the [`provider.TextStream` doc
+comment](https://pkg.go.dev/github.com/digitallysavvy/go-ai/pkg/provider#TextStream).
+
 ```go
 type CustomTextStream struct {
     chunks chan *provider.StreamChunk
@@ -175,10 +180,6 @@ func (s *CustomTextStream) Next() (*provider.StreamChunk, error) {
         return nil, io.EOF
     }
     return chunk, nil
-}
-
-func (s *CustomTextStream) Read(p []byte) (n int, err error) {
-    return 0, fmt.Errorf("not implemented")
 }
 
 func (s *CustomTextStream) Close() error {
