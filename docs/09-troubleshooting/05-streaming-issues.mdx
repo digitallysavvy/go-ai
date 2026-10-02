@@ -31,11 +31,12 @@ import (
     "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
 // BAD: Not consuming entire stream
-func badStreamHandling(ctx context.Context, model interface{}) error {
+func badStreamHandling(ctx context.Context, model provider.LanguageModel) error {
     stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
         Model:  model,
         Prompt: "Write a long story",
@@ -54,7 +55,7 @@ func badStreamHandling(ctx context.Context, model interface{}) error {
 }
 
 // GOOD: Always consume entire stream
-func goodStreamHandling(ctx context.Context, model interface{}) error {
+func goodStreamHandling(ctx context.Context, model provider.LanguageModel) error {
     stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
         Model:  model,
         Prompt: "Write a long story",
@@ -73,7 +74,7 @@ func goodStreamHandling(ctx context.Context, model interface{}) error {
 }
 
 // ALSO GOOD: Early exit with context cancellation
-func earlyExitStreamHandling(ctx context.Context, model interface{}) error {
+func earlyExitStreamHandling(ctx context.Context, model provider.LanguageModel) error {
     stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
         Model:  model,
         Prompt: "Write a long story",
@@ -201,7 +202,7 @@ import (
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
-func robustStreaming(ctx context.Context, model interface{}, prompt string) error {
+func robustStreaming(ctx context.Context, model provider.LanguageModel, prompt string) error {
     stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
         Model:  model,
         Prompt: prompt,
@@ -226,10 +227,10 @@ func robustStreaming(ctx context.Context, model interface{}, prompt string) erro
             log.Printf("Tool call: %s", chunk.ToolCall.ToolName)
 
         case provider.ChunkTypeError:
-            log.Printf("Error in stream: %v", chunk.Error)
+            log.Printf("Error in stream: %v", chunk.Err)
 
         case provider.ChunkTypeFinish:
-            finishReason = chunk.FinishReason
+            finishReason = string(chunk.FinishReason)
             log.Printf("\nStream finished: %s", finishReason)
         }
     }
@@ -288,10 +289,11 @@ import (
     "time"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
-func completeStreamRead(ctx context.Context, model interface{}) error {
+func completeStreamRead(ctx context.Context, model provider.LanguageModel) error {
     stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
         Model:  model,
         Prompt: "Count from 1 to 100",
@@ -359,8 +361,10 @@ import (
     "log"
     "os"
     "sync"
+    "time"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
@@ -397,7 +401,7 @@ func (p *SafeStreamProcessor) IsDone() bool {
     return p.done
 }
 
-func processStreamSafely(ctx context.Context, model interface{}, prompt string) error {
+func processStreamSafely(ctx context.Context, model provider.LanguageModel, prompt string) error {
     processor := &SafeStreamProcessor{}
 
     stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
@@ -415,7 +419,7 @@ func processStreamSafely(ctx context.Context, model interface{}, prompt string) 
     go func() {
         defer wg.Done()
         for chunk := range stream.Chunks() {
-            processor.AddChunk(chunk)
+            processor.AddChunk(chunk.Text)
             fmt.Print(chunk.Text)
         }
         processor.MarkDone()
@@ -479,11 +483,12 @@ import (
     "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
 // BAD: Accumulating all chunks in memory
-func memoryHungryStreaming(ctx context.Context, model interface{}) error {
+func memoryHungryStreaming(ctx context.Context, model provider.LanguageModel) error {
     stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
         Model:  model,
         Prompt: "Write a very long essay",
@@ -494,7 +499,7 @@ func memoryHungryStreaming(ctx context.Context, model interface{}) error {
 
     var allText string // Accumulates all chunks - can use lots of memory!
     for chunk := range stream.Chunks() {
-        allText += chunk // Bad: growing string
+        allText += chunk.Text // Bad: growing string
     }
 
     fmt.Println(allText)
@@ -502,7 +507,7 @@ func memoryHungryStreaming(ctx context.Context, model interface{}) error {
 }
 
 // GOOD: Process chunks incrementally
-func memoryEfficientStreaming(ctx context.Context, model interface{}, outputFile string) error {
+func memoryEfficientStreaming(ctx context.Context, model provider.LanguageModel, outputFile string) error {
     stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
         Model:  model,
         Prompt: "Write a very long essay",
@@ -534,7 +539,7 @@ func memoryEfficientStreaming(ctx context.Context, model interface{}, outputFile
 }
 
 // ALSO GOOD: Process chunks with fixed buffer
-func bufferedStreaming(ctx context.Context, model interface{}) error {
+func bufferedStreaming(ctx context.Context, model provider.LanguageModel) error {
     stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
         Model:  model,
         Prompt: "Write a long story",
@@ -547,7 +552,7 @@ func bufferedStreaming(ctx context.Context, model interface{}) error {
     buffer := make([]byte, 0, maxBufferSize)
 
     for chunk := range stream.Chunks() {
-        buffer = append(buffer, []byte(chunk)...)
+        buffer = append(buffer, []byte(chunk.Text)...)
 
         // Process buffer when full
         if len(buffer) >= maxBufferSize {

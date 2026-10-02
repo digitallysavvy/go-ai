@@ -33,7 +33,7 @@ import (
     "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/types"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
     "github.com/invopop/jsonschema"
 )
@@ -59,7 +59,7 @@ func badToolDefinition() types.Tool {
             },
             // Missing "required" array
         },
-        Execute: func(input json.RawMessage) (interface{}, error) {
+        Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
             return "Sunny", nil
         },
     }
@@ -77,9 +77,16 @@ func goodToolDefinition() types.Tool {
         Name:        "get_weather",
         Description: "Get the current weather for a location",
         Parameters:  schema,
-        Execute: func(input json.RawMessage) (interface{}, error) {
+        // Execute always takes (ctx, input map[string]interface{}, opts
+        // types.ToolExecutionOptions) — the SDK decodes the model's JSON
+        // arguments into the map before calling Execute.
+        Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+            inputBytes, err := json.Marshal(input)
+            if err != nil {
+                return nil, fmt.Errorf("invalid input: %w", err)
+            }
             var params WeatherInput
-            if err := json.Unmarshal(input, &params); err != nil {
+            if err := json.Unmarshal(inputBytes, &params); err != nil {
                 return nil, fmt.Errorf("invalid input: %w", err)
             }
 
@@ -107,6 +114,9 @@ func main() {
         Model:  model,
         Prompt: "What's the weather in San Francisco?",
         Tools:  []types.Tool{weatherTool},
+        // GenerateText defaults to a single step; allow more so the model
+        // can see the tool result and produce a final text answer.
+        StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
     })
     if err != nil {
         log.Fatal(err)
@@ -142,7 +152,7 @@ import (
     "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/types"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
     "github.com/invopop/jsonschema"
 )
@@ -164,9 +174,10 @@ func unsafeCalculatorTool() types.Tool {
         Name:        "calculator",
         Description: "Perform basic arithmetic",
         Parameters:  schema,
-        Execute: func(input json.RawMessage) (interface{}, error) {
+        Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+            inputBytes, _ := json.Marshal(input)
             var params CalculatorInput
-            json.Unmarshal(input, &params) // Ignoring error!
+            json.Unmarshal(inputBytes, &params) // Ignoring error!
 
             // No validation - can panic on divide by zero!
             var result float64
@@ -192,10 +203,14 @@ func safeCalculatorTool() types.Tool {
         Name:        "calculator",
         Description: "Perform basic arithmetic operations",
         Parameters:  schema,
-        Execute: func(input json.RawMessage) (interface{}, error) {
+        Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
             // Validate input JSON
+            inputBytes, err := json.Marshal(input)
+            if err != nil {
+                return nil, fmt.Errorf("invalid input: %w", err)
+            }
             var params CalculatorInput
-            if err := json.Unmarshal(input, &params); err != nil {
+            if err := json.Unmarshal(inputBytes, &params); err != nil {
                 return nil, fmt.Errorf("invalid input JSON: %w", err)
             }
 
@@ -209,7 +224,6 @@ func safeCalculatorTool() types.Tool {
 
             // Perform calculation with error handling
             var result float64
-            var err error
 
             switch params.Operation {
             case "add":
@@ -248,6 +262,9 @@ func main() {
         Model:  model,
         Prompt: "What is 144 divided by 12?",
         Tools:  []types.Tool{calcTool},
+        // GenerateText defaults to a single step; allow more so the model
+        // can see the tool result and produce a final text answer.
+        StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
     })
     if err != nil {
         log.Fatal(err)
@@ -282,7 +299,7 @@ import (
     "time"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/types"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
     "github.com/invopop/jsonschema"
 )
@@ -300,9 +317,10 @@ func vagueTimeTool() types.Tool {
         Name:        "time",
         Description: "Gets time", // Too vague!
         Parameters:  schema,
-        Execute: func(input json.RawMessage) (interface{}, error) {
+        Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+            inputBytes, _ := json.Marshal(input)
             var params TimeInput
-            json.Unmarshal(input, &params)
+            json.Unmarshal(inputBytes, &params)
             return time.Now().Format(time.RFC3339), nil
         },
     }
@@ -322,9 +340,13 @@ func clearTimeTool() types.Tool {
 Use this tool when the user asks for the current time, date, or what time it is in a specific location.
 Always use this tool instead of guessing the current time.`,
         Parameters: schema,
-        Execute: func(input json.RawMessage) (interface{}, error) {
+        Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+            inputBytes, err := json.Marshal(input)
+            if err != nil {
+                return nil, err
+            }
             var params TimeInput
-            if err := json.Unmarshal(input, &params); err != nil {
+            if err := json.Unmarshal(inputBytes, &params); err != nil {
                 return nil, err
             }
 
@@ -358,7 +380,10 @@ func forceToolUsage() {
         Prompt: "What time is it in Tokyo?",
         Tools:  []types.Tool{timeTool},
         // Force the model to use the tool
-        ToolChoice: types.ToolChoiceRequired,
+        ToolChoice: types.ToolChoice{Type: types.ToolChoiceRequired},
+        // GenerateText defaults to a single step; allow more so the model
+        // can see the tool result and produce a final text answer.
+        StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
     })
     if err != nil {
         log.Fatal(err)
@@ -398,7 +423,7 @@ import (
     "time"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/types"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
     "github.com/invopop/jsonschema"
 )
@@ -416,9 +441,10 @@ func slowSearchTool() types.Tool {
         Name:        "web_search",
         Description: "Search the web",
         Parameters:  schema,
-        Execute: func(input json.RawMessage) (interface{}, error) {
+        Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+            inputBytes, _ := json.Marshal(input)
             var params SearchInput
-            json.Unmarshal(input, &params)
+            json.Unmarshal(inputBytes, &params)
 
             // BAD: No timeout, can hang forever
             resp, err := http.Get("https://api.example.com/search?q=" + params.Query)
@@ -444,9 +470,13 @@ func timeoutSearchTool() types.Tool {
         Name:        "web_search",
         Description: "Search the web for current information",
         Parameters:  schema,
-        Execute: func(input json.RawMessage) (interface{}, error) {
+        Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+            inputBytes, err := json.Marshal(input)
+            if err != nil {
+                return nil, err
+            }
             var params SearchInput
-            if err := json.Unmarshal(input, &params); err != nil {
+            if err := json.Unmarshal(inputBytes, &params); err != nil {
                 return nil, err
             }
 
@@ -496,6 +526,9 @@ func main() {
         Model:  model,
         Prompt: "Search for the latest news about AI",
         Tools:  []types.Tool{searchTool},
+        // GenerateText defaults to a single step; allow more so the model
+        // can see the tool result and produce a final text answer.
+        StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
     })
     if err != nil {
         log.Fatal(err)
@@ -530,7 +563,7 @@ import (
     "sync"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/types"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
     "github.com/invopop/jsonschema"
 )
@@ -580,9 +613,13 @@ func createToolsWithDependencies(coordinator *ToolCoordinator) []types.Tool {
         Name:        "get_user",
         Description: "Get user information by user ID",
         Parameters:  userSchema,
-        Execute: func(input json.RawMessage) (interface{}, error) {
+        Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+            inputBytes, err := json.Marshal(input)
+            if err != nil {
+                return nil, err
+            }
             var params GetUserInput
-            if err := json.Unmarshal(input, &params); err != nil {
+            if err := json.Unmarshal(inputBytes, &params); err != nil {
                 return nil, err
             }
 
@@ -605,9 +642,13 @@ func createToolsWithDependencies(coordinator *ToolCoordinator) []types.Tool {
         Name:        "get_orders",
         Description: "Get orders for a user",
         Parameters:  ordersSchema,
-        Execute: func(input json.RawMessage) (interface{}, error) {
+        Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+            inputBytes, err := json.Marshal(input)
+            if err != nil {
+                return nil, err
+            }
             var params GetOrdersInput
-            if err := json.Unmarshal(input, &params); err != nil {
+            if err := json.Unmarshal(inputBytes, &params); err != nil {
                 return nil, err
             }
 
@@ -644,6 +685,10 @@ func main() {
         Model:  model,
         Prompt: "Get all orders for user ID user-123",
         Tools:  tools,
+        // GenerateText defaults to a single step; this scenario needs
+        // multiple tool-call rounds (get_user, then get_orders) plus a
+        // final text response, so allow more steps.
+        StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
     })
     if err != nil {
         log.Fatal(err)
@@ -668,9 +713,13 @@ schema := reflector.Reflect(&YourStruct{})
 ### 2. Validate Tool Inputs
 
 ```go
-Execute: func(input json.RawMessage) (interface{}, error) {
+Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+    inputBytes, err := json.Marshal(input)
+    if err != nil {
+        return nil, fmt.Errorf("invalid input: %w", err)
+    }
     var params InputType
-    if err := json.Unmarshal(input, &params); err != nil {
+    if err := json.Unmarshal(inputBytes, &params); err != nil {
         return nil, fmt.Errorf("invalid input: %w", err)
     }
     // Validate params...
@@ -687,7 +736,7 @@ Description: "Get current weather for a location. Use this tool when the user as
 ### 4. Handle Tool Errors Gracefully
 
 ```go
-Execute: func(input json.RawMessage) (interface{}, error) {
+Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
     result, err := performOperation()
     if err != nil {
         return nil, fmt.Errorf("operation failed: %w", err)

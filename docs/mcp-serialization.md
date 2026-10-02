@@ -57,7 +57,7 @@ import (
 
 func main() {
     // Create MCP client
-    transport := mcp.NewStdioTransport(mcp.StdioConfig{
+    transport := mcp.NewStdioTransport(mcp.StdioTransportConfig{
         Command: "npx",
         Args:    []string{"-y", "@modelcontextprotocol/server-everything"},
     })
@@ -298,11 +298,12 @@ func snapshotTools(client *mcp.MCPClient) (*ToolSnapshot, error) {
 ```go
 tools, err := client.GetSerializableTools(ctx)
 if err != nil {
+    var mcpErr *mcp.MCPClientError
     switch {
     case errors.Is(err, context.DeadlineExceeded):
         log.Fatal("Timeout getting tools")
-    case errors.Is(err, mcp.ErrNotInitialized):
-        log.Fatal("Client not initialized")
+    case errors.As(err, &mcpErr):
+        log.Fatalf("MCP error %d: %s", mcpErr.Code, mcpErr.Message)
     default:
         log.Fatalf("Failed to get tools: %v", err)
     }

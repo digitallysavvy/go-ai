@@ -29,6 +29,9 @@ result, err := ai.StreamText(ctx, ai.StreamTextOptions{
     Model:  model,
     Prompt: "What's the weather?",
     Tools:  []types.Tool{weatherTool},
+    // StreamText defaults to a single step; allow more so the model gets
+    // a turn to respond in text after the tool result.
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
     OnChunk: func(chunk provider.StreamChunk) {
         fmt.Print(chunk.Text)
     },

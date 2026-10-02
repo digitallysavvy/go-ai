@@ -388,7 +388,7 @@ These are TS-only by design — the Go SDK is a backend/CLI library, not a UI fr
 
 - **React/Vue/Angular/Svelte hooks** (`useChat`, `useCompletion` from `@ai-sdk/react`, `@ai-sdk/vue`, `@ai-sdk/angular`, `@ai-sdk/svelte`) — client-side UI state management. Go serves the same UI message stream protocol these hooks consume; see [Serving a TS frontend](#serving-a-ts-frontend-from-a-go-backend).
 - **React Server Components streaming** (`@ai-sdk/rsc`) — an RSC-specific streaming mechanism with no Go analogue.
-- **`@ai-sdk/devtools`** — a browser-based UI for inspecting LLM requests/responses. Go's own [debugging guide](../03-ai-sdk-core/65-devtools.mdx) covers the same goal (`DebugMode` request logging), by different means.
+- **`@ai-sdk/devtools`** — a browser-based UI for inspecting LLM requests/responses. Go's own [debugging guide](../09-troubleshooting/09-debugging.mdx) covers the same goal — wrapping the HTTP client to log requests/responses, plus `ai.SetLogWarnings` for provider warnings — by different means.
 - **`@ai-sdk/codemod`** — jscodeshift-based automated upgrade transforms for TS source files; doesn't apply to Go source.
 - **`@ai-sdk/harness-cline`, `@ai-sdk/harness-pi`** — these load their vendor Node SDKs in-process with no TS bridge script to port; a Go port would need original work with no TS reference to mirror. Revisit on demand.
 - **Browser-only realtime transport** (`BrowserRealtimeTransport`, `BrowserRealtimeAudio`, `useRealtime`, OpenAI Live over WebRTC) — WebRTC/browser-audio glue. Go's [Realtime Sessions](../03-ai-sdk-core/39-realtime.mdx) support the same server-side WebSocket session API (`ai.ConnectRealtime`); only the in-browser/WebRTC transport is out of scope.

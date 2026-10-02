@@ -46,11 +46,12 @@ import (
     "time"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
     providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
-func generateWithRateLimitHandling(ctx context.Context, model interface{}, prompt string) (string, error) {
+func generateWithRateLimitHandling(ctx context.Context, model provider.LanguageModel, prompt string) (string, error) {
     maxRetries := 3
     var lastErr error
 
@@ -140,17 +141,18 @@ import (
     "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
     "golang.org/x/time/rate"
 )
 
 // RateLimitedGenerator wraps AI generation with rate limiting
 type RateLimitedGenerator struct {
-    model   interface{}
+    model   provider.LanguageModel
     limiter *rate.Limiter
 }
 
-func NewRateLimitedGenerator(model interface{}, requestsPerMinute float64) *RateLimitedGenerator {
+func NewRateLimitedGenerator(model provider.LanguageModel, requestsPerMinute float64) *RateLimitedGenerator {
     // Convert RPM to requests per second
     rps := requestsPerMinute / 60.0
 
@@ -216,6 +218,7 @@ import (
     "time"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
@@ -292,11 +295,11 @@ func min(a, b int) int {
 
 // TokenAwareGenerator manages token-based rate limiting
 type TokenAwareGenerator struct {
-    model  interface{}
+    model  provider.LanguageModel
     bucket *TokenBucket
 }
 
-func NewTokenAwareGenerator(model interface{}, tokensPerMinute int) *TokenAwareGenerator {
+func NewTokenAwareGenerator(model provider.LanguageModel, tokensPerMinute int) *TokenAwareGenerator {
     return &TokenAwareGenerator{
         model:  model,
         bucket: NewTokenBucket(tokensPerMinute),
@@ -316,14 +319,14 @@ func (g *TokenAwareGenerator) Generate(ctx context.Context, prompt string, maxTo
     result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
         Model:     g.model,
         Prompt:    prompt,
-        MaxTokens: maxTokens,
+        MaxTokens: &maxTokens,
     })
     if err != nil {
         return "", err
     }
 
     // Update bucket with actual token usage
-    actualTokens := result.Usage.GetTotalTokens()
+    actualTokens := int(result.Usage.GetTotalTokens())
     difference := actualTokens - estimatedTotalTokens
     if difference > 0 {
         // We used more than estimated, remove additional tokens
@@ -372,6 +375,7 @@ import (
     "sync"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
@@ -401,11 +405,11 @@ func (s *Semaphore) Release() {
 
 // ConcurrentGenerator limits concurrent API requests
 type ConcurrentGenerator struct {
-    model     interface{}
+    model     provider.LanguageModel
     semaphore *Semaphore
 }
 
-func NewConcurrentGenerator(model interface{}, maxConcurrent int) *ConcurrentGenerator {
+func NewConcurrentGenerator(model provider.LanguageModel, maxConcurrent int) *ConcurrentGenerator {
     return &ConcurrentGenerator{
         model:     model,
         semaphore: NewSemaphore(maxConcurrent),
@@ -621,7 +625,7 @@ func main() {
             continue
         }
 
-        tracker.RecordRequest(result.Usage.GetTotalTokens())
+        tracker.RecordRequest(int(result.Usage.GetTotalTokens()))
         time.Sleep(2 * time.Second) // Space out requests
     }
 }

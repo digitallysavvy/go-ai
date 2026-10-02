@@ -164,7 +164,7 @@ to `PrepareStep`.
 opts := ai.GenerateTextOptions{
     Model: model,
     Prompt: "Return JSON.",
-    Output: ai.JSONOutput(),
+    Output: ai.JSONOutput(ai.JSONOutputOptions{}),
     PrepareStep: func(ctx context.Context, step ai.PrepareStepOptions) ai.PrepareStepOptions {
         return step
     },
