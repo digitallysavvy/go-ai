@@ -43,7 +43,7 @@ there are no completed steps yet (safe to evaluate on step zero).
 
 Define a `finish` tool that the model calls when it is satisfied with its
 research. Use `HasToolCall("finish")` to stop the loop the moment it fires.
-Pair it with `StepCountIs` as a hard-limit fallback in case the model never
+Pair it with `IsStepCount` as a hard-limit fallback in case the model never
 calls the tool.
 
 ```go
@@ -72,7 +72,7 @@ When you are satisfied with your findings, call the finish tool.`,
     Tools: []types.Tool{searchTool, finishTool},
     StopWhen: []ai.StopCondition{
         ai.HasToolCall("finish"), // stop on semantic completion
-        ai.StepCountIs(10),       // safety ceiling
+        ai.IsStepCount(10),       // safety ceiling
     },
 })
 if err != nil {
@@ -92,7 +92,7 @@ myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
     Tools: []types.Tool{searchTool, submitTool},
     StopWhen: []ai.StopCondition{
         ai.HasToolCall("submit"),
-        ai.StepCountIs(20),
+        ai.IsStepCount(20),
     },
 })
 
@@ -111,13 +111,13 @@ anywhere and are guaranteed to run.
 // Both conditions always run; the first non-empty reason is returned.
 StopWhen: []ai.StopCondition{
     ai.HasToolCall("finish"),   // fires → "tool 'finish' was called"
-    ai.StepCountIs(20),         // also evaluated, but result ignored if finish fired first
+    ai.IsStepCount(20),         // also evaluated, but result ignored if finish fired first
 },
 ```
 
 ## See Also
 
-- [StepCountIs](./step-count-is.mdx) — stop after n steps (safety ceiling pattern)
+- [IsStepCount](./step-count-is.mdx) — stop after n steps (safety ceiling pattern)
 - [Loop Control](../../03-agents/04-loop-control.mdx) — full guide with examples
 - [GenerateText](./generate-text.mdx) — `GenerateTextOptions.StopWhen` field
 - [ToolLoopAgent](./tool-loop-agent.mdx) — `AgentConfig.StopWhen` field

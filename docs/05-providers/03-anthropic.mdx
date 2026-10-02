@@ -209,7 +209,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "Find all active customers who signed up in 2024",
     Tools:  []types.Tool{searchTool},
-    StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 })
 
 for _, call := range result.ToolCalls {
@@ -525,7 +525,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "Read main.go, add error handling, and save the improved version",
     Tools:  []types.Tool{fileReadTool, fileWriteTool},
-    StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 })
 
 // Process tool calls
@@ -809,7 +809,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "Run some Python to analyze this data, then summarize.",
     Tools:  tools,
-    StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
     PrepareStep: func(ctx context.Context, step ai.PrepareStepOptions) ai.PrepareStepOptions {
         if opts := anthropic.ForwardContainerIDFromLastStep(step.Steps); opts != nil {
             step.ProviderOptions = opts

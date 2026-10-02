@@ -239,7 +239,7 @@ func main() {
         Model:       model,
         Temperature: &temperature,
         Tools:       []types.Tool{weatherTool},
-        StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
+        StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
         Prompt:      "What's the weather in Brooklyn, New York?",
     })
 
@@ -269,7 +269,7 @@ Now answer: What's the weather like in Tokyo and are there flights from San Fran
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Tools:  tools,
-    StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
     Prompt: prompt,
 })
 ```

@@ -19,7 +19,7 @@ control for advanced use cases.
 results, the SDK evaluates the conditions and stops the loop as soon as one returns a non-empty
 reason string. The reason is available as `result.StopReason`.
 
-### StepCountIs
+### IsStepCount
 
 The most common condition: stop after *n* steps.
 
@@ -29,7 +29,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Prompt: "Analyze this dataset and create a summary report",
     Tools:  tools,
     StopWhen: []ai.StopCondition{
-        ai.StepCountIs(5),
+        ai.IsStepCount(5),
     },
 })
 if err != nil {
@@ -41,7 +41,7 @@ fmt.Printf("Stopped because: %s\n", result.StopReason)
 // → "Stopped because: maximum number of steps (5) reached"
 ```
 
-`StepCountIs(n)` stops the loop once exactly *n* steps have completed. Because it is
+`IsStepCount(n)` stops the loop once exactly *n* steps have completed. Because it is
 evaluated after every step, it is checked against every step count from 1 up to *n* and
 never skips the threshold.
 
@@ -60,7 +60,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     },
     StopWhen: []ai.StopCondition{
         ai.HasToolCall("finish"),
-        ai.StepCountIs(10), // safety ceiling
+        ai.IsStepCount(10), // safety ceiling
     },
 })
 ```
@@ -68,12 +68,12 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 ### Combining Conditions
 
 Conditions are evaluated OR — the loop stops on the **first match**. Place conditions you care
-about most, or that have side effects, **before** safety ceilings like `StepCountIs`.
+about most, or that have side effects, **before** safety ceilings like `IsStepCount`.
 
 ```go
 StopWhen: []ai.StopCondition{
     ai.HasToolCall("submit"),  // semantic completion
-    ai.StepCountIs(20),        // hard limit
+    ai.IsStepCount(20),        // hard limit
 },
 ```
 
@@ -83,9 +83,9 @@ Any function with signature `func(ai.StopConditionState) string` qualifies as a 
 Return a non-empty string to stop, or an empty string to continue.
 
 ```go
-// Token-budget guard — placed BEFORE StepCountIs so it always runs.
+// Token-budget guard — placed BEFORE IsStepCount so it always runs.
 // Because evaluation is eager (all conditions run before the first match is
-// returned), this condition fires even if StepCountIs would also match.
+// returned), this condition fires even if IsStepCount would also match.
 tokenBudget := func(state ai.StopConditionState) string {
     if state.Usage.GetTotalTokens() > 5000 {
         return fmt.Sprintf("token budget exceeded (%d tokens)", state.Usage.GetTotalTokens())
@@ -99,7 +99,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Tools:  tools,
     StopWhen: []ai.StopCondition{
         tokenBudget,          // side-effectful or priority condition first
-        ai.StepCountIs(10),   // safety ceiling last
+        ai.IsStepCount(10),   // safety ceiling last
     },
 })
 ```
@@ -153,13 +153,13 @@ case result.FinishReason == types.FinishReasonStop:
 
 | Scenario | Behavior |
 |----------|----------|
-| Neither `StopWhen` nor `MaxSteps` set | `ai.GenerateText` / `ai.StreamText` default to `StepCountIs(1)`: one model call, whose tool calls still execute (as in TS). `agent.NewToolLoopAgent` defaults to `StepCountIs(20)`. |
-| `MaxSteps` set, `StopWhen` not set | Converts to `StopWhen{StepCountIs(MaxSteps)}` |
+| Neither `StopWhen` nor `MaxSteps` set | `ai.GenerateText` / `ai.StreamText` default to `IsStepCount(1)`: one model call, whose tool calls still execute (as in TS). `agent.NewToolLoopAgent` defaults to `IsStepCount(20)`. |
+| `MaxSteps` set, `StopWhen` not set | Converts to `StopWhen{IsStepCount(MaxSteps)}` |
 | Both set | `StopWhen` takes precedence; `MaxSteps` is ignored |
 
 ### MaxSteps (Deprecated)
 
-`MaxSteps` is shorthand for `StopWhen: []ai.StopCondition{ai.StepCountIs(n)}`. It is still
+`MaxSteps` is shorthand for `StopWhen: []ai.StopCondition{ai.IsStepCount(n)}`. It is still
 supported for backwards compatibility but **new code should use `StopWhen` directly**.
 
 ```go
@@ -168,7 +168,7 @@ maxSteps := 5
 ai.GenerateTextOptions{MaxSteps: &maxSteps}
 
 // Preferred
-ai.GenerateTextOptions{StopWhen: []ai.StopCondition{ai.StepCountIs(5)}}
+ai.GenerateTextOptions{StopWhen: []ai.StopCondition{ai.IsStepCount(5)}}
 ```
 
 ---
@@ -183,7 +183,7 @@ run or how many tokens have been consumed.
 myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
     Model: model,
     Tools: tools,
-    StopWhen: []ai.StopCondition{ai.StepCountIs(10)},
+    StopWhen: []ai.StopCondition{ai.IsStepCount(10)},
     PrepareCall: func(ctx context.Context, config agent.PrepareCallConfig) agent.PrepareCallConfig {
         // Switch to a more concise prompt after the first few steps
         if config.StepNumber > 3 {

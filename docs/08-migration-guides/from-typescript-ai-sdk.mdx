@@ -364,7 +364,7 @@ Go implements the current (v7) names only. If your TS code still uses a v5 or v6
 |---|---|---|
 | `maxTokens` | `maxOutputTokens` | `GenerateTextOptions.MaxTokens *int` (Go kept the shorter name) |
 | `maxSteps` | `stopWhen: isStepCount(n)` | `StopWhen: []ai.StopCondition{ai.IsStepCount(n)}` |
-| `stepCountIs` (was the canonical name in v6) | `isStepCount` (canonical in v7; `stepCountIs` now a deprecated alias) | `ai.IsStepCount` (`ai.StepCountIs` exists too, as a deprecated alias) |
+| `stepCountIs` (was the canonical name in v6) | `isStepCount` (canonical in v7; `stepCountIs` now a deprecated alias) | `ai.IsStepCount` (`ai.IsStepCount` exists too, as a deprecated alias) |
 | `Experimental_Agent` | `ToolLoopAgent` | `agent.ToolLoopAgent` / `agent.NewToolLoopAgent` |
 | `system` | `instructions` | `System string` (canonical in Go) / `Instructions *string` (alias) |
 | `experimental_telemetry` | `telemetry` | `Telemetry *telemetry.Options` |

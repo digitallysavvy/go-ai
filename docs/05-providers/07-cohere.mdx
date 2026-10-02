@@ -131,7 +131,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "Find laptop under $1000",
     Tools:  []types.Tool{searchTool},
-    StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 })
 
 for _, call := range result.ToolCalls {

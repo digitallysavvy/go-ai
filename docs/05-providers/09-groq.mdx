@@ -98,7 +98,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "What is 234 * 567?",
     Tools:  tools,
-    StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 })
 ```
 

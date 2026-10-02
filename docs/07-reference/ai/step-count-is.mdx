@@ -1,16 +1,20 @@
 ---
-title: StepCountIs
-description: "API reference for StepCountIs, a built-in StopCondition that stops the Go AI SDK's tool-calling loop once a given number of steps completes."
+title: IsStepCount
+description: "API reference for IsStepCount (formerly StepCountIs), a built-in StopCondition that stops the Go AI SDK's tool-calling loop once a given number of steps completes."
 ---
 
-# StepCountIs
+# IsStepCount
 
-Returns a `StopCondition` that stops the tool-calling loop when the number of completed
-steps meets or exceeds `n`. Pass it to `StopWhen` in `GenerateTextOptions` or `AgentConfig`.
+Returns a `StopCondition` that stops the tool-calling loop once exactly `n` steps have
+completed (TS `isStepCount`). `StepCountIs` is the deprecated name for the same function
+and still works. Pass it to `StopWhen` in `GenerateTextOptions` or `AgentConfig`.
 
 ## Signature
 
 ```go
+func IsStepCount(n int) StopCondition
+
+// Deprecated: use IsStepCount.
 func StepCountIs(n int) StopCondition
 ```
 
@@ -31,13 +35,9 @@ type StopCondition func(state StopConditionState) string
 
 ## Behavior
 
-`StepCountIs` uses `>=` (greater-than-or-equal) rather than `==` (exact match).
-This is a deliberate, defensive choice: if a step produces more tool calls than
-expected, the count can never silently skip past the threshold.
-
-> **TypeScript difference:** The TypeScript SDK's `stepCountIs(n)` uses `steps.length === n`
-> (exact match). Go uses `>=` instead. Both default to `StepCountIs(1)` when no
-> `StopWhen` is configured.
+`IsStepCount(n)` checks `len(steps) == n`, the same exact match as TypeScript's
+`isStepCount(n)` (`steps.length === n`). Stop conditions are evaluated after every
+step and the step count grows by one each time, so the threshold is never skipped.
 
 ## Examples
 
@@ -49,7 +49,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Prompt: "Analyze the dataset and create a summary",
     Tools:  tools,
     StopWhen: []ai.StopCondition{
-        ai.StepCountIs(5),
+        ai.IsStepCount(5),
     },
 })
 if err != nil {
@@ -70,7 +70,7 @@ the first match, both conditions always execute regardless of order.
 ```go
 StopWhen: []ai.StopCondition{
     ai.HasToolCall("finish"), // semantic completion
-    ai.StepCountIs(10),       // hard limit fallback
+    ai.IsStepCount(10),       // hard limit fallback
 },
 ```
 
@@ -81,7 +81,7 @@ myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
     Model: model,
     Tools: tools,
     StopWhen: []ai.StopCondition{
-        ai.StepCountIs(8),
+        ai.IsStepCount(8),
     },
 })
 
@@ -93,8 +93,8 @@ fmt.Printf("Steps: %d, StopReason: %s\n", len(result.Steps), result.StopReason)
 
 | Scenario | Behavior |
 |----------|----------|
-| Neither `StopWhen` nor `MaxSteps` set | Defaults to `StepCountIs(1)` |
-| `MaxSteps: &n` set, `StopWhen` not set | Converts to `StopWhen{StepCountIs(n)}` |
+| Neither `StopWhen` nor `MaxSteps` set | `GenerateText` / `StreamText` default to `IsStepCount(1)`; `agent.NewToolLoopAgent` defaults to `IsStepCount(20)` |
+| `MaxSteps: &n` set, `StopWhen` not set | Converts to `StopWhen{IsStepCount(n)}` |
 | Both set | `StopWhen` takes precedence |
 
 ## See Also

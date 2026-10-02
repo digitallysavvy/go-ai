@@ -240,7 +240,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "What's the weather?",
     Tools:  []types.Tool{weatherTool},
-    StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 })
 ```
 

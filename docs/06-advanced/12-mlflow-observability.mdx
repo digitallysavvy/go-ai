@@ -254,7 +254,7 @@ result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
     Tools: []types.Tool{
         weatherTool,
     },
-    StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
     // Each tool call step is tracked as a span
 })
 

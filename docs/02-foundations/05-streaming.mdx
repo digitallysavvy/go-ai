@@ -168,7 +168,7 @@ result, err := ai.StreamText(ctx, ai.StreamTextOptions{
     Model:  model,
     Prompt: "What's the weather in Tokyo and Paris?",
     Tools:  []types.Tool{weatherTool},
-    StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
     OnChunk: func(chunk provider.StreamChunk) {
         if chunk.Text != "" {
             fmt.Print(chunk.Text)

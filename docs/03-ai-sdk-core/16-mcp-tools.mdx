@@ -238,7 +238,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Tools:  tools, // All MCP tools are available
     // Allow a follow-up step so the model can turn the tool result into a
     // final answer (GenerateText/StreamText default to a single step).
-    StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 })
 
 if err != nil {
@@ -302,7 +302,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Tools:  []types.Tool{weatherTool},
     // Allow a follow-up step so the model can turn the tool result into a
     // final answer (GenerateText/StreamText default to a single step).
-    StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 })
 ```
 
@@ -336,7 +336,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:    model,
     Prompt:   "Create a sales chart and analyze it",
     Tools:    tools, // Tool may return image
-    StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 })
 
 // Images in results are properly handled
@@ -728,7 +728,7 @@ tools, err := converter.ConvertToGoAITools(ctx)
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Tools:  tools,
-    StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
     Prompt: "Use whatever tools you need",
 })
 ```
@@ -740,7 +740,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model: model,
     Tools: tools,
-    StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
     Prompt: prompt,
 })
 

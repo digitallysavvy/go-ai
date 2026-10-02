@@ -379,7 +379,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "What's the weather?",
     Tools:  []types.Tool{weatherTool},
-    StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
     Timeout: &ai.TimeoutConfig{
         ToolMs: &fiveSeconds, // 5 second timeout for all tools
     },
@@ -404,7 +404,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "Search for weather and news",
     Tools:  []types.Tool{weatherTool, searchTool},
-    StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
     Timeout: &ai.TimeoutConfig{
         ToolMs: &fiveSeconds, // Default: 5s for all tools
         Tools: map[string]time.Duration{
@@ -743,7 +743,7 @@ calcTool := weathertools.NewCalculatorTool()
 result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Tools:  []types.Tool{weatherTool, calcTool},
-    StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
     Prompt: "What's the weather and calculate something",
 })
 ```
@@ -871,7 +871,7 @@ func getAvailableTools(userRole string) []types.Tool {
 result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Tools:  getAvailableTools(user.Role),
-    StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
     Prompt: prompt,
 })
 ```
