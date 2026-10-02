@@ -21,19 +21,24 @@ High-level functions for working with AI models:
 - [GenerateImage](./ai/generate-image.mdx) - Generate images from text
 - [Transcribe](./ai/transcribe.mdx) - Transcribe audio to text
 - [GenerateSpeech](./ai/generate-speech.mdx) - Generate speech from text
-- [Agent](./ai/agent.mdx) - Create autonomous AI agents
-- [ToolLoopAgent](./ai/tool-loop-agent.mdx) - Create tool-using agents
+- [Agent](./ai/agent.mdx) - The `agent.Agent` interface (in `pkg/agent`)
+- [ToolLoopAgent](./ai/tool-loop-agent.mdx) - `agent.ToolLoopAgent`, the SDK's tool-using agent (in `pkg/agent`)
 
 ## Tool & Helper APIs
 
 Functions for working with tools and utilities:
 
 - [Tool](./ai/tool.mdx) - Define tools for AI models
-- [DynamicTool](./ai/dynamic-tool.mdx) - Create tools dynamically
+- [Dynamic Tools](./ai/dynamic-tool.mdx) - Register tools at runtime
 - [CosineSimilarity](./ai/cosine-similarity.mdx) - Calculate similarity between vectors
-- [StepCountIs](./ai/step-count-is.mdx) - Check agent step count
-- [HasToolCall](./ai/has-tool-call.mdx) - Check if result has tool calls
+- [StepCountIs](./ai/step-count-is.mdx) - Stop condition: stop after n steps
+- [HasToolCall](./ai/has-tool-call.mdx) - Stop condition: stop when a tool is called
+- [StopCondition](./ai/stop-condition.mdx) - The StopCondition type and StopWhen evaluation
 - [GenerateID](./ai/generate-id.mdx) - Generate unique IDs
+- [Callback Events](./ai/callback-events.mdx) - Structured lifecycle events for observability
+- [Stream Transport Helpers](./ai/stream-transport-helpers.mdx) - Convert stream results to HTTP-friendly payloads
+- [Agent UI Stream Helpers](./ai/agent-ui-stream-helpers.mdx) - Bridge ToolLoopAgent streams to UI transport
+- [Middleware Aliases](./ai/middleware-aliases.mdx) - Middleware APIs re-exported from pkg/ai
 
 ## Type Definitions
 
