@@ -726,6 +726,71 @@ func TestConvertToAnthropicPrompt_Golden(t *testing.T) {
 				{"type":"code_execution_tool_result","tool_use_id":"code-execution-call","content":{"type":"encrypted_code_execution_result","encrypted_stdout":"enc","stderr":"","return_code":0,"content":[]}}
 			]}]`,
 		},
+		// TS commit 8373a22603 (#21623): pruning a converted multi-step
+		// conversation can remove a code execution source call while retaining a
+		// dependent call with caller.toolId. Normalize dangling caller metadata
+		// from history before a subsequent genuine user message (retaining the
+		// calls/results/ordering/cache controls), but preserve it when still in
+		// an active continuation (no subsequent user message yet).
+		{
+			name: "normalize orphaned caller when source was pruned, before a subsequent user message",
+			messages: []types.Message{
+				{Role: types.RoleAssistant, Content: []types.ContentPart{
+					types.ToolCallContent{ToolCallID: "lookup-call", ToolName: "lookup", Arguments: map[string]interface{}{"ticker": "AAPL"},
+						ProviderOptions: anthropicOpt("caller", map[string]interface{}{"type": "code_execution_20260120", "toolId": "pruned-source"})},
+				}},
+				{Role: types.RoleTool, Content: []types.ContentPart{
+					types.ToolResultContent{ToolCallID: "lookup-call", ToolName: "lookup", Output: &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "185.42"}},
+				}},
+				{Role: types.RoleAssistant, Content: []types.ContentPart{types.TextContent{Text: "The price is $185.42."}}},
+				{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Now look up MSFT."}}},
+			},
+			wantMessages: `[
+				{"role":"assistant","content":[{"type":"tool_use","id":"lookup-call","name":"lookup","input":{"ticker":"AAPL"}}]},
+				{"role":"user","content":[{"type":"tool_result","tool_use_id":"lookup-call","content":"185.42"}]},
+				{"role":"assistant","content":[{"type":"text","text":"The price is $185.42."}]},
+				{"role":"user","content":[{"type":"text","text":"Now look up MSFT."}]}
+			]`,
+			wantWarnings: []string{"Omitted caller metadata for tool lookup-call because source code execution tool pruned-source is missing from the conversation history."},
+		},
+		{
+			name: "preserve orphaned-looking caller in an active continuation (no subsequent user message)",
+			messages: []types.Message{
+				{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Look up AAPL."}}},
+				{Role: types.RoleAssistant, Content: []types.ContentPart{
+					types.ToolCallContent{ToolCallID: "lookup-call", ToolName: "lookup", Arguments: map[string]interface{}{},
+						ProviderOptions: anthropicOpt("caller", map[string]interface{}{"type": "code_execution_20260120", "toolId": "source-call"})},
+				}},
+				{Role: types.RoleTool, Content: []types.ContentPart{
+					types.ToolResultContent{ToolCallID: "lookup-call", ToolName: "lookup", Output: &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "185.42"}},
+				}},
+			},
+			wantMessages: `[
+				{"role":"user","content":[{"type":"text","text":"Look up AAPL."}]},
+				{"role":"assistant","content":[{"type":"tool_use","id":"lookup-call","name":"lookup","input":{},"caller":{"type":"code_execution_20260120","tool_id":"source-call"}}]},
+				{"role":"user","content":[{"type":"tool_result","tool_use_id":"lookup-call","content":"185.42"}]}
+			]`,
+		},
+		{
+			name: "normalize callers on historical server calls and results",
+			messages: []types.Message{
+				{Role: types.RoleAssistant, Content: []types.ContentPart{
+					types.ToolCallContent{ToolCallID: "search-call", ToolName: "web_search", ProviderExecuted: true, Arguments: map[string]interface{}{"query": "AI SDK"},
+						ProviderOptions: anthropicOpt("caller", map[string]interface{}{"type": "code_execution_20260120", "toolId": "pruned-source"})},
+					types.ToolResultContent{ToolCallID: "search-call", ToolName: "web_search", Output: &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: []interface{}{}},
+						ProviderOptions: anthropicOpt("caller", map[string]interface{}{"type": "code_execution_20260120", "toolId": "pruned-source"})},
+				}},
+				{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Tell me more."}}},
+			},
+			wantMessages: `[
+				{"role":"assistant","content":[
+					{"type":"server_tool_use","id":"search-call","name":"web_search","input":{"query":"AI SDK"}},
+					{"type":"web_search_tool_result","tool_use_id":"search-call","content":[]}
+				]},
+				{"role":"user","content":[{"type":"text","text":"Tell me more."}]}
+			]`,
+			wantWarnings: []string{"Omitted caller metadata for tool search-call because source code execution tool pruned-source is missing from the conversation history."},
+		},
 		{
 			name: "mcp tool use parts",
 			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{

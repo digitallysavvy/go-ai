@@ -253,6 +253,12 @@ func ConvertToAnthropicPrompt(messages []types.Message, opts AnthropicPromptOpti
 	blocks := groupAnthropicBlocks(MergeConsecutiveToolMessages(messages))
 	var system []map[string]interface{}
 	out := make([]map[string]interface{}, 0, len(blocks))
+	// lastUserMessageIndex tracks the out[] index of the last combined
+	// user-block message that contains at least one genuine (non-tool-result)
+	// user message with non-empty content -- used below to normalize dangling
+	// programmatic caller metadata only in history BEFORE that point (TS
+	// commit 8373a22603, #21623).
+	lastUserMessageIndex := -1
 
 	for i, block := range blocks {
 		isLastBlock := i == len(blocks)-1
@@ -273,6 +279,16 @@ func ConvertToAnthropicPrompt(messages []types.Message, opts AnthropicPromptOpti
 			}
 
 		default:
+			// A tool-result sub-message does not end a turn -- only an
+			// actual non-empty user message does -- so lastUserMessageIndex
+			// is set from the original per-message roles inside this
+			// (already tool+user merged) block, not from the block itself.
+			for _, msg := range block.messages {
+				if msg.Role != types.RoleTool && len(msg.Content) > 0 {
+					lastUserMessageIndex = len(out)
+					break
+				}
+			}
 			content, err := c.convertUserBlock(block)
 			if err != nil {
 				return nil, err
@@ -283,6 +299,8 @@ func ConvertToAnthropicPrompt(messages []types.Message, opts AnthropicPromptOpti
 			})
 		}
 	}
+
+	normalizeOrphanedAnthropicCallers(out, lastUserMessageIndex, c)
 
 	warnings := append(c.warnings, c.validator.Warnings()...)
 	if opts.CacheControlValidator != nil {
@@ -296,6 +314,81 @@ func ConvertToAnthropicPrompt(messages []types.Message, opts AnthropicPromptOpti
 		Betas:    c.betas,
 		Warnings: warnings,
 	}, nil
+}
+
+// normalizeOrphanedAnthropicCallers omits dangling programmatic `caller`
+// metadata (added by convertAssistantBlock via anthropicCaller) from
+// converted assistant messages before lastUserMessageIndex, mirroring TS
+// commit 8373a22603 (#21623). Pruning a multi-step conversation can remove a
+// code execution source call while retaining a dependent tool call that
+// still references it via caller.tool_id; Anthropic then rejects the next
+// request with "source tool ... not found for tool use block ...". This
+// retains the tool calls, results, ordering, and cache controls, and emits
+// one warning per affected tool call -- it does not restore deleted
+// execution history, so a historical call with a missing source is simply
+// replayed without programmatic provenance.
+//
+// Only history strictly before lastUserMessageIndex is normalized: a
+// tool-result message does not end a turn, so callers in an active
+// continuation (not yet followed by a genuine user message) must keep their
+// source intact so Anthropic can resume it. lastUserMessageIndex == -1
+// (no genuine user message in the prompt) means nothing is normalized.
+func normalizeOrphanedAnthropicCallers(out []map[string]interface{}, lastUserMessageIndex int, c *anthropicConverter) {
+	// Resolve source IDs against actual emitted code execution
+	// server_tool_use blocks (including custom tool names already resolved
+	// to "code_execution" during conversion).
+	codeExecutionToolCallIDs := map[string]bool{}
+	for _, m := range out {
+		if m["role"] != "assistant" {
+			continue
+		}
+		contentParts, _ := m["content"].([]map[string]interface{})
+		for _, part := range contentParts {
+			if part["type"] == "server_tool_use" && part["name"] == "code_execution" {
+				if id, ok := part["id"].(string); ok {
+					codeExecutionToolCallIDs[id] = true
+				}
+			}
+		}
+	}
+
+	warnedToolCallIDs := map[string]bool{}
+	limit := lastUserMessageIndex
+	if limit > len(out) {
+		limit = len(out)
+	}
+	for i := 0; i < limit; i++ {
+		m := out[i]
+		if m["role"] != "assistant" {
+			continue
+		}
+		contentParts, _ := m["content"].([]map[string]interface{})
+		for _, part := range contentParts {
+			callerRaw, hasCaller := part["caller"]
+			if !hasCaller {
+				continue
+			}
+			caller, ok := callerRaw.(map[string]interface{})
+			if !ok || caller == nil {
+				continue
+			}
+			callerType, _ := caller["type"].(string)
+			toolID, _ := caller["tool_id"].(string)
+			if callerType == "direct" || codeExecutionToolCallIDs[toolID] {
+				continue
+			}
+
+			toolCallID, _ := part["id"].(string)
+			if toolCallID == "" {
+				toolCallID, _ = part["tool_use_id"].(string)
+			}
+			delete(part, "caller")
+			if !warnedToolCallIDs[toolCallID] {
+				warnedToolCallIDs[toolCallID] = true
+				c.warn(fmt.Sprintf("Omitted caller metadata for tool %s because source code execution tool %s is missing from the conversation history.", toolCallID, toolID))
+			}
+		}
+	}
 }
 
 // ToAnthropicMessages converts messages to Anthropic wire messages using the

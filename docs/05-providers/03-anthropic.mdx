@@ -812,6 +812,10 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 ```
 
+### Pruned Programmatic Tool History
+
+If history is pruned between steps (e.g. to control context size) and that removes a code-execution source call (`code_execution_20250825`/`code_execution_20260120`) while a dependent tool call still references it via `caller`, the provider now omits that dangling `caller` metadata — rather than sending it as-is and having Anthropic reject the request with "source tool ... not found" — and returns one warning per affected tool call. The call, its result, ordering, and cache controls are otherwise unchanged; a caller that still resolves to an emitted `server_tool_use` block, or that is in an active continuation not yet followed by a new user message, is left untouched.
+
 ## Finish Reasons
 
 `result.FinishReason` and `result.RawFinishReason` (and their `StreamChunk`
