@@ -83,10 +83,11 @@ func main() {
 	// First request - creates cache for tools
 	fmt.Println("=== First request (creating cache for tools with 1h TTL) ===")
 	result1, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-		Model:  model,
-		System: "You are a helpful assistant with access to weather and calculator tools.",
-		Prompt: "What's the weather like in San Francisco?",
-		Tools:  []types.Tool{weatherTool, calculatorTool},
+		Model:    model,
+		System:   "You are a helpful assistant with access to weather and calculator tools.",
+		Prompt:   "What's the weather like in San Francisco?",
+		Tools:    []types.Tool{weatherTool, calculatorTool},
+		StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
 	})
 	if err != nil {
 		log.Fatalf("Failed to generate text: %v", err)
@@ -113,10 +114,11 @@ func main() {
 	// Second request - uses cached tools
 	fmt.Println("=== Second request (using cached tools) ===")
 	result2, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-		Model:  model,
-		System: "You are a helpful assistant with access to weather and calculator tools.",
-		Prompt: "Calculate 42 plus 17",
-		Tools:  []types.Tool{weatherTool, calculatorTool},
+		Model:    model,
+		System:   "You are a helpful assistant with access to weather and calculator tools.",
+		Prompt:   "Calculate 42 plus 17",
+		Tools:    []types.Tool{weatherTool, calculatorTool},
+		StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
 	})
 	if err != nil {
 		log.Fatalf("Failed to generate text: %v", err)
