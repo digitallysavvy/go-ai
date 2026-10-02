@@ -46,6 +46,44 @@ func (m *ImageModel) ModelID() string {
 	return m.modelID
 }
 
+// fireworksFileInputUnsupportedModels lists Fireworks model IDs known to be
+// text-to-image only (TS FireworksImageModel#supportsFileInputs).
+var fireworksFileInputUnsupportedModels = map[string]bool{
+	"accounts/fireworks/models/flux-1-dev-fp8":                   true,
+	"accounts/fireworks/models/flux-1-schnell-fp8":               true,
+	"accounts/fireworks/models/playground-v2-5-1024px-aesthetic": true,
+	"accounts/fireworks/models/japanese-stable-diffusion-xl":     true,
+	"accounts/fireworks/models/playground-v2-1024px-aesthetic":   true,
+	"accounts/fireworks/models/SSD-1B":                           true,
+	"accounts/fireworks/models/stable-diffusion-xl-1024-v1-0":    true,
+}
+
+// SupportsFileInputs reports whether the model accepts file inputs for image
+// editing. Returns nil when support is unknown for the model ID.
+func (m *ImageModel) SupportsFileInputs() *bool {
+	if m.modelID == "accounts/fireworks/models/flux-kontext-pro" ||
+		m.modelID == "accounts/fireworks/models/flux-kontext-max" {
+		return boolPtr(true)
+	}
+	if fireworksFileInputUnsupportedModels[m.modelID] {
+		return boolPtr(false)
+	}
+	return nil
+}
+
+// SupportsMaskInputs reports whether the model accepts a mask input for
+// inpainting. Returns nil when support is unknown for the model ID.
+func (m *ImageModel) SupportsMaskInputs() *bool {
+	if m.SupportsFileInputs() == nil {
+		return nil
+	}
+	return boolPtr(false)
+}
+
+func boolPtr(b bool) *bool {
+	return &b
+}
+
 // DoGenerate performs image generation, routing flux-kontext-* models through
 // the async submission and polling path.
 func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {

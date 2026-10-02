@@ -49,6 +49,40 @@ func (m *ImageModel) ModelID() string { return m.modelID }
 // MaxImagesPerCall returns the maximum number of images per call.
 func (m *ImageModel) MaxImagesPerCall() int { return 1 }
 
+// deepInfraFileInputModels lists the known DeepInfra model IDs that accept
+// file inputs for image editing (TS DeepInfraImageModel#supportsFileInputs).
+var deepInfraFileInputModels = map[string]bool{
+	"stabilityai/sd3.5":                    true,
+	"black-forest-labs/FLUX-1.1-pro":       true,
+	"black-forest-labs/FLUX-1-schnell":     true,
+	"black-forest-labs/FLUX-1-dev":         true,
+	"black-forest-labs/FLUX-pro":           true,
+	"black-forest-labs/FLUX.1-Kontext-dev": true,
+	"black-forest-labs/FLUX.1-Kontext-pro": true,
+	"Qwen/Qwen-Image-Edit":                 true,
+	"stabilityai/sd3.5-medium":             true,
+	"stabilityai/sdxl-turbo":               true,
+}
+
+// SupportsFileInputs reports whether the model accepts file inputs for image
+// editing. Returns nil when support is unknown for the model ID.
+func (m *ImageModel) SupportsFileInputs() *bool {
+	if deepInfraFileInputModels[m.modelID] {
+		return boolPtr(true)
+	}
+	return nil
+}
+
+// SupportsMaskInputs mirrors SupportsFileInputs (TS returns the same value
+// for both capabilities).
+func (m *ImageModel) SupportsMaskInputs() *bool {
+	return m.SupportsFileInputs()
+}
+
+func boolPtr(b bool) *bool {
+	return &b
+}
+
 // DoGenerate performs image generation or, when Files are supplied, image
 // editing via DeepInfra's OpenAI-compatible /images/edits endpoint.
 func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
