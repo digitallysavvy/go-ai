@@ -159,10 +159,10 @@ result, err := model.DoGenerate(ctx, &provider.ImageGenerateOptions{
 Models with IDs containing `flux-kontext` use a two-phase generation API:
 
 1. **Submit** — POST to `/v1/workflows/{modelID}` with the generation parameters. Returns a `request_id`.
-2. **Poll** — POST to `/v1/workflows/{modelID}/get_result` every 2 seconds until status is `"Ready"`.
+2. **Poll** — POST to `/v1/workflows/{modelID}/get_result` every 500ms (configurable via `fireworks.Config.ImagePollIntervalMs`) until status is `"Ready"`.
 3. **Result** — When `"Ready"`, the response contains a URL in `result.sample`.
 
-The Go-AI SDK handles this flow transparently via `DoGenerate`. Polling respects context cancellation and has a 2-minute timeout.
+The Go-AI SDK handles this flow transparently via `DoGenerate`. Polling respects context cancellation and has a 2-minute timeout by default (configurable via `fireworks.Config.ImagePollTimeoutMs`).
 
 **Supported poll statuses:**
 - `Pending` / `Running` → continue polling
