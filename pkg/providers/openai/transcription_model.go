@@ -45,7 +45,7 @@ func (m *TranscriptionModel) ModelID() string {
 
 // DoTranscribe performs speech-to-text transcription
 func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.TranscriptionOptions) (*types.TranscriptionResult, error) {
-	if isRealtimeTranscriptionModelID(m.modelID) {
+	if IsRealtimeTranscriptionModelID(m.modelID) {
 		return nil, &providererrors.UnsupportedFunctionalityError{
 			Functionality: fmt.Sprintf("non-streaming transcription with %s", m.modelID),
 		}
