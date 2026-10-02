@@ -393,6 +393,41 @@ func TestOpenResponsesExtensionBareItemDecodeGenerate(t *testing.T) {
 	}
 }
 
+// TestExtensionToolTypeAndItemTypesHelpers covers the TS
+// getOpenResponsesExtensionToolType/getOpenResponsesExtensionItemTypes
+// helpers (commit 8cf3f5bb1e, #19939): they return whichever of the
+// namespaced/bare fields is set, combining both for item types.
+func TestExtensionToolTypeAndItemTypesHelpers(t *testing.T) {
+	namespaced := &Extension{ToolType: "ns:tool", ItemTypes: []string{"ns:a", "ns:b"}}
+	if got := ExtensionToolType(namespaced); got != "ns:tool" {
+		t.Errorf("ExtensionToolType(namespaced) = %q, want ns:tool", got)
+	}
+	if got := ExtensionItemTypes(namespaced); len(got) != 2 || got[0] != "ns:a" || got[1] != "ns:b" {
+		t.Errorf("ExtensionItemTypes(namespaced) = %#v, want [ns:a ns:b]", got)
+	}
+
+	bare := &Extension{BareToolType: "legacy", BareItemTypes: []string{"legacy_a"}}
+	if got := ExtensionToolType(bare); got != "legacy" {
+		t.Errorf("ExtensionToolType(bare) = %q, want legacy", got)
+	}
+	if got := ExtensionItemTypes(bare); len(got) != 1 || got[0] != "legacy_a" {
+		t.Errorf("ExtensionItemTypes(bare) = %#v, want [legacy_a]", got)
+	}
+
+	mixed := &Extension{ItemTypes: []string{"ns:a"}, BareItemTypes: []string{"legacy_a"}}
+	if got := ExtensionItemTypes(mixed); len(got) != 2 || got[0] != "ns:a" || got[1] != "legacy_a" {
+		t.Errorf("ExtensionItemTypes(mixed) = %#v, want [ns:a legacy_a]", got)
+	}
+
+	empty := &Extension{}
+	if got := ExtensionToolType(empty); got != "" {
+		t.Errorf("ExtensionToolType(empty) = %q, want empty", got)
+	}
+	if got := ExtensionItemTypes(empty); len(got) != 0 {
+		t.Errorf("ExtensionItemTypes(empty) = %#v, want empty", got)
+	}
+}
+
 // TestOpenResponsesExtensionToolChoiceUsesToolArgs covers row 9a68261: TS
 // calls encodeToolChoice({name: tool.name, args: tool.args}) using the
 // provider tool's own declared args, not always nil.
