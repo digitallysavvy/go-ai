@@ -148,6 +148,26 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 ```
 
+If you supply a JSON schema but disable structured outputs
+(`providerOptions.mistral.structuredOutputs: false`), Mistral still receives
+a plain `{"type": "json_object"}` response format, but the schema is
+preserved by injecting it into the system message so the model still sees
+the intended shape:
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Extract: John, 30, engineer",
+    ResponseFormat: &provider.ResponseFormat{
+        Type:   "json",
+        Schema: mySchema,
+    },
+    ProviderOptions: map[string]interface{}{
+        "mistral": map[string]interface{}{"structuredOutputs": false},
+    },
+})
+```
+
 ### Code Generation
 
 Codestral is optimized for code:

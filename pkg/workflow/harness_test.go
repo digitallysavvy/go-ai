@@ -119,6 +119,8 @@ type fakeHarnessOptions struct {
 	// harness that is still streaming when a time slice's timer fires.
 	promptDone    func() <-chan struct{}
 	doSuspendTurn func(context.Context) (*harness.ContinueTurnState, error)
+	// detachError, when set, makes DoDetach fail instead of succeeding.
+	detachError error
 }
 
 type fakeSession struct {
@@ -174,7 +176,11 @@ func (s *fakeSession) DoSuspendTurn(ctx context.Context) (*harness.ContinueTurnS
 func (s *fakeSession) DoDetach(context.Context) (*harness.ResumeSessionState, error) {
 	s.mu.Lock()
 	s.detachCalls++
+	detachError := s.opts.detachError
 	s.mu.Unlock()
+	if detachError != nil {
+		return nil, detachError
+	}
 	return harness.NewResumeSessionState("fake", map[string]any{})
 }
 func (s *fakeSession) DoStop(context.Context) (*harness.ResumeSessionState, error) {
@@ -334,6 +340,48 @@ func TestRunHarnessAgentTimeSlice_FinishesFirstTurn(t *testing.T) {
 	want := []string{"start", "text-start", "text-delta", "text-end", "finish-step", "finish"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("chunk types = %v, want %v", got, want)
+	}
+}
+
+// TestRunHarnessAgentTimeSlice_SurfacesDetachFailureInsteadOfStaleResumeState
+// ports TS "surfaces detach failures instead of returning stale resume
+// state" (run-harness-agent-output.test.ts, TS #21591 "workflow harness
+// suppressing detach failures and returning stale resume state"): a
+// finished turn's Detach failure must propagate, not be swallowed in
+// favor of the previous (now stale) turn's ResumeFrom.
+func TestRunHarnessAgentTimeSlice_SurfacesDetachFailureInsteadOfStaleResumeState(t *testing.T) {
+	detachErr := errors.New("could not persist resume state")
+	a := newFakeHarnessAgent(t, fakeHarnessOptions{
+		script: func() []harness.StreamPart {
+			return []harness.StreamPart{
+				&harness.StreamStartPart{},
+				&harness.TextStartPart{ID: "t1"},
+				&harness.TextDeltaPart{ID: "t1", Delta: "done"},
+				&harness.TextEndPart{ID: "t1"},
+				&harness.FinishStepPart{FinishReason: harness.FinishReason{Unified: harness.FinishReasonStop}, Usage: usageParts(1, 1)},
+				&harness.FinishPart{FinishReason: harness.FinishReason{Unified: harness.FinishReasonStop}, TotalUsage: usageParts(1, 1)},
+			}
+		},
+		detachError: detachErr,
+	})
+
+	staleResumeFrom, err := harness.NewResumeSessionState("fake", map[string]any{"cursor": "before-finished-turn"})
+	if err != nil {
+		t.Fatalf("NewResumeSessionState: %v", err)
+	}
+	state := CreateHarnessWorkflowState(HarnessWorkflowInput{
+		Prompt: harness.TextPrompt("Finish this turn."), SessionID: "ses_1",
+		ResumeFrom: staleResumeFrom,
+	})
+
+	next, err := RunHarnessAgentTimeSlice(context.Background(), RunHarnessAgentTimeSliceOptions{
+		Agent: a, State: state, Writable: &collectingWriter{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "could not persist resume state") {
+		t.Fatalf("err = %v, want it to surface %q (not be swallowed)", err, detachErr)
+	}
+	if next.ResumeFrom != nil {
+		t.Fatalf("ResumeFrom = %+v, want none on a propagated detach failure", next.ResumeFrom)
 	}
 }
 

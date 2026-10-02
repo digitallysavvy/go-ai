@@ -76,6 +76,15 @@ func PipeTextStreamToResponse(ctx context.Context, result *StreamTextResult, w i
 
 // PipeTextStreamToWriter writes text delta chunks from a provider stream to w as
 // UTF-8 text.
+//
+// If writing to w fails, or ctx is done, before the stream finishes (the Go
+// analogs of a client disconnecting mid response -- a failed write, or a
+// cancelled *http.Request.Context()), stream is closed before the error is
+// returned so any upstream resources it holds (for example an open provider
+// HTTP connection) are released instead of being silently abandoned
+// mid-stream. Mirrors TS write-to-server-response.ts's client-disconnect
+// handling, which cancels the source reader on a premature close (TS
+// #21578).
 func PipeTextStreamToWriter(ctx context.Context, stream provider.TextStream, w io.Writer) error {
 	if stream == nil {
 		return fmt.Errorf("stream is required")
@@ -96,6 +105,16 @@ func PipeTextStreamToWriter(ctx context.Context, stream provider.TextStream, w i
 		for {
 			select {
 			case <-ctx.Done():
+				// ctx is the Go-idiomatic way a caller detects a
+				// disconnected client (e.g. an *http.Request's Context,
+				// which net/http cancels when the client connection
+				// closes) -- the same "client disconnected" condition a
+				// write failure signals below, just observed a different
+				// way. Close for the same reason: leaving stream open
+				// would leak its upstream resources (e.g. an open provider
+				// HTTP connection) until the provider's own response ends
+				// on its own.
+				_ = stream.Close()
 				return ctx.Err()
 			default:
 			}
@@ -108,6 +127,7 @@ func PipeTextStreamToWriter(ctx context.Context, stream provider.TextStream, w i
 			}
 			if chunk.Type == provider.ChunkTypeText && chunk.Text != "" {
 				if _, err := bw.WriteString(chunk.Text); err != nil {
+					_ = stream.Close()
 					return err
 				}
 				// Flush after every chunk (audit row b9ac19f, WG-MISC): TS
@@ -116,6 +136,7 @@ func PipeTextStreamToWriter(ctx context.Context, stream provider.TextStream, w i
 				// output incrementally instead of in bufio's default 4 KiB
 				// blocks.
 				if err := bw.Flush(); err != nil {
+					_ = stream.Close()
 					return err
 				}
 				if flusher != nil {
@@ -130,6 +151,7 @@ func PipeTextStreamToWriter(ctx context.Context, stream provider.TextStream, w i
 	// (hand-off/WG-MISC item 7f6650b: "response piping returns [an error] so
 	// write errors are catchable").
 	if flushErr := bw.Flush(); flushErr != nil && loopErr == nil {
+		_ = stream.Close()
 		return flushErr
 	}
 	return loopErr

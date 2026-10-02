@@ -10,6 +10,10 @@ const (
 	// Claude Opus 5 — supports fallbacks:'default' and rejectsThinkingDisabledAboveHighEffort
 	ClaudeOpus5 = "claude-opus-5"
 
+	// Claude Sonnet 5.5 — supports between_tools thinking and rejects disabled
+	// thinking / forced tool use
+	ClaudeSonnet5_5 = "claude-sonnet-5-5"
+
 	// Claude Sonnet 5 — current-generation Sonnet
 	ClaudeSonnet5 = "claude-sonnet-5"
 

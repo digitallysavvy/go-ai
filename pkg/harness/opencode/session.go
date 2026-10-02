@@ -56,10 +56,20 @@ type session struct {
 	selectedModel           string
 	activeTurn              bool
 	pendingCompaction       []harness.StreamPart
+	// pendingTurnDrain is closed once the most recently started turn has
+	// fully finished (unsubscribed its channel listeners and — if aborted —
+	// told OpenCode to stop generating). prepareTurn awaits it before
+	// starting a replacement turn, so an aborted turn's stale events never
+	// reach the next turn's Emit. Mirrors TS `pendingTurnDrain`/
+	// `resolveTurnDrain` (TS #21683: "stop aborted OpenCode turns before
+	// starting the next turn").
+	pendingTurnDrain chan struct{}
 }
 
 func newSession(p sessionParams) *session {
-	s := &session{p: p, latestOpenCodeSessionID: p.openCodeSessionID}
+	closedDrain := make(chan struct{})
+	close(closedDrain)
+	s := &session{p: p, latestOpenCodeSessionID: p.openCodeSessionID, pendingTurnDrain: closedDrain}
 	if p.seedResumeSessionOnFirstPrompt {
 		s.pendingResumeSessionID = p.openCodeSessionID
 	}
@@ -158,8 +168,10 @@ func (c *promptControl) PinCheckpoint() (release func()) { return c.checkpoint.P
 var _ harness.CheckpointPinner = (*promptControl)(nil)
 
 func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptControl {
+	turnDrain := make(chan struct{})
 	s.mu.Lock()
 	s.activeTurn = true
+	s.pendingTurnDrain = turnDrain
 	s.mu.Unlock()
 
 	c := &promptControl{channel: s.p.channel, done: make(chan struct{})}
@@ -169,27 +181,68 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 	}
 
 	var unsub []func()
+	// turnMu guards this turn's own settlement bookkeeping below
+	// (isSettled/isFinished/drainingAfterAbort), separate from
+	// promptControl's own c.mu (which only guards the caller-visible
+	// Done()/Err()). Mirrors TS's closure-local `isSettled`/`isFinished`/
+	// `drainingAfterAbort` variables (TS #21683).
+	var turnMu sync.Mutex
+	isSettled := false
+	isFinished := false
+	drainingAfterAbort := false
+
 	forward := func(part harness.StreamPart) {
+		turnMu.Lock()
+		settled := isSettled
+		turnMu.Unlock()
+		if settled {
+			return
+		}
 		defer func() { _ = recover() }()
 		emit(part)
 	}
-	settleSuccess := func() {
+	// finishTurn does the actual teardown (unsubscribe every channel
+	// listener, flip activeTurn off, unblock prepareTurn's drain wait) --
+	// distinct from settling the caller-visible PromptControl, which an
+	// abort may already have done well before the bridge actually stops
+	// sending events for this turn. Mirrors TS `finishTurn`.
+	finishTurn := func() {
+		turnMu.Lock()
+		if isFinished {
+			turnMu.Unlock()
+			return
+		}
+		isFinished = true
+		turnMu.Unlock()
 		s.mu.Lock()
 		s.activeTurn = false
 		s.mu.Unlock()
 		for _, u := range unsub {
 			u()
 		}
+		close(turnDrain)
+	}
+	settleSuccess := func() {
+		turnMu.Lock()
+		if isSettled {
+			turnMu.Unlock()
+			return
+		}
+		isSettled = true
+		turnMu.Unlock()
 		c.settleSuccess()
+		finishTurn()
 	}
 	settleError := func(err error) {
-		s.mu.Lock()
-		s.activeTurn = false
-		s.mu.Unlock()
-		for _, u := range unsub {
-			u()
+		turnMu.Lock()
+		if isSettled {
+			turnMu.Unlock()
+			return
 		}
+		isSettled = true
+		turnMu.Unlock()
 		c.settleError(err)
+		finishTurn()
 	}
 
 	for _, t := range eventTypes {
@@ -203,12 +256,27 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 		}))
 	}
 	unsub = append(unsub, s.p.channel.On(harness.PartTypeFinish, func(e bridge.Event) {
+		turnMu.Lock()
+		draining := drainingAfterAbort
+		turnMu.Unlock()
+		if draining {
+			finishTurn()
+			return
+		}
 		if f, ok := e.Message.(bridge.StreamPartFrame); ok {
 			forward(f.Part)
 		}
 		settleSuccess()
 	}))
 	unsub = append(unsub, s.p.channel.On(harness.PartTypeError, func(e bridge.Event) {
+		turnMu.Lock()
+		draining := drainingAfterAbort
+		turnMu.Unlock()
+		if draining {
+			// The bridge emits finish from its finally block after an
+			// error; finishTurn runs there, not here.
+			return
+		}
 		f, ok := e.Message.(bridge.StreamPartFrame)
 		if !ok {
 			settleError(errors.New("opencode: malformed error frame"))
@@ -224,6 +292,13 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 	}))
 
 	s.p.channel.OnClose(func(_ int, reason string) {
+		turnMu.Lock()
+		draining := drainingAfterAbort
+		turnMu.Unlock()
+		if draining {
+			finishTurn()
+			return
+		}
 		if reason == bridge.CloseReasonSuspended {
 			settleSuccess()
 			return
@@ -235,7 +310,19 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 		select {
 		case <-ctx.Done():
 			_ = s.p.channel.Send(bridge.AbortCommand{})
-			settleError(ctx.Err())
+			turnMu.Lock()
+			if isSettled {
+				turnMu.Unlock()
+				return
+			}
+			isSettled = true
+			drainingAfterAbort = true
+			turnMu.Unlock()
+			err := ctx.Err()
+			if c.submitter != nil {
+				c.submitter.Close(err)
+			}
+			c.settleError(err)
 		case <-c.done:
 		}
 	}()
@@ -280,7 +367,27 @@ func (s *session) startBase(turnModel string) (StartMessage, error) {
 	return msg, nil
 }
 
+// waitForPendingTurnDrain blocks until the previous turn (if any) has fully
+// finished — including, when that turn was aborted, OpenCode itself having
+// stopped generating — so a replacement turn never races the aborted one's
+// trailing events. Mirrors TS prepareTurn's `await pendingTurnDrain;` (TS
+// #21683).
+func (s *session) waitForPendingTurnDrain(ctx context.Context) error {
+	s.mu.Lock()
+	drain := s.pendingTurnDrain
+	s.mu.Unlock()
+	select {
+	case <-drain:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func (s *session) prepareTurn(ctx context.Context, opts turnPrepareOptions) (*promptControl, *harnessutil.WriteSkillsResult, error) {
+	if err := s.waitForPendingTurnDrain(ctx); err != nil {
+		return nil, nil, err
+	}
 	if opts.ResponseFormat != nil && opts.ResponseFormat.Type == harness.ResponseFormatJSON && opts.ResponseFormat.Schema == nil {
 		return nil, nil, harness.NewCapabilityUnsupportedError(
 			"Harness 'opencode' requires a JSON schema for structured output.", HarnessID, nil)

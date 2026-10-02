@@ -375,6 +375,15 @@ type eventState struct {
 	emittedToolInputsInCurrentStepByNamespace  map[string]map[string]bool
 	emittedToolOutputsInCurrentStepByNamespace map[string]map[string]bool
 
+	// unfinishedToolCallsByNamespace tracks tool calls still awaiting a
+	// terminal output in each namespace, distinct from
+	// emittedToolCalls/emittedToolCallsInCurrentStepByNamespace: those never
+	// forget a toolCallId once it's been started, even after a provider
+	// reuses the same id for an unrelated later call (TS #21552, "preserve
+	// ordered bare LangChain tool lifecycles when tool-call IDs are
+	// reused"). markToolCallStarted adds; markToolOutputEmitted removes.
+	unfinishedToolCallsByNamespace map[string]map[string]bool
+
 	// direct model / streamEvents stream state
 	streamMessageID        string
 	streamTextStarted      bool
@@ -400,6 +409,8 @@ func newEventState() *eventState {
 		emittedToolCallsInCurrentStepByNamespace:   map[string]map[string]bool{},
 		emittedToolInputsInCurrentStepByNamespace:  map[string]map[string]bool{},
 		emittedToolOutputsInCurrentStepByNamespace: map[string]map[string]bool{},
+
+		unfinishedToolCallsByNamespace: map[string]map[string]bool{},
 	}
 }
 
@@ -436,6 +447,23 @@ func (state *eventState) markToolCallEmitted(toolCallID, ns string) {
 	}
 }
 
+// markToolCallStarted mirrors TS `markToolCallStarted`: marks the call
+// emitted and additionally records it as unfinished (awaiting output) in
+// this namespace, so a same-id call reused in a different namespace/step
+// isn't mistaken for a delayed output of this one.
+func (state *eventState) markToolCallStarted(toolCallID, ns string) {
+	state.markToolCallEmitted(toolCallID, ns)
+	if state.unfinishedToolCallsByNamespace[ns] == nil {
+		state.unfinishedToolCallsByNamespace[ns] = map[string]bool{}
+	}
+	state.unfinishedToolCallsByNamespace[ns][toolCallID] = true
+}
+
+// hasUnfinishedToolCall mirrors TS `hasUnfinishedToolCall`.
+func (state *eventState) hasUnfinishedToolCall(toolCallID, ns string) bool {
+	return state.unfinishedToolCallsByNamespace[ns][toolCallID]
+}
+
 func (state *eventState) hasEmittedToolInputInCurrentStep(toolCallID, ns string) bool {
 	if _, ok := state.currentStepsByNamespace[ns]; !ok {
 		return state.emittedToolInputs[toolCallID]
@@ -462,6 +490,7 @@ func (state *eventState) hasEmittedToolOutputInCurrentStep(toolCallID, ns string
 
 func (state *eventState) markToolOutputEmitted(toolCallID, ns string) {
 	state.emittedToolOutputCallIDs[toolCallID] = true
+	delete(state.unfinishedToolCallsByNamespace[ns], toolCallID)
 	if _, ok := state.currentStepsByNamespace[ns]; ok {
 		if state.emittedToolOutputsInCurrentStepByNamespace[ns] == nil {
 			state.emittedToolOutputsInCurrentStepByNamespace[ns] = map[string]bool{}
@@ -698,6 +727,12 @@ func processMessagesEvent(state *eventState, event StreamEvent) []ai.UIMessageCh
 
 	var chunks []ai.UIMessageChunk
 
+	// startedUIReducerStep mirrors TS `startedUIReducerStep`: whether THIS
+	// event already opened a new reducer step scope below, so
+	// processToolMessage's bare-ToolMessage lifecycle synthesis knows
+	// whether it still needs to open its own.
+	var startedUIReducerStep bool
+
 	// Each namespace has an independent LangGraph step counter. Advancing a
 	// namespace starts a new reducer scope so provider-scoped tool call IDs
 	// can be reused in that namespace. A finish-step chunk clears every
@@ -710,6 +745,7 @@ func processMessagesEvent(state *eventState, event StreamEvent) []ai.UIMessageCh
 			case !exists:
 				if len(state.currentStepsByNamespace) == 0 {
 					chunks = append(chunks, ai.UIMessageChunk{"type": "start-step"})
+					startedUIReducerStep = true
 				}
 				state.startNamespaceStep(eventNS, step)
 			case step != currentStep:
@@ -719,6 +755,7 @@ func processMessagesEvent(state *eventState, event StreamEvent) []ai.UIMessageCh
 					chunks = append(chunks, ai.UIMessageChunk{"type": "finish-step"})
 				}
 				chunks = append(chunks, ai.UIMessageChunk{"type": "start-step"})
+				startedUIReducerStep = true
 				state.startNamespaceStep(eventNS, step)
 			}
 		}
@@ -731,7 +768,7 @@ func processMessagesEvent(state *eventState, event StreamEvent) []ai.UIMessageCh
 	}
 
 	if isToolMessage(message) {
-		chunks = append(chunks, processToolMessage(state, message, eventNS)...)
+		chunks = append(chunks, processToolMessage(state, message, eventNS, startedUIReducerStep)...)
 		return chunks
 	}
 
@@ -757,7 +794,7 @@ func processMessagesEvent(state *eventState, event StreamEvent) []ai.UIMessageCh
 		if !seen.tools[call.id] {
 			seen.tools[call.id] = true
 			if !state.hasEmittedToolCallInCurrentStep(call.id, eventNS) {
-				state.markToolCallEmitted(call.id, eventNS)
+				state.markToolCallStarted(call.id, eventNS)
 				chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-start", "toolCallId": call.id, "toolName": firstString(call.name, "unknown"), "dynamic": true})
 			}
 		}
@@ -869,7 +906,7 @@ func processValuesEvent(state *eventState, event StreamEvent) []ai.UIMessageChun
 				// their trailing ToolMessage arrived.
 				if !wasToolCallEmittedInCurrentStep &&
 					(wasObservedInCurrentStep || (!state.emittedToolCalls[call.id] && !completedToolCallIDs[call.id])) {
-					state.markToolCallEmitted(call.id, lifecycleNS)
+					state.markToolCallStarted(call.id, lifecycleNS)
 					key := toolCallKey(call.name, call.args)
 					state.emittedToolCallsByKey[key] = call.id
 					chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-start", "toolCallId": call.id, "toolName": call.name, "dynamic": true})
@@ -921,7 +958,7 @@ func actionRequestChunks(state *eventState, root map[string]interface{}, eventNS
 			toolCallID = fmt.Sprintf("hitl-%s-%d", request.name, time.Now().UnixMilli())
 		}
 		if !state.emittedToolCalls[toolCallID] {
-			state.markToolCallEmitted(toolCallID, eventNS)
+			state.markToolCallStarted(toolCallID, eventNS)
 			state.emittedToolCallsByKey[key] = toolCallID
 			chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-start", "toolCallId": toolCallID, "toolName": request.name, "dynamic": true})
 			state.markToolInputEmitted(toolCallID, eventNS)
@@ -977,10 +1014,10 @@ func processToolsEvent(state *eventState, event StreamEvent) []ai.UIMessageChunk
 func ensureToolInputLifecycle(state *eventState, toolCallID, toolName, ns string, input interface{}, allowPreviousStep bool) []ai.UIMessageChunk {
 	var chunks []ai.UIMessageChunk
 	if !state.hasEmittedToolCallInCurrentStep(toolCallID, ns) {
-		if allowPreviousStep && state.emittedToolCalls[toolCallID] {
+		if allowPreviousStep && state.hasUnfinishedToolCall(toolCallID, ns) {
 			return nil
 		}
-		state.markToolCallEmitted(toolCallID, ns)
+		state.markToolCallStarted(toolCallID, ns)
 		chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-start", "toolCallId": toolCallID, "toolName": toolName, "dynamic": true})
 	}
 	if !state.hasEmittedToolInputInCurrentStep(toolCallID, ns) {
@@ -1007,11 +1044,32 @@ func formatToolError(v interface{}) string {
 	}
 }
 
-func processToolMessage(state *eventState, message map[string]interface{}, ns string) []ai.UIMessageChunk {
+// processToolMessage mirrors TS `processLangGraphEvent`'s bare
+// `isToolMessageType(msg)` branch. A bare messages-mode ToolMessage may
+// arrive with no preceding tool-call lifecycle ever observed for its
+// toolCallId in this namespace/step — synthesize the missing tool-input-start
+// first so the UI always sees a started lifecycle before its output (TS
+// #21552). A delayed output for a lifecycle already started earlier in the
+// SAME namespace (hasUnfinishedToolCall) is not re-started; a reused
+// provider-scoped id that belongs to a DIFFERENT (already finished)
+// lifecycle gets its own synthesized start, in its own reducer step scope
+// when one hasn't already been opened for this event, so it doesn't
+// overwrite the prior namespace's tool part.
+func processToolMessage(state *eventState, message map[string]interface{}, ns string, startedUIReducerStep bool) []ai.UIMessageChunk {
 	source := messageDataSource(message)
 	toolCallID := stringValue(firstPresent(source, "tool_call_id", "toolCallId"))
 	if toolCallID == "" {
 		return nil
+	}
+	var chunks []ai.UIMessageChunk
+	wasEmittedInCurrentStep := state.hasEmittedToolCallInCurrentStep(toolCallID, ns)
+	isDelayedOutputForPreviousLifecycle := !wasEmittedInCurrentStep && state.hasUnfinishedToolCall(toolCallID, ns)
+	if !wasEmittedInCurrentStep && !isDelayedOutputForPreviousLifecycle {
+		if _, hasStep := state.currentStepsByNamespace[ns]; !startedUIReducerStep && hasStep && state.emittedToolCalls[toolCallID] {
+			chunks = append(chunks, ai.UIMessageChunk{"type": "start-step"})
+		}
+		state.markToolCallStarted(toolCallID, ns)
+		chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-start", "toolCallId": toolCallID, "toolName": firstString(stringValue(source["name"]), "unknown"), "dynamic": true})
 	}
 	if msgID := messageID(message); msgID != "" {
 		state.emittedToolOutputMessageIDs[msgID] = true
@@ -1022,9 +1080,11 @@ func processToolMessage(state *eventState, message map[string]interface{}, ns st
 		if s, ok := source["content"].(string); ok {
 			errText = s
 		}
-		return []ai.UIMessageChunk{{"type": "tool-output-error", "toolCallId": toolCallID, "errorText": errText}}
+		chunks = append(chunks, ai.UIMessageChunk{"type": "tool-output-error", "toolCallId": toolCallID, "errorText": errText})
+		return chunks
 	}
-	return []ai.UIMessageChunk{{"type": "tool-output-available", "toolCallId": toolCallID, "output": source["content"]}}
+	chunks = append(chunks, ai.UIMessageChunk{"type": "tool-output-available", "toolCallId": toolCallID, "output": source["content"]})
+	return chunks
 }
 
 func processModelChunk(state *eventState, data interface{}) []ai.UIMessageChunk {

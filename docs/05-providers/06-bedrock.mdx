@@ -481,3 +481,29 @@ model, err := p.LanguageModelWithOptions("anthropic.claude-opus-4-7", &bedrock.M
 ### Transport behavior
 
 The TypeScript lazy fetch resolution change has no direct Go runtime equivalent. The Go provider uses its AWS signing request path and explicit configuration fields; no application migration is required for JavaScript `fetch` patching behavior.
+
+### requestMetadata
+
+Pass `providerOptions.amazonBedrock.requestMetadata` (a `map[string]string`) to attach key-value pairs to a Converse/ConverseStream request for invocation-log cost attribution:
+
+```go
+_, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Prompt: "hello",
+    ProviderOptions: map[string]interface{}{
+        "amazonBedrock": map[string]interface{}{
+            "requestMetadata": map[string]interface{}{"team": "search", "environment": "prod"},
+        },
+    },
+})
+```
+
+It is forwarded as a top-level `requestMetadata` field on the request body, separate from `additionalModelRequestFields`.
+
+### Nova 2 Lite high reasoning
+
+`amazon.nova-2-lite-v1:0` rejects a request that combines `maxOutputTokens` with `high`/`xhigh`/`max` reasoning effort. The provider now drops `inferenceConfig.maxTokens` and returns an `unsupported` warning for `maxOutputTokens` instead of sending a request Bedrock would reject; `medium` (and lower) reasoning keeps `maxOutputTokens` unchanged.
+
+### Region validation
+
+`Region` (and Bedrock Mantle's `Region`) is interpolated directly into the request host (`https://bedrock-runtime.{region}.amazonaws.com`, `https://bedrock-mantle.{region}.api.aws`). A value that isn't a single DNS label (letters, digits, and hyphens) is rejected with an `InvalidArgumentError` before any request is sent — this only applies when no explicit `BaseURL` or endpoint environment variable is configured, since those make `Region` unused.

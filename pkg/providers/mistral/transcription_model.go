@@ -105,6 +105,29 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		result.ProviderMetadata = map[string]interface{}{"mistral": metadata}
 	}
 
+	// TS: `...(response.usage != null && { usage: response.usage })` — the
+	// raw wire-format usage object (snake_case keys), not the camelCased
+	// providerMetadata.mistral.usage transform above.
+	if response.Usage != nil {
+		rawUsage := map[string]interface{}{}
+		if response.Usage.PromptTokens != nil {
+			rawUsage["prompt_tokens"] = *response.Usage.PromptTokens
+		}
+		if response.Usage.CompletionTokens != nil {
+			rawUsage["completion_tokens"] = *response.Usage.CompletionTokens
+		}
+		if response.Usage.TotalTokens != nil {
+			rawUsage["total_tokens"] = *response.Usage.TotalTokens
+		}
+		if response.Usage.PromptAudioSeconds != nil {
+			rawUsage["prompt_audio_seconds"] = *response.Usage.PromptAudioSeconds
+		}
+		if response.Usage.RequestCount != nil {
+			rawUsage["request_count"] = *response.Usage.RequestCount
+		}
+		result.ProviderUsage = rawUsage
+	}
+
 	return result, nil
 }
 

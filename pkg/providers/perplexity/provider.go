@@ -48,8 +48,9 @@ func New(cfg Config) *Provider {
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
 		Headers: version.WithUserAgentSuffix(http.MergeHeaders(map[string]string{
-			"Authorization": "Bearer " + apiKey,
-			"Content-Type":  "application/json",
+			"Authorization":      "Bearer " + apiKey,
+			"Content-Type":       "application/json",
+			"X-Pplx-Integration": "vercel-ai-sdk",
 		}, cfg.Headers), version.ProviderUserAgent("perplexity")),
 	})
 

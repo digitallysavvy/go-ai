@@ -25,11 +25,11 @@ import (
 // of whitespace separates it from the token, not just a single space.
 var bearerTokenPattern = regexp.MustCompile(`(?i)^bearer\s+(.+)$`)
 
-// isRealtimeTranscriptionModelID reports whether modelID streams over the
+// IsRealtimeTranscriptionModelID reports whether modelID streams over the
 // OpenAI realtime WebSocket rather than the REST transcription endpoint.
 // Prefix matching keeps dated snapshots (e.g. "gpt-realtime-whisper-2026-01-01")
 // working, mirroring TS isRealtimeTranscriptionModelId.
-func isRealtimeTranscriptionModelID(modelID string) bool {
+func IsRealtimeTranscriptionModelID(modelID string) bool {
 	return modelID == "gpt-realtime-whisper" || strings.HasPrefix(modelID, "gpt-realtime-whisper-")
 }
 
@@ -37,30 +37,30 @@ func isRealtimeTranscriptionModelID(modelID string) bool {
 // WebSocket (gpt-realtime-whisper and dated snapshots). Mirrors TS
 // OpenAITranscriptionModel#doStream / createOpenAIRealtimeTranscriptionStream.
 func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.TranscriptionStreamOptions) (*provider.TranscriptionStreamResult, error) {
-	if !isRealtimeTranscriptionModelID(m.modelID) {
+	if !IsRealtimeTranscriptionModelID(m.modelID) {
 		return nil, &providererrors.UnsupportedFunctionalityError{
 			Functionality: fmt.Sprintf("streaming transcription with %s", m.modelID),
 		}
 	}
 
-	streamOpts := transcriptionStreamOpenAIOptions(opts.ProviderOptions)
+	streamOpts := TranscriptionStreamOpenAIOptions(opts.ProviderOptions)
 
 	var warnings []types.Warning
-	if streamOpts.hasInclude {
-		warnings = append(warnings, unsupportedStreamingTranscriptionWarning("include"))
+	if streamOpts.HasInclude {
+		warnings = append(warnings, UnsupportedStreamingTranscriptionWarning("include"))
 	}
 	if streamOpts.Prompt != "" {
-		warnings = append(warnings, unsupportedStreamingTranscriptionWarning("prompt"))
+		warnings = append(warnings, UnsupportedStreamingTranscriptionWarning("prompt"))
 	}
 	if streamOpts.HasTemperature {
-		warnings = append(warnings, unsupportedStreamingTranscriptionWarning("temperature"))
+		warnings = append(warnings, UnsupportedStreamingTranscriptionWarning("temperature"))
 	}
 	if len(streamOpts.TimestampGranularities) > 0 {
-		warnings = append(warnings, unsupportedStreamingTranscriptionWarning("timestampGranularities"))
+		warnings = append(warnings, UnsupportedStreamingTranscriptionWarning("timestampGranularities"))
 	}
 
 	headers := internalhttp.MergeHeaders(m.baseWSHeaders(), opts.Headers)
-	sessionUpdate := buildOpenAIRealtimeTranscriptionSession(m.modelID, opts.InputAudioFormat, streamOpts)
+	sessionUpdate := BuildOpenAIRealtimeTranscriptionSession(m.modelID, opts.InputAudioFormat, streamOpts)
 	wsURL := realtimeTranscriptionWebSocketURL(m.provider.config.BaseURL)
 
 	abortCtx := opts.AbortSignal
@@ -68,14 +68,14 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		abortCtx = ctx
 	}
 
-	stream := newOpenAIRealtimeTranscriptionStream(abortCtx, openAIRealtimeTranscriptionStreamConfig{
-		url:              wsURL,
-		headers:          headers,
-		sessionUpdate:    sessionUpdate,
-		language:         streamOpts.Language,
-		warnings:         warnings,
-		audio:            opts.Audio,
-		includeRawChunks: opts.IncludeRawChunks,
+	stream := NewOpenAIRealtimeTranscriptionStream(abortCtx, OpenAIRealtimeTranscriptionStreamConfig{
+		URL:              wsURL,
+		Headers:          headers,
+		SessionUpdate:    sessionUpdate,
+		Language:         streamOpts.Language,
+		Warnings:         warnings,
+		Audio:            opts.Audio,
+		IncludeRawChunks: opts.IncludeRawChunks,
 	})
 
 	return &provider.TranscriptionStreamResult{
@@ -87,7 +87,7 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 
 // baseWSHeaders returns the provider's default headers (Authorization,
 // organization, project, custom config headers, and the
-// `ai-sdk/openai/VERSION` User-Agent tag) for the WebSocket handshake,
+// `ai-sdk-openai/VERSION` User-Agent tag) for the WebSocket handshake,
 // mirroring TS openai-transcription-model.ts's doStream, which reuses
 // `this.config.headers()` -- the same tagged getHeaders() closure used for
 // REST calls -- rather than rebuilding an untagged header set.
@@ -95,7 +95,7 @@ func (m *TranscriptionModel) baseWSHeaders() map[string]string {
 	return m.provider.client.Headers()
 }
 
-func unsupportedStreamingTranscriptionWarning(option string) types.Warning {
+func UnsupportedStreamingTranscriptionWarning(option string) types.Warning {
 	return types.Warning{
 		Type:    "unsupported",
 		Feature: "providerOptions.openai." + option,
@@ -109,9 +109,9 @@ func realtimeTranscriptionWebSocketURL(baseURL string) string {
 	return wsBase + "/realtime?intent=transcription"
 }
 
-// buildOpenAIRealtimeTranscriptionSession mirrors TS
-// buildOpenAIRealtimeTranscriptionSession.
-func buildOpenAIRealtimeTranscriptionSession(modelID string, format provider.AudioFormat, opts transcriptionStreamOpenAIOptionsValue) map[string]interface{} {
+// BuildOpenAIRealtimeTranscriptionSession mirrors TS
+// BuildOpenAIRealtimeTranscriptionSession.
+func BuildOpenAIRealtimeTranscriptionSession(modelID string, format provider.AudioFormat, opts TranscriptionStreamOpenAIOptionsValue) map[string]interface{} {
 	inputFormat := map[string]interface{}{"type": format.Type}
 	if format.Rate != nil {
 		inputFormat["rate"] = *format.Rate
@@ -141,21 +141,21 @@ func buildOpenAIRealtimeTranscriptionSession(modelID string, format provider.Aud
 	return map[string]interface{}{"type": "session.update", "session": session}
 }
 
-// transcriptionStreamOpenAIOptionsValue holds providerOptions.openai fields
+// TranscriptionStreamOpenAIOptionsValue holds providerOptions.openai fields
 // relevant to streaming transcription, plus flags for REST-only fields that
 // warn when set during streaming.
-type transcriptionStreamOpenAIOptionsValue struct {
+type TranscriptionStreamOpenAIOptionsValue struct {
 	Language               string
 	StreamingDelay         *int
 	StreamingInclude       []string
-	hasInclude             bool
+	HasInclude             bool
 	Prompt                 string
 	HasTemperature         bool
 	TimestampGranularities []string
 }
 
-func transcriptionStreamOpenAIOptions(providerOptions map[string]interface{}) transcriptionStreamOpenAIOptionsValue {
-	var result transcriptionStreamOpenAIOptionsValue
+func TranscriptionStreamOpenAIOptions(providerOptions map[string]interface{}) TranscriptionStreamOpenAIOptionsValue {
+	var result TranscriptionStreamOpenAIOptionsValue
 	if providerOptions == nil {
 		return result
 	}
@@ -173,7 +173,7 @@ func transcriptionStreamOpenAIOptions(providerOptions map[string]interface{}) tr
 		result.HasTemperature = true
 	}
 	if v, ok := openaiOpts["include"].([]interface{}); ok && len(v) > 0 {
-		result.hasInclude = true
+		result.HasInclude = true
 	}
 	if v, ok := openaiOpts["timestampGranularities"].([]interface{}); ok {
 		for _, item := range v {
@@ -237,16 +237,16 @@ func openAIRealtimeWSAuth(headers map[string]string) ([]string, map[string]strin
 	return []string{"realtime", "openai-insecure-api-key." + token}, filtered
 }
 
-// openAIRealtimeTranscriptionStreamConfig bundles the inputs to
-// newOpenAIRealtimeTranscriptionStream.
-type openAIRealtimeTranscriptionStreamConfig struct {
-	url              string
-	headers          map[string]string
-	sessionUpdate    map[string]interface{}
-	language         string
-	warnings         []types.Warning
-	audio            provider.AudioStream
-	includeRawChunks bool
+// OpenAIRealtimeTranscriptionStreamConfig bundles the inputs to
+// NewOpenAIRealtimeTranscriptionStream.
+type OpenAIRealtimeTranscriptionStreamConfig struct {
+	URL              string
+	Headers          map[string]string
+	SessionUpdate    map[string]interface{}
+	Language         string
+	Warnings         []types.Warning
+	Audio            provider.AudioStream
+	IncludeRawChunks bool
 }
 
 // openAIRealtimeTranscriptionStream implements provider.TranscriptionStream
@@ -258,23 +258,23 @@ type openAIRealtimeTranscriptionStream struct {
 	*wsutil.Session[provider.TranscriptionStreamPart]
 }
 
-func newOpenAIRealtimeTranscriptionStream(parentCtx context.Context, cfg openAIRealtimeTranscriptionStreamConfig) *openAIRealtimeTranscriptionStream {
+func NewOpenAIRealtimeTranscriptionStream(parentCtx context.Context, cfg OpenAIRealtimeTranscriptionStreamConfig) *openAIRealtimeTranscriptionStream {
 	s := &openAIRealtimeTranscriptionStream{Session: wsutil.NewSession[provider.TranscriptionStreamPart](parentCtx)}
 	go s.run(cfg)
 	return s
 }
 
-func (s *openAIRealtimeTranscriptionStream) run(cfg openAIRealtimeTranscriptionStreamConfig) {
+func (s *openAIRealtimeTranscriptionStream) run(cfg OpenAIRealtimeTranscriptionStreamConfig) {
 	defer s.CloseParts()
 	// Release the session's resources as soon as run() returns for any
 	// reason instead of only on an explicit Close() call, which a consumer
 	// that only drains Next() to io.EOF may never make.
 	defer s.CancelContext()
 
-	conn, err := s.dial(cfg.url, cfg.headers)
+	conn, err := s.dial(cfg.URL, cfg.Headers)
 	if err != nil {
 		s.SetErr(err)
-		cfg.audio.Cancel(err)
+		cfg.Audio.Cancel(err)
 		return
 	}
 	s.SetConn(conn)
@@ -284,22 +284,22 @@ func (s *openAIRealtimeTranscriptionStream) run(cfg openAIRealtimeTranscriptionS
 	// stream-start: setup must not wait for a consumer to be reading yet
 	// (mirrors TS onOpen, where controller.enqueue does not block on a
 	// reader before the socket send and sendAudio() call that follow it).
-	payload, err := json.Marshal(cfg.sessionUpdate)
+	payload, err := json.Marshal(cfg.SessionUpdate)
 	if err != nil {
 		s.SetErr(err)
-		cfg.audio.Cancel(err)
+		cfg.Audio.Cancel(err)
 		return
 	}
 	if err := s.send(conn, payload); err != nil {
 		s.SetErr(err)
-		cfg.audio.Cancel(err)
+		cfg.Audio.Cancel(err)
 		return
 	}
 
 	audioErrCh := make(chan error, 1)
-	go s.pumpAudio(conn, cfg.audio, audioErrCh)
+	go s.pumpAudio(conn, cfg.Audio, audioErrCh)
 
-	if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart, Warnings: cfg.warnings}) {
+	if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeStreamStart, Warnings: cfg.Warnings}) {
 		return
 	}
 
@@ -311,7 +311,7 @@ func (s *openAIRealtimeTranscriptionStream) run(cfg openAIRealtimeTranscriptionS
 		case <-s.Context().Done():
 			cause := s.Context().Err()
 			s.SetErr(cause)
-			cfg.audio.Cancel(cause)
+			cfg.Audio.Cancel(cause)
 			return
 
 		case audioErr := <-audioErrCh:
@@ -320,7 +320,7 @@ func (s *openAIRealtimeTranscriptionStream) run(cfg openAIRealtimeTranscriptionS
 			// writing to the WebSocket) terminates the stream with an error
 			// instead of being silently dropped.
 			s.SetErr(audioErr)
-			cfg.audio.Cancel(audioErr)
+			cfg.Audio.Cancel(audioErr)
 			return
 
 		case res := <-msgCh:
@@ -330,12 +330,12 @@ func (s *openAIRealtimeTranscriptionStream) run(cfg openAIRealtimeTranscriptionS
 					// normal end of stream, not a failure (TS onClose calls
 					// controller.close(), not controller.error(), when the
 					// stream isn't already finished).
-					cfg.audio.Cancel(nil)
+					cfg.Audio.Cancel(nil)
 					return
 				}
 				realtimeErr := errors.New("OpenAI realtime transcription error")
 				s.SetErr(realtimeErr)
-				cfg.audio.Cancel(realtimeErr)
+				cfg.Audio.Cancel(realtimeErr)
 				return
 			}
 
@@ -343,7 +343,7 @@ func (s *openAIRealtimeTranscriptionStream) run(cfg openAIRealtimeTranscriptionS
 			if jsonErr := json.Unmarshal([]byte(res.Text), &raw); jsonErr != nil {
 				continue
 			}
-			if cfg.includeRawChunks {
+			if cfg.IncludeRawChunks {
 				if !s.Emit(provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeRaw, RawValue: raw}) {
 					return
 				}
@@ -366,7 +366,7 @@ func (s *openAIRealtimeTranscriptionStream) run(cfg openAIRealtimeTranscriptionS
 						return
 					}
 				}
-				langCopy := cfg.language
+				langCopy := cfg.Language
 				finish := provider.TranscriptionStreamPart{Type: provider.TranscriptionStreamPartTypeFinish, FinishText: transcript, Language: langCopy}
 				s.Emit(finish)
 				return
@@ -380,7 +380,7 @@ func (s *openAIRealtimeTranscriptionStream) run(cfg openAIRealtimeTranscriptionS
 				}
 				streamErr := errors.New(message)
 				s.SetErr(streamErr)
-				cfg.audio.Cancel(streamErr)
+				cfg.Audio.Cancel(streamErr)
 				return
 			}
 		}

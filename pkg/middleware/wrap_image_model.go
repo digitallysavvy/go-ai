@@ -24,6 +24,18 @@ type ImageModelMiddleware struct {
 	// can be generated in a single API call.
 	OverrideMaxImagesPerCall func(model provider.ImageModel) int
 
+	// OverrideSupportsFileInputs allows overriding whether the model
+	// supports image file inputs for image editing. Return nil to advertise
+	// unknown support explicitly. A nil field (no override configured, as
+	// opposed to a configured override that returns nil) falls through to
+	// the wrapped model's own capability.
+	OverrideSupportsFileInputs func(model provider.ImageModel) *bool
+
+	// OverrideSupportsMaskInputs allows overriding whether the model
+	// supports mask inputs for image editing. Same nil-handling as
+	// OverrideSupportsFileInputs.
+	OverrideSupportsMaskInputs func(model provider.ImageModel) *bool
+
 	// TransformParams transforms the parameters before they are passed to the image model
 	TransformParams func(ctx context.Context, params *provider.ImageGenerateOptions, model provider.ImageModel) (*provider.ImageGenerateOptions, error)
 
@@ -115,6 +127,25 @@ func (w *wrappedImageModel) MaxImagesPerCall() int {
 		return m.MaxImagesPerCall()
 	}
 	return 0
+}
+
+// SupportsFileInputs reports whether the wrapped model (after any override)
+// supports image file inputs for image editing. Mirrors TS doWrap's
+// `overrideSupportsFileInputs !== undefined ? overrideSupportsFileInputs({model}) : model.supportsFileInputs`.
+func (w *wrappedImageModel) SupportsFileInputs() *bool {
+	if w.middleware.OverrideSupportsFileInputs != nil {
+		return w.middleware.OverrideSupportsFileInputs(w.model)
+	}
+	return provider.ImageModelSupportsFileInputs(w.model)
+}
+
+// SupportsMaskInputs reports whether the wrapped model (after any override)
+// supports mask inputs for image editing.
+func (w *wrappedImageModel) SupportsMaskInputs() *bool {
+	if w.middleware.OverrideSupportsMaskInputs != nil {
+		return w.middleware.OverrideSupportsMaskInputs(w.model)
+	}
+	return provider.ImageModelSupportsMaskInputs(w.model)
 }
 
 // DoGenerate performs image generation

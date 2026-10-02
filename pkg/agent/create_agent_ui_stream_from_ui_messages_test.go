@@ -279,3 +279,109 @@ func TestCreateAgentUIStreamFromUIMessages_AcceptsSystemMessageWhenAgentAllows(t
 		t.Fatal("expected UI chunks to be produced")
 	}
 }
+
+// Ported from TS ff3dcef416 (#21816): CreateAgentUIStreamFromUIMessages must
+// forward ConvertDataPart to ConvertToModelMessages so custom UI data parts
+// can be converted into model message content instead of being silently
+// dropped.
+func TestCreateAgentUIStreamFromUIMessages_ConvertDataPart(t *testing.T) {
+	var capturedMessages []types.Message
+	model := &functionalAgentLanguageModel{
+		doStream: func(_ context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			capturedMessages = opts.Prompt.Messages
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "response"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+	toolLoopAgent := NewToolLoopAgent(AgentConfig{Model: model})
+
+	convertDataPart := func(part ai.DataUIPart) types.ContentPart {
+		m, ok := part.Data.(map[string]interface{})
+		if !ok {
+			return nil
+		}
+		project, ok := m["project"].(string)
+		if !ok {
+			return nil
+		}
+		return types.TextContent{Text: "Project: " + project}
+	}
+
+	chunks, errs, err := CreateAgentUIStreamFromUIMessages(context.Background(), toolLoopAgent, CreateAgentUIStreamFromUIMessagesOptions{
+		UIMessages: json.RawMessage(`[{
+			"id": "1",
+			"role": "user",
+			"parts": [
+				{"type": "text", "text": "What project?"},
+				{"type": "data-context", "data": {"project": "AI SDK"}}
+			]
+		}]`),
+		ConvertDataPart: convertDataPart,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Drain to completion before reading capturedMessages: agent.Stream runs
+	// the model call on a separate goroutine (StreamText.gowrap1), so reading
+	// capturedMessages before the stream finishes is a data race.
+	drainUIChunks(t, chunks, errs)
+	if len(capturedMessages) != 1 {
+		t.Fatalf("expected 1 model message, got %d", len(capturedMessages))
+	}
+	content := capturedMessages[0].Content
+	if len(content) != 2 {
+		t.Fatalf("expected 2 content parts, got %d: %#v", len(content), content)
+	}
+	text1, ok := content[0].(types.TextContent)
+	if !ok || text1.Text != "What project?" {
+		t.Fatalf("content[0] = %#v, want text %q", content[0], "What project?")
+	}
+	text2, ok := content[1].(types.TextContent)
+	if !ok || text2.Text != "Project: AI SDK" {
+		t.Fatalf("content[1] = %#v, want text %q (converted data part)", content[1], "Project: AI SDK")
+	}
+}
+
+// Without ConvertDataPart, a custom data part must be ignored (not converted
+// into a model message part), matching TS's default behavior.
+func TestCreateAgentUIStreamFromUIMessages_IgnoresDataPartWithoutConverter(t *testing.T) {
+	var capturedMessages []types.Message
+	model := &functionalAgentLanguageModel{
+		doStream: func(_ context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			capturedMessages = opts.Prompt.Messages
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "response"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+	toolLoopAgent := NewToolLoopAgent(AgentConfig{Model: model})
+
+	chunks, errs, err := CreateAgentUIStreamFromUIMessages(context.Background(), toolLoopAgent, CreateAgentUIStreamFromUIMessagesOptions{
+		UIMessages: json.RawMessage(`[{
+			"id": "1",
+			"role": "user",
+			"parts": [
+				{"type": "text", "text": "Hello"},
+				{"type": "data-context", "data": {"project": "AI SDK"}}
+			]
+		}]`),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	drainUIChunks(t, chunks, errs)
+	if len(capturedMessages) != 1 {
+		t.Fatalf("expected 1 model message, got %d", len(capturedMessages))
+	}
+	content := capturedMessages[0].Content
+	if len(content) != 1 {
+		t.Fatalf("expected 1 content part (data part dropped), got %d: %#v", len(content), content)
+	}
+	text, ok := content[0].(types.TextContent)
+	if !ok || text.Text != "Hello" {
+		t.Fatalf("content[0] = %#v, want text %q", content[0], "Hello")
+	}
+}

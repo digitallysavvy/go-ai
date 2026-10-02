@@ -60,6 +60,37 @@ Streaming emits `text-start` / `text-end` chunk boundaries around text
 content, and text parts carry the Responses `itemId` and any annotations
 in their provider metadata.
 
+## Extensions
+
+`openresponses.Config.Extensions` lets a provider that embeds the Open
+Responses spec plug in its own tool/item/event codecs via
+`openresponses.Extension`, without the core language model needing to know
+about them ahead of time. By default a codec's wire types must be
+namespaced (`"<implementor>:<type>"`, e.g. `"lmstudio:code_execution"`),
+which keeps extensions portable across implementations.
+
+For an implementation that documents a bare (non-namespaced) wire
+discriminator and can't be changed, set `AllowBareTypes: true` and use
+`BareToolType`/`BareItemTypes`/`BareEventTypes` instead of
+`ToolType`/`ItemTypes`/`EventTypes`. A bare type must be non-empty, must
+not contain a colon, and must not collide with a core Responses wire type
+(e.g. `"function"`, `"message"`, `"response.completed"`); registering one
+is an explicit, non-portable opt-in.
+
+```go
+p := openresponses.New(openresponses.Config{
+    BaseURL: "https://api.example.com/v1",
+    Extensions: []openresponses.Extension{{
+        ID:             "acme.legacy_tool",
+        AllowBareTypes: true,
+        BareToolType:   "legacy_tool",
+        EncodeTool: func(name string, args map[string]interface{}) (map[string]interface{}, error) {
+            return args, nil
+        },
+    }},
+})
+```
+
 ## Workflow Serialization
 
 OpenResponses language models can cross a workflow boundary with

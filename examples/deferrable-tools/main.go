@@ -60,9 +60,10 @@ func runToolSearchExample(model provider.LanguageModel) {
 	}
 
 	result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
-		Model:  model,
-		Prompt: "Search for weather-related tools using tool-search-bm25",
-		Tools:  []types.Tool{toolSearch},
+		Model:    model,
+		Prompt:   "Search for weather-related tools using tool-search-bm25",
+		Tools:    []types.Tool{toolSearch},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 	})
 
 	if err != nil {
@@ -134,9 +135,10 @@ func runMixedToolsExample(model provider.LanguageModel) {
 	}
 
 	result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
-		Model:  model,
-		Prompt: "What's the weather in San Francisco? Also search the web for recent weather patterns in California.",
-		Tools:  []types.Tool{weatherTool, webSearch},
+		Model:    model,
+		Prompt:   "What's the weather in San Francisco? Also search the web for recent weather patterns in California.",
+		Tools:    []types.Tool{weatherTool, webSearch},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 	})
 
 	if err != nil {
@@ -182,9 +184,10 @@ func runErrorHandlingExample(model provider.LanguageModel) {
 	}
 
 	result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
-		Model:  model,
-		Prompt: "Fetch content from https://invalid-url-that-does-not-exist-12345.com",
-		Tools:  []types.Tool{webFetch},
+		Model:    model,
+		Prompt:   "Fetch content from https://invalid-url-that-does-not-exist-12345.com",
+		Tools:    []types.Tool{webFetch},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 	})
 
 	if err != nil {

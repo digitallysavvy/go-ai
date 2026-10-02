@@ -132,12 +132,22 @@ type mockHarnessOptions struct {
 	// (always-succeeding) DoSuspendTurn — used to exercise
 	// suspendOrFinishNow's fallback-to-hard-finish path.
 	doSuspendTurn func(context.Context) (*ContinueTurnState, error)
+	// doDetach, when set, overrides mockSession's default (always-
+	// succeeding) DoDetach — used to exercise a detach failure leaving the
+	// local session handle usable for Stop-based cleanup (TS #21591).
+	doDetach func(context.Context) (*ResumeSessionState, error)
 	// onControl, when set, is called synchronously with each turn's
 	// underlying *mockPromptControl as soon as DoPromptTurn/DoContinueTurn
 	// creates it, letting a test observe pin/release counts.
 	onControl func(*mockPromptControl)
 	// onPin, when set, becomes every turn's mockPromptControl.onPin hook.
 	onPin func()
+	// doReadHistory, when set, makes the mock session additionally
+	// implement HistoryReader (mirrors TS mockHarness's optional
+	// `doReadHistory` property — Go expresses "an adapter that does/doesn't
+	// support a capability" as two distinct types rather than a nullable
+	// method, see mockSteerablePromptControl).
+	doReadHistory func(context.Context, string) (*ReadHistoryResult, error)
 }
 
 type mockHarnessResult struct {
@@ -178,6 +188,7 @@ func newMockHarness(opts mockHarnessOptions) *mockHarnessResult {
 	sess := &mockSession{
 		id:            "mock-session-1",
 		doSuspendTurn: opts.doSuspendTurn,
+		doDetach:      opts.doDetach,
 		doPromptTurn: func(ctx context.Context, o PromptTurnOptions) (PromptControl, error) {
 			res.prompts = append(res.prompts, o.Prompt)
 			res.turnSettings = append(res.turnSettings, o.TurnSettings)
@@ -222,9 +233,13 @@ func newMockHarness(opts mockHarnessOptions) *mockHarnessResult {
 			return control, nil
 		},
 	}
-	res.session = sess
+	var session Session = sess
+	if opts.doReadHistory != nil {
+		session = &mockSessionWithHistory{mockSession: sess, doReadHistory: opts.doReadHistory}
+	}
+	res.session = session
 
-	h := &mockHarnessAdapter{id: "mock", builtinTools: opts.builtinTools, session: sess, supportsApproval: opts.supportsApproval}
+	h := &mockHarnessAdapter{id: "mock", builtinTools: opts.builtinTools, session: session, supportsApproval: opts.supportsApproval}
 	res.harness = h
 	return res
 }
@@ -235,6 +250,10 @@ type mockSession struct {
 	doPromptTurn   func(context.Context, PromptTurnOptions) (PromptControl, error)
 	doContinueTurn func(context.Context, ContinueTurnOptions) (PromptControl, error)
 	doSuspendTurn  func(context.Context) (*ContinueTurnState, error)
+	// doDetach, when set, overrides mockSession's default (always-succeeding)
+	// DoDetach — used to exercise a detach failure leaving the local session
+	// handle usable for Stop-based cleanup (TS #21591).
+	doDetach func(context.Context) (*ResumeSessionState, error)
 }
 
 func (s *mockSession) SessionID() string { return s.id }
@@ -255,13 +274,30 @@ func (s *mockSession) DoSuspendTurn(ctx context.Context) (*ContinueTurnState, er
 	}
 	return NewContinueTurnState("mock", map[string]any{})
 }
-func (s *mockSession) DoDetach(context.Context) (*ResumeSessionState, error) {
+func (s *mockSession) DoDetach(ctx context.Context) (*ResumeSessionState, error) {
+	if s.doDetach != nil {
+		return s.doDetach(ctx)
+	}
 	return NewResumeSessionState("mock", map[string]any{})
 }
 func (s *mockSession) DoStop(context.Context) (*ResumeSessionState, error) {
 	return NewResumeSessionState("mock", map[string]any{})
 }
 func (s *mockSession) DoDestroy(context.Context) error { return nil }
+
+// mockSessionWithHistory wraps mockSession and additionally implements
+// HistoryReader, mirroring TS mockHarness's optional `doReadHistory`
+// property. See mockHarnessOptions.doReadHistory.
+type mockSessionWithHistory struct {
+	*mockSession
+	doReadHistory func(context.Context, string) (*ReadHistoryResult, error)
+}
+
+func (s *mockSessionWithHistory) DoReadHistory(ctx context.Context, since string) (*ReadHistoryResult, error) {
+	return s.doReadHistory(ctx, since)
+}
+
+var _ HistoryReader = (*mockSessionWithHistory)(nil)
 
 type mockHarnessAdapter struct {
 	id               string
@@ -1710,6 +1746,34 @@ func TestAgentSession_SuspendTurn_DetachesLocalHandle(t *testing.T) {
 	close(finishPrompt)
 	if err := result.Err(); err != nil {
 		t.Fatalf("result.Err() = %v", err)
+	}
+}
+
+// TestAgentSession_Detach_KeepsLocalHandleActiveOnFailure ports TS
+// "session.detach() keeps the local handle active when detaching fails"
+// (harness-agent.test.ts, TS #21591 "workflow harness suppressing detach
+// failures and returning stale resume state"): when the adapter's
+// DoDetach fails, the error must propagate and the session must remain
+// active (not already ended), so a caller can still fall back to Stop for
+// cleanup.
+func TestAgentSession_Detach_KeepsLocalHandleActiveOnFailure(t *testing.T) {
+	detachErr := errors.New("could not persist resume state")
+	mock := newMockHarness(mockHarnessOptions{
+		script:   func(func(string, interface{})) []StreamPart { return nil },
+		doDetach: func(context.Context) (*ResumeSessionState, error) { return nil, detachErr },
+	})
+	_, session := newTestAgent(t, mock, nil, Callbacks{}, nil)
+
+	if _, err := session.Detach(context.Background()); !errors.Is(err, detachErr) {
+		t.Fatalf("Detach() err = %v, want %v", err, detachErr)
+	}
+
+	state, err := session.Stop(context.Background())
+	if err != nil {
+		t.Fatalf("Stop() after a failed Detach: %v", err)
+	}
+	if state == nil {
+		t.Fatal("Stop() should still return resume state")
 	}
 }
 

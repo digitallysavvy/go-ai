@@ -124,6 +124,12 @@ func TestMistralLanguageHelpers(t *testing.T) {
 	if mapMistralFinishReason("model_length") != types.FinishReasonLength {
 		t.Fatalf("finish reason mapping mismatch")
 	}
+	if mapMistralFinishReason("error") != types.FinishReasonError {
+		t.Fatalf("finish reason mapping for %q = want %q", "error", types.FinishReasonError)
+	}
+	if mapMistralFinishReason("something_unknown") != types.FinishReasonOther {
+		t.Fatalf("finish reason mapping for unknown value should remain %q", types.FinishReasonOther)
+	}
 	lm := NewLanguageModel(New(Config{APIKey: "k"}), "mistral-large")
 	if ws := lm.checkReasoningWarnings(&provider.GenerateOptions{Reasoning: func() *types.ReasoningLevel { v := types.ReasoningMedium; return &v }()}); len(ws) == 0 {
 		t.Fatal("expected reasoning warning on unsupported model")

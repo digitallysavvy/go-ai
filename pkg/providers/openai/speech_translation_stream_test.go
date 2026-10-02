@@ -40,14 +40,14 @@ func drainUntilTranslationFinishOrError(t *testing.T, stream provider.SpeechTran
 // openai-speech-translation-model.ts's doStream, which reuses
 // `this.config.headers()` -- the same tagged getHeaders() closure used for
 // REST calls -- for the WebSocket handshake, so it carries the
-// `ai-sdk/openai/VERSION` tag too.
+// `ai-sdk-openai/VERSION` tag too.
 func TestSpeechTranslationModel_BaseWSHeadersCarryUserAgentTag(t *testing.T) {
 	p := New(Config{APIKey: "test-key"})
 	m := NewSpeechTranslationModel(p, "gpt-realtime-translate")
 
 	ua := m.baseSpeechTranslationWSHeaders()["user-agent"]
-	if !strings.HasPrefix(ua, "ai-sdk/openai/") {
-		t.Fatalf("user-agent = %q, want ai-sdk/openai/... prefix", ua)
+	if !strings.HasPrefix(ua, "ai-sdk-openai/") {
+		t.Fatalf("user-agent = %q, want ai-sdk-openai/... prefix", ua)
 	}
 }
 

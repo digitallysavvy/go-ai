@@ -301,9 +301,9 @@ func TestGeminiTranscriptionModel_DoStream_StreamsTranscriptEndToEnd(t *testing.
 	}
 	// TS google-vertex-gemini-transcription-model.ts reuses this.config.headers()
 	// -- the same tagged getHeaders() closure used for REST calls -- for the
-	// WebSocket handshake, so it carries the ai-sdk/google-vertex/VERSION tag too.
-	if got := server.userAgentHeader(); !strings.HasPrefix(got, "ai-sdk/google-vertex/") {
-		t.Fatalf("handshake User-Agent header = %q, want ai-sdk/google-vertex/... prefix", got)
+	// WebSocket handshake, so it carries the ai-sdk-google-vertex/VERSION tag too.
+	if got := server.userAgentHeader(); !strings.HasPrefix(got, "ai-sdk-google-vertex/") {
+		t.Fatalf("handshake User-Agent header = %q, want ai-sdk-google-vertex/... prefix", got)
 	}
 
 	// audio is gated on setupComplete: nothing else should have been sent yet.
@@ -371,6 +371,11 @@ func TestGeminiTranscriptionModel_DoStream_StreamsTranscriptEndToEnd(t *testing.
 	wantMetaJSON, _ := json.Marshal(wantMeta)
 	if string(gotMeta) != string(wantMetaJSON) {
 		t.Fatalf("providerMetadata = %s, want %s", gotMeta, wantMetaJSON)
+	}
+	// Ported from TS google-vertex-gemini-transcription-model.test.ts
+	// doStream "should surface usage" (TS 8c659885c5 / #21427).
+	if got := finish.Usage["promptTokenCount"]; got != float64(7) {
+		t.Fatalf("finish.Usage[promptTokenCount] = %v, want 7", got)
 	}
 }
 

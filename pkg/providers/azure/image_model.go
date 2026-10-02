@@ -40,6 +40,19 @@ func (m *ImageModel) ModelID() string {
 	return m.deploymentID
 }
 
+// SupportsFileInputs always reports unknown support. Azure model IDs are
+// user-defined deployment names, so OpenAI model family capabilities cannot
+// be inferred from them.
+func (m *ImageModel) SupportsFileInputs() *bool {
+	return nil
+}
+
+// SupportsMaskInputs always reports unknown support, for the same reason as
+// SupportsFileInputs.
+func (m *ImageModel) SupportsMaskInputs() *bool {
+	return nil
+}
+
 // DoGenerate performs image generation
 func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
 	reqBody := m.buildRequestBody(opts)

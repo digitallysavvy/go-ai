@@ -13,6 +13,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -31,6 +32,15 @@ type TranscribeOptions struct {
 	Headers         map[string]string
 	Download        URLDownloadFunction
 	MaxRetries      *int
+
+	// Telemetry configures observability for this operation.
+	// When both Telemetry and ExperimentalTelemetry are set, Telemetry wins.
+	Telemetry *TelemetrySettings
+
+	// ExperimentalTelemetry configures observability for this operation.
+	//
+	// Deprecated: use Telemetry.
+	ExperimentalTelemetry *TelemetrySettings
 }
 
 // TranscribeResult contains speech transcription output.
@@ -113,6 +123,19 @@ func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult,
 	if mediaType == "" {
 		mediaType = detectTranscriptionMediaType(audio)
 	}
+	opts.ExperimentalTelemetry = effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
+	callID := newCallID()
+	audioByteLength := int64(len(audio))
+	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
+		CallID:          callID,
+		OperationType:   "ai.transcribe",
+		ModelProvider:   opts.Model.Provider(),
+		ModelID:         opts.Model.ModelID(),
+		Settings:        opts.ExperimentalTelemetry,
+		AudioByteLength: &audioByteLength,
+		AudioMediaType:  mediaType,
+		Headers:         opts.Headers,
+	})
 	providerOptions := opts.ProviderOptions
 	if providerOptions == nil {
 		providerOptions = map[string]interface{}{}
@@ -143,6 +166,7 @@ func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult,
 		})
 	}
 	if err != nil {
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: err})
 		return nil, err
 	}
 	if raw == nil || raw.Text == "" {
@@ -150,7 +174,9 @@ func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult,
 		if raw != nil {
 			responses = []TranscriptionModelResponseMetadata{transcriptionResponseMetadata(raw.Response, opts.Model)}
 		}
-		return nil, &NoTranscriptGeneratedError{Responses: responses}
+		noTranscriptErr := &NoTranscriptGeneratedError{Responses: responses}
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: noTranscriptErr})
+		return nil, noTranscriptErr
 	}
 	segments := make([]TranscriptionSegment, 0, len(raw.Segments))
 	for _, ts := range raw.Segments {
@@ -170,6 +196,18 @@ func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult,
 		providerMetadata = map[string]interface{}{}
 	}
 	logModelWarnings(warnings, opts.Model.Provider(), opts.Model.ModelID())
+	telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
+		CallID:           callID,
+		OperationType:    "ai.transcribe",
+		ModelProvider:    opts.Model.Provider(),
+		ModelID:          opts.Model.ModelID(),
+		Settings:         opts.ExperimentalTelemetry,
+		Text:             raw.Text,
+		AudioByteLength:  &audioByteLength,
+		AudioMediaType:   mediaType,
+		ProviderMetadata: providerMetadata,
+		ProviderUsage:    raw.ProviderUsage,
+	})
 	return &TranscribeResult{
 		Text:              raw.Text,
 		Segments:          segments,

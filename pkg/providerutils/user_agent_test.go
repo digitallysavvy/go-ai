@@ -132,29 +132,35 @@ func TestWithUserAgentSuffixNoPartsKeepsExistingHeader(t *testing.T) {
 }
 
 func TestWithUserAgentSuffixEmptyPartsFiltered(t *testing.T) {
-	result := WithUserAgentSuffix(nil, "", "ai-sdk/openai/1.0", "")
-	if result["user-agent"] != "ai-sdk/openai/1.0" {
-		t.Errorf("user-agent = %q, want ai-sdk/openai/1.0 (empty parts filtered, no stray spaces)", result["user-agent"])
+	result := WithUserAgentSuffix(nil, "", "ai-sdk-openai/1.0", "")
+	if result["user-agent"] != "ai-sdk-openai/1.0" {
+		t.Errorf("user-agent = %q, want ai-sdk-openai/1.0 (empty parts filtered, no stray spaces)", result["user-agent"])
 	}
 }
 
 func TestWithUserAgentSuffixNilHeaders(t *testing.T) {
-	result := WithUserAgentSuffix(nil, "ai-sdk/openai/1.0")
-	if result["user-agent"] != "ai-sdk/openai/1.0" {
-		t.Errorf("user-agent = %q, want ai-sdk/openai/1.0", result["user-agent"])
+	result := WithUserAgentSuffix(nil, "ai-sdk-openai/1.0")
+	if result["user-agent"] != "ai-sdk-openai/1.0" {
+		t.Errorf("user-agent = %q, want ai-sdk-openai/1.0", result["user-agent"])
 	}
 }
 
-// Ported from get-runtime-environment-user-agent.ts's Go analogue: Go has a
-// single runtime, so RuntimeEnvironmentUserAgent should always report it via
-// runtime.Version(), matching the documented "runtime/go/go1.25.1" shape.
+// Ported from get-runtime-environment-user-agent.ts's Go analogue (updated
+// for TS #21344): Go has a single runtime, so RuntimeEnvironmentUserAgent
+// should always report it via runtime.Version(), with no "runtime/" prefix
+// (that prefix made the identifier have two "/" characters, which TS
+// #21344 fixed because RFC 9110 product identifiers allow only one),
+// matching the documented "go/go1.25.1" shape.
 func TestRuntimeEnvironmentUserAgent(t *testing.T) {
 	got := RuntimeEnvironmentUserAgent()
-	want := "runtime/go/" + runtime.Version()
+	want := "go/" + runtime.Version()
 	if got != want {
 		t.Fatalf("RuntimeEnvironmentUserAgent() = %q, want %q", got, want)
 	}
-	if !strings.HasPrefix(got, "runtime/go/go") {
-		t.Fatalf("RuntimeEnvironmentUserAgent() = %q, want prefix runtime/go/go", got)
+	if !strings.HasPrefix(got, "go/go") {
+		t.Fatalf("RuntimeEnvironmentUserAgent() = %q, want prefix go/go", got)
+	}
+	if strings.Count(got, "/") != 1 {
+		t.Fatalf("RuntimeEnvironmentUserAgent() = %q, want exactly one '/' (RFC 9110 product identifier)", got)
 	}
 }

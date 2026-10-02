@@ -1,6 +1,9 @@
 package openai
 
 import (
+	"regexp"
+	"strings"
+
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -21,7 +24,7 @@ import (
 func NormalizeOpenAIJSONSchema(schema map[string]interface{}) (map[string]interface{}, []types.Warning, error) {
 	var removedPropertyNames, removedLookaroundPattern bool
 
-	normalized, err := normalizeJSONSchemaValue(schema, &removedPropertyNames, &removedLookaroundPattern)
+	normalized, err := normalizeJSONSchemaValueRoot(schema, &removedPropertyNames, &removedLookaroundPattern, true)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -73,8 +76,19 @@ func normalizeOpenAIChatToolSchemas(tools []map[string]interface{}) ([]map[strin
 
 // normalizeJSONSchemaValue normalizes a schema "definition", which per JSON
 // Schema can be either a boolean (true/false, pass-through as-is) or an
-// object schema.
+// object schema. Nested definitions are never the document root, so a
+// singleton-reference allOf wrapper here is always rewritten to a direct
+// $ref (see normalizeJSONSchemaObject's isRoot parameter).
 func normalizeJSONSchemaValue(def interface{}, removedPropertyNames, removedLookaroundPattern *bool) (interface{}, error) {
+	return normalizeJSONSchemaValueRoot(def, removedPropertyNames, removedLookaroundPattern, false)
+}
+
+// normalizeJSONSchemaValueRoot is normalizeJSONSchemaValue with an explicit
+// isRoot flag, used only by NormalizeOpenAIJSONSchema's initial call (isRoot
+// = true): OpenAI requires an object at the schema root, so a root-level
+// singleton reference must be expanded (inlined) rather than rewritten to a
+// bare $ref.
+func normalizeJSONSchemaValueRoot(def interface{}, removedPropertyNames, removedLookaroundPattern *bool, isRoot bool) (interface{}, error) {
 	b, isBool := def.(bool)
 	if isBool {
 		return b, nil
@@ -83,10 +97,10 @@ func normalizeJSONSchemaValue(def interface{}, removedPropertyNames, removedLook
 	if !ok || m == nil {
 		return def, nil
 	}
-	return normalizeJSONSchemaObject(m, removedPropertyNames, removedLookaroundPattern)
+	return normalizeJSONSchemaObject(m, removedPropertyNames, removedLookaroundPattern, isRoot)
 }
 
-func normalizeJSONSchemaObject(schema map[string]interface{}, removedPropertyNames, removedLookaroundPattern *bool) (map[string]interface{}, error) {
+func normalizeJSONSchemaObject(schema map[string]interface{}, removedPropertyNames, removedLookaroundPattern *bool, isRoot bool) (map[string]interface{}, error) {
 	if propertyNames, ok := schema["propertyNames"]; ok && propertyNames != nil {
 		pnMap, isMap := propertyNames.(map[string]interface{})
 		if !isMap || pnMap["type"] != "string" {
@@ -197,7 +211,90 @@ func normalizeJSONSchemaObject(schema map[string]interface{}, removedPropertyNam
 		}
 	}
 
-	return normalized, nil
+	// Zod 4 represents recursive references as singleton `allOf` schemas
+	// ({"allOf": [{"$ref": "..."}]}). OpenAI does not support `allOf`, but a
+	// singleton local reference validates identically to a direct $ref, so
+	// rewrite it (TS commit 4e94782655, #21678).
+	reference, hasReference := getSingletonReference(normalized)
+	if !hasReference {
+		return normalized, nil
+	}
+
+	schemaWithoutAllOf := make(map[string]interface{}, len(normalized))
+	for k, v := range normalized {
+		if k != "allOf" {
+			schemaWithoutAllOf[k] = v
+		}
+	}
+
+	if !isRoot {
+		// A one-item allOf has the same validation behavior as its reference.
+		schemaWithoutAllOf["$ref"] = reference
+		return schemaWithoutAllOf, nil
+	}
+
+	// OpenAI requires an object at the schema root, so a local root
+	// reference must be expanded instead of being sent as a direct $ref.
+	referencedSchema, found := getLocalReferenceSchema(reference, normalized)
+	if !found {
+		return normalized, nil
+	}
+
+	merged := make(map[string]interface{}, len(referencedSchema)+len(schemaWithoutAllOf))
+	for k, v := range referencedSchema {
+		merged[k] = v
+	}
+	for k, v := range schemaWithoutAllOf {
+		merged[k] = v
+	}
+	return merged, nil
+}
+
+// getSingletonReference reports whether schema's "allOf" is a one-item list
+// whose sole entry is a bare {"$ref": "..."} object (i.e. an intersection
+// that is equivalent to a direct reference). Any other allOf shape -- more
+// than one entry, or an entry with additional keys alongside $ref -- is left
+// untouched, matching TS's getSingletonReference.
+func getSingletonReference(schema map[string]interface{}) (string, bool) {
+	allOf, ok := schema["allOf"].([]interface{})
+	if !ok || len(allOf) != 1 {
+		return "", false
+	}
+	entry, ok := allOf[0].(map[string]interface{})
+	if !ok || len(entry) != 1 {
+		return "", false
+	}
+	ref, ok := entry["$ref"].(string)
+	if !ok {
+		return "", false
+	}
+	return ref, true
+}
+
+var localJSONSchemaReferenceRe = regexp.MustCompile(`^#/(definitions|\$defs)/(.+)$`)
+
+// getLocalReferenceSchema resolves a "#/definitions/<name>" or
+// "#/$defs/<name>" reference against schema's own definitions/$defs,
+// unescaping the JSON Pointer "~1" ("/") and "~0" ("~") sequences in name.
+func getLocalReferenceSchema(reference string, schema map[string]interface{}) (map[string]interface{}, bool) {
+	match := localJSONSchemaReferenceRe.FindStringSubmatch(reference)
+	if match == nil {
+		return nil, false
+	}
+	keyword, encodedName := match[1], match[2]
+	name := strings.ReplaceAll(strings.ReplaceAll(encodedName, "~1", "/"), "~0", "~")
+
+	var definitions map[string]interface{}
+	if keyword == "definitions" {
+		definitions, _ = schema["definitions"].(map[string]interface{})
+	} else {
+		definitions, _ = schema["$defs"].(map[string]interface{})
+	}
+	definition, ok := definitions[name].(map[string]interface{})
+	if !ok {
+		return nil, false
+	}
+	return definition, true
 }
 
 func normalizeSchemaRecord(schemas map[string]interface{}, removedPropertyNames, removedLookaroundPattern *bool) (map[string]interface{}, error) {

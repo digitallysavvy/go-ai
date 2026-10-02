@@ -55,7 +55,8 @@ type AgentSession struct {
 	sessionState SessionState
 	turnState    TurnState
 
-	resumedToolsContext map[string]interface{}
+	resumedToolsContext   map[string]interface{}
+	resumedRuntimeContext interface{}
 
 	// turnSeq/activeTurnID/activeHandoff support ExperimentalSteerTurn.
 	// turnSeq/activeTurnID mirror TS `turnSequence`/`activeTurnSequence`:
@@ -93,35 +94,37 @@ type steerHandoff struct {
 
 // AgentSessionOptions is the input of newAgentSession.
 type AgentSessionOptions struct {
-	SessionID            string
-	Harness              Harness
-	Underlying           Session
-	SandboxSession       providerutils.SandboxSession
-	OwnsSandboxLifecycle bool
-	SessionWorkDir       string
-	ToolApproval         ToolApprovalConfiguration
-	PendingToolApprovals []PendingToolApproval
-	PendingToolResults   []PendingToolResult
-	TurnSettings         *TurnSettings
-	ResumedToolsContext  map[string]interface{}
-	TurnState            TurnState
+	SessionID             string
+	Harness               Harness
+	Underlying            Session
+	SandboxSession        providerutils.SandboxSession
+	OwnsSandboxLifecycle  bool
+	SessionWorkDir        string
+	ToolApproval          ToolApprovalConfiguration
+	PendingToolApprovals  []PendingToolApproval
+	PendingToolResults    []PendingToolResult
+	TurnSettings          *TurnSettings
+	ResumedToolsContext   map[string]interface{}
+	ResumedRuntimeContext interface{}
+	TurnState             TurnState
 }
 
 func newAgentSession(opts AgentSessionOptions) *AgentSession {
 	s := &AgentSession{
-		sessionID:            opts.SessionID,
-		harness:              opts.Harness,
-		underlying:           opts.Underlying,
-		sandboxSession:       opts.SandboxSession,
-		ownsSandboxLifecycle: opts.OwnsSandboxLifecycle,
-		sessionWorkDir:       opts.SessionWorkDir,
-		toolApproval:         opts.ToolApproval,
-		pendingApprovals:     map[string]PendingToolApproval{},
-		pendingResults:       map[string]PendingToolResult{},
-		turnSettings:         opts.TurnSettings,
-		sessionState:         SessionStateActive,
-		turnState:            opts.TurnState,
-		resumedToolsContext:  opts.ResumedToolsContext,
+		sessionID:             opts.SessionID,
+		harness:               opts.Harness,
+		underlying:            opts.Underlying,
+		sandboxSession:        opts.SandboxSession,
+		ownsSandboxLifecycle:  opts.OwnsSandboxLifecycle,
+		sessionWorkDir:        opts.SessionWorkDir,
+		toolApproval:          opts.ToolApproval,
+		pendingApprovals:      map[string]PendingToolApproval{},
+		pendingResults:        map[string]PendingToolResult{},
+		turnSettings:          opts.TurnSettings,
+		sessionState:          SessionStateActive,
+		turnState:             opts.TurnState,
+		resumedToolsContext:   opts.ResumedToolsContext,
+		resumedRuntimeContext: opts.ResumedRuntimeContext,
 	}
 	if s.turnState == "" {
 		s.turnState = TurnStateIdle

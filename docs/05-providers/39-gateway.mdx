@@ -443,6 +443,20 @@ fmt.Printf("Balance: %s\n", credits.Balance)
 fmt.Printf("Total Used: %s\n", credits.TotalUsed)
 ```
 
+`/v1/credits` reads the team from a `teamId`/`slug` query parameter rather than the `x-vercel-ai-gateway-team` header every other endpoint uses. When `Config.TeamIDOrSlug` (or a per-call `x-vercel-ai-gateway-team` header) is set, `GetCredits` forwards it as that query parameter too, so credentials that can access multiple teams (such as Vercel access tokens) are scoped correctly instead of getting a 401.
+
+## Evaluation model fallbacks
+
+`EvaluationFallbackCondition.Question` is optional. Without it, `ConfidenceBelow` checks every Choice/Score question and `ProbabilityBetween` checks every Boolean question, instead of a single named question:
+
+```go
+confidenceBelow := 0.6
+when := gateway.EvaluationFallbackCondition{ConfidenceBelow: &confidenceBelow}
+fallback := gateway.GatewayConditionalModelFallback("openai/gpt-5.6-sol", when)
+```
+
+A condition still needs a check: `{}` or a condition with only `Question` set is rejected.
+
 ## Error Handling
 
 The Gateway provides detailed error types:

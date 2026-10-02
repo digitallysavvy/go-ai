@@ -14,6 +14,7 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
@@ -38,11 +39,24 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	}
 	vertexOpts := vertexTranscriptionOptions(opts.ProviderOptions)
 	region := vertexOpts.Region
-	if region == "" {
+	regionArg := "location"
+	if region != "" {
+		regionArg = "region"
+	} else {
 		region = m.provider.config.Location
 	}
 	if region == "" {
 		region = "global"
+	}
+	// region is interpolated directly into the Cloud Speech-to-Text request
+	// host (https://{region}-speech.googleapis.com/...), so only a single
+	// DNS label is accepted. Ports TS google-vertex-transcription-model.ts
+	// (TS #21842).
+	if !providerutils.IsValidHostnamePart(region) {
+		return nil, &providererrors.InvalidArgumentError{
+			Field:   regionArg,
+			Message: "Invalid Google Cloud Speech-to-Text region. Expected a single DNS label (letters, digits, and hyphens).",
+		}
 	}
 	languages := vertexOpts.LanguageCodes
 	if len(languages) == 0 {

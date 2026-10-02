@@ -12,6 +12,7 @@ import (
 	retryutil "github.com/digitallysavvy/go-ai/pkg/internal/retry"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -55,6 +56,15 @@ type GenerateSpeechOptions struct {
 	ProviderOptions map[string]interface{}
 	Headers         map[string]string
 	MaxRetries      *int
+
+	// Telemetry configures observability for this operation.
+	// When both Telemetry and ExperimentalTelemetry are set, Telemetry wins.
+	Telemetry *TelemetrySettings
+
+	// ExperimentalTelemetry configures observability for this operation.
+	//
+	// Deprecated: use Telemetry.
+	ExperimentalTelemetry *TelemetrySettings
 }
 
 // GenerateSpeechResult contains generated speech audio.
@@ -102,6 +112,18 @@ func GenerateSpeech(ctx context.Context, opts GenerateSpeechOptions) (*GenerateS
 	if err := validateMaxRetries(opts.MaxRetries); err != nil {
 		return nil, err
 	}
+	opts.ExperimentalTelemetry = effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
+	callID := newCallID()
+	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
+		CallID:        callID,
+		OperationType: "ai.generateSpeech",
+		ModelProvider: opts.Model.Provider(),
+		ModelID:       opts.Model.ModelID(),
+		Settings:      opts.ExperimentalTelemetry,
+		Text:          telemetryInputValue(opts.ExperimentalTelemetry, opts.Text),
+		Headers:       opts.Headers,
+	})
+
 	providerOptions := opts.ProviderOptions
 	if providerOptions == nil {
 		providerOptions = map[string]interface{}{}
@@ -136,6 +158,7 @@ func GenerateSpeech(ctx context.Context, opts GenerateSpeechOptions) (*GenerateS
 		})
 	}
 	if err != nil {
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: err})
 		return nil, err
 	}
 	var responses []SpeechModelResponseMetadata
@@ -143,7 +166,9 @@ func GenerateSpeech(ctx context.Context, opts GenerateSpeechOptions) (*GenerateS
 		responses = []SpeechModelResponseMetadata{speechResponseMetadata(raw.Response, opts.Model)}
 	}
 	if raw == nil || len(raw.Audio) == 0 {
-		return nil, &NoSpeechGeneratedError{Responses: responses}
+		noSpeechErr := &NoSpeechGeneratedError{Responses: responses}
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: noSpeechErr})
+		return nil, noSpeechErr
 	}
 	providerMetadata := raw.ProviderMetadata
 	if providerMetadata == nil {
@@ -159,11 +184,25 @@ func GenerateSpeech(ctx context.Context, opts GenerateSpeechOptions) (*GenerateS
 	}
 	mediaType := resolveGeneratedSpeechMediaType(raw.Audio, responseHeaders, opts.OutputFormat)
 	logModelWarnings(warnings, opts.Model.Provider(), opts.Model.ModelID())
+	audioByteLength := int64(len(raw.Audio))
+	format := generatedAudioFormat(mediaType)
+	telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
+		CallID:           callID,
+		OperationType:    "ai.generateSpeech",
+		ModelProvider:    opts.Model.Provider(),
+		ModelID:          opts.Model.ModelID(),
+		Settings:         opts.ExperimentalTelemetry,
+		AudioByteLength:  &audioByteLength,
+		AudioMediaType:   mediaType,
+		AudioFormat:      format,
+		ProviderMetadata: providerMetadata,
+		ProviderUsage:    raw.Usage,
+	})
 	return &GenerateSpeechResult{
 		Audio: GeneratedAudioFile{
 			Data:      raw.Audio,
 			MediaType: mediaType,
-			Format:    generatedAudioFormat(mediaType),
+			Format:    format,
 		},
 		Warnings:         warnings,
 		Responses:        responses,

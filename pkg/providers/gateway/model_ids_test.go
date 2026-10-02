@@ -6,7 +6,7 @@ import (
 )
 
 // Expectations below mirror packages/gateway/src/gateway-*-model-settings.ts
-// at ai@7.0.113. Regenerate with `go generate` (see generate.go) and update
+// at ai@7.0.127. Regenerate with `go generate` (see generate.go) and update
 // these counts when refreshing to a newer TS release.
 
 func TestGatewayModelIDConstantsMatchSettings(t *testing.T) {
@@ -81,20 +81,20 @@ func catalogs() map[string][]string {
 
 func TestGatewayModelIDCatalogsExposeAllModelKinds(t *testing.T) {
 	want := map[string]int{
-		"language":      262,
+		"language":      267,
 		"embedding":     26,
-		"image":         33,
+		"image":         34,
 		"video":         35,
-		"reranking":     5,
-		"speech":        8,
-		"transcription": 8,
+		"reranking":     7,
+		"speech":        12,
+		"transcription": 11,
 		"realtime":      9,
-		"evaluation":    1,
+		"evaluation":    2,
 	}
 	got := catalogs()
 	for kind, n := range want {
 		if len(got[kind]) != n {
-			t.Errorf("%s catalog length = %d, want %d (TS ai@7.0.113)", kind, len(got[kind]), n)
+			t.Errorf("%s catalog length = %d, want %d (TS ai@7.0.127)", kind, len(got[kind]), n)
 		}
 	}
 }

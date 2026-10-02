@@ -178,6 +178,8 @@ When `Location` is `eu` or `us`, standard Gemini, MaaS, and Anthropic-on-Vertex 
 
 Explicit `BaseURL` values still take precedence.
 
+`Location` (and the Cloud Speech-to-Text `region` transcription option) is interpolated directly into the request host. A value that isn't a single DNS label (letters, digits, and hyphens) is rejected with an `InvalidArgumentError` before any request is sent; this only applies when no explicit `BaseURL` is configured, since that makes `Location` unused.
+
 ### PayGo Request Type
 
 Vertex AI uses request headers for PayGo tier selection. Set `sharedRequestType` and optionally `requestType` in Vertex provider options:

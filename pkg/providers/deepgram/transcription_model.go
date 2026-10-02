@@ -202,7 +202,7 @@ func (m *TranscriptionModel) convertResponse(response deepgramTranscriptionRespo
 		durationInSeconds = &d
 	}
 
-	return &types.TranscriptionResult{
+	result := &types.TranscriptionResult{
 		Text:              text,
 		Segments:          segments,
 		Timestamps:        segments,
@@ -219,6 +219,11 @@ func (m *TranscriptionModel) convertResponse(response deepgramTranscriptionRespo
 			Body:      response,
 		},
 	}
+	// TS: `...(durationInSeconds != null ? { usage: { seconds: durationInSeconds } } : {})`.
+	if durationInSeconds != nil {
+		result.ProviderUsage = map[string]interface{}{"seconds": *durationInSeconds}
+	}
+	return result
 }
 
 func durationValue(duration *float64) float64 {

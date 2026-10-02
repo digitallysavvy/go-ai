@@ -368,3 +368,60 @@ func intPtr(i int) *int {
 	return &i
 }
 
+func boolPtr(b bool) *bool {
+	return &b
+}
+
+// bareImageModel implements only the required ImageModel methods, with none
+// of the optional capability methods (MaxImagesPerCall,
+// SupportsFileInputs/SupportsMaskInputs) — mirroring a legacy adapter in TS
+// that has no file/mask capability metadata at all.
+type bareImageModel struct{}
+
+func (bareImageModel) SpecificationVersion() string { return "v1" }
+func (bareImageModel) Provider() string             { return "bare" }
+func (bareImageModel) ModelID() string              { return "bare-model" }
+func (bareImageModel) DoGenerate(ctx context.Context, opts *ImageGenerateOptions) (*types.ImageResult, error) {
+	return nil, nil
+}
+
+// capableImageModel additionally implements the optional
+// SupportsFileInputs/SupportsMaskInputs capability methods.
+type capableImageModel struct {
+	bareImageModel
+	files *bool
+	masks *bool
+}
+
+func (m capableImageModel) SupportsFileInputs() *bool { return m.files }
+func (m capableImageModel) SupportsMaskInputs() *bool { return m.masks }
+
+// TS image-model.test-d.ts / mock-image-model-v4.ts (TS #19230): a model
+// that doesn't implement the optional capability methods reports unknown
+// (nil) through ImageModelSupportsFileInputs/ImageModelSupportsMaskInputs,
+// and one that does implement them reports its declared value, including
+// an explicit false.
+func TestImageModelSupportsFileAndMaskInputs(t *testing.T) {
+	t.Parallel()
+
+	if got := ImageModelSupportsFileInputs(bareImageModel{}); got != nil {
+		t.Errorf("bare model SupportsFileInputs() = %v, want nil (unknown)", *got)
+	}
+	if got := ImageModelSupportsMaskInputs(bareImageModel{}); got != nil {
+		t.Errorf("bare model SupportsMaskInputs() = %v, want nil (unknown)", *got)
+	}
+
+	model := capableImageModel{files: boolPtr(true), masks: boolPtr(false)}
+	if got := ImageModelSupportsFileInputs(model); got == nil || *got != true {
+		t.Errorf("SupportsFileInputs() = %v, want true", got)
+	}
+	if got := ImageModelSupportsMaskInputs(model); got == nil || *got != false {
+		t.Errorf("SupportsMaskInputs() = %v, want false", got)
+	}
+
+	unknownModel := capableImageModel{}
+	if got := ImageModelSupportsFileInputs(unknownModel); got != nil {
+		t.Errorf("capable model with unset capability SupportsFileInputs() = %v, want nil", *got)
+	}
+}
+

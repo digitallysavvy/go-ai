@@ -368,6 +368,84 @@ data: [DONE]
 	}
 }
 
+// TestOpenAICompatStream_BlankToolCallNameDoesNotAbortSiblingCalls proves the
+// Flush fix alongside TestOpenAICompatStream_ErrorsWhenToolCallNameNeverArrives:
+// a gateway that sends one usable call plus one with an explicitly blank
+// name (TS's "should ignore a blank function name without preventing prior
+// calls from finalizing") must finish the turn successfully with just the
+// valid call, not error out and drop everything.
+func TestOpenAICompatStream_BlankToolCallNameDoesNotAbortSiblingCalls(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"valid_tool","arguments":"{}"}}]},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_2","type":"function","function":{"name":"","arguments":"{}"}}]},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`
+	stream := newTestStream(sseData)
+	defer stream.Close() //nolint:errcheck
+
+	chunks := collectStreamChunks(t, stream)
+	if errs := compatChunksOfType(chunks, provider.ChunkTypeError); len(errs) != 0 {
+		t.Fatalf("expected no error chunks, got %#v", errs)
+	}
+	toolCalls := compatChunksOfType(chunks, provider.ChunkTypeToolCall)
+	if len(toolCalls) != 1 || toolCalls[0].ToolCall.ID != "call_1" || toolCalls[0].ToolCall.ToolName != "valid_tool" {
+		t.Fatalf("expected only call_1/valid_tool, got %#v", toolCalls)
+	}
+	if finishes := compatChunksOfType(chunks, provider.ChunkTypeFinish); len(finishes) != 1 {
+		t.Fatalf("expected 1 finish chunk, got %#v", finishes)
+	}
+}
+
+// TestOpenAICompatStream_KeepsIDlessToolCallsDistinctOnReusedIndex ports the
+// OpenAI-compatible regression added by TS #18445 ("should keep id-less
+// tool calls distinct when the index is reused"): three id-less tool_calls
+// deltas sharing index 0 (read_file / write_file / read_file) must remain
+// three distinct tool calls, not merge into one or two.
+func TestOpenAICompatStream_KeepsIDlessToolCallsDistinctOnReusedIndex(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"type":"function","function":{"name":"read_file","arguments":"{\"path\":\"p0\"}"}}]},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"type":"function","function":{"name":"write_file","arguments":"{\"path\":\"p1\"}"}}]},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"type":"function","function":{"name":"read_file","arguments":"{\"path\":\"p2\"}"}}]},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`
+	stream := newTestStream(sseData)
+	defer stream.Close() //nolint:errcheck
+
+	chunks := collectStreamChunks(t, stream)
+	toolCalls := compatChunksOfType(chunks, provider.ChunkTypeToolCall)
+	if len(toolCalls) != 3 {
+		t.Fatalf("expected 3 tool-call chunks, got %d in %#v", len(toolCalls), chunks)
+	}
+
+	wantNames := []string{"read_file", "write_file", "read_file"}
+	wantInputs := []string{`{"path":"p0"}`, `{"path":"p1"}`, `{"path":"p2"}`}
+	ids := map[string]bool{}
+	for i, tc := range toolCalls {
+		if tc.ToolCall.ToolName != wantNames[i] {
+			t.Fatalf("toolCalls[%d].ToolName = %q, want %q", i, tc.ToolCall.ToolName, wantNames[i])
+		}
+		if tc.ToolCall.RawArguments != wantInputs[i] {
+			t.Fatalf("toolCalls[%d].RawArguments = %q, want %q", i, tc.ToolCall.RawArguments, wantInputs[i])
+		}
+		if strings.TrimSpace(tc.ToolCall.ID) == "" {
+			t.Fatalf("toolCalls[%d].ID is blank", i)
+		}
+		ids[tc.ToolCall.ID] = true
+	}
+	if len(ids) != 3 {
+		t.Fatalf("expected 3 distinct tool call ids, got %#v", ids)
+	}
+}
+
 func TestOpenAICompatStream_UsesIDFallbackWhenIndexMissing(t *testing.T) {
 	sseData := `data: {"choices":[{"delta":{"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"q\":\""}}]},"finish_reason":null}]}
 

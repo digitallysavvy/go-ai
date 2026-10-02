@@ -101,6 +101,31 @@ if err != nil {
 defer client.Close()
 ```
 
+### Custom OAuth Client Providers
+
+For full control over credential storage (e.g. a database-backed provider shared by multiple processes), implement `mcp.OAuthClientProvider` and drive the flow yourself with `mcp.Auth`.
+
+If the server rotates its OAuth issuer, rediscovered authorization server metadata may no longer match the metadata that issued your stored credentials. `mcp.Auth` surfaces this as a permanent failure, detectable with `mcp.IsAuthorizationServerMismatchError`:
+
+```go
+result, err := mcp.Auth(ctx, provider, mcp.AuthOptions{ServerURL: serverURL})
+if mcp.IsAuthorizationServerMismatchError(err) {
+    // Treat as permanent: drop credentials and start a fresh authorization
+    // flow rather than retrying with the stale pin.
+}
+```
+
+If your provider also implements `mcp.OAuthTokenInvalidator`, `mcp.Auth` identifies the exact token generation a failed refresh attempted, letting providers that share storage across clients delete only that stale generation instead of unconditionally clearing storage — so a concurrent refresh's newer tokens survive:
+
+```go
+func (p *myOAuthProvider) InvalidateCredentialsForTokens(ctx context.Context, tokens mcp.OAuthTokens) error {
+    if p.tokens != nil && p.tokens.AccessToken == tokens.AccessToken && p.tokens.RefreshToken == tokens.RefreshToken {
+        p.tokens = nil
+    }
+    return nil
+}
+```
+
 ### HTTP Error Handling
 
 HTTP transport failures return `*mcp.MCPClientError` with structured transport fields. `Code` remains the JSON-RPC application error code; `StatusCode`, `URL`, and `ResponseBody` describe the HTTP failure.

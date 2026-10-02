@@ -75,17 +75,21 @@ func HasUserAgent(headers map[string]string) bool {
 
 // RuntimeEnvironmentUserAgent returns the runtime-environment user-agent
 // suffix, mirroring TS provider-utils' `getRuntimeEnvironmentUserAgent`.
-// The TS helper branches on the detected JS runtime (browser, Deno/Bun/modern
-// Node via navigator.userAgent, older Node.js, Vercel Edge), producing
-// strings like "runtime/browser" or "runtime/node.js/v20.11.0". Go has
-// exactly one runtime, so this always returns
-// "runtime/go/<runtime.Version()>" (e.g. "runtime/go/go1.25.1").
+// TS #21344 ("use standards-compliant User-Agent header") dropped the
+// "runtime/" prefix this helper used to add: an RFC 9110 product
+// identifier is `token ["/" version]` and allows only one "/", so
+// "runtime/go/go1.25.1" (two slashes) was invalid the same way
+// "runtime/node.js/v20.11.0" was for TS. The TS helper now returns the raw
+// per-runtime identifier with no added prefix (e.g. "node.js/v20.11.0",
+// or the runtime's own navigator.userAgent string unmodified), and an
+// empty string for a runtime it cannot identify (dropped by
+// WithUserAgentSuffix's `.filter(Boolean)` instead of a placeholder like
+// the old "runtime/unknown").
 //
-// The "go/" segment is kept even though runtime.Version() already starts
-// with "go" (so the result reads "go/go1.25.1", not "go1.25.1") so the
-// value keeps TS's "runtime/<ecosystem>/<version>" shape — matching
-// "runtime/node.js/v20.11.0" token for token — rather than collapsing to a
-// two-segment "runtime/go1.25.1" that would read as ecosystem-less.
+// Go has exactly one, always-identifiable runtime, so this always returns
+// "go/<runtime.Version()>" (e.g. "go/go1.25.1") — one slash, matching TS's
+// "node.js/v20.11.0" shape token for token once the "runtime/" prefix is
+// gone.
 func RuntimeEnvironmentUserAgent() string {
-	return "runtime/go/" + runtime.Version()
+	return "go/" + runtime.Version()
 }
