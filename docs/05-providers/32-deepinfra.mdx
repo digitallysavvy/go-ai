@@ -168,18 +168,18 @@ for _, modelID := range models {
 package main
 
 import (
+    "context"
     "fmt"
     "log"
     "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/deepinfra"
 )
 
 func main() {
-    provider := openai.New(openai.Config{
-        APIKey:  os.Getenv("DEEPINFRA_API_KEY"),
-        BaseURL: "https://api.deepinfra.com/v1/openai",
+    provider := deepinfra.New(deepinfra.Config{
+        APIKey: os.Getenv("DEEPINFRA_API_KEY"),
     })
 
     model, err := provider.LanguageModel("meta-llama/Meta-Llama-3.1-70B-Instruct")
@@ -187,7 +187,7 @@ func main() {
         log.Fatal(err)
     }
 
-    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
         Model: model,
         Prompt: "Explain serverless GPU inference",
     })
@@ -201,7 +201,7 @@ func main() {
             result.Usage.GetOutputTokens()))
 }
 
-func calculateCost(inputTokens, outputTokens int) float64 {
+func calculateCost(inputTokens, outputTokens int64) float64 {
     inputCost := float64(inputTokens) * 0.52 / 1_000_000
     outputCost := float64(outputTokens) * 0.75 / 1_000_000
     return inputCost + outputCost
