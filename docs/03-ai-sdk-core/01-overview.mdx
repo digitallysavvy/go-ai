@@ -207,7 +207,8 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 if err != nil {
     // Handle error
-    if errors.Is(err, provider.ErrRateLimit) {
+    // providererrors is github.com/digitallysavvy/go-ai/pkg/provider/errors
+    if providererrors.IsRateLimitError(err) {
         fmt.Println("Rate limit exceeded")
     }
     log.Fatal(err)

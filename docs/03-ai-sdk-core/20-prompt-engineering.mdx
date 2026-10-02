@@ -290,8 +290,8 @@ type MarketingCampaign struct {
     Tone        string   `json:"tone" description:"Brand tone (e.g., 'professional', 'playful')"`
 }
 
-// Convert struct to JSON schema
-schema := types.StructToJSONSchema(MarketingCampaign{})
+// Build a JSON schema from the struct's json tags
+schema := ai.SchemaFor[MarketingCampaign]()
 
 result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
     Model:  model,
@@ -408,7 +408,7 @@ type SloganSet struct {
     Emotion    string `json:"emotion" description:"Single word describing emotion"`
 }
 
-schema := types.StructToJSONSchema(SloganSet{})
+schema := ai.SchemaFor[SloganSet]()
 
 result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
     Model:  model,
