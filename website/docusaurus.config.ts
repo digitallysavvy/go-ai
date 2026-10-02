@@ -2,10 +2,10 @@ import { themes as prismThemes } from 'prism-react-renderer';
 import type { Config } from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 
-// Where the site is served. To move to the custom domain, set SITE_URL to
-// 'https://goaisdk.com' and BASE_URL to '/' (and add static/CNAME).
-const SITE_URL = 'https://digitallysavvy.github.io';
-const BASE_URL = '/go-ai/';
+// Where the site is served: the custom domain goaisdk.com (GitHub Pages
+// redirects the old digitallysavvy.github.io/go-ai/ URLs here).
+const SITE_URL = 'https://goaisdk.com';
+const BASE_URL = '/';
 
 const config: Config = {
   title: 'Go AI SDK',
