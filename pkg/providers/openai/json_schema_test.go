@@ -233,6 +233,132 @@ func TestNormalizeOpenAIJSONSchemaPreservesEscapedLookaroundLikeText(t *testing.
 	}
 }
 
+// TestNormalizeOpenAIJSONSchemaUnwrapsNestedSingletonAllOfReference ports
+// normalize-openai-json-schema.test.ts's "unwraps singleton reference allOf
+// schemas from recursive Zod schemas" (TS commit 4e94782655, #21678). Zod 4
+// emits a recursive reference as {"allOf": [{"$ref": "..."}]}; OpenAI
+// rejects "allOf", but a singleton reference validates identically to a
+// direct $ref, so it must be rewritten in place rather than dropped.
+func TestNormalizeOpenAIJSONSchemaUnwrapsNestedSingletonAllOfReference(t *testing.T) {
+	schema := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"relatives": map[string]interface{}{
+				"type": "array",
+				"items": map[string]interface{}{
+					"allOf": []interface{}{
+						map[string]interface{}{"$ref": "#/definitions/person"},
+					},
+				},
+			},
+		},
+		"definitions": map[string]interface{}{
+			"person": map[string]interface{}{
+				"type":                 "object",
+				"properties":           map[string]interface{}{"firstName": map[string]interface{}{"type": "string"}},
+				"required":             []interface{}{"firstName"},
+				"additionalProperties": false,
+			},
+		},
+		"required":             []interface{}{"relatives"},
+		"additionalProperties": false,
+	}
+
+	want := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"relatives": map[string]interface{}{
+				"type":  "array",
+				"items": map[string]interface{}{"$ref": "#/definitions/person"},
+			},
+		},
+		"definitions":          schema["definitions"],
+		"required":             []interface{}{"relatives"},
+		"additionalProperties": false,
+	}
+
+	got, warnings, err := NormalizeOpenAIJSONSchema(schema)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("schema = %#v, want %#v", got, want)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none", warnings)
+	}
+}
+
+// TestNormalizeOpenAIJSONSchemaExpandsRootSingletonAllOfReference ports
+// normalize-openai-json-schema.test.ts's "expands a singleton local
+// reference allOf at the root" (TS commit 4e94782655, #21678). OpenAI
+// requires an object at the schema root, so a root-level singleton
+// reference must be inlined (expanded) rather than rewritten to a bare
+// $ref; the root's own fields (here "default") take precedence over the
+// expanded definition's fields.
+func TestNormalizeOpenAIJSONSchemaExpandsRootSingletonAllOfReference(t *testing.T) {
+	personDef := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"firstName": map[string]interface{}{"type": "string"},
+			"relatives": map[string]interface{}{
+				"type": "array",
+				"items": map[string]interface{}{
+					"allOf": []interface{}{
+						map[string]interface{}{"$ref": "#/definitions/person"},
+					},
+				},
+			},
+		},
+		"required":             []interface{}{"firstName", "relatives"},
+		"additionalProperties": false,
+	}
+	schema := map[string]interface{}{
+		"default": map[string]interface{}{"firstName": "John"},
+		"allOf": []interface{}{
+			map[string]interface{}{"$ref": "#/definitions/person"},
+		},
+		"definitions": map[string]interface{}{"person": personDef},
+	}
+
+	expandedRelatives := map[string]interface{}{
+		"type":  "array",
+		"items": map[string]interface{}{"$ref": "#/definitions/person"},
+	}
+	want := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"firstName": map[string]interface{}{"type": "string"},
+			"relatives": expandedRelatives,
+		},
+		"required":             []interface{}{"firstName", "relatives"},
+		"additionalProperties": false,
+		"default":              map[string]interface{}{"firstName": "John"},
+		"definitions": map[string]interface{}{
+			"person": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"firstName": map[string]interface{}{"type": "string"},
+					"relatives": expandedRelatives,
+				},
+				"required":             []interface{}{"firstName", "relatives"},
+				"additionalProperties": false,
+			},
+		},
+	}
+
+	got, warnings, err := NormalizeOpenAIJSONSchema(schema)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("schema = %#v, want %#v", got, want)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none", warnings)
+	}
+}
+
 func TestContainsRegexLookaroundTable(t *testing.T) {
 	tests := []struct {
 		pattern string
