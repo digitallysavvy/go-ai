@@ -23,12 +23,12 @@ import (
     "encoding/json"
     "fmt"
     "log"
-    "os"
     "time"
 
     "github.com/digitallysavvy/go-ai/pkg/middleware"
     "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/testutil"
     "github.com/redis/go-redis/v9"
 )
 
@@ -37,9 +37,10 @@ func CacheMiddleware(client *redis.Client, ttl time.Duration) *middleware.Langua
     return &middleware.LanguageModelMiddleware{
         WrapGenerate: func(
             ctx context.Context,
-            model provider.LanguageModel,
-            next middleware.GenerateFunc,
+            doGenerate func() (*types.GenerateResult, error),
+            doStream func() (provider.TextStream, error),
             options *provider.GenerateOptions,
+            model provider.LanguageModel,
         ) (*types.GenerateResult, error) {
             // Create cache key from options
             cacheKey := createCacheKey(options)
@@ -56,7 +57,7 @@ func CacheMiddleware(client *redis.Client, ttl time.Duration) *middleware.Langua
             }
 
             // Cache miss - call the model
-            result, err := next(ctx, options)
+            result, err := doGenerate()
             if err != nil {
                 return nil, err
             }
@@ -70,9 +71,10 @@ func CacheMiddleware(client *redis.Client, ttl time.Duration) *middleware.Langua
 
         WrapStream: func(
             ctx context.Context,
-            model provider.LanguageModel,
-            next middleware.StreamFunc,
+            doGenerate func() (*types.GenerateResult, error),
+            doStream func() (provider.TextStream, error),
             options *provider.GenerateOptions,
+            model provider.LanguageModel,
         ) (provider.TextStream, error) {
             // Create cache key
             cacheKey := createCacheKey(options)
@@ -89,7 +91,7 @@ func CacheMiddleware(client *redis.Client, ttl time.Duration) *middleware.Langua
             }
 
             // Cache miss - call the model
-            stream, err := next(ctx, options)
+            stream, err := doStream()
             if err != nil {
                 return nil, err
             }
@@ -265,9 +267,10 @@ func MemoryCacheMiddleware(cache *MemoryCache, ttl time.Duration) *middleware.La
     return &middleware.LanguageModelMiddleware{
         WrapGenerate: func(
             ctx context.Context,
-            model provider.LanguageModel,
-            next middleware.GenerateFunc,
+            doGenerate func() (*types.GenerateResult, error),
+            doStream func() (provider.TextStream, error),
             options *provider.GenerateOptions,
+            model provider.LanguageModel,
         ) (*types.GenerateResult, error) {
             cacheKey := createCacheKey(options)
 
@@ -280,7 +283,7 @@ func MemoryCacheMiddleware(cache *MemoryCache, ttl time.Duration) *middleware.La
             }
 
             // Call model
-            result, err := next(ctx, options)
+            result, err := doGenerate()
             if err != nil {
                 return nil, err
             }
@@ -334,9 +337,10 @@ func FileCacheMiddleware(cacheDir string, ttl time.Duration) *middleware.Languag
     return &middleware.LanguageModelMiddleware{
         WrapGenerate: func(
             ctx context.Context,
-            model provider.LanguageModel,
-            next middleware.GenerateFunc,
+            doGenerate func() (*types.GenerateResult, error),
+            doStream func() (provider.TextStream, error),
             options *provider.GenerateOptions,
+            model provider.LanguageModel,
         ) (*types.GenerateResult, error) {
             cacheKey := createCacheKey(options)
             cacheFile := filepath.Join(cacheDir, cacheKey+".json")
@@ -356,7 +360,7 @@ func FileCacheMiddleware(cacheDir string, ttl time.Duration) *middleware.Languag
             }
 
             // Call model
-            result, err := next(ctx, options)
+            result, err := doGenerate()
             if err != nil {
                 return nil, err
             }
@@ -373,6 +377,12 @@ func FileCacheMiddleware(cacheDir string, ttl time.Duration) *middleware.Languag
             return result, nil
         },
     }
+}
+
+func createCacheKey(options *provider.GenerateOptions) string {
+    data, _ := json.Marshal(options)
+    hash := sha256.Sum256(data)
+    return hex.EncodeToString(hash[:])
 }
 ```
 
@@ -395,6 +405,7 @@ import (
     "time"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
     "github.com/redis/go-redis/v9"
 )
@@ -491,6 +502,7 @@ import (
     "log"
     "net/http"
     "os"
+    "time"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
@@ -538,9 +550,9 @@ func streamHandler(w http.ResponseWriter, r *http.Request) {
     stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
         Model:  model,
         Prompt: req.Prompt,
-        OnFinish: func(ctx context.Context, result *ai.StreamTextResult, userContext interface{}) {
+        OnFinish: func(result *ai.StreamTextResult) {
             // Cache complete response
-            redisClient.Set(context.Background(), cacheKey, result.Text, 1*time.Hour)
+            redisClient.Set(context.Background(), cacheKey, result.Text(), 1*time.Hour)
             fmt.Println("Cached stream")
         },
     })
@@ -557,7 +569,7 @@ func streamHandler(w http.ResponseWriter, r *http.Request) {
     flusher, _ := w.(http.Flusher)
 
     for chunk := range stream.Chunks() {
-        fmt.Fprintf(w, "data: %s\n\n", chunk)
+        fmt.Fprintf(w, "data: %s\n\n", chunk.Text)
         flusher.Flush()
     }
 

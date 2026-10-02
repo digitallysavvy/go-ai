@@ -175,7 +175,7 @@ func streamHandler(w http.ResponseWriter, r *http.Request) {
             log.Println("Client disconnected, cleaning up")
             return
         default:
-            fmt.Fprintf(w, "data: %s\n\n", chunk)
+            fmt.Fprintf(w, "data: %s\n\n", chunk.Text)
             flusher.Flush()
         }
     }
@@ -261,7 +261,6 @@ import (
     "os"
     "os/signal"
     "syscall"
-    "time"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"

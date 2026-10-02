@@ -145,7 +145,7 @@ tools := []types.Tool{
         Name:        "search",
         Description: "Search the web for information",
         Parameters:  /* JSON schema */,
-        Execute:     func(ctx context.Context, input map[string]interface{}) (interface{}, error) {
+        Execute:     func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
             // Implementation
         },
     },
@@ -227,7 +227,7 @@ config := agent.AgentConfig{
     OnStepStart: func(stepNum int) {
         fmt.Printf("Starting step %d\n", stepNum)
     },
-    OnStepFinish: func(ctx context.Context, step types.StepResult, userContext interface{}) {
+    OnStepFinish: func(step types.StepResult) {
         fmt.Printf("Step %d complete: %s\n", step.StepNumber, step.Text)
     },
     OnToolCall: func(toolCall types.ToolCall) {
@@ -236,7 +236,7 @@ config := agent.AgentConfig{
     OnToolResult: func(toolResult types.ToolResult) {
         fmt.Printf("Tool %s returned: %v\n", toolResult.ToolName, toolResult.Result)
     },
-    OnFinish: func(ctx context.Context, result *agent.AgentResult, userContext interface{}) {
+    OnFinish: func(result *agent.AgentResult) {
         fmt.Printf("Agent complete after %d steps\n", len(result.Steps))
     },
 }
@@ -363,7 +363,7 @@ func main() {
             },
         },
         MaxSteps: 15,
-        OnStepFinish: func(ctx context.Context, step types.StepResult, userContext interface{}) {
+        OnStepFinish: func(step types.StepResult) {
             fmt.Printf("[Step %d] %s\n", step.StepNumber, step.Text)
         },
     })

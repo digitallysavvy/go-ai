@@ -34,7 +34,6 @@ import (
     "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/provider/types"
     "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 )
@@ -45,7 +44,7 @@ type MessageHistory struct {
 }
 
 // Add appends a message to the history.
-func (h *MessageHistory) Add(role types.Role, text string) {
+func (h *MessageHistory) Add(role types.MessageRole, text string) {
     h.messages = append(h.messages, types.Message{
         Role: role,
         Content: []types.ContentPart{
@@ -110,7 +109,7 @@ func NewSlidingWindowHistory(maxTurns int) *SlidingWindowHistory {
     return &SlidingWindowHistory{maxTurns: maxTurns}
 }
 
-func (h *SlidingWindowHistory) Add(role types.Role, text string) {
+func (h *SlidingWindowHistory) Add(role types.MessageRole, text string) {
     h.messages = append(h.messages, types.Message{
         Role:    role,
         Content: []types.ContentPart{types.TextContent{Text: text}},
@@ -145,6 +144,7 @@ import (
     "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/provider/types"
     "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 )
@@ -167,7 +167,7 @@ func NewCompactingHistory(model provider.LanguageModel, system string) *Compacti
     return &CompactingHistory{model: model, system: system}
 }
 
-func (h *CompactingHistory) Add(role types.Role, text string) {
+func (h *CompactingHistory) Add(role types.MessageRole, text string) {
     h.messages = append(h.messages, types.Message{
         Role:    role,
         Content: []types.ContentPart{types.TextContent{Text: text}},

@@ -41,8 +41,9 @@ fmt.Printf("Stopped because: %s\n", result.StopReason)
 // → "Stopped because: maximum number of steps (5) reached"
 ```
 
-`StepCountIs(n)` uses `>=` — it stops as soon as the step count meets or exceeds *n*, so it
-will never skip the threshold if your loop runs faster than expected.
+`StepCountIs(n)` stops the loop once exactly *n* steps have completed. Because it is
+evaluated after every step, it is checked against every step count from 1 up to *n* and
+never skips the threshold.
 
 ### HasToolCall
 
@@ -152,7 +153,7 @@ case result.FinishReason == types.FinishReasonStop:
 
 | Scenario | Behavior |
 |----------|----------|
-| Neither `StopWhen` nor `MaxSteps` set | Defaults to `StepCountIs(1)` — single tool-calling round |
+| Neither `StopWhen` nor `MaxSteps` set | No stop condition is applied — the loop continues calling tools until the model stops requesting them (`ai.GenerateText` applies a 1000-step safety ceiling) |
 | `MaxSteps` set, `StopWhen` not set | Converts to `StopWhen{StepCountIs(MaxSteps)}` |
 | Both set | `StopWhen` takes precedence; `MaxSteps` is ignored |
 

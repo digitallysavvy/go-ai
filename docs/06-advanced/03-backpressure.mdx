@@ -428,7 +428,7 @@ func streamHandler(w http.ResponseWriter, r *http.Request) {
             return
         default:
             // Send chunk to client
-            fmt.Fprintf(w, "data: %s\n\n", chunk)
+            fmt.Fprintf(w, "data: %s\n\n", chunk.Text)
             flusher.Flush()
         }
     }
