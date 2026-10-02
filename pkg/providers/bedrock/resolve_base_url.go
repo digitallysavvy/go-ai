@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // awsPartitionDNSSuffix maps a region prefix to the DNS suffix used for
@@ -62,6 +65,12 @@ func ResolveAmazonBedrockBaseURL(opts ResolveBaseURLOptions) (string, error) {
 
 	if opts.Region == "" {
 		return "", fmt.Errorf("AWS region is required: set Region or AWS_REGION")
+	}
+	if !providerutils.IsValidHostnamePart(opts.Region) {
+		return "", &providererrors.InvalidArgumentError{
+			Field:   "region",
+			Message: "Invalid AWS region. Expected a single DNS label (letters, digits, and hyphens). Use baseURL for custom endpoints.",
+		}
 	}
 
 	dnsSuffix := "amazonaws.com"
