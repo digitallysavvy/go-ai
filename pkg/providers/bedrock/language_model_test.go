@@ -364,6 +364,105 @@ func TestDoGenerate_ParsesToolCallsReasoningAndUsage(t *testing.T) {
 	}
 }
 
+func TestDoGenerate_RequestMetadataForwardedToTopLevel(t *testing.T) {
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{
+			"output": {"message": {"role": "assistant", "content": [{"text": "hello"}]}},
+			"stopReason": "end_turn",
+			"usage": {"inputTokens": 3, "outputTokens": 5, "totalTokens": 8}
+		}`))
+	}))
+	defer server.Close()
+
+	model := newHTTPTestBedrockModel(t, server, "anthropic.claude-3-5-sonnet-20241022-v2:0")
+	_, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{
+			"amazonBedrock": map[string]interface{}{
+				"requestMetadata": map[string]interface{}{"team": "search", "environment": "prod"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate error = %v", err)
+	}
+	rm, ok := gotBody["requestMetadata"].(map[string]interface{})
+	if !ok || rm["team"] != "search" || rm["environment"] != "prod" {
+		t.Fatalf("requestMetadata = %#v, want top-level map", gotBody["requestMetadata"])
+	}
+	if additional, ok := gotBody["additionalModelRequestFields"].(map[string]interface{}); ok {
+		if _, leaked := additional["requestMetadata"]; leaked {
+			t.Fatalf("requestMetadata leaked into additionalModelRequestFields: %#v", additional)
+		}
+	}
+}
+
+func TestDoGenerate_RequestMetadataOmittedWhenNotProvided(t *testing.T) {
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{
+			"output": {"message": {"role": "assistant", "content": [{"text": "hello"}]}},
+			"stopReason": "end_turn",
+			"usage": {"inputTokens": 3, "outputTokens": 5, "totalTokens": 8}
+		}`))
+	}))
+	defer server.Close()
+
+	model := newHTTPTestBedrockModel(t, server, "anthropic.claude-3-5-sonnet-20241022-v2:0")
+	_, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate error = %v", err)
+	}
+	if _, ok := gotBody["requestMetadata"]; ok {
+		t.Fatalf("requestMetadata = %#v, want omitted", gotBody["requestMetadata"])
+	}
+}
+
+func TestDoStream_RequestMetadataForwardedToTopLevel(t *testing.T) {
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		body := buildBedrockEventStreamBody([][2]string{
+			{"messageStop", `{"stopReason":"end_turn"}`},
+		})
+		w.WriteHeader(200)
+		_, _ = w.Write(body)
+	}))
+	defer server.Close()
+
+	model := newHTTPTestBedrockModel(t, server, "anthropic.claude-3-5-sonnet-20241022-v2:0")
+	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{
+			"amazonBedrock": map[string]interface{}{
+				"requestMetadata": map[string]interface{}{"team": "search", "environment": "prod"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoStream error = %v", err)
+	}
+	defer stream.Close() //nolint:errcheck
+	for {
+		if _, err := stream.Next(); err == io.EOF {
+			break
+		} else if err != nil {
+			t.Fatalf("Next() error = %v", err)
+		}
+	}
+	rm, ok := gotBody["requestMetadata"].(map[string]interface{})
+	if !ok || rm["team"] != "search" || rm["environment"] != "prod" {
+		t.Fatalf("requestMetadata = %#v, want top-level map", gotBody["requestMetadata"])
+	}
+}
+
 func TestDoGenerate_ErrorResponseUsesTypeAndMessage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(400)
