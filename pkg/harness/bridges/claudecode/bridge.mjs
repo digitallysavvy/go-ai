@@ -703,6 +703,7 @@ function createClaudeStreamEventState() {
     pendingStepAssistantUsage: void 0,
     pendingStepDeltaUsage: void 0,
     pendingStepUsage: void 0,
+    pendingResponseUsage: void 0,
     stepOpen: false,
     mcpToolUseIds: /* @__PURE__ */ new Set(),
     externalMcpToolUseIds: /* @__PURE__ */ new Set(),
@@ -773,7 +774,7 @@ function createEmitStreamEvent({
       }
       return;
     }
-    if (type === "system" && msg.subtype != null && RAW_TASK_MESSAGE_SUBTYPES.has(msg.subtype)) {
+    if (type === "tool_progress" || type === "system" && msg.subtype != null && RAW_TASK_MESSAGE_SUBTYPES.has(msg.subtype)) {
       emit({ type: "raw", rawValue: msg });
       return;
     }
@@ -784,6 +785,7 @@ function createEmitStreamEvent({
     if (type === "stream_event") {
       handleStreamEvent({
         event: msg.event,
+        message: msg,
         state,
         send: emit,
         toCommonName: toCommonName2
@@ -935,20 +937,40 @@ function formatApiRetryWarning(msg) {
 }
 function handleStreamEvent({
   event,
+  message,
   state,
   send,
   toCommonName: toCommonName2
 }) {
   if (!event) return;
+  if (event.type === "message_start") {
+    state.pendingResponseUsage = toUsageRecord(event.message?.usage);
+    return;
+  }
   if (event.type === "message_delta") {
     const usage = toUsageRecord(event.usage);
     if (usage) {
+      state.pendingResponseUsage = mergeNonNullUsage(
+        state.pendingResponseUsage,
+        usage
+      );
       state.pendingStepDeltaUsage = mergeNonNullUsage(
         state.pendingStepDeltaUsage,
         usage
       );
       updatePendingStepUsage(state);
     }
+    return;
+  }
+  if (event.type === "message_stop") {
+    send({
+      type: "raw",
+      rawValue: {
+        ...message,
+        usage: state.pendingResponseUsage ?? {}
+      }
+    });
+    state.pendingResponseUsage = void 0;
     return;
   }
   if (typeof event.index !== "number") return;

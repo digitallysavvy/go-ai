@@ -18,10 +18,10 @@
       "bridgeEntry": "bridge.mjs",
       "builtFrom": "packages/harness-claude-code/dist/bridge (tsup bundle of packages/harness-claude-code/src/bridge)",
       "files": {
-        "bridge.mjs": "4f2077cd8daf92c40cba0404416f998f96273a8b01885c9ef9d53cf9d36aaaff",
-        "package.json": "afe03f855d75974ec50fffa011c6adaed1609c70f4ac3e95b95d00f015d222c0",
-        "pnpm-lock.yaml": "b1c7e96a7f34208383e0abae7445a68728661a04709f4d7b30419f2d41f06831",
-        "pnpm-workspace.yaml": "7e65fc9b9a67ac54f22b69f8b5be22b7d88260ca60204840cff46f39ebef2649"
+        "bridge.mjs": "fb6963e3c4ed3239e09919e39776c52161ca68d89ea75a27f801a97608c07b5e",
+        "package.json": "1f32e78334fbb185715ee24b1c0ec1ae86ddf113a37a92c3845b999eb320953f",
+        "pnpm-lock.yaml": "b823c0ddb82ec2451e507924b4ed7b0d189fe0440c7f4aa9cecedfbb8a15af7b",
+        "pnpm-workspace.yaml": "39a78bfb0ce481fb4a9d32e654841bc2a2f82b7f754b19098b41f9716b7d2f7c"
       },
       "sourceDir": "packages/harness-claude-code/src/bridge",
       "sourcePackage": "@ai-sdk/harness-claude-code",

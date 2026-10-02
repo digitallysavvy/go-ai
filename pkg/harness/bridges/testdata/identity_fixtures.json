@@ -16,7 +16,7 @@
         "command": "./node_modules/.bin/claude --version"
       }
     ],
-    "identity": "3a632b269645451f"
+    "identity": "33ae948afd1c6c6c"
   },
   "codex": {
     "harnessId": "codex",
