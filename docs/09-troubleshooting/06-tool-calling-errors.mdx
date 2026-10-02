@@ -114,6 +114,9 @@ func main() {
         Model:  model,
         Prompt: "What's the weather in San Francisco?",
         Tools:  []types.Tool{weatherTool},
+        // GenerateText defaults to a single step; allow more so the model
+        // can see the tool result and produce a final text answer.
+        StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
     })
     if err != nil {
         log.Fatal(err)
@@ -259,6 +262,9 @@ func main() {
         Model:  model,
         Prompt: "What is 144 divided by 12?",
         Tools:  []types.Tool{calcTool},
+        // GenerateText defaults to a single step; allow more so the model
+        // can see the tool result and produce a final text answer.
+        StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
     })
     if err != nil {
         log.Fatal(err)
@@ -375,6 +381,9 @@ func forceToolUsage() {
         Tools:  []types.Tool{timeTool},
         // Force the model to use the tool
         ToolChoice: types.ToolChoice{Type: types.ToolChoiceRequired},
+        // GenerateText defaults to a single step; allow more so the model
+        // can see the tool result and produce a final text answer.
+        StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
     })
     if err != nil {
         log.Fatal(err)
@@ -517,6 +526,9 @@ func main() {
         Model:  model,
         Prompt: "Search for the latest news about AI",
         Tools:  []types.Tool{searchTool},
+        // GenerateText defaults to a single step; allow more so the model
+        // can see the tool result and produce a final text answer.
+        StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
     })
     if err != nil {
         log.Fatal(err)
@@ -673,6 +685,10 @@ func main() {
         Model:  model,
         Prompt: "Get all orders for user ID user-123",
         Tools:  tools,
+        // GenerateText defaults to a single step; this scenario needs
+        // multiple tool-call rounds (get_user, then get_orders) plus a
+        // final text response, so allow more steps.
+        StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
     })
     if err != nil {
         log.Fatal(err)
