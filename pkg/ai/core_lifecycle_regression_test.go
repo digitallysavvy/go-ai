@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -454,8 +455,15 @@ func TestStreamTextPrepareStepModelOverrideUpdatesStepAndFinishMetadata(t *testi
 			}), nil
 		},
 	}
-	var finishedStepModels []string
-	var finalModel string
+	// The finish callbacks run on the stream goroutine and can fire after
+	// Text()/Steps() return (as in TS, where onFinish runs after the result
+	// promises resolve), so guard them and wait for OnFinishEvent.
+	var (
+		mu                 sync.Mutex
+		finishedStepModels []string
+		finalModel         string
+	)
+	finished := make(chan struct{})
 	result, err := StreamText(context.Background(), StreamTextOptions{
 		Model: firstModel,
 		Messages: []types.Message{{
@@ -476,10 +484,15 @@ func TestStreamTextPrepareStepModelOverrideUpdatesStepAndFinishMetadata(t *testi
 			return step
 		},
 		OnStepFinishEvent: func(ctx context.Context, e OnStepFinishEvent) {
+			mu.Lock()
 			finishedStepModels = append(finishedStepModels, e.ModelID)
+			mu.Unlock()
 		},
 		OnFinishEvent: func(ctx context.Context, e OnFinishEvent) {
+			mu.Lock()
 			finalModel = e.ModelID
+			mu.Unlock()
+			close(finished)
 		},
 	})
 	if err != nil {
@@ -487,6 +500,13 @@ func TestStreamTextPrepareStepModelOverrideUpdatesStepAndFinishMetadata(t *testi
 	}
 	_ = result.Text()
 	steps := result.Steps()
+	select {
+	case <-finished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("OnFinishEvent was not called")
+	}
+	mu.Lock()
+	defer mu.Unlock()
 	if len(finishedStepModels) != 2 || finishedStepModels[0] != "first" || finishedStepModels[1] != "second" {
 		t.Fatalf("finishedStepModels = %#v, want first then second step models", finishedStepModels)
 	}
