@@ -4,3 +4,28 @@
 .main {
   min-width: 0;
 }
+
+.faq {
+  display: grid;
+  gap: 0.75rem;
+  max-width: 52rem;
+}
+
+.faqItem {
+  border: 1px solid var(--l-border);
+  border-radius: 10px;
+  background: var(--l-surface);
+  padding: 0.9rem 1.1rem;
+}
+
+.faqQ {
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--l-text);
+}
+
+.faqA {
+  margin: 0.75rem 0 0;
+  line-height: 1.6;
+  color: var(--l-muted);
+}
