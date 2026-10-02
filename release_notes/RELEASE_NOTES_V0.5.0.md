@@ -955,6 +955,15 @@ fixes on TS `main` up to `5b8e63bad8`):
 - Streaming tool calls: the shared tracker no longer aborts, corrupts,
   loses or misorders calls when a provider sends unreliable tool-call IDs,
   indexes or names (TS #18445).
+- `PipeTextStreamToWriter` and the UI message stream pipes close the source
+  stream when the client disconnects or the request context is cancelled,
+  instead of leaking the provider connection.
+- Azure: the OpenAI-protocol transcription model supports streaming
+  (`gpt-realtime-whisper` deployments), as in TS.
+- Google Vertex: embedding calls read `providerOptions.googleVertex` (they
+  only checked `vertex` and `google`).
+- Harness: tool-execution telemetry spans now start when the tool starts,
+  not when it finishes.
 - Docs: pages that showed functions, types or options that don't exist in
   the SDK were corrected against the code, and every complete example
   program was compiled.

@@ -180,8 +180,12 @@ step-by-step upgrade instructions are in
   responses, breaking multi-step `StreamText` with thinking and tools; the
   shared streaming tool-call tracker no longer aborts, corrupts, loses or
   misorders calls when providers send unreliable tool-call labels; UI
-  message stream pipes now cancel their source when the client
-  disconnects. Docs pages that showed APIs that don't exist were corrected
+  message stream and text stream pipes now close their source when the
+  client disconnects (no leaked provider connections); Azure's
+  OpenAI-protocol transcription model supports streaming
+  (`gpt-realtime-whisper`); Google Vertex embeddings honor
+  `providerOptions.googleVertex`; harness tool-execution telemetry spans
+  start when the tool starts. Docs pages that showed APIs that don't exist were corrected
   against the code. Full list in the release notes' Bug Fixes section.
 
 ### Security
