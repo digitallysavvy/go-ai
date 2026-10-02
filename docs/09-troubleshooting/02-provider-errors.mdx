@@ -31,7 +31,6 @@ import (
     "fmt"
     "log"
     "os"
-    "time"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
     providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -111,11 +110,13 @@ import (
     "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    goprovider "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
-func getAvailableModel(provider *openai.Provider, preferredModels []string) (interface{}, error) {
+func getAvailableModel(provider *openai.Provider, preferredModels []string) (goprovider.LanguageModel, error) {
     ctx := context.Background()
+    maxTokens := 5
 
     // Try models in order of preference
     for _, modelName := range preferredModels {
@@ -127,9 +128,9 @@ func getAvailableModel(provider *openai.Provider, preferredModels []string) (int
 
         // Test if model is actually accessible with a cheap request
         _, err = ai.GenerateText(ctx, ai.GenerateTextOptions{
-            Model:      model,
-            Prompt:     "Hi",
-            MaxTokens:  5,
+            Model:     model,
+            Prompt:    "Hi",
+            MaxTokens: &maxTokens,
         })
         if err == nil {
             log.Printf("Using model: %s", modelName)
@@ -270,11 +271,12 @@ import (
     "time"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
     providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
     "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 )
 
-func generateWithRetry(ctx context.Context, model interface{}, prompt string, maxRetries int) (string, error) {
+func generateWithRetry(ctx context.Context, model provider.LanguageModel, prompt string, maxRetries int) (string, error) {
     var lastErr error
 
     for attempt := 0; attempt <= maxRetries; attempt++ {
@@ -422,6 +424,7 @@ import (
     "time"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
     providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
     "github.com/digitallysavvy/go-ai/pkg/providers/google"
     "golang.org/x/time/rate"
@@ -430,7 +433,7 @@ import (
 // Rate limiter for Google AI (15 RPM for free tier)
 var googleLimiter = rate.NewLimiter(rate.Limit(15.0/60.0), 1)
 
-func generateWithRateLimit(ctx context.Context, model interface{}, prompt string) (string, error) {
+func generateWithRateLimit(ctx context.Context, model provider.LanguageModel, prompt string) (string, error) {
     // Wait for rate limiter
     if err := googleLimiter.Wait(ctx); err != nil {
         return "", fmt.Errorf("rate limiter error: %w", err)
@@ -569,23 +572,20 @@ import (
     "fmt"
     "log"
 
-    "github.com/aws/aws-sdk-go-v2/config"
     "github.com/digitallysavvy/go-ai/pkg/ai"
     "github.com/digitallysavvy/go-ai/pkg/providers/bedrock"
 )
 
 func main() {
-    // Load AWS credentials from environment or credentials file
     ctx := context.Background()
-    cfg, err := config.LoadDefaultConfig(ctx,
-        config.WithRegion("us-east-1"),
-    )
-    if err != nil {
-        log.Fatalf("Failed to load AWS config: %v", err)
-    }
 
+    // bedrock.Config signs requests itself (SigV4), so there is no AWS SDK
+    // aws.Config to load. With AWSAccessKeyID/AWSSecretAccessKey left unset,
+    // credentials and region fall back to the environment (AWS_REGION,
+    // AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY), the shared credentials file,
+    // or an instance role — the same chain the AWS CLI uses.
     provider := bedrock.New(bedrock.Config{
-        AWSConfig: cfg,
+        Region: "us-east-1",
     })
 
     // Use full model ARN or ID
