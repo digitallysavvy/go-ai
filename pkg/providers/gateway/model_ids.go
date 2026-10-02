@@ -80,6 +80,7 @@ const (
 	GatewayLanguageModelAnthropicClaudeSonnet45          GatewayLanguageModelID = "anthropic/claude-sonnet-4.5"
 	GatewayLanguageModelAnthropicClaudeSonnet46          GatewayLanguageModelID = "anthropic/claude-sonnet-4.6"
 	GatewayLanguageModelAnthropicClaudeSonnet5           GatewayLanguageModelID = "anthropic/claude-sonnet-5"
+	GatewayLanguageModelAnthropicClaudeSonnet55          GatewayLanguageModelID = "anthropic/claude-sonnet-5.5"
 	GatewayLanguageModelArceeAiTrinityLargeThinking      GatewayLanguageModelID = "arcee-ai/trinity-large-thinking"
 	GatewayLanguageModelBytedanceSeed16                  GatewayLanguageModelID = "bytedance/seed-1.6"
 	GatewayLanguageModelBytedanceSeed18                  GatewayLanguageModelID = "bytedance/seed-1.8"
@@ -503,6 +504,7 @@ var GatewayLanguageModelIDs = []GatewayLanguageModelID{
 	GatewayLanguageModelAnthropicClaudeSonnet45,
 	GatewayLanguageModelAnthropicClaudeSonnet46,
 	GatewayLanguageModelAnthropicClaudeSonnet5,
+	GatewayLanguageModelAnthropicClaudeSonnet55,
 	GatewayLanguageModelArceeAiTrinityLargeThinking,
 	GatewayLanguageModelBytedanceSeed16,
 	GatewayLanguageModelBytedanceSeed18,

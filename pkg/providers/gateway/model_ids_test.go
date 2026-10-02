@@ -20,6 +20,7 @@ func TestGatewayModelIDConstantsMatchSettings(t *testing.T) {
 		{"language OpenAI GPT-6 Sol", string(GatewayLanguageModelOpenaiGpt6Sol), "openai/gpt-6-sol"},
 		{"language Anthropic opus 4.8", string(GatewayLanguageModelAnthropicClaudeOpus48), "anthropic/claude-opus-4.8"},
 		{"language Anthropic opus 5.5", string(GatewayLanguageModelAnthropicClaudeOpus55), "anthropic/claude-opus-5.5"},
+		{"language Anthropic sonnet 5.5", string(GatewayLanguageModelAnthropicClaudeSonnet55), "anthropic/claude-sonnet-5.5"},
 		{"language SpaceXAI grok 4.3", string(GatewayLanguageModelSpacexaiGrok43), "spacexai/grok-4.3"},
 		{"language SpaceXAI grok 4.7", string(GatewayLanguageModelSpacexaiGrok47), "spacexai/grok-4.7"},
 		{"language SpaceXAI grok build", string(GatewayLanguageModelSpacexaiGrokBuild01), "spacexai/grok-build-0.1"},
@@ -81,7 +82,7 @@ func catalogs() map[string][]string {
 
 func TestGatewayModelIDCatalogsExposeAllModelKinds(t *testing.T) {
 	want := map[string]int{
-		"language":      262,
+		"language":      263,
 		"embedding":     26,
 		"image":         33,
 		"video":         35,
