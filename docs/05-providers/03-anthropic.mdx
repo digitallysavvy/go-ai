@@ -27,7 +27,7 @@ provider := anthropic.New(anthropic.Config{
     APIKey: os.Getenv("ANTHROPIC_API_KEY"),
 })
 
-model, err := provider.LanguageModel("claude-sonnet-4.5")
+model, err := provider.LanguageModel("claude-sonnet-4-5")
 if err != nil {
     log.Fatal(err)
 }
@@ -77,7 +77,7 @@ provider, err := anthropicaws.New(anthropicaws.Config{
 })
 ```
 
-The default base URL is `https://aws-external-anthropic.{region}.api.aws`. `WorkspaceID` is required and is sent as `anthropic-workspace-id`.
+The default base URL is `https://aws-external-anthropic.{region}.api.aws/v1`. `WorkspaceID` is required and is sent as `anthropic-workspace-id`.
 
 ## Available Models
 
@@ -88,9 +88,9 @@ The default base URL is `https://aws-external-anthropic.{region}.api.aws`. `Work
 | claude-opus-4-7 | 200K | TBA | TBA | Latest Opus reasoning and coding |
 | claude-opus-4-6 | 200K | TBA | TBA | Complex tasks, fast mode |
 | claude-sonnet-4-6 | 200K | TBA | TBA | Balanced performance and capability |
-| claude-opus-4.5 | 200K | $15.00/1M | $75.00/1M | Most capable, complex tasks |
-| claude-sonnet-4.5 | 200K | $3.00/1M | $15.00/1M | Best balance of speed & quality |
-| claude-haiku-4.5 | 200K | $0.80/1M | $4.00/1M | Fast, cost-effective |
+| claude-opus-4-5 | 200K | $15.00/1M | $75.00/1M | Most capable, complex tasks |
+| claude-sonnet-4-5 | 200K | $3.00/1M | $15.00/1M | Best balance of speed & quality |
+| claude-haiku-4-5 | 200K | $0.80/1M | $4.00/1M | Fast, cost-effective |
 
 ### Claude 4 Series
 
@@ -366,8 +366,8 @@ for chunk := range stream.Chunks() {
     fmt.Print(chunk.Text)
 }
 
-if stream.Error() != nil {
-    log.Fatal(stream.Error())
+if stream.Err() != nil {
+    log.Fatal(stream.Err())
 }
 ```
 
@@ -392,7 +392,7 @@ func main() {
         APIKey: os.Getenv("ANTHROPIC_API_KEY"),
     })
 
-    model, err := provider.LanguageModel("claude-sonnet-4.5")
+    model, err := provider.LanguageModel("claude-sonnet-4-5")
     if err != nil {
         log.Fatal(err)
     }
@@ -614,13 +614,15 @@ provider := anthropic.New(anthropic.Config{
 
 ### Beta Features
 
+Most beta headers (prompt caching, extended thinking, context management, and so on) are added automatically based on the `ModelOptions` you set. To send an additional `anthropic-beta` flag that isn't covered by a dedicated option, set `AnthropicBeta` on `ModelOptions`:
+
 ```go
 provider := anthropic.New(anthropic.Config{
     APIKey: os.Getenv("ANTHROPIC_API_KEY"),
-    BetaHeaders: []string{
-        "prompt-caching-2024-07-31",
-        "extended-thinking-2024-12-01",
-    },
+})
+
+model, err := provider.LanguageModelWithOptions("claude-sonnet-4-5", &anthropic.ModelOptions{
+    AnthropicBeta: []string{"some-other-beta-flag"},
 })
 ```
 
@@ -695,9 +697,9 @@ func generateWithRetry(ctx context.Context, model provider.LanguageModel, prompt
 ## Best Practices
 
 1. **Model Selection**
-   - Use `claude-sonnet-4.5` for best balance of quality and speed
-   - Use `claude-opus-4.5` for most complex tasks requiring deep analysis
-   - Use `claude-haiku-4.5` for high-volume, latency-sensitive applications
+   - Use `claude-sonnet-4-5` for best balance of quality and speed
+   - Use `claude-opus-4-5` for most complex tasks requiring deep analysis
+   - Use `claude-haiku-4-5` for high-volume, latency-sensitive applications
 
 2. **Prompt Engineering**
    - Be specific and detailed in instructions
@@ -745,11 +747,11 @@ func estimateTokens(text string) int {
 }
 
 // Calculate cost
-func calculateCost(usage ai.Usage, model string) float64 {
+func calculateCost(usage types.Usage, model string) float64 {
     rates := map[string][2]float64{
-        "claude-opus-4.5":   {15.00 / 1_000_000, 75.00 / 1_000_000},
-        "claude-sonnet-4.5": {3.00 / 1_000_000, 15.00 / 1_000_000},
-        "claude-haiku-4.5":  {0.80 / 1_000_000, 4.00 / 1_000_000},
+        "claude-opus-4-5":   {15.00 / 1_000_000, 75.00 / 1_000_000},
+        "claude-sonnet-4-5": {3.00 / 1_000_000, 15.00 / 1_000_000},
+        "claude-haiku-4-5":  {0.80 / 1_000_000, 4.00 / 1_000_000},
     }
 
     rate := rates[model]

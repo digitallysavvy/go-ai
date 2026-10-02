@@ -26,9 +26,9 @@ import (
 
 ```go
 provider := bedrock.New(bedrock.Config{
-    Region:          "us-east-1",
-    AccessKeyID:     os.Getenv("AWS_ACCESS_KEY_ID"),
-    SecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
+    Region:             "us-east-1",
+    AWSAccessKeyID:     os.Getenv("AWS_ACCESS_KEY_ID"),
+    AWSSecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
 })
 
 model, err := provider.LanguageModel("anthropic.claude-3-5-sonnet-20241022-v2:0")
@@ -64,7 +64,7 @@ export AWS_REGION=us-east-1
 
 | Model ID | Context | Input Price | Output Price | Best For |
 |----------|---------|-------------|--------------|----------|
-| meta.llama3-3-70b-instruct-v1:0 | 128K | $0.99/1M | $0.99/1M | Open source |
+| us.meta.llama3-3-70b-instruct-v1:0 | 128K | $0.99/1M | $0.99/1M | Open source |
 | meta.llama3-2-90b-instruct-v1:0 | 128K | $2.65/1M | $2.65/1M | Multimodal |
 | meta.llama3-2-11b-instruct-v1:0 | 128K | $0.35/1M | $0.35/1M | Efficient |
 
@@ -115,27 +115,20 @@ export AWS_REGION=us-east-1
 
 ### Model Access Control
 
-Request access to specific models:
-
-```go
-// Check model access
-models, err := provider.ListAvailableModels()
-for _, model := range models {
-    fmt.Printf("%s: %s\n", model.ID, model.Status)
-}
-```
+Request access to models in the [Bedrock Console](https://console.aws.amazon.com/bedrock/home#/modelaccess) before calling them; the SDK does not expose an API to list or manage model access.
 
 ### Cross-Region Inference
 
-Use models across AWS regions:
+Cross-region inference profiles are plain model IDs with a region prefix (e.g. `us.`, `eu.`, or no prefix for global profiles) — pass the profile ID directly to `LanguageModel`, there is no separate config field:
 
 ```go
 provider := bedrock.New(bedrock.Config{
-    Region:          "us-east-1",
-    AccessKeyID:     os.Getenv("AWS_ACCESS_KEY_ID"),
-    SecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
-    InferenceProfile: "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+    Region:             "us-east-1",
+    AWSAccessKeyID:     os.Getenv("AWS_ACCESS_KEY_ID"),
+    AWSSecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
 })
+
+model, err := provider.LanguageModel("us.anthropic.claude-3-5-sonnet-20241022-v2:0")
 ```
 
 ### Guardrails
@@ -153,36 +146,6 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
         },
     },
 })
-```
-
-### Agents
-
-Use Bedrock Agents for autonomous task execution:
-
-```go
-agent := bedrock.NewAgent(bedrock.AgentConfig{
-    AgentID:      "agent-id",
-    AgentAliasID: "alias-id",
-    Region:       "us-east-1",
-})
-
-result, err := agent.InvokeAgent("Complete this task for me")
-```
-
-### Knowledge Bases
-
-Query Bedrock Knowledge Bases:
-
-```go
-kb := bedrock.NewKnowledgeBase(bedrock.KnowledgeBaseConfig{
-    KnowledgeBaseID: "kb-id",
-    Region:          "us-east-1",
-})
-
-results, err := kb.Query("What is our refund policy?")
-for _, result := range results {
-    fmt.Printf("Source: %s\nContent: %s\n", result.Source, result.Content)
-}
 ```
 
 ## Examples
@@ -203,9 +166,9 @@ import (
 
 func main() {
     provider := bedrock.New(bedrock.Config{
-        Region:          "us-east-1",
-        AccessKeyID:     os.Getenv("AWS_ACCESS_KEY_ID"),
-        SecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
+        Region:             "us-east-1",
+        AWSAccessKeyID:     os.Getenv("AWS_ACCESS_KEY_ID"),
+        AWSSecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
     })
 
     model, err := provider.LanguageModel("anthropic.claude-3-5-sonnet-20241022-v2:0")
@@ -230,7 +193,7 @@ func main() {
 ```go
 models := []string{
     "anthropic.claude-3-5-sonnet-20241022-v2:0",
-    "meta.llama3-3-70b-instruct-v1:0",
+    "us.meta.llama3-3-70b-instruct-v1:0",
     "cohere.command-r-plus-v1:0",
 }
 
@@ -334,10 +297,10 @@ provider := bedrock.New(bedrock.Config{
 
 ```go
 provider := bedrock.New(bedrock.Config{
-    Region:          "us-east-1",
-    AccessKeyID:     os.Getenv("AWS_ACCESS_KEY_ID"),
-    SecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
-    SessionToken:    os.Getenv("AWS_SESSION_TOKEN"),
+    Region:             "us-east-1",
+    AWSAccessKeyID:     os.Getenv("AWS_ACCESS_KEY_ID"),
+    AWSSecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
+    SessionToken:       os.Getenv("AWS_SESSION_TOKEN"),
 })
 ```
 
@@ -347,8 +310,8 @@ When explicit credentials are provided, the provider uses the explicit `SessionT
 
 ```go
 provider := bedrock.New(bedrock.Config{
-    Region:   "us-east-1",
-    Endpoint: "https://bedrock-runtime.us-east-1.amazonaws.com",
+    Region:  "us-east-1",
+    BaseURL: "https://bedrock-runtime.us-east-1.amazonaws.com",
 })
 ```
 
@@ -373,26 +336,29 @@ result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
 
 ### Common Errors
 
+Bedrock surfaces errors as `*providererrors.ProviderError`, like every other provider. AWS's exception type is folded into `Message` as `"{type}: {message}"` (there is no separate error-code field), so match on the message prefix:
+
 ```go
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: prompt})
 if err != nil {
-    if bedrockErr, ok := err.(*bedrock.Error); ok {
-        switch bedrockErr.Code {
-        case "AccessDeniedException":
+    var providerErr *providererrors.ProviderError
+    if errors.As(err, &providerErr) {
+        switch {
+        case strings.HasPrefix(providerErr.Message, "AccessDeniedException"):
             log.Fatal("Access denied - check IAM permissions")
-        case "ResourceNotFoundException":
+        case strings.HasPrefix(providerErr.Message, "ResourceNotFoundException"):
             log.Fatal("Model not found - request access in Bedrock console")
-        case "ThrottlingException":
+        case strings.HasPrefix(providerErr.Message, "ThrottlingException"):
             log.Println("Throttled, retrying...")
             time.Sleep(time.Second * 5)
-        case "ValidationException":
-            log.Printf("Invalid request: %s", bedrockErr.Message)
-        case "ModelNotReadyException":
+        case strings.HasPrefix(providerErr.Message, "ValidationException"):
+            log.Printf("Invalid request: %s", providerErr.Message)
+        case strings.HasPrefix(providerErr.Message, "ModelNotReadyException"):
             log.Println("Model still loading, retry later")
-        case "ServiceQuotaExceededException":
+        case strings.HasPrefix(providerErr.Message, "ServiceQuotaExceededException"):
             log.Fatal("Quota exceeded - request limit increase")
         default:
-            log.Printf("Bedrock error: %s - %s", bedrockErr.Code, bedrockErr.Message)
+            log.Printf("Bedrock error (%d): %s", providerErr.StatusCode, providerErr.Message)
         }
     }
 }
@@ -501,7 +467,7 @@ Explicit credentials in `bedrock.Config` take precedence over environment and sh
 
 ```go
 budget := 4096
-model, err := p.LanguageModelWithOptions("anthropic.claude-opus-4-7-v1:0", &bedrock.ModelOptions{
+model, err := p.LanguageModelWithOptions("anthropic.claude-opus-4-7", &bedrock.ModelOptions{
     ReasoningConfig: &bedrock.ReasoningConfig{
         Type:         "enabled",
         BudgetTokens: &budget,
