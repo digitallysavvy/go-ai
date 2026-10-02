@@ -98,6 +98,20 @@ type TelemetryStartEvent struct {
 	// []map[string]interface{}), JSON-encoded per element and emitted as
 	// ai.documents (TS: event.documents.map(d => JSON.stringify(d))).
 	Documents interface{}
+
+	// Text is the speech input text for "ai.generateSpeech". Emitted as
+	// ai.request.text (input-gated) and, for the GenAI integration, folded
+	// into a synthetic gen_ai.input.messages user message, mirroring TS
+	// onAudioOperationStart's `text` field (open-telemetry.ts /
+	// legacy-open-telemetry.ts).
+	Text string
+	// AudioByteLength is the input audio size in bytes for "ai.transcribe",
+	// emitted as ai.request.audio.size (input-gated).
+	AudioByteLength *int64
+	// AudioMediaType is the input audio media type for "ai.transcribe",
+	// emitted as ai.request.audio.mediaType (LegacyOpenTelemetry) /
+	// ai.request.audio.media_type (OpenTelemetry), input-gated.
+	AudioMediaType string
 }
 
 // TelemetryStepStartEvent is passed to TelemetryIntegration.OnStepStart.
@@ -419,6 +433,27 @@ type TelemetryFinishEvent struct {
 	// metadata, emitted as ai.response.providerMetadata when
 	// OpenTelemetryOptions.ProviderMetadata is set (18651f6).
 	ProviderMetadata map[string]interface{}
+
+	// AudioByteLength is the audio size in bytes: the generated output audio
+	// for "ai.generateSpeech" (emitted as ai.response.audio.size), or the
+	// input audio for "ai.transcribe" (emitted as ai.request.audio.size).
+	// Mirrors TS onAudioOperationEnd's outputAudio/inputAudio distinction.
+	AudioByteLength *int64
+	// AudioMediaType mirrors AudioByteLength: output media type for
+	// "ai.generateSpeech" (ai.response.audio.mediaType /
+	// ai.response.audio.media_type), input media type for "ai.transcribe"
+	// (ai.request.audio.mediaType / ai.request.audio.media_type).
+	AudioMediaType string
+	// AudioFormat is the generated audio format for "ai.generateSpeech"
+	// only, emitted as ai.response.audio.format.
+	AudioFormat string
+	// DurationSeconds is the input audio duration reported by a
+	// transcription provider (types.TranscriptionUsage.DurationSeconds),
+	// emitted as ai.usage.duration_seconds / gen_ai.usage.duration_seconds,
+	// mirroring TS onAudioOperationEnd's generic provider-usage passthrough
+	// (getProviderUsageAttributes) narrowed to the one usage value go-ai's
+	// transcription models currently report.
+	DurationSeconds *float64
 }
 
 // TelemetryErrorEvent is passed to TelemetryIntegration.OnError.
@@ -1174,6 +1209,19 @@ func (i LegacyOpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent)
 			if docs := legacyJSONEachElement(e.Documents); len(docs) > 0 {
 				span.SetAttributes(attribute.StringSlice("ai.documents", docs))
 			}
+		}
+	case "ai.generateSpeech", "ai.transcribe":
+		// TS onAudioOperationStart: ai.request.text (generateSpeech) and
+		// ai.request.audio.size/mediaType (transcribe), all input-gated. No
+		// ai.prompt/ai.settings.* attributes for audio operations.
+		if recordInputs && e.Text != "" {
+			span.SetAttributes(attribute.String("ai.request.text", e.Text))
+		}
+		if recordInputs && e.AudioByteLength != nil {
+			span.SetAttributes(attribute.Int64("ai.request.audio.size", *e.AudioByteLength))
+		}
+		if recordInputs && e.AudioMediaType != "" {
+			span.SetAttributes(attribute.String("ai.request.audio.mediaType", e.AudioMediaType))
 		}
 	default:
 		// generateText/streamText/generateObject/streamObject: ai.prompt is
@@ -2121,11 +2169,60 @@ func (i LegacyOpenTelemetry) OnEnd(ctx context.Context, e TelemetryFinishEvent) 
 		// TS onRerankOperationEnd sets nothing beyond ending the span.
 	case "ai.generateObject", "ai.streamObject":
 		i.legacyOnObjectOperationEnd(span, e, recordOutputs)
+	case "ai.generateSpeech", "ai.transcribe":
+		recordInputs := e.Settings == nil || e.Settings.RecordInputs
+		i.legacyOnAudioOperationEnd(span, e, recordInputs, recordOutputs)
 	default:
 		i.legacyOnGenerateEnd(span, e, recordOutputs)
 	}
 	span.End()
 	legacyDeleteState(e.CallID)
+}
+
+// legacyOnAudioOperationEnd mirrors TS's onAudioOperationEnd
+// (legacy-open-telemetry.ts): ai.request.audio.* for the transcribe input
+// audio, ai.response.text for the transcript, ai.response.audio.* for the
+// generateSpeech output audio, and ai.response.usage/providerMetadata, all
+// output-gated except ai.request.audio.* which stays input-gated via the
+// event already being nil when RecordInputs is false (callers only
+// populate AudioByteLength/AudioMediaType when safe to record).
+func (i LegacyOpenTelemetry) legacyOnAudioOperationEnd(span trace.Span, e TelemetryFinishEvent, recordInputs, recordOutputs bool) {
+	isSpeech := e.OperationType == "ai.generateSpeech"
+	if !isSpeech && recordInputs {
+		if e.AudioByteLength != nil {
+			span.SetAttributes(attribute.Int64("ai.request.audio.size", *e.AudioByteLength))
+		}
+		if e.AudioMediaType != "" {
+			span.SetAttributes(attribute.String("ai.request.audio.mediaType", e.AudioMediaType))
+		}
+	}
+	if recordOutputs {
+		if e.Text != "" {
+			span.SetAttributes(attribute.String("ai.response.text", e.Text))
+		}
+		if isSpeech {
+			if e.AudioByteLength != nil {
+				span.SetAttributes(attribute.Int64("ai.response.audio.size", *e.AudioByteLength))
+			}
+			if e.AudioMediaType != "" {
+				span.SetAttributes(attribute.String("ai.response.audio.mediaType", e.AudioMediaType))
+			}
+			if e.AudioFormat != "" {
+				span.SetAttributes(attribute.String("ai.response.audio.format", e.AudioFormat))
+			}
+		}
+	}
+	if e.DurationSeconds != nil {
+		span.SetAttributes(attribute.Float64("ai.usage.duration_seconds", *e.DurationSeconds))
+		if b, err := json.Marshal(map[string]interface{}{"duration_seconds": *e.DurationSeconds}); err == nil {
+			span.SetAttributes(attribute.String("ai.response.usage", string(b)))
+		}
+	}
+	if e.ProviderMetadata != nil {
+		if b, err := json.Marshal(e.ProviderMetadata); err == nil {
+			span.SetAttributes(attribute.String("ai.response.providerMetadata", string(b)))
+		}
+	}
 }
 
 // legacyOnGenerateEnd mirrors TS's onGenerateEnd (generateText/streamText).
