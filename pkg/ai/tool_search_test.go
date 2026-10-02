@@ -2,11 +2,14 @@ package ai
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
@@ -63,26 +66,51 @@ var searchTestCallers = ResolvedToolCallers{
 	"getWeather": {"code"},
 }
 
-func runSearch(t *testing.T, tools []types.Tool, query string) map[string]interface{} {
-	t.Helper()
-	var search *types.Tool
+// searchTestCandidates builds n deferred weather-shaped candidate tools
+// named "candidate0".."candidate{n-1}", plus a ResolvedToolCallers map
+// routing each through "code". Mirrors the TypeScript SDK's
+// `Array.from({ length: n }, (_, i) => [...candidate${i}])` test fixture.
+func searchTestCandidates(n int) ([]types.Tool, ResolvedToolCallers) {
+	tools := make([]types.Tool, n)
+	callers := ResolvedToolCallers{}
+	for i := 0; i < n; i++ {
+		cand := searchTestWeatherTool()
+		cand.Name = fmt.Sprintf("candidate%d", i)
+		tools[i] = cand
+		callers[cand.Name] = []string{"code"}
+	}
+	return tools, callers
+}
+
+func findTool(tools []types.Tool, name string) *types.Tool {
 	for i := range tools {
-		if tools[i].Name == "search" {
-			search = &tools[i]
+		if tools[i].Name == name {
+			return &tools[i]
 		}
 	}
+	return nil
+}
+
+func runNamedSearch(t *testing.T, tools []types.Tool, name, query string) map[string]interface{} {
+	t.Helper()
+	search := findTool(tools, name)
 	if search == nil {
-		t.Fatalf("search tool not found in %v", toolNames(tools))
+		t.Fatalf("%s tool not found in %v", name, toolNames(tools))
 	}
-	out, err := search.Execute(context.Background(), map[string]interface{}{"query": query}, types.ToolExecutionOptions{ToolCallID: "search"})
+	out, err := search.Execute(context.Background(), map[string]interface{}{"query": query}, types.ToolExecutionOptions{ToolCallID: name})
 	if err != nil {
-		t.Fatalf("search.Execute() error = %v", err)
+		t.Fatalf("%s.Execute() error = %v", name, err)
 	}
 	result, ok := out.(map[string]interface{})
 	if !ok {
-		t.Fatalf("search.Execute() output = %#v, want map[string]interface{}", out)
+		t.Fatalf("%s.Execute() output = %#v, want map[string]interface{}", name, out)
 	}
 	return result
+}
+
+func runSearch(t *testing.T, tools []types.Tool, query string) map[string]interface{} {
+	t.Helper()
+	return runNamedSearch(t, tools, "search", query)
 }
 
 func searchResultNames(t *testing.T, result map[string]interface{}) []string {
@@ -556,5 +584,466 @@ func TestGenerateText_ToolSearch_DiscoversOnNextStep(t *testing.T) {
 				t.Fatalf("unrelated tool must stay hidden, got %v", toolNames(c.Tools))
 			}
 		}
+	}
+}
+
+// Ports ai/src/tool-search/tool-search.test.ts "describes the default
+// five-result limit" / "describes a configured limit" / "describes custom
+// search with its configured result limit" (TS #21897, #21903).
+func TestToolSearch_Description(t *testing.T) {
+	t.Parallel()
+	for _, maxResults := range []int{0, ToolSearchDefaultMaxResults} {
+		desc := ToolSearch(ToolSearchConfig{MaxResults: maxResults}).Description
+		if !strings.Contains(desc, "Search for tools by keywords in their names and descriptions.") {
+			t.Fatalf("MaxResults=%d description = %q, want built-in keyword phrasing", maxResults, desc)
+		}
+		if !strings.Contains(desc, "Returns up to five matching tools.") {
+			t.Fatalf("MaxResults=%d description = %q, want 'five'", maxResults, desc)
+		}
+	}
+	for _, maxResults := range []int{1, 3, 10} {
+		desc := ToolSearch(ToolSearchConfig{MaxResults: maxResults}).Description
+		want := fmt.Sprintf("Returns up to %d matching tools.", maxResults)
+		if !strings.Contains(desc, want) {
+			t.Fatalf("MaxResults=%d description = %q, want contains %q", maxResults, desc, want)
+		}
+	}
+
+	noop := func(ctx context.Context, query string, tools []ToolSearchCandidate) ([]string, error) { return nil, nil }
+	custom := ToolSearch(ToolSearchConfig{Search: noop, MaxResults: 3}).Description
+	if !strings.Contains(custom, "Search for tools matching a query.") {
+		t.Fatalf("custom search description = %q, want custom phrasing", custom)
+	}
+	if !strings.Contains(custom, "Returns up to 3 matching tools.") {
+		t.Fatalf("custom search description = %q, want 'Returns up to 3 matching tools.'", custom)
+	}
+}
+
+// Ports ai/src/tool-search/tool-search.test.ts "rejects an invalid
+// maxResults" (TS #21897). Go's int type already rules out non-integers,
+// NaN and Infinity, so only non-positive values remain to validate; zero is
+// treated as "unset" (defaults to five), matching this SDK's existing
+// zero-value-means-default convention for ToolSearchConfig.Name, so only
+// negative values panic.
+func TestToolSearch_RejectsInvalidMaxResults(t *testing.T) {
+	t.Parallel()
+	for _, maxResults := range []int{-1, -5, -100} {
+		func() {
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatalf("MaxResults=%d: expected panic, got none", maxResults)
+				}
+				argErr, ok := r.(*providererrors.InvalidArgumentError)
+				if !ok {
+					t.Fatalf("MaxResults=%d: panic value = %#v, want *providererrors.InvalidArgumentError", maxResults, r)
+				}
+				if !strings.Contains(argErr.Error(), "maxResults must be a positive safe integer.") {
+					t.Fatalf("MaxResults=%d: err = %v", maxResults, argErr)
+				}
+			}()
+			ToolSearch(ToolSearchConfig{MaxResults: maxResults})
+		}()
+	}
+}
+
+// TestToolSearchState_MaxResultsLimitsOutputAndDiscovery ports
+// prepare-tool-search.test.ts "applies maxResults %i to search output and
+// next-step discovery" (TS #21897).
+func TestToolSearchState_MaxResultsLimitsOutputAndDiscovery(t *testing.T) {
+	t.Parallel()
+	for _, maxResults := range []int{1, 3, 8, 20} {
+		t.Run(fmt.Sprintf("maxResults=%d", maxResults), func(t *testing.T) {
+			t.Parallel()
+			candidates, callers := searchTestCandidates(8)
+			registry := append([]types.Tool{
+				searchTestCaller(),
+				ToolSearch(ToolSearchConfig{Name: "search", MaxResults: maxResults}),
+			}, candidates...)
+			callers["search"] = []string{"code"}
+
+			state, err := NewToolSearchState(registry, callers)
+			if err != nil {
+				t.Fatal(err)
+			}
+			first := state.Apply(registry, nil, nil)
+			if got, want := toolNames(first), []string{"code", "search"}; !equalStrings(got, want) {
+				t.Fatalf("first = %v, want %v", got, want)
+			}
+			result := runSearch(t, first, "weather")
+
+			want := make([]string, 0, maxResults)
+			for i := 0; i < 8 && len(want) < maxResults; i++ {
+				want = append(want, fmt.Sprintf("candidate%d", i))
+			}
+			if got := searchResultNames(t, result); !equalStrings(got, want) {
+				t.Fatalf("result = %v, want %v", got, want)
+			}
+			if hasTool(first, "candidate0") {
+				t.Fatalf("first must not gain candidates in place")
+			}
+			second := state.Apply(registry, nil, nil)
+			wantNext := append([]string{"code", "search"}, want...)
+			if got := toolNames(second); !equalStrings(got, wantNext) {
+				t.Fatalf("second = %v, want %v", got, wantNext)
+			}
+		})
+	}
+}
+
+// TestToolSearchState_IndependentMaxResultsPerSearchTool ports
+// prepare-tool-search.test.ts "keeps configured limits independent for
+// multiple search tools" (TS #21897).
+func TestToolSearchState_IndependentMaxResultsPerSearchTool(t *testing.T) {
+	t.Parallel()
+	candidates, callers := searchTestCandidates(8)
+	registry := append([]types.Tool{
+		searchTestCaller(),
+		ToolSearch(ToolSearchConfig{Name: "search", MaxResults: 1}),
+		ToolSearch(ToolSearchConfig{Name: "broadSearch", MaxResults: 8}),
+	}, candidates...)
+	callers["search"] = []string{"code"}
+	callers["broadSearch"] = []string{"code"}
+
+	state, err := NewToolSearchState(registry, callers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := state.Apply(registry, nil, nil)
+
+	narrow := runNamedSearch(t, first, "search", "weather")
+	if got := len(searchResultNames(t, narrow)); got != 1 {
+		t.Fatalf("narrow search returned %d results, want 1", got)
+	}
+	broad := runNamedSearch(t, first, "broadSearch", "weather")
+	if got := len(searchResultNames(t, broad)); got != 8 {
+		t.Fatalf("broad search returned %d results, want 8", got)
+	}
+}
+
+// TestToolSearchState_MaxResultsRespectsActiveToolsAndCallerRestrictions
+// ports prepare-tool-search.test.ts "respects active tools and caller
+// restrictions with a larger limit" (TS #21897).
+func TestToolSearchState_MaxResultsRespectsActiveToolsAndCallerRestrictions(t *testing.T) {
+	t.Parallel()
+	otherCode := searchTestCaller()
+	otherCode.Name = "otherCode"
+	otherWeather := searchTestWeatherTool()
+	otherWeather.Name = "otherWeather"
+	excludedWeather := searchTestWeatherTool()
+	excludedWeather.Name = "excludedWeather"
+
+	registry := []types.Tool{
+		searchTestCaller(),
+		ToolSearch(ToolSearchConfig{Name: "search", MaxResults: 10}),
+		searchTestWeatherTool(),
+		otherCode,
+		otherWeather,
+		excludedWeather,
+	}
+	callers := ResolvedToolCallers{
+		"search":          {"code"},
+		"getWeather":      {"code"},
+		"otherWeather":    {"otherCode"},
+		"excludedWeather": {"code"},
+	}
+	eligible := make([]types.Tool, 0, len(registry))
+	for _, tl := range registry {
+		if tl.Name != "excludedWeather" {
+			eligible = append(eligible, tl)
+		}
+	}
+
+	state, err := NewToolSearchState(registry, callers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := runSearch(t, state.Apply(eligible, nil, nil), "weather")
+	want := []string{"getWeather"}
+	if got := searchResultNames(t, result); !equalStrings(got, want) {
+		t.Fatalf("result = %v, want %v", got, want)
+	}
+
+	next := state.Apply(registry, nil, nil)
+	if hasTool(next, "otherWeather") {
+		t.Fatalf("otherWeather belongs to another caller and must stay hidden")
+	}
+	if hasTool(next, "excludedWeather") {
+		t.Fatalf("excludedWeather was excluded from activeTools and must stay hidden")
+	}
+}
+
+// TestToolSearchState_CustomSearchRanksBeforeLimiting ports
+// prepare-tool-search.test.ts "lets a custom search rank all candidates
+// before limiting results" (TS #21903). TS varies this test over
+// sync/async callbacks; Go has no such distinction (a ToolSearchRankFunc is
+// always a plain function), so only the ranking behavior is ported.
+func TestToolSearchState_CustomSearchRanksBeforeLimiting(t *testing.T) {
+	t.Parallel()
+	for _, maxResults := range []int{0, 1, 3, 8, 20} {
+		t.Run(fmt.Sprintf("maxResults=%d", maxResults), func(t *testing.T) {
+			t.Parallel()
+			var mu sync.Mutex
+			var capturedQuery string
+			var capturedTools []ToolSearchCandidate
+			rank := func(ctx context.Context, query string, tools []ToolSearchCandidate) ([]string, error) {
+				mu.Lock()
+				capturedQuery = query
+				capturedTools = append([]ToolSearchCandidate(nil), tools...)
+				mu.Unlock()
+				names := make([]string, len(tools))
+				for i, tl := range tools {
+					names[len(tools)-1-i] = tl.Name
+				}
+				return names, nil
+			}
+
+			candidates, callers := searchTestCandidates(8)
+			cfg := ToolSearchConfig{Name: "search", Search: rank}
+			if maxResults != 0 {
+				cfg.MaxResults = maxResults
+			}
+			registry := append([]types.Tool{searchTestCaller(), ToolSearch(cfg)}, candidates...)
+			callers["search"] = []string{"code"}
+
+			state, err := NewToolSearchState(registry, callers)
+			if err != nil {
+				t.Fatal(err)
+			}
+			first := state.Apply(registry, nil, nil)
+			// The query deliberately has no keyword overlap with the candidates.
+			result := runSearch(t, first, "meteorology")
+
+			mu.Lock()
+			gotQuery, gotTools := capturedQuery, capturedTools
+			mu.Unlock()
+			if gotQuery != "meteorology" {
+				t.Fatalf("query = %q, want meteorology", gotQuery)
+			}
+			if len(gotTools) != 8 {
+				t.Fatalf("tools len = %d, want 8", len(gotTools))
+			}
+			for i, tl := range gotTools {
+				wantName := fmt.Sprintf("candidate%d", i)
+				if tl.Name != wantName || tl.Description != "Weather forecast." {
+					t.Fatalf("tools[%d] = %+v, want {%s Weather forecast.}", i, tl, wantName)
+				}
+			}
+
+			limit := maxResults
+			if limit == 0 {
+				limit = ToolSearchDefaultMaxResults
+			}
+			reversed := make([]string, 8)
+			for i := 0; i < 8; i++ {
+				reversed[i] = fmt.Sprintf("candidate%d", 7-i)
+			}
+			want := reversed
+			if len(want) > limit {
+				want = want[:limit]
+			}
+			if got := searchResultNames(t, result); !equalStrings(got, want) {
+				t.Fatalf("result = %v, want %v", got, want)
+			}
+
+			second := state.Apply(registry, nil, nil)
+			for _, name := range want {
+				if !hasTool(second, name) {
+					t.Fatalf("second should include discovered %s, got %v", name, toolNames(second))
+				}
+			}
+		})
+	}
+}
+
+// TestToolSearchState_CustomSearchFiltersIneligibleAndDuplicates ports
+// prepare-tool-search.test.ts "filters ineligible names and duplicates
+// before applying the limit" (TS #21903).
+func TestToolSearchState_CustomSearchFiltersIneligibleAndDuplicates(t *testing.T) {
+	t.Parallel()
+	rank := func(ctx context.Context, query string, tools []ToolSearchCandidate) ([]string, error) {
+		return []string{
+			"missing", "toString", "otherWeather", "excludedWeather", "code", "search",
+			"candidate0", "candidate0", "candidate1", "candidate2", "candidate3", "candidate4", "candidate5",
+		}, nil
+	}
+	otherCode := searchTestCaller()
+	otherCode.Name = "otherCode"
+	excludedWeather := searchTestWeatherTool()
+	excludedWeather.Name = "excludedWeather"
+	otherWeather := searchTestWeatherTool()
+	otherWeather.Name = "otherWeather"
+	candidates, candidateCallers := searchTestCandidates(6)
+
+	registry := []types.Tool{
+		searchTestCaller(), otherCode,
+		ToolSearch(ToolSearchConfig{Name: "search", Search: rank}),
+		excludedWeather, otherWeather,
+	}
+	registry = append(registry, candidates...)
+
+	callers := ResolvedToolCallers{
+		"search":          {"code"},
+		"excludedWeather": {"code"},
+		"otherWeather":    {"otherCode"},
+	}
+	for name, c := range candidateCallers {
+		callers[name] = c
+	}
+
+	eligible := make([]types.Tool, 0, len(registry))
+	for _, tl := range registry {
+		if tl.Name != "excludedWeather" {
+			eligible = append(eligible, tl)
+		}
+	}
+
+	state, err := NewToolSearchState(registry, callers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := runSearch(t, state.Apply(eligible, nil, nil), "weather")
+	want := []string{"candidate0", "candidate1", "candidate2", "candidate3", "candidate4"}
+	if got := searchResultNames(t, result); !equalStrings(got, want) {
+		t.Fatalf("result = %v, want %v", got, want)
+	}
+
+	next := state.Apply(registry, nil, nil)
+	wantOrder := []string{"code", "otherCode", "search", "candidate0", "candidate1", "candidate2", "candidate3", "candidate4"}
+	if got := toolNames(next); !equalStrings(got, wantOrder) {
+		t.Fatalf("next tools = %v, want %v", got, wantOrder)
+	}
+}
+
+// TestToolSearchState_CustomSearchResolvesDescriptionsWithContext ports
+// prepare-tool-search.test.ts "resolves candidate descriptions with the
+// current context" (TS #21903).
+func TestToolSearchState_CustomSearchResolvesDescriptionsWithContext(t *testing.T) {
+	t.Parallel()
+	var captured []ToolSearchCandidate
+	rank := func(ctx context.Context, query string, tools []ToolSearchCandidate) ([]string, error) {
+		captured = append([]ToolSearchCandidate(nil), tools...)
+		names := make([]string, len(tools))
+		for i, tl := range tools {
+			names[i] = tl.Name
+		}
+		return names, nil
+	}
+	registry := []types.Tool{
+		searchTestCaller(),
+		ToolSearch(ToolSearchConfig{Name: "search", Search: rank}),
+		{
+			Name:         "getWeather",
+			DeferLoading: true,
+			Parameters:   map[string]interface{}{"type": "object"},
+			DescriptionFunc: func(ctx context.Context, opts types.ToolDescriptionOptions) string {
+				m, _ := opts.Context.(map[string]interface{})
+				capability, _ := m["capability"].(string)
+				return capability
+			},
+		},
+	}
+	state, err := NewToolSearchState(registry, searchTestCallers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolsContext := map[string]interface{}{"getWeather": map[string]interface{}{"capability": "Meteorology"}}
+	result := runSearch(t, state.Apply(registry, toolsContext, nil), "forecast")
+
+	if got, want := searchResultNames(t, result), []string{"getWeather"}; !equalStrings(got, want) {
+		t.Fatalf("result names = %v, want %v", got, want)
+	}
+	if desc := result["tools"].([]map[string]interface{})[0]["description"]; desc != "Meteorology" {
+		t.Fatalf("description = %v, want Meteorology", desc)
+	}
+	if len(captured) != 1 || captured[0].Name != "getWeather" || captured[0].Description != "Meteorology" {
+		t.Fatalf("captured tools = %+v", captured)
+	}
+}
+
+// TestToolSearchState_CustomSearchMutationDoesNotAffectResults ports
+// prepare-tool-search.test.ts "preserves SDK metadata when a callback
+// mutates its candidate list" (TS #21903).
+func TestToolSearchState_CustomSearchMutationDoesNotAffectResults(t *testing.T) {
+	t.Parallel()
+	rank := func(ctx context.Context, query string, tools []ToolSearchCandidate) ([]string, error) {
+		if len(tools) > 0 {
+			tools[0].Name = "missing"
+			tools[0].Description = "Changed description"
+		}
+		tools = append(tools, ToolSearchCandidate{Name: "missing"})
+		_ = tools
+		return []string{"missing", "getWeather"}, nil
+	}
+	registry := []types.Tool{searchTestCaller(), ToolSearch(ToolSearchConfig{Name: "search", Search: rank}), searchTestWeatherTool()}
+	state, err := NewToolSearchState(registry, searchTestCallers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := runSearch(t, state.Apply(registry, nil, nil), "weather")
+	if got, want := searchResultNames(t, result), []string{"getWeather"}; !equalStrings(got, want) {
+		t.Fatalf("result = %v, want %v", got, want)
+	}
+	if desc := result["tools"].([]map[string]interface{})[0]["description"]; desc != "Weather forecast." {
+		t.Fatalf("description = %v, want unchanged 'Weather forecast.'", desc)
+	}
+
+	next := state.Apply(registry, nil, nil)
+	if got, want := toolNames(next), []string{"code", "search", "getWeather"}; !equalStrings(got, want) {
+		t.Fatalf("next = %v, want %v", got, want)
+	}
+}
+
+// TestToolSearchState_CustomSearchEmptyResultsSkipsFallback ports
+// prepare-tool-search.test.ts "honors empty results instead of falling
+// back to keyword search" (TS #21903).
+func TestToolSearchState_CustomSearchEmptyResultsSkipsFallback(t *testing.T) {
+	t.Parallel()
+	rank := func(ctx context.Context, query string, tools []ToolSearchCandidate) ([]string, error) {
+		return []string{}, nil
+	}
+	registry := []types.Tool{searchTestCaller(), ToolSearch(ToolSearchConfig{Name: "search", Search: rank}), searchTestWeatherTool()}
+	state, err := NewToolSearchState(registry, searchTestCallers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := runSearch(t, state.Apply(registry, nil, nil), "weather")
+	if got := searchResultNames(t, result); len(got) != 0 {
+		t.Fatalf("result = %v, want empty", got)
+	}
+	next := state.Apply(registry, nil, nil)
+	if got, want := toolNames(next), []string{"code", "search"}; !equalStrings(got, want) {
+		t.Fatalf("next = %v, want %v", got, want)
+	}
+}
+
+// TestToolSearchState_CustomSearchErrorPropagatesWithoutDiscovery ports
+// prepare-tool-search.test.ts "propagates search failures without
+// discovery" (TS #21903). TS varies this over sync/async callbacks; Go has
+// no such distinction, so only the error-propagation behavior is ported.
+func TestToolSearchState_CustomSearchErrorPropagatesWithoutDiscovery(t *testing.T) {
+	t.Parallel()
+	wantErr := errors.New("search unavailable")
+	rank := func(ctx context.Context, query string, tools []ToolSearchCandidate) ([]string, error) {
+		return nil, wantErr
+	}
+	registry := []types.Tool{searchTestCaller(), ToolSearch(ToolSearchConfig{Name: "search", Search: rank}), searchTestWeatherTool()}
+	state, err := NewToolSearchState(registry, searchTestCallers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := state.Apply(registry, nil, nil)
+	search := findTool(first, "search")
+	if search == nil {
+		t.Fatalf("search tool not found in %v", toolNames(first))
+	}
+	_, gotErr := search.Execute(context.Background(), map[string]interface{}{"query": "weather"}, types.ToolExecutionOptions{})
+	if gotErr != wantErr {
+		t.Fatalf("err = %v, want %v", gotErr, wantErr)
+	}
+
+	next := state.Apply(registry, nil, nil)
+	if got, want := toolNames(next), []string{"code", "search"}; !equalStrings(got, want) {
+		t.Fatalf("next = %v, want %v", got, want)
 	}
 }
