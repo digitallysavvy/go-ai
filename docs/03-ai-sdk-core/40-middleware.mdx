@@ -16,9 +16,9 @@ You can use language model middleware with the `middleware.WrapLanguageModel` fu
 For parity-oriented API discovery, equivalent wrappers are also exposed from `pkg/ai` (for example `ai.WrapLanguageModel` and `ai.DefaultSettingsMiddleware`).
 
 ```go
-package main
-
 import (
+    "os"
+
     "github.com/digitallysavvy/go-ai/pkg/middleware"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
@@ -162,7 +162,7 @@ package main
 import (
     "context"
     "encoding/json"
-    "fmt"
+    "io"
     "log"
 
     "github.com/digitallysavvy/go-ai/pkg/middleware"
@@ -606,7 +606,10 @@ Instead of wrapping individual models, you can wrap an entire provider to apply 
 
 ```go
 import (
+    "os"
+
     "github.com/digitallysavvy/go-ai/pkg/middleware"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 

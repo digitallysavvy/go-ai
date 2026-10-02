@@ -16,6 +16,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -24,8 +25,11 @@ import (
 
 func main() {
 	ctx := context.Background()
-	provider := anthropic.NewProvider()
-	model := provider.LanguageModel("claude-sonnet-4-6")
+	provider := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")})
+	model, err := provider.LanguageModel("claude-sonnet-4-6")
+	if err != nil {
+		log.Fatalf("Failed to create model: %v", err)
+	}
 
 	reasoning := types.ReasoningMedium
 	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
@@ -76,8 +80,11 @@ import (
 
 func main() {
 	ctx := context.Background()
-	p := google.NewProvider()
-	model := p.LanguageModel("gemini-3-flash-preview")
+	p := google.New(google.Config{APIKey: os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY")})
+	model, err := p.LanguageModel("gemini-3-flash-preview")
+	if err != nil {
+		log.Fatalf("Failed to create model: %v", err)
+	}
 
 	reasoning := types.ReasoningHigh
 	result, err := ai.StreamText(ctx, ai.StreamTextOptions{
@@ -168,6 +175,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -176,8 +184,11 @@ import (
 
 func main() {
 	ctx := context.Background()
-	p := openai.NewProvider()
-	model := p.ResponsesModel("gpt-5.4")
+	p := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+	model, err := p.ResponsesModel("gpt-5.2")
+	if err != nil {
+		log.Fatalf("Failed to create model: %v", err)
+	}
 
 	reasoning := types.ReasoningLow // ignored because ProviderOptions is set
 	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{

@@ -112,12 +112,12 @@ result, err := ai.StreamText(ctx, ai.StreamTextOptions{
         fmt.Print(chunk.Text)
 
         // You can also process other chunk data
-        if chunk.Usage != nil {
-            fmt.Printf("[Tokens: %d]", chunk.Usage.TotalTokens)
+        if chunk.Usage != nil && chunk.Usage.TotalTokens != nil {
+            fmt.Printf("[Tokens: %d]", *chunk.Usage.TotalTokens)
         }
     },
     OnFinish: func(result *ai.StreamTextResult) {
-        fmt.Printf("\n\nTotal tokens: %d\n", result.Usage().TotalTokens)
+        fmt.Printf("\n\nTotal tokens: %d\n", result.Usage().GetTotalTokens())
         fmt.Printf("Finish reason: %s\n", result.FinishReason())
     },
 })
@@ -318,10 +318,16 @@ package main
 import (
     "context"
     "fmt"
+    "os"
     "sync"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
-func streamFromModel(ctx context.Context, model LanguageModel, prompt string, wg *sync.WaitGroup) {
+func streamFromModel(ctx context.Context, model provider.LanguageModel, prompt string, wg *sync.WaitGroup) {
     defer wg.Done()
 
     result, err := ai.StreamText(ctx, ai.StreamTextOptions{
@@ -342,6 +348,12 @@ func streamFromModel(ctx context.Context, model LanguageModel, prompt string, wg
 func main() {
     ctx := context.Background()
     var wg sync.WaitGroup
+
+    openaiProvider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+    gpt4Model, _ := openaiProvider.LanguageModel("gpt-4")
+
+    anthropicProvider := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")})
+    claudeModel, _ := anthropicProvider.LanguageModel("claude-3-5-sonnet-20241022")
 
     // Stream from GPT-4 and Claude simultaneously
     wg.Add(2)

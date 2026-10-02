@@ -87,10 +87,10 @@ func main() {
     ctx := context.Background()
 
     // Initialize provider and model
-    provider := openai.New(openai.Config{
+    prov := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, err := provider.LanguageModel("gpt-4")
+    model, err := prov.LanguageModel("gpt-4")
     if err != nil {
         log.Fatal(err)
     }
@@ -102,7 +102,7 @@ func main() {
     reader := bufio.NewReader(os.Stdin)
 
     fmt.Println("AI Chat Agent (type 'exit' to quit)")
-    fmt.Println("=====================================\n")
+    fmt.Println("=====================================")
 
     for {
         // Get user input
@@ -141,7 +141,7 @@ func main() {
                 fullResponse.WriteString(chunk.Text)
             }
         }
-        fmt.Println("\n")
+        fmt.Print("\n\n")
 
         // Check for errors
         if err := stream.Err(); err != nil {
@@ -216,7 +216,7 @@ import "github.com/digitallysavvy/go-ai/pkg/providers/google"
 provider := google.New(google.Config{
     APIKey: os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY"),
 })
-model, _ := provider.LanguageModel("gemini-pro")
+model, _ := provider.LanguageModel("gemini-1.5-flash")
 ```
 
 The rest of your code remains exactly the same!
@@ -254,10 +254,10 @@ import (
 func main() {
     ctx := context.Background()
 
-    provider := openai.New(openai.Config{
+    prov := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, err := provider.LanguageModel("gpt-4")
+    model, err := prov.LanguageModel("gpt-4")
     if err != nil {
         log.Fatal(err)
     }
@@ -266,7 +266,7 @@ func main() {
     reader := bufio.NewReader(os.Stdin)
 
     fmt.Println("AI Chat Agent (type 'exit' to quit)")
-    fmt.Println("=====================================\n")
+    fmt.Println("=====================================")
 
     for {
         fmt.Print("You: ")
@@ -328,7 +328,7 @@ func main() {
                 fullResponse.WriteString(chunk.Text)
             }
         }
-        fmt.Println("\n")
+        fmt.Print("\n\n")
 
         if err := stream.Err(); err != nil {
             log.Printf("Stream error: %v\n", err)
@@ -397,7 +397,7 @@ func main() {
     reader := bufio.NewReader(os.Stdin)
 
     fmt.Println("AI Chat Agent (type 'exit' to quit)")
-    fmt.Println("=====================================\n")
+    fmt.Println("=====================================")
 
     for {
         fmt.Print("You: ")
@@ -570,21 +570,25 @@ When moving to production, consider:
 Example with timeout and better error handling:
 
 ```go
+import providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+
 ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 defer cancel()
 
 result, err := ai.GenerateText(ctx, options)
 if err != nil {
-    switch e := err.(type) {
-    case *ai.APIConnectionError:
-        log.Printf("Connection error: %v", e)
-        // Retry with backoff
-    case *ai.RateLimitError:
-        log.Printf("Rate limited: %v", e)
-        // Wait and retry
-    case *ai.InvalidPromptError:
-        log.Printf("Invalid prompt: %v", e)
-        // Fix prompt
+    var rateLimitErr *providererrors.RateLimitError
+    var providerErr *providererrors.ProviderError
+    switch {
+    case errors.As(err, &rateLimitErr):
+        log.Printf("Rate limited: %v", rateLimitErr)
+        // Wait and retry, respecting rateLimitErr.RetryAfterSeconds if set
+    case errors.As(err, &providerErr):
+        log.Printf("Provider error (%d): %v", providerErr.StatusCode, providerErr)
+        // Retry on 5xx, fail fast on 4xx
+    case providererrors.IsValidationError(err):
+        log.Printf("Invalid input: %v", err)
+        // Fix the request
     default:
         log.Printf("Unknown error: %v", err)
     }

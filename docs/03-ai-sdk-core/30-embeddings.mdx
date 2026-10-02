@@ -127,7 +127,10 @@ func main() {
     }
 
     // Calculate cosine similarity
-    similarity := ai.CosineSimilarity(result.Embeddings[0], result.Embeddings[1])
+    similarity, err := ai.CosineSimilarity(result.Embeddings[0], result.Embeddings[1])
+    if err != nil {
+        log.Fatal(err)
+    }
     fmt.Printf("Cosine similarity: %.4f\n", similarity)
 }
 ```
@@ -138,16 +141,13 @@ The Go AI SDK provides several similarity functions:
 
 ```go
 // Cosine Similarity (range: -1 to 1, higher is more similar)
-similarity := ai.CosineSimilarity(embedding1, embedding2)
+similarity, err := ai.CosineSimilarity(embedding1, embedding2)
 
 // Euclidean Distance (lower is more similar)
-distance := ai.EuclideanDistance(embedding1, embedding2)
+distance, err := ai.EuclideanDistance(embedding1, embedding2)
 
 // Dot Product (higher is more similar)
-dotProduct := ai.DotProduct(embedding1, embedding2)
-
-// Manhattan Distance (lower is more similar)
-manhattan := ai.ManhattanDistance(embedding1, embedding2)
+dotProduct, err := ai.DotProduct(embedding1, embedding2)
 ```
 
 ### Finding Most Similar
@@ -184,11 +184,14 @@ fmt.Printf("Most similar: index %d with similarity %.4f\n", mostSimilarIdx, simi
 Rank all embeddings by similarity:
 
 ```go
-rankings := ai.RankBySimilarity(queryResult.Embedding, candidatesResult.Embeddings)
+indices, similarities, err := ai.RankBySimilarity(queryResult.Embedding, candidatesResult.Embeddings)
+if err != nil {
+    log.Fatal(err)
+}
 
 fmt.Println("Rankings (most to least similar):")
-for i, rank := range rankings {
-    fmt.Printf("%d. Index %d - Similarity: %.4f\n", i+1, rank.Index, rank.Similarity)
+for i, idx := range indices {
+    fmt.Printf("%d. Index %d - Similarity: %.4f\n", i+1, idx, similarities[i])
 }
 ```
 
@@ -205,7 +208,7 @@ if err != nil {
     log.Fatal(err)
 }
 
-fmt.Printf("Tokens used: %d\n", result.Usage.GetTotalTokens())
+fmt.Printf("Tokens used: %d\n", result.Usage.TotalTokens)
 ```
 
 For `EmbedMany`:
@@ -219,7 +222,7 @@ if err != nil {
     log.Fatal(err)
 }
 
-fmt.Printf("Total tokens used: %d\n", result.Usage.GetTotalTokens())
+fmt.Printf("Total tokens used: %d\n", result.Usage.TotalTokens)
 ```
 
 ## Settings
@@ -293,9 +296,9 @@ result, err := ai.Embed(ctx, ai.EmbedOptions{
             TaskType: "RETRIEVAL_DOCUMENT",
             Content: [][]google.EmbeddingPart{
                 {
-                    google.FileDataEmbeddingPart{
+                    google.ImageEmbeddingPart{
                         MimeType: "application/pdf",
-                        FileURI:  "files/abc123",
+                        Data:     pdfData,
                     },
                 },
             },
@@ -315,9 +318,9 @@ result, err := ai.EmbedMany(ctx, ai.EmbedManyOptions{
             Content: [][]google.EmbeddingPart{
                 nil,
                 {
-                    google.FileDataEmbeddingPart{
+                    google.ImageEmbeddingPart{
                         MimeType: "application/pdf",
-                        FileURI:  "files/abc123",
+                        Data:     pdfData,
                     },
                 },
             },
@@ -347,10 +350,12 @@ result, err := ai.EmbedMany(ctx, ai.EmbedManyOptions{
 Both `Embed` and `EmbedMany` accept an optional `MaxRetries` parameter that you can use to set the maximum number of retries for the embedding process. It defaults to `2` retries (3 attempts in total). You can set it to `0` to disable retries.
 
 ```go
+maxRetries := 0
+
 result, err := ai.Embed(ctx, ai.EmbedOptions{
     Model:      embeddingModel,
     Input:      "sunny day at the beach",
-    MaxRetries: 0, // Disable retries
+    MaxRetries: &maxRetries, // Disable retries
 })
 ```
 
@@ -402,9 +407,8 @@ if err != nil {
     log.Fatal(err)
 }
 
-fmt.Printf("Response ID: %s\n", result.Response.ID)
-fmt.Printf("Model: %s\n", result.Response.ModelID)
-fmt.Printf("Timestamp: %v\n", result.Response.Timestamp)
+fmt.Printf("Headers: %+v\n", result.Response.Headers)
+fmt.Printf("Body: %+v\n", result.Response.Body)
 ```
 
 ## Embedding Middleware
@@ -412,23 +416,30 @@ fmt.Printf("Timestamp: %v\n", result.Response.Timestamp)
 You can enhance embedding models, e.g. to set default values, using middleware:
 
 ```go
-import "github.com/digitallysavvy/go-ai/pkg/middleware"
+import (
+    "github.com/digitallysavvy/go-ai/pkg/middleware"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+)
 
-// Wrap model with default settings
-wrappedModel := middleware.WrapEmbeddingModel(embeddingModel, &middleware.EmbeddingModelMiddleware{
-    BeforeEmbed: func(ctx context.Context, input string) (context.Context, string, error) {
-        // Pre-process input
-        fmt.Printf("Embedding: %s\n", input)
-        return ctx, input, nil
+// Wrap model to log input and output
+wrappedModel := middleware.WrapEmbeddingModel(embeddingModel, []*middleware.EmbeddingModelMiddleware{
+    {
+        TransformInput: func(ctx context.Context, input string, model provider.EmbeddingModel) (string, error) {
+            // Pre-process input
+            fmt.Printf("Embedding: %s\n", input)
+            return input, nil
+        },
+        WrapEmbed: func(ctx context.Context, doEmbed func() (*types.EmbeddingResult, error), input string, model provider.EmbeddingModel) (*types.EmbeddingResult, error) {
+            result, err := doEmbed()
+            // Post-process embedding
+            if err == nil {
+                fmt.Printf("Generated embedding with %d dimensions\n", len(result.Embedding))
+            }
+            return result, err
+        },
     },
-    AfterEmbed: func(ctx context.Context, embedding []float64, err error) ([]float64, error) {
-        // Post-process embedding
-        if err == nil {
-            fmt.Printf("Generated embedding with %d dimensions\n", len(embedding))
-        }
-        return embedding, err
-    },
-})
+}, nil, nil)
 
 result, _ := ai.Embed(ctx, ai.EmbedOptions{
     Model: wrappedModel,
@@ -449,8 +460,10 @@ import (
     "context"
     "fmt"
     "log"
+    "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
 type Document struct {
@@ -461,6 +474,12 @@ type Document struct {
 
 func main() {
     ctx := context.Background()
+
+    provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+    embeddingModel, err := provider.EmbeddingModel("text-embedding-3-small")
+    if err != nil {
+        log.Fatal(err)
+    }
 
     // Documents to search
     docs := []string{
@@ -498,7 +517,10 @@ func main() {
     var bestSimilarity float64 = -1
 
     for _, doc := range documents {
-        similarity := ai.CosineSimilarity(queryResult.Embedding, doc.Embedding)
+        similarity, err := ai.CosineSimilarity(queryResult.Embedding, doc.Embedding)
+        if err != nil {
+            log.Fatal(err)
+        }
         if similarity > bestSimilarity {
             bestSimilarity = similarity
             bestMatch = doc
@@ -541,10 +563,13 @@ func clusterTexts(ctx context.Context, texts []string, embeddingModel provider.E
                 continue
             }
 
-            similarity := ai.CosineSimilarity(
+            similarity, err := ai.CosineSimilarity(
                 result.Embeddings[i],
                 result.Embeddings[j],
             )
+            if err != nil {
+                continue
+            }
 
             if similarity >= threshold {
                 cluster = append(cluster, j)
@@ -575,14 +600,17 @@ func answerWithRAG(ctx context.Context, query string, documents []Document, mode
     }
 
     // Find top 3 most relevant documents
-    rankings := ai.RankBySimilarity(queryResult.Embedding, getEmbeddings(documents))
-    topDocs := rankings[:min(3, len(rankings))]
+    indices, _, err := ai.RankBySimilarity(queryResult.Embedding, getEmbeddings(documents))
+    if err != nil {
+        return "", err
+    }
+    topIndices := indices[:min(3, len(indices))]
 
     // Build context from relevant documents
     var context strings.Builder
     context.WriteString("Context:\n")
-    for _, rank := range topDocs {
-        context.WriteString(fmt.Sprintf("- %s\n", documents[rank.Index].Text))
+    for _, idx := range topIndices {
+        context.WriteString(fmt.Sprintf("- %s\n", documents[idx].Text))
     }
 
     // Generate answer using context

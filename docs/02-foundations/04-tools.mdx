@@ -21,8 +21,8 @@ A tool in Go consists of several properties:
 type Tool struct {
     Name        string                 // Required: name of the tool
     Description string                 // Optional: description to guide when tool is picked
-    Parameters  map[string]interface{} // Required: JSON schema for tool input
-    Execute     func(context.Context, map[string]interface{}) (interface{}, error) // Optional: execution function
+    Parameters  interface{}            // Required: JSON schema for tool input
+    Execute     func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) // Optional: execution function
 }
 ```
 
@@ -41,6 +41,7 @@ import (
     "context"
     "fmt"
     "log"
+    "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
     "github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -81,6 +82,9 @@ func main() {
         Model:  model,
         Prompt: "What's the weather in San Francisco?",
         Tools:  []types.Tool{weatherTool},
+        // Allow a follow-up step so the model can turn the tool result into
+        // a final answer (GenerateText/StreamText default to a single step).
+        StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
     })
     if err != nil {
         log.Fatal(err)
@@ -163,11 +167,12 @@ The Go AI SDK automatically handles multi-step tool execution. When a model make
 3. Sends back to the model for the next response
 
 ```go
+maxSteps := 5 // Allow up to 5 steps of tool calling
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-    Model:  model,
-    Prompt: "What's the weather in London and Paris?",
-    Tools:  []types.Tool{weatherTool},
-    MaxSteps: 5, // Allow up to 5 steps of tool calling
+    Model:    model,
+    Prompt:   "What's the weather in London and Paris?",
+    Tools:    []types.Tool{weatherTool},
+    MaxSteps: &maxSteps,
 })
 ```
 
@@ -221,9 +226,7 @@ import (
     "fmt"
     "log"
     "math"
-    "net/http"
-    "encoding/json"
-    "io"
+    "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
     "github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -234,7 +237,7 @@ func main() {
     ctx := context.Background()
 
     provider := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")})
-    model, _ := provider.LanguageModel("claude-3-sonnet-20240229")
+    model, _ := provider.LanguageModel("claude-3-5-sonnet-20241022")
 
     // Calculator tool
     calculatorTool := types.Tool{
@@ -306,11 +309,12 @@ func main() {
         },
     }
 
+    maxSteps := 5
     result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
         Model:    model,
         Prompt:   "Search for the population of Tokyo, then calculate what percentage it is of Japan's total population (125 million)",
         Tools:    []types.Tool{calculatorTool, searchTool},
-        MaxSteps: 5,
+        MaxSteps: &maxSteps,
     })
     if err != nil {
         log.Fatal(err)
@@ -329,13 +333,13 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "What's the weather in Tokyo?",
     Tools:  []types.Tool{weatherTool},
-    OnStepFinish: func(step types.Step) {
+    OnStepFinish: func(ctx context.Context, step types.StepResult, userContext interface{}) {
         fmt.Printf("Step %d finished\n", step.StepNumber)
         for _, toolCall := range step.ToolCalls {
-            fmt.Printf("  Tool: %s, Args: %v\n", toolCall.ToolName, toolCall.Input)
+            fmt.Printf("  Tool: %s, Args: %v\n", toolCall.ToolName, toolCall.Arguments)
         }
         for _, toolResult := range step.ToolResults {
-            fmt.Printf("  Result: %v\n", toolResult.Output)
+            fmt.Printf("  Result: %v\n", toolResult.Result)
         }
     },
 })

@@ -36,11 +36,12 @@ func main() {
         "snowy night in the mountains",
     }
 
+    topN := 2 // Return top 2 most relevant documents
     result, err := ai.Rerank(ctx, ai.RerankOptions{
         Model:     rerankModel,
         Query:     "talk about rain",
         Documents: documents,
-        TopN:      2, // Return top 2 most relevant documents
+        TopN:      &topN,
     })
     if err != nil {
         log.Fatal(err)
@@ -68,7 +69,6 @@ package main
 
 import (
     "context"
-    "encoding/json"
     "fmt"
     "log"
     "os"
@@ -108,19 +108,22 @@ func main() {
         documents[i] = email
     }
 
+    topN := 1
     result, err := ai.Rerank(ctx, ai.RerankOptions{
         Model:     rerankModel,
         Query:     "Which pricing did we get from Oracle?",
         Documents: documents,
-        TopN:      1,
+        TopN:      &topN,
     })
     if err != nil {
         log.Fatal(err)
     }
 
-    // Get most relevant document
-    if len(result.RerankedDocuments) > 0 {
-        topEmail := result.RerankedDocuments[0].(Email)
+    // Get most relevant document (RerankedDocuments is an interface{} holding
+    // the same slice type that was passed in as Documents)
+    rerankedEmails := result.RerankedDocuments.([]interface{})
+    if len(rerankedEmails) > 0 {
+        topEmail := rerankedEmails[0].(Email)
         fmt.Printf("Most relevant email:\n")
         fmt.Printf("From: %s\n", topEmail.From)
         fmt.Printf("Subject: %s\n", topEmail.Subject)
@@ -143,15 +146,16 @@ if err != nil {
     log.Fatal(err)
 }
 
-// result.Ranking: sorted array of RankItem structs
-// result.RerankedDocuments: documents sorted by relevance (convenience)
+// result.Ranking: sorted array of ai.RerankItem structs
+// result.RerankedDocuments: documents sorted by relevance (convenience, same
+//   underlying slice type as RerankOptions.Documents; assert before ranging)
 // result.OriginalDocuments: original documents array
 ```
 
 Each item in the `Ranking` slice contains:
 
 ```go
-type RankItem struct {
+type RerankItem struct {
     OriginalIndex int         // Position in the original documents array
     Score         float64     // Relevance score (typically 0-1, higher is more relevant)
     Document      interface{} // The original document
@@ -165,11 +169,13 @@ type RankItem struct {
 Use `TopN` to limit the number of results returned. This is useful for retrieving only the most relevant documents:
 
 ```go
+topN := 3 // Return only top 3 most relevant documents
+
 result, err := ai.Rerank(ctx, ai.RerankOptions{
     Model:     rerankModel,
     Query:     "relevant information",
     Documents: []string{"doc1", "doc2", "doc3", "doc4", "doc5"},
-    TopN:      3, // Return only top 3 most relevant documents
+    TopN:      &topN,
 })
 ```
 
@@ -195,11 +201,13 @@ result, err := ai.Rerank(ctx, ai.RerankOptions{
 The `Rerank` function accepts an optional `MaxRetries` parameter that you can use to set the maximum number of retries for the reranking process. It defaults to `2` retries (3 attempts in total). You can set it to `0` to disable retries.
 
 ```go
+maxRetries := 0
+
 result, err := ai.Rerank(ctx, ai.RerankOptions{
     Model:      rerankModel,
     Query:      "talk about rain",
     Documents:  documents,
-    MaxRetries: 0, // Disable retries
+    MaxRetries: &maxRetries, // Disable retries
 })
 ```
 
@@ -291,33 +299,38 @@ func retrieveWithReranking(
     }
 
     // Step 2: Find top candidates using embedding similarity
-    rankings := ai.RankBySimilarity(queryResult.Embedding, docsResult.Embeddings)
-
-    // Get top 10 candidates
-    topN := 10
-    if len(rankings) < topN {
-        topN = len(rankings)
+    indices, _, err := ai.RankBySimilarity(queryResult.Embedding, docsResult.Embeddings)
+    if err != nil {
+        return nil, err
     }
 
-    candidates := make([]string, topN)
-    for i := 0; i < topN; i++ {
-        candidates[i] = documents[rankings[i].Index]
+    // Get top 10 candidates
+    candidateCount := 10
+    if len(indices) < candidateCount {
+        candidateCount = len(indices)
+    }
+
+    candidates := make([]string, candidateCount)
+    for i := 0; i < candidateCount; i++ {
+        candidates[i] = documents[indices[i]]
     }
 
     // Step 3: Rerank candidates for more accurate ordering
+    rerankTopN := 3 // Get top 3 most relevant
     rerankResult, err := ai.Rerank(ctx, ai.RerankOptions{
         Model:     rerankModel,
         Query:     query,
         Documents: toInterfaceSlice(candidates),
-        TopN:      3, // Get top 3 most relevant
+        TopN:      &rerankTopN,
     })
     if err != nil {
         return nil, err
     }
 
     // Convert back to strings
-    finalResults := make([]string, len(rerankResult.RerankedDocuments))
-    for i, doc := range rerankResult.RerankedDocuments {
+    rerankedDocs := rerankResult.RerankedDocuments.([]interface{})
+    finalResults := make([]string, len(rerankedDocs))
+    for i, doc := range rerankedDocs {
         finalResults[i] = doc.(string)
     }
 
@@ -362,14 +375,17 @@ func (se *SearchEngine) Search(ctx context.Context, query string, limit int) ([]
     }
 
     // Find top candidates using embeddings (fast first pass)
-    rankings := ai.RankBySimilarity(queryResult.Embedding, se.embeddings)
+    indices, _, err := ai.RankBySimilarity(queryResult.Embedding, se.embeddings)
+    if err != nil {
+        return nil, err
+    }
 
-    candidateCount := min(limit*3, len(rankings)) // Get 3x candidates for reranking
+    candidateCount := min(limit*3, len(indices)) // Get 3x candidates for reranking
     candidates := make([]Document, candidateCount)
     candidateTexts := make([]interface{}, candidateCount)
 
     for i := 0; i < candidateCount; i++ {
-        candidates[i] = se.documents[rankings[i].Index]
+        candidates[i] = se.documents[indices[i]]
         candidateTexts[i] = candidates[i].Content
     }
 
@@ -378,15 +394,16 @@ func (se *SearchEngine) Search(ctx context.Context, query string, limit int) ([]
         Model:     se.rerankModel,
         Query:     query,
         Documents: candidateTexts,
-        TopN:      limit,
+        TopN:      &limit,
     })
     if err != nil {
         return nil, err
     }
 
     // Return reranked documents
-    results := make([]Document, len(rerankResult.RerankedDocuments))
-    for i, doc := range rerankResult.RerankedDocuments {
+    rerankedDocs := rerankResult.RerankedDocuments.([]interface{})
+    results := make([]Document, len(rerankedDocs))
+    for i, doc := range rerankedDocs {
         // Find original document
         content := doc.(string)
         for _, candidate := range candidates {
@@ -494,19 +511,21 @@ func searchWithFiltering(
     }
 
     // Rerank filtered results
+    topN := 10
     result, err := ai.Rerank(ctx, ai.RerankOptions{
         Model:     rerankModel,
         Query:     query,
         Documents: docTexts,
-        TopN:      10,
+        TopN:      &topN,
     })
     if err != nil {
         return nil, err
     }
 
     // Map back to original documents
-    reranked := make([]Document, len(result.RerankedDocuments))
-    for i, doc := range result.RerankedDocuments {
+    rerankedDocs := result.RerankedDocuments.([]interface{})
+    reranked := make([]Document, len(rerankedDocs))
+    for i, doc := range rerankedDocs {
         content := doc.(string)
         for _, filteredDoc := range filtered {
             if filteredDoc.Content == content {
@@ -578,7 +597,7 @@ func rerankLargeDataset(
     rerankModel provider.RerankingModel,
     batchSize int,
 ) ([]string, error) {
-    var allResults []RankItem
+    var allResults []ai.RerankItem
 
     for i := 0; i < len(documents); i += batchSize {
         end := i + batchSize
