@@ -9,9 +9,11 @@ import (
 	"io"
 	"net/http"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -180,6 +182,45 @@ func TestPipeUIMessageStreamToResponseWithInit_PropagatesFlushError(t *testing.T
 	err := PipeUIMessageStreamToResponseWithInit(context.Background(), res, alwaysFailingWriter{}, nil)
 	if err == nil {
 		t.Fatal("expected the writer's error to propagate instead of being silently discarded (audit row #56)")
+	}
+}
+
+// Ported from TS 33e94baaf4 (#21578): a write/flush failure (the Go analog
+// of a client disconnect) must cancel the internal source stream instead of
+// leaving its background producer goroutine blocked forever trying to send
+// a chunk nobody will ever read.
+func TestPipeUIMessageStreamToResponseWithInit_CancelsSourceOnWriteFailure(t *testing.T) {
+	// Enough chunks that, without the fix, the producer goroutine inside
+	// CreateUIMessageStream is still trying to send a later chunk on its
+	// unbuffered output channel (and so still running) long after this
+	// function has returned due to the write failure below.
+	chunks := make([]provider.StreamChunk, 0, 500)
+	for i := 0; i < 500; i++ {
+		chunks = append(chunks, provider.StreamChunk{Type: provider.ChunkTypeText, Text: "x"})
+	}
+	chunks = append(chunks, provider.StreamChunk{Type: provider.ChunkTypeFinish})
+	stream := testutil.NewMockTextStream(chunks)
+	res := &StreamTextResult{stream: stream}
+
+	runtime.GC()
+	before := runtime.NumGoroutine()
+
+	if err := PipeUIMessageStreamToResponseWithInit(context.Background(), res, alwaysFailingWriter{}, nil); err == nil {
+		t.Fatal("expected the writer's error to propagate")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	var after int
+	for {
+		runtime.GC()
+		after = runtime.NumGoroutine()
+		if after <= before {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("goroutine count did not settle after write failure: before=%d after=%d (likely a leaked producer goroutine blocked on an uncancelled source stream)", before, after)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

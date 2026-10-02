@@ -1801,6 +1801,14 @@ func PipeUIMessageStreamToResponse(ctx context.Context, result *StreamTextResult
 }
 
 // PipeUIMessageStreamToResponseWithInit supports optional SSE side-channel consumption.
+//
+// If writing to w fails (for example because the client disconnected), the
+// internal source stream is cancelled before returning so its background
+// producer goroutine and any upstream provider resources it holds are
+// released instead of leaking (blocked forever trying to send a chunk to a
+// reader that has stopped listening). Mirrors TS
+// write-to-server-response.ts's client-disconnect handling, which cancels
+// the ReadableStream's reader on a premature close (TS #21578).
 func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTextResult, w io.Writer, init *UIMessageStreamResponseInit, opts ...UIMessageStreamResultOptions) error {
 	if result == nil {
 		return fmt.Errorf("result is required")
@@ -1808,6 +1816,12 @@ func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTe
 	if w == nil {
 		return fmt.Errorf("writer is required")
 	}
+
+	// streamCtx is cancelled on any write/flush failure (see below) so the
+	// CreateUIMessageStream producer goroutine stops promptly instead of
+	// relying solely on the caller's ctx, which may never be cancelled.
+	streamCtx, cancelStream := context.WithCancel(ctx)
+	defer cancelStream()
 
 	var (
 		teeWriter  = w
@@ -1826,7 +1840,7 @@ func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTe
 		teeWriter = io.MultiWriter(w, pw)
 	}
 
-	chunks, errCh := CreateUIMessageStream(ctx, result, opts...)
+	chunks, errCh := CreateUIMessageStream(streamCtx, result, opts...)
 	bw := bufio.NewWriter(teeWriter)
 	// flush surfaces the bufio flush error instead of discarding it (TS
 	// write-to-server-response.ts's pipe helpers return a promise that
