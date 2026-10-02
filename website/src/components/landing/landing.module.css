@@ -648,7 +648,7 @@
   color: var(--l-text);
   text-decoration: none;
   overflow-wrap: anywhere;
-  transition: background-color 0.15s, color 0.15s;
+  transition: background-color 0.15s;
 }
 
 .prov::before {
@@ -660,13 +660,19 @@
   border-radius: 1px;
   background: var(--l-accent);
   vertical-align: 0.1em;
-  opacity: 0.75;
+  opacity: 0.55;
+  transition: opacity 0.15s, width 0.15s;
 }
 
 .page .prov:hover {
-  background: var(--l-accent-soft);
-  color: var(--l-accent-text);
+  background: var(--l-surface);
+  color: var(--l-text);
   text-decoration: none;
+}
+
+.prov:hover::before {
+  width: 12px;
+  opacity: 1;
 }
 
 .page .prov:focus-visible {
