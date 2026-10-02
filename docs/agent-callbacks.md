@@ -29,7 +29,7 @@ The `StepResult` passed to the callback contains complete information about the 
 
 ```go
 type StepResult struct {
-    // Step number (1-indexed)
+    // Step number (0-indexed)
     StepNumber int
 
     // Text generated in this step
@@ -57,7 +57,8 @@ type StepResult struct {
     Warnings []Warning
 
     // Response messages generated in this step
-    ResponseMessages []ResponseMessage
+    // Deprecated: use Response.Messages instead.
+    ResponseMessages []Message
 }
 ```
 
@@ -178,7 +179,7 @@ stepCount := 0
 
 agent := agent.NewToolLoopAgent(agent.AgentConfig{
     Model:    model,
-    MaxSteps: 10,  // SDK maximum
+    MaxSteps: 10,  // hard limit for this agent (plain int, no SDK-imposed ceiling)
 
     OnStepFinish: func(step types.StepResult) {
         stepCount++
