@@ -30,12 +30,12 @@ The SDK's download functions did not limit file sizes when fetching resources fr
 
 ```go
 // Attacker provides URL to a huge file
-model := xai.NewImageModel(provider, "grok-2-vision-1212")
+model := xai.NewImageModel(xaiProvider, "grok-2-vision-1212")
 result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
-    Model: model,
+    Model:  model,
     Prompt: "analyze this image",
-    Files: []ai.ImagePart{
-        ai.ImagePart("https://evil.com/100gb-file.jpg"), // Causes OOM crash
+    Files: []provider.ImageFile{
+        {Type: "url", URL: "https://evil.com/100gb-file.jpg"}, // Causes OOM crash
     },
 })
 // Process crashes from memory exhaustion
@@ -60,11 +60,14 @@ The fix implements a **2 GiB default size limit** for all downloads with the fol
 
 ### Default Protection
 
-All download operations now automatically enforce a 2 GiB limit:
+All download operations now automatically enforce a 2 GiB limit. The default
+download function (used internally, and available via `ai.CreateURLDownload`
+for your own code) enforces this limit without any extra configuration:
 
 ```go
 // Automatically protected with 2 GiB limit
-data, err := fileutil.Download(ctx, url, fileutil.DefaultDownloadOptions())
+download := ai.CreateURLDownload(nil)
+data, err := download(ctx, url)
 ```
 
 ### Custom Limits
