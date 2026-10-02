@@ -7,7 +7,7 @@ description: Map Vercel AI SDK (ai@7.0.x) calls to their Go SDK equivalents, and
 
 This guide is for developers who know the [Vercel AI SDK](https://ai-sdk.dev) and are porting an app to Go, or building a new Go backend behind an existing TypeScript frontend. It assumes no Go SDK experience.
 
-The Go SDK (`github.com/digitallysavvy/go-ai`) targets 1:1 parity with TypeScript `ai@7.0.118`. Most concepts map directly: same function names in spirit, same option names where Go syntax allows, same wire formats for anything that crosses a network boundary (provider requests, UI message streams). The core package is `pkg/ai`, mirroring the `ai` package; individual providers live under `pkg/providers/*`, mirroring `@ai-sdk/*`.
+The Go SDK (`github.com/digitallysavvy/go-ai`) targets 1:1 parity with TypeScript `ai@7.0.127`. Most concepts map directly: same function names in spirit, same option names where Go syntax allows, same wire formats for anything that crosses a network boundary (provider requests, UI message streams). The core package is `pkg/ai`, mirroring the `ai` package; individual providers live under `pkg/providers/*`, mirroring `@ai-sdk/*`.
 
 If you're coming from TypeScript v5 or v6 rather than v7, read [Coming from TS v5 or v6](#coming-from-ts-v5-or-v6) first — several TS names changed on the way to v7, and Go only implements the current (v7) names.
 
