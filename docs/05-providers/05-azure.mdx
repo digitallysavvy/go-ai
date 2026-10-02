@@ -194,6 +194,8 @@ result, err := speechModel.DoGenerate(ctx, &provider.SpeechGenerateOptions{
 
 MAI-Transcribe-2-Streaming only supports `ai.ExperimentalStreamTranscribe` (streaming transcription), over a WebSocket to the MAI realtime API; it requires 16-bit mono PCM audio at 16000 or 24000 Hz.
 
+`gpt-realtime-whisper` deployments (and dated snapshots, e.g. `gpt-realtime-whisper-2026-01-01`) also support `ai.ExperimentalStreamTranscribe`, streaming over the OpenAI-compatible realtime WebSocket at your Azure resource's `/realtime?intent=transcription` endpoint instead of the REST transcription endpoint; `DoTranscribe` (non-streaming) is unsupported for these deployments, matching OpenAI's own `gpt-realtime-whisper` restriction.
+
 Two optional `azure.Config` settings control the endpoints these models use, both defaulting from `ResourceName` and validated the same way as `ResourceName` itself (a single DNS label) before being used:
 
 - `SpeechBaseURL` — the Azure Speech endpoint prefix (default `https://{ResourceName}.cognitiveservices.azure.com`), used for both MAI-Transcribe file transcription and MAI-Voice speech.
