@@ -194,6 +194,15 @@ func New(cfg Config) (*Provider, error) {
 // request to an attacker-controlled host. Mirrors TS createAzure's
 // getResourceName validation (ports TS #21640, #21842).
 func validateAzureResourceName(resourceName string) error {
+	// An empty resourceName is left to fail naturally wherever it's
+	// actually used (it was already tolerated, unvalidated, before this
+	// check existed); only a non-empty value that could rewrite the
+	// request host is rejected here. TS's equivalent "required" check
+	// lives in loadSetting, a separate, pre-existing concern this port
+	// does not introduce.
+	if resourceName == "" {
+		return nil
+	}
 	if !providerutils.IsValidHostnamePart(resourceName) {
 		return &providererrors.InvalidArgumentError{
 			Field:   "resourceName",

@@ -171,7 +171,6 @@ func TestNew_RejectsResourceNameThatWouldRewriteHost(t *testing.T) {
 		"-resource",
 		"resource-",
 		strings.Repeat("a", 64),
-		"",
 	}
 	for _, resourceName := range cases {
 		t.Run(resourceName, func(t *testing.T) {
@@ -184,6 +183,19 @@ func TestNew_RejectsResourceNameThatWouldRewriteHost(t *testing.T) {
 				t.Fatalf("Field = %q, want resourceName", invalid.Field)
 			}
 		})
+	}
+}
+
+// TestNew_EmptyResourceNameDoesNotBlockConstruction verifies an empty (unset)
+// ResourceName is left to fail naturally wherever it's actually used,
+// matching Go's prior (unvalidated) leniency for the "nothing configured"
+// case and the TS SDK's createAzure(), which never fails at provider
+// construction regardless of resourceName -- a *separate*, pre-existing
+// "resourceName is required" check (TS loadSetting) is out of scope for
+// this hostname-rewrite fix.
+func TestNew_EmptyResourceNameDoesNotBlockConstruction(t *testing.T) {
+	if _, err := New(Config{APIKey: "test-key"}); err != nil {
+		t.Fatalf("New() error = %v, want success with an empty/unset ResourceName", err)
 	}
 }
 
