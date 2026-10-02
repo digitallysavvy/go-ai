@@ -68,9 +68,15 @@ body {
   letter-spacing: -0.01em;
 }
 
+/* Fixed height; width follows the logo's own aspect ratio (it isn't square). */
 .navbar__logo {
-  height: 28px;
-  width: 28px;
+  height: 30px;
+  width: auto;
+}
+
+.navbar__logo img {
+  height: 100%;
+  width: auto;
 }
 
 /* GitHub icon in navbar */
