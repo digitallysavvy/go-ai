@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
@@ -451,5 +452,56 @@ func TestOpenTelemetryStepToolChoiceOptedOut(t *testing.T) {
 	}
 	if _, ok := attrValue(span, "ai.prompt.toolChoice"); ok {
 		t.Fatal("expected ai.prompt.toolChoice to be omitted when OpenTelemetryOptions.ToolChoice is unset")
+	}
+}
+
+// TestOpenTelemetrySpanStatusErrorOnErrorFinishReason ports TS 51e1763d2b
+// (#21915): the "chat" (language-model-call), step, and root spans must get
+// SpanStatusCode.ERROR when the corresponding finish event's FinishReason is
+// "error", and otherwise keep the default Unset status.
+func TestOpenTelemetrySpanStatusErrorOnErrorFinishReason(t *testing.T) {
+	for _, finishReason := range []string{"error", "stop"} {
+		t.Run(finishReason, func(t *testing.T) {
+			rec := tracetest.NewSpanRecorder()
+			tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+			t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+			tracer := tp.Tracer("genai-finish-status-test")
+
+			integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tracer})
+			settings := &Settings{IsEnabled: Bool(true)}
+
+			ctx := integration.OnStart(context.Background(), TelemetryStartEvent{
+				OperationType: "ai.generateText", ModelID: "gpt-5", Settings: settings, CallID: "call-1",
+			})
+			ctx = integration.OnStepStart(ctx, TelemetryStepStartEvent{
+				Settings: settings, OperationType: "ai.generateText", StepNumber: 0, CallID: "call-1",
+			})
+			ctx = integration.OnLanguageModelCallStart(ctx, LanguageModelCallStartEvent{
+				Settings: settings, CallID: "call-1", ModelID: "claude",
+			})
+			integration.OnLanguageModelCallEnd(ctx, LanguageModelCallEndEvent{
+				Settings: settings, CallID: "call-1", FinishReason: finishReason,
+			})
+			integration.OnStepEnd(ctx, TelemetryStepEndEvent{
+				Settings: settings, StepNumber: 0, CallID: "call-1", FinishReason: finishReason,
+			})
+			integration.OnEnd(ctx, TelemetryFinishEvent{
+				Settings: settings, CallID: "call-1", FinishReason: finishReason,
+			})
+
+			wantCode := codes.Unset
+			if finishReason == "error" {
+				wantCode = codes.Error
+			}
+			for _, name := range []string{"chat claude", "step 1", "invoke_agent gpt-5"} {
+				span := findSpan(rec, name)
+				if span == nil {
+					t.Fatalf("expected a %q span", name)
+				}
+				if got := span.Status().Code; got != wantCode {
+					t.Errorf("%s span status = %v, want %v", name, got, wantCode)
+				}
+			}
+		})
 	}
 }

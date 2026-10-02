@@ -1931,6 +1931,9 @@ func (i LegacyOpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEv
 	if !ok || !stepSpan.IsRecording() {
 		return
 	}
+	if e.FinishReason == string(types.FinishReasonError) {
+		stepSpan.SetStatus(codes.Error, "")
+	}
 	recordOutputs := e.Settings == nil || e.Settings.RecordOutputs
 
 	stepSpan.SetAttributes(attribute.String("ai.response.finishReason", e.FinishReason))
@@ -2105,6 +2108,9 @@ func (i LegacyOpenTelemetry) OnEnd(ctx context.Context, e TelemetryFinishEvent) 
 	span := legacyRootSpanFor(e.CallID, ctx)
 	if !span.IsRecording() {
 		return
+	}
+	if e.FinishReason == string(types.FinishReasonError) {
+		span.SetStatus(codes.Error, "")
 	}
 	recordOutputs := e.Settings == nil || e.Settings.RecordOutputs
 

@@ -487,6 +487,9 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 	if !ok || !entry.span.IsRecording() {
 		return
 	}
+	if e.FinishReason == string(types.FinishReasonError) {
+		entry.span.SetStatus(codes.Error, "")
+	}
 	content := contentParts(e.Content)
 	attrs := []attribute.KeyValue{
 		attribute.StringSlice("gen_ai.response.finish_reasons", []string{e.FinishReason}),
@@ -889,6 +892,9 @@ func (i OpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEvent) {
 	if !ok || !stepSpan.IsRecording() {
 		return
 	}
+	if e.FinishReason == string(types.FinishReasonError) {
+		stepSpan.SetStatus(codes.Error, "")
+	}
 	attrs := []attribute.KeyValue{
 		attribute.StringSlice("gen_ai.response.finish_reasons", []string{e.FinishReason}),
 	}
@@ -943,6 +949,9 @@ func (i OpenTelemetry) OnEnd(ctx context.Context, e TelemetryFinishEvent) {
 	span := genAIRootSpanFor(e.CallID, ctx)
 	if !span.IsRecording() {
 		return
+	}
+	if e.FinishReason == string(types.FinishReasonError) {
+		span.SetStatus(codes.Error, "")
 	}
 	isEmbedOperation := spanNameLooksLikeEmbed(e)
 	attrs := []attribute.KeyValue{
