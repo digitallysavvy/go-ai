@@ -35,7 +35,7 @@ func main() {
     ctx := context.Background()
 
     provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
-    model, _ := provider.LanguageModel("gpt-5.4")
+    model, _ := provider.LanguageModel("gpt-5.2")
 
     result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
         Model:  model,
@@ -274,7 +274,7 @@ To log errors, you can provide an `OnError` callback that is triggered when an e
 result, err := ai.StreamText(ctx, ai.StreamTextOptions{
     Model:  model,
     Prompt: "Generate text",
-    OnError: func(err error) {
+    OnError: func(ctx context.Context, err error) {
         log.Printf("Stream error: %v", err) // Your error logging logic here
     },
 })
@@ -410,11 +410,12 @@ weatherTool := types.Tool{
     },
 }
 
+maxSteps := 5 // Allow up to 5 steps of tool calling
 result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:    model,
     Prompt:   "What's the weather in London?",
     Tools:    []types.Tool{weatherTool},
-    MaxSteps: 5, // Allow up to 5 steps of tool calling
+    MaxSteps: &maxSteps,
 })
 
 fmt.Println(result.Text)
@@ -428,11 +429,12 @@ See [Tools and Tool Calling](./15-tools-and-tool-calling.mdx) for more details.
 Access intermediate steps in multi-step generations:
 
 ```go
+maxSteps := 10
 result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:    model,
     Prompt:   "What's the weather in Tokyo and Paris?",
     Tools:    []types.Tool{weatherTool},
-    MaxSteps: 10,
+    MaxSteps: &maxSteps,
     OnStepFinish: func(ctx context.Context, step types.StepResult, userContext interface{}) {
         fmt.Printf("Step %d finished\n", step.StepNumber)
         for _, toolCall := range step.ToolCalls {
@@ -507,9 +509,9 @@ For chat applications, use message-based generation:
 import "github.com/digitallysavvy/go-ai/pkg/provider/types"
 
 messages := []types.Message{
-    {Role: "user", Content: types.TextContent{Text: "Hi!"}},
-    {Role: "assistant", Content: types.TextContent{Text: "Hello! How can I help?"}},
-    {Role: "user", Content: types.TextContent{Text: "Tell me a joke."}},
+    {Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Hi!"}}},
+    {Role: types.RoleAssistant, Content: []types.ContentPart{types.TextContent{Text: "Hello! How can I help?"}}},
+    {Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Tell me a joke."}}},
 }
 
 result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
@@ -525,13 +527,18 @@ fmt.Println(result.Text)
 Control generation behavior with various settings:
 
 ```go
+temperature := 0.8
+maxTokens := 500
+topP := 0.9
+topK := 40
+
 result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:         model,
     Prompt:        "Generate creative text",
-    Temperature:   0.8,              // Higher = more creative
-    MaxTokens:     500,              // Limit response length
-    TopP:          0.9,              // Nucleus sampling
-    TopK:          40,               // Top-k sampling
+    Temperature:   &temperature,     // Higher = more creative
+    MaxTokens:     &maxTokens,       // Limit response length
+    TopP:          &topP,            // Nucleus sampling
+    TopK:          &topK,            // Top-k sampling
     StopSequences: []string{"\n\n"}, // Stop at double newline
 })
 ```
@@ -543,17 +550,20 @@ See [Settings](./25-settings.mdx) for all available options.
 Handle errors appropriately:
 
 ```go
+import providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "Generate text",
 })
 if err != nil {
     // Check for specific error types
-    if errors.Is(err, provider.ErrRateLimit) {
+    var rateLimitErr *providererrors.RateLimitError
+    if errors.As(err, &rateLimitErr) {
         fmt.Println("Rate limit exceeded, retry later")
         return
     }
-    if errors.Is(err, provider.ErrInvalidRequest) {
+    if providererrors.IsValidationError(err) {
         fmt.Println("Invalid request parameters")
         return
     }
