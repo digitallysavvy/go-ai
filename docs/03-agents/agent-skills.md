@@ -113,7 +113,7 @@ package main
 import (
     "context"
     "fmt"
-    "log"
+    "os"
     "strings"
 
     "github.com/digitallysavvy/go-ai/pkg/agent"
@@ -122,8 +122,11 @@ import (
 
 func main() {
     // Create agent
+    openaiProvider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+    model, _ := openaiProvider.LanguageModel("gpt-4o-mini")
+
     config := agent.AgentConfig{
-        Model:    openai.NewLanguageModel("gpt-4o-mini", openai.Config{APIKey: apiKey}),
+        Model:    model,
         System:   "You are a helpful assistant with text processing skills.",
         MaxSteps: 5,
     }

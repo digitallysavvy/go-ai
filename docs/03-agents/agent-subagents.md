@@ -119,13 +119,15 @@ import (
     "context"
     "fmt"
     "log"
+    "os"
 
     "github.com/digitallysavvy/go-ai/pkg/agent"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
 func main() {
-    model := openai.NewLanguageModel("gpt-4o-mini", openai.Config{APIKey: apiKey})
+    openaiProvider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+    model, _ := openaiProvider.LanguageModel("gpt-4o-mini")
 
     // Create main coordinator agent
     mainConfig := agent.AgentConfig{
@@ -194,16 +196,16 @@ mainAgent.AddSubagent("research", researchAgent)
 // Deep research agent (subagent of research)
 deepResearchAgent := agent.NewToolLoopAgent(deepResearchConfig)
 
-// Cast to ToolLoopAgent to access subagent methods
-researchToolLoopAgent := researchAgent.(*agent.ToolLoopAgent)
-researchToolLoopAgent.AddSubagent("deep_research", deepResearchAgent)
+// researchAgent is already a *agent.ToolLoopAgent, so its subagent methods
+// are available directly -- no type assertion needed.
+researchAgent.AddSubagent("deep_research", deepResearchAgent)
 
 // Delegate through hierarchy
 // Main -> Research
 result1, _ := mainAgent.DelegateToSubagent(ctx, "research", "broad research task")
 
 // Research -> Deep Research
-result2, _ := researchToolLoopAgent.DelegateToSubagent(ctx, "deep_research", "detailed research task")
+result2, _ := researchAgent.DelegateToSubagent(ctx, "deep_research", "detailed research task")
 ```
 
 ## Delegation Tracking
@@ -423,11 +425,10 @@ Use both for maximum flexibility:
 // Subagent with tools
 researchAgent := agent.NewToolLoopAgent(researchConfig)
 
-// Add tools to subagent
-researchAgent.config.Tools = []types.Tool{
-    searchTool,
-    summarizerTool,
-}
+// Add tools to subagent (AgentConfig.Tools is unexported on ToolLoopAgent;
+// use AddTool to add tools after construction)
+researchAgent.AddTool(searchTool)
+researchAgent.AddTool(summarizerTool)
 
 // Register as subagent
 mainAgent.AddSubagent("research", researchAgent)
