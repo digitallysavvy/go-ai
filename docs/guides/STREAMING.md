@@ -1,3 +1,8 @@
+---
+title: "Streaming in Go AI SDK"
+description: "Explains the Go AI SDK's Next()-based streaming pattern, covering chunk types, advanced patterns, error handling, and migrating from io.Reader."
+---
+
 # Streaming in Go AI SDK
 
 The Go AI SDK uses a `Next()`-based pattern for streaming responses. This provides better type safety, error handling, and follows Go idioms.

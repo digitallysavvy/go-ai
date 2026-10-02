@@ -1,3 +1,8 @@
+---
+title: "MCP Tool Serialization"
+description: "Documents GetSerializableTools() in the Go-AI SDK for retrieving MCP tool definitions in a storable, transmittable format, with pagination support."
+---
+
 # MCP Tool Serialization
 
 The Model Context Protocol (MCP) allows servers to expose tools that can be used by AI models. The Go-AI SDK provides methods to retrieve tool definitions in a format that can be stored, transmitted, or cached.

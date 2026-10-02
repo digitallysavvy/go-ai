@@ -2,18 +2,35 @@ import { themes as prismThemes } from 'prism-react-renderer';
 import type { Config } from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 
+// Where the site is served. To move to the custom domain, set SITE_URL to
+// 'https://goaisdk.com' and BASE_URL to '/' (and add static/CNAME).
+const SITE_URL = 'https://digitallysavvy.github.io';
+const BASE_URL = '/go-ai/';
+
 const config: Config = {
   title: 'Go AI SDK',
   tagline: 'Build production-grade AI applications in Go',
   favicon: 'img/favicon.png',
 
-  url: 'https://digitallysavvy.github.io',
-  baseUrl: '/go-ai/',
+  url: SITE_URL,
+  baseUrl: BASE_URL,
   organizationName: 'digitallysavvy',
   projectName: 'go-ai',
   trailingSlash: false,
 
   onBrokenLinks: 'throw',
+
+  headTags: [
+    {
+      tagName: 'link',
+      attributes: {
+        rel: 'alternate',
+        type: 'text/plain',
+        title: 'LLM-friendly documentation index',
+        href: `${BASE_URL}llms.txt`,
+      },
+    },
+  ],
 
   stylesheets: [
     {
@@ -57,6 +74,11 @@ const config: Config = {
           showLastUpdateTime: true,
         },
         blog: false,
+        sitemap: {
+          lastmod: 'date',
+          changefreq: null,
+          priority: null,
+        },
         theme: {
           customCss: './src/css/custom.css',
         },
@@ -67,6 +89,8 @@ const config: Config = {
   plugins: [
     // Publishes /docs/<page>.md, /llms.txt and /llms-full.txt for agents.
     './plugins/markdown-export.js',
+    // Per-page Open Graph images and robots.txt.
+    './plugins/seo.js',
     [
       require.resolve('@easyops-cn/docusaurus-search-local'),
       {
@@ -83,6 +107,15 @@ const config: Config = {
 
   themeConfig: {
     image: 'img/social-card.png',
+    metadata: [
+      {
+        name: 'keywords',
+        content:
+          'Go AI SDK, golang AI SDK, Go LLM library, AI agents in Go, OpenAI Go, Anthropic Go, Gemini Go, tool calling, structured output, streaming, MCP, Vercel AI SDK for Go',
+      },
+      { property: 'og:site_name', content: 'Go AI SDK' },
+      { property: 'og:type', content: 'website' },
+    ],
     colorMode: {
       defaultMode: 'dark',
       disableSwitch: false,
@@ -91,7 +124,7 @@ const config: Config = {
     announcementBar: {
       id: 'star-on-github',
       content:
-        '⭐️ Go AI SDK is under active development — <a target="_blank" rel="noopener noreferrer" href="https://github.com/digitallysavvy/go-ai">star us on GitHub</a> and check the <a href="/go-ai/docs/migration-guides/from-v0.4-to-v0.5">latest release notes</a>.',
+        `⭐️ Go AI SDK is under active development — <a target="_blank" rel="noopener noreferrer" href="https://github.com/digitallysavvy/go-ai">star us on GitHub</a> and check the <a href="${BASE_URL}docs/migration-guides/from-v0.4-to-v0.5">latest release notes</a>.`,
       backgroundColor: '#00acd7',
       textColor: '#04121a',
       isCloseable: true,

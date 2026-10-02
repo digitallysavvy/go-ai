@@ -1,3 +1,8 @@
+---
+title: "Download API Reference"
+description: "API reference for the Go-AI SDK's Download API, which fetches files securely with built-in size limits that prevent memory-exhaustion attacks."
+---
+
 # Download API Reference
 
 ## Overview

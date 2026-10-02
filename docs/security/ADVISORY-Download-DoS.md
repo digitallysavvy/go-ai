@@ -1,3 +1,8 @@
+---
+title: "Security Advisory: Unbounded Download DoS Prevention"
+description: "Security advisory describing an unbounded download denial-of-service vulnerability in the Go-AI SDK, its fix, mitigation steps, and impact assessment."
+---
+
 # Security Advisory: Unbounded Download DoS Prevention
 
 **Status:** Fixed

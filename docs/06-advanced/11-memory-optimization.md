@@ -1,3 +1,8 @@
+---
+title: "Memory Optimization"
+description: "Explains how retention settings in the Go AI SDK reduce memory consumption by 50-80%, covering usage, streaming support, and performance impact."
+---
+
 # Memory Optimization
 
 Learn how to reduce memory consumption by 50-80% using retention settings.

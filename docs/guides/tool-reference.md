@@ -1,3 +1,8 @@
+---
+title: "Tool Reference (Anthropic)"
+description: "Explains Anthropic tool references in the Go AI SDK, which let you reuse previously defined tool definitions to reduce token usage and improve performance."
+---
+
 # Tool Reference (Anthropic)
 
 Tool references are an Anthropic-specific feature that allows you to reference previously defined tools without sending the full tool definition again. This reduces token usage and improves performance in conversations where tools have already been defined.

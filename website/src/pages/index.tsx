@@ -1,9 +1,11 @@
+import Head from '@docusaurus/Head';
 import Link from '@docusaurus/Link';
 import useBaseUrl from '@docusaurus/useBaseUrl';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import CodeBlock from '@theme/CodeBlock';
 import Layout from '@theme/Layout';
 
+import { FAQ } from '../components/landing/faq';
 import GitHubIcon from '../components/landing/GitHubIcon';
 import InstallCommand from '../components/landing/InstallCommand';
 import Showcase from '../components/landing/Showcase';
@@ -190,6 +192,29 @@ function UIStream() {
   );
 }
 
+function Faq() {
+  return (
+    <section className={styles.section} aria-labelledby="faq-title">
+      <div className={styles.container}>
+        <div className={styles.sectionHead}>
+          <p className={styles.eyebrow}>faq</p>
+          <h2 id="faq-title" className={styles.h2}>
+            Questions about the Go AI SDK
+          </h2>
+        </div>
+        <div className={pageStyles.faq}>
+          {FAQ.map(({ q, a }) => (
+            <details key={q} className={pageStyles.faqItem}>
+              <summary className={pageStyles.faqQ}>{q}</summary>
+              <p className={pageStyles.faqA}>{a}</p>
+            </details>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function FinalCta() {
   return (
     <section className={styles.cta} aria-labelledby="cta-title">
@@ -214,15 +239,62 @@ function FinalCta() {
   );
 }
 
-export default function Home() {
+const PAGE_TITLE = 'Go AI SDK: build AI apps and agents in Go';
+const PAGE_DESCRIPTION = `The open-source AI SDK for Go. Generate and stream text, call tools, run agents, use MCP and serve useChat UIs across ${PROVIDER_COUNT} providers, with parity with the TypeScript AI SDK.`;
+
+function StructuredData() {
   const { siteConfig } = useDocusaurusContext();
+  const home = siteConfig.url.replace(/\/$/, '') + siteConfig.baseUrl;
+  const data = [
+    {
+      '@context': 'https://schema.org',
+      '@type': 'WebSite',
+      name: siteConfig.title,
+      url: home,
+      description: PAGE_DESCRIPTION,
+    },
+    {
+      '@context': 'https://schema.org',
+      '@type': 'SoftwareSourceCode',
+      name: 'Go AI SDK',
+      description: PAGE_DESCRIPTION,
+      url: home,
+      codeRepository: GITHUB_URL,
+      programmingLanguage: { '@type': 'ComputerLanguage', name: 'Go', url: 'https://go.dev' },
+      runtimePlatform: 'Go 1.26+',
+      license: 'https://www.apache.org/licenses/LICENSE-2.0',
+      keywords: 'Go, golang, AI SDK, LLM, AI agents, tool calling, MCP, OpenAI, Anthropic, Gemini',
+      image: home + 'img/social-card.png',
+    },
+    {
+      '@context': 'https://schema.org',
+      '@type': 'FAQPage',
+      mainEntity: FAQ.map(({ q, a }) => ({
+        '@type': 'Question',
+        name: q,
+        acceptedAnswer: { '@type': 'Answer', text: a },
+      })),
+    },
+  ];
   return (
-    <Layout title={siteConfig.title} description={siteConfig.tagline}>
+    <Head>
+      <title>{PAGE_TITLE}</title>
+      <meta property="og:title" content={PAGE_TITLE} />
+      <script type="application/ld+json">{JSON.stringify(data)}</script>
+    </Head>
+  );
+}
+
+export default function Home() {
+  return (
+    <Layout description={PAGE_DESCRIPTION}>
+      <StructuredData />
       <main className={`${styles.page} ${pageStyles.main}`}>
         <Hero />
         <Packages />
         <Providers />
         <UIStream />
+        <Faq />
         <FinalCta />
       </main>
     </Layout>
