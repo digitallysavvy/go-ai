@@ -1,3 +1,8 @@
+---
+title: "Alibaba Video Generation"
+description: "Guide to image-to-video generation using the Alibaba DashScope provider in the Go-AI SDK, covering available models, image formats, and limitations."
+---
+
 # Alibaba Video Generation
 
 This guide covers video generation using the Alibaba DashScope provider in the Go-AI SDK.

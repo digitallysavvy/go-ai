@@ -51,9 +51,10 @@ func (s *MCPHTTPServer) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
-		Model:  model,
-		Prompt: req.Prompt,
-		Tools:  toolsArray,
+		Model:    model,
+		Prompt:   req.Prompt,
+		Tools:    toolsArray,
+		StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
 	})
 
 	if err != nil {

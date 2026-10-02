@@ -75,9 +75,10 @@ func main() {
 	ctx := context.Background()
 
 	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-		Model:  model,
-		Prompt: "What is (12 + 8) multiplied by 3? Use the calculator tool.",
-		Tools:  []types.Tool{calculatorTool},
+		Model:    model,
+		Prompt:   "What is (12 + 8) multiplied by 3? Use the calculator tool.",
+		Tools:    []types.Tool{calculatorTool},
+		StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
 
 		// ── Lifecycle callbacks ─────────────────────────────────────────────
 

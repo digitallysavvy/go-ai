@@ -65,10 +65,11 @@ func main() {
 	// Generate response with tools
 	ctx := context.Background()
 	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-		Model:  model,
-		System: "You are a helpful assistant with access to weather and time information.",
-		Prompt: "What's the weather like in Tokyo, and what time is it there?",
-		Tools:  tools,
+		Model:    model,
+		System:   "You are a helpful assistant with access to weather and time information.",
+		Prompt:   "What's the weather like in Tokyo, and what time is it there?",
+		Tools:    tools,
+		StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
 	})
 	if err != nil {
 		log.Fatalf("Failed to generate: %v", err)

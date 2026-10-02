@@ -666,9 +666,10 @@ func TestDeferredToolContinuesStepLoopStreaming(t *testing.T) {
 
 	done := make(chan *StreamTextResult, 1)
 	result, err := StreamText(context.Background(), StreamTextOptions{
-		Model:  model,
-		Prompt: "search",
-		Tools:  []types.Tool{deferredTool},
+		StopWhen: []StopCondition{IsLoopFinished()},
+		Model:    model,
+		Prompt:   "search",
+		Tools:    []types.Tool{deferredTool},
 		OnFinish: func(r *StreamTextResult) {
 			done <- r
 		},

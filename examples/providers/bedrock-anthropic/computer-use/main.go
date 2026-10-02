@@ -81,9 +81,10 @@ func main() {
 	// 1. Upgrade tool versions (computer_20241022 -> computer_20250124)
 	// 2. Add anthropic_beta headers for computer use
 	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-		Model:  model,
-		Prompt: "Take a screenshot of the current screen",
-		Tools:  []types.Tool{computerTool, bashTool},
+		Model:    model,
+		Prompt:   "Take a screenshot of the current screen",
+		Tools:    []types.Tool{computerTool, bashTool},
+		StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
 	})
 	if err != nil {
 		log.Fatalf("Failed to generate text: %v", err)

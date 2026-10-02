@@ -1,3 +1,8 @@
+---
+title: "Agent Skills"
+description: "Explains agent skills in the Go AI SDK: reusable behaviors registered with agents, covering skill structure, the skill registry, and skills vs. tools."
+---
+
 # Agent Skills
 
 Agent skills are reusable behaviors that can be registered with agents to extend their capabilities. Skills provide a clean way to encapsulate common operations and share them across multiple agents.

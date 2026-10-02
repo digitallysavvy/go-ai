@@ -96,5 +96,6 @@ func resolveStopConditions(stopWhen []StopCondition, maxSteps *int) []StopCondit
 	if maxSteps != nil {
 		return []StopCondition{StepCountIs(*maxSteps)}
 	}
-	return nil
+	// TS: generateText / streamText default to stopWhen = isStepCount(1).
+	return []StopCondition{IsStepCount(1)}
 }

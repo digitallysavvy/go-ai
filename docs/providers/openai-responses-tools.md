@@ -1,3 +1,8 @@
+---
+title: "OpenAI Responses API: Custom Tools & Shell Container Tools"
+description: "Covers Custom Tool, Tool Search, and Shell Container Tool types in the OpenAI Responses API, and how to use PrepareTools with them in the Go-AI SDK."
+---
+
 # OpenAI Responses API: Custom Tools & Shell Container Tools
 
 This guide covers the Custom Tool, Tool Search, and Shell Container Tool types available in the OpenAI Responses API, and how to use them with the Go-AI SDK.

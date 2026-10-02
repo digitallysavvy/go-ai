@@ -1,3 +1,8 @@
+---
+title: "Tool Result Content Arrays"
+description: "Explains the content array feature for tool results in the Go AI SDK, letting tools return rich structured content like text, images, and files."
+---
+
 # Tool Result Content Arrays
 
 This guide explains how to use the new content array feature for tool results, which allows you to return rich, structured content from tools including text, images, files, and provider-specific content like tool references.
