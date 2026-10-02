@@ -281,7 +281,7 @@ code.
   `stopWhen: isStepCount(1)` does. A tool call in that step still executes
   and its result is returned, but the model is not called again. For a
   tool-calling loop, set `StopWhen` (for example
-  `[]ai.StopCondition{ai.StepCountIs(5)}`) or use `agent.NewToolLoopAgent`,
+  `[]ai.StopCondition{ai.IsStepCount(5)}`) or use `agent.NewToolLoopAgent`,
   which defaults to 20 steps. Pre-release builds of v0.5.0 had dropped this
   default and looped until the model stopped calling tools; that is fixed.
 - **Outgoing requests now carry a `User-Agent` header**: every provider
