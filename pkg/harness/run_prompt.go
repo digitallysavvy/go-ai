@@ -349,18 +349,29 @@ type turnDriver struct {
 	execErr error
 
 	// startedToolExecutions backs ensureToolExecutionStarted's idempotent
-	// ai.Callbacks.OnToolExecutionStart (TS #21696 "Start/end callbacks and
-	// fast tool results were delayed behind slower tools in the same
-	// step"): it may be called once per tool call from either goroutine —
-	// a host tool's own exec goroutine when its execution begins, or the
-	// main loop when a provider-executed tool call is observed or a
-	// tool-result arrives for a call that never got an explicit early
-	// start (e.g. a client-submitted result) — and must fire the start
-	// callback exactly once regardless of which caller gets there first.
-	// Guarded by execMu like every other field a host tool execution
-	// touches from its own goroutine. Telemetry's own start+end pair stays
-	// combined at recordToolResult time (see telToolExecution's doc).
+	// ai.Callbacks.OnToolExecutionStart AND telemetry's own toolExecutionStart
+	// (TS #21696 "Start/end callbacks and fast tool results were delayed
+	// behind slower tools in the same step"): it may be called once per tool
+	// call from the main goroutine at any of several points — synchronously
+	// in executeHostToolAsync just before a host tool's exec goroutine is
+	// spawned, when a provider-executed tool call is observed, or (as a
+	// fallback) when a tool-result arrives for a call that never got an
+	// explicit early start (e.g. a client-submitted result) — and must fire
+	// the start callback exactly once regardless of which call site gets
+	// there first. Deliberately always called from the main goroutine, never
+	// from inside a host tool's own exec goroutine — see
+	// executeHostToolAsync's doc for why firing it there would race a
+	// step's own telemetry span lifetime. Guarded by execMu like every
+	// other field a host tool execution touches.
 	startedToolExecutions map[string]bool
+
+	// telToolCtx stores, per ToolCallID, the ctx returned by telemetry's
+	// toolExecutionStart event (see ensureToolExecutionStarted), so the
+	// later toolExecutionEnd event (telToolExecutionEnd, always fired from
+	// recordToolResult on the main goroutine) threads the exact span ctx
+	// that start opened — mirroring TS's `toolExecutions` map, which holds
+	// each tool's `startNotification` the same way. Guarded by execMu.
+	telToolCtx map[string]context.Context
 
 	closingResumedStep bool
 
@@ -420,6 +431,7 @@ func (d *turnDriver) run() {
 	d.continuationsByToolCallID = map[string]types.ToolResultContent{}
 	d.toolExecMs = map[string]int64{}
 	d.startedToolExecutions = map[string]bool{}
+	d.telToolCtx = map[string]context.Context{}
 	d.stripToolInput = NewToolInputWorkDirStripper(d.in.SessionWorkDir)
 
 	d.activeToolSet = map[string]struct{}{}
@@ -737,8 +749,10 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 				// exec goroutine to fire the early start from — the
 				// runtime is already executing it by the time this event
 				// arrives — so fire it here instead of waiting for
-				// recordToolResult's end-of-execution fallback.
-				d.ensureToolExecutionStarted(displayCall)
+				// recordToolResult's end-of-execution fallback. Runs on
+				// the main goroutine, so reading d.telStepCtx live is
+				// safe here.
+				d.ensureToolExecutionStarted(d.telStepCtx, displayCall)
 			}
 			d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &displayCall})
 			d.stepToolCalls = append(d.stepToolCalls, displayCall)
@@ -1063,25 +1077,33 @@ func (d *turnDriver) flushBufferedResultChunks() {
 	d.bufferedResultChunks = nil
 }
 
-// ensureToolExecutionStarted fires ai.Callbacks.OnToolExecutionStart for
-// call the first time it is invoked for call.ID, idempotently — mirrors
-// TS's (TS #21696) `publishToolExecutionStart`
-// (`execution.startNotification ??= ...`). Called as soon as a tool's
-// execution actually begins (a host tool's own exec goroutine;
-// consumeLoop when a provider-executed tool call is first observed), so
-// OnToolExecutionStart no longer waits behind slower sibling tools in the
-// same step the way the combined start+end firing in recordToolResult used
-// to. recordToolResult also calls this (idempotently) right before firing
-// OnToolExecutionEnd, as a fallback for any tool-result that never got an
-// earlier explicit start (e.g. a client-submitted result for a call the
-// host never executed itself) — this matches TS's `publishToolExecutionEnd`
-// always calling `publishToolExecutionStart` first.
+// ensureToolExecutionStarted fires ai.Callbacks.OnToolExecutionStart AND
+// telemetry's own toolExecutionStart event for call the first time it is
+// invoked for call.ID, idempotently — mirrors TS's (TS #21696)
+// `publishToolExecutionStart` (`execution.startNotification ??= ...`),
+// which does the same for both the consumer-visible callback and the
+// telemetry span in one call. Called as soon as a tool's execution
+// actually begins (a host tool's own exec goroutine; consumeLoop when a
+// provider-executed tool call is first observed), so neither
+// OnToolExecutionStart nor the telemetry span waits behind slower sibling
+// tools in the same step the way the combined start+end firing in
+// recordToolResult used to. recordToolResult also calls this (idempotently)
+// right before firing OnToolExecutionEnd/telToolExecutionEnd, as a fallback
+// for any tool-result that never got an earlier explicit start (e.g. a
+// client-submitted result for a call the host never executed itself) —
+// this matches TS's `publishToolExecutionEnd` always calling
+// `publishToolExecutionStart` first.
 //
-// Telemetry's own tool-execution span is deliberately NOT split the same
-// way — see telToolExecution's doc for why firing it early from a host
-// tool's own exec goroutine would race the OpenTelemetry integration's
-// live per-turn step-span state.
-func (d *turnDriver) ensureToolExecutionStarted(call types.ToolCall) {
+// telCtx is the ctx to parent the telemetry event under: the main
+// goroutine passes its live d.telStepCtx directly (safe — same
+// goroutine); a host tool's own exec goroutine must instead pass a
+// snapshot taken synchronously before the goroutine was spawned (see
+// executeHostToolAsync's execTelCtx) rather than read d.telStepCtx live,
+// since the main goroutine mutates it at step boundaries. nil skips the
+// telemetry event entirely (telemetry disabled, or no step context yet).
+// See the telToolCtx field doc for why firing telemetry's start from a
+// host tool's own goroutine is race-safe despite the ctx snapshot.
+func (d *turnDriver) ensureToolExecutionStarted(telCtx context.Context, call types.ToolCall) {
 	d.execMu.Lock()
 	if d.startedToolExecutions[call.ID] {
 		d.execMu.Unlock()
@@ -1096,13 +1118,27 @@ func (d *turnDriver) ensureToolExecutionStarted(call types.ToolCall) {
 			RuntimeContext: d.in.RuntimeContext, ToolsContext: d.in.ToolsContext,
 		})
 	}
+
+	if telCtx != nil {
+		toolCtx := telemetry.FireOnToolCallStart(telCtx, telemetry.TelemetryToolCallStartEvent{
+			Settings:    d.in.Telemetry,
+			CallID:      d.telCallID,
+			ToolCallID:  call.ID,
+			ToolName:    call.ToolName,
+			Args:        call.Arguments,
+			ToolContext: telemetryToolContext(d.in.Telemetry, call.ToolName, d.in.ToolsContext[call.ToolName]),
+		})
+		d.execMu.Lock()
+		d.telToolCtx[call.ID] = toolCtx
+		d.execMu.Unlock()
+	}
 }
 
 // recordToolResult correlates a tool-result event with its originating call
-// for step accounting and fires OnToolExecutionEnd (ensuring
-// OnToolExecutionStart has fired first). Mirrors TS's `toolExecutions` map,
-// populated for every tool call regardless of who executed it (host or the
-// runtime's own builtin).
+// for step accounting and fires OnToolExecutionEnd/telToolExecutionEnd
+// (ensuring the start events have fired first). Mirrors TS's
+// `toolExecutions` map, populated for every tool call regardless of who
+// executed it (host or the runtime's own builtin).
 func (d *turnDriver) recordToolResult(tr *ToolResultPart) {
 	call, ok := d.toolCallsByID[tr.ToolCallID]
 	if !ok {
@@ -1116,7 +1152,9 @@ func (d *turnDriver) recordToolResult(tr *ToolResultPart) {
 	}
 	d.stepToolResults = append(d.stepToolResults, toolResult)
 
-	d.ensureToolExecutionStarted(call)
+	// recordToolResult always runs on the main goroutine, so reading
+	// d.telStepCtx live here (rather than a pre-captured snapshot) is safe.
+	d.ensureToolExecutionStarted(d.telStepCtx, call)
 
 	if d.in.Callbacks.OnToolExecutionEnd != nil {
 		d.in.Callbacks.OnToolExecutionEnd(d.ctx, ai.OnToolCallFinishEvent{
@@ -1125,7 +1163,7 @@ func (d *turnDriver) recordToolResult(tr *ToolResultPart) {
 			RuntimeContext:  d.in.RuntimeContext, ToolsContext: d.in.ToolsContext,
 		})
 	}
-	d.telToolExecution(call, toolResult, d.toolExecMs[tr.ToolCallID])
+	d.telToolExecutionEnd(call, toolResult, d.toolExecMs[tr.ToolCallID])
 }
 
 // completeStep flushes buffered tool-result chunks, fires the model-call-end
@@ -1621,13 +1659,27 @@ func (d *turnDriver) executeHostToolAsync(tool types.Tool, raw *ToolCallPart, ca
 	if execTelCtx == nil {
 		execTelCtx = d.ctx
 	}
+	// TS #21696: fire OnToolExecutionStart (and telemetry's own
+	// toolExecutionStart) as execution actually begins, not buffered
+	// behind this step's slower sibling tool executions. Called here —
+	// synchronously, on the caller's (the main consumeLoop) goroutine,
+	// before the exec goroutine is even spawned — rather than as the
+	// first statement inside the goroutine below: a step's own step span
+	// can legitimately end (telStepEnd, e.g. at this step's very next
+	// StreamPart, FinishStepPart) before a newly-spawned goroutine gets
+	// scheduled onto a thread, which would silently resolve the
+	// telemetry integration's per-step span state to an already-ended,
+	// non-recording span and drop the tool's span entirely — a real
+	// ordering race, not merely a data race (genAIState's own map/fields
+	// are already mutex-protected either way). Firing synchronously here
+	// instead gives it the same happens-before guarantee relative to
+	// subsequent StreamParts that TS gets for free from its
+	// single-threaded, run-to-completion-until-the-first-await execution
+	// model. See the telToolCtx field doc.
+	d.ensureToolExecutionStarted(d.telStepCtx, call)
 	d.execWG.Add(1)
 	go func() {
 		defer d.execWG.Done()
-		// TS #21696: fire OnToolExecutionStart as execution actually
-		// begins, not buffered behind this step's slower sibling tool
-		// executions.
-		d.ensureToolExecutionStarted(call)
 		start := time.Now()
 		var toolCtx interface{}
 		if ctxValue, ok := d.in.ToolsContext[raw.ToolName]; ok {

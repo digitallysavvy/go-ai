@@ -16,9 +16,12 @@ import (
 //   - telStart          -> lifecycle.start
 //   - telStepStart      -> lifecycle.ensureStepOpen (stepStart + modelStart)
 //   - telLanguageModelCallEnd -> lifecycle.languageModelCallEnd
-//   - telToolExecution  -> lifecycle.toolExecutionStart + toolExecutionEnd
-//     (fired back-to-back once a tool's outcome is known — TS's
-//     publishToolExecutions does the same at each step boundary/pause)
+//   - ensureToolExecutionStarted (run_prompt.go) -> lifecycle.toolExecutionStart
+//     (fired as soon as a tool's execution actually begins — TS #21696's
+//     `publishToolExecutionStart`)
+//   - telToolExecutionEnd -> lifecycle.toolExecutionEnd (fired once a
+//     tool's outcome is known, closing the span toolExecutionStart opened —
+//     TS #21696's `publishToolExecutionEnd`)
 //   - telStepEnd        -> lifecycle.stepEnd (TS b7aa06a: includes StepNumber)
 //   - telEnd            -> lifecycle.end (TS a9a22e1: reports the *final*
 //     step's text/reasoning, not a fresh accumulation, for multi-step turns)
@@ -244,31 +247,33 @@ func (d *turnDriver) telLanguageModelCallEnd(finishReason FinishReason, usage Us
 	})
 }
 
-// telToolExecution fires a toolExecutionStart+toolExecutionEnd telemetry
-// event pair for one completed tool call, always from recordToolResult (the
-// main goroutine), once the tool's outcome is known. Unlike the Go-visible
-// ai.Callbacks.OnToolExecutionStart (see ensureToolExecutionStarted), this
-// is deliberately NOT split to fire an early, real-time start from a host
-// tool's own exec goroutine: the OpenTelemetry integration resolves a tool
-// span's parent from its own live per-turn step-span state (keyed by
-// CallID, mutated by OnStepStart/OnStepEnd as the main goroutine advances
-// steps — see OnToolExecutionStart's doc), not from a ctx this call would
-// pass across goroutines; firing it from a concurrently-scheduled exec
-// goroutine would race that state non-deterministically. Mirrors TS's
-// `publishToolExecutions` (which likewise fires both back-to-back once a
-// tool's outcome — success or error — is already known).
-func (d *turnDriver) telToolExecution(call types.ToolCall, result types.ToolResult, durationMs int64) {
-	if d.telStepCtx == nil {
-		return
+// telToolExecutionEnd fires the toolExecutionEnd telemetry event for one
+// completed tool call, from recordToolResult (the main goroutine), once the
+// tool's outcome is known. Its matching toolExecutionStart has already
+// fired — either early, from the tool's own exec goroutine or from
+// consumeLoop for a provider-executed call (see ensureToolExecutionStarted
+// and the telToolCtx field doc, TS #21696's `publishToolExecutionStart`) —
+// or, as a fallback here via recordToolResult's own
+// ensureToolExecutionStarted call for a tool-result that never got an
+// earlier explicit start (e.g. a client-submitted result), matching TS's
+// `publishToolExecutionEnd` always calling `publishToolExecutionStart`
+// first. Threads the exact ctx that start returned (d.telToolCtx[call.ID])
+// so the end event closes the same span, falling back to d.telStepCtx (the
+// pre-H5 behavior) if no stored ctx exists — e.g. telemetry was disabled
+// when start ran. Mirrors TS's `toolExecutions` map / `publishToolExecutionEnd`.
+func (d *turnDriver) telToolExecutionEnd(call types.ToolCall, result types.ToolResult, durationMs int64) {
+	d.execMu.Lock()
+	toolCtx, started := d.telToolCtx[call.ID]
+	if started {
+		delete(d.telToolCtx, call.ID)
 	}
-	toolCtx := telemetry.FireOnToolCallStart(d.telStepCtx, telemetry.TelemetryToolCallStartEvent{
-		Settings:    d.in.Telemetry,
-		CallID:      d.telCallID,
-		ToolCallID:  call.ID,
-		ToolName:    call.ToolName,
-		Args:        call.Arguments,
-		ToolContext: telemetryToolContext(d.in.Telemetry, call.ToolName, d.in.ToolsContext[call.ToolName]),
-	})
+	d.execMu.Unlock()
+	if !started {
+		if d.telStepCtx == nil {
+			return
+		}
+		toolCtx = d.telStepCtx
+	}
 	telemetry.FireOnToolCallFinish(toolCtx, telemetry.TelemetryToolCallFinishEvent{
 		Settings:    d.in.Telemetry,
 		CallID:      d.telCallID,
