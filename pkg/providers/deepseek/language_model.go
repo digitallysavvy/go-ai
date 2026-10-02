@@ -526,8 +526,13 @@ func convertDeepseekUsage(raw json.RawMessage) types.Usage {
 
 	p, c, t := int64(usage.PromptTokens), int64(usage.CompletionTokens), int64(usage.TotalTokens)
 	result := types.Usage{InputTokens: &p, OutputTokens: &c, TotalTokens: &t}
+	// Prefer DeepSeek's native prompt_cache_hit_tokens; fall back to the
+	// OpenAI-compatible prompt_tokens_details.cached_tokens when the native
+	// counter is absent (e.g. Azure-hosted DeepSeek deployments).
 	var cached int64
-	if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens != nil {
+	if usage.PromptCacheHitTokens != nil {
+		cached = int64(*usage.PromptCacheHitTokens)
+	} else if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens != nil {
 		cached = int64(*usage.PromptTokensDetails.CachedTokens)
 	}
 	var textTokens *int64

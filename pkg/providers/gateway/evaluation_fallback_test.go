@@ -104,6 +104,71 @@ func TestValidateGatewayEvaluationModelsOption_RejectsEachInvalidConditionShape(
 	}
 }
 
+// TS #21625: "accepts condition %#" additions -- a condition without
+// `question` checks every matching question of the implied type.
+func TestValidateGatewayEvaluationModelsOption_AcceptsQuestionlessConditions(t *testing.T) {
+	cases := []interface{}{
+		map[string]interface{}{"confidenceBelow": 0.6},
+		map[string]interface{}{"probabilityBetween": []interface{}{0.4, 0.6}},
+		map[string]interface{}{"any": []interface{}{
+			map[string]interface{}{"confidenceBelow": 0.6},
+			map[string]interface{}{"question": "intent", "confidenceBelow": 0.8},
+			map[string]interface{}{"probabilityBetween": []interface{}{0.4, 0.6}},
+		}},
+	}
+	for i, when := range cases {
+		models := []interface{}{
+			map[string]interface{}{"model": "openai/gpt-5.6-sol", "when": when},
+		}
+		if err := validateGatewayEvaluationModelsOption(models); err != nil {
+			t.Errorf("case %d: unexpected error: %v", i, err)
+		}
+	}
+}
+
+// TS #21625: "rejects condition %#" additions -- a bare `question` is not a
+// check, and exactly one of confidenceBelow/probabilityBetween is still
+// required with no extra keys.
+func TestValidateGatewayEvaluationModelsOption_RejectsQuestionOnlyOrMalformedConditions(t *testing.T) {
+	cases := []interface{}{
+		map[string]interface{}{},
+		map[string]interface{}{"question": "intent"},
+		map[string]interface{}{"confidenceBelow": 0.5, "probabilityBetween": []interface{}{0.4, 0.6}},
+		map[string]interface{}{"confidenceBelow": 0.5, "extra": true},
+	}
+	for i, when := range cases {
+		models := []interface{}{
+			map[string]interface{}{"model": "openai/gpt-5.6-sol", "when": when},
+		}
+		if err := validateGatewayEvaluationModelsOption(models); err == nil {
+			t.Errorf("case %d: expected error, got nil for %#v", i, when)
+		}
+	}
+}
+
+// TestEvaluationFallbackCondition_ToWire_OmitsQuestionWhenUnset is a
+// Go-specific wire-shape test: Question == "" (the questionless case) must
+// not serialize an empty "question" key, matching the TS wire shape where
+// the field is absent rather than present-but-empty.
+func TestEvaluationFallbackCondition_ToWire_OmitsQuestionWhenUnset(t *testing.T) {
+	cb := 0.6
+	c := EvaluationFallbackCondition{ConfidenceBelow: &cb}
+	wire := c.toWire()
+	if _, ok := wire["question"]; ok {
+		t.Fatalf("toWire() = %#v, want no question key", wire)
+	}
+	if wire["confidenceBelow"] != 0.6 {
+		t.Fatalf("toWire() = %#v, want confidenceBelow 0.6", wire)
+	}
+
+	pb := [2]float64{0.4, 0.6}
+	c2 := EvaluationFallbackCondition{ProbabilityBetween: &pb}
+	wire2 := c2.toWire()
+	if _, ok := wire2["question"]; ok {
+		t.Fatalf("toWire() = %#v, want no question key", wire2)
+	}
+}
+
 // TS: "enforces the maximum condition depth"
 func TestValidateGatewayEvaluationModelsOption_EnforcesMaximumConditionDepth(t *testing.T) {
 	var condition interface{} = map[string]interface{}{"question": "intent", "confidenceBelow": 0.5}

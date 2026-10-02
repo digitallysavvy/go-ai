@@ -2,12 +2,14 @@ package anthropic
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -60,6 +62,27 @@ func TestRuntimeBaseURL_UsesSharedPartitionAwareResolver(t *testing.T) {
 	want := "https://bedrock-runtime.cn-north-1.amazonaws.com.cn"
 	if got != want {
 		t.Fatalf("runtimeBaseURL = %q, want %q", got, want)
+	}
+}
+
+// TestRuntimeBaseURL_RejectsRegionThatWouldRewriteHost ports TS
+// region-validation.test.ts "rejects %j before fetching" for the
+// bedrock-anthropic provider (TS #21842): region is interpolated into the
+// request host via the shared resolver, so a non-DNS-label value must be
+// rejected with an InvalidArgumentError.
+func TestRuntimeBaseURL_RejectsRegionThatWouldRewriteHost(t *testing.T) {
+	for _, region := range []string{"user@internal:8080/#", "evil.example.com/#", "us-east-1/../.."} {
+		t.Run(region, func(t *testing.T) {
+			p := New(Config{Region: region, BearerToken: "token"})
+			_, err := p.runtimeBaseURL()
+			var invalid *providererrors.InvalidArgumentError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("runtimeBaseURL(region=%q) error = %v, want InvalidArgumentError", region, err)
+			}
+			if invalid.Field != "region" {
+				t.Fatalf("Field = %q, want region", invalid.Field)
+			}
+		})
 	}
 }
 

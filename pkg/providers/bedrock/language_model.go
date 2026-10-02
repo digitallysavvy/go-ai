@@ -316,6 +316,21 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 		}
 	}
 
+	// Nova 2 Lite rejects inferenceConfig.maxTokens combined with high (or
+	// higher) reasoning effort with an HTTP 400. Drop it and warn instead of
+	// failing the request, mirroring TS amazon-bedrock-chat-language-model.ts.
+	if isNovaReasoningModel(m.modelID) && thinkingType == "enabled" &&
+		(maxReasoningEffort == "high" || maxReasoningEffort == "xhigh" || maxReasoningEffort == "max") {
+		if _, ok := inferenceConfig["maxTokens"]; ok {
+			delete(inferenceConfig, "maxTokens")
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "maxOutputTokens",
+				Details: fmt.Sprintf("maxOutputTokens is not supported by %s when high reasoning is enabled and will be ignored", m.modelID),
+			})
+		}
+	}
+
 	// taskBudget (Anthropic's advisory task-level token budget, output_config.
 	// task_budget) is not wired up in TS's amazon-bedrock-chat-language-
 	// model.ts today (verified against ai@7.0.113: it has no `taskBudget`

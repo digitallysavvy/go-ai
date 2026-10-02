@@ -100,6 +100,8 @@ This matches the TypeScript `azure.tools` behavior by serializing provider-execu
 
 For the standard Azure URL format, set `ResourceName`. For custom regional, proxy, or private-link endpoints, set `BaseURL` to the Azure OpenAI `/openai` prefix:
 
+`ResourceName` is interpolated directly into the request host (`https://{resourceName}.openai.azure.com/...`), so `New` rejects a value that isn't a single DNS label (letters, digits, and hyphens, 1-63 characters, no leading/trailing hyphen) with an `InvalidArgumentError` before building the client — a value like `user@internal:8080/#` would otherwise rewrite the destination host. This only applies when `BaseURL` is unset; a custom `BaseURL` is used as-is and `ResourceName` is ignored.
+
 ```go
 provider, err := azure.New(azure.Config{
     BaseURL: "https://your-resource-eastus.openai.azure.com/openai",
@@ -138,6 +140,72 @@ transcriptionModel, err := provider.TranscriptionModel("whisper-1")
 ```
 
 Azure DeepSeek deployments are available through `provider.DeepSeek("deployment-name")`. The model uses Azure authentication, the Azure `api-version` query parameter, and the `"azure"` provider option namespace while preserving DeepSeek reasoning-effort request behavior.
+
+## MAI-Transcribe And MAI-Voice (Azure Speech)
+
+`provider.TranscriptionModel` and `provider.SpeechModel` route Microsoft AI's MAI-Transcribe and MAI-Voice model families through the Azure Speech API instead of Azure OpenAI, since they use a different protocol and endpoint. Routing is automatic by model ID, and can be overridden per call with `providerOptions.azure.api` (`"openai"`, `"speech"`, or `"mai"`):
+
+| Model ID | Default API |
+| --- | --- |
+| `mai-transcribe-2`, `mai-transcribe-1.5` | Speech (file transcription) |
+| `mai-transcribe-2-streaming` | MAI realtime (streaming transcription only) |
+| `mai-voice-2`, `mai-voice-2-flash`, `mai-voice-2.1`, `mai-voice-2.1-flash` | Speech (SSML text-to-speech) |
+| any other deployment name | OpenAI |
+
+```go
+provider, err := azure.New(azure.Config{
+    ResourceName: os.Getenv("AZURE_RESOURCE_NAME"),
+    APIKey:       os.Getenv("AZURE_API_KEY"),
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+transcriptionModel, err := provider.TranscriptionModel("mai-transcribe-2")
+if err != nil {
+    log.Fatal(err)
+}
+result, err := transcriptionModel.DoTranscribe(ctx, &provider.TranscriptionOptions{
+    Audio:    audioBytes,
+    MimeType: "audio/wav",
+    ProviderOptions: map[string]interface{}{
+        "azure": map[string]interface{}{
+            "timestamps": "segment", // "word" | "segment" | "none"; default "segment"
+            "locales":    []interface{}{"en"},
+        },
+    },
+})
+```
+
+`providerOptions.azure` is validated strictly for both models: an unrecognized key, or an option a given MAI model doesn't support (e.g. `diarization` on MAI-Transcribe-1.5), returns an `InvalidArgumentError` instead of being silently dropped; an option that only applies to a different backend (e.g. `style` routed to OpenAI TTS) is reported as an `unsupported` warning on the result instead.
+
+MAI-Voice speech picks a default voice from `Language` when `Voice` is unset, and accepts `providerOptions.azure.style` / `styleDegree` for Azure's `mstts:express-as` speaking styles:
+
+```go
+speechModel, err := provider.SpeechModel("mai-voice-2")
+result, err := speechModel.DoGenerate(ctx, &provider.SpeechGenerateOptions{
+    Text:     "Hello from Azure.",
+    Language: "es", // selects es-MX-Valeria when Voice is unset
+    ProviderOptions: map[string]interface{}{
+        "azure": map[string]interface{}{"style": "excited", "styleDegree": 1.5},
+    },
+})
+```
+
+MAI-Transcribe-2-Streaming only supports `ai.ExperimentalStreamTranscribe` (streaming transcription), over a WebSocket to the MAI realtime API; it requires 16-bit mono PCM audio at 16000 or 24000 Hz.
+
+Two optional `azure.Config` settings control the endpoints these models use, both defaulting from `ResourceName` and validated the same way as `ResourceName` itself (a single DNS label) before being used:
+
+- `SpeechBaseURL` — the Azure Speech endpoint prefix (default `https://{ResourceName}.cognitiveservices.azure.com`), used for both MAI-Transcribe file transcription and MAI-Voice speech.
+- `MaiBaseURL` — the MAI realtime endpoint prefix (default `https://{ResourceName}.services.ai.azure.com/mai/v1`), used for MAI-Transcribe-2-Streaming.
+
+```go
+provider, err := azure.New(azure.Config{
+    ResourceName:  os.Getenv("AZURE_RESOURCE_NAME"),
+    APIKey:        os.Getenv("AZURE_API_KEY"),
+    SpeechBaseURL: "https://eastus.api.cognitive.microsoft.com",
+})
+```
 
 ## Custom Headers
 

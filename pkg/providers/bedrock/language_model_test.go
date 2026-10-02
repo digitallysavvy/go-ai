@@ -364,6 +364,105 @@ func TestDoGenerate_ParsesToolCallsReasoningAndUsage(t *testing.T) {
 	}
 }
 
+func TestDoGenerate_RequestMetadataForwardedToTopLevel(t *testing.T) {
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{
+			"output": {"message": {"role": "assistant", "content": [{"text": "hello"}]}},
+			"stopReason": "end_turn",
+			"usage": {"inputTokens": 3, "outputTokens": 5, "totalTokens": 8}
+		}`))
+	}))
+	defer server.Close()
+
+	model := newHTTPTestBedrockModel(t, server, "anthropic.claude-3-5-sonnet-20241022-v2:0")
+	_, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{
+			"amazonBedrock": map[string]interface{}{
+				"requestMetadata": map[string]interface{}{"team": "search", "environment": "prod"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate error = %v", err)
+	}
+	rm, ok := gotBody["requestMetadata"].(map[string]interface{})
+	if !ok || rm["team"] != "search" || rm["environment"] != "prod" {
+		t.Fatalf("requestMetadata = %#v, want top-level map", gotBody["requestMetadata"])
+	}
+	if additional, ok := gotBody["additionalModelRequestFields"].(map[string]interface{}); ok {
+		if _, leaked := additional["requestMetadata"]; leaked {
+			t.Fatalf("requestMetadata leaked into additionalModelRequestFields: %#v", additional)
+		}
+	}
+}
+
+func TestDoGenerate_RequestMetadataOmittedWhenNotProvided(t *testing.T) {
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{
+			"output": {"message": {"role": "assistant", "content": [{"text": "hello"}]}},
+			"stopReason": "end_turn",
+			"usage": {"inputTokens": 3, "outputTokens": 5, "totalTokens": 8}
+		}`))
+	}))
+	defer server.Close()
+
+	model := newHTTPTestBedrockModel(t, server, "anthropic.claude-3-5-sonnet-20241022-v2:0")
+	_, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate error = %v", err)
+	}
+	if _, ok := gotBody["requestMetadata"]; ok {
+		t.Fatalf("requestMetadata = %#v, want omitted", gotBody["requestMetadata"])
+	}
+}
+
+func TestDoStream_RequestMetadataForwardedToTopLevel(t *testing.T) {
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		body := buildBedrockEventStreamBody([][2]string{
+			{"messageStop", `{"stopReason":"end_turn"}`},
+		})
+		w.WriteHeader(200)
+		_, _ = w.Write(body)
+	}))
+	defer server.Close()
+
+	model := newHTTPTestBedrockModel(t, server, "anthropic.claude-3-5-sonnet-20241022-v2:0")
+	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{
+			"amazonBedrock": map[string]interface{}{
+				"requestMetadata": map[string]interface{}{"team": "search", "environment": "prod"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoStream error = %v", err)
+	}
+	defer stream.Close() //nolint:errcheck
+	for {
+		if _, err := stream.Next(); err == io.EOF {
+			break
+		} else if err != nil {
+			t.Fatalf("Next() error = %v", err)
+		}
+	}
+	rm, ok := gotBody["requestMetadata"].(map[string]interface{})
+	if !ok || rm["team"] != "search" || rm["environment"] != "prod" {
+		t.Fatalf("requestMetadata = %#v, want top-level map", gotBody["requestMetadata"])
+	}
+}
+
 func TestDoGenerate_ErrorResponseUsesTypeAndMessage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(400)
@@ -1333,5 +1432,70 @@ func TestResolveAmazonBedrockBaseURL_EnvVarPrecedence(t *testing.T) {
 	}
 	if explicit != "https://explicit.example.com" {
 		t.Fatalf("got %q, want explicit BaseURL to win over env vars", explicit)
+	}
+}
+
+// TestResolveAmazonBedrockBaseURL_RejectsRegionThatWouldRewriteHost ports TS
+// resolve-amazon-bedrock-base-url.test.ts "rejects region %j because it
+// would rewrite the request host" (TS #21842): region is interpolated
+// directly into the request host, so a non-DNS-label value must be
+// rejected with an InvalidArgumentError instead of silently redirecting the
+// request.
+func TestResolveAmazonBedrockBaseURL_RejectsRegionThatWouldRewriteHost(t *testing.T) {
+	for _, region := range []string{
+		"evil.example.com/#",
+		"user@internal:8080/#",
+		"169.254.169.254:80/x#",
+		"us-east-1/../..",
+		"us east 1",
+		"",
+	} {
+		t.Run(region, func(t *testing.T) {
+			_, err := ResolveAmazonBedrockBaseURL(ResolveBaseURLOptions{
+				Region:                               region,
+				Service:                              "bedrock-runtime",
+				ServiceEndpointURLEnvironmentVarName: "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
+			})
+			var invalid *providererrors.InvalidArgumentError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("ResolveAmazonBedrockBaseURL(region=%q) error = %v, want InvalidArgumentError", region, err)
+			}
+			if invalid.Field != "region" {
+				t.Fatalf("Field = %q, want region", invalid.Field)
+			}
+		})
+	}
+}
+
+// TestResolveAmazonBedrockBaseURL_DoesNotValidateUnusedRegion ports TS
+// "does not reject the region when an explicit endpoint is configured" /
+// "does not validate an unused region with %s": region is irrelevant once
+// an explicit BaseURL or endpoint env var is set, so a garbage region must
+// not block the request.
+func TestResolveAmazonBedrockBaseURL_DoesNotValidateUnusedRegion(t *testing.T) {
+	got, err := ResolveAmazonBedrockBaseURL(ResolveBaseURLOptions{
+		BaseURL:                              "https://proxy.example/",
+		Region:                               "user@internal/#",
+		Service:                              "bedrock-runtime",
+		ServiceEndpointURLEnvironmentVarName: "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
+	})
+	if err != nil {
+		t.Fatalf("error = %v, want success (region unused with explicit BaseURL)", err)
+	}
+	if got != "https://proxy.example" {
+		t.Fatalf("got %q, want the explicit BaseURL", got)
+	}
+
+	t.Setenv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", "https://proxy.example/")
+	got2, err := ResolveAmazonBedrockBaseURL(ResolveBaseURLOptions{
+		Region:                               "user@internal/#",
+		Service:                              "bedrock-runtime",
+		ServiceEndpointURLEnvironmentVarName: "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
+	})
+	if err != nil {
+		t.Fatalf("error = %v, want success (region unused with endpoint env var)", err)
+	}
+	if got2 != "https://proxy.example" {
+		t.Fatalf("got %q, want the endpoint env var URL", got2)
 	}
 }
