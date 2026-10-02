@@ -240,13 +240,25 @@ func SmoothStream(opts SmoothStreamOptions) (StreamTransformFunc, error) {
 		}
 
 		text := chunk.Text
-		if chunk.Type == provider.ChunkTypeReasoning && chunk.Reasoning != "" {
+		if chunk.Type == provider.ChunkTypeReasoning {
 			text = chunk.Reasoning
 		}
 
-		// Flush the buffer when the block type or ID changes; never carry
-		// metadata from one part to another.
-		if (chunk.Type != chunkType || chunk.ID != id) && (buffer.Len() > 0 || metadata != nil) {
+		// An empty-text delta that only carries metadata (e.g. an
+		// Anthropic-style signature-only delta) cannot be merged into the
+		// buffer: flush whatever is pending and pass it through unchanged.
+		if text == "" && chunk.ProviderMetadata != nil {
+			for _, c := range flush() {
+				send(c)
+			}
+			return append(out, chunk)
+		}
+
+		// Flush at metadata boundaries: one output part cannot preserve
+		// metadata from multiple input deltas, so a type/ID change, or
+		// either the pending or incoming delta carrying metadata, forces a
+		// flush before merging the new delta's text into the buffer.
+		if buffer.Len() > 0 && (chunk.Type != chunkType || chunk.ID != id || metadata != nil || chunk.ProviderMetadata != nil) {
 			for _, c := range flush() {
 				send(c)
 			}
@@ -255,10 +267,7 @@ func SmoothStream(opts SmoothStreamOptions) (StreamTransformFunc, error) {
 		buffer.WriteString(text)
 		id = chunk.ID
 		chunkType = chunk.Type
-
-		if chunk.ProviderMetadata != nil {
-			metadata = chunk.ProviderMetadata
-		}
+		metadata = chunk.ProviderMetadata
 
 		for {
 			match, derr := detect(buffer.String())
@@ -272,12 +281,23 @@ func SmoothStream(opts SmoothStreamOptions) (StreamTransformFunc, error) {
 			if match == "" {
 				break
 			}
-			send(makeDeltaChunk(chunkType, id, match))
+			matchChunk := makeDeltaChunk(chunkType, id, match)
+			if metadata != nil {
+				matchChunk.ProviderMetadata = metadata
+			}
+			send(matchChunk)
 			remaining := buffer.String()[len(match):]
 			buffer.Reset()
 			buffer.WriteString(remaining)
 
 			sleep(ctx, delayInMs)
+		}
+
+		// The buffer is fully drained: the current delta's metadata has been
+		// attached to every chunk split from it, so it must not leak onto a
+		// later, unrelated delta that happens to keep the same type/ID.
+		if buffer.Len() == 0 {
+			metadata = nil
 		}
 
 		return out
