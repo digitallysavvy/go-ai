@@ -439,6 +439,13 @@ func TestTranscriptionModel_DoStream_StreamsTranscriptEndToEnd(t *testing.T) {
 	if string(gotMeta) != string(wantMetaJSON) {
 		t.Fatalf("providerMetadata = %s, want %s", gotMeta, wantMetaJSON)
 	}
+	// Ported from TS google-transcription-model.test.ts doStream "should
+	// surface usage metadata" assertion (TS 8c659885c5 / #21427): the finish
+	// part's usage field mirrors usageMetadata directly, not just nested
+	// under providerMetadata.
+	if got := finish.Usage["promptTokenCount"]; got != float64(7) {
+		t.Fatalf("finish.Usage[promptTokenCount] = %v, want 7", got)
+	}
 }
 
 // TestTranscriptionModel_DoStream_PassesSmartModeIntoLiveSetup mirrors the TS

@@ -196,7 +196,6 @@ func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult,
 		providerMetadata = map[string]interface{}{}
 	}
 	logModelWarnings(warnings, opts.Model.Provider(), opts.Model.ModelID())
-	durationSeconds := raw.Usage.DurationSeconds
 	telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
 		CallID:           callID,
 		OperationType:    "ai.transcribe",
@@ -206,8 +205,8 @@ func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult,
 		Text:             raw.Text,
 		AudioByteLength:  &audioByteLength,
 		AudioMediaType:   mediaType,
-		DurationSeconds:  &durationSeconds,
 		ProviderMetadata: providerMetadata,
+		ProviderUsage:    raw.ProviderUsage,
 	})
 	return &TranscribeResult{
 		Text:              raw.Text,

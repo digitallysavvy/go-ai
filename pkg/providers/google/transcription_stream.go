@@ -427,6 +427,7 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 			FinishText:       fullText,
 			Segments:         []provider.TranscriptSegment{},
 			Language:         language,
+			Usage:            usageMetadata,
 			ProviderMetadata: providerMetadata,
 		})
 		cfg.audio.Cancel(nil)

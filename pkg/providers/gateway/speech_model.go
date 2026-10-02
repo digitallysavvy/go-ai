@@ -86,6 +86,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	return &types.SpeechResult{
 		Audio:            audio,
 		Warnings:         warnings,
+		Usage:            response.Usage,
 		ProviderMetadata: response.ProviderMetadata,
 		Response: &types.ResponseMetadata{
 			Timestamp: time.Now(),
@@ -106,6 +107,7 @@ func (m *SpeechModel) getModelConfigHeaders() map[string]string {
 type gatewaySpeechResponse struct {
 	Audio            string                 `json:"audio"`
 	Warnings         []types.Warning        `json:"warnings,omitempty"`
+	Usage            map[string]interface{} `json:"usage,omitempty"`
 	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
 }
 

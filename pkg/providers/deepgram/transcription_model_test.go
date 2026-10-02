@@ -46,6 +46,11 @@ func TestDeepgramConvertResponseHandlesEmptyAndWords(t *testing.T) {
 	if empty.Text != "" || empty.Usage.DurationSeconds != 3.2 || len(empty.Timestamps) != 0 {
 		t.Fatalf("empty response mismatch: %#v", empty)
 	}
+	// Ported from TS deepgram-transcription-model.test.ts "should return
+	// audio duration as usage in seconds" (TS 8c659885c5 / #21427).
+	if got, want := empty.ProviderUsage["seconds"], 3.2; got != want {
+		t.Fatalf("empty.ProviderUsage[seconds] = %v, want %v", got, want)
+	}
 
 	var resp deepgramTranscriptionResponse
 	resp.Metadata = &struct {
@@ -99,5 +104,8 @@ func TestDeepgramConvertResponseHandlesEmptyAndWords(t *testing.T) {
 	}
 	if converted.Language != "en" {
 		t.Fatalf("language = %q, want en", converted.Language)
+	}
+	if got, want := converted.ProviderUsage["seconds"], 5.5; got != want {
+		t.Fatalf("converted.ProviderUsage[seconds] = %v, want %v", got, want)
 	}
 }

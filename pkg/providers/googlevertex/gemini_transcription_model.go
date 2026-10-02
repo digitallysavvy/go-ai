@@ -269,6 +269,11 @@ func (m *GeminiTranscriptionModel) DoTranscribe(ctx context.Context, opts *provi
 		}
 	}
 
+	var providerUsage map[string]interface{}
+	if len(response.UsageMetadata) > 0 {
+		providerUsage = response.UsageMetadata
+	}
+
 	return &types.TranscriptionResult{
 		Text:             text,
 		Segments:         segments,
@@ -276,6 +281,7 @@ func (m *GeminiTranscriptionModel) DoTranscribe(ctx context.Context, opts *provi
 		Language:         language,
 		Warnings:         []types.Warning{},
 		ProviderMetadata: providerMetadata,
+		ProviderUsage:    providerUsage,
 		Response: &types.ResponseMetadata{
 			Timestamp: time.Now(),
 			ModelID:   m.modelID,
