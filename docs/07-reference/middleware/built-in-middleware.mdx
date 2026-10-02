@@ -1,18 +1,21 @@
 ---
 title: Built-in Middleware
-description: "Catalog of built-in Go-AI SDK middleware, including DefaultSettingsMiddleware, LoggingMiddleware, RetryMiddleware, CachingMiddleware, and RateLimitMiddleware."
+description: "Catalog of built-in Go AI SDK middleware, including DefaultSettingsMiddleware, DefaultInstructionsMiddleware, ExtractJSONMiddleware, ExtractReasoningMiddleware, SimulateStreamingMiddleware, and AddToolInputExamplesMiddleware."
 ---
 
 # Built-in Middleware
 
-Pre-built middleware functions available in the Go-AI SDK.
+Pre-built middleware functions available in the Go AI SDK's `pkg/middleware`
+package. All of them return `*middleware.LanguageModelMiddleware` for use
+with [`WrapLanguageModel`](./wrap-language-model.mdx) or
+[`WrapProvider`](#wrapprovider).
 
 ## DefaultSettingsMiddleware
 
-Applies default settings to generation requests.
+Applies default settings to generation requests when the caller didn't set them.
 
 ```go
-func DefaultSettingsMiddleware(defaults *provider.GenerateOptions) *LanguageModelMiddleware
+func DefaultSettingsMiddleware(settings *provider.GenerateOptions) *LanguageModelMiddleware
 ```
 
 ### Example
@@ -21,103 +24,143 @@ func DefaultSettingsMiddleware(defaults *provider.GenerateOptions) *LanguageMode
 temperature := 0.7
 maxTokens := 500
 
-middleware := middleware.DefaultSettingsMiddleware(&provider.GenerateOptions{
+defaultsMw := middleware.DefaultSettingsMiddleware(&provider.GenerateOptions{
     Temperature: &temperature,
     MaxTokens:   &maxTokens,
 })
 
-wrapped := middleware.WrapLanguageModel(baseModel, []*middleware.LanguageModelMiddleware{middleware}, nil, nil)
+wrapped := middleware.WrapLanguageModel(baseModel, []*middleware.LanguageModelMiddleware{defaultsMw}, nil, nil)
 ```
 
-## LoggingMiddleware
+## DefaultInstructionsMiddleware
 
-Logs generation requests and responses.
-
-```go
-func LoggingMiddleware() *LanguageModelMiddleware
-```
-
-### Example
+Applies default system instructions when the call doesn't provide any.
 
 ```go
-loggingMw := middleware.LoggingMiddleware()
-wrapped := middleware.WrapLanguageModel(baseModel, []*middleware.LanguageModelMiddleware{loggingMw}, nil, nil)
-```
+func DefaultInstructionsMiddleware(opts DefaultInstructionsOptions) *LanguageModelMiddleware
 
-## RetryMiddleware
+type DefaultInstructionsOptions struct {
+    // Instructions are plain-string default instructions, applied as
+    // Prompt.System when the call has none.
+    Instructions string
 
-Automatically retries failed requests.
-
-```go
-func RetryMiddleware(maxRetries int, backoff time.Duration) *LanguageModelMiddleware
+    // InstructionMessages supplies the default instructions as system
+    // messages instead, preserving each message's ProviderOptions. Takes
+    // precedence over Instructions when non-empty.
+    InstructionMessages []types.Message
+}
 ```
 
 ### Example
 
 ```go
-retryMw := middleware.RetryMiddleware(3, time.Second)
-wrapped := middleware.WrapLanguageModel(baseModel, []*middleware.LanguageModelMiddleware{retryMw}, nil, nil)
+instructionsMw := middleware.DefaultInstructionsMiddleware(middleware.DefaultInstructionsOptions{
+    Instructions: "You are a concise, helpful assistant.",
+})
+
+wrapped := middleware.WrapLanguageModel(baseModel, []*middleware.LanguageModelMiddleware{instructionsMw}, nil, nil)
 ```
 
-## CachingMiddleware
+## ExtractJSONMiddleware
 
-Caches generation results based on prompts.
-
-```go
-func CachingMiddleware(ttl time.Duration) *LanguageModelMiddleware
-```
-
-### Example
+Extracts JSON from model output, stripping markdown code fences by default.
 
 ```go
-cacheMw := middleware.CachingMiddleware(5 * time.Minute)
-wrapped := middleware.WrapLanguageModel(baseModel, []*middleware.LanguageModelMiddleware{cacheMw}, nil, nil)
-```
+func ExtractJSONMiddleware(options *ExtractJSONOptions) *LanguageModelMiddleware
 
-## RateLimitMiddleware
-
-Enforces rate limits on API calls.
-
-```go
-func RateLimitMiddleware(requestsPerSecond float64) *LanguageModelMiddleware
+type ExtractJSONOptions struct {
+    // Transform is a custom function to extract JSON from text.
+    // If nil, the default transform strips markdown code fences.
+    Transform func(text string) string
+}
 ```
 
 ### Example
 
 ```go
-rateLimitMw := middleware.RateLimitMiddleware(10.0) // 10 requests per second
-wrapped := middleware.WrapLanguageModel(baseModel, []*middleware.LanguageModelMiddleware{rateLimitMw}, nil, nil)
+jsonMw := middleware.ExtractJSONMiddleware(nil) // use the default fence-stripping transform
+wrapped := middleware.WrapLanguageModel(baseModel, []*middleware.LanguageModelMiddleware{jsonMw}, nil, nil)
 ```
 
-## TokenBudgetMiddleware
+## ExtractReasoningMiddleware
 
-Enforces token usage budgets.
+Extracts reasoning content wrapped in an XML-style tag (for example `<think>`)
+out of the model's text output.
 
 ```go
-func TokenBudgetMiddleware(maxTokens int) *LanguageModelMiddleware
+func ExtractReasoningMiddleware(options *ExtractReasoningOptions) *LanguageModelMiddleware
+
+type ExtractReasoningOptions struct {
+    // TagName is the XML tag name to extract reasoning from
+    // (e.g., "think" for Anthropic, "reasoning" for OpenAI)
+    TagName string
+
+    // Separator is the separator to use between reasoning and text sections
+    // Default: "\n"
+    Separator string
+
+    // StartWithReasoning indicates whether reasoning tokens appear at the beginning
+    // Default: false
+    StartWithReasoning bool
+}
 ```
 
 ### Example
 
 ```go
-budgetMw := middleware.TokenBudgetMiddleware(10000)
-wrapped := middleware.WrapLanguageModel(baseModel, []*middleware.LanguageModelMiddleware{budgetMw}, nil, nil)
+reasoningMw := middleware.ExtractReasoningMiddleware(&middleware.ExtractReasoningOptions{
+    TagName: "think",
+})
+wrapped := middleware.WrapLanguageModel(baseModel, []*middleware.LanguageModelMiddleware{reasoningMw}, nil, nil)
 ```
 
-## MetricsMiddleware
+## SimulateStreamingMiddleware
 
-Collects metrics on model usage.
+Simulates a streaming response from a model that only supports non-streaming
+generation, by generating the full result and then replaying it as stream chunks.
 
 ```go
-func MetricsMiddleware(collector MetricsCollector) *LanguageModelMiddleware
+func SimulateStreamingMiddleware() *LanguageModelMiddleware
 ```
 
 ### Example
 
 ```go
-collector := NewPrometheusCollector()
-metricsMw := middleware.MetricsMiddleware(collector)
-wrapped := middleware.WrapLanguageModel(baseModel, []*middleware.LanguageModelMiddleware{metricsMw}, nil, nil)
+simulateMw := middleware.SimulateStreamingMiddleware()
+wrapped := middleware.WrapLanguageModel(baseModel, []*middleware.LanguageModelMiddleware{simulateMw}, nil, nil)
+```
+
+## AddToolInputExamplesMiddleware
+
+Appends each tool's `InputExamples` to its description so the model sees
+example inputs, then (by default) removes `InputExamples` from the tool
+definition sent to the provider.
+
+```go
+func AddToolInputExamplesMiddleware(options *AddToolInputExamplesOptions) *LanguageModelMiddleware
+
+type AddToolInputExamplesOptions struct {
+    // Prefix is the text to prepend before examples
+    // Default: "Input Examples:"
+    Prefix string
+
+    // Format is a custom formatter for each example
+    // If nil, uses JSON.stringify on the example input
+    Format func(example types.ToolInputExample, index int) string
+
+    // Remove indicates whether to remove the InputExamples property
+    // after adding them to the description. Default: true.
+    Remove *bool
+}
+```
+
+### Example
+
+```go
+examplesMw := middleware.AddToolInputExamplesMiddleware(&middleware.AddToolInputExamplesOptions{
+    Prefix: "Examples:",
+})
+wrapped := middleware.WrapLanguageModel(baseModel, []*middleware.LanguageModelMiddleware{examplesMw}, nil, nil)
 ```
 
 ## Combining Middleware
@@ -131,14 +174,63 @@ wrapped := middleware.WrapLanguageModel(
         middleware.DefaultSettingsMiddleware(&provider.GenerateOptions{
             Temperature: &temperature,
         }),
-        middleware.LoggingMiddleware(),
-        middleware.RetryMiddleware(3, time.Second),
-        middleware.RateLimitMiddleware(10.0),
-        middleware.CachingMiddleware(5 * time.Minute),
+        middleware.ExtractReasoningMiddleware(&middleware.ExtractReasoningOptions{
+            TagName: "think",
+        }),
+        middleware.ExtractJSONMiddleware(nil),
     },
     nil,
     nil,
 )
+```
+
+## Image and embedding model wrappers
+
+There are no built-in `*ImageModelMiddleware` or `*EmbeddingModelMiddleware`
+constructors analogous to the ones above, but the same wrapping mechanism is
+available for image and embedding models if you write your own middleware
+struct (see [Middleware Interface](./middleware-interface.mdx)):
+
+```go
+func WrapImageModel(model provider.ImageModel, middleware []*ImageModelMiddleware, modelID, providerID *string) provider.ImageModel
+func WrapEmbeddingModel(model provider.EmbeddingModel, middleware []*EmbeddingModelMiddleware, modelID, providerID *string) provider.EmbeddingModel
+```
+
+## WrapProvider
+
+Applies language model and embedding model middleware to every model
+returned by a provider, instead of wrapping one model at a time.
+
+```go
+func WrapProvider(
+    p provider.Provider,
+    languageModelMiddleware []*LanguageModelMiddleware,
+    embeddingModelMiddleware []*EmbeddingModelMiddleware,
+    opts ...ProviderMiddlewareOption,
+) provider.Provider
+```
+
+Pass `middleware.WithImageModelMiddleware([]*middleware.ImageModelMiddleware{...})`
+as a trailing option to also apply image model middleware.
+
+### Example
+
+```go
+temperature := 0.7
+
+p := openai.New(openai.Config{APIKey: "your-api-key"})
+
+wrappedProvider := middleware.WrapProvider(
+    p,
+    []*middleware.LanguageModelMiddleware{
+        middleware.DefaultSettingsMiddleware(&provider.GenerateOptions{
+            Temperature: &temperature,
+        }),
+    },
+    nil,
+)
+
+model, _ := wrappedProvider.LanguageModel("gpt-4")
 ```
 
 ## See Also

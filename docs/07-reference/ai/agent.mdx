@@ -1,33 +1,42 @@
 ---
 title: Agent
-description: "API reference for the Agent function in the Go AI SDK, which creates an autonomous agent that uses tools and makes decisions to complete tasks."
+description: "API reference for agent.Agent, the Go AI SDK interface implemented by autonomous agents that use tools and make decisions to complete tasks."
 ---
 
 # Agent
 
-Creates an autonomous agent that can use tools and make decisions to complete tasks.
+`agent.Agent` is the interface implemented by autonomous agents in the Go AI
+SDK. It lives in `github.com/digitallysavvy/go-ai/pkg/agent`, not `pkg/ai`.
+The SDK's concrete implementation is [`ToolLoopAgent`](./tool-loop-agent.mdx),
+created with `agent.NewToolLoopAgent`.
 
 ## Signature
 
 ```go
-func Agent(ctx context.Context, opts AgentOptions) (*AgentResult, error)
+type Agent interface {
+    // Version returns the agent interface specification version.
+    Version() string
+
+    // ID returns the optional agent identifier.
+    ID() string
+
+    // Tools returns the tools that the agent can use.
+    Tools() []types.Tool
+
+    // Generate runs the agent with per-call options and returns the core
+    // GenerateText result.
+    Generate(ctx context.Context, opts AgentGenerateOptions) (*ai.GenerateTextResult, error)
+
+    // Stream streams the agent with per-call options.
+    Stream(ctx context.Context, opts AgentStreamOptions) (*ai.StreamTextResult, error)
+
+    // Execute runs the agent with the given prompt and returns the final result
+    Execute(ctx context.Context, prompt string) (*AgentResult, error)
+
+    // ExecuteWithMessages runs the agent with a message history
+    ExecuteWithMessages(ctx context.Context, messages []types.Message) (*AgentResult, error)
+}
 ```
-
-## Parameters
-
-### AgentOptions
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| Model | provider.LanguageModel | Yes | Language model for the agent |
-| Task | string | Yes | Task description for the agent |
-| Tools | []types.Tool | Yes | Tools available to the agent |
-| StopWhen | []ai.StopCondition | No | Stable multi-step stop conditions, for example `[]ai.StopCondition{ai.IsStepCount(10)}` |
-| MaxSteps | int | No | Deprecated compatibility shorthand for `StopWhen: []ai.StopCondition{ai.IsStepCount(n)}` |
-| SystemPrompt | string | No | Custom system instructions |
-| InitialMessages | []types.Message | No | Initial conversation context |
-| OnStep | func(AgentStep) | No | Called after each step |
-| OnComplete | func(*AgentResult) | No | Called when task completes |
 
 ## Return Value
 
@@ -35,11 +44,15 @@ func Agent(ctx context.Context, opts AgentOptions) (*AgentResult, error)
 
 | Field | Type | Description |
 |-------|------|-------------|
-| Success | bool | Whether task was completed successfully |
-| Result | string | Final result or answer |
-| Steps | []AgentStep | All steps taken by the agent |
-| Usage | types.Usage | Total token usage |
-| Error | error | Error if task failed |
+| Text | string | Final text output |
+| Output | interface{} | Parsed/structured final output when an output strategy is configured |
+| Steps | []types.StepResult | All steps taken by the agent |
+| ToolResults | []types.ToolResult | All tool results from agent execution |
+| Delegations | []agent.SubagentDelegation | Subagent delegations during execution |
+| FinishReason | types.FinishReason | Final finish reason |
+| StopReason | string | Reason string from the `StopCondition` that stopped the loop; empty if the agent ended naturally |
+| Usage | types.Usage | Total usage across all steps |
+| Warnings | []types.Warning | Warnings from any step |
 
 ## Examples
 
@@ -53,18 +66,17 @@ import (
     "fmt"
     "log"
 
-    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/agent"
     "github.com/digitallysavvy/go-ai/pkg/provider/types"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
 func main() {
-    provider := openai.New(openai.Config{
+    p := openai.New(openai.Config{
         APIKey: "your-api-key",
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := p.LanguageModel("gpt-4")
 
-    // Define tools
     searchTool := types.Tool{
         Name:        "search",
         Description: "Search the web for information",
@@ -80,72 +92,27 @@ func main() {
         },
         Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
             query := input["query"].(string)
-            // Implement search logic
             return fmt.Sprintf("Search results for: %s", query), nil
         },
     }
 
-    result, err := ai.Agent(context.Background(), ai.AgentOptions{
+    var a agent.Agent = agent.NewToolLoopAgent(agent.AgentConfig{
         Model: model,
-        Task:  "Find the current weather in Tokyo",
         Tools: []types.Tool{searchTool},
     })
+
+    result, err := a.Execute(context.Background(), "Find the current weather in Tokyo")
     if err != nil {
         log.Fatal(err)
     }
 
-    fmt.Printf("Task completed: %v\n", result.Success)
-    fmt.Printf("Result: %s\n", result.Result)
+    fmt.Printf("Result: %s\n", result.Text)
     fmt.Printf("Steps taken: %d\n", len(result.Steps))
 }
 ```
 
-### Agent with Multiple Tools
-
-```go
-calculatorTool := types.Tool{
-    Name:        "calculator",
-    Description: "Perform mathematical calculations",
-    Parameters: map[string]interface{}{
-        "type": "object",
-        "properties": map[string]interface{}{
-            "expression": map[string]interface{}{
-                "type": "string",
-            },
-        },
-        "required": []string{"expression"},
-    },
-    Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
-        // Implement calculator
-        return "42", nil
-    },
-}
-
-result, err := ai.Agent(ctx, ai.AgentOptions{
-    Model: model,
-    Task:  "Calculate 15% tip on a $85 bill",
-    Tools: []types.Tool{calculatorTool},
-})
-```
-
-### Agent with Step Tracking
-
-```go
-result, err := ai.Agent(ctx, ai.AgentOptions{
-    Model: model,
-    Task:  "Research and summarize recent AI developments",
-    Tools: tools,
-    OnStep: func(step ai.AgentStep) {
-        fmt.Printf("Step %d: %s\n", step.StepNumber, step.Action)
-        if len(step.ToolCalls) > 0 {
-            fmt.Printf("  Tool calls: %d\n", len(step.ToolCalls))
-        }
-    },
-})
-```
-
 ## See Also
 
-- [ToolLoopAgent](./tool-loop-agent.mdx) - Extended agent with tool loop
+- [ToolLoopAgent](./tool-loop-agent.mdx) - The SDK's concrete `Agent` implementation
 - [Tool](./tool.mdx) - Tool definition
 - [Agents Guide](../../03-agents/01-overview.mdx)

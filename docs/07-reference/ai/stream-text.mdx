@@ -32,6 +32,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 | StopSequences | []string | No | Sequences that stop generation |
 | Seed | *int | No | Random seed for reproducibility |
 | Tools | []types.Tool | No | Tools available for the model to call |
+| StopWhen | []ai.StopCondition | No | Conditions that stop the tool-calling loop (see [IsStepCount](./step-count-is.mdx)). Default: `IsStepCount(1)`, a single step (tool calls in it still execute). Set e.g. `IsStepCount(5)` to let the model answer after tool results. |
 | ToolChoice | types.ToolChoice | No | How the model should choose tools |
 | ResponseFormat | *provider.ResponseFormat | No | Response format specification |
 | Timeout | *TimeoutConfig | No | Timeout configuration |
@@ -81,10 +82,10 @@ import (
 )
 
 func main() {
-    provider := openai.New(openai.Config{
+    p := openai.New(openai.Config{
         APIKey: "your-api-key",
     })
-    model, err := provider.LanguageModel("gpt-4")
+    model, err := p.LanguageModel("gpt-4")
     if err != nil {
         log.Fatal(err)
     }
@@ -114,7 +115,7 @@ func main() {
         }
     }
 
-    fmt.Printf("\n\nTotal tokens: %d\n", result.Usage().TotalTokens)
+    fmt.Printf("\n\nTotal tokens: %d\n", result.Usage().GetTotalTokens())
 }
 ```
 
@@ -130,7 +131,7 @@ result, err := ai.StreamText(ctx, ai.StreamTextOptions{
         }
     },
     OnFinish: func(result *ai.StreamTextResult) {
-        fmt.Printf("\n\nDone! Tokens: %d\n", result.Usage().TotalTokens)
+        fmt.Printf("\n\nDone! Tokens: %d\n", result.Usage().GetTotalTokens())
     },
 })
 if err != nil {
@@ -157,7 +158,7 @@ if err != nil {
 }
 
 fmt.Println(text)
-fmt.Printf("Tokens: %d\n", result.Usage().TotalTokens)
+fmt.Printf("Tokens: %d\n", result.Usage().GetTotalTokens())
 ```
 
 ### Using Channel-based Consumption

@@ -234,6 +234,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "What's the weather in San Francisco?",
     Tools:  []types.Tool{weatherTool},
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 })
 
 if result.ToolCalls != nil {
@@ -329,8 +330,8 @@ for chunk := range stream.Chunks() {
     fmt.Print(chunk.Text)
 }
 
-if stream.Error() != nil {
-    log.Fatal(stream.Error())
+if stream.Err() != nil {
+    log.Fatal(stream.Err())
 }
 ```
 
@@ -356,6 +357,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 package main
 
 import (
+    "context"
     "fmt"
     "log"
     "os"
@@ -365,6 +367,7 @@ import (
 )
 
 func main() {
+    ctx := context.Background()
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
@@ -568,9 +571,9 @@ provider := openai.New(openai.Config{
 
 ```go
 provider := openai.New(openai.Config{
-    APIKey:         os.Getenv("OPENAI_API_KEY"),
-    OrganizationID: "org-xxxxx",
-    ProjectID:      "proj-xxxxx",
+    APIKey:       os.Getenv("OPENAI_API_KEY"),
+    Organization: "org-xxxxx",
+    Project:      "proj-xxxxx",
 })
 ```
 
@@ -725,7 +728,11 @@ if err != nil {
     log.Fatal(err)
 }
 
-ws := model.GetWebSocketConfig(secret.Token, secret.URL)
+wsConfigProvider, ok := model.(providerapi.RealtimeWebSocketConfigProvider)
+if !ok {
+    log.Fatal("model does not support client-side WebSocket config")
+}
+ws := wsConfigProvider.GetWebSocketConfig(secret.Token, secret.URL)
 ```
 
 > **Fixed this cycle:** the WebSocket handshake's `Authorization` bearer

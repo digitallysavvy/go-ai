@@ -131,6 +131,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "Find laptop under $1000",
     Tools:  []types.Tool{searchTool},
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 })
 
 for _, call := range result.ToolCalls {
@@ -218,6 +219,7 @@ for i, doc := range result.Ranking {
 package main
 
 import (
+    "context"
     "fmt"
     "log"
     "os"
@@ -227,6 +229,7 @@ import (
 )
 
 func main() {
+    ctx := context.Background()
     provider := cohere.New(cohere.Config{
         APIKey: os.Getenv("COHERE_API_KEY"),
     })

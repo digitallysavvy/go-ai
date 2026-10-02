@@ -115,6 +115,7 @@ func main() {
         "gpt-4o-mini",
         "gpt-3.5-turbo",
     }
+    log.Printf("known-good model names: %v", validModels)
 
     // Try to create model with error handling
     model, err := provider.LanguageModel("gpt-4")
@@ -280,10 +281,11 @@ import (
     "time"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
-func processStream(ctx context.Context, model interface{}, prompt string) error {
+func processStream(ctx context.Context, model provider.LanguageModel, prompt string) error {
     stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
         Model:  model,
         Prompt: prompt,
@@ -369,19 +371,29 @@ Conflicting package names or vendored dependencies.
 package main
 
 import (
+    "context"
+
     // Use full import paths with aliases if needed
     goai "github.com/digitallysavvy/go-ai/pkg/ai"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 
     // If you have naming conflicts, use aliases
-    aitools "github.com/digitallysavvy/go-ai/pkg/types"
+    aitools "github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 func main() {
+    ctx := context.Background()
+    _ = aitools.RoleUser // use the aliased import, same as any other import
+
+    model, _ := openai.New(openai.Config{}).LanguageModel("gpt-4o")
+
     // Use aliases in your code
     result, err := goai.GenerateText(ctx, goai.GenerateTextOptions{
-        // ...
+        Model:  model,
+        Prompt: "Hello!",
     })
+    _ = result
+    _ = err
 }
 ```
 
@@ -410,7 +422,7 @@ import (
     "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/types"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
@@ -421,11 +433,12 @@ func main() {
     })
     model, _ := provider.LanguageModel("gpt-4")
 
-    // CORRECT: Pass messages as proper types.Message slice
+    // CORRECT: Pass messages as proper types.Message slice, with Content
+    // as a []types.ContentPart, not a bare string
     messages := []types.Message{
         {
             Role:    types.RoleUser,
-            Content: "Hello!",
+            Content: []types.ContentPart{types.TextContent{Text: "Hello!"}},
         },
     }
 
@@ -468,6 +481,7 @@ import (
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    goschema "github.com/digitallysavvy/go-ai/pkg/schema"
     "github.com/invopop/jsonschema"
 )
 
@@ -486,32 +500,33 @@ func main() {
     })
     model, _ := provider.LanguageModel("gpt-4")
 
-    // Generate schema from struct
+    // Generate a JSON schema from the struct with invopop/jsonschema, then
+    // wrap the resulting map in goschema.Schema — ai.GenerateObjectOptions.Schema
+    // takes a schema.Schema, not a *jsonschema.Schema directly.
     reflector := jsonschema.Reflector{
         AllowAdditionalProperties: false,
         DoNotReference:            true,
     }
-    schema := reflector.Reflect(&Recipe{})
+    reflected := reflector.Reflect(&Recipe{})
 
-    // Validate schema is correct
-    schemaBytes, err := json.MarshalIndent(schema, "", "  ")
+    schemaBytes, err := json.Marshal(reflected)
     if err != nil {
         log.Fatalf("Invalid schema: %v", err)
     }
     log.Printf("Using schema:\n%s", schemaBytes)
 
-    result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
-        Model:  model,
-        Schema: schema,
-        Prompt: "Generate a lasagna recipe",
-    })
-    if err != nil {
-        log.Fatalf("Failed to generate object: %v", err)
+    var schemaMap map[string]interface{}
+    if err := json.Unmarshal(schemaBytes, &schemaMap); err != nil {
+        log.Fatalf("Failed to decode schema: %v", err)
     }
 
     var recipe Recipe
-    if err := json.Unmarshal(result.Object, &recipe); err != nil {
-        log.Fatalf("Failed to unmarshal result: %v", err)
+    if err := ai.GenerateObjectInto(ctx, ai.GenerateObjectOptions{
+        Model:  model,
+        Schema: goschema.NewSimpleJSONSchema(schemaMap),
+        Prompt: "Generate a lasagna recipe",
+    }, &recipe); err != nil {
+        log.Fatalf("Failed to generate object: %v", err)
     }
 
     fmt.Printf("Recipe: %s\n", recipe.Name)

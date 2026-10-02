@@ -130,6 +130,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "What's the weather in Paris and London?",
     Tools:  tools,
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 })
 
 // Processes both calls in parallel
@@ -188,6 +189,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 package main
 
 import (
+    "context"
     "fmt"
     "log"
     "os"
@@ -197,6 +199,7 @@ import (
 )
 
 func main() {
+    ctx := context.Background()
     provider := mistral.New(mistral.Config{
         APIKey: os.Getenv("MISTRAL_API_KEY"),
     })

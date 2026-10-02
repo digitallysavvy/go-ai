@@ -35,11 +35,11 @@ func main() {
 
     // Anthropic
     anthropicProvider := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")})
-    claude, _ := anthropicProvider.LanguageModel("claude-3-sonnet-20240229")
+    claude, _ := anthropicProvider.LanguageModel("claude-3-5-sonnet-20241022")
 
     // Google
     googleProvider := google.New(google.Config{APIKey: os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY")})
-    gemini, _ := googleProvider.LanguageModel("gemini-pro")
+    gemini, _ := googleProvider.LanguageModel("gemini-1.5-flash")
 
     // Same API for all providers
     result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
@@ -207,7 +207,8 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 if err != nil {
     // Handle error
-    if errors.Is(err, provider.ErrRateLimit) {
+    // providererrors is github.com/digitallysavvy/go-ai/pkg/provider/errors
+    if providererrors.IsRateLimitError(err) {
         fmt.Println("Rate limit exceeded")
     }
     log.Fatal(err)

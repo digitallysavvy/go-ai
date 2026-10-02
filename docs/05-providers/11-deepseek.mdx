@@ -146,6 +146,7 @@ neither.
 package main
 
 import (
+    "context"
     "fmt"
     "log"
     "os"
@@ -155,6 +156,7 @@ import (
 )
 
 func main() {
+    ctx := context.Background()
     provider := deepseek.New(deepseek.Config{
         APIKey: os.Getenv("DEEPSEEK_API_KEY"),
     })

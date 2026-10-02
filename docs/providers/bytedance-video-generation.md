@@ -101,6 +101,8 @@ response, err := model.DoGenerate(ctx, &provider.VideoModelV3CallOptions{
 
 | Constant | Model ID |
 |---|---|
+| `bytedance.ModelSeedance20` | `dreamina-seedance-2-0-260128` |
+| `bytedance.ModelSeedance20Fast` | `dreamina-seedance-2-0-fast-260128` |
 | `bytedance.ModelSeedance15Pro` | `seedance-1-5-pro-251215` |
 | `bytedance.ModelSeedance10Pro` | `seedance-1-0-pro-250528` |
 | `bytedance.ModelSeedance10ProFast` | `seedance-1-0-pro-fast-251015` |
@@ -135,15 +137,15 @@ response, err := model.DoGenerate(ctx, &provider.VideoModelV3CallOptions{
 | `draft` | `bool` | Draft mode (faster but lower quality) |
 | `lastFrameImage` | `string` | URL of the desired last frame |
 | `referenceImages` | `[]string` | Reference image URLs |
-| `pollIntervalMs` | `int` | Status polling interval (default: 3000ms) |
-| `pollTimeoutMs` | `int` | Max polling timeout (default: 300000ms) |
+| `pollIntervalMs` | `int` | Status polling interval when calling `model.DoGenerate` directly (default: 5000ms). Deprecated: emits a warning, and has no effect through `ai.GenerateVideo`/`ai.ExperimentalStartVideo` — use `Poll: &ai.VideoPollOptions{IntervalMs: ...}` instead. |
+| `pollTimeoutMs` | `int` | Max polling timeout when calling `model.DoGenerate` directly (default: 600000ms). Same deprecation as `pollIntervalMs` — use `ai.VideoPollOptions.TimeoutMs` instead. |
 
 ## Async Polling
 
 Video generation is asynchronous. The SDK handles the submit-then-poll loop automatically:
 
 1. POST to `/contents/generations/tasks` → receive `task_id`
-2. GET `/contents/generations/tasks/{task_id}` every `pollIntervalMs` ms
+2. GET `/contents/generations/tasks/{task_id}` every `pollIntervalMs` ms (default 5000ms)
 3. When `status == "succeeded"`, return the video URL
 
 Context cancellation stops the polling loop immediately:

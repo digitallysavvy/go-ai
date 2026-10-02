@@ -192,9 +192,10 @@ result, err := ai.GenerateImage(context.Background(), ai.GenerateImageOptions{
     Size:   "1024x1024",
 })
 
-// result.IsRetryable (*bool) is set from the Gateway's own retryability
-// signal on a failed/empty generation and is consumed automatically by
-// GenerateImage's internal retry loop.
+// The Gateway image model sets its own retryability signal (*bool) on a
+// failed/empty generation; ai.GenerateImage reads it internally through
+// the retry loop, so this does not appear as a field on the returned
+// GenerateImageResult.
 ```
 
 ## Embeddings
@@ -301,14 +302,20 @@ Use `GetRealtimeToken` or `MintRealtimeClientSecret` on a server to create the
 short-lived client secret used by browser WebSocket clients.
 
 ```go
-gw := gateway.New(gateway.Config{
+gw, err := gateway.New(gateway.Config{
     APIKey:       os.Getenv("AI_GATEWAY_API_KEY"),
     TeamIDOrSlug: os.Getenv("VERCEL_TEAM_ID"),
 })
+if err != nil {
+    return err
+}
 
-expiresIn := 600
-secret, err := gw.GetRealtimeToken(ctx, "openai/gpt-realtime", &gateway.RealtimeClientSecretOptions{
-    ExpiresIn: &expiresIn,
+expiresAfterSeconds := 600
+secret, err := gw.GetRealtimeToken(ctx, provider.RealtimeFactoryGetTokenOptions{
+    Model: "openai/gpt-realtime",
+    ClientSecretOptions: provider.ClientSecretOptions{
+        ExpiresAfterSeconds: &expiresAfterSeconds,
+    },
 })
 if err != nil {
     return err
@@ -526,8 +533,10 @@ type Config struct {
 ## Workflow Serialization
 
 Gateway embedding and image models can cross a workflow boundary with
-`providerutils.SerializeModel` / `DeserializeModel` (language models could
-already be serialized). See
+`provider.SerializeEmbeddingModel` / `DeserializeEmbeddingModel` and
+`provider.SerializeImageModel` / `DeserializeImageModel` (language models
+could already be serialized with `providerutils.SerializeModel` /
+`DeserializeModel`). See
 [Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
 for the mechanism; speech, transcription, and video models are not yet
 serializable.

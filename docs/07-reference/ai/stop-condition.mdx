@@ -68,7 +68,7 @@ stopOnError := func(state ai.StopConditionState) string {
     }
     last := state.Steps[len(state.Steps)-1]
     for _, result := range last.ToolResults {
-        if result.IsError {
+        if result.Error != nil {
             return "tool returned an error"
         }
     }
@@ -79,7 +79,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:    model,
     Prompt:   "Search for recent Go releases",
     Tools:    []types.Tool{searchTool},
-    StopWhen: []ai.StopCondition{stopOnError, ai.StepCountIs(10)},
+    StopWhen: []ai.StopCondition{stopOnError, ai.IsStepCount(10)},
 })
 ```
 
@@ -90,7 +90,7 @@ Stop before the model runs out of context by inspecting `state.Usage`:
 ```go
 tokenBudget := func(maxTokens int) ai.StopCondition {
     return func(state ai.StopConditionState) string {
-        if int(state.Usage.TotalTokens) >= maxTokens {
+        if int(state.Usage.GetTotalTokens()) >= maxTokens {
             return fmt.Sprintf("token budget of %d reached", maxTokens)
         }
         return ""
@@ -104,7 +104,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     StopWhen: []ai.StopCondition{
         tokenBudget(50_000),
         ai.HasToolCall("finish"),
-        ai.StepCountIs(20),
+        ai.IsStepCount(20),
     },
 })
 if err != nil {
@@ -121,14 +121,14 @@ in a `StopCondition` without worrying about evaluation order:
 
 ```go
 recordStepMetric := func(state ai.StopConditionState) string {
-    metrics.RecordStep(len(state.Steps), int(state.Usage.TotalTokens))
+    metrics.RecordStep(len(state.Steps), int(state.Usage.GetTotalTokens()))
     return "" // never stops the loop on its own
 }
 
 StopWhen: []ai.StopCondition{
     recordStepMetric,      // always runs; records every step
     ai.HasToolCall("done"), // may stop early
-    ai.StepCountIs(15),    // hard ceiling
+    ai.IsStepCount(15),    // hard ceiling
 },
 ```
 
@@ -146,13 +146,13 @@ the first non-empty one. This means:
 // Both conditions always run; the first non-empty reason is returned.
 StopWhen: []ai.StopCondition{
     ai.HasToolCall("finish"), // fires → "tool 'finish' was called"
-    ai.StepCountIs(20),       // also evaluated, but result ignored if finish fired first
+    ai.IsStepCount(20),       // also evaluated, but result ignored if finish fired first
 },
 ```
 
 ## See Also
 
-- [StepCountIs](./step-count-is.mdx) — built-in condition: stop after n steps
+- [IsStepCount](./step-count-is.mdx) — built-in condition: stop after n steps
 - [HasToolCall](./has-tool-call.mdx) — built-in condition: stop when a tool is called
 - [Loop Control](../../03-agents/04-loop-control.mdx) — full guide with examples
 - [GenerateText](./generate-text.mdx) — `GenerateTextOptions.StopWhen` field

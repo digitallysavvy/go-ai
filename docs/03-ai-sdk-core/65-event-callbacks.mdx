@@ -25,8 +25,11 @@ import (
 
 func main() {
 	ctx := context.Background()
-	p := openai.NewProvider("your-api-key")
-	model := p.LanguageModel("gpt-4o")
+	p := openai.New(openai.Config{APIKey: "your-api-key"})
+	model, err := p.LanguageModel("gpt-4o")
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 		Model:  model,
@@ -104,8 +107,6 @@ Called when the generation begins, before any LLM calls are made.
 | `StopSequences` | `[]string` | Sequences that stop generation. |
 | `Seed` | `*int` | Random seed for reproducible generation. |
 | `ExperimentalContext` | `interface{}` | User-defined context flowing through the lifecycle. |
-| `FunctionID` | `string` | Telemetry function identifier for grouping operations. |
-| `Metadata` | `map[string]any` | Additional telemetry metadata. |
 
 #### OnStepStartEvent
 
@@ -113,7 +114,7 @@ Called before each step (LLM call) begins. Useful for tracking multi-step genera
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `StepNumber` | `int` | 1-indexed step number. |
+| `StepNumber` | `int` | 0-indexed step number. |
 | `ModelProvider` | `string` | The provider name. |
 | `ModelID` | `string` | The model identifier. |
 | `System` | `string` | The system message for this step. |
@@ -121,8 +122,6 @@ Called before each step (LLM call) begins. Useful for tracking multi-step genera
 | `Tools` | `[]types.Tool` | The tools available for this step. |
 | `PreviousSteps` | `[]types.StepResult` | Results from previous steps (empty for the first step). |
 | `ExperimentalContext` | `interface{}` | User-defined context object. |
-| `FunctionID` | `string` | Telemetry function identifier. |
-| `Metadata` | `map[string]any` | Additional telemetry metadata. |
 
 #### OnToolCallStartEvent
 
@@ -133,13 +132,11 @@ Called before a tool's `Execute` function runs.
 | `ToolCallID` | `string` | Unique identifier for this tool call. |
 | `ToolName` | `string` | Name of the tool being called. |
 | `Args` | `map[string]any` | Input arguments passed to the tool. |
-| `StepNumber` | `int` | 1-indexed step where this tool call occurs. |
+| `StepNumber` | `int` | 0-indexed step where this tool call occurs. |
 | `ModelProvider` | `string` | The provider name. |
 | `ModelID` | `string` | The model identifier. |
 | `Messages` | `[]types.Message` | The conversation messages at tool execution time. |
 | `ExperimentalContext` | `interface{}` | User-defined context object. |
-| `FunctionID` | `string` | Telemetry function identifier. |
-| `Metadata` | `map[string]any` | Additional telemetry metadata. |
 
 #### OnToolCallFinishEvent
 
@@ -153,13 +150,11 @@ Called after a tool's `Execute` function completes or errors. Exactly one of `Re
 | `Result` | `any` | The tool's return value (nil on error). |
 | `Error` | `error` | The error from tool execution (nil on success). |
 | `DurationMs` | `int64` | Execution time of the tool call in milliseconds. |
-| `StepNumber` | `int` | 1-indexed step where this tool call occurred. |
+| `StepNumber` | `int` | 0-indexed step where this tool call occurred. |
 | `ModelProvider` | `string` | The provider name. |
 | `ModelID` | `string` | The model identifier. |
 | `Messages` | `[]types.Message` | The conversation messages at tool execution time. |
 | `ExperimentalContext` | `interface{}` | User-defined context object. |
-| `FunctionID` | `string` | Telemetry function identifier. |
-| `Metadata` | `map[string]any` | Additional telemetry metadata. |
 
 #### OnStepFinishEvent
 
@@ -167,7 +162,7 @@ Called after each step (LLM call) completes.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `StepNumber` | `int` | 1-indexed step number. |
+| `StepNumber` | `int` | 0-indexed step number. |
 | `ModelProvider` | `string` | The provider name. |
 | `ModelID` | `string` | The model identifier. |
 | `Text` | `string` | The generated text from this step. |
@@ -177,8 +172,6 @@ Called after each step (LLM call) completes.
 | `Usage` | `types.Usage` | Token usage for this step. |
 | `Warnings` | `[]types.Warning` | Warnings from the provider. |
 | `ExperimentalContext` | `interface{}` | User-defined context object. |
-| `FunctionID` | `string` | Telemetry function identifier. |
-| `Metadata` | `map[string]any` | Additional telemetry metadata. |
 
 #### OnFinishEvent
 
@@ -194,8 +187,6 @@ Called when the entire generation completes (all steps finished). Includes aggre
 | `TotalUsage` | `types.Usage` | Aggregated token usage across all steps. |
 | `Warnings` | `[]types.Warning` | Warnings aggregated across all steps. |
 | `ExperimentalContext` | `interface{}` | Final state of the user-defined context. |
-| `FunctionID` | `string` | Telemetry function identifier. |
-| `Metadata` | `map[string]any` | Additional telemetry metadata. |
 
 ### Embed / EmbedMany
 
@@ -254,7 +245,6 @@ Called when the reranking operation begins, before the reranking model is called
 | `Headers` | `map[string]string` | Additional HTTP headers sent with the request. |
 | `ProviderOptions` | `map[string]interface{}` | Provider-specific options. |
 | `FunctionID` | `string` | Telemetry function identifier. |
-| `Metadata` | `map[string]any` | Additional telemetry metadata. |
 
 #### RerankOnFinishEvent
 
@@ -273,7 +263,6 @@ Called when the reranking operation completes, after the reranking model returns
 | `Response` | `types.RerankResponse` | Response metadata (id, timestamp, modelId, headers). |
 | `ProviderMetadata` | `json.RawMessage` | Provider-specific metadata. |
 | `FunctionID` | `string` | Telemetry function identifier. |
-| `Metadata` | `map[string]any` | Additional telemetry metadata. |
 
 ## Use cases
 
@@ -296,8 +285,11 @@ import (
 
 func main() {
 	ctx := context.Background()
-	p := openai.NewProvider("your-api-key")
-	model := p.LanguageModel("gpt-4o")
+	p := openai.New(openai.Config{APIKey: "your-api-key"})
+	model, err := p.LanguageModel("gpt-4o")
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 		Model:  model,
@@ -343,8 +335,11 @@ import (
 
 func main() {
 	ctx := context.Background()
-	p := openai.NewProvider("your-api-key")
-	model := p.LanguageModel("gpt-4o")
+	p := openai.New(openai.Config{APIKey: "your-api-key"})
+	model, err := p.LanguageModel("gpt-4o")
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 		Model:  model,
@@ -389,8 +384,11 @@ import (
 
 func main() {
 	ctx := context.Background()
-	p := openai.NewProvider("your-api-key")
-	model := p.EmbeddingModel("text-embedding-3-small")
+	p := openai.New(openai.Config{APIKey: "your-api-key"})
+	model, err := p.EmbeddingModel("text-embedding-3-small")
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	result, err := ai.EmbedMany(ctx, ai.EmbedManyOptions{
 		Model:  model,
@@ -401,7 +399,7 @@ func main() {
 		},
 		ExperimentalOnFinish: func(event ai.EmbedOnFinishEvent) {
 			fmt.Printf("Embedding complete (%s): tokens=%d vectors=%d\n",
-				event.OperationID, event.Usage.GetTotalTokens(), len(event.Embeddings))
+				event.OperationID, event.Usage.TotalTokens, len(event.Embeddings))
 		},
 	})
 	if err != nil {

@@ -114,14 +114,6 @@ type ImageUsage struct {
 }
 ```
 
-### SpeechUsage
-
-```go
-type SpeechUsage struct {
-    CharacterCount int
-}
-```
-
 ### TranscriptionUsage
 
 ```go
@@ -147,14 +139,22 @@ type VideoUsage struct {
 package main
 
 import (
+    "context"
     "fmt"
     "log"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
 func main() {
-    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    provider := openai.New(openai.Config{APIKey: "your-api-key"})
+    model, err := provider.LanguageModel("gpt-4")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
         Model:  model,
         Prompt: "Hello, world!",
     })
@@ -177,9 +177,9 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Messages: []types.Message{
         {
             Role: types.RoleUser,
-            Content: []types.MessageContent{
-                {Type: types.ContentTypeText, Text: ptr("Describe this image:")},
-                {Type: types.ContentTypeImage, Image: imageURL},
+            Content: []types.ContentPart{
+                types.TextContent{Text: "Describe this image:"},
+                types.ImageContent{URL: imageURL},
             },
         },
     },
@@ -252,8 +252,10 @@ if result.Usage.InputDetails != nil && result.Usage.InputDetails.CacheReadTokens
 ### Track Reasoning Tokens (o1/o3 Models)
 
 ```go
+model, _ := openaiProvider.LanguageModel("o3-mini") // OpenAI reasoning model
+
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-    Model:  "o3-mini",  // OpenAI reasoning model
+    Model:  model,
     Prompt: "Solve this complex problem...",
 })
 if err != nil {

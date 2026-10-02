@@ -90,9 +90,9 @@ func main() {
 
     // Generate text with telemetry
     result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
-        Model:  model,
-        Prompt: "Explain machine learning in simple terms",
-        // Note: Telemetry integration point
+        Model:     model,
+        Prompt:    "Explain machine learning in simple terms",
+        Telemetry: telemetrySettings,
     })
     if err != nil {
         log.Fatal(err)
@@ -232,12 +232,12 @@ stream, err := ai.StreamText(context.Background(), ai.StreamTextOptions{
     // Telemetry automatically tracks streaming
 })
 
-for {
-    chunk, err := stream.Read()
-    if err != nil {
-        break
-    }
+for chunk := range stream.Chunks() {
     fmt.Print(chunk.Text)
+}
+
+if err := stream.Err(); err != nil {
+    log.Printf("stream error: %v", err)
 }
 
 // Final token usage is tracked when stream completes
@@ -254,6 +254,7 @@ result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
     Tools: []types.Tool{
         weatherTool,
     },
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
     // Each tool call step is tracked as a span
 })
 

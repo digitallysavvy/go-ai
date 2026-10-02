@@ -115,7 +115,8 @@ When using file uploads with i2v models:
 | r2v | ✅ Yes | ❌ No |
 | r2v-flash | ✅ Yes | ❌ No |
 
-Attempting to use file uploads with non-i2v models will return an error.
+The `Image` field is only read for i2v models; on t2v and r2v models it is
+silently ignored (use `InputReferences`/`FrameImages` for r2v instead).
 
 ## Parameters
 
@@ -135,10 +136,10 @@ result, err := model.DoGenerate(ctx, &provider.VideoModelV3CallOptions{
     Prompt: "A cat walking",
     ProviderOptions: map[string]interface{}{
         "alibaba": map[string]interface{}{
-            "negative_prompt": "blurry, distorted",
-            "watermark":       false,
-            "pollIntervalMs":  2000,  // Poll every 2 seconds
-            "pollTimeoutMs":   300000, // 5 minute timeout
+            "negativePrompt": "blurry, distorted",
+            "watermark":      false,
+            "pollIntervalMs": 2000,  // Poll every 2 seconds
+            "pollTimeoutMs":  300000, // 5 minute timeout
         },
     },
 })
@@ -171,9 +172,11 @@ See complete example: `examples/providers/alibaba/09-image-to-video-file.go`
 
 ## Troubleshooting
 
-### "file-based images only supported for i2v models" error
-- You're trying to use file upload with a t2v or r2v model
-- Solution: Use URL-based input for r2v, or switch to an i2v model
+### `Image` field seems to have no effect
+- The top-level `Image` field is only applied on i2v models; t2v and r2v
+  models ignore it without an error
+- Solution: use `InputReferences` (URLs, or data URIs for images) on r2v
+  models, or switch to an i2v model
 
 ### "Invalid image data" error
 - Verify the image file is not corrupted

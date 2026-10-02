@@ -13,16 +13,14 @@ The Go AI SDK is organized into several key packages:
 
 ### Core Packages
 
-- **`pkg/ai`** - Main package with high-level functions (`GenerateText`, `StreamText`, `GenerateObject`, etc.)
+- **`pkg/ai`** - Main package with high-level functions (`GenerateText`, `StreamText`, `GenerateObject`, `Embed`, `GenerateImage`, `GenerateSpeech`, `Transcribe`, `Rerank`, etc.)
 - **`pkg/providers`** - All 26+ provider implementations (OpenAI, Anthropic, Google, etc.)
-- **`pkg/agents`** - Agent framework for building autonomous workflows
-- **`pkg/middleware`** - Middleware for logging, retry, telemetry
-- **`pkg/testing`** - Testing utilities and mock providers
+- **`pkg/agent`** - Agent framework for building autonomous workflows (`ToolLoopAgent`)
+- **`pkg/middleware`** - Middleware for wrapping models with default settings, instructions, JSON/reasoning extraction, and simulated streaming
+- **`pkg/testutil`** - Testing utilities and mock providers
 
 ### Optional Packages
 
-- **`pkg/embeddings`** - Vector embeddings for semantic search
-- **`pkg/media`** - Image generation, speech, transcription
 - **`pkg/schema`** - JSON Schema utilities for structured output
 - **`pkg/telemetry`** - OpenTelemetry integration
 
@@ -36,8 +34,8 @@ When deciding which part of the SDK to use, consider your use case:
 | **`ai.StreamText`** | Stream text responses | Real-time responses, user interfaces, long generations |
 | **`ai.GenerateObject`** | Generate structured data | Type-safe JSON output, data extraction |
 | **`ai.StreamObject`** | Stream structured data | Real-time structured data with progress updates |
-| **`agents`** | Build autonomous agents | Multi-step workflows, tool calling, decision making |
-| **`middleware`** | Wrap provider calls | Logging, retry logic, observability |
+| **`agent`** | Build autonomous agents | Multi-step workflows, tool calling, decision making |
+| **`middleware`** | Wrap provider calls | Default settings/instructions, JSON extraction, observability |
 
 ## Use Case Guide
 
@@ -92,13 +90,15 @@ type EmailSummary struct {
     Priority  string   `json:"priority"`
 }
 
-result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "Summarize this email: ...",
-    Output: &EmailSummary{},
+    Output: ai.ObjectOutput[EmailSummary](ai.ObjectOutputOptions{
+        Schema: schema.NewSimpleStructSchema(reflect.TypeOf(EmailSummary{})),
+    }),
 })
 
-summary := result.Object
+summary := result.Output.(EmailSummary)
 fmt.Printf("Priority: %s\n", summary.Priority)
 ```
 
@@ -113,9 +113,9 @@ fmt.Printf("Priority: %s\n", summary.Priority)
 For complex, multi-step workflows:
 
 ```go
-agent := agents.New(agents.Config{
-    Model:        model,
-    Instructions: "You are a customer support agent.",
+myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
+    Model:  model,
+    System: "You are a customer support agent.",
     Tools: []types.Tool{
         searchKnowledgeBase,
         createSupportTicket,
@@ -124,7 +124,7 @@ agent := agents.New(agents.Config{
     MaxSteps: 10,
 })
 
-result, err := agent.Execute(ctx, "Help me track my order #12345")
+result, err := myAgent.Execute(ctx, "Help me track my order #12345")
 ```
 
 **Use when:**
@@ -211,7 +211,7 @@ Include the agent framework:
 ```go
 import (
     "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/agents"
+    "github.com/digitallysavvy/go-ai/pkg/agent"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 ```
@@ -250,7 +250,7 @@ import (
 - No → Continue
 
 **Need multi-step workflows?**
-- Yes → Use `agents` package
+- Yes → Use the `agent` package
 - No → Use `GenerateText`
 
 ## Best Practices
@@ -268,13 +268,14 @@ result, err := ai.GenerateText(ctx, options)
 ### 2. Handle Errors Properly
 
 ```go
+import providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+
 result, err := ai.GenerateText(ctx, options)
 if err != nil {
-    switch e := err.(type) {
-    case *ai.APIConnectionError:
-        // Retry with backoff
-    case *ai.RateLimitError:
-        // Wait and retry
+    var rateLimitErr *providererrors.RateLimitError
+    switch {
+    case errors.As(err, &rateLimitErr):
+        // Wait and retry, respecting rateLimitErr.RetryAfterSeconds if set
     default:
         return err
     }

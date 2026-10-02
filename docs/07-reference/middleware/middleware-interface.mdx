@@ -1,55 +1,92 @@
 ---
 title: Middleware Interface
-description: "API reference for LanguageModelMiddleware and EmbeddingModelMiddleware, the Go AI SDK interfaces for implementing custom model-behavior middleware."
+description: "API reference for LanguageModelMiddleware, EmbeddingModelMiddleware, and ImageModelMiddleware, the Go AI SDK structs for implementing custom model-behavior middleware."
 ---
 
 # Middleware Interface
 
-Interfaces for implementing custom middleware to intercept and modify model behavior.
+Structs for implementing custom middleware to intercept and modify model
+behavior. Each field is an optional hook; a middleware only needs to set the
+hooks it uses, and leave the rest nil.
 
 ## LanguageModelMiddleware
 
 ```go
 type LanguageModelMiddleware struct {
-    WrapGenerate func(next GenerateFunc) GenerateFunc
-    WrapStream   func(next StreamFunc) StreamFunc
+    // SpecificationVersion should be "v3" for the current version
+    SpecificationVersion string
+
+    // OverrideProvider allows overriding the provider name
+    OverrideProvider func(model provider.LanguageModel) string
+
+    // OverrideModelID allows overriding the model ID
+    OverrideModelID func(model provider.LanguageModel) string
+
+    // OverrideSupportedURLs allows overriding the URL patterns (regular
+    // expressions keyed by media type) the wrapped model reports supporting.
+    OverrideSupportedURLs func(model provider.LanguageModel) map[string][]string
+
+    // TransformParams transforms the parameters before they are passed to the language model
+    TransformParams func(ctx context.Context, callType string, params *provider.GenerateOptions, model provider.LanguageModel) (*provider.GenerateOptions, error)
+
+    // WrapGenerate wraps the generate operation of the language model
+    WrapGenerate func(ctx context.Context, doGenerate func() (*types.GenerateResult, error), doStream func() (provider.TextStream, error), params *provider.GenerateOptions, model provider.LanguageModel) (*types.GenerateResult, error)
+
+    // WrapStream wraps the stream operation of the language model
+    WrapStream func(ctx context.Context, doGenerate func() (*types.GenerateResult, error), doStream func() (provider.TextStream, error), params *provider.GenerateOptions, model provider.LanguageModel) (provider.TextStream, error)
 }
 ```
 
-Middleware for language models that can intercept both generation and streaming calls.
-
-### GenerateFunc
-
-```go
-type GenerateFunc func(
-    ctx context.Context,
-    opts *provider.GenerateOptions,
-) (*types.GenerateResult, error)
-```
-
-Function signature for generation calls.
-
-### StreamFunc
-
-```go
-type StreamFunc func(
-    ctx context.Context,
-    opts *provider.GenerateOptions,
-) (provider.TextStream, error)
-```
-
-Function signature for streaming calls.
+Middleware for language models that can intercept both generation and
+streaming calls. `WrapGenerate` and `WrapStream` each receive both
+`doGenerate` and `doStream` closures — a `WrapGenerate` hook calls
+`doGenerate()` to invoke the wrapped model (or the next middleware in the
+chain), and a `WrapStream` hook calls `doStream()`.
 
 ## EmbeddingModelMiddleware
 
 ```go
 type EmbeddingModelMiddleware struct {
-    WrapEmbed     func(next EmbedFunc) EmbedFunc
-    WrapEmbedMany func(next EmbedManyFunc) EmbedManyFunc
+    SpecificationVersion string
+
+    OverrideProvider               func(model provider.EmbeddingModel) string
+    OverrideModelID                func(model provider.EmbeddingModel) string
+    OverrideMaxEmbeddingsPerCall    func(model provider.EmbeddingModel) int
+    OverrideSupportsParallelCalls  func(model provider.EmbeddingModel) bool
+
+    // TransformInput transforms the input before it is passed to the embedding model
+    TransformInput func(ctx context.Context, input string, model provider.EmbeddingModel) (string, error)
+
+    // WrapEmbed wraps a single embed call
+    WrapEmbed func(ctx context.Context, doEmbed func() (*types.EmbeddingResult, error), input string, model provider.EmbeddingModel) (*types.EmbeddingResult, error)
+
+    // WrapEmbedMany wraps a batch embed call
+    WrapEmbedMany func(ctx context.Context, doEmbedMany func() (*types.EmbeddingsResult, error), inputs []string, model provider.EmbeddingModel) (*types.EmbeddingsResult, error)
 }
 ```
 
 Middleware for embedding models.
+
+## ImageModelMiddleware
+
+```go
+type ImageModelMiddleware struct {
+    // SpecificationVersion should be "v3" or "v4" for the current version
+    SpecificationVersion string
+
+    OverrideProvider         func(model provider.ImageModel) string
+    OverrideModelID          func(model provider.ImageModel) string
+    OverrideMaxImagesPerCall func(model provider.ImageModel) int
+
+    // TransformParams transforms the parameters before they are passed to the image model
+    TransformParams func(ctx context.Context, params *provider.ImageGenerateOptions, model provider.ImageModel) (*provider.ImageGenerateOptions, error)
+
+    // WrapGenerate wraps the generate operation of the image model
+    WrapGenerate func(ctx context.Context, doGenerate func() (*types.ImageResult, error), params *provider.ImageGenerateOptions, model provider.ImageModel) (*types.ImageResult, error)
+}
+```
+
+Middleware for image models.
 
 ## Examples
 
@@ -70,23 +107,27 @@ import (
 
 func LoggingMiddleware() *middleware.LanguageModelMiddleware {
     return &middleware.LanguageModelMiddleware{
-        WrapGenerate: func(next middleware.GenerateFunc) middleware.GenerateFunc {
-            return func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-                start := time.Now()
-                log.Printf("Starting generation...")
+        WrapGenerate: func(
+            ctx context.Context,
+            doGenerate func() (*types.GenerateResult, error),
+            doStream func() (provider.TextStream, error),
+            params *provider.GenerateOptions,
+            model provider.LanguageModel,
+        ) (*types.GenerateResult, error) {
+            start := time.Now()
+            log.Printf("Starting generation...")
 
-                result, err := next(ctx, opts)
+            result, err := doGenerate()
 
-                duration := time.Since(start)
-                if err != nil {
-                    log.Printf("Generation failed after %v: %v", duration, err)
-                } else {
-                    log.Printf("Generation completed in %v (%d tokens)",
-                        duration, result.Usage.GetTotalTokens())
-                }
-
-                return result, err
+            duration := time.Since(start)
+            if err != nil {
+                log.Printf("Generation failed after %v: %v", duration, err)
+            } else {
+                log.Printf("Generation completed in %v (%d tokens)",
+                    duration, result.Usage.GetTotalTokens())
             }
+
+            return result, err
         },
     }
 }
@@ -97,78 +138,27 @@ func LoggingMiddleware() *middleware.LanguageModelMiddleware {
 ```go
 func RetryMiddleware(maxRetries int) *middleware.LanguageModelMiddleware {
     return &middleware.LanguageModelMiddleware{
-        WrapGenerate: func(next middleware.GenerateFunc) middleware.GenerateFunc {
-            return func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-                var result *types.GenerateResult
-                var err error
+        WrapGenerate: func(
+            ctx context.Context,
+            doGenerate func() (*types.GenerateResult, error),
+            doStream func() (provider.TextStream, error),
+            params *provider.GenerateOptions,
+            model provider.LanguageModel,
+        ) (*types.GenerateResult, error) {
+            var result *types.GenerateResult
+            var err error
 
-                for attempt := 0; attempt < maxRetries; attempt++ {
-                    result, err = next(ctx, opts)
-                    if err == nil {
-                        return result, nil
-                    }
-
-                    if !isRetryable(err) {
-                        return nil, err
-                    }
-
-                    log.Printf("Retry attempt %d/%d", attempt+1, maxRetries)
-                    time.Sleep(time.Duration(attempt+1) * time.Second)
+            for attempt := 0; attempt < maxRetries; attempt++ {
+                result, err = doGenerate()
+                if err == nil {
+                    return result, nil
                 }
 
-                return nil, fmt.Errorf("max retries exceeded: %w", err)
+                log.Printf("Retry attempt %d/%d", attempt+1, maxRetries)
+                time.Sleep(time.Duration(attempt+1) * time.Second)
             }
-        },
-    }
-}
 
-func isRetryable(err error) bool {
-    return strings.Contains(err.Error(), "rate limit") ||
-        strings.Contains(err.Error(), "timeout")
-}
-```
-
-### Caching Middleware
-
-```go
-type CacheMiddleware struct {
-    cache map[string]*types.GenerateResult
-    mu    sync.RWMutex
-}
-
-func NewCacheMiddleware() *middleware.LanguageModelMiddleware {
-    cm := &CacheMiddleware{
-        cache: make(map[string]*types.GenerateResult),
-    }
-
-    return &middleware.LanguageModelMiddleware{
-        WrapGenerate: func(next middleware.GenerateFunc) middleware.GenerateFunc {
-            return func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-                // Generate cache key from prompt
-                key := generateCacheKey(opts)
-
-                // Check cache
-                cm.mu.RLock()
-                if cached, ok := cm.cache[key]; ok {
-                    cm.mu.RUnlock()
-                    log.Println("Cache hit!")
-                    return cached, nil
-                }
-                cm.mu.RUnlock()
-
-                // Cache miss - call next
-                result, err := next(ctx, opts)
-                if err != nil {
-                    return nil, err
-                }
-
-                // Store in cache
-                cm.mu.Lock()
-                cm.cache[key] = result
-                cm.mu.Unlock()
-
-                return result, nil
-            }
+            return nil, fmt.Errorf("max retries exceeded: %w", err)
         },
     }
 }
@@ -184,19 +174,23 @@ type TokenCounter struct {
 
 func (tc *TokenCounter) Middleware() *middleware.LanguageModelMiddleware {
     return &middleware.LanguageModelMiddleware{
-        WrapGenerate: func(next middleware.GenerateFunc) middleware.GenerateFunc {
-            return func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-                result, err := next(ctx, opts)
-                if err != nil {
-                    return nil, err
-                }
-
-                tc.mu.Lock()
-                tc.totalTokens += result.Usage.GetTotalTokens()
-                tc.mu.Unlock()
-
-                return result, nil
+        WrapGenerate: func(
+            ctx context.Context,
+            doGenerate func() (*types.GenerateResult, error),
+            doStream func() (provider.TextStream, error),
+            params *provider.GenerateOptions,
+            model provider.LanguageModel,
+        ) (*types.GenerateResult, error) {
+            result, err := doGenerate()
+            if err != nil {
+                return nil, err
             }
+
+            tc.mu.Lock()
+            tc.totalTokens += int(result.Usage.GetTotalTokens())
+            tc.mu.Unlock()
+
+            return result, nil
         },
     }
 }
@@ -205,26 +199,6 @@ func (tc *TokenCounter) Total() int {
     tc.mu.Lock()
     defer tc.mu.Unlock()
     return tc.totalTokens
-}
-```
-
-### Rate Limiting Middleware
-
-```go
-func RateLimitMiddleware(requestsPerMinute int) *middleware.LanguageModelMiddleware {
-    limiter := rate.NewLimiter(rate.Every(time.Minute/time.Duration(requestsPerMinute)), 1)
-
-    return &middleware.LanguageModelMiddleware{
-        WrapGenerate: func(next middleware.GenerateFunc) middleware.GenerateFunc {
-            return func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-                if err := limiter.Wait(ctx); err != nil {
-                    return nil, fmt.Errorf("rate limit wait failed: %w", err)
-                }
-
-                return next(ctx, opts)
-            }
-        },
-    }
 }
 ```
 

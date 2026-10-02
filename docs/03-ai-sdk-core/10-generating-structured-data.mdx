@@ -193,11 +193,12 @@ if err != nil {
 
 elements := ai.ElementStreamWithOutput(streamResult, arrayOut)
 for elem := range elements {
-    if elem.Err != nil {
-        log.Printf("Error: %v", elem.Err)
-        break
-    }
     fmt.Printf("Notification %d: %s\n", elem.Index, elem.Element.Name)
+}
+
+// Check for a stream-level error after consuming all elements
+if err := streamResult.Err(); err != nil {
+    log.Printf("Error: %v", err)
 }
 ```
 
@@ -240,6 +241,7 @@ import (
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
 type Recipe struct {
@@ -258,7 +260,7 @@ func main() {
     model, _ := provider.LanguageModel("gpt-4")
 
     // Define JSON Schema
-    schema := map[string]interface{}{
+    recipeSchema := map[string]interface{}{
         "type": "object",
         "properties": map[string]interface{}{
             "recipe": map[string]interface{}{
@@ -287,16 +289,21 @@ func main() {
 
     result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
         Model:  model,
-        Schema: schema,
+        Schema: schema.NewSimpleJSONSchema(recipeSchema),
         Prompt: "Generate a lasagna recipe.",
     })
     if err != nil {
         log.Fatal(err)
     }
 
-    // Unmarshal into struct
+    // result.Object is already unmarshaled; re-marshal it to decode into a typed struct
+    objBytes, err := json.Marshal(result.Object)
+    if err != nil {
+        log.Fatal(err)
+    }
+
     var recipe Recipe
-    if err := json.Unmarshal(result.Object, &recipe); err != nil {
+    if err := json.Unmarshal(objBytes, &recipe); err != nil {
         log.Fatal(err)
     }
 
@@ -328,45 +335,36 @@ fmt.Printf("Body: %+v\n", result.Response.Body)
 
 ## Stream Object
 
-Given the added complexity of returning structured data, model response time can be unacceptable for your interactive use case. With the [`ai.StreamObject()`](../07-reference/ai/stream-object.mdx) function, you can stream the model's response as it is generated.
+Given the added complexity of returning structured data, model response time can be unacceptable for your interactive use case. With the [`ai.StreamObject()`](../07-reference/ai/stream-object.mdx) function, you can receive partial objects as they are parsed during generation via the `OnChunk` callback. Unlike `StreamText`, `ai.StreamObject()` blocks until generation completes and returns the final `*GenerateObjectResult` directly — it does not return a channel-based stream.
 
 ```go
 result, err := ai.StreamObject(ctx, ai.StreamObjectOptions{
     Model:  model,
     Schema: schema,
     Prompt: "Generate a lasagna recipe.",
+    OnChunk: func(partialObject interface{}) {
+        fmt.Printf("Partial object: %v\n", partialObject)
+    },
 })
 if err != nil {
     log.Fatal(err)
 }
-defer result.Close()
-
-// Stream partial objects as they arrive
-for chunk := range result.Chunks() {
-    if chunk.Error != nil {
-        log.Printf("Error: %v", chunk.Error)
-        break
-    }
-    fmt.Printf("Partial object: %s\n", chunk.PartialObject)
-}
 
 // Get final complete object
 finalObject := result.Object
-fmt.Printf("Final object: %s\n", finalObject)
+fmt.Printf("Final object: %v\n", finalObject)
 ```
 
 ### OnError Callback
 
-`StreamObject` immediately starts streaming. Errors become part of the stream and are not returned to prevent servers from crashing.
-
-To log errors, you can provide an `OnError` callback that is triggered when an error occurs:
+`StreamObject` surfaces stream-level errors (distinct from schema parse/validation errors) via the `OnError` callback, which is called before the function returns its final error:
 
 ```go
 result, err := ai.StreamObject(ctx, ai.StreamObjectOptions{
     Model:  model,
     Schema: schema,
     Prompt: "Generate data",
-    OnError: func(err error) {
+    OnError: func(ctx context.Context, err error) {
         log.Printf("Stream error: %v", err) // Your error logging logic here
     },
 })
@@ -393,7 +391,7 @@ result, _ := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
 
 If you want to generate an array of objects, you can set the output strategy to `array`. When you use the `array` output strategy, the schema specifies the shape of an array element.
 
-With `StreamObject`, you can also stream the generated array elements:
+With `StreamObject`, you can receive the partial array through `OnChunk` as it is generated:
 
 ```go
 // Schema for a single hero
@@ -413,29 +411,20 @@ heroSchema := map[string]interface{}{
 result, _ := ai.StreamObject(ctx, ai.StreamObjectOptions{
     Model:      model,
     OutputMode: "array",
-    Schema:     heroSchema,
+    Schema:     schema.NewSimpleJSONSchema(heroSchema),
     Prompt:     "Generate 3 hero descriptions for a fantasy role playing game.",
+    OnChunk: func(partialObject interface{}) {
+        fmt.Printf("Partial array so far: %v\n", partialObject)
+    },
 })
-defer result.Close()
 
-// Stream individual elements
-for chunk := range result.ElementStream() {
-    if chunk.Error != nil {
-        log.Printf("Error: %v", chunk.Error)
-        break
-    }
-
-    var hero struct {
-        Name        string `json:"name"`
-        Class       string `json:"class"`
-        Description string `json:"description"`
-    }
-
-    if err := json.Unmarshal(chunk.Element, &hero); err == nil {
-        fmt.Printf("Hero: %s (%s) - %s\n", hero.Name, hero.Class, hero.Description)
-    }
+// The final array is available once StreamObject returns
+for _, hero := range result.Array {
+    fmt.Printf("Hero: %v\n", hero)
 }
 ```
+
+> **Note:** To receive fully validated elements one at a time as they complete, use the non-deprecated `StreamText` with `ArrayOutput[T]()` and `ai.ElementStreamWithOutput()` shown above under [Element Streaming for Arrays](#element-streaming-for-arrays).
 
 ### Enum
 
@@ -456,10 +445,8 @@ if err != nil {
     log.Fatal(err)
 }
 
-// result.Object contains the selected enum value
-var genre string
-json.Unmarshal(result.Object, &genre)
-fmt.Printf("Genre: %s\n", genre) // Output: sci-fi
+// result.EnumValue contains the selected enum value
+fmt.Printf("Genre: %s\n", result.EnumValue) // Output: sci-fi
 ```
 
 ### No Schema
@@ -476,8 +463,8 @@ if err != nil {
     log.Fatal(err)
 }
 
-// result.Object contains raw JSON without schema validation
-fmt.Printf("Object: %s\n", result.Object)
+// result.Object contains the parsed value without schema validation
+fmt.Printf("Object: %v\n", result.Object)
 ```
 
 ## Schema Name and Description
@@ -485,32 +472,34 @@ fmt.Printf("Object: %s\n", result.Object)
 You can optionally specify a name and description for the schema. These are used by some providers for additional LLM guidance, e.g. via tool or schema name.
 
 ```go
+recipeSchema := map[string]interface{}{
+    "type": "object",
+    "properties": map[string]interface{}{
+        "name": map[string]interface{}{"type": "string"},
+        "ingredients": map[string]interface{}{
+            "type": "array",
+            "items": map[string]interface{}{
+                "type": "object",
+                "properties": map[string]interface{}{
+                    "name":   map[string]interface{}{"type": "string"},
+                    "amount": map[string]interface{}{"type": "string"},
+                },
+            },
+        },
+        "steps": map[string]interface{}{
+            "type":  "array",
+            "items": map[string]interface{}{"type": "string"},
+        },
+    },
+    "required": []string{"name", "ingredients", "steps"},
+}
+
 result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
     Model:             model,
     SchemaName:        "Recipe",
     SchemaDescription: "A recipe for a dish.",
-    Schema: map[string]interface{}{
-        "type": "object",
-        "properties": map[string]interface{}{
-            "name": map[string]interface{}{"type": "string"},
-            "ingredients": map[string]interface{}{
-                "type": "array",
-                "items": map[string]interface{}{
-                    "type": "object",
-                    "properties": map[string]interface{}{
-                        "name":   map[string]interface{}{"type": "string"},
-                        "amount": map[string]interface{}{"type": "string"},
-                    },
-                },
-            },
-            "steps": map[string]interface{}{
-                "type":  "array",
-                "items": map[string]interface{}{"type": "string"},
-            },
-        },
-        "required": []string{"name", "ingredients", "steps"},
-    },
-    Prompt: "Generate a lasagna recipe.",
+    Schema:            schema.NewSimpleJSONSchema(recipeSchema),
+    Prompt:            "Generate a lasagna recipe.",
 })
 ```
 
@@ -525,6 +514,8 @@ It can arise due to the following reasons:
 - The model generated a response that could not be validated against the schema
 
 ```go
+import providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+
 result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
     Model:  model,
     Schema: schema,
@@ -532,10 +523,10 @@ result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
 })
 if err != nil {
     // Check for specific error types
-    if errors.Is(err, provider.ErrNoObjectGenerated) {
-        fmt.Println("No object was generated")
-        // You can access error details if using a custom error type
-    } else if errors.Is(err, provider.ErrValidationFailed) {
+    var noObjectErr *ai.NoObjectGeneratedError
+    if errors.As(err, &noObjectErr) {
+        fmt.Println("No object was generated:", noObjectErr.Message)
+    } else if providererrors.IsValidationError(err) {
         fmt.Println("Object validation failed")
     } else {
         fmt.Printf("Error: %v\n", err)
@@ -564,33 +555,17 @@ type Address struct {
     Country string `json:"country"`
 }
 
-// Generate JSON schema from struct
-// (You can use a library like github.com/invopop/jsonschema)
-schema := map[string]interface{}{
-    "type": "object",
-    "properties": map[string]interface{}{
-        "name":  map[string]interface{}{"type": "string"},
-        "age":   map[string]interface{}{"type": "integer"},
-        "email": map[string]interface{}{"type": "string"},
-        "address": map[string]interface{}{
-            "type": "object",
-            "properties": map[string]interface{}{
-                "street":  map[string]interface{}{"type": "string"},
-                "city":    map[string]interface{}{"type": "string"},
-                "country": map[string]interface{}{"type": "string"},
-            },
-        },
-    },
-}
-
+// Generate a JSON schema directly from the struct's json tags
 result, _ := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
     Model:  model,
-    Schema: schema,
+    Schema: ai.SchemaFor[Person](),
     Prompt: "Generate a person profile.",
 })
 
+// result.Object is already unmarshaled; re-marshal it to decode into a typed struct
+objBytes, _ := json.Marshal(result.Object)
 var person Person
-json.Unmarshal(result.Object, &person)
+json.Unmarshal(objBytes, &person)
 fmt.Printf("Person: %+v\n", person)
 ```
 
@@ -617,12 +592,14 @@ article := "..." // your article text
 
 result, _ := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
     Model:  model,
-    Schema: articleSchema,
+    Schema: schema.NewSimpleJSONSchema(articleSchema),
     Prompt: fmt.Sprintf("Extract key information from this article: %s", article),
 })
 
+// result.Object is already unmarshaled; re-marshal it to decode into a typed value
+objBytes, _ := json.Marshal(result.Object)
 var extractedInfo map[string]interface{}
-json.Unmarshal(result.Object, &extractedInfo)
+json.Unmarshal(objBytes, &extractedInfo)
 fmt.Printf("Extracted: %+v\n", extractedInfo)
 ```
 
@@ -638,9 +615,7 @@ result, _ := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
     Prompt:     "Classify the sentiment of this review: \"This product is amazing!\"",
 })
 
-var sentiment string
-json.Unmarshal(result.Object, &sentiment)
-fmt.Printf("Sentiment: %s\n", sentiment) // Output: positive
+fmt.Printf("Sentiment: %s\n", result.EnumValue) // Output: positive
 ```
 
 ### Synthetic Data Generation
@@ -661,14 +636,12 @@ userSchema := map[string]interface{}{
 result, _ := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
     Model:      model,
     OutputMode: "array",
-    Schema:     userSchema,
+    Schema:     schema.NewSimpleJSONSchema(userSchema),
     Prompt:     "Generate 5 realistic test users for a web application.",
 })
 
-var users []map[string]interface{}
-json.Unmarshal(result.Object, &users)
-
-for i, user := range users {
+// For array mode, elements are available in result.Array
+for i, user := range result.Array {
     fmt.Printf("User %d: %+v\n", i+1, user)
 }
 ```
@@ -684,7 +657,7 @@ result, _ := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
     Model:  model,
     Schema: schema,
     Prompt: "Generate data",
-    OnFinish: func(result types.GenerateObjectResult) {
+    OnFinish: func(ctx context.Context, result *ai.GenerateObjectResult, userContext interface{}) {
         fmt.Printf("Object generated\n")
         fmt.Printf("Usage: %+v\n", result.Usage)
         fmt.Printf("Finish reason: %s\n", result.FinishReason)
@@ -694,26 +667,17 @@ result, _ := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
 
 ### OnChunk Callback (Streaming)
 
-Process chunks as they arrive when streaming:
+Process partial objects as they arrive during streaming (note: `StreamObject` blocks until generation completes; `OnChunk` is a callback, not a channel):
 
 ```go
 result, _ := ai.StreamObject(ctx, ai.StreamObjectOptions{
     Model:  model,
     Schema: schema,
     Prompt: "Generate data",
-    OnChunk: func(chunk types.StreamObjectChunk) {
-        if chunk.Error != nil {
-            log.Printf("Error: %v", chunk.Error)
-            return
-        }
-        fmt.Printf("Partial: %s\n", chunk.PartialObject)
+    OnChunk: func(partialObject interface{}) {
+        fmt.Printf("Partial: %v\n", partialObject)
     },
 })
-defer result.Close()
-
-// Still need to consume channel
-for range result.Chunks() {
-}
 ```
 
 ## Validation
@@ -721,13 +685,15 @@ for range result.Chunks() {
 The Go AI SDK automatically validates generated objects against your schema. If validation fails, an error is returned:
 
 ```go
+import providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+
 result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
     Model:  model,
     Schema: schema,
     Prompt: "Generate data",
 })
 if err != nil {
-    if errors.Is(err, provider.ErrValidationFailed) {
+    if providererrors.IsValidationError(err) {
         fmt.Println("Generated object does not match schema")
         // Handle validation failure
     }
@@ -785,7 +751,7 @@ text := "Apple CEO Tim Cook announced a new initiative in Cupertino..."
 
 result, _ := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
     Model:  model,
-    Schema: entitiesSchema,
+    Schema: schema.NewSimpleJSONSchema(entitiesSchema),
     Prompt: fmt.Sprintf("Extract all people, organizations, and locations from: %s", text),
 })
 ```
@@ -808,7 +774,7 @@ formSchema := map[string]interface{}{
 
 result, _ := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
     Model:  model,
-    Schema: formSchema,
+    Schema: schema.NewSimpleJSONSchema(formSchema),
     Prompt: "Extract form data from this document: ...",
 })
 ```

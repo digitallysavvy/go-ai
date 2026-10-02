@@ -125,7 +125,8 @@ stream, err := ai.ExperimentalStreamTranscribe(ctx, ai.StreamTranscribeOptions{
 ## Workflow Serialization
 
 Cartesia speech and transcription models can cross a workflow boundary
-with `providerutils.SerializeModel` / `DeserializeModel`. See
+with `provider.SerializeSpeechModel` / `DeserializeSpeechModel` and
+`provider.SerializeTranscriptionModel` / `DeserializeTranscriptionModel`. See
 [Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
 for the mechanism.
 

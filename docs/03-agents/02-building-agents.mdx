@@ -29,6 +29,7 @@ import (
     "os"
 
     "github.com/digitallysavvy/go-ai/pkg/agent"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
@@ -41,10 +42,11 @@ func main() {
     myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
         Model:  model,
         System: "You are a helpful assistant.",
-        Tools:  []types.Tool{
+        Tools: []types.Tool{
             // Your tools here
         },
     })
+    _ = myAgent
 }
 ```
 
@@ -74,6 +76,7 @@ func main() {
         Model:  model,
         System: "You are an expert software engineer.",
     })
+    _ = myAgent
 }
 ```
 
@@ -120,12 +123,13 @@ func main() {
                     code := input["code"].(string)
                     // Execute code and return result
                     return map[string]interface{}{
-                        "output": "Code executed successfully",
+                        "output": fmt.Sprintf("Executed: %s", code),
                     }, nil
                 },
             },
         },
     })
+    _ = codeAgent
 }
 ```
 
@@ -156,6 +160,7 @@ func main() {
         Model:    model,
         StopWhen: []ai.StopCondition{ai.IsStepCount(20)}, // Allow up to 20 steps
     })
+    _ = myAgent
 }
 ```
 
@@ -197,6 +202,7 @@ func main() {
         Temperature: &temperature,
         MaxTokens:   &maxTokens,
     })
+    _ = myAgent
 }
 ```
 
@@ -331,7 +337,6 @@ func main() {
     myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
         Model:  model,
         System: "You are a helpful assistant.",
-        Tools:  []types.Tool{weatherTool},
     })
 
     result, err := myAgent.Execute(ctx, "What is the weather like?")
@@ -444,7 +449,6 @@ func main() {
     myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
         Model:    model,
         System:   "You are a helpful research assistant.",
-        Tools:    []types.Tool{searchTool, analysisTool},
         MaxSteps: 15,
 
         OnStepStart: func(stepNum int) {
@@ -497,7 +501,7 @@ The `OnStepFinish` callback is called after each agent step completes. It provid
 
 The `StepResult` passed to `OnStepFinish` contains:
 
-- `StepNumber` (int) - The step number (1-indexed)
+- `StepNumber` (int) - The step number (0-indexed)
 - `Text` (string) - Text generated in this step
 - `ToolCalls` ([]ToolCall) - Tool calls made in this step
 - `ToolResults` ([]ToolResult) - Results from tool executions
@@ -517,7 +521,7 @@ OnStepFinish: func(step types.StepResult) {
     log.Printf("[Step %d] Tool calls: %d, Tokens: %d",
         step.StepNumber,
         len(step.ToolCalls),
-        getTokens(step.Usage.GetTotalTokens()))
+        getTokens(step.Usage.TotalTokens))
 }
 ```
 
@@ -533,7 +537,7 @@ OnStepFinish: func(step types.StepResult) {
 
     fmt.Printf("Step %d: %d tokens (total: %d)\n",
         step.StepNumber,
-        getTokens(step.Usage.GetTotalTokens()),
+        getTokens(step.Usage.TotalTokens),
         totalTokens)
 
     if totalTokens > 10000 {
@@ -728,7 +732,8 @@ func main() {
             expr := input["expression"].(string)
             // Evaluate expression (simplified example)
             return map[string]interface{}{
-                "result": 42,
+                "expression": expr,
+                "result":     42,
             }, nil
         },
     })
@@ -762,7 +767,6 @@ import (
     "os"
 
     "github.com/digitallysavvy/go-ai/pkg/agent"
-    "github.com/digitallysavvy/go-ai/pkg/provider/types"
     "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 )
 
@@ -777,7 +781,6 @@ func main() {
     myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
         Model:    model,
         System:   "You are a helpful assistant.",
-        Tools:    []types.Tool{weatherTool, calculatorTool},
         MaxSteps: 15,
     })
 

@@ -23,6 +23,7 @@ type Provider interface {
     ImageModel(modelID string) (ImageModel, error)
     SpeechModel(modelID string) (SpeechModel, error)
     TranscriptionModel(modelID string) (TranscriptionModel, error)
+    RerankingModel(modelID string) (RerankingModel, error)
 }
 ```
 
@@ -35,7 +36,7 @@ model1, _ := openaiProvider.LanguageModel("gpt-4")
 
 // Anthropic
 anthropicProvider := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")})
-model2, _ := anthropicProvider.LanguageModel("claude-3-sonnet-20240229")
+model2, _ := anthropicProvider.LanguageModel("claude-3-5-sonnet-20241022")
 
 // Same API for both
 result1, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model1, Prompt: "Hello"})
@@ -44,7 +45,7 @@ result2, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model2, Prompt:
 
 ## Supported Providers
 
-The Go AI SDK includes built-in support for 26 providers:
+The Go AI SDK includes built-in support for 26+ providers:
 
 ### Language Model Providers
 
@@ -282,7 +283,7 @@ func main() {
 
     // Use Claude for critique
     anthropicProvider := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")})
-    claude, _ := anthropicProvider.LanguageModel("claude-3-sonnet-20240229")
+    claude, _ := anthropicProvider.LanguageModel("claude-3-5-sonnet-20241022")
 
     result2, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
         Model:  claude,
@@ -302,14 +303,14 @@ For applications that need dynamic provider/model selection, use the registry:
 import "github.com/digitallysavvy/go-ai/pkg/registry"
 
 // Create registry and register providers
-reg := registry.New()
+reg := registry.NewRegistry()
 reg.RegisterProvider("openai", openaiProvider)
 reg.RegisterProvider("anthropic", anthropicProvider)
 reg.RegisterProvider("google", googleProvider)
 
 // Resolve models by string ID
-model, _ := reg.LanguageModel("openai:gpt-4")
-model2, _ := reg.LanguageModel("anthropic:claude-3-opus-20240229")
+model, _ := reg.ResolveLanguageModel("openai:gpt-4")
+model2, _ := reg.ResolveLanguageModel("anthropic:claude-3-opus-20240229")
 
 // Use consistently
 result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{

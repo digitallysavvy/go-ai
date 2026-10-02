@@ -7,7 +7,7 @@ description: Map Vercel AI SDK (ai@7.0.x) calls to their Go SDK equivalents, and
 
 This guide is for developers who know the [Vercel AI SDK](https://ai-sdk.dev) and are porting an app to Go, or building a new Go backend behind an existing TypeScript frontend. It assumes no Go SDK experience.
 
-The Go SDK (`github.com/digitallysavvy/go-ai`) targets 1:1 parity with TypeScript `ai@7.0.118`. Most concepts map directly: same function names in spirit, same option names where Go syntax allows, same wire formats for anything that crosses a network boundary (provider requests, UI message streams). The core package is `pkg/ai`, mirroring the `ai` package; individual providers live under `pkg/providers/*`, mirroring `@ai-sdk/*`.
+The Go SDK (`github.com/digitallysavvy/go-ai`) targets 1:1 parity with TypeScript `ai@7.0.127`. Most concepts map directly: same function names in spirit, same option names where Go syntax allows, same wire formats for anything that crosses a network boundary (provider requests, UI message streams). The core package is `pkg/ai`, mirroring the `ai` package; individual providers live under `pkg/providers/*`, mirroring `@ai-sdk/*`.
 
 If you're coming from TypeScript v5 or v6 rather than v7, read [Coming from TS v5 or v6](#coming-from-ts-v5-or-v6) first — several TS names changed on the way to v7, and Go only implements the current (v7) names.
 
@@ -133,7 +133,7 @@ Go ships two mechanisms. Prefer the `Output` one; `GenerateObject`/`StreamObject
 | TypeScript | Go | Note |
 |---|---|---|
 | `smoothStream({delayInMs, chunking})` | `ai.SmoothStream(ai.SmoothStreamOptions{DelayInMs: ..., Chunking: "word"})` | `pkg/ai/smooth_stream.go`. Returns `(ai.StreamTransformFunc, error)`. An invalid `chunking` value now returns a typed `*errors.InvalidArgumentError`. |
-| `streamText({experimental_transform: [smoothStream(...)]})` | `ai.StreamTextOptions{ExperimentalTransform: []ai.StreamTransformFunc{transform}}` | `pkg/ai/stream.go`. Still `experimental_` in **both** SDKs — TS hasn't graduated this option in 7.0.118 either, so this isn't a Go gap. |
+| `streamText({experimental_transform: [smoothStream(...)]})` | `ai.StreamTextOptions{ExperimentalTransform: []ai.StreamTransformFunc{transform}}` | `pkg/ai/stream.go`. Still `experimental_` in **both** SDKs — TS hasn't graduated this option as of 7.0.127 either, so this isn't a Go gap. |
 | `pruneMessages({messages, toolCalls: [...]})` | `ai.PruneModelMessages(messages, ai.PruneModelMessagesOptions{ToolCalls: []ai.PruneToolCallsRule{{Type: "before-last-message"}}})` | `pkg/ai/prune_messages.go`. Doc comment explicitly mirrors TS `generate-text/prune-messages.ts`, quirks included. |
 
 ### Telemetry
@@ -377,7 +377,7 @@ Go implements the current (v7) names only. If your TS code still uses a v5 or v6
 |---|---|---|
 | `maxTokens` | `maxOutputTokens` | `GenerateTextOptions.MaxTokens *int` (Go kept the shorter name) |
 | `maxSteps` | `stopWhen: isStepCount(n)` | `StopWhen: []ai.StopCondition{ai.IsStepCount(n)}` |
-| `stepCountIs` (was the canonical name in v6) | `isStepCount` (canonical in v7; `stepCountIs` now a deprecated alias) | `ai.IsStepCount` (`ai.StepCountIs` exists too, as a deprecated alias) |
+| `stepCountIs` (was the canonical name in v6) | `isStepCount` (canonical in v7; `stepCountIs` now a deprecated alias) | `ai.IsStepCount` (`ai.IsStepCount` exists too, as a deprecated alias) |
 | `Experimental_Agent` | `ToolLoopAgent` | `agent.ToolLoopAgent` / `agent.NewToolLoopAgent` |
 | `system` | `instructions` | `System string` (canonical in Go) / `Instructions *string` (alias) |
 | `experimental_telemetry` | `telemetry` | `Telemetry *telemetry.Options` |
@@ -401,7 +401,7 @@ These are TS-only by design — the Go SDK is a backend/CLI library, not a UI fr
 
 - **React/Vue/Angular/Svelte hooks** (`useChat`, `useCompletion` from `@ai-sdk/react`, `@ai-sdk/vue`, `@ai-sdk/angular`, `@ai-sdk/svelte`) — client-side UI state management. Go serves the same UI message stream protocol these hooks consume; see [Serving a TS frontend](#serving-a-ts-frontend-from-a-go-backend).
 - **React Server Components streaming** (`@ai-sdk/rsc`) — an RSC-specific streaming mechanism with no Go analogue.
-- **`@ai-sdk/devtools`** — a browser-based UI for inspecting LLM requests/responses. Go's own [debugging guide](../03-ai-sdk-core/65-devtools.mdx) covers the same goal (`DebugMode` request logging), by different means.
+- **`@ai-sdk/devtools`** — a browser-based UI for inspecting LLM requests/responses. Go's own [debugging guide](../09-troubleshooting/09-debugging.mdx) covers the same goal — wrapping the HTTP client to log requests/responses, plus `ai.SetLogWarnings` for provider warnings — by different means.
 - **`@ai-sdk/codemod`** — jscodeshift-based automated upgrade transforms for TS source files; doesn't apply to Go source.
 - **`@ai-sdk/harness-cline`, `@ai-sdk/harness-pi`** — these load their vendor Node SDKs in-process with no TS bridge script to port; a Go port would need original work with no TS reference to mirror. Revisit on demand.
 - **Browser-only realtime transport** (`BrowserRealtimeTransport`, `BrowserRealtimeAudio`, `useRealtime`, OpenAI Live over WebRTC) — WebRTC/browser-audio glue. Go's [Realtime Sessions](../03-ai-sdk-core/39-realtime.mdx) support the same server-side WebSocket session API (`ai.ConnectRealtime`); only the in-browser/WebRTC transport is out of scope.

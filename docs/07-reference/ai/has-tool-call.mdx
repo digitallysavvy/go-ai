@@ -6,21 +6,21 @@ description: Built-in StopCondition that stops the tool-calling loop when a spec
 # HasToolCall
 
 Returns a `StopCondition` that stops the tool-calling loop when the model calls
-a tool with the given name. Use this for **semantic completion signals** — for
-example, when the model is expected to call a `"finish"` or `"submit"` tool to
-indicate that it has completed its task.
+a tool with one of the given names. Use this for **semantic completion
+signals** — for example, when the model is expected to call a `"finish"` or
+`"submit"` tool to indicate that it has completed its task.
 
 ## Signature
 
 ```go
-func HasToolCall(toolName string) StopCondition
+func HasToolCall(toolNames ...string) StopCondition
 ```
 
 ## Parameters
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| toolName | string | Name of the tool whose invocation stops the loop |
+| toolNames | ...string | Names of the tools whose invocation stops the loop |
 
 ## Return Value
 
@@ -33,9 +33,9 @@ type StopCondition func(state StopConditionState) string
 
 ## Behavior
 
-`HasToolCall` inspects the **last step's tool calls**. If `toolName` appears in
-any of them the condition fires. It returns `""` when there are no completed steps
-yet (safe to evaluate on step zero).
+`HasToolCall` inspects the **most recent step's tool calls**. If any of the
+given `toolNames` appears in them the condition fires. It returns `""` when
+there are no completed steps yet (safe to evaluate on step zero).
 
 ## Examples
 
@@ -43,7 +43,7 @@ yet (safe to evaluate on step zero).
 
 Define a `finish` tool that the model calls when it is satisfied with its
 research. Use `HasToolCall("finish")` to stop the loop the moment it fires.
-Pair it with `StepCountIs` as a hard-limit fallback in case the model never
+Pair it with `IsStepCount` as a hard-limit fallback in case the model never
 calls the tool.
 
 ```go
@@ -72,7 +72,7 @@ When you are satisfied with your findings, call the finish tool.`,
     Tools: []types.Tool{searchTool, finishTool},
     StopWhen: []ai.StopCondition{
         ai.HasToolCall("finish"), // stop on semantic completion
-        ai.StepCountIs(10),       // safety ceiling
+        ai.IsStepCount(10),       // safety ceiling
     },
 })
 if err != nil {
@@ -92,7 +92,7 @@ myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
     Tools: []types.Tool{searchTool, submitTool},
     StopWhen: []ai.StopCondition{
         ai.HasToolCall("submit"),
-        ai.StepCountIs(20),
+        ai.IsStepCount(20),
     },
 })
 
@@ -111,13 +111,13 @@ anywhere and are guaranteed to run.
 // Both conditions always run; the first non-empty reason is returned.
 StopWhen: []ai.StopCondition{
     ai.HasToolCall("finish"),   // fires → "tool 'finish' was called"
-    ai.StepCountIs(20),         // also evaluated, but result ignored if finish fired first
+    ai.IsStepCount(20),         // also evaluated, but result ignored if finish fired first
 },
 ```
 
 ## See Also
 
-- [StepCountIs](./step-count-is.mdx) — stop after n steps (safety ceiling pattern)
+- [IsStepCount](./step-count-is.mdx) — stop after n steps (safety ceiling pattern)
 - [Loop Control](../../03-agents/04-loop-control.mdx) — full guide with examples
 - [GenerateText](./generate-text.mdx) — `GenerateTextOptions.StopWhen` field
 - [ToolLoopAgent](./tool-loop-agent.mdx) — `AgentConfig.StopWhen` field

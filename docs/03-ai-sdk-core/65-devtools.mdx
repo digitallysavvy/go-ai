@@ -11,7 +11,11 @@ The Go-AI SDK provides several tools and techniques for debugging, observability
 
 ### Enabling Debug Logging
 
-Enable debug mode to see detailed HTTP requests and responses:
+There is no built-in `DebugMode` flag. Every provider's `Config` accepts an
+`HTTPClient` override, so you can log requests and responses by supplying an
+`http.Client` with a logging `http.RoundTripper` (see
+[Intercepting HTTP Requests](#intercepting-http-requests) below for the
+`LoggingTransport` implementation):
 
 ```go
 package main
@@ -19,19 +23,38 @@ package main
 import (
     "context"
     "log"
+    "net/http"
     "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
+// simpleLoggingTransport logs the method and URL of every request.
+// See LoggingTransport under "Intercepting HTTP Requests" below for a
+// version that also logs headers and bodies.
+type simpleLoggingTransport struct {
+    Transport http.RoundTripper
+}
+
+func (t *simpleLoggingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+    log.Printf("Request: %s %s", req.Method, req.URL)
+    resp, err := t.Transport.RoundTrip(req)
+    if err == nil {
+        log.Printf("Response Status: %s", resp.Status)
+    }
+    return resp, err
+}
+
 func main() {
     ctx := context.Background()
 
-    // Enable debug mode
+    // Log all HTTP requests and responses via a custom HTTPClient
     provider := openai.New(openai.Config{
-        APIKey:    os.Getenv("OPENAI_API_KEY"),
-        DebugMode: true, // Logs all HTTP requests and responses
+        APIKey: os.Getenv("OPENAI_API_KEY"),
+        HTTPClient: &http.Client{
+            Transport: &simpleLoggingTransport{Transport: http.DefaultTransport},
+        },
     })
 
     model, _ := provider.LanguageModel("gpt-4")
@@ -49,37 +72,27 @@ func main() {
 }
 ```
 
-**Output:**
-```
-DEBUG: POST https://api.openai.com/v1/chat/completions
-DEBUG: Request Headers: {Authorization: Bearer sk-..., Content-Type: application/json}
-DEBUG: Request Body: {"model":"gpt-4","messages":[{"role":"user","content":"Hello, world!"}]}
-DEBUG: Response Status: 200 OK
-DEBUG: Response Body: {"id":"chatcmpl-...","object":"chat.completion",...}
-Result: Hello! How can I assist you today?
-```
-
 ### Provider-Specific Debug Options
 
-Different providers support different debug configurations:
+The same `HTTPClient` override works for every provider:
 
 ```go
-// Anthropic debug mode
+// Anthropic
 anthropicProvider := anthropic.New(anthropic.Config{
-    APIKey:    os.Getenv("ANTHROPIC_API_KEY"),
-    DebugMode: true,
+    APIKey:     os.Getenv("ANTHROPIC_API_KEY"),
+    HTTPClient: httpClient,
 })
 
-// Google debug mode
+// Google
 googleProvider := google.New(google.Config{
-    APIKey:    os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY"),
-    DebugMode: true,
+    APIKey:     os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY"),
+    HTTPClient: httpClient,
 })
 
-// Bedrock debug mode (includes AWS request signing details)
+// Bedrock does not expose an HTTPClient override; use Headers for
+// provider-visible debug markers, or inspect traffic at the network layer.
 bedrockProvider := bedrock.New(bedrock.Config{
-    Region:    "us-east-1",
-    DebugMode: true,
+    Region: "us-east-1",
 })
 ```
 
@@ -94,7 +107,6 @@ package main
 
 import (
     "context"
-    "encoding/json"
     "fmt"
     "log"
     "os"
@@ -140,7 +152,7 @@ func main() {
     fmt.Println("=== Response Details ===")
     fmt.Printf("Text: %s\n", result.Text)
     fmt.Printf("Finish Reason: %s\n", result.FinishReason)
-    fmt.Printf("Model: %s\n", result.ModelID)
+    fmt.Printf("Model: %s\n", result.Response.ModelID)
     fmt.Println()
 
     // Log usage statistics
@@ -554,10 +566,11 @@ import (
     "testing"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
-// MockLanguageModel implements the LanguageModel interface
+// MockLanguageModel implements provider.LanguageModel
 type MockLanguageModel struct {
     Response string
     Error    error
@@ -567,14 +580,21 @@ func int64Ptr(v int64) *int64 {
     return &v
 }
 
-func (m *MockLanguageModel) DoGenerate(ctx context.Context, messages []types.Message, options map[string]interface{}) (*types.GenerateResult, error) {
+func (m *MockLanguageModel) SpecificationVersion() string { return "v3" }
+func (m *MockLanguageModel) Provider() string              { return "mock" }
+func (m *MockLanguageModel) ModelID() string                { return "mock-model" }
+func (m *MockLanguageModel) SupportsTools() bool             { return false }
+func (m *MockLanguageModel) SupportsStructuredOutput() bool  { return false }
+func (m *MockLanguageModel) SupportsImageInput() bool        { return false }
+
+func (m *MockLanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
     if m.Error != nil {
         return nil, m.Error
     }
 
     return &types.GenerateResult{
         Text:         m.Response,
-        FinishReason: "stop",
+        FinishReason: types.FinishReasonStop,
         Usage: types.Usage{
             InputTokens:  int64Ptr(10),
             OutputTokens: int64Ptr(20),
@@ -583,7 +603,7 @@ func (m *MockLanguageModel) DoGenerate(ctx context.Context, messages []types.Mes
     }, nil
 }
 
-func (m *MockLanguageModel) DoStream(ctx context.Context, messages []types.Message, options map[string]interface{}) (types.StreamReader, error) {
+func (m *MockLanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
     return nil, nil // Implement if needed
 }
 
@@ -696,7 +716,37 @@ import (
     "testing"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
+
+// MockLanguageModel implements provider.LanguageModel (same definition as
+// shown earlier under "Mocking AI Responses").
+type MockLanguageModel struct {
+    Response string
+    Error    error
+}
+
+func (m *MockLanguageModel) SpecificationVersion() string { return "v3" }
+func (m *MockLanguageModel) Provider() string              { return "mock" }
+func (m *MockLanguageModel) ModelID() string                { return "mock-model" }
+func (m *MockLanguageModel) SupportsTools() bool             { return false }
+func (m *MockLanguageModel) SupportsStructuredOutput() bool  { return false }
+func (m *MockLanguageModel) SupportsImageInput() bool        { return false }
+
+func (m *MockLanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+    if m.Error != nil {
+        return nil, m.Error
+    }
+    return &types.GenerateResult{
+        Text:         m.Response,
+        FinishReason: types.FinishReasonStop,
+    }, nil
+}
+
+func (m *MockLanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+    return nil, nil
+}
 
 func TestGenerateTextSnapshot(t *testing.T) {
     ctx := context.Background()
@@ -786,7 +836,7 @@ func main() {
     }
 
     logger.Info("AI request completed",
-        "model", result.ModelID,
+        "model", result.Response.ModelID,
         "finish_reason", result.FinishReason,
         "prompt_tokens", result.Usage.GetInputTokens(),
         "completion_tokens", result.Usage.GetOutputTokens(),
@@ -809,9 +859,9 @@ import (
 
     "go.opentelemetry.io/otel"
     "go.opentelemetry.io/otel/attribute"
-    "go.opentelemetry.io/otel/trace"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
@@ -839,7 +889,7 @@ func generateWithTracing(ctx context.Context, model provider.LanguageModel, prom
         attribute.Int64("ai.tokens.prompt", result.Usage.GetInputTokens()),
         attribute.Int64("ai.tokens.completion", result.Usage.GetOutputTokens()),
         attribute.Int64("ai.tokens.total", result.Usage.GetTotalTokens()),
-        attribute.String("ai.finish_reason", result.FinishReason),
+        attribute.String("ai.finish_reason", string(result.FinishReason)),
     )
 
     return result, nil
@@ -910,15 +960,17 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Tools:  tools,
     Prompt: "Use the weather tool",
-    OnStepFinish: func(step ai.Step) {
-        log.Printf("Step %d:", step.StepIndex)
+    OnStepFinish: func(ctx context.Context, step types.StepResult, userContext interface{}) {
+        log.Printf("Step %d:", step.StepNumber)
         for _, call := range step.ToolCalls {
-            log.Printf("  Tool: %s", call.Name)
+            log.Printf("  Tool: %s", call.ToolName)
             log.Printf("  Args: %+v", call.Arguments)
-            if call.Error != nil {
-                log.Printf("  Error: %v", call.Error)
+        }
+        for _, res := range step.ToolResults {
+            if res.Error != nil {
+                log.Printf("  Error: %v", res.Error)
             } else {
-                log.Printf("  Result: %+v", call.Result)
+                log.Printf("  Result: %+v", res.Result)
             }
         }
     },

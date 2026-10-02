@@ -55,23 +55,26 @@ If you can't find a solution in this troubleshooting guide:
 
 ## Debug Mode
 
-Enable debug logging to see detailed information about SDK operations:
+The SDK has no global log-level switch. Its built-in logging hook is the
+warnings logger: route provider warnings to your own logger with
+`ai.SetLogWarnings`, or see [Debugging](./09-debugging.mdx#sdk-warning-logging)
+for the full pattern, including wrapping the HTTP client to log raw
+requests and responses.
 
 ```go
 import (
     "log"
-    "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
 )
 
 func main() {
-    // Enable debug logging
-    ai.SetLogLevel(ai.LogLevelDebug)
-
-    // Or use standard log configuration
-    log.SetOutput(os.Stdout)
-    log.SetFlags(log.LstdFlags | log.Lshortfile)
+    // Route SDK warnings into your own logger instead of stderr.
+    ai.SetLogWarnings(func(opts ai.LogWarningsOptions) {
+        for _, w := range opts.Warnings {
+            log.Printf("[%s/%s] %s", opts.Provider, opts.Model, ai.FormatWarning(w, opts.Provider, opts.Model))
+        }
+    })
 
     // Your code here...
 }

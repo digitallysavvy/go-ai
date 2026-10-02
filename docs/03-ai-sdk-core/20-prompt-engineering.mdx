@@ -239,6 +239,7 @@ func main() {
         Model:       model,
         Temperature: &temperature,
         Tools:       []types.Tool{weatherTool},
+        StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
         Prompt:      "What's the weather in Brooklyn, New York?",
     })
 
@@ -268,6 +269,7 @@ Now answer: What's the weather like in Tokyo and are there flights from San Fran
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Tools:  tools,
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
     Prompt: prompt,
 })
 ```
@@ -288,8 +290,8 @@ type MarketingCampaign struct {
     Tone        string   `json:"tone" description:"Brand tone (e.g., 'professional', 'playful')"`
 }
 
-// Convert struct to JSON schema
-schema := types.StructToJSONSchema(MarketingCampaign{})
+// Build a JSON schema from the struct's json tags
+schema := ai.SchemaFor[MarketingCampaign]()
 
 result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
     Model:  model,
@@ -406,7 +408,7 @@ type SloganSet struct {
     Emotion    string `json:"emotion" description:"Single word describing emotion"`
 }
 
-schema := types.StructToJSONSchema(SloganSet{})
+schema := ai.SchemaFor[SloganSet]()
 
 result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
     Model:  model,
@@ -732,7 +734,7 @@ system := `You are Claude, an AI assistant created by Anthropic.`
 model, _ := provider.LanguageModel("gemini-2.0-flash")
 
 // Long context windows (up to 1M tokens)
-model, _ := provider.LanguageModel("gemini-pro-1.5")
+model, _ := provider.LanguageModel("gemini-1.5-pro")
 ```
 
 ## Resources

@@ -1,20 +1,22 @@
 ---
 title: "XAI Advanced Usage Reporting"
-description: "Explains advanced token usage tracking for xAI models in the Go-AI SDK, covering cached tokens, reasoning tokens, multi-modal inputs, and cost tracking."
+description: "Explains advanced token usage tracking for xAI models in the Go-AI SDK, covering cached tokens, reasoning tokens, and cost tracking."
 ---
 
 # XAI Advanced Usage Reporting
 
-The Go-AI SDK provides sophisticated token usage tracking for XAI (formerly Twitter/X AI) models, including support for cached tokens, reasoning tokens, and multi-modal inputs.
+The Go-AI SDK provides sophisticated token usage tracking for XAI (formerly Twitter/X AI) models, including support for cached tokens and reasoning tokens.
 
 ## Overview
 
-XAI models report detailed token usage information that goes beyond basic prompt/completion counts:
+XAI models report detailed token usage information that goes beyond basic input/output counts:
 
 - **Cached tokens**: Tokens read from cache (prompt caching)
 - **Reasoning tokens**: Tokens used for extended reasoning (Grok models)
-- **Text input tokens**: Text-only portion of input
-- **Image input tokens**: Image portion of input (multi-modal)
+
+The `Usage` struct also has `TextTokens`/`ImageTokens` fields for a
+text/image input split, but xAI's current Responses API usage conversion
+does not populate them — see [Multi-Modal Token Tracking](#multi-modal-token-tracking).
 
 ## Basic Usage
 
@@ -104,87 +106,59 @@ type OutputTokenDetails struct {
 
 ## Cached Token Tracking
 
-The SDK automatically handles two different cached token reporting patterns from the XAI API:
-
-### Inclusive Caching (Most Common)
-
-When `cached_tokens ≤ prompt_tokens`, cached tokens are **part of** the prompt tokens:
+xAI's Responses API (the only language model path xAI uses — Chat Completions
+was removed) reports `input_tokens` as the total, with cached tokens broken
+out separately under `input_tokens_details.cached_tokens`. The SDK derives
+`NoCacheTokens` by subtracting the cached count from the total:
 
 ```go
 // API Response:
-// prompt_tokens: 200
-// cached_tokens: 150
+// input_tokens: 200
+// input_tokens_details: { cached_tokens: 150 }
 
 // SDK converts to:
-InputTokens: 200  // Total (cached are included)
+InputTokens: 200  // Total, taken directly from input_tokens
 InputDetails: {
     NoCacheTokens:   50,   // 200 - 150
-    CacheReadTokens: 150,  // From cache
+    CacheReadTokens: 150,  // From input_tokens_details.cached_tokens
 }
 ```
 
-### Exclusive Caching (Edge Cases)
-
-When `cached_tokens > prompt_tokens`, cached tokens are **additional to** prompt tokens:
-
-```go
-// API Response:
-// prompt_tokens: 4142
-// cached_tokens: 4328 (larger than prompt!)
-
-// SDK converts to:
-InputTokens: 8470  // 4142 + 4328 (sum)
-InputDetails: {
-    NoCacheTokens:   4142,  // All prompt tokens
-    CacheReadTokens: 4328,  // Additional cached tokens
-}
-```
-
-The SDK automatically detects which pattern is being used and calculates correctly.
+`InputDetails` is only populated when `cached_tokens > 0`; otherwise it stays
+`nil`. The SDK does not special-case `cached_tokens` exceeding `input_tokens`
+— if the API ever reports that, `NoCacheTokens` would be negative.
 
 ## Reasoning Token Tracking
 
-For models with extended reasoning (like Grok with reasoning mode), reasoning tokens are **additive** to completion tokens:
+For models with extended reasoning (like Grok with reasoning mode), xAI's
+`output_tokens` field is already the full total (text plus reasoning). The
+SDK breaks out the reasoning portion from `output_tokens_details.reasoning_tokens`
+and derives the text-only count by subtraction — it does not sum two
+separate fields:
 
 ```go
 // API Response:
-// completion_tokens: 50
-// reasoning_tokens: 228
+// output_tokens: 278
+// output_tokens_details: { reasoning_tokens: 228 }
 
 // SDK converts to:
-OutputTokens: 278  // 50 + 228 (sum)
+OutputTokens: 278  // Total, taken directly from output_tokens
 OutputDetails: {
-    TextTokens:      50,   // Regular output
-    ReasoningTokens: 228,  // Extended reasoning
+    TextTokens:      50,   // 278 - 228
+    ReasoningTokens: 228,  // From output_tokens_details.reasoning_tokens
 }
 ```
 
-This follows the XAI Chat API pattern where reasoning is additional compute.
+`OutputDetails` is only populated when `reasoning_tokens > 0`.
 
 ## Multi-Modal Token Tracking
 
-For inputs with images and text:
-
-```go
-result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-    Model: model,
-    Messages: []types.Message{
-        {
-            Role: types.RoleUser,
-            Content: []types.ContentPart{
-                types.TextContent{Text: "What's in this image?"},
-                types.ImageContent{URL: "https://example.com/image.jpg"},
-            },
-        },
-    },
-})
-
-// Access multi-modal token breakdown
-if result.Usage.InputDetails != nil {
-    fmt.Printf("Text tokens: %d\n", *result.Usage.InputDetails.TextTokens)
-    fmt.Printf("Image tokens: %d\n", *result.Usage.InputDetails.ImageTokens)
-}
-```
+xAI's Responses API usage conversion does not currently populate
+`InputDetails.TextTokens` / `InputDetails.ImageTokens` — those fields stay
+`nil` for xAI models even on multi-modal requests. If you need a text/image
+token split, use a provider that supports it (see the [Token usage
+differentiation guide](./08-migration-guides/token-usage-differentiation.mdx)
+for current per-provider support).
 
 ## Complete Example: Cost Tracking
 
@@ -197,6 +171,7 @@ import (
     "log"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
     "github.com/digitallysavvy/go-ai/pkg/providers/xai"
 )
 
@@ -350,13 +325,14 @@ if err != nil {
 // Access raw API response
 rawData := result.Usage.Raw
 
-// Get direct API fields
-if cachedTokens, ok := rawData["cached_tokens"].(int64); ok {
-    fmt.Printf("Raw cached_tokens: %d\n", cachedTokens)
+// Get direct API fields. Raw is populated via a plain json.Unmarshal into
+// map[string]interface{}, so JSON numbers decode as float64, not int64.
+if cachedTokens, ok := rawData["cached_tokens"].(float64); ok {
+    fmt.Printf("Raw cached_tokens: %.0f\n", cachedTokens)
 }
 
-if reasoningTokens, ok := rawData["reasoning_tokens"].(int64); ok {
-    fmt.Printf("Raw reasoning_tokens: %d\n", reasoningTokens)
+if reasoningTokens, ok := rawData["reasoning_tokens"].(float64); ok {
+    fmt.Printf("Raw reasoning_tokens: %.0f\n", reasoningTokens)
 }
 
 // Nested structures
@@ -371,24 +347,23 @@ if details, ok := rawData["prompt_tokens_details"].(map[string]interface{}); ok 
 
 ```
 API Response:
-  prompt_tokens: 100
-  completion_tokens: 50
-  total_tokens: 150
+  input_tokens: 100
+  output_tokens: 50
 
 SDK Output:
   InputTokens: 100
   OutputTokens: 50
-  TotalTokens: 150
+  TotalTokens: 150     (100 + 50, computed by the SDK)
   InputDetails: nil
   OutputDetails: nil
 ```
 
-### Example 2: With Cache (Inclusive)
+### Example 2: With Cache
 
 ```
 API Response:
-  prompt_tokens: 200
-  cached_tokens: 150
+  input_tokens: 200
+  input_tokens_details: { cached_tokens: 150 }
 
 SDK Output:
   InputTokens: 200
@@ -396,45 +371,28 @@ SDK Output:
     NoCacheTokens: 50    (200 - 150)
     CacheReadTokens: 150
   }
-  TotalTokens: 250  (recalculated)
 ```
 
-### Example 3: With Cache (Exclusive) + Reasoning
+### Example 3: With Cache and Reasoning
 
 ```
 API Response:
-  prompt_tokens: 4142
-  cached_tokens: 4328 (> prompt)
-  completion_tokens: 100
-  reasoning_tokens: 200
+  input_tokens: 4142
+  input_tokens_details: { cached_tokens: 2000 }
+  output_tokens: 300
+  output_tokens_details: { reasoning_tokens: 200 }
 
 SDK Output:
-  InputTokens: 8470     (4142 + 4328)
-  OutputTokens: 300     (100 + 200)
-  TotalTokens: 8770     (8470 + 300)
+  InputTokens: 4142
+  OutputTokens: 300
+  TotalTokens: 4442     (4142 + 300, computed by the SDK)
   InputDetails: {
-    NoCacheTokens: 4142
-    CacheReadTokens: 4328
+    NoCacheTokens: 2142  (4142 - 2000)
+    CacheReadTokens: 2000
   }
   OutputDetails: {
-    TextTokens: 100
+    TextTokens: 100      (300 - 200)
     ReasoningTokens: 200
-  }
-```
-
-### Example 4: Multi-Modal
-
-```
-API Response:
-  prompt_tokens: 500
-  text_input_tokens: 100
-  image_input_tokens: 400
-
-SDK Output:
-  InputTokens: 500
-  InputDetails: {
-    TextTokens: 100
-    ImageTokens: 400
   }
 ```
 

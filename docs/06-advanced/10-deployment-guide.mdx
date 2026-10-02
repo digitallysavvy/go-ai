@@ -37,13 +37,11 @@ package main
 import (
     "context"
     "flag"
-    "fmt"
     "log"
     "os"
     "os/signal"
     "syscall"
 
-    "github.com/digitallysavvy/go-ai/pkg/ai"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
@@ -623,7 +621,12 @@ type CheckResult struct {
     Message string `json:"message,omitempty"`
 }
 
-var startTime = time.Now()
+var (
+    // Version is set via -ldflags "-X main.Version=..." at build time,
+    // as shown in the "Application Structure" section above.
+    Version   = "dev"
+    startTime = time.Now()
+)
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
     ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -657,7 +660,7 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
     }
 
     w.Header().Set("Content-Type", "application/json")
-    w.WriteStatus(statusCode)
+    w.WriteHeader(statusCode)
     json.NewEncoder(w).Encode(status)
 }
 
