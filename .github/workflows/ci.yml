@@ -36,14 +36,25 @@ jobs:
       - name: Run tests
         run: go test -v -race -coverprofile=coverage.out ./...
 
-      - name: Upload coverage to Codecov
+      # Coverage of the SDK packages (pkg/...), written to the run's Summary page.
+      - name: Coverage summary
         if: matrix.go-version == '1.26'
-        uses: codecov/codecov-action@v7
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: ./coverage.out
-          flags: unittests
-          fail_ci_if_error: false
+        run: |
+          grep -v -E '/(examples|pkg/testutil|pkg/internal/third_party)/' coverage.out > sdk.cov
+          total=$(go tool cover -func=sdk.cov | awk '/^total:/ {print $3}')
+          {
+            echo "## Test coverage: ${total}"
+            echo
+            echo "SDK packages only (pkg/..., excluding test helpers and vendored code)."
+            echo
+            echo "<details><summary>Per package</summary>"
+            echo
+            echo "| Package | Coverage |"
+            echo "|---|---|"
+            awk 'NR > 1 { split($1, f, ":"); pkg = f[1]; sub("/[^/]*$", "", pkg); t[pkg] += $2; if ($3 > 0) c[pkg] += $2 } END { for (k in t) printf "| %s | %.1f%% |\n", k, 100 * c[k] / t[k] }' sdk.cov | sed 's|github.com/digitallysavvy/go-ai/||' | sort
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   lint:
     name: Lint
