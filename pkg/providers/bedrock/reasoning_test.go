@@ -304,6 +304,118 @@ func TestBedrockNonAnthropicReasoningEffort(t *testing.T) {
 	}
 }
 
+// TestBedrockNova2LiteHighReasoningOmitsMaxTokens ports TS "should omit
+// maxOutputTokens for Nova 2 high reasoning" / "...xhigh portable
+// reasoning (max effort)": Nova 2 Lite rejects inferenceConfig.maxTokens
+// combined with high/xhigh/max reasoning effort, so it must be dropped with
+// an "unsupported" warning instead of sent and rejected by Bedrock.
+func TestBedrockNova2LiteHighReasoningOmitsMaxTokens(t *testing.T) {
+	tests := []struct {
+		name  string
+		level types.ReasoningLevel
+		want  string
+	}{
+		{"high", types.ReasoningHigh, "high"},
+		{"xhigh", types.ReasoningXHigh, "max"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			model := newBedrockModelWithID(ModelAmazonNova2LiteV1)
+			level := tt.level
+			maxTokens := 1024
+			args, err := model.getArgs(&provider.GenerateOptions{
+				Prompt:    types.Prompt{Text: "hi"},
+				Reasoning: &level,
+				MaxTokens: &maxTokens,
+			})
+			if err != nil {
+				t.Fatalf("getArgs error: %v", err)
+			}
+			inferenceConfig, _ := args.Body["inferenceConfig"].(map[string]interface{})
+			if _, ok := inferenceConfig["maxTokens"]; ok {
+				t.Fatalf("inferenceConfig.maxTokens = %v, want omitted", inferenceConfig["maxTokens"])
+			}
+			fields, _ := args.Body["additionalModelRequestFields"].(map[string]interface{})
+			rc, _ := fields["reasoningConfig"].(map[string]interface{})
+			if rc["type"] != "enabled" || rc["maxReasoningEffort"] != tt.want {
+				t.Fatalf("reasoningConfig = %#v, want type=enabled maxReasoningEffort=%s", rc, tt.want)
+			}
+			found := false
+			for _, w := range args.Warnings {
+				if w.Type == "unsupported" && w.Feature == "maxOutputTokens" {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("expected unsupported maxOutputTokens warning, got %#v", args.Warnings)
+			}
+		})
+	}
+}
+
+// TestBedrockNova2LiteMediumReasoningPreservesMaxTokens ports TS "should
+// preserve maxOutputTokens for Nova 2 medium reasoning".
+func TestBedrockNova2LiteMediumReasoningPreservesMaxTokens(t *testing.T) {
+	model := newBedrockModelWithID(ModelAmazonNova2LiteV1)
+	level := types.ReasoningMedium
+	maxTokens := 1024
+	args, err := model.getArgs(&provider.GenerateOptions{
+		Prompt:    types.Prompt{Text: "hi"},
+		Reasoning: &level,
+		MaxTokens: &maxTokens,
+	})
+	if err != nil {
+		t.Fatalf("getArgs error: %v", err)
+	}
+	inferenceConfig, _ := args.Body["inferenceConfig"].(map[string]interface{})
+	if inferenceConfig["maxTokens"] != 1024 {
+		t.Fatalf("inferenceConfig.maxTokens = %v, want 1024", inferenceConfig["maxTokens"])
+	}
+	for _, w := range args.Warnings {
+		if w.Feature == "maxOutputTokens" {
+			t.Fatalf("unexpected maxOutputTokens warning: %#v", w)
+		}
+	}
+}
+
+// TestBedrockNova2LiteExplicitMaxReasoningEffortOmitsMaxTokens ports TS
+// "should omit maxOutputTokens for Nova 2 explicit max reasoning effort":
+// an explicit providerOptions.amazonBedrock.reasoningConfig.maxReasoningEffort
+// of "max" must also trigger the maxTokens guard, not just portable
+// reasoning levels.
+func TestBedrockNova2LiteExplicitMaxReasoningEffortOmitsMaxTokens(t *testing.T) {
+	model := newBedrockModelWithID(ModelAmazonNova2LiteV1)
+	maxTokens := 1024
+	args, err := model.getArgs(&provider.GenerateOptions{
+		Prompt:    types.Prompt{Text: "hi"},
+		MaxTokens: &maxTokens,
+		ProviderOptions: map[string]interface{}{
+			"amazonBedrock": map[string]interface{}{
+				"reasoningConfig": map[string]interface{}{
+					"type":               "enabled",
+					"maxReasoningEffort": "max",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("getArgs error: %v", err)
+	}
+	inferenceConfig, _ := args.Body["inferenceConfig"].(map[string]interface{})
+	if _, ok := inferenceConfig["maxTokens"]; ok {
+		t.Fatalf("inferenceConfig.maxTokens = %v, want omitted", inferenceConfig["maxTokens"])
+	}
+	found := false
+	for _, w := range args.Warnings {
+		if w.Feature == "maxOutputTokens" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected unsupported maxOutputTokens warning, got %#v", args.Warnings)
+	}
+}
+
 // TestBedrockReasoningIgnoredForModelsWithoutKnownSupport ports TS "should
 // ignore portable reasoning for models without known reasoning support":
 // non-Anthropic models that are neither OpenAI models nor Nova 2 Lite get an
