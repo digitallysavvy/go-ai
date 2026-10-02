@@ -79,6 +79,8 @@ go get github.com/digitallysavvy/go-ai/pkg/providers/google
 
 ### Generating Text
 
+📖 [Generating text](https://digitallysavvy.github.io/go-ai/docs/ai-sdk-core/generating-text) · [`GenerateText` reference](https://digitallysavvy.github.io/go-ai/docs/reference/ai/generate-text)
+
 ```go
 import (
     "context"
@@ -95,7 +97,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-5.4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
         Model:  model,
@@ -107,6 +109,8 @@ func main() {
 ```
 
 ### Streaming Text
+
+📖 [Streaming](https://digitallysavvy.github.io/go-ai/docs/foundations/streaming) · [`StreamText` reference](https://digitallysavvy.github.io/go-ai/docs/reference/ai/stream-text)
 
 ```go
 stream, _ := ai.StreamText(ctx, ai.StreamTextOptions{
@@ -123,6 +127,8 @@ for chunk := range stream.Chunks() {
 ```
 
 ### Generating Structured Data
+
+📖 [Generating structured data](https://digitallysavvy.github.io/go-ai/docs/ai-sdk-core/generating-structured-data)
 
 ```go
 import "github.com/digitallysavvy/go-ai/pkg/schema"
@@ -156,6 +162,8 @@ fmt.Printf("Recipe: %s\n", recipe.Name)
 
 ### Agents
 
+📖 [Agents overview](https://digitallysavvy.github.io/go-ai/docs/agents/overview) · [Building agents](https://digitallysavvy.github.io/go-ai/docs/agents/building-agents)
+
 Build autonomous agents with multi-step reasoning:
 
 ```go
@@ -179,6 +187,8 @@ fmt.Println(result.Text)
 ```
 
 ### Tool Calling
+
+📖 [Tools and tool calling](https://digitallysavvy.github.io/go-ai/docs/ai-sdk-core/tools-and-tool-calling) · [MCP tools](https://digitallysavvy.github.io/go-ai/docs/ai-sdk-core/mcp-tools)
 
 Extend AI capabilities with custom tools:
 
@@ -216,6 +226,8 @@ result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
 
 ### Embeddings
 
+📖 [Embeddings](https://digitallysavvy.github.io/go-ai/docs/ai-sdk-core/embeddings)
+
 Generate embeddings for semantic search:
 
 ```go
@@ -231,8 +243,10 @@ result, _ := ai.Embed(ctx, ai.EmbedOptions{
 
 ### Image Generation
 
+📖 [Image generation](https://digitallysavvy.github.io/go-ai/docs/ai-sdk-core/image-generation)
+
 ```go
-imageModel, _ := provider.ImageModel("dall-e-3")
+imageModel, _ := provider.ImageModel("gpt-image-2")
 
 result, _ := ai.GenerateImage(ctx, ai.GenerateImageOptions{
     Model:  imageModel,
@@ -245,9 +259,11 @@ result, _ := ai.GenerateImage(ctx, ai.GenerateImageOptions{
 
 ### Speech and Transcription
 
+📖 [Speech](https://digitallysavvy.github.io/go-ai/docs/ai-sdk-core/speech) · [Transcription](https://digitallysavvy.github.io/go-ai/docs/ai-sdk-core/transcription)
+
 ```go
 // Generate speech
-speechModel, _ := provider.SpeechModel("tts-1")
+speechModel, _ := provider.SpeechModel("gpt-4o-mini-tts")
 result, _ := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
     Model: speechModel,
     Text:  "Hello, welcome to the Go AI SDK!",
@@ -255,7 +271,7 @@ result, _ := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
 })
 
 // Transcribe audio
-transcriptionModel, _ := provider.TranscriptionModel("whisper-1")
+transcriptionModel, _ := provider.TranscriptionModel("gpt-4o-transcribe")
 transcript, _ := ai.Transcribe(ctx, ai.TranscribeOptions{
     Model: transcriptionModel,
     Audio: audioBytes,
@@ -263,6 +279,8 @@ transcript, _ := ai.Transcribe(ctx, ai.TranscribeOptions{
 ```
 
 ### Memory Optimization
+
+📖 [Memory optimization](https://digitallysavvy.github.io/go-ai/docs/advanced/memory-optimization)
 
 Reduce memory consumption by 50-80% for image-heavy or large-context workloads using retention settings:
 
