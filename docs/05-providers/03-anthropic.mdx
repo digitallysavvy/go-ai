@@ -280,6 +280,17 @@ fmt.Println("Final answer:", result.Text)
 
 When streaming (`ai.StreamText`) extended thinking together with tool calls across multiple steps, each thinking block's cryptographic signature streams as its own `signature_delta` event, after the block's text deltas. The provider carries it through as the reasoning content part's `Signature`, so a later step's request replays the thinking block with its signature intact (required for Anthropic to accept the replayed block) instead of dropping it.
 
+#### Between-Tools Thinking (Claude Sonnet 5.5)
+
+`anthropic.ClaudeSonnet5_5` rejects `thinking.type` `"disabled"` and budget-based thinking, and adds `anthropic.ThinkingTypeBetweenTools`, its lowest thinking setting: no upfront thinking, but short progress notes between tool calls stream back as summarized thinking blocks. It's only accepted at `"low"`, `"medium"`, and `"high"` effort — `"xhigh"`/`"max"` is lowered to `"high"` with a warning. `Reasoning: types.ReasoningNone` and `ThinkingConfig{Type: anthropic.ThinkingTypeDisabled}` both map to `between_tools` automatically for this model, with a warning in the latter case.
+
+```go
+model, err := provider.LanguageModelWithOptions(anthropic.ClaudeSonnet5_5, &anthropic.ModelOptions{
+    Thinking: &anthropic.ThinkingConfig{Type: anthropic.ThinkingTypeBetweenTools},
+    Effort:   anthropic.EffortMedium,
+})
+```
+
 ### Context Management (Beta)
 
 Automatically manage conversation history to prevent context window overflows. Claude can intelligently clear old tool calls, thinking blocks, or compact entire conversations:
