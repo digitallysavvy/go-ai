@@ -55,7 +55,8 @@ type AuthOptions struct {
 // replaced) and no authorization code is in flight. On invalid_grant it
 // retries once after invalidating stored tokens.
 func Auth(ctx context.Context, provider OAuthClientProvider, options AuthOptions) (AuthResult, error) {
-	result, err := authInternal(ctx, provider, options)
+	refreshAttempt := &oauthRefreshAttempt{}
+	result, err := authInternal(ctx, provider, options, refreshAttempt)
 	if err == nil {
 		return result, nil
 	}
@@ -80,22 +81,54 @@ func Auth(ctx context.Context, provider OAuthClientProvider, options AuthOptions
 				return "", ierr
 			}
 		}
-		return authInternal(ctx, provider, options)
+		return authInternal(ctx, provider, options, nil)
 	}
 
 	if IsInvalidGrantError(err) {
-		if invalidator, ok := provider.(OAuthCredentialInvalidator); ok {
-			if ierr := invalidator.InvalidateCredentials(ctx, OAuthInvalidateTokens); ierr != nil {
-				return "", ierr
-			}
+		// If a refresh was attempted, identify exactly which (now stale)
+		// tokens it tried so a provider sharing storage across clients can
+		// atomically delete only that generation, preserving a concurrent
+		// refresh's newer tokens (hash 4d0500e). Otherwise fall back to
+		// unconditional invalidation, e.g. during an authorization-code
+		// exchange.
+		if ierr := invalidateOAuthTokens(ctx, provider, refreshAttempt.tokens); ierr != nil {
+			return "", ierr
 		}
-		return authInternal(ctx, provider, options)
+		return authInternal(ctx, provider, options, nil)
 	}
 
 	return "", err
 }
 
-func authInternal(ctx context.Context, provider OAuthClientProvider, options AuthOptions) (AuthResult, error) {
+// oauthRefreshAttempt records the token generation a refresh attempt used,
+// matching TS auth()'s closure-captured `refreshAttempt` object (hash
+// 4d0500e). It lets Auth identify the stale tokens for conditional
+// invalidation when the authorization server rejects the refresh with
+// invalid_grant.
+type oauthRefreshAttempt struct {
+	tokens *OAuthTokens
+}
+
+// invalidateOAuthTokens invalidates stored OAuth tokens, matching TS
+// provider.invalidateCredentials('tokens', context?). When tokens is
+// non-nil and the provider implements OAuthTokenInvalidator, the specific
+// token generation is passed through so providers sharing storage across
+// clients can atomically compare-and-delete only that generation.
+// Otherwise it falls back to the unconditional OAuthCredentialInvalidator
+// form.
+func invalidateOAuthTokens(ctx context.Context, provider OAuthClientProvider, tokens *OAuthTokens) error {
+	if tokens != nil {
+		if invalidator, ok := provider.(OAuthTokenInvalidator); ok {
+			return invalidator.InvalidateCredentialsForTokens(ctx, *tokens)
+		}
+	}
+	if invalidator, ok := provider.(OAuthCredentialInvalidator); ok {
+		return invalidator.InvalidateCredentials(ctx, OAuthInvalidateTokens)
+	}
+	return nil
+}
+
+func authInternal(ctx context.Context, provider OAuthClientProvider, options AuthOptions, refreshAttempt *oauthRefreshAttempt) (AuthResult, error) {
 	if options.ResourceMetadataURL != nil {
 		if err := AssertOAuthResourceMetadataURLSameOrigin(options.ServerURL, options.ResourceMetadataURL.String()); err != nil {
 			return "", err
@@ -315,13 +348,18 @@ func authInternal(ctx context.Context, provider OAuthClientProvider, options Aut
 			if err := AssertOAuthAuthorizationServerInformationMatches(*storedASInfo, currentASInfo); err != nil {
 				return "", err
 			}
-		} else if invalidator, ok := provider.(OAuthCredentialInvalidator); ok {
-			if err := invalidator.InvalidateCredentials(ctx, OAuthInvalidateTokens); err != nil {
+		} else {
+			tokensCopy := *tokens
+			if err := invalidateOAuthTokens(ctx, provider, &tokensCopy); err != nil {
 				return "", err
 			}
 		}
 
 		if storedASInfo != nil {
+			if refreshAttempt != nil {
+				tokensCopy := *tokens
+				refreshAttempt.tokens = &tokensCopy
+			}
 			newTokens, refreshErr := RefreshOAuthAuthorization(ctx, authorizationServerURL, RefreshOAuthAuthorizationParams{
 				Metadata:                metadata,
 				ClientInformation:       *clientInformation,
