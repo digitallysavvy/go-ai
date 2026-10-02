@@ -791,6 +791,32 @@ func TestConvertToAnthropicPrompt_Golden(t *testing.T) {
 			]`,
 			wantWarnings: []string{"Omitted caller metadata for tool search-call because source code execution tool pruned-source is missing from the conversation history."},
 		},
+		// TS commit a587f554f7 (#21736): a replayed anthropic.fallback custom
+		// content part must round-trip back to a "fallback" wire block in its
+		// original position between reasoning blocks, not be swept to the end
+		// like a tool_use block; invalid (incomplete) fallback metadata is
+		// dropped with a warning instead of being sent malformed.
+		{
+			name: "preserve fallback boundaries between reasoning blocks",
+			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.ReasoningContent{Text: "Primary model thinking", ProviderOptions: anthropicOpt("signature", "primary-signature")},
+				types.CustomContent{Kind: "anthropic.fallback", ProviderOptions: anthropicOpt("from", map[string]interface{}{"model": "claude-opus-5-5"}, "to", map[string]interface{}{"model": "claude-opus-4-8"})},
+				types.ReasoningContent{Text: "Fallback model thinking", ProviderOptions: anthropicOpt("signature", "fallback-signature")},
+			}}},
+			wantMessages: `[{"role":"assistant","content":[
+				{"type":"thinking","thinking":"Primary model thinking","signature":"primary-signature"},
+				{"type":"fallback","from":{"model":"claude-opus-5-5"},"to":{"model":"claude-opus-4-8"}},
+				{"type":"thinking","thinking":"Fallback model thinking","signature":"fallback-signature"}
+			]}]`,
+		},
+		{
+			name: "warn and omit fallback boundaries with invalid metadata",
+			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.CustomContent{Kind: "anthropic.fallback", ProviderOptions: anthropicOpt("from", map[string]interface{}{"model": "claude-opus-5-5"})},
+			}}},
+			wantMessages: `[]`,
+			wantWarnings: []string{"anthropic fallback metadata must include from.model and to.model"},
+		},
 		{
 			name: "mcp tool use parts",
 			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{

@@ -1245,14 +1245,43 @@ func (c *anthropicConverter) convertAssistantBlock(block anthropicBlock, isLastB
 				}
 
 			case types.CustomContent:
-				// Go extension: forward anthropic-keyed custom blocks verbatim.
-				if anthropicOpts, ok := p.ProviderOptions["anthropic"].(map[string]interface{}); ok {
-					forwarded := make(map[string]interface{}, len(anthropicOpts))
-					for key, value := range anthropicOpts {
-						forwarded[key] = value
-					}
-					content = append(content, forwarded)
+				// Go extension: forward anthropic-keyed custom blocks verbatim,
+				// reading from ProviderOptions (caller-constructed) or falling
+				// back to ProviderMetadata (round-tripped from a previous
+				// response), mirroring convertReasoning's same fallback.
+				opts := p.ProviderOptions
+				if opts == nil {
+					opts = rawMetadataMap(p.ProviderMetadata)
 				}
+				anthropicOpts, ok := opts["anthropic"].(map[string]interface{})
+				if !ok {
+					break
+				}
+				if p.Kind == "anthropic.fallback" {
+					// Fallback blocks require from.model and to.model to
+					// round-trip; anything else is dropped with a warning
+					// rather than sent malformed (TS commit a587f554f7,
+					// #21736).
+					from, _ := anthropicOpts["from"].(map[string]interface{})
+					to, _ := anthropicOpts["to"].(map[string]interface{})
+					fromModel, _ := from["model"].(string)
+					toModel, _ := to["model"].(string)
+					if fromModel == "" || toModel == "" {
+						c.warn("anthropic fallback metadata must include from.model and to.model")
+						break
+					}
+					content = append(content, map[string]interface{}{
+						"type": "fallback",
+						"from": map[string]interface{}{"model": fromModel},
+						"to":   map[string]interface{}{"model": toModel},
+					})
+					break
+				}
+				forwarded := make(map[string]interface{}, len(anthropicOpts))
+				for key, value := range anthropicOpts {
+					forwarded[key] = value
+				}
+				content = append(content, forwarded)
 			}
 			// file and reasoning-file parts are not sent back to Anthropic.
 		}
@@ -1689,7 +1718,12 @@ func moveToolUseBlocksToEnd(content []map[string]interface{}) []map[string]inter
 		segment = nil
 	}
 	for _, part := range content {
-		if part["type"] == "thinking" || part["type"] == "redacted_thinking" {
+		if part["type"] == "thinking" || part["type"] == "redacted_thinking" || part["type"] == "fallback" {
+			// fallback blocks are a boundary between thinking blocks from
+			// different models, same as thinking/redacted_thinking itself
+			// (TS commit a587f554f7, #21736): they must stay in their
+			// original position rather than being swept to the end with
+			// tool_use blocks.
 			flush()
 			result = append(result, part)
 		} else {
