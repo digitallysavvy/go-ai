@@ -2076,6 +2076,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 					Content     *string                `json:"content"`      // nullable in compaction_delta
 					PartialJSON string                 `json:"partial_json"` // in input_json_delta
 					Thinking    string                 `json:"thinking"`     // in thinking_delta
+					Signature   string                 `json:"signature"`    // in signature_delta
 					Citation    map[string]interface{} `json:"citation"`     // in citations_delta
 				} `json:"delta"`
 			}
@@ -2150,7 +2151,23 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				}, nil
 
 			case "signature_delta":
-				// Thinking block signature: cryptographic attestation, not user-visible.
+				// Thinking block signature: cryptographic attestation required to
+				// replay this thinking block in a later turn's history. Only
+				// meaningful on "thinking" blocks (TS: `if (blockType ===
+				// 'thinking')`); emitted as a reasoning chunk with empty text and
+				// the signature in ProviderMetadata, mirroring TS's
+				// reasoning-delta with delta: '' (previously dropped entirely,
+				// causing unsigned thinking blocks to be replayed and rejected by
+				// Anthropic).
+				if block := s.contentBlocks[delta.Index]; block != nil && block.blockType == "reasoning" {
+					metadata, _ := json.Marshal(map[string]interface{}{
+						"anthropic": map[string]interface{}{"signature": delta.Delta.Signature},
+					})
+					return &provider.StreamChunk{
+						Type:             provider.ChunkTypeReasoning,
+						ProviderMetadata: metadata,
+					}, nil
+				}
 				continue
 
 			case "compaction_delta":

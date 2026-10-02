@@ -158,6 +158,14 @@ func TestClaudeFable5CapabilitiesAndFallbacksRequest(t *testing.T) {
 	}
 }
 
+// TestAnthropicFallbackResponsePreservesBlockAndIterations ports TS's
+// "should preserve the fallback content block and surface the fallback
+// iteration" (anthropic-language-model.test.ts, commit a587f554f7, #21736).
+// The fallback block used to be dropped entirely (TS commit d5e3024-era
+// behavior); it must now survive as anthropic.fallback custom content with
+// from/to metadata so the next turn's prompt conversion can round-trip the
+// fallback boundary, alongside the usage.iterations it was already surfaced
+// through.
 func TestAnthropicFallbackResponsePreservesBlockAndIterations(t *testing.T) {
 	prov := New(Config{APIKey: "test-key"})
 	model := NewLanguageModel(prov, ClaudeFable5, nil)
@@ -190,10 +198,25 @@ func TestAnthropicFallbackResponsePreservesBlockAndIterations(t *testing.T) {
 	if result.Text != "The printing press was invented by Johannes Gutenberg around 1440." {
 		t.Fatalf("Text = %q", result.Text)
 	}
+	var fallback *types.CustomContent
 	for _, part := range result.Content {
-		if custom, ok := part.(types.CustomContent); ok && (custom.Kind == "anthropic.fallback" || custom.Kind == "anthropic-fallback") {
-			t.Fatalf("fallback content block should be dropped like TS, got %#v", part)
+		if custom, ok := part.(types.CustomContent); ok && custom.Kind == "anthropic.fallback" {
+			fallback = &custom
+			break
 		}
+	}
+	if fallback == nil {
+		t.Fatalf("expected an anthropic.fallback custom content part, got %#v", result.Content)
+	}
+	var fallbackMeta map[string]interface{}
+	if err := json.Unmarshal(fallback.ProviderMetadata, &fallbackMeta); err != nil {
+		t.Fatalf("unmarshal fallback ProviderMetadata: %v", err)
+	}
+	anthropicMeta, _ := fallbackMeta["anthropic"].(map[string]interface{})
+	from, _ := anthropicMeta["from"].(map[string]interface{})
+	to, _ := anthropicMeta["to"].(map[string]interface{})
+	if from["model"] != ClaudeFable5 || to["model"] != ClaudeOpus4_8 {
+		t.Fatalf("fallback metadata = %#v, want from/to models", anthropicMeta)
 	}
 	if result.Usage.Raw["iterations"] == nil {
 		t.Fatalf("usage raw missing iterations: %#v", result.Usage.Raw)
@@ -1188,6 +1211,11 @@ func TestStreamingUsageCapturedFromMessageStart(t *testing.T) {
 	}
 }
 
+// TestStreamingFallbackUsageAndIterationsMatchTypeScript ports TS's "should
+// preserve the streamed fallback content block and surface the fallback
+// iteration" (commit a587f554f7, #21736). The streamed "fallback" content
+// block must now surface as an anthropic.fallback custom chunk (previously
+// dropped), alongside the usage.iterations it was already surfaced through.
 func TestStreamingFallbackUsageAndIterationsMatchTypeScript(t *testing.T) {
 	sseData := "" +
 		"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_01FallbackStreamAbcdefghij\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-fable-5\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":408,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":1}}}\n\n" +
@@ -1198,6 +1226,24 @@ func TestStreamingFallbackUsageAndIterationsMatchTypeScript(t *testing.T) {
 		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 
 	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)), false)
+
+	fallbackChunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next() fallback chunk error: %v", err)
+	}
+	if fallbackChunk.Type != provider.ChunkTypeCustom || fallbackChunk.CustomContent == nil || fallbackChunk.CustomContent.Kind != "anthropic.fallback" {
+		t.Fatalf("unexpected fallback chunk: %#v", fallbackChunk)
+	}
+	var fallbackMeta map[string]interface{}
+	if err := json.Unmarshal(fallbackChunk.CustomContent.ProviderMetadata, &fallbackMeta); err != nil {
+		t.Fatalf("decode fallback provider metadata: %v", err)
+	}
+	fallbackAnthropicMeta, _ := fallbackMeta["anthropic"].(map[string]interface{})
+	from, _ := fallbackAnthropicMeta["from"].(map[string]interface{})
+	to, _ := fallbackAnthropicMeta["to"].(map[string]interface{})
+	if from["model"] != ClaudeFable5 || to["model"] != ClaudeOpus4_8 {
+		t.Fatalf("fallback metadata = %#v, want from/to models", fallbackAnthropicMeta)
+	}
 
 	textChunk, err := stream.Next()
 	if err != nil {

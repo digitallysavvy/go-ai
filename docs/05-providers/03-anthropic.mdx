@@ -278,6 +278,8 @@ for _, part := range result.Content {
 fmt.Println("Final answer:", result.Text)
 ```
 
+When streaming (`ai.StreamText`) extended thinking together with tool calls across multiple steps, each thinking block's cryptographic signature streams as its own `signature_delta` event, after the block's text deltas. The provider carries it through as the reasoning content part's `Signature`, so a later step's request replays the thinking block with its signature intact (required for Anthropic to accept the replayed block) instead of dropping it.
+
 ### Context Management (Beta)
 
 Automatically manage conversation history to prevent context window overflows. Claude can intelligently clear old tool calls, thinking blocks, or compact entire conversations:

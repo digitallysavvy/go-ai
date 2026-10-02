@@ -1768,14 +1768,18 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				}
 			}
 
-			// Accumulate reasoning text from reasoning chunks.
-			if chunk.Type == provider.ChunkTypeReasoning && (chunk.Text != "" || chunk.Reasoning != "") {
+			// Accumulate reasoning text from reasoning chunks. A chunk with
+			// empty text but non-nil ProviderMetadata (e.g. Anthropic's
+			// signature_delta) still carries signature metadata that must
+			// be merged onto the accumulated part so it can be replayed in
+			// the next request's history.
+			if chunk.Type == provider.ChunkTypeReasoning && (chunk.Text != "" || chunk.Reasoning != "" || len(chunk.ProviderMetadata) > 0) {
 				reasoningText := chunk.Reasoning
 				if reasoningText == "" {
 					reasoningText = chunk.Text
 				}
 				stepReasoningBuilder.WriteString(reasoningText)
-				stepContent = appendReasoningPart(stepContent, reasoningText)
+				stepContent = appendReasoningPart(stepContent, reasoningText, chunk.ProviderMetadata)
 			}
 
 			// Parse (validate/repair), then refine, and accumulate tool call
@@ -3743,16 +3747,19 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 			streamedToolResults[enrichedResult.ToolCallID] = enrichedResult
 			stepContent = append(stepContent, toolResultContentFromToolResult(enrichedResult))
 		}
-		if chunk.Type == provider.ChunkTypeReasoning && (chunk.Text != "" || chunk.Reasoning != "") {
+		if chunk.Type == provider.ChunkTypeReasoning && (chunk.Text != "" || chunk.Reasoning != "" || len(chunk.ProviderMetadata) > 0) {
 			reasoningText := chunk.Reasoning
 			if reasoningText == "" {
 				reasoningText = chunk.Text
 			}
-			stepContent = appendReasoningPart(stepContent, reasoningText)
+			stepContent = appendReasoningPart(stepContent, reasoningText, chunk.ProviderMetadata)
 			if n := len(stepReasoning); n > 0 {
 				stepReasoning[n-1].Text += reasoningText
+				if len(chunk.ProviderMetadata) > 0 {
+					stepReasoning[n-1].ProviderMetadata = chunk.ProviderMetadata
+				}
 			} else {
-				stepReasoning = append(stepReasoning, types.ReasoningContent{Text: reasoningText})
+				stepReasoning = append(stepReasoning, types.ReasoningContent{Text: reasoningText, ProviderMetadata: chunk.ProviderMetadata})
 			}
 		}
 
