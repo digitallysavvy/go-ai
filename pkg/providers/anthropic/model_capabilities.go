@@ -40,6 +40,12 @@ type ModelCapabilities struct {
 	// rejected.
 	RejectsForcedToolUse bool
 
+	// SupportsBetweenToolsThinking reports support for thinking.type
+	// "between_tools", the lowest thinking setting on models that reject
+	// disabled thinking: no upfront thinking, only short progress notes
+	// between tool calls, only at "low"/"medium"/"high" effort.
+	SupportsBetweenToolsThinking bool
+
 	// IsKnownModel is false for unknown and legacy model IDs.
 	IsKnownModel bool
 }
@@ -56,6 +62,19 @@ var (
 // getModelCapabilities in the TypeScript SDK.
 func GetModelCapabilities(modelID string) ModelCapabilities {
 	switch {
+	case strings.Contains(modelID, "claude-sonnet-5-5"):
+		return ModelCapabilities{
+			MaxOutputTokens:                        128000,
+			SupportsStructuredOutput:               true,
+			SupportsAdaptiveThinking:               true,
+			RejectsSamplingParameters:              true,
+			SupportsXHighEffort:                    true,
+			RejectsThinkingDisabledAboveHighEffort: true,
+			RejectsThinkingDisabled:                true,
+			RejectsForcedToolUse:                   true,
+			SupportsBetweenToolsThinking:           true,
+			IsKnownModel:                           true,
+		}
 	case strings.Contains(modelID, "claude-opus-5-5"):
 		return ModelCapabilities{
 			MaxOutputTokens:                        128000,

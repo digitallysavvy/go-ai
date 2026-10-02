@@ -163,6 +163,13 @@ if err != nil {
 fmt.Printf("Structured data: %+v\n", result.Object)
 ```
 
+JSON schemas are normalized for OpenAI's structured-outputs dialect before
+being sent: `propertyNames` and lookaround `pattern`s are stripped (with a
+`compatibility` warning), and a singleton-reference `allOf` wrapper (as
+recursive schemas commonly produce) is rewritten to a direct `$ref`, or
+inlined at the schema root, since OpenAI rejects `allOf` and requires an
+object at the root.
+
 ### Vision Capabilities
 
 GPT-4o and GPT-4-turbo support image understanding:
@@ -837,3 +844,34 @@ messages := []types.Message{{
 ### Assistant null content behavior
 
 Assistant messages with tool calls serialize `content: null` only when the target OpenAI-compatible API requires it for tool-call assistant turns. Plain assistant messages keep their text content.
+
+## October 2026 parity updates
+
+### Model IDs
+
+GPT-6.1 Sol is available as a Chat Completions and Responses model ID.
+
+| Capability | Go constant | Model ID |
+| --- | --- | --- |
+| Chat / Responses | `openai.ModelGPT61Sol` | `gpt-6.1-sol` |
+
+```go
+model, err := p.LanguageModel(openai.ModelGPT61Sol)
+```
+
+### `reasoningSummary` warning on Chat Completions models
+
+`providerOptions.openai.reasoningSummary` is a Responses API option. Passing it to a Chat Completions model (`p.LanguageModel("o3")`) now returns an `unsupported` warning instead of being silently dropped:
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model, // a Chat Completions model, e.g. p.LanguageModel("o3")
+    Prompt: "Explain quantum tunnelling.",
+    ProviderOptions: map[string]interface{}{
+        "openai": map[string]interface{}{"reasoningSummary": "detailed"},
+    },
+})
+// result.Warnings contains {Type: "unsupported", Feature: "reasoningSummary", ...}
+```
+
+Use `p.ResponsesModel(...)` instead to enable reasoning summaries.

@@ -188,6 +188,34 @@ func TestGetLanguageModelCapabilitiesGpt6AndLater(t *testing.T) {
 	}
 }
 
+// TestGetLanguageModelCapabilitiesGpt61Sol ports TS's "supports the
+// documented GPT-6.1 Sol capabilities" test (commit 040033b608, #21747).
+// gpt-6.1-sol is a plain GPT-6+ model (not the gpt-6-sol/gpt-6-luna special
+// case), so its SupportedReasoningEfforts must NOT include "none".
+func TestGetLanguageModelCapabilitiesGpt61Sol(t *testing.T) {
+	got := GetLanguageModelCapabilities(ModelGPT61Sol)
+	want := LanguageModelCapabilities{
+		IsReasoningModel:               true,
+		SystemMessageMode:              "developer",
+		SupportsFlexProcessing:         true,
+		SupportsPriorityProcessing:     true,
+		SupportsConfigurationUpdate:    true,
+		SupportsAsyncToolCalling:       true,
+		SupportedReasoningEfforts:      []string{"low", "medium", "high", "xhigh", "max"},
+		SupportsNonReasoningParameters: false,
+	}
+	if got.IsReasoningModel != want.IsReasoningModel ||
+		got.SystemMessageMode != want.SystemMessageMode ||
+		got.SupportsFlexProcessing != want.SupportsFlexProcessing ||
+		got.SupportsPriorityProcessing != want.SupportsPriorityProcessing ||
+		got.SupportsConfigurationUpdate != want.SupportsConfigurationUpdate ||
+		got.SupportsAsyncToolCalling != want.SupportsAsyncToolCalling ||
+		!stringSlicesEqual(got.SupportedReasoningEfforts, want.SupportedReasoningEfforts) ||
+		got.SupportsNonReasoningParameters != want.SupportsNonReasoningParameters {
+		t.Errorf("GetLanguageModelCapabilities(%q) = %+v, want %+v", ModelGPT61Sol, got, want)
+	}
+}
+
 func TestGetLanguageModelCapabilitiesSupportsFlexProcessing(t *testing.T) {
 	tests := []struct {
 		modelID string

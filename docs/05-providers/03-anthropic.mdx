@@ -278,6 +278,19 @@ for _, part := range result.Content {
 fmt.Println("Final answer:", result.Text)
 ```
 
+When streaming (`ai.StreamText`) extended thinking together with tool calls across multiple steps, each thinking block's cryptographic signature streams as its own `signature_delta` event, after the block's text deltas. The provider carries it through as the reasoning content part's `Signature`, so a later step's request replays the thinking block with its signature intact (required for Anthropic to accept the replayed block) instead of dropping it.
+
+#### Between-Tools Thinking (Claude Sonnet 5.5)
+
+`anthropic.ClaudeSonnet5_5` rejects `thinking.type` `"disabled"` and budget-based thinking, and adds `anthropic.ThinkingTypeBetweenTools`, its lowest thinking setting: no upfront thinking, but short progress notes between tool calls stream back as summarized thinking blocks. It's only accepted at `"low"`, `"medium"`, and `"high"` effort — `"xhigh"`/`"max"` is lowered to `"high"` with a warning. `Reasoning: types.ReasoningNone` and `ThinkingConfig{Type: anthropic.ThinkingTypeDisabled}` both map to `between_tools` automatically for this model, with a warning in the latter case.
+
+```go
+model, err := provider.LanguageModelWithOptions(anthropic.ClaudeSonnet5_5, &anthropic.ModelOptions{
+    Thinking: &anthropic.ThinkingConfig{Type: anthropic.ThinkingTypeBetweenTools},
+    Effort:   anthropic.EffortMedium,
+})
+```
+
 ### Context Management (Beta)
 
 Automatically manage conversation history to prevent context window overflows. Claude can intelligently clear old tool calls, thinking blocks, or compact entire conversations:
@@ -811,6 +824,10 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     },
 })
 ```
+
+### Pruned Programmatic Tool History
+
+If history is pruned between steps (e.g. to control context size) and that removes a code-execution source call (`code_execution_20250825`/`code_execution_20260120`) while a dependent tool call still references it via `caller`, the provider now omits that dangling `caller` metadata — rather than sending it as-is and having Anthropic reject the request with "source tool ... not found" — and returns one warning per affected tool call. The call, its result, ordering, and cache controls are otherwise unchanged; a caller that still resolves to an emitted `server_tool_use` block, or that is in an active continuation not yet followed by a new user message, is left untouched.
 
 ## Finish Reasons
 

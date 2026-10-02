@@ -193,7 +193,7 @@ func decodeAnthropicCallOptions(raw map[string]interface{}) (*ModelOptions, erro
 func validateAnthropicCallOptions(o *ModelOptions) error {
 	if o.Thinking != nil {
 		switch o.Thinking.Type {
-		case "", ThinkingTypeAdaptive, ThinkingTypeEnabled, ThinkingTypeDisabled:
+		case "", ThinkingTypeAdaptive, ThinkingTypeEnabled, ThinkingTypeDisabled, ThinkingTypeBetweenTools:
 		default:
 			return fmt.Errorf("thinking.type: invalid value %q", o.Thinking.Type)
 		}

@@ -462,6 +462,66 @@ func TestBatch_StreamsAllResultVariants(t *testing.T) {
 	}
 }
 
+// TestBatch_PreservesFallbackBlocksInSuccessfulResults ports TS's "preserves
+// fallback blocks in successful results" (anthropic-batch.test.ts, commit
+// a587f554f7, #21736): a batch result's "fallback" content block must
+// survive as anthropic.fallback custom content with from/to metadata,
+// not be dropped, since batch results share the same response-conversion
+// path as generate/stream.
+func TestBatch_PreservesFallbackBlocksInSuccessfulResults(t *testing.T) {
+	resultsBody := `{"custom_id":"fallback","result":{"type":"succeeded","message":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"fallback","from":{"model":"claude-opus-5-5"},"to":{"model":"claude-opus-4-8"}},{"type":"text","text":"Done"}],"model":"claude-opus-5-5","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}}}`
+
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	mux.HandleFunc("/messages/batches/b1", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"b1","type":"message_batch","processing_status":"ended","request_counts":{"processing":0,"succeeded":1,"errored":0,"canceled":0,"expired":0},"created_at":"2024-01-01T00:00:00Z","expires_at":"2024-01-02T00:00:00Z","results_url":"` + srv.URL + `/results"}`))
+	})
+	mux.HandleFunc("/results", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(resultsBody))
+	})
+
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	b := p.ExperimentalBatch()
+	stream, err := b.DoGetBatchResults(t.Context(), provider.BatchV4OperationOptions{BatchID: "b1"})
+	if err != nil {
+		t.Fatalf("DoGetBatchResults: %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+
+	item, err := stream.Next()
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	if item.Status != provider.BatchItemSucceeded || item.TextResult == nil {
+		t.Fatalf("item = %+v", item)
+	}
+	var custom *types.CustomContent
+	for _, part := range item.TextResult.Content {
+		if c, ok := part.(types.CustomContent); ok {
+			custom = &c
+			break
+		}
+	}
+	if custom == nil || custom.Kind != "anthropic.fallback" {
+		t.Fatalf("content = %+v, want an anthropic.fallback custom content part", item.TextResult.Content)
+	}
+	var metadata map[string]interface{}
+	if err := json.Unmarshal(custom.ProviderMetadata, &metadata); err != nil {
+		t.Fatalf("unmarshal ProviderMetadata: %v", err)
+	}
+	anthropicMeta, _ := metadata["anthropic"].(map[string]interface{})
+	from, _ := anthropicMeta["from"].(map[string]interface{})
+	to, _ := anthropicMeta["to"].(map[string]interface{})
+	if from["model"] != "claude-opus-5-5" || to["model"] != "claude-opus-4-8" {
+		t.Fatalf("anthropic metadata = %+v, want from/to models", anthropicMeta)
+	}
+	if item.TextResult.Text != "Done" {
+		t.Fatalf("Text = %q, want %q", item.TextResult.Text, "Done")
+	}
+}
+
 // TestBatch_ErroredResultRequiresErrorTypeLiteral mirrors TS
 // anthropicBatchResultSchema's discriminated-union member for "errored",
 // which requires error.type === "error" (z.literal('error')). A result line

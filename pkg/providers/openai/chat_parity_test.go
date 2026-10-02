@@ -163,6 +163,45 @@ func TestChatServiceTierWarnsWhenUnsupported(t *testing.T) {
 	}
 }
 
+// TestChatReasoningSummaryWarnsOnChatModel ports TS commit 5b8e63bad8
+// (#21178): providerOptions.openai.reasoningSummary is a Responses API
+// option the chat options schema has no field for, so it would otherwise be
+// silently dropped. The chat model must warn instead of staying silent.
+func TestChatReasoningSummaryWarnsOnChatModel(t *testing.T) {
+	p := New(Config{APIKey: "k"})
+	m := NewLanguageModel(p, "o3")
+
+	_, warnings, _ := m.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+		Prompt:          types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"reasoningSummary": "detailed"}},
+	}, false)
+
+	want := types.Warning{
+		Type:    "unsupported",
+		Feature: "reasoningSummary",
+		Details: "reasoningSummary is only supported by the Responses API, not the Chat Completions API",
+	}
+	var found bool
+	for _, w := range warnings {
+		if w == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("warnings = %#v, want to contain %#v", warnings, want)
+	}
+
+	// No reasoningSummary option set: no warning.
+	_, warnings, _ = m.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+	}, false)
+	for _, w := range warnings {
+		if w.Feature == "reasoningSummary" {
+			t.Fatalf("unexpected reasoningSummary warning when option unset: %#v", warnings)
+		}
+	}
+}
+
 // TestChatPromptCacheOptionsForwarded covers the b2b1bb9 chat half:
 // providerOptions.openai.promptCacheOptions forwards to prompt_cache_options.
 func TestChatPromptCacheOptionsForwarded(t *testing.T) {

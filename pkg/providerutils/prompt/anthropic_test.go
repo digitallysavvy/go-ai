@@ -726,6 +726,97 @@ func TestConvertToAnthropicPrompt_Golden(t *testing.T) {
 				{"type":"code_execution_tool_result","tool_use_id":"code-execution-call","content":{"type":"encrypted_code_execution_result","encrypted_stdout":"enc","stderr":"","return_code":0,"content":[]}}
 			]}]`,
 		},
+		// TS commit 8373a22603 (#21623): pruning a converted multi-step
+		// conversation can remove a code execution source call while retaining a
+		// dependent call with caller.toolId. Normalize dangling caller metadata
+		// from history before a subsequent genuine user message (retaining the
+		// calls/results/ordering/cache controls), but preserve it when still in
+		// an active continuation (no subsequent user message yet).
+		{
+			name: "normalize orphaned caller when source was pruned, before a subsequent user message",
+			messages: []types.Message{
+				{Role: types.RoleAssistant, Content: []types.ContentPart{
+					types.ToolCallContent{ToolCallID: "lookup-call", ToolName: "lookup", Arguments: map[string]interface{}{"ticker": "AAPL"},
+						ProviderOptions: anthropicOpt("caller", map[string]interface{}{"type": "code_execution_20260120", "toolId": "pruned-source"})},
+				}},
+				{Role: types.RoleTool, Content: []types.ContentPart{
+					types.ToolResultContent{ToolCallID: "lookup-call", ToolName: "lookup", Output: &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "185.42"}},
+				}},
+				{Role: types.RoleAssistant, Content: []types.ContentPart{types.TextContent{Text: "The price is $185.42."}}},
+				{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Now look up MSFT."}}},
+			},
+			wantMessages: `[
+				{"role":"assistant","content":[{"type":"tool_use","id":"lookup-call","name":"lookup","input":{"ticker":"AAPL"}}]},
+				{"role":"user","content":[{"type":"tool_result","tool_use_id":"lookup-call","content":"185.42"}]},
+				{"role":"assistant","content":[{"type":"text","text":"The price is $185.42."}]},
+				{"role":"user","content":[{"type":"text","text":"Now look up MSFT."}]}
+			]`,
+			wantWarnings: []string{"Omitted caller metadata for tool lookup-call because source code execution tool pruned-source is missing from the conversation history."},
+		},
+		{
+			name: "preserve orphaned-looking caller in an active continuation (no subsequent user message)",
+			messages: []types.Message{
+				{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Look up AAPL."}}},
+				{Role: types.RoleAssistant, Content: []types.ContentPart{
+					types.ToolCallContent{ToolCallID: "lookup-call", ToolName: "lookup", Arguments: map[string]interface{}{},
+						ProviderOptions: anthropicOpt("caller", map[string]interface{}{"type": "code_execution_20260120", "toolId": "source-call"})},
+				}},
+				{Role: types.RoleTool, Content: []types.ContentPart{
+					types.ToolResultContent{ToolCallID: "lookup-call", ToolName: "lookup", Output: &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "185.42"}},
+				}},
+			},
+			wantMessages: `[
+				{"role":"user","content":[{"type":"text","text":"Look up AAPL."}]},
+				{"role":"assistant","content":[{"type":"tool_use","id":"lookup-call","name":"lookup","input":{},"caller":{"type":"code_execution_20260120","tool_id":"source-call"}}]},
+				{"role":"user","content":[{"type":"tool_result","tool_use_id":"lookup-call","content":"185.42"}]}
+			]`,
+		},
+		{
+			name: "normalize callers on historical server calls and results",
+			messages: []types.Message{
+				{Role: types.RoleAssistant, Content: []types.ContentPart{
+					types.ToolCallContent{ToolCallID: "search-call", ToolName: "web_search", ProviderExecuted: true, Arguments: map[string]interface{}{"query": "AI SDK"},
+						ProviderOptions: anthropicOpt("caller", map[string]interface{}{"type": "code_execution_20260120", "toolId": "pruned-source"})},
+					types.ToolResultContent{ToolCallID: "search-call", ToolName: "web_search", Output: &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: []interface{}{}},
+						ProviderOptions: anthropicOpt("caller", map[string]interface{}{"type": "code_execution_20260120", "toolId": "pruned-source"})},
+				}},
+				{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Tell me more."}}},
+			},
+			wantMessages: `[
+				{"role":"assistant","content":[
+					{"type":"server_tool_use","id":"search-call","name":"web_search","input":{"query":"AI SDK"}},
+					{"type":"web_search_tool_result","tool_use_id":"search-call","content":[]}
+				]},
+				{"role":"user","content":[{"type":"text","text":"Tell me more."}]}
+			]`,
+			wantWarnings: []string{"Omitted caller metadata for tool search-call because source code execution tool pruned-source is missing from the conversation history."},
+		},
+		// TS commit a587f554f7 (#21736): a replayed anthropic.fallback custom
+		// content part must round-trip back to a "fallback" wire block in its
+		// original position between reasoning blocks, not be swept to the end
+		// like a tool_use block; invalid (incomplete) fallback metadata is
+		// dropped with a warning instead of being sent malformed.
+		{
+			name: "preserve fallback boundaries between reasoning blocks",
+			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.ReasoningContent{Text: "Primary model thinking", ProviderOptions: anthropicOpt("signature", "primary-signature")},
+				types.CustomContent{Kind: "anthropic.fallback", ProviderOptions: anthropicOpt("from", map[string]interface{}{"model": "claude-opus-5-5"}, "to", map[string]interface{}{"model": "claude-opus-4-8"})},
+				types.ReasoningContent{Text: "Fallback model thinking", ProviderOptions: anthropicOpt("signature", "fallback-signature")},
+			}}},
+			wantMessages: `[{"role":"assistant","content":[
+				{"type":"thinking","thinking":"Primary model thinking","signature":"primary-signature"},
+				{"type":"fallback","from":{"model":"claude-opus-5-5"},"to":{"model":"claude-opus-4-8"}},
+				{"type":"thinking","thinking":"Fallback model thinking","signature":"fallback-signature"}
+			]}]`,
+		},
+		{
+			name: "warn and omit fallback boundaries with invalid metadata",
+			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.CustomContent{Kind: "anthropic.fallback", ProviderOptions: anthropicOpt("from", map[string]interface{}{"model": "claude-opus-5-5"})},
+			}}},
+			wantMessages: `[]`,
+			wantWarnings: []string{"anthropic fallback metadata must include from.model and to.model"},
+		},
 		{
 			name: "mcp tool use parts",
 			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
@@ -887,18 +978,58 @@ func TestConvertToAnthropicPrompt_Golden(t *testing.T) {
 				}},
 			},
 			wantMessages: `[
-				{"role":"assistant","content":[{"type":"tool_use","id":"toolu_click","name":"left_click","toolset_name":"computer","input":{"coordinate":[640,60]}}]},
+				{"role":"assistant","content":[{"type":"tool_use","id":"toolu_click","name":"left_click","toolset_name":"computer","input":{"action":"left_click","coordinate":[640,60]}}]},
 				{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_click","toolset_name":"computer","content":"OK"}]}
 			]`,
 		},
+		// TS commit c35458eac5 (#21875): a malformed toolset call (no action, a
+		// null action, or non-object input) is retained -- with its existing
+		// error result -- instead of being dropped, using the toolset name
+		// itself as the tool_use block's `name` so Anthropic still accepts the
+		// (now matched) result.
 		{
-			name: "warn and skip toolset tool calls without an action",
+			name: "retain malformed toolset call missing the action, with its error result",
+			opts: AnthropicPromptOptions{ToolsetNames: map[string]string{"computer": "computer"}},
+			messages: []types.Message{
+				{Role: types.RoleAssistant, Content: []types.ContentPart{
+					types.ToolCallContent{ToolCallID: "toolu_bad", ToolName: "computer", Arguments: map[string]interface{}{"coordinate": []interface{}{1, 2}}},
+				}},
+				{Role: types.RoleTool, Content: []types.ContentPart{
+					types.ToolResultContent{ToolCallID: "toolu_bad", ToolName: "computer", Output: &types.ToolResultOutput{Type: types.ToolResultOutputError, Value: "Invalid input for tool computer"}},
+				}},
+			},
+			wantMessages: `[
+				{"role":"assistant","content":[{"type":"tool_use","id":"toolu_bad","name":"computer","toolset_name":"computer","input":{"coordinate":[1,2]}}]},
+				{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_bad","toolset_name":"computer","content":"Invalid input for tool computer","is_error":true}]}
+			]`,
+			wantWarnings: []string{"toolset tool call for tool computer is missing the action"},
+		},
+		{
+			name: "retain malformed toolset call with a null action",
 			opts: AnthropicPromptOptions{ToolsetNames: map[string]string{"computer": "computer"}},
 			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
-				types.ToolCallContent{ToolCallID: "toolu_bad", ToolName: "computer", Arguments: map[string]interface{}{"coordinate": []interface{}{1, 2}}},
+				types.ToolCallContent{ToolCallID: "toolu_bad", ToolName: "computer", Arguments: map[string]interface{}{"action": nil, "coordinate": []interface{}{1, 2}}},
 			}}},
-			wantMessages: `[]`,
+			wantMessages: `[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_bad","name":"computer","toolset_name":"computer","input":{"action":null,"coordinate":[1,2]}}]}]`,
 			wantWarnings: []string{"toolset tool call for tool computer is missing the action"},
+		},
+		{
+			name: "retain malformed toolset call with non-object input",
+			opts: AnthropicPromptOptions{ToolsetNames: map[string]string{"computer": "computer"}},
+			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.ToolCallContent{ToolCallID: "toolu_bad", ToolName: "computer", Input: "invalid JSON"},
+			}}},
+			wantMessages: `[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_bad","name":"computer","toolset_name":"computer","input":{"rawInvalidInput":"invalid JSON"}}]}]`,
+			wantWarnings: []string{"toolset tool call for tool computer is missing the action"},
+		},
+		{
+			name: "retain malformed toolset call for a differently-named toolset tool",
+			opts: AnthropicPromptOptions{ToolsetNames: map[string]string{"desktop": "computer"}},
+			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.ToolCallContent{ToolCallID: "toolu_bad", ToolName: "desktop", Arguments: map[string]interface{}{"action": nil}},
+			}}},
+			wantMessages: `[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_bad","name":"computer","toolset_name":"computer","input":{"action":null}}]}]`,
+			wantWarnings: []string{"toolset tool call for tool desktop is missing the action"},
 		},
 	}
 

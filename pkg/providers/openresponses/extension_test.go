@@ -106,6 +106,89 @@ func TestNewExtensionRegistry_ValidationRules(t *testing.T) {
 			},
 			wantErr: false,
 		},
+		// Bare extension type registration (TS commit 8cf3f5bb1e, #19939).
+		{
+			name: "bareToolType without allowBareTypes",
+			ext: Extension{
+				ID:           "ns.ext",
+				BareToolType: "legacy_tool",
+				EncodeTool: func(string, map[string]interface{}) (map[string]interface{}, error) {
+					return map[string]interface{}{}, nil
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "allowBareTypes true without any bare field",
+			ext: Extension{ID: "ns.ext", AllowBareTypes: true, ToolType: "ns:tool", EncodeTool: func(string, map[string]interface{}) (map[string]interface{}, error) {
+				return map[string]interface{}{}, nil
+			}},
+			wantErr: true,
+		},
+		{
+			name: "toolType and bareToolType together",
+			ext: Extension{
+				ID: "ns.ext", AllowBareTypes: true, ToolType: "ns:tool", BareToolType: "legacy_tool",
+				EncodeTool: func(string, map[string]interface{}) (map[string]interface{}, error) {
+					return map[string]interface{}{}, nil
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "bareToolType core collision",
+			ext: Extension{
+				ID: "ns.ext", AllowBareTypes: true, BareToolType: "function",
+				EncodeTool: func(string, map[string]interface{}) (map[string]interface{}, error) {
+					return map[string]interface{}{}, nil
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "bareToolType with a colon",
+			ext: Extension{
+				ID: "ns.ext", AllowBareTypes: true, BareToolType: "ns:legacy_tool",
+				EncodeTool: func(string, map[string]interface{}) (map[string]interface{}, error) {
+					return map[string]interface{}{}, nil
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "bareItemTypes core collision",
+			ext: Extension{
+				ID: "ns.ext", AllowBareTypes: true, BareItemTypes: []string{"message"},
+				DecodeItem: func(ExtensionItem, string) ([]types.ContentPart, error) { return nil, nil },
+			},
+			wantErr: true,
+		},
+		{
+			name: "bareEventTypes core collision",
+			ext: Extension{
+				ID: "ns.ext", AllowBareTypes: true, BareEventTypes: []string{"response.completed"},
+				DecodeEvent: func(ExtensionEvent, map[string]interface{}) ([]*provider.StreamChunk, error) { return nil, nil },
+			},
+			wantErr: true,
+		},
+		{
+			name: "valid bare tool, item, and event extension",
+			ext: Extension{
+				ID:             "ns.ext",
+				AllowBareTypes: true,
+				BareToolType:   "legacy_tool",
+				BareItemTypes:  []string{"legacy_item"},
+				BareEventTypes: []string{"legacy_event"},
+				EncodeTool: func(string, map[string]interface{}) (map[string]interface{}, error) {
+					return map[string]interface{}{}, nil
+				},
+				DecodeItem: func(ExtensionItem, string) ([]types.ContentPart, error) { return nil, nil },
+				DecodeEvent: func(ExtensionEvent, map[string]interface{}) ([]*provider.StreamChunk, error) {
+					return nil, nil
+				},
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tc := range cases {
@@ -225,6 +308,123 @@ func TestOpenResponsesExtensionToolPrepareAndChoice(t *testing.T) {
 	choice, ok := body["tool_choice"].(map[string]interface{})
 	if !ok || choice["type"] != "lmstudio:code_execution" {
 		t.Fatalf("tool_choice = %#v, want {type: lmstudio:code_execution}", body["tool_choice"])
+	}
+}
+
+// bareCodeExecutionExtension mirrors codeExecutionExtension but registers
+// non-namespaced ("bare") wire discriminators via AllowBareTypes, modeling
+// a documented implementation extension whose legacy wire types cannot be
+// expressed in the "<namespace>:<type>" form (TS commit 8cf3f5bb1e,
+// #19939).
+func bareCodeExecutionExtension() Extension {
+	return Extension{
+		ID:             "lmstudio.code_execution",
+		AllowBareTypes: true,
+		BareToolType:   "code_execution",
+		EncodeTool: func(name string, args map[string]interface{}) (map[string]interface{}, error) {
+			return map[string]interface{}{"language": args["language"]}, nil
+		},
+		BareItemTypes: []string{"code_execution"},
+		DecodeItem: func(item ExtensionItem, mode string) ([]types.ContentPart, error) {
+			code, _ := item["code"].(string)
+			result, _ := item["result"].(string)
+			return []types.ContentPart{
+				types.ToolCallContent{ToolCallID: item.ID(), ToolName: "run_code", Input: code, Arguments: map[string]interface{}{"code": code}, ProviderExecuted: true},
+				types.ToolResultContent{ToolCallID: item.ID(), ToolName: "run_code", Result: result, ProviderExecuted: true},
+			}, nil
+		},
+	}
+}
+
+// TestOpenResponsesExtensionBareToolPrepareAndChoice ports TS's bare
+// extension coverage for request tool and tool-choice encoding (commit
+// 8cf3f5bb1e, #19939): a registered bare tool type encodes verbatim (no
+// namespace prefix) into the request body's tools array and tool_choice.
+func TestOpenResponsesExtensionBareToolPrepareAndChoice(t *testing.T) {
+	p := New(Config{BaseURL: "http://localhost:1234/v1", Extensions: []Extension{bareCodeExecutionExtension()}})
+	model := NewLanguageModel(p, "local-model")
+
+	body, _, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		Tools: []types.Tool{
+			{Name: "run_code", Type: "provider", ProviderID: "lmstudio.code_execution", ProviderArgs: map[string]interface{}{"language": "python"}},
+		},
+		ToolChoice: types.ToolChoice{Type: "tool", ToolName: "run_code"},
+	}, false)
+	if err != nil {
+		t.Fatalf("buildRequestBody failed: %v", err)
+	}
+	tools, ok := body["tools"].([]interface{})
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools = %#v, want one encoded extension tool", body["tools"])
+	}
+	toolDef, ok := tools[0].(map[string]interface{})
+	if !ok || toolDef["type"] != "code_execution" || toolDef["language"] != "python" {
+		t.Fatalf("tool def = %#v, want bare type code_execution with language=python", tools[0])
+	}
+	choice, ok := body["tool_choice"].(map[string]interface{})
+	if !ok || choice["type"] != "code_execution" {
+		t.Fatalf("tool_choice = %#v, want {type: code_execution}", body["tool_choice"])
+	}
+}
+
+// TestOpenResponsesExtensionBareItemDecodeGenerate ports TS's bare
+// extension coverage for generation decoding (commit 8cf3f5bb1e, #19939):
+// an output item using a registered bare (non-namespaced) item type still
+// decodes via the extension's DecodeItem, same as a namespaced item type.
+func TestOpenResponsesExtensionBareItemDecodeGenerate(t *testing.T) {
+	p := New(Config{BaseURL: "http://localhost:1234/v1", Extensions: []Extension{bareCodeExecutionExtension()}})
+	model := NewLanguageModel(p, "local-model")
+
+	raw := json.RawMessage(`{"type":"code_execution","id":"ce_1","status":"completed","code":"print(1)","result":"1"}`)
+	var item OutputItem
+	if err := json.Unmarshal(raw, &item); err != nil {
+		t.Fatalf("unmarshal item failed: %v", err)
+	}
+	result, convertErr := model.convertResponse(OpenResponsesResponse{Output: []OutputItem{item}})
+	if convertErr != nil {
+		t.Fatalf("convertResponse failed: %v", convertErr)
+	}
+	if len(result.ToolCalls) != 1 || result.ToolCalls[0].ToolName != "run_code" || !result.ToolCalls[0].ProviderExecuted {
+		t.Fatalf("ToolCalls = %#v, want one provider-executed run_code call", result.ToolCalls)
+	}
+	if result.FinishReason != types.FinishReasonToolCalls {
+		t.Fatalf("FinishReason = %v, want tool-calls", result.FinishReason)
+	}
+}
+
+// TestExtensionToolTypeAndItemTypesHelpers covers the TS
+// getOpenResponsesExtensionToolType/getOpenResponsesExtensionItemTypes
+// helpers (commit 8cf3f5bb1e, #19939): they return whichever of the
+// namespaced/bare fields is set, combining both for item types.
+func TestExtensionToolTypeAndItemTypesHelpers(t *testing.T) {
+	namespaced := &Extension{ToolType: "ns:tool", ItemTypes: []string{"ns:a", "ns:b"}}
+	if got := ExtensionToolType(namespaced); got != "ns:tool" {
+		t.Errorf("ExtensionToolType(namespaced) = %q, want ns:tool", got)
+	}
+	if got := ExtensionItemTypes(namespaced); len(got) != 2 || got[0] != "ns:a" || got[1] != "ns:b" {
+		t.Errorf("ExtensionItemTypes(namespaced) = %#v, want [ns:a ns:b]", got)
+	}
+
+	bare := &Extension{BareToolType: "legacy", BareItemTypes: []string{"legacy_a"}}
+	if got := ExtensionToolType(bare); got != "legacy" {
+		t.Errorf("ExtensionToolType(bare) = %q, want legacy", got)
+	}
+	if got := ExtensionItemTypes(bare); len(got) != 1 || got[0] != "legacy_a" {
+		t.Errorf("ExtensionItemTypes(bare) = %#v, want [legacy_a]", got)
+	}
+
+	mixed := &Extension{ItemTypes: []string{"ns:a"}, BareItemTypes: []string{"legacy_a"}}
+	if got := ExtensionItemTypes(mixed); len(got) != 2 || got[0] != "ns:a" || got[1] != "legacy_a" {
+		t.Errorf("ExtensionItemTypes(mixed) = %#v, want [ns:a legacy_a]", got)
+	}
+
+	empty := &Extension{}
+	if got := ExtensionToolType(empty); got != "" {
+		t.Errorf("ExtensionToolType(empty) = %q, want empty", got)
+	}
+	if got := ExtensionItemTypes(empty); len(got) != 0 {
+		t.Errorf("ExtensionItemTypes(empty) = %#v, want empty", got)
 	}
 }
 

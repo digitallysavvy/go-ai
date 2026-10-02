@@ -38,6 +38,17 @@ if err != nil {
 }
 ```
 
+The provider sends `X-Pplx-Integration: vercel-ai-sdk` on every request so
+Perplexity can attribute traffic to the SDK; pass your own value in
+`Config.Headers` to override it:
+
+```go
+provider := perplexity.New(perplexity.Config{
+    APIKey:  os.Getenv("PERPLEXITY_API_KEY"),
+    Headers: map[string]string{"X-Pplx-Integration": "my-app"},
+})
+```
+
 ### Get API Key
 
 1. Sign up at [perplexity.ai](https://www.perplexity.ai)
