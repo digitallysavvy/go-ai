@@ -212,9 +212,41 @@ func (t *StreamingToolCallTracker) Flush() []ToolCallChunk {
 		})
 	}
 
+	// TS's resolveToolCall distinguishes a present-but-blank function name
+	// (silently ignored forever, see the TrackDelta/processNewToolCall doc
+	// comments) from a name that's entirely absent (fatal: thrown
+	// synchronously the instant the call would be created). Go's plain
+	// `string` Name can't preserve that distinction from the wire layer
+	// (both collapse to ""), so a call that never receives a name is
+	// buffered the same way regardless of which case produced it.
+	//
+	// Resolving the ambiguity in favor of "always fatal" would reintroduce
+	// exactly the failure mode e3605f637a (TS #18445) exists to prevent: one
+	// gateway's blank-name noise aborting an otherwise-successful turn (see
+	// TestStreamingToolCallTrackerIgnoresBlankNameNewCall, which mirrors
+	// TS's "should ignore a blank function name without preventing prior
+	// calls from finalizing"). So when at least one other call in this same
+	// flush resolves successfully, any still-nameless call is treated as
+	// that benign case and dropped without emitting anything. Only when
+	// every call in the batch is nameless -- the shape TestOpenAICompatStream
+	// _ErrorsWhenToolCallNameNeverArrives and
+	// _TruncatedStreamWithMissingToolCallNameSuppressesFinish exercise, where
+	// nothing else in the turn succeeded -- is the fatal path preserved.
+	hasNamedCall := false
+	for _, call := range calls {
+		if !call.hasFinished && call.name != "" {
+			hasNamedCall = true
+			break
+		}
+	}
+
 	chunks := make([]ToolCallChunk, 0, len(calls))
 	for _, call := range calls {
 		if call.hasFinished {
+			continue
+		}
+		if call.name == "" && hasNamedCall {
+			call.hasFinished = true
 			continue
 		}
 		chunks = append(chunks, t.finishToolCall(call)...)

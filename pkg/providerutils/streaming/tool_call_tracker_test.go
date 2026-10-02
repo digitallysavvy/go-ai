@@ -296,6 +296,28 @@ func TestStreamingToolCallTrackerIgnoresBlankNameNewCall(t *testing.T) {
 		if toolCalls[0].ToolCall.ID != "call_1" || toolCalls[0].ToolCall.ToolName != "valid_tool" {
 			t.Fatalf("name=%q: unexpected tool call: %#v", name, toolCalls[0].ToolCall)
 		}
+		// The whole point of "ignore": the blank-name call must not fail the
+		// turn that valid_tool otherwise completed successfully (TS never
+		// enqueues anything for it, let alone an error).
+		if errs := chunksOfType(chunks, provider.ChunkTypeError); len(errs) != 0 {
+			t.Fatalf("name=%q: expected no error chunks, got %#v", name, errs)
+		}
+	}
+}
+
+// A blank-name call with no successful sibling in the same flush still has
+// nothing usable to report -- but it must not silently vanish either, since
+// that would hide a genuinely malformed response. This stays on the fatal
+// path (see Flush), matching TestStreamingToolCallTrackerIgnoresNewCallMissingName
+// and the OpenAICompatStream truncated-stream regressions.
+func TestStreamingToolCallTrackerBlankNameAloneStillErrors(t *testing.T) {
+	tracker := NewStreamingToolCallTracker()
+	tracker.Track(intPtr(0), "call_1", "", `{"value":1}`)
+
+	chunks := tracker.Flush()
+	errs := chunksOfType(chunks, provider.ChunkTypeError)
+	if len(errs) != 1 || errs[0].Text != "Expected 'function.name' to be a string." {
+		t.Fatalf("expected one function.name error chunk, got %#v", chunks)
 	}
 }
 
