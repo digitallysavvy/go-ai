@@ -379,6 +379,18 @@ func (p *Provider) requestHeaders(_ context.Context, extra map[string]string) (m
 	return extra, nil
 }
 
+// speechHTTPClient returns the *http.Client to use for direct Azure Speech
+// REST calls (p.httpClient is nil when no ADTokenProvider and no custom
+// HTTPClient were configured -- internalhttp.Client handles that nil
+// internally, but the raw *stdhttp.Client used by the Speech/MAI backends
+// cannot, so fall back explicitly here).
+func (p *Provider) speechHTTPClient() *stdhttp.Client {
+	if p.httpClient != nil {
+		return p.httpClient
+	}
+	return http.DefaultHTTPClient
+}
+
 // speechBaseURL resolves the Azure Speech endpoint prefix for MAI-Transcribe
 // transcription and MAI-Voice speech, mirroring TS's `speechBaseURL()`
 // closure in createAzure. ResourceName is only validated here (not
@@ -522,7 +534,7 @@ func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
 				return base + "/tts/cognitiveservices/v1", nil
 			},
 			func(context.Context) (map[string]string, error) { return p.speechAPIHeaders(), nil },
-			p.httpClient,
+			p.speechHTTPClient(),
 		),
 	), nil
 }
@@ -550,7 +562,7 @@ func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionMod
 				return base + "/speechtotext/transcriptions:transcribe?api-version=2025-10-15", nil
 			},
 			func(context.Context) (map[string]string, error) { return p.speechAPIHeaders(), nil },
-			p.httpClient,
+			p.speechHTTPClient(),
 		),
 		newAzureMaiTranscriptionModel(modelID,
 			func() (string, error) {
