@@ -85,7 +85,7 @@ func main() {
 		Model:    model,
 		Prompt:   "Replace the word 'hello' with 'goodbye' in the file test.txt",
 		Tools:    []types.Tool{textEditorTool},
-		StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 	})
 	if err != nil {
 		log.Fatalf("Failed to generate text: %v", err)

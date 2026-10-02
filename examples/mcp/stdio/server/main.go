@@ -215,7 +215,7 @@ func (s *MCPServer) handleGenerate(req MCPRequest) MCPResponse {
 		Model:    model,
 		Prompt:   prompt,
 		Tools:    toolsArray,
-		StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 	})
 
 	if err != nil {

@@ -96,7 +96,7 @@ func main() {
 		Model:    model,
 		Messages: messages,
 		Tools:    []types.Tool{weatherTool},
-		StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 	})
 
 	if err != nil {

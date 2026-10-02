@@ -67,7 +67,7 @@ func main() {
 		Model:    model,
 		Prompt:   "List all files in the current directory using bash",
 		Tools:    []types.Tool{bashTool},
-		StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 	})
 	if err != nil {
 		log.Fatalf("Failed to generate text: %v", err)

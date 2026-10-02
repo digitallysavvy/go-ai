@@ -78,7 +78,7 @@ func main() {
 		Model:    model,
 		Prompt:   "What is (12 + 8) multiplied by 3? Use the calculator tool.",
 		Tools:    []types.Tool{calculatorTool},
-		StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 
 		// ── Lifecycle callbacks ─────────────────────────────────────────────
 

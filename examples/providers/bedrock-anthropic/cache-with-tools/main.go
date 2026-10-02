@@ -87,7 +87,7 @@ func main() {
 		System:   "You are a helpful assistant with access to weather and calculator tools.",
 		Prompt:   "What's the weather like in San Francisco?",
 		Tools:    []types.Tool{weatherTool, calculatorTool},
-		StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 	})
 	if err != nil {
 		log.Fatalf("Failed to generate text: %v", err)
@@ -118,7 +118,7 @@ func main() {
 		System:   "You are a helpful assistant with access to weather and calculator tools.",
 		Prompt:   "Calculate 42 plus 17",
 		Tools:    []types.Tool{weatherTool, calculatorTool},
-		StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 	})
 	if err != nil {
 		log.Fatalf("Failed to generate text: %v", err)

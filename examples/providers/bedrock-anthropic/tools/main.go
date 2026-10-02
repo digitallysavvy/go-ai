@@ -71,7 +71,7 @@ func main() {
 		Model:    model,
 		Prompt:   "What's the weather like in San Francisco?",
 		Tools:    []types.Tool{getWeatherTool},
-		StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 		ToolChoice: types.ToolChoice{
 			Type: "auto",
 		},

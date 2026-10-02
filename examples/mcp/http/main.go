@@ -54,7 +54,7 @@ func (s *MCPHTTPServer) handleGenerate(w http.ResponseWriter, r *http.Request) {
 		Model:    model,
 		Prompt:   req.Prompt,
 		Tools:    toolsArray,
-		StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 	})
 
 	if err != nil {

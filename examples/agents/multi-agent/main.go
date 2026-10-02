@@ -27,7 +27,7 @@ func (a *Agent) Process(ctx context.Context, task string) (string, error) {
 		Prompt:   task,
 		System:   fmt.Sprintf("You are %s. %s", a.name, a.role),
 		Tools:    a.tools,
-		StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 	})
 
 	if err != nil {

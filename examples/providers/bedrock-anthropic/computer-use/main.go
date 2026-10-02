@@ -84,7 +84,7 @@ func main() {
 		Model:    model,
 		Prompt:   "Take a screenshot of the current screen",
 		Tools:    []types.Tool{computerTool, bashTool},
-		StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 	})
 	if err != nil {
 		log.Fatalf("Failed to generate text: %v", err)

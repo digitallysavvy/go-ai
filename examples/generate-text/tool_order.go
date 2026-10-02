@@ -39,7 +39,7 @@ func main() {
 			namedTool("readProfile", "Read the user profile."),
 			namedTool("auditLog", "Read account audit logs."),
 		},
-		StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
+		StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
 	})
 	if err != nil {
 		log.Fatal(err)

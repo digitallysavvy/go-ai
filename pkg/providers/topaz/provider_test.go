@@ -181,7 +181,7 @@ func TestProvider_SendsAPIKeyCustomHeadersAndUserAgent(t *testing.T) {
 	}
 	if ua := gotHeader.Get("User-Agent"); ua == "" {
 		t.Error("User-Agent header is empty")
-	} else if want := "ai-sdk/topaz/"; !strings.Contains(ua, want) {
+	} else if want := "ai-sdk-topaz/"; !strings.Contains(ua, want) {
 		t.Errorf("User-Agent header = %q, want to contain %q", ua, want)
 	}
 }

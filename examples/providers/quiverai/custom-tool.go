@@ -46,7 +46,7 @@ func main() {
 		Model:      model,
 		Prompt:     "Draw a minimal sun icon.",
 		Tools:      []types.Tool{svgTool},
-		StopWhen:   []ai.StopCondition{ai.StepCountIs(5)},
+		StopWhen:   []ai.StopCondition{ai.IsStepCount(5)},
 		ToolChoice: types.ToolChoice{Type: types.ToolChoiceTool, ToolName: "write_svg"},
 	})
 	if err != nil {
