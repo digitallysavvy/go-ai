@@ -374,6 +374,19 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 					}
 				}()
 				for {
+					// Check ctx.Done() first (non-blocking) so a consumer
+					// cancellation that raced with a chunk already sitting
+					// on stream wins immediately, instead of Go's select
+					// picking between two simultaneously-ready cases at
+					// random — mirrors TS createUIMessageStream's merge
+					// fix, where cancelling the reader always stops a
+					// pending read before it can resolve with another
+					// value (TS #21728).
+					select {
+					case <-ctx.Done():
+						return
+					default:
+					}
 					select {
 					case <-ctx.Done():
 						return
