@@ -31,7 +31,7 @@
         "command": "pnpm install --frozen-lockfile --store-dir .pnpm-store"
       }
     ],
-    "identity": "9f41bef3527f2f19"
+    "identity": "04e4c4295a63d482"
   },
   "opencode": {
     "harnessId": "opencode",

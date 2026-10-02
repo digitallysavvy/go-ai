@@ -31,7 +31,7 @@
       "bridgeEntry": "bridge.mjs",
       "builtFrom": "packages/harness-codex/dist/bridge (tsup bundle of packages/harness-codex/src/bridge)",
       "files": {
-        "bridge.mjs": "66b97fc97e8ffd5abd187f2bbb0b4804711318028a7f6f19613c5e47fe4912af",
+        "bridge.mjs": "9e003bd1398fd628728c62c609b767cf4f8cababbc0ba59fa7c9226c45c4363a",
         "package.json": "a2fdd9ef99c5542562c218d3970d141e33882e6ddf459e3d2cbdca39cd41c32e",
         "pnpm-lock.yaml": "07dbe58883d4062dac45dd2f33f586dbfed3a3bd27990d7332ec731d33ed4b42"
       },
