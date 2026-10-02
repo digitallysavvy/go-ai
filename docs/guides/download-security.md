@@ -29,10 +29,10 @@ This limit applies to:
 ```go
 // Automatically protected with 2 GiB limit
 result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
-    Model: model,
+    Model:  model,
     Prompt: "analyze this image",
-    Files: []ai.ImagePart{
-        ai.ImagePart("https://example.com/large-image.jpg"),
+    Files: []provider.ImageFile{
+        {Type: "url", URL: "https://example.com/large-image.jpg"},
     },
 })
 ```
@@ -128,7 +128,8 @@ Downloads respect context cancellation for timeouts:
 ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 defer cancel()
 
-data, err := fileutil.Download(ctx, url, opts)
+download := ai.CreateURLDownload(opts)
+data, err := download(ctx, url)
 // Automatically cancelled after 30 seconds
 ```
 
@@ -184,8 +185,8 @@ videoDownload := ai.CreateURLDownloadWithMetadata(&ai.DownloadOptions{
 ### 2. Validate URLs Before Downloading
 
 ```go
-func isAllowedDomain(url string) bool {
-    parsed, err := url.Parse(url)
+func isAllowedDomain(rawURL string) bool {
+    parsed, err := url.Parse(rawURL)
     if err != nil {
         return false
     }
@@ -255,23 +256,26 @@ Even for internal services:
 
 ## Low-Level API
 
-For advanced use cases, you can use the download utilities directly:
+`pkg/internal/fileutil` (the package underlying all of this) is a Go
+`internal/` package and cannot be imported outside this module. For advanced
+use cases, build a download function with `ai.CreateURLDownloadWithMetadata`
+or `ai.CreateURLDownload` instead, then call it directly:
 
 ```go
 import (
-    "github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+    "github.com/digitallysavvy/go-ai/pkg/ai"
 )
 
 // Configure download options
-opts := fileutil.DefaultDownloadOptions()
-opts.MaxSize = 50 * 1024 * 1024  // 50 MB
-opts.Timeout = 30 * time.Second
-opts.Headers = map[string]string{
-    "User-Agent": "MyApp/1.0",
-}
+download := ai.CreateURLDownloadWithMetadata(&ai.DownloadOptions{
+    MaxBytes: 50 * 1024 * 1024, // 50 MB
+    Headers: map[string]string{
+        "User-Agent": "MyApp/1.0",
+    },
+})
 
 // Download with options
-data, err := fileutil.Download(ctx, url, opts)
+result, err := download(ctx, url)
 if err != nil {
     var downloadErr *providererrors.DownloadError
     if errors.As(err, &downloadErr) {
@@ -279,6 +283,7 @@ if err != nil {
     }
     return err
 }
+data := result.Data
 ```
 
 ## FAQ
