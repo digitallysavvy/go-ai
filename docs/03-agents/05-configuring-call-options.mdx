@@ -107,7 +107,6 @@ import (
 
     "github.com/digitallysavvy/go-ai/pkg/agent"
     "github.com/digitallysavvy/go-ai/pkg/provider"
-    "github.com/digitallysavvy/go-ai/pkg/provider/types"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
@@ -119,7 +118,7 @@ const (
 )
 
 func newAdaptiveAgent(complexity QueryComplexity) (*agent.ToolLoopAgent, error) {
-    provider := openai.New(openai.Config{
+    openaiProvider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
 
@@ -128,10 +127,10 @@ func newAdaptiveAgent(complexity QueryComplexity) (*agent.ToolLoopAgent, error) 
     var err error
 
     if complexity == ComplexitySimple {
-        model, err = provider.LanguageModel("gpt-4o-mini")
+        model, err = openaiProvider.LanguageModel("gpt-4o-mini")
         fmt.Println("Using fast model for simple query")
     } else {
-        model, err = provider.LanguageModel("o1-mini")
+        model, err = openaiProvider.LanguageModel("o1-mini")
         fmt.Println("Using powerful model for complex query")
     }
     if err != nil {
@@ -477,16 +476,16 @@ func writeDatabaseTool() types.Tool {
 }
 
 func newConfiguredAgent(config RequestConfig) *agent.ToolLoopAgent {
-    provider := openai.New(openai.Config{
+    openaiProvider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
 
     // Select model based on urgency
     var model provider.LanguageModel
     if config.Urgency == "high" {
-        model, _ = provider.LanguageModel("gpt-4") // More capable model
+        model, _ = openaiProvider.LanguageModel("gpt-4") // More capable model
     } else {
-        model, _ = provider.LanguageModel("gpt-4o-mini") // Faster, cheaper model
+        model, _ = openaiProvider.LanguageModel("gpt-4o-mini") // Faster, cheaper model
     }
 
     // Configure tools based on user role
@@ -728,7 +727,6 @@ Integrate dynamic agent configuration in web applications:
 package main
 
 import (
-    "context"
     "encoding/json"
     "fmt"
     "log"
