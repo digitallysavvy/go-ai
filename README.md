@@ -438,6 +438,15 @@ We provide **50+ production-ready examples** covering every feature. See the [ex
 - **[Agents](https://digitallysavvy.github.io/go-ai/docs/agents/overview)** - Building autonomous agents
 - **[Advanced](https://digitallysavvy.github.io/go-ai/docs/advanced)** - Production patterns
 
+The full docs site is at <https://digitallysavvy.github.io/go-ai/>.
+
+### Docs for AI agents
+
+- [`llms.txt`](https://digitallysavvy.github.io/go-ai/llms.txt) indexes every docs page; [`llms-full.txt`](https://digitallysavvy.github.io/go-ai/llms-full.txt) is the whole documentation in one file.
+- Any docs URL with `.md` appended returns that page as markdown, for example <https://digitallysavvy.github.io/go-ai/docs/foundations/tools.md>.
+- Each docs page has **Copy page**, **Open in ChatGPT** and **Open in Claude** buttons.
+- Coding agents working in this repository should read [AGENTS.md](./AGENTS.md).
+
 ## TypeScript Parity
 
 This SDK maintains 1:1 feature parity with the [Vercel AI SDK](https://ai-sdk.dev) **ai@7.0.118** for backend functionality:

@@ -1,3 +1,8 @@
+---
+title: "Fireworks Kimi K2.5: Extended Reasoning"
+description: "Explains extended reasoning and thinking options for Fireworks AI's Kimi K2.5 model in the Go AI SDK, covering model IDs, token budgets, and history modes."
+---
+
 # Fireworks Kimi K2.5: Extended Reasoning
 
 Fireworks AI's Kimi K2.5 model supports extended reasoning and thinking capabilities, allowing the model to spend additional compute on complex problems before generating a response.

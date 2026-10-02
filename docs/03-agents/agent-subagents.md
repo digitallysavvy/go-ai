@@ -1,3 +1,8 @@
+---
+title: "Agent Subagents"
+description: "Covers hierarchical agent systems in the Go AI SDK where a main agent delegates to subagents, including the subagent registry and delegation tracking."
+---
+
 # Agent Subagents
 
 Subagents enable hierarchical agent systems where a main agent can delegate tasks to specialized subagents. This allows for complex workflows with division of labor and specialized expertise.

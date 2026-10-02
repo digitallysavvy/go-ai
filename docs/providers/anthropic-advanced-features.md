@@ -1,3 +1,8 @@
+---
+title: "Anthropic Advanced Features"
+description: "Covers advanced Claude model features in the Go-AI SDK, including Fast Mode, adaptive thinking, combining features, and AWS Bedrock support."
+---
+
 # Anthropic Advanced Features
 
 This guide covers advanced features available for Anthropic Claude models in the Go-AI SDK.
