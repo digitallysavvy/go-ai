@@ -52,9 +52,11 @@ transport := mcp.NewHTTPTransport(mcp.HTTPTransportConfig{
     URL:       "https://your-server.com/mcp",
     TimeoutMS: 30000,
 
-    // Optional: Add custom headers
-    Headers: map[string]string{
-        "Authorization": "Bearer my-api-key",
+    // Optional: Add custom headers (set on the base transport config)
+    Config: mcp.TransportConfig{
+        Headers: map[string]string{
+            "Authorization": "Bearer my-api-key",
+        },
     },
 })
 
@@ -196,6 +198,8 @@ With schema discovery, all tools offered by the server are automatically listed 
 ```go
 import (
     "context"
+    "os"
+
     "github.com/digitallysavvy/go-ai/pkg/ai"
     "github.com/digitallysavvy/go-ai/pkg/mcp"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
@@ -226,7 +230,8 @@ if err != nil {
 }
 
 // Use tools with AI model
-model, _ := openai.New().LanguageModel("gpt-4")
+openaiProvider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+model, _ := openaiProvider.LanguageModel("gpt-4")
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "What's the weather in Brooklyn, NY?",
@@ -273,16 +278,17 @@ weatherTool := types.Tool{
     },
     Execute: func(ctx context.Context, args map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
         // Call MCP tool manually
-        result, err := client.CallTool(ctx, &mcp.CallToolRequest{
-            Name: "get-weather",
-            Arguments: args,
-        })
+        result, err := client.CallTool(ctx, "get-weather", args)
         if err != nil {
             return nil, err
         }
 
         // Convert result
-        return mcp.ConvertMCPContentToAISDK(result.Content), nil
+        content, err := mcp.ConvertMCPContentToAISDK(result.Content)
+        if err != nil {
+            return nil, err
+        }
+        return content, nil
     },
 }
 
@@ -370,9 +376,7 @@ for _, resource := range resources {
 Read the contents of a specific resource by its URI:
 
 ```go
-resourceData, err := client.ReadResource(ctx, &mcp.ReadResourceRequest{
-    URI: "file:///example/document.txt",
-})
+resourceData, err := client.ReadResource(ctx, "file:///example/document.txt")
 if err != nil {
     log.Fatal(err)
 }
@@ -395,7 +399,7 @@ if err != nil {
     log.Fatal(err)
 }
 
-for _, template := range templates {
+for _, template := range templates.ResourceTemplates {
     fmt.Printf("Template: %s\n", template.Name)
     fmt.Printf("  URI Template: %s\n", template.URITemplate)
     fmt.Printf("  Description: %s\n", template.Description)
@@ -450,7 +454,7 @@ for _, prompt := range prompts {
     if len(prompt.Arguments) > 0 {
         fmt.Println("  Arguments:")
         for _, arg := range prompt.Arguments {
-            fmt.Printf("    - %s (%s): %s\n",
+            fmt.Printf("    - %s (required: %v): %s\n",
                 arg.Name, arg.Required, arg.Description)
         }
     }
@@ -462,12 +466,9 @@ for _, prompt := range prompts {
 Retrieve prompt messages, optionally passing arguments:
 
 ```go
-prompt, err := client.GetPrompt(ctx, &mcp.GetPromptRequest{
-    Name: "code_review",
-    Arguments: map[string]string{
-        "code": "func add(a, b int) int { return a + b }",
-        "language": "go",
-    },
+prompt, err := client.GetPrompt(ctx, "code_review", map[string]interface{}{
+    "code":     "func add(a, b int) int { return a + b }",
+    "language": "go",
 })
 if err != nil {
     log.Fatal(err)
@@ -477,7 +478,7 @@ if err != nil {
 messages := make([]types.Message, len(prompt.Messages))
 for i, msg := range prompt.Messages {
     messages[i] = types.Message{
-        Role:    msg.Role,
+        Role:    types.MessageRole(msg.Role),
         Content: []types.ContentPart{
             types.TextContent{Text: msg.Content.Text},
         },
@@ -518,8 +519,10 @@ func main() {
     transport := mcp.NewHTTPTransport(mcp.HTTPTransportConfig{
         URL:       os.Getenv("MCP_SERVER_URL"),
         TimeoutMS: 30000,
-        Headers: map[string]string{
-            "Authorization": "Bearer " + os.Getenv("MCP_API_KEY"),
+        Config: mcp.TransportConfig{
+            Headers: map[string]string{
+                "Authorization": "Bearer " + os.Getenv("MCP_API_KEY"),
+            },
         },
     })
 
@@ -572,13 +575,14 @@ func main() {
         log.Fatal(err)
     }
 
+    maxSteps := 5 // Allow multiple tool calls
     result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
         Model: model,
         Prompt: "Use the available tools to get the current weather " +
                 "in Brooklyn, New York and create a chart showing " +
                 "temperature trends",
-        Tools: tools,
-        MaxSteps: 5, // Allow multiple tool calls
+        Tools:    tools,
+        MaxSteps: &maxSteps,
     })
 
     if err != nil {
@@ -595,7 +599,7 @@ func main() {
         for i, step := range result.Steps {
             fmt.Printf("  Step %d:\n", i+1)
             for _, call := range step.ToolCalls {
-                fmt.Printf("    - %s(%v)\n", call.Name, call.Arguments)
+                fmt.Printf("    - %s(%v)\n", call.ToolName, call.Arguments)
             }
         }
     }
@@ -612,12 +616,17 @@ func main() {
 Handle common MCP errors gracefully:
 
 ```go
-import "github.com/digitallysavvy/go-ai/pkg/mcp"
+import (
+    "errors"
+
+    "github.com/digitallysavvy/go-ai/pkg/mcp"
+)
 
 // Connect with error handling
 err := client.Connect(ctx)
 if err != nil {
-    if mcp.IsConnectionError(err) {
+    var transportErr *mcp.TransportError
+    if errors.As(err, &transportErr) {
         log.Printf("Failed to connect to MCP server: %v", err)
         // Retry or fallback logic
     } else {
@@ -626,23 +635,24 @@ if err != nil {
 }
 
 // Tool execution with error handling
-result, err := client.CallTool(ctx, &mcp.CallToolRequest{
-    Name: "get-weather",
-    Arguments: map[string]interface{}{
-        "location": "New York",
-    },
+result, err := client.CallTool(ctx, "get-weather", map[string]interface{}{
+    "location": "New York",
 })
 
 if err != nil {
-    if mcp.IsToolExecutionError(err) {
-        log.Printf("Tool execution failed: %v", err)
-        // Handle tool failure
-    } else if mcp.IsTimeoutError(err) {
+    var clientErr *mcp.MCPClientError
+    var timeoutErr *mcp.TimeoutError
+    if errors.As(err, &timeoutErr) {
         log.Printf("Tool execution timed out: %v", err)
         // Retry with longer timeout
+    } else if errors.As(err, &clientErr) {
+        log.Printf("Tool execution failed: %v", err)
+        // Handle tool failure
     } else {
         log.Fatal(err)
     }
+} else {
+    fmt.Printf("Tool result: %+v\n", result.Content)
 }
 ```
 
@@ -760,8 +770,10 @@ If you cannot connect to an MCP server:
 ```go
 // Enable debug logging
 transport := mcp.NewHTTPTransport(mcp.HTTPTransportConfig{
-    URL:       "https://mcp.example.com",
-    DebugMode: true, // Enable verbose logging
+    URL: "https://mcp.example.com",
+    Config: mcp.TransportConfig{
+        EnableLogging: true, // Enable verbose logging
+    },
 })
 
 // Check network connectivity
@@ -787,12 +799,11 @@ for _, tool := range tools {
 }
 
 // Test tool manually
-result, err := client.CallTool(ctx, &mcp.CallToolRequest{
-    Name: "problem-tool",
-    Arguments: map[string]interface{}{},
-})
+result, err := client.CallTool(ctx, "problem-tool", map[string]interface{}{})
 if err != nil {
     fmt.Printf("Tool error: %v\n", err)
+} else {
+    fmt.Printf("Tool result: %+v\n", result.Content)
 }
 ```
 
@@ -805,10 +816,10 @@ If you're seeing unexpectedly high token usage:
 // but if you see 200K+ token usage, check:
 
 // 1. Verify image conversion is working
-result, err := client.CallTool(ctx, &mcp.CallToolRequest{
-    Name: "create-chart",
-    Arguments: args,
-})
+result, err := client.CallTool(ctx, "create-chart", args)
+if err != nil {
+    log.Fatal(err)
+}
 
 // 2. Inspect the result content
 for _, content := range result.Content {
