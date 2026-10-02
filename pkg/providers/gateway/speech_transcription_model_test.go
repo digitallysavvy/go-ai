@@ -27,6 +27,7 @@ func TestGatewaySpeechModelDoGenerateWireFormat(t *testing.T) {
 			"warnings": []map[string]interface{}{
 				{"type": "other", "message": "w"},
 			},
+			"usage":            map[string]interface{}{"characters": 11},
 			"providerMetadata": map[string]interface{}{"gateway": map[string]interface{}{"id": "g1"}},
 		})
 	}))
@@ -55,6 +56,11 @@ func TestGatewaySpeechModelDoGenerateWireFormat(t *testing.T) {
 	if string(result.Audio) != "audio" || len(result.Warnings) != 1 {
 		t.Fatalf("result mismatch: %#v", result)
 	}
+	// Ported from TS gateway-speech-model.test.ts "should pass through usage"
+	// (TS 8c659885c5 / #21427).
+	if want := float64(11); result.Usage["characters"] != want {
+		t.Fatalf("result.Usage[characters] = %v, want %v", result.Usage["characters"], want)
+	}
 }
 
 func TestGatewayTranscriptionModelDoTranscribeWireFormat(t *testing.T) {
@@ -78,6 +84,7 @@ func TestGatewayTranscriptionModelDoTranscribeWireFormat(t *testing.T) {
 			},
 			"language":          "en",
 			"durationInSeconds": 1.5,
+			"usage":             map[string]interface{}{"inputTokens": 11},
 		})
 	}))
 	defer closeServer()
@@ -105,5 +112,10 @@ func TestGatewayTranscriptionModelDoTranscribeWireFormat(t *testing.T) {
 	}
 	if result.Warnings == nil || len(result.Warnings) != 0 {
 		t.Fatalf("warnings should be an explicit empty slice to match TS, got %#v", result.Warnings)
+	}
+	// Ported from TS gateway-transcription-model.test.ts "should pass through
+	// usage" (TS 8c659885c5 / #21427).
+	if want := float64(11); result.ProviderUsage["inputTokens"] != want {
+		t.Fatalf("result.ProviderUsage[inputTokens] = %v, want %v", result.ProviderUsage["inputTokens"], want)
 	}
 }

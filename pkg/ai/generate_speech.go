@@ -196,6 +196,7 @@ func GenerateSpeech(ctx context.Context, opts GenerateSpeechOptions) (*GenerateS
 		AudioMediaType:   mediaType,
 		AudioFormat:      format,
 		ProviderMetadata: providerMetadata,
+		ProviderUsage:    raw.Usage,
 	})
 	return &GenerateSpeechResult{
 		Audio: GeneratedAudioFile{

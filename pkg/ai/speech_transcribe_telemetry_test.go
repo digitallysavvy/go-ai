@@ -30,7 +30,10 @@ func TestGenerateSpeech_Telemetry_OpenTelemetry(t *testing.T) {
 	model := &testutil.MockSpeechModel{
 		ModelName: "tts-1",
 		DoGenerateFunc: func(_ context.Context, _ *provider.SpeechGenerateOptions) (*types.SpeechResult, error) {
-			return &types.SpeechResult{Audio: []byte("RIFF....WAVEfmt ")}, nil
+			return &types.SpeechResult{
+				Audio: []byte("RIFF....WAVEfmt "),
+				Usage: map[string]interface{}{"characters": 11},
+			}, nil
 		},
 	}
 
@@ -41,7 +44,7 @@ func TestGenerateSpeech_Telemetry_OpenTelemetry(t *testing.T) {
 			IsEnabled:     telemetry.Bool(true),
 			RecordInputs:  true,
 			RecordOutputs: true,
-			Integrations:  []telemetry.TelemetryIntegration{telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{Tracer: tracer})},
+			Integrations:  []telemetry.TelemetryIntegration{telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{Tracer: tracer, Usage: true})},
 		},
 	})
 	if err != nil {
@@ -80,6 +83,15 @@ func TestGenerateSpeech_Telemetry_OpenTelemetry(t *testing.T) {
 	}
 	if _, ok := gotAttrs["ai.response.audio.format"]; !ok {
 		t.Error("expected ai.response.audio.format to be set")
+	}
+	// Ported from TS generate-speech.test.ts usage propagation (TS
+	// 8c659885c5 / #21427): provider-reported usage flattens into
+	// gen_ai.usage.* attributes and the raw ai.response.usage JSON.
+	if got, ok := gotAttrs["gen_ai.usage.characters"]; !ok || got != 11.0 {
+		t.Errorf("gen_ai.usage.characters = %v (ok=%v), want 11", got, ok)
+	}
+	if got, ok := gotAttrs["ai.response.usage"]; !ok || got != `{"characters":11}` {
+		t.Errorf(`ai.response.usage = %v (ok=%v), want {"characters":11}`, got, ok)
 	}
 }
 
@@ -133,8 +145,9 @@ func TestTranscribe_Telemetry_LegacyOpenTelemetry(t *testing.T) {
 		ModelName: "whisper-1",
 		DoTranscribeFunc: func(_ context.Context, _ *provider.TranscriptionOptions) (*types.TranscriptionResult, error) {
 			return &types.TranscriptionResult{
-				Text:  "hello world",
-				Usage: types.TranscriptionUsage{DurationSeconds: 1.5},
+				Text:          "hello world",
+				Usage:         types.TranscriptionUsage{DurationSeconds: 1.5},
+				ProviderUsage: map[string]interface{}{"seconds": 1.5},
 			}, nil
 		},
 	}
@@ -170,8 +183,11 @@ func TestTranscribe_Telemetry_LegacyOpenTelemetry(t *testing.T) {
 	if got, ok := gotAttrs["ai.response.text"]; !ok || got != "hello world" {
 		t.Errorf("ai.response.text = %v (ok=%v), want %q", got, ok, "hello world")
 	}
-	if got, ok := gotAttrs["ai.usage.duration_seconds"]; !ok || got != 1.5 {
-		t.Errorf("ai.usage.duration_seconds = %v (ok=%v), want 1.5", got, ok)
+	if got, ok := gotAttrs["ai.usage.seconds"]; !ok || got != 1.5 {
+		t.Errorf("ai.usage.seconds = %v (ok=%v), want 1.5", got, ok)
+	}
+	if got, ok := gotAttrs["ai.response.usage"]; !ok || got != `{"seconds":1.5}` {
+		t.Errorf(`ai.response.usage = %v (ok=%v), want {"seconds":1.5}`, got, ok)
 	}
 }
 

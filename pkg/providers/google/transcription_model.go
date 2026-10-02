@@ -259,10 +259,16 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		}
 	}
 
+	var providerUsage map[string]interface{}
+	if len(response.Usage) > 0 {
+		providerUsage = response.Usage
+	}
+
 	return &types.TranscriptionResult{
 		Text:             text.String(),
 		Segments:         segments,
 		ProviderMetadata: providerMetadata,
+		ProviderUsage:    providerUsage,
 		Response: &types.ResponseMetadata{
 			ModelID: m.modelID,
 			Headers: providerutils.ExtractHeaders(resp.Headers),

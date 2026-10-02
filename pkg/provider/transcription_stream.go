@@ -83,6 +83,10 @@ type TranscriptionStreamPart struct {
 	FinishText string
 	Segments   []TranscriptSegment
 	Language   string
+	// Usage is provider-reported usage information in the provider's native
+	// JSON-compatible shape (TS TranscriptionModelV4StreamPart "finish"
+	// part's usage field, added in TS 8c659885c5 / #21427).
+	Usage map[string]interface{}
 
 	// raw
 	RawValue interface{}

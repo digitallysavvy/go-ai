@@ -380,6 +380,7 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 			FinishText:       fullText,
 			Segments:         []provider.TranscriptSegment{},
 			Language:         language,
+			Usage:            usageMetadata,
 			ProviderMetadata: providerMetadata,
 		})
 		cfg.audio.Cancel(nil)

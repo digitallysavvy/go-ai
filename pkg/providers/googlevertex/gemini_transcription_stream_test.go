@@ -372,6 +372,11 @@ func TestGeminiTranscriptionModel_DoStream_StreamsTranscriptEndToEnd(t *testing.
 	if string(gotMeta) != string(wantMetaJSON) {
 		t.Fatalf("providerMetadata = %s, want %s", gotMeta, wantMetaJSON)
 	}
+	// Ported from TS google-vertex-gemini-transcription-model.test.ts
+	// doStream "should surface usage" (TS 8c659885c5 / #21427).
+	if got := finish.Usage["promptTokenCount"]; got != float64(7) {
+		t.Fatalf("finish.Usage[promptTokenCount] = %v, want 7", got)
+	}
 }
 
 // TestGeminiTranscriptionModel_DoStream_PassesSmartModeIntoLiveSetup mirrors
