@@ -140,6 +140,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
             },
         },
     },
+    StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
 })
 ```
 

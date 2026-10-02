@@ -172,6 +172,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "Use a tool, then summarize.",
     Tools:  tools,
+    StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
     OnStepEnd: func(ctx context.Context, step types.StepResult, userContext interface{}) {
         fmt.Println(step.StepNumber, step.FinishReason, step.Usage)
     },

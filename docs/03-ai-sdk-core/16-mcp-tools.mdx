@@ -728,6 +728,7 @@ tools, err := converter.ConvertToGoAITools(ctx)
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Tools:  tools,
+    StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
     Prompt: "Use whatever tools you need",
 })
 ```
@@ -739,6 +740,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model: model,
     Tools: tools,
+    StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
     Prompt: prompt,
 })
 
