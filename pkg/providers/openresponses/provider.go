@@ -90,9 +90,9 @@ type Config struct {
 	StructuredOutputs *bool
 
 	// UserAgentSuffix overrides the User-Agent suffix appended to requests.
-	// Defaults to "ai-sdk/<Name>/<version>", mirroring the TS SDK's
+	// Defaults to "ai-sdk-<Name>/<version>", mirroring the TS SDK's
 	// `userAgentSuffix` provider setting (default
-	// `ai-sdk/open-responses/${VERSION}`). A wrapper provider built on this
+	// `ai-sdk-open-responses/${VERSION}`). A wrapper provider built on this
 	// package (e.g. QuiverAI) sets this to identify itself instead of the
 	// generic "open-responses" name.
 	UserAgentSuffix string

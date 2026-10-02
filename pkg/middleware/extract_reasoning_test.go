@@ -429,6 +429,76 @@ func TestExtractReasoningMiddleware_Stream_DelayedTextStart(t *testing.T) {
 	}
 }
 
+// TestExtractReasoningMiddleware_Stream_PreservesPartialTagAtTextEnd ports
+// extract-reasoning-middleware.test.ts "should preserve a partial tag in
+// $location when the text part ends" (TS #21726): a text block that ends
+// while the buffer holds an unresolved partial opening or closing tag must
+// still flush that buffer (as text or reasoning) when text-end arrives,
+// instead of silently dropping it.
+func TestExtractReasoningMiddleware_Stream_PreservesPartialTagAtTextEnd(t *testing.T) {
+	tests := []struct {
+		name              string
+		delta             string
+		expectedText      string
+		expectedReasoning string
+	}{
+		{
+			name:         "partial opening tag in text",
+			delta:        "Use the <th",
+			expectedText: "Use the <th",
+		},
+		{
+			name:              "partial closing tag in reasoning",
+			delta:             "<think>a </th",
+			expectedReasoning: "a </th",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			chunks := []*provider.StreamChunk{
+				{Type: provider.ChunkTypeTextStart, ID: "1"},
+				{Type: provider.ChunkTypeText, ID: "1", Text: tt.delta},
+				{Type: provider.ChunkTypeTextEnd, ID: "1"},
+			}
+			mockStream := &mockTextStream{chunks: chunks}
+			mockModel := &mockLanguageModel{stream: mockStream}
+
+			middleware := ExtractReasoningMiddleware(&ExtractReasoningOptions{TagName: "think", Separator: "\n"})
+			wrapped := WrapLanguageModel(mockModel, []*LanguageModelMiddleware{middleware}, nil, nil)
+
+			stream, err := wrapped.DoStream(context.Background(), &provider.GenerateOptions{})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			var text, reasoning string
+			for {
+				chunk, err := stream.Next()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					t.Fatalf("unexpected error during streaming: %v", err)
+				}
+				switch chunk.Type {
+				case provider.ChunkTypeText:
+					text += chunk.Text
+				case provider.ChunkTypeReasoning:
+					reasoning += chunk.Reasoning
+				}
+			}
+
+			if text != tt.expectedText {
+				t.Errorf("text = %q, want %q", text, tt.expectedText)
+			}
+			if reasoning != tt.expectedReasoning {
+				t.Errorf("reasoning = %q, want %q", reasoning, tt.expectedReasoning)
+			}
+		})
+	}
+}
+
 func TestExtractReasoningMiddleware_NilOptions(t *testing.T) {
 	mockModel := &mockLanguageModel{
 		generateResult: &types.GenerateResult{

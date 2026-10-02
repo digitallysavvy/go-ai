@@ -60,10 +60,21 @@ func ConvertToModelMessages(ctx context.Context, messages []UIMessage, opts ...C
 
 	warnIfUIMessagesHaveDeprecatedRawInput(messages)
 
-	if options.IgnoreIncompleteToolCalls {
+	// A later user message supersedes unresolved approval requests. Keeping
+	// those requests would leave unmatched tool calls at the user boundary.
+	lastUserMessageIndex := -1
+	for i, message := range messages {
+		if message.Role == UIMessageRoleUser {
+			lastUserMessageIndex = i
+		}
+	}
+
+	if options.IgnoreIncompleteToolCalls || lastUserMessageIndex > 0 {
 		filtered := make([]UIMessage, len(messages))
 		for i, message := range messages {
-			message.Parts = filterCompleteToolParts(message.Parts)
+			message.Parts = filterSupersededAndIncompleteToolParts(
+				message.Parts, i, lastUserMessageIndex, options.IgnoreIncompleteToolCalls,
+			)
 			filtered[i] = message
 		}
 		messages = filtered
@@ -170,13 +181,27 @@ func ConvertToModelMessages(ctx context.Context, messages []UIMessage, opts ...C
 	return modelMessages, nil
 }
 
-// filterCompleteToolParts keeps non-tool parts and tool parts in a completed
-// state. Preliminary outputs are treated as incomplete.
-func filterCompleteToolParts(parts []UIMessagePart) []UIMessagePart {
+// filterSupersededAndIncompleteToolParts keeps non-tool parts. A tool part
+// whose approval is still pending ("approval-requested") is dropped once a
+// later user message (messageIndex < lastUserMessageIndex) supersedes it,
+// regardless of ignoreIncomplete, since keeping it would leave an unmatched
+// tool call at that user-message boundary. When ignoreIncomplete is true,
+// tool parts not in a completed state (approval-responded, final
+// output-available, output-error, output-denied) are also dropped;
+// preliminary outputs are treated as incomplete. Mirrors TS
+// convertToModelMessages' combined part filter.
+func filterSupersededAndIncompleteToolParts(parts []UIMessagePart, messageIndex, lastUserMessageIndex int, ignoreIncomplete bool) []UIMessagePart {
 	out := make([]UIMessagePart, 0, len(parts))
 	for _, part := range parts {
 		tool, ok := AsToolUIPart(part)
 		if !ok {
+			out = append(out, part)
+			continue
+		}
+		if tool.State == ToolStateApprovalRequested && messageIndex < lastUserMessageIndex {
+			continue
+		}
+		if !ignoreIncomplete {
 			out = append(out, part)
 			continue
 		}

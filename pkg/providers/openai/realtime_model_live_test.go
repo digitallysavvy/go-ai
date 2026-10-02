@@ -142,14 +142,14 @@ func TestOpenAIRealtimeModelLive_GetServerWebSocketConfig(t *testing.T) {
 	// TS openai-realtime-model-live.ts's getServerWebSocketConfig() reuses
 	// config.headers() verbatim (the same tagged getHeaders() used for
 	// regular HTTP requests), so the WS handshake headers carry the
-	// `ai-sdk/openai/VERSION` tag too. version.WithUserAgentSuffix
+	// `ai-sdk-openai/VERSION` tag too. version.WithUserAgentSuffix
 	// normalizes header keys to lowercase, mirroring TS's Headers-backed
 	// withUserAgentSuffix.
 	if cfg.Headers["authorization"] != "Bearer test-key" {
 		t.Fatalf("headers = %v", cfg.Headers)
 	}
-	if !strings.HasPrefix(cfg.Headers["user-agent"], "ai-sdk/openai/") {
-		t.Fatalf("headers user-agent = %q, want ai-sdk/openai/... prefix", cfg.Headers["user-agent"])
+	if !strings.HasPrefix(cfg.Headers["user-agent"], "ai-sdk-openai/") {
+		t.Fatalf("headers user-agent = %q, want ai-sdk-openai/... prefix", cfg.Headers["user-agent"])
 	}
 }
 

@@ -281,14 +281,14 @@ func TestTranscriptionModel_DoStream_RequiresAPIKey(t *testing.T) {
 // TestTranscriptionModel_BaseHeadersCarryUserAgentTag mirrors TS
 // google-transcription-model.ts's doStream, which reuses `this.config.headers()`
 // -- the same tagged getHeaders() closure used for REST calls -- for the
-// WebSocket handshake, so it carries the `ai-sdk/google/VERSION` tag too.
+// WebSocket handshake, so it carries the `ai-sdk-google/VERSION` tag too.
 func TestTranscriptionModel_BaseHeadersCarryUserAgentTag(t *testing.T) {
 	p := New(Config{APIKey: "provider-level-key"})
 	m := NewTranscriptionModel(p, ModelGemini35TranscribeLive)
 
 	ua := m.baseTranscriptionHeaders()["user-agent"]
-	if !strings.HasPrefix(ua, "ai-sdk/google/") {
-		t.Fatalf("user-agent = %q, want ai-sdk/google/... prefix", ua)
+	if !strings.HasPrefix(ua, "ai-sdk-google/") {
+		t.Fatalf("user-agent = %q, want ai-sdk-google/... prefix", ua)
 	}
 }
 

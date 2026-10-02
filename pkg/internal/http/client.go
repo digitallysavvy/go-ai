@@ -19,12 +19,13 @@ import (
 // applyUserAgentSuffix appends the Go runtime tag to whatever "User-Agent"
 // value is already present on req (set by the client's default headers
 // and/or request-specific headers — normally each provider's own
-// `ai-sdk/<provider>/VERSION` tag, added via version.ProviderUserAgent at
+// `ai-sdk-<provider>/VERSION` tag, added via version.ProviderUserAgent at
 // provider construction). The final shape matches the owner's 2026-09-30
-// decision: `ai-sdk/<provider>/<version> runtime/go/<goVersion>`.
+// decision (updated 2026-10-01 for TS #21344's standards-compliant format):
+// `ai-sdk-<provider>/<version> go/<goVersion>`.
 //
 // TS's provider-utils postToApi/getFromApi additionally chain in their own
-// package's `ai-sdk/provider-utils/VERSION` tag here (TS has no single Go
+// package's `ai-sdk-provider-utils/VERSION` tag here (TS has no single Go
 // module equivalent of that internal package, and the owner's decision
 // specifies the two-segment shape above), so this only adds the runtime
 // tag, not a third "shared layer" segment. http.Header canonicalizes the

@@ -129,8 +129,8 @@ func TestBuildRequestURL_NonStreaming(t *testing.T) {
 
 // TestUserAgentTaggedAmazonBedrockNotAnthropic covers the owner's 2026-09-30
 // User-Agent decision: TS amazon-bedrock-anthropic-provider.ts tags requests
-// with its own package's "ai-sdk/amazon-bedrock/VERSION" tag (shared with the
-// Converse-API amazon-bedrock provider), never "ai-sdk/anthropic" -- even
+// with its own package's "ai-sdk-amazon-bedrock/VERSION" tag (shared with the
+// Converse-API amazon-bedrock provider), never "ai-sdk-anthropic" -- even
 // though this Go package reuses pkg/providers/anthropic as its transport.
 func TestUserAgentTaggedAmazonBedrockNotAnthropic(t *testing.T) {
 	var gotUserAgent string
@@ -149,10 +149,10 @@ func TestUserAgentTaggedAmazonBedrockNotAnthropic(t *testing.T) {
 	if _, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hello"}}); err != nil {
 		t.Fatalf("DoGenerate: %v", err)
 	}
-	if !strings.HasPrefix(gotUserAgent, "ai-sdk/amazon-bedrock/") {
-		t.Fatalf("User-Agent = %q, want ai-sdk/amazon-bedrock/... prefix", gotUserAgent)
+	if !strings.HasPrefix(gotUserAgent, "ai-sdk-amazon-bedrock/") {
+		t.Fatalf("User-Agent = %q, want ai-sdk-amazon-bedrock/... prefix", gotUserAgent)
 	}
-	if strings.Contains(gotUserAgent, "ai-sdk/anthropic/") {
+	if strings.Contains(gotUserAgent, "ai-sdk-anthropic/") {
 		t.Fatalf("User-Agent = %q, must not carry the ai-sdk/anthropic tag", gotUserAgent)
 	}
 }

@@ -74,6 +74,12 @@ func ResolveAmazonBedrockBaseURL(opts ResolveBaseURLOptions) (string, error) {
 			Message: "Invalid AWS region. Expected a single DNS label (letters, digits, and hyphens). Use `BaseURL` for custom endpoints.",
 		}
 	}
+	if !providerutils.IsValidHostnamePart(opts.Region) {
+		return "", &providererrors.InvalidArgumentError{
+			Field:   "region",
+			Message: "Invalid AWS region. Expected a single DNS label (letters, digits, and hyphens). Use baseURL for custom endpoints.",
+		}
+	}
 
 	dnsSuffix := "amazonaws.com"
 	for _, partition := range awsPartitionDNSSuffixes {

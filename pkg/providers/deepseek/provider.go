@@ -73,9 +73,9 @@ func New(cfg Config) *Provider {
 	mergedHeaders := http.MergeHeaders(headers, cfg.Headers)
 	// Azure-hosted DeepSeek (pkg/providers/azure.DeepSeekModel) reuses this
 	// constructor but already tagged mergedHeaders with its own
-	// `ai-sdk/azure/VERSION` (see azure's staticAuthHeaders); only add the
+	// `ai-sdk-azure/VERSION` (see azure's staticAuthHeaders); only add the
 	// standalone-DeepSeek tag when no wrapping caller has already tagged it,
-	// matching TS deepseek-provider.ts's own `ai-sdk/deepseek/VERSION`.
+	// matching TS deepseek-provider.ts's own `ai-sdk-deepseek/VERSION`.
 	if !providerutils.HasUserAgent(mergedHeaders) {
 		mergedHeaders = version.WithUserAgentSuffix(mergedHeaders, version.ProviderUserAgent("deepseek"))
 	}

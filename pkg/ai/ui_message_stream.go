@@ -1181,17 +1181,14 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 		if existing := s.findCurrentStepToolPart(toolCallID, nil); existing != nil {
 			dynamic = existing["type"] == "dynamic-tool"
 		}
-		update := UIMessageChunk{"state": "output-error", "errorText": chunk["errorText"]}
-		if dynamic {
-			update["input"] = chunk["input"]
-		} else {
-			update["input"] = uiOmitField
-			update["rawInput"] = chunk["input"]
-		}
+		// Both dynamic and static tool parts store the failed input in
+		// "input" directly, without the deprecated "rawInput" compatibility
+		// field: an SDK-generated output-error part must not retain a
+		// deprecated field or warn about one. Persisted streams that already
+		// carry a legacy rawInput continue to go through the separate
+		// validate-ui-messages compatibility path.
+		update := UIMessageChunk{"state": "output-error", "errorText": chunk["errorText"], "input": chunk["input"]}
 		s.updateToolPart(toolCallID, toolName, dynamic, update, chunk)
-		if !dynamic {
-			warnIfUIMessageMapHasDeprecatedRawInput(s.message)
-		}
 	case "tool-output-available":
 		toolCallID := stringValue(chunk["toolCallId"])
 		part := s.findToolPart(toolCallID)
@@ -1512,31 +1509,6 @@ func uiParts(message UIMessageChunk) []interface{} {
 		return parts
 	}
 	return nil
-}
-
-// warnIfUIMessageMapHasDeprecatedRawInput logs the rawInput deprecation
-// warning when message (a raw UIMessageChunk, as used by the streaming
-// reducer) has an output-error tool part carrying a non-nil "rawInput" key.
-// Mirrors TS warnIfUIMessageHasDeprecatedRawInput([state.message]) at
-// process-ui-message-stream.ts's tool-input-error handler.
-func warnIfUIMessageMapHasDeprecatedRawInput(message UIMessageChunk) {
-	for _, raw := range uiParts(message) {
-		part, ok := asUIMap(raw)
-		if !ok {
-			continue
-		}
-		typ, _ := part["type"].(string)
-		if typ != "dynamic-tool" && !strings.HasPrefix(typ, "tool-") {
-			continue
-		}
-		if state, _ := part["state"].(string); state != "output-error" {
-			continue
-		}
-		if rawInput, ok := part["rawInput"]; ok && rawInput != nil {
-			LogWarnings(LogWarningsOptions{Warnings: []types.Warning{rawInputDeprecationWarning}})
-			return
-		}
-	}
 }
 
 func copyIfPresent(dst UIMessageChunk, src UIMessageChunk, from, to string) {

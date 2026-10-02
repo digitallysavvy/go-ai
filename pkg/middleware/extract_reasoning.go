@@ -224,30 +224,34 @@ func (s *extractReasoningStream) transform(chunk provider.StreamChunk) {
 		return
 	}
 
-	if chunk.Type == provider.ChunkTypeTextEnd {
-		if start, ok := s.delayedTextStarts[chunk.ID]; ok {
-			s.enqueue(*start)
-			delete(s.delayedTextStarts, chunk.ID)
-		}
-	}
-
-	if chunk.Type != provider.ChunkTypeText {
+	if chunk.Type != provider.ChunkTypeText && chunk.Type != provider.ChunkTypeTextEnd {
 		s.enqueue(chunk)
 		return
 	}
 
-	ext, ok := s.extractions[chunk.ID]
-	if !ok {
-		ext = &reasoningExtraction{
-			isFirstReasoning: true,
-			isFirstText:      true,
-			isReasoning:      s.startWithReasoning,
-			textID:           chunk.ID,
+	// Only a text-delta starts a new extraction; a text-end with no prior
+	// delta for this ID (activeExtraction == nil in TS) falls through to the
+	// "no extraction" branch below instead of creating one.
+	if chunk.Type == provider.ChunkTypeText {
+		if _, ok := s.extractions[chunk.ID]; !ok {
+			s.extractions[chunk.ID] = &reasoningExtraction{
+				isFirstReasoning: true,
+				isFirstText:      true,
+				isReasoning:      s.startWithReasoning,
+				textID:           chunk.ID,
+			}
 		}
-		s.extractions[chunk.ID] = ext
 	}
 
-	ext.buffer += chunk.Text
+	ext, ok := s.extractions[chunk.ID]
+	if !ok {
+		if start, dOk := s.delayedTextStarts[chunk.ID]; dOk {
+			s.enqueue(*start)
+			delete(s.delayedTextStarts, chunk.ID)
+		}
+		s.enqueue(chunk)
+		return
+	}
 
 	getReasoningID := func() string {
 		if ext.reasoningID == "" {
@@ -294,6 +298,23 @@ func (s *extractReasoningStream) transform(chunk provider.StreamChunk) {
 			ext.isFirstText = false
 		}
 	}
+
+	if chunk.Type == provider.ChunkTypeTextEnd {
+		// Flush whatever is left in the buffer instead of silently dropping
+		// it: without this, text (or reasoning) ending with a partial
+		// opening/closing tag that never resolved into a full match was lost
+		// when the block ended.
+		publish(ext.buffer)
+		ext.buffer = ""
+		if start, ok := s.delayedTextStarts[chunk.ID]; ok {
+			s.enqueue(*start)
+			delete(s.delayedTextStarts, chunk.ID)
+		}
+		s.enqueue(chunk)
+		return
+	}
+
+	ext.buffer += chunk.Text
 
 	for {
 		nextTag := s.openingTag

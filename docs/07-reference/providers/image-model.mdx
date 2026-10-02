@@ -30,6 +30,24 @@ type ImageModel interface {
 | ModelID() | - | string | Model identifier |
 | DoGenerate() | ctx, *ImageGenerateOptions | *types.ImageResult, error | Generate images |
 
+## Optional Capability Methods
+
+A model may optionally implement these methods to advertise whether it
+consumes `ImageGenerateOptions.Files` / `.Mask` for image editing. They are
+not part of the `ImageModel` interface itself, so implementing them is
+optional; callers read them through `provider.ImageModelSupportsFileInputs` /
+`provider.ImageModelSupportsMaskInputs`, which return `nil` (unknown) for a
+model that doesn't implement the method:
+
+```go
+SupportsFileInputs() *bool // nil means unknown; only route file-input edits when this is non-nil true
+SupportsMaskInputs() *bool // nil means unknown; advertised separately since some models accept files without masks
+```
+
+`middleware.WrapImageModel` preserves these from the wrapped model and lets
+an `ImageModelMiddleware` override either one via
+`OverrideSupportsFileInputs` / `OverrideSupportsMaskInputs`.
+
 ## ImageGenerateOptions
 
 ```go

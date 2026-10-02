@@ -558,3 +558,208 @@ func TestSmoothStream_PassesThroughBoundaryChunkMetadata(t *testing.T) {
 		t.Errorf("reasoning-start ProviderMetadata = %s, want %s", out[0].ProviderMetadata, meta)
 	}
 }
+
+// deltaText returns the payload text of a text-delta/reasoning-delta chunk
+// (Text for text, Reasoning for reasoning), mirroring TextStreamPart's
+// unified `.text` field in TS.
+func deltaText(c provider.StreamChunk) string {
+	if c.Type == provider.ChunkTypeReasoning {
+		return c.Reasoning
+	}
+	return c.Text
+}
+
+// assertSmoothStreamChunks fails the test unless got and want have the same
+// length, type, id, text/reasoning payload, and ProviderMetadata bytes at
+// every position, in order.
+func assertSmoothStreamChunks(t *testing.T, got []provider.StreamChunk, want []provider.StreamChunk) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("got %d chunks, want %d: got=%+v want=%+v", len(got), len(want), got, want)
+	}
+	for i := range want {
+		g, w := got[i], want[i]
+		if g.Type != w.Type || g.ID != w.ID || deltaText(g) != deltaText(w) || string(g.ProviderMetadata) != string(w.ProviderMetadata) {
+			t.Errorf("chunk %d = %+v, want %+v", i, g, w)
+		}
+	}
+}
+
+// TS smooth-stream.test.ts "providerMetadata preservation > should preserve
+// providerMetadata on every $chunking-chunked $deltaType part" (TS #19561):
+// every chunk split out of a single metadata-bearing delta, including the
+// final one emitted via the trailing flush, must carry that metadata, not
+// just the first (previously dropped from loop-emitted chunks) or last.
+func TestSmoothStream_PreservesMetadataOnEveryChunkedPart(t *testing.T) {
+	t.Parallel()
+
+	meta := []byte(`{"anthropic":{"signature":"sig_abc123"}}`)
+
+	tests := []struct {
+		name         string
+		chunking     string
+		delta        provider.StreamChunk
+		end          provider.StreamChunk
+		expectedText []string
+	}{
+		{
+			name:         "word-chunked reasoning-delta",
+			chunking:     "word",
+			delta:        provider.StreamChunk{Type: provider.ChunkTypeReasoning, ID: "1", Reasoning: "First second final", ProviderMetadata: meta},
+			end:          provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "1"},
+			expectedText: []string{"First ", "second ", "final"},
+		},
+		{
+			name:         "line-chunked text-delta",
+			chunking:     "line",
+			delta:        provider.StreamChunk{Type: provider.ChunkTypeText, ID: "1", Text: "First line\nSecond line\nfinal line", ProviderMetadata: meta},
+			end:          provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: "1"},
+			expectedText: []string{"First line\n", "Second line\n", "final line"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fn, err := SmoothStream(SmoothStreamOptions{Chunking: tt.chunking, internalDelay: func(context.Context, *int) {}})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			out := runSmoothStream(fn, []provider.StreamChunk{tt.delta, tt.end})
+
+			var deltas []provider.StreamChunk
+			for _, c := range out {
+				if c.Type == tt.delta.Type {
+					deltas = append(deltas, c)
+				}
+			}
+			want := make([]provider.StreamChunk, len(tt.expectedText))
+			for i, text := range tt.expectedText {
+				want[i] = provider.StreamChunk{Type: tt.delta.Type, ID: "1", ProviderMetadata: meta}
+				if tt.delta.Type == provider.ChunkTypeReasoning {
+					want[i].Reasoning = text
+				} else {
+					want[i].Text = text
+				}
+			}
+			assertSmoothStreamChunks(t, deltas, want)
+		})
+	}
+}
+
+// TS smooth-stream.test.ts "providerMetadata preservation > should preserve
+// an empty metadata delta after an exact boundary" (TS #19561).
+func TestSmoothStream_PreservesEmptyMetadataDeltaAfterExactBoundary(t *testing.T) {
+	t.Parallel()
+
+	fn, err := SmoothStream(SmoothStreamOptions{internalDelay: func(context.Context, *int) {}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	metaA := []byte(`{"anthropic":{"signature":"sig-a"}}`)
+	out := runSmoothStream(fn, []provider.StreamChunk{
+		reasoningChunk("1", "Done "),
+		{Type: provider.ChunkTypeReasoning, ID: "1", Reasoning: "", ProviderMetadata: metaA},
+		{Type: provider.ChunkTypeReasoningEnd, ID: "1"},
+	})
+
+	assertSmoothStreamChunks(t, out, []provider.StreamChunk{
+		reasoningChunk("1", "Done "),
+		{Type: provider.ChunkTypeReasoning, ID: "1", Reasoning: "", ProviderMetadata: metaA},
+		{Type: provider.ChunkTypeReasoningEnd, ID: "1"},
+	})
+}
+
+// TS smooth-stream.test.ts "providerMetadata preservation > should not
+// carry metadata to a metadata-free delta with the same id" (TS #19561): a
+// pending metadata-bearing buffer must be flushed (carrying its metadata)
+// before a later metadata-free delta for the same id/type is merged in, so
+// the metadata never attaches to text it didn't originate from.
+func TestSmoothStream_DoesNotCarryMetadataToMetadataFreeDeltaSameID(t *testing.T) {
+	t.Parallel()
+
+	fn, err := SmoothStream(SmoothStreamOptions{internalDelay: func(context.Context, *int) {}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	metaA := []byte(`{"anthropic":{"signature":"sig-a"}}`)
+	out := runSmoothStream(fn, []provider.StreamChunk{
+		{Type: provider.ChunkTypeReasoning, ID: "1", Reasoning: "Signed", ProviderMetadata: metaA},
+		{Type: provider.ChunkTypeReasoning, ID: "1", Reasoning: " plain "},
+	})
+
+	assertSmoothStreamChunks(t, out, []provider.StreamChunk{
+		{Type: provider.ChunkTypeReasoning, ID: "1", Reasoning: "Signed", ProviderMetadata: metaA},
+		{Type: provider.ChunkTypeReasoning, ID: "1", Reasoning: " plain "},
+	})
+}
+
+// TS smooth-stream.test.ts "providerMetadata preservation > should keep
+// different metadata values with their source deltas" (TS #19561).
+func TestSmoothStream_KeepsDifferentMetadataValuesWithSourceDeltas(t *testing.T) {
+	t.Parallel()
+
+	fn, err := SmoothStream(SmoothStreamOptions{internalDelay: func(context.Context, *int) {}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	metaA := []byte(`{"anthropic":{"signature":"sig-a"}}`)
+	metaB := []byte(`{"anthropic":{"signature":"sig-b"}}`)
+	out := runSmoothStream(fn, []provider.StreamChunk{
+		{Type: provider.ChunkTypeReasoning, ID: "1", Reasoning: "First", ProviderMetadata: metaA},
+		{Type: provider.ChunkTypeReasoning, ID: "1", Reasoning: " second ", ProviderMetadata: metaB},
+	})
+
+	assertSmoothStreamChunks(t, out, []provider.StreamChunk{
+		{Type: provider.ChunkTypeReasoning, ID: "1", Reasoning: "First", ProviderMetadata: metaA},
+		{Type: provider.ChunkTypeReasoning, ID: "1", Reasoning: " second ", ProviderMetadata: metaB},
+	})
+}
+
+// TS smooth-stream.test.ts "providerMetadata preservation > should not
+// carry word-chunk metadata to a subsequent delta type" (TS #19561).
+func TestSmoothStream_DoesNotCarryWordChunkMetadataToSubsequentDeltaType(t *testing.T) {
+	t.Parallel()
+
+	fn, err := SmoothStream(SmoothStreamOptions{internalDelay: func(context.Context, *int) {}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	meta := []byte(`{"anthropic":{"signature":"sig_abc123"}}`)
+	out := runSmoothStream(fn, []provider.StreamChunk{
+		{Type: provider.ChunkTypeReasoning, ID: "reasoning-1", Reasoning: "Signed ", ProviderMetadata: meta},
+		{Type: provider.ChunkTypeText, ID: "text-1", Text: "Plain "},
+	})
+
+	assertSmoothStreamChunks(t, out, []provider.StreamChunk{
+		{Type: provider.ChunkTypeReasoning, ID: "reasoning-1", Reasoning: "Signed ", ProviderMetadata: meta},
+		{Type: provider.ChunkTypeText, ID: "text-1", Text: "Plain "},
+	})
+}
+
+// TS smooth-stream.test.ts "providerMetadata preservation > should not
+// carry line-chunk metadata to a subsequent delta id" (TS #19561).
+func TestSmoothStream_DoesNotCarryLineChunkMetadataToSubsequentDeltaID(t *testing.T) {
+	t.Parallel()
+
+	fn, err := SmoothStream(SmoothStreamOptions{Chunking: "line", internalDelay: func(context.Context, *int) {}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	meta := []byte(`{"anthropic":{"signature":"sig_abc123"}}`)
+	out := runSmoothStream(fn, []provider.StreamChunk{
+		{Type: provider.ChunkTypeText, ID: "text-1", Text: "Signed line\n", ProviderMetadata: meta},
+		{Type: provider.ChunkTypeText, ID: "text-2", Text: "Plain line\n"},
+	})
+
+	assertSmoothStreamChunks(t, out, []provider.StreamChunk{
+		{Type: provider.ChunkTypeText, ID: "text-1", Text: "Signed line\n", ProviderMetadata: meta},
+		{Type: provider.ChunkTypeText, ID: "text-2", Text: "Plain line\n"},
+	})
+}
