@@ -130,6 +130,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "What's the weather in Paris and London?",
     Tools:  tools,
+    StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
 })
 
 // Processes both calls in parallel

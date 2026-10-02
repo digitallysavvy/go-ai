@@ -202,6 +202,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "What is 2+2?",
     Tools:  []types.Tool{calculatorTool},
+    StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
     OnStart: func(ctx context.Context, e ai.OnStartEvent) {
         log.Printf("[start] model=%s/%s prompt=%q", e.ModelProvider, e.ModelID, e.Prompt)
     },

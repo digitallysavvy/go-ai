@@ -32,6 +32,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 | StopSequences | []string | No | Sequences that stop generation |
 | Seed | *int | No | Random seed for reproducibility |
 | Tools | []types.Tool | No | Tools available for the model to call |
+| StopWhen | []ai.StopCondition | No | Conditions that stop the tool-calling loop (see [StepCountIs](./step-count-is.mdx)). Default: `StepCountIs(1)`, a single step (tool calls in it still execute). Set e.g. `StepCountIs(5)` to let the model answer after tool results. |
 | ToolChoice | types.ToolChoice | No | How the model should choose tools |
 | ResponseFormat | *provider.ResponseFormat | No | Response format specification |
 | Timeout | *TimeoutConfig | No | Timeout configuration |

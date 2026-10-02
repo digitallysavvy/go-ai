@@ -73,6 +73,7 @@ func main() {
         Model:  model,
         Prompt: "Use the weather tool",
         Tools:  []types.Tool{weatherTool},
+        StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
     })
     if err != nil {
         var noSuchTool *ai.NoSuchToolError
@@ -264,6 +265,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "What's the weather?",
     Tools:  []types.Tool{weatherTool},
+    StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
 })
 if err != nil {
     if strings.Contains(err.Error(), "tool execution failed") {

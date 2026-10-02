@@ -79,6 +79,7 @@ func main() {
         Model:  model,
         Prompt: "Search the database for invoices",
         Tools:  []types.Tool{searchTool},
+        StopWhen: []ai.StopCondition{ai.StepCountIs(5)},
     })
     if err != nil {
         log.Fatal(err)
