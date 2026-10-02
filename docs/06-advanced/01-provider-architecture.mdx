@@ -267,10 +267,14 @@ package main
 
 import (
     "context"
+    "fmt"
     "log"
+    "os"
 
+    "github.com/digitallysavvy/go-ai/pkg/ai"
     "github.com/digitallysavvy/go-ai/pkg/middleware"
     "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
@@ -278,11 +282,13 @@ import (
 var loggingMiddleware = &middleware.LanguageModelMiddleware{
     WrapGenerate: func(
         ctx context.Context,
-        opts *provider.GenerateOptions,
-        next middleware.DoGenerateFn,
-    ) (*provider.GenerateResult, error) {
-        log.Printf("generating with prompt: %q", opts.Prompt.Text)
-        result, err := next(ctx, opts)
+        doGenerate func() (*types.GenerateResult, error),
+        doStream func() (provider.TextStream, error),
+        params *provider.GenerateOptions,
+        model provider.LanguageModel,
+    ) (*types.GenerateResult, error) {
+        log.Printf("generating with prompt: %q", params.Prompt.Text)
+        result, err := doGenerate()
         if err == nil {
             log.Printf("generated %d tokens", result.Usage.GetTotalTokens())
         }
@@ -291,6 +297,8 @@ var loggingMiddleware = &middleware.LanguageModelMiddleware{
 }
 
 func main() {
+    ctx := context.Background()
+
     p := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
     base, _ := p.LanguageModel("gpt-4o")
 
