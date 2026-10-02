@@ -83,7 +83,7 @@ func TestAzureSerializeAndDeserializeSpeechModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SpeechModel error = %v", err)
 	}
-	serialized := modelAny.(*SpeechModel).Serialize()
+	serialized := modelAny.(*azureSpeechDispatchModel).Serialize()
 	if serialized.Provider != "azure.speech" || serialized.ModelID != "tts-dep" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
@@ -115,7 +115,7 @@ func TestAzureSerializeAndDeserializeTranscriptionModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TranscriptionModel error = %v", err)
 	}
-	serialized := modelAny.(*TranscriptionModel).Serialize()
+	serialized := modelAny.(*azureTranscriptionDispatchModel).Serialize()
 	if serialized.Provider != "azure.transcription" || serialized.ModelID != "whisper-dep" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
