@@ -19,10 +19,12 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	anthropicprovider "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 	googleprovider "github.com/digitallysavvy/go-ai/pkg/providers/google"
 	vertexanthropic "github.com/digitallysavvy/go-ai/pkg/providers/googlevertex/anthropic"
 	vertexinternal "github.com/digitallysavvy/go-ai/pkg/providers/googlevertex/internal"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 	"golang.org/x/oauth2"
 )
@@ -182,6 +184,19 @@ func New(cfg Config) (*Provider, error) {
 			return nil, fmt.Errorf("access token is required for Google Vertex AI")
 		}
 		if baseURL == "" {
+			// Location is interpolated directly into the request host
+			// (https://{location}-aiplatform.googleapis.com/...), so only a
+			// single DNS label is accepted; a value like
+			// "user@internal:8080/#" could otherwise rewrite the request
+			// destination. Only validated here (not unconditionally above)
+			// because an explicit BaseURL makes location unused. Ports TS
+			// google-vertex-provider-base.ts (TS #21842).
+			if !providerutils.IsValidHostnamePart(cfg.Location) {
+				return nil, &providererrors.InvalidArgumentError{
+					Field:   "location",
+					Message: "Invalid Google Vertex location. Expected a single DNS label (letters, digits, and hyphens). Use `BaseURL` for custom endpoints.",
+				}
+			}
 			baseURL = fmt.Sprintf("https://%s/v1beta1/projects/%s/locations/%s/publishers/google",
 				vertexHost(cfg.Location), cfg.Project, cfg.Location)
 			// Tuned models are addressed via their deployed endpoint

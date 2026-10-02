@@ -74,6 +74,43 @@ func TestNewMaaS_CustomBaseURLDoesNotRequireProject(t *testing.T) {
 	}
 }
 
+// TestNewMaaS_RejectsLocationThatWouldRewriteHost ports TS
+// google-vertex-location-validation.test.ts for the MaaS provider (TS
+// #21842): location is interpolated directly into the request host, so a
+// value that isn't a single DNS label must be rejected before init.
+func TestNewMaaS_RejectsLocationThatWouldRewriteHost(t *testing.T) {
+	for _, location := range []string{"user@internal:8080/#", "evil.example.com/#", "us central 1"} {
+		t.Run(location, func(t *testing.T) {
+			p := NewMaaS(MaaSConfig{
+				Project:           "test-project",
+				Location:          location,
+				GoogleAuthOptions: &GoogleAuthOptions{TokenSource: staticTokenSource("token")},
+			})
+			_, err := p.LanguageModel("test-model")
+			var invalid *providererrors.InvalidArgumentError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("LanguageModel(location=%q) error = %v, want InvalidArgumentError", location, err)
+			}
+			if invalid.Field != "location" {
+				t.Fatalf("Field = %q, want location", invalid.Field)
+			}
+		})
+	}
+}
+
+// TestNewMaaS_DoesNotValidateUnusedLocationWithCustomBaseURL ports TS "does
+// not validate an unused location with a custom endpoint".
+func TestNewMaaS_DoesNotValidateUnusedLocationWithCustomBaseURL(t *testing.T) {
+	p := NewMaaS(MaaSConfig{
+		Location:          "user@internal:8080/#",
+		BaseURL:           "https://custom-endpoint.example.com",
+		GoogleAuthOptions: &GoogleAuthOptions{TokenSource: staticTokenSource("token")},
+	})
+	if _, err := p.LanguageModel("test-model"); err != nil {
+		t.Fatalf("LanguageModel error = %v, want success (location unused with explicit BaseURL)", err)
+	}
+}
+
 func TestMaaSBaseURLUsesMultiRegionHosts(t *testing.T) {
 	tests := []struct {
 		location string

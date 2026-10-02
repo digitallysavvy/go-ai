@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // awsPartitionDNSSuffix maps a region prefix to the DNS suffix used for
@@ -60,8 +63,16 @@ func ResolveAmazonBedrockBaseURL(opts ResolveBaseURLOptions) (string, error) {
 		return strings.TrimRight(resolved, "/"), nil
 	}
 
-	if opts.Region == "" {
-		return "", fmt.Errorf("AWS region is required: set Region or AWS_REGION")
+	// Region is interpolated directly into the request host
+	// (https://{service}.{region}.{suffix}), so only a single DNS label is
+	// accepted; a value like "user@internal:8080/#" could otherwise rewrite
+	// the request destination. Ports TS resolve-amazon-bedrock-base-url.ts
+	// (TS #21842).
+	if !providerutils.IsValidHostnamePart(opts.Region) {
+		return "", &providererrors.InvalidArgumentError{
+			Field:   "region",
+			Message: "Invalid AWS region. Expected a single DNS label (letters, digits, and hyphens). Use `BaseURL` for custom endpoints.",
+		}
 	}
 
 	dnsSuffix := "amazonaws.com"

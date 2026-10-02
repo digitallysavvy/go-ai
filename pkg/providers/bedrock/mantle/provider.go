@@ -11,6 +11,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providers/bedrock"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ProviderSettings contains configuration for the Amazon Bedrock Mantle provider.
@@ -107,8 +108,14 @@ func (p *BedrockMantleProvider) baseURLForModel(modelID string) (string, error) 
 	if p.settings.BaseURL != "" {
 		return strings.TrimRight(p.settings.BaseURL, "/"), nil
 	}
-	if p.region == "" {
-		return "", fmt.Errorf("AWS region is required: set Region or AWS_REGION")
+	// Region is interpolated directly into the request host
+	// (https://bedrock-mantle.{region}.api.aws/...), so only a single DNS
+	// label is accepted; ports TS bedrock-mantle-provider.ts (TS #21842).
+	if !providerutils.IsValidHostnamePart(p.region) {
+		return "", &providererrors.InvalidArgumentError{
+			Field:   "region",
+			Message: "Invalid AWS region. Expected a single DNS label (letters, digits, and hyphens). Use `BaseURL` for custom endpoints.",
+		}
 	}
 	path := "v1"
 	if isMantleOpenAIOnlyModel(modelID) {

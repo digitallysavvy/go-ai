@@ -152,6 +152,109 @@ func TestProviderRejectsAPIKeyAndADTokenProviderTogether(t *testing.T) {
 	}
 }
 
+// TestNew_RejectsResourceNameThatWouldRewriteHost ports TS "resourceName
+// validation rejects %j before sending a request" (#21640) plus the
+// non-ASCII/underscore edge cases added by #21881: resourceName becomes
+// part of the request host, so a value that isn't a single DNS label must
+// be rejected by New (before any model or request can be created) rather
+// than silently rewriting the destination host.
+func TestNew_RejectsResourceNameThatWouldRewriteHost(t *testing.T) {
+	cases := []string{
+		"user@internal:8080/#",
+		"169.254.169.254:80/x#",
+		"evil.example.com/#",
+		"resource\n",
+		"resource\r",
+		"resource.example",
+		"my_resource",
+		"résource",
+		"-resource",
+		"resource-",
+		strings.Repeat("a", 64),
+		"",
+	}
+	for _, resourceName := range cases {
+		t.Run(resourceName, func(t *testing.T) {
+			_, err := New(Config{ResourceName: resourceName, APIKey: "test-key"})
+			var invalid *providererrors.InvalidArgumentError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("New(%q) error = %v, want InvalidArgumentError", resourceName, err)
+			}
+			if invalid.Field != "resourceName" {
+				t.Fatalf("Field = %q, want resourceName", invalid.Field)
+			}
+		})
+	}
+}
+
+// TestNew_AcceptsDNSLabelBoundaryResourceNames ports TS "accepts the
+// DNS-label boundary case %j" (#21881): 1 character, 63 characters, and
+// mixed case are all valid single DNS labels.
+func TestNew_AcceptsDNSLabelBoundaryResourceNames(t *testing.T) {
+	for _, resourceName := range []string{"a", strings.Repeat("a", 63), "My-Resource-1"} {
+		t.Run(resourceName, func(t *testing.T) {
+			p, err := New(Config{ResourceName: resourceName, APIKey: "test-key"})
+			if err != nil {
+				t.Fatalf("New(%q) error = %v, want success", resourceName, err)
+			}
+			// Unlike TS's `new URL(...)`, Go does not lowercase the host when
+			// building the request string; DNS resolution is case-insensitive
+			// regardless, so this is cosmetic only.
+			wantHost := resourceName + ".openai.azure.com"
+			if got := p.responsesBaseURL("dep"); !strings.Contains(got, wantHost) {
+				t.Fatalf("responsesBaseURL(%q) = %q, want host %q", resourceName, got, wantHost)
+			}
+		})
+	}
+}
+
+// TestNew_DoesNotValidateUnusedResourceNameWithCustomEndpoint ports TS "does
+// not validate an unused resource name with a custom endpoint": resourceName
+// is irrelevant when BaseURL is explicit, so an otherwise-invalid value must
+// not block provider construction.
+func TestNew_DoesNotValidateUnusedResourceNameWithCustomEndpoint(t *testing.T) {
+	p, err := New(Config{
+		ResourceName: "user@internal:8080/#",
+		BaseURL:      "https://proxy.example/openai",
+		APIKey:       "test-key",
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v, want success (resourceName unused with explicit BaseURL)", err)
+	}
+	if got := p.responsesBaseURL("dep"); !strings.Contains(got, "proxy.example") {
+		t.Fatalf("responsesBaseURL = %q, want the custom BaseURL host", got)
+	}
+}
+
+// TestNew_RejectsInvalidResourceNameFromEnvironment ports TS "rejects an
+// invalid AZURE_RESOURCE_NAME for non-language models": since Go's New
+// validates resourceName at construction (before any model, including
+// embeddings, can be created), an invalid AZURE_RESOURCE_NAME env var fails
+// the same way regardless of which model type the caller would have asked
+// for.
+func TestNew_RejectsInvalidResourceNameFromEnvironment(t *testing.T) {
+	origResource := os.Getenv("AZURE_RESOURCE_NAME")
+	t.Cleanup(func() {
+		if origResource == "" {
+			_ = os.Unsetenv("AZURE_RESOURCE_NAME")
+		} else {
+			_ = os.Setenv("AZURE_RESOURCE_NAME", origResource)
+		}
+	})
+	if err := os.Setenv("AZURE_RESOURCE_NAME", "user@internal:8080/#"); err != nil {
+		t.Fatalf("Setenv AZURE_RESOURCE_NAME failed: %v", err)
+	}
+
+	_, err := New(Config{APIKey: "test-key"})
+	var invalid *providererrors.InvalidArgumentError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("New() error = %v, want InvalidArgumentError", err)
+	}
+	if invalid.Field != "resourceName" {
+		t.Fatalf("Field = %q, want resourceName", invalid.Field)
+	}
+}
+
 func TestCompletionModelUsesAzureCompletionURLHeadersAndOptions(t *testing.T) {
 	var capturedPath string
 	var capturedQuery string

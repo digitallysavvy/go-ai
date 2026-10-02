@@ -535,3 +535,7 @@ It is forwarded as a top-level `requestMetadata` field on the request body, sepa
 ### Nova 2 Lite high reasoning
 
 `amazon.nova-2-lite-v1:0` rejects a request that combines `maxOutputTokens` with `high`/`xhigh`/`max` reasoning effort. The provider now drops `inferenceConfig.maxTokens` and returns an `unsupported` warning for `maxOutputTokens` instead of sending a request Bedrock would reject; `medium` (and lower) reasoning keeps `maxOutputTokens` unchanged.
+
+### Region validation
+
+`Region` (and Bedrock Mantle's `Region`) is interpolated directly into the request host (`https://bedrock-runtime.{region}.amazonaws.com`, `https://bedrock-mantle.{region}.api.aws`). A value that isn't a single DNS label (letters, digits, and hyphens) is rejected with an `InvalidArgumentError` before any request is sent — this only applies when no explicit `BaseURL` or endpoint environment variable is configured, since those make `Region` unused.

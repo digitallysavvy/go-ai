@@ -100,6 +100,8 @@ This matches the TypeScript `azure.tools` behavior by serializing provider-execu
 
 For the standard Azure URL format, set `ResourceName`. For custom regional, proxy, or private-link endpoints, set `BaseURL` to the Azure OpenAI `/openai` prefix:
 
+`ResourceName` is interpolated directly into the request host (`https://{resourceName}.openai.azure.com/...`), so `New` rejects a value that isn't a single DNS label (letters, digits, and hyphens, 1-63 characters, no leading/trailing hyphen) with an `InvalidArgumentError` before building the client — a value like `user@internal:8080/#` would otherwise rewrite the destination host. This only applies when `BaseURL` is unset; a custom `BaseURL` is used as-is and `ResourceName` is ignored.
+
 ```go
 provider, err := azure.New(azure.Config{
     BaseURL: "https://your-resource-eastus.openai.azure.com/openai",

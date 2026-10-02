@@ -7,7 +7,9 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	anthropicprovider "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 const (
@@ -185,6 +187,15 @@ func (p *GoogleVertexAnthropicProvider) baseURL() (string, error) {
 	}
 	if location == "" {
 		return "", fmt.Errorf("location is required for Google Vertex Anthropic")
+	}
+	// Location is interpolated directly into the request host, so only a
+	// single DNS label is accepted; ports TS
+	// google-vertex-anthropic-provider.ts (TS #21842).
+	if !providerutils.IsValidHostnamePart(location) {
+		return "", &providererrors.InvalidArgumentError{
+			Field:   "location",
+			Message: "Invalid Google Vertex location. Expected a single DNS label (letters, digits, and hyphens). Use `BaseURL` for custom endpoints.",
+		}
 	}
 
 	return fmt.Sprintf("https://%s/v1/projects/%s/locations/%s/publishers/anthropic/models", vertexAnthropicHost(location), project, location), nil

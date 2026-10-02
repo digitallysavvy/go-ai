@@ -1434,3 +1434,68 @@ func TestResolveAmazonBedrockBaseURL_EnvVarPrecedence(t *testing.T) {
 		t.Fatalf("got %q, want explicit BaseURL to win over env vars", explicit)
 	}
 }
+
+// TestResolveAmazonBedrockBaseURL_RejectsRegionThatWouldRewriteHost ports TS
+// resolve-amazon-bedrock-base-url.test.ts "rejects region %j because it
+// would rewrite the request host" (TS #21842): region is interpolated
+// directly into the request host, so a non-DNS-label value must be
+// rejected with an InvalidArgumentError instead of silently redirecting the
+// request.
+func TestResolveAmazonBedrockBaseURL_RejectsRegionThatWouldRewriteHost(t *testing.T) {
+	for _, region := range []string{
+		"evil.example.com/#",
+		"user@internal:8080/#",
+		"169.254.169.254:80/x#",
+		"us-east-1/../..",
+		"us east 1",
+		"",
+	} {
+		t.Run(region, func(t *testing.T) {
+			_, err := ResolveAmazonBedrockBaseURL(ResolveBaseURLOptions{
+				Region:                               region,
+				Service:                              "bedrock-runtime",
+				ServiceEndpointURLEnvironmentVarName: "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
+			})
+			var invalid *providererrors.InvalidArgumentError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("ResolveAmazonBedrockBaseURL(region=%q) error = %v, want InvalidArgumentError", region, err)
+			}
+			if invalid.Field != "region" {
+				t.Fatalf("Field = %q, want region", invalid.Field)
+			}
+		})
+	}
+}
+
+// TestResolveAmazonBedrockBaseURL_DoesNotValidateUnusedRegion ports TS
+// "does not reject the region when an explicit endpoint is configured" /
+// "does not validate an unused region with %s": region is irrelevant once
+// an explicit BaseURL or endpoint env var is set, so a garbage region must
+// not block the request.
+func TestResolveAmazonBedrockBaseURL_DoesNotValidateUnusedRegion(t *testing.T) {
+	got, err := ResolveAmazonBedrockBaseURL(ResolveBaseURLOptions{
+		BaseURL:                              "https://proxy.example/",
+		Region:                               "user@internal/#",
+		Service:                              "bedrock-runtime",
+		ServiceEndpointURLEnvironmentVarName: "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
+	})
+	if err != nil {
+		t.Fatalf("error = %v, want success (region unused with explicit BaseURL)", err)
+	}
+	if got != "https://proxy.example" {
+		t.Fatalf("got %q, want the explicit BaseURL", got)
+	}
+
+	t.Setenv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", "https://proxy.example/")
+	got2, err := ResolveAmazonBedrockBaseURL(ResolveBaseURLOptions{
+		Region:                               "user@internal/#",
+		Service:                              "bedrock-runtime",
+		ServiceEndpointURLEnvironmentVarName: "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
+	})
+	if err != nil {
+		t.Fatalf("error = %v, want success (region unused with endpoint env var)", err)
+	}
+	if got2 != "https://proxy.example" {
+		t.Fatalf("got %q, want the endpoint env var URL", got2)
+	}
+}

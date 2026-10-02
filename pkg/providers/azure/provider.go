@@ -13,6 +13,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providers/deepseek"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -134,6 +135,9 @@ func New(cfg Config) (*Provider, error) {
 	// Build base URL if not provided
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
+		if err := validateAzureResourceName(cfg.ResourceName); err != nil {
+			return nil, err
+		}
 		// Standard Azure OpenAI endpoint format
 		baseURL = fmt.Sprintf("https://%s.openai.azure.com/openai", cfg.ResourceName)
 	}
@@ -166,6 +170,23 @@ func New(cfg Config) (*Provider, error) {
 		httpClient: httpClient,
 		urlInfo:    getAzureOpenAIBaseURLInfo(cfg.BaseURL),
 	}, nil
+}
+
+// validateAzureResourceName rejects a resourceName that would rewrite the
+// request host. resourceName is interpolated directly into the request host
+// (https://{resourceName}.openai.azure.com/... and, for Azure Speech,
+// https://{resourceName}.cognitiveservices.azure.com/...), so a value that
+// isn't a single DNS label -- e.g. "user@internal:8080/#" -- could steer the
+// request to an attacker-controlled host. Mirrors TS createAzure's
+// getResourceName validation (ports TS #21640, #21842).
+func validateAzureResourceName(resourceName string) error {
+	if !providerutils.IsValidHostnamePart(resourceName) {
+		return &providererrors.InvalidArgumentError{
+			Field:   "resourceName",
+			Message: "Invalid Azure resource name. Expected a single DNS label (letters, digits, and hyphens). Use `BaseURL` for custom endpoints.",
+		}
+	}
+	return nil
 }
 
 // CreateAzure creates a new Azure OpenAI provider.
