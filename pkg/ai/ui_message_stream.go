@@ -81,7 +81,16 @@ func (w UIMessageStreamWriter) Write(part UIMessageChunk) {
 	}
 }
 
-// Merge forwards all chunks from another stream into this stream.
+// Merge forwards all chunks from another stream into this stream. Merge
+// stops reading stream once the outer stream's ctx is done, but -- unlike TS
+// createUIMessageStream's writer.merge(), which holds a ReadableStream
+// reader it can call .cancel() on to interrupt the source's own pending pull
+// -- a Go channel has no generic way to signal a producer to stop (TS
+// #21728). The caller is responsible for making stream's producer honor the
+// same ctx (or one derived from it) for its own sends, the way every
+// built-in producer in this package does (e.g. ToUIMessageStream's
+// `select { case out <- part: case <-ctx.Done(): }`), or that producer's
+// goroutine will block forever trying to send once Merge stops receiving.
 func (w UIMessageStreamWriter) Merge(stream <-chan UIMessageChunk) {
 	if w.mergeFn != nil {
 		w.mergeFn(stream)

@@ -2814,3 +2814,33 @@ func TestBugReview_UIMessageStream_ConcurrentMergeRace(t *testing.T) {
 		t.Fatalf("got %d chunks, want %d", gotTypes, want)
 	}
 }
+
+// TestUIMessageStreamMergeStopsOnAlreadyCancelledContext is the regression
+// test for the merge ctx.Done()-priority check (TS #21728,
+// bb8d33e0f7): when the consumer's ctx is already cancelled, a merge
+// goroutine must never forward a chunk that happens to be sitting ready on
+// its source channel. Without the non-blocking ctx.Done() check ahead of the
+// select, Go picks uniformly at random between two simultaneously-ready
+// cases, so a naive single select would forward the buffered chunk roughly
+// half the time -- this runs enough iterations that any such regression
+// shows up reliably.
+func TestUIMessageStreamMergeStopsOnAlreadyCancelledContext(t *testing.T) {
+	for i := 0; i < 200; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // cancelled before Execute ever runs
+
+		src := make(chan UIMessageChunk, 1)
+		src <- UIMessageChunk{"type": "text-start", "id": "late"}
+		close(src)
+
+		out, _ := CreateUIMessageStreamWithOptions(ctx, UIMessageStreamOptions{
+			Execute: func(writer UIMessageStreamWriter) {
+				writer.Merge(src)
+			},
+		})
+
+		for chunk := range out {
+			t.Fatalf("iteration %d: expected no chunks forwarded after cancellation, got %#v", i, chunk)
+		}
+	}
+}
