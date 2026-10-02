@@ -275,12 +275,15 @@ func TestReadUIMessages_FinishStepPreservesActiveTextAndReasoning(t *testing.T) 
 	assert.Equal(t, "step-start", final.Parts[2].UIPartType())
 }
 
-// ports the tool-input-error branch of process-ui-message-stream.ts, which
-// calls warnIfUIMessageHasDeprecatedRawInput([state.message]) only for
-// static (non-dynamic) tool parts, since the deprecated field is only set on
-// those.
-func TestReadUIMessages_ToolInputErrorRawInputDeprecationWarning(t *testing.T) {
-	t.Run("static tool part logs the deprecation warning", func(t *testing.T) {
+// ports the tool-input-error branch of process-ui-message-stream.ts (TS
+// #21539): SDK-generated static tool input errors store the failed input in
+// Input directly, with no deprecated RawInput field and no deprecation
+// warning, matching the dynamic-tool branch. Persisted-stream compatibility
+// for a legacy rawInput field is a separate path (ValidateUIMessages /
+// ConvertToModelMessages' warnIfUIMessagesHaveDeprecatedRawInput), unchanged
+// and covered by TestValidateUIMessages_WarnsOnDeprecatedRawInput.
+func TestReadUIMessages_ToolInputErrorStoresInputWithoutDeprecationWarning(t *testing.T) {
+	t.Run("static tool part stores input and does not warn", func(t *testing.T) {
 		buf := setupLogWarnings(t)
 		snapshots, err := sendChunks(t, nil, []UIMessageChunk{
 			{"type": "start"},
@@ -294,13 +297,14 @@ func TestReadUIMessages_ToolInputErrorRawInputDeprecationWarning(t *testing.T) {
 		part := findToolUIMessagePart(final, "tool-search")
 		require.NotNil(t, part)
 		assert.Equal(t, ToolStateOutputError, part.State)
-		assert.Equal(t, "bad json", part.RawInput)
-		assert.Contains(t, buf.String(), `Deprecated: "rawInput in output-error UI message parts". Use the "input" field instead. The "rawInput" field will be removed in the next major version.`)
+		assert.Equal(t, "bad json", part.Input)
+		assert.Nil(t, part.RawInput)
+		assert.Empty(t, buf.String())
 	})
 
-	t.Run("dynamic tool part does not set rawInput and does not warn", func(t *testing.T) {
+	t.Run("dynamic tool part stores input and does not warn", func(t *testing.T) {
 		buf := setupLogWarnings(t)
-		_, err := sendChunks(t, nil, []UIMessageChunk{
+		snapshots, err := sendChunks(t, nil, []UIMessageChunk{
 			{"type": "start"},
 			{"type": "start-step"},
 			{"type": "tool-input-error", "toolCallId": "call-1", "toolName": "search", "dynamic": true, "input": "bad json", "errorText": "parse error"},
@@ -308,6 +312,12 @@ func TestReadUIMessages_ToolInputErrorRawInputDeprecationWarning(t *testing.T) {
 			{"type": "finish"},
 		})
 		require.NoError(t, err)
+		final := snapshots[len(snapshots)-1]
+		part := findToolUIMessagePart(final, "dynamic-tool")
+		require.NotNil(t, part)
+		assert.Equal(t, ToolStateOutputError, part.State)
+		assert.Equal(t, "bad json", part.Input)
+		assert.Nil(t, part.RawInput)
 		assert.Empty(t, buf.String())
 	})
 }
