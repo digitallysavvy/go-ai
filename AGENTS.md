@@ -4,7 +4,7 @@ Guidance for AI coding agents working in this repository. People should start
 with [CONTRIBUTING.md](./CONTRIBUTING.md); the rules below apply to both.
 
 **Using the SDK rather than changing it?** Read the docs as markdown instead:
-<https://digitallysavvy.github.io/go-ai/llms.txt> is an index of every page, and
+<https://goaisdk.com/llms.txt> is an index of every page, and
 any docs URL with `.md` appended returns that page as markdown.
 
 ## What this is

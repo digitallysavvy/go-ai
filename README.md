@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://digitallysavvy.github.io/go-ai/">
+  <a href="https://goaisdk.com/">
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="./.github/assets/logo-dark.png">
       <source media="(prefers-color-scheme: light)" srcset="./.github/assets/logo-light.png">
@@ -26,13 +26,13 @@
 </p>
 
 <p align="center">
-  <a href="https://digitallysavvy.github.io/go-ai/docs/getting-started"><b>Get started</b></a>
+  <a href="https://goaisdk.com/docs/getting-started"><b>Get started</b></a>
   &nbsp;·&nbsp;
-  <a href="https://digitallysavvy.github.io/go-ai/">Docs</a>
+  <a href="https://goaisdk.com/">Docs</a>
   &nbsp;·&nbsp;
   <a href="./examples">Examples</a>
   &nbsp;·&nbsp;
-  <a href="https://digitallysavvy.github.io/go-ai/llms.txt">llms.txt</a>
+  <a href="https://goaisdk.com/llms.txt">llms.txt</a>
   &nbsp;·&nbsp;
   <a href="./CHANGELOG.md">Changelog</a>
 </p>
@@ -43,7 +43,7 @@ go get github.com/digitallysavvy/go-ai
 
 The [Go AI SDK](https://github.com/digitallysavvy/go-ai) is a comprehensive toolkit designed to help you build AI-powered applications and agents using Go. It provides 1:1 feature parity with the [Vercel AI SDK](https://ai-sdk.dev) for backend functionality.
 
-To learn more about how to use the Go AI SDK, check out the [documentation](https://digitallysavvy.github.io/go-ai/).
+To learn more about how to use the Go AI SDK, check out the [documentation](https://goaisdk.com/).
 
 ### What's new in v0.5.0
 
@@ -80,7 +80,7 @@ go get github.com/digitallysavvy/go-ai/pkg/providers/google
 
 ### Generating Text
 
-📖 [Generating text](https://digitallysavvy.github.io/go-ai/docs/ai-sdk-core/generating-text) · [`GenerateText` reference](https://digitallysavvy.github.io/go-ai/docs/reference/ai/generate-text)
+📖 [Generating text](https://goaisdk.com/docs/ai-sdk-core/generating-text) · [`GenerateText` reference](https://goaisdk.com/docs/reference/ai/generate-text)
 
 ```go
 import (
@@ -111,7 +111,7 @@ func main() {
 
 ### Streaming Text
 
-📖 [Streaming](https://digitallysavvy.github.io/go-ai/docs/foundations/streaming) · [`StreamText` reference](https://digitallysavvy.github.io/go-ai/docs/reference/ai/stream-text)
+📖 [Streaming](https://goaisdk.com/docs/foundations/streaming) · [`StreamText` reference](https://goaisdk.com/docs/reference/ai/stream-text)
 
 ```go
 stream, _ := ai.StreamText(ctx, ai.StreamTextOptions{
@@ -129,7 +129,7 @@ for chunk := range stream.Chunks() {
 
 ### Generating Structured Data
 
-📖 [Generating structured data](https://digitallysavvy.github.io/go-ai/docs/ai-sdk-core/generating-structured-data)
+📖 [Generating structured data](https://goaisdk.com/docs/ai-sdk-core/generating-structured-data)
 
 ```go
 import "github.com/digitallysavvy/go-ai/pkg/schema"
@@ -163,7 +163,7 @@ fmt.Printf("Recipe: %s\n", recipe.Name)
 
 ### Agents
 
-📖 [Agents overview](https://digitallysavvy.github.io/go-ai/docs/agents/overview) · [Building agents](https://digitallysavvy.github.io/go-ai/docs/agents/building-agents)
+📖 [Agents overview](https://goaisdk.com/docs/agents/overview) · [Building agents](https://goaisdk.com/docs/agents/building-agents)
 
 Build autonomous agents with multi-step reasoning:
 
@@ -189,7 +189,7 @@ fmt.Println(result.Text)
 
 ### Tool Calling
 
-📖 [Tools and tool calling](https://digitallysavvy.github.io/go-ai/docs/ai-sdk-core/tools-and-tool-calling) · [MCP tools](https://digitallysavvy.github.io/go-ai/docs/ai-sdk-core/mcp-tools)
+📖 [Tools and tool calling](https://goaisdk.com/docs/ai-sdk-core/tools-and-tool-calling) · [MCP tools](https://goaisdk.com/docs/ai-sdk-core/mcp-tools)
 
 Extend AI capabilities with custom tools:
 
@@ -227,7 +227,7 @@ result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
 
 ### Embeddings
 
-📖 [Embeddings](https://digitallysavvy.github.io/go-ai/docs/ai-sdk-core/embeddings)
+📖 [Embeddings](https://goaisdk.com/docs/ai-sdk-core/embeddings)
 
 Generate embeddings for semantic search:
 
@@ -244,7 +244,7 @@ result, _ := ai.Embed(ctx, ai.EmbedOptions{
 
 ### Image Generation
 
-📖 [Image generation](https://digitallysavvy.github.io/go-ai/docs/ai-sdk-core/image-generation)
+📖 [Image generation](https://goaisdk.com/docs/ai-sdk-core/image-generation)
 
 ```go
 imageModel, _ := provider.ImageModel("gpt-image-2")
@@ -260,7 +260,7 @@ result, _ := ai.GenerateImage(ctx, ai.GenerateImageOptions{
 
 ### Speech and Transcription
 
-📖 [Speech](https://digitallysavvy.github.io/go-ai/docs/ai-sdk-core/speech) · [Transcription](https://digitallysavvy.github.io/go-ai/docs/ai-sdk-core/transcription)
+📖 [Speech](https://goaisdk.com/docs/ai-sdk-core/speech) · [Transcription](https://goaisdk.com/docs/ai-sdk-core/transcription)
 
 ```go
 // Generate speech
@@ -281,7 +281,7 @@ transcript, _ := ai.Transcribe(ctx, ai.TranscribeOptions{
 
 ### Memory Optimization
 
-📖 [Memory optimization](https://digitallysavvy.github.io/go-ai/docs/advanced/memory-optimization)
+📖 [Memory optimization](https://goaisdk.com/docs/advanced/memory-optimization)
 
 Reduce memory consumption by 50-80% for image-heavy or large-context workloads using retention settings:
 
@@ -433,18 +433,18 @@ We provide **50+ production-ready examples** covering every feature. See the [ex
 
 ## Documentation
 
-- **[Getting Started](https://digitallysavvy.github.io/go-ai/docs/getting-started)** - Quick start guide
-- **[Foundations](https://digitallysavvy.github.io/go-ai/docs/foundations/overview)** - Core concepts
-- **[AI SDK Core](https://digitallysavvy.github.io/go-ai/docs/ai-sdk-core/overview)** - Complete API reference
-- **[Agents](https://digitallysavvy.github.io/go-ai/docs/agents/overview)** - Building autonomous agents
-- **[Advanced](https://digitallysavvy.github.io/go-ai/docs/advanced)** - Production patterns
+- **[Getting Started](https://goaisdk.com/docs/getting-started)** - Quick start guide
+- **[Foundations](https://goaisdk.com/docs/foundations/overview)** - Core concepts
+- **[AI SDK Core](https://goaisdk.com/docs/ai-sdk-core/overview)** - Complete API reference
+- **[Agents](https://goaisdk.com/docs/agents/overview)** - Building autonomous agents
+- **[Advanced](https://goaisdk.com/docs/advanced)** - Production patterns
 
-The full docs site is at <https://digitallysavvy.github.io/go-ai/>.
+The full docs site is at <https://goaisdk.com/>.
 
 ### Docs for AI agents
 
-- [`llms.txt`](https://digitallysavvy.github.io/go-ai/llms.txt) indexes every docs page; [`llms-full.txt`](https://digitallysavvy.github.io/go-ai/llms-full.txt) is the whole documentation in one file.
-- Any docs URL with `.md` appended returns that page as markdown, for example <https://digitallysavvy.github.io/go-ai/docs/foundations/tools.md>.
+- [`llms.txt`](https://goaisdk.com/llms.txt) indexes every docs page; [`llms-full.txt`](https://goaisdk.com/llms-full.txt) is the whole documentation in one file.
+- Any docs URL with `.md` appended returns that page as markdown, for example <https://goaisdk.com/docs/foundations/tools.md>.
 - Each docs page has **Copy page**, **Open in ChatGPT** and **Open in Claude** buttons.
 - Coding agents working in this repository should read [AGENTS.md](./AGENTS.md).
 
