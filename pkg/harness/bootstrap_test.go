@@ -252,12 +252,18 @@ func TestValidateSandboxBootstrapSettings(t *testing.T) {
 	if _, err := NormalizeSandboxWorkDir(""); err == nil {
 		t.Fatal("empty workDir must be rejected")
 	}
-	for _, v := range []string{".", "/repo", "../repo", "repo/../../x", `a\b`, "a\x00b"} {
+	for _, v := range []string{"./", "repo/..", "/repo", "../repo", "repo/../../x", `a\b`, "a\x00b"} {
 		if err := ValidateSandboxBootstrapSettings(SandboxConfig{WorkDir: v}); err == nil || !strings.Contains(err.Error(), "workDir") {
 			t.Errorf("workDir %q: err = %v", v, err)
 		}
 	}
-	for in, want := range map[string]string{"repo/../ai-sdk": "ai-sdk", "./ai-sdk": "ai-sdk"} {
+	// "." is the literal alias for the sandbox default working directory
+	// (TS #21600) and must not be rejected, unlike other inputs that merely
+	// normalize to it.
+	if err := ValidateSandboxBootstrapSettings(SandboxConfig{WorkDir: "."}); err != nil {
+		t.Errorf("workDir \".\": err = %v, want nil", err)
+	}
+	for in, want := range map[string]string{"repo/../ai-sdk": "ai-sdk", "./ai-sdk": "ai-sdk", ".": "."} {
 		if got, err := NormalizeSandboxWorkDir(in); err != nil || got != want {
 			t.Errorf("NormalizeSandboxWorkDir(%q) = %q, %v", in, got, err)
 		}
@@ -291,6 +297,7 @@ func TestResolveSessionWorkDir(t *testing.T) {
 		{"mock", "../../../../project", "", "/work/mock-..%2F..%2F..%2F..%2Fproject"},
 		{"../mock", "s1", "", "/work/..%2Fmock-s1"},
 		{"mock", "s1", "ai-sdk", "/work/ai-sdk"},
+		{"mock", "s1", ".", "/work"},
 	}
 	for _, tc := range cases {
 		if got := ResolveSessionWorkDir("/work", tc.harnessID, tc.sessionID, tc.workDir); got != tc.want {
@@ -349,6 +356,35 @@ func TestRunSandboxBootstrap(t *testing.T) {
 		})
 		if err != nil || workDir != "/work" {
 			t.Fatalf("workDir = %q, %v", workDir, err)
+		}
+	})
+
+	// TS #21600: workDir "." is the literal alias for the sandbox default
+	// working directory, distinct from omitting workDir entirely (both
+	// resolve to the same path here, but WorkDir: "." takes the dot branch
+	// through NormalizeSandboxWorkDir/ResolveSessionWorkDir upstream).
+	t.Run("uses the sandbox default working directory for caller bootstrap when workDir is dot", func(t *testing.T) {
+		sb := newMockSandbox()
+		var workDir string
+		err := RunSandboxBootstrap(ctx, RunSandboxBootstrapOptions{
+			Session: sb,
+			WorkDir: ".",
+			OnBootstrap: func(_ context.Context, bc SandboxBootstrapContext) error {
+				workDir = bc.WorkDir
+				return nil
+			},
+		})
+		if err != nil || workDir != "/work" {
+			t.Fatalf("workDir = %q, %v", workDir, err)
+		}
+		found := false
+		for _, r := range sb.runs {
+			if r.Command == `mkdir -p "$WORK_DIR"` && r.Env["WORK_DIR"] == "/work" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("expected a mkdir -p \"$WORK_DIR\" run with WORK_DIR=/work, got %+v", sb.runs)
 		}
 	})
 

@@ -303,6 +303,48 @@ func TestCreateHarnessSandboxTemplate(t *testing.T) {
 			t.Fatalf("commands = %q, want %q (recipe applied once)", cmds, want)
 		}
 	})
+
+	// TS #21600: "uses the sandbox default working directory for dot and
+	// includes it in the template identity".
+	t.Run("uses the sandbox default working directory for dot and includes it in the template identity", func(t *testing.T) {
+		alpha := makeRecipe("alpha")
+		var gotWorkDir string
+		onBootstrap := func(_ context.Context, bc SandboxBootstrapContext) error {
+			gotWorkDir = bc.WorkDir
+			return nil
+		}
+		tmpl, err := CreateHarnessSandboxTemplate(ctx, CreateHarnessSandboxTemplateOptions{
+			Harnesses:     []Harness{makeHarness("alpha", alpha)},
+			SandboxConfig: &SandboxConfig{WorkDir: ".", BootstrapHash: "tools-v1", OnBootstrap: onBootstrap},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		subdirTmpl, err := CreateHarnessSandboxTemplate(ctx, CreateHarnessSandboxTemplateOptions{
+			Harnesses:     []Harness{makeHarness("alpha", alpha)},
+			SandboxConfig: &SandboxConfig{WorkDir: "repo", BootstrapHash: "tools-v1", OnBootstrap: onBootstrap},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tmpl == nil || subdirTmpl == nil {
+			t.Fatal("expected both templates")
+		}
+		if tmpl.Identity == "" {
+			t.Fatal("expected a non-empty identity")
+		}
+		if tmpl.Identity == subdirTmpl.Identity {
+			t.Fatal("workDir \".\" must produce a different identity than workDir \"repo\"")
+		}
+
+		sb := newMockSandbox()
+		if err := tmpl.Prepare(ctx, sb); err != nil {
+			t.Fatal(err)
+		}
+		if gotWorkDir != "/work" {
+			t.Fatalf("onBootstrap workDir = %q, want /work", gotWorkDir)
+		}
+	})
 }
 
 // TestAgent_GetSandboxTemplate verifies HarnessAgent.getSandboxTemplate's Go
