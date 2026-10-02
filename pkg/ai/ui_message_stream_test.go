@@ -161,6 +161,115 @@ func TestPipeUIMessageStreamToResponse_AppendsDoneSentinel(t *testing.T) {
 	}
 }
 
+// keepAliveBlockingTextStream is a provider.TextStream controlled entirely by the
+// test: Next() blocks until a chunk (or error) is sent on the corresponding
+// channel, giving precise control over timing for keep-alive tests. Mirrors
+// TS's ReadableStream with a manually-driven controller in
+// create-sse-stream-with-keep-alive.test.ts.
+type keepAliveBlockingTextStream struct {
+	next chan *provider.StreamChunk
+	errs chan error
+}
+
+func newBlockingTextStream() *keepAliveBlockingTextStream {
+	return &keepAliveBlockingTextStream{
+		next: make(chan *provider.StreamChunk),
+		errs: make(chan error, 1),
+	}
+}
+
+func (s *keepAliveBlockingTextStream) Next() (*provider.StreamChunk, error) {
+	select {
+	case c := <-s.next:
+		return c, nil
+	case err := <-s.errs:
+		return nil, err
+	}
+}
+func (s *keepAliveBlockingTextStream) Close() error { return nil }
+func (s *keepAliveBlockingTextStream) Err() error   { return nil }
+
+// Ported from TS 05cdac6c32 (#21672): an idle UI message stream must flush
+// an opening SSE comment immediately and send periodic keep-alive comments
+// while idle, resetting the timer on every real chunk.
+func TestPipeUIMessageStreamToResponseWithInit_KeepAlive(t *testing.T) {
+	stream := newBlockingTextStream()
+	res := &StreamTextResult{stream: stream}
+	buf := &syncBuffer{}
+	keepAlive := 15 * time.Millisecond
+
+	done := make(chan error, 1)
+	go func() {
+		done <- PipeUIMessageStreamToResponseWithInit(context.Background(), res, buf, &UIMessageStreamResponseInit{KeepAliveMs: &keepAlive})
+	}()
+
+	// The opening comment must appear almost immediately, well before any
+	// real chunk is sent.
+	waitForContains(t, buf, []byte(sseStreamOpenComment), time.Second)
+
+	// Stay idle for several keep-alive intervals: at least one keep-alive
+	// comment must appear.
+	waitForContains(t, buf, []byte(sseKeepAliveComment), time.Second)
+
+	// Sending a real chunk resets the timer and the chunk itself must still
+	// reach the output.
+	stream.next <- &provider.StreamChunk{Type: provider.ChunkTypeText, Text: "hello"}
+	stream.next <- &provider.StreamChunk{Type: provider.ChunkTypeFinish}
+	stream.errs <- io.EOF
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("PipeUIMessageStreamToResponseWithInit() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for pipe to finish")
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "hello") {
+		t.Fatalf("expected the real chunk to still be written, got %q", out)
+	}
+	if !strings.Contains(out, "data: [DONE]\n\n") {
+		t.Fatalf("missing DONE sentinel in %q", out)
+	}
+}
+
+// syncBuffer is a bytes.Buffer safe for concurrent Write (by the pipe
+// goroutine) and Read-via-String (by the test goroutine polling for
+// content).
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// waitForContains polls buf until it contains want or the timeout elapses.
+func waitForContains(t *testing.T, buf *syncBuffer, want []byte, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if strings.Contains(buf.String(), string(want)) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %q in buffer; got %q", want, buf.String())
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 // alwaysFailingWriter always fails its Write call. Before the fix for audit
 // row #56, PipeUIMessageStreamToResponseWithInit buffered every chunk write
 // in a bufio.Writer and only touched the underlying writer via a *deferred*

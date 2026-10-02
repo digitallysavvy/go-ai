@@ -47,6 +47,19 @@ func PipeUIMessageStreamToResponse(ctx context.Context, result *ai.StreamTextRes
 
 Writes UI message chunks as Server-Sent Events.
 
+### Keep-alive
+
+`CreateUIMessageStreamResponseWithInit` and `PipeUIMessageStreamToResponseWithInit` accept a `*ai.UIMessageStreamResponseInit` with a `KeepAliveMs *time.Duration` field. When set to a positive duration, the pipeline writes an opening `: stream-open\n\n` SSE comment immediately — so a reverse proxy sees the response start right away instead of buffering an empty connection — and then a `: keep-alive\n\n` comment whenever that duration elapses with no other write, resetting on every real chunk:
+
+```go
+keepAlive := 15 * time.Second
+err := ai.PipeUIMessageStreamToResponseWithInit(ctx, result, w, &ai.UIMessageStreamResponseInit{
+    KeepAliveMs: &keepAlive,
+})
+```
+
+`ReadUIMessageStream` and `ReadUIMessages` already skip SSE comment lines (any line starting with `:`), so a client reading a keep-alive-enabled stream needs no changes.
+
 ## `ReadUIMessageStream`
 
 ```go

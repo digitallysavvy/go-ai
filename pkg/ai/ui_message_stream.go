@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -144,7 +145,20 @@ type UIMessageStreamResponseInit struct {
 	// added in addition to Headers, so both can be set together.
 	Header           http.Header
 	ConsumeSSEStream func(io.Reader) error
+	// KeepAliveMs, when set, makes the SSE pipeline flush an opening
+	// ": stream-open\n\n" comment immediately (so headers reach the client
+	// right away even if the first real chunk is slow) and send a
+	// ": keep-alive\n\n" comment whenever this duration elapses without any
+	// other write, resetting on every chunk. Must be a positive duration;
+	// zero or negative disables it the same as a nil value. Mirrors TS
+	// createSseStreamWithKeepAlive's `keepAliveMs` option (TS #21672).
+	KeepAliveMs *time.Duration //nolint:revive,staticcheck // name matches TS SDK field "keepAliveMs" for parity
 }
+
+const (
+	sseStreamOpenComment = ": stream-open\n\n"
+	sseKeepAliveComment  = ": keep-alive\n\n"
+)
 
 func getDefaultMessageErrorHandler(onError func(error) string) func(error) string {
 	if onError == nil {
@@ -1809,6 +1823,25 @@ func PipeUIMessageStreamToResponse(ctx context.Context, result *StreamTextResult
 // reader that has stopped listening). Mirrors TS
 // write-to-server-response.ts's client-disconnect handling, which cancels
 // the ReadableStream's reader on a premature close (TS #21578).
+// writeUIMessageSSEChunk JSON-encodes and writes a single UI message chunk
+// as one SSE "data: ...\n\n" event, then flushes it.
+func writeUIMessageSSEChunk(bw *bufio.Writer, flush func() error, chunk UIMessageChunk) error {
+	b, err := json.Marshal(chunk)
+	if err != nil {
+		return err
+	}
+	if _, err := bw.WriteString("data: "); err != nil {
+		return err
+	}
+	if _, err := bw.Write(b); err != nil {
+		return err
+	}
+	if _, err := bw.WriteString("\n\n"); err != nil {
+		return err
+	}
+	return flush()
+}
+
 func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTextResult, w io.Writer, init *UIMessageStreamResponseInit, opts ...UIMessageStreamResultOptions) error {
 	if result == nil {
 		return fmt.Errorf("result is required")
@@ -1840,6 +1873,13 @@ func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTe
 		teeWriter = io.MultiWriter(w, pw)
 	}
 
+	var keepAliveDuration time.Duration
+	keepAliveEnabled := false
+	if init != nil && init.KeepAliveMs != nil && *init.KeepAliveMs > 0 {
+		keepAliveDuration = *init.KeepAliveMs
+		keepAliveEnabled = true
+	}
+
 	chunks, errCh := CreateUIMessageStream(streamCtx, result, opts...)
 	bw := bufio.NewWriter(teeWriter)
 	// flush surfaces the bufio flush error instead of discarding it (TS
@@ -1858,22 +1898,49 @@ func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTe
 		}
 		return nil
 	}
-	for chunk := range chunks {
-		b, err := json.Marshal(chunk)
-		if err != nil {
+	writeComment := func(comment string) error {
+		if _, err := bw.WriteString(comment); err != nil {
 			return err
 		}
-		if _, err := bw.WriteString("data: "); err != nil {
+		return flush()
+	}
+
+	if keepAliveEnabled {
+		// Flush an opening comment immediately, before the first real chunk
+		// is available, so a reverse proxy sees the response start right
+		// away instead of timing out an idle connection. Mirrors TS
+		// createSseStreamWithKeepAlive's STREAM_OPEN_COMMENT.
+		if err := writeComment(sseStreamOpenComment); err != nil {
 			return err
 		}
-		if _, err := bw.Write(b); err != nil {
-			return err
+	}
+
+	if !keepAliveEnabled {
+		for chunk := range chunks {
+			if err := writeUIMessageSSEChunk(bw, flush, chunk); err != nil {
+				return err
+			}
 		}
-		if _, err := bw.WriteString("\n\n"); err != nil {
-			return err
-		}
-		if err := flush(); err != nil {
-			return err
+	} else {
+		timer := time.NewTimer(keepAliveDuration)
+		defer timer.Stop()
+	loop:
+		for {
+			select {
+			case chunk, ok := <-chunks:
+				if !ok {
+					break loop
+				}
+				if err := writeUIMessageSSEChunk(bw, flush, chunk); err != nil {
+					return err
+				}
+				timer.Reset(keepAliveDuration)
+			case <-timer.C:
+				if err := writeComment(sseKeepAliveComment); err != nil {
+					return err
+				}
+				timer.Reset(keepAliveDuration)
+			}
 		}
 	}
 	if _, err := bw.WriteString("data: [DONE]\n\n"); err != nil {
