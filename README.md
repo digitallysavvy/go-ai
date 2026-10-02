@@ -1,13 +1,15 @@
 # Go AI SDK
 
 [![CI](https://github.com/digitallysavvy/go-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/digitallysavvy/go-ai/actions/workflows/ci.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/digitallysavvy/go-ai)](https://goreportcard.com/report/github.com/digitallysavvy/go-ai)
+[![codecov](https://codecov.io/gh/digitallysavvy/go-ai/graph/badge.svg)](https://codecov.io/gh/digitallysavvy/go-ai)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/digitallysavvy/go-ai)](./go.mod)
+[![Release](https://img.shields.io/github/v/release/digitallysavvy/go-ai)](https://github.com/digitallysavvy/go-ai/releases)
 [![Go Reference](https://pkg.go.dev/badge/github.com/digitallysavvy/go-ai.svg)](https://pkg.go.dev/github.com/digitallysavvy/go-ai)
 [![License](https://img.shields.io/github/license/digitallysavvy/go-ai)](./LICENSE)
 
 The [Go AI SDK](https://github.com/digitallysavvy/go-ai) is a comprehensive toolkit designed to help you build AI-powered applications and agents using Go. It provides 1:1 feature parity with the [Vercel AI SDK](https://ai-sdk.dev) for backend functionality.
 
-To learn more about how to use the Go AI SDK, check out our [Documentation](./docs).
+To learn more about how to use the Go AI SDK, check out the [documentation](https://digitallysavvy.github.io/go-ai/).
 
 ### What's new in v0.5.0
 
@@ -260,18 +262,18 @@ See [examples/features/retention](./examples/features/retention) for detailed us
 
 ## Supported Providers
 
-The Go AI SDK supports 45+ providers:
+The Go AI SDK supports 48 providers:
 
 | Provider         | Language Models              | Embeddings | Images / Video   | Speech       |
 | ---------------- | ---------------------------- | ---------- | ---------------- | ------------ |
-| **OpenAI**       | GPT-5.4, GPT-5.3, O3, O4    | ✓          | DALL-E           | TTS, Whisper |
-| **Anthropic**    | Claude Sonnet 4.6, Opus 4.6  | -          | -                | -            |
-| **Google**       | Gemini 3, 2.5 Pro/Flash      | ✓          | -                | -            |
-| **Google Vertex**| Gemini (enterprise)          | ✓          | Imagen           | -            |
+| **OpenAI**       | GPT-5 family, o-series       | ✓          | GPT Image        | TTS, Whisper |
+| **Anthropic**    | Claude Opus, Sonnet, Haiku   | -          | -                | -            |
+| **Google**       | Gemini 3 family              | ✓          | Gemini image, Veo | TTS, transcription |
+| **Google Vertex**| Gemini (enterprise)          | ✓          | Gemini image, Veo | TTS, transcription |
 | **AWS Bedrock**  | Claude, Titan, Nova, Llama   | ✓          | -                | -            |
 | **Azure OpenAI** | Azure-hosted models          | ✓          | ✓                | ✓            |
-| **xAI**          | Grok-3 (Responses API)       | -          | ✓                | -            |
-| **Mistral**      | Large, Small                 | ✓          | -                | -            |
+| **xAI**          | Grok 4 family (Responses)    | -          | ✓                | -            |
+| **Mistral**      | Large, Medium, Small         | ✓          | -                | -            |
 | **Cohere**       | Command R+, Command          | ✓          | -                | -            |
 | **Groq**         | Llama, Mixtral               | -          | -                | Whisper      |
 | **Together AI**  | Llama, Mixtral, Qwen         | -          | Stable Diffusion | -            |
@@ -288,7 +290,7 @@ And more (Replicate, Hugging Face, Stability, ElevenLabs, Deepgram, Gladia, LMNT
 
 ## Features
 
-- ✅ **Unified API** — one interface for 30+ providers
+- ✅ **Unified API** — one interface for 48 providers
 - ✅ **Text Generation** — `GenerateText()` and `StreamText()`
 - ✅ **Structured Output** — type-safe `GenerateObject()` with JSON validation
 - ✅ **Tool Calling** — custom functions with per-tool timeouts
@@ -379,11 +381,11 @@ We provide **50+ production-ready examples** covering every feature. See the [ex
 
 ## Documentation
 
-- **[Getting Started](./docs/02-getting-started)** - Quick start guide
-- **[Foundations](./docs/02-foundations)** - Core concepts
-- **[AI SDK Core](./docs/03-ai-sdk-core)** - Complete API reference
-- **[Agents](./docs/03-agents)** - Building autonomous agents
-- **[Advanced](./docs/06-advanced)** - Production patterns
+- **[Getting Started](https://digitallysavvy.github.io/go-ai/docs/getting-started)** - Quick start guide
+- **[Foundations](https://digitallysavvy.github.io/go-ai/docs/foundations/overview)** - Core concepts
+- **[AI SDK Core](https://digitallysavvy.github.io/go-ai/docs/ai-sdk-core/overview)** - Complete API reference
+- **[Agents](https://digitallysavvy.github.io/go-ai/docs/agents/overview)** - Building autonomous agents
+- **[Advanced](https://digitallysavvy.github.io/go-ai/docs/advanced)** - Production patterns
 
 ## TypeScript Parity
 
@@ -392,7 +394,7 @@ This SDK maintains 1:1 feature parity with the [Vercel AI SDK](https://ai-sdk.de
 - Same public APIs and response shapes
 - Same provider interfaces and tool system
 - Same middleware and telemetry patterns
-- Compatible workflows across all 45+ providers
+- Compatible workflows across all 48 providers
 - Feature complete for server-side use
 
 A handful of features are intentionally TS-only (browser WebRTC realtime, the

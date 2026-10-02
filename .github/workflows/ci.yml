@@ -40,7 +40,8 @@ jobs:
         if: matrix.go-version == '1.26'
         uses: codecov/codecov-action@v7
         with:
-          file: ./coverage.out
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage.out
           flags: unittests
           fail_ci_if_error: false
 
