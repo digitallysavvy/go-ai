@@ -4,14 +4,14 @@ Guidance for AI coding agents working in this repository. People should start
 with [CONTRIBUTING.md](./CONTRIBUTING.md); the rules below apply to both.
 
 **Using the SDK rather than changing it?** Read the docs as markdown instead:
-<https://digitallysavvy.github.io/go-ai/llms.txt> is an index of every page, and
+<https://goaisdk.com/llms.txt> is an index of every page, and
 any docs URL with `.md` appended returns that page as markdown.
 
 ## What this is
 
 `github.com/digitallysavvy/go-ai` is the Go AI SDK: a Go port of Vercel's
 TypeScript AI SDK (`ai` on npm), tracking it 1:1 for server-side features.
-The current parity target is `ai@7.0.118`. Intentional differences are listed in
+The current parity target is `ai@7.0.127`. Intentional differences are listed in
 `docs/08-migration-guides/known-differences.mdx`; anything else that behaves
 differently from TypeScript is a bug.
 
@@ -40,7 +40,7 @@ go vet ./...
 go test -race ./...
 .github/scripts/build-examples.sh            # every example compiles and vets
 go run docs/scripts/validate-links.go -docs=docs/   # docs links + frontmatter
-golangci-lint run ./...                      # CI uses golangci-lint v2
+golangci-lint run ./...                      # v2.14.0 (pinned in CI), config in .golangci.yml
 ```
 
 For docs-site changes, also run `npm ci && npm run build` in `website/`.

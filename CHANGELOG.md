@@ -5,9 +5,9 @@ All notable changes to the Go AI SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.0] - Unreleased
+## [0.5.0] - 2026-10-02
 
-TS SDK parity target: `ai@7.0.118` (was `ai@6.0.137` in v0.4.0). Ships
+TS SDK parity target: `ai@7.0.127` (was `ai@6.0.137` in v0.4.0). Ships
 everything merged since the v0.4.0 tag — about 1,000 commits across the May,
 June, and September 2026 parity cycles. Condensed from and superseded in
 detail by [`release_notes/RELEASE_NOTES_V0.5.0.md`](release_notes/RELEASE_NOTES_V0.5.0.md);
@@ -18,8 +18,18 @@ step-by-step upgrade instructions are in
 
 - **New providers**: Voyage AI (embedding/rerank), Fish Audio, Cartesia
   (plus Ink 2 realtime transcription), Rev.ai, Hume, Luma, GMI Cloud, Z.AI,
-  MiniMax, TypeSafe AI, QuiverAI, and `anthropicaws` (Claude Platform on
-  AWS).
+  MiniMax, TypeSafe AI, QuiverAI, `anthropicaws` (Claude Platform on
+  AWS), and Topaz Labs (image enhance/generation, async video).
+- **Catch-up to `ai@7.0.127`**:
+  - ToolSearch `MaxResults` and custom `Search` ranking
+  - UI message stream keepalive (`KeepAliveMs`) and `ConvertDataPart`
+  - image-model file/mask input capabilities
+  - speech and transcription telemetry (including streaming transcription)
+  - GPT-6.1 Sol; Claude Sonnet 5.5 with between-tools thinking
+  - Azure MAI-Transcribe / MAI-Voice (including streaming transcription)
+  - Bedrock `requestMetadata`
+  - MCP `AuthorizationServerMismatchError` and conditional token invalidation
+  - harness `ReadHistory`, sub-agent activity events, `WorkDir: "."` and runtime-context forwarding
 - **Experimental surfaces**: Batch API, Evaluation, Files API v4, async
   video, streaming transcription/translation, and speech translation, each
   implemented by two or more providers.
@@ -52,9 +62,25 @@ step-by-step upgrade instructions are in
   Vertex, Bedrock, Gateway, and Cohere feature additions;
   `openai.Config.TransformRequestBody`; Groq model ID constants; see the
   release notes' New Features section for the per-provider breakdown.
+- **Docs for agents and search**: every docs page is published as markdown
+  (append `.md` to its URL), with `llms.txt` and `llms-full.txt` indexes,
+  Copy page / Open in ChatGPT / Open in Claude actions, per-page Open Graph
+  images, `robots.txt`, sitemap dates and schema.org structured data;
+  `AGENTS.md` for coding agents; the docs validator now checks YAML
+  frontmatter; new logo.
 
 ### Changed
 
+- **`GenerateText` / `StreamText` run a single step unless you set
+  `StopWhen`** (same as v0.4.0 and the TypeScript SDK's default
+  `stopWhen: isStepCount(1)`). If the model calls a tool, the tool runs and its
+  result is returned, but the model is not called again. To keep calling
+  tools until the model answers, set a stop condition, for example
+  `StopWhen: []ai.StopCondition{ai.IsStepCount(5)}`, or use
+  `agent.NewToolLoopAgent` (default 20 steps). Pre-release builds of v0.5.0
+  briefly looped with no default limit (up to a 1,000-step safety ceiling);
+  that regression is fixed, and the docs and examples now set `StopWhen`
+  wherever they expect a final answer after a tool call.
 - **Minimum Go version is now 1.26** (`go.mod` declares `go 1.26.0`). Go 1.25 is
   end-of-life, and the current `golang.org/x/*` modules require Go 1.26. CI tests
   Go 1.26 and 1.27.
@@ -90,7 +116,8 @@ step-by-step upgrade instructions are in
   the Agent API. **Telemetry**: tracers belong to registered integrations;
   `LegacyOpenTelemetry` span shape overhauled to match TS.
 - **Outgoing requests now carry a `User-Agent` header**
-  (`ai-sdk/<provider>/<version> runtime/go/<goVersion>`, plus `ai/<version>`
+  (`ai-sdk-<provider>/<version> go/<goVersion>`, the standards-compliant
+  form TS uses, plus `ai/<version>`
   from the non-streaming `pkg/ai` calls; `StreamText`, `StreamObject` and
   `Rerank` add no `ai/` tag), matching the TypeScript SDK.
 - Vendored `qjs.wasm` rebuilt from pinned upstream sources with job-queue
@@ -143,9 +170,23 @@ step-by-step upgrade instructions are in
   crashes in the agent subagent/skill registries; MCP stdio, TUI and
   workflow transport races and leaks; Azure system-only prompt panic;
   poller timeouts and cancellation; JSON numeric provider options; Vercel
-  Sandbox `Wait` ctx handling and stream error causes. Full list in the
-  release notes' Bug
-  Fixes section.
+  Sandbox `Wait` ctx handling and stream error causes; ACP now rejects a
+  misconfigured `askUserQuestions` that returns a provider-executed tool
+  call instead of silently accepting it; the LangChain adapter's argument
+  fallback (it never ran); agent and workflow lifecycle events now fill in
+  the new `ToolCall`/`ToolOutput`/`Provider`/`Instructions` fields, not
+  only the deprecated ones; Google speech rejects out-of-range sample
+  rates; Anthropic extended-thinking signatures were dropped from streamed
+  responses, breaking multi-step `StreamText` with thinking and tools; the
+  shared streaming tool-call tracker no longer aborts, corrupts, loses or
+  misorders calls when providers send unreliable tool-call labels; UI
+  message stream and text stream pipes now close their source when the
+  client disconnects (no leaked provider connections); Azure's
+  OpenAI-protocol transcription model supports streaming
+  (`gpt-realtime-whisper`); Google Vertex embeddings honor
+  `providerOptions.googleVertex`; harness tool-execution telemetry spans
+  start when the tool starts. Docs pages that showed APIs that don't exist were corrected
+  against the code. Full list in the release notes' Bug Fixes section.
 
 ### Security
 
@@ -160,9 +201,18 @@ step-by-step upgrade instructions are in
 - Tool approvals verified on resume (HMAC v1, TS-compatible).
 - Downloads: DNS pinning, synced blocklist, bounded reads, credential
   stripping across cross-origin redirects. MCP OAuth discovery SSRF-guarded.
-- Dependency bumps: `echo` v4.15.4 (CVE-2026-55677), `chi` v5.3.0, OTel
-  v1.44.0, `grpc` v1.83.2, `x/text` v0.41.0, `quic-go` v0.59.1 —
-  `govulncheck` reports no reachable vulnerabilities.
+- Dependency bumps: `echo` v4.16.0 (includes the CVE-2026-55677 fix from
+  v4.15.4), `chi` v5.3.2, OTel v1.46.0, `grpc` v1.84.0, `x/text` v0.42.0,
+  `quic-go` v0.63.0 and the other `golang.org/x` modules — `govulncheck`
+  reports no reachable vulnerabilities.
+- Resource names, regions and locations that would rewrite the request
+  host are rejected (Azure, Bedrock incl. Mantle, Google Vertex incl. MaaS
+  and Anthropic on Vertex); the TUI escapes untrusted terminal control
+  characters; ACP host-tool execution requires a one-use authorization
+  from a matching observed tool call.
+- CodeQL clean: allocation sizes are overflow-checked, JSON fragments are
+  built with the encoder instead of string splicing, and the examples no
+  longer log raw errors or URLs that can carry credentials.
 - BFL poll URLs, OpenAI image-edit URL inputs, and Anthropic batch
   `results_url` now fetched through the SSRF-safe download path.
 - Removed unused internal download helpers that skipped the SSRF checks.

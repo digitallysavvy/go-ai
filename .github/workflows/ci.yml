@@ -12,6 +12,9 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    permissions:
+      # Pushes the coverage badge JSON to the `badges` branch (main only).
+      contents: write
     strategy:
       matrix:
         go-version: ['1.26', '1.27']
@@ -34,13 +37,47 @@ jobs:
       - name: Run tests
         run: go test -v -race -coverprofile=coverage.out ./...
 
-      - name: Upload coverage to Codecov
+      # Coverage of the SDK packages (pkg/...), written to the run's Summary page.
+      - name: Coverage summary
         if: matrix.go-version == '1.26'
-        uses: codecov/codecov-action@v7
-        with:
-          file: ./coverage.out
-          flags: unittests
-          fail_ci_if_error: false
+        run: |
+          grep -v -E '/(examples|pkg/testutil|pkg/internal/third_party)/' coverage.out > sdk.cov
+          total=$(go tool cover -func=sdk.cov | awk '/^total:/ {print $3}')
+          {
+            echo "## Test coverage: ${total}"
+            echo
+            echo "SDK packages only (pkg/..., excluding test helpers and vendored code)."
+            echo
+            echo "<details><summary>Per package</summary>"
+            echo
+            echo "| Package | Coverage |"
+            echo "|---|---|"
+            awk 'NR > 1 { split($1, f, ":"); pkg = f[1]; sub("/[^/]*$", "", pkg); t[pkg] += $2; if ($3 > 0) c[pkg] += $2 } END { for (k in t) printf "| %s | %.1f%% |\n", k, 100 * c[k] / t[k] }' sdk.cov | sed 's|github.com/digitallysavvy/go-ai/||' | sort
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # README badge: shields.io reads badges/coverage.json from the `badges` branch.
+      - name: Publish coverage badge
+        if: matrix.go-version == '1.26' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        continue-on-error: true
+        run: |
+          pct=$(go tool cover -func=sdk.cov | awk '/^total:/ {sub("%", "", $3); print $3}')
+          color=$(awk -v p="$pct" 'BEGIN { print (p >= 80 ? "brightgreen" : p >= 60 ? "yellow" : "orange") }')
+          wt="$RUNNER_TEMP/badges"
+          if git ls-remote --exit-code --heads origin badges >/dev/null; then
+            git fetch -q origin badges
+            git worktree add -q -B badges "$wt" FETCH_HEAD
+          else
+            git worktree add -q --orphan -b badges "$wt"
+          fi
+          printf '{"schemaVersion":1,"label":"coverage","message":"%s%%","color":"%s"}\n' "$pct" "$color" > "$wt/coverage.json"
+          cd "$wt"
+          git add coverage.json
+          if git diff --cached --quiet; then exit 0; fi
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "coverage: ${pct}%"
+          git push -q origin badges
 
   lint:
     name: Lint
@@ -58,8 +95,9 @@ jobs:
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
-          args: --timeout=5m
+          # Pinned so a new release can't change lint results on unchanged code;
+          # bump deliberately (and run it locally) when upgrading.
+          version: v2.14.0
 
   build:
     name: Build

@@ -1,0 +1,10 @@
+# golangci-lint v2 configuration. CI pins the golangci-lint version in
+# .github/workflows/ci.yml; keep the two in step.
+version: "2"
+
+linters:
+  # The standard set: errcheck, govet, ineffassign, staticcheck, unused.
+  default: standard
+
+run:
+  timeout: 10m

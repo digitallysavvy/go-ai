@@ -1,7 +1,7 @@
 # Go AI SDK Docs Site
 
 This is the [Docusaurus 3](https://docusaurus.io/) site that renders the Markdown/MDX docs in
-[`../docs`](../docs) at **https://digitallysavvy.github.io/go-ai/**.
+[`../docs`](../docs) at **https://goaisdk.com/**.
 
 ## Local development
 

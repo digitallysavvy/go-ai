@@ -1,13 +1,49 @@
-# Go AI SDK
+<p align="center">
+  <a href="https://goaisdk.com/">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="./.github/assets/logo-dark.png">
+      <source media="(prefers-color-scheme: light)" srcset="./.github/assets/logo-light.png">
+      <img alt="Go AI SDK logo" src="./.github/assets/logo-light.png" width="260">
+    </picture>
+  </a>
+</p>
 
-[![CI](https://github.com/digitallysavvy/go-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/digitallysavvy/go-ai/actions/workflows/ci.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/digitallysavvy/go-ai)](https://goreportcard.com/report/github.com/digitallysavvy/go-ai)
-[![Go Reference](https://pkg.go.dev/badge/github.com/digitallysavvy/go-ai.svg)](https://pkg.go.dev/github.com/digitallysavvy/go-ai)
-[![License](https://img.shields.io/github/license/digitallysavvy/go-ai)](./LICENSE)
+<h1 align="center">Go AI SDK</h1>
+
+<p align="center">
+  <b>The AI SDK, in Go.</b><br>
+  Generate and stream text, call tools, run agents and connect to MCP servers<br>
+  across 49 providers, with one API that tracks the TypeScript AI SDK.
+</p>
+
+<p align="center">
+  <a href="https://github.com/digitallysavvy/go-ai/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/digitallysavvy/go-ai/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/digitallysavvy/go-ai/actions/workflows/ci.yml?query=branch%3Amain"><img alt="Coverage" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fdigitallysavvy%2Fgo-ai%2Fbadges%2Fcoverage.json"></a>
+  <a href="https://pkg.go.dev/github.com/digitallysavvy/go-ai"><img alt="Go Reference" src="https://pkg.go.dev/badge/github.com/digitallysavvy/go-ai.svg"></a>
+  <a href="./go.mod"><img alt="Go version" src="https://img.shields.io/github/go-mod/go-version/digitallysavvy/go-ai"></a>
+  <a href="https://github.com/digitallysavvy/go-ai/releases"><img alt="Release" src="https://img.shields.io/github/v/release/digitallysavvy/go-ai"></a>
+  <a href="./LICENSE"><img alt="License" src="https://img.shields.io/github/license/digitallysavvy/go-ai"></a>
+</p>
+
+<p align="center">
+  <a href="https://goaisdk.com/docs/getting-started"><b>Get started</b></a>
+  &nbsp;·&nbsp;
+  <a href="https://goaisdk.com/">Docs</a>
+  &nbsp;·&nbsp;
+  <a href="./examples">Examples</a>
+  &nbsp;·&nbsp;
+  <a href="https://goaisdk.com/llms.txt">llms.txt</a>
+  &nbsp;·&nbsp;
+  <a href="./CHANGELOG.md">Changelog</a>
+</p>
+
+```bash
+go get github.com/digitallysavvy/go-ai
+```
 
 The [Go AI SDK](https://github.com/digitallysavvy/go-ai) is a comprehensive toolkit designed to help you build AI-powered applications and agents using Go. It provides 1:1 feature parity with the [Vercel AI SDK](https://ai-sdk.dev) for backend functionality.
 
-To learn more about how to use the Go AI SDK, check out our [Documentation](./docs).
+To learn more about how to use the Go AI SDK, check out the [documentation](https://goaisdk.com/).
 
 ### What's new in v0.5.0
 
@@ -17,7 +53,7 @@ To learn more about how to use the Go AI SDK, check out our [Documentation](./do
 - **Async video** — `ai.ExperimentalStartVideo` / `ExperimentalGetVideoStatus` for fal, Google, Google Vertex, Replicate and xAI, plus Google Vertex Veo support
 - **Code-mode (experimental)** — `pkg/codemode` runs model-written JavaScript in a QuickJS-on-WebAssembly sandbox with TS execution-policy limits
 - **Harness** — `pkg/harness` (Go port of `@ai-sdk/harness`) with adapters for Claude Code, Codex, OpenCode, Deep Agents, ACP, Cursor, GitHub Copilot, Grok Build, and a Vercel Sandbox provider
-- **New providers** — GMI Cloud, Z.AI, MiniMax, TypeSafe AI, Fish Audio, Cartesia, Rev.ai, Hume, Luma
+- **New providers** — GMI Cloud, Z.AI, MiniMax, TypeSafe AI, Fish Audio, Cartesia, Rev.ai, Hume, Luma, Topaz Labs
 - **Security** — tool approvals verified on resume (HMAC v1), DNS-pinned downloads, MCP OAuth SSRF guards
 
 See the full [release notes](./release_notes/) and [changelog](./CHANGELOG.md), and the [v0.4 → v0.5 migration guide](./docs/08-migration-guides/from-v0.4-to-v0.5.mdx).
@@ -44,6 +80,8 @@ go get github.com/digitallysavvy/go-ai/pkg/providers/google
 
 ### Generating Text
 
+📖 [Generating text](https://goaisdk.com/docs/ai-sdk-core/generating-text) · [`GenerateText` reference](https://goaisdk.com/docs/reference/ai/generate-text)
+
 ```go
 import (
     "context"
@@ -60,7 +98,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-5.4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
         Model:  model,
@@ -72,6 +110,8 @@ func main() {
 ```
 
 ### Streaming Text
+
+📖 [Streaming](https://goaisdk.com/docs/foundations/streaming) · [`StreamText` reference](https://goaisdk.com/docs/reference/ai/stream-text)
 
 ```go
 stream, _ := ai.StreamText(ctx, ai.StreamTextOptions{
@@ -88,6 +128,8 @@ for chunk := range stream.Chunks() {
 ```
 
 ### Generating Structured Data
+
+📖 [Generating structured data](https://goaisdk.com/docs/ai-sdk-core/generating-structured-data)
 
 ```go
 import "github.com/digitallysavvy/go-ai/pkg/schema"
@@ -121,6 +163,8 @@ fmt.Printf("Recipe: %s\n", recipe.Name)
 
 ### Agents
 
+📖 [Agents overview](https://goaisdk.com/docs/agents/overview) · [Building agents](https://goaisdk.com/docs/agents/building-agents)
+
 Build autonomous agents with multi-step reasoning:
 
 ```go
@@ -144,6 +188,8 @@ fmt.Println(result.Text)
 ```
 
 ### Tool Calling
+
+📖 [Tools and tool calling](https://goaisdk.com/docs/ai-sdk-core/tools-and-tool-calling) · [MCP tools](https://goaisdk.com/docs/ai-sdk-core/mcp-tools)
 
 Extend AI capabilities with custom tools:
 
@@ -181,6 +227,8 @@ result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
 
 ### Embeddings
 
+📖 [Embeddings](https://goaisdk.com/docs/ai-sdk-core/embeddings)
+
 Generate embeddings for semantic search:
 
 ```go
@@ -196,8 +244,10 @@ result, _ := ai.Embed(ctx, ai.EmbedOptions{
 
 ### Image Generation
 
+📖 [Image generation](https://goaisdk.com/docs/ai-sdk-core/image-generation)
+
 ```go
-imageModel, _ := provider.ImageModel("dall-e-3")
+imageModel, _ := provider.ImageModel("gpt-image-2")
 
 result, _ := ai.GenerateImage(ctx, ai.GenerateImageOptions{
     Model:  imageModel,
@@ -210,9 +260,11 @@ result, _ := ai.GenerateImage(ctx, ai.GenerateImageOptions{
 
 ### Speech and Transcription
 
+📖 [Speech](https://goaisdk.com/docs/ai-sdk-core/speech) · [Transcription](https://goaisdk.com/docs/ai-sdk-core/transcription)
+
 ```go
 // Generate speech
-speechModel, _ := provider.SpeechModel("tts-1")
+speechModel, _ := provider.SpeechModel("gpt-4o-mini-tts")
 result, _ := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
     Model: speechModel,
     Text:  "Hello, welcome to the Go AI SDK!",
@@ -220,7 +272,7 @@ result, _ := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
 })
 
 // Transcribe audio
-transcriptionModel, _ := provider.TranscriptionModel("whisper-1")
+transcriptionModel, _ := provider.TranscriptionModel("gpt-4o-transcribe")
 transcript, _ := ai.Transcribe(ctx, ai.TranscribeOptions{
     Model: transcriptionModel,
     Audio: audioBytes,
@@ -228,6 +280,8 @@ transcript, _ := ai.Transcribe(ctx, ai.TranscribeOptions{
 ```
 
 ### Memory Optimization
+
+📖 [Memory optimization](https://goaisdk.com/docs/advanced/memory-optimization)
 
 Reduce memory consumption by 50-80% for image-heavy or large-context workloads using retention settings:
 
@@ -260,18 +314,18 @@ See [examples/features/retention](./examples/features/retention) for detailed us
 
 ## Supported Providers
 
-The Go AI SDK supports 45+ providers:
+The Go AI SDK supports 49 providers:
 
 | Provider         | Language Models              | Embeddings | Images / Video   | Speech       |
 | ---------------- | ---------------------------- | ---------- | ---------------- | ------------ |
-| **OpenAI**       | GPT-5.4, GPT-5.3, O3, O4    | ✓          | DALL-E           | TTS, Whisper |
-| **Anthropic**    | Claude Sonnet 4.6, Opus 4.6  | -          | -                | -            |
-| **Google**       | Gemini 3, 2.5 Pro/Flash      | ✓          | -                | -            |
-| **Google Vertex**| Gemini (enterprise)          | ✓          | Imagen           | -            |
+| **OpenAI**       | GPT-5 family, o-series       | ✓          | GPT Image        | TTS, Whisper |
+| **Anthropic**    | Claude Opus, Sonnet, Haiku   | -          | -                | -            |
+| **Google**       | Gemini 3 family              | ✓          | Gemini image, Veo | TTS, transcription |
+| **Google Vertex**| Gemini (enterprise)          | ✓          | Gemini image, Veo | TTS, transcription |
 | **AWS Bedrock**  | Claude, Titan, Nova, Llama   | ✓          | -                | -            |
 | **Azure OpenAI** | Azure-hosted models          | ✓          | ✓                | ✓            |
-| **xAI**          | Grok-3 (Responses API)       | -          | ✓                | -            |
-| **Mistral**      | Large, Small                 | ✓          | -                | -            |
+| **xAI**          | Grok 4 family (Responses)    | -          | ✓                | -            |
+| **Mistral**      | Large, Medium, Small         | ✓          | -                | -            |
 | **Cohere**       | Command R+, Command          | ✓          | -                | -            |
 | **Groq**         | Llama, Mixtral               | -          | -                | Whisper      |
 | **Together AI**  | Llama, Mixtral, Qwen         | -          | Stable Diffusion | -            |
@@ -284,11 +338,11 @@ The Go AI SDK supports 45+ providers:
 | **Prodia**       | img2img                      | -          | Video (T2V/I2V)  | -            |
 | **Ollama**       | Local models                 | ✓          | -                | -            |
 
-And more (Replicate, Hugging Face, Stability, ElevenLabs, Deepgram, Gladia, LMNT, ByteDance, Baseten, Cerebras, DeepInfra, Gateway, GMI Cloud, Z.AI, MiniMax, TypeSafe AI, Fish Audio, Cartesia, Rev.ai, Hume, Luma, BFL, Voyage, AssemblyAI, Vercel, Moonshot, Anthropic AWS, Google Vertex xAI, Open Responses, QuiverAI)...
+And more (Replicate, Hugging Face, Stability, ElevenLabs, Deepgram, Gladia, LMNT, ByteDance, Baseten, Cerebras, DeepInfra, Gateway, GMI Cloud, Z.AI, MiniMax, TypeSafe AI, Fish Audio, Cartesia, Rev.ai, Hume, Luma, BFL, Voyage, AssemblyAI, Vercel, Moonshot, Anthropic AWS, Google Vertex xAI, Open Responses, QuiverAI, Topaz Labs)...
 
 ## Features
 
-- ✅ **Unified API** — one interface for 30+ providers
+- ✅ **Unified API** — one interface for 49 providers
 - ✅ **Text Generation** — `GenerateText()` and `StreamText()`
 - ✅ **Structured Output** — type-safe `GenerateObject()` with JSON validation
 - ✅ **Tool Calling** — custom functions with per-tool timeouts
@@ -379,29 +433,29 @@ We provide **50+ production-ready examples** covering every feature. See the [ex
 
 ## Documentation
 
-- **[Getting Started](./docs/02-getting-started)** - Quick start guide
-- **[Foundations](./docs/02-foundations)** - Core concepts
-- **[AI SDK Core](./docs/03-ai-sdk-core)** - Complete API reference
-- **[Agents](./docs/03-agents)** - Building autonomous agents
-- **[Advanced](./docs/06-advanced)** - Production patterns
+- **[Getting Started](https://goaisdk.com/docs/getting-started)** - Quick start guide
+- **[Foundations](https://goaisdk.com/docs/foundations/overview)** - Core concepts
+- **[AI SDK Core](https://goaisdk.com/docs/ai-sdk-core/overview)** - Complete API reference
+- **[Agents](https://goaisdk.com/docs/agents/overview)** - Building autonomous agents
+- **[Advanced](https://goaisdk.com/docs/advanced)** - Production patterns
 
-The full docs site is at <https://digitallysavvy.github.io/go-ai/>.
+The full docs site is at <https://goaisdk.com/>.
 
 ### Docs for AI agents
 
-- [`llms.txt`](https://digitallysavvy.github.io/go-ai/llms.txt) indexes every docs page; [`llms-full.txt`](https://digitallysavvy.github.io/go-ai/llms-full.txt) is the whole documentation in one file.
-- Any docs URL with `.md` appended returns that page as markdown, for example <https://digitallysavvy.github.io/go-ai/docs/foundations/tools.md>.
+- [`llms.txt`](https://goaisdk.com/llms.txt) indexes every docs page; [`llms-full.txt`](https://goaisdk.com/llms-full.txt) is the whole documentation in one file.
+- Any docs URL with `.md` appended returns that page as markdown, for example <https://goaisdk.com/docs/foundations/tools.md>.
 - Each docs page has **Copy page**, **Open in ChatGPT** and **Open in Claude** buttons.
 - Coding agents working in this repository should read [AGENTS.md](./AGENTS.md).
 
 ## TypeScript Parity
 
-This SDK maintains 1:1 feature parity with the [Vercel AI SDK](https://ai-sdk.dev) **ai@7.0.118** for backend functionality:
+This SDK maintains 1:1 feature parity with the [Vercel AI SDK](https://ai-sdk.dev) **ai@7.0.127** for backend functionality:
 
 - Same public APIs and response shapes
 - Same provider interfaces and tool system
 - Same middleware and telemetry patterns
-- Compatible workflows across all 45+ providers
+- Compatible workflows across all 49 providers
 - Feature complete for server-side use
 
 A handful of features are intentionally TS-only (browser WebRTC realtime, the
