@@ -95,8 +95,9 @@ jobs:
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
-          args: --timeout=5m
+          # Pinned so a new release can't change lint results on unchanged code;
+          # bump deliberately (and run it locally) when upgrading.
+          version: v2.14.0
 
   build:
     name: Build
