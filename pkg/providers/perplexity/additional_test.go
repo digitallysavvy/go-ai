@@ -116,6 +116,50 @@ func TestPerplexityProviderLoadsAPIKeyFromEnvironmentAndUsesAgentEndpoint(t *tes
 	}
 }
 
+func TestPerplexityProviderSendsIntegrationAttributionHeader(t *testing.T) {
+	var integration string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		integration = r.Header.Get("X-Pplx-Integration")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp-1","created_at":1770768220,"model":"sonar","object":"response","status":"completed","output":[]}`))
+	}))
+	defer srv.Close()
+
+	p := New(Config{APIKey: "test-key", BaseURL: srv.URL + "/"})
+	model := NewLanguageModel(p, "sonar")
+	_, err := model.DoGenerate(t.Context(), &provider.GenerateOptions{})
+	if err != nil {
+		t.Fatalf("DoGenerate() error = %v", err)
+	}
+	if integration != "vercel-ai-sdk" {
+		t.Fatalf("X-Pplx-Integration = %q, want vercel-ai-sdk", integration)
+	}
+}
+
+func TestPerplexityProviderIntegrationAttributionHeaderCanBeOverridden(t *testing.T) {
+	var integration string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		integration = r.Header.Get("X-Pplx-Integration")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp-1","created_at":1770768220,"model":"sonar","object":"response","status":"completed","output":[]}`))
+	}))
+	defer srv.Close()
+
+	p := New(Config{
+		APIKey:  "test-key",
+		BaseURL: srv.URL + "/",
+		Headers: map[string]string{"X-Pplx-Integration": "custom"},
+	})
+	model := NewLanguageModel(p, "sonar")
+	_, err := model.DoGenerate(t.Context(), &provider.GenerateOptions{})
+	if err != nil {
+		t.Fatalf("DoGenerate() error = %v", err)
+	}
+	if integration != "custom" {
+		t.Fatalf("X-Pplx-Integration = %q, want custom", integration)
+	}
+}
+
 func TestPerplexityLanguageModel_Metadata(t *testing.T) {
 	t.Parallel()
 
