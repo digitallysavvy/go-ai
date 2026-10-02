@@ -368,6 +368,52 @@ data: [DONE]
 	}
 }
 
+// TestOpenAICompatStream_KeepsIDlessToolCallsDistinctOnReusedIndex ports the
+// OpenAI-compatible regression added by TS #18445 ("should keep id-less
+// tool calls distinct when the index is reused"): three id-less tool_calls
+// deltas sharing index 0 (read_file / write_file / read_file) must remain
+// three distinct tool calls, not merge into one or two.
+func TestOpenAICompatStream_KeepsIDlessToolCallsDistinctOnReusedIndex(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"type":"function","function":{"name":"read_file","arguments":"{\"path\":\"p0\"}"}}]},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"type":"function","function":{"name":"write_file","arguments":"{\"path\":\"p1\"}"}}]},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"type":"function","function":{"name":"read_file","arguments":"{\"path\":\"p2\"}"}}]},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`
+	stream := newTestStream(sseData)
+	defer stream.Close() //nolint:errcheck
+
+	chunks := collectStreamChunks(t, stream)
+	toolCalls := compatChunksOfType(chunks, provider.ChunkTypeToolCall)
+	if len(toolCalls) != 3 {
+		t.Fatalf("expected 3 tool-call chunks, got %d in %#v", len(toolCalls), chunks)
+	}
+
+	wantNames := []string{"read_file", "write_file", "read_file"}
+	wantInputs := []string{`{"path":"p0"}`, `{"path":"p1"}`, `{"path":"p2"}`}
+	ids := map[string]bool{}
+	for i, tc := range toolCalls {
+		if tc.ToolCall.ToolName != wantNames[i] {
+			t.Fatalf("toolCalls[%d].ToolName = %q, want %q", i, tc.ToolCall.ToolName, wantNames[i])
+		}
+		if tc.ToolCall.RawArguments != wantInputs[i] {
+			t.Fatalf("toolCalls[%d].RawArguments = %q, want %q", i, tc.ToolCall.RawArguments, wantInputs[i])
+		}
+		if strings.TrimSpace(tc.ToolCall.ID) == "" {
+			t.Fatalf("toolCalls[%d].ID is blank", i)
+		}
+		ids[tc.ToolCall.ID] = true
+	}
+	if len(ids) != 3 {
+		t.Fatalf("expected 3 distinct tool call ids, got %#v", ids)
+	}
+}
+
 func TestOpenAICompatStream_UsesIDFallbackWhenIndexMissing(t *testing.T) {
 	sseData := `data: {"choices":[{"delta":{"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"q\":\""}}]},"finish_reason":null}]}
 

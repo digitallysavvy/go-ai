@@ -101,3 +101,29 @@ v0.4.0.
 Streamed responses on providers built on the shared base now report token
 usage: the trailing `stream_options.include_usage` chunk that v0.4.0
 dropped is applied to the final usage totals.
+
+## Unreliable Streamed Tool-Call Labels
+
+Some OpenAI-compatible gateways omit, blank, repeat, or change streamed
+tool-call `id` and `index` values mid-stream, and may strip the `type`
+field from individual deltas. The shared tool-call tracker (used by OpenAI,
+OpenAI-compatible providers, Groq, DeepSeek, Alibaba, Mistral, and
+MoonshotAI) now correlates fragments using the wire ID, index, function
+name, incremental argument structure, and explicit-start evidence together,
+rather than treating any single label as authoritative:
+
+- Tool calls that reuse the same `index` (or the same `id`, or both) are
+  kept distinct once another signal — a new function name, or a fresh JSON
+  object/array start — shows the provider has moved on to a new call.
+- A continuation fragment with a conflicting or unattributable label (no
+  matching `id`/`index`, and more than one call it could belong to) is
+  dropped instead of being merged into the wrong call.
+- A tool call whose function name only arrives on a later, correlated delta
+  (rather than on the delta that first introduces its `id`/`index`) is still
+  reported correctly, with its buffered arguments included.
+
+This requires no code changes — it is a correctness fix to the existing
+`tool-input-start` / `tool-input-delta` / `tool-input-end` / `tool-call`
+chunk sequence for well-formed streams. A tool call whose function name
+never arrives by the end of the stream still surfaces as an
+`InvalidResponseDataError` error chunk, exactly as before.
