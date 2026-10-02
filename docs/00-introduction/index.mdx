@@ -25,6 +25,7 @@ import (
     "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
     "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 )
@@ -45,12 +46,17 @@ func main() {
     anthropicModel, _ := anthropicProvider.LanguageModel("claude-sonnet-4-5")
 
     // Same API for both!
-    result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
-        Model:  openaiModel, // or anthropicModel
-        Prompt: "Why is Go great for AI applications?",
-    })
+    for _, model := range []provider.LanguageModel{openaiModel, anthropicModel} {
+        result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:  model,
+            Prompt: "Why is Go great for AI applications?",
+        })
+        if err != nil {
+            log.Fatal(err)
+        }
 
-    fmt.Println(result.Text)
+        fmt.Println(result.Text)
+    }
 }
 ```
 

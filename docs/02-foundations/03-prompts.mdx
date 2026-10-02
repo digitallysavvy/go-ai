@@ -69,9 +69,9 @@ import "github.com/digitallysavvy/go-ai/pkg/provider/types"
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model: model,
     Messages: []types.Message{
-        {Role: "user", Content: types.TextContent{Text: "Hi!"}},
-        {Role: "assistant", Content: types.TextContent{Text: "Hello, how can I help?"}},
-        {Role: "user", Content: types.TextContent{Text: "Where can I buy the best Currywurst in Berlin?"}},
+        {Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Hi!"}}},
+        {Role: types.RoleAssistant, Content: []types.ContentPart{types.TextContent{Text: "Hello, how can I help?"}}},
+        {Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Where can I buy the best Currywurst in Berlin?"}}},
     },
 })
 ```
@@ -86,19 +86,17 @@ Instead of sending text in the `Content` field, you can send a slice of parts th
 
 Text content is the most common type of content. It is a string that is passed to the model.
 
-If you only need to send text content in a message, the `Content` can be a `TextContent`, but you can also use it to send multiple content parts.
+If you only need to send text content in a message, `Content` can be a single-element slice of `TextContent`, but it can also hold multiple content parts.
 
 ```go
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model: model,
     Messages: []types.Message{
         {
-            Role: "user",
-            Content: types.MultiContent{
-                Parts: []types.ContentPart{
-                    types.TextPart{
-                        Text: "Where can I buy the best Currywurst in Berlin?",
-                    },
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.TextContent{
+                    Text: "Where can I buy the best Currywurst in Berlin?",
                 },
             },
         },
@@ -125,13 +123,12 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model: model,
     Messages: []types.Message{
         {
-            Role: "user",
-            Content: types.MultiContent{
-                Parts: []types.ContentPart{
-                    types.TextPart{Text: "Describe the image in detail."},
-                    types.ImagePart{
-                        Image: imageData,
-                    },
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.TextContent{Text: "Describe the image in detail."},
+                types.ImageContent{
+                    Image:    imageData,
+                    MimeType: "image/png",
                 },
             },
         },
@@ -144,18 +141,18 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 ```go
 imageData, _ := os.ReadFile("./data/comic-cat.png")
 base64Image := base64.StdEncoding.EncodeToString(imageData)
+decodedImage, _ := base64.StdEncoding.DecodeString(base64Image)
 
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model: model,
     Messages: []types.Message{
         {
-            Role: "user",
-            Content: types.MultiContent{
-                Parts: []types.ContentPart{
-                    types.TextPart{Text: "Describe the image in detail."},
-                    types.ImagePart{
-                        Image: base64Image,
-                    },
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.TextContent{Text: "Describe the image in detail."},
+                types.ImageContent{
+                    Image:    decodedImage,
+                    MimeType: "image/png",
                 },
             },
         },
@@ -170,13 +167,11 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model: model,
     Messages: []types.Message{
         {
-            Role: "user",
-            Content: types.MultiContent{
-                Parts: []types.ContentPart{
-                    types.TextPart{Text: "Describe the image in detail."},
-                    types.ImagePart{
-                        Image: "https://github.com/vercel/ai/blob/main/examples/ai-core/data/comic-cat.png?raw=true",
-                    },
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.TextContent{Text: "Describe the image in detail."},
+                types.ImageContent{
+                    URL: "https://github.com/vercel/ai/blob/main/examples/ai-core/data/comic-cat.png?raw=true",
                 },
             },
         },
@@ -206,19 +201,22 @@ import (
 
 pdfData, _ := os.ReadFile("./data/example.pdf")
 
+model, err := googleProvider.LanguageModel("gemini-1.5-flash")
+if err != nil {
+    log.Fatal(err)
+}
+
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-    Model: googleProvider.LanguageModel("gemini-1.5-flash"),
+    Model: model,
     Messages: []types.Message{
         {
-            Role: "user",
-            Content: types.MultiContent{
-                Parts: []types.ContentPart{
-                    types.TextPart{Text: "What is the file about?"},
-                    types.FilePart{
-                        MediaType: "application/pdf",
-                        Data:      pdfData,
-                        Filename:  "example.pdf", // optional, not used by all providers
-                    },
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.TextContent{Text: "What is the file about?"},
+                types.FileContent{
+                    MediaType: "application/pdf",
+                    Data:      pdfData,
+                    Filename:  "example.pdf", // optional, not used by all providers
                 },
             },
         },
@@ -236,18 +234,21 @@ import (
 
 audioData, _ := os.ReadFile("./data/galileo.mp3")
 
+model, err := openaiProvider.LanguageModel("gpt-4o-audio-preview")
+if err != nil {
+    log.Fatal(err)
+}
+
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-    Model: openaiProvider.LanguageModel("gpt-4o-audio-preview"),
+    Model: model,
     Messages: []types.Message{
         {
-            Role: "user",
-            Content: types.MultiContent{
-                Parts: []types.ContentPart{
-                    types.TextPart{Text: "What is the audio saying?"},
-                    types.FilePart{
-                        MediaType: "audio/mpeg",
-                        Data:      audioData,
-                    },
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.TextContent{Text: "What is the audio saying?"},
+                types.FileContent{
+                    MediaType: "audio/mpeg",
+                    Data:      audioData,
                 },
             },
         },
@@ -265,8 +266,8 @@ Assistant messages are messages that have a role of `assistant`. They are typica
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model: model,
     Messages: []types.Message{
-        {Role: "user", Content: types.TextContent{Text: "Hi!"}},
-        {Role: "assistant", Content: types.TextContent{Text: "Hello, how can I help?"}},
+        {Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Hi!"}}},
+        {Role: types.RoleAssistant, Content: []types.ContentPart{types.TextContent{Text: "Hello, how can I help?"}}},
     },
 })
 ```
@@ -278,19 +279,17 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model: model,
     Messages: []types.Message{
         {
-            Role:    "user",
-            Content: types.TextContent{Text: "How many calories are in this block of cheese?"},
+            Role:    types.RoleUser,
+            Content: []types.ContentPart{types.TextContent{Text: "How many calories are in this block of cheese?"}},
         },
         {
-            Role: "assistant",
-            Content: types.MultiContent{
-                Parts: []types.ContentPart{
-                    types.ToolCallPart{
-                        ToolCallID: "12345",
-                        ToolName:   "get-nutrition-data",
-                        Input: map[string]interface{}{
-                            "cheese": "Roquefort",
-                        },
+            Role: types.RoleAssistant,
+            Content: []types.ContentPart{
+                types.ToolCallContent{
+                    ToolCallID: "12345",
+                    ToolName:   "get-nutrition-data",
+                    Arguments: map[string]interface{}{
+                        "cheese": "Roquefort",
                     },
                 },
             },
@@ -310,45 +309,42 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model: model,
     Messages: []types.Message{
         {
-            Role: "user",
-            Content: types.MultiContent{
-                Parts: []types.ContentPart{
-                    types.TextPart{Text: "How many calories are in this block of cheese?"},
-                    types.ImagePart{Image: imageData},
-                },
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.TextContent{Text: "How many calories are in this block of cheese?"},
+                types.ImageContent{Image: imageData, MimeType: "image/jpeg"},
             },
         },
         {
-            Role: "assistant",
-            Content: types.MultiContent{
-                Parts: []types.ContentPart{
-                    types.ToolCallPart{
-                        ToolCallID: "12345",
-                        ToolName:   "get-nutrition-data",
-                        Input: map[string]interface{}{
-                            "cheese": "Roquefort",
-                        },
+            Role: types.RoleAssistant,
+            Content: []types.ContentPart{
+                types.ToolCallContent{
+                    ToolCallID: "12345",
+                    ToolName:   "get-nutrition-data",
+                    Arguments: map[string]interface{}{
+                        "cheese": "Roquefort",
                     },
-                    // there could be more tool calls here (parallel calling)
                 },
+                // there could be more tool calls here (parallel calling)
             },
         },
         {
-            Role: "tool",
-            Content: types.MultiContent{
-                Parts: []types.ContentPart{
-                    types.ToolResultPart{
-                        ToolCallID: "12345", // needs to match the tool call id
-                        ToolName:   "get-nutrition-data",
-                        Output: map[string]interface{}{
+            Role: types.RoleTool,
+            Content: []types.ContentPart{
+                types.ToolResultContent{
+                    ToolCallID: "12345", // needs to match the tool call id
+                    ToolName:   "get-nutrition-data",
+                    Output: &types.ToolResultOutput{
+                        Type: types.ToolResultOutputJSON,
+                        Value: map[string]interface{}{
                             "name":     "Cheese, roquefort",
                             "calories": 369,
                             "fat":      31,
                             "protein":  22,
                         },
                     },
-                    // there could be more tool results here (parallel calling)
                 },
+                // there could be more tool results here (parallel calling)
             },
         },
     },
@@ -364,15 +360,15 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model: model,
     Messages: []types.Message{
         {
-            Role:    "system",
-            Content: types.TextContent{Text: "You help planning travel itineraries."},
+            Role:    types.RoleSystem,
+            Content: []types.ContentPart{types.TextContent{Text: "You help planning travel itineraries."}},
         },
         {
-            Role: "user",
-            Content: types.TextContent{
+            Role: types.RoleUser,
+            Content: []types.ContentPart{types.TextContent{
                 Text: "I am planning a trip to Berlin for 3 days. " +
                     "Please suggest the best tourist activities for me to do.",
-            },
+            }},
         },
     },
 })
@@ -406,8 +402,8 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model: model,
     Messages: []types.Message{
         {
-            Role:    "system",
-            Content: types.TextContent{Text: "Cached system message"},
+            Role:    types.RoleSystem,
+            Content: []types.ContentPart{types.TextContent{Text: "Cached system message"}},
             ProviderOptions: map[string]interface{}{
                 "anthropic": map[string]interface{}{
                     "cacheControl": map[string]interface{}{
@@ -429,15 +425,13 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model: model,
     Messages: []types.Message{
         {
-            Role: "user",
-            Content: types.MultiContent{
-                Parts: []types.ContentPart{
-                    types.ImagePart{
-                        Image: imageURL,
-                        ProviderOptions: map[string]interface{}{
-                            "openai": map[string]interface{}{
-                                "imageDetail": "low",
-                            },
+            Role: types.RoleUser,
+            Content: []types.ContentPart{
+                types.ImageContent{
+                    URL: imageURL,
+                    ProviderOptions: map[string]interface{}{
+                        "openai": map[string]interface{}{
+                            "imageDetail": "low",
                         },
                     },
                 },

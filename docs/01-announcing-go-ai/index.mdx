@@ -27,13 +27,16 @@ Access 26+ AI providers through a single, consistent API:
 // Switch providers with just one line
 openaiModel, _ := openaiProvider.LanguageModel("gpt-4")
 claudeModel, _ := anthropicProvider.LanguageModel("claude-sonnet-4-5")
-geminiModel, _ := googleProvider.LanguageModel("gemini-pro")
+geminiModel, _ := googleProvider.LanguageModel("gemini-1.5-flash")
 
 // Same API for all
-result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
-    Model:  openaiModel, // or claudeModel, or geminiModel
-    Prompt: "Hello!",
-})
+for _, model := range []provider.LanguageModel{openaiModel, claudeModel, geminiModel} {
+    result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Hello!",
+    })
+    fmt.Println(result.Text)
+}
 ```
 
 ### Comprehensive Feature Set

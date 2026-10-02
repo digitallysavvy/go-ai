@@ -216,7 +216,7 @@ import "github.com/digitallysavvy/go-ai/pkg/providers/google"
 provider := google.New(google.Config{
     APIKey: os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY"),
 })
-model, _ := provider.LanguageModel("gemini-pro")
+model, _ := provider.LanguageModel("gemini-1.5-flash")
 ```
 
 The rest of your code remains exactly the same!
