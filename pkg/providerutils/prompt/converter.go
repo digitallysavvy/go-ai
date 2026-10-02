@@ -67,6 +67,25 @@ type ToOpenAIMessagesOptions struct {
 	// converter that only ever handles images (Groq, Cohere, Alibaba) must
 	// also leave this false.
 	AllowVideo bool
+
+	// SupportsMultiPartToolContent enables structured (multi-part) content
+	// for a tool-result message whose output is "content" (text/file
+	// blocks), emitting an array of OpenAI-compatible content parts
+	// (text/image_url/video_url/input_audio/file, via the same conversion
+	// as user-message file parts) instead of JSON.stringify-ing the whole
+	// block array into a single string (TS commit 04be48fbf3, #21857:
+	// @ai-sdk/openai-compatible's `supportsMultiPartToolContent` provider
+	// setting). Defaults to false (every ToOpenAIMessages caller's prior
+	// behavior): enable only for an endpoint documented to accept
+	// structured tool-result content in Chat Completions requests.
+	//
+	// Unlike TS's convertToolContentPart, which throws
+	// UnsupportedFunctionalityError for a "custom" content block, this
+	// shared converter has no error return; a block that cannot be
+	// represented as a structured part instead falls back to the whole
+	// output's JSON-stringified string, the same as SupportsMultiPartToolContent
+	// being false.
+	SupportsMultiPartToolContent bool
 }
 
 // AssistantToolCallContentMode is documented on
@@ -108,6 +127,13 @@ func ToOpenAIMessages(messages []types.Message, opts ...ToOpenAIMessagesOptions)
 					toolMsg := map[string]interface{}{
 						"role":         "tool",
 						"tool_call_id": p.ToolCallID,
+					}
+					if opt.SupportsMultiPartToolContent {
+						if parts, ok := openAIToolResultContentParts(p); ok {
+							toolMsg["content"] = parts
+							result = append(result, toolMsg)
+							continue
+						}
 					}
 					text := openAIToolResultText(p)
 					if opt.IncludePromptCacheBreakpoint {
@@ -454,6 +480,73 @@ func openAIToolResultText(p types.ToolResultContent) string {
 		return jsonStringify(value)
 	default: // json, error-json
 		return jsonStringify(out.value)
+	}
+}
+
+// openAIToolResultContentParts converts a "content" kind tool-result
+// output's blocks into structured OpenAI-compatible content parts, used
+// only when ToOpenAIMessagesOptions.SupportsMultiPartToolContent is set.
+// Mirrors TS's convertToolContentPart (packages/openai-compatible's
+// convert-to-openai-compatible-chat-messages.ts, commit 04be48fbf3,
+// #21857). ok is false when the output isn't "content" kind, or any block
+// can't be represented as a structured part -- the caller then falls back
+// to openAIToolResultText's JSON-stringified string, matching
+// SupportsMultiPartToolContent being false (see its doc comment for why
+// this differs from TS's throwing behavior).
+func openAIToolResultContentParts(p types.ToolResultContent) (parts []map[string]interface{}, ok bool) {
+	out := resolveToolOutput(p)
+	if out.kind != "content" {
+		return nil, false
+	}
+	// Mirror openAIToolResultText's ToolResultOutput.MarshalJSON Value/
+	// Content precedence: a round-tripped output carries blocks in Value,
+	// a natively built one in Content.
+	blocks, hasValueBlocks := out.value.([]types.ToolResultContentBlock)
+	if !hasValueBlocks {
+		blocks = out.content
+	}
+	parts = make([]map[string]interface{}, 0, len(blocks))
+	for _, block := range blocks {
+		part, ok := openAIToolResultContentBlockPart(block)
+		if !ok {
+			return nil, false
+		}
+		parts = append(parts, part)
+	}
+	return parts, true
+}
+
+// openAIToolResultContentBlockPart converts one tool-result content block
+// into the structured OpenAI-compatible content-part shape, reusing
+// openAIFileContentPart's (lenient) file/image conversion. ok is false for a
+// block type with no representable shape here (e.g. a provider-specific
+// custom block), signaling the caller to fall back to the stringified form.
+func openAIToolResultContentBlockPart(block types.ToolResultContentBlock) (map[string]interface{}, bool) {
+	switch b := block.(type) {
+	case types.TextContentBlock:
+		return map[string]interface{}{"type": "text", "text": b.Text}, true
+	case types.FileContentBlock:
+		fc := types.FileContent{
+			MediaType:       firstNonEmpty(b.MediaType, b.FileData.MediaType),
+			Filename:        b.Filename,
+			URL:             b.URL,
+			Reference:       b.Reference,
+			Text:            b.Text,
+			Data:            b.Data,
+			ProviderOptions: b.ProviderOptions,
+		}
+		if !b.FileData.IsZero() {
+			fc.FileData = b.FileData
+		}
+		return openAIFileContentPart(fc, true), true
+	case types.ImageContentBlock:
+		return openAIFileContentPart(types.FileContent{
+			MediaType:       b.MediaType,
+			Data:            b.Data,
+			ProviderOptions: b.ProviderOptions,
+		}, true), true
+	default:
+		return nil, false
 	}
 }
 

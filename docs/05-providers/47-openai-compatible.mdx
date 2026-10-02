@@ -65,6 +65,27 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 plain `openai` package used directly against a custom `BaseURL` still omits
 video parts unless the endpoint is one of the providers above.
 
+## Multipart Tool Result Content
+
+By default, a tool result's structured `content` output (text and file
+blocks, e.g. from `toModelOutput`) is sent as a single JSON-stringified
+`content` field, since not every OpenAI-compatible endpoint accepts
+structured tool-result content. Endpoints documented to extend Chat
+Completions with structured tool-result content can opt in internally via
+`prompt.ToOpenAIMessagesOptions.SupportsMultiPartToolContent`, which instead
+sends an array of content parts (text/image_url/video_url/input_audio/file)
+so a multimodal model can see an image a tool returned, rather than its
+JSON-stringified representation:
+
+```go
+toolMessages := prompt.ToOpenAIMessages(messages, prompt.ToOpenAIMessagesOptions{
+    SupportsMultiPartToolContent: true,
+})
+```
+
+There is no per-call setting; a provider implementation sets this only for
+an endpoint it has confirmed accepts the structured shape.
+
 ## Streams Truncated Without A Finish Reason
 
 If the underlying SSE stream ends without ever sending a `finish_reason`
