@@ -1,29 +1,45 @@
 ---
-title: DynamicTool
-description: "API reference for the DynamicTool helper, which creates Go AI SDK tools dynamically from function signatures and descriptions at runtime."
+title: Dynamic Tools
+description: "API reference for dynamic tools in the Go AI SDK: registering tools at runtime with types.Tool.Type set to types.ToolTypeDynamic instead of a static, typed definition."
 ---
 
-# DynamicTool
+# Dynamic Tools
 
-Helper function to create tools dynamically from function signatures and descriptions.
+The Go AI SDK does not have a `DynamicTool` helper function. Instead, a tool
+is marked as **dynamic** by setting its `Type` field to `types.ToolTypeDynamic`.
+Dynamic tools are registered and typed at runtime (for example, tools loaded
+from an MCP server or built from user-supplied configuration) rather than
+being known at compile time. The SDK tracks dynamic tool calls and results
+separately from statically defined ones.
 
-## Signature
+## Tool.Type
 
 ```go
-func DynamicTool(name string, description string, fn interface{}) (types.Tool, error)
+const (
+    ToolTypeFunction        = "function"  // default: locally executed function tool
+    ToolTypeDynamic         = "dynamic"   // dynamic tool whose schema can vary at runtime
+    ToolTypeProviderDefined = "provider"  // provider-defined native tool
+    ToolTypeProviderExecuted = "provider-executed"
+)
 ```
 
-## Parameters
+Setting `Type: types.ToolTypeDynamic` on a `types.Tool` tells the SDK this
+tool's shape isn't known statically. It otherwise has the same fields as any
+other tool: `Name`, `Description`, `Parameters`, and `Execute`.
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| name | string | Unique tool name |
-| description | string | What the tool does |
-| fn | interface{} | Function to wrap as a tool |
+## Tracking dynamic tool calls and results
+
+Results that come from dynamic tools are split out from static ones:
+
+- `ai.GenerateTextResult.DynamicToolCalls []types.ToolCall`
+- `ai.GenerateTextResult.DynamicToolResults []types.ToolResult`
+- `ai.StreamTextResult.DynamicToolCalls() []types.ToolCall`
+- `ai.StreamTextResult.DynamicToolResults() []types.ToolResult`
+- `types.ToolCall.Dynamic bool` and `types.ToolResult.Dynamic bool`
 
 ## Examples
 
-### Basic Dynamic Tool
+### Registering a dynamic tool
 
 ```go
 package main
@@ -34,85 +50,55 @@ import (
     "log"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
-func getWeather(location string, units string) (string, error) {
-    return fmt.Sprintf("Weather in %s: 72°F", location), nil
-}
-
 func main() {
-    tool, err := ai.DynamicTool(
-        "get_weather",
-        "Get current weather for a location",
-        getWeather,
-    )
+    p := openai.New(openai.Config{APIKey: "your-api-key"})
+    model, _ := p.LanguageModel("gpt-4")
+
+    searchTool := types.Tool{
+        Name:        "search_db",
+        Type:        types.ToolTypeDynamic,
+        Description: "Search the database",
+        Parameters: map[string]interface{}{
+            "type": "object",
+            "properties": map[string]interface{}{
+                "query": map[string]interface{}{"type": "string"},
+            },
+            "required": []string{"query"},
+        },
+        Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+            query := input["query"].(string)
+            return []string{"result for " + query}, nil
+        },
+    }
+
+    result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Search the database for invoices",
+        Tools:  []types.Tool{searchTool},
+    })
     if err != nil {
         log.Fatal(err)
     }
 
-    // Use tool with GenerateText
-    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-        Model:  model,
-        Prompt: "What's the weather in Tokyo?",
-        Tools:  []types.Tool{tool},
-    })
+    fmt.Printf("Dynamic tool calls: %d\n", len(result.DynamicToolCalls))
 }
 ```
 
-### With Context
+### Checking whether a result came from a dynamic tool
 
 ```go
-func searchDatabase(ctx context.Context, query string) ([]string, error) {
-    // Database search implementation
-    return []string{"result1", "result2"}, nil
+for _, tr := range result.ToolResults {
+    if tr.Dynamic {
+        fmt.Printf("dynamic tool %s returned %v\n", tr.ToolName, tr.Result)
+    }
 }
-
-tool, err := ai.DynamicTool(
-    "search_db",
-    "Search the database",
-    searchDatabase,
-)
-```
-
-### With Multiple Parameters
-
-```go
-func sendEmail(to string, subject string, body string) error {
-    // Email sending logic
-    fmt.Printf("Sending email to %s\n", to)
-    return nil
-}
-
-tool, err := ai.DynamicTool(
-    "send_email",
-    "Send an email to a recipient",
-    sendEmail,
-)
-```
-
-### With Struct Return
-
-```go
-type SearchResult struct {
-    Title string
-    URL   string
-    Score float64
-}
-
-func webSearch(query string, limit int) ([]SearchResult, error) {
-    return []SearchResult{
-        {Title: "Result 1", URL: "https://example.com", Score: 0.95},
-    }, nil
-}
-
-tool, err := ai.DynamicTool(
-    "web_search",
-    "Search the web and return results",
-    webSearch,
-)
 ```
 
 ## See Also
 
-- [Tool](./tool.mdx) - Manual tool definition
+- [Tool](./tool.mdx) - Static tool definition
 - [Tool Calling Guide](../../03-ai-sdk-core/15-tools-and-tool-calling.mdx)
