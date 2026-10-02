@@ -347,9 +347,12 @@ Represents an action the agent has decided to take:
 
 ```go
 type AgentAction struct {
-    ToolCall   types.ToolCall  // The tool being called
-    StepNumber int             // Step when action was decided
-    Reasoning  string          // Agent's reasoning for the action
+    ToolCall    types.ToolCall // The tool being called
+    StepNumber  int            // Step when action was decided
+    Reasoning   string         // Agent's reasoning for the action
+    RunID       string         // Unique identifier for this agent execution chain
+    ParentRunID string         // ID of the parent run (empty for top-level runs)
+    Tags        []string       // User-defined labels for categorizing runs
 }
 ```
 
@@ -363,6 +366,9 @@ type AgentFinish struct {
     StepNumber   int                    // Step when agent finished
     FinishReason types.FinishReason     // Why the agent finished
     Metadata     map[string]interface{} // Additional metadata
+    RunID        string                 // Unique identifier for this agent execution chain
+    ParentRunID  string                 // ID of the parent run (empty for top-level runs)
+    Tags         []string               // User-defined labels for categorizing runs
 }
 ```
 
