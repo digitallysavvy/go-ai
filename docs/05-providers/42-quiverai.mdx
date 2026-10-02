@@ -103,8 +103,9 @@ full runnable examples.
 ## Workflow Serialization
 
 QuiverAI image models can cross a workflow boundary with
-`providerutils.SerializeModel` / `DeserializeModel` (Open Responses language
-models can too, gated by `provider.SerializableModelStrict` and refused
+`provider.SerializeImageModel` / `DeserializeImageModel` (Open Responses
+language models can too, via `providerutils.SerializeModel` /
+`DeserializeModel`, gated by `provider.SerializableModelStrict` and refused
 when extensions are registered). See
 [Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
 for the mechanism.
