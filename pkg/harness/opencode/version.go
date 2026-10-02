@@ -5,4 +5,4 @@ package opencode
 // harness-opencode/src/version.ts). Pinned to the embedded bridge's source
 // package version (see pkg/harness/bridges.VERSIONS.json,
 // adapters.opencode.sourceVersion).
-const Version = "1.0.125"
+const Version = "1.0.140"

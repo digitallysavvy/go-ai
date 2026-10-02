@@ -617,8 +617,8 @@ func TestDoStart_ClientAppSetForAIGatewayAuth(t *testing.T) {
 	}
 
 	env, _ := captured["env"].(map[string]any)
-	if env["CLAUDE_AGENT_SDK_CLIENT_APP"] != "ai-sdk/harness-claude-code/1.0.127" {
-		t.Errorf("env.CLAUDE_AGENT_SDK_CLIENT_APP = %v, want ai-sdk/harness-claude-code/1.0.127", env["CLAUDE_AGENT_SDK_CLIENT_APP"])
+	if env["CLAUDE_AGENT_SDK_CLIENT_APP"] != "ai-sdk/harness-claude-code/1.0.142" {
+		t.Errorf("env.CLAUDE_AGENT_SDK_CLIENT_APP = %v, want ai-sdk/harness-claude-code/1.0.142", env["CLAUDE_AGENT_SDK_CLIENT_APP"])
 	}
 }
 

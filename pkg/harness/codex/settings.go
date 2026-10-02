@@ -1,5 +1,5 @@
 // Package codex is the Go host-side port of TS `@ai-sdk/harness-codex`
-// (`createCodex`), pinned to ai@7.0.118.
+// (`createCodex`), pinned to ai@7.0.127.
 //
 // It implements harness.Harness/Session/PromptControl by launching the
 // embedded TS bridge (pkg/harness/bridges, WG6) as `node bridge.mjs` inside

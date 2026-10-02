@@ -1,5 +1,5 @@
 // Package workflow's harness.go ports TS `@ai-sdk/workflow-harness`
-// (packages/workflow-harness/src/*.ts at ai@7.0.118): helpers for running a
+// (packages/workflow-harness/src/*.ts at ai@7.0.127): helpers for running a
 // pkg/harness.Agent turn as one execution of a durable workflow step,
 // suspending and resuming across executions (a tool-approval pause, a
 // time-slice budget, or a semantic step boundary), and persisting the turn's
