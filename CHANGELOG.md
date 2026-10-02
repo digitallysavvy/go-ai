@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.5.0] - 2026-10-02
 
-TS SDK parity target: `ai@7.0.118` (was `ai@6.0.137` in v0.4.0). Ships
+TS SDK parity target: `ai@7.0.127` (was `ai@6.0.137` in v0.4.0). Ships
 everything merged since the v0.4.0 tag — about 1,000 commits across the May,
 June, and September 2026 parity cycles. Condensed from and superseded in
 detail by [`release_notes/RELEASE_NOTES_V0.5.0.md`](release_notes/RELEASE_NOTES_V0.5.0.md);
@@ -18,8 +18,18 @@ step-by-step upgrade instructions are in
 
 - **New providers**: Voyage AI (embedding/rerank), Fish Audio, Cartesia
   (plus Ink 2 realtime transcription), Rev.ai, Hume, Luma, GMI Cloud, Z.AI,
-  MiniMax, TypeSafe AI, QuiverAI, and `anthropicaws` (Claude Platform on
-  AWS).
+  MiniMax, TypeSafe AI, QuiverAI, `anthropicaws` (Claude Platform on
+  AWS), and Topaz Labs (image enhance/generation, async video).
+- **Catch-up to `ai@7.0.127`**:
+  - ToolSearch `MaxResults` and custom `Search` ranking
+  - UI message stream keepalive (`KeepAliveMs`) and `ConvertDataPart`
+  - image-model file/mask input capabilities
+  - speech and transcription telemetry (including streaming transcription)
+  - GPT-6.1 Sol; Claude Sonnet 5.5 with between-tools thinking
+  - Azure MAI-Transcribe / MAI-Voice (including streaming transcription)
+  - Bedrock `requestMetadata`
+  - MCP `AuthorizationServerMismatchError` and conditional token invalidation
+  - harness `ReadHistory`, sub-agent activity events, `WorkDir: "."` and runtime-context forwarding
 - **Experimental surfaces**: Batch API, Evaluation, Files API v4, async
   video, streaming transcription/translation, and speech translation, each
   implemented by two or more providers.
@@ -106,7 +116,8 @@ step-by-step upgrade instructions are in
   the Agent API. **Telemetry**: tracers belong to registered integrations;
   `LegacyOpenTelemetry` span shape overhauled to match TS.
 - **Outgoing requests now carry a `User-Agent` header**
-  (`ai-sdk/<provider>/<version> runtime/go/<goVersion>`, plus `ai/<version>`
+  (`ai-sdk-<provider>/<version> go/<goVersion>`, the standards-compliant
+  form TS uses, plus `ai/<version>`
   from the non-streaming `pkg/ai` calls; `StreamText`, `StreamObject` and
   `Rerank` add no `ai/` tag), matching the TypeScript SDK.
 - Vendored `qjs.wasm` rebuilt from pinned upstream sources with job-queue
@@ -165,7 +176,12 @@ step-by-step upgrade instructions are in
   fallback (it never ran); agent and workflow lifecycle events now fill in
   the new `ToolCall`/`ToolOutput`/`Provider`/`Instructions` fields, not
   only the deprecated ones; Google speech rejects out-of-range sample
-  rates. Docs pages that showed APIs that don't exist were corrected
+  rates; Anthropic extended-thinking signatures were dropped from streamed
+  responses, breaking multi-step `StreamText` with thinking and tools; the
+  shared streaming tool-call tracker no longer aborts, corrupts, loses or
+  misorders calls when providers send unreliable tool-call labels; UI
+  message stream pipes now cancel their source when the client
+  disconnects. Docs pages that showed APIs that don't exist were corrected
   against the code. Full list in the release notes' Bug Fixes section.
 
 ### Security
@@ -185,6 +201,11 @@ step-by-step upgrade instructions are in
   v4.15.4), `chi` v5.3.2, OTel v1.46.0, `grpc` v1.84.0, `x/text` v0.42.0,
   `quic-go` v0.63.0 and the other `golang.org/x` modules — `govulncheck`
   reports no reachable vulnerabilities.
+- Resource names, regions and locations that would rewrite the request
+  host are rejected (Azure, Bedrock incl. Mantle, Google Vertex incl. MaaS
+  and Anthropic on Vertex); the TUI escapes untrusted terminal control
+  characters; ACP host-tool execution requires a one-use authorization
+  from a matching observed tool call.
 - CodeQL clean: allocation sizes are overflow-checked, JSON fragments are
   built with the encoder instead of string splicing, and the examples no
   longer log raw errors or URLs that can carry credentials.

@@ -4,7 +4,7 @@ Released 2026-10-02.
 
 ## Overview
 
-v0.5.0 tracks TypeScript AI SDK parity target **`ai@7.0.118`** (up from
+v0.5.0 tracks TypeScript AI SDK parity target **`ai@7.0.127`** (up from
 `ai@6.0.137` in v0.4.0). It ships everything merged since the v0.4.0 tag —
 about 1,000 commits across three work efforts: the May and June 2026 parity
 cycles (runtime/tool context split, call-level tool approval, the provider
@@ -285,8 +285,9 @@ code.
   which defaults to 20 steps. Pre-release builds of v0.5.0 had dropped this
   default and looped until the model stopped calling tools; that is fixed.
 - **Outgoing requests now carry a `User-Agent` header**: every provider
-  tags requests with `ai-sdk/<provider>/<version> runtime/go/<goVersion>`
-  (e.g. `ai-sdk/openai/0.5.0 runtime/go/go1.26.0`), appended to any
+  tags requests with `ai-sdk-<provider>/<version> go/<goVersion>`
+  (e.g. `ai-sdk-openai/0.5.0 go/go1.26.0`, the standards-compliant form TS
+  uses), appended to any
   `User-Agent` you set. This matches the TypeScript AI SDK and replaces the
   previous behavior of sending no custom `User-Agent`. The non-streaming
   `pkg/ai` calls (`GenerateText`, `GenerateObject`, `GenerateImage`,
@@ -330,6 +331,14 @@ code.
 
 ## Security Fixes
 
+- Resource names, regions and locations that would rewrite a generated
+  request host (for example `evil.example.com/#`) are rejected for Azure,
+  Bedrock (including Mantle) and Google Vertex (including MaaS and
+  Anthropic on Vertex). Use `BaseURL` for custom endpoints.
+- The TUI escapes untrusted terminal control characters in model output,
+  tool names, tool input/output and errors.
+- ACP host-tool execution now requires a one-use authorization from an
+  independently observed, matching ACP tool call.
 - `pkg/codemode`: closed a sandbox escape. Model-written JavaScript could
   reach QuickJS's `std` / `os` modules (through globals, `import('qjs:std')`,
   or an `import()` inside a template literal interpolation), read and write
@@ -671,6 +680,50 @@ code.
 
 ---
 
+### Catch-up to `ai@7.0.127`
+
+Ported from the TypeScript SDK between `ai@7.0.118` and `ai@7.0.127` (plus
+fixes on TS `main` up to `5b8e63bad8`):
+
+- **Topaz Labs provider** (`pkg/providers/topaz`): image enhance and
+  generation, async video enhancement, workflow serialization.
+- **Tools**:
+  - `ToolSearch` gains `MaxResults` and a custom `Search` ranking callback.
+  - Pending approval requests superseded by a later user message are
+    dropped instead of failing the request.
+- **UI message streams**:
+  - `KeepAliveMs` sends SSE keepalive comments so idle streams stay open
+    behind reverse proxies.
+  - Response pipes cancel their source when the client disconnects.
+  - `ConvertDataPart` on the agent UI stream helpers.
+  - Partial tool calls resume correctly.
+- **Image models** advertise file and mask input support
+  (`provider.ImageModelSupportsFileInputs` / `ImageModelSupportsMaskInputs`),
+  implemented by 12 providers.
+- **Telemetry**:
+  - `GenerateSpeech`, `Transcribe` and `ExperimentalStreamTranscribe` spans,
+    with provider usage attributes.
+  - Spans get ERROR status when the finish reason is `error`.
+- **Providers**:
+  - OpenAI: GPT-6.1 Sol.
+  - Anthropic: Claude Sonnet 5.5 with between-tools thinking (also on
+    Bedrock, Vertex and Gateway).
+  - Azure: MAI-Transcribe and MAI-Voice models, including streaming
+    transcription.
+  - Bedrock: `requestMetadata`.
+  - OpenAI-compatible: multipart tool results (opt-in).
+  - Open Responses: bare extension types.
+  - Perplexity: integration attribution.
+  - Gateway: the credits scope and evaluation fallback.
+- **MCP**: `AuthorizationServerMismatchError`; conditional token
+  invalidation, so concurrent refreshes no longer wipe each other's tokens.
+- **Harness**:
+  - `AgentSession.ReadHistory`.
+  - Claude Code sub-agent and progress events (Opus 5.5 bridge SDK).
+  - Runtime context forwarded to callbacks and telemetry.
+  - `WorkDir: "."`.
+  - Tool start/end callbacks fire per tool in real time.
+
 ### Documentation and agent access
 
 - Every docs page is published as markdown: append `.md` to any docs URL.
@@ -895,6 +948,13 @@ code.
   `Instructions`) alongside the deprecated ones, as `pkg/ai` already did.
 - Google speech rejects sample rates outside the valid range instead of
   overflowing on conversion.
+- Anthropic: extended-thinking signatures were dropped from streamed
+  responses, so multi-step `StreamText` with thinking and tools sent
+  unsigned thinking blocks back. Signatures are now kept and replayed, as in
+  TS.
+- Streaming tool calls: the shared tracker no longer aborts, corrupts,
+  loses or misorders calls when a provider sends unreliable tool-call IDs,
+  indexes or names (TS #18445).
 - Docs: pages that showed functions, types or options that don't exist in
   the SDK were corrected against the code, and every complete example
   program was compiled.
@@ -986,7 +1046,7 @@ ships as source + WASM inside the repository.
 
 ---
 
-**TS SDK parity target:** `ai@7.0.118`
+**TS SDK parity target:** `ai@7.0.127` (plus the fixes on TS `main` up to `5b8e63bad8`)
 **Base tag:** `v0.4.0` (2026-03-29)
 **Scope:** `v0.4.0..HEAD`, ~1,000 commits across the May, June, and
 September 2026 parity cycles.

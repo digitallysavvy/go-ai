@@ -450,7 +450,7 @@ The full docs site is at <https://digitallysavvy.github.io/go-ai/>.
 
 ## TypeScript Parity
 
-This SDK maintains 1:1 feature parity with the [Vercel AI SDK](https://ai-sdk.dev) **ai@7.0.118** for backend functionality:
+This SDK maintains 1:1 feature parity with the [Vercel AI SDK](https://ai-sdk.dev) **ai@7.0.127** for backend functionality:
 
 - Same public APIs and response shapes
 - Same provider interfaces and tool system
