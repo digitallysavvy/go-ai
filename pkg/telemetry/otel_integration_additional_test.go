@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
@@ -1000,5 +1001,56 @@ func TestLegacyOpenTelemetryObjectStepFirstChunkEvent(t *testing.T) {
 	}
 	if len(genStepSpan.Events()) != 0 {
 		t.Errorf("non-streaming ai.generateObject step span should have no events, got %+v", genStepSpan.Events())
+	}
+}
+
+// TestLegacyOpenTelemetrySpanStatusErrorOnErrorFinishReason ports TS
+// 51e1763d2b (#21915) for LegacyOpenTelemetry: the step span (OnStepEnd) and
+// root span (OnEnd) must get SpanStatusCode.ERROR when the corresponding
+// finish event's FinishReason is "error", and otherwise keep the default
+// Unset status.
+func TestLegacyOpenTelemetrySpanStatusErrorOnErrorFinishReason(t *testing.T) {
+	for _, finishReason := range []string{"error", "stop"} {
+		t.Run(finishReason, func(t *testing.T) {
+			rec := tracetest.NewSpanRecorder()
+			tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+			t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+			tracer := tp.Tracer("legacy-finish-status-test")
+
+			integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
+			settings := &Settings{IsEnabled: Bool(true)}
+
+			rootCtx := integration.OnStart(context.Background(), TelemetryStartEvent{
+				OperationType: "ai.generateText", Settings: settings, CallID: "call-1",
+			})
+			stepCtx := integration.OnStepStart(rootCtx, TelemetryStepStartEvent{
+				OperationType: "ai.generateText", Settings: settings, CallID: "call-1",
+			})
+			integration.OnStepEnd(stepCtx, TelemetryStepEndEvent{
+				OperationType: "ai.generateText", Settings: settings, CallID: "call-1", FinishReason: finishReason,
+			})
+			integration.OnEnd(rootCtx, TelemetryFinishEvent{
+				OperationType: "ai.generateText", Settings: settings, CallID: "call-1", FinishReason: finishReason,
+			})
+
+			wantCode := codes.Unset
+			if finishReason == "error" {
+				wantCode = codes.Error
+			}
+			stepSpan := findSpan(rec, "ai.generateText.doGenerate")
+			if stepSpan == nil {
+				t.Fatal("expected an ai.generateText.doGenerate step span")
+			}
+			if got := stepSpan.Status().Code; got != wantCode {
+				t.Errorf("step span status = %v, want %v", got, wantCode)
+			}
+			rootSpan := findSpan(rec, "ai.generateText")
+			if rootSpan == nil {
+				t.Fatal("expected an ai.generateText root span")
+			}
+			if got := rootSpan.Status().Code; got != wantCode {
+				t.Errorf("root span status = %v, want %v", got, wantCode)
+			}
+		})
 	}
 }

@@ -84,6 +84,12 @@ var operationNameMapping = map[string]string{
 	"ai.embed":          "embeddings",
 	"ai.embedMany":      "embeddings",
 	"ai.rerank":         "rerank",
+	// generateSpeech/transcribe have no standardized GenAI operation name
+	// yet, so TS maps them to themselves (identity); mapOperationName's
+	// default fallback already does this without an explicit entry, but
+	// these are listed for parity with TS's mapping object.
+	"ai.generateSpeech": "ai.generateSpeech",
+	"ai.transcribe":     "ai.transcribe",
 }
 
 // mapOperationName maps a go-ai operationId to a gen_ai.operation.name value,

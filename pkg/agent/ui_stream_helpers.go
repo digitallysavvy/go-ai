@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // CreateAgentUIStream starts an agent stream and converts it to UI message chunks.
@@ -58,6 +59,12 @@ type CreateAgentUIStreamFromUIMessagesOptions struct {
 	// approval's inputSchemaInput during validation. Optional.
 	ExperimentalRefineToolInput map[string]ai.ToolInputRefiner
 
+	// ConvertDataPart converts custom UI data parts to text or file model
+	// message parts. Data parts are ignored when nil or when the callback
+	// returns nil. Mirrors TS createAgentUIStream/createAgentUIStreamResponse/
+	// pipeAgentUIStreamToResponse's `convertDataPart` option (TS #21816).
+	ConvertDataPart func(part ai.DataUIPart) types.ContentPart
+
 	// AgentOptions carries the remaining agent stream options (RuntimeContext,
 	// ToolsContext, CallOptions, AbortSignal-equivalents, etc). Its Prompt and
 	// Messages fields are ignored: the converted UI messages are used instead.
@@ -95,7 +102,8 @@ func CreateAgentUIStreamFromUIMessages(ctx context.Context, agent *ToolLoopAgent
 	}
 
 	modelMessages, err := ai.ConvertToModelMessages(ctx, validated, ai.ConvertToModelMessagesOptions{
-		Tools: agent.Tools(),
+		Tools:           agent.Tools(),
+		ConvertDataPart: opts.ConvertDataPart,
 	})
 	if err != nil {
 		return nil, nil, err

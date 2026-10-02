@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -144,7 +145,20 @@ type UIMessageStreamResponseInit struct {
 	// added in addition to Headers, so both can be set together.
 	Header           http.Header
 	ConsumeSSEStream func(io.Reader) error
+	// KeepAliveMs, when set, makes the SSE pipeline flush an opening
+	// ": stream-open\n\n" comment immediately (so headers reach the client
+	// right away even if the first real chunk is slow) and send a
+	// ": keep-alive\n\n" comment whenever this duration elapses without any
+	// other write, resetting on every chunk. Must be a positive duration;
+	// zero or negative disables it the same as a nil value. Mirrors TS
+	// createSseStreamWithKeepAlive's `keepAliveMs` option (TS #21672).
+	KeepAliveMs *time.Duration //nolint:revive,staticcheck // name matches TS SDK field "keepAliveMs" for parity
 }
+
+const (
+	sseStreamOpenComment = ": stream-open\n\n"
+	sseKeepAliveComment  = ": keep-alive\n\n"
+)
 
 func getDefaultMessageErrorHandler(onError func(error) string) func(error) string {
 	if onError == nil {
@@ -360,6 +374,19 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 					}
 				}()
 				for {
+					// Check ctx.Done() first (non-blocking) so a consumer
+					// cancellation that raced with a chunk already sitting
+					// on stream wins immediately, instead of Go's select
+					// picking between two simultaneously-ready cases at
+					// random — mirrors TS createUIMessageStream's merge
+					// fix, where cancelling the reader always stops a
+					// pending read before it can resolve with another
+					// value (TS #21728).
+					select {
+					case <-ctx.Done():
+						return
+					default:
+					}
 					select {
 					case <-ctx.Done():
 						return
@@ -1008,9 +1035,44 @@ func newUIMessageCallbackState(original []UIMessageChunk, messageID string) *uiM
 			if _, ok := state.message["parts"]; !ok {
 				state.message["parts"] = []interface{}{}
 			}
+			state.partialTools = seedPartialToolCalls(state.message)
 		}
 	}
 	return state
+}
+
+// seedPartialToolCalls reconstructs the partial-tool-call accumulator for
+// any tool part in message's last step that is still in the
+// "input-streaming" state, keyed by toolCallId. This lets a resumed stream
+// continue a "tool-input-delta" sequence for a tool call that was already
+// partially streamed before a disconnect (the part's "rawInput" carries the
+// accumulated raw text) -- the part itself was hydrated from persisted
+// history, so no "tool-input-start" chunk precedes the resumed deltas.
+// Mirrors TS process-ui-message-stream.ts's createStreamingUIMessageState
+// (audit: TS #21480).
+func seedPartialToolCalls(message UIMessageChunk) map[string]*uiPartialToolCall {
+	partials := map[string]*uiPartialToolCall{}
+	parts := uiParts(message)
+	start := currentStepStartIndex(parts)
+	for _, raw := range parts[start:] {
+		part := asUIPartChunk(raw)
+		if !isToolPartChunk(part) || stringValue(part["state"]) != "input-streaming" {
+			continue
+		}
+		toolCallID := stringValue(part["toolCallId"])
+		if toolCallID == "" {
+			continue
+		}
+		toolName, dynamic := toolInfoFromPart(part)
+		partials[toolCallID] = &uiPartialToolCall{
+			text:         stringValue(part["rawInput"]),
+			toolName:     toolName,
+			dynamic:      dynamic,
+			title:        part["title"],
+			toolMetadata: part["toolMetadata"],
+		}
+	}
+	return partials
 }
 
 func (s *uiMessageCallbackState) responseMessage() UIMessageChunk {
@@ -1149,8 +1211,9 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 			toolMetadata: chunk["toolMetadata"],
 		}
 		s.updateToolPart(toolCallID, toolName, dynamic, UIMessageChunk{
-			"state": "input-streaming",
-			"input": uiOmitField,
+			"state":    "input-streaming",
+			"input":    uiOmitField,
+			"rawInput": uiOmitField,
 		}, chunk)
 	case "tool-input-delta":
 		toolCallID := stringValue(chunk["toolCallId"])
@@ -1160,17 +1223,24 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 			return
 		}
 		partial.text += stringValue(chunk["inputTextDelta"])
+		// rawInput carries the accumulated raw text onto the part itself (not
+		// just the in-memory partialTools accumulator) so a persisted/hydrated
+		// message can later re-seed partialTools via seedPartialToolCalls and
+		// continue streaming after a disconnect. Mirrors TS
+		// process-ui-message-stream.ts's tool-input-delta handling (TS #21480).
 		s.updateToolPart(toolCallID, partial.toolName, partial.dynamic, UIMessageChunk{
-			"state": "input-streaming",
-			"input": parseToolInputPartial(partial.text),
+			"state":    "input-streaming",
+			"input":    parseToolInputPartial(partial.text),
+			"rawInput": partial.text,
 		}, UIMessageChunk{"title": partial.title, "toolMetadata": partial.toolMetadata})
 	case "tool-input-available":
 		toolCallID := stringValue(chunk["toolCallId"])
 		toolName := stringValue(chunk["toolName"])
 		dynamic, _ := chunk["dynamic"].(bool)
 		s.updateToolPart(toolCallID, toolName, dynamic, UIMessageChunk{
-			"state": "input-available",
-			"input": chunk["input"],
+			"state":    "input-available",
+			"input":    chunk["input"],
+			"rawInput": uiOmitField,
 		}, chunk)
 	case "tool-input-error":
 		toolCallID := stringValue(chunk["toolCallId"])
@@ -1730,6 +1800,33 @@ func PipeUIMessageStreamToResponse(ctx context.Context, result *StreamTextResult
 }
 
 // PipeUIMessageStreamToResponseWithInit supports optional SSE side-channel consumption.
+//
+// If writing to w fails (for example because the client disconnected), the
+// internal source stream is cancelled before returning so its background
+// producer goroutine and any upstream provider resources it holds are
+// released instead of leaking (blocked forever trying to send a chunk to a
+// reader that has stopped listening). Mirrors TS
+// write-to-server-response.ts's client-disconnect handling, which cancels
+// the ReadableStream's reader on a premature close (TS #21578).
+// writeUIMessageSSEChunk JSON-encodes and writes a single UI message chunk
+// as one SSE "data: ...\n\n" event, then flushes it.
+func writeUIMessageSSEChunk(bw *bufio.Writer, flush func() error, chunk UIMessageChunk) error {
+	b, err := json.Marshal(chunk)
+	if err != nil {
+		return err
+	}
+	if _, err := bw.WriteString("data: "); err != nil {
+		return err
+	}
+	if _, err := bw.Write(b); err != nil {
+		return err
+	}
+	if _, err := bw.WriteString("\n\n"); err != nil {
+		return err
+	}
+	return flush()
+}
+
 func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTextResult, w io.Writer, init *UIMessageStreamResponseInit, opts ...UIMessageStreamResultOptions) error {
 	if result == nil {
 		return fmt.Errorf("result is required")
@@ -1737,6 +1834,12 @@ func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTe
 	if w == nil {
 		return fmt.Errorf("writer is required")
 	}
+
+	// streamCtx is cancelled on any write/flush failure (see below) so the
+	// CreateUIMessageStream producer goroutine stops promptly instead of
+	// relying solely on the caller's ctx, which may never be cancelled.
+	streamCtx, cancelStream := context.WithCancel(ctx)
+	defer cancelStream()
 
 	var (
 		teeWriter  = w
@@ -1755,7 +1858,14 @@ func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTe
 		teeWriter = io.MultiWriter(w, pw)
 	}
 
-	chunks, errCh := CreateUIMessageStream(ctx, result, opts...)
+	var keepAliveDuration time.Duration
+	keepAliveEnabled := false
+	if init != nil && init.KeepAliveMs != nil && *init.KeepAliveMs > 0 {
+		keepAliveDuration = *init.KeepAliveMs
+		keepAliveEnabled = true
+	}
+
+	chunks, errCh := CreateUIMessageStream(streamCtx, result, opts...)
 	bw := bufio.NewWriter(teeWriter)
 	// flush surfaces the bufio flush error instead of discarding it (TS
 	// write-to-server-response.ts's pipe helpers return a promise that
@@ -1773,22 +1883,49 @@ func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTe
 		}
 		return nil
 	}
-	for chunk := range chunks {
-		b, err := json.Marshal(chunk)
-		if err != nil {
+	writeComment := func(comment string) error {
+		if _, err := bw.WriteString(comment); err != nil {
 			return err
 		}
-		if _, err := bw.WriteString("data: "); err != nil {
+		return flush()
+	}
+
+	if keepAliveEnabled {
+		// Flush an opening comment immediately, before the first real chunk
+		// is available, so a reverse proxy sees the response start right
+		// away instead of timing out an idle connection. Mirrors TS
+		// createSseStreamWithKeepAlive's STREAM_OPEN_COMMENT.
+		if err := writeComment(sseStreamOpenComment); err != nil {
 			return err
 		}
-		if _, err := bw.Write(b); err != nil {
-			return err
+	}
+
+	if !keepAliveEnabled {
+		for chunk := range chunks {
+			if err := writeUIMessageSSEChunk(bw, flush, chunk); err != nil {
+				return err
+			}
 		}
-		if _, err := bw.WriteString("\n\n"); err != nil {
-			return err
-		}
-		if err := flush(); err != nil {
-			return err
+	} else {
+		timer := time.NewTimer(keepAliveDuration)
+		defer timer.Stop()
+	loop:
+		for {
+			select {
+			case chunk, ok := <-chunks:
+				if !ok {
+					break loop
+				}
+				if err := writeUIMessageSSEChunk(bw, flush, chunk); err != nil {
+					return err
+				}
+				timer.Reset(keepAliveDuration)
+			case <-timer.C:
+				if err := writeComment(sseKeepAliveComment); err != nil {
+					return err
+				}
+				timer.Reset(keepAliveDuration)
+			}
 		}
 	}
 	if _, err := bw.WriteString("data: [DONE]\n\n"); err != nil {

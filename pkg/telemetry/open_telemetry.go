@@ -213,6 +213,35 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 			span.SetAttributes(attribute.String("gen_ai.input.messages", string(b)))
 		}
 	}
+	// onAudioOperationStart (TS open-telemetry.ts): "ai.generateSpeech" and
+	// "ai.transcribe" additionally carry gen_ai.output.type/request.stream
+	// and the text/audio request content, none of which apply to any other
+	// operation type.
+	if e.OperationType == "ai.generateSpeech" || e.OperationType == "ai.transcribe" {
+		outputType := "text"
+		if e.OperationType == "ai.generateSpeech" {
+			outputType = "speech"
+		}
+		span.SetAttributes(
+			attribute.String("gen_ai.output.type", outputType),
+			attribute.Bool("gen_ai.request.stream", false),
+		)
+		if recordInputs && e.Text != "" {
+			span.SetAttributes(attribute.String("ai.request.text", e.Text))
+			if b, err := json.Marshal([]semConvInputMessage{{
+				Role:  "user",
+				Parts: []semConvPart{{"type": "text", "content": e.Text}},
+			}}); err == nil {
+				span.SetAttributes(attribute.String("gen_ai.input.messages", string(b)))
+			}
+		}
+		if recordInputs && e.AudioByteLength != nil {
+			span.SetAttributes(attribute.Int64("ai.request.audio.size", *e.AudioByteLength))
+		}
+		if recordInputs && e.AudioMediaType != "" {
+			span.SetAttributes(attribute.String("ai.request.audio.media_type", e.AudioMediaType))
+		}
+	}
 	if i.opts.Headers {
 		for _, attr := range headerAttributes(e.Headers) {
 			span.SetAttributes(attr)
@@ -486,6 +515,9 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 	entry, ok := value.(otelSpanEntry)
 	if !ok || !entry.span.IsRecording() {
 		return
+	}
+	if e.FinishReason == string(types.FinishReasonError) {
+		entry.span.SetStatus(codes.Error, "")
 	}
 	content := contentParts(e.Content)
 	attrs := []attribute.KeyValue{
@@ -889,6 +921,9 @@ func (i OpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEvent) {
 	if !ok || !stepSpan.IsRecording() {
 		return
 	}
+	if e.FinishReason == string(types.FinishReasonError) {
+		stepSpan.SetStatus(codes.Error, "")
+	}
 	attrs := []attribute.KeyValue{
 		attribute.StringSlice("gen_ai.response.finish_reasons", []string{e.FinishReason}),
 	}
@@ -944,6 +979,19 @@ func (i OpenTelemetry) OnEnd(ctx context.Context, e TelemetryFinishEvent) {
 	if !span.IsRecording() {
 		return
 	}
+	if e.FinishReason == string(types.FinishReasonError) {
+		span.SetStatus(codes.Error, "")
+	}
+	if e.OperationType == "ai.generateSpeech" || e.OperationType == "ai.transcribe" {
+		// onAudioOperationEnd (TS open-telemetry.ts): a completely different
+		// attribute set from every other operation — no
+		// gen_ai.response.finish_reasons (audio operations have no finish
+		// reason) and no token-based gen_ai.usage.* (appendGenAIUsageAttrs).
+		i.onAudioOperationEnd(span, e)
+		span.End()
+		genAIDeleteState(e.CallID)
+		return
+	}
 	isEmbedOperation := spanNameLooksLikeEmbed(e)
 	attrs := []attribute.KeyValue{
 		attribute.StringSlice("gen_ai.response.finish_reasons", []string{e.FinishReason}),
@@ -975,6 +1023,64 @@ func (i OpenTelemetry) OnEnd(ctx context.Context, e TelemetryFinishEvent) {
 // InputTokens/OutputTokens split).
 func spanNameLooksLikeEmbed(e TelemetryFinishEvent) bool {
 	return e.Usage.TotalTokens != nil && e.Usage.InputTokens == nil && e.Usage.OutputTokens == nil
+}
+
+// onAudioOperationEnd sets the final attributes for "ai.generateSpeech"/
+// "ai.transcribe" on the root span, mirroring TS's onAudioOperationEnd
+// (open-telemetry.ts): ai.request.audio.* for the transcribe input audio
+// (input-gated), ai.response.text/gen_ai.output.messages for the transcript
+// and ai.response.audio.* for the generated speech audio (both
+// output-gated), gen_ai.usage.duration_seconds (unconditional, mirroring
+// TS's getProviderUsageAttributes spread), and ai.response.providerMetadata
+// (gated by OpenTelemetryOptions.ProviderMetadata, not recordOutputs,
+// matching every other operation's providerMetadata attribute in this
+// file).
+func (i OpenTelemetry) onAudioOperationEnd(span trace.Span, e TelemetryFinishEvent) {
+	isSpeech := e.OperationType == "ai.generateSpeech"
+	recordInputs := e.Settings == nil || e.Settings.RecordInputs
+	recordOutputs := e.Settings == nil || e.Settings.RecordOutputs
+	if !isSpeech && recordInputs {
+		if e.AudioByteLength != nil {
+			span.SetAttributes(attribute.Int64("ai.request.audio.size", *e.AudioByteLength))
+		}
+		if e.AudioMediaType != "" {
+			span.SetAttributes(attribute.String("ai.request.audio.media_type", e.AudioMediaType))
+		}
+	}
+	if recordOutputs {
+		if e.Text != "" {
+			span.SetAttributes(attribute.String("ai.response.text", e.Text))
+			// A plain map, not semConvOutputMessage: TS's inline JSON for
+			// this attribute has no finish_reason key (unlike the shared
+			// chat-response formatter), since audio operations have no
+			// finish reason at all.
+			if b, err := json.Marshal([]map[string]interface{}{{
+				"role":  "assistant",
+				"parts": []semConvPart{{"type": "text", "content": e.Text}},
+			}}); err == nil {
+				span.SetAttributes(attribute.String("gen_ai.output.messages", string(b)))
+			}
+		}
+		if isSpeech {
+			if e.AudioByteLength != nil {
+				span.SetAttributes(attribute.Int64("ai.response.audio.size", *e.AudioByteLength))
+			}
+			if e.AudioMediaType != "" {
+				span.SetAttributes(attribute.String("ai.response.audio.media_type", e.AudioMediaType))
+			}
+			if e.AudioFormat != "" {
+				span.SetAttributes(attribute.String("ai.response.audio.format", e.AudioFormat))
+			}
+		}
+	}
+	if e.DurationSeconds != nil {
+		span.SetAttributes(attribute.Float64("gen_ai.usage.duration_seconds", *e.DurationSeconds))
+	}
+	if i.opts.ProviderMetadata && e.ProviderMetadata != nil {
+		if b, err := json.Marshal(e.ProviderMetadata); err == nil {
+			span.SetAttributes(attribute.String("ai.response.providerMetadata", string(b)))
+		}
+	}
 }
 
 // OnError records the error on the root span (with HTTP status when

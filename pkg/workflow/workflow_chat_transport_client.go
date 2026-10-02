@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
@@ -241,6 +242,7 @@ func (t *WorkflowChatTransport) reconnectLoop(ctx context.Context, chatID, runID
 	base := fmt.Sprintf("%s/%s/stream", strings.TrimRight(t.api, "/"), url.PathEscape(runID))
 	reconnectCtx := WorkflowChatTransportReconnectContext{ChatID: chatID, API: base}
 	headers := map[string]string{}
+	usedDefaultBase := true
 	if t.prepareReconnectToStreamRequest != nil {
 		prepared, err := t.prepareReconnectToStreamRequest(reconnectCtx)
 		if err != nil {
@@ -249,10 +251,23 @@ func (t *WorkflowChatTransport) reconnectLoop(ctx context.Context, chatID, runID
 		}
 		if prepared.API != "" {
 			base = prepared.API
+			usedDefaultBase = false
 		}
 		for k, v := range prepared.Headers {
 			headers[k] = v
 		}
+	}
+	if usedDefaultBase && (runID == "." || runID == "..") {
+		// url.PathEscape leaves dot segments unchanged, and URL parsers
+		// normalize them even when their dots are percent-encoded, so a
+		// literal "." or ".." run ID could change which route the request
+		// hits. Mirrors TS http-chat-transport.ts's reconnectToStream guard
+		// (TS #21649).
+		errs <- &providererrors.InvalidArgumentError{
+			Field:   "chatId",
+			Message: `Chat IDs must not be "." or ".." when using the default reconnect URL.`,
+		}
+		return
 	}
 
 	var orphans *orphanFilter

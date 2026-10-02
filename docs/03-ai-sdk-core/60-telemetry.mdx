@@ -150,6 +150,8 @@ successful call.
 
 Step lifecycle telemetry uses `OnStepEnd` as the canonical name. `OnStepFinish` is still emitted as a deprecated compatibility event for migration, and `OnStepEnd` takes precedence when both callback names are configured.
 
+The built-in `telemetry.OpenTelemetry` and `telemetry.LegacyOpenTelemetry` integrations set the OTel span status to `codes.Error` on the language-model-call, step, and root spans whenever the corresponding event's `FinishReason` is `"error"` (for example a provider stream that ends with an error chunk), even when no separate `OnError`/`OnStepError` event fires. Spans finishing with any other reason keep the default `Unset` status.
+
 ### Abort and Performance Events
 
 Telemetry integrations can implement `OnAbort(context.Context, telemetry.TelemetryAbortEvent)`. The SDK emits this event when generation is canceled or aborted and closes the active OpenTelemetry span so traces do not remain open.
@@ -428,6 +430,30 @@ Records the following spans:
 **`ai.embedMany.doEmbed` span:**
 - Individual provider call
 - May be multiple spans if batching occurs
+
+### Speech and Transcription
+
+`GenerateSpeech` and `Transcribe` emit a single root span covering the whole call (including retries) — there is no nested per-attempt span, unlike `ai.embed`/`ai.generateText`.
+
+**`ai.generateSpeech` span:**
+- Attributes:
+  - `operation.name`: `ai.generateSpeech` + function ID
+  - `ai.operationId`: `"ai.generateSpeech"`
+  - `gen_ai.output.type`: `"speech"` (GenAI integration only)
+  - `ai.request.text`: Input text (if RecordInputs is true)
+  - `ai.response.audio.size` / `ai.response.audio.mediaType` / `ai.response.audio.format`: Generated audio metadata (if RecordOutputs is true)
+  - `ai.response.providerMetadata`: Provider-specific metadata (if enabled)
+- Ends with `codes.Error` status on failure, including a provider response with no audio.
+
+**`ai.transcribe` span:**
+- Attributes:
+  - `operation.name`: `ai.transcribe` + function ID
+  - `ai.operationId`: `"ai.transcribe"`
+  - `ai.request.audio.size` / `ai.request.audio.mediaType`: Input audio metadata (if RecordInputs is true)
+  - `ai.response.text`: Transcript text (if RecordOutputs is true)
+  - `ai.usage.duration_seconds` / `gen_ai.usage.duration_seconds`: Provider-reported input audio duration
+  - `ai.response.providerMetadata`: Provider-specific metadata (if enabled)
+- Ends with `codes.Error` status on failure, including a provider response with no transcript.
 
 ### Tool Calls
 
