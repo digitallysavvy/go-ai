@@ -1,11 +1,19 @@
 <p align="center">
   <a href="https://digitallysavvy.github.io/go-ai/">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="./.github/assets/readme-banner-dark.png">
-      <source media="(prefers-color-scheme: light)" srcset="./.github/assets/readme-banner-light.png">
-      <img alt="Go AI SDK: the AI SDK, in Go. LLMs, tools, agents and MCP." src="./.github/assets/readme-banner-light.png" width="100%">
+      <source media="(prefers-color-scheme: dark)" srcset="./.github/assets/logo-dark.png">
+      <source media="(prefers-color-scheme: light)" srcset="./.github/assets/logo-light.png">
+      <img alt="Go AI SDK logo" src="./.github/assets/logo-light.png" width="260">
     </picture>
   </a>
+</p>
+
+<h1 align="center">Go AI SDK</h1>
+
+<p align="center">
+  <b>The AI SDK, in Go.</b><br>
+  Generate and stream text, call tools, run agents and connect to MCP servers<br>
+  across 48 providers, with one API that tracks the TypeScript AI SDK.
 </p>
 
 <p align="center">
@@ -28,6 +36,10 @@
   &nbsp;·&nbsp;
   <a href="./CHANGELOG.md">Changelog</a>
 </p>
+
+```bash
+go get github.com/digitallysavvy/go-ai
+```
 
 The [Go AI SDK](https://github.com/digitallysavvy/go-ai) is a comprehensive toolkit designed to help you build AI-powered applications and agents using Go. It provides 1:1 feature parity with the [Vercel AI SDK](https://ai-sdk.dev) for backend functionality.
 
