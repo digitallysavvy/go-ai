@@ -655,7 +655,7 @@ if apiKey := os.Getenv("OPENAI_API_KEY"); apiKey == "" {
 ```go
 // Use SDK types, not raw strings
 messages := []types.Message{
-    {Role: types.RoleUser, Content: "Hello"},
+    {Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Hello"}}},
 }
 ```
 

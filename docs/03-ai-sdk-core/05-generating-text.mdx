@@ -210,22 +210,23 @@ for chunk := range result.Chunks() {
 The stream result object provides access to the streamed data:
 
 ```go
-// StreamTextResult provides methods to access streamed data:
+// StreamTextResult provides these methods to access streamed data.
+type streamTextResult interface {
+    // Streaming methods (available immediately)
+    Chunks() <-chan provider.StreamChunk // Channel for receiving chunks
+    Close() error                        // Close the stream
+    ReadAll() (string, error)            // Read all text (blocks until complete)
 
-// Streaming methods (available immediately)
-result.Chunks() <-chan provider.StreamChunk  // Channel for receiving chunks
-result.Close() error                         // Close the stream
-result.ReadAll() (string, error)             // Read all text (blocks until complete)
-
-// Accessor methods (available after stream completes)
-result.Text() string                         // Complete generated text
-result.Content() []types.ContentPart         // Ordered content across all steps
-result.FinishReason() types.FinishReason     // Reason the model finished
-result.Usage() types.Usage                   // Token usage information
-result.ToolCalls() []types.ToolCall          // Tool calls made during streaming
-result.ToolResults() []types.ToolResult      // Tool results from executed tools
-result.ContextManagement() interface{}       // Context management stats (Anthropic)
-result.Err() error                           // Error if stream failed
+    // Accessor methods (available after stream completes)
+    Text() string                     // Complete generated text
+    Content() []types.ContentPart     // Ordered content across all steps
+    FinishReason() types.FinishReason // Reason the model finished
+    Usage() types.Usage               // Token usage information
+    ToolCalls() []types.ToolCall      // Tool calls made during streaming
+    ToolResults() []types.ToolResult  // Tool results from executed tools
+    ContextManagement() interface{}   // Context management stats (Anthropic)
+    Err() error                       // Error if stream failed
+}
 ```
 
 ### Standalone Stream Helpers

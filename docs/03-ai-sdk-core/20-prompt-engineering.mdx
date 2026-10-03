@@ -425,12 +425,14 @@ fmt.Printf("Primary: %s\n", slogans.Primary)
 
 ### Inspect HTTP Requests
 
-Enable debug mode to see full API requests:
+Pass an `http.Client` with a logging `http.RoundTripper` to see full API requests. See [Development tools](./65-devtools.mdx#intercepting-http-requests) for a complete `LoggingTransport`:
 
 ```go
 provider := openai.New(openai.Config{
-    APIKey:    os.Getenv("OPENAI_API_KEY"),
-    DebugMode: true, // Logs full HTTP requests and responses
+    APIKey: os.Getenv("OPENAI_API_KEY"),
+    HTTPClient: &http.Client{
+        Transport: &LoggingTransport{Transport: http.DefaultTransport}, // Logs requests and responses
+    },
 })
 ```
 
@@ -528,7 +530,7 @@ for _, modelID := range models {
 
 ### 1. Be Specific
 
-```go
+```text
 // ❌ Bad: Vague
 "Write about coffee"
 
@@ -650,7 +652,7 @@ if promptTokens > maxTokens-2000 {
 
 ### 3. Assuming Context
 
-```go
+```text
 // ❌ Bad: No context
 "What should I do?"
 
@@ -670,9 +672,10 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 
 // ✅ Good: Set reasonable limits
+maxTokens := 500
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:     model,
-    MaxTokens: 500, // Limit output length
+    MaxTokens: &maxTokens, // Limit output length
     Prompt:    "Write a brief introduction to Go programming",
 })
 ```

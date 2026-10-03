@@ -358,7 +358,7 @@ ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 defer cancel()
 
 options.Model = videoModel
-result, err := ai.GenerateVideo(ctx, options)
+videoResult, err := ai.GenerateVideo(ctx, options)
 ```
 
 ### Detecting Timeout Errors

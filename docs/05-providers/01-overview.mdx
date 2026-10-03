@@ -15,14 +15,14 @@ All providers implement a consistent interface, allowing you to switch providers
 
 ```go
 // Works with any provider
-provider := openai.New(openai.Config{APIKey: key})
+var p provider.Provider = openai.New(openai.Config{APIKey: key})
 // OR
-provider := anthropic.New(anthropic.Config{APIKey: key})
+p = anthropic.New(anthropic.Config{APIKey: key})
 // OR
-provider := google.New(google.Config{APIKey: key})
+p = google.New(google.Config{APIKey: key})
 
 // Same API for all providers
-model, err := provider.LanguageModel("model-id")
+model, err := p.LanguageModel("model-id")
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: prompt})
 ```
 
@@ -155,7 +155,7 @@ provider := anthropic.New(anthropic.Config{
 
 ```go
 // Azure OpenAI with regional endpoint
-provider, err := azure.New(azure.Config{
+azureProvider, err := azure.New(azure.Config{
     ResourceName: os.Getenv("AZURE_RESOURCE_NAME"),
     APIKey:       os.Getenv("AZURE_API_KEY"),
     APIVersion:   "v1",
@@ -165,7 +165,7 @@ if err != nil {
 }
 
 // AWS Bedrock with region
-provider := bedrock.New(bedrock.Config{
+bedrockProvider := bedrock.New(bedrock.Config{
     Region: "us-west-2",
     AWSAccessKeyID: os.Getenv("AWS_ACCESS_KEY_ID"),
     AWSSecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),

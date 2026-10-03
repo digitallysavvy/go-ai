@@ -660,7 +660,7 @@ Track rate limit usage and set up alerts:
 
 ```go
 if rpm > 0.8 * maxRPM {
-    log.Warn("Approaching rate limit threshold")
+    log.Println("WARN: approaching rate limit threshold")
 }
 ```
 
@@ -683,7 +683,7 @@ Stop making requests after repeated rate limit errors:
 
 ```go
 if consecutiveRateLimitErrors > 3 {
-    log.Error("Too many rate limit errors, circuit breaker activated")
+    log.Println("ERROR: too many rate limit errors, circuit breaker activated")
     time.Sleep(5 * time.Minute)
     consecutiveRateLimitErrors = 0
 }

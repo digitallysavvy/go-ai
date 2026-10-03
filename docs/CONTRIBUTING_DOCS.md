@@ -294,8 +294,8 @@ go run docs/scripts/compile-snippets.go -fragments=strict
 
 The tool sorts blocks into three groups:
 
-- **Complete programs** (the block has a `package` clause). Each program is checked with `go vet` against the module. Any error fails CI. Report `file:line` points at the failing line in the docs source.
-- **Fragments** (no `package` clause). The tool wraps each fragment in a template (declarations become a package, statements become a function body) and adds imports for the packages it uses. It ignores errors that a fragment cannot avoid, such as `undefined: model` or `declared and not used`, and reports the rest: undefined package members (`ai.Step`), wrong argument counts or types, and syntax errors. Fragment findings are printed but do not fail CI yet. Fix the ones in the pages you touch.
+- **Complete programs** (the block has a `package` clause). Each program is checked with `go vet` against the module. Any error fails CI. Report `file:line` points at the failing line in the docs source. A block whose first line is a `// name_test.go` comment is a test file for the program above it on the same page: the tool adds it to that program's package.
+- **Fragments** (no `package` clause). The tool wraps each fragment in a template (declarations become a package, statements become a function body) and adds imports for the packages it uses. It ignores errors that a fragment cannot avoid, such as `undefined: model` or `declared and not used`, and reports the rest: undefined package members (`ai.Step`), wrong argument counts or types, and syntax errors. Fragments can start with `import` declarations, and can mix top-level `func` and `type` declarations with statements. Keyed elements or struct fields copied out of a larger declaration (`OnStepFinish: func(...) {...},`) only have to parse. CI runs with `-fragments=strict`, so any fragment finding fails the job. In prose-like blocks such as prompt text, use a `text` fence instead of `go`.
 - **Skipped blocks** (the fence has `skip-compile`).
 
 Write complete programs when a reader can run them. Write fragments when the context around them supplies the variables. Both are checked.

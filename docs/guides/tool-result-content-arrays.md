@@ -53,8 +53,8 @@ types.TextContentBlock{
 Images with base64 data:
 
 ```go
-imageData := []byte{...} // Image bytes
-types.ImageContentBlock{
+imageData, _ := os.ReadFile("chart.png") // Image bytes
+block := types.ImageContentBlock{
     Data:      imageData,
     MediaType: "image/png",
 }
@@ -65,8 +65,8 @@ types.ImageContentBlock{
 Files like PDFs or documents:
 
 ```go
-pdfData := []byte{...} // PDF bytes
-types.FileContentBlock{
+pdfData, _ := os.ReadFile("report.pdf") // PDF bytes
+block := types.FileContentBlock{
     Data:      pdfData,
     MediaType: "application/pdf",
     Filename:  "report.pdf",

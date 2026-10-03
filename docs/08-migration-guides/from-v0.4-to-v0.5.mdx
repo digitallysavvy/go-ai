@@ -1042,7 +1042,8 @@ Sandbox implementations now use the TypeScript SDK v7 naming and file helper sur
 
 Before (old API, will not compile):
 
-```go
+```go skip-compile
+// Removed API: ai.SandboxExecuteOptions no longer exists.
 result, err := sandbox.Execute(ctx, "go test ./...", ai.SandboxExecuteOptions{
     WorkingDirectory: "/workspace",
 })
@@ -1229,7 +1230,7 @@ uiChunks, uiErrs := ai.ToUIMessageStream(ctx, result.Stream(), ai.UIMessageStrea
 })
 
 for chunk := range uiChunks {
-    fmt.Printf("%s\n", chunk.Type)
+    fmt.Printf("%v\n", chunk["type"])
 }
 if err := <-uiErrs; err != nil {
     log.Fatal(err)

@@ -247,8 +247,9 @@ fmt.Printf("\n\nFinish reason: %s\n", result.FinishReason())
 ### With Per-Chunk Timeout
 
 ```go
+perChunk := 5 * time.Second
 timeout := &ai.TimeoutConfig{
-    PerChunk: 5 * time.Second,
+    PerChunk: &perChunk,
 }
 
 result, err := ai.StreamText(ctx, ai.StreamTextOptions{

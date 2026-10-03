@@ -63,9 +63,10 @@ func NewCustomTool(opts ...CustomToolOption) CustomTool
 Available options:
 
 ```go
-openaitool.WithDescription(desc string) CustomToolOption
-openaitool.WithFormat(format CustomToolFormat) CustomToolOption
-openaitool.WithAsync(async bool) CustomToolOption
+// Package openaitool
+func WithDescription(desc string) CustomToolOption
+func WithFormat(format CustomToolFormat) CustomToolOption
+func WithAsync(async bool) CustomToolOption
 ```
 
 The tool name is **not** stored in `CustomTool`. Supply it when calling `ToTool("name")` so

@@ -694,12 +694,12 @@ if err != nil {
 
 ```go
 // ✅ Good: HTTP transport for production
-transport := mcp.NewHTTPTransport(mcp.HTTPTransportConfig{
+httpTransport := mcp.NewHTTPTransport(mcp.HTTPTransportConfig{
     URL: "https://mcp.production.com",
 })
 
 // ❌ Avoid: Stdio transport in production (won't work)
-transport := mcp.NewStdioTransport(mcp.StdioTransportConfig{
+stdioTransport := mcp.NewStdioTransport(mcp.StdioTransportConfig{
     Command: "node", // Cannot deploy to cloud
 })
 ```

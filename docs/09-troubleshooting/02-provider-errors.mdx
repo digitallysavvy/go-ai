@@ -754,14 +754,15 @@ type ProviderHealth struct {
     ErrorCount   int
 }
 
-func checkProviderHealth(provider interface{}, model string) ProviderHealth {
+func checkProviderHealth(model provider.LanguageModel) ProviderHealth {
     ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
     defer cancel()
 
+    maxTokens := 5
     _, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
         Model:     model,
         Prompt:    "test",
-        MaxTokens: 5,
+        MaxTokens: &maxTokens,
     })
 
     return ProviderHealth{

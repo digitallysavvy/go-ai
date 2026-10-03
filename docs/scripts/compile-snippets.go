@@ -14,6 +14,9 @@
 //   - Complete programs (the block declares a package clause). Each one is
 //     written to its own package inside the module and checked with go vet.
 //     Any failure is an error and the exit status is 1.
+//     A block whose first line is a "// name_test.go" comment is a test file for
+//     the previous program on the same page: it is added to that program's
+//     package, so it can call the program's code.
 //   - Fragments (no package clause). A fragment is wrapped in a template: if it
 //     parses as top-level declarations it becomes a package with auto-added
 //     imports; if it parses as statements it becomes a function body. Imports
@@ -23,6 +26,10 @@
 //     "declared and not used" and "imported and not used" are ignored. What
 //     remains is reported: undefined package members (ai.Step), wrong
 //     argument counts, wrong types, and syntax errors.
+//   - Partial literals: struct fields (OnStepFinish func(...)) or keyed
+//     elements (StopWhen: []ai.StopCondition{...},) copied out of a larger
+//     declaration. They cannot be type-checked alone, so they only have to
+//     parse.
 //   - Skipped blocks. A fence info string that contains the word skip-compile
 //     (```go skip-compile) opts a block out. Use it for old-API "Before:"
 //     blocks and programs that need a third-party module.
@@ -39,6 +46,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/parser"
+	"go/scanner"
 	"go/token"
 	"os"
 	"os/exec"
@@ -60,6 +68,19 @@ type block struct {
 	kind   string // "program", "decl", "stmt", "syntax"
 	id     int
 	synErr string
+	dir    string // temporary package directory (programs only)
+
+	// Statement fragments that start with import declarations: the imports
+	// are hoisted to file level and body holds the statements after them.
+	stmtImports string
+	stmtBody    string
+	bodyLine    int // line number of the first body line
+
+	// Mixed fragments: top-level func/type declarations next to statements.
+	// mixedDecls holds the declarations (file level) and mixedStmts the rest
+	// (function body); both carry //line directives.
+	mixedDecls string
+	mixedStmts string
 }
 
 type finding struct {
@@ -76,7 +97,10 @@ var (
 	fenceRe   = regexp.MustCompile("^(\\s*)(`{3,}|~{3,})\\s*(.*)$")
 	qualRe    = regexp.MustCompile(`\b([a-z][a-zA-Z0-9]*)\.[A-Za-z_]`)
 	errLineRe = regexp.MustCompile(`^(?:vet: )?(/DOCS/)?(\S+?):(\d+)(?::(\d+))?: (.*)$`)
-	pkgClause = regexp.MustCompile(`(?m)^package\s+\w+`)
+	// A program block that starts with a "// name_test.go" comment is a test file
+	// for the previous program block on the same page.
+	testFileRe = regexp.MustCompile(`^//\s*(\S+_test\.go)\s*\n`)
+	pkgClause  = regexp.MustCompile(`(?m)^package\s+\w+`)
 )
 
 var stdAliases = map[string]string{
@@ -121,7 +145,7 @@ func main() {
 	}
 	tmpRel := filepath.Base(tmp)
 
-	var progErrs, fragErrs, synErrs, skipped []finding
+	var progErrs, fragErrs, synErrs, skipped, partials []finding
 	var nProg, nDecl, nStmt int
 
 	// Classify.
@@ -142,7 +166,15 @@ func main() {
 		case "decl":
 			decls = append(decls, b)
 		case "stmt":
-			stmts = append(stmts, b)
+			if b.mixedDecls != "" {
+				// Declarations at file level can collide with other
+				// fragments, so these get a package of their own.
+				decls = append(decls, b)
+			} else {
+				stmts = append(stmts, b)
+			}
+		case "partial":
+			partials = append(partials, finding{b.file, b.line, "partial"})
 		default:
 			synErrs = append(synErrs, finding{b.file, b.line, "syntax: " + b.synErr})
 		}
@@ -153,16 +185,30 @@ func main() {
 
 	// Complete programs.
 	var progDirs []string
+	lastProg := map[string]*block{}
 	for _, b := range programs {
 		if msg := checkImports(root, modPath, b.code); msg != "" {
 			progErrs = append(progErrs, finding{b.file, b.line, msg})
 			continue
 		}
+		src := fmt.Sprintf("//line /DOCS/%s:%d\n%s\n", b.file, b.line, stripBuildTags(b.code))
+		if m := testFileRe.FindStringSubmatch(strings.TrimSpace(b.code)); m != nil {
+			// A test file for the program above it on the same page: put it
+			// in that program's package so it can use the program's code.
+			prev := lastProg[b.file]
+			if prev == nil {
+				progErrs = append(progErrs, finding{b.file, b.line, "test file block (" + m[1] + ") has no program block before it on this page"})
+				continue
+			}
+			check(os.WriteFile(filepath.Join(prev.dir, filepath.Base(m[1])), []byte(src), 0o644))
+			continue
+		}
 		dir := filepath.Join(tmp, fmt.Sprintf("p%d", b.id))
 		check(os.MkdirAll(dir, 0o755))
-		src := fmt.Sprintf("//line /DOCS/%s:%d\n%s\n", b.file, b.line, stripBuildTags(b.code))
 		check(os.WriteFile(filepath.Join(dir, "main.go"), []byte(src), 0o644))
 		byDir[dir] = b
+		b.dir = dir
+		lastProg[b.file] = b
 		progDirs = append(progDirs, "./"+tmpRel+"/"+filepath.Base(dir))
 	}
 	if len(progDirs) > 0 {
@@ -188,6 +234,9 @@ func main() {
 		dir := filepath.Join(tmp, fmt.Sprintf("d%d", b.id))
 		check(os.MkdirAll(dir, 0o755))
 		src := wrapDecl(b, aliases)
+		if b.mixedDecls != "" {
+			src = wrapStmt(b, aliases)
+		}
 		check(os.WriteFile(filepath.Join(dir, "main.go"), []byte(src), 0o644))
 		declDirs = append(declDirs, "./"+tmpRel+"/"+filepath.Base(dir))
 	}
@@ -196,6 +245,14 @@ func main() {
 		dir := filepath.Join(tmp, "stmts")
 		check(os.MkdirAll(dir, 0o755))
 		for _, b := range stmts {
+			if b.stmtImports != "" {
+				// A fragment with its own imports may name a module that is not
+				// in go.mod; it would stop the shared package from loading.
+				if msg := checkImports(root, modPath, "package frag\n"+b.stmtImports); msg != "" {
+					extFrags = append(extFrags, finding{b.file, b.line, msg})
+					continue
+				}
+			}
 			src := wrapStmt(b, aliases)
 			check(os.WriteFile(filepath.Join(dir, fmt.Sprintf("s%d.go", b.id)), []byte(src), 0o644))
 		}
@@ -216,10 +273,13 @@ func main() {
 	sortFindings(fragErrs)
 	sortFindings(synErrs)
 
-	fmt.Printf("Checked %d go blocks in %s/: %d complete programs, %d declaration fragments, %d statement fragments, %d syntax-only failures, %d skipped (%s)\n\n",
-		len(blocks), *docsDir, nProg, nDecl, nStmt, len(synErrs), len(skipped), skipMarker)
+	fmt.Printf("Checked %d go blocks in %s/: %d complete programs, %d declaration fragments, %d statement fragments, %d partial literals (parse only), %d syntax-only failures, %d skipped (%s)\n\n",
+		len(blocks), *docsDir, nProg, nDecl, nStmt, len(partials), len(synErrs), len(skipped), skipMarker)
 
 	if *verbose {
+		for _, s := range partials {
+			fmt.Printf("  partial %s:%d\n", s.file, s.line)
+		}
 		for _, s := range skipped {
 			fmt.Printf("  skipped %s:%d\n", s.file, s.line)
 		}
@@ -253,7 +313,7 @@ func main() {
 	fail := len(progErrs) > 0
 	switch *fragMode {
 	case "strict":
-		fail = fail || len(members)+len(other)+len(synErrs) > 0
+		fail = fail || len(members)+len(other)+len(synErrs)+len(extFrags) > 0
 	case "members":
 		fail = fail || len(members) > 0
 	}
@@ -417,7 +477,9 @@ func checkImports(root, modPath, code string) string {
 		first := strings.SplitN(path, "/", 2)[0]
 		switch {
 		case !strings.Contains(first, "."):
-			// std library
+			if !isStdPackage(root, path) {
+				return "import " + strconv.Quote(path) + ": not a standard library package (add `" + skipMarker + "` to the fence if intentional)"
+			}
 		case strings.HasPrefix(path, modPath+"/"):
 			rel := strings.TrimPrefix(path, modPath+"/")
 			if st, err := os.Stat(filepath.Join(root, rel)); err != nil || !st.IsDir() {
@@ -431,6 +493,18 @@ func checkImports(root, modPath, code string) string {
 		}
 	}
 	return ""
+}
+
+var stdPkgs map[string]bool
+
+func isStdPackage(root, path string) bool {
+	if stdPkgs == nil {
+		stdPkgs = map[string]bool{}
+		for _, l := range strings.Fields(run(root, "list", "std")) {
+			stdPkgs[l] = true
+		}
+	}
+	return stdPkgs[path]
 }
 
 var goModCache string
@@ -469,8 +543,150 @@ func classifyFragment(b *block) {
 		b.kind = "stmt"
 		return
 	}
+	// Top-level func/type declarations mixed with statements: hoist the
+	// declarations to file level and keep the statements in a function body.
+	if decls, stmts, ok := splitMixed(b); ok {
+		fs = token.NewFileSet()
+		_, e1 := parser.ParseFile(fs, "x.go", "package p\n"+decls, parser.AllErrors)
+		fs = token.NewFileSet()
+		_, e2 := parser.ParseFile(fs, "x.go", "package p\nfunc _() {\n"+stmts+"\n}\n", parser.AllErrors)
+		if e1 == nil && e2 == nil {
+			b.kind = "stmt"
+			b.mixedDecls, b.mixedStmts = decls, stmts
+			return
+		}
+	}
+	// Imports followed by statements: hoist the imports out of the function body.
+	if imps, body, line, ok := splitLeadingImports(b); ok {
+		fs = token.NewFileSet()
+		if _, err2 := parser.ParseFile(fs, "x.go", "package p\nfunc _() {\n"+body+"\n}\n", parser.AllErrors); err2 == nil {
+			b.kind = "stmt"
+			b.stmtImports, b.stmtBody, b.bodyLine = imps, body, line
+			return
+		}
+		inner := &block{file: b.file, line: line, code: body}
+		if decls, stmts, ok2 := splitMixed(inner); ok2 {
+			fs = token.NewFileSet()
+			_, e1 := parser.ParseFile(fs, "x.go", "package p\n"+decls, parser.AllErrors)
+			fs = token.NewFileSet()
+			_, e2 := parser.ParseFile(fs, "x.go", "package p\nfunc _() {\n"+stmts+"\n}\n", parser.AllErrors)
+			if e1 == nil && e2 == nil {
+				b.kind = "stmt"
+				b.stmtImports, b.mixedDecls, b.mixedStmts = imps, decls, stmts
+				return
+			}
+		}
+	}
+	// Partial literals: struct fields or keyed elements copied out of a larger
+	// declaration. They cannot be type-checked on their own, so they only have
+	// to parse.
+	for _, wrap := range partialWrappers {
+		fs = token.NewFileSet()
+		if _, err3 := parser.ParseFile(fs, "x.go", "package p\n"+wrap[0]+b.code+wrap[1], parser.AllErrors); err3 == nil {
+			b.kind = "partial"
+			return
+		}
+	}
 	b.kind = "syntax"
 	b.synErr = firstLine(err.Error())
+}
+
+var partialWrappers = [][2]string{
+	{"var _ = map[interface{}]interface{}{\n", "\n}\n"},  // keyed elements: Name: value,
+	{"var _ = map[interface{}]interface{}{\n", ",\n}\n"}, // ... without a trailing comma
+	{"type _ struct {\n", "\n}\n"},                       // field declarations: Name func(...)
+}
+
+// splitMixed splits a fragment into top-level func/type declarations and the
+// remaining statements. A top-level line is one that starts at brace depth 0.
+// It reports ok only when the fragment contains at least one declaration and
+// one statement.
+func splitMixed(b *block) (decls, stmts string, ok bool) {
+	src := b.code
+	lines := strings.Split(src, "\n")
+	// Depth at the start of each line, via the Go scanner.
+	depthAt := make([]int, len(lines)+1)
+	fs := token.NewFileSet()
+	file := fs.AddFile("x.go", fs.Base(), len(src))
+	var sc scanner.Scanner
+	sc.Init(file, []byte(src), func(token.Position, string) {}, scanner.ScanComments)
+	depth := 0
+	events := make([]int, len(lines)+2) // net depth change per line
+	for {
+		pos, tok, _ := sc.Scan()
+		if tok == token.EOF {
+			break
+		}
+		ln := fs.Position(pos).Line
+		switch tok {
+		case token.LBRACE, token.LPAREN, token.LBRACK:
+			events[ln]++
+		case token.RBRACE, token.RPAREN, token.RBRACK:
+			events[ln]--
+		}
+	}
+	for i := range lines {
+		depthAt[i] = depth
+		depth += events[i+1]
+	}
+	depthAt[len(lines)] = depth
+	var d, st strings.Builder
+	i := 0
+	hasDecl, hasStmt := false, false
+	for i < len(lines) {
+		if strings.TrimSpace(lines[i]) == "" || depthAt[i] != 0 {
+			// Blank lines and stray continuation lines go with the statements.
+			st.WriteString(lines[i] + "\n")
+			i++
+			continue
+		}
+		j := i
+		for j+1 < len(lines) && depthAt[j+1] != 0 {
+			j++
+		}
+		chunk := strings.Join(lines[i:j+1], "\n")
+		directive := fmt.Sprintf("//line /DOCS/%s:%d\n", b.file, b.line+i)
+		trimmed := strings.TrimSpace(lines[i])
+		switch {
+		case strings.HasPrefix(trimmed, "func ") && !strings.HasPrefix(trimmed, "func("),
+			strings.HasPrefix(trimmed, "type "):
+			d.WriteString(directive + chunk + "\n")
+			hasDecl = true
+		case strings.HasPrefix(trimmed, "//"):
+			st.WriteString(chunk + "\n")
+		default:
+			st.WriteString(directive + chunk + "\n")
+			hasStmt = true
+		}
+		i = j + 1
+	}
+	return d.String(), st.String(), hasDecl && hasStmt
+}
+
+// splitLeadingImports separates import declarations at the top of a fragment
+// from the code that follows them.
+func splitLeadingImports(b *block) (imps, body string, bodyLine int, ok bool) {
+	src := "package p\n" + b.code
+	fs := token.NewFileSet()
+	f, err := parser.ParseFile(fs, "x.go", src, parser.ImportsOnly)
+	if err != nil || f == nil || len(f.Imports) == 0 {
+		return "", "", 0, false
+	}
+	end := 0
+	for _, d := range f.Decls {
+		if gd, isGen := d.(*ast.GenDecl); isGen && gd.Tok == token.IMPORT {
+			if off := fs.Position(gd.End()).Offset; off > end {
+				end = off
+			}
+		}
+	}
+	if end == 0 || end > len(src) {
+		return "", "", 0, false
+	}
+	imps = src[len("package p\n"):end]
+	body = src[end:]
+	bodyLine = b.line + strings.Count(imps, "\n")
+	return imps + "\n", body, bodyLine, strings.TrimSpace(body) != ""
 }
 
 func ownImports(code string) map[string]bool {
@@ -581,6 +797,12 @@ func wrapDecl(b *block, aliases map[string]string) string {
 func wrapStmt(b *block, aliases map[string]string) string {
 	imp := importBlock(b, aliases, false)
 	fn := fmt.Sprintf("snippet%d", b.id)
+	if b.mixedDecls != "" {
+		return "package stmts\n" + imp + b.stmtImports + b.mixedDecls + "func " + fn + "() {\n" + b.mixedStmts + "}\n"
+	}
+	if b.stmtBody != "" {
+		return "package stmts\n" + imp + b.stmtImports + "func " + fn + "() {\n" + fmt.Sprintf("//line /DOCS/%s:%d\n%s\n", b.file, b.bodyLine, b.stmtBody) + "}\n"
+	}
 	return "package stmts\n" + imp + "func " + fn + "() {\n" + fmt.Sprintf("//line /DOCS/%s:%d\n%s\n", b.file, b.line, b.code) + "}\n"
 }
 

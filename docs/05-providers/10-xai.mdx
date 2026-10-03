@@ -206,7 +206,7 @@ videoModel, _ := provider.VideoModel("grok-imagine-video")
 
 result, _ := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
     Model:  videoModel,
-    Prompt: "A cat playing piano",
+    Prompt: ai.VideoPrompt{Text: "A cat playing piano"},
 })
 ```
 

@@ -286,7 +286,7 @@ func init() {
 
 Usage:
 
-```go
+```go skip-compile
 import "myapp/models"
 
 // Use pre-configured models
@@ -386,8 +386,6 @@ package config
 import (
     "os"
 
-    "github.com/digitallysavvy/go-ai/pkg/middleware"
-    "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
     "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
     "github.com/digitallysavvy/go-ai/pkg/providers/google"
@@ -684,8 +682,11 @@ const (
     PowerfulModel   = "anthropic:claude-opus-4-5"
     CodeModel       = "openai:gpt-6-astra"
 )
+```
 
-// Usage
+Then resolve a model by its constant:
+
+```go
 model, _ := registry.ResolveLanguageModel(models.DefaultModel)
 ```
 

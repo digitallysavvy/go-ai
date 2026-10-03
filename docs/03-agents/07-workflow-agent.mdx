@@ -26,7 +26,7 @@ agent, err := workflow.NewWorkflowAgent(workflow.WorkflowAgent{
   ID: "support-agent",
   Model: model,
   Instructions: "You are a support assistant.",
-  Tools: []types.Tool{...},
+  Tools: tools,
   StopWhen: []ai.StopCondition{ai.IsStepCount(20)},
   ActiveTools: []string{"search"},
   Telemetry: &ai.TelemetrySettings{FunctionID: "support-agent"},

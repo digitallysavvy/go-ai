@@ -309,7 +309,10 @@ type TextContent struct {
 }
 
 // pkg/provider/types/usage.go
-InputTokens *int64 `json:"inputTokens,omitempty"`
+type Usage struct {
+    InputTokens *int64 `json:"inputTokens,omitempty"`
+    // ...
+}
 ```
 
 One field genuinely renamed rather than just re-cased: TS `toolCall.toolCallId` is Go `ToolCall.ID` (`json:"id"`) on the internal result type — but the UI-message-stream wire type (`ToolUIPart`) does use `json:"toolCallId"` (`pkg/ai/ui_message.go`), because that one has to match the protocol a TS frontend expects.

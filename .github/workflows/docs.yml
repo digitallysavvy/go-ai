@@ -32,11 +32,11 @@ jobs:
           go-version: '1.26'
           cache: true
 
-      # Complete programs (blocks with a package clause) must compile: any error
-      # fails the job. Fragment findings are printed for review and do not fail
-      # the job yet. Opt a block out with ```go skip-compile.
+      # Complete programs (blocks with a package clause) must compile, and
+      # fragments must type-check and parse (-fragments=strict): any finding
+      # fails the job. Opt a block out with ```go skip-compile.
       - name: Compile Go snippets
-        run: go run docs/scripts/compile-snippets.go | tee snippets.txt
+        run: go run docs/scripts/compile-snippets.go -fragments=strict | tee snippets.txt
 
       - name: Summarize fragment findings
         if: always()

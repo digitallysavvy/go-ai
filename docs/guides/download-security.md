@@ -110,13 +110,15 @@ Limit: 2147483648 (2 GiB)
 Even if `Content-Length` is missing or incorrect, the SDK tracks bytes while streaming:
 
 ```go
+import providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+
 // Reads incrementally, not all at once
 limitedReader := io.LimitReader(resp.Body, maxBytes+1)
 data, err := io.ReadAll(limitedReader)
 
 // Checks if limit was exceeded
 if len(data) > maxBytes {
-    return DownloadError{...}
+    return providererrors.NewDownloadError(url, 0, "", "download exceeds the size limit", nil)
 }
 ```
 

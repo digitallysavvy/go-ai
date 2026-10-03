@@ -412,7 +412,7 @@ result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 
 // Streaming: Slightly more overhead, better UX
-result, _ := ai.StreamText(ctx, ai.StreamTextOptions{
+streamResult, _ := ai.StreamText(ctx, ai.StreamTextOptions{
     Model:  model,
     Prompt: "Short response",
 })

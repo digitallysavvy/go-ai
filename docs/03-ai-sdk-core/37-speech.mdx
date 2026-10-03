@@ -613,7 +613,12 @@ result, err := ai.ExperimentalStreamTranslate(ctx, ai.StreamTranslateOptions{
 if err != nil {
     log.Fatal(err)
 }
-defer result.Close()
+
+translation, err := result.TranslationText() // waits for the stream to finish
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(translation)
 ```
 
 This feature is experimental and its API may change. See the package docs

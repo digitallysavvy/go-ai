@@ -423,16 +423,14 @@ Bad: "If you want deterministic outputs, it would be recommended to consider set
 ### Inline Documentation
 ```go
 // Generate a completion using the Claude model
+temperature := 0.7
+maxTokens := 1000
+
 response, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-    Model: "claude-sonnet-5-5", // Recommended for most use cases
-    Messages: []types.Message{
-        {
-            Role:    "user",
-            Content: "Explain quantum computing",
-        },
-    },
-    Temperature: ptr(0.7), // Higher = more creative, lower = more focused
-    MaxTokens:   ptr(1000), // Limit response length
+    Model:       model, // For example, claude-sonnet-5-5: recommended for most use cases
+    Prompt:      "Explain quantum computing",
+    Temperature: &temperature, // Higher = more creative, lower = more focused
+    MaxTokens:   &maxTokens,   // Limit response length
 })
 ```
 
@@ -443,10 +441,9 @@ client := newExampleClient("your-api-key")
 
 // Step 2: Create a request with system and user messages
 request := ai.GenerateTextOptions{
-    Messages: []types.Message{
-        {Role: "system", Content: "You are a helpful assistant."},
-        {Role: "user", Content: "What is Go?"},
-    },
+    Model:  model,
+    System: "You are a helpful assistant.",
+    Prompt: "What is Go?",
 }
 
 // Step 3: Generate the response

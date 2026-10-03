@@ -712,12 +712,12 @@ Each middleware should have a single responsibility:
 
 ```go
 // Good: Single responsibility
-func LogMiddleware() *middleware.LanguageModelMiddleware { ... }
-func CacheMiddleware() *middleware.LanguageModelMiddleware { ... }
-func MetricsMiddleware() *middleware.LanguageModelMiddleware { ... }
+func LogMiddleware() *middleware.LanguageModelMiddleware { return nil }
+func CacheMiddleware() *middleware.LanguageModelMiddleware { return nil }
+func MetricsMiddleware() *middleware.LanguageModelMiddleware { return nil }
 
 // Bad: Multiple responsibilities
-func LogAndCacheAndMetricsMiddleware() *middleware.LanguageModelMiddleware { ... }
+func LogAndCacheAndMetricsMiddleware() *middleware.LanguageModelMiddleware { return nil }
 ```
 
 ### 2. Handle Errors Gracefully

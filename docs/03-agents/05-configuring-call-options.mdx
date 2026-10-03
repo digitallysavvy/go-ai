@@ -815,7 +815,7 @@ func newAgentWithContext(ctx RequestContext) *agent.ToolLoopAgent {
 }
 
 // Bad - Inline configuration everywhere
-myAgent := agent.NewToolLoopAgent(agent.AgentConfig{...})
+myAgent := agent.NewToolLoopAgent(agent.AgentConfig{Model: model})
 ```
 
 ### 2. Validate Configuration
@@ -833,7 +833,7 @@ func newValidatedAgent(config Config) (*agent.ToolLoopAgent, error) {
     }
 
     // Create agent with validated config
-    return agent.NewToolLoopAgent(agent.AgentConfig{...}), nil
+    return agent.NewToolLoopAgent(agent.AgentConfig{Model: model}), nil
 }
 ```
 

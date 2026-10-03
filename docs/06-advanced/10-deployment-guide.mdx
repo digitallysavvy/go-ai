@@ -704,7 +704,7 @@ log.Println("Shutting down gracefully...")
 
 ### 3. Add Structured Logging
 
-```go
+```go skip-compile
 import "go.uber.org/zap"
 
 logger, _ := zap.NewProduction()
@@ -719,7 +719,7 @@ logger.Info("request_processed",
 
 ### 4. Monitor Performance
 
-```go
+```go skip-compile
 import "github.com/prometheus/client_golang/prometheus"
 
 var (

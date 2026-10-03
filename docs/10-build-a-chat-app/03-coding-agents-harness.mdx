@@ -177,6 +177,8 @@ The bridge runs on Node.js, so Node must be installed on the host. The first ses
 For isolation, run the coding agent on [Vercel Sandbox](https://vercel.com/docs/vercel-sandbox). Create the sandbox session yourself, expose a port, and hand it to `CreateSession`. You then own its lifecycle:
 
 ```go
+import "github.com/digitallysavvy/go-ai/pkg/harness/sandbox/vercel"
+
 sandbox, err := vercel.CreateNetworkSandboxSession(ctx, vercel.CreateSessionOptions{
 	Runtime: "node24",
 	Ports:   []int{4319},

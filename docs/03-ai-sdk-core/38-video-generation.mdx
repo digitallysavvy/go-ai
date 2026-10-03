@@ -197,10 +197,13 @@ model := replicate.NewVideoModel(prov, "minimax/video-01")
 ### Google Vertex AI
 
 ```go
-prov := googlevertex.New(googlevertex.Config{
+prov, err := googlevertex.New(googlevertex.Config{
     Project:  os.Getenv("GOOGLE_VERTEX_PROJECT"),
     Location: "us-central1",
 })
+if err != nil {
+    log.Fatal(err)
+}
 model, _ := prov.VideoModel(googlevertex.ModelVeo30Generate001)
 ```
 

@@ -979,14 +979,17 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 
 ## Best Practices
 
-### 1. Use Debug Mode in Development
+### 1. Log HTTP traffic in development
 
 ```go
 // ✅ Good: Debug mode in development
-provider := openai.New(openai.Config{
-    APIKey:    os.Getenv("OPENAI_API_KEY"),
-    DebugMode: os.Getenv("ENV") == "development",
-})
+cfg := openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")}
+if os.Getenv("ENV") == "development" {
+    cfg.HTTPClient = &http.Client{
+        Transport: &LoggingTransport{Transport: http.DefaultTransport},
+    }
+}
+provider := openai.New(cfg)
 ```
 
 ### 2. Monitor Token Usage

@@ -117,7 +117,7 @@ func main() {
 
         case provider.ChunkTypeError:
             // Handle error chunk
-            log.Printf("Error in stream: %v", chunk.Error)
+            log.Printf("Error in stream: %v", chunk.Err)
 
         case provider.ChunkTypeFinish:
             fmt.Printf("\nFinished: %s\n", chunk.FinishReason)

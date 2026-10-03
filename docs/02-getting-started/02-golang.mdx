@@ -43,7 +43,7 @@ Other providers read their own variable, for example `ANTHROPIC_API_KEY` or `GOO
 
 If you prefer a `.env` file, Go does not load it on its own. Put `OPENAI_API_KEY=sk-...` in `.env`, install the loader with `go get github.com/joho/godotenv`, and add a blank import of its `autoload` package to `main.go`:
 
-```go
+```go skip-compile
 import _ "github.com/joho/godotenv/autoload"
 ```
 

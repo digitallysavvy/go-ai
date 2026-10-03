@@ -111,7 +111,7 @@ was removed) reports `input_tokens` as the total, with cached tokens broken
 out separately under `input_tokens_details.cached_tokens`. The SDK derives
 `NoCacheTokens` by subtracting the cached count from the total:
 
-```go
+```text
 // API Response:
 // input_tokens: 200
 // input_tokens_details: { cached_tokens: 150 }
@@ -136,7 +136,7 @@ SDK breaks out the reasoning portion from `output_tokens_details.reasoning_token
 and derives the text-only count by subtraction — it does not sum two
 separate fields:
 
-```go
+```text
 // API Response:
 // output_tokens: 278
 // output_tokens_details: { reasoning_tokens: 228 }

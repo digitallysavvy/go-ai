@@ -153,7 +153,7 @@ Azure DeepSeek deployments are available through `provider.DeepSeek("deployment-
 | any other deployment name | OpenAI |
 
 ```go
-provider, err := azure.New(azure.Config{
+azureProvider, err := azure.New(azure.Config{
     ResourceName: os.Getenv("AZURE_RESOURCE_NAME"),
     APIKey:       os.Getenv("AZURE_API_KEY"),
 })
@@ -161,7 +161,7 @@ if err != nil {
     log.Fatal(err)
 }
 
-transcriptionModel, err := provider.TranscriptionModel("mai-transcribe-2")
+transcriptionModel, err := azureProvider.TranscriptionModel("mai-transcribe-2")
 if err != nil {
     log.Fatal(err)
 }

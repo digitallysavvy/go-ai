@@ -58,8 +58,10 @@ This code is unchanged between v0.3.x and v0.4.0. What changes is the order `OnC
 ```go
 provider := xai.New(xai.Config{APIKey: os.Getenv("XAI_API_KEY")})
 
-model, _ := provider.LanguageModel("grok-3")                    // Responses API (new default)
-chatModel, _ := provider.ChatCompletionsLanguageModel("grok-3") // Chat Completions API (v0.3.x behavior)
+model, _ := provider.LanguageModel("grok-3") // Responses API (new default)
+
+// v0.4 only, removed in v0.5.0: Chat Completions API (v0.3.x behavior)
+// chatModel, _ := provider.ChatCompletionsLanguageModel("grok-3")
 ```
 
 ### XAI removed grok-2 model IDs

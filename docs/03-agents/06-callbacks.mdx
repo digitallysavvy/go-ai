@@ -529,7 +529,7 @@ parentCtx := agent.WithRunID(ctx, "parent-run-456")
 subagentCtx := agent.WithParentRunID(parentCtx, "parent-run-456")
 subagentCtx = agent.WithRunID(subagentCtx, "subagent-run-789")
 
-result, err := agent.Execute(ctx, "question")
+result, err := myAgent.Generate(ctx, agent.AgentGenerateOptions{Prompt: "question"})
 ```
 
 ### Retrieving Run Tracking Info
