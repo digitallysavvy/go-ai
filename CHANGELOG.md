@@ -5,6 +5,41 @@ All notable changes to the Go AI SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Fixes found while building the [Shipyard demo](https://github.com/digitallysavvy/go-ai-demo),
+a `useChat` frontend on a Go backend.
+
+### Added
+
+- `ai.PipeUIMessageChunksToResponse` and `ai.CreateUIMessageChunksResponse`
+  serve any UI message chunk stream over HTTP, such as one built with
+  `CreateUIMessageStreamWithOptions` that writes data parts and merges an
+  agent stream (TS `pipeUIMessageStreamToResponse({ stream })` /
+  `createUIMessageStreamResponse({ stream })`).
+- `agent.PipeAgentUIStreamFromUIMessagesToResponse` and
+  `agent.CreateAgentUIStreamResponseFromUIMessages` take `useChat`'s UI
+  messages directly (TS `pipeAgentUIStreamToResponse` /
+  `createAgentUIStreamResponse` with `uiMessages`).
+- `ai.UIMessageStreamHeaders()` (TS `UI_MESSAGE_STREAM_HEADERS`).
+
+### Fixed
+
+- A step that pauses for tool approval keeps the model's finish reason
+  (normally `tool-calls`), as in TS. It was reported as `user-approval`,
+  which TS `useChat` rejects, so the approval step failed with a type
+  validation error in the browser. `types.FinishReasonUserApproval` is
+  deprecated and no longer reported.
+- `harness.Agent.CreateSession` names the sandbox and its work dir after the
+  generated session ID. Sessions created without a `SessionID` all shared
+  the work dir `<harness>-%`.
+- The default UI message stream headers are canonical, so
+  `Header.Get("X-Vercel-AI-UI-Message-Stream")` finds the protocol header on
+  responses from `CreateUIMessageStreamResponse`.
+- The harness examples (Claude Code, Codex, Cursor, fx, GitHub Copilot,
+  Grok Build, workflow) give the local sandbox a port; they failed at
+  startup with "needs a TCP port exposed by the sandbox".
+
 ## [0.5.0] - 2026-10-02
 
 TS SDK parity target: `ai@7.0.127` (was `ai@6.0.137` in v0.4.0). Ships
