@@ -34,6 +34,18 @@ a `useChat` frontend on a Go backend.
   Other `io.Writer`s still get only the body. New
   `PipeTextStreamToResponseWithInit` takes a status and headers.
 
+### Security
+
+- Tool approval fails closed. A `ToolApproval` (or `NeedsApproval`) set to
+  a bare function literal, such as
+  `func(ctx context.Context, input map[string]interface{}, opts types.ToolNeedsApprovalOptions) bool`,
+  matched no case and the tool ran without approval. Unnamed literals with
+  the approval function signatures are now treated as their named types,
+  and any other unrecognized value, or an unknown status string such as
+  `"user_approval"`, is an error: the call is reported to the model as a
+  tool error and the tool does not run. This applies to tool-level,
+  per-tool map and call-level `ToolApproval` settings.
+
 ### Fixed
 
 - A step that pauses for tool approval keeps the model's finish reason

@@ -63,7 +63,53 @@ func normalizeToolApprovalStatus(status types.ToolApprovalStatus) types.ToolAppr
 	return types.ToolApprovalResult{Status: status}
 }
 
+// resolveToolApproval decides whether a tool call needs approval. It fails
+// closed: a configuration value or status it doesn't recognize is an error,
+// which reaches the model as a tool error instead of running the tool.
 func resolveToolApproval(
+	ctx context.Context,
+	call types.ToolCall,
+	tools []types.Tool,
+	messages []types.Message,
+	runtimeCtx interface{},
+	toolsCtx map[string]interface{},
+	toolApproval interface{},
+) (types.ToolApprovalResult, error) {
+	result, err := resolveToolApprovalValue(ctx, call, tools, messages, runtimeCtx, toolsCtx, toolApproval)
+	if err != nil {
+		return types.ToolApprovalResult{}, err
+	}
+	switch result.Status {
+	case types.ToolApprovalStatusNotApplicable, types.ToolApprovalStatusApproved,
+		types.ToolApprovalStatusDenied, types.ToolApprovalStatusUserApproval:
+		return result, nil
+	}
+	return types.ToolApprovalResult{}, fmt.Errorf("tool %q: unknown tool approval status %q (want %q, %q, %q or %q)",
+		call.ToolName, result.Status, types.ToolApprovalStatusNotApplicable, types.ToolApprovalStatusApproved,
+		types.ToolApprovalStatusDenied, types.ToolApprovalStatusUserApproval)
+}
+
+// namedApprovalFunc converts an unnamed function literal to the named
+// approval function type with the same signature. Without it, a value such
+// as ToolApproval: func(ctx context.Context, ...) bool {...} would match no
+// case in the type switches below. Other values are returned unchanged.
+func namedApprovalFunc(v interface{}) interface{} {
+	switch fn := v.(type) {
+	case func(context.Context, map[string]interface{}, types.ToolNeedsApprovalOptions) bool:
+		return types.ToolNeedsApprovalFunc(fn)
+	case func(context.Context, map[string]interface{}) bool:
+		return types.NeedsApprovalFunc(fn) //nolint:staticcheck // legacy function type still accepted for backward compatibility
+	case func(types.ToolApprovalOptions) types.ToolApprovalResult:
+		return types.GenericToolApprovalFunc(fn)
+	case func(map[string]interface{}, types.SingleToolApprovalOptions) types.ToolApprovalResult:
+		return types.SingleToolApprovalFunc(fn)
+	case func(types.ToolCall, []types.Tool, []types.Message, interface{}, map[string]interface{}) types.ToolApprovalResult:
+		return types.ToolApprovalFunc(fn) //nolint:staticcheck // legacy function type still accepted for backward compatibility
+	}
+	return v
+}
+
+func resolveToolApprovalValue(
 	ctx context.Context,
 	call types.ToolCall,
 	tools []types.Tool,
@@ -74,7 +120,7 @@ func resolveToolApproval(
 ) (types.ToolApprovalResult, error) {
 	tool := findToolForCall(call, tools)
 	if toolApproval != nil {
-		switch v := toolApproval.(type) {
+		switch v := namedApprovalFunc(toolApproval).(type) {
 		case types.GenericToolApprovalFunc:
 			return normalizeToolApprovalResult(v(types.ToolApprovalOptions{
 				ToolCall:       call,
@@ -93,6 +139,8 @@ func resolveToolApproval(
 			if value, ok := v[call.ToolName]; ok {
 				return normalizePerToolApprovalValue(call, tool, tools, messages, value, runtimeCtx, toolsCtx)
 			}
+		default:
+			return types.ToolApprovalResult{}, fmt.Errorf("unsupported ToolApproval option of type %T: use a GenericToolApprovalFunc or a map of tool name to approval value", toolApproval)
 		}
 	}
 
@@ -104,7 +152,7 @@ func resolveToolApproval(
 	if setting == nil {
 		setting = tool.NeedsApproval
 	}
-	switch v := setting.(type) {
+	switch v := namedApprovalFunc(setting).(type) {
 	case nil:
 		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}, nil
 	case bool:
@@ -139,7 +187,7 @@ func resolveToolApproval(
 		return normalizeToolApprovalStatus(types.ToolApprovalStatus(v)), nil
 	}
 
-	return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}, nil
+	return types.ToolApprovalResult{}, fmt.Errorf("tool %q: unsupported ToolApproval value of type %T: use a bool, a ToolApprovalStatus or a ToolNeedsApprovalFunc", call.ToolName, setting)
 }
 
 func findToolForCall(call types.ToolCall, tools []types.Tool) *types.Tool {
@@ -160,7 +208,7 @@ func normalizePerToolApprovalValue(
 	runtimeCtx interface{},
 	toolsCtx map[string]interface{},
 ) (types.ToolApprovalResult, error) {
-	switch fn := value.(type) {
+	switch fn := namedApprovalFunc(value).(type) {
 	case types.SingleToolApprovalFunc:
 		toolCtx, err := validateToolContextFor(tool, call.ToolName, toolsCtx[call.ToolName])
 		if err != nil {
@@ -186,8 +234,10 @@ func normalizePerToolApprovalValue(
 		return normalizeToolApprovalResult(fn), nil
 	case string:
 		return normalizeToolApprovalResult(types.ToolApprovalStatus(fn)), nil
-	default:
+	case nil, types.ToolApprovalResult, *types.ToolApprovalResult:
 		return normalizeToolApprovalResult(value), nil
+	default:
+		return types.ToolApprovalResult{}, fmt.Errorf("tool %q: unsupported tool approval value of type %T", call.ToolName, value)
 	}
 }
 
