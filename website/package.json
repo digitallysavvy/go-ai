@@ -3,7 +3,10 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
+    "sync-changelog": "node scripts/sync-changelog.mjs",
+    "prestart": "npm run sync-changelog",
     "start": "docusaurus start",
+    "prebuild": "npm run sync-changelog",
     "build": "docusaurus build",
     "clear": "docusaurus clear",
     "serve": "docusaurus serve",

@@ -13,6 +13,13 @@ npm start
 This starts a local dev server at `http://localhost:3000/go-ai/` with hot reload. Most edits
 (including content in `../docs`) show up live without a server restart.
 
+## Changelog page
+
+`../docs/12-changelog/index.md` is generated from the root `CHANGELOG.md` by
+`scripts/sync-changelog.mjs`. `npm start` and `npm run build` run it first
+(through the `prestart` and `prebuild` hooks), and git ignores the output. If you
+call `docusaurus build` directly, run `npm run sync-changelog` before it.
+
 ## Build
 
 ```bash

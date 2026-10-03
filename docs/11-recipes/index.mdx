@@ -1,0 +1,27 @@
+---
+title: Recipes
+description: Short, complete programs for common tasks with the Go AI SDK, each with a runnable example in the repository.
+---
+
+# Recipes
+
+Each recipe is one task, one complete program and links to the guide and reference for more depth. Every program lives in [`examples/recipes`](https://github.com/digitallysavvy/go-ai/tree/main/examples/recipes), is built by CI, and compiles without API keys. Set the keys a recipe names to run it.
+
+| Recipe | Task |
+| --- | --- |
+| [Serve a useChat frontend](./01-usechat-backend.mdx) | Serve an endpoint that the `useChat` hook from `@ai-sdk/react` can talk to. |
+| [Ask before running a tool](./02-tool-approval.mdx) | Let the model request a tool, but run it only after the user says yes. |
+| [Use tools from an MCP server](./03-mcp-tools.mdx) | Call the tools of a Model Context Protocol (MCP) server from `GenerateText`. |
+| [Get typed data from a model](./04-structured-output.mdx) | Get a Go struct back from a model, not free text. |
+| [Switch providers](./05-switch-providers.mdx) | Run the same code on different providers, chosen by configuration. |
+| [Use Claude with reasoning](./06-claude-reasoning.mdx) | Have Claude think before it answers, and read what it thought. |
+| [Run Claude Code or Codex](./07-harness-coding-agent.mdx) | Hand a coding task to Claude Code or Codex and read what it changed. |
+| [Retrieve context with embeddings](./08-rag-embeddings.mdx) | Answer questions from your own documents. |
+| [Handle rate limits and retries](./09-rate-limits-retries.mdx) | Make calls resilient to 429 and 5xx responses, and fail clearly when they are not. |
+| [Test code that calls a model](./10-mock-model-tests.mdx) | Write fast, deterministic tests for code that calls a language model. |
+| [Run a tool loop with an agent](./11-agent-with-tools.mdx) | Let a model call your Go functions until it has an answer. |
+| [Stream text as it arrives](./12-stream-text.mdx) | Print a model's answer while it is still being written. |
+
+## Reference app
+
+For a full application that combines several of these recipes, see the [Build a chat app](../10-build-a-chat-app/index.mdx) guides and the [Shipyard demo](https://github.com/digitallysavvy/go-ai-demo).

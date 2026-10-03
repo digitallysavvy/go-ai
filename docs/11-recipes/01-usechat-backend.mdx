@@ -1,0 +1,86 @@
+---
+title: Serve a useChat frontend
+description: Stream a Go agent to the stock useChat hook with validation, keep-alive and the right headers.
+sidebar_position: 1
+---
+
+# Serve a useChat frontend
+
+Serve an endpoint that the `useChat` hook from `@ai-sdk/react` can talk to.
+
+```go
+package main
+
+import (
+	"encoding/json"
+	"log"
+	"net/http"
+	"os"
+	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/agent"
+	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+
+func main() {
+	model, err := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")}).
+		LanguageModel(anthropic.ClaudeSonnet5_5)
+	if err != nil {
+		log.Fatal(err)
+	}
+	assistant := agent.NewToolLoopAgent(agent.AgentConfig{
+		Model:  model,
+		System: "You are a concise assistant.",
+	})
+
+	http.HandleFunc("POST /api/chat", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages json.RawMessage `json:"messages"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<20)).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		// Validate and convert the UI messages before anything is written, so
+		// a bad request gets a plain 400.
+		chunks, _, err := agent.CreateAgentUIStreamFromUIMessages(r.Context(), assistant,
+			agent.CreateAgentUIStreamFromUIMessagesOptions{UIMessages: []byte(req.Messages)})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Sets the SSE headers, writes 200 and flushes each chunk.
+		keepAlive := 15 * time.Second
+		if err := ai.PipeUIMessageChunksToResponse(chunks, w, &ai.UIMessageStreamResponseInit{KeepAliveMs: &keepAlive}); err != nil {
+			log.Printf("write stream: %v", err)
+		}
+	})
+
+	log.Println("listening on :8080")
+	log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+Run it:
+
+```bash
+ANTHROPIC_API_KEY=... go run ./examples/recipes/usechat-backend
+```
+
+## Notes
+
+- `CreateAgentUIStreamFromUIMessages` validates the UI messages and runs the agent. A bad request returns an error before anything is written, so the handler answers 400.
+- `PipeUIMessageChunksToResponse` sets the SSE headers, writes the status and flushes every chunk. Do not set them yourself.
+- `KeepAliveMs` (a `*time.Duration`) keeps idle proxies from closing the stream.
+- On the client, use `DefaultChatTransport({ api: "http://localhost:8080/api/chat" })`. Add a CORS wrapper if the frontend is on another origin.
+
+## Go deeper
+
+- [Guide: Serve a useChat frontend from Go](../10-build-a-chat-app/01-serve-usechat-from-go.mdx)
+- [Reference: Stream transport helpers](../07-reference/ai/stream-transport-helpers.mdx)
+- [Reference: Agent UI stream helpers](../07-reference/ai/agent-ui-stream-helpers.mdx)
+
+The full program is at [`examples/recipes/usechat-backend/main.go`](https://github.com/digitallysavvy/go-ai/blob/main/examples/recipes/usechat-backend/main.go).

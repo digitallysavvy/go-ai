@@ -1,0 +1,80 @@
+---
+title: Handle rate limits and retries
+description: Set retries and timeouts, and inspect the error when the SDK gives up.
+sidebar_position: 9
+---
+
+# Handle rate limits and retries
+
+Make calls resilient to 429 and 5xx responses, and fail clearly when they are not.
+
+```go
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"os"
+	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/ai"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+	model, err := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")}).
+		LanguageModel(openai.ModelGPT6Astra)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// The SDK retries 408, 409, 429 and 5xx responses with exponential
+	// backoff and honors Retry-After. The default is 2 retries.
+	maxRetries := 4
+	total := 60 * time.Second
+
+	result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+		Model:      model,
+		Prompt:     "Name three Go proverbs.",
+		MaxRetries: &maxRetries,
+		Timeout:    &ai.TimeoutConfig{Total: &total},
+	})
+	if err != nil {
+		// RetryError means the SDK gave up. Its last error is the cause.
+		var retryErr *providererrors.RetryError
+		if errors.As(err, &retryErr) {
+			fmt.Printf("gave up after %d attempts (%s)\n", len(retryErr.Errors), retryErr.Reason)
+		}
+		var perr *providererrors.ProviderError
+		if errors.As(err, &perr) && perr.StatusCode == 429 {
+			fmt.Println("rate limited; retry-after:", perr.ResponseHeaders["retry-after"])
+		}
+		log.Fatal(err)
+	}
+	fmt.Println(result.Text)
+}
+```
+
+Run it:
+
+```bash
+OPENAI_API_KEY=... go run ./examples/recipes/rate-limits-retries
+```
+
+## Notes
+
+- `MaxRetries` is a `*int`. Nil means the default of 2, and 0 turns retries off.
+- The SDK retries 408, 409, 429 and 5xx with exponential backoff and honors `Retry-After`.
+- `ai.TimeoutConfig` bounds the whole call (`Total`), each step (`PerStep`) and, for streams, each chunk (`PerChunk`).
+- When retries run out you get a `*providererrors.RetryError`. Use `errors.As` to reach the underlying `*providererrors.ProviderError` and its status code and headers.
+
+## Go deeper
+
+- [Troubleshooting: Rate limit issues](../09-troubleshooting/03-rate-limits.mdx)
+- [Troubleshooting: Timeout errors](../09-troubleshooting/10-timeout-errors.mdx)
+- [Guide: Error handling](../03-ai-sdk-core/50-error-handling.mdx)
+
+The full program is at [`examples/recipes/rate-limits-retries/main.go`](https://github.com/digitallysavvy/go-ai/blob/main/examples/recipes/rate-limits-retries/main.go).

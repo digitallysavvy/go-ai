@@ -1,0 +1,81 @@
+---
+title: Stream text as it arrives
+description: Read a streaming response chunk by chunk with StreamText and the Next() loop.
+sidebar_position: 12
+---
+
+# Stream text as it arrives
+
+Print a model's answer while it is still being written.
+
+```go
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"os"
+
+	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+	model, err := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")}).
+		LanguageModel(openai.ModelGPT6Astra)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	result, err := ai.StreamText(context.Background(), ai.StreamTextOptions{
+		Model:  model,
+		Prompt: "Write a haiku about concurrency.",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	stream := result.Stream()
+	for {
+		chunk, err := stream.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			log.Fatal(err)
+		}
+		if chunk.Type == provider.ChunkTypeText {
+			fmt.Print(chunk.Text)
+		}
+	}
+	if err := stream.Err(); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println()
+}
+```
+
+Run it:
+
+```bash
+OPENAI_API_KEY=... go run ./examples/recipes/stream-text
+```
+
+## Notes
+
+- `ai.StreamText` returns a result right away. `result.Stream()` yields chunks.
+- Loop on `stream.Next()` until it returns `io.EOF`, then check `stream.Err()`.
+- Chunks have a `Type`. Text arrives as `provider.ChunkTypeText` with the delta in `chunk.Text`.
+- To send the stream to a browser, use `ai.PipeUIMessageStreamToResponse` or `PipeTextStreamToResponse`.
+
+## Go deeper
+
+- [Guide: Streaming](../02-foundations/05-streaming.mdx)
+- [Reference: Stream text](../07-reference/ai/stream-text.mdx)
+- [Reference: Stream transport helpers](../07-reference/ai/stream-transport-helpers.mdx)
+
+The full program is at [`examples/recipes/stream-text/main.go`](https://github.com/digitallysavvy/go-ai/blob/main/examples/recipes/stream-text/main.go).
