@@ -77,9 +77,9 @@ const START_HERE = [
   { label: 'Tools and tool calling', re: /\/tools-and-tool-calling$/ },
   { label: 'Use MCP tools', re: /\/mcp-tools$/ },
   { label: 'Build an agent', re: /\/agents\/(building-agents|overview)$/ },
-  { label: 'Serve a useChat endpoint', re: /(use-?chat|chat-endpoint|chat-backend)/ },
-  { label: 'Tool approval', re: /(tool-approval|approval)/ },
-  { label: 'Claude Code and Codex harness', re: /(harness|\/coding-agents$)/ },
+  { label: 'Serve a useChat endpoint', re: /\/build-a-chat-app\/serve-usechat-from-go$/ },
+  { label: 'Tool approval', re: /\/build-a-chat-app\/tool-approval$/ },
+  { label: 'Claude Code and Codex harness', re: /\/build-a-chat-app\/coding-agents-harness$/ },
   { label: 'Use Go AI SDK with coding agents', re: /using-go-ai-with-coding-agents$/ },
   { label: 'Error handling', re: /\/error-handling$/ },
 ];
@@ -356,8 +356,10 @@ module.exports = function markdownExport(context) {
         `${llmsUrl}. Orientation: ${origin}${baseUrl}agents.md\n\n---\n\n`;
       const chunkOf = (/** @type {any} */ pg) => `<!-- Source: ${pg.url} -->\n\n${pg.body}\n\n---\n\n`;
       const sizeOf = (/** @type {string} */ t) => Buffer.byteLength(t);
-      // Reserve room for the "left out" index.
-      const reserve = 12 * 1024;
+      // Reserve room for the "left out" index: its size if every page were
+      // left out, an upper bound that keeps the file under the cap.
+      const omittedHeader = '## Pages not included here\n\nFetch these individually as markdown.\n\n';
+      const reserve = sizeOf(omittedHeader) + corePages.reduce((n, pg) => n + sizeOf(entry(pg)), 0);
       let used = sizeOf(coreHead) + reserve;
       const included = new Set();
       const bySizeAsc = [...corePages].sort((x, y) => x.body.length - y.body.length);
@@ -375,7 +377,7 @@ module.exports = function markdownExport(context) {
         else omitted.push(pg);
       }
       if (omitted.length) {
-        core += '## Pages not included here\n\nFetch these individually as markdown.\n\n' + omitted.map(entry).join('');
+        core += omittedHeader + omitted.map(entry).join('');
       }
       fs.writeFileSync(path.join(outDir, 'llms-core.txt'), core);
       const coreKB = (Buffer.byteLength(core) / 1024).toFixed(0);
