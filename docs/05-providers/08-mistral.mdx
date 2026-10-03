@@ -45,21 +45,21 @@ export MISTRAL_API_KEY=...
 
 ### Language Models
 
-| Model ID | Context | Input Price | Output Price | Best For |
-|----------|---------|-------------|--------------|----------|
-| mistral-large-latest | 128K | $3.00/1M | $9.00/1M | Complex reasoning, code |
-| mistral-small-latest | 32K | $1.00/1M | $3.00/1M | Fast, cost-effective |
-| mistral-medium-3 | 128K | Varies | Varies | Balanced quality/latency |
-| mistral-medium-3.5 | 128K | Varies | Varies | Balanced quality/latency |
-| pixtral-large-latest | 128K | $3.00/1M | $9.00/1M | Multimodal (vision) |
-| codestral-latest | 32K | $1.00/1M | $3.00/1M | Code generation |
-| mistral-nemo | 128K | $0.30/1M | $0.30/1M | Open-source |
+| Model ID | Context | Best For |
+| ---------- | --------- | ---------- |
+| mistral-large-latest | 128K | Complex reasoning, code |
+| mistral-small-latest | 32K | Fast, cost-effective |
+| mistral-medium-3 | 128K | Balanced quality/latency |
+| mistral-medium-3.5 | 128K | Balanced quality/latency |
+| pixtral-large-latest | 128K | Multimodal (vision) |
+| codestral-latest | 32K | Code generation |
+| mistral-nemo | 128K | Open-source |
 
 ### Embedding Models
 
-| Model ID | Dimensions | Price | Best For |
-|----------|-----------|-------|----------|
-| mistral-embed | 1024 | $0.10/1M | Semantic search |
+| Model ID | Dimensions | Best For |
+| ---------- | ----------- | ---------- |
+| mistral-embed | 1024 | Semantic search |
 
 `mistral.EmbeddingModel` batches at most 32 inputs per call
 (`MaxEmbeddingsPerCall() == 32`) and does not support parallel calls

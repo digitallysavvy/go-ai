@@ -46,38 +46,28 @@ export GOOGLE_GENERATIVE_AI_API_KEY=AI...
 
 ## Available Models
 
-### Gemini 3 / 2.5 Series
+Use the constants in `pkg/providers/google/model_ids.go` instead of raw strings. For context windows and pricing, see [Google's model documentation](https://ai.google.dev/gemini-api/docs/models).
 
-| Model ID | Best For |
-|----------|----------|
-| gemini-3.1-pro-preview | Advanced text generation |
-| gemini-3.1-pro-preview-customtools | Advanced text generation with custom tools |
-| gemini-3-flash-preview | Fast preview generation |
-| gemini-3-pro-preview | Advanced preview generation |
-| gemini-2.5-pro | Complex reasoning and multimodal tasks |
-| gemini-2.5-flash | Fast multimodal tasks |
-| gemini-2.5-flash-lite | Cost-effective high-volume tasks |
+### Language models
 
-### Gemini 2.0 Series
+| Model ID | Go constant | Best for |
+|----------|-------------|----------|
+| `gemini-3.8-flash` | `google.ModelGemini38Flash` | Fast, current-generation Flash |
+| `gemini-3.7-flash` | `google.ModelGemini37Flash` | Fast, current-generation Flash |
+| `gemini-3.6-flash` | `google.ModelGemini36Flash` | Fast, current-generation Flash |
+| `gemini-3.5-flash` | `google.ModelGemini35Flash` | Fast multimodal tasks |
+| `gemini-3.5-flash-lite` | `google.ModelGemini35FlashLite` | High-volume, low-cost tasks |
+| `gemini-3.1-pro-preview` | `google.ModelGemini31ProPreview` | Advanced reasoning and generation |
+| `gemini-3.1-pro-preview-customtools` | `google.ModelGemini31ProPreviewCustom` | Advanced generation with custom tools |
+| `gemini-3.1-flash-lite-preview` | `google.ModelGemini31FlashLitePreview` | Low-cost preview model |
+| `gemini-3-pro-preview` | `google.ModelGemini3ProPreview` | Advanced preview generation |
+| `gemini-3-flash-preview` | `google.ModelGemini3FlashPreview` | Fast preview generation |
+| `gemini-2.5-pro` | `google.ModelGemini25Pro` | Complex reasoning and multimodal tasks |
+| `gemini-2.5-flash` | `google.ModelGemini25Flash` | Fast multimodal tasks |
+| `gemini-2.5-flash-lite` | `google.ModelGemini25FlashLite` | Cost-effective high-volume tasks |
+| `gemini-pro-latest`, `gemini-flash-latest`, `gemini-flash-lite-latest` | `google.ModelGeminiProLatest`, `ModelGeminiFlashLatest`, `ModelGeminiFlashLiteLatest` | Latest aliases |
 
-| Model ID | Context | Input Price | Output Price | Best For |
-|----------|---------|-------------|--------------|----------|
-| gemini-2.0-flash | 1M | $0.075/1M (≤128K)<br/>$0.15/1M (>128K) | $0.30/1M (≤128K)<br/>$0.60/1M (>128K) | Fast, multimodal |
-| gemini-2.0-flash-thinking | 1M | $0.075/1M (≤128K)<br/>$0.15/1M (>128K) | $0.30/1M (≤128K)<br/>$0.60/1M (>128K) | Reasoning tasks |
-
-### Gemini 1.5 Series
-
-| Model ID | Context | Input Price | Output Price | Best For |
-|----------|---------|-------------|--------------|----------|
-| gemini-1.5-pro | 2M | $1.25/1M (≤128K)<br/>$2.50/1M (>128K) | $5.00/1M (≤128K)<br/>$10.00/1M (>128K) | Complex analysis |
-| gemini-1.5-flash | 1M | $0.075/1M (≤128K)<br/>$0.15/1M (>128K) | $0.30/1M (≤128K)<br/>$0.60/1M (>128K) | Fast responses |
-| gemini-1.5-flash-8b | 1M | $0.0375/1M (≤128K)<br/>$0.075/1M (>128K) | $0.15/1M (≤128K)<br/>$0.30/1M (>128K) | Cost-effective |
-
-### Gemini 1.0 Series (Legacy)
-
-| Model ID | Context | Input Price | Output Price | Best For |
-|----------|---------|-------------|--------------|----------|
-| gemini-1.0-pro | 32K | $0.50/1M | $1.50/1M | General purpose |
+Earlier Gemini 2.0, 1.5 and Gemma models still have constants. Prefer the models above for new code.
 
 ### Image Generation Models
 
@@ -88,10 +78,11 @@ export GOOGLE_GENERATIVE_AI_API_KEY=AI...
 > longer supported. Use a model ID that starts with `gemini-`." Use Google
 > Vertex AI if you still need Imagen.
 
-| Model ID | Aspect Ratios | Price | Best For |
-|----------|--------------|-------|----------|
-| gemini-2.5-flash-image | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | Fast Gemini generation |
-| gemini-3-pro-image-preview | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | Advanced generation |
+| Model ID | Go constant | Best for |
+|----------|-------------|----------|
+| `gemini-3.1-flash-image-preview` | `google.ModelGemini31FlashImagePreview` | Fast Gemini generation |
+| `gemini-3-pro-image-preview` | `google.ModelGemini3ProImagePreview` | Advanced generation |
+| `gemini-2.5-flash-image` | `google.ModelGemini25FlashImage` | Fast Gemini generation |
 
 Gemini image models ignore `N` (they generate one image per call and are
 auto-batched by `ai.GenerateImage` to reach the requested count) instead of
@@ -114,11 +105,11 @@ result, err := imageModel.DoGenerate(ctx, &provider.ImageGenerateOptions{
 
 ### Embedding Models
 
-| Model ID | Dimensions | Price | Best For |
-|----------|-----------|-------|----------|
-| gemini-embedding-001 | 3072 | See Google pricing | Multimodal semantic search |
-| gemini-embedding-2 | 3072 | See Google pricing | Stable Gemini embedding workloads |
-| gemini-embedding-2-preview | Provider-defined | See Google pricing | Preview embedding workloads |
+| Model ID | Go constant | Dimensions | Best for |
+|----------|-------------|------------|----------|
+| `gemini-embedding-001` | `google.EmbeddingModelGeminiEmbedding001` | 3072 | Multimodal semantic search |
+| `gemini-embedding-2` | `google.EmbeddingModelGeminiEmbedding2` | 3072 | Stable Gemini embedding workloads |
+| `gemini-embedding-2-preview` | `google.EmbeddingModelGeminiEmbedding2Preview` | Provider-defined | Preview embedding workloads |
 
 ### Gemini TTS Speech Models
 
@@ -933,38 +924,9 @@ if err != nil {
 
 ## Rate Limits & Pricing
 
-### Rate Limits (Free Tier)
+### Rate limits
 
-| Model | RPM | TPM | RPD |
-|-------|-----|-----|-----|
-| Gemini 2.0 Flash | 15 | 1M | 1,500 |
-| Gemini 1.5 Pro | 2 | 32K | 50 |
-| Gemini 1.5 Flash | 15 | 1M | 1,500 |
-
-RPM = Requests per minute, TPM = Tokens per minute, RPD = Requests per day
-
-Paid tier offers significantly higher limits.
-
-### Context-Based Pricing
-
-```go
-func calculateGeminiCost(inputTokens, outputTokens int, model string) float64 {
-    // Pricing changes based on context length
-    var inputRate, outputRate float64
-
-    if inputTokens <= 128000 {
-        // Low context pricing
-        inputRate = 0.075 / 1_000_000  // for flash models
-        outputRate = 0.30 / 1_000_000
-    } else {
-        // High context pricing (2x)
-        inputRate = 0.15 / 1_000_000
-        outputRate = 0.60 / 1_000_000
-    }
-
-    return float64(inputTokens)*inputRate + float64(outputTokens)*outputRate
-}
-```
+Rate limits depend on your model and tier. See [Google's rate limits](https://ai.google.dev/gemini-api/docs/rate-limits) and [pricing](https://ai.google.dev/gemini-api/docs/pricing) pages for current values. Pricing can also depend on prompt length.
 
 ## Workflow Serialization
 
