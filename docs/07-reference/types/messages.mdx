@@ -235,6 +235,8 @@ Represents a prompt that can be either a simple string or a list of messages.
 package main
 
 import (
+    "fmt"
+
     "github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -245,6 +247,7 @@ func main() {
             types.TextContent{Text: "Hello, how are you?"},
         },
     }
+    fmt.Println(message.Role)
 }
 ```
 

@@ -467,15 +467,15 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Tools:  tools,
     Prompt: "What's the weather in New York?",
-    OnStepFinish: func(step ai.Step) {
+    OnStepEnd: func(ctx context.Context, step types.StepResult, userContext interface{}) {
         // Called after each step
-        fmt.Printf("Step %d:\n", step.StepIndex)
+        fmt.Printf("Step %d:\n", step.StepNumber)
         for _, call := range step.ToolCalls {
-            fmt.Printf("  Tool: %s\n", call.Name)
+            fmt.Printf("  Tool: %s\n", call.ToolName)
             fmt.Printf("  Args: %v\n", call.Arguments)
-            if call.Result != nil {
-                fmt.Printf("  Result: %v\n", call.Result)
-            }
+        }
+        for _, res := range step.ToolResults {
+            fmt.Printf("  Result (%s): %v\n", res.ToolName, res.Result)
         }
     },
 })

@@ -103,7 +103,6 @@ import (
     "context"
     "fmt"
     "github.com/digitallysavvy/go-ai/pkg/provider/types"
-    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 )
 
 func searchTool() types.Tool {

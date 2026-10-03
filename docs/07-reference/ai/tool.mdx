@@ -19,7 +19,7 @@ type Tool struct {
     ToModelOutput      ToModelOutputFunc
     InputExamples      []ToolInputExample
     Strict             *bool
-    NeedsApproval      interface{}
+    ToolApproval       interface{}
     ProviderExecuted   bool
     ProviderOptions    interface{}
     OnInputStart       OnInputStartFunc
@@ -40,12 +40,14 @@ type Tool struct {
 | ToModelOutput | ToModelOutputFunc | No | Custom result formatting for model |
 | InputExamples | []ToolInputExample | No | Example inputs to guide the model |
 | Strict | *bool | No | Enable strict schema enforcement |
-| NeedsApproval | interface{} | No | Whether execution requires approval (bool or func) |
+| ToolApproval | interface{} | No | Whether execution requires approval: `bool`, a `types.ToolApprovalStatus`, or a `types.ToolNeedsApprovalFunc` |
 | ProviderExecuted | bool | No | Whether provider executes this tool |
 | ProviderOptions | interface{} | No | Provider-specific options |
 | OnInputStart | OnInputStartFunc | No | Called when input streaming starts |
 | OnInputDelta | OnInputDeltaFunc | No | Called for each input delta |
 | OnInputAvailable | OnInputAvailableFunc | No | Called when input is complete |
+
+`NeedsApproval` still compiles as a deprecated alias for `ToolApproval`. New code should set `ToolApproval`. Call-level approval policies (`AgentConfig.ToolApproval`, `GenerateTextOptions.ToolApproval`) take precedence and accept a function or a per-tool map.
 
 When a function tool is serialized for provider requests, nil parameters or a
 schema with `properties` but no `type` are normalized to an explicit object
@@ -206,7 +208,7 @@ deleteFileTool := types.Tool{
         },
         "required": []string{"filepath"},
     },
-    NeedsApproval: true, // Require approval before execution
+    ToolApproval: true, // Require approval before execution
     Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
         filepath := input["filepath"].(string)
         // Delete file logic
@@ -230,7 +232,7 @@ sendEmailTool := types.Tool{
         },
         "required": []string{"to", "subject", "body"},
     },
-    NeedsApproval: types.NeedsApprovalFunc(func(ctx context.Context, input map[string]interface{}) bool {
+    ToolApproval: types.ToolNeedsApprovalFunc(func(ctx context.Context, input map[string]interface{}, options types.ToolNeedsApprovalOptions) bool {
         // Only require approval for external emails
         to := input["to"].(string)
         return !strings.HasSuffix(to, "@company.com")

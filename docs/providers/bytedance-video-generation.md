@@ -232,4 +232,4 @@ func main() {
 
 - [ByteDance Ark Platform](https://ark.volces.com)
 - [Provider package documentation](https://github.com/digitallysavvy/go-ai/blob/main/pkg/providers/bytedance/README.md)
-- [Example: text-to-video](../../examples/providers/bytedance/01-text-to-video.go)
+- [Example: text-to-video](https://github.com/digitallysavvy/go-ai/blob/main/examples/providers/bytedance/01-text-to-video.go)

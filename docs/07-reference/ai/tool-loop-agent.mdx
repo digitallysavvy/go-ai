@@ -38,7 +38,9 @@ func NewToolLoopAgent(config AgentConfig) *ToolLoopAgent
 | PrepareCall | func(ctx, PrepareCallConfig) PrepareCallConfig | Called before each generation step to adjust settings dynamically |
 | OnStepEnd | func(types.StepResult) | Called after each step completes |
 | OnFinish | func(*AgentResult) | Called when agent execution completes |
-| ToolApprovalRequired | bool | Whether tools require approval before execution |
+| ToolApproval | types.ToolApprovalConfig | Approval policy for tool calls: a `types.GenericToolApprovalFunc` or a per-tool map. Tools can also set `Tool.ToolApproval` |
+| ExperimentalToolApprovalSecret | []byte | Signs approval requests and verifies approval responses when a client resumes a conversation |
+| ToolApprovalRequired, ToolApprover | bool, func | Legacy blocking callback for CLI-style programs. `ToolApprover` is called inline and returns true or false |
 
 See `go doc ./pkg/agent AgentConfig` for the complete field list, including
 telemetry, retry, timeout, and callback-event options.

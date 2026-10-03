@@ -21,36 +21,46 @@ import (
     "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
     "github.com/digitallysavvy/go-ai/pkg/providers/google"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
 func main() {
     ctx := context.Background()
 
-    // OpenAI
+    // Pick a provider and model. The provider constants hold current model IDs.
     openaiProvider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
-    gpt4, _ := openaiProvider.LanguageModel("gpt-4")
-
-    // Anthropic
-    anthropicProvider := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")})
-    claude, _ := anthropicProvider.LanguageModel("claude-3-5-sonnet-20241022")
-
-    // Google
-    googleProvider := google.New(google.Config{APIKey: os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY")})
-    gemini, _ := googleProvider.LanguageModel("gemini-1.5-flash")
-
-    // Same API for all providers
-    result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-        Model:  gpt4, // or claude, or gemini
-        Prompt: "Explain quantum computing in simple terms.",
-    })
+    gpt, err := openaiProvider.LanguageModel(openai.ModelGPT6Astra)
     if err != nil {
         log.Fatal(err)
     }
 
-    fmt.Println(result.Text)
+    anthropicProvider := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")})
+    claude, err := anthropicProvider.LanguageModel(anthropic.ClaudeSonnet5_5)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    googleProvider := google.New(google.Config{APIKey: os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY")})
+    gemini, err := googleProvider.LanguageModel(google.ModelGemini31FlashLitePreview)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Same API for all providers
+    for _, model := range []provider.LanguageModel{gpt, claude, gemini} {
+        result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+            Model:  model,
+            Prompt: "Explain quantum computing in simple terms.",
+        })
+        if err != nil {
+            log.Fatal(err)
+        }
+
+        fmt.Println(result.Text)
+    }
 }
 ```
 

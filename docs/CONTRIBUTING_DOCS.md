@@ -146,29 +146,31 @@ import (
     "context"
     "fmt"
     "log"
+    "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 )
 
 func main() {
-    // Create client with API key
-    client := newExampleClient("your-api-key")
-
-    // Create request
-    request := ai.GenerateTextOptions{
-        Model: "claude-3-5-sonnet-20241022",
-        Messages: []types.Message{
-            {Role: "user", Content: "Hello!"},
-        },
+    // 1. Setup: create a provider and pick a model
+    provider := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")})
+    model, err := provider.LanguageModel(anthropic.ClaudeSonnet5_5)
+    if err != nil {
+        log.Fatal(err)
     }
 
-    // Generate response
-    response, err := ai.GenerateText(context.Background(), request)
+    // 2. Main operation
+    result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Hello!",
+    })
     if err != nil {
         log.Fatalf("Error: %v", err)
     }
 
-    fmt.Println(response.Content)
+    // 3. Use the result
+    fmt.Println(result.Text)
 }
 ```
 ````
@@ -248,27 +250,34 @@ go run extract-examples.go -docs=../ -verbose
 package main
 
 import (
-    // Standard library imports
     "context"
     "fmt"
     "log"
+    "os"
 
-    // Third-party imports
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 )
 
 func main() {
-    // 1. Setup
-    client := newExampleClient("your-api-key")
+    // 1. Setup: create a provider and pick a model
+    provider := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")})
+    model, err := provider.LanguageModel(anthropic.ClaudeSonnet5_5)
+    if err != nil {
+        log.Fatal(err)
+    }
 
     // 2. Main operation
-    result, err := client.DoSomething(context.Background())
+    result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Hello!",
+    })
     if err != nil {
         log.Fatalf("Error: %v", err)
     }
 
-    // 3. Use result
-    fmt.Println(result)
+    // 3. Use the result
+    fmt.Println(result.Text)
 }
 ```
 

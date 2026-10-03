@@ -41,6 +41,9 @@ export AI_GATEWAY_API_KEY="your-api-key-here"
 package main
 
 import (
+    "log"
+    "os"
+
     "github.com/digitallysavvy/go-ai/pkg/providers/gateway"
 )
 
@@ -52,6 +55,7 @@ func main() {
     if err != nil {
         log.Fatal(err)
     }
+    _ = provider
 }
 ```
 

@@ -107,6 +107,7 @@ import (
     "context"
     "fmt"
     "log"
+    "os"
 
     "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -117,6 +118,11 @@ func main() {
     prov := prodia.New(prodia.Config{})
 
     model, err := prov.LanguageModel("inference.nano-banana.img2img.v2")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    imageBytes, err := os.ReadFile("input.png")
     if err != nil {
         log.Fatal(err)
     }

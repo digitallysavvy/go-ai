@@ -91,13 +91,31 @@ import (
     "context"
     "fmt"
     "log"
+    "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 )
 
 func main() {
-    client := newExampleClient("your-api-key")
-    // ... rest of example
+    // 1. Setup: create a provider and pick a model
+    provider := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")})
+    model, err := provider.LanguageModel(anthropic.ClaudeSonnet5_5)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // 2. Main operation
+    result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Hello!",
+    })
+    if err != nil {
+        log.Fatalf("Error: %v", err)
+    }
+
+    // 3. Use the result
+    fmt.Println(result.Text)
 }
 ```
 ````
@@ -142,35 +160,34 @@ Every code example must:
 package main
 
 import (
-    // Standard library imports first
     "context"
     "fmt"
     "log"
+    "os"
 
-    // Third-party imports second, grouped by domain
     "github.com/digitallysavvy/go-ai/pkg/ai"
     "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 )
 
 func main() {
-    // 1. Setup/configuration
-    client := newExampleClient(
-        "your-api-key",
-        exampleWithProvider(anthropic.NewProvider()),
-    )
+    // 1. Setup: create a provider and pick a model
+    provider := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")})
+    model, err := provider.LanguageModel(anthropic.ClaudeSonnet5_5)
+    if err != nil {
+        log.Fatal(err)
+    }
 
     // 2. Main operation
-    response, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
-        Messages: []types.Message{
-            {Role: "user", Content: "Hello!"},
-        },
+    result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Hello!",
     })
     if err != nil {
         log.Fatalf("Error: %v", err)
     }
 
-    // 3. Result handling/output
-    fmt.Println(response.Content)
+    // 3. Use the result
+    fmt.Println(result.Text)
 }
 ```
 

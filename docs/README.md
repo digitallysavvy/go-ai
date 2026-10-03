@@ -2,7 +2,7 @@
 
 Welcome to the Go AI SDK documentation. This is a complete Go implementation of the Vercel AI SDK with full feature parity for backend functionality.
 
-Build AI-powered applications in Go with a unified API across 26+ model providers including OpenAI, Anthropic, Google, AWS Bedrock, Azure, Cohere, Mistral, and many more.
+Build AI-powered applications in Go with a unified API across 49 model providers including OpenAI, Anthropic, Google, AWS Bedrock, Azure, Cohere, Mistral, and many more.
 
 ## Quick Start
 
@@ -129,9 +129,9 @@ Complete API documentation:
 - **[Schema](./07-reference/schema/)** - Schema validation
 - **[Types](./07-reference/types/)** - Message, Tool, Error types
 
-### [Examples](../examples/)
+### [Examples](https://github.com/digitallysavvy/go-ai/tree/main/examples)
 
-Practical, runnable examples live in the [`examples/`](../examples/) directory at the
+Practical, runnable examples live in the [`examples/`](https://github.com/digitallysavvy/go-ai/tree/main/examples) directory at the
 repository root, organized by feature (`generate-text/`, `agents/`, `embed/`, `mcp/`,
 and more).
 
@@ -150,7 +150,7 @@ Common issues and solutions:
 
 ## Key Features
 
-- **Unified Provider API**: Switch between 26+ providers with zero code changes
+- **Unified Provider API**: Switch between 49 providers with zero code changes
 - **Text Generation**: `GenerateText()` and `StreamText()` with multi-step tool calling
 - **Structured Output**: `GenerateObject()` for JSON schema-validated responses
 - **Embeddings**: `Embed()` and `EmbedMany()` with similarity search utilities
@@ -205,11 +205,11 @@ This SDK maintains 1:1 feature parity with the [Vercel AI SDK](https://sdk.verce
 
 ## Contributing
 
-Contributions are welcome! Please see our [Contributing Guide](../CONTRIBUTING.md) for details.
+Contributions are welcome! Please see our [Contributing Guide](https://github.com/digitallysavvy/go-ai/blob/main/CONTRIBUTING.md) for details.
 
 ## License
 
-Apache 2.0 - See [LICENSE](../LICENSE) for details.
+Apache 2.0 - See [LICENSE](https://github.com/digitallysavvy/go-ai/blob/main/LICENSE) for details.
 
 ## Trademarks
 
