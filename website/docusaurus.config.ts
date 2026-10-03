@@ -92,6 +92,23 @@ const config: Config = {
     // Per-page Open Graph images and robots.txt.
     './plugins/seo.js',
     [
+      '@docusaurus/plugin-client-redirects',
+      {
+        // Pages moved or merged in the docs reorganization of 2026-10-03.
+        redirects: [
+          { from: '/docs/agent-callbacks', to: '/docs/agents/agent-callbacks' },
+          { from: '/docs/mcp-serialization', to: '/docs/ai-sdk-core/mcp-serialization' },
+          { from: '/docs/fireworks-kimi-k2-5', to: '/docs/providers/fireworks-kimi-k2-5' },
+          { from: '/docs/xai-usage-reporting', to: '/docs/providers/xai-usage-reporting' },
+          { from: '/docs/guides/migration-may-2026', to: '/docs/migration-guides/from-v0.4-to-v0.5' },
+          {
+            from: '/docs/migration-guides/may31-stream-telemetry-provider-parity',
+            to: '/docs/migration-guides/from-v0.4-to-v0.5',
+          },
+        ],
+      },
+    ],
+    [
       require.resolve('@easyops-cn/docusaurus-search-local'),
       {
         hashed: true,
