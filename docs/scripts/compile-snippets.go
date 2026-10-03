@@ -102,6 +102,7 @@ func main() {
 	check(err)
 
 	aliases := buildAliases(root, modPath, blocks)
+	learnFileAliases(blocks)
 	// A name that some block uses as a variable (provider, registry, ...) is
 	// ambiguous: "provider.Foo" is as likely a method call as a package member.
 	// Auto-import only unambiguous aliases; a fragment can still import it.
@@ -364,8 +365,11 @@ func buildAliases(root, modPath string, blocks []*block) map[string]string {
 			if strings.HasSuffix(e.Name(), ".go") && !strings.HasSuffix(e.Name(), "_test.go") {
 				rel, _ := filepath.Rel(root, p)
 				name := filepath.Base(p)
-				if _, ok := al[name]; !ok {
-					al[name] = modPath + "/" + filepath.ToSlash(rel)
+				path := modPath + "/" + filepath.ToSlash(rel)
+				// Several packages share a last element (providers/vercel and
+				// harness/sandbox/vercel): the shallowest path wins.
+				if cur, ok := al[name]; !ok || (strings.HasPrefix(cur, modPath+"/") && strings.Count(path, "/") < strings.Count(cur, "/")) {
+					al[name] = path
 				}
 				break
 			}
@@ -505,6 +509,39 @@ func declaredNames(code string) map[string]bool {
 
 var ambiguous = map[string]bool{}
 
+// fileAliases records, per docs file, the import paths that the file's own
+// blocks use for an alias. A page about pkg/harness/sandbox/vercel that
+// imports it in one block gets that package, not providers/vercel, in the
+// fragments that follow.
+var fileAliases = map[string]map[string]string{}
+
+func learnFileAliases(blocks []*block) {
+	for _, b := range blocks {
+		code := b.code
+		if !pkgClause.MatchString(code) {
+			code = "package p\n" + code
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), "x.go", code, parser.ImportsOnly)
+		if err != nil || f == nil {
+			continue
+		}
+		for _, im := range f.Imports {
+			path, _ := strconv.Unquote(im.Path.Value)
+			name := filepath.Base(path)
+			if im.Name != nil {
+				name = im.Name.Name
+			}
+			if name == "_" || name == "." {
+				continue
+			}
+			if fileAliases[b.file] == nil {
+				fileAliases[b.file] = map[string]string{}
+			}
+			fileAliases[b.file][name] = path
+		}
+	}
+}
+
 func importBlock(b *block, aliases map[string]string, skipImports bool) string {
 	if skipImports {
 		return ""
@@ -524,7 +561,11 @@ func importBlock(b *block, aliases map[string]string, skipImports bool) string {
 	sort.Strings(names)
 	var sb strings.Builder
 	for _, n := range names {
-		fmt.Fprintf(&sb, "import %s %q\n", n, aliases[n])
+		path := aliases[n]
+		if fp, ok := fileAliases[b.file][n]; ok {
+			path = fp
+		}
+		fmt.Fprintf(&sb, "import %s %q\n", n, path)
 	}
 	return sb.String()
 }
