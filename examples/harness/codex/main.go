@@ -33,7 +33,7 @@ func main() {
 
 	cx := codex.New(codex.Settings{})
 
-	sandbox := local.NewProvider(local.Options{})
+	sandbox := local.NewProvider(local.Options{Ports: []int{4318}}) // the harness bridge listens on this port
 
 	agent, err := harness.NewAgent(harness.AgentSettings{
 		Harness:        cx,

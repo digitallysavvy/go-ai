@@ -64,7 +64,7 @@ func main() {
 	agent, err := harness.NewAgent(harness.AgentSettings{
 		Harness:        cc,
 		Model:          "claude-sonnet-4-5",
-		Sandbox:        local.NewProvider(local.Options{}),
+		Sandbox:        local.NewProvider(local.Options{Ports: []int{4318}}), // the harness bridge listens on this port
 		PermissionMode: harness.PermissionModeAllowAll,
 		// A StopWhen of one step per execution lets this example show
 		// multiple time slices even for a fast-finishing prompt. Omit this
