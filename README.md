@@ -47,6 +47,7 @@ To learn more about how to use the Go AI SDK, check out the [documentation](http
 
 ### What's new in v0.5.0
 
+- **Single-step default** — `GenerateText` / `StreamText` now stop after one step unless you set `StopWhen` (TS parity); use `ai.IsStepCount(n)` or `ai.IsLoopFinished()` to run tool loops. `agent.NewToolLoopAgent` defaults to 20 steps
 - **StreamText lifecycle** — `ChunkTypeFinish` now fires once per call (not once per step); each step is bracketed by new `ChunkTypeStartStep` / `ChunkTypeFinishStep` chunks, and `StreamText` itself returns before the first model request
 - **xAI Responses-only** — the Chat Completions API is removed; `LanguageModel()` (Responses API) is the only xAI language model
 - **Bedrock Converse** — `bedrock.LanguageModel` now calls the Converse API instead of `/invoke`; Bedrock-Anthropic is rebuilt on `anthropic.LanguageModel`
@@ -56,7 +57,7 @@ To learn more about how to use the Go AI SDK, check out the [documentation](http
 - **New providers** — GMI Cloud, Z.AI, MiniMax, TypeSafe AI, Fish Audio, Cartesia, Rev.ai, Hume, Luma, Topaz Labs
 - **Security** — tool approvals verified on resume (HMAC v1), DNS-pinned downloads, MCP OAuth SSRF guards
 
-See the full [release notes](./release_notes/) and [changelog](./CHANGELOG.md), and the [v0.4 → v0.5 migration guide](./docs/08-migration-guides/from-v0.4-to-v0.5.mdx).
+See the full [release notes](./release_notes/RELEASE_NOTES_V0.5.0.md) and [changelog](./CHANGELOG.md), and the [v0.4 → v0.5 migration guide](./docs/08-migration-guides/from-v0.4-to-v0.5.mdx).
 
 ## Installation
 
@@ -479,6 +480,11 @@ Contributions to the Go AI SDK are welcome and highly appreciated. However, befo
 ## License
 
 Apache 2.0 - See [LICENSE](./LICENSE) for details.
+
+## Trademarks
+
+Go is a trademark of Google.  
+The Go gopher, whenever used, is an original creation by Renée French.
 
 ## Authors
 

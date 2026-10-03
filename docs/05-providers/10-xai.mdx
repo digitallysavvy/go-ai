@@ -81,7 +81,7 @@ transcriptionModel, _ := provider.TranscriptionModel("")
 
 ## Responses API (only)
 
-`LanguageModel()` returns a Responses API model. Starting in v0.4.0 this was the default (with the legacy Chat Completions API available as an opt-in escape hatch); as of this release the Chat Completions API (`ChatCompletionsLanguageModel()`) has been removed entirely, matching the upstream TypeScript SDK. See the migration guide if you were still using `ChatCompletionsLanguageModel()`.
+`LanguageModel()` returns a Responses API model. Starting in v0.4.0 this was the default (with the legacy Chat Completions API available as an opt-in escape hatch); as of v0.5.0 the Chat Completions API (`ChatCompletionsLanguageModel()`) has been removed entirely, matching the upstream TypeScript SDK. See the migration guide if you were still using `ChatCompletionsLanguageModel()`.
 
 ```go
 model, _ := provider.LanguageModel("grok-3")

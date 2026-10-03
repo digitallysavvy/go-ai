@@ -19,7 +19,7 @@ Thank you for your interest in improving the Go-AI SDK documentation! This guide
 
 Before contributing to documentation, ensure you have:
 
-- Go 1.21 or later installed
+- Go 1.26 or later installed
 - Git configured on your system
 - A text editor or IDE for editing Markdown files
 - Basic understanding of Markdown syntax

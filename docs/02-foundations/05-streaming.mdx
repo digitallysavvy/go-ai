@@ -189,9 +189,9 @@ for range result.Chunks() {
 }
 ```
 
-## Tool Execution Timing (v0.4.0)
+## Tool Execution Timing
 
-In v0.4.0, tool execution in `StreamText` is deferred until the stream is fully consumed. This means:
+Since v0.4.0, tool execution in `StreamText` is deferred until the stream is fully consumed. This means:
 
 - All text, reasoning, and custom content chunks arrive first
 - Tool calls are accumulated during streaming

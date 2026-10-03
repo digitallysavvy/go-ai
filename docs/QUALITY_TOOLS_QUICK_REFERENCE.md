@@ -256,7 +256,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v4
         with:
-          go-version: '1.21'
+          go-version: '1.26'
 
       - name: Validate Links
         run: |

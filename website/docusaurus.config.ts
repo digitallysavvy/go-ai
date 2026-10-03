@@ -209,7 +209,7 @@ const config: Config = {
           ],
         },
       ],
-      copyright: `Copyright © ${new Date().getFullYear()} Go AI SDK Contributors. Apache 2.0 License.`,
+      copyright: `Copyright © ${new Date().getFullYear()} Go AI SDK Contributors. Apache 2.0 License.<br />Go is a trademark of Google. The Go gopher, whenever used, is an original creation by Renée French.`,
     },
     prism: {
       theme: prismThemes.vsDark,
