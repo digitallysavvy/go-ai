@@ -1,0 +1,445 @@
+---
+title: Harness agent
+description: "Reference for harness.Agent, AgentSettings and AgentSession in the Go AI SDK: running coding-agent runtimes such as Claude Code and Codex as an agent, with sessions, approvals and lifecycle state."
+---
+
+# Harness agent
+
+Package `github.com/digitallysavvy/go-ai/pkg/harness` runs a third-party coding-agent runtime, such as Claude Code or Codex, as an `agent.Agent`. A harness adapter wraps the runtime. `harness.Agent` merges the adapter's built-in tools with your tools, creates a sandbox session, runs prompt turns and streams the result in the same form as `StreamText`.
+
+This page covers the consumer API. The adapter interface is in [Harness adapters](./adapters.mdx), sandboxes in [Harness sandboxes](./sandbox.mdx) and the stream part types in [Harness stream parts](./stream-parts.mdx).
+
+## NewAgent
+
+```go
+func NewAgent(settings AgentSettings) (*Agent, error)
+```
+
+Validates the settings and returns an agent. `*harness.Agent` implements `agent.Agent`, so you can use it wherever an agent is expected, including the [agent UI stream helpers](../ai/agent-ui-stream-helpers.mdx).
+
+```go
+import (
+	"github.com/digitallysavvy/go-ai/pkg/agent"
+	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/harness/claudecode"
+	"github.com/digitallysavvy/go-ai/pkg/harness/sandbox/local"
+)
+
+h, err := claudecode.New(claudecode.Settings{})
+if err != nil {
+	return err
+}
+coder, err := harness.NewAgent(harness.AgentSettings{
+	Harness: h,
+	Sandbox: local.NewProvider(local.Options{}),
+})
+if err != nil {
+	return err
+}
+session, err := coder.CreateSession(ctx, harness.CreateSessionOptions{})
+if err != nil {
+	return err
+}
+defer session.Destroy(ctx)
+
+result, err := coder.Generate(ctx, agent.AgentGenerateOptions{
+	Prompt:         "Add a README to this project.",
+	HarnessSession: session,
+})
+```
+
+## AgentSettings
+
+{/* gen:fields harness.AgentSettings */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Harness` | `Harness` | Harness is the adapter driving the underlying agent runtime. Its builtin tools are merged with UserTools and exposed via Agent.Tools(). |
+| `ID` | `string` | ID is exposed via HarnessAgent.ID(). |
+| `Model` | `string` | Model is the model identifier used by the harness adapter. PrepareCall can replace it between completed turns. |
+| `UserTools` | `map[string]types.Tool` | UserTools are tools available to the runtime in addition to the harness's own builtins. User tools take precedence over harness builtins on key collision. |
+| `ToolsContext` | `map[string]interface{}` | ToolsContext is per-tool context passed to host-executed tools. |
+| `RuntimeContext` | `interface{}` | RuntimeContext is user-defined context passed to lifecycle callbacks and telemetry (subject to Telemetry.IncludeRuntimeContext). A per-call agent.AgentGenerateOptions.RuntimeContext takes precedence when set. Mirrors TS `HarnessAgentSettings.runtimeContext`. |
+| `Skills` | `[]Skill` | Skills made available to the underlying runtime. |
+| `Instructions` | `interface{}` | Instructions for the underlying agent runtime. Adapters append these to a native system/developer prompt when supported. Accepts either a plain string or a \*types.Message (a system message; only its Content text is forwarded to the harness adapter) for parity with ToolLoopAgent's Instructions field, mirroring TS `HarnessAgentSettings.instructions: string \| SystemModelMessage` (TS 4d1bf28). PrepareCall can replace it (with the same two shapes) between completed turns. |
+| `Headers` | `map[string]string` | Headers are additional HTTP headers sent with every model request. "authorization", "x-api-key", "user-agent" and "x-client-app" are managed by the harness and must not be set here. |
+| `PrepareCall` | `func(ctx context.Context, opts PrepareCallOptions) (PrepareCallResult, error)` | PrepareCall derives the prompt and the settings that may vary between completed turns. See PrepareCallOptions/PrepareCallResult. |
+| `Output` | `interface{}` | Output is an optional specification for generating typed output (e.g. ai.ObjectOutput/ai.ArrayOutput/ai.ChoiceOutput/ai.JSONOutput/ ai.TextOutput), active for every turn this agent runs. Mirrors TS `HarnessAgentSettings.output`. The same value type StreamText's StreamTextOptions.Output/GenerateTextOptions.Output accept — it is resolved against pkg/ai's internal outputProcessor interface, so any value that does not implement it is silently ignored, exactly like those options. See Agent.HasOutput and startTurn's ResponseFormat derivation. |
+| `StopWhen` | `[]ai.StopCondition` | StopWhen are the conditions that stop the current result after a completed harness tool step that could continue into another model step. The underlying turn remains unfinished and can be suspended and continued. Nil means the harness runs until the turn naturally finishes or pauses. |
+| `Callbacks` | `Callbacks` |  |
+| `PermissionMode` | `PermissionMode` | PermissionMode is the baseline permission mode for adapter-native built-in tools. Defaults to PermissionModeAllowAll. |
+| `ToolApproval` | `AgentToolApprovalConfiguration` | ToolApproval is the per-tool static approval configuration for host-executed tools. |
+| `ActiveTools` | `[]string` | ActiveTools / InactiveTools limit the tools available to the harness without changing the tool call/result types in the result. Mutually exclusive; leave both nil to allow every tool. |
+| `InactiveTools` | `[]string` |  |
+| `Sandbox` | `SandboxProvider` | Sandbox is the provider used to create or resume network sandbox sessions. When nil, every CreateSession call must provide an existing sandbox session. |
+| `SandboxConfig` | `AgentSandboxConfig` | SandboxConfig is the sandbox working-directory and lifecycle-hook configuration. |
+| `Telemetry` | `*telemetry.Options` | Telemetry configures OpenTelemetry span/attribute reporting for every turn this agent runs, via pkg/telemetry's dispatch pattern (see run_prompt.go's telemetry.go): a turn span nests step spans, which nest model-call and tool-execution spans. Nil disables it. Mirrors TS `HarnessAgentSettings.telemetry`. |
+
+{/* /gen:fields */}
+
+### Callbacks
+
+The callbacks reuse the event types from `pkg/ai`, so a harness turn appears in callback-driven tooling like a `StreamText` call. See [Callback events](../ai/callback-events.mdx).
+
+{/* gen:fields harness.Callbacks */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `OnStart` | `func(ctx context.Context, e ai.OnStartEvent)` |  |
+| `OnStepStart` | `func(ctx context.Context, e ai.OnStepStartEvent)` |  |
+| `OnLanguageModelCallStart` | `ai.OnLanguageModelCallStartCallback` |  |
+| `OnLanguageModelCallEnd` | `ai.OnLanguageModelCallEndCallback` |  |
+| `OnToolExecutionStart` | `func(ctx context.Context, e ai.OnToolCallStartEvent)` |  |
+| `OnToolExecutionEnd` | `func(ctx context.Context, e ai.OnToolCallFinishEvent)` |  |
+| `OnStepEnd` | `func(ctx context.Context, e ai.OnStepFinishEvent)` |  |
+| `OnEnd` | `func(ctx context.Context, e ai.OnFinishEvent)` |  |
+
+{/* /gen:fields */}
+
+### PrepareCall
+
+`PrepareCall` runs before each turn. It can replace the model, skills, instructions and tools between completed turns, and it can rewrite the prompt.
+
+{/* gen:fields harness.PrepareCallOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `CallOptions` | `interface{}` |  |
+| `Prompt` | `Prompt` |  |
+| `Model` | `string` |  |
+| `Skills` | `[]Skill` |  |
+| `Instructions` | `interface{}` | Instructions is either a string or a \*types.Message, exactly as configured on AgentSettings.Instructions (or overridden by the per-call Instructions option). See PrepareCallResult.Instructions. |
+| `Tools` | `map[string]types.Tool` |  |
+| `ToolsContext` | `map[string]interface{}` |  |
+| `RuntimeContext` | `interface{}` | RuntimeContext is the turn's runtime context before PrepareCall runs: AgentSettings.RuntimeContext, or a per-call agent.AgentGenerateOptions.RuntimeContext override when the caller supplied one. Mirrors TS `prepareCall`'s `runtimeContext` input field. |
+
+{/* /gen:fields */}
+
+{/* gen:fields harness.PrepareCallResult */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Model` | `string` |  |
+| `Skills` | `[]Skill` |  |
+| `Instructions` | `interface{}` | Instructions is either a string or a \*types.Message (a system message; only its Content text is used), mirroring TS `HarnessAgentSettings`'s `instructions?: string \| SystemModelMessage` (TS 4d1bf28). Extracted to a plain string via instructionsText before being handed to the harness adapter. |
+| `HasInstructions` | `bool` | HasInstructions distinguishes "clear the instructions" (Instructions == "", HasInstructions == true) from "leave them as configured" (HasInstructions == false). Go has no `undefined`, so this flag plays its role for prepareCall's rest-spread removal pattern. |
+| `Tools` | `map[string]types.Tool` |  |
+| `ToolsContext` | `map[string]interface{}` |  |
+| `RuntimeContext` | `interface{}` | RuntimeContext replaces the turn's runtime context when HasRuntimeContext is true (including clearing it, by leaving RuntimeContext nil) — mirrors TS `prepareCall`'s result spreading its own `runtimeContext` key (even `undefined`) over the configured default. See HasInstructions for why Go needs this flag where TS uses `undefined`. |
+| `HasRuntimeContext` | `bool` |  |
+| `Prompt` | `Prompt` |  |
+
+{/* /gen:fields */}
+
+## Agent methods
+
+| Method | Description |
+| --- | --- |
+| `Generate(ctx, agent.AgentGenerateOptions) (*ai.GenerateTextResult, error)` | Runs a fresh prompt turn on `HarnessSession` and waits for the result. |
+| `Stream(ctx, agent.AgentStreamOptions) (*ai.StreamTextResult, error)` | Runs a fresh prompt turn on `HarnessSession` and streams the result. |
+| `ContinueGenerate(ctx, opts, toolApprovalContinuations, toolResultContinuations)` | Resumes a paused turn and waits for the result. |
+| `ContinueStream(ctx, opts, toolApprovalContinuations, toolResultContinuations)` | Resumes a paused turn and streams the result. |
+| `Execute(ctx, prompt string) (*agent.AgentResult, error)`, `ExecuteWithMessages(ctx, messages)` | The `agent.Agent` entry points. |
+| `CreateSession(ctx, CreateSessionOptions) (*AgentSession, error)` | Creates or resumes a session. |
+| `ExperimentalSteer(ctx, session, text string) error` | Sends an extra user message to the session's running turn, if the adapter supports it. |
+| `GetSandboxTemplate(ctx) (*HarnessSandboxTemplate, error)` | Returns the reusable sandbox template for this agent. Returns `nil, nil` when there is nothing to prepare. |
+| `Tools() []types.Tool` | The merged tool set. User tools win over built-in tools on a name collision. |
+| `ID() string`, `HarnessID() string`, `Version() string`, `HasOutput() bool` | Identity and capability accessors. |
+
+`harness.AgentVersion` is the agent interface specification version.
+
+`Generate`, `Stream`, `ContinueGenerate` and `ContinueStream` need a session. Pass it as `HarnessSession` on `agent.AgentGenerateOptions` (or on the embedded options of `agent.AgentStreamOptions`). `Execute` and `ExecuteWithMessages` create a session, run one turn and destroy the session. To keep a runtime across turns, create a session with `CreateSession`.
+
+## Sessions
+
+`CreateSession` returns an `*harness.AgentSession`, the handle for one runtime session. One turn can be in flight at a time. `Generate` and `Stream` need the turn state to be `idle`. `ContinueGenerate` and `ContinueStream` need `awaiting-approval`, `awaiting-tool-result` or `suspended`.
+
+### CreateSessionOptions
+
+{/* gen:fields harness.CreateSessionOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `SessionID` | `string` | SessionID is the stable identifier for the underlying sandbox/session. Generated when empty. |
+| `ResumeFrom` | `*ResumeSessionState` | ResumeFrom is the payload from a prior Detach/Stop. Mutually exclusive with ContinueFrom. |
+| `ContinueFrom` | `*ContinueTurnState` | ContinueFrom is the payload from a prior SuspendTurn. Mutually exclusive with ResumeFrom. |
+| `ToolsContext` | `map[string]interface{}` | ToolsContext rebinds host-only tool context for an unfinished turn resumed with ContinueFrom (directly or nested in ResumeFrom). Only valid together with one of those. |
+| `RuntimeContext` | `interface{}` | RuntimeContext rebinds host-only runtime context for an unfinished turn resumed with ContinueFrom (directly or nested in ResumeFrom). Runtime context is not serialized into lifecycle state. Mirrors TS `HarnessAgent.createSession`'s `options.runtimeContext`. |
+| `SandboxSession` | `providerutils.SandboxSession` | SandboxSession is a caller-owned sandbox session. When set, the caller retains ownership of its lifecycle; Agent.Sandbox is not consulted. |
+
+{/* /gen:fields */}
+
+### AgentSession methods
+
+| Method | Description |
+| --- | --- |
+| `SessionID() string` | The session ID. |
+| `GetSessionWorkDir() string` | The working directory for this session in the sandbox. |
+| `GetSandboxSession() providerutils.SandboxSession` | The underlying sandbox session. |
+| `HasUnfinishedTurn() bool` | Whether a turn is in flight or paused. |
+| `Compact(ctx, customInstructions string) error` | Asks the runtime to compact its context. |
+| `ReadHistory(ctx, since string) (*ReadHistoryResult, error)` | Reads the conversation history the runtime persisted. Returns `*HistoryUnavailableError` when the adapter supports it but cannot reach the history. |
+| `ExperimentalSteerTurn(ctx, text string) error` | Sends an extra user message to the running turn. |
+| `SuspendTurn(ctx) (*ContinueTurnState, error)` | Freezes the active turn and returns the state to persist. The handle is detached afterward, so create a new session from the state to continue. |
+| `Detach(ctx) (*ResumeSessionState, error)` | Detaches without tearing down the runtime. Pass the state to `CreateSessionOptions.ResumeFrom` later. |
+| `Stop(ctx) (*ResumeSessionState, error)` | Persists enough state to resume, then stops the runtime. |
+| `Destroy(ctx) error` | Stops the runtime and returns no state. |
+
+{/* gen:consts harness.SessionState */}
+
+| Constant | Value | Description |
+| --- | --- | --- |
+| `SessionStateActive` | `"active"` |  |
+| `SessionStateDetached` | `"detached"` |  |
+| `SessionStateStopped` | `"stopped"` |  |
+| `SessionStateDestroyed` | `"destroyed"` |  |
+
+{/* /gen:consts */}
+
+{/* gen:consts harness.TurnState */}
+
+| Constant | Value | Description |
+| --- | --- | --- |
+| `TurnStateIdle` | `"idle"` |  |
+| `TurnStateRunning` | `"running"` |  |
+| `TurnStateAwaitingApproval` | `"awaiting-approval"` |  |
+| `TurnStateAwaitingResult` | `"awaiting-tool-result"` |  |
+| `TurnStateSuspended` | `"suspended"` |  |
+
+{/* /gen:consts */}
+
+### History
+
+{/* gen:fields harness.ReadHistoryResult */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Messages` | `[]HistoryMessage` |  |
+| `Cursor` | `string` | Cursor is an opaque position; pass it back as the next read's Since to read only what follows. |
+
+{/* /gen:fields */}
+
+{/* gen:fields harness.HistoryMessage */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| (embedded) | `types.Message` | Embedded. |
+| `At` | `string` | At is the message's timestamp, when the adapter's runtime records one. |
+| `HarnessMetadata` | `Metadata` | HarnessMetadata is adapter-namespaced opaque data for this message, e.g. the runtime's raw record. |
+
+{/* /gen:fields */}
+
+## Lifecycle state
+
+`Detach`, `Stop` and `SuspendTurn` return state you can persist as JSON and pass back to `CreateSession`. State written by the TypeScript SDK decodes in Go and the reverse.
+
+| Name | Description |
+| --- | --- |
+| `harness.LifecycleState` | Either a `*ResumeSessionState` or a `*ContinueTurnState`. |
+| `harness.ResumeSessionState` | State between turns. Accepted as `StartOptions.ResumeFrom`. |
+| `harness.ContinueTurnState` | State of a suspended turn. Accepted as `StartOptions.ContinueFrom`. |
+| `harness.NewResumeSessionState(...)`, `harness.NewContinueTurnState(...)` | Build a state. The adapter-defined `data` is marshaled to JSON. |
+| `harness.DecodeLifecycleState(data []byte) (LifecycleState, error)` | Parses and validates persisted JSON. |
+| `harness.LifecycleStateResumeSession`, `harness.LifecycleStateContinueTurn` | The `type` discriminators. |
+| `harness.LifecycleStateValidator` | Optional adapter interface that validates the adapter-defined `data`. |
+| `harness.AgentLifecycleState`, `harness.AgentResumeSessionState`, `harness.AgentContinueTurnState`, `harness.AgentContinueTurnOptions` | Consumer-facing aliases of the types above. |
+
+{/* gen:fields harness.ResumeSessionState */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Type` | `string` |  |
+| `HarnessID` | `string` |  |
+| `SpecificationVersion` | `string` |  |
+| `Data` | `json.RawMessage` |  |
+| `ContinueFrom` | `*ContinueTurnState` | ContinueFrom is optional unfinished-turn state. |
+
+{/* /gen:fields */}
+
+{/* gen:fields harness.ContinueTurnState */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Type` | `string` |  |
+| `HarnessID` | `string` |  |
+| `SpecificationVersion` | `string` |  |
+| `Data` | `json.RawMessage` |  |
+| `PendingToolApprovals` | `[]PendingToolApproval` |  |
+| `PendingToolResults` | `[]PendingToolResult` |  |
+| `TurnSettings` | `*TurnSettings` |  |
+
+{/* /gen:fields */}
+
+## Permissions and approvals
+
+`PermissionMode` sets the baseline for the adapter's native built-in tools. The default is `harness.DefaultPermissionMode` (`allow-all`).
+
+{/* gen:consts harness.PermissionMode */}
+
+| Constant | Value | Description |
+| --- | --- | --- |
+| `PermissionModeAllowReads` | `"allow-reads"` |  |
+| `PermissionModeAllowEdits` | `"allow-edits"` |  |
+| `PermissionModeAllowAll` | `"allow-all"` |  |
+
+{/* /gen:consts */}
+
+| Name | Description |
+| --- | --- |
+| `harness.ResolvePermissionMode(mode)` | Returns `mode`, or the default when empty. |
+| `PermissionMode.Valid()` | Reports whether the mode is one of the three values. |
+| `harness.PermissionModeNeedsBuiltinSupport(mode)` | Reports whether the mode needs the adapter to support built-in tool approvals. |
+| `harness.SupportsBuiltinToolApprovals(h Harness) bool` | Reports whether the adapter implements `BuiltinToolApprovalSupport`. |
+| `harness.AgentPermissionMode` | Consumer-facing alias of `PermissionMode`. |
+
+`AgentSettings.ToolApproval` is an `harness.AgentToolApprovalConfiguration`, a `harness.ToolApprovalConfiguration`: a map of host-tool names to a static approval status. `harness.ResolveCustomToolApproval(...)` maps one entry to a `harness.CustomToolApprovalDecision` for one host tool call.
+
+{/* gen:fields harness.CustomToolApprovalDecision */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Type` | `CustomToolApprovalDecisionType` |  |
+| `Reason` | `string` |  |
+
+{/* /gen:fields */}
+
+`harness.CustomToolApprovalDecisionType` discriminates the decision: `harness.CustomToolApprovalAllow`, `harness.CustomToolApprovalDeny` or `harness.CustomToolApprovalRequest`.
+
+### Pausing for approval or results
+
+A turn pauses when the runtime wants approval for a tool, or when it calls a client-executed tool. The paused state is recorded as a `harness.PendingToolApproval` or `harness.PendingToolResult`. Their kinds are `harness.PendingToolApprovalBuiltin` and `harness.PendingToolApprovalCustom`. A `harness.CompletedToolResult` is a client tool result executed while suspending, submitted on resume without running the tool again.
+
+{/* gen:fields harness.PendingToolApproval */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ApprovalID` | `string` |  |
+| `ToolCallID` | `string` |  |
+| `ToolName` | `string` |  |
+| `Input` | `string` |  |
+| `Kind` | `string` | "builtin" \| "custom" |
+| `ProviderExecuted` | `*bool` |  |
+| `NativeName` | `string` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields harness.PendingToolResult */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ToolCallID` | `string` |  |
+| `ToolName` | `string` |  |
+| `Input` | `string` |  |
+| `ProviderOptions` | `map[string]map[string]any` |  |
+| `CompletedResult` | `*CompletedToolResult` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields harness.CompletedToolResult */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Output` | `any` |  |
+| `IsError` | `*bool` |  |
+| `ToolResult` | `any` |  |
+
+{/* /gen:fields */}
+
+To resume, take the client's trailing tool message and pass the continuations to `ContinueGenerate` or `ContinueStream`:
+
+| Function | Description |
+| --- | --- |
+| `harness.CollectToolApprovalContinuations(messages []types.Message) ([]types.ToolApprovalResponseContent, error)` | Extracts approval decisions from a trailing `tool` message. Responses that already have a tool result are ignored. |
+| `harness.CollectToolResultContinuations(messages []types.Message) []types.ToolResultContent` | Extracts client-provided tool results from the trailing `tool` message. |
+
+`harness.AgentPendingToolApproval` and `harness.AgentPendingToolResult` are the consumer-facing aliases.
+
+## Tools
+
+| Name | Description |
+| --- | --- |
+| `harness.BuiltinTool` | A tool the adapter's runtime exposes natively: a `types.Tool` plus harness metadata. |
+| `harness.CommonTool(name, CommonToolOptions)` | Declares a built-in tool that maps to a cross-harness common name. |
+| `harness.StandardBuiltinTools()` | The cross-harness vocabulary of common built-in tools with baseline input schemas. |
+| `harness.BuiltinToolNames` | The common built-in tool names, in declaration order: `harness.BuiltinToolRead`, `harness.BuiltinToolWrite`, `harness.BuiltinToolEdit`, `harness.BuiltinToolBash`, `harness.BuiltinToolGrep`, `harness.BuiltinToolGlob`, `harness.BuiltinToolWebSearch` and `harness.BuiltinToolAskUserQuestions`. |
+| `harness.BuiltinToolName`, `harness.BuiltinToolUseKind` | A common name, and a classification for permission handling: `harness.BuiltinToolUseKindReadonly`, `harness.BuiltinToolUseKindEdit` or `harness.BuiltinToolUseKindBash`. |
+| `harness.AgentBuiltinTool`, `harness.AgentBuiltinToolName`, `harness.AgentBuiltinToolUseKind`, `harness.AgentToolSpec` | Consumer-facing aliases. |
+| `harness.ToolSpec` | Describes a host-defined tool made available to the runtime. |
+| `harness.BuiltinToolFiltering` | Selects the adapter-native built-in tools for a session. `Mode` is `harness.BuiltinToolFilteringAllow` or `harness.BuiltinToolFilteringDeny`. |
+| `harness.BuiltinToolFilteringMode` | The type of `Mode`. |
+| `harness.ResolveToolFiltering(ResolveToolFilteringOptions) ResolvedToolFiltering` | Computes the active user tools and the built-in filtering to send to the adapter from `ActiveTools` and `InactiveTools`. |
+| `harness.IsBuiltinToolIncluded(...)` | Reports whether a built-in tool is allowed by a filtering. |
+| `harness.BuiltinToolFilteringDenialReason(...)` | The reason a built-in tool is denied. |
+| `harness.SupportsBuiltinToolFiltering(h Harness) bool` | Reports whether the adapter implements `BuiltinToolFilteringSupport`. |
+
+{/* gen:fields harness.ResolveToolFilteringOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Harness` | `Harness` |  |
+| `UserTools` | `map[string]types.Tool` |  |
+| `AllTools` | `map[string]types.Tool` |  |
+| `ActiveTools` | `[]string` | nil when unset |
+| `InactiveTools` | `[]string` | nil when unset |
+
+{/* /gen:fields */}
+
+{/* gen:fields harness.ResolvedToolFiltering */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ActiveUserTools` | `map[string]types.Tool` | ActiveUserTools is the (possibly narrowed) set of host-executed tools. |
+| `BuiltinToolFiltering` | `*BuiltinToolFiltering` | BuiltinToolFiltering is nil when every built-in tool stays available. |
+
+{/* /gen:fields */}
+
+### Questions tool
+
+The `askUserQuestions` tool lets the runtime ask the user a question and wait for the answer.
+
+| Name | Description |
+| --- | --- |
+| `harness.QuestionsToolDescription` | The tool description. |
+| `harness.QuestionsToolInput`, `harness.QuestionsToolOutput` | Input and output of the tool. |
+| `harness.Question`, `harness.QuestionOption`, `harness.QuestionAnswer` | One question, one choice and one answer. |
+| `harness.AllowFreeForm` | `boolean` or `{ secret: boolean }`. Controls free-form answers. |
+| `harness.ParseQuestionsToolInput(...)`, `harness.ParseQuestionsToolOutput(...)` | Decode and validate the tool input and output. |
+| `harness.QuestionsToolInputJSONSchema()`, `harness.QuestionsToolOutputJSONSchema()` | The JSON Schemas. |
+| `harness.QuestionsActionAnswered`, `harness.QuestionsActionPartiallyAnswered`, `harness.QuestionsActionDeclined`, `harness.QuestionsActionCancelled` | The output `action` values. |
+
+## Authentication
+
+`harness.Authentication` is an adapter `auth` setting: a mode string or an isolated environment.
+
+| Name | Description |
+| --- | --- |
+| `harness.AuthMode(mode string) Authentication` | Selects a mode. |
+| `harness.AuthEnvironment(env map[string]string) Authentication` | Uses an isolated environment. |
+| `harness.AuthModeAuto`, `harness.AuthModeAIGateway`, `harness.AuthModeDirect` | The shared modes. |
+| `harness.ErrInvalidAuthentication` | Returned for an authentication record that is not flat. |
+| `harness.CredentialForwarding` | Callback that customizes a credential value just before an adapter forwards it into the sandbox. |
+| `harness.CredentialForwardingOptions` | Input of that callback. |
+| `harness.MintBridgeTokenCallback` | Creates the bridge channel token for one session. |
+
+## Telemetry and diagnostics
+
+`AgentSettings.Telemetry` takes a `*telemetry.Options`. A turn span contains step spans, which contain model-call and tool-execution spans.
+
+| Name | Description |
+| --- | --- |
+| `harness.DebugConfig` | Per-session diagnostics configuration. |
+| `harness.DebugLevel` | `harness.DebugLevelError`, `harness.DebugLevelWarn`, `harness.DebugLevelInfo`, `harness.DebugLevelDebug` or `harness.DebugLevelTrace`, ordered most to least severe. |
+| `harness.Diagnostic`, `harness.DiagnosticError` | A diagnostic and its error payload. |
+| `harness.Observability` | Diagnostics wiring handed to `DoStart`. |
+| `harness.CallWarning`, `harness.CallWarningType` | A non-fatal adapter warning. The types are `harness.CallWarningUnsupportedSetting`, `harness.CallWarningUnsupportedTool` and `harness.CallWarningOther`. |
+
+## Errors
+
+| Type | Test function | Description |
+| --- | --- | --- |
+| `*harness.HarnessError` | `harness.IsHarnessError(err)` | Base error. `harness.NewHarnessError` creates one. |
+| `*harness.CapabilityUnsupportedError` | `harness.IsCapabilityUnsupportedError(err)` | The adapter or sandbox cannot do what you asked. `harness.NewCapabilityUnsupportedError` creates one. |
+| `*harness.SandboxAuthenticationError` | `harness.IsSandboxAuthenticationError(err)` | A sandbox provider cannot authenticate. `harness.NewSandboxAuthenticationError` creates one. |
+| `*harness.HistoryUnavailableError` | `harness.IsHistoryUnavailableError(err)` | `ReadHistory` cannot reach the runtime's history. `harness.NewHistoryUnavailableError` creates one. |
+
+`harness.GetHarnessErrorMessage(err)` returns a message that is safe to show a client. The error name constants are `harness.HarnessErrorName`, `harness.CapabilityUnsupportedErrorName`, `harness.SandboxAuthenticationErrorName` and `harness.HistoryUnavailableErrorName`.

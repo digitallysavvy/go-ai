@@ -117,3 +117,145 @@ func ConsumeStream(ctx context.Context, stream provider.TextStream) error
 ```
 
 Consumes a stream until completion or context cancellation.
+
+## `CreateTextStreamResponseWithInit`
+
+```go
+func CreateTextStreamResponseWithInit(ctx context.Context, result *ai.StreamTextResult, init *ai.TextStreamResponseInit) (*http.Response, error)
+```
+
+Like `CreateTextStreamResponse`, with a custom status, status text and headers from `init`.
+
+{/* gen:fields ai.TextStreamResponseInit */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Status` | `int` |  |
+| `StatusText` | `string` |  |
+| `Headers` | `map[string]string` |  |
+
+{/* /gen:fields */}
+
+## `CreateTextStreamResponseFromStream`
+
+```go
+func CreateTextStreamResponseFromStream(ctx context.Context, stream provider.TextStream, init *ai.TextStreamResponseInit) (*http.Response, error)
+```
+
+Builds the plain text response from a `provider.TextStream` instead of a `StreamTextResult`.
+
+## `PipeTextStreamToWriter`
+
+```go
+func PipeTextStreamToWriter(ctx context.Context, stream provider.TextStream, w io.Writer) error
+```
+
+Writes the text deltas of a provider stream to `w` as UTF-8. If a write fails or `ctx` ends first, it closes the stream before it returns, so a client that disconnects does not leave a provider connection open.
+
+## `ToTextStream`
+
+```go
+func ToTextStream(ctx context.Context, stream provider.TextStream) (<-chan string, <-chan error)
+```
+
+Returns the text deltas of a stream as a channel of strings, with a channel for the error.
+
+## `CreateUIMessageStreamWithOptions`
+
+```go
+func CreateUIMessageStreamWithOptions(ctx context.Context, options ai.UIMessageStreamOptions) (<-chan ai.UIMessageChunk, <-chan error)
+```
+
+Creates a UI message stream from an `Execute` function that writes chunks and merges other streams. Use it to add custom data parts or to combine several streams. The option fields are in [UI message chunks](./ui-message-chunks.mdx#uimessagestreamoptions).
+
+## `ToUIMessageStream` and `ToUIMessageChunk`
+
+```go
+func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...ai.UIMessageStreamResultOptions) (<-chan ai.UIMessageChunk, <-chan error)
+func ToUIMessageChunk(part provider.StreamChunk, opts ai.UIMessageStreamResultOptions) (ai.UIMessageChunk, bool)
+```
+
+`ToUIMessageStream` converts a provider stream to UI message chunks. `ToUIMessageChunk` converts one chunk and returns false when the part has no UI chunk.
+
+## `CreateUIMessageStreamResponseWithInit` and `PipeUIMessageStreamToResponseWithInit`
+
+```go
+func CreateUIMessageStreamResponseWithInit(ctx context.Context, result *ai.StreamTextResult, init *ai.UIMessageStreamResponseInit, opts ...ai.UIMessageStreamResultOptions) (*http.Response, error)
+func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *ai.StreamTextResult, w io.Writer, init *ai.UIMessageStreamResponseInit, opts ...ai.UIMessageStreamResultOptions) error
+```
+
+The `WithInit` forms take an `*ai.UIMessageStreamResponseInit` for the status, status text, headers, repeated headers, a stream consumer and keep-alive. The fields are in [UI message chunks](./ui-message-chunks.mdx#uimessagestreamresponseinit).
+
+## `ReadUIMessages`
+
+```go
+func ReadUIMessages(ctx context.Context, opts ai.ReadUIMessagesOptions) (<-chan ai.UIMessage, <-chan error)
+```
+
+Folds a chunk stream into progressively updated `ai.UIMessage` snapshots. See [UI messages](./ui-messages.mdx#readuimessages).
+
+## `IsUIMessageStreamError`
+
+```go
+func IsUIMessageStreamError(err error) bool
+```
+
+Reports whether `err` is an `*ai.UIMessageStreamError`, which the stream reports through `OnError` when a chunk refers to a part that does not exist.
+
+## `SmoothStream`
+
+```go
+func SmoothStream(opts ai.SmoothStreamOptions) (ai.StreamTransformFunc, error)
+```
+
+Returns a stream transform that re-chunks text deltas and delays them, so text appears at an even pace. Pass it as `ExperimentalTransform` in `ai.StreamTextOptions`.
+
+{/* gen:fields ai.SmoothStreamOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `DelayInMs` | `*int` | DelayInMs is the delay between emitted chunks. nil means unset and defaults to 10ms (TS default); a non-nil pointer to 0 disables the delay entirely (TS `delayInMs: null`). This mirrors the \*int "unset vs explicit zero" convention used elsewhere in this package (see GenerateTextOptions.MaxRetries), applied to TS's `number \| null`. |
+| `Chunking` | `interface{}` | Chunking controls how text is split for streaming. One of: - "word" (default): split on `\S+\s+` (word boundaries). - "line": split on `\n+`. - a \*regexp.Regexp: must not match an empty string. - a ChunkDetector function. |
+
+{/* /gen:fields */}
+
+## `ElementStream` and `ElementStreamWithOutput`
+
+```go
+func ElementStream[ELEMENT any](result *ai.StreamTextResult, opts ai.ElementStreamOptions[ELEMENT]) <-chan ai.ElementStreamResult[ELEMENT]
+func ElementStreamWithOutput[ELEMENT any](result *ai.StreamTextResult, output ai.Output[[]ELEMENT, []ELEMENT]) <-chan ai.ElementStreamResult[ELEMENT]
+```
+
+Emits each element of a streamed JSON array as soon as it is complete. See [Utilities](./utilities.mdx#elementstreamoptions) for the option and result fields.
+
+## `ChatTransport`
+
+`ai.ChatTransport` is the client-side interface that sends a chat's message history and receives UI message chunks. `workflow.WorkflowChatTransport` and the LangSmith deployment transport implement it.
+
+```go
+type ChatTransport interface {
+	SendMessages(ctx context.Context, req ChatTransportSendMessagesRequest) (<-chan UIMessageChunk, <-chan error)
+	ReconnectToStream(ctx context.Context, req ChatTransportReconnectToStreamRequest) (<-chan UIMessageChunk, <-chan error)
+}
+```
+
+`ReconnectToStream` closes both channels without values when no stream is active.
+
+{/* gen:fields ai.ChatTransportSendMessagesRequest */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ChatID` | `string` | ChatID identifies the conversation. Callers that run a single conversation per process (such as pkg/tui's AgentTUIRunner) typically generate this once per runner instance. |
+| `MessageID` | `string` | MessageID is the id of the message being responded to, when known. |
+| `Trigger` | `string` | Trigger describes why SendMessages was called (for example "submit-message" or "regenerate-message"), matching the TypeScript ChatTransport's `trigger` field. |
+| `Messages` | `[]types.Message` | Messages is the full message history sent to the transport. |
+
+{/* /gen:fields */}
+
+{/* gen:fields ai.ChatTransportReconnectToStreamRequest */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ChatID` | `string` | ChatID identifies the conversation whose in-progress stream should be resumed. |
+
+{/* /gen:fields */}

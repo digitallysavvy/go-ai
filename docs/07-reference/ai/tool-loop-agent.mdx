@@ -157,6 +157,167 @@ a := agent.NewToolLoopAgent(agent.AgentConfig{
 result, err := a.Execute(ctx, "Complex multi-step research task")
 ```
 
+## Configuration fields (generated)
+
+These tables are generated from the `agent.AgentConfig` and `agent.PrepareCallConfig` source and list every exported field.
+
+### AgentConfig
+
+`agent.DefaultAgentConfig()` returns an `AgentConfig` with default values.
+
+{/* gen:fields agent.AgentConfig */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ID` | `string` | ID is a unique identifier for the agent Useful for tracking and logging which agent performed actions |
+| `Version` | `string` | Version is the version of the agent (e.g., "agent-v1", "1.0.0") Useful for versioning agent behavior and configurations |
+| `Model` | `provider.LanguageModel` | Model to use for the agent |
+| `System` | `string` | System prompt for the agent |
+| `Prompt` | `string` | Prompt is a TypeScript-compatible alias for System/instructions. When System is empty, Prompt is used as the system prompt for each step. |
+| `Instructions` | `*string` | Instructions is the canonical TypeScript-compatible name for System. When set, Instructions takes precedence over System. |
+| `AllowSystemInMessages` | `bool` | AllowSystemInMessages mirrors TypeScript ToolLoopAgentSettings.allowSystemInMessages. |
+| `Tools` | `[]types.Tool` | Tools available to the agent |
+| `ActiveTools` | `[]string` | ActiveTools restricts the available tools by name before model calls. |
+| `ToolOrder` | `[]string` | ToolOrder controls the order tools are sent to providers. |
+| `ExperimentalToolCallers` | `ai.ExperimentalToolCallers` | ExperimentalToolCallers configures which tools may call which other tools, and which tools stay hidden until discovered via ai.ToolSearch. Forwarded to the underlying GenerateText/StreamText call. Mirrors the TypeScript SDK's ToolLoopAgentSettings.experimental_toolCallers. |
+| `Skills` | `*SkillRegistry` | Skills are reusable agent behaviors Skills can be registered and executed by the agent |
+| `Subagents` | `*SubagentRegistry` | Subagents are specialized agents that can be delegated to The main agent can delegate tasks to subagents for specialized processing |
+| `MaxSteps` | `int` | Maximum number of steps (iterations) the agent can take. If both MaxSteps and StopWhen are set, StopWhen takes precedence. Deprecated: use StopWhen with ai.IsStepCount instead. |
+| `StopWhen` | `[]ai.StopCondition` | StopWhen defines conditions that terminate the agent's tool-calling loop. Conditions are evaluated OR -- first non-empty string stops the loop. If neither StopWhen nor MaxSteps is set, defaults to []ai.StopCondition\{ai.IsStepCount(20)\}. |
+| `Temperature` | `*float64` | Temperature for generation |
+| `MaxTokens` | `*int` | MaxTokens per generation |
+| `TopP` | `*float64` | TopP controls nucleus sampling. |
+| `TopK` | `*int` | TopK controls top-k sampling for providers that support it. |
+| `FrequencyPenalty` | `*float64` | FrequencyPenalty reduces repetition. |
+| `PresencePenalty` | `*float64` | PresencePenalty encourages topic diversity. |
+| `StopSequences` | `[]string` | StopSequences halt generation when encountered. |
+| `ToolChoice` | `types.ToolChoice` | ToolChoice controls how the model may call tools. |
+| `Seed` | `*int` | Seed enables deterministic generation when supported by the provider. |
+| `Headers` | `map[string]string` | Headers are custom request headers forwarded to the provider. |
+| `Reasoning` | `*types.ReasoningLevel` | Reasoning configures provider reasoning effort. |
+| `SendReasoning` | `*bool` | SendReasoning controls whether reasoning stream/content parts are exposed. |
+| `ProviderOptions` | `map[string]interface{}` | ProviderOptions are provider-specific options keyed by provider name. |
+| `Output` | `interface{}` | Output specifies how to handle and parse model output during streaming. |
+| `Telemetry` | `*ai.TelemetrySettings` | Telemetry configures observability for this agent. |
+| `ExperimentalTelemetry` | `*ai.TelemetrySettings` | ExperimentalTelemetry is a deprecated alias for Telemetry, included for parity with TypeScript prepareCall. |
+| `SensitiveRuntimeContext` | `bool` | SensitiveRuntimeContext omits runtime context from telemetry payloads. |
+| `Include` | `*ai.IncludeOptions` | Include forwards stable include options to core stream/generate behavior. |
+| `Internal` | `*ai.InternalOptions` | Internal contains test-only ID generators matching TypeScript _internal. |
+| `Timeout` | `*ai.TimeoutConfig` | Timeout provides granular timeout controls Supports total timeout, per-step timeout, and per-chunk timeout |
+| `MaxRetries` | `*int` | MaxRetries controls transient provider call retries, forwarded to ai.GenerateTextOptions.MaxRetries / ai.StreamTextOptions.MaxRetries. nil uses the default retry count (2), matching TS WorkflowAgent's `mergedGenerationSettings.maxRetries ?? 2`. |
+| `PrepareCall` | `func(ctx context.Context, config PrepareCallConfig) PrepareCallConfig` | PrepareCall is called before each generation step Allows dynamic modification of the agent's configuration per step This is useful for: - Adjusting system prompts based on context - Changing temperature/parameters dynamically - Modifying available tools based on state - Adding contextual information Example: PrepareCall: func(ctx context.Context, config PrepareCallConfig) PrepareCallConfig \{ // Adjust system prompt based on step number if config.StepNumber &gt; 5 \{ config.System = "Be more concise." \} return config \} |
+| `ExperimentalContext` | `interface{}` | ExperimentalContext is user-defined context that flows through all structured callback events (OnStartEvent, OnStepStartEvent, etc.). It is passed as-is to every event — useful for correlating events with application-level state (e.g. request IDs, session objects). |
+| `RuntimeContext` | `interface{}` | RuntimeContext is user-defined context that flows through callbacks, approval hooks, and tool execution. ExperimentalContext is a deprecated alias and is used only when RuntimeContext is nil. |
+| `ToolsContext` | `map[string]interface{}` | ToolsContext contains per-tool context keyed by tool name. Each value is validated against the matching tool's ContextSchema before approval callbacks and execution. |
+| `ExperimentalSandbox` | `interface{}` | ExperimentalSandbox is passed to tool execution and prepare-step hooks. |
+| `ExperimentalRefineToolInput` | `map[string]ai.ToolInputRefiner` | ExperimentalRefineToolInput refines parsed tool input before execution. |
+| `CallOptions` | `interface{}` | CallOptions contains agent-level call options passed through PrepareCall. When CallOptionsSchema is set, this value is validated before model calls. |
+| `CallOptionsSchema` | `schema.Schema` | CallOptionsSchema validates CallOptions before any generate/stream call. |
+| `FilterActiveTools` | `func(ctx context.Context, stepNumber int, tools []types.Tool) []types.Tool` | FilterActiveTools can restrict the available tools for each step. It mirrors the TypeScript filterActiveTools/activeTools behavior. |
+| `ExperimentalDownload` | `ai.DownloadFunction` | ExperimentalDownload customizes remote file URL downloads before model calls. When nil, the core default downloader is used for unsupported URLs. |
+| `InstructionMessages` | `[]types.Message` | InstructionMessages supplies the agent's instructions as system messages (ai.GenerateTextOptions.InstructionMessages / StreamTextOptions equivalent), preserving per-message ProviderOptions. Takes precedence over Instructions/System/Prompt when non-empty. |
+| `PrepareStep` | `func(ctx context.Context, step ai.PrepareStepOptions) ai.PrepareStepOptions` | PrepareStep lets you provide different settings for a step. Forwarded to ai.GenerateText/StreamText for Generate/Stream (TS ToolLoopAgentSettings.prepareStep). |
+| `RepairToolCall` | `ai.ToolCallRepairFunction` | RepairToolCall attempts to repair tool calls that fail to parse because the tool does not exist or its input is invalid. Forwarded to ai.GenerateText/StreamText for Generate/Stream. |
+| `ExperimentalRepairToolCall` | `ai.ToolCallRepairFunction` | ExperimentalRepairToolCall is a deprecated alias for RepairToolCall. Deprecated: use RepairToolCall. |
+| `OnLanguageModelCallStart` | `ai.OnLanguageModelCallStartCallback` | OnLanguageModelCallStart is called immediately before each provider model call begins. |
+| `ExperimentalOnLanguageModelCallStart` | `ai.OnLanguageModelCallStartCallback` | ExperimentalOnLanguageModelCallStart is a deprecated alias for OnLanguageModelCallStart. Deprecated: use OnLanguageModelCallStart. |
+| `OnLanguageModelCallEnd` | `ai.OnLanguageModelCallEndCallback` | OnLanguageModelCallEnd is called after each provider model response is normalized and parsed, before client-side tool execution. |
+| `ExperimentalOnLanguageModelCallEnd` | `ai.OnLanguageModelCallEndCallback` | ExperimentalOnLanguageModelCallEnd is a deprecated alias for OnLanguageModelCallEnd. Deprecated: use OnLanguageModelCallEnd. |
+| `OnStepStart` | `func(stepNum int)` | Legacy/Basic Callbacks |
+| `OnStepEnd` | `func(step types.StepResult)` |  |
+| `OnStepFinish` | `func(step types.StepResult)` | Deprecated: use OnStepEnd. |
+| `OnToolCall` | `func(toolCall types.ToolCall)` |  |
+| `OnToolResult` | `func(toolResult types.ToolResult)` |  |
+| `OnFinish` | `func(result *AgentResult)` |  |
+| `OnStart` | `func(ctx context.Context, e ai.OnStartEvent)` | OnStart is called once when agent execution begins. |
+| `OnStepStartEvent` | `func(ctx context.Context, e ai.OnStepStartEvent)` | OnStepStart is called at the beginning of each LLM step. |
+| `OnToolExecutionStart` | `func(ctx context.Context, e ai.OnToolCallStartEvent)` | OnToolExecutionStart is called just before each tool's Execute function runs. |
+| `OnToolExecutionEnd` | `func(ctx context.Context, e ai.OnToolCallFinishEvent)` | OnToolExecutionEnd is called after each tool's Execute function returns. |
+| `OnToolCallStart` | `func(ctx context.Context, e ai.OnToolCallStartEvent)` | OnToolCallStart is the previous Go name for OnToolExecutionStart. Deprecated: use OnToolExecutionStart. |
+| `OnToolCallFinish` | `func(ctx context.Context, e ai.OnToolCallFinishEvent)` | OnToolCallFinish is the previous Go name for OnToolExecutionEnd. Deprecated: use OnToolExecutionEnd. |
+| `OnStepEndEvent` | `func(ctx context.Context, e ai.OnStepFinishEvent)` | OnStepEndEvent is called at the end of each LLM step. |
+| `OnStepFinishEvent` | `func(ctx context.Context, e ai.OnStepFinishEvent)` | OnStepFinishEvent is called at the end of each LLM step. Deprecated: use OnStepEndEvent. |
+| `OnEndEvent` | `func(ctx context.Context, e ai.OnFinishEvent)` | OnEndEvent is called once when agent execution completes. |
+| `OnFinishEvent` | `func(ctx context.Context, e ai.OnFinishEvent)` | OnFinishEvent is a deprecated alias for OnEndEvent. Deprecated: use OnEndEvent. |
+| `OnChainStart` | `func(input string, messages []types.Message)` | OnChainStart is called when the agent begins execution Use this to initialize resources, start timers, or log the beginning of a chain |
+| `OnChainEnd` | `func(result *AgentResult)` | OnChainEnd is called when the agent completes successfully Use this to clean up resources, log completion, or process final results |
+| `OnChainError` | `func(err error)` | OnChainError is called when the agent encounters an error during execution Use this for error logging, cleanup, or triggering fallback mechanisms |
+| `OnAgentAction` | `func(action AgentAction)` | OnAgentAction is called when the agent decides to take an action (e.g., call a tool) This is invoked before tool execution begins Use this to log agent decisions or implement custom action approval logic |
+| `OnAgentFinish` | `func(finish AgentFinish)` | OnAgentFinish is called when the agent reaches a final answer (no more tool calls) This differs from OnChainEnd as it's called when the agent decides it's done, even if more processing remains |
+| `OnToolStart` | `func(toolCall types.ToolCall)` | OnToolStart is called immediately before a tool begins execution Use this to log tool invocations or start performance timers |
+| `OnToolEnd` | `func(toolResult types.ToolResult)` | OnToolEnd is called after a tool successfully completes execution Use this to log successful tool completions or process tool outputs |
+| `OnToolError` | `func(toolCall types.ToolCall, err error)` | OnToolError is called when a tool execution fails Use this for error logging, retry logic, or fallback mechanisms |
+| `ToolApprovalRequired` | `bool` | ToolApprovalRequired determines if tools require approval before execution |
+| `ToolApprover` | `func(toolCall types.ToolCall) bool` | ToolApprover is called when a tool needs approval (if ToolApprovalRequired is true) Should return true to approve, false to reject |
+| `ToolApproval` | `types.ToolApprovalConfig` | ToolApproval configures automatic approval handling. Supported values are types.ToolApprovalFunc and maps keyed by tool name. Nil or zero-valued results are treated as not-applicable. |
+| `ExperimentalToolApprovalSecret` | `[]byte` | ExperimentalToolApprovalSecret signs issued tool approval requests and verifies resumed approval responses before tools execute (TS experimental_toolApprovalSecret). Nil disables signing/verification. |
+
+{/* /gen:fields */}
+
+### PrepareCallConfig
+
+`PrepareCall` returns a `PrepareCallConfig` to override settings for one call.
+
+{/* gen:fields agent.PrepareCallConfig */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `StepNumber` | `int` | StepNumber is the current step number |
+| `Model` | `provider.LanguageModel` | Model is the language model for this call. |
+| `System` | `string` | System prompt for this call |
+| `AllowSystemInMessages` | `bool` | AllowSystemInMessages controls whether system-role messages are accepted in this call's message list. |
+| `Prompt` | `string` | Prompt is the per-call user prompt when the caller used Prompt instead of Messages. |
+| `Messages` | `[]types.Message` | Messages for this call |
+| `Tools` | `[]types.Tool` | Tools available for this call |
+| `ActiveTools` | `[]string` | ActiveTools restricts Tools by name before calling the model. |
+| `ToolChoice` | `types.ToolChoice` | ToolChoice controls how the model may call tools for this call. |
+| `ToolOrder` | `[]string` | ToolOrder controls the order tools are sent to providers for this call. |
+| `ExperimentalToolCallers` | `ai.ExperimentalToolCallers` | ExperimentalToolCallers configures which tools may call which other tools for this call. |
+| `ToolApproval` | `types.ToolApprovalConfig` | ToolApproval configures automatic approval handling for this call. |
+| `ExperimentalToolApprovalSecret` | `[]byte` | ExperimentalToolApprovalSecret overrides the approval signing secret for this call. |
+| `SensitiveRuntimeContext` | `bool` | SensitiveRuntimeContext omits runtime context from telemetry payloads. |
+| `CallOptions` | `interface{}` | CallOptions are validated and passed through from AgentConfig. |
+| `Temperature` | `*float64` | Temperature for this call |
+| `MaxTokens` | `*int` | MaxTokens for this call |
+| `TopP` | `*float64` | TopP controls nucleus sampling. |
+| `TopK` | `*int` | TopK controls top-k sampling for providers that support it. |
+| `FrequencyPenalty` | `*float64` | FrequencyPenalty reduces repetition. |
+| `PresencePenalty` | `*float64` | PresencePenalty encourages topic diversity. |
+| `StopSequences` | `[]string` | StopSequences halt generation when encountered. |
+| `Seed` | `*int` | Seed enables deterministic generation when supported by the provider. |
+| `Headers` | `map[string]string` | Headers are custom request headers forwarded to the provider. |
+| `Reasoning` | `*types.ReasoningLevel` | Reasoning configures provider reasoning effort. |
+| `SendReasoning` | `*bool` | SendReasoning controls whether reasoning stream/content parts are exposed. |
+| `ProviderOptions` | `map[string]interface{}` | ProviderOptions are provider-specific options keyed by provider name. |
+| `StopWhen` | `[]ai.StopCondition` | StopWhen defines conditions that can terminate the tool loop. |
+| `Output` | `interface{}` | Output specifies how to handle and parse model output. |
+| `Telemetry` | `*ai.TelemetrySettings` | Telemetry configures observability for this call. |
+| `ExperimentalTelemetry` | `*ai.TelemetrySettings` | ExperimentalTelemetry is a deprecated alias for Telemetry. |
+| `Include` | `*ai.IncludeOptions` | Include controls retained request/response details. |
+| `Internal` | `*ai.InternalOptions` | Internal contains test-only ID generators matching TypeScript _internal. |
+| `ExperimentalSandbox` | `interface{}` | ExperimentalSandbox is the sandbox environment for this step. |
+| `ExperimentalRefineToolInput` | `map[string]ai.ToolInputRefiner` | ExperimentalRefineToolInput refines parsed tool input before execution. |
+| `ExperimentalDownload` | `ai.DownloadFunction` | ExperimentalDownload customizes prompt URL download handling. |
+| `InstructionMessages` | `[]types.Message` | InstructionMessages supplies this step's instructions as system messages. See AgentConfig.InstructionMessages. |
+| `PrepareStep` | `func(ctx context.Context, step ai.PrepareStepOptions) ai.PrepareStepOptions` | PrepareStep lets you provide different settings for a step. See AgentConfig.PrepareStep. |
+| `RepairToolCall` | `ai.ToolCallRepairFunction` | RepairToolCall attempts to repair tool calls that fail to parse for this step. |
+| `OnLanguageModelCallStart` | `ai.OnLanguageModelCallStartCallback` | OnLanguageModelCallStart is called immediately before this step's provider model call begins. |
+| `OnLanguageModelCallEnd` | `ai.OnLanguageModelCallEndCallback` | OnLanguageModelCallEnd is called after this step's provider model response is normalized and parsed, before client-side tool execution. |
+| `RuntimeContext` | `interface{}` | RuntimeContext is user-defined runtime data for this call. |
+| `ToolsContext` | `map[string]interface{}` | ToolsContext contains per-tool execution context keyed by tool name. |
+| `PreviousSteps` | `[]types.StepResult` | PreviousSteps contains completed step results before this call. |
+| `AccumulatedUsage` | `types.Usage` | AccumulatedUsage is the total usage so far |
+| `CustomData` | `interface{}` | CustomData allows passing custom data between PrepareCall invocations |
+| `MaxRetries` | `*int` | MaxRetries controls transient provider call retries for this call. |
+| `Timeout` | `*ai.TimeoutConfig` | Timeout provides granular timeout controls for this call, the Go stand-in for TS's per-call abortSignal. |
+
+{/* /gen:fields */}
+
+### Tool approval signing
+
+`ExperimentalToolApprovalSecret` is a byte slice. When it is set, the SDK signs every approval request it issues with HMAC-SHA256 and verifies the signature on the approval response before it runs the tool. A client that edits the tool name, the tool call ID or the tool input between the request and the response fails verification. When it is nil, requests are not signed and responses are not verified. The signing functions are `ai.SignToolApproval` and `ai.VerifyToolApprovalSignature`; see [Tool approval helpers](./tool-approvals.mdx).
+
+
 ## See Also
 
 - [Agent](./agent.mdx) - The `agent.Agent` interface

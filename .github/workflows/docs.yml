@@ -64,6 +64,26 @@ jobs:
         with:
           path: website/build
 
+  reference:
+    name: Reference check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Check generated reference sections
+        run: go run docs/scripts/gen-reference.go --check
+
+      # Report only: prints the share of exported identifiers that appear in the docs.
+      - name: Report reference coverage
+        run: go run docs/scripts/ref-coverage.go
+
   deploy:
     name: Deploy
     if: github.event_name != 'pull_request'

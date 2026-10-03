@@ -1,0 +1,394 @@
+---
+title: UI message chunks
+description: "Reference for every chunk type the Go AI SDK UI message stream emits, with fields, matching the AI SDK UIMessageChunk union."
+---
+
+# UI message chunks
+
+The UI message stream is a sequence of JSON chunks sent as Server-Sent Events. Each chunk is an `ai.UIMessageChunk`, a `map[string]interface{}` with a `type` key. The chunk set matches the TypeScript AI SDK `UIMessageChunk` union, so `useChat` from `@ai-sdk/react` reads the stream without an adapter.
+
+Functions that produce the stream are in [Stream transport helpers](./stream-transport-helpers.mdx). Functions that fold chunks back into messages are in [UI messages](./ui-messages.mdx).
+
+All field names are camelCase. A field marked optional is omitted when it has no value. Several chunks accept `providerMetadata` (a `map[string]interface{}` keyed by provider name); it appears on a chunk when the provider returned metadata for it.
+
+## Wire format
+
+Every chunk is one SSE event, `data: <json>\n\n`. After the last chunk the stream writes `data: [DONE]\n\n`. The response carries the headers from `ai.UIMessageStreamHeaders()`: `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`, `X-Vercel-AI-UI-Message-Stream: v1` and `X-Accel-Buffering: no`.
+
+## Message lifecycle
+
+A stream for one assistant message looks like this:
+
+```
+start
+  start-step
+    text-start, text-delta..., text-end
+    tool-input-start, tool-input-delta..., tool-input-available
+    tool-output-available
+  finish-step
+finish
+```
+
+A tool-calling run repeats the `start-step` to `finish-step` block for each model step.
+
+### `start`
+
+Begins the message. Sent once, when `SendStart` is not false.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `messageId` | `string` | Optional. ID of the assistant message. Set from `ResponseMessageID` or `GenerateMessageID`. |
+| `messageMetadata` | `object` | Optional. Result of the `MessageMetadata` callback for the `start` part. |
+
+### `finish`
+
+Ends the message. Sent once, when `SendFinish` is not false.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `finishReason` | `string` | Why generation ended: `stop`, `length`, `content-filter`, `tool-calls`, `user-approval`, `error` or `other`. |
+| `messageMetadata` | `object` | Optional. Result of the `MessageMetadata` callback for the `finish` part. |
+
+### `abort`
+
+The stream was aborted.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `reason` | `string` | Optional. Why the stream was aborted. |
+
+### `message-metadata`
+
+Updates the message metadata mid-stream. Emitted when the `MessageMetadata` callback returns a value for a part other than `start` and `finish`. A client merges the value into the message metadata.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `messageMetadata` | `object` | The metadata to merge. |
+
+### `start-step`
+
+Begins one model call. Carries no fields. A client adds a `step-start` part to the message.
+
+### `finish-step`
+
+Ends one model call. Carries no fields.
+
+### `reset-step`
+
+Discards the parts added since the last `start-step` because the step is being retried. A client truncates the message to the last `step-start` part and clears in-flight text, reasoning and tool state. The Go UI stream does not emit this chunk itself. `ai.ReadUIMessages` and the workflow chat transport client handle it, so a stream from a retrying workflow agent reads correctly.
+
+### `error`
+
+A stream error.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `errorText` | `string` | Error message. `UIMessageStreamOptions.OnError` and `UIMessageStreamResultOptions.OnError` map the Go error to this text. The default text is "An error occurred." |
+
+## Text
+
+Text is streamed as a start, one or more deltas and an end, all sharing an `id`.
+
+| Type | Fields |
+| --- | --- |
+| `text-start` | `id` (string), `providerMetadata` (optional) |
+| `text-delta` | `id` (string), `delta` (string), `providerMetadata` (optional) |
+| `text-end` | `id` (string), `providerMetadata` (optional) |
+
+## Reasoning
+
+Reasoning chunks have the same shape as text chunks. They are sent only when `SendReasoning` is not false (the default is true).
+
+| Type | Fields |
+| --- | --- |
+| `reasoning-start` | `id` (string), `providerMetadata` (optional) |
+| `reasoning-delta` | `id` (string), `delta` (string), `providerMetadata` (optional) |
+| `reasoning-end` | `id` (string), `providerMetadata` (optional) |
+
+## Sources, files and custom content
+
+### `source-url`
+
+Sent only when `SendSources` is true (the default is false).
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `sourceId` | `string` | Source ID. |
+| `url` | `string` | Source URL. |
+| `title` | `string` | Optional. Source title. |
+| `providerMetadata` | `object` | Optional. |
+
+### `source-document`
+
+Sent only when `SendSources` is true.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `sourceId` | `string` | Source ID. |
+| `mediaType` | `string` | IANA media type of the document. |
+| `title` | `string` | Optional. Document title. |
+| `filename` | `string` | Optional. File name. |
+| `providerMetadata` | `object` | Optional. |
+
+### `file`
+
+A model-generated file.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `mediaType` | `string` | IANA media type. |
+| `url` | `string` | The file URL, or a `data:` URL when the provider returned inline bytes. |
+| `providerMetadata` | `object` | Optional. |
+
+### `reasoning-file`
+
+A file generated as part of reasoning. Same fields as `file`. Sent only when `SendReasoning` is not false.
+
+### `custom`
+
+Provider-specific content that has no standard part type.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `kind` | `string` | Provider-defined content kind. |
+| `providerMetadata` | `object` | Optional. |
+
+## Tool calls
+
+### `tool-input-start`
+
+The model started writing a tool call. Sent when the provider streams tool input.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `toolCallId` | `string` | Tool call ID. |
+| `toolName` | `string` | Tool name. |
+| `providerExecuted` | `bool` | Optional. True when the provider runs the tool. |
+| `dynamic` | `bool` | Optional. True for dynamic tools. |
+| `title` | `string` | Optional. Tool title. |
+| `toolMetadata` | `object` | Optional. Tool metadata from `types.Tool.Metadata`. |
+| `providerMetadata` | `object` | Optional. |
+
+### `tool-input-delta`
+
+A piece of the raw JSON tool input.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `toolCallId` | `string` | Tool call ID. |
+| `inputTextDelta` | `string` | The next piece of input text. |
+
+### `tool-input-available`
+
+The complete, parsed tool input. This chunk is sent even when the provider did not stream the input.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `toolCallId` | `string` | Tool call ID. |
+| `toolName` | `string` | Tool name. |
+| `input` | `any` | Parsed tool input. |
+| `providerExecuted` | `bool` | Optional. |
+| `dynamic` | `bool` | Optional. |
+| `title` | `string` | Optional. |
+| `toolMetadata` | `object` | Optional. |
+| `providerMetadata` | `object` | Optional. |
+
+### `tool-input-error`
+
+The model produced a tool call that is invalid (unknown tool or input that fails validation).
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `toolCallId` | `string` | Tool call ID. |
+| `toolName` | `string` | Tool name. |
+| `input` | `any` | The raw input. |
+| `errorText` | `string` | Error message, mapped by `OnError`. |
+| `providerExecuted` | `bool` | Optional. |
+| `dynamic` | `bool` | Optional. |
+| `title` | `string` | Optional. |
+| `toolMetadata` | `object` | Optional. |
+| `providerMetadata` | `object` | Optional. |
+
+## Tool results
+
+### `tool-output-available`
+
+The tool returned a result.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `toolCallId` | `string` | Tool call ID. |
+| `output` | `any` | Tool output. |
+| `providerExecuted` | `bool` | Optional. |
+| `dynamic` | `bool` | Optional. |
+| `preliminary` | `bool` | Optional. True for a preliminary result from a streaming tool. A later chunk replaces it. |
+| `toolMetadata` | `object` | Optional. |
+| `providerMetadata` | `object` | Optional. |
+
+### `tool-output-error`
+
+The tool failed.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `toolCallId` | `string` | Tool call ID. |
+| `errorText` | `string` | Error message, mapped by `OnError`. Provider-executed tools report the raw error text. |
+| `providerExecuted` | `bool` | Optional. |
+| `dynamic` | `bool` | Optional. |
+| `toolMetadata` | `object` | Optional. |
+| `providerMetadata` | `object` | Optional. |
+
+### `tool-output-denied`
+
+The user denied the tool call, so the tool did not run.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `toolCallId` | `string` | Tool call ID. |
+
+## Tool approval
+
+See [Tool approval helpers](./tool-approvals.mdx) for the server-side flow.
+
+### `tool-approval-request`
+
+The tool needs approval before it runs. The client shows a prompt and answers with a tool approval response.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `approvalId` | `string` | Approval ID. |
+| `toolCallId` | `string` | ID of the tool call that needs approval. |
+| `isAutomatic` | `bool` | Optional. True when a `ToolApproval` function decided without asking the user. |
+| `signature` | `string` | Optional. HMAC signature, present when `ExperimentalToolApprovalSecret` is set. |
+| `inputSchemaInput` | `any` | Optional. The tool input before schema parsing and input refinement, when it differs from the parsed input. |
+| `reason` | `string` | Optional. Why approval is requested. |
+
+### `tool-approval-response`
+
+The approval decision. The stream emits this chunk for automatic decisions. Clients send the same shape back on the next request, as a tool part approval.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `approvalId` | `string` | Approval ID. |
+| `approved` | `bool` | Whether the call is approved. |
+| `reason` | `string` | Optional. Reason for the decision. |
+| `providerExecuted` | `bool` | Optional. |
+
+## Data chunks
+
+### `data-<name>`
+
+A custom data part. The type is `data-` followed by a name you choose, for example `data-weather`. Write one with `UIMessageStreamWriter.Write`.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `id` | `string` | Optional. When set, a later chunk with the same type and ID replaces the data of the earlier part instead of adding a new part. |
+| `data` | `any` | The payload. |
+| `transient` | `bool` | Optional. When true, the part is sent to the client but not stored in the message. It does not reach `OnEnd` callbacks. |
+
+## Options
+
+### UIMessageStreamOptions
+
+Options for `ai.CreateUIMessageStreamWithOptions`.
+
+{/* gen:fields ai.UIMessageStreamOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Execute` | `func(writer UIMessageStreamWriter)` |  |
+| `OnError` | `func(error) string` |  |
+| `OriginalMessages` | `[]UIMessageChunk` |  |
+| `OnStepEnd` | `UIMessageStreamOnStepEndCallback` |  |
+| `OnStepFinish` | `UIMessageStreamOnStepFinishCallback` | Deprecated: use OnStepEnd. |
+| `OnEnd` | `UIMessageStreamOnEndCallback` |  |
+| `OnFinish` | `UIMessageStreamOnFinishCallback` | Deprecated: use OnEnd. |
+| `GenerateMessageID` | `IDGenerator` |  |
+
+{/* /gen:fields */}
+
+### UIMessageStreamResultOptions
+
+Options for `ai.CreateUIMessageStream`, `ai.ToUIMessageStream` and the response helpers.
+
+{/* gen:fields ai.UIMessageStreamResultOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `OriginalMessages` | `[]UIMessageChunk` |  |
+| `GenerateMessageID` | `IDGenerator` |  |
+| `ResponseMessageID` | `string` |  |
+| `Tools` | `[]types.Tool` |  |
+| `MessageMetadata` | `func(part map[string]interface{}) map[string]interface{}` |  |
+| `SendReasoning` | `*bool` |  |
+| `SendSources` | `*bool` |  |
+| `SendStart` | `*bool` |  |
+| `SendFinish` | `*bool` |  |
+| `OnStepEnd` | `UIMessageStreamOnStepEndCallback` |  |
+| `OnStepFinish` | `UIMessageStreamOnStepFinishCallback` | Deprecated: use OnStepEnd. |
+| `OnEnd` | `UIMessageStreamOnEndCallback` |  |
+| `OnFinish` | `UIMessageStreamOnFinishCallback` | Deprecated: use OnEnd. |
+| `OnError` | `func(error) string` |  |
+
+{/* /gen:fields */}
+
+### UIMessageStreamResponseInit
+
+Options for the response helpers that take an init value.
+
+{/* gen:fields ai.UIMessageStreamResponseInit */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Status` | `int` |  |
+| `StatusText` | `string` |  |
+| `Headers` | `map[string]string` | Headers sets a single value per header key. Use Header instead when a header (e.g. Set-Cookie) needs multiple values. |
+| `Header` | `http.Header` | Header carries repeated header values (e.g. multiple Set-Cookie entries), which map[string]string cannot represent. Values here are added in addition to Headers, so both can be set together. |
+| `ConsumeSSEStream` | `func(io.Reader) error` |  |
+| `KeepAliveMs` | `*time.Duration` | KeepAliveMs, when set, makes the SSE pipeline flush an opening ": stream-open\n\n" comment immediately (so headers reach the client right away even if the first real chunk is slow) and send a ": keep-alive\n\n" comment whenever this duration elapses without any other write, resetting on every chunk. Must be a positive duration; zero or negative disables it the same as a nil value. Mirrors TS createSseStreamWithKeepAlive's `keepAliveMs` option (TS #21672). |
+
+{/* /gen:fields */}
+
+### UIMessageStreamOutcome
+
+The operation-level result of a stream. Declare one with `UIMessageStreamWriter.SetOutcome`.
+
+{/* gen:fields ai.UIMessageStreamOutcome */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Status` | `UIMessageStreamOutcomeStatus` |  |
+| `Error` | `error` | Error is set when Status is UIMessageStreamOutcomeFailed. |
+
+{/* /gen:fields */}
+
+{/* gen:consts ai.UIMessageStreamOutcomeStatus */}
+
+| Constant | Value | Description |
+| --- | --- | --- |
+| `UIMessageStreamOutcomeCompleted` | `"completed"` |  |
+| `UIMessageStreamOutcomeFailed` | `"failed"` |  |
+| `UIMessageStreamOutcomeAborted` | `"aborted"` |  |
+| `UIMessageStreamOutcomeUnknown` | `"unknown"` |  |
+
+{/* /gen:consts */}
+
+## Writer
+
+`ai.UIMessageStreamWriter` is passed to `UIMessageStreamOptions.Execute`.
+
+| Method | Description |
+| --- | --- |
+| `Write(part UIMessageChunk)` | Appends a chunk. |
+| `Merge(stream <-chan UIMessageChunk)` | Forwards every chunk from another stream. |
+| `SetOutcome(outcome UIMessageStreamOutcome)` | Declares the outcome. The first outcome that is not `unknown` wins. |
+
+## Conversion functions
+
+| Function | Description |
+| --- | --- |
+| `ai.ToUIMessageChunk(part provider.StreamChunk, opts UIMessageStreamResultOptions) (UIMessageChunk, bool)` | Converts one provider stream chunk. The boolean is false when the part produces no UI chunk. |
+| `ai.ToUIMessageStream(ctx, stream provider.TextStream, opts ...UIMessageStreamResultOptions)` | Converts a whole provider stream to a chunk channel. |
+| `ai.IsUIMessageStreamError(err error) bool` | Reports whether `err` is an `*ai.UIMessageStreamError`. |
+
+`ai.UIMessageStreamError` is the error type reported through `OnError` when a chunk refers to a part that does not exist, for example a `text-delta` with no matching `text-start`.

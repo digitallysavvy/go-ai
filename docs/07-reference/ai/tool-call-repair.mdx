@@ -1,0 +1,115 @@
+---
+title: Tool call parsing and repair
+description: "Reference for the Go AI SDK functions that parse, repair and refine model tool calls, and the tool definition fingerprints that detect drift."
+---
+
+# Tool call parsing and repair
+
+The SDK parses each tool call the model returns against the tool's input schema. A call that names an unknown tool or has invalid input is marked invalid unless a repair function fixes it. `GenerateText`, `StreamText` and `ToolLoopAgent` run these steps for you. The functions on this page are the building blocks.
+
+## RepairToolCall
+
+Set `RepairToolCall` on `ai.GenerateTextOptions` or `ai.StreamTextOptions` to repair calls that fail to parse. The function type is `ai.ToolCallRepairFunction`.
+
+```go
+type ToolCallRepairFunction func(ctx context.Context, options ToolCallRepairOptions) (*types.ToolCall, error)
+```
+
+Return `(nil, nil)` when the call cannot be repaired. The returned call may carry the repaired input as `RawArguments` (JSON text) or `Arguments`.
+
+{/* gen:fields ai.ToolCallRepairOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ToolCall` | `types.ToolCall` | ToolCall is the tool call that failed to parse. |
+| `Tools` | `[]types.Tool` | Tools are the tools available in the step. |
+| `InputSchema` | `func(toolName string) (map[string]interface{}, error)` | InputSchema returns the JSON schema of a tool's input. |
+| `Instructions` | `string` | Instructions is the text instructions (system prompt) of the step. |
+| `InstructionMessages` | `[]types.Message` | InstructionMessages are the system-message instructions of the step, when instructions were given as system messages. |
+| `System` | `string` | System is the step's system prompt. Deprecated: use Instructions. |
+| `Messages` | `[]types.Message` | Messages are the messages of the current generation step. |
+| `Error` | `error` | Error is the \*NoSuchToolError or \*InvalidToolInputError that occurred. |
+
+{/* /gen:fields */}
+
+`ai.RepairTextFunc` is a function type that repairs raw JSON text before parsing: `func(ctx context.Context, text string, parseErr error) (*string, error)`. Return nil to leave the text unchanged.
+
+## ParseToolCall
+
+```go
+func ParseToolCall(ctx context.Context, opts ParseToolCallOptions) (types.ToolCall, error)
+```
+
+Resolves a provider tool call against the available tools, parses and validates its input, and runs `RepairToolCall` for unknown-tool and invalid-input errors. A call that cannot be parsed or repaired comes back with `Invalid`, `Dynamic` and `Error` set. The only error it returns is a context error.
+
+{/* gen:fields ai.ParseToolCallOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ToolCall` | `types.ToolCall` |  |
+| `Tools` | `[]types.Tool` |  |
+| `RepairToolCall` | `ToolCallRepairFunction` |  |
+| `Instructions` | `string` |  |
+| `InstructionMessages` | `[]types.Message` |  |
+| `Messages` | `[]types.Message` |  |
+
+{/* /gen:fields */}
+
+## Basic repair helpers
+
+These helpers predate `ToolCallRepairFunction`. They take an `ai.ToolCallRepairFunc`, which sees the failing call and the error but not the tools or messages.
+
+| Name | Description |
+| --- | --- |
+| `ai.ToolCallRepairFunc` | `func(ctx context.Context, toolCall types.ToolCall, err error) (*types.ToolCall, error)`. |
+| `ai.DefaultToolCallRepair` | A `ToolCallRepairFunc` that fixes common argument problems. |
+| `ai.RepairOptions` | Options for `TryRepairToolCalls`: `MaxAttempts` and `RepairFunc`. |
+| `ai.DefaultRepairOptions()` | Returns the default `RepairOptions`. |
+| `ai.TryRepairToolCalls(ctx, toolCalls, opts)` | Repairs every call in a slice. |
+| `ai.IsToolCallRepairError(err)` | Reports whether `err` is an `*ai.ToolCallRepairError`. |
+
+## Refining tool input
+
+A refiner adjusts parsed tool input before approval, callbacks, telemetry and execution.
+
+```go
+type ToolInputRefiner func(ctx context.Context, opts ToolInputRefinementOptions) (map[string]interface{}, error)
+
+func RefineToolCalls(ctx context.Context, calls []types.ToolCall, tools []types.Tool, refiners map[string]ToolInputRefiner, runtimeContext interface{}, toolsContext map[string]interface{}) ([]types.ToolCall, error)
+```
+
+`refiners` is keyed by tool name. When a refiner changes the input, the original input is kept as `inputSchemaInput` on the approval request.
+
+{/* gen:fields ai.ToolInputRefinementOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ToolCall` | `types.ToolCall` |  |
+| `Tool` | `*types.Tool` |  |
+| `RuntimeContext` | `interface{}` |  |
+| `ToolsContext` | `map[string]interface{}` |  |
+
+{/* /gen:fields */}
+
+## Tool definition fingerprints
+
+A server-controlled tool definition, such as one fetched from an MCP server, can change after you reviewed it. Fingerprint the tools when you trust them and compare later.
+
+```go
+func FingerprintTools(tools []types.Tool) (map[string]string, error)
+func DetectToolDrift(current, baseline map[string]string) ToolDrift
+```
+
+`FingerprintTools` hashes the description, the resolved input schema and the title of each tool with SHA-256 over canonical JSON. A `DescriptionFunc` is pinned by presence only, not by output. The digests match the TypeScript SDK's `fingerprintTools`.
+
+`DetectToolDrift` returns the tool names that were added, removed or changed. The slices are sorted.
+
+{/* gen:fields ai.ToolDrift */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Added` | `[]string` | Added lists tools present only in the current fingerprints. |
+| `Removed` | `[]string` | Removed lists tools present only in the baseline fingerprints. |
+| `Changed` | `[]string` | Changed lists tools whose pinned definition differs. |
+
+{/* /gen:fields */}

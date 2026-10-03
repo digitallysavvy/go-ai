@@ -1,0 +1,95 @@
+---
+title: Files and skills
+description: "Reference for the Go AI SDK functions that upload, inspect, download and delete provider files and upload skills."
+---
+
+# Files and skills
+
+These functions call a provider's Files API or Skills API. The `API` field of each options struct takes a `provider.FilesAPI` (or `provider.SkillsAPI`) or a provider that exposes a `Files()` (or `Skills()`) method.
+
+## Functions
+
+| Function | Description |
+| --- | --- |
+| `ai.UploadFile(ctx, UploadFileOptions) (*types.UploadFileResult, error)` | Uploads a file and returns a provider reference. |
+| `ai.GetFileMetadata(ctx, GetFileMetadataOptions) (*provider.FileMetadataResult, error)` | Returns metadata for an uploaded file. |
+| `ai.DownloadFile(ctx, DownloadFileOptions) (*provider.DownloadFileResult, error)` | Downloads an uploaded file. |
+| `ai.DeleteFile(ctx, DeleteFileOptions) (*provider.DeleteFileResult, error)` | Deletes an uploaded file. |
+| `ai.UploadSkill(ctx, UploadSkillOptions) (*types.UploadSkillResult, error)` | Uploads a skill. |
+
+## UploadFileOptions
+
+{/* gen:fields ai.UploadFileOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `API` | `interface{}` |  |
+| `Data` | `interface{}` |  |
+| `MediaType` | `string` |  |
+| `Filename` | `string` |  |
+| `ProviderOptions` | `map[string]interface{}` |  |
+| `Headers` | `map[string]string` | Headers are additional HTTP headers to send with the upload request. Only applicable for HTTP-based providers. |
+
+{/* /gen:fields */}
+
+## GetFileMetadataOptions
+
+{/* gen:fields ai.GetFileMetadataOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `API` | `interface{}` | API is a provider.FilesAPI instance or a provider.FilesProvider (a Provider exposing a Files() method). |
+| `File` | `types.ProviderReference` | File is the provider reference of the file, as returned by UploadFile. |
+| `Headers` | `map[string]string` |  |
+| `ProviderOptions` | `map[string]interface{}` |  |
+
+{/* /gen:fields */}
+
+## DownloadFileOptions
+
+{/* gen:fields ai.DownloadFileOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `API` | `interface{}` | API is a provider.FilesAPI instance or a provider.FilesProvider (a Provider exposing a Files() method). |
+| `File` | `types.ProviderReference` | File is the provider reference of the file, as returned by UploadFile. |
+| `Headers` | `map[string]string` |  |
+| `ProviderOptions` | `map[string]interface{}` |  |
+
+{/* /gen:fields */}
+
+## DeleteFileOptions
+
+{/* gen:fields ai.DeleteFileOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `API` | `interface{}` | API is a provider.FilesAPI instance or a provider.FilesProvider (a Provider exposing a Files() method). |
+| `File` | `types.ProviderReference` | File is the provider reference of the file, as returned by UploadFile. |
+| `Headers` | `map[string]string` |  |
+| `ProviderOptions` | `map[string]interface{}` |  |
+
+{/* /gen:fields */}
+
+## UploadSkillOptions
+
+{/* gen:fields ai.UploadSkillOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `API` | `interface{}` |  |
+| `Files` | `[]UploadSkillFile` |  |
+| `DisplayTitle` | `string` |  |
+| `ProviderOptions` | `map[string]interface{}` |  |
+
+{/* /gen:fields */}
+
+## Errors
+
+| Variable | Returned when |
+| --- | --- |
+| `ai.ErrFilesAPINotSupported` | The provider does not expose a `Files()` method. |
+| `ai.ErrFileMetadataNotSupported` | The provider's Files API cannot return metadata. |
+| `ai.ErrFileDownloadNotSupported` | The provider's Files API cannot download files. |
+| `ai.ErrFileDeleteNotSupported` | The provider's Files API cannot delete files. |
+| `ai.ErrSkillsAPINotSupported` | The provider does not expose a `Skills()` method. |
