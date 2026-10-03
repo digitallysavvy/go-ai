@@ -1,0 +1,317 @@
+---
+title: UI messages
+description: "Reference for the Go AI SDK UI message types, part types, type guards, validation, conversion to model messages and stream reading."
+---
+
+# UI messages
+
+`ai.UIMessage` is the message shape `useChat` stores and sends. The Go AI SDK models it as a typed struct and as a map form (`ai.UIMessageChunk`) that matches the JSON on the wire. For the chunks that build a message while it streams, see [UI message chunks](./ui-message-chunks.mdx).
+
+## UIMessage
+
+{/* gen:fields ai.UIMessage */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ID` | `string` | ID is a unique identifier for the message. |
+| `Role` | `UIMessageRole` | Role is system, user or assistant. |
+| `Metadata` | `interface{}` | Metadata is optional application metadata (omitted when nil). |
+| `Parts` | `[]UIMessagePart` | Parts are the message parts. Parts decoded from JSON are pointers to the concrete part types (\*TextUIPart, \*ToolUIPart, ...). |
+
+{/* /gen:fields */}
+
+{/* gen:consts ai.UIMessageRole */}
+
+| Constant | Value | Description |
+| --- | --- | --- |
+| `UIMessageRoleSystem` | `"system"` |  |
+| `UIMessageRoleUser` | `"user"` |  |
+| `UIMessageRoleAssistant` | `"assistant"` |  |
+
+{/* /gen:consts */}
+
+## Parts
+
+`ai.UIMessagePart` is the interface every part implements. `UIPartType()` returns the `type` discriminator. Parts decoded from JSON are pointers to the concrete types.
+
+### TextUIPart
+
+{/* gen:fields ai.TextUIPart */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Text` | `string` |  |
+| `State` | `UIPartState` |  |
+| `ProviderMetadata` | `map[string]interface{}` |  |
+
+{/* /gen:fields */}
+
+### ReasoningUIPart
+
+{/* gen:fields ai.ReasoningUIPart */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ID` | `string` |  |
+| `Text` | `string` |  |
+| `State` | `UIPartState` |  |
+| `ProviderMetadata` | `map[string]interface{}` |  |
+
+{/* /gen:fields */}
+
+{/* gen:consts ai.UIPartState */}
+
+| Constant | Value | Description |
+| --- | --- | --- |
+| `UIPartStateStreaming` | `"streaming"` |  |
+| `UIPartStateDone` | `"done"` |  |
+
+{/* /gen:consts */}
+
+### ToolUIPart
+
+A static tool part has type `tool-<name>`. A dynamic tool part has type `dynamic-tool` and sets `ToolName`. `ai.DynamicToolUIPart` and `ai.ToolOutputErrorUIPart` are aliases for `ToolUIPart`.
+
+{/* gen:fields ai.ToolUIPart */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Type` | `string` | Type is `tool-<name>` for static tools or `dynamic-tool`. |
+| `ToolName` | `string` | ToolName is set (and serialized) for dynamic tools only. |
+| `ToolCallID` | `string` |  |
+| `State` | `ToolUIPartState` |  |
+| `Title` | `string` |  |
+| `ToolMetadata` | `map[string]interface{}` |  |
+| `ProviderExecuted` | `*bool` |  |
+| `Input` | `interface{}` | Input is the tool input. For input-streaming and output-error nil means absent; for other states nil is serialized as null. |
+| `Output` | `interface{}` | Output is the tool output (output-available). |
+| `RawInput` | `interface{}` | RawInput serves two purposes depending on State: - input-streaming: the accumulated raw (partial-JSON) tool input text received so far. Used to continue input streaming when a message is persisted and later resumed (see seedPartialToolCalls). - output-error: the deprecated raw input of an output-error part. Deprecated: for output-error, use Input instead. |
+| `ErrorText` | `string` |  |
+| `Preliminary` | `*bool` |  |
+| `CallProviderMetadata` | `map[string]interface{}` |  |
+| `ResultProviderMetadata` | `map[string]interface{}` |  |
+| `Approval` | `*ToolUIPartApproval` |  |
+
+{/* /gen:fields */}
+
+{/* gen:consts ai.ToolUIPartState */}
+
+| Constant | Value | Description |
+| --- | --- | --- |
+| `ToolStateInputStreaming` | `"input-streaming"` |  |
+| `ToolStateInputAvailable` | `"input-available"` |  |
+| `ToolStateApprovalRequested` | `"approval-requested"` |  |
+| `ToolStateApprovalResponded` | `"approval-responded"` |  |
+| `ToolStateOutputAvailable` | `"output-available"` |  |
+| `ToolStateOutputError` | `"output-error"` |  |
+| `ToolStateOutputDenied` | `"output-denied"` |  |
+
+{/* /gen:consts */}
+
+### ToolUIPartApproval
+
+{/* gen:fields ai.ToolUIPartApproval */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ID` | `string` |  |
+| `Approved` | `*bool` | Approved is nil while approval is requested. |
+| `Descriptor` | `interface{}` | Descriptor is an application-defined approval descriptor. |
+| `RequestReason` | `string` | RequestReason is the reason the approval was requested (user-approval status with a reason). |
+| `Reason` | `string` | Reason is the approval response reason. |
+| `IsAutomatic` | `*bool` |  |
+| `Signature` | `string` |  |
+| `InputSchemaInput` | `interface{}` | InputSchemaInput is the tool input before schema parsing and input refinement (present only when it differs from Input). |
+
+{/* /gen:fields */}
+
+### SourceURLUIPart
+
+{/* gen:fields ai.SourceURLUIPart */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `SourceID` | `string` |  |
+| `URL` | `string` |  |
+| `Title` | `string` |  |
+| `ProviderMetadata` | `map[string]interface{}` |  |
+
+{/* /gen:fields */}
+
+### SourceDocumentUIPart
+
+{/* gen:fields ai.SourceDocumentUIPart */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `SourceID` | `string` |  |
+| `MediaType` | `string` |  |
+| `Title` | `string` |  |
+| `Filename` | `string` |  |
+| `ProviderMetadata` | `map[string]interface{}` |  |
+
+{/* /gen:fields */}
+
+### FileUIPart
+
+{/* gen:fields ai.FileUIPart */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `MediaType` | `string` |  |
+| `Filename` | `string` |  |
+| `URL` | `string` |  |
+| `ProviderReference` | `map[string]string` |  |
+| `ProviderMetadata` | `map[string]interface{}` |  |
+
+{/* /gen:fields */}
+
+### ReasoningFileUIPart
+
+{/* gen:fields ai.ReasoningFileUIPart */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `MediaType` | `string` |  |
+| `URL` | `string` |  |
+| `ProviderMetadata` | `map[string]interface{}` |  |
+
+{/* /gen:fields */}
+
+### CustomContentUIPart
+
+{/* gen:fields ai.CustomContentUIPart */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Kind` | `string` |  |
+| `ProviderMetadata` | `map[string]interface{}` |  |
+
+{/* /gen:fields */}
+
+### DataUIPart
+
+`Type` is `data-<name>`. `DataName()` returns the name without the prefix.
+
+{/* gen:fields ai.DataUIPart */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Type` | `string` |  |
+| `ID` | `string` |  |
+| `Data` | `interface{}` |  |
+
+{/* /gen:fields */}
+
+### StepStartUIPart
+
+An empty struct with type `step-start`. It marks the start of a model step.
+
+## Type guards and accessors
+
+| Function | Description |
+| --- | --- |
+| `ai.IsTextUIPart(part)` | True for `text` parts. |
+| `ai.IsReasoningUIPart(part)` | True for `reasoning` parts. |
+| `ai.IsReasoningFileUIPart(part)` | True for `reasoning-file` parts. |
+| `ai.IsFileUIPart(part)` | True for `file` parts. |
+| `ai.IsCustomContentUIPart(part)` | True for `custom` parts. |
+| `ai.IsDataUIPart(part)` | True for `data-*` parts. |
+| `ai.IsToolUIPart(part)` | True for static and dynamic tool parts. |
+| `ai.IsStaticToolUIPart(part)` | True for `tool-<name>` parts. |
+| `ai.IsDynamicToolUIPart(part)` | True for `dynamic-tool` parts. |
+| `ai.IsToolOutputErrorUIPart(part)` | True for tool parts in the `output-error` state. |
+| `ai.AsToolUIPart(part) (*ToolUIPart, bool)` | Returns the tool part behind a value or pointer. |
+| `ai.GetStaticToolName(part *ToolUIPart) string` | The tool name of a static tool part. |
+| `ai.GetToolName(part *ToolUIPart) string` | The tool name of a static or dynamic tool part. |
+| `ai.GetToolOrDynamicToolName(part *ToolUIPart) string` | Alias for `GetToolName`. |
+
+## JSON and map conversion
+
+| Function | Description |
+| --- | --- |
+| `ai.UnmarshalUIMessagePart(data []byte) (UIMessagePart, error)` | Decodes one part into its concrete pointer type. |
+| `ai.UIMessageFromChunk(message UIMessageChunk) (UIMessage, error)` | Converts a map-shaped message, such as `responseMessage` in an end callback, into a `UIMessage`. |
+| `ai.UIMessagesFromChunks(messages []UIMessageChunk) ([]UIMessage, error)` | Converts a slice of map-shaped messages. |
+| `ai.UIMessagesToChunks(messages []UIMessage) ([]UIMessageChunk, error)` | Converts typed messages to map-shaped messages. |
+| `UIMessage.ToChunk() (UIMessageChunk, error)` | Converts one typed message to a map. |
+
+## ReadUIMessages
+
+```go
+func ReadUIMessages(ctx context.Context, opts ReadUIMessagesOptions) (<-chan UIMessage, <-chan error)
+```
+
+Folds a chunk stream into a channel of progressively updated messages. Each value is the assistant message so far.
+
+{/* gen:fields ai.ReadUIMessagesOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Message` | `*UIMessage` | Message is the last assistant message to continue when a conversation is resumed. Optional. |
+| `Stream` | `<-chan UIMessageChunk` | Stream is the UI message chunk stream to read. |
+| `OnError` | `func(error)` | OnError is called for processing errors (e.g. a delta for a missing part). Optional. |
+| `TerminateOnError` | `bool` | TerminateOnError stops reading and reports the first error on the error channel. |
+
+{/* /gen:fields */}
+
+## Validation
+
+```go
+func ValidateUIMessages(ctx context.Context, opts ValidateUIMessagesOptions) ([]UIMessage, error)
+func SafeValidateUIMessages(ctx context.Context, opts ValidateUIMessagesOptions) SafeValidateUIMessagesResult
+func ValidateUIMessagesForAgent(ctx context.Context, opts ValidateUIMessagesOptions) ([]UIMessage, error)
+```
+
+`SafeValidateUIMessages` returns a result instead of an error. `ValidateUIMessagesForAgent` converts terminal tool parts whose tools are not registered, for example tools from a disconnected MCP server, to dynamic tool parts instead of failing.
+
+### ValidateUIMessagesOptions
+
+{/* gen:fields ai.ValidateUIMessagesOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Messages` | `interface{}` | Messages are the messages to validate. Accepts []UIMessage, []UIMessageChunk, decoded JSON ([]interface\{\}), json.RawMessage, []byte or string JSON, or any value that marshals to a UI message array. nil means "not provided". |
+| `MetadataSchema` | `schema.Schema` | MetadataSchema validates each message's metadata. The validated value (with schema defaults applied) replaces the metadata. |
+| `DataSchemas` | `map[string]schema.Schema` | DataSchemas validate data parts by name (without the `data-` prefix). When set, a data part without a schema is an error. Validated values (with schema defaults applied) replace the part data. |
+| `Tools` | `[]types.Tool` | Tools validate static tool parts against the current tool input (Parameters) and output (OutputSchema) schemas. A nil slice means no tools were provided (tool parts are not validated); a non-nil empty slice validates against an empty tool set. |
+| `ExperimentalRefineToolInput` | `map[string]ToolInputRefiner` | ExperimentalRefineToolInput reconstructs the approved input from an approval's inputSchemaInput before comparing it with the part input. |
+
+{/* /gen:fields */}
+
+### SafeValidateUIMessagesResult
+
+{/* gen:fields ai.SafeValidateUIMessagesResult */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Success` | `bool` |  |
+| `Data` | `[]UIMessage` |  |
+| `Error` | `error` |  |
+
+{/* /gen:fields */}
+
+## Conversion to model messages
+
+```go
+func ConvertToModelMessages(ctx context.Context, messages []UIMessage, opts ...ConvertToModelMessagesOptions) ([]types.Message, error)
+```
+
+Converts UI messages to the `types.Message` slice a model call takes. A failure returns a `*ai.MessageConversionError`; `ai.IsMessageConversionError(err)` tests for it.
+
+{/* gen:fields ai.ConvertToModelMessagesOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Tools` | `[]types.Tool` | Tools are used to convert tool outputs with Tool.ToModelOutput. |
+| `IgnoreIncompleteToolCalls` | `bool` | IgnoreIncompleteToolCalls drops tool parts that are not in a completed state (approval-responded, final output-available, output-error, output-denied). |
+| `ConvertDataPart` | `func(part DataUIPart) types.ContentPart` | ConvertDataPart converts data parts to text or file model message parts (types.TextContent / types.FileContent). Returning nil skips the part. Without it, data parts are ignored. |
+
+{/* /gen:fields */}
+
+## Auto-resubmit predicates
+
+| Function | Description |
+| --- | --- |
+| `ai.LastAssistantMessageIsCompleteWithToolCalls(messages []UIMessage) bool` | True when the last message is an assistant message whose last step has client-executed tool calls and every one has reached a final output or an error, with no text still streaming. Mirrors the TypeScript helper of the same name. |
+| `ai.LastAssistantMessageIsCompleteWithApprovalResponses(messages []UIMessage) bool` | True when the last message is an assistant message whose last step has at least one tool call in the `approval-responded` state and every tool call in that step has reached a terminal state. Provider-executed calls count. Mirrors the TypeScript helper of the same name. |
