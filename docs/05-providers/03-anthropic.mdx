@@ -840,7 +840,7 @@ If history is pruned between steps (e.g. to control context size) and that remov
 
 `result.FinishReason` and `result.RawFinishReason` (and their `StreamChunk`
 equivalents) report Anthropic's raw `stop_reason` alongside the normalized
-value. Since this release, three additional raw reasons map to
+value. Since v0.5.0, three additional raw reasons map to
 non-`"other"` finish reasons, matching TS:
 
 | Anthropic `stop_reason` | `FinishReason` |

@@ -211,6 +211,11 @@ Contributions are welcome! Please see our [Contributing Guide](../CONTRIBUTING.m
 
 Apache 2.0 - See [LICENSE](../LICENSE) for details.
 
+## Trademarks
+
+Go is a trademark of Google.  
+The Go gopher, whenever used, is an original creation by Renée French.
+
 ---
 
 ## Navigation

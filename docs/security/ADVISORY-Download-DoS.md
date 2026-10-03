@@ -7,9 +7,9 @@ description: "Security advisory describing an unbounded download denial-of-servi
 
 **Status:** Fixed
 **Severity:** High
-**CVE:** TBD
-**Affected Versions:** All versions before v0.X.X
-**Fixed in:** v0.X.X
+**CVE:** None assigned
+**Affected Versions:** All versions before v0.2.0
+**Fixed in:** v0.2.0
 
 ## Summary
 
@@ -92,7 +92,7 @@ result, err := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
 
 ### Immediate Action
 
-**Upgrade to v0.X.X or later immediately.** No workaround is available for earlier versions.
+**Upgrade to v0.2.0 or later immediately.** No workaround is available for earlier versions.
 
 ### Version Check
 
@@ -100,7 +100,7 @@ result, err := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
 go list -m github.com/digitallysavvy/go-ai
 ```
 
-If the version is below v0.X.X, upgrade with:
+If the version is below v0.2.0, upgrade with:
 
 ```bash
 go get github.com/digitallysavvy/go-ai@latest
