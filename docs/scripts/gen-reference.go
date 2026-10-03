@@ -164,15 +164,54 @@ func (g *generator) load(spec string) (*doc.Package, error) {
 	return nil, fmt.Errorf("no Go package in %s", dir)
 }
 
-// rewrite replaces every generated section in src.
+// fencedRanges returns the [start, end) byte ranges of fenced code blocks in
+// src, so markers shown as examples inside code are left alone.
+func fencedRanges(src string) [][2]int {
+	var ranges [][2]int
+	start, offset := -1, 0
+	for _, line := range strings.SplitAfter(src, "\n") {
+		trimmed := strings.TrimLeft(line, " \t")
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			if start < 0 {
+				start = offset
+			} else {
+				ranges = append(ranges, [2]int{start, offset + len(line)})
+				start = -1
+			}
+		}
+		offset += len(line)
+	}
+	if start >= 0 {
+		ranges = append(ranges, [2]int{start, len(src)})
+	}
+	return ranges
+}
+
+func inRanges(pos int, ranges [][2]int) bool {
+	for _, r := range ranges {
+		if pos >= r[0] && pos < r[1] {
+			return true
+		}
+	}
+	return false
+}
+
+// rewrite replaces every generated section in src. Markers inside fenced
+// code blocks are documentation examples and are not expanded.
 func (g *generator) rewrite(src string) (string, error) {
 	var out strings.Builder
+	fences := fencedRanges(src)
 	rest := src
 	for {
 		loc := markerRe.FindStringSubmatchIndex(rest)
 		if loc == nil {
 			out.WriteString(rest)
 			return out.String(), nil
+		}
+		if inRanges(len(src)-len(rest)+loc[0], fences) {
+			out.WriteString(rest[:loc[1]])
+			rest = rest[loc[1]:]
+			continue
 		}
 		kind := rest[loc[2]:loc[3]]
 		ref := rest[loc[4]:loc[5]]
