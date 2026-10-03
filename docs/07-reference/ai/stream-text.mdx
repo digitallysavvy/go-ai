@@ -17,29 +17,90 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 
 ### StreamTextOptions
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| Model | provider.LanguageModel | Yes | Language model to use for generation |
-| Prompt | string | No | Simple string prompt (alternative to Messages) |
-| Messages | []types.Message | No | List of conversation messages |
-| System | string | No | System instructions |
-| Temperature | *float64 | No | Sampling temperature (0.0 to 2.0) |
-| MaxTokens | *int | No | Maximum tokens to generate |
-| TopP | *float64 | No | Nucleus sampling parameter |
-| TopK | *int | No | Top-K sampling parameter |
-| FrequencyPenalty | *float64 | No | Frequency penalty (-2.0 to 2.0) |
-| PresencePenalty | *float64 | No | Presence penalty (-2.0 to 2.0) |
-| StopSequences | []string | No | Sequences that stop generation |
-| Seed | *int | No | Random seed for reproducibility |
-| Tools | []types.Tool | No | Tools available for the model to call |
-| StopWhen | []ai.StopCondition | No | Conditions that stop the tool-calling loop (see [IsStepCount](./step-count-is.mdx)). Default: `IsStepCount(1)`, a single step (tool calls in it still execute). Set e.g. `IsStepCount(5)` to let the model answer after tool results. |
-| ToolChoice | types.ToolChoice | No | How the model should choose tools |
-| ResponseFormat | *provider.ResponseFormat | No | Response format specification |
-| Timeout | *TimeoutConfig | No | Timeout configuration |
-| ExperimentalRetention | *types.RetentionSettings | No | Data retention settings |
-| ProviderOptions | map[string]interface{} | No | Provider-specific options |
-| OnChunk | func(provider.StreamChunk) | No | Called for each chunk |
-| OnFinish | func(*StreamTextResult) | No | Called when stream completes |
+`Model` is required, and so is one of `Prompt` or `Messages`. Every other field is optional. The table is generated from the source and lists every exported field.
+
+{/* gen:fields ai.StreamTextOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Model` | `provider.LanguageModel` | Model to use for generation |
+| `Prompt` | `string` | Prompt can be a simple string or a list of messages |
+| `Messages` | `[]types.Message` |  |
+| `System` | `string` |  |
+| `Instructions` | `*string` | Instructions is a TypeScript-compatible alias for System. When set, Instructions takes precedence over System. |
+| `InstructionMessages` | `[]types.Message` | InstructionMessages supplies the instructions as system messages (TS instructions: SystemModelMessage \| SystemModelMessage[]), preserving per-message ProviderOptions. When non-empty it takes precedence over Instructions and System. Every message must have the system role. |
+| `AllowSystemMessages` | `bool` | AllowSystemMessages permits system-role messages in Messages. Defaults to false; use System for system instructions unless you are intentionally passing provider-native system messages. |
+| `AllowSystemInMessages` | `bool` | AllowSystemInMessages is a TypeScript-compatible alias for AllowSystemMessages. Either field enables system-role messages. |
+| `Temperature` | `*float64` | Generation parameters |
+| `MaxTokens` | `*int` |  |
+| `TopP` | `*float64` |  |
+| `TopK` | `*int` |  |
+| `FrequencyPenalty` | `*float64` |  |
+| `PresencePenalty` | `*float64` |  |
+| `StopSequences` | `[]string` |  |
+| `Seed` | `*int` |  |
+| `Headers` | `map[string]string` |  |
+| `Tools` | `[]types.Tool` | Tools available for the model to call |
+| `ToolChoice` | `types.ToolChoice` |  |
+| `ToolOrder` | `[]string` |  |
+| `ActiveTools` | `[]string` |  |
+| `ExperimentalToolCallers` | `ExperimentalToolCallers` | ExperimentalToolCallers configures which tools may call which other tools (programmatic tool calling / code mode), and which tools stay hidden from the model until discovered via ai.ToolSearch. Mirrors the TypeScript SDK's experimental_toolCallers. |
+| `ToolApproval` | `types.ToolApprovalConfig` | ToolApproval configures approval handling for tool execution. |
+| `ExperimentalToolApprovalSecret` | `[]byte` | ExperimentalToolApprovalSecret signs server-issued approval requests so resumed approval responses can be verified before execution. |
+| `MaxSteps` | `*int` | MaxSteps is a convenience shorthand for StopWhen\{StepCountIs(N)\}. Deprecated: use StopWhen with StepCountIs instead. If StopWhen is set, MaxSteps is ignored. |
+| `StopWhen` | `[]StopCondition` | StopWhen defines conditions that terminate the tool-calling loop. Conditions are evaluated OR -- first non-empty string stops the loop. |
+| `ResponseFormat` | `*provider.ResponseFormat` | Response format (for structured output) Deprecated: Use Output instead. |
+| `Output` | `interface{}` | Output specifies how to handle and parse model output during streaming. Use TextOutput(), ObjectOutput(), ArrayOutput(), ChoiceOutput(), or JSONOutput(). When set, the model is called with the appropriate ResponseFormat and PartialOutput() is updated after each text chunk via ParsePartialOutput. If nil, defaults to plain text streaming. |
+| `Timeout` | `*TimeoutConfig` | Timeout provides granular timeout controls Supports total timeout, per-step timeout, and per-chunk timeout |
+| `ExperimentalRetention` | `*types.RetentionSettings` | ExperimentalRetention controls what data is retained from LLM requests/responses. Useful for reducing memory consumption with images or large contexts. Default (nil) retains everything for backwards compatibility. |
+| `Include` | `*IncludeOptions` | Include controls which large request/response details are retained in step results and whether raw provider chunks are requested. Defaults match the TypeScript SDK. |
+| `ExperimentalInclude` | `*IncludeOptions` | ExperimentalInclude is a deprecated alias for Include. |
+| `IncludeRawChunks` | `bool` | IncludeRawChunks is a deprecated alias for Include.RawChunks. |
+| `Reasoning` | `*types.ReasoningLevel` | Reasoning controls how much thinking effort the model applies. nil means unset (use provider default). Set to types.ReasoningDefault to explicitly omit from the API request. |
+| `SendReasoning` | `*bool` | SendReasoning controls whether reasoning/thinking boundary chunks are exposed to OnChunk. nil and false suppress reasoning-start/end, matching the TypeScript SDK default. |
+| `ProviderOptions` | `map[string]interface{}` | ProviderOptions allows passing provider-specific options |
+| `MaxRetries` | `*int` | MaxRetries controls transient provider call retries. For Gateway models, nil uses the TypeScript SDK default of 2 retries; set to 0 to disable. |
+| `ExperimentalSandbox` | `interface{}` | ExperimentalSandbox is passed through to tool execution. PrepareStep can override it for an individual step. |
+| `RepairToolCall` | `ToolCallRepairFunction` | RepairToolCall attempts to repair tool calls that fail to parse because the tool does not exist or its input is invalid. When it returns a call, the repaired call is parsed again; (nil, nil) keeps the call invalid. |
+| `ExperimentalRepairToolCall` | `ToolCallRepairFunction` | ExperimentalRepairToolCall is a deprecated alias for RepairToolCall. Deprecated: use RepairToolCall. |
+| `OnLanguageModelCallStart` | `OnLanguageModelCallStartCallback` | OnLanguageModelCallStart is called immediately before each provider model call begins. |
+| `ExperimentalOnLanguageModelCallStart` | `OnLanguageModelCallStartCallback` | ExperimentalOnLanguageModelCallStart is a deprecated alias for OnLanguageModelCallStart. Deprecated: use OnLanguageModelCallStart. |
+| `OnLanguageModelCallEnd` | `OnLanguageModelCallEndCallback` | OnLanguageModelCallEnd is called after each provider model response is normalized and parsed, before client-side tool execution. |
+| `ExperimentalOnLanguageModelCallEnd` | `OnLanguageModelCallEndCallback` | ExperimentalOnLanguageModelCallEnd is a deprecated alias for OnLanguageModelCallEnd. Deprecated: use OnLanguageModelCallEnd. |
+| `ExperimentalRefineToolInput` | `map[string]ToolInputRefiner` | ExperimentalRefineToolInput refines parsed tool inputs by tool name before approval, callbacks, telemetry, execution, and response messages. |
+| `ExperimentalDownload` | `DownloadFunction` | ExperimentalDownload downloads remote file URLs that need inline data before sending tool-result messages back to the model. Defaults to DefaultDownload, matching the TypeScript SDK's default download behavior. |
+| `RuntimeContext` | `interface{}` | RuntimeContext is user-defined context that flows through callbacks. It is passed as-is to all structured event callbacks. |
+| `SensitiveRuntimeContext` | `bool` | SensitiveRuntimeContext omits runtime context from telemetry payloads. |
+| `ToolsContext` | `map[string]interface{}` | ToolsContext is the per-tool context map passed to approval and execution hooks. |
+| `ExperimentalContext` | `interface{}` | ExperimentalContext is a deprecated alias for RuntimeContext. |
+| `PrepareStep` | `func(ctx context.Context, step PrepareStepOptions) PrepareStepOptions` | PrepareStep is called before each model step. |
+| `Telemetry` | `*TelemetrySettings` | Telemetry configures observability for this operation. When both Telemetry and ExperimentalTelemetry are set, Telemetry wins. |
+| `ExperimentalTelemetry` | `*TelemetrySettings` | Telemetry configuration for observability. Deprecated: use Telemetry. |
+| `Internal` | `*InternalOptions` | Internal contains test-only ID generators matching the TypeScript _internal option. |
+| `OnChunk` | `func(chunk provider.StreamChunk)` | Callbacks |
+| `InitialStreamChunks` | `[]provider.StreamChunk` | InitialStreamChunks are emitted before the provider stream. Higher-level adapters use this for work resolved before the next model step while preserving stream event ordering. |
+| `OnEnd` | `func(result *StreamTextResult)` | OnEnd is called when the stream is fully consumed, with the full \*StreamTextResult (Text(), Usage(), ToolCalls(), etc. give the same data TS's onEnd event carries). This is a Go-only convenience signature that predates OnEndEvent below; it is NOT the same field as GenerateTextOptions.OnEnd (whose signature is func(ctx, \*GenerateTextResult, userContext) — StreamText's per-step and per-call analogues of that tuple shape are OnStepEnd below and OnEndEvent/OnFinishEvent, since a StreamTextResult is a different Go type from a GenerateTextResult and can't share that field's type). For code that wants the same shared, TS-parity event struct that GenerateText/Agent use, prefer OnEndEvent. |
+| `OnFinish` | `func(result *StreamTextResult)` | OnFinish is called when the stream is fully consumed. Deprecated: use OnEnd. |
+| `OnStepEnd` | `func(ctx context.Context, step types.StepResult, userContext interface{})` | OnStepEnd is called after each step completes, mirroring GenerateTextOptions.OnStepEnd exactly (same func type, since types.StepResult — unlike \*GenerateTextResult/\*StreamTextResult — is shared between generate and stream). TS shares one onStepEnd callback type between generateText and streamText; this is the Go equivalent. |
+| `OnStepFinish` | `func(ctx context.Context, step types.StepResult, userContext interface{})` | OnStepFinish is called after each step completes. Deprecated: use OnStepEnd. |
+| `OnStart` | `func(ctx context.Context, e OnStartEvent)` | OnStart is called once, before streaming begins. |
+| `OnStepStart` | `func(ctx context.Context, e OnStepStartEvent)` | OnStepStart is called at the beginning of each LLM step. |
+| `OnToolExecutionStart` | `func(ctx context.Context, e OnToolCallStartEvent)` | OnToolExecutionStart is called just before each tool's Execute function runs. |
+| `OnToolExecutionEnd` | `func(ctx context.Context, e OnToolCallFinishEvent)` | OnToolExecutionEnd is called after each tool's Execute function returns. |
+| `OnToolCallStart` | `func(ctx context.Context, e OnToolCallStartEvent)` | Deprecated: use OnToolExecutionStart. |
+| `OnToolCallFinish` | `func(ctx context.Context, e OnToolCallFinishEvent)` | Deprecated: use OnToolExecutionEnd. |
+| `OnStepEndEvent` | `func(ctx context.Context, e OnStepFinishEvent)` | OnStepEndEvent is called at the end of each LLM step. |
+| `OnStepFinishEvent` | `func(ctx context.Context, e OnStepFinishEvent)` | OnStepFinishEvent is called at the end of each LLM step. Deprecated: use OnStepEndEvent. |
+| `OnEndEvent` | `func(ctx context.Context, e OnFinishEvent)` | OnEndEvent is called once when the stream fully completes. |
+| `OnFinishEvent` | `func(ctx context.Context, e OnFinishEvent)` | OnFinishEvent is called once when the stream fully completes. Deprecated: use OnEndEvent. |
+| `OnError` | `func(ctx context.Context, err error)` | OnError is called when an error chunk is received from the provider during streaming. Mirrors the TypeScript SDK's onError callback. Unlike a fatal stream error (which surfaces via TextStream.Err()), error chunks are non-fatal stream events that can be observed and logged without aborting the stream. If nil, error chunks are silently forwarded to OnChunk. |
+| `StreamRetries` | `*int` | StreamRetries is the maximum number of automatic retries for ANY provider error chunk received after streaming has already started (a mid-stream error chunk). Matching TS (stream-text.ts's `automaticStreamRetryCount < streamRetries`), this budget is consulted unconditionally — it does not check whether the normalized providererrors.StreamProviderError considers itself retryable; that classification is informational, for OnError/ OnErrorRetry to build their own heuristics on. nil (the option omitted entirely) disables ALL stream retry behavior, both automatic and OnErrorRetry-directed, and preserves pre-streamRetries incremental chunk delivery for existing OnError observers (TS: "Omit this option to disable all stream retry behavior and preserve incremental tool streaming for existing onError observers"). An explicit 0 disables automatic retries but still allows OnErrorRetry to request one retry (TS canRetryStreamViaOnError = streamRetries !== undefined && onErrorArg != null). A negative value is rejected synchronously by StreamText (TS "streamRetries must be &gt;= 0"). A ToolChoiceViolationError is never retried, automatically or via OnErrorRetry (TS stream-text.ts isToolChoiceViolation check). Audit row 802af1e / WG8. |
+| `OnErrorRetry` | `func(ctx context.Context, event StreamTextOnErrorRetryEvent) bool` | OnErrorRetry is called for a mid-stream provider error (after OnError) and, if StreamRetries permits a retry, may request one by returning true. It is consulted only when StreamRetries was explicitly set (even to 0) and no automatic retry applies (StreamRetries exhausted), and is honored at most once per streamText call, matching TS's StreamTextOnErrorRetryCallback semantics. |
+| `OnAbort` | `func(ctx context.Context, steps []types.StepResult)` | OnAbort is called when streaming is aborted by context cancellation or deadline before normal completion. Deprecated: use OnAbortEvent, which also carries the call ID and abort reason. |
+| `OnAbortEvent` | `OnAbortCallback` | OnAbortEvent is called when streaming is aborted by context cancellation or deadline before normal completion, with a GenerateTextAbortEvent carrying the call ID, completed steps, and abort reason. Takes precedence over the deprecated OnAbort. |
+| `ExperimentalTransform` | `[]StreamTransformFunc` | ExperimentalTransform is an ordered list of transform functions applied to each stream chunk after provider emission but before forwarding to OnChunk. Each function receives a chunk and returns zero or more replacement chunks. Returning nil or an empty slice drops the chunk. Transforms are applied in order; each transform receives the output of the previous one. Mirrors the TypeScript SDK's experimental_transform option. |
+
+{/* /gen:fields */}
 
 ## Return Value
 
@@ -277,94 +338,7 @@ if result.Err() != nil {
 }
 ```
 
-## Option fields (generated)
-
-This table is generated from the `ai.StreamTextOptions` source and lists every exported field.
-
-{/* gen:fields ai.StreamTextOptions */}
-
-| Field | Type | Description |
-| --- | --- | --- |
-| `Model` | `provider.LanguageModel` | Model to use for generation |
-| `Prompt` | `string` | Prompt can be a simple string or a list of messages |
-| `Messages` | `[]types.Message` |  |
-| `System` | `string` |  |
-| `Instructions` | `*string` | Instructions is a TypeScript-compatible alias for System. When set, Instructions takes precedence over System. |
-| `InstructionMessages` | `[]types.Message` | InstructionMessages supplies the instructions as system messages (TS instructions: SystemModelMessage \| SystemModelMessage[]), preserving per-message ProviderOptions. When non-empty it takes precedence over Instructions and System. Every message must have the system role. |
-| `AllowSystemMessages` | `bool` | AllowSystemMessages permits system-role messages in Messages. Defaults to false; use System for system instructions unless you are intentionally passing provider-native system messages. |
-| `AllowSystemInMessages` | `bool` | AllowSystemInMessages is a TypeScript-compatible alias for AllowSystemMessages. Either field enables system-role messages. |
-| `Temperature` | `*float64` | Generation parameters |
-| `MaxTokens` | `*int` |  |
-| `TopP` | `*float64` |  |
-| `TopK` | `*int` |  |
-| `FrequencyPenalty` | `*float64` |  |
-| `PresencePenalty` | `*float64` |  |
-| `StopSequences` | `[]string` |  |
-| `Seed` | `*int` |  |
-| `Headers` | `map[string]string` |  |
-| `Tools` | `[]types.Tool` | Tools available for the model to call |
-| `ToolChoice` | `types.ToolChoice` |  |
-| `ToolOrder` | `[]string` |  |
-| `ActiveTools` | `[]string` |  |
-| `ExperimentalToolCallers` | `ExperimentalToolCallers` | ExperimentalToolCallers configures which tools may call which other tools (programmatic tool calling / code mode), and which tools stay hidden from the model until discovered via ai.ToolSearch. Mirrors the TypeScript SDK's experimental_toolCallers. |
-| `ToolApproval` | `types.ToolApprovalConfig` | ToolApproval configures approval handling for tool execution. |
-| `ExperimentalToolApprovalSecret` | `[]byte` | ExperimentalToolApprovalSecret signs server-issued approval requests so resumed approval responses can be verified before execution. |
-| `MaxSteps` | `*int` | MaxSteps is a convenience shorthand for StopWhen\{StepCountIs(N)\}. Deprecated: use StopWhen with StepCountIs instead. If StopWhen is set, MaxSteps is ignored. |
-| `StopWhen` | `[]StopCondition` | StopWhen defines conditions that terminate the tool-calling loop. Conditions are evaluated OR -- first non-empty string stops the loop. |
-| `ResponseFormat` | `*provider.ResponseFormat` | Response format (for structured output) Deprecated: Use Output instead. |
-| `Output` | `interface{}` | Output specifies how to handle and parse model output during streaming. Use TextOutput(), ObjectOutput(), ArrayOutput(), ChoiceOutput(), or JSONOutput(). When set, the model is called with the appropriate ResponseFormat and PartialOutput() is updated after each text chunk via ParsePartialOutput. If nil, defaults to plain text streaming. |
-| `Timeout` | `*TimeoutConfig` | Timeout provides granular timeout controls Supports total timeout, per-step timeout, and per-chunk timeout |
-| `ExperimentalRetention` | `*types.RetentionSettings` | ExperimentalRetention controls what data is retained from LLM requests/responses. Useful for reducing memory consumption with images or large contexts. Default (nil) retains everything for backwards compatibility. |
-| `Include` | `*IncludeOptions` | Include controls which large request/response details are retained in step results and whether raw provider chunks are requested. Defaults match the TypeScript SDK. |
-| `ExperimentalInclude` | `*IncludeOptions` | ExperimentalInclude is a deprecated alias for Include. |
-| `IncludeRawChunks` | `bool` | IncludeRawChunks is a deprecated alias for Include.RawChunks. |
-| `Reasoning` | `*types.ReasoningLevel` | Reasoning controls how much thinking effort the model applies. nil means unset (use provider default). Set to types.ReasoningDefault to explicitly omit from the API request. |
-| `SendReasoning` | `*bool` | SendReasoning controls whether reasoning/thinking boundary chunks are exposed to OnChunk. nil and false suppress reasoning-start/end, matching the TypeScript SDK default. |
-| `ProviderOptions` | `map[string]interface{}` | ProviderOptions allows passing provider-specific options |
-| `MaxRetries` | `*int` | MaxRetries controls transient provider call retries. For Gateway models, nil uses the TypeScript SDK default of 2 retries; set to 0 to disable. |
-| `ExperimentalSandbox` | `interface{}` | ExperimentalSandbox is passed through to tool execution. PrepareStep can override it for an individual step. |
-| `RepairToolCall` | `ToolCallRepairFunction` | RepairToolCall attempts to repair tool calls that fail to parse because the tool does not exist or its input is invalid. When it returns a call, the repaired call is parsed again; (nil, nil) keeps the call invalid. |
-| `ExperimentalRepairToolCall` | `ToolCallRepairFunction` | ExperimentalRepairToolCall is a deprecated alias for RepairToolCall. Deprecated: use RepairToolCall. |
-| `OnLanguageModelCallStart` | `OnLanguageModelCallStartCallback` | OnLanguageModelCallStart is called immediately before each provider model call begins. |
-| `ExperimentalOnLanguageModelCallStart` | `OnLanguageModelCallStartCallback` | ExperimentalOnLanguageModelCallStart is a deprecated alias for OnLanguageModelCallStart. Deprecated: use OnLanguageModelCallStart. |
-| `OnLanguageModelCallEnd` | `OnLanguageModelCallEndCallback` | OnLanguageModelCallEnd is called after each provider model response is normalized and parsed, before client-side tool execution. |
-| `ExperimentalOnLanguageModelCallEnd` | `OnLanguageModelCallEndCallback` | ExperimentalOnLanguageModelCallEnd is a deprecated alias for OnLanguageModelCallEnd. Deprecated: use OnLanguageModelCallEnd. |
-| `ExperimentalRefineToolInput` | `map[string]ToolInputRefiner` | ExperimentalRefineToolInput refines parsed tool inputs by tool name before approval, callbacks, telemetry, execution, and response messages. |
-| `ExperimentalDownload` | `DownloadFunction` | ExperimentalDownload downloads remote file URLs that need inline data before sending tool-result messages back to the model. Defaults to DefaultDownload, matching the TypeScript SDK's default download behavior. |
-| `RuntimeContext` | `interface{}` | RuntimeContext is user-defined context that flows through callbacks. It is passed as-is to all structured event callbacks. |
-| `SensitiveRuntimeContext` | `bool` | SensitiveRuntimeContext omits runtime context from telemetry payloads. |
-| `ToolsContext` | `map[string]interface{}` | ToolsContext is the per-tool context map passed to approval and execution hooks. |
-| `ExperimentalContext` | `interface{}` | ExperimentalContext is a deprecated alias for RuntimeContext. |
-| `PrepareStep` | `func(ctx context.Context, step PrepareStepOptions) PrepareStepOptions` | PrepareStep is called before each model step. |
-| `Telemetry` | `*TelemetrySettings` | Telemetry configures observability for this operation. When both Telemetry and ExperimentalTelemetry are set, Telemetry wins. |
-| `ExperimentalTelemetry` | `*TelemetrySettings` | Telemetry configuration for observability. Deprecated: use Telemetry. |
-| `Internal` | `*InternalOptions` | Internal contains test-only ID generators matching the TypeScript _internal option. |
-| `OnChunk` | `func(chunk provider.StreamChunk)` | Callbacks |
-| `InitialStreamChunks` | `[]provider.StreamChunk` | InitialStreamChunks are emitted before the provider stream. Higher-level adapters use this for work resolved before the next model step while preserving stream event ordering. |
-| `OnEnd` | `func(result *StreamTextResult)` | OnEnd is called when the stream is fully consumed, with the full \*StreamTextResult (Text(), Usage(), ToolCalls(), etc. give the same data TS's onEnd event carries). This is a Go-only convenience signature that predates OnEndEvent below; it is NOT the same field as GenerateTextOptions.OnEnd (whose signature is func(ctx, \*GenerateTextResult, userContext) — StreamText's per-step and per-call analogues of that tuple shape are OnStepEnd below and OnEndEvent/OnFinishEvent, since a StreamTextResult is a different Go type from a GenerateTextResult and can't share that field's type). For code that wants the same shared, TS-parity event struct that GenerateText/Agent use, prefer OnEndEvent. |
-| `OnFinish` | `func(result *StreamTextResult)` | OnFinish is called when the stream is fully consumed. Deprecated: use OnEnd. |
-| `OnStepEnd` | `func(ctx context.Context, step types.StepResult, userContext interface{})` | OnStepEnd is called after each step completes, mirroring GenerateTextOptions.OnStepEnd exactly (same func type, since types.StepResult — unlike \*GenerateTextResult/\*StreamTextResult — is shared between generate and stream). TS shares one onStepEnd callback type between generateText and streamText; this is the Go equivalent. |
-| `OnStepFinish` | `func(ctx context.Context, step types.StepResult, userContext interface{})` | OnStepFinish is called after each step completes. Deprecated: use OnStepEnd. |
-| `OnStart` | `func(ctx context.Context, e OnStartEvent)` | OnStart is called once, before streaming begins. |
-| `OnStepStart` | `func(ctx context.Context, e OnStepStartEvent)` | OnStepStart is called at the beginning of each LLM step. |
-| `OnToolExecutionStart` | `func(ctx context.Context, e OnToolCallStartEvent)` | OnToolExecutionStart is called just before each tool's Execute function runs. |
-| `OnToolExecutionEnd` | `func(ctx context.Context, e OnToolCallFinishEvent)` | OnToolExecutionEnd is called after each tool's Execute function returns. |
-| `OnToolCallStart` | `func(ctx context.Context, e OnToolCallStartEvent)` | Deprecated: use OnToolExecutionStart. |
-| `OnToolCallFinish` | `func(ctx context.Context, e OnToolCallFinishEvent)` | Deprecated: use OnToolExecutionEnd. |
-| `OnStepEndEvent` | `func(ctx context.Context, e OnStepFinishEvent)` | OnStepEndEvent is called at the end of each LLM step. |
-| `OnStepFinishEvent` | `func(ctx context.Context, e OnStepFinishEvent)` | OnStepFinishEvent is called at the end of each LLM step. Deprecated: use OnStepEndEvent. |
-| `OnEndEvent` | `func(ctx context.Context, e OnFinishEvent)` | OnEndEvent is called once when the stream fully completes. |
-| `OnFinishEvent` | `func(ctx context.Context, e OnFinishEvent)` | OnFinishEvent is called once when the stream fully completes. Deprecated: use OnEndEvent. |
-| `OnError` | `func(ctx context.Context, err error)` | OnError is called when an error chunk is received from the provider during streaming. Mirrors the TypeScript SDK's onError callback. Unlike a fatal stream error (which surfaces via TextStream.Err()), error chunks are non-fatal stream events that can be observed and logged without aborting the stream. If nil, error chunks are silently forwarded to OnChunk. |
-| `StreamRetries` | `*int` | StreamRetries is the maximum number of automatic retries for ANY provider error chunk received after streaming has already started (a mid-stream error chunk). Matching TS (stream-text.ts's `automaticStreamRetryCount < streamRetries`), this budget is consulted unconditionally — it does not check whether the normalized providererrors.StreamProviderError considers itself retryable; that classification is informational, for OnError/ OnErrorRetry to build their own heuristics on. nil (the option omitted entirely) disables ALL stream retry behavior, both automatic and OnErrorRetry-directed, and preserves pre-streamRetries incremental chunk delivery for existing OnError observers (TS: "Omit this option to disable all stream retry behavior and preserve incremental tool streaming for existing onError observers"). An explicit 0 disables automatic retries but still allows OnErrorRetry to request one retry (TS canRetryStreamViaOnError = streamRetries !== undefined && onErrorArg != null). A negative value is rejected synchronously by StreamText (TS "streamRetries must be &gt;= 0"). A ToolChoiceViolationError is never retried, automatically or via OnErrorRetry (TS stream-text.ts isToolChoiceViolation check). Audit row 802af1e / WG8. |
-| `OnErrorRetry` | `func(ctx context.Context, event StreamTextOnErrorRetryEvent) bool` | OnErrorRetry is called for a mid-stream provider error (after OnError) and, if StreamRetries permits a retry, may request one by returning true. It is consulted only when StreamRetries was explicitly set (even to 0) and no automatic retry applies (StreamRetries exhausted), and is honored at most once per streamText call, matching TS's StreamTextOnErrorRetryCallback semantics. |
-| `OnAbort` | `func(ctx context.Context, steps []types.StepResult)` | OnAbort is called when streaming is aborted by context cancellation or deadline before normal completion. Deprecated: use OnAbortEvent, which also carries the call ID and abort reason. |
-| `OnAbortEvent` | `OnAbortCallback` | OnAbortEvent is called when streaming is aborted by context cancellation or deadline before normal completion, with a GenerateTextAbortEvent carrying the call ID, completed steps, and abort reason. Takes precedence over the deprecated OnAbort. |
-| `ExperimentalTransform` | `[]StreamTransformFunc` | ExperimentalTransform is an ordered list of transform functions applied to each stream chunk after provider emission but before forwarding to OnChunk. Each function receives a chunk and returns zero or more replacement chunks. Returning nil or an empty slice drops the chunk. Transforms are applied in order; each transform receives the output of the previous one. Mirrors the TypeScript SDK's experimental_transform option. |
-
-{/* /gen:fields */}
-
-### Tool approval signing
+## Tool approval signing
 
 `ExperimentalToolApprovalSecret` is a byte slice. When it is set, the SDK signs every approval request it issues with HMAC-SHA256 and verifies the signature on the approval response before it runs the tool. A client that edits the tool name, the tool call ID or the tool input between the request and the response fails verification. When it is nil, requests are not signed and responses are not verified. The signing functions are `ai.SignToolApproval` and `ai.VerifyToolApprovalSignature`; see [Tool approval helpers](./tool-approvals.mdx).
 
