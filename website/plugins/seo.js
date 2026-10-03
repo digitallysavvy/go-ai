@@ -138,7 +138,8 @@ module.exports = function seo(context) {
         [
           '# All crawlers, including AI crawlers, are welcome.',
           '# Agent-friendly docs: every page is available as markdown by',
-          `# appending .md to its URL; the index is ${siteRoot}llms.txt`,
+          `# appending .md to its URL; the index is ${siteRoot}llms.txt and a short`,
+          `# orientation for coding agents is ${siteRoot}agents.md`,
           'User-agent: *',
           'Allow: /',
           '',
