@@ -1,0 +1,99 @@
+---
+title: Video operations
+description: "Reference for the experimental Go AI SDK functions that start a video generation and check its status later, with option and result types."
+---
+
+# Video operations
+
+`ai.ExperimentalStartVideo` starts a video generation and returns without waiting. `ai.ExperimentalGetVideoStatus` checks the operation later, from any process. Use them for long-running generations. The model must implement `provider.VideoModelStarter`.
+
+```go
+func ExperimentalStartVideo(ctx context.Context, opts StartVideoOptions) (*StartVideoResult, error)
+func ExperimentalGetVideoStatus(ctx context.Context, model provider.VideoModelV3, opts GetVideoStatusOptions) (*GetVideoStatusResult, error)
+```
+
+## StartVideoOptions
+
+{/* gen:fields ai.StartVideoOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Model` | `provider.VideoModelV3` | Model to use. Must implement provider.VideoModelStarter. |
+| `Prompt` | `VideoPrompt` | Prompt can be text-only or image+text for image-to-video. |
+| `N` | `int` | Number of videos to generate (default: 1). Must not exceed the model's MaxVideosPerCall — fan out with multiple StartVideo calls. |
+| `MaxVideosPerCall` | `*int` | Maximum videos per API call (provider-specific). If not set, uses the model's MaxVideosPerCall() value for the limit check. |
+| `AspectRatio` | `string` | Aspect ratio in format "width:height", or "adaptive". |
+| `Resolution` | `string` | Resolution in format "widthxheight". |
+| `Duration` | `*float64` | Duration in seconds. |
+| `FPS` | `*int` | Frames per second. |
+| `Seed` | `*int` | Seed for reproducible generation. |
+| `FrameImages` | `[]VideoFrameImageInput` | FrameImages are role-tagged image inputs for image-to-video and first-last-frame generation. |
+| `InputReferences` | `[]VideoReferenceInput` | InputReferences are reference image or video inputs for reference-to-video generation. |
+| `GenerateAudio` | `*bool` | GenerateAudio requests that the model generate audio alongside the video, when supported. |
+| `ProviderOptions` | `map[string]interface{}` | Provider-specific options. |
+| `MaxRetries` | `*int` | Maximum retries for the start call (default: 2). Set to 0 to disable. |
+| `Headers` | `map[string]string` | Additional HTTP headers. |
+| `WebhookURL` | `string` | WebhookURL, when set, asks the provider to notify this URL when the generation reaches a terminal state. |
+
+{/* /gen:fields */}
+
+## StartVideoResult
+
+`Operation` is an opaque JSON value. Persist it and pass it to `ExperimentalGetVideoStatus`.
+
+{/* gen:fields ai.StartVideoResult */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Operation` | `json.RawMessage` | Operation is a JSON-serializable opaque reference to the started generation. Persist it and pass it to ExperimentalGetVideoStatus to retrieve the status and result later, from any process. |
+| `Warnings` | `[]types.Warning` | Warnings for the call, e.g. unsupported settings. |
+| `ProviderMetadata` | `map[string]interface{}` | ProviderMetadata is passed through from the provider. Carries the provider's own job identifiers (e.g. the AI Gateway's providerMetadata.gateway.asyncJob.jobId). |
+| `Response` | `VideoModelResponseMetadata` | Response is response metadata from the provider. |
+
+{/* /gen:fields */}
+
+## GetVideoStatusOptions
+
+{/* gen:fields ai.GetVideoStatusOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Operation` | `json.RawMessage` | Operation is the opaque reference returned by ExperimentalStartVideo. |
+| `Headers` | `map[string]string` | Additional HTTP headers. |
+| `MaxRetries` | `*int` | Maximum retries for the status call (default: 2). Set to 0 to disable. |
+
+{/* /gen:fields */}
+
+## GetVideoStatusResult
+
+`Status` is one of the `provider.VideoOperationStatus*` constants. `Videos` is set when the status is completed. `Error` is set when the status is error.
+
+{/* gen:fields ai.GetVideoStatusResult */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Status` | `string` |  |
+| `Videos` | `[]provider.VideoModelV3VideoData` | Videos is set when Status is provider.VideoOperationStatusCompleted. |
+| `Error` | `string` | Error is set when Status is provider.VideoOperationStatusError. |
+| `Warnings` | `[]types.Warning` |  |
+| `ProviderMetadata` | `map[string]interface{}` |  |
+| `Response` | `VideoModelResponseMetadata` |  |
+
+{/* /gen:fields */}
+
+## VideoFrameImageInput
+
+A role-tagged image for image-to-video and first-and-last-frame generation.
+
+{/* gen:fields ai.VideoFrameImageInput */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Image` | `VideoPromptImage` | Image is the file used for this frame. |
+| `FrameType` | `string` | FrameType is provider.VideoFrameTypeFirstFrame or provider.VideoFrameTypeLastFrame. |
+
+{/* /gen:fields */}
+
+## Errors
+
+`ai.IsNoVideoGeneratedError(err)` reports whether `err` is a `*ai.NoVideoGeneratedError`.

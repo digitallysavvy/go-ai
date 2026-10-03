@@ -1,0 +1,121 @@
+---
+title: Streaming transcription and translation
+description: "Reference for the experimental Go AI SDK functions that stream audio to a model for live transcription and speech translation, with stream part types."
+---
+
+# Streaming transcription and translation
+
+Two experimental functions send raw audio to a model as it arrives and stream results back.
+
+```go
+func ExperimentalStreamTranscribe(ctx context.Context, opts StreamTranscribeOptions) (*StreamTranscriptionResult, error)
+func ExperimentalStreamTranslate(ctx context.Context, opts StreamTranslateOptions) (*StreamTranslationResult, error)
+```
+
+`FullStream()` on each result is single-consumer. Read it before any other result accessor. An accessor such as `ProviderMetadata()` consumes the stream, and `FullStream()` is unavailable afterwards.
+
+## Audio sources
+
+| Function | Description |
+| --- | --- |
+| `ai.NewChannelAudioStream(chunks <-chan []byte, onCancel func(reason error)) provider.AudioStream` | Wraps a channel of raw audio chunks, for live input. The producer closes the channel at the end of the audio. `onCancel` runs at most once if the consumer cancels. |
+| `ai.NewReaderAudioStream(r io.Reader, chunkSize int) provider.AudioStream` | Reads audio from `r` in `chunkSize`-byte chunks. `chunkSize` defaults to 4096. Cancel closes `r` when it is an `io.Closer`. |
+
+## StreamTranscribeOptions
+
+{/* gen:fields ai.StreamTranscribeOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Model` | `provider.TranscriptionModel` | Model must implement provider.TranscriptionStreamer. |
+| `Audio` | `provider.AudioStream` | Audio is the source of raw audio chunks to transcribe. |
+| `InputAudioFormat` | `provider.AudioFormat` | InputAudioFormat is the input audio format for the raw audio chunks. |
+| `ProviderOptions` | `map[string]interface{}` | ProviderOptions contains provider-specific request options. |
+| `Headers` | `map[string]string` | Additional HTTP/WebSocket headers to send when supported by the provider. |
+| `IncludeRawChunks` | `bool` | IncludeRawChunks requests provider raw chunks in the stream. |
+| `Telemetry` | `*TelemetrySettings` | Telemetry configures observability for this operation. When both Telemetry and ExperimentalTelemetry are set, Telemetry wins. |
+| `ExperimentalTelemetry` | `*TelemetrySettings` | ExperimentalTelemetry configures observability for this operation. Deprecated: use Telemetry. |
+
+{/* /gen:fields */}
+
+## StreamTranslateOptions
+
+{/* gen:fields ai.StreamTranslateOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Model` | `provider.SpeechTranslationModel` | Model to use for speech-to-speech translation. |
+| `Audio` | `provider.AudioStream` | Audio is the source of raw audio chunks to translate. |
+| `InputAudioFormat` | `provider.AudioFormat` | InputAudioFormat is the input audio format for the raw audio chunks. |
+| `TargetLanguage` | `string` | TargetLanguage is the language to translate the audio into, as a BCP-47-style language tag (e.g. "en", "es", "fr-CA"). |
+| `SourceLanguage` | `string` | SourceLanguage is the language of the source audio. Auto-detected when empty. |
+| `OutputAudioFormat` | `*provider.AudioFormat` | OutputAudioFormat is the desired audio format for translated audio chunks. When nil, the provider default output format is used. |
+| `ProviderOptions` | `map[string]interface{}` | ProviderOptions contains provider-specific request options. |
+| `Headers` | `map[string]string` | Additional HTTP/WebSocket headers to send when supported by the provider. |
+| `IncludeRawChunks` | `bool` | IncludeRawChunks requests provider raw chunks in the stream. |
+
+{/* /gen:fields */}
+
+## Stream types
+
+`ai.TranscriptionStream` and `ai.TranslationStream` have the same shape as `provider.TextStream`: `Next()`, `Err()` and `Close()`.
+
+### TranscriptionStreamPart
+
+`Type` is one of `transcript-delta`, `transcript-partial`, `transcript-final`, `raw` or `error`.
+
+{/* gen:fields ai.TranscriptionStreamPart */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Type` | `string` | Type is one of "transcript-delta", "transcript-partial", "transcript-final", "raw", or "error". |
+| `ID` | `string` |  |
+| `Delta` | `string` |  |
+| `Text` | `string` |  |
+| `StartSecond` | `*float64` |  |
+| `EndSecond` | `*float64` |  |
+| `DurationInSeconds` | `*float64` |  |
+| `ChannelIndex` | `*int` |  |
+| `ProviderMetadata` | `map[string]interface{}` |  |
+| `RawValue` | `interface{}` | RawValue carries the provider's raw chunk when Type is "raw". |
+| `Err` | `interface{}` | Err carries the streamed error payload when Type is "error". |
+
+{/* /gen:fields */}
+
+### TranslationStreamPart
+
+`Type` is one of `audio`, `output-text-delta`, `output-text-final`, `source-transcript-delta`, `source-transcript-partial`, `source-transcript-final`, `raw` or `error`.
+
+{/* gen:fields ai.TranslationStreamPart */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Type` | `string` | Type is one of "audio", "output-text-delta", "output-text-final", "source-transcript-delta", "source-transcript-partial", "source-transcript-final", "raw", or "error". |
+| `ID` | `string` |  |
+| `AudioData` | `[]byte` |  |
+| `Delta` | `string` |  |
+| `Text` | `string` |  |
+| `StartSecond` | `*float64` |  |
+| `EndSecond` | `*float64` |  |
+| `ChannelIndex` | `*int` |  |
+| `ProviderMetadata` | `map[string]interface{}` |  |
+| `RawValue` | `interface{}` | RawValue carries the provider's raw chunk when Type is "raw". |
+| `Err` | `interface{}` | Err carries the streamed error payload when Type is "error". |
+
+{/* /gen:fields */}
+
+### SpeechTranslationModelResponseMetadata
+
+{/* gen:fields ai.SpeechTranslationModelResponseMetadata */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Timestamp` | `time.Time` |  |
+| `ModelID` | `string` |  |
+| `Headers` | `map[string]string` |  |
+
+{/* /gen:fields */}
+
+## Errors
+
+`ai.IsNoTranslationGeneratedError(err)` reports whether `err` is a `*ai.NoTranslationGeneratedError`.

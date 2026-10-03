@@ -1,0 +1,53 @@
+---
+title: Tool search and tool callers
+description: "Reference for ai.ToolSearch, deferred tool loading and the experimental tool caller routing helpers in the Go AI SDK."
+---
+
+# Tool search and tool callers
+
+Two features change which tools the model sees on each step. Tool search hides tools marked `DeferLoading` until the model finds them. Tool callers route a tool so that only another tool, such as a code execution tool, can call it.
+
+Both are experimental.
+
+## ToolSearch
+
+```go
+func ToolSearch(config ...ToolSearchConfig) types.Tool
+```
+
+Returns the native tool-search tool. Pair it with tools that set `DeferLoading: true`. The generation loop binds a search registry, so a match becomes available on the next model step. `ToolSearch` panics with `*providererrors.InvalidArgumentError` when `MaxResults` is negative.
+
+{/* gen:fields ai.ToolSearchConfig */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Name` | `string` | Name overrides the tool's registered name (default: ToolSearchDefaultName). Set it to register more than one tool-search instance in the same request (e.g. one per tool-caller boundary), or to avoid a collision with an existing tool name. Whatever name is used here must match the corresponding entry in ExperimentalToolCallers and the tools list passed to GenerateText/StreamText. |
+| `MaxResults` | `int` | MaxResults caps the number of matching tools returned per search. Zero (the default) uses ToolSearchDefaultMaxResults (5). A negative value panics with an InvalidArgumentError, mirroring the TypeScript SDK's toolSearch(\{ maxResults \}) synchronous validation throw. |
+| `Search` | `ToolSearchRankFunc` | Search optionally selects and ranks eligible deferred tools, instead of the built-in keyword scoring over tool names and descriptions. Mirrors the TypeScript SDK's toolSearch(\{ search \}) callback. |
+
+{/* /gen:fields */}
+
+| Constant | Value |
+| --- | --- |
+| `ai.ToolSearchDefaultName` | `"toolSearch"` |
+| `ai.ToolSearchDefaultMaxResults` | `5` |
+
+`ai.ToolSearchRankFunc` is the type of `Search`. It is an alias for `types.ToolSearchRankFunc`.
+
+### ToolSearchState
+
+For custom loops, `ai.NewToolSearchState(tools, toolCallers)` creates the discovery state for one generation. Do not share it across generations. Call `Apply(activeTools, toolsContext, sandbox)` once per step. It hides deferred tools that were not discovered, and rebinds any search tool to the deferred tools reachable through its callers. When no tool uses `DeferLoading` and no search tool is present, `Apply` returns its input unchanged.
+
+## Tool callers
+
+`ai.ExperimentalToolCallers` is a `map[string][]string`. Each key is a tool name, and each value lists the tool names allowed to call it. Include `ai.DirectToolCall` (`"AI_SDK_DIRECT_TOOL_CALL"`) to let the model call the tool directly as well. A tool that is absent from the map is not routed.
+
+Set it as `ExperimentalToolCallers` on `ai.GenerateTextOptions`, `ai.StreamTextOptions` or `agent.AgentConfig`. Mark a caller tool with `types.Tool.ExperimentalToolCaller`.
+
+| Function | Description |
+| --- | --- |
+| `ai.ResolveToolCallerConfiguration(tools, toolCallers) (ResolvedToolCallers, error)` | Validates a configuration against the available tools. |
+| `ai.PrepareToolsForToolCallers(tools, toolCallers) (executionTools, modelTools, toolCallerMessages)` | Splits tools into the set used for execution and the set shown to the model. Collects the messages that announce local caller catalogs. |
+| `ai.AppendToolCallerMessages(messages, toolCallerMessages) []types.Message` | Appends the announcement messages and skips duplicates. Returns a copy. |
+
+`ai.ResolvedToolCallers` is the validated form, also a `map[string][]string`.
