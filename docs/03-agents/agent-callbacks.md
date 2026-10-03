@@ -290,6 +290,6 @@ The `StepResult` structure matches the TypeScript `StreamStep` with all the same
 
 ## See Also
 
-- [Agent Guide](./03-agents/index.mdx)
-- [Tool Integration](./03-ai-sdk-core/15-tools-and-tool-calling.mdx)
+- [Agent Guide](./index.mdx)
+- [Tool Integration](../03-ai-sdk-core/15-tools-and-tool-calling.mdx)
 - [Example: OnStepFinish](https://github.com/digitallysavvy/go-ai/blob/main/examples/agent/on-step-finish/main.go)

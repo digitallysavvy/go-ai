@@ -157,7 +157,7 @@ xAI's Responses API usage conversion does not currently populate
 `InputDetails.TextTokens` / `InputDetails.ImageTokens` — those fields stay
 `nil` for xAI models even on multi-modal requests. If you need a text/image
 token split, use a provider that supports it (see the [Token usage
-differentiation guide](./08-migration-guides/token-usage-differentiation.mdx)
+differentiation guide](../08-migration-guides/token-usage-differentiation.mdx)
 for current per-provider support).
 
 ## Complete Example: Cost Tracking
@@ -438,7 +438,7 @@ The cached token inclusivity logic and reasoning token additive behavior match t
 
 ## See Also
 
-- [XAI Provider](./05-providers/10-xai.mdx)
+- [XAI Provider](../05-providers/10-xai.mdx)
 - Cost Optimization
-- [Usage Tracking](./07-reference/types/usage.mdx)
-- [Prompt Caching](./06-advanced/04-caching.mdx)
+- [Usage Tracking](../07-reference/types/usage.mdx)
+- [Prompt Caching](../06-advanced/04-caching.mdx)
