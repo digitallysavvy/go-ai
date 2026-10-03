@@ -1,0 +1,150 @@
+---
+title: MCP protocol types
+description: "Reference for the Go AI SDK MCP protocol types: JSON-RPC messages, capabilities, initialize and discover, tool, resource and prompt payloads, and logging."
+---
+
+# MCP protocol types
+
+Types in `pkg/mcp` that model the protocol. Most code uses the [client](./client.mdx) and never builds these directly. They matter when you write a transport or a server-side bridge.
+
+## JSON-RPC messages
+
+`mcp.MCPMessage` is a generic JSON-RPC 2.0 message.
+
+{/* gen:fields mcp.MCPMessage */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `JSONRpc` | `string` |  |
+| `ID` | `interface{}` |  |
+| `Method` | `string` |  |
+| `Params` | `json.RawMessage` |  |
+| `Result` | `json.RawMessage` |  |
+| `Error` | `*MCPError` |  |
+
+{/* /gen:fields */}
+
+| Function | Description |
+| --- | --- |
+| `mcp.CreateRequest(id, method, params) (*MCPMessage, error)` | Builds a request. |
+| `mcp.CreateNotification(method, params) (*MCPMessage, error)` | Builds a notification (no ID). |
+| `mcp.CreateResponse(id, result) (*MCPMessage, error)` | Builds a success response. |
+| `mcp.CreateErrorResponse(id, code, message, data) *MCPMessage` | Builds an error response. |
+| `mcp.ValidateJSONRPCMessage(raw []byte) (*MCPMessage, error)` | Checks that `raw` is a well-formed request, notification or response. |
+| `mcp.IsRequest(msg)`, `mcp.IsNotification(msg)`, `mcp.IsResponse(msg)`, `mcp.IsError(msg)` | Classify a message. |
+| `mcp.GetError(msg) error` | Returns the error from an error response. |
+| `mcp.ParseParams(msg, target)`, `mcp.ParseResult(msg, target)` | Decode `params` or `result` into `target`. |
+| `mcp.NewIDGenerator() *IDGenerator` | Creates a generator. `Next()` returns a new request ID. |
+
+## Initialize and discover
+
+| Type | Description |
+| --- | --- |
+| `mcp.InitializeParams` | Parameters of the `initialize` request. |
+| `mcp.InitializeResult` | Result of `initialize`. |
+| `mcp.ClientInfo`, `mcp.ServerInfo` | Name and version of each side. |
+| `mcp.ClientCapabilities` | What the client supports. |
+| `mcp.ServerCapabilities` | What the server supports. |
+| `mcp.DiscoverResult` | Result of `server/discover`. |
+
+{/* gen:fields mcp.ClientCapabilities */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Experimental` | `map[string]interface{}` |  |
+| `Extensions` | `map[string]interface{}` |  |
+| `Roots` | `*RootsCapability` |  |
+| `Sampling` | `*SamplingCapability` |  |
+| `Elicitation` | `map[string]interface{}` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields mcp.ServerCapabilities */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Experimental` | `map[string]interface{}` |  |
+| `Logging` | `*LoggingCapability` |  |
+| `Completions` | `*CompletionsCapability` | Completions advertises support for the completion/complete method (hash 68a739a). See (\*MCPClient).Complete. |
+| `Prompts` | `*PromptsCapability` |  |
+| `Resources` | `*ResourcesCapability` |  |
+| `Tools` | `*ToolsCapability` |  |
+
+{/* /gen:fields */}
+
+The capability types are `mcp.RootsCapability`, `mcp.SamplingCapability`, `mcp.ToolsCapability`, `mcp.ResourcesCapability`, `mcp.PromptsCapability`, `mcp.LoggingCapability` and `mcp.CompletionsCapability`.
+
+## Tools
+
+{/* gen:fields mcp.MCPTool */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Name` | `string` |  |
+| `Title` | `string` |  |
+| `Description` | `string` |  |
+| `InputSchema` | `map[string]interface{}` |  |
+| `OutputSchema` | `map[string]interface{}` |  |
+| `Annotations` | `map[string]interface{}` |  |
+| `Meta` | `map[string]interface{}` |  |
+
+{/* /gen:fields */}
+
+| Type | Description |
+| --- | --- |
+| `mcp.ListToolsParams`, `mcp.ListToolsResult` | Parameters and result of `tools/list`, including pagination. |
+| `mcp.CallToolParams`, `mcp.CallToolResult` | Parameters and result of `tools/call`. |
+| `mcp.ToolResultContent` | One content item in a tool result. |
+
+{/* gen:fields mcp.CallToolResult */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Content` | `[]ToolResultContent` |  |
+| `StructuredContent` | `interface{}` |  |
+| `ToolResult` | `interface{}` |  |
+| `IsError` | `bool` |  |
+| `Metadata` | `map[string]interface{}` |  |
+
+{/* /gen:fields */}
+
+## Resources, prompts and completions
+
+See [MCP client](./client.mdx#resources) for `MCPResource`, `MCPResourceTemplate`, `ReadResourceParams`, `ReadResourceResult`, `ResourceContent`, `MCPPrompt`, `PromptMessage`, `CompleteRequestParams` and related types.
+
+## Logging
+
+A client can set the server's log level and receive log messages.
+
+{/* gen:consts mcp.LoggingLevel */}
+
+| Constant | Value | Description |
+| --- | --- | --- |
+| `LoggingLevelDebug` | `"debug"` |  |
+| `LoggingLevelInfo` | `"info"` |  |
+| `LoggingLevelNotice` | `"notice"` |  |
+| `LoggingLevelWarning` | `"warning"` |  |
+| `LoggingLevelError` | `"error"` |  |
+| `LoggingLevelCritical` | `"critical"` |  |
+| `LoggingLevelAlert` | `"alert"` |  |
+| `LoggingLevelEmergency` | `"emergency"` |  |
+
+{/* /gen:consts */}
+
+{/* gen:fields mcp.SetLevelParams */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Level` | `LoggingLevel` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields mcp.LoggingMessageNotification */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Level` | `LoggingLevel` |  |
+| `Logger` | `string` |  |
+| `Data` | `interface{}` |  |
+
+{/* /gen:fields */}
