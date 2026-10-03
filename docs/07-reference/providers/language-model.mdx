@@ -35,7 +35,7 @@ type LanguageModel interface {
 |--------|---------|-------------|
 | SpecificationVersion() | string | Returns "v3" for V3 models |
 | Provider() | string | Provider name (e.g., "openai", "anthropic") |
-| ModelID() | string | Model ID (e.g., "gpt-4", "claude-3-opus") |
+| ModelID() | string | Model ID (e.g., "gpt-6-astra", "claude-opus-5-5") |
 
 ### Capability Methods
 
@@ -96,7 +96,7 @@ func main() {
     p := openai.New(openai.Config{
         APIKey: "your-api-key",
     })
-    model, err := p.LanguageModel("gpt-4")
+    model, err := p.LanguageModel("gpt-6-astra")
     if err != nil {
         log.Fatal(err)
     }

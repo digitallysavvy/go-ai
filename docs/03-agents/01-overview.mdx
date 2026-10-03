@@ -40,7 +40,7 @@ func main() {
 
     // Set up provider and model
     provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     // Create agent with tools
     weatherAgent := agent.NewToolLoopAgent(agent.AgentConfig{
@@ -132,7 +132,7 @@ The language model that powers the agent:
 
 ```go
 provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
-model, _ := provider.LanguageModel("gpt-4")
+model, _ := provider.LanguageModel("gpt-6-astra")
 ```
 
 ### 2. Tools

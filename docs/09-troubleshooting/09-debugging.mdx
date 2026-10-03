@@ -112,7 +112,7 @@ func main() {
         HTTPClient: httpClient,
     })
 
-    model, _ := provider.LanguageModel("gpt-4o-mini")
+    model, _ := provider.LanguageModel("gpt-5.4-mini")
 
     result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
         Model:  model,
@@ -157,7 +157,7 @@ func detectLeaks() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4o-mini")
+    model, _ := provider.LanguageModel("gpt-5.4-mini")
 
     // Start streaming
     stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
@@ -281,7 +281,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4o-mini")
+    model, _ := provider.LanguageModel("gpt-5.4-mini")
 
     // Run your code to profile
     for i := 0; i < 10; i++ {
@@ -385,7 +385,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     if err := debugStream(ctx, model, "Write a short story about a robot"); err != nil {
         log.Fatalf("Debug stream failed: %v", err)
@@ -468,7 +468,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: "invalid-key", // Will cause auth error
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     prompt := "Hello, world!"
     _, err := ai.GenerateText(ctx, ai.GenerateTextOptions{

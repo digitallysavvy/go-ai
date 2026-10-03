@@ -114,7 +114,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     text, err := generateWithRateLimitHandling(ctx, model, "Explain quantum computing")
     if err != nil {
@@ -185,7 +185,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     // Limit to 50 requests per minute
     generator := NewRateLimitedGenerator(model, 50)
@@ -344,7 +344,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     // Limit to 10,000 tokens per minute
     generator := NewTokenAwareGenerator(model, 10000)
@@ -440,7 +440,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     // Limit to 5 concurrent requests
     generator := NewConcurrentGenerator(model, 5)
@@ -490,7 +490,7 @@ func main() {
 ### OpenAI Rate Limits
 
 ```go
-// OpenAI GPT-4 typical limits:
+// Typical OpenAI limits:
 // - Free tier: 3 RPM, 40,000 TPM
 // - Tier 1: 500 RPM, 30,000 TPM
 // - Tier 2: 5,000 RPM, 450,000 TPM
@@ -597,7 +597,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     tracker := NewRateLimitTracker()
 

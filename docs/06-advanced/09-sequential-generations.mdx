@@ -30,7 +30,7 @@ func sequentialActions(ctx context.Context) error {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     // Step 1: Generate blog post ideas
     fmt.Println("=== Step 1: Generating Ideas ===")
@@ -304,7 +304,7 @@ func etlPipeline(ctx context.Context, rawText string) error {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     // Extract
     extracted, err := extractData(ctx, model, rawText)
@@ -360,7 +360,7 @@ func multiModelPipeline(ctx context.Context, userQuery string) error {
     openaiProvider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    fastModel, _ := openaiProvider.LanguageModel("gpt-4o-mini")
+    fastModel, _ := openaiProvider.LanguageModel("gpt-5.4-mini")
 
     fmt.Println("=== Step 1: Classify Query (Fast Model) ===")
     classifyResult, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
@@ -381,7 +381,7 @@ func multiModelPipeline(ctx context.Context, userQuery string) error {
 
     var processingModel provider.LanguageModel
     if classification == "technical" {
-        processingModel, _ = openaiProvider.LanguageModel("gpt-4")
+        processingModel, _ = openaiProvider.LanguageModel("gpt-6-astra")
     } else {
         processingModel, _ = anthropicProvider.LanguageModel("claude-sonnet-4-5")
     }
@@ -489,7 +489,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     steps := []PipelineStep{
         {
@@ -575,7 +575,7 @@ func executeChain(ctx context.Context, name string, steps []string) ChainResult 
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     currentOutput := ""
 

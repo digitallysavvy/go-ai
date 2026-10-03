@@ -73,7 +73,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     // Send spans to MLflow: register an integration built with the MLflow tracer
     telemetry.RegisterTelemetryIntegration(
@@ -420,7 +420,7 @@ import { generateText } from 'ai';
 init(); // Auto-configures from environment
 
 const result = await generateText({
-  model: openai('gpt-4'),
+  model: openai('gpt-6-astra'),
   prompt: 'Hello',
   experimental_telemetry: { isEnabled: true },
 });

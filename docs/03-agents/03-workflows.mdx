@@ -64,7 +64,7 @@ func generateMarketingCopy(ctx context.Context, input string) (string, QualityMe
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     // Step 1: Generate marketing copy
     copyResult, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
@@ -192,7 +192,7 @@ func handleCustomerQuery(ctx context.Context, query string) (string, Classificat
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     // Step 1: Classify the query type
     classificationResult, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
@@ -242,9 +242,9 @@ Determine:
     // Set model based on complexity
     var responseModel string
     if classification.Complexity == "simple" {
-        responseModel = "gpt-4o-mini"
+        responseModel = "gpt-5.4-mini"
     } else {
-        responseModel = "o4-mini"
+        responseModel = "gpt-6-astra"
     }
 
     // Set system prompt based on query type
@@ -325,7 +325,7 @@ func parallelCodeReview(ctx context.Context, code string) (string, error) {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     // Run parallel reviews using goroutines
     var wg sync.WaitGroup
@@ -567,7 +567,7 @@ func implementFeature(ctx context.Context, featureRequest string) (Implementatio
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     // Orchestrator: Plan the implementation
     planResult, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
@@ -754,7 +754,7 @@ func translateWithFeedback(ctx context.Context, text, targetLanguage string) (st
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     const maxIterations = 3
     iterations := 0
@@ -926,7 +926,7 @@ func intelligentTaskProcessor(ctx context.Context, task string) (string, error) 
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     // Step 1: Route - Classify the task
     classificationResult, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{

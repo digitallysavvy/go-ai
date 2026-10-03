@@ -62,7 +62,7 @@ func loadConfig() *Config {
     cfg := &Config{}
 
     flag.StringVar(&cfg.APIKey, "api-key", os.Getenv("OPENAI_API_KEY"), "OpenAI API key")
-    flag.StringVar(&cfg.Model, "model", "gpt-4o-mini", "Model to use")
+    flag.StringVar(&cfg.Model, "model", "gpt-5.4-mini", "Model to use")
     flag.IntVar(&cfg.Port, "port", 8080, "Port to listen on")
     flag.StringVar(&cfg.LogLevel, "log-level", "info", "Log level (debug, info, warn, error)")
     flag.StringVar(&cfg.Environment, "env", "production", "Environment (development, staging, production)")
@@ -198,7 +198,7 @@ services:
       - "8080:8080"
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - MODEL=gpt-4o-mini
+      - MODEL=gpt-5.4-mini
       - LOG_LEVEL=info
       - ENVIRONMENT=production
     env_file:
@@ -445,7 +445,7 @@ primary_region = "sjc"
 
 [env]
   ENVIRONMENT = "production"
-  MODEL = "gpt-4o-mini"
+  MODEL = "gpt-5.4-mini"
 
 [[services]]
   internal_port = 8080
@@ -529,7 +529,7 @@ type Config struct {
 func Load() (*Config, error) {
     cfg := &Config{
         APIKey:          getEnv("OPENAI_API_KEY", ""),
-        Model:           getEnv("MODEL", "gpt-4o-mini"),
+        Model:           getEnv("MODEL", "gpt-5.4-mini"),
         Provider:        getEnv("PROVIDER", "openai"),
         Port:            getEnvInt("PORT", 8080),
         ReadTimeout:     getEnvDuration("READ_TIMEOUT", 30*time.Second),

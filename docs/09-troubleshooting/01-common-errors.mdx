@@ -51,7 +51,7 @@ func main() {
         APIKey: apiKey,
     })
 
-    model, err := provider.LanguageModel("gpt-4")
+    model, err := provider.LanguageModel("gpt-6-astra")
     if err != nil {
         log.Fatalf("Failed to create model: %v", err)
     }
@@ -109,21 +109,21 @@ func main() {
 
     // Use valid model names
     validModels := []string{
-        "gpt-4",
-        "gpt-4-turbo",
-        "gpt-4o",
-        "gpt-4o-mini",
-        "gpt-3.5-turbo",
+        "gpt-6-astra",
+        "gpt-6-sol",
+        "gpt-6-astra",
+        "gpt-5.4-mini",
+        "gpt-5.4-nano",
     }
     log.Printf("known-good model names: %v", validModels)
 
     // Try to create model with error handling
-    model, err := provider.LanguageModel("gpt-4")
+    model, err := provider.LanguageModel("gpt-6-astra")
     if err != nil {
-        log.Printf("Failed to create gpt-4 model: %v", err)
-        log.Println("Falling back to gpt-4o-mini...")
+        log.Printf("Failed to create gpt-6-astra model: %v", err)
+        log.Println("Falling back to gpt-5.4-mini...")
 
-        model, err = provider.LanguageModel("gpt-4o-mini")
+        model, err = provider.LanguageModel("gpt-5.4-mini")
         if err != nil {
             log.Fatalf("Failed to create fallback model: %v", err)
         }
@@ -176,7 +176,7 @@ func main() {
     })
 
     // ALWAYS check errors before using the returned value
-    model, err := provider.LanguageModel("gpt-4")
+    model, err := provider.LanguageModel("gpt-6-astra")
     if err != nil {
         log.Fatalf("Failed to create model: %v", err)
     }
@@ -232,7 +232,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
         Model:  model,
@@ -319,7 +319,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     if err := processStream(ctx, model, "Write a story"); err != nil {
         log.Printf("Error: %v", err)
@@ -385,7 +385,7 @@ func main() {
     ctx := context.Background()
     _ = aitools.RoleUser // use the aliased import, same as any other import
 
-    model, _ := openai.New(openai.Config{}).LanguageModel("gpt-4o")
+    model, _ := openai.New(openai.Config{}).LanguageModel("gpt-6-astra")
 
     // Use aliases in your code
     result, err := goai.GenerateText(ctx, goai.GenerateTextOptions{
@@ -431,7 +431,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     // CORRECT: Pass messages as proper types.Message slice, with Content
     // as a []types.ContentPart, not a bare string
@@ -498,7 +498,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     // Generate a JSON schema from the struct with invopop/jsonschema, then
     // wrap the resulting map in goschema.Schema — ai.GenerateObjectOptions.Schema
@@ -566,7 +566,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     // Increase timeout for long operations
     ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)

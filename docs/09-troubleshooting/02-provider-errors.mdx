@@ -43,7 +43,7 @@ func generateWithQuotaFallback(ctx context.Context, prompt string) (string, erro
     })
 
     // Try primary model
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
     result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
         Model:  model,
         Prompt: prompt,
@@ -55,7 +55,7 @@ func generateWithQuotaFallback(ctx context.Context, prompt string) (string, erro
             log.Println("Quota exceeded, trying alternative provider or model...")
 
             // Option 1: Use a cheaper model
-            model, _ = provider.LanguageModel("gpt-4o-mini")
+            model, _ = provider.LanguageModel("gpt-5.4-mini")
             result, err = ai.GenerateText(ctx, ai.GenerateTextOptions{
                 Model:  model,
                 Prompt: prompt,
@@ -91,7 +91,7 @@ func main() {
 
 **Symptoms:**
 ```
-Error: The model 'gpt-4' does not exist or you do not have access to it
+Error: The model 'gpt-6-astra' does not exist or you do not have access to it
 Status Code: 404
 ```
 
@@ -149,10 +149,10 @@ func main() {
 
     // List models in order of preference
     preferredModels := []string{
-        "gpt-4",
-        "gpt-4-turbo",
-        "gpt-4o",
-        "gpt-3.5-turbo",
+        "gpt-6-astra",
+        "gpt-6-sol",
+        "gpt-6-astra",
+        "gpt-5.4-nano",
     }
 
     model, err := getAvailableModel(provider, preferredModels)
@@ -227,7 +227,7 @@ func main() {
         APIKey: apiKey,
     })
 
-    model, err := provider.LanguageModel("claude-3-5-sonnet-20241022")
+    model, err := provider.LanguageModel("claude-sonnet-5-5")
     if err != nil {
         log.Fatalf("Failed to create model: %v", err)
     }
@@ -330,7 +330,7 @@ func main() {
     provider := anthropic.New(anthropic.Config{
         APIKey: os.Getenv("ANTHROPIC_API_KEY"),
     })
-    model, _ := provider.LanguageModel("claude-3-5-sonnet-20241022")
+    model, _ := provider.LanguageModel("claude-sonnet-5-5")
 
     text, err := generateWithRetry(ctx, model, "Explain quantum computing", 5)
     if err != nil {
@@ -381,7 +381,7 @@ func main() {
         APIKey: apiKey,
     })
 
-    model, err := provider.LanguageModel("gemini-1.5-pro")
+    model, err := provider.LanguageModel("gemini-2.5-pro")
     if err != nil {
         log.Fatalf("Failed to create model: %v", err)
     }
@@ -472,7 +472,7 @@ func main() {
     provider := google.New(google.Config{
         APIKey: os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gemini-1.5-flash")
+    model, _ := provider.LanguageModel("gemini-2.5-flash")
 
     text, err := generateWithRateLimit(ctx, model, "Explain quantum computing")
     if err != nil {
@@ -589,7 +589,7 @@ func main() {
     })
 
     // Use full model ARN or ID
-    model, err := provider.LanguageModel("anthropic.claude-3-5-sonnet-20241022-v2:0")
+    model, err := provider.LanguageModel("anthropic.claude-sonnet-5-5")
     if err != nil {
         log.Fatalf("Failed to create model: %v", err)
     }
@@ -669,7 +669,7 @@ func main() {
         HTTPClient: httpClient,
     })
 
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     // Use context with longer timeout
     ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -697,9 +697,9 @@ providers := []struct {
     provider interface{}
     model string
 }{
-    {"openai", openaiProvider, "gpt-4o-mini"},
-    {"anthropic", anthropicProvider, "claude-3-5-haiku-20241022"},
-    {"google", googleProvider, "gemini-1.5-flash"},
+    {"openai", openaiProvider, "gpt-5.4-mini"},
+    {"anthropic", anthropicProvider, "claude-haiku-4-5"},
+    {"google", googleProvider, "gemini-2.5-flash"},
 }
 
 for _, p := range providers {

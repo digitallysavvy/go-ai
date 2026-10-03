@@ -194,7 +194,7 @@ Every example includes:
 provider := openai.New(openai.Config{
     APIKey: os.Getenv("OPENAI_API_KEY"),
 })
-model, _ := provider.LanguageModel("gpt-4")
+model, _ := provider.LanguageModel("gpt-6-astra")
 ```
 
 ### Basic Text Generation

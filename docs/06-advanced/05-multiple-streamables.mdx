@@ -89,7 +89,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4o-mini")
+    model, _ := provider.LanguageModel("gpt-5.4-mini")
 
     prompts := []string{
         "Explain AI in one sentence",
@@ -226,7 +226,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4o-mini")
+    model, _ := provider.LanguageModel("gpt-5.4-mini")
 
     // Create requests
     requests := []Request{
@@ -352,7 +352,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4o-mini")
+    model, _ := provider.LanguageModel("gpt-5.4-mini")
 
     // Create streamer: 30 requests per minute, max 5 concurrent
     streamer := NewRateLimitedStreamer(model, 30, 5)
@@ -508,7 +508,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4o-mini")
+    model, _ := provider.LanguageModel("gpt-5.4-mini")
 
     prompts := []string{
         "List 3 programming languages",
@@ -607,7 +607,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4o-mini")
+    model, _ := provider.LanguageModel("gpt-5.4-mini")
 
     prompts := []string{
         "Explain quantum computing",

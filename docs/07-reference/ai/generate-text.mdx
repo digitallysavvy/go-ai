@@ -87,7 +87,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: "your-api-key",
     })
-    model, err := provider.LanguageModel("gpt-4")
+    model, err := provider.LanguageModel("gpt-6-astra")
     if err != nil {
         log.Fatal(err)
     }

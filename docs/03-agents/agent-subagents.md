@@ -127,7 +127,7 @@ import (
 
 func main() {
     openaiProvider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
-    model, _ := openaiProvider.LanguageModel("gpt-4o-mini")
+    model, _ := openaiProvider.LanguageModel("gpt-5.4-mini")
 
     // Create main coordinator agent
     mainConfig := agent.AgentConfig{

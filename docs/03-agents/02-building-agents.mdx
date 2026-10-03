@@ -37,7 +37,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
         Model:  model,
@@ -70,7 +70,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
         Model:  model,
@@ -101,7 +101,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     codeAgent := agent.NewToolLoopAgent(agent.AgentConfig{
         Model: model,
@@ -154,7 +154,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
         Model:    model,
@@ -332,7 +332,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
         Model:  model,
@@ -372,7 +372,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
         Model:  model,
@@ -644,7 +644,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     // Create agent with tool approval
     myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
@@ -733,7 +733,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
         Model:  model,

@@ -65,7 +65,7 @@ import (
 
 func main() {
     p := openai.New(openai.Config{APIKey: "your-api-key"})
-    model, _ := p.LanguageModel("gpt-4")
+    model, _ := p.LanguageModel("gpt-6-astra")
 
     weatherTool := types.Tool{Name: "get_weather"}
 
@@ -124,7 +124,7 @@ import (
 
 func main() {
     p := openai.New(openai.Config{APIKey: "your-api-key"})
-    model, _ := p.LanguageModel("gpt-4")
+    model, _ := p.LanguageModel("gpt-6-astra")
 
     opts := ai.GenerateTextOptions{Model: model, Prompt: "Hello"}
 

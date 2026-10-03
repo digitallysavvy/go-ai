@@ -123,7 +123,7 @@ import (
 func main() {
     // Create agent
     openaiProvider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
-    model, _ := openaiProvider.LanguageModel("gpt-4o-mini")
+    model, _ := openaiProvider.LanguageModel("gpt-5.4-mini")
 
     config := agent.AgentConfig{
         Model:    model,

@@ -288,7 +288,7 @@ if err != nil {
 
 - Verify thinking is enabled in model options
 - Check `result.Reasoning` for thinking content
-- Ensure model supports thinking (Claude 3+)
+- Ensure the model supports thinking (Claude 3.7 and later)
 
 ### Budget Token Issues
 
@@ -342,7 +342,7 @@ const (
 |---------|--------------|-------------|
 | Fast Mode | claude-opus-4-6 | 2023-06-01+ |
 | Adaptive Thinking | claude-opus-4-6 | 2023-06-01+ |
-| Extended Thinking | claude-3+ | 2023-06-01+ |
+| Extended Thinking | Claude 3.7+ | 2023-06-01+ |
 
 ## Code Execution Tool (2026-01-20)
 

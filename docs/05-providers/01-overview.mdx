@@ -49,7 +49,7 @@ type Provider interface {
 Providers offering text generation and chat capabilities:
 
 **Tier 1 (Frontier Models)**
-- OpenAI - GPT-4o, GPT-5, o1, o3
+- OpenAI - GPT-6, GPT-5, o3, o4-mini
 - Anthropic - Claude Opus 4.5, Sonnet 4.5
 - Google - Gemini 2.0 Flash, Pro
 
@@ -202,13 +202,13 @@ provider := openai.New(openai.Config{
 
 **General Purpose Chat**
 ```go
-// Best: GPT-4o, Claude Opus 4.5, Gemini 2.0 Flash
-model, _ := provider.LanguageModel("gpt-4o")
+// Best: GPT-6, Claude Opus 5.5, Gemini 3.5 Flash
+model, _ := provider.LanguageModel("gpt-6-astra")
 ```
 
 **Code Generation**
 ```go
-// Best: GPT-4o, Claude Sonnet 4.5, DeepSeek-V3
+// Best: GPT-6, Claude Sonnet 5.5, DeepSeek V4
 model, _ := provider.LanguageModel("claude-sonnet-4.5")
 ```
 
@@ -226,20 +226,20 @@ model, _ := provider.LanguageModel("llama-3.3-70b-versatile")
 
 **Cost-Effective**
 ```go
-// Best: Gemini Flash, Claude Haiku, GPT-4o-mini
+// Best: Gemini Flash, Claude Haiku, GPT-5.4 mini
 model, _ := provider.LanguageModel("gemini-2.0-flash")
 ```
 
 **Long Context**
 ```go
 // Best: Gemini Pro (1M+), Claude Opus (200K)
-model, _ := provider.LanguageModel("gemini-2.0-pro")
+model, _ := provider.LanguageModel("gemini-2.5-pro")
 ```
 
 ### By Capability
 
 **Tool Calling**
-- OpenAI GPT-4o
+- OpenAI GPT-6
 - Anthropic Claude 4.5
 - Google Gemini 2.0
 - Mistral Large 2
@@ -252,7 +252,7 @@ model, _ := provider.LanguageModel("gemini-2.0-pro")
 - Mistral
 
 **Vision**
-- OpenAI GPT-4o
+- OpenAI GPT-6
 - Anthropic Claude 4.5
 - Google Gemini 2.0 Flash
 - Mistral Pixtral

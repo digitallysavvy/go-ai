@@ -98,7 +98,7 @@ if err != nil {
 }
 
 // Get a model
-model, err := p.LanguageModel("gpt-4")
+model, err := p.LanguageModel("gpt-6-astra")
 if err != nil {
     log.Fatal(err)
 }
@@ -107,8 +107,8 @@ if err != nil {
 ### Resolving a "provider:model" String Directly
 
 ```go
-// Equivalent to GetProvider("openai") then LanguageModel("gpt-4")
-model, err := registry.ResolveLanguageModel("openai:gpt-4")
+// Equivalent to GetProvider("openai") then LanguageModel("gpt-6-astra")
+model, err := registry.ResolveLanguageModel("openai:gpt-6-astra")
 if err != nil {
     log.Fatal(err)
 }
@@ -159,7 +159,7 @@ func getModel(cfg Config) (provider.LanguageModel, error) {
 // Usage
 config := Config{
     ProviderName: "openai",
-    ModelID:      "gpt-4",
+    ModelID:      "gpt-6-astra",
 }
 
 model, err := getModel(config)
@@ -197,7 +197,7 @@ func generateWithProvider(providerName, modelID, prompt string) (string, error) 
 }
 
 // Usage
-text, err := generateWithProvider("openai", "gpt-4", "Hello!")
+text, err := generateWithProvider("openai", "gpt-6-astra", "Hello!")
 ```
 
 ### Multi-Provider Setup
@@ -271,9 +271,9 @@ func generateWithFallback(modelConfigs []struct{ Provider, Model string }, promp
 
 // Usage with fallback chain
 configs := []struct{ Provider, Model string }{
-    {"openai", "gpt-4"},
-    {"anthropic", "claude-3-opus"},
-    {"google", "gemini-pro"},
+    {"openai", "gpt-6-astra"},
+    {"anthropic", "claude-opus-5-5"},
+    {"google", "gemini-2.5-pro"},
 }
 
 text, err := generateWithFallback(configs, "Hello!")

@@ -224,7 +224,7 @@ yourself using `ai.GenerateText`.
 ```go
 func manualAgentLoop(ctx context.Context, prompt string, tools []types.Tool) (string, error) {
     provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     messages := []types.Message{
         {

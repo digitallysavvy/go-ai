@@ -256,7 +256,7 @@ if err != nil {
 
 // Use tools with AI model
 openaiProvider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
-model, _ := openaiProvider.LanguageModel("gpt-4")
+model, _ := openaiProvider.LanguageModel("gpt-6-astra")
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "What's the weather in Brooklyn, NY?",
@@ -380,7 +380,7 @@ The SDK handles all standard image formats:
 
 - **Without image handling**: 200K+ tokens per image
 - **With proper handling**: ~1K tokens per image
-- **Cost savings**: ~$1.99 per image for GPT-4 Turbo (~99% reduction)
+- **Cost savings**: large reduction in image tokens sent to the model
 
 ## Using MCP Resources
 
@@ -602,7 +602,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, err := provider.LanguageModel("gpt-4")
+    model, err := provider.LanguageModel("gpt-6-astra")
     if err != nil {
         log.Fatal(err)
     }

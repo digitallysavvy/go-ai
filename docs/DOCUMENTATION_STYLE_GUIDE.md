@@ -226,7 +226,7 @@ if err != nil {
 // Replace with your actual API key from https://console.anthropic.com
 client := newExampleClient("your-api-key")
 
-// Use a supported model name (e.g., claude-3-5-sonnet-20241022)
+// Use a supported model name (e.g., claude-sonnet-5-5)
 request.Model = "your-model-name"
 ```
 
@@ -424,7 +424,7 @@ Bad: "If you want deterministic outputs, it would be recommended to consider set
 ```go
 // Generate a completion using the Claude model
 response, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-    Model: "claude-3-5-sonnet-20241022", // Recommended for most use cases
+    Model: "claude-sonnet-5-5", // Recommended for most use cases
     Messages: []types.Message{
         {
             Role:    "user",

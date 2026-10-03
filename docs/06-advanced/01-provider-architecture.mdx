@@ -59,7 +59,7 @@ type LanguageModel interface {
     // Metadata
     SpecificationVersion() string  // e.g., "v3"
     Provider() string              // e.g., "openai", "anthropic"
-    ModelID() string               // e.g., "gpt-4o", "claude-sonnet-4-5"
+    ModelID() string               // e.g., "gpt-6-astra", "claude-sonnet-4-5"
 
     // Capabilities
     SupportsTools() bool
@@ -300,7 +300,7 @@ func main() {
     ctx := context.Background()
 
     p := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
-    base, _ := p.LanguageModel("gpt-4o")
+    base, _ := p.LanguageModel("gpt-6-astra")
 
     // Wrap the model with middleware
     wrapped := middleware.WrapLanguageModel(base, []*middleware.LanguageModelMiddleware{loggingMiddleware}, nil, nil)

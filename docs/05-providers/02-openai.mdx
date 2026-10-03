@@ -1,11 +1,11 @@
 ---
 title: OpenAI Provider
-description: Setup and usage guide for OpenAI models (GPT-4, GPT-5, o1, o3) with Go-AI SDK
+description: Setup and usage guide for OpenAI models (GPT-6, GPT-5, o-series) with Go AI SDK
 ---
 
 # OpenAI Provider
 
-OpenAI provides industry-leading language models including GPT-4o, GPT-5, and reasoning models like o1 and o3. Known for high-quality responses, extensive capabilities, and comprehensive API features.
+OpenAI provides industry-leading language models including GPT-6, GPT-5, and reasoning models like o3 and o4-mini. Known for high-quality responses, extensive capabilities, and comprehensive API features.
 
 ## Setup
 
@@ -27,7 +27,7 @@ provider := openai.New(openai.Config{
     APIKey: os.Getenv("OPENAI_API_KEY"),
 })
 
-model, err := provider.LanguageModel("gpt-4o")
+model, err := provider.LanguageModel("gpt-6-astra")
 if err != nil {
     log.Fatal(err)
 }
@@ -36,7 +36,7 @@ if err != nil {
 `LanguageModel` matches the TypeScript OpenAI provider default and returns a Responses API model. Use `ChatModel` when you need the Chat Completions endpoint or `CompletionModel` for legacy instruct-style completions:
 
 ```go
-chatModel, err := provider.ChatModel("gpt-4o")
+chatModel, err := provider.ChatModel("gpt-6-astra")
 completionModel, err := provider.CompletionModel("gpt-3.5-turbo-instruct")
 ```
 
@@ -167,7 +167,7 @@ object at the root.
 
 ### Vision Capabilities
 
-GPT-4o and GPT-4-turbo support image understanding:
+Current GPT models support image understanding:
 
 ```go
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
@@ -305,7 +305,7 @@ Note: o1 models do not support:
 - System messages
 - Streaming
 - Temperature settings
-- Function calling (use o1-mini for some tool support)
+- Function calling (use o4-mini for some tool support)
 
 ### Streaming Responses
 
@@ -367,7 +367,7 @@ func main() {
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
 
-    model, err := provider.LanguageModel("gpt-4o")
+    model, err := provider.LanguageModel("gpt-6-astra")
     if err != nil {
         log.Fatal(err)
     }
@@ -640,10 +640,10 @@ func generateWithBackoff(ctx context.Context, model provider.LanguageModel, prom
 ## Best Practices
 
 1. **Model Selection**
-   - Use `gpt-4o` for general tasks with vision support
-   - Use `gpt-4o-mini` for cost-effective, fast responses
+   - Use `gpt-6-astra` for general tasks with vision support
+   - Use `gpt-5.4-mini` for cost-effective, fast responses
    - Use `o1` for complex reasoning and math problems
-   - Use `gpt-3.5-turbo` for simple, high-volume tasks
+   - Use `gpt-5.4-nano` for simple, high-volume tasks
 
 2. **Cost Optimization**
    - Monitor token usage with `result.Usage`
@@ -655,7 +655,7 @@ func generateWithBackoff(ctx context.Context, model provider.LanguageModel, prom
    - Use streaming for long responses
    - Implement connection pooling for high-volume apps
    - Batch embedding requests (up to 2048 inputs)
-   - Use `gpt-4o-mini` for latency-sensitive applications
+   - Use `gpt-5.4-mini` for latency-sensitive applications
 
 4. **Error Handling**
    - Always implement retry logic for rate limits

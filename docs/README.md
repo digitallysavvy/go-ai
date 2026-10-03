@@ -28,7 +28,7 @@ func main() {
     })
 
     // Get model
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     // Generate text
     result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{

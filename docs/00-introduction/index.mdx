@@ -37,7 +37,7 @@ func main() {
     openaiProvider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    openaiModel, _ := openaiProvider.LanguageModel("gpt-4")
+    openaiModel, _ := openaiProvider.LanguageModel("gpt-6-astra")
 
     // Use Anthropic
     anthropicProvider := anthropic.New(anthropic.Config{
@@ -163,8 +163,8 @@ result, err := myAgent.Execute(ctx, "Help me plan a trip to Japan")
 
 The Go AI SDK supports 49 model providers including:
 
-- **OpenAI** - GPT-4, GPT-4 Turbo, GPT-3.5
-- **Anthropic** - Claude 3.5 Sonnet, Claude 3 Opus/Sonnet/Haiku
+- **OpenAI** - GPT-6, GPT-5, o-series
+- **Anthropic** - Claude Opus, Sonnet, Haiku and Fable
 - **Google** - Gemini Pro, Gemini Flash
 - **Mistral** - Mistral Large, Medium, Small
 - **Cohere** - Command R+, Command R

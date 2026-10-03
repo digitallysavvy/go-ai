@@ -176,7 +176,7 @@ For cost-conscious applications:
 ### Specialized Use Cases
 
 - **Long Context**: Anthropic Claude (200K+ tokens)
-- **Code Generation**: OpenAI GPT-4, Codestral
+- **Code Generation**: OpenAI GPT-6, Codestral
 - **Fast Inference**: Groq, Fireworks
 - **Open Source**: Together AI, Replicate, Hugging Face
 
@@ -311,10 +311,10 @@ wg.Wait()
 
 ```go
 // Fast, cheap model for simple tasks
-quickModel, _ := provider.LanguageModel("gpt-3.5-turbo")
+quickModel, _ := provider.LanguageModel("gpt-5.4-nano")
 
 // Powerful model for complex reasoning
-smartModel, _ := provider.LanguageModel("gpt-4")
+smartModel, _ := provider.LanguageModel("gpt-6-astra")
 
 // Use based on task complexity
 model := quickModel

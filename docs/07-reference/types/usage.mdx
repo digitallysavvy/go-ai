@@ -149,7 +149,7 @@ import (
 
 func main() {
     provider := openai.New(openai.Config{APIKey: "your-api-key"})
-    model, err := provider.LanguageModel("gpt-4")
+    model, err := provider.LanguageModel("gpt-6-astra")
     if err != nil {
         log.Fatal(err)
     }
@@ -202,7 +202,7 @@ if result.Usage.InputDetails != nil {
 ### Estimate Cost with Multimodal Pricing
 
 ```go
-// Example pricing (OpenAI GPT-4o)
+// Example pricing
 const (
     textInputCost  = 0.0000025  // $2.50 per 1M tokens
     imageInputCost = 0.0000075  // $7.50 per 1M tokens (approx)

@@ -175,7 +175,7 @@ func main() {
 func getBaseModel() (provider.LanguageModel, error) {
     // Import your provider and create model
     // provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
-    // return provider.LanguageModel("gpt-4")
+    // return provider.LanguageModel("gpt-6-astra")
     return nil, nil
 }
 ```
@@ -443,7 +443,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     // Convert messages
     messages := convertToMessages(req.Messages)
@@ -545,7 +545,7 @@ func streamHandler(w http.ResponseWriter, r *http.Request) {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
         Model:  model,

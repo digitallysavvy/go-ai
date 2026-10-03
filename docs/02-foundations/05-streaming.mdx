@@ -80,7 +80,7 @@ func main() {
     ctx := context.Background()
 
     provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     result, err := ai.StreamText(ctx, ai.StreamTextOptions{
         Model:  model,
@@ -351,14 +351,14 @@ func main() {
     var wg sync.WaitGroup
 
     openaiProvider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
-    gpt4Model, _ := openaiProvider.LanguageModel("gpt-4")
+    gptModel, _ := openaiProvider.LanguageModel("gpt-6-astra")
 
     anthropicProvider := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")})
-    claudeModel, _ := anthropicProvider.LanguageModel("claude-3-5-sonnet-20241022")
+    claudeModel, _ := anthropicProvider.LanguageModel("claude-sonnet-5-5")
 
-    // Stream from GPT-4 and Claude simultaneously
+    // Stream from GPT and Claude simultaneously
     wg.Add(2)
-    go streamFromModel(ctx, gpt4Model, "What is AI?", &wg)
+    go streamFromModel(ctx, gptModel, "What is AI?", &wg)
     go streamFromModel(ctx, claudeModel, "What is AI?", &wg)
 
     wg.Wait()

@@ -37,8 +37,8 @@ func useFasterModels() {
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
 
-    // SLOW: GPT-4 (high quality, slower)
-    slowModel, _ := provider.LanguageModel("gpt-4")
+    // SLOW: large model (high quality, slower)
+    slowModel, _ := provider.LanguageModel("gpt-6-astra")
 
     start := time.Now()
     slowResult, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
@@ -48,8 +48,8 @@ func useFasterModels() {
     fmt.Printf("Slow model took: %v\n", time.Since(start))
     fmt.Println(slowResult.Text)
 
-    // FAST: GPT-4o-mini (good quality, much faster)
-    fastModel, _ := provider.LanguageModel("gpt-4o-mini")
+    // FAST: small model (good quality, much faster)
+    fastModel, _ := provider.LanguageModel("gpt-5.4-mini")
 
     start = time.Now()
     result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
@@ -66,7 +66,7 @@ func useStreaming() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     // Streaming gives immediate feedback
     start := time.Now()
@@ -96,7 +96,7 @@ func limitTokens() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     start := time.Now()
     maxTokens := 100 // Limit response length
@@ -215,7 +215,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4o-mini")
+    model, _ := provider.LanguageModel("gpt-5.4-mini")
 
     prompts := []string{
         "Explain AI",
@@ -367,7 +367,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4o-mini")
+    model, _ := provider.LanguageModel("gpt-5.4-mini")
 
     // Create cached generator with 5 minute TTL
     generator := NewCachedGenerator(model, 5*time.Minute)
@@ -478,7 +478,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4o-mini")
+    model, _ := provider.LanguageModel("gpt-5.4-mini")
 
     prompts := []string{
         "Explain AI in one sentence",
@@ -511,10 +511,10 @@ func main() {
 
 ```go
 // Fast, cheap for simple tasks
-model, _ := provider.LanguageModel("gpt-4o-mini")
+model, _ := provider.LanguageModel("gpt-5.4-mini")
 
 // Powerful for complex tasks
-model, _ := provider.LanguageModel("gpt-4")
+model, _ := provider.LanguageModel("gpt-6-astra")
 ```
 
 ### 2. Stream Long Responses

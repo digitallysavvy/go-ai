@@ -89,7 +89,7 @@ func generateHandler(w http.ResponseWriter, r *http.Request) {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     result, err := ai.GenerateText(r.Context(), ai.GenerateTextOptions{
         Model:  model,
@@ -226,7 +226,7 @@ func rateLimitHandler(w http.ResponseWriter, r *http.Request) {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
         Model:  model,
@@ -587,7 +587,7 @@ func streamHandler(w http.ResponseWriter, r *http.Request) {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
         Model:  model,
@@ -650,9 +650,9 @@ var (
 ```go
 if !limiter.Allow() {
     // Instead of hard failure, use a simpler/faster model
-    model, _ = provider.LanguageModel("gpt-4o-mini")
+    model, _ = provider.LanguageModel("gpt-5.4-mini")
 } else {
-    model, _ = provider.LanguageModel("gpt-4")
+    model, _ = provider.LanguageModel("gpt-6-astra")
 }
 ```
 

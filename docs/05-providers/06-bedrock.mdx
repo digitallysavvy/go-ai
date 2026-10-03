@@ -31,7 +31,7 @@ provider := bedrock.New(bedrock.Config{
     AWSSecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
 })
 
-model, err := provider.LanguageModel("anthropic.claude-3-5-sonnet-20241022-v2:0")
+model, err := provider.LanguageModel("anthropic.claude-sonnet-5-5")
 if err != nil {
     log.Fatal(err)
 }
@@ -135,7 +135,7 @@ provider := bedrock.New(bedrock.Config{
     AWSSecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
 })
 
-model, err := provider.LanguageModel("us.anthropic.claude-3-5-sonnet-20241022-v2:0")
+model, err := provider.LanguageModel("us.anthropic.claude-sonnet-5-5")
 ```
 
 ### Guardrails
@@ -180,7 +180,7 @@ func main() {
         AWSSecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
     })
 
-    model, err := provider.LanguageModel("anthropic.claude-3-5-sonnet-20241022-v2:0")
+    model, err := provider.LanguageModel("anthropic.claude-sonnet-5-5")
     if err != nil {
         log.Fatal(err)
     }
@@ -201,7 +201,7 @@ func main() {
 
 ```go
 models := []string{
-    "anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "anthropic.claude-sonnet-5-5",
     "us.meta.llama3-3-70b-instruct-v1:0",
     "cohere.command-r-plus-v1:0",
 }
@@ -274,7 +274,7 @@ fmt.Printf("Generated %d embeddings\n", len(result.Embeddings))
 ### Streaming with Claude
 
 ```go
-model, err := provider.LanguageModel("anthropic.claude-3-5-sonnet-20241022-v2:0")
+model, err := provider.LanguageModel("anthropic.claude-sonnet-5-5")
 if err != nil {
     log.Fatal(err)
 }
