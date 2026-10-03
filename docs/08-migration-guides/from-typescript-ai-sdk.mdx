@@ -121,7 +121,7 @@ Go ships two mechanisms. Prefer the `Output` one; `GenerateObject`/`StreamObject
 | `validateUIMessages({messages})` | `ai.ValidateUIMessages(ctx, ai.ValidateUIMessagesOptions{Messages: messages})` | `pkg/ai/validate_ui_messages.go`. |
 | `await convertToModelMessages(uiMessages)` | `ai.ConvertToModelMessages(ctx, uiMessages)` | `pkg/ai/convert_to_model_messages.go`. Both are effectively async/fallible; Go returns `([]types.Message, error)` instead of a rejected promise. |
 | `result.toUIMessageStream()` (method, deprecated) / standalone `toUIMessageStream(result.stream)` | `result.ToUIMessageStream(ctx)` or `ai.ToUIMessageStream(ctx, stream)` | `pkg/ai/stream.go`, `pkg/ai/ui_message_stream.go`. |
-| `createUIMessageStreamResponse(...)` | `ai.CreateUIMessageStreamResponse(ctx, result)` | `ui_message_stream.go`. Returns `(*http.Response, error)` — copy its headers/status/body onto your `http.ResponseWriter` (see [Serving a TS frontend](#serving-a-ts-frontend-from-a-go-backend)). |
+| `createUIMessageStreamResponse(...)` | `ai.CreateUIMessageStreamResponse(ctx, result)` | `ui_message_stream.go`. Returns `(*http.Response, error)`. To write to an `http.ResponseWriter` directly, use `ai.PipeUIMessageStreamToResponse` or `ai.PipeUIMessageChunksToResponse`, which set the headers and flush each chunk (see [Serving a TS frontend](#serving-a-ts-frontend-from-a-go-backend)). |
 | `pipeUIMessageStreamToResponse(response, ...)` | `ai.PipeUIMessageStreamToResponse(ctx, result, w)` | `ui_message_stream.go`. Writes SSE frames straight to any `io.Writer`, flushing after every event. |
 | `createUIMessageStreamResponse({ stream })` / `pipeUIMessageStreamToResponse({ response, stream })` | `ai.CreateUIMessageChunksResponse(chunks, init)` / `ai.PipeUIMessageChunksToResponse(chunks, w, init)` | For any UI message chunk stream, such as one from `CreateUIMessageStreamWithOptions`. |
 | `UI_MESSAGE_STREAM_HEADERS` | `ai.UIMessageStreamHeaders()` | The `Pipe*` helpers set these on an `http.ResponseWriter` for you. |
@@ -426,83 +426,60 @@ tool callers** (`ai.ToolSearch`, `types.Tool.DeferLoading`,
 
 ## Serving a TS frontend from a Go backend
 
-A `useChat` frontend posts `{ messages: UIMessage[] }` and expects a UI message stream back. This handler validates the incoming messages, converts them to model messages, streams a response, and pipes the result back in the same protocol:
+A `useChat` frontend posts `{ messages: UIMessage[] }` and expects a UI message stream back. The Go AI SDK writes that stream, so the TypeScript frontend needs no changes. This handler runs an agent on the incoming messages and streams the reply, the way TS `createAgentUIStreamResponse` does:
 
 ```go
 package main
 
 import (
 	"encoding/json"
-	"io"
 	"log"
 	"net/http"
+	"os"
 
+	"github.com/digitallysavvy/go-ai/pkg/agent"
 	"github.com/digitallysavvy/go-ai/pkg/ai"
-	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
-type chatRequest struct {
-	Messages []ai.UIMessage `json:"messages"`
-}
+func main() {
+	model, err := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")}).
+		LanguageModel(openai.ModelGPT6Astra)
+	if err != nil {
+		log.Fatal(err)
+	}
+	assistant := agent.NewToolLoopAgent(agent.AgentConfig{Model: model})
 
-func chatHandler(model provider.LanguageModel) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		ctx := r.Context()
-
-		var req chatRequest
+	http.HandleFunc("POST /api/chat", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages json.RawMessage `json:"messages"`
+		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		validated, err := ai.ValidateUIMessages(ctx, ai.ValidateUIMessagesOptions{
-			Messages: req.Messages,
-		})
+		// Validates the UI messages and converts them to model messages.
+		chunks, _, err := agent.CreateAgentUIStreamFromUIMessages(r.Context(), assistant,
+			agent.CreateAgentUIStreamFromUIMessagesOptions{UIMessages: []byte(req.Messages)})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		modelMessages, err := ai.ConvertToModelMessages(ctx, validated)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
+		// Sets the stream headers, writes 200 and flushes every chunk.
+		if err := ai.PipeUIMessageChunksToResponse(chunks, w, nil); err != nil {
+			log.Printf("write stream: %v", err)
 		}
+	})
 
-		result, err := ai.StreamText(ctx, ai.StreamTextOptions{
-			Model:    model,
-			Messages: modelMessages,
-		})
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		resp, err := ai.CreateUIMessageStreamResponse(ctx, result)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		defer resp.Body.Close()
-
-		for key, values := range resp.Header {
-			for _, v := range values {
-				w.Header().Add(key, v)
-			}
-		}
-		w.WriteHeader(resp.StatusCode)
-		_, _ = io.Copy(w, resp.Body)
-	}
-}
-
-func main() {
-	// model := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")}).LanguageModel("gpt-4o")
-	http.Handle("/api/chat", chatHandler(nil))
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
 ```
 
-`ai.CreateUIMessageStreamResponse` builds a full `*http.Response` with the same headers the TS SDK's response helpers set (`Content-Type: text/event-stream`, `X-Vercel-AI-UI-Message-Stream: v1`, and so on) — copy them onto `http.ResponseWriter` as shown, and any TS `useChat` client pointed at this endpoint works unmodified. If you'd rather write SSE frames directly without the intermediate `*http.Response`, use `ai.PipeUIMessageStreamToResponse(ctx, result, w)`: like TS `pipeUIMessageStreamToResponse`, it sets the headers and status on the `http.ResponseWriter` itself.
+On an `http.ResponseWriter`, the `Pipe*` helpers set the status and the UI message stream headers (`Content-Type: text/event-stream`, `X-Vercel-AI-UI-Message-Stream: v1` and so on) and flush after every chunk, like `pipeUIMessageStreamToResponse` on a Node `ServerResponse`. Do not copy bytes into the writer with `io.Copy`: a `ResponseWriter` does not flush on each write, so the browser would see the output in large blocks. If you already have a `*ai.StreamTextResult` and no UI messages, use `ai.PipeUIMessageStreamToResponse(ctx, result, w)`. `agent.PipeAgentUIStreamFromUIMessagesToResponse` does the validate-and-pipe steps in one call.
+
+For keep-alive, CORS, proxies, custom data parts and tool approval, see [Serve a useChat frontend from Go](../10-build-a-chat-app/01-serve-usechat-from-go.mdx) and [Tool approval end to end](../10-build-a-chat-app/02-tool-approval.mdx).
 
 ## See Also
 

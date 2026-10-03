@@ -432,6 +432,16 @@ We provide **50+ production-ready examples** covering every feature. See the [ex
 
 [Browse all 50+ examples →](./examples)
 
+## Reference app
+
+[**Shipyard**](https://github.com/digitallysavvy/go-ai-demo) is a Next.js chat UI backed by a Go server built with this SDK. It uses the stock `useChat` hook, gates a tool behind a signed user approval, and hands code changes to Claude Code or Codex through the harness. Read the code with the guides:
+
+- [Serve a useChat frontend from Go](https://goaisdk.com/docs/build-a-chat-app/serve-usechat-from-go)
+- [Tool approval end to end](https://goaisdk.com/docs/build-a-chat-app/tool-approval)
+- [Coding agents with the harness](https://goaisdk.com/docs/build-a-chat-app/coding-agents-harness)
+
+Short task pages with runnable programs are in [Recipes](https://goaisdk.com/docs/recipes), built from [`examples/recipes`](./examples/recipes).
+
 ## Documentation
 
 - **[Getting Started](https://goaisdk.com/docs/getting-started)** - Quick start guide

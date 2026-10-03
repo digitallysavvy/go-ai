@@ -1,0 +1,84 @@
+---
+title: Use tools from an MCP server
+description: Connect to a Model Context Protocol server over HTTP and give its tools to a model.
+sidebar_position: 3
+---
+
+# Use tools from an MCP server
+
+Call the tools of a Model Context Protocol (MCP) server from `GenerateText`.
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+
+	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/mcp"
+	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+
+func main() {
+	ctx := context.Background()
+
+	transport := mcp.NewHTTPTransport(mcp.HTTPTransportConfig{
+		URL:       os.Getenv("MCP_URL"),
+		TimeoutMS: 30000,
+	})
+	client := mcp.NewMCPClient(transport, mcp.MCPClientConfig{
+		ClientName:    "recipe",
+		ClientVersion: "1.0.0",
+	})
+	if err := client.Connect(ctx); err != nil {
+		log.Fatal(err)
+	}
+	defer func() { _ = client.Close() }()
+
+	// Every tool the server lists becomes a go-ai tool.
+	tools, err := mcp.NewMCPToolConverter(client).ConvertToGoAITools(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	model, err := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")}).
+		LanguageModel(anthropic.ClaudeSonnet5_5)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+		Model:    model,
+		Prompt:   "Use your tools to answer: what can you do?",
+		Tools:    tools,
+		StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(result.Text)
+}
+```
+
+Run it:
+
+```bash
+MCP_URL=https://your-server.example/mcp ANTHROPIC_API_KEY=... go run ./examples/recipes/mcp-tools
+```
+
+## Notes
+
+- `mcp.NewHTTPTransport` and `mcp.NewMCPClient` connect to the server. Use HTTP in production. Stdio is for local servers.
+- `mcp.NewMCPToolConverter(client).ConvertToGoAITools` turns every listed tool into a `types.Tool`.
+- Set `StopWhen` so the model can call a tool and then answer.
+- Close the client when you are done. For OAuth, pass an `OAuth` config to the transport.
+
+## Go deeper
+
+- [Guide: Model Context Protocol (MCP)](../03-ai-sdk-core/16-mcp-tools.mdx)
+- [Reference: Generate text](../07-reference/ai/generate-text.mdx)
+
+The full program is at [`examples/recipes/mcp-tools/main.go`](https://github.com/digitallysavvy/go-ai/blob/main/examples/recipes/mcp-tools/main.go).
