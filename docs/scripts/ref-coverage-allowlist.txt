@@ -7,3 +7,4 @@ pkg/ai GatewayMaxRetries # exported only so pkg/agent shares the AI Gateway retr
 pkg/ai IsGatewayCallRetryable # exported only so pkg/agent shares the AI Gateway retry policy; not a public API
 pkg/ai Experimental_SandboxProcess # alias kept for TypeScript naming parity; use SandboxProcess
 pkg/ai FirstWarningInfoMessage # text of a log line, not an API
+pkg/harness AgentSessionOptions # input of the unexported newAgentSession constructor; sessions are created with Agent.CreateSession

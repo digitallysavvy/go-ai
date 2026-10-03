@@ -76,7 +76,7 @@ A provider can also implement these. `Auth` checks for them with a type assertio
 | `mcp.OAuthStateProvider` | `State`, `SaveState`, `StoredState` | Generate and verify the CSRF `state` parameter. |
 | `mcp.OAuthResourceURLValidator` | `ValidateResourceURL` | Override the RFC 8707 `resource` parameter. |
 | `mcp.OAuthAuthorizationServerURLValidator` | `ValidateAuthorizationServerURL` | Limit which authorization servers `Auth` fetches metadata from. |
-| `mcp.OAuthAuthorizationServerInformationStore` | save and load | Persist the authorization server pin. |
+| `mcp.OAuthAuthorizationServerInformationStore` | `AuthorizationServerInformation`, `SaveAuthorizationServerInformation` | Persist the authorization server pin. |
 
 `mcp.OAuthCredentialInvalidationScope` selects what `InvalidateCredentials` discards.
 
