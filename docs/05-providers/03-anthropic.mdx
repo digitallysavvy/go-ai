@@ -246,10 +246,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 // Subsequent requests with same cached content cost significantly less
 ```
 
-Pricing with caching:
-- Cache write: $3.75/1M tokens (1.25x normal)
-- Cache read: $0.30/1M tokens (0.1x normal)
-- Cached content valid for 5 minutes
+Cache writes cost more than normal input tokens and cache reads cost much less. See [Anthropic's pricing page](https://www.anthropic.com/pricing) for current multipliers. Cached content is valid for 5 minutes by default.
 
 ### Thinking (Extended Reasoning)
 
