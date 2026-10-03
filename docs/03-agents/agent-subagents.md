@@ -9,7 +9,7 @@ Subagents enable hierarchical agent systems where a main agent can delegate task
 
 ## Overview
 
-Subagents in the Go-AI SDK allow you to:
+Subagents in the Go AI SDK allow you to:
 - **Delegate specialized tasks**: Route work to agents optimized for specific domains
 - **Build hierarchies**: Create multi-level agent structures with subagents having their own subagents
 - **Separate concerns**: Keep agents focused on their areas of expertise

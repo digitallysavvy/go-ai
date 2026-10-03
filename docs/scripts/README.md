@@ -1,6 +1,6 @@
 # Documentation Scripts
 
-This directory contains utility scripts for validating and testing the Go-AI SDK documentation.
+This directory contains utility scripts for validating and testing the Go AI SDK documentation.
 
 ## Scripts
 
@@ -304,4 +304,4 @@ To improve these scripts:
 
 ## License
 
-These scripts are part of the Go-AI SDK and follow the same license.
+These scripts are part of the Go AI SDK and follow the same license.

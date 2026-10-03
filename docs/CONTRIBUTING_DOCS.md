@@ -1,6 +1,6 @@
 # Contributing to Documentation
 
-Thank you for your interest in improving the Go-AI SDK documentation! This guide will help you contribute effectively and ensure consistency across all documentation.
+Thank you for your interest in improving the Go AI SDK documentation! This guide will help you contribute effectively and ensure consistency across all documentation.
 
 ## Table of Contents
 
@@ -23,7 +23,7 @@ Before contributing to documentation, ensure you have:
 - Git configured on your system
 - A text editor or IDE for editing Markdown files
 - Basic understanding of Markdown syntax
-- Familiarity with the Go-AI SDK (read the getting started guide)
+- Familiarity with the Go AI SDK (read the getting started guide)
 
 ### Initial Setup
 
@@ -633,7 +633,7 @@ go run extract-examples.go -docs=../07-reference/api/new-type.mdx -verbose
 - [Documentation Style Guide](./DOCUMENTATION_STYLE_GUIDE.md)
 - [Template Files](./_templates/)
 - [Existing Documentation](./02-getting-started/)
-- [Go-AI Repository](https://github.com/digitallysavvy/go-ai)
+- [Go AI SDK repository](https://github.com/digitallysavvy/go-ai)
 
 ### Questions?
 
@@ -660,7 +660,7 @@ Contributors to documentation will be:
 - Credited in release notes for significant contributions
 - Recognized in the community
 
-Thank you for helping make Go-AI documentation better!
+Thank you for helping make the Go AI SDK documentation better!
 
 ---
 

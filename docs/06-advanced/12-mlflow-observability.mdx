@@ -1,11 +1,11 @@
 ---
 title: MLflow Observability
-description: "Shows how to track and debug Go-AI SDK operations with MLflow Tracing over OpenTelemetry, covering configuration, telemetry settings, and troubleshooting."
+description: "Shows how to track and debug Go AI SDK operations with MLflow Tracing over OpenTelemetry, covering configuration, telemetry settings, and troubleshooting."
 ---
 
 # MLflow Observability
 
-MLflow Tracing provides automatic observability for applications built with the Go-AI SDK via OpenTelemetry. When enabled, MLflow records prompts, responses, token usage, latencies, and exceptions for comprehensive experiment tracking and debugging.
+MLflow Tracing provides automatic observability for applications built with the Go AI SDK via OpenTelemetry. When enabled, MLflow records prompts, responses, token usage, latencies, and exceptions for comprehensive experiment tracking and debugging.
 
 ## What is MLflow?
 
@@ -34,7 +34,7 @@ mlflow server --backend-store-uri sqlite:///mlruns.db --port 5000
 
 For production, use a proper database backend. See [MLflow Setup Guide](https://mlflow.org/docs/latest/genai/getting-started/connect-environment/).
 
-2. **Install Go-AI SDK:**
+2. **Install Go AI SDK:**
 
 ```bash
 go get github.com/digitallysavvy/go-ai

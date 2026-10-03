@@ -1,6 +1,6 @@
 ---
 title: DeepInfra Provider
-description: Setup and usage guide for DeepInfra serverless GPU inference with Go-AI SDK
+description: Setup and usage guide for DeepInfra serverless GPU inference with Go AI SDK
 ---
 
 # DeepInfra Provider
@@ -70,7 +70,7 @@ export DEEPINFRA_API_KEY=...
 
 ### Token Counting Fix
 
-The Go-AI SDK automatically corrects token counting issues for Gemini and Gemma models on DeepInfra.
+The Go AI SDK automatically corrects token counting issues for Gemini and Gemma models on DeepInfra.
 
 **The Issue:**
 DeepInfra's API has a bug where `reasoning_tokens` are not included in `completion_tokens` for Gemini/Gemma models with thinking capabilities. This violates the OpenAI-compatible spec and can result in negative token counts.
@@ -88,7 +88,7 @@ DeepInfra's API has a bug where `reasoning_tokens` are not included in `completi
 This would incorrectly calculate: `text_tokens = 84 - 1081 = -997` ❌
 
 **The Fix:**
-The Go-AI SDK automatically detects and corrects this:
+The Go AI SDK automatically detects and corrects this:
 ```go
 // When reasoning_tokens > completion_tokens, automatically add them
 // corrected_completion_tokens = 84 + 1081 = 1165 ✅

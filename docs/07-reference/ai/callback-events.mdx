@@ -5,7 +5,7 @@ description: Structured lifecycle events for observability in GenerateText, Stre
 
 # Callback Events
 
-The Go-AI SDK fires structured lifecycle events during text generation and agent execution. Each event is a typed struct delivered via callback fields on `GenerateTextOptions`, `StreamTextOptions`, and `AgentConfig`.
+The Go AI SDK fires structured lifecycle events during text generation and agent execution. Each event is a typed struct delivered via callback fields on `GenerateTextOptions`, `StreamTextOptions`, and `AgentConfig`.
 
 `GenerateTextOptions`, `StreamTextOptions`, `AgentGenerateOptions`, and `AgentConfig` use the TypeScript-aligned tool callback names `OnToolExecutionStart` and `OnToolExecutionEnd`. The event structs keep their Go names, `OnToolCallStartEvent` and `OnToolCallFinishEvent`.
 

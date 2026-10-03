@@ -1,11 +1,11 @@
 ---
 title: "OpenAI Responses API: Custom Tools & Shell Container Tools"
-description: "Covers Custom Tool, Tool Search, and Shell Container Tool types in the OpenAI Responses API, and how to use PrepareTools with them in the Go-AI SDK."
+description: "Covers Custom Tool, Tool Search, and Shell Container Tool types in the OpenAI Responses API, and how to use PrepareTools with them in the Go AI SDK."
 ---
 
 # OpenAI Responses API: Custom Tools & Shell Container Tools
 
-This guide covers the Custom Tool, Tool Search, and Shell Container Tool types available in the OpenAI Responses API, and how to use them with the Go-AI SDK.
+This guide covers the Custom Tool, Tool Search, and Shell Container Tool types available in the OpenAI Responses API, and how to use them with the Go AI SDK.
 
 ## Overview
 
@@ -456,7 +456,7 @@ Full runnable examples are in:
 ## Server-Side Compaction
 
 When the Responses API compacts the conversation context server-side, it emits a
-`compaction` event in the SSE stream. The Go-AI SDK surfaces this as a
+`compaction` event in the SSE stream. The Go AI SDK surfaces this as a
 `ChunkTypeCustom` stream chunk with `CustomContent{Kind: "openai.compaction"}`.
 
 The `ProviderMetadata` JSON on the chunk contains:

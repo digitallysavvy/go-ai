@@ -1,6 +1,6 @@
 # Documentation Style Guide
 
-This guide establishes standards for Go-AI SDK documentation to ensure consistency, clarity, and maintainability across all documentation files.
+This guide establishes standards for Go AI SDK documentation to ensure consistency, clarity, and maintainability across all documentation files.
 
 ## File Naming Conventions
 

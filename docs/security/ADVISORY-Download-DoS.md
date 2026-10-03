@@ -1,6 +1,6 @@
 ---
 title: "Security Advisory: Unbounded Download DoS Prevention"
-description: "Security advisory describing an unbounded download denial-of-service vulnerability in the Go-AI SDK, its fix, mitigation steps, and impact assessment."
+description: "Security advisory describing an unbounded download denial-of-service vulnerability in the Go AI SDK, its fix, mitigation steps, and impact assessment."
 ---
 
 # Security Advisory: Unbounded Download DoS Prevention
@@ -13,7 +13,7 @@ description: "Security advisory describing an unbounded download denial-of-servi
 
 ## Summary
 
-Prior versions of the Go-AI SDK allowed unbounded memory growth when downloading from user-provided URLs (images, videos, audio), enabling Denial of Service (DoS) attacks through memory exhaustion.
+Prior versions of the Go AI SDK allowed unbounded memory growth when downloading from user-provided URLs (images, videos, audio), enabling Denial of Service (DoS) attacks through memory exhaustion.
 
 ## Vulnerability Details
 
@@ -112,7 +112,7 @@ go get github.com/digitallysavvy/go-ai@latest
 
 Any application that:
 - Accepts user-provided image/video/audio URLs
-- Uses the Go-AI SDK for generation with file inputs
+- Uses the Go AI SDK for generation with file inputs
 - Runs in production environments with untrusted input
 
 ### Risk Level

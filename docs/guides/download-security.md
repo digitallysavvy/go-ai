@@ -1,11 +1,11 @@
 ---
 title: "Download Security and Size Limits"
-description: "Explains built-in protection against memory-exhaustion attacks when the Go-AI SDK downloads files from URLs, covering default limits and customization."
+description: "Explains built-in protection against memory-exhaustion attacks when the Go AI SDK downloads files from URLs, covering default limits and customization."
 ---
 
 # Download Security and Size Limits
 
-The Go-AI SDK includes built-in protection against memory exhaustion attacks when downloading files from URLs. This guide explains how download security works and how to customize size limits for your use case.
+The Go AI SDK includes built-in protection against memory exhaustion attacks when downloading files from URLs. This guide explains how download security works and how to customize size limits for your use case.
 
 ## Overview
 

@@ -1,6 +1,6 @@
 # Quality Tools Quick Reference
 
-Quick reference for Go-AI SDK documentation quality tools and standards.
+Quick reference for Go AI SDK documentation quality tools and standards.
 
 ## Documentation Standards
 
