@@ -53,6 +53,7 @@ Before contributing to documentation, ensure you have:
    cd docs/scripts
    go run validate-links.go -docs=../ -verbose
    go run extract-examples.go -docs=../ -test-only
+   # or, from the repo root: go run docs/scripts/compile-snippets.go
    ```
 
 ## Documentation Structure
@@ -283,38 +284,37 @@ func main() {
 
 ### Testing Examples
 
-Your examples will be automatically extracted and tested. Ensure they compile:
+CI compiles every Go block in `docs/` with `docs/scripts/compile-snippets.go`. Run it from the repository root before you open a PR:
 
 ```bash
-# Test your specific file
-cd docs/scripts
-go run extract-examples.go -docs=../04-guides/your-guide.mdx -verbose
-
-# Test all examples
-go run extract-examples.go -docs=../ -compile
+go run docs/scripts/compile-snippets.go             # check all of docs/
+go run docs/scripts/compile-snippets.go -v          # also list skipped blocks
+go run docs/scripts/compile-snippets.go -fragments=strict
 ```
 
-### Marking Non-Compilable Examples
+The tool sorts blocks into three groups:
 
-If your example is pseudo-code or intentionally incomplete:
+- **Complete programs** (the block has a `package` clause). Each program is checked with `go vet` against the module. Any error fails CI. Report `file:line` points at the failing line in the docs source.
+- **Fragments** (no `package` clause). The tool wraps each fragment in a template (declarations become a package, statements become a function body) and adds imports for the packages it uses. It ignores errors that a fragment cannot avoid, such as `undefined: model` or `declared and not used`, and reports the rest: undefined package members (`ai.Step`), wrong argument counts or types, and syntax errors. Fragment findings are printed but do not fail CI yet. Fix the ones in the pages you touch.
+- **Skipped blocks** (the fence has `skip-compile`).
+
+Write complete programs when a reader can run them. Write fragments when the context around them supplies the variables. Both are checked.
+
+### Marking non-compilable examples
+
+Add `skip-compile` to the fence info string for blocks that cannot compile on purpose:
+
+- "Before:" blocks that show a removed API.
+- Programs that import a third-party module the SDK does not depend on (for example Redis or OpenTelemetry exporters).
 
 ````markdown
-```go
-// This is pseudo-code for illustration
-client := NewClient()
-result := client.DoMagic() // Simplified for clarity
+```go skip-compile
+// Before (v0.4): this no longer compiles.
+tool := types.Tool{Name: "search", Strict: true}
 ```
 ````
 
-Add a note above the example:
-
-```markdown
-The following is pseudo-code showing the general pattern:
-
-```go
-// pseudo-code here
-```
-```
+Docusaurus ignores the extra word, so the block renders as normal Go code. Use the marker only when the block must not compile. Do not use it to hide a broken example. Pages in `_templates/` are not checked.
 
 ## Testing Documentation
 

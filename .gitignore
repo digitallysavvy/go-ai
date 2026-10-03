@@ -84,3 +84,4 @@ PROGRESS.md
 
 # Generated at build time from CHANGELOG.md by website/scripts/sync-changelog.mjs
 docs/12-changelog/
+.docsnippets-*/

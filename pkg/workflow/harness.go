@@ -12,6 +12,7 @@
 // default resolveWorkflowWritable() has no Go analog) and the caller supplies
 // their own step/durability wrapper around RunHarnessAgent* — see
 // examples/workflow/harness for the intended usage shape.
+
 package workflow
 
 import (

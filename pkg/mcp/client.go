@@ -832,7 +832,7 @@ func (c *MCPClient) receiveLoop() {
 		if IsResponse(msg) {
 			// Response to a request
 			c.pendingMu.RLock()
-			ch, ok := c.pending[msg.ID]
+			ch, ok := c.pending[pendingKey(msg.ID)]
 			c.pendingMu.RUnlock()
 
 			if ok {
@@ -856,6 +856,26 @@ func (c *MCPClient) receiveLoop() {
 			go c.handleRequest(msg)
 		}
 	}
+}
+
+// pendingKey converts a response ID decoded from JSON into the uint64 key
+// IDGenerator uses for c.pending. encoding/json decodes numbers into
+// interface{} as float64 and ParseMessage as int64; neither equals a uint64
+// map key, so without this conversion responses never reach their caller.
+func pendingKey(id interface{}) interface{} {
+	switch v := id.(type) {
+	case float64:
+		return uint64(v)
+	case int64:
+		return uint64(v)
+	case int:
+		return uint64(v)
+	case json.Number:
+		if n, err := v.Int64(); err == nil {
+			return uint64(n)
+		}
+	}
+	return id
 }
 
 // handleNotification handles notifications from the server

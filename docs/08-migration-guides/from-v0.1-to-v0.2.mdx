@@ -27,7 +27,7 @@ If you're upgrading from a later version instead, see [migrating from v0.3.x to 
 
 **Before (v0.1.0 — no longer compiles):**
 
-```go
+```go skip-compile
 usage := types.Usage{
     InputTokens:  10,
     OutputTokens: 20,
@@ -114,7 +114,7 @@ weatherTool := types.Tool{
 
 **Before (v0.1.0 — no longer compiles):**
 
-```go
+```go skip-compile
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "Solve this problem",

@@ -1,4 +1,4 @@
-// Computer tool types and helpers for the OpenAI Responses API (row 0063c2d).
+// Computer tool types and helpers for the OpenAI Responses API.
 //
 // Computer tool flow:
 //  1. Include the computer tool in the request (via NewComputerTool).
@@ -7,6 +7,7 @@
 //  3. Execute the actions, capture a screenshot, and send back a
 //     ComputerCallOutput with the screenshot (image_url or file_id) and any
 //     acknowledged safety checks.
+
 package responses
 
 import (
@@ -41,7 +42,7 @@ type ComputerCall struct {
 	// call_id: null) means this call is fully server-executed with no
 	// client round-trip; it decodes as a provider-executed "computer_use"
 	// tool-call/tool-result pair instead of a client-executable "computer"
-	// tool call (row 0063c2d).
+	// tool call.
 	CallID *string `json:"call_id,omitempty"`
 
 	// Status is "in_progress", "completed", or "incomplete".

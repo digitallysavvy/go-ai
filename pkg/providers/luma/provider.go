@@ -4,6 +4,7 @@
 // Luma exposes an asynchronous image generation queue: DoGenerate submits a
 // generation, polls its status, and downloads the resulting image. Luma has
 // no language, embedding, speech, transcription, reranking, or video model.
+
 package luma
 
 import (

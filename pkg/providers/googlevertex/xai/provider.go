@@ -29,6 +29,7 @@
 // imported from pkg/providers/googlevertex/internal (a leaf package neither
 // this package nor the parent googlevertex package needs to avoid), rather
 // than duplicated here.
+
 package xai
 
 import (

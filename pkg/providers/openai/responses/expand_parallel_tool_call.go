@@ -8,6 +8,7 @@
 // a declared client-side function tool, preserving the wrapper's identity
 // via ParallelToolCallMetadata so results can be regrouped into a single
 // function_call_output on replay (see convert.go).
+
 package responses
 
 import (
