@@ -75,7 +75,7 @@ func main() {
 | `types.ToolApprovalStatus` | A fixed outcome: `ToolApprovalStatusUserApproval`, `ToolApprovalStatusApproved` or `ToolApprovalStatusDenied`. |
 | `nil` or `false` | Run without asking. |
 
-> **Warning:** convert function values to their named types. `ToolApproval` is an `interface{}`. The SDK matches functions by their named type, so a bare `func(...) bool` literal is not recognized, and the tool **runs without approval**. Always write `types.ToolNeedsApprovalFunc(func...)`, and `types.GenericToolApprovalFunc(func...)` for the call-level function below.
+`ToolApproval` is an `interface{}`, so the compiler can't check what you put in it. A bare function literal with one of the signatures above works the same as its named type. The SDK fails closed on anything else: a value of an unsupported type, or an unknown status string such as `"user_approval"`, becomes a tool error and the tool doesn't run. Writing the named type, as in the example, makes the intent clear and lets the compiler check the signature.
 
 `NeedsApproval` still works but is deprecated. Use `ToolApproval`.
 

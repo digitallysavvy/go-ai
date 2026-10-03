@@ -105,7 +105,7 @@ ANTHROPIC_API_KEY=... go run ./examples/recipes/tool-approval
 - `ToolApproval: true` on the tool makes the agent stop and send an approval request instead of running it.
 - `ExperimentalToolApprovalSecret` signs each request. The server verifies the signature when the approval comes back, so a client cannot forge one.
 - The client needs `addToolApprovalResponse` and `sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses`.
-- To ask only sometimes, set `ToolApproval` to a `types.ToolNeedsApprovalFunc`. Convert the function to that named type; a bare function literal is ignored and the tool runs without approval.
+- To ask only sometimes, set `ToolApproval` to a `types.ToolNeedsApprovalFunc`. Values the SDK doesn't recognize fail closed: the tool reports an error instead of running.
 
 ## Go deeper
 
