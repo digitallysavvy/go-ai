@@ -1761,8 +1761,8 @@ func CreateUIMessageStreamResponse(ctx context.Context, result *StreamTextResult
 
 // UIMessageStreamHeaders returns the headers a UI message stream response
 // carries: SSE content type, no caching or proxy buffering, and the
-// X-Vercel-AI-UI-Message-Stream protocol version that useChat expects. Set
-// them on an http.ResponseWriter before calling a Pipe* helper. Mirrors TS
+// X-Vercel-AI-UI-Message-Stream protocol version that useChat expects. The
+// Pipe* helpers set them on an http.ResponseWriter for you. Mirrors TS
 // UI_MESSAGE_STREAM_HEADERS.
 func UIMessageStreamHeaders() http.Header {
 	// Set canonicalizes the keys; a map literal with "X-Vercel-AI-UI-..."
@@ -1822,6 +1822,8 @@ func CreateUIMessageStreamResponseWithInit(ctx context.Context, result *StreamTe
 }
 
 // PipeUIMessageStreamToResponse writes UI chunks to the given writer as SSE.
+// When w is an http.ResponseWriter it first sets UIMessageStreamHeaders and
+// writes status 200, like TS pipeUIMessageStreamToResponse.
 func PipeUIMessageStreamToResponse(ctx context.Context, result *StreamTextResult, w io.Writer, opts ...UIMessageStreamResultOptions) error {
 	return PipeUIMessageStreamToResponseWithInit(ctx, result, w, nil, opts...)
 }
@@ -1870,6 +1872,8 @@ func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTe
 	defer cancelStream()
 
 	chunks, errCh := CreateUIMessageStream(streamCtx, result, opts...)
+	status, _, headers := uiMessageStreamResponseHead(init)
+	writeResponseHead(w, status, headers)
 	consumeErr, err := writeUIMessageChunksSSE(chunks, w, init)
 	if err != nil {
 		return err
@@ -1891,10 +1895,10 @@ func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTe
 // CreateUIMessageStreamWithOptions or CreateAgentUIStreamFromUIMessages.
 // Mirrors TS pipeUIMessageStreamToResponse({ response, stream }).
 //
-// Like PipeUIMessageStreamToResponse it writes only the SSE body: when w is
-// an http.ResponseWriter, set the UI message stream headers first (see
-// UIMessageStreamHeaders). init may be nil; its KeepAliveMs and
-// ConsumeSSEStream are honored, its Status and headers are not used.
+// When w is an http.ResponseWriter it first sets the UI message stream
+// headers (UIMessageStreamHeaders, overridden by init's) and writes the
+// status (200 unless init sets one). Other writers get only the body. init
+// may be nil.
 //
 // If writing fails, PipeUIMessageChunksToResponse returns without draining
 // chunks. Create the stream with a ctx you cancel when this returns (an
@@ -1907,6 +1911,8 @@ func PipeUIMessageChunksToResponse(chunks <-chan UIMessageChunk, w io.Writer, in
 	if w == nil {
 		return fmt.Errorf("writer is required")
 	}
+	status, _, headers := uiMessageStreamResponseHead(init)
+	writeResponseHead(w, status, headers)
 	consumeErr, err := writeUIMessageChunksSSE(chunks, w, init)
 	if err != nil {
 		return err

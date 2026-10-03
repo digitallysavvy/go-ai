@@ -124,7 +124,7 @@ Go ships two mechanisms. Prefer the `Output` one; `GenerateObject`/`StreamObject
 | `createUIMessageStreamResponse(...)` | `ai.CreateUIMessageStreamResponse(ctx, result)` | `ui_message_stream.go`. Returns `(*http.Response, error)` — copy its headers/status/body onto your `http.ResponseWriter` (see [Serving a TS frontend](#serving-a-ts-frontend-from-a-go-backend)). |
 | `pipeUIMessageStreamToResponse(response, ...)` | `ai.PipeUIMessageStreamToResponse(ctx, result, w)` | `ui_message_stream.go`. Writes SSE frames straight to any `io.Writer`, flushing after every event. |
 | `createUIMessageStreamResponse({ stream })` / `pipeUIMessageStreamToResponse({ response, stream })` | `ai.CreateUIMessageChunksResponse(chunks, init)` / `ai.PipeUIMessageChunksToResponse(chunks, w, init)` | For any UI message chunk stream, such as one from `CreateUIMessageStreamWithOptions`. |
-| `UI_MESSAGE_STREAM_HEADERS` | `ai.UIMessageStreamHeaders()` | Set on `http.ResponseWriter` before a `Pipe*` helper. |
+| `UI_MESSAGE_STREAM_HEADERS` | `ai.UIMessageStreamHeaders()` | The `Pipe*` helpers set these on an `http.ResponseWriter` for you. |
 | `createAgentUIStreamResponse({ agent, uiMessages })` / `pipeAgentUIStreamToResponse({ response, agent, uiMessages })` | `agent.CreateAgentUIStreamResponseFromUIMessages` / `agent.PipeAgentUIStreamFromUIMessagesToResponse` | Validate and convert `useChat` messages, then stream the agent's reply. See [Agent UI Stream Helpers](../07-reference/ai/agent-ui-stream-helpers.mdx).
 | `readUIMessageStream(stream)` | `ai.ReadUIMessageStream(r io.Reader)` | `ui_message_stream.go`. |
 | chunk-sequence error passed to `onError` | `ai.UIMessageStreamError` / `ai.IsUIMessageStreamError(err)` | Typed error for malformed UI message stream sequences. |
@@ -502,7 +502,7 @@ func main() {
 }
 ```
 
-`ai.CreateUIMessageStreamResponse` builds a full `*http.Response` with the same headers the TS SDK's response helpers set (`Content-Type: text/event-stream`, `X-Vercel-AI-UI-Message-Stream: v1`, and so on) — copy them onto `http.ResponseWriter` as shown, and any TS `useChat` client pointed at this endpoint works unmodified. If you'd rather write SSE frames directly without the intermediate `*http.Response`, use `ai.PipeUIMessageStreamToResponse(ctx, result, w)` and set `ai.UIMessageStreamHeaders()` on the response yourself.
+`ai.CreateUIMessageStreamResponse` builds a full `*http.Response` with the same headers the TS SDK's response helpers set (`Content-Type: text/event-stream`, `X-Vercel-AI-UI-Message-Stream: v1`, and so on) — copy them onto `http.ResponseWriter` as shown, and any TS `useChat` client pointed at this endpoint works unmodified. If you'd rather write SSE frames directly without the intermediate `*http.Response`, use `ai.PipeUIMessageStreamToResponse(ctx, result, w)`: like TS `pipeUIMessageStreamToResponse`, it sets the headers and status on the `http.ResponseWriter` itself.
 
 ## See Also
 

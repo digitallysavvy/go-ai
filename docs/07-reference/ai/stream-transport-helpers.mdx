@@ -21,7 +21,7 @@ Returns an `*http.Response` with a plain text body (`text/plain; charset=utf-8`)
 func PipeTextStreamToResponse(ctx context.Context, result *ai.StreamTextResult, w io.Writer) error
 ```
 
-Writes text chunks to `w` as plain UTF-8 text.
+Writes text chunks to `w` as plain UTF-8 text. On an `http.ResponseWriter` it first sets `Content-Type: text/plain; charset=utf-8` and writes status 200. `PipeTextStreamToResponseWithInit(ctx, result, w, init)` takes a `*ai.TextStreamResponseInit` to change the status or add headers. Mirrors TS `pipeTextStreamToResponse`.
 
 ## `CreateUIMessageStream`
 
@@ -45,7 +45,7 @@ Returns an `*http.Response` with Server-Sent Events (`text/event-stream`) UI mes
 func PipeUIMessageStreamToResponse(ctx context.Context, result *ai.StreamTextResult, w io.Writer, opts ...ai.UIMessageStreamResultOptions) error
 ```
 
-Writes UI message chunks as Server-Sent Events.
+Writes UI message chunks as Server-Sent Events. On an `http.ResponseWriter` it first sets the UI message stream headers (see `UIMessageStreamHeaders`) and writes status 200; `PipeUIMessageStreamToResponseWithInit` takes an init with a different status or extra headers. Other writers get only the body. Mirrors TS `pipeUIMessageStreamToResponse`.
 
 ## `PipeUIMessageChunksToResponse`
 
@@ -53,7 +53,7 @@ Writes UI message chunks as Server-Sent Events.
 func PipeUIMessageChunksToResponse(chunks <-chan ai.UIMessageChunk, w io.Writer, init *ai.UIMessageStreamResponseInit) error
 ```
 
-Writes any UI message chunk stream to `w` as Server-Sent Events, ending with `data: [DONE]`. Use it for a stream that isn't a single `StreamTextResult`, such as one built with `CreateUIMessageStreamWithOptions` that writes custom data parts and merges an agent stream. Mirrors TS `pipeUIMessageStreamToResponse({ response, stream })`. `init` may be `nil`. Its `KeepAliveMs` and `ConsumeSSEStream` apply, but not its status or headers, because only the body is written. When writing fails it returns without draining `chunks`, so create the stream with a context you cancel, such as the request's.
+Writes any UI message chunk stream to `w` as Server-Sent Events, ending with `data: [DONE]`. Use it for a stream that isn't a single `StreamTextResult`, such as one built with `CreateUIMessageStreamWithOptions` that writes custom data parts and merges an agent stream. Mirrors TS `pipeUIMessageStreamToResponse({ response, stream })`. On an `http.ResponseWriter` it first sets the UI message stream headers (overridden by `init.Headers`) and writes the status (200 unless `init.Status` is set). `init` may be `nil`. When writing fails it returns without draining `chunks`, so create the stream with a context you cancel, such as the request's.
 
 ```go
 chunks, _ := ai.CreateUIMessageStreamWithOptions(r.Context(), ai.UIMessageStreamOptions{
@@ -68,9 +68,6 @@ chunks, _ := ai.CreateUIMessageStreamWithOptions(r.Context(), ai.UIMessageStream
 		writer.Merge(uiChunks)
 	},
 })
-for key, values := range ai.UIMessageStreamHeaders() {
-	w.Header()[key] = values
-}
 if err := ai.PipeUIMessageChunksToResponse(chunks, w, nil); err != nil {
 	log.Printf("stream: %v", err)
 }
@@ -90,7 +87,7 @@ Returns an `*http.Response` that streams any UI message chunk stream, with the s
 func UIMessageStreamHeaders() http.Header
 ```
 
-Returns the headers a UI message stream response carries: `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`, `X-Vercel-AI-UI-Message-Stream: v1` and `X-Accel-Buffering: no`. The `Pipe*` helpers write only the body, so set these on an `http.ResponseWriter` first. Mirrors TS `UI_MESSAGE_STREAM_HEADERS`.
+Returns the headers a UI message stream response carries: `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`, `X-Vercel-AI-UI-Message-Stream: v1` and `X-Accel-Buffering: no`. The `Pipe*` helpers set them on an `http.ResponseWriter` for you; use this when you write the response another way. Mirrors TS `UI_MESSAGE_STREAM_HEADERS`.
 
 ### Keep-alive
 

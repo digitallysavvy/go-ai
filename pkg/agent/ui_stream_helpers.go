@@ -148,8 +148,10 @@ func CreateAgentUIStreamFromUIMessages(ctx context.Context, agent *ToolLoopAgent
 
 // PipeAgentUIStreamFromUIMessagesToResponse runs the agent on UI messages
 // from a chat frontend (see CreateAgentUIStreamFromUIMessages) and writes
-// the reply to w as Server-Sent Events. When w is an http.ResponseWriter, set
-// ai.UIMessageStreamHeaders() on it first. Mirrors TS
+// the reply to w as Server-Sent Events, setting the UI message stream status
+// and headers when w is an http.ResponseWriter. Invalid messages return an
+// error before anything is written, so the caller can still answer with an
+// error status. Mirrors TS
 // pipeAgentUIStreamToResponse({ response, agent, uiMessages }).
 func PipeAgentUIStreamFromUIMessagesToResponse(ctx context.Context, agent *ToolLoopAgent, opts CreateAgentUIStreamFromUIMessagesOptions, w io.Writer) error {
 	if w == nil {

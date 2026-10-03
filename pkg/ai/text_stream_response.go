@@ -39,20 +39,7 @@ func CreateTextStreamResponseFromStream(ctx context.Context, stream provider.Tex
 	if stream == nil {
 		return nil, fmt.Errorf("stream is required")
 	}
-	status := http.StatusOK
-	statusText := ""
-	headers := http.Header{
-		"Content-Type": []string{"text/plain; charset=utf-8"},
-	}
-	if init != nil {
-		if init.Status != 0 {
-			status = init.Status
-		}
-		statusText = init.StatusText
-		for key, value := range init.Headers {
-			headers.Set(key, value)
-		}
-	}
+	status, statusText, headers := textStreamResponseHead(init)
 	pr, pw := io.Pipe()
 	go func() {
 		defer func() { _ = pw.Close() }()
@@ -66,11 +53,59 @@ func CreateTextStreamResponseFromStream(ctx context.Context, stream provider.Tex
 	}, nil
 }
 
-// PipeTextStreamToResponse writes text chunks to the writer as UTF-8 text.
+// textStreamResponseHead resolves the status and headers for a plain-text
+// stream response. Mirrors TS prepareHeaders with the text/plain default.
+func textStreamResponseHead(init *TextStreamResponseInit) (int, string, http.Header) {
+	status := http.StatusOK
+	statusText := ""
+	headers := http.Header{}
+	headers.Set("Content-Type", "text/plain; charset=utf-8")
+	if init != nil {
+		if init.Status != 0 {
+			status = init.Status
+		}
+		statusText = init.StatusText
+		for key, value := range init.Headers {
+			headers.Set(key, value)
+		}
+	}
+	return status, statusText, headers
+}
+
+// writeResponseHead sets headers and writes the status code when w is an
+// http.ResponseWriter, the way TS writeToServerResponse calls setHeaders and
+// writeHead on a Node ServerResponse. Headers already set on w are kept
+// unless headers names them. Other writers get only the body. net/http
+// cannot send a custom reason phrase, so a status text is not used here.
+func writeResponseHead(w io.Writer, status int, headers http.Header) {
+	rw, ok := w.(http.ResponseWriter)
+	if !ok {
+		return
+	}
+	for key, values := range headers {
+		rw.Header()[key] = values
+	}
+	rw.WriteHeader(status)
+}
+
+// PipeTextStreamToResponse writes text chunks to w as UTF-8 text. When w is
+// an http.ResponseWriter it first writes status 200 and
+// Content-Type: text/plain; charset=utf-8, like TS pipeTextStreamToResponse.
 func PipeTextStreamToResponse(ctx context.Context, result *StreamTextResult, w io.Writer) error {
+	return PipeTextStreamToResponseWithInit(ctx, result, w, nil)
+}
+
+// PipeTextStreamToResponseWithInit is PipeTextStreamToResponse with an
+// optional status and headers, which override the defaults.
+func PipeTextStreamToResponseWithInit(ctx context.Context, result *StreamTextResult, w io.Writer, init *TextStreamResponseInit) error {
 	if result == nil {
 		return fmt.Errorf("result is required")
 	}
+	if w == nil {
+		return fmt.Errorf("writer is required")
+	}
+	status, _, headers := textStreamResponseHead(init)
+	writeResponseHead(w, status, headers)
 	return PipeTextStreamToWriter(ctx, result.Stream(), w)
 }
 

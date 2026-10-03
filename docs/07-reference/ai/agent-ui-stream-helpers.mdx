@@ -49,7 +49,7 @@ Returns the reply as a UI message chunk stream. `opts.UIMessages` accepts `[]ai.
 func PipeAgentUIStreamFromUIMessagesToResponse(ctx context.Context, agent *agent.ToolLoopAgent, opts agent.CreateAgentUIStreamFromUIMessagesOptions, w io.Writer) error
 ```
 
-Writes the reply to `w` as Server-Sent Events. It writes only the body, so set `ai.UIMessageStreamHeaders()` on an `http.ResponseWriter` first. The agent stops when writing fails, for example when the client disconnects.
+Writes the reply to `w` as Server-Sent Events. On an `http.ResponseWriter` it sets the UI message stream headers and status first. The agent stops when writing fails, for example when the client disconnects.
 
 ```go
 package main
@@ -61,7 +61,6 @@ import (
 	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/agent"
-	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
@@ -80,9 +79,6 @@ func main() {
 			http.Error(w, "invalid body", http.StatusBadRequest)
 			return
 		}
-		for key, values := range ai.UIMessageStreamHeaders() {
-			w.Header()[key] = values
-		}
 		err := agent.PipeAgentUIStreamFromUIMessagesToResponse(r.Context(), assistant,
 			agent.CreateAgentUIStreamFromUIMessagesOptions{UIMessages: []byte(body.Messages)}, w)
 		if err != nil {
@@ -93,7 +89,21 @@ func main() {
 }
 ```
 
-Invalid messages return an error before anything is written. To answer those with a 400 instead of an empty 200, call `CreateAgentUIStreamFromUIMessages` yourself and pipe the chunks with `ai.PipeUIMessageChunksToResponse` once it succeeds.
+Messages that fail validation return an error before anything is written. To answer those with a 400, start the stream yourself and pipe it once it succeeds:
+
+```go
+chunks, _, err := agent.CreateAgentUIStreamFromUIMessages(r.Context(), assistant,
+	agent.CreateAgentUIStreamFromUIMessagesOptions{UIMessages: []byte(body.Messages)})
+if err != nil {
+	http.Error(w, err.Error(), http.StatusBadRequest)
+	return
+}
+if err := ai.PipeUIMessageChunksToResponse(chunks, w, nil); err != nil {
+	log.Printf("chat: %v", err)
+}
+```
+
+Once streaming has started, errors reach the client as `error` chunks.
 
 ### `CreateAgentUIStreamResponseFromUIMessages`
 

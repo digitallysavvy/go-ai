@@ -23,6 +23,17 @@ a `useChat` frontend on a Go backend.
   `createAgentUIStreamResponse` with `uiMessages`).
 - `ai.UIMessageStreamHeaders()` (TS `UI_MESSAGE_STREAM_HEADERS`).
 
+### Changed
+
+- On an `http.ResponseWriter`, `PipeUIMessageStreamToResponse`,
+  `PipeUIMessageChunksToResponse`, `PipeTextStreamToResponse` and the agent
+  `Pipe*` helpers now set the response headers and write the status before
+  the body, like their TS counterparts on a Node `ServerResponse`. Before,
+  they wrote only the body and the caller had to set the headers. Remove any
+  manual header setup or `WriteHeader` call made before these helpers.
+  Other `io.Writer`s still get only the body. New
+  `PipeTextStreamToResponseWithInit` takes a status and headers.
+
 ### Fixed
 
 - A step that pauses for tool approval keeps the model's finish reason

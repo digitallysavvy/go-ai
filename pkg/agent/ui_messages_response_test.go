@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -76,5 +77,31 @@ func TestCreateAgentUIStreamResponseFromUIMessages(t *testing.T) {
 	}
 	if !strings.Contains(string(body), `"delta":"response"`) || !strings.HasSuffix(string(body), "data: [DONE]\n\n") {
 		t.Fatalf("unexpected body:\n%s", body)
+	}
+}
+
+func TestPipeAgentUIStreamFromUIMessagesToResponse_HeadOnlyAfterValidation(t *testing.T) {
+	a := NewToolLoopAgent(AgentConfig{Model: simpleStreamModel()})
+
+	// Valid messages: the UI message stream head is written.
+	rec := httptest.NewRecorder()
+	if err := PipeAgentUIStreamFromUIMessagesToResponse(context.Background(), a, CreateAgentUIStreamFromUIMessagesOptions{
+		UIMessages: []byte(helloUIMessages),
+	}, rec); err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	if rec.Header().Get("X-Vercel-AI-UI-Message-Stream") != "v1" || !rec.Flushed {
+		t.Fatalf("expected UI stream headers and a flushed body, got %v", rec.Header())
+	}
+
+	// Invalid messages: nothing is written, so the caller can still reply 400.
+	rec = httptest.NewRecorder()
+	if err := PipeAgentUIStreamFromUIMessagesToResponse(context.Background(), a, CreateAgentUIStreamFromUIMessagesOptions{
+		UIMessages: []byte(`not json`),
+	}, rec); err == nil {
+		t.Fatal("expected a validation error")
+	}
+	if len(rec.Header()) != 0 || rec.Body.Len() != 0 || rec.Flushed {
+		t.Fatalf("nothing should be written: headers %v, body %q", rec.Header(), rec.Body.String())
 	}
 }
