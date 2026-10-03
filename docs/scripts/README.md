@@ -305,3 +305,36 @@ To improve these scripts:
 ## License
 
 These scripts are part of the Go-AI SDK and follow the same license.
+
+### gen-reference.go
+
+Regenerates struct field tables and constant lists in the reference pages from the Go source in `pkg/`. A generated section sits between two marker comments:
+
+```mdx
+{/* gen:fields ai.GenerateTextOptions */}
+...generated table...
+{/* /gen:fields */}
+
+{/* gen:consts ai.ToolUIPartState */}
+...generated table...
+{/* /gen:consts */}
+```
+
+Text outside the markers is hand-written and never touched, so running the generator twice changes nothing. The reference is `<package>.<Type>`. Use a path below `pkg/` (for example `providers/openai.Config`) when a package name is ambiguous.
+
+```bash
+go run docs/scripts/gen-reference.go          # rewrite the pages
+go run docs/scripts/gen-reference.go --check  # exit 1 if a page is out of date (CI)
+```
+
+### ref-coverage.go
+
+Reports the share of exported top-level identifiers (types, functions, constants, variables) in `pkg/ai`, `pkg/agent`, `pkg/mcp`, `pkg/harness` and `pkg/workflow` that appear anywhere in `docs/`. An identifier counts as documented when it appears as a whole word in any `.md` or `.mdx` file.
+
+```bash
+go run docs/scripts/ref-coverage.go                      # report
+go run docs/scripts/ref-coverage.go -list pkg/mcp        # list what is missing
+go run docs/scripts/ref-coverage.go -min pkg/ai=90       # exit 1 below a threshold
+```
+
+Identifiers that are intentionally undocumented go in `docs/scripts/ref-coverage-allowlist.txt`, one per line, as `<package-dir> <Identifier> # reason`. A reason is required.
