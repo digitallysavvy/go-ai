@@ -29,6 +29,10 @@ import (
 	"strings"
 )
 
+// wordRe matches Go identifier-shaped tokens. An identifier counts as
+// documented when it appears as a whole token anywhere in the docs.
+var wordRe = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*`)
+
 func main() {
 	pkgsFlag := flag.String("pkgs", "pkg/ai,pkg/agent,pkg/mcp,pkg/harness,pkg/workflow", "comma-separated package directories")
 	docsDir := flag.String("docs", "docs", "docs directory")
@@ -40,6 +44,10 @@ func main() {
 	corpus, err := readDocs(*docsDir)
 	if err != nil {
 		fatal(err)
+	}
+	words := map[string]bool{}
+	for _, w := range wordRe.FindAllString(corpus, -1) {
+		words[w] = true
 	}
 	allow, err := readAllowlist(*allowFile)
 	if err != nil {
@@ -76,7 +84,7 @@ func main() {
 				continue
 			}
 			total++
-			if regexp.MustCompile(`\b` + regexp.QuoteMeta(id) + `\b`).MatchString(corpus) {
+			if words[id] {
 				covered++
 			} else {
 				missing = append(missing, id)
