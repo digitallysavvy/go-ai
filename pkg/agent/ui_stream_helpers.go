@@ -145,3 +145,43 @@ func CreateAgentUIStreamFromUIMessages(ctx context.Context, agent *ToolLoopAgent
 	chunks, errs := ai.CreateUIMessageStream(ctx, result, uiOptions)
 	return chunks, errs, nil
 }
+
+// PipeAgentUIStreamFromUIMessagesToResponse runs the agent on UI messages
+// from a chat frontend (see CreateAgentUIStreamFromUIMessages) and writes
+// the reply to w as Server-Sent Events. When w is an http.ResponseWriter, set
+// ai.UIMessageStreamHeaders() on it first. Mirrors TS
+// pipeAgentUIStreamToResponse({ response, agent, uiMessages }).
+func PipeAgentUIStreamFromUIMessagesToResponse(ctx context.Context, agent *ToolLoopAgent, opts CreateAgentUIStreamFromUIMessagesOptions, w io.Writer) error {
+	if w == nil {
+		return fmt.Errorf("writer is required")
+	}
+	// Cancelled when writing stops, so the agent stops when the client goes away.
+	streamCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	chunks, errs, err := CreateAgentUIStreamFromUIMessages(streamCtx, agent, opts)
+	if err != nil {
+		return err
+	}
+	if err := ai.PipeUIMessageChunksToResponse(chunks, w, nil); err != nil {
+		return err
+	}
+	select {
+	case err := <-errs:
+		return err
+	default:
+		return nil
+	}
+}
+
+// CreateAgentUIStreamResponseFromUIMessages runs the agent on UI messages
+// from a chat frontend and returns an *http.Response streaming the reply,
+// with the UI message stream status and headers. Mirrors TS
+// createAgentUIStreamResponse({ agent, uiMessages }).
+func CreateAgentUIStreamResponseFromUIMessages(ctx context.Context, agent *ToolLoopAgent, opts CreateAgentUIStreamFromUIMessagesOptions) (*http.Response, error) {
+	chunks, _, err := CreateAgentUIStreamFromUIMessages(ctx, agent, opts)
+	if err != nil {
+		return nil, err
+	}
+	return ai.CreateUIMessageChunksResponse(chunks, nil)
+}

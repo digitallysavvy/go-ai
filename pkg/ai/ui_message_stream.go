@@ -1759,22 +1759,29 @@ func CreateUIMessageStreamResponse(ctx context.Context, result *StreamTextResult
 	return CreateUIMessageStreamResponseWithInit(ctx, result, nil, opts...)
 }
 
-// CreateUIMessageStreamResponseWithInit writes UI chunks as SSE to an HTTP response
-// with optional status/statusText/headers.
-func CreateUIMessageStreamResponseWithInit(ctx context.Context, result *StreamTextResult, init *UIMessageStreamResponseInit, opts ...UIMessageStreamResultOptions) (*http.Response, error) {
-	if result == nil {
-		return nil, fmt.Errorf("result is required")
-	}
+// UIMessageStreamHeaders returns the headers a UI message stream response
+// carries: SSE content type, no caching or proxy buffering, and the
+// X-Vercel-AI-UI-Message-Stream protocol version that useChat expects. Set
+// them on an http.ResponseWriter before calling a Pipe* helper. Mirrors TS
+// UI_MESSAGE_STREAM_HEADERS.
+func UIMessageStreamHeaders() http.Header {
+	// Set canonicalizes the keys; a map literal with "X-Vercel-AI-UI-..."
+	// would be invisible to Header.Get.
+	h := http.Header{}
+	h.Set("Content-Type", "text/event-stream")
+	h.Set("Cache-Control", "no-cache")
+	h.Set("Connection", "keep-alive")
+	h.Set("X-Vercel-AI-UI-Message-Stream", "v1")
+	h.Set("X-Accel-Buffering", "no")
+	return h
+}
 
+// uiMessageStreamResponseHead resolves the status and headers for a UI
+// message stream response from the defaults and init.
+func uiMessageStreamResponseHead(init *UIMessageStreamResponseInit) (int, string, http.Header) {
 	status := http.StatusOK
 	statusText := ""
-	headers := http.Header{
-		"Content-Type":                  []string{"text/event-stream"},
-		"Cache-Control":                 []string{"no-cache"},
-		"Connection":                    []string{"keep-alive"},
-		"X-Vercel-AI-UI-Message-Stream": []string{"v1"},
-		"X-Accel-Buffering":             []string{"no"},
-	}
+	headers := UIMessageStreamHeaders()
 	if init != nil {
 		if init.Status != 0 {
 			status = init.Status
@@ -1789,6 +1796,17 @@ func CreateUIMessageStreamResponseWithInit(ctx context.Context, result *StreamTe
 			}
 		}
 	}
+	return status, statusText, headers
+}
+
+// CreateUIMessageStreamResponseWithInit writes UI chunks as SSE to an HTTP response
+// with optional status/statusText/headers.
+func CreateUIMessageStreamResponseWithInit(ctx context.Context, result *StreamTextResult, init *UIMessageStreamResponseInit, opts ...UIMessageStreamResultOptions) (*http.Response, error) {
+	if result == nil {
+		return nil, fmt.Errorf("result is required")
+	}
+
+	status, statusText, headers := uiMessageStreamResponseHead(init)
 
 	pr, pw := io.Pipe()
 	go func() {
@@ -1844,17 +1862,88 @@ func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTe
 		return fmt.Errorf("writer is required")
 	}
 
-	// streamCtx is cancelled on any write/flush failure (see below) so the
-	// CreateUIMessageStream producer goroutine stops promptly instead of
-	// relying solely on the caller's ctx, which may never be cancelled.
+	// streamCtx is cancelled on any write/flush failure (the deferred cancel
+	// runs as soon as writing stops) so the CreateUIMessageStream producer
+	// goroutine stops promptly instead of relying solely on the caller's ctx,
+	// which may never be cancelled.
 	streamCtx, cancelStream := context.WithCancel(ctx)
 	defer cancelStream()
 
+	chunks, errCh := CreateUIMessageStream(streamCtx, result, opts...)
+	consumeErr, err := writeUIMessageChunksSSE(chunks, w, init)
+	if err != nil {
+		return err
+	}
+	select {
+	case err := <-errCh:
+		if consumeErr != nil {
+			return fmt.Errorf("%v; consumeSSEStream error: %w", err, consumeErr)
+		}
+		return err
+	default:
+		return consumeErr
+	}
+}
+
+// PipeUIMessageChunksToResponse writes any stream of UI message chunks to w
+// as Server-Sent Events, ending with "data: [DONE]". Use it for streams that
+// don't come from a single StreamTextResult, such as the output of
+// CreateUIMessageStreamWithOptions or CreateAgentUIStreamFromUIMessages.
+// Mirrors TS pipeUIMessageStreamToResponse({ response, stream }).
+//
+// Like PipeUIMessageStreamToResponse it writes only the SSE body: when w is
+// an http.ResponseWriter, set the UI message stream headers first (see
+// UIMessageStreamHeaders). init may be nil; its KeepAliveMs and
+// ConsumeSSEStream are honored, its Status and headers are not used.
+//
+// If writing fails, PipeUIMessageChunksToResponse returns without draining
+// chunks. Create the stream with a ctx you cancel when this returns (an
+// http.Request's context is cancelled when the client disconnects) so its
+// producer stops instead of blocking.
+func PipeUIMessageChunksToResponse(chunks <-chan UIMessageChunk, w io.Writer, init *UIMessageStreamResponseInit) error {
+	if chunks == nil {
+		return fmt.Errorf("stream is required")
+	}
+	if w == nil {
+		return fmt.Errorf("writer is required")
+	}
+	consumeErr, err := writeUIMessageChunksSSE(chunks, w, init)
+	if err != nil {
+		return err
+	}
+	return consumeErr
+}
+
+// CreateUIMessageChunksResponse returns an *http.Response that streams any
+// UI message chunk stream as Server-Sent Events, with the same status and
+// headers as CreateUIMessageStreamResponse. Mirrors TS
+// createUIMessageStreamResponse({ stream }).
+func CreateUIMessageChunksResponse(chunks <-chan UIMessageChunk, init *UIMessageStreamResponseInit) (*http.Response, error) {
+	if chunks == nil {
+		return nil, fmt.Errorf("stream is required")
+	}
+	status, statusText, headers := uiMessageStreamResponseHead(init)
+	pr, pw := io.Pipe()
+	go func() {
+		err := PipeUIMessageChunksToResponse(chunks, pw, init)
+		_ = pw.CloseWithError(err)
+	}()
+	return &http.Response{
+		StatusCode: status,
+		Status:     statusText,
+		Header:     headers,
+		Body:       pr,
+	}, nil
+}
+
+// writeUIMessageChunksSSE is the shared SSE writer behind the Pipe*
+// helpers. It returns the ConsumeSSEStream callback's error separately from
+// a write error.
+func writeUIMessageChunksSSE(chunks <-chan UIMessageChunk, w io.Writer, init *UIMessageStreamResponseInit) (consumeErr error, err error) {
 	var (
 		teeWriter  = w
 		sideWriter *io.PipeWriter
 		closeSide  chan error
-		consumeErr error
 	)
 	if init != nil && init.ConsumeSSEStream != nil {
 		pr, pw := io.Pipe()
@@ -1874,7 +1963,6 @@ func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTe
 		keepAliveEnabled = true
 	}
 
-	chunks, errCh := CreateUIMessageStream(streamCtx, result, opts...)
 	bw := bufio.NewWriter(teeWriter)
 	// flush surfaces the bufio flush error instead of discarding it (TS
 	// write-to-server-response.ts's pipe helpers return a promise that
@@ -1905,14 +1993,14 @@ func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTe
 		// away instead of timing out an idle connection. Mirrors TS
 		// createSseStreamWithKeepAlive's STREAM_OPEN_COMMENT.
 		if err := writeComment(sseStreamOpenComment); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
 	if !keepAliveEnabled {
 		for chunk := range chunks {
 			if err := writeUIMessageSSEChunk(bw, flush, chunk); err != nil {
-				return err
+				return nil, err
 			}
 		}
 	} else {
@@ -1926,39 +2014,28 @@ func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTe
 					break loop
 				}
 				if err := writeUIMessageSSEChunk(bw, flush, chunk); err != nil {
-					return err
+					return nil, err
 				}
 				timer.Reset(keepAliveDuration)
 			case <-timer.C:
 				if err := writeComment(sseKeepAliveComment); err != nil {
-					return err
+					return nil, err
 				}
 				timer.Reset(keepAliveDuration)
 			}
 		}
 	}
 	if _, err := bw.WriteString("data: [DONE]\n\n"); err != nil {
-		return err
+		return nil, err
 	}
 	if err := flush(); err != nil {
-		return err
+		return nil, err
 	}
 	if sideWriter != nil {
 		_ = sideWriter.Close()
 		consumeErr = <-closeSide
 	}
-	select {
-	case err := <-errCh:
-		if consumeErr != nil {
-			return fmt.Errorf("%v; consumeSSEStream error: %w", err, consumeErr)
-		}
-		return err
-	default:
-		if consumeErr != nil {
-			return consumeErr
-		}
-		return nil
-	}
+	return consumeErr, nil
 }
 
 // ReadUIMessageStream reads SSE data lines containing JSON UI chunks.

@@ -30,3 +30,75 @@ func PipeAgentUIStreamToResponse(ctx context.Context, agent *agent.ToolLoopAgent
 ```
 
 Writes agent UI chunks to a writer as Server-Sent Events.
+
+## Serving `useChat` from UI messages
+
+A chat frontend built with `useChat` posts its whole message history as UI messages. These helpers take those messages directly. They validate them against the agent's tools, convert them to model messages (including any tool approvals the user just gave), run the agent, and stream the reply back in the UI message stream protocol. They mirror TS `createAgentUIStream`, `createAgentUIStreamResponse` and `pipeAgentUIStreamToResponse`, which take `uiMessages`.
+
+### `CreateAgentUIStreamFromUIMessages`
+
+```go
+func CreateAgentUIStreamFromUIMessages(ctx context.Context, agent *agent.ToolLoopAgent, opts agent.CreateAgentUIStreamFromUIMessagesOptions) (<-chan ai.UIMessageChunk, <-chan error, error)
+```
+
+Returns the reply as a UI message chunk stream. `opts.UIMessages` accepts `[]ai.UIMessage`, decoded JSON, or raw JSON bytes or a string. It returns an error before streaming when the messages fail validation.
+
+### `PipeAgentUIStreamFromUIMessagesToResponse`
+
+```go
+func PipeAgentUIStreamFromUIMessagesToResponse(ctx context.Context, agent *agent.ToolLoopAgent, opts agent.CreateAgentUIStreamFromUIMessagesOptions, w io.Writer) error
+```
+
+Writes the reply to `w` as Server-Sent Events. It writes only the body, so set `ai.UIMessageStreamHeaders()` on an `http.ResponseWriter` first. The agent stops when writing fails, for example when the client disconnects.
+
+```go
+package main
+
+import (
+	"encoding/json"
+	"log"
+	"net/http"
+	"os"
+
+	"github.com/digitallysavvy/go-ai/pkg/agent"
+	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+	model, err := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")}).LanguageModel("gpt-6-astra")
+	if err != nil {
+		log.Fatal(err)
+	}
+	assistant := agent.NewToolLoopAgent(agent.AgentConfig{Model: model, System: "You are a helpful assistant."})
+
+	http.HandleFunc("POST /api/chat", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages json.RawMessage `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		for key, values := range ai.UIMessageStreamHeaders() {
+			w.Header()[key] = values
+		}
+		err := agent.PipeAgentUIStreamFromUIMessagesToResponse(r.Context(), assistant,
+			agent.CreateAgentUIStreamFromUIMessagesOptions{UIMessages: []byte(body.Messages)}, w)
+		if err != nil {
+			log.Printf("chat: %v", err)
+		}
+	})
+	log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+Invalid messages return an error before anything is written. To answer those with a 400 instead of an empty 200, call `CreateAgentUIStreamFromUIMessages` yourself and pipe the chunks with `ai.PipeUIMessageChunksToResponse` once it succeeds.
+
+### `CreateAgentUIStreamResponseFromUIMessages`
+
+```go
+func CreateAgentUIStreamResponseFromUIMessages(ctx context.Context, agent *agent.ToolLoopAgent, opts agent.CreateAgentUIStreamFromUIMessagesOptions) (*http.Response, error)
+```
+
+Returns an `*http.Response` that streams the reply, with the UI message stream status and headers already set.
