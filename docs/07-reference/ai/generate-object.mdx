@@ -225,6 +225,50 @@ if err != nil {
 }
 ```
 
+## Option fields (generated)
+
+This table is generated from the `ai.GenerateObjectOptions` source and lists every exported field.
+
+{/* gen:fields ai.GenerateObjectOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Model` | `provider.LanguageModel` | Model to use for generation |
+| `Prompt` | `string` | Prompt can be a simple string or a list of messages |
+| `Messages` | `[]types.Message` |  |
+| `System` | `string` |  |
+| `Schema` | `schema.Schema` | Schema for the output object (not required for no-schema mode) |
+| `OutputMode` | `ObjectOutputMode` | Output mode - object, array, enum, or no-schema |
+| `EnumValues` | `[]string` | Enum values (required for enum mode) |
+| `Temperature` | `*float64` | Generation parameters |
+| `MaxTokens` | `*int` |  |
+| `TopP` | `*float64` |  |
+| `TopK` | `*int` |  |
+| `FrequencyPenalty` | `*float64` |  |
+| `PresencePenalty` | `*float64` |  |
+| `Seed` | `*int` |  |
+| `MaxRetries` | `int` |  |
+| `RepairText` | `RepairTextFunc` | RepairText repairs invalid JSON or schema-invalid object output. Return nil when the output cannot be repaired. Takes precedence over ExperimentalRepairText when both are set (audit row 09a52cb). |
+| `ExperimentalRepairText` | `RepairTextFunc` | ExperimentalRepairText repairs invalid JSON or schema-invalid object output. Return nil when the output cannot be repaired. Deprecated: use RepairText. |
+| `Headers` | `map[string]string` | Additional HTTP headers sent with the request. |
+| `ProviderOptions` | `map[string]interface{}` | Additional provider-specific options. |
+| `SchemaName` | `string` | SchemaName is an optional name for the output schema. |
+| `SchemaDescription` | `string` | SchemaDescription is an optional description for the output schema. |
+| `Telemetry` | `*TelemetrySettings` | Telemetry configures observability for this operation. When both Telemetry and ExperimentalTelemetry are set, Telemetry wins. |
+| `ExperimentalTelemetry` | `*TelemetrySettings` | Telemetry configuration for observability. Deprecated: use Telemetry. |
+| `OnStart` | `func(ctx context.Context, e ObjectOnStartEvent)` | OnStart is called once before any LLM call is made. |
+| `ExperimentalOnStart` | `func(ctx context.Context, e ObjectOnStartEvent)` | ExperimentalOnStart is a deprecated alias for OnStart. Deprecated: use OnStart. |
+| `OnStepStart` | `func(ctx context.Context, e ObjectOnStepStartEvent)` | OnStepStart is called just before the provider is called. |
+| `ExperimentalOnStepStart` | `func(ctx context.Context, e ObjectOnStepStartEvent)` | ExperimentalOnStepStart is a deprecated alias for OnStepStart. Deprecated: use OnStepStart. |
+| `OnStepEnd` | `func(ctx context.Context, e ObjectOnStepFinishEvent)` | OnStepEnd is called after the provider returns, before JSON parsing. |
+| `OnStepFinish` | `func(ctx context.Context, e ObjectOnStepFinishEvent)` | OnStepFinish is called after the provider returns, before JSON parsing. Deprecated: use OnStepEnd. |
+| `OnEnd` | `func(ctx context.Context, e ObjectOnFinishEvent)` | OnEnd is called when the operation completes with a typed event. For GenerateObject, the event Error field is always nil. |
+| `OnFinishEvent` | `func(ctx context.Context, e ObjectOnFinishEvent)` | OnFinishEvent is a deprecated alias for OnEnd. Deprecated: use OnEnd. |
+| `OnFinish` | `func(ctx context.Context, result *GenerateObjectResult, userContext interface{})` | Legacy callback — kept for backward compatibility. Prefer OnEnd for structured access. |
+| `ExperimentalContext` | `interface{}` | ExperimentalContext allows passing custom context through generation lifecycle |
+
+{/* /gen:fields */}
+
 ## See Also
 
 - [StreamObject](./stream-object.mdx) - Streaming structured output
