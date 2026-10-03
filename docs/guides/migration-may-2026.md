@@ -141,7 +141,7 @@ Sandbox implementations now use the TypeScript SDK v7 naming and file helper sur
 
 Before:
 
-```go
+```go skip-compile
 result, err := sandbox.Execute(ctx, "go test ./...", ai.SandboxExecuteOptions{
     WorkingDirectory: "/workspace",
 })

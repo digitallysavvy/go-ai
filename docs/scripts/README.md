@@ -4,6 +4,16 @@ This directory contains utility scripts for validating and testing the Go-AI SDK
 
 ## Scripts
 
+### compile-snippets.go
+
+Compiles every ```go block in `docs/` against the module. Complete programs are vetted one by one and fail the run on any error; fragments are wrapped in a template and reported. Opt a block out with `skip-compile` in the fence info string. Run from the repository root:
+
+```bash
+go run docs/scripts/compile-snippets.go
+```
+
+See `docs/CONTRIBUTING_DOCS.md` for the policy.
+
 ### validate-links.go
 
 Scans all documentation files and validates internal links.

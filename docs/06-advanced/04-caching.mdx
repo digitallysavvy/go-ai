@@ -13,7 +13,7 @@ The recommended approach to caching responses is using [language model middlewar
 
 Let's see how you can use language model middleware to cache responses:
 
-```go
+```go skip-compile
 package main
 
 import (
@@ -390,7 +390,7 @@ func createCacheKey(options *provider.GenerateOptions) string {
 
 Alternatively, you can use the `OnFinish` callback to cache responses:
 
-```go
+```go skip-compile
 package main
 
 import (
@@ -492,7 +492,7 @@ func main() {
 
 For streaming responses, cache the complete stream after it finishes:
 
-```go
+```go skip-compile
 package main
 
 import (

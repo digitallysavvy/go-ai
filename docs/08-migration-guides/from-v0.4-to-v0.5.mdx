@@ -231,7 +231,7 @@ indistinguishable from unset).
 
 **Before:**
 
-```go
+```go skip-compile
 tool := types.Tool{Name: "search", Strict: true, /* ... */}
 ```
 
@@ -335,7 +335,7 @@ integrations must update this method to return a context.
 
 **Before:**
 
-```go
+```go skip-compile
 Telemetry: &telemetry.Options{IsEnabled: telemetry.Bool(true), Tracer: tracer}
 ```
 
@@ -574,7 +574,7 @@ override the agent's defaults (previously the agent defaults always won).
 
 **Before:**
 
-```go
+```go skip-compile
 transport := &workflow.WorkflowChatTransport{}
 http.Handle("/api/workflow", transport)
 ```
@@ -656,7 +656,7 @@ from `gateway.Config` and `GatewayProviderOptions` — it is no longer sent as
 
 **Before:**
 
-```go
+```go skip-compile
 // DisableParallelToolUse was a plain bool on anthropic.ModelOptions:
 model := anthropic.NewLanguageModel(prov, anthropic.ClaudeSonnet4_6, &anthropic.ModelOptions{
     DisableParallelToolUse: true,
@@ -781,7 +781,7 @@ values now returns an empty result instead of an error.
 
 **Before:**
 
-```go
+```go skip-compile
 result, err := ai.Embed(ctx, ai.EmbedOptions{
     Model:      model,
     Input:      "hello",
