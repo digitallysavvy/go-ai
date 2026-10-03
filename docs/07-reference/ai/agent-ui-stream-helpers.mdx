@@ -112,3 +112,21 @@ func CreateAgentUIStreamResponseFromUIMessages(ctx context.Context, agent *agent
 ```
 
 Returns an `*http.Response` that streams the reply, with the UI message stream status and headers already set.
+
+## Options
+
+{/* gen:fields agent.CreateAgentUIStreamFromUIMessagesOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `UIMessages` | `interface{}` | UIMessages are the input UI messages (for example []ai.UIMessage, decoded JSON, or raw JSON bytes/string). Validated against the agent's tools via ai.ValidateUIMessagesForAgent before conversion. |
+| `ExperimentalRefineToolInput` | `map[string]ai.ToolInputRefiner` | ExperimentalRefineToolInput reconstructs approved tool input from an approval's inputSchemaInput during validation. Optional. |
+| `ConvertDataPart` | `func(part ai.DataUIPart) types.ContentPart` | ConvertDataPart converts custom UI data parts to text or file model message parts. Data parts are ignored when nil or when the callback returns nil. Mirrors TS createAgentUIStream/createAgentUIStreamResponse/ pipeAgentUIStreamToResponse's `convertDataPart` option (TS #21816). |
+| `AgentOptions` | `AgentStreamOptions` | AgentOptions carries the remaining agent stream options (RuntimeContext, ToolsContext, CallOptions, AbortSignal-equivalents, etc). Its Prompt and Messages fields are ignored: the converted UI messages are used instead. |
+| `UIMessageStream` | `ai.UIMessageStreamResultOptions` | UIMessageStream carries ToUIMessageStream/CreateUIMessageStream options (message metadata, ID generation, callbacks, etc). Tools defaults to agent.Tools() when nil. OriginalMessages defaults to the validated UI messages (converted to UIMessageChunk) when nil, kept for backwards compatibility with callers that already computed their own chunks (TS `originalMessages` escape hatch). |
+
+{/* /gen:fields */}
+
+## Tool approval signing
+
+When `agent.AgentConfig.ExperimentalToolApprovalSecret` is set, these helpers sign each approval request the agent issues and verify each approval response in the posted UI messages before a tool runs. A response with a missing or wrong signature fails with `*ai.InvalidToolApprovalSignatureError`. See [Tool approval helpers](./tool-approvals.mdx).
