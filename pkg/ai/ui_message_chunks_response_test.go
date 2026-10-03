@@ -90,7 +90,7 @@ func TestCreateUIMessageChunksResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusAccepted || resp.Header.Get("X-Demo") != "1" {
 		t.Fatalf("status/header not applied: %d %v", resp.StatusCode, resp.Header)
 	}
