@@ -14,6 +14,7 @@
 // prefixed `HarnessAgent` (d77bed4). In Go the package name provides the
 // namespace, so spec types drop the prefix (harness.Session is
 // HarnessV1Session). Consumer-facing aliases live in agent_types.go.
+
 package harness
 
 import (

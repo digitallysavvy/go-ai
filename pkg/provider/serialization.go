@@ -23,6 +23,7 @@
 // DeserializeModel/Deserialize<Kind>Model function itself after loading it
 // back -- both are ordinary, explicitly-called functions, not framework
 // plumbing.
+
 package provider
 
 import (

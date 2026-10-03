@@ -67,7 +67,7 @@ func ExampleStreamText() {
 		fmt.Println("error:", err)
 		return
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	for chunk := range stream.Chunks() {
 		if chunk.Type == provider.ChunkTypeText {
@@ -185,7 +185,7 @@ func ExamplePipeUIMessageStreamToResponse() {
 		fmt.Println("error:", err)
 		return
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	// In a handler, pass the http.ResponseWriter instead of a recorder.
 	rec := httptest.NewRecorder()

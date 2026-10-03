@@ -1,4 +1,4 @@
-// Open Responses extension codecs (row 9a68261, OR-EXT).
+// Open Responses extension codecs.
 //
 // An Extension lets a provider that embeds the Open Responses spec (LM
 // Studio, Ollama, and similar servers) plug in encode/decode logic for its
@@ -10,6 +10,7 @@
 //
 // This is an advanced, opt-in mechanism (Config.Extensions): most Open
 // Responses servers need none of it.
+
 package openresponses
 
 import (

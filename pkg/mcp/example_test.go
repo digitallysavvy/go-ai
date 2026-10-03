@@ -67,7 +67,7 @@ func ExampleMCPClient() {
 		fmt.Println("error:", err)
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	if err := client.Connect(ctx); err != nil {
 		fmt.Println("error:", err)
 		return

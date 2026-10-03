@@ -36,6 +36,10 @@ a `useChat` frontend on a Go backend.
 
 ### Fixed
 
+- `mcp.MCPClient` now matches JSON-RPC responses to pending requests when the
+  server echoes the request id as a JSON number. Before, responses decoded as
+  `float64` never matched the client's `uint64` request ids, so `Connect` timed
+  out against HTTP servers.
 - A step that pauses for tool approval keeps the model's finish reason
   (normally `tool-calls`), as in TS. It was reported as `user-approval`,
   which TS `useChat` rejects, so the approval step failed with a type
