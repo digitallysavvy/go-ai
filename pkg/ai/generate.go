@@ -1486,7 +1486,6 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			for _, tr := range toolResults {
 				if tr.ApprovalStatus == types.ToolApprovalStatusUserApproval {
 					hasUserApproval = true
-					stepResult.FinishReason = types.FinishReasonUserApproval
 				}
 			}
 
@@ -1699,8 +1698,11 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		}
 
 		if hasUserApproval {
+			// The step keeps the model's own finish reason (normally
+			// "tool-calls"), as in TS; pending approvals are reported as
+			// tool-approval-request content, not as a finish reason.
 			result.Text = stepResult.Text
-			result.FinishReason = types.FinishReasonUserApproval
+			result.FinishReason = stepResult.FinishReason
 			break
 		}
 

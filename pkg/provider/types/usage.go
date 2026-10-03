@@ -271,6 +271,11 @@ const (
 	FinishReasonToolCalls FinishReason = "tool-calls"
 
 	// FinishReasonUserApproval indicates execution paused for human approval.
+	//
+	// Deprecated: never reported. A step that stops for tool approval keeps
+	// the model's finish reason (normally FinishReasonToolCalls), matching the
+	// TS SDK, whose FinishReason union has no "user-approval" member. Check for
+	// tool-approval-request content instead.
 	FinishReasonUserApproval FinishReason = "user-approval"
 
 	// FinishReasonError indicates an error occurred

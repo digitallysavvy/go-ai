@@ -3520,3 +3520,64 @@ func TestStreamText_DefaultStopWhenIsOneStep(t *testing.T) {
 		t.Errorf("expected 1 model call, got %d", calls)
 	}
 }
+
+// TS's UI message chunk schema only accepts these finish reasons; a "finish"
+// chunk with anything else fails validation in useChat.
+var tsFinishReasons = map[string]bool{
+	"stop": true, "length": true, "content-filter": true, "tool-calls": true, "error": true, "other": true,
+}
+
+func TestStreamText_ToolApprovalPauseKeepsModelFinishReasonInUIStream(t *testing.T) {
+	t.Parallel()
+
+	tool := types.Tool{
+		Name:         "danger",
+		ToolApproval: true,
+		Execute: func(_ context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			t.Fatal("tool awaiting approval should not execute")
+			return nil, nil
+		},
+	}
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call_1", ToolName: "danger", Arguments: map[string]interface{}{}}},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+			}), nil
+		},
+	}
+
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:    model,
+		Tools:    []types.Tool{tool},
+		StopWhen: []StopCondition{IsStepCount(5)},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	chunks, errs := CreateUIMessageStream(context.Background(), result)
+	var finishes []interface{}
+	for chunk := range chunks {
+		if chunk["type"] == "finish" || chunk["type"] == "finish-step" {
+			if reason, ok := chunk["finishReason"]; ok {
+				finishes = append(finishes, reason)
+			}
+		}
+	}
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("ui stream error: %v", err)
+		}
+	}
+	if len(finishes) == 0 {
+		t.Fatal("expected a finish chunk with a finishReason")
+	}
+	for _, reason := range finishes {
+		if s, _ := reason.(string); !tsFinishReasons[s] {
+			t.Fatalf("finishReason %v is not a TS FinishReason", reason)
+		}
+	}
+	if got := result.FinishReason(); got != types.FinishReasonToolCalls {
+		t.Fatalf("FinishReason() = %q, want %q", got, types.FinishReasonToolCalls)
+	}
+}

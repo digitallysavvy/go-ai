@@ -1648,8 +1648,9 @@ func TestGenerateText_ToolApprovalUserApprovalPauses(t *testing.T) {
 	if callCount != 1 {
 		t.Fatalf("expected generation to pause after one call, got %d calls", callCount)
 	}
-	if result.FinishReason != types.FinishReasonUserApproval {
-		t.Fatalf("expected user-approval finish reason, got %s", result.FinishReason)
+	// TS parity: a step paused for approval keeps the model's finish reason.
+	if result.FinishReason != types.FinishReasonToolCalls {
+		t.Fatalf("expected tool-calls finish reason, got %s", result.FinishReason)
 	}
 	if len(result.ToolResults) != 1 {
 		t.Fatalf("expected 1 tool result, got %d", len(result.ToolResults))
@@ -1703,8 +1704,9 @@ func TestGenerateText_ToolApprovalUserApprovalWithReason(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.FinishReason != types.FinishReasonUserApproval {
-		t.Fatalf("expected user-approval finish reason, got %s", result.FinishReason)
+	// TS parity: a step paused for approval keeps the model's finish reason.
+	if result.FinishReason != types.FinishReasonToolCalls {
+		t.Fatalf("expected tool-calls finish reason, got %s", result.FinishReason)
 	}
 
 	var req *types.ToolApprovalRequestContent

@@ -783,7 +783,7 @@ func TestGenerateText_IssuedApprovalSignatureVerifiesOnResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if executed != 0 || res.FinishReason != types.FinishReasonUserApproval {
+	if executed != 0 || res.FinishReason != types.FinishReasonToolCalls {
 		t.Fatalf("executed=%d finish=%s", executed, res.FinishReason)
 	}
 	var approvalID string
