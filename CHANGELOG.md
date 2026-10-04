@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.5.1] - 2026-10-03
+### Fixed
+
+- OpenAI Responses (the default `openai.LanguageModel`): a streamed step
+  that ends with a function call reports finish reason `tool-calls`. It
+  reported `stop`, because the tool-call flag was never passed to the
+  mapping. Both paths now follow TS `mapOpenAIResponseFinishReason`: a
+  length or content-filter stop wins over tool calls, provider-executed
+  tools such as web search don't count as tool calls, and an unknown
+  reason is `other`.
+- xAI Responses: the finish-reason mapping matches TS
+  `mapXaiResponsesFinishReason`. An empty or unknown status, or an
+  incomplete response without a reason, is `other` (it was `stop` or
+  `length`), and the statuses `max_output_tokens` and `function_call` are
+  recognized.
+
+## [0.5.1] - 2026-10-04
 
 Fixes found while building the [Shipyard demo](https://github.com/digitallysavvy/go-ai-demo),
 a `useChat` frontend on a Go backend, plus a documentation overhaul for

@@ -1243,6 +1243,9 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 	// mirrors TS `hostedToolSearchCallIds`), since hosted tool_search_output
 	// items report call_id: null.
 	var hostedToolSearchCallIds []string
+	// hasFunctionCall tracks client-side tool calls for the finish reason
+	// (TS hasFunctionCall); provider-executed tools don't count.
+	hasFunctionCall := false
 
 	for _, rawItem := range resp.Output {
 		// Peek at type field.
@@ -1251,6 +1254,9 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 		}
 		if err := json.Unmarshal(rawItem, &peek); err != nil {
 			continue
+		}
+		if isResponsesFunctionCallType(peek.Type) {
+			hasFunctionCall = true
 		}
 
 		switch peek.Type {
@@ -1782,10 +1788,8 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 
 	if len(toolCalls) > 0 {
 		result.ToolCalls = toolCalls
-		result.FinishReason = types.FinishReasonToolCalls
-	} else {
-		result.FinishReason = mapResponsesFinishReason(resp.IncompleteDetails, false)
 	}
+	result.FinishReason = mapResponsesFinishReason(resp.IncompleteDetails, hasFunctionCall)
 	if resp.IncompleteDetails != nil {
 		result.RawFinishReason = resp.IncompleteDetails.Reason
 	}
@@ -2066,21 +2070,40 @@ func mapWebSearchOutput(action *WebSearchAction) map[string]interface{} {
 	return result
 }
 
-// mapResponsesFinishReason maps Responses API incomplete_details to a FinishReason.
-func mapResponsesFinishReason(details *responses.IncompleteDetails, hasToolCalls bool) types.FinishReason {
-	if hasToolCalls {
-		return types.FinishReasonToolCalls
+// isResponsesFunctionCallType reports whether a Responses output item is a
+// client-side tool call, which TS counts as hasFunctionCall.
+func isResponsesFunctionCallType(itemType string) bool {
+	switch itemType {
+	case "function_call", "custom_tool_call", "computer_call", "apply_patch_call":
+		return true
 	}
-	if details == nil {
+	return false
+}
+
+// mapResponsesFinishReason maps Responses API incomplete_details to a
+// FinishReason. Mirrors TS mapOpenAIResponseFinishReason: a length or
+// content-filter stop wins over tool calls, and an unknown reason is
+// "tool-calls" when the model called a client-side tool, else "other".
+func mapResponsesFinishReason(details *responses.IncompleteDetails, hasFunctionCall bool) types.FinishReason {
+	reason := ""
+	if details != nil {
+		reason = details.Reason
+	}
+	switch reason {
+	case "":
+		if hasFunctionCall {
+			return types.FinishReasonToolCalls
+		}
 		return types.FinishReasonStop
-	}
-	switch details.Reason {
 	case "max_output_tokens":
 		return types.FinishReasonLength
 	case "content_filter":
 		return types.FinishReasonContentFilter
 	default:
-		return types.FinishReasonStop
+		if hasFunctionCall {
+			return types.FinishReasonToolCalls
+		}
+		return types.FinishReasonOther
 	}
 }
 
@@ -2173,6 +2196,10 @@ type responsesStream struct {
 	reader io.ReadCloser
 	parser *streaming.SSEParser
 	err    error
+
+	// hasFunctionCall is set once a client-side tool call item finishes; it
+	// makes the finish reason "tool-calls" (TS hasFunctionCall).
+	hasFunctionCall bool
 
 	// Accumulated tool calls keyed by output_index.
 	toolAccum map[int]*responsesToolAccum
@@ -3134,7 +3161,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			usage := convertResponsesUsage(e.Response.Usage)
-			finishReason := mapResponsesFinishReason(e.Response.IncompleteDetails, false)
+			finishReason := mapResponsesFinishReason(e.Response.IncompleteDetails, s.hasFunctionCall)
 			rawFinishReason := ""
 			if e.Response.IncompleteDetails != nil {
 				rawFinishReason = e.Response.IncompleteDetails.Reason
@@ -3188,7 +3215,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			finishReason := types.FinishReason("error")
 			rawFinishReason := "error"
 			if e.Response.IncompleteDetails != nil && e.Response.IncompleteDetails.Reason != "" {
-				finishReason = mapResponsesFinishReason(e.Response.IncompleteDetails, false)
+				finishReason = mapResponsesFinishReason(e.Response.IncompleteDetails, s.hasFunctionCall)
 				rawFinishReason = e.Response.IncompleteDetails.Reason
 			}
 
@@ -3308,6 +3335,9 @@ func openAIResponsesRawChunk(data string) *provider.StreamChunk {
 // All other item types were emitted incrementally and need no action here.
 func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) (*provider.StreamChunk, bool) {
 	itemType := s.itemTypes[e.OutputIndex]
+	if isResponsesFunctionCallType(itemType) {
+		s.hasFunctionCall = true
+	}
 
 	switch itemType {
 	case "function_call":
