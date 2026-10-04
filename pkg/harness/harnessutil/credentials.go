@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
@@ -202,7 +203,10 @@ type CreateCredentialRequestTransformationOptions struct {
 func CreateCredentialRequestTransformation(opts CreateCredentialRequestTransformationOptions) (harness.RequestTransformation, error) {
 	u, err := url.Parse(opts.MatchURL)
 	if err != nil || u.Host == "" {
-		return harness.RequestTransformation{}, fmt.Errorf("Invalid URL: %s", opts.MatchURL) //nolint:staticcheck // matches TS SDK's exact error text
+		// Like TS `new URL(matchUrl)` (Node's TypeError message is just
+		// "Invalid URL"), the input is not echoed: a base URL can carry
+		// credentials such as https://user:token@host.
+		return harness.RequestTransformation{}, errors.New("Invalid URL") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	pathname := strings.TrimRight(u.EscapedPath(), "/")
 	match := harness.RequestTransformationMatch{
