@@ -53,7 +53,7 @@ func main() {
     p := openai.New(openai.Config{
         APIKey: "your-api-key",
     })
-    baseModel, _ := p.LanguageModel("gpt-4")
+    baseModel, _ := p.LanguageModel("gpt-6-astra")
 
     temperature := 0.7
     wrapped := middleware.WrapLanguageModel(

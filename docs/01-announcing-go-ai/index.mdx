@@ -21,13 +21,13 @@ While the AI ecosystem has been dominated by Python and TypeScript, Go developer
 
 ### Unified Provider Interface
 
-Access 26+ AI providers through a single, consistent API:
+Access 49 AI providers through a single, consistent API:
 
 ```go
 // Switch providers with just one line
-openaiModel, _ := openaiProvider.LanguageModel("gpt-4")
+openaiModel, _ := openaiProvider.LanguageModel("gpt-6-astra")
 claudeModel, _ := anthropicProvider.LanguageModel("claude-sonnet-4-5")
-geminiModel, _ := googleProvider.LanguageModel("gemini-1.5-flash")
+geminiModel, _ := googleProvider.LanguageModel("gemini-2.5-flash")
 
 // Same API for all
 for _, model := range []provider.LanguageModel{openaiModel, claudeModel, geminiModel} {
@@ -219,11 +219,11 @@ result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
 
 ## Supported Providers
 
-The Go AI SDK supports 26+ providers out of the box:
+The Go AI SDK supports 49 providers out of the box:
 
 ### Major Providers
-- **OpenAI** - GPT-4, GPT-4 Turbo, GPT-3.5, O1
-- **Anthropic** - Claude 3.5 Sonnet, Claude 3 Opus/Sonnet/Haiku
+- **OpenAI** - GPT-6, GPT-5, o-series
+- **Anthropic** - Claude Opus, Sonnet, Haiku and Fable
 - **Google** - Gemini Pro, Gemini Flash, Gemini Ultra
 - **Mistral** - Mistral Large, Medium, Small, Codestral
 - **Cohere** - Command R+, Command R, Command Light
@@ -284,7 +284,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
         Model:  model,

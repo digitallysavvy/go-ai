@@ -11,9 +11,9 @@ The Go AI SDK is designed with testability in mind. All models are interfaces, w
 
 ## Testing Strategies
 
-### 1. Interface-Based Mocking
+### 1. Use the SDK mocks
 
-Since all models in the Go AI SDK are interfaces, you can create mock implementations for testing:
+The `pkg/testutil` package ships ready-made mocks for every model type: `MockLanguageModel`, `MockEmbeddingModel`, `MockImageModel`, `MockSpeechModel`, `MockTranscriptionModel`, `MockRerankingModel` and `MockProvider`. Each mock has a `Do...Func` field you can set to control the response, and records the calls it receives.
 
 ```go
 package myapp
@@ -22,98 +22,75 @@ import (
     "context"
     "testing"
 
-    "github.com/digitallysavvy/go-ai/pkg/provider"
-    "github.com/digitallysavvy/go-ai/pkg/provider/types"
-)
-
-func int64Ptr(v int64) *int64 {
-    return &v
-}
-
-// MockLanguageModel implements provider.LanguageModel for testing
-type MockLanguageModel struct {
-    GenerateFunc func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error)
-    StreamFunc   func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error)
-}
-
-func (m *MockLanguageModel) SpecificationVersion() string {
-    return "v3"
-}
-
-func (m *MockLanguageModel) Provider() string {
-    return "mock"
-}
-
-func (m *MockLanguageModel) ModelID() string {
-    return "mock-model"
-}
-
-func (m *MockLanguageModel) SupportsTools() bool {
-    return true
-}
-
-func (m *MockLanguageModel) SupportsStructuredOutput() bool {
-    return true
-}
-
-func (m *MockLanguageModel) SupportsImageInput() bool {
-    return false
-}
-
-func (m *MockLanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-    if m.GenerateFunc != nil {
-        return m.GenerateFunc(ctx, opts)
-    }
-    return &types.GenerateResult{
-        Text:         "Mock response",
-        FinishReason: types.FinishReasonStop,
-        Usage: types.Usage{
-            InputTokens:  int64Ptr(10),
-            OutputTokens: int64Ptr(20),
-            TotalTokens:  int64Ptr(30),
-        },
-    }, nil
-}
-
-func (m *MockLanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
-    if m.StreamFunc != nil {
-        return m.StreamFunc(ctx, opts)
-    }
-    return NewMockTextStream("Mock streaming response"), nil
-}
-```
-
-### 2. Mock Text Stream
-
-Create a mock stream for testing streaming operations:
-
-```go
-package myapp
-
-import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
     "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/provider/types"
     "github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
-func NewMockTextStream(text string) provider.TextStream {
-    return testutil.NewMockTextStream([]provider.StreamChunk{
-        {
-            Type: provider.ChunkTypeText,
-            Text: text,
+func TestMockLanguageModel(t *testing.T) {
+    inputTokens, outputTokens, totalTokens := int64(10), int64(20), int64(30)
+
+    model := &testutil.MockLanguageModel{
+        DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+            return &types.GenerateResult{
+                Text:         "Mock response",
+                FinishReason: types.FinishReasonStop,
+                Usage: types.Usage{
+                    InputTokens:  &inputTokens,
+                    OutputTokens: &outputTokens,
+                    TotalTokens:  &totalTokens,
+                },
+            }, nil
         },
-        {
-            Type:         provider.ChunkTypeFinish,
-            FinishReason: types.FinishReasonStop,
-            Usage: &types.Usage{
-                InputTokens:  int64Ptr(10),
-                OutputTokens: int64Ptr(20),
-                TotalTokens:  int64Ptr(30),
-            },
-        },
+    }
+
+    result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Hello",
     })
+    if err != nil {
+        t.Fatal(err)
+    }
+    if result.Text != "Mock response" {
+        t.Errorf("unexpected text: %q", result.Text)
+    }
+    if len(model.GenerateCalls) != 1 {
+        t.Errorf("expected 1 call, got %d", len(model.GenerateCalls))
+    }
 }
 ```
+
+With no `DoGenerateFunc` set, `MockLanguageModel` returns a default `"mock response"` result. With no `DoStreamFunc`, it streams `"mock "` and `"response"`.
+
+### 2. Mock text stream
+
+Use `testutil.NewMockTextStream` to build a stream from a fixed list of chunks:
+
+```go
+package myapp
+
+import (
+    "context"
+
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/testutil"
+)
+
+func newStreamingModel(text string) *testutil.MockLanguageModel {
+    return &testutil.MockLanguageModel{
+        DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+            return testutil.NewMockTextStream([]provider.StreamChunk{
+                {Type: provider.ChunkTypeText, Text: text},
+                {Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+            }), nil
+        },
+    }
+}
+```
+
+Use `testutil.NewMockTextStreamWithError` to simulate a stream that fails.
 
 ## Testing Examples
 
@@ -127,6 +104,9 @@ import (
     "testing"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
 func TestGenerateText(t *testing.T) {
@@ -158,16 +138,11 @@ func TestGenerateText(t *testing.T) {
     for _, tt := range tests {
         t.Run(tt.name, func(t *testing.T) {
             // Create mock model
-            mockModel := &MockLanguageModel{
-                GenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+            mockModel := &testutil.MockLanguageModel{
+                DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
                     return &types.GenerateResult{
                         Text:         tt.mockResponse,
                         FinishReason: types.FinishReasonStop,
-                        Usage: types.Usage{
-                            InputTokens:  int64Ptr(10),
-                            OutputTokens: int64Ptr(20),
-                            TotalTokens:  int64Ptr(30),
-                        },
                     }, nil
                 },
             }
@@ -209,6 +184,9 @@ import (
     "testing"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
 func TestStreamText(t *testing.T) {
@@ -231,9 +209,9 @@ func TestStreamText(t *testing.T) {
     for _, tt := range tests {
         t.Run(tt.name, func(t *testing.T) {
             // Create mock model
-            mockModel := &MockLanguageModel{
-                StreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
-                    return NewMockStreamWithChunks(tt.mockChunks), nil
+            mockModel := &testutil.MockLanguageModel{
+                DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+                    return newMockStreamWithChunks(tt.mockChunks), nil
                 },
             }
 
@@ -264,8 +242,8 @@ func TestStreamText(t *testing.T) {
     }
 }
 
-// NewMockStreamWithChunks creates a mock stream with multiple chunks
-func NewMockStreamWithChunks(chunks []string) provider.TextStream {
+// newMockStreamWithChunks creates a mock stream with multiple chunks
+func newMockStreamWithChunks(chunks []string) provider.TextStream {
     streamChunks := make([]provider.StreamChunk, 0, len(chunks)+1)
     for _, chunk := range chunks {
         streamChunks = append(streamChunks, provider.StreamChunk{
@@ -292,7 +270,10 @@ import (
     "testing"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
     "github.com/digitallysavvy/go-ai/pkg/schema"
+    "github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
 func TestGenerateObject(t *testing.T) {
@@ -325,8 +306,8 @@ func TestGenerateObject(t *testing.T) {
 
     for _, tt := range tests {
         t.Run(tt.name, func(t *testing.T) {
-            mockModel := &MockLanguageModel{
-                GenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+            mockModel := &testutil.MockLanguageModel{
+                DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
                     return &types.GenerateResult{
                         Text:         tt.mockResponse,
                         FinishReason: types.FinishReasonStop,
@@ -387,7 +368,9 @@ import (
     "testing"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
 func TestToolCalling(t *testing.T) {
@@ -411,8 +394,8 @@ func TestToolCalling(t *testing.T) {
         },
     }
 
-    mockModel := &MockLanguageModel{
-        GenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+    mockModel := &testutil.MockLanguageModel{
+        DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
             // Simulate tool call
             return &types.GenerateResult{
                 ToolCalls: []types.ToolCall{
@@ -454,68 +437,13 @@ import (
     "testing"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
-    "github.com/digitallysavvy/go-ai/pkg/provider"
-    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/testutil"
 )
-
-// MockEmbeddingModel implements provider.EmbeddingModel for testing
-type MockEmbeddingModel struct {
-    EmbedFunc     func(ctx context.Context, input string, opts *provider.EmbedModelOptions) (*types.EmbeddingResult, error)
-    EmbedManyFunc func(ctx context.Context, inputs []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error)
-}
-
-func (m *MockEmbeddingModel) SpecificationVersion() string {
-    return "v4"
-}
-
-func (m *MockEmbeddingModel) Provider() string {
-    return "mock"
-}
-
-func (m *MockEmbeddingModel) ModelID() string {
-    return "mock-embedding"
-}
-
-func (m *MockEmbeddingModel) MaxEmbeddingsPerCall() int {
-    return 100
-}
-
-func (m *MockEmbeddingModel) SupportsParallelCalls() bool {
-    return true
-}
-
-func (m *MockEmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provider.EmbedModelOptions) (*types.EmbeddingResult, error) {
-    if m.EmbedFunc != nil {
-        return m.EmbedFunc(ctx, input, opts)
-    }
-    return &types.EmbeddingResult{
-        Embedding: []float64{0.1, 0.2, 0.3},
-        Usage: types.EmbeddingUsage{
-            TotalTokens: 10,
-        },
-    }, nil
-}
-
-func (m *MockEmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
-    if m.EmbedManyFunc != nil {
-        return m.EmbedManyFunc(ctx, inputs, opts)
-    }
-    embeddings := make([][]float64, len(inputs))
-    for i := range inputs {
-        embeddings[i] = []float64{0.1, 0.2, 0.3}
-    }
-    return &types.EmbeddingsResult{
-        Embeddings: embeddings,
-        Usage: types.EmbeddingUsage{
-            TotalTokens: 10 * len(inputs),
-        },
-    }, nil
-}
 
 func TestEmbed(t *testing.T) {
     ctx := context.Background()
 
-    mockModel := &MockEmbeddingModel{}
+    mockModel := &testutil.MockEmbeddingModel{}
 
     result, err := ai.Embed(ctx, ai.EmbedOptions{
         Model: mockModel,
@@ -525,8 +453,8 @@ func TestEmbed(t *testing.T) {
         t.Fatalf("unexpected error: %v", err)
     }
 
-    if len(result.Embedding) != 3 {
-        t.Errorf("expected 3-dimensional embedding, got %d", len(result.Embedding))
+    if len(result.Embedding) != 5 {
+        t.Errorf("expected 5-dimensional embedding, got %d", len(result.Embedding))
     }
 }
 ```
@@ -564,8 +492,8 @@ Always test error paths:
 ```go
 func TestErrorHandling(t *testing.T) {
     ctx := context.Background()
-    mockModel := &MockLanguageModel{
-        GenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+    mockModel := &testutil.MockLanguageModel{
+        DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
             return nil, errors.New("mock error")
         },
     }
@@ -590,8 +518,8 @@ func TestContextCancellation(t *testing.T) {
     ctx, cancel := context.WithCancel(context.Background())
     cancel() // Cancel immediately
 
-    mockModel := &MockLanguageModel{
-        GenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+    mockModel := &testutil.MockLanguageModel{
+        DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
             // A real model call would fail on a canceled context; the mock
             // must check it explicitly since it never makes an HTTP request.
             if err := ctx.Err(); err != nil {
@@ -617,9 +545,9 @@ func TestContextCancellation(t *testing.T) {
 Create reusable test helpers:
 
 ```go
-func newTestModel(response string) *MockLanguageModel {
-    return &MockLanguageModel{
-        GenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+func newTestModel(response string) *testutil.MockLanguageModel {
+    return &testutil.MockLanguageModel{
+        DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
             return &types.GenerateResult{
                 Text:         response,
                 FinishReason: types.FinishReasonStop,
@@ -643,7 +571,7 @@ func TestOnFinishCallback(t *testing.T) {
     ctx := context.Background()
     callbackCalled := false
 
-    mockModel := &MockLanguageModel{}
+    mockModel := &testutil.MockLanguageModel{}
 
     _, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
         Model:  mockModel,
@@ -704,8 +632,8 @@ func (s *MyService) ProcessText(ctx context.Context, text string) (string, error
 }
 
 func TestMyService(t *testing.T) {
-    mockModel := &MockLanguageModel{
-        GenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+    mockModel := &testutil.MockLanguageModel{
+        DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
             return &types.GenerateResult{
                 Text: "processed: " + opts.Prompt.Messages[0].Content[0].(types.TextContent).Text,
             }, nil
@@ -751,7 +679,7 @@ func TestRealProvider(t *testing.T) {
 
     ctx := context.Background()
     provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
         Model:  model,

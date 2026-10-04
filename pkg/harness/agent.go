@@ -181,6 +181,9 @@ func (a *Agent) CreateSession(ctx context.Context, opts CreateSessionOptions) (*
 	if sessionID == "" {
 		sessionID = newID()
 	}
+	// The sandbox and the session work dir are named after the session, so
+	// they must see the generated id too (TS passes the same `sessionId`).
+	opts.SessionID = sessionID
 
 	var validatedResumeFrom *ResumeSessionState
 	if opts.ResumeFrom != nil {

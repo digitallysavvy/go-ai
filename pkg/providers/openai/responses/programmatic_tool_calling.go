@@ -12,6 +12,7 @@
 // "program_output" item (result + status); both decode into a single
 // provider-executed tool call/result pair named
 // "openai.programmatic_tool_calling".
+
 package responses
 
 import (

@@ -8,6 +8,7 @@
 //  1. Include a shell tool in the request (via NewLocalShellTool, NewShellTool, or NewApplyPatchTool)
 //  2. The model returns a LocalShellCall, ShellCall, or ApplyPatchCall when it invokes the tool
 //  3. Execute the requested action and send back LocalShellCallOutput, ShellCallOutput, or ApplyPatchCallOutput
+
 package responses
 
 import (

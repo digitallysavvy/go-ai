@@ -1,6 +1,6 @@
 # Contributing to Documentation
 
-Thank you for your interest in improving the Go-AI SDK documentation! This guide will help you contribute effectively and ensure consistency across all documentation.
+Thank you for your interest in improving the Go AI SDK documentation! This guide will help you contribute effectively and ensure consistency across all documentation.
 
 ## Table of Contents
 
@@ -19,11 +19,11 @@ Thank you for your interest in improving the Go-AI SDK documentation! This guide
 
 Before contributing to documentation, ensure you have:
 
-- Go 1.21 or later installed
+- Go 1.26 or later installed
 - Git configured on your system
 - A text editor or IDE for editing Markdown files
 - Basic understanding of Markdown syntax
-- Familiarity with the Go-AI SDK (read the getting started guide)
+- Familiarity with the Go AI SDK (read the getting started guide)
 
 ### Initial Setup
 
@@ -53,6 +53,7 @@ Before contributing to documentation, ensure you have:
    cd docs/scripts
    go run validate-links.go -docs=../ -verbose
    go run extract-examples.go -docs=../ -test-only
+   # or, from the repo root: go run docs/scripts/compile-snippets.go
    ```
 
 ## Documentation Structure
@@ -146,29 +147,31 @@ import (
     "context"
     "fmt"
     "log"
+    "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 )
 
 func main() {
-    // Create client with API key
-    client := newExampleClient("your-api-key")
-
-    // Create request
-    request := ai.GenerateTextOptions{
-        Model: "claude-3-5-sonnet-20241022",
-        Messages: []types.Message{
-            {Role: "user", Content: "Hello!"},
-        },
+    // 1. Setup: create a provider and pick a model
+    provider := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")})
+    model, err := provider.LanguageModel(anthropic.ClaudeSonnet5_5)
+    if err != nil {
+        log.Fatal(err)
     }
 
-    // Generate response
-    response, err := ai.GenerateText(context.Background(), request)
+    // 2. Main operation
+    result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Hello!",
+    })
     if err != nil {
         log.Fatalf("Error: %v", err)
     }
 
-    fmt.Println(response.Content)
+    // 3. Use the result
+    fmt.Println(result.Text)
 }
 ```
 ````
@@ -248,64 +251,70 @@ go run extract-examples.go -docs=../ -verbose
 package main
 
 import (
-    // Standard library imports
     "context"
     "fmt"
     "log"
+    "os"
 
-    // Third-party imports
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 )
 
 func main() {
-    // 1. Setup
-    client := newExampleClient("your-api-key")
+    // 1. Setup: create a provider and pick a model
+    provider := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")})
+    model, err := provider.LanguageModel(anthropic.ClaudeSonnet5_5)
+    if err != nil {
+        log.Fatal(err)
+    }
 
     // 2. Main operation
-    result, err := client.DoSomething(context.Background())
+    result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Hello!",
+    })
     if err != nil {
         log.Fatalf("Error: %v", err)
     }
 
-    // 3. Use result
-    fmt.Println(result)
+    // 3. Use the result
+    fmt.Println(result.Text)
 }
 ```
 
 ### Testing Examples
 
-Your examples will be automatically extracted and tested. Ensure they compile:
+CI compiles every Go block in `docs/` with `docs/scripts/compile-snippets.go`. Run it from the repository root before you open a PR:
 
 ```bash
-# Test your specific file
-cd docs/scripts
-go run extract-examples.go -docs=../04-guides/your-guide.mdx -verbose
-
-# Test all examples
-go run extract-examples.go -docs=../ -compile
+go run docs/scripts/compile-snippets.go             # check all of docs/
+go run docs/scripts/compile-snippets.go -v          # also list skipped blocks
+go run docs/scripts/compile-snippets.go -fragments=strict
 ```
 
-### Marking Non-Compilable Examples
+The tool sorts blocks into three groups:
 
-If your example is pseudo-code or intentionally incomplete:
+- **Complete programs** (the block has a `package` clause). Each program is checked with `go vet` against the module. Any error fails CI. Report `file:line` points at the failing line in the docs source. A block whose first line is a `// name_test.go` comment is a test file for the program above it on the same page: the tool adds it to that program's package.
+- **Fragments** (no `package` clause). The tool wraps each fragment in a template (declarations become a package, statements become a function body) and adds imports for the packages it uses. It ignores errors that a fragment cannot avoid, such as `undefined: model` or `declared and not used`, and reports the rest: undefined package members (`ai.Step`), wrong argument counts or types, and syntax errors. Fragments can start with `import` declarations, and can mix top-level `func` and `type` declarations with statements. Keyed elements or struct fields copied out of a larger declaration (`OnStepFinish: func(...) {...},`) only have to parse. CI runs with `-fragments=strict`, so any fragment finding fails the job. In prose-like blocks such as prompt text, use a `text` fence instead of `go`.
+- **Skipped blocks** (the fence has `skip-compile`).
+
+Write complete programs when a reader can run them. Write fragments when the context around them supplies the variables. Both are checked.
+
+### Marking non-compilable examples
+
+Add `skip-compile` to the fence info string for blocks that cannot compile on purpose:
+
+- "Before:" blocks that show a removed API.
+- Programs that import a third-party module the SDK does not depend on (for example Redis or OpenTelemetry exporters).
 
 ````markdown
-```go
-// This is pseudo-code for illustration
-client := NewClient()
-result := client.DoMagic() // Simplified for clarity
+```go skip-compile
+// Before (v0.4): this no longer compiles.
+tool := types.Tool{Name: "search", Strict: true}
 ```
 ````
 
-Add a note above the example:
-
-```markdown
-The following is pseudo-code showing the general pattern:
-
-```go
-// pseudo-code here
-```
-```
+Docusaurus ignores the extra word, so the block renders as normal Go code. Use the marker only when the block must not compile. Do not use it to hide a broken example. Pages in `_templates/` are not checked.
 
 ## Testing Documentation
 
@@ -624,7 +633,7 @@ go run extract-examples.go -docs=../07-reference/api/new-type.mdx -verbose
 - [Documentation Style Guide](./DOCUMENTATION_STYLE_GUIDE.md)
 - [Template Files](./_templates/)
 - [Existing Documentation](./02-getting-started/)
-- [Go-AI Repository](https://github.com/digitallysavvy/go-ai)
+- [Go AI SDK repository](https://github.com/digitallysavvy/go-ai)
 
 ### Questions?
 
@@ -651,7 +660,7 @@ Contributors to documentation will be:
 - Credited in release notes for significant contributions
 - Recognized in the community
 
-Thank you for helping make Go-AI documentation better!
+Thank you for helping make the Go AI SDK documentation better!
 
 ---
 

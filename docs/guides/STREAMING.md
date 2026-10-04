@@ -641,7 +641,7 @@ func TestStreamProcessing(t *testing.T) {
 ## Resources
 
 - [Provider Documentation](https://github.com/digitallysavvy/go-ai/tree/main/pkg/providers)
-- [Language Model Interface](../../pkg/provider/language_model.go)
+- [Language Model Interface](https://github.com/digitallysavvy/go-ai/blob/main/pkg/provider/language_model.go)
 - [Examples](https://github.com/digitallysavvy/go-ai/tree/main/examples)
 
 ## Summary

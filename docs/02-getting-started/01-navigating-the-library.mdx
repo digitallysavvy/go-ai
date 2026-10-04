@@ -14,7 +14,7 @@ The Go AI SDK is organized into several key packages:
 ### Core Packages
 
 - **`pkg/ai`** - Main package with high-level functions (`GenerateText`, `StreamText`, `GenerateObject`, `Embed`, `GenerateImage`, `GenerateSpeech`, `Transcribe`, `Rerank`, etc.)
-- **`pkg/providers`** - All 26+ provider implementations (OpenAI, Anthropic, Google, etc.)
+- **`pkg/providers`** - All 49 provider implementations (OpenAI, Anthropic, Google, etc.)
 - **`pkg/agent`** - Agent framework for building autonomous workflows (`ToolLoopAgent`)
 - **`pkg/middleware`** - Middleware for wrapping models with default settings, instructions, JSON/reasoning extraction, and simulated streaming
 - **`pkg/testutil`** - Testing utilities and mock providers
@@ -176,7 +176,7 @@ For cost-conscious applications:
 ### Specialized Use Cases
 
 - **Long Context**: Anthropic Claude (200K+ tokens)
-- **Code Generation**: OpenAI GPT-4, Codestral
+- **Code Generation**: OpenAI GPT-6, Codestral
 - **Fast Inference**: Groq, Fireworks
 - **Open Source**: Together AI, Replicate, Hugging Face
 
@@ -311,10 +311,10 @@ wg.Wait()
 
 ```go
 // Fast, cheap model for simple tasks
-quickModel, _ := provider.LanguageModel("gpt-3.5-turbo")
+quickModel, _ := provider.LanguageModel("gpt-5.4-nano")
 
 // Powerful model for complex reasoning
-smartModel, _ := provider.LanguageModel("gpt-4")
+smartModel, _ := provider.LanguageModel("gpt-6-astra")
 
 // Use based on task complexity
 model := quickModel

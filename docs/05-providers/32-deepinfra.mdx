@@ -1,6 +1,6 @@
 ---
 title: DeepInfra Provider
-description: Setup and usage guide for DeepInfra serverless GPU inference with Go-AI SDK
+description: Setup and usage guide for DeepInfra serverless GPU inference with Go AI SDK
 ---
 
 # DeepInfra Provider
@@ -45,32 +45,32 @@ export DEEPINFRA_API_KEY=...
 
 ### Language Models
 
-| Model ID | Parameters | Input Price | Output Price | Best For |
-|----------|-----------|-------------|--------------|----------|
-| meta-llama/Meta-Llama-3.1-70B-Instruct | 70B | $0.52/1M | $0.75/1M | General purpose |
-| meta-llama/Meta-Llama-3.1-8B-Instruct | 8B | $0.06/1M | $0.06/1M | Fast, cheap |
-| mistralai/Mixtral-8x7B-Instruct-v0.1 | 47B | $0.24/1M | $0.24/1M | Balanced |
-| Qwen/Qwen2.5-72B-Instruct | 72B | $0.35/1M | $0.40/1M | Multilingual |
-| microsoft/WizardLM-2-8x22B | 141B | $0.65/1M | $0.65/1M | Complex tasks |
+| Model ID | Parameters | Best For |
+| ---------- | ----------- | ---------- |
+| meta-llama/Meta-Llama-3.1-70B-Instruct | 70B | General purpose |
+| meta-llama/Meta-Llama-3.1-8B-Instruct | 8B | Fast, cheap |
+| mistralai/Mixtral-8x7B-Instruct-v0.1 | 47B | Balanced |
+| Qwen/Qwen2.5-72B-Instruct | 72B | Multilingual |
+| microsoft/WizardLM-2-8x22B | 141B | Complex tasks |
 
 ### Embedding Models
 
-| Model ID | Dimensions | Price | Best For |
-|----------|-----------|-------|----------|
-| BAAI/bge-large-en-v1.5 | 1024 | $0.005/1M | English embeddings |
-| sentence-transformers/all-MiniLM-L6-v2 | 384 | $0.005/1M | Fast embeddings |
+| Model ID | Dimensions | Best For |
+| ---------- | ----------- | ---------- |
+| BAAI/bge-large-en-v1.5 | 1024 | English embeddings |
+| sentence-transformers/all-MiniLM-L6-v2 | 384 | Fast embeddings |
 
 ### Vision Models
 
-| Model ID | Capability | Price | Best For |
-|----------|-----------|-------|----------|
-| meta-llama/Llama-3.2-90B-Vision-Instruct | Vision | $0.50/1M | Image understanding |
+| Model ID | Capability | Best For |
+| ---------- | ----------- | ---------- |
+| meta-llama/Llama-3.2-90B-Vision-Instruct | Vision | Image understanding |
 
 ## Provider-Specific Features
 
 ### Token Counting Fix
 
-The Go-AI SDK automatically corrects token counting issues for Gemini and Gemma models on DeepInfra.
+The Go AI SDK automatically corrects token counting issues for Gemini and Gemma models on DeepInfra.
 
 **The Issue:**
 DeepInfra's API has a bug where `reasoning_tokens` are not included in `completion_tokens` for Gemini/Gemma models with thinking capabilities. This violates the OpenAI-compatible spec and can result in negative token counts.
@@ -88,15 +88,15 @@ DeepInfra's API has a bug where `reasoning_tokens` are not included in `completi
 This would incorrectly calculate: `text_tokens = 84 - 1081 = -997` ❌
 
 **The Fix:**
-The Go-AI SDK automatically detects and corrects this:
+The Go AI SDK automatically detects and corrects this:
 ```go
 // When reasoning_tokens > completion_tokens, automatically add them
 // corrected_completion_tokens = 84 + 1081 = 1165 ✅
 ```
 
 **Affected Models:**
-- `google/gemini-2.0-flash-thinking-exp-1219`
-- `google/gemini-2.0-flash-thinking-exp:free`
+- `google/gemini-2.5-flash`
+- `google/gemini-2.5-flash:free`
 - `google/gemma-2-9b-it`
 - Other Gemini/Gemma variants with reasoning support
 
@@ -106,7 +106,7 @@ provider := deepinfra.New(deepinfra.Config{
     APIKey: os.Getenv("DEEPINFRA_API_KEY"),
 })
 
-model, err := provider.LanguageModel("google/gemini-2.0-flash-thinking-exp-1219")
+model, err := provider.LanguageModel("google/gemini-2.5-flash")
 
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: "Explain quantum computing"})
 
@@ -316,26 +316,9 @@ Varies by plan:
 - Pay-as-you-go: Higher limits
 - Enterprise: Custom limits
 
-### Pricing Comparison
+### Pricing
 
-```go
-func compareProviderCosts(inputTokens, outputTokens int) {
-    providers := map[string][2]float64{
-        "DeepInfra Llama 70B":  {0.52 / 1_000_000, 0.75 / 1_000_000},
-        "DeepInfra Llama 8B":   {0.06 / 1_000_000, 0.06 / 1_000_000},
-        "DeepInfra Mixtral":    {0.24 / 1_000_000, 0.24 / 1_000_000},
-        "DeepInfra Qwen 72B":   {0.35 / 1_000_000, 0.40 / 1_000_000},
-    }
-
-    fmt.Println("Cost comparison for 1M input + 1M output tokens:")
-    for provider, rates := range providers {
-        inputCost := float64(inputTokens) * rates[0]
-        outputCost := float64(outputTokens) * rates[1]
-        totalCost := inputCost + outputCost
-        fmt.Printf("%s: $%.2f\n", provider, totalCost)
-    }
-}
-```
+Pricing varies by model. See the [DeepInfra pricing page](https://deepinfra.com/pricing) for current values.
 
 ## Error Handling
 

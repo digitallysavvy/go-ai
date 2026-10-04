@@ -59,7 +59,7 @@ type LanguageModel interface {
     // Metadata
     SpecificationVersion() string  // e.g., "v3"
     Provider() string              // e.g., "openai", "anthropic"
-    ModelID() string               // e.g., "gpt-4o", "claude-sonnet-4-5"
+    ModelID() string               // e.g., "gpt-6-astra", "claude-sonnet-4-5"
 
     // Capabilities
     SupportsTools() bool
@@ -165,6 +165,7 @@ package myprovider
 
 import (
     "context"
+    "fmt"
 
     "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -244,6 +245,33 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
     // See existing providers for streaming patterns
     return nil, fmt.Errorf("streaming not yet implemented")
 }
+
+// myAIRequest and myAIResponse mirror your API's wire format.
+type myAIRequest struct {
+    Model  string `json:"model"`
+    Prompt string `json:"prompt"`
+}
+
+type myAIResponse struct {
+    Text string `json:"text"`
+}
+
+func buildMyAIRequest(opts *provider.GenerateOptions) *myAIRequest {
+    return &myAIRequest{Prompt: opts.Prompt.Text}
+}
+
+// callMyAIAPI sends the request to your API. Replace the body with a real HTTP call.
+func callMyAIAPI(ctx context.Context, baseURL, apiKey, modelID string, req *myAIRequest) (*myAIResponse, error) {
+    req.Model = modelID
+    return nil, fmt.Errorf("not implemented")
+}
+
+func convertMyAIResponse(resp *myAIResponse) *types.GenerateResult {
+    return &types.GenerateResult{
+        Text:         resp.Text,
+        FinishReason: types.FinishReasonStop,
+    }
+}
 ```
 
 Once implemented, your provider works anywhere the SDK accepts a `provider.LanguageModel`:
@@ -300,7 +328,7 @@ func main() {
     ctx := context.Background()
 
     p := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
-    base, _ := p.LanguageModel("gpt-4o")
+    base, _ := p.LanguageModel("gpt-6-astra")
 
     // Wrap the model with middleware
     wrapped := middleware.WrapLanguageModel(base, []*middleware.LanguageModelMiddleware{loggingMiddleware}, nil, nil)

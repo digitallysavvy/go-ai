@@ -1,0 +1,387 @@
+---
+title: Coding agents with the harness
+description: Run Claude Code or Codex from Go with harness.NewAgent. Covers sandboxes, sessions, permission modes, seeding files, streaming activity into a chat UI and reading changes back.
+---
+
+# Coding agents with the harness
+
+The harness lets a Go program drive an existing coding agent, such as Claude Code or Codex, inside a sandbox. Your code gives it a task and a workspace. It edits files and runs commands. You stream what it does, then read the files it changed.
+
+This is different from the [hand-rolled tool loop](../04-advanced/coding-agents.mdx), where your model calls tools you wrote. With the harness, the coding agent brings its own tools, prompts and loop.
+
+## The pieces
+
+| Piece | What it is |
+| --- | --- |
+| `harness.Agent` | Built with `harness.NewAgent`. Holds the settings: which coding agent, which model, which sandbox. |
+| Adapter | `claudecode.New` or `codex.New`. Translates between the harness protocol and the coding agent's own CLI. |
+| Sandbox provider | Where the coding agent runs. `local` runs on your machine. `vercel` runs on Vercel Sandbox. |
+| `harness.AgentSession` | One sandbox and one conversation. Created with `CreateSession`, cleaned up with `Destroy`. |
+
+The flow is: create the agent, create a session, stream a prompt into the session, read the files back, destroy the session.
+
+## A complete program
+
+This program starts Claude Code in a local sandbox, seeds a file with a bug, asks the agent to fix it, prints its activity, and reads the fixed file back.
+
+```go
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"os"
+	"path"
+	"path/filepath"
+
+	"github.com/digitallysavvy/go-ai/pkg/agent"
+	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/harness/claudecode"
+	"github.com/digitallysavvy/go-ai/pkg/harness/sandbox/local"
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+)
+
+const brokenFile = `package main
+
+import "fmt"
+
+func add(a, b int) int { return a - b } // bug
+
+func main() { fmt.Println(add(2, 3)) }
+`
+
+func main() {
+	ctx := context.Background()
+
+	cc, err := claudecode.New(claudecode.Settings{MaxTurns: 20})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	coder, err := harness.NewAgent(harness.AgentSettings{
+		Harness:        cc,
+		Model:          anthropic.ClaudeSonnet5_5,
+		PermissionMode: harness.PermissionModeAllowAll,
+		Instructions:   "Fix the bug with a minimal change. End with one sentence describing it.",
+		Sandbox: local.NewProvider(local.Options{
+			RootDir: filepath.Join(os.TempDir(), "recipe-sandboxes"),
+			Ports:   []int{4319},
+		}),
+		SandboxConfig: harness.AgentSandboxConfig{
+			OnSession: func(ctx context.Context, sc harness.SandboxSessionContext) error {
+				return sc.Session.WriteTextFile(ctx, providerutils.SandboxWriteTextFileOptions{
+					Path:    path.Join(sc.SessionWorkDir, "main.go"),
+					Content: brokenFile,
+				})
+			},
+		},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	session, err := coder.CreateSession(ctx, harness.CreateSessionOptions{SessionID: "guide-session"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer func() { _ = session.Destroy(context.WithoutCancel(ctx)) }()
+
+	result, err := coder.Stream(ctx, agent.AgentStreamOptions{AgentGenerateOptions: agent.AgentGenerateOptions{
+		HarnessSession: session,
+		Prompt:         "add(2, 3) in main.go returns -1 but should return 5. Fix it.",
+	}})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	stream := result.Stream()
+	for {
+		chunk, err := stream.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			log.Fatal(err)
+		}
+		switch chunk.Type {
+		case provider.ChunkTypeText:
+			fmt.Print(chunk.Text)
+		case provider.ChunkTypeToolCall:
+			if chunk.ToolCall != nil {
+				fmt.Printf("\n[tool] %s\n", chunk.ToolCall.ToolName)
+			}
+		}
+	}
+	if err := stream.Err(); err != nil {
+		log.Fatal(err)
+	}
+
+	content, err := session.GetSandboxSession().ReadTextFile(ctx, providerutils.SandboxReadTextFileOptions{
+		Path: path.Join(session.GetSessionWorkDir(), "main.go"),
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	if content != nil {
+		fmt.Println(*content)
+	}
+}
+```
+
+The rest of this guide explains each part.
+
+## Claude Code or Codex
+
+Both adapters implement the same interface, so switching is one line:
+
+```go
+cc, err := claudecode.New(claudecode.Settings{MaxTurns: 30})
+// or
+cx := codex.New(codex.Settings{})
+```
+
+Set `harness.AgentSettings.Harness` to the adapter and `Model` to a model ID the coding agent understands. The demo reads the Codex model from an environment variable and leaves it empty by default, which lets Codex choose.
+
+Credentials are discovered from the host environment. Claude Code looks for `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `CLAUDE_CODE_OAUTH_TOKEN`. Codex looks for `OPENAI_API_KEY` or `CODEX_API_KEY`. Set `Auth` in the adapter settings to choose a route explicitly, for example through the AI Gateway.
+
+Other adapters exist for OpenCode, Deep Agents, ACP-based agents and more. They share this shape. See [Migrating from the TypeScript AI SDK](../08-migration-guides/from-typescript-ai-sdk.mdx#harness) for the list.
+
+## Sandboxes
+
+The sandbox provider decides where commands run.
+
+### Local
+
+`local.NewProvider` runs everything on your machine, in one directory per session under `RootDir`:
+
+```go
+local.NewProvider(local.Options{
+	RootDir: "/tmp/sandboxes",
+	Ports:   []int{4319},
+})
+```
+
+> **Warning:** the local sandbox is not isolated. Commands run as your user, with your files, network and environment. Use it for development and for work you trust. Use an isolated provider for anything else.
+
+`Ports` is required. The harness starts a small bridge process inside the sandbox and talks to it over a WebSocket on one port. A sandbox that exposes no port makes `CreateSession` fail with an error that asks for one. The local sandbox shares your machine's network, so two sessions on the same port at the same time collide. The demo gives Claude Code port 4319 and Codex port 4318, and runs one coding session at a time.
+
+The bridge runs on Node.js, so Node must be installed on the host. The first session installs the adapter's dependencies into the sandbox and takes longer than later ones.
+
+### Vercel Sandbox
+
+For isolation, run the coding agent on [Vercel Sandbox](https://vercel.com/docs/vercel-sandbox). Create the sandbox session yourself, expose a port, and hand it to `CreateSession`. You then own its lifecycle:
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/harness/sandbox/vercel"
+
+sandbox, err := vercel.CreateNetworkSandboxSession(ctx, vercel.CreateSessionOptions{
+	Runtime: "node24",
+	Ports:   []int{4319},
+})
+if err != nil {
+	log.Fatal(err)
+}
+defer func() { _ = sandbox.Destroy(context.WithoutCancel(ctx)) }()
+
+session, err := coder.CreateSession(ctx, harness.CreateSessionOptions{
+	SessionID:      "run-1",
+	SandboxSession: sandbox,
+})
+```
+
+Credentials come from `VERCEL_OIDC_TOKEN`, or from `Credentials` with a token, team ID and project ID. You do not need a `Sandbox` setting on the `harness.Agent` in this mode. See [Harness sandbox: Vercel](../07-reference/ai/harness-sandbox-vercel.mdx) for the full option list.
+
+## Sessions
+
+A session is one sandbox plus one conversation with the coding agent.
+
+```go
+session, err := coder.CreateSession(ctx, harness.CreateSessionOptions{SessionID: "run-1"})
+defer session.Destroy(context.WithoutCancel(ctx))
+```
+
+- `SessionID` names the session. Leave it empty to have one generated. Use a stable value when you may resume the session later.
+- `Destroy` stops the agent and deletes the sandbox. Defer it right after `CreateSession` succeeds. Wrap the context in `context.WithoutCancel`, so cleanup still runs when the request was cancelled.
+- `Detach` and `Stop` return a state value you can pass back in `CreateSessionOptions.ResumeFrom` to continue the same session later.
+- `GetSandboxSession()` returns the sandbox for file and command access. `GetSessionWorkDir()` returns the directory the agent works in.
+
+You can send several prompts to one session. Each call to `Stream` is a turn, and the agent remembers earlier turns.
+
+## Permission modes
+
+`PermissionMode` sets the baseline for the agent's built-in tools:
+
+| Mode | Meaning |
+| --- | --- |
+| `harness.PermissionModeAllowAll` | Reads, edits and shell commands run without asking. The default. |
+| `harness.PermissionModeAllowEdits` | Reads and edits run. Shell commands need approval. |
+| `harness.PermissionModeAllowReads` | Reads run. Edits and shell commands need approval. |
+
+Codex supports only `allow-all`; starting a session in another mode fails with a capability error. Claude Code supports all three. With `allow-reads` or `allow-edits`, a call to a gated built-in tool surfaces as a tool approval request, which you answer with `Agent.ContinueStream`. For a coding agent that you have already put behind an approval in your own chat, as the demo does, `allow-all` inside a sandbox is the usual choice: the user approved the task, and the sandbox bounds the damage.
+
+For tools you define on the harness agent, use `harness.AgentSettings.ToolApproval`, a map from tool name to a static `ToolApprovalStatus`.
+
+## Seed files with OnSession
+
+`SandboxConfig.OnSession` runs after the sandbox exists and the work directory has been created, and before the agent starts. Use it to copy the project in:
+
+```go
+SandboxConfig: harness.AgentSandboxConfig{
+	OnSession: func(ctx context.Context, sc harness.SandboxSessionContext) error {
+		for rel, content := range files {
+			err := sc.Session.WriteTextFile(ctx, providerutils.SandboxWriteTextFileOptions{
+				Path:    path.Join(sc.SessionWorkDir, rel),
+				Content: content,
+			})
+			if err != nil {
+				return err
+			}
+		}
+		// A baseline commit lets the agent use git status and git diff.
+		res, err := sc.Session.Run(ctx, providerutils.SandboxProcessOptions{
+			Command:          "git init -q && git add -A && git -c user.name=app -c user.email=app@localhost commit -qm baseline",
+			WorkingDirectory: sc.SessionWorkDir,
+		})
+		if err != nil {
+			return err
+		}
+		if res.ExitCode != 0 {
+			return fmt.Errorf("git init: %s", res.Stderr)
+		}
+		return nil
+	},
+},
+```
+
+`sc.Session` is the sandbox, with `WriteTextFile`, `ReadTextFile` and `Run`. Always build paths from `sc.SessionWorkDir`; the sandbox's own root is not where the agent works. For work that every session repeats, such as installing dependencies, `SandboxConfig.OnBootstrap` with a `BootstrapHash` runs once and lets snapshot-capable providers reuse the result.
+
+## Stream activity
+
+`coder.Stream` returns an `*ai.StreamTextResult`. Its `Stream()` yields `provider.StreamChunk` values for the agent's text, its tool calls and their results. (`FullStream()` is a deprecated alias for the same stream, and the demo still uses it.)
+
+| Chunk type | What to read |
+| --- | --- |
+| `provider.ChunkTypeText` | `chunk.Text`, a piece of the agent's message. `ChunkTypeTextEnd` closes it. |
+| `provider.ChunkTypeToolCall` | `chunk.ToolCall.ToolName`, `.ID` and `.Arguments`. The agent's own tool names, such as `Bash`, `Edit` or `Read`, and Codex's equivalents. |
+| `provider.ChunkTypeToolResult` | `chunk.ToolResult.ToolCallID` and `.Result`, which for shell commands carries `exitCode` and `output`. |
+
+The agents name their tools differently, so classify them by name. The demo's `describeToolCall` maps a shell tool to a `run` event, edit and write tools to `edit`, read tools to `read`, and everything else to a generic line.
+
+## Turn activity into UI data parts
+
+To show the work in a chat, fold the chunks into one state value and write it as a data part each time it changes. Use the tool call ID as the part ID so each update replaces the last. This code follows the demo, with the classification reduced to the essentials:
+
+```go
+type coderEvent struct {
+	ID   string `json:"id"`
+	Kind string `json:"kind"` // say | run | edit | read | tool
+	Text string `json:"text"`
+}
+
+type coderState struct {
+	Status string       `json:"status"` // running | done | error
+	Events []coderEvent `json:"events"`
+}
+
+// runCoder streams the agent's activity into the chat as a data-coder part.
+func runCoder(ctx context.Context, result *ai.StreamTextResult, toolCallID string, writer ai.UIMessageStreamWriter) error {
+	state := &coderState{Status: "running", Events: []coderEvent{}}
+	emit := func() {
+		snapshot := *state
+		// Copy the slice, and never send nil: JSON null breaks a client that maps over it.
+		snapshot.Events = append([]coderEvent{}, state.Events...)
+		writer.Write(ai.UIMessageChunk{"type": "data-coder", "id": toolCallID, "data": snapshot})
+	}
+	emit()
+
+	stream := result.Stream()
+	say := -1 // index of the event that receives text deltas
+	for {
+		chunk, err := stream.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		switch chunk.Type {
+		case provider.ChunkTypeText:
+			if say < 0 {
+				state.Events = append(state.Events, coderEvent{ID: fmt.Sprintf("say-%d", len(state.Events)), Kind: "say"})
+				say = len(state.Events) - 1
+			}
+			state.Events[say].Text += chunk.Text
+		case provider.ChunkTypeTextEnd:
+			say = -1
+			continue
+		case provider.ChunkTypeToolCall:
+			say = -1
+			if chunk.ToolCall == nil {
+				continue
+			}
+			state.Events = append(state.Events, coderEvent{ID: chunk.ToolCall.ID, Kind: "tool", Text: chunk.ToolCall.ToolName})
+		default:
+			continue
+		}
+		emit()
+	}
+	if err := stream.Err(); err != nil {
+		return err
+	}
+	state.Status = "done"
+	emit()
+	return nil
+}
+```
+
+Write the part from inside the tool that runs the coding agent. The demo's `delegate_to_coding_agent` tool receives the request's stream writer through a closure, which is why `s.tools(kind, writer)` is built per request. Throttle `emit` for chatty agents: the demo skips updates that arrive less than 120 ms apart unless the chunk is not text.
+
+On the client, find the part by type and ID:
+
+```tsx
+const coderById = new Map<string, CoderState>();
+for (const part of message.parts) {
+  if (part.type === 'data-coder' && part.id) coderById.set(part.id, part.data);
+}
+// Then render coderById.get(toolPart.toolCallId) next to the tool call.
+```
+
+## Read changes back
+
+When the stream ends, the agent has finished its turn. Read the result through the sandbox API on the session:
+
+```go
+sb := session.GetSandboxSession()
+workDir := session.GetSessionWorkDir()
+
+res, err := sb.Run(ctx, providerutils.SandboxProcessOptions{
+	Command:          "git diff --stat && git status --short",
+	WorkingDirectory: workDir,
+})
+
+content, err := sb.ReadTextFile(ctx, providerutils.SandboxReadTextFileOptions{
+	Path: path.Join(workDir, "shortlink.go"),
+})
+// content is a *string, nil when the file does not exist.
+```
+
+The demo lists every file with `find`, reads each one, and keeps the ones that differ from the snapshot it took before the run. Then it applies those files to its own workspace and builds a unified diff for the chat. `Run` is also the place to execute the project's tests after the agent finishes, before you accept its work.
+
+## Practical notes
+
+- **One writer per workspace.** The demo guards coding runs with a mutex because of the fixed bridge port and because two agents editing one workspace would conflict.
+- **Pass a cancellable context.** Cancelling it stops the stream and the agent. Tie it to the HTTP request so a closed tab does not leave an agent running.
+- **Keep the stream open.** Coding runs go quiet for long stretches. Use `KeepAliveMs` on the chat response, as described in [Serve a useChat frontend](./01-serve-usechat-from-go.mdx#keep-alive).
+- **Gate the start.** Put the call that starts a coding agent behind `ToolApproval`, as in [Tool approval end to end](./02-tool-approval.mdx).
+
+## See it in the demo
+
+- [`server/coder.go`](https://github.com/digitallysavvy/go-ai-demo/blob/main/server/coder.go): `newHarnessAgent` (Claude Code or Codex, local sandbox with `Ports`, `OnSession`), `Run` (session, stream, `Destroy`), `activityLog` (chunks to events), `collectChanges` (reads files back) and `unifiedDiff`.
+- [`server/tools.go`](https://github.com/digitallysavvy/go-ai-demo/blob/main/server/tools.go): the approval-gated tool that calls `coder.Run` with the request's writer.
+- [`web/components/CoderCard.tsx`](https://github.com/digitallysavvy/go-ai-demo/blob/main/web/components/CoderCard.tsx): rendering the `data-coder` part as a live log with a diff.
+- [`web/lib/types.ts`](https://github.com/digitallysavvy/go-ai-demo/blob/main/web/lib/types.ts): the TypeScript type that mirrors `coderState`.

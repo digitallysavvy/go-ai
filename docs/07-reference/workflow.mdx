@@ -1,0 +1,546 @@
+---
+title: Workflow
+description: "Reference for pkg/workflow in the Go AI SDK: WorkflowAgent, its options and results, the chat transports, serializable tools, step iteration and the durable harness runner."
+---
+
+# Workflow
+
+Package `github.com/digitallysavvy/go-ai/pkg/workflow` is the Go port of the TypeScript `@ai-sdk/workflow` package. It provides an agent for durable execution, where one run spans several process executions, and the client and server pieces that stream a run to a chat UI. For a walkthrough of `WorkflowAgent`, see [WorkflowAgent](../03-agents/07-workflow-agent.mdx).
+
+## WorkflowAgent
+
+`workflow.NewWorkflowAgent` validates a `WorkflowAgent` value and returns it.
+
+```go
+func NewWorkflowAgent(agent WorkflowAgent) (*WorkflowAgent, error)
+```
+
+{/* gen:fields workflow.WorkflowAgent */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Model` | `provider.LanguageModel` |  |
+| `System` | `string` |  |
+| `Instructions` | `interface{}` | Instructions is the TypeScript-compatible name for system instructions. |
+| `AllowSystemInMessages` | `bool` | AllowSystemInMessages permits system-role messages in Messages. By default WorkflowAgent rejects system messages; use Instructions/System for default system prompts. |
+| `Tools` | `[]types.Tool` |  |
+| `ToolSet` | `map[string]types.Tool` |  |
+| `StopWhen` | `[]ai.StopCondition` |  |
+| `Output` | `interface{}` |  |
+| `Telemetry` | `*ai.TelemetrySettings` |  |
+| `ID` | `string` |  |
+| `Prompt` | `string` |  |
+| `OnStart` | `StartCallback` |  |
+| `OnStepStart` | `StepStartCallback` |  |
+| `OnToolExecutionStart` | `ToolExecutionStartCallback` |  |
+| `OnToolExecutionEnd` | `ToolExecutionEndCallback` |  |
+| `OnStepEnd` | `StepEndCallback` |  |
+| `OnStepFinish` | `StepFinishCallback` | Deprecated: use OnStepEnd. |
+| `OnEnd` | `EndCallback` |  |
+| `OnFinish` | `FinishCallback` | Deprecated: use OnEnd. |
+| `OnError` | `ErrorCallback` |  |
+| `OnAbort` | `AbortCallback` |  |
+| `PrepareCall` | `PrepareCallHook` |  |
+| `PrepareStep` | `PrepareStepHook` |  |
+| `FilterActiveTools` | `FilterActiveToolsHook` |  |
+| `CallOptionsSchema` | `schema.Schema` |  |
+| `CallOptions` | `interface{}` |  |
+| `ActiveTools` | `[]string` |  |
+| `Temperature` | `*float64` |  |
+| `MaxTokens` | `*int` |  |
+| `TopP` | `*float64` |  |
+| `TopK` | `*int` |  |
+| `FrequencyPenalty` | `*float64` |  |
+| `PresencePenalty` | `*float64` |  |
+| `StopSequences` | `[]string` |  |
+| `Seed` | `*int` |  |
+| `Headers` | `map[string]string` |  |
+| `Reasoning` | `*types.ReasoningLevel` |  |
+| `SendReasoning` | `*bool` |  |
+| `ProviderOptions` | `map[string]interface{}` |  |
+| `RuntimeContext` | `interface{}` |  |
+| `ToolsContext` | `map[string]interface{}` |  |
+| `ToolChoice` | `types.ToolChoice` |  |
+| `Include` | `*ai.IncludeOptions` |  |
+| `ExperimentalSandbox` | `interface{}` |  |
+| `ExperimentalRefineToolInput` | `map[string]ai.ToolInputRefiner` |  |
+| `RepairToolCall` | `ai.ToolCallRepairFunction` | RepairToolCall attempts to repair tool calls that fail to parse. |
+| `ExperimentalRepairToolCall` | `ai.ToolCallRepairFunction` | ExperimentalRepairToolCall is a deprecated alias for RepairToolCall. Deprecated: use RepairToolCall. |
+| `ExperimentalToolApprovalSecret` | `[]byte` | ExperimentalToolApprovalSecret signs issued approval requests and verifies resumed approvals before approved tools execute. |
+| `MaxRetries` | `*int` | MaxRetries controls transient provider call retries for each model call, forwarded to agent.AgentConfig.MaxRetries. Defaults to 2 when nil, matching TS WorkflowAgent's `mergedGenerationSettings.maxRetries ?? 2`. |
+| `Timeout` | `*ai.TimeoutConfig` | Timeout provides granular timeout controls, forwarded to agent.AgentConfig.Timeout. |
+| `ExperimentalDownload` | `ai.DownloadFunction` | ExperimentalDownload customizes remote file URL downloads before model calls, forwarded to agent.AgentConfig.ExperimentalDownload. |
+
+{/* /gen:fields */}
+
+| Method | Description |
+| --- | --- |
+| `Generate(ctx, prompt string, opts *agent.AgentGenerateOptions) (*WorkflowResult, error)` | Runs the agent and returns the final result. |
+| `GenerateWithOptions(ctx, WorkflowGenerateOptions) (*WorkflowResult, error)` | Runs with workflow-native call options. |
+| `Stream(ctx, prompt string, opts *agent.AgentStreamOptions) (*WorkflowStreamResult, error)` | Runs in streaming mode. |
+| `StreamWithOptions(ctx, WorkflowStreamOptions) (*WorkflowStreamResult, error)` | Streams with workflow-native stream options. |
+
+### WorkflowGenerateOptions
+
+{/* gen:fields workflow.WorkflowGenerateOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Prompt` | `string` |  |
+| `Messages` | `[]types.Message` |  |
+| `System` | `string` |  |
+| `Instructions` | `interface{}` |  |
+| `AllowSystemInMessages` | `bool` |  |
+| `Tools` | `[]types.Tool` |  |
+| `ToolSet` | `map[string]types.Tool` |  |
+| `StopWhen` | `[]ai.StopCondition` |  |
+| `Telemetry` | `*ai.TelemetrySettings` |  |
+| `RuntimeContext` | `interface{}` |  |
+| `ToolsContext` | `map[string]interface{}` |  |
+| `Include` | `*ai.IncludeOptions` |  |
+| `ExperimentalSandbox` | `interface{}` |  |
+| `ExperimentalRefineToolInput` | `map[string]ai.ToolInputRefiner` |  |
+| `RepairToolCall` | `ai.ToolCallRepairFunction` | RepairToolCall attempts to repair tool calls that fail to parse. |
+| `ExperimentalRepairToolCall` | `ai.ToolCallRepairFunction` | ExperimentalRepairToolCall is a deprecated alias for RepairToolCall. Deprecated: use RepairToolCall. |
+| `ExperimentalToolApprovalSecret` | `[]byte` | ExperimentalToolApprovalSecret overrides the agent's approval secret. |
+| `MaxRetries` | `*int` | MaxRetries overrides the agent's MaxRetries for this call. |
+| `Timeout` | `*ai.TimeoutConfig` | Timeout overrides the agent's Timeout for this call. |
+| `ExperimentalDownload` | `ai.DownloadFunction` | ExperimentalDownload overrides the agent's ExperimentalDownload for this call. |
+| `OnStart` | `StartCallback` |  |
+| `OnStepStart` | `StepStartCallback` |  |
+| `OnToolExecutionStart` | `ToolExecutionStartCallback` |  |
+| `OnToolExecutionEnd` | `ToolExecutionEndCallback` |  |
+| `OnStepEnd` | `StepEndCallback` |  |
+| `OnStepFinish` | `StepFinishCallback` | Deprecated: use OnStepEnd. |
+| `OnEnd` | `EndCallback` |  |
+| `OnFinish` | `FinishCallback` | Deprecated: use OnEnd. |
+| `OnError` | `ErrorCallback` |  |
+| `OnAbort` | `AbortCallback` |  |
+
+{/* /gen:fields */}
+
+### WorkflowStreamOptions
+
+{/* gen:fields workflow.WorkflowStreamOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Prompt` | `string` |  |
+| `Messages` | `[]types.Message` |  |
+| `System` | `string` |  |
+| `Instructions` | `interface{}` |  |
+| `AllowSystemInMessages` | `bool` |  |
+| `Tools` | `[]types.Tool` |  |
+| `ToolSet` | `map[string]types.Tool` |  |
+| `StopWhen` | `[]ai.StopCondition` |  |
+| `Telemetry` | `*ai.TelemetrySettings` |  |
+| `ActiveTools` | `[]string` |  |
+| `RuntimeContext` | `interface{}` |  |
+| `ToolsContext` | `map[string]interface{}` |  |
+| `Include` | `*ai.IncludeOptions` |  |
+| `ExperimentalSandbox` | `interface{}` |  |
+| `ExperimentalRefineToolInput` | `map[string]ai.ToolInputRefiner` |  |
+| `RepairToolCall` | `ai.ToolCallRepairFunction` | RepairToolCall attempts to repair tool calls that fail to parse. |
+| `ExperimentalRepairToolCall` | `ai.ToolCallRepairFunction` | ExperimentalRepairToolCall is a deprecated alias for RepairToolCall. Deprecated: use RepairToolCall. |
+| `ExperimentalToolApprovalSecret` | `[]byte` | ExperimentalToolApprovalSecret overrides the agent's approval secret. |
+| `MaxRetries` | `*int` | MaxRetries overrides the agent's MaxRetries for this call. |
+| `Timeout` | `*ai.TimeoutConfig` | Timeout overrides the agent's Timeout for this call. |
+| `ExperimentalDownload` | `ai.DownloadFunction` | ExperimentalDownload overrides the agent's ExperimentalDownload for this call. |
+| `ExperimentalTransform` | `[]ai.StreamTransformFunc` | ExperimentalTransform is an ordered list of transforms applied to raw model stream chunks before they reach OnChunk or the returned WorkflowStreamResult, matching TS WorkflowAgent's `experimental_transform` stream option (hash 165455d). Previously declared-but-unused in TS; this forwards it through to the underlying ai.StreamText call so it actually runs. |
+| `OnChunk` | `func(chunk provider.StreamChunk)` |  |
+| `OnStart` | `StartCallback` |  |
+| `OnStepStart` | `StepStartCallback` |  |
+| `OnToolExecutionStart` | `ToolExecutionStartCallback` |  |
+| `OnToolExecutionEnd` | `ToolExecutionEndCallback` |  |
+| `OnStepEnd` | `StepEndCallback` |  |
+| `OnStepFinish` | `StepFinishCallback` | Deprecated: use OnStepEnd. |
+| `OnEnd` | `EndCallback` |  |
+| `OnFinish` | `FinishCallback` | Deprecated: use OnEnd. |
+| `OnError` | `ErrorCallback` |  |
+| `OnAbort` | `AbortCallback` |  |
+
+{/* /gen:fields */}
+
+### Results
+
+`workflow.WorkflowResult` is the final non-streaming result. `IsLoopFinished()` reports whether the run ended naturally.
+
+{/* gen:fields workflow.WorkflowResult */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| (embedded) | `*agent.AgentResult` | Embedded. |
+
+{/* /gen:fields */}
+
+`workflow.WorkflowStreamResult` wraps the streaming result.
+
+{/* gen:fields workflow.WorkflowStreamResult */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| (embedded) | `*ai.StreamTextResult` | Embedded. |
+
+{/* /gen:fields */}
+
+### Hooks and callbacks
+
+The hook and callback function types mirror the `ToolLoopAgent` ones.
+
+| Type | Description |
+| --- | --- |
+| `workflow.PrepareStepHook` | Mutates per-step options using the current history. |
+| `workflow.PrepareCallHook` | Mutates per-step call options before model invocation. |
+| `workflow.FilterActiveToolsHook` | Reduces the available tools for a step. |
+| `workflow.LanguageModelCallOptions` | The per-step call configuration, as in `ToolLoopAgent`. |
+| `workflow.StartCallback` | Fires once before the first step. |
+| `workflow.StepStartCallback` | Fires before each model step. |
+| `workflow.StepEndCallback`, `workflow.StepFinishCallback` | Fire after each completed step. |
+| `workflow.ToolExecutionStartCallback`, `workflow.ToolExecutionEndCallback` | Fire around local tool execution. |
+| `workflow.EndCallback`, `workflow.FinishCallback` | Fire once after the run completes. |
+| `workflow.ErrorCallback` | Fires when execution returns an error. |
+| `workflow.AbortCallback` | Fires when the context cancels the run. |
+
+{/* gen:fields workflow.LanguageModelCallOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `StepNumber` | `int` |  |
+| `System` | `string` |  |
+| `AllowSystemInMessages` | `bool` |  |
+| `Messages` | `[]types.Message` |  |
+| `Tools` | `[]types.Tool` |  |
+| `ToolChoice` | `types.ToolChoice` |  |
+| `CallOptions` | `interface{}` |  |
+| `Temperature` | `*float64` |  |
+| `MaxTokens` | `*int` |  |
+| `TopP` | `*float64` |  |
+| `TopK` | `*int` |  |
+| `FrequencyPenalty` | `*float64` |  |
+| `PresencePenalty` | `*float64` |  |
+| `StopSequences` | `[]string` |  |
+| `Seed` | `*int` |  |
+| `Headers` | `map[string]string` |  |
+| `Reasoning` | `*types.ReasoningLevel` |  |
+| `SendReasoning` | `*bool` |  |
+| `ProviderOptions` | `map[string]interface{}` |  |
+| `RuntimeContext` | `interface{}` |  |
+| `ToolsContext` | `map[string]interface{}` |  |
+| `ExperimentalSandbox` | `interface{}` |  |
+| `PreviousSteps` | `[]types.StepResult` |  |
+| `AccumulatedUsage` | `types.Usage` |  |
+| `CustomData` | `interface{}` |  |
+| `StopWhen` | `[]ai.StopCondition` | StopWhen, ActiveTools and ExperimentalDownload mirror TS prepareCall's per-call stopWhen/activeTools/download settings parity (d56638a): a PrepareCall/PrepareStep hook can read the current effective value here and mutate it to override the call. |
+| `ActiveTools` | `[]string` |  |
+| `ExperimentalDownload` | `ai.DownloadFunction` |  |
+| `MaxRetries` | `*int` | MaxRetries and Timeout mirror TS's `maxRetries`/`abortSignal` prepareCall parity (419adc7). Timeout is the Go stand-in for TS's AbortSignal. |
+| `Timeout` | `*ai.TimeoutConfig` |  |
+| `InitialInstructions` | `string` | InitialInstructions and InitialMessages are the original (unmutated) instructions/messages the call was invoked with, matching TS prepareCall's initial-inputs parity (b666f57). They are read-only: a hook should mutate System/Messages to change what is sent, not these. |
+| `InitialMessages` | `[]types.Message` |  |
+
+{/* /gen:fields */}
+
+## Iterating steps
+
+`workflow.StreamTextIterator` iterates the step results of a run. `Next(ctx)` returns the next `*types.StepResult` and `io.EOF` when the steps are exhausted. `Close()` marks the iterator closed.
+
+| Constructor | Description |
+| --- | --- |
+| `workflow.NewStreamTextIterator(steps []types.StepResult)` | Iterates a slice you already have. |
+| `workflow.NewStreamTextIteratorFromChannel(ch <-chan types.StepResult)` | Iterates live steps from a channel. |
+| `workflow.NewStreamTextIteratorFromResult(result *WorkflowResult)` | Iterates the steps of a result. |
+
+## Serializable tools
+
+A durable run cannot persist a Go function. These helpers carry the tool definitions across an execution boundary, and you attach `Execute` functions again by name afterward.
+
+| Function | Description |
+| --- | --- |
+| `workflow.SerializeToolSet(tools []types.Tool) (map[string]SerializableToolDef, error)` | Converts tools to a JSON-safe map keyed by name. |
+| `workflow.ResolveSerializableTools(defs map[string]SerializableToolDef) []types.Tool` | Rebuilds non-executable tool descriptors. |
+| `workflow.ValidateSerializableToolInput(def SerializableToolDef, input interface{}) (interface{}, error)` | Validates input against the serialized schema. It applies schema defaults first, and returns the defaulted value. Pass that value to the tool, not the raw input. |
+| `workflow.MarshalSchema(schema interface{}) (map[string]interface{}, error)` | Converts a JSON-serializable schema to a map. |
+| `workflow.UnmarshalSchema(data map[string]interface{}) (interface{}, error)` | Rebuilds a schema as a generic JSON value. |
+
+{/* gen:fields workflow.SerializableToolDef */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Name` | `string` |  |
+| `Description` | `string` |  |
+| `Title` | `string` |  |
+| `Parameters` | `map[string]interface{}` |  |
+| `InputSchema` | `map[string]interface{}` |  |
+| `Type` | `string` |  |
+| `ID` | `string` |  |
+| `Args` | `map[string]interface{}` |  |
+| `Strict` | `*bool` |  |
+| `ProviderExecuted` | `bool` |  |
+| `IsProviderExecuted` | `bool` |  |
+| `SupportsDeferredResults` | `bool` |  |
+| `InputExamples` | `[]types.ToolInputExample` |  |
+| `ProviderMetadata` | `map[string]interface{}` |  |
+
+{/* /gen:fields */}
+
+## Chat transports
+
+### WorkflowChatTransport
+
+`workflow.WorkflowChatTransport` is a client-side `ai.ChatTransport`. It POSTs the message history to a workflow chat endpoint and reads the response as a stream of UI message chunks. When the response ends without a `finish` chunk, for example after a network drop or a function timeout, it reconnects with a GET to `<api>/<runId>/stream?startIndex=N`. It also repairs UI message stream framing and, on a resume with a negative start index, drops deltas and ends whose start fell outside the resumed window.
+
+```go
+func NewWorkflowChatTransport(opts WorkflowChatTransportOptions) *WorkflowChatTransport
+```
+
+`SendMessages(ctx, ai.ChatTransportSendMessagesRequest)` and `ReconnectToStream(ctx, ai.ChatTransportReconnectToStreamRequest)` implement `ai.ChatTransport`. See [Stream transport helpers](./ai/stream-transport-helpers.mdx#chattransport).
+
+{/* gen:fields workflow.WorkflowChatTransportOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `API` | `string` | API is the chat endpoint. Defaults to "/api/chat". |
+| `HTTPClient` | `*http.Client` | HTTPClient is used for both the initial POST and any reconnect GETs. Defaults to http.DefaultClient. |
+| `OnChatSendMessage` | `func(resp *http.Response, req ai.ChatTransportSendMessagesRequest) error` | OnChatSendMessage is invoked after the initial POST completes, useful for inspecting response headers or tracking chat history. |
+| `OnChatEnd` | `func(WorkflowChatTransportEndEvent) error` | OnChatEnd is invoked once, after a "finish" chunk is observed. |
+| `MaxConsecutiveErrors` | `int` | MaxConsecutiveErrors bounds reconnect attempts. Defaults to 3. |
+| `InitialStartIndex` | `int` | InitialStartIndex is the default startIndex used by ReconnectToStream when it is called directly (not as part of a SendMessages recovery). Negative values are tail-relative (e.g. -10 reads the last 10 chunks), useful for resuming a chat UI after a page refresh without replaying the whole conversation. Defaults to 0 (replay from the beginning). |
+| `PrepareSendMessagesRequest` | `func(ai.ChatTransportSendMessagesRequest) (PreparedChatRequest, error)` | PrepareSendMessagesRequest customizes the API endpoint, body, and headers used for the initial POST. |
+| `PrepareReconnectToStreamRequest` | `func(WorkflowChatTransportReconnectContext) (PreparedChatRequest, error)` | PrepareReconnectToStreamRequest customizes the API endpoint and headers used for reconnect GETs. |
+
+{/* /gen:fields */}
+
+{/* gen:fields workflow.SendMessagesOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ChatID` | `string` |  |
+| `MessageID` | `string` |  |
+| `Trigger` | `string` |  |
+| `Messages` | `interface{}` |  |
+| `Body` | `map[string]interface{}` |  |
+| `Headers` | `map[string]string` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields workflow.ReconnectToStreamOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `RunID` | `string` |  |
+| `ChatID` | `string` |  |
+| `StartIndex` | `int` |  |
+| `Headers` | `map[string]string` |  |
+
+{/* /gen:fields */}
+
+`workflow.WorkflowChatTransportReconnectContext` is passed to `PrepareReconnectToStreamRequest`. `workflow.WorkflowChatTransportEndEvent` is passed to `OnChatEnd`. `workflow.ChatEndEvent` is the equivalent event for the multiplexer's `OnChatEnd`. It carries `ChatID`, `ChunkIndex`, `RunID` and the SSE `Events`.
+
+{/* gen:fields workflow.WorkflowChatTransportEndEvent */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ChatID` | `string` |  |
+| `ChunkIndex` | `int` |  |
+
+{/* /gen:fields */}
+
+### WorkflowRunMultiplexer
+
+`workflow.WorkflowRunMultiplexer` is a Go-only server and client helper that predates `WorkflowChatTransport`. It serves run-scoped SSE and resume handlers. Its client helpers return raw SSE events, not UI message chunks, so it does not implement `ai.ChatTransport`. For new client code, use `WorkflowChatTransport`.
+
+```go
+func NewWorkflowRunMultiplexer(opts ...WorkflowRunMultiplexerOptions) *WorkflowRunMultiplexer
+```
+
+| Method | Description |
+| --- | --- |
+| `ServeHTTP(w, r)` | Starts a new run stream and emits lifecycle events. |
+| `Resume(runID string) http.Handler` | Returns a handler that attaches an SSE reader to a run in progress. |
+| `SendMessages(ctx, SendMessagesOptions) ([]*streaming.SSEEvent, error)` | POSTs chat messages and returns parsed SSE events. |
+| `ReconnectToStream(ctx, ReconnectToStreamOptions) ([]*streaming.SSEEvent, error)` | GETs the API to resume a run-scoped SSE stream. |
+
+{/* gen:fields workflow.WorkflowRunMultiplexerOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `API` | `string` |  |
+| `HTTPClient` | `*http.Client` |  |
+| `MaxConsecutiveErrors` | `int` |  |
+| `InitialStartIndex` | `int` |  |
+| `OnChatSendMessage` | `func(*http.Response, SendMessagesOptions) error` |  |
+| `OnChatEnd` | `func(ChatEndEvent) error` |  |
+| `PrepareSendMessagesRequest` | `func(SendMessagesOptions) (PreparedChatRequest, error)` |  |
+| `PrepareReconnectToStreamRequest` | `func(ReconnectToStreamOptions) (PreparedChatRequest, error)` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields workflow.PreparedChatRequest */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `API` | `string` |  |
+| `Body` | `map[string]interface{}` |  |
+| `Headers` | `map[string]string` |  |
+
+{/* /gen:fields */}
+
+## Durable harness runner
+
+These functions run a [harness agent](./harness/agent.mdx) across process executions. Each execution returns a serializable `workflow.HarnessWorkflowState`. Your durable-workflow runtime stores it as the checkpoint, and you pass it to the next execution.
+
+| Function | Description |
+| --- | --- |
+| `workflow.CreateHarnessWorkflowState(HarnessWorkflowInput) HarnessWorkflowState` | Builds the initial state for one user turn. |
+| `workflow.RunHarnessAgent(ctx, RunHarnessAgentOptions) (HarnessWorkflowState, error)` | Runs one durable execution. It resumes or starts the session and streams the turn's chunks to `Writable`. When `TimeSliceSeconds` is positive, it races the turn against that budget and suspends the turn when the slice ends. |
+| `workflow.RunHarnessAgentTimeSlice(ctx, RunHarnessAgentTimeSliceOptions) (HarnessWorkflowState, error)` | Runs one time-boxed slice. When the slice ends before the turn, the status is `ready_for_next_step`. |
+| `workflow.RunHarnessAgentStep(ctx, RunHarnessAgentStepOptions) (HarnessWorkflowState, error)` | Runs until the next step boundary. Set `StopWhen` on the agent, for example `ai.IsStepCount(1)`. |
+| `workflow.RunHarnessAgentSlice(ctx, RunHarnessAgentSliceOptions)` | Deprecated alias of `RunHarnessAgentTimeSlice` that reports `timed_out` where the new function reports `ready_for_next_step`. |
+| `workflow.FinalizeHarnessWorkflow(state) (HarnessWorkflowFinalResult, error)` | Collapses a terminal state into its result. It returns an error if the run failed. |
+
+`workflow.DefaultTimeSliceSeconds` is 750. A Vercel Fluid Compute instance is recycled at about 800 seconds, so a 750-second slice leaves time for the next execution to reattach to the sandbox that is still running.
+
+### Status
+
+{/* gen:consts workflow.HarnessWorkflowStatus */}
+
+| Constant | Value | Description |
+| --- | --- | --- |
+| `HarnessWorkflowStatusNotStarted` | `"not_started"` | HarnessWorkflowStatusNotStarted is the fresh state before any execution has run. |
+| `HarnessWorkflowStatusReadyForNextStep` | `"ready_for_next_step"` | HarnessWorkflowStatusReadyForNextStep means the turn remains unfinished and ContinueFrom carries the cursor for the next execution. |
+| `HarnessWorkflowStatusAwaitingToolApproval` | `"awaiting_tool_approval"` | HarnessWorkflowStatusAwaitingToolApproval means the turn emitted one or more tool approval/result requests and ContinueFrom carries the suspended turn. |
+| `HarnessWorkflowStatusFinished` | `"finished"` | HarnessWorkflowStatusFinished means the agent turn completed on its own; FinalResult is set. |
+| `HarnessWorkflowStatusFailed` | `"failed"` | HarnessWorkflowStatusFailed means the turn errored; Error is set. |
+| `HarnessWorkflowStatusTimedOut` | `"timed_out"` | HarnessWorkflowStatusTimedOut is returned by the deprecated RunHarnessAgentSlice in place of HarnessWorkflowStatusReadyForNextStep. Deprecated: use HarnessWorkflowStatusReadyForNextStep. |
+
+{/* /gen:consts */}
+
+### Types
+
+`workflow.HarnessWorkflowAgent` is the subset of `*harness.Agent` the runner drives: `HasOutput`, `CreateSession`, `Stream` and `ContinueStream`. `*harness.Agent` satisfies it.
+
+{/* gen:fields workflow.HarnessWorkflowInput */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Prompt` | `harness.Prompt` |  |
+| `Messages` | `[]types.Message` |  |
+| `SessionID` | `string` |  |
+| `ResumeFrom` | `*harness.ResumeSessionState` |  |
+| `ContinueFrom` | `*harness.ContinueTurnState` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields workflow.HarnessWorkflowState */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `SessionID` | `string` | SessionID is the stable harness session id; doubles as the sandbox name across processes. |
+| `Prompt` | `harness.Prompt` | Prompt is the new user turn for this run. Sent once, on the execution that starts the turn. |
+| `Messages` | `[]types.Message` | Messages carries full model messages for continuing a suspended approval turn (e.g. tool-approval-response content). When non-nil, the next execution sends these instead of Prompt/ContinueFrom. |
+| `Status` | `HarnessWorkflowStatus` |  |
+| `ResumeFrom` | `*harness.ResumeSessionState` | ResumeFrom carries resume coordinates for the next user turn. |
+| `ContinueFrom` | `*harness.ContinueTurnState` | ContinueFrom carries continuation coordinates for this run's current suspended turn. |
+| `StreamContext` | `*HarnessWorkflowStreamContext` |  |
+| `FinalResult` | `*HarnessWorkflowFinalResult` |  |
+| `Error` | `string` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields workflow.HarnessWorkflowFinalResult */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `SessionID` | `string` |  |
+| `FinishReason` | `string` |  |
+| `Usage` | `*HarnessWorkflowUsageSummary` |  |
+| `Output` | `any` | Output is the agent's parsed and schema-validated output when the agent has an output specification (HarnessWorkflowAgent.HasOutput). |
+
+{/* /gen:fields */}
+
+{/* gen:fields workflow.RunHarnessAgentOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Agent` | `HarnessWorkflowAgent` |  |
+| `State` | `HarnessWorkflowState` |  |
+| `SandboxSession` | `providerutils.SandboxSession` | SandboxSession, when set, is forwarded to HarnessWorkflowAgent. CreateSession as a caller-owned sandbox (harness.CreateSessionOptions. SandboxSession) instead of letting the agent's own SandboxProvider create/resume one. Mirrors TS `RunHarnessAgentOptions.sandboxSession`. |
+| `TimeSliceSeconds` | `float64` | TimeSliceSeconds is the wall-clock budget for this execution. Zero means no time slice: the run continues until the harness's own turn (or, with a StopWhen-configured agent, step) boundary. |
+| `DestroyOnFinish` | `bool` | DestroyOnFinish controls whether to destroy the sandbox when the run finishes or fails. Defaults to false: the session is parked and a fresh resume state is returned in ResumeFrom, so the next user turn reattaches to the same conversation (multi-turn chat). Set true for a one-shot run that should release the sandbox when the run ends. |
+| `Writable` | `HarnessWorkflowWriter` | Writable is where to write the turn's UI-message chunks. Required — TS's default resolveWorkflowWritable() (a Workflow DevKit getWritable()) has no Go equivalent. |
+
+{/* /gen:fields */}
+
+{/* gen:fields workflow.RunHarnessAgentTimeSliceOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Agent` | `HarnessWorkflowAgent` |  |
+| `State` | `HarnessWorkflowState` |  |
+| `SandboxSession` | `providerutils.SandboxSession` |  |
+| `TimeSliceSeconds` | `float64` | TimeSliceSeconds defaults to DefaultTimeSliceSeconds when zero. |
+| `DestroyOnFinish` | `bool` |  |
+| `Writable` | `HarnessWorkflowWriter` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields workflow.RunHarnessAgentStepOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Agent` | `HarnessWorkflowAgent` |  |
+| `State` | `HarnessWorkflowState` |  |
+| `SandboxSession` | `providerutils.SandboxSession` |  |
+| `DestroyOnFinish` | `bool` |  |
+| `Writable` | `HarnessWorkflowWriter` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields workflow.RunHarnessAgentSliceOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Agent` | `HarnessWorkflowAgent` |  |
+| `State` | `HarnessWorkflowState` |  |
+| `SandboxSession` | `providerutils.SandboxSession` |  |
+| `TimeSliceSeconds` | `float64` |  |
+| `SliceTimeoutSeconds` | `float64` | SliceTimeoutSeconds is used when TimeSliceSeconds is zero. Deprecated: use TimeSliceSeconds. |
+| `DestroyOnFinish` | `bool` |  |
+| `Writable` | `HarnessWorkflowWriter` |  |
+
+{/* /gen:fields */}
+
+`workflow.HarnessWorkflowStreamContext` is the serializable subset of in-flight UI message state carried across an execution boundary. `workflow.HarnessWorkflowActiveToolInput` is a tool input that was partly streamed when the execution ended. `workflow.HarnessWorkflowUsageSummary` is a minimal token usage summary.
+
+{/* gen:fields workflow.HarnessWorkflowStreamContext */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ActiveTextParts` | `map[string]ai.UIMessageChunk` |  |
+| `ActiveReasoningParts` | `map[string]ai.UIMessageChunk` |  |
+| `ActiveToolInputs` | `map[string]HarnessWorkflowActiveToolInput` |  |
+| `PendingToolInputs` | `map[string]ai.UIMessageChunk` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields workflow.HarnessWorkflowUsageSummary */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `InputTokens` | `*int64` |  |
+| `OutputTokens` | `*int64` |  |
+
+{/* /gen:fields */}
+
+### Writer
+
+`workflow.HarnessWorkflowWriter` receives the UI message chunks of one execution:
+
+```go
+type HarnessWorkflowWriter interface {
+	Write(chunk ai.UIMessageChunk) error
+	Close() error
+}
+```
+
+`Write` is called once per chunk, in order. `Close` is called only when the run reaches `finished`. The other statuses leave the writer open because a later execution keeps writing, or the failure propagates. `workflow.NewChanHarnessWorkflowWriter(ch)` returns a `*workflow.ChanHarnessWorkflowWriter` that forwards every chunk to `ch` and closes `ch` on `Close`.

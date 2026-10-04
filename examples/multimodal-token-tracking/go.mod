@@ -4,7 +4,7 @@ go 1.26.0
 
 replace github.com/digitallysavvy/go-ai => ../..
 
-require github.com/digitallysavvy/go-ai v0.4.0
+require github.com/digitallysavvy/go-ai v0.5.0
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect

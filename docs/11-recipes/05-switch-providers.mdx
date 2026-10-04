@@ -1,0 +1,73 @@
+---
+title: Switch providers
+description: Resolve models from provider:model strings so one program runs on Anthropic, OpenAI or Google.
+sidebar_position: 5
+---
+
+# Switch providers
+
+Run the same code on different providers, chosen by configuration.
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+
+	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+	"github.com/digitallysavvy/go-ai/pkg/providers/google"
+	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
+	"github.com/digitallysavvy/go-ai/pkg/registry"
+)
+
+func main() {
+	// Register each provider once, at startup.
+	registry.RegisterProvider("anthropic", anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")}))
+	registry.RegisterProvider("openai", openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")}))
+	registry.RegisterProvider("google", google.New(google.Config{APIKey: os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY")}))
+
+	// The rest of the program only sees a "provider:model" string.
+	id := os.Getenv("PROVIDER_MODEL")
+	if id == "" {
+		id = "anthropic:" + anthropic.ClaudeSonnet5_5
+	}
+	model, err := registry.ResolveLanguageModel(id)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+		Model:  model,
+		Prompt: "Say hello in one short sentence.",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("%s: %s\n", id, result.Text)
+}
+```
+
+Run it:
+
+```bash
+PROVIDER_MODEL=openai:gpt-6-astra OPENAI_API_KEY=... go run ./examples/recipes/switch-providers
+```
+
+## Notes
+
+- Register each provider once with `registry.RegisterProvider`.
+- `registry.ResolveLanguageModel("provider:model")` returns a `provider.LanguageModel`. Everything after that is provider-neutral.
+- Read the string from an environment variable or config file to switch without a code change.
+- Provider-specific features go in `ProviderOptions`, keyed by provider name. Portable settings such as `Reasoning` work across providers.
+
+## Go deeper
+
+- [Guide: Provider and model management](../03-ai-sdk-core/45-provider-management.mdx)
+- [Guide: Providers and models](../02-foundations/02-providers-and-models.mdx)
+- [Reference: Generate text](../07-reference/ai/generate-text.mdx)
+
+The full program is at [`examples/recipes/switch-providers/main.go`](https://github.com/digitallysavvy/go-ai/blob/main/examples/recipes/switch-providers/main.go).

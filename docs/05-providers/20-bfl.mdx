@@ -1,6 +1,6 @@
 ---
 title: Black Forest Labs Provider
-description: Setup and usage guide for Black Forest Labs FLUX image models with Go-AI SDK
+description: Setup and usage guide for Black Forest Labs FLUX image models with Go AI SDK
 ---
 
 # Black Forest Labs Provider
@@ -38,12 +38,12 @@ export BFL_API_KEY=...
 
 ### FLUX Models
 
-| Model ID | Quality | Speed | Price | Best For |
-|----------|---------|-------|-------|----------|
-| flux-pro-1.1 | Excellent | Medium | $0.055/image | Professional work |
-| flux-pro | Excellent | Medium | $0.05/image | High quality |
-| flux-dev | Very Good | Fast | $0.025/image | Development |
-| flux-schnell | Good | Very Fast | $0.003/image | Rapid iteration |
+| Model ID | Quality | Speed | Best For |
+| ---------- | --------- | ------- | ---------- |
+| flux-pro-1.1 | Excellent | Medium | Professional work |
+| flux-pro | Excellent | Medium | High quality |
+| flux-dev | Very Good | Fast | Development |
+| flux-schnell | Good | Very Fast | Rapid iteration |
 
 ## Provider-Specific Features
 
@@ -243,23 +243,9 @@ for the mechanism.
 
 Varies by plan - check dashboard.
 
-### Cost Comparison
+### Pricing
 
-```go
-func compareFLUXCosts(imageCount int) {
-    models := map[string]float64{
-        "flux-pro-1.1":  0.055,
-        "flux-pro":      0.05,
-        "flux-dev":      0.025,
-        "flux-schnell":  0.003,
-    }
-
-    for model, price := range models {
-        total := price * float64(imageCount)
-        fmt.Printf("%s: $%.2f\n", model, total)
-    }
-}
-```
+FLUX pricing varies by model. See the [BFL pricing page](https://bfl.ai/pricing) for current values.
 
 ## See Also
 

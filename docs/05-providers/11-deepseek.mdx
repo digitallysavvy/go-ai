@@ -1,6 +1,6 @@
 ---
 title: DeepSeek Provider
-description: "Setup and usage guide for DeepSeek's reasoning models in the Go-AI SDK, covering available models, provider-specific features, and May 2026 parity updates."
+description: "Setup and usage guide for DeepSeek's reasoning models in the Go AI SDK, covering available models, provider-specific features, and May 2026 parity updates."
 ---
 
 # DeepSeek Provider
@@ -25,7 +25,7 @@ provider := deepseek.New(deepseek.Config{
     APIKey: os.Getenv("DEEPSEEK_API_KEY"),
 })
 
-model, err := provider.LanguageModel("deepseek-chat")
+model, err := provider.LanguageModel("deepseek-v4-flash")
 if err != nil {
     log.Fatal(err)
 }
@@ -45,11 +45,16 @@ export DEEPSEEK_API_KEY=sk-...
 
 ### Language Models
 
-| Model ID | Context | Input Price | Output Price | Best For |
-|----------|---------|-------------|--------------|----------|
-| deepseek-chat | 64K | $0.27/1M | $1.10/1M | General purpose |
-| deepseek-reasoner | 64K | $0.55/1M | $2.19/1M | Complex reasoning |
-| deepseek-coder | 128K | $0.14/1M | $0.28/1M | Code generation |
+Use the constants in `pkg/providers/deepseek/model_ids.go` instead of raw strings. See [DeepSeek's pricing and model list](https://api-docs.deepseek.com/quick_start/pricing) for context windows and prices.
+
+| Model ID | Go constant | Notes |
+|----------|-------------|-------|
+| `deepseek-flash` | `deepseek.ModelDeepSeekFlash` | Alias for the latest Flash model |
+| `deepseek-v4-flash` | `deepseek.ModelDeepSeekV4Flash` | DeepSeek V4 Flash |
+| `deepseek-v4-pro` | `deepseek.ModelDeepSeekV4Pro` | DeepSeek V4 Pro |
+| `deepseek-v4-flash-vision-exp` | `deepseek.ModelDeepSeekV4FlashVisionExp` | Experimental, image input |
+
+V4 models enable thinking mode by default. `deepseek-chat` and `deepseek-reasoner` still work but are deprecated aliases for the V3 and R1 generations.
 
 ## Provider-Specific Features
 
@@ -58,7 +63,7 @@ export DEEPSEEK_API_KEY=sk-...
 Extended thinking for complex problems:
 
 ```go
-model, err := provider.LanguageModel("deepseek-reasoner")
+model, err := provider.LanguageModel("deepseek-v4-pro")
 
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
@@ -76,7 +81,7 @@ if result.ReasoningText != "" {
 Optimized for programming tasks:
 
 ```go
-codeModel, err := provider.LanguageModel("deepseek-coder")
+codeModel, err := provider.LanguageModel("deepseek-v4-flash")
 
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  codeModel,
@@ -161,7 +166,7 @@ func main() {
         APIKey: os.Getenv("DEEPSEEK_API_KEY"),
     })
 
-    model, err := provider.LanguageModel("deepseek-chat")
+    model, err := provider.LanguageModel("deepseek-v4-flash")
     if err != nil {
         log.Fatal(err)
     }
@@ -181,7 +186,7 @@ func main() {
 ### Complex Reasoning
 
 ```go
-reasoner, err := provider.LanguageModel("deepseek-reasoner")
+reasoner, err := provider.LanguageModel("deepseek-v4-pro")
 
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  reasoner,
@@ -195,12 +200,12 @@ fmt.Println("Answer:", result.Text)
 ## Best Practices
 
 1. **Model Selection**
-   - Use deepseek-chat for general tasks
-   - Use deepseek-reasoner for math/logic problems
-   - Use deepseek-coder for programming
+   - Use deepseek-v4-flash for general tasks
+   - Use deepseek-v4-pro for math/logic problems
+   - Use deepseek-v4-pro for programming and long agent runs
 
 2. **Cost Optimization**
-   - Significantly cheaper than GPT-4
+   - Typically much cheaper than other frontier models
    - Great for high-volume applications
    - Excellent price-performance ratio
 
@@ -229,5 +234,5 @@ The DeepSeek provider preserves `reasoning_content` for DeepSeek v4-style multi-
 
 ```go
 p := deepseek.New(deepseek.Config{APIKey: os.Getenv("DEEPSEEK_API_KEY")})
-model, err := p.LanguageModel("deepseek-reasoner")
+model, err := p.LanguageModel("deepseek-v4-pro")
 ```

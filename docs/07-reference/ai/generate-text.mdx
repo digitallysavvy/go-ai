@@ -17,33 +17,83 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 
 ### GenerateTextOptions
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| Model | provider.LanguageModel | Yes | Language model to use for generation |
-| Prompt | string | No | Simple string prompt (alternative to Messages) |
-| Messages | []types.Message | No | List of conversation messages |
-| System | string | No | System instructions |
-| Temperature | *float64 | No | Sampling temperature (0.0 to 2.0) |
-| MaxTokens | *int | No | Maximum tokens to generate |
-| TopP | *float64 | No | Nucleus sampling parameter |
-| TopK | *int | No | Top-K sampling parameter |
-| FrequencyPenalty | *float64 | No | Frequency penalty (-2.0 to 2.0) |
-| PresencePenalty | *float64 | No | Presence penalty (-2.0 to 2.0) |
-| StopSequences | []string | No | Sequences that stop generation |
-| Seed | *int | No | Random seed for reproducibility |
-| Tools | []types.Tool | No | Tools available for the model to call |
-| ToolChoice | types.ToolChoice | No | How the model should choose tools |
-| StopWhen | []ai.StopCondition | No | Conditions that stop the tool-calling loop (see [IsStepCount](./step-count-is.mdx), [HasToolCall](./has-tool-call.mdx)). Default: `IsStepCount(1)`, a single step (tool calls in it still execute). Set e.g. `IsStepCount(5)` to let the model answer after tool results. |
-| MaxSteps | *int | No | **Deprecated** — use `StopWhen: []ai.StopCondition{ai.IsStepCount(n)}` instead |
-| Timeout | *TimeoutConfig | No | Timeout configuration |
-| Output | interface{} | No | Output specification (v6.0+) |
-| ResponseFormat | *provider.ResponseFormat | No | Response format (deprecated: use Output) |
-| ExperimentalContext | interface{} | No | User-defined context |
-| ExperimentalRetention | *types.RetentionSettings | No | Data retention settings |
-| ProviderOptions | map[string]interface{} | No | Provider-specific options |
-| PrepareStep | func | No | Called before each step |
-| OnStepFinish | func | No | Called after each step completes |
-| OnFinish | func | No | Called when generation completes |
+`Model` is required, and so is one of `Prompt` or `Messages`. Every other field is optional. The table is generated from the source and lists every exported field.
+
+{/* gen:fields ai.GenerateTextOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Model` | `provider.LanguageModel` | Model to use for generation |
+| `Prompt` | `string` | Prompt can be a simple string or a list of messages |
+| `Messages` | `[]types.Message` |  |
+| `System` | `string` |  |
+| `Instructions` | `*string` | Instructions is a TypeScript-compatible alias for System. When set, Instructions takes precedence over System. |
+| `InstructionMessages` | `[]types.Message` | InstructionMessages supplies the instructions as system messages (TS instructions: SystemModelMessage \| SystemModelMessage[]), preserving per-message ProviderOptions. When non-empty it takes precedence over Instructions and System. Every message must have the system role. |
+| `AllowSystemMessages` | `bool` | AllowSystemMessages permits system-role messages in Messages. Defaults to false; use System for system instructions unless you are intentionally passing provider-native system messages. |
+| `AllowSystemInMessages` | `bool` | AllowSystemInMessages is a TypeScript-compatible alias for AllowSystemMessages. Either field enables system-role messages. |
+| `Temperature` | `*float64` | Generation parameters |
+| `MaxTokens` | `*int` |  |
+| `TopP` | `*float64` |  |
+| `TopK` | `*int` |  |
+| `FrequencyPenalty` | `*float64` |  |
+| `PresencePenalty` | `*float64` |  |
+| `StopSequences` | `[]string` |  |
+| `Seed` | `*int` |  |
+| `Headers` | `map[string]string` |  |
+| `Tools` | `[]types.Tool` | Tools available for the model to call |
+| `ToolChoice` | `types.ToolChoice` |  |
+| `ToolOrder` | `[]string` | ToolOrder controls the order tools are sent to providers. Listed tools are sent first in listed order; unlisted tools follow alphabetically. |
+| `ActiveTools` | `[]string` | ActiveTools restricts the tools available for this generation. |
+| `ExperimentalToolCallers` | `ExperimentalToolCallers` | ExperimentalToolCallers configures which tools may call which other tools (programmatic tool calling / code mode), and which tools stay hidden from the model until discovered via ai.ToolSearch. Mirrors the TypeScript SDK's experimental_toolCallers. |
+| `ToolApproval` | `types.ToolApprovalConfig` | ToolApproval configures approval handling for tool execution. |
+| `ExperimentalToolApprovalSecret` | `[]byte` | ExperimentalToolApprovalSecret signs server-issued approval requests so resumed approval responses can be verified before execution. |
+| `MaxSteps` | `*int` | MaxSteps is a convenience shorthand for StopWhen\{StepCountIs(N)\}. Deprecated: use StopWhen with StepCountIs instead. If StopWhen is set, MaxSteps is ignored. |
+| `StopWhen` | `[]StopCondition` | StopWhen defines conditions that terminate the tool-calling loop. Conditions are evaluated OR -- first non-empty string stops the loop. Evaluated after each step that produces tool results. |
+| `Timeout` | `*TimeoutConfig` | Timeout provides granular timeout controls Supports total timeout, per-step timeout, and per-chunk timeout (for streaming) |
+| `Output` | `interface{}` | Output specifies how to handle and parse model output Use TextOutput(), ObjectOutput(), ArrayOutput(), ChoiceOutput(), or JSONOutput() If nil, defaults to text output |
+| `ResponseFormat` | `*provider.ResponseFormat` | ResponseFormat (for structured output) - DEPRECATED: Use Output instead Kept for backward compatibility |
+| `RuntimeContext` | `interface{}` | RuntimeContext is user-defined context that flows through the conversation. This context is passed to tool execution functions, callbacks, and approval hooks. |
+| `SensitiveRuntimeContext` | `bool` | SensitiveRuntimeContext omits runtime context from telemetry payloads. |
+| `ToolsContext` | `map[string]interface{}` | ToolsContext is the per-tool context map passed to approval and execution hooks. |
+| `ExperimentalContext` | `interface{}` | ExperimentalContext is a deprecated alias for RuntimeContext. |
+| `ExperimentalRetention` | `*types.RetentionSettings` | ExperimentalRetention controls what data is retained from LLM requests/responses. Useful for reducing memory consumption with images or large contexts. Default (nil) retains everything for backwards compatibility. Example: retention := &types.RetentionSettings\{ RequestBody: types.BoolPtr(false), // Don't retain request ResponseBody: types.BoolPtr(false), // Don't retain response \} This can reduce memory consumption by 50-80% for image-heavy workloads. |
+| `Include` | `*IncludeOptions` | Include controls which large request/response details are retained in step results. Defaults match the TypeScript SDK: request/response bodies and request messages are excluded unless explicitly enabled. |
+| `ExperimentalInclude` | `*IncludeOptions` | ExperimentalInclude is a deprecated alias for Include. |
+| `Reasoning` | `*types.ReasoningLevel` | Reasoning controls how much thinking effort the model applies. nil means unset (use provider default). Set to types.ReasoningDefault to explicitly omit from the API request. Providers map this to their native reasoning APIs (Anthropic: thinking.budget_tokens, OpenAI: reasoning_effort, Google: thinkingConfig.thinkingBudget, Bedrock: reasoningConfig). |
+| `SendReasoning` | `*bool` | SendReasoning controls whether reasoning/thinking stream boundary chunks are exposed to callbacks. nil and false suppress reasoning-start/end, matching the TypeScript SDK default. |
+| `ProviderOptions` | `map[string]interface{}` | ProviderOptions allows passing provider-specific options Example: ProviderOptions: map[string]interface\{\}\{ "openai": map[string]interface\{\}\{ "promptCacheRetention": "24h", \}, \} |
+| `MaxRetries` | `*int` | MaxRetries controls transient provider call retries. For Gateway models, nil uses the TypeScript SDK default of 2 retries; set to 0 to disable. |
+| `ExperimentalSandbox` | `interface{}` | ExperimentalSandbox is passed through to tool execution. PrepareStep can override it for an individual step. |
+| `RepairToolCall` | `ToolCallRepairFunction` | RepairToolCall attempts to repair tool calls that fail to parse because the tool does not exist or its input is invalid. When it returns a call, the repaired call is parsed again; (nil, nil) keeps the call invalid. |
+| `ExperimentalRepairToolCall` | `ToolCallRepairFunction` | ExperimentalRepairToolCall is a deprecated alias for RepairToolCall. Deprecated: use RepairToolCall. |
+| `OnLanguageModelCallStart` | `OnLanguageModelCallStartCallback` | OnLanguageModelCallStart is called immediately before each provider model call begins. |
+| `ExperimentalOnLanguageModelCallStart` | `OnLanguageModelCallStartCallback` | ExperimentalOnLanguageModelCallStart is a deprecated alias for OnLanguageModelCallStart. Deprecated: use OnLanguageModelCallStart. |
+| `OnLanguageModelCallEnd` | `OnLanguageModelCallEndCallback` | OnLanguageModelCallEnd is called after each provider model response is normalized and parsed, before client-side tool execution. |
+| `ExperimentalOnLanguageModelCallEnd` | `OnLanguageModelCallEndCallback` | ExperimentalOnLanguageModelCallEnd is a deprecated alias for OnLanguageModelCallEnd. Deprecated: use OnLanguageModelCallEnd. |
+| `ExperimentalRefineToolInput` | `map[string]ToolInputRefiner` | ExperimentalRefineToolInput refines parsed tool inputs by tool name before approval, callbacks, telemetry, execution, and response messages. |
+| `ExperimentalDownload` | `DownloadFunction` | ExperimentalDownload downloads remote file URLs that need inline data before sending tool-result messages back to the model. Defaults to DefaultDownload, matching the TypeScript SDK's default download behavior. |
+| `Telemetry` | `*TelemetrySettings` | Telemetry configures observability for this operation. When both Telemetry and ExperimentalTelemetry are set, Telemetry wins. |
+| `ExperimentalTelemetry` | `*TelemetrySettings` | ExperimentalTelemetry enables OpenTelemetry tracing for this operation Deprecated: use Telemetry. When set, automatically records spans with prompts, responses, token usage, and latencies Example: import "github.com/digitallysavvy/go-ai/pkg/telemetry" result, err := ai.GenerateText(ctx, ai.GenerateTextOptions\{ Model: model, Prompt: "Hello", ExperimentalTelemetry: &telemetry.Options\{ IsEnabled: true, RecordInputs: true, RecordOutputs: true, \}, \}) For MLflow integration, see pkg/observability/mlflow |
+| `Internal` | `*InternalOptions` | Internal contains test-only ID generators matching the TypeScript _internal option. |
+| `PrepareStep` | `func(ctx context.Context, step PrepareStepOptions) PrepareStepOptions` | PrepareStep is called before each generation step Allows modification of options before the next step Receives the user context if ExperimentalContext is set |
+| `OnStepEnd` | `func(ctx context.Context, step types.StepResult, userContext interface{})` | OnStepEnd is called after each generation step completes. |
+| `OnStepFinish` | `func(ctx context.Context, step types.StepResult, userContext interface{})` | OnStepFinish is called after each generation step completes. Deprecated: use OnStepEnd. |
+| `OnEnd` | `func(ctx context.Context, result *GenerateTextResult, userContext interface{})` | OnEnd is called when generation completes. Receives the user context if RuntimeContext/ExperimentalContext is set. |
+| `OnFinish` | `func(ctx context.Context, result *GenerateTextResult, userContext interface{})` | OnFinish is called when generation completes. Receives the user context if RuntimeContext/ExperimentalContext is set. Deprecated: use OnEnd. |
+| `OnStart` | `func(ctx context.Context, e OnStartEvent)` | OnStart is called once, before the first LLM step begins. |
+| `OnStepStart` | `func(ctx context.Context, e OnStepStartEvent)` | OnStepStart is called at the beginning of each LLM step. |
+| `OnToolExecutionStart` | `func(ctx context.Context, e OnToolCallStartEvent)` | OnToolExecutionStart is called just before each tool's Execute function runs. |
+| `OnToolExecutionEnd` | `func(ctx context.Context, e OnToolCallFinishEvent)` | OnToolExecutionEnd is called after each tool's Execute function returns (whether the execution succeeded or failed). |
+| `OnToolCallStart` | `func(ctx context.Context, e OnToolCallStartEvent)` | Deprecated: use OnToolExecutionStart. |
+| `OnToolCallFinish` | `func(ctx context.Context, e OnToolCallFinishEvent)` | Deprecated: use OnToolExecutionEnd. |
+| `OnStepEndEvent` | `func(ctx context.Context, e OnStepFinishEvent)` | OnStepEndEvent is called at the end of each LLM step with a typed event. |
+| `OnStepFinishEvent` | `func(ctx context.Context, e OnStepFinishEvent)` | OnStepFinishEvent is called at the end of each LLM step with a typed event. Deprecated: use OnStepEndEvent. |
+| `OnEndEvent` | `func(ctx context.Context, e OnFinishEvent)` | OnEndEvent is called once when the entire generation completes with a typed event. |
+| `OnFinishEvent` | `func(ctx context.Context, e OnFinishEvent)` | OnFinishEvent is called once when the entire generation completes with a typed OnFinishEvent. Use OnEndEvent for new code. Deprecated: use OnEndEvent. |
+| `OnAbort` | `func(ctx context.Context, steps []types.StepResult)` | OnAbort is called when generation is aborted by context cancellation or deadline before normal completion. Deprecated: use OnAbortEvent, which also carries the call ID and abort reason. |
+| `OnAbortEvent` | `OnAbortCallback` | OnAbortEvent is called when generation is aborted by context cancellation or deadline before normal completion, with a GenerateTextAbortEvent carrying the call ID, completed steps, and abort reason. Takes precedence over the deprecated OnAbort. |
+
+{/* /gen:fields */}
 
 ## Return Value
 
@@ -87,7 +137,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: "your-api-key",
     })
-    model, err := provider.LanguageModel("gpt-4")
+    model, err := provider.LanguageModel("gpt-6-astra")
     if err != nil {
         log.Fatal(err)
     }
@@ -216,6 +266,11 @@ if err != nil {
     return
 }
 ```
+
+## Tool approval signing
+
+`ExperimentalToolApprovalSecret` is a byte slice. When it is set, the SDK signs every approval request it issues with HMAC-SHA256 and verifies the signature on the approval response before it runs the tool. A client that edits the tool name, the tool call ID or the tool input between the request and the response fails verification. When it is nil, requests are not signed and responses are not verified. The signing functions are `ai.SignToolApproval` and `ai.VerifyToolApprovalSignature`; see [Tool approval helpers](./tool-approvals.mdx).
+
 
 ## See Also
 

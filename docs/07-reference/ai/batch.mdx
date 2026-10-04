@@ -1,0 +1,170 @@
+---
+title: Batch API
+description: "Reference for the experimental batch functions in the Go AI SDK: start, status, results, cancel and list, with their option and result types."
+---
+
+# Batch API
+
+Batch functions submit many requests to a provider for asynchronous processing, then poll for status and read the results. The functions are experimental and carry the `Experimental` prefix.
+
+A `Provider` field accepts a `provider.BatchV4` value, a provider that exposes `ExperimentalBatch()`, or nil. When it is nil, the batch runs through the AI Gateway.
+
+## Functions
+
+| Function | Returns |
+| --- | --- |
+| `ai.ExperimentalStartBatch(ctx, StartBatchOptions)` | `*StartBatchResult`. Submits the batch. |
+| `ai.ExperimentalGetBatchStatus(ctx, GetBatchStatusOptions)` | `*Batch`. The batch with its latest status. |
+| `ai.ExperimentalGetBatchResults(ctx, GetBatchResultsOptions)` | `*BatchResultsStream`. Streams the terminal results. |
+| `ai.ExperimentalCancelBatch(ctx, CancelBatchOptions)` | `*CancelBatchResult`. Requests cancellation. |
+| `ai.ExperimentalListBatches(ctx, ListBatchesOptions)` | `*ListBatchesResult`. One page of batches. |
+
+## BatchReference and Batch
+
+`ai.BatchReference` is the value to persist. It holds `Version`, `ID` and `Provider`, which is enough to check status, read results or cancel from another process. `ai.Batch` embeds `BatchReference` and `provider.BatchV4Status`.
+
+## StartBatchOptions
+
+{/* gen:fields ai.StartBatchOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Provider` | `interface{}` | Provider is a provider.BatchV4 instance, a provider.BatchProvider (a Provider exposing ExperimentalBatch()), or nil. When nil, batches are processed through the AI Gateway (mirrors TypeScript: `globalThis.AI_SDK_DEFAULT_PROVIDER ?? gateway`). |
+| `Requests` | `[]BatchRequest` |  |
+| `ProviderOptions` | `map[string]interface{}` |  |
+| `WebhookURL` | `string` | WebhookURL, when set, is the URL the provider notifies when the batch reaches a terminal state. Providers that do not support completion webhooks return an unsupported-functionality warning instead of erroring. |
+| `MaxRetries` | `*int` |  |
+| `Headers` | `map[string]string` |  |
+| `Timeout` | `*time.Duration` |  |
+
+{/* /gen:fields */}
+
+### StartBatchResult
+
+{/* gen:fields ai.StartBatchResult */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| (embedded) | `Batch` | Embedded. |
+| `Warnings` | `[]provider.BatchV4Warning` |  |
+
+{/* /gen:fields */}
+
+### BatchImageRequest
+
+An image request inside a batch.
+
+{/* gen:fields ai.BatchImageRequest */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ID` | `string` |  |
+| `Model` | `string` |  |
+| `Prompt` | `string` |  |
+| `N` | `*int` |  |
+| `Size` | `string` |  |
+| `AspectRatio` | `string` |  |
+| `Seed` | `*int` |  |
+| `Files` | `[]provider.ImageFile` |  |
+| `Mask` | `*provider.ImageFile` |  |
+| `ProviderOptions` | `map[string]interface{}` |  |
+
+{/* /gen:fields */}
+
+## GetBatchStatusOptions
+
+{/* gen:fields ai.GetBatchStatusOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Provider` | `interface{}` |  |
+| `Batch` | `BatchReference` |  |
+| `ProviderOptions` | `map[string]interface{}` |  |
+| `MaxRetries` | `*int` |  |
+| `Headers` | `map[string]string` |  |
+| `Timeout` | `*time.Duration` |  |
+
+{/* /gen:fields */}
+
+## GetBatchResultsOptions
+
+{/* gen:fields ai.GetBatchResultsOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Provider` | `interface{}` |  |
+| `Batch` | `BatchReference` |  |
+| `ProviderOptions` | `map[string]interface{}` |  |
+| `MaxRetries` | `*int` |  |
+| `Headers` | `map[string]string` |  |
+| `Timeout` | `*time.Duration` |  |
+
+{/* /gen:fields */}
+
+### BatchResultsStream
+
+`Next()` returns the next `*ai.BatchItemResult` and `io.EOF` when the stream is complete. `Err()` returns the first error. `Close()` releases the stream. The shape matches `provider.TextStream`.
+
+{/* gen:fields ai.BatchItemResult */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Type` | `provider.BatchRequestType` |  |
+| `ID` | `string` |  |
+| `Status` | `provider.BatchItemStatus` |  |
+| `Text` | `*types.GenerateResult` | Text is populated when Type is text and Status is succeeded. |
+| `Image` | `*types.ImageResult` | Image is populated when Type is image and Status is succeeded. |
+| `Error` | `*provider.BatchError` |  |
+| `ProviderMetadata` | `map[string]interface{}` |  |
+
+{/* /gen:fields */}
+
+## CancelBatchOptions
+
+{/* gen:fields ai.CancelBatchOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Provider` | `interface{}` |  |
+| `Batch` | `BatchReference` |  |
+| `ProviderOptions` | `map[string]interface{}` |  |
+| `Headers` | `map[string]string` |  |
+| `Timeout` | `*time.Duration` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields ai.CancelBatchResult */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ProviderMetadata` | `map[string]interface{}` |  |
+
+{/* /gen:fields */}
+
+## ListBatchesOptions
+
+{/* gen:fields ai.ListBatchesOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Provider` | `interface{}` |  |
+| `ProviderOptions` | `map[string]interface{}` |  |
+| `Limit` | `*int` | Limit is optional (nil means unset), mirroring TypeScript's `limit?: number`. An explicit 0 is forwarded to the provider rather than treated as "not set". |
+| `Cursor` | `string` |  |
+| `MaxRetries` | `*int` |  |
+| `Headers` | `map[string]string` |  |
+| `Timeout` | `*time.Duration` |  |
+
+{/* /gen:fields */}
+
+### ListBatchesResult
+
+{/* gen:fields ai.ListBatchesResult */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Batches` | `[]Batch` |  |
+| `NextCursor` | `string` |  |
+| `ProviderMetadata` | `map[string]interface{}` |  |
+
+{/* /gen:fields */}

@@ -14,12 +14,12 @@ Some examples support additional providers:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
-export GOOGLE_API_KEY=...
+export GOOGLE_GENERATIVE_AI_API_KEY=...
 ```
 
 ## Examples by Category
 
-### 🚀 HTTP Servers (5 examples)
+### HTTP Servers (5 examples)
 
 Production-ready server implementations:
 
@@ -29,7 +29,7 @@ Production-ready server implementations:
 - **[fiber-server](./fiber-server)** - Fiber framework for high-performance HTTP servers
 - **[chi-server](./chi-server)** - Chi router for lightweight, composable middleware
 
-### 📦 Structured Output (4 examples)
+### Structured Output (4 examples)
 
 Type-safe JSON generation:
 
@@ -38,7 +38,7 @@ Type-safe JSON generation:
 - **[generate-object/complex](./generate-object/complex)** - Deep nesting, optional fields
 - **[stream-object](./stream-object)** - Real-time structured output streaming
 
-### 🤖 AI Providers (8 examples)
+### AI Providers (8 examples)
 
 Provider-specific features:
 
@@ -58,7 +58,7 @@ Provider-specific features:
 **Azure:**
 - **[providers/azure](./providers/azure)** - Azure OpenAI Service integration pattern
 
-### 🧠 Agents (11 examples)
+### Agents (11 examples)
 
 Multi-tool autonomous agents:
 
@@ -74,7 +74,7 @@ Multi-tool autonomous agents:
 - **[agent-subagents](./agent-subagents)** - Hierarchical agent delegation
 - **[agent-skills-subagents](./agent-skills-subagents)** - Combined skills and subagents
 
-### 🛠️ Production Middleware (5 examples)
+### Production Middleware (5 examples)
 
 Essential middleware patterns:
 
@@ -84,7 +84,7 @@ Essential middleware patterns:
 - **[middleware/retry](./middleware/retry)** - Automatic retry with exponential backoff
 - **[middleware/telemetry](./middleware/telemetry)** - Metrics collection and monitoring
 
-### 🔌 MCP (Model Context Protocol) (4 examples)
+### MCP (Model Context Protocol) (4 examples)
 
 Standard protocol for connecting AI to data sources:
 
@@ -93,14 +93,14 @@ Standard protocol for connecting AI to data sources:
 - **[mcp/with-auth](./mcp/with-auth)** - Authenticated MCP with JWT tokens and API keys
 - **[mcp/tools](./mcp/tools)** - MCP server with rich tool definitions and examples
 
-### 🧪 Testing (2 examples)
+### Testing (2 examples)
 
 Test patterns for AI applications:
 
 - **[testing/unit](./testing/unit)** - Unit tests with mocks and benchmarks
 - **[testing/integration](./testing/integration)** - Integration tests with real API calls
 
-### 🎨 Modalities (4 examples)
+### Modalities (4 examples)
 
 Image, speech, and multimodal AI:
 
@@ -109,21 +109,21 @@ Image, speech, and multimodal AI:
 - **[speech/speech-to-text](./speech/speech-to-text)** - Speech-to-text with OpenAI Whisper (transcription, translation)
 - **[multimodal/audio](./multimodal/audio)** - Audio analysis and understanding patterns
 
-### 🔬 Advanced Patterns (2 examples)
+### Advanced Patterns (2 examples)
 
 Advanced AI application patterns:
 
 - **[rerank](./rerank)** - Document reranking for search quality (basic, context-aware, multi-criteria, hybrid)
 - **[complex/semantic-router](./complex/semantic-router)** - Semantic intent routing with AI classification
 
-### 📊 Benchmarks (2 examples)
+### Benchmarks (2 examples)
 
 Performance measurement and optimization:
 
 - **[benchmarks/throughput](./benchmarks/throughput)** - Concurrent throughput benchmarking (RPS, tokens/sec)
 - **[benchmarks/latency](./benchmarks/latency)** - Latency measurement with percentiles (P50, P95, P99)
 
-### 📚 Core Examples (4 existing)
+### Core Examples (4 existing)
 
 Foundation examples:
 
@@ -179,12 +179,12 @@ cd examples
 
 Every example includes:
 
-- ✅ Complete, compilable Go code
-- ✅ Comprehensive README with examples
-- ✅ Usage documentation
-- ✅ Best practices
-- ✅ Troubleshooting guides
-- ✅ API key setup instructions
+- Complete, compilable Go code
+- Comprehensive README with examples
+- Usage documentation
+- Best practices
+- Troubleshooting guides
+- API key setup instructions
 
 ## Common Patterns
 
@@ -194,7 +194,7 @@ Every example includes:
 provider := openai.New(openai.Config{
     APIKey: os.Getenv("OPENAI_API_KEY"),
 })
-model, _ := provider.LanguageModel("gpt-4")
+model, _ := provider.LanguageModel("gpt-6-astra")
 ```
 
 ### Basic Text Generation
@@ -299,34 +299,34 @@ When adding new examples:
 
 | Feature | TypeScript SDK | Go SDK | Status |
 |---------|---------------|---------|--------|
-| Text Generation | ✅ | ✅ | Complete |
-| Streaming | ✅ | ✅ | Complete |
-| Tool Calling | ✅ | ✅ | Complete |
-| Structured Output | ✅ | ✅ | Complete |
-| HTTP Servers | ✅ (5 frameworks) | ✅ (5 frameworks) | Complete |
-| Provider Examples | ✅ (30+ providers) | ✅ (Core providers) | Core complete |
-| Agents | ✅ | ✅ | Complete |
-| Middleware | ✅ | ✅ | Complete |
-| MCP | ✅ | ✅ (4 examples) | Complete |
-| Testing | ✅ | ✅ (2 examples) | Complete |
-| Image Generation | ✅ | ✅ | Complete |
+| Text Generation | Yes | Yes | Complete |
+| Streaming | Yes | Yes | Complete |
+| Tool Calling | Yes | Yes | Complete |
+| Structured Output | Yes | Yes | Complete |
+| HTTP Servers | Yes (5 frameworks) | Yes (5 frameworks) | Complete |
+| Provider Examples | Yes (30+ providers) | Yes (Core providers) | Core complete |
+| Agents | Yes | Yes | Complete |
+| Middleware | Yes | Yes | Complete |
+| MCP | Yes | Yes (4 examples) | Complete |
+| Testing | Yes | Yes (2 examples) | Complete |
+| Image Generation | Yes | Yes | Complete |
 
-## ✅ 100% Feature Parity Achieved!
+## 100% Feature Parity Achieved!
 
 The Go AI SDK now has complete feature parity with the TypeScript SDK for server-side AI applications!
 
 **What's Included:**
-- ✅ All core AI capabilities (text generation, streaming, tool calling)
-- ✅ Structured output generation and streaming
-- ✅ HTTP servers with 5 different frameworks
-- ✅ 8 provider-specific examples (OpenAI, Anthropic, Google, Azure)
-- ✅ 5 agent patterns (math, web search, streaming, multi-agent, supervisor)
-- ✅ 5 production middleware patterns
-- ✅ 4 MCP (Model Context Protocol) implementations
-- ✅ Speech (TTS & STT) and multimodal support
-- ✅ Advanced patterns (reranking, semantic routing)
-- ✅ Performance benchmarking tools
-- ✅ Testing patterns (unit & integration)
+- All core AI capabilities (text generation, streaming, tool calling)
+- Structured output generation and streaming
+- HTTP servers with 5 different frameworks
+- 8 provider-specific examples (OpenAI, Anthropic, Google, Azure)
+- 5 agent patterns (math, web search, streaming, multi-agent, supervisor)
+- 5 production middleware patterns
+- 4 MCP (Model Context Protocol) implementations
+- Speech (TTS & STT) and multimodal support
+- Advanced patterns (reranking, semantic routing)
+- Performance benchmarking tools
+- Testing patterns (unit & integration)
 
 **Future Enhancements Could Include:**
 - Additional providers (AWS Bedrock, Cohere, Mistral)

@@ -104,7 +104,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     if err := goodStreamHandling(ctx, model); err != nil {
         log.Fatal(err)
@@ -142,7 +142,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
         Model:  model,
@@ -259,7 +259,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     if err := robustStreaming(ctx, model, "Write a story about AI"); err != nil {
         log.Fatalf("Streaming failed: %v", err)
@@ -330,7 +330,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     if err := completeStreamRead(ctx, model); err != nil {
         log.Fatalf("Error: %v", err)
@@ -450,7 +450,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     if err := processStreamSafely(ctx, model, "Write a story"); err != nil {
         log.Fatal(err)
@@ -580,7 +580,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     if err := memoryEfficientStreaming(ctx, model, "output.txt"); err != nil {
         log.Fatal(err)

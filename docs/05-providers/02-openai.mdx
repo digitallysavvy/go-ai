@@ -1,17 +1,17 @@
 ---
 title: OpenAI Provider
-description: Setup and usage guide for OpenAI models (GPT-4, GPT-5, o1, o3) with Go-AI SDK
+description: Setup and usage guide for OpenAI models (GPT-6, GPT-5, o-series) with Go AI SDK
 ---
 
 # OpenAI Provider
 
-OpenAI provides industry-leading language models including GPT-4o, GPT-5, and reasoning models like o1 and o3. Known for high-quality responses, extensive capabilities, and comprehensive API features.
+OpenAI provides industry-leading language models including GPT-6, GPT-5, and reasoning models like o3 and o4-mini. Known for high-quality responses, extensive capabilities, and comprehensive API features.
 
 ## Setup
 
 ### Installation
 
-The OpenAI provider is included in the Go-AI SDK:
+The OpenAI provider is included in the Go AI SDK:
 
 ```go
 import (
@@ -27,7 +27,7 @@ provider := openai.New(openai.Config{
     APIKey: os.Getenv("OPENAI_API_KEY"),
 })
 
-model, err := provider.LanguageModel("gpt-4o")
+model, err := provider.LanguageModel("gpt-6-astra")
 if err != nil {
     log.Fatal(err)
 }
@@ -36,7 +36,7 @@ if err != nil {
 `LanguageModel` matches the TypeScript OpenAI provider default and returns a Responses API model. Use `ChatModel` when you need the Chat Completions endpoint or `CompletionModel` for legacy instruct-style completions:
 
 ```go
-chatModel, err := provider.ChatModel("gpt-4o")
+chatModel, err := provider.ChatModel("gpt-6-astra")
 completionModel, err := provider.CompletionModel("gpt-3.5-turbo-instruct")
 ```
 
@@ -53,62 +53,57 @@ export OPENAI_API_KEY=sk-...
 
 ## Available Models
 
-### GPT-4 Series (Latest Generation)
+Use the constants in `pkg/providers/openai/model_ids.go` instead of raw strings. For context windows and pricing, see [OpenAI's model documentation](https://platform.openai.com/docs/models).
 
-| Model ID | Context | Input Price | Output Price | Best For |
-|----------|---------|-------------|--------------|----------|
-| gpt-4o | 128K | $2.50/1M | $10.00/1M | General purpose, multimodal |
-| gpt-4o-mini | 128K | $0.15/1M | $0.60/1M | Fast, cost-effective tasks |
-| gpt-4-turbo | 128K | $10.00/1M | $30.00/1M | Complex tasks, vision |
-| gpt-4 | 8K | $30.00/1M | $60.00/1M | Legacy high-quality |
+### Language models
 
-### GPT-5 Series (Frontier)
+| Model ID | Go constant | Notes |
+|----------|-------------|-------|
+| `gpt-6.1-sol` | `openai.ModelGPT61Sol` | GPT-6.1 series |
+| `gpt-6-astra` | `openai.ModelGPT6Astra` | GPT-6 series |
+| `gpt-6-luna` | `openai.ModelGPT6Luna` | GPT-6 series |
+| `gpt-6-sol` | `openai.ModelGPT6Sol` | GPT-6 series |
+| `gpt-5.6`, `gpt-5.6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra` | `openai.ModelGPT56`, `ModelGPT56Luna`, `ModelGPT56Sol`, `ModelGPT56Terra` | GPT-5.6 series |
+| `gpt-5.5` | `openai.ModelGPT55` | Also pinned as `gpt-5.5-2026-04-23` |
+| `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5.4-pro` | `openai.ModelGPT54`, `ModelGPT54Mini`, `ModelGPT54Nano`, `ModelGPT54Pro` | GPT-5.4 series |
+| `gpt-5.3-codex` | `openai.ModelGPT53Codex` | Coding |
+| `gpt-5.2`, `gpt-5.2-pro`, `gpt-5.2-codex` | `openai.ModelGPT52`, `ModelGPT52Pro`, `ModelGPT52Codex` | GPT-5.2 series |
+| `gpt-5.1`, `gpt-5.1-codex`, `gpt-5.1-codex-mini`, `gpt-5.1-codex-max` | `openai.ModelGPT51`, `ModelGPT51Codex`, `ModelGPT51CodexMini`, `ModelGPT51CodexMax` | GPT-5.1 series |
+| `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-5-pro` | `openai.ModelGPT5`, `ModelGPT5Mini`, `ModelGPT5Nano`, `ModelGPT5Pro` | GPT-5 series |
+| `o3`, `o4-mini` | `openai.ModelO3`, `openai.ModelO4Mini` | Reasoning models |
 
-| Model ID | Context | Input Price | Output Price | Best For |
-|----------|---------|-------------|--------------|----------|
-| gpt-5 | 200K | TBA | TBA | Next-generation reasoning |
-| gpt-5.5 | 200K | TBA | TBA | Frontier reasoning and coding |
-| gpt-5.5-2026-04-23 | 200K | TBA | TBA | Pinned GPT-5.5 release |
+Earlier models such as the GPT-4 and GPT-4o families, `o1`, `o3-mini` and GPT-3.5 still have constants. Prefer the models above for new code.
 
-### o-Series (Reasoning Models)
+### Embedding models
 
-| Model ID | Context | Input Price | Output Price | Best For |
-|----------|---------|-------------|--------------|----------|
-| o1 | 200K | $15.00/1M | $60.00/1M | Complex reasoning, math |
-| o1-mini | 128K | $3.00/1M | $12.00/1M | Fast reasoning tasks |
-| o3 | 200K | TBA | TBA | Advanced reasoning (preview) |
-| o3-mini | 128K | TBA | TBA | Efficient reasoning |
+| Model ID | Go constant |
+|----------|-------------|
+| `text-embedding-3-large` | `openai.ModelTextEmbedding3Large` |
+| `text-embedding-3-small` | `openai.ModelTextEmbedding3Small` |
+| `text-embedding-ada-002` | `openai.ModelTextEmbeddingAda002` |
 
-### GPT-3.5 Series (Legacy)
+### Image generation models
 
-| Model ID | Context | Input Price | Output Price | Best For |
-|----------|---------|-------------|--------------|----------|
-| gpt-3.5-turbo | 16K | $0.50/1M | $1.50/1M | Simple, fast tasks |
+| Model ID | Go constant |
+|----------|-------------|
+| `gpt-image-2.5-flare` | `openai.ModelGPTImage25Flare` |
+| `gpt-image-2.5-sunburst` | `openai.ModelGPTImage25Sunburst` |
+| `gpt-image-2` | `openai.ModelGPTImage2` |
+| `gpt-image-1.5` | `openai.ModelGPTImage15` |
+| `gpt-image-1` | `openai.ModelGPTImage1` |
+| `gpt-image-1-mini` | `openai.ModelGPTImage1Mini` |
+| `dall-e-3`, `dall-e-2` | `openai.ModelDallE3`, `openai.ModelDallE2` |
 
-### Embedding Models
+### Speech and transcription models
 
-| Model ID | Dimensions | Price | Best For |
-|----------|-----------|-------|----------|
-| text-embedding-3-large | 3072 | $0.13/1M | High-quality embeddings |
-| text-embedding-3-small | 1536 | $0.02/1M | Cost-effective embeddings |
-| text-embedding-ada-002 | 1536 | $0.10/1M | Legacy embeddings |
-
-### Image Generation Models
-
-| Model ID | Quality | Speed | Price | Best For |
-|----------|---------|-------|-------|----------|
-| gpt-image-2 | Excellent | Medium | Per image | Latest image generation |
-| gpt-image-1 | Excellent | Medium | Per image | Multimodal image generation |
-| dall-e-3 | Excellent | Medium | $0.040/image | High-quality images |
-| dall-e-2 | Good | Fast | $0.020/image | Quick generations |
-
-### Speech Models
-
-| Model ID | Type | Quality | Price | Best For |
-|----------|------|---------|-------|----------|
-| tts-1 | TTS | Good | $15/1M chars | Fast synthesis |
-| tts-1-hd | TTS | High | $30/1M chars | High-quality voices |
-| whisper-1 | STT | Excellent | $0.006/min | Transcription |
+| Model ID | Type | Go constant |
+|----------|------|-------------|
+| `gpt-4o-mini-tts` | TTS | `openai.ModelGPT4oMiniTTS` |
+| `tts-1-hd` | TTS | `openai.ModelTTS1HD` |
+| `tts-1` | TTS | `openai.ModelTTS1` |
+| `gpt-4o-transcribe` | STT | `openai.ModelGPT4oTranscribe` |
+| `gpt-4o-mini-transcribe` | STT | `openai.ModelGPT4oMiniTranscribe` |
+| `whisper-1` | STT | `openai.ModelWhisper1` |
 
 ## Provider-Specific Features
 
@@ -172,7 +167,7 @@ object at the root.
 
 ### Vision Capabilities
 
-GPT-4o and GPT-4-turbo support image understanding:
+Current GPT models support image understanding:
 
 ```go
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
@@ -310,7 +305,7 @@ Note: o1 models do not support:
 - System messages
 - Streaming
 - Temperature settings
-- Function calling (use o1-mini for some tool support)
+- Function calling (use o4-mini for some tool support)
 
 ### Streaming Responses
 
@@ -372,7 +367,7 @@ func main() {
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
 
-    model, err := provider.LanguageModel("gpt-4o")
+    model, err := provider.LanguageModel("gpt-6-astra")
     if err != nil {
         log.Fatal(err)
     }
@@ -496,7 +491,7 @@ if err != nil {
 
 result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
     Model:        ttsModel,
-    Text:         "Hello, welcome to Go-AI SDK",
+    Text:         "Hello, welcome to Go AI SDK",
     Voice:        "alloy",
     OutputFormat: "mp3",
 })
@@ -645,10 +640,10 @@ func generateWithBackoff(ctx context.Context, model provider.LanguageModel, prom
 ## Best Practices
 
 1. **Model Selection**
-   - Use `gpt-4o` for general tasks with vision support
-   - Use `gpt-4o-mini` for cost-effective, fast responses
+   - Use `gpt-6-astra` for general tasks with vision support
+   - Use `gpt-5.4-mini` for cost-effective, fast responses
    - Use `o1` for complex reasoning and math problems
-   - Use `gpt-3.5-turbo` for simple, high-volume tasks
+   - Use `gpt-5.4-nano` for simple, high-volume tasks
 
 2. **Cost Optimization**
    - Monitor token usage with `result.Usage`
@@ -660,7 +655,7 @@ func generateWithBackoff(ctx context.Context, model provider.LanguageModel, prom
    - Use streaming for long responses
    - Implement connection pooling for high-volume apps
    - Batch embedding requests (up to 2048 inputs)
-   - Use `gpt-4o-mini` for latency-sensitive applications
+   - Use `gpt-5.4-mini` for latency-sensitive applications
 
 4. **Error Handling**
    - Always implement retry logic for rate limits
@@ -674,36 +669,17 @@ func generateWithBackoff(ctx context.Context, model provider.LanguageModel, prom
    - Implement rate limiting on your API
    - Validate user inputs before sending
 
-## Rate Limits & Pricing
+## Rate limits and pricing
 
-### Rate Limits (Tier 3)
+Rate limits depend on your usage tier. See [OpenAI's rate limits](https://platform.openai.com/docs/guides/rate-limits) and [pricing](https://openai.com/api/pricing/) pages for current values.
 
-| Model | RPM | TPM | RPD |
-|-------|-----|-----|-----|
-| gpt-4o | 5,000 | 800,000 | 10,000 |
-| gpt-4o-mini | 10,000 | 2,000,000 | 10,000 |
-| o1 | 500 | 100,000 | 5,000 |
-| gpt-3.5-turbo | 10,000 | 2,000,000 | 10,000 |
+### Cost estimation
 
-RPM = Requests per minute, TPM = Tokens per minute, RPD = Requests per day
-
-### Cost Estimation
+Pricing changes often, so load rates from your own configuration instead of hard-coding them:
 
 ```go
-func estimateCost(promptTokens, completionTokens int, model string) float64 {
-    prices := map[string][2]float64{
-        "gpt-4o":         {2.50 / 1_000_000, 10.00 / 1_000_000},
-        "gpt-4o-mini":    {0.15 / 1_000_000, 0.60 / 1_000_000},
-        "o1":             {15.00 / 1_000_000, 60.00 / 1_000_000},
-        "gpt-3.5-turbo":  {0.50 / 1_000_000, 1.50 / 1_000_000},
-    }
-
-    price, ok := prices[model]
-    if !ok {
-        return 0
-    }
-
-    return float64(promptTokens)*price[0] + float64(completionTokens)*price[1]
+func estimateCost(promptTokens, completionTokens int, inputPerToken, outputPerToken float64) float64 {
+    return float64(promptTokens)*inputPerToken + float64(completionTokens)*outputPerToken
 }
 ```
 

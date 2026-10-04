@@ -5,6 +5,72 @@ All notable changes to the Go AI SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Fixes found while building the [Shipyard demo](https://github.com/digitallysavvy/go-ai-demo),
+a `useChat` frontend on a Go backend.
+
+### Added
+
+- `ai.PipeUIMessageChunksToResponse` and `ai.CreateUIMessageChunksResponse`
+  serve any UI message chunk stream over HTTP, such as one built with
+  `CreateUIMessageStreamWithOptions` that writes data parts and merges an
+  agent stream (TS `pipeUIMessageStreamToResponse({ stream })` /
+  `createUIMessageStreamResponse({ stream })`).
+- `agent.PipeAgentUIStreamFromUIMessagesToResponse` and
+  `agent.CreateAgentUIStreamResponseFromUIMessages` take `useChat`'s UI
+  messages directly (TS `pipeAgentUIStreamToResponse` /
+  `createAgentUIStreamResponse` with `uiMessages`).
+- `ai.UIMessageStreamHeaders()` (TS `UI_MESSAGE_STREAM_HEADERS`).
+
+### Changed
+
+- On an `http.ResponseWriter`, `PipeUIMessageStreamToResponse`,
+  `PipeUIMessageChunksToResponse`, `PipeTextStreamToResponse` and the agent
+  `Pipe*` helpers now set the response headers and write the status before
+  the body, like their TS counterparts on a Node `ServerResponse`. Before,
+  they wrote only the body and the caller had to set the headers. Remove any
+  manual header setup or `WriteHeader` call made before these helpers.
+  Other `io.Writer`s still get only the body. New
+  `PipeTextStreamToResponseWithInit` takes a status and headers.
+
+### Security
+
+- Tool approval fails closed. A `ToolApproval` (or `NeedsApproval`) set to
+  a bare function literal, such as
+  `func(ctx context.Context, input map[string]interface{}, opts types.ToolNeedsApprovalOptions) bool`,
+  matched no case and the tool ran without approval. Unnamed literals with
+  the approval function signatures are now treated as their named types,
+  and any other unrecognized value, or an unknown status string such as
+  `"user_approval"`, is an error: the call is reported to the model as a
+  tool error and the tool does not run. This applies to tool-level,
+  per-tool map and call-level `ToolApproval` settings.
+
+- The harness credential setup no longer echoes an invalid base URL in its
+  error. A base URL can carry credentials (`https://user:token@host`); the
+  message is now `Invalid URL`, as in TS.
+
+### Fixed
+
+- `mcp.MCPClient` now matches JSON-RPC responses to pending requests when the
+  server echoes the request id as a JSON number. Before, responses decoded as
+  `float64` never matched the client's `uint64` request ids, so `Connect` timed
+  out against HTTP servers.
+- A step that pauses for tool approval keeps the model's finish reason
+  (normally `tool-calls`), as in TS. It was reported as `user-approval`,
+  which TS `useChat` rejects, so the approval step failed with a type
+  validation error in the browser. `types.FinishReasonUserApproval` is
+  deprecated and no longer reported.
+- `harness.Agent.CreateSession` names the sandbox and its work dir after the
+  generated session ID. Sessions created without a `SessionID` all shared
+  the work dir `<harness>-%`.
+- The default UI message stream headers are canonical, so
+  `Header.Get("X-Vercel-AI-UI-Message-Stream")` finds the protocol header on
+  responses from `CreateUIMessageStreamResponse`.
+- The harness examples (Claude Code, Codex, Cursor, fx, GitHub Copilot,
+  Grok Build, workflow) give the local sandbox a port; they failed at
+  startup with "needs a TCP port exposed by the sandbox".
+
 ## [0.5.0] - 2026-10-02
 
 TS SDK parity target: `ai@7.0.127` (was `ai@6.0.137` in v0.4.0). Ships

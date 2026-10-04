@@ -1,0 +1,88 @@
+// Recipe: pause a tool call until a user approves it.
+//
+// Run: ANTHROPIC_API_KEY=... go run ./examples/recipes/tool-approval
+// The frontend needs useChat with
+// sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses.
+package main
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/json"
+	"log"
+	"net/http"
+	"os"
+	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/agent"
+	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
+)
+
+func main() {
+	model, err := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")}).
+		LanguageModel(anthropic.ClaudeSonnet5_5)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Signs approval requests so a client cannot forge an approval. Use a
+	// stable secret in production, the same on every instance.
+	secret := []byte(os.Getenv("TOOL_APPROVAL_SECRET"))
+	if len(secret) == 0 {
+		secret = make([]byte, 32)
+		if _, err := rand.Read(secret); err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	deploy := types.Tool{
+		Name:        "deploy",
+		Description: "Deploy the service to an environment. Requires user approval.",
+		Parameters: schema.NewSimpleJSONSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"env": map[string]interface{}{"type": "string", "enum": []string{"staging", "prod"}},
+			},
+			"required": []string{"env"},
+		}),
+		// The model can ask; only the user can say yes.
+		ToolApproval: true,
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return map[string]interface{}{"deployed": input["env"]}, nil
+		},
+	}
+
+	assistant := agent.NewToolLoopAgent(agent.AgentConfig{
+		Model:                          model,
+		System:                         "You deploy services. Call deploy when asked. Keep replies short.",
+		Tools:                          []types.Tool{deploy},
+		StopWhen:                       []ai.StopCondition{ai.IsStepCount(5)},
+		ExperimentalToolApprovalSecret: secret,
+	})
+
+	http.HandleFunc("POST /api/chat", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages json.RawMessage `json:"messages"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<20)).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		chunks, _, err := agent.CreateAgentUIStreamFromUIMessages(r.Context(), assistant,
+			agent.CreateAgentUIStreamFromUIMessagesOptions{UIMessages: []byte(req.Messages)})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		keepAlive := 15 * time.Second
+		if err := ai.PipeUIMessageChunksToResponse(chunks, w, &ai.UIMessageStreamResponseInit{KeepAliveMs: &keepAlive}); err != nil {
+			log.Printf("write stream: %v", err)
+		}
+	})
+
+	log.Println("listening on :8080")
+	log.Fatal(http.ListenAndServe(":8080", nil))
+}

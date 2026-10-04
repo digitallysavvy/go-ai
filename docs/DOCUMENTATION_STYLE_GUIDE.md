@@ -1,6 +1,6 @@
 # Documentation Style Guide
 
-This guide establishes standards for Go-AI SDK documentation to ensure consistency, clarity, and maintainability across all documentation files.
+This guide establishes standards for Go AI SDK documentation to ensure consistency, clarity, and maintainability across all documentation files.
 
 ## File Naming Conventions
 
@@ -65,7 +65,7 @@ Content here.
 ```markdown
 Prerequisites:
 
-- Go 1.21 or later
+- Go 1.26 or later
 - Valid API key
 - Internet connection
 
@@ -91,13 +91,31 @@ import (
     "context"
     "fmt"
     "log"
+    "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 )
 
 func main() {
-    client := newExampleClient("your-api-key")
-    // ... rest of example
+    // 1. Setup: create a provider and pick a model
+    provider := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")})
+    model, err := provider.LanguageModel(anthropic.ClaudeSonnet5_5)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // 2. Main operation
+    result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Hello!",
+    })
+    if err != nil {
+        log.Fatalf("Error: %v", err)
+    }
+
+    // 3. Use the result
+    fmt.Println(result.Text)
 }
 ```
 ````
@@ -142,35 +160,34 @@ Every code example must:
 package main
 
 import (
-    // Standard library imports first
     "context"
     "fmt"
     "log"
+    "os"
 
-    // Third-party imports second, grouped by domain
     "github.com/digitallysavvy/go-ai/pkg/ai"
     "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 )
 
 func main() {
-    // 1. Setup/configuration
-    client := newExampleClient(
-        "your-api-key",
-        exampleWithProvider(anthropic.NewProvider()),
-    )
+    // 1. Setup: create a provider and pick a model
+    provider := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")})
+    model, err := provider.LanguageModel(anthropic.ClaudeSonnet5_5)
+    if err != nil {
+        log.Fatal(err)
+    }
 
     // 2. Main operation
-    response, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
-        Messages: []types.Message{
-            {Role: "user", Content: "Hello!"},
-        },
+    result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Hello!",
     })
     if err != nil {
         log.Fatalf("Error: %v", err)
     }
 
-    // 3. Result handling/output
-    fmt.Println(response.Content)
+    // 3. Use the result
+    fmt.Println(result.Text)
 }
 ```
 
@@ -209,7 +226,7 @@ if err != nil {
 // Replace with your actual API key from https://console.anthropic.com
 client := newExampleClient("your-api-key")
 
-// Use a supported model name (e.g., claude-3-5-sonnet-20241022)
+// Use a supported model name (e.g., claude-sonnet-5-5)
 request.Model = "your-model-name"
 ```
 
@@ -406,16 +423,14 @@ Bad: "If you want deterministic outputs, it would be recommended to consider set
 ### Inline Documentation
 ```go
 // Generate a completion using the Claude model
+temperature := 0.7
+maxTokens := 1000
+
 response, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
-    Model: "claude-3-5-sonnet-20241022", // Recommended for most use cases
-    Messages: []types.Message{
-        {
-            Role:    "user",
-            Content: "Explain quantum computing",
-        },
-    },
-    Temperature: ptr(0.7), // Higher = more creative, lower = more focused
-    MaxTokens:   ptr(1000), // Limit response length
+    Model:       model, // For example, claude-sonnet-5-5: recommended for most use cases
+    Prompt:      "Explain quantum computing",
+    Temperature: &temperature, // Higher = more creative, lower = more focused
+    MaxTokens:   &maxTokens,   // Limit response length
 })
 ```
 
@@ -426,10 +441,9 @@ client := newExampleClient("your-api-key")
 
 // Step 2: Create a request with system and user messages
 request := ai.GenerateTextOptions{
-    Messages: []types.Message{
-        {Role: "system", Content: "You are a helpful assistant."},
-        {Role: "user", Content: "What is Go?"},
-    },
+    Model:  model,
+    System: "You are a helpful assistant.",
+    Prompt: "What is Go?",
 }
 
 // Step 3: Generate the response

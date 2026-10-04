@@ -1,6 +1,6 @@
 ---
 title: Mistral AI Provider
-description: "Setup and usage guide for Mistral AI models in the Go-AI SDK, covering available models, provider-specific features, rate limits, and pricing."
+description: "Setup and usage guide for Mistral AI models in the Go AI SDK, covering available models, provider-specific features, rate limits, and pricing."
 ---
 
 # Mistral AI Provider
@@ -45,21 +45,24 @@ export MISTRAL_API_KEY=...
 
 ### Language Models
 
-| Model ID | Context | Input Price | Output Price | Best For |
-|----------|---------|-------------|--------------|----------|
-| mistral-large-latest | 128K | $3.00/1M | $9.00/1M | Complex reasoning, code |
-| mistral-small-latest | 32K | $1.00/1M | $3.00/1M | Fast, cost-effective |
-| mistral-medium-3 | 128K | Varies | Varies | Balanced quality/latency |
-| mistral-medium-3.5 | 128K | Varies | Varies | Balanced quality/latency |
-| pixtral-large-latest | 128K | $3.00/1M | $9.00/1M | Multimodal (vision) |
-| codestral-latest | 32K | $1.00/1M | $3.00/1M | Code generation |
-| mistral-nemo | 128K | $0.30/1M | $0.30/1M | Open-source |
+Use the constants in `pkg/providers/mistral/model_ids.go` instead of raw strings. See [Mistral's model documentation](https://docs.mistral.ai/getting-started/models/) for context windows and pricing.
+
+| Model ID | Go constant | Best for |
+|----------|-------------|----------|
+| `mistral-large-latest` | `mistral.ModelMistralLargeLatest` | Complex reasoning, code |
+| `mistral-medium-latest` | `mistral.ModelMistralMediumLatest` | Balanced quality and latency |
+| `mistral-medium-3.5` | `mistral.ModelMistralMedium35` | Balanced quality and latency |
+| `mistral-small-latest` | `mistral.ModelMistralSmallLatest` | Fast, cost-effective |
+| `magistral-medium-latest` | `mistral.ModelMagistralMediumLatest` | Reasoning |
+| `ministral-14b-latest` | `mistral.ModelMinistral14BLatest` | Small, efficient |
+| `codestral-latest` | `mistral.ModelCodestralLatest` | Code generation |
+| `voxtral-small-latest` | `mistral.ModelVoxtralSmallLatest` | Speech and audio |
 
 ### Embedding Models
 
-| Model ID | Dimensions | Price | Best For |
-|----------|-----------|-------|----------|
-| mistral-embed | 1024 | $0.10/1M | Semantic search |
+| Model ID | Dimensions | Best For |
+| ---------- | ----------- | ---------- |
+| mistral-embed | 1024 | Semantic search |
 
 `mistral.EmbeddingModel` batches at most 32 inputs per call
 (`MaxEmbeddingsPerCall() == 32`) and does not support parallel calls
@@ -226,7 +229,7 @@ func main() {
 1. **Model Selection**
    - Use mistral-large for complex reasoning
    - Use mistral-small for fast, cost-effective tasks
-   - Use pixtral for vision tasks
+   - Use a vision-capable model for image input
    - Use codestral for code generation
 
 2. **Cost Optimization**

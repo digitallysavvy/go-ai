@@ -231,7 +231,7 @@ indistinguishable from unset).
 
 **Before:**
 
-```go
+```go skip-compile
 tool := types.Tool{Name: "search", Strict: true, /* ... */}
 ```
 
@@ -335,7 +335,7 @@ integrations must update this method to return a context.
 
 **Before:**
 
-```go
+```go skip-compile
 Telemetry: &telemetry.Options{IsEnabled: telemetry.Bool(true), Tracer: tracer}
 ```
 
@@ -574,7 +574,7 @@ override the agent's defaults (previously the agent defaults always won).
 
 **Before:**
 
-```go
+```go skip-compile
 transport := &workflow.WorkflowChatTransport{}
 http.Handle("/api/workflow", transport)
 ```
@@ -656,7 +656,7 @@ from `gateway.Config` and `GatewayProviderOptions` — it is no longer sent as
 
 **Before:**
 
-```go
+```go skip-compile
 // DisableParallelToolUse was a plain bool on anthropic.ModelOptions:
 model := anthropic.NewLanguageModel(prov, anthropic.ClaudeSonnet4_6, &anthropic.ModelOptions{
     DisableParallelToolUse: true,
@@ -781,7 +781,7 @@ values now returns an empty result instead of an error.
 
 **Before:**
 
-```go
+```go skip-compile
 result, err := ai.Embed(ctx, ai.EmbedOptions{
     Model:      model,
     Input:      "hello",
@@ -903,6 +903,377 @@ existing calls — review them if they're relevant to your application:
 - **Harness**: `pkg/harness` (Go port of `@ai-sdk/harness`) with adapters for Claude Code, Codex, OpenCode, Deep Agents, ACP, Cursor, GitHub Copilot, Grok Build, and a Vercel Sandbox provider. See [pkg/harness/sandbox/vercel reference](../07-reference/ai/harness-sandbox-vercel.mdx).
 - **New providers**: GMI Cloud, Z.AI, MiniMax, TypeSafe AI, Fish Audio, Cartesia, Rev.ai, Hume, Luma.
 - **LlamaIndex**: `pkg/llamaindex.ToUIMessageStream` adapts a LlamaIndex chat-engine delta stream to UI message stream chunks. See [pkg/llamaindex reference](../07-reference/ai/llamaindex.mdx).
+
+## Appendix: May 2026 parity cycle details
+
+This appendix keeps the detailed notes from the May 2026 migration guide, which covers the first of the two cycles that land in v0.5.0. Use it for before and after code on agents, tool approval, sandboxes, registries, and upload APIs.
+
+### Agent interface (May 2026 detail)
+
+The `agent.Agent` interface now follows the TypeScript SDK agent contract. Custom agent implementations must expose identity, tool, generate, and stream methods in addition to the legacy Go convenience execution methods.
+
+Before:
+
+```go
+type MyAgent struct{}
+
+func (a *MyAgent) Execute(ctx context.Context, prompt string) (*agent.AgentResult, error) { /* ... */ }
+func (a *MyAgent) ExecuteWithMessages(ctx context.Context, messages []types.Message) (*agent.AgentResult, error) {
+    /* ... */
+}
+```
+
+After:
+
+```go
+type MyAgent struct{}
+
+func (a *MyAgent) Version() string { return "agent-v1" }
+func (a *MyAgent) ID() string { return "support-agent" }
+func (a *MyAgent) Tools() []types.Tool { return nil }
+func (a *MyAgent) Generate(ctx context.Context, opts agent.AgentGenerateOptions) (*ai.GenerateTextResult, error) {
+    /* ... */
+}
+func (a *MyAgent) Stream(ctx context.Context, opts agent.AgentStreamOptions) (*ai.StreamTextResult, error) {
+    /* ... */
+}
+func (a *MyAgent) Execute(ctx context.Context, prompt string) (*agent.AgentResult, error) { /* ... */ }
+func (a *MyAgent) ExecuteWithMessages(ctx context.Context, messages []types.Message) (*agent.AgentResult, error) {
+    /* ... */
+}
+```
+
+### RuntimeContext and ToolsContext (May 2026 detail)
+
+`RuntimeContext` is now the primary call-level context. `ExperimentalContext` remains as a deprecated alias and is used only when `RuntimeContext` is not set. Per-tool context belongs in `ToolsContext` and is validated against each tool's `ContextSchema` before approval callbacks or tool execution.
+
+Before:
+
+```go
+agent.NewToolLoopAgent(agent.AgentConfig{
+    Model: model,
+    ExperimentalContext: map[string]any{"requestID": "req_123"},
+})
+```
+
+After:
+
+```go
+agent.NewToolLoopAgent(agent.AgentConfig{
+    Model: model,
+    RuntimeContext: map[string]any{"requestID": "req_123"},
+    ToolsContext: map[string]any{
+        "lookup": map[string]any{"tenant": "acme"},
+    },
+})
+```
+
+Dynamic tool descriptions receive the same per-tool context used by the TypeScript SDK:
+
+```go
+types.Tool{
+    Name: "lookup",
+    DescriptionFunc: func(ctx context.Context, opts types.ToolDescriptionOptions) string {
+        return fmt.Sprintf("Lookup data for %v", opts.Context)
+    },
+}
+```
+
+### Tool approval (May 2026 detail)
+
+Tool approval callbacks can now return a zero-value `types.ToolApprovalResult{}` to mean `not-applicable`. Denials preserve the approval status and reason in `types.ToolResult` and use a default message that includes the tool name. Per-tool approval callbacks run only after the matching `ContextSchema` validates successfully; validated JSON-schema defaults are applied before `ToolContext` is passed to approval or execution callbacks.
+
+Tool-defined approval callbacks can use the options-based `types.ToolNeedsApprovalFunc` to receive the same data as the TypeScript SDK: tool call ID, pre-call messages, and validated tool context. The older `types.NeedsApprovalFunc` remains available as a deprecated input-only compatibility path.
+
+Before:
+
+```go
+ToolApprovalRequired: true,
+ToolApprover: func(call types.ToolCall) bool { return false },
+```
+
+After:
+
+```go
+ToolApproval: types.ToolApprovalFunc(func(
+    call types.ToolCall,
+    tools []types.Tool,
+    messages []types.Message,
+    runtimeCtx any,
+    toolsCtx map[string]any,
+) types.ToolApprovalResult {
+    return types.ToolApprovalResult{Status: types.ToolApprovalStatusDenied}
+}),
+```
+
+### MaxSteps and StopWhen (May 2026 detail)
+
+`MaxSteps` is deprecated for agents. Existing callers still work: `MaxSteps: n` is routed to `StopWhen: []ai.StopCondition{ai.IsStepCount(n)}` and emits a deprecation warning. New code should use `StopWhen` directly.
+
+Before:
+
+```go
+agent.NewToolLoopAgent(agent.AgentConfig{Model: model, MaxSteps: 5})
+```
+
+After:
+
+```go
+agent.NewToolLoopAgent(agent.AgentConfig{
+    Model: model,
+    StopWhen: []ai.StopCondition{ai.IsStepCount(5)},
+})
+```
+
+### Prompt field (May 2026 detail)
+
+`Prompt` is available as a TypeScript-compatible alias for the agent system prompt. If `System` is empty, `Prompt` is used as the system prompt sent to the model.
+
+```go
+agent.NewToolLoopAgent(agent.AgentConfig{
+    Model: model,
+    Prompt: "You are a careful support agent.",
+})
+```
+
+### Sandbox API (May 2026 detail)
+
+Sandbox implementations now use the TypeScript SDK v7 naming and file helper surface. Implement `ai.Experimental_SandboxSession` or `providerutils.SandboxSession`.
+
+Before (old API, will not compile):
+
+```go skip-compile
+// Removed API: ai.SandboxExecuteOptions no longer exists.
+result, err := sandbox.Execute(ctx, "go test ./...", ai.SandboxExecuteOptions{
+    WorkingDirectory: "/workspace",
+})
+```
+
+After:
+
+```go
+result, err := sandbox.Run(ctx, ai.SandboxProcessOptions{
+    Command:          "go test ./...",
+    WorkingDirectory: "/workspace",
+    Env: map[string]string{
+        "GOFLAGS": "-mod=mod",
+    },
+})
+```
+
+The session interface also includes `ReadFile`, `ReadBinaryFile`, `ReadTextFile`, `WriteFile`, `WriteBinaryFile`, and `WriteTextFile`. The old Go-only `Sandbox`, `SandboxExecuteOptions`, and `SandboxExecuteResult` names are removed; use `Experimental_SandboxSession`, `SandboxProcessOptions`, and `SandboxRunResult`.
+
+`SandboxProcessOptions.Env` is forwarded to both `Run` and `Spawn`, matching the TypeScript `Experimental_SandboxSession` process options shape.
+
+### OpenAI Responses files (May 2026 detail)
+
+OpenAI Responses now matches the TypeScript SDK default for file parts: images and PDFs are accepted by default, while unsupported file media types require an explicit opt-in.
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model: model,
+    Prompt: promptWithCSVFile,
+    ProviderOptions: map[string]interface{}{
+        "openai": map[string]interface{}{
+            "passThroughUnsupportedFiles": true,
+        },
+    },
+})
+```
+
+### FilterActiveTools (May 2026 detail)
+
+Use `FilterActiveTools` to restrict tool availability per step.
+
+```go
+agent.NewToolLoopAgent(agent.AgentConfig{
+    Model: model,
+    Tools: tools,
+    FilterActiveTools: func(ctx context.Context, step int, tools []types.Tool) []types.Tool {
+        if step == 1 { return tools[:1] }
+        return tools
+    },
+})
+```
+
+### Telemetry event names (May 2026 detail)
+
+Telemetry integrations should use the stable end-event names from the May 2026 TypeScript SDK cycle:
+
+| Previous Go name | New Go name |
+| --- | --- |
+| `OnToolCallStart` / `FireOnToolCallStart` | `OnToolExecutionStart` / `FireOnToolCallStart` |
+| `OnToolCallFinish` / `FireOnToolCallFinish` | `OnToolExecutionEnd` / `FireOnToolCallFinish` |
+| `OnFinish` / `FireOnFinish` | `OnEnd` / `FireOnEnd` |
+| `OnEmbedFinish` / `FireOnEmbedFinish` | `OnEmbedEnd` / `FireOnEmbedEnd` |
+| `OnRerankFinish` / `FireOnRerankFinish` | `OnRerankEnd` / `FireOnRerankEnd` |
+
+`TelemetryIntegration` now includes the TypeScript-aligned `OnToolExecutionStart` and `OnToolExecutionEnd` methods. `OnToolCallStart` and `OnToolCallFinish` remain as deprecated aliases.
+
+Telemetry no longer emits per-chunk `OnChunk` events; stream consumers should continue using `StreamTextOptions.OnChunk` for application-level chunk handling.
+
+`GenerateTextOptions`, `StreamTextOptions`, `agent.AgentGenerateOptions`, and `agent.AgentConfig` also prefer `OnToolExecutionStart` and `OnToolExecutionEnd` for tool execution callbacks. The older `OnToolCallStart` and `OnToolCallFinish` option fields remain deprecated aliases.
+
+### Result content and step performance (May 2026 detail)
+
+`GenerateTextResult.Content` now matches the TypeScript SDK `result.content` getter: it is the ordered aggregate of every step's content parts, including text, reasoning, files, sources, tool calls, tool results, tool errors, and tool approval request/response parts.
+
+`types.StepResult` now includes `Performance` statistics matching the TypeScript SDK: `StepTimeMs`, `ResponseTimeMs`, `ToolExecutionMs`, `EffectiveOutputTokensPerSecond`, `EffectiveTotalTokensPerSecond`, and streaming-only `OutputTokensPerSecond`, `InputTokensPerSecond`, `TimeToFirstOutputMs`, and `TimeBetweenOutputChunksMs`. Use `FinalStep.Performance.EffectiveOutputTokensPerSecond` for final-step output throughput and `Steps[i].Performance` for multi-step workflows.
+
+`StepTimeMs` is measured as wall-clock step duration, including client-side tool execution. `ToolExecutionMs` is keyed by `toolCallID`.
+
+### Sandbox description (May 2026 detail)
+
+`ai.Experimental_SandboxSession` includes `Description() string`. When a sandbox is active, non-empty descriptions are appended to system instructions before provider calls, matching the TypeScript SDK sandbox instruction behavior.
+
+```go
+sandbox := ai.NewShellSandbox(
+    ai.WithShellSandboxDescription("Ubuntu 22.04, root: /workspace"),
+)
+```
+
+### CallOptionsSchema (May 2026 detail)
+
+`CallOptionsSchema` is enforced before any model call. Validation errors include the `options` schema path and are returned as provider validation errors.
+
+```go
+agent.NewToolLoopAgent(agent.AgentConfig{
+    Model: model,
+    CallOptions: map[string]any{"mode": "safe"},
+    CallOptionsSchema: schema.NewSimpleJSONSchema(map[string]any{
+        "type": "object",
+        "required": []any{"mode"},
+    }),
+})
+```
+
+### Registry files and skills (May 2026 detail)
+
+Registries now resolve upload APIs directly. Providers that do not expose the requested API return `NoSuchProviderError`-equivalent errors.
+
+```go
+files, err := registry.GetGlobalRegistry().Files("anthropic")
+skills, err := registry.GetGlobalRegistry().Skills("anthropic")
+```
+
+### Provider v4 file data and reasoning files (May 2026 detail)
+
+Middleware wrappers preserve the wrapped model specification version and pass provider file data, custom content, and reasoning-file content through without downgrading model metadata.
+
+### System message validation (May 2026 detail)
+
+System instructions should be passed via `System` or agent `Prompt`. Passing system-role messages still requires `AllowSystemMessages` / `AllowSystemInMessages` on lower-level generation calls.
+
+### Upload APIs (May 2026 detail)
+
+Use `ai.UploadFile` and `ai.UploadSkill` with providers or registry-resolved `Files()` / `Skills()` APIs. Unsupported providers return explicit capability errors rather than nil API panics.
+
+## Appendix: May 31 stream, telemetry, and provider details
+
+This appendix maps the May 31 TypeScript AI SDK changes to Go AI SDK API names.
+
+### Stream helpers (May 31 detail)
+
+Use standalone stream helpers with `result.Stream()` for new code:
+
+```go
+result, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Write a concise release note.",
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer result.Close()
+
+textStream, errStream := ai.ToTextStream(ctx, result.Stream())
+for text := range textStream {
+    fmt.Print(text)
+}
+if err := <-errStream; err != nil {
+    log.Fatal(err)
+}
+```
+
+For HTTP responses, prefer helpers that accept a raw `provider.TextStream`:
+
+```go
+response, err := ai.CreateTextStreamResponseFromStream(ctx, result.Stream(), &ai.TextStreamResponseInit{
+    Headers: map[string]string{"Cache-Control": "no-cache"},
+})
+```
+
+`StreamTextResult.ToTextStreamResponse`, `StreamTextResult.ToUIMessageStream`, `StreamTextResult.ToUIMessageStreamResponse`, `StreamTextResult.PipeTextStreamToResponse`, and `StreamTextResult.PipeUIMessageStreamToResponse` are retained as deprecated compatibility wrappers.
+
+### Stream and FullStream (May 31 detail)
+
+`Stream()` is the canonical Go accessor for the underlying provider stream. `FullStream()` remains available as a deprecated alias for TypeScript `fullStream` migration.
+
+```go
+stream := result.Stream()
+
+// Deprecated compatibility:
+legacy := result.FullStream()
+_ = legacy
+```
+
+### UI message conversion (May 31 detail)
+
+Use `ToUIMessageChunk` for one chunk and `ToUIMessageStream` for a full stream:
+
+```go
+sendStart := true
+sendFinish := true
+uiChunks, uiErrs := ai.ToUIMessageStream(ctx, result.Stream(), ai.UIMessageStreamResultOptions{
+    SendStart:  &sendStart,
+    SendFinish: &sendFinish,
+})
+
+for chunk := range uiChunks {
+    fmt.Printf("%v\n", chunk["type"])
+}
+if err := <-uiErrs; err != nil {
+    log.Fatal(err)
+}
+```
+
+The standalone stream helper is the Go equivalent of TypeScript's helper surface. Result-bound methods delegate to these helpers only for source compatibility.
+
+### Telemetry (May 31 detail)
+
+`Telemetry` is the canonical field. `ExperimentalTelemetry` still works as a deprecated alias.
+
+Telemetry integrations now receive abort events through `OnAbort`, and OpenTelemetry spans are closed when generation is canceled. Model calls run inside the telemetry context, so integrations that attach spans or values in `OnStart` can make them visible downstream.
+
+```go
+ctx, cancel := context.WithCancel(context.Background())
+defer cancel()
+enabled := true
+
+result, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Stream until canceled.",
+    Telemetry: &ai.TelemetrySettings{
+        IsEnabled: &enabled,
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer result.Close()
+
+cancel()
+_ = result.ConsumeStream()
+```
+
+Output timing fields use the TypeScript-compatible names:
+
+- `TimeToFirstOutputMs`
+- `TimeBetweenOutputChunksMs`
+
+File outputs and tool calls count as first output events, matching the TypeScript SDK. Earlier token-specific naming is not canonical in Go.
+
+Nested runtime/tool context objects are split into separate telemetry attributes when opted in through `IncludeRuntimeContext` or `IncludeToolsContext`.
 
 ## See Also
 

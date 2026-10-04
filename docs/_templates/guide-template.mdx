@@ -25,7 +25,7 @@ Comprehensive introduction that explains:
 
 Before starting this guide, you should:
 
-- Have Go 1.21 or later installed
+- Have Go 1.26 or later installed
 - Have completed the [Getting Started guide](../02-getting-started/index.mdx)
 - Understand `[prerequisite concept](../path/to/concept.mdx)`
 - Have an API key configured
@@ -62,7 +62,7 @@ Explanation of the second step and what it accomplishes.
 ```go
 // Build on the previous step
 request := ai.GenerateTextOptions{
-    Model: "claude-3-5-sonnet-20241022",
+    Model: "claude-sonnet-5-5",
     Messages: []types.Message{
         {Role: "user", Content: "Hello!"},
     },
@@ -108,7 +108,7 @@ func main() {
 
     // Create request
     request := ai.GenerateTextOptions{
-        Model: "claude-3-5-sonnet-20241022",
+        Model: "claude-sonnet-5-5",
         Messages: []types.Message{
             {Role: "user", Content: "Hello, world!"},
         },
@@ -156,7 +156,7 @@ func main() {
     defer cancel()
 
     request := ai.GenerateTextOptions{
-        Model: "claude-3-5-sonnet-20241022",
+        Model: "claude-sonnet-5-5",
         Messages: messages,
         Temperature: ptr(0.7),
         MaxTokens:   ptr(2000),
@@ -554,7 +554,7 @@ import "testing"
 func BenchmarkFeature(b *testing.B) {
     client := newExampleClient("your-api-key")
     request := ai.GenerateTextOptions{
-        Model:    "claude-3-5-sonnet-20241022",
+        Model:    "claude-sonnet-5-5",
         Messages: messages,
     }
 
@@ -590,7 +590,7 @@ func TestFeature(t *testing.T) {
 
     // Test case
     request := ai.GenerateTextOptions{
-        Model: "claude-3-5-sonnet-20241022",
+        Model: "claude-sonnet-5-5",
         Messages: []types.Message{
             {Role: "user", Content: "test"},
         },

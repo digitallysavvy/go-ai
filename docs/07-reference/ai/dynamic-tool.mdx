@@ -56,7 +56,7 @@ import (
 
 func main() {
     p := openai.New(openai.Config{APIKey: "your-api-key"})
-    model, _ := p.LanguageModel("gpt-4")
+    model, _ := p.LanguageModel("gpt-6-astra")
 
     searchTool := types.Tool{
         Name:        "search_db",

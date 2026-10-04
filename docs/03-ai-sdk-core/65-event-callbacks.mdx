@@ -26,7 +26,7 @@ import (
 func main() {
 	ctx := context.Background()
 	p := openai.New(openai.Config{APIKey: "your-api-key"})
-	model, err := p.LanguageModel("gpt-4o")
+	model, err := p.LanguageModel("gpt-6-astra")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -93,7 +93,7 @@ Called when the generation begins, before any LLM calls are made.
 | Field | Type | Description |
 |-------|------|-------------|
 | `ModelProvider` | `string` | The provider name (e.g., `"openai"`). |
-| `ModelID` | `string` | The model identifier (e.g., `"gpt-4o"`). |
+| `ModelID` | `string` | The model identifier (e.g., `"gpt-6-astra"`). |
 | `System` | `string` | The system message provided to the model. |
 | `Prompt` | `string` | The prompt string if using the Prompt option. |
 | `Messages` | `[]types.Message` | The messages array if using the Messages option. |
@@ -286,7 +286,7 @@ import (
 func main() {
 	ctx := context.Background()
 	p := openai.New(openai.Config{APIKey: "your-api-key"})
-	model, err := p.LanguageModel("gpt-4o")
+	model, err := p.LanguageModel("gpt-6-astra")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -336,7 +336,7 @@ import (
 func main() {
 	ctx := context.Background()
 	p := openai.New(openai.Config{APIKey: "your-api-key"})
-	model, err := p.LanguageModel("gpt-4o")
+	model, err := p.LanguageModel("gpt-6-astra")
 	if err != nil {
 		log.Fatal(err)
 	}

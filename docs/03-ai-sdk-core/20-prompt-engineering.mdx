@@ -5,7 +5,7 @@ description: "Teaches prompt engineering for LLMs in Go, from a slogan-generator
 
 # Prompt Engineering
 
-Prompt engineering is the practice of designing and refining prompts to get the best results from Large Language Models (LLMs). This guide covers fundamental concepts, advanced techniques, and Go-specific patterns for working with the Go-AI SDK.
+Prompt engineering is the practice of designing and refining prompts to get the best results from Large Language Models (LLMs). This guide covers fundamental concepts, advanced techniques, and Go-specific patterns for working with the Go AI SDK.
 
 ## What is a Large Language Model (LLM)?
 
@@ -36,7 +36,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
         Model:  model,
@@ -173,7 +173,7 @@ When using tools, getting good results becomes more challenging as tool complexi
 
 ### Tips for Effective Tool Prompts
 
-1. **Use Strong Models**: Use models proficient at tool calling (GPT-4, GPT-5, Claude Sonnet)
+1. **Use Strong Models**: Use models proficient at tool calling (GPT-6, GPT-5, Claude Sonnet)
 2. **Limit Tool Count**: Keep tools to 5 or less for best results
 3. **Simplify Schemas**: Avoid deeply nested or overly complex schemas
 4. **Use Semantic Names**: Choose descriptive names for tools and parameters
@@ -230,7 +230,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     // Use temperature 0 for deterministic tool calls
     temperature := 0.0
@@ -425,12 +425,14 @@ fmt.Printf("Primary: %s\n", slogans.Primary)
 
 ### Inspect HTTP Requests
 
-Enable debug mode to see full API requests:
+Pass an `http.Client` with a logging `http.RoundTripper` to see full API requests. See [Development tools](./65-devtools.mdx#intercepting-http-requests) for a complete `LoggingTransport`:
 
 ```go
 provider := openai.New(openai.Config{
-    APIKey:    os.Getenv("OPENAI_API_KEY"),
-    DebugMode: true, // Logs full HTTP requests and responses
+    APIKey: os.Getenv("OPENAI_API_KEY"),
+    HTTPClient: &http.Client{
+        Transport: &LoggingTransport{Transport: http.DefaultTransport}, // Logs requests and responses
+    },
 })
 ```
 
@@ -467,15 +469,15 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Tools:  tools,
     Prompt: "What's the weather in New York?",
-    OnStepFinish: func(step ai.Step) {
+    OnStepEnd: func(ctx context.Context, step types.StepResult, userContext interface{}) {
         // Called after each step
-        fmt.Printf("Step %d:\n", step.StepIndex)
+        fmt.Printf("Step %d:\n", step.StepNumber)
         for _, call := range step.ToolCalls {
-            fmt.Printf("  Tool: %s\n", call.Name)
+            fmt.Printf("  Tool: %s\n", call.ToolName)
             fmt.Printf("  Args: %v\n", call.Arguments)
-            if call.Result != nil {
-                fmt.Printf("  Result: %v\n", call.Result)
-            }
+        }
+        for _, res := range step.ToolResults {
+            fmt.Printf("  Result (%s): %v\n", res.ToolName, res.Result)
         }
     },
 })
@@ -508,7 +510,7 @@ if len(result.Warnings) > 0 {
 Compare results across models:
 
 ```go
-models := []string{"gpt-4", "gpt-4-turbo", "gpt-3.5-turbo"}
+models := []string{"gpt-6-astra", "gpt-6-sol", "gpt-5.4-nano"}
 
 for _, modelID := range models {
     model, _ := provider.LanguageModel(modelID)
@@ -528,7 +530,7 @@ for _, modelID := range models {
 
 ### 1. Be Specific
 
-```go
+```text
 // ❌ Bad: Vague
 "Write about coffee"
 
@@ -617,7 +619,7 @@ temperature := 0.8 // Can cause inconsistent tool usage
 
 ```go
 // Check if prompt fits in context
-maxTokens := 128000 // GPT-4 context limit
+maxTokens := 128000 // example context limit
 promptTokens := len(prompt) / 4 // Rough estimate (1 token ≈ 4 chars)
 
 if promptTokens > maxTokens-2000 {
@@ -650,7 +652,7 @@ if promptTokens > maxTokens-2000 {
 
 ### 3. Assuming Context
 
-```go
+```text
 // ❌ Bad: No context
 "What should I do?"
 
@@ -670,9 +672,10 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 
 // ✅ Good: Set reasonable limits
+maxTokens := 500
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:     model,
-    MaxTokens: 500, // Limit output length
+    MaxTokens: &maxTokens, // Limit output length
     Prompt:    "Write a brief introduction to Go programming",
 })
 ```
@@ -706,11 +709,11 @@ if err != nil {
 ### OpenAI
 
 ```go
-// GPT-4 is better at complex tasks
-model, _ := provider.LanguageModel("gpt-4")
+// A larger model is better at complex tasks
+model, _ := provider.LanguageModel("gpt-6-astra")
 
-// GPT-3.5-turbo is faster and cheaper
-model, _ := provider.LanguageModel("gpt-3.5-turbo")
+// A smaller model is faster and cheaper
+model, _ := provider.LanguageModel("gpt-5.4-nano")
 
 // o1 models use extended thinking
 model, _ := provider.LanguageModel("o1")
@@ -734,7 +737,7 @@ system := `You are Claude, an AI assistant created by Anthropic.`
 model, _ := provider.LanguageModel("gemini-2.0-flash")
 
 // Long context windows (up to 1M tokens)
-model, _ := provider.LanguageModel("gemini-1.5-pro")
+model, _ := provider.LanguageModel("gemini-2.5-pro")
 ```
 
 ## Resources

@@ -3,9 +3,23 @@
 Guidance for AI coding agents working in this repository. People should start
 with [CONTRIBUTING.md](./CONTRIBUTING.md); the rules below apply to both.
 
-**Using the SDK rather than changing it?** Read the docs as markdown instead:
-<https://goaisdk.com/llms.txt> is an index of every page, and
-any docs URL with `.md` appended returns that page as markdown.
+## Using the SDK
+
+If you are writing an application with the SDK rather than changing it, do not
+use the rest of this file. Instead:
+
+- Read <https://goaisdk.com/agents.md>: module path, the six most common calls
+  and the usual mistakes.
+- Find pages in <https://goaisdk.com/llms.txt> (start with "Start here") or
+  <https://goaisdk.com/sitemap.md>. Any docs URL with `.md` appended returns
+  that page as markdown.
+- Install the agent skill in [`skills/go-ai/SKILL.md`](./skills/go-ai/SKILL.md),
+  or run the docs MCP server in [`cmd/goai-docs-mcp`](./cmd/goai-docs-mcp)
+  (`go install github.com/digitallysavvy/go-ai/cmd/goai-docs-mcp@latest`).
+  The guide at `docs/02-getting-started/04-using-go-ai-with-coding-agents.mdx`
+  has a snippet to paste into your own AGENTS.md or CLAUDE.md.
+- Reference app (useChat frontend, Go backend, approval-gated tool, coding-agent
+  harness): <https://github.com/digitallysavvy/go-ai-demo>.
 
 ## What this is
 
@@ -29,6 +43,8 @@ differently from TypeScript is a bug.
 | `pkg/harness`, `pkg/codemode` | Coding-agent harnesses and the sandboxed code-mode runtime |
 | `examples/` | Runnable examples (some are separate Go modules) |
 | `docs/` | Documentation source, published by `website/` (Docusaurus) |
+| `cmd/goai-docs-mcp` | MCP server that searches and reads the docs for coding agents |
+| `skills/go-ai` | Agent skill for people using the SDK |
 
 ## Commands
 

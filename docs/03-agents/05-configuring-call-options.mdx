@@ -53,7 +53,7 @@ func newSupportAgent(ctx UserContext) *agent.ToolLoopAgent {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     systemPrompt := fmt.Sprintf(`You are a helpful customer support agent.
 
@@ -127,10 +127,10 @@ func newAdaptiveAgent(complexity QueryComplexity) (*agent.ToolLoopAgent, error) 
     var err error
 
     if complexity == ComplexitySimple {
-        model, err = openaiProvider.LanguageModel("gpt-4o-mini")
+        model, err = openaiProvider.LanguageModel("gpt-5.4-mini")
         fmt.Println("Using fast model for simple query")
     } else {
-        model, err = openaiProvider.LanguageModel("o1-mini")
+        model, err = openaiProvider.LanguageModel("gpt-6-astra")
         fmt.Println("Using powerful model for complex query")
     }
     if err != nil {
@@ -192,7 +192,7 @@ func newNewsAgent(userLocation Location) *agent.ToolLoopAgent {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     // Create tool with user location captured in closure
     searchTool := types.Tool{
@@ -274,7 +274,7 @@ func newConfigurableAgent(config GenerationConfig) *agent.ToolLoopAgent {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     return agent.NewToolLoopAgent(agent.AgentConfig{
         Model:       model,
@@ -483,9 +483,9 @@ func newConfiguredAgent(config RequestConfig) *agent.ToolLoopAgent {
     // Select model based on urgency
     var model provider.LanguageModel
     if config.Urgency == "high" {
-        model, _ = openaiProvider.LanguageModel("gpt-4") // More capable model
+        model, _ = openaiProvider.LanguageModel("gpt-6-astra") // More capable model
     } else {
-        model, _ = openaiProvider.LanguageModel("gpt-4o-mini") // Faster, cheaper model
+        model, _ = openaiProvider.LanguageModel("gpt-5.4-mini") // Faster, cheaper model
     }
 
     // Configure tools based on user role
@@ -564,7 +564,7 @@ func newSessionAgent(session SessionContext) *agent.ToolLoopAgent {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     // Build personalized system prompt
     systemPrompt := fmt.Sprintf(`You are a helpful assistant.
@@ -779,7 +779,7 @@ func newSupportAgentFromRequest(req ChatRequest) *agent.ToolLoopAgent {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     systemPrompt := fmt.Sprintf(`You are a customer support agent.
 
@@ -815,7 +815,7 @@ func newAgentWithContext(ctx RequestContext) *agent.ToolLoopAgent {
 }
 
 // Bad - Inline configuration everywhere
-myAgent := agent.NewToolLoopAgent(agent.AgentConfig{...})
+myAgent := agent.NewToolLoopAgent(agent.AgentConfig{Model: model})
 ```
 
 ### 2. Validate Configuration
@@ -833,7 +833,7 @@ func newValidatedAgent(config Config) (*agent.ToolLoopAgent, error) {
     }
 
     // Create agent with validated config
-    return agent.NewToolLoopAgent(agent.AgentConfig{...}), nil
+    return agent.NewToolLoopAgent(agent.AgentConfig{Model: model}), nil
 }
 ```
 

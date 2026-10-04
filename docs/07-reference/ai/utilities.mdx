@@ -1,0 +1,291 @@
+---
+title: Utilities
+description: "Reference for Go AI SDK utility types and functions: message pruning, timeouts, stream adapters, partial output parsing, evaluation, realtime sessions, sandboxes and warnings."
+---
+
+# Utilities
+
+Smaller exported types and functions in `pkg/ai` that the other reference pages do not cover.
+
+## Message pruning
+
+Prune a conversation to fit a token budget.
+
+```go
+func PruneMessages(ctx context.Context, messages []types.Message, opts PruneOptions) ([]types.Message, error)
+func PruneToFitContext(ctx context.Context, messages []types.Message, contextWindow int, reserveTokens int) ([]types.Message, error)
+func DefaultMessagePrune(ctx context.Context, messages []types.Message, maxTokens int) ([]types.Message, error)
+func DefaultPruneOptions(maxTokens int) PruneOptions
+```
+
+`ai.MessagePruneFunc` is the function type of `DefaultMessagePrune`: `func(ctx context.Context, messages []types.Message, maxTokens int) ([]types.Message, error)`. `DefaultMessagePrune` keeps the system message and the last messages and drops older ones.
+
+{/* gen:fields ai.PruneOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `MaxTokens` | `int` | MaxTokens is the maximum number of tokens allowed |
+| `PreserveSystemMessage` | `bool` | PreserveSystemMessage keeps the system message even if pruning is needed |
+| `PreserveLastN` | `int` | PreserveLastN keeps the last N messages |
+| `PruneFunc` | `MessagePruneFunc` | PruneFunc is the custom pruning function |
+
+{/* /gen:fields */}
+
+## Timeouts
+
+`ai.TimeoutConfig` sets total, per-step and per-chunk timeouts on `GenerateTextOptions` and `StreamTextOptions`. `ai.NewTimeoutConfig(total, perStep, perChunk *time.Duration)` builds one. Pass nil for a timeout you do not want.
+
+`ai.TimeoutReason` names the boundary that aborted an operation.
+
+{/* gen:consts ai.TimeoutReason */}
+
+| Constant | Value | Description |
+| --- | --- | --- |
+| `TimeoutReasonTotal` | `"total"` |  |
+| `TimeoutReasonStep` | `"step"` |  |
+| `TimeoutReasonChunk` | `"chunk"` |  |
+| `TimeoutReasonFirstChunk` | `"firstChunk"` |  |
+| `TimeoutReasonTool` | `"tool"` |  |
+
+{/* /gen:consts */}
+
+## Stream status
+
+`ai.StreamStatus` reports the state of a stream for UI code.
+
+{/* gen:consts ai.StreamStatus */}
+
+| Constant | Value | Description |
+| --- | --- | --- |
+| `StreamStatusSubmitted` | `"submitted"` | StreamStatusSubmitted indicates the request has been submitted and the stream is actively receiving data from the model. |
+| `StreamStatusStreaming` | `"streaming"` | StreamStatusStreaming indicates at least one chunk has been received. |
+| `StreamStatusDone` | `"done"` | StreamStatusDone indicates the stream has completed successfully. |
+
+{/* /gen:consts */}
+
+## Building stream results
+
+### NewStreamTextResultFromParts
+
+```go
+func NewStreamTextResultFromParts(ctx context.Context, src provider.TextStream, opts ExternalStreamOptions) *StreamTextResult
+```
+
+Builds a `*StreamTextResult` from a stream you already have, instead of calling a model. The stream carries every step's chunks in order. Use it to put the SDK's result accessors and UI helpers over a custom source.
+
+{/* gen:fields ai.ExternalStreamOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `CallID` | `string` | CallID correlates this result with the caller's own callback/telemetry events. A new one is generated when empty. |
+| `Provider` | `string` | Provider and ModelID label steps and the response metadata when a chunk does not carry its own provider.ResponseMetadata. |
+| `ModelID` | `string` |  |
+| `OnChunk` | `func(chunk provider.StreamChunk)` | OnChunk is invoked for every chunk as it is consumed from src, mirroring StreamTextOptions.OnChunk. |
+| `OnFinish` | `func(result *StreamTextResult)` | OnFinish/OnEnd are invoked once, after src is fully consumed (whether it ended in success or with an error), mirroring StreamTextOptions' callbacks of the same name. OnEnd takes precedence when both are set. |
+| `OnEnd` | `func(result *StreamTextResult)` |  |
+| `Output` | `interface{}` | Output, when it satisfies the internal outputProcessor interface (any value returned by TextOutput/ObjectOutput/ArrayOutput/ChoiceOutput/ JSONOutput), enables structured-output parsing on the returned result: Output()/OutputErr() resolve once src is fully consumed by parsing the final step's accumulated text, and PartialOutput() updates after every text chunk of that step, deduplicated exactly like StreamTextOptions. Output. A value that does not satisfy outputProcessor is ignored (mirrors StreamTextOptions.Output's `interface{}` + type-assertion contract; see stream.go's own opts.Output handling for the pattern this mirrors). |
+
+{/* /gen:fields */}
+
+### SimulateReadableStream
+
+```go
+func SimulateReadableStream(chunks []provider.StreamChunk, perChunkDelay time.Duration) provider.TextStream
+```
+
+Creates a stream from in-memory chunks, with a delay between chunks. Use it in tests.
+
+### Stream transform emitters
+
+A `StreamTransformFunc` can emit chunks before it returns, which keeps output flowing for transforms that wait.
+
+| Name | Description |
+| --- | --- |
+| `ai.StreamTransformEmitter` | `func(provider.StreamChunk)`. Emits one chunk immediately. |
+| `ai.WithStreamTransformEmitter(ctx, emit)` | Returns a context that carries an emitter. The stream loop installs one around every transform call. |
+| `ai.StreamTransformEmitterFromContext(ctx)` | Returns the emitter and true inside a transform call. Outside one it returns false, and the transform should return its chunks as a batch. |
+
+### ChunkDetector
+
+`ai.ChunkDetector` is one of the values `ai.SmoothStreamOptions.Chunking` accepts, next to `"word"`, `"line"` and a `*regexp.Regexp`. It takes the buffered text and returns the first complete chunk and true, or an empty string and false when the buffer holds no complete chunk. It mirrors the TypeScript `ChunkDetector`.
+
+### Text stream response init
+
+`ai.CreateTextStreamResponseWithInit(ctx, result, init *TextStreamResponseInit)` is `CreateTextStreamResponse` with a custom status, status text and headers.
+
+`ai.PipeTextStreamToWriter(ctx, stream provider.TextStream, w io.Writer) error` writes text deltas from a provider stream to `w` as UTF-8. If a write fails or `ctx` ends first, it closes the stream before it returns, so upstream resources are released.
+
+## Parsing partial output
+
+| Name | Description |
+| --- | --- |
+| `ai.ParsePartialJSON(text string) jsonparser.ParseResult` | Parses JSON that may be incomplete. |
+| `ai.ParsePartialOutputOptions` | Input for an output specification's partial parse: `Text`. |
+| `ai.ParseCompleteOutputOptions` | Input for the final parse: `Text`, `Response`, `Usage` and `FinishReason`. |
+| `ai.GetTextFromDataURL(dataURL string) (string, error)` | Decodes a base64 `text/*` data URL, using its declared charset (UTF-8 by default). |
+
+### Object output modes
+
+{/* gen:consts ai.ObjectOutputMode */}
+
+| Constant | Value | Description |
+| --- | --- | --- |
+| `ObjectModeObject` | `"object"` | ObjectModeObject returns a single object (default) |
+| `ObjectModeArray` | `"array"` | ObjectModeArray returns an array of objects (streaming) |
+| `ObjectModeEnum` | `"enum"` | ObjectModeEnum forces selection from enum values |
+| `ObjectModeNoSchema` | `"no-schema"` | ObjectModeNoSchema returns raw JSON without validation |
+
+{/* /gen:consts */}
+
+### ElementStreamOptions
+
+Options for streaming array elements as they complete.
+
+{/* gen:fields ai.ElementStreamOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ElementSchema` | `schema.Schema` | ElementSchema defines the structure of each array element |
+| `OnElement` | `func(element ElementStreamResult[ELEMENT])` | OnElement is called when a new element is parsed |
+| `OnError` | `func(err error)` | OnError is called when an error occurs during parsing |
+| `OnComplete` | `func()` | OnComplete is called when the stream completes |
+
+{/* /gen:fields */}
+
+{/* gen:fields ai.ElementStreamResult */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Element` | `ELEMENT` | The parsed element |
+| `Index` | `int` | Index of this element in the array |
+| `IsFinal` | `bool` | Whether this is the final element in the array |
+
+{/* /gen:fields */}
+
+## Evaluation
+
+`ai.ExperimentalEvaluate` asks an evaluation model typed questions and returns one typed answer per question. `ai.NewEvaluationLanguageModel` returns an `*ai.EvaluationLanguageModel`, which adapts any language model into an evaluation model by prompting it with a JSON-schema-constrained request. Reasoning defaults to `none` unless you override it with provider options.
+
+{/* gen:fields ai.EvaluationLanguageModelOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Model` | `provider.LanguageModel` |  |
+| `Provider` | `string` | Provider overrides the reported provider ID. Defaults to "&lt;model.Provider()&gt;.evaluation". |
+
+{/* /gen:fields */}
+
+### EvaluateResult
+
+{/* gen:fields ai.EvaluateResult */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Answers` | `map[string]provider.EvaluationAnswer` | Answers has exactly one typed answer per question, keyed by question ID. |
+| `Usage` | `EvaluateUsage` |  |
+| `Warnings` | `[]types.Warning` |  |
+| `Rounding` | `*provider.EvaluationRounding` |  |
+| `ProviderMetadata` | `map[string]interface{}` |  |
+| `Response` | `EvaluateResponse` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields ai.EvaluateUsage */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `InputTokens` | `*int` |  |
+| `OutputTokens` | `*int` |  |
+| `TotalTokens` | `*int` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields ai.EvaluateResponse */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ID` | `string` |  |
+| `Timestamp` | `time.Time` |  |
+| `ModelID` | `string` |  |
+| `Headers` | `map[string]string` |  |
+| `Body` | `interface{}` |  |
+
+{/* /gen:fields */}
+
+## Per-call diagnostics
+
+`GenerateImageResult.Calls` holds one `ai.GenerateImageCall` per provider call. Each step result from text generation carries an `ai.GenerateStepRequest` and an `ai.GenerateStepResponse`.
+
+{/* gen:fields ai.GenerateImageCall */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Images` | `[]types.GeneratedFile` |  |
+| `ProviderMetadata` | `map[string]interface{}` |  |
+| `Response` | `*types.ResponseMetadata` |  |
+| `Warnings` | `[]types.Warning` |  |
+| `Usage` | `types.ImageUsage` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields ai.GenerateStepRequest */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Body` | `interface{}` | Body is the raw request body sent to the provider API (for debugging). |
+
+{/* /gen:fields */}
+
+{/* gen:fields ai.GenerateStepResponse */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ID` | `string` | ID is the provider-assigned response identifier when available. For streaming paths, this may be a generated fallback value. |
+| `Timestamp` | `time.Time` | Timestamp is when the provider started generating the response. Zero value means it was not available. |
+| `ModelID` | `string` | ModelID is the model that handled the request, when available. |
+| `Headers` | `map[string]string` | Headers are the raw HTTP response headers from the provider. |
+| `Messages` | `[]types.Message` | Messages are the response messages generated in this step (assistant message + any tool messages). |
+| `Body` | `interface{}` | Body is the raw response body from the provider (for debugging). |
+
+{/* /gen:fields */}
+
+## Realtime sessions
+
+`ai.ConnectRealtime(ctx, model, opts RealtimeSessionOptions)` opens a `*ai.RealtimeSession` on an experimental realtime model. `Send(ctx, event)` writes a client event. `Read(ctx)` returns the next batch of server events. `Close()` ends the session.
+
+| Name | Description |
+| --- | --- |
+| `ai.RealtimeDialer` | Opens a connection: `Dial(ctx, provider.WebSocketConfig) (RealtimeWebSocketConn, error)`. |
+| `ai.WebSocketRealtimeDialer` | The default dialer, built on `golang.org/x/net/websocket`. The `Origin` field is unused. |
+| `ai.RealtimeWebSocketConn` | A connection with `Send`, `Receive` and `Close`. |
+| `ai.RealtimeBinaryConn` | Optional capability for a connection that can send and receive binary frames (`SendBinary`, `ReceiveFrame`). Without it, every frame is text. |
+| `ai.GetRealtimeToolDefinitions(tools) ([]provider.RealtimeToolDefinition, error)` | Converts tools to realtime tool definitions. |
+| `ai.GetRealtimeToolDefinitionsWithOptions(opts RealtimeToolDefinitionsOptions)` | Same, with a per-tool context. |
+
+{/* gen:fields ai.RealtimeToolDefinitionsOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Tools` | `[]types.Tool` |  |
+| `ToolsContext` | `map[string]interface{}` |  |
+
+{/* /gen:fields */}
+
+## Sandboxes
+
+`ai.ShellSandbox` runs commands through the local shell with context cancellation. `ai.NewShellSandbox(opts ...ShellSandboxOption)` creates one, and `ai.WithShellSandboxDescription(description)` sets its description. The sandbox types `ai.SandboxProcess`, `ai.SandboxProcessResult`, `ai.SandboxReadTextFileOptions` and `ai.SandboxWriteTextFileOptions` re-export the types in `pkg/providerutils`.
+
+## Warnings and telemetry
+
+| Name | Description |
+| --- | --- |
+| `ai.LogWarningsFunction` | `func(options LogWarningsOptions)`. Install one with `ai.SetLogWarnings` to replace the default stderr logger. |
+| `ai.DisableLogWarnings()` | Turns warning logging off. The `AI_SDK_LOG_WARNINGS=false` environment variable does the same. |
+| `ai.TelemetryOptions` | Alias for `telemetry.Options`. |
+
+## URL support checks
+
+| Function | Description |
+| --- | --- |
+| `ai.SupportedURLCheckerForModel(model)` | Returns a `func(mediaType, rawURL string) bool` for a model that exposes `SupportedURLs`. A model without it supports no direct URLs. |
+| `ai.SupportedURLCheckerFromPatterns(patternsByMediaType)` | Compiles a `SupportedURLs`-style map of regular expressions, keyed by media type, into the same checker. |

@@ -81,3 +81,7 @@ CLAUDE.md
 VERIFICATION_PLAN.md
 PROGRESS.md
 /logging
+
+# Generated at build time from CHANGELOG.md by website/scripts/sync-changelog.mjs
+docs/12-changelog/
+.docsnippets-*/

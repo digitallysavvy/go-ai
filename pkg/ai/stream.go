@@ -2239,7 +2239,6 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		for _, tr := range stepToolResults {
 			if tr.ApprovalStatus == types.ToolApprovalStatusUserApproval {
 				hasUserApproval = true
-				r.finishReason = types.FinishReasonUserApproval
 				break
 			}
 		}

@@ -57,7 +57,7 @@ import (
 )
 
 // Resolve model from registry
-model, err := registry.ResolveLanguageModel("openai:gpt-4")
+model, err := registry.ResolveLanguageModel("openai:gpt-6-astra")
 if err != nil {
     log.Fatal(err)
 }
@@ -102,8 +102,8 @@ func init() {
     registry.RegisterAlias("opus", "anthropic:claude-opus-4-5")
     registry.RegisterAlias("sonnet", "anthropic:claude-sonnet-4-5")
     registry.RegisterAlias("haiku", "anthropic:claude-haiku-4-5")
-    registry.RegisterAlias("gpt-4", "openai:gpt-4")
-    registry.RegisterAlias("gpt-4-turbo", "openai:gpt-4-turbo-preview")
+    registry.RegisterAlias("gpt-6-astra", "openai:gpt-6-astra")
+    registry.RegisterAlias("gpt-6-sol", "openai:gpt-6-sol")
 }
 
 // Use aliases
@@ -126,7 +126,7 @@ myRegistry.RegisterProvider("openai", openai.New(openai.Config{
 }))
 
 // Use custom registry
-model, err := myRegistry.ResolveLanguageModel("openai:gpt-4")
+model, err := myRegistry.ResolveLanguageModel("openai:gpt-6-astra")
 ```
 
 ### Registry Options
@@ -145,7 +145,7 @@ myRegistry := registry.NewRegistry(
     registry.WithImageModelMiddleware(imageLoggingMiddleware),
 )
 
-model, err := myRegistry.ResolveLanguageModel("openai/gpt-4") // custom separator
+model, err := myRegistry.ResolveLanguageModel("openai/gpt-6-astra") // custom separator
 ```
 
 ### NoSuchModelError
@@ -156,7 +156,7 @@ provider or model) returns a typed error from `pkg/provider/errors`:
 ```go
 import providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 
-model, err := registry.ResolveLanguageModel("gpt-4") // missing "provider:" prefix
+model, err := registry.ResolveLanguageModel("gpt-6-astra") // missing "provider:" prefix
 if err != nil {
     var noSuchModel *providererrors.NoSuchModelError
     if errors.As(err, &noSuchModel) {
@@ -185,7 +185,7 @@ func setupCustomProviders() {
     })
 
     // Create a base model
-    baseModel, _ := openaiProvider.LanguageModel("gpt-4")
+    baseModel, _ := openaiProvider.LanguageModel("gpt-6-astra")
 
     // Wrap with default settings
     temperature := 0.7
@@ -286,7 +286,7 @@ func init() {
 
 Usage:
 
-```go
+```go skip-compile
 import "myapp/models"
 
 // Use pre-configured models
@@ -329,7 +329,7 @@ func NewLimitedProvider() *LimitedProvider {
     models := make(map[string]provider.LanguageModel)
 
     textMedium, _ := anthropicProvider.LanguageModel("claude-sonnet-4-5")
-    textSmall, _ := openaiProvider.LanguageModel("gpt-4-turbo")
+    textSmall, _ := openaiProvider.LanguageModel("gpt-6-sol")
 
     models["text-medium"] = textMedium
     models["text-small"] = textSmall
@@ -386,8 +386,6 @@ package config
 import (
     "os"
 
-    "github.com/digitallysavvy/go-ai/pkg/middleware"
-    "github.com/digitallysavvy/go-ai/pkg/provider"
     "github.com/digitallysavvy/go-ai/pkg/providers/openai"
     "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
     "github.com/digitallysavvy/go-ai/pkg/providers/google"
@@ -421,8 +419,8 @@ func setupAliases() {
     registry.RegisterAlias("balanced", "anthropic:claude-sonnet-4-5")
     registry.RegisterAlias("powerful", "anthropic:claude-opus-4-5")
 
-    registry.RegisterAlias("gpt-4", "openai:gpt-4")
-    registry.RegisterAlias("gpt-4-turbo", "openai:gpt-4-turbo-preview")
+    registry.RegisterAlias("gpt-6-astra", "openai:gpt-6-astra")
+    registry.RegisterAlias("gpt-6-sol", "openai:gpt-6-sol")
 
     registry.RegisterAlias("gemini", "google:gemini-2.0-flash")
 }
@@ -554,12 +552,12 @@ func main() {
     fmt.Println("Creative:", result2.Text)
 
     // Use direct provider:model syntax
-    model3, _ := registry.ResolveLanguageModel("openai:gpt-4")
+    model3, _ := registry.ResolveLanguageModel("openai:gpt-6-astra")
     result3, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
         Model:  model3,
         Prompt: "Explain photosynthesis",
     })
-    fmt.Println("GPT-4:", result3.Text)
+    fmt.Println("GPT:", result3.Text)
 }
 ```
 
@@ -598,7 +596,7 @@ if err != nil {
     log.Fatal(err)
 }
 
-model, _ := provider.LanguageModel("gpt-4")
+model, _ := provider.LanguageModel("gpt-6-astra")
 ```
 
 ## Best Practices
@@ -634,7 +632,7 @@ Use meaningful names that reflect the model's purpose:
 ```go
 // Good: Semantic aliases
 registry.RegisterAlias("writing-assistant", "anthropic:claude-sonnet-4-5")
-registry.RegisterAlias("code-reviewer", "openai:gpt-4")
+registry.RegisterAlias("code-reviewer", "openai:gpt-6-astra")
 registry.RegisterAlias("quick-qa", "anthropic:claude-haiku-4-5")
 
 // Bad: Technical aliases
@@ -654,8 +652,8 @@ Create documentation for your team about available models:
 // default         - Claude Sonnet 4.5 (balanced performance)
 // fast            - Claude Haiku 4.5 (quick responses)
 // smart           - Claude Opus 4.5 (complex reasoning)
-// writing         - GPT-4 optimized for writing
-// code            - GPT-4 optimized for code generation
+// writing         - larger model, tuned for writing
+// code            - larger model, tuned for code generation
 ```
 
 ### 5. Handle Errors Gracefully
@@ -682,10 +680,13 @@ const (
     DefaultModel    = "anthropic:claude-sonnet-4-5"
     FastModel       = "anthropic:claude-haiku-4-5"
     PowerfulModel   = "anthropic:claude-opus-4-5"
-    CodeModel       = "openai:gpt-4"
+    CodeModel       = "openai:gpt-6-astra"
 )
+```
 
-// Usage
+Then resolve a model by its constant:
+
+```go
 model, _ := registry.ResolveLanguageModel(models.DefaultModel)
 ```
 

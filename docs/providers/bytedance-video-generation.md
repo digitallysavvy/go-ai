@@ -1,11 +1,11 @@
 ---
 title: "ByteDance Video Generation"
-description: "Guide to text-to-video and image-to-video generation with the ByteDance Volcengine provider in the Go-AI SDK, covering start/end frames and resolution."
+description: "Guide to text-to-video and image-to-video generation with the ByteDance Volcengine provider in the Go AI SDK, covering start/end frames and resolution."
 ---
 
 # ByteDance Video Generation
 
-This guide covers video generation using the ByteDance (Volcengine) provider in the Go-AI SDK.
+This guide covers video generation using the ByteDance (Volcengine) provider in the Go AI SDK.
 
 ## Overview
 
@@ -232,4 +232,4 @@ func main() {
 
 - [ByteDance Ark Platform](https://ark.volces.com)
 - [Provider package documentation](https://github.com/digitallysavvy/go-ai/blob/main/pkg/providers/bytedance/README.md)
-- [Example: text-to-video](../../examples/providers/bytedance/01-text-to-video.go)
+- [Example: text-to-video](https://github.com/digitallysavvy/go-ai/blob/main/examples/providers/bytedance/01-text-to-video.go)

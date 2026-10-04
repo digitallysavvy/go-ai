@@ -134,6 +134,8 @@ Options passed to tool execution.
 package main
 
 import (
+    "fmt"
+
     "github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -146,6 +148,7 @@ func main() {
             "units":    "celsius",
         },
     }
+    fmt.Println(toolCall.ToolName)
 }
 ```
 

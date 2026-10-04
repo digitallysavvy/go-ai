@@ -1,0 +1,152 @@
+---
+title: Tool approval helpers
+description: "Reference for the Go AI SDK tool approval functions: signing, verification, collecting, validating and resuming approvals, with their option and result types and errors."
+---
+
+# Tool approval helpers
+
+A tool with `ToolApproval` set pauses the run and sends a `tool-approval-request` chunk. The client answers, and the next request carries the response. These helpers sign requests, verify responses and resume the run. `GenerateText`, `StreamText` and `ToolLoopAgent` call them for you. Call them directly when you write your own generation loop.
+
+For the chunk shapes, see [UI message chunks](./ui-message-chunks.mdx). For the tool field, see [Tool](./tool.mdx).
+
+## Signing
+
+Set `ExperimentalToolApprovalSecret` on `ai.GenerateTextOptions`, `ai.StreamTextOptions` or `agent.AgentConfig` to turn signing on. The SDK signs each approval request with HMAC-SHA256 over the approval ID, tool call ID, tool name and a digest of the tool input. On resume, it recomputes the signature for each approved call. A call with a missing or wrong signature is rejected with `*ai.InvalidToolApprovalSignatureError`. The signature format matches the TypeScript SDK, so a request signed by one SDK verifies in the other.
+
+```go
+func SignToolApproval(secret []byte, approvalID, toolCallID, toolName string, input interface{}) (string, error)
+func VerifyToolApprovalSignature(secret []byte, signature, approvalID, toolCallID, toolName string, input interface{}) (bool, error)
+```
+
+`SignToolApproval` returns a base64url string. `VerifyToolApprovalSignature` also accepts the legacy newline-joined payload, but only when none of the IDs or the tool name contain a newline.
+
+## Status values
+
+`ai.ToolApprovalStatus` is the result of an approval policy. The constants alias the values in `types`.
+
+| Constant | Meaning |
+| --- | --- |
+| `ai.ToolApprovalStatusNotApplicable` | No policy applies. The tool runs. |
+| `ai.ToolApprovalStatusApproved` | The policy approved the call. |
+| `ai.ToolApprovalStatusDenied` | The policy denied the call. |
+| `ai.ToolApprovalStatusUserApproval` | The user must decide. |
+
+`ai.ToolApprovalConfig` configures automatic approval on options structs.
+
+## CollectToolApprovals
+
+```go
+func CollectToolApprovals(messages []types.Message) (CollectToolApprovalsResult, error)
+```
+
+Reads the approval responses from the last message when it is a tool message. Approved responses whose tool call already has a result are skipped. Denied responses are skipped only when the existing result is not an execution-denied output, so a client denial can replace an earlier synthetic one. It returns `*ai.InvalidToolApprovalError` when a response names an unknown approval ID, and `*ai.ToolCallNotFoundForApprovalError` when a request names a tool call that is not in the history.
+
+{/* gen:fields ai.CollectToolApprovalsResult */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ApprovedToolApprovals` | `[]CollectedToolApproval` |  |
+| `DeniedToolApprovals` | `[]CollectedToolApproval` |  |
+
+{/* /gen:fields */}
+
+### CollectedToolApproval
+
+{/* gen:fields ai.CollectedToolApproval */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ApprovalRequest` | `types.ToolApprovalRequestContent` |  |
+| `ApprovalResponse` | `types.ToolApprovalResponseContent` |  |
+| `ToolCall` | `types.ToolCall` |  |
+| `ExistingToolResult` | `*types.ToolResultContent` | ExistingToolResult is the tool result for the call that is already present in the last tool message, if any. |
+
+{/* /gen:fields */}
+
+## ValidateApprovedToolApprovals
+
+```go
+func ValidateApprovedToolApprovals(ctx context.Context, opts ValidateApprovedToolApprovalsOptions) (ValidateApprovedToolApprovalsResult, error)
+```
+
+Re-validates approved approvals that were rebuilt from client-supplied history, before the tools run. It verifies the signature when `ToolApprovalSecret` is set, validates the input against the tool's current schema and input refinement, and resolves the server-side approval policy again. Approvals whose input no longer validates come back as `InvalidToolApproval` values and are reported to the model as tool errors.
+
+{/* gen:fields ai.ValidateApprovedToolApprovalsOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ApprovedToolApprovals` | `[]CollectedToolApproval` |  |
+| `Tools` | `[]types.Tool` |  |
+| `ToolApproval` | `types.ToolApprovalConfig` |  |
+| `Messages` | `[]types.Message` |  |
+| `ToolsContext` | `map[string]interface{}` |  |
+| `RuntimeContext` | `interface{}` |  |
+| `ToolApprovalSecret` | `[]byte` | ToolApprovalSecret enables HMAC signature verification when non-nil. |
+| `RefineToolInput` | `map[string]ToolInputRefiner` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields ai.ValidateApprovedToolApprovalsResult */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ApprovedToolApprovals` | `[]CollectedToolApproval` |  |
+| `DeniedToolApprovals` | `[]CollectedToolApproval` |  |
+| `InvalidToolApprovals` | `[]InvalidToolApproval` |  |
+
+{/* /gen:fields */}
+
+### InvalidToolApproval
+
+{/* gen:fields ai.InvalidToolApproval */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| (embedded) | `CollectedToolApproval` | Embedded. |
+| `Error` | `*InvalidToolInputError` |  |
+
+{/* /gen:fields */}
+
+## ResumeToolApprovals
+
+```go
+func ResumeToolApprovals(ctx context.Context, opts ResumeToolApprovalsOptions) (ResumeToolApprovalsResult, error)
+```
+
+Applies the approvals at the end of `Messages`: it collects, validates and executes approved tools and records denials. `GenerateText` and `StreamText` run the same logic before the first model call. Use it when you implement your own loop.
+
+{/* gen:fields ai.ResumeToolApprovalsOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Messages` | `[]types.Message` | Messages is the input history to scan for a trailing tool-approval-response message. |
+| `Tools` | `[]types.Tool` | Tools are the tools available to resolve approved calls against. |
+| `ToolApproval` | `types.ToolApprovalConfig` | ToolApproval configures automatic approval handling. |
+| `ToolsContext` | `map[string]interface{}` | ToolsContext contains per-tool execution context keyed by tool name. |
+| `RuntimeContext` | `interface{}` | RuntimeContext is user-defined context passed to callbacks and tools. |
+| `Secret` | `[]byte` | Secret verifies (and, when re-signing, produces) approval signatures. Nil disables signature verification. |
+| `RefineToolInput` | `map[string]ToolInputRefiner` | RefineToolInput refines parsed tool inputs by tool name before re-validation and execution. |
+| `CallID` | `string` | CallID correlates emitted tool execution events with the caller's call. |
+| `ModelProvider` | `string` | ModelProvider and ModelID identify the model for emitted events. |
+| `ModelID` | `string` |  |
+| `OnToolExecutionStart` | `func(ctx context.Context, e OnToolCallStartEvent)` | OnToolExecutionStart/OnToolExecutionEnd are notified around each approved tool's execution. |
+| `OnToolExecutionEnd` | `func(ctx context.Context, e OnToolCallFinishEvent)` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields ai.ResumeToolApprovalsResult */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ResponseMessages` | `[]types.Message` | ResponseMessages is the tool message (if any) produced by resuming approvals: executed results, invalid-input errors, and execution-denied outputs. Empty when the history had no pending or resolved approvals to resume. |
+| `Usage` | `types.Usage` | Usage is the token usage consumed by any tools that ran. |
+
+{/* /gen:fields */}
+
+## Errors
+
+| Type | Test function | Returned when |
+| --- | --- | --- |
+| `*ai.InvalidToolApprovalError` | `ai.IsInvalidToolApprovalError(err)` | A response references an approval ID with no matching request. |
+| `*ai.ToolCallNotFoundForApprovalError` | `ai.IsToolCallNotFoundForApprovalError(err)` | A request references a tool call that is not in the history. |
+| `*ai.InvalidToolApprovalSignatureError` | `ai.IsInvalidToolApprovalSignatureError(err)` | The signature is missing or does not match. |

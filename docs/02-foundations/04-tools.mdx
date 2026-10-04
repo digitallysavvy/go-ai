@@ -52,7 +52,7 @@ func main() {
     ctx := context.Background()
 
     provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     weatherTool := types.Tool{
         Name:        "get_weather",
@@ -237,7 +237,7 @@ func main() {
     ctx := context.Background()
 
     provider := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")})
-    model, _ := provider.LanguageModel("claude-3-5-sonnet-20241022")
+    model, _ := provider.LanguageModel("claude-sonnet-5-5")
 
     // Calculator tool
     calculatorTool := types.Tool{
@@ -448,7 +448,7 @@ func GetWeatherTool(apiKey string) types.Tool {
 
 ### Using a Tool Package
 
-```go
+```go skip-compile
 import "github.com/yourusername/weathertools"
 
 weatherTool := weathertools.GetWeatherTool(apiKey)

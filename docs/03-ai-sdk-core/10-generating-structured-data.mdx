@@ -50,7 +50,7 @@ func main() {
     ctx := context.Background()
 
     provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
-    model, _ := provider.LanguageModel("gpt-4o")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
         Model:  model,
@@ -257,7 +257,7 @@ func main() {
     ctx := context.Background()
 
     provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     // Define JSON Schema
     recipeSchema := map[string]interface{}{

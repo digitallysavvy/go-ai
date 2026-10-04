@@ -1,6 +1,6 @@
 ---
 title: Go AI SDK
-description: The Go AI SDK is a powerful toolkit for building AI applications and agents with Go, featuring support for 26+ providers.
+description: The Go AI SDK is a powerful toolkit for building AI applications and agents with Go, featuring support for 49 providers.
 ---
 
 # Go AI SDK
@@ -11,7 +11,7 @@ The Go AI SDK is a comprehensive toolkit designed to help developers build AI-po
 
 Integrating large language models (LLMs) into applications is complicated and heavily dependent on the specific model provider you use.
 
-The Go AI SDK standardizes integrating artificial intelligence (AI) models across [26+ supported providers](/docs/providers). This enables developers to focus on building great AI applications, not waste time on technical details.
+The Go AI SDK standardizes integrating artificial intelligence (AI) models across [49 supported providers](/docs/providers). This enables developers to focus on building great AI applications, not waste time on technical details.
 
 For example, here's how you can generate text with various models using the Go AI SDK:
 
@@ -37,7 +37,7 @@ func main() {
     openaiProvider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    openaiModel, _ := openaiProvider.LanguageModel("gpt-4")
+    openaiModel, _ := openaiProvider.LanguageModel("gpt-6-astra")
 
     // Use Anthropic
     anthropicProvider := anthropic.New(anthropic.Config{
@@ -64,7 +64,7 @@ func main() {
 
 The Go AI SDK provides:
 
-- **Unified API**: Work with 26+ AI providers through a consistent interface
+- **Unified API**: Work with 49 AI providers through a consistent interface
 - **Type Safety**: Leverage Go's strong typing for safer AI applications
 - **Concurrency**: Built on Go's goroutines, channels, and contexts for efficient streaming
 - **Production Ready**: Comprehensive error handling, testing utilities, and telemetry
@@ -161,10 +161,10 @@ result, err := myAgent.Execute(ctx, "Help me plan a trip to Japan")
 
 ## Model Providers
 
-The Go AI SDK supports 26+ model providers including:
+The Go AI SDK supports 49 model providers including:
 
-- **OpenAI** - GPT-4, GPT-4 Turbo, GPT-3.5
-- **Anthropic** - Claude 3.5 Sonnet, Claude 3 Opus/Sonnet/Haiku
+- **OpenAI** - GPT-6, GPT-5, o-series
+- **Anthropic** - Claude Opus, Sonnet, Haiku and Fable
 - **Google** - Gemini Pro, Gemini Flash
 - **Mistral** - Mistral Large, Medium, Small
 - **Cohere** - Command R+, Command R
@@ -231,6 +231,12 @@ Ready to start building? Choose your path:
 - **[Foundations](/docs/foundations)** - Learn core concepts
 - **[AI SDK Core](/docs/ai-sdk-core)** - Explore the complete API
 - **[Agents](/docs/agents)** - Build autonomous agents
+- **[Build a chat app](/docs/build-a-chat-app)** - A `useChat` frontend on a Go backend, with tool approval and coding agents
+- **[Recipes](/docs/recipes)** - Short, complete programs for common tasks
+
+### Reference app
+
+[Shipyard](https://github.com/digitallysavvy/go-ai-demo) is a Next.js chat UI backed by a Go server built with the Go AI SDK. It shows the stock `useChat` hook, an approval-gated tool and Claude Code or Codex running through the harness. Three guides walk through its code: [serve a useChat frontend from Go](/docs/build-a-chat-app/serve-usechat-from-go), [tool approval end to end](/docs/build-a-chat-app/tool-approval) and [coding agents with the harness](/docs/build-a-chat-app/coding-agents-harness).
 
 ## Installation
 

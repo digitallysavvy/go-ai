@@ -19,7 +19,7 @@ The AI Gateway provider enables you to access multiple AI providers through a un
 
 ## Installation
 
-The Gateway provider is included in the core Go-AI SDK:
+The Gateway provider is included in the core Go AI SDK:
 
 ```bash
 go get github.com/digitallysavvy/go-ai
@@ -41,6 +41,9 @@ export AI_GATEWAY_API_KEY="your-api-key-here"
 package main
 
 import (
+    "log"
+    "os"
+
     "github.com/digitallysavvy/go-ai/pkg/providers/gateway"
 )
 
@@ -52,6 +55,7 @@ func main() {
     if err != nil {
         log.Fatal(err)
     }
+    _ = provider
 }
 ```
 
@@ -354,7 +358,7 @@ ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 defer cancel()
 
 options.Model = videoModel
-result, err := ai.GenerateVideo(ctx, options)
+videoResult, err := ai.GenerateVideo(ctx, options)
 ```
 
 ### Detecting Timeout Errors

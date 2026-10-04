@@ -1,0 +1,320 @@
+---
+title: Harness sandboxes
+description: "Reference for harness sandbox configuration, the SandboxProvider interface, bootstrap recipes and templates, network policy, request transformations and the local and Vercel providers."
+---
+
+# Harness sandboxes
+
+A harness runtime runs inside a sandbox. A sandbox provider creates a network sandbox session, which gives the runtime file I/O, process execution, exposed ports and a network policy. This page covers the sandbox types in `pkg/harness`, bootstrap and templates, and the two built-in providers.
+
+The agent API is in [Harness agent](./agent.mdx).
+
+## SandboxConfig
+
+`AgentSettings.SandboxConfig` configures the working directory and lifecycle hooks. Its type is `harness.AgentSandboxConfig`, an alias of `harness.SandboxConfig`.
+
+{/* gen:fields harness.SandboxConfig */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `WorkDir` | `string` | WorkDir is an optional fixed working directory for all sessions, relative to the sandbox default working directory. |
+| `BootstrapHash` | `string` | BootstrapHash is the caller-controlled identity for OnBootstrap. |
+| `OnBootstrap` | `func(ctx context.Context, bc SandboxBootstrapContext) error` | OnBootstrap runs during sandbox template creation after the adapter's own bootstrap, before snapshot-capable providers publish a snapshot (a83a367). Must be provided together with BootstrapHash. |
+| `OnSession` | `func(ctx context.Context, sc SandboxSessionContext) error` | OnSession runs after each sandbox session is acquired and the session work directory exists, before the adapter starts. |
+
+{/* /gen:fields */}
+
+`OnBootstrap` runs once per sandbox template, after the adapter's own bootstrap and before a snapshot-capable provider takes a snapshot. `BootstrapHash` identifies that work, so changing it invalidates the snapshot. Set the two together. `OnSession` runs for every session, after the session work directory exists and before the adapter starts.
+
+{/* gen:fields harness.SandboxBootstrapContext */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Session` | `providerutils.SandboxSession` |  |
+| `WorkDir` | `string` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields harness.SandboxSessionContext */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Session` | `providerutils.SandboxSession` |  |
+| `SessionWorkDir` | `string` |  |
+
+{/* /gen:fields */}
+
+`harness.ValidateSandboxBootstrapSettings(cfg SandboxConfig) error` checks that `OnBootstrap` and `BootstrapHash` are set together.
+
+## SandboxProvider
+
+```go
+type SandboxProvider interface {
+	SpecificationVersion() string // "harness-sandbox-v1"
+	ProviderID() string
+	CreateSession(ctx context.Context, opts CreateSandboxSessionOptions) (NetworkSandboxSession, error)
+}
+```
+
+A provider returns `*harness.SandboxAuthenticationError` when credentials are missing or invalid. A provider that can reattach by ID also implements `harness.SandboxSessionResumer` (`ResumeSession(ctx, sessionID) (NetworkSandboxSession, error)`). `harness.SandboxSpecificationVersion` is the specification version.
+
+{/* gen:fields harness.CreateSandboxSessionOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `SessionID` | `string` | SessionID names the underlying resource deterministically so a future ResumeSession can find it. Empty for prewarm paths. |
+| `Identity` | `string` | Identity is the stable identity for snapshot-based reuse. |
+| `OnFirstCreate` | `OnFirstCreateFunc` | OnFirstCreate is called exactly once per identity, on fresh creation. |
+
+{/* /gen:fields */}
+
+`harness.OnFirstCreateFunc` runs once per identity on fresh sandbox creation. It lets a snapshot-capable provider run the template's prepare step before it snapshots.
+
+## NetworkSandboxSession
+
+`harness.NetworkSandboxSession` extends `providerutils.SandboxSession` (file I/O, exec and spawn) with the infrastructure surface.
+
+| Method | Description |
+| --- | --- |
+| `ID() string` | Stable ID of the underlying sandbox resource. |
+| `DefaultWorkingDirectory() string` | Absolute path that relative commands resolve against. |
+| `Ports() []int` | Ports the sandbox exposes. |
+| `GetPortEndpoint(ctx, PortEndpointOptions) (PortEndpoint, error)` | Connection details for an exposed port. |
+| `GetPortURL(ctx, PortEndpointOptions) (string, error)` | Deprecated. Use `GetPortEndpoint`. |
+| `Stop(ctx) error` | Stops the sandbox. Idempotent. |
+| `Destroy(ctx) error` | Stops the sandbox, then cleans up. Works on running and stopped sandboxes. |
+| `Restricted() providerutils.SandboxSession` | A reduced view with file I/O and process APIs only. |
+
+`harness.AsNetworkSandboxSession(s)` returns the network view of a session when it has one. `harness.GetRestrictedSandboxSession(s)` returns the restricted view, or the session itself.
+
+Optional interfaces extend a session. A provider implements the ones it supports.
+
+| Interface | Method |
+| --- | --- |
+| `harness.NetworkPolicySetter` | `SetNetworkPolicy(ctx, NetworkPolicy) error` |
+| `harness.RequestTransformationSetter` | `SetRequestTransformations(ctx, []RequestTransformation) error`. Replaces the full set. |
+| `harness.RequestTransformationAdder` | Adds rules without replacing existing ones. |
+| `harness.PortsSetter` | `SetPorts(ctx, []int) error`. Replaces the set of exposed ports. |
+
+### Ports
+
+{/* gen:fields harness.PortEndpoint */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `URL` | `string` |  |
+| `Headers` | `map[string]string` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields harness.PortEndpointOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Port` | `int` |  |
+| `Protocol` | `PortProtocol` |  |
+
+{/* /gen:fields */}
+
+`harness.PortProtocol` selects the URL scheme: `harness.PortProtocolHTTP`, `harness.PortProtocolHTTPS` or `harness.PortProtocolWS`.
+
+## Network policy
+
+{/* gen:fields harness.NetworkPolicy */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Mode` | `string` |  |
+| `AllowedHosts` | `[]string` |  |
+| `AllowedCIDRs` | `[]string` |  |
+| `DeniedCIDRs` | `[]string` |  |
+
+{/* /gen:fields */}
+
+`Mode` is `harness.NetworkPolicyAllowAll`, `harness.NetworkPolicyDenyAll` or `harness.NetworkPolicyCustom`. A custom policy needs at least one of `AllowedHosts` or `AllowedCIDRs`. `DeniedCIDRs` takes precedence over both.
+
+## Request transformations
+
+A request transformation rewrites an outbound HTTPS request outside the sandbox security boundary. Adapters use them for credential brokering: the sandbox holds a placeholder, and the transformation adds the real credential on the way out, so the credential never enters the sandbox.
+
+{/* gen:fields harness.RequestTransformation */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Match` | `RequestTransformationMatch` |  |
+| `Transform` | `RequestTransformationTransform` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields harness.RequestTransformationMatch */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Host` | `string` |  |
+| `Path` | `*StringMatcher` |  |
+| `Method` | `[]string` |  |
+| `QueryString` | `[]KeyValueMatcher` |  |
+| `Headers` | `[]KeyValueMatcher` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields harness.RequestTransformationTransform */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Headers` | `map[string]string` |  |
+
+{/* /gen:fields */}
+
+`harness.StringMatcher` matches a string exactly, by prefix or by regular expression. `harness.KeyValueMatcher` matches a header or a query parameter. `harness.RequestTransformationSources` holds the inputs adapters use to build credential transformations.
+
+## Bootstrap recipes
+
+An adapter can declare a recipe that installs its runtime in the sandbox. The recipe is a set of files and commands. It runs once per sandbox, and a marker file records completion, so repeated calls are cheap.
+
+| Name | Description |
+| --- | --- |
+| `harness.Bootstrap` | The recipe: `HarnessID`, `BootstrapDir`, `Files` and `Commands`. |
+| `harness.BootstrapFile`, `harness.BootstrapCommand` | One file written, and one command run from the bootstrap directory after all files are written. |
+| `harness.BootstrapProvider` | Interface an adapter implements to declare a recipe. |
+| `harness.GetBootstrap(ctx, h Harness) (*Bootstrap, error)` | Returns the adapter's recipe, or nil. |
+| `harness.BootstrapSchemaVersion` | The version of the recipe shape. |
+| `harness.HashHarnessBootstrap(recipe Bootstrap) string` | A deterministic 16-character hex identity of a recipe. Identical to the TypeScript hash for identical input. |
+| `harness.ApplyBootstrapRecipe(ctx, session, recipe, identity, stateDirectory) error` | Applies a recipe idempotently. |
+| `harness.BootstrapMarkerPath(recipe, identity, stateDirectory) string` | The path of the marker written after a recipe is applied. |
+| `harness.StateDirectoryName`, `harness.StateDirectoryPath(sandboxHomeDir) string` | The fixed directory under the sandbox `HOME` that holds all harness state. |
+| `harness.SessionDataDirectoryPath(stateDirectory, sessionID) string` | The per-session state path under `.agent-runs`. |
+
+### OnBootstrap markers
+
+| Function | Description |
+| --- | --- |
+| `harness.OnBootstrapMarkerPath(ctx, session, bootstrapHash) (string, error)` | The marker path for a caller's `OnBootstrap` hook, keyed by the SHA-256 of the hash. |
+| `harness.HasOnBootstrapMarker(ctx, session, bootstrapHash) (bool, error)` | Reports whether `OnBootstrap` already finished for this hash on this sandbox. |
+| `harness.WriteOnBootstrapMarker(ctx, session, bootstrapHash) error` | Records completion. |
+
+## Templates
+
+A template packages the bootstrap work so a snapshot-capable provider can reuse it.
+
+| Function | Description |
+| --- | --- |
+| `harness.CreateSandboxBootstrapPlan(recipe *Bootstrap, cfg SandboxConfig) (SandboxBootstrapPlan, error)` | Computes the recipe identity and the combined sandbox identity. |
+| `harness.CreateHarnessSandboxTemplate(ctx, CreateHarnessSandboxTemplateOptions) (*HarnessSandboxTemplate, error)` | Builds a template for one or more harnesses. Returns `nil, nil` when there is nothing to prepare. |
+| `harness.PrepareHarnessSandboxTemplate(ctx, PrepareHarnessSandboxTemplateOptions) error` | Prepares a template without running an agent. Idempotent. |
+| `harness.PrepareSandboxForHarness(ctx, PrepareSandboxForHarnessOptions) (*PrepareSandboxForHarnessResult, error)` | Applies recipes to a sandbox you own and returns an identity you can use as a snapshot key. |
+| `harness.RunSandboxBootstrap(ctx, RunSandboxBootstrapOptions) error` | Applies the adapter recipe, then runs `OnBootstrap`. |
+| `harness.PrewarmHarness(ctx, opts)` | Deprecated alias of `PrepareHarnessSandboxTemplate`. |
+
+{/* gen:fields harness.HarnessSandboxTemplate */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Identity` | `string` |  |
+| `Prepare` | `func(ctx context.Context, session providerutils.SandboxSession) error` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields harness.SandboxBootstrapPlan */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Recipe` | `*Bootstrap` |  |
+| `RecipeIdentity` | `string` |  |
+| `Identity` | `string` | Identity is the sandbox identity passed to SandboxProvider.CreateSession. |
+| `WorkDir` | `string` |  |
+| `OnFirstCreate` | `OnFirstCreateFunc` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields harness.CreateHarnessSandboxTemplateOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Harnesses` | `[]Harness` |  |
+| `SandboxConfig` | `*SandboxConfig` | SandboxConfig is optional; OnSession is ignored. |
+
+{/* /gen:fields */}
+
+{/* gen:fields harness.PrepareHarnessSandboxTemplateOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Harness` | `Harness` |  |
+| `SandboxProvider` | `SandboxProvider` |  |
+| `SandboxConfig` | `*SandboxConfig` | SandboxConfig is optional; OnSession is ignored. |
+
+{/* /gen:fields */}
+
+{/* gen:fields harness.PrepareSandboxForHarnessOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Session` | `providerutils.SandboxSession` |  |
+| `Harnesses` | `[]Harness` |  |
+| `SandboxConfig` | `*SandboxConfig` | SandboxConfig is optional; OnSession is ignored. |
+
+{/* /gen:fields */}
+
+{/* gen:fields harness.PrepareSandboxForHarnessResult */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Identity` | `string` | Identity is empty when no recipe was applied and no bootstrapHash set. |
+| `RecipeIdentities` | `map[string]string` |  |
+| `SkippedHarnessIDs` | `[]string` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields harness.RunSandboxBootstrapOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Session` | `providerutils.SandboxSession` |  |
+| `Recipe` | `*Bootstrap` |  |
+| `RecipeIdentity` | `string` |  |
+| `WorkDir` | `string` |  |
+| `OnBootstrap` | `func(ctx context.Context, bc SandboxBootstrapContext) error` |  |
+| `BootstrapHash` | `string` | BootstrapHash is the caller-controlled identity OnBootstrap is keyed by. Required for SkipOnBootstrapIfMarked and for the completion marker this writes after a successful OnBootstrap run. |
+| `SkipOnBootstrapIfMarked` | `bool` | SkipOnBootstrapIfMarked skips OnBootstrap entirely when a marker for BootstrapHash already exists on this sandbox (from a prior call, e.g. a snapshot-provider's OnFirstCreate having already run it). Mirrors TS `runSandboxBootstrap`'s `skipOnBootstrapIfMarked` (31742b9a1b). |
+| `DefaultWorkingDirectory` | `string` | DefaultWorkingDirectory skips the `pwd` lookup when known. |
+
+{/* /gen:fields */}
+
+## Working directory helpers
+
+| Function | Description |
+| --- | --- |
+| `harness.NormalizeSandboxWorkDir(workDir string) (string, error)` | Validates and normalizes a relative work directory. |
+| `harness.ResolveSessionWorkDir(defaultWorkingDirectory, harnessID, sessionID, workDir string) string` | Composes `<default>/<harnessId>-<sessionId>`, or `<default>/<workDir>` when `workDir` is set. |
+| `harness.EncodePathSegment(value string) string` | Encodes a value as one safe path segment. |
+| `harness.EnsureSandboxDirectory(ctx, session, workDir) error` | Runs `mkdir -p` for the directory. |
+| `harness.ResolveSandboxHomeDir(ctx, sandbox) (string, error)` | Resolves the sandbox `HOME`. |
+| `harness.ResolveSandboxDefaultWorkingDirectory(ctx, sandbox) (string, error)` | Returns the default working directory. |
+| `harness.StripWorkDir(...)`, `harness.NewToolInputWorkDirStripper(...)` | Remove the session work directory prefix from path fields of stream parts before they reach the consumer. |
+
+## Local provider
+
+Package `github.com/digitallysavvy/go-ai/pkg/harness/sandbox/local` runs each session in a directory on the host. It has no isolation. Use it for development and tests. `local.ProviderID` is `"local"`.
+
+```go
+func NewProvider(opts Options) *Provider
+```
+
+{/* gen:fields harness/sandbox/local.Options */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `RootDir` | `string` | RootDir holds one directory per session. Defaults to &lt;os.TempDir()&gt;/ai-sdk-harness-local. |
+| `HomeDir` | `string` | HomeDir, when set, is used as HOME for every session (for example the real user home to reuse caches and native subscriptions). When empty, each session gets an isolated HOME under its session directory. |
+| `Shell` | `string` | Shell runs commands. Defaults to /bin/sh. |
+| `Env` | `map[string]string` | Env is added to every command's environment (after the host environment and HOME, before per-command env). |
+| `Ports` | `[]int` | Ports lists the ports reported by Ports(); all localhost ports are reachable regardless. |
+| `Host` | `string` | Host used in port endpoints. Defaults to 127.0.0.1. |
+| `KeepFiles` | `bool` | KeepFiles keeps the session directory on Destroy. |
+
+{/* /gen:fields */}
+
+## Vercel provider
+
+Package `github.com/digitallysavvy/go-ai/pkg/harness/sandbox/vercel` runs sandboxes on Vercel Sandbox, with network policies and template snapshots. See [Harness sandbox: Vercel](../ai/harness-sandbox-vercel.mdx) for the full API.

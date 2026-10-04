@@ -24,7 +24,7 @@ import (
 )
 
 provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
-baseModel, _ := provider.LanguageModel("gpt-4")
+baseModel, _ := provider.LanguageModel("gpt-6-astra")
 
 wrappedModel := middleware.WrapLanguageModel(
     baseModel,
@@ -633,7 +633,7 @@ wrappedProvider := middleware.WrapProvider(
 )
 
 // All models from this provider will have the middleware applied
-model, _ := wrappedProvider.LanguageModel("gpt-4")
+model, _ := wrappedProvider.LanguageModel("gpt-6-astra")
 ```
 
 ## Combining Multiple Middlewares
@@ -712,12 +712,12 @@ Each middleware should have a single responsibility:
 
 ```go
 // Good: Single responsibility
-func LogMiddleware() *middleware.LanguageModelMiddleware { ... }
-func CacheMiddleware() *middleware.LanguageModelMiddleware { ... }
-func MetricsMiddleware() *middleware.LanguageModelMiddleware { ... }
+func LogMiddleware() *middleware.LanguageModelMiddleware { return nil }
+func CacheMiddleware() *middleware.LanguageModelMiddleware { return nil }
+func MetricsMiddleware() *middleware.LanguageModelMiddleware { return nil }
 
 // Bad: Multiple responsibilities
-func LogAndCacheAndMetricsMiddleware() *middleware.LanguageModelMiddleware { ... }
+func LogAndCacheAndMetricsMiddleware() *middleware.LanguageModelMiddleware { return nil }
 ```
 
 ### 2. Handle Errors Gracefully

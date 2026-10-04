@@ -32,7 +32,7 @@ We welcome your contributions to our code and documentation. Here's how you can 
 
 ### Environment Setup
 
-Go AI SDK development requires Go 1.22 or higher.
+Go AI SDK development requires Go 1.26 or higher.
 
 ### Setting Up the Repository Locally
 
@@ -44,7 +44,7 @@ To set up the repository on your local machine, follow these steps:
    git clone https://github.com/digitallysavvy/go-ai.git
    cd go-ai
    ```
-3. **Install Go**: If you haven't already, install Go 1.22 or higher from [golang.org](https://golang.org/dl/).
+3. **Install Go**: If you haven't already, install Go 1.26 or higher from [golang.org](https://golang.org/dl/).
 4. **Install Dependencies**: Run `go mod download` to download all necessary dependencies.
 5. **Verify Setup**: Run `go test ./...` to ensure everything is working correctly.
 

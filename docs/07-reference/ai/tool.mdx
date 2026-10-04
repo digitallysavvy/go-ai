@@ -19,7 +19,7 @@ type Tool struct {
     ToModelOutput      ToModelOutputFunc
     InputExamples      []ToolInputExample
     Strict             *bool
-    NeedsApproval      interface{}
+    ToolApproval       interface{}
     ProviderExecuted   bool
     ProviderOptions    interface{}
     OnInputStart       OnInputStartFunc
@@ -30,22 +30,47 @@ type Tool struct {
 
 ## Fields
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| Name | string | Yes | Unique tool name |
-| Description | string | Yes | What the tool does (helps model decide when to use it) |
-| Title | string | No | Short human-readable title |
-| Parameters | interface{} | Yes | JSON Schema for tool input parameters |
-| Execute | ToolExecutor | Yes | Function that executes the tool |
-| ToModelOutput | ToModelOutputFunc | No | Custom result formatting for model |
-| InputExamples | []ToolInputExample | No | Example inputs to guide the model |
-| Strict | *bool | No | Enable strict schema enforcement |
-| NeedsApproval | interface{} | No | Whether execution requires approval (bool or func) |
-| ProviderExecuted | bool | No | Whether provider executes this tool |
-| ProviderOptions | interface{} | No | Provider-specific options |
-| OnInputStart | OnInputStartFunc | No | Called when input streaming starts |
-| OnInputDelta | OnInputDeltaFunc | No | Called for each input delta |
-| OnInputAvailable | OnInputAvailableFunc | No | Called when input is complete |
+`Name` and `Parameters` are required, and `Execute` is required unless the provider runs the tool. The table is generated from the source and lists every exported field.
+
+{/* gen:fields types.Tool */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Name` | `string` | Name of the tool (must be unique) |
+| `Description` | `string` | Description of what the tool does (helps the model decide when to use it) |
+| `DescriptionFunc` | `func(ctx context.Context, options ToolDescriptionOptions) string` | DescriptionFunc resolves the tool description dynamically at call-prep time using the active per-tool context and sandbox. |
+| `Title` | `string` | Title is a short, human-readable title for the tool (optional) |
+| `Parameters` | `interface{}` | Parameters schema for the tool input |
+| `OutputSchema` | `interface{}` | OutputSchema is the schema for provider-executed tool output. It mirrors TypeScript provider tool outputSchema and is not sent as part of function tool definitions. |
+| `Execute` | `ToolExecutor` | Execute function that runs the tool This is not serialized to JSON |
+| `ToModelOutput` | `ToModelOutputFunc` | ToModelOutput allows custom conversion of tool results to model-readable output This can be used to format results in a specific way for the model If nil, the raw result will be used |
+| `InputExamples` | `[]ToolInputExample` | InputExamples provides example inputs to help guide the LLM These examples can improve the model's ability to use the tool correctly |
+| `Strict` | `*bool` | Strict enables strict schema enforcement for tool parameters. When true, the model must follow the schema exactly. A \*bool (rather than bool) lets callers distinguish "unset" from "explicitly false", so a provider can forward/warn about an explicit strict: false the same way TS does (TS checks `strict != null`), instead of only ever seeing the zero value (hand-off: "Tool.Strict bool -&gt; \*bool"). |
+| `ContextSchema` | `schema.Schema` | ContextSchema optionally validates the tool-specific context passed to the tool execution and approval callbacks. |
+| `ToolApproval` | `interface{}` | ToolApproval indicates whether tool execution requires user approval. Can be a boolean, ToolApprovalStatus string, ToolNeedsApprovalFunc, or deprecated NeedsApprovalFunc. |
+| `NeedsApproval` | `interface{}` | NeedsApproval is a deprecated alias for ToolApproval. Can be a boolean or a function that determines approval based on input. Deprecated: use ToolApproval. |
+| `ProviderExecuted` | `bool` | ProviderExecuted indicates whether this tool is executed by the provider (not locally) When true, the tool is executed by the LLM provider (e.g., Anthropic tool-search, xAI file-search) When false or unset, the tool is executed locally by the client using the Execute function This affects error handling and validation behavior |
+| `SupportsDeferredResults` | `bool` | SupportsDeferredResults indicates that this provider-executed tool may not return its result in the same response that contains the tool call. When true, the step loop continues even if FinishReason is not ToolCalls, waiting for the provider to deliver the result in a later response. Only meaningful when ProviderExecuted is also true. |
+| `ProviderOptions` | `interface{}` | ProviderOptions contains provider-specific options for the tool This allows passing provider-specific configuration without polluting the main Tool struct Example: Anthropic cache_control, OpenAI response_format, etc. The value should be provider-specific types (e.g., anthropic.ToolOptions) |
+| `ProviderMetadata` | `map[string]interface{}` | ProviderMetadata carries provider-specific metadata for the tool and is propagated onto tool calls and results produced for this tool. |
+| `Metadata` | `map[string]interface{}` | Metadata carries tool-specific metadata that is not sent to models and is propagated via ToolCall.ToolMetadata and ToolResult.ToolMetadata. |
+| `Meta` | `map[string]interface{}` | Meta preserves provider/tool-definition metadata fields such as MCP `_meta`. It is exposed for callers that need the raw provider metadata but is not sent to models. |
+| `ProviderName` | `string` | ProviderName identifies the provider that owns a provider-defined tool. |
+| `Type` | `string` | Type is "function" (default), "dynamic", or "provider" for provider-defined native tools. When Type is "provider", ProviderID and ProviderArgs specify the native tool. |
+| `ProviderID` | `string` | ProviderID is the identifier for provider-defined tools. Example: "google.google_search", "google.url_context", "google.code_execution" |
+| `ProviderArgs` | `map[string]interface{}` | ProviderArgs are optional arguments for provider-defined tools. The structure depends on the specific provider tool. |
+| `OnInputStart` | `OnInputStartFunc` | OnInputStart is called when tool input streaming starts |
+| `OnInputDelta` | `OnInputDeltaFunc` | OnInputDelta is called for each delta during tool input streaming |
+| `OnInputAvailable` | `OnInputAvailableFunc` | OnInputAvailable is called when complete tool input is available |
+| `DeferLoading` | `bool` | DeferLoading defers exposing this tool to the model until it is discovered by a toolSearch tool (see ai.ToolSearch). Deferred tools still support direct calls and local callers that announce tools in conversation messages. Discovered tools become available on the next model step. |
+| `ExperimentalToolCaller` | `*ToolCallerDefinition` | ExperimentalToolCaller marks this tool as usable as a tool caller for other tools (TS experimental_toolCaller / ToolCallerTool). Nil means this tool is not a caller. |
+| `IsToolSearch` | `bool` | IsToolSearch marks this tool as the native tool search tool created by ai.ToolSearch(). It mirrors the TypeScript SDK's internal vercel.ai.toolSearch symbol tag and must not be set directly. |
+| `ToolSearchMaxResults` | `int` | ToolSearchMaxResults caps the number of matching tools a toolSearch tool (ai.ToolSearch()) returns per search. Zero means unset, in which case ai.ToolSearch applies its own default (5). Set only by ai.ToolSearch(); must not be set directly. |
+| `ToolSearchRank` | `ToolSearchRankFunc` | ToolSearchRank optionally selects and ranks eligible deferred tools for a toolSearch tool (ai.ToolSearch()) instead of its built-in keyword scoring. Mirrors the TypeScript SDK's toolSearch(\{ search \}) callback. Set only by ai.ToolSearch(); must not be set directly. |
+
+{/* /gen:fields */}
+
+`NeedsApproval` still compiles as a deprecated alias for `ToolApproval`. New code should set `ToolApproval`. Call-level approval policies (`AgentConfig.ToolApproval`, `GenerateTextOptions.ToolApproval`) take precedence and accept a function or a per-tool map.
 
 When a function tool is serialized for provider requests, nil parameters or a
 schema with `properties` but no `type` are normalized to an explicit object
@@ -206,7 +231,7 @@ deleteFileTool := types.Tool{
         },
         "required": []string{"filepath"},
     },
-    NeedsApproval: true, // Require approval before execution
+    ToolApproval: true, // Require approval before execution
     Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
         filepath := input["filepath"].(string)
         // Delete file logic
@@ -230,7 +255,7 @@ sendEmailTool := types.Tool{
         },
         "required": []string{"to", "subject", "body"},
     },
-    NeedsApproval: types.NeedsApprovalFunc(func(ctx context.Context, input map[string]interface{}) bool {
+    ToolApproval: types.ToolNeedsApprovalFunc(func(ctx context.Context, input map[string]interface{}, options types.ToolNeedsApprovalOptions) bool {
         // Only require approval for external emails
         to := input["to"].(string)
         return !strings.HasSuffix(to, "@company.com")

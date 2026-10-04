@@ -1,0 +1,274 @@
+---
+title: Harness adapters
+description: "Reference for the Harness adapter interface, sessions and prompt controls in the Go AI SDK, and for the Claude Code, Codex and other built-in adapters."
+---
+
+# Harness adapters
+
+An adapter wraps one coding-agent runtime. It implements `harness.Harness` and returns a `harness.Session`. `harness.Agent` is the only consumer of that interface, so a test double is a first-class substitute for a real adapter. Application code usually builds an adapter with its constructor and hands it to `harness.NewAgent`. See [Harness agent](./agent.mdx).
+
+## Harness
+
+```go
+type Harness interface {
+	SpecificationVersion() string // always "harness-v1"
+	HarnessID() string
+	BuiltinTools() map[string]BuiltinTool
+	DoStart(ctx context.Context, opts StartOptions) (Session, error)
+}
+```
+
+`harness.SpecificationVersion` is the version string. `BuiltinTools` is keyed by what the runtime reports on tool-call events: the common name when it has one, otherwise the native name.
+
+Optional capabilities are separate interfaces that an adapter may also implement:
+
+| Interface | Purpose |
+| --- | --- |
+| `harness.BootstrapProvider` | Declare a [bootstrap recipe](./sandbox.mdx#bootstrap-recipes). |
+| `harness.BuiltinToolApprovalSupport` | Emit approval requests for built-in tools. |
+| `harness.BuiltinToolFilteringSupport` | Hide inactive built-in tools from the runtime. |
+| `harness.LifecycleStateValidator` | Validate the adapter-defined `data` in lifecycle state. |
+
+### StartOptions
+
+{/* gen:fields harness.StartOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Headers` | `map[string]string` | Headers are additional normalized HTTP headers to send with model requests. |
+| `SessionID` | `string` | SessionID is the stable identifier for this harness session. |
+| `ResumeFrom` | `*ResumeSessionState` | ResumeFrom is the resume payload from a prior lifecycle method. |
+| `ContinueFrom` | `*ContinueTurnState` | ContinueFrom is the continuation payload from DoSuspendTurn, or nested in ResumeFrom. |
+| `PermissionMode` | `PermissionMode` | PermissionMode is the approval policy for built-in adapter-native tools. |
+| `BuiltinToolFiltering` | `*BuiltinToolFiltering` | BuiltinToolFiltering lists adapter-native built-in tools available for this session. |
+| `Observability` | `*Observability` | Observability is diagnostics wiring; nil when diagnostics are disabled. |
+| `SandboxSession` | `providerutils.SandboxSession` | SandboxSession is the sandbox the adapter operates against. It is either a NetworkSandboxSession or a caller-provided plain providerutils.SandboxSession (filesystem + process only). Adapters must not stop or destroy the sandbox themselves. |
+| `SessionWorkDir` | `string` | SessionWorkDir is the absolute path the adapter runs the agent in. |
+
+{/* /gen:fields */}
+
+`StartOptions.SandboxSession` is a `harness.NetworkSandboxSession` or a plain `providerutils.SandboxSession` that you supply. An adapter must not stop or destroy the sandbox itself.
+
+## Session
+
+```go
+type Session interface {
+	SessionID() string
+	IsResume() bool
+	DoPromptTurn(ctx context.Context, opts PromptTurnOptions) (PromptControl, error)
+	DoCompact(ctx context.Context, customInstructions string) error
+	DoContinueTurn(ctx context.Context, opts ContinueTurnOptions) (PromptControl, error)
+	DoSuspendTurn(ctx context.Context) (*ContinueTurnState, error)
+	DoDetach(ctx context.Context) (*ResumeSessionState, error)
+	DoStop(ctx context.Context) (*ResumeSessionState, error)
+	DoDestroy(ctx context.Context) error
+}
+```
+
+An adapter whose runtime cannot compact returns `*harness.CapabilityUnsupportedError` from `DoCompact`. A session may also implement `harness.HistoryReader` (`DoReadHistory(ctx, since string) (*ReadHistoryResult, error)`). `since` is a previous result's cursor, which is opaque to the host. An adapter that cannot reach its runtime's store returns `*harness.HistoryUnavailableError`.
+
+### PromptTurnOptions and ContinueTurnOptions
+
+Both embed `harness.TurnSettings`, the framework-owned settings captured when a turn begins: `Model`, `Skills`, `Instructions` and `Tools`.
+
+{/* gen:fields harness.PromptTurnOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| (embedded) | `TurnSettings` | Embedded. |
+| `Prompt` | `Prompt` | Prompt is the fresh input for this turn. |
+| `ResponseFormat` | `*ResponseFormat` | ResponseFormat requested for this turn. Adapters that cannot honor a JSON response format must return a CapabilityUnsupportedError. |
+| `Emit` | `EmitFunc` | Emit is invoked once for each event the adapter produces. |
+
+{/* /gen:fields */}
+
+{/* gen:fields harness.ContinueTurnOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| (embedded) | `TurnSettings` | Embedded. |
+| `ResponseFormat` | `*ResponseFormat` | ResponseFormat of the in-flight turn. |
+| `Emit` | `EmitFunc` | Emit is invoked once for each event the adapter produces. |
+
+{/* /gen:fields */}
+
+{/* gen:fields harness.TurnSettings */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Model` | `string` |  |
+| `Skills` | `[]Skill` |  |
+| `Instructions` | `string` |  |
+| `Tools` | `[]ToolSpec` |  |
+
+{/* /gen:fields */}
+
+`harness.Prompt` is plain text or one user message. Build one with `harness.TextPrompt(text)`.
+
+{/* gen:fields harness.Prompt */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Text` | `string` |  |
+| `Message` | `*types.Message` |  |
+
+{/* /gen:fields */}
+
+`harness.ResponseFormat` is the response format for a turn. `Type` is `harness.ResponseFormatText` or `harness.ResponseFormatJSON`. Adapters that cannot produce JSON return `*harness.CapabilityUnsupportedError`.
+
+{/* gen:fields harness.ResponseFormat */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Type` | `ResponseFormatType` |  |
+| `Schema` | `map[string]any` |  |
+| `Name` | `string` |  |
+| `Description` | `string` |  |
+
+{/* /gen:fields */}
+
+### Skills
+
+`harness.Skill` is a self-contained instruction bundle the runtime can load. `harness.SkillFile` is an extra file, with a skill-relative POSIX `Path` and its `Content`. `harness.AgentSkill` is the consumer-facing alias.
+
+{/* gen:fields harness.Skill */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Name` | `string` |  |
+| `Description` | `string` |  |
+| `Content` | `string` |  |
+| `Files` | `[]SkillFile` |  |
+
+{/* /gen:fields */}
+
+## PromptControl
+
+`DoPromptTurn` and `DoContinueTurn` return a `harness.PromptControl`, the control surface for the turn.
+
+```go
+type PromptControl interface {
+	SubmitToolResult(ctx context.Context, result ToolResultSubmission) error
+	Done() <-chan struct{} // closed when the turn ends
+	Err() error            // the turn error, after Done is closed
+}
+```
+
+{/* gen:fields harness.ToolResultSubmission */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ToolCallID` | `string` |  |
+| `Output` | `any` |  |
+| `IsError` | `bool` |  |
+| `ToolResult` | `any` | ToolResult optionally carries the full tool-result part (TS `ToolResultPart`) for adapters that forward it verbatim. |
+
+{/* /gen:fields */}
+
+A control can also implement:
+
+| Interface | Method |
+| --- | --- |
+| `harness.ToolApprovalSubmitter` | `SubmitToolApproval(ctx, ToolApprovalSubmission) error` |
+| `harness.UserMessageSubmitter` | Accepts a user message mid-turn, which is what `ExperimentalSteer` uses. |
+| `harness.CheckpointPinner` | `PinCheckpoint() (release func())`. Pins the replay checkpoint so already-delivered bridge events are kept until you call `release`. |
+
+{/* gen:fields harness.ToolApprovalSubmission */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ApprovalID` | `string` |  |
+| `Approved` | `bool` |  |
+| `Reason` | `string` |  |
+
+{/* /gen:fields */}
+
+## Consumer-facing aliases
+
+The consumer-facing `harness.Agent*` names are aliases of the specification types, matching the TypeScript `HarnessAgent*` names.
+
+| Alias | Type |
+| --- | --- |
+| `harness.AgentAdapter` | `harness.Harness` |
+| `harness.AgentAdapterSession` | `harness.Session` |
+| `harness.AgentPrompt` | `harness.Prompt` |
+| `harness.AgentPromptControl` | `harness.PromptControl` |
+| `harness.AgentPromptTurnOptions` | `harness.PromptTurnOptions` |
+| `harness.AgentStartOptions` | `harness.StartOptions` |
+
+## Built-in adapters
+
+Each adapter is its own package under `pkg/harness`. Every adapter has a `HarnessID` and a `CredentialEnvironmentVariables` list, and most have a bootstrap recipe under a `.harness-bootstrap/<id>` directory.
+
+| Package | Constructor | Runtime |
+| --- | --- | --- |
+| `harness/claudecode` | `claudecode.New(Settings) (*Harness, error)` | Claude Code. `HarnessID` is `claude-code`. |
+| `harness/codex` | `codex.New(Settings) *Harness` | OpenAI Codex. `HarnessID` is `codex`. |
+| `harness/opencode` | `opencode.CreateOpenCode(...Settings) (harness.Harness, error)` | OpenCode. |
+| `harness/deepagents` | `deepagents.CreateDeepAgents(...Settings) harness.Harness` | Deep Agents. |
+| `harness/cursor` | `cursor.CreateCursor(...Settings) (harness.Harness, error)` | Cursor, through ACP. |
+| `harness/githubcopilot` | `githubcopilot.CreateGitHubCopilot(...Settings) (harness.Harness, error)` | GitHub Copilot, through ACP. |
+| `harness/grokbuild` | `grokbuild.CreateGrokBuild(...Settings) (harness.Harness, error)` | Grok Build, through ACP. |
+| `harness/acp` | `acp.CreateACP(Settings) (harness.Harness, error)` | Any runtime that speaks the Agent Client Protocol. The Cursor, GitHub Copilot and Grok Build adapters are configurations of it. |
+
+### Claude Code
+
+`claudecode.New` starts the Claude Agent SDK in a bridge process inside the sandbox and talks to it over a port the sandbox exposes.
+
+{/* gen:fields harness/claudecode.Settings */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Auth` | `harness.Authentication` | Auth selects the authentication route: unset (auto-detect), "direct", "ai-gateway", or an isolated environment via harness.AuthEnvironment. |
+| `CredentialForwarding` | `harness.CredentialForwarding` | CredentialForwarding customizes each credential value immediately before it is forwarded into the sandbox. |
+| `MCPServers` | `map[string]any` | MCPServers are additional MCP server definitions, keyed by name, in the Claude Agent SDK's native configuration format. The name "harness-tools" is reserved. |
+| `MaxTurns` | `int` | MaxTurns caps how many internal turns the CLI can take before yielding back to the caller. Zero means the CLI's default. |
+| `AgentProgressSummaries` | `bool` | AgentProgressSummaries enables periodic AI-generated progress summaries for running subagents. The summaries are forwarded in raw `task_progress` stream parts. |
+| `ForwardSubagentText` | `bool` | ForwardSubagentText forwards subagent text and thinking messages in addition to tool activity. Subagent messages are exposed as raw stream parts. |
+| `Env` | `map[string]string` | Env are additional environment variables for the Claude Code process, merged over the resolved authentication environment. |
+| `Thinking` | `*ThinkingConfig` | Thinking controls extended-thinking behavior. Defaults to \{Type: "adaptive", Display: "summarized"\}. |
+| `Effort` | `string` | Effort controls adaptive-thinking effort: "low", "medium", "high", "xhigh" or "max". Empty uses the Claude Agent SDK default. |
+| `Port` | `int` | Port overrides the port the bridge binds inside the sandbox. Defaults to the first port the sandbox exposes. |
+| `PortEndpoint` | `*harness.PortEndpoint` | PortEndpoint overrides the host endpoint used to reach the bridge. Required together with Port for a sandbox that is not a harness.NetworkSandboxSession. |
+| `StartupTimeout` | `time.Duration` | StartupTimeout bounds how long to wait for the bridge to announce its port. Defaults to 120s. |
+| `Reconnect` | `bridge.ReconnectOptions` | Reconnect tunes reconnection after an established bridge connection drops. |
+| `MintBridgeToken` | `harness.MintBridgeTokenCallback` | MintBridgeToken creates the bridge channel token. Defaults to a random 32-byte hex token. Requires the sandbox to expose an ID. |
+
+{/* /gen:fields */}
+
+{/* gen:fields harness/claudecode.ThinkingConfig */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Type` | `string` | Type is "adaptive" (default), "enabled" or "disabled". |
+| `Display` | `string` | Display is "summarized" (default) or "omitted"; ignored when Type is "disabled". |
+
+{/* /gen:fields */}
+
+`claudecode.GetBootstrap(ctx)` returns the bootstrap recipe. `claudecode.BootstrapDir` is `.harness-bootstrap/claude-code`. `claudecode.AuthModeDirect` and its siblings are the resolved authentication modes.
+
+### Codex
+
+{/* gen:fields harness/codex.Settings */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Auth` | `harness.Authentication` | Auth selects the authentication route: unset (auto-detect), "direct", "ai-gateway", or an isolated environment via harness.AuthEnvironment. |
+| `CredentialForwarding` | `harness.CredentialForwarding` | CredentialForwarding customizes each credential value immediately before it is forwarded into the sandbox. |
+| `CodexConfig` | `map[string]any` | CodexConfig is additional configuration passed through to Codex as-is (snake_case config.toml keys). Values managed by this adapter take precedence over conflicting entries. |
+| `MCPServers` | `map[string]any` | MCPServers are additional MCP server definitions, keyed by name, in Codex's native configuration format. |
+| `ReasoningEffort` | `string` | ReasoningEffort for reasoning-capable models: "low", "medium", "high", "xhigh" or "max". Empty defers to the CLI's default. |
+| `WebSearch` | `*bool` | WebSearch, when true, allows the runtime to use live web search. |
+| `Port` | `int` | Port overrides the port the bridge binds inside the sandbox. Defaults to the first port the sandbox exposes. |
+| `PortEndpoint` | `*harness.PortEndpoint` | PortEndpoint overrides the host endpoint used to reach the bridge. |
+| `StartupTimeout` | `time.Duration` | StartupTimeout bounds how long to wait for the bridge to announce its port. Defaults to 120s. |
+| `Reconnect` | `bridge.ReconnectOptions` | Reconnect tunes reconnection after an established bridge connection drops. |
+| `MintBridgeToken` | `harness.MintBridgeTokenCallback` | MintBridgeToken creates the bridge channel token. Defaults to a random 32-byte hex token. Requires the sandbox to expose an ID. |
+
+{/* /gen:fields */}
+
+`codex.DefaultModel` is the model used when none is set. `codex.DefaultOpenAIBaseURL` is `https://api.openai.com/v1`.
+
+### Authentication
+
+Every adapter takes an `Auth` setting of type `harness.Authentication`. Leave it unset to detect the route, or choose `harness.AuthModeDirect`, `harness.AuthModeAIGateway` or an isolated environment with `harness.AuthEnvironment`. Adapters forward credentials into the sandbox through request transformations where the provider supports it, so the sandbox does not hold the real secret. See [Request transformations](./sandbox.mdx#request-transformations).

@@ -9,7 +9,7 @@ Agent skills are reusable behaviors that can be registered with agents to extend
 
 ## Overview
 
-Skills in the Go-AI SDK allow you to:
+Skills in the Go AI SDK allow you to:
 - **Encapsulate reusable behaviors**: Define skills once and use them across multiple agents
 - **Extend agent capabilities**: Add custom functionality beyond what tools provide
 - **Organize agent logic**: Group related behaviors into named skills
@@ -123,7 +123,7 @@ import (
 func main() {
     // Create agent
     openaiProvider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
-    model, _ := openaiProvider.LanguageModel("gpt-4o-mini")
+    model, _ := openaiProvider.LanguageModel("gpt-5.4-mini")
 
     config := agent.AgentConfig{
         Model:    model,

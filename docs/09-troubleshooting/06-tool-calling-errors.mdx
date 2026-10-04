@@ -22,7 +22,7 @@ Tool parameters schema doesn't match expected JSON schema format.
 
 **Solution:**
 
-```go
+```go skip-compile
 package main
 
 import (
@@ -106,7 +106,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     weatherTool := goodToolDefinition()
 
@@ -141,7 +141,7 @@ Runtime error in tool execution function or invalid return value.
 
 **Solution:**
 
-```go
+```go skip-compile
 package main
 
 import (
@@ -254,7 +254,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     calcTool := safeCalculatorTool()
 
@@ -287,7 +287,7 @@ Poor tool description or model doesn't understand when to use the tool.
 
 **Solution:**
 
-```go
+```go skip-compile
 package main
 
 import (
@@ -371,7 +371,7 @@ func forceToolUsage() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     timeTool := clearTimeTool()
 
@@ -410,7 +410,7 @@ Tool performs slow operations (API calls, database queries) without timeout.
 
 **Solution:**
 
-```go
+```go skip-compile
 package main
 
 import (
@@ -518,7 +518,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     searchTool := timeoutSearchTool()
 
@@ -551,7 +551,7 @@ Not managing tool call dependencies properly.
 
 **Solution:**
 
-```go
+```go skip-compile
 package main
 
 import (
@@ -676,7 +676,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     coordinator := NewToolCoordinator()
     tools := createToolsWithDependencies(coordinator)

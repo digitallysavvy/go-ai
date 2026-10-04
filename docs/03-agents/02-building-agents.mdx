@@ -37,7 +37,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
         Model:  model,
@@ -70,7 +70,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
         Model:  model,
@@ -101,7 +101,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     codeAgent := agent.NewToolLoopAgent(agent.AgentConfig{
         Model: model,
@@ -154,7 +154,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
         Model:    model,
@@ -168,7 +168,7 @@ Each step represents one generation (which results in either text or a tool call
 
 - A finish reason other than `FinishReasonToolCalls` is returned, or
 - A tool execution fails, or
-- A tool call needs approval (if `ToolApprovalRequired` is true), or
+- A tool call needs approval (see [tool approval](#tool-approval-and-human-in-the-loop)), or
 - The step limit configured with `StopWhen` is reached
 
 Learn more about [loop control](/docs/agents/loop-control).
@@ -332,7 +332,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
         Model:  model,
@@ -372,7 +372,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
         Model:  model,
@@ -588,9 +588,39 @@ func getTokens(tokens *int64) int64 {
 }
 ```
 
-## Tool Approval and Human-in-the-Loop
+## Tool approval and human-in-the-loop
 
-Require human approval before executing tools:
+Mark a tool as requiring approval with `Tool.ToolApproval`. Set it to `true`, or to a `types.ToolNeedsApprovalFunc` that decides per call:
+
+```go
+deleteFile := types.Tool{
+    Name:         "deleteFile",
+    Description:  "Delete a file from the filesystem",
+    Parameters:   map[string]interface{}{"type": "object"},
+    ToolApproval: true, // always ask
+    Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+        return "deleted", nil
+    },
+}
+```
+
+To set a policy for the whole agent instead, use `AgentConfig.ToolApproval`. It takes a function or a map keyed by tool name:
+
+```go
+agent.AgentConfig{
+    Model: model,
+    Tools: []types.Tool{deleteFile},
+    ToolApproval: map[string]types.ToolApprovalValue{
+        "deleteFile": types.ToolApprovalStatusUserApproval,
+    },
+}
+```
+
+When a call needs approval, the loop stops with a pending approval request instead of running the tool. Your application collects the decision and resumes the conversation. Set `ExperimentalToolApprovalSecret` to sign requests, so a client cannot forge an approval.
+
+### Blocking approval for command-line programs
+
+If your program can block and ask the user inline, the legacy `ToolApprovalRequired` and `ToolApprover` fields do that. `ToolApprover` runs for each tool call and returns true to approve or false to reject:
 
 ```go
 package main
@@ -614,7 +644,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     // Create agent with tool approval
     myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
@@ -703,7 +733,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     myAgent := agent.NewToolLoopAgent(agent.AgentConfig{
         Model:  model,
@@ -1109,13 +1139,18 @@ Require approval for operations that modify state or access sensitive data:
 
 ```go
 agent.AgentConfig{
-    ToolApprovalRequired: true,
-    ToolApprover: func(toolCall types.ToolCall) bool {
-        // Implement your approval logic
-        return userApproves(toolCall)
-    },
+    Tools: []types.Tool{deleteFile}, // deleteFile sets ToolApproval: true
+    ToolApproval: types.GenericToolApprovalFunc(func(opts types.ToolApprovalOptions) types.ToolApprovalResult {
+        // Implement your approval policy
+        if opts.ToolCall.ToolName == "deleteFile" {
+            return types.ToolApprovalResult{Status: types.ToolApprovalStatusUserApproval}
+        }
+        return types.ToolApprovalResult{}
+    }),
 }
 ```
+
+For a blocking prompt in a command-line program, use the legacy `ToolApprover` callback described above.
 
 ## Next Steps
 

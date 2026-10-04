@@ -125,11 +125,15 @@ recordStepMetric := func(state ai.StopConditionState) string {
     return "" // never stops the loop on its own
 }
 
-StopWhen: []ai.StopCondition{
-    recordStepMetric,      // always runs; records every step
-    ai.HasToolCall("done"), // may stop early
-    ai.IsStepCount(15),    // hard ceiling
-},
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Summarize this document",
+    StopWhen: []ai.StopCondition{
+        recordStepMetric,       // always runs; records every step
+        ai.HasToolCall("done"), // may stop early
+        ai.IsStepCount(15),     // hard ceiling
+    },
+})
 ```
 
 ## Condition ordering guarantee

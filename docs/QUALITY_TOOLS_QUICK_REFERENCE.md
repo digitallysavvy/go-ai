@@ -1,6 +1,6 @@
 # Quality Tools Quick Reference
 
-Quick reference for Go-AI SDK documentation quality tools and standards.
+Quick reference for Go AI SDK documentation quality tools and standards.
 
 ## Documentation Standards
 
@@ -170,24 +170,31 @@ import (
     "context"
     "fmt"
     "log"
+    "os"
 
     "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 )
 
 func main() {
-    client := newExampleClient("your-api-key")
+    // 1. Setup: create a provider and pick a model
+    provider := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")})
+    model, err := provider.LanguageModel(anthropic.ClaudeSonnet5_5)
+    if err != nil {
+        log.Fatal(err)
+    }
 
-    response, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
-        Model: "claude-3-5-sonnet-20241022",
-        Messages: []types.Message{
-            {Role: "user", Content: "Hello!"},
-        },
+    // 2. Main operation
+    result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
+        Model:  model,
+        Prompt: "Hello!",
     })
     if err != nil {
         log.Fatalf("Error: %v", err)
     }
 
-    fmt.Println(response.Content)
+    // 3. Use the result
+    fmt.Println(result.Text)
 }
 ```
 
@@ -256,7 +263,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v4
         with:
-          go-version: '1.21'
+          go-version: '1.26'
 
       - name: Validate Links
         run: |

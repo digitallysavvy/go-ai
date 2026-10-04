@@ -1,0 +1,97 @@
+---
+title: Google configuration
+description: "Reference for the Google Generative AI provider Config struct and model option types, generated from the Go source."
+---
+
+# Google configuration
+
+Package `github.com/digitallysavvy/go-ai/pkg/providers/google`. Create a provider with `google.New(google.Config{...})`. When `APIKey` is empty, the provider reads `GOOGLE_GENERATIVE_AI_API_KEY`.
+
+The tables on this page are generated from the Go source. For usage, see the [Google provider page](../../05-providers/04-google.mdx).
+
+## Config
+
+{/* gen:fields providers/google.Config */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `APIKey` | `string` | APIKey is the Google API key |
+| `BaseURL` | `string` | BaseURL is the base URL for the Google API (default: https://generativelanguage.googleapis.com) |
+| `Headers` | `map[string]string` | Headers are custom HTTP headers to include in requests. |
+| `Name` | `string` | Name overrides the provider name returned by Provider.Name(). Defaults to "google.generative-ai". |
+| `HTTPClient` | `*http.Client` | HTTPClient overrides the HTTP client used for requests. |
+
+{/* /gen:fields */}
+
+## Model factories
+
+| Method | Returns |
+| --- | --- |
+| `LanguageModel(id)` | A Gemini language model. |
+| `Interactions(id)`, `InteractionsAgent(agent)`, `InteractionsManagedAgent(id)` | Language models that use the Interactions API. |
+| `EmbeddingModel(id)` | An embedding model. |
+| `ImageModel(id)` | An image generation model. |
+| `SpeechModel(id)` | A speech synthesis model. |
+| `TranscriptionModel(id)` | A transcription model. |
+| `VideoModel(id)` | A video generation model. |
+| `RerankingModel(id)` | A reranking model. |
+| `Files()` | The Files API client. |
+
+## GoogleEmbeddingProviderOptions
+
+{/* gen:fields providers/google.GoogleEmbeddingProviderOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Parts` | `[]EmbeddingPart` | Parts provides additional multimodal content parts alongside the text input. Each element corresponds to a single embedding value and is appended to that value's content.parts in the API request. |
+| `Content` | `[][]EmbeddingPart` | Content provides TypeScript-compatible per-value multimodal content. Each entry corresponds to the embedding value at the same index. A nil entry is text-only; a non-nil entry must contain at least one part. |
+| `OutputDimensionality` | `*int` | OutputDimensionality optionally truncates the embedding vector length. |
+| `TaskType` | `string` | TaskType maps to the Google embedding taskType request field. |
+
+{/* /gen:fields */}
+
+## GoogleSpeechModelOptions
+
+{/* gen:fields providers/google.GoogleSpeechModelOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `MultiSpeakerVoiceConfig` | `map[string]interface{}` | MultiSpeakerVoiceConfig configures Gemini multi-speaker TTS. When set it takes precedence over the top-level voice. |
+
+{/* /gen:fields */}
+
+## GoogleVideoModelOptions
+
+{/* gen:fields providers/google.GoogleVideoModelOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `PersonGeneration` | `*string` |  |
+| `NegativePrompt` | `*string` |  |
+| `ReferenceImages` | `[]googleVideoReferenceImageOpt` |  |
+
+{/* /gen:fields */}
+
+## GoogleInteractionsProviderOptions
+
+{/* gen:fields providers/google.GoogleInteractionsProviderOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `PreviousInteractionID` | `string` |  |
+| `Store` | `*bool` |  |
+| `MediaResolution` | `string` |  |
+| `SystemInstruction` | `string` |  |
+| `ResponseModalities` | `[]string` |  |
+| `ServiceTier` | `string` |  |
+| `ThinkingLevel` | `string` |  |
+| `ThinkingSummaries` | `string` |  |
+| `ResponseFormat` | `[]map[string]interface{}` | ResponseFormat holds raw (camelCase) response_format entries from providerOptions.google.responseFormat, e.g. \{"type":"video","aspectRatio":"16:9",...\}. Converted to snake_case wire entries in buildArgs. |
+| `ImageConfig` | `map[string]interface{}` |  |
+| `Agent` | `string` |  |
+| `AgentConfig` | `map[string]interface{}` |  |
+| `Environment` | `interface{}` |  |
+| `PollingTimeoutMs` | `int` |  |
+| `Background` | `*bool` |  |
+
+{/* /gen:fields */}

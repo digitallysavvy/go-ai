@@ -1,11 +1,11 @@
 ---
 title: Azure OpenAI Provider
-description: "Setup guide for Azure OpenAI Service in the Go-AI SDK, covering deployment names as model IDs, Entra ID authentication, and regional/private endpoints."
+description: "Setup guide for Azure OpenAI Service in the Go AI SDK, covering deployment names as model IDs, Entra ID authentication, and regional/private endpoints."
 ---
 
 # Azure OpenAI Provider
 
-Azure OpenAI Service provides OpenAI-compatible models through Azure resources and deployments. In Go-AI, the deployment name is the model ID you pass to the provider.
+Azure OpenAI Service provides OpenAI-compatible models through Azure resources and deployments. In the Go AI SDK, the deployment name is the model ID you pass to the provider.
 
 ## Setup
 
@@ -36,7 +36,7 @@ if err != nil {
     log.Fatal(err)
 }
 
-model, err := provider.LanguageModel("gpt-4o-deployment")
+model, err := provider.LanguageModel("my-gpt-deployment")
 if err != nil {
     log.Fatal(err)
 }
@@ -153,7 +153,7 @@ Azure DeepSeek deployments are available through `provider.DeepSeek("deployment-
 | any other deployment name | OpenAI |
 
 ```go
-provider, err := azure.New(azure.Config{
+azureProvider, err := azure.New(azure.Config{
     ResourceName: os.Getenv("AZURE_RESOURCE_NAME"),
     APIKey:       os.Getenv("AZURE_API_KEY"),
 })
@@ -161,7 +161,7 @@ if err != nil {
     log.Fatal(err)
 }
 
-transcriptionModel, err := provider.TranscriptionModel("mai-transcribe-2")
+transcriptionModel, err := azureProvider.TranscriptionModel("mai-transcribe-2")
 if err != nil {
     log.Fatal(err)
 }

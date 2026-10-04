@@ -1,6 +1,6 @@
 ---
 title: Cohere Provider
-description: Setup and usage guide for Cohere Command and Embed models with Go-AI SDK
+description: Setup and usage guide for Cohere Command and Embed models with Go AI SDK
 ---
 
 # Cohere Provider
@@ -45,20 +45,20 @@ export COHERE_API_KEY=...
 
 ### Language Models
 
-| Model ID | Context | Input Price | Output Price | Best For |
-|----------|---------|-------------|--------------|----------|
-| command-r-plus | 128K | $3.00/1M | $15.00/1M | RAG, search, agents |
-| command-r | 128K | $0.50/1M | $1.50/1M | Cost-effective tasks |
-| command | 4K | $1.00/1M | $2.00/1M | Legacy |
-| command-light | 4K | $0.30/1M | $0.60/1M | Fast responses |
+| Model ID | Context | Best For |
+| ---------- | --------- | ---------- |
+| command-r-plus | 128K | RAG, search, agents |
+| command-r | 128K | Cost-effective tasks |
+| command | 4K | Legacy |
+| command-light | 4K | Fast responses |
 
 ### Embedding Models
 
-| Model ID | Dimensions | Price | Best For |
-|----------|-----------|-------|----------|
-| embed-english-v3.0 | 1024 | $0.10/1M | English semantic search |
-| embed-multilingual-v3.0 | 1024 | $0.10/1M | Multilingual search |
-| embed-english-light-v3.0 | 384 | $0.10/1M | Fast embeddings |
+| Model ID | Dimensions | Best For |
+| ---------- | ----------- | ---------- |
+| embed-english-v3.0 | 1024 | English semantic search |
+| embed-multilingual-v3.0 | 1024 | Multilingual search |
+| embed-english-light-v3.0 | 384 | Fast embeddings |
 
 ## Provider-Specific Features
 

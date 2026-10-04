@@ -1,6 +1,6 @@
 ---
 title: Anthropic Provider
-description: Setup and usage guide for Anthropic Claude models (Sonnet, Opus, Haiku) with Go-AI SDK
+description: Setup and usage guide for Anthropic Claude models (Sonnet, Opus, Haiku) with Go AI SDK
 ---
 
 # Anthropic Provider
@@ -11,7 +11,7 @@ Anthropic provides the Claude family of models, known for their helpfulness, hon
 
 ### Installation
 
-The Anthropic provider is included in the Go-AI SDK:
+The Anthropic provider is included in the Go AI SDK:
 
 ```go
 import (
@@ -81,39 +81,37 @@ The default base URL is `https://aws-external-anthropic.{region}.api.aws/v1`. `W
 
 ## Available Models
 
-### Claude 4.7/4.6/4.5 Series (Latest)
+Use the constants in `pkg/providers/anthropic/model_ids.go` instead of raw strings. The list below is the current set. For context windows and pricing, see [Anthropic's model overview](https://docs.anthropic.com/en/docs/about-claude/models/overview).
 
-| Model ID | Context | Input Price | Output Price | Best For |
-|----------|---------|-------------|--------------|----------|
-| claude-opus-4-7 | 200K | TBA | TBA | Latest Opus reasoning and coding |
-| claude-opus-4-6 | 200K | TBA | TBA | Complex tasks, fast mode |
-| claude-sonnet-4-6 | 200K | TBA | TBA | Balanced performance and capability |
-| claude-opus-4-5 | 200K | $15.00/1M | $75.00/1M | Most capable, complex tasks |
-| claude-sonnet-4-5 | 200K | $3.00/1M | $15.00/1M | Best balance of speed & quality |
-| claude-haiku-4-5 | 200K | $0.80/1M | $4.00/1M | Fast, cost-effective |
+### Current models
 
-### Claude 4 Series
+| Model ID | Go constant | Notes |
+|----------|-------------|-------|
+| `claude-opus-5-5` | `anthropic.ClaudeOpus5_5` | Flagship, always-adaptive thinking |
+| `claude-opus-5` | `anthropic.ClaudeOpus5` | Supports `fallbacks: 'default'` |
+| `claude-sonnet-5-5` | `anthropic.ClaudeSonnet5_5` | Between-tools thinking; rejects disabled thinking and forced tool use |
+| `claude-sonnet-5` | `anthropic.ClaudeSonnet5` | Current-generation Sonnet |
+| `claude-fable-5-1` | `anthropic.ClaudeFable5_1` | Always-adaptive thinking, system-message `clearAt` and effort |
+| `claude-fable-5` | `anthropic.ClaudeFable5` | Server-side fallbacks |
+| `claude-opus-4-8` | `anthropic.ClaudeOpus4_8` | Native structured output |
+| `claude-opus-4-7` | `anthropic.ClaudeOpus4_7` | `xhigh` effort |
+| `claude-opus-4-6` | `anthropic.ClaudeOpus4_6` | Adaptive thinking, fast mode |
+| `claude-sonnet-4-6` | `anthropic.ClaudeSonnet4_6` | Balanced performance and capability |
+| `claude-haiku-4-5` | `anthropic.ClaudeHaiku4_5` | Fast and cost-effective |
 
-| Model ID | Context | Input Price | Output Price | Best For |
-|----------|---------|-------------|--------------|----------|
-| claude-opus-4 | 200K | $15.00/1M | $75.00/1M | Complex analysis |
-| claude-sonnet-4 | 200K | $3.00/1M | $15.00/1M | General purpose |
-| claude-haiku-4 | 200K | $0.25/1M | $1.25/1M | High-volume tasks |
+### Earlier generations
 
-### Claude 3.5 Series (Previous Generation)
+These IDs still have constants. Prefer the current models above for new code.
 
-| Model ID | Context | Input Price | Output Price | Best For |
-|----------|---------|-------------|--------------|----------|
-| claude-3-5-sonnet-20241022 | 200K | $3.00/1M | $15.00/1M | Latest 3.5 with tool use |
-| claude-3-5-haiku-20241022 | 200K | $0.80/1M | $4.00/1M | Fast responses |
+| Model ID | Go constant |
+|----------|-------------|
+| `claude-opus-4-5` | `anthropic.ClaudeOpus4_5` |
+| `claude-sonnet-4-5` | `anthropic.ClaudeSonnet4_5` |
+| `claude-opus-4-1` | `anthropic.ClaudeOpus4_1` |
+| `claude-opus-4-0` | `anthropic.ClaudeOpus4_0` |
+| `claude-sonnet-4-0` | `anthropic.ClaudeSonnet4_0` |
 
-### Claude 3 Series (Legacy)
-
-| Model ID | Context | Input Price | Output Price | Best For |
-|----------|---------|-------------|--------------|----------|
-| claude-3-opus-20240229 | 200K | $15.00/1M | $75.00/1M | Legacy flagship |
-| claude-3-sonnet-20240229 | 200K | $3.00/1M | $15.00/1M | Legacy balanced |
-| claude-3-haiku-20240307 | 200K | $0.25/1M | $1.25/1M | Legacy fast |
+Dated variants such as `claude-sonnet-4-5-20250929` and `claude-haiku-4-5-20251001` also have constants. The Claude 3 and 3.5 models are deprecated by Anthropic.
 
 ## Provider-Specific Features
 
@@ -248,10 +246,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 // Subsequent requests with same cached content cost significantly less
 ```
 
-Pricing with caching:
-- Cache write: $3.75/1M tokens (1.25x normal)
-- Cache read: $0.30/1M tokens (0.1x normal)
-- Cached content valid for 5 minutes
+Cache writes cost more than normal input tokens and cache reads cost much less. See [Anthropic's pricing page](https://www.anthropic.com/pricing) for current multipliers. Cached content is valid for 5 minutes by default.
 
 ### Thinking (Extended Reasoning)
 
@@ -743,17 +738,9 @@ func generateWithRetry(ctx context.Context, model provider.LanguageModel, prompt
 
 ## Rate Limits & Pricing
 
-### Rate Limits (Standard Tier)
+### Rate limits
 
-| Model | RPM | TPM | RPD |
-|-------|-----|-----|-----|
-| Claude Opus 4.5 | 50 | 40,000 | 1,000 |
-| Claude Sonnet 4.5 | 50 | 40,000 | 1,000 |
-| Claude Haiku 4.5 | 50 | 50,000 | 1,000 |
-
-RPM = Requests per minute, TPM = Tokens per minute (input), RPD = Requests per day
-
-Higher tiers available with increased limits.
+Rate limits depend on your account tier and change over time. See [Anthropic's rate limits page](https://docs.anthropic.com/en/api/rate-limits) for current values.
 
 ### Token Counting
 
@@ -765,6 +752,7 @@ func estimateTokens(text string) int {
 
 // Calculate cost
 func calculateCost(usage types.Usage, model string) float64 {
+    // Example rates only. Check Anthropic's pricing page for current prices.
     rates := map[string][2]float64{
         "claude-opus-4-5":   {15.00 / 1_000_000, 75.00 / 1_000_000},
         "claude-sonnet-4-5": {3.00 / 1_000_000, 15.00 / 1_000_000},
@@ -840,7 +828,7 @@ If history is pruned between steps (e.g. to control context size) and that remov
 
 `result.FinishReason` and `result.RawFinishReason` (and their `StreamChunk`
 equivalents) report Anthropic's raw `stop_reason` alongside the normalized
-value. Since this release, three additional raw reasons map to
+value. Since v0.5.0, three additional raw reasons map to
 non-`"other"` finish reasons, matching TS:
 
 | Anthropic `stop_reason` | `FinishReason` |

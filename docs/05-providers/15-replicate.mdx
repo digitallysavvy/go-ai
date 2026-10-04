@@ -1,6 +1,6 @@
 ---
 title: Replicate Provider
-description: "Setup and usage guide for Replicate's model marketplace in the Go-AI SDK, covering available models, workflow serialization, and example API calls."
+description: "Setup and usage guide for Replicate's model marketplace in the Go AI SDK, covering available models, workflow serialization, and example API calls."
 ---
 
 # Replicate Provider
@@ -38,24 +38,24 @@ export REPLICATE_API_KEY=r8_...
 
 ### Language Models
 
-| Model ID | Context | Price | Best For |
-|----------|---------|-------|----------|
-| meta/meta-llama-3-70b-instruct | 8K | $0.65/1M | General purpose |
-| mistralai/mixtral-8x7b-instruct-v0.1 | 32K | $0.30/1M | Balanced |
+| Model ID | Context | Best For |
+| ---------- | --------- | ---------- |
+| meta/meta-llama-3-70b-instruct | 8K | General purpose |
+| mistralai/mixtral-8x7b-instruct-v0.1 | 32K | Balanced |
 
 ### Image Generation
 
-| Model ID | Quality | Price | Best For |
-|----------|---------|-------|----------|
-| stability-ai/sdxl | High | $0.0119/run | Images |
-| black-forest-labs/flux-pro | Excellent | $0.055/run | Professional |
-| black-forest-labs/flux-schnell | Good | $0.003/run | Fast |
+| Model ID | Quality | Best For |
+| ---------- | --------- | ---------- |
+| stability-ai/sdxl | High | Images |
+| black-forest-labs/flux-pro | Excellent | Professional |
+| black-forest-labs/flux-schnell | Good | Fast |
 
 ### Video Generation
 
-| Model ID | Quality | Price | Best For |
-|----------|---------|-------|----------|
-| stability-ai/stable-video-diffusion | Medium | $0.10/run | Video from image |
+| Model ID | Quality | Best For |
+| ---------- | --------- | ---------- |
+| stability-ai/stable-video-diffusion | Medium | Video from image |
 
 `provider.VideoModel(modelID)` accepts both forms Replicate uses:
 

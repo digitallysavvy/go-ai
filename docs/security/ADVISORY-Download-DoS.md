@@ -1,19 +1,19 @@
 ---
 title: "Security Advisory: Unbounded Download DoS Prevention"
-description: "Security advisory describing an unbounded download denial-of-service vulnerability in the Go-AI SDK, its fix, mitigation steps, and impact assessment."
+description: "Security advisory describing an unbounded download denial-of-service vulnerability in the Go AI SDK, its fix, mitigation steps, and impact assessment."
 ---
 
 # Security Advisory: Unbounded Download DoS Prevention
 
 **Status:** Fixed
 **Severity:** High
-**CVE:** TBD
-**Affected Versions:** All versions before v0.X.X
-**Fixed in:** v0.X.X
+**CVE:** None assigned
+**Affected Versions:** All versions before v0.2.0
+**Fixed in:** v0.2.0
 
 ## Summary
 
-Prior versions of the Go-AI SDK allowed unbounded memory growth when downloading from user-provided URLs (images, videos, audio), enabling Denial of Service (DoS) attacks through memory exhaustion.
+Prior versions of the Go AI SDK allowed unbounded memory growth when downloading from user-provided URLs (images, videos, audio), enabling Denial of Service (DoS) attacks through memory exhaustion.
 
 ## Vulnerability Details
 
@@ -92,7 +92,7 @@ result, err := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
 
 ### Immediate Action
 
-**Upgrade to v0.X.X or later immediately.** No workaround is available for earlier versions.
+**Upgrade to v0.2.0 or later immediately.** No workaround is available for earlier versions.
 
 ### Version Check
 
@@ -100,7 +100,7 @@ result, err := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
 go list -m github.com/digitallysavvy/go-ai
 ```
 
-If the version is below v0.X.X, upgrade with:
+If the version is below v0.2.0, upgrade with:
 
 ```bash
 go get github.com/digitallysavvy/go-ai@latest
@@ -112,7 +112,7 @@ go get github.com/digitallysavvy/go-ai@latest
 
 Any application that:
 - Accepts user-provided image/video/audio URLs
-- Uses the Go-AI SDK for generation with file inputs
+- Uses the Go AI SDK for generation with file inputs
 - Runs in production environments with untrusted input
 
 ### Risk Level

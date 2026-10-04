@@ -1,4 +1,5 @@
-// Extension item/event decode helpers (row 9a68261, OR-EXT).
+// Extension item/event decode helpers.
+
 package openresponses
 
 import (

@@ -6,6 +6,7 @@
 // pkg/providers/google through pkg/providers/gemini; OAuth2 Bearer
 // authentication (or Express Mode API-key auth) and Vertex's
 // region/project-scoped base URLs are this package's own concern.
+
 package googlevertex
 
 import (

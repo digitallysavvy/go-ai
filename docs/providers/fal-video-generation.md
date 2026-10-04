@@ -1,11 +1,11 @@
 ---
 title: "FAL Video Generation"
-description: "Guide to image-to-video generation using the FAL provider in the Go-AI SDK, covering supported image formats, parameters, and memory considerations."
+description: "Guide to image-to-video generation using the FAL provider in the Go AI SDK, covering supported image formats, parameters, and memory considerations."
 ---
 
 # FAL Video Generation
 
-This guide covers video generation using the FAL provider in the Go-AI SDK.
+This guide covers video generation using the FAL provider in the Go AI SDK.
 
 ## Overview
 

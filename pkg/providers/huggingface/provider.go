@@ -4,6 +4,7 @@
 // Inference API, the Responses API does not offer embeddings or image
 // generation, so EmbeddingModel/ImageModel intentionally return errors
 // (TS createHuggingFace throws NoSuchModelError for both).
+
 package huggingface
 
 import (

@@ -1,6 +1,6 @@
 ---
 title: Google Vertex AI Provider
-description: Setup and usage guide for Google Vertex AI enterprise platform with Go-AI SDK
+description: Setup and usage guide for Google Vertex AI enterprise platform with Go AI SDK
 ---
 
 # Google Vertex AI Provider
@@ -52,31 +52,40 @@ The Vertex provider reuses auth per provider instance. You can provide an explic
 
 ## Available Models
 
-### Gemini Models
+Use the constants in `pkg/providers/googlevertex/models.go` instead of raw strings. For context windows and pricing, see [Google Cloud's Vertex AI model documentation](https://cloud.google.com/vertex-ai/generative-ai/docs/models).
 
-| Model ID | Context | Price | Best For |
-|----------|---------|-------|----------|
-| gemini-2.0-flash | 1M | $0.075/1M (≤128K) | Fast, multimodal |
-| gemini-1.5-pro | 2M | $1.25/1M (≤128K) | Complex tasks |
-| gemini-1.5-flash | 1M | $0.075/1M (≤128K) | General purpose |
+### Gemini models
+
+| Model ID | Go constant | Best for |
+|----------|-------------|----------|
+| `gemini-3.8-flash` | `googlevertex.ModelGemini38Flash` | Fast, current-generation Flash |
+| `gemini-3.7-flash` | `googlevertex.ModelGemini37Flash` | Fast, current-generation Flash |
+| `gemini-3.6-flash` | `googlevertex.ModelGemini36Flash` | Fast, current-generation Flash |
+| `gemini-3.5-flash` | `googlevertex.ModelGemini35Flash` | Fast multimodal tasks |
+| `gemini-3.5-flash-lite` | `googlevertex.ModelGemini35FlashLite` | High-volume, low-cost tasks |
+| `gemini-3.1-pro-preview` | `googlevertex.ModelGemini31ProPreview` | Advanced reasoning and generation |
+| `gemini-3.1-flash-lite-preview` | `googlevertex.ModelGemini31FlashLitePreview` | Low-cost preview model |
+| `gemini-3-pro-preview` | `googlevertex.ModelGemini3ProPreview` | Advanced preview generation |
+| `gemini-3-flash-preview` | `googlevertex.ModelGemini3FlashPreview` | Fast preview generation |
+| `gemini-2.5-pro` | `googlevertex.ModelGemini25Pro` | Complex reasoning and multimodal tasks |
+| `gemini-2.5-flash` | `googlevertex.ModelGemini25Flash` | Fast multimodal tasks |
+| `gemini-2.5-flash-lite` | `googlevertex.ModelGemini25FlashLite` | Cost-effective high-volume tasks |
+
+Earlier Gemini 2.0, 1.5 and 1.0 models still have constants. Prefer the models above for new code.
 
 Grok models are not reachable through `Provider.LanguageModel` — see
 [xAI (Grok) Sub-Provider](#xai-grok-sub-provider) and
 [Vertex MaaS and Grok](#vertex-maas-and-grok) below for the MaaS model IDs
 (e.g. `xai/grok-4.20-reasoning`).
 
-### PaLM Models (Legacy)
+### Embedding models
 
-| Model ID | Context | Price | Best For |
-|----------|---------|-------|----------|
-| text-bison | 8K | $0.50/1M | Text generation |
-| chat-bison | 8K | $0.50/1M | Chat |
-
-### Embedding Models
-
-| Model ID | Dimensions | Price | Best For |
-|----------|-----------|-------|----------|
-| textembedding-gecko | 768 | Free | Semantic search |
+| Model ID | Go constant | Best for |
+|----------|-------------|----------|
+| `gemini-embedding-2` | `googlevertex.EmbeddingModelGeminiEmbedding2` | Stable Gemini embeddings |
+| `gemini-embedding-2-preview` | `googlevertex.EmbeddingModelGeminiEmbedding2Preview` | Preview embeddings |
+| `text-multilingual-embedding-002` | `googlevertex.EmbeddingModelTextMultilingualEmbedding002` | Multilingual semantic search |
+| `textembedding-gecko` | `googlevertex.EmbeddingModelTextEmbeddingGecko` | Semantic search |
 
 ### Gemini TTS Speech Models
 
@@ -123,10 +132,11 @@ Provider metadata for Vertex speech is keyed as `google`, matching the TypeScrip
 > `gemini-` now fails with: "Google image models other than Gemini are no
 > longer supported. Use a model ID that starts with `gemini-`."
 
-| Model ID | Aspect Ratios | Price | Best For |
-|----------|--------------|-------|----------|
-| gemini-2.5-flash-image | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | Fast Gemini generation |
-| gemini-3-pro-image-preview | 1:1, 3:4, 4:3, 9:16, 16:9 | Per image | Advanced generation |
+| Model ID | Go constant | Best for |
+|----------|-------------|----------|
+| `gemini-3.1-flash-image-preview` | `googlevertex.ModelGemini31FlashImagePreview` | Fast Gemini generation |
+| `gemini-3-pro-image-preview` | `googlevertex.ModelGemini3ProImagePreview` | Advanced generation |
+| `gemini-2.5-flash-image` | `googlevertex.ModelGemini25FlashImage` | Fast Gemini generation |
 
 ### Gemini Transcription
 
@@ -217,7 +227,7 @@ model, err := provider.LanguageModel("publishers/google/models/gemini-2.0-flash"
 ### Batch Prediction And Custom Training
 
 Use Google Cloud Vertex AI client libraries for batch prediction and custom
-training jobs. Go-AI focuses on the AI SDK provider surfaces for generation,
+training jobs. The Go AI SDK focuses on the AI SDK provider surfaces for generation,
 embedding, image, speech, MaaS, and Anthropic-on-Vertex requests.
 
 ### Image Generation
@@ -489,7 +499,7 @@ Varies by model and quota:
 | Model | Default QPM | Max QPM |
 |-------|------------|---------|
 | Gemini 2.0 Flash | 60 | 1000+ |
-| Gemini 1.5 Pro | 60 | 1000+ |
+| Gemini 2.5 Pro | 60 | 1000+ |
 
 Request quota increases through Cloud Console.
 

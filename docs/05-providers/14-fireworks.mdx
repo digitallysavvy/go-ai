@@ -1,6 +1,6 @@
 ---
 title: Fireworks AI Provider
-description: "Setup and usage guide for Fireworks AI's fast inference models in the Go-AI SDK, covering available models, async models, and production best practices."
+description: "Setup and usage guide for Fireworks AI's fast inference models in the Go AI SDK, covering available models, async models, and production best practices."
 ---
 
 # Fireworks AI Provider
@@ -40,12 +40,12 @@ export FIREWORKS_API_KEY=fw_...
 
 ### Language Models
 
-| Model ID | Context | Price | Best For |
-|----------|---------|-------|----------|
-| accounts/fireworks/models/llama-v3p1-70b-instruct | 128K | $0.90/1M | High quality |
-| accounts/fireworks/models/llama-v3p1-8b-instruct | 128K | $0.20/1M | Fast |
-| accounts/fireworks/models/mixtral-8x7b-instruct | 32K | $0.50/1M | Balanced |
-| accounts/fireworks/models/kimi-k2p5 | 128K | — | Extended reasoning |
+| Model ID | Context | Best For |
+| ---------- | --------- | ---------- |
+| accounts/fireworks/models/llama-v3p1-70b-instruct | 128K | High quality |
+| accounts/fireworks/models/llama-v3p1-8b-instruct | 128K | Fast |
+| accounts/fireworks/models/mixtral-8x7b-instruct | 32K | Balanced |
+| accounts/fireworks/models/kimi-k2p5 | 128K | Extended reasoning |
 
 ### Image Models
 
@@ -95,7 +95,7 @@ func main() {
 
 ### Async Image Generation (flux-kontext-\*)
 
-`flux-kontext-*` models use a two-phase async flow: submit a request, then poll for the result. The Go-AI SDK handles this automatically.
+`flux-kontext-*` models use a two-phase async flow: submit a request, then poll for the result. The Go AI SDK handles this automatically.
 
 ```go
 package main
@@ -164,7 +164,7 @@ Models with IDs containing `flux-kontext` use a two-phase generation API:
 2. **Poll** — POST to `/v1/workflows/{modelID}/get_result` every 500ms (configurable via `fireworks.Config.ImagePollIntervalMs`) until status is `"Ready"`.
 3. **Result** — When `"Ready"`, the response contains a URL in `result.sample`.
 
-The Go-AI SDK handles this flow transparently via `DoGenerate`. Polling respects context cancellation and has a 2-minute timeout by default (configurable via `fireworks.Config.ImagePollTimeoutMs`).
+The Go AI SDK handles this flow transparently via `DoGenerate`. Polling respects context cancellation and has a 2-minute timeout by default (configurable via `fireworks.Config.ImagePollTimeoutMs`).
 
 **Supported poll statuses:**
 - `Pending` / `Running` → continue polling

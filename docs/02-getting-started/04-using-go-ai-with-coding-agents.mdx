@@ -1,0 +1,86 @@
+---
+title: Use Go AI SDK with coding agents
+description: "Point Claude Code, Cursor, Codex and other coding agents at the Go AI SDK docs, with a snippet for AGENTS.md or CLAUDE.md, an agent skill, and a docs MCP server."
+---
+
+# Use Go AI SDK with coding agents
+
+Coding agents write better Go AI SDK code when they read the docs instead of guessing from training data. The site publishes the docs in forms an agent can use directly.
+
+## Agent entry points
+
+| URL | What it is |
+|---|---|
+| [`/agents.md`](https://goaisdk.com/agents.md) | A 3 KB orientation file: module path, install, the six most common calls and the usual mistakes. Start here. |
+| [`/llms.txt`](https://goaisdk.com/llms.txt) | An index of every page with a "Start here" block. Providers, migration guides and troubleshooting sit under "Optional". |
+| [`/sitemap.md`](https://goaisdk.com/sitemap.md) | Every page with its type, a one-line summary and prerequisites. |
+| [`/llms-core.txt`](https://goaisdk.com/llms-core.txt) | The core, agents and reference docs in one file, under 300 KB. |
+| `/docs/<section>/llms.txt` | An index for one section, for example `/docs/agents/llms.txt`. |
+| [`/llms-full.txt`](https://goaisdk.com/llms-full.txt) | All docs in one file. It is large; prefer the files above. |
+| `<any docs URL>.md` | That page as markdown, with its title, description and canonical URL at the top. |
+
+## Add the SDK to your project instructions
+
+Paste this into your project's `AGENTS.md` or `CLAUDE.md`:
+
+```md
+## Go AI SDK
+
+This project uses the Go AI SDK (`github.com/digitallysavvy/go-ai`, Go 1.26 or later).
+
+- Read https://goaisdk.com/agents.md before writing SDK code. It lists the common calls and mistakes.
+- Find a page with https://goaisdk.com/llms.txt, or search https://goaisdk.com/sitemap.md.
+  Fetch any docs page as markdown by appending `.md` to its URL.
+- `LanguageModel(id)` returns `(model, error)`. Streams are `TextStream` or `Chunks()`, not `io.Reader`.
+- Provider option keys are camelCase. Use `ToolApproval`, not `NeedsApproval`.
+- `GenerateText` and `StreamText` run one step unless you set `StopWhen`.
+- For a useChat endpoint, use `ai.PipeUIMessageStreamToResponse` or
+  `agent.PipeAgentUIStreamFromUIMessagesToResponse`. They set the stream headers.
+- Take model IDs from the provider package constants (for example `anthropic.ClaudeSonnet5_5`).
+- Reference app: https://github.com/digitallysavvy/go-ai-demo
+```
+
+## Install the agent skill
+
+The repository ships the same guidance as an agent skill at [`skills/go-ai/SKILL.md`](https://github.com/digitallysavvy/go-ai/blob/main/skills/go-ai/SKILL.md). To use it in Claude Code, copy the folder into your project or your home directory:
+
+```bash
+mkdir -p .claude/skills/go-ai
+curl -fsSL https://raw.githubusercontent.com/digitallysavvy/go-ai/main/skills/go-ai/SKILL.md \
+  -o .claude/skills/go-ai/SKILL.md
+```
+
+Use `~/.claude/skills/go-ai/` instead to make it available in every project. The skill loads when you work on code that imports the SDK.
+
+## Search the docs from your editor
+
+The `goai-docs-mcp` server gives an agent two tools, `search_docs` and `read_doc`, over the full docs. It runs locally over stdio, and the docs are compiled into the binary, so it needs no network access and no API key.
+
+```bash
+go install github.com/digitallysavvy/go-ai/cmd/goai-docs-mcp@latest
+```
+
+Add it to Claude Code:
+
+```bash
+claude mcp add go-ai-docs -- goai-docs-mcp
+```
+
+Add it to Cursor in `.cursor/mcp.json` (or `~/.cursor/mcp.json` for every project):
+
+```json
+{
+  "mcpServers": {
+    "go-ai-docs": {
+      "command": "goai-docs-mcp"
+    }
+  }
+}
+```
+
+Make sure `$(go env GOPATH)/bin` is on your `PATH`, or use the absolute path to the binary as the command. Then ask your agent to "search the Go AI SDK docs for tool approval". The docs in the binary match the version you installed, so update it with the SDK.
+
+## Next steps
+
+- [Quick start](/docs/getting-started/golang) builds a first chat agent.
+- The [Shipyard demo](https://github.com/digitallysavvy/go-ai-demo) is a complete app with a useChat frontend, a Go backend, an approval-gated tool and a coding-agent harness.

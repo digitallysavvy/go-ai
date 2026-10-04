@@ -1,0 +1,116 @@
+---
+title: Ask before running a tool
+description: Pause a tool call until a user approves it, with signed approval requests and the useChat round trip.
+sidebar_position: 2
+---
+
+# Ask before running a tool
+
+Let the model request a tool, but run it only after the user says yes.
+
+```go
+package main
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/json"
+	"log"
+	"net/http"
+	"os"
+	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/agent"
+	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
+)
+
+func main() {
+	model, err := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")}).
+		LanguageModel(anthropic.ClaudeSonnet5_5)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Signs approval requests so a client cannot forge an approval. Use a
+	// stable secret in production, the same on every instance.
+	secret := []byte(os.Getenv("TOOL_APPROVAL_SECRET"))
+	if len(secret) == 0 {
+		secret = make([]byte, 32)
+		if _, err := rand.Read(secret); err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	deploy := types.Tool{
+		Name:        "deploy",
+		Description: "Deploy the service to an environment. Requires user approval.",
+		Parameters: schema.NewSimpleJSONSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"env": map[string]interface{}{"type": "string", "enum": []string{"staging", "prod"}},
+			},
+			"required": []string{"env"},
+		}),
+		// The model can ask; only the user can say yes.
+		ToolApproval: true,
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return map[string]interface{}{"deployed": input["env"]}, nil
+		},
+	}
+
+	assistant := agent.NewToolLoopAgent(agent.AgentConfig{
+		Model:                          model,
+		System:                         "You deploy services. Call deploy when asked. Keep replies short.",
+		Tools:                          []types.Tool{deploy},
+		StopWhen:                       []ai.StopCondition{ai.IsStepCount(5)},
+		ExperimentalToolApprovalSecret: secret,
+	})
+
+	http.HandleFunc("POST /api/chat", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages json.RawMessage `json:"messages"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<20)).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		chunks, _, err := agent.CreateAgentUIStreamFromUIMessages(r.Context(), assistant,
+			agent.CreateAgentUIStreamFromUIMessagesOptions{UIMessages: []byte(req.Messages)})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		keepAlive := 15 * time.Second
+		if err := ai.PipeUIMessageChunksToResponse(chunks, w, &ai.UIMessageStreamResponseInit{KeepAliveMs: &keepAlive}); err != nil {
+			log.Printf("write stream: %v", err)
+		}
+	})
+
+	log.Println("listening on :8080")
+	log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+Run it:
+
+```bash
+ANTHROPIC_API_KEY=... go run ./examples/recipes/tool-approval
+```
+
+## Notes
+
+- `ToolApproval: true` on the tool makes the agent stop and send an approval request instead of running it.
+- `ExperimentalToolApprovalSecret` signs each request. The server verifies the signature when the approval comes back, so a client cannot forge one.
+- The client needs `addToolApprovalResponse` and `sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses`.
+- To ask only sometimes, set `ToolApproval` to a `types.ToolNeedsApprovalFunc`. Values the SDK doesn't recognize fail closed: the tool reports an error instead of running.
+
+## Go deeper
+
+- [Guide: Tool approval end to end](../10-build-a-chat-app/02-tool-approval.mdx)
+- [Reference: Tool](../07-reference/ai/tool.mdx)
+- [Guide: Building agents](../03-agents/02-building-agents.mdx)
+
+The full program is at [`examples/recipes/tool-approval/main.go`](https://github.com/digitallysavvy/go-ai/blob/main/examples/recipes/tool-approval/main.go).

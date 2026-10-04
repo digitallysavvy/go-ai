@@ -1,6 +1,6 @@
 ---
 title: xAI Provider
-description: "Setup and usage guide for xAI's Grok models in the Go-AI SDK, covering the Responses API, provider options, image/video generation, and speech support."
+description: "Setup and usage guide for xAI's Grok models in the Go AI SDK, covering the Responses API, provider options, image/video generation, and speech support."
 ---
 
 # xAI Provider
@@ -81,7 +81,7 @@ transcriptionModel, _ := provider.TranscriptionModel("")
 
 ## Responses API (only)
 
-`LanguageModel()` returns a Responses API model. Starting in v0.4.0 this was the default (with the legacy Chat Completions API available as an opt-in escape hatch); as of this release the Chat Completions API (`ChatCompletionsLanguageModel()`) has been removed entirely, matching the upstream TypeScript SDK. See the migration guide if you were still using `ChatCompletionsLanguageModel()`.
+`LanguageModel()` returns a Responses API model. Starting in v0.4.0 this was the default (with the legacy Chat Completions API available as an opt-in escape hatch); as of v0.5.0 the Chat Completions API (`ChatCompletionsLanguageModel()`) has been removed entirely, matching the upstream TypeScript SDK. See the migration guide if you were still using `ChatCompletionsLanguageModel()`.
 
 ```go
 model, _ := provider.LanguageModel("grok-3")
@@ -206,7 +206,7 @@ videoModel, _ := provider.VideoModel("grok-imagine-video")
 
 result, _ := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
     Model:  videoModel,
-    Prompt: "A cat playing piano",
+    Prompt: ai.VideoPrompt{Text: "A cat playing piano"},
 })
 ```
 

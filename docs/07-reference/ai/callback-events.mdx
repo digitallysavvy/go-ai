@@ -5,7 +5,7 @@ description: Structured lifecycle events for observability in GenerateText, Stre
 
 # Callback Events
 
-The Go-AI SDK fires structured lifecycle events during text generation and agent execution. Each event is a typed struct delivered via callback fields on `GenerateTextOptions`, `StreamTextOptions`, and `AgentConfig`.
+The Go AI SDK fires structured lifecycle events during text generation and agent execution. Each event is a typed struct delivered via callback fields on `GenerateTextOptions`, `StreamTextOptions`, and `AgentConfig`.
 
 `GenerateTextOptions`, `StreamTextOptions`, `AgentGenerateOptions`, and `AgentConfig` use the TypeScript-aligned tool callback names `OnToolExecutionStart` and `OnToolExecutionEnd`. The event structs keep their Go names, `OnToolCallStartEvent` and `OnToolCallFinishEvent`.
 
@@ -34,7 +34,7 @@ type OnStartEvent struct {
 |-------|-------------|
 | CallID | Unique ID for this generation call; correlates `OnStart`/`OnStepStart`/`OnStepFinish`/`OnFinish` events |
 | ModelProvider | Provider name (e.g., `"openai"`, `"anthropic"`) |
-| ModelID | Model identifier (e.g., `"gpt-4o"`) |
+| ModelID | Model identifier (e.g., `"gpt-6-astra"`) |
 | Prompt | The user prompt string |
 | System | The system prompt string (deprecated alias for `Instructions`) |
 | Messages | Initial conversation messages |
@@ -175,6 +175,113 @@ type OnFinishEvent struct {
 | TotalUsage | Aggregated token usage across all steps |
 
 ---
+
+## Canonical event names
+
+Each lifecycle event has a canonical name that matches the TypeScript SDK. The older names are type aliases for the same types, so both compile.
+
+| Canonical name | Alias for |
+| --- | --- |
+| `ai.GenerateTextStartEvent` | `ai.OnStartEvent` |
+| `ai.GenerateTextStepStartEvent` | `ai.OnStepStartEvent` |
+| `ai.GenerateTextStepEndEvent` | `ai.OnStepFinishEvent` |
+| `ai.GenerateTextEndEvent` | `ai.OnFinishEvent` |
+| `ai.ToolExecutionStartEvent` | `ai.OnToolCallStartEvent` |
+| `ai.ToolExecutionEndEvent` | `ai.OnToolCallFinishEvent` |
+| `ai.GenerateObjectStartEvent` | `ai.ObjectOnStartEvent` |
+| `ai.GenerateObjectStepStartEvent` | `ai.ObjectOnStepStartEvent` |
+| `ai.GenerateObjectStepEndEvent`, `ai.ObjectOnStepEndEvent` | `ai.ObjectOnStepFinishEvent` |
+| `ai.GenerateObjectEndEvent` | `ai.ObjectOnFinishEvent` |
+| `ai.EmbedStartEvent` | `ai.EmbedOnStartEvent` |
+| `ai.EmbedEndEvent` | `ai.EmbedOnFinishEvent` |
+| `ai.RerankStartEvent` | `ai.RerankOnStartEvent` |
+| `ai.RerankEndEvent` | `ai.RerankOnFinishEvent` |
+
+## Language model call events
+
+These events wrap each provider call inside a step.
+
+### LanguageModelCallStartEvent
+
+{/* gen:fields ai.LanguageModelCallStartEvent */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `CallID` | `string` | CallID correlates this event with the other events of the call. |
+| `Provider` | `string` | Provider and ModelID identify the model that is called. |
+| `ModelID` | `string` |  |
+| `Instructions` | `string` | Instructions are the step's text instructions. |
+| `InstructionMessages` | `[]types.Message` | InstructionMessages are the step's instructions when given as system messages. |
+| `Messages` | `[]types.Message` | Messages are the step's input messages. |
+| `Tools` | `[]types.Tool` | Tools are the prepared tool definitions sent to the model. |
+| `MaxOutputTokens` | `*int` | Call settings. |
+| `Temperature` | `*float64` |  |
+| `TopP` | `*float64` |  |
+| `TopK` | `*int` |  |
+| `PresencePenalty` | `*float64` |  |
+| `FrequencyPenalty` | `*float64` |  |
+| `StopSequences` | `[]string` |  |
+| `Seed` | `*int` |  |
+| `Reasoning` | `*types.ReasoningLevel` |  |
+
+{/* /gen:fields */}
+
+### LanguageModelCallEndEvent
+
+{/* gen:fields ai.LanguageModelCallEndEvent */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `CallID` | `string` | CallID correlates this event with the other events of the call. |
+| `Provider` | `string` | Provider is the provider identifier. |
+| `ModelID` | `string` | ModelID is the model that produced the response (the response model ID when the provider reports one, otherwise the requested model). |
+| `FinishReason` | `types.FinishReason` | FinishReason is the unified finish reason of the model call. |
+| `Usage` | `types.Usage` | Usage is the token usage reported by the model call. |
+| `Content` | `[]types.ContentPart` | Content are the (parsed) content parts produced by the model call. |
+| `ResponseID` | `string` | ResponseID is the provider-returned response id. |
+| `ProviderMetadata` | `map[string]interface{}` | ProviderMetadata is optional provider-specific metadata. |
+| `Performance` | `LanguageModelCallPerformance` | Performance contains performance metrics for the model call. |
+
+{/* /gen:fields */}
+
+## Evaluate events
+
+`ai.ExperimentalEvaluate` emits `ai.EvaluateOnStartEvent` and `ai.EvaluateOnEndEvent`.
+
+### EvaluateOnStartEvent
+
+{/* gen:fields ai.EvaluateOnStartEvent */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `CallID` | `string` | CallID is a unique identifier for this evaluate call. |
+| `OperationID` | `string` | OperationID is the canonical operation name ("ai.evaluate"). |
+| `RuntimeContext` | `interface{}` | RuntimeContext is the user-defined runtime context passed via options. |
+| `Provider` | `string` |  |
+| `ModelID` | `string` |  |
+| `State` | `interface{}` |  |
+| `Questions` | `map[string]provider.EvaluationQuestion` |  |
+| `MaxRetries` | `int` |  |
+| `Headers` | `map[string]string` |  |
+| `ProviderOptions` | `map[string]interface{}` |  |
+
+{/* /gen:fields */}
+
+### EvaluateOnEndEvent
+
+{/* gen:fields ai.EvaluateOnEndEvent */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| (embedded) | `EvaluateOnStartEvent` | Embedded. |
+| `Answers` | `map[string]provider.EvaluationAnswer` |  |
+| `Usage` | `EvaluateUsage` |  |
+| `Warnings` | `[]types.Warning` |  |
+| `Rounding` | `*provider.EvaluationRounding` |  |
+| `ProviderMetadata` | `map[string]interface{}` |  |
+| `Response` | `EvaluateResponse` |  |
+
+{/* /gen:fields */}
 
 ## Notify Utility
 

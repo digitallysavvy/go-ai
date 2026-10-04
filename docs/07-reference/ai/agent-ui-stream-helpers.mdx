@@ -30,3 +30,103 @@ func PipeAgentUIStreamToResponse(ctx context.Context, agent *agent.ToolLoopAgent
 ```
 
 Writes agent UI chunks to a writer as Server-Sent Events.
+
+## Serving `useChat` from UI messages
+
+A chat frontend built with `useChat` posts its whole message history as UI messages. These helpers take those messages directly. They validate them against the agent's tools, convert them to model messages (including any tool approvals the user just gave), run the agent, and stream the reply back in the UI message stream protocol. They mirror TS `createAgentUIStream`, `createAgentUIStreamResponse` and `pipeAgentUIStreamToResponse`, which take `uiMessages`.
+
+### `CreateAgentUIStreamFromUIMessages`
+
+```go
+func CreateAgentUIStreamFromUIMessages(ctx context.Context, agent *agent.ToolLoopAgent, opts agent.CreateAgentUIStreamFromUIMessagesOptions) (<-chan ai.UIMessageChunk, <-chan error, error)
+```
+
+Returns the reply as a UI message chunk stream. `opts.UIMessages` accepts `[]ai.UIMessage`, decoded JSON, or raw JSON bytes or a string. It returns an error before streaming when the messages fail validation.
+
+### `PipeAgentUIStreamFromUIMessagesToResponse`
+
+```go
+func PipeAgentUIStreamFromUIMessagesToResponse(ctx context.Context, agent *agent.ToolLoopAgent, opts agent.CreateAgentUIStreamFromUIMessagesOptions, w io.Writer) error
+```
+
+Writes the reply to `w` as Server-Sent Events. On an `http.ResponseWriter` it sets the UI message stream headers and status first. The agent stops when writing fails, for example when the client disconnects.
+
+```go
+package main
+
+import (
+	"encoding/json"
+	"log"
+	"net/http"
+	"os"
+
+	"github.com/digitallysavvy/go-ai/pkg/agent"
+	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+	model, err := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")}).LanguageModel("gpt-6-astra")
+	if err != nil {
+		log.Fatal(err)
+	}
+	assistant := agent.NewToolLoopAgent(agent.AgentConfig{Model: model, System: "You are a helpful assistant."})
+
+	http.HandleFunc("POST /api/chat", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages json.RawMessage `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		err := agent.PipeAgentUIStreamFromUIMessagesToResponse(r.Context(), assistant,
+			agent.CreateAgentUIStreamFromUIMessagesOptions{UIMessages: []byte(body.Messages)}, w)
+		if err != nil {
+			log.Printf("chat: %v", err)
+		}
+	})
+	log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+Messages that fail validation return an error before anything is written. To answer those with a 400, start the stream yourself and pipe it once it succeeds:
+
+```go
+chunks, _, err := agent.CreateAgentUIStreamFromUIMessages(r.Context(), assistant,
+	agent.CreateAgentUIStreamFromUIMessagesOptions{UIMessages: []byte(body.Messages)})
+if err != nil {
+	http.Error(w, err.Error(), http.StatusBadRequest)
+	return
+}
+if err := ai.PipeUIMessageChunksToResponse(chunks, w, nil); err != nil {
+	log.Printf("chat: %v", err)
+}
+```
+
+Once streaming has started, errors reach the client as `error` chunks.
+
+### `CreateAgentUIStreamResponseFromUIMessages`
+
+```go
+func CreateAgentUIStreamResponseFromUIMessages(ctx context.Context, agent *agent.ToolLoopAgent, opts agent.CreateAgentUIStreamFromUIMessagesOptions) (*http.Response, error)
+```
+
+Returns an `*http.Response` that streams the reply, with the UI message stream status and headers already set.
+
+## Options
+
+{/* gen:fields agent.CreateAgentUIStreamFromUIMessagesOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `UIMessages` | `interface{}` | UIMessages are the input UI messages (for example []ai.UIMessage, decoded JSON, or raw JSON bytes/string). Validated against the agent's tools via ai.ValidateUIMessagesForAgent before conversion. |
+| `ExperimentalRefineToolInput` | `map[string]ai.ToolInputRefiner` | ExperimentalRefineToolInput reconstructs approved tool input from an approval's inputSchemaInput during validation. Optional. |
+| `ConvertDataPart` | `func(part ai.DataUIPart) types.ContentPart` | ConvertDataPart converts custom UI data parts to text or file model message parts. Data parts are ignored when nil or when the callback returns nil. Mirrors TS createAgentUIStream/createAgentUIStreamResponse/ pipeAgentUIStreamToResponse's `convertDataPart` option (TS #21816). |
+| `AgentOptions` | `AgentStreamOptions` | AgentOptions carries the remaining agent stream options (RuntimeContext, ToolsContext, CallOptions, AbortSignal-equivalents, etc). Its Prompt and Messages fields are ignored: the converted UI messages are used instead. |
+| `UIMessageStream` | `ai.UIMessageStreamResultOptions` | UIMessageStream carries ToUIMessageStream/CreateUIMessageStream options (message metadata, ID generation, callbacks, etc). Tools defaults to agent.Tools() when nil. OriginalMessages defaults to the validated UI messages (converted to UIMessageChunk) when nil, kept for backwards compatibility with callers that already computed their own chunks (TS `originalMessages` escape hatch). |
+
+{/* /gen:fields */}
+
+## Tool approval signing
+
+When `agent.AgentConfig.ExperimentalToolApprovalSecret` is set, these helpers sign each approval request the agent issues and verify each approval response in the posted UI messages before a tool runs. A response with a missing or wrong signature fails with `*ai.InvalidToolApprovalSignatureError`. See [Tool approval helpers](./tool-approvals.mdx).

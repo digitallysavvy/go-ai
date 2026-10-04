@@ -1,0 +1,27 @@
+---
+title: Build a chat app
+description: Guides for building a chat product with a useChat frontend, a Go backend, approval-gated tools and coding agents, based on the Shipyard reference app.
+---
+
+# Build a chat app
+
+Three guides cover the path from a streaming endpoint to a chat product that can change code on a user's behalf. They follow the code in the Shipyard demo, a reference app you can run and read.
+
+1. [Serve a useChat frontend from Go](./01-serve-usechat-from-go.mdx): the request and response protocol, validation, keep-alive, CORS, proxies and custom data parts.
+2. [Tool approval end to end](./02-tool-approval.mdx): let a model ask and a user decide, with signed approval requests.
+3. [Coding agents with the harness](./03-coding-agents-harness.mdx): run Claude Code or Codex in a sandbox and show their work in the chat.
+
+## The reference app
+
+[Shipyard](https://github.com/digitallysavvy/go-ai-demo) is a Next.js page that uses the stock `useChat` hook, talking to a Go server built with the Go AI SDK. A failing Go project sits in a workspace. The chat model investigates with its own tools, asks the user before handing the fix to Claude Code or Codex, and streams the coding agent's activity into the thread.
+
+| Piece | Where it lives |
+| --- | --- |
+| Chat endpoint, validation, keep-alive | [`server/chat.go`](https://github.com/digitallysavvy/go-ai-demo/blob/main/server/chat.go) |
+| Tools and the approval-gated tool | [`server/tools.go`](https://github.com/digitallysavvy/go-ai-demo/blob/main/server/tools.go) |
+| Claude Code and Codex through the harness | [`server/coder.go`](https://github.com/digitallysavvy/go-ai-demo/blob/main/server/coder.go) |
+| `useChat` setup and approval buttons | [`web/app/page.tsx`](https://github.com/digitallysavvy/go-ai-demo/blob/main/web/app/page.tsx) |
+
+## Short versions
+
+If you only need the code, the [recipes](../11-recipes/index.mdx) have one page per task, each with a program you can run.

@@ -35,14 +35,14 @@ result, err := ai.StreamObject(ctx, ai.StreamObjectOptions{
 // Recommended: StreamText + Output returns immediately and lets you read
 // the incrementally parsed value as chunks arrive, matching TS's lazy
 // streamObject.
-result, err := ai.StreamText(ctx, ai.StreamTextOptions{
+textResult, err := ai.StreamText(ctx, ai.StreamTextOptions{
     Model:  model,
     Prompt: "Generate a recipe",
     Output: ai.ObjectOutput[Recipe](ai.ObjectOutputOptions{Schema: recipeSchema}),
 })
-for chunk := range result.Chunks() {
+for chunk := range textResult.Chunks() {
     if chunk.Type == provider.ChunkTypeText {
-        partial := result.PartialOutput() // latest parsed partial value
+        partial := textResult.PartialOutput() // latest parsed partial value
         _ = partial
     }
 }

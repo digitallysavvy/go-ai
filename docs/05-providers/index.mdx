@@ -1,11 +1,11 @@
 ---
 title: Providers
-description: "Complete guide to the 49 AI providers supported by the Go-AI SDK, covering provider categories, comparison, selection guidance, and configuration patterns."
+description: "Complete guide to the 49 AI providers supported by the Go AI SDK, covering provider categories, comparison, selection guidance, and configuration patterns."
 ---
 
 # Providers
 
-The Go-AI SDK supports 49 AI providers (`pkg/providers/*`), giving you access to the latest language models, embedding models, image generation, video generation, speech synthesis, and transcription services. Five providers — **LMNT**, **Ollama**, **Stability AI**, **Vercel**, and **You.com** — are Go-only additions with no upstream TypeScript AI SDK equivalent.
+The Go AI SDK supports 49 AI providers (`pkg/providers/*`), giving you access to the latest language models, embedding models, image generation, video generation, speech synthesis, and transcription services. Five providers — **LMNT**, **Ollama**, **Stability AI**, **Vercel**, and **You.com** — are Go-only additions with no upstream TypeScript AI SDK equivalent.
 
 ## Provider Categories
 
@@ -13,7 +13,7 @@ The Go-AI SDK supports 49 AI providers (`pkg/providers/*`), giving you access to
 
 The most popular and widely-used AI providers:
 
-- [OpenAI](02-openai.mdx) - GPT-4, GPT-5, o1, o3 models
+- [OpenAI](02-openai.mdx) - GPT-6, GPT-5, o-series models
 - [Anthropic](03-anthropic.mdx) - Claude Sonnet, Opus, Haiku
 - [Google](04-google.mdx) - Gemini models
 - [Azure OpenAI](05-azure.mdx) - Enterprise OpenAI deployment
@@ -93,7 +93,7 @@ Providers for specific use cases:
 
 ### 1. Install the SDK
 
-```go
+```bash
 go get github.com/digitallysavvy/go-ai
 ```
 
@@ -109,13 +109,13 @@ provider := openai.New(openai.Config{
     APIKey: os.Getenv("OPENAI_API_KEY"),
 })
 
-model, err := provider.LanguageModel("gpt-4")
+model, err := provider.LanguageModel("gpt-6-astra")
 ```
 
 ### 3. Generate Text
 
 ```go
-result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: "What is the Go-AI SDK?"})
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: "What is the Go AI SDK?"})
 if err != nil {
     log.Fatal(err)
 }
@@ -128,7 +128,7 @@ fmt.Println(result.Text)
 
 | Provider | Best Models | Context Length | Streaming | Tools | Reasoning |
 |----------|-------------|----------------|-----------|-------|-----------|
-| OpenAI | GPT-4o, o1, o3 | 128K+ | Yes | Yes | Yes (o1/o3) |
+| OpenAI | GPT-6, o3, o4-mini | 128K+ | Yes | Yes | Yes (o3/o4-mini) |
 | Anthropic | Claude Opus 4.5 | 200K | Yes | Yes | Yes |
 | Google | Gemini 2.0 Flash | 1M+ | Yes | Yes | Yes |
 | Alibaba | Qwen Max, QwQ | 32K | Yes | Yes | Yes (QwQ) |

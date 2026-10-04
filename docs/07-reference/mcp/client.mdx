@@ -1,0 +1,489 @@
+---
+title: MCP client
+description: "Reference for the Go AI SDK MCP client in pkg/mcp: client creation, transports, tool conversion, resources, prompts, completions, elicitation, MCP Apps and errors."
+---
+
+# MCP client
+
+Package `github.com/digitallysavvy/go-ai/pkg/mcp` is a Model Context Protocol client. It connects to an MCP server, lists its tools, resources and prompts, and converts server tools into `types.Tool` values for `GenerateText`, `StreamText` and agents.
+
+OAuth helpers are in [MCP OAuth](./oauth.mdx). Message and capability types are in [MCP protocol types](./protocol-types.mdx).
+
+## Creating a client
+
+| Function | Description |
+| --- | --- |
+| `mcp.CreateStdioMCPClient(command string, args []string) (*MCPClient, error)` | Starts a local server as a child process and talks to it over stdin and stdout. |
+| `mcp.CreateHTTPMCPClient(url string, oauth *OAuthConfig) (*MCPClient, error)` | Connects to a remote server over streamable HTTP. |
+| `mcp.CreateSSEMCPClient(url string, oauth *OAuthConfig) (*MCPClient, error)` | Connects over the legacy SSE transport. |
+| `mcp.CreateMCPClient(config MCPClientConfig, transport Transport) (*MCPClient, error)` | Creates a client over any transport with explicit configuration. |
+| `mcp.NewMCPClient(transport Transport, config MCPClientConfig) *MCPClient` | Creates a client without connecting. Call `Connect` yourself. |
+
+### MCPClientConfig
+
+{/* gen:fields mcp.MCPClientConfig */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ClientName` | `string` | ClientName is the name of the client |
+| `Name` | `string` | Name is a deprecated alias for ClientName. Deprecated: use ClientName. |
+| `ClientVersion` | `string` | ClientVersion is the version of the client |
+| `Capabilities` | `ClientCapabilities` | Capabilities are optional client capabilities advertised during initialize. |
+| `RequestTimeoutMS` | `int` | RequestTimeoutMS is the timeout for individual requests in milliseconds Default: 30000 (30 seconds) |
+| `EnableLogging` | `bool` | EnableLogging enables client-level logging |
+| `MaxRetries` | `int` | MaxRetries is the maximum number of times a failed "tools/call" request is retried with exponential backoff, matching TypeScript's MCPClient maxRetries option (TS prepareMaxRetries). Default: 0 (no retries). A negative value makes Connect return an error (TS throws MCPClientError "maxRetries must be &gt;= 0" from the constructor; Go has no fallible constructor, so the check runs at Connect instead). Only transient failures are retried: HTTP status 408/409/429/&gt;=500 and transport-level connection errors (refused/reset/timeout/broken pipe/ closed). JSON-RPC application errors (a non-zero MCPClientError.Code) and successful results with IsError=true are never retried. |
+| `ProtocolVersionDiscovery` | `*bool` | ProtocolVersionDiscovery controls whether the client probes the 2026-07-28 `server/discover` method before falling back to the legacy `initialize` handshake (hash e6a9927). Default true. Only takes effect when the transport implements ProtocolVersionDiscoveryTransport and reports support (only HTTPTransport does today). |
+| `OnError` | `func(error)` | OnError, when set, receives non-fatal diagnostics the client would otherwise drop silently: a tool skipped because its x-mcp-header annotation is invalid, a tool call whose header binding failed (hash 0c60a40), or a registered OnElicitationRequest handler that returned an error or an invalid ElicitResult (matching TS DefaultMCPClient.onRequestMessage's this.onError(error) call). |
+
+{/* /gen:fields */}
+
+## MCPClient methods
+
+| Method | Description |
+| --- | --- |
+| `Connect(ctx) error` | Connects the transport and runs the protocol handshake. |
+| `Close() error` | Closes the connection. |
+| `ListTools(ctx) ([]MCPTool, error)` | Lists the first page of tools. |
+| `ListToolsWithCursor(ctx, cursor string) (*ListToolsResult, error)` | Lists one page of tools from a cursor. |
+| `ListAllTools(ctx) ([]MCPTool, error)` | Lists every tool across pages. |
+| `GetSerializableTools(ctx) (*ListToolsResult, error)` | Returns the tool definitions in a form you can store, for example for [fingerprinting](../ai/tool-call-repair.mdx#tool-definition-fingerprints). |
+| `CallTool(ctx, name string, arguments map[string]interface{}) (*CallToolResult, error)` | Calls a tool. |
+| `ListResources(ctx) ([]MCPResource, error)` | Lists resources. |
+| `ListResourceTemplates(ctx) (*ListResourceTemplatesResult, error)` | Lists resource templates. |
+| `ReadResource(ctx, uri string) (*ReadResourceResult, error)` | Reads a resource. |
+| `ListPrompts(ctx) ([]MCPPrompt, error)` | Lists prompts. |
+| `GetPrompt(ctx, name string, arguments map[string]interface{}) (*GetPromptResult, error)` | Gets a prompt with arguments filled in. |
+| `Complete(ctx, params CompleteRequestParams) (*CompleteResult, error)` | Requests argument completions for a prompt or resource template. |
+| `OnElicitationRequest(handler func(context.Context, ElicitationRequest) (ElicitResult, error))` | Registers the handler for server-initiated elicitation requests. |
+| `ServerCapabilities() ServerCapabilities` | Capabilities the server reported. |
+| `ServerInfo() ServerInfo` | Server name and version. |
+| `ServerInstructions() string` | Instructions the server sent. |
+| `InitializeResult() InitializeResult` | The raw initialize result. |
+
+`MaxRetries` retries only `tools/call` requests that fail with a transient error: HTTP 408, 409, 429 or 5xx, or a connection-level failure. JSON-RPC application errors and results with `IsError` set are never retried.
+
+## Transports
+
+All transports implement `mcp.Transport`:
+
+```go
+type Transport interface {
+	Connect(ctx context.Context) error
+	Close() error
+	Send(ctx context.Context, message *MCPMessage) error
+	Receive(ctx context.Context) (*MCPMessage, error) // io.EOF when closed
+	IsConnected() bool
+}
+```
+
+| Constructor | Transport |
+| --- | --- |
+| `mcp.NewStdioTransport(StdioTransportConfig) *StdioTransport` | Child process over stdin and stdout. |
+| `mcp.NewHTTPTransport(HTTPTransportConfig) *HTTPTransport` | Streamable HTTP, with session resumption and an inbound SSE stream. |
+| `mcp.NewSSETransport(SSETransportConfig) *SSETransport` | Legacy SSE. |
+
+### TransportConfig
+
+Common settings that every transport config embeds as `Config`.
+
+{/* gen:fields mcp.TransportConfig */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `TimeoutMS` | `int` | Timeout for operations (optional) |
+| `Headers` | `map[string]string` | Headers for HTTP-based transports |
+| `EnableLogging` | `bool` | EnableLogging enables transport-level logging |
+| `Redirect` | `MCPRedirectMode` | Redirect controls how HTTP redirects are handled. Default (zero value) is MCPRedirectError — redirects cause an error. Set to MCPRedirectFollow to allow the transport to follow redirects. |
+
+{/* /gen:fields */}
+
+`mcp.MCPRedirectMode` controls HTTP redirects. The default, `mcp.MCPRedirectError`, fails on a redirect, so a server cannot silently send the client somewhere else. `mcp.MCPRedirectFollow` follows them.
+
+{/* gen:consts mcp.MCPRedirectMode */}
+
+| Constant | Value | Description |
+| --- | --- | --- |
+| `MCPRedirectError` | `"error"` | MCPRedirectError causes the transport to return an error when the server responds with an HTTP redirect (3xx). This is the default. |
+| `MCPRedirectFollow` | `"follow"` | MCPRedirectFollow allows the transport to follow HTTP redirects automatically. Use this only when you trust the MCP server and expect redirects (e.g. behind a reverse proxy that normalises URLs). |
+
+{/* /gen:consts */}
+
+### StdioTransportConfig
+
+The child process does not inherit the whole parent environment. It gets `Env` plus a short allowlist of safe variables such as `PATH` and `HOME`.
+
+{/* gen:fields mcp.StdioTransportConfig */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Command` | `string` | Command is the command to execute |
+| `Args` | `[]string` | Args are the arguments to pass to the command |
+| `Env` | `[]string` | Env are additional environment variables to set, in "KEY=VALUE" form (the os.Environ()/exec.Cmd.Env convention). The child process does not inherit the full parent environment: only Env plus a small safe allowlist of inherited vars (PATH, HOME, etc. — see getEnvironment) are passed through, mirroring TS mcp-stdio/get-environment.ts. |
+| `WorkingDir` | `string` | WorkingDir is the working directory for the command |
+| `Config` | `TransportConfig` | Config is the base transport configuration |
+
+{/* /gen:fields */}
+
+### HTTPTransportConfig
+
+{/* gen:fields mcp.HTTPTransportConfig */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `URL` | `string` | URL is the URL of the MCP server |
+| `TimeoutMS` | `int` | Timeout is the HTTP request timeout |
+| `OAuth` | `*OAuthConfig` | OAuth configuration (optional) |
+| `Config` | `TransportConfig` | Config is the base transport configuration |
+| `HTTPClient` | `*http.Client` | HTTPClient is an optional custom HTTP client used for all MCP HTTP requests. Useful for TLS customization, proxy settings, and custom dialers. |
+| `SSEClient` | `SSEClient` | SSEClient is an optional custom SSE-capable client used instead of HTTPClient when supplied. It lets callers provide custom event-stream transports, TLS settings, proxy behavior, or dialers. |
+| `InitialSessionID` | `string` | InitialSessionID resumes a previously established streamable HTTP session (hash 241a8c5), sent as `mcp-session-id` on every request until the server issues a new one. |
+| `OnSessionIDChange` | `func(sessionID string)` | OnSessionIDChange is called whenever the server assigns or changes the session id (from an `mcp-session-id` response header). |
+| `OnSessionExpired` | `func(sessionID string)` | OnSessionExpired is called when the server responds 404 to a request carrying a session id, indicating that session is no longer valid. |
+| `TerminateSessionOnClose` | `*bool` | TerminateSessionOnClose sends a best-effort DELETE with the session id when Close is called. Default true. |
+| `OnError` | `func(error)` | OnError, when set, receives non-fatal diagnostics from the background inbound SSE listener (GET reconnect failures, malformed messages, etc.), the send()/POST path (non-2xx responses, fetch failures, OAuth refresh failures, session expiry), and the POST-response SSE reader (stream read failures, malformed messages), matching TS HttpMCPTransport's `onerror` callback. Optional. |
+
+{/* /gen:fields */}
+
+### SSETransportConfig
+
+{/* gen:fields mcp.SSETransportConfig */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `URL` | `string` | URL is the SSE endpoint URL of the MCP server. |
+| `TimeoutMS` | `int` | TimeoutMS is the HTTP request timeout. |
+| `OAuth` | `*OAuthConfig` | OAuth configuration (optional). |
+| `Config` | `TransportConfig` | Config is the base transport configuration. |
+| `HTTPClient` | `*http.Client` | HTTPClient is an optional custom HTTP client used for GET and POST requests. |
+| `SSEClient` | `SSEClient` | SSEClient is an optional custom SSE-capable client used instead of HTTPClient when supplied. |
+
+{/* /gen:fields */}
+
+### OAuthConfig
+
+A static OAuth configuration for `HTTPTransportConfig.OAuth` and `SSETransportConfig.OAuth`. For the full authorization-code flow, use [`mcp.Auth`](./oauth.mdx).
+
+{/* gen:fields mcp.OAuthConfig */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `TokenURL` | `string` | TokenURL is the OAuth token endpoint |
+| `ClientID` | `string` | ClientID is the OAuth client ID |
+| `ClientSecret` | `string` | ClientSecret is the OAuth client secret |
+| `Scopes` | `[]string` | Scopes are the OAuth scopes to request |
+| `AccessToken` | `string` | AccessToken is the current access token |
+| `RefreshToken` | `string` | RefreshToken is the refresh token |
+| `ExpiresAt` | `time.Time` | ExpiresAt is when the access token expires |
+| `RefreshTokenFunc` | `func(ctx context.Context, cfg *OAuthConfig) (accessToken string, expiresIn time.Duration, err error)` | RefreshTokenFunc refreshes the OAuth token. When nil, refresh attempts return an error and callers should provide a fresh access token manually. |
+
+{/* /gen:fields */}
+
+### Optional transport capabilities
+
+A transport can implement these interfaces. The client checks for them with a type assertion.
+
+| Interface | Purpose |
+| --- | --- |
+| `mcp.HeaderedSendTransport` | Attach extra HTTP headers to one request. |
+| `mcp.MCPToolParameterHeadersTransport` | Support binding tool arguments to HTTP headers (see below). |
+| `mcp.ProtocolVersionTransport` | Receive the protocol version negotiated during initialize. |
+| `mcp.ProtocolVersionDiscoveryTransport` | Support probing `server/discover` before falling back to `initialize`. Only `HTTPTransport` does. |
+| `mcp.SendOptionsTransport` | Accept `mcp.MCPTransportSendOptions` on each send. |
+| `mcp.SSEClient` | A custom SSE-capable client for the HTTP and SSE transports. |
+
+{/* gen:fields mcp.MCPTransportSendOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `RelatedRequestID` | `interface{}` | RelatedRequestID associates this outgoing message with an incoming request (TS: `relatedRequestId?: string \| number`). |
+| `ResumptionToken` | `string` | ResumptionToken resumes a previously interrupted request. |
+| `OnResumptionToken` | `func(token string)` | OnResumptionToken receives updated resumption tokens from transports that support them. |
+
+{/* /gen:fields */}
+
+### Tool parameter headers
+
+A tool input schema can mark a property with `x-mcp-header`. The client then sends that argument as an `Mcp-Param-<Name>` header on the `tools/call` request.
+
+| Name | Description |
+| --- | --- |
+| `mcp.GetMCPToolHeaderBindings(inputSchema) ([]MCPToolHeaderBinding, error)` | Finds annotated properties reachable through `properties` only. |
+| `mcp.CreateMCPToolHeaders(bindings, args) (map[string]string, error)` | Builds the headers for one call. |
+| `mcp.EncodeMCPHeaderValue(value string) string` | Encodes a value for an HTTP header. Plain printable ASCII passes through. Other values become `=?base64?<b64>?=`. |
+| `mcp.MCPHeaderValueType` | The JSON Schema `type` an annotated property must declare: `mcp.MCPHeaderValueString`, `mcp.MCPHeaderValueInteger` or `mcp.MCPHeaderValueBoolean`. |
+| `mcp.MCPToolHeaderBinding` | One binding of a schema property to a header. |
+
+## Protocol versions
+
+| Name | Description |
+| --- | --- |
+| `mcp.LatestProtocolVersion` | `"2026-07-28"`. Negotiated with `server/discover`. |
+| `mcp.LatestLegacyProtocolVersion` | `"2025-11-25"`. Negotiated with `initialize`. |
+| `mcp.ProtocolVersion` | The legacy version the client sends in `initialize`. |
+| `mcp.SupportedProtocolVersions` | Every version the client understands, in order of preference. |
+| `mcp.DefaultProtocolDiscoveryTimeoutMS` | How long the client waits for a `server/discover` response before it falls back to `initialize`. |
+| `mcp.ModernProtocolErrorCodes` | JSON-RPC error codes a server uses for a hard failure during modern-era discovery. |
+
+`mcp.DiscoverResult` is the result of `server/discover`. `mcp.DiscoverResultServerInfo(result)` extracts the server info from its metadata.
+
+## Converting tools
+
+```go
+tools, err := mcp.GetMCPToolsForAgent(ctx, client)
+```
+
+`mcp.GetMCPToolsForAgent(ctx, client) ([]types.Tool, error)` fetches and converts every tool. For finer control, create an `mcp.MCPToolConverter` with `mcp.NewMCPToolConverter(client)`:
+
+| Method | Description |
+| --- | --- |
+| `ConvertToGoAITools(ctx) ([]types.Tool, error)` | Fetches and converts every tool. |
+| `ConvertToGoAIToolsWithSchemas(ctx, schemas map[string]MCPToolSchema) ([]types.Tool, error)` | Converts only the tools named in the map. A schema replaces the discovered input schema, and `OutputSchema` validates structured output. |
+| `ToolsFromDefinitions(mcpTools []MCPTool, schemas map[string]MCPToolSchema) ([]types.Tool, error)` | Converts tool definitions you already hold, for example from `GetSerializableTools`. |
+
+`mcp.MCPToolSchema` supplies the Go equivalent of the TypeScript `schemas` map.
+
+{/* gen:fields mcp.MCPToolSchema */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `InputSchema` | `interface{}` |  |
+| `OutputSchema` | `interface{}` |  |
+
+{/* /gen:fields */}
+
+Converted tools carry `mcp.McpProviderMetadata` under the `mcp` provider metadata key. `mcp.McpToolAnnotations` carries the behavior hints a server reports (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`). Treat these hints as untrusted unless you trust the server.
+
+{/* gen:fields mcp.McpProviderMetadata */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ClientName` | `string` |  |
+| `Title` | `string` |  |
+| `ToolName` | `string` |  |
+| `Annotations` | `*McpToolAnnotations` |  |
+| `App` | `map[string]interface{}` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields mcp.McpToolAnnotations */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Title` | `*string` |  |
+| `ReadOnlyHint` | `*bool` |  |
+| `DestructiveHint` | `*bool` |  |
+| `IdempotentHint` | `*bool` |  |
+| `OpenWorldHint` | `*bool` |  |
+
+{/* /gen:fields */}
+
+### Converting results
+
+`mcp.ConvertMCPContentToAISDK(content []ToolResultContent) ([]types.ContentPart, error)` converts MCP tool result content to SDK content parts. Image content becomes an image part with decoded bytes, not text, so a large base64 payload does not count as prompt tokens. It accepts base64 data, `data:` URLs and `http` or `https` URLs.
+
+`mcp.ToolResultContent` is one content item. Its `type` is `text`, `image`, `resource` or `resource_link`.
+
+{/* gen:fields mcp.ToolResultContent */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Type` | `string` | "text", "image", "resource", "resource_link" |
+| `Text` | `string` |  |
+| `Data` | `string` | base64 for image |
+| `MimeType` | `string` |  |
+| `URI` | `string` | for resource/resource_link |
+| `Name` | `string` |  |
+| `Title` | `string` |  |
+| `Description` | `string` |  |
+| `Resource` | `*ResourceContent` |  |
+| `Metadata` | `interface{}` |  |
+| `Meta` | `map[string]interface{}` |  |
+
+{/* /gen:fields */}
+
+### Detecting definition drift
+
+A server can change a tool definition after you reviewed it. Use `ai.FingerprintTools` and `ai.DetectToolDrift` on the converted tools. See [Tool call parsing and repair](../ai/tool-call-repair.mdx#tool-definition-fingerprints).
+
+## Resources
+
+`ListResources`, `ListResourceTemplates` and `ReadResource` return these types.
+
+| Type | Description |
+| --- | --- |
+| `mcp.MCPResource` | A resource the server exposes. |
+| `mcp.MCPResourceTemplate` | A parameterized resource URI. |
+| `mcp.ListResourcesParams`, `mcp.ListResourcesResult` | Parameters and result of `resources/list`. |
+| `mcp.ListResourceTemplatesResult` | Result of `resources/templates/list`. |
+| `mcp.ReadResourceParams`, `mcp.ReadResourceResult` | Parameters and result of `resources/read`. |
+| `mcp.ResourceContent` | One content item of a resource, with `text` or a base64 `blob`. |
+| `mcp.ResourceReference` | Identifies a resource template argument in a completion request. |
+
+{/* gen:fields mcp.MCPResource */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `URI` | `string` |  |
+| `Name` | `string` |  |
+| `Title` | `string` |  |
+| `Description` | `string` |  |
+| `MimeType` | `string` |  |
+| `Size` | `*int64` |  |
+| `Metadata` | `interface{}` |  |
+| `Meta` | `map[string]interface{}` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields mcp.ResourceContent */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `URI` | `string` |  |
+| `Name` | `string` |  |
+| `Title` | `string` |  |
+| `MimeType` | `string` |  |
+| `Text` | `string` |  |
+| `Blob` | `string` | base64 encoded |
+| `Meta` | `map[string]interface{}` |  |
+
+{/* /gen:fields */}
+
+## Prompts
+
+| Type | Description |
+| --- | --- |
+| `mcp.MCPPrompt` | A prompt template the server exposes. |
+| `mcp.MCPPromptArgument` | An argument of a prompt template. |
+| `mcp.ListPromptsParams`, `mcp.ListPromptsResult` | Parameters and result of `prompts/list`. |
+| `mcp.GetPromptParams`, `mcp.GetPromptResult` | Parameters and result of `prompts/get`. |
+| `mcp.PromptMessage` | One message in a prompt result. |
+| `mcp.PromptContent` | The content of a prompt message. |
+| `mcp.PromptReference` | Identifies a prompt argument in a completion request. |
+
+{/* gen:fields mcp.MCPPrompt */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Name` | `string` |  |
+| `Title` | `string` |  |
+| `Description` | `string` |  |
+| `Arguments` | `[]MCPPromptArgument` |  |
+| `Template` | `string` |  |
+| `Metadata` | `map[string]interface{}` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields mcp.GetPromptResult */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Description` | `string` |  |
+| `Messages` | `[]PromptMessage` |  |
+| `Metadata` | `map[string]interface{}` |  |
+
+{/* /gen:fields */}
+
+## Completions
+
+`Complete` asks the server for suggestions for a prompt argument or a resource template argument.
+
+{/* gen:fields mcp.CompleteRequestParams */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `PromptRef` | `*PromptReference` |  |
+| `ResourceRef` | `*ResourceReference` |  |
+| `Argument` | `CompletionArgument` |  |
+| `Context` | `*CompletionContext` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields mcp.CompleteResult */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Completion` | `CompleteResultCompletion` |  |
+| `ResultType` | `string` |  |
+
+{/* /gen:fields */}
+
+`mcp.CompleteResultCompletion` is the payload of `CompleteResult`. `mcp.CompletionArgument` names the argument being completed. `mcp.CompletionContext` carries argument values already resolved.
+
+## Elicitation
+
+A server can ask the user for more input during a tool call. Register a handler with `OnElicitationRequest`. The handler receives an `mcp.ElicitationRequest` (a message and a JSON Schema for the answer) and returns an `mcp.ElicitResult`.
+
+{/* gen:fields mcp.ElicitationRequest */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Message` | `string` |  |
+| `RequestedSchema` | `interface{}` |  |
+| `Meta` | `map[string]interface{}` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields mcp.ElicitResult */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Action` | `string` |  |
+| `Content` | `map[string]interface{}` |  |
+| `Meta` | `map[string]interface{}` |  |
+
+{/* /gen:fields */}
+
+## MCP Apps
+
+MCP Apps let a tool attach an interactive HTML resource, served from a `ui://` URI, for the host to render.
+
+| Name | Description |
+| --- | --- |
+| `mcp.MCPAppExtensionName` | The extension name, `io.modelcontextprotocol/ui`. |
+| `mcp.MCPAppMimeType` | The MIME type of an app resource. |
+| `mcp.MCPAppLegacyResourceURIMetaKey` | The legacy metadata key that holds the resource URI. |
+| `mcp.MCPAppClientCapabilities() ClientCapabilities` | The capabilities a host that supports MCP Apps advertises. |
+| `mcp.IsMCPAppTool(tool MCPTool) (bool, error)` | Reports whether a tool has an app resource. |
+| `mcp.GetMCPAppToolMeta(tool MCPTool) (*MCPAppToolMeta, error)` | Reads and validates the tool's app metadata. |
+| `mcp.GetMCPAppResourceURI(tool MCPTool) (string, error)` | The tool's `ui://` resource URI. |
+| `mcp.GetMCPAppResourceURIs(definitions ListToolsResult) ([]string, error)` | The unique resource URIs across tools. |
+| `mcp.SplitMCPAppTools(definitions ListToolsResult) (modelVisible, appVisible ListToolsResult, err error)` | Splits tools into the set the model sees and the set only the app can call. |
+| `mcp.ReadMCPAppResource(ctx, client, uri) (MCPAppResource, error)` | Reads and normalizes an app resource. |
+| `mcp.GetMCPAppResourceFromReadResult(uri, ReadResourceResult) (MCPAppResource, error)` | Extracts the app HTML from a read result you already have. |
+| `mcp.FingerprintMCPAppResource(resource MCPAppResource) string` | A stable SHA-256 digest of a resource. |
+| `mcp.DetectMCPAppResourceDrift(current, baseline string) bool` | True when two fingerprints differ. |
+
+{/* gen:fields mcp.MCPAppResource */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `URI` | `string` |  |
+| `MimeType` | `string` |  |
+| `HTML` | `string` |  |
+| `Meta` | `map[string]interface{}` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields mcp.MCPAppToolMeta */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ResourceURI` | `string` |  |
+| `Visibility` | `[]string` |  |
+| `Extra` | `map[string]interface{}` |  |
+
+{/* /gen:fields */}
+
+## Errors
+
+| Type or value | Description |
+| --- | --- |
+| `*mcp.MCPClientError` | An error from the client. `Code` is the JSON-RPC error code. `StatusCode` is the HTTP status for transport failures. |
+| `mcp.NewMCPClientError(code, message, data, opts...)` | Creates one. |
+| `mcp.MCPClientErrorOption` | Option for `NewMCPClientError`: `mcp.WithMCPHTTPResponse`, `mcp.WithMCPHTTPResponseBody`, `mcp.WithMCPHTTPStatus`, `mcp.WithMCPHTTPURL`. |
+| `*mcp.MCPError` | A protocol error payload. |
+| `*mcp.TimeoutError`, `mcp.NewTimeoutError(operation)` | A request timed out. |
+| `*mcp.TransportError`, `mcp.NewTransportError(message, cause)` | A transport-level failure. |
+| `mcp.ErrParseError`, `mcp.ErrInvalidRequest`, `mcp.ErrMethodNotFound`, `mcp.ErrInvalidParams`, `mcp.ErrInternalError`, `mcp.ErrToolNotFound`, `mcp.ErrToolExecutionFail`, `mcp.ErrResourceNotFound`, `mcp.ErrUnauthorized` | Sentinel `*MCPClientError` values. |
+
+The matching codes are `mcp.ErrorCodeParseError` (-32700), `mcp.ErrorCodeInvalidRequest`, `mcp.ErrorCodeMethodNotFound`, `mcp.ErrorCodeInvalidParams`, `mcp.ErrorCodeInternalError`, and the MCP-specific `mcp.ErrorCodeToolNotFound` (-32000), `mcp.ErrorCodeToolExecutionFail`, `mcp.ErrorCodeResourceNotFound` and `mcp.ErrorCodeUnauthorized`. OAuth errors are in [MCP OAuth](./oauth.mdx#errors).

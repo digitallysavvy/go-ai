@@ -19,6 +19,35 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  snippets:
+    name: Compile docs snippets
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.26'
+          cache: true
+
+      # Complete programs (blocks with a package clause) must compile, and
+      # fragments must type-check and parse (-fragments=strict): any finding
+      # fails the job. Opt a block out with ```go skip-compile.
+      - name: Compile Go snippets
+        run: go run docs/scripts/compile-snippets.go -fragments=strict | tee snippets.txt
+
+      - name: Summarize fragment findings
+        if: always()
+        run: |
+          {
+            echo '### Docs snippet check'
+            echo '```'
+            grep -E '^(Checked|==)' snippets.txt || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   build:
     name: Build
     runs-on: ubuntu-latest
@@ -63,6 +92,26 @@ jobs:
         uses: actions/upload-pages-artifact@v5
         with:
           path: website/build
+
+  reference:
+    name: Reference check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Check generated reference sections
+        run: go run docs/scripts/gen-reference.go --check
+
+      # Report only: prints the share of exported identifiers that appear in the docs.
+      - name: Report reference coverage
+        run: go run docs/scripts/ref-coverage.go
 
   deploy:
     name: Deploy

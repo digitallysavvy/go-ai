@@ -1,0 +1,133 @@
+---
+title: Anthropic configuration
+description: "Reference for the Anthropic provider Config struct and model option types, generated from the Go source."
+---
+
+# Anthropic configuration
+
+Package `github.com/digitallysavvy/go-ai/pkg/providers/anthropic`. Create a provider with `anthropic.New(anthropic.Config{...})`. When `BaseURL` is empty, the provider reads `ANTHROPIC_BASE_URL`.
+
+The tables on this page are generated from the Go source. For usage, see the [Anthropic provider page](../../05-providers/03-anthropic.mdx).
+
+## Config
+
+{/* gen:fields providers/anthropic.Config */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `APIKey` | `string` | APIKey is the Anthropic API key |
+| `Name` | `string` | Name overrides the provider name returned by Provider.Name() and LanguageModel.Provider(). Defaults to "anthropic". |
+| `BaseURL` | `string` | BaseURL is the URL prefix for API calls, including the version path (default: https://api.anthropic.com/v1, or ANTHROPIC_BASE_URL). The bare host https://api.anthropic.com is normalized to .../v1. A base URL that is set but empty after trimming whitespace makes New panic, matching the TS validateBaseURL error ("baseURL must be a non-empty string."). |
+| `APIVersion` | `string` | APIVersion is the Anthropic API version (default: 2023-06-01) |
+| `OmitAPIVersionHeader` | `bool` | OmitAPIVersionHeader disables the anthropic-version HTTP header. This is used by Vertex Anthropic, which sends anthropic_version in the JSON body. |
+| `HTTPClient` | `*stdhttp.Client` | HTTPClient overrides the HTTP client used for all requests. |
+| `MessagesPath` | `func(modelID string, stream bool) string` | MessagesPath builds the request path for messages API calls. Defaults to "/messages" (relative to BaseURL). |
+| `TransformRequestBody` | `func(body map[string]interface{}, stream bool) map[string]interface{}` | TransformRequestBody can rewrite the Anthropic messages request body before it is sent. It is used by Vertex Anthropic to remove the model field and inject anthropic_version in the JSON body. |
+| `TransformRequestBodyWithBetas` | `func(body map[string]interface{}, betas []string, stream bool) map[string]interface{}` | TransformRequestBodyWithBetas rewrites the request body with access to the request's anthropic-beta flags (TS transformRequestBody(args, betas)). It runs before TransformRequestBody. Bedrock-Anthropic uses it. |
+| `TransformStreamBody` | `func(body io.ReadCloser, header stdhttp.Header) io.ReadCloser` | TransformStreamBody wraps the streaming response body before SSE parsing (for example to convert an AWS event stream into SSE). |
+| `TransformErrorBody` | `func(body []byte) []byte` | TransformErrorBody rewrites a non-2xx response body into the Anthropic error shape before it is parsed. |
+| `SupportsNativeStructuredOutput` | `*bool` | SupportsNativeStructuredOutput gates native structured output. A nil value means true; the model capability must also allow it. |
+| `SupportsImageInput` | `*bool` | SupportsImageInput overrides model capability detection. A nil value preserves the default Anthropic model-based behavior. |
+| `SupportsStrictTools` | `*bool` | SupportsStrictTools controls whether strict mode on function tools is sent to Anthropic. A nil value means true; the model capability must also allow it. |
+| `SupportedURLs` | `func(modelID string) map[string][]string` | SupportedURLs overrides the URL patterns the model accepts directly without downloading first (TS languageModelConfig.supportedUrls). A nil value falls back to DefaultSupportedURLs (https image/\* and application/pdf), matching the direct Anthropic and anthropic-aws providers. Vertex-Anthropic and Bedrock-Anthropic set this to a function that returns an empty map to force base64 conversion, matching TS. |
+| `Headers` | `map[string]string` | Headers are custom HTTP headers to include in requests. |
+| `UserAgentName` | `string` | UserAgentName selects the `ai-sdk-<name>/VERSION` User-Agent tag this provider construction adds (version.ProviderUserAgent). Defaults to "anthropic". TS's anthropic-aws and minimax packages are each their own npm package with their own tag ("ai-sdk-anthropic-aws", "ai-sdk-minimax"); Go's anthropicaws and minimax packages implement this by reusing anthropic.New as their Messages-API transport, so they set this field to avoid inheriting the wrong "ai-sdk-anthropic" tag. |
+| `NoUserAgentTag` | `bool` | NoUserAgentTag disables the `ai-sdk-<name>/VERSION` tag entirely (UserAgentName is ignored when this is true). TS's google-vertex-anthropic-provider.ts builds its AnthropicLanguageModel directly instead of going through createAnthropic (the only place TS's own `ai-sdk-anthropic/VERSION` tag is added), so Vertex-Anthropic requests carry no anthropic-package tag at all -- only the runtime tag the shared HTTP client appends downstream. pkg/providers/googlevertex/anthropic sets this to match. |
+
+{/* /gen:fields */}
+
+## Model factories
+
+| Method | Returns |
+| --- | --- |
+| `LanguageModel(id)` | A language model with default options. |
+| `LanguageModelWithOptions(id, *ModelOptions)` | A language model configured with `ModelOptions`. |
+| `EmbeddingModel(id)`, `ImageModel(id)`, `SpeechModel(id)`, `TranscriptionModel(id)`, `RerankingModel(id)` | Return an error. Anthropic does not offer these model types. |
+| `Files()` | The Files API client. |
+| `Skills()` | The Skills API client. |
+
+## ModelOptions
+
+Options for `LanguageModelWithOptions`.
+
+{/* gen:fields providers/anthropic.ModelOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ContextManagement` | `*ContextManagement` | ContextManagement enables automatic cleanup of conversation history to prevent context window overflow in long conversations. This is a beta feature that requires Claude 4.5+ models. When enabled, Anthropic will automatically remove or truncate old content based on the configured strategies. Example: options := anthropic.ModelOptions\{ ContextManagement: &anthropic.ContextManagement\{ Strategies: []string\{anthropic.StrategyClearToolUses\}, \}, \} See ContextManagement for available strategies. |
+| `Compaction` | `*CompactionOption` | Compaction requests an on-demand summary of the supplied conversation. Mutually exclusive with ContextManagement (setting both returns an error). Adds the "compact-2026-09-04" beta header automatically. Example: options := anthropic.ModelOptions\{ Compaction: &anthropic.CompactionOption\{Type: "summarize"\}, \} |
+| `Thinking` | `*ThinkingConfig` | Thinking configures Claude's extended thinking capabilities. When enabled, responses include thinking content blocks showing Claude's reasoning process before the final answer. For Opus 4.6 and newer models, use ThinkingTypeAdaptive: options := anthropic.ModelOptions\{ Thinking: &anthropic.ThinkingConfig\{ Type: anthropic.ThinkingTypeAdaptive, \}, \} For models before Opus 4.6, use ThinkingTypeEnabled with optional budget: budget := 5000 options := anthropic.ModelOptions\{ Thinking: &anthropic.ThinkingConfig\{ Type: anthropic.ThinkingTypeEnabled, BudgetTokens: &budget, \}, \} |
+| `Speed` | `Speed` | Speed configures the inference speed mode. Fast mode provides 2.5x faster output token speeds but is only supported with claude-opus-4-6. Example: options := anthropic.ModelOptions\{ Speed: anthropic.SpeedFast, \} |
+| `AutomaticCaching` | `bool` | AutomaticCaching enables Anthropic's automatic prompt caching feature. When enabled, the API automatically identifies and caches reusable prompt segments without requiring explicit cache_control markers in individual messages. This requires the "prompt-caching-2024-07-31" beta header. Example: options := anthropic.ModelOptions\{ AutomaticCaching: true, \} See https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching for details. |
+| `CacheControl` | `*CacheControlOption` | CacheControl configures explicit ephemeral prompt caching. Mutually exclusive with AutomaticCaching; CacheControl takes precedence if both are set. Example: options := anthropic.ModelOptions\{ CacheControl: &anthropic.CacheControlOption\{Type: "ephemeral", TTL: "5m"\}, \} |
+| `Effort` | `Effort` | Effort controls the model's reasoning effort level. Supported values: EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax. Sent as output_config.effort (no beta header is required). Example: options := anthropic.ModelOptions\{ Effort: anthropic.EffortHigh, \} |
+| `TaskBudget` | `*TaskBudget` | TaskBudget informs the model of the total token budget available for the current task. This is advisory only; it does not enforce a hard limit. Requires the "task-budgets-2026-03-13" beta header (injected automatically). |
+| `InferenceGeo` | `string` | InferenceGeo controls where Anthropic inference may run for this request. Supported values match the TypeScript SDK: "us" or "global". |
+| `Fallbacks` | `[]FallbackConfig` | Fallbacks configures Anthropic server-side fallback attempts. |
+| `FallbacksDefault` | `bool` | FallbacksDefault sends fallbacks: "default" to use Anthropic's default server-side fallback chain (beta server-side-fallback-2026-07-01). It takes precedence over Fallbacks. |
+| `ServiceTier` | `string` | ServiceTier selects the Anthropic service tier: "auto" or "standard_only". Serialized as service_tier. |
+| `AnthropicBeta` | `[]string` | AnthropicBeta lists additional anthropic-beta flags to send. |
+| `Safeguards` | `[]Safeguard` | Safeguards configures safeguard classifiers (for example dangerous_tool_use). Classifier verdicts are returned in providerMetadata.anthropic.safeguardResults. |
+| `ToolStreaming` | `*bool` | ToolStreaming controls whether fine-grained tool streaming is enabled. When nil or true, streaming requests set eager_input_streaming: true on function tools that do not set ToolOptions.EagerInputStreaming. Set it to false to disable that default. Example (disable): disabled := false options := anthropic.ModelOptions\{ToolStreaming: &disabled\} |
+| `DisableParallelToolUse` | `*bool` | DisableParallelToolUse prevents the model from calling multiple tools in a single response. When true, adds \{disable_parallel_tool_use: true\} to the tool_choice object sent to the API. An explicit false is ignored (with a warning) when the JSON response tool is used for structured output. Example: disable := true options := anthropic.ModelOptions\{ DisableParallelToolUse: &disable, \} |
+| `MCPServers` | `[]MCPServerConfig` | MCPServers configures remote MCP servers for native server-side tool invocation. The Anthropic API connects to these MCP servers directly, exposing their tools to the model without the caller having to proxy individual tool calls. Requires the "mcp-client-2025-04-04" beta header (injected automatically). Example: options := anthropic.ModelOptions\{ MCPServers: []anthropic.MCPServerConfig\{ \{Type: "url", Name: "my-server", URL: "https://mcp.example.com/sse"\}, \}, \} |
+| `Container` | `*ContainerConfig` | Container configures an Anthropic agent container for code execution and skills. When Skills are provided, the code-execution-2025-08-25, skills-2025-10-02, and files-api-2025-04-14 beta headers are automatically injected. Example (full config with skills): options := anthropic.ModelOptions\{ Container: &anthropic.ContainerConfig\{ Skills: []anthropic.ContainerSkill\{ \{Type: "anthropic", SkillID: "web_search"\}, \}, \}, \} |
+| `ContainerID` | `string` | ContainerID is a shorthand for specifying a plain container ID string. When set, the container body field is sent as a plain string value. Mutually exclusive with Container; ContainerID takes precedence if both are set. Example: options := anthropic.ModelOptions\{ ContainerID: "container-abc123", \} |
+| `StructuredOutputMode` | `StructuredOutputMode` | StructuredOutputMode controls how ResponseFormat is sent to the API. Default (empty/"auto"): uses output_config.format for models that support it (claude-\*-4-6, claude-\*-4-5), falls back to a synthetic json tool for models that don't (e.g. claude-sonnet-4-20250514, claude-3-7-sonnet). Example: options := anthropic.ModelOptions\{ StructuredOutputMode: anthropic.StructuredOutputJSONTool, \} |
+| `SendReasoning` | `*bool` | SendReasoning controls whether ReasoningContent (thinking) blocks from message history are included when sending messages to the Anthropic API. Default (nil or true): reasoning blocks with a valid Signature are included in outgoing requests — required when the receiving model supports extended thinking and the blocks were originally produced by that model. Set to false when routing a conversation to a model that does not support thinking input (e.g. an older Claude model or one without thinking enabled). This strips all ReasoningContent parts from outgoing message history before the API call, preventing errors caused by unexpected thinking content. Example (disable when switching to non-thinking model): disabled := false options := anthropic.ModelOptions\{SendReasoning: &disabled\} |
+| `Metadata` | `*Metadata` | Metadata to include with the request (TS anthropicLanguageModelOptions.metadata). Example: options := anthropic.ModelOptions\{ Metadata: &anthropic.Metadata\{UserID: "user-123"\}, \} |
+
+{/* /gen:fields */}
+
+## ThinkingConfig
+
+{/* gen:fields providers/anthropic.ThinkingConfig */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Type` | `ThinkingType` | Type specifies the thinking mode |
+| `BudgetTokens` | `*int` | BudgetTokens specifies the maximum tokens for thinking (only for "enabled" type) Requires a minimum of 1,024 tokens and counts towards the max_tokens limit. Optional for "enabled" type, not used for "adaptive" type. |
+| `Display` | `ThinkingDisplay` | Display controls how thinking is returned for "adaptive" thinking: ThinkingDisplayOmitted, ThinkingDisplaySummarized or ThinkingDisplayUpdates (adds the thinking-display-updates beta). Ignored for other thinking types. |
+| `BlockBinding` | `*ThinkingBlockBinding` | BlockBinding configures preserved-thinking block binding (thinking.block_binding). It may be set with Type "adaptive" or alone (empty Type) for binding-only recovery requests. Adds the thinking-binding-controls beta. |
+
+{/* /gen:fields */}
+
+## ToolOptions
+
+Per-tool options, set on `types.Tool.ProviderOptions`.
+
+{/* gen:fields providers/anthropic.ToolOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `CacheControl` | `*CacheControl` | CacheControl enables prompt caching for this tool definition. When set, the tool definition will be cached for reuse across requests. |
+| `EagerInputStreaming` | `*bool` | EagerInputStreaming enables eager (larger-chunk) streaming of tool input deltas for this custom function tool. When true, Anthropic streams tool input in larger batches rather than byte-by-byte, improving streaming responsiveness. Only applies to custom function tools. Do NOT set on provider tools (web_search_20260209, web_fetch_20260209, etc.). When enabled, the stream emits tool-input-start, tool-input-delta, and tool-input-end chunks alongside the final tool-call chunk. |
+| `DeferLoading` | `*bool` | DeferLoading marks this tool for deferred loading when used alongside a tool search tool. When true, Claude does not load this tool's full definition upfront; instead it discovers and loads the tool on demand via tool_search. Use with AnthropicTools.ToolSearchBm2520251119 or AnthropicTools.ToolSearchRegex20251119. Serialized as defer_loading in the API request. |
+| `AllowedCallers` | `[]string` | AllowedCallers restricts which tool types can invoke this tool programmatically. Valid values: "direct", "code_execution_20250825", "code_execution_20260120" When set, the anthropic-beta: advanced-tool-use-2025-11-20 header is automatically injected. Serialized as allowed_callers in the API request. |
+
+{/* /gen:fields */}
+
+## ContainerConfig
+
+{/* gen:fields providers/anthropic.ContainerConfig */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ID` | `string` | ID is an optional existing container ID to reuse |
+| `Skills` | `[]ContainerSkill` | Skills are the capability bundles to load into the container |
+
+{/* /gen:fields */}
+
+## MCPServerConfig
+
+{/* gen:fields providers/anthropic.MCPServerConfig */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Type` | `string` | Type must be "url" |
+| `Name` | `string` | Name is a unique identifier for this server within the request |
+| `URL` | `string` | URL is the HTTP(S) endpoint of the MCP server |
+| `AuthorizationToken` | `string` | AuthorizationToken is an optional bearer token for authentication |
+| `ToolConfiguration` | `*MCPToolConfiguration` | ToolConfiguration optionally restricts which tools from this server are available |
+
+{/* /gen:fields */}

@@ -32,18 +32,18 @@ func main() {
 
     // OpenAI
     openaiProvider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
-    gpt4, _ := openaiProvider.LanguageModel("gpt-4")
+    gpt, _ := openaiProvider.LanguageModel("gpt-6-astra")
 
     // Anthropic
     anthropicProvider := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")})
-    claude, _ := anthropicProvider.LanguageModel("claude-3-5-sonnet-20241022")
+    claude, _ := anthropicProvider.LanguageModel("claude-sonnet-5-5")
 
     // Google
     googleProvider := google.New(google.Config{APIKey: os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY")})
-    gemini, _ := googleProvider.LanguageModel("gemini-1.5-flash")
+    gemini, _ := googleProvider.LanguageModel("gemini-2.5-flash")
 
     // Same API for all providers
-    for _, model := range []provider.LanguageModel{gpt4, claude, gemini} {
+    for _, model := range []provider.LanguageModel{gpt, claude, gemini} {
         result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
             Model:  model,
             Prompt: "What is love?",

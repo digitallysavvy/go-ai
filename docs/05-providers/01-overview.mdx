@@ -1,11 +1,11 @@
 ---
 title: Provider System Overview
-description: Complete guide to the Go-AI SDK provider architecture and capabilities
+description: Complete guide to the Go AI SDK provider architecture and capabilities
 ---
 
 # Provider System Overview
 
-The Go-AI SDK provides a unified interface for working with 50 AI providers (`pkg/providers/*`, one shared internal package excluded), from OpenAI and Anthropic to open-source platforms and specialized services. Five of them — LMNT, Ollama, Stability AI, Vercel, and You.com (search tools) — are Go-only and have no upstream TypeScript SDK equivalent. See the [full provider index](index.mdx) for the complete list.
+The Go AI SDK provides a unified interface for working with 50 AI providers (`pkg/providers/*`, one shared internal package excluded), from OpenAI and Anthropic to open-source platforms and specialized services. Five of them — LMNT, Ollama, Stability AI, Vercel, and You.com (search tools) — are Go-only and have no upstream TypeScript SDK equivalent. See the [full provider index](index.mdx) for the complete list.
 
 ## Architecture
 
@@ -15,14 +15,14 @@ All providers implement a consistent interface, allowing you to switch providers
 
 ```go
 // Works with any provider
-provider := openai.New(openai.Config{APIKey: key})
+var p provider.Provider = openai.New(openai.Config{APIKey: key})
 // OR
-provider := anthropic.New(anthropic.Config{APIKey: key})
+p = anthropic.New(anthropic.Config{APIKey: key})
 // OR
-provider := google.New(google.Config{APIKey: key})
+p = google.New(google.Config{APIKey: key})
 
 // Same API for all providers
-model, err := provider.LanguageModel("model-id")
+model, err := p.LanguageModel("model-id")
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{Model: model, Prompt: prompt})
 ```
 
@@ -49,7 +49,7 @@ type Provider interface {
 Providers offering text generation and chat capabilities:
 
 **Tier 1 (Frontier Models)**
-- OpenAI - GPT-4o, GPT-5, o1, o3
+- OpenAI - GPT-6, GPT-5, o3, o4-mini
 - Anthropic - Claude Opus 4.5, Sonnet 4.5
 - Google - Gemini 2.0 Flash, Pro
 
@@ -155,7 +155,7 @@ provider := anthropic.New(anthropic.Config{
 
 ```go
 // Azure OpenAI with regional endpoint
-provider, err := azure.New(azure.Config{
+azureProvider, err := azure.New(azure.Config{
     ResourceName: os.Getenv("AZURE_RESOURCE_NAME"),
     APIKey:       os.Getenv("AZURE_API_KEY"),
     APIVersion:   "v1",
@@ -165,7 +165,7 @@ if err != nil {
 }
 
 // AWS Bedrock with region
-provider := bedrock.New(bedrock.Config{
+bedrockProvider := bedrock.New(bedrock.Config{
     Region: "us-west-2",
     AWSAccessKeyID: os.Getenv("AWS_ACCESS_KEY_ID"),
     AWSSecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
@@ -202,13 +202,13 @@ provider := openai.New(openai.Config{
 
 **General Purpose Chat**
 ```go
-// Best: GPT-4o, Claude Opus 4.5, Gemini 2.0 Flash
-model, _ := provider.LanguageModel("gpt-4o")
+// Best: GPT-6, Claude Opus 5.5, Gemini 3.5 Flash
+model, _ := provider.LanguageModel("gpt-6-astra")
 ```
 
 **Code Generation**
 ```go
-// Best: GPT-4o, Claude Sonnet 4.5, DeepSeek-V3
+// Best: GPT-6, Claude Sonnet 5.5, DeepSeek V4
 model, _ := provider.LanguageModel("claude-sonnet-4.5")
 ```
 
@@ -226,20 +226,20 @@ model, _ := provider.LanguageModel("llama-3.3-70b-versatile")
 
 **Cost-Effective**
 ```go
-// Best: Gemini Flash, Claude Haiku, GPT-4o-mini
+// Best: Gemini Flash, Claude Haiku, GPT-5.4 mini
 model, _ := provider.LanguageModel("gemini-2.0-flash")
 ```
 
 **Long Context**
 ```go
 // Best: Gemini Pro (1M+), Claude Opus (200K)
-model, _ := provider.LanguageModel("gemini-2.0-pro")
+model, _ := provider.LanguageModel("gemini-2.5-pro")
 ```
 
 ### By Capability
 
 **Tool Calling**
-- OpenAI GPT-4o
+- OpenAI GPT-6
 - Anthropic Claude 4.5
 - Google Gemini 2.0
 - Mistral Large 2
@@ -252,7 +252,7 @@ model, _ := provider.LanguageModel("gemini-2.0-pro")
 - Mistral
 
 **Vision**
-- OpenAI GPT-4o
+- OpenAI GPT-6
 - Anthropic Claude 4.5
 - Google Gemini 2.0 Flash
 - Mistral Pixtral

@@ -1,6 +1,6 @@
 ---
 title: ElevenLabs Provider
-description: "Setup guide for ElevenLabs text-to-speech in the Go-AI SDK, covering the provider.SpeechModel interface, generating speech, provider options, and models."
+description: "Setup guide for ElevenLabs text-to-speech in the Go AI SDK, covering the provider.SpeechModel interface, generating speech, provider options, and models."
 ---
 
 # ElevenLabs Provider
@@ -38,7 +38,7 @@ if err != nil {
 ```go
 result, err := ai.GenerateSpeech(context.Background(), ai.GenerateSpeechOptions{
     Model:        model,
-    Text:         "Welcome to the Go-AI SDK.",
+    Text:         "Welcome to the Go AI SDK.",
     Voice:        "Rachel",
     OutputFormat: "mp3",
 })

@@ -201,7 +201,7 @@ import (
 
 pdfData, _ := os.ReadFile("./data/example.pdf")
 
-model, err := googleProvider.LanguageModel("gemini-1.5-flash")
+model, err := googleProvider.LanguageModel("gemini-2.5-flash")
 if err != nil {
     log.Fatal(err)
 }

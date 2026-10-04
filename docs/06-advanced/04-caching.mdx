@@ -13,7 +13,7 @@ The recommended approach to caching responses is using [language model middlewar
 
 Let's see how you can use language model middleware to cache responses:
 
-```go
+```go skip-compile
 package main
 
 import (
@@ -175,7 +175,7 @@ func main() {
 func getBaseModel() (provider.LanguageModel, error) {
     // Import your provider and create model
     // provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
-    // return provider.LanguageModel("gpt-4")
+    // return provider.LanguageModel("gpt-6-astra")
     return nil, nil
 }
 ```
@@ -390,7 +390,7 @@ func createCacheKey(options *provider.GenerateOptions) string {
 
 Alternatively, you can use the `OnFinish` callback to cache responses:
 
-```go
+```go skip-compile
 package main
 
 import (
@@ -443,7 +443,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     // Convert messages
     messages := convertToMessages(req.Messages)
@@ -492,7 +492,7 @@ func main() {
 
 For streaming responses, cache the complete stream after it finishes:
 
-```go
+```go skip-compile
 package main
 
 import (
@@ -545,7 +545,7 @@ func streamHandler(w http.ResponseWriter, r *http.Request) {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     stream, err := ai.StreamText(ctx, ai.StreamTextOptions{
         Model:  model,

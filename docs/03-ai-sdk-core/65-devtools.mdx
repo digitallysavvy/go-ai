@@ -1,11 +1,11 @@
 ---
 title: Development Tools & Debugging
-description: "Covers debugging, profiling, and testing Go-AI SDK applications, including debug mode, request/response inspection, token usage, and performance profiling."
+description: "Covers debugging, profiling, and testing Go AI SDK applications, including debug mode, request/response inspection, token usage, and performance profiling."
 ---
 
 # Development Tools & Debugging
 
-The Go-AI SDK provides several tools and techniques for debugging, observability, and testing your AI applications. This guide covers logging, request inspection, performance profiling, and testing utilities.
+The Go AI SDK provides several tools and techniques for debugging, observability, and testing your AI applications. This guide covers logging, request inspection, performance profiling, and testing utilities.
 
 ## Debug Mode
 
@@ -57,7 +57,7 @@ func main() {
         },
     })
 
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
         Model:  model,
@@ -121,7 +121,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     temperature := 0.7
     maxTokens := 500
@@ -227,7 +227,7 @@ func main() {
         HTTPClient: httpClient,
     })
 
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
         Model:  model,
@@ -271,7 +271,7 @@ func (t *TokenTracker) Track(result *ai.GenerateTextResult) {
     t.TotalPromptTokens += result.Usage.GetInputTokens()
     t.TotalCompletionTokens += result.Usage.GetOutputTokens()
 
-    // GPT-4 pricing (example)
+    // Example pricing
     promptCost := float64(result.Usage.GetInputTokens()) * 0.03 / 1000
     completionCost := float64(result.Usage.GetOutputTokens()) * 0.06 / 1000
     t.TotalCost += promptCost + completionCost
@@ -291,7 +291,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     tracker := &TokenTracker{}
 
@@ -377,7 +377,7 @@ func main() {
         TokenBudget: 1000, // Maximum 1000 tokens
     }
 
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     result, err := budgetedAI.GenerateText(ctx, ai.GenerateTextOptions{
         Model:  model,
@@ -428,7 +428,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     for i := 0; i < 10; i++ {
         result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
@@ -526,7 +526,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     tracker := &LatencyTracker{}
 
@@ -665,7 +665,7 @@ func TestOpenAIIntegration(t *testing.T) {
     provider := openai.New(openai.Config{
         APIKey: apiKey,
     })
-    model, err := provider.LanguageModel("gpt-3.5-turbo")
+    model, err := provider.LanguageModel("gpt-5.4-nano")
     if err != nil {
         t.Fatal(err)
     }
@@ -816,10 +816,10 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     logger.Info("Starting AI request",
-        "model", "gpt-4",
+        "model", "gpt-6-astra",
         "prompt", "Hello!",
     )
 
@@ -871,7 +871,7 @@ func generateWithTracing(ctx context.Context, model provider.LanguageModel, prom
     defer span.End()
 
     span.SetAttributes(
-        attribute.String("ai.model", "gpt-4"),
+        attribute.String("ai.model", "gpt-6-astra"),
         attribute.String("ai.prompt", prompt),
     )
 
@@ -901,7 +901,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     result, err := generateWithTracing(ctx, model, "Hello!")
     if err != nil {
@@ -979,14 +979,17 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 
 ## Best Practices
 
-### 1. Use Debug Mode in Development
+### 1. Log HTTP traffic in development
 
 ```go
 // ✅ Good: Debug mode in development
-provider := openai.New(openai.Config{
-    APIKey:    os.Getenv("OPENAI_API_KEY"),
-    DebugMode: os.Getenv("ENV") == "development",
-})
+cfg := openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")}
+if os.Getenv("ENV") == "development" {
+    cfg.HTTPClient = &http.Client{
+        Transport: &LoggingTransport{Transport: http.DefaultTransport},
+    }
+}
+provider := openai.New(cfg)
 ```
 
 ### 2. Monitor Token Usage
@@ -1003,7 +1006,7 @@ if result.Usage.GetTotalTokens() > 10000 {
 ```go
 // ✅ Good: Structured logging
 logger.Info("AI request",
-    "model", "gpt-4",
+    "model", "gpt-6-astra",
     "tokens", result.Usage.GetTotalTokens(),
     "duration", duration,
 )

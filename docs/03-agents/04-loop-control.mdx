@@ -224,7 +224,7 @@ yourself using `ai.GenerateText`.
 ```go
 func manualAgentLoop(ctx context.Context, prompt string, tools []types.Tool) (string, error) {
     provider := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     messages := []types.Message{
         {
@@ -307,7 +307,7 @@ boilerplate.
 
 ## See Also
 
-- [Stop-When Example](../../examples/agents/callbacks/stop-when/main.go) — focused example showing all three stop patterns
+- [Stop-When Example](https://github.com/digitallysavvy/go-ai/blob/main/examples/agents/callbacks/stop-when/main.go) — focused example showing all three stop patterns
 - [Configuring Call Options](./05-configuring-call-options.mdx) — temperature, max tokens, and other options
 - [Workflow Patterns](./03-workflows.mdx) — structured agent designs
 - [Error Handling](../03-ai-sdk-core/50-error-handling.mdx) — robust error handling

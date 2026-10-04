@@ -9,12 +9,11 @@ Long-running agents and multi-turn applications need strategies to keep conversa
 
 ## The Problem: Context Window Limits
 
-Every language model has a fixed context window — the maximum number of tokens it can process in a single request. Conversations that exceed this limit fail or truncate silently. For reference:
+Every language model has a fixed context window — the maximum number of tokens it can process in a single request. Conversations that exceed this limit fail or truncate silently. Check your provider's documentation for the window of the model you use. For reference:
 
 | Model | Context Window |
 |-------|---------------|
 | claude-sonnet-4-5 | 200K tokens |
-| gpt-4o | 128K tokens |
 | gemini-2.0-flash | 1M tokens |
 
 Even with large windows, longer conversations become expensive. Sending 100K tokens per request adds up quickly in production.
@@ -418,7 +417,7 @@ func main() {
     ctx := context.Background()
 
     p := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
-    model, _ := p.LanguageModel("gpt-4o")
+    model, _ := p.LanguageModel("gpt-6-astra")
 
     store := NewFileMemoryStore("/tmp/chat-sessions")
     sessionID := fmt.Sprintf("session-%d", time.Now().Unix())

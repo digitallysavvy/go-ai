@@ -5,7 +5,7 @@ go 1.26.0
 replace github.com/digitallysavvy/go-ai => ../../..
 
 require (
-	github.com/digitallysavvy/go-ai v0.4.0
+	github.com/digitallysavvy/go-ai v0.5.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 )
 

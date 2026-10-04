@@ -183,7 +183,7 @@ func main() {
     })
 
     // Create model
-    model, err := provider.LanguageModel("claude-3-5-sonnet-20241022")
+    model, err := provider.LanguageModel("claude-sonnet-5-5")
     if err != nil {
         panic(err)
     }

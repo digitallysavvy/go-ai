@@ -1,11 +1,11 @@
 ---
 title: "Anthropic Advanced Features"
-description: "Covers advanced Claude model features in the Go-AI SDK, including Fast Mode, adaptive thinking, combining features, and AWS Bedrock support."
+description: "Covers advanced Claude model features in the Go AI SDK, including Fast Mode, adaptive thinking, combining features, and AWS Bedrock support."
 ---
 
 # Anthropic Advanced Features
 
-This guide covers advanced features available for Anthropic Claude models in the Go-AI SDK.
+This guide covers advanced features available for Anthropic Claude models in the Go AI SDK.
 
 ## Fast Mode
 
@@ -288,7 +288,7 @@ if err != nil {
 
 - Verify thinking is enabled in model options
 - Check `result.Reasoning` for thinking content
-- Ensure model supports thinking (Claude 3+)
+- Ensure the model supports thinking (Claude 3.7 and later)
 
 ### Budget Token Issues
 
@@ -342,7 +342,7 @@ const (
 |---------|--------------|-------------|
 | Fast Mode | claude-opus-4-6 | 2023-06-01+ |
 | Adaptive Thinking | claude-opus-4-6 | 2023-06-01+ |
-| Extended Thinking | claude-3+ | 2023-06-01+ |
+| Extended Thinking | Claude 3.7+ | 2023-06-01+ |
 
 ## Code Execution Tool (2026-01-20)
 

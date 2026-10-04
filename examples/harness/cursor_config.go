@@ -76,7 +76,7 @@ func main() {
 	agent, err := harness.NewAgent(harness.AgentSettings{
 		Harness:        h,
 		Model:          "auto",
-		Sandbox:        local.NewProvider(local.Options{}),
+		Sandbox:        local.NewProvider(local.Options{Ports: []int{4318}}), // the harness bridge listens on this port
 		PermissionMode: harness.PermissionModeAllowAll,
 	})
 	if err != nil {

@@ -1,0 +1,236 @@
+---
+title: Harness stream parts
+description: "Reference for the stream part types a harness adapter emits during a prompt turn, how they map to AI SDK stream chunks, and the JSON helpers."
+---
+
+# Harness stream parts
+
+An adapter emits `harness.StreamPart` values while a turn runs. `harness.Agent` translates them into `provider.StreamChunk` values for `ai.NewStreamTextResultFromParts`, so a harness turn streams like a `StreamText` call. Each part marshals to the JSON shape of the TypeScript `HarnessV1StreamPart`, so parts persisted by one SDK decode in the other.
+
+The adapter interface is in [Harness adapters](./adapters.mdx).
+
+## Part types
+
+`StreamPart.PartType()` returns the `type` discriminator. The `harness.PartType*` constants hold the values.
+
+| Constant | `type` | Go type | Description |
+| --- | --- | --- | --- |
+| `harness.PartTypeStreamStart` | `stream-start` | `*harness.StreamStartPart` | Start of a turn. |
+| `harness.PartTypeTextStart` | `text-start` | `*harness.TextStartPart` | A text block opens. |
+| `harness.PartTypeTextDelta` | `text-delta` | `*harness.TextDeltaPart` | A piece of text. |
+| `harness.PartTypeTextEnd` | `text-end` | `*harness.TextEndPart` | A text block closes. |
+| `harness.PartTypeReasoningStart` | `reasoning-start` | `*harness.ReasoningStartPart` | A reasoning block opens. |
+| `harness.PartTypeReasoningDelta` | `reasoning-delta` | `*harness.ReasoningDeltaPart` | A piece of reasoning. |
+| `harness.PartTypeReasoningEnd` | `reasoning-end` | `*harness.ReasoningEndPart` | A reasoning block closes. |
+| `harness.PartTypeToolInputStart` | `tool-input-start` | `*harness.ToolInputStartPart` | Tool input starts streaming. |
+| `harness.PartTypeToolInputDelta` | `tool-input-delta` | `*harness.ToolInputDeltaPart` | A piece of tool input. |
+| `harness.PartTypeToolInputEnd` | `tool-input-end` | `*harness.ToolInputEndPart` | Tool input is complete. |
+| `harness.PartTypeToolCall` | `tool-call` | `*harness.ToolCallPart` | A tool call. Carries `nativeName` and `stepToolCallCount` in addition to the model tool call fields. |
+| `harness.PartTypeToolApprovalRequest` | `tool-approval-request` | `*harness.ToolApprovalRequestPart` | The runtime asks for approval. |
+| `harness.PartTypeToolResult` | `tool-result` | `*harness.ToolResultPart` | A tool result. |
+| `harness.PartTypeFinishStep` | `finish-step` | `*harness.FinishStepPart` | End of a step inside a turn. |
+| `harness.PartTypeFinish` | `finish` | `*harness.FinishPart` | End of the turn. |
+| `harness.PartTypeFileChange` | `file-change` | `*harness.FileChangePart` | A workspace change made through an opaque mechanism. |
+| `harness.PartTypeCompaction` | `compaction` | `*harness.CompactionPart` | The runtime compacted its context. |
+| `harness.PartTypeError` | `error` | `*harness.ErrorPart` | An error. |
+| `harness.PartTypeRaw` | `raw` | `*harness.RawPart` | Adapter-specific passthrough. |
+
+### Fields
+
+{/* gen:fields harness.StreamStartPart */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Warnings` | `[]CallWarning` |  |
+| `ModelID` | `string` | ModelID is the model the runtime resolved to for this turn, when known. |
+
+{/* /gen:fields */}
+
+{/* gen:fields harness.TextDeltaPart */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ID` | `string` |  |
+| `Delta` | `string` |  |
+| `HarnessMetadata` | `Metadata` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields harness.ToolCallPart */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ToolCallID` | `string` |  |
+| `ToolName` | `string` |  |
+| `Input` | `string` | Input is the stringified JSON tool input. |
+| `ProviderExecuted` | `bool` | ProviderExecuted is true for runtime-executed builtins. |
+| `Dynamic` | `bool` |  |
+| `ProviderMetadata` | `ProviderMetadata` |  |
+| `NativeName` | `string` | NativeName is the runtime's native name when it differs from ToolName. |
+| `StepToolCallCount` | `*int` | StepToolCallCount is the total tool calls in the current model step, when known up front. Must be a positive integer when set. |
+
+{/* /gen:fields */}
+
+{/* gen:fields harness.ToolApprovalRequestPart */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ApprovalID` | `string` |  |
+| `ToolCallID` | `string` |  |
+| `ProviderMetadata` | `ProviderMetadata` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields harness.ToolResultPart */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ToolCallID` | `string` |  |
+| `ToolName` | `string` |  |
+| `Result` | `any` |  |
+| `IsError` | `bool` |  |
+| `Preliminary` | `bool` |  |
+| `Dynamic` | `bool` |  |
+| `ProviderMetadata` | `ProviderMetadata` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields harness.FinishStepPart */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `FinishReason` | `FinishReason` |  |
+| `Usage` | `Usage` |  |
+| `HarnessMetadata` | `Metadata` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields harness.FinishPart */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `FinishReason` | `FinishReason` |  |
+| `TotalUsage` | `Usage` |  |
+| `HarnessMetadata` | `Metadata` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields harness.FileChangePart */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Event` | `string` |  |
+| `Path` | `string` |  |
+| `HarnessMetadata` | `Metadata` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields harness.CompactionPart */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Trigger` | `string` |  |
+| `Summary` | `string` |  |
+| `TokensBefore` | `*float64` |  |
+| `TokensAfter` | `*float64` |  |
+| `HarnessMetadata` | `Metadata` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields harness.ErrorPart */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Error` | `any` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields harness.RawPart */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `RawValue` | `any` |  |
+
+{/* /gen:fields */}
+
+The block parts all carry an `id`. Text and reasoning parts also carry `harnessMetadata`, and the delta parts add a `delta` string. The tool input parts carry `providerMetadata`. `harness.ToolInputStartPart` adds `toolName`, `providerExecuted`, `dynamic` and `title`. These parts are `harness.TextStartPart`, `harness.TextEndPart`, `harness.ReasoningStartPart`, `harness.ReasoningDeltaPart`, `harness.ReasoningEndPart`, `harness.ToolInputStartPart`, `harness.ToolInputDeltaPart` and `harness.ToolInputEndPart`.
+
+### Constants
+
+| Group | Values |
+| --- | --- |
+| File change kinds | `harness.FileChangeCreate`, `harness.FileChangeModify`, `harness.FileChangeDelete` |
+| Compaction triggers | `harness.CompactionTriggerManual`, `harness.CompactionTriggerAuto` |
+| Finish reasons | `harness.FinishReasonStop`, `harness.FinishReasonLength`, `harness.FinishReasonContentFilter`, `harness.FinishReasonToolCalls`, `harness.FinishReasonError`, `harness.FinishReasonOther` |
+
+### Usage
+
+`harness.FinishReason` is the harness wire encoding of the model finish reason. `harness.Usage` is the wire encoding of model usage, with `harness.InputTokenUsage` and `harness.OutputTokenUsage` for the token breakdowns.
+
+{/* gen:fields harness.Usage */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `InputTokens` | `InputTokenUsage` |  |
+| `OutputTokens` | `OutputTokenUsage` |  |
+| `Raw` | `map[string]any` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields harness.InputTokenUsage */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Total` | `*int` |  |
+| `NoCache` | `*int` |  |
+| `CacheRead` | `*int` |  |
+| `CacheWrite` | `*int` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields harness.OutputTokenUsage */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Total` | `*int` |  |
+| `Text` | `*int` |  |
+| `Reasoning` | `*int` |  |
+
+{/* /gen:fields */}
+
+`harness.Metadata` is adapter-namespaced opaque data attached to events, keyed by harness ID. `harness.ProviderMetadata` is the provider metadata shape on tool parts.
+
+## Translation
+
+```go
+func TranslatePart(part StreamPart, opts TranslateOptions) []provider.StreamChunk
+```
+
+Converts one part to zero or more chunks. Most parts map one to one. These are the exceptions:
+
+- `tool-call` is not translated here. `harness.Agent` validates it against the merged tool set first.
+- A failed `tool-result` from a provider-executed tool becomes a tool result with an error.
+- `file-change` and `compaction` have no chunk type of their own. Each becomes a dynamic, provider-executed tool call and tool result pair named `fileChange` or `compaction`, so the event stays visible.
+- `stream-start`, `finish-step` and `finish` return nil. `harness.Agent` owns step and turn boundaries.
+
+{/* gen:fields harness.TranslateOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `IsProviderExecuted` | `func(toolCallID string) bool` | IsProviderExecuted reports whether the tool call that produced a tool-result event ran inside the harness runtime. Host results are echoed back as tool-result events too, so the event alone cannot say who ran the tool — only the originating tool-call can, and correlating the two is the caller's job (run_prompt.go tracks it). A nil func treats every failure as provider-executed, matching TS's `?? true` default. |
+
+{/* /gen:fields */}
+
+## JSON helpers
+
+| Function | Description |
+| --- | --- |
+| `harness.DecodeStreamPart(data []byte) (StreamPart, error)` | Parses and validates one JSON part. Returns `harness.ErrUnknownPartType` for an unknown `type`. |
+| `harness.MarshalStreamPart(part StreamPart) ([]byte, error)` | Encodes a part with `type` as the first key. |
+| `harness.IsStreamPartType(typ string) bool` | Reports whether `typ` is a part discriminator. |
+| `harness.MarshalTagged(typ string, v any) ([]byte, error)` | Encodes a struct as a JSON object with `"type"` first. |
+| `harness.ReadTagged(data []byte) (string, map[string]json.RawMessage, error)` | Returns the `type` and the raw top-level fields of a JSON object. |
+| `harness.RequireKeys(typ string, fields map[string]json.RawMessage, required []string) error` | Checks that the required keys are present. |
+| `harness.StripWorkDir(part StreamPart, sessionWorkDir string) StreamPart` | Returns a copy of the part with the session work directory removed from path fields. |
+| `harness.EmitFunc` | `func(part StreamPart)`. Receives every part an adapter produces during a turn. |
+| `harness.AgentStreamPart` | Consumer-facing alias of `StreamPart`. |

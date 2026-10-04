@@ -1,0 +1,352 @@
+---
+title: Tool approval end to end
+description: Let a model ask and a user decide. Mark tools as approval-gated, sign approval requests, and run the full round trip with useChat and a Go backend.
+---
+
+# Tool approval end to end
+
+Some tools should not run just because a model asked. Deploying, deleting, paying and handing work to a coding agent all deserve a human decision. The Go AI SDK pauses the tool call, sends an approval request to the client, and runs the tool only after the client sends back a signed approval.
+
+This guide covers the server, the client, and what happens on each side. The [Serve a useChat frontend](./01-serve-usechat-from-go.mdx) guide covers the endpoint itself.
+
+## How it works
+
+1. The model calls a tool that needs approval. The agent does not run it. It ends the step and streams a `tool-approval-request` chunk.
+2. `useChat` shows the tool part in the `approval-requested` state. Your UI renders Approve and Deny buttons.
+3. The user clicks. The client calls `addToolApprovalResponse`, and the tool part moves to `approval-responded`.
+4. With `sendAutomaticallyWhen` set, the client sends a new request with the updated message list.
+5. The server validates the approval against its signature. If the user approved, it runs the tool and streams the result, then the model continues. If the user denied, it skips the tool and tells the model.
+
+The server holds no state between steps 1 and 5. Everything it needs comes back in the message history, which is why the signature matters.
+
+## Mark a tool as needing approval
+
+Set `ToolApproval` on the tool. It takes a bool or a function:
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
+)
+
+func deployTool() types.Tool {
+	return types.Tool{
+		Name:        "deploy",
+		Description: "Deploy the service to an environment.",
+		Parameters: schema.NewSimpleJSONSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"env": map[string]interface{}{"type": "string", "enum": []string{"staging", "prod"}},
+			},
+			"required": []string{"env"},
+		}),
+
+		// Always ask:
+		//   ToolApproval: true,
+		//
+		// Ask only for production. The conversion to the named function type
+		// is required; see the note below.
+		ToolApproval: types.ToolNeedsApprovalFunc(func(ctx context.Context, input map[string]interface{}, opts types.ToolNeedsApprovalOptions) bool {
+			return input["env"] == "prod"
+		}),
+
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return map[string]interface{}{"deployed": input["env"]}, nil
+		},
+	}
+}
+
+func main() {
+	fmt.Println(deployTool().Name)
+}
+```
+
+`ToolApproval` accepts these values:
+
+| Value | Meaning |
+| --- | --- |
+| `true` | Always ask the user. |
+| `types.ToolNeedsApprovalFunc` | Ask when the function returns `true`. It receives the parsed input, the tool call ID, the messages and the tool's context. |
+| `types.ToolApprovalStatus` | A fixed outcome: `ToolApprovalStatusUserApproval`, `ToolApprovalStatusApproved` or `ToolApprovalStatusDenied`. |
+| `nil` or `false` | Run without asking. |
+
+`ToolApproval` is an `interface{}`, so the compiler can't check what you put in it. A bare function literal with one of the signatures above works the same as its named type. The SDK fails closed on anything else: a value of an unsupported type, or an unknown status string such as `"user_approval"`, becomes a tool error and the tool doesn't run. Writing the named type, as in the example, makes the intent clear and lets the compiler check the signature.
+
+`NeedsApproval` still works but is deprecated. Use `ToolApproval`.
+
+## Set a policy for the whole call
+
+You can also decide approval outside the tools, on the agent or on a single call. A call-level policy wins over a tool's own setting. Use a map to cover chosen tools, or a function to decide for every call:
+
+```go
+reason := "Production deploys are blocked outside business hours."
+
+assistant := agent.NewToolLoopAgent(agent.AgentConfig{
+	Model: model,
+	Tools: tools,
+	ToolApproval: map[string]types.ToolApprovalValue{
+		"read_logs": types.ToolApprovalStatusApproved,
+		"deploy":    types.ToolApprovalResult{Status: types.ToolApprovalStatusUserApproval},
+		"drop_db":   types.ToolApprovalResult{Status: types.ToolApprovalStatusDenied, Reason: &reason},
+	},
+})
+```
+
+A map decides only for the tools it names. Other tools fall back to their own `ToolApproval`. A `types.GenericToolApprovalFunc` receives `types.ToolApprovalOptions` (the tool call, the tools, the messages and the contexts) and returns the final decision for every call:
+
+```go
+ToolApproval: types.GenericToolApprovalFunc(func(opts types.ToolApprovalOptions) types.ToolApprovalResult {
+	if opts.ToolCall.ToolName == "deploy" {
+		return types.ToolApprovalResult{Status: types.ToolApprovalStatusUserApproval}
+	}
+	return types.ToolApprovalResult{Status: types.ToolApprovalStatusApproved}
+}),
+```
+
+A denied status needs no user. The tool does not run, and the model receives an execution-denied result with your reason. In a per-tool map you can also use `types.SingleToolApprovalFunc`, which receives that tool's parsed arguments.
+
+To change the policy between steps, set `config.ToolApproval` in the agent's `PrepareCall` function. `ai.GenerateTextOptions` and `ai.StreamTextOptions` have the same `ToolApproval` field.
+
+## Sign approval requests
+
+When the user approves, the client sends the decision back inside the message history. A client controls that history. Without a check, anyone who can call your endpoint could send an `approval-responded` part for a call the server never requested, or change the tool's input after the user approved it.
+
+`ExperimentalToolApprovalSecret` closes that gap. With a secret set, the server signs each approval request with HMAC-SHA256 over the approval ID, the tool call ID, the tool name and a digest of the input. The signature travels to the client in the `tool-approval-request` chunk and comes back with the response. On resume, the server verifies it before running anything. A missing or wrong signature stops the call.
+
+```go
+shipyard := agent.NewToolLoopAgent(agent.AgentConfig{
+	Model:                          model,
+	Tools:                          tools,
+	ExperimentalToolApprovalSecret: secret, // []byte
+})
+```
+
+Handle the secret like any signing key:
+
+- Use at least 32 random bytes and load it from configuration, not source code.
+- Use the same secret on every instance. A request approved on one replica must verify on another.
+- A secret that changes, such as a new random value at every start, invalidates approvals that are still waiting. The demo generates a random secret per process unless `TOOL_APPROVAL_SECRET` is set, which is fine locally.
+- Without a secret, nothing is signed or verified. Set one for any endpoint that is reachable by users.
+
+The same field exists on `ai.GenerateTextOptions`, `ai.StreamTextOptions` and `PrepareCallConfig`. A signature failure returns an `*ai.InvalidToolApprovalSignatureError`; `ai.IsInvalidToolApprovalSignatureError` tests for it. Over HTTP it reaches the client as an `error` chunk, after the `200` status has gone out, so use `OnError` if you want to log or shape the message.
+
+## The server
+
+This server has one approval-gated tool. Nothing in the handler is specific to approval: the tool's setting and the secret do the work.
+
+```go
+package main
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/json"
+	"log"
+	"net/http"
+	"os"
+	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/agent"
+	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
+)
+
+func main() {
+	model, err := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")}).
+		LanguageModel(anthropic.ClaudeSonnet5_5)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	secret := []byte(os.Getenv("TOOL_APPROVAL_SECRET"))
+	if len(secret) == 0 {
+		secret = make([]byte, 32)
+		if _, err := rand.Read(secret); err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	deploy := types.Tool{
+		Name:        "deploy",
+		Description: "Deploy the service to an environment. Requires user approval.",
+		Parameters: schema.NewSimpleJSONSchema(map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"env": map[string]interface{}{"type": "string", "enum": []string{"staging", "prod"}},
+			},
+			"required": []string{"env"},
+		}),
+		ToolApproval: true,
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return map[string]interface{}{"deployed": input["env"]}, nil
+		},
+	}
+
+	assistant := agent.NewToolLoopAgent(agent.AgentConfig{
+		Model:                          model,
+		System:                         "You deploy services. Call deploy when the user asks. Keep replies short.",
+		Tools:                          []types.Tool{deploy},
+		StopWhen:                       []ai.StopCondition{ai.IsStepCount(5)},
+		ExperimentalToolApprovalSecret: secret,
+	})
+
+	http.HandleFunc("POST /api/chat", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages json.RawMessage `json:"messages"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<20)).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		chunks, _, err := agent.CreateAgentUIStreamFromUIMessages(r.Context(), assistant,
+			agent.CreateAgentUIStreamFromUIMessagesOptions{UIMessages: []byte(req.Messages)})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		keepAlive := 15 * time.Second
+		if err := ai.PipeUIMessageChunksToResponse(chunks, w, &ai.UIMessageStreamResponseInit{KeepAliveMs: &keepAlive}); err != nil {
+			log.Printf("write stream: %v", err)
+		}
+	})
+
+	log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+## What goes over the wire
+
+The first response ends at the approval request. The model's finish reason stays `tool-calls`:
+
+```text
+data: {"type":"start"}
+data: {"type":"start-step"}
+data: {"type":"tool-input-available","toolCallId":"call-1","toolName":"deploy","input":{"env":"prod"}}
+data: {"type":"tool-approval-request","toolCallId":"call-1","approvalId":"982897cfe028b8ec","signature":"-oKB..."}
+data: {"type":"finish-step"}
+data: {"type":"finish","finishReason":"tool-calls"}
+data: [DONE]
+```
+
+The follow-up request carries the same assistant message with the tool part updated. The part type is `tool-` plus the tool name:
+
+```json
+{
+  "id": "a1",
+  "role": "assistant",
+  "parts": [
+    {
+      "type": "tool-deploy",
+      "toolCallId": "call-1",
+      "state": "approval-responded",
+      "input": { "env": "prod" },
+      "approval": { "id": "982897cfe028b8ec", "approved": true, "signature": "-oKB..." }
+    }
+  ]
+}
+```
+
+If approved, the server runs the tool and streams `tool-output-available`, followed by the model's next step. The new chunks continue the same assistant message, because the `start` chunk reuses its ID.
+
+## The client
+
+```tsx
+'use client';
+
+import { useChat } from '@ai-sdk/react';
+import { DefaultChatTransport, isToolUIPart, lastAssistantMessageIsCompleteWithApprovalResponses } from 'ai';
+import { useState } from 'react';
+
+export default function Chat() {
+  const { messages, sendMessage, addToolApprovalResponse, status } = useChat({
+    transport: new DefaultChatTransport({ api: 'http://localhost:8080/api/chat' }),
+    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
+  });
+  const [input, setInput] = useState('');
+
+  return (
+    <div>
+      {messages.map((message) =>
+        message.parts.map((part, i) => {
+          if (part.type === 'text') return <p key={`${message.id}-${i}`}>{part.text}</p>;
+          if (isToolUIPart(part) && part.state === 'approval-requested') {
+            return (
+              <div key={part.toolCallId}>
+                <p>The assistant wants to run a tool with {JSON.stringify(part.input)}.</p>
+                <button onClick={() => addToolApprovalResponse({ id: part.approval.id, approved: true })}>
+                  Approve
+                </button>
+                <button
+                  onClick={() =>
+                    addToolApprovalResponse({ id: part.approval.id, approved: false, reason: 'User declined.' })
+                  }
+                >
+                  Deny
+                </button>
+              </div>
+            );
+          }
+          if (isToolUIPart(part) && part.state === 'output-denied') {
+            return <p key={part.toolCallId}>Denied.</p>;
+          }
+          return null;
+        }),
+      )}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          sendMessage({ text: input });
+          setInput('');
+        }}
+      >
+        <input value={input} onChange={(e) => setInput(e.target.value)} disabled={status !== 'ready'} />
+      </form>
+    </div>
+  );
+}
+```
+
+`addToolApprovalResponse` takes the approval `id`, not the tool call ID. Without `sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses`, the click only updates local state and nothing is sent until the user types again.
+
+## Denial
+
+When the user denies, the client sends `approved: false` and an optional `reason`. The server does not run the tool. The stream carries a `tool-output-denied` chunk, the tool part ends in `output-denied`, and the model receives an execution-denied tool result containing the reason. The model then continues. It can explain that the action did not happen or try another approach. Write your system prompt with that in mind: tell the model to stop and report when a tool is denied.
+
+A call-level `ToolApprovalStatusDenied` works the same way without asking the user.
+
+If the tool's input fails validation again after approval, the model gets a tool error and the tool does not run.
+
+## The legacy blocking approver (CLI only)
+
+Before UI approval existed, the agent had a blocking callback:
+
+```go
+agent.AgentConfig{
+	ToolApprovalRequired: true,
+	ToolApprover: func(call types.ToolCall) bool {
+		fmt.Printf("Run %s? [y/N] ", call.ToolName)
+		var answer string
+		fmt.Scanln(&answer)
+		return answer == "y"
+	},
+}
+```
+
+`ToolApprover` runs inline, on the agent's goroutine, and returns the answer before the loop moves on. That fits a terminal program where a person is waiting at the keyboard. It does not fit an HTTP handler: the request would block while the browser waits, with no way to show a button. It applies only to calls whose approval status is not-applicable, so a tool already marked with `ToolApproval` goes through the round trip above instead. For anything with a UI, use `ToolApproval`. See [Building agents](../03-agents/02-building-agents.mdx) for the CLI pattern.
+
+## See it in the demo
+
+- [`server/tools.go`](https://github.com/digitallysavvy/go-ai-demo/blob/main/server/tools.go): `delegate_to_coding_agent` sets `ToolApproval: true`, so the model can ask and only the user can say yes.
+- [`server/chat.go`](https://github.com/digitallysavvy/go-ai-demo/blob/main/server/chat.go): `ExperimentalToolApprovalSecret` on the agent and `CreateAgentUIStreamFromUIMessages` handling the resumed request.
+- [`server/main.go`](https://github.com/digitallysavvy/go-ai-demo/blob/main/server/main.go): where the per-process secret and `TOOL_APPROVAL_SECRET` are loaded.
+- [`web/app/page.tsx`](https://github.com/digitallysavvy/go-ai-demo/blob/main/web/app/page.tsx): `addToolApprovalResponse` and `lastAssistantMessageIsCompleteWithApprovalResponses`.
+- [`web/components/ToolPart.tsx`](https://github.com/digitallysavvy/go-ai-demo/blob/main/web/components/ToolPart.tsx): the approval card for each tool part state.
+
+Next: [Coding agents with the harness](./03-coding-agents-harness.mdx).

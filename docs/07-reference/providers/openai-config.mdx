@@ -1,0 +1,87 @@
+---
+title: OpenAI configuration
+description: "Reference for the OpenAI provider Config struct and model option types, generated from the Go source."
+---
+
+# OpenAI configuration
+
+Package `github.com/digitallysavvy/go-ai/pkg/providers/openai`. Create a provider with `openai.New(openai.Config{...})`. When `APIKey` is empty, the provider reads `OPENAI_API_KEY`. When `BaseURL` is empty, it reads `OPENAI_BASE_URL`.
+
+The tables on this page are generated from the Go source. For usage, see the [OpenAI provider page](../../05-providers/02-openai.mdx).
+
+## Config
+
+{/* gen:fields providers/openai.Config */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `APIKey` | `string` | APIKey is the OpenAI API key |
+| `Name` | `string` | Name overrides the provider name returned by Provider.Name(). Defaults to "openai". |
+| `BaseURL` | `string` | BaseURL is the base URL for the OpenAI API (default: https://api.openai.com/v1) |
+| `Organization` | `string` | Organization is the optional organization ID |
+| `Project` | `string` | Project is the optional project ID |
+| `HTTPClient` | `*stdhttp.Client` | HTTPClient overrides the HTTP client used for all requests. |
+| `Headers` | `map[string]string` | Headers are custom HTTP headers to include in requests. |
+| `ChatProviderName` | `string` | ChatProviderName overrides the provider identifier returned by ChatModel. Defaults to "openai.chat". |
+| `CompletionProviderName` | `string` | CompletionProviderName overrides the provider identifier returned by CompletionModel. Defaults to "openai.completion". |
+| `CompletionProviderOptionsName` | `string` | CompletionProviderOptionsName selects the providerOptions/providerMetadata namespace used by completion models. Defaults to "azure" when the completion provider name contains "azure", otherwise "openai". |
+| `CompletionQuery` | `map[string]string` | CompletionQuery contains query parameters added to Completions API requests. |
+| `ResponsesProviderName` | `string` | ResponsesProviderName overrides the provider identifier returned by ResponsesModel. Defaults to "openai.responses". |
+| `ResponsesProviderOptionsName` | `string` | ResponsesProviderOptionsName selects the providerOptions/providerMetadata namespace used by Responses models. Defaults to "azure" when the Responses provider name contains "azure", otherwise "openai". |
+| `ResponsesQuery` | `map[string]string` | ResponsesQuery contains query parameters added to Responses API requests. |
+| `FileIDPrefixes` | `[]string` | FileIDPrefixes identifies deprecated string file-data values that should be sent to the Responses API as file_id references instead of base64 data. Nil defaults to []string\{"file-"\} to match the TypeScript OpenAI provider; set an empty non-nil slice to disable this compatibility path. |
+| `SupportsWebSearchSourcesInclude` | `*bool` | SupportsWebSearchSourcesInclude controls whether the Responses API request automatically includes "web_search_call.action.sources" when a web_search tool is present. Defaults to true (nil). Set to a pointer to false for backends that reject that include value (e.g. Amazon Bedrock Mantle). Callers can also override this per-call via the Responses provider option "includeWebSearchSources". |
+| `ExplicitMessageItemType` | `bool` | ExplicitMessageItemType adds an explicit `"type":"message"` field to system/developer/user Responses input items. Azure AI Foundry projects require this. |
+| `AllowVideo` | `bool` | AllowVideo emits a "video_url" content part for a video/\* FileContent (prompt.ToOpenAIMessagesOptions.AllowVideo). OpenAI's own Chat Completions API has no video support, so this defaults to false and must stay false for the openai package's own provider construction. Set true only by wrapper providers whose TS counterpart is an OpenAICompatibleChatLanguageModel subclass reusing Go's openai.Provider as its OpenAI-compatible base (baseten, cerebras, deepinfra). |
+| `UserAgentName` | `string` | UserAgentName selects the `ai-sdk-<name>/VERSION` User-Agent tag this provider construction adds (version.ProviderUserAgent). Every wrapper provider whose TS counterpart is its own distinct npm package (and therefore its own `ai-sdk-<name>` tag) but is implemented in Go by reusing openai.New as an OpenAI-Chat-Completions-compatible transport (cerebras, deepinfra, baseten, vercel, amazon-bedrock's Mantle gateway, google-vertex's MaaS models) must set this to that TS package's name; leaving it empty here would wrongly tag those providers' requests "ai-sdk-openai". Defaults to "openai" — unless Headers already carries a "user-agent" entry (case-insensitive), meaning the caller (e.g. the azure package, whose own TS package already applies its own `ai-sdk-azure` tag before reaching here) has already tagged the request and no further tag should be appended. |
+| `TransformRequestBody` | `func(body map[string]interface{}) map[string]interface{}` | TransformRequestBody can rewrite the Chat Completions request body before it is sent, mirroring TS OpenAICompatibleChatLanguageModel's `transformRequestBody` config hook (e.g. cerebras-provider.ts's transformCerebrasRequestBody, which renames max_tokens -&gt; max_completion_tokens and reasoning_content -&gt; reasoning). It runs inside buildRequestBodyWithWarnings, before the body is captured for both the outgoing HTTP request and the optional provider.StreamRequestBody / types.StepRequest.Body exposure, so RequestBody() reflects the same post-transform shape TS's `request: { body }` does. |
+
+{/* /gen:fields */}
+
+## Model factories
+
+| Method | Returns |
+| --- | --- |
+| `LanguageModel(id)` | The default language model (Chat Completions API). |
+| `ChatModel(id)` | A Chat Completions language model. |
+| `ResponsesModel(id)` | A language model that uses the Responses API (`/v1/responses`). |
+| `CompletionModel(id)` | A legacy completions model. |
+| `EmbeddingModel(id)` | An embedding model. |
+| `ImageModel(id)` | An image generation model. |
+| `SpeechModel(id)` | A speech synthesis model. |
+| `TranscriptionModel(id)` | A transcription model. |
+| `RerankingModel(id)` | A reranking model. |
+| `Files()` | The Files API client. |
+| `Skills()` | The Skills API client. |
+
+## OpenAIImageModelOptions
+
+Options for image generation.
+
+{/* gen:fields providers/openai.OpenAIImageModelOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Quality` | `string` |  |
+| `Size` | `string` |  |
+| `Style` | `string` |  |
+| `Background` | `string` |  |
+| `Moderation` | `string` |  |
+| `OutputFormat` | `string` |  |
+| `OutputCompression` | `*int` |  |
+| `InputFidelity` | `string` |  |
+| `User` | `string` |  |
+
+{/* /gen:fields */}
+
+## OpenAIRealtimeModelOptions
+
+Options for realtime sessions.
+
+{/* gen:fields providers/openai.OpenAIRealtimeModelOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `API` | `*string` | API overrides model ID routing: "live" or "realtime". Nil (unset) routes known Live model IDs (e.g. "gpt-live-1") to Live and everything else to the GA Realtime API, matching TS resolveRealtimeApi, where an omitted (undefined) api is distinct from an explicit invalid value. A non-nil value that is neither "live" nor "realtime" (including "") is rejected, matching TS. |
+
+{/* /gen:fields */}

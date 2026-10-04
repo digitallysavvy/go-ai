@@ -1,0 +1,344 @@
+---
+title: Serve a useChat frontend from Go
+description: Build a Go HTTP endpoint that the stock useChat hook talks to, with validation, keep-alive, CORS, proxy settings and custom data parts.
+---
+
+# Serve a useChat frontend from Go
+
+The `useChat` hook from `@ai-sdk/react` posts a list of UI messages to an endpoint and reads back a stream of Server-Sent Events (SSE). The Go AI SDK writes that stream, so the frontend needs no adapter. This guide builds the endpoint the way the [Shipyard demo](https://github.com/digitallysavvy/go-ai-demo) does.
+
+## The protocol
+
+`DefaultChatTransport` sends a `POST` with a JSON body:
+
+```json
+{
+  "id": "chat-id",
+  "messages": [
+    { "id": "m1", "role": "user", "parts": [{ "type": "text", "text": "Hello" }] }
+  ],
+  "trigger": "submit-message",
+  "messageId": "m2"
+}
+```
+
+Anything you pass in the transport's `body` option is merged into the same object. The `messages` array holds UI messages, not model messages: each has `parts` such as text, tool calls with their state, files and your own data parts.
+
+The response is `text/event-stream`. Each event is `data: <JSON chunk>`, and the stream ends with `data: [DONE]`. The response also carries the header `X-Vercel-AI-UI-Message-Stream: v1`, which `useChat` checks.
+
+## A minimal endpoint
+
+This program runs an agent on the messages `useChat` sends. It validates first, so a bad request gets a plain 400 before any streaming starts.
+
+```go
+package main
+
+import (
+	"encoding/json"
+	"log"
+	"net/http"
+	"os"
+
+	"github.com/digitallysavvy/go-ai/pkg/agent"
+	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+
+type chatRequest struct {
+	Messages json.RawMessage `json:"messages"`
+}
+
+func main() {
+	model, err := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")}).
+		LanguageModel(anthropic.ClaudeSonnet5_5)
+	if err != nil {
+		log.Fatal(err)
+	}
+	assistant := agent.NewToolLoopAgent(agent.AgentConfig{
+		Model:  model,
+		System: "You are a concise assistant.",
+	})
+
+	http.HandleFunc("POST /api/chat", func(w http.ResponseWriter, r *http.Request) {
+		var req chatRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<20)).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		// Validates the UI messages against the agent's tools and converts
+		// them to model messages. Nothing is written to w yet.
+		chunks, _, err := agent.CreateAgentUIStreamFromUIMessages(r.Context(), assistant,
+			agent.CreateAgentUIStreamFromUIMessagesOptions{UIMessages: []byte(req.Messages)})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Sets the stream headers, writes 200 and flushes every chunk.
+		if err := ai.PipeUIMessageChunksToResponse(chunks, w, nil); err != nil {
+			log.Printf("write stream: %v", err)
+		}
+	})
+
+	log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+Pass the request context. `r.Context()` is cancelled when the browser disconnects, which stops the agent and the provider call.
+
+## Choose a helper
+
+| You have | Use |
+| --- | --- |
+| UI messages from `useChat`, and you want one call | `agent.PipeAgentUIStreamFromUIMessagesToResponse(ctx, agent, opts, w)` |
+| UI messages, and you want to answer 400 on bad input | `agent.CreateAgentUIStreamFromUIMessages`, then `ai.PipeUIMessageChunksToResponse` |
+| A stream you built with `ai.CreateUIMessageStreamWithOptions` | `ai.PipeUIMessageChunksToResponse` |
+| A `*ai.StreamTextResult` from `ai.StreamText` | `ai.PipeUIMessageStreamToResponse` |
+| A framework that wants an `*http.Response` | `agent.CreateAgentUIStreamResponseFromUIMessages` or `ai.CreateUIMessageChunksResponse` |
+
+The `Pipe*` helpers set the status and headers when the writer is an `http.ResponseWriter`, so do not call `WriteHeader` or set the SSE headers yourself. Headers you set earlier, such as CORS headers, stay in place. See [Stream transport helpers](../07-reference/ai/stream-transport-helpers.mdx) and [Agent UI stream helpers](../07-reference/ai/agent-ui-stream-helpers.mdx) for every signature.
+
+`PipeAgentUIStreamFromUIMessagesToResponse` returns an error for invalid messages before it writes anything, but it also returns write errors after streaming starts, and the two look the same to the caller. Use the two-step form above when you want to send a 400.
+
+## Errors before and after streaming
+
+Two kinds of failure need different handling.
+
+**Before streaming starts**, the response is still open. Bad JSON, a `messages` value that fails validation, and messages that can't be converted all return an error from `CreateAgentUIStreamFromUIMessages`. Answer with a 4xx status. `useChat` sets its `error` state and `status` becomes `error`.
+
+**After streaming starts**, the status line has already gone out as `200`. A provider failure, a tool that panics, or an invalid approval signature surfaces as an `error` chunk in the stream:
+
+```text
+data: {"type":"error","errorText":"An error occurred."}
+```
+
+`useChat` shows it through the same `error` state. The default text is generic so that provider messages, URLs and keys do not reach the browser. To send real text, set an `OnError` function that maps the error to the string you want users to see:
+
+```go
+chunks, _, err := agent.CreateAgentUIStreamFromUIMessages(ctx, assistant, agent.CreateAgentUIStreamFromUIMessagesOptions{
+	UIMessages: []byte(req.Messages),
+	UIMessageStream: ai.UIMessageStreamResultOptions{
+		OnError: func(err error) string {
+			log.Printf("chat error: %v", err)
+			return "Something went wrong. Try again."
+		},
+	},
+})
+```
+
+If you build the stream yourself with `ai.CreateUIMessageStreamWithOptions`, the same `OnError` goes on `ai.UIMessageStreamOptions`. The demo returns `err.Error()` because it runs locally; do not do that in production.
+
+## Keep-alive
+
+Coding agents and slow tools can leave a stream quiet for a minute. Idle connections get closed by proxies and load balancers. `UIMessageStreamResponseInit.KeepAliveMs` makes the pipe send an opening `: stream-open` comment right away, then a `: keep-alive` comment whenever the stream has been silent for that long. SSE clients ignore comments.
+
+```go
+keepAlive := 15 * time.Second
+err := ai.PipeUIMessageChunksToResponse(chunks, w, &ai.UIMessageStreamResponseInit{
+	KeepAliveMs: &keepAlive,
+})
+```
+
+The field is a `*time.Duration`, despite the `Ms` suffix, which it keeps for parity with the TypeScript option. Pick an interval shorter than your proxy's idle timeout.
+
+## CORS
+
+When the frontend and the API live on different origins, such as `localhost:3000` and `localhost:8080`, the browser sends a preflight `OPTIONS` request because the body is JSON. Answer it, and name the one origin you trust:
+
+```go
+func withCORS(origin string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+```
+
+If you send an `Authorization` header from the client, add it to `Access-Control-Allow-Headers`. If you serve the frontend and the API from one origin, or proxy `/api` through your frontend server, you do not need CORS.
+
+## Proxies and buffering
+
+SSE only works if every layer between Go and the browser passes bytes through as they arrive. The SDK flushes after every chunk and sends `Cache-Control: no-cache` and `X-Accel-Buffering: no`. The rest is up to your stack:
+
+- **Wrap the `ResponseWriter` carefully.** Logging, metrics and compression middleware often wrap the writer in a type that does not implement `http.Flusher`. The SDK then cannot flush, and the output arrives in large blocks. Implement `Flush` on your wrapper by delegating to the underlying writer, or skip the wrapper for this route.
+- **Do not compress the stream.** Gzip buffers until it has a block to emit. Exclude `text/event-stream` from compression.
+- **nginx.** The `X-Accel-Buffering: no` header already tells nginx not to buffer this response. If you still see batching, set `proxy_buffering off;` and `proxy_http_version 1.1;` on the location, and raise `proxy_read_timeout` above your keep-alive interval.
+- **CDNs and platform proxies.** Check that streaming responses are enabled and that the idle timeout is longer than your keep-alive interval.
+- **Server timeouts.** `http.Server.WriteTimeout` ends the stream when it expires. Leave it at zero for streaming routes, and set `ReadHeaderTimeout` as the demo does.
+
+### Troubleshooting
+
+**`useChat` shows nothing.**
+Open the network tab and check the `/api/chat` response. A non-200 status or an HTML error page means the request failed before streaming; look at your server log. A CORS error in the console means the preflight was not answered. A 200 with the right content type but no events points to a proxy that holds the response.
+
+**Output arrives all at once at the end.**
+Something is buffering. Test the Go server directly with `curl -N -X POST localhost:8080/api/chat -H 'Content-Type: application/json' -d '{"messages":[...]}'`. If chunks appear one by one there, the problem is a proxy, compression or a wrapped `ResponseWriter` in front of it. If they arrive together even there, check for a middleware that wraps the writer.
+
+**It streams, but `useChat` reports a parse error.**
+The response is missing `X-Vercel-AI-UI-Message-Stream: v1`, or something else is writing to the body. Use the `Pipe*` helpers and write nothing yourself.
+
+**The stream stops after about a minute.**
+An idle timeout closed the connection. Turn on `KeepAliveMs`.
+
+## Custom data parts
+
+Data parts let the server send typed side-channel data, such as progress or the activity log of a coding agent, as part of the assistant message. Build the stream with `ai.CreateUIMessageStreamWithOptions`, write data chunks through the writer, and merge the agent's stream into it:
+
+```go
+package main
+
+import (
+	"encoding/json"
+	"log"
+	"net/http"
+	"os"
+	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/agent"
+	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+)
+
+func main() {
+	model, err := anthropic.New(anthropic.Config{APIKey: os.Getenv("ANTHROPIC_API_KEY")}).
+		LanguageModel(anthropic.ClaudeSonnet5_5)
+	if err != nil {
+		log.Fatal(err)
+	}
+	assistant := agent.NewToolLoopAgent(agent.AgentConfig{Model: model})
+
+	http.HandleFunc("POST /api/chat", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages json.RawMessage `json:"messages"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<20)).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		ctx := r.Context()
+		chunks, _ := ai.CreateUIMessageStreamWithOptions(ctx, ai.UIMessageStreamOptions{
+			OnError: func(err error) string {
+				log.Printf("chat error: %v", err)
+				return "Something went wrong."
+			},
+			Execute: func(writer ai.UIMessageStreamWriter) {
+				// A data part with an id is replaced in place when you write
+				// the same id again.
+				writer.Write(ai.UIMessageChunk{
+					"type": "data-status",
+					"id":   "status",
+					"data": map[string]interface{}{"phase": "thinking"},
+				})
+
+				stream, errs, err := agent.CreateAgentUIStreamFromUIMessages(ctx, assistant,
+					agent.CreateAgentUIStreamFromUIMessagesOptions{UIMessages: []byte(req.Messages)})
+				if err != nil {
+					// The response is already open, so report it as a chunk.
+					writer.Write(ai.UIMessageChunk{"type": "error", "errorText": err.Error()})
+					return
+				}
+				writer.Merge(stream)
+				go func() {
+					for err := range errs {
+						if err != nil {
+							log.Printf("agent stream: %v", err)
+						}
+					}
+				}()
+			},
+		})
+
+		keepAlive := 15 * time.Second
+		if err := ai.PipeUIMessageChunksToResponse(chunks, w, &ai.UIMessageStreamResponseInit{KeepAliveMs: &keepAlive}); err != nil {
+			log.Printf("write stream: %v", err)
+		}
+	})
+
+	log.Fatal(http.ListenAndServe(":8080", nil))
+}
+```
+
+Rules for data chunks:
+
+- The `type` is `data-` plus a name you choose. The client sees it as a part of that type.
+- Writing the same `id` again replaces the part's `data` in place. The demo sends one `data-coder` part per coding run and rewrites it as work progresses, using the tool call ID as the part ID.
+- Add `"transient": true` for data that should reach the client's `onData` callback but not be stored in the message history.
+- Data must be JSON-serializable. Send empty slices, not nil, when the client expects an array: `null` breaks a client that calls `.map` on it.
+- `Execute` must return after it has set up the stream. Anything you pass to `writer.Merge` keeps streaming after `Execute` returns.
+
+Because the data parts live in the assistant message, they come back to the server on the next request. Validation accepts them. Pass `ConvertDataPart` in `CreateAgentUIStreamFromUIMessagesOptions` if you want any of them turned into text or file parts for the model; by default they are ignored.
+
+## The client
+
+On the client, point `DefaultChatTransport` at your endpoint. `body` can be an object or a function; the function runs on every request, including the automatic resend after a tool approval.
+
+```tsx
+'use client';
+
+import { useChat } from '@ai-sdk/react';
+import { DefaultChatTransport, type UIMessage } from 'ai';
+import { useMemo, useRef, useState } from 'react';
+
+type ChatMessage = UIMessage<never, { status: { phase: string } }>;
+
+export default function Chat() {
+  const [mode, setMode] = useState('default');
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+
+  const transport = useMemo(
+    () =>
+      new DefaultChatTransport<ChatMessage>({
+        api: 'http://localhost:8080/api/chat',
+        body: () => ({ mode: modeRef.current }),
+      }),
+    [],
+  );
+
+  const { messages, sendMessage, status, error } = useChat<ChatMessage>({ transport });
+  const [input, setInput] = useState('');
+
+  return (
+    <div>
+      {messages.map((m) => (
+        <div key={m.id}>
+          {m.parts.map((part, i) => {
+            if (part.type === 'text') return <p key={i}>{part.text}</p>;
+            if (part.type === 'data-status') return <em key={i}>{part.data.phase}</em>;
+            return null;
+          })}
+        </div>
+      ))}
+      {error && <p>{error.message}</p>}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          sendMessage({ text: input });
+          setInput('');
+        }}
+      >
+        <input value={input} onChange={(e) => setInput(e.target.value)} disabled={status !== 'ready'} />
+      </form>
+    </div>
+  );
+}
+```
+
+The `mode` field arrives in the JSON body next to `messages`. Read it by adding a field to your request struct, as the demo does with `agent`. The second type argument to `UIMessage` types your data parts, so `part.data` is checked against what the server sends.
+
+## See it in the demo
+
+- [`server/chat.go`](https://github.com/digitallysavvy/go-ai-demo/blob/main/server/chat.go): the request struct, the 400 for a bad body, `CreateUIMessageStreamWithOptions` with `Execute`, `CreateAgentUIStreamFromUIMessages`, `Merge`, and the keep-alive pipe.
+- [`server/main.go`](https://github.com/digitallysavvy/go-ai-demo/blob/main/server/main.go): `withCORS`, the HTTP server timeouts and graceful shutdown.
+- [`web/app/page.tsx`](https://github.com/digitallysavvy/go-ai-demo/blob/main/web/app/page.tsx): `DefaultChatTransport` with a `body` function and `useChat`.
+- [`web/lib/types.ts`](https://github.com/digitallysavvy/go-ai-demo/blob/main/web/lib/types.ts): the typed `data-coder` part that mirrors the Go struct.
+
+Next: [Tool approval end to end](./02-tool-approval.mdx).

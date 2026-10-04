@@ -8,6 +8,7 @@
 // result. The video model implements the spec-v4 async operation protocol
 // (DoStart/DoStatus) on Topaz's express endpoint. Topaz has no language,
 // embedding, speech, transcription, or reranking model.
+
 package topaz
 
 import (

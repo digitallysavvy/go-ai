@@ -1,0 +1,249 @@
+---
+title: MCP OAuth
+description: "Reference for the Go AI SDK MCP OAuth helpers: the Auth flow, client provider interfaces, discovery, registration, token exchange, PKCE and OAuth errors."
+---
+
+# MCP OAuth
+
+`mcp.Auth` runs the OAuth 2.1 authorization-code flow with PKCE for an MCP server. It matches the TypeScript SDK's `auth()`. The lower-level functions on this page are the steps it composes. For a static token, use `mcp.OAuthConfig` instead (see [MCP client](./client.mdx#oauthconfig)).
+
+## Auth
+
+```go
+func Auth(ctx context.Context, provider OAuthClientProvider, options AuthOptions) (AuthResult, error)
+```
+
+One call advances the flow one step. It refreshes tokens when it can, registers a client when it has none, and starts an authorization when it needs the user. It returns:
+
+{/* gen:consts mcp.AuthResult */}
+
+| Constant | Value | Description |
+| --- | --- | --- |
+| `AuthResultAuthorized` | `"AUTHORIZED"` |  |
+| `AuthResultRedirect` | `"REDIRECT"` |  |
+
+{/* /gen:consts */}
+
+On `REDIRECT`, send the user to the authorization URL (the provider's `RedirectToAuthorization` runs), then call `Auth` again with the authorization code from the callback.
+
+When the authorization server answers `invalid_client` or `unauthorized_client`, `Auth` invalidates credentials and retries once, but only when the client information came from Dynamic Client Registration. A client you registered yourself is never replaced silently. On `invalid_grant`, it invalidates the stored tokens and retries once.
+
+### AuthOptions
+
+Set `HasAuthorizationCode` (with `AuthorizationCode`, `CallbackState` and `CallbackIssuer`) when you complete an authorization-code callback. Leave it false to check for or refresh tokens, or to start a new authorization.
+
+{/* gen:fields mcp.AuthOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ServerURL` | `string` |  |
+| `HasAuthorizationCode` | `bool` |  |
+| `AuthorizationCode` | `string` |  |
+| `CallbackState` | `string` |  |
+| `CallbackIssuer` | `string` | CallbackIssuer is the `iss` parameter from the authorization response, validated against the pinned issuer when present (hash 1f29230). |
+| `Scope` | `string` | Scope is an explicit scope override, typically extracted from a 401 challenge via ExtractWWWAuthenticateParams (hash 1011e33). |
+| `ResourceMetadataURL` | `*url.URL` |  |
+| `HTTPClient` | `*http.Client` |  |
+
+{/* /gen:fields */}
+
+## OAuthClientProvider
+
+You implement this interface. It holds the storage and policy hooks `Auth` needs. Back it with a keychain, a database row or a struct in memory.
+
+| Method | Description |
+| --- | --- |
+| `Tokens(ctx) (*OAuthTokens, error)` | Returns stored tokens, or nil. |
+| `SaveTokens(ctx, tokens OAuthTokens) error` | Persists tokens from an exchange or a refresh. |
+| `RedirectToAuthorization(ctx, authorizationURL string) error` | Sends the user to the authorization URL. |
+| `SaveCodeVerifier(ctx, codeVerifier string) error` | Persists the PKCE verifier. |
+| `CodeVerifier(ctx) (string, error)` | Returns the saved verifier. |
+| `RedirectURL() string` | The registered redirect URI. |
+| `ClientMetadata() OAuthClientMetadata` | Metadata for Dynamic Client Registration and scope selection. |
+| `ClientInformation(ctx) (*OAuthClientInformation, error)` | Returns stored client credentials, or nil. |
+
+### Optional provider interfaces
+
+A provider can also implement these. `Auth` checks for them with a type assertion.
+
+| Interface | Method | Purpose |
+| --- | --- | --- |
+| `mcp.OAuthClientInformationSaver` | `SaveClientInformation` | Persist newly registered client information. |
+| `mcp.OAuthDynamicRegistrationReporter` | `IsClientInformationDynamicallyRegistered` | Report whether the client came from Dynamic Client Registration. |
+| `mcp.OAuthCredentialInvalidator` | `InvalidateCredentials` | Clear stored credentials after the server rejects them. |
+| `mcp.OAuthTokenInvalidator` | `InvalidateCredentialsForTokens` | Receive the specific tokens being invalidated. |
+| `mcp.OAuthClientAuthenticator` | `AddClientAuthentication` | Customize how client credentials are added to token requests. |
+| `mcp.OAuthStateProvider` | `State`, `SaveState`, `StoredState` | Generate and verify the CSRF `state` parameter. |
+| `mcp.OAuthResourceURLValidator` | `ValidateResourceURL` | Override the RFC 8707 `resource` parameter. |
+| `mcp.OAuthAuthorizationServerURLValidator` | `ValidateAuthorizationServerURL` | Limit which authorization servers `Auth` fetches metadata from. |
+| `mcp.OAuthAuthorizationServerInformationStore` | `AuthorizationServerInformation`, `SaveAuthorizationServerInformation` | Persist the authorization server pin. |
+
+`mcp.OAuthCredentialInvalidationScope` selects what `InvalidateCredentials` discards.
+
+{/* gen:consts mcp.OAuthCredentialInvalidationScope */}
+
+| Constant | Value | Description |
+| --- | --- | --- |
+| `OAuthInvalidateAll` | `"all"` |  |
+| `OAuthInvalidateClient` | `"client"` |  |
+| `OAuthInvalidateTokens` | `"tokens"` |  |
+| `OAuthInvalidateVerifier` | `"verifier"` |  |
+
+{/* /gen:consts */}
+
+### Authorization server pinning
+
+`mcp.OAuthAuthorizationServerInformation` pins the authorization server, token endpoint and issuer that issued stored credentials, so credentials are not reused with a different server. `mcp.CreateOAuthAuthorizationServerInformation(authorizationServerURL, metadata)` creates a pin. `mcp.AssertOAuthAuthorizationServerInformationMatches(stored, current)` returns an error when rediscovered metadata does not match. The error satisfies `mcp.IsAuthorizationServerMismatchError`.
+
+## Data types
+
+{/* gen:fields mcp.OAuthTokens */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `AccessToken` | `string` |  |
+| `IDToken` | `string` |  |
+| `TokenType` | `string` |  |
+| `ExpiresIn` | `*int` |  |
+| `Scope` | `string` |  |
+| `RefreshToken` | `string` |  |
+| `Issuer` | `string` |  |
+| `AuthorizationServer` | `string` |  |
+| `TokenEndpoint` | `string` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields mcp.OAuthClientMetadata */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `RedirectURIs` | `[]string` |  |
+| `ApplicationType` | `string` | "native" \| "web" |
+| `TokenEndpointAuthMethod` | `string` |  |
+| `GrantTypes` | `[]string` |  |
+| `ResponseTypes` | `[]string` |  |
+| `ClientName` | `string` |  |
+| `ClientURI` | `string` |  |
+| `LogoURI` | `string` |  |
+| `Scope` | `string` |  |
+| `Contacts` | `[]string` |  |
+| `TosURI` | `string` |  |
+| `PolicyURI` | `string` |  |
+| `JWKSURI` | `string` |  |
+| `SoftwareID` | `string` |  |
+| `SoftwareVersion` | `string` |  |
+| `SoftwareStatement` | `string` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields mcp.OAuthClientInformation */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ClientID` | `string` |  |
+| `ClientSecret` | `string` |  |
+| `ClientIDIssuedAt` | `*int64` |  |
+| `ClientSecretExpiresAt` | `*int64` |  |
+| `Issuer` | `string` |  |
+| `AuthorizationServer` | `string` |  |
+| `TokenEndpoint` | `string` |  |
+
+{/* /gen:fields */}
+
+`mcp.OAuthClientInformationFull` is the full result of Dynamic Client Registration: the registered metadata plus the client credentials.
+
+## Discovery
+
+| Function | Description |
+| --- | --- |
+| `mcp.DiscoverOAuthProtectedResourceMetadata(ctx, serverURL, opts) (OAuthProtectedResourceMetadata, error)` | Fetches the server's RFC 9728 protected resource metadata. |
+| `mcp.SelectOAuthAuthorizationServerURL(ctx, serverURL, opts) (string, *OAuthProtectedResourceMetadata, error)` | Returns the first authorization server in the resource metadata, or the MCP server's own origin. |
+| `mcp.BuildAuthorizationServerDiscoveryURLs(authorizationServerURL) ([]OAuthDiscoveryURL, error)` | The OAuth and OIDC metadata URLs to try, in priority order. |
+| `mcp.DiscoverAuthorizationServerMetadata(ctx, authorizationServerURL, opts) (*OAuthAuthorizationServerMetadata, error)` | Fetches authorization server metadata and checks the issuer. |
+| `mcp.ExtractWWWAuthenticateParams(resp) WWWAuthenticateParams` | Parses a `Bearer` challenge for `resource_metadata` and `scope`. |
+| `mcp.ExtractResourceMetadataURL(resp) (*url.URL, bool)` | Extracts the RFC 9728 `resource_metadata` URL from a challenge. |
+| `mcp.AssertOAuthResourceMetadataURLSameOrigin(serverURL, resourceMetadataURL) error` | Rejects a `resource_metadata` URL on a different origin from the server. |
+| `mcp.SelectOAuthResourceURL(ctx, serverURL, provider, ...) (*url.URL, error)` | Selects the RFC 8707 `resource` value for the authorization server. |
+| `mcp.SelectOAuthScope(challengeScope, resourceMetadata, ...) string` | Picks the scope: the challenge scope first, then metadata, then client metadata. |
+| `mcp.TrustedOAuthAuthorizationServerOrigin(serverURL, authorizationServerURL) string` | Returns the origin that may skip the SSRF guard, only when it is a loopback address of the same server. |
+
+Discovery refuses unsafe endpoints. It applies an SSRF guard to every hop of metadata discovery and rejects redirects on token requests.
+
+{/* gen:fields mcp.OAuthDiscoveryOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `ProtocolVersion` | `string` |  |
+| `ResourceMetadataURL` | `string` |  |
+| `HTTPClient` | `*http.Client` |  |
+| `ValidateAuthorizationServerURL` | `func(serverURL string, authorizationServerURL string) error` |  |
+| `TrustedOrigin` | `string` | TrustedOrigin is a developer-configured origin whose discovery hops skip the SSRF guard in DiscoverAuthorizationServerMetadata (TS trustedOrigin). It must never be derived from response data. See TrustedOAuthAuthorizationServerOrigin. |
+
+{/* /gen:fields */}
+
+`mcp.OAuthProtectedResourceMetadata`, `mcp.OAuthAuthorizationServerMetadata`, `mcp.OAuthDiscoveryURL` and `mcp.WWWAuthenticateParams` are the result types.
+
+## Flow steps
+
+| Function | Description |
+| --- | --- |
+| `mcp.RegisterOAuthClient(ctx, authorizationServerURL, ...) (*OAuthClientInformationFull, error)` | Dynamic Client Registration (RFC 7591). |
+| `mcp.StartOAuthAuthorization(authorizationServerURL, params) (authorizationURL, codeVerifier string, err error)` | Builds the authorization URL and a fresh PKCE verifier. |
+| `mcp.ExchangeOAuthAuthorization(ctx, authorizationServerURL, ...) (*OAuthTokens, error)` | Exchanges an authorization code for tokens. |
+| `mcp.RefreshOAuthAuthorization(ctx, authorizationServerURL, ...) (*OAuthTokens, error)` | Exchanges a refresh token for new tokens. |
+| `mcp.GenerateOAuthPKCE() (codeVerifier, codeChallenge string, err error)` | Generates a PKCE (RFC 7636) verifier and its S256 challenge. |
+| `mcp.ValidateOAuthState(returnedState, sentState string) error` | Compares the callback `state` with the one you sent. |
+
+{/* gen:fields mcp.StartOAuthAuthorizationParams */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Metadata` | `*OAuthAuthorizationServerMetadata` |  |
+| `ClientInformation` | `OAuthClientInformation` |  |
+| `RedirectURL` | `string` |  |
+| `Scope` | `string` |  |
+| `State` | `string` |  |
+| `Resource` | `*url.URL` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields mcp.ExchangeOAuthAuthorizationParams */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Metadata` | `*OAuthAuthorizationServerMetadata` |  |
+| `ClientInformation` | `OAuthClientInformation` |  |
+| `AuthorizationCode` | `string` |  |
+| `CodeVerifier` | `string` |  |
+| `RedirectURI` | `string` |  |
+| `Resource` | `*url.URL` |  |
+| `AddClientAuthentication` | `func(ctx context.Context, headers http.Header, params url.Values, tokenURL string, metadata *OAuthAuthorizationServerMetadata) error` |  |
+| `HTTPClient` | `*http.Client` |  |
+
+{/* /gen:fields */}
+
+{/* gen:fields mcp.RefreshOAuthAuthorizationParams */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Metadata` | `*OAuthAuthorizationServerMetadata` |  |
+| `ClientInformation` | `OAuthClientInformation` |  |
+| `RefreshToken` | `string` |  |
+| `Resource` | `*url.URL` |  |
+| `AddClientAuthentication` | `func(ctx context.Context, headers http.Header, params url.Values, tokenURL string, metadata *OAuthAuthorizationServerMetadata) error` |  |
+| `HTTPClient` | `*http.Client` |  |
+
+{/* /gen:fields */}
+
+## Errors
+
+| Name | Description |
+| --- | --- |
+| `*mcp.MCPClientOAuthError` | An error from the OAuth flow. `Code` is the OAuth error code when known. |
+| `mcp.ParseOAuthErrorResponse(resp) *MCPClientOAuthError` | Parses an OAuth error response. |
+| `mcp.IsInvalidClientError(err)` | True for `invalid_client`. |
+| `mcp.IsInvalidGrantError(err)` | True for `invalid_grant`. |
+| `mcp.IsUnauthorizedClientError(err)` | True for `unauthorized_client`. |
+| `mcp.IsAuthorizationServerMismatchError(err)` | True when rediscovered authorization server metadata does not match the pin. |
+
+The codes are `mcp.OAuthErrorCodeServerError`, `mcp.OAuthErrorCodeInvalidClient`, `mcp.OAuthErrorCodeInvalidGrant`, `mcp.OAuthErrorCodeUnauthorizedClient` and `mcp.OAuthErrorCodeAuthorizationServerMismatch`.

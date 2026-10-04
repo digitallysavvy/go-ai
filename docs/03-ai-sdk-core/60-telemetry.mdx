@@ -192,7 +192,7 @@ Before using telemetry, you need to configure OpenTelemetry in your application:
 
 ### Basic Setup
 
-```go
+```go skip-compile
 package main
 
 import (
@@ -238,7 +238,7 @@ func main() {
 
 ### Jaeger Setup
 
-```go
+```go skip-compile
 import (
     "go.opentelemetry.io/otel"
     "go.opentelemetry.io/otel/exporters/jaeger"
@@ -476,7 +476,7 @@ When tools are executed, `ai.toolCall` spans are recorded:
 
 Here's a complete example showing telemetry setup and usage:
 
-```go
+```go skip-compile
 package main
 
 import (
@@ -524,7 +524,7 @@ func main() {
     provider := openai.New(openai.Config{
         APIKey: os.Getenv("OPENAI_API_KEY"),
     })
-    model, _ := provider.LanguageModel("gpt-4")
+    model, _ := provider.LanguageModel("gpt-6-astra")
 
     // Configure telemetry settings
     telemetrySettings := &telemetry.Options{
