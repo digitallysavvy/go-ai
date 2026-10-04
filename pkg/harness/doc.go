@@ -27,7 +27,7 @@
 //	})
 //
 // Stream a turn with coder.Stream, as in the Shipyard demo at
-// https://github.com/digitallysavvy/go-ai-demo. The demo streams the
+// https://github.com/digitallysavvy/go-ai-shipyard. The demo streams the
 // activity of the coding agent into a chat UI as data parts.
 //
 // This package also holds the harness-v1 specification types that adapter

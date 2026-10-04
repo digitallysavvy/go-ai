@@ -13,14 +13,14 @@ Three guides cover the path from a streaming endpoint to a chat product that can
 
 ## The reference app
 
-[Shipyard](https://github.com/digitallysavvy/go-ai-demo) is a Next.js page that uses the stock `useChat` hook, talking to a Go server built with the Go AI SDK. A failing Go project sits in a workspace. The chat model investigates with its own tools, asks the user before handing the fix to Claude Code or Codex, and streams the coding agent's activity into the thread.
+[Shipyard](https://github.com/digitallysavvy/go-ai-shipyard) is a Next.js page that uses the stock `useChat` hook, talking to a Go server built with the Go AI SDK. A failing Go project sits in a workspace. The chat model investigates with its own tools, asks the user before handing the fix to Claude Code or Codex, and streams the coding agent's activity into the thread.
 
 | Piece | Where it lives |
 | --- | --- |
-| Chat endpoint, validation, keep-alive | [`server/chat.go`](https://github.com/digitallysavvy/go-ai-demo/blob/main/server/chat.go) |
-| Tools and the approval-gated tool | [`server/tools.go`](https://github.com/digitallysavvy/go-ai-demo/blob/main/server/tools.go) |
-| Claude Code and Codex through the harness | [`server/coder.go`](https://github.com/digitallysavvy/go-ai-demo/blob/main/server/coder.go) |
-| `useChat` setup and approval buttons | [`web/app/page.tsx`](https://github.com/digitallysavvy/go-ai-demo/blob/main/web/app/page.tsx) |
+| Chat endpoint, validation, keep-alive | [`server/chat.go`](https://github.com/digitallysavvy/go-ai-shipyard/blob/main/server/chat.go) |
+| Tools and the approval-gated tool | [`server/tools.go`](https://github.com/digitallysavvy/go-ai-shipyard/blob/main/server/tools.go) |
+| Claude Code and Codex through the harness | [`server/coder.go`](https://github.com/digitallysavvy/go-ai-shipyard/blob/main/server/coder.go) |
+| `useChat` setup and approval buttons | [`web/app/page.tsx`](https://github.com/digitallysavvy/go-ai-shipyard/blob/main/web/app/page.tsx) |
 
 ## Short versions
 

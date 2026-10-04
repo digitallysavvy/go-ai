@@ -45,5 +45,5 @@ Imports: `github.com/digitallysavvy/go-ai/pkg/ai` and `.../pkg/providers/anthrop
 
 ## Reference
 
-- Reference app with a useChat frontend, Go backend, approval-gated tool and coding-agent harness: https://github.com/digitallysavvy/go-ai-demo
+- Reference app with a useChat frontend, Go backend, approval-gated tool and coding-agent harness: https://github.com/digitallysavvy/go-ai-shipyard
 - Setup guide for agents: https://goaisdk.com/docs/getting-started/using-go-ai-with-coding-agents

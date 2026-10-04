@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.5.1] - 2026-10-04
 
-Fixes found while building the [Shipyard demo](https://github.com/digitallysavvy/go-ai-demo),
+Fixes found while building the [Shipyard demo](https://github.com/digitallysavvy/go-ai-shipyard),
 a `useChat` frontend on a Go backend, plus a documentation overhaul for
 human and agent developers.
 

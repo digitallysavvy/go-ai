@@ -5,7 +5,7 @@ description: Build a Go HTTP endpoint that the stock useChat hook talks to, with
 
 # Serve a useChat frontend from Go
 
-The `useChat` hook from `@ai-sdk/react` posts a list of UI messages to an endpoint and reads back a stream of Server-Sent Events (SSE). The Go AI SDK writes that stream, so the frontend needs no adapter. This guide builds the endpoint the way the [Shipyard demo](https://github.com/digitallysavvy/go-ai-demo) does.
+The `useChat` hook from `@ai-sdk/react` posts a list of UI messages to an endpoint and reads back a stream of Server-Sent Events (SSE). The Go AI SDK writes that stream, so the frontend needs no adapter. This guide builds the endpoint the way the [Shipyard demo](https://github.com/digitallysavvy/go-ai-shipyard) does.
 
 ## The protocol
 
@@ -336,9 +336,9 @@ The `mode` field arrives in the JSON body next to `messages`. Read it by adding 
 
 ## See it in the demo
 
-- [`server/chat.go`](https://github.com/digitallysavvy/go-ai-demo/blob/main/server/chat.go): the request struct, the 400 for a bad body, `CreateUIMessageStreamWithOptions` with `Execute`, `CreateAgentUIStreamFromUIMessages`, `Merge`, and the keep-alive pipe.
-- [`server/main.go`](https://github.com/digitallysavvy/go-ai-demo/blob/main/server/main.go): `withCORS`, the HTTP server timeouts and graceful shutdown.
-- [`web/app/page.tsx`](https://github.com/digitallysavvy/go-ai-demo/blob/main/web/app/page.tsx): `DefaultChatTransport` with a `body` function and `useChat`.
-- [`web/lib/types.ts`](https://github.com/digitallysavvy/go-ai-demo/blob/main/web/lib/types.ts): the typed `data-coder` part that mirrors the Go struct.
+- [`server/chat.go`](https://github.com/digitallysavvy/go-ai-shipyard/blob/main/server/chat.go): the request struct, the 400 for a bad body, `CreateUIMessageStreamWithOptions` with `Execute`, `CreateAgentUIStreamFromUIMessages`, `Merge`, and the keep-alive pipe.
+- [`server/main.go`](https://github.com/digitallysavvy/go-ai-shipyard/blob/main/server/main.go): `withCORS`, the HTTP server timeouts and graceful shutdown.
+- [`web/app/page.tsx`](https://github.com/digitallysavvy/go-ai-shipyard/blob/main/web/app/page.tsx): `DefaultChatTransport` with a `body` function and `useChat`.
+- [`web/lib/types.ts`](https://github.com/digitallysavvy/go-ai-shipyard/blob/main/web/lib/types.ts): the typed `data-coder` part that mirrors the Go struct.
 
 Next: [Tool approval end to end](./02-tool-approval.mdx).
