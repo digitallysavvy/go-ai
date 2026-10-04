@@ -241,6 +241,9 @@ func TestEmbeddedDocsParse(t *testing.T) {
 }
 
 func TestStartupTime(t *testing.T) {
+	if raceEnabled {
+		t.Skip("timing is not meaningful under -race")
+	}
 	start := time.Now()
 	pages, err := docs.Build(godocs.FS)
 	if err != nil {
