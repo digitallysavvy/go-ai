@@ -7,8 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-03
+
 Fixes found while building the [Shipyard demo](https://github.com/digitallysavvy/go-ai-demo),
-a `useChat` frontend on a Go backend.
+a `useChat` frontend on a Go backend, plus a documentation overhaul for
+human and agent developers.
 
 ### Added
 
@@ -22,6 +25,16 @@ a `useChat` frontend on a Go backend.
   messages directly (TS `pipeAgentUIStreamToResponse` /
   `createAgentUIStreamResponse` with `uiMessages`).
 - `ai.UIMessageStreamHeaders()` (TS `UI_MESSAGE_STREAM_HEADERS`).
+
+- `cmd/goai-docs-mcp`: an MCP server over stdio that lets coding agents
+  search and read the docs (`search_docs`, `read_doc`, `list_docs`). It
+  embeds the docs, so it works offline:
+  `go install github.com/digitallysavvy/go-ai/cmd/goai-docs-mcp@latest`.
+- `skills/go-ai`: an agent skill for projects that use the SDK.
+- Runnable `Example` functions for `GenerateText`, `StreamText`, structured
+  output, tools, `ToolLoopAgent`, `PipeUIMessageStreamToResponse` and the MCP
+  client, plus package overviews for the core and provider packages, on
+  pkg.go.dev.
 
 ### Changed
 
@@ -70,6 +83,20 @@ a `useChat` frontend on a Go backend.
 - The harness examples (Claude Code, Codex, Cursor, fx, GitHub Copilot,
   Grok Build, workflow) give the local sandbox a port; they failed at
   startup with "needs a TCP port exposed by the sandbox".
+
+### Documentation
+
+- New "Build a chat app" guides: serve `useChat` from Go, tool approval end
+  to end, and Claude Code or Codex through the harness. 12 recipes, each
+  backed by a program in `examples/recipes/`.
+- Rewritten quick start; current model IDs throughout; reference pages for
+  MCP, the harness, workflow and UI message chunks; option tables generated
+  from the source (`docs/scripts/gen-reference.go`); changelog page on the
+  site.
+- For coding agents: `/agents.md`, `/sitemap.md`, a restructured `llms.txt`,
+  per-section `llms.txt` files and `llms-core.txt`.
+- CI compiles every Go snippet in the docs (`docs/scripts/compile-snippets.go`)
+  and checks the generated reference for drift.
 
 ## [0.5.0] - 2026-10-02
 
@@ -1155,7 +1182,9 @@ Apache 2.0 - See LICENSE for details
 
 ---
 
-[0.5.0]: https://github.com/digitallysavvy/go-ai/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/digitallysavvy/go-ai/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/digitallysavvy/go-ai/compare/v0.5.0...v0.5.1
+[0.5.0]: https://github.com/digitallysavvy/go-ai/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/digitallysavvy/go-ai/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/digitallysavvy/go-ai/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/digitallysavvy/go-ai/compare/v0.1.0...v0.2.0
