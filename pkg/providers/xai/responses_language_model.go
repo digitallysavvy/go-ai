@@ -926,28 +926,26 @@ func mapWebSearchAction(raw json.RawMessage) map[string]interface{} {
 }
 
 func mapXAIResponsesFinishReason(status string, details *responses.IncompleteDetails) types.FinishReason {
-	switch status {
-	case "completed", "stop", "":
-		// "": no status provided (older API versions) — treat as stop.
-		return types.FinishReasonStop
-	case "tool_calls":
-		return types.FinishReasonToolCalls
-	case "incomplete":
-		if details != nil {
-			switch details.Reason {
-			case "max_output_tokens":
-				return types.FinishReasonLength
-			case "content_filter":
-				return types.FinishReasonContentFilter
-			}
+	// An incomplete response is mapped from its incomplete_details reason;
+	// with no reason it is "other" (TS: reason ? map(reason) : 'other').
+	if status == "incomplete" {
+		if details == nil || details.Reason == "" {
+			return types.FinishReasonOther
 		}
+		status = details.Reason
+	}
+	// Mirrors TS mapXaiResponsesFinishReason.
+	switch status {
+	case "stop", "completed":
+		return types.FinishReasonStop
+	case "length", "max_output_tokens":
 		return types.FinishReasonLength
-	case "length":
-		return types.FinishReasonLength
+	case "tool_calls", "function_call":
+		return types.FinishReasonToolCalls
 	case "content_filter":
 		return types.FinishReasonContentFilter
 	default:
-		return types.FinishReasonStop
+		return types.FinishReasonOther
 	}
 }
 

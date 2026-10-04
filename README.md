@@ -64,7 +64,7 @@ See the full [release notes](./release_notes/RELEASE_NOTES_V0.5.0.md) and [chang
 You will need Go 1.26+ installed on your local development machine.
 
 ```bash
-go get github.com/digitallysavvy/go-ai@v0.5.1
+go get github.com/digitallysavvy/go-ai@v0.5.2
 ```
 
 ## Unified Provider Architecture
