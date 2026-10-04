@@ -343,10 +343,10 @@ agent.AgentConfig{
 
 ## See it in the demo
 
-- [`server/tools.go`](https://github.com/digitallysavvy/go-ai-demo/blob/main/server/tools.go): `delegate_to_coding_agent` sets `ToolApproval: true`, so the model can ask and only the user can say yes.
-- [`server/chat.go`](https://github.com/digitallysavvy/go-ai-demo/blob/main/server/chat.go): `ExperimentalToolApprovalSecret` on the agent and `CreateAgentUIStreamFromUIMessages` handling the resumed request.
-- [`server/main.go`](https://github.com/digitallysavvy/go-ai-demo/blob/main/server/main.go): where the per-process secret and `TOOL_APPROVAL_SECRET` are loaded.
-- [`web/app/page.tsx`](https://github.com/digitallysavvy/go-ai-demo/blob/main/web/app/page.tsx): `addToolApprovalResponse` and `lastAssistantMessageIsCompleteWithApprovalResponses`.
-- [`web/components/ToolPart.tsx`](https://github.com/digitallysavvy/go-ai-demo/blob/main/web/components/ToolPart.tsx): the approval card for each tool part state.
+- [`server/tools.go`](https://github.com/digitallysavvy/go-ai-shipyard/blob/main/server/tools.go): `delegate_to_coding_agent` sets `ToolApproval: true`, so the model can ask and only the user can say yes.
+- [`server/chat.go`](https://github.com/digitallysavvy/go-ai-shipyard/blob/main/server/chat.go): `ExperimentalToolApprovalSecret` on the agent and `CreateAgentUIStreamFromUIMessages` handling the resumed request.
+- [`server/main.go`](https://github.com/digitallysavvy/go-ai-shipyard/blob/main/server/main.go): where the per-process secret and `TOOL_APPROVAL_SECRET` are loaded.
+- [`web/app/page.tsx`](https://github.com/digitallysavvy/go-ai-shipyard/blob/main/web/app/page.tsx): `addToolApprovalResponse` and `lastAssistantMessageIsCompleteWithApprovalResponses`.
+- [`web/components/ToolPart.tsx`](https://github.com/digitallysavvy/go-ai-shipyard/blob/main/web/components/ToolPart.tsx): the approval card for each tool part state.
 
 Next: [Coding agents with the harness](./03-coding-agents-harness.mdx).

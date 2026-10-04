@@ -381,7 +381,7 @@ The demo lists every file with `find`, reads each one, and keeps the ones that d
 
 ## See it in the demo
 
-- [`server/coder.go`](https://github.com/digitallysavvy/go-ai-demo/blob/main/server/coder.go): `newHarnessAgent` (Claude Code or Codex, local sandbox with `Ports`, `OnSession`), `Run` (session, stream, `Destroy`), `activityLog` (chunks to events), `collectChanges` (reads files back) and `unifiedDiff`.
-- [`server/tools.go`](https://github.com/digitallysavvy/go-ai-demo/blob/main/server/tools.go): the approval-gated tool that calls `coder.Run` with the request's writer.
-- [`web/components/CoderCard.tsx`](https://github.com/digitallysavvy/go-ai-demo/blob/main/web/components/CoderCard.tsx): rendering the `data-coder` part as a live log with a diff.
-- [`web/lib/types.ts`](https://github.com/digitallysavvy/go-ai-demo/blob/main/web/lib/types.ts): the TypeScript type that mirrors `coderState`.
+- [`server/coder.go`](https://github.com/digitallysavvy/go-ai-shipyard/blob/main/server/coder.go): `newHarnessAgent` (Claude Code or Codex, local sandbox with `Ports`, `OnSession`), `Run` (session, stream, `Destroy`), `activityLog` (chunks to events), `collectChanges` (reads files back) and `unifiedDiff`.
+- [`server/tools.go`](https://github.com/digitallysavvy/go-ai-shipyard/blob/main/server/tools.go): the approval-gated tool that calls `coder.Run` with the request's writer.
+- [`web/components/CoderCard.tsx`](https://github.com/digitallysavvy/go-ai-shipyard/blob/main/web/components/CoderCard.tsx): rendering the `data-coder` part as a live log with a diff.
+- [`web/lib/types.ts`](https://github.com/digitallysavvy/go-ai-shipyard/blob/main/web/lib/types.ts): the TypeScript type that mirrors `coderState`.

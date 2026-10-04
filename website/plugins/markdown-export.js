@@ -408,7 +408,7 @@ module.exports = function markdownExport(context) {
       index += `- Every page is also markdown: append \`.md\` to its URL\n`;
       index += `- Core docs in one file (about ${coreKB} KB): ${origin}${baseUrl}llms-core.txt\n`;
       index += `- All docs in one file (large): ${origin}${baseUrl}llms-full.txt\n`;
-      index += `- Source: ${REPO_URL}. Reference app: https://github.com/digitallysavvy/go-ai-demo\n`;
+      index += `- Source: ${REPO_URL}. Reference app: https://github.com/digitallysavvy/go-ai-shipyard\n`;
       if (startHere.length) index += `\n## Start here\n\n${startHere.join('')}`;
       for (const sec of sections.values()) {
         const list = overviewFirst(sec.pages.filter((pg) => !OPTIONAL_TYPES.has(pg.type)));
@@ -567,6 +567,6 @@ er, err := ai.Embed(ctx, ai.EmbedOptions{Model: emb, Input: "hello"}) // er.Embe
 - [llms.txt](${origin}/llms.txt): index with a "Start here" block
 - [llms-core.txt](${origin}/llms-core.txt): the core pages in one file
 - [sitemap.md](${origin}/sitemap.md): every page with type and summary
-${link('Quick start', /\/getting-started\/(go|golang|quick-?start)$/)}${link('Generating text', /\/generating-text$/)}${link('Structured data', /\/generating-structured-data$/)}${link('Tools and tool calling', /\/tools-and-tool-calling$/)}${link('Building agents', /\/agents\/building-agents$/)}${agentGuide ? `- [Use Go AI SDK with coding agents](${agentGuide.url})\n` : ''}- Reference app (useChat frontend, Go backend, approval-gated tool, harness): https://github.com/digitallysavvy/go-ai-demo
+${link('Quick start', /\/getting-started\/(go|golang|quick-?start)$/)}${link('Generating text', /\/generating-text$/)}${link('Structured data', /\/generating-structured-data$/)}${link('Tools and tool calling', /\/tools-and-tool-calling$/)}${link('Building agents', /\/agents\/building-agents$/)}${agentGuide ? `- [Use Go AI SDK with coding agents](${agentGuide.url})\n` : ''}- Reference app (useChat frontend, Go backend, approval-gated tool, harness): https://github.com/digitallysavvy/go-ai-shipyard
 `;
 }
