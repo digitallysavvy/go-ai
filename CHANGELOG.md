@@ -46,6 +46,10 @@ a `useChat` frontend on a Go backend.
   tool error and the tool does not run. This applies to tool-level,
   per-tool map and call-level `ToolApproval` settings.
 
+- The harness credential setup no longer echoes an invalid base URL in its
+  error. A base URL can carry credentials (`https://user:token@host`); the
+  message is now `Invalid URL`, as in TS.
+
 ### Fixed
 
 - `mcp.MCPClient` now matches JSON-RPC responses to pending requests when the
