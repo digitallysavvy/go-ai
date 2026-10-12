@@ -438,7 +438,7 @@ func TestMistralReasoningEffortModelIDsMatchTypeScript(t *testing.T) {
 		"mistral-vibe-cli-fast",
 		"mistral-vibe-cli-latest",
 		"mistral-vibe-cli-with-tools",
-		"zai-glm-5-2",
+		"zai-glm-5-3",
 	}
 	wantUnsupported := []string{
 		"codestral-2508",

@@ -35,7 +35,7 @@ const (
 	ModelMistralVibeCliWithTools = "mistral-vibe-cli-with-tools"
 	ModelVoxtralSmall2507        = "voxtral-small-2507"
 	ModelVoxtralSmallLatest      = "voxtral-small-latest"
-	ModelZaiGLM52                = "zai-glm-5-2"
+	ModelZaiGLM52                = "zai-glm-5-3"
 )
 
 // mistralReasoningEffortModelIDs mirrors reasoningEffortModelIds in
