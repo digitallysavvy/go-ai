@@ -1942,6 +1942,14 @@ func toolResultOutputWithOptions(tr types.ToolResultContent, opts ConvertOptions
 	}
 	if tr.Output != nil {
 		switch tr.Output.Type {
+		case types.ToolResultOutputErrorText, types.ToolResultOutputErrorJSON, types.ToolResultOutputError:
+			// Tool errors are wrapped as {"error": value} so the model can
+			// tell a failed execution from a successful result (TS #22209).
+			// The wrapped text is already JSON, so it is not re-encoded for
+			// tools with an output schema.
+			if b, err := json.Marshal(map[string]interface{}{"error": tr.Output.Value}); err == nil {
+				return string(b)
+			}
 		case types.ToolResultOutputText:
 			if s, ok := tr.Output.Value.(string); ok {
 				return scalarOutput(s)

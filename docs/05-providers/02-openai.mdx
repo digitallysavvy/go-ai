@@ -263,6 +263,10 @@ result, err := model.DoGenerate(ctx, &provider.GenerateOptions{
 })
 ```
 
+#### Tool errors
+
+Failed tool executions are marked as errors in the request so the model can tell them from successful results. For Chat Completions and for Responses function and custom tools, an `error-text` or `error-json` tool output is sent as `{"error": <value>}` (JSON-encoded) instead of the bare value.
+
 ### Image Generation Options
 
 Use `OpenAIImageModelOptions` under the `"openai"` provider key for typed image options. The struct maps camelCase Go JSON names to the OpenAI wire fields used by the TypeScript SDK.

@@ -1707,3 +1707,57 @@ func TestConvertPromptToInput_ReasoningWithoutEncryptedContentWarns(t *testing.T
 		t.Fatalf("warnings = %#v, want reasoning-dropped warning", warnings)
 	}
 }
+
+// Ported from convert-to-openai-responses-input.test.ts (TS #22209): tool
+// errors are wrapped as {"error": value} for function and custom tools,
+// with or without an output schema. (The Go Responses converter has no
+// prompt cache breakpoint support for tool outputs, so that axis of the TS
+// test is not ported.)
+func TestConvertPromptToInput_WrapsToolErrors(t *testing.T) {
+	t.Parallel()
+
+	for _, custom := range []bool{false, true} {
+		for _, tc := range []struct {
+			name     string
+			output   types.ToolResultOutput
+			expected string
+		}{
+			{"error-text", types.ToolResultOutput{Type: types.ToolResultOutputErrorText, Value: "E42"}, `{"error":"E42"}`},
+			{"error-json", types.ToolResultOutput{Type: types.ToolResultOutputErrorJSON, Value: map[string]interface{}{"code": "E42"}}, `{"error":{"code":"E42"}}`},
+		} {
+			for _, hasSchema := range []bool{false, true} {
+				{
+					output := tc.output
+					part := types.ToolResultContent{ToolCallID: "call_error", ToolName: "deploy", Output: &output}
+					opts := ConvertOptions{Store: true}
+					if custom {
+						opts.CustomToolNames = map[string]bool{"deploy": true}
+					}
+					if hasSchema {
+						opts.OutputSchemaToolNames = map[string]bool{"deploy": true}
+					}
+					input, warnings, err := ConvertPromptToInputWithOptions(types.Prompt{Messages: []types.Message{{
+						Role:    types.RoleTool,
+						Content: []types.ContentPart{part},
+					}}}, "system", opts)
+					if err != nil || len(warnings) != 0 || len(input) != 1 {
+						t.Fatalf("custom=%v %s: input=%v warnings=%v err=%v", custom, tc.name, input, warnings, err)
+					}
+					raw, _ := json.Marshal(input[0])
+					var item map[string]interface{}
+					_ = json.Unmarshal(raw, &item)
+					wantType := "function_call_output"
+					if custom {
+						wantType = "custom_tool_call_output"
+					}
+					if item["type"] != wantType {
+						t.Fatalf("type = %v, want %s", item["type"], wantType)
+					}
+					if item["output"] != tc.expected {
+						t.Fatalf("custom=%v schema=%v %s: output = %#v, want %s", custom, hasSchema, tc.name, item["output"], tc.expected)
+					}
+				}
+			}
+		}
+	}
+}

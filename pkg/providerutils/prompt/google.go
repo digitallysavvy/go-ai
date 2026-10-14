@@ -734,6 +734,7 @@ func (c *googleConverter) appendFunctionResponse(parts *[]map[string]interface{}
 		return
 	}
 	var content interface{}
+	isError := out.kind == "error-text" || out.kind == "error-json" || out.kind == "execution-denied"
 	if out.kind == "execution-denied" {
 		content = "Tool call execution denied."
 		if out.reason != "" {
@@ -742,7 +743,10 @@ func (c *googleConverter) appendFunctionResponse(parts *[]map[string]interface{}
 	} else {
 		content = serializeFunctionResponseContent(out.value)
 	}
-	*parts = append(*parts, map[string]interface{}{"functionResponse": c.functionResponse(p.ToolName, p.ToolCallID, content)})
+	// Errors are sent under response.error and successful results under
+	// response.content so the model can tell a failed tool from a result
+	// (TS #22209).
+	*parts = append(*parts, map[string]interface{}{"functionResponse": c.functionResponseWithKey(p.ToolName, p.ToolCallID, content, isError)})
 }
 
 // containsJSONSchemaReference reports whether value (a decoded JSON value:
@@ -787,9 +791,19 @@ func serializeFunctionResponseContent(value interface{}) interface{} {
 }
 
 func (c *googleConverter) functionResponse(toolName, toolCallID string, content interface{}) map[string]interface{} {
+	return c.functionResponseWithKey(toolName, toolCallID, content, false)
+}
+
+// functionResponseWithKey builds a functionResponse part whose payload is
+// response.error when isError, else response.content.
+func (c *googleConverter) functionResponseWithKey(toolName, toolCallID string, content interface{}, isError bool) map[string]interface{} {
+	key := "content"
+	if isError {
+		key = "error"
+	}
 	fr := map[string]interface{}{
 		"name":     toolName,
-		"response": map[string]interface{}{"name": toolName, "content": content},
+		"response": map[string]interface{}{"name": toolName, key: content},
 	}
 	if c.opts.IncludeFunctionCallIDs && toolCallID != "" {
 		fr["id"] = toolCallID
