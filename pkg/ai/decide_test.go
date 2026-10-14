@@ -432,3 +432,33 @@ func TestExperimentalDecide_RejectsRefusedQuestionsWithoutRetrying(t *testing.T)
 		}
 	}
 }
+
+// TS: decide.test.ts "accepts a selected choice within the declared probability rounding"
+func TestExperimentalDecide_AcceptsRoundedChoiceTies(t *testing.T) {
+	questions := map[string]provider.DecisionQuestion{
+		"topic": {Type: "choice", Instructions: "Team?", Criteria: map[string]interface{}{"billing": nil, "support": nil, "other": nil}},
+	}
+	run := func(rounding *provider.DecisionRounding) error {
+		mock := &mockDecisionModel{
+			providerName: "test", modelID: "m",
+			doDecide: func(context.Context, provider.DecisionCallOptions) (*provider.DecisionResult, error) {
+				return &provider.DecisionResult{
+					Rounding: rounding,
+					Answers: map[string]provider.DecisionAnswer{
+						"topic": {Type: "choice", Choice: "support", Probabilities: map[string]float64{"billing": 0.44, "support": 0.43, "other": 0.13}},
+					},
+				}, nil
+			},
+		}
+		_, err := ExperimentalDecide(context.Background(), DecideOptions{Model: mock, State: "text", Questions: questions})
+		return err
+	}
+	decimals := 2
+	if err := run(&provider.DecisionRounding{ProbabilityDecimals: &decimals}); err != nil {
+		t.Fatalf("rounded tie rejected: %v", err)
+	}
+	// Without declared rounding the same answer is not a highest-probability pick.
+	if err := run(nil); err == nil {
+		t.Fatal("expected an error without declared rounding")
+	}
+}

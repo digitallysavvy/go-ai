@@ -596,7 +596,7 @@ func validateDecisionAnswers(questions map[string]provider.DecisionQuestion, ans
 				}
 				selected := answer.Probabilities[answer.Choice]
 				for _, p := range answer.Probabilities {
-					if p > selected+decisionTolerance {
+					if p > selected+decisionTolerance+2*probError {
 						return invalidDecisionAnswer(answers, fmt.Sprintf("Question %q did not select a highest-probability option.", id))
 					}
 				}
