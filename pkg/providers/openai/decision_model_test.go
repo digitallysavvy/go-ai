@@ -536,3 +536,52 @@ func TestDecisionModel_DeprecatedEvaluationFactoryIsBackedByDecisions(t *testing
 		t.Fatalf("path = %q", rec.path)
 	}
 }
+
+func TestDecisionModel_HTTPErrorKeepsStatusAndIsRetryable(t *testing.T) {
+	for _, tc := range []struct {
+		status    int
+		retryable bool
+	}{{429, true}, {503, true}, {403, false}} {
+		p, _ := newDecisionProvider(t, `{"error": {"message": "slow down", "type": "rate_limit", "code": "rate_limit_exceeded"}}`, tc.status)
+		_, err := decide(t, p, decisionTestOptions())
+		var perr *providererrors.ProviderError
+		if !errors.As(err, &perr) {
+			t.Fatalf("status %d: err = %v", tc.status, err)
+		}
+		if perr.StatusCode != tc.status || perr.Message != "slow down" || perr.ErrorCode != "rate_limit_exceeded" {
+			t.Fatalf("status %d: got %+v", tc.status, perr)
+		}
+		if perr.IsRetryable() != tc.retryable {
+			t.Fatalf("status %d: retryable = %v", tc.status, perr.IsRetryable())
+		}
+	}
+}
+
+func TestDecisionModel_ForwardsCancellation(t *testing.T) {
+	p, rec := newDecisionProvider(t, decisionFixture, 200)
+	m, err := p.DecisionModel("gpt-6-luna")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := m.DoDecide(ctx, decisionTestOptions()); err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if rec.calls > 1 {
+		t.Fatalf("calls = %d", rec.calls)
+	}
+}
+
+func TestDecisionModel_UsesConfiguredProviderName(t *testing.T) {
+	p := New(Config{APIKey: "k", Name: "custom"})
+	m, err := p.DecisionModel("future-decisions-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Provider() != "custom.decision" {
+		t.Fatalf("provider = %q", m.Provider())
+	}
+}

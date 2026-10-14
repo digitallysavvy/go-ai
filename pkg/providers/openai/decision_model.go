@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -185,7 +186,7 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 		Headers: opts.Headers,
 	}, &raw)
 	if err != nil {
-		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
+		return nil, m.handleError(err)
 	}
 
 	var response decisionResponseWire
@@ -281,6 +282,30 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 	}
 	result.ProviderMetadata = map[string]interface{}{"openai": openaiMetadata}
 	return result, nil
+}
+
+// handleError mirrors openaiFailedResponseHandler: an HTTP error keeps its
+// status code (so 408/409/429/5xx retry) and uses the OpenAI error message.
+func (m *DecisionModel) handleError(err error) error {
+	var statusErr *internalhttp.HTTPStatusError
+	if !errors.As(err, &statusErr) {
+		return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
+	}
+	message := string(statusErr.Body)
+	errorCode := ""
+	var envelope struct {
+		Error *struct {
+			Message string      `json:"message"`
+			Code    interface{} `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(statusErr.Body, &envelope) == nil && envelope.Error != nil && envelope.Error.Message != "" {
+		message = envelope.Error.Message
+		if code, ok := envelope.Error.Code.(string); ok {
+			errorCode = code
+		}
+	}
+	return providererrors.NewProviderError(m.Provider(), statusErr.StatusCode, errorCode, message, err)
 }
 
 func floatToIntPtr(v *float64) *int {
