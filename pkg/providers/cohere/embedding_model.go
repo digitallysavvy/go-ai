@@ -117,6 +117,9 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	}
 	if m.options.OutputDimension != nil {
 		reqBody["output_dimension"] = int(*m.options.OutputDimension)
+	} else if opts != nil && opts.Dimensions != nil {
+		// Top-level dimensions (TS #22338); the provider option wins.
+		reqBody["output_dimension"] = *opts.Dimensions
 	}
 
 	var response cohereEmbedResponse

@@ -261,7 +261,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// object is sent as "{}" rather than forwarded verbatim. This is unique
 	// to OpenAI's own chat conversion -- other ToOpenAIMessages callers
 	// (Groq/DeepSeek/openai-compatible/Alibaba/...) must not opt in.
-	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{SanitizeReplayedToolCallArguments: true, IncludePromptCacheBreakpoint: true, AllowVideo: m.provider.config.AllowVideo, Provider: m.fileReferenceProvider()}
+	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{SanitizeReplayedToolCallArguments: true, IncludePromptCacheBreakpoint: true, WrapToolErrorOutputs: true, AllowVideo: m.provider.config.AllowVideo, Provider: m.fileReferenceProvider()}
 	if opts.Prompt.IsMessages() {
 		converted, convErr := prompt.ToOpenAIMessagesWithError(convertMessages(opts.Prompt.Messages), toOpenAIMessagesOpts)
 		if convErr != nil {
@@ -567,6 +567,11 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 
 	if m.provider.config.TransformRequestBody != nil {
 		body = m.provider.config.TransformRequestBody(body)
+	}
+	if m.provider.config.TransformRequestBodyWithWarnings != nil {
+		var transformWarnings []types.Warning
+		body, transformWarnings = m.provider.config.TransformRequestBodyWithWarnings(body)
+		warnings = append(warnings, transformWarnings...)
 	}
 
 	return body, warnings, nil

@@ -38,6 +38,15 @@ type ToOpenAIMessagesOptions struct {
 	// and Azure's chat-completions models must leave this false.
 	IncludePromptCacheBreakpoint bool
 
+	// WrapToolErrorOutputs sends error-text and error-json tool outputs as
+	// JSON.stringify({error: value}) so the model can tell a failed tool
+	// execution from a successful result (TS #22209,
+	// convert-to-openai-chat-messages.ts). Unique to OpenAI's own
+	// chat-completions conversion; the shared @ai-sdk/openai-compatible
+	// converter keeps the verbatim behavior, so every other caller must leave
+	// this false.
+	WrapToolErrorOutputs bool
+
 	// AssistantToolCallContentMode selects what "content" an assistant
 	// message with tool calls emits, matching each TS converter's own
 	// ternary exactly -- they differ per provider:
@@ -188,7 +197,7 @@ func toOpenAIMessages(messages []types.Message, opt ToOpenAIMessagesOptions, ref
 							continue
 						}
 					}
-					text := openAIToolResultText(p)
+					text := openAIToolResultTextWithErrors(p, opt.WrapToolErrorOutputs)
 					if opt.IncludePromptCacheBreakpoint {
 						if bp, ok := openAIToolResultPromptCacheBreakpoint(p); ok {
 							toolMsg["content"] = []map[string]interface{}{
@@ -510,7 +519,17 @@ func openAIToolResultPromptCacheBreakpoint(p types.ToolResultContent) (interface
 // resolveToolOutput (shared with the Anthropic converter) also handles the
 // legacy Result/Error fields (P1-1 7259126).
 func openAIToolResultText(p types.ToolResultContent) string {
+	return openAIToolResultTextWithErrors(p, false)
+}
+
+// openAIToolResultTextWithErrors is openAIToolResultText with optional
+// {"error": value} wrapping of error-text / error-json outputs (OpenAI's own
+// chat converter only; see ToOpenAIMessagesOptions.WrapToolErrorOutputs).
+func openAIToolResultTextWithErrors(p types.ToolResultContent, wrapErrors bool) string {
 	out := resolveToolOutput(p)
+	if wrapErrors && (out.kind == "error-text" || out.kind == "error-json") {
+		return jsonStringify(map[string]interface{}{"error": out.value})
+	}
 	switch out.kind {
 	case "text", "error-text":
 		return stringValue(out.value)

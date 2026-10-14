@@ -9,6 +9,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -25,6 +26,10 @@ type Provider struct {
 
 // Config contains configuration for the Google provider
 type Config struct {
+	// BatchResultDownloads configures JSON Lines batch result downloads, e.g.
+	// the maximum bytes per result row (TS `batchResultDownloads`).
+	BatchResultDownloads providerutils.BatchResultDownloads
+
 	// APIKey is the Google API key
 	APIKey string
 

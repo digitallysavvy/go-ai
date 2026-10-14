@@ -455,6 +455,29 @@ for i, step := range result.Steps {
 }
 ```
 
+### Citations
+
+`Sources` is the set of references a provider retrieved (for example web-search results or file-search documents). Inline references that support a specific piece of generated text are exposed separately as `Citations` on the text content part, so you can render them next to the text they support without mixing them into the retrieved set.
+
+```go
+for _, part := range result.Content {
+    text, ok := part.(types.TextContent)
+    if !ok {
+        continue
+    }
+    for _, c := range text.Citations {
+        fmt.Printf("%s -> %s", text.Text, c.Source.URL)
+        if c.StartIndex != nil && c.EndIndex != nil {
+            // Offsets are positions in the generated text of this part.
+            fmt.Printf(" [%d:%d]", *c.StartIndex, *c.EndIndex)
+        }
+        fmt.Println()
+    }
+}
+```
+
+When streaming, citations arrive on the `ChunkTypeTextEnd` chunk (`chunk.Citations`) and are attached to the text part in `result.Content()`. In UI message streams they are sent as `citations` on the `text-end` chunk and stored on the text part (`ai.TextUIPart.Citations`). `StartIndex`/`EndIndex` are only set when the provider supplies output offsets (OpenAI `url_citation` and `container_file_citation`); `CitedText` holds the supporting passage when the provider returns one (Anthropic). When a response contains no retrieval data (no web-search results or file-search documents), citation-derived sources are still added to `Sources` so existing code keeps working.
+
 ### Sources
 
 Some providers such as Perplexity and Google Generative AI include sources in the response. These are web pages that ground the response.

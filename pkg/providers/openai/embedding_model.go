@@ -65,6 +65,7 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		"model": m.modelID,
 		"input": input,
 	}
+	m.applyDimensions(reqBody, opts)
 
 	var response openAIEmbeddingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
@@ -105,6 +106,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		"model": m.modelID,
 		"input": inputs,
 	}
+	m.applyDimensions(reqBody, opts)
 
 	var response openAIEmbeddingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
@@ -166,4 +168,19 @@ type openAIEmbeddingResponse struct {
 		PromptTokens int `json:"prompt_tokens"`
 		TotalTokens  int `json:"total_tokens"`
 	} `json:"usage"`
+}
+
+// applyDimensions sets the request's dimensions: providerOptions.openai.dimensions
+// wins over the top-level dimensions setting (TS #22338).
+func (m *EmbeddingModel) applyDimensions(reqBody map[string]interface{}, opts *provider.EmbedModelOptions) {
+	if opts == nil {
+		return
+	}
+	if d, ok := providerutils.ResolveEmbeddingDimensions(providerutils.EmbedProviderOption(opts.ProviderOptions, "openai", "dimensions"), opts.Dimensions); ok {
+		reqBody["dimensions"] = d
+	}
+	// providerOptions.openai.user (TS openaiEmbeddingModelOptions.user).
+	if u, ok := providerutils.EmbedProviderOption(opts.ProviderOptions, "openai", "user").(string); ok && u != "" {
+		reqBody["user"] = u
+	}
 }

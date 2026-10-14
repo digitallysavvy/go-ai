@@ -256,7 +256,7 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 				effort = "medium"
 			case types.ReasoningHigh:
 				effort = "high"
-			case types.ReasoningXHigh:
+			case types.ReasoningXHigh, types.ReasoningMax:
 				if m.modelID == "grok-4.6" {
 					effort = "xhigh"
 				} else {

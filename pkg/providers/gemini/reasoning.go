@@ -41,6 +41,7 @@ var reasoningBudgetPercentages = map[types.ReasoningLevel]float64{
 	types.ReasoningMedium:  0.3,
 	types.ReasoningHigh:    0.6,
 	types.ReasoningXHigh:   0.9,
+	types.ReasoningMax:     0.95,
 }
 
 // mapReasoningBudget mirrors TS mapReasoningToProviderBudget as used by
@@ -92,6 +93,7 @@ func resolveGemini3ThinkingConfig(reasoning types.ReasoningLevel, modelID string
 		types.ReasoningMedium:  "medium",
 		types.ReasoningHigh:    "high",
 		types.ReasoningXHigh:   "high",
+		types.ReasoningMax:     "high",
 	}
 	mapped, ok := effortMap[reasoning]
 	if !ok {

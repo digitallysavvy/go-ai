@@ -27,6 +27,7 @@ func TestFireworksReasoningAllLevels(t *testing.T) {
 		{types.ReasoningMedium, "medium", true},
 		{types.ReasoningHigh, "high", true},
 		{types.ReasoningXHigh, "high", true},
+		{types.ReasoningMax, "high", true},
 		{types.ReasoningDefault, "", false},
 	}
 
@@ -114,5 +115,28 @@ func TestFireworksReasoningEffortProviderOptionOverrideRemapped(t *testing.T) {
 
 	if body["reasoning_effort"] != "low" {
 		t.Errorf("expected 'minimal' override remapped to 'low', got %v", body["reasoning_effort"])
+	}
+}
+
+// TS #22045: coercing xhigh/max/minimal to a lower Fireworks tier emits a
+// compatibility warning in both generate and stream paths.
+func TestFireworksReasoningCoercionWarnings(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(p, "accounts/fireworks/models/deepseek-r1")
+	for level, want := range map[types.ReasoningLevel]string{
+		types.ReasoningMax:     "high",
+		types.ReasoningXHigh:   "high",
+		types.ReasoningMinimal: "low",
+	} {
+		l := level
+		_, warnings := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{Reasoning: &l}, true)
+		if len(warnings) != 1 || warnings[0].Type != "compatibility" || warnings[0].Feature != "reasoning" ||
+			warnings[0].Details != `reasoning "`+string(level)+`" is not directly supported by this model. mapped to effort "`+want+`".` {
+			t.Fatalf("%s: warnings = %#v", level, warnings)
+		}
+	}
+	h := types.ReasoningHigh
+	if _, warnings := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{Reasoning: &h}, false); len(warnings) != 0 {
+		t.Fatalf("unexpected warnings %#v", warnings)
 	}
 }

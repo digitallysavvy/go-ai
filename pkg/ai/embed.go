@@ -44,6 +44,8 @@ type EmbedOnStartEvent struct {
 	// Values are the input texts being embedded (single value for Embed,
 	// multiple for EmbedMany).
 	Values []string
+	// Dimensions is the requested output dimensions, when specified.
+	Dimensions *int
 	// MaxRetries is the configured retry limit (0 if not set).
 	MaxRetries int
 	// Ctx is the context passed to Embed / EmbedMany.
@@ -139,6 +141,11 @@ type EmbedOptions struct {
 	// Keyed by provider name, e.g. map[string]interface{}{"openai": map[string]interface{}{"dimensions": 256}}.
 	ProviderOptions map[string]interface{}
 
+	// Dimensions is the requested number of output dimensions for the
+	// embeddings. Must be a positive integer when set. Support and allowed
+	// values depend on the model and provider. nil leaves it unspecified.
+	Dimensions *int
+
 	// Telemetry configures observability for this operation.
 	// When both Telemetry and ExperimentalTelemetry are set, Telemetry wins.
 	Telemetry *TelemetrySettings
@@ -197,6 +204,9 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 	if opts.Input == "" {
 		return nil, fmt.Errorf("input is required")
 	}
+	if err := validateEmbeddingDimensions(opts.Dimensions); err != nil {
+		return nil, err
+	}
 	if err := validateMaxRetries(opts.MaxRetries); err != nil {
 		return nil, err
 	}
@@ -226,6 +236,7 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 		ModelID:          opts.Model.ModelID(),
 		RuntimeContext:   opts.RuntimeContext,
 		Values:           []string{opts.Input},
+		Dimensions:       opts.Dimensions,
 		MaxRetries:       resolvedMaxRetries,
 		Ctx:              ctx,
 		Headers:          opts.Headers,
@@ -251,6 +262,7 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 		ModelID:        opts.Model.ModelID(),
 		Settings:       opts.ExperimentalTelemetry,
 		Prompt:         telemetryInputValue(opts.ExperimentalTelemetry, opts.Input),
+		Dimensions:     opts.Dimensions,
 		Headers:        opts.Headers,
 		MaxRetries:     &resolvedMaxRetries,
 		RuntimeContext: telemetryRuntimeContext(opts.ExperimentalTelemetry, opts.RuntimeContext),
@@ -261,6 +273,7 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 	embedModelOpts := &provider.EmbedModelOptions{
 		ProviderOptions: opts.ProviderOptions,
 		Headers:         opts.Headers,
+		Dimensions:      opts.Dimensions,
 	}
 
 	// Call the model (with retries). Mirrors TS embed(): the embed-call
@@ -276,6 +289,7 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 			ModelProvider: opts.Model.Provider(),
 			ModelID:       opts.Model.ModelID(),
 			Values:        []string{opts.Input},
+			Dimensions:    opts.Dimensions,
 		})
 		res, callErr := opts.Model.DoEmbed(callCtx, opts.Input, embedModelOpts)
 		if callErr != nil {
@@ -421,6 +435,11 @@ type EmbedManyOptions struct {
 	// Keyed by provider name, e.g. map[string]interface{}{"openai": map[string]interface{}{"dimensions": 256}}.
 	ProviderOptions map[string]interface{}
 
+	// Dimensions is the requested number of output dimensions for the
+	// embeddings. Must be a positive integer when set. Support and allowed
+	// values depend on the model and provider. nil leaves it unspecified.
+	Dimensions *int
+
 	// Telemetry configures observability for this operation.
 	// When both Telemetry and ExperimentalTelemetry are set, Telemetry wins.
 	Telemetry *TelemetrySettings
@@ -489,6 +508,9 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 	// TS embedMany does not special-case an empty values array: it falls
 	// through to model.doEmbed({values: []}) (or an empty batch split) and
 	// returns an empty result. Match that instead of erroring.
+	if err := validateEmbeddingDimensions(opts.Dimensions); err != nil {
+		return nil, err
+	}
 	if err := validateMaxRetries(opts.MaxRetries); err != nil {
 		return nil, err
 	}
@@ -518,6 +540,7 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 		ModelID:          opts.Model.ModelID(),
 		RuntimeContext:   opts.RuntimeContext,
 		Values:           opts.Inputs,
+		Dimensions:       opts.Dimensions,
 		MaxRetries:       resolvedMaxRetries,
 		Ctx:              ctx,
 		Headers:          opts.Headers,
@@ -544,6 +567,7 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 		Settings:       opts.ExperimentalTelemetry,
 		Prompt:         telemetryInputValue(opts.ExperimentalTelemetry, opts.Inputs),
 		ValueCount:     len(opts.Inputs),
+		Dimensions:     opts.Dimensions,
 		Values:         opts.Inputs,
 		Headers:        opts.Headers,
 		MaxRetries:     &resolvedMaxRetries,
@@ -770,4 +794,16 @@ func RankBySimilarity(query []float64, candidates [][]float64) ([]int, []float64
 	}
 
 	return indices, similarities, nil
+}
+
+// validateEmbeddingDimensions rejects a non-positive dimensions value (TS
+// validateEmbeddingDimensions). nil means unspecified.
+func validateEmbeddingDimensions(dimensions *int) error {
+	if dimensions != nil && *dimensions <= 0 {
+		return &providererrors.InvalidArgumentError{
+			Field:   "dimensions",
+			Message: "dimensions must be a positive integer",
+		}
+	}
+	return nil
 }

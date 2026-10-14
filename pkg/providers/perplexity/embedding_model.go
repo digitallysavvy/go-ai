@@ -117,6 +117,9 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	}
 	if perplexityOpts.Dimensions != nil {
 		reqBody["dimensions"] = *perplexityOpts.Dimensions
+	} else if opts != nil && opts.Dimensions != nil {
+		// Top-level dimensions (TS #22338); the provider option wins.
+		reqBody["dimensions"] = *opts.Dimensions
 	}
 
 	var response perplexityEmbeddingResponse

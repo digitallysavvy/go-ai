@@ -281,6 +281,10 @@ type StreamChunk struct {
 	// stream part types.
 	ProviderMetadata json.RawMessage
 
+	// Citations carries the references supporting the text block with this ID
+	// when Type is ChunkTypeTextEnd (TS text-end `citations`).
+	Citations []types.Citation
+
 	// ResponseMetadata is set when Type == ChunkTypeResponseMetadata.
 	// Carries the provider-level HTTP response metadata emitted early in the
 	// stream (after headers arrive, before content begins).
@@ -502,6 +506,13 @@ type EmbedModelOptions struct {
 
 	// Headers are additional HTTP headers to send with the request.
 	Headers map[string]string
+
+	// Dimensions is the requested number of output dimensions for the
+	// embeddings (the top-level `dimensions` setting). nil means unspecified.
+	// It is validated as a positive integer by ai.Embed / ai.EmbedMany; support
+	// and allowed values depend on the model and provider. Providers map it to
+	// their native setting; an explicit provider option takes precedence.
+	Dimensions *int
 }
 
 // EmbeddingModel represents an embedding model

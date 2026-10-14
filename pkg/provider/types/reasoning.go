@@ -30,6 +30,11 @@ const (
 	// ReasoningHigh enables high reasoning effort (Anthropic: 16000 budget tokens).
 	ReasoningHigh ReasoningLevel = "high"
 
-	// ReasoningXHigh enables maximum reasoning effort (Anthropic: 32000 budget tokens).
+	// ReasoningXHigh enables extra-high reasoning effort (Anthropic: 32000 budget tokens).
 	ReasoningXHigh ReasoningLevel = "xhigh"
+
+	// ReasoningMax enables the portable maximum reasoning level. Providers
+	// with a native maximum tier send it as-is; others coerce it to their
+	// highest supported tier and emit a compatibility warning.
+	ReasoningMax ReasoningLevel = "max"
 )

@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // Batch implements provider.BatchV4 for the AI Gateway's async batch routes
@@ -162,6 +164,11 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 		headers[k] = v
 	}
 
+	maxLineBytes, err := b.provider.config.BatchResultDownloads.ResolveMaxLineBytes()
+	if err != nil {
+		return nil, err
+	}
+
 	httpResp, err := b.provider.client.DoStream(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/batch/results",
@@ -172,7 +179,7 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 		return nil, b.handleError(ctx, err)
 	}
 
-	return newGatewayBatchResultsStream(httpResp.Body), nil
+	return newGatewayBatchResultsStream(httpResp.Body, strings.TrimRight(b.provider.config.BaseURL, "/")+"/batch/results", maxLineBytes), nil
 }
 
 func (b *Batch) handleError(ctx context.Context, err error) error {
@@ -420,24 +427,27 @@ func (w gatewayBatchItemResultLine) toItemResult() *provider.BatchV4ItemResult {
 // gatewayBatchResultsStream implements provider.BatchV4ItemResultStream over
 // the NDJSON body returned by `/batch/results`.
 type gatewayBatchResultsStream struct {
-	scanner *bufio.Scanner
-	body    io.ReadCloser
-	err     error
+	scanner      *bufio.Scanner
+	body         io.ReadCloser
+	url          string
+	maxLineBytes int
+	err          error
 }
 
-func newGatewayBatchResultsStream(body io.ReadCloser) *gatewayBatchResultsStream {
-	scanner := bufio.NewScanner(body)
-	// Allow individual result lines (a full LanguageModelV4GenerateResult) to
-	// exceed bufio.Scanner's 64KiB default.
-	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
-	return &gatewayBatchResultsStream{scanner: scanner, body: body}
+func newGatewayBatchResultsStream(body io.ReadCloser, url string, maxLineBytes int) *gatewayBatchResultsStream {
+	// Individual result lines (a full LanguageModelV4GenerateResult) may
+	// exceed bufio.Scanner's 64KiB default; rows are bounded by maxLineBytes.
+	scanner := providerutils.NewJSONLinesScanner(body, maxLineBytes)
+	return &gatewayBatchResultsStream{scanner: scanner, body: body, url: url, maxLineBytes: maxLineBytes}
 }
 
 func (s *gatewayBatchResultsStream) Next() (*provider.BatchV4ItemResult, error) {
 	for {
 		if !s.scanner.Scan() {
 			if err := s.scanner.Err(); err != nil {
+				err = providerutils.JSONLinesScanError(err, s.url, s.maxLineBytes)
 				s.err = err
+				_ = s.body.Close()
 				return nil, err
 			}
 			return nil, io.EOF

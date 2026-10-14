@@ -471,6 +471,8 @@ type openAIBatchResultsStream struct {
 	scanner *bufio.Scanner
 	rc      io.ReadCloser
 	err     error
+
+	maxLineBytes int
 }
 
 func newOpenAIBatchResultsStream(ctx context.Context, b *Batch, fileIDs []string, headers map[string]string) *openAIBatchResultsStream {
@@ -487,6 +489,10 @@ func (s *openAIBatchResultsStream) advanceFile() (bool, error) {
 	}
 	fileID := s.fileIDs[s.fileIdx]
 	s.fileIdx++
+	maxLineBytes, err := s.batch.provider.config.BatchResultDownloads.ResolveMaxLineBytes()
+	if err != nil {
+		return false, err
+	}
 
 	httpResp, err := s.batch.provider.client.DoStream(s.ctx, internalhttp.Request{
 		Method:  http.MethodGet,
@@ -497,9 +503,8 @@ func (s *openAIBatchResultsStream) advanceFile() (bool, error) {
 		return false, s.batch.handleError(err)
 	}
 	s.rc = httpResp.Body
-	scanner := bufio.NewScanner(s.rc)
-	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
-	s.scanner = scanner
+	s.maxLineBytes = maxLineBytes
+	s.scanner = providerutils.NewJSONLinesScanner(s.rc, maxLineBytes)
 	return true, nil
 }
 
@@ -518,7 +523,9 @@ func (s *openAIBatchResultsStream) Next() (*provider.BatchV4ItemResult, error) {
 
 		if !s.scanner.Scan() {
 			if err := s.scanner.Err(); err != nil {
+				err = providerutils.JSONLinesScanError(err, "/files/"+providerutils.EncodePathSegment(s.fileIDs[s.fileIdx-1])+"/content", s.maxLineBytes)
 				s.err = err
+				_ = s.rc.Close()
 				return nil, err
 			}
 			s.scanner = nil

@@ -330,22 +330,30 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 		// A citation can only resolve against a web-fetched document that
 		// appears earlier in the content array, same as TS.
 		citationDocs := append([]citationDocument(nil), co.citationDocuments...)
+		hasWebSearchResults := anthropicResponseHasWebSearchResults(response.Content)
 		for _, content := range response.Content {
 			switch content.Type {
 			case "text":
 				textParts = append(textParts, content.Text)
-				metadataCitations := filterWebSearchCitations(content.Citations)
-				if co.rawBatchCitations {
-					metadataCitations = content.Citations
-				}
+				// Every citation is normalized onto the text part and kept raw in
+				// providerMetadata; retrieved sources are separate (TS #21797).
 				textBlocks = append(textBlocks, types.TextContent{
 					Text:             content.Text,
-					ProviderMetadata: citationsProviderMetadata(metadataCitations),
+					Citations:        mapAnthropicCitations(content.Citations, citationDocs),
+					ProviderMetadata: citationsProviderMetadata(content.Citations),
 				})
-				if len(metadataCitations) > 0 {
+				if len(content.Citations) > 0 {
 					hasExtraContent = true
 				}
 				for _, citation := range content.Citations {
+					if citationType(citation) == "web_search_result_location" && hasWebSearchResults {
+						continue
+					}
+					if co.rawBatchCitations && citationType(citation) != "web_search_result_location" {
+						// Batch results have no prompt to resolve indexed
+						// document citations against (TS batch converter).
+						continue
+					}
 					src, ok := createCitationSource(citation, citationDocs, anthropicGenerateID)
 					if !ok {
 						continue
@@ -1110,6 +1118,8 @@ func anthropicReasoningBudget(level types.ReasoningLevel, modelID string) int {
 		pct = 0.60
 	case types.ReasoningXHigh:
 		pct = 0.90
+	case types.ReasoningMax:
+		pct = 0.95
 	default:
 		pct = 0.30
 	}
@@ -1367,6 +1377,12 @@ type anthropicStream struct {
 	// extracted from citation-enabled file parts in the request prompt (TS
 	// extractCitationDocuments). Set by DoStream before the first Next() call.
 	citationDocuments []citationDocument
+	// hasWebSearchResults is set once a web_search_tool_result with retrieved
+	// results is seen; fallbackWebCitations holds web_search_result_location
+	// citations that only become sources at the end of the stream when no
+	// search results were retrieved (TS #21797).
+	hasWebSearchResults  bool
+	fallbackWebCitations []map[string]interface{}
 }
 
 // newAnthropicStream creates a new Anthropic stream.
@@ -1440,8 +1456,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			}
 			if err == io.EOF && s.finish != nil && !s.finishIssued {
 				s.finishIssued = true
-				s.err = io.EOF
-				return s.finalizeFinish(), nil
+				return s.issueFinish(), nil
 			}
 			s.err = err
 			return nil, err
@@ -1768,6 +1783,9 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 					mapped, sources := convertWebSearchToolResult(start.ContentBlock.Content)
 					tr.Result = mapped
 					webSearchSources = sources
+					if len(sources) > 0 {
+						s.hasWebSearchResults = true
+					}
 				}
 				s.contentBlocks[start.Index] = &streamContentBlock{blockType: "web-search-tool-result"}
 				for _, src := range webSearchSources {
@@ -1973,6 +1991,9 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 							mapped, sources := convertWebSearchToolResult(part.Content)
 							tr.Result = mapped
 							webSearchSources = sources
+							if len(sources) > 0 {
+								s.hasWebSearchResults = true
+							}
 						}
 						s.pending = append(s.pending, &provider.StreamChunk{
 							Type:       provider.ChunkTypeToolResult,
@@ -2208,9 +2229,13 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				// page_location/char_location resolve against citationDocuments
 				// extracted from the request prompt.
 				if block := s.contentBlocks[delta.Index]; block != nil && isTextLikeBlock(block.blockType) {
-					if citationType(delta.Delta.Citation) == "web_search_result_location" {
-						block.citations = append(block.citations, delta.Delta.Citation)
-					}
+					block.citations = append(block.citations, delta.Delta.Citation)
+				}
+				if citationType(delta.Delta.Citation) == "web_search_result_location" {
+					// Decide at the end of the stream, once it is known whether
+					// the search results were retrieved.
+					s.fallbackWebCitations = append(s.fallbackWebCitations, delta.Delta.Citation)
+					continue
 				}
 				if src, ok := createCitationSource(delta.Delta.Citation, s.citationDocuments, anthropicGenerateID); ok {
 					return &provider.StreamChunk{
@@ -2313,12 +2338,15 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				// text-end carrying the accumulated web-search citations, if any
 				// (TS content_block_stop "text" case).
 				var meta json.RawMessage
+				var citations []types.Citation
 				if len(block.citations) > 0 {
 					meta = citationsProviderMetadata(block.citations)
+					citations = mapAnthropicCitations(block.citations, s.citationDocuments)
 				}
 				return &provider.StreamChunk{
 					Type:             provider.ChunkTypeTextEnd,
 					ID:               strconv.Itoa(stop.Index),
+					Citations:        citations,
 					ProviderMetadata: meta,
 				}, nil
 			}
@@ -2493,8 +2521,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			s.activeMessageID = ""
 			if s.finish != nil && !s.finishIssued {
 				s.finishIssued = true
-				s.err = io.EOF
-				return s.finalizeFinish(), nil
+				return s.issueFinish(), nil
 			}
 			// Stream complete
 			s.err = io.EOF
@@ -2505,6 +2532,31 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 		continue
 
 	}
+}
+
+// issueFinish returns the next chunk of the end-of-stream sequence: any
+// citation-derived web-search sources that were deferred because no
+// web_search_tool_result supplied retrieved sources (TS: fallbackWebCitations
+// are enqueued just before the finish part), followed by the finish chunk.
+func (s *anthropicStream) issueFinish() *provider.StreamChunk {
+	finish := s.finalizeFinish()
+	var sources []*provider.StreamChunk
+	if !s.hasWebSearchResults {
+		for _, citation := range s.fallbackWebCitations {
+			if src, ok := createCitationSource(citation, s.citationDocuments, anthropicGenerateID); ok {
+				src := src
+				sources = append(sources, &provider.StreamChunk{Type: provider.ChunkTypeSource, SourceContent: &src})
+			}
+		}
+	}
+	s.fallbackWebCitations = nil
+	if len(sources) == 0 {
+		s.err = io.EOF
+		return finish
+	}
+	s.pending = append(s.pending, sources[1:]...)
+	s.pending = append(s.pending, finish)
+	return sources[0]
 }
 
 // finalizeFinish recomputes usage and provider metadata from the final

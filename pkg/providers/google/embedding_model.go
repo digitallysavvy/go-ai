@@ -462,7 +462,23 @@ func addEmbeddingModelOptions(body map[string]interface{}, opts GoogleEmbeddingP
 	}
 }
 
+// parseEmbeddingProviderOptions parses the google provider options and falls
+// back to the top-level dimensions setting for outputDimensionality when the
+// provider option is unset (TS #22338).
 func parseEmbeddingProviderOptions(opts *provider.EmbedModelOptions) (GoogleEmbeddingProviderOptions, error) {
+	out, err := parseEmbeddingProviderOptionsRaw(opts)
+	if err != nil {
+		return out, err
+	}
+	if out.OutputDimensionality == nil && out.outputDimensionality == nil && opts != nil && opts.Dimensions != nil {
+		d := *opts.Dimensions
+		out.OutputDimensionality = &d
+		out.outputDimensionality = d
+	}
+	return out, nil
+}
+
+func parseEmbeddingProviderOptionsRaw(opts *provider.EmbedModelOptions) (GoogleEmbeddingProviderOptions, error) {
 	if opts == nil || opts.ProviderOptions == nil {
 		return GoogleEmbeddingProviderOptions{}, nil
 	}

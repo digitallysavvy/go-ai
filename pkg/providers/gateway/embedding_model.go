@@ -54,6 +54,9 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 	body := map[string]interface{}{
 		"values": []string{input},
 	}
+	if opts != nil && opts.Dimensions != nil {
+		body["dimensions"] = *opts.Dimensions
+	}
 	if opts != nil && opts.ProviderOptions != nil {
 		body["providerOptions"] = opts.ProviderOptions
 	}
@@ -98,6 +101,9 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
 	body := map[string]interface{}{
 		"values": inputs,
+	}
+	if opts != nil && opts.Dimensions != nil {
+		body["dimensions"] = *opts.Dimensions
 	}
 	if opts != nil && opts.ProviderOptions != nil {
 		body["providerOptions"] = opts.ProviderOptions

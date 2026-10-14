@@ -61,6 +61,11 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		}
 	}
 
+	// Top-level dimensions (TS #22338); providerOptions.voyage.outputDimension wins.
+	if _, ok := reqBody["output_dimension"]; !ok && opts != nil && opts.Dimensions != nil {
+		reqBody["output_dimension"] = *opts.Dimensions
+	}
+
 	var response struct {
 		Data []struct {
 			Embedding []float64 `json:"embedding"`

@@ -101,6 +101,11 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	}
 
 	vopts := vertexEmbeddingOptions(opts)
+	if vopts.OutputDimensionality == nil && opts != nil && opts.Dimensions != nil {
+		// Top-level dimensions (TS #22338); the provider option wins.
+		d := *opts.Dimensions
+		vopts.OutputDimensionality = &d
+	}
 
 	if usesEmbedContentEndpoint(m.modelID) {
 		return m.doEmbedContent(ctx, inputs[0], vopts, opts)

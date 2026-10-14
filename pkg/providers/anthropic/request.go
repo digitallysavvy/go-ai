@@ -593,6 +593,7 @@ func resolveReasoningConfig(level types.ReasoningLevel, modelID string, caps Mod
 			types.ReasoningMedium:  "medium",
 			types.ReasoningHigh:    "high",
 			types.ReasoningXHigh:   "max",
+			types.ReasoningMax:     "max",
 		}
 		if caps.SupportsXHighEffort {
 			effortMap[types.ReasoningXHigh] = "xhigh"
@@ -611,6 +612,7 @@ func resolveReasoningConfig(level types.ReasoningLevel, modelID string, caps Mod
 		types.ReasoningMedium:  0.30,
 		types.ReasoningHigh:    0.60,
 		types.ReasoningXHigh:   0.90,
+		types.ReasoningMax:     0.95,
 	}[level]
 	if !ok {
 		*warnings = append(*warnings, types.Warning{Type: "unsupported", Feature: "reasoning", Details: fmt.Sprintf("reasoning %q is not supported by this model.", level)})

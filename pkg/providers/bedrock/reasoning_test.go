@@ -272,7 +272,9 @@ func TestBedrockNonAnthropicReasoningEffort(t *testing.T) {
 		{types.ReasoningLow, "low", true},
 		{types.ReasoningMedium, "medium", true},
 		{types.ReasoningHigh, "high", true},
-		{types.ReasoningXHigh, "max", true},
+		// Nova 2 supports only low/medium/high; xhigh and max map to high.
+		{types.ReasoningXHigh, "high", true},
+		{types.ReasoningMax, "high", true},
 		{types.ReasoningNone, "", false},
 	}
 
@@ -316,7 +318,8 @@ func TestBedrockNova2LiteHighReasoningOmitsMaxTokens(t *testing.T) {
 		want  string
 	}{
 		{"high", types.ReasoningHigh, "high"},
-		{"xhigh", types.ReasoningXHigh, "max"},
+		{"xhigh", types.ReasoningXHigh, "high"},
+		{"max", types.ReasoningMax, "high"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

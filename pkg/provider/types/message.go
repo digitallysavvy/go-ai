@@ -59,6 +59,10 @@ type TextContent struct {
 	// Used by Google/Vertex providers to carry thoughtSignature for text parts
 	// that are associated with model reasoning.
 	ProviderMetadata json.RawMessage `json:"providerMetadata,omitempty"`
+
+	// Citations are references supporting this text, separate from the set of
+	// retrieved sources (TS LanguageModelV4Text.citations).
+	Citations []Citation `json:"citations,omitempty"`
 }
 
 // ContentType implements ContentPart interface
@@ -714,12 +718,19 @@ func (t ToolApprovalRequestContent) MarshalJSON() ([]byte, error) {
 
 // ToolApprovalResponseContent indicates that approval was granted or denied.
 type ToolApprovalResponseContent struct {
-	ApprovalID       string   `json:"approvalId"`
-	ToolCallID       string   `json:"toolCallId,omitempty"`
-	ToolCall         ToolCall `json:"toolCall,omitempty"`
-	Approved         bool     `json:"approved"`
-	Reason           string   `json:"reason,omitempty"`
-	ProviderExecuted bool     `json:"providerExecuted,omitempty"`
+	ApprovalID string   `json:"approvalId"`
+	ToolCallID string   `json:"toolCallId,omitempty"`
+	ToolCall   ToolCall `json:"toolCall,omitempty"`
+	Approved   bool     `json:"approved"`
+	// Reason is an optional reason for the approval or denial. For denied tool
+	// calls, the reason is included in the execution-denied tool result that
+	// is sent to the model. For approved tool calls executed by the SDK, the
+	// reason remains in the message history: it is not included in the model
+	// prompt and is not exposed through a dedicated tool execution option. For
+	// provider-executed tools, the approval response (including the reason) is
+	// forwarded to the provider.
+	Reason           string `json:"reason,omitempty"`
+	ProviderExecuted bool   `json:"providerExecuted,omitempty"`
 }
 
 func (t ToolApprovalResponseContent) ContentType() string {

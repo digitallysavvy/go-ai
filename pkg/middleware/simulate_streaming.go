@@ -146,14 +146,14 @@ func (s *simulatedStream) buildChunks() {
 		switch p := part.(type) {
 		case types.TextContent:
 			sawTextContent = true
-			if len(p.Text) == 0 {
+			if len(p.Text) == 0 && len(p.Citations) == 0 {
 				continue
 			}
 			id := newID()
 			chunks = append(chunks,
 				&provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: id, ProviderMetadata: p.ProviderMetadata},
 				&provider.StreamChunk{Type: provider.ChunkTypeText, ID: id, Text: p.Text},
-				&provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: id},
+				&provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: id, Citations: p.Citations},
 			)
 		case types.ReasoningContent:
 			id := newID()

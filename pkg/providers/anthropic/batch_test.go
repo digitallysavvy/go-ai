@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1159,3 +1160,25 @@ func asInvalidArgumentError(err error, target **providererrors.InvalidArgumentEr
 	}
 	return false
 }
+
+// TS #22096: batch result rows over batchResultDownloads.maxLineBytes fail
+// with a DownloadError and close the body.
+func TestAnthropicBatchResultsStreamRejectsOversizedRow(t *testing.T) {
+	body := &closeTrackingBody{Reader: strings.NewReader(`{"custom_id":"a","result":{"type":"canceled"}}` + "\n")}
+	stream := newAnthropicBatchResultsStream(body, nil, "https://results.example/x", 10)
+	_, err := stream.Next()
+	var dl *providererrors.DownloadError
+	if !errors.As(err, &dl) || dl.URL != "https://results.example/x" || !strings.Contains(dl.Message, "maximum line size of 10 bytes") {
+		t.Fatalf("err = %v", err)
+	}
+	if !body.closed {
+		t.Fatal("body should be closed")
+	}
+}
+
+type closeTrackingBody struct {
+	io.Reader
+	closed bool
+}
+
+func (c *closeTrackingBody) Close() error { c.closed = true; return nil }

@@ -49,6 +49,9 @@ type TelemetryStartEvent struct {
 	Messages []types.Message
 	// ValueCount is populated for batch value operations such as embedMany.
 	ValueCount int
+	// Dimensions is the requested embedding output dimensions, when set
+	// (embed / embedMany).
+	Dimensions *int
 	// Headers carries caller-supplied request headers, emitted as
 	// ai.request.headers.* when OpenTelemetryOptions.Headers is set (18651f6).
 	Headers map[string]string
@@ -210,6 +213,8 @@ type EmbeddingModelCallStartEvent struct {
 	ModelProvider string
 	ModelID       string
 	Values        []string
+	// Dimensions is the requested embedding output dimensions, when set.
+	Dimensions *int
 }
 
 // EmbeddingModelCallEndEvent is emitted after an embedding model call

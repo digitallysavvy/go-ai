@@ -139,7 +139,7 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (map[string]inte
 		if *opts.Reasoning == types.ReasoningNone {
 			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: `reasoning "none"`})
 		} else {
-			reasoningConfig = map[string]interface{}{"effort": string(*opts.Reasoning)}
+			reasoningConfig = map[string]interface{}{"effort": perplexityReasoningEffort(*opts.Reasoning, &warnings)}
 		}
 	}
 
@@ -948,4 +948,16 @@ func perplexityExtractNestedUsageBytes(raw []byte) []byte {
 		return nil
 	}
 	return probe.Response.Usage
+}
+
+// perplexityReasoningEffort maps a portable reasoning level to a Perplexity
+// reasoning effort (TS mapReasoningToProviderEffort with max -> xhigh). A
+// compatibility warning is appended when the level is coerced.
+func perplexityReasoningEffort(level types.ReasoningLevel, warnings *[]types.Warning) string {
+	if level != types.ReasoningMax {
+		return string(level)
+	}
+	details := fmt.Sprintf("reasoning %q is not directly supported by this model. mapped to effort %q.", string(level), "xhigh")
+	*warnings = append(*warnings, types.Warning{Type: "compatibility", Feature: "reasoning", Details: details, Message: details})
+	return "xhigh"
 }

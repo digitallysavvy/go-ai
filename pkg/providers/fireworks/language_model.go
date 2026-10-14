@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 
@@ -66,7 +67,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if err := prompt.ValidateProviderFileReferences(opts.Prompt.Messages, "fireworks"); err != nil {
 		return nil, err
 	}
-	reqBody := m.buildRequestBody(opts, false)
+	reqBody, warnings := m.buildRequestBodyWithWarnings(opts, false)
 	var response fireworksResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method: http.MethodPost,
@@ -77,6 +78,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, m.handleError(err)
 	}
 	result := m.convertResponse(response)
+	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	return result, nil
 }
@@ -86,7 +88,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	if err := prompt.ValidateProviderFileReferences(opts.Prompt.Messages, "fireworks"); err != nil {
 		return nil, err
 	}
-	reqBody := m.buildRequestBody(opts, true)
+	reqBody, warnings := m.buildRequestBodyWithWarnings(opts, true)
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
 		Method: http.MethodPost,
 		Path:   "/v1/chat/completions",
@@ -100,10 +102,16 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 	stream := newFireworksStream(httpResp.Body)
 	stream.SetRequestBody(reqBody)
-	return providerutils.WithResponseMetadata(stream, httpResp.Header, m.ModelID()), nil
+	return providerutils.WithResponseMetadata(streaming.NewWarningsStream(stream, warnings), httpResp.Header, m.ModelID()), nil
 }
 
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
+	body, _ := m.buildRequestBodyWithWarnings(opts, stream)
+	return body
+}
+
+func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning) {
+	var warnings []types.Warning
 	body := map[string]interface{}{
 		"model": m.modelID,
 	}
@@ -182,15 +190,23 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 			reasoningEffort, hasReasoningEffort = "high", true
 		case types.ReasoningXHigh:
 			reasoningEffort, hasReasoningEffort = "xhigh", true
+		case types.ReasoningMax:
+			reasoningEffort, hasReasoningEffort = "max", true
 			// ReasoningDefault: omit
 		}
 	}
 	if hasReasoningEffort {
+		// Fireworks supports low, medium, and high reasoning levels.
+		original := reasoningEffort
 		switch reasoningEffort {
 		case "minimal":
 			reasoningEffort = "low"
-		case "xhigh":
+		case "xhigh", "max":
 			reasoningEffort = "high"
+		}
+		if reasoningEffort != original {
+			details := fmt.Sprintf("reasoning %q is not directly supported by this model. mapped to effort %q.", original, reasoningEffort)
+			warnings = append(warnings, types.Warning{Type: "compatibility", Feature: "reasoning", Details: details, Message: details})
 		}
 		body["reasoning_effort"] = reasoningEffort
 	}
@@ -236,7 +252,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["service_tier"] = serviceTier
 	}
 
-	return body
+	return body, warnings
 }
 
 func (m *LanguageModel) convertResponse(response fireworksResponse) *types.GenerateResult {

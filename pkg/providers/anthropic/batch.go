@@ -265,6 +265,11 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 		return nil, err
 	}
 
+	maxLineBytes, err := b.provider.config.BatchResultDownloads.ResolveMaxLineBytes()
+	if err != nil {
+		return nil, err
+	}
+
 	httpReq, err := stdhttp.NewRequestWithContext(ctx, stdhttp.MethodGet, resultsURL, nil)
 	if err != nil {
 		return nil, err
@@ -286,7 +291,7 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 		return nil, b.handleError(&internalhttp.HTTPStatusError{StatusCode: httpResp.StatusCode, Headers: httpResp.Header, Body: body})
 	}
 
-	return newAnthropicBatchResultsStream(httpResp.Body, b.provider), nil
+	return newAnthropicBatchResultsStream(httpResp.Body, b.provider, resultsURL, maxLineBytes), nil
 }
 
 // retrieveBatch fetches one batch's current representation
@@ -574,23 +579,26 @@ type anthropicBatchResultLineWire struct {
 // anthropicBatchResultsStream implements provider.BatchV4ItemResultStream
 // over the JSONL body returned by a batch's results_url.
 type anthropicBatchResultsStream struct {
-	scanner  *bufio.Scanner
-	body     io.ReadCloser
-	provider *Provider
-	err      error
+	scanner      *bufio.Scanner
+	body         io.ReadCloser
+	provider     *Provider
+	url          string
+	maxLineBytes int
+	err          error
 }
 
-func newAnthropicBatchResultsStream(body io.ReadCloser, p *Provider) *anthropicBatchResultsStream {
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
-	return &anthropicBatchResultsStream{scanner: scanner, body: body, provider: p}
+func newAnthropicBatchResultsStream(body io.ReadCloser, p *Provider, url string, maxLineBytes int) *anthropicBatchResultsStream {
+	scanner := providerutils.NewJSONLinesScanner(body, maxLineBytes)
+	return &anthropicBatchResultsStream{scanner: scanner, body: body, provider: p, url: url, maxLineBytes: maxLineBytes}
 }
 
 func (s *anthropicBatchResultsStream) Next() (*provider.BatchV4ItemResult, error) {
 	for {
 		if !s.scanner.Scan() {
 			if err := s.scanner.Err(); err != nil {
+				err = providerutils.JSONLinesScanError(err, s.url, s.maxLineBytes)
 				s.err = err
+				_ = s.body.Close()
 				return nil, err
 			}
 			return nil, io.EOF

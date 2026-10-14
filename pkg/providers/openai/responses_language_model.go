@@ -527,6 +527,8 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 			effort = "high"
 		case types.ReasoningXHigh:
 			effort = "xhigh"
+		case types.ReasoningMax:
+			effort = "max"
 		}
 	}
 	// Provider-level reasoningEffort overrides the top-level param.
@@ -1268,6 +1270,8 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 	// hasFunctionCall tracks client-side tool calls for the finish reason
 	// (TS hasFunctionCall); provider-executed tools don't count.
 	hasFunctionCall := false
+	hasWebSearchActionSources, hasFileSearchResults := openAIResponseRetrievalFlags(resp.Output)
+	retrievedFileIDs := map[string]bool{}
 
 	for _, rawItem := range resp.Output {
 		// Peek at type field.
@@ -1291,10 +1295,16 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				result.Text += part.Text
 				result.Content = append(result.Content, types.TextContent{
 					Text:            part.Text,
+					Citations:       openAIAnnotationCitations(providerName, part.Annotations),
 					ProviderOptions: openAIResponsesMessageProviderOptions(providerName, item.ID, item.Phase, part.Annotations),
 				})
 				for _, ann := range part.Annotations {
-					if src, ok := openAIAnnotationToSource(providerName, ann); ok {
+					// Use citation-derived sources only when retrieval data
+					// is unavailable.
+					if openAIAnnotationHasRetrievedSource(ann, hasWebSearchActionSources, hasFileSearchResults) {
+						continue
+					}
+					if src, ok := openAIAnnotationToSource(providerName, ann, streaming.GenerateID()); ok {
 						result.Content = append(result.Content, src)
 					}
 				}
@@ -1521,6 +1531,9 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				},
 				webSearchResult,
 			)
+			for _, src := range openAIWebSearchActionSources(item.Action, streaming.GenerateID) {
+				result.Content = append(result.Content, src)
+			}
 
 		case "compaction":
 			var item responses.CompactionEvent
@@ -1658,6 +1671,11 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 					// only on the tool-call.
 				},
 			)
+			for _, r := range item.Results {
+				if src, ok := openAIFileSearchResultSource(providerName, r, retrievedFileIDs, streaming.GenerateID()); ok {
+					result.Content = append(result.Content, src)
+				}
+			}
 
 		case "code_interpreter_call":
 			var item responses.CodeInterpreterCallItem
@@ -1952,8 +1970,7 @@ func openAIResponsesMessageProviderOptions(providerName, itemID string, phase *s
 // `this.config.generateId?.() ?? generateId()` for each source there;
 // streaming.GenerateID() is this file's existing stand-in for that (also
 // used for the mcp_approval_request dummy tool-call id below).
-func openAIAnnotationToSource(providerName string, ann responses.TextAnnotation) (types.SourceContent, bool) {
-	id := streaming.GenerateID()
+func openAIAnnotationToSource(providerName string, ann responses.TextAnnotation, id string) (types.SourceContent, bool) {
 	switch ann.Type {
 	case "url_citation":
 		return types.SourceContent{
@@ -2012,6 +2029,108 @@ func openAIAnnotationToSource(providerName string, ann responses.TextAnnotation)
 		}, true
 	}
 	return types.SourceContent{}, false
+}
+
+// openAIAnnotationCitations maps text annotations to normalized citations,
+// mirroring TS mapOpenAIResponsesCitations: file_path annotations are not
+// citations, a url source's id is its URL and a file source's id is its file
+// ID, and url_citation / container_file_citation carry output offsets. Returns
+// nil when there is nothing to cite.
+func openAIAnnotationCitations(providerName string, annotations []responses.TextAnnotation) []types.Citation {
+	var citations []types.Citation
+	for _, ann := range annotations {
+		if ann.Type == "file_path" {
+			continue
+		}
+		id := ann.FileID
+		if ann.Type == "url_citation" {
+			id = ann.URL
+		}
+		src, ok := openAIAnnotationToSource(providerName, ann, id)
+		if !ok {
+			continue
+		}
+		c := types.Citation{Source: src}
+		if ann.Type == "url_citation" || ann.Type == "container_file_citation" {
+			start, end := ann.StartIndex, ann.EndIndex
+			c.StartIndex, c.EndIndex = &start, &end
+		}
+		citations = append(citations, c)
+	}
+	return citations
+}
+
+// openAIAnnotationHasRetrievedSource reports whether a citation-derived source
+// should be skipped because the response already carries retrieval data for
+// it (web-search action sources or file-search results).
+func openAIAnnotationHasRetrievedSource(ann responses.TextAnnotation, hasWebSearchActionSources, hasFileSearchResults bool) bool {
+	return (ann.Type == "url_citation" && hasWebSearchActionSources) ||
+		(ann.Type == "file_citation" && hasFileSearchResults)
+}
+
+// openAIResponseRetrievalFlags scans response output items for web-search
+// action URL sources and file-search results.
+func openAIResponseRetrievalFlags(output []json.RawMessage) (webSearchSources, fileSearchResults bool) {
+	for _, raw := range output {
+		var peek struct {
+			Type    string            `json:"type"`
+			Action  *WebSearchAction  `json:"action"`
+			Results []json.RawMessage `json:"results"`
+		}
+		if json.Unmarshal(raw, &peek) != nil {
+			continue
+		}
+		switch peek.Type {
+		case "web_search_call":
+			if peek.Action != nil && peek.Action.Type == "search" {
+				for _, s := range peek.Action.Sources {
+					if s.Type == "url" {
+						webSearchSources = true
+					}
+				}
+			}
+		case "file_search_call":
+			if len(peek.Results) > 0 {
+				fileSearchResults = true
+			}
+		}
+	}
+	return webSearchSources, fileSearchResults
+}
+
+// openAIWebSearchActionSources returns the URL sources retrieved by a
+// web_search_call "search" action (TS: one source per `url` entry).
+func openAIWebSearchActionSources(action *WebSearchAction, newID func() string) []types.SourceContent {
+	if action == nil || action.Type != "search" {
+		return nil
+	}
+	var out []types.SourceContent
+	for _, s := range action.Sources {
+		if s.Type == "url" {
+			out = append(out, types.SourceContent{SourceType: "url", ID: newID(), URL: s.URL})
+		}
+	}
+	return out
+}
+
+// openAIFileSearchResultSource returns the document source for a retrieved
+// file-search result, deduplicated by file ID (seen is updated).
+func openAIFileSearchResultSource(providerName string, r responses.FileSearchResult, seen map[string]bool, id string) (types.SourceContent, bool) {
+	if seen[r.FileID] {
+		return types.SourceContent{}, false
+	}
+	seen[r.FileID] = true
+	meta, _ := json.Marshal(map[string]interface{}{
+		providerName: map[string]interface{}{"type": "file_search", "fileId": r.FileID},
+	})
+	return types.SourceContent{
+		SourceType:       "document",
+		ID:               id,
+		MediaType:        "text/plain",
+		Title:            r.Filename,
+		Filename:         r.Filename,
+		ProviderMetadata: meta,
+	}, true
 }
 
 // toRawMetadata marshals a provider metadata map into json.RawMessage, for
@@ -2321,6 +2440,15 @@ type responsesStream struct {
 	// text-end providerMetadata.openai.annotations (TS `ongoingAnnotations`).
 	ongoingAnnotations []responses.TextAnnotation
 
+	// Retrieval-vs-citation source tracking (TS #21797): url_citation and
+	// file_citation annotations only become fallback sources at the end of
+	// the stream, and only when no web-search action sources / file-search
+	// results were retrieved.
+	hasWebSearchActionSources bool
+	hasFileSearchResults      bool
+	retrievedFileIDs          map[string]bool
+	fallbackAnnotations       []responses.TextAnnotation
+
 	// activeMessagePhase captures the "message" item's phase at
 	// output_item.added, used as a fallback for text-end's providerMetadata
 	// when the output_item.done event's own item omits phase (TS
@@ -2446,6 +2574,21 @@ func (s *responsesStream) Err() error {
 	return s.err
 }
 
+// queueFallbackSources enqueues citation-derived sources for url_citation /
+// file_citation annotations once the stream's complete source set is known,
+// skipping those superseded by retrieval data (TS flush()).
+func (s *responsesStream) queueFallbackSources() {
+	for _, ann := range s.fallbackAnnotations {
+		if openAIAnnotationHasRetrievedSource(ann, s.hasWebSearchActionSources, s.hasFileSearchResults) {
+			continue
+		}
+		if src, ok := openAIAnnotationToSource(s.providerName, ann, streaming.GenerateID()); ok {
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeSource, SourceContent: &src})
+		}
+	}
+	s.fallbackAnnotations = nil
+}
+
 // emitParsedChunk decides how a freshly built chunk should be delivered: if
 // nothing is queued ahead of it, it is returned immediately (chunk, true);
 // otherwise it is appended behind the pending flushQueue and the caller
@@ -2498,6 +2641,14 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		event, err := s.parser.Next()
 		if err != nil {
 			s.err = err
+			if err == io.EOF {
+				// End of stream without a terminal event: still decide the
+				// citation-derived source fallbacks (TS flush()).
+				s.queueFallbackSources()
+				if len(s.flushQueue) > 0 {
+					continue
+				}
+			}
 			return nil, err
 		}
 
@@ -2982,7 +3133,13 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			// TS: `ongoingAnnotations.push(value.annotation)` -- surfaced on the
 			// owning message item's text-end providerMetadata.openai.annotations.
 			s.ongoingAnnotations = append(s.ongoingAnnotations, e.Annotation)
-			if src, ok := openAIAnnotationToSource(s.providerName, e.Annotation); ok {
+			if e.Annotation.Type == "url_citation" || e.Annotation.Type == "file_citation" {
+				// Retrieval events may arrive after the annotation. Decide the
+				// compatibility fallback once the complete source set is known.
+				s.fallbackAnnotations = append(s.fallbackAnnotations, e.Annotation)
+				continue
+			}
+			if src, ok := openAIAnnotationToSource(s.providerName, e.Annotation, streaming.GenerateID()); ok {
 				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 					Type:          provider.ChunkTypeSource,
 					SourceContent: &src,
@@ -3220,6 +3377,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			}
 
 			s.err = io.EOF
+			s.queueFallbackSources()
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type:             provider.ChunkTypeFinish,
 				FinishReason:     finishReason,
@@ -3286,6 +3444,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			}
 
 			s.err = io.EOF
+			s.queueFallbackSources()
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type:             provider.ChunkTypeFinish,
 				FinishReason:     finishReason,
@@ -3465,6 +3624,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type:             provider.ChunkTypeTextEnd,
 			ID:               itemID,
+			Citations:        openAIAnnotationCitations(s.providerName, annotations),
 			ProviderMetadata: meta,
 		})
 
@@ -3676,10 +3836,17 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			webSearchResult.Result = map[string]interface{}{"status": item.Status}
 			webSearchResult.Error = errors.New(item.Status)
 		}
-		return s.emitParsedChunk(&provider.StreamChunk{
+		chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 			Type:       provider.ChunkTypeToolResult,
 			ToolResult: webSearchResult,
 		})
+		// Retrieved URL sources follow the tool result (TS order).
+		for _, src := range openAIWebSearchActionSources(item.Action, streaming.GenerateID) {
+			s.hasWebSearchActionSources = true
+			src := src
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeSource, SourceContent: &src})
+		}
+		return chunk, ok
 
 	case "program":
 		// Row 1f6dd3a: the hosted programmatic-tool-calling sandbox generated
@@ -3754,7 +3921,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			}
 			results = mapped
 		}
-		return s.emitParsedChunk(&provider.StreamChunk{
+		chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeToolResult,
 			ToolResult: &types.ToolResult{
 				ToolCallID: item.ID,
@@ -3762,6 +3929,17 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				Result:     map[string]interface{}{"queries": item.Queries, "results": results},
 			},
 		})
+		// Retrieved documents follow the tool result, deduplicated by file.
+		if s.retrievedFileIDs == nil {
+			s.retrievedFileIDs = map[string]bool{}
+		}
+		for _, r := range item.Results {
+			s.hasFileSearchResults = true
+			if src, ok := openAIFileSearchResultSource(s.providerName, r, s.retrievedFileIDs, streaming.GenerateID()); ok {
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeSource, SourceContent: &src})
+			}
+		}
+		return chunk, ok
 
 	case "code_interpreter_call":
 		// The tool-call itself was already emitted by the

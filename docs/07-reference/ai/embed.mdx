@@ -21,6 +21,7 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error)
 |-------|------|----------|-------------|
 | Model | provider.EmbeddingModel | Yes | Embedding model to use |
 | Input | string | Yes | Text to embed |
+| Dimensions | *int | No | Requested output dimensions (positive integer). Mapped to each provider's native setting; an explicit provider option takes precedence. Invalid values return an `InvalidArgumentError` before the model is called |
 
 ## Return Value
 

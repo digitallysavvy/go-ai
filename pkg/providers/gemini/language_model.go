@@ -64,6 +64,7 @@ func (m *LanguageModel) SupportedURLs() map[string][]string {
 
 // DoGenerate performs non-streaming text generation.
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	opts, jsonResponseToolName := m.withJSONResponseTool(opts)
 	reqBody, headers, warnings, err := m.buildRequest(ctx, opts, false)
 	if err != nil {
 		return nil, err
@@ -115,7 +116,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		prior = append(prior, m.convertResponse(response, tnm))
+		prior = append(prior, m.convertResponseFull(response, tnm, jsonResponseToolName, nil))
 
 		next := make(map[string]interface{}, len(reqBody)+1)
 		for k, v := range reqBody {
@@ -132,9 +133,9 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	last.UsageMetadata = usageMetadata
 	var result *types.GenerateResult
 	if len(prior) == 0 {
-		result = m.convertResponse(last, tnm)
+		result = m.convertResponseFull(last, tnm, jsonResponseToolName, nil)
 	} else {
-		result = m.convertResponseWithInitialPromptTokens(last, tnm, firstPrompt)
+		result = m.convertResponseFull(last, tnm, jsonResponseToolName, firstPrompt)
 		for i := len(prior) - 1; i >= 0; i-- {
 			p := prior[i]
 			result.Content = append(append([]types.ContentPart{}, p.Content...), result.Content...)
@@ -151,6 +152,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 // DoStream performs streaming text generation.
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	opts, jsonResponseToolName := m.withJSONResponseTool(opts)
 	reqBody, headers, warnings, err := m.buildRequest(ctx, opts, true)
 	if err != nil {
 		return nil, err
@@ -188,7 +190,34 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		}
 		return resp.Body, nil
 	}
-	return streaming.NewWarningsStream(stream, warnings), nil
+	var textStream provider.TextStream = stream
+	if jsonResponseToolName != "" {
+		textStream = streaming.NewJSONResponseToolStream(textStream, jsonResponseToolName)
+	}
+	return streaming.NewWarningsStream(textStream, warnings), nil
+}
+
+// withJSONResponseTool returns opts rewritten to request structured output
+// through a synthetic JSON response tool when the model cannot combine a JSON
+// response format with function tools, plus the tool's name ("" when no
+// rewrite is needed). Gemini models before Gemini 3 reject JSON response
+// formatting together with function tools; Gemini 3 supports the combination
+// only with automatic tool choice, so a forced tool choice (required / a
+// specific tool) also needs the response tool (TS #21989).
+func (m *LanguageModel) withJSONResponseTool(opts *provider.GenerateOptions) (*provider.GenerateOptions, string) {
+	if !providerutils.NeedsJSONResponseTool(opts.ResponseFormat, opts.Tools) || !geminiModelPattern.MatchString(m.modelID) {
+		return opts, ""
+	}
+	forced := opts.ToolChoice.Type == types.ToolChoiceRequired || opts.ToolChoice.Type == types.ToolChoiceTool
+	if GetModelCapabilities(m.modelID).UsesGemini3Features && !forced {
+		return opts, ""
+	}
+	responseTool := providerutils.NewJSONResponseTool(opts.ResponseFormat, opts.Tools)
+	rewritten := *opts
+	rewritten.ResponseFormat = nil
+	rewritten.Tools = append(append([]types.Tool(nil), opts.Tools...), responseTool)
+	rewritten.ToolChoice = providerutils.JSONResponseToolChoice(opts.ToolChoice, responseTool.Name)
+	return &rewritten, responseTool.Name
 }
 
 // PrepareBatchRequestBody builds the GenerateContent request body and
@@ -264,13 +293,16 @@ func (m *LanguageModel) handleError(err error) error {
 
 // convertResponse converts a Gemini API Response to a GenerateResult.
 func (m *LanguageModel) convertResponse(response Response, tnm toolNameMapping) *types.GenerateResult {
-	return m.convertResponseWithInitialPromptTokens(response, tnm, nil)
+	return m.convertResponseFull(response, tnm, "", nil)
 }
 
-// convertResponseWithInitialPromptTokens is convertResponse for a response
-// assembled from several continued requests: initialPromptTokenCount (the
-// first request's prompt token count) is exposed in provider metadata.
-func (m *LanguageModel) convertResponseWithInitialPromptTokens(response Response, tnm toolNameMapping, initialPromptTokenCount *int) *types.GenerateResult {
+// convertResponseFull converts a Gemini API Response. jsonResponseToolName is
+// set when the request used a JSON response tool (see withJSONResponseTool):
+// conversational text is dropped and the response tool's call becomes the
+// text content. initialPromptTokenCount is set for a response assembled from
+// several continued long-decode requests (the first request's prompt token
+// count, exposed in provider metadata).
+func (m *LanguageModel) convertResponseFull(response Response, tnm toolNameMapping, jsonResponseToolName string, initialPromptTokenCount *int) *types.GenerateResult {
 	result := &types.GenerateResult{
 		Usage:       convertUsage(response.UsageMetadata),
 		RawResponse: response,
@@ -339,6 +371,9 @@ func (m *LanguageModel) convertResponseWithInitialPromptTokens(response Response
 			continue
 		}
 		// Regular text → TextContent (ThoughtSignature forwarded via ProviderMetadata).
+		if part.Text != "" && jsonResponseToolName != "" {
+			continue
+		}
 		if part.Text != "" {
 			textParts = append(textParts, part.Text)
 			tc := types.TextContent{Text: part.Text}
@@ -351,6 +386,22 @@ func (m *LanguageModel) convertResponseWithInitialPromptTokens(response Response
 			result.Content = append(result.Content, tc)
 		}
 		// Function calls.
+		if part.FunctionCall != nil && jsonResponseToolName != "" && part.FunctionCall.Name == jsonResponseToolName {
+			args := part.FunctionCall.Args
+			if args == nil {
+				args = map[string]interface{}{}
+			}
+			raw, _ := json.Marshal(args) //nolint:errcheck // a decoded map always marshals
+			tc := types.TextContent{Text: string(raw)}
+			if part.ThoughtSignature != "" {
+				tc.ProviderMetadata, _ = json.Marshal(m.cfg.wrapProviderMetadata(map[string]interface{}{ //nolint:errcheck
+					"thoughtSignature": part.ThoughtSignature,
+				}))
+			}
+			textParts = append(textParts, tc.Text)
+			result.Content = append(result.Content, tc)
+			continue
+		}
 		if part.FunctionCall != nil {
 			args := part.FunctionCall.Args
 			if args == nil {

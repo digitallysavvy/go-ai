@@ -340,6 +340,8 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 			reasoningEffort = "high"
 		case types.ReasoningXHigh:
 			reasoningEffort = "xhigh"
+		case types.ReasoningMax:
+			reasoningEffort = "max"
 			// ReasoningDefault ("provider-default"): omit.
 		}
 	}

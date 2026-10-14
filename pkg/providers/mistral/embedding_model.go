@@ -87,6 +87,10 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 			reqBody["output_dtype"] = mistralOpts.OutputDtype
 		}
 	}
+	// Top-level dimensions (TS #22338); providerOptions.mistral.outputDimension wins.
+	if _, ok := reqBody["output_dimension"]; !ok && opts != nil && opts.Dimensions != nil {
+		reqBody["output_dimension"] = *opts.Dimensions
+	}
 	var response mistralEmbedResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,

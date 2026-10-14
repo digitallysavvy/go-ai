@@ -66,8 +66,11 @@ const (
 
 // TextUIPart is a text part of a message.
 type TextUIPart struct {
-	Text             string
-	State            UIPartState
+	Text  string
+	State UIPartState
+	// Citations are references supporting this text, separate from retrieved
+	// sources.
+	Citations        []types.Citation
 	ProviderMetadata map[string]interface{}
 }
 
@@ -457,6 +460,9 @@ func (p TextUIPart) MarshalJSON() ([]byte, error) {
 	var o orderedJSON
 	o.field("type", "text")
 	o.field("text", p.Text)
+	if len(p.Citations) > 0 {
+		o.field("citations", p.Citations)
+	}
 	o.str("state", string(p.State))
 	o.mapField("providerMetadata", p.ProviderMetadata)
 	return o.bytes()
@@ -466,12 +472,41 @@ func (p *TextUIPart) UnmarshalJSON(data []byte) error {
 	var raw struct {
 		Text             string                 `json:"text"`
 		State            UIPartState            `json:"state"`
+		Citations        []types.Citation       `json:"citations"`
 		ProviderMetadata map[string]interface{} `json:"providerMetadata"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	*p = TextUIPart(raw)
+	for i, c := range raw.Citations {
+		if err := validateUICitation(c); err != nil {
+			return fmt.Errorf("invalid citation at index %d: %w", i, err)
+		}
+	}
+	*p = TextUIPart{Text: raw.Text, State: raw.State, Citations: raw.Citations, ProviderMetadata: raw.ProviderMetadata}
+	return nil
+}
+
+// validateUICitation mirrors the TS citationSchema: a url source requires id
+// and url, a document source requires id, mediaType and title, and offsets
+// must be non-negative.
+func validateUICitation(c types.Citation) error {
+	s := c.Source
+	switch s.SourceType {
+	case "url":
+		if s.ID == "" || s.URL == "" {
+			return fmt.Errorf("url source requires id and url")
+		}
+	case "document":
+		if s.ID == "" || s.MediaType == "" || s.Title == "" {
+			return fmt.Errorf("document source requires id, mediaType and title")
+		}
+	default:
+		return fmt.Errorf("unsupported source type %q", s.SourceType)
+	}
+	if (c.StartIndex != nil && *c.StartIndex < 0) || (c.EndIndex != nil && *c.EndIndex < 0) {
+		return fmt.Errorf("startIndex and endIndex must be non-negative")
+	}
 	return nil
 }
 

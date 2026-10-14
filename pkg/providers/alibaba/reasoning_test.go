@@ -42,6 +42,7 @@ func TestAlibabaReasoningEnablesThinkingWithBudget(t *testing.T) {
 		{types.ReasoningMedium, 4915},
 		{types.ReasoningHigh, 9830},
 		{types.ReasoningXHigh, 14746},
+		{types.ReasoningMax, 15565},
 	}
 
 	for _, tt := range tests {
