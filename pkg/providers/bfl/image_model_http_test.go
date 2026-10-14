@@ -486,3 +486,57 @@ func TestBFLImageModel_PollResultWallClockDeadline(t *testing.T) {
 		t.Fatalf("expected wall-clock deadline to abort quickly, took %v", elapsed)
 	}
 }
+
+// TestBFLImageModel_DownloadCredentialPolicy covers the delivery-host policy
+// (TS #22034): provider and request headers only reach a same-origin, non-bfl.ai
+// base URL (custom proxy); bfl.ai hosts (even same-origin with the base URL)
+// and foreign hosts get only the SDK user agent.
+func TestBFLImageModel_DownloadCredentialPolicy(t *testing.T) {
+	// Not parallel: swaps the process-global http.DefaultTransport.
+	var got http.Header
+	oldDefault := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		got = r.Header.Clone()
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"image/png"}},
+			Body:       io.NopCloser(strings.NewReader("image")),
+		}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = oldDefault })
+	oldDownload := downloadTransport
+	downloadTransport = func() http.RoundTripper { return http.DefaultTransport }
+	t.Cleanup(func() { downloadTransport = oldDownload })
+
+	cases := []struct {
+		name, baseURL, imageURL string
+		wantCreds               bool
+	}{
+		{"bfl.ai base, same-origin delivery", "https://api.bfl.ai", "https://api.bfl.ai/img.png", false},
+		{"bfl.ai subdomain delivery", "https://api.bfl.ai", "https://delivery-us1.bfl.ai/img.png", false},
+		{"custom proxy, same-origin", "https://proxy.example.com", "https://proxy.example.com/img.png", true},
+		{"custom proxy, other bfl.ai host", "https://proxy.example.com", "https://delivery-us1.bfl.ai/img.png", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got = nil
+			m := NewImageModel(New(Config{APIKey: "secret", BaseURL: tc.baseURL}), "flux-pro")
+			_, _, err := m.downloadImage(context.Background(), tc.imageURL, map[string]string{
+				"Custom-Provider-Header": "provider",
+			})
+			if err != nil {
+				t.Fatalf("downloadImage: %v", err)
+			}
+			if got == nil {
+				t.Fatal("no request captured")
+			}
+			hasCreds := got.Get("X-Key") != "" || got.Get("Custom-Provider-Header") != ""
+			if hasCreds != tc.wantCreds {
+				t.Fatalf("credentials forwarded = %v, want %v (headers %#v)", hasCreds, tc.wantCreds, got)
+			}
+			if !tc.wantCreds && !strings.Contains(got.Get("User-Agent"), "black-forest-labs") {
+				t.Fatalf("expected SDK user agent, got %q", got.Get("User-Agent"))
+			}
+		})
+	}
+}

@@ -20,6 +20,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // ImageModel implements the provider.ImageModel interface for Black Forest Labs
@@ -743,6 +744,11 @@ func (m *ImageModel) downloadImage(ctx context.Context, url string, headers map[
 		}
 		if req.Header.Get("X-Key") == "" {
 			req.Header.Set("X-Key", m.provider.config.APIKey)
+		}
+	} else {
+		// Like TS, only the SDK user agent travels to delivery hosts.
+		for k, v := range version.WithUserAgentSuffix(nil, version.ProviderUserAgent("black-forest-labs")) {
+			req.Header.Set(k, v)
 		}
 	}
 	resp, err := client.Do(req)
