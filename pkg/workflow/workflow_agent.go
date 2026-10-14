@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -380,6 +381,32 @@ func effectiveWorkflowTools(w *WorkflowAgent, streamOpts WorkflowStreamOptions, 
 		tools = orderedTools(streamOpts.Tools, streamOpts.ToolSet)
 	}
 	return tools
+}
+
+// workflowTelemetryRuntimeContext returns the subset of the runtime context
+// that Telemetry.IncludeRuntimeContext opts in, so workflow-level telemetry
+// events never carry unselected keys (TS #23340). It is always non-nil.
+func workflowTelemetryRuntimeContext(settings *ai.TelemetrySettings, runtimeContext interface{}) map[string]interface{} {
+	out := map[string]interface{}{}
+	if settings == nil || len(settings.IncludeRuntimeContext) == 0 || runtimeContext == nil {
+		return out
+	}
+	rv := reflect.ValueOf(runtimeContext)
+	for rv.Kind() == reflect.Pointer && !rv.IsNil() {
+		rv = rv.Elem()
+	}
+	if rv.Kind() != reflect.Map || rv.Type().Key().Kind() != reflect.String {
+		return out
+	}
+	for key, enabled := range settings.IncludeRuntimeContext {
+		if !enabled {
+			continue
+		}
+		if v := rv.MapIndex(reflect.ValueOf(key).Convert(rv.Type().Key())); v.IsValid() {
+			out[key] = v.Interface()
+		}
+	}
+	return out
 }
 
 func firstNonNil(values ...interface{}) interface{} {
@@ -1137,10 +1164,11 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 	// approval-resume tool execution has no root span to parent under and its
 	// tool span is silently skipped (27d294d).
 	ctx = telemetrypkg.FireOnStart(ctx, telemetrypkg.TelemetryStartEvent{
-		OperationType: "ai.workflowAgent.generate",
-		ModelProvider: modelProvider,
-		ModelID:       modelID,
-		Settings:      telemetrySettings,
+		OperationType:  "ai.workflowAgent.generate",
+		ModelProvider:  modelProvider,
+		ModelID:        modelID,
+		Settings:       telemetrySettings,
+		RuntimeContext: workflowTelemetryRuntimeContext(telemetrySettings, firstNonNil(opts.RuntimeContext, w.RuntimeContext)),
 	})
 	var err error
 	opts.Messages, _, err = processWorkflowApprovalResume(ctx, workflowApprovalResumeOptions{
@@ -1190,11 +1218,12 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 		return nil, err
 	}
 	telemetrypkg.FireOnEnd(ctx, telemetrypkg.TelemetryFinishEvent{
-		Settings:      telemetrySettings,
-		FinishReason:  string(result.FinishReason),
-		ModelProvider: modelProvider,
-		ModelID:       modelID,
-		Text:          result.Text,
+		Settings:       telemetrySettings,
+		RuntimeContext: workflowTelemetryRuntimeContext(telemetrySettings, firstNonNil(opts.RuntimeContext, w.RuntimeContext)),
+		FinishReason:   string(result.FinishReason),
+		ModelProvider:  modelProvider,
+		ModelID:        modelID,
+		Text:           result.Text,
 		Usage: telemetrypkg.TelemetryUsage{
 			InputTokens:  result.Usage.InputTokens,
 			OutputTokens: result.Usage.OutputTokens,
@@ -1266,10 +1295,11 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	// asynchronously as the caller drains WorkflowStreamResult, under the
 	// child span the delegated ai.StreamText call creates for itself.
 	ctx = telemetrypkg.FireOnStart(ctx, telemetrypkg.TelemetryStartEvent{
-		OperationType: "ai.workflowAgent.stream",
-		ModelProvider: modelProvider,
-		ModelID:       modelID,
-		Settings:      telemetrySettings,
+		OperationType:  "ai.workflowAgent.stream",
+		ModelProvider:  modelProvider,
+		ModelID:        modelID,
+		Settings:       telemetrySettings,
+		RuntimeContext: workflowTelemetryRuntimeContext(telemetrySettings, firstNonNil(opts.RuntimeContext, w.RuntimeContext)),
 	})
 	var err error
 	var prefixChunks []provider.StreamChunk
@@ -1325,9 +1355,10 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		return nil, err
 	}
 	telemetrypkg.FireOnEnd(ctx, telemetrypkg.TelemetryFinishEvent{
-		Settings:      telemetrySettings,
-		ModelProvider: modelProvider,
-		ModelID:       modelID,
+		Settings:       telemetrySettings,
+		RuntimeContext: workflowTelemetryRuntimeContext(telemetrySettings, firstNonNil(opts.RuntimeContext, w.RuntimeContext)),
+		ModelProvider:  modelProvider,
+		ModelID:        modelID,
 	})
 	return &WorkflowStreamResult{StreamTextResult: stream}, nil
 }

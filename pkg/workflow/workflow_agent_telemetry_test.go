@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -105,5 +106,91 @@ func TestWorkflowApprovalResumeToolSpanParentedUnderRootSpan(t *testing.T) {
 	if toolSpan.Parent().SpanID() != rootSpan.SpanContext().SpanID() {
 		t.Fatalf("expected the approval-resume tool span's parent (%s) to be the root span (%s)",
 			toolSpan.Parent().SpanID(), rootSpan.SpanContext().SpanID())
+	}
+}
+
+type runtimeContextCapture struct {
+	telemetry.NoopTelemetryIntegration
+	mu       sync.Mutex
+	contexts []map[string]interface{}
+}
+
+func (c *runtimeContextCapture) record(rc map[string]interface{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.contexts = append(c.contexts, rc)
+}
+
+func (c *runtimeContextCapture) OnStart(ctx context.Context, e telemetry.TelemetryStartEvent) context.Context {
+	c.record(e.RuntimeContext)
+	return ctx
+}
+
+func (c *runtimeContextCapture) OnStepStart(ctx context.Context, e telemetry.TelemetryStepStartEvent) context.Context {
+	c.record(e.RuntimeContext)
+	return ctx
+}
+
+func (c *runtimeContextCapture) OnFinish(_ context.Context, e telemetry.TelemetryFinishEvent) {
+	c.record(e.RuntimeContext)
+}
+
+// TS #23340: model-step telemetry carries only the runtime context keys
+// opted in through Telemetry.IncludeRuntimeContext.
+func TestWorkflowTelemetryIncludesOnlyOptedInRuntimeContext(t *testing.T) {
+	cases := []struct {
+		name    string
+		include map[string]bool
+		want    map[string]interface{}
+	}{
+		{"unset", nil, map[string]interface{}{}},
+		{"excluded", map[string]bool{"traceIdentity": false}, map[string]interface{}{}},
+		{"included", map[string]bool{"traceIdentity": true}, map[string]interface{}{"traceIdentity": "u1"}},
+	}
+	for _, mode := range []string{"generate", "stream"} {
+		for _, tc := range cases {
+			t.Run(mode+"/"+tc.name, func(t *testing.T) {
+				capture := &runtimeContextCapture{}
+				a, err := NewWorkflowAgent(WorkflowAgent{
+					Model:          &wfMockModel{},
+					RuntimeContext: map[string]interface{}{"traceIdentity": "u1", "secret": "s"},
+					Telemetry: &telemetry.Options{
+						IsEnabled:             telemetry.Bool(true),
+						IncludeRuntimeContext: tc.include,
+						Integrations:          []telemetry.TelemetryIntegration{capture},
+					},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if mode == "generate" {
+					_, err = a.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "hi"})
+				} else {
+					var st *WorkflowStreamResult
+					st, err = a.StreamWithOptions(context.Background(), WorkflowStreamOptions{Prompt: "hi"})
+					if err == nil {
+						_, err = st.ReadAll()
+					}
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				capture.mu.Lock()
+				defer capture.mu.Unlock()
+				if len(capture.contexts) == 0 {
+					t.Fatal("no telemetry events captured")
+				}
+				for i, rc := range capture.contexts {
+					if len(rc) != len(tc.want) {
+						t.Fatalf("event %d runtime context = %v, want %v", i, rc, tc.want)
+					}
+					for k, v := range tc.want {
+						if rc[k] != v {
+							t.Fatalf("event %d runtime context = %v, want %v", i, rc, tc.want)
+						}
+					}
+				}
+			})
+		}
 	}
 }

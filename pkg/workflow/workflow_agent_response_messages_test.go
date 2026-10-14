@@ -130,3 +130,32 @@ func TestWorkflowIncompleteStreamWithoutOutputReportsError(t *testing.T) {
 		t.Fatal("expected a no-output error for a stream that ended without output or finish")
 	}
 }
+
+// TS #22079: streamed steps report real (non-placeholder) performance metrics.
+func TestWorkflowStreamStepReportsPerformance(t *testing.T) {
+	m := &fnModel{chunks: []provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: "hello"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, Usage: &types.Usage{InputTokens: ptrInt64(10), OutputTokens: ptrInt64(20)}},
+	}}
+	a, _ := NewWorkflowAgent(WorkflowAgent{Model: m})
+	st, err := a.StreamWithOptions(context.Background(), WorkflowStreamOptions{Prompt: "hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ReadAll(); err != nil {
+		t.Fatal(err)
+	}
+	steps := st.Steps()
+	if len(steps) != 1 {
+		t.Fatalf("steps = %d", len(steps))
+	}
+	perf := steps[0].Performance
+	if perf.TimeToFirstOutputMs == nil || perf.ToolExecutionMs == nil {
+		t.Fatalf("performance is a placeholder: %+v", perf)
+	}
+	if perf.StepTimeMs < perf.ResponseTimeMs {
+		t.Fatalf("stepTimeMs %d < responseTimeMs %d", perf.StepTimeMs, perf.ResponseTimeMs)
+	}
+}
+
+func ptrInt64(v int64) *int64 { return &v }
