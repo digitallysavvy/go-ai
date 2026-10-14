@@ -118,6 +118,9 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		embeddingDimension := 1024
 		if novaOpts.EmbeddingDimension != nil {
 			embeddingDimension = *novaOpts.EmbeddingDimension
+		} else if opts != nil && opts.Dimensions != nil {
+			// Top-level dimensions (TS #22338); the provider option wins.
+			embeddingDimension = *opts.Dimensions
 		}
 		truncate := string(novaOpts.Truncate)
 		if truncate == "" {
@@ -155,6 +158,8 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 
 		if cohereOpts.OutputDimension != nil {
 			reqBody["output_dimension"] = int(*cohereOpts.OutputDimension)
+		} else if opts != nil && opts.Dimensions != nil {
+			reqBody["output_dimension"] = *opts.Dimensions
 		}
 
 		if cohereOpts.Truncate != "" {
@@ -164,6 +169,11 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		// Titan or other models
 		reqBody = map[string]interface{}{
 			"inputText": input,
+		}
+
+		if opts != nil && opts.Dimensions != nil {
+			// Top-level dimensions (TS #22338); the Titan option below wins.
+			reqBody["dimensions"] = *opts.Dimensions
 		}
 
 		// Add Titan-specific options if provided
@@ -503,6 +513,8 @@ func (m *EmbeddingModel) doEmbedCohereBatch(ctx context.Context, inputs []string
 	}
 	if cohereOpts.OutputDimension != nil {
 		reqBody["output_dimension"] = int(*cohereOpts.OutputDimension)
+	} else if opts != nil && opts.Dimensions != nil {
+		reqBody["output_dimension"] = *opts.Dimensions
 	}
 	if cohereOpts.Truncate != "" {
 		reqBody["truncate"] = string(cohereOpts.Truncate)

@@ -56,10 +56,12 @@ func embedManyCalls(ctx context.Context, opts EmbedManyOptions, callID string, m
 				ModelProvider: model.Provider(),
 				ModelID:       model.ModelID(),
 				Values:        values,
+				Dimensions:    opts.Dimensions,
 			})
 			res, err := model.DoEmbedMany(attemptCtx, values, &provider.EmbedModelOptions{
 				ProviderOptions: providerOptions,
 				Headers:         opts.Headers,
+				Dimensions:      opts.Dimensions,
 			})
 			if err != nil {
 				// TS embedMany()'s try/catch rethrows the doEmbed error

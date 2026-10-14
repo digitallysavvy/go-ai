@@ -65,6 +65,7 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		"input": input,
 		"model": m.deploymentID,
 	}
+	applyEmbeddingDimensions(reqBody, opts)
 	path := m.provider.endpointPath(m.deploymentID, "/embeddings")
 	headers, err := m.provider.requestHeaders(ctx, optsHeaders(opts))
 	if err != nil {
@@ -103,6 +104,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		"input": inputs,
 		"model": m.deploymentID,
 	}
+	applyEmbeddingDimensions(reqBody, opts)
 	path := m.provider.endpointPath(m.deploymentID, "/embeddings")
 	headers, err := m.provider.requestHeaders(ctx, optsHeaders(opts))
 	if err != nil {
@@ -162,4 +164,16 @@ type azureEmbeddingResponse struct {
 		PromptTokens int `json:"prompt_tokens"`
 		TotalTokens  int `json:"total_tokens"`
 	} `json:"usage"`
+}
+
+// applyEmbeddingDimensions sets the request's dimensions:
+// providerOptions.openai.dimensions wins over the top-level dimensions
+// setting (TS #22338; Azure embeddings use the OpenAI options namespace).
+func applyEmbeddingDimensions(reqBody map[string]interface{}, opts *provider.EmbedModelOptions) {
+	if opts == nil {
+		return
+	}
+	if d, ok := providerutils.ResolveEmbeddingDimensions(providerutils.EmbedProviderOption(opts.ProviderOptions, "openai", "dimensions"), opts.Dimensions); ok {
+		reqBody["dimensions"] = d
+	}
 }

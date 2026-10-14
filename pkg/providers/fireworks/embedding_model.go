@@ -73,6 +73,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		"input": inputs,
 		"model": m.modelID,
 	}
+	applyEmbeddingDimensions(reqBody, opts)
 	var response fireworksEmbedResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
@@ -118,4 +119,16 @@ type fireworksEmbedResponse struct {
 		PromptTokens int `json:"prompt_tokens"`
 		TotalTokens  int `json:"total_tokens"`
 	} `json:"usage"`
+}
+
+// applyEmbeddingDimensions sets the request's dimensions: the provider option
+// wins over the top-level dimensions setting (TS #22338).
+func applyEmbeddingDimensions(reqBody map[string]interface{}, opts *provider.EmbedModelOptions) {
+	if opts == nil {
+		return
+	}
+	resolved, _ := providerutils.ResolveOpenAICompatibleProviderOptions("fireworks", opts.ProviderOptions)
+	if d, ok := providerutils.ResolveEmbeddingDimensions(resolved["dimensions"], opts.Dimensions); ok {
+		reqBody["dimensions"] = d
+	}
 }

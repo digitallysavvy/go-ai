@@ -21,6 +21,7 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 |-------|------|----------|-------------|
 | Model | provider.EmbeddingModel | Yes | Embedding model to use |
 | Inputs | []string | Yes | Texts to embed (at least one required) |
+| Dimensions | *int | No | Requested output dimensions (positive integer). Mapped to each provider's native setting; an explicit provider option takes precedence. Invalid values return an `InvalidArgumentError` before the model is called |
 
 ## Return Value
 
