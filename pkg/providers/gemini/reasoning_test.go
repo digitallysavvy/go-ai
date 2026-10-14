@@ -113,8 +113,16 @@ func TestReasoningGemini3MinimumThinkingLevel(t *testing.T) {
 		want  string
 		warn  bool
 	}{
-		{"gemini-3-pro-preview", types.ReasoningMinimal, "minimal", false},
-		{"gemini-3-pro-preview", types.ReasoningNone, "minimal", false},
+		{"gemini-3-pro-preview", types.ReasoningMinimal, "low", true},
+		{"gemini-3-pro-preview", types.ReasoningNone, "low", false},
+		// Regional prefixes and Pro 3+ (TS #22394).
+		{"au.gemini-3.5-flash", types.ReasoningNone, "minimal", false},
+		{"eu.gemini-3.5-flash", types.ReasoningNone, "minimal", false},
+		{"us.gemini-3.1-pro", types.ReasoningNone, "low", false},
+		{"gemini-3.5-pro", types.ReasoningNone, "low", false},
+		{"gemini-3.5-pro", types.ReasoningMinimal, "low", true},
+		{"gemini-3.1-pro", types.ReasoningNone, "low", false},
+		{"gemini-3.1-pro", types.ReasoningMinimal, "low", true},
 		{"gemini-3-pro-preview", types.ReasoningXHigh, "high", true},
 		{"gemini-3.1-pro-preview", types.ReasoningMedium, "medium", false},
 		{"gemini-3.7-flash", types.ReasoningMinimal, "low", true},
@@ -277,6 +285,33 @@ func TestIsGemmaModel(t *testing.T) {
 	for _, id := range no {
 		if isGemmaModel(id) {
 			t.Errorf("isGemmaModel(%q) = true, want false", id)
+		}
+	}
+}
+
+// TS #22394: a resolved thinkingLevel is never combined with an explicit
+// providerOptions thinkingBudget (or the reverse).
+func TestReasoningNotCombinedWithExplicitThinkingOptions(t *testing.T) {
+	for _, opt := range []map[string]interface{}{{"thinkingBudget": 999}, {"thinkingLevel": "medium"}} {
+		level := types.ReasoningHigh
+		body, _, warnings, err := makeTestModel("gemini-3-pro-preview").buildRequest(context.Background(), &provider.GenerateOptions{
+			Reasoning:       &level,
+			ProviderOptions: map[string]interface{}{"google": map[string]interface{}{"thinkingConfig": opt}},
+		}, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tc := body["generationConfig"].(map[string]interface{})["thinkingConfig"].(map[string]interface{})
+		if len(tc) != 1 {
+			t.Errorf("thinkingConfig = %v, want only the explicit option %v", tc, opt)
+		}
+		for k, v := range opt {
+			if tc[k] != v {
+				t.Errorf("thinkingConfig[%s] = %v, want %v", k, tc[k], v)
+			}
+		}
+		if len(warnings) != 0 {
+			t.Errorf("warnings = %#v, want none", warnings)
 		}
 	}
 }

@@ -498,6 +498,8 @@ fmt.Println("Answer:", result.Text)
 
 Gemini 3 thinking and tool-call streams preserve `thoughtSignature` in provider metadata so multi-step calls can safely round-trip model-generated reasoning and function calls. Streaming no-argument function calls are emitted with `{}` input instead of being dropped.
 
+When call-level `Reasoning` is used with Gemini 3+ models, the lowest `thinkingLevel` is `"low"` for Pro models (3 and later), `gemini-flash-latest` and Flash models from 3.7; other Flash models still accept `"minimal"`. Regional model IDs such as `eu.gemini-2.5-flash` or `au.gemini-3.5-flash` are classified the same as their unprefixed names. An explicit `thinkingBudget` or `thinkingLevel` in `ProviderOptions["google"]["thinkingConfig"]` replaces the `Reasoning` mapping entirely; the two are never combined.
+
 Usage includes per-modality token details when the API returns them. Text, image, audio, and video token counts are preserved in the result usage details rather than collapsed into only total input/output tokens.
 
 Use the `"google"` provider key for AI Studio options. Vertex options use the `"googleVertex"` key (see the [Google Vertex AI provider](18-google-vertex.mdx#provider-specific-options) for its lookup order) — the hyphenated `"google-vertex"` string is only the Vertex model's `Provider()` identity, not a `ProviderOptions` key.

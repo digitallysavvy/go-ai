@@ -205,8 +205,14 @@ func (m *LanguageModel) buildRequest(ctx context.Context, opts *provider.Generat
 	// Thinking config: resolved call-level reasoning merged with (and
 	// overridden by) providerOptions.thinkingConfig.
 	var thinkingConfig map[string]interface{}
-	resolvedThinking := resolveThinkingConfig(opts.Reasoning, m.modelID, &warnings)
 	optThinking, _ := provOpts["thinkingConfig"].(map[string]interface{})
+	// An explicit thinkingBudget or thinkingLevel in providerOptions replaces
+	// call-level reasoning entirely, so a resolved thinkingLevel is never
+	// combined with an explicit thinkingBudget (TS #22394).
+	var resolvedThinking map[string]interface{}
+	if optThinking["thinkingBudget"] == nil && optThinking["thinkingLevel"] == nil {
+		resolvedThinking = resolveThinkingConfig(opts.Reasoning, m.modelID, &warnings)
+	}
 	if optThinking != nil || resolvedThinking != nil {
 		thinkingConfig = map[string]interface{}{}
 		for k, v := range resolvedThinking {
