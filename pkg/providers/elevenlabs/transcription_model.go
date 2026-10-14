@@ -85,7 +85,17 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		}
 	}
 
+	var providerMetadata map[string]interface{}
+	if response.Words != nil {
+		words := make([]interface{}, 0, len(response.Words))
+		for _, word := range response.Words {
+			words = append(words, word.Raw)
+		}
+		providerMetadata = map[string]interface{}{"elevenlabs": map[string]interface{}{"words": words}}
+	}
+
 	return &types.TranscriptionResult{
+		ProviderMetadata:  providerMetadata,
 		Text:              response.Text,
 		Segments:          segments,
 		Timestamps:        segments,
@@ -207,16 +217,33 @@ func durationValue(duration *float64) float64 {
 }
 
 type elevenlabsTranscriptionResponse struct {
-	LanguageCode        string  `json:"language_code"`
-	LanguageProbability float64 `json:"language_probability"`
-	Text                string  `json:"text"`
-	Words               []struct {
-		Text      string   `json:"text"`
-		Type      string   `json:"type"`
-		Start     *float64 `json:"start"`
-		End       *float64 `json:"end"`
-		SpeakerID string   `json:"speaker_id"`
-	} `json:"words"`
+	LanguageCode        string           `json:"language_code"`
+	LanguageProbability float64          `json:"language_probability"`
+	Text                string           `json:"text"`
+	Words               []elevenlabsWord `json:"words"`
+}
+
+// elevenlabsWord is one entry of the response "words" array. Raw keeps the
+// complete wire object so type and speaker_id are preserved in provider
+// metadata exactly as returned.
+type elevenlabsWord struct {
+	Text      string   `json:"text"`
+	Type      string   `json:"type"`
+	Start     *float64 `json:"start"`
+	End       *float64 `json:"end"`
+	SpeakerID string   `json:"speaker_id"`
+
+	Raw map[string]interface{} `json:"-"`
+}
+
+func (w *elevenlabsWord) UnmarshalJSON(data []byte) error {
+	type plain elevenlabsWord
+	var p plain
+	if err := json.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	*w = elevenlabsWord(p)
+	return json.Unmarshal(data, &w.Raw)
 }
 
 // handleTranscriptionError converts an HTTP error into a ProviderError,

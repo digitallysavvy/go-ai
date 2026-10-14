@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -162,5 +163,61 @@ func TestElevenLabsTranscription_APIError(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "bad audio") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestElevenLabsTranscription_DiarizeDefaultsWithProviderOptions(t *testing.T) {
+	cases := []struct {
+		name string
+		opts map[string]interface{}
+		want string
+	}{
+		{"no options", nil, "true"},
+		{"empty options", map[string]interface{}{}, "true"},
+		{"unrelated option", map[string]interface{}{"languageCode": "en"}, "true"},
+		{"explicitly disabled", map[string]interface{}{"diarize": false}, "false"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			capture := map[string]string{}
+			srv := transcriptionTestServer(t, &capture)
+			defer srv.Close()
+			p := New(Config{APIKey: "k", BaseURL: srv.URL})
+			m, _ := p.TranscriptionModel(ModelScribeV1)
+			o := &provider.TranscriptionOptions{Audio: []byte("a"), MimeType: "audio/wav"}
+			if tc.opts != nil {
+				o.ProviderOptions = map[string]interface{}{"elevenlabs": tc.opts}
+			}
+			if _, err := m.DoTranscribe(context.Background(), o); err != nil {
+				t.Fatal(err)
+			}
+			if capture["diarize"] != tc.want {
+				t.Fatalf("diarize = %q, want %q", capture["diarize"], tc.want)
+			}
+		})
+	}
+}
+
+func TestElevenLabsTranscription_PreservesWordMetadata(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"language_code":"eng","language_probability":1,"text":"hi (laughter)","words":[` +
+			`{"text":"hi","type":"word","start":0,"end":0.4,"speaker_id":"speaker_1"},` +
+			`{"text":" ","type":"spacing","start":0.4,"end":0.5},` +
+			`{"text":"(laughter)","type":"audio_event","start":0.5,"end":1.2,"speaker_id":"speaker_1"}]}`))
+	}))
+	defer srv.Close()
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	m, _ := p.TranscriptionModel(ModelScribeV1)
+	res, err := m.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte("a"), MimeType: "audio/wav"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]interface{}{"elevenlabs": map[string]interface{}{"words": []interface{}{
+		map[string]interface{}{"text": "hi", "type": "word", "start": 0.0, "end": 0.4, "speaker_id": "speaker_1"},
+		map[string]interface{}{"text": " ", "type": "spacing", "start": 0.4, "end": 0.5},
+		map[string]interface{}{"text": "(laughter)", "type": "audio_event", "start": 0.5, "end": 1.2, "speaker_id": "speaker_1"},
+	}}}
+	if !reflect.DeepEqual(res.ProviderMetadata, want) {
+		t.Fatalf("providerMetadata = %#v", res.ProviderMetadata)
 	}
 }
