@@ -67,7 +67,7 @@ func CollectToolApprovalContinuations(messages []types.Message) ([]types.ToolApp
 		// approval; it does not mean the harness has received the decision,
 		// so that approval response must still continue the turn (TS #23260).
 		if tr, ok := part.(types.ToolResultContent); ok &&
-			!(tr.Output != nil && tr.Output.Type == types.ToolResultOutputExecutionDenied) {
+			(tr.Output == nil || tr.Output.Type != types.ToolResultOutputExecutionDenied) {
 			toolResultIDs[tr.ToolCallID] = struct{}{}
 		}
 	}

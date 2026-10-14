@@ -1863,7 +1863,7 @@ func (d *turnDriver) executeHostToolAsync(tool types.Tool, raw *ToolCallPart, ca
 		// and is cached for ResponseMessages.
 		if tool.ToModelOutput != nil {
 			modelOutput, mErr := tool.ToModelOutput(d.ctx, types.ToModelOutputOptions{
-				ToolCallID: raw.ToolCallID, Input: execArgs, Output: output, Result: output,
+				ToolCallID: raw.ToolCallID, Input: execArgs, Output: output, Result: output, //nolint:staticcheck // Result is the deprecated alias; set for older callbacks
 			})
 			if mErr != nil {
 				_ = d.submitToolResult(ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: map[string]interface{}{"error": mErr.Error()}, IsError: true})

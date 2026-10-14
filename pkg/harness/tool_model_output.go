@@ -83,7 +83,7 @@ func NormalizeToolModelOutput(output types.ToolResultOutput) (types.ToolResultOu
 			if mediaType == "" {
 				mediaType = b.FileData.MediaType
 			}
-			if topLevelMediaType(mediaType) != "image" && !(mediaType == "" && len(data) > 0) {
+			if topLevelMediaType(mediaType) != "image" && (mediaType != "" || len(data) == 0) {
 				return types.ToolResultOutput{}, unsupportedModelOutput(fmt.Sprintf("Unsupported content 'file' (%s, data).", mediaType))
 			}
 			img, err := normalizeInlineImage(data, mediaType, b.ProviderOptions)

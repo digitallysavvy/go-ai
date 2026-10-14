@@ -44,9 +44,9 @@ func TestRunPrompt_UIStreamStepCallbacks(t *testing.T) {
 				opts.OnStepEnd = func(map[string]interface{}) { mu.Lock(); ends++; mu.Unlock() }
 			}
 			if tc.useFinish {
-				opts.OnStepFinish = func(map[string]interface{}) { mu.Lock(); finishes++; mu.Unlock() }
+				opts.OnStepFinish = func(map[string]interface{}) { mu.Lock(); finishes++; mu.Unlock() } //nolint:staticcheck // deprecated alias under test
 			}
-			chunks, errs := out.Result.ToUIMessageStream(context.Background(), opts)
+			chunks, errs := out.Result.ToUIMessageStream(context.Background(), opts) //nolint:staticcheck // the only UI stream entry point with step callbacks
 			finishSteps := 0
 			for c := range chunks {
 				if c["type"] == "finish-step" {

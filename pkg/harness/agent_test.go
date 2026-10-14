@@ -83,7 +83,7 @@ func (c *mockPromptControl) SubmitToolResult(_ context.Context, r ToolResultSubm
 		c.onSubmitResult(r)
 	}
 	c.mu.Lock()
-	*c.toolResults = append(*c.toolResults, recordedToolResult{ToolCallID: r.ToolCallID, Output: r.Output, IsError: r.IsError, ToolResult: r.ToolResult})
+	*c.toolResults = append(*c.toolResults, recordedToolResult(r))
 	c.mu.Unlock()
 	return nil
 }
