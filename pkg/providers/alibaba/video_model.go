@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -82,14 +83,28 @@ const (
 	alibabaProtocolWan3   alibabaVideoProtocol = "wan3"
 )
 
+// alibabaModelVersionRe matches the version prefix of a Wan model id; "wanx"
+// is the older id prefix (e.g. wanx2.1-t2v-turbo). The trailing group stands in
+// for the TS lookahead (?=[.-]|$).
+var alibabaModelVersionRe = regexp.MustCompile(`^wanx?(\d+)(?:\.(\d+))?(?:[.-]|$)`)
+
 func detectAlibabaVideoProtocol(modelID string) alibabaVideoProtocol {
-	if strings.HasPrefix(modelID, "wan3") {
-		return alibabaProtocolWan3
+	if v := alibabaModelVersionRe.FindStringSubmatch(modelID); v != nil {
+		major, _ := strconv.Atoi(v[1])
+		minor := 0
+		if v[2] != "" {
+			minor, _ = strconv.Atoi(v[2])
+		}
+		if major < 2 || (major == 2 && minor < 7) {
+			return alibabaProtocolLegacy
+		}
+		if major == 2 {
+			return alibabaProtocolWan27
+		}
 	}
-	if strings.HasPrefix(modelID, "wan2.7") {
-		return alibabaProtocolWan27
-	}
-	return alibabaProtocolLegacy
+
+	// Unrecognized IDs inherit the latest all-in-one media protocol.
+	return alibabaProtocolWan3
 }
 
 // alibabaResolutionTierMap maps SDK "WIDTHxHEIGHT" resolutions to Alibaba

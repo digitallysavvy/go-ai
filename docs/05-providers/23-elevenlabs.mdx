@@ -101,6 +101,11 @@ result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
 })
 ```
 
+Batch transcription enables speaker diarization by default, including when other
+`providerOptions.elevenlabs` values are set. Pass `"diarize": false` to disable it.
+The raw word entries returned by ElevenLabs (including `type` and `speaker_id`) are
+available as `result.ProviderMetadata["elevenlabs"]["words"]`.
+
 ### Streaming Transcription (Scribe v2 Realtime)
 
 `scribe_v2_realtime` is a streaming-only model — `DoTranscribe` (the batch

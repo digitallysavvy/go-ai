@@ -21,7 +21,7 @@ import (
 // batch transcription flow (POST /stt), and provider.TranscriptionStreamer
 // (see transcription_stream.go) for Ink 2's realtime WebSocket flow.
 //
-// ink-2 (and any "ink-2-*" variant) is a STREAMING-only realtime
+// Every model except ink-whisper (and "ink-whisper-*" snapshots) is a STREAMING-only realtime
 // transcription model (WebSocket-based, over /stt/websocket and
 // /stt/turns/websocket); DoTranscribe rejects it, matching the TypeScript
 // SDK's UnsupportedFunctionalityError for non-streaming use of that model.
@@ -43,7 +43,10 @@ func (m *TranscriptionModel) ModelID() string { return m.modelID }
 // isStreamingTranscriptionModelID mirrors the TypeScript SDK's
 // isStreamingTranscriptionModelId.
 func isStreamingTranscriptionModelID(modelID string) bool {
-	return modelID == ModelInk2 || strings.HasPrefix(modelID, "ink-2-")
+	// Ink Whisper (including dated snapshots such as "ink-whisper-2025-06-04")
+	// is the known batch-only model family. Future IDs inherit the current
+	// streaming protocol regardless of their name.
+	return modelID != ModelInkWhisper && !strings.HasPrefix(modelID, "ink-whisper-")
 }
 
 type cartesiaTranscriptionResponse struct {

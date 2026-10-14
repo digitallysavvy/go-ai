@@ -11,6 +11,7 @@ func TestImageModelSupportsFileAndMaskInputs(t *testing.T) {
 		wantFileInputs *bool
 		wantMaskInputs *bool
 	}{
+		{"flux-3-image", "flux-3-image", boolPtr(true), boolPtr(false)},
 		{"flux-pro-1.0-fill", "flux-pro-1.0-fill", boolPtr(true), boolPtr(true)},
 		{"flux-kontext-pro", "flux-kontext-pro", boolPtr(true), boolPtr(false)},
 		{"flux-kontext-max", "flux-kontext-max", boolPtr(true), boolPtr(false)},

@@ -377,6 +377,7 @@ func convertCohereUsage(raw json.RawMessage) types.Usage {
 			InputTokens  int `json:"input_tokens"`
 			OutputTokens int `json:"output_tokens"`
 		} `json:"tokens"`
+		CachedTokens *int `json:"cached_tokens"`
 	}
 	if err := json.Unmarshal(raw, &usage); err != nil {
 		return types.Usage{}
@@ -388,11 +389,17 @@ func convertCohereUsage(raw json.RawMessage) types.Usage {
 	inputTokens := int64(usage.Tokens.InputTokens)
 	outputTokens := int64(usage.Tokens.OutputTokens)
 	totalTokens := inputTokens + outputTokens
+	inputDetails := &types.InputTokenDetails{NoCacheTokens: &inputTokens}
+	if usage.CachedTokens != nil {
+		cacheRead := int64(*usage.CachedTokens)
+		noCache := inputTokens - cacheRead
+		inputDetails = &types.InputTokenDetails{NoCacheTokens: &noCache, CacheReadTokens: &cacheRead}
+	}
 	return types.Usage{
 		InputTokens:   &inputTokens,
 		OutputTokens:  &outputTokens,
 		TotalTokens:   &totalTokens,
-		InputDetails:  &types.InputTokenDetails{NoCacheTokens: &inputTokens},
+		InputDetails:  inputDetails,
 		OutputDetails: &types.OutputTokenDetails{TextTokens: &outputTokens},
 		Raw:           rawMap,
 	}

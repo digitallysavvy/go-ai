@@ -85,3 +85,44 @@ func TestNew_TrailingSlashIsStripped(t *testing.T) {
 		t.Fatalf("path = %q, want /systemone (no double slash)", gotPath)
 	}
 }
+
+func TestNew_BaseURLFromEnvironment(t *testing.T) {
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(nativeResponseJSON))
+	}))
+	defer server.Close()
+
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("env URL used despite explicit BaseURL")
+	}))
+	defer other.Close()
+
+	run := func(p *Provider) {
+		t.Helper()
+		model, _ := p.EvaluationModel("jev-latest")
+		if _, err := model.DoEvaluate(t.Context(), provider.EvaluationCallOptions{State: "test", Questions: nativeQuestions()}); err != nil {
+			t.Fatalf("DoEvaluate: %v", err)
+		}
+	}
+
+	t.Setenv("TYPESAFE_AI_BASE_URL", server.URL+"/")
+	run(New(Config{APIKey: "k"}))
+	if gotPath != "/systemone" {
+		t.Fatalf("env: path = %q", gotPath)
+	}
+
+	t.Setenv("TYPESAFE_AI_BASE_URL", other.URL)
+	gotPath = ""
+	run(New(Config{APIKey: "k", BaseURL: server.URL + "/"}))
+	if gotPath != "/systemone" {
+		t.Fatalf("explicit: path = %q", gotPath)
+	}
+
+	t.Setenv("TYPESAFE_AI_BASE_URL", "")
+	if p := New(Config{APIKey: "k"}); p.client == nil {
+		t.Fatal("expected client")
+	}
+}

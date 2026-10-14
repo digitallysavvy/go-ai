@@ -25,7 +25,7 @@ type TranscriptionModelOptions struct {
 	// TimestampsGranularity is "none", "word", or "character". Defaults to "word".
 	TimestampsGranularity string `json:"timestampsGranularity,omitempty"`
 
-	// Diarize enables speaker diarization. Defaults to false.
+	// Diarize enables speaker diarization. Defaults to true.
 	Diarize *bool `json:"diarize,omitempty"`
 
 	// FileFormat is "pcm_s16le_16" or "other". Defaults to "other".
@@ -123,7 +123,7 @@ func extractTranscriptionOptions(providerOptions map[string]interface{}) (opts *
 		opts.TimestampsGranularity = "word"
 	}
 	if opts.Diarize == nil {
-		diarizeDefault := false
+		diarizeDefault := true
 		opts.Diarize = &diarizeDefault
 	}
 	if opts.FileFormat == "" {

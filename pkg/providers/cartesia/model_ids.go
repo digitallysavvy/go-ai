@@ -9,7 +9,8 @@ const (
 	ModelSonicLatest = "sonic-latest"
 )
 
-// Cartesia transcription model IDs. ModelInk2 (and any "ink-2-*" variant) is
+// Cartesia transcription model IDs. ModelInk2 (and every ID other than
+// ink-whisper and "ink-whisper-*" snapshots) is
 // STREAMING-only (WebSocket-based) and is out of scope for this batch-only
 // TranscriptionModel; DoTranscribe rejects it.
 const (
