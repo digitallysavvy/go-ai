@@ -92,8 +92,9 @@ result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
 
 ## Errors
 
-When the provider response contains no transcript text, `Transcribe` returns a
-typed `NoTranscriptGeneratedError` with response metadata:
+When the provider returns no transcription result, `Transcribe` returns a
+typed `NoTranscriptGeneratedError` with response metadata. An empty transcript
+(for example, from silent audio) is a valid result and is returned as `""`:
 
 ```go
 result, err := ai.Transcribe(ctx, opts)

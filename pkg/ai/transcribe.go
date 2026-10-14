@@ -169,7 +169,7 @@ func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult,
 		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: err})
 		return nil, err
 	}
-	if raw == nil || raw.Text == "" {
+	if raw == nil {
 		var responses []TranscriptionModelResponseMetadata
 		if raw != nil {
 			responses = []TranscriptionModelResponseMetadata{transcriptionResponseMetadata(raw.Response, opts.Model)}

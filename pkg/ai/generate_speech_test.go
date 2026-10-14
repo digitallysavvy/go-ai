@@ -251,16 +251,33 @@ func TestGeneratedAudioFormatMatchesTypeScript(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]string{
-		"audio/mpeg": "mp3",
-		"audio/mp3":  "mp3",
-		"audio/wav":  "wav",
-		"audio/pcm":  "pcm",
-		"":           "mp3",
+		"audio/mpeg":      "mp3",
+		"audio/mp3":       "mp3",
+		"audio/wav":       "wav",
+		"audio/pcm":       "pcm",
+		"":                "mp3",
+		"audio":           "mp3",
+		"audio/ogg":       "ogg",
+		"audio/mp3/extra": "mp3",
 	}
 	for mediaType, want := range tests {
-		if got := generatedAudioFormat(mediaType); got != want {
-			t.Fatalf("generatedAudioFormat(%q) = %q, want %q", mediaType, got, want)
+		got, err := generatedAudioFormat(mediaType)
+		if err != nil || got != want {
+			t.Fatalf("generatedAudioFormat(%q) = %q, %v, want %q", mediaType, got, err, want)
 		}
+	}
+}
+
+func TestGeneratedAudioFormatEmptySubtypeIsInvalidResponseDataError(t *testing.T) {
+	t.Parallel()
+
+	_, err := generatedAudioFormat("audio/")
+	var invalid *providererrors.InvalidResponseDataError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("expected InvalidResponseDataError, got %T %v", err, err)
+	}
+	if invalid.Data != "audio/" || invalid.Message != "Could not determine audio format from media type: audio/" {
+		t.Fatalf("unexpected error: %#v", invalid)
 	}
 }
 

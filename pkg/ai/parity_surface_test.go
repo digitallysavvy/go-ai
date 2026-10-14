@@ -663,18 +663,10 @@ func TestTranscribeInvalidAudioBase64AndNegativeMaxRetries(t *testing.T) {
 	}
 }
 
-func TestTranscribeNoTranscriptGeneratedErrorWithResponses(t *testing.T) {
+func TestTranscribeNoTranscriptGeneratedErrorWhenResultMissing(t *testing.T) {
 	model := &testutil.MockTranscriptionModel{
 		DoTranscribeFunc: func(ctx context.Context, opts *provider.TranscriptionOptions) (*types.TranscriptionResult, error) {
-			return &types.TranscriptionResult{
-				Text: "",
-				Response: &types.ResponseMetadata{
-					ModelID: "test-model-id",
-					Headers: map[string]string{
-						"custom-response-header": "response-header-value",
-					},
-				},
-			}, nil
+			return nil, nil
 		},
 	}
 
@@ -689,24 +681,25 @@ func TestTranscribeNoTranscriptGeneratedErrorWithResponses(t *testing.T) {
 	if noTranscript.Error() != "No transcript generated." {
 		t.Fatalf("error message = %q", noTranscript.Error())
 	}
-	if len(noTranscript.Responses) != 1 || noTranscript.Responses[0].Headers["custom-response-header"] != "response-header-value" {
-		t.Fatalf("responses = %#v", noTranscript.Responses)
-	}
+}
 
-	fallbackModel := &testutil.MockTranscriptionModel{
+// Ports TS #22059: a successful silent-audio transcription returns an empty
+// transcript instead of NoTranscriptGeneratedError.
+func TestTranscribeReturnsEmptyTranscript(t *testing.T) {
+	model := &testutil.MockTranscriptionModel{
 		DoTranscribeFunc: func(ctx context.Context, opts *provider.TranscriptionOptions) (*types.TranscriptionResult, error) {
-			return &types.TranscriptionResult{Text: ""}, nil
+			return &types.TranscriptionResult{Text: "", Language: "en"}, nil
 		},
 	}
-	_, err = Transcribe(context.Background(), TranscribeOptions{
-		Model: fallbackModel,
+	result, err := Transcribe(context.Background(), TranscribeOptions{
+		Model: model,
 		Audio: []byte("audio"),
 	})
-	if !errors.As(err, &noTranscript) {
-		t.Fatalf("Transcribe fallback error = %T %v, want NoTranscriptGeneratedError", err, err)
+	if err != nil {
+		t.Fatalf("Transcribe error = %v, want nil", err)
 	}
-	if len(noTranscript.Responses) != 1 || noTranscript.Responses[0].ModelID != fallbackModel.ModelID() || noTranscript.Responses[0].Timestamp.IsZero() {
-		t.Fatalf("fallback responses = %#v, want model/timestamp metadata", noTranscript.Responses)
+	if result.Text != "" || len(result.Segments) != 0 {
+		t.Fatalf("result = %#v", result)
 	}
 }
 
