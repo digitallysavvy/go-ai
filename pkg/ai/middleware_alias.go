@@ -10,6 +10,7 @@ type LanguageModelMiddleware = mw.LanguageModelMiddleware
 type EmbeddingModelMiddleware = mw.EmbeddingModelMiddleware
 type ImageModelMiddleware = mw.ImageModelMiddleware
 type ExtractReasoningOptions = mw.ExtractReasoningOptions
+type ReasoningDelimiters = mw.ReasoningDelimiters
 type ExtractJSONOptions = mw.ExtractJSONOptions
 type AddToolInputExamplesOptions = mw.AddToolInputExamplesOptions
 

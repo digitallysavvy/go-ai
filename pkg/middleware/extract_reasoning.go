@@ -7,14 +7,29 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
+
+// ReasoningDelimiters are literal opening and closing delimiters for a
+// reasoning section, for formats that are not XML tags (for example Gemma's
+// "<|channel>thought\n" ... "<channel|>").
+type ReasoningDelimiters struct {
+	Opening string
+	Closing string
+}
 
 // ExtractReasoningOptions configures the reasoning extraction middleware
 type ExtractReasoningOptions struct {
 	// TagName is the XML tag name to extract reasoning from
 	// (e.g., "think" for Anthropic, "reasoning" for OpenAI)
 	TagName string
+
+	// Delimiters, when set, replaces TagName with literal opening and closing
+	// delimiters (regex metacharacters are matched literally). Both must be
+	// non-empty or ExtractReasoningMiddleware panics with an
+	// *errors.InvalidArgumentError.
+	Delimiters *ReasoningDelimiters
 
 	// Separator is the separator to use between reasoning and text sections
 	// Default: "\n"
@@ -55,6 +70,16 @@ func ExtractReasoningMiddleware(options *ExtractReasoningOptions) *LanguageModel
 
 	openingTag := fmt.Sprintf("<%s>", options.TagName)
 	closingTag := fmt.Sprintf("</%s>", options.TagName)
+	if options.Delimiters != nil {
+		openingTag = options.Delimiters.Opening
+		closingTag = options.Delimiters.Closing
+		if openingTag == "" || closingTag == "" {
+			panic(&providererrors.InvalidArgumentError{
+				Field:   "tagName",
+				Message: "Reasoning delimiters must not be empty.",
+			})
+		}
+	}
 
 	return &LanguageModelMiddleware{
 		SpecificationVersion: "v3",
@@ -77,7 +102,7 @@ func ExtractReasoningMiddleware(options *ExtractReasoningOptions) *LanguageModel
 			}
 
 			// Extract all reasoning blocks
-			pattern := fmt.Sprintf(`%s(.*?)%s`, regexp.QuoteMeta(openingTag), regexp.QuoteMeta(closingTag))
+			pattern := fmt.Sprintf(`(?s)%s(.*?)%s`, regexp.QuoteMeta(openingTag), regexp.QuoteMeta(closingTag))
 			re := regexp.MustCompile(pattern)
 			matches := re.FindAllStringSubmatch(text, -1)
 
