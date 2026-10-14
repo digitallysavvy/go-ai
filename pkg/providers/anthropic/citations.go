@@ -84,18 +84,6 @@ func fileCitationsEnabled(providerOptions map[string]interface{}) bool {
 	return enabled
 }
 
-// filterWebSearchCitations returns the subset of raw citations whose type is
-// "web_search_result_location", preserving order.
-func filterWebSearchCitations(citations []map[string]interface{}) []map[string]interface{} {
-	var out []map[string]interface{}
-	for _, c := range citations {
-		if citationType(c) == "web_search_result_location" {
-			out = append(out, c)
-		}
-	}
-	return out
-}
-
 // citationsProviderMetadata wraps citations as {"anthropic":{"citations":[...]}},
 // or returns nil when citations is empty (TS's `...(citations.length > 0 &&
 // {providerMetadata: {anthropic: {citations}}})`).
