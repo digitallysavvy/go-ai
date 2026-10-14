@@ -675,7 +675,7 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 				psb.release()
 			} else if reason := d.evaluateStopConditions(); reason != "" {
 				psb.release()
-				d.suspendOrFinishNow(psb.finishReason, psb.usage)
+				d.suspendOrFinishNow(psb.finishReason)
 				return false, true, nil
 			} else {
 				psb.release()
@@ -829,7 +829,7 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 					release = pinner.PinCheckpoint()
 				}
 				d.pendingStopBoundary = &pendingStopBoundary{
-					finishReason: fs.FinishReason, usage: fs.Usage, releaseCheckpoint: release,
+					finishReason: fs.FinishReason, releaseCheckpoint: release,
 				}
 			}
 		}
@@ -1283,7 +1283,6 @@ func (d *turnDriver) pauseForHostInput() error {
 // `pendingStopBoundary` in run-prompt.ts.
 type pendingStopBoundary struct {
 	finishReason      FinishReason
-	usage             Usage
 	releaseCheckpoint func()
 }
 
@@ -1310,9 +1309,9 @@ func (d *turnDriver) releasePendingStopBoundary() {
 // usage is deliberately left off the pushed chunk so the locally-summed
 // total stands, since this is not a real bridge-reported total the way a
 // genuine terminal `finish` carries one (contrast pauseForHostInput/the
-// FinishPart branch in consumeLoop) — but it is still the right usage for
-// the telemetry span's totals (see telEnd's call below), mirroring TS's
-// `pendingStopBoundary.usage`.
+// FinishPart branch in consumeLoop). The telemetry span's turn total is the
+// sum of every completed step's usage (TS #22259), not just the last
+// step's.
 //
 // Whether the *underlying harness session's turn* survives this for a later
 // resume depends on d.in.OnStopConditionMet (wired to
@@ -1343,7 +1342,7 @@ func (d *turnDriver) releasePendingStopBoundary() {
 // decision is pending. Correctness never depended on this — DoSuspendTurn
 // (not this driver) is what actually freezes the adapter's cursor — it is
 // purely the replay-safety optimization CheckpointPinner's own doc describes.
-func (d *turnDriver) suspendOrFinishNow(finishReason FinishReason, usage Usage) {
+func (d *turnDriver) suspendOrFinishNow(finishReason FinishReason) {
 	suspended := false
 	if d.in.OnStopConditionMet != nil {
 		if _, err := d.in.OnStopConditionMet(d.ctx); err == nil {
@@ -1351,10 +1350,14 @@ func (d *turnDriver) suspendOrFinishNow(finishReason FinishReason, usage Usage) 
 		}
 	}
 	// TS's StopConditions early-stop path ends the root telemetry span with
-	// the matched step boundary's own usage (`pendingStopBoundary.usage`),
-	// not a fresh/zero one — mirrors that exactly, regardless of whether the
-	// underlying session turn was suspended or hard-finished.
-	d.telEnd(d.completedSteps, harnessUsageToTypesUsageValue(usage))
+	// the usage of every completed step summed (TS #22259; previously only
+	// the last step's), regardless of whether the underlying session turn
+	// was suspended or hard-finished.
+	var total types.Usage
+	for _, step := range d.completedSteps {
+		total = total.Add(step.Usage)
+	}
+	d.telEnd(d.completedSteps, total)
 	// OnTurnFinished must run before the finish chunk is pushed onto
 	// d.stream, not after: d.stream is a buffered channel, so pushing makes
 	// the chunk visible to a concurrent reader (pkg/ai's StreamTextResult
