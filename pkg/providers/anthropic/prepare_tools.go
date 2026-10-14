@@ -225,7 +225,7 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 			out.warnings = append(out.warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "toolChoice",
-				Details: "toolChoice 'required' is not supported by this model because it rejects forced tool use. " +
+				Details: "toolChoice 'required' is not supported with this model or thinking configuration. " +
 					"Using 'auto' instead. Instruct the model to use a tool in the prompt and verify that a tool call was made.",
 			})
 			out.toolChoice = withDisable(map[string]interface{}{"type": "auto"})
@@ -241,7 +241,7 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 			out.warnings = append(out.warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "toolChoice",
-				Details: fmt.Sprintf("toolChoice 'tool' is not supported by this model because it rejects forced tool use. "+
+				Details: fmt.Sprintf("toolChoice 'tool' is not supported with this model or thinking configuration. "+
 					"Only the '%s' tool is sent with 'auto' tool choice. "+
 					"Instruct the model to use the tool in the prompt and verify that a tool call was made.", o.toolChoice.ToolName),
 			})

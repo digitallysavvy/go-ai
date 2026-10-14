@@ -640,6 +640,10 @@ provider := anthropic.New(anthropic.Config{
 })
 ```
 
+### Forced tool choice with budget thinking
+
+Anthropic rejects forced tool use (`ToolChoiceRequired` or a named tool) when budget-based thinking (`thinking.type: "enabled"`) is on, including thinking set through the top-level `Reasoning` option on models that use budgets. The SDK falls back to `auto` tool choice, sends only the named tool for a named choice, and returns an `unsupported` `toolChoice` warning. This also applies to the synthetic JSON response tool used for structured output.
+
 ### Tool choice none
 
 `ToolChoiceNone` keeps the tool definitions in the request and sends `tool_choice: {"type": "none"}`, so earlier server-tool calls in the conversation history remain valid. Failed Anthropic tool-search results (`error-json`, or JSON with `type: "tool_search_tool_result_error"`) are replayed as `tool_search_tool_result_error` blocks.

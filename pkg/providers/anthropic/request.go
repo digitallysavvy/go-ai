@@ -519,7 +519,7 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 			supportsStructuredOutput:   false,
 			supportsStrictTools:        supportsStrictTools,
 			defaultEagerInputStreaming: defaultEager,
-			rejectsForcedToolUse:       caps.RejectsForcedToolUse,
+			rejectsForcedToolUse:       caps.RejectsForcedToolUse || th.typ == ThinkingTypeEnabled,
 		})
 	} else {
 		tc := opts.ToolChoice
@@ -531,7 +531,7 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 			supportsStructuredOutput:   supportsStructuredOutput,
 			supportsStrictTools:        supportsStrictTools,
 			defaultEagerInputStreaming: defaultEager,
-			rejectsForcedToolUse:       caps.RejectsForcedToolUse,
+			rejectsForcedToolUse:       caps.RejectsForcedToolUse || th.typ == ThinkingTypeEnabled,
 		})
 	}
 	if prepared.tools != nil {
