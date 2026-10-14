@@ -146,8 +146,9 @@ func (t *StreamingToolCallTracker) TrackDelta(delta ToolCallDelta) []ToolCallChu
 	name := nonBlank(delta.Name)
 	index := delta.Index
 	hasExplicitCallStart := name != "" && StartsWithStructuredValue(delta.ArgumentsDelta)
+	hasEmptyArguments := strings.TrimSpace(delta.ArgumentsDelta) == ""
 
-	res := t.resolveToolCall(wireID, index, name, hasExplicitCallStart)
+	res := t.resolveToolCall(wireID, index, name, hasExplicitCallStart, hasEmptyArguments)
 	if res.kind == resolutionAmbiguous {
 		return nil
 	}
@@ -266,11 +267,12 @@ func (t *StreamingToolCallTracker) Flush() []ToolCallChunk {
 //	| known | matching | any | matching call, new call, or ambiguity |
 //	| known | conflicting | named | new call |
 //	| unseen | matching | structured start | new call |
+//	| unseen | matching | named empty arguments | incomplete call, new call, or ambiguity |
 //	| unseen | matching | continuation | matching call or ambiguity |
 //	| absent | matching | any | matching call, new call, or ambiguity |
 //	| absent | absent | named | new call |
 //	| absent | absent | unnamed | sole unfinished call, new call, or ambiguity |
-func (t *StreamingToolCallTracker) resolveToolCall(wireID string, index *int, name string, hasExplicitCallStart bool) resolution {
+func (t *StreamingToolCallTracker) resolveToolCall(wireID string, index *int, name string, hasExplicitCallStart, hasEmptyArguments bool) resolution {
 	var indexedCalls []*trackedToolCall
 	if index != nil {
 		indexedCalls = t.toolCallsByIndex[*index]
@@ -313,15 +315,15 @@ func (t *StreamingToolCallTracker) resolveToolCall(wireID string, index *int, na
 		}
 
 		if len(matchingIndexed) > 0 {
-			// A previously unseen ID plus a named structured argument start
-			// is stronger evidence of a distinct call than a reused
-			// index/name. This also keeps interleaved same-name calls
-			// separate while still allowing IDs to change on ordinary
-			// continuation fragments.
+			// A named structured start with an unseen ID identifies a new
+			// call. Empty arguments can also occur when a continuation
+			// changes its ID. Keep the incomplete matching call in that case,
+			// and start a new call only after the matching structured
+			// arguments are complete.
 			if hasExplicitCallStart {
 				return resolution{kind: resolutionNew}
 			}
-			return resolveMatchingToolCall(matchingIndexed, false)
+			return resolveMatchingToolCall(matchingIndexed, name != "" && hasEmptyArguments)
 		}
 
 		return resolution{kind: resolutionNew}
@@ -344,13 +346,7 @@ func (t *StreamingToolCallTracker) resolveToolCall(wireID string, index *int, na
 			unfinished = append(unfinished, call)
 		}
 	}
-	if len(unfinished) == 1 {
-		return resolution{kind: resolutionExisting, call: unfinished[0]}
-	}
-	if len(unfinished) > 1 {
-		return resolution{kind: resolutionAmbiguous}
-	}
-	return resolution{kind: resolutionNew}
+	return resolveMatchingToolCall(unfinished, false)
 }
 
 // filterByName narrows calls to those whose name matches, porting TS's
@@ -379,16 +375,11 @@ func resolveMatchingToolCall(calls []*trackedToolCall, hasExplicitCallStart bool
 		return resolution{kind: resolutionNew}
 	}
 
-	if !hasExplicitCallStart {
-		if len(calls) == 1 {
-			return resolution{kind: resolutionExisting, call: calls[0]}
-		}
-		return resolution{kind: resolutionAmbiguous}
-	}
-
 	// A repeated name can occur on continuations. A fresh structured
 	// argument prefix is evidence of another call only after the matching
-	// call has completed its own structured argument payload.
+	// call has completed its own structured argument payload. When labels
+	// are missing, a sole call without a complete structured payload is the
+	// only viable continuation target.
 	var continuable []*trackedToolCall
 	for _, call := range calls {
 		if !call.argumentState.HasCompleteStructuredValue() {
@@ -396,12 +387,18 @@ func resolveMatchingToolCall(calls []*trackedToolCall, hasExplicitCallStart bool
 		}
 	}
 
+	if !hasExplicitCallStart && len(calls) == 1 {
+		return resolution{kind: resolutionExisting, call: calls[0]}
+	}
+
 	if len(continuable) == 1 {
 		return resolution{kind: resolutionExisting, call: continuable[0]}
 	}
-	if len(continuable) > 1 {
+
+	if len(continuable) > 1 || !hasExplicitCallStart {
 		return resolution{kind: resolutionAmbiguous}
 	}
+
 	return resolution{kind: resolutionNew}
 }
 
