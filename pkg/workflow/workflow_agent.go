@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/agent"
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 	telemetrypkg "github.com/digitallysavvy/go-ai/pkg/telemetry"
@@ -184,6 +186,12 @@ type WorkflowAgent struct {
 	// Timeout provides granular timeout controls, forwarded to
 	// agent.AgentConfig.Timeout.
 	Timeout *ai.TimeoutConfig
+	// ToolCallConcurrency is the maximum number of local tool calls that may
+	// execute concurrently. Set to 1 to execute calls sequentially in model
+	// order, including approved calls resumed by the agent. nil runs all calls
+	// concurrently. Values below 1 return an InvalidArgumentError. Mirrors TS
+	// WorkflowAgent's `toolCallConcurrency`.
+	ToolCallConcurrency *int
 	// ExperimentalDownload customizes remote file URL downloads before model
 	// calls, forwarded to agent.AgentConfig.ExperimentalDownload.
 	ExperimentalDownload ai.DownloadFunction
@@ -218,6 +226,12 @@ type WorkflowGenerateOptions struct {
 	MaxRetries *int
 	// Timeout overrides the agent's Timeout for this call.
 	Timeout *ai.TimeoutConfig
+	// ToolCallConcurrency is the maximum number of local tool calls that may
+	// execute concurrently. Set to 1 to execute calls sequentially in model
+	// order, including approved calls resumed by the agent. nil runs all calls
+	// concurrently. Values below 1 return an InvalidArgumentError. Mirrors TS
+	// WorkflowAgent's `toolCallConcurrency`.
+	ToolCallConcurrency *int
 	// ExperimentalDownload overrides the agent's ExperimentalDownload for this call.
 	ExperimentalDownload ai.DownloadFunction
 
@@ -266,6 +280,12 @@ type WorkflowStreamOptions struct {
 	MaxRetries *int
 	// Timeout overrides the agent's Timeout for this call.
 	Timeout *ai.TimeoutConfig
+	// ToolCallConcurrency is the maximum number of local tool calls that may
+	// execute concurrently. Set to 1 to execute calls sequentially in model
+	// order, including approved calls resumed by the agent. nil runs all calls
+	// concurrently. Values below 1 return an InvalidArgumentError. Mirrors TS
+	// WorkflowAgent's `toolCallConcurrency`.
+	ToolCallConcurrency *int
 	// ExperimentalDownload overrides the agent's ExperimentalDownload for this call.
 	ExperimentalDownload ai.DownloadFunction
 
@@ -409,6 +429,21 @@ func workflowTelemetryRuntimeContext(settings *ai.TelemetrySettings, runtimeCont
 	return out
 }
 
+// resolveToolCallConcurrency picks the per-call value over the agent default
+// and validates it (TS prepareToolCallConcurrency). It returns 0 for unbounded.
+func resolveToolCallConcurrency(values ...*int) (int, error) {
+	for _, v := range values {
+		if v == nil {
+			continue
+		}
+		if *v < 1 {
+			return 0, &providererrors.InvalidArgumentError{Field: "toolCallConcurrency", Message: "toolCallConcurrency must be >= 1"}
+		}
+		return *v, nil
+	}
+	return 0, nil
+}
+
 func firstNonNil(values ...interface{}) interface{} {
 	for _, value := range values {
 		if value != nil {
@@ -480,6 +515,9 @@ type workflowApprovalResumeOptions struct {
 	// caller is expected to have already started the workflow-level
 	// operation span so this has a root to parent under.
 	telemetrySettings *telemetrypkg.Options
+	// toolCallConcurrency bounds concurrent approved tool executions; 0 means
+	// unbounded.
+	toolCallConcurrency int
 }
 
 // processWorkflowApprovalResume resolves tool approvals from the last tool
@@ -521,18 +559,25 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 		}
 	}
 
-	for _, approval := range collected.ApprovedToolApprovals {
+	// Approved calls run with the same concurrency limit as new tool calls
+	// (TS #22135): all at once by default, in order with a limit of 1. Results
+	// are assembled in model order regardless of completion order.
+	type approvedOutcome struct {
+		result types.ContentPart
+		chunk  *provider.StreamChunk
+		err    error
+	}
+	runApproved := func(approval ai.CollectedToolApproval) approvedOutcome {
 		call := approval.ToolCall
 		if call.ProviderExecuted {
-			continue
+			return approvedOutcome{}
 		}
 		tool := workflowToolByName(opts.tools, call.ToolName)
 		if tool == nil || tool.Execute == nil {
-			continue
+			return approvedOutcome{}
 		}
 		if !workflowToolNeedsApproval(ctx, tool, call, messages, opts.toolsContext) {
-			localResults = append(localResults, errorTextResult(call, fmt.Sprintf("Tool %q does not require approval", call.ToolName)))
-			continue
+			return approvedOutcome{result: errorTextResult(call, fmt.Sprintf("Tool %q does not require approval", call.ToolName))}
 		}
 
 		// Re-validate through the shared core implementation: signature (when
@@ -559,26 +604,25 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 			}
 		}
 		if revalidationReason != "" {
-			localResults = append(localResults, errorTextResult(call, revalidationReason))
-			continue
+			return approvedOutcome{result: errorTextResult(call, revalidationReason)}
 		}
 
 		result, execErr := executeWorkflowApprovedTool(ctx, tool, call, opts)
 		if execErr != nil {
-			errText := execErr.Error()
-			localResults = append(localResults, errorTextResult(call, errText))
 			// Failed executions stream as tool errors, not tool results.
-			prefixChunks = append(prefixChunks, provider.StreamChunk{
-				Type: provider.ChunkTypeToolResult,
-				ToolResult: &types.ToolResult{
-					ToolCallID: call.ID,
-					ToolName:   call.ToolName,
-					Input:      call.Arguments,
-					Error:      execErr,
-					Dynamic:    call.Dynamic,
+			return approvedOutcome{
+				result: errorTextResult(call, execErr.Error()),
+				chunk: &provider.StreamChunk{
+					Type: provider.ChunkTypeToolResult,
+					ToolResult: &types.ToolResult{
+						ToolCallID: call.ID,
+						ToolName:   call.ToolName,
+						Input:      call.Arguments,
+						Error:      execErr,
+						Dynamic:    call.Dynamic,
+					},
 				},
-			})
-			continue
+			}
 		}
 		part := types.ToolResultContent{
 			ToolCallID: call.ID,
@@ -598,22 +642,58 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 				ToolCall: &callCopy,
 			})
 			if err != nil {
-				return nil, nil, err
+				return approvedOutcome{err: err}
 			}
 			part.Output = output
 			part.Result = nil
 		}
-		localResults = append(localResults, part)
-		prefixChunks = append(prefixChunks, provider.StreamChunk{
-			Type: provider.ChunkTypeToolResult,
-			ToolResult: &types.ToolResult{
-				ToolCallID: call.ID,
-				ToolName:   call.ToolName,
-				Input:      call.Arguments,
-				Result:     result,
-				Dynamic:    call.Dynamic,
+		return approvedOutcome{
+			result: part,
+			chunk: &provider.StreamChunk{
+				Type: provider.ChunkTypeToolResult,
+				ToolResult: &types.ToolResult{
+					ToolCallID: call.ID,
+					ToolName:   call.ToolName,
+					Input:      call.Arguments,
+					Result:     result,
+					Dynamic:    call.Dynamic,
+				},
 			},
-		})
+		}
+	}
+	outcomes := make([]approvedOutcome, len(collected.ApprovedToolApprovals))
+	limit := opts.toolCallConcurrency
+	if limit <= 0 || limit > len(outcomes) {
+		limit = len(outcomes)
+	}
+	if limit == 1 {
+		for i, approval := range collected.ApprovedToolApprovals {
+			outcomes[i] = runApproved(approval)
+		}
+	} else if limit > 1 {
+		sem := make(chan struct{}, limit)
+		var wg sync.WaitGroup
+		for i, approval := range collected.ApprovedToolApprovals {
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(i int, approval ai.CollectedToolApproval) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				outcomes[i] = runApproved(approval)
+			}(i, approval)
+		}
+		wg.Wait()
+	}
+	for _, o := range outcomes {
+		if o.err != nil {
+			return nil, nil, o.err
+		}
+		if o.result != nil {
+			localResults = append(localResults, o.result)
+		}
+		if o.chunk != nil {
+			prefixChunks = append(prefixChunks, *o.chunk)
+		}
 	}
 
 	deniedChunks := 0
@@ -1170,7 +1250,11 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 		Settings:       telemetrySettings,
 		RuntimeContext: workflowTelemetryRuntimeContext(telemetrySettings, firstNonNil(opts.RuntimeContext, w.RuntimeContext)),
 	})
-	var err error
+	toolCallConcurrency, err := resolveToolCallConcurrency(opts.ToolCallConcurrency, w.ToolCallConcurrency)
+	if err != nil {
+		telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
+		return nil, err
+	}
 	opts.Messages, _, err = processWorkflowApprovalResume(ctx, workflowApprovalResumeOptions{
 		messages:            opts.Messages,
 		tools:               effectiveWorkflowTools(w, WorkflowStreamOptions{}, opts),
@@ -1181,6 +1265,7 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 		onToolStart:         mergeToolStart(w.OnToolExecutionStart, opts.OnToolExecutionStart),
 		onToolEnd:           mergeToolEnd(w.OnToolExecutionEnd, opts.OnToolExecutionEnd),
 		telemetrySettings:   telemetrySettings,
+		toolCallConcurrency: toolCallConcurrency,
 	})
 	if err != nil {
 		telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
@@ -1301,7 +1386,11 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		Settings:       telemetrySettings,
 		RuntimeContext: workflowTelemetryRuntimeContext(telemetrySettings, firstNonNil(opts.RuntimeContext, w.RuntimeContext)),
 	})
-	var err error
+	toolCallConcurrency, err := resolveToolCallConcurrency(opts.ToolCallConcurrency, w.ToolCallConcurrency)
+	if err != nil {
+		telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
+		return nil, err
+	}
 	var prefixChunks []provider.StreamChunk
 	opts.Messages, prefixChunks, err = processWorkflowApprovalResume(ctx, workflowApprovalResumeOptions{
 		messages:            opts.Messages,
@@ -1313,6 +1402,7 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		onToolStart:         mergeToolStart(w.OnToolExecutionStart, opts.OnToolExecutionStart),
 		onToolEnd:           mergeToolEnd(w.OnToolExecutionEnd, opts.OnToolExecutionEnd),
 		telemetrySettings:   telemetrySettings,
+		toolCallConcurrency: toolCallConcurrency,
 	})
 	if err != nil {
 		telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})

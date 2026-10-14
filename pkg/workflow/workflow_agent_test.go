@@ -1497,3 +1497,85 @@ func TestWorkflowApprovalRequestsAreTransportIndependent(t *testing.T) {
 		check(t, res.Steps)
 	})
 }
+
+func approvedResumeMessages(ids ...string) []types.Message {
+	assistant := []types.ContentPart{}
+	responses := []types.ContentPart{}
+	for _, id := range ids {
+		assistant = append(assistant,
+			types.ToolCallContent{ToolCallID: id, ToolName: "slow", Arguments: map[string]interface{}{}},
+			types.ToolApprovalRequestContent{ApprovalID: "approval-" + id, ToolCallID: id})
+		responses = append(responses, types.ToolApprovalResponseContent{ApprovalID: "approval-" + id, Approved: true})
+	}
+	return []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "go"}}},
+		{Role: types.RoleAssistant, Content: assistant},
+		{Role: types.RoleTool, Content: responses},
+	}
+}
+
+// TS #22135 (workflow half): approved calls resumed by the agent honor
+// ToolCallConcurrency; the default runs them concurrently.
+func TestWorkflowResumeApprovedToolCallConcurrency(t *testing.T) {
+	run := func(t *testing.T, limit *int) (maxActive int) {
+		t.Helper()
+		var mu sync.Mutex
+		active := 0
+		agent, err := NewWorkflowAgent(WorkflowAgent{
+			Model:               &wfMockModel{},
+			ToolCallConcurrency: limit,
+			Tools: []types.Tool{{
+				Name:         "slow",
+				ToolApproval: true,
+				Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+					mu.Lock()
+					active++
+					if active > maxActive {
+						maxActive = active
+					}
+					mu.Unlock()
+					time.Sleep(40 * time.Millisecond)
+					mu.Lock()
+					active--
+					mu.Unlock()
+					return "ok", nil
+				},
+			}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := agent.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Messages: approvedResumeMessages("a", "b", "c")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = res
+		mu.Lock()
+		defer mu.Unlock()
+		return maxActive
+	}
+	one, two := 1, 2
+	if got := run(t, &one); got != 1 {
+		t.Fatalf("limit 1: max concurrent = %d, want 1", got)
+	}
+	if got := run(t, &two); got != 2 {
+		t.Fatalf("limit 2: max concurrent = %d, want 2", got)
+	}
+	if got := run(t, nil); got != 3 {
+		t.Fatalf("default: max concurrent = %d, want 3", got)
+	}
+}
+
+func TestWorkflowRejectsInvalidToolCallConcurrency(t *testing.T) {
+	zero := 0
+	agent, err := NewWorkflowAgent(WorkflowAgent{Model: &wfMockModel{}, ToolCallConcurrency: &zero})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "hi"}); err == nil || !strings.Contains(err.Error(), "toolCallConcurrency must be >= 1") {
+		t.Fatalf("generate error = %v", err)
+	}
+	if _, err := agent.StreamWithOptions(context.Background(), WorkflowStreamOptions{Prompt: "hi"}); err == nil || !strings.Contains(err.Error(), "toolCallConcurrency must be >= 1") {
+		t.Fatalf("stream error = %v", err)
+	}
+}
