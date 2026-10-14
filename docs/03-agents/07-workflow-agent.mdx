@@ -62,12 +62,16 @@ response format to the model and parses the final text into `WorkflowResult.Outp
 ### Tool call concurrency
 
 `ToolCallConcurrency` (on `WorkflowAgent`, `WorkflowGenerateOptions` and `WorkflowStreamOptions`)
-bounds how many approved tool calls run at once when a run resumes after a tool approval. Leave it
-`nil` to run them all concurrently, or set it to `1` to run them one at a time in model order, for
+bounds how many tool calls run at once, both within a model step and when a run resumes after a tool
+approval. The per-call value overrides the agent's. Leave it `nil` to run them all concurrently, or set it to `1` to run them one at a time in model order, for
 example when the tools have side effects that must not overlap. A value below 1 returns an
 `InvalidArgumentError`. Results and stream events always follow model order, whatever order the calls
 finish in, and queued calls are not started once the context is cancelled. Tool execution callbacks can
 run concurrently, so guard shared state with a mutex.
+
+Within model steps, `StreamWithOptions` honors the bound today. `GenerateWithOptions` still executes a
+step's tool calls one at a time (the agent's generate loop does not yet run them concurrently), so
+there the option only takes effect for approval resumes and for a bound of 1.
 
 ```go
 one := 1

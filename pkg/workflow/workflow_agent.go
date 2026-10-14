@@ -1135,6 +1135,17 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 	if ovr.Telemetry != nil {
 		telemetry = ovr.Telemetry
 	}
+	// Per-call ToolCallConcurrency wins over the agent default (TS
+	// options.toolCallConcurrency ?? this.toolCallConcurrency); it bounds the
+	// step loop's tool execution as well as approved-call resume. Already
+	// validated by resolveToolCallConcurrency before the agent is built.
+	toolCallConcurrency := w.ToolCallConcurrency
+	if govr.ToolCallConcurrency != nil {
+		toolCallConcurrency = govr.ToolCallConcurrency
+	}
+	if ovr.ToolCallConcurrency != nil {
+		toolCallConcurrency = ovr.ToolCallConcurrency
+	}
 	tools := orderedTools(w.Tools, w.ToolSet)
 	if govr.Tools != nil || govr.ToolSet != nil {
 		tools = orderedTools(govr.Tools, govr.ToolSet)
@@ -1185,6 +1196,7 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		PresencePenalty: w.PresencePenalty, StopSequences: w.StopSequences, Seed: w.Seed, Headers: version.WithUserAgentSuffix(w.Headers, "ai-sdk-agent/workflow"), Reasoning: w.Reasoning,
 		SendReasoning: w.SendReasoning, ProviderOptions: w.ProviderOptions, RuntimeContext: runtimeContext, ToolsContext: toolsContext,
 		ToolChoice:                     w.ToolChoice,
+		ToolCallConcurrency:            toolCallConcurrency,
 		Output:                         w.Output,
 		Telemetry:                      telemetry,
 		Include:                        include,
