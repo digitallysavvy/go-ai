@@ -118,8 +118,8 @@ type Config struct {
 	// do not use BaseURL or APIVersion.
 	SpeechBaseURL string
 
-	// MaiBaseURL is the URL prefix for MAI realtime APIs
-	// (MAI-Transcribe-2-Streaming). Defaults to
+	// MaiBaseURL is the URL prefix for MAI APIs (MAI-Image,
+	// MAI-Transcribe-2-Streaming). Defaults to
 	// "https://{ResourceName}.services.ai.azure.com/mai/v1".
 	MaiBaseURL string
 }
@@ -414,7 +414,7 @@ func (p *Provider) speechBaseURL() (string, error) {
 	return fmt.Sprintf("https://%s.cognitiveservices.azure.com", p.config.ResourceName), nil
 }
 
-// maiBaseURL resolves the MAI realtime API endpoint prefix for
+// maiBaseURL resolves the MAI API endpoint prefix for MAI-Image and
 // MAI-Transcribe-2-Streaming, mirroring TS's maiBaseURL provider setting
 // default. ResourceName is only validated here, for the same reason as
 // speechBaseURL.

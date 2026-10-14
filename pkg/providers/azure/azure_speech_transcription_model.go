@@ -188,7 +188,7 @@ func (m *AzureSpeechTranscriptionModel) DoGenerate(ctx context.Context, opts *pr
 	}
 
 	if resp.StatusCode != stdhttp.StatusOK {
-		return nil, azureSpeechAPIError(m.Provider(), resp.StatusCode, resp.Header, respBody)
+		return nil, azureSpeechAPIError(m.Provider(), resp.StatusCode, resp.Header, respBody, false)
 	}
 
 	var parsed azureSpeechTranscribeResponse
@@ -320,7 +320,14 @@ type azureSpeechErrorBody struct {
 // error message is used as-is; an empty 400 body (Azure's common failure
 // mode for a bad voice, style, or option) gets an actionable message instead
 // of a blank one.
-func azureSpeechAPIError(providerName string, statusCode int, headers stdhttp.Header, body []byte) error {
+//
+// When detectVoiceReset is set (speech synthesis), an Envoy 502 whose body
+// contains "reset reason: protocol error" -- Azure's response to an unknown
+// voice or unsupported style -- is a client input error, so it is reported as
+// a non-retryable 400 (TS #21944). Other 502s stay retryable.
+func azureSpeechAPIError(providerName string, statusCode int, headers stdhttp.Header, body []byte, detectVoiceReset bool) error {
+	isVoiceReset := detectVoiceReset && statusCode == stdhttp.StatusBadGateway &&
+		strings.Contains(string(body), "reset reason: protocol error")
 	message := ""
 	var parsed azureSpeechErrorBody
 	if len(body) > 0 && json.Unmarshal(body, &parsed) == nil {
@@ -331,17 +338,25 @@ func azureSpeechAPIError(providerName string, statusCode int, headers stdhttp.He
 		}
 	}
 	if message == "" {
-		if statusCode == stdhttp.StatusBadRequest {
+		if isVoiceReset {
+			message = "Azure Speech could not synthesize the request. Check that the voice is available for this model and that the style is supported by the voice."
+		} else if statusCode == stdhttp.StatusBadRequest {
 			message = "Azure Speech request failed with status 400. Check the voice name, style, and output format."
 		} else {
 			message = "Azure Speech request failed with status " + strconv.Itoa(statusCode) + "."
 		}
 	}
-	return &providererrors.ProviderError{
+	perr := &providererrors.ProviderError{
 		Provider:        providerName,
 		StatusCode:      statusCode,
 		Message:         message,
 		ResponseHeaders: providerutils.ExtractHeaders(headers),
 		ResponseBody:    string(body),
 	}
+	if isVoiceReset {
+		notRetryable := false
+		perr.StatusCode = stdhttp.StatusBadRequest
+		perr.Retryable = &notRetryable
+	}
+	return perr
 }

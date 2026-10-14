@@ -183,7 +183,7 @@ func (m *AzureSpeechSpeechModel) DoGenerate(ctx context.Context, opts *provider.
 	}
 
 	if resp.StatusCode != stdhttp.StatusOK {
-		return nil, azureSpeechAPIError(m.Provider(), resp.StatusCode, resp.Header, respBody)
+		return nil, azureSpeechAPIError(m.Provider(), resp.StatusCode, resp.Header, respBody, true)
 	}
 
 	if warnings == nil {
