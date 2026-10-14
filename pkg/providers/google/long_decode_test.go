@@ -409,3 +409,33 @@ func TestInteractionsPollsBackgroundModelCalls(t *testing.T) {
 		t.Errorf("finish=%v text=%q", res.FinishReason, res.Text)
 	}
 }
+
+// A server that answers CONTINUATION forever must stop once the caller's
+// context is cancelled (the TS loop is unbounded; Go honors ctx between hops).
+func TestLongDecode_GenerateStopsOnContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var mu sync.Mutex
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits++
+		if hits == 3 {
+			cancel()
+		}
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, continuationJSON)
+	}))
+	defer srv.Close()
+	mt := 100000
+	_, err := longDecodeModel(srv).DoGenerate(ctx, &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}, MaxTokens: &mt})
+	if err == nil {
+		t.Fatal("expected an error after cancellation")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if hits > 4 {
+		t.Errorf("kept requesting after cancel: %d hits", hits)
+	}
+}

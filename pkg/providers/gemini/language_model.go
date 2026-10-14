@@ -110,6 +110,11 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		if token == "" {
 			break
 		}
+		// TS has no bound on the loop; honor cancellation between hops so a
+		// server that keeps answering CONTINUATION cannot outlive the caller.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		prior = append(prior, m.convertResponse(response, tnm))
 
 		next := make(map[string]interface{}, len(reqBody)+1)
