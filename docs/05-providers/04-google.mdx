@@ -495,8 +495,9 @@ if err != nil {
     log.Fatal(err)
 }
 
+raw, _ := json.Marshal(first.ProviderMetadata)
 meta := map[string]map[string]interface{}{}
-_ = json.Unmarshal(first.ProviderMetadata, &meta)
+_ = json.Unmarshal(raw, &meta)
 if token, ok := meta["google"]["continuationToken"].(string); ok && first.FinishReason == types.FinishReasonLength {
     higher := 200_000
     _, err = ai.GenerateText(ctx, ai.GenerateTextOptions{
