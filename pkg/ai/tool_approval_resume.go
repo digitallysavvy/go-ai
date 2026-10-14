@@ -455,3 +455,16 @@ func ResumeToolApprovals(ctx context.Context, opts ResumeToolApprovalsOptions) (
 	}
 	return ResumeToolApprovalsResult{ResponseMessages: resumed.responseMessages, Usage: usage}, nil
 }
+
+// validateStepToolResults rejects a step prompt that leaves a tool call
+// without a tool result before later context or the end of the conversation
+// (TS convertToLanguageModelPrompt MissingToolResultsError, TS #22449).
+func validateStepToolResults(messages []types.Message, tools []types.Tool) error {
+	var providerTools []string
+	for _, tool := range tools {
+		if tool.ProviderExecuted {
+			providerTools = append(providerTools, tool.Name)
+		}
+	}
+	return promptutils.ValidateToolResults(messages, providerTools...)
+}

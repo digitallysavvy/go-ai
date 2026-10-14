@@ -240,6 +240,11 @@ func transcriptionResponseMetadata(response *types.ResponseMetadata, model provi
 //
 // Deprecated: use Transcribe.
 func ExperimentalTranscribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult, error) {
+	LogWarnings(LogWarningsOptions{Warnings: []types.Warning{{
+		Type:    "deprecated",
+		Setting: "experimental_transcribe",
+		Message: "Use transcribe instead.",
+	}}})
 	return Transcribe(ctx, opts)
 }
 

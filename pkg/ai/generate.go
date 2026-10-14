@@ -1189,6 +1189,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		if normErr != nil {
 			return nil, fmt.Errorf("prompt normalization failed at step %d: %w", stepNum, normErr)
 		}
+		if err := validateStepToolResults(stepPrompt.Messages, opts.Tools); err != nil {
+			return nil, err
+		}
 		stepPrompt = prependInstructionMessages(stepPrompt, stepInstructionMessages)
 
 		// Build generate options

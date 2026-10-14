@@ -1127,6 +1127,14 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		r.fail(fmt.Errorf("prompt normalization failed: %w", normErr))
 		return
 	}
+	if toolResultsErr := validateStepToolResults(stepPrompt.Messages, opts.Tools); toolResultsErr != nil {
+		if stepCancel != nil {
+			stepCancel()
+		}
+		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: toolResultsErr})
+		r.fail(toolResultsErr)
+		return
+	}
 	stepPrompt = prependInstructionMessages(stepPrompt, stepInstructionMessages)
 
 	// Build generate options
@@ -2750,6 +2758,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		if normErr != nil {
 			nextStepCancel()
 			r.err = fmt.Errorf("prompt normalization failed for step %d: %w", stepNum+1, normErr)
+			break
+		}
+		if toolResultsErr := validateStepToolResults(nextPrompt.Messages, opts.Tools); toolResultsErr != nil {
+			nextStepCancel()
+			r.err = toolResultsErr
 			break
 		}
 		nextPrompt = prependInstructionMessages(nextPrompt, nextInstructionMessages)

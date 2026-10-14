@@ -1,10 +1,13 @@
 package ai
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
 // Ports packages/ai/src/logger/deprecations.test.ts (TS #22182).
@@ -114,5 +117,24 @@ func TestLogWarnings_DeprecationCodesNotConsumedWhenDisabledOrCustom(t *testing.
 	LogWarnings(LogWarningsOptions{Warnings: []types.Warning{w}})
 	if lines := logLines(buf); len(lines) != 2 {
 		t.Fatalf("default logger should still emit the code once, got %v", lines)
+	}
+}
+
+// TS #22182: experimental_transcribe warns, like experimental_generateSpeech.
+func TestExperimentalTranscribe_LogsDeprecationWarning(t *testing.T) {
+	buf := setupLogWarnings(t)
+	model := &testutil.MockTranscriptionModel{
+		DoTranscribeFunc: func(ctx context.Context, opts *provider.TranscriptionOptions) (*types.TranscriptionResult, error) {
+			return &types.TranscriptionResult{Text: "hi"}, nil
+		},
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := ExperimentalTranscribe(context.Background(), TranscribeOptions{Model: model, Audio: []byte("audio")}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lines := logLines(buf)
+	if len(lines) != 2 || lines[1] != `[AISDK_DEP_EXPERIMENTAL_TRANSCRIBE] AI SDK Warning: Deprecated: "experimental_transcribe". Use transcribe instead.` {
+		t.Fatalf("lines = %v", lines)
 	}
 }
