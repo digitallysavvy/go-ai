@@ -517,11 +517,15 @@ func convertAssistantItems(msg types.Message, opts ConvertOptions) ([]interface{
 		case types.ToolResultContent:
 			if item := convertAssistantToolResultItem(p, opts); item != nil {
 				items = append(items, item)
+			} else if w := droppedToolResultWarning(p, opts); w != nil {
+				warnings = append(warnings, *w)
 			}
 		case *types.ToolResultContent:
 			if p != nil {
 				if item := convertAssistantToolResultItem(*p, opts); item != nil {
 					items = append(items, item)
+				} else if w := droppedToolResultWarning(*p, opts); w != nil {
+					warnings = append(warnings, *w)
 				}
 			}
 		case types.CustomContent:
@@ -1009,6 +1013,27 @@ func filterReasoningItemsWithoutEncryptedContent(items []interface{}) ([]interfa
 		})
 	}
 	return filtered, warnings
+}
+
+// droppedToolResultWarning returns the TS "not sent to the API when store is
+// false" warning for a provider-executed tool result that
+// convertAssistantToolResultItem could not replay. It mirrors the tail of the
+// TS tool-result case: tool search, programmatic tool calling and shell
+// results are handled (or intentionally omitted) without a warning.
+func droppedToolResultWarning(part types.ToolResultContent, opts ConvertOptions) *types.Warning {
+	if opts.Store || opts.HasConversation || isExecutionDeniedOutput(part.Output) {
+		return nil
+	}
+	if part.ToolName == opts.toolSearchName() || part.ToolName == "openai.programmatic_tool_calling" {
+		return nil
+	}
+	if opts.HasShellTool && normalizeOpenAIToolName(part.ToolName) == "shell" {
+		return nil
+	}
+	return &types.Warning{
+		Type:    "other",
+		Message: fmt.Sprintf("Results for OpenAI tool %s are not sent to the API when store is false", part.ToolName),
+	}
 }
 
 func convertAssistantToolResultItem(part types.ToolResultContent, opts ConvertOptions) interface{} {

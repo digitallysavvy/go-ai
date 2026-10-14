@@ -162,3 +162,47 @@ func TestConvert_WebSearchStoredUsesItemReference(t *testing.T) {
 		t.Errorf("got %#v", out)
 	}
 }
+
+// TS keeps the "not sent to the API when store is false" warning for
+// provider-executed results that cannot be replayed statelessly.
+func TestConvert_DroppedProviderToolResultWarnsWhenNotStored(t *testing.T) {
+	t.Parallel()
+	msgs := []types.Message{asst(
+		webSearchResult("ws_missing", "web_search", map[string]interface{}{}),
+		webSearchResult("ci_1", "code_interpreter", map[string]interface{}{"outputs": []interface{}{}}),
+	)}
+	_, warnings, err := ConvertPromptToInputWithOptions(types.Prompt{Messages: msgs}, "system", ConvertOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"Results for OpenAI tool web_search are not sent to the API when store is false",
+		"Results for OpenAI tool code_interpreter are not sent to the API when store is false",
+	}
+	var got []string
+	for _, w := range warnings {
+		if w.Type != "other" {
+			t.Errorf("warning type = %q", w.Type)
+		}
+		got = append(got, w.Message)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("warnings = %v, want %v", got, want)
+	}
+
+	// Stored, replayable and conversation-managed results do not warn.
+	for name, opts := range map[string]ConvertOptions{
+		"store": {Store: true}, "conversation": {HasConversation: true},
+	} {
+		_, warnings, err := ConvertPromptToInputWithOptions(types.Prompt{Messages: msgs}, "system", opts)
+		if err != nil || len(warnings) != 0 {
+			t.Errorf("%s: warnings = %v err = %v", name, warnings, err)
+		}
+	}
+	replayable := []types.Message{asst(webSearchResult("ws_1", "web_search", map[string]interface{}{
+		"action": map[string]interface{}{"type": "search", "query": "q"},
+	}))}
+	if _, warnings, _ := ConvertPromptToInputWithOptions(types.Prompt{Messages: replayable}, "system", ConvertOptions{}); len(warnings) != 0 {
+		t.Errorf("replayable web search warned: %v", warnings)
+	}
+}
