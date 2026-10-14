@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -107,9 +108,14 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 		requestQuestions[id] = entry
 	}
 
+	requestState, err := typeSafeRequestState(provider.DecisionStateParts(opts.State))
+	if err != nil {
+		return nil, err
+	}
+
 	body := map[string]interface{}{
 		"model":     m.modelID,
-		"state":     opts.State,
+		"state":     requestState,
 		"questions": requestQuestions,
 	}
 
@@ -340,4 +346,30 @@ type typesafeUsageWire struct {
 // Deprecated: Use DoDecide instead.
 func (m *DecisionModel) DoEvaluate(ctx context.Context, opts provider.DecisionCallOptions) (*provider.DecisionResult, error) {
 	return m.DoDecide(ctx, opts)
+}
+
+// typeSafeRequestState maps ordered state parts to TypeSafe's native state: a
+// single json part is sent as native JSON; otherwise text and json parts are
+// joined with newlines. File parts are rejected because the endpoint is
+// text-only. Mirrors TS DecisionTypeSafeAiModel's requestState.
+func typeSafeRequestState(parts []provider.DecisionStatePart) (interface{}, error) {
+	if len(parts) == 1 && parts[0].Type == "json" {
+		return parts[0].Value, nil
+	}
+	texts := make([]string, 0, len(parts))
+	for _, part := range parts {
+		switch part.Type {
+		case "file":
+			return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "TypeSafe AI decision file input"}
+		case "text":
+			texts = append(texts, part.Text)
+		default:
+			encoded, err := json.Marshal(part.Value)
+			if err != nil {
+				return nil, fmt.Errorf("failed to encode decision state: %w", err)
+			}
+			texts = append(texts, string(encoded))
+		}
+	}
+	return strings.Join(texts, "\n"), nil
 }

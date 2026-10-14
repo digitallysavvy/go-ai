@@ -3,12 +3,16 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
 )
 
@@ -58,8 +62,12 @@ func TestGatewayDecisionModel_DoDecide_RequestShapeAndHeaders(t *testing.T) {
 	if got := gotHeaders.Get("ai-decision-model-specification-version"); got != "4" {
 		t.Fatalf("ai-decision-model-specification-version = %q, want 4", got)
 	}
-	if gotBody["state"] != "The capital of France is Paris." {
-		t.Fatalf("state = %v", gotBody["state"])
+	wantParts := []interface{}{map[string]interface{}{"type": "text", "text": "The capital of France is Paris."}}
+	if !reflect.DeepEqual(gotBody["stateParts"], wantParts) {
+		t.Fatalf("stateParts = %v", gotBody["stateParts"])
+	}
+	if _, legacy := gotBody["state"]; legacy {
+		t.Fatalf("legacy state key must not be sent: %v", gotBody)
 	}
 	questions, _ := gotBody["questions"].(map[string]interface{})
 	correctQ, _ := questions["correct"].(map[string]interface{})
@@ -430,5 +438,103 @@ func TestGatewayDecisionModel_DoDecide_ExtractsRefusalAnswers(t *testing.T) {
 	}
 	if got := result.Answers["tone"]; got.Type != "refusal" || got.Choice != "" {
 		t.Fatalf("tone = %+v", got)
+	}
+}
+
+func decodeGatewayStateParts(t *testing.T, state interface{}) (map[string]interface{}, error) {
+	t.Helper()
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"answers": {"q": {"type": "boolean", "probability": 0.5}}}`))
+	}))
+	defer server.Close()
+	p, err := New(Config{APIKey: "k", BaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model, _ := p.DecisionModel("m")
+	_, err = model.DoDecide(context.Background(), provider.DecisionCallOptions{
+		State:     state,
+		Questions: map[string]provider.DecisionQuestion{"q": {Type: "boolean", Instructions: "i"}},
+	})
+	return gotBody, err
+}
+
+// TS: "sends $name as ordered state parts"
+func TestGatewayDecisionModel_DoDecide_SendsOrderedStateParts(t *testing.T) {
+	cases := map[string][]provider.DecisionStatePart{
+		"text":    {provider.DecisionTextPart("Inspect.")},
+		"object":  {provider.DecisionJSONPart(map[string]interface{}{"product": "vase"})},
+		"array":   {provider.DecisionJSONPart([]interface{}{"vase", nil})},
+		"empty":   {},
+		"mixed":   {provider.DecisionTextPart("Inspect."), provider.DecisionJSONPart(map[string]interface{}{"product": "vase"}), provider.DecisionJSONPart([]interface{}{1.0, nil})},
+		"number":  {provider.DecisionJSONPart(1.0)},
+		"jsonnil": {provider.DecisionJSONPart(nil)},
+	}
+	for name, parts := range cases {
+		body, err := decodeGatewayStateParts(t, parts)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		raw, _ := json.Marshal(parts)
+		var want []interface{}
+		_ = json.Unmarshal(raw, &want)
+		got, _ := body["stateParts"].([]interface{})
+		if len(got) != len(want) || (len(want) > 0 && !reflect.DeepEqual(got, want)) {
+			t.Fatalf("%s: stateParts = %v, want %v", name, got, want)
+		}
+	}
+}
+
+// TS: "sends file bytes as base64 in ordered state parts"
+func TestGatewayDecisionModel_DoDecide_SendsFileBytesAsBase64(t *testing.T) {
+	body, err := decodeGatewayStateParts(t, []provider.DecisionStatePart{
+		provider.DecisionTextPart("Inspect this package."),
+		provider.DecisionFilePart(types.FileContent{
+			MediaType: "image/png", Filename: "box.png",
+			FileData: types.FileData{Type: types.FileDataTypeData, Data: []byte{1, 2, 3}},
+		}),
+		provider.DecisionJSONPart(map[string]interface{}{"product": "vase"}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []interface{}{
+		map[string]interface{}{"type": "text", "text": "Inspect this package."},
+		map[string]interface{}{"type": "file", "mediaType": "image/png", "filename": "box.png", "data": map[string]interface{}{"type": "data", "data": "AQID"}},
+		map[string]interface{}{"type": "json", "value": map[string]interface{}{"product": "vase"}},
+	}
+	if !reflect.DeepEqual(body["stateParts"], want) {
+		t.Fatalf("stateParts = %v", body["stateParts"])
+	}
+}
+
+// TS: "sends base64 file strings unchanged"
+func TestGatewayDecisionModel_DoDecide_SendsBase64FileStringsUnchanged(t *testing.T) {
+	body, err := decodeGatewayStateParts(t, []provider.DecisionStatePart{
+		provider.DecisionFilePart(types.FileContent{MediaType: "image/jpeg", FileData: types.FileData{Type: types.FileDataTypeData, DataString: "AQID"}}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []interface{}{map[string]interface{}{"type": "file", "mediaType": "image/jpeg", "data": map[string]interface{}{"type": "data", "data": "AQID"}}}
+	if !reflect.DeepEqual(body["stateParts"], want) {
+		t.Fatalf("stateParts = %v", body["stateParts"])
+	}
+}
+
+// TS: "rejects URL file data before sending a Gateway request"
+func TestGatewayDecisionModel_DoDecide_RejectsURLFileData(t *testing.T) {
+	body, err := decodeGatewayStateParts(t, []provider.DecisionStatePart{
+		provider.DecisionFilePart(types.FileContent{MediaType: "image/png", FileData: types.FileData{Type: types.FileDataTypeURL, URL: "https://example.com/a.png"}}),
+	})
+	var target *providererrors.UnsupportedFunctionalityError
+	if !errors.As(err, &target) || target.Functionality != "Gateway decision file input: url data" {
+		t.Fatalf("err = %v", err)
+	}
+	if body != nil {
+		t.Fatalf("a request was sent: %v", body)
 	}
 }

@@ -1,14 +1,17 @@
 package typesafeai
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // Ported from packages/typesafe-ai/src/typesafe-ai-decision-model.test.ts,
@@ -352,5 +355,63 @@ func TestDecisionModel_AcceptsNullOptionalMetadata(t *testing.T) {
 	confidence, _ := meta["confidence"].(map[string]float64)
 	if len(confidence) != 0 {
 		t.Fatalf("confidence = %+v", confidence)
+	}
+}
+
+func typeSafeDecideWithState(t *testing.T, state interface{}) (map[string]interface{}, error) {
+	t.Helper()
+	var got map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"answers": {"q": {"type": "noul", "noul": 0.5}}}`))
+	}))
+	defer server.Close()
+	p := New(Config{APIKey: "k", BaseURL: server.URL})
+	model, _ := p.DecisionModel("jev-latest")
+	_, err := model.DoDecide(context.Background(), provider.DecisionCallOptions{
+		State:     state,
+		Questions: map[string]provider.DecisionQuestion{"q": {Type: "boolean", Instructions: "i"}},
+	})
+	return got, err
+}
+
+// TS: "maps text and JSON parts to native text state"
+func TestDecisionModel_MapsTextAndJSONPartsToNativeTextState(t *testing.T) {
+	got, err := typeSafeDecideWithState(t, []provider.DecisionStatePart{
+		provider.DecisionTextPart("Inspect."), provider.DecisionJSONPart([]interface{}{1.0, nil}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["state"] != "Inspect.\n[1,null]" {
+		t.Fatalf("state = %v", got["state"])
+	}
+}
+
+// TS: "preserves a single JSON state part as native JSON"
+func TestDecisionModel_PreservesSingleJSONPartAsNativeJSON(t *testing.T) {
+	obj := map[string]interface{}{"nested": map[string]interface{}{"amount": 49.0}, "history": []interface{}{"refund"}}
+	for _, value := range []interface{}{obj, []interface{}{1.0, nil}} {
+		got, err := typeSafeDecideWithState(t, []provider.DecisionStatePart{provider.DecisionJSONPart(value)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got["state"], value) {
+			t.Fatalf("state = %v, want %v", got["state"], value)
+		}
+	}
+}
+
+// TS: "rejects file evidence before sending a text-only decision request"
+func TestDecisionModel_RejectsFileEvidence(t *testing.T) {
+	got, err := typeSafeDecideWithState(t, []provider.DecisionStatePart{
+		provider.DecisionFilePart(types.FileContent{MediaType: "image/png", FileData: types.FileData{Type: types.FileDataTypeData, DataString: "AAAA"}}),
+	})
+	if !providererrors.IsUnsupportedFunctionalityError(err) {
+		t.Fatalf("err = %v", err)
+	}
+	if got != nil {
+		t.Fatalf("a request was sent: %v", got)
 	}
 }

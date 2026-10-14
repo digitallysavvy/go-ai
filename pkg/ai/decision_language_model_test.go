@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -262,5 +263,119 @@ func TestDecisionLanguageModel_WorksWithExperimentalDecide(t *testing.T) {
 	}
 	if result.Answers["q"].Probability == nil || *result.Answers["q"].Probability != 0.75 {
 		t.Fatalf("Answers[q] = %+v", result.Answers["q"])
+	}
+}
+
+func decisionLMWithText(text string, capture *[]*provider.GenerateOptions) *testutil.MockLanguageModel {
+	return &testutil.MockLanguageModel{
+		ProviderName: "test",
+		ModelName:    "test-model",
+		DoGenerateFunc: func(_ context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			if capture != nil {
+				*capture = append(*capture, opts)
+			}
+			return &types.GenerateResult{Text: text, FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+}
+
+func categoryQuestion(criteria map[string]interface{}) map[string]provider.DecisionQuestion {
+	return map[string]provider.DecisionQuestion{
+		"category": {Type: "choice", Instructions: "Which?", Criteria: criteria},
+	}
+}
+
+// TS: "accepts exact choice labels when an internal option code is not returned"
+func TestDecisionLanguageModel_AcceptsExactChoiceLabels(t *testing.T) {
+	model, _ := NewDecisionLanguageModel(DecisionLanguageModelOptions{Model: decisionLMWithText(`{"q0":"Needs review"}`, nil)})
+	result, err := model.DoDecide(context.Background(), provider.DecisionCallOptions{
+		State:     "s",
+		Questions: categoryQuestion(map[string]interface{}{"Needs review": nil, "Fine": nil}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := result.Answers["category"]; got.Type != "choice" || got.Choice != "Needs review" {
+		t.Fatalf("answer = %+v", got)
+	}
+}
+
+// TS: "prefers internal option codes over identical choice labels"
+func TestDecisionLanguageModel_PrefersOptionCodesOverLabels(t *testing.T) {
+	model, _ := NewDecisionLanguageModel(DecisionLanguageModelOptions{Model: decisionLMWithText(`{"q0":"c1"}`, nil)})
+	result, err := model.DoDecide(context.Background(), provider.DecisionCallOptions{
+		State:     "s",
+		Questions: categoryQuestion(map[string]interface{}{"c1": "first label", "other": "second label"}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := result.Answers["category"]; got.Choice != "other" {
+		t.Fatalf("choice = %q, want other", got.Choice)
+	}
+}
+
+func TestDecisionLanguageModel_RejectsUnknownLabelAndCode(t *testing.T) {
+	model, _ := NewDecisionLanguageModel(DecisionLanguageModelOptions{Model: decisionLMWithText(`{"q0":"nope"}`, nil)})
+	_, err := model.DoDecide(context.Background(), provider.DecisionCallOptions{
+		State: "s", Questions: categoryQuestion(map[string]interface{}{"a": nil}),
+	})
+	if err == nil {
+		t.Fatal("expected an unknown-option error")
+	}
+}
+
+// TS: image state parts are forwarded after the rubric and "Shared state:" text.
+func TestDecisionLanguageModel_SendsStatePartsInOrder(t *testing.T) {
+	var calls []*provider.GenerateOptions
+	model, _ := NewDecisionLanguageModel(DecisionLanguageModelOptions{Model: decisionLMWithText(`{"q0":"c0"}`, &calls)})
+	img := types.FileContent{MediaType: "image/png", FileData: types.FileData{Type: types.FileDataTypeData, Data: []byte{1, 2, 3}}}
+	_, err := model.DoDecide(context.Background(), provider.DecisionCallOptions{
+		State: []provider.DecisionStatePart{
+			provider.DecisionTextPart("Inspect."),
+			provider.DecisionFilePart(img),
+			provider.DecisionJSONPart(map[string]interface{}{"product": "vase"}),
+		},
+		Questions: categoryQuestion(map[string]interface{}{"a": nil}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := calls[0].Prompt.Messages[0].Content
+	if len(content) != 5 {
+		t.Fatalf("content parts = %d", len(content))
+	}
+	if first, ok := content[0].(types.TextContent); !ok || !strings.HasPrefix(first.Text, `{"questions":`) || strings.Contains(first.Text, "Inspect.") {
+		t.Fatalf("first part = %#v", content[0])
+	}
+	if label := content[1].(types.TextContent); label.Text != "Shared state:" {
+		t.Fatalf("label = %q", label.Text)
+	}
+	if txt := content[2].(types.TextContent); txt.Text != "Inspect." {
+		t.Fatalf("text = %q", txt.Text)
+	}
+	if _, ok := content[3].(types.FileContent); !ok {
+		t.Fatalf("file part = %#v", content[3])
+	}
+	if js := content[4].(types.TextContent); js.Text != `{"product":"vase"}` {
+		t.Fatalf("json = %q", js.Text)
+	}
+}
+
+// TS: non-image file media types are rejected before any model call.
+func TestDecisionLanguageModel_RejectsNonImageFiles(t *testing.T) {
+	var calls []*provider.GenerateOptions
+	model, _ := NewDecisionLanguageModel(DecisionLanguageModelOptions{Model: decisionLMWithText(`{"q0":"c0"}`, &calls)})
+	_, err := model.DoDecide(context.Background(), provider.DecisionCallOptions{
+		State: []provider.DecisionStatePart{provider.DecisionFilePart(types.FileContent{
+			MediaType: "application/pdf", FileData: types.FileData{Type: types.FileDataTypeData, Data: []byte{1}},
+		})},
+		Questions: categoryQuestion(map[string]interface{}{"a": nil}),
+	})
+	if !providererrors.IsUnsupportedFunctionalityError(err) {
+		t.Fatalf("err = %v", err)
+	}
+	if len(calls) != 0 {
+		t.Fatal("model was called")
 	}
 }

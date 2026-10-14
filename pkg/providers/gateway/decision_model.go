@@ -2,10 +2,13 @@ package gateway
 
 import (
 	"context"
+	"encoding/base64"
+	"fmt"
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -54,9 +57,14 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 		}
 	}
 
+	stateParts, err := encodeGatewayDecisionState(provider.DecisionStateParts(opts.State))
+	if err != nil {
+		return nil, err
+	}
+
 	body := map[string]interface{}{
-		"state":     opts.State,
-		"questions": encodeGatewayDecisionQuestions(opts.Questions),
+		"stateParts": stateParts,
+		"questions":  encodeGatewayDecisionQuestions(opts.Questions),
 	}
 	if len(opts.ProviderOptions) > 0 {
 		body["providerOptions"] = opts.ProviderOptions
@@ -205,4 +213,50 @@ func (p *Provider) EvaluationModel(modelID string) (provider.EvaluationModel, er
 // Deprecated: Use DoDecide instead.
 func (m *DecisionModel) DoEvaluate(ctx context.Context, opts provider.DecisionCallOptions) (*provider.DecisionResult, error) {
 	return m.DoDecide(ctx, opts)
+}
+
+// encodeGatewayDecisionState converts ordered state parts to the Gateway's
+// stateParts wire shape. File bytes are sent as base64 in the tagged data
+// shape; URL, reference, and text file data are rejected before any request.
+// Mirrors TS toGatewayDecisionState.
+func encodeGatewayDecisionState(parts []provider.DecisionStatePart) ([]interface{}, error) {
+	out := make([]interface{}, 0, len(parts))
+	for _, part := range parts {
+		switch part.Type {
+		case "text":
+			out = append(out, map[string]interface{}{"type": "text", "text": part.Text})
+		case "json":
+			out = append(out, map[string]interface{}{"type": "json", "value": part.Value})
+		case "file":
+			if part.File == nil {
+				return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "Gateway decision file input"}
+			}
+			kind := string(part.File.FileData.Type)
+			if kind == "" && part.File.URL != "" {
+				kind = "url"
+			}
+			if kind != "" && kind != string(types.FileDataTypeData) {
+				return nil, &providererrors.UnsupportedFunctionalityError{Functionality: fmt.Sprintf("Gateway decision file input: %s data", kind)}
+			}
+			mediaType, data, err := part.InlineData()
+			if err != nil {
+				return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "Gateway decision file input"}
+			}
+			wire := map[string]interface{}{
+				"type":      "file",
+				"mediaType": mediaType,
+				"data":      map[string]interface{}{"type": "data", "data": base64.StdEncoding.EncodeToString(data)},
+			}
+			if part.File.Filename != "" {
+				wire["filename"] = part.File.Filename
+			}
+			if len(part.File.ProviderOptions) > 0 {
+				wire["providerOptions"] = part.File.ProviderOptions
+			}
+			out = append(out, wire)
+		default:
+			return nil, fmt.Errorf("unknown decision state part type %q", part.Type)
+		}
+	}
+	return out, nil
 }

@@ -2,6 +2,9 @@ package provider
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -28,6 +31,161 @@ type DecisionQuestion struct {
 	//   - "boolean": optional; when non-nil, a map[string]interface{} with
 	//     only "true"/"false" keys.
 	Criteria interface{}
+}
+
+// DecisionStatePart is one ordered part of the shared decision state. Mirrors
+// TypeScript's Experimental_DecisionModelV4StatePart union (text, file, or
+// json). Type selects which field is meaningful.
+type DecisionStatePart struct {
+	// Type is "text", "file", or "json".
+	Type string
+
+	// Text is the content of a "text" part.
+	Text string
+
+	// Value is the JSON-compatible content of a "json" part.
+	Value interface{}
+
+	// File is the content of a "file" part. Core downloads URL data before
+	// calling a model, so models normally see inline data (FileData.Type
+	// "data").
+	File *types.FileContent
+}
+
+// MarshalJSON emits the TypeScript SDK shape used in telemetry attributes:
+// {"type":"text","text":...}, {"type":"json","value":...}, or
+// {"type":"file","data":<base64 | url | reference>,"mediaType":...}.
+func (p DecisionStatePart) MarshalJSON() ([]byte, error) {
+	switch p.Type {
+	case "text":
+		return json.Marshal(struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}{"text", p.Text})
+	case "json":
+		return json.Marshal(struct {
+			Type  string      `json:"type"`
+			Value interface{} `json:"value"`
+		}{"json", p.Value})
+	case "file":
+		out := struct {
+			Type            string                 `json:"type"`
+			Data            interface{}            `json:"data,omitempty"`
+			MediaType       string                 `json:"mediaType,omitempty"`
+			Filename        string                 `json:"filename,omitempty"`
+			ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
+		}{Type: "file"}
+		if p.File != nil {
+			f := p.File
+			out.MediaType = f.MediaType
+			if out.MediaType == "" {
+				out.MediaType = f.MimeType
+			}
+			if out.MediaType == "" {
+				out.MediaType = f.FileData.MediaType
+			}
+			out.Filename = f.Filename
+			out.ProviderOptions = f.ProviderOptions
+			switch f.FileData.Type {
+			case types.FileDataTypeData:
+				if f.FileData.DataString != "" {
+					out.Data = f.FileData.DataString
+				} else {
+					out.Data = base64.StdEncoding.EncodeToString(f.FileData.Data)
+				}
+			case types.FileDataTypeURL:
+				out.Data = f.FileData.URL
+			case types.FileDataTypeReference:
+				out.Data = f.FileData.Reference
+			case types.FileDataTypeText:
+				out.Data = f.FileData.Text
+			default:
+				switch {
+				case len(f.Data) > 0:
+					out.Data = base64.StdEncoding.EncodeToString(f.Data)
+				case f.URL != "":
+					out.Data = f.URL
+				case f.Text != "":
+					out.Data = f.Text
+				}
+			}
+		}
+		return json.Marshal(out)
+	default:
+		return nil, fmt.Errorf("unknown decision state part type %q", p.Type)
+	}
+}
+
+// DecisionTextPart returns a "text" state part.
+func DecisionTextPart(text string) DecisionStatePart {
+	return DecisionStatePart{Type: "text", Text: text}
+}
+
+// DecisionJSONPart returns a "json" state part holding a JSON-compatible value.
+func DecisionJSONPart(value interface{}) DecisionStatePart {
+	return DecisionStatePart{Type: "json", Value: value}
+}
+
+// DecisionFilePart returns a "file" state part.
+func DecisionFilePart(file types.FileContent) DecisionStatePart {
+	return DecisionStatePart{Type: "file", File: &file}
+}
+
+// DecisionStateParts converts a decision state into ordered parts. It accepts
+// a string (one text part), a []DecisionStatePart (returned as is), or any
+// other JSON-compatible value such as map[string]interface{} (one json part).
+// It performs no downloads; core resolves file URLs before calling a model.
+// Models use it so that direct calls with a plain string or object state
+// keep working.
+func DecisionStateParts(state interface{}) []DecisionStatePart {
+	switch v := state.(type) {
+	case []DecisionStatePart:
+		return v
+	case string:
+		return []DecisionStatePart{DecisionTextPart(v)}
+	default:
+		return []DecisionStatePart{DecisionJSONPart(v)}
+	}
+}
+
+// InlineData returns the media type and raw bytes of a "file" part with
+// inline data. It returns an error for URL, reference, or text file data,
+// which core does not resolve for decision models.
+func (p DecisionStatePart) InlineData() (mediaType string, data []byte, err error) {
+	if p.Type != "file" || p.File == nil {
+		return "", nil, fmt.Errorf("decision state part of type %q is not a file", p.Type)
+	}
+	f := p.File
+	mediaType = f.MediaType
+	if mediaType == "" {
+		mediaType = f.MimeType
+	}
+	if mediaType == "" {
+		mediaType = f.FileData.MediaType
+	}
+	switch f.FileData.Type {
+	case types.FileDataTypeData:
+		if len(f.FileData.Data) > 0 {
+			return mediaType, f.FileData.Data, nil
+		}
+		if f.FileData.DataString != "" {
+			decoded, derr := base64.StdEncoding.DecodeString(f.FileData.DataString)
+			if derr != nil {
+				return mediaType, nil, fmt.Errorf("decision file data is not valid base64: %w", derr)
+			}
+			return mediaType, decoded, nil
+		}
+		return mediaType, nil, nil
+	case "":
+		if len(f.Data) > 0 {
+			return mediaType, f.Data, nil
+		}
+	}
+	kind := string(f.FileData.Type)
+	if kind == "" {
+		kind = "data"
+	}
+	return mediaType, nil, fmt.Errorf("decision file data of type %q is not inline data", kind)
 }
 
 // DecisionAnswer is one typed answer to an DecisionQuestion. Mirrors
@@ -78,8 +236,10 @@ type DecisionResponseInfo struct {
 
 // DecisionCallOptions are passed to DecisionModel.DoDecide.
 type DecisionCallOptions struct {
-	// State is one shared JSON-compatible string, map[string]interface{}, or
-	// []interface{}, even when the value is an array.
+	// State is the shared state. Core always passes ordered
+	// []DecisionStatePart with file URLs already resolved to inline data;
+	// models should read it through DecisionStateParts so direct calls with a
+	// string or JSON object keep working.
 	State interface{}
 
 	// Questions maps question ID -> question.

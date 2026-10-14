@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -69,6 +70,20 @@ type decisionLanguageModelEntry struct {
 // DoDecide prompts the wrapped language model once for every question and
 // parses its structured JSON response into typed answers.
 func (e *DecisionLanguageModel) DoDecide(ctx context.Context, opts provider.DecisionCallOptions) (*provider.DecisionResult, error) {
+	stateParts := provider.DecisionStateParts(opts.State)
+	for _, part := range stateParts {
+		if part.Type != "file" {
+			continue
+		}
+		mediaType, _, _ := part.InlineData()
+		if part.File != nil && mediaType == "" {
+			mediaType = part.File.MediaType
+		}
+		if !isImageMediaType(mediaType) {
+			return nil, &providererrors.UnsupportedFunctionalityError{Functionality: fmt.Sprintf("Decision file media type: %s", mediaType)}
+		}
+	}
+
 	ids := make([]string, 0, len(opts.Questions))
 	for id := range opts.Questions {
 		ids = append(ids, id)
@@ -164,9 +179,30 @@ func (e *DecisionLanguageModel) DoDecide(ctx context.Context, opts provider.Deci
 		}
 	}
 
-	userPayload, err := json.Marshal(map[string]interface{}{"state": opts.State, "questions": rubrics})
+	rubricPayload, err := json.Marshal(map[string]interface{}{"questions": rubrics})
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode decision prompt: %w", err)
+	}
+
+	// User content: the rubrics, a "Shared state:" label, then the ordered
+	// state parts (json parts become text; files stay file parts).
+	userContent := []types.ContentPart{
+		types.TextContent{Text: string(rubricPayload)},
+		types.TextContent{Text: "Shared state:"},
+	}
+	for _, part := range stateParts {
+		switch part.Type {
+		case "text":
+			userContent = append(userContent, types.TextContent{Text: part.Text})
+		case "json":
+			encoded, merr := json.Marshal(part.Value)
+			if merr != nil {
+				return nil, fmt.Errorf("failed to encode decision state: %w", merr)
+			}
+			userContent = append(userContent, types.TextContent{Text: string(encoded)})
+		case "file":
+			userContent = append(userContent, *part.File)
+		}
 	}
 
 	requiredKeys := make([]string, len(entries))
@@ -180,7 +216,7 @@ func (e *DecisionLanguageModel) DoDecide(ctx context.Context, opts provider.Deci
 		Prompt: types.Prompt{
 			System: decisionLanguageModelSystemPrompt,
 			Messages: []types.Message{
-				{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: string(userPayload)}}},
+				{Role: types.RoleUser, Content: userContent},
 			},
 		},
 		ResponseFormat: &provider.ResponseFormat{
@@ -228,6 +264,16 @@ func (e *DecisionLanguageModel) DoDecide(ctx context.Context, opts provider.Deci
 			if isString {
 				for j := range optionKeys {
 					if str == fmt.Sprintf("c%d", j) {
+						choiceIndex = j
+						break
+					}
+				}
+			}
+			if choiceIndex == -1 && isString {
+				// Some models return the exact criteria label instead of the
+				// internal option code (TS #22408).
+				for j, label := range optionKeys {
+					if str == label {
 						choiceIndex = j
 						break
 					}
@@ -285,4 +331,11 @@ func (e *DecisionLanguageModel) DoDecide(ctx context.Context, opts provider.Deci
 		ProviderMetadata: genResult.ProviderMetadata,
 		Response:         responseInfo,
 	}, nil
+}
+
+// isImageMediaType reports whether mediaType is "image", "image/*", or an
+// image/* subtype (TS getTopLevelMediaType(mediaType) === 'image').
+func isImageMediaType(mediaType string) bool {
+	top, _, _ := strings.Cut(mediaType, "/")
+	return top == "image"
 }

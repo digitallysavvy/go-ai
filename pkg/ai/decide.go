@@ -181,6 +181,14 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 
 	headers := version.WithUserAgentSuffix(opts.Headers, version.UserAgent())
 
+	// Resolve file URLs to inline data; the model-call events and the model
+	// see the prepared parts (mirrors prepareDecisionState in decide.ts).
+	preparedState, err := prepareDecisionState(ctx, opts.State)
+	if err != nil {
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: err, CallID: callID})
+		return nil, err
+	}
+
 	// Nested "ai.decide.doDecide" model-call event, wrapping the whole
 	// retry loop for the underlying model call, mirrors the modelCallEvent
 	// notify pair (experimental_onDecisionModelCallStart/End) in decide.ts.
@@ -190,14 +198,14 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 		OperationID:   "ai.decide.doDecide",
 		ModelProvider: model.Provider(),
 		ModelID:       model.ModelID(),
-		State:         opts.State,
+		State:         preparedState,
 		Questions:     opts.Questions,
 	})
 
 	var result *provider.DecisionResult
 	err = withEmbedRetry(ctx, resolvedMaxRetries, func(callCtx context.Context) error {
 		res, callErr := model.DoDecide(callCtx, provider.DecisionCallOptions{
-			State:           opts.State,
+			State:           preparedState,
 			Questions:       opts.Questions,
 			Headers:         headers,
 			ProviderOptions: opts.ProviderOptions,
@@ -256,7 +264,7 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 			OperationID:   "ai.decide.doDecide",
 			ModelProvider: model.Provider(),
 			ModelID:       model.ModelID(),
-			State:         opts.State,
+			State:         preparedState,
 			Questions:     opts.Questions,
 		},
 		Answers:          result.Answers,
@@ -442,8 +450,8 @@ func invalidDecisionInput(field string, message string) error {
 
 // validateDecisionInput mirrors TypeScript's validateDecisionInput.
 func validateDecisionInput(state interface{}, questions map[string]provider.DecisionQuestion) error {
-	if !isDecisionInput(state) {
-		return invalidDecisionInput("state", "must be a JSON-compatible string, object, or array")
+	if err := validateDecisionState(state); err != nil {
+		return err
 	}
 	if len(questions) == 0 {
 		return invalidDecisionInput("questions", "must be a nonempty question map")
