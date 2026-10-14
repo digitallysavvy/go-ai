@@ -34,6 +34,7 @@ OAuth helpers are in [MCP OAuth](./oauth.mdx). Message and capability types are 
 | `MaxRetries` | `int` | MaxRetries is the maximum number of times a failed "tools/call" request is retried with exponential backoff, matching TypeScript's MCPClient maxRetries option (TS prepareMaxRetries). Default: 0 (no retries). A negative value makes Connect return an error (TS throws MCPClientError "maxRetries must be &gt;= 0" from the constructor; Go has no fallible constructor, so the check runs at Connect instead). Only transient failures are retried: HTTP status 408/409/429/&gt;=500 and transport-level connection errors (refused/reset/timeout/broken pipe/ closed). JSON-RPC application errors (a non-zero MCPClientError.Code) and successful results with IsError=true are never retried. |
 | `ProtocolVersionDiscovery` | `*bool` | ProtocolVersionDiscovery controls whether the client probes the 2026-07-28 `server/discover` method before falling back to the legacy `initialize` handshake (hash e6a9927). Default true. Only takes effect when the transport implements ProtocolVersionDiscoveryTransport and reports support (only HTTPTransport does today). |
 | `OnError` | `func(error)` | OnError, when set, receives non-fatal diagnostics the client would otherwise drop silently: a tool skipped because its x-mcp-header annotation is invalid, a tool call whose header binding failed (hash 0c60a40), or a registered OnElicitationRequest handler that returned an error or an invalid ElicitResult (matching TS DefaultMCPClient.onRequestMessage's this.onError(error) call). |
+| `ExperimentalEvents` | `*MCPEventsConfig` | ExperimentalEvents configures experimental MCP events (webhook subscriptions with a Store, or managed subscriptions with an Adapter). Experimental: may change in any release. |
 
 {/* /gen:fields */}
 
@@ -474,6 +475,91 @@ MCP Apps let a tool attach an interactive HTML resource, served from a `ui://` U
 
 {/* /gen:fields */}
 
+## Events (experimental)
+
+Events let a client discover and subscribe to server events delivered by webhook. The API is experimental and may change in any release. Configure it with `MCPClientConfig.ExperimentalEvents`; the server must advertise the `events` capability, otherwise calls return `Server does not support events`.
+
+Set exactly one of `Store` or `Adapter`. Setting both makes `Connect` return an error before the transport starts.
+
+| Type | Description |
+| --- | --- |
+| `mcp.MCPEventsConfig` | `Store` (direct webhook subscriptions), `Adapter` (managed subscriptions) and `ValidateArguments` (optional, `Store` only). |
+| `(*MCPClient).ExperimentalEvents() *mcp.MCPEvents` | Direct API: `List`, `Subscribe`, `Refresh`, `Unsubscribe`. `List` works without a store; the others need `Store`. |
+| `(*MCPClient).ExperimentalManagedEvents() mcp.ManagedMCPEvents` | Managed API when an `Adapter` is set (nil otherwise): `List` over MCP, plus `Subscribe`, `GetSubscription`, `ListSubscriptions`, `Unsubscribe` delegated to the adapter. |
+| `mcp.MCPEventStore` | Durable, private storage for subscriptions, scoped to one server and principal. `Update` must atomically merge only the fields set in the `MCPEventSubscriptionPatch`. Records hold the signing secret, so never expose them to a browser. |
+| `mcp.MCPEventAdapter` | `CreateAdapter(MCPEventAdapterContext) (MCPEventOperations, error)` is called once from `NewMCPClient`, before the transport starts. The context holds the transport type (`http`, `sse`, `custom`) and its configured URL (empty for `custom`). Errors are returned by `Connect`. |
+| `mcp.ExperimentalCreateMCPEventWebhook(opts)` | Returns an `http.Handler` for webhook deliveries. Mount it at the callback URL before subscribing. |
+
+`Subscribe` requires an HTTPS callback URL without credentials or fragments (`AllowInsecureLocalhost` permits `http://127.0.0.1` and `http://[::1]` for development), follows catalog pagination, persists a `pending` record with the generated `whsec_` secret and a `mcp_event_subscription` routing parameter, and only then sends `events/subscribe`. `Refresh` and `Unsubscribe` accept an `MCPEventSubscriptionRef` with a server `ID` or the local `Key`. Optional TTLs use `mcp.Nullable`: leave it unset to omit `ttlMs`, or pass `mcp.NullableNull[int64]()` to request a non-expiring subscription.
+
+The webhook handler verifies the Standard Webhooks v1 signature over the exact body (5 minute tolerance, 256 KiB limit), echoes signed verification challenges, and responds 503 until the subscription is `active` so the server retries. `OnEvent`, `OnGap` and `OnTerminated` run before cursor, truncation or deletion state is saved; an error from a callback or the store becomes a 503. Deliveries can be duplicated or reordered, so deduplicate by subscription ID and event ID (or message ID).
+
+```go
+package main
+
+import (
+	"context"
+	"log"
+	"net/http"
+
+	"github.com/digitallysavvy/go-ai/pkg/mcp"
+)
+
+func run(store mcp.MCPEventStore, transport mcp.Transport) error {
+	ctx := context.Background()
+
+	webhook, err := mcp.ExperimentalCreateMCPEventWebhook(mcp.MCPEventWebhookOptions{
+		Store: store,
+		OnEvent: func(ctx context.Context, args mcp.MCPEventWebhookEventArgs) error {
+			log.Printf("event %s for %s", args.Event.EventID, args.Subscription.Name)
+			return nil
+		},
+	})
+	if err != nil {
+		return err
+	}
+	go func() { _ = http.ListenAndServe(":8080", webhook) }()
+
+	client := mcp.NewMCPClient(transport, mcp.MCPClientConfig{
+		ExperimentalEvents: &mcp.MCPEventsConfig{Store: store},
+	})
+	if err := client.Connect(ctx); err != nil {
+		return err
+	}
+	defer client.Close()
+
+	_, err = client.ExperimentalEvents().Subscribe(ctx, mcp.SubscribeEventOptions{
+		Name:      "comment.created",
+		Arguments: map[string]interface{}{"document_id": "doc_1"},
+		Delivery:  mcp.MCPEventWebhookDelivery{URL: "https://app.example/events"},
+	})
+	return err
+}
+
+func main() {}
+```
+
+### Event types
+
+| Name | Description |
+| --- | --- |
+| `mcp.MCPEventDefinition` | One catalog entry: `Name`, `Description`, `Delivery`, `InputSchema`, `PayloadSchema`. Delivery modes are `mcp.MCPEventDeliveryWebhook`, `mcp.MCPEventDeliveryPoll` and `mcp.MCPEventDeliveryPush`. |
+| `mcp.ListEventsOptions`, `mcp.ListEventsResult` | Catalog paging input and result (`Events`, `NextCursor`). |
+| `mcp.SubscribeEventResult` | Result of subscribing: `ID`, `RefreshBefore`, `Cursor`, `Truncated`. It never contains the secret. |
+| `mcp.MCPEvent` | A delivered event envelope: `EventID`, `Name`, `Timestamp`, `Data`, `Cursor`, `HasCursor`. |
+| `mcp.MCPEventGap`, `mcp.MCPEventTermination`, `mcp.MCPEventTerminationError` | Signed control messages: a replay gap, or termination with an error. |
+| `mcp.MCPEventSubscription` | The stored record. `mcp.MCPEventSubscriptionStatus` is `mcp.MCPEventStatusPending` or `mcp.MCPEventStatusActive`. |
+| `mcp.MCPEventSubscriptionInfo` | The secret-free view passed to handlers. |
+| `mcp.MCPEventDelivery`, `mcp.MCPEventDeliveryInfo` | Delivery configuration with and without the secret. |
+| `mcp.MCPEventCallbackKey` | The `mcp_event_subscription` query parameter that routes a delivery to its record. |
+| `mcp.MCPEventWebhookGapArgs`, `mcp.MCPEventWebhookTerminatedArgs` | Arguments for `OnGap` and `OnTerminated`. |
+| `mcp.NullableOf(v)` | Builds a set `mcp.Nullable`; `mcp.NullableNull[T]()` builds an explicit null. |
+| `mcp.MCPEventAdapterTransport` | Transport metadata given to `CreateAdapter`; `Type` is `mcp.MCPEventTransportHTTP`, `mcp.MCPEventTransportSSE` or `mcp.MCPEventTransportCustom`. |
+| `mcp.ManagedSubscribeInput`, `mcp.ManagedSubscription` | Managed subscription input and record. `mcp.ManagedSubscriptionStatus` is `mcp.ManagedSubscriptionPending`, `mcp.ManagedSubscriptionActive`, `mcp.ManagedSubscriptionNeedsAuth`, `mcp.ManagedSubscriptionStopped`, `mcp.ManagedSubscriptionExpired` or `mcp.ManagedSubscriptionFailed`. |
+| `mcp.ListManagedSubscriptionsInput`, `mcp.ListManagedSubscriptionsResult` | Managed listing input and result page. |
+
+Managed adapters receive a `context.Context` instead of TS request options: cancel it or set a deadline to bound a call. Cancelling does not cancel an already accepted remote subscription.
+
 ## Errors
 
 | Type or value | Description |
@@ -485,5 +571,7 @@ MCP Apps let a tool attach an interactive HTML resource, served from a `ui://` U
 | `*mcp.TimeoutError`, `mcp.NewTimeoutError(operation)` | A request timed out. |
 | `*mcp.TransportError`, `mcp.NewTransportError(message, cause)` | A transport-level failure. |
 | `mcp.ErrParseError`, `mcp.ErrInvalidRequest`, `mcp.ErrMethodNotFound`, `mcp.ErrInvalidParams`, `mcp.ErrInternalError`, `mcp.ErrToolNotFound`, `mcp.ErrToolExecutionFail`, `mcp.ErrResourceNotFound`, `mcp.ErrUnauthorized` | Sentinel `*MCPClientError` values. |
+
+The legacy SSE transport returns an `*MCPClientError` with `MCP SSE Transport Error: Connection closed before endpoint event was received` from `Connect` when the stream ends before the `endpoint` event.
 
 The matching codes are `mcp.ErrorCodeParseError` (-32700), `mcp.ErrorCodeInvalidRequest`, `mcp.ErrorCodeMethodNotFound`, `mcp.ErrorCodeInvalidParams`, `mcp.ErrorCodeInternalError`, and the MCP-specific `mcp.ErrorCodeToolNotFound` (-32000), `mcp.ErrorCodeToolExecutionFail`, `mcp.ErrorCodeResourceNotFound` and `mcp.ErrorCodeUnauthorized`. OAuth errors are in [MCP OAuth](./oauth.mdx#errors).
