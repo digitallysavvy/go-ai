@@ -76,7 +76,7 @@ func (m *LanguageModel) SupportsImageInput() bool {
 
 // supportsReasoningEffort returns true for Mistral models that accept reasoning_effort.
 func (m *LanguageModel) supportsReasoningEffort() bool {
-	return mistralReasoningEffortModelIDs[m.modelID]
+	return !mistralModelsWithoutReasoningEffort[m.modelID]
 }
 
 // checkReasoningWarnings returns warnings for options Mistral does not

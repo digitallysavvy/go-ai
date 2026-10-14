@@ -199,7 +199,7 @@ MAI-Transcribe-2-Streaming only supports `ai.ExperimentalStreamTranscribe` (stre
 Two optional `azure.Config` settings control the endpoints these models use, both defaulting from `ResourceName` and validated the same way as `ResourceName` itself (a single DNS label) before being used:
 
 - `SpeechBaseURL` — the Azure Speech endpoint prefix (default `https://{ResourceName}.cognitiveservices.azure.com`), used for both MAI-Transcribe file transcription and MAI-Voice speech.
-- `MaiBaseURL` — the MAI realtime endpoint prefix (default `https://{ResourceName}.services.ai.azure.com/mai/v1`), used for MAI-Transcribe-2-Streaming.
+- `MaiBaseURL` — the MAI endpoint prefix (default `https://{ResourceName}.services.ai.azure.com/mai/v1`), used for MAI-Transcribe-2-Streaming and MAI-Image.
 
 ```go
 provider, err := azure.New(azure.Config{
@@ -208,6 +208,32 @@ provider, err := azure.New(azure.Config{
     SpeechBaseURL: "https://eastus.api.cognitive.microsoft.com",
 })
 ```
+
+MAI-Voice requests that fail with Azure's Envoy `502` ("reset reason: protocol error", returned for an unknown voice or an unsupported style) are returned as a non-retryable `400` `ProviderError` with a descriptive message, so callers and retry logic treat them as a bad input instead of a provider outage. Other `502` responses stay retryable.
+
+## MAI-Image
+
+`provider.ImageModel` routes `mai-image-2.5`, `mai-image-2.5-flash`, `mai-image-2.5-pro`, `mai-image-2.6` and `mai-image-2.6-flash` (case-insensitive) through the MAI image API (`{MaiBaseURL}/images/generations`, or `/images/edits` when reference images are passed). Other IDs keep using the OpenAI images API. Override per call with `providerOptions.azure.api` (`"openai"` or `"mai"`).
+
+MAI returns one image per request, so `N > 1` sends one request per image. It takes `width` and `height` rather than `size`: `Size` is split into the two, and `AspectRatio` is mapped to dimensions near 1024x1024 with a 768px minimum side (`Size` wins when both are set, with a warning). `Seed` and `Mask` are not supported and produce `unsupported` warnings. Token usage is reported in `Usage`, and per-image `created`, `size`, `textTokens` and `imageTokens` in `ProviderMetadata["azure"]["images"]`.
+
+```go
+n := 2
+result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
+    Model:       imageModel, // provider.ImageModel("MAI-Image-2.6")
+    Prompt:      "A red apple on a table",
+    AspectRatio: "16:9",
+    N:           &n,
+    ProviderOptions: map[string]interface{}{
+        "azure": map[string]interface{}{
+            "autoAspectRatio": false, // MAI-Image-2.6 only
+            "webGrounding":    true,  // MAI-Image-2.6 only
+        },
+    },
+})
+```
+
+`autoAspectRatio` and `webGrounding` are MAI-only; when a call is routed to the OpenAI images API they are reported as `unsupported` warnings.
 
 ## Custom Headers
 

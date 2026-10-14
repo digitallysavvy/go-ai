@@ -69,6 +69,16 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 	return NewLanguageModel(p, modelID), nil
 }
 
+// ConversationModel returns a language model that uses Mistral's Conversations
+// API (POST /v1/conversations), with support for the built-in WebSearch and
+// WebSearchPremium tools. Mirrors TS provider.conversation(modelId).
+func (p *Provider) ConversationModel(modelID string) *ConversationLanguageModel {
+	if modelID == "" {
+		modelID = "mistral-medium"
+	}
+	return NewConversationLanguageModel(p, modelID)
+}
+
 // EmbeddingModel returns an embedding model by ID
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
 	if modelID == "" {

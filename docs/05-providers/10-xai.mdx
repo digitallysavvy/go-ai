@@ -60,6 +60,7 @@ export XAI_API_KEY=xai-...
 | Model ID | Description |
 |----------|-------------|
 | `grok-imagine-image` | Image generation |
+| `grok-imagine-image-2.0` | Image generation (`xai.ModelGrokImagineImage20`) |
 | `grok-imagine-image-pro` | Higher quality image generation |
 
 ### Video models
@@ -110,6 +111,8 @@ result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
     },
 })
 ```
+
+`xai.XSearch` accepts up to 20 handles in each of `AllowedXHandles` and `ExcludedXHandles`.
 
 The legacy chat-completions `SearchParameters` option was removed along with `ChatCompletionsLanguageModel()`. Use the provider-executed `WebSearch` or `XSearch` tools on the Responses API instead.
 
@@ -191,7 +194,8 @@ result, _ := ai.GenerateImage(ctx, ai.GenerateImageOptions{
     Prompt: "A futuristic cityscape at sunset",
     ProviderOptions: map[string]interface{}{
         "xai": map[string]interface{}{
-            "quality": "high",  // "low", "medium", "high"
+            "quality":    "high", // "low", "medium", "high", "auto"
+            "resolution": "1.5k", // "1k", "1.5k", "2k"
         },
     },
 })
@@ -255,9 +259,11 @@ result, _ := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
 })
 ```
 
-`TranscriptionModel("")` maps to `/v1/stt`. Multipart request fields match the
-TypeScript provider, including repeated `keyterm` fields and the audio `file`
-part last.
+`TranscriptionModel(id)` maps to `/v1/stt`. Pass an ID such as
+`"grok-voice-transcribe-2.0"` to select a model (sent as the `model` request
+field / query parameter), or `""` for xAI's default transcription model.
+Multipart request fields match the TypeScript provider, including repeated
+`keyterm` fields and the audio `file` part last.
 
 ```go
 transcriptionModel, _ := provider.TranscriptionModel("")
@@ -278,6 +284,12 @@ transcript, _ := ai.Transcribe(ctx, ai.TranscribeOptions{
 
 fmt.Println(transcript.Text)
 ```
+
+Additional transcription options under the `"xai"` key:
+
+- `vadThreshold` (0 to 1): voice activity detection threshold. xAI defaults to 0.5 for batch and 0.08 for streaming; 0 disables the filter.
+- `audioFormat` accepts `"opus"` for streaming (one raw Opus packet per chunk). Streaming also maps `inputAudioFormat.Type == "audio/opus"` to `encoding=opus`. Container formats such as Ogg/Opus are auto-detected, so do not set `audioFormat` for them.
+- With `diarize: true`, words that carry a speaker are preserved in `result.ProviderMetadata["xai"]["words"]` (each with `text`, `start`, `end` and `speaker`).
 
 ## Best practices
 

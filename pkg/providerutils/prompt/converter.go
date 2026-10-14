@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ToOpenAIMessagesOptions controls provider-specific variations in
@@ -86,6 +87,25 @@ type ToOpenAIMessagesOptions struct {
 	// output's JSON-stringified string, the same as SupportsMultiPartToolContent
 	// being false.
 	SupportsMultiPartToolContent bool
+
+	// Provider is the provider name used to resolve file parts whose data is
+	// a provider reference (types.FileDataTypeReference) to the provider's
+	// own file ID, emitted as {"type":"file","file":{"file_id":...}} (TS
+	// #22466: @ai-sdk/openai-compatible resolves references via
+	// resolveProviderReference with the model's providerOptionsName, e.g.
+	// "together"). An empty Provider keeps the legacy behavior (only the
+	// single-string FileContent.Reference is honored). A reference with no ID
+	// for Provider is reported as *errors.NoSuchProviderReferenceError by
+	// ToOpenAIMessagesWithError; ToOpenAIMessages cannot return it and falls
+	// back to the legacy shape.
+	Provider string
+}
+
+// providerRefResolver resolves provider file references during conversion
+// and records the first resolution error.
+type providerRefResolver struct {
+	provider string
+	err      error
 }
 
 // AssistantToolCallContentMode is documented on
@@ -110,10 +130,43 @@ const (
 // opts is variadic so existing call sites are unaffected; at most the first
 // element is used.
 func ToOpenAIMessages(messages []types.Message, opts ...ToOpenAIMessagesOptions) []map[string]interface{} {
+	result, _ := ToOpenAIMessagesWithError(messages, opts...)
+	return result
+}
+
+// ToOpenAIMessagesWithError is ToOpenAIMessages that also reports prompt
+// conversion errors, currently a file part whose provider reference has no
+// file ID for ToOpenAIMessagesOptions.Provider
+// (*errors.NoSuchProviderReferenceError). The returned messages are still
+// complete on error (the offending part is emitted in the legacy shape) so
+// callers that ignore the error behave as with ToOpenAIMessages.
+func ToOpenAIMessagesWithError(messages []types.Message, opts ...ToOpenAIMessagesOptions) ([]map[string]interface{}, error) {
 	var opt ToOpenAIMessagesOptions
 	if len(opts) > 0 {
 		opt = opts[0]
 	}
+	var refs *providerRefResolver
+	if opt.Provider != "" {
+		refs = &providerRefResolver{provider: opt.Provider}
+	}
+	result := toOpenAIMessages(messages, opt, refs)
+	if refs != nil && refs.err != nil {
+		return result, refs.err
+	}
+	return result, nil
+}
+
+// ValidateProviderFileReferences reports the
+// *errors.NoSuchProviderReferenceError ToOpenAIMessagesWithError would
+// return for a file part whose provider reference has no file ID for
+// providerName. Providers whose request builders cannot return an error call
+// it before building the body.
+func ValidateProviderFileReferences(messages []types.Message, providerName string) error {
+	_, err := ToOpenAIMessagesWithError(messages, ToOpenAIMessagesOptions{Provider: providerName})
+	return err
+}
+
+func toOpenAIMessages(messages []types.Message, opt ToOpenAIMessagesOptions, refs *providerRefResolver) []map[string]interface{} {
 	messages = MergeConsecutiveToolMessages(messages)
 	result := make([]map[string]interface{}, 0, len(messages))
 
@@ -129,7 +182,7 @@ func ToOpenAIMessages(messages []types.Message, opts ...ToOpenAIMessagesOptions)
 						"tool_call_id": p.ToolCallID,
 					}
 					if opt.SupportsMultiPartToolContent {
-						if parts, ok := openAIToolResultContentParts(p); ok {
+						if parts, ok := openAIToolResultContentParts(p, refs); ok {
 							toolMsg["content"] = parts
 							result = append(result, toolMsg)
 							continue
@@ -272,7 +325,7 @@ func ToOpenAIMessages(messages []types.Message, opts ...ToOpenAIMessagesOptions)
 					}
 					contentParts = append(contentParts, imagePart)
 				case types.FileContent:
-					filePart := openAIFileContentPart(p, opt.AllowVideo)
+					filePart := openAIFileContentPartResolving(p, opt.AllowVideo, refs)
 					if opt.IncludePromptCacheBreakpoint {
 						if bp, ok := openAIPromptCacheBreakpoint(p.ProviderOptions); ok {
 							filePart["prompt_cache_breakpoint"] = bp
@@ -493,7 +546,7 @@ func openAIToolResultText(p types.ToolResultContent) string {
 // to openAIToolResultText's JSON-stringified string, matching
 // SupportsMultiPartToolContent being false (see its doc comment for why
 // this differs from TS's throwing behavior).
-func openAIToolResultContentParts(p types.ToolResultContent) (parts []map[string]interface{}, ok bool) {
+func openAIToolResultContentParts(p types.ToolResultContent, refs *providerRefResolver) (parts []map[string]interface{}, ok bool) {
 	out := resolveToolOutput(p)
 	if out.kind != "content" {
 		return nil, false
@@ -507,7 +560,7 @@ func openAIToolResultContentParts(p types.ToolResultContent) (parts []map[string
 	}
 	parts = make([]map[string]interface{}, 0, len(blocks))
 	for _, block := range blocks {
-		part, ok := openAIToolResultContentBlockPart(block)
+		part, ok := openAIToolResultContentBlockPart(block, refs)
 		if !ok {
 			return nil, false
 		}
@@ -521,7 +574,7 @@ func openAIToolResultContentParts(p types.ToolResultContent) (parts []map[string
 // openAIFileContentPart's (lenient) file/image conversion. ok is false for a
 // block type with no representable shape here (e.g. a provider-specific
 // custom block), signaling the caller to fall back to the stringified form.
-func openAIToolResultContentBlockPart(block types.ToolResultContentBlock) (map[string]interface{}, bool) {
+func openAIToolResultContentBlockPart(block types.ToolResultContentBlock, refs *providerRefResolver) (map[string]interface{}, bool) {
 	switch b := block.(type) {
 	case types.TextContentBlock:
 		return map[string]interface{}{"type": "text", "text": b.Text}, true
@@ -538,13 +591,13 @@ func openAIToolResultContentBlockPart(block types.ToolResultContentBlock) (map[s
 		if !b.FileData.IsZero() {
 			fc.FileData = b.FileData
 		}
-		return openAIFileContentPart(fc, true), true
+		return openAIFileContentPartResolving(fc, true, refs), true
 	case types.ImageContentBlock:
-		return openAIFileContentPart(types.FileContent{
+		return openAIFileContentPartResolving(types.FileContent{
 			MediaType:       b.MediaType,
 			Data:            b.Data,
 			ProviderOptions: b.ProviderOptions,
-		}, true), true
+		}, true, refs), true
 	default:
 		return nil, false
 	}
@@ -564,6 +617,31 @@ func ExtractSystemMessage(messages []types.Message) string {
 }
 
 func openAIFileContentPart(file types.FileContent, allowVideo bool) map[string]interface{} {
+	return openAIFileContentPartResolving(file, allowVideo, nil)
+}
+
+func openAIFileContentPartResolving(file types.FileContent, allowVideo bool, refs *providerRefResolver) map[string]interface{} {
+	// A provider-reference file resolves to the provider's own file ID for
+	// any media type (TS #22466), keeping the part-level
+	// providerOptions.openaiCompatible metadata.
+	if refs != nil && file.FileData.Type == types.FileDataTypeReference {
+		id, err := providerutils.ResolveProviderReference(file.FileData.Reference, refs.provider)
+		if err == nil {
+			part := map[string]interface{}{
+				"type": "file",
+				"file": map[string]interface{}{"file_id": id},
+			}
+			if meta, ok := file.ProviderOptions["openaiCompatible"].(map[string]interface{}); ok {
+				for k, v := range meta {
+					part[k] = v
+				}
+			}
+			return part
+		}
+		if refs.err == nil {
+			refs.err = err
+		}
+	}
 	mediaType := firstNonEmpty(file.MediaType, file.MimeType, file.FileData.MediaType)
 	if strings.HasPrefix(mediaType, "image/") || mediaType == "image" {
 		imageURL := file.URL

@@ -16,7 +16,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 )
 
 // LanguageModel implements the provider.LanguageModel interface for Groq
@@ -150,13 +149,17 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if opts.Seed != nil {
 		body["seed"] = *opts.Seed
 	}
+	var toolPrepWarnings []types.Warning
 	if len(opts.Tools) > 0 {
-		body["tools"] = tool.ToOpenAIFormat(opts.Tools)
-		if opts.ToolChoice.Type != "" {
-			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(opts.ToolChoice)
+		groqTools, groqToolChoice, toolWarnings := prepareTools(m.modelID, opts.Tools, opts.ToolChoice)
+		toolPrepWarnings = toolWarnings
+		body["tools"] = groqTools
+		if groqToolChoice != nil {
+			body["tool_choice"] = groqToolChoice
 		}
 	}
 	compatibleOptions, warnings := providerutils.ResolveOpenAICompatibleProviderOptions("groq", opts.ProviderOptions)
+	warnings = append(toolPrepWarnings, warnings...)
 	warnings = append(warnings, providerutils.OpenAICompatibleCommonOptionWarnings(compatibleOptions)...)
 	// Map top-level Reasoning to Groq reasoning_effort. An explicit
 	// providerOptions.groq.reasoningEffort always wins (applied below via

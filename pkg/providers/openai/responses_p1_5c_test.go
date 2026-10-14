@@ -489,9 +489,9 @@ func TestResponsesLanguageModel_StreamCustomToolCallProgressiveInput(t *testing.
 
 data: {"type":"response.custom_tool_call_input.delta","item_id":"ctc_1","output_index":0,"delta":"prin"}
 
-data: {"type":"response.custom_tool_call_input.delta","item_id":"ctc_1","output_index":0,"delta":"t(1)"}
+data: {"type":"response.custom_tool_call_input.delta","item_id":"ctc_1","output_index":0,"delta":"t(\"1\")\n"}
 
-data: {"type":"response.output_item.done","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_1","name":"format_code","input":"print(1)"}}
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_1","name":"format_code","input":"print(\"1\")\n"}}
 
 `)), false)
 	defer stream.Close() //nolint:errcheck
@@ -500,13 +500,23 @@ data: {"type":"response.output_item.done","output_index":0,"item":{"type":"custo
 	if err != nil || start.Type != provider.ChunkTypeToolInputStart || start.ToolCall.ID != "call_1" || start.ToolCall.ToolName != "format_code" {
 		t.Fatalf("chunk = %#v, err = %v, want a format_code tool-input-start", start, err)
 	}
+	// TS #22535: custom tool input is a string, so the stream is its JSON
+	// encoding: an opening quote, escaped deltas, then a closing quote.
+	open, err := stream.Next()
+	if err != nil || open.Type != provider.ChunkTypeToolInputDelta || open.ID != "call_1" || open.Text != `"` {
+		t.Fatalf("chunk = %#v, err = %v, want opening-quote tool-input-delta", open, err)
+	}
 	delta1, err := stream.Next()
 	if err != nil || delta1.Type != provider.ChunkTypeToolInputDelta || delta1.ID != "call_1" || delta1.Text != "prin" {
 		t.Fatalf("chunk = %#v, err = %v, want tool-input-delta \"prin\"", delta1, err)
 	}
 	delta2, err := stream.Next()
-	if err != nil || delta2.Type != provider.ChunkTypeToolInputDelta || delta2.Text != "t(1)" {
-		t.Fatalf("chunk = %#v, err = %v, want tool-input-delta \"t(1)\"", delta2, err)
+	if err != nil || delta2.Type != provider.ChunkTypeToolInputDelta || delta2.Text != `t(\"1\")\n` {
+		t.Fatalf("chunk = %#v, err = %v, want escaped tool-input-delta", delta2, err)
+	}
+	closeQ, err := stream.Next()
+	if err != nil || closeQ.Type != provider.ChunkTypeToolInputDelta || closeQ.ID != "call_1" || closeQ.Text != `"` {
+		t.Fatalf("chunk = %#v, err = %v, want closing-quote tool-input-delta", closeQ, err)
 	}
 	end, err := stream.Next()
 	if err != nil || end.Type != provider.ChunkTypeToolInputEnd || end.ToolCall.ID != "call_1" {
@@ -516,7 +526,7 @@ data: {"type":"response.output_item.done","output_index":0,"item":{"type":"custo
 	if err != nil || call.Type != provider.ChunkTypeToolCall || call.ToolCall.ToolName != "format_code" {
 		t.Fatalf("chunk = %#v, err = %v, want the final tool-call", call, err)
 	}
-	if call.ToolCall.Arguments["input"] != "print(1)" {
+	if call.ToolCall.Arguments["input"] != "print(\"1\")\n" {
 		t.Fatalf("tool call arguments = %#v, want input=print(1)", call.ToolCall.Arguments)
 	}
 }

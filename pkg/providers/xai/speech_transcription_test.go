@@ -209,7 +209,7 @@ func TestXAITranscriptionMultipartRequestAndResponse(t *testing.T) {
 			t.Fatalf("file part filename/content-type = %q/%q", part.FileName(), part.Header.Get("Content-Type"))
 		}
 	}
-	wantOrder := []string{"audio_format", "sample_rate", "language", "format", "multichannel", "channels", "diarize", "filler_words", "keyterm", "keyterm", "file"}
+	wantOrder := []string{"sample_rate", "language", "multichannel", "channels", "diarize", "filler_words", "keyterm", "keyterm", "audio_format", "format", "file"}
 	if strings.Join(order, ",") != strings.Join(wantOrder, ",") {
 		t.Fatalf("multipart order = %v, want %v", order, wantOrder)
 	}

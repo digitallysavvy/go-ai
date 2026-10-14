@@ -39,6 +39,18 @@ type ConvertOptions struct {
 	HasComputerTool             bool
 	FileIDPrefixes              []string
 	ProviderOptionsName         string
+	// IsReasoningModel, when true, means stored assistant text is only
+	// replaced by an item_reference when it follows a reasoning part of the
+	// same message. Stored messages of reasoning models are bound to the
+	// reasoning item that produced them; when the reasoning was removed
+	// (e.g. by pruning), referencing the message fails, so it is sent with
+	// its content instead (TS #23123).
+	IsReasoningModel bool
+	// WebSearchToolName is the request's name for the web search tool
+	// (openai.web_search or openai.web_search_preview), used to recognize
+	// provider-executed web search results in assistant history. Defaults to
+	// matching "web_search" / "web_search_preview".
+	WebSearchToolName string
 	// ExplicitMessageItemType, when true, adds `"type":"message"` to easy-input
 	// assistant/system messages (required by Azure Foundry projects). See TS
 	// convert-to-openai-responses-input.ts `explicitMessageItemType`.
@@ -473,13 +485,18 @@ func convertAssistantItems(msg types.Message, opts ConvertOptions) ([]interface{
 
 	reasoningItems := map[string]map[string]interface{}{}
 	toolCallContentIDs := map[string]bool{}
+	// A message's text parts all share the stored message id; reference each
+	// stored message only once (TS #22214).
+	emittedTextItemIDs := map[string]bool{}
+	hasPrecedingReasoning := false
 	for _, part := range msg.Content {
 		switch p := part.(type) {
 		case types.TextContent:
-			if item := convertAssistantTextItem(p, opts); item != nil {
+			if item := convertAssistantTextItem(p, opts, hasPrecedingReasoning, emittedTextItemIDs); item != nil {
 				items = append(items, item)
 			}
 		case types.ReasoningContent:
+			hasPrecedingReasoning = true
 			item, w := convertReasoningItem(p, opts, reasoningItems)
 			if item != nil {
 				items = append(items, item)
@@ -500,11 +517,15 @@ func convertAssistantItems(msg types.Message, opts ConvertOptions) ([]interface{
 		case types.ToolResultContent:
 			if item := convertAssistantToolResultItem(p, opts); item != nil {
 				items = append(items, item)
+			} else if w := droppedToolResultWarning(p, opts); w != nil {
+				warnings = append(warnings, *w)
 			}
 		case *types.ToolResultContent:
 			if p != nil {
 				if item := convertAssistantToolResultItem(*p, opts); item != nil {
 					items = append(items, item)
+				} else if w := droppedToolResultWarning(*p, opts); w != nil {
+					warnings = append(warnings, *w)
 				}
 			}
 		case types.CustomContent:
@@ -861,12 +882,16 @@ func isProviderDefinedResponsesTool(normalizedToolName, originalToolName string,
 // field (an id present with store=false is simply dropped, since the text is
 // being resent as fresh content); `type` is only added when
 // opts.ExplicitMessageItemType is set (Azure Foundry projects).
-func convertAssistantTextItem(part types.TextContent, opts ConvertOptions) interface{} {
+func convertAssistantTextItem(part types.TextContent, opts ConvertOptions, hasPrecedingReasoning bool, emittedTextItemIDs map[string]bool) interface{} {
 	itemID, phase := openAITextMetadata(part, openAIProviderOptionsName(opts))
 	if opts.HasConversation && itemID != "" {
 		return nil
 	}
-	if opts.Store && itemID != "" {
+	if opts.Store && itemID != "" && (!opts.IsReasoningModel || hasPrecedingReasoning) {
+		if emittedTextItemIDs[itemID] {
+			return nil
+		}
+		emittedTextItemIDs[itemID] = true
 		return map[string]interface{}{
 			"type": "item_reference",
 			"id":   itemID,
@@ -990,6 +1015,27 @@ func filterReasoningItemsWithoutEncryptedContent(items []interface{}) ([]interfa
 	return filtered, warnings
 }
 
+// droppedToolResultWarning returns the TS "not sent to the API when store is
+// false" warning for a provider-executed tool result that
+// convertAssistantToolResultItem could not replay. It mirrors the tail of the
+// TS tool-result case: tool search, programmatic tool calling and shell
+// results are handled (or intentionally omitted) without a warning.
+func droppedToolResultWarning(part types.ToolResultContent, opts ConvertOptions) *types.Warning {
+	if opts.Store || opts.HasConversation || isExecutionDeniedOutput(part.Output) {
+		return nil
+	}
+	if part.ToolName == opts.toolSearchName() || part.ToolName == "openai.programmatic_tool_calling" {
+		return nil
+	}
+	if opts.HasShellTool && normalizeOpenAIToolName(part.ToolName) == "shell" {
+		return nil
+	}
+	return &types.Warning{
+		Type:    "other",
+		Message: fmt.Sprintf("Results for OpenAI tool %s are not sent to the API when store is false", part.ToolName),
+	}
+}
+
 func convertAssistantToolResultItem(part types.ToolResultContent, opts ConvertOptions) interface{} {
 	if isExecutionDeniedOutput(part.Output) {
 		return nil
@@ -998,6 +1044,17 @@ func convertAssistantToolResultItem(part types.ToolResultContent, opts ConvertOp
 		return nil
 	}
 	toolName := normalizeOpenAIToolName(part.ToolName)
+	if isWebSearchToolName(part.ToolName, opts) {
+		// TS #22346: stateless replay re-creates the web_search_call so the
+		// search context survives across steps.
+		itemID := firstNonEmpty(openAIToolResultItemID(part, openAIProviderOptionsName(opts)), part.ToolCallID)
+		if opts.Store {
+			return map[string]interface{}{"type": "item_reference", "id": itemID}
+		}
+		if call := convertWebSearchToolResultOutput(part, itemID); call != nil {
+			return call
+		}
+	}
 	if part.ToolName == opts.toolSearchName() {
 		itemID := firstNonEmpty(openAIToolResultItemID(part, openAIProviderOptionsName(opts)), part.ToolCallID)
 		if opts.Store {
@@ -2092,4 +2149,133 @@ func openAIResponsesImageDetail(providerOptions map[string]interface{}, provider
 		return detail
 	}
 	return ""
+}
+
+func isWebSearchToolName(name string, opts ConvertOptions) bool {
+	if opts.WebSearchToolName != "" && name == opts.WebSearchToolName {
+		return true
+	}
+	switch normalizeOpenAIToolName(name) {
+	case "web_search", "web_search_preview":
+		return true
+	}
+	return false
+}
+
+// convertWebSearchToolResultOutput maps a stored web search tool result back
+// to a web_search_call input item. It returns nil (so the generic handling
+// applies) when the output is not a JSON object with a valid action,
+// mirroring TS convertWebSearchToolResultOutput's schema validation.
+func convertWebSearchToolResultOutput(part types.ToolResultContent, id string) interface{} {
+	var value interface{}
+	switch {
+	case part.Output != nil:
+		if part.Output.Type != types.ToolResultOutputJSON {
+			return nil
+		}
+		value = part.Output.Value
+	case part.Result != nil:
+		value = part.Result
+	default:
+		return nil
+	}
+	var parsed map[string]interface{}
+	if !decodeToolOutputJSON(value, &parsed) {
+		return nil
+	}
+	action, ok := parsed["action"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	optString := func(m map[string]interface{}, key string) (interface{}, bool, bool) {
+		v, present := m[key]
+		if !present {
+			return nil, false, true
+		}
+		if v == nil {
+			return nil, true, true
+		}
+		if str, ok := v.(string); ok {
+			return str, true, true
+		}
+		return nil, false, false
+	}
+	wireAction := map[string]interface{}{}
+	switch action["type"] {
+	case "search":
+		wireAction["type"] = "search"
+		if v, present, ok := optString(action, "query"); !ok {
+			return nil
+		} else if present && v != nil {
+			wireAction["query"] = v
+		}
+		if rawQueries, present := action["queries"]; present && rawQueries != nil {
+			list, ok := rawQueries.([]interface{})
+			if !ok {
+				return nil
+			}
+			queries := make([]string, 0, len(list))
+			for _, q := range list {
+				str, ok := q.(string)
+				if !ok {
+					return nil
+				}
+				queries = append(queries, str)
+			}
+			wireAction["queries"] = queries
+		}
+		if rawSources, present := parsed["sources"]; present && rawSources != nil {
+			list, ok := rawSources.([]interface{})
+			if !ok {
+				return nil
+			}
+			for _, src := range list {
+				m, ok := src.(map[string]interface{})
+				if !ok {
+					return nil
+				}
+				switch m["type"] {
+				case "url":
+					if _, ok := m["url"].(string); !ok {
+						return nil
+					}
+				case "api":
+					if _, ok := m["name"].(string); !ok {
+						return nil
+					}
+				default:
+					return nil
+				}
+			}
+			wireAction["sources"] = list
+		}
+	case "openPage":
+		wireAction["type"] = "open_page"
+		v, present, ok := optString(action, "url")
+		if !ok {
+			return nil
+		}
+		if present {
+			wireAction["url"] = v
+		}
+	case "findInPage":
+		wireAction["type"] = "find_in_page"
+		for _, key := range []string{"url", "pattern"} {
+			v, present, ok := optString(action, key)
+			if !ok {
+				return nil
+			}
+			if present {
+				wireAction[key] = v
+			}
+		}
+	default:
+		return nil
+	}
+	return map[string]interface{}{
+		"type":   "web_search_call",
+		"id":     id,
+		"status": "completed",
+		"action": wireAction,
+	}
 }

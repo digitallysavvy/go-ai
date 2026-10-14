@@ -127,3 +127,19 @@ This requires no code changes — it is a correctness fix to the existing
 chunk sequence for well-formed streams. A tool call whose function name
 never arrives by the end of the stream still surfaces as an
 `InvalidResponseDataError` error chunk, exactly as before.
+
+## File ID references
+
+File parts whose data is a provider reference (`types.FileDataTypeReference`) are sent as `{"type":"file","file":{"file_id":"..."}}` for any media type, resolved with the provider's own name (for example `togetherai`, `fireworks`, `zai`, `gmicloud`, `ollama`). Part-level `providerOptions.openaiCompatible` values are merged into the part. A reference with no ID for that provider fails the call with `*errors.NoSuchProviderReferenceError` before any request is sent.
+
+```go
+file := types.FileContent{
+    FileData: types.FileData{
+        Type:      types.FileDataTypeReference,
+        Reference: types.ProviderReference{"fireworks": "file-123"},
+    },
+    MediaType: "application/pdf",
+}
+```
+
+Custom providers built on `prompt.ToOpenAIMessages` can opt in with `prompt.ToOpenAIMessagesOptions{Provider: "myprovider"}` and `prompt.ToOpenAIMessagesWithError`, which also returns the resolution error.

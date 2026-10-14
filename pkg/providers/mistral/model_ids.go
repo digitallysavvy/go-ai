@@ -20,6 +20,8 @@ const (
 	ModelMinistral8BLatest       = "ministral-8b-latest"
 	ModelMistralCodeFimLatest    = "mistral-code-fim-latest"
 	ModelMistralCodeLatest       = "mistral-code-latest"
+	ModelMistralLarge4           = "mistral-large-4"
+	ModelMistralLarge40          = "mistral-large-4-0"
 	ModelMistralLargeLatest      = "mistral-large-latest"
 	ModelMistralLarge2512        = "mistral-large-2512"
 	ModelMistralMediumBare       = "mistral-medium"
@@ -38,25 +40,23 @@ const (
 	ModelZaiGLM52                = "zai-glm-5-2"
 )
 
-// mistralReasoningEffortModelIDs mirrors reasoningEffortModelIds in
-// ai/packages/mistral/src/mistral-chat-language-model.ts: models that accept
-// the reasoning_effort chat completion parameter.
-var mistralReasoningEffortModelIDs = map[string]bool{
-	ModelGLM52:                   true,
-	ModelLabsLeanstral15:         true,
-	ModelLabsLeanstral151:        true,
-	ModelMagistralMediumLatest:   true,
-	ModelMagistralSmallLatest:    true,
-	ModelMistralMediumBare:       true,
-	ModelMistralMedium2604:       true,
-	ModelMistralMedium3:          true,
-	ModelMistralMedium35Dashed:   true,
-	ModelMistralMedium35:         true,
-	ModelMistralMediumLatest:     true,
-	ModelMistralSmall2603:        true,
-	ModelMistralSmallLatest:      true,
-	ModelMistralVibeCliFast:      true,
-	ModelMistralVibeCliLatest:    true,
-	ModelMistralVibeCliWithTools: true,
-	ModelZaiGLM52:                true,
+// mistralModelsWithoutReasoningEffort mirrors modelsWithoutReasoningEffort in
+// ai/packages/mistral/src/mistral-chat-language-model.ts: known non-reasoning
+// models from https://api.mistral.ai/v1/models (2026-10-06). Unknown IDs
+// inherit current reasoning configuration support (TS #22494).
+var mistralModelsWithoutReasoningEffort = map[string]bool{
+	ModelCodestral2508:        true,
+	ModelCodestralLatest:      true,
+	ModelMinistral14B2512:     true,
+	ModelMinistral14BLatest:   true,
+	ModelMinistral3B2512:      true,
+	ModelMinistral3BLatest:    true,
+	ModelMinistral8B2512:      true,
+	ModelMinistral8BLatest:    true,
+	ModelMistralCodeFimLatest: true,
+	ModelMistralCodeLatest:    true,
+	ModelMistralLargeLatest:   true,
+	ModelMistralLarge2512:     true,
+	ModelVoxtralSmall2507:     true,
+	ModelVoxtralSmallLatest:   true,
 }

@@ -202,6 +202,10 @@ result, err := ai.GenerateImage(context.Background(), ai.GenerateImageOptions{
 // GenerateImageResult.
 ```
 
+## Transcription
+
+`gateway.NewTranscriptionModel` transcribes audio through the Gateway's `/transcription-model` endpoint. When a request asks for xAI speaker diarization (`providerOptions` `"xai"` or `"spacexai"` with `"diarize": true`) on a `spacexai/` or `xai/` model, but the Gateway response contains no `speaker` metadata, the result carries an `unsupported` warning (`providerOptions.xai.diarize`: "AI Gateway does not currently expose xAI speaker diarization metadata."). When speaker data is present in the response (for example in `ProviderMetadata["xai"]["words"]`), no warning is added.
+
 ## Embeddings
 
 ```go
