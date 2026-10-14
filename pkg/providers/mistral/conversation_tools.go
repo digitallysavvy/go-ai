@@ -132,11 +132,12 @@ func prepareConversationTools(tools []types.Tool, choice types.ToolChoice) (wire
 		name := newConversationToolNames(tools).providerName(choice.ToolName)
 		filtered := []map[string]interface{}{}
 		for _, w := range wireTools {
-			if w["type"] == "function" {
+			switch w["type"] {
+			case "function":
 				if fn, ok := w["function"].(map[string]interface{}); ok && fn["name"] == name {
 					filtered = append(filtered, w)
 				}
-			} else if w["type"] == name {
+			case name:
 				filtered = append(filtered, w)
 			}
 		}
