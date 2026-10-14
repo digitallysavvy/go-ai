@@ -208,6 +208,31 @@ func parseConversationContent(raw json.RawMessage) []conversationContent {
 	}
 }
 
+// validConversationContent reports whether a streamed message.output.delta
+// content value matches the TS schema: a string or a text / thinking /
+// tool_reference chunk.
+func validConversationContent(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	switch raw[0] {
+	case '"':
+		return true
+	case '{':
+		var head struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(raw, &head) != nil {
+			return false
+		}
+		switch head.Type {
+		case "text", "thinking", "tool_reference":
+			return true
+		}
+	}
+	return false
+}
+
 type conversationConverter struct {
 	names      conversationToolNames
 	sourceURLs map[string]bool
@@ -530,6 +555,11 @@ func (s *conversationStream) handle(data string) {
 		s.hasError = true
 		s.queue = append(s.queue, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: ev.Message})
 	case "message.output.delta":
+		if !validConversationContent(ev.Content) {
+			s.hasError = true
+			s.queue = append(s.queue, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: "mistral: invalid message.output.delta content in conversation stream"})
+			return
+		}
 		if !s.hasModelID && ev.Model != nil {
 			s.hasModelID = true
 			s.queue = append(s.queue, &provider.StreamChunk{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ModelID: *ev.Model}})
@@ -607,6 +637,11 @@ func (s *conversationStream) handle(data string) {
 			}},
 		)
 		delete(s.executions, ev.ID)
+	default:
+		// TS validates every event against a closed discriminated union; an
+		// unknown event type is a parse error that fails the stream.
+		s.hasError = true
+		s.queue = append(s.queue, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: fmt.Sprintf("mistral: unknown conversation stream event type %q", ev.Type)})
 	}
 }
 
