@@ -1,0 +1,176 @@
+---
+title: Decisions
+description: "Ask a model typed questions about shared state with the experimental ai.ExperimentalDecide function: choice, score, and boolean answers, multimodal state, refusals, and migrating from ExperimentalEvaluate."
+---
+
+# Decisions
+
+`ai.ExperimentalDecide` asks a decision model typed questions about one shared state and returns exactly one typed answer per question. It is experimental and may change in patch releases.
+
+It was previously named `ai.ExperimentalEvaluate`. See [Migrating from evaluate](#migrating-from-evaluate).
+
+## Basic usage
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    ctx := context.Background()
+    p := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+    model, err := p.DecisionModel("gpt-6-luna")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    result, err := ai.ExperimentalDecide(ctx, ai.DecideOptions{
+        Model: model,
+        State: "I was charged twice for my subscription and want my money back.",
+        Questions: map[string]provider.DecisionQuestion{
+            "department": {
+                Type:         "choice",
+                Instructions: "Which team should handle this?",
+                Criteria: map[string]interface{}{
+                    "billing":   "Charges, invoices, refunds",
+                    "technical": "Bugs and outages",
+                },
+            },
+            "severity": {
+                Type:         "score",
+                Instructions: "How severe is this issue?",
+                Criteria:     []interface{}{"Low", "Medium", "High"},
+            },
+            "refund": {
+                Type:         "boolean",
+                Instructions: "Is the customer asking for a refund?",
+            },
+        },
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(result.Answers["department"].Choice)
+    fmt.Println(*result.Answers["severity"].Score)
+    fmt.Println(*result.Answers["refund"].Probability)
+}
+```
+
+There are three question types:
+
+- `choice` picks one option from a nonempty `Criteria` map of option name to description (a `nil` description is allowed). The answer has `Choice` and, when the model reports it, a `Probabilities` distribution.
+- `score` places the state on an ordered rubric. `Criteria` is a slice of at least two levels, indexed from zero. The answer has a fractional `Score` between `0` and the last level.
+- `boolean` estimates `P(true)` as a probability in `[0, 1]`. `Criteria` is optional and may only describe `"true"` and `"false"`.
+
+The SDK validates every answer. Choice probabilities must sum to 1, the selected choice must be a highest-probability option, and a score must equal the probability-weighted mean. Models that round their output declare it in `Rounding`, and the validation allows for that rounding.
+
+## State
+
+`State` is one of:
+
+- a `string`, sent as text;
+- a JSON object (`map[string]interface{}`), sent as one JSON part;
+- an ordered `[]provider.DecisionStatePart` of text, JSON, and file parts.
+
+```go
+state := []provider.DecisionStatePart{
+    provider.DecisionTextPart("Inspect this package."),
+    provider.DecisionFilePart(types.FileContent{
+        MediaType: "image/png",
+        Filename:  "package.png",
+        FileData:  types.FileData{Type: types.FileDataTypeData, Data: pngBytes},
+    }),
+    provider.DecisionJSONPart(map[string]interface{}{"product": "glass vase"}),
+}
+```
+
+File parts with a URL are downloaded before the model is called, using the same SSRF-protected download as prompt files. A failed download stops the call before any provider request. Decision models receive the resolved parts, with file URLs replaced by inline data.
+
+Image support depends on the model:
+
+- `DecisionLanguageModel` (used by the Anthropic and Google decision models) forwards image parts to the underlying language model and rejects other media types.
+- The OpenAI Decisions model accepts inline PNG, JPEG, WebP, and GIF images. Set `ProviderOptions["openai"]["imageDetail"]` (`low`, `high`, `auto`, or `original`) on a file part to control the image detail.
+- The Gateway sends files as base64 `stateParts`. URL, reference, and text file data are rejected.
+- TypeSafe AI is text-only and rejects file parts.
+
+## Refusals
+
+A model can decline to answer a question. Core reports a refusal as a `*errors.DecisionRefusalError` listing the refused question IDs (sorted), without retrying:
+
+```go
+import providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+
+var refusal *providererrors.DecisionRefusalError
+if errors.As(err, &refusal) {
+    fmt.Println("refused:", refusal.QuestionIDs)
+}
+```
+
+Decision models represent a refusal as an answer of `Type: "refusal"`, which is valid for any question type.
+
+## Decision models
+
+| Provider | Factory | Notes |
+| --- | --- | --- |
+| OpenAI | `openai.Provider.DecisionModel(id)` | Calls the Decisions API (`POST /decisions`). Provider name `openai.decision`. Supports `safetyIdentifier`. |
+| Anthropic | `anthropic.Provider.DecisionModel(id)` | Wraps the Messages model with `ai.NewDecisionLanguageModel`. |
+| Google | `google.Provider.DecisionModel(id)` | Wraps the Gemini model with `ai.NewDecisionLanguageModel`. |
+| AI Gateway | `gateway.Provider.DecisionModel(id)` | Calls `POST /decision-model`. Supports conditional model fallbacks. |
+| TypeSafe AI | `typesafeai.Provider.DecisionModel(id)` | Text-only. |
+
+Pass a model ID string as `Model` to resolve it through `Provider` (or the AI Gateway when `Provider` is nil). The model registry and `registry.NewCustomProvider` resolve decision models through `ResolveDecisionModel` and `CustomProviderOptions.DecisionModels`.
+
+To use any language model, wrap it:
+
+```go
+decisionModel, err := ai.NewDecisionLanguageModel(ai.DecisionLanguageModelOptions{Model: languageModel})
+```
+
+The wrapper prompts the model for JSON-schema-constrained output with reasoning set to `none`. It accepts either the internal option code or the exact criteria label for choice answers.
+
+The OpenAI Decisions request lists questions and choices sorted by name, because Go maps are unordered.
+
+## Callbacks and telemetry
+
+`DecideOptions.OnStart` and `OnEnd` receive `ai.DecideOnStartEvent` and `ai.DecideOnEndEvent`. See [callback events](../07-reference/ai/callback-events.mdx).
+
+Telemetry integrations receive `OnDecideStart`, `OnDecisionModelCallStart`, `OnDecisionModelCallEnd`, and `OnDecideEnd`, with operation IDs `ai.decide` and `ai.decide.doDecide`. The OpenTelemetry integrations record `ai.decision.state`, `ai.decision.questions`, and `ai.decision.answers`. Enable them on the GenAI integration with `OpenTelemetryOptions.ExperimentalDecision`. The nested model-call span also records `gen_ai.response.id` and `gen_ai.response.model` when the model reports them.
+
+## Migrating from evaluate
+
+`ExperimentalEvaluate` was renamed to `ExperimentalDecide`, matching the TypeScript SDK's `experimental_evaluate` to `experimental_decide` rename. The old names keep working as deprecated aliases and wrappers, so existing code compiles and runs unchanged. Move to the new names when convenient.
+
+| Deprecated | Use instead |
+| --- | --- |
+| `ai.ExperimentalEvaluate`, `ai.EvaluateOptions`, `ai.EvaluateResult`, `ai.EvaluateUsage`, `ai.EvaluateResponse` | `ai.ExperimentalDecide`, `ai.DecideOptions`, `ai.DecideResult`, `ai.DecideUsage`, `ai.DecideResponse` |
+| `ai.EvaluateOnStartEvent`, `ai.EvaluateOnEndEvent` | `ai.DecideOnStartEvent`, `ai.DecideOnEndEvent` |
+| `ai.NewEvaluationLanguageModel`, `ai.EvaluationLanguageModel` | `ai.NewDecisionLanguageModel`, `ai.DecisionLanguageModel` |
+| `provider.EvaluationModel` (`DoEvaluate`), `provider.EvaluationModelProvider` | `provider.DecisionModel` (`DoDecide`), `provider.DecisionModelProvider` |
+| `provider.EvaluationQuestion`, `EvaluationAnswer`, `EvaluationResult`, `EvaluationCallOptions`, `EvaluationRounding`, `EvaluationUsage`, `EvaluationResponseInfo` | the matching `provider.Decision...` types |
+| `errors.EvaluationUnsupportedQuestionTypeError` | `errors.DecisionUnsupportedQuestionTypeError` |
+| `Provider.EvaluationModel(id)` on OpenAI, Anthropic, Google, Gateway, TypeSafe AI | `Provider.DecisionModel(id)` |
+| `registry.CustomProviderOptions.EvaluationModels`, `Registry.ResolveEvaluationModel` | `DecisionModels`, `ResolveDecisionModel` |
+| `provider.SerializeEvaluationModel`, `DeserializeEvaluationModel`, `RegisterEvaluationModelDeserializer` | the `Decision` forms (the old `typesafe.evaluation` serialized provider tag still deserializes) |
+| `gateway.EvaluationFallbackCondition`, `gateway.GatewayEvaluationModelID` | `gateway.DecisionFallbackCondition`, `gateway.GatewayDecisionModelID` |
+| telemetry handlers `OnEvaluateStart`, `OnEvaluateEnd`, `OnEvaluationModelCallStart`, `OnEvaluationModelCallEnd` | `OnDecideStart`, `OnDecideEnd`, `OnDecisionModelCallStart`, `OnDecisionModelCallEnd` |
+| `telemetry.OpenTelemetryOptions.ExperimentalEvaluation` | `ExperimentalDecision` |
+
+Existing models that only implement `DoEvaluate` keep working: pass them as `Model`, register them in `EvaluationModels`, or return them from a provider's `EvaluationModel` method. The SDK adapts them to `DecisionModel`. If a provider only implements the deprecated `EvaluationModel` method, pass it as `DecideOptions.Provider` or as a registry or custom provider fallback. When a type provides both, the `Decision` method wins, and a telemetry integration that implements both a current and a deprecated handler receives only the current one.
+
+Some things changed along with the rename:
+
+- Telemetry operation IDs and attributes are now `ai.decide`, `ai.decide.doDecide`, `ai.decision.*`, and `gen_ai.operation.name` is `decide`. The root span is named `decide <model>`.
+- Decision models receive `DecisionCallOptions.State` as an ordered `[]provider.DecisionStatePart`. Read it with `provider.DecisionStateParts(opts.State)`, which also accepts a plain string or JSON object for direct calls. Models that only implement the deprecated `DoEvaluate` keep the old shape: when the state is a single text part (a plain string) they receive the string, when it is a single JSON part they receive the JSON value, and only multi-part or file states arrive as `[]provider.DecisionStatePart`. Models that implement `DoDecide` always receive parts.
+- The Gateway wire format changed: requests go to `/decision-model` with the `ai-decision-model-specification-version` header and `stateParts`. The `evaluation` model type in the Gateway catalog is still recognized.
+- Go maps have no insertion order, so questions and choice options are sent to models in sorted key order (the OpenAI request, the Gateway wire output and the decision prompt). The TypeScript SDK preserves insertion order, so a model can see a different question or option order than the same call in TypeScript.
+- The TypeScript SDK now reads a state array as a list of parts. Go keeps accepting a plain `[]interface{}` as a single JSON array part for compatibility.

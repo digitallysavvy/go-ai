@@ -120,6 +120,9 @@ func modelIDFor(key string) string {
 // the test only asserts that deserialization succeeds; it does not require
 // Provider() == key.
 var registryAliasKeys = map[string]string{
+	// Payloads serialized before the evaluate -> decide rename carry the
+	// old TypeSafe provider tag; they restore as typesafe.decision.
+	"typesafe.evaluation": "pre-rename serialization key, restores as typesafe.decision",
 	// "google" is a short alias for the default provider name
 	// "google.generative-ai" (TS: providerName defaults to
 	// 'google.generative-ai', options.name lets callers override it to
@@ -391,18 +394,18 @@ func TestEmbeddingModelDeserializerRegistryKeysRoundTrip(t *testing.T) {
 	}
 }
 
-func TestEvaluationModelDeserializerRegistryKeysRoundTrip(t *testing.T) {
-	keys := provider.RegisteredEvaluationModelDeserializerKeys()
+func TestDecisionModelDeserializerRegistryKeysRoundTrip(t *testing.T) {
+	keys := provider.RegisteredDecisionModelDeserializerKeys()
 	for _, key := range keys {
 		key := key
 		t.Run(key, func(t *testing.T) {
-			restored, err := provider.DeserializeEvaluationModel(provider.SerializedModel{
+			restored, err := provider.DeserializeDecisionModel(provider.SerializedModel{
 				Provider: key,
 				ModelID:  modelIDFor(key),
 				Config:   configFor(key),
 			})
 			if err != nil {
-				t.Fatalf("DeserializeEvaluationModel(%q) error = %v", key, err)
+				t.Fatalf("DeserializeDecisionModel(%q) error = %v", key, err)
 			}
 			if reason, ok := registryAliasKeys[key]; ok {
 				t.Logf("alias key %q: %s (restored Provider() = %q)", key, reason, restored.Provider())

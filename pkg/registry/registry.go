@@ -284,30 +284,30 @@ func (r *Registry) ResolveVideoModel(model string) (provider.VideoModelV3, error
 	return vp.VideoModel(modelID)
 }
 
-// ResolveEvaluationModel resolves a "provider:model" string to an
-// EvaluationModel. Evaluation is experimental and not part of the stable
+// ResolveDecisionModel resolves a "provider:model" string to an
+// DecisionModel. Decision is experimental and not part of the stable
 // Provider contract: the resolved provider must additionally implement
-// provider.EvaluationModelProvider (mirrors TypeScript's registry
-// `evaluationModel`).
-func (r *Registry) ResolveEvaluationModel(model string) (provider.EvaluationModel, error) {
+// provider.DecisionModelProvider (mirrors TypeScript's registry
+// `decisionModel`).
+func (r *Registry) ResolveDecisionModel(model string) (provider.DecisionModel, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if target, ok := r.aliases[model]; ok {
 		model = target
 	}
-	providerName, modelID, err := parseModelString(model, r.separator, "evaluationModel")
+	providerName, modelID, err := parseModelString(model, r.separator, "decisionModel")
 	if err != nil {
 		return nil, err
 	}
 	p, ok := r.providers[providerName]
 	if !ok {
-		return nil, &NoSuchProviderError{ProviderID: providerName, ModelID: modelID, ModelType: "evaluationModel", AvailableProviders: r.listProvidersLocked()}
+		return nil, &NoSuchProviderError{ProviderID: providerName, ModelID: modelID, ModelType: "decisionModel", AvailableProviders: r.listProvidersLocked()}
 	}
-	ep, ok := p.(provider.EvaluationModelProvider)
+	resolved, ok, err := provider.DecisionModelFromProvider(p, modelID)
 	if !ok {
-		return nil, &NoSuchProviderError{ProviderID: providerName, ModelID: modelID, ModelType: "evaluationModel", AvailableProviders: r.listProvidersLocked()}
+		return nil, &NoSuchProviderError{ProviderID: providerName, ModelID: modelID, ModelType: "decisionModel", AvailableProviders: r.listProvidersLocked()}
 	}
-	return ep.EvaluationModel(modelID)
+	return resolved, err
 }
 
 func (r *Registry) Files(providerID string) (provider.FilesAPI, error) {
@@ -534,8 +534,27 @@ func ResolveVideoModel(model string) (provider.VideoModelV3, error) {
 	return globalRegistry.ResolveVideoModel(model)
 }
 
-// ResolveEvaluationModel resolves an evaluation model string using the
+// ResolveDecisionModel resolves a decision model string using the
 // global registry.
+func ResolveDecisionModel(model string) (provider.DecisionModel, error) {
+	return globalRegistry.ResolveDecisionModel(model)
+}
+
+// ResolveEvaluationModel is the deprecated form of ResolveDecisionModel.
+//
+// Deprecated: Use ResolveDecisionModel instead.
+func (r *Registry) ResolveEvaluationModel(model string) (provider.EvaluationModel, error) {
+	resolved, err := r.ResolveDecisionModel(model)
+	if err != nil {
+		return nil, err
+	}
+	return provider.AsEvaluationModel(resolved), nil
+}
+
+// ResolveEvaluationModel is the deprecated form of ResolveDecisionModel
+// using the global registry.
+//
+// Deprecated: Use ResolveDecisionModel instead.
 func ResolveEvaluationModel(model string) (provider.EvaluationModel, error) {
 	return globalRegistry.ResolveEvaluationModel(model)
 }

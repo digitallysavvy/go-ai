@@ -463,8 +463,8 @@ type TelemetryErrorEvent struct {
 	Settings *Settings
 	Error    error
 	// CallID, when set, lets an integration defensively close a nested span
-	// it opened for this call (e.g. the "ai.evaluate.doEvaluate" span from
-	// OnEvaluationModelCallStart) that would otherwise leak because the
+	// it opened for this call (e.g. the "ai.decide.doDecide" span from
+	// OnDecisionModelCallStart) that would otherwise leak because the
 	// corresponding *End event is never notified on an error path. Other
 	// operations leave this empty and are unaffected.
 	CallID string
@@ -770,7 +770,7 @@ func modelCallID(parts ...string) string {
 // open_telemetry.go so the two integrations' state can never collide), keyed
 // by CallID in the package-level legacyCallStates map — LegacyOpenTelemetry
 // is a small value type constructed fresh per NewLegacyOpenTelemetry call
-// (like the pre-existing otelModelCallSpans for embed/rerank/evaluation), so
+// (like the pre-existing otelModelCallSpans for embed/rerank/decision), so
 // its mutable span bookkeeping has always lived in package-level state rather
 // than the struct itself.
 //
@@ -964,7 +964,7 @@ func legacyOperationNameAttrs(operationID, functionID string) []attribute.KeyVal
 // legacySettings holds the call-level generation settings TS folds into a
 // plain "settings" object before getBaseTelemetryAttributes
 // (legacy-open-telemetry.ts onGenerateStart/onObjectOperationStart/
-// onEmbedOperationStart/onRerankOperationStart/onEvaluateOperationStart).
+// onEmbedOperationStart/onRerankOperationStart/onDecideOperationStart).
 // Every operation sets MaxRetries; only generateText/streamText set
 // StopSequences.
 type legacySettings struct {
@@ -2303,13 +2303,13 @@ func (i LegacyOpenTelemetry) OnFinish(ctx context.Context, e TelemetryFinishEven
 }
 
 // OnError records the error on the root span and ends it. It also
-// defensively closes any nested "ai.evaluate.doEvaluate" span left open by
-// OnEvaluationModelCallStart for this CallID, since
-// OnEvaluationModelCallEnd is never notified on an error path (mirrors
-// evaluate.ts, where onEvaluationModelCallEnd only fires on success).
+// defensively closes any nested "ai.decide.doDecide" span left open by
+// OnDecisionModelCallStart for this CallID, since
+// OnDecisionModelCallEnd is never notified on an error path (mirrors
+// decide.ts, where onDecisionModelCallEnd only fires on success).
 func (i LegacyOpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent) {
 	if e.CallID != "" {
-		if value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("evaluation", e.CallID)); ok {
+		if value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("decision", e.CallID)); ok {
 			if entry, ok := value.(otelSpanEntry); ok && entry.span.IsRecording() {
 				if e.Error != nil {
 					RecordErrorOnSpan(entry.span, e.Error)

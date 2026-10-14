@@ -8,9 +8,9 @@ import (
 	"testing"
 )
 
-// TS: gateway-provider-options.test.ts "gatewayEvaluationProviderOptionsSchema
+// TS: gateway-provider-options.test.ts "gatewayDecisionProviderOptionsSchema
 // accepts condition %#" — each shape is individually valid.
-func TestValidateGatewayEvaluationModelsOption_AcceptsEachConditionShape(t *testing.T) {
+func TestValidateGatewayDecisionModelsOption_AcceptsEachConditionShape(t *testing.T) {
 	cases := []interface{}{
 		map[string]interface{}{"question": "intent", "confidenceBelow": 0.6},
 		map[string]interface{}{"question": "refunded", "probabilityBetween": []interface{}{0.4, 0.6}},
@@ -35,25 +35,25 @@ func TestValidateGatewayEvaluationModelsOption_AcceptsEachConditionShape(t *test
 		models := []interface{}{
 			map[string]interface{}{"model": "openai/gpt-5.6-sol", "when": when},
 		}
-		if err := validateGatewayEvaluationModelsOption(models); err != nil {
+		if err := validateGatewayDecisionModelsOption(models); err != nil {
 			t.Errorf("case %d: unexpected error: %v", i, err)
 		}
 	}
 }
 
 // TS: "keeps existing string fallback lists and service-owned options valid"
-func TestValidateGatewayEvaluationProviderOptions_KeepsStringFallbackListsValid(t *testing.T) {
+func TestValidateGatewayDecisionProviderOptions_KeepsStringFallbackListsValid(t *testing.T) {
 	value := map[string]interface{}{
 		"models":             []interface{}{"openai/gpt-5.6-sol", "anthropic/claude-sonnet-5"},
 		"serviceOwnedOption": true,
 	}
-	if err := validateGatewayEvaluationProviderOptions(value); err != nil {
+	if err := validateGatewayDecisionProviderOptions(value); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
 // TS: "accepts one conditional entry followed by string error fallbacks"
-func TestValidateGatewayEvaluationModelsOption_AcceptsConditionalFollowedByStrings(t *testing.T) {
+func TestValidateGatewayDecisionModelsOption_AcceptsConditionalFollowedByStrings(t *testing.T) {
 	models := []interface{}{
 		map[string]interface{}{
 			"model": "openai/gpt-5.6-sol",
@@ -61,13 +61,13 @@ func TestValidateGatewayEvaluationModelsOption_AcceptsConditionalFollowedByStrin
 		},
 		"anthropic/claude-sonnet-5",
 	}
-	if err := validateGatewayEvaluationModelsOption(models); err != nil {
+	if err := validateGatewayDecisionModelsOption(models); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
 // TS: "rejects condition %#" — each shape must fail validation.
-func TestValidateGatewayEvaluationModelsOption_RejectsEachInvalidConditionShape(t *testing.T) {
+func TestValidateGatewayDecisionModelsOption_RejectsEachInvalidConditionShape(t *testing.T) {
 	cases := []interface{}{
 		map[string]interface{}{"question": "", "confidenceBelow": 0.5},
 		map[string]interface{}{"question": "intent", "confidenceBelow": math.NaN()},
@@ -98,7 +98,7 @@ func TestValidateGatewayEvaluationModelsOption_RejectsEachInvalidConditionShape(
 		models := []interface{}{
 			map[string]interface{}{"model": "openai/gpt-5.6-sol", "when": when},
 		}
-		if err := validateGatewayEvaluationModelsOption(models); err == nil {
+		if err := validateGatewayDecisionModelsOption(models); err == nil {
 			t.Errorf("case %d: expected error, got nil for %#v", i, when)
 		}
 	}
@@ -106,7 +106,7 @@ func TestValidateGatewayEvaluationModelsOption_RejectsEachInvalidConditionShape(
 
 // TS #21625: "accepts condition %#" additions -- a condition without
 // `question` checks every matching question of the implied type.
-func TestValidateGatewayEvaluationModelsOption_AcceptsQuestionlessConditions(t *testing.T) {
+func TestValidateGatewayDecisionModelsOption_AcceptsQuestionlessConditions(t *testing.T) {
 	cases := []interface{}{
 		map[string]interface{}{"confidenceBelow": 0.6},
 		map[string]interface{}{"probabilityBetween": []interface{}{0.4, 0.6}},
@@ -120,7 +120,7 @@ func TestValidateGatewayEvaluationModelsOption_AcceptsQuestionlessConditions(t *
 		models := []interface{}{
 			map[string]interface{}{"model": "openai/gpt-5.6-sol", "when": when},
 		}
-		if err := validateGatewayEvaluationModelsOption(models); err != nil {
+		if err := validateGatewayDecisionModelsOption(models); err != nil {
 			t.Errorf("case %d: unexpected error: %v", i, err)
 		}
 	}
@@ -129,7 +129,7 @@ func TestValidateGatewayEvaluationModelsOption_AcceptsQuestionlessConditions(t *
 // TS #21625: "rejects condition %#" additions -- a bare `question` is not a
 // check, and exactly one of confidenceBelow/probabilityBetween is still
 // required with no extra keys.
-func TestValidateGatewayEvaluationModelsOption_RejectsQuestionOnlyOrMalformedConditions(t *testing.T) {
+func TestValidateGatewayDecisionModelsOption_RejectsQuestionOnlyOrMalformedConditions(t *testing.T) {
 	cases := []interface{}{
 		map[string]interface{}{},
 		map[string]interface{}{"question": "intent"},
@@ -140,19 +140,19 @@ func TestValidateGatewayEvaluationModelsOption_RejectsQuestionOnlyOrMalformedCon
 		models := []interface{}{
 			map[string]interface{}{"model": "openai/gpt-5.6-sol", "when": when},
 		}
-		if err := validateGatewayEvaluationModelsOption(models); err == nil {
+		if err := validateGatewayDecisionModelsOption(models); err == nil {
 			t.Errorf("case %d: expected error, got nil for %#v", i, when)
 		}
 	}
 }
 
-// TestEvaluationFallbackCondition_ToWire_OmitsQuestionWhenUnset is a
+// TestDecisionFallbackCondition_ToWire_OmitsQuestionWhenUnset is a
 // Go-specific wire-shape test: Question == "" (the questionless case) must
 // not serialize an empty "question" key, matching the TS wire shape where
 // the field is absent rather than present-but-empty.
-func TestEvaluationFallbackCondition_ToWire_OmitsQuestionWhenUnset(t *testing.T) {
+func TestDecisionFallbackCondition_ToWire_OmitsQuestionWhenUnset(t *testing.T) {
 	cb := 0.6
-	c := EvaluationFallbackCondition{ConfidenceBelow: &cb}
+	c := DecisionFallbackCondition{ConfidenceBelow: &cb}
 	wire := c.toWire()
 	if _, ok := wire["question"]; ok {
 		t.Fatalf("toWire() = %#v, want no question key", wire)
@@ -162,7 +162,7 @@ func TestEvaluationFallbackCondition_ToWire_OmitsQuestionWhenUnset(t *testing.T)
 	}
 
 	pb := [2]float64{0.4, 0.6}
-	c2 := EvaluationFallbackCondition{ProbabilityBetween: &pb}
+	c2 := DecisionFallbackCondition{ProbabilityBetween: &pb}
 	wire2 := c2.toWire()
 	if _, ok := wire2["question"]; ok {
 		t.Fatalf("toWire() = %#v, want no question key", wire2)
@@ -170,14 +170,14 @@ func TestEvaluationFallbackCondition_ToWire_OmitsQuestionWhenUnset(t *testing.T)
 }
 
 // TS: "enforces the maximum condition depth"
-func TestValidateGatewayEvaluationModelsOption_EnforcesMaximumConditionDepth(t *testing.T) {
+func TestValidateGatewayDecisionModelsOption_EnforcesMaximumConditionDepth(t *testing.T) {
 	var condition interface{} = map[string]interface{}{"question": "intent", "confidenceBelow": 0.5}
-	for depth := 1; depth < EvaluationFallbackMaxConditionDepth; depth++ {
+	for depth := 1; depth < DecisionFallbackMaxConditionDepth; depth++ {
 		condition = map[string]interface{}{"any": []interface{}{condition}}
 	}
 
 	validModels := []interface{}{map[string]interface{}{"model": "openai/gpt-5.6-sol", "when": condition}}
-	if err := validateGatewayEvaluationModelsOption(validModels); err != nil {
+	if err := validateGatewayDecisionModelsOption(validModels); err != nil {
 		t.Fatalf("valid depth should pass: %v", err)
 	}
 
@@ -185,13 +185,13 @@ func TestValidateGatewayEvaluationModelsOption_EnforcesMaximumConditionDepth(t *
 		"model": "openai/gpt-5.6-sol",
 		"when":  map[string]interface{}{"any": []interface{}{condition}},
 	}}
-	if err := validateGatewayEvaluationModelsOption(invalidModels); err == nil {
+	if err := validateGatewayDecisionModelsOption(invalidModels); err == nil {
 		t.Fatalf("expected depth-limit error")
 	}
 }
 
 // TS: "accepts five condition levels and rejects six"
-func TestValidateGatewayEvaluationModelsOption_AcceptsFiveLevelsRejectsSix(t *testing.T) {
+func TestValidateGatewayDecisionModelsOption_AcceptsFiveLevelsRejectsSix(t *testing.T) {
 	direct := map[string]interface{}{"question": "intent", "confidenceBelow": 0.5}
 	fiveLevels := map[string]interface{}{
 		"any": []interface{}{
@@ -210,12 +210,12 @@ func TestValidateGatewayEvaluationModelsOption_AcceptsFiveLevelsRejectsSix(t *te
 	sixLevels := map[string]interface{}{"any": []interface{}{fiveLevels}}
 
 	validModels := []interface{}{map[string]interface{}{"model": "openai/gpt-5.6-sol", "when": fiveLevels}}
-	if err := validateGatewayEvaluationModelsOption(validModels); err != nil {
+	if err := validateGatewayDecisionModelsOption(validModels); err != nil {
 		t.Fatalf("five levels should pass: %v", err)
 	}
 
 	invalidModels := []interface{}{map[string]interface{}{"model": "openai/gpt-5.6-sol", "when": sixLevels}}
-	err := validateGatewayEvaluationModelsOption(invalidModels)
+	err := validateGatewayDecisionModelsOption(invalidModels)
 	if err == nil {
 		t.Fatalf("six levels should fail")
 	}
@@ -226,7 +226,7 @@ func TestValidateGatewayEvaluationModelsOption_AcceptsFiveLevelsRejectsSix(t *te
 }
 
 // TS: "rejects invalid models list %#"
-func TestValidateGatewayEvaluationModelsOption_RejectsInvalidModelsList(t *testing.T) {
+func TestValidateGatewayDecisionModelsOption_RejectsInvalidModelsList(t *testing.T) {
 	conditionalFallback := map[string]interface{}{
 		"model": "openai/gpt-5.6-sol",
 		"when":  map[string]interface{}{"question": "intent", "confidenceBelow": 0.6},
@@ -237,20 +237,20 @@ func TestValidateGatewayEvaluationModelsOption_RejectsInvalidModelsList(t *testi
 		{"anthropic/claude-sonnet-5", conditionalFallback},
 	}
 	for i, models := range cases {
-		if err := validateGatewayEvaluationModelsOption(models); err == nil {
+		if err := validateGatewayDecisionModelsOption(models); err == nil {
 			t.Errorf("case %d: expected error", i)
 		}
 	}
 }
 
 // TS: "bounds question length at $length"
-func TestValidateGatewayEvaluationModelsOption_BoundsQuestionLength(t *testing.T) {
+func TestValidateGatewayDecisionModelsOption_BoundsQuestionLength(t *testing.T) {
 	tests := []struct {
 		length  int
 		success bool
 	}{
-		{EvaluationFallbackMaxQuestionLength, true},
-		{EvaluationFallbackMaxQuestionLength + 1, false},
+		{DecisionFallbackMaxQuestionLength, true},
+		{DecisionFallbackMaxQuestionLength + 1, false},
 	}
 	for _, tt := range tests {
 		question := strings.Repeat("q", tt.length)
@@ -258,7 +258,7 @@ func TestValidateGatewayEvaluationModelsOption_BoundsQuestionLength(t *testing.T
 			"model": "openai/gpt-5.6-sol",
 			"when":  map[string]interface{}{"question": question, "confidenceBelow": 0.6},
 		}}
-		err := validateGatewayEvaluationModelsOption(models)
+		err := validateGatewayDecisionModelsOption(models)
 		if tt.success && err != nil {
 			t.Errorf("length %d: unexpected error: %v", tt.length, err)
 		}
@@ -269,7 +269,7 @@ func TestValidateGatewayEvaluationModelsOption_BoundsQuestionLength(t *testing.T
 }
 
 // TS: "accepts any non-empty conditional model length ($length)"
-func TestValidateGatewayEvaluationModelsOption_AcceptsAnyNonEmptyModelLength(t *testing.T) {
+func TestValidateGatewayDecisionModelsOption_AcceptsAnyNonEmptyModelLength(t *testing.T) {
 	tests := []struct {
 		length  int
 		success bool
@@ -282,7 +282,7 @@ func TestValidateGatewayEvaluationModelsOption_AcceptsAnyNonEmptyModelLength(t *
 			"model": strings.Repeat("m", tt.length),
 			"when":  map[string]interface{}{"question": "intent", "confidenceBelow": 0.6},
 		}}
-		err := validateGatewayEvaluationModelsOption(models)
+		err := validateGatewayDecisionModelsOption(models)
 		if tt.success && err != nil {
 			t.Errorf("model length %d: unexpected error: %v", tt.length, err)
 		}
@@ -293,7 +293,7 @@ func TestValidateGatewayEvaluationModelsOption_AcceptsAnyNonEmptyModelLength(t *
 }
 
 // TS: "bounds $name condition lists" for any/all/atLeast
-func TestValidateGatewayEvaluationModelsOption_BoundsConditionLists(t *testing.T) {
+func TestValidateGatewayDecisionModelsOption_BoundsConditionLists(t *testing.T) {
 	makeConditions := func(count int) []interface{} {
 		out := make([]interface{}, count)
 		for i := 0; i < count; i++ {
@@ -311,16 +311,16 @@ func TestValidateGatewayEvaluationModelsOption_BoundsConditionLists(t *testing.T
 	for name, wrap := range wrappers {
 		validModels := []interface{}{map[string]interface{}{
 			"model": "openai/gpt-5.6-sol",
-			"when":  wrap(makeConditions(EvaluationFallbackMaxConditionsPerList)),
+			"when":  wrap(makeConditions(DecisionFallbackMaxConditionsPerList)),
 		}}
-		if err := validateGatewayEvaluationModelsOption(validModels); err != nil {
+		if err := validateGatewayDecisionModelsOption(validModels); err != nil {
 			t.Errorf("%s: max count should pass: %v", name, err)
 		}
 		invalidModels := []interface{}{map[string]interface{}{
 			"model": "openai/gpt-5.6-sol",
-			"when":  wrap(makeConditions(EvaluationFallbackMaxConditionsPerList + 1)),
+			"when":  wrap(makeConditions(DecisionFallbackMaxConditionsPerList + 1)),
 		}}
-		if err := validateGatewayEvaluationModelsOption(invalidModels); err == nil {
+		if err := validateGatewayDecisionModelsOption(invalidModels); err == nil {
 			t.Errorf("%s: over max count should fail", name)
 		}
 	}
@@ -344,7 +344,7 @@ func TestGatewayModelFallback_MarshalJSON_PlainFallback(t *testing.T) {
 // conditional fallback marshals as {"model", "when"}.
 func TestGatewayModelFallback_MarshalJSON_ConditionalFallback(t *testing.T) {
 	confidenceBelow := 0.6
-	fallback := GatewayConditionalModelFallback("openai/gpt-5.6-sol", EvaluationFallbackCondition{
+	fallback := GatewayConditionalModelFallback("openai/gpt-5.6-sol", DecisionFallbackCondition{
 		Question:        "intent",
 		ConfidenceBelow: &confidenceBelow,
 	})
@@ -426,7 +426,7 @@ func TestGatewayModelFallback_UnmarshalJSON_Conditional(t *testing.T) {
 	if err := json.Unmarshal([]byte("["+string(remarshaled)+"]"), &models); err != nil {
 		t.Fatalf("re-decode error = %v", err)
 	}
-	if err := validateGatewayEvaluationModelsOption(models); err != nil {
+	if err := validateGatewayDecisionModelsOption(models); err != nil {
 		t.Fatalf("re-marshaled fallback failed validation: %v", err)
 	}
 }
@@ -457,7 +457,7 @@ func TestGatewayModelFallback_UnmarshalJSON_RejectsInvalidShapes(t *testing.T) {
 func TestGatewayModelFallback_JSONRoundTrip_InProviderOptions(t *testing.T) {
 	confidenceBelow := 0.6
 	original := []GatewayModelFallback{
-		GatewayConditionalModelFallback("openai/gpt-5.6-sol", EvaluationFallbackCondition{
+		GatewayConditionalModelFallback("openai/gpt-5.6-sol", DecisionFallbackCondition{
 			Question:        "intent",
 			ConfidenceBelow: &confidenceBelow,
 		}),

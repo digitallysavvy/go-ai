@@ -45,7 +45,7 @@ func TestGatewayModelIDConstantsMatchSettings(t *testing.T) {
 		{"transcription SpaceXAI", string(GatewayTranscriptionModelSpacexaiGrokStt), "spacexai/grok-stt"},
 		{"realtime OpenAI", string(GatewayRealtimeModelOpenaiGptRealtime2), "openai/gpt-realtime-2"},
 		{"realtime SpaceXAI", string(GatewayRealtimeModelSpacexaiGrokVoiceThinkFast20), "spacexai/grok-voice-think-fast-2.0"},
-		{"evaluation", string(GatewayEvaluationModelTypesafeAiJev), "typesafe-ai/jev"},
+		{"decision", string(GatewayDecisionModelTypesafeAiJev), "typesafe-ai/jev"},
 	}
 
 	for _, tt := range tests {
@@ -75,7 +75,7 @@ func catalogs() map[string][]string {
 	add("speech", len(GatewaySpeechModelIDs), func(i int) string { return string(GatewaySpeechModelIDs[i]) })
 	add("transcription", len(GatewayTranscriptionModelIDs), func(i int) string { return string(GatewayTranscriptionModelIDs[i]) })
 	add("realtime", len(GatewayRealtimeModelIDs), func(i int) string { return string(GatewayRealtimeModelIDs[i]) })
-	add("evaluation", len(GatewayEvaluationModelIDs), func(i int) string { return string(GatewayEvaluationModelIDs[i]) })
+	add("decision", len(GatewayDecisionModelIDs), func(i int) string { return string(GatewayDecisionModelIDs[i]) })
 	return out
 }
 
@@ -89,7 +89,7 @@ func TestGatewayModelIDCatalogsExposeAllModelKinds(t *testing.T) {
 		"speech":        13,
 		"transcription": 10,
 		"realtime":      9,
-		"evaluation":    2,
+		"decision":      2,
 	}
 	got := catalogs()
 	for kind, n := range want {
@@ -167,7 +167,7 @@ func TestGatewayModelIDCatalogIncludesSep23Additions(t *testing.T) {
 		"speech":        {"fish-audio/s2.1-pro", "google/gemini-3.8-flash-tts"},
 		"transcription": {"fish-audio/transcribe-1", "openai/gpt-realtime-whisper"},
 		"realtime":      {"google/gemini-3.8-live", "openai/gpt-live-1"},
-		"evaluation":    {"typesafe-ai/jev"},
+		"decision":      {"typesafe-ai/jev"},
 	}
 	all := catalogs()
 	for kind, ids := range want {

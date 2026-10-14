@@ -28,7 +28,7 @@ import (
 // tracer/recorder so their spans can be inspected independently, and assert
 // that every span BOTH integrations started also ended exactly once, for
 // generateText, streamText, generateObject, streamObject, embed, rerank,
-// evaluate, and a tool call — covering success, error, and abort.
+// decide, and a tool call — covering success, error, and abort.
 
 // dualIntegrationSettings creates one dedicated tracer/recorder pair per
 // integration and a *telemetry.Options with both LegacyOpenTelemetry and
@@ -591,58 +591,58 @@ func TestDualIntegration_Rerank_Error(t *testing.T) {
 	assertRootSpanEnded(t, "genai", genAIRec, "rerank mock-reranking", true)
 }
 
-// --- evaluate ----------------------------------------------------------------
+// --- decide ----------------------------------------------------------------
 
-func TestDualIntegration_Evaluate_Success(t *testing.T) {
+func TestDualIntegration_Decide_Success(t *testing.T) {
 	legacyRec, genAIRec, settings := dualIntegrationSettings(t)
 
-	questions, model := evaluateTelemetryFixture()
+	questions, model := decideTelemetryFixture()
 
-	_, err := ExperimentalEvaluate(context.Background(), EvaluateOptions{
+	_, err := ExperimentalDecide(context.Background(), DecideOptions{
 		Model:                 model,
 		State:                 "hello",
 		Questions:             questions,
 		ExperimentalTelemetry: settings,
 	})
 	if err != nil {
-		t.Fatalf("ExperimentalEvaluate() error = %v", err)
+		t.Fatalf("ExperimentalDecide() error = %v", err)
 	}
 
 	assertAllSpansEndedExactlyOnce(t, "legacy", legacyRec)
 	assertAllSpansEndedExactlyOnce(t, "genai", genAIRec)
-	assertRootSpanEnded(t, "legacy", legacyRec, "ai.evaluate", false)
-	assertRootSpanEnded(t, "genai", genAIRec, "evaluate test-model", false)
+	assertRootSpanEnded(t, "legacy", legacyRec, "ai.decide", false)
+	assertRootSpanEnded(t, "genai", genAIRec, "decide test-model", false)
 }
 
-func TestDualIntegration_Evaluate_Error(t *testing.T) {
+func TestDualIntegration_Decide_Error(t *testing.T) {
 	legacyRec, genAIRec, settings := dualIntegrationSettings(t)
 
 	wantErr := errors.New("provider boom")
-	model := &mockEvaluationModel{
+	model := &mockDecisionModel{
 		providerName: "test-provider",
 		modelID:      "test-model",
-		doEvaluate: func(_ context.Context, _ provider.EvaluationCallOptions) (*provider.EvaluationResult, error) {
+		doDecide: func(_ context.Context, _ provider.DecisionCallOptions) (*provider.DecisionResult, error) {
 			return nil, wantErr
 		},
 	}
-	questions := map[string]provider.EvaluationQuestion{
+	questions := map[string]provider.DecisionQuestion{
 		"q1": {Type: "boolean", Instructions: "Is it correct?"},
 	}
 
-	_, err := ExperimentalEvaluate(context.Background(), EvaluateOptions{
+	_, err := ExperimentalDecide(context.Background(), DecideOptions{
 		Model:                 model,
 		State:                 "hello",
 		Questions:             questions,
 		ExperimentalTelemetry: settings,
 	})
 	if err == nil {
-		t.Fatal("expected ExperimentalEvaluate to return an error")
+		t.Fatal("expected ExperimentalDecide to return an error")
 	}
 
 	assertAllSpansEndedExactlyOnce(t, "legacy", legacyRec)
 	assertAllSpansEndedExactlyOnce(t, "genai", genAIRec)
-	assertRootSpanEnded(t, "legacy", legacyRec, "ai.evaluate", true)
-	assertRootSpanEnded(t, "genai", genAIRec, "evaluate test-model", true)
+	assertRootSpanEnded(t, "legacy", legacyRec, "ai.decide", true)
+	assertRootSpanEnded(t, "genai", genAIRec, "decide test-model", true)
 }
 
 // --- tool call ---------------------------------------------------------------

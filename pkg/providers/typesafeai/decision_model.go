@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -15,39 +16,39 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
-// EvaluationModel implements provider.EvaluationModel for TypeSafe AI's
-// evaluation endpoint (`POST {baseURL}/systemone`). Mirrors TypeScript's
-// EvaluationTypeSafeAiModel (packages/typesafe-ai/src/typesafe-ai-evaluation-model.ts).
-type EvaluationModel struct {
+// DecisionModel implements provider.DecisionModel for TypeSafe AI's
+// decision endpoint (`POST {baseURL}/systemone`). Mirrors TypeScript's
+// DecisionTypeSafeAiModel (packages/typesafe-ai/src/typesafe-ai-decision-model.ts).
+type DecisionModel struct {
 	provider *Provider
 	modelID  string
 }
 
-// NewEvaluationModel creates a new TypeSafe AI evaluation model.
-func NewEvaluationModel(p *Provider, modelID string) *EvaluationModel {
-	return &EvaluationModel{provider: p, modelID: modelID}
+// NewDecisionModel creates a new TypeSafe AI decision model.
+func NewDecisionModel(p *Provider, modelID string) *DecisionModel {
+	return &DecisionModel{provider: p, modelID: modelID}
 }
 
-// SpecificationVersion returns the evaluation model specification version.
-func (m *EvaluationModel) SpecificationVersion() string { return "v4" }
+// SpecificationVersion returns the decision model specification version.
+func (m *DecisionModel) SpecificationVersion() string { return "v4" }
 
-// Provider returns "typesafe.evaluation", matching TypeScript's provider ID.
-func (m *EvaluationModel) Provider() string { return "typesafe.evaluation" }
+// Provider returns "typesafe.decision", matching TypeScript's provider ID.
+func (m *DecisionModel) Provider() string { return "typesafe.decision" }
 
 // ModelID returns the model ID.
-func (m *EvaluationModel) ModelID() string { return m.modelID }
+func (m *DecisionModel) ModelID() string { return m.modelID }
 
 // SupportedQuestionTypes reports that TypeSafe AI accepts all three question
 // types.
-func (m *EvaluationModel) SupportedQuestionTypes() []string {
+func (m *DecisionModel) SupportedQuestionTypes() []string {
 	return []string{"choice", "score", "boolean"}
 }
 
-// DoEvaluate evaluates every question against the same state via TypeSafe
+// DoDecide decides every question against the same state via TypeSafe
 // AI's /systemone endpoint. Boolean questions are sent as TypeSafe's native
 // "noul" type and mapped back to "boolean" answers on the way out.
-func (m *EvaluationModel) DoEvaluate(ctx context.Context, opts provider.EvaluationCallOptions) (*provider.EvaluationResult, error) {
-	// TypeSafe-specific provider limits (mirrors the TS doEvaluate checks,
+func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCallOptions) (*provider.DecisionResult, error) {
+	// TypeSafe-specific provider limits (mirrors the TS doDecide checks,
 	// enforced before any HTTP request).
 	ids := make([]string, 0, len(opts.Questions))
 	for id := range opts.Questions {
@@ -107,9 +108,14 @@ func (m *EvaluationModel) DoEvaluate(ctx context.Context, opts provider.Evaluati
 		requestQuestions[id] = entry
 	}
 
+	requestState, err := typeSafeRequestState(provider.DecisionStateParts(opts.State))
+	if err != nil {
+		return nil, err
+	}
+
 	body := map[string]interface{}{
 		"model":     m.modelID,
-		"state":     opts.State,
+		"state":     requestState,
 		"questions": requestQuestions,
 	}
 
@@ -135,14 +141,14 @@ func (m *EvaluationModel) DoEvaluate(ctx context.Context, opts provider.Evaluati
 		return nil, err
 	}
 
-	var usage *provider.EvaluationUsage
+	var usage *provider.DecisionUsage
 	if response.Usage != nil {
-		usage = &provider.EvaluationUsage{
+		usage = &provider.DecisionUsage{
 			InputTokens:  response.Usage.InputTokens,
 			OutputTokens: response.Usage.OutputTokens,
 		}
 	} else {
-		usage = &provider.EvaluationUsage{}
+		usage = &provider.DecisionUsage{}
 	}
 
 	modelID := m.modelID
@@ -156,16 +162,16 @@ func (m *EvaluationModel) DoEvaluate(ctx context.Context, opts provider.Evaluati
 	probabilityDecimals := 2
 	scoreDecimals := 2
 
-	return &provider.EvaluationResult{
+	return &provider.DecisionResult{
 		Answers: answers,
-		Rounding: &provider.EvaluationRounding{
+		Rounding: &provider.DecisionRounding{
 			ProbabilityDecimals: &probabilityDecimals,
 			ScoreDecimals:       &scoreDecimals,
 		},
 		Usage:            usage,
 		Warnings:         warnings,
 		ProviderMetadata: map[string]interface{}{"typesafe": map[string]interface{}{"confidence": confidence}},
-		Response: &provider.EvaluationResponseInfo{
+		Response: &provider.DecisionResponseInfo{
 			ModelID: modelID,
 			Headers: providerutils.ExtractHeaders(httpResp.Headers),
 			Body:    rawBody,
@@ -174,10 +180,10 @@ func (m *EvaluationModel) DoEvaluate(ctx context.Context, opts provider.Evaluati
 }
 
 // convertTypesafeAnswers maps the wire answer shapes ("choice"/"score"/"noul")
-// to provider.EvaluationAnswer ("choice"/"score"/"boolean"), and collects the
+// to provider.DecisionAnswer ("choice"/"score"/"boolean"), and collects the
 // per-question confidence values reported for choice/score answers.
-func convertTypesafeAnswers(raw map[string]json.RawMessage) (map[string]provider.EvaluationAnswer, map[string]float64, error) {
-	answers := make(map[string]provider.EvaluationAnswer, len(raw))
+func convertTypesafeAnswers(raw map[string]json.RawMessage) (map[string]provider.DecisionAnswer, map[string]float64, error) {
+	answers := make(map[string]provider.DecisionAnswer, len(raw))
 	confidence := make(map[string]float64, len(raw))
 
 	ids := make([]string, 0, len(raw))
@@ -189,7 +195,7 @@ func convertTypesafeAnswers(raw map[string]json.RawMessage) (map[string]provider
 	for _, id := range ids {
 		var fields map[string]interface{}
 		if err := json.Unmarshal(raw[id], &fields); err != nil {
-			return nil, nil, providererrors.NewInvalidResponseDataError(string(raw[id]), "TypeSafe AI returned a malformed evaluation answer.")
+			return nil, nil, providererrors.NewInvalidResponseDataError(string(raw[id]), "TypeSafe AI returned a malformed decision answer.")
 		}
 		answerType, _ := fields["type"].(string)
 		switch answerType {
@@ -199,7 +205,7 @@ func convertTypesafeAnswers(raw map[string]json.RawMessage) (map[string]provider
 			if !ok || !probsOK {
 				return nil, nil, providererrors.NewInvalidResponseDataError(fields, fmt.Sprintf("TypeSafe AI returned a malformed choice answer for %q.", id))
 			}
-			answers[id] = provider.EvaluationAnswer{Type: "choice", Choice: choice, Probabilities: probs}
+			answers[id] = provider.DecisionAnswer{Type: "choice", Choice: choice, Probabilities: probs}
 			if c, ok := fields["confidence"].(float64); ok {
 				confidence[id] = c
 			}
@@ -209,7 +215,7 @@ func convertTypesafeAnswers(raw map[string]json.RawMessage) (map[string]provider
 			if !ok || !probsOK {
 				return nil, nil, providererrors.NewInvalidResponseDataError(fields, fmt.Sprintf("TypeSafe AI returned a malformed score answer for %q.", id))
 			}
-			answers[id] = provider.EvaluationAnswer{Type: "score", Score: &score, Probabilities: probs}
+			answers[id] = provider.DecisionAnswer{Type: "score", Score: &score, Probabilities: probs}
 			if c, ok := fields["confidence"].(float64); ok {
 				confidence[id] = c
 			}
@@ -218,7 +224,7 @@ func convertTypesafeAnswers(raw map[string]json.RawMessage) (map[string]provider
 			if !ok {
 				return nil, nil, providererrors.NewInvalidResponseDataError(fields, fmt.Sprintf("TypeSafe AI returned a malformed boolean answer for %q.", id))
 			}
-			answers[id] = provider.EvaluationAnswer{Type: "boolean", Probability: &noul}
+			answers[id] = provider.DecisionAnswer{Type: "boolean", Probability: &noul}
 		default:
 			return nil, nil, providererrors.NewInvalidResponseDataError(fields, fmt.Sprintf("TypeSafe AI returned an unknown answer type for %q.", id))
 		}
@@ -247,7 +253,7 @@ func toFloatMap(v interface{}) (map[string]float64, bool) {
 // providererrors.ProviderError, extracting the error message per TypeScript's
 // priority order: message ?? (error string or error.message) ??
 // (detail string or JSON.stringify(detail)) ?? error_type ?? fallback.
-func (m *EvaluationModel) handleError(err error) error {
+func (m *DecisionModel) handleError(err error) error {
 	var httpErr *internalhttp.HTTPStatusError
 	if !errors.As(err, &httpErr) {
 		return err
@@ -333,4 +339,37 @@ type typesafeResponseWire struct {
 type typesafeUsageWire struct {
 	InputTokens  *int `json:"input_tokens"`
 	OutputTokens *int `json:"output_tokens"`
+}
+
+// DoEvaluate is the deprecated form of DoDecide.
+//
+// Deprecated: Use DoDecide instead.
+func (m *DecisionModel) DoEvaluate(ctx context.Context, opts provider.DecisionCallOptions) (*provider.DecisionResult, error) {
+	return m.DoDecide(ctx, opts)
+}
+
+// typeSafeRequestState maps ordered state parts to TypeSafe's native state: a
+// single json part is sent as native JSON; otherwise text and json parts are
+// joined with newlines. File parts are rejected because the endpoint is
+// text-only. Mirrors TS DecisionTypeSafeAiModel's requestState.
+func typeSafeRequestState(parts []provider.DecisionStatePart) (interface{}, error) {
+	if len(parts) == 1 && parts[0].Type == "json" {
+		return parts[0].Value, nil
+	}
+	texts := make([]string, 0, len(parts))
+	for _, part := range parts {
+		switch part.Type {
+		case "file":
+			return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "TypeSafe AI decision file input"}
+		case "text":
+			texts = append(texts, part.Text)
+		default:
+			encoded, err := json.Marshal(part.Value)
+			if err != nil {
+				return nil, fmt.Errorf("failed to encode decision state: %w", err)
+			}
+			texts = append(texts, string(encoded))
+		}
+	}
+	return strings.Join(texts, "\n"), nil
 }

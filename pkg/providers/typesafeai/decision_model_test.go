@@ -1,21 +1,24 @@
 package typesafeai
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
-// Ported from packages/typesafe-ai/src/typesafe-ai-evaluation-model.test.ts,
-// using inline fixtures equivalent to __fixtures__/evaluation-{request,response}.json.
+// Ported from packages/typesafe-ai/src/typesafe-ai-decision-model.test.ts,
+// using inline fixtures equivalent to __fixtures__/decision-{request,response}.json.
 
-func nativeQuestions() map[string]provider.EvaluationQuestion {
-	return map[string]provider.EvaluationQuestion{
+func nativeQuestions() map[string]provider.DecisionQuestion {
+	return map[string]provider.DecisionQuestion{
 		"department": {
 			Type:         "choice",
 			Instructions: map[string]interface{}{"question": "Which team should handle this?"},
@@ -65,7 +68,7 @@ func newTestServer(t *testing.T, response string) *httptest.Server {
 	return server
 }
 
-func TestEvaluationModel_SendsAllThreeQuestionTypes(t *testing.T) {
+func TestDecisionModel_SendsAllThreeQuestionTypes(t *testing.T) {
 	var gotPath string
 	var gotAuth string
 	var gotBody map[string]interface{}
@@ -79,17 +82,17 @@ func TestEvaluationModel_SendsAllThreeQuestionTypes(t *testing.T) {
 	defer server.Close()
 
 	p := New(Config{APIKey: "test-api-key", BaseURL: server.URL})
-	model, err := p.EvaluationModel("jev-latest")
+	model, err := p.DecisionModel("jev-latest")
 	if err != nil {
-		t.Fatalf("EvaluationModel: %v", err)
+		t.Fatalf("DecisionModel: %v", err)
 	}
 
-	_, err = model.DoEvaluate(t.Context(), provider.EvaluationCallOptions{
+	_, err = model.DoDecide(t.Context(), provider.DecisionCallOptions{
 		State:     map[string]interface{}{"message": "I was charged twice. Please refund the duplicate.", "order": map[string]interface{}{"amount": float64(49)}},
 		Questions: nativeQuestions(),
 	})
 	if err != nil {
-		t.Fatalf("DoEvaluate: %v", err)
+		t.Fatalf("DoDecide: %v", err)
 	}
 	if gotPath != "/systemone" {
 		t.Fatalf("path = %q", gotPath)
@@ -107,17 +110,17 @@ func TestEvaluationModel_SendsAllThreeQuestionTypes(t *testing.T) {
 	}
 }
 
-func TestEvaluationModel_PreservesScoresProbabilitiesConfidenceUsage(t *testing.T) {
+func TestDecisionModel_PreservesScoresProbabilitiesConfidenceUsage(t *testing.T) {
 	server := newTestServer(t, nativeResponseJSON)
 	p := New(Config{APIKey: "k", BaseURL: server.URL})
-	model, _ := p.EvaluationModel("jev-latest")
+	model, _ := p.DecisionModel("jev-latest")
 
-	result, err := model.DoEvaluate(t.Context(), provider.EvaluationCallOptions{
+	result, err := model.DoDecide(t.Context(), provider.DecisionCallOptions{
 		State:     "test",
 		Questions: nativeQuestions(),
 	})
 	if err != nil {
-		t.Fatalf("DoEvaluate: %v", err)
+		t.Fatalf("DoDecide: %v", err)
 	}
 
 	dept := result.Answers["department"]
@@ -148,7 +151,7 @@ func TestEvaluationModel_PreservesScoresProbabilitiesConfidenceUsage(t *testing.
 	}
 }
 
-func TestEvaluationModel_CustomBaseURLHeadersAndFutureModelIDs(t *testing.T) {
+func TestDecisionModel_CustomBaseURLHeadersAndFutureModelIDs(t *testing.T) {
 	var gotAuth, gotCustom, gotShared string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
@@ -164,14 +167,14 @@ func TestEvaluationModel_CustomBaseURLHeadersAndFutureModelIDs(t *testing.T) {
 		BaseURL: server.URL,
 		Headers: map[string]string{"custom": "provider", "shared": "provider"},
 	})
-	model, _ := p.EvaluationModel("jev-future")
-	_, err := model.DoEvaluate(t.Context(), provider.EvaluationCallOptions{
+	model, _ := p.DecisionModel("jev-future")
+	_, err := model.DoDecide(t.Context(), provider.DecisionCallOptions{
 		State:     "test",
 		Questions: nativeQuestions(),
 		Headers:   map[string]string{"shared": "call"},
 	})
 	if err != nil {
-		t.Fatalf("DoEvaluate: %v", err)
+		t.Fatalf("DoDecide: %v", err)
 	}
 	if gotAuth != "Bearer custom-key" {
 		t.Fatalf("Authorization = %q", gotAuth)
@@ -184,10 +187,10 @@ func TestEvaluationModel_CustomBaseURLHeadersAndFutureModelIDs(t *testing.T) {
 	}
 }
 
-func TestEvaluationModel_LoadsAPIKeyLazilyFromEnvironment(t *testing.T) {
+func TestDecisionModel_LoadsAPIKeyLazilyFromEnvironment(t *testing.T) {
 	server := newTestServer(t, nativeResponseJSON)
 	p := New(Config{BaseURL: server.URL})
-	model, _ := p.EvaluationModel("jev-latest")
+	model, _ := p.DecisionModel("jev-latest")
 
 	t.Setenv("TYPESAFE_AI_API_KEY", "environment-key")
 
@@ -198,62 +201,62 @@ func TestEvaluationModel_LoadsAPIKeyLazilyFromEnvironment(t *testing.T) {
 		_, _ = w.Write([]byte(nativeResponseJSON))
 	})
 
-	_, err := model.DoEvaluate(t.Context(), provider.EvaluationCallOptions{State: "test", Questions: nativeQuestions()})
+	_, err := model.DoDecide(t.Context(), provider.DecisionCallOptions{State: "test", Questions: nativeQuestions()})
 	if err != nil {
-		t.Fatalf("DoEvaluate: %v", err)
+		t.Fatalf("DoDecide: %v", err)
 	}
 	if gotAuth != "Bearer environment-key" {
 		t.Fatalf("Authorization = %q", gotAuth)
 	}
 }
 
-func TestEvaluationModel_MissingAPIKey(t *testing.T) {
+func TestDecisionModel_MissingAPIKey(t *testing.T) {
 	old := os.Getenv("TYPESAFE_AI_API_KEY")
 	_ = os.Unsetenv("TYPESAFE_AI_API_KEY")
 	defer func() { _ = os.Setenv("TYPESAFE_AI_API_KEY", old) }()
 
 	p := New(Config{})
-	model, _ := p.EvaluationModel("jev-latest")
-	_, err := model.DoEvaluate(t.Context(), provider.EvaluationCallOptions{State: "test", Questions: nativeQuestions()})
+	model, _ := p.DecisionModel("jev-latest")
+	_, err := model.DoDecide(t.Context(), provider.DecisionCallOptions{State: "test", Questions: nativeQuestions()})
 	if err == nil {
 		t.Fatal("expected an error when no API key is configured")
 	}
 }
 
-func TestEvaluationModel_ReportsUnsupportedProviderOptions(t *testing.T) {
+func TestDecisionModel_ReportsUnsupportedProviderOptions(t *testing.T) {
 	server := newTestServer(t, nativeResponseJSON)
 	p := New(Config{APIKey: "k", BaseURL: server.URL})
-	model, _ := p.EvaluationModel("jev-latest")
+	model, _ := p.DecisionModel("jev-latest")
 
-	result, err := model.DoEvaluate(t.Context(), provider.EvaluationCallOptions{
+	result, err := model.DoDecide(t.Context(), provider.DecisionCallOptions{
 		State:           "test",
 		Questions:       nativeQuestions(),
 		ProviderOptions: map[string]interface{}{"typesafe": map[string]interface{}{"temperature": float64(0)}},
 	})
 	if err != nil {
-		t.Fatalf("DoEvaluate: %v", err)
+		t.Fatalf("DoDecide: %v", err)
 	}
 	if len(result.Warnings) != 1 || result.Warnings[0].Feature != "providerOptions.typesafe.temperature" {
 		t.Fatalf("warnings = %+v", result.Warnings)
 	}
 }
 
-func TestEvaluationModel_RejectsProviderLimitsBeforeHTTP(t *testing.T) {
+func TestDecisionModel_RejectsProviderLimitsBeforeHTTP(t *testing.T) {
 	called := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 	}))
 	defer server.Close()
 	p := New(Config{APIKey: "k", BaseURL: server.URL})
-	model, _ := p.EvaluationModel("jev-latest")
+	model, _ := p.DecisionModel("jev-latest")
 
 	criteria := make(map[string]interface{}, 256)
 	for i := 0; i < 256; i++ {
 		criteria[string(rune('a'+i%26))+string(rune(i))] = nil
 	}
-	_, err := model.DoEvaluate(t.Context(), provider.EvaluationCallOptions{
+	_, err := model.DoDecide(t.Context(), provider.DecisionCallOptions{
 		State: "test",
-		Questions: map[string]provider.EvaluationQuestion{
+		Questions: map[string]provider.DecisionQuestion{
 			"q": {Type: "choice", Instructions: "Pick", Criteria: criteria},
 		},
 	})
@@ -271,9 +274,9 @@ func TestEvaluationModel_RejectsProviderLimitsBeforeHTTP(t *testing.T) {
 	for i := range levels {
 		levels[i] = "level"
 	}
-	_, err = model.DoEvaluate(t.Context(), provider.EvaluationCallOptions{
+	_, err = model.DoDecide(t.Context(), provider.DecisionCallOptions{
 		State: "test",
-		Questions: map[string]provider.EvaluationQuestion{
+		Questions: map[string]provider.DecisionQuestion{
 			"q": {Type: "score", Instructions: "Rate", Criteria: levels},
 		},
 	})
@@ -282,7 +285,7 @@ func TestEvaluationModel_RejectsProviderLimitsBeforeHTTP(t *testing.T) {
 	}
 }
 
-func TestEvaluationModel_HTTPErrors(t *testing.T) {
+func TestDecisionModel_HTTPErrors(t *testing.T) {
 	cases := []struct {
 		status      int
 		body        string
@@ -302,8 +305,8 @@ func TestEvaluationModel_HTTPErrors(t *testing.T) {
 			_, _ = w.Write([]byte(tc.body))
 		}))
 		p := New(Config{APIKey: "k", BaseURL: server.URL})
-		model, _ := p.EvaluationModel("jev-latest")
-		_, err := model.DoEvaluate(t.Context(), provider.EvaluationCallOptions{State: "test", Questions: nativeQuestions()})
+		model, _ := p.DecisionModel("jev-latest")
+		_, err := model.DoDecide(t.Context(), provider.DecisionCallOptions{State: "test", Questions: nativeQuestions()})
 		server.Close()
 		if err == nil {
 			t.Fatalf("status %d: expected an error", tc.status)
@@ -321,11 +324,11 @@ func TestEvaluationModel_HTTPErrors(t *testing.T) {
 	}
 }
 
-func TestEvaluationModel_RejectsMalformedSuccessfulResponse(t *testing.T) {
+func TestDecisionModel_RejectsMalformedSuccessfulResponse(t *testing.T) {
 	server := newTestServer(t, `{"answers":{"test":{"type":"noul"}}}`)
 	p := New(Config{APIKey: "k", BaseURL: server.URL})
-	model, _ := p.EvaluationModel("jev-latest")
-	_, err := model.DoEvaluate(t.Context(), provider.EvaluationCallOptions{State: "test", Questions: nativeQuestions()})
+	model, _ := p.DecisionModel("jev-latest")
+	_, err := model.DoDecide(t.Context(), provider.DecisionCallOptions{State: "test", Questions: nativeQuestions()})
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -334,13 +337,13 @@ func TestEvaluationModel_RejectsMalformedSuccessfulResponse(t *testing.T) {
 	}
 }
 
-func TestEvaluationModel_AcceptsNullOptionalMetadata(t *testing.T) {
+func TestDecisionModel_AcceptsNullOptionalMetadata(t *testing.T) {
 	server := newTestServer(t, `{"model":null,"usage":null,"answers":{"topic":{"type":"choice","choice":"a","probabilities":{"a":1},"confidence":null}}}`)
 	p := New(Config{APIKey: "k", BaseURL: server.URL})
-	model, _ := p.EvaluationModel("jev-latest")
-	result, err := model.DoEvaluate(t.Context(), provider.EvaluationCallOptions{State: "test", Questions: nativeQuestions()})
+	model, _ := p.DecisionModel("jev-latest")
+	result, err := model.DoDecide(t.Context(), provider.DecisionCallOptions{State: "test", Questions: nativeQuestions()})
 	if err != nil {
-		t.Fatalf("DoEvaluate: %v", err)
+		t.Fatalf("DoDecide: %v", err)
 	}
 	if result.Usage.InputTokens != nil || result.Usage.OutputTokens != nil {
 		t.Fatalf("usage = %+v", result.Usage)
@@ -352,5 +355,63 @@ func TestEvaluationModel_AcceptsNullOptionalMetadata(t *testing.T) {
 	confidence, _ := meta["confidence"].(map[string]float64)
 	if len(confidence) != 0 {
 		t.Fatalf("confidence = %+v", confidence)
+	}
+}
+
+func typeSafeDecideWithState(t *testing.T, state interface{}) (map[string]interface{}, error) {
+	t.Helper()
+	var got map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"answers": {"q": {"type": "noul", "noul": 0.5}}}`))
+	}))
+	defer server.Close()
+	p := New(Config{APIKey: "k", BaseURL: server.URL})
+	model, _ := p.DecisionModel("jev-latest")
+	_, err := model.DoDecide(context.Background(), provider.DecisionCallOptions{
+		State:     state,
+		Questions: map[string]provider.DecisionQuestion{"q": {Type: "boolean", Instructions: "i"}},
+	})
+	return got, err
+}
+
+// TS: "maps text and JSON parts to native text state"
+func TestDecisionModel_MapsTextAndJSONPartsToNativeTextState(t *testing.T) {
+	got, err := typeSafeDecideWithState(t, []provider.DecisionStatePart{
+		provider.DecisionTextPart("Inspect."), provider.DecisionJSONPart([]interface{}{1.0, nil}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["state"] != "Inspect.\n[1,null]" {
+		t.Fatalf("state = %v", got["state"])
+	}
+}
+
+// TS: "preserves a single JSON state part as native JSON"
+func TestDecisionModel_PreservesSingleJSONPartAsNativeJSON(t *testing.T) {
+	obj := map[string]interface{}{"nested": map[string]interface{}{"amount": 49.0}, "history": []interface{}{"refund"}}
+	for _, value := range []interface{}{obj, []interface{}{1.0, nil}} {
+		got, err := typeSafeDecideWithState(t, []provider.DecisionStatePart{provider.DecisionJSONPart(value)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got["state"], value) {
+			t.Fatalf("state = %v, want %v", got["state"], value)
+		}
+	}
+}
+
+// TS: "rejects file evidence before sending a text-only decision request"
+func TestDecisionModel_RejectsFileEvidence(t *testing.T) {
+	got, err := typeSafeDecideWithState(t, []provider.DecisionStatePart{
+		provider.DecisionFilePart(types.FileContent{MediaType: "image/png", FileData: types.FileData{Type: types.FileDataTypeData, DataString: "AAAA"}}),
+	})
+	if !providererrors.IsUnsupportedFunctionalityError(err) {
+		t.Fatalf("err = %v", err)
+	}
+	if got != nil {
+		t.Fatalf("a request was sent: %v", got)
 	}
 }

@@ -162,35 +162,35 @@ Options for streaming array elements as they complete.
 
 {/* /gen:fields */}
 
-## Evaluation
+## Decision
 
-`ai.ExperimentalEvaluate` asks an evaluation model typed questions and returns one typed answer per question. `ai.NewEvaluationLanguageModel` returns an `*ai.EvaluationLanguageModel`, which adapts any language model into an evaluation model by prompting it with a JSON-schema-constrained request. Reasoning defaults to `none` unless you override it with provider options.
+`ai.ExperimentalDecide` asks a decision model typed questions and returns one typed answer per question. `ai.NewDecisionLanguageModel` returns an `*ai.DecisionLanguageModel`, which adapts any language model into a decision model by prompting it with a JSON-schema-constrained request. Reasoning defaults to `none` unless you override it with provider options.
 
-{/* gen:fields ai.EvaluationLanguageModelOptions */}
+{/* gen:fields ai.DecisionLanguageModelOptions */}
 
 | Field | Type | Description |
 | --- | --- | --- |
 | `Model` | `provider.LanguageModel` |  |
-| `Provider` | `string` | Provider overrides the reported provider ID. Defaults to "&lt;model.Provider()&gt;.evaluation". |
+| `Provider` | `string` | Provider overrides the reported provider ID. Defaults to "&lt;model.Provider()&gt;.decision". |
 
 {/* /gen:fields */}
 
-### EvaluateResult
+### DecideResult
 
-{/* gen:fields ai.EvaluateResult */}
+{/* gen:fields ai.DecideResult */}
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `Answers` | `map[string]provider.EvaluationAnswer` | Answers has exactly one typed answer per question, keyed by question ID. |
-| `Usage` | `EvaluateUsage` |  |
+| `Answers` | `map[string]provider.DecisionAnswer` | Answers has exactly one typed answer per question, keyed by question ID. |
+| `Usage` | `DecideUsage` |  |
 | `Warnings` | `[]types.Warning` |  |
-| `Rounding` | `*provider.EvaluationRounding` |  |
+| `Rounding` | `*provider.DecisionRounding` |  |
 | `ProviderMetadata` | `map[string]interface{}` |  |
-| `Response` | `EvaluateResponse` |  |
+| `Response` | `DecideResponse` |  |
 
 {/* /gen:fields */}
 
-{/* gen:fields ai.EvaluateUsage */}
+{/* gen:fields ai.DecideUsage */}
 
 | Field | Type | Description |
 | --- | --- | --- |
@@ -200,7 +200,7 @@ Options for streaming array elements as they complete.
 
 {/* /gen:fields */}
 
-{/* gen:fields ai.EvaluateResponse */}
+{/* gen:fields ai.DecideResponse */}
 
 | Field | Type | Description |
 | --- | --- | --- |

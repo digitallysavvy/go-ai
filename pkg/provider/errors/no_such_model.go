@@ -17,7 +17,7 @@ type NoSuchModelError struct {
 	// ModelType identifies the kind of model requested, matching TS's
 	// modelType union: "languageModel", "embeddingModel", "imageModel",
 	// "transcriptionModel", "speechModel", "rerankingModel", "videoModel",
-	// or "evaluationModel".
+	// or "decisionModel".
 	ModelType string
 
 	// Message is a custom error message. When empty, Error() falls back to

@@ -1,8 +1,8 @@
-// Example: TypeSafe AI evaluation.
+// Example: TypeSafe AI decision.
 //
-// Evaluates a shared "state" (here, a support ticket) against a choice,
+// Decides a shared "state" (here, a support ticket) against a choice,
 // score, and boolean question in a single call using TypeSafe AI's
-// experimental EvaluationModel. Requires TYPESAFE_AI_API_KEY.
+// experimental DecisionModel. Requires TYPESAFE_AI_API_KEY.
 package main
 
 import (
@@ -22,7 +22,7 @@ func main() {
 		"message": "I was charged twice for my subscription. Please refund the duplicate charge.",
 	}
 
-	questions := map[string]provider.EvaluationQuestion{
+	questions := map[string]provider.DecisionQuestion{
 		"department": {
 			Type:         "choice",
 			Instructions: "Which team should handle this support ticket?",
@@ -47,7 +47,7 @@ func main() {
 		},
 	}
 
-	result, err := ai.ExperimentalEvaluate(context.Background(), ai.EvaluateOptions{
+	result, err := ai.ExperimentalDecide(context.Background(), ai.DecideOptions{
 		Model:     "jev-latest",
 		Provider:  tsai,
 		State:     state,

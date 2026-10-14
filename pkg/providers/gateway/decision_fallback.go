@@ -9,25 +9,25 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
-// Bounds for EvaluationFallbackCondition trees. Mirror TS
-// EVALUATION_FALLBACK_MAX_CONDITION_DEPTH /
-// EVALUATION_FALLBACK_MAX_CONDITIONS_PER_LIST /
-// EVALUATION_FALLBACK_MAX_QUESTION_LENGTH
+// Bounds for DecisionFallbackCondition trees. Mirror TS
+// DECISION_FALLBACK_MAX_CONDITION_DEPTH /
+// DECISION_FALLBACK_MAX_CONDITIONS_PER_LIST /
+// DECISION_FALLBACK_MAX_QUESTION_LENGTH
 // (packages/gateway/src/gateway-provider-options.ts).
 const (
-	EvaluationFallbackMaxConditionDepth    = 5
-	EvaluationFallbackMaxConditionsPerList = 20
-	EvaluationFallbackMaxQuestionLength    = 256
+	DecisionFallbackMaxConditionDepth    = 5
+	DecisionFallbackMaxConditionsPerList = 20
+	DecisionFallbackMaxQuestionLength    = 256
 )
 
-// EvaluationFallbackCondition is a condition on the primary model's
-// answers, used to decide whether to rerun an evaluation against a
+// DecisionFallbackCondition is a condition on the primary model's
+// answers, used to decide whether to rerun a decision against a
 // conditional fallback model. Exactly one of the following combinations
 // must be set: (Question + ConfidenceBelow), (Question +
 // ProbabilityBetween), Any, All, or AtLeast. Groups (Any/All/AtLeast) nest
-// at most EvaluationFallbackMaxConditionDepth levels deep. Mirrors TS
-// EvaluationFallbackCondition.
-type EvaluationFallbackCondition struct {
+// at most DecisionFallbackMaxConditionDepth levels deep. Mirrors TS
+// DecisionFallbackCondition.
+type DecisionFallbackCondition struct {
 	// Question narrows the condition to a specific question ID. Used with
 	// ConfidenceBelow or ProbabilityBetween. When left empty, ConfidenceBelow
 	// checks every Choice and Score question and ProbabilityBetween checks
@@ -44,31 +44,31 @@ type EvaluationFallbackCondition struct {
 	ProbabilityBetween *[2]float64
 
 	// Any triggers the fallback when any nested condition matches.
-	Any []EvaluationFallbackCondition
+	Any []DecisionFallbackCondition
 
 	// All triggers the fallback when every nested condition matches.
-	All []EvaluationFallbackCondition
+	All []DecisionFallbackCondition
 
 	// AtLeast triggers the fallback when at least AtLeast.Count nested
 	// conditions match.
-	AtLeast *EvaluationFallbackAtLeast
+	AtLeast *DecisionFallbackAtLeast
 }
 
-// EvaluationFallbackAtLeast is the payload for
-// EvaluationFallbackCondition.AtLeast.
-type EvaluationFallbackAtLeast struct {
+// DecisionFallbackAtLeast is the payload for
+// DecisionFallbackCondition.AtLeast.
+type DecisionFallbackAtLeast struct {
 	Count      int
-	Conditions []EvaluationFallbackCondition
+	Conditions []DecisionFallbackCondition
 }
 
 // GatewayModelFallback is a single entry in GatewayProviderOptions.Models:
 // either a plain fallback model ID (When nil) or -- as the first entry
-// only, and only for evaluation requests -- a conditional fallback that
-// reruns the evaluation against Model when When matches the primary
+// only, and only for decision requests -- a conditional fallback that
+// reruns the decision against Model when When matches the primary
 // answers. Mirrors TS GatewayModelFallback.
 type GatewayModelFallback struct {
 	Model string
-	When  *EvaluationFallbackCondition
+	When  *DecisionFallbackCondition
 }
 
 // GatewayModel returns a plain (non-conditional) fallback model entry.
@@ -76,10 +76,10 @@ func GatewayModel(modelID string) GatewayModelFallback {
 	return GatewayModelFallback{Model: modelID}
 }
 
-// GatewayConditionalModelFallback returns a conditional evaluation
+// GatewayConditionalModelFallback returns a conditional decision
 // fallback entry. When present in GatewayProviderOptions.Models it must be
 // the first entry; every other entry must be a plain GatewayModel.
-func GatewayConditionalModelFallback(modelID string, when EvaluationFallbackCondition) GatewayModelFallback {
+func GatewayConditionalModelFallback(modelID string, when DecisionFallbackCondition) GatewayModelFallback {
 	return GatewayModelFallback{Model: modelID, When: &when}
 }
 
@@ -130,7 +130,7 @@ func (f *GatewayModelFallback) UnmarshalJSON(data []byte) error {
 	}
 	result := GatewayModelFallback{Model: wire.Model}
 	if len(wire.When) > 0 && string(wire.When) != "null" {
-		cond, err := unmarshalEvaluationFallbackCondition(wire.When)
+		cond, err := unmarshalDecisionFallbackCondition(wire.When)
 		if err != nil {
 			return err
 		}
@@ -140,90 +140,90 @@ func (f *GatewayModelFallback) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// unmarshalEvaluationFallbackCondition decodes a raw JSON "when" condition
-// into an EvaluationFallbackCondition tree. It mirrors the shapes
-// validateEvaluationFallbackCondition accepts structurally, but performs no
-// bounds checking itself -- validateGatewayEvaluationModelsOption still
+// unmarshalDecisionFallbackCondition decodes a raw JSON "when" condition
+// into a DecisionFallbackCondition tree. It mirrors the shapes
+// validateDecisionFallbackCondition accepts structurally, but performs no
+// bounds checking itself -- validateGatewayDecisionModelsOption still
 // runs at request time and is the source of truth for limits/error
 // messages.
-func unmarshalEvaluationFallbackCondition(data []byte) (EvaluationFallbackCondition, error) {
+func unmarshalDecisionFallbackCondition(data []byte) (DecisionFallbackCondition, error) {
 	var m map[string]interface{}
 	if err := json.Unmarshal(data, &m); err != nil {
-		return EvaluationFallbackCondition{}, fmt.Errorf("gateway: invalid evaluation fallback condition: %w", err)
+		return DecisionFallbackCondition{}, fmt.Errorf("gateway: invalid decision fallback condition: %w", err)
 	}
-	return evaluationFallbackConditionFromMap(m)
+	return decisionFallbackConditionFromMap(m)
 }
 
-func evaluationFallbackConditionFromMap(m map[string]interface{}) (EvaluationFallbackCondition, error) {
+func decisionFallbackConditionFromMap(m map[string]interface{}) (DecisionFallbackCondition, error) {
 	switch {
 	case m["confidenceBelow"] != nil:
 		question, _ := m["question"].(string)
 		v, ok := toFloat64(m["confidenceBelow"])
 		if !ok {
-			return EvaluationFallbackCondition{}, errors.New("gateway: confidenceBelow must be a number")
+			return DecisionFallbackCondition{}, errors.New("gateway: confidenceBelow must be a number")
 		}
-		return EvaluationFallbackCondition{Question: question, ConfidenceBelow: &v}, nil
+		return DecisionFallbackCondition{Question: question, ConfidenceBelow: &v}, nil
 
 	case m["probabilityBetween"] != nil:
 		question, _ := m["question"].(string)
 		arr, ok := toInterfaceSlice(m["probabilityBetween"])
 		if !ok || len(arr) != 2 {
-			return EvaluationFallbackCondition{}, errors.New("gateway: probabilityBetween must be a two-element array")
+			return DecisionFallbackCondition{}, errors.New("gateway: probabilityBetween must be a two-element array")
 		}
 		minV, ok1 := toFloat64(arr[0])
 		maxV, ok2 := toFloat64(arr[1])
 		if !ok1 || !ok2 {
-			return EvaluationFallbackCondition{}, errors.New("gateway: probabilityBetween values must be numbers")
+			return DecisionFallbackCondition{}, errors.New("gateway: probabilityBetween values must be numbers")
 		}
 		pb := [2]float64{minV, maxV}
-		return EvaluationFallbackCondition{Question: question, ProbabilityBetween: &pb}, nil
+		return DecisionFallbackCondition{Question: question, ProbabilityBetween: &pb}, nil
 
 	case m["any"] != nil:
-		list, err := evaluationFallbackConditionListFromValue(m["any"])
+		list, err := decisionFallbackConditionListFromValue(m["any"])
 		if err != nil {
-			return EvaluationFallbackCondition{}, err
+			return DecisionFallbackCondition{}, err
 		}
-		return EvaluationFallbackCondition{Any: list}, nil
+		return DecisionFallbackCondition{Any: list}, nil
 
 	case m["all"] != nil:
-		list, err := evaluationFallbackConditionListFromValue(m["all"])
+		list, err := decisionFallbackConditionListFromValue(m["all"])
 		if err != nil {
-			return EvaluationFallbackCondition{}, err
+			return DecisionFallbackCondition{}, err
 		}
-		return EvaluationFallbackCondition{All: list}, nil
+		return DecisionFallbackCondition{All: list}, nil
 
 	case m["atLeast"] != nil:
 		atLeast, ok := m["atLeast"].(map[string]interface{})
 		if !ok {
-			return EvaluationFallbackCondition{}, errors.New("gateway: atLeast must be an object")
+			return DecisionFallbackCondition{}, errors.New("gateway: atLeast must be an object")
 		}
 		countF, ok := toFloat64(atLeast["count"])
 		if !ok {
-			return EvaluationFallbackCondition{}, errors.New("gateway: atLeast.count must be a number")
+			return DecisionFallbackCondition{}, errors.New("gateway: atLeast.count must be a number")
 		}
-		list, err := evaluationFallbackConditionListFromValue(atLeast["conditions"])
+		list, err := decisionFallbackConditionListFromValue(atLeast["conditions"])
 		if err != nil {
-			return EvaluationFallbackCondition{}, err
+			return DecisionFallbackCondition{}, err
 		}
-		return EvaluationFallbackCondition{AtLeast: &EvaluationFallbackAtLeast{Count: int(countF), Conditions: list}}, nil
+		return DecisionFallbackCondition{AtLeast: &DecisionFallbackAtLeast{Count: int(countF), Conditions: list}}, nil
 
 	default:
-		return EvaluationFallbackCondition{}, errors.New("gateway: unrecognized evaluation fallback condition shape")
+		return DecisionFallbackCondition{}, errors.New("gateway: unrecognized decision fallback condition shape")
 	}
 }
 
-func evaluationFallbackConditionListFromValue(v interface{}) ([]EvaluationFallbackCondition, error) {
+func decisionFallbackConditionListFromValue(v interface{}) ([]DecisionFallbackCondition, error) {
 	arr, ok := toInterfaceSlice(v)
 	if !ok {
 		return nil, errors.New("gateway: condition list must be an array")
 	}
-	out := make([]EvaluationFallbackCondition, len(arr))
+	out := make([]DecisionFallbackCondition, len(arr))
 	for i, item := range arr {
 		m, ok := item.(map[string]interface{})
 		if !ok {
 			return nil, fmt.Errorf("gateway: condition[%d] must be an object", i)
 		}
-		c, err := evaluationFallbackConditionFromMap(m)
+		c, err := decisionFallbackConditionFromMap(m)
 		if err != nil {
 			return nil, err
 		}
@@ -232,7 +232,7 @@ func evaluationFallbackConditionListFromValue(v interface{}) ([]EvaluationFallba
 	return out, nil
 }
 
-func (c EvaluationFallbackCondition) toWire() map[string]interface{} {
+func (c DecisionFallbackCondition) toWire() map[string]interface{} {
 	switch {
 	case c.ConfidenceBelow != nil:
 		w := map[string]interface{}{"confidenceBelow": *c.ConfidenceBelow}
@@ -260,7 +260,7 @@ func (c EvaluationFallbackCondition) toWire() map[string]interface{} {
 	}
 }
 
-func conditionsToWire(conditions []EvaluationFallbackCondition) []interface{} {
+func conditionsToWire(conditions []DecisionFallbackCondition) []interface{} {
 	out := make([]interface{}, len(conditions))
 	for i, c := range conditions {
 		out[i] = c.toWire()
@@ -268,13 +268,13 @@ func conditionsToWire(conditions []EvaluationFallbackCondition) []interface{} {
 	return out
 }
 
-// validateGatewayEvaluationProviderOptions validates the "gateway" entry of
-// an evaluation call's providerOptions, mirroring TS
-// gatewayEvaluationProviderOptionsSchema (only the "models" key is
+// validateGatewayDecisionProviderOptions validates the "gateway" entry of
+// a decision call's providerOptions, mirroring TS
+// gatewayDecisionProviderOptionsSchema (only the "models" key is
 // constrained; every other key passes through via the schema's
 // `.catchall(z.unknown())`). Returns nil when there is nothing to
 // validate (gatewayOptions is not an object, or has no "models" key).
-func validateGatewayEvaluationProviderOptions(gatewayOptions interface{}) error {
+func validateGatewayDecisionProviderOptions(gatewayOptions interface{}) error {
 	m, ok := gatewayOptions.(map[string]interface{})
 	if !ok {
 		return nil
@@ -283,7 +283,7 @@ func validateGatewayEvaluationProviderOptions(gatewayOptions interface{}) error 
 	if !ok {
 		return nil
 	}
-	if err := validateGatewayEvaluationModelsOption(modelsRaw); err != nil {
+	if err := validateGatewayDecisionModelsOption(modelsRaw); err != nil {
 		return &providererrors.InvalidArgumentError{
 			Field:   "providerOptions.gateway.models",
 			Message: fmt.Sprintf("invalid gateway provider options: %v", err),
@@ -292,11 +292,11 @@ func validateGatewayEvaluationProviderOptions(gatewayOptions interface{}) error 
 	return nil
 }
 
-// validateGatewayEvaluationModelsOption mirrors TS
+// validateGatewayDecisionModelsOption mirrors TS
 // gatewayModelFallbacksSchema: an array of strings and/or at most one
 // conditional fallback object, which -- if present -- must be the first
 // entry.
-func validateGatewayEvaluationModelsOption(value interface{}) error {
+func validateGatewayDecisionModelsOption(value interface{}) error {
 	list, ok := value.([]interface{})
 	if !ok {
 		return errors.New("models must be an array")
@@ -310,7 +310,7 @@ func validateGatewayEvaluationModelsOption(value interface{}) error {
 			if conditionalIndex == -1 {
 				conditionalIndex = i
 			} else {
-				return errors.New("models supports at most one conditional evaluation fallback")
+				return errors.New("models supports at most one conditional decision fallback")
 			}
 			if err := validateConditionalModelFallback(e); err != nil {
 				return err
@@ -320,7 +320,7 @@ func validateGatewayEvaluationModelsOption(value interface{}) error {
 		}
 	}
 	if conditionalIndex > 0 {
-		return errors.New("a conditional evaluation fallback must be the first models entry")
+		return errors.New("a conditional decision fallback must be the first models entry")
 	}
 	return nil
 }
@@ -346,16 +346,16 @@ func validateConditionalModelFallback(entry map[string]interface{}) error {
 	if !ok {
 		return errors.New(`conditional model fallback requires "when"`)
 	}
-	return validateEvaluationFallbackCondition(whenRaw, 1)
+	return validateDecisionFallbackCondition(whenRaw, 1)
 }
 
-// validateEvaluationFallbackCondition mirrors TS conditionSchema(depth):
+// validateDecisionFallbackCondition mirrors TS conditionSchema(depth):
 // depth starts at 1 for the top-level "when" condition. At
-// EvaluationFallbackMaxConditionDepth, only direct conditions
+// DecisionFallbackMaxConditionDepth, only direct conditions
 // (question+confidenceBelow or question+probabilityBetween) are accepted;
 // any/all/atLeast groups are rejected with the depth-limit message
 // regardless of their contents.
-func validateEvaluationFallbackCondition(value interface{}, depth int) error {
+func validateDecisionFallbackCondition(value interface{}, depth int) error {
 	m, ok := value.(map[string]interface{})
 	if !ok {
 		return errors.New("condition must be an object")
@@ -365,15 +365,15 @@ func validateEvaluationFallbackCondition(value interface{}, depth int) error {
 		return validateDirectCondition(m)
 	}
 
-	if depth >= EvaluationFallbackMaxConditionDepth {
+	if depth >= DecisionFallbackMaxConditionDepth {
 		if _, ok := m["any"]; ok {
-			return fmt.Errorf("conditions can be nested at most %d levels deep", EvaluationFallbackMaxConditionDepth)
+			return fmt.Errorf("conditions can be nested at most %d levels deep", DecisionFallbackMaxConditionDepth)
 		}
 		if _, ok := m["all"]; ok {
-			return fmt.Errorf("conditions can be nested at most %d levels deep", EvaluationFallbackMaxConditionDepth)
+			return fmt.Errorf("conditions can be nested at most %d levels deep", DecisionFallbackMaxConditionDepth)
 		}
 		if _, ok := m["atLeast"]; ok {
-			return fmt.Errorf("conditions can be nested at most %d levels deep", EvaluationFallbackMaxConditionDepth)
+			return fmt.Errorf("conditions can be nested at most %d levels deep", DecisionFallbackMaxConditionDepth)
 		}
 		return errors.New("invalid condition")
 	}
@@ -419,8 +419,8 @@ func hasOnlyKey(m map[string]interface{}, key string) bool {
 func validateDirectCondition(m map[string]interface{}) error {
 	if q, hasQuestion := m["question"]; hasQuestion {
 		question, ok := q.(string)
-		if !ok || len(question) < 1 || len(question) > EvaluationFallbackMaxQuestionLength {
-			return fmt.Errorf("condition question must be between 1 and %d characters", EvaluationFallbackMaxQuestionLength)
+		if !ok || len(question) < 1 || len(question) > DecisionFallbackMaxQuestionLength {
+			return fmt.Errorf("condition question must be between 1 and %d characters", DecisionFallbackMaxQuestionLength)
 		}
 	}
 	if cb, ok := m["confidenceBelow"]; ok {
@@ -454,11 +454,11 @@ func validateConditionGroup(value interface{}, nextDepth int) error {
 	if !ok {
 		return errors.New("condition list must be an array")
 	}
-	if len(arr) < 1 || len(arr) > EvaluationFallbackMaxConditionsPerList {
-		return fmt.Errorf("condition list must contain between 1 and %d entries", EvaluationFallbackMaxConditionsPerList)
+	if len(arr) < 1 || len(arr) > DecisionFallbackMaxConditionsPerList {
+		return fmt.Errorf("condition list must contain between 1 and %d entries", DecisionFallbackMaxConditionsPerList)
 	}
 	for _, c := range arr {
-		if err := validateEvaluationFallbackCondition(c, nextDepth); err != nil {
+		if err := validateDecisionFallbackCondition(c, nextDepth); err != nil {
 			return err
 		}
 	}
@@ -488,14 +488,14 @@ func validateAtLeast(value interface{}, nextDepth int) error {
 		return errors.New("atLeast requires conditions")
 	}
 	arr, ok := conditionsRaw.([]interface{})
-	if !ok || len(arr) < 1 || len(arr) > EvaluationFallbackMaxConditionsPerList {
-		return fmt.Errorf("atLeast conditions must contain between 1 and %d entries", EvaluationFallbackMaxConditionsPerList)
+	if !ok || len(arr) < 1 || len(arr) > DecisionFallbackMaxConditionsPerList {
+		return fmt.Errorf("atLeast conditions must contain between 1 and %d entries", DecisionFallbackMaxConditionsPerList)
 	}
 	if int(countF) > len(arr) {
 		return errors.New("atLeast count cannot exceed the number of conditions")
 	}
 	for _, c := range arr {
-		if err := validateEvaluationFallbackCondition(c, nextDepth); err != nil {
+		if err := validateDecisionFallbackCondition(c, nextDepth); err != nil {
 			return err
 		}
 	}

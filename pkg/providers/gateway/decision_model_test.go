@@ -3,17 +3,21 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
 )
 
-// TS: gateway-evaluation-model.test.ts createTestModel / basic request shape
-func TestGatewayEvaluationModel_DoEvaluate_RequestShapeAndHeaders(t *testing.T) {
+// TS: gateway-decision-model.test.ts createTestModel / basic request shape
+func TestGatewayDecisionModel_DoDecide_RequestShapeAndHeaders(t *testing.T) {
 	var gotPath string
 	var gotHeaders http.Header
 	var gotBody map[string]interface{}
@@ -33,33 +37,37 @@ func TestGatewayEvaluationModel_DoEvaluate_RequestShapeAndHeaders(t *testing.T) 
 	if err != nil {
 		t.Fatalf("New error = %v", err)
 	}
-	model, err := p.EvaluationModel("typesafe-ai/jev-latest")
+	model, err := p.DecisionModel("typesafe-ai/jev-latest")
 	if err != nil {
-		t.Fatalf("EvaluationModel error = %v", err)
+		t.Fatalf("DecisionModel error = %v", err)
 	}
 
-	result, err := model.DoEvaluate(context.Background(), provider.EvaluationCallOptions{
+	result, err := model.DoDecide(context.Background(), provider.DecisionCallOptions{
 		State: "The capital of France is Paris.",
-		Questions: map[string]provider.EvaluationQuestion{
+		Questions: map[string]provider.DecisionQuestion{
 			"correct": {Type: "boolean", Instructions: "Is the statement factually correct?"},
 		},
 		ProviderOptions: map[string]interface{}{"typesafe-ai": map[string]interface{}{"strict": true}},
 	})
 	if err != nil {
-		t.Fatalf("DoEvaluate() error = %v", err)
+		t.Fatalf("DoDecide() error = %v", err)
 	}
 
-	if gotPath != "/evaluation-model" {
-		t.Fatalf("path = %q, want /evaluation-model", gotPath)
+	if gotPath != "/decision-model" {
+		t.Fatalf("path = %q, want /decision-model", gotPath)
 	}
 	if got := gotHeaders.Get("ai-model-id"); got != "typesafe-ai/jev-latest" {
 		t.Fatalf("ai-model-id = %q", got)
 	}
-	if got := gotHeaders.Get("ai-evaluation-model-specification-version"); got != "4" {
-		t.Fatalf("ai-evaluation-model-specification-version = %q, want 4", got)
+	if got := gotHeaders.Get("ai-decision-model-specification-version"); got != "4" {
+		t.Fatalf("ai-decision-model-specification-version = %q, want 4", got)
 	}
-	if gotBody["state"] != "The capital of France is Paris." {
-		t.Fatalf("state = %v", gotBody["state"])
+	wantParts := []interface{}{map[string]interface{}{"type": "text", "text": "The capital of France is Paris."}}
+	if !reflect.DeepEqual(gotBody["stateParts"], wantParts) {
+		t.Fatalf("stateParts = %v", gotBody["stateParts"])
+	}
+	if _, legacy := gotBody["state"]; legacy {
+		t.Fatalf("legacy state key must not be sent: %v", gotBody)
 	}
 	questions, _ := gotBody["questions"].(map[string]interface{})
 	correctQ, _ := questions["correct"].(map[string]interface{})
@@ -82,9 +90,9 @@ func TestGatewayEvaluationModel_DoEvaluate_RequestShapeAndHeaders(t *testing.T) 
 	}
 }
 
-// TS: gateway-evaluation-model.test.ts includes criteria only when the
+// TS: gateway-decision-model.test.ts includes criteria only when the
 // question defines it (boolean questions may omit criteria entirely).
-func TestGatewayEvaluationModel_DoEvaluate_OmitsNilCriteria(t *testing.T) {
+func TestGatewayDecisionModel_DoDecide_OmitsNilCriteria(t *testing.T) {
 	var gotBody map[string]interface{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
@@ -98,19 +106,19 @@ func TestGatewayEvaluationModel_DoEvaluate_OmitsNilCriteria(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New error = %v", err)
 	}
-	model, err := p.EvaluationModel("m")
+	model, err := p.DecisionModel("m")
 	if err != nil {
-		t.Fatalf("EvaluationModel error = %v", err)
+		t.Fatalf("DecisionModel error = %v", err)
 	}
 
-	_, err = model.DoEvaluate(context.Background(), provider.EvaluationCallOptions{
+	_, err = model.DoDecide(context.Background(), provider.DecisionCallOptions{
 		State: "s",
-		Questions: map[string]provider.EvaluationQuestion{
+		Questions: map[string]provider.DecisionQuestion{
 			"q": {Type: "boolean", Instructions: "i"},
 		},
 	})
 	if err != nil {
-		t.Fatalf("DoEvaluate() error = %v", err)
+		t.Fatalf("DoDecide() error = %v", err)
 	}
 
 	questions, _ := gotBody["questions"].(map[string]interface{})
@@ -120,8 +128,8 @@ func TestGatewayEvaluationModel_DoEvaluate_OmitsNilCriteria(t *testing.T) {
 	}
 }
 
-// TS: gateway-evaluation-model.test.ts maps rounding/usage/warnings/providerMetadata/response
-func TestGatewayEvaluationModel_DoEvaluate_MapsFullResponse(t *testing.T) {
+// TS: gateway-decision-model.test.ts maps rounding/usage/warnings/providerMetadata/response
+func TestGatewayDecisionModel_DoDecide_MapsFullResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("x-request-id", "req-123")
@@ -142,19 +150,19 @@ func TestGatewayEvaluationModel_DoEvaluate_MapsFullResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New error = %v", err)
 	}
-	model, err := p.EvaluationModel("m")
+	model, err := p.DecisionModel("m")
 	if err != nil {
-		t.Fatalf("EvaluationModel error = %v", err)
+		t.Fatalf("DecisionModel error = %v", err)
 	}
 
-	result, err := model.DoEvaluate(context.Background(), provider.EvaluationCallOptions{
+	result, err := model.DoDecide(context.Background(), provider.DecisionCallOptions{
 		State: "s",
-		Questions: map[string]provider.EvaluationQuestion{
+		Questions: map[string]provider.DecisionQuestion{
 			"quality": {Type: "score", Instructions: "Rate the quality.", Criteria: []interface{}{"Poor.", "Acceptable.", "Excellent."}},
 		},
 	})
 	if err != nil {
-		t.Fatalf("DoEvaluate() error = %v", err)
+		t.Fatalf("DoDecide() error = %v", err)
 	}
 
 	if result.Rounding == nil || result.Rounding.ProbabilityDecimals == nil || *result.Rounding.ProbabilityDecimals != 2 {
@@ -178,14 +186,14 @@ func TestGatewayEvaluationModel_DoEvaluate_MapsFullResponse(t *testing.T) {
 	}
 }
 
-func TestGatewayEvaluationModel_SupportedQuestionTypes(t *testing.T) {
+func TestGatewayDecisionModel_SupportedQuestionTypes(t *testing.T) {
 	p, err := New(Config{APIKey: "test-key"})
 	if err != nil {
 		t.Fatalf("New error = %v", err)
 	}
-	model, err := p.EvaluationModel("m")
+	model, err := p.DecisionModel("m")
 	if err != nil {
-		t.Fatalf("EvaluationModel error = %v", err)
+		t.Fatalf("DecisionModel error = %v", err)
 	}
 	types := model.SupportedQuestionTypes()
 	if len(types) != 3 {
@@ -196,9 +204,9 @@ func TestGatewayEvaluationModel_SupportedQuestionTypes(t *testing.T) {
 	}
 }
 
-// TS: gateway-evaluation-model.test.ts "should attribute the response to
+// TS: gateway-decision-model.test.ts "should attribute the response to
 // the returned model after a fallback".
-func TestGatewayEvaluationModel_DoEvaluate_AttributesResponseToReturnedModel(t *testing.T) {
+func TestGatewayDecisionModel_DoDecide_AttributesResponseToReturnedModel(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -210,26 +218,26 @@ func TestGatewayEvaluationModel_DoEvaluate_AttributesResponseToReturnedModel(t *
 	if err != nil {
 		t.Fatalf("New error = %v", err)
 	}
-	model, err := p.EvaluationModel("typesafe-ai/jev")
+	model, err := p.DecisionModel("typesafe-ai/jev")
 	if err != nil {
-		t.Fatalf("EvaluationModel error = %v", err)
+		t.Fatalf("DecisionModel error = %v", err)
 	}
 
-	result, err := model.DoEvaluate(context.Background(), provider.EvaluationCallOptions{
+	result, err := model.DoDecide(context.Background(), provider.DecisionCallOptions{
 		State:     "s",
-		Questions: map[string]provider.EvaluationQuestion{"q": {Type: "boolean", Instructions: "i"}},
+		Questions: map[string]provider.DecisionQuestion{"q": {Type: "boolean", Instructions: "i"}},
 	})
 	if err != nil {
-		t.Fatalf("DoEvaluate() error = %v", err)
+		t.Fatalf("DoDecide() error = %v", err)
 	}
 	if result.Response == nil || result.Response.ModelID != "anthropic/claude-sonnet-5" {
 		t.Fatalf("Response.ModelID = %+v, want anthropic/claude-sonnet-5", result.Response)
 	}
 }
 
-// TS: gateway-evaluation-model.test.ts "should attribute the response to
+// TS: gateway-decision-model.test.ts "should attribute the response to
 // the requested model when none is returned".
-func TestGatewayEvaluationModel_DoEvaluate_AttributesResponseToRequestedModelWhenNoneReturned(t *testing.T) {
+func TestGatewayDecisionModel_DoDecide_AttributesResponseToRequestedModelWhenNoneReturned(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -241,26 +249,26 @@ func TestGatewayEvaluationModel_DoEvaluate_AttributesResponseToRequestedModelWhe
 	if err != nil {
 		t.Fatalf("New error = %v", err)
 	}
-	model, err := p.EvaluationModel("typesafe-ai/jev")
+	model, err := p.DecisionModel("typesafe-ai/jev")
 	if err != nil {
-		t.Fatalf("EvaluationModel error = %v", err)
+		t.Fatalf("DecisionModel error = %v", err)
 	}
 
-	result, err := model.DoEvaluate(context.Background(), provider.EvaluationCallOptions{
+	result, err := model.DoDecide(context.Background(), provider.DecisionCallOptions{
 		State:     "s",
-		Questions: map[string]provider.EvaluationQuestion{"q": {Type: "boolean", Instructions: "i"}},
+		Questions: map[string]provider.DecisionQuestion{"q": {Type: "boolean", Instructions: "i"}},
 	})
 	if err != nil {
-		t.Fatalf("DoEvaluate() error = %v", err)
+		t.Fatalf("DoDecide() error = %v", err)
 	}
 	if result.Response == nil || result.Response.ModelID != "typesafe-ai/jev" {
 		t.Fatalf("Response.ModelID = %+v, want typesafe-ai/jev", result.Response)
 	}
 }
 
-// TS: gateway-evaluation-model.test.ts "should pass conditional model
+// TS: gateway-decision-model.test.ts "should pass conditional model
 // fallbacks into request body".
-func TestGatewayEvaluationModel_DoEvaluate_PassesConditionalModelFallbacks(t *testing.T) {
+func TestGatewayDecisionModel_DoDecide_PassesConditionalModelFallbacks(t *testing.T) {
 	var gotBody map[string]interface{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
@@ -274,16 +282,16 @@ func TestGatewayEvaluationModel_DoEvaluate_PassesConditionalModelFallbacks(t *te
 	if err != nil {
 		t.Fatalf("New error = %v", err)
 	}
-	model, err := p.EvaluationModel("typesafe-ai/jev")
+	model, err := p.DecisionModel("typesafe-ai/jev")
 	if err != nil {
-		t.Fatalf("EvaluationModel error = %v", err)
+		t.Fatalf("DecisionModel error = %v", err)
 	}
 
 	confidenceBelow := 0.6
 	providerOptions := GatewayProviderOptions{
 		Models: []GatewayModelFallback{
-			GatewayConditionalModelFallback("openai/gpt-5.6-sol", EvaluationFallbackCondition{
-				Any: []EvaluationFallbackCondition{
+			GatewayConditionalModelFallback("openai/gpt-5.6-sol", DecisionFallbackCondition{
+				Any: []DecisionFallbackCondition{
 					{Question: "tone", ConfidenceBelow: &confidenceBelow},
 					{Question: "correct", ProbabilityBetween: &[2]float64{0.4, 0.6}},
 				},
@@ -292,13 +300,13 @@ func TestGatewayEvaluationModel_DoEvaluate_PassesConditionalModelFallbacks(t *te
 		},
 	}.ToProviderOptions()
 
-	_, err = model.DoEvaluate(context.Background(), provider.EvaluationCallOptions{
+	_, err = model.DoDecide(context.Background(), provider.DecisionCallOptions{
 		State:           "s",
-		Questions:       map[string]provider.EvaluationQuestion{"q": {Type: "boolean", Instructions: "i"}},
+		Questions:       map[string]provider.DecisionQuestion{"q": {Type: "boolean", Instructions: "i"}},
 		ProviderOptions: providerOptions,
 	})
 	if err != nil {
-		t.Fatalf("DoEvaluate() error = %v", err)
+		t.Fatalf("DoDecide() error = %v", err)
 	}
 
 	body, _ := gotBody["providerOptions"].(map[string]interface{})
@@ -321,9 +329,9 @@ func TestGatewayEvaluationModel_DoEvaluate_PassesConditionalModelFallbacks(t *te
 	}
 }
 
-// TS: gateway-evaluation-model.test.ts "should reject invalid conditional
+// TS: gateway-decision-model.test.ts "should reject invalid conditional
 // model fallbacks" — the request must never reach the server.
-func TestGatewayEvaluationModel_DoEvaluate_RejectsInvalidConditionalModelFallbacks(t *testing.T) {
+func TestGatewayDecisionModel_DoDecide_RejectsInvalidConditionalModelFallbacks(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -337,9 +345,9 @@ func TestGatewayEvaluationModel_DoEvaluate_RejectsInvalidConditionalModelFallbac
 	if err != nil {
 		t.Fatalf("New error = %v", err)
 	}
-	model, err := p.EvaluationModel("typesafe-ai/jev")
+	model, err := p.DecisionModel("typesafe-ai/jev")
 	if err != nil {
-		t.Fatalf("EvaluationModel error = %v", err)
+		t.Fatalf("DecisionModel error = %v", err)
 	}
 
 	providerOptions := map[string]interface{}{
@@ -356,9 +364,9 @@ func TestGatewayEvaluationModel_DoEvaluate_RejectsInvalidConditionalModelFallbac
 		},
 	}
 
-	_, err = model.DoEvaluate(context.Background(), provider.EvaluationCallOptions{
+	_, err = model.DoDecide(context.Background(), provider.DecisionCallOptions{
 		State:           "s",
-		Questions:       map[string]provider.EvaluationQuestion{"q": {Type: "boolean", Instructions: "i"}},
+		Questions:       map[string]provider.DecisionQuestion{"q": {Type: "boolean", Instructions: "i"}},
 		ProviderOptions: providerOptions,
 	})
 	if err == nil {
@@ -372,7 +380,7 @@ func TestGatewayEvaluationModel_DoEvaluate_RejectsInvalidConditionalModelFallbac
 	}
 }
 
-func TestGatewayEvaluationModel_DoEvaluate_ErrorMapsToTypedGatewayError(t *testing.T) {
+func TestGatewayDecisionModel_DoDecide_ErrorMapsToTypedGatewayError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
@@ -384,14 +392,14 @@ func TestGatewayEvaluationModel_DoEvaluate_ErrorMapsToTypedGatewayError(t *testi
 	if err != nil {
 		t.Fatalf("New error = %v", err)
 	}
-	model, err := p.EvaluationModel("m")
+	model, err := p.DecisionModel("m")
 	if err != nil {
-		t.Fatalf("EvaluationModel error = %v", err)
+		t.Fatalf("DecisionModel error = %v", err)
 	}
 
-	_, err = model.DoEvaluate(context.Background(), provider.EvaluationCallOptions{
+	_, err = model.DoDecide(context.Background(), provider.DecisionCallOptions{
 		State:     "s",
-		Questions: map[string]provider.EvaluationQuestion{"q": {Type: "boolean", Instructions: "i"}},
+		Questions: map[string]provider.DecisionQuestion{"q": {Type: "boolean", Instructions: "i"}},
 	})
 	var invalidReq *gatewayerrors.GatewayInvalidRequestError
 	if err == nil {
@@ -402,5 +410,131 @@ func TestGatewayEvaluationModel_DoEvaluate_ErrorMapsToTypedGatewayError(t *testi
 	}
 	if invalidReq == nil {
 		t.Fatalf("err = %v (%T), want GatewayInvalidRequestError", err, err)
+	}
+}
+
+// TS: gateway-decision-model.test.ts "should extract refusal answers"
+func TestGatewayDecisionModel_DoDecide_ExtractsRefusalAnswers(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"answers": {"tone": {"type": "refusal"}, "ok": {"type": "boolean", "probability": 0.5}}}`))
+	}))
+	defer server.Close()
+
+	p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model, _ := p.DecisionModel("m")
+	result, err := model.DoDecide(context.Background(), provider.DecisionCallOptions{
+		State: "s",
+		Questions: map[string]provider.DecisionQuestion{
+			"tone": {Type: "choice", Instructions: "t", Criteria: map[string]interface{}{"a": nil}},
+			"ok":   {Type: "boolean", Instructions: "o"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := result.Answers["tone"]; got.Type != "refusal" || got.Choice != "" {
+		t.Fatalf("tone = %+v", got)
+	}
+}
+
+func decodeGatewayStateParts(t *testing.T, state interface{}) (map[string]interface{}, error) {
+	t.Helper()
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"answers": {"q": {"type": "boolean", "probability": 0.5}}}`))
+	}))
+	defer server.Close()
+	p, err := New(Config{APIKey: "k", BaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model, _ := p.DecisionModel("m")
+	_, err = model.DoDecide(context.Background(), provider.DecisionCallOptions{
+		State:     state,
+		Questions: map[string]provider.DecisionQuestion{"q": {Type: "boolean", Instructions: "i"}},
+	})
+	return gotBody, err
+}
+
+// TS: "sends $name as ordered state parts"
+func TestGatewayDecisionModel_DoDecide_SendsOrderedStateParts(t *testing.T) {
+	cases := map[string][]provider.DecisionStatePart{
+		"text":    {provider.DecisionTextPart("Inspect.")},
+		"object":  {provider.DecisionJSONPart(map[string]interface{}{"product": "vase"})},
+		"array":   {provider.DecisionJSONPart([]interface{}{"vase", nil})},
+		"empty":   {},
+		"mixed":   {provider.DecisionTextPart("Inspect."), provider.DecisionJSONPart(map[string]interface{}{"product": "vase"}), provider.DecisionJSONPart([]interface{}{1.0, nil})},
+		"number":  {provider.DecisionJSONPart(1.0)},
+		"jsonnil": {provider.DecisionJSONPart(nil)},
+	}
+	for name, parts := range cases {
+		body, err := decodeGatewayStateParts(t, parts)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		raw, _ := json.Marshal(parts)
+		var want []interface{}
+		_ = json.Unmarshal(raw, &want)
+		got, _ := body["stateParts"].([]interface{})
+		if len(got) != len(want) || (len(want) > 0 && !reflect.DeepEqual(got, want)) {
+			t.Fatalf("%s: stateParts = %v, want %v", name, got, want)
+		}
+	}
+}
+
+// TS: "sends file bytes as base64 in ordered state parts"
+func TestGatewayDecisionModel_DoDecide_SendsFileBytesAsBase64(t *testing.T) {
+	body, err := decodeGatewayStateParts(t, []provider.DecisionStatePart{
+		provider.DecisionTextPart("Inspect this package."),
+		provider.DecisionFilePart(types.FileContent{
+			MediaType: "image/png", Filename: "box.png",
+			FileData: types.FileData{Type: types.FileDataTypeData, Data: []byte{1, 2, 3}},
+		}),
+		provider.DecisionJSONPart(map[string]interface{}{"product": "vase"}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []interface{}{
+		map[string]interface{}{"type": "text", "text": "Inspect this package."},
+		map[string]interface{}{"type": "file", "mediaType": "image/png", "filename": "box.png", "data": map[string]interface{}{"type": "data", "data": "AQID"}},
+		map[string]interface{}{"type": "json", "value": map[string]interface{}{"product": "vase"}},
+	}
+	if !reflect.DeepEqual(body["stateParts"], want) {
+		t.Fatalf("stateParts = %v", body["stateParts"])
+	}
+}
+
+// TS: "sends base64 file strings unchanged"
+func TestGatewayDecisionModel_DoDecide_SendsBase64FileStringsUnchanged(t *testing.T) {
+	body, err := decodeGatewayStateParts(t, []provider.DecisionStatePart{
+		provider.DecisionFilePart(types.FileContent{MediaType: "image/jpeg", FileData: types.FileData{Type: types.FileDataTypeData, DataString: "AQID"}}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []interface{}{map[string]interface{}{"type": "file", "mediaType": "image/jpeg", "data": map[string]interface{}{"type": "data", "data": "AQID"}}}
+	if !reflect.DeepEqual(body["stateParts"], want) {
+		t.Fatalf("stateParts = %v", body["stateParts"])
+	}
+}
+
+// TS: "rejects URL file data before sending a Gateway request"
+func TestGatewayDecisionModel_DoDecide_RejectsURLFileData(t *testing.T) {
+	body, err := decodeGatewayStateParts(t, []provider.DecisionStatePart{
+		provider.DecisionFilePart(types.FileContent{MediaType: "image/png", FileData: types.FileData{Type: types.FileDataTypeURL, URL: "https://example.com/a.png"}}),
+	})
+	var target *providererrors.UnsupportedFunctionalityError
+	if !errors.As(err, &target) || target.Functionality != "Gateway decision file input: url data" {
+		t.Fatalf("err = %v", err)
+	}
+	if body != nil {
+		t.Fatalf("a request was sent: %v", body)
 	}
 }

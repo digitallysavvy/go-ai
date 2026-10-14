@@ -320,10 +320,10 @@ func TestProvider_GetAvailableModels_FiltersUnknownModelTypes(t *testing.T) {
 	}
 }
 
-// TestProvider_GetAvailableModels_KeepsRealtimeAndEvaluationTypes mirrors the
+// TestProvider_GetAvailableModels_KeepsRealtimeAndDecisionTypes mirrors the
 // TS test "should include realtime models in getAvailableModels" (9dce0a7)
-// plus the evaluation model type added by 6982e9d5c6's catalog work.
-func TestProvider_GetAvailableModels_KeepsRealtimeAndEvaluationTypes(t *testing.T) {
+// plus the decision model type added by 6982e9d5c6's catalog work.
+func TestProvider_GetAvailableModels_KeepsRealtimeAndDecisionTypes(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -338,7 +338,13 @@ func TestProvider_GetAvailableModels_KeepsRealtimeAndEvaluationTypes(t *testing.
 				{
 					"id": "typesafe-ai/jev",
 					"name": "JEV",
-					"specification": {"specificationVersion":"v4","provider":"typesafe.evaluation","modelId":"jev"},
+					"specification": {"specificationVersion":"v4","provider":"typesafe.decision","modelId":"jev"},
+					"modelType": "decision"
+				},
+				{
+					"id": "liquid/d1",
+					"name": "D1",
+					"specification": {"specificationVersion":"v4","provider":"liquid.evaluation","modelId":"d1"},
 					"modelType": "evaluation"
 				}
 			]
@@ -355,15 +361,15 @@ func TestProvider_GetAvailableModels_KeepsRealtimeAndEvaluationTypes(t *testing.
 	if err != nil {
 		t.Fatalf("GetAvailableModels() error = %v", err)
 	}
-	if len(metadata.Models) != 2 {
-		t.Fatalf("expected realtime and evaluation entries to be kept, got %d models: %#v", len(metadata.Models), metadata.Models)
+	if len(metadata.Models) != 3 {
+		t.Fatalf("expected realtime, decision, and legacy evaluation entries to be kept, got %d models: %#v", len(metadata.Models), metadata.Models)
 	}
 	types := map[string]bool{}
 	for _, m := range metadata.Models {
 		types[m.ModelType] = true
 	}
-	if !types["realtime"] || !types["evaluation"] {
-		t.Fatalf("expected realtime and evaluation model types present, got %#v", types)
+	if !types["realtime"] || !types["decision"] || !types["evaluation"] {
+		t.Fatalf("expected realtime, decision, and evaluation model types present, got %#v", types)
 	}
 }
 
@@ -1225,7 +1231,7 @@ func TestGatewayProviderOptionsModelsSerializesPlainAndConditionalFallbacks(t *t
 	confidenceBelow := 0.6
 	opts := GatewayProviderOptions{
 		Models: []GatewayModelFallback{
-			GatewayConditionalModelFallback("openai/gpt-5.6-sol", EvaluationFallbackCondition{
+			GatewayConditionalModelFallback("openai/gpt-5.6-sol", DecisionFallbackCondition{
 				Question:        "intent",
 				ConfidenceBelow: &confidenceBelow,
 			}),

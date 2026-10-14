@@ -10,16 +10,16 @@ import (
 
 // Ported from packages/typesafe-ai/src/typesafe-ai-provider.test.ts.
 
-func TestProvider_ProvidesEvaluationCapability(t *testing.T) {
+func TestProvider_ProvidesDecisionCapability(t *testing.T) {
 	p := New(Config{})
-	model, err := p.EvaluationModel("jev-latest")
+	model, err := p.DecisionModel("jev-latest")
 	if err != nil {
-		t.Fatalf("EvaluationModel: %v", err)
+		t.Fatalf("DecisionModel: %v", err)
 	}
 	if model.SpecificationVersion() != "v4" {
 		t.Fatalf("SpecificationVersion = %q", model.SpecificationVersion())
 	}
-	if model.Provider() != "typesafe.evaluation" {
+	if model.Provider() != "typesafe.decision" {
 		t.Fatalf("Provider = %q", model.Provider())
 	}
 	if model.ModelID() != "jev-latest" {
@@ -76,10 +76,10 @@ func TestNew_TrailingSlashIsStripped(t *testing.T) {
 	defer server.Close()
 
 	p := New(Config{APIKey: "k", BaseURL: server.URL + "/"})
-	model, _ := p.EvaluationModel("jev-latest")
-	_, err := model.DoEvaluate(t.Context(), provider.EvaluationCallOptions{State: "test", Questions: nativeQuestions()})
+	model, _ := p.DecisionModel("jev-latest")
+	_, err := model.DoDecide(t.Context(), provider.DecisionCallOptions{State: "test", Questions: nativeQuestions()})
 	if err != nil {
-		t.Fatalf("DoEvaluate: %v", err)
+		t.Fatalf("DoDecide: %v", err)
 	}
 	if gotPath != "/systemone" {
 		t.Fatalf("path = %q, want /systemone (no double slash)", gotPath)

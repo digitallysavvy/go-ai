@@ -425,14 +425,14 @@ func TestEmbed_Telemetry(t *testing.T) {
 	}
 }
 
-// Evaluate's OTel span assertions (root "ai.evaluate" / nested
-// "ai.evaluate.doEvaluate" spans, attribute gating) now live in
-// pkg/telemetry (TestLegacyOpenTelemetryEvaluateSpans and friends), since
-// evaluate.go no longer creates spans directly — it dispatches
-// experimental_onEvaluateStart/End and
-// experimental_onEvaluationModelCallStart/End events that a registered
+// Decide's OTel span assertions (root "ai.decide" / nested
+// "ai.decide.doDecide" spans, attribute gating) now live in
+// pkg/telemetry (TestLegacyOpenTelemetryDecideSpans and friends), since
+// decide.go no longer creates spans directly — it dispatches
+// experimental_onDecideStart/End and
+// experimental_onDecisionModelCallStart/End events that a registered
 // integration (e.g. LegacyOpenTelemetry) turns into spans. See
-// pkg/ai/evaluate_telemetry_test.go for the pkg/ai-level dispatch tests
+// pkg/ai/decide_telemetry_test.go for the pkg/ai-level dispatch tests
 // (no span without an integration; exactly the expected spans with one).
 
 func TestEmbedMany_Telemetry(t *testing.T) {
