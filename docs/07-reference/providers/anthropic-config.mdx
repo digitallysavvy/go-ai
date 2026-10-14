@@ -15,6 +15,7 @@ The tables on this page are generated from the Go source. For usage, see the [An
 
 | Field | Type | Description |
 | --- | --- | --- |
+| `BatchResultDownloads` | `providerutils.BatchResultDownloads` | BatchResultDownloads configures JSON Lines batch result downloads, e.g. the maximum bytes per result row (TS `batchResultDownloads`). |
 | `APIKey` | `string` | APIKey is the Anthropic API key |
 | `Name` | `string` | Name overrides the provider name returned by Provider.Name() and LanguageModel.Provider(). Defaults to "anthropic". |
 | `BaseURL` | `string` | BaseURL is the URL prefix for API calls, including the version path (default: https://api.anthropic.com/v1, or ANTHROPIC_BASE_URL). The bare host https://api.anthropic.com is normalized to .../v1. A base URL that is set but empty after trimming whitespace makes New panic, matching the TS validateBaseURL error ("baseURL must be a non-empty string."). |
@@ -24,6 +25,7 @@ The tables on this page are generated from the Go source. For usage, see the [An
 | `MessagesPath` | `func(modelID string, stream bool) string` | MessagesPath builds the request path for messages API calls. Defaults to "/messages" (relative to BaseURL). |
 | `TransformRequestBody` | `func(body map[string]interface{}, stream bool) map[string]interface{}` | TransformRequestBody can rewrite the Anthropic messages request body before it is sent. It is used by Vertex Anthropic to remove the model field and inject anthropic_version in the JSON body. |
 | `TransformRequestBodyWithBetas` | `func(body map[string]interface{}, betas []string, stream bool) map[string]interface{}` | TransformRequestBodyWithBetas rewrites the request body with access to the request's anthropic-beta flags (TS transformRequestBody(args, betas)). It runs before TransformRequestBody. Bedrock-Anthropic uses it. |
+| `TransformRequestHeaders` | `func(headers map[string]string, providerOptions map[string]interface{}) (map[string]string, error)` | TransformRequestHeaders rewrites the per-request headers (caller headers and anthropic-beta) with access to the call's provider options (TS transformRequestHeaders). Vertex Anthropic uses it to send providerOptions.vertex.labels as the x-vertex-ai-labels header. A returned error aborts the request before it is sent. |
 | `TransformStreamBody` | `func(body io.ReadCloser, header stdhttp.Header) io.ReadCloser` | TransformStreamBody wraps the streaming response body before SSE parsing (for example to convert an AWS event stream into SSE). |
 | `TransformErrorBody` | `func(body []byte) []byte` | TransformErrorBody rewrites a non-2xx response body into the Anthropic error shape before it is parsed. |
 | `SupportsNativeStructuredOutput` | `*bool` | SupportsNativeStructuredOutput gates native structured output. A nil value means true; the model capability must also allow it. |
