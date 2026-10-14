@@ -808,6 +808,16 @@ func TestConvertToAnthropicPrompt_Golden(t *testing.T) {
 				{"type":"fallback","from":{"model":"claude-opus-5-5"},"to":{"model":"claude-opus-4-8"}},
 				{"type":"thinking","thinking":"Fallback model thinking","signature":"fallback-signature"}
 			]}]`,
+			wantBetas: []string{AnthropicBetaServerSideFallback},
+		},
+		// TS #21979: message-start accounting parts are never replayed.
+		{
+			name: "ignore message-start accounting parts when replaying assistant content",
+			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.CustomContent{Kind: "anthropic.message_start", ProviderOptions: anthropicOpt("id", "msg_usage", "model", "claude-haiku-4-5", "usage", map[string]interface{}{"input_tokens": 13, "output_tokens": 1})},
+				types.TextContent{Text: "Hi!"},
+			}}},
+			wantMessages: `[{"role":"assistant","content":[{"type":"text","text":"Hi!"}]}]`,
 		},
 		{
 			name: "warn and omit fallback boundaries with invalid metadata",

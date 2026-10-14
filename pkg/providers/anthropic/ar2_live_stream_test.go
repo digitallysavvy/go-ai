@@ -227,6 +227,7 @@ func TestStream_MessageStartPrePopulatedMCPToolUse(t *testing.T) {
 		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 
 	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)), false)
+	skipMessageStartChunk(t, stream)
 
 	callChunk, err := stream.Next()
 	if err != nil {

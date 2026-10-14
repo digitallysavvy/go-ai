@@ -25,6 +25,7 @@ const (
 	AnthropicBetaMidConversationToolChanges = "mid-conversation-tool-changes-2026-07-01"
 	AnthropicBetaMidConversationClearAt     = "mid-conversation-system-clear-at-2026-08-21"
 	AnthropicBetaMidConversationOutputCfg   = "mid-conversation-output-config-2026-07-01"
+	AnthropicBetaServerSideFallback         = "server-side-fallback-2026-06-01"
 )
 
 // anthropicMaxCacheBreakpoints is the maximum number of cache breakpoints
@@ -1249,6 +1250,11 @@ func (c *anthropicConverter) convertAssistantBlock(block anthropicBlock, isLastB
 				// reading from ProviderOptions (caller-constructed) or falling
 				// back to ProviderMetadata (round-tripped from a previous
 				// response), mirroring convertReasoning's same fallback.
+				if p.Kind == "anthropic.message_start" {
+					// Message-start accounting is informational output
+					// (TS #21979); never replay it to Anthropic.
+					break
+				}
 				opts := p.ProviderOptions
 				if opts == nil {
 					opts = rawMetadataMap(p.ProviderMetadata)
@@ -1270,6 +1276,9 @@ func (c *anthropicConverter) convertAssistantBlock(block anthropicBlock, isLastB
 						c.warn("anthropic fallback metadata must include from.model and to.model")
 						break
 					}
+					// Replayed fallback blocks need the beta even when no
+					// fallback chain is configured (TS #22007).
+					c.addBeta(AnthropicBetaServerSideFallback)
 					content = append(content, map[string]interface{}{
 						"type": "fallback",
 						"from": map[string]interface{}{"model": fromModel},

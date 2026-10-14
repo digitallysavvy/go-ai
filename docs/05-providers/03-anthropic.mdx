@@ -380,6 +380,21 @@ if stream.Err() != nil {
 }
 ```
 
+#### Message-start events
+
+Each Anthropic `message_start` event is exposed as an `anthropic.message_start` custom stream chunk (`provider.ChunkTypeCustom`) containing the message ID, model, and raw initial token usage. No option is required. The initial usage may be incomplete; use the final result usage for token counts.
+
+```go
+// chunk is a *provider.StreamChunk read from the model stream.
+if chunk.Type == provider.ChunkTypeCustom && chunk.CustomContent != nil &&
+    chunk.CustomContent.Kind == "anthropic.message_start" {
+    // {"anthropic":{"id":"msg_...","model":"...","usage":{...}}}
+    fmt.Println(string(chunk.CustomContent.ProviderMetadata))
+}
+```
+
+Like other custom parts, it is included in response content and forwarded to UI message streams. It is ignored when the conversation is replayed to Anthropic. Replaying an `anthropic.fallback` block also adds the `server-side-fallback-2026-06-01` beta header automatically, even when no `Fallbacks` chain is configured.
+
 ## Examples
 
 ### Basic Text Generation

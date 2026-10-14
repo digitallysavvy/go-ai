@@ -1146,6 +1146,7 @@ func TestStreamingUsageCapturedFromMessageStart(t *testing.T) {
 		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 
 	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)), false)
+	skipMessageStartChunk(t, stream)
 
 	// First chunk: text-start boundary.
 	textStart, err := stream.Next()
@@ -1226,6 +1227,7 @@ func TestStreamingFallbackUsageAndIterationsMatchTypeScript(t *testing.T) {
 		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 
 	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)), false)
+	skipMessageStartChunk(t, stream)
 
 	fallbackChunk, err := stream.Next()
 	if err != nil {
@@ -1289,6 +1291,7 @@ func TestStreamingStopSequenceAndDetailsMetadataMatchTypeScript(t *testing.T) {
 		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 
 	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)), false)
+	skipMessageStartChunk(t, stream)
 	if chunk, err := stream.Next(); err != nil || chunk.Type != provider.ChunkTypeText {
 		t.Fatalf("text chunk = %#v err=%v", chunk, err)
 	}

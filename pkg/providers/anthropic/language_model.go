@@ -1858,6 +1858,10 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				}
 				s.isMessageOpen = true
 				s.activeMessageID = msg.Message.ID
+				// Expose the initial message accounting as an
+				// anthropic.message_start custom chunk (TS #21979). The raw
+				// usage object is passed through unchanged.
+				s.pending = append(s.pending, messageStartChunk(event.Data))
 				if v := rawJSONValue(msg.Message.InputTransformations); v != nil {
 					s.inputTransformations = v
 				}
@@ -2654,6 +2658,38 @@ func convertWebFetchToolResult(raw json.RawMessage) interface{} {
 				"mediaType": wire.Content.Source.MediaType,
 				"data":      wire.Content.Source.Data,
 			},
+		},
+	}
+}
+
+// messageStartChunk builds the anthropic.message_start custom chunk from a
+// raw message_start event payload: {id, model, usage} with usage passed
+// through verbatim. Missing id/model are null, matching TS.
+func messageStartChunk(data string) *provider.StreamChunk {
+	var raw struct {
+		Message struct {
+			ID    *string                `json:"id"`
+			Model *string                `json:"model"`
+			Usage map[string]interface{} `json:"usage"`
+		} `json:"message"`
+	}
+	_ = json.Unmarshal([]byte(data), &raw)
+	var usage interface{}
+	if raw.Message.Usage != nil {
+		usage = raw.Message.Usage
+	}
+	metadata, _ := json.Marshal(map[string]interface{}{
+		"anthropic": map[string]interface{}{
+			"id":    raw.Message.ID,
+			"model": raw.Message.Model,
+			"usage": usage,
+		},
+	})
+	return &provider.StreamChunk{
+		Type: provider.ChunkTypeCustom,
+		CustomContent: &types.CustomContent{
+			Kind:             "anthropic.message_start",
+			ProviderMetadata: metadata,
 		},
 	}
 }
