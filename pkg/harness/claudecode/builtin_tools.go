@@ -156,6 +156,11 @@ func builtinTools() map[string]harness.BuiltinTool {
 			"description": str(), "timeout_ms": num(), "persistent": boolT(), "command": str(),
 			"ws": obj(map[string]any{"url": str(), "protocols": arr(str())}, "url"),
 		}))
+	// TS #22383: the pinned runtime defines ListAgentsTool; registering it lets
+	// callers disable it via inactiveTools. channel/q are unavailable in the
+	// pinned build ("leave unset"); the TS schema is a strict object.
+	tools["ListAgents"] = plainTool("ListAgents", "List agents that can receive messages", harness.BuiltinToolUseKindReadonly,
+		listAgentsInputSchema())
 	tools["ListMcpResources"] = plainTool("ListMcpResources", "List resources available from MCP servers", harness.BuiltinToolUseKindReadonly, listMcpResourcesInputSchema)
 	tools["ListMcpResourcesTool"] = plainTool("ListMcpResourcesTool", "List resources available from MCP servers", harness.BuiltinToolUseKindReadonly, listMcpResourcesInputSchema)
 	tools["ReadMcpResource"] = plainTool("ReadMcpResource", "Read a specific MCP resource by URI", harness.BuiltinToolUseKindReadonly, readMcpResourceInputSchema)
@@ -262,4 +267,13 @@ func builtinTools() map[string]harness.BuiltinTool {
 		}, "method"))
 
 	return tools
+}
+
+func listAgentsInputSchema() map[string]any {
+	field := map[string]any{"type": "string", "maxLength": 256, "description": "Not available in this build; leave unset."}
+	return map[string]any{
+		"type":                 "object",
+		"properties":           map[string]any{"channel": field, "q": field},
+		"additionalProperties": false,
+	}
 }

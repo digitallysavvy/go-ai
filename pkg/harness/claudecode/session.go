@@ -73,10 +73,13 @@ type session struct {
 	stopped           bool
 	pendingResumeFlag bool
 	lastSessionID     string
+	// rerunContinue is the live copy of opts.rerunContinue: true until the
+	// single recovery start has been sent. Mirrors TS `rerunContinue`.
+	rerunContinue bool
 }
 
 func newSession(opts sessionOptions) *session {
-	return &session{opts: opts, pendingResumeFlag: opts.continueOnFirstPrompt, lastSessionID: opts.resumeSessionID}
+	return &session{opts: opts, pendingResumeFlag: opts.continueOnFirstPrompt, lastSessionID: opts.resumeSessionID, rerunContinue: opts.rerunContinue}
 }
 
 func (s *session) SessionID() string { return s.opts.sessionID }
@@ -114,6 +117,8 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 	s.mu.Lock()
 	frame.Continue, frame.ResumeSessionID = s.resumeFields()
 	s.pendingResumeFlag = false
+	// Recovery starts a native turn once. Later continuations attach to it.
+	s.rerunContinue = false
 	s.mu.Unlock()
 	if err := s.opts.channel.Send(frame); err != nil {
 		return nil, err
@@ -126,7 +131,13 @@ func (s *session) DoContinueTurn(ctx context.Context, opts harness.ContinueTurnO
 		return nil, err
 	}
 	control := s.wireTurn(ctx, opts.Emit)
-	if s.opts.rerunContinue && ctx.Err() == nil {
+	s.mu.Lock()
+	rerun := s.rerunContinue && ctx.Err() == nil
+	if rerun {
+		s.rerunContinue = false
+	}
+	s.mu.Unlock()
+	if rerun {
 		frame := s.buildStartFrame("Continue.", opts.TurnSettings, opts.ResponseFormat)
 		s.mu.Lock()
 		frame.Continue, frame.ResumeSessionID = s.resumeFields()
