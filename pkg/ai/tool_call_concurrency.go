@@ -121,11 +121,8 @@ func executeToolsLimited(ctx context.Context, calls []types.ToolCall, tools []ty
 }
 
 // executeToolsConfigured executes tool calls honoring an optional
-// ToolCallConcurrency. concurrency == 0 (option not set) keeps the default
-// sequential execution.
+// ToolCallConcurrency. concurrency == 0 (option not set) executes all calls
+// concurrently, as TS does by default; results stay in call order.
 func executeToolsConfigured(ctx context.Context, calls []types.ToolCall, tools []types.Tool, runtimeContext interface{}, toolsContext map[string]interface{}, toolApproval interface{}, usage *types.Usage, callbacks toolCallEventCallbacks, concurrency int) ([]types.ToolResult, error) {
-	if concurrency <= 0 {
-		return executeTools(ctx, calls, tools, runtimeContext, toolsContext, toolApproval, usage, callbacks)
-	}
 	return executeToolsLimited(ctx, calls, tools, runtimeContext, toolsContext, toolApproval, usage, callbacks, concurrency)
 }

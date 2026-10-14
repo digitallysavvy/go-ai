@@ -12,10 +12,14 @@ import (
 )
 
 func TestToolLoopAgent_ToolCallConcurrency(t *testing.T) {
-	run := func(t *testing.T, concurrency *int) []string {
+	run := func(t *testing.T, concurrency *int, gate int) []string {
 		t.Helper()
 		var mu sync.Mutex
 		var events []string
+		// The first gate executions wait for each other, so overlap is
+		// proven by rendezvous instead of timing.
+		arrived := 0
+		opened := make(chan struct{})
 		mkTool := func(name string) types.Tool {
 			return types.Tool{
 				Name:       name,
@@ -24,7 +28,18 @@ func TestToolLoopAgent_ToolCallConcurrency(t *testing.T) {
 					mu.Lock()
 					events = append(events, name+":start")
 					mu.Unlock()
-					time.Sleep(20 * time.Millisecond)
+					if gate > 0 {
+						mu.Lock()
+						arrived++
+						if arrived == gate {
+							close(opened)
+						}
+						mu.Unlock()
+						select {
+						case <-opened:
+						case <-time.After(10 * time.Second):
+						}
+					}
 					mu.Lock()
 					events = append(events, name+":end")
 					mu.Unlock()
@@ -52,13 +67,16 @@ func TestToolLoopAgent_ToolCallConcurrency(t *testing.T) {
 	}
 
 	one := 1
-	if got := run(t, &one); !reflect.DeepEqual(got, []string{"first:start", "first:end", "second:start", "second:end"}) {
+	if got := run(t, &one, 0); !reflect.DeepEqual(got, []string{"first:start", "first:end", "second:start", "second:end"}) {
 		t.Fatalf("concurrency 1 events = %v", got)
 	}
 	two := 2
-	got := run(t, &two)
+	got := run(t, &two, 2)
 	if len(got) != 4 {
 		t.Fatalf("concurrency 2 events = %v", got)
+	}
+	if unset := run(t, nil, 2); len(unset) != 4 || unset[0][len(unset[0])-5:] != "start" || unset[1][len(unset[1])-5:] != "start" {
+		t.Fatalf("unset concurrency should run both calls concurrently: %v", unset)
 	}
 	if (got[0] != "first:start" || got[1] != "second:start") && (got[0] != "second:start" || got[1] != "first:start") {
 		t.Fatalf("concurrency 2 should start both calls before either ends: %v", got)

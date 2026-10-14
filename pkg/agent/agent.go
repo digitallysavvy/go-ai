@@ -88,6 +88,7 @@ type AgentGenerateOptions struct {
 	ToolOrder  []string
 	// ToolCallConcurrency is the maximum number of tool calls that may execute
 	// concurrently within a step (1 = sequential). Must be >= 1 when set.
+	// When unset, all tool calls of a step execute concurrently.
 	ToolCallConcurrency *int
 	ActiveTools         []string
 	StopWhen            []ai.StopCondition
@@ -292,8 +293,9 @@ type AgentConfig struct {
 
 	// ToolCallConcurrency is the maximum number of tool calls that may execute
 	// concurrently within a step. Set to 1 to execute tool calls sequentially
-	// in the order they were generated. Must be >= 1 when set. Applies to
-	// Generate and Stream. Mirrors TS ToolLoopAgentSettings.toolCallConcurrency.
+	// in the order they were generated. Must be >= 1 when set. When unset,
+	// all tool calls of a step execute concurrently. Applies to Generate and
+	// Stream (the legacy Execute loop ignores it and runs tools sequentially). Mirrors TS ToolLoopAgentSettings.toolCallConcurrency.
 	ToolCallConcurrency *int
 
 	// ExperimentalToolCallers configures which tools may call which other

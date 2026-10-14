@@ -34,7 +34,7 @@ and `pkg/provider`.
 | `TimeoutError` | ai | Reason, Err | A configured `TimeoutConfig` deadline was hit |
 | `UIMessageStreamError` | ai | ChunkType, ChunkID, Message | A UI message stream received an out-of-sequence chunk |
 | `types.MissingToolResultError` | provider/types | ToolCallID, ToolName, Message | A provider-executed tool didn't return a result |
-| `types.MissingToolResultsError` | provider/types | ToolCallIDs, Message | Multiple provider-executed tools are missing results |
+| `types.MissingToolResultsError` | provider/types | ToolCallIDs, Message | Tool calls have no tool result before later user or system context, or before the end of the prompt. `GenerateText` and `StreamText` return it before calling the model. A tool approval response does not count as a result |
 | `types.ToolExecutionError` | provider/types | ToolCallID, ToolName, Err, ProviderExecuted | A tool's `Execute` function returned an error |
 | `provider.BatchError` | provider | Message, Type, Code, StatusCode | Serializable error info for a failed batch item |
 | `provider.NoSuchUploadAPIError` | provider | API | Provider has no upload API of the requested kind |

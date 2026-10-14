@@ -148,14 +148,9 @@ func resumeToolApprovals(ctx context.Context, opts toolApprovalResumeOptions) (t
 		noApproval := types.GenericToolApprovalFunc(func(types.ToolApprovalOptions) types.ToolApprovalResult {
 			return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
 		})
-		if opts.streaming {
-			// TS streamText's initial tool-execution stream runs resumed
-			// approvals in parallel (Promise.all); generateText's resume
-			// stays sequential, matching executeTools elsewhere.
-			executed, err = executeToolsLimited(ctx, executable, opts.tools, opts.runtimeContext, opts.toolsContext, noApproval, opts.usage, opts.callbacks, opts.toolCallConcurrency)
-		} else {
-			executed, err = executeToolsConfigured(ctx, executable, opts.tools, opts.runtimeContext, opts.toolsContext, noApproval, opts.usage, opts.callbacks, opts.toolCallConcurrency)
-		}
+		// Resumed approvals run concurrently by default (TS Promise.all),
+		// bounded by ToolCallConcurrency, with results in model order.
+		executed, err = executeToolsLimited(ctx, executable, opts.tools, opts.runtimeContext, opts.toolsContext, noApproval, opts.usage, opts.callbacks, opts.toolCallConcurrency)
 		if err != nil {
 			return out, err
 		}

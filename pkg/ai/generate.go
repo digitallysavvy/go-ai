@@ -231,9 +231,9 @@ type GenerateTextOptions struct {
 
 	// ToolCallConcurrency is the maximum number of tool calls that may execute
 	// concurrently within a step. Set to 1 to execute tool calls sequentially
-	// in the order they were generated. Must be >= 1 when set. When unset, tool
-	// calls execute sequentially (resumed approvals in StreamText execute in
-	// parallel). Mirrors TS toolCallConcurrency.
+	// in the order they were generated. Must be >= 1 when set. When unset, all
+	// tool calls of a step execute concurrently (results stay in call order).
+	// Mirrors TS toolCallConcurrency.
 	ToolCallConcurrency *int
 
 	// StopWhen defines conditions that terminate the tool-calling loop.

@@ -150,3 +150,4 @@ Applies the approvals at the end of `Messages`: it collects, validates and execu
 | `*ai.InvalidToolApprovalError` | `ai.IsInvalidToolApprovalError(err)` | A response references an approval ID with no matching request. |
 | `*ai.ToolCallNotFoundForApprovalError` | `ai.IsToolCallNotFoundForApprovalError(err)` | A request references a tool call that is not in the history. |
 | `*ai.InvalidToolApprovalSignatureError` | `ai.IsInvalidToolApprovalSignatureError(err)` | The signature is missing or does not match. |
+| `*types.MissingToolResultsError` | `errors.As` | An approval response is followed by later user or system messages without a tool result for its call. Only an approval in the final tool message is resumed; `GenerateText` and `StreamText` return this error before calling the model. |

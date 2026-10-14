@@ -20,6 +20,38 @@ type concurrencyRecorder struct {
 	events  []string
 	running int
 	maxSeen int
+
+	// gate, when > 0, makes the first gate tool executions wait until gate
+	// executions are running at once (or fail the rendezvous after a long
+	// timeout), so overlap is proven without relying on sleeps.
+	gate    int
+	arrived int
+	opened  chan struct{}
+}
+
+func newGatedRecorder(gate int) *concurrencyRecorder {
+	return &concurrencyRecorder{gate: gate, opened: make(chan struct{})}
+}
+
+// rendezvous blocks the first gate arrivals until all of them arrived.
+func (r *concurrencyRecorder) rendezvous() {
+	if r.gate == 0 {
+		return
+	}
+	r.mu.Lock()
+	r.arrived++
+	n := r.arrived
+	if n == r.gate {
+		close(r.opened)
+	}
+	r.mu.Unlock()
+	if n > r.gate {
+		return
+	}
+	select {
+	case <-r.opened:
+	case <-time.After(10 * time.Second):
+	}
 }
 
 func (r *concurrencyRecorder) enter(name string) {
@@ -54,7 +86,7 @@ func concurrencyTools(rec *concurrencyRecorder, names ...string) []types.Tool {
 			Parameters: map[string]interface{}{"type": "object"},
 			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
 				rec.enter(name)
-				time.Sleep(30 * time.Millisecond)
+				rec.rendezvous()
 				rec.leave(name)
 				return name, nil
 			},
@@ -114,8 +146,31 @@ func TestGenerateText_ToolCallConcurrency(t *testing.T) {
 		}
 	})
 
+	t.Run("unset runs all calls concurrently (TS default)", func(t *testing.T) {
+		rec := newGatedRecorder(3)
+		result, err := GenerateText(context.Background(), GenerateTextOptions{
+			Model: concurrencyGenerateModel("first", "second", "third"), Prompt: "hi",
+			Tools:    concurrencyTools(rec, "first", "second", "third"),
+			StopWhen: []StopCondition{IsStepCount(2)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, max := rec.snapshot()
+		if max != 3 {
+			t.Fatalf("max concurrent = %d, want 3", max)
+		}
+		var order []string
+		for _, r := range result.Steps[0].ToolResults {
+			order = append(order, r.ToolName)
+		}
+		if !reflect.DeepEqual(order, []string{"first", "second", "third"}) {
+			t.Fatalf("result order = %v", order)
+		}
+	})
+
 	t.Run("2 bounds concurrency and keeps result order", func(t *testing.T) {
-		rec := &concurrencyRecorder{}
+		rec := newGatedRecorder(2)
 		result, err := GenerateText(context.Background(), GenerateTextOptions{
 			Model: concurrencyGenerateModel("first", "second", "third"), Prompt: "hi",
 			Tools: concurrencyTools(rec, "first", "second", "third"), ToolCallConcurrency: intp(2),
@@ -186,6 +241,21 @@ func TestStreamText_ToolCallConcurrency(t *testing.T) {
 		want := []string{"first:start", "first:end", "second:start", "second:end"}
 		if !reflect.DeepEqual(events, want) || max != 1 {
 			t.Fatalf("events = %v (max %d)", events, max)
+		}
+	})
+
+	t.Run("unset runs all calls concurrently (TS default)", func(t *testing.T) {
+		rec := newGatedRecorder(2)
+		result, err := StreamText(context.Background(), StreamTextOptions{
+			Model: newModel("first", "second"), Prompt: "hi", Tools: concurrencyTools(rec, "first", "second"),
+			StopWhen: []StopCondition{IsStepCount(2)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = result.ReadAll()
+		if _, max := rec.snapshot(); max != 2 {
+			t.Fatalf("max concurrent = %d, want 2", max)
 		}
 	})
 
