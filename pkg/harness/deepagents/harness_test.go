@@ -159,6 +159,15 @@ func TestGetBootstrapShipsBridgeFilesAndInstallCommand(t *testing.T) {
 	if !strings.Contains(commands, "pnpm install --frozen-lockfile --store-dir .pnpm-store") {
 		t.Fatalf("commands = %q, missing pnpm install", commands)
 	}
+	// TS #23344: ripgrep is an npm dependency of the bridge, not a curl install.
+	if len(b.Commands) != 1 || strings.Contains(commands, "ripgrep") {
+		t.Fatalf("commands = %q, want only pnpm install (no ripgrep download)", commands)
+	}
+	for _, f := range b.Files {
+		if strings.HasSuffix(f.Path, "/package.json") && !strings.Contains(f.Content, "@vscode/ripgrep") {
+			t.Fatalf("bridge package.json lacks the @vscode/ripgrep dependency")
+		}
+	}
 	if strings.Contains(commands, "mkdir -p .harness-bootstrap/deepagents") {
 		t.Fatalf("commands = %q, should not mkdir the bootstrap dir itself", commands)
 	}

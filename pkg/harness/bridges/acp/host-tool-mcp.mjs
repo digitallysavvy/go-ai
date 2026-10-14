@@ -4,9 +4,77 @@ import { env } from "node:process";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError } from "@modelcontextprotocol/sdk/types.js";
+import "ws";
 import { Agent, request } from "node:http";
+//#region ../harness/dist/bridge/index.js
+const name = "AI_HarnessBridgeCapabilityUnsupportedError";
+/**
+* Signals an unsupported capability discovered inside a sandbox bridge.
+* `isInstance` also recognizes the serialized error shape received by the
+* host, where it can be translated to `HarnessCapabilityUnsupportedError`.
+*/
+var HarnessBridgeCapabilityUnsupportedError = class extends Error {
+	constructor({ message, harnessId, cause }) {
+		super(message);
+		Object.defineProperty(this, "name", { value: name });
+		this.harnessId = harnessId;
+		this.cause = cause;
+	}
+	static isInstance(error) {
+		return error != null && typeof error === "object" && "name" in error && error.name === name && "message" in error && typeof error.message === "string";
+	}
+};
+function getNormalizedInlineImage(part) {
+	if (part.type === "file" && part.mediaType.startsWith("image/") && part.mediaType !== "image/*" && part.data.type === "data" && typeof part.data.data === "string") return {
+		data: part.data.data,
+		mediaType: part.mediaType
+	};
+}
+function convertHarnessToolModelOutput({ output }) {
+	switch (output.type) {
+		case "text":
+		case "error-text": return {
+			content: [{
+				type: "text",
+				text: output.value
+			}],
+			isError: output.type === "error-text"
+		};
+		case "json":
+		case "error-json": return {
+			content: [{
+				type: "text",
+				text: JSON.stringify(output.value)
+			}],
+			isError: output.type === "error-json"
+		};
+		case "execution-denied": return {
+			content: [{
+				type: "text",
+				text: output.reason ?? "Tool execution denied."
+			}],
+			isError: true
+		};
+		case "content": return {
+			content: output.value.map((part) => {
+				if (part.type === "text") return {
+					type: "text",
+					text: part.text
+				};
+				const image = getNormalizedInlineImage(part);
+				if (image != null) return {
+					type: "image",
+					...image
+				};
+				throw new HarnessBridgeCapabilityUnsupportedError({ message: `Harnesses support only text and inline images in tool model output; unsupported content '${part.type}'.` });
+			}),
+			isError: false
+		};
+	}
+}
+//#endregion
 //#region src/v1/bridge/host-tool-mcp-server.ts
-const VERSION = "1.0.77";
+const VERSION = "1.0.90";
 function createHostToolMCPServer({ tools, revision = 1, invoke, onListTools }) {
 	let catalog = createCatalog({
 		revision,
@@ -71,12 +139,17 @@ function requireObjectSchema({ toolName, schema }) {
 	return schema;
 }
 function toCallToolResult({ result }) {
+	const converted = result.toolResult == null ? void 0 : convertHarnessToolModelOutput({ output: result.toolResult.output });
 	return {
-		content: [{
+		content: converted == null ? [{
 			type: "text",
 			text: stringifyOutput({ output: result.output })
-		}],
-		...result.isError ? { isError: true } : {},
+		}] : converted.content.map((part) => part.type === "text" ? part : {
+			type: "image",
+			data: part.data,
+			mimeType: part.mediaType
+		}),
+		...result.isError === true || converted?.isError === true ? { isError: true } : {},
 		_meta: { "ai-sdk-harness-acp-correlation": result.correlationToken }
 	};
 }
@@ -200,9 +273,10 @@ function isTool(value) {
 	return isRecord(value) && typeof value.name === "string" && (value.description === void 0 || typeof value.description === "string") && (value.inputSchema === void 0 || isRecord(value.inputSchema) && !Array.isArray(value.inputSchema));
 }
 function validateInvocationResult({ value }) {
-	if (!isRecord(value) || typeof value.correlationToken !== "string" || value.isError !== void 0 && typeof value.isError !== "boolean") throw new Error("Invalid host tool relay response.");
+	if (!isRecord(value) || typeof value.correlationToken !== "string" || value.isError !== void 0 && typeof value.isError !== "boolean" || value.toolResult !== void 0 && (!isRecord(value.toolResult) || value.toolResult.type !== "tool-result" || typeof value.toolResult.toolCallId !== "string" || typeof value.toolResult.toolName !== "string" || !isRecord(value.toolResult.output))) throw new Error("Invalid host tool relay response.");
 	return {
 		output: value.output,
+		...value.toolResult == null ? {} : { toolResult: value.toolResult },
 		...value.isError ? { isError: true } : {},
 		correlationToken: value.correlationToken
 	};
