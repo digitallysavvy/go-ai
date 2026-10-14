@@ -886,10 +886,19 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			}
 			if !skipStepBoundaryDup {
 				converted := toUIMessageChunks(chunkForConversion, options)
-				for _, uiChunk := range converted {
-					processChunk(uiChunk)
+				if chunk.Type == provider.ChunkTypeFinish || chunk.Type == provider.ChunkTypeFinishStep {
+					// Apply step metadata before the finish-step boundary, so
+					// the OnStepEnd snapshot includes it (TS #22268).
+					processMessageMetadata(*chunk)
+					for _, uiChunk := range converted {
+						processChunk(uiChunk)
+					}
+				} else {
+					for _, uiChunk := range converted {
+						processChunk(uiChunk)
+					}
+					processMessageMetadata(*chunk)
 				}
-				processMessageMetadata(*chunk)
 			}
 		}
 
@@ -909,11 +918,11 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		}
 		closeOpenParts()
 		if !sawFinishChunk && finishReason != "" {
-			processChunk(UIMessageChunk{"type": "finish-step"})
 			processMessageMetadata(provider.StreamChunk{
 				Type:         provider.ChunkTypeFinish,
 				FinishReason: finishReason,
 			})
+			processChunk(UIMessageChunk{"type": "finish-step"})
 		}
 		var finishMetadata map[string]interface{}
 		if options.MessageMetadata != nil {

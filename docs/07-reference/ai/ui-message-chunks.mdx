@@ -71,7 +71,7 @@ Begins one model call. Carries no fields. A client adds a `step-start` part to t
 
 ### `finish-step`
 
-Ends one model call. Carries no fields.
+Ends one model call. Carries no fields. When `MessageMetadata` returns metadata for the step, the `message-metadata` chunk is emitted before `finish-step`, so the message passed to `OnStepEnd` already includes it.
 
 ### `reset-step`
 

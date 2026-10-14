@@ -2844,3 +2844,48 @@ func TestUIMessageStreamMergeStopsOnAlreadyCancelledContext(t *testing.T) {
 		}
 	}
 }
+
+// Ports TS to-ui-message-stream.test.ts 'includes finish-step metadata in the
+// snapshot before forwarding the boundary' (TS #22268).
+func TestToUIMessageStream_FinishStepMetadataPrecedesBoundaryAndIsInStepSnapshot(t *testing.T) {
+	stream := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeFinishStep, FinishReason: types.FinishReasonStop},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	})
+	var mu sync.Mutex
+	var stepMetadata interface{}
+	steps := 0
+	chunks, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{
+		GenerateMessageID: func() string { return "assistant-1" },
+		MessageMetadata: func(input map[string]interface{}) map[string]interface{} {
+			if input["type"] == "finish-step" {
+				return map[string]interface{}{"totalTokens": 2}
+			}
+			return nil
+		},
+		OnStepEnd: func(event map[string]interface{}) {
+			mu.Lock()
+			defer mu.Unlock()
+			steps++
+			b, _ := json.Marshal(event["responseMessage"].(UIMessageChunk)["metadata"])
+			stepMetadata = string(b)
+		},
+	})
+	var types_ []string
+	for chunk := range chunks {
+		types_ = append(types_, chunk["type"].(string))
+	}
+	if err, ok := <-errs; ok && err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"start", "start-step", "message-metadata", "finish-step", "finish"}
+	if !reflect.DeepEqual(types_, want) {
+		t.Fatalf("chunk types = %v, want %v", types_, want)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if steps != 1 || stepMetadata != `{"totalTokens":2}` {
+		t.Fatalf("steps = %d, step snapshot metadata = %#v", steps, stepMetadata)
+	}
+}
