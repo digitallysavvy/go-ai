@@ -16,7 +16,7 @@ import (
 func TestStreamText_ChunkTimeoutClearedAfterModelFinishBeforeSlowProcessing(t *testing.T) {
 	t.Parallel()
 
-	perChunk := 300 * time.Millisecond
+	perChunk := time.Second
 	model := &testutil.MockLanguageModel{
 		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
 			return &delayedTextStream{chunks: []delayedChunk{
@@ -31,7 +31,7 @@ func TestStreamText_ChunkTimeoutClearedAfterModelFinishBeforeSlowProcessing(t *t
 		Timeout: &TimeoutConfig{PerChunk: &perChunk},
 		OnChunk: func(c provider.StreamChunk) {
 			if c.Type == provider.ChunkTypeFinish {
-				time.Sleep(500 * time.Millisecond) // slow consumer after the model ended
+				time.Sleep(1500 * time.Millisecond) // slow consumer after the model ended
 			}
 		},
 	})
@@ -51,7 +51,7 @@ func TestStreamText_ChunkTimeoutClearedAfterModelFinishBeforeSlowProcessing(t *t
 func TestStreamText_ChunkTimeoutDoesNotFireDuringLocalToolExecution(t *testing.T) {
 	t.Parallel()
 
-	perChunk := 300 * time.Millisecond
+	perChunk := time.Second
 	step := 0
 	model := &testutil.MockLanguageModel{
 		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
@@ -77,7 +77,7 @@ func TestStreamText_ChunkTimeoutDoesNotFireDuringLocalToolExecution(t *testing.T
 			Name:       "slow",
 			Parameters: map[string]interface{}{"type": "object"},
 			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
-				time.Sleep(600 * time.Millisecond)
+				time.Sleep(2 * time.Second)
 				return "ok", nil
 			},
 		}},
