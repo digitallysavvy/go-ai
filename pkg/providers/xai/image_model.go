@@ -44,6 +44,34 @@ func (m *ImageModel) ModelID() string {
 	return m.modelID
 }
 
+// xaiFileInputImageModelIDs are the image models that accept reference
+// images, mirroring TS fileInputModelIds.
+var xaiFileInputImageModelIDs = map[string]bool{
+	ModelGrokImagineImage:    true,
+	ModelGrokImagineImage20:  true,
+	ModelGrokImagineImagePro: true,
+}
+
+// SupportsFileInputs reports true for models that accept reference images and
+// nil (unknown) for any other model ID.
+func (m *ImageModel) SupportsFileInputs() *bool {
+	if xaiFileInputImageModelIDs[m.modelID] {
+		v := true
+		return &v
+	}
+	return nil
+}
+
+// SupportsMaskInputs reports false for models that accept reference images
+// (masks are not supported) and nil (unknown) otherwise.
+func (m *ImageModel) SupportsMaskInputs() *bool {
+	if xaiFileInputImageModelIDs[m.modelID] {
+		v := false
+		return &v
+	}
+	return nil
+}
+
 // MaxImagesPerCall returns the maximum number of images accepted in one request.
 func (m *ImageModel) MaxImagesPerCall() int {
 	return 3
@@ -63,12 +91,12 @@ type XAIImageProviderOptions struct {
 	SyncMode *bool `json:"sync_mode,omitempty"`
 
 	// Resolution controls the output resolution tier of the generated image.
-	// Accepted values: "1k" (1024px), "2k" (2048px).
+	// Accepted values: "1k" (1024px), "1.5k", "2k" (2048px).
 	// Only supported by models that accept this option (e.g., grok-imagine-image-pro).
 	Resolution *string `json:"resolution,omitempty"`
 
 	// Quality controls the output quality.
-	// Valid values: "low", "medium", "high".
+	// Valid values: "low", "medium", "high", "auto".
 	Quality *string `json:"quality,omitempty"`
 
 	// User is a unique identifier for the end user, used for abuse detection.
@@ -404,14 +432,14 @@ func extractImageProviderOptions(opts map[string]interface{}) (*XAIImageProvider
 	if err := json.Unmarshal(jsonData, &provOpts); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal provider options: %w", err)
 	}
-	if provOpts.Resolution != nil && *provOpts.Resolution != "1k" && *provOpts.Resolution != "2k" {
-		return nil, fmt.Errorf("invalid xai image resolution %q: expected \"1k\" or \"2k\"", *provOpts.Resolution)
+	if provOpts.Resolution != nil && *provOpts.Resolution != "1k" && *provOpts.Resolution != "1.5k" && *provOpts.Resolution != "2k" {
+		return nil, fmt.Errorf("invalid xai image resolution %q: expected \"1k\", \"1.5k\", or \"2k\"", *provOpts.Resolution)
 	}
 	if provOpts.Quality != nil {
 		switch *provOpts.Quality {
-		case "low", "medium", "high":
+		case "low", "medium", "high", "auto":
 		default:
-			return nil, fmt.Errorf("invalid xai image quality %q: expected \"low\", \"medium\", or \"high\"", *provOpts.Quality)
+			return nil, fmt.Errorf("invalid xai image quality %q: expected \"low\", \"medium\", \"high\", or \"auto\"", *provOpts.Quality)
 		}
 	}
 

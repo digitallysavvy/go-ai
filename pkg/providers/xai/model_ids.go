@@ -97,6 +97,9 @@ const (
 	// ModelGrokImagineImage — Grok Imagine standard image generation model
 	ModelGrokImagineImage = "grok-imagine-image"
 
+	// ModelGrokImagineImage20 — Grok Imagine 2.0 image generation model
+	ModelGrokImagineImage20 = "grok-imagine-image-2.0"
+
 	// ModelGrokImagineImagePro — Grok Imagine Pro image generation model (higher quality)
 	ModelGrokImagineImagePro = "grok-imagine-image-pro"
 )

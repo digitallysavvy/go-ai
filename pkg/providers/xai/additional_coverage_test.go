@@ -52,8 +52,8 @@ func TestXAIProvider_WrappersAndDefaults(t *testing.T) {
 	if model, err := p.SpeechModel("x"); err != nil || model.Provider() != "xai.speech" || model.ModelID() != "" {
 		t.Fatalf("SpeechModel = %v, %v; want xai.speech model with empty model ID", model, err)
 	}
-	if model, err := p.TranscriptionModel("x"); err != nil || model.Provider() != "xai.transcription" || model.ModelID() != "" {
-		t.Fatalf("TranscriptionModel = %v, %v; want xai.transcription model with empty model ID", model, err)
+	if model, err := p.TranscriptionModel("x"); err != nil || model.Provider() != "xai.transcription" || model.ModelID() != "x" {
+		t.Fatalf("TranscriptionModel = %v, %v; want xai.transcription model with model ID x", model, err)
 	}
 	if _, err := p.RerankingModel("x"); err == nil {
 		t.Fatal("RerankingModel expected unsupported error")

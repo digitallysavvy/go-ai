@@ -124,10 +124,11 @@ func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
 	return NewSpeechModel(p, ""), nil
 }
 
-// TranscriptionModel returns the xAI speech-to-text model. The TypeScript
-// provider has no transcription model ID parameter, so Go ignores modelID for parity.
+// TranscriptionModel returns the xAI speech-to-text model. When modelID is
+// empty, xAI's default transcription model is used; otherwise it is sent as
+// the `model` request parameter (e.g. "grok-voice-transcribe-2.0").
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return NewTranscriptionModel(p, ""), nil
+	return NewTranscriptionModel(p, modelID), nil
 }
 
 // RerankingModel returns a reranking model by ID

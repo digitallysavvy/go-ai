@@ -135,6 +135,14 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	if warnings == nil {
 		warnings = []types.Warning{}
 	}
+	rawBody := parseGatewayTranscriptionRawBody(httpResp.Body)
+	if isXaiTranscriptionModel(m.modelID) && requestsXaiDiarization(opts.ProviderOptions) && !containsSpeaker(rawBody) {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "providerOptions.xai.diarize",
+			Details: "AI Gateway does not currently expose xAI speaker diarization metadata.",
+		})
+	}
 	return &types.TranscriptionResult{
 		Text:              response.Text,
 		Segments:          segments,
@@ -147,7 +155,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 			Timestamp: time.Now(),
 			ModelID:   m.modelID,
 			Headers:   flattenHeaders(httpResp.Headers),
-			Body:      parseGatewayTranscriptionRawBody(httpResp.Body),
+			Body:      rawBody,
 		},
 		Usage: types.TranscriptionUsage{
 			DurationSeconds: durationValue(response.DurationInSeconds),
@@ -177,6 +185,45 @@ type gatewaySegment struct {
 	Text        string  `json:"text"`
 	StartSecond float64 `json:"startSecond"`
 	EndSecond   float64 `json:"endSecond"`
+}
+
+// isXaiTranscriptionModel reports whether modelID routes to an xAI
+// transcription model (TS isXaiTranscriptionModel).
+func isXaiTranscriptionModel(modelID string) bool {
+	return strings.HasPrefix(modelID, "spacexai/") || strings.HasPrefix(modelID, "xai/")
+}
+
+// requestsXaiDiarization reports whether providerOptions asks for xAI
+// speaker diarization under either the xai or spacexai namespace.
+func requestsXaiDiarization(providerOptions map[string]interface{}) bool {
+	for _, ns := range []string{"xai", "spacexai"} {
+		if opts, ok := providerOptions[ns].(map[string]interface{}); ok {
+			if diarize, ok := opts["diarize"].(bool); ok && diarize {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// containsSpeaker reports whether value contains a non-null "speaker" key at
+// any depth of the decoded response.
+func containsSpeaker(value interface{}) bool {
+	switch v := value.(type) {
+	case []interface{}:
+		for _, item := range v {
+			if containsSpeaker(item) {
+				return true
+			}
+		}
+	case map[string]interface{}:
+		for key, nested := range v {
+			if (key == "speaker" && nested != nil) || containsSpeaker(nested) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func durationValue(duration *float64) float64 {
