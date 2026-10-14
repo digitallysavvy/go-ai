@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
-	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 func embedTestModel(t *testing.T, respBody string, seen *map[string]interface{}, calls *int) *EmbeddingModel {
@@ -113,7 +112,6 @@ func TestCohereEmbed5OutputDimensions(t *testing.T) {
 
 func TestConvertCohereUsageCachedTokens(t *testing.T) {
 	u := convertCohereUsage(json.RawMessage(`{"tokens":{"input_tokens":100,"output_tokens":5},"cached_tokens":40}`))
-	var _ types.Usage = u
 	if *u.InputDetails.CacheReadTokens != 40 || *u.InputDetails.NoCacheTokens != 60 || *u.InputTokens != 100 {
 		t.Fatalf("usage = %#v", u.InputDetails)
 	}
