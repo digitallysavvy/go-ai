@@ -1095,6 +1095,8 @@ func anthropicReasoningBudget(level types.ReasoningLevel, modelID string) int {
 		pct = 0.60
 	case types.ReasoningXHigh:
 		pct = 0.90
+	case types.ReasoningMax:
+		pct = 0.95
 	default:
 		pct = 0.30
 	}

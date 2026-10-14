@@ -181,7 +181,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 			body["reasoning_effort"] = "low"
 		case types.ReasoningMedium:
 			body["reasoning_effort"] = "medium"
-		case types.ReasoningHigh, types.ReasoningXHigh:
+		case types.ReasoningHigh, types.ReasoningXHigh, types.ReasoningMax:
 			body["reasoning_effort"] = "high"
 			// ReasoningDefault: omit
 		}

@@ -551,6 +551,11 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if m.provider.config.TransformRequestBody != nil {
 		body = m.provider.config.TransformRequestBody(body)
 	}
+	if m.provider.config.TransformRequestBodyWithWarnings != nil {
+		var transformWarnings []types.Warning
+		body, transformWarnings = m.provider.config.TransformRequestBodyWithWarnings(body)
+		warnings = append(warnings, transformWarnings...)
+	}
 
 	return body, warnings, nil
 }

@@ -376,7 +376,7 @@ func deepseekTopLevelReasoningEffort(level types.ReasoningLevel) (effort string,
 		return "low", true
 	case types.ReasoningMedium, types.ReasoningHigh:
 		return "high", true
-	case types.ReasoningXHigh:
+	case types.ReasoningXHigh, types.ReasoningMax:
 		return "max", true
 	}
 	return "", false

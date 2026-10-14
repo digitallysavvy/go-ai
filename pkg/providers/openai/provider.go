@@ -9,6 +9,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
@@ -130,6 +131,13 @@ type Config struct {
 	// RequestBody() reflects the same post-transform shape TS's
 	// `request: { body }` does.
 	TransformRequestBody func(body map[string]interface{}) map[string]interface{} `json:"-"`
+
+	// TransformRequestBodyWithWarnings is like TransformRequestBody but can
+	// also report request transformations as warnings (TS #22045
+	// transformRequestBody(args, warnings)). It runs after
+	// TransformRequestBody; the returned warnings are appended to the call's
+	// warnings.
+	TransformRequestBodyWithWarnings func(body map[string]interface{}) (map[string]interface{}, []types.Warning) `json:"-"`
 }
 
 // New creates a new OpenAI provider with the given configuration

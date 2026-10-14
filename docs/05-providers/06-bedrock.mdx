@@ -326,7 +326,7 @@ provider := bedrock.New(bedrock.Config{
 
 ### Reasoning and Structured Output
 
-Bedrock drops reasoning blocks that belong to a foreign provider before request signing, so unsigned provider-specific reasoning is not forwarded accidentally. When top-level reasoning is set, custom reasoning configuration properties are merged into the Bedrock request instead of replacing the reasoning config.
+Bedrock drops reasoning blocks that belong to a foreign provider before request signing, so unsigned provider-specific reasoning is not forwarded accidentally. When top-level reasoning is set, custom reasoning configuration properties are merged into the Bedrock request instead of replacing the reasoning config. Merging is field by field: an explicit `maxReasoningEffort`, `budgetTokens` or `type` in the provider config always wins and is never remapped, and a provider config with `type: "disabled"` is preserved without deriving effort or budget. Portable `max` maps to `max` effort on adaptive Claude models and OpenAI models, to a 95% token budget on budget-based Claude models, and to `high` on Nova 2 (as does `xhigh`, with a `compatibility` warning).
 
 Anthropic-on-Bedrock supports native structured output when reasoning is not enabled. The SDK preserves empty text blocks that accompany reasoning content, matching the TypeScript content-shape behavior required by Claude reasoning models.
 

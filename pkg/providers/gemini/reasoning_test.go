@@ -75,6 +75,7 @@ func TestReasoningDynamicBudget(t *testing.T) {
 		{"gemini-2.5-pro", types.ReasoningMedium, 19661},  // round(65536*0.3)
 		{"gemini-2.5-pro", types.ReasoningHigh, 32768},    // clamped to 2.5-pro max
 		{"gemini-2.5-pro", types.ReasoningXHigh, 32768},   // clamped to 2.5-pro max
+		{"gemini-2.5-pro", types.ReasoningMax, 32768},
 		{"gemini-2.5-flash-lite", types.ReasoningMedium, 19661},
 		{"gemini-2.5-flash", types.ReasoningHigh, 24576}, // clamped to flash max
 	}
@@ -116,6 +117,7 @@ func TestReasoningGemini3MinimumThinkingLevel(t *testing.T) {
 		{"gemini-3-pro-preview", types.ReasoningMinimal, "minimal", false},
 		{"gemini-3-pro-preview", types.ReasoningNone, "minimal", false},
 		{"gemini-3-pro-preview", types.ReasoningXHigh, "high", true},
+		{"gemini-3-pro-preview", types.ReasoningMax, "high", true},
 		{"gemini-3.1-pro-preview", types.ReasoningMedium, "medium", false},
 		{"gemini-3.7-flash", types.ReasoningMinimal, "low", true},
 		{"gemini-3.7-flash", types.ReasoningNone, "low", false},

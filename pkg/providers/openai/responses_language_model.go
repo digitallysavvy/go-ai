@@ -524,6 +524,8 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 			effort = "high"
 		case types.ReasoningXHigh:
 			effort = "xhigh"
+		case types.ReasoningMax:
+			effort = "max"
 		}
 	}
 	// Provider-level reasoningEffort overrides the top-level param.

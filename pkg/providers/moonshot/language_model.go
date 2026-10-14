@@ -457,14 +457,14 @@ func isCustomReasoning(r *types.ReasoningLevel) bool {
 }
 
 // mapReasoningToMoonshotEffort mirrors the effortMap used for Kimi K3 and
-// unknown models: minimal/low -> low, medium/high -> high, xhigh -> max.
+// unknown models: minimal/low -> low, medium/high -> high, xhigh/max -> max.
 func mapReasoningToMoonshotEffort(r types.ReasoningLevel) string {
 	switch r {
 	case types.ReasoningMinimal, types.ReasoningLow:
 		return "low"
 	case types.ReasoningMedium, types.ReasoningHigh:
 		return "high"
-	case types.ReasoningXHigh:
+	case types.ReasoningXHigh, types.ReasoningMax:
 		return "max"
 	default:
 		return ""

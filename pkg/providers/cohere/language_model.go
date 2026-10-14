@@ -358,6 +358,8 @@ func (m *LanguageModel) resolveThinking(opts *provider.GenerateOptions) map[stri
 		return map[string]interface{}{"type": "enabled", "token_budget": 19661}
 	case types.ReasoningXHigh:
 		return map[string]interface{}{"type": "enabled", "token_budget": 29491}
+	case types.ReasoningMax:
+		return map[string]interface{}{"type": "enabled", "token_budget": 31130}
 	default:
 		return nil
 	}

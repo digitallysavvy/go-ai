@@ -1749,3 +1749,19 @@ func TestXAIResponsesImageGenerationFailedStatus(t *testing.T) {
 		t.Fatal("no image_generation tool-result content found")
 	}
 }
+
+// TestXAIResponsesMaxEffortModelGating covers TS #22045: portable max maps
+// like xhigh ("xhigh" for grok-4.6, "high" otherwise).
+func TestXAIResponsesMaxEffortModelGating(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	level := types.ReasoningMax
+	for model, want := range map[string]string{"grok-4.6": "xhigh", "grok-4.3": "high"} {
+		body, _, err := NewResponsesLanguageModel(p, model).buildRequestBody(&provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}, Reasoning: &level}, false)
+		if err != nil {
+			t.Fatalf("buildRequestBody failed: %v", err)
+		}
+		if got := body["reasoning"].(map[string]interface{})["effort"]; got != want {
+			t.Fatalf("%s effort = %v, want %s", model, got, want)
+		}
+	}
+}

@@ -286,7 +286,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 			switch *opts.Reasoning {
 			case types.ReasoningNone:
 				body["reasoning_effort"] = "none"
-			case types.ReasoningMinimal, types.ReasoningLow, types.ReasoningMedium, types.ReasoningHigh, types.ReasoningXHigh:
+			case types.ReasoningMinimal, types.ReasoningLow, types.ReasoningMedium, types.ReasoningHigh, types.ReasoningXHigh, types.ReasoningMax:
 				body["reasoning_effort"] = "high"
 				// ReasoningDefault: omit
 			}

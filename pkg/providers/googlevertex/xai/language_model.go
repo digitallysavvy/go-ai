@@ -213,7 +213,7 @@ func reasoningEffortFromTopLevel(level *types.ReasoningLevel) string {
 	switch *level {
 	case types.ReasoningMinimal, types.ReasoningLow, types.ReasoningMedium:
 		return "low"
-	case types.ReasoningHigh, types.ReasoningXHigh:
+	case types.ReasoningHigh, types.ReasoningXHigh, types.ReasoningMax:
 		return "high"
 	}
 	return ""

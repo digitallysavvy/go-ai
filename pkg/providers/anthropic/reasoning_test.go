@@ -93,6 +93,7 @@ func TestAnthropicReasoningAllLevels(t *testing.T) {
 		{types.ReasoningMedium, "adaptive", "medium"},
 		{types.ReasoningHigh, "adaptive", "high"},
 		{types.ReasoningXHigh, "adaptive", "max"},
+		{types.ReasoningMax, "adaptive", "max"},
 		{types.ReasoningNone, "disabled", ""},
 	}
 

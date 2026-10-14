@@ -304,6 +304,9 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		case types.ReasoningXHigh:
 			body["enable_thinking"] = true
 			body["thinking_budget"] = 14746
+		case types.ReasoningMax:
+			body["enable_thinking"] = true
+			body["thinking_budget"] = 15565
 			// ReasoningDefault: omit
 		}
 	}
