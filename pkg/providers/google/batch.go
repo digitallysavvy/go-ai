@@ -407,6 +407,11 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 	baseOrigin := strings.TrimSuffix(b.provider.config.BaseURL, "/v1beta")
 	downloadURL := fmt.Sprintf("%s/download/v1beta/%s:download?alt=media", baseOrigin, strings.Join(segments, "/"))
 
+	maxLineBytes, err := b.provider.config.BatchResultDownloads.ResolveMaxLineBytes()
+	if err != nil {
+		return nil, err
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
 		return nil, err
@@ -427,7 +432,7 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 		return nil, b.handleError(&internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Header, Body: body})
 	}
 
-	return newGoogleBatchFileResultsStream(b, resp.Body), nil
+	return newGoogleBatchFileResultsStream(b, resp.Body, downloadURL, maxLineBytes), nil
 }
 
 func (b *Batch) retrieveBatch(ctx context.Context, batchID string, headers map[string]string) (*googleBatchOperationWire, error) {
@@ -874,23 +879,26 @@ type googleBatchResultLineWire struct {
 // googleBatchFileResultsStream implements provider.BatchV4ItemResultStream
 // over the NDJSON body of a downloaded responses file.
 type googleBatchFileResultsStream struct {
-	batch   *Batch
-	scanner *bufio.Scanner
-	body    io.ReadCloser
-	err     error
+	batch        *Batch
+	scanner      *bufio.Scanner
+	body         io.ReadCloser
+	url          string
+	maxLineBytes int
+	err          error
 }
 
-func newGoogleBatchFileResultsStream(b *Batch, body io.ReadCloser) *googleBatchFileResultsStream {
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
-	return &googleBatchFileResultsStream{batch: b, scanner: scanner, body: body}
+func newGoogleBatchFileResultsStream(b *Batch, body io.ReadCloser, url string, maxLineBytes int) *googleBatchFileResultsStream {
+	scanner := providerutils.NewJSONLinesScanner(body, maxLineBytes)
+	return &googleBatchFileResultsStream{batch: b, scanner: scanner, body: body, url: url, maxLineBytes: maxLineBytes}
 }
 
 func (s *googleBatchFileResultsStream) Next() (*provider.BatchV4ItemResult, error) {
 	for {
 		if !s.scanner.Scan() {
 			if err := s.scanner.Err(); err != nil {
+				err = providerutils.JSONLinesScanError(err, s.url, s.maxLineBytes)
 				s.err = err
+				_ = s.body.Close()
 				return nil, err
 			}
 			return nil, io.EOF

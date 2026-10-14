@@ -114,6 +114,10 @@ func gatewayRequestID(ctx context.Context) string {
 
 // Config contains configuration for the AI Gateway provider
 type Config struct {
+	// BatchResultDownloads configures JSON Lines batch result downloads, e.g.
+	// the maximum bytes per result row (TS `batchResultDownloads`).
+	BatchResultDownloads providerutils.BatchResultDownloads
+
 	// APIKey is the AI Gateway API key
 	// or Vercel access token. Can also be set via AI_GATEWAY_API_KEY.
 	APIKey string

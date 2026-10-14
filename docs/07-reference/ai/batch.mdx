@@ -119,6 +119,19 @@ An image request inside a batch.
 
 {/* /gen:fields */}
 
+### Limiting result row size
+
+Results are downloaded as JSON Lines. Each row is limited to 64 MiB of UTF-8 bytes (excluding the line feed) so a misbehaving endpoint that never sends a newline cannot exhaust memory. A larger row fails the stream with a `*errors.DownloadError` and closes the response body. Set `BatchResultDownloads.MaxLineBytes` on the Anthropic, OpenAI, Google or Gateway provider config to change the limit; a negative value is rejected with an `InvalidArgumentError` when results are requested.
+
+```go
+provider := anthropic.New(anthropic.Config{
+    APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+    BatchResultDownloads: providerutils.BatchResultDownloads{
+        MaxLineBytes: 16 * 1024 * 1024,
+    },
+})
+```
+
 ## CancelBatchOptions
 
 {/* gen:fields ai.CancelBatchOptions */}

@@ -27,6 +27,10 @@ type Provider struct {
 
 // Config contains configuration for the OpenAI provider
 type Config struct {
+	// BatchResultDownloads configures JSON Lines batch result downloads, e.g.
+	// the maximum bytes per result row (TS `batchResultDownloads`).
+	BatchResultDownloads providerutils.BatchResultDownloads
+
 	// APIKey is the OpenAI API key
 	APIKey string
 
