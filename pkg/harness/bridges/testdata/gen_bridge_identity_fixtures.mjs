@@ -69,28 +69,6 @@ async function readEmbedded(adapterDir, name) {
   return readFile(posix.join(bridgesDir, adapterDir, name), 'utf8');
 }
 
-// Verbatim from packages/harness-deepagents/src/deepagents-bootstrap.ts.
-function installRipgrepCommand() {
-  const v = '14.1.1';
-  const shaArm =
-    'c827481c4ff4ea10c9dc7a4022c8de5db34a5737cb74484d62eb94a95841ab2f';
-  const shaX64 =
-    '4cf9f2741e6c465ffdb7c26f38056a59e2a2544b51f7cc128ef28337eeae4d8e';
-  return [
-    'command -v rg >/dev/null 2>&1 || {',
-    'case "$(uname -m)" in',
-    `aarch64) a=aarch64-unknown-linux-gnu; sha=${shaArm} ;;`,
-    `*) a=x86_64-unknown-linux-musl; sha=${shaX64} ;;`,
-    'esac;',
-    `f=/tmp/ripgrep-${v}.tar.gz;`,
-    `curl -fsSL "https://github.com/BurntSushi/ripgrep/releases/download/${v}/ripgrep-${v}-$a.tar.gz" -o "$f"`,
-    '&& echo "$sha  $f" | sha256sum -c -',
-    '&& tar xzf "$f" -C /tmp',
-    `&& mv "/tmp/ripgrep-${v}-$a/rg" /usr/local/bin/rg && chmod +x /usr/local/bin/rg;`,
-    '}',
-  ].join(' ');
-}
-
 async function buildRecipe({ adapterDir, harnessId, bootstrapDir, fileNames, commands }) {
   const files = await Promise.all(
     fileNames.map(async name => ({
@@ -137,7 +115,6 @@ const adapters = {
     bootstrapDir: '.harness-bootstrap/deepagents',
     fileNames: ['bridge.mjs', 'package.json', 'pnpm-lock.yaml'],
     commands: [
-      { command: installRipgrepCommand() },
       { command: 'pnpm install --frozen-lockfile --store-dir .pnpm-store' },
     ],
   },

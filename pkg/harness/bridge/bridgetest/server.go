@@ -36,6 +36,15 @@ type Options struct {
 	// OnUserMessage answers a `user-message` frame. Defaults to accepting
 	// every message.
 	OnUserMessage func(messageID, text string) (accepted bool, errMessage string)
+	// OnToolResult, when set, receives the decoded body of every inbound
+	// `tool-result` frame, so tests can assert what the host forwarded.
+	OnToolResult func(frame map[string]any)
+	// OnFrame, when set, is called synchronously from the connection's read
+	// loop with the type of every inbound frame, before it is dispatched.
+	// Unlike OnStart (which runs on its own goroutine) it is ordered with
+	// respect to later frames on the same connection, so a test can wait for
+	// a later frame and know every earlier one has been observed.
+	OnFrame func(frameType string)
 }
 
 type entry struct {
@@ -178,6 +187,12 @@ func (s *Server) handleInbound(c *serverConn, raw []byte) {
 	if json.Unmarshal(raw, &probe) != nil {
 		return
 	}
+	s.mu.Lock()
+	onFrame := s.opts.OnFrame
+	s.mu.Unlock()
+	if onFrame != nil {
+		onFrame(probe.Type)
+	}
 	switch probe.Type {
 	case bridge.TypeStart:
 		var payload map[string]any
@@ -234,6 +249,15 @@ func (s *Server) handleInbound(c *serverConn, raw []byte) {
 			Accepted:  false,
 			Error:     &bridge.UserMessageResponseError{Message: errMsg},
 		})
+	case bridge.TypeToolResult:
+		s.mu.Lock()
+		onToolResult := s.opts.OnToolResult
+		s.mu.Unlock()
+		if onToolResult != nil {
+			var payload map[string]any
+			_ = json.Unmarshal(raw, &payload)
+			onToolResult(payload)
+		}
 	case bridge.TypeStopCommand:
 		s.mu.Lock()
 		onStop := s.opts.OnStop

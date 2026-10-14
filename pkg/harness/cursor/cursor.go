@@ -91,6 +91,7 @@ func BuildConfig(settings Settings) acp.Settings {
 		WarnAuthenticationConfiguration(settings.Auth.Mode)
 	}
 	cfg := acp.Settings{
+		NonTextContentTypes:              []acp.NonTextContentType{acp.NonTextContentImage},
 		HarnessID:                        HarnessID,
 		ClientApp:                        acp.ClientApp{Name: ClientAppName, Version: ClientAppVersion},
 		Auth:                             settings.Auth,

@@ -1,15 +1,21 @@
 package codex
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"slices"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf16"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
@@ -64,6 +70,9 @@ type session struct {
 	pendingResumeThreadID              string
 	latestThreadID                     string
 	latestTurnConfigurationFingerprint string
+	// rerunContinue is the live copy of opts.rerunContinue: true until the
+	// single recovery start has been sent. Mirrors TS `rerunContinue`.
+	rerunContinue bool
 }
 
 func newSession(opts sessionOptions) *session {
@@ -71,6 +80,7 @@ func newSession(opts sessionOptions) *session {
 		opts:                               opts,
 		latestThreadID:                     opts.resumeThreadID,
 		latestTurnConfigurationFingerprint: opts.turnConfigurationFingerprint,
+		rerunContinue:                      opts.rerunContinue,
 	}
 	if opts.seedResumeThreadOnFirstPrompt {
 		s.pendingResumeThreadID = opts.resumeThreadID
@@ -105,13 +115,18 @@ func (s *session) synchronizeTurnConfiguration(ctx context.Context, skills []har
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	restart := s.latestThreadID != "" &&
-		(result.Changed || (s.latestTurnConfigurationFingerprint != "" && s.latestTurnConfigurationFingerprint != fingerprint))
+		(result.Changed || (strings.HasPrefix(s.latestTurnConfigurationFingerprint, fingerprintVersionPrefix) && s.latestTurnConfigurationFingerprint != fingerprint))
 	s.latestTurnConfigurationFingerprint = fingerprint
 	if restart {
 		s.pendingResumeThreadID = ""
 	}
 	return restart, nil
 }
+
+// fingerprintVersionPrefix marks fingerprints computed over canonical
+// (key-sorted) JSON. Legacy fingerprints (bare hex) are replaced once rather
+// than treated as a configuration change. Mirrors TS `v2:`.
+const fingerprintVersionPrefix = "v2:"
 
 func fingerprintTurnConfiguration(instructions string, tools []harness.ToolSpec) string {
 	type wireTool struct {
@@ -127,12 +142,22 @@ func fingerprintTurnConfiguration(instructions string, tools []harness.ToolSpec)
 	if instructions != "" {
 		instructionsValue = instructions
 	}
-	payload, _ := json.Marshal(struct {
+	// Round-trip through a generic value so every object (including raw JSON
+	// and struct-typed schemas) is re-encoded with sorted keys: value-equivalent
+	// tool definitions with reordered keys must hash identically.
+	raw, _ := json.Marshal(struct {
 		Instructions any        `json:"instructions"`
 		Tools        []wireTool `json:"tools"`
 	}{instructionsValue, wireTools})
-	sum := sha256.Sum256(payload)
-	return hex.EncodeToString(sum[:])
+	var generic any
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	_ = dec.Decode(&generic)
+	var buf bytes.Buffer
+	writeJSCanonicalJSON(&buf, generic)
+	canonical := buf.Bytes()
+	sum := sha256.Sum256(canonical)
+	return fingerprintVersionPrefix + hex.EncodeToString(sum[:])
 }
 
 func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptions) (harness.PromptControl, error) {
@@ -153,6 +178,10 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 		return control, nil
 	}
 	frame := s.buildStartFrame(text, opts.TurnSettings, opts.ResponseFormat, restartThread, true)
+	// Recovery starts a native turn once. Later continuations attach to it.
+	s.mu.Lock()
+	s.rerunContinue = false
+	s.mu.Unlock()
 	if err := s.opts.channel.Send(frame); err != nil {
 		return nil, err
 	}
@@ -168,7 +197,13 @@ func (s *session) DoContinueTurn(ctx context.Context, opts harness.ContinueTurnO
 		return nil, err
 	}
 	control := s.wireTurn(ctx, opts.Emit)
-	if s.opts.rerunContinue && ctx.Err() == nil {
+	s.mu.Lock()
+	rerun := s.rerunContinue && ctx.Err() == nil
+	if rerun {
+		s.rerunContinue = false
+	}
+	s.mu.Unlock()
+	if rerun {
 		frame := s.buildStartFrame("Continue.", opts.TurnSettings, opts.ResponseFormat, restartThread, false)
 		if err := s.opts.channel.Send(frame); err != nil {
 			return nil, err
@@ -464,7 +499,7 @@ func (c *promptControl) settleError(err error) {
 }
 
 func (c *promptControl) SubmitToolResult(ctx context.Context, result harness.ToolResultSubmission) error {
-	return c.channel.Send(bridge.ToolResultCommand{ToolCallID: result.ToolCallID, Output: result.Output, IsError: result.IsError})
+	return c.channel.Send(bridge.ToolResultCommand{ToolCallID: result.ToolCallID, Output: result.Output, IsError: result.IsError, ToolResult: result.ToolResult})
 }
 
 func (c *promptControl) SubmitToolApproval(ctx context.Context, approval harness.ToolApprovalSubmission) error {
@@ -506,4 +541,105 @@ func extractUserText(prompt harness.Prompt) (string, error) {
 		parts = append(parts, text.Text)
 	}
 	return strings.Join(parts, "\n\n"), nil
+}
+
+// writeJSCanonicalJSON serializes v byte-for-byte like the TS fingerprint's
+// JSON.stringify with a key-sorting replacer: keys sorted by UTF-16 code unit,
+// no HTML escaping, U+2028/U+2029 and non-ASCII emitted raw, JS number
+// formatting, and JS short escapes (\b \f \n \r \t, lowercase \u00xx).
+func writeJSCanonicalJSON(buf *bytes.Buffer, v any) {
+	switch x := v.(type) {
+	case nil:
+		buf.WriteString("null")
+	case bool:
+		if x {
+			buf.WriteString("true")
+		} else {
+			buf.WriteString("false")
+		}
+	case json.Number:
+		f, err := strconv.ParseFloat(string(x), 64)
+		if err != nil || math.IsInf(f, 0) || math.IsNaN(f) {
+			buf.WriteString("null")
+			return
+		}
+		buf.WriteString(jsNumber(f))
+	case string:
+		writeJSString(buf, x)
+	case []any:
+		buf.WriteByte('[')
+		for i, e := range x {
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			writeJSCanonicalJSON(buf, e)
+		}
+		buf.WriteByte(']')
+	case map[string]any:
+		keys := make([]string, 0, len(x))
+		for k := range x {
+			keys = append(keys, k)
+		}
+		sort.Slice(keys, func(i, j int) bool {
+			return slices.Compare(utf16.Encode([]rune(keys[i])), utf16.Encode([]rune(keys[j]))) < 0
+		})
+		buf.WriteByte('{')
+		for i, k := range keys {
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			writeJSString(buf, k)
+			buf.WriteByte(':')
+			writeJSCanonicalJSON(buf, x[k])
+		}
+		buf.WriteByte('}')
+	default:
+		buf.WriteString("null")
+	}
+}
+
+// jsNumber formats f like ECMAScript Number::toString.
+func jsNumber(f float64) string {
+	if f == 0 {
+		return "0"
+	}
+	abs := math.Abs(f)
+	if abs >= 1e-6 && abs < 1e21 {
+		return strconv.FormatFloat(f, 'f', -1, 64)
+	}
+	s := strconv.FormatFloat(f, 'e', -1, 64) // d.ddde+XX
+	mant, exp, _ := strings.Cut(s, "e")
+	sign := exp[0]
+	exp = strings.TrimLeft(exp[1:], "0")
+	return mant + "e" + string(sign) + exp
+}
+
+func writeJSString(buf *bytes.Buffer, s string) {
+	const hexDigits = "0123456789abcdef"
+	buf.WriteByte('"')
+	for _, r := range s {
+		switch {
+		case r == '"':
+			buf.WriteString(`\"`)
+		case r == '\\':
+			buf.WriteString(`\\`)
+		case r == '\b':
+			buf.WriteString(`\b`)
+		case r == '\f':
+			buf.WriteString(`\f`)
+		case r == '\n':
+			buf.WriteString(`\n`)
+		case r == '\r':
+			buf.WriteString(`\r`)
+		case r == '\t':
+			buf.WriteString(`\t`)
+		case r < 0x20:
+			buf.WriteString(`\u00`)
+			buf.WriteByte(hexDigits[r>>4])
+			buf.WriteByte(hexDigits[r&0xf])
+		default:
+			buf.WriteRune(r)
+		}
+	}
+	buf.WriteByte('"')
 }

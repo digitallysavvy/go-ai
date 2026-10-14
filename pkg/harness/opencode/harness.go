@@ -60,6 +60,7 @@ func CreateOpenCode(settings ...Settings) (harness.Harness, error) {
 func (h *openCodeHarness) SpecificationVersion() string                 { return harness.SpecificationVersion }
 func (h *openCodeHarness) HarnessID() string                            { return HarnessID }
 func (h *openCodeHarness) SupportsBuiltinToolApprovals() bool           { return true }
+func (h *openCodeHarness) SupportsBuiltinToolFiltering() bool           { return true }
 func (h *openCodeHarness) BuiltinTools() map[string]harness.BuiltinTool { return BuiltinTools() }
 func (h *openCodeHarness) GetBootstrap(ctx context.Context) (*harness.Bootstrap, error) {
 	return GetBootstrap(ctx)
@@ -93,6 +94,9 @@ func unsupported(capability string) error {
 
 func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions) (harness.Session, error) {
 	settings := h.settings
+	if err := validateBuiltinToolFiltering(opts.BuiltinToolFiltering); err != nil {
+		return nil, err
+	}
 	sandboxSession := opts.SandboxSession
 	toolSafeSandboxSession := harness.GetRestrictedSandboxSession(sandboxSession)
 	networkSession, isNetwork := harness.AsNetworkSandboxSession(sandboxSession)
@@ -386,4 +390,32 @@ func wrapPortError(err error) error {
 				"Create the sandbox with `ports: [<port>]` or pass `createOpenCode({ port })`.", HarnessID, err)
 	}
 	return err
+}
+
+// validateBuiltinToolFiltering mirrors TS `validateBuiltinToolFiltering`
+// (TS #23342): OpenCode implements `write` and `edit` through one native
+// permission, so they must be both active or both inactive.
+func validateBuiltinToolFiltering(filtering *harness.BuiltinToolFiltering) error {
+	if filtering == nil {
+		return nil
+	}
+	if harness.IsBuiltinToolIncluded("write", filtering) != harness.IsBuiltinToolIncluded("edit", filtering) {
+		return harness.NewCapabilityUnsupportedError(
+			"OpenCode built-in filtering requires 'write' and 'edit' to either both be active or both be inactive.", HarnessID, nil)
+	}
+	return nil
+}
+
+// resolveInactiveBuiltinToolNames mirrors TS `resolveInactiveBuiltinToolNames`.
+func resolveInactiveBuiltinToolNames(filtering *harness.BuiltinToolFiltering) *[]string {
+	if filtering == nil {
+		return nil
+	}
+	inactive := []string{}
+	for _, name := range builtinToolNames {
+		if !harness.IsBuiltinToolIncluded(name, filtering) {
+			inactive = append(inactive, name)
+		}
+	}
+	return &inactive
 }

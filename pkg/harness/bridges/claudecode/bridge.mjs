@@ -5,8 +5,74 @@ import { argv, env, pid, stdout } from "node:process";
 import { WebSocketServer } from "ws";
 import * as claudeAgentSdk from "@anthropic-ai/claude-agent-sdk";
 import * as mcpServerModule from "@modelcontextprotocol/sdk/server/mcp.js";
+import { isDeepStrictEqual } from "node:util";
 import { z } from "zod/v4";
 //#region ../harness/dist/bridge/index.js
+const name = "AI_HarnessBridgeCapabilityUnsupportedError";
+/**
+* Signals an unsupported capability discovered inside a sandbox bridge.
+* `isInstance` also recognizes the serialized error shape received by the
+* host, where it can be translated to `HarnessCapabilityUnsupportedError`.
+*/
+var HarnessBridgeCapabilityUnsupportedError = class extends Error {
+	constructor({ message, harnessId, cause }) {
+		super(message);
+		Object.defineProperty(this, "name", { value: name });
+		this.harnessId = harnessId;
+		this.cause = cause;
+	}
+	static isInstance(error) {
+		return error != null && typeof error === "object" && "name" in error && error.name === name && "message" in error && typeof error.message === "string";
+	}
+};
+function getNormalizedInlineImage(part) {
+	if (part.type === "file" && part.mediaType.startsWith("image/") && part.mediaType !== "image/*" && part.data.type === "data" && typeof part.data.data === "string") return {
+		data: part.data.data,
+		mediaType: part.mediaType
+	};
+}
+function convertHarnessToolModelOutput({ output }) {
+	switch (output.type) {
+		case "text":
+		case "error-text": return {
+			content: [{
+				type: "text",
+				text: output.value
+			}],
+			isError: output.type === "error-text"
+		};
+		case "json":
+		case "error-json": return {
+			content: [{
+				type: "text",
+				text: JSON.stringify(output.value)
+			}],
+			isError: output.type === "error-json"
+		};
+		case "execution-denied": return {
+			content: [{
+				type: "text",
+				text: output.reason ?? "Tool execution denied."
+			}],
+			isError: true
+		};
+		case "content": return {
+			content: output.value.map((part) => {
+				if (part.type === "text") return {
+					type: "text",
+					text: part.text
+				};
+				const image = getNormalizedInlineImage(part);
+				if (image != null) return {
+					type: "image",
+					...image
+				};
+				throw new HarnessBridgeCapabilityUnsupportedError({ message: `Harnesses support only text and inline images in tool model output; unsupported content '${part.type}'.` });
+			}),
+			isError: false
+		};
+	}
+}
 const DEBUG_LEVEL_WEIGHT = {
 	error: 0,
 	warn: 1,
@@ -631,11 +697,17 @@ function createClaudeStreamEventState() {
 		pendingStepDeltaUsage: void 0,
 		pendingStepUsage: void 0,
 		pendingResponseUsage: void 0,
+		responseOpen: false,
 		stepOpen: false,
-		mcpToolUseIds: /* @__PURE__ */ new Set(),
+		mcpToolCalls: /* @__PURE__ */ new Map(),
+		mcpHandlerCalls: /* @__PURE__ */ new Map(),
 		externalMcpToolUseIds: /* @__PURE__ */ new Set(),
 		structuredOutputToolUseIds: /* @__PURE__ */ new Set(),
-		observedTerminalError: void 0
+		observedTerminalError: void 0,
+		hostInputWaitingToolUseIds: /* @__PURE__ */ new Set(),
+		earlyFinishStepToolUseIds: /* @__PURE__ */ new Set(),
+		emittedToolCallIds: /* @__PURE__ */ new Set(),
+		modelResponseStreaming: false
 	};
 }
 const UNRECOVERABLE_API_RETRY_STATUSES = /* @__PURE__ */ new Set([
@@ -692,7 +764,7 @@ function createEmitStreamEvent({ state, emit, emitWarning, emitTerminalError, on
 			});
 			return;
 		}
-		if (type === "tool_progress" || type === "system" && msg.subtype != null && RAW_TASK_MESSAGE_SUBTYPES.has(msg.subtype)) {
+		if (type === "tool_progress" || type === "rate_limit_event" || type === "system" && msg.subtype != null && RAW_TASK_MESSAGE_SUBTYPES.has(msg.subtype)) {
 			emit({
 				type: "raw",
 				rawValue: msg
@@ -728,9 +800,34 @@ function createEmitStreamEvent({ state, emit, emitWarning, emitTerminalError, on
 					continue;
 				}
 				if (block.name.startsWith(HOST_TOOL_PREFIX)) {
+					const hostToolName = block.name.slice(20);
 					state.pendingStepToolUseIds.add(block.id);
-					state.mcpToolUseIds.add(block.id);
+					state.mcpToolCalls.set(block.id, {
+						toolName: hostToolName,
+						input: block.input ?? {}
+					});
 					opensStep = true;
+					const handlerCallId = findMcpHandlerCallId({
+						state,
+						toolCallId: block.id,
+						toolCall: state.mcpToolCalls.get(block.id)
+					});
+					if (handlerCallId != null) {
+						state.mcpHandlerCalls.get(handlerCallId).toolUseId = block.id;
+						state.emittedToolCallIds.add(block.id);
+						continue;
+					}
+					state.hostInputWaitingToolUseIds.add(block.id);
+					if (!state.emittedToolCallIds.has(block.id)) {
+						state.emittedToolCallIds.add(block.id);
+						emit({
+							type: "tool-call",
+							toolCallId: block.id,
+							toolName: hostToolName,
+							input: JSON.stringify(block.input ?? {}),
+							providerExecuted: false
+						});
+					}
 					continue;
 				}
 				state.nativeToolCallNames.set(block.id, block.name);
@@ -741,9 +838,10 @@ function createEmitStreamEvent({ state, emit, emitWarning, emitTerminalError, on
 				}
 				const dynamic = isExternalMcpTool(block.name);
 				if (dynamic) state.externalMcpToolUseIds.add(block.id);
-				if (state.approvalRequestedToolUseIds.has(block.id)) continue;
 				state.pendingStepToolUseIds.add(block.id);
 				opensStep = true;
+				if (state.emittedToolCallIds.has(block.id)) continue;
+				state.emittedToolCallIds.add(block.id);
 				emit({
 					type: "tool-call",
 					toolCallId: block.id,
@@ -760,6 +858,10 @@ function createEmitStreamEvent({ state, emit, emitWarning, emitTerminalError, on
 					state.pendingStepAssistantUsage = usage;
 					updatePendingStepUsage(state);
 				}
+				if (state.hostInputWaitingToolUseIds.size > 0) closeStepIfReady({
+					state,
+					emit
+				});
 			}
 			return;
 		}
@@ -767,9 +869,41 @@ function createEmitStreamEvent({ state, emit, emitWarning, emitTerminalError, on
 			const toolUseResult = messageContent.filter((block) => block.type === "tool_result").length === 1 ? msg.tool_use_result : void 0;
 			for (const block of messageContent) if (block.type === "tool_result" && typeof block.tool_use_id === "string") {
 				if (state.structuredOutputToolUseIds.delete(block.tool_use_id)) continue;
-				if (state.mcpToolUseIds.has(block.tool_use_id)) {
-					state.mcpToolUseIds.delete(block.tool_use_id);
+				const mcpToolCall = state.mcpToolCalls.get(block.tool_use_id);
+				if (mcpToolCall != null) {
+					const handlerReportedCall = takeMcpHandlerCall({
+						state,
+						toolCallId: block.tool_use_id,
+						toolCall: mcpToolCall
+					});
+					state.mcpToolCalls.delete(block.tool_use_id);
 					state.pendingStepToolUseIds.delete(block.tool_use_id);
+					state.hostInputWaitingToolUseIds.delete(block.tool_use_id);
+					if (handlerReportedCall) continue;
+					const isError = !!block.is_error;
+					const result = toolUseResult !== void 0 ? toolUseResult : resolveToolResult({
+						toolName: mcpToolCall.toolName,
+						dynamic: false,
+						isError,
+						rawContent: block.content
+					});
+					if (!state.emittedToolCallIds.has(block.tool_use_id)) {
+						state.emittedToolCallIds.add(block.tool_use_id);
+						emit({
+							type: "tool-call",
+							toolCallId: block.tool_use_id,
+							toolName: mcpToolCall.toolName,
+							input: JSON.stringify(mcpToolCall.input),
+							providerExecuted: true
+						});
+					}
+					emit({
+						type: "tool-result",
+						toolCallId: block.tool_use_id,
+						toolName: mcpToolCall.toolName,
+						result,
+						isError
+					});
 					continue;
 				}
 				state.approvalRequestedToolUseIds.delete(block.tool_use_id);
@@ -801,13 +935,40 @@ function createEmitStreamEvent({ state, emit, emitWarning, emitTerminalError, on
 		}
 	};
 }
-function finishApprovalStep({ state, emit, approvalId }) {
+function takeMcpHandlerCall({ state, toolCallId, toolCall }) {
+	const handlerCallId = findMcpHandlerCallId({
+		state,
+		toolCallId,
+		toolCall
+	});
+	if (handlerCallId != null) return state.mcpHandlerCalls.delete(handlerCallId);
+	const matchingHandlerCallIds = Array.from(state.mcpHandlerCalls).filter(([, handlerCall]) => handlerCall.toolName === toolCall.toolName).map(([handlerCallId]) => handlerCallId);
+	const matchingToolCallCount = Array.from(state.mcpToolCalls.values()).filter((pendingCall) => pendingCall.toolName === toolCall.toolName).length;
+	if (matchingHandlerCallIds.length > 0 && matchingHandlerCallIds.length === matchingToolCallCount) return state.mcpHandlerCalls.delete(matchingHandlerCallIds[0]);
+	return false;
+}
+function findMcpHandlerCallId({ state, toolCallId, toolCall }) {
+	if (state.mcpHandlerCalls.has(toolCallId)) return toolCallId;
+	for (const [handlerCallId, handlerCall] of state.mcpHandlerCalls) {
+		if (handlerCall.toolUseId != null && handlerCall.toolUseId !== toolCallId || handlerCallId !== toolCallId && state.mcpToolCalls.has(handlerCallId)) continue;
+		if (handlerCall.toolName === toolCall.toolName && isDeepStrictEqual(handlerCall.input, toolCall.input)) return handlerCallId;
+	}
+}
+function markWaitingOnHostInput({ state, emit, toolUseId }) {
 	state.stepOpen = true;
-	state.pendingStepToolUseIds.delete(approvalId);
+	state.pendingStepToolUseIds.add(toolUseId);
+	state.hostInputWaitingToolUseIds.add(toolUseId);
 	closeStepIfReady({
 		state,
 		emit
 	});
+}
+function clearWaitingOnHostInput({ state, toolUseId }) {
+	state.hostInputWaitingToolUseIds.delete(toolUseId);
+}
+function resolveMcpHandlerToolUseId({ state, metadataToolUseId, toolName, input }) {
+	if (metadataToolUseId != null) return metadataToolUseId;
+	for (const [toolUseId, toolCall] of state.mcpToolCalls) if (!state.mcpHandlerCalls.has(toolUseId) && toolCall.toolName === toolName && isDeepStrictEqual(toolCall.input, input)) return toolUseId;
 }
 function emitFinishStep({ state, emit, usage }) {
 	emit({
@@ -823,14 +984,37 @@ function emitFinishStep({ state, emit, usage }) {
 	state.pendingStepDeltaUsage = void 0;
 	state.pendingStepUsage = void 0;
 	state.pendingStepToolUseIds = /* @__PURE__ */ new Set();
+	state.earlyFinishStepToolUseIds = /* @__PURE__ */ new Set();
 	state.stepOpen = false;
 }
 function closeStepIfReady({ state, emit }) {
-	if (!state.stepOpen || state.pendingStepToolUseIds.size > 0 || state.partialBlocks.size > 0) return;
-	emitFinishStep({
+	if (!state.stepOpen || state.responseOpen || state.partialBlocks.size > 0) return;
+	if (state.pendingStepToolUseIds.size === 0) {
+		emitFinishStep({
+			state,
+			emit,
+			usage: state.pendingStepUsage
+		});
+		return;
+	}
+	emitEarlyFinishStepIfReady({
 		state,
-		emit,
-		usage: state.pendingStepUsage
+		emit
+	});
+}
+function emitEarlyFinishStepIfReady({ state, emit }) {
+	if (!state.stepOpen || state.partialBlocks.size > 0 || state.modelResponseStreaming || state.pendingStepToolUseIds.size === 0) return;
+	const uncovered = [...state.hostInputWaitingToolUseIds].filter((toolUseId) => state.pendingStepToolUseIds.has(toolUseId) && !state.earlyFinishStepToolUseIds.has(toolUseId));
+	if (uncovered.length === 0) return;
+	for (const toolUseId of uncovered) state.earlyFinishStepToolUseIds.add(toolUseId);
+	emit({
+		type: "finish-step",
+		finishReason: {
+			unified: "tool-calls",
+			raw: "host-input"
+		},
+		usage: defaultUsage(),
+		harnessMetadata: { "claude-code": { inferredStep: true } }
 	});
 }
 function formatApiRetryWarning(msg) {
@@ -847,7 +1031,9 @@ function formatApiRetryWarning(msg) {
 function handleStreamEvent({ event, message, state, send, toCommonName }) {
 	if (!event) return;
 	if (event.type === "message_start") {
+		state.modelResponseStreaming = true;
 		state.pendingResponseUsage = toUsageRecord(event.message?.usage);
+		state.responseOpen = true;
 		return;
 	}
 	if (event.type === "message_delta") {
@@ -868,6 +1054,12 @@ function handleStreamEvent({ event, message, state, send, toCommonName }) {
 			}
 		});
 		state.pendingResponseUsage = void 0;
+		state.modelResponseStreaming = false;
+		state.responseOpen = false;
+		closeStepIfReady({
+			state,
+			emit: send
+		});
 		return;
 	}
 	if (typeof event.index !== "number") return;
@@ -1233,6 +1425,7 @@ const NATIVE_TOOL_KINDS = {
 	TaskGet: "readonly",
 	TaskList: "readonly",
 	TaskOutput: "readonly",
+	ListAgents: "readonly",
 	ListMcpResources: "readonly",
 	ReadMcpResource: "readonly",
 	Write: "edit",
@@ -1307,22 +1500,26 @@ function createPermissionOptions(input) {
 			const approvalId = options.toolUseID;
 			input.approvalRequestedToolUseIds.add(approvalId);
 			input.nativeToolCallNames.set(approvalId, toolName);
-			input.emit({
-				type: "tool-call",
-				toolCallId: approvalId,
-				toolName: toCommonName(toolName),
-				nativeName: toolName,
-				input: JSON.stringify(toolInput ?? {}),
-				providerExecuted: true,
-				...isExternalMcpTool(toolName) ? { dynamic: true } : {}
-			});
+			if (!input.emittedToolCallIds.has(approvalId)) {
+				input.emittedToolCallIds.add(approvalId);
+				input.emit({
+					type: "tool-call",
+					toolCallId: approvalId,
+					toolName: toCommonName(toolName),
+					nativeName: toolName,
+					input: JSON.stringify(toolInput ?? {}),
+					providerExecuted: true,
+					...isExternalMcpTool(toolName) ? { dynamic: true } : {}
+				});
+			}
+			const decisionPromise = input.turn.requestToolApproval(approvalId);
 			input.emit({
 				type: "tool-approval-request",
 				approvalId,
 				toolCallId: approvalId
 			});
-			input.finishApprovalStep(approvalId);
-			const decision = await input.turn.requestToolApproval(approvalId);
+			input.markWaitingOnHostInput(approvalId);
+			const decision = await decisionPromise.finally(() => input.clearWaitingOnHostInput(approvalId));
 			return decision.approved ? {
 				behavior: "allow",
 				updatedInput: toolInput,
@@ -1352,6 +1549,7 @@ function createQuestionPreToolUseHook(input) {
 			providerMetadata: { "claude-code": { nativeRequest: nativeInput } }
 		});
 		const questionKey = claudeCodeQuestionKey(nativeInput);
+		input.markWaitingOnHostInput(toolCallId);
 		const nativeResult = toClaudeCodeQuestionResult({
 			nativeInput,
 			output: (await input.turn.requestToolResult({
@@ -1360,7 +1558,7 @@ function createQuestionPreToolUseHook(input) {
 					const nativeRequest = candidate.toolResult?.providerOptions?.["claude-code"]?.nativeRequest;
 					return nativeRequest != null && claudeCodeQuestionKey(nativeRequest) === questionKey;
 				}
-			})).output
+			}).finally(() => input.clearWaitingOnHostInput(toolCallId))).output
 		});
 		return { hookSpecificOutput: {
 			hookEventName: "PreToolUse",
@@ -1413,15 +1611,38 @@ async function runTurn(start, turn) {
 		}, async (...handlerArgs) => {
 			const [input, extra] = handlerArgs;
 			const metadataToolCallId = extra._meta?.["claudecode/toolUseId"];
-			const toolCallId = typeof metadataToolCallId === "string" ? metadataToolCallId : randomUUID();
-			emit({
-				type: "tool-call",
-				toolCallId,
+			const toolCallId = resolveMcpHandlerToolUseId({
+				state: streamEventState,
+				metadataToolUseId: typeof metadataToolCallId === "string" ? metadataToolCallId : void 0,
 				toolName: tool.name,
-				input: JSON.stringify(input),
-				providerExecuted: false
+				input
+			}) ?? randomUUID();
+			streamEventState.mcpHandlerCalls.set(toolCallId, {
+				toolName: tool.name,
+				input
 			});
-			const { output, isError } = await turn.requestToolResult(toolCallId);
+			if (!streamEventState.emittedToolCallIds.has(toolCallId)) {
+				streamEventState.emittedToolCallIds.add(toolCallId);
+				emit({
+					type: "tool-call",
+					toolCallId,
+					toolName: tool.name,
+					input: JSON.stringify(input),
+					providerExecuted: false
+				});
+				markWaitingOnHostInput({
+					state: streamEventState,
+					emit,
+					toolUseId: toolCallId
+				});
+			}
+			const { output, isError, toolResult } = await turn.requestToolResult(toolCallId).finally(() => {
+				clearWaitingOnHostInput({
+					state: streamEventState,
+					toolUseId: toolCallId
+				});
+				if (!streamEventState.mcpToolCalls.has(toolCallId)) streamEventState.pendingStepToolUseIds.delete(toolCallId);
+			});
 			emit({
 				type: "tool-result",
 				toolCallId,
@@ -1429,6 +1650,17 @@ async function runTurn(start, turn) {
 				result: output ?? null,
 				isError: !!isError
 			});
+			if (toolResult != null) {
+				const converted = convertHarnessToolModelOutput({ output: toolResult.output });
+				return {
+					content: converted.content.map((part) => part.type === "text" ? part : {
+						type: "image",
+						data: part.data,
+						mimeType: part.mediaType
+					}),
+					isError: isError === true || converted.isError
+				};
+			}
 			return {
 				content: [{
 					type: "text",
@@ -1443,7 +1675,15 @@ async function runTurn(start, turn) {
 			instance: server
 		};
 	}
-	const compaction = createCompactionLatch((event) => emit(event));
+	const compaction = createCompactionLatch((event) => {
+		const hasOpenStep = streamEventState.stepOpen;
+		emit(event);
+		if (!hasOpenStep) emitFinishStep({
+			state: streamEventState,
+			emit,
+			usage: void 0
+		});
+	});
 	const queryInput = createQueryInput({
 		initialUserMessage: start.prompt,
 		userMessages: turn.experimental_userMessages,
@@ -1457,20 +1697,32 @@ async function runTurn(start, turn) {
 		inactiveNativeTools,
 		turn,
 		emit,
-		finishApprovalStep: (approvalId) => {
-			finishApprovalStep({
-				state: streamEventState,
-				emit,
-				approvalId
-			});
-		},
+		markWaitingOnHostInput: (toolUseId) => markWaitingOnHostInput({
+			state: streamEventState,
+			emit,
+			toolUseId
+		}),
+		clearWaitingOnHostInput: (toolUseId) => clearWaitingOnHostInput({
+			state: streamEventState,
+			toolUseId
+		}),
 		nativeToolCallNames: streamEventState.nativeToolCallNames,
-		approvalRequestedToolUseIds: streamEventState.approvalRequestedToolUseIds
+		approvalRequestedToolUseIds: streamEventState.approvalRequestedToolUseIds,
+		emittedToolCallIds: streamEventState.emittedToolCallIds
 	});
 	const questionPreToolUseHook = createQuestionPreToolUseHook({
 		turn,
 		emit,
-		nativeToolCallNames: streamEventState.nativeToolCallNames
+		nativeToolCallNames: streamEventState.nativeToolCallNames,
+		markWaitingOnHostInput: (toolUseId) => markWaitingOnHostInput({
+			state: streamEventState,
+			emit,
+			toolUseId
+		}),
+		clearWaitingOnHostInput: (toolUseId) => clearWaitingOnHostInput({
+			state: streamEventState,
+			toolUseId
+		})
 	});
 	const q = claudeSdk.query({
 		prompt: queryInput.input,
@@ -1560,7 +1812,7 @@ async function runTurn(start, turn) {
 					}
 					const harnessUsage = mapUsage(msg.usage ?? msg.message?.usage);
 					if (harnessUsage) turnUsage = addUsage(turnUsage, harnessUsage);
-					if (typeof msg.total_cost_usd === "number") totalCostUsd = (totalCostUsd ?? 0) + msg.total_cost_usd;
+					if (typeof msg.total_cost_usd === "number") totalCostUsd = msg.total_cost_usd;
 					if (start.responseFormat?.type === "json" && msg.structured_output !== void 0) {
 						const id = randomUUID();
 						emit({
@@ -1583,6 +1835,7 @@ async function runTurn(start, turn) {
 						emit,
 						usage: streamEventState.pendingStepUsage ?? harnessUsage
 					});
+					if (!queryInput.answersSentMessage(msg)) continue;
 					queryInput.observeResult();
 					if (!queryInput.hasActiveUserMessages()) {
 						queryInput.close();
@@ -1630,6 +1883,14 @@ function createQueryInput({ initialUserMessage, userMessages, abortSignal }) {
 	let closed = false;
 	let observedResult = false;
 	const submittedMessages = /* @__PURE__ */ new Map();
+	const initialMessageId = randomUUID();
+	const sentMessageIds = /* @__PURE__ */ new Set([initialMessageId]);
+	let cliEchoesMessageIds = false;
+	const noteEcho = (ids) => {
+		const echoed = ids.some((id) => typeof id === "string" && sentMessageIds.has(id));
+		if (echoed) cliEchoesMessageIds = true;
+		return echoed;
+	};
 	const close = (error) => {
 		if (closed) return;
 		closed = true;
@@ -1656,6 +1917,8 @@ function createQueryInput({ initialUserMessage, userMessages, abortSignal }) {
 		handleLifecycle: (message) => {
 			const lifecycle = message;
 			if (lifecycle.command_uuid == null || lifecycle.state == null) return;
+			noteEcho([lifecycle.command_uuid]);
+			if (lifecycle.command_uuid === initialMessageId && (lifecycle.state === "cancelled" || lifecycle.state === "discarded")) observedResult = true;
 			const submitted = submittedMessages.get(lifecycle.command_uuid);
 			if (submitted == null) return;
 			if (lifecycle.state === "queued" || lifecycle.state === "started") {
@@ -1666,6 +1929,10 @@ function createQueryInput({ initialUserMessage, userMessages, abortSignal }) {
 			submittedMessages.delete(lifecycle.command_uuid);
 		},
 		hasActiveUserMessages: () => submittedMessages.size > 0 || userMessages.pendingCount > 0,
+		answersSentMessage: (result) => {
+			const { user_message_uuid, user_message_uuids, origin } = result;
+			return noteEcho([user_message_uuid, ...Array.isArray(user_message_uuids) ? user_message_uuids : []]) || !cliEchoesMessageIds && origin?.kind !== "task-notification";
+		},
 		observeResult: () => {
 			observedResult = true;
 		},
@@ -1684,7 +1951,7 @@ function createQueryInput({ initialUserMessage, userMessages, abortSignal }) {
 					return {
 						value: toUserMessage({
 							text: initialUserMessage,
-							messageId: randomUUID()
+							messageId: initialMessageId
 						}),
 						done: false
 					};
@@ -1695,6 +1962,7 @@ function createQueryInput({ initialUserMessage, userMessages, abortSignal }) {
 					done: true
 				};
 				submittedMessages.set(nextMessage.value.messageId, nextMessage.value);
+				sentMessageIds.add(nextMessage.value.messageId);
 				return {
 					value: toUserMessage({
 						text: nextMessage.value.text,

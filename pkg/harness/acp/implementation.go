@@ -183,6 +183,7 @@ type implementationIdentityInput struct {
 	ModelMapping           ModelMapping
 	ProviderAuthentication *providerAuthenticationCompatibility
 	PermissionModeMapping  *PermissionModeMapping
+	NonTextContentTypes    []NonTextContentType
 }
 
 // createImplementationIdentity mirrors TS `createImplementationIdentity`: a
@@ -226,6 +227,15 @@ func createImplementationIdentity(in implementationIdentityInput) string {
 		},
 		"providerAuthentication": in.ProviderAuthentication,
 		"permissionModeMapping":  in.PermissionModeMapping,
+	}
+	if len(in.NonTextContentTypes) > 0 {
+		// Only present when declared, so identities of implementations that
+		// declare none are unchanged. Deduplicated and sorted like TS.
+		names := make([]string, len(in.NonTextContentTypes))
+		for i, t := range in.NonTextContentTypes {
+			names[i] = string(t)
+		}
+		payload["nonTextContentTypes"] = sortedUnique(names)
 	}
 	sum := sha256.Sum256([]byte(stableStringify(payload)))
 	return hex.EncodeToString(sum[:])

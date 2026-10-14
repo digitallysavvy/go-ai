@@ -184,6 +184,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 		HarnessID: settings.HarnessID, Implementation: h.impl, ClientApp: h.clientApp,
 		ClientCapabilities: settings.ClientCapabilities, ModelMapping: settings.ModelMapping,
 		ProviderAuthentication: compat, PermissionModeMapping: h.permMap,
+		NonTextContentTypes: settings.NonTextContentTypes,
 	})
 	authProfile := createAuthenticationProfileIdentity(settings.Authentication, compat)
 	resolvedProviderAuth, err := resolveProviderAuthentication(settings.Auth, settings.ProviderAuthentication, h.clientApp, authenticationEnvironment, compat)
@@ -473,7 +474,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 		Authentication: settings.Authentication, ProviderAuthentication: bridgeProviderAuthentication,
 		ProviderEnvironment: providerEnvironment, SessionMeta: settings.SessionMeta,
 		ClientCapabilities: settings.ClientCapabilities, AskUserQuestionsRequestMethod: askUserQuestionsRequestMethod(settings.AskUserQuestions),
-		HostToolMCPTransport: settings.HostToolMCPTransport,
+		HostToolMCPTransport: settings.HostToolMCPTransport, NonTextContentTypes: settings.NonTextContentTypes,
 	}) {
 		env[k] = v
 	}

@@ -1208,3 +1208,42 @@ func TestDoDetach_ReattachReusesTokenHeadersAndReconnect(t *testing.T) {
 		}
 	}
 }
+
+// TS #22367: nonTextContentTypes travels in the bridge configuration blob and
+// participates in the implementation identity only when declared.
+func TestNonTextContentTypes_BridgeEnvAndIdentity(t *testing.T) {
+	env := createBridgeEnvironment(bridgeConfiguration{NonTextContentTypes: []NonTextContentType{NonTextContentImage}})
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(env[BridgeConfigurationEnv]), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := cfg["nonTextContentTypes"].([]any); len(got) != 1 || got[0] != "image" {
+		t.Fatalf("nonTextContentTypes = %v, want [image]", cfg["nonTextContentTypes"])
+	}
+	if _, has := createBridgeEnvironment(bridgeConfiguration{})[BridgeConfigurationEnv]; !has {
+		t.Fatal("missing env")
+	}
+	var empty map[string]any
+	_ = json.Unmarshal([]byte(createBridgeEnvironment(bridgeConfiguration{})[BridgeConfigurationEnv]), &empty)
+	if _, has := empty["nonTextContentTypes"]; has {
+		t.Error("nonTextContentTypes must be omitted when none are declared")
+	}
+
+	impl := implementation{Source: Source{Type: SourceNPMSimple, PackageName: "foo"}, Executable: "foo"}
+	base := implementationIdentityInput{HarnessID: "test", Implementation: impl, ClientApp: DefaultClientApp, ModelMapping: ModelMapping{Type: ModelMappingSessionModel, Path: "model"}}
+	withNone := base
+	withNone.NonTextContentTypes = []NonTextContentType{}
+	if createImplementationIdentity(base) != createImplementationIdentity(withNone) {
+		t.Error("an empty declaration must not change the identity")
+	}
+	withImage := base
+	withImage.NonTextContentTypes = []NonTextContentType{NonTextContentImage}
+	dup := base
+	dup.NonTextContentTypes = []NonTextContentType{NonTextContentImage, NonTextContentImage}
+	if createImplementationIdentity(base) == createImplementationIdentity(withImage) {
+		t.Error("declaring image content must change the identity")
+	}
+	if createImplementationIdentity(withImage) != createImplementationIdentity(dup) {
+		t.Error("duplicate declarations must hash like a single one")
+	}
+}

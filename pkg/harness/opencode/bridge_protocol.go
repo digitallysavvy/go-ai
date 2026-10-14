@@ -23,4 +23,18 @@ type StartMessage struct {
 	OpenCodeConfig  map[string]any    `json:"openCodeConfig,omitempty"`
 	MCPServers      map[string]any    `json:"mcpServers,omitempty"`
 	Headers         map[string]string `json:"headers,omitempty"`
+	// InactiveBuiltinToolNames lists the OpenCode built-in tools the bridge
+	// must disable for this session (TS #23342). It replaces the shared
+	// `builtinToolFiltering` field, which OpenCode's start frame omits: the
+	// embedded StartBase.BuiltinToolFiltering is never set for OpenCode.
+	// A nil pointer means no filtering; a pointer to an empty slice means
+	// filtering is active but nothing is disabled (sent as `[]`, like TS).
+	InactiveBuiltinToolNames *[]string `json:"inactiveBuiltinToolNames,omitempty"`
+}
+
+// builtinToolNames is the ordered key set of TS `OPENCODE_BUILTIN_TOOLS`
+// (TS `openCodeBuiltinToolNameSchema`).
+var builtinToolNames = []string{
+	"askUserQuestions", "read", "write", "edit", "bash", "glob", "grep",
+	"ls", "webfetch", "skill", "todowrite", "agent",
 }

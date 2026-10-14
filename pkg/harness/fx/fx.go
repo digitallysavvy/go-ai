@@ -1,5 +1,5 @@
 // Package fx is the Go port of the TypeScript `@ai-sdk/harness-fx` package
-// (pinned to ai@7.0.113, hash d0b241d).
+// (pinned to ai@7.0.140).
 //
 // Like pkg/harness/cursor, fx is an "ACP-derived" adapter: TS `createFx()`
 // is a thin configuration layer over `createACP()` (`@ai-sdk/harness-acp`).
@@ -22,6 +22,12 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
 )
+
+// fxVersion is the pinned fx release the install command fetches, instead of
+// whatever "latest" resolves to at bootstrap time (TS #23138 `FX_VERSION`).
+// To update it, find the newest release with the fx installer's release list
+// and bump this constant together with the TS-parity tests.
+const fxVersion = "0.0.13"
 
 const (
 	ClientAppName    = "ai-sdk/harness-fx"
@@ -89,7 +95,7 @@ func BuildConfig(settings Settings) acp.Settings {
 		BuiltinTools:    BuiltinTools,
 		Source: acp.Source{
 			Type:    acp.SourceInstallCommand,
-			Command: "curl -fsSL https://fx.sh/setup.sh | bash",
+			Command: "curl -fsSL https://fx.sh/setup.sh | bash -s -- v" + fxVersion,
 		},
 		Executable: "fx",
 		Args:       []string{"acp"},

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
 	"github.com/digitallysavvy/go-ai/pkg/harness/claudecode"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -45,7 +46,7 @@ func TestBuiltinTools_Declared(t *testing.T) {
 }
 
 // TS `claude-code-harness.ts` CLAUDE_CODE_BUILTIN_TOOLS: the complete
-// 47-entry table (7 common tools + askUserQuestions + 39 native-only tools).
+// 48-entry table (7 common tools + askUserQuestions + 40 native-only tools).
 func TestBuiltinTools_CompleteTable(t *testing.T) {
 	h, err := claudecode.New(claudecode.Settings{})
 	if err != nil {
@@ -57,15 +58,15 @@ func TestBuiltinTools_CompleteTable(t *testing.T) {
 		"WebFetch", "NotebookEdit", "TodoWrite", "Agent", "TaskCreate", "TaskGet",
 		"TaskUpdate", "TaskList", "TaskStop", "TaskOutput", "Monitor",
 		"ListMcpResources", "ListMcpResourcesTool", "ReadMcpResource", "ReadMcpResourceTool",
-		"ReadMcpResourceDirTool", "RefreshMcpTools", "ExitPlanMode", "EnterPlanMode",
+		"ReadMcpResourceDirTool", "RefreshMcpTools", "ListAgents", "ExitPlanMode", "EnterPlanMode",
 		"EnterWorktree", "ExitWorktree", "askUserQuestions", "Skill", "ToolSearch",
 		"Artifact", "CronCreate", "CronDelete", "CronList", "DesignSync", "LSP",
 		"PowerShell", "PushNotification", "RemoteTrigger", "ReportFindings",
 		"ScheduleWakeup", "SendMessage", "SendUserFile", "ShareOnboardingGuide",
 		"WaitForMcpServers", "Workflow",
 	}
-	if len(want) != 47 {
-		t.Fatalf("test bug: want list has %d entries, expected 47", len(want))
+	if len(want) != 48 {
+		t.Fatalf("test bug: want list has %d entries, expected 48", len(want))
 	}
 	if len(tools) != len(want) {
 		t.Errorf("len(BuiltinTools()) = %d, want %d", len(tools), len(want))
@@ -617,8 +618,8 @@ func TestDoStart_ClientAppSetForAIGatewayAuth(t *testing.T) {
 	}
 
 	env, _ := captured["env"].(map[string]any)
-	if env["CLAUDE_AGENT_SDK_CLIENT_APP"] != "ai-sdk/harness-claude-code/1.0.142" {
-		t.Errorf("env.CLAUDE_AGENT_SDK_CLIENT_APP = %v, want ai-sdk/harness-claude-code/1.0.142", env["CLAUDE_AGENT_SDK_CLIENT_APP"])
+	if env["CLAUDE_AGENT_SDK_CLIENT_APP"] != "ai-sdk/harness-claude-code/1.0.155" {
+		t.Errorf("env.CLAUDE_AGENT_SDK_CLIENT_APP = %v, want ai-sdk/harness-claude-code/1.0.155", env["CLAUDE_AGENT_SDK_CLIENT_APP"])
 	}
 }
 
@@ -869,5 +870,105 @@ func TestDoStart_ReportsDiagnostics(t *testing.T) {
 	}
 	if eventDiag.Kind != "event" || eventDiag.Message != "retrying" || eventDiag.Subsystem != "claude-code.bridge" || eventDiag.SessionID != "diag-session" {
 		t.Errorf("event diagnostic = %+v", eventDiag)
+	}
+}
+
+func resumedRerunSession(t *testing.T) (harness.Session, *int32, <-chan map[string]any) {
+	t.Helper()
+	var starts int32
+	markers := make(chan map[string]any, 4)
+	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnToolResult: func(f map[string]any) { markers <- f },
+		OnFrame: func(ft string) {
+			if ft == bridge.TypeStart {
+				atomic.AddInt32(&starts, 1)
+			}
+		},
+		OnStart: func(turn *bridgetest.Turn, _ map[string]any) {
+			turn.Emit(map[string]any{
+				"type": "finish", "finishReason": map[string]any{"unified": "stop", "raw": "stop"},
+				"totalUsage": map[string]any{"inputTokens": map[string]any{"total": 1}, "outputTokens": map[string]any{"total": 1}},
+			})
+		}})
+	t.Cleanup(srv.Close)
+	sandbox := newTestSandbox(srv)
+	wireSpawn(sandbox)
+	h, err := claudecode.New(claudecode.Settings{StartupTimeout: 2 * time.Second, MintBridgeToken: func(string) string { return "tok" }})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	resumeState, err := harness.NewResumeSessionState(claudecode.HarnessID, map[string]any{"claudeSessionId": "claude-session-1"})
+	if err != nil {
+		t.Fatalf("NewResumeSessionState: %v", err)
+	}
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{
+		SessionID: "s1", SandboxSession: sandbox, SessionWorkDir: "/workdir", ResumeFrom: resumeState,
+	})
+	if err != nil {
+		t.Fatalf("DoStart: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+	return sess, &starts, markers
+}
+
+// settle sends a marker tool-result on the same connection and waits until the
+// bridge has received it. Frames on one connection are processed in order, so
+// any start frame sent before the marker has already been counted: this
+// replaces a timing-based "no further start frame" sleep.
+func settle(t *testing.T, c harness.PromptControl, markers <-chan map[string]any) {
+	t.Helper()
+	if err := c.SubmitToolResult(context.Background(), harness.ToolResultSubmission{ToolCallID: "settle-marker", Output: "ok"}); err != nil {
+		t.Fatalf("settle marker: %v", err)
+	}
+	select {
+	case <-markers:
+	case <-time.After(2 * time.Second):
+		t.Fatal("settle marker never reached the bridge")
+	}
+}
+
+func waitDone(t *testing.T, c harness.PromptControl) {
+	t.Helper()
+	select {
+	case <-c.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("turn never finished")
+	}
+}
+
+// TS (#22569) continuation-first resume: the recovery start is sent once.
+func TestDoContinueTurn_RerunRecoveryStartsNativeTurnOnce(t *testing.T) {
+	sess, starts, markers := resumedRerunSession(t)
+	emit := func(harness.StreamPart) {}
+	first, err := sess.DoContinueTurn(context.Background(), harness.ContinueTurnOptions{Emit: emit})
+	if err != nil {
+		t.Fatalf("first DoContinueTurn: %v", err)
+	}
+	waitDone(t, first)
+	second, err := sess.DoContinueTurn(context.Background(), harness.ContinueTurnOptions{Emit: emit})
+	if err != nil {
+		t.Fatalf("second DoContinueTurn: %v", err)
+	}
+	settle(t, second, markers)
+	if got := atomic.LoadInt32(starts); got != 1 {
+		t.Fatalf("bridge received %d start frames, want exactly 1", got)
+	}
+}
+
+// TS (#22569) prompt-first resume: a recovered prompt consumes the rerun flag.
+func TestDoContinueTurn_AfterRecoveredPromptSendsNoStart(t *testing.T) {
+	sess, starts, markers := resumedRerunSession(t)
+	emit := func(harness.StreamPart) {}
+	prompt, err := sess.DoPromptTurn(context.Background(), harness.PromptTurnOptions{Prompt: harness.TextPrompt("hi"), Emit: emit})
+	if err != nil {
+		t.Fatalf("DoPromptTurn: %v", err)
+	}
+	waitDone(t, prompt)
+	cont, err := sess.DoContinueTurn(context.Background(), harness.ContinueTurnOptions{Emit: emit})
+	if err != nil {
+		t.Fatalf("DoContinueTurn: %v", err)
+	}
+	settle(t, cont, markers)
+	if got := atomic.LoadInt32(starts); got != 1 {
+		t.Fatalf("bridge received %d start frames, want 1 (the prompt only)", got)
 	}
 }

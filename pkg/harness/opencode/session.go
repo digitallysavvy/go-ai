@@ -64,12 +64,20 @@ type session struct {
 	// `resolveTurnDrain` (TS #21683: "stop aborted OpenCode turns before
 	// starting the next turn").
 	pendingTurnDrain chan struct{}
+	// abortedTurnDrain is the drain of the most recently aborted turn.
+	// DoContinueTurn waits only on this: a turn paused for a tool approval or
+	// tool result cannot finish before the continue answers it, so waiting on
+	// pendingTurnDrain would deadlock (TS #23331).
+	abortedTurnDrain chan struct{}
+	// rerunContinue is the live copy of p.rerunContinue: true until the single
+	// recovery start has been sent. Mirrors TS `rerunContinue`.
+	rerunContinue bool
 }
 
 func newSession(p sessionParams) *session {
 	closedDrain := make(chan struct{})
 	close(closedDrain)
-	s := &session{p: p, latestOpenCodeSessionID: p.openCodeSessionID, pendingTurnDrain: closedDrain}
+	s := &session{p: p, latestOpenCodeSessionID: p.openCodeSessionID, pendingTurnDrain: closedDrain, abortedTurnDrain: closedDrain, rerunContinue: p.rerunContinue}
 	if p.seedResumeSessionOnFirstPrompt {
 		s.pendingResumeSessionID = p.openCodeSessionID
 	}
@@ -318,6 +326,9 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 			isSettled = true
 			drainingAfterAbort = true
 			turnMu.Unlock()
+			s.mu.Lock()
+			s.abortedTurnDrain = turnDrain
+			s.mu.Unlock()
 			err := ctx.Err()
 			if c.submitter != nil {
 				c.submitter.Close(err)
@@ -350,9 +361,10 @@ func (s *session) startBase(turnModel string) (StartMessage, error) {
 	defer s.mu.Unlock()
 	msg := StartMessage{
 		StartBase: bridge.StartBase{
-			Model: turnModel, PermissionMode: s.p.permissionMode, BuiltinToolFiltering: s.p.builtinToolFiltering,
+			Model: turnModel, PermissionMode: s.p.permissionMode,
 		},
-		Provider: s.p.provider, Variant: s.p.reasoningVariant, OpenCodeConfig: s.p.openCodeConfig,
+		InactiveBuiltinToolNames: resolveInactiveBuiltinToolNames(s.p.builtinToolFiltering),
+		Provider:                 s.p.provider, Variant: s.p.reasoningVariant, OpenCodeConfig: s.p.openCodeConfig,
 		MCPServers: s.p.mcpServers, Headers: s.p.headers,
 	}
 	switch {
@@ -367,14 +379,10 @@ func (s *session) startBase(turnModel string) (StartMessage, error) {
 	return msg, nil
 }
 
-// waitForPendingTurnDrain blocks until the previous turn (if any) has fully
-// finished — including, when that turn was aborted, OpenCode itself having
-// stopped generating — so a replacement turn never races the aborted one's
-// trailing events. Mirrors TS prepareTurn's `await pendingTurnDrain;` (TS
-// #21683).
-func (s *session) waitForPendingTurnDrain(ctx context.Context) error {
+// waitForTurnDrain blocks until the given drain is closed or ctx ends.
+func (s *session) waitForTurnDrain(ctx context.Context, which func() chan struct{}) error {
 	s.mu.Lock()
-	drain := s.pendingTurnDrain
+	drain := which()
 	s.mu.Unlock()
 	select {
 	case <-drain:
@@ -384,8 +392,11 @@ func (s *session) waitForPendingTurnDrain(ctx context.Context) error {
 	}
 }
 
+// prepareTurn waits for the drain selected by opts.drain first: prompts wait
+// for the previous turn (so an aborted turn's stale events never reach the
+// new turn's Emit, TS #21683), continues only for an aborted turn (TS #23331).
 func (s *session) prepareTurn(ctx context.Context, opts turnPrepareOptions) (*promptControl, *harnessutil.WriteSkillsResult, error) {
-	if err := s.waitForPendingTurnDrain(ctx); err != nil {
+	if err := s.waitForTurnDrain(ctx, opts.drain); err != nil {
 		return nil, nil, err
 	}
 	if opts.ResponseFormat != nil && opts.ResponseFormat.Type == harness.ResponseFormatJSON && opts.ResponseFormat.Schema == nil {
@@ -410,10 +421,12 @@ type turnPrepareOptions struct {
 	ResponseFormat *harness.ResponseFormat
 	Skills         []harness.Skill
 	Emit           harness.EmitFunc
+	// drain selects the drain channel to await; called with s.mu held.
+	drain func() chan struct{}
 }
 
 func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptions) (harness.PromptControl, error) {
-	control, skillResult, err := s.prepareTurn(ctx, turnPrepareOptions{ResponseFormat: opts.ResponseFormat, Skills: opts.Skills, Emit: opts.Emit})
+	control, skillResult, err := s.prepareTurn(ctx, turnPrepareOptions{ResponseFormat: opts.ResponseFormat, Skills: opts.Skills, Emit: opts.Emit, drain: func() chan struct{} { return s.pendingTurnDrain }})
 	if err != nil {
 		return nil, err
 	}
@@ -445,16 +458,24 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 	}
 	s.mu.Lock()
 	s.pendingResumeSessionID = ""
+	// Recovery starts a native turn once. Later continuations attach to it.
+	s.rerunContinue = false
 	s.mu.Unlock()
 	return control, nil
 }
 
 func (s *session) DoContinueTurn(ctx context.Context, opts harness.ContinueTurnOptions) (harness.PromptControl, error) {
-	control, skillResult, err := s.prepareTurn(ctx, turnPrepareOptions{ResponseFormat: opts.ResponseFormat, Skills: opts.Skills, Emit: opts.Emit})
+	control, skillResult, err := s.prepareTurn(ctx, turnPrepareOptions{ResponseFormat: opts.ResponseFormat, Skills: opts.Skills, Emit: opts.Emit, drain: func() chan struct{} { return s.abortedTurnDrain }})
 	if err != nil {
 		return nil, err
 	}
-	if s.p.rerunContinue {
+	s.mu.Lock()
+	rerun := s.rerunContinue
+	if rerun {
+		s.rerunContinue = false
+	}
+	s.mu.Unlock()
+	if rerun {
 		turnModel := opts.Model
 		s.mu.Lock()
 		if turnModel == "" {
