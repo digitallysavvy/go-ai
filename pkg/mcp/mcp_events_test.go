@@ -887,3 +887,49 @@ func TestMCPEventSignatureRoundTrip(t *testing.T) {
 		t.Fatal("expected invalid secret error")
 	}
 }
+
+// Review: a request that fails authentication or size checks must never reach
+// application callbacks or mutate the stored cursor.
+func TestMCPEventWebhookUnauthenticatedRequestsHaveNoSideEffects(t *testing.T) {
+	h := newWebhookHarness(t)
+	now := mcpEventNow().Unix()
+	body, _ := json.Marshal(testEvent)
+	other := "whsec_" + base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32))
+
+	cases := map[string]*http.Request{
+		"forged":      signedEventRequestBody(h.sub, body, "evt_1", fmt.Sprint(now), other),
+		"stale":       signedEventRequestBody(h.sub, body, "evt_1", fmt.Sprint(now-3600), h.sub.Delivery.Secret),
+		"future":      signedEventRequestBody(h.sub, body, "evt_1", fmt.Sprint(now+3600), h.sub.Delivery.Secret),
+		"exponent":    signedEventRequestBody(h.sub, body, "evt_1", "1e9", h.sub.Delivery.Secret),
+		"signed-plus": signedEventRequestBody(h.sub, body, "evt_1", "+"+fmt.Sprint(now), h.sub.Delivery.Secret),
+		"huge":        signedEventRequestBody(h.sub, body, "evt_1", strings.Repeat("9", 400), h.sub.Delivery.Secret),
+	}
+	big := signedEventRequestBody(h.sub, bytes.Repeat([]byte("a"), 256*1024+1), "evt_1", fmt.Sprint(now), h.sub.Delivery.Secret)
+	big.ContentLength = -1
+	cases["oversized"] = big
+	for name, r := range cases {
+		want := 401
+		if name == "oversized" {
+			want = 413
+		}
+		if code := h.do(r); code != want {
+			t.Fatalf("%s = %d, want %d", name, code, want)
+		}
+	}
+	// Forged control messages must not delete the subscription or move cursors.
+	for _, ctl := range []map[string]interface{}{
+		{"type": "gap", "cursor": "evil"},
+		{"type": "terminated", "error": map[string]interface{}{"code": -32012, "message": "x"}},
+	} {
+		cb, _ := json.Marshal(ctl)
+		if code := h.do(signedEventRequestBody(h.sub, cb, "m", fmt.Sprint(now), other)); code != 401 {
+			t.Fatalf("forged control = %d", code)
+		}
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	s := h.store.get("local_1")
+	if h.events != 0 || len(h.gaps) != 0 || len(h.terms) != 0 || h.errs != 0 || s == nil || *s.Cursor != "cursor_1" {
+		t.Fatalf("side effects: events=%d gaps=%d terms=%d errs=%d sub=%v", h.events, len(h.gaps), len(h.terms), h.errs, s)
+	}
+}

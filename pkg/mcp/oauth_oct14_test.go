@@ -124,3 +124,33 @@ func TestDiscoverAuthorizationServerMetadataDoubleSlashIssuerStaysOnOrigin(t *te
 		t.Fatalf("requests = %v", seen)
 	}
 }
+
+// Adversarial issuers (review): whatever the issuer looks like, discovery must
+// either refuse before any request or stay on the issuer's own host.
+func TestDiscoverAuthorizationServerMetadataAdversarialIssuersNeverLeaveOrigin(t *testing.T) {
+	for _, issuer := range []string{
+		"https://auth.example.com//evil.example",
+		"https://auth.example.com/\\evil.example",
+		"https://auth.example.com/%2F%2Fevil.example",
+		"https://auth.example.com/%2f%5cevil.example",
+		"https://auth.example.com/@evil.example",
+		"https://auth.example.com//user@evil.example:8443/x",
+		"https://user:pw@auth.example.com//evil.example",
+		"https://auth.example.com/a%3F@evil.example",
+		"https://auth.example.com/a%23@evil.example",
+		"https:evil.example/x",
+		"https:/evil.example/x",
+		"https:///evil.example",
+		"//evil.example",
+	} {
+		t.Run(issuer, func(t *testing.T) {
+			client := oauthTestClient(func(req *http.Request) (*http.Response, error) {
+				if req.URL.Host != "auth.example.com" {
+					t.Errorf("request escaped origin: %s", req.URL)
+				}
+				return jsonResponse(http.StatusNotFound, `{}`), nil
+			})
+			_, _ = DiscoverAuthorizationServerMetadata(context.Background(), issuer, OAuthDiscoveryOptions{HTTPClient: client})
+		})
+	}
+}

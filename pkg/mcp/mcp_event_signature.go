@@ -82,7 +82,7 @@ func verifyMCPEventSignature(headers http.Header, body []byte, secret string) (b
 	}
 	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(id + "." + timestamp + ".")) //nolint:errcheck // hash.Hash writes never fail
-	mac.Write(body) //nolint:errcheck // hash.Hash writes never fail
+	mac.Write(body)                               //nolint:errcheck // hash.Hash writes never fail
 	expected := mac.Sum(nil)
 
 	for _, signature := range strings.Split(signatures, " ") {
