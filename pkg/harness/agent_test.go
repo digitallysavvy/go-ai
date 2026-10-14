@@ -25,6 +25,7 @@ type recordedToolResult struct {
 	ToolCallID string
 	Output     interface{}
 	IsError    bool
+	ToolResult any
 }
 
 type recordedApproval struct {
@@ -82,7 +83,7 @@ func (c *mockPromptControl) SubmitToolResult(_ context.Context, r ToolResultSubm
 		c.onSubmitResult(r)
 	}
 	c.mu.Lock()
-	*c.toolResults = append(*c.toolResults, recordedToolResult{ToolCallID: r.ToolCallID, Output: r.Output, IsError: r.IsError})
+	*c.toolResults = append(*c.toolResults, recordedToolResult{ToolCallID: r.ToolCallID, Output: r.Output, IsError: r.IsError, ToolResult: r.ToolResult})
 	c.mu.Unlock()
 	return nil
 }

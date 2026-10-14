@@ -373,6 +373,12 @@ type turnDriver struct {
 	// each tool's `startNotification` the same way. Guarded by execMu.
 	telToolCtx map[string]context.Context
 
+	// toolModelOutputs caches the normalized model-facing output of each
+	// submitted tool result by toolCallId, so the corresponding tool-result
+	// chunk (and therefore ResponseMessages) reports it instead of the raw
+	// result (TS #22367 `toolModelOutputs`). Guarded by execMu.
+	toolModelOutputs map[string]types.ToolResultOutput
+
 	closingResumedStep bool
 
 	// pendingStopBoundary is set at a finish-step whose completed step might
@@ -784,6 +790,17 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 			// fires OnToolExecutionEnd) runs before the chunk is pushed,
 			// matching TS's "End callbacks precede streamed results."
 			chunks := TranslatePart(tr, d.translateOpts())
+			d.execMu.Lock()
+			modelOutput, hasModelOutput := d.toolModelOutputs[tr.ToolCallID]
+			d.execMu.Unlock()
+			if hasModelOutput {
+				for i := range chunks {
+					if chunks[i].ToolResult != nil && chunks[i].ToolResult.Error == nil {
+						mo := modelOutput
+						chunks[i].ToolResult.ModelOutput = &mo
+					}
+				}
+			}
 			d.recordToolResult(tr)
 			for _, c := range chunks {
 				d.stream.push(c)
@@ -1536,7 +1553,7 @@ func (d *turnDriver) handleHostToolCall(raw *ToolCallPart) (awaiting bool, err e
 
 	if _, active := d.activeToolSet[raw.ToolName]; !isClientExecutedBuiltin && !active {
 		output := executionDeniedOutput(BuiltinToolFilteringDenialReason(raw.ToolName))
-		if err := d.control.SubmitToolResult(d.ctx, ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: output}); err != nil {
+		if err := d.submitToolResult(ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: output}); err != nil {
 			return false, err
 		}
 		return false, nil
@@ -1577,7 +1594,7 @@ func (d *turnDriver) handleHostToolCall(raw *ToolCallPart) (awaiting bool, err e
 			ApprovalID: approvalID, ToolCallID: raw.ToolCallID, ToolCall: call, Approved: false, Reason: decision.Reason,
 		}})
 		output := executionDeniedOutput(decision.Reason)
-		if err := d.control.SubmitToolResult(d.ctx, ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: output}); err != nil {
+		if err := d.submitToolResult(ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: output}); err != nil {
 			return false, err
 		}
 		return false, nil
@@ -1654,7 +1671,7 @@ func (d *turnDriver) rejectInvalidHostToolCall(raw *ToolCallPart, displayCall ty
 			Dynamic:    true,
 		},
 	}})
-	return d.control.SubmitToolResult(d.ctx, ToolResultSubmission{
+	return d.submitToolResult(ToolResultSubmission{
 		ToolCallID: raw.ToolCallID,
 		Output:     map[string]interface{}{"error": invalidToolInputMessage},
 		IsError:    true,
@@ -1731,7 +1748,7 @@ func (d *turnDriver) executeHostToolAsync(tool types.Tool, raw *ToolCallPart, ca
 			// and the tool sees the defaulted value.
 			normalizedToolCtx := schema.ApplyDefaults(toolCtx, tool.ContextSchema)
 			if err := tool.ContextSchema.Validator().Validate(normalizedToolCtx); err != nil {
-				_ = d.control.SubmitToolResult(d.ctx, ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: map[string]interface{}{"error": "Tool context validation failed."}, IsError: true})
+				_ = d.submitToolResult(ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: map[string]interface{}{"error": "Tool context validation failed."}, IsError: true})
 				d.recordExecError(raw.ToolCallID, err)
 				return
 			}
@@ -1752,11 +1769,81 @@ func (d *turnDriver) executeHostToolAsync(tool types.Tool, raw *ToolCallPart, ca
 		d.toolExecMs[raw.ToolCallID] = time.Since(start).Milliseconds()
 		d.execMu.Unlock()
 		if err != nil {
-			_ = d.control.SubmitToolResult(d.ctx, ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: map[string]interface{}{"error": err.Error()}, IsError: true})
+			_ = d.submitToolResult(ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: map[string]interface{}{"error": err.Error()}, IsError: true})
 			return
 		}
-		_ = d.control.SubmitToolResult(d.ctx, ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: output})
+		submission := ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: output}
+		// Run toModelOutput() exactly once per submitted result (TS #22367):
+		// the raw output stays on the consumer-facing result, and the
+		// model-facing representation travels as ToolResult for the adapter
+		// and is cached for ResponseMessages.
+		if tool.ToModelOutput != nil {
+			modelOutput, mErr := tool.ToModelOutput(d.ctx, types.ToModelOutputOptions{
+				ToolCallID: raw.ToolCallID, Input: execArgs, Output: output, Result: output,
+			})
+			if mErr != nil {
+				_ = d.submitToolResult(ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: map[string]interface{}{"error": mErr.Error()}, IsError: true})
+				return
+			}
+			if modelOutput != nil {
+				submission.ToolResult = newModelToolResult(raw.ToolCallID, raw.ToolName, *modelOutput)
+			}
+		}
+		_ = d.submitToolResult(submission)
 	}()
+}
+
+// submitToolResult is the single path every tool result takes back to the
+// harness runtime. When the submission carries a model-facing tool result
+// (from a tool's ToModelOutput or a client-supplied continuation), its
+// output is normalized (text and inline images only) and cached so
+// ResponseMessages reports it. Mirrors TS runPrompt's wrapped
+// `submitToolResult` (TS #22367): an unsupported model output is an error,
+// except for a client continuation, which falls back to the JSON text of the
+// raw output.
+func (d *turnDriver) submitToolResult(submission ToolResultSubmission) error {
+	var output *types.ToolResultOutput
+	switch tr := submission.ToolResult.(type) {
+	case *ModelToolResult:
+		if tr != nil {
+			output = &tr.Output
+		}
+	case *types.ToolResultContent:
+		if tr != nil {
+			output = tr.Output
+		}
+	}
+	if output != nil {
+		normalized, err := NormalizeToolModelOutput(*output)
+		if err != nil {
+			_, hasContinuation := d.continuationsByToolCallID[submission.ToolCallID]
+			if !hasContinuation || !IsCapabilityUnsupportedError(err) {
+				return err
+			}
+			text, mErr := json.Marshal(submission.Output)
+			if mErr != nil || string(text) == "" {
+				text = []byte("null")
+			}
+			normalized = types.ToolResultOutput{Type: types.ToolResultOutputText, Value: string(text)}
+		}
+		switch tr := submission.ToolResult.(type) {
+		case *ModelToolResult:
+			cp := *tr
+			cp.Output = normalized
+			submission.ToolResult = &cp
+		case *types.ToolResultContent:
+			cp := *tr
+			cp.Output = &normalized
+			submission.ToolResult = &cp
+		}
+		d.execMu.Lock()
+		if d.toolModelOutputs == nil {
+			d.toolModelOutputs = map[string]types.ToolResultOutput{}
+		}
+		d.toolModelOutputs[submission.ToolCallID] = normalized
+		d.execMu.Unlock()
+	}
+	return d.control.SubmitToolResult(d.ctx, submission)
 }
 
 func (d *turnDriver) recordExecError(toolCallID string, err error) {
@@ -1859,7 +1946,7 @@ func (d *turnDriver) processApprovalContinuation(approval PendingToolApproval, c
 	d.settledHostIDs[approval.ToolCallID] = struct{}{}
 	if !continuation.Approved {
 		output := executionDeniedOutput(continuation.Reason)
-		if err := d.control.SubmitToolResult(d.ctx, ToolResultSubmission{ToolCallID: approval.ToolCallID, Output: output}); err != nil {
+		if err := d.submitToolResult(ToolResultSubmission{ToolCallID: approval.ToolCallID, Output: output}); err != nil {
 			return turnOutcomeContinue, err
 		}
 		return turnOutcomeContinue, nil
@@ -1873,7 +1960,7 @@ func (d *turnDriver) processApprovalContinuation(approval PendingToolApproval, c
 	// without ever calling tool.Execute. Mirrors TS's
 	// `validatedToolCall.invalid` branch here.
 	if validatedHostToolCall.Invalid {
-		if err := d.control.SubmitToolResult(d.ctx, ToolResultSubmission{
+		if err := d.submitToolResult(ToolResultSubmission{
 			ToolCallID: approval.ToolCallID,
 			Output:     map[string]interface{}{"error": invalidToolInputMessage},
 			IsError:    true,
@@ -1928,7 +2015,7 @@ func (d *turnDriver) processResultContinuation(pending PendingToolResult, contin
 	if d.in.OnToolResultSettled != nil {
 		d.in.OnToolResultSettled(pending.ToolCallID)
 	}
-	if err := d.control.SubmitToolResult(d.ctx, submission); err != nil {
+	if err := d.submitToolResult(submission); err != nil {
 		return err
 	}
 	delete(d.pendingResultsByToolCallID, pending.ToolCallID)

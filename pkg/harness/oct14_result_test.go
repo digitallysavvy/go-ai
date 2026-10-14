@@ -8,7 +8,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
-
 // Ports TS #23086: interleaved text/reasoning blocks accumulate by stream ID
 // into separate content parts with their own metadata.
 func TestRunPrompt_InterleavedBlocksPreservedByStreamID(t *testing.T) {
