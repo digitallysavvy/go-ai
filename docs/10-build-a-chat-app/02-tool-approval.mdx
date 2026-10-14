@@ -108,6 +108,8 @@ ToolApproval: types.GenericToolApprovalFunc(func(opts types.ToolApprovalOptions)
 }),
 ```
 
+The reason of a denial is included in the execution-denied result the model receives. An approval reason is kept in the message history only: it is not added to the model prompt, and tools do not receive it as an execution option. For provider-executed tools the approval response, including the reason, is forwarded to the provider.
+
 A denied status needs no user. The tool does not run, and the model receives an execution-denied result with your reason. In a per-tool map you can also use `types.SingleToolApprovalFunc`, which receives that tool's parsed arguments.
 
 To change the policy between steps, set `config.ToolApproval` in the agent's `PrepareCall` function. `ai.GenerateTextOptions` and `ai.StreamTextOptions` have the same `ToolApproval` field.

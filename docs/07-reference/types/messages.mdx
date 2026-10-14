@@ -213,6 +213,8 @@ type ToolApprovalResponseContent struct {
 }
 ```
 
+For denied tool calls, `reason` is included in the `execution-denied` tool result sent to the model. For approved tool calls executed by the SDK, the reason stays in the message history: it is not included in the model prompt and is not exposed through a dedicated tool execution option. For provider-executed tools, the approval response (including the reason) is forwarded to the provider.
+
 Tool approval response content contains `approvalId`, nested `toolCall`, `approved`, optional `reason`, and optional `providerExecuted` in public result content. Provider replay strips the nested tool call and sends `approvalId`, `approved`, `reason`, and `providerExecuted`, matching the TypeScript SDK `toResponseMessages` behavior.
 
 ## Prompt
