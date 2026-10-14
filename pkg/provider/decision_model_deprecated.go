@@ -3,6 +3,8 @@ package provider
 import (
 	"context"
 	"fmt"
+
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // This file keeps the pre-rename "evaluation" names as deprecated aliases,
@@ -167,4 +169,48 @@ func DecisionModelFromProvider(p interface{}, modelID string) (model DecisionMod
 	default:
 		return nil, false, nil
 	}
+}
+
+// RegisterEvaluationModelDeserializer registers a factory for the deprecated
+// EvaluationModel contract. The factory's result is adapted to DecisionModel.
+//
+// Deprecated: Use RegisterDecisionModelDeserializer instead.
+func RegisterEvaluationModelDeserializer(providerName string, fn func(SerializedModel) (EvaluationModel, error)) {
+	RegisterDecisionModelDeserializer(providerName, func(serialized SerializedModel) (DecisionModel, error) {
+		model, err := fn(serialized)
+		if err != nil {
+			return nil, err
+		}
+		return AdaptEvaluationModel(model), nil
+	})
+}
+
+// DeserializeEvaluationModel reconstructs a serialized decision model through
+// the deprecated EvaluationModel interface.
+//
+// Deprecated: Use DeserializeDecisionModel instead.
+func DeserializeEvaluationModel(serialized SerializedModel) (EvaluationModel, error) {
+	model, err := DeserializeDecisionModel(serialized)
+	if err != nil {
+		return nil, err
+	}
+	return AsEvaluationModel(model), nil
+}
+
+// RegisteredEvaluationModelDeserializerKeys returns every registered decision
+// model deserializer key.
+//
+// Deprecated: Use RegisteredDecisionModelDeserializerKeys instead.
+func RegisteredEvaluationModelDeserializerKeys() []string {
+	return RegisteredDecisionModelDeserializerKeys()
+}
+
+// SerializeEvaluationModel serializes a legacy EvaluationModel.
+//
+// Deprecated: Use SerializeDecisionModel instead.
+func SerializeEvaluationModel(model EvaluationModel) (SerializedModel, error) {
+	if model == nil {
+		return SerializedModel{}, providererrors.NewSerializationError("provider: model is nil", nil)
+	}
+	return serializeTypedModel(model)
 }

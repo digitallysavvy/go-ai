@@ -738,6 +738,69 @@ result, err := ai.ExperimentalStreamTranslate(ctx, ai.StreamTranslateOptions{
 })
 ```
 
+## Decisions (experimental)
+
+`Provider.DecisionModel(id)` returns a decision model backed by the OpenAI Decisions API (`POST /decisions`) for [`ai.ExperimentalDecide`](../03-ai-sdk-core/32-decisions.mdx). The model reports its provider as `openai.decision` (or `<name>.decision` when `Config.Name` is set), accepts any model ID, and supports choice, score, and boolean questions, refusals, and image state parts.
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/provider"
+    "github.com/digitallysavvy/go-ai/pkg/provider/types"
+    "github.com/digitallysavvy/go-ai/pkg/providers/openai"
+)
+
+func main() {
+    p := openai.New(openai.Config{APIKey: os.Getenv("OPENAI_API_KEY")})
+    model, err := p.DecisionModel("gpt-6-luna")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    photo := types.FileContent{
+        MediaType: "image/png",
+        FileData:  types.FileData{Type: types.FileDataTypeData, Data: []byte{0x89, 0x50, 0x4e, 0x47}},
+        ProviderOptions: map[string]interface{}{
+            "openai": map[string]interface{}{"imageDetail": "high"},
+        },
+    }
+
+    result, err := ai.ExperimentalDecide(context.Background(), ai.DecideOptions{
+        Model: model,
+        State: []provider.DecisionStatePart{
+            provider.DecisionTextPart("Inspect this package."),
+            provider.DecisionFilePart(photo),
+        },
+        Questions: map[string]provider.DecisionQuestion{
+            "damaged": {Type: "boolean", Instructions: "Is the package damaged?"},
+        },
+        ProviderOptions: map[string]interface{}{
+            "openai": map[string]interface{}{"safetyIdentifier": "user-123"},
+        },
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println(*result.Answers["damaged"].Probability)
+}
+```
+
+| Option | Where | Description |
+| --- | --- | --- |
+| `safetyIdentifier` | `ProviderOptions["openai"]` | Opaque end-user identifier for safety monitoring, up to 128 characters. Other `openai` options are ignored with an `unsupported` warning. |
+| `imageDetail` | `FileContent.ProviderOptions["openai"]` | Image detail (`low`, `high`, `auto`, or `original`) sent as `detail` on the image input. |
+
+Only inline PNG, JPEG, WebP, and GIF images are supported as file parts. The Decisions API rounds probabilities and scores to two decimals, and the model declares that rounding to core. The per-answer `confidence` is returned in provider metadata under `openai.confidence`, and the raw token usage under `openai.usage`.
+
+`Provider.EvaluationModel(id)` still works as a deprecated alias.
+
 ## Workflow Serialization
 
 OpenAI embedding, image, speech, and transcription models can cross a

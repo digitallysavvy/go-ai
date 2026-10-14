@@ -8,6 +8,8 @@ import (
 
 func init() {
 	provider.RegisterDecisionModelDeserializer("typesafe.decision", deserializeModel)
+	// Payloads serialized before the evaluate -> decide rename.
+	provider.RegisterDecisionModelDeserializer("typesafe.evaluation", deserializeModel)
 }
 
 // Serialize implements provider.SerializableModel for workflow boundaries.
