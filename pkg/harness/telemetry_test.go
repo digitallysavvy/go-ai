@@ -172,15 +172,12 @@ func TestAgent_TelemetrySpanNesting(t *testing.T) {
 	if len(toolSpans) != 1 {
 		t.Fatalf("execute_tool getWeather spans = %d, want 1", len(toolSpans))
 	}
-	// TS #21696: toolExecutionStart (and so the execute_tool span) now
-	// fires as soon as the host tool's own execution begins — while step 0
-	// is still open, since getWeather's ToolCallPart arrives before step
-	// 0's `finish-step` — rather than being deferred until its result is
-	// observed (which, per the scripted `tool-result` part arriving after
-	// step 0's `finish-step`, would be once step 1 has already opened).
-	// The execute_tool span is therefore nested under step 0, the step the
-	// tool call actually ran in, not step 1 (where its result happened to
-	// stream).
+	// TS #21696: toolExecutionStart (and so the execute_tool span) fires as
+	// soon as the host tool's own execution begins, while step 0 is still
+	// open (getWeather's ToolCallPart arrives before step 0's `finish-step`),
+	// rather than being deferred until its result is observed. The
+	// execute_tool span is therefore nested under step 0, the step the tool
+	// call actually ran in.
 	if toolSpans[0].Parent().SpanID() != step0[0].SpanContext().SpanID() {
 		t.Fatalf("execute_tool span is not nested under the step it started executing in (step 0)")
 	}
