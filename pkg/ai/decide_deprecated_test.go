@@ -3,6 +3,7 @@ package ai
 
 import (
 	"context"
+	"reflect"
 	"sync"
 	"testing"
 
@@ -162,4 +163,62 @@ func TestDecide_CurrentTelemetryHandlerPreferredOverDeprecated(t *testing.T) {
 	if integ.current != 4 || len(integ.ops) != 0 {
 		t.Fatalf("current=%d deprecated=%v", integ.current, integ.ops)
 	}
+}
+
+// stateRecordingLegacyModel records the State a DoEvaluate-only model sees.
+type stateRecordingLegacyModel struct {
+	legacyEvaluationModel
+	state interface{}
+}
+
+func (m *stateRecordingLegacyModel) DoEvaluate(ctx context.Context, opts provider.DecisionCallOptions) (*provider.DecisionResult, error) {
+	m.mu.Lock()
+	m.state = opts.State
+	m.mu.Unlock()
+	return m.legacyEvaluationModel.DoEvaluate(ctx, opts)
+}
+
+func TestExperimentalDecide_LegacyModelKeepsPreMultimodalStateShape(t *testing.T) {
+	cases := []struct {
+		name  string
+		state interface{}
+		want  interface{}
+	}{
+		{"string", "hello", "hello"},
+		{"object", map[string]interface{}{"a": 1.0}, map[string]interface{}{"a": 1.0}},
+		{"array", []interface{}{1.0, 2.0}, []interface{}{1.0, 2.0}},
+		{"single text part", []provider.DecisionStatePart{provider.DecisionTextPart("hi")}, "hi"},
+	}
+	for _, tc := range cases {
+		for _, entry := range []string{"evaluate", "decide"} {
+			t.Run(tc.name+"/"+entry, func(t *testing.T) {
+				model := &stateRecordingLegacyModel{}
+				opts := DecideOptions{Model: model, State: tc.state, Questions: legacyQuestions()}
+				var err error
+				if entry == "evaluate" {
+					_, err = ExperimentalEvaluate(context.Background(), opts)
+				} else {
+					_, err = ExperimentalDecide(context.Background(), opts)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(model.state, tc.want) {
+					t.Fatalf("legacy model saw %#v (%T), want %#v", model.state, model.state, tc.want)
+				}
+			})
+		}
+	}
+
+	t.Run("multi-part state is passed as parts", func(t *testing.T) {
+		model := &stateRecordingLegacyModel{}
+		parts := []provider.DecisionStatePart{provider.DecisionTextPart("a"), provider.DecisionJSONPart(map[string]interface{}{"b": 1.0})}
+		if _, err := ExperimentalDecide(context.Background(), DecideOptions{Model: model, State: parts, Questions: legacyQuestions()}); err != nil {
+			t.Fatal(err)
+		}
+		got, ok := model.state.([]provider.DecisionStatePart)
+		if !ok || len(got) != 2 {
+			t.Fatalf("state = %#v, want 2 parts", model.state)
+		}
+	})
 }

@@ -75,7 +75,29 @@ type evaluationToDecisionModel struct {
 }
 
 func (m evaluationToDecisionModel) DoDecide(ctx context.Context, opts DecisionCallOptions) (*DecisionResult, error) {
+	opts.State = legacyEvaluationState(opts.State)
 	return m.DoEvaluate(ctx, opts)
+}
+
+// legacyEvaluationState restores the pre-multimodal state shape for models
+// that only implement DoEvaluate. Core now always passes ordered
+// []DecisionStatePart; a state made of exactly one text part is handed back
+// as the string and one json part as its JSON value, which is what these
+// models received before. Multi-part or file states are new and are passed
+// through as parts. (TS passes parts through unchanged; Go converts so
+// existing type-asserting models keep working.)
+func legacyEvaluationState(state interface{}) interface{} {
+	parts, ok := state.([]DecisionStatePart)
+	if !ok || len(parts) != 1 {
+		return state
+	}
+	switch parts[0].Type {
+	case "text":
+		return parts[0].Text
+	case "json":
+		return parts[0].Value
+	}
+	return state
 }
 
 // AdaptEvaluationModel adapts a legacy EvaluationModel to a DecisionModel by
