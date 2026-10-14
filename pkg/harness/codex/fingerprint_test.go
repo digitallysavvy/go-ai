@@ -67,3 +67,18 @@ func TestSynchronizeTurnConfiguration_Restart(t *testing.T) {
 		})
 	}
 }
+
+// The expected hash was produced by the TS fingerprintCodexTurnConfiguration
+// (JSON.stringify with a key-sorting replacer) on the same input, so a TS->Go
+// resume does not restart the thread. Covers HTML characters, U+2028, control
+// escapes, astral characters (UTF-16 key order), and JS number formatting.
+func TestFingerprintTurnConfiguration_MatchesJSStringify(t *testing.T) {
+	schema := `{"z":1.0,"a":[1e2,0.000001,1e-7,1e21,-0.5],"😀":1,"` + "￿" + `":2,"é":3}`
+	got := fingerprintTurnConfiguration("a<b>&c  é \u0001\b 😀", []harness.ToolSpec{
+		{Name: "t", Description: "x\"\\\n", InputSchema: json.RawMessage(schema)},
+	})
+	const want = "v2:631ed82f2fb88efd045e6232789df4a09e8b26429cfaa83629aa9f819bd46bf7"
+	if got != want {
+		t.Fatalf("fingerprint = %s, want %s (JS JSON.stringify)", got, want)
+	}
+}

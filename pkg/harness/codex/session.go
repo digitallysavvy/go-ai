@@ -8,9 +8,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"slices"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf16"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
@@ -149,10 +154,8 @@ func fingerprintTurnConfiguration(instructions string, tools []harness.ToolSpec)
 	dec.UseNumber()
 	_ = dec.Decode(&generic)
 	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	_ = enc.Encode(generic)
-	canonical := bytes.TrimRight(buf.Bytes(), "\n")
+	writeJSCanonicalJSON(&buf, generic)
+	canonical := buf.Bytes()
 	sum := sha256.Sum256(canonical)
 	return fingerprintVersionPrefix + hex.EncodeToString(sum[:])
 }
@@ -538,4 +541,105 @@ func extractUserText(prompt harness.Prompt) (string, error) {
 		parts = append(parts, text.Text)
 	}
 	return strings.Join(parts, "\n\n"), nil
+}
+
+// writeJSCanonicalJSON serializes v byte-for-byte like the TS fingerprint's
+// JSON.stringify with a key-sorting replacer: keys sorted by UTF-16 code unit,
+// no HTML escaping, U+2028/U+2029 and non-ASCII emitted raw, JS number
+// formatting, and JS short escapes (\b \f \n \r \t, lowercase \u00xx).
+func writeJSCanonicalJSON(buf *bytes.Buffer, v any) {
+	switch x := v.(type) {
+	case nil:
+		buf.WriteString("null")
+	case bool:
+		if x {
+			buf.WriteString("true")
+		} else {
+			buf.WriteString("false")
+		}
+	case json.Number:
+		f, err := strconv.ParseFloat(string(x), 64)
+		if err != nil || math.IsInf(f, 0) || math.IsNaN(f) {
+			buf.WriteString("null")
+			return
+		}
+		buf.WriteString(jsNumber(f))
+	case string:
+		writeJSString(buf, x)
+	case []any:
+		buf.WriteByte('[')
+		for i, e := range x {
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			writeJSCanonicalJSON(buf, e)
+		}
+		buf.WriteByte(']')
+	case map[string]any:
+		keys := make([]string, 0, len(x))
+		for k := range x {
+			keys = append(keys, k)
+		}
+		sort.Slice(keys, func(i, j int) bool {
+			return slices.Compare(utf16.Encode([]rune(keys[i])), utf16.Encode([]rune(keys[j]))) < 0
+		})
+		buf.WriteByte('{')
+		for i, k := range keys {
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			writeJSString(buf, k)
+			buf.WriteByte(':')
+			writeJSCanonicalJSON(buf, x[k])
+		}
+		buf.WriteByte('}')
+	default:
+		buf.WriteString("null")
+	}
+}
+
+// jsNumber formats f like ECMAScript Number::toString.
+func jsNumber(f float64) string {
+	if f == 0 {
+		return "0"
+	}
+	abs := math.Abs(f)
+	if abs >= 1e-6 && abs < 1e21 {
+		return strconv.FormatFloat(f, 'f', -1, 64)
+	}
+	s := strconv.FormatFloat(f, 'e', -1, 64) // d.ddde+XX
+	mant, exp, _ := strings.Cut(s, "e")
+	sign := exp[0]
+	exp = strings.TrimLeft(exp[1:], "0")
+	return mant + "e" + string(sign) + exp
+}
+
+func writeJSString(buf *bytes.Buffer, s string) {
+	const hexDigits = "0123456789abcdef"
+	buf.WriteByte('"')
+	for _, r := range s {
+		switch {
+		case r == '"':
+			buf.WriteString(`\"`)
+		case r == '\\':
+			buf.WriteString(`\\`)
+		case r == '\b':
+			buf.WriteString(`\b`)
+		case r == '\f':
+			buf.WriteString(`\f`)
+		case r == '\n':
+			buf.WriteString(`\n`)
+		case r == '\r':
+			buf.WriteString(`\r`)
+		case r == '\t':
+			buf.WriteString(`\t`)
+		case r < 0x20:
+			buf.WriteString(`\u00`)
+			buf.WriteByte(hexDigits[r>>4])
+			buf.WriteByte(hexDigits[r&0xf])
+		default:
+			buf.WriteRune(r)
+		}
+	}
+	buf.WriteByte('"')
 }

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
 )
 
@@ -107,7 +108,14 @@ func TestDoStart_RejectsSplitWriteEditFiltering(t *testing.T) {
 // session.
 func TestDoContinueTurn_DoesNotWaitForPausedTurn(t *testing.T) {
 	var starts int32
-	srv := newServer(t, "tok", func(*bridgetest.Turn, map[string]any) { atomic.AddInt32(&starts, 1) })
+	markers := make(chan map[string]any, 4)
+	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnToolResult: func(f map[string]any) { markers <- f },
+		OnFrame: func(ft string) {
+			if ft == bridge.TypeStart {
+				atomic.AddInt32(&starts, 1)
+			}
+		}})
+	t.Cleanup(srv.Close)
 	h, err := CreateOpenCode(Settings{MintBridgeToken: func(string) string { return "tok" }})
 	if err != nil {
 		t.Fatal(err)
@@ -123,20 +131,26 @@ func TestDoContinueTurn_DoesNotWaitForPausedTurn(t *testing.T) {
 	// The prompt turn never finishes (paused for host input).
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	done := make(chan error, 1)
+	type contResult struct {
+		control harness.PromptControl
+		err     error
+	}
+	done := make(chan contResult, 1)
 	go func() {
-		_, err := sess.DoContinueTurn(ctx, harness.ContinueTurnOptions{Emit: func(harness.StreamPart) {}})
-		done <- err
+		c, err := sess.DoContinueTurn(ctx, harness.ContinueTurnOptions{Emit: func(harness.StreamPart) {}})
+		done <- contResult{c, err}
 	}()
+	var cont harness.PromptControl
 	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("DoContinueTurn: %v", err)
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("DoContinueTurn: %v", r.err)
 		}
+		cont = r.control
 	case <-time.After(1 * time.Second):
 		t.Fatal("DoContinueTurn deadlocked waiting for the paused turn to drain")
 	}
-	time.Sleep(100 * time.Millisecond)
+	settleBridge(t, cont, markers)
 	if got := atomic.LoadInt32(&starts); got != 1 {
 		t.Fatalf("starts = %d, want 1", got)
 	}
@@ -146,10 +160,15 @@ func TestDoContinueTurn_DoesNotWaitForPausedTurn(t *testing.T) {
 // sends a start frame.
 func TestDoContinueTurn_RerunSendsStartOnce(t *testing.T) {
 	var starts int32
-	srv := newServer(t, "tok", func(turn *bridgetest.Turn, _ map[string]any) {
-		atomic.AddInt32(&starts, 1)
-		turn.Emit(finishPayload())
-	})
+	markers := make(chan map[string]any, 4)
+	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnToolResult: func(f map[string]any) { markers <- f },
+		OnFrame: func(ft string) {
+			if ft == bridge.TypeStart {
+				atomic.AddInt32(&starts, 1)
+			}
+		},
+		OnStart: func(turn *bridgetest.Turn, _ map[string]any) { turn.Emit(finishPayload()) }})
+	t.Cleanup(srv.Close)
 	h, err := CreateOpenCode(Settings{MintBridgeToken: func(string) string { return "tok" }, StartupTimeout: 2 * time.Second})
 	if err != nil {
 		t.Fatal(err)
@@ -172,11 +191,72 @@ func TestDoContinueTurn_RerunSendsStartOnce(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("first continue did not finish")
 	}
-	if _, err := sess.DoContinueTurn(context.Background(), harness.ContinueTurnOptions{Emit: func(harness.StreamPart) {}}); err != nil {
+	second, err := sess.DoContinueTurn(context.Background(), harness.ContinueTurnOptions{Emit: func(harness.StreamPart) {}})
+	if err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(150 * time.Millisecond)
+	settleBridge(t, second, markers)
 	if got := atomic.LoadInt32(&starts); got != 1 {
 		t.Fatalf("starts = %d, want 1", got)
+	}
+}
+
+// TS #23331: a recovered prompt consumes the rerun flag, so a following
+// continue sends no start frame.
+func TestDoContinueTurn_AfterRecoveredPromptSendsNoStart(t *testing.T) {
+	var starts int32
+	markers := make(chan map[string]any, 4)
+	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnToolResult: func(f map[string]any) { markers <- f },
+		OnFrame: func(ft string) {
+			if ft == bridge.TypeStart {
+				atomic.AddInt32(&starts, 1)
+			}
+		},
+		OnStart: func(turn *bridgetest.Turn, _ map[string]any) { turn.Emit(finishPayload()) }})
+	t.Cleanup(srv.Close)
+	h, err := CreateOpenCode(Settings{MintBridgeToken: func(string) string { return "tok" }, StartupTimeout: 2 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resume, err := harness.NewResumeSessionState("opencode", map[string]any{"openCodeSessionId": "oc-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "s", SessionWorkDir: "/w", SandboxSession: newFakeSandbox(srv), ResumeFrom: resume})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+	first, err := sess.DoPromptTurn(context.Background(), harness.PromptTurnOptions{Prompt: harness.TextPrompt("hi"), Emit: func(harness.StreamPart) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-first.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("prompt did not finish")
+	}
+	second, err := sess.DoContinueTurn(context.Background(), harness.ContinueTurnOptions{Emit: func(harness.StreamPart) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	settleBridge(t, second, markers)
+	if got := atomic.LoadInt32(&starts); got != 1 {
+		t.Fatalf("starts = %d, want 1", got)
+	}
+}
+
+// settleBridge sends a marker tool-result on the same connection and waits for
+// the bridge to receive it. Frames on one connection are handled in order, so
+// any start frame sent earlier has been counted by then (no timing sleep).
+func settleBridge(t *testing.T, c harness.PromptControl, markers <-chan map[string]any) {
+	t.Helper()
+	if err := c.SubmitToolResult(context.Background(), harness.ToolResultSubmission{ToolCallID: "settle-marker", Output: "ok"}); err != nil {
+		t.Fatalf("settle marker: %v", err)
+	}
+	select {
+	case <-markers:
+	case <-time.After(2 * time.Second):
+		t.Fatal("settle marker never reached the bridge")
 	}
 }
