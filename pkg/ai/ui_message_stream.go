@@ -1023,6 +1023,13 @@ type uiMessageCallbackState struct {
 	activeText       map[string]UIMessageChunk
 	activeReasoning  map[string]UIMessageChunk
 	partialTools     map[string]*uiPartialToolCall
+
+	// resetOnMessageIDChange discards the seeded message (parts, metadata and
+	// in-flight part state) when a start chunk carries a different message
+	// ID, so a resumed stream for another response does not adopt content
+	// from an unrelated assistant turn. Mirrors TS processUIMessageStream's
+	// resetStateOnMessageIdChange.
+	resetOnMessageIDChange bool
 }
 
 type uiPartialToolCall struct {
@@ -1111,6 +1118,14 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 	switch chunkType {
 	case "start":
 		if id, _ := chunk["messageId"].(string); id != "" {
+			if s.resetOnMessageIDChange && id != stringValue(s.message["id"]) {
+				s.message = UIMessageChunk{"id": id, "role": "assistant", "parts": []interface{}{}}
+				s.activeText = map[string]UIMessageChunk{}
+				s.activeReasoning = map[string]UIMessageChunk{}
+				s.partialTools = map[string]*uiPartialToolCall{}
+				s.finishReason = nil
+				s.isContinuation = false
+			}
 			s.message["id"] = id
 		}
 		s.mergeMetadata(chunk["messageMetadata"])

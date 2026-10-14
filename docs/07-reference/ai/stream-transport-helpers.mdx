@@ -194,6 +194,8 @@ func ReadUIMessages(ctx context.Context, opts ai.ReadUIMessagesOptions) (<-chan 
 
 Folds a chunk stream into progressively updated `ai.UIMessage` snapshots. See [UI messages](./ui-messages.mdx#readuimessages).
 
+When `opts.Message` seeds a message and the stream's `start` chunk carries a different `messageId`, the seeded message is discarded and a new message with that ID begins, so a resumed stream for another response never adopts an unrelated turn's content. A `start` chunk with the same ID, or no ID, keeps the seeded parts and metadata.
+
 ## `IsUIMessageStreamError`
 
 ```go

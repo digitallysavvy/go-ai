@@ -57,6 +57,9 @@ func ReadUIMessages(ctx context.Context, opts ReadUIMessagesOptions) (<-chan UIM
 		// Only an assistant message is continued; otherwise a new message
 		// with the given ID is started.
 		state := newUIMessageCallbackState(original, messageID)
+		// A start chunk with a different message ID begins a separate
+		// response: discard the seeded message instead of adopting it (TS #22194).
+		state.resetOnMessageIDChange = true
 
 		for {
 			select {
