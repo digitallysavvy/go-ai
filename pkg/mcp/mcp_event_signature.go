@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"fmt"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -82,7 +81,7 @@ func verifyMCPEventSignature(headers http.Header, body []byte, secret string) (b
 		return false, err
 	}
 	mac := hmac.New(sha256.New, key)
-	fmt.Fprintf(mac, "%s.%s.", id, timestamp)
+	mac.Write([]byte(id + "." + timestamp + ".")) //nolint:errcheck // hash.Hash writes never fail
 	mac.Write(body) //nolint:errcheck // hash.Hash writes never fail
 	expected := mac.Sum(nil)
 

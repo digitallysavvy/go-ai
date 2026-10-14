@@ -228,7 +228,7 @@ func signedEventRequest(sub *MCPEventSubscription, value interface{}, id string)
 func signedEventRequestBody(sub *MCPEventSubscription, body []byte, id, ts, secret string) *http.Request {
 	key, _ := base64.RawStdEncoding.DecodeString(strings.TrimRight(secret[6:], "="))
 	mac := hmac.New(sha256.New, key)
-	fmt.Fprintf(mac, "%s.%s.%s", id, ts, body)
+	mac.Write([]byte(id + "." + ts + "." + string(body))) //nolint:errcheck
 	r := httptest.NewRequest(http.MethodPost, sub.Delivery.URL, bytes.NewReader(body))
 	r.Header.Set("content-type", "application/json")
 	r.Header.Set("webhook-id", id)
