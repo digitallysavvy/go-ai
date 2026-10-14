@@ -236,6 +236,11 @@ func speechResponseMetadata(response *types.ResponseMetadata, model provider.Spe
 //
 // Deprecated: use GenerateSpeech.
 func ExperimentalGenerateSpeech(ctx context.Context, opts GenerateSpeechOptions) (*GenerateSpeechResult, error) {
+	LogWarnings(LogWarningsOptions{Warnings: []types.Warning{{
+		Type:    "deprecated",
+		Setting: "experimental_generateSpeech",
+		Message: "Use generateSpeech instead.",
+	}}})
 	return GenerateSpeech(ctx, opts)
 }
 
