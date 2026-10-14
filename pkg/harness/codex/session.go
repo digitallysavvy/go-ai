@@ -496,7 +496,7 @@ func (c *promptControl) settleError(err error) {
 }
 
 func (c *promptControl) SubmitToolResult(ctx context.Context, result harness.ToolResultSubmission) error {
-	return c.channel.Send(bridge.ToolResultCommand{ToolCallID: result.ToolCallID, Output: result.Output, IsError: result.IsError})
+	return c.channel.Send(bridge.ToolResultCommand{ToolCallID: result.ToolCallID, Output: result.Output, IsError: result.IsError, ToolResult: result.ToolResult})
 }
 
 func (c *promptControl) SubmitToolApproval(ctx context.Context, approval harness.ToolApprovalSubmission) error {

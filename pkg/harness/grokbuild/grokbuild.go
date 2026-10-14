@@ -93,8 +93,9 @@ func BuildConfig(settings Settings) (acp.Settings, error) {
 	args = append(args, "stdio")
 
 	cfg := acp.Settings{
-		HarnessID: HarnessID,
-		ClientApp: acp.ClientApp{Name: ClientAppName, Version: ClientAppVersion},
+		NonTextContentTypes: []acp.NonTextContentType{acp.NonTextContentImage},
+		HarnessID:           HarnessID,
+		ClientApp:           acp.ClientApp{Name: ClientAppName, Version: ClientAppVersion},
 		Source: acp.Source{
 			Type:              acp.SourceNPMLocked,
 			PackageJSON:       string(files["package.json"]),

@@ -207,3 +207,10 @@ func TestCreateCursor(t *testing.T) {
 		t.Error("expected SupportsBuiltinToolApprovals() to be true")
 	}
 }
+
+// TS #22367: Cursor accepts image tool model output.
+func TestBuildConfig_DeclaresImageContent(t *testing.T) {
+	if got := BuildConfig(Settings{}).NonTextContentTypes; !reflect.DeepEqual(got, []acp.NonTextContentType{acp.NonTextContentImage}) {
+		t.Errorf("NonTextContentTypes = %v, want [image]", got)
+	}
+}

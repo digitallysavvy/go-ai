@@ -18,6 +18,7 @@ type bridgeConfiguration struct {
 	ClientCapabilities            map[string]any       `json:"clientCapabilities,omitempty"`
 	AskUserQuestionsRequestMethod string               `json:"askUserQuestionsRequestMethod,omitempty"`
 	HostToolMCPTransport          HostToolMCPTransport `json:"hostToolMcpTransport,omitempty"`
+	NonTextContentTypes           []NonTextContentType `json:"nonTextContentTypes,omitempty"`
 }
 
 // bridgeProviderAuth mirrors TS `ACPResolvedProviderAuthentication`

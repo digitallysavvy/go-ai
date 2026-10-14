@@ -641,3 +641,39 @@ func TestDoContinueTurn_AfterRecoveredPromptSendsNoStart(t *testing.T) {
 		t.Fatalf("bridge received %d start frames, want 1 (the prompt only)", got)
 	}
 }
+
+// TS #22367: SubmitToolResult forwards the full tool-result part as
+// `toolResult` alongside output/isError.
+func TestSubmitToolResult_ForwardsToolResult(t *testing.T) {
+	got := make(chan map[string]any, 1)
+	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok",
+		OnStart:      func(turn *bridgetest.Turn, _ map[string]any) {},
+		OnToolResult: func(f map[string]any) { got <- f },
+	})
+	t.Cleanup(srv.Close)
+	sandbox := newTestSandbox(srv)
+	wireSpawn(sandbox)
+	h := codex.New(codex.Settings{StartupTimeout: 2 * time.Second, MintBridgeToken: func(string) string { return "tok" }})
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "s1", SandboxSession: sandbox, SessionWorkDir: "/workdir"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+	control, err := sess.DoPromptTurn(context.Background(), harness.PromptTurnOptions{Prompt: harness.TextPrompt("hi"), Emit: func(harness.StreamPart) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	part := map[string]any{"type": "tool-result", "toolCallId": "call-1", "output": map[string]any{"type": "content"}}
+	if err := control.SubmitToolResult(context.Background(), harness.ToolResultSubmission{ToolCallID: "call-1", Output: "ok", ToolResult: part}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case f := <-got:
+		tr, ok := f["toolResult"].(map[string]any)
+		if !ok || tr["toolCallId"] != "call-1" || f["output"] != "ok" {
+			t.Fatalf("tool-result frame = %v, want toolResult forwarded", f)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("bridge never received tool-result")
+	}
+}

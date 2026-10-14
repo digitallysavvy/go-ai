@@ -36,6 +36,9 @@ type Options struct {
 	// OnUserMessage answers a `user-message` frame. Defaults to accepting
 	// every message.
 	OnUserMessage func(messageID, text string) (accepted bool, errMessage string)
+	// OnToolResult, when set, receives the decoded body of every inbound
+	// `tool-result` frame, so tests can assert what the host forwarded.
+	OnToolResult func(frame map[string]any)
 }
 
 type entry struct {
@@ -234,6 +237,15 @@ func (s *Server) handleInbound(c *serverConn, raw []byte) {
 			Accepted:  false,
 			Error:     &bridge.UserMessageResponseError{Message: errMsg},
 		})
+	case bridge.TypeToolResult:
+		s.mu.Lock()
+		onToolResult := s.opts.OnToolResult
+		s.mu.Unlock()
+		if onToolResult != nil {
+			var payload map[string]any
+			_ = json.Unmarshal(raw, &payload)
+			onToolResult(payload)
+		}
 	case bridge.TypeStopCommand:
 		s.mu.Lock()
 		onStop := s.opts.OnStop

@@ -569,3 +569,39 @@ func TestExtractUserTextRejectsNonTextParts(t *testing.T) {
 		t.Fatalf("extractUserText(text) error = %v", err)
 	}
 }
+
+// TS #22367: SubmitToolResult forwards the full tool-result part as
+// `toolResult` alongside output/isError.
+func TestSubmitToolResult_ForwardsToolResult(t *testing.T) {
+	const token = "tr-token"
+	got := make(chan map[string]any, 1)
+	srv := bridgetest.NewServer(bridgetest.Options{Token: token,
+		OnStart:      func(*bridgetest.Turn, map[string]any) {},
+		OnToolResult: func(f map[string]any) { got <- f },
+	})
+	t.Cleanup(srv.Close)
+	h := CreateDeepAgents(Settings{MintBridgeToken: func(string) string { return token }})
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{
+		SessionID: "s", SessionWorkDir: "/w", SandboxSession: newFakeSandbox(srv),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+	control, err := sess.DoPromptTurn(context.Background(), harness.PromptTurnOptions{Prompt: harness.TextPrompt("hi"), Emit: func(harness.StreamPart) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	part := map[string]any{"type": "tool-result", "toolCallId": "call-1"}
+	if err := control.SubmitToolResult(context.Background(), harness.ToolResultSubmission{ToolCallID: "call-1", Output: "ok", ToolResult: part}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case f := <-got:
+		if tr, ok := f["toolResult"].(map[string]any); !ok || tr["toolCallId"] != "call-1" {
+			t.Fatalf("tool-result frame = %v, want toolResult forwarded", f)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("bridge never received tool-result")
+	}
+}

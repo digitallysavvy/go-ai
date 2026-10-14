@@ -172,6 +172,15 @@ const (
 	HostToolMCPHTTP  HostToolMCPTransport = "http"
 )
 
+// NonTextContentType is a kind of non-text tool model output (produced by a
+// tool's toModelOutput transformation) an ACP implementation can deliver to
+// its model. Text is always supported. Mirrors the elements of TS
+// `nonTextContentTypes` (`'image'`).
+type NonTextContentType string
+
+// NonTextContentImage declares that the implementation accepts inline images.
+const NonTextContentImage NonTextContentType = "image"
+
 // AskUserQuestionsSettings normalizes an ACP implementation's native
 // clarifying-question mechanism into the harness askUserQuestions built-in
 // tool. Mirrors TS `ACPAskUserQuestionsSettings`.
@@ -242,10 +251,15 @@ type Settings struct {
 	InstructionMapping     *InstructionMapping
 	OutputSchemaMapping    *OutputSchemaMapping
 	HostToolMCPTransport   HostToolMCPTransport
-	AskUserQuestions       *AskUserQuestionsSettings
-	PermissionModeMapping  *PermissionModeMapping
-	SessionMeta            map[string]any
-	MintBridgeToken        harness.MintBridgeTokenCallback
+	// NonTextContentTypes lists the non-text tool model output the ACP
+	// implementation can deliver to its model. Text is always supported;
+	// undeclared image content is omitted with a bridge stderr warning.
+	// Defaults to none. Mirrors TS `nonTextContentTypes`.
+	NonTextContentTypes   []NonTextContentType
+	AskUserQuestions      *AskUserQuestionsSettings
+	PermissionModeMapping *PermissionModeMapping
+	SessionMeta           map[string]any
+	MintBridgeToken       harness.MintBridgeTokenCallback
 }
 
 // ClientApp identifies the harness adapter to the ACP implementation and
