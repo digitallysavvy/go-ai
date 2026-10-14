@@ -517,8 +517,13 @@ const (
 
 // GatewayDecisionModelID constants mirror gateway-decision-model-settings.ts.
 const (
-	GatewayDecisionModelLiquidD1      GatewayDecisionModelID = "liquid/d1"
-	GatewayDecisionModelTypesafeAiJev GatewayDecisionModelID = "typesafe-ai/jev"
+	GatewayDecisionModelConvaiinnovationsLaya       GatewayDecisionModelID = "convaiinnovations/laya"
+	GatewayDecisionModelConvaiinnovationsLayaFree   GatewayDecisionModelID = "convaiinnovations/laya-free"
+	GatewayDecisionModelLiquidD1                    GatewayDecisionModelID = "liquid/d1"
+	GatewayDecisionModelMicrosoftMicrosoftDecision1 GatewayDecisionModelID = "microsoft/microsoft-decision-1"
+	GatewayDecisionModelOpenaiGpt6LunaDecisions     GatewayDecisionModelID = "openai/gpt-6-luna-decisions"
+	GatewayDecisionModelScaledownScaledownClassify1 GatewayDecisionModelID = "scaledown/scaledown-classify-1"
+	GatewayDecisionModelTypesafeAiJev               GatewayDecisionModelID = "typesafe-ai/jev"
 )
 
 // GatewayLanguageModelIDs lists the suggested gateway language model IDs from gateway-language-model-settings.ts.
@@ -1012,6 +1017,11 @@ var GatewayRealtimeModelIDs = []GatewayRealtimeModelID{
 
 // GatewayDecisionModelIDs lists the suggested gateway decision model IDs from gateway-decision-model-settings.ts.
 var GatewayDecisionModelIDs = []GatewayDecisionModelID{
+	GatewayDecisionModelConvaiinnovationsLaya,
+	GatewayDecisionModelConvaiinnovationsLayaFree,
 	GatewayDecisionModelLiquidD1,
+	GatewayDecisionModelMicrosoftMicrosoftDecision1,
+	GatewayDecisionModelOpenaiGpt6LunaDecisions,
+	GatewayDecisionModelScaledownScaledownClassify1,
 	GatewayDecisionModelTypesafeAiJev,
 }

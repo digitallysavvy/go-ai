@@ -89,7 +89,7 @@ func TestGatewayModelIDCatalogsExposeAllModelKinds(t *testing.T) {
 		"speech":        13,
 		"transcription": 10,
 		"realtime":      9,
-		"decision":      2,
+		"decision":      7,
 	}
 	got := catalogs()
 	for kind, n := range want {
