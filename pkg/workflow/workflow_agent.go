@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/agent"
 	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/internal/ordered"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -662,56 +662,13 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 		}
 	}
 	outcomes := make([]approvedOutcome, len(collected.ApprovedToolApprovals))
-	workers := opts.toolCallConcurrency
-	if workers <= 0 || workers > len(outcomes) {
-		workers = len(outcomes)
-	}
-	// Workers claim calls in model order. Once ctx is cancelled or a call
-	// fails, no further queued call is started (TS mapWithConcurrency); calls
+	// Calls are claimed in model order; once ctx is cancelled or a call
+	// fails, no further queued call is started (TS mapWithConcurrency). Calls
 	// that were never started produce no result.
-	var (
-		claimMu sync.Mutex
-		next    int
-		stopped bool
-	)
-	claim := func() (int, bool) {
-		claimMu.Lock()
-		defer claimMu.Unlock()
-		if stopped || next >= len(outcomes) || (ctx != nil && ctx.Err() != nil) {
-			return 0, false
-		}
-		i := next
-		next++
-		return i, true
-	}
-	worker := func() {
-		for {
-			i, ok := claim()
-			if !ok {
-				return
-			}
-			outcomes[i] = runApproved(collected.ApprovedToolApprovals[i])
-			if outcomes[i].err != nil {
-				claimMu.Lock()
-				stopped = true
-				claimMu.Unlock()
-				return
-			}
-		}
-	}
-	if workers == 1 {
-		worker()
-	} else if workers > 1 {
-		var wg sync.WaitGroup
-		wg.Add(workers)
-		for w := 0; w < workers; w++ {
-			go func() {
-				defer wg.Done()
-				worker()
-			}()
-		}
-		wg.Wait()
-	}
+	ordered.Run(ctx, len(outcomes), opts.toolCallConcurrency, func(i int) error {
+		outcomes[i] = runApproved(collected.ApprovedToolApprovals[i])
+		return outcomes[i].err
+	})
 	for _, o := range outcomes {
 		if o.err != nil {
 			return nil, nil, o.err

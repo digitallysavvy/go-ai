@@ -2,8 +2,8 @@ package ai
 
 import (
 	"context"
-	"sync"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/ordered"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -38,60 +38,22 @@ func executeToolsLimited(ctx context.Context, calls []types.ToolCall, tools []ty
 	if len(calls) <= 1 {
 		return executeTools(ctx, calls, tools, runtimeContext, toolsContext, toolApproval, usage, callbacks)
 	}
-	workers := len(calls)
-	if limit > 0 && limit < workers {
-		workers = limit
-	}
-
 	perCallResults := make([][]types.ToolResult, len(calls))
 	perCallUsage := make([]types.Usage, len(calls))
 	perCallMs := make([]map[string]int64, len(calls))
 	errs := make([]error, len(calls))
-	started := make([]bool, len(calls))
 
-	var mu sync.Mutex
-	next := 0
-	stopped := false
-	claim := func() (int, bool) {
-		mu.Lock()
-		defer mu.Unlock()
-		if stopped || next >= len(calls) || (ctx != nil && ctx.Err() != nil) {
-			return 0, false
+	started := ordered.Run(ctx, len(calls), limit, func(i int) error {
+		cb := callbacks
+		if callbacks.toolExecutionMs != nil {
+			perCallMs[i] = map[string]int64{}
+			cb.toolExecutionMs = perCallMs[i]
 		}
-		i := next
-		next++
-		started[i] = true
-		return i, true
-	}
-
-	var wg sync.WaitGroup
-	wg.Add(workers)
-	for w := 0; w < workers; w++ {
-		go func() {
-			defer wg.Done()
-			for {
-				i, ok := claim()
-				if !ok {
-					return
-				}
-				cb := callbacks
-				if callbacks.toolExecutionMs != nil {
-					perCallMs[i] = map[string]int64{}
-					cb.toolExecutionMs = perCallMs[i]
-				}
-				results, err := executeTools(ctx, []types.ToolCall{calls[i]}, tools, runtimeContext, toolsContext, toolApproval, &perCallUsage[i], cb)
-				perCallResults[i] = results
-				errs[i] = err
-				if err != nil {
-					mu.Lock()
-					stopped = true
-					mu.Unlock()
-					return
-				}
-			}
-		}()
-	}
-	wg.Wait()
+		results, err := executeTools(ctx, []types.ToolCall{calls[i]}, tools, runtimeContext, toolsContext, toolApproval, &perCallUsage[i], cb)
+		perCallResults[i] = results
+		errs[i] = err
+		return err
+	})
 
 	merged := usage.Add(types.Usage{})
 	out := make([]types.ToolResult, 0, len(calls))
