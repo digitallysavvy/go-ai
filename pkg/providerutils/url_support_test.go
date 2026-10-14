@@ -178,6 +178,20 @@ func TestMatchesSupportedURL(t *testing.T) {
 			want:          true,
 		},
 		{
+			name:          "scheme and host stay case-insensitive while the path keeps its case",
+			supportedUrls: map[string][]string{"image/*": {`^https://assets\.example/Images/Photo\.PNG$`}},
+			mediaType:     "image/png",
+			url:           "HTTPS://Assets.Example/Images/Photo.PNG",
+			want:          true,
+		},
+		{
+			name:          "case-insensitive host does not relax the path",
+			supportedUrls: map[string][]string{"image/*": {`^https://assets\.example/Images/Photo\.PNG$`}},
+			mediaType:     "image/png",
+			url:           "HTTPS://Assets.Example/images/photo.png",
+			want:          false,
+		},
+		{
 			name:          "preserves case-sensitive URL query values",
 			supportedUrls: map[string][]string{"image/*": {`^https://assets\.example/photo\.png\?token=AbC123$`}},
 			mediaType:     "image/png",

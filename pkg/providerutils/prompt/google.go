@@ -817,7 +817,7 @@ var googleDataURLRegex = regexp.MustCompile(`(?s)^data:([^;,]+);base64,(.+)$`)
 // directly as functionResponse.parts[].fileData for mediaType, per TS
 // isUrlSupported (provider-utils/src/is-url-supported.ts): a pattern under
 // the exact media type, its `type/*` prefix, or the wildcard "*"/"*/*" must
-// match the (lowercased) URL. The matching algorithm itself is shared with
+// match the URL (scheme and host lowercased, path and query case-sensitive). The matching algorithm itself is shared with
 // pkg/ai's SupportedURLCheckerFromPatterns via providerutils.MatchesSupportedURL
 // (pkg/ai cannot import this package without an import cycle, so the shared
 // logic lives in pkg/providerutils, which both already import).

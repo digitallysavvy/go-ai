@@ -180,3 +180,43 @@ data: {"type":"response.output_item.done","output_index":0,"item":{"type":"file_
 		t.Fatalf("order = %v docs = %d, want tool-result then one deduplicated source", order, docs)
 	}
 }
+
+// TS #21797: container_file_citation and file_path annotations become sources
+// immediately; url/file citation fallbacks are deferred until just before the
+// finish part.
+func TestResponsesStreamNonDeferredAnnotationsAndFallbackBeforeFinish(t *testing.T) {
+	sse := `data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1"}}
+
+data: {"type":"response.output_text.annotation.added","annotation":{"type":"url_citation","start_index":0,"end_index":1,"url":"https://example.com","title":"Example"}}
+
+data: {"type":"response.output_text.annotation.added","annotation":{"type":"container_file_citation","container_id":"cntr_1","file_id":"file_9","filename":"out.csv","start_index":2,"end_index":3}}
+
+data: {"type":"response.output_text.annotation.added","annotation":{"type":"file_path","file_id":"file_p","index":1}}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_1"}}
+
+data: {"type":"response.completed","response":{"id":"r","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}
+
+`
+	var order []string
+	var textEnd *provider.StreamChunk
+	for _, c := range drainResponsesStream(t, sse) {
+		switch c.Type {
+		case provider.ChunkTypeSource:
+			order = append(order, "source:"+c.SourceContent.Title)
+		case provider.ChunkTypeTextEnd:
+			textEnd = c
+			order = append(order, "text-end")
+		case provider.ChunkTypeFinish:
+			order = append(order, "finish")
+		}
+	}
+	want := []string{"source:out.csv", "source:file_p", "text-end", "source:Example", "finish"}
+	if strings.Join(order, ",") != strings.Join(want, ",") {
+		t.Fatalf("order = %v, want %v", order, want)
+	}
+	// file_path is not a citation; the url and container citations are.
+	if textEnd == nil || len(textEnd.Citations) != 2 {
+		t.Fatalf("citations = %#v", textEnd)
+	}
+}
