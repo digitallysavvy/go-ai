@@ -8,18 +8,33 @@ type OutputDimension int
 const (
 	Dimension256  OutputDimension = 256
 	Dimension512  OutputDimension = 512
+	Dimension768  OutputDimension = 768
 	Dimension1024 OutputDimension = 1024
 	Dimension1536 OutputDimension = 1536
+	Dimension2048 OutputDimension = 2048
+)
+
+// EmbeddingType selects the format of the returned embeddings.
+// Non-float formats require Embed v3.0 or newer. Binary formats contain
+// packed bytes, not individual vector dimensions.
+type EmbeddingType string
+
+const (
+	EmbeddingTypeFloat   EmbeddingType = "float"
+	EmbeddingTypeInt8    EmbeddingType = "int8"
+	EmbeddingTypeUint8   EmbeddingType = "uint8"
+	EmbeddingTypeBinary  EmbeddingType = "binary"
+	EmbeddingTypeUbinary EmbeddingType = "ubinary"
 )
 
 // InputType represents the type of input for embedding optimization
 type InputType string
 
 const (
-	InputTypeSearchDocument  InputType = "search_document"
-	InputTypeSearchQuery     InputType = "search_query"
-	InputTypeClassification  InputType = "classification"
-	InputTypeClustering      InputType = "clustering"
+	InputTypeSearchDocument InputType = "search_document"
+	InputTypeSearchQuery    InputType = "search_query"
+	InputTypeClassification InputType = "classification"
+	InputTypeClustering     InputType = "clustering"
 )
 
 // TruncateMode represents how to handle inputs that exceed max token length
@@ -35,9 +50,13 @@ const (
 type EmbeddingOptions struct {
 	// OutputDimension specifies the number of dimensions for the output embedding.
 	// Only available for v3.0 and newer models (embed-english-v3.0, embed-multilingual-v3.0, etc.)
-	// Supported values: 256, 512, 1024, 1536
-	// Default varies by model (typically 1024)
+	// Embed v4.0 supports 256, 512, 1024, and 1536 (default).
+	// Embed v5.0 Pro and Fast also support 768 and 2048 (default).
 	OutputDimension *OutputDimension
+
+	// EmbeddingType selects the format of the returned embedding. Defaults to
+	// "float". Can also be set per call via providerOptions.cohere.embeddingType.
+	EmbeddingType EmbeddingType
 
 	// InputType specifies the type of input for optimization
 	// - "search_document": For embeddings stored in a vector database
@@ -59,11 +78,15 @@ type EmbeddingOptions struct {
 func (o *EmbeddingOptions) Validate() error {
 	if o.OutputDimension != nil {
 		switch *o.OutputDimension {
-		case Dimension256, Dimension512, Dimension1024, Dimension1536:
+		case Dimension256, Dimension512, Dimension768, Dimension1024, Dimension1536, Dimension2048:
 			// Valid dimension
 		default:
-			return fmt.Errorf("invalid output dimension: %d (must be 256, 512, 1024, or 1536)", *o.OutputDimension)
+			return fmt.Errorf("invalid output dimension: %d (must be 256, 512, 768, 1024, 1536, or 2048)", *o.OutputDimension)
 		}
+	}
+
+	if err := validateEmbeddingType(o.EmbeddingType); err != nil {
+		return err
 	}
 
 	if o.InputType != "" {
@@ -93,4 +116,12 @@ func DefaultEmbeddingOptions() EmbeddingOptions {
 		InputType: InputTypeSearchDocument,
 		Truncate:  "",
 	}
+}
+
+func validateEmbeddingType(t EmbeddingType) error {
+	switch t {
+	case "", EmbeddingTypeFloat, EmbeddingTypeInt8, EmbeddingTypeUint8, EmbeddingTypeBinary, EmbeddingTypeUbinary:
+		return nil
+	}
+	return fmt.Errorf("invalid embedding type: %s (must be float, int8, uint8, binary, or ubinary)", t)
 }

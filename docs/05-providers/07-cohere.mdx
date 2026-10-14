@@ -59,6 +59,8 @@ export COHERE_API_KEY=...
 | embed-english-v3.0 | 1024 | English semantic search |
 | embed-multilingual-v3.0 | 1024 | Multilingual search |
 | embed-english-light-v3.0 | 384 | Fast embeddings |
+| embed-v4.0 | 256, 512, 1024, 1536 (default) | Multimodal, configurable dimensions |
+| embed-v5.0-pro, embed-v5.0-fast | 256, 512, 768, 1024, 1536, 2048 (default) | Configurable dimensions |
 
 ## Provider-Specific Features
 
@@ -276,6 +278,22 @@ queryResult, err := ai.Embed(ctx, ai.EmbedOptions{
 
 // Find most similar
 bestMatch := findMostSimilar(queryResult.Embedding, docResult.Embeddings)
+```
+
+### Embedding Formats and Dimensions
+
+Select the returned embedding format with `EmbeddingType` (or per call with
+`providerOptions.cohere.embeddingType`): `float` (default), `int8`, `uint8`,
+`binary`, or `ubinary`. Non-float formats require Embed v3.0 or newer, and binary
+formats contain packed bytes rather than individual vector dimensions.
+`OutputDimension` accepts 256, 512, 768, 1024, 1536, or 2048 depending on the model.
+
+```go
+dim := cohere.Dimension768
+model := cohere.NewEmbeddingModel(provider, "embed-v5.0-pro", cohere.EmbeddingOptions{
+    OutputDimension: &dim,
+    EmbeddingType:   cohere.EmbeddingTypeInt8,
+})
 ```
 
 ## Best Practices
