@@ -539,3 +539,20 @@ func toolResultContentFromToolResult(result types.ToolResult) types.ContentPart 
 	}
 	return part
 }
+
+// setTrailingTextCitations attaches a text-end chunk's citations to the most
+// recent TextContent part in parts (TS stream-text.ts: `if (part.citations !=
+// null) activeText.citations = part.citations`).
+func setTrailingTextCitations(parts []types.ContentPart, citations []types.Citation) []types.ContentPart {
+	if len(citations) == 0 {
+		return parts
+	}
+	for i := len(parts) - 1; i >= 0; i-- {
+		if text, ok := parts[i].(types.TextContent); ok {
+			text.Citations = citations
+			parts[i] = text
+			return parts
+		}
+	}
+	return parts
+}

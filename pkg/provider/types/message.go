@@ -59,6 +59,10 @@ type TextContent struct {
 	// Used by Google/Vertex providers to carry thoughtSignature for text parts
 	// that are associated with model reasoning.
 	ProviderMetadata json.RawMessage `json:"providerMetadata,omitempty"`
+
+	// Citations are references supporting this text, separate from the set of
+	// retrieved sources (TS LanguageModelV4Text.citations).
+	Citations []Citation `json:"citations,omitempty"`
 }
 
 // ContentType implements ContentPart interface

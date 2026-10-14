@@ -93,8 +93,16 @@ func TestDoGenerate_PDFCitations(t *testing.T) {
 	if textPart.Text != "Based on the document, the results show positive growth." {
 		t.Errorf("text = %q", textPart.Text)
 	}
-	if textPart.ProviderMetadata != nil {
-		t.Errorf("text providerMetadata = %s, want nil (page_location isn't a web-search citation)", textPart.ProviderMetadata)
+	// TS #21797: every citation kind is kept raw in providerMetadata and
+	// normalized onto the text part.
+	if !strings.Contains(string(textPart.ProviderMetadata), `"page_location"`) {
+		t.Errorf("text providerMetadata = %s, want the raw page_location citation", textPart.ProviderMetadata)
+	}
+	if len(textPart.Citations) != 1 || textPart.Citations[0].Source.SourceType != "document" ||
+		textPart.Citations[0].Source.MediaType != "application/pdf" || textPart.Citations[0].Source.Filename != "financial-report.pdf" ||
+		textPart.Citations[0].Source.Title != "Financial Report 2023" || textPart.Citations[0].Source.ID != "0" ||
+		textPart.Citations[0].CitedText != "Revenue increased by 25% year over year" {
+		t.Errorf("citations = %#v", textPart.Citations)
 	}
 
 	src, ok := result.Content[1].(types.SourceContent)

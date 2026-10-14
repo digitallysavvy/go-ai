@@ -1137,6 +1137,7 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 			return
 		}
 		part["state"] = "done"
+		copyIfPresent(part, chunk, "citations", "citations")
 		copyIfPresent(part, chunk, "providerMetadata", "providerMetadata")
 		delete(s.activeText, id)
 	case "reasoning-start":
@@ -2125,6 +2126,16 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		out = append(out, part)
 	case provider.ChunkTypeTextEnd:
 		part := map[string]interface{}{"type": "text-end", "id": chunk.ID}
+		if len(chunk.Citations) > 0 {
+			// Round-trip through JSON so the chunk holds the same generic
+			// shape as a decoded wire chunk.
+			if raw, err := json.Marshal(chunk.Citations); err == nil {
+				var citations []interface{}
+				if json.Unmarshal(raw, &citations) == nil {
+					part["citations"] = citations
+				}
+			}
+		}
 		withMeta(part)
 		out = append(out, part)
 	case provider.ChunkTypeReasoningStart:

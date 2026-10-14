@@ -2,6 +2,8 @@ package anthropic
 
 import (
 	"encoding/json"
+	"fmt"
+	"strconv"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
@@ -226,4 +228,90 @@ func extractWebFetchCitationDocument(raw json.RawMessage) (citationDocument, boo
 		Title:     title,
 		MediaType: wire.Content.Source.MediaType,
 	}, true
+}
+
+// mapAnthropicCitations normalizes raw Anthropic citations onto the shared
+// types.Citation shape (TS mapAnthropicCitation), resolving indexed document
+// citations against documents. It returns nil for no citations.
+func mapAnthropicCitations(citations []map[string]interface{}, documents []citationDocument) []types.Citation {
+	if len(citations) == 0 {
+		return nil
+	}
+	out := make([]types.Citation, 0, len(citations))
+	for _, citation := range citations {
+		out = append(out, mapAnthropicCitation(citation, documents))
+	}
+	return out
+}
+
+// mapAnthropicCitation mirrors TS mapAnthropicCitation: web_search_result_location
+// and search_result_location become url sources (the id is the URL); every
+// other kind becomes a document source whose id is the file_id or the
+// document index. The full raw citation is kept under providerMetadata.anthropic.
+func mapAnthropicCitation(citation map[string]interface{}, documents []citationDocument) types.Citation {
+	meta, _ := json.Marshal(map[string]interface{}{"anthropic": citation})
+	citedText := citationString(citation, "cited_text")
+
+	switch citationType(citation) {
+	case "web_search_result_location", "search_result_location":
+		url := citationString(citation, "url")
+		if citationType(citation) == "search_result_location" {
+			url = citationString(citation, "source")
+		}
+		return types.Citation{
+			Source: types.SourceContent{
+				SourceType:       "url",
+				ID:               url,
+				URL:              url,
+				Title:            citationString(citation, "title"),
+				ProviderMetadata: meta,
+			},
+			CitedText: citedText,
+		}
+	}
+
+	docIndex := 0
+	if f, ok := citation["document_index"].(float64); ok {
+		docIndex = int(f)
+	}
+	var doc *citationDocument
+	if docIndex >= 0 && docIndex < len(documents) {
+		doc = &documents[docIndex]
+	}
+	id := citationString(citation, "file_id")
+	if id == "" {
+		id = strconv.Itoa(docIndex)
+	}
+	src := types.SourceContent{
+		SourceType:       "document",
+		ID:               id,
+		MediaType:        "text/plain",
+		ProviderMetadata: meta,
+	}
+	title := fmt.Sprintf("Document %d", docIndex)
+	if doc != nil {
+		src.MediaType = doc.MediaType
+		src.Filename = doc.Filename
+		title = doc.Title
+	}
+	if dt, ok := citation["document_title"].(string); ok {
+		title = dt
+	}
+	src.Title = title
+	return types.Citation{Source: src, CitedText: citedText}
+}
+
+// anthropicResponseHasWebSearchResults reports whether any web_search_tool_result
+// block carries a non-empty array of retrieved results.
+func anthropicResponseHasWebSearchResults(content []anthropicContent) bool {
+	for _, part := range content {
+		if part.Type != "web_search_tool_result" {
+			continue
+		}
+		var results []json.RawMessage
+		if json.Unmarshal(part.Content, &results) == nil && len(results) > 0 {
+			return true
+		}
+	}
+	return false
 }

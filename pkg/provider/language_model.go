@@ -281,6 +281,10 @@ type StreamChunk struct {
 	// stream part types.
 	ProviderMetadata json.RawMessage
 
+	// Citations carries the references supporting the text block with this ID
+	// when Type is ChunkTypeTextEnd (TS text-end `citations`).
+	Citations []types.Citation
+
 	// ResponseMetadata is set when Type == ChunkTypeResponseMetadata.
 	// Carries the provider-level HTTP response metadata emitted early in the
 	// stream (after headers arrive, before content begins).

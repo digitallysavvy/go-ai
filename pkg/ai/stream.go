@@ -1731,6 +1731,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				stepContent = startNewTextPart(stepContent, chunk.ProviderMetadata)
 			}
 
+			// A text-end boundary: attach its citations to the text part.
+			if chunk.Type == provider.ChunkTypeTextEnd {
+				stepContent = setTrailingTextCitations(stepContent, chunk.Citations)
+			}
+
 			// Accumulate text
 			if chunk.Type == provider.ChunkTypeText {
 				stepTextParts = append(stepTextParts, chunk.Text)
@@ -3685,6 +3690,11 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 		// A text-start boundary: see the identical branch in processStream.
 		if chunk.Type == provider.ChunkTypeTextStart {
 			stepContent = startNewTextPart(stepContent, chunk.ProviderMetadata)
+		}
+
+		// A text-end boundary: attach its citations to the text part.
+		if chunk.Type == provider.ChunkTypeTextEnd {
+			stepContent = setTrailingTextCitations(stepContent, chunk.Citations)
 		}
 
 		// Accumulate text

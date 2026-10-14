@@ -132,8 +132,12 @@ func TestResponsesLanguageModel_WebSearchIncludesSourcesAndMapsQueries(t *testin
 	if len(result.ToolCalls) != 1 || !result.ToolCalls[0].ProviderExecuted {
 		t.Fatalf("tool calls = %#v", result.ToolCalls)
 	}
-	if len(result.Content) != 2 {
-		t.Fatalf("content len = %d, want 2", len(result.Content))
+	// tool call, tool result, then the retrieved URL source (TS #21797).
+	if len(result.Content) != 3 {
+		t.Fatalf("content len = %d, want 3", len(result.Content))
+	}
+	if src, ok := result.Content[2].(types.SourceContent); !ok || src.SourceType != "url" || src.URL != "https://go.dev/doc/" {
+		t.Fatalf("content[2] = %#v, want retrieved url source", result.Content[2])
 	}
 	toolResult, ok := result.Content[1].(types.ToolResultContent)
 	if !ok {
