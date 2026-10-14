@@ -1,3 +1,4 @@
+//nolint:staticcheck // exercises the deprecated aliases on purpose
 package ai
 
 import (
@@ -100,7 +101,7 @@ func (i *deprecatedOnlyIntegration) OnEvaluationModelCallEnd(_ context.Context, 
 // bothIntegration implements current and deprecated handlers.
 type bothIntegration struct {
 	deprecatedOnlyIntegration
-	current, deprecated int
+	current int
 }
 
 func (i *bothIntegration) OnDecideStart(ctx context.Context, _ telemetry.DecideStartEvent) context.Context {

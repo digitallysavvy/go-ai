@@ -78,13 +78,18 @@ type DecideOptions struct {
 	// via Provider (or the AI Gateway when Provider is nil).
 	Model interface{}
 
-	// Provider resolves a string Model ID to an DecisionModel. When nil and
-	// Model is a string, resolution falls back to the AI Gateway (mirrors
-	// TypeScript: `(globalThis.AI_SDK_DEFAULT_PROVIDER ?? gateway).decisionModel(id)`).
+	// Provider resolves a string Model ID to a DecisionModel. It must
+	// implement provider.DecisionModelProvider, or the deprecated
+	// provider.EvaluationModelProvider (the decision method is preferred).
+	// When nil and Model is a string, resolution falls back to the AI Gateway
+	// (mirrors TypeScript:
+	// `(globalThis.AI_SDK_DEFAULT_PROVIDER ?? gateway).decisionModel(id)`).
 	Provider interface{}
 
-	// State is one shared JSON-compatible string, map[string]interface{}, or
-	// []interface{}.
+	// State is the shared state: a string, a JSON object
+	// (map[string]interface{}), or an ordered []provider.DecisionStatePart of
+	// text, file, and json parts. For compatibility with the pre-multimodal
+	// API, a JSON array ([]interface{}) is accepted and sent as one json part.
 	State interface{}
 
 	// Questions maps question ID -> question.
@@ -361,13 +366,13 @@ func resolveDecisionModel(model interface{}, resolver interface{}) (provider.Dec
 			return nil, &providererrors.InvalidArgumentError{Field: "model", Message: "model is required"}
 		}
 		return v, nil
-	case provider.EvaluationModel:
+	case provider.EvaluationModel: //nolint:staticcheck // deprecated compatibility path
 		// Deprecated pre-rename model (DoEvaluate): adapt it, like TS's
 		// legacy-model adapter in resolveDecisionModel.
 		if v == nil {
 			return nil, &providererrors.InvalidArgumentError{Field: "model", Message: "model is required"}
 		}
-		return provider.AdaptEvaluationModel(v), nil
+		return provider.AdaptEvaluationModel(v), nil //nolint:staticcheck // deprecated compatibility path
 	case string:
 		if resolver == nil {
 			gw, err := gateway.Gateway()

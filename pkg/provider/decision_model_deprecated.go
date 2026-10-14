@@ -75,7 +75,7 @@ type evaluationToDecisionModel struct {
 }
 
 func (m evaluationToDecisionModel) DoDecide(ctx context.Context, opts DecisionCallOptions) (*DecisionResult, error) {
-	return m.EvaluationModel.DoEvaluate(ctx, opts)
+	return m.DoEvaluate(ctx, opts)
 }
 
 // AdaptEvaluationModel adapts a legacy EvaluationModel to a DecisionModel by
@@ -99,7 +99,7 @@ type decisionToEvaluationModel struct {
 }
 
 func (m decisionToEvaluationModel) DoEvaluate(ctx context.Context, opts DecisionCallOptions) (*DecisionResult, error) {
-	return m.DecisionModel.DoDecide(ctx, opts)
+	return m.DoDecide(ctx, opts)
 }
 
 // AsEvaluationModel exposes a DecisionModel through the deprecated
@@ -123,7 +123,7 @@ type evaluationToDecisionProvider struct {
 }
 
 func (p evaluationToDecisionProvider) DecisionModel(modelID string) (DecisionModel, error) {
-	model, err := p.EvaluationModelProvider.EvaluationModel(modelID)
+	model, err := p.EvaluationModel(modelID)
 	if err != nil {
 		return nil, err
 	}

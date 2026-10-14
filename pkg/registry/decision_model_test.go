@@ -1,3 +1,4 @@
+//nolint:staticcheck // exercises the deprecated evaluation aliases on purpose
 package registry
 
 import (
@@ -134,12 +135,6 @@ func TestRegistry_ResolveDecisionModel_UnknownProvider(t *testing.T) {
 
 // Deprecated alias coverage, ported from TS deprecated-aliases.test.ts.
 
-type legacyEvalModel struct{ mockDecisionModel }
-
-func (m *legacyEvalModel) DoEvaluate(_ context.Context, _ provider.DecisionCallOptions) (*provider.DecisionResult, error) {
-	return &provider.DecisionResult{}, nil
-}
-
 // onlyEvaluationModel implements just the legacy contract.
 type onlyEvaluationModel struct{}
 
@@ -151,6 +146,7 @@ func (onlyEvaluationModel) DoEvaluate(context.Context, provider.DecisionCallOpti
 	return &provider.DecisionResult{Warnings: nil}, nil
 }
 
+//nolint:staticcheck // exercises the deprecated EvaluationModelProvider
 type legacyEvalProvider struct {
 	*testutil.MockProvider
 	model provider.EvaluationModel

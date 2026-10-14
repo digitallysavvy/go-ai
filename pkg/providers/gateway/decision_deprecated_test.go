@@ -1,3 +1,4 @@
+//nolint:staticcheck // exercises the deprecated aliases on purpose
 package gateway
 
 import "testing"

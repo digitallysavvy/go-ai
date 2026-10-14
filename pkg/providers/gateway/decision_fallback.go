@@ -141,7 +141,7 @@ func (f *GatewayModelFallback) UnmarshalJSON(data []byte) error {
 }
 
 // unmarshalDecisionFallbackCondition decodes a raw JSON "when" condition
-// into an DecisionFallbackCondition tree. It mirrors the shapes
+// into a DecisionFallbackCondition tree. It mirrors the shapes
 // validateDecisionFallbackCondition accepts structurally, but performs no
 // bounds checking itself -- validateGatewayDecisionModelsOption still
 // runs at request time and is the source of truth for limits/error

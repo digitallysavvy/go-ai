@@ -188,7 +188,7 @@ func (p DecisionStatePart) InlineData() (mediaType string, data []byte, err erro
 	return mediaType, nil, fmt.Errorf("decision file data of type %q is not inline data", kind)
 }
 
-// DecisionAnswer is one typed answer to an DecisionQuestion. Mirrors
+// DecisionAnswer is one typed answer to a DecisionQuestion. Mirrors
 // TypeScript's Experimental_DecisionModelV4Answer union.
 type DecisionAnswer struct {
 	// Type is "choice", "score", "boolean", or "refusal". A "refusal" answer

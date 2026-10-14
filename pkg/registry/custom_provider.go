@@ -27,7 +27,7 @@ type CustomProviderOptions struct {
 	// DecisionModels is set it takes precedence.
 	//
 	// Deprecated: Use DecisionModels instead.
-	EvaluationModels map[string]provider.EvaluationModel
+	EvaluationModels map[string]provider.EvaluationModel //nolint:staticcheck // deprecated compatibility field
 
 	FilesFactory  func() provider.FilesAPI
 	SkillsFactory func() provider.SkillsAPI
@@ -156,7 +156,7 @@ func (p *customProvider) DecisionModel(modelID string) (provider.DecisionModel, 
 			return model, nil
 		}
 	} else if model := p.opts.EvaluationModels[modelID]; model != nil {
-		return provider.AdaptEvaluationModel(model), nil
+		return provider.AdaptEvaluationModel(model), nil //nolint:staticcheck // deprecated compatibility path
 	}
 
 	if p.opts.Fallback != nil {
