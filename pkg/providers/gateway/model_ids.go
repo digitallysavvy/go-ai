@@ -117,6 +117,8 @@ const (
 	GatewayLanguageModelGoogleGemini36Flash              GatewayLanguageModelID = "google/gemini-3.6-flash"
 	GatewayLanguageModelGoogleGemini37Flash              GatewayLanguageModelID = "google/gemini-3.7-flash"
 	GatewayLanguageModelGoogleGemini38Flash              GatewayLanguageModelID = "google/gemini-3.8-flash"
+	GatewayLanguageModelGoogleGemini4Argon               GatewayLanguageModelID = "google/gemini-4-argon"
+	GatewayLanguageModelGoogleGeminiNanoBanana21         GatewayLanguageModelID = "google/gemini-nano-banana-2.1"
 	GatewayLanguageModelGoogleGeminiOmniFlashPreview     GatewayLanguageModelID = "google/gemini-omni-flash-preview"
 	GatewayLanguageModelGoogleGemma426bA4bIt             GatewayLanguageModelID = "google/gemma-4-26b-a4b-it"
 	GatewayLanguageModelGoogleGemma431bIt                GatewayLanguageModelID = "google/gemma-4-31b-it"

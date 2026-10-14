@@ -155,7 +155,11 @@ func (m *InteractionsLanguageModel) DoGenerate(ctx context.Context, opts *provid
 		return nil, m.handleError(err)
 	}
 
-	if m.agent != "" && !isTerminalInteractionStatus(response.Status) {
+	// Agent calls and background: true calls (e.g. Gemini 4 long decode, where
+	// the server runs every hop) may return a non-terminal status. Poll until
+	// terminal so the result matches a synchronous call (TS #23261).
+	isBackground := interactionsOpts.Background != nil && *interactionsOpts.Background
+	if (m.agent != "" || isBackground) && !isTerminalInteractionStatus(response.Status) {
 		response, resp, err = m.pollUntilTerminal(ctx, response.ID, requestHeaders(opts), interactionsOpts.PollingTimeoutMs)
 		if err != nil {
 			return nil, err

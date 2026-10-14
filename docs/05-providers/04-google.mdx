@@ -53,6 +53,7 @@ Use the constants in `pkg/providers/google/model_ids.go` instead of raw strings.
 | Model ID | Go constant | Best for |
 |----------|-------------|----------|
 | `gemini-3.8-flash` | `google.ModelGemini38Flash` | Fast, current-generation Flash |
+| `gemini-4-argon` | `google.ModelGemini4Argon` | Long decode with automatic continuation |
 | `gemini-nano-banana-2.1` | `google.ModelGeminiNanoBanana21` | Language and image model |
 | `gemini-3.7-flash` | `google.ModelGemini37Flash` | Fast, current-generation Flash |
 | `gemini-3.6-flash` | `google.ModelGemini36Flash` | Fast, current-generation Flash |
@@ -474,6 +475,42 @@ for chunk := range stream.Chunks() {
     fmt.Print(chunk.Text)
 }
 ```
+
+### Long Decode (Gemini 4)
+
+`gemini-4-argon` can produce very long responses. A `generateContent` request that stops at the per-request cap while `MaxTokens` budget remains (finish reason `CONTINUATION`) is continued automatically by `DoGenerate` and `DoStream`: the same request is resent with the continuation token and the results are combined into one response. Usage is summed across requests. Because every continued request re-sends the prompt plus all output so far, `providerMetadata.google.initialPromptTokenCount` holds the first request's prompt token count for context-window checks.
+
+A response that uses up the caller's `MaxTokens` returns finish reason `length` with `providerMetadata.google.continuationToken`. Resume it by passing the token back with the original prompt and a higher `MaxTokens` (the budget is cumulative):
+
+```go
+model, _ := googleProvider.LanguageModel(google.ModelGemini4Argon)
+
+maxTokens := 100_000
+first, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:     model,
+    Prompt:    "Write a very long report.",
+    MaxTokens: &maxTokens,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+meta := map[string]map[string]interface{}{}
+_ = json.Unmarshal(first.ProviderMetadata, &meta)
+if token, ok := meta["google"]["continuationToken"].(string); ok && first.FinishReason == types.FinishReasonLength {
+    higher := 200_000
+    _, err = ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:     model,
+        Prompt:    "Write a very long report.",
+        MaxTokens: &higher,
+        ProviderOptions: map[string]interface{}{
+            "google": map[string]interface{}{"continuationToken": token},
+        },
+    })
+}
+```
+
+When a stream stops early (budget used up, or a continuation request fails) the finish chunk carries `continuationToken`; checkpoint tokens of a stream that finished normally are not surfaced. The Interactions API does not continue client-side. Use `ProviderOptions["google"]["background"] = true`; `DoGenerate` then polls the interaction until it reaches a terminal status, as it already did for agents.
 
 ### Thinking Mode
 

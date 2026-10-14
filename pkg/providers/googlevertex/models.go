@@ -90,6 +90,7 @@ const (
 	ModelGemini36Flash      = "gemini-3.6-flash"
 	ModelGemini37Flash      = "gemini-3.7-flash"
 	ModelGemini38Flash      = "gemini-3.8-flash"
+	ModelGemini4Argon       = "gemini-4-argon"         // long decode (TS #23261)
 	ModelGeminiNanoBanana21 = "gemini-nano-banana-2.1" // language + image model (TS #22164)
 
 	// Preview models

@@ -325,6 +325,9 @@ func (m *LanguageModel) buildRequest(ctx context.Context, opts *provider.Generat
 	if v, ok := provOpts["cachedContent"]; ok && v != nil {
 		body["cachedContent"] = v
 	}
+	if v, ok := provOpts["continuationToken"].(string); ok && v != "" {
+		body["continuationToken"] = v
+	}
 	if v, ok := provOpts["labels"]; ok && v != nil {
 		body["labels"] = v
 	}
