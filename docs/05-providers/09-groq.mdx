@@ -102,6 +102,23 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 ```
 
+### Browser Search
+
+Groq provides a browser search tool that navigates websites interactively and returns more detailed results than traditional web search. It runs on Groq's servers, so no extra API key or setup is needed. Use `groq.BrowserSearchTool()`:
+
+```go
+model, _ := p.LanguageModel("openai/gpt-oss-120b")
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:      model,
+    Prompt:     "What are the latest developments in AI?",
+    Tools:      []types.Tool{groq.BrowserSearchTool()},
+    ToolChoice: types.RequiredToolChoice(),
+})
+```
+
+Browser search is available on Groq's GPT-OSS models, for example `openai/gpt-oss-20b` and `openai/gpt-oss-120b`. Known model IDs without browser search (such as the Llama, Qwen and Kimi models) produce an `unsupported` warning (`Browser search is not supported on model <id>.`) and the tool is dropped. Unknown model IDs are sent the tool, and the Groq API decides whether it is supported. `groq.IsBrowserSearchSupportedModel(id)` reports the same check.
+
 ### JSON Mode
 
 ```go
