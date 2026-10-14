@@ -1267,6 +1267,10 @@ func (d *turnDriver) recordToolResult(tr *ToolResultPart) {
 		toolResult = types.ToolResult{ToolCallID: tr.ToolCallID, ToolName: tr.ToolName, Input: call.Arguments, Result: tr.Result, ProviderExecuted: ok && call.ProviderExecuted}
 	}
 	d.stepToolResults = append(d.stepToolResults, toolResult)
+	// Host tool goroutines write toolExecMs under execMu.
+	d.execMu.Lock()
+	execMs := d.toolExecMs[tr.ToolCallID]
+	d.execMu.Unlock()
 
 	// recordToolResult always runs on the main goroutine, so reading
 	// d.telStepCtx live here (rather than a pre-captured snapshot) is safe.
@@ -1275,11 +1279,11 @@ func (d *turnDriver) recordToolResult(tr *ToolResultPart) {
 	if d.in.Callbacks.OnToolExecutionEnd != nil {
 		d.in.Callbacks.OnToolExecutionEnd(d.ctx, ai.OnToolCallFinishEvent{
 			ToolCallID: tr.ToolCallID, ToolName: tr.ToolName, ToolCall: call, ToolOutput: toolResult,
-			ToolExecutionMs: d.toolExecMs[tr.ToolCallID],
+			ToolExecutionMs: execMs,
 			RuntimeContext:  d.in.RuntimeContext, ToolsContext: d.in.ToolsContext,
 		})
 	}
-	d.telToolExecutionEnd(call, toolResult, d.toolExecMs[tr.ToolCallID])
+	d.telToolExecutionEnd(call, toolResult, execMs)
 }
 
 // completeStep flushes buffered tool-result chunks, fires the model-call-end

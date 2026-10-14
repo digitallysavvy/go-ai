@@ -139,14 +139,17 @@ func TestRunPrompt_ToolResultsPreserveInputAndOrigin(t *testing.T) {
 			return "host found", nil
 		},
 	}
+	allCalls := make(chan struct{})
 	mock := newScriptedHarness(
 		func(emit func(StreamPart)) {
+			defer close(allCalls)
 			emit(&StreamStartPart{})
 			emit(&ToolCallPart{ToolCallID: "native-success", ToolName: "nativeLookup", Input: `{"query":"native success"}`, ProviderExecuted: true, Dynamic: true})
 			emit(&ToolCallPart{ToolCallID: "host-success", ToolName: "hostLookup", Input: `{"query":"host success"}`})
 			emit(&ToolCallPart{ToolCallID: "native-failure", ToolName: "nativeLookup", Input: `{"query":"native failure"}`, ProviderExecuted: true, Dynamic: true})
 		},
 		func(sub ToolResultSubmission, emit func(StreamPart)) {
+			<-allCalls
 			emit(&ToolResultPart{ToolCallID: "host-success", ToolName: "hostLookup", Result: "host found"})
 			emit(&ToolResultPart{ToolCallID: "native-failure", ToolName: "nativeLookup", Result: "native failed", IsError: true, Dynamic: true})
 			emit(&ToolResultPart{ToolCallID: "native-success", ToolName: "nativeLookup", Result: "native found", Dynamic: true})
