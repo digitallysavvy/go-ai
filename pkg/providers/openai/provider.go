@@ -6,7 +6,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -370,20 +369,11 @@ func (p *Provider) Skills() provider.SkillsAPI {
 	return &SkillsAPI{provider: p}
 }
 
-// DecisionModel returns an experimental decision model backed by the
-// OpenAI Responses API language model. Mirrors TypeScript's
-// OpenAIProvider.decisionModel: `provider.decisionModel = (modelId) =>
-// new DecisionLanguageModel({ model: createResponsesModel(modelId),
-// provider: providerName + '.decision' })`.
+// DecisionModel returns an experimental Choice/Score/Boolean decision model
+// backed by the OpenAI Decisions API (POST /decisions). Mirrors TypeScript's
+// OpenAIProvider.decisionModel, which uses DecisionOpenAIModel.
 func (p *Provider) DecisionModel(modelID string) (provider.DecisionModel, error) {
-	model, err := p.ResponsesModel(modelID)
-	if err != nil {
-		return nil, err
-	}
-	return ai.NewDecisionLanguageModel(ai.DecisionLanguageModelOptions{
-		Model:    model,
-		Provider: p.Name() + ".decision",
-	})
+	return NewDecisionModel(p, modelID), nil
 }
 
 // EvaluationModel is the deprecated form of DecisionModel.
