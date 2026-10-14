@@ -93,6 +93,13 @@ type StreamTextOptions struct {
 	// Conditions are evaluated OR -- first non-empty string stops the loop.
 	StopWhen []StopCondition
 
+	// ToolCallConcurrency is the maximum number of tool calls that may execute
+	// concurrently within a step. Set to 1 to execute tool calls sequentially
+	// in the order they were generated. Must be >= 1 when set. When unset, a
+	// step's tool calls execute sequentially while resumed approvals execute
+	// in parallel. Mirrors TS toolCallConcurrency.
+	ToolCallConcurrency *int
+
 	// Response format (for structured output)
 	// Deprecated: Use Output instead.
 	ResponseFormat *provider.ResponseFormat
@@ -678,6 +685,9 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	if err := validateStreamRetries(opts.StreamRetries); err != nil {
 		return nil, err
 	}
+	if _, err := prepareToolCallConcurrency(opts.ToolCallConcurrency); err != nil {
+		return nil, err
+	}
 	instructionMessages := cloneInstructionMessages(opts.InstructionMessages)
 	if err := validateInstructionMessages(instructionMessages); err != nil {
 		return nil, err
@@ -876,16 +886,18 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	// Resume tool approvals from the input messages before the first step
 	// (TS streamText initial tool execution stream).
 	var resumeUsage types.Usage
+	resumeToolCallConcurrency, _ := prepareToolCallConcurrency(opts.ToolCallConcurrency)
 	resumed, resumeErr := resumeToolApprovals(ctx, toolApprovalResumeOptions{
-		messages:       prompt.Messages,
-		tools:          opts.Tools,
-		toolApproval:   opts.ToolApproval,
-		toolsContext:   toolsContext,
-		runtimeContext: runtimeContext,
-		secret:         opts.ExperimentalToolApprovalSecret,
-		refine:         opts.ExperimentalRefineToolInput,
-		usage:          &resumeUsage,
-		streaming:      true,
+		messages:            prompt.Messages,
+		tools:               opts.Tools,
+		toolApproval:        opts.ToolApproval,
+		toolsContext:        toolsContext,
+		runtimeContext:      runtimeContext,
+		secret:              opts.ExperimentalToolApprovalSecret,
+		refine:              opts.ExperimentalRefineToolInput,
+		usage:               &resumeUsage,
+		streaming:           true,
+		toolCallConcurrency: resumeToolCallConcurrency,
 		callbacks: toolCallEventCallbacks{
 			callID:              callID,
 			onStart:             opts.OnToolExecutionStart,
@@ -2226,7 +2238,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				executionBlocked:    !isToolExecutionAllowedFinishReason(r.finishReason),
 			}
 			usageForTools := r.usage.Add(stepUsage)
-			stepToolResults, _ = executeTools(stepCtx, stepToolCalls, stepExecutionTools, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, &usageForTools, toolCallbacks)
+			stepToolCallConcurrency, _ := prepareToolCallConcurrency(opts.ToolCallConcurrency)
+			stepToolResults, _ = executeToolsConfigured(stepCtx, stepToolCalls, stepExecutionTools, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, &usageForTools, toolCallbacks, stepToolCallConcurrency)
 			attachToolApprovalSignatures(stepToolResults, opts.ExperimentalToolApprovalSecret)
 		}
 		if stepCtx.Err() != nil && r.timeout != nil && r.timeout.HasPerStep() {

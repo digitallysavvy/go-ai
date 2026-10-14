@@ -799,7 +799,22 @@ for _, step := range result.Steps {
 
 ## Concurrency and Parallel Tool Execution
 
-The Go AI SDK executes tools sequentially by default, but you can implement parallel execution patterns:
+The Go AI SDK executes the tool calls of a step sequentially by default. Set `ToolCallConcurrency` on `ai.GenerateTextOptions`, `ai.StreamTextOptions`, `agent.AgentConfig` or `agent.AgentGenerateOptions` to run them concurrently with a bound:
+
+```go
+concurrency := 2 // at most two tool calls run at once; 1 means sequential, in model order
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:               model,
+    Prompt:              "Check the weather in three cities.",
+    Tools:               tools,
+    ToolCallConcurrency: &concurrency,
+    StopWhen:            []ai.StopCondition{ai.IsStepCount(5)},
+})
+```
+
+The value must be at least `1`; otherwise the call returns an `*errors.InvalidArgumentError` for `toolCallConcurrency` before the model is called. Results stay in model order whatever the finishing order. Queued calls are not started after the context is cancelled or a tool execution fails. This option limits SDK-executed (local) tool calls only; provider-executed tools and provider-side parallel tool call settings are unaffected. Approved tool calls resumed from message history run in model order; with `StreamText` they run in parallel when `ToolCallConcurrency` is unset.
+
+You can also implement your own parallel execution patterns:
 
 ```go
 type ParallelToolExecutor struct {

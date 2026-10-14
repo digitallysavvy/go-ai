@@ -48,6 +48,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (*GenerateTextR
 | `ToolApproval` | `types.ToolApprovalConfig` | ToolApproval configures approval handling for tool execution. |
 | `ExperimentalToolApprovalSecret` | `[]byte` | ExperimentalToolApprovalSecret signs server-issued approval requests so resumed approval responses can be verified before execution. |
 | `MaxSteps` | `*int` | MaxSteps is a convenience shorthand for StopWhen\{StepCountIs(N)\}. Deprecated: use StopWhen with StepCountIs instead. If StopWhen is set, MaxSteps is ignored. |
+| `ToolCallConcurrency` | `*int` | ToolCallConcurrency is the maximum number of tool calls that may execute concurrently within a step. Set to 1 to execute tool calls sequentially in the order they were generated. Must be &gt;= 1 when set. When unset, tool calls execute sequentially (resumed approvals in StreamText execute in parallel). Mirrors TS toolCallConcurrency. |
 | `StopWhen` | `[]StopCondition` | StopWhen defines conditions that terminate the tool-calling loop. Conditions are evaluated OR -- first non-empty string stops the loop. Evaluated after each step that produces tool results. |
 | `Timeout` | `*TimeoutConfig` | Timeout provides granular timeout controls Supports total timeout, per-step timeout, and per-chunk timeout (for streaming) |
 | `Output` | `interface{}` | Output specifies how to handle and parse model output Use TextOutput(), ObjectOutput(), ArrayOutput(), ChoiceOutput(), or JSONOutput() If nil, defaults to text output |

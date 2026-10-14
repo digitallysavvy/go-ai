@@ -133,6 +133,7 @@ These tables are generated from the `agent.AgentGenerateOptions` and `agent.Agen
 | `Tools` | `[]types.Tool` |  |
 | `ToolChoice` | `types.ToolChoice` |  |
 | `ToolOrder` | `[]string` |  |
+| `ToolCallConcurrency` | `*int` | ToolCallConcurrency is the maximum number of tool calls that may execute concurrently within a step (1 = sequential). Must be &gt;= 1 when set. |
 | `ActiveTools` | `[]string` |  |
 | `StopWhen` | `[]ai.StopCondition` |  |
 | `MaxSteps` | `int` |  |
