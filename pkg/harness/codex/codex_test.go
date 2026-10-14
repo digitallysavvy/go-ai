@@ -565,3 +565,79 @@ func TestDoStart_ReportsDiagnostics(t *testing.T) {
 		t.Errorf("event diagnostic = %+v", eventDiag)
 	}
 }
+
+// resumedRerunSession starts a session via the RERUN rung (persisted state
+// without reachable bridge coordinates) and returns it with a start counter.
+func resumedRerunSession(t *testing.T) (harness.Session, *int32) {
+	t.Helper()
+	var starts int32
+	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnStart: func(turn *bridgetest.Turn, _ map[string]any) {
+		atomic.AddInt32(&starts, 1)
+		turn.Emit(finishFrame())
+	}})
+	t.Cleanup(srv.Close)
+	sandbox := newTestSandbox(srv)
+	wireSpawn(sandbox)
+	h := codex.New(codex.Settings{StartupTimeout: 2 * time.Second, MintBridgeToken: func(string) string { return "tok" }})
+	resumeState, err := harness.NewResumeSessionState(codex.HarnessID, map[string]any{"threadId": "thread-1"})
+	if err != nil {
+		t.Fatalf("NewResumeSessionState: %v", err)
+	}
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{
+		SessionID: "s1", SandboxSession: sandbox, SessionWorkDir: "/workdir", ResumeFrom: resumeState,
+	})
+	if err != nil {
+		t.Fatalf("DoStart: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+	return sess, &starts
+}
+
+func waitDone(t *testing.T, c harness.PromptControl) {
+	t.Helper()
+	select {
+	case <-c.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("turn never finished")
+	}
+}
+
+// TS (#21961) "does not restart the native turn on later continuations after
+// rerun recovery": the recovery start is sent exactly once.
+func TestDoContinueTurn_RerunRecoveryStartsNativeTurnOnce(t *testing.T) {
+	sess, starts := resumedRerunSession(t)
+	emit := func(harness.StreamPart) {}
+
+	first, err := sess.DoContinueTurn(context.Background(), harness.ContinueTurnOptions{Emit: emit})
+	if err != nil {
+		t.Fatalf("first DoContinueTurn: %v", err)
+	}
+	waitDone(t, first)
+	if _, err := sess.DoContinueTurn(context.Background(), harness.ContinueTurnOptions{Emit: emit}); err != nil {
+		t.Fatalf("second DoContinueTurn: %v", err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if got := atomic.LoadInt32(starts); got != 1 {
+		t.Fatalf("bridge received %d start frames, want exactly 1 (later continuations attach to the live turn)", got)
+	}
+}
+
+// TS (#21961) "does not restart after a recovered prompt": a recovered prompt
+// consumes the rerun flag, so a following continuation sends no start frame.
+func TestDoContinueTurn_AfterRecoveredPromptSendsNoStart(t *testing.T) {
+	sess, starts := resumedRerunSession(t)
+	emit := func(harness.StreamPart) {}
+
+	prompt, err := sess.DoPromptTurn(context.Background(), harness.PromptTurnOptions{Prompt: harness.TextPrompt("hi"), Emit: emit})
+	if err != nil {
+		t.Fatalf("DoPromptTurn: %v", err)
+	}
+	waitDone(t, prompt)
+	if _, err := sess.DoContinueTurn(context.Background(), harness.ContinueTurnOptions{Emit: emit}); err != nil {
+		t.Fatalf("DoContinueTurn: %v", err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if got := atomic.LoadInt32(starts); got != 1 {
+		t.Fatalf("bridge received %d start frames, want 1 (the prompt only)", got)
+	}
+}

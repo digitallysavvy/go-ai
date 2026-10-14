@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -64,6 +65,9 @@ type session struct {
 	pendingResumeThreadID              string
 	latestThreadID                     string
 	latestTurnConfigurationFingerprint string
+	// rerunContinue is the live copy of opts.rerunContinue: true until the
+	// single recovery start has been sent. Mirrors TS `rerunContinue`.
+	rerunContinue bool
 }
 
 func newSession(opts sessionOptions) *session {
@@ -71,6 +75,7 @@ func newSession(opts sessionOptions) *session {
 		opts:                               opts,
 		latestThreadID:                     opts.resumeThreadID,
 		latestTurnConfigurationFingerprint: opts.turnConfigurationFingerprint,
+		rerunContinue:                      opts.rerunContinue,
 	}
 	if opts.seedResumeThreadOnFirstPrompt {
 		s.pendingResumeThreadID = opts.resumeThreadID
@@ -105,13 +110,18 @@ func (s *session) synchronizeTurnConfiguration(ctx context.Context, skills []har
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	restart := s.latestThreadID != "" &&
-		(result.Changed || (s.latestTurnConfigurationFingerprint != "" && s.latestTurnConfigurationFingerprint != fingerprint))
+		(result.Changed || (strings.HasPrefix(s.latestTurnConfigurationFingerprint, fingerprintVersionPrefix) && s.latestTurnConfigurationFingerprint != fingerprint))
 	s.latestTurnConfigurationFingerprint = fingerprint
 	if restart {
 		s.pendingResumeThreadID = ""
 	}
 	return restart, nil
 }
+
+// fingerprintVersionPrefix marks fingerprints computed over canonical
+// (key-sorted) JSON. Legacy fingerprints (bare hex) are replaced once rather
+// than treated as a configuration change. Mirrors TS `v2:`.
+const fingerprintVersionPrefix = "v2:"
 
 func fingerprintTurnConfiguration(instructions string, tools []harness.ToolSpec) string {
 	type wireTool struct {
@@ -127,12 +137,24 @@ func fingerprintTurnConfiguration(instructions string, tools []harness.ToolSpec)
 	if instructions != "" {
 		instructionsValue = instructions
 	}
-	payload, _ := json.Marshal(struct {
+	// Round-trip through a generic value so every object (including raw JSON
+	// and struct-typed schemas) is re-encoded with sorted keys: value-equivalent
+	// tool definitions with reordered keys must hash identically.
+	raw, _ := json.Marshal(struct {
 		Instructions any        `json:"instructions"`
 		Tools        []wireTool `json:"tools"`
 	}{instructionsValue, wireTools})
-	sum := sha256.Sum256(payload)
-	return hex.EncodeToString(sum[:])
+	var generic any
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	_ = dec.Decode(&generic)
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(generic)
+	canonical := bytes.TrimRight(buf.Bytes(), "\n")
+	sum := sha256.Sum256(canonical)
+	return fingerprintVersionPrefix + hex.EncodeToString(sum[:])
 }
 
 func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptions) (harness.PromptControl, error) {
@@ -153,6 +175,10 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 		return control, nil
 	}
 	frame := s.buildStartFrame(text, opts.TurnSettings, opts.ResponseFormat, restartThread, true)
+	// Recovery starts a native turn once. Later continuations attach to it.
+	s.mu.Lock()
+	s.rerunContinue = false
+	s.mu.Unlock()
 	if err := s.opts.channel.Send(frame); err != nil {
 		return nil, err
 	}
@@ -168,7 +194,13 @@ func (s *session) DoContinueTurn(ctx context.Context, opts harness.ContinueTurnO
 		return nil, err
 	}
 	control := s.wireTurn(ctx, opts.Emit)
-	if s.opts.rerunContinue && ctx.Err() == nil {
+	s.mu.Lock()
+	rerun := s.rerunContinue && ctx.Err() == nil
+	if rerun {
+		s.rerunContinue = false
+	}
+	s.mu.Unlock()
+	if rerun {
 		frame := s.buildStartFrame("Continue.", opts.TurnSettings, opts.ResponseFormat, restartThread, false)
 		if err := s.opts.channel.Send(frame); err != nil {
 			return nil, err
