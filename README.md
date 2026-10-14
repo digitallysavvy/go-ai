@@ -337,9 +337,10 @@ The Go AI SDK supports 49 providers:
 | **QuiverAI**     | SVG generation/vectorization | -          | SVG              | -            |
 | **KlingAI**      | -                            | -          | Video (v3.0)     | -            |
 | **Prodia**       | img2img                      | -          | Video (T2V/I2V)  | -            |
+| **HeyGen**       | -                            | -          | Video (T2V/I2V/R2V) | -         |
 | **Ollama**       | Local models                 | ✓          | -                | -            |
 
-And more (Replicate, Hugging Face, Stability, ElevenLabs, Deepgram, Gladia, LMNT, ByteDance, Baseten, Cerebras, DeepInfra, Gateway, GMI Cloud, Z.AI, MiniMax, TypeSafe AI, Fish Audio, Cartesia, Rev.ai, Hume, Luma, BFL, Voyage, AssemblyAI, Vercel, Moonshot, Anthropic AWS, Google Vertex xAI, Open Responses, QuiverAI, Topaz Labs)...
+And more (Replicate, Hugging Face, Stability, ElevenLabs, Deepgram, Gladia, LMNT, ByteDance, Baseten, Cerebras, DeepInfra, Gateway, GMI Cloud, Z.AI, MiniMax, TypeSafe AI, Fish Audio, Cartesia, Rev.ai, Hume, Luma, BFL, Voyage, AssemblyAI, Vercel, Moonshot, Anthropic AWS, Google Vertex xAI, Open Responses, QuiverAI, Topaz Labs, HeyGen)...
 
 ## Features
 
@@ -352,7 +353,7 @@ And more (Replicate, Hugging Face, Stability, ElevenLabs, Deepgram, Gladia, LMNT
 - ✅ **Agents** — autonomous multi-step reasoning with `ToolLoopAgent`
 - ✅ **Embeddings** — generate and search with vector embeddings, multimodal support
 - ✅ **Image Generation** — text-to-image with multiple providers
-- ✅ **Video Generation** — text/image-to-video (KlingAI, Prodia, ByteDance, xAI)
+- ✅ **Video Generation** — text/image-to-video (KlingAI, Prodia, ByteDance, xAI, HeyGen)
 - ✅ **Speech** — TTS and transcription capabilities
 - ✅ **Middleware** — logging, caching, rate limiting, and more
 - ✅ **Telemetry** — global registry with OpenTelemetry integration

@@ -41,6 +41,7 @@ import (
 	_ "github.com/digitallysavvy/go-ai/pkg/providers/googlevertex/xai"
 	_ "github.com/digitallysavvy/go-ai/pkg/providers/groq"
 	_ "github.com/digitallysavvy/go-ai/pkg/providers/huggingface"
+	_ "github.com/digitallysavvy/go-ai/pkg/providers/heygen"
 	_ "github.com/digitallysavvy/go-ai/pkg/providers/hume"
 	_ "github.com/digitallysavvy/go-ai/pkg/providers/luma"
 	_ "github.com/digitallysavvy/go-ai/pkg/providers/mistral"

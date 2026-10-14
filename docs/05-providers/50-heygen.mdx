@@ -1,0 +1,200 @@
+---
+title: HeyGen Provider
+description: "Setup and usage guide for HeyGen text-to-video, image-to-video, and reference-to-video generation with the Go AI SDK."
+---
+
+# HeyGen Provider
+
+The [HeyGen](https://developers.heygen.com/docs/models/heygen-video) provider supports `heygen-video-1`, a video generation model with text-to-video, image-to-video, and reference-to-video modes. Generated clips include audio.
+
+This provider supports video generation only. HeyGen's avatar, voice, translation, and video editing APIs are not included.
+
+## Setup
+
+### Installation
+
+```go
+import (
+    "github.com/digitallysavvy/go-ai/pkg/ai"
+    "github.com/digitallysavvy/go-ai/pkg/providers/heygen"
+)
+```
+
+### Configuration
+
+```go
+prov := heygen.New(heygen.Config{
+    APIKey: os.Getenv("HEYGEN_API_KEY"),
+})
+
+model, err := prov.VideoModel("heygen-video-1")
+```
+
+`heygen.Config` accepts:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `APIKey` | `string` | The key sent in the `x-api-key` header. Falls back to the `HEYGEN_API_KEY` environment variable, read on each request. |
+| `BaseURL` | `string` | The API URL prefix. Defaults to `https://api.heygen.com`. |
+| `Headers` | `map[string]string` | Additional headers merged into every request. |
+| `PollIntervalMillis` | `int` | Interval between status checks used by `VideoModel.DoGenerate`. Defaults to 5000ms. |
+| `PollTimeoutMillis` | `int` | Total timeout for `VideoModel.DoGenerate`. Defaults to 600000ms (10 minutes). |
+
+`prov.Video(id)` is an alias for `prov.VideoModel(id)`, and `heygen.CreateHeyGen(cfg)` is an alias for `heygen.New(cfg)`.
+
+```bash
+export HEYGEN_API_KEY=...
+```
+
+## Text to Video
+
+```go
+duration := 5.0
+
+result, err := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
+    Model: model,
+    Prompt: ai.VideoPrompt{
+        Text: "A paper boat floats down a quiet stream. Static camera, soft morning light, the sound of flowing water. No music.",
+    },
+    Duration:    &duration,
+    AspectRatio: "16:9",
+})
+```
+
+## Image to Video
+
+Pass an image in the prompt to use it as the first frame. The video follows the image's aspect ratio; a supplied `AspectRatio` is ignored with a warning.
+
+```go
+result, err := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
+    Model: model,
+    Prompt: ai.VideoPrompt{
+        Text: "The subject moves slowly. Preserve the composition and natural lighting.",
+        Image: &ai.VideoPromptImage{
+            URL:       "https://example.com/first-frame.jpg",
+            MediaType: "image/jpeg",
+        },
+    },
+    Duration: &duration,
+})
+```
+
+A single `first_frame` in `FrameImages` is also supported. Last-frame conditioning and multiple first frames are rejected.
+
+## Reference to Video
+
+Use `InputReferences` to condition a new scene on images or videos. Include a `MediaType` for URL references so the provider can select the reference kind.
+
+```go
+result, err := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
+    Model: model,
+    Prompt: ai.VideoPrompt{
+        Text: "The product in <Picture 1> sits on a desk beside a sunlit window.",
+    },
+    InputReferences: []ai.VideoReferenceInput{
+        {Data: ai.VideoPromptImage{URL: "https://example.com/product.jpg", MediaType: "image/jpeg"}},
+    },
+    Duration:    &duration,
+    AspectRatio: "16:9",
+})
+```
+
+References are grouped by media type, preserving order within each group. Address them in the prompt as `<Picture 1>`, `<Video 1>`, and `<Audio 1>`. Provider-option references are appended after standard references of the same kind.
+
+Reference-to-video requires at least one image or video. Audio-only conditioning is not supported. HeyGen accepts up to 9 image references, 3 video references, and 3 audio references, with a combined maximum of 12. Only the first 5 seconds of each reference video are used.
+
+## Provider Options
+
+```go
+result, err := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
+    Model: model,
+    Prompt: ai.VideoPrompt{
+        Text: "The product in <Picture 1> rotates slowly on a table. No music.",
+    },
+    AspectRatio: "16:9",
+    ProviderOptions: map[string]interface{}{
+        "heygen": map[string]interface{}{
+            "resolution":        "1080p",
+            "promptEnhancement": "disabled",
+            "referenceImages": []interface{}{
+                map[string]interface{}{"type": "asset_id", "assetId": "YOUR_ASSET_ID"},
+            },
+        },
+    },
+})
+```
+
+`heygen.VideoModelOptions` is the typed form of the same options and can be passed as `ProviderOptions["heygen"]`.
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `mode` | `text_to_video`, `image_to_video`, `reference_to_video` | Inferred from the inputs when omitted. Explicit modes must match the supplied inputs. First-frame images cannot be combined with references. |
+| `resolution` | `480p`, `768p`, `1080p`, `2k` | Output size class. Defaults to `768p`. Takes precedence over the standard `Resolution` option. |
+| `promptEnhancement` | `turbo`, `quality`, `disabled` | HeyGen's prompt enhancement setting. The API defaults to `turbo`. |
+| `image` | `VideoAsset` | First-frame input, including an existing asset ID. Cannot be combined with a standard image or `FrameImages`. |
+| `referenceImages` | `[]VideoAsset` (max 9) | Additional image references. |
+| `referenceVideos` | `[]VideoAsset` (max 3) | Additional video references. |
+| `referenceAudio` | `[]VideoAsset` (max 3) | Additional audio references. |
+
+A `VideoAsset` is one of:
+
+```go
+{"type": "url", "url": "https://example.com/input.jpg"}
+{"type": "asset_id", "assetId": "YOUR_ASSET_ID"}
+{"type": "base64", "mediaType": "image/jpeg", "data": "BASE64_DATA"}
+```
+
+Asset IDs must already exist in the workspace associated with the API key. This provider does not upload or manage HeyGen assets. Standard file inputs are sent inline as base64. HeyGen permits up to 5 MB per inline image and 16 MB per inline video or audio input. URL inputs must use HTTPS and be directly accessible without redirects; HeyGen permits up to 16 MB per image URL and 32 MB per video or audio URL.
+
+## Resolution and Aspect Ratio
+
+Prefer `providerOptions.heygen.resolution` to select a size class. The standard `Resolution` option accepts the exact frame sizes below and infers the corresponding aspect ratio when `AspectRatio` is omitted:
+
+| Aspect ratio | `480p`    | `768p`     | `1080p`     | `2k`        |
+| ------------ | --------- | ---------- | ----------- | ----------- |
+| `21:9`       | `960x416` | `1536x672` | -           | -           |
+| `16:9`       | `832x480` | `1344x768` | `1890x1080` | `2688x1536` |
+| `4:3`        | `640x480` | `1024x768` | -           | -           |
+| `1:1`        | `480x480` | `768x768`  | -           | -           |
+| `3:4`        | `480x640` | `768x1024` | -           | -           |
+| `9:16`       | `480x832` | `768x1344` | `1080x1890` | `1536x2688` |
+
+Text-to-video defaults to `16:9`. Reference-to-video defaults to `adaptive`, inheriting the first reference image or video's shape. At `1080p` or `2k`, text-to-video and reference-to-video require `16:9` or `9:16`. Image-to-video always inherits the first frame's shape, even when a standard frame size is supplied; only its size class is used.
+
+## Other Constraints
+
+- Prompts must contain between 1 and 32,000 characters.
+- Duration must be an integer from 5 to 15 seconds; the default is 5.
+- Seeds must be unsigned 32-bit integers.
+- One video is generated per provider call.
+- Output is MP4 at 24 fps with generated audio. Unsupported `FPS` values and `GenerateAudio: false` produce warnings.
+
+## Asynchronous Generation
+
+The model implements `provider.VideoModelStarter` (`DoStart`) and `provider.VideoModelStatusChecker` (`DoStatus`). `ai.GenerateVideo` orchestrates polling; calling `DoGenerate` directly starts and polls using `PollIntervalMillis` and `PollTimeoutMillis`. Native webhook completion is not implemented; polling is used.
+
+HeyGen jobs continue running after submission. Cancelling a local request does not cancel the remote generation. The returned video URL is signed; retrieving the same operation's status again refreshes the URL.
+
+Pass an `Idempotency-Key` through the `Headers` option when retrying the same submission. HeyGen retains keys for 24 hours; concurrent duplicates return an HTTP 409 error.
+
+## Provider Metadata
+
+`result.ProviderMetadata["heygen"]["videos"]` contains one entry per completed video. Each entry contains:
+
+- `videoId`: The HeyGen video identifier.
+- `mode`: The generation mode submitted to HeyGen.
+- `resolution`: The resolved size class submitted to HeyGen, retained across asynchronous status calls. This is separate from the actual output dimensions.
+- `duration`, `width`, `height`, `aspectRatio`, and `seed`: Values reported by HeyGen on completion, when available.
+- `timings.inference`: The inference timing reported by HeyGen, when available.
+
+Submission and in-progress operation metadata exposes `videoId`, `mode`, and `resolution` directly under `providerMetadata["heygen"]`. Failed or cancelled operations also expose `failureCode` when HeyGen reports it.
+
+The current HeyGen video endpoint does not document token counts or credit consumption in its generation response. The provider returns the reported duration and dimensions without estimating those quantities.
+
+## Workflow Serialization
+
+`VideoModel` implements `provider.SerializableModel` (key `heygen.video`). Credentials are not serialized; the restored model reads `HEYGEN_API_KEY`.
+
+## Examples
+
+See [`examples/providers/heygen`](https://github.com/digitallysavvy/go-ai/tree/main/examples/providers/heygen) for text-to-video, image-to-video, and reference-to-video programs.
