@@ -211,6 +211,14 @@ Each adapter is its own package under `pkg/harness`. Every adapter has a `Harnes
 | `harness/grokbuild` | `grokbuild.CreateGrokBuild(...Settings) (harness.Harness, error)` | Grok Build, through ACP. |
 | `harness/acp` | `acp.CreateACP(Settings) (harness.Harness, error)` | Any runtime that speaks the Agent Client Protocol. The Cursor, GitHub Copilot and Grok Build adapters are configurations of it. |
 
+### Adapter notes
+
+- **ACP image tool output.** `acp.Settings.NonTextContentTypes` declares the non-text tool model output the runtime can deliver to its model. Text is always supported. The only value is `acp.NonTextContentImage`, which the Cursor and Grok Build adapters set. For a runtime that does not declare it, image content from a tool's `toModelOutput` transformation is omitted and the bridge writes a warning to stderr. The fx adapter does not declare it, so it receives text only.
+- **OpenCode built-in tool filtering.** `opencode` supports `BuiltinToolFiltering`. OpenCode controls `write` and `edit` through one permission, so they must be both active or both inactive. `DoStart` returns a `*harness.CapabilityUnsupportedError` otherwise.
+- **Claude Code.** The built-in tool catalog includes `ListAgents` (read-only), so it can be listed in `inactiveTools`.
+- **Deep Agents and OpenCode.** Ripgrep ships with the bridge as an npm dependency. The Deep Agents bootstrap no longer downloads it with `curl`.
+- **fx.** The install command pins a specific fx release (`bash -s -- v<version>`) instead of the latest one. The `terminal` built-in tool was removed; use `shell`. The `skill` tool takes a required `location` and an optional `resource`.
+
 ### Claude Code
 
 `claudecode.New` starts the Claude Agent SDK in a bridge process inside the sandbox and talks to it over a port the sandbox exposes.
