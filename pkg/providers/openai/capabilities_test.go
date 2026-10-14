@@ -110,6 +110,8 @@ func TestGetLanguageModelCapabilitiesSupportsNonReasoningParameters(t *testing.T
 		{"gpt-5.6-terra", true},
 		{"gpt-5.99", true},
 		{"gpt-5.100", true},
+		{"gpt-6-sol", true},
+		{"gpt-6-luna", true},
 		{"gpt-6-astra", false},
 		{"gpt-99", false},
 		{"gpt-5", false},

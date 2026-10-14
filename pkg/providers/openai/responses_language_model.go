@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -415,6 +416,8 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		OutputSchemaToolNames:                outputSchemaToolNames(opts.Tools),
 		ExplicitMessageItemType:              m.provider.explicitMessageItemType(),
 		ConfigurationUpdateUnsupportedReason: configurationUpdateUnsupportedReason,
+		IsReasoningModel:                     isReasoning,
+		WebSearchToolName:                    responsesWebSearchToolName(opts.Tools),
 	})
 	if err != nil {
 		return nil, store, warnings, err
@@ -584,7 +587,19 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 
 	// Temperature and top_p: forbidden for reasoning models except GPT-5.1 and
 	// later families when reasoning effort is disabled.
-	supportsNonReasoningParams := !isReasoning || (effort == "none" && supportsNonReasoningParameters(m.modelID))
+	// Input configuration updates change the effort used to validate sampling
+	// parameters (TS #22304).
+	effectiveEffort := effort
+	for _, item := range input {
+		if m0, ok := item.(map[string]interface{}); ok && m0["type"] == "configuration_update" {
+			if r, ok := m0["reasoning"].(map[string]interface{}); ok {
+				if e, ok := r["effort"].(string); ok {
+					effectiveEffort = e
+				}
+			}
+		}
+	}
+	supportsNonReasoningParams := !isReasoning || (effectiveEffort == "none" && supportsNonReasoningParameters(m.modelID))
 	if supportsNonReasoningParams {
 		if opts.Temperature != nil {
 			body["temperature"] = *opts.Temperature
@@ -609,8 +624,15 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		}
 		// GPT-6+ models (which have a fixed SupportedReasoningEfforts list)
 		// do not support logprobs while reasoning is active.
-		if modelCapabilities.SupportedReasoningEfforts != nil && topLogprobs != nil {
+		if modelCapabilities.SupportedReasoningEfforts != nil && (topLogprobs != nil || sliceHas(includeFields, "message.output_text.logprobs")) {
 			topLogprobs = nil
+			filtered := includeFields[:0:0]
+			for _, v := range includeFields {
+				if v != "message.output_text.logprobs" {
+					filtered = append(filtered, v)
+				}
+			}
+			includeFields = filtered
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "logprobs",
@@ -1477,6 +1499,18 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				ProviderExecuted: true,
 			}
 			toolCalls = append(toolCalls, tc)
+			webSearchResult := types.ToolResultContent{
+				ToolCallID: item.ID,
+				ToolName:   toolName,
+				Result:     mapWebSearchOutput(item.Action),
+				// TS never sets providerExecuted on this tool-result,
+				// only on the tool-call.
+			}
+			if isFailedWebSearchStatus(item.Status) {
+				// TS #22330: failed/incomplete searches are tool errors.
+				webSearchResult.Result = map[string]interface{}{"status": item.Status}
+				webSearchResult.Error = item.Status
+			}
 			result.Content = append(result.Content,
 				types.ToolCallContent{
 					ToolCallID:       item.ID,
@@ -1485,13 +1519,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 					Arguments:        map[string]interface{}{},
 					ProviderExecuted: true,
 				},
-				types.ToolResultContent{
-					ToolCallID: item.ID,
-					ToolName:   toolName,
-					Result:     mapWebSearchOutput(item.Action),
-					// TS never sets providerExecuted on this tool-result,
-					// only on the tool-call.
-				},
+				webSearchResult,
 			)
 
 		case "compaction":
@@ -2710,13 +2738,19 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 					toolName:   e.Item.Name,
 					toolCallID: e.Item.CallID,
 				}
-				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-					Type: provider.ChunkTypeToolInputStart,
-					ToolCall: &types.ToolCall{
-						ID:       e.Item.CallID,
-						ToolName: e.Item.Name,
+				s.flushQueue = append(s.flushQueue,
+					&provider.StreamChunk{
+						Type: provider.ChunkTypeToolInputStart,
+						ToolCall: &types.ToolCall{
+							ID:       e.Item.CallID,
+							ToolName: e.Item.Name,
+						},
 					},
-				})
+					// Custom tool input is a string, so stream its JSON
+					// encoding consistently with the final tool call input
+					// (TS #22535).
+					&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: e.Item.CallID, Text: `"`},
+				)
 				continue
 			case "apply_patch_call":
 				// Row 45f2b6a / item 9: progressive tool-input streaming, mirroring
@@ -2977,7 +3011,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 					Type: provider.ChunkTypeToolInputDelta,
 					ID:   toolCall.toolCallID,
-					Text: e.Delta,
+					Text: escapeJSONDelta(e.Delta),
 				})
 				if ok {
 					return chunk, nil
@@ -3609,10 +3643,13 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		if err := json.Unmarshal(e.Item, &item); err != nil {
 			return nil, false
 		}
-		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-			Type:     provider.ChunkTypeToolInputEnd,
-			ToolCall: &types.ToolCall{ID: item.CallID},
-		})
+		s.flushQueue = append(s.flushQueue,
+			&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: item.CallID, Text: `"`},
+			&provider.StreamChunk{
+				Type:     provider.ChunkTypeToolInputEnd,
+				ToolCall: &types.ToolCall{ID: item.CallID},
+			},
+		)
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{
@@ -3629,13 +3666,19 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		if err := json.Unmarshal(e.Item, &item); err != nil {
 			return nil, false
 		}
+		webSearchResult := &types.ToolResult{
+			ToolCallID: item.ID,
+			ToolName:   s.webSearchToolName,
+			Result:     mapWebSearchOutput(item.Action),
+		}
+		if isFailedWebSearchStatus(item.Status) {
+			// TS #22330: failed/incomplete searches are tool errors.
+			webSearchResult.Result = map[string]interface{}{"status": item.Status}
+			webSearchResult.Error = errors.New(item.Status)
+		}
 		return s.emitParsedChunk(&provider.StreamChunk{
-			Type: provider.ChunkTypeToolResult,
-			ToolResult: &types.ToolResult{
-				ToolCallID: item.ID,
-				ToolName:   s.webSearchToolName,
-				Result:     mapWebSearchOutput(item.Action),
-			},
+			Type:       provider.ChunkTypeToolResult,
+			ToolResult: webSearchResult,
 		})
 
 	case "program":
@@ -3937,3 +3980,18 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 // Ensure ResponsesLanguageModel satisfies the provider.LanguageModel interface
 // at compile time.
 var _ provider.LanguageModel = (*ResponsesLanguageModel)(nil)
+
+func sliceHas(values []string, want string) bool {
+	for _, v := range values {
+		if v == want {
+			return true
+		}
+	}
+	return false
+}
+
+// isFailedWebSearchStatus reports whether a web_search_call status marks the
+// search as a tool error (TS: status === 'failed' || 'incomplete').
+func isFailedWebSearchStatus(status string) bool {
+	return status == "failed" || status == "incomplete"
+}

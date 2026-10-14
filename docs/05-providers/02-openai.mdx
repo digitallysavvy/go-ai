@@ -858,3 +858,32 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 ```
 
 Use `p.ResponsesModel(...)` instead to enable reasoning summaries.
+
+## October 14 2026 catch-up
+
+### GPT-6 Sol and Luna sampling parameters
+
+`gpt-6-sol` and `gpt-6-luna` keep `temperature`, `topP` and `logprobs` when the effective reasoning effort is `"none"`, the same as GPT-5.1 and later. Configuration updates (`reasoningEffortUpdate`, request-level or positioned in the prompt) change the effective effort, so the last update decides whether sampling parameters are sent or dropped with an `unsupported` warning. Other GPT-6 models still drop them.
+
+```go
+temperature := 0.2
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:       model, // p.ResponsesModel("gpt-6-sol")
+    Prompt:      "Say hello.",
+    Temperature: &temperature,
+    ProviderOptions: map[string]interface{}{
+        "openai": map[string]interface{}{"reasoningEffort": "none"},
+    },
+})
+```
+
+### Failed web searches are tool errors
+
+A `web_search_call` whose status is `failed` or `incomplete` now produces a tool result with `Result: {"status": "<status>"}` and a non-empty `Error`, instead of a normal result with an empty action. This applies to `Generate`, streaming and batch results.
+
+### Responses history replay
+
+- Text parts that share one stored message id are replayed as a single `item_reference`.
+- For reasoning models, a stored assistant message is only replaced by an `item_reference` when its reasoning part is still present. If the reasoning was removed (for example by pruning), the text is sent as content instead of failing with "was provided without its required 'reasoning' item".
+- With `store: false`, provider-executed web search results are replayed as `web_search_call` items so the search context survives across steps. Results without a valid action are still omitted.
+- Custom tool input deltas are streamed as the JSON encoding of the string input: an opening `"`, JSON-escaped deltas, then a closing `"`. Concatenating the deltas yields the same JSON string as the final tool call input.
