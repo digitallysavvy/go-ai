@@ -321,6 +321,9 @@ func BuildAuthorizationServerDiscoveryURLs(authorizationServerURL string) ([]OAu
 	}
 	pathname := strings.TrimSuffix(parsed.Path, "/")
 	pathIssuer := rootIssuer + pathname
+	// Build candidates by string concatenation onto the origin (never by
+	// resolving the path as a URL reference): a path beginning with // would
+	// otherwise replace the authorization server host (TS #22248).
 	return []OAuthDiscoveryURL{
 		{URL: rootIssuer + "/.well-known/oauth-authorization-server" + pathname, Type: "oauth", ExpectedIssuer: pathIssuer},
 		{URL: rootIssuer + "/.well-known/oauth-authorization-server", Type: "oauth", ExpectedIssuer: rootIssuer},
@@ -340,6 +343,19 @@ func DiscoverAuthorizationServerMetadata(ctx context.Context, authorizationServe
 	urls, err := BuildAuthorizationServerDiscoveryURLs(authorizationServerURL)
 	if err != nil {
 		return nil, err
+	}
+	// Check every candidate before any request so discovery cannot bypass an
+	// application's authorization server validation by changing the origin
+	// (TS #22248).
+	serverURL, err := url.Parse(authorizationServerURL)
+	if err != nil {
+		return nil, err
+	}
+	for _, candidate := range urls {
+		candidateURL, perr := url.Parse(candidate.URL)
+		if perr != nil || origin(candidateURL) != origin(serverURL) {
+			return nil, NewMCPClientError(0, "OAuth discovery URL changed authorization-server origin", nil)
+		}
 	}
 	for _, candidate := range urls {
 		resp, err := oauthMetadataGET(ctx, client, candidate.URL, protocolVersion, opts.TrustedOrigin)

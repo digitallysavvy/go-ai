@@ -26,7 +26,7 @@ One call advances the flow one step. It refreshes tokens when it can, registers 
 
 On `REDIRECT`, send the user to the authorization URL (the provider's `RedirectToAuthorization` runs), then call `Auth` again with the authorization code from the callback.
 
-When the authorization server answers `invalid_client` or `unauthorized_client`, `Auth` invalidates credentials and retries once, but only when the client information came from Dynamic Client Registration. A client you registered yourself is never replaced silently. On `invalid_grant`, it invalidates the stored tokens and retries once.
+When the authorization server answers `invalid_client` or `unauthorized_client`, `Auth` invalidates credentials and retries once, but only when the client information came from Dynamic Client Registration. A client you registered yourself is never replaced silently. When a refresh is rejected with `invalid_grant`, it invalidates the refreshed tokens and retries once. An `invalid_grant` from an authorization-code exchange is returned to the caller without invalidating stored credentials or retrying, because a rejected code does not mean existing tokens are invalid.
 
 ### AuthOptions
 
