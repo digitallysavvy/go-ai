@@ -885,5 +885,9 @@ A `web_search_call` whose status is `failed` or `incomplete` now produces a tool
 
 - Text parts that share one stored message id are replayed as a single `item_reference`.
 - For reasoning models, a stored assistant message is only replaced by an `item_reference` when its reasoning part is still present. If the reasoning was removed (for example by pruning), the text is sent as content instead of failing with "was provided without its required 'reasoning' item".
-- With `store: false`, provider-executed web search results are replayed as `web_search_call` items so the search context survives across steps. Results without a valid action are still omitted.
+- With `store: false`, provider-executed web search results are replayed as `web_search_call` items so the search context survives across steps. Results without a valid action are omitted, and other provider-executed tool results that cannot be replayed statelessly are omitted with an `other` warning (`Results for OpenAI tool <name> are not sent to the API when store is false`).
 - Custom tool input deltas are streamed as the JSON encoding of the string input: an opening `"`, JSON-escaped deltas, then a closing `"`. Concatenating the deltas yields the same JSON string as the final tool call input.
+
+### File references in chat
+
+The Chat Completions model resolves file parts whose data is a provider reference (`types.FileDataTypeReference`) with the `openai` key (OpenAI and Azure) and sends `{"type":"file","file":{"file_id":"..."}}`. OpenAI-compatible providers built on this model (Baseten, DeepInfra, Cerebras) resolve their own name instead. A reference with no ID for the provider fails the call with `*errors.NoSuchProviderReferenceError` instead of sending a file part without an ID.
