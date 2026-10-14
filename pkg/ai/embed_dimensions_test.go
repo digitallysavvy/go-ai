@@ -12,7 +12,6 @@ import (
 
 // Ported from packages/ai/src/embed/embed-dimensions.test.ts (TS #22335).
 
-
 type dimensionsRecorder struct {
 	mu   sync.Mutex
 	dims []*int
