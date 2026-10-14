@@ -157,10 +157,31 @@ func TestMatchesSupportedURL(t *testing.T) {
 			want:          true,
 		},
 		{
-			name:          "URL matching is case-insensitive",
-			supportedUrls: map[string][]string{"text/plain": {`https://example\.com/path`}},
+			name:          "URL matching is case-insensitive when the pattern says so",
+			supportedUrls: map[string][]string{"text/plain": {`(?i)https://example\.com/path`}},
 			mediaType:     "text/plain",
 			url:           "https://EXAMPLE.com/PATH",
+			want:          true,
+		},
+		{
+			name:          "URL paths are case-sensitive by default",
+			supportedUrls: map[string][]string{"text/plain": {`https://example\.com/path`}},
+			mediaType:     "text/plain",
+			url:           "https://example.com/PATH",
+			want:          false,
+		},
+		{
+			name:          "preserves case-sensitive URL paths when matching provider patterns",
+			supportedUrls: map[string][]string{"image/*": {`^https://assets\.example/Images/Photo\.PNG$`}},
+			mediaType:     "image/png",
+			url:           "https://assets.example/Images/Photo.PNG",
+			want:          true,
+		},
+		{
+			name:          "preserves case-sensitive URL query values",
+			supportedUrls: map[string][]string{"image/*": {`^https://assets\.example/photo\.png\?token=AbC123$`}},
+			mediaType:     "image/png",
+			url:           "https://assets.example/photo.png?token=AbC123",
 			want:          true,
 		},
 		{
