@@ -171,3 +171,7 @@ func TestModelConstants_SpeechTranscriptionLyriaVeo(t *testing.T) {
 	assert.Equal(t, "veo-3.0-fast-generate-001", ModelVeo30FastGenerate001)
 	assert.Equal(t, "veo-2.0-generate-001", ModelVeo20Generate001)
 }
+
+func TestModelConstants_GeminiNanoBanana21(t *testing.T) {
+	assert.Equal(t, "gemini-nano-banana-2.1", ModelGeminiNanoBanana21)
+}

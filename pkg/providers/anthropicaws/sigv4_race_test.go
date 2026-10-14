@@ -65,3 +65,22 @@ func TestSigV4Transport_LastCredentialsRace(t *testing.T) {
 		t.Fatalf("lastCredentials.AccessKeyID = %q, want %q", got.AccessKeyID, "akid")
 	}
 }
+
+// TS #22265: headers with non-ASCII values are neither signed nor listed in
+// SignedHeaders, but are still sent.
+func TestSignAWSRequestSkipsNonASCIIHeaderValues(t *testing.T) {
+	req, err := http.NewRequest(http.MethodPost, "https://example.com/v1/messages", bytes.NewReader([]byte(`{}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Custom-Name", "café")
+	signAWSRequest(req, []byte(`{}`), "us-west-2", Credentials{AccessKeyID: "akid", SecretAccessKey: "secret"})
+	auth := req.Header.Get("Authorization")
+	if strings.Contains(auth, "x-custom-name") || !strings.Contains(auth, "content-type") {
+		t.Fatalf("authorization = %q", auth)
+	}
+	if req.Header.Get("X-Custom-Name") != "café" {
+		t.Fatalf("non-ASCII header must still be sent")
+	}
+}

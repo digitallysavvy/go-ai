@@ -4,6 +4,9 @@ package anthropic
 // Use these constants instead of raw strings to avoid typos and get IDE support.
 // See https://docs.anthropic.com/en/docs/about-claude/models/overview for the full list.
 const (
+	// Claude Haiku 5.5 — adaptive-thinking Haiku with all five effort levels
+	ClaudeHaiku5_5 = "claude-haiku-5-5"
+
 	// Claude Opus 5.5 — always-adaptive-thinking flagship model
 	ClaudeOpus5_5 = "claude-opus-5-5"
 

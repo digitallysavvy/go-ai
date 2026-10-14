@@ -161,12 +161,11 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 		if eager {
 			m["eager_input_streaming"] = true
 		}
-		// TS anthropic-prepare-tools.ts checks `tool.strict != null`
-		// (specified at all, true OR false), not `=== true`: strictSet must
-		// distinguish "unset" from "explicitly false", matching
-		// types.Tool.Strict's tri-state *bool.
+		// strictSet distinguishes "unset" from "explicitly false" (tri-state
+		// *bool). The unsupported-strict warning only fires for strict ===
+		// true (TS #22300); strict: false is silently omitted.
 		strictSet := t.Strict != nil
-		if !o.supportsStrictTools && strictSet {
+		if !o.supportsStrictTools && strictSet && *t.Strict {
 			out.warnings = append(out.warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "strict",
@@ -226,7 +225,7 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 			out.warnings = append(out.warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "toolChoice",
-				Details: "toolChoice 'required' is not supported by this model because it rejects forced tool use. " +
+				Details: "toolChoice 'required' is not supported with this model or thinking configuration. " +
 					"Using 'auto' instead. Instruct the model to use a tool in the prompt and verify that a tool call was made.",
 			})
 			out.toolChoice = withDisable(map[string]interface{}{"type": "auto"})
@@ -234,15 +233,15 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 			out.toolChoice = withDisable(map[string]interface{}{"type": "any"})
 		}
 	case types.ToolChoiceNone:
-		// Anthropic does not support 'none' tool choice, so the tools are removed.
-		out.tools = nil
-		out.toolChoice = nil
+		// Keep the tool definitions so server-tool history stays valid
+		// (TS #22440).
+		out.toolChoice = map[string]interface{}{"type": "none"}
 	case types.ToolChoiceTool:
 		if o.rejectsForcedToolUse {
 			out.warnings = append(out.warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "toolChoice",
-				Details: fmt.Sprintf("toolChoice 'tool' is not supported by this model because it rejects forced tool use. "+
+				Details: fmt.Sprintf("toolChoice 'tool' is not supported with this model or thinking configuration. "+
 					"Only the '%s' tool is sent with 'auto' tool choice. "+
 					"Instruct the model to use the tool in the prompt and verify that a tool call was made.", o.toolChoice.ToolName),
 			})

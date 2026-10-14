@@ -88,3 +88,28 @@ func TestAWSSignerAuthorizationHeaderIncludesSortedSignedHeaders(t *testing.T) {
 		t.Fatalf("signature suffix mismatch: %q", got)
 	}
 }
+
+// TS #22265: headers with non-ASCII values are neither signed nor listed in
+// SignedHeaders, but are still sent.
+func TestAWSSignerSkipsNonASCIIHeaderValues(t *testing.T) {
+	s := NewAWSSigner("AKID", "SECRET", "", "us-east-1")
+	req, err := http.NewRequest(http.MethodPost, "https://bedrock-runtime.us-east-1.amazonaws.com/model/test", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Custom-Name", "café")
+	if err := s.SignRequest(req, []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	auth := req.Header.Get("Authorization")
+	if strings.Contains(auth, "x-custom-name") {
+		t.Fatalf("non-ASCII header must not be signed: %q", auth)
+	}
+	if !strings.Contains(auth, "content-type") {
+		t.Fatalf("ASCII headers must still be signed: %q", auth)
+	}
+	if req.Header.Get("X-Custom-Name") != "café" {
+		t.Fatalf("non-ASCII header must still be sent, got %q", req.Header.Get("X-Custom-Name"))
+	}
+}

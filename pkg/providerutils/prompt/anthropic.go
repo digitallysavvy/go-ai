@@ -25,6 +25,7 @@ const (
 	AnthropicBetaMidConversationToolChanges = "mid-conversation-tool-changes-2026-07-01"
 	AnthropicBetaMidConversationClearAt     = "mid-conversation-system-clear-at-2026-08-21"
 	AnthropicBetaMidConversationOutputCfg   = "mid-conversation-output-config-2026-07-01"
+	AnthropicBetaServerSideFallback         = "server-side-fallback-2026-06-01"
 )
 
 // anthropicMaxCacheBreakpoints is the maximum number of cache breakpoints
@@ -1249,6 +1250,11 @@ func (c *anthropicConverter) convertAssistantBlock(block anthropicBlock, isLastB
 				// reading from ProviderOptions (caller-constructed) or falling
 				// back to ProviderMetadata (round-tripped from a previous
 				// response), mirroring convertReasoning's same fallback.
+				if p.Kind == "anthropic.message_start" {
+					// Message-start accounting is informational output
+					// (TS #21979); never replay it to Anthropic.
+					break
+				}
 				opts := p.ProviderOptions
 				if opts == nil {
 					opts = rawMetadataMap(p.ProviderMetadata)
@@ -1270,6 +1276,9 @@ func (c *anthropicConverter) convertAssistantBlock(block anthropicBlock, isLastB
 						c.warn("anthropic fallback metadata must include from.model and to.model")
 						break
 					}
+					// Replayed fallback blocks need the beta even when no
+					// fallback chain is configured (TS #22007).
+					c.addBeta(AnthropicBetaServerSideFallback)
 					content = append(content, map[string]interface{}{
 						"type": "fallback",
 						"from": map[string]interface{}{"model": fromModel},
@@ -1556,6 +1565,23 @@ func (c *anthropicConverter) convertProviderToolResult(content *[]map[string]int
 		}, true)
 
 	case "tool_search_tool_regex", "tool_search_tool_bm25":
+		// Failed tool searches round-trip as tool_search_tool_result_error
+		// (TS #22438).
+		isErrorValue := false
+		if v, ok := output.value.(map[string]interface{}); ok && output.kind == "json" {
+			isErrorValue = v["type"] == "tool_search_tool_result_error"
+		}
+		if output.kind == "error-json" || isErrorValue {
+			push(map[string]interface{}{
+				"type":        "tool_search_tool_result",
+				"tool_use_id": part.ToolCallID,
+				"content": map[string]interface{}{
+					"type":       "tool_search_tool_result_error",
+					"error_code": extractErrorCode(output.value),
+				},
+			}, true)
+			return nil
+		}
 		if output.kind != "json" {
 			unsupportedOutput()
 			return nil

@@ -90,6 +90,18 @@ type stream struct {
 	// still contribute usage and provider metadata.").
 	confirmedPromptBlockReason string
 
+	// Gemini 4 long decode. continueFn opens the follow-up stream for a
+	// CONTINUATION response (nil disables continuation). pendingContinuation
+	// is the token to resume with once the current stream ends.
+	// lastContinuationToken is surfaced on finish only when the response
+	// stopped early. continuedUsage banks the usage of completed requests.
+	continueFn              func(token string) (io.ReadCloser, error)
+	pendingContinuation     string
+	lastContinuationToken   string
+	continuedUsage          *UsageMetadata
+	initialPromptTokenCount *int
+	continuationErr         bool
+
 	// requestBody is the raw request body this stream was opened with,
 	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
 	// "stream request body field").
@@ -167,6 +179,9 @@ func (s *stream) Next() (*provider.StreamChunk, error) {
 			// event (e.g. in tests, or providers that just close the connection).
 			// TS always calls its stream's flush() exactly once regardless of how
 			// the stream ends, so finalize here too.
+			if err == io.EOF && s.continueStream() {
+				continue
+			}
 			if err == io.EOF && s.finalizeOnce() {
 				continue
 			}
@@ -174,6 +189,9 @@ func (s *stream) Next() (*provider.StreamChunk, error) {
 			return nil, err
 		}
 		if streaming.IsStreamDone(event) {
+			if s.continueStream() {
+				continue
+			}
 			if s.finalizeOnce() {
 				continue
 			}
@@ -199,6 +217,35 @@ func (s *stream) Next() (*provider.StreamChunk, error) {
 
 		s.processSSEEvent(chunkData)
 	}
+}
+
+// continueStream opens the follow-up stream of an automatically continued
+// long decode response once the current stream has ended. Returns true when a
+// new stream was opened (the caller keeps reading). If the continuation
+// request fails, an error chunk is buffered, continuation stops, and the
+// caller finalizes: the finish chunk then carries the last continuation token
+// so the caller can resume. Mirrors TS continueGoogleStream.
+func (s *stream) continueStream() bool {
+	if s.pendingContinuation == "" || s.continueFn == nil || s.continuationErr {
+		return false
+	}
+	token := s.pendingContinuation
+	s.pendingContinuation = ""
+	next, err := s.continueFn(token)
+	if err != nil {
+		s.continuationErr = true
+		message := fmt.Sprintf("failed to continue response: %v", err)
+		s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
+			Type: provider.ChunkTypeError,
+			Text: message,
+			Err:  providererrors.NewStreamProviderError(message, s.cfg.ProviderName, "", nil, nil, nil, nil),
+		})
+		return false
+	}
+	_ = s.reader.Close()
+	s.reader = next
+	s.parser = streaming.NewSSEParser(next)
+	return true
 }
 
 // finalizeOnce closes any open blocks/tool inputs and appends the single
@@ -271,6 +318,12 @@ func (s *stream) processSSEEvent(chunkData Response) {
 	if candidate.FinishMessage != "" {
 		s.lastFinishMessage = candidate.FinishMessage
 	}
+	if candidate.ContinuationToken != "" {
+		s.lastContinuationToken = candidate.ContinuationToken
+		if candidate.FinishReason == "CONTINUATION" {
+			s.pendingContinuation = candidate.ContinuationToken
+		}
+	}
 
 	// Process parts: non-function-call parts first (text/thought/code/inline),
 	// then function call parts. Matches TS: main loop + getToolCallsFromParts.
@@ -295,7 +348,7 @@ func (s *stream) processSSEEvent(chunkData Response) {
 			} else {
 				fr = types.FinishReasonStop
 			}
-		case "MAX_TOKENS":
+		case "MAX_TOKENS", "CONTINUATION":
 			fr = types.FinishReasonLength
 		case "IMAGE_SAFETY", "RECITATION", "SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII":
 			fr = types.FinishReasonContentFilter
@@ -308,6 +361,17 @@ func (s *stream) processSSEEvent(chunkData Response) {
 		s.rawFinishReason = candidate.FinishReason
 		s.hasFinished = true
 	}
+
+	if candidate.FinishReason == "CONTINUATION" {
+		// Usage metadata is per request. The next request reports its own
+		// usage, so bank the usage of this one.
+		if s.continuedUsage == nil && s.lastUsageMetadata != nil {
+			v := s.lastUsageMetadata.PromptTokenCount
+			s.initialPromptTokenCount = &v
+		}
+		s.continuedUsage = addUsageMetadata(s.continuedUsage, s.lastUsageMetadata)
+		s.lastUsageMetadata = nil
+	}
 }
 
 // buildFinishChunk builds the single 'finish' chunk emitted at end-of-stream
@@ -317,6 +381,8 @@ func (s *stream) buildFinishChunk() *provider.StreamChunk {
 	if !s.hasFinished {
 		fr = types.FinishReasonOther
 	}
+	s.lastUsageMetadata = addUsageMetadata(s.continuedUsage, s.lastUsageMetadata)
+	s.continuedUsage = nil
 	usage := convertUsage(s.lastUsageMetadata)
 	return &provider.StreamChunk{
 		Type:             provider.ChunkTypeFinish,
@@ -438,6 +504,17 @@ func (s *stream) buildFinishMeta() json.RawMessage {
 		}
 	} else {
 		meta["serviceTier"] = json.RawMessage("null")
+	}
+	// Only surface the token when the response stopped early (budget used up,
+	// or continuing failed), not for the checkpoint tokens of a stream that
+	// finished normally.
+	if s.lastContinuationToken != "" && (s.rawFinishReason == "MAX_TOKENS" || s.rawFinishReason == "CONTINUATION") {
+		ct, _ := json.Marshal(s.lastContinuationToken)
+		meta["continuationToken"] = ct
+	}
+	if s.initialPromptTokenCount != nil {
+		ip, _ := json.Marshal(*s.initialPromptTokenCount)
+		meta["initialPromptTokenCount"] = ip
 	}
 	provMeta, _ := json.Marshal(s.cfg.wrapProviderMetadata(meta))
 	return provMeta

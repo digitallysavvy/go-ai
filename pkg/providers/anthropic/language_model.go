@@ -89,7 +89,7 @@ func (m *LanguageModel) SupportsImageInput() bool {
 		m.modelID == "claude-3-5-sonnet-20241022"
 }
 
-func (m *LanguageModel) requestHeaders(opts *provider.GenerateOptions, betas []string, stream bool) map[string]string {
+func (m *LanguageModel) requestHeaders(opts *provider.GenerateOptions, betas []string, stream bool) (map[string]string, error) {
 	headers := map[string]string{}
 	if opts != nil {
 		for k, v := range opts.Headers {
@@ -105,7 +105,14 @@ func (m *LanguageModel) requestHeaders(opts *provider.GenerateOptions, betas []s
 	if len(betas) > 0 {
 		headers["anthropic-beta"] = strings.Join(betas, ",")
 	}
-	return headers
+	if m.provider.config.TransformRequestHeaders != nil {
+		var providerOptions map[string]interface{}
+		if opts != nil {
+			providerOptions = opts.ProviderOptions
+		}
+		return m.provider.config.TransformRequestHeaders(headers, providerOptions)
+	}
+	return headers, nil
 }
 
 // DoGenerate performs non-streaming text generation
@@ -116,11 +123,15 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	}
 	body := m.transformRequestBody(req.body, req.betas, false)
 
+	headers, err := m.requestHeaders(opts, req.betas, false)
+	if err != nil {
+		return nil, err
+	}
 	internalReq := internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    m.messagesPath(false),
 		Body:    body,
-		Headers: m.requestHeaders(opts, req.betas, false),
+		Headers: headers,
 	}
 	var response anthropicResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalReq, &response)
@@ -150,11 +161,15 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 	body := m.transformRequestBody(req.body, req.betas, true)
 
+	headers, err := m.requestHeaders(opts, req.betas, true)
+	if err != nil {
+		return nil, err
+	}
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    m.messagesPath(true),
 		Body:    body,
-		Headers: m.requestHeaders(opts, req.betas, true),
+		Headers: headers,
 	})
 	if err != nil {
 		return nil, m.handleError(err)
@@ -1858,6 +1873,10 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				}
 				s.isMessageOpen = true
 				s.activeMessageID = msg.Message.ID
+				// Expose the initial message accounting as an
+				// anthropic.message_start custom chunk (TS #21979). The raw
+				// usage object is passed through unchanged.
+				s.pending = append(s.pending, messageStartChunk(event.Data))
 				if v := rawJSONValue(msg.Message.InputTransformations); v != nil {
 					s.inputTransformations = v
 				}
@@ -2654,6 +2673,38 @@ func convertWebFetchToolResult(raw json.RawMessage) interface{} {
 				"mediaType": wire.Content.Source.MediaType,
 				"data":      wire.Content.Source.Data,
 			},
+		},
+	}
+}
+
+// messageStartChunk builds the anthropic.message_start custom chunk from a
+// raw message_start event payload: {id, model, usage} with usage passed
+// through verbatim. Missing id/model are null, matching TS.
+func messageStartChunk(data string) *provider.StreamChunk {
+	var raw struct {
+		Message struct {
+			ID    *string                `json:"id"`
+			Model *string                `json:"model"`
+			Usage map[string]interface{} `json:"usage"`
+		} `json:"message"`
+	}
+	_ = json.Unmarshal([]byte(data), &raw)
+	var usage interface{}
+	if raw.Message.Usage != nil {
+		usage = raw.Message.Usage
+	}
+	metadata, _ := json.Marshal(map[string]interface{}{
+		"anthropic": map[string]interface{}{
+			"id":    raw.Message.ID,
+			"model": raw.Message.Model,
+			"usage": usage,
+		},
+	})
+	return &provider.StreamChunk{
+		Type: provider.ChunkTypeCustom,
+		CustomContent: &types.CustomContent{
+			Kind:             "anthropic.message_start",
+			ProviderMetadata: metadata,
 		},
 	}
 }

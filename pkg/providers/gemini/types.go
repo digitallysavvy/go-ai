@@ -13,8 +13,12 @@ type Candidate struct {
 		Parts []Part `json:"parts"`
 		Role  string `json:"role"`
 	} `json:"content"`
-	FinishReason       string          `json:"finishReason"`
-	FinishMessage      string          `json:"finishMessage,omitempty"`
+	FinishReason  string `json:"finishReason"`
+	FinishMessage string `json:"finishMessage,omitempty"`
+	// ContinuationToken is set on long-decode responses (Gemini 4): with
+	// finishReason CONTINUATION it resumes the response, with MAX_TOKENS it
+	// can be passed back to continue after raising maxOutputTokens.
+	ContinuationToken  string          `json:"continuationToken,omitempty"`
 	Index              int             `json:"index"`
 	GroundingMetadata  json.RawMessage `json:"groundingMetadata,omitempty"`
 	UrlContextMetadata json.RawMessage `json:"urlContextMetadata,omitempty"`
@@ -279,4 +283,57 @@ func convertUsage(usage *UsageMetadata) types.Usage {
 	}
 
 	return result
+}
+
+// addUsageMetadata sums the usage metadata of two requests, e.g. the hops of
+// a long decode response that was continued automatically. Token counts and
+// per-modality details are added; non-numeric fields are taken from b when
+// set. Mirrors TS addGoogleUsageMetadata.
+func addUsageMetadata(a, b *UsageMetadata) *UsageMetadata {
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
+	out := *b
+	out.PromptTokenCount = a.PromptTokenCount + b.PromptTokenCount
+	out.CandidatesTokenCount = a.CandidatesTokenCount + b.CandidatesTokenCount
+	out.ToolUsePromptTokenCount = a.ToolUsePromptTokenCount + b.ToolUsePromptTokenCount
+	out.TotalTokenCount = a.TotalTokenCount + b.TotalTokenCount
+	out.CachedContentTokenCount = a.CachedContentTokenCount + b.CachedContentTokenCount
+	out.ThoughtsTokenCount = a.ThoughtsTokenCount + b.ThoughtsTokenCount
+	if out.TrafficType == "" {
+		out.TrafficType = a.TrafficType
+	}
+	if out.ServiceTier == "" {
+		out.ServiceTier = a.ServiceTier
+	}
+	out.PromptTokensDetails = addTokenDetails(a.PromptTokensDetails, b.PromptTokensDetails)
+	out.CacheTokensDetails = addTokenDetails(a.CacheTokensDetails, b.CacheTokensDetails)
+	out.CandidatesTokensDetails = addTokenDetails(a.CandidatesTokensDetails, b.CandidatesTokensDetails)
+	out.ToolUsePromptTokensDetails = addTokenDetails(a.ToolUsePromptTokensDetails, b.ToolUsePromptTokensDetails)
+	return &out
+}
+
+func addTokenDetails(a, b []tokenDetail) []tokenDetail {
+	if len(a) == 0 {
+		return b
+	}
+	if len(b) == 0 {
+		return a
+	}
+	var order []string
+	counts := map[string]int{}
+	for _, d := range append(append([]tokenDetail{}, a...), b...) {
+		if _, ok := counts[d.Modality]; !ok {
+			order = append(order, d.Modality)
+		}
+		counts[d.Modality] += d.TokenCount
+	}
+	out := make([]tokenDetail, 0, len(order))
+	for _, m := range order {
+		out = append(out, tokenDetail{Modality: m, TokenCount: counts[m]})
+	}
+	return out
 }

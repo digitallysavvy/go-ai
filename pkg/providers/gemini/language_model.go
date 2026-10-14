@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -68,17 +69,81 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, err
 	}
 
-	var response Response
-	resp, err := m.cfg.Client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    m.cfg.GeneratePath(m.modelID),
-		Body:    reqBody,
-		Headers: headers,
-	}, &response)
+	generateContent := func(body map[string]interface{}) (Response, *internalhttp.Response, error) {
+		var response Response
+		resp, err := m.cfg.Client.DoJSONResponse(ctx, internalhttp.Request{
+			Method:  http.MethodPost,
+			Path:    m.cfg.GeneratePath(m.modelID),
+			Body:    body,
+			Headers: headers,
+		}, &response)
+		return response, resp, err
+	}
+
+	response, resp, err := generateContent(reqBody)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	result := m.convertResponse(response, newToolNameMapping(opts.Tools))
+
+	// Gemini 4 long decode: a request that reaches the per-request cap while
+	// maxOutputTokens budget remains finishes with CONTINUATION. Resend the
+	// same request with the continuation token (the server tracks the
+	// cumulative tokens) and combine the content of all requests. Usage is
+	// summed across requests (matching billing); the first request's prompt
+	// token count is kept separately for context window checks.
+	tnm := newToolNameMapping(opts.Tools)
+	var (
+		prior         []*types.GenerateResult
+		usageMetadata *UsageMetadata
+		firstPrompt   *int
+	)
+	if response.UsageMetadata != nil {
+		v := response.UsageMetadata.PromptTokenCount
+		firstPrompt = &v
+	}
+	for {
+		var token string
+		if len(response.Candidates) > 0 && response.Candidates[0].FinishReason == "CONTINUATION" {
+			token = response.Candidates[0].ContinuationToken
+		}
+		usageMetadata = addUsageMetadata(usageMetadata, response.UsageMetadata)
+		if token == "" {
+			break
+		}
+		// TS has no bound on the loop; honor cancellation between hops so a
+		// server that keeps answering CONTINUATION cannot outlive the caller.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		prior = append(prior, m.convertResponse(response, tnm))
+
+		next := make(map[string]interface{}, len(reqBody)+1)
+		for k, v := range reqBody {
+			next[k] = v
+		}
+		next["continuationToken"] = token
+		response, resp, err = generateContent(next)
+		if err != nil {
+			return nil, m.handleError(err)
+		}
+	}
+
+	last := response
+	last.UsageMetadata = usageMetadata
+	var result *types.GenerateResult
+	if len(prior) == 0 {
+		result = m.convertResponse(last, tnm)
+	} else {
+		result = m.convertResponseWithInitialPromptTokens(last, tnm, firstPrompt)
+		for i := len(prior) - 1; i >= 0; i-- {
+			p := prior[i]
+			result.Content = append(append([]types.ContentPart{}, p.Content...), result.Content...)
+			result.ToolCalls = append(append([]types.ToolCall{}, p.ToolCalls...), result.ToolCalls...)
+			if p.Text != "" {
+				result.Text = p.Text + result.Text
+			}
+		}
+	}
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	return result, nil
@@ -104,6 +169,25 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 	stream := newStream(httpResp.Body, m.cfg, newToolNameMapping(opts.Tools), httpResp.Header, m.ModelID())
 	stream.requestBody = reqBody
+	stream.continueFn = func(token string) (io.ReadCloser, error) {
+		next := make(map[string]interface{}, len(reqBody)+1)
+		for k, v := range reqBody {
+			next[k] = v
+		}
+		next["continuationToken"] = token
+		resp, err := m.cfg.Client.DoStream(ctx, internalhttp.Request{
+			Method: http.MethodPost,
+			Path:   m.cfg.StreamPath(m.modelID),
+			Body:   next,
+			Headers: internalhttp.MergeHeaders(headers, map[string]string{
+				"Accept": "text/event-stream",
+			}),
+		})
+		if err != nil {
+			return nil, m.handleError(err)
+		}
+		return resp.Body, nil
+	}
 	return streaming.NewWarningsStream(stream, warnings), nil
 }
 
@@ -180,6 +264,13 @@ func (m *LanguageModel) handleError(err error) error {
 
 // convertResponse converts a Gemini API Response to a GenerateResult.
 func (m *LanguageModel) convertResponse(response Response, tnm toolNameMapping) *types.GenerateResult {
+	return m.convertResponseWithInitialPromptTokens(response, tnm, nil)
+}
+
+// convertResponseWithInitialPromptTokens is convertResponse for a response
+// assembled from several continued requests: initialPromptTokenCount (the
+// first request's prompt token count) is exposed in provider metadata.
+func (m *LanguageModel) convertResponseWithInitialPromptTokens(response Response, tnm toolNameMapping, initialPromptTokenCount *int) *types.GenerateResult {
 	result := &types.GenerateResult{
 		Usage:       convertUsage(response.UsageMetadata),
 		RawResponse: response,
@@ -368,7 +459,10 @@ func (m *LanguageModel) convertResponse(response Response, tnm toolNameMapping) 
 			} else {
 				result.FinishReason = types.FinishReasonStop
 			}
-		case "MAX_TOKENS":
+		case "MAX_TOKENS", "CONTINUATION":
+			// CONTINUATION (Gemini 4 long decode): the per-request cap was
+			// reached while budget remains. Continued automatically; only
+			// surfaced if continuing fails.
 			result.FinishReason = types.FinishReasonLength
 		case "IMAGE_SAFETY", "RECITATION", "SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII":
 			result.FinishReason = types.FinishReasonContentFilter
@@ -420,6 +514,14 @@ func (m *LanguageModel) convertResponse(response Response, tnm toolNameMapping) 
 		meta["serviceTier"] = st
 	} else {
 		meta["serviceTier"] = json.RawMessage("null")
+	}
+	if candidate.ContinuationToken != "" {
+		ct, _ := json.Marshal(candidate.ContinuationToken)
+		meta["continuationToken"] = ct
+	}
+	if initialPromptTokenCount != nil {
+		ip, _ := json.Marshal(*initialPromptTokenCount)
+		meta["initialPromptTokenCount"] = ip
 	}
 	result.ProviderMetadata = m.cfg.wrapProviderMetadata(meta)
 

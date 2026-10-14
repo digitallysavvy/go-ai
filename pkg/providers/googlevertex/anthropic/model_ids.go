@@ -8,6 +8,7 @@ type GoogleVertexAnthropicModelID string
 const (
 	ClaudeSonnet5              GoogleVertexAnthropicModelID = "claude-sonnet-5"
 	ClaudeSonnet5_5            GoogleVertexAnthropicModelID = "claude-sonnet-5-5"
+	ClaudeHaiku5_5             GoogleVertexAnthropicModelID = "claude-haiku-5-5"
 	ClaudeFable5               GoogleVertexAnthropicModelID = "claude-fable-5"
 	ClaudeFable5_1             GoogleVertexAnthropicModelID = "claude-fable-5-1"
 	ClaudeOpus5                GoogleVertexAnthropicModelID = "claude-opus-5"

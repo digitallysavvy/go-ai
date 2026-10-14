@@ -40,6 +40,8 @@ func TestGetModelCapabilities(t *testing.T) {
 		{"gemini-robotics-er-1.5-preview", false, false, false},
 		{"gemini-2.0-flash", true, false, false},
 		{"gemini-2.5-flash", true, true, false},
+		{"eu.gemini-2.5-flash", true, true, false},
+		{"au.gemini-3.5-flash", true, true, true},
 		{"gemini-3.1-pro-preview", true, true, true},
 		{"gemini-99-pro-preview", true, true, true},
 		{"gemini-ultra-latest", true, true, true},

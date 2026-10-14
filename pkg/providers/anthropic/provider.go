@@ -75,6 +75,13 @@ type Config struct {
 	// It runs before TransformRequestBody. Bedrock-Anthropic uses it.
 	TransformRequestBodyWithBetas func(body map[string]interface{}, betas []string, stream bool) map[string]interface{} `json:"-"`
 
+	// TransformRequestHeaders rewrites the per-request headers (caller headers
+	// and anthropic-beta) with access to the call's provider options (TS
+	// transformRequestHeaders). Vertex Anthropic uses it to send
+	// providerOptions.vertex.labels as the x-vertex-ai-labels header. A
+	// returned error aborts the request before it is sent.
+	TransformRequestHeaders func(headers map[string]string, providerOptions map[string]interface{}) (map[string]string, error) `json:"-"`
+
 	// TransformStreamBody wraps the streaming response body before SSE
 	// parsing (for example to convert an AWS event stream into SSE).
 	TransformStreamBody func(body io.ReadCloser, header stdhttp.Header) io.ReadCloser `json:"-"`

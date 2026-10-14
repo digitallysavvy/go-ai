@@ -416,6 +416,7 @@ func TestStream_CompleteSignedOnDemandCompaction(t *testing.T) {
 		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 
 	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)), false)
+	skipMessageStartChunk(t, stream)
 
 	// text-start carries providerMetadata.anthropic = {type: 'compaction',
 	// signature} (TS content_block_start "compaction" case).

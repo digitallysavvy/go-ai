@@ -653,6 +653,50 @@ func TestConvertToAnthropicPrompt_Golden(t *testing.T) {
 			]}]`,
 		},
 		{
+			name: "tool_search_tool_regex error-json error result round-trips (TS #22438)",
+			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.ToolCallContent{ToolCallID: "srvtoolu_x", ToolName: "tool_search_tool_regex", ProviderExecuted: true, Arguments: map[string]interface{}{"pattern": "["}},
+				types.ToolResultContent{ToolCallID: "srvtoolu_x", ToolName: "tool_search_tool_regex", Output: &types.ToolResultOutput{Type: types.ToolResultOutputErrorJSON, Value: `{"type":"tool_search_tool_result_error","errorCode":"invalid_tool_input"}`}},
+			}}},
+			wantMessages: `[{"role":"assistant","content":[
+				{"type":"server_tool_use","id":"srvtoolu_x","name":"tool_search_tool_regex","input":{"pattern":"["}},
+				{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_x","content":{"type":"tool_search_tool_result_error","error_code":"invalid_tool_input"}}
+			]}]`,
+		},
+		{
+			name: "tool_search_tool_regex json error result round-trips (TS #22438)",
+			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.ToolCallContent{ToolCallID: "srvtoolu_x", ToolName: "tool_search_tool_regex", ProviderExecuted: true, Arguments: map[string]interface{}{"pattern": "["}},
+				types.ToolResultContent{ToolCallID: "srvtoolu_x", ToolName: "tool_search_tool_regex", Output: &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: map[string]interface{}{"type": "tool_search_tool_result_error", "errorCode": "invalid_tool_input"}}},
+			}}},
+			wantMessages: `[{"role":"assistant","content":[
+				{"type":"server_tool_use","id":"srvtoolu_x","name":"tool_search_tool_regex","input":{"pattern":"["}},
+				{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_x","content":{"type":"tool_search_tool_result_error","error_code":"invalid_tool_input"}}
+			]}]`,
+		},
+		{
+			name: "tool_search_tool_bm25 error-json error result round-trips (TS #22438)",
+			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.ToolCallContent{ToolCallID: "srvtoolu_x", ToolName: "tool_search_tool_bm25", ProviderExecuted: true, Arguments: map[string]interface{}{"query": "weather"}},
+				types.ToolResultContent{ToolCallID: "srvtoolu_x", ToolName: "tool_search_tool_bm25", Output: &types.ToolResultOutput{Type: types.ToolResultOutputErrorJSON, Value: `{"type":"tool_search_tool_result_error","errorCode":"invalid_tool_input"}`}},
+			}}},
+			wantMessages: `[{"role":"assistant","content":[
+				{"type":"server_tool_use","id":"srvtoolu_x","name":"tool_search_tool_bm25","input":{"query":"weather"}},
+				{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_x","content":{"type":"tool_search_tool_result_error","error_code":"invalid_tool_input"}}
+			]}]`,
+		},
+		{
+			name: "tool_search_tool_bm25 json error result round-trips (TS #22438)",
+			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.ToolCallContent{ToolCallID: "srvtoolu_x", ToolName: "tool_search_tool_bm25", ProviderExecuted: true, Arguments: map[string]interface{}{"query": "weather"}},
+				types.ToolResultContent{ToolCallID: "srvtoolu_x", ToolName: "tool_search_tool_bm25", Output: &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: map[string]interface{}{"type": "tool_search_tool_result_error", "errorCode": "invalid_tool_input"}}},
+			}}},
+			wantMessages: `[{"role":"assistant","content":[
+				{"type":"server_tool_use","id":"srvtoolu_x","name":"tool_search_tool_bm25","input":{"query":"weather"}},
+				{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_x","content":{"type":"tool_search_tool_result_error","error_code":"invalid_tool_input"}}
+			]}]`,
+		},
+		{
 			name: "web_fetch tool call and result",
 			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
 				types.ToolCallContent{ToolCallID: "f", ToolName: "anthropic.web_fetch_20250910", ProviderExecuted: true, Arguments: map[string]interface{}{"url": "https://example.com"}},
@@ -808,6 +852,16 @@ func TestConvertToAnthropicPrompt_Golden(t *testing.T) {
 				{"type":"fallback","from":{"model":"claude-opus-5-5"},"to":{"model":"claude-opus-4-8"}},
 				{"type":"thinking","thinking":"Fallback model thinking","signature":"fallback-signature"}
 			]}]`,
+			wantBetas: []string{AnthropicBetaServerSideFallback},
+		},
+		// TS #21979: message-start accounting parts are never replayed.
+		{
+			name: "ignore message-start accounting parts when replaying assistant content",
+			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.CustomContent{Kind: "anthropic.message_start", ProviderOptions: anthropicOpt("id", "msg_usage", "model", "claude-haiku-4-5", "usage", map[string]interface{}{"input_tokens": 13, "output_tokens": 1})},
+				types.TextContent{Text: "Hi!"},
+			}}},
+			wantMessages: `[{"role":"assistant","content":[{"type":"text","text":"Hi!"}]}]`,
 		},
 		{
 			name: "warn and omit fallback boundaries with invalid metadata",

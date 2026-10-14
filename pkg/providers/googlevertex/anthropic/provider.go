@@ -105,6 +105,7 @@ func (p *GoogleVertexAnthropicProvider) LanguageModelWithOptions(modelID string,
 			}
 			return fmt.Sprintf("/%s:%s", id, action)
 		},
+		TransformRequestHeaders: transformRequestHeaders,
 		TransformRequestBody: func(body map[string]interface{}, stream bool) map[string]interface{} {
 			out := make(map[string]interface{}, len(body)+1)
 			for k, v := range body {
