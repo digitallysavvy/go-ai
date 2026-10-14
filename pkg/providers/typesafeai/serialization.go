@@ -7,12 +7,12 @@ import (
 )
 
 func init() {
-	provider.RegisterEvaluationModelDeserializer("typesafe.evaluation", deserializeModel)
+	provider.RegisterDecisionModelDeserializer("typesafe.decision", deserializeModel)
 }
 
 // Serialize implements provider.SerializableModel for workflow boundaries.
-// Mirrors TS typesafe-ai-evaluation-model.ts [WORKFLOW_SERIALIZE].
-func (m *EvaluationModel) Serialize() provider.SerializedModel {
+// Mirrors TS typesafe-ai-decision-model.ts [WORKFLOW_SERIALIZE].
+func (m *DecisionModel) Serialize() provider.SerializedModel {
 	return provider.SerializedModel{
 		Provider: m.Provider(),
 		ModelID:  m.ModelID(),
@@ -20,7 +20,7 @@ func (m *EvaluationModel) Serialize() provider.SerializedModel {
 	}
 }
 
-func deserializeModel(serialized provider.SerializedModel) (provider.EvaluationModel, error) {
+func deserializeModel(serialized provider.SerializedModel) (provider.DecisionModel, error) {
 	var cfg Config
 	data, err := json.Marshal(serialized.Config)
 	if err != nil {
@@ -29,5 +29,5 @@ func deserializeModel(serialized provider.SerializedModel) (provider.EvaluationM
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, err
 	}
-	return New(cfg).EvaluationModel(serialized.ModelID)
+	return New(cfg).DecisionModel(serialized.ModelID)
 }

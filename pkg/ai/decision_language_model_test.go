@@ -11,8 +11,8 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
-func mixedEvaluationQuestions() map[string]provider.EvaluationQuestion {
-	return map[string]provider.EvaluationQuestion{
+func mixedDecisionQuestions() map[string]provider.DecisionQuestion {
+	return map[string]provider.DecisionQuestion{
 		"topic": {
 			Type:         "choice",
 			Instructions: "Team?",
@@ -30,10 +30,10 @@ func mixedEvaluationQuestions() map[string]provider.EvaluationQuestion {
 	}
 }
 
-// TS: evaluation-language-model.test.ts — verifies reasoning defaults to
+// TS: decision-language-model.test.ts — verifies reasoning defaults to
 // "none" and the JSON schema / prompt are built as expected, then decodes a
 // well-formed structured response.
-func TestEvaluationLanguageModel_DoEvaluate_MixedQuestions(t *testing.T) {
+func TestDecisionLanguageModel_DoDecide_MixedQuestions(t *testing.T) {
 	mock := &testutil.MockLanguageModel{
 		ProviderName: "test",
 		ModelName:    "test-model",
@@ -80,23 +80,23 @@ func TestEvaluationLanguageModel_DoEvaluate_MixedQuestions(t *testing.T) {
 		},
 	}
 
-	model, err := NewEvaluationLanguageModel(EvaluationLanguageModelOptions{Model: mock})
+	model, err := NewDecisionLanguageModel(DecisionLanguageModelOptions{Model: mock})
 	if err != nil {
-		t.Fatalf("NewEvaluationLanguageModel() error = %v", err)
+		t.Fatalf("NewDecisionLanguageModel() error = %v", err)
 	}
-	if model.Provider() != "test.evaluation" {
-		t.Fatalf("Provider() = %q, want test.evaluation", model.Provider())
+	if model.Provider() != "test.decision" {
+		t.Fatalf("Provider() = %q, want test.decision", model.Provider())
 	}
 	if model.ModelID() != "test-model" {
 		t.Fatalf("ModelID() = %q, want test-model", model.ModelID())
 	}
 
-	result, err := model.DoEvaluate(context.Background(), provider.EvaluationCallOptions{
+	result, err := model.DoDecide(context.Background(), provider.DecisionCallOptions{
 		State:     "some state",
-		Questions: mixedEvaluationQuestions(),
+		Questions: mixedDecisionQuestions(),
 	})
 	if err != nil {
-		t.Fatalf("DoEvaluate() error = %v", err)
+		t.Fatalf("DoDecide() error = %v", err)
 	}
 	if len(result.Answers) != 3 {
 		t.Fatalf("Answers = %+v, want 3 entries", result.Answers)
@@ -115,49 +115,49 @@ func TestEvaluationLanguageModel_DoEvaluate_MixedQuestions(t *testing.T) {
 	}
 }
 
-func TestEvaluationLanguageModel_ProviderOverride(t *testing.T) {
+func TestDecisionLanguageModel_ProviderOverride(t *testing.T) {
 	mock := &testutil.MockLanguageModel{ProviderName: "test", ModelName: "m"}
-	model, err := NewEvaluationLanguageModel(EvaluationLanguageModelOptions{Model: mock, Provider: "custom.eval"})
+	model, err := NewDecisionLanguageModel(DecisionLanguageModelOptions{Model: mock, Provider: "custom.eval"})
 	if err != nil {
-		t.Fatalf("NewEvaluationLanguageModel() error = %v", err)
+		t.Fatalf("NewDecisionLanguageModel() error = %v", err)
 	}
 	if model.Provider() != "custom.eval" {
 		t.Fatalf("Provider() = %q, want custom.eval", model.Provider())
 	}
 }
 
-func TestEvaluationLanguageModel_RejectsNilModel(t *testing.T) {
-	_, err := NewEvaluationLanguageModel(EvaluationLanguageModelOptions{})
+func TestDecisionLanguageModel_RejectsNilModel(t *testing.T) {
+	_, err := NewDecisionLanguageModel(DecisionLanguageModelOptions{})
 	if !isInvalidArgumentError(err) {
 		t.Fatalf("err = %v, want InvalidArgumentError", err)
 	}
 }
 
-func TestEvaluationLanguageModel_RejectsEmptyQuestions(t *testing.T) {
+func TestDecisionLanguageModel_RejectsEmptyQuestions(t *testing.T) {
 	mock := &testutil.MockLanguageModel{}
-	model, err := NewEvaluationLanguageModel(EvaluationLanguageModelOptions{Model: mock})
+	model, err := NewDecisionLanguageModel(DecisionLanguageModelOptions{Model: mock})
 	if err != nil {
-		t.Fatalf("NewEvaluationLanguageModel() error = %v", err)
+		t.Fatalf("NewDecisionLanguageModel() error = %v", err)
 	}
-	_, err = model.DoEvaluate(context.Background(), provider.EvaluationCallOptions{State: "s", Questions: map[string]provider.EvaluationQuestion{}})
+	_, err = model.DoDecide(context.Background(), provider.DecisionCallOptions{State: "s", Questions: map[string]provider.DecisionQuestion{}})
 	if !isInvalidArgumentError(err) {
 		t.Fatalf("err = %v, want InvalidArgumentError", err)
 	}
 }
 
-func TestEvaluationLanguageModel_RejectsNonStopFinish(t *testing.T) {
+func TestDecisionLanguageModel_RejectsNonStopFinish(t *testing.T) {
 	mock := &testutil.MockLanguageModel{
 		DoGenerateFunc: func(_ context.Context, _ *provider.GenerateOptions) (*types.GenerateResult, error) {
 			return &types.GenerateResult{Text: "{}", FinishReason: types.FinishReasonLength}, nil
 		},
 	}
-	model, err := NewEvaluationLanguageModel(EvaluationLanguageModelOptions{Model: mock})
+	model, err := NewDecisionLanguageModel(DecisionLanguageModelOptions{Model: mock})
 	if err != nil {
-		t.Fatalf("NewEvaluationLanguageModel() error = %v", err)
+		t.Fatalf("NewDecisionLanguageModel() error = %v", err)
 	}
-	_, err = model.DoEvaluate(context.Background(), provider.EvaluationCallOptions{
+	_, err = model.DoDecide(context.Background(), provider.DecisionCallOptions{
 		State:     "s",
-		Questions: map[string]provider.EvaluationQuestion{"q": {Type: "boolean", Instructions: "i"}},
+		Questions: map[string]provider.DecisionQuestion{"q": {Type: "boolean", Instructions: "i"}},
 	})
 	var target *providererrors.InvalidResponseDataError
 	if err == nil {
@@ -171,38 +171,38 @@ func TestEvaluationLanguageModel_RejectsNonStopFinish(t *testing.T) {
 	}
 }
 
-func TestEvaluationLanguageModel_RejectsInvalidJSON(t *testing.T) {
+func TestDecisionLanguageModel_RejectsInvalidJSON(t *testing.T) {
 	mock := &testutil.MockLanguageModel{
 		DoGenerateFunc: func(_ context.Context, _ *provider.GenerateOptions) (*types.GenerateResult, error) {
 			return &types.GenerateResult{Text: "not json", FinishReason: types.FinishReasonStop}, nil
 		},
 	}
-	model, err := NewEvaluationLanguageModel(EvaluationLanguageModelOptions{Model: mock})
+	model, err := NewDecisionLanguageModel(DecisionLanguageModelOptions{Model: mock})
 	if err != nil {
-		t.Fatalf("NewEvaluationLanguageModel() error = %v", err)
+		t.Fatalf("NewDecisionLanguageModel() error = %v", err)
 	}
-	_, err = model.DoEvaluate(context.Background(), provider.EvaluationCallOptions{
+	_, err = model.DoDecide(context.Background(), provider.DecisionCallOptions{
 		State:     "s",
-		Questions: map[string]provider.EvaluationQuestion{"q": {Type: "boolean", Instructions: "i"}},
+		Questions: map[string]provider.DecisionQuestion{"q": {Type: "boolean", Instructions: "i"}},
 	})
 	if err == nil {
 		t.Fatalf("expected error for invalid JSON response")
 	}
 }
 
-func TestEvaluationLanguageModel_RejectsUnknownChoice(t *testing.T) {
+func TestDecisionLanguageModel_RejectsUnknownChoice(t *testing.T) {
 	mock := &testutil.MockLanguageModel{
 		DoGenerateFunc: func(_ context.Context, _ *provider.GenerateOptions) (*types.GenerateResult, error) {
 			return &types.GenerateResult{Text: `{"q0":"not-a-real-option"}`, FinishReason: types.FinishReasonStop}, nil
 		},
 	}
-	model, err := NewEvaluationLanguageModel(EvaluationLanguageModelOptions{Model: mock})
+	model, err := NewDecisionLanguageModel(DecisionLanguageModelOptions{Model: mock})
 	if err != nil {
-		t.Fatalf("NewEvaluationLanguageModel() error = %v", err)
+		t.Fatalf("NewDecisionLanguageModel() error = %v", err)
 	}
-	_, err = model.DoEvaluate(context.Background(), provider.EvaluationCallOptions{
+	_, err = model.DoDecide(context.Background(), provider.DecisionCallOptions{
 		State: "s",
-		Questions: map[string]provider.EvaluationQuestion{
+		Questions: map[string]provider.DecisionQuestion{
 			"q": {Type: "choice", Instructions: "i", Criteria: map[string]interface{}{"a": nil}},
 		},
 	})
@@ -211,33 +211,33 @@ func TestEvaluationLanguageModel_RejectsUnknownChoice(t *testing.T) {
 	}
 }
 
-// TS: evaluate.ts / EvaluationLanguageModel throws when a question type isn't
+// TS: decide.ts / DecisionLanguageModel throws when a question type isn't
 // choice/score/boolean.
-func TestEvaluationLanguageModel_RejectsUnsupportedQuestionType(t *testing.T) {
+func TestDecisionLanguageModel_RejectsUnsupportedQuestionType(t *testing.T) {
 	mock := &testutil.MockLanguageModel{}
-	model, err := NewEvaluationLanguageModel(EvaluationLanguageModelOptions{Model: mock})
+	model, err := NewDecisionLanguageModel(DecisionLanguageModelOptions{Model: mock})
 	if err != nil {
-		t.Fatalf("NewEvaluationLanguageModel() error = %v", err)
+		t.Fatalf("NewDecisionLanguageModel() error = %v", err)
 	}
-	_, err = model.DoEvaluate(context.Background(), provider.EvaluationCallOptions{
+	_, err = model.DoDecide(context.Background(), provider.DecisionCallOptions{
 		State:     "s",
-		Questions: map[string]provider.EvaluationQuestion{"q": {Type: "unknown", Instructions: "i"}},
+		Questions: map[string]provider.DecisionQuestion{"q": {Type: "unknown", Instructions: "i"}},
 	})
-	var target *providererrors.EvaluationUnsupportedQuestionTypeError
+	var target *providererrors.DecisionUnsupportedQuestionTypeError
 	if err == nil {
 		t.Fatalf("expected error")
 	}
-	if e, ok := err.(*providererrors.EvaluationUnsupportedQuestionTypeError); ok {
+	if e, ok := err.(*providererrors.DecisionUnsupportedQuestionTypeError); ok {
 		target = e
 	}
 	if target == nil {
-		t.Fatalf("err = %v (%T), want EvaluationUnsupportedQuestionTypeError", err, err)
+		t.Fatalf("err = %v (%T), want DecisionUnsupportedQuestionTypeError", err, err)
 	}
 }
 
-// End-to-end: NewEvaluationLanguageModel satisfies provider.EvaluationModel
-// and plugs directly into ExperimentalEvaluate.
-func TestEvaluationLanguageModel_WorksWithExperimentalEvaluate(t *testing.T) {
+// End-to-end: NewDecisionLanguageModel satisfies provider.DecisionModel
+// and plugs directly into ExperimentalDecide.
+func TestDecisionLanguageModel_WorksWithExperimentalDecide(t *testing.T) {
 	mock := &testutil.MockLanguageModel{
 		ProviderName: "test",
 		ModelName:    "m",
@@ -245,20 +245,20 @@ func TestEvaluationLanguageModel_WorksWithExperimentalEvaluate(t *testing.T) {
 			return &types.GenerateResult{Text: `{"q0":0.75}`, FinishReason: types.FinishReasonStop}, nil
 		},
 	}
-	model, err := NewEvaluationLanguageModel(EvaluationLanguageModelOptions{Model: mock})
+	model, err := NewDecisionLanguageModel(DecisionLanguageModelOptions{Model: mock})
 	if err != nil {
-		t.Fatalf("NewEvaluationLanguageModel() error = %v", err)
+		t.Fatalf("NewDecisionLanguageModel() error = %v", err)
 	}
 
-	result, err := ExperimentalEvaluate(context.Background(), EvaluateOptions{
+	result, err := ExperimentalDecide(context.Background(), DecideOptions{
 		Model: model,
 		State: "s",
-		Questions: map[string]provider.EvaluationQuestion{
+		Questions: map[string]provider.DecisionQuestion{
 			"q": {Type: "boolean", Instructions: "i"},
 		},
 	})
 	if err != nil {
-		t.Fatalf("ExperimentalEvaluate() error = %v", err)
+		t.Fatalf("ExperimentalDecide() error = %v", err)
 	}
 	if result.Answers["q"].Probability == nil || *result.Answers["q"].Probability != 0.75 {
 		t.Fatalf("Answers[q] = %+v", result.Answers["q"])

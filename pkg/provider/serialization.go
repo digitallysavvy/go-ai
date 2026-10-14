@@ -1,7 +1,7 @@
 // Package provider's serialization helpers (this file) are the Go
 // equivalent of TS's [WORKFLOW_SERIALIZE]/[WORKFLOW_DESERIALIZE] symbols on
 // each LanguageModelV3/ImageModelV4/VideoModelV3/SpeechModelV4/
-// TranscriptionModelV4/EmbeddingModelV4/Experimental_EvaluationModelV4
+// TranscriptionModelV4/EmbeddingModelV4/Experimental_DecisionModelV4
 // implementation: every serializable model in this SDK exposes a
 // Serialize() (or SerializeStrict()) method, and every provider package
 // registers a matching deserializer factory in its own init() via
@@ -18,7 +18,7 @@
 // other durability boundary must call provider.SerializeModel(model) (or
 // SerializeImageModel/SerializeVideoModel/SerializeSpeechModel/
 // SerializeSpeechTranslationModel/SerializeTranscriptionModel/
-// SerializeEmbeddingModel/SerializeEvaluationModel, matching the model's
+// SerializeEmbeddingModel/SerializeDecisionModel, matching the model's
 // kind) itself before persisting the result, and the corresponding
 // DeserializeModel/Deserialize<Kind>Model function itself after loading it
 // back -- both are ordinary, explicitly-called functions, not framework
@@ -134,7 +134,7 @@ func SerializeModel(model LanguageModel) (SerializedModel, error) {
 
 // -----------------------------------------------------------------------
 // Non-language model kinds (image, video, speech, transcription,
-// embedding, evaluation).
+// embedding, decision).
 //
 // Language models use the LanguageModel-specific SerializeModel /
 // DeserializeModel / RegisterModelDeserializer above. Every other model
@@ -143,7 +143,7 @@ func SerializeModel(model LanguageModel) (SerializedModel, error) {
 // method) has no model-kind-specific shape -- it only needs Provider()
 // and ModelID() to produce a useful error. Mirrors the TypeScript SDK,
 // where ImageModelV4, VideoModelV3/V4, SpeechModelV4, TranscriptionModelV4,
-// EmbeddingModelV4, and Experimental_EvaluationModelV4 implementations all
+// EmbeddingModelV4, and Experimental_DecisionModelV4 implementations all
 // carry the same [WORKFLOW_SERIALIZE]/[WORKFLOW_DESERIALIZE] contract as
 // LanguageModelV3.
 type typedModelDeserializer[M any] func(SerializedModel) (M, error)
@@ -190,7 +190,7 @@ func (r *typedModelRegistry[M]) keys() []string {
 // to produce a useful error when a model doesn't implement
 // SerializableModel/SerializableModelStrict. Every model kind interface
 // (ImageModel, VideoModelV3, SpeechModel, TranscriptionModel,
-// EmbeddingModel, EvaluationModel) already satisfies this structurally.
+// EmbeddingModel, DecisionModel) already satisfies this structurally.
 type serializableModelMetadata interface {
 	Provider() string
 	ModelID() string
@@ -405,30 +405,30 @@ func SerializeSpeechTranslationModel(model SpeechTranslationModel) (SerializedMo
 	return serializeTypedModel(model)
 }
 
-var evaluationModelDeserializers = newTypedModelRegistry[EvaluationModel]()
+var decisionModelDeserializers = newTypedModelRegistry[DecisionModel]()
 
-// RegisterEvaluationModelDeserializer registers a model factory for
-// DeserializeEvaluationModel.
-func RegisterEvaluationModelDeserializer(providerName string, fn func(SerializedModel) (EvaluationModel, error)) {
-	evaluationModelDeserializers.register(providerName, fn)
+// RegisterDecisionModelDeserializer registers a model factory for
+// DeserializeDecisionModel.
+func RegisterDecisionModelDeserializer(providerName string, fn func(SerializedModel) (DecisionModel, error)) {
+	decisionModelDeserializers.register(providerName, fn)
 }
 
-// DeserializeEvaluationModel reconstructs a serialized evaluation model
+// DeserializeDecisionModel reconstructs a serialized decision model
 // using a registered provider factory.
-func DeserializeEvaluationModel(serialized SerializedModel) (EvaluationModel, error) {
-	return evaluationModelDeserializers.deserialize("evaluation", serialized)
+func DeserializeDecisionModel(serialized SerializedModel) (DecisionModel, error) {
+	return decisionModelDeserializers.deserialize("decision", serialized)
 }
 
-// RegisteredEvaluationModelDeserializerKeys returns every provider name
-// currently registered with RegisterEvaluationModelDeserializer. See
+// RegisteredDecisionModelDeserializerKeys returns every provider name
+// currently registered with RegisterDecisionModelDeserializer. See
 // RegisteredModelDeserializerKeys's doc comment.
-func RegisteredEvaluationModelDeserializerKeys() []string {
-	return evaluationModelDeserializers.keys()
+func RegisteredDecisionModelDeserializerKeys() []string {
+	return decisionModelDeserializers.keys()
 }
 
-// SerializeEvaluationModel returns a JSON-friendly serialized evaluation
+// SerializeDecisionModel returns a JSON-friendly serialized decision
 // model representation.
-func SerializeEvaluationModel(model EvaluationModel) (SerializedModel, error) {
+func SerializeDecisionModel(model DecisionModel) (SerializedModel, error) {
 	if model == nil {
 		return SerializedModel{}, providererrors.NewSerializationError("provider: model is nil", nil)
 	}

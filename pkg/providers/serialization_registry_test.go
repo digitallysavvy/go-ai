@@ -390,18 +390,18 @@ func TestEmbeddingModelDeserializerRegistryKeysRoundTrip(t *testing.T) {
 	}
 }
 
-func TestEvaluationModelDeserializerRegistryKeysRoundTrip(t *testing.T) {
-	keys := provider.RegisteredEvaluationModelDeserializerKeys()
+func TestDecisionModelDeserializerRegistryKeysRoundTrip(t *testing.T) {
+	keys := provider.RegisteredDecisionModelDeserializerKeys()
 	for _, key := range keys {
 		key := key
 		t.Run(key, func(t *testing.T) {
-			restored, err := provider.DeserializeEvaluationModel(provider.SerializedModel{
+			restored, err := provider.DeserializeDecisionModel(provider.SerializedModel{
 				Provider: key,
 				ModelID:  modelIDFor(key),
 				Config:   configFor(key),
 			})
 			if err != nil {
-				t.Fatalf("DeserializeEvaluationModel(%q) error = %v", key, err)
+				t.Fatalf("DeserializeDecisionModel(%q) error = %v", key, err)
 			}
 			if reason, ok := registryAliasKeys[key]; ok {
 				t.Logf("alias key %q: %s (restored Provider() = %q)", key, reason, restored.Provider())

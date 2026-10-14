@@ -22,8 +22,8 @@ type (
 	GatewayTranscriptionModelID string
 	// GatewayRealtimeModelID mirrors TS GatewayRealtimeModelId.
 	GatewayRealtimeModelID string
-	// GatewayEvaluationModelID mirrors TS GatewayEvaluationModelId.
-	GatewayEvaluationModelID string
+	// GatewayDecisionModelID mirrors TS GatewayDecisionModelId.
+	GatewayDecisionModelID string
 )
 
 // GatewayLanguageModelID constants mirror gateway-language-model-settings.ts.
@@ -459,10 +459,10 @@ const (
 	GatewayRealtimeModelSpacexaiGrokVoiceThinkFast20       GatewayRealtimeModelID = "spacexai/grok-voice-think-fast-2.0"
 )
 
-// GatewayEvaluationModelID constants mirror gateway-evaluation-model-settings.ts.
+// GatewayDecisionModelID constants mirror gateway-decision-model-settings.ts.
 const (
-	GatewayEvaluationModelLiquidD1      GatewayEvaluationModelID = "liquid/d1"
-	GatewayEvaluationModelTypesafeAiJev GatewayEvaluationModelID = "typesafe-ai/jev"
+	GatewayDecisionModelLiquidD1      GatewayDecisionModelID = "liquid/d1"
+	GatewayDecisionModelTypesafeAiJev GatewayDecisionModelID = "typesafe-ai/jev"
 )
 
 // GatewayLanguageModelIDs lists the suggested gateway language model IDs from gateway-language-model-settings.ts.
@@ -898,8 +898,8 @@ var GatewayRealtimeModelIDs = []GatewayRealtimeModelID{
 	GatewayRealtimeModelSpacexaiGrokVoiceThinkFast20,
 }
 
-// GatewayEvaluationModelIDs lists the suggested gateway evaluation model IDs from gateway-evaluation-model-settings.ts.
-var GatewayEvaluationModelIDs = []GatewayEvaluationModelID{
-	GatewayEvaluationModelLiquidD1,
-	GatewayEvaluationModelTypesafeAiJev,
+// GatewayDecisionModelIDs lists the suggested gateway decision model IDs from gateway-decision-model-settings.ts.
+var GatewayDecisionModelIDs = []GatewayDecisionModelID{
+	GatewayDecisionModelLiquidD1,
+	GatewayDecisionModelTypesafeAiJev,
 }

@@ -370,18 +370,29 @@ func (p *Provider) Skills() provider.SkillsAPI {
 	return &SkillsAPI{provider: p}
 }
 
-// EvaluationModel returns an experimental evaluation model backed by the
+// DecisionModel returns an experimental decision model backed by the
 // OpenAI Responses API language model. Mirrors TypeScript's
-// OpenAIProvider.evaluationModel: `provider.evaluationModel = (modelId) =>
-// new EvaluationLanguageModel({ model: createResponsesModel(modelId),
-// provider: providerName + '.evaluation' })`.
-func (p *Provider) EvaluationModel(modelID string) (provider.EvaluationModel, error) {
+// OpenAIProvider.decisionModel: `provider.decisionModel = (modelId) =>
+// new DecisionLanguageModel({ model: createResponsesModel(modelId),
+// provider: providerName + '.decision' })`.
+func (p *Provider) DecisionModel(modelID string) (provider.DecisionModel, error) {
 	model, err := p.ResponsesModel(modelID)
 	if err != nil {
 		return nil, err
 	}
-	return ai.NewEvaluationLanguageModel(ai.EvaluationLanguageModelOptions{
+	return ai.NewDecisionLanguageModel(ai.DecisionLanguageModelOptions{
 		Model:    model,
-		Provider: p.Name() + ".evaluation",
+		Provider: p.Name() + ".decision",
 	})
+}
+
+// EvaluationModel is the deprecated form of DecisionModel.
+//
+// Deprecated: Use DecisionModel instead.
+func (p *Provider) EvaluationModel(modelID string) (provider.EvaluationModel, error) {
+	model, err := p.DecisionModel(modelID)
+	if err != nil {
+		return nil, err
+	}
+	return provider.AsEvaluationModel(model), nil
 }

@@ -7,12 +7,12 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
-// EvaluationQuestion is one judgment to make about the shared evaluation
-// state. Mirrors TypeScript's Experimental_EvaluationModelV4Question union
+// DecisionQuestion is one judgment to make about the shared decision
+// state. Mirrors TypeScript's Experimental_DecisionModelV4Question union
 // (choice/score/boolean). Fields are interpreted according to Type; Go does
 // not have discriminated unions so Criteria is typed loosely, matching how
 // the TypeScript validator itself treats it structurally.
-type EvaluationQuestion struct {
+type DecisionQuestion struct {
 	// Type is "choice", "score", or "boolean".
 	Type string
 
@@ -30,9 +30,9 @@ type EvaluationQuestion struct {
 	Criteria interface{}
 }
 
-// EvaluationAnswer is one typed answer to an EvaluationQuestion. Mirrors
-// TypeScript's Experimental_EvaluationModelV4Answer union.
-type EvaluationAnswer struct {
+// DecisionAnswer is one typed answer to an DecisionQuestion. Mirrors
+// TypeScript's Experimental_DecisionModelV4Answer union.
+type DecisionAnswer struct {
 	// Type is "choice", "score", or "boolean".
 	Type string `json:"type"`
 
@@ -52,21 +52,21 @@ type EvaluationAnswer struct {
 	Probabilities map[string]float64 `json:"probabilities,omitempty"`
 }
 
-// EvaluationRounding declares the decimal precision a provider rounded its
+// DecisionRounding declares the decimal precision a provider rounded its
 // output to. Omit a field for full precision.
-type EvaluationRounding struct {
+type DecisionRounding struct {
 	ProbabilityDecimals *int `json:"probabilityDecimals,omitempty"`
 	ScoreDecimals       *int `json:"scoreDecimals,omitempty"`
 }
 
-// EvaluationUsage reports token usage for an evaluation call.
-type EvaluationUsage struct {
+// DecisionUsage reports token usage for a decision call.
+type DecisionUsage struct {
 	InputTokens  *int `json:"inputTokens,omitempty"`
 	OutputTokens *int `json:"outputTokens,omitempty"`
 }
 
-// EvaluationResponseInfo carries raw response metadata from the provider.
-type EvaluationResponseInfo struct {
+// DecisionResponseInfo carries raw response metadata from the provider.
+type DecisionResponseInfo struct {
 	ID        string
 	Timestamp time.Time
 	ModelID   string
@@ -74,34 +74,34 @@ type EvaluationResponseInfo struct {
 	Body      interface{}
 }
 
-// EvaluationCallOptions are passed to EvaluationModel.DoEvaluate.
-type EvaluationCallOptions struct {
+// DecisionCallOptions are passed to DecisionModel.DoDecide.
+type DecisionCallOptions struct {
 	// State is one shared JSON-compatible string, map[string]interface{}, or
 	// []interface{}, even when the value is an array.
 	State interface{}
 
 	// Questions maps question ID -> question.
-	Questions map[string]EvaluationQuestion
+	Questions map[string]DecisionQuestion
 
 	Headers         map[string]string
 	ProviderOptions map[string]interface{}
 }
 
-// EvaluationResult is returned by EvaluationModel.DoEvaluate.
-type EvaluationResult struct {
+// DecisionResult is returned by DecisionModel.DoDecide.
+type DecisionResult struct {
 	// Answers has exactly one answer per question, keyed by question ID.
-	Answers map[string]EvaluationAnswer
+	Answers map[string]DecisionAnswer
 
-	Rounding         *EvaluationRounding
-	Usage            *EvaluationUsage
+	Rounding         *DecisionRounding
+	Usage            *DecisionUsage
 	Warnings         []types.Warning
 	ProviderMetadata map[string]interface{}
-	Response         *EvaluationResponseInfo
+	Response         *DecisionResponseInfo
 }
 
-// EvaluationModel is the experimental evaluation model contract (V4). May
-// change in patch releases. Mirrors TypeScript's Experimental_EvaluationModelV4.
-type EvaluationModel interface {
+// DecisionModel is the experimental decision model contract (V4). May
+// change in patch releases. Mirrors TypeScript's Experimental_DecisionModelV4.
+type DecisionModel interface {
 	SpecificationVersion() string
 	Provider() string
 	ModelID() string
@@ -111,15 +111,15 @@ type EvaluationModel interface {
 	// calls before any I/O.
 	SupportedQuestionTypes() []string
 
-	// DoEvaluate evaluates every question against the same state. No partial
+	// DoDecide decides every question against the same state. No partial
 	// results.
-	DoEvaluate(ctx context.Context, opts EvaluationCallOptions) (*EvaluationResult, error)
+	DoDecide(ctx context.Context, opts DecisionCallOptions) (*DecisionResult, error)
 }
 
-// EvaluationModelProvider is a structural extension a Provider may implement
-// to resolve evaluation models by ID. Evaluation is experimental and not
+// DecisionModelProvider is a structural extension a Provider may implement
+// to resolve decision models by ID. Decision is experimental and not
 // part of the stable Provider contract, mirroring TypeScript's
-// EvaluationProvider.evaluationModel.
-type EvaluationModelProvider interface {
-	EvaluationModel(modelID string) (EvaluationModel, error)
+// DecisionProvider.decisionModel.
+type DecisionModelProvider interface {
+	DecisionModel(modelID string) (DecisionModel, error)
 }

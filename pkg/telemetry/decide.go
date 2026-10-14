@@ -9,52 +9,52 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// experimental_evaluate telemetry events
+// experimental_decide telemetry events
 // ---------------------------------------------------------------------------
 //
-// These mirror TypeScript's restricted telemetry dispatcher for evaluate
-// (packages/ai/src/evaluate/restricted-telemetry-dispatcher.ts): evaluate's
-// onStart/onEnd are routed to experimental_onEvaluateStart/End instead of the
-// generic onStart/onEnd used by generateText/embed/etc, so core evaluate
+// These mirror TypeScript's restricted telemetry dispatcher for decide
+// (packages/ai/src/decide/restricted-telemetry-dispatcher.ts): decide's
+// onStart/onEnd are routed to experimental_onDecideStart/End instead of the
+// generic onStart/onEnd used by generateText/embed/etc, so core decide
 // telemetry never gets fed into (or interpreted by) integrations expecting
 // the shape of a generateText-family operation. The nested model call is
-// reported separately via experimental_onEvaluationModelCallStart/End
-// (packages/ai/src/evaluate/evaluate.ts).
+// reported separately via experimental_onDecisionModelCallStart/End
+// (packages/ai/src/decide/decide.ts).
 
-// EvaluateStartEvent is emitted before calling the evaluation model, routed
-// as experimental_onEvaluateStart.
-type EvaluateStartEvent struct {
+// DecideStartEvent is emitted before calling the decision model, routed
+// as experimental_onDecideStart.
+type DecideStartEvent struct {
 	Settings *Settings
 	CallID   string
-	// OperationID is the canonical operation name ("ai.evaluate").
+	// OperationID is the canonical operation name ("ai.decide").
 	OperationID   string
 	ModelProvider string
 	ModelID       string
 	// RuntimeContext is already filtered by Settings.IncludeRuntimeContext.
 	RuntimeContext map[string]interface{}
 	// State and Questions are JSON-compatible values, JSON-encoded for span
-	// attributes (ai.evaluation.state / ai.evaluation.questions).
+	// attributes (ai.decision.state / ai.decision.questions).
 	State      interface{}
 	Questions  interface{}
 	MaxRetries int
 	Headers    map[string]string
 }
 
-// EvaluateEndEvent is emitted after the evaluate operation completes
-// successfully, routed as experimental_onEvaluateEnd.
-type EvaluateEndEvent struct {
-	EvaluateStartEvent
-	// Answers is JSON-encoded as ai.evaluation.answers (output-gated).
+// DecideEndEvent is emitted after the decide operation completes
+// successfully, routed as experimental_onDecideEnd.
+type DecideEndEvent struct {
+	DecideStartEvent
+	// Answers is JSON-encoded as ai.decision.answers (output-gated).
 	Answers interface{}
 }
 
-// EvaluationModelCallStartEvent is emitted immediately before the
-// evaluation model's DoEvaluate call (the nested "ai.evaluate.doEvaluate"
-// span), routed as experimental_onEvaluationModelCallStart.
-type EvaluationModelCallStartEvent struct {
+// DecisionModelCallStartEvent is emitted immediately before the
+// decision model's DoDecide call (the nested "ai.decide.doDecide"
+// span), routed as experimental_onDecisionModelCallStart.
+type DecisionModelCallStartEvent struct {
 	Settings *Settings
 	CallID   string
-	// OperationID is the canonical nested operation name ("ai.evaluate.doEvaluate").
+	// OperationID is the canonical nested operation name ("ai.decide.doDecide").
 	OperationID   string
 	ModelProvider string
 	ModelID       string
@@ -62,93 +62,148 @@ type EvaluationModelCallStartEvent struct {
 	Questions     interface{}
 }
 
-// EvaluationModelCallEndEvent is emitted after the evaluation model call
-// completes successfully, routed as experimental_onEvaluationModelCallEnd.
+// DecisionModelCallEndEvent is emitted after the decision model call
+// completes successfully, routed as experimental_onDecisionModelCallEnd.
 // Not notified when the call or answer validation fails — the registered
 // integration is responsible for defensively closing any span it opened at
-// EvaluationModelCallStartEvent when FireOnError fires instead (mirrors
-// evaluate.ts, where onEvaluationModelCallEnd is only notified on success).
-type EvaluationModelCallEndEvent struct {
-	EvaluationModelCallStartEvent
-	// Answers is JSON-encoded as ai.evaluation.answers (output-gated).
+// DecisionModelCallStartEvent when FireOnError fires instead (mirrors
+// decide.ts, where onDecisionModelCallEnd is only notified on success).
+type DecisionModelCallEndEvent struct {
+	DecisionModelCallStartEvent
+	// Answers is JSON-encoded as ai.decision.answers (output-gated).
 	Answers          interface{}
 	Usage            TelemetryUsage
 	ProviderMetadata map[string]interface{}
 }
 
+type decideStartHandler interface {
+	OnDecideStart(context.Context, DecideStartEvent) context.Context
+}
+
+type decideEndHandler interface {
+	OnDecideEnd(context.Context, DecideEndEvent)
+}
+
+type decisionModelCallStartHandler interface {
+	OnDecisionModelCallStart(context.Context, DecisionModelCallStartEvent)
+}
+
+type decisionModelCallEndHandler interface {
+	OnDecisionModelCallEnd(context.Context, DecisionModelCallEndEvent)
+}
+
+// Deprecated pre-rename event names and handler interfaces. An integration
+// implementing a deprecated handler keeps working; when it implements both
+// the current and the deprecated handler, only the current one is called
+// (mirrors TS's `integration[key] ?? integration[deprecatedKey]`).
+
+// EvaluateStartEvent is an alias of DecideStartEvent.
+//
+// Deprecated: Use DecideStartEvent instead.
+type EvaluateStartEvent = DecideStartEvent
+
+// EvaluateEndEvent is an alias of DecideEndEvent.
+//
+// Deprecated: Use DecideEndEvent instead.
+type EvaluateEndEvent = DecideEndEvent
+
+// EvaluationModelCallStartEvent is an alias of DecisionModelCallStartEvent.
+//
+// Deprecated: Use DecisionModelCallStartEvent instead.
+type EvaluationModelCallStartEvent = DecisionModelCallStartEvent
+
+// EvaluationModelCallEndEvent is an alias of DecisionModelCallEndEvent.
+//
+// Deprecated: Use DecisionModelCallEndEvent instead.
+type EvaluationModelCallEndEvent = DecisionModelCallEndEvent
+
+// evaluateStartHandler is the deprecated form of decideStartHandler.
 type evaluateStartHandler interface {
-	OnEvaluateStart(context.Context, EvaluateStartEvent) context.Context
+	OnEvaluateStart(context.Context, DecideStartEvent) context.Context
 }
 
+// evaluateEndHandler is the deprecated form of decideEndHandler.
 type evaluateEndHandler interface {
-	OnEvaluateEnd(context.Context, EvaluateEndEvent)
+	OnEvaluateEnd(context.Context, DecideEndEvent)
 }
 
+// evaluationModelCallStartHandler is the deprecated form of
+// decisionModelCallStartHandler.
 type evaluationModelCallStartHandler interface {
-	OnEvaluationModelCallStart(context.Context, EvaluationModelCallStartEvent)
+	OnEvaluationModelCallStart(context.Context, DecisionModelCallStartEvent)
 }
 
+// evaluationModelCallEndHandler is the deprecated form of
+// decisionModelCallEndHandler.
 type evaluationModelCallEndHandler interface {
-	OnEvaluationModelCallEnd(context.Context, EvaluationModelCallEndEvent)
+	OnEvaluationModelCallEnd(context.Context, DecisionModelCallEndEvent)
 }
 
-// FireOnEvaluateStart publishes and fans out an evaluate-operation start
-// event to integrations implementing OnEvaluateStart. Each integration is
+// FireOnDecideStart publishes and fans out a decide-operation start
+// event to integrations implementing OnDecideStart. Each integration is
 // given the SAME base ctx (H5 — see the identical rationale on FireOnStart in
 // registry.go) rather than the previous integration's result, so two
 // registered integrations' root spans come out as siblings and each resolves
 // its own root/nested spans from its own callId-keyed state rather than
 // trace.SpanFromContext(ctx).
-func FireOnEvaluateStart(ctx context.Context, e EvaluateStartEvent) context.Context {
+func FireOnDecideStart(ctx context.Context, e DecideStartEvent) context.Context {
 	if telemetryDisabled(e.Settings) {
 		return ctx
 	}
-	PublishDiagnostic(ctx, DiagnosticEventOnEvaluateStart, e)
+	PublishDiagnostic(ctx, DiagnosticEventOnDecideStart, e)
 	result := ctx
 	for _, integration := range snapshotFor(e.Settings) {
-		if handler, ok := integration.(evaluateStartHandler); ok {
+		if handler, ok := integration.(decideStartHandler); ok {
+			result = handler.OnDecideStart(ctx, e)
+		} else if handler, ok := integration.(evaluateStartHandler); ok {
 			result = handler.OnEvaluateStart(ctx, e)
 		}
 	}
 	return result
 }
 
-// FireOnEvaluateEnd publishes and fans out an evaluate-operation end event.
-func FireOnEvaluateEnd(ctx context.Context, e EvaluateEndEvent) {
+// FireOnDecideEnd publishes and fans out a decide-operation end event.
+func FireOnDecideEnd(ctx context.Context, e DecideEndEvent) {
 	if telemetryDisabled(e.Settings) {
 		return
 	}
-	PublishDiagnostic(ctx, DiagnosticEventOnEvaluateEnd, e)
+	PublishDiagnostic(ctx, DiagnosticEventOnDecideEnd, e)
 	for _, integration := range snapshotFor(e.Settings) {
-		if handler, ok := integration.(evaluateEndHandler); ok {
+		if handler, ok := integration.(decideEndHandler); ok {
+			handler.OnDecideEnd(ctx, e)
+		} else if handler, ok := integration.(evaluateEndHandler); ok {
 			handler.OnEvaluateEnd(ctx, e)
 		}
 	}
 }
 
-// FireOnEvaluationModelCallStart publishes and fans out an
-// evaluation-model-call start event.
-func FireOnEvaluationModelCallStart(ctx context.Context, e EvaluationModelCallStartEvent) {
+// FireOnDecisionModelCallStart publishes and fans out a
+// decision-model-call start event.
+func FireOnDecisionModelCallStart(ctx context.Context, e DecisionModelCallStartEvent) {
 	if telemetryDisabled(e.Settings) {
 		return
 	}
-	PublishDiagnostic(ctx, DiagnosticEventOnEvaluationModelCallStart, e)
+	PublishDiagnostic(ctx, DiagnosticEventOnDecisionModelCallStart, e)
 	for _, integration := range snapshotFor(e.Settings) {
-		if handler, ok := integration.(evaluationModelCallStartHandler); ok {
+		if handler, ok := integration.(decisionModelCallStartHandler); ok {
+			handler.OnDecisionModelCallStart(ctx, e)
+		} else if handler, ok := integration.(evaluationModelCallStartHandler); ok {
 			handler.OnEvaluationModelCallStart(ctx, e)
 		}
 	}
 }
 
-// FireOnEvaluationModelCallEnd publishes and fans out an
-// evaluation-model-call end event.
-func FireOnEvaluationModelCallEnd(ctx context.Context, e EvaluationModelCallEndEvent) {
+// FireOnDecisionModelCallEnd publishes and fans out a
+// decision-model-call end event.
+func FireOnDecisionModelCallEnd(ctx context.Context, e DecisionModelCallEndEvent) {
 	if telemetryDisabled(e.Settings) {
 		return
 	}
-	PublishDiagnostic(ctx, DiagnosticEventOnEvaluationModelCallEnd, e)
+	PublishDiagnostic(ctx, DiagnosticEventOnDecisionModelCallEnd, e)
 	for _, integration := range snapshotFor(e.Settings) {
-		if handler, ok := integration.(evaluationModelCallEndHandler); ok {
+		if handler, ok := integration.(decisionModelCallEndHandler); ok {
+			handler.OnDecisionModelCallEnd(ctx, e)
+		} else if handler, ok := integration.(evaluationModelCallEndHandler); ok {
 			handler.OnEvaluationModelCallEnd(ctx, e)
 		}
 	}
@@ -156,7 +211,7 @@ func FireOnEvaluationModelCallEnd(ctx context.Context, e EvaluationModelCallEndE
 
 // jsonAttr JSON-encodes v and returns a string attribute.KeyValue, or false
 // if v is nil or cannot be marshaled. Mirrors TS's `JSON.stringify(...)`
-// content attributes for evaluation state/questions/answers.
+// content attributes for decision state/questions/answers.
 func jsonAttr(key string, v interface{}) (attribute.KeyValue, bool) {
 	if v == nil {
 		return attribute.KeyValue{}, false
@@ -169,20 +224,20 @@ func jsonAttr(key string, v interface{}) (attribute.KeyValue, bool) {
 }
 
 // ---------------------------------------------------------------------------
-// LegacyOpenTelemetry: evaluate spans
+// LegacyOpenTelemetry: decide spans
 // ---------------------------------------------------------------------------
 
-// OnEvaluateStart creates the root "ai.evaluate" span for an
-// ExperimentalEvaluate call and embeds it in the returned context, mirroring
-// TS's onEvaluateOperationStart (otel/src/legacy-open-telemetry.ts).
+// OnDecideStart creates the root "ai.decide" span for an
+// ExperimentalDecide call and embeds it in the returned context, mirroring
+// TS's onDecideOperationStart (otel/src/legacy-open-telemetry.ts).
 // Attribute shape follows the same base-attribute parity fix as the generic
 // OnStart (follow-up H1): ai.model.provider/id, ai.settings.maxRetries,
 // ai.request.headers.<name>, and operation.name/resource.name are emitted.
 // gen_ai.system/gen_ai.request.model are intentionally NOT set — TS's
-// onEvaluateOperationStart carries no gen_ai.* attributes at all (only
-// assembleOperationName + baseTelemetryAttributes + evaluation.state/
+// onDecideOperationStart carries no gen_ai.* attributes at all (only
+// assembleOperationName + baseTelemetryAttributes + decision.state/
 // questions).
-func (i LegacyOpenTelemetry) OnEvaluateStart(ctx context.Context, e EvaluateStartEvent) context.Context {
+func (i LegacyOpenTelemetry) OnDecideStart(ctx context.Context, e DecideStartEvent) context.Context {
 	if !Enabled(e.Settings) {
 		return ctx
 	}
@@ -209,10 +264,10 @@ func (i LegacyOpenTelemetry) OnEvaluateStart(ctx context.Context, e EvaluateStar
 	ctx = context.WithValue(ctx, legacyBaseAttrsKey{}, baseAttrs)
 
 	if e.Settings == nil || e.Settings.RecordInputs {
-		if attr, ok := jsonAttr("ai.evaluation.state", e.State); ok {
+		if attr, ok := jsonAttr("ai.decision.state", e.State); ok {
 			span.SetAttributes(attr)
 		}
-		if attr, ok := jsonAttr("ai.evaluation.questions", e.Questions); ok {
+		if attr, ok := jsonAttr("ai.decision.questions", e.Questions); ok {
 			span.SetAttributes(attr)
 		}
 	}
@@ -221,7 +276,7 @@ func (i LegacyOpenTelemetry) OnEvaluateStart(ctx context.Context, e EvaluateStar
 		ctx = context.WithValue(ctx, runtimeContextAttrsKey{}, attrs)
 	}
 	// H5: record this integration's own root span by CallID, so
-	// OnEvaluateEnd/OnEvaluationModelCallStart can find it instead of relying
+	// OnDecideEnd/OnDecisionModelCallStart can find it instead of relying
 	// on trace.SpanFromContext(ctx), which only ever resolves the single
 	// "current" span and would break with a second integration registered.
 	if e.CallID != "" {
@@ -233,16 +288,16 @@ func (i LegacyOpenTelemetry) OnEvaluateStart(ctx context.Context, e EvaluateStar
 	return ctx
 }
 
-// OnEvaluateEnd sets output attributes on the root "ai.evaluate" span
-// (resolved by CallID, embedded by OnEvaluateStart) and ends it, mirroring
-// TS's onEvaluateOperationEnd.
-func (i LegacyOpenTelemetry) OnEvaluateEnd(ctx context.Context, e EvaluateEndEvent) {
+// OnDecideEnd sets output attributes on the root "ai.decide" span
+// (resolved by CallID, embedded by OnDecideStart) and ends it, mirroring
+// TS's onDecideOperationEnd.
+func (i LegacyOpenTelemetry) OnDecideEnd(ctx context.Context, e DecideEndEvent) {
 	span := legacyRootSpanFor(e.CallID, ctx)
 	if !span.IsRecording() {
 		return
 	}
 	if e.Settings == nil || e.Settings.RecordOutputs {
-		if attr, ok := jsonAttr("ai.evaluation.answers", e.Answers); ok {
+		if attr, ok := jsonAttr("ai.decision.answers", e.Answers); ok {
 			span.SetAttributes(attr)
 		}
 	}
@@ -250,12 +305,12 @@ func (i LegacyOpenTelemetry) OnEvaluateEnd(ctx context.Context, e EvaluateEndEve
 	legacyDeleteState(e.CallID)
 }
 
-// OnEvaluationModelCallStart creates the nested "ai.evaluate.doEvaluate"
+// OnDecisionModelCallStart creates the nested "ai.decide.doDecide"
 // child span, tracked by CallID (like OnEmbedStart/OnRerankStart) so
-// OnEvaluationModelCallEnd or a defensive OnError close can find it again.
-// Mirrors TS's experimental_onEvaluationModelCallStart — which, like
-// onEvaluateOperationStart, carries no gen_ai.* attributes.
-func (i LegacyOpenTelemetry) OnEvaluationModelCallStart(ctx context.Context, e EvaluationModelCallStartEvent) {
+// OnDecisionModelCallEnd or a defensive OnError close can find it again.
+// Mirrors TS's experimental_onDecisionModelCallStart — which, like
+// onDecideOperationStart, carries no gen_ai.* attributes.
+func (i LegacyOpenTelemetry) OnDecisionModelCallStart(ctx context.Context, e DecisionModelCallStartEvent) {
 	// H5: resolve our own root span by CallID rather than
 	// trace.SpanFromContext(ctx).
 	parent := legacyRootSpanFor(e.CallID, ctx)
@@ -273,23 +328,23 @@ func (i LegacyOpenTelemetry) OnEvaluationModelCallStart(ctx context.Context, e E
 		span.SetAttributes(baseAttrs...)
 	}
 	if e.Settings == nil || e.Settings.RecordInputs {
-		if attr, ok := jsonAttr("ai.evaluation.state", e.State); ok {
+		if attr, ok := jsonAttr("ai.decision.state", e.State); ok {
 			span.SetAttributes(attr)
 		}
-		if attr, ok := jsonAttr("ai.evaluation.questions", e.Questions); ok {
+		if attr, ok := jsonAttr("ai.decision.questions", e.Questions); ok {
 			span.SetAttributes(attr)
 		}
 	}
 	if e.CallID != "" {
-		otelModelCallSpans.Store(otelSpanKey("evaluation", e.CallID), otelSpanEntry{span: span})
+		otelModelCallSpans.Store(otelSpanKey("decision", e.CallID), otelSpanEntry{span: span})
 	}
 }
 
-// OnEvaluationModelCallEnd records evaluation answers, usage, and provider
-// metadata on the nested "ai.evaluate.doEvaluate" span and ends it, mirroring
-// TS's experimental_onEvaluationModelCallEnd.
-func (i LegacyOpenTelemetry) OnEvaluationModelCallEnd(_ context.Context, e EvaluationModelCallEndEvent) {
-	value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("evaluation", e.CallID))
+// OnDecisionModelCallEnd records decision answers, usage, and provider
+// metadata on the nested "ai.decide.doDecide" span and ends it, mirroring
+// TS's experimental_onDecisionModelCallEnd.
+func (i LegacyOpenTelemetry) OnDecisionModelCallEnd(_ context.Context, e DecisionModelCallEndEvent) {
+	value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("decision", e.CallID))
 	if !ok {
 		return
 	}
@@ -298,7 +353,7 @@ func (i LegacyOpenTelemetry) OnEvaluationModelCallEnd(_ context.Context, e Evalu
 		return
 	}
 	if e.Settings == nil || e.Settings.RecordOutputs {
-		if attr, ok := jsonAttr("ai.evaluation.answers", e.Answers); ok {
+		if attr, ok := jsonAttr("ai.decision.answers", e.Answers); ok {
 			entry.span.SetAttributes(attr)
 		}
 	}
@@ -317,19 +372,19 @@ func (i LegacyOpenTelemetry) OnEvaluationModelCallEnd(_ context.Context, e Evalu
 }
 
 // ---------------------------------------------------------------------------
-// OpenTelemetry (GenAI semconv): evaluate spans
+// OpenTelemetry (GenAI semconv): decide spans
 // ---------------------------------------------------------------------------
 
-// OnEvaluateStart creates the root "evaluate {modelId}" span with GenAI
-// semantic-convention attributes, gating ai.evaluation.state/questions
-// behind OpenTelemetryOptions.ExperimentalEvaluation, mirroring TS's
-// onEvaluateOperationStart (otel/src/open-telemetry.ts).
-func (i OpenTelemetry) OnEvaluateStart(ctx context.Context, e EvaluateStartEvent) context.Context {
+// OnDecideStart creates the root "decide {modelId}" span with GenAI
+// semantic-convention attributes, gating ai.decision.state/questions
+// behind OpenTelemetryOptions.ExperimentalDecision, mirroring TS's
+// onDecideOperationStart (otel/src/open-telemetry.ts).
+func (i OpenTelemetry) OnDecideStart(ctx context.Context, e DecideStartEvent) context.Context {
 	if !Enabled(e.Settings) {
 		return ctx
 	}
 	tracer := i.tracerFor(e.Settings)
-	spanName := "evaluate"
+	spanName := "decide"
 	if e.ModelID != "" {
 		spanName += " " + e.ModelID
 	}
@@ -343,7 +398,7 @@ func (i OpenTelemetry) OnEvaluateStart(ctx context.Context, e EvaluateStartEvent
 		span.SetAttributes(attrs...)
 	}
 	span.SetAttributes(
-		attribute.String("gen_ai.operation.name", "evaluate"),
+		attribute.String("gen_ai.operation.name", "decide"),
 		attribute.String("gen_ai.provider.name", mapProviderName(e.ModelProvider)),
 		attribute.String("gen_ai.request.model", e.ModelID),
 	)
@@ -353,11 +408,11 @@ func (i OpenTelemetry) OnEvaluateStart(ctx context.Context, e EvaluateStartEvent
 		}
 	}
 	recordInputs := e.Settings == nil || e.Settings.RecordInputs
-	if i.opts.ExperimentalEvaluation && recordInputs {
-		if attr, ok := jsonAttr("ai.evaluation.state", e.State); ok {
+	if i.opts.experimentalDecision() && recordInputs {
+		if attr, ok := jsonAttr("ai.decision.state", e.State); ok {
 			span.SetAttributes(attr)
 		}
-		if attr, ok := jsonAttr("ai.evaluation.questions", e.Questions); ok {
+		if attr, ok := jsonAttr("ai.decision.questions", e.Questions); ok {
 			span.SetAttributes(attr)
 		}
 	}
@@ -368,7 +423,7 @@ func (i OpenTelemetry) OnEvaluateStart(ctx context.Context, e EvaluateStartEvent
 		}
 	}
 	// H5: record this integration's own root span by CallID, so
-	// OnEvaluateEnd/OnEvaluationModelCallStart can find it instead of relying
+	// OnDecideEnd/OnDecisionModelCallStart can find it instead of relying
 	// on trace.SpanFromContext(ctx).
 	if e.CallID != "" {
 		st := genAIState(e.CallID)
@@ -379,16 +434,16 @@ func (i OpenTelemetry) OnEvaluateStart(ctx context.Context, e EvaluateStartEvent
 	return ctx
 }
 
-// OnEvaluateEnd sets output attributes on the root evaluate span (resolved
-// by CallID) and ends it, mirroring TS's onEvaluateOperationEnd.
-func (i OpenTelemetry) OnEvaluateEnd(ctx context.Context, e EvaluateEndEvent) {
+// OnDecideEnd sets output attributes on the root decide span (resolved
+// by CallID) and ends it, mirroring TS's onDecideOperationEnd.
+func (i OpenTelemetry) OnDecideEnd(ctx context.Context, e DecideEndEvent) {
 	span := genAIRootSpanFor(e.CallID, ctx)
 	if !span.IsRecording() {
 		return
 	}
 	recordOutputs := e.Settings == nil || e.Settings.RecordOutputs
-	if i.opts.ExperimentalEvaluation && recordOutputs {
-		if attr, ok := jsonAttr("ai.evaluation.answers", e.Answers); ok {
+	if i.opts.experimentalDecision() && recordOutputs {
+		if attr, ok := jsonAttr("ai.decision.answers", e.Answers); ok {
 			span.SetAttributes(attr)
 		}
 	}
@@ -396,10 +451,10 @@ func (i OpenTelemetry) OnEvaluateEnd(ctx context.Context, e EvaluateEndEvent) {
 	genAIDeleteState(e.CallID)
 }
 
-// OnEvaluationModelCallStart creates the nested "evaluate {modelId}" child
+// OnDecisionModelCallStart creates the nested "decide {modelId}" child
 // span for the underlying model call, tracked by CallID, mirroring TS's
-// experimental_onEvaluationModelCallStart.
-func (i OpenTelemetry) OnEvaluationModelCallStart(ctx context.Context, e EvaluationModelCallStartEvent) {
+// experimental_onDecisionModelCallStart.
+func (i OpenTelemetry) OnDecisionModelCallStart(ctx context.Context, e DecisionModelCallStartEvent) {
 	// H5: resolve our own root span by CallID rather than
 	// trace.SpanFromContext(ctx).
 	parent := genAIRootSpanFor(e.CallID, ctx)
@@ -407,35 +462,35 @@ func (i OpenTelemetry) OnEvaluationModelCallStart(ctx context.Context, e Evaluat
 		return
 	}
 	tracer := parent.TracerProvider().Tracer("go-ai")
-	spanName := "evaluate"
+	spanName := "decide"
 	if e.ModelID != "" {
 		spanName += " " + e.ModelID
 	}
 	_, span := tracer.Start(trace.ContextWithSpan(ctx, parent), spanName)
 	span.SetAttributes(
-		attribute.String("gen_ai.operation.name", "evaluate"),
+		attribute.String("gen_ai.operation.name", "decide"),
 		attribute.String("gen_ai.provider.name", mapProviderName(e.ModelProvider)),
 		attribute.String("gen_ai.request.model", e.ModelID),
 	)
 	recordInputs := e.Settings == nil || e.Settings.RecordInputs
-	if i.opts.ExperimentalEvaluation && recordInputs {
-		if attr, ok := jsonAttr("ai.evaluation.state", e.State); ok {
+	if i.opts.experimentalDecision() && recordInputs {
+		if attr, ok := jsonAttr("ai.decision.state", e.State); ok {
 			span.SetAttributes(attr)
 		}
-		if attr, ok := jsonAttr("ai.evaluation.questions", e.Questions); ok {
+		if attr, ok := jsonAttr("ai.decision.questions", e.Questions); ok {
 			span.SetAttributes(attr)
 		}
 	}
 	if e.CallID != "" {
-		genAICallSpans.Store(genAISpanKey("evaluation", e.CallID), otelSpanEntry{span: span})
+		genAICallSpans.Store(genAISpanKey("decision", e.CallID), otelSpanEntry{span: span})
 	}
 }
 
-// OnEvaluationModelCallEnd records usage, evaluation answers, and provider
-// metadata on the nested evaluate span and ends it, mirroring TS's
-// experimental_onEvaluationModelCallEnd.
-func (i OpenTelemetry) OnEvaluationModelCallEnd(_ context.Context, e EvaluationModelCallEndEvent) {
-	value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("evaluation", e.CallID))
+// OnDecisionModelCallEnd records usage, decision answers, and provider
+// metadata on the nested decide span and ends it, mirroring TS's
+// experimental_onDecisionModelCallEnd.
+func (i OpenTelemetry) OnDecisionModelCallEnd(_ context.Context, e DecisionModelCallEndEvent) {
+	value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("decision", e.CallID))
 	if !ok {
 		return
 	}
@@ -450,13 +505,13 @@ func (i OpenTelemetry) OnEvaluationModelCallEnd(_ context.Context, e EvaluationM
 		entry.span.SetAttributes(attribute.Int64("gen_ai.usage.output_tokens", *e.Usage.OutputTokens))
 	}
 	recordOutputs := e.Settings == nil || e.Settings.RecordOutputs
-	if i.opts.ExperimentalEvaluation && recordOutputs {
-		if attr, ok := jsonAttr("ai.evaluation.answers", e.Answers); ok {
+	if i.opts.experimentalDecision() && recordOutputs {
+		if attr, ok := jsonAttr("ai.decision.answers", e.Answers); ok {
 			entry.span.SetAttributes(attr)
 		}
 	}
 	// Gated only by opts.ProviderMetadata (not recordOutputs), matching TS's
-	// experimental_onEvaluationModelCallEnd: providerMetadata is a plain
+	// experimental_onDecisionModelCallEnd: providerMetadata is a plain
 	// pre-computed value passed through selectSupplementalAttributes, not
 	// wrapped in an {output: () => ...} accessor, so selectAttributes never
 	// applies its recordOutputs gate to it.

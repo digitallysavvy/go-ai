@@ -1,12 +1,12 @@
 ---
 title: TypeSafe AI Provider
-description: Setup and usage guide for TypeSafe AI evaluation models with Go AI SDK
+description: Setup and usage guide for TypeSafe AI decision models with Go AI SDK
 ---
 
 # TypeSafe AI Provider
 
-TypeSafe AI provides evaluation models for use with the experimental
-`ai.ExperimentalEvaluate` API — judging free-form output against a set of
+TypeSafe AI provides decision models for use with the experimental
+`ai.ExperimentalDecide` API — judging free-form output against a set of
 questions (choice, score, or boolean) rather than generating text. It's
 the only capability this provider implements: `LanguageModel`,
 `EmbeddingModel`, `ImageModel`, `SpeechModel`, and `TranscriptionModel` all
@@ -43,18 +43,18 @@ left empty, it is read from `TYPESAFE_AI_API_KEY` lazily on each request
 export TYPESAFE_AI_API_KEY=...
 ```
 
-## Evaluation
+## Decision
 
 ```go
-evalModel, err := provider.EvaluationModel("jev-latest")
+evalModel, err := provider.DecisionModel("jev-latest")
 if err != nil {
     log.Fatal(err)
 }
 
-result, err := ai.ExperimentalEvaluate(ctx, ai.EvaluateOptions{
+result, err := ai.ExperimentalDecide(ctx, ai.DecideOptions{
     Model: evalModel,
     State: "The capital of France is Paris.",
-    Questions: map[string]goprovider.EvaluationQuestion{
+    Questions: map[string]goprovider.DecisionQuestion{
         "factual": {
             Type:         "boolean",
             Instructions: "Is this statement factually correct?",
@@ -75,15 +75,15 @@ for id, answer := range result.Answers {
 }
 ```
 
-`ai.ExperimentalEvaluate` also accepts any `provider.EvaluationModel`
+`ai.ExperimentalDecide` also accepts any `provider.DecisionModel`
 instance (or a model ID string, resolved via `Provider`, falling back to
 the AI Gateway when `Provider` is nil) — you are not limited to
 TypeSafe AI as the judge model.
 
 ## Workflow Serialization
 
-TypeSafe AI evaluation models can cross a workflow boundary with
-`provider.SerializeEvaluationModel` / `DeserializeEvaluationModel`. See
+TypeSafe AI decision models can cross a workflow boundary with
+`provider.SerializeDecisionModel` / `DeserializeDecisionModel`. See
 [Provider Serialization](../03-agents/07-workflow-agent.mdx#provider-serialization)
 for the mechanism.
 

@@ -212,19 +212,30 @@ func (p *Provider) Files() provider.FilesAPI {
 	return &FilesAPI{provider: p}
 }
 
-// EvaluationModel returns an experimental evaluation model backed by the
+// DecisionModel returns an experimental decision model backed by the
 // Google Generative AI chat language model. Mirrors TypeScript's
-// GoogleGenerativeAIProvider.evaluationModel: `provider.evaluationModel =
-// (modelId) => new EvaluationLanguageModel({ model: createChatModel(modelId),
-// provider: providerName.replace(/\.generative-ai$/, "") + '.evaluation' })`.
-func (p *Provider) EvaluationModel(modelID string) (provider.EvaluationModel, error) {
+// GoogleGenerativeAIProvider.decisionModel: `provider.decisionModel =
+// (modelId) => new DecisionLanguageModel({ model: createChatModel(modelId),
+// provider: providerName.replace(/\.generative-ai$/, "") + '.decision' })`.
+func (p *Provider) DecisionModel(modelID string) (provider.DecisionModel, error) {
 	model, err := p.LanguageModel(modelID)
 	if err != nil {
 		return nil, err
 	}
-	providerName := strings.TrimSuffix(p.Name(), ".generative-ai") + ".evaluation"
-	return ai.NewEvaluationLanguageModel(ai.EvaluationLanguageModelOptions{
+	providerName := strings.TrimSuffix(p.Name(), ".generative-ai") + ".decision"
+	return ai.NewDecisionLanguageModel(ai.DecisionLanguageModelOptions{
 		Model:    model,
 		Provider: providerName,
 	})
+}
+
+// EvaluationModel is the deprecated form of DecisionModel.
+//
+// Deprecated: Use DecisionModel instead.
+func (p *Provider) EvaluationModel(modelID string) (provider.EvaluationModel, error) {
+	model, err := p.DecisionModel(modelID)
+	if err != nil {
+		return nil, err
+	}
+	return provider.AsEvaluationModel(model), nil
 }

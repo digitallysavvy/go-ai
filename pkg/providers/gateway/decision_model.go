@@ -10,53 +10,53 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
-// EvaluationModel implements provider.EvaluationModel for the AI Gateway's
-// evaluation route (`POST {baseURL}/evaluation-model`). Mirrors TypeScript's
-// GatewayEvaluationModel.
-type EvaluationModel struct {
+// DecisionModel implements provider.DecisionModel for the AI Gateway's
+// decision route (`POST {baseURL}/decision-model`). Mirrors TypeScript's
+// GatewayDecisionModel.
+type DecisionModel struct {
 	provider *Provider
 	modelID  string
 }
 
-// NewEvaluationModel creates a new Gateway evaluation model.
-func NewEvaluationModel(p *Provider, modelID string) *EvaluationModel {
-	return &EvaluationModel{provider: p, modelID: modelID}
+// NewDecisionModel creates a new Gateway decision model.
+func NewDecisionModel(p *Provider, modelID string) *DecisionModel {
+	return &DecisionModel{provider: p, modelID: modelID}
 }
 
-// EvaluationModel implements provider.EvaluationModelProvider for Provider,
-// resolving evaluation models by ID through the Gateway.
-func (p *Provider) EvaluationModel(modelID string) (provider.EvaluationModel, error) {
-	return NewEvaluationModel(p, modelID), nil
+// DecisionModel implements provider.DecisionModelProvider for Provider,
+// resolving decision models by ID through the Gateway.
+func (p *Provider) DecisionModel(modelID string) (provider.DecisionModel, error) {
+	return NewDecisionModel(p, modelID), nil
 }
 
-// SpecificationVersion returns the evaluation model specification version.
-func (m *EvaluationModel) SpecificationVersion() string { return "v4" }
+// SpecificationVersion returns the decision model specification version.
+func (m *DecisionModel) SpecificationVersion() string { return "v4" }
 
 // Provider returns the provider name.
-func (m *EvaluationModel) Provider() string { return "gateway" }
+func (m *DecisionModel) Provider() string { return "gateway" }
 
 // ModelID returns the model ID.
-func (m *EvaluationModel) ModelID() string { return m.modelID }
+func (m *DecisionModel) ModelID() string { return m.modelID }
 
-// SupportedQuestionTypes reports that the Gateway evaluation route accepts
+// SupportedQuestionTypes reports that the Gateway decision route accepts
 // all three question types; the route itself validates per-question support
 // for the resolved underlying model.
-func (m *EvaluationModel) SupportedQuestionTypes() []string {
+func (m *DecisionModel) SupportedQuestionTypes() []string {
 	return []string{"choice", "score", "boolean"}
 }
 
-// DoEvaluate evaluates every question against the same state through the
+// DoDecide decides every question against the same state through the
 // Gateway.
-func (m *EvaluationModel) DoEvaluate(ctx context.Context, opts provider.EvaluationCallOptions) (*provider.EvaluationResult, error) {
+func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCallOptions) (*provider.DecisionResult, error) {
 	if gatewayOptions, ok := opts.ProviderOptions["gateway"]; ok {
-		if err := validateGatewayEvaluationProviderOptions(gatewayOptions); err != nil {
+		if err := validateGatewayDecisionProviderOptions(gatewayOptions); err != nil {
 			return nil, err
 		}
 	}
 
 	body := map[string]interface{}{
 		"state":     opts.State,
-		"questions": encodeGatewayEvaluationQuestions(opts.Questions),
+		"questions": encodeGatewayDecisionQuestions(opts.Questions),
 	}
 	if len(opts.ProviderOptions) > 0 {
 		body["providerOptions"] = opts.ProviderOptions
@@ -68,10 +68,10 @@ func (m *EvaluationModel) DoEvaluate(ctx context.Context, opts provider.Evaluati
 		headers[k] = v
 	}
 
-	var response gatewayEvaluationResponse
+	var response gatewayDecisionResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
-		Path:    "/evaluation-model",
+		Path:    "/decision-model",
 		Body:    body,
 		Headers: headers,
 	}, &response)
@@ -84,13 +84,13 @@ func (m *EvaluationModel) DoEvaluate(ctx context.Context, opts provider.Evaluati
 		modelID = *response.Model
 	}
 
-	return &provider.EvaluationResult{
+	return &provider.DecisionResult{
 		Answers:          response.toAnswers(),
 		Rounding:         response.toRounding(),
 		Usage:            response.toUsage(),
 		Warnings:         warningsOrEmpty(response.Warnings),
 		ProviderMetadata: copyGatewayProviderMetadata(response.ProviderMetadata),
-		Response: &provider.EvaluationResponseInfo{
+		Response: &provider.DecisionResponseInfo{
 			ModelID: modelID,
 			Headers: providerutils.ExtractHeaders(httpResp.Headers),
 			Body:    rawJSONBody(httpResp.Body),
@@ -98,22 +98,22 @@ func (m *EvaluationModel) DoEvaluate(ctx context.Context, opts provider.Evaluati
 	}, nil
 }
 
-func (m *EvaluationModel) getModelConfigHeaders() map[string]string {
+func (m *DecisionModel) getModelConfigHeaders() map[string]string {
 	return map[string]string{
-		"ai-evaluation-model-specification-version": "4",
+		"ai-decision-model-specification-version": "4",
 		"ai-model-id": m.modelID,
 	}
 }
 
-func (m *EvaluationModel) handleError(ctx context.Context, err error) error {
+func (m *DecisionModel) handleError(ctx context.Context, err error) error {
 	lm := &LanguageModel{provider: m.provider, modelID: m.modelID}
 	return lm.handleErrorWithContext(ctx, err)
 }
 
-// encodeGatewayEvaluationQuestions converts a question map into the
+// encodeGatewayDecisionQuestions converts a question map into the
 // Gateway's wire shape. Criteria is included only when non-nil: choice/score
 // questions always carry it, boolean questions may omit it.
-func encodeGatewayEvaluationQuestions(questions map[string]provider.EvaluationQuestion) map[string]interface{} {
+func encodeGatewayDecisionQuestions(questions map[string]provider.DecisionQuestion) map[string]interface{} {
 	out := make(map[string]interface{}, len(questions))
 	for id, q := range questions {
 		wire := map[string]interface{}{
@@ -128,7 +128,7 @@ func encodeGatewayEvaluationQuestions(questions map[string]provider.EvaluationQu
 	return out
 }
 
-type gatewayEvaluationAnswerWire struct {
+type gatewayDecisionAnswerWire struct {
 	Type          string             `json:"type"`
 	Choice        string             `json:"choice,omitempty"`
 	Score         *float64           `json:"score,omitempty"`
@@ -136,33 +136,33 @@ type gatewayEvaluationAnswerWire struct {
 	Probabilities map[string]float64 `json:"probabilities,omitempty"`
 }
 
-type gatewayEvaluationRoundingWire struct {
+type gatewayDecisionRoundingWire struct {
 	ProbabilityDecimals *int `json:"probabilityDecimals,omitempty"`
 	ScoreDecimals       *int `json:"scoreDecimals,omitempty"`
 }
 
-type gatewayEvaluationUsageWire struct {
+type gatewayDecisionUsageWire struct {
 	InputTokens  *int `json:"inputTokens,omitempty"`
 	OutputTokens *int `json:"outputTokens,omitempty"`
 }
 
-type gatewayEvaluationResponse struct {
-	Answers map[string]gatewayEvaluationAnswerWire `json:"answers"`
+type gatewayDecisionResponse struct {
+	Answers map[string]gatewayDecisionAnswerWire `json:"answers"`
 	// Model is the model that actually produced the answers. It differs
-	// from the requested model ID when a conditional evaluation fallback
+	// from the requested model ID when a conditional decision fallback
 	// (GatewayConditionalModelFallback) fired. When absent, the requested
-	// model ID is used. Mirrors TS gatewayEvaluationResponseSchema.model.
+	// model ID is used. Mirrors TS gatewayDecisionResponseSchema.model.
 	Model            *string                           `json:"model,omitempty"`
-	Rounding         *gatewayEvaluationRoundingWire    `json:"rounding,omitempty"`
-	Usage            *gatewayEvaluationUsageWire       `json:"usage,omitempty"`
+	Rounding         *gatewayDecisionRoundingWire      `json:"rounding,omitempty"`
+	Usage            *gatewayDecisionUsageWire         `json:"usage,omitempty"`
 	Warnings         []types.Warning                   `json:"warnings,omitempty"`
 	ProviderMetadata map[string]map[string]interface{} `json:"providerMetadata,omitempty"`
 }
 
-func (r gatewayEvaluationResponse) toAnswers() map[string]provider.EvaluationAnswer {
-	out := make(map[string]provider.EvaluationAnswer, len(r.Answers))
+func (r gatewayDecisionResponse) toAnswers() map[string]provider.DecisionAnswer {
+	out := make(map[string]provider.DecisionAnswer, len(r.Answers))
 	for id, a := range r.Answers {
-		out[id] = provider.EvaluationAnswer{
+		out[id] = provider.DecisionAnswer{
 			Type:          a.Type,
 			Choice:        a.Choice,
 			Score:         a.Score,
@@ -173,22 +173,36 @@ func (r gatewayEvaluationResponse) toAnswers() map[string]provider.EvaluationAns
 	return out
 }
 
-func (r gatewayEvaluationResponse) toRounding() *provider.EvaluationRounding {
+func (r gatewayDecisionResponse) toRounding() *provider.DecisionRounding {
 	if r.Rounding == nil {
 		return nil
 	}
-	return &provider.EvaluationRounding{
+	return &provider.DecisionRounding{
 		ProbabilityDecimals: r.Rounding.ProbabilityDecimals,
 		ScoreDecimals:       r.Rounding.ScoreDecimals,
 	}
 }
 
-func (r gatewayEvaluationResponse) toUsage() *provider.EvaluationUsage {
+func (r gatewayDecisionResponse) toUsage() *provider.DecisionUsage {
 	if r.Usage == nil {
 		return nil
 	}
-	return &provider.EvaluationUsage{
+	return &provider.DecisionUsage{
 		InputTokens:  r.Usage.InputTokens,
 		OutputTokens: r.Usage.OutputTokens,
 	}
+}
+
+// EvaluationModel is the deprecated form of DecisionModel.
+//
+// Deprecated: Use DecisionModel instead.
+func (p *Provider) EvaluationModel(modelID string) (provider.EvaluationModel, error) {
+	return NewDecisionModel(p, modelID), nil
+}
+
+// DoEvaluate is the deprecated form of DoDecide.
+//
+// Deprecated: Use DoDecide instead.
+func (m *DecisionModel) DoEvaluate(ctx context.Context, opts provider.DecisionCallOptions) (*provider.DecisionResult, error) {
+	return m.DoDecide(ctx, opts)
 }

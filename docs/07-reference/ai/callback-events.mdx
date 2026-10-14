@@ -244,42 +244,42 @@ These events wrap each provider call inside a step.
 
 {/* /gen:fields */}
 
-## Evaluate events
+## Decide events
 
-`ai.ExperimentalEvaluate` emits `ai.EvaluateOnStartEvent` and `ai.EvaluateOnEndEvent`.
+`ai.ExperimentalDecide` emits `ai.DecideOnStartEvent` and `ai.DecideOnEndEvent`.
 
-### EvaluateOnStartEvent
+### DecideOnStartEvent
 
-{/* gen:fields ai.EvaluateOnStartEvent */}
+{/* gen:fields ai.DecideOnStartEvent */}
 
 | Field | Type | Description |
 | --- | --- | --- |
 | `CallID` | `string` | CallID is a unique identifier for this evaluate call. |
-| `OperationID` | `string` | OperationID is the canonical operation name ("ai.evaluate"). |
+| `OperationID` | `string` | OperationID is the canonical operation name ("ai.decide"). |
 | `RuntimeContext` | `interface{}` | RuntimeContext is the user-defined runtime context passed via options. |
 | `Provider` | `string` |  |
 | `ModelID` | `string` |  |
 | `State` | `interface{}` |  |
-| `Questions` | `map[string]provider.EvaluationQuestion` |  |
+| `Questions` | `map[string]provider.DecisionQuestion` |  |
 | `MaxRetries` | `int` |  |
 | `Headers` | `map[string]string` |  |
 | `ProviderOptions` | `map[string]interface{}` |  |
 
 {/* /gen:fields */}
 
-### EvaluateOnEndEvent
+### DecideOnEndEvent
 
-{/* gen:fields ai.EvaluateOnEndEvent */}
+{/* gen:fields ai.DecideOnEndEvent */}
 
 | Field | Type | Description |
 | --- | --- | --- |
-| (embedded) | `EvaluateOnStartEvent` | Embedded. |
-| `Answers` | `map[string]provider.EvaluationAnswer` |  |
-| `Usage` | `EvaluateUsage` |  |
+| (embedded) | `DecideOnStartEvent` | Embedded. |
+| `Answers` | `map[string]provider.DecisionAnswer` |  |
+| `Usage` | `DecideUsage` |  |
 | `Warnings` | `[]types.Warning` |  |
-| `Rounding` | `*provider.EvaluationRounding` |  |
+| `Rounding` | `*provider.DecisionRounding` |  |
 | `ProviderMetadata` | `map[string]interface{}` |  |
-| `Response` | `EvaluateResponse` |  |
+| `Response` | `DecideResponse` |  |
 
 {/* /gen:fields */}
 

@@ -47,7 +47,12 @@ type OpenTelemetryOptions struct {
 	Embedding bool
 	// Reranking emits ai.documents/ai.ranking.
 	Reranking bool
-	// ExperimentalEvaluation emits ai.evaluation.* attributes.
+	// ExperimentalDecision emits ai.decision.* attributes.
+	ExperimentalDecision bool
+	// ExperimentalEvaluation is the pre-rename form of ExperimentalDecision;
+	// either one enables ai.decision.* attributes.
+	//
+	// Deprecated: Use ExperimentalDecision instead.
 	ExperimentalEvaluation bool
 	// RuntimeContext emits flattened ai.settings.context.* attributes.
 	RuntimeContext bool
@@ -57,6 +62,13 @@ type OpenTelemetryOptions struct {
 	ToolChoice bool
 	// Schema emits ai.schema/ai.schema.name/ai.schema.description.
 	Schema bool
+}
+
+// experimentalDecision reports whether ai.decision.* attributes are enabled,
+// honoring the deprecated ExperimentalEvaluation option. Mirrors TS's
+// `experimental_decision ?? experimental_evaluation ?? false`.
+func (o OpenTelemetryOptions) experimentalDecision() bool {
+	return o.ExperimentalDecision || o.ExperimentalEvaluation
 }
 
 // OpenTelemetry translates TelemetryIntegration events into OpenTelemetry
@@ -1089,12 +1101,12 @@ func (i OpenTelemetry) onAudioOperationEnd(span trace.Span, e TelemetryFinishEve
 }
 
 // OnError records the error on the root span (with HTTP status when
-// available) and ends it. It also defensively closes any nested evaluate
-// span left open by OnEvaluationModelCallStart for this CallID, since
-// OnEvaluationModelCallEnd is never notified on an error path.
+// available) and ends it. It also defensively closes any nested decide
+// span left open by OnDecisionModelCallStart for this CallID, since
+// OnDecisionModelCallEnd is never notified on an error path.
 func (i OpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent) {
 	if e.CallID != "" {
-		if value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("evaluation", e.CallID)); ok {
+		if value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("decision", e.CallID)); ok {
 			if entry, ok := value.(otelSpanEntry); ok && entry.span.IsRecording() {
 				if e.Error != nil {
 					RecordErrorOnSpan(entry.span, e.Error)
