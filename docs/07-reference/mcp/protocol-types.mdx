@@ -63,6 +63,7 @@ Types in `pkg/mcp` that model the protocol. Most code uses the [client](./client
 
 | Field | Type | Description |
 | --- | --- | --- |
+| `Events` | `*EventsCapability` | Events advertises support for the experimental events/\* methods. |
 | `Experimental` | `map[string]interface{}` |  |
 | `Logging` | `*LoggingCapability` |  |
 | `Completions` | `*CompletionsCapability` | Completions advertises support for the completion/complete method (hash 68a739a). See (\*MCPClient).Complete. |

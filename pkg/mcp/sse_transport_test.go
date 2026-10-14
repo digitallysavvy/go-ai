@@ -481,3 +481,23 @@ func TestSSETransportConcurrent401sRefreshOnceAndStaleRetriesSkipRefresh(t *test
 		t.Fatalf("refresh count = %d, want 1 (deduplicated across concurrent 401s)", got)
 	}
 }
+
+// TS #21727: closing the stream before the endpoint event must fail Connect
+// promptly instead of hanging.
+func TestSSETransportConnectRejectsWhenClosedBeforeEndpoint(t *testing.T) {
+	reader, writer := io.Pipe()
+	transport := NewSSETransport(SSETransportConfig{
+		URL:       "http://localhost:3000/sse",
+		SSEClient: &sseRecordingClient{stream: reader},
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- transport.Connect(ctx) }()
+	writer.Close() //nolint:errcheck
+	err := <-done
+	var mcpErr *MCPClientError
+	if !errors.As(err, &mcpErr) || !strings.Contains(err.Error(), "MCP SSE Transport Error: Connection closed before endpoint event was received") {
+		t.Fatalf("Connect error = %v", err)
+	}
+}

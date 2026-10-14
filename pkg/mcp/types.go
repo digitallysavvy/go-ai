@@ -182,6 +182,8 @@ type ClientCapabilities struct {
 
 // ServerCapabilities represents capabilities of the MCP server
 type ServerCapabilities struct {
+	// Events advertises support for the experimental events/* methods.
+	Events       *EventsCapability      `json:"events,omitempty"`
 	Experimental map[string]interface{} `json:"experimental,omitempty"`
 	Logging      *LoggingCapability     `json:"logging,omitempty"`
 	// Completions advertises support for the completion/complete method
@@ -190,6 +192,11 @@ type ServerCapabilities struct {
 	Prompts     *PromptsCapability     `json:"prompts,omitempty"`
 	Resources   *ResourcesCapability   `json:"resources,omitempty"`
 	Tools       *ToolsCapability       `json:"tools,omitempty"`
+}
+
+// EventsCapability represents the experimental events capability.
+type EventsCapability struct {
+	ListChanged *bool `json:"listChanged,omitempty"`
 }
 
 // CompletionsCapability represents the completions capability.

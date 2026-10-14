@@ -52,8 +52,9 @@ type AuthOptions struct {
 // unauthorized_client it retries once after invalidating credentials, but
 // only when the current client information came from Dynamic Client
 // Registration (hash 7fc2bc1: a pre-registered client is never silently
-// replaced) and no authorization code is in flight. On invalid_grant it
-// retries once after invalidating stored tokens.
+// replaced) and no authorization code is in flight. On invalid_grant from a
+// refresh it retries once after invalidating the refreshed tokens; an
+// invalid_grant from an authorization-code exchange is returned as-is.
 func Auth(ctx context.Context, provider OAuthClientProvider, options AuthOptions) (AuthResult, error) {
 	refreshAttempt := &oauthRefreshAttempt{}
 	result, err := authInternal(ctx, provider, options, refreshAttempt)
@@ -84,13 +85,15 @@ func Auth(ctx context.Context, provider OAuthClientProvider, options AuthOptions
 		return authInternal(ctx, provider, options, nil)
 	}
 
-	if IsInvalidGrantError(err) {
-		// If a refresh was attempted, identify exactly which (now stale)
-		// tokens it tried so a provider sharing storage across clients can
-		// atomically delete only that generation, preserving a concurrent
-		// refresh's newer tokens (hash 4d0500e). Otherwise fall back to
-		// unconditional invalidation, e.g. during an authorization-code
-		// exchange.
+	if IsInvalidGrantError(err) && refreshAttempt.tokens != nil {
+		// Only invalidate the tokens used by a failed refresh, identifying
+		// exactly which (now stale) generation was attempted so a provider
+		// sharing storage across clients can atomically delete only that
+		// generation, preserving a concurrent refresh's newer tokens (hash
+		// 4d0500e). An invalid_grant from an authorization-code exchange
+		// does not indicate that existing tokens are invalid, so the error
+		// propagates without invalidating credentials or retrying (TS
+		// #22055).
 		if ierr := invalidateOAuthTokens(ctx, provider, refreshAttempt.tokens); ierr != nil {
 			return "", ierr
 		}

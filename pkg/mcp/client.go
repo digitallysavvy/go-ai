@@ -68,6 +68,13 @@ type MCPClient struct {
 
 	// Configuration
 	config MCPClientConfig
+
+	// events is the direct event surface; managedEvents is set when an
+	// adapter is configured. eventsErr is a configuration error reported by
+	// Connect before the transport starts.
+	events        *MCPEvents
+	managedEvents ManagedMCPEvents
+	eventsErr     error
 }
 
 // MCPClientConfig contains configuration for the MCP client
@@ -120,6 +127,11 @@ type MCPClientConfig struct {
 	// an error or an invalid ElicitResult (matching TS
 	// DefaultMCPClient.onRequestMessage's this.onError(error) call).
 	OnError func(error) `json:"-"`
+
+	// ExperimentalEvents configures experimental MCP events (webhook
+	// subscriptions with a Store, or managed subscriptions with an Adapter).
+	// Experimental: may change in any release.
+	ExperimentalEvents *MCPEventsConfig `json:"-"`
 }
 
 // protocolVersionDiscoveryEnabled reports the effective value of
@@ -150,7 +162,7 @@ func NewMCPClient(transport Transport, config MCPClientConfig) *MCPClient {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	return &MCPClient{
+	client := &MCPClient{
 		transport: transport,
 		idGen:     NewIDGenerator(),
 		pending:   make(map[interface{}]chan *MCPMessage),
@@ -168,6 +180,71 @@ func NewMCPClient(transport Transport, config MCPClientConfig) *MCPClient {
 		cancel: cancel,
 		config: config,
 	}
+	client.setupEvents(transport, config.ExperimentalEvents)
+	return client
+}
+
+// setupEvents validates the events configuration and, for an adapter, binds
+// its operations once before the transport starts (TS DefaultMCPClient
+// constructor). Errors are reported by Connect.
+func (c *MCPClient) setupEvents(transport Transport, cfg *MCPEventsConfig) {
+	c.events = &MCPEvents{call: c.eventsCall}
+	if cfg == nil {
+		return
+	}
+	if cfg.Adapter != nil && (cfg.Store != nil || cfg.ValidateArguments != nil) {
+		c.eventsErr = NewMCPClientError(0, "Configure experimental_events with either an adapter or a store, not both. Managed adapters own argument validation.", nil)
+		return
+	}
+	c.events.store = cfg.Store
+	c.events.validateArguments = cfg.ValidateArguments
+	if cfg.Adapter == nil {
+		return
+	}
+	info := MCPEventAdapterTransport{Type: MCPEventTransportCustom}
+	switch t := transport.(type) {
+	case *HTTPTransport:
+		info = MCPEventAdapterTransport{Type: MCPEventTransportHTTP, URL: t.url}
+	case *SSETransport:
+		info = MCPEventAdapterTransport{Type: MCPEventTransportSSE, URL: t.url}
+	}
+	operations, err := cfg.Adapter.CreateAdapter(MCPEventAdapterContext{Transport: info})
+	if err != nil {
+		c.eventsErr = err
+		return
+	}
+	if operations == nil {
+		c.eventsErr = newMCPEventOperationsError()
+		return
+	}
+	c.managedEvents = &managedMCPEvents{operations: operations, events: c.events}
+}
+
+// eventsCall sends an events/* request after checking the server's events
+// capability.
+func (c *MCPClient) eventsCall(ctx context.Context, method string, params interface{}, result interface{}) error {
+	if !c.initialized {
+		return fmt.Errorf("client not initialized")
+	}
+	if c.serverCapability.Events == nil {
+		return NewMCPClientError(0, "Server does not support events", nil)
+	}
+	return c.call(ctx, method, params, result)
+}
+
+// ExperimentalEvents returns the experimental direct event API: catalog
+// discovery plus webhook subscriptions backed by MCPEventsConfig.Store.
+// When an Adapter is configured, use ExperimentalManagedEvents instead.
+// Experimental: may change in any release.
+func (c *MCPClient) ExperimentalEvents() *MCPEvents {
+	return c.events
+}
+
+// ExperimentalManagedEvents returns the managed event API when
+// MCPEventsConfig.Adapter is configured, or nil otherwise.
+// Experimental: may change in any release.
+func (c *MCPClient) ExperimentalManagedEvents() ManagedMCPEvents {
+	return c.managedEvents
 }
 
 // Connect connects to the MCP server and initializes the connection. When
@@ -181,6 +258,10 @@ func (c *MCPClient) Connect(ctx context.Context) error {
 	// first fallible call instead.
 	if c.config.MaxRetries < 0 {
 		return NewMCPClientError(0, "maxRetries must be >= 0", nil)
+	}
+
+	if c.eventsErr != nil {
+		return c.eventsErr
 	}
 
 	// Connect transport

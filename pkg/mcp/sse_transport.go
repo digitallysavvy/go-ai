@@ -354,6 +354,7 @@ func (t *SSETransport) readSSEStream(body io.ReadCloser, ready chan<- error) {
 		if err == io.EOF {
 			t.mu.Lock()
 			wasConnected := t.connected
+			aborted := t.cancel == nil // closed intentionally via Close
 			t.connected = false
 			t.endpoint = nil
 			if readySent && wasConnected {
@@ -362,8 +363,8 @@ func (t *SSETransport) readSSEStream(body io.ReadCloser, ready chan<- error) {
 				t.streamErr = io.EOF
 			}
 			t.mu.Unlock()
-			if !readySent {
-				ready <- NewMCPClientError(0, "MCP SSE Transport Error: Connection closed unexpectedly", nil)
+			if !readySent && !aborted {
+				ready <- NewMCPClientError(0, "MCP SSE Transport Error: Connection closed before endpoint event was received", nil)
 			}
 			return
 		}
