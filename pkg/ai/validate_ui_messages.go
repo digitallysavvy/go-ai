@@ -298,7 +298,7 @@ func asDynamicToolPart(part *ToolUIPart) *ToolUIPart {
 	dynamic := *part
 	dynamic.ToolName = GetStaticToolName(part)
 	dynamic.Type = "dynamic-tool"
-	return &dynamic
+	return markToolPartAsUnavailable(&dynamic)
 }
 
 // uiMessagesToJSONValue converts the caller-supplied messages into decoded
@@ -484,7 +484,12 @@ func uiPartIssue(raw interface{}) string {
 	case strings.HasPrefix(partType, "data-"):
 		return optionalString(part, "id")
 	case partType == "dynamic-tool":
-		return checks(str("toolName"), func() string { return uiToolPartIssue(part) })
+		return checks(str("toolName"), func() string {
+			if v, ok := part["dynamic"]; ok && v != nil && v != false {
+				return "Invalid input: dynamic must be false"
+			}
+			return ""
+		}, func() string { return uiToolPartIssue(part) })
 	case strings.HasPrefix(partType, "tool-"):
 		return uiToolPartIssue(part)
 	}
@@ -690,4 +695,18 @@ func optionalProviderMetadata(obj map[string]interface{}, key string) string {
 		}
 	}
 	return ""
+}
+
+// markToolPartAsUnavailable records that a dynamic-tool part was normalized
+// from a static tool part, so model-message conversion never falls back to
+// the tool's unfiltered raw output. Mirrors TS markToolPartAsUnavailable.
+func markToolPartAsUnavailable(part *ToolUIPart) *ToolUIPart {
+	f := false
+	part.Dynamic = &f
+	return part
+}
+
+// isToolPartFromUnavailableTool mirrors TS isToolPartFromUnavailableTool.
+func isToolPartFromUnavailableTool(part *ToolUIPart) bool {
+	return part.Type == "dynamic-tool" && part.Dynamic != nil && !*part.Dynamic
 }

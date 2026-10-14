@@ -290,7 +290,7 @@ func convertUIAssistantBlock(ctx context.Context, message UIMessage, block []UIM
 					output = p.ErrorText
 					errorMode = "json"
 				}
-				modelOutput, err := createUIToolModelOutput(ctx, p.ToolCallID, p.Input, output, findUITool(options.Tools, toolName), errorMode)
+				modelOutput, err := createUIPartModelOutput(ctx, p, output, findUITool(options.Tools, toolName), errorMode)
 				if err != nil {
 					return msg, err
 				}
@@ -373,7 +373,7 @@ func convertUIToolBlock(ctx context.Context, block []UIMessagePart, options Conv
 				output = p.ErrorText
 				errorMode = "text"
 			}
-			modelOutput, err := createUIToolModelOutput(ctx, p.ToolCallID, p.Input, output, findUITool(options.Tools, toolName), errorMode)
+			modelOutput, err := createUIPartModelOutput(ctx, p, output, findUITool(options.Tools, toolName), errorMode)
 			if err != nil {
 				return msg, err
 			}
@@ -410,6 +410,17 @@ func uiToolCallContent(toolCallID, toolName string, input interface{}, providerE
 		}
 	}
 	return call
+}
+
+// createUIPartModelOutput mirrors the TS createModelOutput helper in
+// convertToModelMessages: when a static tool part was normalized to a
+// dynamic-tool part and its tool is still unavailable, the persisted output
+// is omitted rather than sent to the model unfiltered.
+func createUIPartModelOutput(ctx context.Context, part *ToolUIPart, output interface{}, tool *types.Tool, errorMode string) (*types.ToolResultOutput, error) {
+	if errorMode == "none" && tool == nil && isToolPartFromUnavailableTool(part) {
+		return &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "Tool output omitted because the tool is no longer available."}, nil
+	}
+	return createUIToolModelOutput(ctx, part.ToolCallID, part.Input, output, tool, errorMode)
 }
 
 // createUIToolModelOutput mirrors TS createToolModelOutput.
