@@ -181,7 +181,7 @@ func NewToolLoopAgent(config AgentConfig) *ToolLoopAgent {
 		})
 		config.MaxSteps = 0
 	} else {
-		config.StopWhen = []ai.StopCondition{ai.IsStepCount(20)}
+		config.StopWhen = []ai.StopCondition{createDefaultStopCondition(20)}
 		config.MaxSteps = 0
 	}
 
@@ -302,6 +302,7 @@ func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions)
 		ActiveTools:                    callConfig.ActiveTools,
 		ToolChoice:                     defaultToolChoice(callConfig.ToolChoice),
 		ToolOrder:                      callConfig.ToolOrder,
+		ToolCallConcurrency:            callConfig.ToolCallConcurrency,
 		ExperimentalToolCallers:        callConfig.ExperimentalToolCallers,
 		ToolApproval:                   callConfig.ToolApproval,
 		ExperimentalToolApprovalSecret: callConfig.ExperimentalToolApprovalSecret,
@@ -417,6 +418,7 @@ func (a *ToolLoopAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*a
 		ActiveTools:                    callConfig.ActiveTools,
 		ToolChoice:                     defaultToolChoice(callConfig.ToolChoice),
 		ToolOrder:                      callConfig.ToolOrder,
+		ToolCallConcurrency:            callConfig.ToolCallConcurrency,
 		ExperimentalToolCallers:        callConfig.ExperimentalToolCallers,
 		ToolApproval:                   callConfig.ToolApproval,
 		ExperimentalToolApprovalSecret: callConfig.ExperimentalToolApprovalSecret,
@@ -947,6 +949,7 @@ func (a *ToolLoopAgent) prepareStepCallConfig(ctx context.Context, stepNum int, 
 		ActiveTools:                    a.config.ActiveTools,
 		ToolChoice:                     a.config.ToolChoice,
 		ToolOrder:                      a.config.ToolOrder,
+		ToolCallConcurrency:            a.config.ToolCallConcurrency,
 		ExperimentalToolCallers:        a.config.ExperimentalToolCallers,
 		ToolApproval:                   a.config.ToolApproval,
 		ExperimentalToolApprovalSecret: a.config.ExperimentalToolApprovalSecret,
@@ -1103,6 +1106,9 @@ func (c AgentConfig) withGenerateOptions(opts AgentGenerateOptions) AgentConfig 
 	}
 	if opts.ToolOrder != nil {
 		c.ToolOrder = opts.ToolOrder
+	}
+	if opts.ToolCallConcurrency != nil {
+		c.ToolCallConcurrency = opts.ToolCallConcurrency
 	}
 	if opts.ExperimentalToolCallers != nil {
 		c.ExperimentalToolCallers = opts.ExperimentalToolCallers

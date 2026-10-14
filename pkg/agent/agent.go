@@ -83,12 +83,16 @@ type AgentGenerateOptions struct {
 
 	Model provider.LanguageModel
 
-	Tools       []types.Tool
-	ToolChoice  types.ToolChoice
-	ToolOrder   []string
-	ActiveTools []string
-	StopWhen    []ai.StopCondition
-	MaxSteps    int
+	Tools      []types.Tool
+	ToolChoice types.ToolChoice
+	ToolOrder  []string
+	// ToolCallConcurrency is the maximum number of tool calls that may execute
+	// concurrently within a step (1 = sequential). Must be >= 1 when set.
+	// When unset, all tool calls of a step execute concurrently.
+	ToolCallConcurrency *int
+	ActiveTools         []string
+	StopWhen            []ai.StopCondition
+	MaxSteps            int
 
 	// ExperimentalToolCallers configures which tools may call which other
 	// tools, and which tools stay hidden until discovered via ai.ToolSearch.
@@ -286,6 +290,13 @@ type AgentConfig struct {
 
 	// ToolOrder controls the order tools are sent to providers.
 	ToolOrder []string
+
+	// ToolCallConcurrency is the maximum number of tool calls that may execute
+	// concurrently within a step. Set to 1 to execute tool calls sequentially
+	// in the order they were generated. Must be >= 1 when set. When unset,
+	// all tool calls of a step execute concurrently. Applies to Generate and
+	// Stream (the legacy Execute loop ignores it and runs tools sequentially). Mirrors TS ToolLoopAgentSettings.toolCallConcurrency.
+	ToolCallConcurrency *int
 
 	// ExperimentalToolCallers configures which tools may call which other
 	// tools, and which tools stay hidden until discovered via ai.ToolSearch.
@@ -635,6 +646,10 @@ type PrepareCallConfig struct {
 
 	// ToolOrder controls the order tools are sent to providers for this call.
 	ToolOrder []string
+
+	// ToolCallConcurrency is the maximum number of tool calls that may execute
+	// concurrently within a step for this call.
+	ToolCallConcurrency *int
 
 	// ExperimentalToolCallers configures which tools may call which other
 	// tools for this call.

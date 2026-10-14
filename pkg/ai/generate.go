@@ -229,6 +229,13 @@ type GenerateTextOptions struct {
 	// If StopWhen is set, MaxSteps is ignored.
 	MaxSteps *int
 
+	// ToolCallConcurrency is the maximum number of tool calls that may execute
+	// concurrently within a step. Set to 1 to execute tool calls sequentially
+	// in the order they were generated. Must be >= 1 when set. When unset, all
+	// tool calls of a step execute concurrently (results stay in call order).
+	// Mirrors TS toolCallConcurrency.
+	ToolCallConcurrency *int
+
 	// StopWhen defines conditions that terminate the tool-calling loop.
 	// Conditions are evaluated OR -- first non-empty string stops the loop.
 	// Evaluated after each step that produces tool results.
@@ -712,6 +719,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	if err := validateMaxRetries(opts.MaxRetries); err != nil {
 		return nil, err
 	}
+	toolCallConcurrency, err := prepareToolCallConcurrency(opts.ToolCallConcurrency)
+	if err != nil {
+		return nil, err
+	}
 	// TS generate-text.ts tags every call's headers with `ai/${VERSION}`
 	// (`headersWithUserAgent = withUserAgentSuffix(headers ?? {}, ai/${VERSION})`)
 	// right after validating retries, before the prompt is standardized.
@@ -929,14 +940,15 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// + validateApprovedToolApprovals): execute re-validated approved tools,
 	// report invalid inputs and denials to the model before the first step.
 	resumed, err := resumeToolApprovals(ctx, toolApprovalResumeOptions{
-		messages:       initialMessages,
-		tools:          opts.Tools,
-		toolApproval:   opts.ToolApproval,
-		toolsContext:   toolsContext,
-		runtimeContext: runtimeContext,
-		secret:         opts.ExperimentalToolApprovalSecret,
-		refine:         opts.ExperimentalRefineToolInput,
-		usage:          &result.Usage,
+		messages:            initialMessages,
+		tools:               opts.Tools,
+		toolApproval:        opts.ToolApproval,
+		toolsContext:        toolsContext,
+		runtimeContext:      runtimeContext,
+		secret:              opts.ExperimentalToolApprovalSecret,
+		refine:              opts.ExperimentalRefineToolInput,
+		usage:               &result.Usage,
+		toolCallConcurrency: toolCallConcurrency,
 		callbacks: toolCallEventCallbacks{
 			callID:              callID,
 			onStart:             opts.OnToolExecutionStart,
@@ -1176,6 +1188,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		}, allowSystem, effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(stepModel))
 		if normErr != nil {
 			return nil, fmt.Errorf("prompt normalization failed at step %d: %w", stepNum, normErr)
+		}
+		if err := validateStepToolResults(stepPrompt.Messages, opts.Tools); err != nil {
+			return nil, err
 		}
 		stepPrompt = prependInstructionMessages(stepPrompt, stepInstructionMessages)
 
@@ -1457,7 +1472,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				toolExecutionMs:     map[string]int64{},
 				executionBlocked:    !isToolExecutionAllowedFinishReason(genResult.FinishReason),
 			}
-			toolResults, err := executeTools(ctx, genResult.ToolCalls, stepExecutionTools, runtimeContext, toolsContext, opts.ToolApproval, &result.Usage, toolCallbacks)
+			toolResults, err := executeToolsConfigured(ctx, genResult.ToolCalls, stepExecutionTools, runtimeContext, toolsContext, opts.ToolApproval, &result.Usage, toolCallbacks, toolCallConcurrency)
 			if err != nil {
 				if opts.Timeout != nil && opts.Timeout.HasTotal() && ctx.Err() != nil {
 					err = wrapTimeoutError(TimeoutReasonTotal, err)

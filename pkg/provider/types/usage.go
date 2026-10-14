@@ -25,7 +25,9 @@ type Usage struct {
 	TotalTokens *int64 `json:"totalTokens,omitempty"`
 
 	// Raw provider-specific usage data
-	// Contains any additional usage information specific to the provider
+	// Contains any additional usage information specific to the provider.
+	// Add keeps Raw only when one side is an empty usage (a single step);
+	// summing two steps drops it.
 	Raw map[string]interface{} `json:"raw,omitempty"`
 }
 
@@ -86,18 +88,37 @@ func (u Usage) Add(other Usage) Usage {
 		}
 	}
 
-	// Merge raw data (simple merge, later values override)
-	if len(u.Raw) > 0 || len(other.Raw) > 0 {
-		result.Raw = make(map[string]interface{})
-		for k, v := range u.Raw {
-			result.Raw[k] = v
-		}
-		for k, v := range other.Raw {
-			result.Raw[k] = v
-		}
+	// Raw usage is provider/step specific and cannot be summed. Like TS
+	// addLanguageModelUsage, preserve it only when the other side is a null
+	// usage (for example the zero value used to start aggregation, so a
+	// single step keeps its raw usage); otherwise drop it.
+	switch {
+	case u.isNull():
+		result.Raw = copyRaw(other.Raw)
+	case other.isNull():
+		result.Raw = copyRaw(u.Raw)
 	}
 
 	return result
+}
+
+func (u Usage) isNull() bool {
+	d, o := u.InputDetails, u.OutputDetails
+	return u.InputTokens == nil && u.OutputTokens == nil && u.TotalTokens == nil &&
+		(d == nil || (d.NoCacheTokens == nil && d.CacheReadTokens == nil && d.CacheWriteTokens == nil && d.TextTokens == nil && d.ImageTokens == nil)) &&
+		(o == nil || (o.TextTokens == nil && o.ReasoningTokens == nil)) &&
+		len(u.Raw) == 0
+}
+
+func copyRaw(raw map[string]interface{}) map[string]interface{} {
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make(map[string]interface{}, len(raw))
+	for k, v := range raw {
+		out[k] = v
+	}
+	return out
 }
 
 // Helper functions for Add method

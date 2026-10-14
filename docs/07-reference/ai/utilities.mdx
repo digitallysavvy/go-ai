@@ -281,6 +281,7 @@ Options for streaming array elements as they complete.
 | --- | --- |
 | `ai.LogWarningsFunction` | `func(options LogWarningsOptions)`. Install one with `ai.SetLogWarnings` to replace the default stderr logger. |
 | `ai.DisableLogWarnings()` | Turns warning logging off. The `AI_SDK_LOG_WARNINGS=false` environment variable does the same. |
+| `ai.GetDeprecationCode(setting, provider string) string` | Stable code for a deprecation warning, for example `AISDK_DEP_GENERATE_OBJECT`, or `AISDK_DEP_PROVIDER_<provider>__<setting>` when provider-scoped. The default logger prefixes deprecation lines with `[CODE]` and prints each code once per process; custom loggers receive every warning. `GenerateObject`, `StreamObject` and `ExperimentalGenerateSpeech` now emit deprecation warnings. |
 | `ai.TelemetryOptions` | Alias for `telemetry.Options`. |
 
 ## URL support checks

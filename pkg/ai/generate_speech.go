@@ -11,6 +11,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	retryutil "github.com/digitallysavvy/go-ai/pkg/internal/retry"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/version"
@@ -185,7 +186,11 @@ func GenerateSpeech(ctx context.Context, opts GenerateSpeechOptions) (*GenerateS
 	mediaType := resolveGeneratedSpeechMediaType(raw.Audio, responseHeaders, opts.OutputFormat)
 	logModelWarnings(warnings, opts.Model.Provider(), opts.Model.ModelID())
 	audioByteLength := int64(len(raw.Audio))
-	format := generatedAudioFormat(mediaType)
+	format, formatErr := generatedAudioFormat(mediaType)
+	if formatErr != nil {
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: formatErr})
+		return nil, formatErr
+	}
 	telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
 		CallID:           callID,
 		OperationType:    "ai.generateSpeech",
@@ -231,6 +236,11 @@ func speechResponseMetadata(response *types.ResponseMetadata, model provider.Spe
 //
 // Deprecated: use GenerateSpeech.
 func ExperimentalGenerateSpeech(ctx context.Context, opts GenerateSpeechOptions) (*GenerateSpeechResult, error) {
+	LogWarnings(LogWarningsOptions{Warnings: []types.Warning{{
+		Type:    "deprecated",
+		Setting: "experimental_generateSpeech",
+		Message: "Use generateSpeech instead.",
+	}}})
 	return GenerateSpeech(ctx, opts)
 }
 
@@ -295,13 +305,19 @@ func outputFormatMediaType(outputFormat string) string {
 	}
 }
 
-func generatedAudioFormat(mediaType string) string {
-	if mediaType == "audio/mpeg" {
-		return "mp3"
+// generatedAudioFormat derives the audio format from a media type. Mirrors TS
+// DefaultGeneratedAudioFile: "audio/mpeg" and unparseable media types map to
+// mp3, and an empty subtype ("audio/") is an InvalidResponseDataError.
+func generatedAudioFormat(mediaType string) (string, error) {
+	format := "mp3"
+	if mediaType != "" {
+		parts := strings.Split(mediaType, "/")
+		if len(parts) == 2 && mediaType != "audio/mpeg" {
+			format = parts[1]
+		}
 	}
-	parts := strings.Split(mediaType, "/")
-	if len(parts) == 2 && parts[1] != "" {
-		return parts[1]
+	if format == "" {
+		return "", providererrors.NewInvalidResponseDataError(mediaType, "Could not determine audio format from media type: "+mediaType)
 	}
-	return "mp3"
+	return format, nil
 }

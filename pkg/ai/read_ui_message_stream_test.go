@@ -405,3 +405,63 @@ func TestReadUIMessages_ToolOutputChunkMetadataOverridesInputMetadata(t *testing
 		assert.Equal(t, c.wantPhase, part.ToolMetadata["phase"], "unexpected toolMetadata for %s", c.toolCallID)
 	}
 }
+
+// Ports read-ui-message-stream.test.ts (TS #22194): a seeded assistant message
+// is discarded when the stream starts with a different message id, and kept
+// for the same id or no id.
+func TestReadUIMessages_SeededMessageAndMessageIDChange(t *testing.T) {
+	textChunks := func(start UIMessageChunk, delta string) []UIMessageChunk {
+		chunks := []UIMessageChunk{}
+		if start != nil {
+			chunks = append(chunks, start)
+		}
+		return append(chunks,
+			UIMessageChunk{"type": "text-start", "id": "text-1"},
+			UIMessageChunk{"type": "text-delta", "id": "text-1", "delta": delta},
+			UIMessageChunk{"type": "text-end", "id": "text-1"},
+			UIMessageChunk{"type": "finish"},
+		)
+	}
+	seed := func(id string) *UIMessage {
+		return &UIMessage{ID: id, Role: UIMessageRoleAssistant, Metadata: map[string]interface{}{"source": "previous"},
+			Parts: []UIMessagePart{TextUIPart{Text: "Previous response"}}}
+	}
+
+	t.Run("different id discards seed", func(t *testing.T) {
+		got, err := sendChunks(t, seed("previous-response"), textChunks(UIMessageChunk{"type": "start", "messageId": "resumed-response"}, "Resumed response"))
+		require.NoError(t, err)
+		require.NotEmpty(t, got)
+		last := got[len(got)-1]
+		assert.Equal(t, "resumed-response", last.ID)
+		assert.Nil(t, last.Metadata)
+		require.Len(t, last.Parts, 1)
+		assert.Equal(t, "Resumed response", uiPartText(last.Parts[0]))
+	})
+
+	for name, start := range map[string]UIMessageChunk{
+		"same id": {"type": "start", "messageId": "previous-response"},
+		"no id":   nil,
+	} {
+		t.Run(name+" preserves seed", func(t *testing.T) {
+			got, err := sendChunks(t, seed("previous-response"), textChunks(start, " continued"))
+			require.NoError(t, err)
+			require.NotEmpty(t, got)
+			last := got[len(got)-1]
+			assert.Equal(t, "previous-response", last.ID)
+			assert.Equal(t, map[string]interface{}{"source": "previous"}, last.Metadata)
+			require.Len(t, last.Parts, 2)
+			assert.Equal(t, "Previous response", uiPartText(last.Parts[0]))
+			assert.Equal(t, " continued", uiPartText(last.Parts[1]))
+		})
+	}
+}
+
+func uiPartText(p UIMessagePart) string {
+	switch v := p.(type) {
+	case TextUIPart:
+		return v.Text
+	case *TextUIPart:
+		return v.Text
+	}
+	return ""
+}

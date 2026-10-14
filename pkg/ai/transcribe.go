@@ -169,7 +169,7 @@ func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult,
 		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: err})
 		return nil, err
 	}
-	if raw == nil || raw.Text == "" {
+	if raw == nil {
 		var responses []TranscriptionModelResponseMetadata
 		if raw != nil {
 			responses = []TranscriptionModelResponseMetadata{transcriptionResponseMetadata(raw.Response, opts.Model)}
@@ -240,6 +240,11 @@ func transcriptionResponseMetadata(response *types.ResponseMetadata, model provi
 //
 // Deprecated: use Transcribe.
 func ExperimentalTranscribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult, error) {
+	LogWarnings(LogWarningsOptions{Warnings: []types.Warning{{
+		Type:    "deprecated",
+		Setting: "experimental_transcribe",
+		Message: "Use transcribe instead.",
+	}}})
 	return Transcribe(ctx, opts)
 }
 

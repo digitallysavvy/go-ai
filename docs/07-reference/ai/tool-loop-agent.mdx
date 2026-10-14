@@ -179,6 +179,7 @@ These tables are generated from the `agent.AgentConfig` and `agent.PrepareCallCo
 | `Tools` | `[]types.Tool` | Tools available to the agent |
 | `ActiveTools` | `[]string` | ActiveTools restricts the available tools by name before model calls. |
 | `ToolOrder` | `[]string` | ToolOrder controls the order tools are sent to providers. |
+| `ToolCallConcurrency` | `*int` | ToolCallConcurrency is the maximum number of tool calls that may execute concurrently within a step. Set to 1 to execute tool calls sequentially in the order they were generated. Must be &gt;= 1 when set. When unset, all tool calls of a step execute concurrently. Applies to Generate and Stream (the legacy Execute loop ignores it and runs tools sequentially). Mirrors TS ToolLoopAgentSettings.toolCallConcurrency. |
 | `ExperimentalToolCallers` | `ai.ExperimentalToolCallers` | ExperimentalToolCallers configures which tools may call which other tools, and which tools stay hidden until discovered via ai.ToolSearch. Forwarded to the underlying GenerateText/StreamText call. Mirrors the TypeScript SDK's ToolLoopAgentSettings.experimental_toolCallers. |
 | `Skills` | `*SkillRegistry` | Skills are reusable agent behaviors Skills can be registered and executed by the agent |
 | `Subagents` | `*SubagentRegistry` | Subagents are specialized agents that can be delegated to The main agent can delegate tasks to subagents for specialized processing |
@@ -272,6 +273,7 @@ These tables are generated from the `agent.AgentConfig` and `agent.PrepareCallCo
 | `ActiveTools` | `[]string` | ActiveTools restricts Tools by name before calling the model. |
 | `ToolChoice` | `types.ToolChoice` | ToolChoice controls how the model may call tools for this call. |
 | `ToolOrder` | `[]string` | ToolOrder controls the order tools are sent to providers for this call. |
+| `ToolCallConcurrency` | `*int` | ToolCallConcurrency is the maximum number of tool calls that may execute concurrently within a step for this call. |
 | `ExperimentalToolCallers` | `ai.ExperimentalToolCallers` | ExperimentalToolCallers configures which tools may call which other tools for this call. |
 | `ToolApproval` | `types.ToolApprovalConfig` | ToolApproval configures automatic approval handling for this call. |
 | `ExperimentalToolApprovalSecret` | `[]byte` | ExperimentalToolApprovalSecret overrides the approval signing secret for this call. |

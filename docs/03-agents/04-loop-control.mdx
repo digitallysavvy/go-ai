@@ -154,6 +154,8 @@ case result.FinishReason == types.FinishReasonStop:
 | Scenario | Behavior |
 |----------|----------|
 | Neither `StopWhen` nor `MaxSteps` set | `ai.GenerateText` / `ai.StreamText` default to `IsStepCount(1)`: one model call, whose tool calls still execute (as in TS). `agent.NewToolLoopAgent` defaults to `IsStepCount(20)`. |
+
+If the agent's default `IsStepCount(20)` limit stops a tool loop that could otherwise continue, the SDK logs a warning (through `ai.LogWarnings`) with guidance on configuring `StopWhen`. Set `StopWhen` explicitly to choose a limit, even if you want to keep `ai.IsStepCount(20)`; explicit stop conditions do not produce this warning.
 | `MaxSteps` set, `StopWhen` not set | Converts to `StopWhen{IsStepCount(MaxSteps)}` |
 | Both set | `StopWhen` takes precedence; `MaxSteps` is ignored |
 

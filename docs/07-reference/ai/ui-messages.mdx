@@ -72,12 +72,15 @@ description: "Reference for the Go AI SDK UI message types, part types, type gua
 
 A static tool part has type `tool-<name>`. A dynamic tool part has type `dynamic-tool` and sets `ToolName`. `ai.DynamicToolUIPart` and `ai.ToolOutputErrorUIPart` are aliases for `ToolUIPart`.
 
+When `ValidateUIMessages` converts a static tool part into a `dynamic-tool` part because its tool is unavailable, it sets `Dynamic` to a pointer to `false` (serialized as `"dynamic": false`). `ConvertToModelMessages` then replaces the persisted output with `Tool output omitted because the tool is no longer available.` unless the historical tool is passed in `Tools`, so a removed tool's unfiltered output never reaches the model.
+
 {/* gen:fields ai.ToolUIPart */}
 
 | Field | Type | Description |
 | --- | --- | --- |
 | `Type` | `string` | Type is `tool-<name>` for static tools or `dynamic-tool`. |
 | `ToolName` | `string` | ToolName is set (and serialized) for dynamic tools only. |
+| `Dynamic` | `*bool` | Dynamic is non-nil (pointing at false) when a static tool part was normalized to a dynamic-tool part because its current tool schema was unavailable or incompatible. It preserves the static origin across persistence boundaries. Serialized as `"dynamic": false` for dynamic-tool parts only. |
 | `ToolCallID` | `string` |  |
 | `State` | `ToolUIPartState` |  |
 | `Title` | `string` |  |

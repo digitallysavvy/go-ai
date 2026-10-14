@@ -694,6 +694,11 @@ type GenerateObjectResult struct {
 // ChoiceOutput(), or JSONOutput() instead. The Output option provides
 // type-safe structured generation without a separate function call.
 func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateObjectResult, error) {
+	LogWarnings(LogWarningsOptions{Warnings: []types.Warning{{
+		Type:    "deprecated",
+		Setting: "generateObject",
+		Message: "Use generateText with an output setting instead.",
+	}}})
 	// Validate options
 	if opts.Model == nil {
 		return nil, fmt.Errorf("model is required")
@@ -1617,6 +1622,11 @@ type StreamObjectOptions struct {
 // instead. The Output option provides type-safe structured streaming with
 // PartialOutput() for incremental results.
 func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjectResult, error) {
+	LogWarnings(LogWarningsOptions{Warnings: []types.Warning{{
+		Type:    "deprecated",
+		Setting: "streamObject",
+		Message: "Use streamText with an output setting instead.",
+	}}})
 	// Validate options
 	if opts.Model == nil {
 		return nil, fmt.Errorf("model is required")

@@ -478,3 +478,20 @@ func TestUsage_Add_ComplexScenario(t *testing.T) {
 func ptrInt64(v int64) *int64 {
 	return &v
 }
+
+// Ports TS usage.test.ts (#22114): raw usage is preserved when aggregating a
+// single step into a null usage, and dropped when two real usages are summed.
+func TestUsage_Add_RawPreservedForSingleStep(t *testing.T) {
+	t.Parallel()
+	in, out, total := int64(10), int64(5), int64(15)
+	step := Usage{InputTokens: &in, OutputTokens: &out, TotalTokens: &total, Raw: map[string]interface{}{"totalTokens": 20}}
+
+	for name, got := range map[string]Usage{"null+step": (Usage{}).Add(step), "step+null": step.Add(Usage{})} {
+		if got.Raw["totalTokens"] != 20 || *got.TotalTokens != 15 {
+			t.Fatalf("%s: raw = %v total = %v", name, got.Raw, got.TotalTokens)
+		}
+	}
+	if sum := step.Add(step); sum.Raw != nil || *sum.TotalTokens != 30 {
+		t.Fatalf("two steps: raw = %v total = %v, want raw dropped", sum.Raw, sum.TotalTokens)
+	}
+}

@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -1467,5 +1468,30 @@ func TestStreamText_ResumeExecutesApprovedToolsInParallel(t *testing.T) {
 	}
 	if first.Output == nil || first.Output.Value != "call-result" || second.Output == nil || second.Output.Value != "call-result" {
 		t.Fatalf("unexpected results: first=%+v second=%+v", first, second)
+	}
+}
+
+// Ports TS #22178: provider options of an approval-only tool message survive
+// combining with the following tool-result message.
+func TestMessagesForModel_PreservesProviderOptionsOfEmptyApprovalToolMessage(t *testing.T) {
+	approvalOpts := map[string]interface{}{"test": map[string]interface{}{"cacheControl": "approval"}}
+	result := types.ToolResultContent{ToolCallID: "c1", ToolName: "tool", Output: &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "result"}}
+	messages := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentPart{
+			types.ToolCallContent{ToolCallID: "c1", ToolName: "tool"},
+			types.ToolApprovalRequestContent{ApprovalID: "a1", ToolCallID: "c1"},
+		}},
+		{Role: types.RoleTool, ProviderOptions: approvalOpts, Content: []types.ContentPart{
+			types.ToolApprovalResponseContent{ApprovalID: "a1", Approved: true},
+		}},
+		{Role: types.RoleTool, Content: []types.ContentPart{result}},
+	}
+	got := messagesForModel(messages)
+	last := got[len(got)-1]
+	if last.Role != types.RoleTool || len(last.Content) != 1 {
+		t.Fatalf("last = %#v", last)
+	}
+	if !reflect.DeepEqual(last.ProviderOptions, approvalOpts) {
+		t.Fatalf("providerOptions = %#v, want %#v", last.ProviderOptions, approvalOpts)
 	}
 }

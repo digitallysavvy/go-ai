@@ -166,7 +166,13 @@ type ToolUIPart struct {
 	// Type is `tool-<name>` for static tools or `dynamic-tool`.
 	Type string
 	// ToolName is set (and serialized) for dynamic tools only.
-	ToolName         string
+	ToolName string
+	// Dynamic is non-nil (pointing at false) when a static tool part was
+	// normalized to a dynamic-tool part because its current tool schema was
+	// unavailable or incompatible. It preserves the static origin across
+	// persistence boundaries. Serialized as `"dynamic": false` for
+	// dynamic-tool parts only.
+	Dynamic          *bool
 	ToolCallID       string
 	State            ToolUIPartState
 	Title            string
@@ -733,6 +739,9 @@ func (p ToolUIPart) MarshalJSON() ([]byte, error) {
 	var o orderedJSON
 	o.field("type", p.Type)
 	if p.Type == "dynamic-tool" {
+		if p.Dynamic != nil {
+			o.field("dynamic", *p.Dynamic)
+		}
 		o.field("toolName", p.ToolName)
 	}
 	o.field("toolCallId", p.ToolCallID)
@@ -768,6 +777,7 @@ func (p ToolUIPart) MarshalJSON() ([]byte, error) {
 func (p *ToolUIPart) UnmarshalJSON(data []byte) error {
 	var raw struct {
 		Type                   string                 `json:"type"`
+		Dynamic                *bool                  `json:"dynamic"`
 		ToolName               string                 `json:"toolName"`
 		ToolCallID             string                 `json:"toolCallId"`
 		State                  ToolUIPartState        `json:"state"`
@@ -786,9 +796,27 @@ func (p *ToolUIPart) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	*p = ToolUIPart(raw)
+	*p = ToolUIPart{
+		Type:                   raw.Type,
+		ToolName:               raw.ToolName,
+		Dynamic:                raw.Dynamic,
+		ToolCallID:             raw.ToolCallID,
+		State:                  raw.State,
+		Title:                  raw.Title,
+		ToolMetadata:           raw.ToolMetadata,
+		ProviderExecuted:       raw.ProviderExecuted,
+		Input:                  raw.Input,
+		Output:                 raw.Output,
+		RawInput:               raw.RawInput,
+		ErrorText:              raw.ErrorText,
+		Preliminary:            raw.Preliminary,
+		CallProviderMetadata:   raw.CallProviderMetadata,
+		ResultProviderMetadata: raw.ResultProviderMetadata,
+		Approval:               raw.Approval,
+	}
 	if p.Type != "dynamic-tool" {
 		p.ToolName = ""
+		p.Dynamic = nil
 	}
 	return nil
 }

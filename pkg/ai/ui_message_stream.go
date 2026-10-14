@@ -886,10 +886,19 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			}
 			if !skipStepBoundaryDup {
 				converted := toUIMessageChunks(chunkForConversion, options)
-				for _, uiChunk := range converted {
-					processChunk(uiChunk)
+				if chunk.Type == provider.ChunkTypeFinish || chunk.Type == provider.ChunkTypeFinishStep {
+					// Apply step metadata before the finish-step boundary, so
+					// the OnStepEnd snapshot includes it (TS #22268).
+					processMessageMetadata(*chunk)
+					for _, uiChunk := range converted {
+						processChunk(uiChunk)
+					}
+				} else {
+					for _, uiChunk := range converted {
+						processChunk(uiChunk)
+					}
+					processMessageMetadata(*chunk)
 				}
-				processMessageMetadata(*chunk)
 			}
 		}
 
@@ -909,11 +918,11 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		}
 		closeOpenParts()
 		if !sawFinishChunk && finishReason != "" {
-			processChunk(UIMessageChunk{"type": "finish-step"})
 			processMessageMetadata(provider.StreamChunk{
 				Type:         provider.ChunkTypeFinish,
 				FinishReason: finishReason,
 			})
+			processChunk(UIMessageChunk{"type": "finish-step"})
 		}
 		var finishMetadata map[string]interface{}
 		if options.MessageMetadata != nil {
@@ -1014,6 +1023,13 @@ type uiMessageCallbackState struct {
 	activeText       map[string]UIMessageChunk
 	activeReasoning  map[string]UIMessageChunk
 	partialTools     map[string]*uiPartialToolCall
+
+	// resetOnMessageIDChange discards the seeded message (parts, metadata and
+	// in-flight part state) when a start chunk carries a different message
+	// ID, so a resumed stream for another response does not adopt content
+	// from an unrelated assistant turn. Mirrors TS processUIMessageStream's
+	// resetStateOnMessageIdChange.
+	resetOnMessageIDChange bool
 }
 
 type uiPartialToolCall struct {
@@ -1102,6 +1118,14 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 	switch chunkType {
 	case "start":
 		if id, _ := chunk["messageId"].(string); id != "" {
+			if s.resetOnMessageIDChange && id != stringValue(s.message["id"]) {
+				s.message = UIMessageChunk{"id": id, "role": "assistant", "parts": []interface{}{}}
+				s.activeText = map[string]UIMessageChunk{}
+				s.activeReasoning = map[string]UIMessageChunk{}
+				s.partialTools = map[string]*uiPartialToolCall{}
+				s.finishReason = nil
+				s.isContinuation = false
+			}
 			s.message["id"] = id
 		}
 		s.mergeMetadata(chunk["messageMetadata"])

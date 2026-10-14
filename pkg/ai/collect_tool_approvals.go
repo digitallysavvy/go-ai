@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -77,6 +78,8 @@ func CollectToolApprovals(messages []types.Message) (CollectToolApprovalsResult,
 	// exact-key, so client-supplied IDs cannot resolve inherited properties
 	// (the TS Object.create(null) concern does not apply).
 	toolCallsByID := map[string]types.ToolCall{}
+	toolCallOrder := map[string]int{}
+	nextToolCallIndex := 0
 	requestsByApprovalID := map[string]types.ToolApprovalRequestContent{}
 	for _, message := range messages {
 		if message.Role != types.RoleAssistant {
@@ -84,16 +87,22 @@ func CollectToolApprovals(messages []types.Message) (CollectToolApprovalsResult,
 		}
 		for _, call := range message.ToolCalls {
 			toolCallsByID[call.ID] = call
+			toolCallOrder[call.ID] = nextToolCallIndex
+			nextToolCallIndex++
 		}
 		for _, part := range message.Content {
 			switch p := part.(type) {
 			case types.ToolCallContent:
 				call := toolCallFromContentPart(p)
 				toolCallsByID[call.ID] = call
+				toolCallOrder[call.ID] = nextToolCallIndex
+				nextToolCallIndex++
 			case *types.ToolCallContent:
 				if p != nil {
 					call := toolCallFromContentPart(*p)
 					toolCallsByID[call.ID] = call
+					toolCallOrder[call.ID] = nextToolCallIndex
+					nextToolCallIndex++
 				}
 			}
 		}
@@ -176,6 +185,11 @@ func CollectToolApprovals(messages []types.Message) (CollectToolApprovalsResult,
 			result.DeniedToolApprovals = append(result.DeniedToolApprovals, approval)
 		}
 	}
+	// Approval responses can arrive in a different order than the model's
+	// calls. Restore model order before execution is scheduled (TS #22135).
+	sort.SliceStable(result.ApprovedToolApprovals, func(i, j int) bool {
+		return toolCallOrder[result.ApprovedToolApprovals[i].ToolCall.ID] < toolCallOrder[result.ApprovedToolApprovals[j].ToolCall.ID]
+	})
 	return result, nil
 }
 
