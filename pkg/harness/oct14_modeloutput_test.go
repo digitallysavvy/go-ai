@@ -92,22 +92,19 @@ func TestRunPrompt_ToModelOutputRunsOnceAndPreservesRaw(t *testing.T) {
 			return &modelOutput, nil
 		},
 	}
-	mock := newMockHarness(mockHarnessOptions{
-		script: func(submit func(string, interface{})) []StreamPart {
-			stop := FinishReason{Unified: FinishReasonStop}
-			return []StreamPart{
-				&StreamStartPart{},
-				&ToolCallPart{ToolCallID: "call", ToolName: "inspect", Input: "{}"},
-				// finish-step joins the host tool execution, so the adapter's
-				// echoed tool-result (as in a real runtime) arrives after
-				// the result was submitted.
-				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonToolCalls}, Usage: stringUsage(1, 1)},
-				&ToolResultPart{ToolCallID: "call", ToolName: "inspect", Result: map[string]any{"status": "ready"}},
-				&FinishStepPart{FinishReason: stop, Usage: stringUsage(1, 1)},
-				&FinishPart{FinishReason: stop, TotalUsage: stringUsage(2, 2)},
-			}
+	stop := FinishReason{Unified: FinishReasonStop}
+	mock := newScriptedHarness(
+		func(emit func(StreamPart)) {
+			emit(&StreamStartPart{})
+			emit(&ToolCallPart{ToolCallID: "call", ToolName: "inspect", Input: "{}"})
 		},
-	})
+		func(sub ToolResultSubmission, emit func(StreamPart)) {
+			emit(&ToolResultPart{ToolCallID: "call", ToolName: "inspect", Result: map[string]any{"status": "ready"}})
+			emit(&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonToolCalls}, Usage: stringUsage(1, 1)})
+			emit(&FinishStepPart{FinishReason: stop, Usage: stringUsage(1, 1)})
+			emit(&FinishPart{FinishReason: stop, TotalUsage: stringUsage(2, 2)})
+		},
+	)
 	tools := map[string]types.Tool{"inspect": inspect}
 	out := runPrompt(context.Background(), runPromptInput{
 		Harness: mock.harness, Session: mock.session, Prompt: TextPrompt("Inspect"), SandboxSession: testSandbox(),

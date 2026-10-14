@@ -86,19 +86,19 @@ func TestRunPrompt_ResponseMessagesPreserveChronology(t *testing.T) {
 			return 42, nil
 		},
 	}
-	mock := newMockHarness(mockHarnessOptions{
-		script: func(submit func(string, interface{})) []StreamPart {
-			return []StreamPart{
-				&StreamStartPart{},
-				&ToolCallPart{ToolCallID: "lookup-call", ToolName: "lookup", Input: "{}"},
-				&ToolResultPart{ToolCallID: "lookup-call", ToolName: "lookup", Result: 42},
-				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonToolCalls}, Usage: stringUsage(1, 1)},
-				&TextDeltaPart{ID: "answer", Delta: "The answer is 42."},
-				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)},
-				&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(2, 2)},
-			}
+	mock := newScriptedHarness(
+		func(emit func(StreamPart)) {
+			emit(&StreamStartPart{})
+			emit(&ToolCallPart{ToolCallID: "lookup-call", ToolName: "lookup", Input: "{}"})
 		},
-	})
+		func(sub ToolResultSubmission, emit func(StreamPart)) {
+			emit(&ToolResultPart{ToolCallID: "lookup-call", ToolName: "lookup", Result: 42})
+			emit(&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonToolCalls}, Usage: stringUsage(1, 1)})
+			emit(&TextDeltaPart{ID: "answer", Delta: "The answer is 42."})
+			emit(&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)})
+			emit(&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(2, 2)})
+		},
+	)
 	tools := map[string]types.Tool{"lookup": lookup}
 	out := runPrompt(context.Background(), runPromptInput{
 		Harness: mock.harness, Session: mock.session, Prompt: TextPrompt("Look it up"), SandboxSession: testSandbox(),
@@ -139,21 +139,21 @@ func TestRunPrompt_ToolResultsPreserveInputAndOrigin(t *testing.T) {
 			return "host found", nil
 		},
 	}
-	mock := newMockHarness(mockHarnessOptions{
-		script: func(submit func(string, interface{})) []StreamPart {
-			return []StreamPart{
-				&StreamStartPart{},
-				&ToolCallPart{ToolCallID: "native-success", ToolName: "nativeLookup", Input: `{"query":"native success"}`, ProviderExecuted: true, Dynamic: true},
-				&ToolCallPart{ToolCallID: "host-success", ToolName: "hostLookup", Input: `{"query":"host success"}`},
-				&ToolCallPart{ToolCallID: "native-failure", ToolName: "nativeLookup", Input: `{"query":"native failure"}`, ProviderExecuted: true, Dynamic: true},
-				&ToolResultPart{ToolCallID: "host-success", ToolName: "hostLookup", Result: "host found"},
-				&ToolResultPart{ToolCallID: "native-failure", ToolName: "nativeLookup", Result: "native failed", IsError: true, Dynamic: true},
-				&ToolResultPart{ToolCallID: "native-success", ToolName: "nativeLookup", Result: "native found", Dynamic: true},
-				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)},
-				&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(1, 1)},
-			}
+	mock := newScriptedHarness(
+		func(emit func(StreamPart)) {
+			emit(&StreamStartPart{})
+			emit(&ToolCallPart{ToolCallID: "native-success", ToolName: "nativeLookup", Input: `{"query":"native success"}`, ProviderExecuted: true, Dynamic: true})
+			emit(&ToolCallPart{ToolCallID: "host-success", ToolName: "hostLookup", Input: `{"query":"host success"}`})
+			emit(&ToolCallPart{ToolCallID: "native-failure", ToolName: "nativeLookup", Input: `{"query":"native failure"}`, ProviderExecuted: true, Dynamic: true})
 		},
-	})
+		func(sub ToolResultSubmission, emit func(StreamPart)) {
+			emit(&ToolResultPart{ToolCallID: "host-success", ToolName: "hostLookup", Result: "host found"})
+			emit(&ToolResultPart{ToolCallID: "native-failure", ToolName: "nativeLookup", Result: "native failed", IsError: true, Dynamic: true})
+			emit(&ToolResultPart{ToolCallID: "native-success", ToolName: "nativeLookup", Result: "native found", Dynamic: true})
+			emit(&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)})
+			emit(&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(1, 1)})
+		},
+	)
 	tools := map[string]types.Tool{"hostLookup": host}
 	out := runPrompt(context.Background(), runPromptInput{
 		Harness: mock.harness, Session: mock.session, Prompt: TextPrompt("go"), SandboxSession: testSandbox(),

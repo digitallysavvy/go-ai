@@ -179,6 +179,10 @@ type ToolCallPart struct {
 	NativeName string `json:"nativeName,omitempty"`
 	// StepToolCallCount is the total tool calls in the current model step,
 	// when known up front. Must be a positive integer when set.
+	//
+	// Deprecated: ignored by the host since TS #23260. Parallel approvals and
+	// client tool results are collected by pausing at the step's next
+	// finish-step instead, so adapters no longer need to populate it.
 	StepToolCallCount *int `json:"stepToolCallCount,omitempty"`
 }
 

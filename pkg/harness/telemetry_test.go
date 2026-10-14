@@ -99,19 +99,22 @@ func TestAgent_TelemetrySpanNesting(t *testing.T) {
 			return "sunny", nil
 		},
 	}
-	mock := newMockHarness(mockHarnessOptions{
-		script: func(func(string, interface{})) []StreamPart {
-			return []StreamPart{
-				&StreamStartPart{},
-				&ToolCallPart{ToolCallID: "call_1", ToolName: "getWeather", Input: "{}"},
-				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonToolCalls}, Usage: stringUsage(1, 1)},
-				&ToolResultPart{ToolCallID: "call_1", ToolName: "getWeather", Result: "sunny"},
-				&TextDeltaPart{ID: "t1", Delta: "It is sunny."},
-				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)},
-				&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(4, 4)},
-			}
+	// Realistic ordering: the runtime echoes the host tool's result only after
+	// the host submitted it, and a finish-step that arrives before the echo is
+	// not a step boundary (TS #23260).
+	mock := newScriptedHarness(
+		func(emit func(StreamPart)) {
+			emit(&StreamStartPart{})
+			emit(&ToolCallPart{ToolCallID: "call_1", ToolName: "getWeather", Input: "{}"})
 		},
-	})
+		func(sub ToolResultSubmission, emit func(StreamPart)) {
+			emit(&ToolResultPart{ToolCallID: "call_1", ToolName: "getWeather", Result: "sunny"})
+			emit(&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonToolCalls}, Usage: stringUsage(1, 1)})
+			emit(&TextDeltaPart{ID: "t1", Delta: "It is sunny."})
+			emit(&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)})
+			emit(&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(4, 4)})
+		},
+	)
 	a, err := NewAgent(AgentSettings{
 		Harness: mock.harness, Model: "harness-model", UserTools: map[string]types.Tool{"getWeather": weatherTool},
 		Telemetry: &telemetry.Options{
