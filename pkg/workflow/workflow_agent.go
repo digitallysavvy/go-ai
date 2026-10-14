@@ -662,25 +662,53 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 		}
 	}
 	outcomes := make([]approvedOutcome, len(collected.ApprovedToolApprovals))
-	limit := opts.toolCallConcurrency
-	if limit <= 0 || limit > len(outcomes) {
-		limit = len(outcomes)
+	workers := opts.toolCallConcurrency
+	if workers <= 0 || workers > len(outcomes) {
+		workers = len(outcomes)
 	}
-	if limit == 1 {
-		for i, approval := range collected.ApprovedToolApprovals {
-			outcomes[i] = runApproved(approval)
+	// Workers claim calls in model order. Once ctx is cancelled or a call
+	// fails, no further queued call is started (TS mapWithConcurrency); calls
+	// that were never started produce no result.
+	var (
+		claimMu sync.Mutex
+		next    int
+		stopped bool
+	)
+	claim := func() (int, bool) {
+		claimMu.Lock()
+		defer claimMu.Unlock()
+		if stopped || next >= len(outcomes) || (ctx != nil && ctx.Err() != nil) {
+			return 0, false
 		}
-	} else if limit > 1 {
-		sem := make(chan struct{}, limit)
+		i := next
+		next++
+		return i, true
+	}
+	worker := func() {
+		for {
+			i, ok := claim()
+			if !ok {
+				return
+			}
+			outcomes[i] = runApproved(collected.ApprovedToolApprovals[i])
+			if outcomes[i].err != nil {
+				claimMu.Lock()
+				stopped = true
+				claimMu.Unlock()
+				return
+			}
+		}
+	}
+	if workers == 1 {
+		worker()
+	} else if workers > 1 {
 		var wg sync.WaitGroup
-		for i, approval := range collected.ApprovedToolApprovals {
-			wg.Add(1)
-			sem <- struct{}{}
-			go func(i int, approval ai.CollectedToolApproval) {
+		wg.Add(workers)
+		for w := 0; w < workers; w++ {
+			go func() {
 				defer wg.Done()
-				defer func() { <-sem }()
-				outcomes[i] = runApproved(approval)
-			}(i, approval)
+				worker()
+			}()
 		}
 		wg.Wait()
 	}

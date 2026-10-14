@@ -1713,7 +1713,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				}
 			}
 
-			if isModelOutputChunkType(chunk.Type) {
+			// Only semantic output counts (TS isOutputChunk): boundary chunks
+			// such as a bare text-start or an empty reasoning delta do not.
+			if isOutputChunkForTiming(*chunk) {
 				stepSawOutput = true
 			}
 
@@ -3656,7 +3658,11 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 			continue
 		}
 
-		if isModelOutputChunkType(chunk.Type) {
+		// Only semantic output counts: boundary chunks (text-start, empty
+		// reasoning deltas, metadata) do not, so a stream that closes after
+		// them without a finish chunk is reported as having no output (TS
+		// isOutputChunk, #22403).
+		if isOutputChunkForTiming(*chunk) {
 			sawOutput = true
 		}
 

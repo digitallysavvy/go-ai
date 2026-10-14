@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
@@ -159,3 +160,46 @@ func TestWorkflowStreamStepReportsPerformance(t *testing.T) {
 }
 
 func ptrInt64(v int64) *int64 { return &v }
+
+// TS #22403: a stream that closes without a finish chunk is a no-output error
+// unless it carried semantic output; boundary chunks, metadata and empty
+// reasoning deltas are not output. Partial output is kept without an error.
+func TestWorkflowIncompleteStreamClassifiesOutputChunks(t *testing.T) {
+	cases := []struct {
+		name    string
+		chunks  []provider.StreamChunk
+		wantErr bool
+	}{
+		{"stream start only", []provider.StreamChunk{{Type: provider.ChunkTypeStreamStart}}, true},
+		{"response metadata only", []provider.StreamChunk{{Type: provider.ChunkTypeStreamStart}, {Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "r1", ModelID: "mock-model"}}}, true},
+		{"bare text start", []provider.StreamChunk{{Type: provider.ChunkTypeTextStart, ID: "t"}}, true},
+		{"empty reasoning delta", []provider.StreamChunk{{Type: provider.ChunkTypeReasoningStart, ID: "r"}, {Type: provider.ChunkTypeReasoning, Text: ""}}, true},
+		{"partial text", []provider.StreamChunk{{Type: provider.ChunkTypeTextStart, ID: "t"}, {Type: provider.ChunkTypeText, Text: "partial output"}}, false},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			a, err := NewWorkflowAgent(WorkflowAgent{Model: &fnModel{chunks: tc.chunks}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			st, err := a.StreamWithOptions(context.Background(), WorkflowStreamOptions{Prompt: "hi"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, readErr := st.ReadAll()
+			if tc.wantErr {
+				if !ai.IsNoOutputGeneratedError(readErr) && !ai.IsNoOutputGeneratedError(st.Err()) {
+					t.Fatalf("want NoOutputGeneratedError, got readErr=%v streamErr=%v", readErr, st.Err())
+				}
+				return
+			}
+			if readErr != nil || st.Err() != nil {
+				t.Fatalf("partial output must not error: readErr=%v streamErr=%v", readErr, st.Err())
+			}
+			if st.Text() != "partial output" {
+				t.Fatalf("text = %q", st.Text())
+			}
+		})
+	}
+}

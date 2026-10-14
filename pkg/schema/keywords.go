@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"unicode/utf8"
 )
@@ -309,8 +310,10 @@ func validateObjectConstraints(obj map[string]interface{}, sch map[string]interf
 	}
 
 	// dependentRequired (JSON Schema 2019-09 / 2020-12): when a property is
-	// present, the properties it lists must be present too.
-	if dependent, ok := sch["dependentRequired"].(map[string]interface{}); ok {
+	// present, the properties it lists must be present too. Enforced only for
+	// schemas that declare one of those dialects in the root $schema, matching
+	// TS (Ajv2020 enforces it; the default draft-07 Ajv ignores it).
+	if dependent, ok := sch["dependentRequired"].(map[string]interface{}); ok && supportsDependentRequired(root) {
 		keys := make([]string, 0, len(dependent))
 		for key := range dependent {
 			keys = append(keys, key)
@@ -401,4 +404,13 @@ func validateObjectConstraints(obj map[string]interface{}, sch map[string]interf
 	}
 
 	return nil
+}
+
+// supportsDependentRequired reports whether the root schema declares a JSON
+// Schema dialect (2019-09 or 2020-12) that defines dependentRequired.
+func supportsDependentRequired(root map[string]interface{}) bool {
+	dialect, _ := root["$schema"].(string)
+	dialect = strings.TrimSuffix(dialect, "#")
+	return dialect == "https://json-schema.org/draft/2020-12/schema" ||
+		dialect == "https://json-schema.org/draft/2019-09/schema"
 }

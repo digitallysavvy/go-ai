@@ -482,7 +482,7 @@ func TestWorkflowChatTransportEmptyReconnectStreamsAreBounded(t *testing.T) {
 			out, errs := tr.ReconnectToStream(context.Background(), ai.ChatTransportReconnectToStreamRequest{ChatID: "chat-empty"})
 			_, err := collectChunks(out, errs, 3*time.Second)
 			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("failed to reconnect after %d consecutive errors", tc.want)) ||
-				!strings.Contains(err.Error(), "Reconnect stream ended without receiving chunks.") {
+				!strings.Contains(err.Error(), "Last error: Error: Reconnect stream ended without receiving chunks.") {
 				t.Fatalf("error = %v, want reconnect failure after %d consecutive errors", err, tc.want)
 			}
 			mu.Lock()

@@ -65,7 +65,9 @@ response format to the model and parses the final text into `WorkflowResult.Outp
 bounds how many approved tool calls run at once when a run resumes after a tool approval. Leave it
 `nil` to run them all concurrently, or set it to `1` to run them one at a time in model order, for
 example when the tools have side effects that must not overlap. A value below 1 returns an
-`InvalidArgumentError`. Tool execution callbacks can run concurrently, so guard shared state with a mutex.
+`InvalidArgumentError`. Results and stream events always follow model order, whatever order the calls
+finish in, and queued calls are not started once the context is cancelled. Tool execution callbacks can
+run concurrently, so guard shared state with a mutex.
 
 ```go
 one := 1
@@ -184,7 +186,7 @@ Use `workflow.ValidateSerializableToolInput` to validate reconstructed tool inpu
 against the serialized JSON Schema before executing an attached Go function.
 
 Validation treats `format` as an annotation (it is not enforced), accepts annotation and union
-`type` keywords, and supports JSON Schema 2020-12 keywords such as `dependentRequired`. A failure
+`type` keywords, and enforces `dependentRequired` for schemas whose `$schema` declares JSON Schema 2019-09 or 2020-12. A failure
 lists every problem with the details a model needs to retry, for example
 `data/action must be one of "click", "type", "scroll"` or
 `data/edits/0 has unexpected property "path"`. When a tool's `Parameters` is a `schema.Schema` with

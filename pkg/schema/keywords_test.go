@@ -652,3 +652,15 @@ func TestDependentRequired(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestDependentRequiredIgnoredWithoutModernDialect(t *testing.T) {
+	sch := map[string]interface{}{
+		"type": "object",
+		"dependentRequired": map[string]interface{}{
+			"creditCard": []interface{}{"billingAddress"},
+		},
+	}
+	if err := NewJSONSchema(sch).Validate(map[string]interface{}{"creditCard": 1.0}); err != nil {
+		t.Fatalf("draft-07 style schema must ignore dependentRequired: %v", err)
+	}
+}
