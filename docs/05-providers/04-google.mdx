@@ -496,6 +496,8 @@ fmt.Println("Answer:", result.Text)
 
 Gemini 3 thinking and tool-call streams preserve `thoughtSignature` in provider metadata so multi-step calls can safely round-trip model-generated reasoning and function calls. Streaming no-argument function calls are emitted with `{}` input instead of being dropped.
 
+Gemini models before Gemini 3 reject a JSON response format combined with function tools, and Gemini 3 only supports the combination with automatic tool choice. When a request has a JSON response format with a schema and function tools in either unsupported case (also for Vertex Gemini models), the provider adds a synthetic `json` tool (`json_1`, `json_2`, ... if the name is taken), forces a tool call, and returns that tool's arguments as the text output so the SDK can parse the structured output after any application tool calls. Gemini 3 with automatic tool choice keeps native structured output.
+
 Usage includes per-modality token details when the API returns them. Text, image, audio, and video token counts are preserved in the result usage details rather than collapsed into only total input/output tokens.
 
 Use the `"google"` provider key for AI Studio options. Vertex options use the `"googleVertex"` key (see the [Google Vertex AI provider](18-google-vertex.mdx#provider-specific-options) for its lookup order) — the hyphenated `"google-vertex"` string is only the Vertex model's `Provider()` identity, not a `ProviderOptions` key.

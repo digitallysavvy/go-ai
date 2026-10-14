@@ -112,6 +112,10 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 ```
 
+### Structured Output With Tools
+
+Groq rejects JSON response formats combined with function tools. When a request has a JSON response format with a schema (for example from `ai.Output`) and function tools, the provider adds a synthetic `json` tool (`json_1`, `json_2`, ... if the name is taken) carrying the schema, forces a tool call (`required`), and disables parallel tool calls. The response tool's arguments are returned as the text output and conversational text is dropped, so the SDK parses the structured output after any application tool calls. A response that only calls the response tool finishes with `stop`.
+
 ## Examples
 
 ### Basic Text Generation

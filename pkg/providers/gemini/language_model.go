@@ -63,6 +63,7 @@ func (m *LanguageModel) SupportedURLs() map[string][]string {
 
 // DoGenerate performs non-streaming text generation.
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	opts, jsonResponseToolName := m.withJSONResponseTool(opts)
 	reqBody, headers, warnings, err := m.buildRequest(ctx, opts, false)
 	if err != nil {
 		return nil, err
@@ -78,7 +79,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	result := m.convertResponse(response, newToolNameMapping(opts.Tools))
+	result := m.convertResponseWithJSONTool(response, newToolNameMapping(opts.Tools), jsonResponseToolName)
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	return result, nil
@@ -86,6 +87,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 // DoStream performs streaming text generation.
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	opts, jsonResponseToolName := m.withJSONResponseTool(opts)
 	reqBody, headers, warnings, err := m.buildRequest(ctx, opts, true)
 	if err != nil {
 		return nil, err
@@ -104,7 +106,34 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 	stream := newStream(httpResp.Body, m.cfg, newToolNameMapping(opts.Tools), httpResp.Header, m.ModelID())
 	stream.requestBody = reqBody
-	return streaming.NewWarningsStream(stream, warnings), nil
+	var textStream provider.TextStream = stream
+	if jsonResponseToolName != "" {
+		textStream = streaming.NewJSONResponseToolStream(textStream, jsonResponseToolName)
+	}
+	return streaming.NewWarningsStream(textStream, warnings), nil
+}
+
+// withJSONResponseTool returns opts rewritten to request structured output
+// through a synthetic JSON response tool when the model cannot combine a JSON
+// response format with function tools, plus the tool's name ("" when no
+// rewrite is needed). Gemini models before Gemini 3 reject JSON response
+// formatting together with function tools; Gemini 3 supports the combination
+// only with automatic tool choice, so a forced tool choice (required / a
+// specific tool) also needs the response tool (TS #21989).
+func (m *LanguageModel) withJSONResponseTool(opts *provider.GenerateOptions) (*provider.GenerateOptions, string) {
+	if !providerutils.NeedsJSONResponseTool(opts.ResponseFormat, opts.Tools) || !geminiModelPattern.MatchString(m.modelID) {
+		return opts, ""
+	}
+	forced := opts.ToolChoice.Type == types.ToolChoiceRequired || opts.ToolChoice.Type == types.ToolChoiceTool
+	if GetModelCapabilities(m.modelID).UsesGemini3Features && !forced {
+		return opts, ""
+	}
+	responseTool := providerutils.NewJSONResponseTool(opts.ResponseFormat, opts.Tools)
+	rewritten := *opts
+	rewritten.ResponseFormat = nil
+	rewritten.Tools = append(append([]types.Tool(nil), opts.Tools...), responseTool)
+	rewritten.ToolChoice = providerutils.JSONResponseToolChoice(opts.ToolChoice, responseTool.Name)
+	return &rewritten, responseTool.Name
 }
 
 // PrepareBatchRequestBody builds the GenerateContent request body and
@@ -180,6 +209,13 @@ func (m *LanguageModel) handleError(err error) error {
 
 // convertResponse converts a Gemini API Response to a GenerateResult.
 func (m *LanguageModel) convertResponse(response Response, tnm toolNameMapping) *types.GenerateResult {
+	return m.convertResponseWithJSONTool(response, tnm, "")
+}
+
+// convertResponseWithJSONTool is convertResponse for a request that used a
+// JSON response tool (see withJSONResponseTool): conversational text is
+// dropped and the response tool's call becomes the text content.
+func (m *LanguageModel) convertResponseWithJSONTool(response Response, tnm toolNameMapping, jsonResponseToolName string) *types.GenerateResult {
 	result := &types.GenerateResult{
 		Usage:       convertUsage(response.UsageMetadata),
 		RawResponse: response,
@@ -248,6 +284,9 @@ func (m *LanguageModel) convertResponse(response Response, tnm toolNameMapping) 
 			continue
 		}
 		// Regular text → TextContent (ThoughtSignature forwarded via ProviderMetadata).
+		if part.Text != "" && jsonResponseToolName != "" {
+			continue
+		}
 		if part.Text != "" {
 			textParts = append(textParts, part.Text)
 			tc := types.TextContent{Text: part.Text}
@@ -260,6 +299,22 @@ func (m *LanguageModel) convertResponse(response Response, tnm toolNameMapping) 
 			result.Content = append(result.Content, tc)
 		}
 		// Function calls.
+		if part.FunctionCall != nil && jsonResponseToolName != "" && part.FunctionCall.Name == jsonResponseToolName {
+			args := part.FunctionCall.Args
+			if args == nil {
+				args = map[string]interface{}{}
+			}
+			raw, _ := json.Marshal(args) //nolint:errcheck // a decoded map always marshals
+			tc := types.TextContent{Text: string(raw)}
+			if part.ThoughtSignature != "" {
+				tc.ProviderMetadata, _ = json.Marshal(m.cfg.wrapProviderMetadata(map[string]interface{}{ //nolint:errcheck
+					"thoughtSignature": part.ThoughtSignature,
+				}))
+			}
+			textParts = append(textParts, tc.Text)
+			result.Content = append(result.Content, tc)
+			continue
+		}
 		if part.FunctionCall != nil {
 			args := part.FunctionCall.Args
 			if args == nil {

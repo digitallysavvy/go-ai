@@ -79,6 +79,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if err != nil {
 		return nil, err
 	}
+	applyJSONResponseToolResult(result, response, m.jsonResponseToolName(opts))
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	responseMetadata := providerutils.BuildResponseMetadata(response.ID, response.Model, response.Created)
@@ -104,7 +105,11 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	inner := newGroqStream(httpResp.Body, opts.IncludeRawChunks)
 	inner.requestBody = reqBody
 	inner.responseHeaders = providerutils.ExtractHeaders(httpResp.Header)
-	return streaming.NewWarningsStream(inner, warnings), nil
+	var textStream provider.TextStream = inner
+	if name := m.jsonResponseToolName(opts); name != "" {
+		textStream = streaming.NewJSONResponseToolStream(textStream, name)
+	}
+	return streaming.NewWarningsStream(textStream, warnings), nil
 }
 
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
@@ -150,10 +155,22 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if opts.Seed != nil {
 		body["seed"] = *opts.Seed
 	}
-	if len(opts.Tools) > 0 {
-		body["tools"] = tool.ToOpenAIFormat(opts.Tools)
-		if opts.ToolChoice.Type != "" {
-			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(opts.ToolChoice)
+	// Groq rejects JSON response formatting together with function tools, so
+	// structured output is requested through a synthetic JSON response tool
+	// (TS #21989).
+	tools := opts.Tools
+	toolChoice := opts.ToolChoice
+	var jsonResponseTool *types.Tool
+	if providerutils.NeedsJSONResponseTool(opts.ResponseFormat, opts.Tools) {
+		t := providerutils.NewJSONResponseTool(opts.ResponseFormat, opts.Tools)
+		jsonResponseTool = &t
+		tools = append(append([]types.Tool(nil), opts.Tools...), t)
+		toolChoice = providerutils.JSONResponseToolChoice(opts.ToolChoice, t.Name)
+	}
+	if len(tools) > 0 {
+		body["tools"] = tool.ToOpenAIFormat(tools)
+		if toolChoice.Type != "" {
+			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(toolChoice)
 		}
 	}
 	compatibleOptions, warnings := providerutils.ResolveOpenAICompatibleProviderOptions("groq", opts.ProviderOptions)
@@ -193,10 +210,12 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		StrictJSONSchema:          providerutils.BoolOption(compatibleOptions, "strictJsonSchema", true),
 		WarnWhenSchemaUnsupported: true,
 	})
-	if responseFormat != nil {
-		body["response_format"] = responseFormat
+	if jsonResponseTool == nil {
+		if responseFormat != nil {
+			body["response_format"] = responseFormat
+		}
+		warnings = append(warnings, formatWarnings...)
 	}
-	warnings = append(warnings, formatWarnings...)
 	providerutils.ApplyOpenAICompatibleCommonRequestOptions(body, compatibleOptions)
 	// Groq performance service tier: on_demand/flex/auto/performance.
 	if serviceTier, ok := providerutils.OpenAICompatibleStringOption(compatibleOptions, "serviceTier", "service_tier", "service-tier"); ok {
@@ -205,10 +224,57 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if parallelToolCalls, ok := providerutils.OpenAICompatibleBoolOption(compatibleOptions, "parallelToolCalls", "parallel_tool_calls", "parallel-tool-calls"); ok {
 		body["parallel_tool_calls"] = parallelToolCalls
 	}
+	if jsonResponseTool != nil {
+		body["parallel_tool_calls"] = false
+	}
 	if reasoningFormat, ok := providerutils.OpenAICompatibleStringOption(compatibleOptions, "reasoningFormat", "reasoning_format", "reasoning-format"); ok {
 		body["reasoning_format"] = reasoningFormat
 	}
 	return body, warnings
+}
+
+// jsonResponseToolName returns the name of the synthetic JSON response tool
+// added for this request, or "" when none is needed.
+func (m *LanguageModel) jsonResponseToolName(opts *provider.GenerateOptions) string {
+	if !providerutils.NeedsJSONResponseTool(opts.ResponseFormat, opts.Tools) {
+		return ""
+	}
+	return providerutils.NewJSONResponseTool(opts.ResponseFormat, opts.Tools).Name
+}
+
+// applyJSONResponseToolResult turns the JSON response tool call into the
+// result text, drops conversational text, and reports "stop" when the model
+// only called the response tool (TS #21989).
+func applyJSONResponseToolResult(result *types.GenerateResult, response groqResponse, toolName string) {
+	if toolName == "" {
+		return
+	}
+	result.Text = ""
+	// Prefer the wire argument string over a re-encoding of the parsed map so
+	// the structured text keeps the model's exact output.
+	rawByIndex := map[int]string{}
+	if len(response.Choices) > 0 {
+		for i, tc := range response.Choices[0].Message.ToolCalls {
+			rawByIndex[i] = tc.Function.Arguments
+		}
+	}
+	var remaining []types.ToolCall
+	for i, call := range result.ToolCalls {
+		if call.ToolName == toolName {
+			if call.RawArguments == "" {
+				call.RawArguments = rawByIndex[i]
+			}
+			text := providerutils.JSONResponseToolText(call)
+			result.Text += text
+			result.Content = append(result.Content, types.TextContent{Text: text})
+			continue
+		}
+		remaining = append(remaining, call)
+	}
+	result.ToolCalls = remaining
+	if result.Text != "" && len(remaining) == 0 && result.RawFinishReason == "tool_calls" {
+		result.FinishReason = types.FinishReasonStop
+	}
 }
 
 func (m *LanguageModel) convertResponse(response groqResponse) (*types.GenerateResult, error) {
