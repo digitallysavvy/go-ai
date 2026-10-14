@@ -965,9 +965,21 @@ func (d *turnDriver) classifyAndValidateToolCall(raw, display *ToolCallPart) (di
 	if isHostTool {
 		eventPart = raw
 	}
+	// An MCP tool named `read` can take different input from a builtin `read`
+	// that is disabled for this session. The builtin's schema remains in the
+	// merged tool set, so validating a provider-executed dynamic call against
+	// it would reject valid input. Skip that schema (schema-free dynamic
+	// parsing) only when the call is provider-executed + dynamic, shares a
+	// name with a filtered-out builtin, and no active host tool owns the
+	// name. Mirrors TS `isFilteredBuiltinDynamicCall` (TS #22263).
+	tools := d.toolsList
+	if display.ProviderExecuted && display.Dynamic && harnessHasBuiltin &&
+		!IsBuiltinToolIncluded(display.ToolName, d.in.BuiltinToolFiltering) && !hasActiveToolEntry {
+		tools = nil
+	}
 	parsed, perr := ai.ParseToolCall(d.ctx, ai.ParseToolCallOptions{
 		ToolCall: toolCallPartToCall(eventPart),
-		Tools:    d.toolsList,
+		Tools:    tools,
 	})
 	if perr != nil {
 		return types.ToolCall{}, nil, perr
