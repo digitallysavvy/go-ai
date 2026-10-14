@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ExternalStreamOptions configures NewStreamTextResultFromParts: the
@@ -125,17 +126,117 @@ func NewStreamTextResultFromParts(ctx context.Context, src provider.TextStream, 
 // mark the stream done). See consumeExternalParts's ChunkTypeFinish handling
 // below.
 func (s *externalStepAccum) isEmpty() bool {
-	return s.text == "" && len(s.content) == 0 && len(s.reasoning) == 0 &&
+	return s.text == "" && len(s.content) == 0 &&
 		len(s.files) == 0 && len(s.sources) == 0 && len(s.toolCalls) == 0 &&
 		len(s.toolResults) == 0 && len(s.warnings) == 0
+}
+
+// startText begins a new text block for id, always as its own content part.
+func (s *externalStepAccum) startText(id string, md json.RawMessage) {
+	if s.textIdx == nil {
+		s.textIdx = map[string]int{}
+	}
+	s.textIdx[id] = len(s.content)
+	s.content = append(s.content, types.TextContent{ProviderMetadata: md})
+}
+
+// addText appends a text delta to the active block for id (creating it if no
+// text-start was seen). An empty id (a source that does not tag blocks)
+// falls back to merging into the trailing text part.
+func (s *externalStepAccum) addText(id, text string, md json.RawMessage) {
+	if id == "" {
+		s.content = appendTextPart(s.content, text, md)
+		return
+	}
+	i, ok := s.textIdx[id]
+	if !ok {
+		s.startText(id, md)
+		i = s.textIdx[id]
+	}
+	tc := s.content[i].(types.TextContent)
+	tc.Text += text
+	if len(md) > 0 {
+		tc.ProviderMetadata = md
+	}
+	s.content[i] = tc
+}
+
+func (s *externalStepAccum) endText(id string, md json.RawMessage) {
+	i, ok := s.textIdx[id]
+	if !ok {
+		return
+	}
+	if len(md) > 0 {
+		tc := s.content[i].(types.TextContent)
+		tc.ProviderMetadata = md
+		s.content[i] = tc
+	}
+	delete(s.textIdx, id)
+}
+
+func (s *externalStepAccum) startReasoning(id string, md json.RawMessage) {
+	if s.reasoningIdx == nil {
+		s.reasoningIdx = map[string]int{}
+	}
+	s.reasoningIdx[id] = len(s.content)
+	s.content = append(s.content, types.ReasoningContent{ProviderMetadata: md})
+}
+
+func (s *externalStepAccum) addReasoning(id, text string, md json.RawMessage) {
+	if id == "" {
+		s.content = appendReasoningPart(s.content, text, md)
+		return
+	}
+	i, ok := s.reasoningIdx[id]
+	if !ok {
+		s.startReasoning(id, md)
+		i = s.reasoningIdx[id]
+	}
+	rc := s.content[i].(types.ReasoningContent)
+	rc.Text += text
+	if len(md) > 0 {
+		rc.ProviderMetadata = md
+	}
+	s.content[i] = rc
+}
+
+func (s *externalStepAccum) endReasoning(id string, md json.RawMessage) {
+	i, ok := s.reasoningIdx[id]
+	if !ok {
+		return
+	}
+	if len(md) > 0 {
+		rc := s.content[i].(types.ReasoningContent)
+		rc.ProviderMetadata = md
+		s.content[i] = rc
+	}
+	delete(s.reasoningIdx, id)
+}
+
+// reasoningParts returns every reasoning part in content, in order.
+func (s *externalStepAccum) reasoningParts() []types.ReasoningContent {
+	var out []types.ReasoningContent
+	for _, part := range s.content {
+		if rc, ok := part.(types.ReasoningContent); ok {
+			out = append(out, rc)
+		}
+	}
+	return out
 }
 
 // externalStepAccum holds the in-progress state for one step while
 // consumeExternalParts reads src.
 type externalStepAccum struct {
-	text             string
-	content          []types.ContentPart
-	reasoning        []types.ReasoningContent
+	text    string
+	content []types.ContentPart
+	// textIdx/reasoningIdx map an active text/reasoning block's stream ID to
+	// its index in content, so interleaved blocks (a-start, b-start, a-delta,
+	// b-delta, a-delta) accumulate into their own parts instead of merging
+	// into whichever part is last. Cleared at every step boundary (a fresh
+	// externalStepAccum). Mirrors TS HarnessStreamTextResult's
+	// currentStepTextContent/currentStepReasoningContent maps (TS #23086).
+	textIdx          map[string]int
+	reasoningIdx     map[string]int
 	files            []types.GeneratedFileContent
 	sources          []types.SourceContent
 	toolCalls        []types.ToolCall
@@ -182,14 +283,23 @@ func (r *StreamTextResult) consumeExternalParts(ctx context.Context, src provide
 
 	finishStep := func(terminal bool) {
 		content := append([]types.ContentPart(nil), step.content...)
+		reasoning := step.reasoningParts()
+		// Response messages are built per step and concatenated in step
+		// order, so a tool-call step followed by an answer step yields
+		// assistant/tool/assistant rather than a flattened, reordered
+		// assistant/tool pair (TS #23085). Provider-executed results stay on
+		// the assistant message; only host (client-executed) results go on
+		// the tool message.
+		stepResponseMsgs := providerutils.ConvertToResponseMessages(step.toolCalls, content, step.toolResults)
+		step.response.Messages = stepResponseMsgs
 		result := types.StepResult{
 			CallID:           r.cbCallID,
 			StepNumber:       stepNumber,
 			Model:            types.StepModel{Provider: opts.Provider, ModelID: opts.ModelID},
 			Text:             step.text,
 			Content:          content,
-			Reasoning:        step.reasoning,
-			ReasoningText:    reasoningText(step.reasoning),
+			Reasoning:        reasoning,
+			ReasoningText:    reasoningText(reasoning),
 			Files:            step.files,
 			ToolCalls:        step.toolCalls,
 			ToolResults:      step.toolResults,
@@ -200,6 +310,7 @@ func (r *StreamTextResult) consumeExternalParts(ctx context.Context, src provide
 			Sources:          step.sources,
 			Response:         step.response,
 			ProviderMetadata: step.providerMetadata,
+			ResponseMessages: stepResponseMsgs,
 		}
 
 		accumulatedText = append(accumulatedText, step.text)
@@ -209,6 +320,7 @@ func (r *StreamTextResult) consumeExternalParts(ctx context.Context, src provide
 
 		r.mu.Lock()
 		r.cbSteps = append(r.cbSteps, result)
+		r.cbResponseMessages = append(r.cbResponseMessages, stepResponseMsgs...)
 		r.text = strings.Join(accumulatedText, "")
 		r.finishReason = step.finishReason
 		if step.rawFinishReason != "" {
@@ -267,10 +379,24 @@ consumeLoop:
 		case provider.ChunkTypeStreamStart:
 			step.warnings = append(step.warnings, chunk.Warnings...)
 
+		case provider.ChunkTypeTextStart:
+			step.startText(chunk.ID, chunk.ProviderMetadata)
+
+		case provider.ChunkTypeTextEnd:
+			step.endText(chunk.ID, chunk.ProviderMetadata)
+
+		case provider.ChunkTypeReasoningStart:
+			step.startReasoning(chunk.ID, chunk.ProviderMetadata)
+
+		case provider.ChunkTypeReasoningEnd:
+			step.endReasoning(chunk.ID, chunk.ProviderMetadata)
+
 		case provider.ChunkTypeText:
+			if chunk.Text != "" || len(chunk.ProviderMetadata) > 0 {
+				step.addText(chunk.ID, chunk.Text, chunk.ProviderMetadata)
+			}
 			if chunk.Text != "" {
 				step.text += chunk.Text
-				step.content = append(step.content, types.TextContent{Text: chunk.Text})
 
 				// Update partial output after each text chunk (deduplicated),
 				// scoped to the in-progress step's own text only. Mirrors the
@@ -297,10 +423,12 @@ consumeLoop:
 			}
 
 		case provider.ChunkTypeReasoning:
-			if chunk.Reasoning != "" {
-				rc := types.ReasoningContent{Text: chunk.Reasoning}
-				step.reasoning = append(step.reasoning, rc)
-				step.content = append(step.content, rc)
+			reasoningDelta := chunk.Reasoning
+			if reasoningDelta == "" {
+				reasoningDelta = chunk.Text
+			}
+			if reasoningDelta != "" || len(chunk.ProviderMetadata) > 0 {
+				step.addReasoning(chunk.ID, reasoningDelta, chunk.ProviderMetadata)
 			}
 
 		case provider.ChunkTypeToolCall:

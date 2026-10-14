@@ -165,6 +165,8 @@ type PromptControl interface {
 
 {/* /gen:fields */}
 
+When a host tool defines `types.Tool.ToModelOutput`, the host runs it once per submitted result and sets `ToolResult` to a `*harness.ModelToolResult`. Its `Output` is the model-facing representation, limited to text and inline images. The adapter should build the runtime's tool response from it, using `harness.ConvertToolModelOutput`, while `Output` stays the raw result for consumer-facing events. The raw result is kept on the tool result, and `ResponseMessages` reports the model output. Adapters that cannot deliver images should return a `*harness.CapabilityUnsupportedError` or omit them with a diagnostic.
+
 A control can also implement:
 
 | Interface | Method |

@@ -99,19 +99,22 @@ func TestAgent_TelemetrySpanNesting(t *testing.T) {
 			return "sunny", nil
 		},
 	}
-	mock := newMockHarness(mockHarnessOptions{
-		script: func(func(string, interface{})) []StreamPart {
-			return []StreamPart{
-				&StreamStartPart{},
-				&ToolCallPart{ToolCallID: "call_1", ToolName: "getWeather", Input: "{}"},
-				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonToolCalls}, Usage: stringUsage(1, 1)},
-				&ToolResultPart{ToolCallID: "call_1", ToolName: "getWeather", Result: "sunny"},
-				&TextDeltaPart{ID: "t1", Delta: "It is sunny."},
-				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)},
-				&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(4, 4)},
-			}
+	// Realistic ordering: the runtime echoes the host tool's result only after
+	// the host submitted it, and a finish-step that arrives before the echo is
+	// not a step boundary (TS #23260).
+	mock := newScriptedHarness(
+		func(emit func(StreamPart)) {
+			emit(&StreamStartPart{})
+			emit(&ToolCallPart{ToolCallID: "call_1", ToolName: "getWeather", Input: "{}"})
 		},
-	})
+		func(sub ToolResultSubmission, emit func(StreamPart)) {
+			emit(&ToolResultPart{ToolCallID: "call_1", ToolName: "getWeather", Result: "sunny"})
+			emit(&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonToolCalls}, Usage: stringUsage(1, 1)})
+			emit(&TextDeltaPart{ID: "t1", Delta: "It is sunny."})
+			emit(&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)})
+			emit(&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(4, 4)})
+		},
+	)
 	a, err := NewAgent(AgentSettings{
 		Harness: mock.harness, Model: "harness-model", UserTools: map[string]types.Tool{"getWeather": weatherTool},
 		Telemetry: &telemetry.Options{
@@ -169,15 +172,12 @@ func TestAgent_TelemetrySpanNesting(t *testing.T) {
 	if len(toolSpans) != 1 {
 		t.Fatalf("execute_tool getWeather spans = %d, want 1", len(toolSpans))
 	}
-	// TS #21696: toolExecutionStart (and so the execute_tool span) now
-	// fires as soon as the host tool's own execution begins — while step 0
-	// is still open, since getWeather's ToolCallPart arrives before step
-	// 0's `finish-step` — rather than being deferred until its result is
-	// observed (which, per the scripted `tool-result` part arriving after
-	// step 0's `finish-step`, would be once step 1 has already opened).
-	// The execute_tool span is therefore nested under step 0, the step the
-	// tool call actually ran in, not step 1 (where its result happened to
-	// stream).
+	// TS #21696: toolExecutionStart (and so the execute_tool span) fires as
+	// soon as the host tool's own execution begins, while step 0 is still
+	// open (getWeather's ToolCallPart arrives before step 0's `finish-step`),
+	// rather than being deferred until its result is observed. The
+	// execute_tool span is therefore nested under step 0, the step the tool
+	// call actually ran in.
 	if toolSpans[0].Parent().SpanID() != step0[0].SpanContext().SpanID() {
 		t.Fatalf("execute_tool span is not nested under the step it started executing in (step 0)")
 	}

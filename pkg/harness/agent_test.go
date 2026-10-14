@@ -25,6 +25,7 @@ type recordedToolResult struct {
 	ToolCallID string
 	Output     interface{}
 	IsError    bool
+	ToolResult any
 }
 
 type recordedApproval struct {
@@ -82,7 +83,7 @@ func (c *mockPromptControl) SubmitToolResult(_ context.Context, r ToolResultSubm
 		c.onSubmitResult(r)
 	}
 	c.mu.Lock()
-	*c.toolResults = append(*c.toolResults, recordedToolResult{ToolCallID: r.ToolCallID, Output: r.Output, IsError: r.IsError})
+	*c.toolResults = append(*c.toolResults, recordedToolResult(r))
 	c.mu.Unlock()
 	return nil
 }
@@ -893,13 +894,11 @@ func TestAgent_SurfacesEveryApprovalFromACountedToolCallStep(t *testing.T) {
 	}
 }
 
-// TestAgent_PausesOnFirstApprovalWithoutStepToolCallCount verifies the
-// backward-compatible default: an adapter that never populates
-// StepToolCallCount on its tool-call events keeps the original
-// pause-on-first behavior — only the first of two approval-required tool
-// calls is surfaced before the turn pauses, matching pre-32349cc behavior
-// for adapters that cannot know a step's tool-call cardinality up front.
-func TestAgent_PausesOnFirstApprovalWithoutStepToolCallCount(t *testing.T) {
+// TestAgent_SurfacesEveryApprovalWithoutStepToolCallCount verifies TS #23260:
+// an approval request no longer ends the response immediately, so both
+// approval-required tool calls of a step are surfaced even though the adapter
+// never populates the (now ignored) StepToolCallCount.
+func TestAgent_SurfacesEveryApprovalWithoutStepToolCallCount(t *testing.T) {
 	mock := newMockHarness(mockHarnessOptions{
 		script: func(submit func(string, interface{})) []StreamPart {
 			return []StreamPart{
@@ -931,8 +930,12 @@ func TestAgent_PausesOnFirstApprovalWithoutStepToolCallCount(t *testing.T) {
 	}
 
 	approvals, _, _ := session.snapshotPendingState()
-	if len(approvals) != 1 || approvals[0].ToolCallID != "c1" {
-		t.Fatalf("pending approvals = %+v, want only c1 (pause-on-first, unaware of c2)", approvals)
+	seen := map[string]bool{}
+	for _, approval := range approvals {
+		seen[approval.ToolCallID] = true
+	}
+	if len(approvals) != 2 || !seen["c1"] || !seen["c2"] {
+		t.Fatalf("pending approvals = %+v, want both c1 and c2", approvals)
 	}
 }
 

@@ -307,7 +307,7 @@ The callbacks reuse the event types from `pkg/ai`, so a harness turn appears in 
 
 ### Pausing for approval or results
 
-A turn pauses when the runtime wants approval for a tool, or when it calls a client-executed tool. The paused state is recorded as a `harness.PendingToolApproval` or `harness.PendingToolResult`. Their kinds are `harness.PendingToolApprovalBuiltin` and `harness.PendingToolApprovalCustom`. A `harness.CompletedToolResult` is a client tool result executed while suspending, submitted on resume without running the tool again.
+A turn pauses when the runtime wants approval for a tool, or when it calls a client-executed tool. An approval request or pending client tool result does not end the response right away. The rest of the step is still surfaced, so every approval and pending result of a parallel batch is reported. The turn pauses at the step's next `finish-step`, after every host tool started in that response has been echoed back by the runtime. An adapter that cannot make progress without host input emits a `finish-step` for that. The host ignores such a `finish-step` while host tools it started have not been echoed yet. The paused state is recorded as a `harness.PendingToolApproval` or `harness.PendingToolResult`. Their kinds are `harness.PendingToolApprovalBuiltin` and `harness.PendingToolApprovalCustom`. A `harness.CompletedToolResult` is a client tool result executed while suspending, submitted on resume without running the tool again.
 
 {/* gen:fields harness.PendingToolApproval */}
 
@@ -349,7 +349,7 @@ To resume, take the client's trailing tool message and pass the continuations to
 
 | Function | Description |
 | --- | --- |
-| `harness.CollectToolApprovalContinuations(messages []types.Message) ([]types.ToolApprovalResponseContent, error)` | Extracts approval decisions from a trailing `tool` message. Responses that already have a tool result are ignored. |
+| `harness.CollectToolApprovalContinuations(messages []types.Message) ([]types.ToolApprovalResponseContent, error)` | Extracts approval decisions from a trailing `tool` message. Responses that already have a tool result are ignored. A synthesized `execution-denied` result does not count, so a newly denied approval still continues the turn. |
 | `harness.CollectToolResultContinuations(messages []types.Message) []types.ToolResultContent` | Extracts client-provided tool results from the trailing `tool` message. |
 
 `harness.AgentPendingToolApproval` and `harness.AgentPendingToolResult` are the consumer-facing aliases.
@@ -365,6 +365,8 @@ To resume, take the client's trailing tool message and pass the continuations to
 | `harness.BuiltinToolName`, `harness.BuiltinToolUseKind` | A common name, and a classification for permission handling: `harness.BuiltinToolUseKindReadonly`, `harness.BuiltinToolUseKindEdit` or `harness.BuiltinToolUseKindBash`. |
 | `harness.AgentBuiltinTool`, `harness.AgentBuiltinToolName`, `harness.AgentBuiltinToolUseKind`, `harness.AgentToolSpec` | Consumer-facing aliases. |
 | `harness.ToolSpec` | Describes a host-defined tool made available to the runtime. |
+| `harness.NormalizeToolModelOutput(output)` | Validates a tool's model output for delivery to a runtime: text and inline images only. Returns a `*harness.CapabilityUnsupportedError` otherwise. |
+| `harness.ConvertToolModelOutput(output)` | Converts a normalized model output into `[]harness.ToolModelOutputContent` blocks and an error flag, for adapters that build the runtime's tool result. |
 | `harness.BuiltinToolFiltering` | Selects the adapter-native built-in tools for a session. `Mode` is `harness.BuiltinToolFilteringAllow` or `harness.BuiltinToolFilteringDeny`. |
 | `harness.BuiltinToolFilteringMode` | The type of `Mode`. |
 | `harness.ResolveToolFiltering(ResolveToolFilteringOptions) ResolvedToolFiltering` | Computes the active user tools and the built-in filtering to send to the adapter from `ActiveTools` and `InactiveTools`. |
