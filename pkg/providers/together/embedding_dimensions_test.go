@@ -51,3 +51,26 @@ func TestEmbeddingTopLevelDimensions(t *testing.T) {
 }
 
 func dimPtr(v int) *int { return &v }
+
+// TS openai(-compatible) embedding options: providerOptions.together.user is
+// forwarded as the request's `user` field.
+func TestEmbeddingUserOption(t *testing.T) {
+	var body map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer srv.Close()
+	m := NewEmbeddingModel(New(Config{APIKey: "k", BaseURL: srv.URL}), "embed")
+	opts := &provider.EmbedModelOptions{ProviderOptions: map[string]interface{}{"together": map[string]interface{}{"user": "user-1"}}}
+	_, _ = m.DoEmbedMany(context.Background(), []string{"a"}, opts)
+	if body["user"] != "user-1" {
+		t.Fatalf("user = %v, body = %#v", body["user"], body)
+	}
+	body = nil
+	_, _ = m.DoEmbedMany(context.Background(), []string{"a"}, &provider.EmbedModelOptions{})
+	if _, ok := body["user"]; ok {
+		t.Fatalf("user sent without option: %#v", body)
+	}
+}

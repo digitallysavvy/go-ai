@@ -131,4 +131,8 @@ func applyEmbeddingDimensions(reqBody map[string]interface{}, opts *provider.Emb
 	if d, ok := providerutils.ResolveEmbeddingDimensions(resolved["dimensions"], opts.Dimensions); ok {
 		reqBody["dimensions"] = d
 	}
+	// providerOptions.<provider>.user (TS openaiCompatibleEmbeddingModelOptions.user).
+	if u, ok := resolved["user"].(string); ok && u != "" {
+		reqBody["user"] = u
+	}
 }
