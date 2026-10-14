@@ -404,3 +404,31 @@ func TestGatewayDecisionModel_DoDecide_ErrorMapsToTypedGatewayError(t *testing.T
 		t.Fatalf("err = %v (%T), want GatewayInvalidRequestError", err, err)
 	}
 }
+
+// TS: gateway-decision-model.test.ts "should extract refusal answers"
+func TestGatewayDecisionModel_DoDecide_ExtractsRefusalAnswers(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"answers": {"tone": {"type": "refusal"}, "ok": {"type": "boolean", "probability": 0.5}}}`))
+	}))
+	defer server.Close()
+
+	p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model, _ := p.DecisionModel("m")
+	result, err := model.DoDecide(context.Background(), provider.DecisionCallOptions{
+		State: "s",
+		Questions: map[string]provider.DecisionQuestion{
+			"tone": {Type: "choice", Instructions: "t", Criteria: map[string]interface{}{"a": nil}},
+			"ok":   {Type: "boolean", Instructions: "o"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := result.Answers["tone"]; got.Type != "refusal" || got.Choice != "" {
+		t.Fatalf("tone = %+v", got)
+	}
+}

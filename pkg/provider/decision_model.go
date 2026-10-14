@@ -33,7 +33,9 @@ type DecisionQuestion struct {
 // DecisionAnswer is one typed answer to an DecisionQuestion. Mirrors
 // TypeScript's Experimental_DecisionModelV4Answer union.
 type DecisionAnswer struct {
-	// Type is "choice", "score", or "boolean".
+	// Type is "choice", "score", "boolean", or "refusal". A "refusal" answer
+	// means the model declined to answer the question; it is valid for any
+	// question type and carries no other fields.
 	Type string `json:"type"`
 
 	// Choice is the selected option for a "choice" answer.

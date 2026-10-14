@@ -401,3 +401,34 @@ func (p mockDecisionModelProvider) DecisionModel(modelID string) (provider.Decis
 	}
 	return nil, errors.New("no such decisionModel: " + modelID)
 }
+
+// TS: decide.test.ts "rejects refused questions with a refusal error without retrying"
+func TestExperimentalDecide_RejectsRefusedQuestionsWithoutRetrying(t *testing.T) {
+	for _, refused := range [][]string{{"topic"}, {"severity"}, {"refund"}, {"refund", "topic"}} {
+		answers := decisionAnswersFixture()
+		for _, id := range refused {
+			answers[id] = provider.DecisionAnswer{Type: "refusal"}
+		}
+		mock := &mockDecisionModel{
+			providerName: "test", modelID: "m",
+			doDecide: func(context.Context, provider.DecisionCallOptions) (*provider.DecisionResult, error) {
+				return &provider.DecisionResult{Answers: answers}, nil
+			},
+		}
+		var endCalled bool
+		_, err := ExperimentalDecide(context.Background(), DecideOptions{
+			Model: mock, State: "", Questions: decisionQuestionsFixture(),
+			OnEnd: func(DecideOnEndEvent) { endCalled = true },
+		})
+		var target *providererrors.DecisionRefusalError
+		if !errors.As(err, &target) {
+			t.Fatalf("%v: err = %v, want DecisionRefusalError", refused, err)
+		}
+		if target.Provider != "test" || target.ModelID != "m" || len(target.QuestionIDs) != len(refused) {
+			t.Fatalf("%v: error = %+v", refused, target)
+		}
+		if len(mock.calls) != 1 || endCalled {
+			t.Fatalf("%v: calls = %d, endCalled = %v", refused, len(mock.calls), endCalled)
+		}
+	}
+}

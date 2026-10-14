@@ -1,8 +1,11 @@
 package errors
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 )
 
 // DecisionUnsupportedQuestionTypeError indicates a decision model does
@@ -30,6 +33,46 @@ func (e *DecisionUnsupportedQuestionTypeError) Error() string {
 // DecisionUnsupportedQuestionTypeError.
 func IsDecisionUnsupportedQuestionTypeError(err error) bool {
 	var target *DecisionUnsupportedQuestionTypeError
+	return errors.As(err, &target)
+}
+
+// DecisionRefusalError indicates a decision model declined to answer one or
+// more questions. Mirrors TypeScript's DecisionRefusalError
+// (AI_DecisionRefusalError).
+type DecisionRefusalError struct {
+	// QuestionIDs lists the refused questions, sorted.
+	QuestionIDs []string
+	Provider    string
+	ModelID     string
+	Message     string
+}
+
+func (e *DecisionRefusalError) Error() string {
+	if e.Message != "" {
+		return e.Message
+	}
+	noun := "questions"
+	if len(e.QuestionIDs) == 1 {
+		noun = "question"
+	}
+	quoted := make([]string, len(e.QuestionIDs))
+	for i, id := range e.QuestionIDs {
+		// JSON.stringify(id) in the TypeScript SDK.
+		b, err := json.Marshal(id)
+		if err != nil {
+			b = []byte(strconv.Quote(id))
+		}
+		quoted[i] = string(b)
+	}
+	return fmt.Sprintf(
+		"Decision model \"%s\" from provider \"%s\" refused %s %s.",
+		e.ModelID, e.Provider, noun, strings.Join(quoted, ", "),
+	)
+}
+
+// IsDecisionRefusalError checks if an error is a DecisionRefusalError.
+func IsDecisionRefusalError(err error) bool {
+	var target *DecisionRefusalError
 	return errors.As(err, &target)
 }
 

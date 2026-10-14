@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"time"
 
@@ -217,6 +218,21 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 	}
 
 	if err := validateDecisionAnswers(opts.Questions, result.Answers, result.Rounding); err != nil {
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: err, CallID: callID})
+		return nil, err
+	}
+
+	// Refusals are valid answers for the model but not for the caller: fail
+	// without retrying, before the model-call end event (mirrors decide.ts).
+	var refused []string
+	for id := range opts.Questions {
+		if result.Answers[id].Type == "refusal" {
+			refused = append(refused, id)
+		}
+	}
+	if len(refused) > 0 {
+		sort.Strings(refused)
+		err := &providererrors.DecisionRefusalError{QuestionIDs: refused, Provider: model.Provider(), ModelID: model.ModelID()}
 		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: err, CallID: callID})
 		return nil, err
 	}
@@ -549,6 +565,9 @@ func validateDecisionAnswers(questions map[string]provider.DecisionQuestion, ans
 
 	for id, q := range questions {
 		answer := answers[id]
+		if answer.Type == "refusal" {
+			continue
+		}
 		if answer.Type != q.Type {
 			return invalidDecisionAnswer(answers, fmt.Sprintf("Question %q returned an answer with the wrong type.", id))
 		}
