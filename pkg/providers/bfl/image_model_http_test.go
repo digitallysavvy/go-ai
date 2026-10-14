@@ -158,7 +158,8 @@ func TestBFLImageModel_HeadersForTrustedAndForeignURLs(t *testing.T) {
 	if pollHeaders.Get("Custom-Provider-Header") != "provider" || pollHeaders.Get("Custom-Request-Header") != "request" || pollHeaders.Get("Content-Type") != "" {
 		t.Fatalf("poll headers = %#v", pollHeaders)
 	}
-	if imageHeaders.Get("Custom-Provider-Header") != "provider" || imageHeaders.Get("Custom-Request-Header") != "request" {
+	// Signed BFL delivery URLs are fetched without provider or API credentials.
+	if imageHeaders.Get("Custom-Provider-Header") != "" || imageHeaders.Get("Custom-Request-Header") != "" || imageHeaders.Get("X-Key") != "" {
 		t.Fatalf("image headers = %#v", imageHeaders)
 	}
 

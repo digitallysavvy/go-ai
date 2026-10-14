@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -54,7 +55,7 @@ func (m *ImageModel) ModelID() string {
 // editing. Returns nil when support is unknown for the model ID.
 func (m *ImageModel) SupportsFileInputs() *bool {
 	switch m.modelID {
-	case "flux-kontext-pro", "flux-kontext-max", "flux-pro-1.0-fill":
+	case "flux-3-image", "flux-kontext-pro", "flux-kontext-max", "flux-pro-1.0-fill":
 		return boolPtr(true)
 	case "flux-pro-1.1-ultra", "flux-pro-1.1":
 		return boolPtr(false)
@@ -86,7 +87,18 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	if len(opts.Files) > 10 {
 		return nil, fmt.Errorf("black forest labs supports up to 10 input images")
 	}
-	reqBody := m.buildRequestBody(opts)
+	var reqBody map[string]interface{}
+	var warnings []types.Warning
+	if m.modelID == flux3ImageModelID {
+		var err error
+		reqBody, warnings, err = m.buildFlux3Request(opts)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		reqBody = m.buildRequestBody(opts)
+		warnings = bflWarnings(opts)
+	}
 
 	// Create request
 	endpoint := m.getEndpoint()
@@ -114,7 +126,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		return nil, err
 	}
 
-	return m.convertResponse(ctx, result, createResp, bflWarnings(opts), requestHeaders)
+	return m.convertResponse(ctx, result, createResp, warnings, requestHeaders)
 }
 
 func validateBFLCreateResponse(resp bflCreateResponse) error {
@@ -184,6 +196,159 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) map[s
 	}
 
 	return reqBody
+}
+
+// flux3ImageModelID is the FLUX 3 image model, which uses a stricter request
+// schema than the legacy FLUX endpoints.
+const flux3ImageModelID = "flux-3-image"
+
+// flux3AspectRatios are the aspect ratios the FLUX 3 endpoint accepts.
+var flux3AspectRatios = map[string]bool{
+	"21:9": true, "2:1": true, "16:9": true, "3:2": true, "7:5": true,
+	"4:3": true, "5:4": true, "1:1": true, "4:5": true, "3:4": true,
+	"5:7": true, "2:3": true, "9:16": true, "1:2": true, "9:21": true,
+}
+
+// flux3SupportedOptions are the blackForestLabs provider options FLUX 3
+// accepts; every other option produces an unsupported warning.
+var flux3SupportedOptions = map[string]bool{
+	"grounding": true, "pollIntervalMillis": true, "pollTimeoutMillis": true,
+	"resolution": true, "safetyTolerance": true, "version": true,
+}
+
+// validateFlux3Options mirrors blackForestLabsFlux3ImageModelOptionsSchema for
+// the options FLUX 3 sends. Invalid values fail before the request is submitted.
+func validateFlux3Options(raw map[string]interface{}) error {
+	invalid := func(msg string) error {
+		return fmt.Errorf("invalid blackForestLabs provider options: %s", msg)
+	}
+	if v, ok := raw["resolution"]; ok && v != nil {
+		str, _ := v.(string)
+		switch str {
+		case "768sq", "1k", "1.5k", "2k", "4k":
+		default:
+			return invalid("resolution must be one of 768sq, 1k, 1.5k, 2k, 4k")
+		}
+	}
+	if v, ok := raw["grounding"]; ok && v != nil {
+		if _, isBool := v.(bool); !isBool {
+			return invalid("grounding must be a boolean")
+		}
+	}
+	if v, ok := raw["version"]; ok && v != nil {
+		if str, _ := v.(string); str != "latest" {
+			return invalid(`version must be "latest"`)
+		}
+	}
+	if v, ok := raw["safetyTolerance"]; ok && v != nil {
+		var f float64
+		switch n := v.(type) {
+		case int:
+			f = float64(n)
+		case int64:
+			f = float64(n)
+		case float64:
+			f = n
+		default:
+			return invalid("safetyTolerance must be an integer between 0 and 4")
+		}
+		if f != float64(int64(f)) || f < 0 || f > 4 {
+			return invalid("safetyTolerance must be an integer between 0 and 4")
+		}
+	}
+	return nil
+}
+
+// buildFlux3Request builds the FLUX 3 request body and its warnings, mirroring
+// the flux-3-image branch of TS BlackForestLabsImageModel.getArgs.
+func (m *ImageModel) buildFlux3Request(opts *provider.ImageGenerateOptions) (map[string]interface{}, []types.Warning, error) {
+	warnings := []types.Warning{}
+	if opts.Size != "" {
+		if opts.AspectRatio == "" {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "size",
+				Details: "Deriving aspect_ratio from size. FLUX 3 uses the resolution provider option to select output resolution.",
+			})
+		} else {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "size",
+				Details: "FLUX 3 ignores size when aspectRatio is provided. Use the resolution provider option to select output resolution.",
+			})
+		}
+	}
+
+	var raw map[string]interface{}
+	if opts.ProviderOptions != nil {
+		raw, _ = opts.ProviderOptions["blackForestLabs"].(map[string]interface{})
+	}
+	if err := validateFlux3Options(raw); err != nil {
+		return nil, nil, err
+	}
+
+	finalAspectRatio := opts.AspectRatio
+	if opts.Size != "" && finalAspectRatio == "" {
+		var width, height int
+		_, _ = fmt.Sscanf(opts.Size, "%dx%d", &width, &height)
+		if width > 0 && height > 0 {
+			finalAspectRatio = bflAspectRatio(width, height)
+		}
+	}
+
+	// The endpoint uses 21:9 and 9:21 instead of their reduced forms.
+	aspectRatio := finalAspectRatio
+	switch aspectRatio {
+	case "7:3":
+		aspectRatio = "21:9"
+	case "3:7":
+		aspectRatio = "9:21"
+	}
+	if aspectRatio != "" && !flux3AspectRatios[aspectRatio] {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "aspectRatio",
+			Details: fmt.Sprintf("FLUX 3 does not support aspect ratio %s. Using the endpoint's default auto aspect ratio.", finalAspectRatio),
+		})
+		aspectRatio = ""
+	}
+	if opts.Mask != nil {
+		return nil, nil, fmt.Errorf("%w: FLUX 3 image masks", providererrors.ErrUnsupportedFeature)
+	}
+	if opts.Seed != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "seed"})
+	}
+	keys := make([]string, 0, len(raw))
+	for key, value := range raw {
+		if value != nil && !flux3SupportedOptions[key] {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "blackForestLabs." + key})
+	}
+
+	body := map[string]interface{}{"prompt": opts.Prompt}
+	if aspectRatio != "" {
+		body["aspect_ratio"] = aspectRatio
+	}
+	if len(opts.Files) > 0 {
+		images := make([]string, 0, len(opts.Files))
+		for _, file := range opts.Files {
+			images = append(images, bflImageValue(file))
+		}
+		body["images"] = images
+	}
+	for from, to := range map[string]string{
+		"resolution": "resolution", "grounding": "grounding",
+		"safetyTolerance": "safety_tolerance", "version": "version",
+	} {
+		if v := raw[from]; v != nil {
+			body[to] = v
+		}
+	}
+	return body, warnings, nil
 }
 
 func bflWarnings(opts *provider.ImageGenerateOptions) []types.Warning {
@@ -351,6 +516,9 @@ func (m *ImageModel) pollResult(ctx context.Context, createResp bflCreateRespons
 		if result.Status == "Error" || result.Status == "Failed" {
 			return bflResult{}, fmt.Errorf("Black Forest Labs generation failed.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
+		if result.Status == "Request Moderated" || result.Status == "Content Moderated" || result.Status == "Task not found" {
+			return bflResult{}, fmt.Errorf("Black Forest Labs generation failed: %s.", result.Status) //nolint:staticcheck // matches TS SDK's exact error text
+		}
 
 		select {
 		case <-pollCtx.Done():
@@ -419,9 +587,47 @@ func (m *ImageModel) getPollBody(ctx context.Context, pollURL string, headers ma
 		return nil, fmt.Errorf("BFL poll response exceeded maximum size of %d bytes", limit)
 	}
 	if resp.StatusCode >= 400 {
+		// Failed tasks can be reported as HTTP 503; resubmitting them would
+		// start a new generation, so a terminal task status is not retryable.
+		var errBody struct {
+			Status  string      `json:"status"`
+			State   string      `json:"state"`
+			Detail  interface{} `json:"detail"`
+			Message string      `json:"message"`
+		}
+		if json.Unmarshal(body, &errBody) == nil && errBody.Detail == nil && errBody.Message == "" {
+			status := errBody.Status
+			if status == "" {
+				status = errBody.State
+			}
+			if status != "" {
+				retryable := !bflTerminalTaskStatus(status)
+				perr := providererrors.NewProviderError("bfl", resp.StatusCode, "", fmt.Sprintf("Black Forest Labs generation failed: %s.", status), nil)
+				perr.Retryable = &retryable
+				return nil, perr
+			}
+		}
 		return nil, fmt.Errorf("BFL API returned status %d: %s", resp.StatusCode, string(body))
 	}
 	return body, nil
+}
+
+// bflHostIsBFL reports whether rawURL is on bfl.ai or one of its subdomains.
+func bflHostIsBFL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	return host == "bfl.ai" || strings.HasSuffix(host, ".bfl.ai")
+}
+
+func bflTerminalTaskStatus(status string) bool {
+	switch status {
+	case "Content Moderated", "Error", "Failed", "Request Moderated", "Task not found":
+		return true
+	}
+	return false
 }
 
 func bflTrustedURL(urlText, baseURL string) bool {
@@ -522,7 +728,9 @@ func (m *ImageModel) downloadImage(ctx context.Context, url string, headers map[
 	if err := opts.URLValidator(url); err != nil {
 		return nil, nil, err
 	}
-	trusted := isTrusted(url)
+	// Signed BFL downloads need no credentials; only a custom proxy (a
+	// same-origin, non-bfl.ai base URL) receives provider and request headers.
+	trusted := providerutils.IsSameOrigin(url, baseURL) && !bflHostIsBFL(baseURL)
 	// Validates each redirect hop and drops credentials on cross-origin hops.
 	client := fileutil.NewDownloadClient(url, opts)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -584,7 +792,7 @@ type bflCreateResponse struct {
 
 type bflResult struct {
 	ID     string `json:"id"`
-	Status string `json:"status"` // "Pending", "Ready", "Error", "Failed", "Request Moderated"
+	Status string `json:"status"` // "Pending", "Reasoning", "Generating", "Ready", "Error", "Failed", "Request Moderated", "Content Moderated", "Task not found"
 	State  string `json:"state"`
 	Result struct {
 		Sample    string   `json:"sample"` // URL to the generated image

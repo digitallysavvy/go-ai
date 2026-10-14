@@ -40,6 +40,7 @@ export BFL_API_KEY=...
 
 | Model ID | Quality | Speed | Best For |
 | ---------- | --------- | ------- | ---------- |
+| flux-3-image | Excellent | Medium | Text-to-image and reference-image editing |
 | flux-pro-1.1 | Excellent | Medium | Professional work |
 | flux-pro | Excellent | Medium | High quality |
 | flux-dev | Very Good | Fast | Development |
@@ -81,6 +82,44 @@ result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
         "shallow depth of field, cinematic composition, blade runner aesthetic",
 })
 ```
+
+### FLUX 3 Image
+
+`flux-3-image` supports text-to-image and reference-image editing (up to 10
+images passed through `Files`). It does not accept masks, `Seed`, or the legacy
+`width`/`height`, `steps`, `guidance`, `outputFormat`, `promptUpsampling`, `raw`,
+`imagePrompt*`, `inputImage*`, and webhook provider options; those produce
+`unsupported` warnings.
+
+Provider options (`providerOptions["blackForestLabs"]`): `resolution`
+(`768sq`, `1k`, `1.5k`, `2k`, `4k`), `grounding` (bool), `version` (`latest`),
+`safetyTolerance` (integer 0-4), `pollIntervalMillis`, and `pollTimeoutMillis`.
+
+Accepted aspect ratios are `21:9`, `2:1`, `16:9`, `3:2`, `7:5`, `4:3`, `5:4`,
+`1:1`, `4:5`, `3:4`, `5:7`, `2:3`, `9:16`, `1:2`, and `9:21`. A ratio derived from
+`Size` (such as `7:3`) is normalized to an accepted one where possible; an
+unsupported ratio is omitted with a warning so the endpoint chooses automatically.
+
+```go
+model, _ := bflProvider.ImageModel("flux-3-image")
+
+result, err := model.DoGenerate(ctx, &provider.ImageGenerateOptions{
+    Prompt:      "a studio photo of a ceramic teapot",
+    AspectRatio: "16:9",
+    ProviderOptions: map[string]interface{}{
+        "blackForestLabs": map[string]interface{}{
+            "resolution":      "2k",
+            "safetyTolerance": 2,
+        },
+    },
+})
+```
+
+Polling continues through the `Reasoning` and `Generating` statuses and stops
+with `Black Forest Labs generation failed: <status>.` for `Request Moderated`,
+`Content Moderated`, and `Task not found`. Signed image downloads from BFL
+delivery hosts are sent without API credentials; a custom proxy base URL still
+receives the provider and request headers on same-origin downloads.
 
 ## Examples
 
