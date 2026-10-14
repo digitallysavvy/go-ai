@@ -45,12 +45,6 @@ var BuiltinTools = map[string]harness.BuiltinTool{
 		obj([]string{"query"}, props("query", str(), "path", str()))),
 	"open_file": tool("open_file", "", obj([]string{"path"}, props("path", str()))),
 	"web_fetch": tool("web_fetch", harness.BuiltinToolUseKindReadonly, obj([]string{"url"}, props("url", str()))),
-	// terminal is fx's original terminal tool, kept unchanged for
-	// back-compat even though fx now also exposes "shell" (TS keeps both in
-	// FX_BUILTIN_TOOLS too).
-	"terminal": tool("terminal", harness.BuiltinToolUseKindBash, obj([]string{"action"}, props(
-		"action", str(), "session_id", str(), "cwd", str(), "command", str(),
-	))),
 	// shell is fx's flat run/interact/stop tool (TS `shellInputSchema`, a
 	// union of 4 variants: run-with-profile, run-with-explicit-executable,
 	// interact, stop). JSON Schema `anyOf` mirrors TS `z.union([...])`, which
@@ -99,7 +93,7 @@ var BuiltinTools = map[string]harness.BuiltinTool{
 		},
 	}),
 	"skill": tool("skill", harness.BuiltinToolUseKindReadonly,
-		obj([]string{"name"}, props("name", str(), "location", str(), "resource", str(), "offset", number()))),
+		obj([]string{"location"}, props("location", str(), "resource", str()))),
 	"install_skill": tool("install_skill", harness.BuiltinToolUseKindEdit,
 		obj([]string{"source"}, props("source", str(), "skill", str()))),
 	"subagent": tool("subagent", "", obj([]string{"command"}, props("command", map[string]any{"type": "object"}))),

@@ -2,6 +2,7 @@ package fx
 
 import (
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -21,7 +22,7 @@ func TestBuildConfig_Recipe(t *testing.T) {
 	if cfg.Executable != "fx" || !reflect.DeepEqual(cfg.Args, []string{"acp"}) {
 		t.Errorf("executable/args = %q/%v", cfg.Executable, cfg.Args)
 	}
-	if cfg.Source != (acp.Source{Type: acp.SourceInstallCommand, Command: "curl -fsSL https://fx.sh/setup.sh | bash"}) {
+	if cfg.Source != (acp.Source{Type: acp.SourceInstallCommand, Command: "curl -fsSL https://fx.sh/setup.sh | bash -s -- v" + fxVersion}) {
 		t.Errorf("source = %+v", cfg.Source)
 	}
 	wantCredentialEnv := []string{
@@ -50,16 +51,16 @@ func TestBuildConfig_Recipe(t *testing.T) {
 	if cfg.ProviderAuthentication == nil || !reflect.DeepEqual(cfg.ProviderAuthentication.GatewayEnv, wantGatewayEnv) {
 		t.Errorf("providerAuthentication = %+v", cfg.ProviderAuthentication)
 	}
-	if len(cfg.BuiltinTools) != 28 {
-		t.Errorf("BuiltinTools has %d entries, want 28", len(cfg.BuiltinTools))
+	if len(cfg.BuiltinTools) != 27 {
+		t.Errorf("BuiltinTools has %d entries, want 27", len(cfg.BuiltinTools))
 	}
 	glob, ok := cfg.BuiltinTools["glob"]
 	if !ok || glob.NativeName != "glob_files" || glob.CommonName != harness.BuiltinToolGlob {
 		t.Errorf("glob = %+v", glob)
 	}
-	terminal, ok := cfg.BuiltinTools["terminal"]
-	if !ok || terminal.ToolUseKind != harness.BuiltinToolUseKindBash {
-		t.Errorf("terminal = %+v", terminal)
+	// TS #22347: fx dropped its original `terminal` tool.
+	if _, ok := cfg.BuiltinTools["terminal"]; ok {
+		t.Error("terminal builtin tool must no longer be declared")
 	}
 	shell, ok := cfg.BuiltinTools["shell"]
 	if !ok || shell.ToolUseKind != harness.BuiltinToolUseKindBash {
@@ -213,6 +214,38 @@ func TestFxShellAndCapabilitySearchInputSchemas(t *testing.T) {
 	for _, tc := range capabilitySearchCases {
 		if got := schemaAccepts(capabilitySearchSchema, tc.input); got != tc.want {
 			t.Errorf("capability_search %s: schemaAccepts = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TS #23138: the install command is pinned to a versioned fx release.
+func TestBuildConfig_InstallCommandIsVersionPinned(t *testing.T) {
+	cmd := BuildConfig(Settings{}).Source.Command
+	if !regexp.MustCompile(`^curl -fsSL https://fx\.sh/setup\.sh \| bash -s -- v\S+$`).MatchString(cmd) {
+		t.Errorf("install command = %q, want a versioned installer invocation", cmd)
+	}
+}
+
+// TS #22347: fx's skill tool takes `location` (required) and `resource`; the
+// legacy name/offset fields are no longer declared, and unknown fields pass.
+func TestFxSkillInputSchema(t *testing.T) {
+	schema, ok := BuildConfig(Settings{}).BuiltinTools["skill"].Parameters.(map[string]any)
+	if !ok {
+		t.Fatal("skill Parameters is not a map")
+	}
+	cases := []struct {
+		name  string
+		input map[string]any
+		want  bool
+	}{
+		{"location", map[string]any{"location": "skills/foo"}, true},
+		{"location and resource", map[string]any{"location": "skills/foo", "resource": "r.md"}, true},
+		{"legacy name only", map[string]any{"name": "foo"}, false},
+		{"unknown fields tolerated", map[string]any{"location": "x", "future": 1}, true},
+	}
+	for _, tc := range cases {
+		if got := schemaAccepts(schema, tc.input); got != tc.want {
+			t.Errorf("skill %s: schemaAccepts = %v, want %v", tc.name, got, tc.want)
 		}
 	}
 }
