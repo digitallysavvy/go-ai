@@ -301,17 +301,20 @@ func TestBuildRequestBody_StructuredOutputGating(t *testing.T) {
 		}
 	})
 
-	t.Run("unknown custom models fall back to json_object", func(t *testing.T) {
-		model := newMoonshotTestModel("custom-model-id")
-		body, _, err := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{
-			Prompt:         textPrompt("Hello"),
-			ResponseFormat: &provider.ResponseFormat{Type: "json", Schema: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}},
-		}, false)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if body["response_format"].(map[string]interface{})["type"] != "json_object" {
-			t.Errorf("expected json_object fallback, got %#v", body["response_format"])
+	t.Run("unknown models preserve JSON schema output", func(t *testing.T) {
+		for _, modelID := range []string{"custom-model-id", "moonshot-v2", "kimi-next"} {
+			model := newMoonshotTestModel(modelID)
+			body, warnings, err := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+				Prompt:         textPrompt("Hello"),
+				ResponseFormat: &provider.ResponseFormat{Type: "json", Name: "response", Schema: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}},
+			}, false)
+			if err != nil {
+				t.Fatalf("%s: unexpected error: %v", modelID, err)
+			}
+			rf, _ := body["response_format"].(map[string]interface{})
+			if rf["type"] != "json_schema" || len(warnings) != 0 {
+				t.Errorf("%s: response_format=%#v warnings=%v", modelID, body["response_format"], warnings)
+			}
 		}
 	})
 

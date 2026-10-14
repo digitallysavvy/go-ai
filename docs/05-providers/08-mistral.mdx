@@ -278,3 +278,25 @@ model, err := p.LanguageModel(mistral.ModelMistralMedium35)
 ### Cached token usage
 
 Mistral cached token counts map into `types.Usage.InputDetails.CacheReadTokens` when returned by the provider.
+
+## October 14 2026 catch-up
+
+### Reasoning configuration
+
+`mistral-large-4` and `mistral-large-4-0` (`mistral.ModelMistralLarge4`, `mistral.ModelMistralLarge40`) accept reasoning configuration. Chat models now default to supporting `reasoning_effort`: only known non-reasoning models (the `codestral`, `ministral`, `mistral-code`, `mistral-large-latest`/`mistral-large-2512` and `voxtral-small` IDs) emit an `unsupported` `reasoning` warning, so new or unknown model IDs forward `Reasoning` and `providerOptions.mistral.reasoningEffort` instead of dropping them.
+
+### Conversations API and web search
+
+`Provider.ConversationModel(id)` calls Mistral's Conversations API (`POST /v1/conversations`, `store: false`) and supports the provider-executed `mistral.WebSearch()` and `mistral.WebSearchPremium()` tools. Web search runs produce a provider-executed tool call and result (the result carries the execution `info`), and `tool_reference` chunks become URL sources (deduplicated by URL).
+
+```go
+model := p.ConversationModel("mistral-medium-latest")
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "What happened in AI news today?",
+    Tools:  []types.Tool{mistral.WebSearch()},
+})
+```
+
+The Conversations API does not support `safePrompt`, `documentImageLimit`, `documentPageLimit`, `promptCacheKey` or `parallelToolCalls`; setting them under `providerOptions.mistral` produces `unsupported` warnings. System messages become `instructions`, and previously executed web searches are replayed as `function.call` and `function.result` inputs. `topK` is unsupported, and `Reasoning` is only forwarded for the reasoning-capable model IDs.

@@ -41,6 +41,13 @@ func TestDeepSeekIsV4Model(t *testing.T) {
 		{"deepseek-pro-mini", true},
 		{"deepseek-chat", false},
 		{"deepseek-reasoner", false},
+		// TS #22493: future models inherit V4 behavior; legacy versions don't.
+		{"deepseek-v5-pro", true},
+		{"deepseek-v10-flash", true},
+		{"deepseek-next", true},
+		{"provider/deepseek-v5-pro", true},
+		{"deepseek-v3.2", false},
+		{"provider/deepseek-v2.5", false},
 	}
 	for _, tt := range tests {
 		if got := isDeepSeekV4Model(tt.modelID); got != tt.want {

@@ -120,3 +120,7 @@ for the mechanism.
 
 - [API Reference: GenerateText](../07-reference/ai/generate-text.mdx)
 - [Moonshot AI Documentation](https://platform.moonshot.ai/docs)
+
+## October 14 2026 catch-up
+
+Native `json_schema` structured output is now used for every Moonshot model ID, including unknown or future IDs (for example `kimi-next`), instead of falling back to `json_object` for IDs outside the known `kimi-k*` and `moonshot-v1-*` families.
