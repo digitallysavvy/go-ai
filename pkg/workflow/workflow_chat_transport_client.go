@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -56,7 +57,8 @@ type WorkflowChatTransportOptions struct {
 	OnChatSendMessage func(resp *http.Response, req ai.ChatTransportSendMessagesRequest) error
 	// OnChatEnd is invoked once, after a "finish" chunk is observed.
 	OnChatEnd func(WorkflowChatTransportEndEvent) error
-	// MaxConsecutiveErrors bounds reconnect attempts. Defaults to 3.
+	// MaxConsecutiveErrors bounds reconnect attempts. Streams that end without
+	// receiving any UI message chunks count as errors. Defaults to 3.
 	MaxConsecutiveErrors int
 	// InitialStartIndex is the default startIndex used by ReconnectToStream
 	// when it is called directly (not as part of a SendMessages recovery).
@@ -218,7 +220,7 @@ func (t *WorkflowChatTransport) sendMessages(ctx context.Context, req ai.ChatTra
 	}
 
 	normalizer := newUIStreamNormalizer()
-	chunkIndex, gotFinish := t.pumpChunkStream(ctx, resp.Body, normalizer, nil, out)
+	chunkIndex, gotFinish, _ := t.pumpChunkStream(ctx, resp.Body, normalizer, nil, out)
 	_ = resp.Body.Close()
 
 	if gotFinish {
@@ -329,7 +331,7 @@ func (t *WorkflowChatTransport) reconnectLoop(ctx context.Context, chatID, runID
 		}
 		useExplicitStartIndex = false
 
-		read, finished := t.pumpChunkStream(ctx, resp.Body, normalizer, orphans, out)
+		read, finished, streamErr := t.pumpChunkStream(ctx, resp.Body, normalizer, orphans, out)
 		_ = resp.Body.Close()
 		chunkIndex += read
 		if finished {
@@ -337,9 +339,26 @@ func (t *WorkflowChatTransport) reconnectLoop(ctx context.Context, chatID, runID
 			// loop immediately, and neither is read again afterward.
 			break
 		}
+		if streamErr == nil && read > 0 {
+			// The stream ended without a finish chunk but made progress
+			// (chunks advanced the cursor, including ones the orphan filter
+			// dropped): reset the error count and resume from the new cursor.
+			consecutiveErrors = 0
+			continue
+		}
+		// A read/parse failure, or a stream that ended without receiving any
+		// UI message chunks (an empty SSE response, keep-alives only, or a
+		// bare [DONE]), counts as an error so an endpoint that keeps returning
+		// the same empty response cannot loop forever (TS #22436).
+		// The message mirrors TS getErrorMessage(error), which is
+		// error.toString(): "Error: <message>".
+		lastErr := "Error: Reconnect stream ended without receiving chunks."
+		if streamErr != nil {
+			lastErr = "Error: " + streamErr.Error()
+		}
 		consecutiveErrors++
 		if consecutiveErrors >= t.maxConsecutiveErrors {
-			errs <- fmt.Errorf("workflow chat transport: failed to reconnect after %d consecutive errors", t.maxConsecutiveErrors)
+			errs <- fmt.Errorf("workflow chat transport: failed to reconnect after %d consecutive errors. Last error: %s", t.maxConsecutiveErrors, lastErr)
 			return
 		}
 	}
@@ -363,18 +382,23 @@ func (t *WorkflowChatTransport) finishChat(chatID string, chunkIndex int, errs c
 // mid-stream (rather than a clean EOF) simply stops the pump — the caller
 // treats an incomplete stream the same as a dropped connection and
 // reconnects, matching TS's `catch { console.error(...) }` fallthrough.
+// streamErr is nil when the body ended at EOF and non-nil when it ended by a
+// read error, malformed frame, or cancelled context.
 //
 // Every send on out also selects on ctx.Done() (R2-4): without it, a
 // consumer that stops draining the channel returned by SendMessages /
 // ReconnectToStream — without separately cancelling ctx — leaves this
 // goroutine permanently blocked on `out <- repaired`, leaking it for the
 // life of the process.
-func (t *WorkflowChatTransport) pumpChunkStream(ctx context.Context, body io.Reader, normalizer *uiStreamNormalizer, orphans *orphanFilter, out chan<- ai.UIMessageChunk) (read int, gotFinish bool) {
+func (t *WorkflowChatTransport) pumpChunkStream(ctx context.Context, body io.Reader, normalizer *uiStreamNormalizer, orphans *orphanFilter, out chan<- ai.UIMessageChunk) (read int, gotFinish bool, streamErr error) {
 	parser := streaming.NewSSEParser(body)
 	for {
 		event, err := parser.Next()
 		if err != nil {
-			return read, gotFinish
+			if errors.Is(err, io.EOF) {
+				return read, gotFinish, nil
+			}
+			return read, gotFinish, err
 		}
 		data := strings.TrimSpace(event.Data)
 		if data == "" || data == "[DONE]" {
@@ -390,7 +414,7 @@ func (t *WorkflowChatTransport) pumpChunkStream(ctx context.Context, body io.Rea
 			// silently skipped: stop the pump so the caller's reconnect path
 			// runs, matching TS instead of dropping one frame and continuing
 			// on the same (possibly desynced) connection.
-			return read, gotFinish
+			return read, gotFinish, fmt.Errorf("invalid UI message chunk: %w", err)
 		}
 		read++
 		// The orphan filter runs on the raw chunk, before framing repair —
@@ -404,7 +428,7 @@ func (t *WorkflowChatTransport) pumpChunkStream(ctx context.Context, body io.Rea
 				select {
 				case out <- repaired:
 				case <-ctx.Done():
-					return read, gotFinish
+					return read, gotFinish, ctx.Err()
 				}
 			}
 		}
