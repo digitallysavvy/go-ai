@@ -181,7 +181,7 @@ func NewToolLoopAgent(config AgentConfig) *ToolLoopAgent {
 		})
 		config.MaxSteps = 0
 	} else {
-		config.StopWhen = []ai.StopCondition{ai.IsStepCount(20)}
+		config.StopWhen = []ai.StopCondition{createDefaultStopCondition(20)}
 		config.MaxSteps = 0
 	}
 
