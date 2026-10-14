@@ -57,10 +57,10 @@ func TestToolLoopAgent_ToolCallConcurrency(t *testing.T) {
 	}
 	two := 2
 	got := run(t, &two)
-	if len(got) != 4 || got[1] != "second:start" && got[1] != "first:end" {
+	if len(got) != 4 {
 		t.Fatalf("concurrency 2 events = %v", got)
 	}
-	if !(got[0] != "" && ((got[0] == "first:start" && got[1] == "second:start") || (got[0] == "second:start" && got[1] == "first:start"))) {
+	if (got[0] != "first:start" || got[1] != "second:start") && (got[0] != "second:start" || got[1] != "first:start") {
 		t.Fatalf("concurrency 2 should start both calls before either ends: %v", got)
 	}
 }

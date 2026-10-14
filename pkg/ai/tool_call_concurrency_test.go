@@ -22,12 +22,6 @@ type concurrencyRecorder struct {
 	maxSeen int
 }
 
-func (r *concurrencyRecorder) record(e string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.events = append(r.events, e)
-}
-
 func (r *concurrencyRecorder) enter(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

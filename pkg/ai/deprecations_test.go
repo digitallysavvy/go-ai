@@ -43,7 +43,7 @@ func TestGetDeprecationCode(t *testing.T) {
 		}
 		seen[code] = true
 		for _, r := range code {
-			if !(r == '_' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9') {
+			if r != '_' && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') {
 				t.Errorf("code %q has invalid char %q", code, r)
 			}
 		}
