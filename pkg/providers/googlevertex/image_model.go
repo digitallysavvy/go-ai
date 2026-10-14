@@ -62,6 +62,7 @@ var googleVertexImageModelsWithFileInputSupport = map[string]bool{
 	"gemini-2.5-flash-image":         true,
 	"gemini-3-pro-image-preview":     true,
 	"gemini-3.1-flash-image-preview": true,
+	"gemini-nano-banana-2.1":         true,
 }
 
 // SupportsFileInputs reports whether the model accepts file inputs for image

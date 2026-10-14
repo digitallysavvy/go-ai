@@ -57,6 +57,7 @@ const (
 	ModelGemini36Flash             = "gemini-3.6-flash"
 	ModelGemini37Flash             = "gemini-3.7-flash"
 	ModelGemini38Flash             = "gemini-3.8-flash"
+	ModelGeminiNanoBanana21        = "gemini-nano-banana-2.1" // language + image model (TS #22164)
 
 	// Latest alias models — added in #12819
 	ModelGeminiProLatest       = "gemini-pro-latest"
