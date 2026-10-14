@@ -92,3 +92,22 @@ func TestPrepareTools_StrictUnsetNoWarningNoForward(t *testing.T) {
 		t.Error("strict should not be forwarded when unset")
 	}
 }
+
+// TS #22440: toolChoice "none" keeps the tool definitions (server-tool
+// history stays valid) and sends tool_choice {type: "none"}.
+func TestPrepareTools_ToolChoiceNonePreservesTools(t *testing.T) {
+	t.Parallel()
+
+	result := prepareTools(prepareToolsOptions{
+		tools:               []types.Tool{{Name: "testFunction", Description: "Test", Parameters: map[string]interface{}{}}},
+		toolChoice:          &types.ToolChoice{Type: types.ToolChoiceNone},
+		validator:           prompt.NewAnthropicCacheControlValidator(),
+		supportsStrictTools: true,
+	})
+	if len(result.tools) != 1 || result.tools[0]["name"] != "testFunction" {
+		t.Fatalf("tools = %+v, want the function tool preserved", result.tools)
+	}
+	if result.toolChoice["type"] != "none" || len(result.toolChoice) != 1 {
+		t.Fatalf("toolChoice = %+v, want {type: none}", result.toolChoice)
+	}
+}

@@ -233,9 +233,9 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 			out.toolChoice = withDisable(map[string]interface{}{"type": "any"})
 		}
 	case types.ToolChoiceNone:
-		// Anthropic does not support 'none' tool choice, so the tools are removed.
-		out.tools = nil
-		out.toolChoice = nil
+		// Keep the tool definitions so server-tool history stays valid
+		// (TS #22440).
+		out.toolChoice = map[string]interface{}{"type": "none"}
 	case types.ToolChoiceTool:
 		if o.rejectsForcedToolUse {
 			out.warnings = append(out.warnings, types.Warning{

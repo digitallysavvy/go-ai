@@ -640,6 +640,10 @@ provider := anthropic.New(anthropic.Config{
 })
 ```
 
+### Tool choice none
+
+`ToolChoiceNone` keeps the tool definitions in the request and sends `tool_choice: {"type": "none"}`, so earlier server-tool calls in the conversation history remain valid. Failed Anthropic tool-search results (`error-json`, or JSON with `type: "tool_search_tool_result_error"`) are replayed as `tool_search_tool_result_error` blocks.
+
 ### Strict tools
 
 On models without strict tool support, a tool with `Strict: true` produces an `unsupported` warning and the flag is dropped. `Strict: false` is dropped without a warning. For Claude Platform on AWS, request headers with non-ASCII values are sent but excluded from SigV4 signing.

@@ -1565,6 +1565,23 @@ func (c *anthropicConverter) convertProviderToolResult(content *[]map[string]int
 		}, true)
 
 	case "tool_search_tool_regex", "tool_search_tool_bm25":
+		// Failed tool searches round-trip as tool_search_tool_result_error
+		// (TS #22438).
+		isErrorValue := false
+		if v, ok := output.value.(map[string]interface{}); ok && output.kind == "json" {
+			isErrorValue = v["type"] == "tool_search_tool_result_error"
+		}
+		if output.kind == "error-json" || isErrorValue {
+			push(map[string]interface{}{
+				"type":        "tool_search_tool_result",
+				"tool_use_id": part.ToolCallID,
+				"content": map[string]interface{}{
+					"type":       "tool_search_tool_result_error",
+					"error_code": extractErrorCode(output.value),
+				},
+			}, true)
+			return nil
+		}
 		if output.kind != "json" {
 			unsupportedOutput()
 			return nil

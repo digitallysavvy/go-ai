@@ -653,6 +653,50 @@ func TestConvertToAnthropicPrompt_Golden(t *testing.T) {
 			]}]`,
 		},
 		{
+			name: "tool_search_tool_regex error-json error result round-trips (TS #22438)",
+			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.ToolCallContent{ToolCallID: "srvtoolu_x", ToolName: "tool_search_tool_regex", ProviderExecuted: true, Arguments: map[string]interface{}{"pattern": "["}},
+				types.ToolResultContent{ToolCallID: "srvtoolu_x", ToolName: "tool_search_tool_regex", Output: &types.ToolResultOutput{Type: types.ToolResultOutputErrorJSON, Value: `{"type":"tool_search_tool_result_error","errorCode":"invalid_tool_input"}`}},
+			}}},
+			wantMessages: `[{"role":"assistant","content":[
+				{"type":"server_tool_use","id":"srvtoolu_x","name":"tool_search_tool_regex","input":{"pattern":"["}},
+				{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_x","content":{"type":"tool_search_tool_result_error","error_code":"invalid_tool_input"}}
+			]}]`,
+		},
+		{
+			name: "tool_search_tool_regex json error result round-trips (TS #22438)",
+			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.ToolCallContent{ToolCallID: "srvtoolu_x", ToolName: "tool_search_tool_regex", ProviderExecuted: true, Arguments: map[string]interface{}{"pattern": "["}},
+				types.ToolResultContent{ToolCallID: "srvtoolu_x", ToolName: "tool_search_tool_regex", Output: &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: map[string]interface{}{"type": "tool_search_tool_result_error", "errorCode": "invalid_tool_input"}}},
+			}}},
+			wantMessages: `[{"role":"assistant","content":[
+				{"type":"server_tool_use","id":"srvtoolu_x","name":"tool_search_tool_regex","input":{"pattern":"["}},
+				{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_x","content":{"type":"tool_search_tool_result_error","error_code":"invalid_tool_input"}}
+			]}]`,
+		},
+		{
+			name: "tool_search_tool_bm25 error-json error result round-trips (TS #22438)",
+			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.ToolCallContent{ToolCallID: "srvtoolu_x", ToolName: "tool_search_tool_bm25", ProviderExecuted: true, Arguments: map[string]interface{}{"query": "weather"}},
+				types.ToolResultContent{ToolCallID: "srvtoolu_x", ToolName: "tool_search_tool_bm25", Output: &types.ToolResultOutput{Type: types.ToolResultOutputErrorJSON, Value: `{"type":"tool_search_tool_result_error","errorCode":"invalid_tool_input"}`}},
+			}}},
+			wantMessages: `[{"role":"assistant","content":[
+				{"type":"server_tool_use","id":"srvtoolu_x","name":"tool_search_tool_bm25","input":{"query":"weather"}},
+				{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_x","content":{"type":"tool_search_tool_result_error","error_code":"invalid_tool_input"}}
+			]}]`,
+		},
+		{
+			name: "tool_search_tool_bm25 json error result round-trips (TS #22438)",
+			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.ToolCallContent{ToolCallID: "srvtoolu_x", ToolName: "tool_search_tool_bm25", ProviderExecuted: true, Arguments: map[string]interface{}{"query": "weather"}},
+				types.ToolResultContent{ToolCallID: "srvtoolu_x", ToolName: "tool_search_tool_bm25", Output: &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: map[string]interface{}{"type": "tool_search_tool_result_error", "errorCode": "invalid_tool_input"}}},
+			}}},
+			wantMessages: `[{"role":"assistant","content":[
+				{"type":"server_tool_use","id":"srvtoolu_x","name":"tool_search_tool_bm25","input":{"query":"weather"}},
+				{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_x","content":{"type":"tool_search_tool_result_error","error_code":"invalid_tool_input"}}
+			]}]`,
+		},
+		{
 			name: "web_fetch tool call and result",
 			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
 				types.ToolCallContent{ToolCallID: "f", ToolName: "anthropic.web_fetch_20250910", ProviderExecuted: true, Arguments: map[string]interface{}{"url": "https://example.com"}},
