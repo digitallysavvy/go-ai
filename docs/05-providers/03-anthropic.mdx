@@ -91,6 +91,7 @@ Use the constants in `pkg/providers/anthropic/model_ids.go` instead of raw strin
 | `claude-opus-5` | `anthropic.ClaudeOpus5` | Supports `fallbacks: 'default'` |
 | `claude-sonnet-5-5` | `anthropic.ClaudeSonnet5_5` | Between-tools thinking; rejects disabled thinking and forced tool use |
 | `claude-sonnet-5` | `anthropic.ClaudeSonnet5` | Current-generation Sonnet |
+| `claude-haiku-5-5` | `anthropic.ClaudeHaiku5_5` | Adaptive thinking with all five effort levels; budget-based thinking is converted to adaptive with a warning; thinking can be disabled only at `low`, `medium` and `high` effort |
 | `claude-fable-5-1` | `anthropic.ClaudeFable5_1` | Always-adaptive thinking, system-message `clearAt` and effort |
 | `claude-fable-5` | `anthropic.ClaudeFable5` | Server-side fallbacks |
 | `claude-opus-4-8` | `anthropic.ClaudeOpus4_8` | Native structured output |

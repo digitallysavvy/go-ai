@@ -187,6 +187,8 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 
 	useJSONInstructionForStructuredOutput := !useNativeStructuredOutput && isAnthropic && responseFormatIsJSON &&
 		(caps.RejectsForcedToolUse ||
+			(strings.Contains(m.modelID, "claude-") && (!caps.IsKnownModel || !caps.SupportsStructuredOutput) &&
+				!bedrockSupportsNativeStructuredOutput(m.modelID) && structuredOutputMode != "jsonTool") ||
 			(structuredOutputMode != "jsonTool" && !bedrockSupportsStrictTools(m.modelID) && len(opts.Tools) > 0))
 
 	var jsonResponseTool *types.Tool

@@ -18,7 +18,7 @@ func TestGetModelCapabilities(t *testing.T) {
 			want: ModelCapabilities{
 				MaxOutputTokens: 128000, SupportsStructuredOutput: true, SupportsAdaptiveThinking: true,
 				RejectsSamplingParameters: true, SupportsXHighEffort: true,
-				RejectsThinkingDisabledAboveHighEffort: true, RejectsThinkingDisabled: true,
+				RejectsThinkingDisabledAboveHighEffort: true, RejectsThinkingDisabled: true, RejectsBudgetThinking: true,
 				RejectsForcedToolUse: true, SupportsBetweenToolsThinking: true, IsKnownModel: true,
 			},
 		},
@@ -28,7 +28,7 @@ func TestGetModelCapabilities(t *testing.T) {
 			want: ModelCapabilities{
 				MaxOutputTokens: 128000, SupportsStructuredOutput: true, SupportsAdaptiveThinking: true,
 				RejectsSamplingParameters: true, SupportsXHighEffort: true,
-				RejectsThinkingDisabledAboveHighEffort: true, RejectsThinkingDisabled: true,
+				RejectsThinkingDisabledAboveHighEffort: true, RejectsThinkingDisabled: true, RejectsBudgetThinking: true,
 				RejectsForcedToolUse: true, IsKnownModel: true,
 			},
 		},
@@ -47,7 +47,7 @@ func TestGetModelCapabilities(t *testing.T) {
 			want: ModelCapabilities{
 				MaxOutputTokens: 128000, SupportsStructuredOutput: true, SupportsAdaptiveThinking: true,
 				RejectsSamplingParameters: true, SupportsXHighEffort: true,
-				RejectsThinkingDisabled: true, RejectsForcedToolUse: true, IsKnownModel: true,
+				RejectsThinkingDisabled: true, RejectsBudgetThinking: true, RejectsForcedToolUse: true, IsKnownModel: true,
 			},
 		},
 		{
@@ -56,7 +56,7 @@ func TestGetModelCapabilities(t *testing.T) {
 			want: ModelCapabilities{
 				MaxOutputTokens: 128000, SupportsStructuredOutput: true, SupportsAdaptiveThinking: true,
 				RejectsSamplingParameters: true, SupportsXHighEffort: true,
-				RejectsThinkingDisabled: true, IsKnownModel: true,
+				RejectsThinkingDisabled: true, RejectsBudgetThinking: true, IsKnownModel: true,
 			},
 		},
 		{

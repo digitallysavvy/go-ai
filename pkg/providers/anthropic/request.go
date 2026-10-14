@@ -248,11 +248,19 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 					"thinking cannot be disabled for %s; it always uses adaptive thinking. The thinking setting has been removed. Lower 'effort' to reduce thinking.", m.modelID))
 				th = effectiveThinking{}
 			}
-		case ThinkingTypeEnabled:
-			warnUnsupported(&warnings, "providerOptions.anthropic.thinking", fmt.Sprintf(
-				"budget-based thinking is not supported by %s; it always uses adaptive thinking. Using adaptive thinking instead. Use 'effort' to control how much the model thinks.", m.modelID))
-			th = effectiveThinking{typ: ThinkingTypeAdaptive, set: true}
 		}
+	}
+
+	// Models that only support adaptive thinking reject budget-based thinking
+	// with a 400. Use adaptive thinking instead and let effort control how
+	// much the model thinks (TS #22239).
+	if caps.RejectsBudgetThinking && th.typ == ThinkingTypeEnabled {
+		details := fmt.Sprintf("budget-based thinking is not supported by %s. Using adaptive thinking instead. Use 'effort' to control how much the model thinks.", m.modelID)
+		if caps.RejectsThinkingDisabled {
+			details = fmt.Sprintf("budget-based thinking is not supported by %s; it always uses adaptive thinking. Using adaptive thinking instead. Use 'effort' to control how much the model thinks.", m.modelID)
+		}
+		warnUnsupported(&warnings, "providerOptions.anthropic.thinking", details)
+		th = effectiveThinking{typ: ThinkingTypeAdaptive, set: true}
 	}
 
 	if caps.RejectsThinkingDisabledAboveHighEffort && th.typ == ThinkingTypeDisabled && (effort == "xhigh" || effort == "max") {
