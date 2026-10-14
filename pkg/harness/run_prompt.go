@@ -648,6 +648,18 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 			return true, false, nil
 		}
 
+		// `raw` is out-of-band adapter data: it must not open a step (and so a
+		// telemetry span), become part of one, or trigger/consume a pending
+		// stop-condition check, so it is passed straight through before any
+		// of that. Mirrors TS run-prompt.ts's `value.type === 'raw'` early
+		// `result.enqueueRaw(...)` branch (TS #22258).
+		if rp, isRaw := part.(*RawPart); isRaw {
+			for _, c := range TranslatePart(rp, TranslateOptions{}) {
+				d.stream.push(c)
+			}
+			continue
+		}
+
 		// One event of lookahead (TS run-prompt.ts's `pendingStopBoundary`
 		// check, evaluated against the *next* part read after a
 		// StopConditions-eligible finish-step): if that next part is the
