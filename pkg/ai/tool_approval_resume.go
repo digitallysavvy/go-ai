@@ -7,6 +7,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // toolApprovalResumeOptions carries the call settings needed to resume tool
@@ -297,6 +298,13 @@ func messagesForModel(messages []types.Message) []types.Message {
 				filtered = append(filtered, part)
 			}
 			message.Content = filtered
+			if n := len(out); n > 0 && out[n-1].Role == types.RoleTool && len(out[n-1].Content) == 0 {
+				// Previous tool message became empty (approval-only): keep
+				// its provider options on the combined message (TS #22178).
+				message.ProviderOptions = promptutils.MergeProviderOptions(out[n-1].ProviderOptions, message.ProviderOptions)
+				out[n-1] = message
+				continue
+			}
 			if n := len(out); n > 0 && out[n-1].Role == types.RoleTool && len(out[n-1].ProviderOptions) == 0 && len(message.ProviderOptions) == 0 {
 				merged := append(append([]types.ContentPart(nil), out[n-1].Content...), message.Content...)
 				out[n-1].Content = merged
