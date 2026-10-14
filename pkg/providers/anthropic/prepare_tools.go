@@ -161,12 +161,11 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 		if eager {
 			m["eager_input_streaming"] = true
 		}
-		// TS anthropic-prepare-tools.ts checks `tool.strict != null`
-		// (specified at all, true OR false), not `=== true`: strictSet must
-		// distinguish "unset" from "explicitly false", matching
-		// types.Tool.Strict's tri-state *bool.
+		// strictSet distinguishes "unset" from "explicitly false" (tri-state
+		// *bool). The unsupported-strict warning only fires for strict ===
+		// true (TS #22300); strict: false is silently omitted.
 		strictSet := t.Strict != nil
-		if !o.supportsStrictTools && strictSet {
+		if !o.supportsStrictTools && strictSet && *t.Strict {
 			out.warnings = append(out.warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "strict",

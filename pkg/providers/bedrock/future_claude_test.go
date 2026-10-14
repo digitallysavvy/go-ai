@@ -73,3 +73,23 @@ func TestGetArgs_FutureClaudeUsesJSONInstructions(t *testing.T) {
 		}
 	}
 }
+
+// TS #22300: strict:false on a model without strict support is dropped
+// silently; strict:true still warns.
+func TestPrepareTools_StrictFalseUnsupportedNoWarning(t *testing.T) {
+	mk := func(strict bool) []types.Tool {
+		return []types.Tool{{Type: types.ToolTypeFunction, Name: "testFunction", Description: "d", Strict: &strict, Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}}}
+	}
+	res := prepareBedrockTools(mk(false), types.ToolChoice{}, false, "us.anthropic.claude-opus-4-7", "", nil, nil, true)
+	if len(res.Warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none", res.Warnings)
+	}
+	spec, _ := res.ToolConfig.Tools[0]["toolSpec"].(map[string]interface{})
+	if _, ok := spec["strict"]; ok {
+		t.Fatalf("strict should be omitted: %#v", spec)
+	}
+	res = prepareBedrockTools(mk(true), types.ToolChoice{}, false, "us.anthropic.claude-opus-4-7", "", nil, nil, true)
+	if len(res.Warnings) != 1 || res.Warnings[0].Feature != "strict" {
+		t.Fatalf("warnings = %#v, want one strict warning", res.Warnings)
+	}
+}

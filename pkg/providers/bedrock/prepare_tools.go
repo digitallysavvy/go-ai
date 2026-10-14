@@ -190,12 +190,13 @@ func prepareBedrockTools(tools []types.Tool, toolChoice types.ToolChoice, hasToo
 		// types.Tool.Strict is now a tri-state *bool (hand-off: "Tool.Strict
 		// bool -> *bool"), so this mirrors TS amazon-bedrock-prepare-tools.ts
 		// exactly: strictSet distinguishes "unset" from "explicitly false"
-		// (tool.strict != null), and strictTrue is the `=== true` check.
+		// (tool.strict != null), and strictTrue is the `=== true` check that
+		// gates the unsupported-strict warning (TS #22300).
 		strictSet := tool.Strict != nil
 		strictTrue := strictSet && *tool.Strict
 		supportsStrictForTool := supportsStrictOnTools && (!strictTrue || isStrictToolSchemaCompatible(tool.Parameters))
 
-		if !supportsStrictOnTools && strictSet {
+		if !supportsStrictOnTools && strictTrue {
 			result.Warnings = append(result.Warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "strict",

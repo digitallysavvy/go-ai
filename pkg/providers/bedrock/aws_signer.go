@@ -130,6 +130,9 @@ func (s *AWSSigner) buildCanonicalQueryString(req *http.Request) string {
 func (s *AWSSigner) buildCanonicalHeaders(req *http.Request) (string, string) {
 	headers := make(map[string]string)
 	for k, v := range req.Header {
+		if !isSignableHeader(v) {
+			continue
+		}
 		lowerKey := strings.ToLower(k)
 		headers[lowerKey] = strings.TrimSpace(v[0])
 	}
@@ -196,7 +199,10 @@ func (s *AWSSigner) buildAuthorizationHeader(t time.Time, credentialScope string
 
 	// Get signed headers
 	keys := make([]string, 0, len(headers))
-	for k := range headers {
+	for k, v := range headers {
+		if !isSignableHeader(v) {
+			continue
+		}
 		keys = append(keys, strings.ToLower(k))
 	}
 	sort.Strings(keys)
@@ -268,4 +274,24 @@ func isAWSURIUnreservedByte(c byte) bool {
 		return true
 	}
 	return false
+}
+
+// isSignableHeader reports whether a header can take part in SigV4 signing.
+// Headers with non-ASCII values (for example a user-agent or metadata value
+// containing a non-Latin character) are neither signed nor listed in
+// SignedHeaders, but are still sent unsigned. Matches TS #22265.
+func isSignableHeader(values []string) bool {
+	if len(values) == 0 {
+		return true
+	}
+	return isASCII(values[0])
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
 }

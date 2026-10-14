@@ -342,7 +342,7 @@ result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
 })
 ```
 
-Bedrock rejects native structured output and tool `strict` for the newest Claude generations. Only known supported Claude models (Claude 3 and earlier, Claude 4 through 4.6 and Haiku 4.5, with native structured output excluded for Sonnet 4.6 and Haiku 4.5) receive those fields. Non-Claude models and opaque inference profile ARNs keep their existing behavior. For any other Claude model ID, including future ones such as `us.anthropic.claude-opus-6-v1:0` and `claude-haiku-5-5`, `GenerateObject` falls back to JSON instructions in the prompt unless `structuredOutputMode` is set to `jsonTool`, and `strict` is omitted from tools with an `unsupported` warning.
+Bedrock rejects native structured output and tool `strict` for the newest Claude generations. Only known supported Claude models (Claude 3 and earlier, Claude 4 through 4.6 and Haiku 4.5, with native structured output excluded for Sonnet 4.6 and Haiku 4.5) receive those fields. Non-Claude models and opaque inference profile ARNs keep their existing behavior. For any other Claude model ID, including future ones such as `us.anthropic.claude-opus-6-v1:0` and `claude-haiku-5-5`, `GenerateObject` falls back to JSON instructions in the prompt unless `structuredOutputMode` is set to `jsonTool`, and `strict` is omitted from tools. A tool with `Strict: true` produces an `unsupported` warning; `Strict: false` is dropped silently. Request headers whose values contain non-ASCII characters are sent but excluded from SigV4 signing.
 
 ## Error Handling
 

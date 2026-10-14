@@ -42,12 +42,11 @@ func TestPrepareTools_StrictExplicitFalseForwardedWhenSupported(t *testing.T) {
 	}
 }
 
-// TestPrepareTools_StrictExplicitFalseWarnsWhenUnsupported verifies that an
-// explicit Strict=false (not just Strict=true) triggers the "not supported"
-// warning when the model doesn't support strict tools at all, matching TS's
-// `!supportsStrictTools && tool.strict != null` (checks "was set", not "was
-// set to true").
-func TestPrepareTools_StrictExplicitFalseWarnsWhenUnsupported(t *testing.T) {
+// TestPrepareTools_StrictExplicitFalseOmittedSilentlyWhenUnsupported verifies
+// that an explicit Strict=false is omitted without a warning when the model
+// doesn't support strict tools, matching TS #22300 (`tool.strict === true`
+// gates the warning).
+func TestPrepareTools_StrictExplicitFalseOmittedSilentlyWhenUnsupported(t *testing.T) {
 	t.Parallel()
 
 	toolDef := types.Tool{
@@ -62,11 +61,8 @@ func TestPrepareTools_StrictExplicitFalseWarnsWhenUnsupported(t *testing.T) {
 		supportsStrictTools: false,
 	})
 
-	if len(result.warnings) != 1 {
-		t.Fatalf("expected 1 warning for an explicit strict setting on an unsupported model, got %d: %+v", len(result.warnings), result.warnings)
-	}
-	if result.warnings[0].Feature != "strict" {
-		t.Errorf("warning feature = %q, want %q", result.warnings[0].Feature, "strict")
+	if len(result.warnings) != 0 {
+		t.Fatalf("expected no warnings for strict:false on an unsupported model, got %+v", result.warnings)
 	}
 	if _, ok := result.tools[0]["strict"]; ok {
 		t.Error("strict should not be forwarded when the model doesn't support strict tools")

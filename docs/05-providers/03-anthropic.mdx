@@ -640,6 +640,10 @@ provider := anthropic.New(anthropic.Config{
 })
 ```
 
+### Strict tools
+
+On models without strict tool support, a tool with `Strict: true` produces an `unsupported` warning and the flag is dropped. `Strict: false` is dropped without a warning. For Claude Platform on AWS, request headers with non-ASCII values are sent but excluded from SigV4 signing.
+
 ### Beta Features
 
 Most beta headers (prompt caching, extended thinking, context management, and so on) are added automatically based on the `ModelOptions` you set. To send an additional `anthropic-beta` flag that isn't covered by a dedicated option, set `AnthropicBeta` on `ModelOptions`:

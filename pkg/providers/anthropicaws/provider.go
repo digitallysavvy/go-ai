@@ -264,6 +264,11 @@ func canonicalHeaders(headers http.Header) (string, string) {
 	keys := make([]string, 0, len(headers))
 	values := map[string]string{}
 	for k, vals := range headers {
+		if len(vals) > 0 && !isASCII(vals[0]) {
+			// Non-ASCII header values are not signed (TS #22265); they are
+			// still sent as-is.
+			continue
+		}
 		lower := strings.ToLower(k)
 		keys = append(keys, lower)
 		if len(vals) > 0 {
@@ -322,4 +327,13 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
 }
