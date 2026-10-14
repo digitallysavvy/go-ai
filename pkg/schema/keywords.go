@@ -6,6 +6,7 @@ import (
 	"math"
 	"reflect"
 	"regexp"
+	"sort"
 	"sync"
 	"unicode/utf8"
 )
@@ -305,6 +306,27 @@ func validateObjectConstraints(obj map[string]interface{}, sch map[string]interf
 	}
 	if maxProps, ok := toInt(sch["maxProperties"]); ok && len(obj) > maxProps {
 		return fmt.Errorf("%s: maxProperties: object has %d properties, more than %d", path, len(obj), maxProps)
+	}
+
+	// dependentRequired (JSON Schema 2019-09 / 2020-12): when a property is
+	// present, the properties it lists must be present too.
+	if dependent, ok := sch["dependentRequired"].(map[string]interface{}); ok {
+		keys := make([]string, 0, len(dependent))
+		for key := range dependent {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if _, present := obj[key]; !present {
+				continue
+			}
+			required, _ := stringSlice(dependent[key])
+			for _, dep := range required {
+				if _, exists := obj[dep]; !exists {
+					return fmt.Errorf("%s.%s: dependentRequired: property is required when %q is present", path, dep, key)
+				}
+			}
+		}
 	}
 
 	if propertyNamesSchema, ok := sch["propertyNames"].(map[string]interface{}); ok {

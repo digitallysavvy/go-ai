@@ -1445,3 +1445,55 @@ func TestWorkflowResumeReusesExistingDenialResultAndStillEmitsDenialEvent(t *tes
 		t.Fatalf("tool-output-denied chunks = %d, want 1", denied)
 	}
 }
+
+// TS #20833: approval requests are created and signed by the shared execution
+// path, so they are returned from generate and from stream consumed without a
+// writable, not only emitted as stream chunks.
+func TestWorkflowApprovalRequestsAreTransportIndependent(t *testing.T) {
+	secret := []byte("test-secret")
+	newAgent := func(model provider.LanguageModel) *WorkflowAgent {
+		a, err := NewWorkflowAgent(WorkflowAgent{
+			Model: model,
+			Tools: []types.Tool{{
+				Name:         "t1",
+				ToolApproval: true,
+				Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+					t.Fatal("tool must not run before approval")
+					return nil, nil
+				},
+			}},
+			ExperimentalToolApprovalSecret: secret,
+		})
+		if err != nil {
+			t.Fatalf("NewWorkflowAgent error: %v", err)
+		}
+		return a
+	}
+	check := func(t *testing.T, steps []types.StepResult) {
+		t.Helper()
+		var found *types.ToolApprovalRequestContent
+		for _, step := range steps {
+			for _, part := range step.Content {
+				if req, ok := part.(types.ToolApprovalRequestContent); ok && req.ToolCallID == "1" {
+					found = &req
+				}
+			}
+		}
+		if found == nil {
+			t.Fatalf("no approval request in step content: %+v", steps)
+		}
+		if found.Signature == "" {
+			t.Fatalf("approval request is unsigned: %+v", found)
+		}
+		if ok, err := ai.VerifyToolApprovalSignature(secret, found.Signature, found.ApprovalID, found.ToolCallID, found.ToolCall.ToolName, found.ToolCall.Arguments); err != nil || !ok {
+			t.Fatalf("signature does not verify: ok=%v err=%v", ok, err)
+		}
+	}
+	t.Run("generate", func(t *testing.T) {
+		res, err := newAgent(&wfMockModel{}).GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "go"})
+		if err != nil {
+			t.Fatalf("Generate error: %v", err)
+		}
+		check(t, res.Steps)
+	})
+}
