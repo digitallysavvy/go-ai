@@ -59,6 +59,28 @@ _ = result.Output
 When `Output` is an `ai.Output` specification, `GenerateWithOptions` forwards its
 response format to the model and parses the final text into `WorkflowResult.Output`.
 
+### Tool call concurrency
+
+`ToolCallConcurrency` (on `WorkflowAgent`, `WorkflowGenerateOptions` and `WorkflowStreamOptions`)
+bounds how many approved tool calls run at once when a run resumes after a tool approval. Leave it
+`nil` to run them all concurrently, or set it to `1` to run them one at a time in model order, for
+example when the tools have side effects that must not overlap. A value below 1 returns an
+`InvalidArgumentError`. Tool execution callbacks can run concurrently, so guard shared state with a mutex.
+
+```go
+one := 1
+agent, err := workflow.NewWorkflowAgent(workflow.WorkflowAgent{
+  Model:               model,
+  Tools:               tools,
+  ToolCallConcurrency: &one,
+})
+```
+
+### Telemetry and runtime context
+
+Workflow telemetry events carry only the runtime context keys you opt in to with
+`Telemetry.IncludeRuntimeContext`. With no entries, events carry an empty runtime context.
+
 ## Stream
 
 ```go
@@ -147,6 +169,11 @@ chunks, errs = transport.ReconnectToStream(ctx, ai.ChatTransportReconnectToStrea
 })
 ```
 
+`MaxConsecutiveErrors` (default 3) bounds reconnect attempts. A reconnect response that ends without
+any UI message chunks (an empty body, keep-alive comments only, or a bare `[DONE]`) counts as an
+error, so an endpoint that keeps answering `200 OK` with nothing cannot loop forever. A response that
+delivers chunks resets the count and the next request resumes from the new cursor.
+
 ## Serializable Schemas And Tools
 
 Use `workflow.MarshalSchema` and `workflow.UnmarshalSchema` for JSON Schema round trips.
@@ -155,6 +182,14 @@ crossing a workflow boundary, then `workflow.ResolveSerializableTools` to restor
 non-executable tool descriptors in the resumed step.
 Use `workflow.ValidateSerializableToolInput` to validate reconstructed tool inputs
 against the serialized JSON Schema before executing an attached Go function.
+
+Validation treats `format` as an annotation (it is not enforced), accepts annotation and union
+`type` keywords, and supports JSON Schema 2020-12 keywords such as `dependentRequired`. A failure
+lists every problem with the details a model needs to retry, for example
+`data/action must be one of "click", "type", "scroll"` or
+`data/edits/0 has unexpected property "path"`. When a tool's `Parameters` is a `schema.Schema` with
+its own validator, `SerializeToolSet` sets `HasOwnValidator` and `ValidateSerializableToolInput`
+returns the input unchanged, leaving validation to the original schema.
 
 ## Provider Serialization
 

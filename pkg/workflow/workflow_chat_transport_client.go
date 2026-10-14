@@ -57,7 +57,8 @@ type WorkflowChatTransportOptions struct {
 	OnChatSendMessage func(resp *http.Response, req ai.ChatTransportSendMessagesRequest) error
 	// OnChatEnd is invoked once, after a "finish" chunk is observed.
 	OnChatEnd func(WorkflowChatTransportEndEvent) error
-	// MaxConsecutiveErrors bounds reconnect attempts. Defaults to 3.
+	// MaxConsecutiveErrors bounds reconnect attempts. Streams that end without
+	// receiving any UI message chunks count as errors. Defaults to 3.
 	MaxConsecutiveErrors int
 	// InitialStartIndex is the default startIndex used by ReconnectToStream
 	// when it is called directly (not as part of a SendMessages recovery).
