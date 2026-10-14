@@ -21,6 +21,21 @@ type TranslateOptions struct {
 	// treats every failure as provider-executed, matching TS's `?? true`
 	// default.
 	IsProviderExecuted func(toolCallID string) bool
+
+	// GetToolCall returns the parsed tool call that produced a tool-result
+	// event. Harness tool-result events only carry the output, so the input
+	// and execution origin (providerExecuted) are restored from the
+	// originating call. Mirrors TS `translateStreamPart`'s `getToolCall`
+	// option (TS #23096). A nil func (or a missing call) leaves both unset.
+	GetToolCall func(toolCallID string) (ToolCallInfo, bool)
+}
+
+// ToolCallInfo is the slice of a parsed tool call TranslatePart needs to
+// restore on its tool-result: the parsed input and whether the harness
+// runtime (rather than the host) executed it.
+type ToolCallInfo struct {
+	Input            map[string]interface{}
+	ProviderExecuted bool
 }
 
 func (o TranslateOptions) isProviderExecuted(toolCallID string) bool {
@@ -103,11 +118,21 @@ func TranslatePart(part StreamPart, opts TranslateOptions) []provider.StreamChun
 		return nil
 
 	case *ToolResultPart:
-		if p.IsError && opts.isProviderExecuted(p.ToolCallID) {
+		var call ToolCallInfo
+		hasCall := false
+		if opts.GetToolCall != nil {
+			call, hasCall = opts.GetToolCall(p.ToolCallID)
+		}
+		providerExecuted := opts.isProviderExecuted(p.ToolCallID)
+		if hasCall {
+			providerExecuted = call.ProviderExecuted
+		}
+		if p.IsError && providerExecuted {
 			return []provider.StreamChunk{{
 				Type: provider.ChunkTypeToolResult,
 				ToolResult: &types.ToolResult{
 					ToolCallID: p.ToolCallID, ToolName: p.ToolName,
+					Input:            call.Input,
 					Error:            fmt.Errorf("%v", p.Result),
 					ProviderExecuted: true,
 					Dynamic:          p.Dynamic,
@@ -120,6 +145,8 @@ func TranslatePart(part StreamPart, opts TranslateOptions) []provider.StreamChun
 			Type: provider.ChunkTypeToolResult,
 			ToolResult: &types.ToolResult{
 				ToolCallID: p.ToolCallID, ToolName: p.ToolName, Result: p.Result,
+				Input:            call.Input,
+				ProviderExecuted: hasCall && call.ProviderExecuted,
 				Dynamic:          p.Dynamic,
 				Preliminary:      p.Preliminary,
 				ProviderMetadata: convertProviderMetadata(p.ProviderMetadata),

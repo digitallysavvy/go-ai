@@ -919,10 +919,21 @@ func isReplayable(part StreamPart) bool {
 }
 
 func (d *turnDriver) translateOpts() TranslateOptions {
-	return TranslateOptions{IsProviderExecuted: func(toolCallID string) bool {
-		executed, ok := d.providerExecByID[toolCallID]
-		return !ok || executed
-	}}
+	return TranslateOptions{
+		IsProviderExecuted: func(toolCallID string) bool {
+			executed, ok := d.providerExecByID[toolCallID]
+			return !ok || executed
+		},
+		// Restores the tool-result's input and execution origin from its
+		// originating (parsed) tool call — TS #23096.
+		GetToolCall: func(toolCallID string) (ToolCallInfo, bool) {
+			call, ok := d.toolCallsByID[toolCallID]
+			if !ok {
+				return ToolCallInfo{}, false
+			}
+			return ToolCallInfo{Input: call.Arguments, ProviderExecuted: call.ProviderExecuted}, true
+		},
+	}
 }
 
 // classifyAndValidateToolCall validates a tool-call event's input against the
@@ -1170,9 +1181,9 @@ func (d *turnDriver) recordToolResult(tr *ToolResultPart) {
 	}
 	var toolResult types.ToolResult
 	if tr.IsError {
-		toolResult = types.ToolResult{ToolCallID: tr.ToolCallID, ToolName: tr.ToolName, Error: fmt.Errorf("%v", tr.Result)}
+		toolResult = types.ToolResult{ToolCallID: tr.ToolCallID, ToolName: tr.ToolName, Input: call.Arguments, Error: fmt.Errorf("%v", tr.Result), ProviderExecuted: ok && call.ProviderExecuted}
 	} else {
-		toolResult = types.ToolResult{ToolCallID: tr.ToolCallID, ToolName: tr.ToolName, Result: tr.Result}
+		toolResult = types.ToolResult{ToolCallID: tr.ToolCallID, ToolName: tr.ToolName, Input: call.Arguments, Result: tr.Result, ProviderExecuted: ok && call.ProviderExecuted}
 	}
 	d.stepToolResults = append(d.stepToolResults, toolResult)
 
