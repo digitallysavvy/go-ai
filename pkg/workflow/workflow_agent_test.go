@@ -6,6 +6,7 @@ import (
 	"io"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1376,5 +1377,71 @@ func TestWorkflowAgentDeferredToolDiscovery(t *testing.T) {
 	}
 	if result.FinishReason != types.FinishReasonStop {
 		t.Fatalf("FinishReason = %v, want stop", result.FinishReason)
+	}
+}
+
+func TestWorkflowResumeReusesExistingDenialResultAndStillEmitsDenialEvent(t *testing.T) {
+	model := &wfMockModel{}
+	executions := 0
+	agent, err := NewWorkflowAgent(WorkflowAgent{
+		Model: model,
+		Tools: []types.Tool{{
+			Name:         "deleteFile",
+			ToolApproval: true,
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				executions++
+				return nil, nil
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("NewWorkflowAgent error: %v", err)
+	}
+	var mu sync.Mutex
+	var chunks []provider.StreamChunk
+	stream, err := agent.StreamWithOptions(context.Background(), WorkflowStreamOptions{
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Delete /etc/passwd."}}},
+			{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.ToolCallContent{ToolCallID: "call-1", ToolName: "deleteFile", Arguments: map[string]interface{}{"path": "/etc/passwd"}},
+				types.ToolApprovalRequestContent{ApprovalID: "approval-call-1", ToolCallID: "call-1"},
+			}},
+			{Role: types.RoleTool, Content: []types.ContentPart{
+				types.ToolApprovalResponseContent{ApprovalID: "approval-call-1", Approved: false, Reason: "Too dangerous"},
+				types.ToolResultContent{ToolCallID: "call-1", ToolName: "deleteFile", Output: &types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: "Too dangerous"}},
+			}},
+		},
+		OnChunk: func(c provider.StreamChunk) { mu.Lock(); chunks = append(chunks, c); mu.Unlock() },
+	})
+	if err != nil {
+		t.Fatalf("StreamWithOptions error: %v", err)
+	}
+	if _, err := stream.ReadAll(); err != nil {
+		t.Fatalf("ReadAll error: %v", err)
+	}
+	if executions != 0 {
+		t.Fatalf("executions = %d, want 0", executions)
+	}
+	results := 0
+	for _, msg := range model.opts[0].Prompt.Messages {
+		for _, part := range msg.Content {
+			if r, ok := part.(types.ToolResultContent); ok && r.ToolCallID == "call-1" {
+				results++
+			}
+		}
+	}
+	if results != 1 {
+		t.Fatalf("tool results for call-1 in prompt = %d, want exactly 1: %+v", results, model.opts[0].Prompt.Messages)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	denied := 0
+	for _, c := range chunks {
+		if c.Type == provider.ChunkTypeToolOutputDenied && c.ToolResult != nil && c.ToolResult.ToolCallID == "call-1" {
+			denied++
+		}
+	}
+	if denied != 1 {
+		t.Fatalf("tool-output-denied chunks = %d, want 1", denied)
 	}
 }

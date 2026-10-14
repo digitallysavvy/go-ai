@@ -589,17 +589,24 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 		})
 	}
 
+	deniedChunks := 0
 	for _, approval := range collected.DeniedToolApprovals {
 		call := approval.ToolCall
-		if call.ProviderExecuted || approval.ExistingToolResult != nil {
+		if call.ProviderExecuted {
 			continue
 		}
-		localResults = append(localResults, types.ToolResultContent{
-			ToolCallID: call.ID,
-			ToolName:   call.ToolName,
-			Input:      call.Arguments,
-			Output:     &types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: approval.ApprovalResponse.Reason},
-		})
+		// A denial result that is already persisted in the conversation is
+		// reused (no duplicate result in the next prompt), but the denial
+		// stream event is still emitted (TS #22019).
+		if approval.ExistingToolResult == nil {
+			localResults = append(localResults, types.ToolResultContent{
+				ToolCallID: call.ID,
+				ToolName:   call.ToolName,
+				Input:      call.Arguments,
+				Output:     &types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: approval.ApprovalResponse.Reason},
+			})
+		}
+		deniedChunks++
 		prefixChunks = append(prefixChunks, provider.StreamChunk{
 			Type:       provider.ChunkTypeToolOutputDenied,
 			ToolResult: &types.ToolResult{ToolCallID: call.ID, ToolName: call.ToolName, Input: call.Arguments},
@@ -656,6 +663,8 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 	}
 	if len(localResults) > 0 {
 		cleaned = append(cleaned, types.Message{Role: types.RoleTool, Content: localResults})
+	}
+	if len(localResults) > 0 || deniedChunks > 0 {
 		prefixChunks = append(prefixChunks,
 			provider.StreamChunk{Type: provider.ChunkTypeStreamFinish},
 			provider.StreamChunk{Type: provider.ChunkTypeStreamStart},
