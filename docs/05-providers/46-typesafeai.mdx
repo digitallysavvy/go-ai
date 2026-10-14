@@ -32,8 +32,9 @@ provider := typesafeai.New(typesafeai.Config{
 })
 ```
 
-`typesafeai.Config` also accepts `BaseURL` (default
-`https://api.typesafe.ai/v1`), `Headers`, and `HTTPClient`. If `APIKey` is
+`typesafeai.Config` also accepts `BaseURL` (defaults to the
+`TYPESAFE_AI_BASE_URL` environment variable, then
+`https://api.typesafe.ai/v1`; an explicit `BaseURL` takes precedence), `Headers`, and `HTTPClient`. If `APIKey` is
 left empty, it is read from `TYPESAFE_AI_API_KEY` lazily on each request
 (so setting the environment variable after `New()` still works).
 

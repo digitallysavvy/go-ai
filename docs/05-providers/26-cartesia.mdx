@@ -85,7 +85,8 @@ result, err := ai.Transcribe(ctx, ai.TranscribeOptions{
 
 ### Streaming Transcription (Ink 2)
 
-`cartesia.ModelInk2` (and any `ink-2-*` variant) is streaming-only — the
+`cartesia.ModelInk2` and every future model other than `ink-whisper` (and its dated
+snapshots such as `ink-whisper-2025-06-04`) is streaming-only — the
 batch `DoTranscribe` path rejects it. Use `ai.ExperimentalStreamTranscribe`
 instead, which streams over Cartesia's Ink 2 WebSocket:
 
