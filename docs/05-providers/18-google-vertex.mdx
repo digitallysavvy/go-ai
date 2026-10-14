@@ -224,6 +224,24 @@ Access hundreds of models from Model Garden:
 model, err := provider.LanguageModel("publishers/google/models/gemini-2.0-flash")
 ```
 
+### Anthropic On Vertex: Labels And Models
+
+Claude on Vertex accepts request labels for billing and monitoring. Pass them as `providerOptions.vertex.labels` (a map of string keys to string values); the SDK sends them as the base64-encoded JSON `x-vertex-ai-labels` header and never in the request body. An explicit `x-vertex-ai-labels` header, set per request or on the provider, takes precedence. Labels that are not a string map return an `InvalidArgumentError` before any request is sent. The JSON is encoded with sorted keys.
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model, // from vertexanthropic.New(...).LanguageModel("claude-haiku-5-5")
+    Prompt: "Hello",
+    ProviderOptions: map[string]interface{}{
+        "vertex": map[string]interface{}{
+            "labels": map[string]string{"team": "data-platform", "feature": "my-app"},
+        },
+    },
+})
+```
+
+`claude-haiku-5-5` is available as `ClaudeHaiku5_5` in the Vertex Anthropic package.
+
 ### Batch Prediction And Custom Training
 
 Use Google Cloud Vertex AI client libraries for batch prediction and custom

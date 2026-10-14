@@ -89,7 +89,7 @@ func (m *LanguageModel) SupportsImageInput() bool {
 		m.modelID == "claude-3-5-sonnet-20241022"
 }
 
-func (m *LanguageModel) requestHeaders(opts *provider.GenerateOptions, betas []string, stream bool) map[string]string {
+func (m *LanguageModel) requestHeaders(opts *provider.GenerateOptions, betas []string, stream bool) (map[string]string, error) {
 	headers := map[string]string{}
 	if opts != nil {
 		for k, v := range opts.Headers {
@@ -105,7 +105,14 @@ func (m *LanguageModel) requestHeaders(opts *provider.GenerateOptions, betas []s
 	if len(betas) > 0 {
 		headers["anthropic-beta"] = strings.Join(betas, ",")
 	}
-	return headers
+	if m.provider.config.TransformRequestHeaders != nil {
+		var providerOptions map[string]interface{}
+		if opts != nil {
+			providerOptions = opts.ProviderOptions
+		}
+		return m.provider.config.TransformRequestHeaders(headers, providerOptions)
+	}
+	return headers, nil
 }
 
 // DoGenerate performs non-streaming text generation
@@ -116,11 +123,15 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	}
 	body := m.transformRequestBody(req.body, req.betas, false)
 
+	headers, err := m.requestHeaders(opts, req.betas, false)
+	if err != nil {
+		return nil, err
+	}
 	internalReq := internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    m.messagesPath(false),
 		Body:    body,
-		Headers: m.requestHeaders(opts, req.betas, false),
+		Headers: headers,
 	}
 	var response anthropicResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalReq, &response)
@@ -150,11 +161,15 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 	body := m.transformRequestBody(req.body, req.betas, true)
 
+	headers, err := m.requestHeaders(opts, req.betas, true)
+	if err != nil {
+		return nil, err
+	}
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    m.messagesPath(true),
 		Body:    body,
-		Headers: m.requestHeaders(opts, req.betas, true),
+		Headers: headers,
 	})
 	if err != nil {
 		return nil, m.handleError(err)
