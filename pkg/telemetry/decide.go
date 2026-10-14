@@ -74,6 +74,12 @@ type DecisionModelCallEndEvent struct {
 	Answers          interface{}
 	Usage            TelemetryUsage
 	ProviderMetadata map[string]interface{}
+	// ResponseID and ResponseModelID are the provider-reported response ID
+	// and resolved model ID, when the model reported them. Recorded by the
+	// GenAI OpenTelemetry integration as gen_ai.response.id and
+	// gen_ai.response.model.
+	ResponseID      string
+	ResponseModelID string
 }
 
 type decideStartHandler interface {
@@ -503,6 +509,12 @@ func (i OpenTelemetry) OnDecisionModelCallEnd(_ context.Context, e DecisionModel
 	}
 	if e.Usage.OutputTokens != nil {
 		entry.span.SetAttributes(attribute.Int64("gen_ai.usage.output_tokens", *e.Usage.OutputTokens))
+	}
+	if e.ResponseID != "" {
+		entry.span.SetAttributes(attribute.String("gen_ai.response.id", e.ResponseID))
+	}
+	if e.ResponseModelID != "" {
+		entry.span.SetAttributes(attribute.String("gen_ai.response.model", e.ResponseModelID))
 	}
 	recordOutputs := e.Settings == nil || e.Settings.RecordOutputs
 	if i.opts.experimentalDecision() && recordOutputs {

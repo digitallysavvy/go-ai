@@ -255,6 +255,12 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 		}
 	}
 
+	var modelResponseID, modelResponseModelID string
+	if result.Response != nil {
+		modelResponseID = result.Response.ID
+		modelResponseModelID = result.Response.ModelID
+	}
+
 	// Mirrors experimental_onDecisionModelCallEnd: ai.decision.answers is
 	// output-gated; usage and providerMetadata are unconditional.
 	telemetry.FireOnDecisionModelCallEnd(ctx, telemetry.DecisionModelCallEndEvent{
@@ -270,6 +276,8 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 		Answers:          result.Answers,
 		Usage:            telemetryUsageFromDecideUsage(usage),
 		ProviderMetadata: result.ProviderMetadata,
+		ResponseID:       modelResponseID,
+		ResponseModelID:  modelResponseModelID,
 	})
 
 	logModelWarnings(result.Warnings, model.Provider(), model.ModelID())

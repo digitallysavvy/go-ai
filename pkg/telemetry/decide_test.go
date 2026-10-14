@@ -484,3 +484,59 @@ func TestOpenTelemetryDecideSpans_ErrorClosesNestedSpan(t *testing.T) {
 		}
 	}
 }
+
+// TS (#22542): the nested model-call span records the resolved model and
+// response ID.
+func TestOpenTelemetryDecideSpans_RecordsResponseIDAndModel(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("genai-decide-test")})
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+
+	ctx := integration.OnDecideStart(context.Background(), DecideStartEvent{
+		Settings: settings, CallID: "call-1", OperationID: "ai.decide", ModelProvider: "openai.chat", ModelID: "gpt-5",
+	})
+	integration.OnDecisionModelCallStart(ctx, DecisionModelCallStartEvent{
+		Settings: settings, CallID: "call-1", OperationID: "ai.decide.doDecide", ModelProvider: "openai.chat", ModelID: "gpt-5",
+	})
+	integration.OnDecisionModelCallEnd(ctx, DecisionModelCallEndEvent{
+		DecisionModelCallStartEvent: DecisionModelCallStartEvent{Settings: settings, CallID: "call-1", OperationID: "ai.decide.doDecide"},
+		ResponseID:                  "test-response-id",
+		ResponseModelID:             "mock-model-resolved",
+	})
+	integration.OnDecideEnd(ctx, DecideEndEvent{DecideStartEvent: DecideStartEvent{Settings: settings, CallID: "call-1", OperationID: "ai.decide"}})
+
+	root := findSpan(rec, "decide gpt-5")
+	for _, s := range findSpans(rec, "decide gpt-5") {
+		if s.SpanContext().SpanID() == root.SpanContext().SpanID() {
+			continue
+		}
+		if v, ok := attrValue(s, "gen_ai.response.id"); !ok || v.(string) != "test-response-id" {
+			t.Errorf("gen_ai.response.id = %v ok=%v", v, ok)
+		}
+		if v, ok := attrValue(s, "gen_ai.response.model"); !ok || v.(string) != "mock-model-resolved" {
+			t.Errorf("gen_ai.response.model = %v ok=%v", v, ok)
+		}
+		return
+	}
+	t.Fatal("nested model-call span not found")
+}
+
+// TS (#21935): experimental_evaluation remains a deprecated alias of
+// experimental_decision.
+func TestOpenTelemetryDecideSpans_DeprecatedExperimentalEvaluationOption(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("t"), ExperimentalEvaluation: true})
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+	ctx := integration.OnDecideStart(context.Background(), DecideStartEvent{
+		Settings: settings, CallID: "c", OperationID: "ai.decide", ModelProvider: "openai", ModelID: "m", State: "hello",
+	})
+	integration.OnDecideEnd(ctx, DecideEndEvent{DecideStartEvent: DecideStartEvent{Settings: settings, CallID: "c", OperationID: "ai.decide"}})
+	root := findSpan(rec, "decide m")
+	if _, ok := attrValue(root, "ai.decision.state"); !ok {
+		t.Fatal("expected ai.decision.state with the deprecated ExperimentalEvaluation option")
+	}
+}
