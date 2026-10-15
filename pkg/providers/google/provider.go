@@ -9,7 +9,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
@@ -90,9 +89,9 @@ func (p *Provider) apiKeyHeaders() (map[string]string, error) {
 			return nil, nil
 		}
 	}
-	key := p.APIKey()
-	if key == "" {
-		return nil, providererrors.NewLoadAPIKeyError("Google Generative AI", "GOOGLE_GENERATIVE_AI_API_KEY")
+	key, err := providerutils.LoadAPIKey(p.config.APIKey, "GOOGLE_GENERATIVE_AI_API_KEY", "Google Generative AI")
+	if err != nil {
+		return nil, err
 	}
 	return map[string]string{"x-goog-api-key": key}, nil
 }
@@ -238,10 +237,7 @@ func (p *Provider) Client() *internalhttp.Client {
 
 // APIKey returns the API key
 func (p *Provider) APIKey() string {
-	if p.config.APIKey != "" {
-		return p.config.APIKey
-	}
-	return os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY")
+	return providerutils.APIKeyOrEnv(p.config.APIKey, "GOOGLE_GENERATIVE_AI_API_KEY")
 }
 
 func (p *Provider) Files() provider.FilesAPI {

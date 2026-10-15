@@ -2,10 +2,10 @@ package groq
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -30,9 +30,7 @@ type Config struct {
 // New creates a new Groq provider with the given configuration
 func New(cfg Config) *Provider {
 	// TS loadApiKey: the key defaults to the GROQ_API_KEY environment variable.
-	if cfg.APIKey == "" {
-		cfg.APIKey = os.Getenv("GROQ_API_KEY")
-	}
+	cfg.APIKey = providerutils.APIKeyOrEnv(cfg.APIKey, "GROQ_API_KEY")
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = "https://api.groq.com/openai"

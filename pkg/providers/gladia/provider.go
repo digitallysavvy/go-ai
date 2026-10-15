@@ -4,10 +4,10 @@ package gladia
 
 import (
 	"fmt"
-	"os"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -33,9 +33,7 @@ type Provider struct {
 // New creates a new Gladia provider instance
 func New(config Config) *Provider {
 	// TS loadApiKey: the key defaults to the GLADIA_API_KEY environment variable.
-	if config.APIKey == "" {
-		config.APIKey = os.Getenv("GLADIA_API_KEY")
-	}
+	config.APIKey = providerutils.APIKeyOrEnv(config.APIKey, "GLADIA_API_KEY")
 	if config.BaseURL == "" {
 		config.BaseURL = "https://api.gladia.io/v2"
 	}

@@ -249,12 +249,9 @@ func requestAuthHeaders(cfg Config) (map[string]string, error) {
 			return nil, nil
 		}
 	}
-	apiKey := cfg.APIKey
-	if apiKey == "" {
-		apiKey = os.Getenv("ANTHROPIC_API_KEY")
-	}
-	if apiKey == "" {
-		return nil, providererrors.NewLoadAPIKeyError("Anthropic", "ANTHROPIC_API_KEY")
+	apiKey, err := providerutils.LoadAPIKey(cfg.APIKey, "ANTHROPIC_API_KEY", "Anthropic")
+	if err != nil {
+		return nil, err
 	}
 	return map[string]string{"x-api-key": apiKey}, nil
 }
