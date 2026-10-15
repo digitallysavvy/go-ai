@@ -454,8 +454,8 @@ func applyToolInputDefaults(input map[string]interface{}, validator schema.Valid
 // or nil when the tool has no JSON schema. Mirrors
 // pkg/ai/tool_call_pipeline.go's toolCallInputValidator.
 func toolInputValidator(tool types.Tool) schema.Validator {
-	if h, ok := tool.Parameters.(jsonorder.Hinted); ok {
-		if m, ok := schema.ParametersMap(h); ok && len(m) > 0 {
+	if isHintedParameters(tool.Parameters) {
+		if m, ok := schema.ParametersMap(tool.Parameters); ok && len(m) > 0 {
 			return schema.NewJSONSchema(m)
 		}
 		return nil
@@ -518,4 +518,14 @@ func raceAgainstAbort[T any](ctx context.Context, fn func() (T, error)) (T, erro
 	case <-ctx.Done():
 		return zero, NewAbortedError()
 	}
+}
+
+// isHintedParameters reports whether a tool's Parameters is a
+// jsonorder.Hinted, in its value or pointer form.
+func isHintedParameters(p interface{}) bool {
+	switch p.(type) {
+	case jsonorder.Hinted, *jsonorder.Hinted:
+		return true
+	}
+	return false
 }

@@ -339,8 +339,8 @@ func toolCallInputValidator(tool *types.Tool) schema.Validator {
 	if tool == nil || tool.ProviderExecuted || tool.Type == "provider" {
 		return nil
 	}
-	if h, ok := tool.Parameters.(jsonorder.Hinted); ok {
-		if m, ok := schema.ParametersMap(h); ok && len(m) > 0 {
+	if isHintedParameters(tool.Parameters) {
+		if m, ok := schema.ParametersMap(tool.Parameters); ok && len(m) > 0 {
 			return schema.NewJSONSchema(m)
 		}
 		return nil
@@ -377,8 +377,8 @@ func applyToolCallInputDefaults(args map[string]interface{}, validator schema.Va
 }
 
 func toolInputJSONSchema(tool *types.Tool) map[string]interface{} {
-	if h, ok := tool.Parameters.(jsonorder.Hinted); ok {
-		if m, ok := schema.ParametersMap(h); ok {
+	if isHintedParameters(tool.Parameters) {
+		if m, ok := schema.ParametersMap(tool.Parameters); ok {
 			return m
 		}
 	}
@@ -605,3 +605,13 @@ func (e *NoSuchToolError) ErrorName() string { return "AI_NoSuchToolError" }
 
 // ErrorName is the TS error name, used where TS shows error.toString().
 func (e *ToolCallRepairError) ErrorName() string { return "AI_ToolCallRepairError" }
+
+// isHintedParameters reports whether a tool's Parameters is a
+// jsonorder.Hinted, in its value or pointer form.
+func isHintedParameters(p interface{}) bool {
+	switch p.(type) {
+	case jsonorder.Hinted, *jsonorder.Hinted:
+		return true
+	}
+	return false
+}
