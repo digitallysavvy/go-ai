@@ -247,7 +247,7 @@ func TestNewStreamTextResultFromParts_TerminalFinishOverridesTotalUsage(t *testi
 	if err := result.Err(); err != nil {
 		t.Fatalf("Err() = %v, want nil", err)
 	}
-	if got, want := result.Text(), "hi there"; got != want {
+	if got, want := result.Text(), " there"; got != want {
 		t.Fatalf("Text() = %q, want %q", got, want)
 	}
 	steps := result.Steps()
@@ -602,5 +602,22 @@ func TestNewStreamTextResultFromParts_PublicStreamHasStartStepPerStep(t *testing
 		if withStreamStart && firstWarnings != 1 {
 			t.Fatalf("first start-step carries %d warnings, want 1", firstWarnings)
 		}
+	}
+}
+
+func TestNewStreamTextResultFromParts_TextIsFinalStepOnly(t *testing.T) {
+	t.Parallel()
+	src := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeText, Text: "Let me check. "},
+		{Type: provider.ChunkTypeFinishStep, FinishReason: types.FinishReasonToolCalls},
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeText, Text: "Done."},
+		{Type: provider.ChunkTypeFinishStep, FinishReason: types.FinishReasonStop},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	})
+	result := NewStreamTextResultFromParts(context.Background(), src, ExternalStreamOptions{})
+	if got := result.Text(); got != "Done." {
+		t.Fatalf("Text() = %q, want final step only", got)
 	}
 }
