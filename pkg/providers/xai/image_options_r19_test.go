@@ -20,3 +20,17 @@ func TestImageProviderOptionsViolationsAreInvalidArgumentErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestVideoProviderOptionsEnumsValidatedAsInvalidArgument(t *testing.T) {
+	for name, o := range map[string]map[string]interface{}{
+		"mode":       {"mode": "remix"},
+		"resolution": {"resolution": "4k"},
+		"type":       {"pollIntervalMs": "fast"},
+	} {
+		_, _, err := extractVideoProviderOptions(map[string]interface{}{"xai": o})
+		var ia *providererrors.InvalidArgumentError
+		if !errors.As(err, &ia) || ia.Field != "providerOptions" {
+			t.Errorf("%s: err = %v", name, err)
+		}
+	}
+}

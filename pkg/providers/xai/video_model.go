@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -326,7 +328,12 @@ func buildXAIVideoMetadata(requestID string, status *xaiVideoStatusResponse) map
 		meta["costInUsdTicks"] = *status.Usage.CostInUsdTicks
 	}
 	if status.Progress != nil {
-		meta["progress"] = *status.Progress
+		// Whole-number progress stays an int (the pre-existing metadata type).
+		if p := *status.Progress; p == math.Trunc(p) {
+			meta["progress"] = int(p)
+		} else {
+			meta["progress"] = p
+		}
 	}
 	if videoData != nil && videoData.FileOutput != nil {
 		fileOutput := map[string]interface{}{
@@ -981,12 +988,30 @@ func mapResolution(resolution string) string {
 // extractVideoProviderOptions extracts XAI-specific provider options and any
 // unrecognized keys (which are passed through to the API request body).
 func extractVideoProviderOptions(opts map[string]interface{}) (*XAIVideoProviderOptions, map[string]interface{}, error) {
+	provOpts, extra, err := parseVideoProviderOptions(opts)
+	var already *providererrors.InvalidArgumentError
+	if errors.As(err, &already) {
+		return nil, nil, err
+	}
+	if err != nil {
+		// TS parseProviderOptions: any schema violation is an
+		// InvalidArgumentError("invalid xai provider options").
+		return nil, nil, &providererrors.InvalidArgumentError{
+			Field:   "providerOptions",
+			Message: "invalid xai provider options: " + err.Error(),
+			Cause:   err,
+		}
+	}
+	return provOpts, extra, nil
+}
+
+func parseVideoProviderOptions(opts map[string]interface{}) (*XAIVideoProviderOptions, map[string]interface{}, error) {
 	if opts == nil {
 		return &XAIVideoProviderOptions{}, nil, nil
 	}
 
 	xaiRaw, ok := opts["xai"]
-	if !ok {
+	if !ok || xaiRaw == nil {
 		return &XAIVideoProviderOptions{}, nil, nil
 	}
 
@@ -1028,6 +1053,23 @@ func extractVideoProviderOptions(opts map[string]interface{}) (*XAIVideoProvider
 }
 
 func validateVideoProviderOptions(rawMap map[string]interface{}, provOpts *XAIVideoProviderOptions) error {
+	if provOpts.Mode != nil {
+		switch *provOpts.Mode {
+		case "edit-video", "extend-video", "reference-to-video":
+		default:
+			return fmt.Errorf("xai provider option mode must be one of edit-video, extend-video, reference-to-video")
+		}
+	}
+	if provOpts.Resolution != nil {
+		switch *provOpts.Resolution {
+		case "480p", "720p", "1080p":
+		default:
+			return fmt.Errorf("xai provider option resolution must be one of 480p, 720p, 1080p")
+		}
+	}
+	if provOpts.VideoURL != nil && *provOpts.VideoURL == "" {
+		return fmt.Errorf("xai provider option videoUrl must not be empty")
+	}
 	if provOpts.PollIntervalMs != nil && *provOpts.PollIntervalMs <= 0 {
 		return fmt.Errorf("xai provider option pollIntervalMs must be positive")
 	}
@@ -1144,7 +1186,7 @@ type xaiVideoStatusResponse struct {
 	Video    *xaiVideoData      `json:"video,omitempty"`
 	Model    string             `json:"model,omitempty"`
 	Usage    *xaiVideoUsage     `json:"usage,omitempty"`
-	Progress *int               `json:"progress,omitempty"`
+	Progress *float64           `json:"progress,omitempty"`
 	Warnings []xaiWarning       `json:"warnings,omitempty"`
 	Error    *xaiVideoStatusErr `json:"error,omitempty"`
 }
