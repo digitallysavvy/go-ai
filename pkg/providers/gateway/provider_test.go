@@ -1553,3 +1553,40 @@ func TestLanguageModel_DoGenerate_TruncatedBodyIsRetryable(t *testing.T) {
 		t.Fatal("a truncated body read error should be retryable")
 	}
 }
+
+// TS gatewayAvailableModelsResponseSchema: `models` must be an array and each
+// model needs id, name and a v4 specification; anything else is rejected.
+func TestProvider_GetAvailableModels_RejectsMalformedResponses(t *testing.T) {
+	for name, body := range map[string]string{
+		"missing models":   `{"invalid":"response"}`,
+		"missing spec":     `{"models":[{"id":"a","name":"A"}]}`,
+		"non-v4 spec":      `{"models":[{"id":"a","name":"A","specification":{"specificationVersion":"v3","provider":"p","modelId":"a"}}]}`,
+		"numeric pricing":  `{"models":[{"id":"a","name":"A","pricing":{"input":123,"output":"1"},"specification":{"specificationVersion":"v4","provider":"p","modelId":"a"}}]}`,
+		"missing model id": `{"models":[{"name":"A","specification":{"specificationVersion":"v4","provider":"p","modelId":"a"}}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(body))
+			}))
+			defer server.Close()
+			p, err := New(Config{APIKey: "k", BaseURL: server.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := p.GetAvailableModels(context.Background()); err == nil {
+				t.Fatal("expected an error")
+			}
+		})
+	}
+	// An empty model list is valid.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"models":[]}`))
+	}))
+	defer server.Close()
+	p, _ := New(Config{APIKey: "k", BaseURL: server.URL})
+	if m, err := p.GetAvailableModels(context.Background()); err != nil || len(m.Models) != 0 {
+		t.Fatalf("empty list: %v %v", m, err)
+	}
+}
