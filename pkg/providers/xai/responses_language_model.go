@@ -224,30 +224,13 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 		}
 	}
 
-	if err := validateXAIResponsesFileParts(opts.Prompt); err != nil {
-		return nil, warnings, err
-	}
-
-	input, _, err := responses.ConvertPromptToInputWithOptions(opts.Prompt, "system", responses.ConvertOptions{
-		PassThroughUnsupportedFiles: true,
-		// Row 72eee24: use providerOptions.xai (not .openai) for xAI-specific
-		// input conversion options such as imageDetail on file parts.
-		ProviderOptionsName: "xai",
-	})
+	// TS convertToXaiResponsesInput: a converter of its own (xAI item ids,
+	// reasoning replay, verbatim tool errors, no inline non-image files).
+	input, inputWarnings, err := responses.ConvertPromptToXAIInput(opts.Prompt)
 	if err != nil {
 		return nil, warnings, err
 	}
-	// xAI function_call input items carry id (the xai itemId, else the call
-	// id) and status "completed" (TS convertToXaiResponsesInput).
-	for i, item := range input {
-		if fc, ok := item.(responses.FunctionCallItem); ok {
-			if fc.ID == "" {
-				fc.ID = fc.CallID
-			}
-			fc.Status = "completed"
-			input[i] = fc
-		}
-	}
+	warnings = append(warnings, inputWarnings...)
 
 	body := map[string]interface{}{
 		"model": m.modelID,
