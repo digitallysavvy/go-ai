@@ -894,10 +894,10 @@ func writeWorkflowChunk(w HarnessWorkflowWriter, chunk ai.UIMessageChunk, sc *mu
 
 func writeRequiredPrelude(w HarnessWorkflowWriter, chunk ai.UIMessageChunk, sc *mutableStreamContext, ps *executionPartState) error {
 	typ, _ := chunk["type"].(string)
-	id, _ := chunk["id"].(string)
-	toolCallID, _ := chunk["toolCallId"].(string)
+	id, hasID := chunk["id"].(string)
+	toolCallID, hasToolCallID := chunk["toolCallId"].(string)
 
-	if (typ == "text-delta" || typ == "text-end") && id != "" {
+	if (typ == "text-delta" || typ == "text-end") && hasID {
 		if start, ok := sc.activeTextParts[id]; ok {
 			if !ps.openedTextParts.has(id) {
 				if w != nil {
@@ -910,7 +910,7 @@ func writeRequiredPrelude(w HarnessWorkflowWriter, chunk ai.UIMessageChunk, sc *
 		}
 	}
 
-	if (typ == "reasoning-delta" || typ == "reasoning-end") && id != "" {
+	if (typ == "reasoning-delta" || typ == "reasoning-end") && hasID {
 		if start, ok := sc.activeReasoningParts[id]; ok {
 			if !ps.openedReasoningParts.has(id) {
 				if w != nil {
@@ -923,7 +923,7 @@ func writeRequiredPrelude(w HarnessWorkflowWriter, chunk ai.UIMessageChunk, sc *
 		}
 	}
 
-	if typ == "tool-input-delta" && toolCallID != "" {
+	if typ == "tool-input-delta" && hasToolCallID {
 		if active, ok := sc.activeToolInputs[toolCallID]; ok {
 			if !ps.openedToolInputs.has(toolCallID) {
 				if w != nil {
@@ -945,50 +945,50 @@ func writeRequiredPrelude(w HarnessWorkflowWriter, chunk ai.UIMessageChunk, sc *
 
 func recordWorkflowChunk(chunk ai.UIMessageChunk, sc *mutableStreamContext, ps *executionPartState) {
 	typ, _ := chunk["type"].(string)
-	id, _ := chunk["id"].(string)
-	toolCallID, _ := chunk["toolCallId"].(string)
+	id, hasID := chunk["id"].(string)
+	toolCallID, hasToolCallID := chunk["toolCallId"].(string)
 
 	switch {
-	case typ == "text-start" && id != "":
+	case typ == "text-start" && hasID:
 		sc.activeTextParts[id] = cloneChunk(chunk)
 		ps.openedTextParts.add(id)
 		return
-	case typ == "text-end" && id != "":
+	case typ == "text-end" && hasID:
 		delete(sc.activeTextParts, id)
 		ps.openedTextParts.delete(id)
 		return
-	case typ == "reasoning-start" && id != "":
+	case typ == "reasoning-start" && hasID:
 		sc.activeReasoningParts[id] = cloneChunk(chunk)
 		ps.openedReasoningParts.add(id)
 		return
-	case typ == "reasoning-end" && id != "":
+	case typ == "reasoning-end" && hasID:
 		delete(sc.activeReasoningParts, id)
 		ps.openedReasoningParts.delete(id)
 		return
-	case typ == "tool-input-start" && toolCallID != "":
+	case typ == "tool-input-start" && hasToolCallID:
 		sc.activeToolInputs[toolCallID] = activeToolInput{start: cloneChunk(chunk)}
 		ps.openedToolInputs.add(toolCallID)
 		return
-	case typ == "tool-input-delta" && toolCallID != "":
+	case typ == "tool-input-delta" && hasToolCallID:
 		if active, ok := sc.activeToolInputs[toolCallID]; ok {
 			if delta, ok := chunk["inputTextDelta"].(string); ok {
 				sc.activeToolInputs[toolCallID] = activeToolInput{start: active.start, text: active.text + delta}
 			}
 		}
 		return
-	case typ == "tool-input-available" && toolCallID != "":
+	case typ == "tool-input-available" && hasToolCallID:
 		delete(sc.activeToolInputs, toolCallID)
 		ps.openedToolInputs.delete(toolCallID)
 		sc.pendingToolInputs[toolCallID] = cloneChunk(chunk)
 		return
-	case typ == "tool-input-error" && toolCallID != "":
+	case typ == "tool-input-error" && hasToolCallID:
 		delete(sc.activeToolInputs, toolCallID)
 		ps.openedToolInputs.delete(toolCallID)
 		delete(sc.pendingToolInputs, toolCallID)
 		return
 	}
 
-	if toolCallID != "" && (typ == "tool-output-error" || typ == "tool-output-denied" ||
+	if hasToolCallID && (typ == "tool-output-error" || typ == "tool-output-denied" ||
 		(typ == "tool-output-available" && chunk["preliminary"] != true)) {
 		delete(sc.pendingToolInputs, toolCallID)
 	}

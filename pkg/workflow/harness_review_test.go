@@ -47,3 +47,22 @@ func TestFinishReasonStringDefaultsToStop(t *testing.T) {
 		t.Fatal("finishReasonString")
 	}
 }
+
+// TS tracks parts by `typeof id === 'string'`, so an empty-string id is still
+// an id: its start is recorded and its end clears it.
+func TestRecordWorkflowChunkTracksEmptyStringIDs(t *testing.T) {
+	sc := newMutableStreamContext(nil)
+	ps := newExecutionPartState()
+	recordWorkflowChunk(ai.UIMessageChunk{"type": "text-start", "id": ""}, sc, ps)
+	if _, ok := sc.activeTextParts[""]; !ok {
+		t.Fatal("text part with empty id was not recorded")
+	}
+	recordWorkflowChunk(ai.UIMessageChunk{"type": "tool-input-start", "toolCallId": ""}, sc, ps)
+	if _, ok := sc.activeToolInputs[""]; !ok {
+		t.Fatal("tool input with empty toolCallId was not recorded")
+	}
+	recordWorkflowChunk(ai.UIMessageChunk{"type": "text-end", "id": ""}, sc, ps)
+	if len(sc.activeTextParts) != 0 {
+		t.Fatal("text-end did not clear the part")
+	}
+}
