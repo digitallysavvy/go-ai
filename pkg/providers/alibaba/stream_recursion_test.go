@@ -49,7 +49,7 @@ func runAlibabaStreamRecursionChild() {
 	for i := 0; i < n; i++ {
 		// No "choices" field: processChunk's `if len(chunk.Choices) == 0`
 		// branch.
-		sb.WriteString(`data: {}` + "\n\n")
+		sb.WriteString(`data: {"choices":[]}` + "\n\n")
 	}
 	sb.WriteString(`data: {"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}` + "\n\n")
 
@@ -66,4 +66,20 @@ func runAlibabaStreamRecursionChild() {
 		return
 	}
 	fmt.Println("BF5_CHILD_OK")
+}
+
+// TS alibabaChatChunkSchema requires `choices`: an {"error": ...} frame is a
+// parse failure surfaced as an error chunk (not silently skipped), and the
+// stream keeps going.
+func TestStream_FrameWithoutChoicesIsAnErrorChunk(t *testing.T) {
+	sse := "data: {\"error\":{\"message\":\"boom\"}}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\n"
+	s := newAlibabaStream(io.NopCloser(strings.NewReader(sse)))
+	first, err := s.Next()
+	if err != nil || first.Type != provider.ChunkTypeError {
+		t.Fatalf("first chunk = %+v, %v; want an error chunk", first, err)
+	}
+	second, err := s.Next()
+	if err != nil || second.Type == provider.ChunkTypeError {
+		t.Fatalf("second chunk = %+v, %v; want the stream to continue", second, err)
+	}
 }

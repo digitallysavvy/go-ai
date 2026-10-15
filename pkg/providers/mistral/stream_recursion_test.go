@@ -48,7 +48,7 @@ func runMistralStreamRecursionChild() {
 	for i := 0; i < n; i++ {
 		// No "choices" field: hits `if len(chunkData.Choices) == 0 { ...
 		// continue }`.
-		sb.WriteString(`data: {}` + "\n\n")
+		sb.WriteString(`data: {"choices":[]}` + "\n\n")
 	}
 	sb.WriteString(`data: {"choices":[{"delta":{"content":"hello"}}]}` + "\n\n")
 
