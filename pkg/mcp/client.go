@@ -997,6 +997,9 @@ func (c *MCPClient) call(ctx context.Context, method string, params interface{},
 		if err := c.validateModernResult(method, response.Result); err != nil {
 			return err
 		}
+		if err := validateMCPResultShape(method, response.Result); err != nil {
+			return err
+		}
 
 		// Parse result
 		if result != nil && response.Result != nil {
