@@ -2,6 +2,8 @@ package ai
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"reflect"
 	"sync"
 	"testing"
@@ -148,5 +150,50 @@ func TestStreamText_ApprovalRequestFollowsItsToolCall(t *testing.T) {
 	}
 	if !reflect.DeepEqual(kinds, []string{"call", "request", "call", "request", "text"}) {
 		t.Fatalf("content order = %v", kinds)
+	}
+}
+
+// stream-text.test.ts 'multiple stream consumption' > 'should support text
+// stream, ai stream, full stream on single result object': each stream of one
+// result is consumed completely, one after the other.
+func TestTSReplay_MultipleStreamConsumption(t *testing.T) {
+	res, err := StreamText(context.Background(), StreamTextOptions{
+		Model: transformTestModel(helloWorldChunks()...), Prompt: "test-input",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var full []string
+	for _, p := range collectTSParts(t, res.Stream()) {
+		full = append(full, p)
+	}
+	want := []string{"start", "start-step", "text-start:1", "text-delta:1:Hello", "text-delta:1:, ", "text-delta:1:world!", "text-end:1", "finish-step:stop", "finish:stop"}
+	if !reflect.DeepEqual(full, want) {
+		t.Fatalf("full stream\n got %q\nwant %q", full, want)
+	}
+	// A second, independent full stream after the first one is exhausted.
+	if again := collectTSParts(t, res.NewStream()); !reflect.DeepEqual(again, want) {
+		t.Fatalf("second full stream\n got %q\nwant %q", again, want)
+	}
+	// The UI message stream still sees every chunk.
+	chunks, errCh := res.ToUIMessageStream(context.Background())
+	var types_ []string
+	for c := range chunks {
+		types_ = append(types_, fmt.Sprint(c["type"]))
+	}
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(types_, []string{"start", "start-step", "text-start", "text-delta", "text-delta", "text-delta", "text-end", "finish-step", "finish"}) {
+		t.Fatalf("ui message stream chunk types = %v", types_)
+	}
+	// And the text stream response carries the whole text.
+	resp, err := res.ToTextStreamResponse(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "Hello, world!" {
+		t.Fatalf("text stream body = %q", body)
 	}
 }

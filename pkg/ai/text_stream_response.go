@@ -30,7 +30,7 @@ func CreateTextStreamResponseWithInit(ctx context.Context, result *StreamTextRes
 	if result == nil {
 		return nil, fmt.Errorf("result is required")
 	}
-	return CreateTextStreamResponseFromStream(ctx, result.Stream(), init)
+	return CreateTextStreamResponseFromStream(ctx, result.NewStream(), init)
 }
 
 // CreateTextStreamResponseFromStream creates an HTTP response with a plain-text
@@ -106,7 +106,7 @@ func PipeTextStreamToResponseWithInit(ctx context.Context, result *StreamTextRes
 	}
 	status, _, headers := textStreamResponseHead(init)
 	writeResponseHead(w, status, headers)
-	return PipeTextStreamToWriter(ctx, result.Stream(), w)
+	return PipeTextStreamToWriter(ctx, result.NewStream(), w)
 }
 
 // PipeTextStreamToWriter writes text delta chunks from a provider stream to w as

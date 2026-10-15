@@ -666,11 +666,10 @@ type StreamTextResult struct {
 	// result.
 	chunkBufReader *chunkBufferReader
 
-	// uiChunkBuf/uiChunkBufReader hold the unfiltered chunk sequence of an
+	// uiChunkBuf holds the unfiltered chunk sequence of an
 	// external stream result (stream-start included), which
 	// ToUIMessageStream uses as its step boundary. Nil for StreamText results.
-	uiChunkBuf       *chunkBuffer
-	uiChunkBufReader *chunkBufferReader
+	uiChunkBuf *chunkBuffer
 
 	processingDone chan struct{}
 
@@ -3537,6 +3536,19 @@ func (r *StreamTextResult) Stream() provider.TextStream {
 	return r.chunkBufReader
 }
 
+// NewStream returns a new, independent cursor over the full chunk stream,
+// replaying every chunk from the start (blocking for chunks not produced yet).
+// It is the Go form of reading TS `result.stream` more than once: every
+// access there is its own tee, so the text, UI-message and full streams of one
+// result can each be consumed completely, in any order. Unlike Stream, which
+// hands out one shared cursor, each call here starts over.
+func (r *StreamTextResult) NewStream() provider.TextStream {
+	if r.chunkBuf == nil {
+		return r.stream
+	}
+	return r.chunkBuf.reader()
+}
+
 // FullStream returns the underlying text stream.
 //
 // Deprecated: use Stream.
@@ -3587,7 +3599,7 @@ func (r *StreamTextResult) ConsumeStream() error {
 //
 // Deprecated: use CreateTextStreamResponseFromStream with Stream.
 func (r *StreamTextResult) ToTextStreamResponse(ctx context.Context, init *TextStreamResponseInit) (*http.Response, error) {
-	return CreateTextStreamResponseFromStream(ctx, r.Stream(), init)
+	return CreateTextStreamResponseFromStream(ctx, r.NewStream(), init)
 }
 
 // ToUIMessageStream converts the stream result into UI message chunks.
@@ -3598,17 +3610,13 @@ func (r *StreamTextResult) ToUIMessageStream(ctx context.Context, opts ...UIMess
 }
 
 // uiStream is the stream the UI converters read: the unfiltered sequence for
-// external results, the public stream otherwise.
+// external results, the public stream otherwise. Each call is an independent
+// cursor (TS: every stream access is its own tee).
 func (r *StreamTextResult) uiStream() provider.TextStream {
 	if r.uiChunkBuf == nil {
-		return r.Stream()
+		return r.NewStream()
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.uiChunkBufReader == nil {
-		r.uiChunkBufReader = r.uiChunkBuf.reader()
-	}
-	return r.uiChunkBufReader
+	return r.uiChunkBuf.reader()
 }
 
 // ToUIMessageStreamResponse creates an SSE response from the stream result.
@@ -3623,7 +3631,7 @@ func (r *StreamTextResult) ToUIMessageStreamResponse(ctx context.Context, init *
 //
 // Deprecated: use PipeTextStreamToWriter with Stream.
 func (r *StreamTextResult) PipeTextStreamToResponse(ctx context.Context, w io.Writer) error {
-	return PipeTextStreamToWriter(ctx, r.Stream(), w)
+	return PipeTextStreamToWriter(ctx, r.NewStream(), w)
 }
 
 // PipeUIMessageStreamToResponse writes UI message chunk output to the writer.
