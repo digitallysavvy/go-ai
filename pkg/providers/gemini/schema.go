@@ -57,7 +57,11 @@ func sanitizeResponseJSONSchema(schema interface{}) interface{} {
 	case []byte:
 		hint, _ = jsonorder.Parse(s)
 	default:
-		schema = providerutils.ResponseFormatJSONSchema(schema)
+		// An ordered schema comes back as raw JSON and keeps its key order.
+		schema = providerutils.ResponseFormatJSONSchemaOrdered(schema)
+		if raw, ok := schema.(json.RawMessage); ok {
+			hint, _ = jsonorder.Parse(raw)
+		}
 	}
 	m, ok := toSchemaMap(schema)
 	if !ok {

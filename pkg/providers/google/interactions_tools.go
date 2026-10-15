@@ -21,7 +21,7 @@ func prepareInteractionsTools(tools []types.Tool, toolChoice types.ToolChoice) (
 				"type":        "function",
 				"name":        t.Name,
 				"description": t.Description,
-				"parameters":  providerutils.ResponseFormatJSONSchema(t.Parameters),
+				"parameters":  providerutils.ResponseFormatJSONSchemaOrdered(t.Parameters),
 			}))
 			continue
 		}

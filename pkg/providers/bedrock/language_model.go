@@ -203,7 +203,7 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 			Type:        types.ToolTypeFunction,
 			Name:        "json",
 			Description: "Respond with a JSON object.",
-			Parameters:  providerutils.ResponseFormatJSONSchema(opts.ResponseFormat.Schema),
+			Parameters:  providerutils.ResponseFormatJSONSchemaOrdered(opts.ResponseFormat.Schema),
 		}
 	}
 
@@ -454,7 +454,7 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 	}
 
 	if useJSONInstructionForStructuredOutput {
-		filteredMessages = injectBedrockJSONInstruction(filteredMessages, providerutils.ResponseFormatJSONSchema(opts.ResponseFormat.Schema))
+		filteredMessages = injectBedrockJSONInstruction(filteredMessages, providerutils.ResponseFormatJSONSchemaOrdered(opts.ResponseFormat.Schema))
 	}
 
 	isMistral := isMistralModel(m.modelID)

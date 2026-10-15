@@ -1109,9 +1109,9 @@ func (c *anthropicConverter) convertToolResultFile(f anthropicFile) (map[string]
 // anthropicToolCall is the unified view of a tool-call part, from either a
 // ToolCallContent part or the legacy Message.ToolCalls field.
 type anthropicToolCall struct {
-	id               string
-	toolName         string
-	input            interface{}
+	id       string
+	toolName string
+	input    interface{}
 	// inputRaw is the wire text of the input when the part carries it
 	// (ToolCallContent.Input / ToolCall.RawArguments). Go maps have no key
 	// order, so the converter takes the order of the keys from it.

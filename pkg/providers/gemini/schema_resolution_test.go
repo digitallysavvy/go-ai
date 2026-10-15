@@ -60,3 +60,24 @@ func TestVertexRagStoreOmitsUndefinedCorpus(t *testing.T) {
 		t.Fatalf("entry = %s", b)
 	}
 }
+
+// A schema.OrderedSchema keeps its property order for the response schema and
+// for function tools.
+func TestOrderedSchemaKeepsOrderOnTheWire(t *testing.T) {
+	ordered, err := schema.NewOrderedSchema([]byte(`{"type":"object","properties":{"zeta":{"type":"string"},"alpha":{"type":"string"}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _, _, err := makeTestModel("gemini-2.5-flash").buildRequest(context.Background(), &provider.GenerateOptions{
+		Prompt:         types.Prompt{Text: "x"},
+		ResponseFormat: &provider.ResponseFormat{Type: "json", Schema: ordered},
+		Tools:          []types.Tool{{Name: "t", Type: types.ToolTypeFunction, Parameters: ordered}},
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(body)
+	if n := strings.Count(string(b), `"properties":{"zeta":{"type":"string"},"alpha":{"type":"string"}}`); n != 2 {
+		t.Fatalf("property order kept %d times, want 2: %s", n, b)
+	}
+}

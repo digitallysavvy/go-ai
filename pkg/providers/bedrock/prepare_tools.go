@@ -227,7 +227,7 @@ func prepareBedrockTools(tools []types.Tool, toolChoice types.ToolChoice, hasToo
 		if strictSet && supportsStrictForTool {
 			toolSpec["strict"] = *tool.Strict
 		}
-		inputSchema := providerutils.ResponseFormatJSONSchema(tool.Parameters)
+		inputSchema := providerutils.ResponseFormatJSONSchemaOrdered(tool.Parameters)
 		if inputSchema == nil {
 			inputSchema = map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
 		}
