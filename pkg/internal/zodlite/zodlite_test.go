@@ -39,6 +39,9 @@ func TestEnumRecordOfAndIssueError(t *testing.T) {
 	if bad == nil || bad.Message != `Invalid option: expected one of "a"|"b"` || bad.Code != "invalid_value" {
 		t.Fatalf("enum issue = %+v", bad)
 	}
+	if one := Enum("click")("x", true, nil); one == nil || one.Message != `Invalid input: expected "click"` {
+		t.Fatalf("single-value enum must use the zod v4 literal message, got %+v", one)
+	}
 	rec := RecordOf(String)
 	if rec(map[string]interface{}{"x": "y"}, true, nil) != nil {
 		t.Fatal("string record should pass")

@@ -126,6 +126,9 @@ func Enum(values ...string) Node {
 			b, _ := json.Marshal(w)
 			quoted[i] = string(b)
 		}
+		if len(values) == 1 { // zod v4 en locale: a single value reads like a literal
+			return &Issue{Path: path, Code: "invalid_value", Message: "Invalid input: expected " + quoted[0]}
+		}
 		return &Issue{Path: path, Code: "invalid_value", Message: "Invalid option: expected one of " + strings.Join(quoted, "|")}
 	}
 }
