@@ -81,6 +81,18 @@ var simpleCall = regexp.MustCompile(`^\{ prompt: [A-Z_]+,?( includeRawChunks: fa
 // Simple reports whether the TS call used only the default prompt.
 func (c Case) Simple() bool { return simpleCall.MatchString(c.CallArgs) }
 
+var evalPathSnapshots bool
+
+// EvalPathSnapshots makes Run also compare snapshots of arbitrary expressions
+// (request headers, aliased values, nested result fields) that earlier suites
+// skipped. It is off by default so those suites keep their original coverage;
+// a test opts in for its own run.
+func EvalPathSnapshots(t *testing.T) {
+	t.Helper()
+	evalPathSnapshots = true
+	t.Cleanup(func() { evalPathSnapshots = false })
+}
+
 // StreamBodyEncoder, when set, turns the canned stream lines (one JSON
 // document per line) into the response body and content type. Providers whose
 // stream is not SSE (Amazon Bedrock's AWS event stream) set it.
@@ -262,6 +274,9 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 				default:
 					if e.Expr == "result" || e.Expr == "response" {
 						continue // whole-result snapshots include wire details Go does not expose
+					}
+					if !evalPathSnapshots {
+						continue
 					}
 					v, ok := evalPath(roots, c.Aliases, e.Expr)
 					if !ok {

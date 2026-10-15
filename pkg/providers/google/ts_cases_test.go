@@ -19,6 +19,7 @@ func TestTSCasesLanguage(t *testing.T) {
 	tsfixture.MetadataKeyAlias = map[string]string{"googleVertex": "google", "vertex": "google"}
 	defer func() { tsfixture.MetadataKeyAlias = nil }()
 	cases := tsfixture.LoadCases(t, "testdata/tscases/language.json.gz")
+	tsfixture.EvalPathSnapshots(t)
 	tsfixture.Run(t, cases, func(base, id string) provider.LanguageModel {
 		if id == "" {
 			id = "gemini-pro"
@@ -99,6 +100,7 @@ func TestTSCasesInteractions(t *testing.T) {
 	tsfixture.DropResponseTimestamp = true
 	defer func() { tsfixture.DropResponseTimestamp = false }()
 	cases := tsfixture.LoadCases(t, "testdata/tscases/interactions.json.gz")
+	tsfixture.EvalPathSnapshots(t)
 	tsfixture.Run(t, cases, func(base, id string) provider.LanguageModel {
 		if id == "" {
 			id = "gemini-2.5-flash"
@@ -120,6 +122,7 @@ func TestTSCasesStructuredOutputWithTools(t *testing.T) {
 	tsfixture.DropResponseTimestamp, tsfixture.DropResponseModelID = true, true
 	defer func() { tsfixture.DropResponseTimestamp, tsfixture.DropResponseModelID = false, false }()
 	cases := tsfixture.LoadCases(t, "testdata/tscases/structured_output_with_tools.json.gz")
+	tsfixture.EvalPathSnapshots(t)
 	tsfixture.Run(t, cases, func(base, id string) provider.LanguageModel {
 		if id == "" {
 			id = "gemini-3-pro-preview"

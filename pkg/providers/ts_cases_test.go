@@ -50,7 +50,9 @@ func TestProviderTSCases(t *testing.T) {
 		}},
 		{"cohere", "cohere/testdata/tscases/chat.json.gz", func(b, id string) (provider.LanguageModel, error) {
 			return cohere.New(cohere.Config{APIKey: "k", BaseURL: b}).LanguageModel(id)
-		}, "command-r-plus", nil},
+		}, "command-r-plus", map[string]string{
+			"should extract text documents and send to API": "the TS test passes the text as a plain string, which the replay decodes as (invalid) base64",
+		}},
 		{"huggingface", "huggingface/testdata/tscases/responses.json.gz", func(b, id string) (provider.LanguageModel, error) {
 			return huggingface.New(huggingface.Config{APIKey: "k", BaseURL: b}).LanguageModel(id)
 		}, "moonshotai/Kimi-K2-Instruct", map[string]string{

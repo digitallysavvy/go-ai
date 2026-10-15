@@ -48,6 +48,7 @@ func TestTSCasesChat(t *testing.T) {
 	tsfixture.StreamBodyEncoder = encodeTSStream
 	defer func() { tsfixture.StreamBodyEncoder = nil }()
 	cases := tsfixture.LoadCases(t, "testdata/tscases/chat.json.gz")
+	tsfixture.EvalPathSnapshots(t)
 	tsfixture.Run(t, cases, func(base, id string) provider.LanguageModel {
 		if id == "" {
 			id = "anthropic.claude-3-haiku-20240307-v1:0"

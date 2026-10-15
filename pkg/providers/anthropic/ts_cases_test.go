@@ -106,6 +106,7 @@ func TestTSCasesLanguage(t *testing.T) {
 		tsfixture.ToolNameAlias, tsfixture.PromptToolNameAlias, tsfixture.DropResponseTimestamp = nil, nil, false
 	}()
 	cases := tsfixture.LoadCases(t, "testdata/tscases/language.json.gz")
+	tsfixture.EvalPathSnapshots(t)
 	tsfixture.Run(t, cases, func(base, id string) provider.LanguageModel {
 		if id == "" {
 			id = "claude-3-haiku-20240307"
@@ -256,6 +257,7 @@ func TestTSCasesPrepareTools(t *testing.T) {
 // anthropic-unknown-model-max-output-tokens.test.ts.
 func TestTSCasesUnknownModelMaxOutputTokens(t *testing.T) {
 	cases := tsfixture.LoadCases(t, "testdata/tscases/unknown_model_max_tokens.json.gz")
+	tsfixture.EvalPathSnapshots(t)
 	tsfixture.Run(t, cases, func(base, id string) provider.LanguageModel {
 		m, err := New(Config{APIKey: "test-api-key", BaseURL: base}).LanguageModel(id)
 		if err != nil {

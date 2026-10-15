@@ -27,6 +27,7 @@ func TestTSCasesVertexLanguage(t *testing.T) {
 	if len(cases) == 0 {
 		t.Fatal("no Vertex cases found")
 	}
+	tsfixture.EvalPathSnapshots(t)
 	tsfixture.Run(t, cases, func(base, id string) provider.LanguageModel {
 		if id == "" {
 			id = "gemini-pro"
