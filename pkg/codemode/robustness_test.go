@@ -15,8 +15,8 @@ func TestHostToolPanicBecomesToolError(t *testing.T) {
 		Name:       "boom",
 		Parameters: map[string]interface{}{"type": "object"},
 		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
-			var m map[string]int
-			m["x"] = 1
+			var p *struct{ n int }
+			p.n = 1 // nil pointer dereference
 			return nil, nil
 		},
 	}}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -46,11 +47,11 @@ func TestLangSmithDeploymentTransportSpeaksRunsStreamProtocol(t *testing.T) {
 		gotPath, gotKey, gotCustom = r.URL.Path, r.Header.Get("x-api-key"), r.Header.Get("X-Custom")
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, "event: metadata\ndata: {\"run_id\":\"r1\"}\n\n")
-		fmt.Fprint(w, "event: messages\ndata: [{\"id\":\"msg-1\",\"type\":\"AIMessageChunk\",\"content\":\"Hel\"},{\"langgraph_step\":1}]\n\n")
-		fmt.Fprint(w, "event: updates\ndata: {\"agent\":{}}\n\n")
-		fmt.Fprint(w, "event: messages\ndata: [{\"id\":\"msg-1\",\"type\":\"AIMessageChunk\",\"content\":\"lo\"},{\"langgraph_step\":1}]\n\n")
-		fmt.Fprint(w, "event: values\ndata: {\"messages\":[]}\n\n")
+		_, _ = io.WriteString(w, "event: metadata\ndata: {\"run_id\":\"r1\"}\n\n")
+		_, _ = io.WriteString(w, "event: messages\ndata: [{\"id\":\"msg-1\",\"type\":\"AIMessageChunk\",\"content\":\"Hel\"},{\"langgraph_step\":1}]\n\n")
+		_, _ = io.WriteString(w, "event: updates\ndata: {\"agent\":{}}\n\n")
+		_, _ = io.WriteString(w, "event: messages\ndata: [{\"id\":\"msg-1\",\"type\":\"AIMessageChunk\",\"content\":\"lo\"},{\"langgraph_step\":1}]\n\n")
+		_, _ = io.WriteString(w, "event: values\ndata: {\"messages\":[]}\n\n")
 	}))
 	defer server.Close()
 
@@ -81,7 +82,7 @@ func TestLangSmithDeploymentTransportSpeaksRunsStreamProtocol(t *testing.T) {
 	var text strings.Builder
 	for _, c := range got {
 		if c["type"] == "text-delta" {
-			text.WriteString(fmt.Sprint(c["delta"]))
+			_, _ = fmt.Fprint(&text, c["delta"])
 		}
 	}
 	if text.String() != "Hello" {
@@ -91,7 +92,7 @@ func TestLangSmithDeploymentTransportSpeaksRunsStreamProtocol(t *testing.T) {
 
 func TestLangSmithDeploymentTransportServerErrorEventBecomesErrorChunk(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, "event: error\ndata: {\"error\":\"GraphRecursionError\",\"message\":\"too deep\"}\n\n")
+		_, _ = io.WriteString(w, "event: error\ndata: {\"error\":\"GraphRecursionError\",\"message\":\"too deep\"}\n\n")
 	}))
 	defer server.Close()
 	var seen error
