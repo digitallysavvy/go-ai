@@ -96,12 +96,13 @@ func New(cfg Config) *Provider {
 
 	if cfg.ModelURL != "" && strings.Contains(cfg.ModelURL, "/sync") {
 		p.embedding = openai.New(openai.Config{
-			APIKey:        apiKey,
-			BaseURL:       basetenEmbeddingURL(cfg.ModelURL),
-			Headers:       cfg.Headers,
-			HTTPClient:    cfg.HTTPClient,
-			Name:          "baseten.embedding",
-			UserAgentName: "baseten",
+			APIKey:           apiKey,
+			BaseURL:          basetenEmbeddingURL(cfg.ModelURL),
+			Headers:          cfg.Headers,
+			HTTPClient:       cfg.HTTPClient,
+			Name:             "baseten.embedding",
+			OpenAICompatible: true,
+			UserAgentName:    "baseten",
 		})
 	}
 
