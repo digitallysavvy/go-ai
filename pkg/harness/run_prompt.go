@@ -56,6 +56,12 @@ func (s *chunkChannelStream) push(c provider.StreamChunk) { s.ch <- c }
 
 func (s *chunkChannelStream) closeOK() { close(s.ch) }
 
+// suspending reports whether the host is suspending this turn (see
+// runPromptInput.IsTurnSuspending).
+func (d *turnDriver) suspending() bool {
+	return d.in.IsTurnSuspending != nil && d.in.IsTurnSuspending()
+}
+
 // fail settles the turn as a soft (data-preserving) failure: a
 // ChunkTypeError chunk carrying msg, then a normal channel close. Mirrors TS
 // `result.fail(err)` (settleFailure's non-abort branch), which always
@@ -97,7 +103,7 @@ func (d *turnDriver) abort(err error) {
 // abort/error classification is applied consistently everywhere, exactly as
 // TS applies it "at all three settle points".
 func (d *turnDriver) settleFailure(err error) {
-	if d.in.OnTurnFailed != nil {
+	if d.in.OnTurnFailed != nil && !d.suspending() {
 		d.in.OnTurnFailed()
 	}
 	// telAbort/telError mirror pkg/ai/generate.go's own abort-vs-error
@@ -189,6 +195,16 @@ type runPromptInput struct {
 	OnTurnFinished           func()
 	OnTurnFailed             func()
 	OnPromptControlAvailable func(PromptControl)
+
+	// IsTurnSuspending reports that the adapter stream closed because the
+	// host intentionally suspended the still-running turn (a workflow slice
+	// boundary or AgentSession.SuspendTurn). While it returns true the driver
+	// does not report the turn as finished or failed, does not submit tool
+	// results to the (closed) runtime, and records host tool results that
+	// complete after the suspension as completed pending results so a
+	// continuation can submit them. Mirrors TS `runPrompt`'s
+	// `isTurnSuspending`.
+	IsTurnSuspending func() bool
 
 	// OnStopConditionMet is called from suspendOrFinishNow when a
 	// StopCondition matches after a completed step: it should suspend the
@@ -383,6 +399,18 @@ type turnDriver struct {
 	// result (TS #22367 `toolModelOutputs`). Guarded by execMu.
 	toolModelOutputs map[string]types.ToolResultOutput
 
+	// callInfo remembers the name and raw input of every tool call the turn
+	// has seen (or resumed with), so a result that completes after the host
+	// suspended the turn can be stored as a completed pending result. Guarded
+	// by execMu. Mirrors TS `rawToolCallsByToolCallId` /
+	// `pendingResultsByToolCallId` / `pendingToolApprovals` lookups in
+	// `submitToolResult`.
+	callInfo map[string]suspendedCallInfo
+	// suspendedOutcomes are host tool outcomes that completed while the turn
+	// was suspending; run publishes them as tool-result parts (TS
+	// `bufferedToolOutcomes` / `enqueueHostToolOutcome`). Guarded by execMu.
+	suspendedOutcomes []*ToolResultPart
+
 	closingResumedStep bool
 
 	// pendingStopBoundary is set at a finish-step whose completed step might
@@ -423,6 +451,25 @@ type turnDriver struct {
 	pendingFinishChunk *provider.StreamChunk
 }
 
+type suspendedCallInfo struct {
+	name  string
+	input string
+	// parsed is true for a tool call observed on this turn's stream (as
+	// opposed to one restored from pending lifecycle state).
+	parsed bool
+}
+
+// rememberCall records the name and raw input of a tool call for
+// submitToolResult's suspended path. Safe from any goroutine.
+func (d *turnDriver) rememberCall(toolCallID, toolName, input string, parsed bool) {
+	d.execMu.Lock()
+	defer d.execMu.Unlock()
+	if d.callInfo == nil {
+		d.callInfo = map[string]suspendedCallInfo{}
+	}
+	d.callInfo[toolCallID] = suspendedCallInfo{name: toolName, input: input, parsed: parsed}
+}
+
 func (d *turnDriver) run() {
 	d.execToolCallsByID = map[string]*ToolCallPart{}
 	d.toolCallsByID = map[string]types.ToolCall{}
@@ -457,10 +504,12 @@ func (d *turnDriver) run() {
 		a := a
 		d.pendingApprovalsByApprovalID[a.ApprovalID] = &a
 		d.pendingApprovalsByToolCallID[a.ToolCallID] = &a
+		d.rememberCall(a.ToolCallID, a.ToolName, a.Input, false)
 	}
 	for _, r := range d.in.PendingToolResults {
 		r := r
 		d.pendingResultsByToolCallID[r.ToolCallID] = &r
+		d.rememberCall(r.ToolCallID, r.ToolName, r.Input, false)
 	}
 	for _, c := range d.in.ToolApprovalContinuations {
 		d.continuationsByApprovalID[c.ApprovalID] = c
@@ -533,7 +582,22 @@ func (d *turnDriver) run() {
 		d.settleFailure(turnErr)
 		return
 	}
-	if finished && d.in.OnTurnFinished != nil {
+	if d.suspending() {
+		// Mirrors TS runPrompt's `isTurnSuspending` branch: neither
+		// onTurnFinished nor onTurnFailed is reported (the turn stays
+		// unfinished for a later continuation), host tool outcomes that
+		// completed during the suspension are published, and a step that
+		// never reached its finish-step is dropped. Its partial content
+		// stays in the bridge replay log for the next slice.
+		if err := d.joinOutstandingExecutions(); err != nil {
+			d.settleFailure(err)
+			return
+		}
+		d.publishSuspendedOutcomes()
+		if !finished {
+			d.discardCurrentStep()
+		}
+	} else if finished && d.in.OnTurnFinished != nil {
 		d.in.OnTurnFinished()
 	}
 	// Push the terminal finish chunk (if any) only now, after
@@ -647,13 +711,21 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 		}
 		if !ok {
 			d.releasePendingStopBoundary()
-			if d.hostInputPauseRequested && !finished {
+			suspending := d.suspending()
+			if d.hostInputPauseRequested && !finished && !suspending {
 				// The adapter ended the response without a closing
 				// finish-step/finish: pause for the requested host input.
 				if err := d.pauseAtHostInputBoundary(d.deferredPauseFinishStep); err != nil {
 					return false, false, err
 				}
 				return false, true, nil
+			}
+			if !finished && suspending {
+				// The host suspended the turn at a slice boundary and the
+				// adapter closed its stream: a clean end, not a failure.
+				// run() publishes the host tool outcomes that completed
+				// meanwhile and discards the unfinished step.
+				return false, false, nil
 			}
 			if !finished {
 				// The adapter ended the turn (closed its Done channel)
@@ -812,6 +884,7 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 		if tc, isCall := display.(*ToolCallPart); isCall {
 			rawTC := part.(*ToolCallPart)
 			d.execToolCallsByID[tc.ToolCallID] = rawTC
+			d.rememberCall(rawTC.ToolCallID, rawTC.ToolName, rawTC.Input, true)
 			displayCall, hostCall, verr := d.classifyAndValidateToolCall(rawTC, tc)
 			if verr != nil {
 				_ = d.joinOutstandingExecutions()
@@ -1957,7 +2030,75 @@ func (d *turnDriver) submitToolResult(submission ToolResultSubmission) error {
 		d.toolModelOutputs[submission.ToolCallID] = normalized
 		d.execMu.Unlock()
 	}
+	if d.suspending() {
+		return d.recordSuspendedResult(submission)
+	}
 	return d.control.SubmitToolResult(d.ctx, submission)
+}
+
+// recordSuspendedResult stores a tool result that completed after the host
+// suspended the turn. The runtime's stream is already closed, so instead of
+// submitting it the result is reported as a completed pending tool result (a
+// continuation submits it without re-running the tool) and, for a tool call
+// this turn has already seen, queued to be published as a tool-result part.
+// Mirrors the `isTurnSuspending` branch of TS runPrompt's `submitToolResult`.
+func (d *turnDriver) recordSuspendedResult(submission ToolResultSubmission) error {
+	d.execMu.Lock()
+	info, ok := d.callInfo[submission.ToolCallID]
+	d.execMu.Unlock()
+	if !ok {
+		return fmt.Errorf("Unknown suspended tool call '%s'.", submission.ToolCallID) //nolint:staticcheck // matches TS SDK's exact error text
+	}
+	completed := &CompletedToolResult{Output: submission.Output, ToolResult: submission.ToolResult}
+	if submission.IsError {
+		isError := true
+		completed.IsError = &isError
+	}
+	if d.in.OnPendingToolResult != nil {
+		d.in.OnPendingToolResult(PendingToolResult{
+			ToolCallID: submission.ToolCallID, ToolName: info.name, Input: info.input, CompletedResult: completed,
+		})
+	}
+	// No echo will arrive from the closed runtime.
+	d.clearAwaitingEcho(submission.ToolCallID)
+	if info.parsed {
+		d.execMu.Lock()
+		d.suspendedOutcomes = append(d.suspendedOutcomes, &ToolResultPart{
+			ToolCallID: submission.ToolCallID, ToolName: info.name, Result: submission.Output, IsError: submission.IsError,
+		})
+		d.execMu.Unlock()
+	}
+	return nil
+}
+
+// publishSuspendedOutcomes emits the tool-result parts for host tool
+// outcomes that completed while the turn was suspending, skipping calls a
+// continuation already settled. Runs on the driver goroutine.
+func (d *turnDriver) publishSuspendedOutcomes() {
+	d.execMu.Lock()
+	outcomes := d.suspendedOutcomes
+	d.suspendedOutcomes = nil
+	d.execMu.Unlock()
+	for _, tr := range outcomes {
+		if d.isSettled(tr.ToolCallID) {
+			continue
+		}
+		display, _ := StripWorkDir(tr, d.in.SessionWorkDir).(*ToolResultPart)
+		if display == nil {
+			display = tr
+		}
+		d.recordToolResult(display)
+		for _, c := range TranslatePart(display, d.translateOpts()) {
+			d.stream.push(c)
+		}
+	}
+}
+
+// discardCurrentStep drops the content of a step that never reached its
+// finish-step. Mirrors TS `result.discardCurrentStepContent()`.
+func (d *turnDriver) discardCurrentStep() {
+	d.bufferedResultChunks = nil
+	d.resetStepAccum()
 }
 
 func (d *turnDriver) recordExecError(toolCallID string, err error) {

@@ -388,14 +388,14 @@ func validateLifecycleStateData(h Harness, state LifecycleState) error {
 			return err
 		}
 		if s.HarnessID != h.HarnessID() {
-			return fmt.Errorf("harness: lifecycle state was produced by harness '%s' but this agent uses '%s'", s.HarnessID, h.HarnessID())
+			return NewHarnessError(fmt.Sprintf("Lifecycle state was produced by harness '%s' but this agent uses '%s'.", s.HarnessID, h.HarnessID()), nil)
 		}
 	case *ContinueTurnState:
 		if err := s.Validate(); err != nil {
 			return err
 		}
 		if s.HarnessID != h.HarnessID() {
-			return fmt.Errorf("harness: lifecycle state was produced by harness '%s' but this agent uses '%s'", s.HarnessID, h.HarnessID())
+			return NewHarnessError(fmt.Sprintf("Lifecycle state was produced by harness '%s' but this agent uses '%s'.", s.HarnessID, h.HarnessID()), nil)
 		}
 	}
 	if v, ok := h.(LifecycleStateValidator); ok {
@@ -429,7 +429,11 @@ func (a *Agent) Generate(ctx context.Context, opts agent.AgentGenerateOptions) (
 	if err != nil {
 		return nil, err
 	}
-	result, err := a.startTurn(ctx, session, opts, "prompt", nil, nil)
+	mode, approvals, results, err := resolveTurnMode(opts)
+	if err != nil {
+		return nil, err
+	}
+	result, err := a.startTurn(ctx, session, opts, mode, approvals, results)
 	if err != nil {
 		return nil, err
 	}
@@ -437,6 +441,24 @@ func (a *Agent) Generate(ctx context.Context, opts agent.AgentGenerateOptions) (
 		return nil, err
 	}
 	return streamResultToGenerateResult(result), nil
+}
+
+// resolveTurnMode mirrors TS `HarnessAgent.generate`/`stream`: a trailing
+// `tool` message carrying approval responses or tool results continues the
+// session's unfinished turn instead of starting a new prompt.
+func resolveTurnMode(opts agent.AgentGenerateOptions) (mode string, approvals []types.ToolApprovalResponseContent, results []types.ToolResultContent, err error) {
+	if opts.Prompt != "" || len(opts.Messages) == 0 {
+		return "prompt", nil, nil, nil
+	}
+	approvals, err = CollectToolApprovalContinuations(opts.Messages)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	results = CollectToolResultContinuations(opts.Messages)
+	if len(approvals) > 0 || len(results) > 0 {
+		return "continue", approvals, results, nil
+	}
+	return "prompt", nil, nil, nil
 }
 
 // Stream runs one fresh prompt turn and returns the streaming result.
@@ -447,7 +469,11 @@ func (a *Agent) Stream(ctx context.Context, opts agent.AgentStreamOptions) (*ai.
 	if err != nil {
 		return nil, err
 	}
-	return a.startTurn(ctx, session, opts.AgentGenerateOptions, "prompt", nil, nil)
+	mode, approvals, results, err := resolveTurnMode(opts.AgentGenerateOptions)
+	if err != nil {
+		return nil, err
+	}
+	return a.startTurn(ctx, session, opts.AgentGenerateOptions, mode, approvals, results)
 }
 
 // ContinueGenerate resumes a paused turn (awaiting an approval, a tool
@@ -525,12 +551,9 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 
 	var prompt Prompt
 	if mode != "continue" {
-		if len(opts.Messages) > 0 {
-			last := opts.Messages[len(opts.Messages)-1]
-			m := last
-			prompt = Prompt{Message: &m}
-		} else {
-			prompt = TextPrompt(opts.Prompt)
+		var err error
+		if prompt, err = resolvePromptTurnInput(opts); err != nil {
+			return nil, err
 		}
 	}
 	if opts.Instructions != nil {
@@ -543,7 +566,9 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 	// defaults above and the per-call Instructions/ToolsContext already
 	// applied, matching TS's "prepared values are frozen for the lifetime of
 	// the turn" contract.
-	if a.settings.PrepareCall != nil {
+	// A continuation runs with the agent's own settings (no prepareCall), like
+	// TS `_prepareContinueTurnInput`.
+	if a.settings.PrepareCall != nil && mode != "continue" {
 		prepared, err := a.settings.PrepareCall(ctx, PrepareCallOptions{
 			CallOptions: opts.CallOptions, Prompt: prompt, Model: model,
 			Skills: skills, Instructions: instructionsRaw, Tools: tools, ToolsContext: toolsContext,
@@ -570,7 +595,17 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 		if prepared.HasRuntimeContext {
 			runtimeContext = prepared.RuntimeContext
 		}
-		if mode != "continue" && (prepared.Prompt.Text != "" || prepared.Prompt.Message != nil) {
+		if prepared.Prompt.Message != nil {
+			one := []types.Message{*prepared.Prompt.Message}
+			ap, aerr := CollectToolApprovalContinuations(one)
+			if aerr != nil {
+				return nil, aerr
+			}
+			if len(ap) > 0 || len(CollectToolResultContinuations(one)) > 0 {
+				return nil, errors.New("HarnessAgent.PrepareCall must return a fresh user prompt, not a tool continuation.") //nolint:staticcheck // matches TS SDK's exact error text
+			}
+		}
+		if prepared.Prompt.Text != "" || prepared.Prompt.Message != nil {
 			prompt = prepared.Prompt
 		}
 	}
@@ -621,32 +656,16 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 		toolSpecs = append(toolSpecs, ToolSpec{Name: name, Description: t.Description, InputSchema: schema})
 	}
 
-	pendingApprovals, pendingResults, turnSettings := session.snapshotPendingState()
-	if turnSettings != nil {
-		if turnSettings.Model != "" {
-			model = turnSettings.Model
-		}
-		if turnSettings.Instructions != "" {
-			instructions = turnSettings.Instructions
-		}
-	}
-	// Continuing an unfinished turn from a session created via
-	// CreateSession's ContinueFrom/ResumeFrom (rather than one still
-	// in-process from an earlier promptTurn/continueTurn call) rebinds
-	// host-only tools/runtime context from whatever CreateSessionOptions
-	// passed, in preference to this call's own options. Mirrors TS
-	// `HarnessAgentSession.resolveActiveTurnSettings`'s
-	// `this.resumedToolsContext ?? options.toolsContext` /
-	// `this.resumedRuntimeContext ?? options.runtimeContext`, which only
-	// ever applies on the continueTurn path (a fresh promptTurn has nothing
-	// to resume).
-	if mode == "continue" {
-		if session.resumedToolsContext != nil {
-			toolsContext = session.resumedToolsContext
-		}
-		if session.resumedRuntimeContext != nil {
-			runtimeContext = session.resumedRuntimeContext
-		}
+	// Resolve the turn's settings. A fresh prompt persists them on the
+	// session; a continuation reuses the unfinished turn's (rebuilding them
+	// from persisted state for a resumed session). Mirrors TS
+	// `promptTurn`/`continueTurn` + `resolveActiveTurnSettings`.
+	cur := &activeTurnSettings{
+		persisted:      TurnSettings{Model: model, Skills: skills, Instructions: instructions, Tools: toolSpecs},
+		tools:          tools,
+		toolsContext:   toolsContext,
+		runtimeContext: runtimeContext,
+		activeTools:    activeTools, builtinToolFiltering: a.builtinToolFiltering,
 	}
 
 	// Resolved fresh for every turn (TS `_resolveResponseFormat`, called from
@@ -658,17 +677,21 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 		return nil, fmt.Errorf("harness: output.ResponseFormat failed: %w", err)
 	}
 
-	turnID, err := session.startTrackedTurn(mode)
+	turnID, active, err := session.startTrackedTurn(mode, cur)
 	if err != nil {
 		return nil, err
 	}
+	pendingApprovals, pendingResults, _ := session.snapshotPendingState()
+	model, skills, instructions = active.persisted.Model, active.persisted.Skills, active.persisted.Instructions
+	tools, toolsContext, runtimeContext = active.tools, active.toolsContext, active.runtimeContext
+	activeTools, toolSpecs = active.activeTools, active.persisted.Tools
 
 	out := runPrompt(ctx, runPromptInput{
 		Harness: a.settings.Harness, Session: session.underlying,
 		Mode: mode, Prompt: prompt,
 		Model: model, Skills: skills, Instructions: instructions,
 		Tools: tools, ToolsContext: toolsContext, ActiveTools: activeTools, ToolSpecs: toolSpecs,
-		BuiltinToolFiltering: a.builtinToolFiltering,
+		BuiltinToolFiltering: active.builtinToolFiltering,
 		SandboxSession:       session.sandboxSession, SessionWorkDir: session.sessionWorkDir,
 		ResponseFormat: responseFormat, Output: a.settings.Output, Telemetry: a.settings.Telemetry,
 		Callbacks: a.settings.Callbacks, StopConditions: a.stopConditions, ToolApproval: a.settings.ToolApproval,
@@ -694,7 +717,8 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 		// calls neither: session.recordPendingApproval/recordPendingResult
 		// already transitioned the turn to awaiting-approval/
 		// awaiting-tool-result at the moment the pause was discovered.
-		OnTurnFinished: func() { session.finishTrackedTurn(turnID) },
+		IsTurnSuspending: func() bool { return session.isTurnSuspending(turnID) },
+		OnTurnFinished:   func() { session.finishTrackedTurn(turnID) },
 		OnTurnFailed:   func() { session.finishTrackedTurn(turnID) },
 		// OnStopConditionMet suspends the underlying harness session's turn
 		// in place when StopWhen stops the result early, so it stays
@@ -707,7 +731,28 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 		RuntimeContext: runtimeContext,
 	})
 
+	session.setActivePromptDone(turnID, out.Done)
 	return out.Result, nil
+}
+
+// resolvePromptTurnInput reduces the call's input to the single user message
+// the harness runs for this turn: the harness session owns prior-turn state,
+// so earlier messages are never replayed. A message list collapses to its last
+// `user` entry. Mirrors TS `_resolvePromptTurnInput`.
+func resolvePromptTurnInput(opts agent.AgentGenerateOptions) (Prompt, error) {
+	if opts.Prompt != "" {
+		return TextPrompt(opts.Prompt), nil
+	}
+	for i := len(opts.Messages) - 1; i >= 0; i-- {
+		if opts.Messages[i].Role == types.RoleUser {
+			m := opts.Messages[i]
+			return Prompt{Message: &m}, nil
+		}
+	}
+	if len(opts.Messages) > 0 {
+		return Prompt{}, errors.New("HarnessAgent: messages must contain at least one `role: \"user\"` entry.") //nolint:staticcheck // matches TS SDK's exact error text
+	}
+	return Prompt{}, errors.New("HarnessAgent: either `prompt` or `messages` is required.") //nolint:staticcheck // matches TS SDK's exact error text
 }
 
 // Execute runs a single prompt to completion against an ephemeral session

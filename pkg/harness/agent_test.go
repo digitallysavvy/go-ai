@@ -1703,8 +1703,8 @@ func TestAgent_ExperimentalSteer_RejectsAfterExplicitSuspend(t *testing.T) {
 	}
 
 	err = a.ExperimentalSteer(context.Background(), session, "Change course.")
-	if err == nil || !strings.Contains(err.Error(), "no running turn to steer") {
-		t.Fatalf("ExperimentalSteer err = %v, want \"no running turn to steer\"", err)
+	if err == nil || !strings.Contains(err.Error(), "has ended and cannot be reused") {
+		t.Fatalf("ExperimentalSteer err = %v, want \"has ended and cannot be reused\"", err)
 	}
 	if len(mock.userMessages) != 0 {
 		t.Fatalf("userMessages = %v, want none", mock.userMessages)
@@ -1726,9 +1726,15 @@ func TestAgent_ExperimentalSteer_RejectsAfterExplicitSuspend(t *testing.T) {
 // `sessionState !== 'active'` guard.
 func TestAgentSession_SuspendTurn_DetachesLocalHandle(t *testing.T) {
 	finishPrompt := make(chan struct{})
+	var closeOnce sync.Once
 	mock := newMockHarness(mockHarnessOptions{
 		script:     steerTestScript,
 		promptDone: func() <-chan struct{} { return finishPrompt },
+		// A real adapter's DoSuspendTurn ends the turn it suspends.
+		doSuspendTurn: func(context.Context) (*ContinueTurnState, error) {
+			closeOnce.Do(func() { close(finishPrompt) })
+			return NewContinueTurnState("mock", map[string]any{})
+		},
 	})
 	a, session := newTestAgent(t, mock, nil, Callbacks{}, nil)
 
@@ -1746,7 +1752,6 @@ func TestAgentSession_SuspendTurn_DetachesLocalHandle(t *testing.T) {
 		t.Fatalf("second SuspendTurn err = %v, want \"is not active\"", err)
 	}
 
-	close(finishPrompt)
 	if err := result.Err(); err != nil {
 		t.Fatalf("result.Err() = %v", err)
 	}
@@ -1876,7 +1881,7 @@ func TestAgent_ConcurrentStream_SecondCallerRejected(t *testing.T) {
 	if len(succeeded) != 1 || len(failed) != 1 {
 		t.Fatalf("got %d succeeded, %d failed (want exactly 1 of each); results = %+v", len(succeeded), len(failed), []callResult{r1, r2})
 	}
-	wantErr := "harness session '" + session.SessionID() + "' already has a turn in progress"
+	wantErr := "Harness session " + session.SessionID() + " already has a turn in progress."
 	if got := failed[0].err.Error(); got != wantErr {
 		t.Fatalf("rejected caller's error = %q, want %q", got, wantErr)
 	}
