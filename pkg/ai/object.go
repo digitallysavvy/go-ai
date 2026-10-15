@@ -13,6 +13,7 @@ import (
 	retryutil "github.com/digitallysavvy/go-ai/pkg/internal/retry"
 	"github.com/digitallysavvy/go-ai/pkg/jsonparser"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
@@ -734,51 +735,9 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 	}
 	opts.MaxRetries = maxRetries
 
-	// Validate mode-specific requirements.
-	// Mirrors TS SDK's validateObjectGenerationInput() in validate-object-generation-input.ts.
-	switch opts.OutputMode {
-	case ObjectModeObject:
-		if opts.Schema == nil {
-			return nil, fmt.Errorf("schema is required for object output")
-		}
-		if len(opts.EnumValues) != 0 {
-			return nil, fmt.Errorf("enum values are not supported for object output")
-		}
-	case ObjectModeArray:
-		if opts.Schema == nil {
-			return nil, fmt.Errorf("element schema is required for array output")
-		}
-		if len(opts.EnumValues) != 0 {
-			return nil, fmt.Errorf("enum values are not supported for array output")
-		}
-	case ObjectModeEnum:
-		if opts.Schema != nil {
-			return nil, fmt.Errorf("schema is not supported for enum output")
-		}
-		if opts.SchemaDescription != "" {
-			return nil, fmt.Errorf("schema description is not supported for enum output")
-		}
-		if opts.SchemaName != "" {
-			return nil, fmt.Errorf("schema name is not supported for enum output")
-		}
-		if len(opts.EnumValues) == 0 {
-			return nil, fmt.Errorf("enum values are required for enum output")
-		}
-	case ObjectModeNoSchema:
-		if opts.Schema != nil {
-			return nil, fmt.Errorf("schema is not supported for no-schema output")
-		}
-		if opts.SchemaDescription != "" {
-			return nil, fmt.Errorf("schema description is not supported for no-schema output")
-		}
-		if opts.SchemaName != "" {
-			return nil, fmt.Errorf("schema name is not supported for no-schema output")
-		}
-		if len(opts.EnumValues) != 0 {
-			return nil, fmt.Errorf("enum values are not supported for no-schema output")
-		}
-	default:
-		return nil, fmt.Errorf("invalid output mode: %s", opts.OutputMode)
+	// Validate mode-specific requirements (TS validateObjectGenerationInput).
+	if err := validateObjectGenerationInput(opts.OutputMode, opts.Schema != nil, opts.SchemaName, opts.SchemaDescription, opts.EnumValues); err != nil {
+		return nil, err
 	}
 
 	if opts.OutputMode != ObjectModeNoSchema && !opts.Model.SupportsStructuredOutput() {
@@ -1676,49 +1635,8 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		return nil, maxRetryErr
 	}
 	opts.MaxRetries = maxRetries
-	switch opts.OutputMode {
-	case ObjectModeObject:
-		if opts.Schema == nil {
-			return nil, fmt.Errorf("schema is required for object output")
-		}
-		if len(opts.EnumValues) != 0 {
-			return nil, fmt.Errorf("enum values are not supported for object output")
-		}
-	case ObjectModeArray:
-		if opts.Schema == nil {
-			return nil, fmt.Errorf("element schema is required for array output")
-		}
-		if len(opts.EnumValues) != 0 {
-			return nil, fmt.Errorf("enum values are not supported for array output")
-		}
-	case ObjectModeEnum:
-		if opts.Schema != nil {
-			return nil, fmt.Errorf("schema is not supported for enum output")
-		}
-		if opts.SchemaDescription != "" {
-			return nil, fmt.Errorf("schema description is not supported for enum output")
-		}
-		if opts.SchemaName != "" {
-			return nil, fmt.Errorf("schema name is not supported for enum output")
-		}
-		if len(opts.EnumValues) == 0 {
-			return nil, fmt.Errorf("enum values are required for enum output")
-		}
-	case ObjectModeNoSchema:
-		if opts.Schema != nil {
-			return nil, fmt.Errorf("schema is not supported for no-schema output")
-		}
-		if opts.SchemaDescription != "" {
-			return nil, fmt.Errorf("schema description is not supported for no-schema output")
-		}
-		if opts.SchemaName != "" {
-			return nil, fmt.Errorf("schema name is not supported for no-schema output")
-		}
-		if len(opts.EnumValues) != 0 {
-			return nil, fmt.Errorf("enum values are not supported for no-schema output")
-		}
-	default:
-		return nil, fmt.Errorf("invalid output mode: %s", opts.OutputMode)
+	if err := validateObjectGenerationInput(opts.OutputMode, opts.Schema != nil, opts.SchemaName, opts.SchemaDescription, opts.EnumValues); err != nil {
+		return nil, err
 	}
 	if opts.OutputMode != ObjectModeNoSchema && !opts.Model.SupportsStructuredOutput() {
 		return nil, fmt.Errorf("model does not support structured output")
@@ -2185,4 +2103,57 @@ func deepEqual(a, b interface{}) bool {
 	}
 
 	return reflect.DeepEqual(a, b)
+}
+
+// validateObjectGenerationInput mirrors TS validateObjectGenerationInput: the
+// same checks, parameter names and messages, reported as InvalidArgumentError.
+func validateObjectGenerationInput(mode ObjectOutputMode, hasSchema bool, schemaName, schemaDescription string, enumValues []string) error {
+	invalid := func(field, message string) error {
+		return &providererrors.InvalidArgumentError{Field: field, Message: message}
+	}
+	switch mode {
+	case ObjectModeObject:
+		if !hasSchema {
+			return invalid("schema", "Schema is required for object output.")
+		}
+		if len(enumValues) != 0 {
+			return invalid("enumValues", "Enum values are not supported for object output.")
+		}
+	case ObjectModeArray:
+		if !hasSchema {
+			return invalid("schema", "Element schema is required for array output.")
+		}
+		if len(enumValues) != 0 {
+			return invalid("enumValues", "Enum values are not supported for array output.")
+		}
+	case ObjectModeEnum:
+		if hasSchema {
+			return invalid("schema", "Schema is not supported for enum output.")
+		}
+		if schemaDescription != "" {
+			return invalid("schemaDescription", "Schema description is not supported for enum output.")
+		}
+		if schemaName != "" {
+			return invalid("schemaName", "Schema name is not supported for enum output.")
+		}
+		if len(enumValues) == 0 {
+			return invalid("enumValues", "Enum values are required for enum output.")
+		}
+	case ObjectModeNoSchema:
+		if hasSchema {
+			return invalid("schema", "Schema is not supported for no-schema output.")
+		}
+		if schemaDescription != "" {
+			return invalid("schemaDescription", "Schema description is not supported for no-schema output.")
+		}
+		if schemaName != "" {
+			return invalid("schemaName", "Schema name is not supported for no-schema output.")
+		}
+		if len(enumValues) != 0 {
+			return invalid("enumValues", "Enum values are not supported for no-schema output.")
+		}
+	default:
+		return invalid("output", "Invalid output type.")
+	}
+	return nil
 }
