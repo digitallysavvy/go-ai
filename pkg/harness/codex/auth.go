@@ -46,13 +46,6 @@ func resolveAuthenticationMode(auth harness.Authentication, processEnv map[strin
 	return AuthModeDirect
 }
 
-// resolveAuthenticationEnvironment mirrors TS `resolveCodexEnv`, including
-// the native-subscription fallback (`resolveCodexAuthentication`).
-func resolveAuthenticationEnvironment(ctx context.Context, auth harness.Authentication, processEnv map[string]string) map[string]string {
-	env, _ := resolveAuthentication(ctx, auth, processEnv, "")
-	return env
-}
-
 // resolveAuthentication mirrors TS `resolveCodexAuthentication`: the
 // environment plus the request headers (ChatGPT account id) of a native
 // subscription credential. storeMode is the `cli_auth_credentials_store`
