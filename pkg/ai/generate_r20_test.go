@@ -384,3 +384,18 @@ func TestStreamText_StepEndTelemetryUsageIsPerStep(t *testing.T) {
 		t.Fatalf("per-step input tokens = %v, want [10 7] (not the running total [10 17])", rec.inputs)
 	}
 }
+
+// TS rethrows model errors unchanged: no "failed at step N" prefix.
+func TestGenerateText_ModelErrorHasNoStepPrefix(t *testing.T) {
+	t.Parallel()
+	boom := errors.New("boom")
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return nil, boom
+		},
+	}
+	_, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "hi"})
+	if err == nil || strings.Contains(err.Error(), "at step") {
+		t.Fatalf("err = %v, want unprefixed model error", err)
+	}
+}

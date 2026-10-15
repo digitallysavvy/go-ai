@@ -1202,7 +1202,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			System:   appendSandboxDescription(stepSystem, stepSandbox),
 		}, allowSystem, effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(stepModel))
 		if normErr != nil {
-			return nil, fmt.Errorf("prompt normalization failed at step %d: %w", stepNum, normErr)
+			return nil, normErr
 		}
 		if err := validateStepToolResults(stepPrompt.Messages, opts.Tools); err != nil {
 			return nil, err
@@ -1316,7 +1316,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				stepErr = nil
 			}
 			telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: stepErr})
-			return nil, fmt.Errorf("generation failed at step %d: %w", stepNum, err)
+			return nil, err
 		}
 
 		modelCallUsage := telemetryUsageFromUsage(genResult.Usage)
@@ -1512,13 +1512,13 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				if errors.As(err, &conversionErr) {
 					return nil, conversionErr.Unwrap()
 				}
-				return nil, fmt.Errorf("tool execution failed at step %d: %w", stepNum, err)
+				return nil, err
 			}
 
 			// Validate tool results (v6.0.57)
 			// This ensures provider-executed tools have proper results
 			if err := validateToolResults(toolResults); err != nil {
-				return nil, fmt.Errorf("tool result validation failed at step %d: %w", stepNum, err)
+				return nil, err
 			}
 
 			// TS toolResults holds only tool-result content parts; approval
