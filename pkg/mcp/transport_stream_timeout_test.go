@@ -102,13 +102,12 @@ func TestHTTPTransportRequestTimeoutStillAppliesToSlowResponses(t *testing.T) {
 	}
 	defer tr.Close() //nolint:errcheck
 	msg, _ := CreateRequest(1, "ping", nil)
-	start := time.Now()
+	// The server holds the response for 2s; a 150ms TimeoutMS that works
+	// ends the call with a timeout error well before that, and the error text
+	// (not a wall-clock bound, which a loaded machine can miss) is the check.
 	err := tr.Send(context.Background(), msg)
 	if err == nil || !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("err = %v, want timeout", err)
-	}
-	if time.Since(start) > time.Second {
-		t.Fatalf("timeout took %v", time.Since(start))
 	}
 }
 

@@ -1256,6 +1256,33 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 	if ovr.Output != nil {
 		output = ovr.Output
 	}
+	inputMessages := initialMessages
+	if len(inputMessages) == 0 {
+		prompt := govr.Prompt
+		if ovr.Prompt != "" {
+			prompt = ovr.Prompt
+		}
+		if prompt == "" {
+			prompt = w.Prompt
+		}
+		if prompt != "" {
+			inputMessages = []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: prompt}}}}
+		}
+	}
+	onEnd := mergeFinish(resolveEnd(w.OnEnd, w.OnFinish), mergeFinish(resolveEnd(govr.OnEnd, govr.OnFinish), resolveEnd(ovr.OnEnd, ovr.OnFinish)))
+	if onEnd != nil {
+		inner := onEnd
+		// TS WorkflowAgent's onEnd event carries `messages`: the final
+		// conversation (input messages plus every step's response messages).
+		onEnd = func(ctx context.Context, e ai.OnFinishEvent) {
+			messages := append([]types.Message(nil), inputMessages...)
+			for _, step := range e.Steps {
+				messages = append(messages, step.Response.Messages...)
+			}
+			e.Messages = messages
+			inner(ctx, e)
+		}
+	}
 	pctx := prepareCallContext{
 		prepareStep:         prepareStep,
 		activeTools:         activeTools,
@@ -1290,7 +1317,7 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		OnToolExecutionStart:           mergeToolStart(w.OnToolExecutionStart, mergeToolStart(govr.OnToolExecutionStart, ovr.OnToolExecutionStart)),
 		OnToolExecutionEnd:             mergeToolEnd(w.OnToolExecutionEnd, mergeToolEnd(govr.OnToolExecutionEnd, ovr.OnToolExecutionEnd)),
 		OnStepEndEvent:                 mergeStepFinish(resolveStepEnd(w.OnStepEnd, w.OnStepFinish), mergeStepFinish(resolveStepEnd(govr.OnStepEnd, govr.OnStepFinish), resolveStepEnd(ovr.OnStepEnd, ovr.OnStepFinish))),
-		OnEndEvent:                     mergeFinish(resolveEnd(w.OnEnd, w.OnFinish), mergeFinish(resolveEnd(govr.OnEnd, govr.OnFinish), resolveEnd(ovr.OnEnd, ovr.OnFinish))),
+		OnEndEvent:                     onEnd,
 	})
 }
 

@@ -196,6 +196,28 @@ any UI message chunks (an empty body, keep-alive comments only, or a bare `[DONE
 error, so an endpoint that keeps answering `200 OK` with nothing cannot loop forever. A response that
 delivers chunks resets the count and the next request resumes from the new cursor.
 
+## Model-call parts to UI chunks
+
+A durable run writes `workflow.ModelCallStreamPart` values (an alias of `provider.StreamChunk`; use
+`workflow.ChunkTypeResetStep` for a retried step). `workflow.ToUIMessageChunk` converts one part, and
+`workflow.CreateModelCallToUIChunkTransform` wraps a whole part stream with `start`/`start-step` and
+`finish-step`/`finish`:
+
+```go
+tr, err := workflow.CreateModelCallToUIChunkTransform(workflow.ModelCallToUIChunkTransformOptions{
+  UIStartIndex: 4, // UI chunks the client already received
+})
+chunks := tr.Pipe(ctx, parts)
+```
+
+To resume, replay the source parts from index 0 and set `UIStartIndex` to the number of UI chunks the
+client already has: raw parts and UI chunks are not one to one, so never use a UI index as the source
+start. `workflow.NormalizeUIMessageStreamParts(ctx, chunks)` repairs text and reasoning part framing
+(missing starts, replayed chunks, `reset-step`).
+
+The `OnEnd` event of a `WorkflowAgent` also carries `Messages`, the final conversation (input messages
+plus every step's response messages).
+
 ## Serializable Schemas And Tools
 
 Use `workflow.MarshalSchema` and `workflow.UnmarshalSchema` for JSON Schema round trips.

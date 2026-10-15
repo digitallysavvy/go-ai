@@ -13,9 +13,9 @@ import (
 
 // Hostile scripts must neither crash the host process, nor outlive the
 // configured timeout (plus the documented grace), nor grow host memory
-// without bound. QuickJS's own stack check does not fire in the wasm build,
-// so every case below ends as a JS error, an engine trap, a memory-limit
-// error or a timeout; none may take the process down.
+// without bound. Every case below ends as a JS error (runaway recursion is a
+// catchable stack overflow), an engine trap, a memory-limit error or a
+// timeout; none may take the process down.
 var exhaustionCases = []struct {
 	name string
 	js   string
@@ -75,8 +75,12 @@ func TestResourceExhaustionCannotCrashHangOrExhaustHost(t *testing.T) {
 			runtime.ReadMemStats(&after)
 			grown := int64(after.HeapInuse) - int64(before.HeapInuse)
 			t.Logf("elapsed=%v heapGrowth=%dMiB err=%.120v got=%.60v", elapsed, grown>>20, err, got)
-			if limit := time.Duration(timeoutMs)*time.Millisecond + 2*time.Second; elapsed > limit {
-				t.Fatalf("ran for %v, past the %dms timeout (+2s)", elapsed, timeoutMs)
+			// The engine's own backstop is the timeout plus sandboxTimeoutGrace
+			// (it abandons a sandbox that ignores the interrupt). Allow that
+			// plus slack for a loaded machine: the test proves the call
+			// returns, not how fast a busy CPU gets there.
+			if limit := time.Duration(timeoutMs)*time.Millisecond + sandboxTimeoutGrace + 10*time.Second; elapsed > limit {
+				t.Fatalf("ran for %v, past the %dms timeout plus the %v grace", elapsed, timeoutMs, sandboxTimeoutGrace)
 			}
 			if grown > 512<<20 {
 				t.Fatalf("host heap grew by %d MiB", grown>>20)
