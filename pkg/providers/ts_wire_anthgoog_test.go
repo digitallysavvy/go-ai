@@ -1,6 +1,7 @@
 package providers_test
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providers/bedrock"
 	"github.com/digitallysavvy/go-ai/pkg/providers/google"
 	"github.com/digitallysavvy/go-ai/pkg/providers/googlevertex"
+	vertexanthropic "github.com/digitallysavvy/go-ai/pkg/providers/googlevertex/anthropic"
 )
 
 // Wire suites for the Anthropic / Google / Bedrock families live in this file
@@ -36,19 +38,7 @@ func init() {
 			}
 			return anthropic.New(cfg), nil
 		},
-		ProviderTool: func(id, name string, args map[string]interface{}) (types.Tool, bool) {
-			t, ok := anthropictools.ProviderTool(id, args)
-			if ok {
-				if tsfixture.ToolNameAlias == nil {
-					tsfixture.ToolNameAlias = map[string]string{}
-				}
-				if tsfixture.PromptToolNameAlias == nil {
-					tsfixture.PromptToolNameAlias = map[string]string{}
-				}
-				tsfixture.ToolNameAlias[id], tsfixture.PromptToolNameAlias[name] = name, id
-			}
-			return t, ok
-		},
+		ProviderTool: anthropicWireTool,
 	}
 	wireSuites["google"] = tsfixture.WireSuite{
 		RawSchemas: true,
@@ -86,19 +76,7 @@ func init() {
 		RootBase:        true,
 		LanguageResults: true,
 		SkipStream:      "the recording keeps the Bedrock binary event-stream frames as text; stream parsing is replayed by the case suites",
-		ProviderTool: func(id, name string, args map[string]interface{}) (types.Tool, bool) {
-			t, ok := anthropictools.ProviderTool(id, args)
-			if ok {
-				if tsfixture.ToolNameAlias == nil {
-					tsfixture.ToolNameAlias = map[string]string{}
-				}
-				if tsfixture.PromptToolNameAlias == nil {
-					tsfixture.PromptToolNameAlias = map[string]string{}
-				}
-				tsfixture.ToolNameAlias[id], tsfixture.PromptToolNameAlias[name] = name, id
-			}
-			return t, ok
-		},
+		ProviderTool:    anthropicWireTool,
 		Skip: map[string]string{
 			"~should handle Anthropic provider-defined tools":                             "the TS test mocks prepareAnthropicTools, and Go sends its own tool JSON schema (property descriptions) where TS sends the zod schema",
 			"~should combine user-provided and tool-generated betas in body":              "the TS test mocks prepareAnthropicTools and leaks anthropicBeta into the body (accepted TS bug)",
@@ -127,13 +105,9 @@ func init() {
 	wireSuites["google-vertex"] = tsfixture.WireSuite{
 		RawSchemas:      true,
 		LanguageResults: true,
-		SkipModel: func(m tsfixture.WireModel) string {
-			if m.Cls == "AnthropicLanguageModel" {
-				return "replayed through the Vertex Anthropic sub-provider"
-			}
-			return ""
-		},
+		ProviderTool:    anthropicWireTool,
 		Skip: map[string]string{
+			"~Vertex Anthropic labels >":                                     "provider-level headers are not captured in the recording config, and the labels JSON keeps the TS object key order, which a Go map cannot",
 			"~tools and thinking config for":                                 "the TS test sets Authorization as a provider-level header, which the recording does not carry",
 			"~predict dimensions >":                                          "the TS fixture returns two predictions for one value and TS does not check; Go rejects a count mismatch",
 			"~should pass headers and user agent":                            "provider-level headers are not captured in the recording config",
@@ -148,6 +122,10 @@ func init() {
 			// Speech-to-text and Cloud TTS use fixed Google hosts: send every
 			// request to the replay server, keeping the path.
 			client := &http.Client{Transport: hostRewriter{host: u.Host, scheme: u.Scheme}}
+			if m.Cls == "AnthropicLanguageModel" {
+				return vertexanthropic.New(vertexanthropic.Options{Project: "test-project", Location: "us-east5", BaseURL: b, HTTPClient: client,
+					AuthToken: func(context.Context) (string, error) { return "test-token", nil }, Headers: wireHeaders(m)}), nil
+			}
 			token := "test-oauth-token"
 			hdrs := wireHeaders(m)
 			if auth, ok := hdrs["Authorization"]; ok { // the TS test sets the token as a provider header
@@ -167,4 +145,19 @@ func (h hostRewriter) RoundTrip(r *http.Request) (*http.Response, error) {
 	r2 := r.Clone(r.Context())
 	r2.URL.Host, r2.URL.Scheme, r2.Host = h.host, h.scheme, h.host
 	return http.DefaultTransport.RoundTrip(r2)
+}
+
+// anthropicWireTool maps a TS Anthropic provider tool and aliases its name.
+func anthropicWireTool(id, name string, args map[string]interface{}) (types.Tool, bool) {
+	t, ok := anthropictools.ProviderTool(id, args)
+	if ok {
+		if tsfixture.ToolNameAlias == nil {
+			tsfixture.ToolNameAlias = map[string]string{}
+		}
+		if tsfixture.PromptToolNameAlias == nil {
+			tsfixture.PromptToolNameAlias = map[string]string{}
+		}
+		tsfixture.ToolNameAlias[id], tsfixture.PromptToolNameAlias[name] = name, id
+	}
+	return t, ok
 }

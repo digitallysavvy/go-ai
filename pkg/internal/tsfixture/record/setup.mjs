@@ -61,7 +61,8 @@ globalThis.__recHttpResponse = (rec, response) => {
   rec.response = r;
 };
 
-const names = ['doGenerate','doStream','doEmbed','doRerank','doStart','doStatus','doDecide','doGetBatchResults','doStartBatch','doGetBatchStatus','doCancelBatch','doCreateClientSecret','doCreateWebRTCSession'];
+const names = ['doGenerate','doStream','doEmbed','doRerank','doStart','doStatus','doDecide','doGetBatchResults','doStartBatch','doGetBatchStatus','doCancelBatch','doCreateClientSecret','doCreateWebRTCSession','parseServerEvent','serializeClientEvent'];
+let instSeq = 0;
 for (const n of names) {
   Object.defineProperty(Object.prototype, '__cap_' + n, {
     enumerable: false, configurable: true, writable: true,
@@ -69,6 +70,7 @@ for (const n of names) {
       const rec = { method: n, args: ser(args), model: undefined };
       try {
         rec.model = { modelId: this.modelId, provider: this.provider, cls: this.constructor?.name };
+        if (n === 'parseServerEvent' || n === 'serializeClientEvent') { if (!this.__recInst) Object.defineProperty(this, '__recInst', { value: ++instSeq, enumerable: false }); rec.model.inst = this.__recInst; }
         if (this.config) {
           const c = this.config;
           rec.model.config = { provider: c.provider, baseURL: c.baseURL };

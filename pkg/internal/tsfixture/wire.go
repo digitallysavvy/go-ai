@@ -41,6 +41,8 @@ type WireModel struct {
 	Provider string                 `json:"provider"`
 	Cls      string                 `json:"cls"`
 	Config   map[string]interface{} `json:"config"`
+	// Inst numbers the object a stateful call (an event mapper) ran on.
+	Inst int `json:"inst,omitempty"`
 
 	// RequestURLs is set by the runner to the URLs of the HTTP requests the
 	// TS test made, for providers whose settings show only in the URLs.
