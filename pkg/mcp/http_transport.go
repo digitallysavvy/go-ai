@@ -74,6 +74,7 @@ type HTTPTransport struct {
 	config TransportConfig
 
 	// OAuth
+	auth       *transportAuth
 	oauth      *OAuthConfig
 	refreshMu  sync.Mutex
 	refreshCh  chan struct{}
@@ -136,6 +137,18 @@ type HTTPTransportConfig struct {
 
 	// OAuth configuration (optional)
 	OAuth *OAuthConfig
+
+	// AuthProvider enables the MCP OAuth flow: its tokens are sent as a
+	// bearer token, and a 401 response runs Auth once (shared by concurrent
+	// requests) before the request is retried. Matches TS HttpMCPTransport's
+	// authProvider. When Auth cannot complete without user interaction the
+	// request fails with *UnauthorizedError (also reported through OnError).
+	AuthProvider OAuthClientProvider `json:"-"`
+
+	// AuthHTTPClient is the HTTP client used for the OAuth discovery,
+	// registration and token requests Auth makes (TS passes the transport's
+	// fetch). Nil uses Auth's default client.
+	AuthHTTPClient *http.Client `json:"-"`
 
 	// Config is the base transport configuration
 	Config TransportConfig
@@ -247,6 +260,7 @@ func NewHTTPTransport(config HTTPTransportConfig) *HTTPTransport {
 		receiveQueue:            make([]*MCPMessage, 0),
 		config:                  config.Config,
 		oauth:                   config.OAuth,
+		auth:                    newTransportAuth(config.AuthProvider, config.URL, config.AuthHTTPClient),
 		sessionID:               config.InitialSessionID,
 		onSessionIDChange:       config.OnSessionIDChange,
 		onSessionExpired:        config.OnSessionExpired,
@@ -521,6 +535,9 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
 	}
+	if err := t.auth.setBearer(ctx, req.Header); err != nil {
+		return fail(NewTransportError("failed to load OAuth tokens", err))
+	}
 
 	var resp *http.Response
 	for attempt := 0; attempt < 2; attempt++ {
@@ -538,7 +555,7 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		if resp == nil {
 			return fail(NewTransportError("failed to send request", fmt.Errorf("nil HTTP response")))
 		}
-		if resp.StatusCode != http.StatusUnauthorized || !t.oauthConfigured() || attempt == 1 {
+		if resp.StatusCode != http.StatusUnauthorized || attempt == 1 || !(t.oauthConfigured() || t.auth.enabled()) {
 			break
 		}
 		// A nil Body here is not the case this fix cares about (see the
@@ -546,10 +563,14 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		// intermediate 401 response is discarded and retried regardless of
 		// its body.
 		if resp.Body != nil {
-			_, _ = io.Copy(io.Discard, resp.Body)
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, mcpMaxErrorBodyBytes))
 			resp.Body.Close() //nolint:errcheck
 		}
-		if err := t.refreshOAuthToken(ctx); err != nil {
+		if t.auth.enabled() {
+			if err := t.auth.authorize(ctx, resp); err != nil {
+				return fail(err)
+			}
+		} else if err := t.refreshOAuthToken(ctx); err != nil {
 			return fail(NewTransportError("failed to refresh OAuth token", err))
 		}
 		req, err = http.NewRequestWithContext(reqCtx, "POST", t.url, bytes.NewReader(data))
@@ -562,6 +583,9 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		}
 		if token, _, ok := t.oauthTokenSnapshot(); ok && token != "" {
 			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		if err := t.auth.setBearer(ctx, req.Header); err != nil {
+			return fail(NewTransportError("failed to load OAuth tokens", err))
 		}
 	}
 
@@ -1025,6 +1049,12 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
 	}
+	if err := t.auth.setBearer(connCtx, req.Header); err != nil {
+		connCancel()
+		t.reportError(NewTransportError("failed to load OAuth tokens", err))
+		t.maybeScheduleInboundSSEReconnect(lifecycleCtx)
+		return
+	}
 
 	client := SSEClient(t.streamClient)
 	if t.sseClient != nil {
@@ -1054,12 +1084,18 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 
 	// 401: run the OAuth refresh once (reusing the single-flight path used by
 	// send()), then retry, matching TS's authorizeOnce()-guarded retry.
-	if resp.StatusCode == http.StatusUnauthorized && t.oauthConfigured() && !triedAuth {
+	if resp.StatusCode == http.StatusUnauthorized && (t.oauthConfigured() || t.auth.enabled()) && !triedAuth {
 		if resp.Body != nil {
-			_, _ = io.Copy(io.Discard, resp.Body)
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, mcpMaxErrorBodyBytes))
 			resp.Body.Close() //nolint:errcheck
 		}
-		if err := t.refreshOAuthToken(connCtx); err != nil {
+		if t.auth.enabled() {
+			if err := t.auth.authorize(connCtx, resp); err != nil {
+				connCancel()
+				t.reportError(err)
+				return
+			}
+		} else if err := t.refreshOAuthToken(connCtx); err != nil {
 			connCancel()
 			t.reportError(NewTransportError("failed to refresh OAuth token", err))
 			return

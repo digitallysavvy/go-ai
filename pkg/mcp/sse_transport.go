@@ -43,6 +43,9 @@ type SSETransport struct {
 
 	config TransportConfig
 	oauth  *OAuthConfig
+	auth   *transportAuth
+	// onError receives non-fatal diagnostics (TS onerror).
+	onError func(error)
 
 	// refreshMu/refreshCh/refreshErr single-flight concurrent OAuth token
 	// refreshes triggered by a 401 response (hash 4b5cb49), mirroring
@@ -72,6 +75,21 @@ type SSETransportConfig struct {
 	// SSEClient is an optional custom SSE-capable client used instead of
 	// HTTPClient when supplied.
 	SSEClient SSEClient
+
+	// AuthProvider enables the MCP OAuth flow: its tokens are sent as a
+	// bearer token, and a 401 response runs Auth once (shared by concurrent
+	// requests) before the request is retried. Matches TS SseMCPTransport's
+	// authProvider. When Auth cannot complete without user interaction the
+	// request fails with *UnauthorizedError.
+	AuthProvider OAuthClientProvider `json:"-"`
+
+	// AuthHTTPClient is the HTTP client used for the OAuth discovery,
+	// registration and token requests Auth makes (TS passes the transport's
+	// fetch). Nil uses Auth's default client.
+	AuthHTTPClient *http.Client `json:"-"`
+
+	// OnError, when set, receives non-fatal diagnostics (TS onerror).
+	OnError func(error) `json:"-"`
 }
 
 // NewSSETransport creates a new legacy SSE transport.
@@ -106,6 +124,23 @@ func NewSSETransport(config SSETransportConfig) *SSETransport {
 		receiveQueue: make([]*MCPMessage, 0),
 		config:       config.Config,
 		oauth:        config.OAuth,
+		auth:         newTransportAuth(config.AuthProvider, config.URL, config.AuthHTTPClient),
+		onError:      config.OnError,
+	}
+}
+
+// sendFailed reports a send failure through OnError unless the caller's own
+// context was cancelled (TS: `if (options?.signal?.aborted) throw error`).
+func (t *SSETransport) sendFailed(ctx context.Context, err error) error {
+	if ctx.Err() == nil {
+		t.reportError(err)
+	}
+	return err
+}
+
+func (t *SSETransport) reportError(err error) {
+	if t.onError != nil && err != nil {
+		t.onError(err)
 	}
 }
 
@@ -122,32 +157,59 @@ func (t *SSETransport) Connect(ctx context.Context) error {
 		return NewMCPClientError(0, "MCP SSE Transport Error: invalid URL", nil)
 	}
 
-	reqCtx, cancel := context.WithCancel(ctx)
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, t.url, nil)
-	if err != nil {
-		cancel()
-		return NewTransportError("failed to create SSE request", err)
-	}
-	t.applyHeaders(ctx, req, map[string]string{"Accept": "text/event-stream"})
+	// The stream outlives this call: only the handshake is bound to ctx
+	// (TS start() has no caller signal), so cancelling a setup context after
+	// Connect returns does not drop the connection.
+	reqCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	stopWatch := context.AfterFunc(ctx, cancel)
+	var resp *http.Response
+	for attempt := 0; ; attempt++ {
+		req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, t.url, nil)
+		if err != nil {
+			stopWatch()
+			cancel()
+			return NewTransportError("failed to create SSE request", err)
+		}
+		if err := t.applyHeaders(ctx, req, map[string]string{"Accept": "text/event-stream"}); err != nil {
+			stopWatch()
+			cancel()
+			return NewTransportError("failed to load OAuth tokens", err)
+		}
 
-	client := SSEClient(t.streamClient)
-	if t.sseClient != nil {
-		client = t.sseClient
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		cancel()
-		return NewTransportError("failed to establish SSE connection", err)
-	}
-	if resp == nil {
-		cancel()
-		return NewTransportError("failed to establish SSE connection", fmt.Errorf("nil HTTP response"))
-	}
-	if resp.Body == nil {
-		resp.Body = io.NopCloser(bytes.NewReader(nil))
+		client := SSEClient(t.streamClient)
+		if t.sseClient != nil {
+			client = t.sseClient
+		}
+		resp, err = client.Do(req)
+		if err != nil {
+			stopWatch()
+			cancel()
+			return NewTransportError("failed to establish SSE connection", err)
+		}
+		if resp == nil {
+			stopWatch()
+			cancel()
+			return NewTransportError("failed to establish SSE connection", fmt.Errorf("nil HTTP response"))
+		}
+		if resp.Body == nil {
+			resp.Body = io.NopCloser(bytes.NewReader(nil))
+		}
+		if resp.StatusCode == http.StatusUnauthorized && t.auth.enabled() && attempt == 0 {
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, mcpMaxErrorBodyBytes))
+			resp.Body.Close() //nolint:errcheck
+			if err := t.auth.authorize(ctx, resp); err != nil {
+				stopWatch()
+				cancel()
+				t.reportError(err)
+				return err
+			}
+			continue
+		}
+		break
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		defer resp.Body.Close() //nolint:errcheck
+		stopWatch()
 		cancel()
 		statusText := http.StatusText(resp.StatusCode)
 		if statusText == "" {
@@ -157,7 +219,9 @@ func (t *SSETransport) Connect(ctx context.Context) error {
 		if resp.StatusCode == http.StatusMethodNotAllowed {
 			message += ". This server does not support SSE transport. Try using `http` transport instead"
 		}
-		return NewMCPClientError(0, strings.TrimSpace(message), nil, WithMCPHTTPResponse(resp.StatusCode, t.url, ""))
+		err := NewMCPClientError(0, strings.TrimSpace(message), nil, WithMCPHTTPResponse(resp.StatusCode, t.url, ""))
+		t.reportError(err)
+		return err
 	}
 
 	ready := make(chan error, 1)
@@ -170,12 +234,15 @@ func (t *SSETransport) Connect(ctx context.Context) error {
 
 	select {
 	case err := <-ready:
+		stopWatch()
 		if err != nil {
 			t.closeWithoutCallback()
+			t.reportError(err)
 			return err
 		}
 		return nil
 	case <-ctx.Done():
+		stopWatch()
 		t.closeWithoutCallback()
 		return ctx.Err()
 	}
@@ -235,7 +302,9 @@ func (t *SSETransport) Send(ctx context.Context, message *MCPMessage) error {
 		if err != nil {
 			return NewTransportError("failed to create request", err)
 		}
-		t.applyHeaders(ctx, req, map[string]string{"Content-Type": "application/json"})
+		if err := t.applyHeaders(ctx, req, map[string]string{"Content-Type": "application/json"}); err != nil {
+			return NewTransportError("failed to load OAuth tokens", err)
+		}
 		sentToken, _, _ := t.oauthTokenSnapshot()
 
 		client := SSEClient(t.client)
@@ -244,21 +313,32 @@ func (t *SSETransport) Send(ctx context.Context, message *MCPMessage) error {
 		}
 		resp, err = client.Do(req)
 		if err != nil {
-			return NewTransportError("failed to send request", err)
+			return t.sendFailed(ctx, NewTransportError("failed to send request", err))
 		}
 		if resp == nil {
-			return NewTransportError("failed to send request", fmt.Errorf("nil HTTP response"))
+			return t.sendFailed(ctx, NewTransportError("failed to send request", fmt.Errorf("nil HTTP response")))
 		}
 		if resp.Body == nil {
 			resp.Body = io.NopCloser(bytes.NewReader(nil))
 		}
 
-		if resp.StatusCode != http.StatusUnauthorized || !t.oauthConfigured() || attempt == 1 {
+		if resp.StatusCode != http.StatusUnauthorized || attempt == 1 || !(t.oauthConfigured() || t.auth.enabled()) {
 			break
 		}
-		_, _ = io.Copy(io.Discard, resp.Body)
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, mcpMaxErrorBodyBytes))
 		resp.Body.Close() //nolint:errcheck
 
+		if t.auth.enabled() {
+			// Another request may already have refreshed the token (TS
+			// accessTokenChanged): retry with it instead of re-authorizing.
+			if t.auth.tokenChanged(ctx, req.Header.Get("Authorization")) {
+				continue
+			}
+			if err := t.auth.authorize(ctx, resp); err != nil {
+				return t.sendFailed(ctx, err)
+			}
+			continue
+		}
 		if currentToken, _, _ := t.oauthTokenSnapshot(); currentToken == "" || currentToken == sentToken {
 			if err := t.refreshOAuthToken(ctx); err != nil {
 				return NewTransportError("failed to refresh OAuth token", err)
@@ -270,7 +350,7 @@ func (t *SSETransport) Send(ctx context.Context, message *MCPMessage) error {
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		body := readErrorBody(resp.Body)
 		message := fmt.Sprintf("MCP SSE Transport Error: POSTing to endpoint (HTTP %d): %s", resp.StatusCode, string(body))
-		return NewMCPClientError(0, message, nil, WithMCPHTTPResponse(resp.StatusCode, endpoint.String(), string(body)))
+		return t.sendFailed(ctx, NewMCPClientError(0, message, nil, WithMCPHTTPResponse(resp.StatusCode, endpoint.String(), string(body))))
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	return nil
@@ -331,7 +411,7 @@ func (t *SSETransport) ProtocolVersion() string {
 	return ProtocolVersion
 }
 
-func (t *SSETransport) applyHeaders(ctx context.Context, req *http.Request, base map[string]string) {
+func (t *SSETransport) applyHeaders(ctx context.Context, req *http.Request, base map[string]string) error {
 	for k, v := range t.config.Headers {
 		req.Header.Set(k, v)
 	}
@@ -349,6 +429,7 @@ func (t *SSETransport) applyHeaders(ctx context.Context, req *http.Request, base
 		}
 	}
 	setMCPUserAgent(req.Header)
+	return t.auth.setBearer(ctx, req.Header)
 }
 
 func (t *SSETransport) readSSEStream(body io.ReadCloser, ready chan<- error) {

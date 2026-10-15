@@ -111,3 +111,31 @@ func TestHTTPTransportRequestTimeoutStillAppliesToSlowResponses(t *testing.T) {
 		t.Fatalf("timeout took %v", time.Since(start))
 	}
 }
+
+// Cancelling the context passed to Connect after it returned must not drop
+// the stream (TS start() takes no signal that outlives the handshake).
+func TestSSETransportStreamSurvivesConnectContextCancel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl := w.(http.Flusher)
+		fmt.Fprint(w, "event: endpoint\ndata: /post\n\n")
+		fl.Flush()
+		time.Sleep(300 * time.Millisecond)
+		fmt.Fprint(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n")
+		fl.Flush()
+		time.Sleep(200 * time.Millisecond)
+	}))
+	defer srv.Close()
+	tr := NewSSETransport(SSETransportConfig{URL: srv.URL})
+	connectCtx, cancelConnect := context.WithCancel(context.Background())
+	if err := tr.Connect(connectCtx); err != nil {
+		t.Fatal(err)
+	}
+	cancelConnect()
+	defer tr.Close() //nolint:errcheck
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, err := tr.Receive(ctx); err != nil {
+		t.Fatalf("stream was dropped when the Connect context was cancelled: %v", err)
+	}
+}
