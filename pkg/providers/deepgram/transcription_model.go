@@ -216,7 +216,7 @@ func (m *TranscriptionModel) convertResponse(response deepgramTranscriptionRespo
 			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   providerutils.ExtractHeaders(httpResp.Headers),
-			Body:      response,
+			Body:      providerutils.RawJSONBody(httpResp.Body),
 		},
 	}
 	// TS: `...(durationInSeconds != null ? { usage: { seconds: durationInSeconds } } : {})`.

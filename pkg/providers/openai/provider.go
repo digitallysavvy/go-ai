@@ -130,6 +130,17 @@ type Config struct {
 	// references resolve the wrapper's own provider key instead of "openai".
 	OpenAICompatible bool
 
+	// SupportsStructuredOutputs, for OpenAI-compatible hosts (TS
+	// supportsStructuredOutputs): nil keeps the legacy behavior (json_schema
+	// whenever a schema is present); an explicit value follows TS, where
+	// false (the TS default) sends json_object and drops the schema.
+	SupportsStructuredOutputs *bool
+
+	// SupportsMultiPartToolContent, for OpenAI-compatible hosts (TS
+	// supportsMultiPartToolContent): send tool results with file/image
+	// content as a content array instead of JSON text.
+	SupportsMultiPartToolContent bool
+
 	// IncludeUsage sends stream_options.include_usage on streaming chat
 	// requests for OpenAICompatible wrappers (TS openai-compatible
 	// `includeUsage`; baseten sets it). Native OpenAI chat always requests
@@ -303,6 +314,11 @@ func (p *Provider) completionProviderOptionsName() string {
 	}
 	if strings.Contains(p.completionProviderName(), "azure") {
 		return "azure"
+	}
+	if p.config.OpenAICompatible {
+		// TS OpenAICompatibleCompletionLanguageModel: provider.split('.')[0].
+		name, _, _ := strings.Cut(p.Name(), ".")
+		return strings.TrimSpace(name)
 	}
 	return "openai"
 }

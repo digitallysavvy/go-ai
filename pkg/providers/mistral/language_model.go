@@ -143,6 +143,10 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	result.RawRequest = reqBody
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	// TS response.body is the raw parsed JSON, not the schema-filtered value.
+	if len(resp.Body) > 0 {
+		result.RawResponse = providerutils.RawJSONBody(resp.Body)
+	}
 	responseMetadata := providerutils.BuildResponseMetadata(response.ID, response.Model, response.Created)
 	responseMetadata.Headers = result.ResponseHeaders
 	result.ResponseMetadata = responseMetadata
@@ -276,10 +280,27 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["prompt_cache_key"] = provOpts.PromptCacheKey
 	}
 	if len(opts.Tools) > 0 {
-		body["tools"] = tool.ToOpenAIFormat(opts.Tools)
+		tools := opts.Tools
 		if opts.ToolChoice.Type != "" {
-			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(opts.ToolChoice)
+			// TS mistral prepareTools: required and tool both force 'any'; a
+			// specific tool is selected by filtering the tool list.
+			switch opts.ToolChoice.Type {
+			case types.ToolChoiceAuto, types.ToolChoiceNone:
+				body["tool_choice"] = string(opts.ToolChoice.Type)
+			case types.ToolChoiceRequired:
+				body["tool_choice"] = "any"
+			case types.ToolChoiceTool:
+				body["tool_choice"] = "any"
+				var filtered []types.Tool
+				for _, t := range tools {
+					if t.Name == opts.ToolChoice.ToolName {
+						filtered = append(filtered, t)
+					}
+				}
+				tools = filtered
+			}
 		}
+		body["tools"] = tool.ToOpenAIFormat(tools)
 		if provOpts.ParallelToolCalls != nil {
 			body["parallel_tool_calls"] = *provOpts.ParallelToolCalls
 		}

@@ -218,6 +218,9 @@ func gatewayImageFile(file provider.ImageFile) map[string]interface{} {
 	if file.MediaType != "" {
 		result["mediaType"] = file.MediaType
 	}
+	if len(file.ProviderOptions) > 0 {
+		result["providerOptions"] = file.ProviderOptions
+	}
 	return result
 }
 

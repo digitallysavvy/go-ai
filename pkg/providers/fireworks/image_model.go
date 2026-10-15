@@ -136,6 +136,11 @@ func (m *ImageModel) doGenerateSync(ctx context.Context, opts *provider.ImageGen
 		return nil, internalhttp.StatusProviderError("fireworks", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
+	// TS createBinaryResponseHandler: an empty body is an error.
+	if len(resp.Body) == 0 {
+		return nil, providererrors.NewProviderError("fireworks", resp.StatusCode, "", "Response body is empty", nil)
+	}
+
 	mimeType := "image/png"
 	if ct := resp.Headers.Get("Content-Type"); strings.HasPrefix(ct, "image/") {
 		mimeType = strings.TrimSpace(strings.SplitN(ct, ";", 2)[0])

@@ -199,8 +199,8 @@ func TestTruncateModeValidation(t *testing.T) {
 func TestDefaultEmbeddingOptions(t *testing.T) {
 	opts := DefaultEmbeddingOptions()
 
-	if opts.InputType != InputTypeSearchDocument {
-		t.Errorf("DefaultEmbeddingOptions() InputType = %v, want %v", opts.InputType, InputTypeSearchDocument)
+	if opts.InputType != InputTypeSearchQuery {
+		t.Errorf("DefaultEmbeddingOptions() InputType = %v, want %v", opts.InputType, InputTypeSearchQuery)
 	}
 
 	if opts.OutputDimension != nil {

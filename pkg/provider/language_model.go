@@ -644,6 +644,10 @@ type ImageFile struct {
 
 	// MediaType for type="file" (e.g., "image/png")
 	MediaType string
+
+	// ProviderOptions carries optional provider-specific options for the file
+	// part (TS ImageModelV4File.providerOptions).
+	ProviderOptions map[string]interface{}
 }
 
 // SpeechModel represents a speech synthesis model

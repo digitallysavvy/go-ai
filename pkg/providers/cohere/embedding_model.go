@@ -90,7 +90,16 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		return nil, err
 	}
 
+	// TS parseProviderOptions({provider: 'cohere', schema: cohereEmbeddingModelOptions}):
+	// per-call options win over the model options.
 	embeddingType := m.options.EmbeddingType
+	inputType := m.options.InputType
+	truncate := m.options.Truncate
+	var outputDimension *int
+	if m.options.OutputDimension != nil {
+		d := int(*m.options.OutputDimension)
+		outputDimension = &d
+	}
 	if opts != nil {
 		if co, ok := opts.ProviderOptions["cohere"].(map[string]interface{}); ok {
 			if v, present := co["embeddingType"]; present {
@@ -103,28 +112,54 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 					return nil, fmt.Errorf("invalid cohere provider options: %s is not a supported embeddingType", str)
 				}
 			}
+			if v, present := co["inputType"]; present && v != nil {
+				str, _ := v.(string)
+				it := InputType(str)
+				if err := (&EmbeddingOptions{InputType: it}).Validate(); err != nil || it == "" {
+					return nil, fmt.Errorf("invalid cohere provider options: inputType %v is not supported", v)
+				}
+				inputType = it
+			}
+			if v, present := co["truncate"]; present && v != nil {
+				str, _ := v.(string)
+				tm := TruncateMode(str)
+				if err := (&EmbeddingOptions{Truncate: tm}).Validate(); err != nil || tm == "" {
+					return nil, fmt.Errorf("invalid cohere provider options: truncate %v is not supported", v)
+				}
+				truncate = tm
+			}
+			if v, present := co["outputDimension"]; present && v != nil {
+				f, _ := v.(float64)
+				if i, isInt := v.(int); isInt {
+					f = float64(i)
+				}
+				od := OutputDimension(int(f))
+				if err := (&EmbeddingOptions{OutputDimension: &od}).Validate(); err != nil {
+					return nil, fmt.Errorf("invalid cohere provider options: outputDimension %v is not supported", v)
+				}
+				d := int(f)
+				outputDimension = &d
+			}
 		}
 	}
 	if embeddingType == "" {
 		embeddingType = EmbeddingTypeFloat
+	}
+	if inputType == "" {
+		inputType = InputTypeSearchQuery
 	}
 
 	reqBody := map[string]interface{}{
 		"texts":           inputs,
 		"model":           m.modelID,
 		"embedding_types": []string{string(embeddingType)},
+		"input_type":      string(inputType),
 	}
-
-	if m.options.InputType != "" {
-		reqBody["input_type"] = string(m.options.InputType)
-	} else {
-		reqBody["input_type"] = "search_document"
+	if truncate != "" {
+		reqBody["truncate"] = string(truncate)
 	}
-	if m.options.Truncate != "" {
-		reqBody["truncate"] = string(m.options.Truncate)
-	}
-	if m.options.OutputDimension != nil {
-		reqBody["output_dimension"] = int(*m.options.OutputDimension)
+	if outputDimension != nil {
+		reqBody["output_dimension"] = *outputDimension
 	} else if opts != nil && opts.Dimensions != nil {
 		// Top-level dimensions (TS #22338); the provider option wins.
 		reqBody["output_dimension"] = *opts.Dimensions
@@ -133,7 +168,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	var response cohereEmbedResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
-		Path:    "/v1/embed",
+		Path:    "/embed",
 		Body:    reqBody,
 		Headers: optsHeaders(opts),
 	}, &response)
@@ -144,6 +179,11 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	if err != nil {
 		return nil, providererrors.NewProviderError("cohere", 0, "", err.Error(), err)
 	}
+	// TS response.body is the raw parsed JSON, not the schema-filtered value.
+	var rawBody interface{}
+	if err := json.Unmarshal(httpResp.Body, &rawBody); err != nil {
+		rawBody = response
+	}
 	return &types.EmbeddingsResult{
 		Embeddings: embeddings,
 		Usage: types.EmbeddingUsage{
@@ -151,7 +191,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 			InputTokens: response.Meta.BilledUnits.InputTokens,
 			TotalTokens: response.Meta.BilledUnits.InputTokens,
 		},
-		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: response}},
+		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: rawBody}},
 	}, nil
 }
 

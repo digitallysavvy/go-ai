@@ -120,7 +120,7 @@ func (p *Provider) chatCompletionsPath() string {
 	if p.config.ChatCompletionsPath != "" {
 		return p.config.ChatCompletionsPath
 	}
-	return "/v1/chat/completions"
+	return "/chat/completions" // TS: ${baseURL}/chat/completions (beta: .../beta/chat/completions)
 }
 
 func (p *Provider) supportsThinking() bool {

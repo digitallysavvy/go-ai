@@ -104,7 +104,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   providerutils.ExtractHeaders(httpResp.Headers),
-			Body:      response,
+			Body:      providerutils.RawJSONBody(httpResp.Body),
 		},
 	}
 	if response.Language != nil {

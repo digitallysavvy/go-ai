@@ -60,3 +60,28 @@ AWS event stream), `BuildPromptMessages`, `BuildTools`, `BuildToolChoice`.
 `TSFIXTURE_FULL=1` stops the diff from truncating long strings. A skip entry in
 the `skip` map is keyed by the TS test name; `name#01` skips only the second
 case with that name.
+
+## Wire replay
+
+`wire.go` / `wire_run.go` replay recordings of the whole TS test run
+(requests, responses and call results) against Go providers; see
+`record/README.md`.
+
+## Large payloads
+
+Recorded image payloads would make case files huge (the TS image fixtures
+are 5 to 6 MB each). `google/testdata/tscases/interactions.json.gz` uses the
+same shrink rule as `pkg/providers/google/testdata/ts/interactions/README.md`:
+every base64 JPEG run of 100,000 characters or more is replaced by a 1x1
+JPEG, and every other run that long (thought signatures) by its first 64
+characters, everywhere it occurs (response bodies and snapshots alike). Apply
+the same rule after regenerating, before gzipping, so no file passes 1 MB.
+
+## Prompt building
+
+`BuildPromptMessages` (used by both the case replay and the wire replay)
+accepts text, reasoning, tool-call, tool-result, file, reasoning-file, custom
+and tool-approval-response parts. File data is built by `fileDataFromTS`
+(base64 strings, recorded `Uint8Array` bytes, URLs with a gs: `originalUrl`,
+provider references and text). Tool-result outputs decode from their TS JSON
+form; content outputs are built block by block so recorded bytes survive.

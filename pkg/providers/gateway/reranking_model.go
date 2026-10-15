@@ -42,7 +42,7 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 		return nil, fmt.Errorf("rerank options cannot be nil")
 	}
 	body := map[string]interface{}{
-		"documents": opts.Documents,
+		"documents": gatewayRerankDocuments(opts.Documents),
 		"query":     opts.Query,
 	}
 	if opts.TopN != nil {
@@ -97,4 +97,25 @@ type gatewayRerankResponse struct {
 	Ranking          []types.RerankItem `json:"ranking"`
 	Warnings         []types.Warning    `json:"warnings,omitempty"`
 	ProviderMetadata interface{}        `json:"providerMetadata,omitempty"`
+}
+
+// gatewayRerankDocuments wraps documents in the V4 reranking documents union
+// ({type: 'text', values} or {type: 'object', values}) that TS sends.
+func gatewayRerankDocuments(docs interface{}) interface{} {
+	switch d := docs.(type) {
+	case []string:
+		return map[string]interface{}{"type": "text", "values": d}
+	case []map[string]interface{}:
+		return map[string]interface{}{"type": "object", "values": d}
+	case []interface{}:
+		kind := "text"
+		for _, v := range d {
+			if _, ok := v.(string); !ok {
+				kind = "object"
+				break
+			}
+		}
+		return map[string]interface{}{"type": kind, "values": d}
+	}
+	return docs
 }

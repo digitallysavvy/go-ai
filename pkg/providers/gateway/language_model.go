@@ -167,12 +167,13 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	// Create streaming parser and wrap it in a proper TextStream implementation
 	stream := streaming.NewSSEParser(httpResp.Body)
 
-	return &gatewayTextStream{
+	// TS: stream result carries response: { headers }.
+	return providerutils.WithResponseMetadata(&gatewayTextStream{
 		parser:           stream,
 		body:             httpResp.Body,
 		includeRawChunks: opts.IncludeRawChunks,
 		requestBody:      reqBody,
-	}, nil
+	}, httpResp.Header, m.modelID), nil
 }
 
 // gatewayTextStream implements provider.TextStream for Gateway provider
@@ -340,9 +341,14 @@ func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.S
 		if !s.includeRawChunks {
 			return nil, nil, false
 		}
+		// V4 raw part: the origin provider's chunk is `rawValue`.
+		var rawValue interface{} = chunk.raw
+		if v, ok := chunk.raw["rawValue"]; ok {
+			rawValue = v
+		}
 		return &provider.StreamChunk{
 			Type: provider.ChunkTypeRaw,
-			Raw:  chunk.raw,
+			Raw:  rawValue,
 		}, nil, true
 
 	case "response-metadata":
@@ -415,8 +421,9 @@ func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.S
 
 	case "tool-input-start":
 		return &provider.StreamChunk{
-			Type: provider.ChunkTypeToolInputStart,
-			ID:   chunk.part.ID,
+			Type:             provider.ChunkTypeToolInputStart,
+			ID:               chunk.part.ID,
+			ProviderMetadata: chunk.part.ProviderMetadata,
 			ToolCall: &types.ToolCall{
 				ID:               chunk.part.ID,
 				ToolName:         chunk.part.ToolName,
@@ -428,16 +435,18 @@ func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.S
 
 	case "tool-input-delta":
 		return &provider.StreamChunk{
-			Type: provider.ChunkTypeToolInputDelta,
-			ID:   chunk.part.ID,
-			Text: chunk.part.Delta,
+			Type:             provider.ChunkTypeToolInputDelta,
+			ID:               chunk.part.ID,
+			Text:             chunk.part.Delta,
+			ProviderMetadata: chunk.part.ProviderMetadata,
 		}, nil, true
 
 	case "tool-input-end":
 		return &provider.StreamChunk{
-			Type:     provider.ChunkTypeToolInputEnd,
-			ID:       chunk.part.ID,
-			ToolCall: &types.ToolCall{ID: chunk.part.ID},
+			Type:             provider.ChunkTypeToolInputEnd,
+			ID:               chunk.part.ID,
+			ToolCall:         &types.ToolCall{ID: chunk.part.ID},
+			ProviderMetadata: chunk.part.ProviderMetadata,
 		}, nil, true
 
 	case "tool-call":
@@ -469,7 +478,6 @@ func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.S
 
 	case "tool-result":
 		tr := chunk.part.toolResult()
-		tr.ProviderMetadata = nil
 		return &provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &tr}, nil, true
 
 	case "tool-approval-request":
@@ -724,7 +732,10 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, streami
 	if opts.Reasoning != nil {
 		body["reasoning"] = string(*opts.Reasoning)
 	}
-	if opts.IncludeRawChunks {
+	if streaming {
+		// TS streamText always passes includeRawChunks (default false).
+		body["includeRawChunks"] = opts.IncludeRawChunks
+	} else if opts.IncludeRawChunks {
 		body["includeRawChunks"] = true
 	}
 
@@ -834,14 +845,13 @@ func (m *LanguageModel) convertContentPart(part types.ContentPart) (map[string]i
 			"text": v.Text,
 		}
 		addProviderOptions(result, v.ProviderOptions)
-		addProviderMetadata(result, v.ProviderMetadata)
 		return result, nil
 
 	case types.ImageContent:
 		// V4 has no image part: images are file parts with an image media type.
 		mediaType := v.MimeType
 		if mediaType == "" {
-			mediaType = "image/*"
+			mediaType = "image" // TS: part.mediaType ?? 'image'
 		}
 		result := map[string]interface{}{"type": "file", "mediaType": mediaType}
 		if v.URL != "" {
@@ -873,7 +883,6 @@ func (m *LanguageModel) convertContentPart(part types.ContentPart) (map[string]i
 			result["filename"] = v.Filename
 		}
 		addProviderOptions(result, v.ProviderOptions)
-		addProviderMetadata(result, v.ProviderMetadata)
 
 		return result, nil
 
@@ -888,7 +897,6 @@ func (m *LanguageModel) convertContentPart(part types.ContentPart) (map[string]i
 			"mediaType": v.MediaType,
 		}
 		addProviderOptions(result, v.ProviderOptions)
-		addProviderMetadata(result, v.ProviderMetadata)
 		return result, nil
 
 	case types.ToolResultContent:
@@ -1005,26 +1013,9 @@ func gatewayToolResultMap(part types.ToolResultContent) (map[string]interface{},
 		"toolCallId": part.ToolCallID,
 		"toolName":   part.ToolName,
 	}
-	if part.Title != "" {
-		result["title"] = part.Title
-	}
-	if part.Input != nil {
-		result["input"] = part.Input
-	}
-	if part.ProviderExecuted {
-		result["providerExecuted"] = true
-	}
-	if part.Dynamic {
-		result["dynamic"] = true
-	}
-	if part.Preliminary {
-		result["preliminary"] = true
-	}
-	if part.ToolMetadata != nil {
-		result["toolMetadata"] = part.ToolMetadata
-	}
+	// LanguageModelV4ToolResultPart carries only toolCallId, toolName, output
+	// and providerOptions.
 	addProviderOptions(result, part.ProviderOptions)
-	addProviderMetadata(result, part.ProviderMetadata)
 
 	switch {
 	case part.Output != nil:
@@ -1073,10 +1064,15 @@ func gatewayToolResultContentBlockMap(block types.ToolResultContentBlock) (map[s
 		addProviderOptions(result, b.ProviderOptions)
 		return result, nil
 	case types.ImageContentBlock:
+		// V4 has no image tool-output part: images are file parts.
+		mediaType := b.MediaType
+		if mediaType == "" {
+			mediaType = "image"
+		}
 		result := map[string]interface{}{
-			"type":      "image",
-			"data":      base64.StdEncoding.EncodeToString(b.Data),
-			"mediaType": b.MediaType,
+			"type":      "file",
+			"data":      map[string]interface{}{"type": "data", "data": base64.StdEncoding.EncodeToString(b.Data)},
+			"mediaType": mediaType,
 		}
 		addProviderOptions(result, b.ProviderOptions)
 		return result, nil
@@ -1110,16 +1106,6 @@ func gatewayToolResultContentBlockMap(block types.ToolResultContentBlock) (map[s
 func addProviderOptions(result map[string]interface{}, options map[string]interface{}) {
 	if len(options) > 0 {
 		result["providerOptions"] = options
-	}
-}
-
-func addProviderMetadata(result map[string]interface{}, metadata json.RawMessage) {
-	if len(metadata) == 0 {
-		return
-	}
-	var decoded interface{}
-	if err := json.Unmarshal(metadata, &decoded); err == nil {
-		result["providerMetadata"] = decoded
 	}
 }
 

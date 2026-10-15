@@ -350,7 +350,7 @@ func newReplicateProviderWithTransport(t *testing.T, rt replicateRoundTripper) *
 	p.client = internalhttp.NewClient(internalhttp.Config{
 		BaseURL: "https://replicate.example",
 		Headers: map[string]string{
-			"Authorization": "Token k",
+			"Authorization": "Bearer k",
 			"Content-Type":  "application/json",
 		},
 		HTTPClient: &http.Client{Transport: rt},

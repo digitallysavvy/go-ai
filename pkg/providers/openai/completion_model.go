@@ -59,6 +59,9 @@ func (m *CompletionModel) DoGenerate(ctx context.Context, opts *provider.Generat
 
 	result := m.convertCompletionResponse(response, warnings)
 	result.RawRequest = body
+	if len(resp.Body) > 0 {
+		result.RawResponse = providerutils.RawJSONBody(resp.Body) // TS response.body is the raw JSON
+	}
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	result.ResponseMetadata = completionResponseMetadata(response.ID, response.Created, response.Model, result.ResponseHeaders)
 	return result, nil
@@ -147,9 +150,35 @@ func (m *CompletionModel) buildCompletionRequest(opts *provider.GenerateOptions,
 		}
 	}
 
+	if m.provider.config.OpenAICompatible {
+		// OpenAICompatibleCompletionLanguageModel spreads the provider's own
+		// options (raw name, then camelCase) into the body, before prompt/stop.
+		name := m.provider.completionProviderOptionsName()
+		camel := providerutils.ToOpenAICompatibleCamelCase(name)
+		if camel != name {
+			if v, ok := opts.ProviderOptions[name]; ok && v != nil {
+				msg := "Use '" + camel + "' instead."
+				warnings = append(warnings, types.Warning{Type: "deprecated", Setting: "providerOptions key '" + name + "'", Feature: "providerOptions key '" + name + "'", Message: msg, Details: msg})
+			}
+		}
+		for _, key := range []string{name, camel} {
+			if raw, ok := opts.ProviderOptions[key].(map[string]interface{}); ok {
+				for k, v := range raw {
+					if k == "prompt" || k == "stop" {
+						continue
+					}
+					body[k] = v
+				}
+			}
+		}
+	}
+
 	if stream {
 		body["stream"] = true
-		body["stream_options"] = map[string]interface{}{"include_usage": true}
+		// The compat model asks for usage only when config.includeUsage is set.
+		if !m.provider.config.OpenAICompatible || m.provider.config.IncludeUsage {
+			body["stream_options"] = map[string]interface{}{"include_usage": true}
+		}
 	}
 
 	return body, warnings, nil

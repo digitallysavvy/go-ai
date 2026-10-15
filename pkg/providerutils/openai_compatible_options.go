@@ -158,7 +158,10 @@ func mergeProviderOptions(target map[string]interface{}, raw interface{}) {
 func deprecatedProviderOptionsKeyWarning(rawName, camelName string) types.Warning {
 	message := "Use '" + camelName + "' instead."
 	return types.Warning{
-		Type:    "deprecated",
+		Type: "deprecated",
+		// TS: { type: 'deprecated', setting: "providerOptions key '<raw>'", message }.
+		// Feature is kept for callers of v0.5.2, which only set it.
+		Setting: "providerOptions key '" + rawName + "'",
 		Feature: "providerOptions key '" + rawName + "'",
 		Details: message,
 		Message: message,
@@ -169,8 +172,21 @@ func deprecatedProviderOptionKeyWarning(rawName, camelName string) types.Warning
 	message := "Use '" + camelName + "' instead."
 	return types.Warning{
 		Type:    "deprecated",
+		Setting: "provider option key '" + rawName + "'",
 		Feature: "provider option key '" + rawName + "'",
 		Details: message,
 		Message: message,
 	}
+}
+
+// ResolveOpenAICompatibleMetadataKey mirrors TS resolveProviderOptionsKey:
+// the providerMetadata namespace is the camelCase provider name only when the
+// caller supplied provider options under that camelCase key, else the raw
+// provider name.
+func ResolveOpenAICompatibleMetadataKey(rawName string, providerOptions map[string]interface{}) string {
+	camel := ToOpenAICompatibleCamelCase(rawName)
+	if camel != rawName && providerOptions[camel] != nil {
+		return camel
+	}
+	return rawName
 }

@@ -75,7 +75,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	var response cohereV2Response
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
-		Path:    "/v2/chat",
+		Path:    "/chat",
 		Body:    reqBody,
 		Headers: opts.Headers,
 	}, &response)
@@ -90,6 +90,10 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	result.Warnings = append(warnings, result.Warnings...)
 	// TS: response { id: generation_id, headers } (no timestamp/model id).
 	result.ResponseHeaders = providerutils.ExtractHeaders(httpResp.Headers)
+	// TS response.body is the raw parsed JSON, not the schema-filtered value.
+	if len(httpResp.Body) > 0 {
+		result.RawResponse = providerutils.RawJSONBody(httpResp.Body)
+	}
 	result.ResponseMetadata = &types.ResponseMetadata{ID: response.GenerationID, Headers: result.ResponseHeaders}
 	return result, nil
 }
@@ -106,7 +110,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	reqBody["stream"] = true
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
-		Path:    "/v2/chat",
+		Path:    "/chat",
 		Body:    reqBody,
 		Headers: opts.Headers,
 	})
@@ -316,6 +320,10 @@ func cohereDocumentText(file types.FileContent) (string, error) {
 	case types.FileDataTypeText:
 		return file.FileData.Text, nil
 	case types.FileDataTypeData:
+		// TS uses a string payload as given and decodes bytes.
+		if file.FileData.DataString != "" {
+			return file.FileData.DataString, nil
+		}
 		return string(file.FileData.Data), nil
 	case types.FileDataTypeURL:
 		return "", providererrors.NewValidationError("messages[].content[].file", "unsupported file URL data for cohere", nil)

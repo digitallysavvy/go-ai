@@ -267,6 +267,22 @@ type Annotation struct {
 	Title      string `json:"title,omitempty"`
 }
 
+// MarshalJSON always writes start_index and end_index for url_citation
+// annotations: an index of 0 is a valid offset and must not be omitted.
+func (a Annotation) MarshalJSON() ([]byte, error) {
+	if a.Type != "url_citation" {
+		type plain Annotation
+		return json.Marshal(plain(a))
+	}
+	return json.Marshal(struct {
+		Type       string `json:"type"`
+		URL        string `json:"url"`
+		StartIndex int    `json:"start_index"`
+		EndIndex   int    `json:"end_index"`
+		Title      string `json:"title"`
+	}{a.Type, a.URL, a.StartIndex, a.EndIndex, a.Title})
+}
+
 // Usage represents token usage information
 type Usage struct {
 	InputTokens  int `json:"input_tokens"`

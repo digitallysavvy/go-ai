@@ -113,7 +113,8 @@ func (o *EmbeddingOptions) Validate() error {
 // DefaultEmbeddingOptions returns default embedding options
 func DefaultEmbeddingOptions() EmbeddingOptions {
 	return EmbeddingOptions{
-		InputType: InputTypeSearchDocument,
+		// TS: embeddingOptions?.inputType ?? 'search_query'
+		InputType: InputTypeSearchQuery,
 		Truncate:  "",
 	}
 }

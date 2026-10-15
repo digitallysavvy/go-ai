@@ -7,6 +7,7 @@ package tsfixture
 import (
 	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -930,14 +931,19 @@ func buildPrompt(v interface{}) ([]types.Message, string) {
 		for _, pv := range m["content"].([]interface{}) {
 			p := pv.(map[string]interface{})
 			po, _ := p["providerOptions"].(map[string]interface{})
+			// Parts replayed from a model result carry providerMetadata.
+			var pm json.RawMessage
+			if m, ok := p["providerMetadata"].(map[string]interface{}); ok {
+				pm, _ = json.Marshal(m)
+			}
 			switch p["type"] {
 			case "text":
-				msg.Content = append(msg.Content, types.TextContent{Text: p["text"].(string), ProviderOptions: po})
+				msg.Content = append(msg.Content, types.TextContent{Text: p["text"].(string), ProviderOptions: po, ProviderMetadata: pm})
 			case "reasoning":
-				msg.Content = append(msg.Content, types.ReasoningContent{Text: p["text"].(string), ProviderOptions: po})
+				msg.Content = append(msg.Content, types.ReasoningContent{Text: p["text"].(string), ProviderOptions: po, ProviderMetadata: pm})
 			case "tool-call":
 				in := p["input"]
-				tc := types.ToolCallContent{ToolCallID: p["toolCallId"].(string), ToolName: promptToolName(p["toolName"].(string)), ProviderOptions: po}
+				tc := types.ToolCallContent{ToolCallID: p["toolCallId"].(string), ToolName: promptToolName(p["toolName"].(string)), ProviderOptions: po, ProviderMetadata: pm}
 				if str, ok := in.(string); ok {
 					tc.Input = str
 					_ = json.Unmarshal([]byte(str), &tc.Arguments)
@@ -950,47 +956,78 @@ func buildPrompt(v interface{}) ([]types.Message, string) {
 					tc.ProviderExecuted = pe
 				}
 				msg.Content = append(msg.Content, tc)
-			case "file":
-				fc := types.FileContent{MediaType: stringOf(p["mediaType"]), Filename: stringOf(p["filename"]), ProviderOptions: po}
-				d, _ := p["data"].(map[string]interface{})
-				switch d["type"] {
-				case "data":
-					if str, ok := d["data"].(string); ok {
-						fc.FileData = types.FileData{Type: types.FileDataTypeData, DataString: str, MediaType: fc.MediaType}
-					} else {
-						return nil, "prompt file data bytes"
-					}
-				case "url":
-					// TS keeps the unparsed string of a gs: URL as originalUrl; Go never
-					// re-parses the string it was given.
-					u := stringOf(d["url"])
-					if o := stringOf(d["originalUrl"]); o != "" {
-						u = o
-					}
-					fc.FileData = types.FileData{Type: types.FileDataTypeURL, URL: u, MediaType: fc.MediaType}
-				case "reference":
-					ref := types.ProviderReference{}
-					if r, ok := d["reference"].(map[string]interface{}); ok {
-						for k, v := range r {
-							ref[k] = stringOf(v)
-						}
-					}
-					fc.FileData = types.FileData{Type: types.FileDataTypeReference, Reference: ref, MediaType: fc.MediaType}
-				default:
-					return nil, fmt.Sprintf("prompt file data %v", d["type"])
-				}
-				msg.Content = append(msg.Content, fc)
 			case "tool-result":
 				tr := types.ToolResultContent{ToolCallID: p["toolCallId"].(string), ToolName: promptToolName(p["toolName"].(string)), ProviderOptions: po}
 				if out, ok := p["output"].(map[string]interface{}); ok {
+					// Most outputs decode from their TS JSON form (keeps providerOptions).
+					// Content outputs are built explicitly so recorded Uint8Array file
+					// data (wire replay) becomes bytes.
+					o := &types.ToolResultOutput{}
 					b, _ := json.Marshal(out)
-					var o types.ToolResultOutput
-					if err := json.Unmarshal(b, &o); err != nil {
-						return nil, "tool-result output " + fmt.Sprint(out["type"])
+					if err := json.Unmarshal(b, o); err != nil || out["type"] == string(types.ToolResultOutputContent) {
+						o = &types.ToolResultOutput{Type: types.ToolResultOutputType(out["type"].(string))}
+						switch o.Type {
+						case types.ToolResultOutputText, types.ToolResultOutputJSON, types.ToolResultOutputError, types.ToolResultOutputErrorText, types.ToolResultOutputErrorJSON:
+							o.Value = out["value"]
+						case types.ToolResultOutputExecutionDenied:
+							o.Reason, _ = out["reason"].(string)
+						case types.ToolResultOutputContent:
+							blocks, _ := out["value"].([]interface{})
+							for _, bv := range blocks {
+								bm, _ := bv.(map[string]interface{})
+								bpo, _ := bm["providerOptions"].(map[string]interface{})
+								switch bm["type"] {
+								case "text":
+									txt, _ := bm["text"].(string)
+									o.Content = append(o.Content, types.TextContentBlock{Text: txt, ProviderOptions: bpo})
+								case "file":
+									fd, ok := fileDataFromTS(bm["data"])
+									if !ok {
+										return nil, "tool-result file data"
+									}
+									mt, _ := bm["mediaType"].(string)
+									fd.MediaType = mt
+									fname, _ := bm["filename"].(string)
+									o.Content = append(o.Content, types.FileContentBlock{FileData: fd, MediaType: mt, Filename: fname, ProviderOptions: bpo})
+								case "custom":
+									o.Content = append(o.Content, types.CustomContentBlock{ProviderOptions: bpo})
+								default:
+									return nil, fmt.Sprintf("tool-result content block %v", bm["type"])
+								}
+							}
+						default:
+							return nil, "tool-result output " + string(o.Type)
+						}
+						o.ProviderOptions, _ = out["providerOptions"].(map[string]interface{})
 					}
-					tr.Output = &o
+					tr.Output = o
 				}
 				msg.Content = append(msg.Content, tr)
+			case "file":
+				fd, ok := fileDataFromTS(p["data"])
+				if !ok {
+					return nil, "file part data"
+				}
+				mt, _ := p["mediaType"].(string)
+				fd.MediaType = mt
+				fname, _ := p["filename"].(string)
+				msg.Content = append(msg.Content, types.FileContent{FileData: fd, MediaType: mt, Filename: fname, ProviderOptions: po})
+			case "reasoning-file":
+				fd, ok := fileDataFromTS(p["data"])
+				if !ok {
+					return nil, "reasoning-file data"
+				}
+				mt, _ := p["mediaType"].(string)
+				fd.MediaType = mt
+				msg.Content = append(msg.Content, types.ReasoningFileContent{FileData: fd, MediaType: mt, ProviderOptions: po})
+			case "custom":
+				kind, _ := p["kind"].(string)
+				msg.Content = append(msg.Content, types.CustomContent{Kind: kind, ProviderOptions: po})
+			case "tool-approval-response":
+				ar := types.ToolApprovalResponseContent{ApprovalID: p["approvalId"].(string)}
+				ar.Approved, _ = p["approved"].(bool)
+				ar.Reason, _ = p["reason"].(string)
+				msg.Content = append(msg.Content, ar)
 			default:
 				return nil, fmt.Sprintf("prompt part %v", p["type"])
 			}
@@ -1119,4 +1156,54 @@ func (r *Response) chunkStrings() []string {
 		out = append(out, "data: "+string(b)+"\n\n")
 	}
 	return out
+}
+
+// fileDataFromTS converts a TS SharedV4FileData ({type:'data'|'url'|'reference'|'text'})
+// to the Go tagged file data. Binary data may be a recorded Uint8Array or a
+// base64 string.
+func fileDataFromTS(v interface{}) (types.FileData, bool) {
+	m, ok := v.(map[string]interface{})
+	if !ok {
+		return types.FileData{}, false
+	}
+	switch m["type"] {
+	case "data":
+		if b, ok := WireBytes(m["data"]); ok {
+			return types.FileData{Type: types.FileDataTypeData, Data: b}, true
+		}
+		if str, ok := m["data"].(string); ok {
+			fd := types.FileData{Type: types.FileDataTypeData, DataString: str}
+			// Go providers read the bytes; a base64 string is decoded into them.
+			if b, err := base64.StdEncoding.DecodeString(str); err == nil {
+				fd.Data = b
+			}
+			return fd, true
+		}
+	case "url":
+		// TS keeps the unparsed string of a gs: URL as originalUrl; Go never
+		// re-parses the string it was given.
+		if o, ok := m["originalUrl"].(string); ok && o != "" {
+			return types.FileData{Type: types.FileDataTypeURL, URL: o}, true
+		}
+		switch u := m["url"].(type) {
+		case string:
+			return types.FileData{Type: types.FileDataTypeURL, URL: u}, true
+		case map[string]interface{}:
+			if h, ok := u["$url"].(string); ok {
+				return types.FileData{Type: types.FileDataTypeURL, URL: h}, true
+			}
+		}
+	case "reference":
+		ref := types.ProviderReference{}
+		if rm, ok := m["reference"].(map[string]interface{}); ok {
+			for k, e := range rm {
+				ref[k], _ = e.(string)
+			}
+		}
+		return types.FileData{Type: types.FileDataTypeReference, Reference: ref}, true
+	case "text":
+		str, _ := m["text"].(string)
+		return types.FileData{Type: types.FileDataTypeText, Text: str}, true
+	}
+	return types.FileData{}, false
 }

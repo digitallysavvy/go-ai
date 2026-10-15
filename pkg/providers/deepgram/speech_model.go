@@ -146,9 +146,12 @@ func (m *SpeechModel) buildArgs(opts *provider.SpeechGenerateOptions) (map[strin
 
 	query := map[string]string{"model": upstreamModelID}
 
-	if opts.OutputFormat != "" {
-		applyOutputFormat(query, opts.OutputFormat)
+	// TS: outputFormat = 'mp3' default.
+	outputFormat := opts.OutputFormat
+	if outputFormat == "" {
+		outputFormat = "mp3"
 	}
+	applyOutputFormat(query, outputFormat)
 
 	if dgOpts != nil {
 		applyDeepgramSpeechOptions(query, dgOpts, &warnings)

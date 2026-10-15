@@ -60,7 +60,7 @@ func TestReplicateImageUnversionedMultiOutputFilesAndOptions(t *testing.T) {
 
 func TestReplicateCredentialedHeadersOnlySameOrigin(t *testing.T) {
 	p := New(Config{APIKey: "k", BaseURL: "https://replicate.example/v1"})
-	if h := p.credentialedHeaders("https://replicate.example/v1/predictions/1", map[string]string{"X": "1"}); h["authorization"] != "Token k" || h["X"] != "1" {
+	if h := p.credentialedHeaders("https://replicate.example/v1/predictions/1", map[string]string{"X": "1"}); h["authorization"] != "Bearer k" || h["X"] != "1" {
 		t.Fatalf("same-origin headers = %v", h)
 	}
 	if h := p.credentialedHeaders("https://evil.example.net/predictions/1", map[string]string{"X": "1"}); h != nil {

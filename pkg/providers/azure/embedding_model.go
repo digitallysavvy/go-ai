@@ -62,8 +62,9 @@ func (m *EmbeddingModel) SupportsParallelCalls() bool {
 // DoEmbed performs embedding for a single input
 func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provider.EmbedModelOptions) (*types.EmbeddingResult, error) {
 	reqBody := map[string]interface{}{
-		"input": input,
-		"model": m.deploymentID,
+		"input":           input,
+		"model":           m.deploymentID,
+		"encoding_format": "float",
 	}
 	applyEmbeddingDimensions(reqBody, opts)
 	path := m.provider.endpointPath(m.deploymentID, "/embeddings")
@@ -94,7 +95,7 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 			InputTokens: response.Usage.PromptTokens,
 			TotalTokens: response.Usage.TotalTokens,
 		},
-		Response: types.EmbeddingResponse{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: response},
+		Response: types.EmbeddingResponse{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: providerutils.RawJSONBody(httpResp.Body)},
 	}, nil
 }
 
@@ -109,8 +110,9 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		}
 	}
 	reqBody := map[string]interface{}{
-		"input": inputs,
-		"model": m.deploymentID,
+		"input":           inputs,
+		"model":           m.deploymentID,
+		"encoding_format": "float",
 	}
 	applyEmbeddingDimensions(reqBody, opts)
 	path := m.provider.endpointPath(m.deploymentID, "/embeddings")
@@ -142,7 +144,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 			InputTokens: response.Usage.PromptTokens,
 			TotalTokens: response.Usage.TotalTokens,
 		},
-		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: response}},
+		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: providerutils.RawJSONBody(httpResp.Body)}},
 	}, nil
 }
 

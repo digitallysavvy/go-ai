@@ -99,8 +99,13 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	if opts == nil {
 		opts = &provider.TranscriptionOptions{}
 	}
+	// TS sends a string audio input as given and encodes bytes.
+	audio := base64.StdEncoding.EncodeToString(opts.Audio)
+	if opts.AudioBase64 != "" {
+		audio = opts.AudioBase64
+	}
 	body := map[string]interface{}{
-		"audio":     base64.StdEncoding.EncodeToString(opts.Audio),
+		"audio":     audio,
 		"mediaType": opts.MimeType,
 	}
 	if opts.ProviderOptions != nil {

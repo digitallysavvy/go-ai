@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"io"
 	"net/http"
 	"strings"
@@ -88,40 +89,40 @@ func (m *ProdiaLanguageModel) DoGenerate(ctx context.Context, opts *provider.Gen
 
 	// Warn about features this provider does not support.
 	if opts.Temperature != nil {
-		warnings = append(warnings, types.Warning{Type: "unsupported", Message: "temperature is not supported"})
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "temperature", Message: "temperature is not supported"})
 	}
 	if opts.TopP != nil {
-		warnings = append(warnings, types.Warning{Type: "unsupported", Message: "topP is not supported"})
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "topP", Message: "topP is not supported"})
 	}
 	if opts.TopK != nil {
-		warnings = append(warnings, types.Warning{Type: "unsupported", Message: "topK is not supported"})
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "topK", Message: "topK is not supported"})
 	}
 	if opts.Seed != nil {
-		warnings = append(warnings, types.Warning{Type: "unsupported", Message: "seed is not supported"})
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "seed", Message: "seed is not supported"})
 	}
 	if opts.MaxTokens != nil {
-		warnings = append(warnings, types.Warning{Type: "unsupported", Message: "maxOutputTokens is not supported"})
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "maxOutputTokens", Message: "maxOutputTokens is not supported"})
 	}
 	if len(opts.StopSequences) > 0 {
-		warnings = append(warnings, types.Warning{Type: "unsupported", Message: "stopSequences is not supported"})
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "stopSequences", Message: "stopSequences is not supported"})
 	}
 	if opts.PresencePenalty != nil {
-		warnings = append(warnings, types.Warning{Type: "unsupported", Message: "presencePenalty is not supported"})
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "presencePenalty", Message: "presencePenalty is not supported"})
 	}
 	if opts.FrequencyPenalty != nil {
-		warnings = append(warnings, types.Warning{Type: "unsupported", Message: "frequencyPenalty is not supported"})
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "frequencyPenalty", Message: "frequencyPenalty is not supported"})
 	}
 	if len(opts.Tools) > 0 {
-		warnings = append(warnings, types.Warning{Type: "unsupported", Message: "tools are not supported"})
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "tools", Message: "tools is not supported"})
 	}
 	if opts.ToolChoice.Type != "" {
-		warnings = append(warnings, types.Warning{Type: "unsupported", Message: "toolChoice is not supported"})
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "toolChoice", Message: "toolChoice is not supported"})
 	}
 	if opts.ResponseFormat != nil && opts.ResponseFormat.Type != "text" {
-		warnings = append(warnings, types.Warning{Type: "unsupported", Message: "responseFormat is not supported"})
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "responseFormat", Message: "responseFormat is not supported"})
 	}
 	if opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault {
-		warnings = append(warnings, types.Warning{Type: "unsupported", Message: "reasoning is not supported"})
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "reasoning", Details: "This provider does not support reasoning configuration.", Message: "reasoning is not supported"})
 	}
 
 	provOpts := extractLanguageProviderOptions(opts)
@@ -180,7 +181,7 @@ func (m *ProdiaLanguageModel) DoGenerate(ctx context.Context, opts *provider.Gen
 	}
 
 	reqURL := fmt.Sprintf("%s/job?price=true", m.prov.effectiveBaseURL())
-	respBody, respHeaders, err := postMultipartToProdia(ctx, reqURL, m.prov.effectiveAPIKey(), buf, contentType, "multipart/form-data")
+	respBody, respHeaders, err := postMultipartToProdia(ctx, reqURL, m.prov.effectiveAPIKey(), buf, contentType, "multipart/form-data", m.prov.config.Headers, opts.Headers)
 	if err != nil {
 		return nil, fmt.Errorf("prodia: %w", err)
 	}
@@ -195,7 +196,7 @@ func (m *ProdiaLanguageModel) DoGenerate(ctx context.Context, opts *provider.Gen
 		}
 	}
 
-	jobResp, outputData, outputMIME, err := parseMultipartResponse(respCT, respBody)
+	jobResp, outputs, err := parseMultipartOutputs(respCT, respBody)
 	if err != nil {
 		return nil, fmt.Errorf("prodia: %w", err)
 	}
@@ -206,23 +207,23 @@ func (m *ProdiaLanguageModel) DoGenerate(ctx context.Context, opts *provider.Gen
 		ProviderMetadata: map[string]interface{}{
 			"prodia": buildProdiaProviderMetadata(jobResp),
 		},
+		ResponseMetadata: &types.ResponseMetadata{ModelID: m.modelID, Headers: providerutils.ExtractHeaders(respHeaders)},
+		ResponseHeaders:  providerutils.ExtractHeaders(respHeaders),
 	}
 
-	if len(outputData) > 0 {
-		if strings.HasPrefix(outputMIME, "text/") {
-			result.Text = string(outputData)
-		} else {
-			if outputMIME == "" {
-				outputMIME = "image/png"
-			}
-			result.Content = []types.ContentPart{
-				types.GeneratedFileContent{
-					MediaType: outputMIME,
-					Data:      outputData,
-				},
-			}
+	// TS content order: the text (the last text part) first, then every image.
+	var files []types.ContentPart
+	for _, out := range outputs {
+		if out.isText {
+			result.Text = string(out.data)
+			continue
 		}
+		files = append(files, types.GeneratedFileContent{MediaType: out.mediaType, Data: out.data})
 	}
+	if result.Text != "" {
+		result.Content = append(result.Content, types.TextContent{Text: result.Text})
+	}
+	result.Content = append(result.Content, files...)
 
 	return result, nil
 }

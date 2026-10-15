@@ -213,7 +213,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	result := m.convertResponse(resp)
 	result.Warnings = warnings
 	result.RawRequest = body
-	result.RawResponse = resp
+	result.RawResponse = providerutils.RawJSONBody(httpResp.Body)
 	result.ResponseHeaders = responseHeaders
 	result.ResponseMetadata = &types.ResponseMetadata{
 		ID:        resp.ID,

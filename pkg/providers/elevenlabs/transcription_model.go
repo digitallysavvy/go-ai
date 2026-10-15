@@ -91,7 +91,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	if response.Words != nil {
 		words := make([]interface{}, 0, len(response.Words))
 		for _, word := range response.Words {
-			words = append(words, word.Raw)
+			words = append(words, schemaWord(word.Raw))
 		}
 		providerMetadata = map[string]interface{}{"elevenlabs": map[string]interface{}{"words": words}}
 	}
@@ -111,7 +111,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   providerutils.ExtractHeaders(httpResp.Headers),
-			Body:      response,
+			Body:      providerutils.RawJSONBody(httpResp.Body),
 		},
 	}, nil
 }
@@ -279,4 +279,32 @@ func handleTranscriptionError(err error) error {
 		return providerErr
 	}
 	return providererrors.NewProviderError("elevenlabs", 0, "", err.Error(), err)
+}
+
+// schemaWord keeps only the keys of the TS response schema's word object
+// (zod strips unknown keys such as logprob).
+func schemaWord(raw map[string]interface{}) map[string]interface{} {
+	out := map[string]interface{}{}
+	for _, k := range []string{"text", "type", "start", "end", "speaker_id"} {
+		if v, ok := raw[k]; ok {
+			out[k] = v
+		}
+	}
+	if chars, ok := raw["characters"].([]interface{}); ok {
+		kept := make([]interface{}, 0, len(chars))
+		for _, c := range chars {
+			cm, _ := c.(map[string]interface{})
+			item := map[string]interface{}{}
+			for _, k := range []string{"text", "start", "end"} {
+				if v, ok := cm[k]; ok {
+					item[k] = v
+				}
+			}
+			kept = append(kept, item)
+		}
+		out["characters"] = kept
+	} else if v, ok := raw["characters"]; ok && v == nil {
+		out["characters"] = nil
+	}
+	return out
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 type RerankingModel struct {
@@ -75,7 +76,7 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 			Timestamp: time.Now(),
 			ModelID:   m.modelID,
 			Headers:   map[string][]string(httpResp.Headers),
-			Body:      response,
+			Body:      providerutils.RawJSONBody(httpResp.Body),
 		},
 	}, nil
 }

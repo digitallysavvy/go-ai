@@ -82,10 +82,8 @@ func FileSearch(config FileSearchConfig) types.Tool {
 		Title:       "File Search",
 		Parameters:  parameters,
 		// ProviderOptions carries the typed config for API serialization by prepareXAIResponsesTools.
-		ProviderOptions: FileSearchOptions{
-			VectorStoreIDs: config.VectorStoreIDs,
-			MaxNumResults:  maxResults,
-		},
+		// max_num_results is sent only when set (TS sends it only if given).
+		ProviderOptions: FileSearchOptions(config),
 		// This tool is executed by xAI's servers, not locally
 		ProviderExecuted: true,
 		Execute:          providerExecutedNoop("xai.file_search"),

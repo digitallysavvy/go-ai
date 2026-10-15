@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"strconv"
-	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -122,7 +121,13 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 			warnings = append(warnings, provider.BatchV4Warning{RequestID: textReq.ID, Warning: w})
 		}
 		for _, tool := range textReq.Options.Tools {
-			if tool.Type == types.ToolTypeProviderDefined && !openAIBatchConvertibleProviderToolIDs[tool.ProviderID] {
+			// Typed hosted tools (openaitool.*) carry the id in Name and are
+			// flagged ProviderExecuted instead of Type "provider".
+			toolID := tool.ProviderID
+			if toolID == "" {
+				toolID = tool.Name
+			}
+			if (tool.Type == types.ToolTypeProviderDefined || tool.ProviderExecuted) && !openAIBatchConvertibleProviderToolIDs[toolID] {
 				warnings = append(warnings, provider.BatchV4Warning{
 					RequestID: textReq.ID,
 					Warning: types.Warning{
@@ -156,7 +161,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 
 	metadata := map[string]interface{}{"inputFileId": uploadedFile.ID}
 	if uploadedFile.ExpiresAt != nil {
-		metadata["inputFileExpiresAt"] = unixSecondsToTime(uploadedFile.ExpiresAt).UTC().Format(time.RFC3339)
+		metadata["inputFileExpiresAt"] = unixSecondsToTime(uploadedFile.ExpiresAt).UTC().Format("2006-01-02T15:04:05.000Z")
 	}
 
 	status := batchResp.toStatus()
@@ -408,10 +413,10 @@ func (r openAIBatchResponseWire) toStatus() provider.BatchV4Status {
 		status.Error = batchErr
 	}
 	if t := unixSecondsToTime(r.CreatedAt); t != nil {
-		status.CreatedAt = t.UTC().Format(time.RFC3339)
+		status.CreatedAt = t.UTC().Format("2006-01-02T15:04:05.000Z")
 	}
 	if t := unixSecondsToTime(r.ExpiresAt); t != nil {
-		status.ExpiresAt = t.UTC().Format(time.RFC3339)
+		status.ExpiresAt = t.UTC().Format("2006-01-02T15:04:05.000Z")
 	}
 	return status
 }

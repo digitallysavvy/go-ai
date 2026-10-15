@@ -110,9 +110,12 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		var w, h int
 		n, _ := fmt.Sscanf(opts.Size, "%dx%d", &w, &h)
 		if n != 2 || w <= 0 || h <= 0 {
+			msg := fmt.Sprintf("Invalid size format: %s. Expected format: WIDTHxHEIGHT (e.g., 1024x1024)", opts.Size)
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
-				Message: fmt.Sprintf("Invalid size format: %s. Expected format: WIDTHxHEIGHT (e.g., 1024x1024)", opts.Size),
+				Feature: "size",
+				Details: msg,
+				Message: msg,
 			})
 		}
 	}

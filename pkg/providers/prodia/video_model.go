@@ -118,7 +118,7 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 			return nil, fmt.Errorf("prodia: failed to build multipart request: %w", err)
 		}
 
-		respBodyBytes, respHeaders, reqErr = postMultipartToProdia(ctx, reqURL, apiKey, buf, contentType, "multipart/form-data; video/mp4")
+		respBodyBytes, respHeaders, reqErr = postMultipartToProdia(ctx, reqURL, apiKey, buf, contentType, "multipart/form-data; video/mp4", m.prov.config.Headers, opts.Headers)
 	} else {
 		// txt2vid: JSON request.
 		resp, err := m.prov.client.Do(ctx, internalhttp.Request{

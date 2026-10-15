@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -134,7 +135,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 			Timestamp: timestamp,
 			ModelID:   m.modelID,
 			Headers:   flattenHeaders(resp.Headers),
-			Body:      resp.Body,
+			Body:      providerutils.RawJSONBody(resp.Body),
 		},
 	}, nil
 }

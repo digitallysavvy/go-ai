@@ -193,7 +193,16 @@ func convertAssistantMessage(msg types.Message, validator *CacheControlValidator
 
 	textStr := text.String()
 	reasoningStr := reasoning.String()
-	hasToolCalls := len(msg.ToolCalls) > 0
+	// TS-shaped history carries tool calls as content parts.
+	toolCalls := msg.ToolCalls
+	if len(toolCalls) == 0 {
+		for _, part := range msg.Content {
+			if tc, ok := part.(types.ToolCallContent); ok {
+				toolCalls = append(toolCalls, types.ToolCall{ID: tc.ToolCallID, ToolName: tc.ToolName, Arguments: tc.Arguments, RawArguments: tc.Input})
+			}
+		}
+	}
+	hasToolCalls := len(toolCalls) > 0
 
 	// A pure-reasoning assistant turn (e.g. a preserved earlier round with no
 	// visible text and no tool calls) is dropped entirely, matching TS's
@@ -229,7 +238,7 @@ func convertAssistantMessage(msg types.Message, validator *CacheControlValidator
 		result["reasoning_content"] = reasoningStr
 	}
 	if hasToolCalls {
-		result["tool_calls"] = alibabaOpenAIStyleToolCalls(msg.ToolCalls)
+		result["tool_calls"] = alibabaOpenAIStyleToolCalls(toolCalls)
 	}
 
 	return result

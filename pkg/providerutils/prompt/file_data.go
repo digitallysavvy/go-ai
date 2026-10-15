@@ -898,8 +898,14 @@ func validateRemoteFileURL(value string) error {
 	if err != nil {
 		return err
 	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return fmt.Errorf("remote file URL must use http or https scheme")
+	// TS file URLs are any `new URL(...)`; providers match their own schemes
+	// (ms://, gs://, s3://, ...) through supportedUrls. Local-file schemes
+	// are never remote.
+	switch strings.ToLower(parsed.Scheme) {
+	case "":
+		return fmt.Errorf("remote file URL must include a scheme")
+	case "file", "javascript", "vbscript":
+		return fmt.Errorf("remote file URL must not use the %s scheme", parsed.Scheme)
 	}
 	if parsed.Host == "" {
 		return fmt.Errorf("remote file URL must include a host")

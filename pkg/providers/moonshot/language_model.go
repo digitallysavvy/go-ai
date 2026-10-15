@@ -98,6 +98,12 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	}
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	// TS result.request.body: the request as sent.
+	result.RawRequest = reqBody
+	// TS response.body is the raw parsed JSON, not the schema-filtered value.
+	if len(resp.Body) > 0 {
+		result.RawResponse = providerutils.RawJSONBody(resp.Body)
+	}
 	responseMetadata := &types.ResponseMetadata{
 		ID:      response.ID,
 		ModelID: response.Model,
@@ -180,7 +186,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		message := "Moonshot Chat Completions does not support budget_tokens. Remove budgetTokens; the option has been omitted."
 		warnings = append(warnings, types.Warning{
 			Type:    "deprecated",
-			Setting: "providerOptions.moonshot.thinking.budgetTokens",
+			Setting: "providerOptions.moonshotai.thinking.budgetTokens",
 			Message: message,
 			Details: message,
 		})
@@ -525,9 +531,11 @@ func (m *LanguageModel) convertResponse(resp moonshotResponse) (*types.GenerateR
 	if len(choice.Message.ToolCalls) > 0 {
 		result.ToolCalls = make([]types.ToolCall, len(choice.Message.ToolCalls))
 		for i, tc := range choice.Message.ToolCalls {
+			// The wire value is a JSON string holding the arguments' JSON text.
+			rawArgs := providerutils.ToolArgumentsString(tc.Function.Arguments)
 			var args map[string]interface{}
-			if len(tc.Function.Arguments) > 0 {
-				_ = json.Unmarshal(tc.Function.Arguments, &args)
+			if rawArgs != "" {
+				_ = json.Unmarshal([]byte(rawArgs), &args)
 			}
 			if args == nil {
 				args = map[string]interface{}{}
@@ -540,7 +548,7 @@ func (m *LanguageModel) convertResponse(resp moonshotResponse) (*types.GenerateR
 				ID:           id,
 				ToolName:     tc.Function.Name,
 				Arguments:    args,
-				RawArguments: string(tc.Function.Arguments),
+				RawArguments: rawArgs,
 			}
 		}
 	}

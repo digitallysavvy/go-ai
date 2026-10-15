@@ -18,6 +18,12 @@ import (
 // @ai-sdk/openai-compatible's Together/Fireworks/Mistral/Ollama/..., Alibaba):
 // they all just JSON.stringify(part.input) with no sanitization.
 type ToOpenAIMessagesOptions struct {
+	// ThoughtSignatureKey enables Gemini thought signatures on replayed
+	// tool calls, as in TS openai-compatible: a tool call's
+	// providerOptions[key].thoughtSignature (or providerOptions.google's) is
+	// sent as extra_content.google.thought_signature. Empty disables it.
+	ThoughtSignatureKey string
+
 	// SanitizeReplayedToolCallArguments matches OpenAI's own
 	// serializeToolCallArguments (packages/openai/src/chat/convert-to-openai-chat-messages.ts):
 	// a replayed RawArguments string that doesn't parse to a JSON object is
@@ -295,6 +301,9 @@ func toOpenAIMessages(messages []types.Message, opt ToOpenAIMessagesOptions, ref
 		}
 		if msg.Role == types.RoleAssistant && len(msg.ToolCalls) > 0 {
 			toolCalls := openAIToolCalls(msg.ToolCalls, opt.SanitizeReplayedToolCallArguments)
+			if opt.ThoughtSignatureKey != "" {
+				applyThoughtSignatures(toolCalls, msg, opt.ThoughtSignatureKey)
+			}
 			openAIMsg["tool_calls"] = toolCalls
 			if opt.IncludePromptCacheBreakpoint {
 				if textParts, hasBreakpoint := assistantTextPartsWithBreakpoint(msg.Content); hasBreakpoint {
@@ -688,6 +697,14 @@ func openAIFileContentPart(file types.FileContent, allowVideo bool) map[string]i
 }
 
 func openAIFileContentPartResolving(file types.FileContent, allowVideo bool, refs *providerRefResolver) map[string]interface{} {
+	// The core builds file parts with the tagged FileData only (for example
+	// from UI messages); sync the legacy Data/URL/Reference/Text fields this
+	// converter reads.
+	if !file.FileData.IsZero() {
+		if normalized, err := NormalizeFileContent(file); err == nil {
+			file = normalized
+		}
+	}
 	// A provider-reference file resolves to the provider's own file ID for
 	// any media type (TS #22466), keeping the part-level
 	// providerOptions.openaiCompatible metadata.
@@ -874,4 +891,42 @@ func ValidateMessages(messages []types.Message) error {
 	}
 
 	return nil
+}
+
+// applyThoughtSignatures adds extra_content.google.thought_signature to the
+// converted tool calls whose source carries a thought signature.
+func applyThoughtSignatures(toolCalls []map[string]interface{}, msg types.Message, key string) {
+	sigs := map[string]string{}
+	fromOptions := func(po map[string]interface{}) string {
+		for _, k := range []string{key, "google"} {
+			if m, ok := po[k].(map[string]interface{}); ok {
+				if v, ok := m["thoughtSignature"]; ok && v != nil && v != "" {
+					return fmt.Sprint(v)
+				}
+			}
+		}
+		return ""
+	}
+	for _, part := range msg.Content {
+		if tc, ok := part.(types.ToolCallContent); ok {
+			if sig := fromOptions(tc.ProviderOptions); sig != "" {
+				sigs[tc.ToolCallID] = sig
+			}
+		}
+	}
+	for _, tc := range msg.ToolCalls {
+		if sigs[tc.ID] != "" {
+			continue
+		}
+		if tc.ThoughtSignature != "" {
+			sigs[tc.ID] = tc.ThoughtSignature
+		} else if sig := fromOptions(tc.ProviderMetadata); sig != "" {
+			sigs[tc.ID] = sig
+		}
+	}
+	for _, c := range toolCalls {
+		if id, _ := c["id"].(string); sigs[id] != "" {
+			c["extra_content"] = map[string]interface{}{"google": map[string]interface{}{"thought_signature": sigs[id]}}
+		}
+	}
 }
