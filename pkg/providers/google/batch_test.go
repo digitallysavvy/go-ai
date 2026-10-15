@@ -813,3 +813,17 @@ func TestBatchPromptFeedbackWithoutBlockReasonIsNullInMetadata(t *testing.T) {
 		t.Fatalf("promptFeedback = %#v", pf)
 	}
 }
+
+// TS parseCount accepts only digit-only strings up to Number.MAX_SAFE_INTEGER.
+func TestParseGoogleBatchCountStrictLikeTS(t *testing.T) {
+	for _, bad := range []interface{}{"+5", "-1", "1.5", "", " 3", "9007199254740993", float64(-1), float64(1.5), float64(1 << 60)} {
+		if got := parseGoogleBatchCount(bad); got != nil {
+			t.Errorf("parseGoogleBatchCount(%#v) = %d, want nil", bad, *got)
+		}
+	}
+	for in, want := range map[interface{}]int{"007": 7, "12": 12, float64(4): 4, "9007199254740991": 9007199254740991} {
+		if got := parseGoogleBatchCount(in); got == nil || *got != want {
+			t.Errorf("parseGoogleBatchCount(%#v) = %v, want %d", in, got, want)
+		}
+	}
+}

@@ -275,3 +275,32 @@ func TestFilesAPI_UploadFile_EmptyDisplayNameIsSent(t *testing.T) {
 		t.Fatalf("init body = %s", initBody)
 	}
 }
+
+// The upload initiation carries the provider's default headers (user-agent
+// suffix and configured headers) with the request-time key, like TS getHeaders.
+func TestFilesAPI_UploadFile_SendsDefaultHeaders(t *testing.T) {
+	var gotUA, gotKey, gotCustom string
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/upload/v1beta/files":
+			gotUA, gotKey, gotCustom = r.Header.Get("User-Agent"), r.Header.Get("x-goog-api-key"), r.Header.Get("X-Custom")
+			w.Header().Set("x-goog-upload-url", srv.URL+"/upload-session")
+		case "/upload-session":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"file": map[string]interface{}{
+				"name": "files/a", "mimeType": "text/plain", "uri": "u", "state": "ACTIVE",
+			}})
+		}
+	}))
+	defer srv.Close()
+
+	p := New(Config{APIKey: "k", BaseURL: srv.URL, Headers: map[string]string{"X-Custom": "1"}})
+	if _, err := p.Files().UploadFile(context.Background(), types.UploadFileOptions{
+		Data: types.FileData{Type: types.FileDataTypeData, Data: []byte{1}}, MediaType: "text/plain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotUA, "ai-sdk-google/") || gotKey != "k" || gotCustom != "1" {
+		t.Fatalf("user-agent=%q key=%q custom=%q", gotUA, gotKey, gotCustom)
+	}
+}

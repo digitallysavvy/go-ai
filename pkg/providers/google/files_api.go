@@ -41,7 +41,9 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	if err != nil {
 		return nil, err
 	}
-	headers := internalhttp.MergeHeaders(keyHeaders, f.provider.config.Headers, opts.Headers)
+	// The provider's default headers (user-agent suffix, config headers) like
+	// TS getHeaders, with the request-time key and the call headers on top.
+	headers := internalhttp.MergeHeaders(f.provider.defaultHeaders(), keyHeaders, opts.Headers)
 
 	var displayName *string
 	pollIntervalMs := int64(2000)

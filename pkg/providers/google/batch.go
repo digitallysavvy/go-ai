@@ -205,7 +205,7 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, displa
 	if err != nil {
 		return nil, err
 	}
-	authHeaders := internalhttp.MergeHeaders(keyHeaders, b.provider.config.Headers)
+	authHeaders := internalhttp.MergeHeaders(b.provider.defaultHeaders(), keyHeaders)
 	authHeaders = internalhttp.MergeHeaders(authHeaders, headers)
 
 	initPayload, err := json.Marshal(map[string]interface{}{"file": map[string]interface{}{"display_name": displayName}})
@@ -428,7 +428,7 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 	if err != nil {
 		return nil, err
 	}
-	authHeaders := internalhttp.MergeHeaders(keyHeaders, b.provider.config.Headers)
+	authHeaders := internalhttp.MergeHeaders(b.provider.defaultHeaders(), keyHeaders)
 	authHeaders = internalhttp.MergeHeaders(authHeaders, opts.Headers)
 	for k, v := range authHeaders {
 		req.Header.Set(k, v)
@@ -656,6 +656,9 @@ func convertGoogleRequestCounts(stats *googleBatchStatsWire) *provider.BatchRequ
 	return providerutils.NormalizeBatchRequestCounts(total, pending, completed, failed)
 }
 
+// maxSafeJSInteger is Number.MAX_SAFE_INTEGER.
+const maxSafeJSInteger = 1<<53 - 1
+
 // parseGoogleBatchCount parses a wire count (string or float64) into a
 // non-negative int, returning nil when missing or invalid (matching TS
 // parseCount's Number.isSafeInteger && >= 0 check; Go's int has no separate
@@ -663,12 +666,18 @@ func convertGoogleRequestCounts(stats *googleBatchStatsWire) *provider.BatchRequ
 func parseGoogleBatchCount(v interface{}) *int {
 	switch t := v.(type) {
 	case string:
-		if n, err := strconv.Atoi(t); err == nil && n >= 0 {
-			return &n
+		// TS accepts only /^\d+$/ strings, up to Number.MAX_SAFE_INTEGER.
+		if t == "" || strings.Trim(t, "0123456789") != "" {
+			return nil
+		}
+		if n, err := strconv.ParseInt(t, 10, 64); err == nil && n <= maxSafeJSInteger {
+			v := int(n)
+			return &v
 		}
 		return nil
 	case float64:
-		if n := int(t); float64(n) == t && n >= 0 {
+		if t >= 0 && t <= maxSafeJSInteger && t == float64(int64(t)) {
+			n := int(t)
 			return &n
 		}
 		return nil
