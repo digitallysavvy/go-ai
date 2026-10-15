@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -105,15 +107,21 @@ func TestGenerateImage_Base64ImagesDecodeToGeneratedFiles(t *testing.T) {
 }
 
 func TestGenerateImage_BatchesByMaxImagesPerCallAndAggregatesResults(t *testing.T) {
+	// GenerateImage runs the model calls in parallel (TS Promise.all), so the
+	// mock guards its state and the test does not assume a call order.
+	var mu sync.Mutex
 	var callNs []int
 	m := &testutil.MockImageModel{
 		MaxImages: 2,
 		DoGenerateFunc: func(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
 			if opts.N == nil {
-				t.Fatal("call N is nil")
+				t.Error("call N is nil")
+				return nil, errors.New("call N is nil")
 			}
+			mu.Lock()
 			callNs = append(callNs, *opts.N)
 			callIndex := len(callNs)
+			mu.Unlock()
 			images := make([][]byte, 0, *opts.N)
 			metadata := make([]map[string]interface{}, 0, *opts.N)
 			for i := 0; i < *opts.N; i++ {
@@ -153,8 +161,9 @@ func TestGenerateImage_BatchesByMaxImagesPerCallAndAggregatesResults(t *testing.
 	if err != nil {
 		t.Fatalf("GenerateImage() error = %v", err)
 	}
-	if !reflect.DeepEqual(callNs, []int{2, 2, 1}) {
-		t.Fatalf("call Ns = %+v, want [2 2 1]", callNs)
+	sort.Ints(callNs)
+	if !reflect.DeepEqual(callNs, []int{1, 2, 2}) {
+		t.Fatalf("call Ns = %+v, want [1 2 2]", callNs)
 	}
 	if len(got.Images) != 5 {
 		t.Fatalf("len(images) = %d, want 5", len(got.Images))
@@ -162,7 +171,7 @@ func TestGenerateImage_BatchesByMaxImagesPerCallAndAggregatesResults(t *testing.
 	if len(got.Warnings) != 3 {
 		t.Fatalf("len(warnings) = %d, want 3", len(got.Warnings))
 	}
-	if len(got.Responses) != 3 || got.Responses[2].ID != "resp-3" {
+	if len(got.Responses) != 3 || got.Responses[2].ID == "" {
 		t.Fatalf("responses = %+v, want three aggregated responses", got.Responses)
 	}
 	if got.Usage.ImageCount != 5 {
@@ -180,11 +189,15 @@ func TestGenerateImage_BatchesByMaxImagesPerCallAndAggregatesResults(t *testing.
 // string gateway cost fields must be summed across split multi-call requests,
 // not overwritten by the last call's metadata.
 func TestGenerateImage_SumsGatewayCostAcrossSplitCalls(t *testing.T) {
+	var mu sync.Mutex
 	callIndex := 0
 	m := &testutil.MockImageModel{
 		MaxImages: 2,
 		DoGenerateFunc: func(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
+			mu.Lock()
 			callIndex++
+			callIndex := callIndex
+			mu.Unlock()
 			images := make([][]byte, *opts.N)
 			for i := range images {
 				images[i] = []byte{byte(callIndex), byte(i)}

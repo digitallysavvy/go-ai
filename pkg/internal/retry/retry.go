@@ -97,6 +97,12 @@ func Do(ctx context.Context, cfg Config, fn RetryFunc) error {
 			return nil // Success!
 		}
 
+		// An aborted call is never retried and never wrapped (TS rethrows
+		// abort errors as is, even after earlier failed attempts).
+		if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+			return err
+		}
+
 		lastErr = err
 		errs = append(errs, err)
 		attempt++

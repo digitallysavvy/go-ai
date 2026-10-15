@@ -144,8 +144,10 @@ type StreamTextOptions struct {
 	// ProviderOptions allows passing provider-specific options
 	ProviderOptions map[string]interface{}
 
-	// MaxRetries controls transient provider call retries. For Gateway models,
-	// nil uses the TypeScript SDK default of 2 retries; set to 0 to disable.
+	// MaxRetries controls transient provider call retries (HTTP 408, 409, 429
+	// and 5xx, or errors a provider marks retryable). nil uses the TypeScript
+	// SDK default of 2 retries with exponential backoff starting at 2s; set to
+	// 0 to disable.
 	MaxRetries *int
 
 	// ExperimentalSandbox is passed through to tool execution. PrepareStep can

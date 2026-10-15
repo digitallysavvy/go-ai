@@ -774,7 +774,7 @@ func TestGenerateObject_DefaultRetriesMatchesTS(t *testing.T) {
 		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
 			attempts++
 			if attempts < 3 {
-				return nil, errors.New("retry me")
+				return nil, fastRetryErr(503)
 			}
 			return &types.GenerateResult{
 				Text:         `{"ok":true}`,
@@ -1163,7 +1163,7 @@ func TestStreamObject_DefaultRetriesMatchesTS(t *testing.T) {
 		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
 			attempts++
 			if attempts < 3 {
-				return nil, errors.New("retry me")
+				return nil, fastRetryErr(503)
 			}
 			return testutil.NewMockTextStream([]provider.StreamChunk{
 				{Type: provider.ChunkTypeText, Text: `{"ok":true}`},
@@ -1341,7 +1341,7 @@ func TestGenerateObject_RetriesDoGenerate(t *testing.T) {
 		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
 			attempts++
 			if attempts < 3 {
-				return nil, errors.New("transient")
+				return nil, fastRetryErr(503)
 			}
 			return &types.GenerateResult{
 				Text:         `{"x":1}`,
