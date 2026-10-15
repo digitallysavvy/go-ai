@@ -192,6 +192,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	stream.requestBody = body
 	stream.includeRawChunks = opts.IncludeRawChunks
 	stream.citationDocuments = extractCitationDocuments(opts.Prompt.Messages)
+	stream.generateID = m.provider.config.GenerateID
 	stream.responseHeaders = providerutils.ExtractHeaders(httpResp.Header)
 	stream.responseTimestamp = time.Now()
 	// The API answers overloaded and similar failures with a 200 whose first
@@ -428,7 +429,7 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 						// document citations against (TS batch converter).
 						continue
 					}
-					src, ok := createCitationSource(citation, citationDocs, anthropicGenerateID)
+					src, ok := createCitationSource(citation, citationDocs, m.provider.newID)
 					if !ok {
 						continue
 					}
@@ -623,7 +624,7 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 				trc.Error = fmt.Sprintf("%v", errResult["errorCode"])
 				trc.IsError = trueFlag()
 			} else if len(content.Content) > 0 {
-				mapped, sources := convertWebSearchToolResult(content.Content)
+				mapped, sources := convertWebSearchToolResult(content.Content, m.provider.newID)
 				trc.Result = mapped
 				// TS pushes the tool-result first, then one source per hit.
 				byBlock[blockIdx] = append(byBlock[blockIdx], trc)
@@ -1551,6 +1552,16 @@ type anthropicStream struct {
 	// search results were retrieved (TS #21797).
 	hasWebSearchResults  bool
 	fallbackWebCitations []map[string]interface{}
+
+	// generateID creates source ids (Config.GenerateID); nil uses a random id.
+	generateID func() string
+}
+
+func (s *anthropicStream) newID() string {
+	if s.generateID != nil {
+		return s.generateID()
+	}
+	return anthropicGenerateID()
 }
 
 // newAnthropicStream creates a new Anthropic stream without the leading
@@ -2063,7 +2074,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 					tr.Error = fmt.Errorf("%v", errResult["errorCode"])
 					tr.IsError = trueFlag()
 				} else if len(start.ContentBlock.Content) > 0 {
-					mapped, sources := convertWebSearchToolResult(start.ContentBlock.Content)
+					mapped, sources := convertWebSearchToolResult(start.ContentBlock.Content, s.newID)
 					tr.Result = mapped
 					webSearchSources = sources
 					if len(sources) > 0 {
@@ -2397,7 +2408,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 					s.fallbackWebCitations = append(s.fallbackWebCitations, delta.Delta.Citation)
 					continue
 				}
-				if src, ok := createCitationSource(delta.Delta.Citation, s.citationDocuments, anthropicGenerateID); ok {
+				if src, ok := createCitationSource(delta.Delta.Citation, s.citationDocuments, s.newID); ok {
 					return &provider.StreamChunk{
 						Type:          provider.ChunkTypeSource,
 						SourceContent: &src,
@@ -2568,11 +2579,16 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				return nil, fmt.Errorf("failed to parse message delta: %w", err)
 			}
 
-			// Update container state if the delta contains container info (includes skills).
-			if delta.Delta.Container != nil {
+			// TS: container = delta.container != null ? {...} : null -- a
+			// message_delta without a container clears the one message_start
+			// reported.
+			switch {
+			case delta.Delta.Container != nil:
 				s.container = delta.Delta.Container
-			} else if delta.Container != nil {
+			case delta.Container != nil:
 				s.container = delta.Container
+			default:
+				s.container = nil
 			}
 			s.stopSequence = delta.Delta.StopSequence
 			s.stopDetails = delta.Delta.StopDetails
@@ -2738,7 +2754,7 @@ func (s *anthropicStream) issueFinish(final bool) *provider.StreamChunk {
 	var sources []*provider.StreamChunk
 	if !s.hasWebSearchResults {
 		for _, citation := range s.fallbackWebCitations {
-			if src, ok := createCitationSource(citation, s.citationDocuments, anthropicGenerateID); ok {
+			if src, ok := createCitationSource(citation, s.citationDocuments, s.newID); ok {
 				src := src
 				sources = append(sources, &provider.StreamChunk{Type: provider.ChunkTypeSource, SourceContent: &src})
 			}
@@ -2828,7 +2844,7 @@ func parseAnthropicWebToolResultError(raw json.RawMessage, expectedType string, 
 // each result entry.
 //
 // Mirrors TS SDK anthropic-messages-language-model.ts lines 1055-1093.
-func convertWebSearchToolResult(raw json.RawMessage) (interface{}, []types.SourceContent) {
+func convertWebSearchToolResult(raw json.RawMessage, generateID func() string) (interface{}, []types.SourceContent) {
 	var wireResults []webSearchResultWire
 	if err := json.Unmarshal(raw, &wireResults); err != nil {
 		// Fallback: return raw data as-is.
@@ -2863,6 +2879,7 @@ func convertWebSearchToolResult(raw json.RawMessage) (interface{}, []types.Sourc
 		})
 		src := types.SourceContent{
 			SourceType:       "url",
+			ID:               generateID(),
 			URL:              r.URL,
 			ProviderMetadata: meta,
 		}

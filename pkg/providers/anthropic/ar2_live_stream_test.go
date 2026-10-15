@@ -2,11 +2,13 @@ package anthropic
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // AR2: live-streamed web_fetch_tool_result / web_search_tool_result content
@@ -245,5 +247,26 @@ func skipToolInputChunks(t *testing.T, stream *anthropicStream) {
 	end, err := stream.Next()
 	if err != nil || end.Type != provider.ChunkTypeToolInputEnd {
 		t.Fatalf("want tool-input-end, got %#v (err %v)", end, err)
+	}
+}
+
+// TS web_search results emit sources with generateId() ids; the configured
+// generator (TS `generateId` setting) is used for them in both modes.
+func TestWebSearchSourcesGetGeneratedIDs(t *testing.T) {
+	n := 0
+	p := New(Config{APIKey: "k", GenerateID: func() string { n++; return fmt.Sprintf("id-%d", n) }})
+	m := NewLanguageModel(p, "claude-sonnet-4-5", nil)
+	res := m.convertResponse(anthropicResponse{Content: []anthropicContent{{
+		Type: "web_search_tool_result", ToolUseID: "t1",
+		Content: json.RawMessage(`[{"type":"web_search_result","url":"https://a","title":"A","page_age":null,"encrypted_content":"e"},{"type":"web_search_result","url":"https://b","title":"B","encrypted_content":"e"}]`),
+	}}}, false)
+	var ids []string
+	for _, part := range res.Content {
+		if src, ok := part.(types.SourceContent); ok {
+			ids = append(ids, src.ID)
+		}
+	}
+	if len(ids) != 2 || ids[0] != "id-1" || ids[1] != "id-2" {
+		t.Fatalf("source ids = %v", ids)
 	}
 }

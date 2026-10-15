@@ -127,6 +127,10 @@ type Config struct {
 	// Headers are custom HTTP headers to include in requests.
 	Headers map[string]string `json:"headers,omitempty"`
 
+	// GenerateID creates the ids of generated sources (TS `generateId`
+	// provider setting). Defaults to a random id.
+	GenerateID func() string `json:"-"`
+
 	// UserAgentName selects the `ai-sdk-<name>/VERSION` User-Agent tag this
 	// provider construction adds (version.ProviderUserAgent). Defaults to
 	// "anthropic". TS's anthropic-aws and minimax packages are each their
@@ -253,6 +257,14 @@ func requestAuthHeaders(cfg Config) (map[string]string, error) {
 		return nil, providererrors.NewLoadAPIKeyError("Anthropic", "ANTHROPIC_API_KEY")
 	}
 	return map[string]string{"x-api-key": apiKey}, nil
+}
+
+// newID returns a fresh generated id (see Config.GenerateID).
+func (p *Provider) newID() string {
+	if p != nil && p.config.GenerateID != nil {
+		return p.config.GenerateID()
+	}
+	return anthropicGenerateID()
 }
 
 func (p *Provider) authHeaders() map[string]string { return authHeadersFor(p.config) }
