@@ -304,3 +304,78 @@ func TestTSReplay_StreamText_InterleavedTextAndReasoningBlocks(t *testing.T) {
 		t.Fatalf("text = %q", res.Text())
 	}
 }
+
+// stream-text.test.ts 'dynamic tools': tool-input-start, tool-call and
+// tool-result carry dynamic: true, and the result lands in dynamicToolResults.
+func TestTSReplay_StreamText_DynamicTool(t *testing.T) {
+	model := &testutil.MockLanguageModel{
+		ToolSupport: true,
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeToolInputStart, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "dynamicTool"}},
+				{Type: provider.ChunkTypeToolInputDelta, ID: "call-1", Text: `{ "value": "value" }`, ToolCall: &types.ToolCall{ID: "call-1"}},
+				{Type: provider.ChunkTypeToolInputEnd, ToolCall: &types.ToolCall{ID: "call-1"}},
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "dynamicTool", Arguments: map[string]interface{}{"value": "value"}}},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: usage(3, 10)},
+			}), nil
+		},
+	}
+	tool := types.Tool{
+		Name: "dynamicTool", Type: types.ToolTypeDynamic,
+		Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"value": map[string]interface{}{"type": "string"}}},
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return map[string]interface{}{"value": "test-result"}, nil
+		},
+	}
+	res, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "p", Tools: []types.Tool{tool}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dyn := map[provider.ChunkType]bool{}
+	s := res.Stream()
+	for {
+		c, err := s.Next()
+		if err != nil || c == nil {
+			break
+		}
+		switch c.Type {
+		case provider.ChunkTypeToolInputStart, provider.ChunkTypeToolCall:
+			dyn[c.Type] = c.ToolCall != nil && c.ToolCall.Dynamic
+		case provider.ChunkTypeToolResult:
+			dyn[c.Type] = c.ToolResult != nil && c.ToolResult.Dynamic
+		}
+	}
+	for _, ty := range []provider.ChunkType{provider.ChunkTypeToolInputStart, provider.ChunkTypeToolCall, provider.ChunkTypeToolResult} {
+		if !dyn[ty] {
+			t.Errorf("%s: dynamic = false, want true", ty)
+		}
+	}
+	if got := res.DynamicToolResults(); len(got) != 1 {
+		t.Fatalf("dynamic tool results = %d, want 1", len(got))
+	}
+	if got := res.StaticToolResults(); len(got) != 0 {
+		t.Fatalf("static tool results = %d, want 0", len(got))
+	}
+	var contentDynamic bool
+	for _, p := range res.Content() {
+		if tr, ok := p.(types.ToolResultContent); ok {
+			contentDynamic = tr.Dynamic
+		}
+	}
+	if !contentDynamic {
+		t.Fatal("tool-result content part is not dynamic")
+	}
+
+	gen, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: &testutil.MockLanguageModel{ToolSupport: true, DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{FinishReason: types.FinishReasonToolCalls, ToolCalls: []types.ToolCall{{ID: "call-1", ToolName: "dynamicTool", Arguments: map[string]interface{}{"value": "value"}}}}, nil
+		}},
+		Prompt: "p", Tools: []types.Tool{tool}, MaxSteps: intPtr(1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gen.DynamicToolResults) != 1 || len(gen.StaticToolResults) != 0 {
+		t.Fatalf("generateText dynamic=%d static=%d", len(gen.DynamicToolResults), len(gen.StaticToolResults))
+	}
+}

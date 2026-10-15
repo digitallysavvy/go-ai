@@ -1693,6 +1693,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 			remapDuplicateBlockID(chunk, usedTextIDs, stepTextIDRemap, provider.ChunkTypeTextStart, provider.ChunkTypeText, provider.ChunkTypeTextEnd, remapGenerateID)
 			remapDuplicateBlockID(chunk, usedReasoningIDs, stepReasoningIDRemap, provider.ChunkTypeReasoningStart, provider.ChunkTypeReasoning, provider.ChunkTypeReasoningEnd, remapGenerateID)
+			// A tool-input-start for a dynamic tool carries dynamic: true (TS).
+			if chunk.Type == provider.ChunkTypeToolInputStart && chunk.ToolCall != nil && !chunk.ToolCall.Dynamic {
+				if t := toolsByName[chunk.ToolCall.ToolName]; t != nil && t.Type == types.ToolTypeDynamic {
+					startCall := *chunk.ToolCall
+					startCall.Dynamic = true
+					chunk.ToolCall = &startCall
+				}
+			}
 			forwardChunk := !suppressReasoningBoundaries || !isReasoningBoundaryChunk(chunk.Type)
 			if chunk.Type == provider.ChunkTypeRaw && !includeRawChunksValue(r.cbInclude) {
 				forwardChunk = false

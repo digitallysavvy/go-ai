@@ -1922,7 +1922,9 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 		}
 		return results, nil
 	}
-	return a.runToolCalls(ctx, toolCalls, runCall)
+	results, err := a.runToolCalls(ctx, toolCalls, runCall)
+	ai.MarkDynamicToolResults(results, toolCalls)
+	return results, err
 }
 
 func (a *ToolLoopAgent) runtimeContext() interface{} {

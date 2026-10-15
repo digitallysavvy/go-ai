@@ -36,7 +36,9 @@ func prepareToolCallConcurrency(toolCallConcurrency *int) (int, error) {
 // mapWithConcurrency applied to tool execution.
 func executeToolsLimited(ctx context.Context, calls []types.ToolCall, tools []types.Tool, runtimeContext interface{}, toolsContext map[string]interface{}, toolApproval interface{}, usage *types.Usage, callbacks toolCallEventCallbacks, limit int) ([]types.ToolResult, error) {
 	if len(calls) <= 1 {
-		return executeTools(ctx, calls, tools, runtimeContext, toolsContext, toolApproval, usage, callbacks)
+		results, err := executeTools(ctx, calls, tools, runtimeContext, toolsContext, toolApproval, usage, callbacks)
+		MarkDynamicToolResults(results, calls)
+		return results, err
 	}
 	perCallResults := make([][]types.ToolResult, len(calls))
 	perCallUsage := make([]types.Usage, len(calls))
@@ -70,6 +72,7 @@ func executeToolsLimited(ctx context.Context, calls []types.ToolCall, tools []ty
 		}
 	}
 	*usage = merged
+	MarkDynamicToolResults(out, calls)
 
 	for _, err := range errs {
 		if err != nil {
@@ -87,4 +90,22 @@ func executeToolsLimited(ctx context.Context, calls []types.ToolCall, tools []ty
 // concurrently, as TS does by default; results stay in call order.
 func executeToolsConfigured(ctx context.Context, calls []types.ToolCall, tools []types.Tool, runtimeContext interface{}, toolsContext map[string]interface{}, toolApproval interface{}, usage *types.Usage, callbacks toolCallEventCallbacks, concurrency int) ([]types.ToolResult, error) {
 	return executeToolsLimited(ctx, calls, tools, runtimeContext, toolsContext, toolApproval, usage, callbacks, concurrency)
+}
+
+// MarkDynamicToolResults sets Dynamic on every result whose call was a dynamic
+// tool call (TS: a tool-result of a dynamic tool has dynamic: true), so the
+// static/dynamic result splits, the content parts and the UI stream agree with
+// the call.
+func MarkDynamicToolResults(results []types.ToolResult, calls []types.ToolCall) {
+	for i := range results {
+		if results[i].Dynamic {
+			continue
+		}
+		for _, call := range calls {
+			if call.ID == results[i].ToolCallID {
+				results[i].Dynamic = call.Dynamic
+				break
+			}
+		}
+	}
 }
