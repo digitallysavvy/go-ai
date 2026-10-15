@@ -101,3 +101,31 @@ func TestCheckPerplexityAgentChunk(t *testing.T) {
 		}
 	}
 }
+
+// Floats and interface{} members must keep their fractional value when a
+// sibling integer field forces the retry path.
+func TestUnmarshalChunkRetryPreservesFloats(t *testing.T) {
+	type inner struct {
+		Count int      `json:"count"`
+		Prob  *float64 `json:"prob"`
+	}
+	var v struct {
+		inner
+		Created int64                  `json:"created"`
+		Cost    float64                `json:"cost"`
+		Any     interface{}            `json:"any"`
+		Items   []inner                `json:"items"`
+		ByName  map[string]float64     `json:"by_name"`
+		Raw     map[string]interface{} `json:"raw"`
+	}
+	in := `{"created":1.5,"count":3.0,"prob":-0.25,"cost":0.0042,"any":2.5,"items":[{"count":4.9,"prob":0.5}],"by_name":{"a":1.25},"raw":{"x":1.5}}`
+	if err := UnmarshalChunk([]byte(in), &v); err != nil {
+		t.Fatal(err)
+	}
+	if v.Created != 1 || v.Count != 3 || v.Items[0].Count != 4 {
+		t.Fatalf("ints not truncated: %+v", v)
+	}
+	if v.Prob == nil || *v.Prob != -0.25 || v.Cost != 0.0042 || v.Any != 2.5 || v.Items[0].Prob == nil || *v.Items[0].Prob != 0.5 || v.ByName["a"] != 1.25 || v.Raw["x"] != 1.5 {
+		t.Fatalf("floats altered: %+v", v)
+	}
+}

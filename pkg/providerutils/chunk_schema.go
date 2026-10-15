@@ -482,9 +482,11 @@ func CheckTypedFrame(data string) (string, error) {
 // UnmarshalChunk decodes a schema-validated stream frame into v. zod's
 // z.number() accepts fractional and exponent forms (1.5, 2.0, 1e9) that Go's
 // integer struct fields reject; when the strict decode fails on such a number,
-// the frame is retried with every non-integral number truncated and integral
-// ones (2.0, 1e9) written as integers, so a frame TS accepts is never rejected
-// for its number spelling.
+// the frame is retried with the numbers under the member names the decoder
+// reported truncated (2.0 and 1e9 become integers). Members that decode fine,
+// such as float fields, interface{} values and raw usage objects, keep their
+// exact value, so a frame TS accepts is never rejected for its number
+// spelling and no float is altered.
 func UnmarshalChunk(data []byte, v interface{}) error {
 	err := json.Unmarshal(data, v)
 	var typeErr *json.UnmarshalTypeError
@@ -497,16 +499,37 @@ func UnmarshalChunk(data []byte, v interface{}) error {
 	if dec.Decode(&tree) != nil {
 		return err
 	}
-	normalized, merr := json.Marshal(normalizeNumbers(tree))
-	if merr != nil {
-		return err
+	// Each pass truncates the members the previous decode named; custom
+	// UnmarshalJSON methods report only the member name, so match by name.
+	fixed := map[string]bool{}
+	for {
+		key := typeErr.Field
+		if i := strings.LastIndex(key, "."); i >= 0 {
+			key = key[i+1:]
+		}
+		if key == "" || fixed[key] {
+			return err
+		}
+		fixed[key] = true
+		normalized, merr := json.Marshal(truncateNumbersUnder(tree, key, false))
+		if merr != nil {
+			return err
+		}
+		err = json.Unmarshal(normalized, v)
+		if err == nil || !errors.As(err, &typeErr) || !strings.HasPrefix(typeErr.Value, "number") {
+			return err
+		}
 	}
-	return json.Unmarshal(normalized, v)
 }
 
-func normalizeNumbers(v interface{}) interface{} {
+// truncateNumbersUnder rewrites, in a json.Number tree, every number held by
+// a member called key (or by array elements of one) to an integer.
+func truncateNumbersUnder(v interface{}, key string, hit bool) interface{} {
 	switch x := v.(type) {
 	case json.Number:
+		if !hit {
+			return x
+		}
 		if _, err := x.Int64(); err == nil {
 			return x
 		}
@@ -520,12 +543,12 @@ func normalizeNumbers(v interface{}) interface{} {
 		return x
 	case []interface{}:
 		for i := range x {
-			x[i] = normalizeNumbers(x[i])
+			x[i] = truncateNumbersUnder(x[i], key, hit)
 		}
 		return x
 	case map[string]interface{}:
 		for k := range x {
-			x[k] = normalizeNumbers(x[k])
+			x[k] = truncateNumbersUnder(x[k], key, k == key)
 		}
 		return x
 	}
