@@ -261,3 +261,27 @@ func TestExperimentalGetBatchResults_ValidatesToolCallsAgainstTools(t *testing.T
 		t.Fatalf("tool calls = %+v, want first valid and second invalid", got)
 	}
 }
+
+// TS detects prompt/frame image media types with the full image signature
+// table (bmp, tiff, avif, heic, ...), not just png/gif/jpeg/webp.
+func TestNormalizeVideoInputs_DetectsFullImageSignatureTable(t *testing.T) {
+	t.Parallel()
+
+	bmp := []byte{0x42, 0x4d, 1, 2, 3, 4, 0, 0, 0, 0, 9, 9}
+	got, err := normalizeVideoInputs(VideoPrompt{Text: "x", Image: &VideoPromptImage{Data: bmp}}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Image == nil || got.Image.MediaType != "image/bmp" {
+		t.Fatalf("image = %+v, want image/bmp", got.Image)
+	}
+
+	tiff := []byte{0x49, 0x49, 0x2a, 0x00, 1, 2}
+	ref, err := normalizeVideoInputs(VideoPrompt{Text: "x"}, nil, []VideoReferenceInput{{Data: VideoPromptImage{Data: tiff}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ref.InputReferences) != 1 || ref.InputReferences[0].MediaType != "image/tiff" {
+		t.Fatalf("reference = %+v, want image/tiff", ref.InputReferences)
+	}
+}
