@@ -2265,6 +2265,19 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				cancelStep()
 				break
 			}
+			// The caller's context ended while tools ran: queued tool calls
+			// were not started, so the step is incomplete. Report the abort
+			// instead of finishing as if the model had stopped.
+			if toolsErr != nil && ctx.Err() != nil {
+				abortErr := toolsErr
+				if r.timeout != nil && r.timeout.HasTotal() {
+					abortErr = wrapTimeoutError(TimeoutReasonTotal, abortErr)
+				}
+				r.err = abortErr
+				fireAbort(r.err)
+				cancelStep()
+				break
+			}
 			attachToolApprovalSignatures(stepToolResults, opts.ExperimentalToolApprovalSecret)
 		}
 		if stepCtx.Err() != nil && r.timeout != nil && r.timeout.HasPerStep() {
