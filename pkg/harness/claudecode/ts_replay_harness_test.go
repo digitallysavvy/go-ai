@@ -47,7 +47,7 @@ func (s *recSandbox) Spawn(ctx context.Context, opts providerutils.SandboxProces
 	s.spawns = append(s.spawns, opts.Command)
 	s.spawnEnvs = append(s.spawnEnvs, opts.Env)
 	s.mu.Unlock()
-	return s.testSandbox.Sandbox.Spawn(ctx, opts)
+	return s.Sandbox.Spawn(ctx, opts)
 }
 
 func (s *recSandbox) WriteTextFile(ctx context.Context, opts providerutils.SandboxWriteTextFileOptions) error {

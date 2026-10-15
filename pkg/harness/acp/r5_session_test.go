@@ -3,6 +3,7 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -130,10 +131,12 @@ func TestDoPromptTurn_PreAbortedRejects(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if _, err := sess.DoPromptTurn(ctx, harness.PromptTurnOptions{Prompt: harness.TextPrompt("hi"), Emit: func(harness.StreamPart) {}}); err == nil {
-		t.Fatal("expected the abort error")
+	ctx, cancel := context.WithCancelCause(context.Background())
+	abortReason := errors.New("cancel before start")
+	cancel(abortReason)
+	// TS rejects with the abort signal's reason.
+	if _, err := sess.DoPromptTurn(ctx, harness.PromptTurnOptions{Prompt: harness.TextPrompt("hi"), Emit: func(harness.StreamPart) {}}); !errors.Is(err, abortReason) {
+		t.Fatalf("err = %v, want the abort reason", err)
 	}
 }
 

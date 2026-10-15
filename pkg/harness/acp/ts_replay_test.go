@@ -1064,7 +1064,7 @@ func TestTSReplay_TranslatesQuestionRequestsAndClientResults(t *testing.T) {
 
 	result := types.ToolResultContent{ToolCallID: "question-1", ToolName: "askUserQuestions",
 		Output: &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: map[string]any{"action": "answered", "answers": map[string]any{"q1": map[string]any{"optionIds": []any{}}}}}}
-	if err := control.(harness.PromptControl).SubmitToolResult(context.Background(), harness.ToolResultSubmission{ToolCallID: "question-1", Output: result.Output.Value, ToolResult: &result}); err != nil {
+	if err := control.SubmitToolResult(context.Background(), harness.ToolResultSubmission{ToolCallID: "question-1", Output: result.Output.Value, ToolResult: &result}); err != nil {
 		t.Fatal(err)
 	}
 	reply := <-toolResults
