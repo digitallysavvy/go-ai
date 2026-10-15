@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
 )
 
 func TestGetSpendReportValidatesRequiredFields(t *testing.T) {
@@ -88,5 +90,23 @@ func TestGetSpendReportDecodeError(t *testing.T) {
 	}
 	if _, err := p.GetSpendReport(context.Background(), SpendReportParams{StartDate: "2026-05-01", EndDate: "2026-05-02"}); err == nil || !strings.Contains(err.Error(), "failed to decode spend report response") {
 		t.Fatalf("expected decode error, got %v", err)
+	}
+}
+
+// TS asGatewayError wraps a malformed success body: callers get a GatewayError.
+func TestGetSpendReportDecodeErrorIsGatewayError(t *testing.T) {
+	for _, body := range []string{`{bad-json`, `{"other":1}`} {
+		serverURL, closeServer := newGatewayIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(body))
+		}))
+		p, err := New(Config{APIKey: "k", BaseURL: serverURL + "/v4/ai"})
+		if err != nil {
+			t.Fatalf("New error = %v", err)
+		}
+		_, err = p.GetSpendReport(context.Background(), SpendReportParams{StartDate: "2026-05-01", EndDate: "2026-05-02"})
+		if !gatewayerrors.IsGatewayError(err) {
+			t.Errorf("body %q: err = %T %v, want a GatewayError", body, err, err)
+		}
+		closeServer()
 	}
 }

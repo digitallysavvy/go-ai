@@ -71,7 +71,7 @@ func (p *Provider) GetGenerationInfo(ctx context.Context, params GenerationInfoP
 
 	var envelope generationInfoEnvelope
 	if err := json.Unmarshal(body, &envelope); err != nil {
-		return nil, fmt.Errorf("failed to decode generation info response: %w", err)
+		return nil, p.handleErrorWithContext(ctx, fmt.Errorf("failed to decode generation info response: %w", err))
 	}
 
 	return &GenerationInfo{
