@@ -608,3 +608,41 @@ func TestParseToolCall_StaticToolDropsProviderDynamicFlag(t *testing.T) {
 		t.Fatalf("expected valid static call, got invalid=%v dynamic=%v", got.Invalid, got.Dynamic)
 	}
 }
+
+// TS parseToolCall runs refineToolInput inside its try block: a refiner that
+// throws yields an invalid tool call (reported to the model) instead of
+// failing the whole generation.
+func TestGenerateTextRefineToolInputErrorBecomesInvalidToolCall(t *testing.T) {
+	executed := false
+	tool := pipelineTestTool("testTool", func(map[string]interface{}) (interface{}, error) {
+		executed = true
+		return "ok", nil
+	})
+	boom := errors.New("refine boom")
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: toolCallModel([]types.ToolCall{
+			{ID: "c1", ToolName: "testTool", RawArguments: `{"value":"x"}`},
+		}, ""),
+		Prompt:   "hi",
+		Tools:    []types.Tool{tool},
+		StopWhen: []StopCondition{StepCountIs(1)},
+		ExperimentalRefineToolInput: map[string]ToolInputRefiner{
+			"testTool": func(context.Context, ToolInputRefinementOptions) (map[string]interface{}, error) {
+				return nil, boom
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if executed {
+		t.Fatal("invalid tool call must not execute")
+	}
+	step := result.Steps[0]
+	if len(step.ToolResults) != 1 || !errors.Is(step.ToolResults[0].Error, boom) {
+		t.Fatalf("tool results = %+v", step.ToolResults)
+	}
+	if !step.ToolCalls[0].Invalid {
+		t.Fatalf("call = %+v", step.ToolCalls[0])
+	}
+}
