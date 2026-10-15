@@ -409,10 +409,7 @@ func TestMCPToolUseStreamingEmitsImmediately(t *testing.T) {
 	}
 
 	// Next: EOF
-	_, err = stream.Next()
-	if err != io.EOF {
-		t.Errorf("expected io.EOF, got: %v", err)
-	}
+	expectFinishOtherThenEOF(t, stream)
 }
 
 // MCP streaming: mcp_tool_result in content_block_start emits a ChunkTypeToolResult
@@ -916,5 +913,18 @@ func TestBetaHeadersNoRegressionWithNewOptions(t *testing.T) {
 		if !strings.Contains(h, want) {
 			t.Errorf("missing header %q in %q", want, h)
 		}
+	}
+}
+
+// expectFinishOtherThenEOF asserts the stream ends with the finish chunk TS
+// emits for a message_stop that had no message_delta (reason `other`).
+func expectFinishOtherThenEOF(t *testing.T, s provider.TextStream) {
+	t.Helper()
+	c, err := s.Next()
+	if err != nil || c.Type != provider.ChunkTypeFinish || c.FinishReason != types.FinishReasonOther {
+		t.Fatalf("Next() = %+v, %v; want finish(other)", c, err)
+	}
+	if _, err := s.Next(); err != io.EOF {
+		t.Fatalf("expected io.EOF, got: %v", err)
 	}
 }

@@ -207,10 +207,7 @@ func TestStream_LiveWebSearchToolResultError(t *testing.T) {
 	}
 
 	// No source chunks follow an error result.
-	next, err := stream.Next()
-	if err != io.EOF {
-		t.Fatalf("Next() = %+v, %v; want io.EOF", next, err)
-	}
+	expectFinishOtherThenEOF(t, stream)
 }
 
 // AR2 item 2: mcp_tool_use was missing from the message_start pre-population

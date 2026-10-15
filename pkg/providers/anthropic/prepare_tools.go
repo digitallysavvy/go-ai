@@ -125,6 +125,17 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 
 	wire := make([]map[string]interface{}, 0, len(o.tools))
 	for _, t := range o.tools {
+		// Self-serializing provider tools carry their own args (advisor model,
+		// max_uses, ... ) and win over the plain builtin table entry.
+		if mapper, ok := t.ProviderOptions.(anthropicAPIMapper); ok && t.ProviderOptions != nil {
+			if _, builtin := anthropicBuiltinToolTypes[t.Name]; builtin {
+				wire = append(wire, mapper.ToAnthropicAPIMap())
+				if b, ok := providerToolBetas[t.Name]; ok {
+					addBeta(b)
+				}
+				continue
+			}
+		}
 		// Simple builtin provider tools.
 		if def, ok := anthropicBuiltinToolTypes[t.Name]; ok {
 			m := map[string]interface{}{"type": def.apiType}

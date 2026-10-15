@@ -371,8 +371,7 @@ func (m *googleRealtimeEventMapper) parseServerEvent(raw json.RawMessage) []prov
 		events := make([]provider.RealtimeServerEvent, 0, len(calls)*2)
 		for _, rawCall := range calls {
 			call, _ := rawCall.(map[string]interface{})
-			argsBytes, _ := json.Marshal(valueOrEmptyMap(call["args"]))
-			args := string(argsBytes)
+			args := jsonStringify(valueOrEmptyMap(call["args"]))
 			id := googleString(call, "id")
 			name := googleString(call, "name")
 			events = append(events,

@@ -1007,10 +1007,6 @@ func bedrockToolResultContent(part types.ToolResultContent, getDocumentName func
 	default:
 		// Ports TS's 'json'/'error-json'/default case (ts:687-690):
 		// JSON.stringify(output.value).
-		data, err := json.Marshal(part.Output.Value)
-		if err != nil {
-			return []map[string]interface{}{{"text": fmt.Sprint(part.Output.Value)}}, nil
-		}
-		return []map[string]interface{}{{"text": string(data)}}, nil
+		return []map[string]interface{}{{"text": jsonStringify(part.Output.Value)}}, nil
 	}
 }

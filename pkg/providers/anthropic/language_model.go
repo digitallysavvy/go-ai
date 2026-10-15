@@ -479,14 +479,24 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 	for blockIdx, content := range response.Content {
 		switch content.Type {
 		case "thinking":
+			// TS: providerMetadata.anthropic.signature; Signature stays for
+			// existing Go callers.
+			sigMeta, _ := json.Marshal(map[string]interface{}{ //nolint:errcheck // string map always marshals
+				"anthropic": map[string]interface{}{"signature": content.Signature},
+			})
 			byBlock[blockIdx] = append(byBlock[blockIdx], types.ReasoningContent{
-				Text:      content.Thinking,
-				Signature: content.Signature,
+				Text:             content.Thinking,
+				Signature:        content.Signature,
+				ProviderMetadata: sigMeta,
 			})
 		case "redacted_thinking":
 			// Redacted blocks have no visible text — only the opaque data blob.
+			redactedMeta, _ := json.Marshal(map[string]interface{}{ //nolint:errcheck // string map always marshals
+				"anthropic": map[string]interface{}{"redactedData": content.Data},
+			})
 			byBlock[blockIdx] = append(byBlock[blockIdx], types.ReasoningContent{
-				RedactedData: content.Data,
+				RedactedData:     content.Data,
+				ProviderMetadata: redactedMeta,
 			})
 		case "container_upload":
 			// A file the model uploaded to the code execution container
@@ -550,8 +560,7 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 			if usesJsonResponseTool && content.Name == "json" {
 				// jsonTool mode: the model responded via the synthetic json tool.
 				// Extract the tool input as the structured text result.
-				inputJSON, _ := json.Marshal(content.Input)
-				result.Text = string(inputJSON)
+				result.Text = jsonStringify(content.Input)
 				isJsonResponseFromTool = true
 			} else if content.ToolsetName != "" {
 				// Toolset member calls (e.g. the computer toolset) map to the
@@ -1477,6 +1486,12 @@ type anthropicStream struct {
 	// emitted on message_stop (or at end of stream).
 	finish       *provider.StreamChunk
 	finishIssued bool
+	// curFinishReason / curRawFinishReason mirror TS's stream-wide
+	// finishReason variable: set by message_start (stop_reason) and
+	// message_delta, kept across messages, and used by a message_stop that had
+	// no message_delta of its own.
+	curFinishReason    types.FinishReason
+	curRawFinishReason string
 
 	// requestBody is the raw request body that opened this stream, exposed
 	// via RequestBody() (provider.StreamRequestBody, hand-off: "stream
@@ -1669,9 +1684,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				// emits the correct arguments even with no following deltas.
 				var initialInput string
 				if len(start.ContentBlock.Input) > 0 {
-					if b, err := json.Marshal(start.ContentBlock.Input); err == nil {
-						initialInput = string(b)
-					}
+					initialInput = jsonStringify(start.ContentBlock.Input)
 				}
 				block := &streamContentBlock{
 					blockType:    "tool-call",
@@ -1772,10 +1785,8 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 					// Dynamic web tools provide their input here; other tools
 					// stream it via deltas, so only non-empty input is used.
 					if len(start.ContentBlock.Input) > 0 {
-						if b, err := json.Marshal(start.ContentBlock.Input); err == nil {
-							block.inputBuf.Write(b)
-							block.firstDelta = false
-						}
+						block.inputBuf.WriteString(jsonStringify(start.ContentBlock.Input))
+						block.firstDelta = false
 					}
 				}
 				// TS streams provider-executed tool input like any other tool
@@ -2038,6 +2049,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				Message struct {
 					ID                   string          `json:"id"`
 					Model                string          `json:"model"`
+					StopReason           string          `json:"stop_reason"`
 					InputTransformations json.RawMessage `json:"input_transformations"`
 					Usage                struct {
 						InputTokens              int              `json:"input_tokens"`
@@ -2048,10 +2060,11 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 					} `json:"usage"`
 					Container *anthropicContainerResponse `json:"container,omitempty"`
 					Content   []struct {
-						Type  string                 `json:"type"`
-						ID    string                 `json:"id"`
-						Name  string                 `json:"name"`
-						Input map[string]interface{} `json:"input"`
+						Type   string                 `json:"type"`
+						ID     string                 `json:"id"`
+						Name   string                 `json:"name"`
+						Input  map[string]interface{} `json:"input"`
+						Caller map[string]interface{} `json:"caller,omitempty"`
 						// mcp_tool_use fields
 						ServerName string `json:"server_name,omitempty"`
 						// Deferred provider tool result fields
@@ -2091,6 +2104,12 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				}
 				s.isMessageOpen = true
 				s.activeMessageID = msg.Message.ID
+				if msg.Message.StopReason != "" {
+					// TS: a message_start that already carries a stop_reason
+					// sets the stream-wide finish reason.
+					s.curFinishReason = mapStopReason(msg.Message.StopReason, s.isJsonResponseFromTool)
+					s.curRawFinishReason = msg.Message.StopReason
+				}
 				// A new message gets its own finish chunk.
 				s.finishIssued = false
 				s.finish = nil
@@ -2132,7 +2151,8 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 					s.usage.Raw = startRaw.Message.Usage
 				}
 				s.usage.InputTokens = msg.Message.Usage.InputTokens
-				s.usage.OutputTokens = msg.Message.Usage.OutputTokens
+				// TS leaves output_tokens alone here: it carries over from the
+				// previous message_delta (and is 0 before the first one).
 				s.usage.CacheReadInputTokens = msg.Message.Usage.CacheReadInputTokens
 				s.usage.CacheCreationInputTokens = msg.Message.Usage.CacheCreationInputTokens
 				if len(msg.Message.Usage.Iterations) > 0 {
@@ -2159,20 +2179,29 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 						if s.usesJsonResponseTool && part.Name == "json" {
 							// jsonTool mode: emit the tool input as a text chunk.
 							s.isJsonResponseFromTool = true
-							inputJSON, _ := json.Marshal(args)
 							s.pending = append(s.pending, &provider.StreamChunk{
 								Type: provider.ChunkTypeText,
-								Text: string(inputJSON),
+								Text: jsonStringify(args),
 							})
 						} else {
-							s.pending = append(s.pending, &provider.StreamChunk{
-								Type: provider.ChunkTypeToolCall,
-								ToolCall: &types.ToolCall{
-									ID:        part.ID,
-									ToolName:  mapAnthropicToolName(part.Name, s.toolNameMap),
-									Arguments: args,
-								},
-							})
+							// TS emits the full tool-input sequence for a tool_use
+							// block pre-populated in message_start, then the call
+							// with its caller metadata.
+							toolName := mapAnthropicToolName(part.Name, s.toolNameMap)
+							inputJSON := jsonStringify(args)
+							s.pending = append(s.pending,
+								&provider.StreamChunk{Type: provider.ChunkTypeToolInputStart, ToolCall: &types.ToolCall{ID: part.ID, ToolName: toolName}},
+								&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: part.ID, Text: inputJSON},
+								&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ToolCall: &types.ToolCall{ID: part.ID}},
+								&provider.StreamChunk{
+									Type: provider.ChunkTypeToolCall,
+									ToolCall: &types.ToolCall{
+										ID:               part.ID,
+										ToolName:         toolName,
+										Arguments:        args,
+										ProviderMetadata: anthropicCallerMetadata(part.Caller),
+									},
+								})
 						}
 					case "mcp_tool_use":
 						// Pre-populated deferred MCP tool call (TS content_block_start
@@ -2506,8 +2535,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				var toolsetDelta *provider.StreamChunk
 				if block.toolsetName != "" {
 					args = toToolsetMemberInput(block.memberName, args)
-					b, _ := json.Marshal(args)
-					toolsetDelta = &provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: block.toolCallID, Text: string(b)}
+					toolsetDelta = &provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: block.toolCallID, Text: jsonStringify(args)}
 				}
 				if block.providerToolName == "code_execution" {
 					_, hasCode := args["code"]
@@ -2652,28 +2680,10 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				}
 			}
 
-			if delta.Delta.StopReason != "" {
-				var finishReason types.FinishReason
-				switch delta.Delta.StopReason {
-				case "end_turn", "pause_turn", "stop_sequence":
-					finishReason = types.FinishReasonStop
-				case "max_tokens", "model_context_window_exceeded":
-					finishReason = types.FinishReasonLength
-				case "tool_use":
-					// When the json tool is used, the API returns stop_reason="tool_use"
-					// but the caller expects "stop" — the structured JSON has been
-					// extracted as text, not a tool call. Matches mapAnthropicStopReason()
-					// in the TypeScript SDK.
-					if s.isJsonResponseFromTool {
-						finishReason = types.FinishReasonStop
-					} else {
-						finishReason = types.FinishReasonToolCalls
-					}
-				case "refusal":
-					finishReason = types.FinishReasonContentFilter
-				default:
-					finishReason = types.FinishReasonOther
-				}
+			// TS maps the stop reason unconditionally: a null stop_reason
+			// finishes as `other`, and usage is applied either way.
+			{
+				finishReason := mapStopReason(delta.Delta.StopReason, s.isJsonResponseFromTool)
 
 				if delta.Usage.InputTokens != nil {
 					s.inputTokens = int64(*delta.Usage.InputTokens)
@@ -2711,9 +2721,9 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				// The finish chunk is emitted on message_stop so later deltas
 				// (e.g. final safeguard results) are included.
 				s.finish = chunk
+				s.curFinishReason, s.curRawFinishReason = finishReason, delta.Delta.StopReason
 				continue
 			}
-			continue
 
 		case "error":
 			// A mid-stream provider error (TS `case 'error'`, e.g. an
@@ -2770,6 +2780,19 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			// TS emits one finish part per message_stop and keeps reading, so a
 			// stream of several concatenated messages yields one finish each.
 			// The stream ends when the underlying body does.
+			if s.finish == nil && !s.finishIssued {
+				// message_stop without a preceding message_delta: TS still
+				// finishes, with its initial finish reason {unified: other}.
+				fr := s.curFinishReason
+				if fr == "" {
+					fr = types.FinishReasonOther
+				}
+				s.finish = &provider.StreamChunk{
+					Type:            provider.ChunkTypeFinish,
+					FinishReason:    fr,
+					RawFinishReason: s.curRawFinishReason,
+				}
+			}
 			if s.finish != nil && !s.finishIssued {
 				s.finishIssued = true
 				return s.issueFinish(false), nil
@@ -3054,4 +3077,25 @@ func sseEventTypeFromPayload(data string) string {
 		return ""
 	}
 	return probe.Type
+}
+
+// mapStopReason is TS mapAnthropicStopReason.
+func mapStopReason(stopReason string, isJSONResponseFromTool bool) types.FinishReason {
+	switch stopReason {
+	case "end_turn", "pause_turn", "stop_sequence":
+		return types.FinishReasonStop
+	case "max_tokens", "model_context_window_exceeded":
+		return types.FinishReasonLength
+	case "tool_use":
+		// When the json tool is used the API returns stop_reason="tool_use"
+		// but the structured JSON was extracted as text, not a tool call.
+		if isJSONResponseFromTool {
+			return types.FinishReasonStop
+		}
+		return types.FinishReasonToolCalls
+	case "refusal":
+		return types.FinishReasonContentFilter
+	default:
+		return types.FinishReasonOther
+	}
 }

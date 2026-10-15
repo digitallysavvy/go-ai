@@ -1,0 +1,669 @@
+[
+ {
+  "title": "should handle JSON response format in streaming",
+  "fixture": "amazon-bedrock-json-tool.1",
+  "line": 3331,
+  "analysis": {
+   "kind": "stream",
+   "parts": [
+    {
+     "type": "stream-start"
+    },
+    {
+     "id": null,
+     "type": "response-metadata"
+    },
+    {
+     "id": "0",
+     "type": "text-start"
+    },
+    {
+     "delta": "{\"value\":\"test\"}",
+     "id": "0",
+     "type": "text-delta"
+    },
+    {
+     "id": "0",
+     "type": "text-end"
+    },
+    {
+     "finishReason": {
+      "raw": "tool_use",
+      "unified": "stop"
+     },
+     "type": "finish",
+     "usage": {
+      "inputTokens": null,
+      "outputTokens": null
+     }
+    }
+   ]
+  }
+ },
+ {
+  "title": "should include text content before JSON tool call in streaming",
+  "fixture": "amazon-bedrock-json-tool.2",
+  "line": 3413,
+  "analysis": {
+   "kind": "stream",
+   "parts": [
+    {
+     "type": "stream-start"
+    },
+    {
+     "id": null,
+     "type": "response-metadata"
+    },
+    {
+     "id": "0",
+     "type": "text-start"
+    },
+    {
+     "delta": "Let me generate",
+     "id": "0",
+     "type": "text-delta"
+    },
+    {
+     "delta": " that JSON for you.",
+     "id": "0",
+     "type": "text-delta"
+    },
+    {
+     "id": "1",
+     "type": "text-start"
+    },
+    {
+     "delta": "{\"value\":\"test\"}",
+     "id": "1",
+     "type": "text-delta"
+    },
+    {
+     "id": "1",
+     "type": "text-end"
+    },
+    {
+     "finishReason": {
+      "raw": "tool_use",
+      "unified": "stop"
+     },
+     "type": "finish",
+     "usage": {
+      "inputTokens": null,
+      "outputTokens": null
+     }
+    }
+   ]
+  }
+ },
+ {
+  "title": "should stream text introduction before JSON-only response",
+  "fixture": "amazon-bedrock-json-only-text-first.1",
+  "line": 3511,
+  "analysis": {
+   "kind": "stream",
+   "parts": [
+    {
+     "type": "stream-start"
+    },
+    {
+     "id": null,
+     "type": "response-metadata"
+    },
+    {
+     "id": "0",
+     "type": "text-start"
+    },
+    {
+     "delta": "Here is your data:",
+     "id": "0",
+     "type": "text-delta"
+    },
+    {
+     "id": "0",
+     "type": "text-end"
+    },
+    {
+     "id": "1",
+     "type": "text-start"
+    },
+    {
+     "delta": "{\"name\":\"John\"}",
+     "id": "1",
+     "type": "text-delta"
+    },
+    {
+     "id": "1",
+     "type": "text-end"
+    },
+    {
+     "finishReason": {
+      "raw": "tool_use",
+      "unified": "stop"
+     },
+     "type": "finish",
+     "usage": {
+      "inputTokens": 100,
+      "outputTokens": 20
+     }
+    }
+   ]
+  }
+ },
+ {
+  "title": "should include multiple text blocks before JSON tool call in streaming",
+  "fixture": "amazon-bedrock-json-tool.3",
+  "line": 3610,
+  "analysis": {
+   "kind": "stream",
+   "parts": [
+    {
+     "type": "stream-start"
+    },
+    {
+     "id": null,
+     "type": "response-metadata"
+    },
+    {
+     "id": "0",
+     "type": "text-start"
+    },
+    {
+     "delta": "First text block.",
+     "id": "0",
+     "type": "text-delta"
+    },
+    {
+     "id": "1",
+     "type": "text-start"
+    },
+    {
+     "delta": "Second text block.",
+     "id": "1",
+     "type": "text-delta"
+    },
+    {
+     "id": "2",
+     "type": "text-start"
+    },
+    {
+     "delta": "Third block.",
+     "id": "2",
+     "type": "text-delta"
+    },
+    {
+     "id": "3",
+     "type": "text-start"
+    },
+    {
+     "delta": "{\"result\":42}",
+     "id": "3",
+     "type": "text-delta"
+    },
+    {
+     "id": "3",
+     "type": "text-end"
+    },
+    {
+     "finishReason": {
+      "raw": "tool_use",
+      "unified": "stop"
+     },
+     "type": "finish",
+     "usage": {
+      "inputTokens": null,
+      "outputTokens": null
+     }
+    }
+   ]
+  }
+ },
+ {
+  "title": "should handle regular tool call before JSON tool call in streaming",
+  "fixture": "amazon-bedrock-json-with-tool.1",
+  "line": 3728,
+  "analysis": {
+   "kind": "stream",
+   "parts": [
+    {
+     "type": "stream-start"
+    },
+    {
+     "id": null,
+     "type": "response-metadata"
+    },
+    {
+     "id": "0",
+     "type": "text-start"
+    },
+    {
+     "delta": "Calling a tool first.",
+     "id": "0",
+     "type": "text-delta"
+    },
+    {
+     "id": "tool-1",
+     "toolName": "get-weather",
+     "type": "tool-input-start"
+    },
+    {
+     "delta": "{\"location\":\"SF\"}",
+     "id": "tool-1",
+     "type": "tool-input-delta"
+    },
+    {
+     "id": "tool-1",
+     "type": "tool-input-end"
+    },
+    {
+     "input": "{\"location\":\"SF\"}",
+     "toolCallId": "tool-1",
+     "toolName": "get-weather",
+     "type": "tool-call"
+    },
+    {
+     "id": "2",
+     "type": "text-start"
+    },
+    {
+     "delta": "Now JSON.",
+     "id": "2",
+     "type": "text-delta"
+    },
+    {
+     "id": "3",
+     "type": "text-start"
+    },
+    {
+     "delta": "{\"result\":\"data\"}",
+     "id": "3",
+     "type": "text-delta"
+    },
+    {
+     "id": "3",
+     "type": "text-end"
+    },
+    {
+     "finishReason": {
+      "raw": "tool_use",
+      "unified": "stop"
+     },
+     "type": "finish",
+     "usage": {
+      "inputTokens": null,
+      "outputTokens": null
+     }
+    }
+   ]
+  }
+ },
+ {
+  "title": "should handle multiple regular tool calls before JSON tool call in streaming",
+  "fixture": "amazon-bedrock-json-with-tools.1",
+  "line": 3864,
+  "analysis": {
+   "kind": "stream",
+   "parts": [
+    {
+     "type": "stream-start"
+    },
+    {
+     "id": null,
+     "type": "response-metadata"
+    },
+    {
+     "id": "0",
+     "type": "text-start"
+    },
+    {
+     "delta": "Multiple tools.",
+     "id": "0",
+     "type": "text-delta"
+    },
+    {
+     "id": "tool-1",
+     "toolName": "tool-a",
+     "type": "tool-input-start"
+    },
+    {
+     "delta": "{\"a\":\"1\"}",
+     "id": "tool-1",
+     "type": "tool-input-delta"
+    },
+    {
+     "id": "tool-1",
+     "type": "tool-input-end"
+    },
+    {
+     "input": "{\"a\":\"1\"}",
+     "toolCallId": "tool-1",
+     "toolName": "tool-a",
+     "type": "tool-call"
+    },
+    {
+     "id": "tool-2",
+     "toolName": "tool-b",
+     "type": "tool-input-start"
+    },
+    {
+     "delta": "{\"b\":\"2\"}",
+     "id": "tool-2",
+     "type": "tool-input-delta"
+    },
+    {
+     "id": "tool-2",
+     "type": "tool-input-end"
+    },
+    {
+     "input": "{\"b\":\"2\"}",
+     "toolCallId": "tool-2",
+     "toolName": "tool-b",
+     "type": "tool-call"
+    },
+    {
+     "id": "3",
+     "type": "text-start"
+    },
+    {
+     "delta": "Final JSON.",
+     "id": "3",
+     "type": "text-delta"
+    },
+    {
+     "id": "4",
+     "type": "text-start"
+    },
+    {
+     "delta": "{\"final\":\"result\"}",
+     "id": "4",
+     "type": "text-delta"
+    },
+    {
+     "id": "4",
+     "type": "text-end"
+    },
+    {
+     "finishReason": {
+      "raw": "tool_use",
+      "unified": "stop"
+     },
+     "type": "finish",
+     "usage": {
+      "inputTokens": null,
+      "outputTokens": null
+     }
+    }
+   ]
+  }
+ },
+ {
+  "title": "should stream text, then regular tool calls, with JSON response format available",
+  "fixture": "amazon-bedrock-json-tool-text-then-weather-then-json.1",
+  "line": 4035,
+  "analysis": {
+   "kind": "stream",
+   "parts": [
+    {
+     "type": "stream-start"
+    },
+    {
+     "id": null,
+     "type": "response-metadata"
+    },
+    {
+     "id": "0",
+     "type": "text-start"
+    },
+    {
+     "delta": "2 + 2 equals 4. Now let me check",
+     "id": "0",
+     "type": "text-delta"
+    },
+    {
+     "delta": " the weather for you.",
+     "id": "0",
+     "type": "text-delta"
+    },
+    {
+     "id": "0",
+     "type": "text-end"
+    },
+    {
+     "id": "weather-tool-1",
+     "toolName": "weather",
+     "type": "tool-input-start"
+    },
+    {
+     "delta": "{\"location\":",
+     "id": "weather-tool-1",
+     "type": "tool-input-delta"
+    },
+    {
+     "delta": "\"San Francisco\"}",
+     "id": "weather-tool-1",
+     "type": "tool-input-delta"
+    },
+    {
+     "id": "weather-tool-1",
+     "type": "tool-input-end"
+    },
+    {
+     "input": "{\"location\":\"San Francisco\"}",
+     "toolCallId": "weather-tool-1",
+     "toolName": "weather",
+     "type": "tool-call"
+    },
+    {
+     "id": "weather-tool-2",
+     "toolName": "weather",
+     "type": "tool-input-start"
+    },
+    {
+     "delta": "{\"location\":\"London\"}",
+     "id": "weather-tool-2",
+     "type": "tool-input-delta"
+    },
+    {
+     "id": "weather-tool-2",
+     "type": "tool-input-end"
+    },
+    {
+     "input": "{\"location\":\"London\"}",
+     "toolCallId": "weather-tool-2",
+     "toolName": "weather",
+     "type": "tool-call"
+    },
+    {
+     "finishReason": {
+      "raw": "tool_use",
+      "unified": "tool-calls"
+     },
+     "type": "finish",
+     "usage": {
+      "inputTokens": 500,
+      "outputTokens": 100
+     }
+    }
+   ]
+  }
+ },
+ {
+  "title": "should include text content before JSON tool call in doGenerate",
+  "fixture": "amazon-bedrock-json-tool.2",
+  "line": 8151,
+  "analysis": {
+   "kind": "generate",
+   "parts": [
+    {
+     "text": "Let me generate that JSON for you.",
+     "type": "text"
+    },
+    {
+     "text": "{\"value\":\"test data\"}",
+     "type": "text"
+    }
+   ]
+  }
+ },
+ {
+  "title": "should include text content before JSON tool call in doGenerate",
+  "fixture": "amazon-bedrock-json-tool.2",
+  "line": 8165,
+  "analysis": {
+   "kind": "generate",
+   "parts": []
+  }
+ },
+ {
+  "title": "should preserve text response before JSON output (answering question then returning structured data)",
+  "fixture": "amazon-bedrock-json-tool-with-answer.1",
+  "line": 8204,
+  "analysis": {
+   "kind": "generate",
+   "parts": [
+    {
+     "text": "2 + 2 equals 4.",
+     "type": "text"
+    },
+    {
+     "text": "{\"firstName\":\"John\",\"lastName\":\"Doe\"}",
+     "type": "text"
+    }
+   ]
+  }
+ },
+ {
+  "title": "should preserve text response before JSON output (answering question then returning structured data)",
+  "fixture": "amazon-bedrock-json-tool-with-answer.1",
+  "line": 8217,
+  "analysis": {
+   "kind": "generate",
+   "parts": []
+  }
+ },
+ {
+  "title": "should include multiple text blocks before JSON tool call in doGenerate",
+  "fixture": "amazon-bedrock-json-tool.3",
+  "line": 8244,
+  "analysis": {
+   "kind": "generate",
+   "parts": [
+    {
+     "text": "First text block.",
+     "type": "text"
+    },
+    {
+     "text": "Second text block.",
+     "type": "text"
+    },
+    {
+     "text": "Third text block before JSON.",
+     "type": "text"
+    },
+    {
+     "text": "{\"result\":42}",
+     "type": "text"
+    }
+   ]
+  }
+ },
+ {
+  "title": "should handle regular tool call before JSON tool call in doGenerate",
+  "fixture": "amazon-bedrock-json-with-tool.1",
+  "line": 8295,
+  "analysis": {
+   "kind": "generate",
+   "parts": [
+    {
+     "text": "Let me call a tool first.",
+     "type": "text"
+    },
+    {
+     "input": "{\"location\":\"SF\"}",
+     "toolCallId": "tool-1",
+     "toolName": "get-weather",
+     "type": "tool-call"
+    },
+    {
+     "text": "Now the JSON.",
+     "type": "text"
+    },
+    {
+     "text": "{\"result\":\"data\"}",
+     "type": "text"
+    }
+   ]
+  }
+ },
+ {
+  "title": "should handle regular tool call before JSON tool call in doGenerate",
+  "fixture": "amazon-bedrock-json-with-tool.1",
+  "line": 8319,
+  "analysis": {
+   "kind": "generate",
+   "parts": []
+  }
+ },
+ {
+  "title": "should handle multiple regular tool calls before JSON tool call in doGenerate",
+  "fixture": "amazon-bedrock-json-with-tools.1",
+  "line": 8361,
+  "analysis": {
+   "kind": "generate",
+   "parts": [
+    {
+     "text": "Calling multiple tools.",
+     "type": "text"
+    },
+    {
+     "input": "{\"param\":\"a\"}",
+     "toolCallId": "tool-1",
+     "toolName": "tool-a",
+     "type": "tool-call"
+    },
+    {
+     "input": "{\"param\":\"b\"}",
+     "toolCallId": "tool-2",
+     "toolName": "tool-b",
+     "type": "tool-call"
+    },
+    {
+     "text": "Finally the JSON response.",
+     "type": "text"
+    },
+    {
+     "text": "{\"final\":\"result\"}",
+     "type": "text"
+    }
+   ]
+  }
+ },
+ {
+  "title": "should handle multiple regular tool calls before JSON tool call in doGenerate",
+  "fixture": "amazon-bedrock-json-with-tools.1",
+  "line": 8391,
+  "analysis": {
+   "kind": "generate",
+   "parts": []
+  }
+ },
+ {
+  "title": "should support tool calls with empty input (no arguments)",
+  "fixture": "amazon-bedrock-tool-no-args",
+  "line": 8419,
+  "analysis": {
+   "kind": "generate",
+   "parts": [
+    {
+     "text": "I'll update the issue list for you.",
+     "type": "text"
+    },
+    {
+     "input": "{}",
+     "toolCallId": "tool-use-id",
+     "toolName": "updateIssueList",
+     "type": "tool-call"
+    }
+   ]
+  }
+ }
+]

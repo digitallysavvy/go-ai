@@ -193,9 +193,12 @@ restart:
 	}
 	if !s.startEmitted {
 		s.startEmitted = true
-		if len(s.warnings) > 0 {
-			return &provider.StreamChunk{Type: provider.ChunkTypeStreamStart, Warnings: s.warnings}, nil
+		// TS always enqueues stream-start first, even without warnings.
+		warnings := s.warnings
+		if warnings == nil {
+			warnings = []types.Warning{}
 		}
+		return &provider.StreamChunk{Type: provider.ChunkTypeStreamStart, Warnings: warnings}, nil
 	}
 	for {
 		event, err := s.parser.Next()
@@ -552,8 +555,7 @@ func (s *interactionsStream) stopBlock(open *interactionOpenBlock) {
 		}
 		argsJSON := open.argsString
 		if argsJSON == "" {
-			b, _ := json.Marshal(args)
-			argsJSON = string(b)
+			argsJSON = jsonStringify(args)
 		}
 		if open.toolName == "" {
 			open.toolName = "unknown"
@@ -569,8 +571,8 @@ func (s *interactionsStream) stopBlock(open *interactionOpenBlock) {
 		// step ended before any delta revealed the content type — no output to emit
 	default:
 		if isBuiltinInteractionsToolCall(open.blockType) {
-			argsJSON, _ := json.Marshal(defaultMap(open.args))
-			s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: open.toolCallID, ToolName: firstNonEmpty(open.toolName, stringsTrimCall(open.blockType)), Arguments: defaultMap(open.args), RawArguments: string(argsJSON), ProviderExecuted: true}})
+			argsJSON := jsonStringify(defaultMap(open.args))
+			s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: open.toolCallID, ToolName: firstNonEmpty(open.toolName, stringsTrimCall(open.blockType)), Arguments: defaultMap(open.args), RawArguments: argsJSON, ProviderExecuted: true}})
 		} else if isBuiltinInteractionsToolResult(open.blockType) {
 			block := interactionsContentBlock{Type: open.blockType, CallID: open.callID, Name: open.toolName, Result: open.result}
 			s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: open.callID, ToolName: firstNonEmpty(open.toolName, stringsTrimResult(open.blockType)), Result: open.result, ProviderExecuted: true}})

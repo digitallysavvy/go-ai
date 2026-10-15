@@ -1,0 +1,45 @@
+{
+  "id": "v1_ChdvMnNIYW9mdU9hR2dxdHNQLTlhby1BVRIXdW1zSGFwUHJCYVRrcXRzUDUtdmkwQUU",
+  "status": "completed",
+  "usage": {
+    "total_tokens": 1403,
+    "total_input_tokens": 6,
+    "input_tokens_by_modality": [
+      {
+        "modality": "text",
+        "tokens": 6
+      }
+    ],
+    "total_cached_tokens": 0,
+    "total_output_tokens": 1250,
+    "output_tokens_by_modality": [
+      {
+        "modality": "image",
+        "tokens": 1120
+      }
+    ],
+    "total_tool_use_tokens": 0,
+    "total_thought_tokens": 147
+  },
+  "created": "2026-05-15T18:54:03Z",
+  "updated": "2026-05-15T18:54:03Z",
+  "service_tier": "standard",
+  "steps": [
+    {
+      "signature": "EtelrAEK0qWsAQEMOdbHrNGdTsR+PMjj0Ut2JONRZvXMI+SFaC21MIkv9jRLKJLc",
+      "type": "thought"
+    },
+    {
+      "content": [
+        {
+          "mime_type": "image/jpeg",
+          "data": "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=",
+          "type": "image"
+        }
+      ],
+      "type": "model_output"
+    }
+  ],
+  "object": "interaction",
+  "model": "gemini-3-pro-image-preview"
+}
