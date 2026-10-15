@@ -43,3 +43,25 @@ func TestTSCasesRealtimeSessionConfig(t *testing.T) {
 		return model.BuildSessionConfig(cfg), nil, nil
 	}, nil)
 }
+
+// TestTSCasesRealtimeSerializeClientEvent replays the serializeClientEvent
+// cases of realtime/google-realtime-event-mapper.test.ts.
+func TestTSCasesRealtimeSerializeClientEvent(t *testing.T) {
+	cases := tsfixture.LoadCases(t, "testdata/tscases/realtime_serialize_event.json.gz")
+	tsfixture.RunFn(t, cases, func(args []interface{}) (interface{}, map[string]interface{}, error) {
+		b, _ := json.Marshal(args[0])
+		var event provider.RealtimeClientEvent
+		if err := json.Unmarshal(b, &event); err != nil {
+			return nil, nil, err
+		}
+		modelID, _ := args[1].(string)
+		model := NewRealtimeModel(New(Config{APIKey: "k"}), modelID)
+		raw, err := model.SerializeClientEvent(event)
+		if err != nil {
+			return nil, nil, err
+		}
+		var out interface{}
+		_ = json.Unmarshal(raw, &out)
+		return out, nil, nil
+	}, nil)
+}

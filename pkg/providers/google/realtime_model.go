@@ -520,6 +520,8 @@ func (m *googleRealtimeEventMapper) serializeClientEvent(event provider.Realtime
 		}
 		setup := (&GoogleRealtimeModel{modelID: modelID}).BuildSessionConfig(event.Config)
 		out = map[string]interface{}{"setup": setup}
+	case "input-audio-commit":
+		out = map[string]interface{}{"realtimeInput": map[string]interface{}{"audioStreamEnd": true}}
 	case "input-audio-append":
 		out = map[string]interface{}{"realtimeInput": map[string]interface{}{"audio": map[string]interface{}{"data": event.Audio, "mimeType": fmt.Sprintf("audio/pcm;rate=%d", m.inputAudioRate)}}}
 	case "conversation-item-create":
@@ -538,7 +540,7 @@ func (m *googleRealtimeEventMapper) serializeClientEvent(event provider.Realtime
 		default:
 			out = nil
 		}
-	case "input-audio-commit", "input-audio-clear", "response-create", "response-cancel", "conversation-item-truncate":
+	case "input-audio-clear", "response-create", "response-cancel", "conversation-item-truncate":
 		out = nil
 	default:
 		out = nil
