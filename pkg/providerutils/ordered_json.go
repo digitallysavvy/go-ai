@@ -91,47 +91,16 @@ func (o OrderedMap) object() *jsonorder.Object {
 	return obj
 }
 
-// applyOrder rebuilds v with each object's keys in the order they have in
-// ref (a jsonorder.Parse tree); keys ref lacks follow, sorted. Arrays are
-// paired with ref by index.
-func applyOrder(v interface{}, ref interface{}) interface{} {
-	switch x := v.(type) {
-	case map[string]interface{}:
-		refObj, _ := ref.(*jsonorder.Object)
-		var keys []string
-		if refObj != nil {
-			keys = refObj.Keys()
-		}
-		out := make(map[string]interface{}, len(x))
-		for k, val := range x {
-			var child interface{}
-			if refObj != nil {
-				child, _ = refObj.Get(k)
-			}
-			out[k] = applyOrder(val, child)
-		}
-		return OrderedMap{Keys: keys, Vals: out}
-	case []interface{}:
-		refArr, _ := ref.([]interface{})
-		out := make([]interface{}, len(x))
-		for i, val := range x {
-			var child interface{}
-			if i < len(refArr) {
-				child = refArr[i]
-			}
-			out[i] = applyOrder(val, child)
-		}
-		return out
-	}
-	return v
-}
-
-// OrderLike returns v (a decoded or transformed JSON tree) with every object
-// marshaling its keys in the order they have in ref; keys that ref does not
-// have follow, sorted. Arrays are paired with ref by index.
+// OrderLike returns v (a decoded or transformed JSON tree) so that it
+// marshals every object's keys in the order they have in ref; keys that ref
+// does not have follow, sorted. Arrays are paired with ref by index. It wraps
+// jsonorder.Hinted, the SDK's one implementation of this.
 func OrderLike(v interface{}, ref json.RawMessage) interface{} {
-	tree, _ := jsonorder.Parse(ref)
-	return applyOrder(v, tree)
+	hint, ok := jsonorder.Parse(ref)
+	if !ok {
+		return v
+	}
+	return jsonorder.Hinted{V: v, Hint: hint}
 }
 
 // BatchJSONLLine is one line of a batch input file with the key order TS

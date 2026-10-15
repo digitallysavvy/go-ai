@@ -7,7 +7,6 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
@@ -45,8 +44,11 @@ func ToJSONSchema(tool types.Tool) map[string]interface{} {
 }
 
 func defaultObjectSchema(parameters interface{}) interface{} {
-	// A schema.Schema marshals as {}; send its JSON Schema.
-	parameters = providerutils.ResponseFormatJSONSchema(parameters)
+	// A schema.Schema marshals as {}; send its JSON Schema. An
+	// *schema.OrderedSchema is kept so its key order reaches the wire.
+	if resolved, ok := resolveParameters(parameters); ok {
+		parameters = resolved
+	}
 	if parameters == nil {
 		return map[string]interface{}{
 			"type":       "object",
@@ -105,14 +107,21 @@ func ToAnthropicFormat(tools []types.Tool) []map[string]interface{} {
 // Schema first. Raw JSON (json.RawMessage or []byte) keeps its key order on the
 // wire, like the JS object TS sanitizes, so `properties` stay in the order the
 // caller wrote them.
-func SanitizeAnthropicSchema(schema interface{}) interface{} {
-	switch v := schema.(type) {
+func SanitizeAnthropicSchema(in interface{}) interface{} {
+	switch v := in.(type) {
 	case map[string]interface{}:
 		return sanitizeAnthropicSchemaMap(v)
 	case json.RawMessage:
 		return sanitizeAnthropicRawSchema(v)
 	case []byte:
 		return sanitizeAnthropicRawSchema(v)
+	case *schema.OrderedSchema:
+		// Sanitize in source key order, like a raw JSON schema.
+		raw, err := v.MarshalJSON()
+		if err != nil {
+			return sanitizeAnthropicSchemaMap(v.JSONSchema())
+		}
+		return sanitizeAnthropicRawSchema(raw)
 	case []interface{}:
 		out := make([]interface{}, len(v))
 		for i, item := range v {
@@ -120,10 +129,10 @@ func SanitizeAnthropicSchema(schema interface{}) interface{} {
 		}
 		return out
 	default:
-		if resolved, ok := providerutils.ResponseFormatJSONSchema(schema).(map[string]interface{}); ok {
+		if resolved, ok := resolveParameters(in); ok {
 			return sanitizeAnthropicSchemaMap(resolved)
 		}
-		return schema
+		return in
 	}
 }
 

@@ -12,8 +12,7 @@ import (
 // the order back for every key the hint knows, at any depth. Keys the hint
 // does not know follow in sorted order. Arrays are matched by index.
 //
-// This is a provider-local equivalent of ordered output; dedupe with the core
-// jsonorder pieces when they land.
+// providerutils.OrderLike is a thin wrapper over Hinted.
 type Hinted struct {
 	V    interface{}
 	Hint interface{}
