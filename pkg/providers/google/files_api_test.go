@@ -3,12 +3,14 @@ package google
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	providerrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -150,5 +152,67 @@ func TestFilesAPI_UploadFile_HeadersIntPollOptionsAndPollFailure(t *testing.T) {
 	}
 	if time.Since(start) > time.Second || polls != 1 {
 		t.Fatalf("int pollIntervalMs ignored (elapsed %v, polls %d)", time.Since(start), polls)
+	}
+}
+
+// Ports of google-files.test.ts "error handling" and "response metadata":
+// failures carry the TS messages and error codes, and absent optional fields
+// are left out of providerMetadata.
+func TestFilesAPI_UploadFile_TSErrorsAndMetadata(t *testing.T) {
+	upload := func(initStatus, uploadStatus int, noURL bool, file string) (*types.UploadFileResult, error) {
+		var srv *httptest.Server
+		srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/upload/v1beta/files":
+				if initStatus != 200 {
+					http.Error(w, "boom", initStatus)
+					return
+				}
+				if !noURL {
+					w.Header().Set("x-goog-upload-url", srv.URL+"/resume")
+				}
+			case "/resume":
+				if uploadStatus != 200 {
+					http.Error(w, "boom", uploadStatus)
+					return
+				}
+				_, _ = w.Write([]byte(`{"file":` + file + `}`))
+			}
+		}))
+		defer srv.Close()
+		return New(Config{APIKey: "k", BaseURL: srv.URL + "/v1beta"}).Files().UploadFile(context.Background(), types.UploadFileOptions{
+			Data: types.FileData{Type: types.FileDataTypeData, Data: []byte{1}}, MediaType: "application/octet-stream",
+		})
+	}
+	const minimal = `{"name":"files/minimal","mimeType":"text/plain","uri":"https://x/files/minimal","state":"ACTIVE"}`
+
+	for name, tc := range map[string]struct {
+		init, up int
+		noURL    bool
+		file     string
+		message  string
+		code     string
+	}{
+		"initiation fails": {500, 200, false, minimal, "Failed to initiate resumable upload: 500 boom", "GOOGLE_FILES_UPLOAD_ERROR"},
+		"no upload url":    {200, 200, true, minimal, "No upload URL returned from initiation request", "GOOGLE_FILES_UPLOAD_ERROR"},
+		"upload fails":     {200, 500, false, minimal, "Failed to upload file data: 500 boom", "GOOGLE_FILES_UPLOAD_ERROR"},
+		"processing fails": {200, 200, false, `{"name":"files/bad","mimeType":"text/plain","uri":"u","state":"FAILED"}`, "File processing failed for files/bad", "GOOGLE_FILES_UPLOAD_FAILED"},
+	} {
+		_, err := upload(tc.init, tc.up, tc.noURL, tc.file)
+		var perr *providerrors.ProviderError
+		if !errors.As(err, &perr) || !strings.HasPrefix(perr.Message, tc.message) || perr.ErrorCode != tc.code {
+			t.Errorf("%s: err = %v, want %q with code %s", name, err, tc.message, tc.code)
+		}
+	}
+
+	res, err := upload(200, 200, false, minimal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := res.ProviderMetadata["google"].(map[string]interface{})
+	for _, absent := range []string{"displayName", "sizeBytes", "createTime", "updateTime", "expirationTime", "sha256Hash"} {
+		if _, ok := meta[absent]; ok {
+			t.Errorf("providerMetadata.google must not carry %s: %v", absent, meta)
+		}
 	}
 }

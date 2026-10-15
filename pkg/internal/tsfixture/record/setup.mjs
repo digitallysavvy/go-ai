@@ -130,8 +130,8 @@ for (const n of names) {
       try {
         rec.model = { modelId: this.modelId, provider: this.provider, cls: this.constructor?.name };
         if (n === 'parseServerEvent' || n === 'serializeClientEvent') { if (!this.__recInst) Object.defineProperty(this, '__recInst', { value: ++instSeq, enumerable: false }); rec.model.inst = this.__recInst; }
-        if (this.config) {
-          const c = this.config;
+        if (this.config ?? this.model?.config) { // a decision model wraps a language model
+          const c = this.config ?? this.model.config;
           rec.model.config = { provider: c.provider, baseURL: c.baseURL };
           // plain settings (booleans, numbers, strings, string lists) that change behavior
           for (const k of Object.keys(c)) {
@@ -145,7 +145,7 @@ for (const n of names) {
         }
       } catch (e) {}
       if (cur) cur.calls.push(rec);
-      try { recordMockFetch(this.config); } catch (e) {}
+      try { recordMockFetch(this.config ?? this.model?.config); } catch (e) {} // decision models wrap a language model
       let r;
       try { r = this[n](...args); } catch (e) { rec.error = ser(e); throw e; }
       if (r && typeof r.then === 'function') {

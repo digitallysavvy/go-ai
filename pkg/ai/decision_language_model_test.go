@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -377,5 +378,46 @@ func TestDecisionLanguageModel_RejectsNonImageFiles(t *testing.T) {
 	}
 	if len(calls) != 0 {
 		t.Fatal("model was called")
+	}
+}
+
+// The rubric text is model-visible: TS writes each question as
+// {id, type, instructions, criteria} and each choice option as
+// {label, description}, and keeps q0..q10 in question order.
+func TestDecisionLanguageModel_RubricKeyOrder(t *testing.T) {
+	var prompt string
+	mock := &testutil.MockLanguageModel{
+		ProviderName: "test",
+		ModelName:    "m",
+		DoGenerateFunc: func(_ context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			prompt = opts.Prompt.Messages[0].Content[0].(types.TextContent).Text
+			values := map[string]interface{}{}
+			for i := 0; i < 11; i++ {
+				values[fmt.Sprintf("q%d", i)] = 0.5
+			}
+			text, _ := json.Marshal(values)
+			return &types.GenerateResult{Text: string(text), FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+	model, _ := NewDecisionLanguageModel(DecisionLanguageModelOptions{Model: mock})
+	questions := map[string]provider.DecisionQuestion{}
+	for i := 0; i < 11; i++ {
+		questions[fmt.Sprintf("flag%02d", i)] = provider.DecisionQuestion{Type: "boolean", Instructions: "x"}
+	}
+	questions["flag00"] = provider.DecisionQuestion{Type: "boolean", Instructions: "x"}
+	if _, err := model.DoDecide(context.Background(), provider.DecisionCallOptions{State: "s", Questions: questions}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(prompt, `{"questions":{"q0":{"id":"flag00","type":"boolean","instructions":"x"},"q1":{"id":"flag01"`) {
+		t.Fatalf("rubric key order: %.200s", prompt)
+	}
+	if i, j := strings.Index(prompt, `"q9"`), strings.Index(prompt, `"q10"`); i < 0 || j < i {
+		t.Fatalf("q10 must follow q9: %s", prompt)
+	}
+
+	choice := map[string]provider.DecisionQuestion{"t": {Type: "choice", Instructions: "x", Criteria: map[string]interface{}{"a": "A"}}}
+	_, _ = model.DoDecide(context.Background(), provider.DecisionCallOptions{State: "s", Questions: choice})
+	if !strings.Contains(prompt, `"criteria":{"c0":{"label":"a","description":"A"}}`) {
+		t.Fatalf("choice option key order: %s", prompt)
 	}
 }
