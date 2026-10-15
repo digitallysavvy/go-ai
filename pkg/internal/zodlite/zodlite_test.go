@@ -1,6 +1,9 @@
 package zodlite
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestValidationMessage(t *testing.T) {
 	schema := Disc(map[string]Node{
@@ -12,7 +15,7 @@ func TestValidationMessage(t *testing.T) {
 	if got := ValidationMessage(schema, `not json`); got != "" {
 		t.Fatalf("non-JSON must be reported elsewhere: %q", got)
 	}
-	want := "Type validation failed: Value: {\"type\":\"a\",\"n\":\"x\"}.\nError message: [{\"code\":\"invalid_type\",\"message\":\"Invalid input: expected number, received string\",\"path\":[\"n\"]}]"
+	want := "Type validation failed: Value: {\"type\":\"a\",\"n\":\"x\"}.\nError message: [\n  {\n    \"expected\": \"number\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"n\"\n    ],\n    \"message\": \"Invalid input: expected number, received string\"\n  }\n]"
 	if got := ValidationMessage(schema, `{ "type": "a", "n": "x" }`); got != want {
 		t.Fatalf("got %q\nwant %q", got, want)
 	}
@@ -60,5 +63,15 @@ func TestEnumRecordOfAndIssueError(t *testing.T) {
 	var empty error = &Issue{Message: "m"}
 	if empty.Error() != "m" {
 		t.Fatal("empty path renders the message alone")
+	}
+}
+
+func TestIssueJSONShapes(t *testing.T) {
+	lit := ValidationMessage(Typed("a"), `{"type":"b"}`)
+	if want := "Error message: [\n  {\n    \"code\": \"invalid_value\",\n    \"values\": [\n      \"a\"\n    ],\n    \"path\": [\n      \"type\"\n    ],\n    \"message\": \"Invalid input: expected \\\"a\\\"\"\n  }\n]"; IssueText(lit) != want[len("Error message: "):] {
+		t.Fatalf("literal issue = %q", IssueText(lit))
+	}
+	if got := IssueText(ValidationMessage(Disc(map[string]Node{"a": Typed("a")}), `{"type":"z"}`)); !strings.Contains(got, `"note": "No matching discriminator"`) || !strings.Contains(got, `"discriminator": "type"`) {
+		t.Fatalf("disc issue = %q", got)
 	}
 }

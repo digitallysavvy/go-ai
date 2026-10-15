@@ -19,6 +19,46 @@ type Issue struct {
 	Path    []interface{}
 	Code    string
 	Message string
+	// Expected is the invalid_type "expected" field; Values the
+	// invalid_value "values" list; Discriminator marks the zod v4
+	// "No matching discriminator" union issue. They only shape the rendered
+	// issue JSON.
+	Expected      string
+	Values        []string
+	Discriminator string
+}
+
+// json renders the issue like zod v4's ZodIssue object (same key order as
+// the object zod builds, so JSON.stringify output matches).
+func (i *Issue) json() []byte {
+	enc := func(v interface{}) string {
+		var b bytes.Buffer
+		e := json.NewEncoder(&b)
+		e.SetEscapeHTML(false)
+		_ = e.Encode(v)
+		return strings.TrimSpace(b.String())
+	}
+	path := i.Path
+	if path == nil {
+		path = []interface{}{}
+	}
+	var parts []string
+	switch {
+	case i.Expected != "":
+		parts = append(parts, `"expected":`+enc(i.Expected), `"code":`+enc(i.Code))
+	case i.Code == "invalid_value":
+		vals := i.Values
+		if vals == nil {
+			vals = []string{}
+		}
+		parts = append(parts, `"code":`+enc(i.Code), `"values":`+enc(vals))
+	case i.Discriminator != "":
+		parts = append(parts, `"code":`+enc(i.Code), `"errors":[]`, `"note":"No matching discriminator"`, `"discriminator":`+enc(i.Discriminator))
+	default:
+		parts = append(parts, `"code":`+enc(i.Code))
+	}
+	parts = append(parts, `"path":`+enc(path), `"message":`+enc(i.Message))
+	return []byte("{" + strings.Join(parts, ",") + "}")
 }
 
 // Error renders the issue as "path.to[0].key: message" (just the message when
@@ -71,7 +111,7 @@ func JSType(v interface{}, present bool) string {
 
 // Invalid builds the zod v4 invalid_type issue.
 func Invalid(expected string, v interface{}, present bool, path []interface{}) *Issue {
-	return &Issue{Path: path, Code: "invalid_type", Message: "Invalid input: expected " + expected + ", received " + JSType(v, present)}
+	return &Issue{Path: path, Code: "invalid_type", Expected: expected, Message: "Invalid input: expected " + expected + ", received " + JSType(v, present)}
 }
 
 // String is z.string().
@@ -107,7 +147,7 @@ func Literal(want string) Node {
 		if s, ok := v.(string); ok && s == want {
 			return nil
 		}
-		return &Issue{Path: path, Code: "invalid_value", Message: fmt.Sprintf("Invalid input: expected %q", want)}
+		return &Issue{Path: path, Code: "invalid_value", Values: []string{want}, Message: fmt.Sprintf("Invalid input: expected %q", want)}
 	}
 }
 
@@ -127,9 +167,9 @@ func Enum(values ...string) Node {
 			quoted[i] = string(b)
 		}
 		if len(values) == 1 { // zod v4 en locale: a single value reads like a literal
-			return &Issue{Path: path, Code: "invalid_value", Message: "Invalid input: expected " + quoted[0]}
+			return &Issue{Path: path, Code: "invalid_value", Values: values, Message: "Invalid input: expected " + quoted[0]}
 		}
-		return &Issue{Path: path, Code: "invalid_value", Message: "Invalid option: expected one of " + strings.Join(quoted, "|")}
+		return &Issue{Path: path, Code: "invalid_value", Values: values, Message: "Invalid option: expected one of " + strings.Join(quoted, "|")}
 	}
 }
 
@@ -251,7 +291,7 @@ func Disc(variants map[string]Node) Node {
 		t, _ := m["type"].(string)
 		n, known := variants[t]
 		if !known {
-			return &Issue{Path: append(append([]interface{}{}, path...), "type"), Code: "invalid_union", Message: "Invalid input"}
+			return &Issue{Path: append(append([]interface{}{}, path...), "type"), Code: "invalid_union", Discriminator: "type", Message: "Invalid input"}
 		}
 		return n(v, present, path)
 	}
@@ -276,19 +316,17 @@ func ValidationMessage(schema Node, data string) string {
 	if bad == nil {
 		return ""
 	}
-	path := bad.Path
-	if path == nil {
-		path = []interface{}{}
-	}
 	var issues bytes.Buffer
-	enc := json.NewEncoder(&issues)
-	enc.SetEscapeHTML(false)
-	_ = enc.Encode([]map[string]interface{}{{"code": bad.Code, "path": path, "message": bad.Message}})
+	// zod v4's ZodError.message is JSON.stringify(issues, null, 2).
+	if err := json.Indent(&issues, append(append([]byte("["), bad.json()...), ']'), "", "  "); err != nil {
+		issues.Reset()
+		issues.Write(bad.json())
+	}
 	var compact bytes.Buffer
 	if err := json.Compact(&compact, []byte(data)); err != nil {
 		compact.WriteString(data)
 	}
-	return "Type validation failed: Value: " + compact.String() + ".\nError message: " + strings.TrimSpace(issues.String())
+	return "Type validation failed: Value: " + compact.String() + ".\nError message: " + issues.String()
 }
 
 // IssueText returns the issue list that follows "Error message: " in a
