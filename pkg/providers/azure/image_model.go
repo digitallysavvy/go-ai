@@ -4,8 +4,8 @@ import (
 	"context"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
-	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
 // ImageModel implements the provider.ImageModel interface for Azure image
@@ -118,23 +118,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 // deployment (TS wraps OpenAIImageModel with provider "azure.image"), so
 // provider options, edits/masks, multiple images, usage and metadata match.
 func (m *ImageModel) openaiDelegate() *openai.ImageModel {
-	p := m.provider
-	var query map[string]string
-	if p.includeAPIVersionQuery() {
-		query = map[string]string{"api-version": p.config.APIVersion}
-	}
-	httpClient := p.httpClient
-	if p.client != nil {
-		httpClient = p.client.HTTPClient()
-	}
-	imageProvider := openai.New(openai.Config{
-		Name:       "azure",
-		BaseURL:    p.responsesBaseURL(m.deploymentID),
-		Headers:    p.staticAuthHeaders(),
-		ImageQuery: query,
-		HTTPClient: httpClient,
-	})
-	return openai.NewImageModel(imageProvider, m.deploymentID)
+	return openai.NewImageModel(m.provider.openaiDelegate(m.deploymentID), m.deploymentID)
 }
 
 func (m *ImageModel) doGenerateOpenAI(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {

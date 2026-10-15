@@ -326,6 +326,30 @@ func (p *Provider) Responses(modelID string) (provider.LanguageModel, error) {
 	return p.ResponsesModel(modelID)
 }
 
+// openaiDelegate builds an OpenAI provider configured for one Azure
+// deployment (base URL, api-key header / token transport, api-version query)
+// so Azure's image, speech and transcription models reuse the OpenAI
+// implementations exactly like the TS Azure provider does. Name "azure" also
+// stops openai.New from falling back to OPENAI_API_KEY.
+func (p *Provider) openaiDelegate(deploymentID string) *openai.Provider {
+	var query map[string]string
+	if p.includeAPIVersionQuery() {
+		query = map[string]string{"api-version": p.config.APIVersion}
+	}
+	httpClient := p.httpClient
+	if p.client != nil {
+		httpClient = p.client.HTTPClient()
+	}
+	return openai.New(openai.Config{
+		Name:       "azure",
+		BaseURL:    p.responsesBaseURL(deploymentID),
+		Headers:    p.staticAuthHeaders(),
+		AudioQuery: query,
+		ImageQuery: query,
+		HTTPClient: httpClient,
+	})
+}
+
 // responsesBaseURL builds the base URL prefix used by the openai-package
 // backed models (Responses, Completion, DeepSeek). It mirrors the `url()`
 // helper in azure-openai-provider.ts:

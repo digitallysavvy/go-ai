@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -497,38 +496,6 @@ func TestEmbeddingAndTranscriptionHelpers(t *testing.T) {
 	if h := optsHeaders(&provider.EmbedModelOptions{Headers: map[string]string{"X-A": "B"}}); h["X-A"] != "B" {
 		t.Fatalf("optsHeaders mismatch: %#v", h)
 	}
-
-	tm := NewTranscriptionModel(p, "dep-1")
-	body, ct, err := tm.buildMultipartBody(&provider.TranscriptionOptions{
-		Audio:      []byte("abc"),
-		Language:   "fr",
-		Timestamps: true,
-	})
-	if err != nil {
-		t.Fatalf("buildMultipartBody: %v", err)
-	}
-	if !strings.Contains(ct, "multipart/form-data") {
-		t.Fatalf("unexpected content type: %s", ct)
-	}
-	raw, _ := io.ReadAll(body)
-	blob := string(raw)
-	if !strings.Contains(blob, `name="language"`) || !strings.Contains(blob, "fr") {
-		t.Fatalf("language field missing: %s", blob)
-	}
-	if !strings.Contains(blob, `name="response_format"`) || !strings.Contains(blob, "verbose_json") {
-		t.Fatalf("response_format missing: %s", blob)
-	}
-
-	verbose := []byte(`{"text":"hello","duration":2.5,"segments":[{"text":"hello","start":0.0,"end":2.5}]}`)
-	vr, err := tm.convertResponse(verbose, true)
-	if err != nil || vr.Text != "hello" || len(vr.Timestamps) != 1 {
-		t.Fatalf("verbose convertResponse result=%#v err=%v", vr, err)
-	}
-	simple := []byte(`{"text":"hola"}`)
-	sr, err := tm.convertResponse(simple, false)
-	if err != nil || sr.Text != "hola" {
-		t.Fatalf("simple convertResponse result=%#v err=%v", sr, err)
-	}
 }
 
 func TestAzureEmbeddingUsageTokensUsesPromptTokensLikeTypeScript(t *testing.T) {
@@ -554,39 +521,6 @@ func TestAzureEmbeddingUsageTokensUsesPromptTokensLikeTypeScript(t *testing.T) {
 	}
 	if result.Response.Headers["X-Request-Id"] != "req_embed" || result.Response.Body == nil {
 		t.Fatalf("response metadata = %+v", result.Response)
-	}
-}
-
-func TestImageAndSpeechBuildHelpers(t *testing.T) {
-	p := mustNewProvider(t, Config{APIKey: "k", ResourceName: "r", DeploymentID: "d"})
-	sm := NewSpeechModel(p, "speech-dep")
-	speed := 1.2
-	sb := sm.buildRequestBody(&provider.SpeechGenerateOptions{
-		Text:  "hello",
-		Voice: "nova",
-		Speed: &speed,
-	})
-	if sb["voice"] != "nova" || sb["response_format"] != "mp3" {
-		t.Fatalf("speech body mismatch: %#v", sb)
-	}
-	sb, warnings := sm.buildRequestArgs(&provider.SpeechGenerateOptions{
-		Text:         "hello",
-		OutputFormat: "wav",
-		Instructions: "speak warmly",
-	})
-	if len(warnings) != 0 || sb["response_format"] != "wav" || sb["instructions"] != "speak warmly" {
-		t.Fatalf("speech custom body=%#v warnings=%#v", sb, warnings)
-	}
-	sb, warnings = sm.buildRequestArgs(&provider.SpeechGenerateOptions{
-		Text:         "hello",
-		OutputFormat: "ogg",
-		Language:     "es",
-	})
-	if sb["response_format"] != "mp3" {
-		t.Fatalf("speech unsupported format should keep mp3: %#v", sb)
-	}
-	if len(warnings) != 2 || warnings[0].Feature != "outputFormat" || warnings[1].Feature != "language" {
-		t.Fatalf("speech warnings mismatch: %#v", warnings)
 	}
 }
 

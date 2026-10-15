@@ -65,6 +65,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	req := internalhttp.Request{
 		Method:  "POST",
 		Path:    "/audio/transcriptions",
+		Query:   m.provider.config.AudioQuery,
 		Body:    body,
 		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
 	}

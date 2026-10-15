@@ -123,7 +123,7 @@ func TestAzureTranscriptionDoTranscribeHTTPAndSerialization(t *testing.T) {
 		return azureJSONResponse(200, `{"text":"hello","duration":1.5,"segments":[{"text":"hello","start":0.0,"end":1.5}]}`, nil), nil
 	})
 
-	tm := NewTranscriptionModel(p, "whisper")
+	tm := NewTranscriptionModel(p, "whisper-1")
 	res, err := tm.DoTranscribe(context.Background(), &provider.TranscriptionOptions{
 		Audio:      []byte("audio"),
 		MimeType:   "audio/mpeg",
@@ -136,7 +136,7 @@ func TestAzureTranscriptionDoTranscribeHTTPAndSerialization(t *testing.T) {
 	if !strings.Contains(seenBody, `name="response_format"`) || !strings.Contains(seenBody, "verbose_json") {
 		t.Fatalf("missing verbose response format in multipart body")
 	}
-	if !strings.Contains(seenBody, `name="model"`) || !strings.Contains(seenBody, "whisper") {
+	if !strings.Contains(seenBody, `name="model"`) || !strings.Contains(seenBody, "whisper-1") {
 		t.Fatalf("missing model in multipart body")
 	}
 	if res.Text != "hello" || len(res.Timestamps) != 1 {
