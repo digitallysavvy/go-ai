@@ -95,6 +95,12 @@ func isGatewayCallRetryable(err error) bool {
 	}
 	var providerErr *providererrors.ProviderError
 	if errors.As(err, &providerErr) {
+		// An explicit override wins (TS APICallError.isRetryable): e.g.
+		// Bedrock's modelStreamErrorException is retryable at status 424,
+		// and an overloaded stream error is retryable by type.
+		if providerErr.Retryable != nil {
+			return *providerErr.Retryable
+		}
 		status := providerErr.StatusCode
 		return status == 408 || status == 409 || status == 429 || status >= 500
 	}

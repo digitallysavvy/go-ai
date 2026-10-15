@@ -2,6 +2,7 @@ package googlevertex
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 
@@ -152,7 +153,9 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		Headers: embedOptsHeaders(opts),
 	}, &response)
 	if err != nil {
-		return nil, fmt.Errorf("vertex embedding request failed: %w", err)
+		// A ProviderError keeps the HTTP status, body and the extracted
+		// error.message, so embed/embedMany can retry 429/5xx like TS.
+		return nil, providererrors.NewProviderError(m.Provider(), 0, "", "vertex embedding request failed: "+err.Error(), err)
 	}
 
 	if len(response.Predictions) != len(inputs) {
@@ -166,7 +169,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		totalTokens += pred.Embeddings.Statistics.TokenCount
 	}
 
-	respEntry := types.EmbeddingResponse{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: response}
+	respEntry := types.EmbeddingResponse{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: rawEmbeddingBody(httpResp.Body, response)}
 	responses := make([]types.EmbeddingResponse, len(inputs))
 	for i := range inputs {
 		responses[i] = respEntry
@@ -220,7 +223,9 @@ func (m *EmbeddingModel) doEmbedContent(ctx context.Context, value string, vopts
 		Headers: embedOptsHeaders(opts),
 	}, &response)
 	if err != nil {
-		return nil, fmt.Errorf("vertex embedding request failed: %w", err)
+		// A ProviderError keeps the HTTP status, body and the extracted
+		// error.message, so embed/embedMany can retry 429/5xx like TS.
+		return nil, providererrors.NewProviderError(m.Provider(), 0, "", "vertex embedding request failed: "+err.Error(), err)
 	}
 
 	usage := types.EmbeddingUsage{}
@@ -238,7 +243,7 @@ func (m *EmbeddingModel) doEmbedContent(ctx context.Context, value string, vopts
 		Usage:      usage,
 		Responses: []types.EmbeddingResponse{{
 			Headers: providerutils.ExtractHeaders(httpResp.Headers),
-			Body:    response,
+			Body:    rawEmbeddingBody(httpResp.Body, response),
 		}},
 	}, nil
 }
@@ -307,4 +312,14 @@ type vertexEmbeddingResponse struct {
 			} `json:"statistics"`
 		} `json:"embeddings"`
 	} `json:"predictions"`
+}
+
+// rawEmbeddingBody is the response body as sent (TS response.body =
+// rawValue), so fields outside the minimal schema (e.g. metadata) survive; it
+// matches the Google Generative AI embedding model's json.RawMessage body.
+func rawEmbeddingBody(body []byte, typed interface{}) interface{} {
+	if json.Valid(body) {
+		return json.RawMessage(body)
+	}
+	return typed
 }
