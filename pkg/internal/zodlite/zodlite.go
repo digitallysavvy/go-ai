@@ -2,14 +2,15 @@
 // TS providers apply to parsed streaming frames (anthropicChunkSchema,
 // google chunkSchema). zod objects are non-strict (unknown keys pass),
 // `nullish` means absent or null, `optional` means absent only, and
-// `nullable` means the key must be present but may be null. Only the first
-// failing issue is reported.
+// `nullable` means the key must be present but may be null. Like zod, objects,
+// arrays and records report every failing entry (in schema or sorted-key
+// order); a union reports each member's full issue list.
 package zodlite
 
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -30,7 +31,35 @@ type Issue struct {
 	Discriminator string
 	// Errors holds, for a plain invalid_union issue, each member's first
 	// issue with paths relative to the union value (zod v4 nested `errors`).
-	Errors []*Issue
+	Errors [][]*Issue
+	// rest are further issues found in the same value (zod reports all of an
+	// object's failing fields, not just the first).
+	rest []*Issue
+}
+
+// all returns the issue followed by its siblings, each without siblings.
+func (i *Issue) all() []*Issue {
+	if i == nil {
+		return nil
+	}
+	head := *i
+	head.rest = nil
+	return append([]*Issue{&head}, i.rest...)
+}
+
+// join merges issues (nil entries skipped) into one head issue that carries
+// the others as siblings; nil when there are none.
+func join(list []*Issue) *Issue {
+	var flat []*Issue
+	for _, it := range list {
+		flat = append(flat, it.all()...)
+	}
+	if len(flat) == 0 {
+		return nil
+	}
+	head := *flat[0]
+	head.rest = flat[1:]
+	return &head
 }
 
 // json renders the issue like zod v4's ZodIssue object (same key order as
@@ -61,8 +90,12 @@ func (i *Issue) json() []byte {
 		parts = append(parts, `"code":`+enc(i.Code), `"errors":[]`, `"note":"No matching discriminator"`, `"discriminator":`+enc(i.Discriminator))
 	case i.Code == "invalid_union":
 		nested := make([]string, 0, len(i.Errors))
-		for _, e := range i.Errors {
-			nested = append(nested, "["+string(e.json())+"]")
+		for _, member := range i.Errors {
+			items := make([]string, 0, len(member))
+			for _, e := range member {
+				items = append(items, string(e.json()))
+			}
+			nested = append(nested, "["+strings.Join(items, ",")+"]")
 		}
 		parts = append(parts, `"code":`+enc(i.Code), `"errors":[`+strings.Join(nested, ",")+`]`)
 	default:
@@ -158,7 +191,8 @@ func Literal(want string) Node {
 		if s, ok := v.(string); ok && s == want {
 			return nil
 		}
-		return &Issue{Path: path, Code: "invalid_value", Values: []string{want}, Message: fmt.Sprintf("Invalid input: expected %q", want)}
+		// zod's stringifyPrimitive wraps the raw string in quotes (no escaping).
+		return &Issue{Path: path, Code: "invalid_value", Values: []string{want}, Message: `Invalid input: expected "` + want + `"`}
 	}
 }
 
@@ -174,8 +208,7 @@ func Enum(values ...string) Node {
 		}
 		quoted := make([]string, len(values))
 		for i, w := range values {
-			b, _ := json.Marshal(w)
-			quoted[i] = string(b)
+			quoted[i] = `"` + w + `"`
 		}
 		if len(values) == 1 { // zod v4 en locale: a single value reads like a literal
 			return &Issue{Path: path, Code: "invalid_value", Values: values, Message: "Invalid input: expected " + quoted[0]}
@@ -221,12 +254,11 @@ func Array(n Node) Node {
 		if !ok {
 			return Invalid("array", v, present, path)
 		}
+		var bad []*Issue
 		for i, e := range a {
-			if bad := n(e, true, append(append([]interface{}{}, path...), i)); bad != nil {
-				return bad
-			}
+			bad = append(bad, n(e, true, append(append([]interface{}{}, path...), i)))
 		}
-		return nil
+		return join(bad)
 	}
 }
 
@@ -246,13 +278,12 @@ func Object(fields ...Field) Node {
 		if !ok {
 			return Invalid("object", v, present, path)
 		}
+		var bad []*Issue
 		for _, f := range fields {
 			fv, fp := m[f.Key]
-			if bad := f.Node(fv, fp, append(append([]interface{}{}, path...), f.Key)); bad != nil {
-				return bad
-			}
+			bad = append(bad, f.Node(fv, fp, append(append([]interface{}{}, path...), f.Key)))
 		}
-		return nil
+		return join(bad)
 	}
 }
 
@@ -271,25 +302,30 @@ func RecordOf(n Node) Node {
 		if !ok {
 			return Invalid("record", v, present, path)
 		}
-		for k, e := range m {
-			if bad := n(e, true, append(append([]interface{}{}, path...), k)); bad != nil {
-				return bad
-			}
+		// Go maps lose wire order; sorted keys keep the report deterministic.
+		keys := make([]string, 0, len(m))
+		for k := range m {
+			keys = append(keys, k)
 		}
-		return nil
+		sort.Strings(keys)
+		var bad []*Issue
+		for _, k := range keys {
+			bad = append(bad, n(m[k], true, append(append([]interface{}{}, path...), k)))
+		}
+		return join(bad)
 	}
 }
 
 // Union is z.union: the first matching node wins.
 func Union(nodes ...Node) Node {
 	return func(v interface{}, present bool, path []interface{}) *Issue {
-		var errs []*Issue
+		var errs [][]*Issue
 		for _, n := range nodes {
 			bad := n(v, present, nil)
 			if bad == nil {
 				return nil
 			}
-			errs = append(errs, bad)
+			errs = append(errs, bad.all())
 		}
 		return &Issue{Path: path, Code: "invalid_union", Errors: errs, Message: "Invalid input"}
 	}
@@ -332,9 +368,14 @@ func ValidationMessage(schema Node, data string) string {
 	}
 	var issues bytes.Buffer
 	// zod v4's ZodError.message is JSON.stringify(issues, null, 2).
-	if err := json.Indent(&issues, append(append([]byte("["), bad.json()...), ']'), "", "  "); err != nil {
+	items := make([]string, 0, 1+len(bad.rest))
+	for _, it := range bad.all() {
+		items = append(items, string(it.json()))
+	}
+	arr := []byte("[" + strings.Join(items, ",") + "]")
+	if err := json.Indent(&issues, arr, "", "  "); err != nil {
 		issues.Reset()
-		issues.Write(bad.json())
+		issues.Write(arr)
 	}
 	return "Type validation failed: Value: " + stringify(data) + ".\nError message: " + issues.String()
 }
