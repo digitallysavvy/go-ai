@@ -2889,3 +2889,41 @@ func TestToUIMessageStream_FinishStepMetadataPrecedesBoundaryAndIsInStepSnapshot
 		t.Fatalf("steps = %d, step snapshot metadata = %#v", steps, stepMetadata)
 	}
 }
+
+// A source the producer intentionally suspended (PartialStream) is forwarded
+// as it arrived: no closed parts, no invented finish-step or finish, no
+// incomplete-stream error. Without the option the truncated stream is repaired.
+func TestToUIMessageStream_PartialStream(t *testing.T) {
+	run := func(partial bool, chunks ...provider.StreamChunk) (types []string, err error) {
+		stream := testutil.NewMockTextStream(chunks)
+		out, errs := ToUIMessageStream(context.Background(), stream, UIMessageStreamResultOptions{PartialStream: partial})
+		for c := range out {
+			types = append(types, c["type"].(string))
+		}
+		if e, ok := <-errs; ok {
+			err = e
+		}
+		return types, err
+	}
+	open := []provider.StreamChunk{
+		{Type: provider.ChunkTypeTextStart, ID: "t1"},
+		{Type: provider.ChunkTypeText, ID: "t1", Text: "hi"},
+	}
+
+	got, err := run(true, open...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, ",") != "start,text-start,text-delta" {
+		t.Fatalf("partial = %v", got)
+	}
+	repaired, _ := run(false, open...)
+	if !strings.Contains(strings.Join(repaired, ","), "text-end") || !strings.Contains(strings.Join(repaired, ","), "finish-step") {
+		t.Fatalf("without PartialStream the truncated stream is repaired, got %v", repaired)
+	}
+
+	// Nothing arrived at all: still no incomplete-stream error.
+	if got, err := run(true); err != nil || strings.Contains(strings.Join(got, ","), "error") {
+		t.Fatalf("empty partial stream = %v, %v", got, err)
+	}
+}

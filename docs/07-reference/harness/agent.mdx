@@ -69,6 +69,7 @@ result, err := coder.Generate(ctx, agent.AgentGenerateOptions{
 | `Callbacks` | `Callbacks` |  |
 | `PermissionMode` | `PermissionMode` | PermissionMode is the baseline permission mode for adapter-native built-in tools. Defaults to PermissionModeAllowAll. |
 | `ToolApproval` | `AgentToolApprovalConfiguration` | ToolApproval is the per-tool static approval configuration for host-executed tools. |
+| `ToolApprovalReasons` | `map[string]string` | ToolApprovalReasons carries the optional `reason` of a ToolApproval entry (TS `{ type: 'denied', reason }`). The reason of a denied tool is sent to the model in the execution-denied result and recorded on the automatic approval response. |
 | `ActiveTools` | `[]string` | ActiveTools / InactiveTools limit the tools available to the harness without changing the tool call/result types in the result. Mutually exclusive; leave both nil to allow every tool. |
 | `InactiveTools` | `[]string` |  |
 | `Sandbox` | `SandboxProvider` | Sandbox is the provider used to create or resume network sandbox sessions. When nil, every CreateSession call must provide an existing sandbox session. |
@@ -137,7 +138,7 @@ The callbacks reuse the event types from `pkg/ai`, so a harness turn appears in 
 
 | Method | Description |
 | --- | --- |
-| `Generate(ctx, agent.AgentGenerateOptions) (*ai.GenerateTextResult, error)` | Runs a fresh prompt turn on `HarnessSession` and waits for the result. |
+| `Generate(ctx, agent.AgentGenerateOptions) (*ai.GenerateTextResult, error)` | Runs a fresh prompt turn on `HarnessSession` and waits for the result. The turn runs the last `user` message of `Messages`. A trailing `tool` message carrying approval responses or tool results continues the session's unfinished turn instead, like `ContinueGenerate`. |
 | `Stream(ctx, agent.AgentStreamOptions) (*ai.StreamTextResult, error)` | Runs a fresh prompt turn on `HarnessSession` and streams the result. |
 | `ContinueGenerate(ctx, opts, toolApprovalContinuations, toolResultContinuations)` | Resumes a paused turn and waits for the result. |
 | `ContinueStream(ctx, opts, toolApprovalContinuations, toolResultContinuations)` | Resumes a paused turn and streams the result. |
@@ -183,9 +184,9 @@ The callbacks reuse the event types from `pkg/ai`, so a harness turn appears in 
 | `ReadHistory(ctx, since string) (*ReadHistoryResult, error)` | Reads the conversation history the runtime persisted. Returns `*HistoryUnavailableError` when the adapter supports it but cannot reach the history. |
 | `ExperimentalSteerTurn(ctx, text string) error` | Sends an extra user message to the running turn. |
 | `SuspendTurn(ctx) (*ContinueTurnState, error)` | Freezes the active turn and returns the state to persist. The handle is detached afterward, so create a new session from the state to continue. |
-| `Detach(ctx) (*ResumeSessionState, error)` | Detaches without tearing down the runtime. Pass the state to `CreateSessionOptions.ResumeFrom` later. |
-| `Stop(ctx) (*ResumeSessionState, error)` | Persists enough state to resume, then stops the runtime. |
-| `Destroy(ctx) error` | Stops the runtime and returns no state. |
+| `Detach(ctx) (*ResumeSessionState, error)` | Detaches without tearing down the runtime. Pass the state to `CreateSessionOptions.ResumeFrom` later. With an unfinished turn, the turn is suspended and returned as the state's `ContinueFrom`. |
+| `Stop(ctx) (*ResumeSessionState, error)` | Persists enough state to resume, then stops the runtime. With an unfinished turn, the turn is suspended and returned as the state's `ContinueFrom`. |
+| `Destroy(ctx) error` | Stops the runtime and returns no state. Does nothing on an ended session. |
 
 {/* gen:consts harness.SessionState */}
 
