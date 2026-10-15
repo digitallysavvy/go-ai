@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // LangSmithDeploymentTransportOptions configures a LangSmith/LangGraph
@@ -204,7 +205,7 @@ func readRemoteGraphEvents(ctx context.Context, body io.ReadCloser) <-chan Strea
 			case "error":
 				text, ok := payload.(string)
 				if !ok {
-					encoded, _ := json.Marshal(payload)
+					encoded, _ := jsonstr.Marshal(payload)
 					text = string(encoded)
 				}
 				sendStreamEvent(ctx, out, StreamEvent{Err: errors.New(text)})

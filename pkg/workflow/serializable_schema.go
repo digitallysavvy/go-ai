@@ -3,8 +3,12 @@ package workflow
 import (
 	"encoding/json"
 	"fmt"
+	"math"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -66,6 +70,16 @@ type SerializableToolDef struct {
 	// Schema. ValidateSerializableToolInput defers to that original validator
 	// instead of re-validating the lossy JSON Schema copy (TS #22397).
 	HasOwnValidator bool `json:"hasOwnValidator,omitempty"`
+
+	// Metadata, ProviderOptions and the HasOnInput* flags mirror the TS
+	// SerializableToolDef fields of the same names. Callbacks themselves never
+	// cross the boundary; the flags tell the receiver that the original tool
+	// has them.
+	Metadata        map[string]interface{} `json:"metadata,omitempty"`
+	ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
+	HasOnInputStart bool                   `json:"hasOnInputStart,omitempty"`
+	HasOnInputDelta bool                   `json:"hasOnInputDelta,omitempty"`
+	HasOnInputAvail bool                   `json:"hasOnInputAvailable,omitempty"`
 
 	// parametersHint and inputSchemaHint hold the key order of the schema the
 	// definition was made from (or decoded from), which the map fields cannot
@@ -195,12 +209,31 @@ func SerializeToolSet(tools []types.Tool) (map[string]SerializableToolDef, error
 		if tool.ProviderExecuted {
 			def.Type = "provider"
 		}
-		if providerArgs, err := MarshalSchema(tool.ProviderOptions); err == nil {
-			def.Args = providerArgs
-			if id, ok := providerArgs["id"].(string); ok {
+		def.Metadata = tool.Metadata
+		def.HasOnInputStart = tool.OnInputStart != nil
+		def.HasOnInputDelta = tool.OnInputDelta != nil
+		def.HasOnInputAvail = tool.OnInputAvailable != nil
+		providerOptions, err := MarshalSchema(tool.ProviderOptions)
+		if err != nil {
+			providerOptions = nil
+		}
+		def.ProviderOptions = providerOptions
+		switch tool.Type {
+		case "dynamic":
+			def.Type = "dynamic"
+		case "provider":
+			// Keep the provider tool identity so the receiver can tell it is
+			// a provider-defined tool (TS: type, id, args).
+			def.Type = "provider"
+			def.ID = tool.ProviderID
+			def.Args = tool.ProviderArgs
+		default:
+			// Before ProviderOptions had its own field it travelled in Args.
+			def.Args = providerOptions
+			if id, ok := providerOptions["id"].(string); ok {
 				def.ID = id
 			}
-			if typ, ok := providerArgs["type"].(string); ok {
+			if typ, ok := providerOptions["type"].(string); ok {
 				def.Type = typ
 			}
 		}
@@ -265,7 +298,8 @@ func ResolveSerializableTools(defs map[string]SerializableToolDef) []types.Tool 
 		if hint != nil && params != nil {
 			keyOrder = hint
 		}
-		tools = append(tools, types.Tool{
+		providerOptions := def.ProviderOptions
+		resolved := types.Tool{
 			Name:                    toolName,
 			Description:             def.Description,
 			Title:                   def.Title,
@@ -275,9 +309,24 @@ func ResolveSerializableTools(defs map[string]SerializableToolDef) []types.Tool 
 			ProviderExecuted:        def.ProviderExecuted || def.IsProviderExecuted || def.Type == "provider",
 			SupportsDeferredResults: def.SupportsDeferredResults,
 			InputExamples:           def.InputExamples,
-			ProviderOptions:         def.Args,
 			ProviderMetadata:        def.ProviderMetadata,
-		})
+			Metadata:                def.Metadata,
+		}
+		switch {
+		case def.Type == "provider" && def.ID != "":
+			resolved.Type = "provider"
+			resolved.ProviderID = def.ID
+			resolved.ProviderArgs = def.Args
+			if providerOptions != nil {
+				resolved.ProviderOptions = providerOptions
+			}
+		case def.Type == "dynamic":
+			resolved.Type = "dynamic"
+			resolved.ProviderOptions = optionsOrArgs(providerOptions, def.Args)
+		default:
+			resolved.ProviderOptions = optionsOrArgs(providerOptions, def.Args)
+		}
+		tools = append(tools, resolved)
 	}
 	return tools
 }
@@ -365,6 +414,7 @@ func collectActionableErrors(value interface{}, sch map[string]interface{}, path
 	if sch == nil {
 		return out
 	}
+	out = appendTypeAndBoundErrors(value, sch, path, out)
 	if enum, ok := sch["enum"].([]interface{}); ok && len(enum) > 0 {
 		matched := false
 		for _, e := range enum {
@@ -416,7 +466,7 @@ func collectActionableErrors(value interface{}, sch map[string]interface{}, path
 			child, exists := obj[k]
 			sub, ok := props[k].(map[string]interface{})
 			if exists && ok {
-				out = collectActionableErrors(child, sub, path+"/"+k, out)
+				out = collectActionableErrors(child, sub, path+"/"+escapeInstancePathKey(k), out)
 			}
 		}
 	}
@@ -447,4 +497,172 @@ func jsonString(v interface{}) string {
 
 func jsonEqual(a, b interface{}) bool {
 	return jsonString(a) == jsonString(b)
+}
+
+// escapeInstancePathKey escapes a property name for a JSON pointer, as Ajv's
+// instancePath does.
+func escapeInstancePathKey(k string) string {
+	return strings.NewReplacer("~", "~0", "/", "~1").Replace(k)
+}
+
+func jsonNumber(v interface{}) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int8:
+		return float64(n), true
+	case int16:
+		return float64(n), true
+	case int32:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case uint:
+		return float64(n), true
+	case uint8:
+		return float64(n), true
+	case uint16:
+		return float64(n), true
+	case uint32:
+		return float64(n), true
+	case uint64:
+		return float64(n), true
+	case json.Number:
+		f, err := n.Float64()
+		return f, err == nil
+	}
+	return 0, false
+}
+
+func matchesJSONType(v interface{}, name string) bool {
+	f, isNum := jsonNumber(v)
+	switch name {
+	case "string":
+		_, ok := v.(string)
+		return ok
+	case "number":
+		return isNum
+	case "integer":
+		return isNum && f == math.Trunc(f) && !math.IsInf(f, 0)
+	case "boolean":
+		_, ok := v.(bool)
+		return ok
+	case "null":
+		return v == nil
+	case "object":
+		_, ok := v.(map[string]interface{})
+		return ok
+	case "array":
+		_, ok := v.([]interface{})
+		return ok
+	}
+	return true
+}
+
+func formatJSNumber(f float64) string {
+	return strconv.FormatFloat(f, 'f', -1, 64)
+}
+
+// appendTypeAndBoundErrors adds the Ajv messages for the type keyword and for
+// the numeric, string and array bounds that apply to the value's own type
+// (TS formatAjvError falls through to `data<path> <ajv message>` for them).
+func appendTypeAndBoundErrors(value interface{}, sch map[string]interface{}, path string, out []string) []string {
+	var names []string
+	switch t := sch["type"].(type) {
+	case string:
+		names = []string{t}
+	case []interface{}:
+		for _, e := range t {
+			if n, ok := e.(string); ok {
+				names = append(names, n)
+			}
+		}
+	case []string:
+		names = t
+	}
+	if len(names) > 0 {
+		matched := false
+		for _, n := range names {
+			if matchesJSONType(value, n) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			out = append(out, fmt.Sprintf("%s must be %s", path, strings.Join(names, ",")))
+		}
+	}
+	bound := func(key string) (float64, bool) {
+		v, ok := sch[key]
+		if !ok {
+			return 0, false
+		}
+		return jsonNumber(v)
+	}
+	if f, ok := jsonNumber(value); ok {
+		if m, has := bound("multipleOf"); has && m != 0 {
+			if q := f / m; q != math.Trunc(q) {
+				out = append(out, fmt.Sprintf("%s must be multiple of %s", path, formatJSNumber(m)))
+			}
+		}
+		if m, has := bound("maximum"); has && f > m {
+			out = append(out, fmt.Sprintf("%s must be <= %s", path, formatJSNumber(m)))
+		}
+		if m, has := bound("minimum"); has && f < m {
+			out = append(out, fmt.Sprintf("%s must be >= %s", path, formatJSNumber(m)))
+		}
+		if m, has := bound("exclusiveMaximum"); has && f >= m {
+			out = append(out, fmt.Sprintf("%s must be < %s", path, formatJSNumber(m)))
+		}
+		if m, has := bound("exclusiveMinimum"); has && f <= m {
+			out = append(out, fmt.Sprintf("%s must be > %s", path, formatJSNumber(m)))
+		}
+	}
+	if str, ok := value.(string); ok {
+		n := utf8.RuneCountInString(str)
+		if m, has := bound("maxLength"); has && float64(n) > m {
+			out = append(out, fmt.Sprintf("%s must NOT have more than %s characters", path, formatJSNumber(m)))
+		}
+		if m, has := bound("minLength"); has && float64(n) < m {
+			out = append(out, fmt.Sprintf("%s must NOT have fewer than %s characters", path, formatJSNumber(m)))
+		}
+		if pat, ok := sch["pattern"].(string); ok {
+			if re, err := regexp.Compile(pat); err == nil && !re.MatchString(str) {
+				out = append(out, fmt.Sprintf("%s must match pattern %q", path, pat))
+			}
+		}
+	}
+	if arr, ok := value.([]interface{}); ok {
+		if m, has := bound("maxItems"); has && float64(len(arr)) > m {
+			out = append(out, fmt.Sprintf("%s must NOT have more than %s items", path, formatJSNumber(m)))
+		}
+		if m, has := bound("minItems"); has && float64(len(arr)) < m {
+			out = append(out, fmt.Sprintf("%s must NOT have fewer than %s items", path, formatJSNumber(m)))
+		}
+	}
+	if obj, ok := value.(map[string]interface{}); ok {
+		if m, has := bound("maxProperties"); has && float64(len(obj)) > m {
+			out = append(out, fmt.Sprintf("%s must NOT have more than %s properties", path, formatJSNumber(m)))
+		}
+		if m, has := bound("minProperties"); has && float64(len(obj)) < m {
+			out = append(out, fmt.Sprintf("%s must NOT have fewer than %s properties", path, formatJSNumber(m)))
+		}
+	}
+	return out
+}
+
+// optionsOrArgs returns the tool's provider options, falling back to Args for
+// definitions serialized before ProviderOptions had its own field.
+func optionsOrArgs(options, args map[string]interface{}) interface{} {
+	if options != nil {
+		return options
+	}
+	if args != nil {
+		return args
+	}
+	return nil
 }

@@ -669,8 +669,8 @@ func TestAuthUsesCustomClientAuthenticatorForTokenExchange(t *testing.T) {
 	if capturedExampleParam != "example_value" {
 		t.Fatalf("example_param = %q, want custom authenticator's value", capturedExampleParam)
 	}
-	if capturedExampleURL != "https://auth.example.com/token" {
-		t.Fatalf("example_url = %q, want the resolved token endpoint passed to the authenticator", capturedExampleURL)
+	if capturedExampleURL != "https://auth.example.com" {
+		t.Fatalf("example_url = %q, want the authorization server URL passed to the authenticator (TS)", capturedExampleURL)
 	}
 	// The default client_secret_basic/post authentication (which would have
 	// set client_id/client_secret) must NOT have run: a custom authenticator
@@ -679,5 +679,32 @@ func TestAuthUsesCustomClientAuthenticatorForTokenExchange(t *testing.T) {
 	// else { applyClientAuthentication(...) }`).
 	if capturedClientID != "" || capturedClientSecret != "" {
 		t.Fatalf("client_id=%q client_secret=%q, want both empty: default auth must not run when a custom authenticator is set", capturedClientID, capturedClientSecret)
+	}
+}
+
+// TestRefreshOAuthAuthorizationPassesAuthorizationServerURLToAuthenticator
+// mirrors TS "awaits async addClientAuthentication before dispatching refresh
+// request": the url argument is the authorization server URL as given.
+func TestRefreshOAuthAuthorizationPassesAuthorizationServerURLToAuthenticator(t *testing.T) {
+	var got string
+	client := oauthFlowTestServer(t, map[string]func(*http.Request) (*http.Response, error){
+		"/token": func(req *http.Request) (*http.Response, error) {
+			return jsonResponse(http.StatusOK, `{"access_token":"AT","token_type":"Bearer"}`), nil
+		},
+	})
+	_, err := RefreshOAuthAuthorization(context.Background(), "https://auth.example.com", RefreshOAuthAuthorizationParams{
+		ClientInformation: OAuthClientInformation{ClientID: "c"},
+		RefreshToken:      "rt",
+		HTTPClient:        client,
+		AddClientAuthentication: func(ctx context.Context, h http.Header, p url.Values, u string, m *OAuthAuthorizationServerMetadata) error {
+			got = u
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "https://auth.example.com" {
+		t.Fatalf("url = %q", got)
 	}
 }

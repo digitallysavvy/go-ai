@@ -217,7 +217,7 @@ Discovery refuses unsafe endpoints. It applies an SSRF guard to every hop of met
 | `CodeVerifier` | `string` |  |
 | `RedirectURI` | `string` |  |
 | `Resource` | `*url.URL` |  |
-| `AddClientAuthentication` | `func(ctx context.Context, headers http.Header, params url.Values, tokenURL string, metadata *OAuthAuthorizationServerMetadata) error` |  |
+| `AddClientAuthentication` | `func(ctx context.Context, headers http.Header, params url.Values, authorizationServerURL string, metadata *OAuthAuthorizationServerMetadata) error` |  |
 | `HTTPClient` | `*http.Client` |  |
 
 {/* /gen:fields */}
@@ -230,7 +230,7 @@ Discovery refuses unsafe endpoints. It applies an SSRF guard to every hop of met
 | `ClientInformation` | `OAuthClientInformation` |  |
 | `RefreshToken` | `string` |  |
 | `Resource` | `*url.URL` |  |
-| `AddClientAuthentication` | `func(ctx context.Context, headers http.Header, params url.Values, tokenURL string, metadata *OAuthAuthorizationServerMetadata) error` |  |
+| `AddClientAuthentication` | `func(ctx context.Context, headers http.Header, params url.Values, authorizationServerURL string, metadata *OAuthAuthorizationServerMetadata) error` |  |
 | `HTTPClient` | `*http.Client` |  |
 
 {/* /gen:fields */}

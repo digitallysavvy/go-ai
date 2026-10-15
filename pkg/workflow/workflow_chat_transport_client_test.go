@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -584,5 +585,37 @@ func TestEncodeURIComponentMatchesJS(t *testing.T) {
 		if got := encodeURIComponent(in); got != want {
 			t.Errorf("encodeURIComponent(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TS posts `{ messages, ...options.body }` by default: chatId, messageId and
+// trigger are only available to prepareSendMessagesRequest.
+func TestWorkflowChatTransportDefaultPostBodyMatchesTS(t *testing.T) {
+	var got map[string]json.RawMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("x-workflow-run-id", "run-1")
+		sse := streaming.NewSSEWriter(w)
+		writeChunk(t, sse, map[string]interface{}{"type": "finish"})
+	}))
+	defer srv.Close()
+
+	tr := NewWorkflowChatTransport(WorkflowChatTransportOptions{API: srv.URL})
+	out, errs := tr.SendMessages(context.Background(), ai.ChatTransportSendMessagesRequest{
+		ChatID: "chat-1", MessageID: "m-1", Trigger: "submit-message",
+		Body:     map[string]interface{}{"extra": 1},
+		Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}},
+	})
+	if _, err := collectChunks(out, errs, 2*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	keys := make([]string, 0, len(got))
+	for k := range got {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	if strings.Join(keys, ",") != "extra,messages" {
+		t.Fatalf("POST body keys = %v, want [extra messages]", keys)
 	}
 }

@@ -259,3 +259,61 @@ func TestResolveSerializableToolsOrderIsStable(t *testing.T) {
 		}
 	}
 }
+
+// TS formatAjvError reports every Ajv error (allErrors), so type and bound
+// failures appear next to the enum/required ones as `data/<path> <message>`.
+func TestValidateSerializableToolInputReportsTypeAndBoundErrors(t *testing.T) {
+	def := SerializableToolDef{Name: "w", InputSchema: map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"a":    map[string]interface{}{"type": "string", "minLength": 2.0},
+			"n":    map[string]interface{}{"type": "number", "minimum": 5.0},
+			"tags": map[string]interface{}{"type": "array", "maxItems": 1.0},
+			"a/b":  map[string]interface{}{"type": "integer"},
+		},
+		"required": []interface{}{"a", "b"},
+	}}
+	_, err := ValidateSerializableToolInput(def, map[string]interface{}{"a": 1, "n": 2, "tags": []interface{}{1, 2}, "a/b": 1.5})
+	want := `workflow: invalid input for w: data is missing required property "b", data/a must be string, data/a~1b must be integer, data/n must be >= 5, data/tags must NOT have more than 1 items`
+	if err == nil || err.Error() != want {
+		t.Fatalf("error = %v\nwant    %s", err, want)
+	}
+	_, err = ValidateSerializableToolInput(def, map[string]interface{}{"a": "x", "b": true})
+	if err == nil || !strings.HasSuffix(err.Error(), "data/a must NOT have fewer than 2 characters") {
+		t.Fatalf("minLength error = %v", err)
+	}
+}
+
+// TS keeps provider and dynamic tool identity (type, id, args), providerOptions,
+// metadata and the input-callback flags across the step boundary.
+func TestSerializeToolSetKeepsProviderIdentityAndFlags(t *testing.T) {
+	tools := []types.Tool{
+		{Name: "search", Type: "provider", ProviderID: "google.google_search", ProviderArgs: map[string]interface{}{"mode": "grounded"},
+			ProviderOptions: map[string]interface{}{"google": map[string]interface{}{"x": 1.0}}, Metadata: map[string]interface{}{"m": "v"},
+			Parameters: map[string]interface{}{"type": "object"}},
+		{Name: "dyn", Type: "dynamic", Parameters: map[string]interface{}{"type": "object"},
+			OnInputStart: func(context.Context, types.OnInputStartOptions) error { return nil }},
+	}
+	defs, err := SerializeToolSet(tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := defs["search"]; d.Type != "provider" || d.ID != "google.google_search" || d.Args["mode"] != "grounded" || d.ProviderOptions["google"] == nil || d.Metadata["m"] != "v" {
+		t.Fatalf("provider def = %+v", d)
+	}
+	if d := defs["dyn"]; d.Type != "dynamic" || !d.HasOnInputStart || d.HasOnInputDelta {
+		t.Fatalf("dynamic def = %+v", d)
+	}
+	resolved := ResolveSerializableTools(defs)
+	byName := map[string]types.Tool{}
+	for _, r := range resolved {
+		byName[r.Name] = r
+	}
+	s := byName["search"]
+	if s.Type != "provider" || s.ProviderID != "google.google_search" || s.ProviderArgs["mode"] != "grounded" || s.Metadata["m"] != "v" || s.ProviderOptions == nil {
+		t.Fatalf("resolved provider tool = %+v", s)
+	}
+	if byName["dyn"].Type != "dynamic" {
+		t.Fatalf("resolved dynamic tool = %+v", byName["dyn"])
+	}
+}

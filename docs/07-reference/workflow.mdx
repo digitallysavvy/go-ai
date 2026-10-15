@@ -115,7 +115,7 @@ func NewWorkflowAgent(agent WorkflowAgent) (*WorkflowAgent, error)
 | `ExperimentalRefineToolInput` | `map[string]ai.ToolInputRefiner` |  |
 | `ToolChoice` | `types.ToolChoice` | ToolChoice overrides the agent's ToolChoice for this call (TS `toolChoice`). |
 | `Output` | `interface{}` | Output overrides the agent's Output specification for this call (TS `output`). |
-| `PrepareStep` | `PrepareStepHook` | PrepareStep is a per-call step hook that runs after the agent-level PrepareStep (TS per-call `prepareStep`). |
+| `PrepareStep` | `PrepareStepHook` | PrepareStep is a per-call step hook that replaces the agent-level PrepareStep for this call (TS `options.prepareStep ?? this.prepareStep`). |
 | `RepairToolCall` | `ai.ToolCallRepairFunction` | RepairToolCall attempts to repair tool calls that fail to parse. |
 | `ExperimentalRepairToolCall` | `ai.ToolCallRepairFunction` | ExperimentalRepairToolCall is a deprecated alias for RepairToolCall. Deprecated: use RepairToolCall. |
 | `ExperimentalToolApprovalSecret` | `[]byte` | ExperimentalToolApprovalSecret overrides the agent's approval secret. |
@@ -170,7 +170,7 @@ func NewWorkflowAgent(agent WorkflowAgent) (*WorkflowAgent, error)
 | `ExperimentalRefineToolInput` | `map[string]ai.ToolInputRefiner` |  |
 | `ToolChoice` | `types.ToolChoice` | ToolChoice overrides the agent's ToolChoice for this call (TS `toolChoice`). |
 | `Output` | `interface{}` | Output overrides the agent's Output specification for this call (TS `output`). |
-| `PrepareStep` | `PrepareStepHook` | PrepareStep is a per-call step hook that runs after the agent-level PrepareStep (TS per-call `prepareStep`). |
+| `PrepareStep` | `PrepareStepHook` | PrepareStep is a per-call step hook that replaces the agent-level PrepareStep for this call (TS `options.prepareStep ?? this.prepareStep`). |
 | `RepairToolCall` | `ai.ToolCallRepairFunction` | RepairToolCall attempts to repair tool calls that fail to parse. |
 | `ExperimentalRepairToolCall` | `ai.ToolCallRepairFunction` | ExperimentalRepairToolCall is a deprecated alias for RepairToolCall. Deprecated: use RepairToolCall. |
 | `ExperimentalToolApprovalSecret` | `[]byte` | ExperimentalToolApprovalSecret overrides the agent's approval secret. |
@@ -314,6 +314,11 @@ A durable run cannot persist a Go function. These helpers carry the tool definit
 | `InputExamples` | `[]types.ToolInputExample` |  |
 | `ProviderMetadata` | `map[string]interface{}` |  |
 | `HasOwnValidator` | `bool` | HasOwnValidator records that the original input schema validates (and possibly normalizes) input with its own runtime validator, not just JSON Schema. ValidateSerializableToolInput defers to that original validator instead of re-validating the lossy JSON Schema copy (TS #22397). |
+| `Metadata` | `map[string]interface{}` | Metadata, ProviderOptions and the HasOnInput\* flags mirror the TS SerializableToolDef fields of the same names. Callbacks themselves never cross the boundary; the flags tell the receiver that the original tool has them. |
+| `ProviderOptions` | `map[string]interface{}` |  |
+| `HasOnInputStart` | `bool` |  |
+| `HasOnInputDelta` | `bool` |  |
+| `HasOnInputAvail` | `bool` |  |
 
 {/* /gen:fields */}
 

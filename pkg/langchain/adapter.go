@@ -16,6 +16,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // StreamEvent is a LangGraph stream event. Mode is commonly "messages" or
@@ -1180,7 +1181,7 @@ func processValuesEvent(state *eventState, event StreamEvent) []ai.UIMessageChun
 					state.emittedToolCallsByKey[key] = call.id
 					chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-start", "toolCallId": call.id, "toolName": call.name, "dynamic": true})
 					state.markToolInputEmitted(call.id, lifecycleNS)
-					chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-available", "toolCallId": call.id, "toolName": call.name, "input": call.args, "dynamic": true})
+					chunks = append(chunks, toolInputAvailableChunk(call.id, call.name, call.args))
 				} else if state.emittedToolCalls[call.id] {
 					key := toolCallKey(call.name, call.args)
 					state.emittedToolCallsByKey[key] = call.id
@@ -1231,6 +1232,16 @@ func processValuesEvent(state *eventState, event StreamEvent) []ai.UIMessageChun
 // nowMillis is Date.now(); a variable so tests can pin it like TS vi.spyOn.
 var nowMillis = func() int64 { return time.Now().UnixMilli() }
 
+// toolInputAvailableChunk builds a tool-input-available chunk; an undefined
+// (nil) input is left off the wire like TS, not sent as null.
+func toolInputAvailableChunk(toolCallID, toolName string, input interface{}) ai.UIMessageChunk {
+	chunk := ai.UIMessageChunk{"type": "tool-input-available", "toolCallId": toolCallID, "toolName": toolName, "dynamic": true}
+	if input != nil {
+		chunk["input"] = input
+	}
+	return chunk
+}
+
 func actionRequestChunks(state *eventState, root map[string]interface{}, eventNS string) []ai.UIMessageChunk {
 	var chunks []ai.UIMessageChunk
 	for _, request := range actionRequests(root) {
@@ -1250,7 +1261,7 @@ func actionRequestChunks(state *eventState, root map[string]interface{}, eventNS
 			state.emittedToolCallsByKey[key] = toolCallID
 			chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-start", "toolCallId": toolCallID, "toolName": request.name, "dynamic": true})
 			state.markToolInputEmitted(toolCallID, eventNS)
-			chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-available", "toolCallId": toolCallID, "toolName": request.name, "input": request.input, "dynamic": true})
+			chunks = append(chunks, toolInputAvailableChunk(toolCallID, request.name, request.input))
 		}
 		chunks = append(chunks, ai.UIMessageChunk{"type": "tool-approval-request", "approvalId": toolCallID, "toolCallId": toolCallID})
 	}
@@ -1289,7 +1300,11 @@ func processToolsEvent(state *eventState, event StreamEvent) []ai.UIMessageChunk
 	case "on_tool_error":
 		chunks = append(chunks, ensureToolInputLifecycle(state, toolCallID, toolName, ns, payload, true)...)
 		state.markToolOutputEmitted(toolCallID, ns)
-		chunks = append(chunks, ai.UIMessageChunk{"type": "tool-output-error", "toolCallId": toolCallID, "errorText": formatToolError(payload["error"])})
+		errorText := "undefined" // TS String(undefined) for a missing error
+		if rawErr, present := payload["error"]; present {
+			errorText = formatToolError(rawErr)
+		}
+		chunks = append(chunks, ai.UIMessageChunk{"type": "tool-output-error", "toolCallId": toolCallID, "errorText": errorText})
 	}
 	return chunks
 }
@@ -1330,7 +1345,7 @@ func formatToolError(v interface{}) string {
 	case error:
 		return e.Error()
 	default:
-		data, err := json.Marshal(e)
+		data, err := jsonstr.Marshal(e)
 		if err != nil {
 			return fmt.Sprint(e)
 		}
@@ -1622,31 +1637,39 @@ func extractToolCallChunks(message map[string]interface{}) []toolCall {
 	return calls
 }
 
+// extractToolCalls mirrors the values-event tool call lookup of TS
+// processLangGraphEvent: only AI messages carry tool calls; the normalized
+// `tool_calls` array is used as is (a call without an id is skipped by the
+// caller), and `additional_kwargs.tool_calls` (OpenAI format) is converted with
+// the `call_<index>` / `unknown` / `{}` fallbacks.
 func extractToolCalls(message map[string]interface{}) []toolCall {
-	source := messageDataSource(message)
-	raw, ok := asSlice(source["tool_calls"])
-	if !ok {
-		raw = openAIToolCalls(source)
+	if !isAIMessageChunk(message) {
+		return nil
 	}
+	source := messageDataSource(message)
+	if raw, ok := asSlice(source["tool_calls"]); ok {
+		calls := make([]toolCall, 0, len(raw))
+		for _, item := range raw {
+			m, ok := asMap(item)
+			if !ok {
+				continue
+			}
+			calls = append(calls, toolCall{id: stringValue(m["id"]), name: stringValue(m["name"]), args: m["args"]})
+		}
+		return calls
+	}
+	raw := openAIToolCalls(source)
 	calls := make([]toolCall, 0, len(raw))
 	for i, item := range raw {
 		m, ok := asMap(item)
 		if !ok {
 			continue
 		}
-		name := stringValue(m["name"])
-		args := m["args"]
-		if fn, ok := asMap(m["function"]); ok {
-			name = firstString(fn["name"], "unknown")
-			args = parseArgs(fn["arguments"])
-		}
-		if args == nil {
-			args = map[string]interface{}{}
-		}
+		fn, _ := asMap(m["function"])
 		calls = append(calls, toolCall{
 			id:   firstString(m["id"], fmt.Sprintf("call_%d", i)),
-			name: name,
-			args: args,
+			name: firstString(fn["name"], "unknown"),
+			args: parseArgs(fn["arguments"]),
 		})
 	}
 	return calls
@@ -2038,7 +2061,7 @@ func toolResultContent(result types.ToolResultContent) string {
 		if s, ok := result.Result.(string); ok {
 			return s
 		}
-		data, err := json.Marshal(result.Result)
+		data, err := jsonstr.Marshal(result.Result)
 		if err != nil {
 			return fmt.Sprint(result.Result)
 		}
@@ -2048,7 +2071,7 @@ func toolResultContent(result types.ToolResultContent) string {
 	case types.ToolResultOutputText, types.ToolResultOutputErrorText:
 		return stringValue(result.Output.Value)
 	case types.ToolResultOutputJSON, types.ToolResultOutputErrorJSON:
-		data, err := json.Marshal(result.Output.Value)
+		data, err := jsonstr.Marshal(result.Output.Value)
 		if err != nil {
 			return ""
 		}
@@ -2203,7 +2226,7 @@ func toolCallKey(name string, args interface{}) string {
 
 func stableJSONString(v interface{}) string {
 	normalized := normalizeForStableJSON(v)
-	data, err := json.Marshal(normalized)
+	data, err := jsonstr.Marshal(normalized)
 	if err != nil {
 		return "null"
 	}

@@ -250,8 +250,8 @@ type WorkflowGenerateOptions struct {
 	// Output overrides the agent's Output specification for this call (TS
 	// `output`).
 	Output interface{}
-	// PrepareStep is a per-call step hook that runs after the agent-level
-	// PrepareStep (TS per-call `prepareStep`).
+	// PrepareStep is a per-call step hook that replaces the agent-level
+	// PrepareStep for this call (TS `options.prepareStep ?? this.prepareStep`).
 	PrepareStep PrepareStepHook
 	// RepairToolCall attempts to repair tool calls that fail to parse.
 	RepairToolCall ai.ToolCallRepairFunction
@@ -329,8 +329,8 @@ type WorkflowStreamOptions struct {
 	// Output overrides the agent's Output specification for this call (TS
 	// `output`).
 	Output interface{}
-	// PrepareStep is a per-call step hook that runs after the agent-level
-	// PrepareStep (TS per-call `prepareStep`).
+	// PrepareStep is a per-call step hook that replaces the agent-level
+	// PrepareStep for this call (TS `options.prepareStep ?? this.prepareStep`).
 	PrepareStep PrepareStepHook
 	// RepairToolCall attempts to repair tool calls that fail to parse.
 	RepairToolCall ai.ToolCallRepairFunction
@@ -1132,10 +1132,54 @@ func (m *hookFailedModel) DoStream(context.Context, *provider.GenerateOptions) (
 	return nil, m.err
 }
 
-func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext) func(ctx context.Context, c agent.PrepareCallConfig) agent.PrepareCallConfig {
-	if w.PrepareCall == nil && w.PrepareStep == nil && pctx.prepareStep == nil && w.FilterActiveTools == nil && pctx.activeTools == nil && w.ActiveTools == nil {
+// prepareCallState carries what PrepareCall decided at the start of a run so
+// later steps keep it (TS applies prepareCall once, before the loop; its
+// results are the effective settings of every step).
+type prepareCallState struct {
+	mu       sync.Mutex
+	started  bool
+	prepared *LanguageModelCallOptions
+	// baseMessages is the number of messages the first step started with;
+	// messages after that prefix are the loop's own history.
+	baseMessages int
+}
+
+func (st *prepareCallState) overlay(opts LanguageModelCallOptions) LanguageModelCallOptions {
+	p := st.prepared
+	opts.System, opts.AllowSystemInMessages, opts.Tools, opts.ToolChoice, opts.CallOptions = p.System, p.AllowSystemInMessages, p.Tools, p.ToolChoice, p.CallOptions
+	opts.Temperature, opts.MaxTokens, opts.TopP, opts.TopK = p.Temperature, p.MaxTokens, p.TopP, p.TopK
+	opts.FrequencyPenalty, opts.PresencePenalty, opts.StopSequences, opts.Seed = p.FrequencyPenalty, p.PresencePenalty, p.StopSequences, p.Seed
+	opts.Headers, opts.Reasoning, opts.SendReasoning, opts.ProviderOptions = p.Headers, p.Reasoning, p.SendReasoning, p.ProviderOptions
+	opts.RuntimeContext, opts.ToolsContext, opts.ExperimentalSandbox = p.RuntimeContext, p.ToolsContext, p.ExperimentalSandbox
+	opts.StopWhen, opts.ActiveTools, opts.ExperimentalDownload, opts.MaxRetries, opts.Timeout = p.StopWhen, p.ActiveTools, p.ExperimentalDownload, p.MaxRetries, p.Timeout
+	if len(opts.Messages) >= st.baseMessages {
+		history := opts.Messages[st.baseMessages:]
+		opts.Messages = append(append([]types.Message(nil), p.Messages...), history...)
+	}
+	return opts
+}
+
+// stepHooks returns the PrepareStep hooks to run, in order. TS uses the
+// per-call prepareStep when given and the constructor one otherwise
+// (`options.prepareStep ?? this.prepareStep`).
+func (w *WorkflowAgent) stepHook(pctx prepareCallContext) PrepareStepHook {
+	if pctx.prepareStep != nil {
+		return pctx.prepareStep
+	}
+	return w.PrepareStep
+}
+
+// makePrepareCall builds the agent-level PrepareCall closure. PrepareCall runs
+// once, on the first step, before any PrepareStep hook; its results persist for
+// the whole run. When stepsInline is set (the legacy generate loop calls this
+// closure on every step) the PrepareStep hook also runs here; the streaming
+// path runs it per step through makePrepareStep instead.
+func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext, stepsInline bool) func(ctx context.Context, c agent.PrepareCallConfig) agent.PrepareCallConfig {
+	stepHook := w.stepHook(pctx)
+	if w.PrepareCall == nil && (stepHook == nil || !stepsInline) && w.FilterActiveTools == nil && pctx.activeTools == nil && w.ActiveTools == nil {
 		return nil
 	}
+	st := &prepareCallState{}
 	return func(ctx context.Context, c agent.PrepareCallConfig) agent.PrepareCallConfig {
 		opts := LanguageModelCallOptions{
 			StepNumber: c.StepNumber, System: c.System, AllowSystemInMessages: c.AllowSystemInMessages, Messages: c.Messages, Tools: c.Tools, ToolChoice: c.ToolChoice, CallOptions: c.CallOptions,
@@ -1158,22 +1202,32 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext) func(ctx contex
 			c.Model = &hookFailedModel{LanguageModel: base, err: err}
 			return c
 		}
-		if w.PrepareStep != nil {
-			mutated, err := w.PrepareStep(ctx, opts)
-			if err != nil {
-				return failStep(err)
+		st.mu.Lock()
+		first := !st.started
+		st.started = true
+		if first {
+			if w.PrepareCall != nil {
+				// TS hands prepareCall the resolved messages: a plain prompt
+				// is its single user message.
+				if len(opts.Messages) == 0 && c.Prompt != "" {
+					opts.Messages = []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: c.Prompt}}}}
+				}
+				st.baseMessages = len(opts.Messages)
+				mutated, err := w.PrepareCall(ctx, opts)
+				if err != nil {
+					st.mu.Unlock()
+					return failStep(err)
+				}
+				opts = mutated
+				kept := mutated
+				st.prepared = &kept
 			}
-			opts = mutated
+		} else if st.prepared != nil {
+			opts = st.overlay(opts)
 		}
-		if pctx.prepareStep != nil {
-			mutated, err := pctx.prepareStep(ctx, opts)
-			if err != nil {
-				return failStep(err)
-			}
-			opts = mutated
-		}
-		if w.PrepareCall != nil {
-			mutated, err := w.PrepareCall(ctx, opts)
+		st.mu.Unlock()
+		if stepsInline && stepHook != nil {
+			mutated, err := stepHook(ctx, opts)
 			if err != nil {
 				return failStep(err)
 			}
@@ -1201,6 +1255,66 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext) func(ctx contex
 		}
 		return c
 	}
+}
+
+// makePrepareStep adapts the WorkflowAgent PrepareStep hook to the streaming
+// loop's per-step hook so it runs before every step, not only the first.
+func (w *WorkflowAgent) makePrepareStep(pctx prepareCallContext, allTools []types.Tool, allowSystem bool) func(context.Context, ai.PrepareStepOptions) ai.PrepareStepOptions {
+	hook := w.stepHook(pctx)
+	if hook == nil {
+		return nil
+	}
+	return func(ctx context.Context, o ai.PrepareStepOptions) ai.PrepareStepOptions {
+		activeTools := o.ActiveTools
+		if activeTools == nil {
+			activeTools = pctx.activeTools
+		}
+		opts := LanguageModelCallOptions{
+			StepNumber: o.StepNumber, System: o.System, AllowSystemInMessages: allowSystem, Messages: o.Messages, Tools: o.Tools, ToolChoice: o.ToolChoice,
+			Temperature: o.Temperature, MaxTokens: o.MaxOutputTokens, TopP: o.TopP, TopK: o.TopK, FrequencyPenalty: o.FrequencyPenalty, PresencePenalty: o.PresencePenalty,
+			StopSequences: o.StopSequences, Seed: o.Seed, Reasoning: o.Reasoning, ProviderOptions: o.ProviderOptions,
+			RuntimeContext: o.RuntimeContext, ToolsContext: o.ToolsContext, ExperimentalSandbox: o.ExperimentalSandbox,
+			PreviousSteps: o.Steps, AccumulatedUsage: o.AccumulatedUsage,
+			StopWhen: pctx.stopWhen, ActiveTools: activeTools, ExperimentalDownload: pctx.download,
+			MaxRetries: pctx.maxRetries, Timeout: pctx.timeout,
+			InitialInstructions: pctx.initialInstructions, InitialMessages: pctx.initialMessages,
+		}
+		mutated, err := hook(ctx, opts)
+		if err != nil {
+			base := o.Model
+			if base == nil {
+				base = w.Model
+			}
+			o.Model = &hookFailedModel{LanguageModel: base, err: err}
+			return o
+		}
+		o.System = mutated.System
+		sys := mutated.System
+		o.Instructions = &sys
+		o.Messages = mutated.Messages
+		o.Tools = mutated.Tools
+		o.ToolChoice = mutated.ToolChoice
+		o.ProviderOptions = mutated.ProviderOptions
+		o.RuntimeContext, o.ToolsContext, o.ExperimentalSandbox = mutated.RuntimeContext, mutated.ToolsContext, mutated.ExperimentalSandbox
+		o.MaxOutputTokens, o.Temperature, o.TopP, o.TopK = mutated.MaxTokens, mutated.Temperature, mutated.TopP, mutated.TopK
+		o.FrequencyPenalty, o.PresencePenalty, o.StopSequences, o.Seed, o.Reasoning = mutated.FrequencyPenalty, mutated.PresencePenalty, mutated.StopSequences, mutated.Seed, mutated.Reasoning
+		if mutated.ActiveTools != nil && !sameStrings(mutated.ActiveTools, activeTools) {
+			o.Tools = ai.FilterActiveTools(allTools, mutated.ActiveTools)
+		}
+		return o
+	}
+}
+
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenerateOptions, streaming bool) *agent.ToolLoopAgent {
@@ -1405,10 +1519,14 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		initialInstructions: system,
 		initialMessages:     initialMessages,
 	}
+	var stepAdapter func(context.Context, ai.PrepareStepOptions) ai.PrepareStepOptions
+	if streaming {
+		stepAdapter = w.makePrepareStep(pctx, tools, allowSystemInMessages)
+	}
 	return agent.NewToolLoopAgent(agent.AgentConfig{
 		ID: w.ID, Model: w.Model, System: system, Prompt: w.Prompt, Tools: tools, StopWhen: stopWhen,
 		AllowSystemInMessages: allowSystemInMessages,
-		CallOptionsSchema:     w.CallOptionsSchema, CallOptions: w.CallOptions, PrepareCall: w.makePrepareCall(pctx),
+		CallOptionsSchema:     w.CallOptionsSchema, CallOptions: w.CallOptions, PrepareCall: w.makePrepareCall(pctx, !streaming), PrepareStep: stepAdapter,
 		Temperature: callSetting(ovr.Temperature, govr.Temperature, w.Temperature), MaxTokens: callSetting(ovr.MaxTokens, govr.MaxTokens, w.MaxTokens),
 		TopP: callSetting(ovr.TopP, govr.TopP, w.TopP), TopK: callSetting(ovr.TopK, govr.TopK, w.TopK),
 		FrequencyPenalty: callSetting(ovr.FrequencyPenalty, govr.FrequencyPenalty, w.FrequencyPenalty),
