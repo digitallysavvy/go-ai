@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
+	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -133,7 +135,14 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 		return nil, "", nil, err
 	}
 
-	part, err := writer.CreateFormFile("file", "audio."+elevenLabsAudioExtension(opts.MimeType))
+	fileHeader := textproto.MIMEHeader{}
+	fileHeader.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename="audio.%s"`, elevenLabsAudioExtension(opts.MimeType)))
+	contentType := opts.MimeType
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	fileHeader.Set("Content-Type", contentType)
+	part, err := writer.CreatePart(fileHeader)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -183,22 +192,23 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	return &buf, writer.FormDataContentType(), warnings, nil
 }
 
+// elevenLabsAudioExtension mirrors TS provider-utils mediaTypeToExtension.
 func elevenLabsAudioExtension(mimeType string) string {
-	switch mimeType {
-	case "audio/mpeg", "audio/mp3":
+	subtype := ""
+	if parts := strings.SplitN(strings.ToLower(mimeType), "/", 2); len(parts) == 2 {
+		subtype = parts[1]
+	}
+	switch subtype {
+	case "mpeg":
 		return "mp3"
-	case "audio/wav", "audio/wave", "audio/x-wav":
+	case "x-wav":
 		return "wav"
-	case "audio/webm":
-		return "webm"
-	case "audio/mp4", "audio/m4a":
-		return "m4a"
-	case "audio/flac":
-		return "flac"
-	case "audio/ogg":
+	case "opus":
 		return "ogg"
+	case "mp4", "x-m4a":
+		return "m4a"
 	default:
-		return "wav"
+		return subtype
 	}
 }
 
