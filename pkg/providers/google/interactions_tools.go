@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 func prepareInteractionsTools(tools []types.Tool, toolChoice types.ToolChoice) ([]map[string]interface{}, interface{}, []types.Warning) {
@@ -20,7 +21,7 @@ func prepareInteractionsTools(tools []types.Tool, toolChoice types.ToolChoice) (
 				"type":        "function",
 				"name":        t.Name,
 				"description": t.Description,
-				"parameters":  t.Parameters,
+				"parameters":  providerutils.ResponseFormatJSONSchema(t.Parameters),
 			}))
 			continue
 		}

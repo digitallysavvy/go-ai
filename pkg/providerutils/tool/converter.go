@@ -44,6 +44,8 @@ func ToJSONSchema(tool types.Tool) map[string]interface{} {
 }
 
 func defaultObjectSchema(parameters interface{}) interface{} {
+	// A schema.Schema marshals as {}; send its JSON Schema.
+	parameters = providerutils.ResponseFormatJSONSchema(parameters)
 	if parameters == nil {
 		return map[string]interface{}{
 			"type":       "object",

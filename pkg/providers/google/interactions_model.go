@@ -309,7 +309,7 @@ func (m *InteractionsLanguageModel) buildArgs(opts *provider.GenerateOptions, _ 
 		} else {
 			entry := map[string]interface{}{"type": "text", "mime_type": "application/json"}
 			if opts.ResponseFormat.Schema != nil {
-				entry["schema"] = opts.ResponseFormat.Schema
+				entry["schema"] = providerutils.ResponseFormatJSONSchema(opts.ResponseFormat.Schema)
 			}
 			responseFormatEntries = append(responseFormatEntries, entry)
 		}

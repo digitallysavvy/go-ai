@@ -206,7 +206,7 @@ func prepareBedrockTools(tools []types.Tool, toolChoice types.ToolChoice, hasToo
 		// gates the unsupported-strict warning (TS #22300).
 		strictSet := tool.Strict != nil
 		strictTrue := strictSet && *tool.Strict
-		supportsStrictForTool := supportsStrictOnTools && (!strictTrue || isStrictToolSchemaCompatible(tool.Parameters))
+		supportsStrictForTool := supportsStrictOnTools && (!strictTrue || isStrictToolSchemaCompatible(providerutils.ResponseFormatJSONSchema(tool.Parameters)))
 
 		if !supportsStrictOnTools && strictTrue {
 			result.Warnings = append(result.Warnings, types.Warning{
