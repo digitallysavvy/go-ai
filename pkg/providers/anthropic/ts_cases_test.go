@@ -116,15 +116,23 @@ func TestTSCasesLanguage(t *testing.T) {
 		}
 		return m
 	}, map[string]string{
-		"should send the model id and settings":                                "TS passes topK 0.1; Go TopK is an int",
-		"should not strip temperature / topP / topK when thinking is disabled": "TS passes topK 0.1; Go TopK is an int",
-		"should pass headers":                                                  "the TS test sets provider-level headers on createAnthropic; the harness builds a default provider",
-		"should process PDF citation responses":                                "the TS test's 'base64PDFdata' is not valid base64; Go decodes file data",
-		"should process PDF citation responses in streaming":                   "the TS test's 'base64PDFdata' is not valid base64; Go decodes file data",
+		"should send the model id and settings":                                                      "TS passes topK 0.1; Go TopK is an int",
+		"should not strip temperature / topP / topK when thinking is disabled":                       "TS passes topK 0.1; Go TopK is an int",
+		"should pass headers":                                                                        "the TS test sets provider-level headers on createAnthropic; the harness builds a default provider",
+		"should merge custom anthropic-beta headers without legacy fine-grained-tool-streaming beta": "the TS test sets provider-level headers on createAnthropic; the harness builds a default provider",
+		"should stream the text output":                                                              longSnapshot,
+		"should stream code execution tool results":                                                  longSnapshot,
+		"should stream code execution tool results without beta header":                              longSnapshot,
+		"should include file id list in code execution tool call result.":                            longSnapshot,
+		"should throw an api error when the first stream chunk is an overloaded error":               "the TS test expects DoStream to fail; covered by TestStreamOverloadedFirstEvent",
+		"should process PDF citation responses":                                                      "the TS test's 'base64PDFdata' is not valid base64; Go decodes file data",
+		"should process PDF citation responses in streaming":                                         "the TS test's 'base64PDFdata' is not valid base64; Go decodes file data",
 	})
 }
 
 const invalidBase64 = "the TS test passes strings like 'base64PDFdata' that are not valid base64; Go decodes file data"
+
+const longSnapshot = "the .snap file stores very long strings with elisions the extractor cannot parse back; the shorter fixtures of the same tools are replayed"
 
 // TestTSCasesConvertPrompt replays convert-to-anthropic-prompt.test.ts.
 func TestTSCasesConvertPrompt(t *testing.T) {

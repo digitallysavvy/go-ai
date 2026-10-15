@@ -521,6 +521,37 @@ for (let i = 0; i < starts.length; i++) {
     else exps.push({ expr: mm[1].trim(), snap: { __err: 'no ext snapshot' } });
   }
 
+  // --asserts: snapshot expectations whose expect(...) argument spans lines
+  if (wantAsserts) {
+    const seen = new Set(exps.map(e => e.expr));
+    const reM = /\bexpect\(/g;
+    let mm4;
+    while ((mm4 = reM.exec(body))) {
+      const st = mm4.index + 'expect'.length;
+      const e = balanced(body, st);
+      if (e < 0) continue;
+      const rawInner = body.slice(st + 1, e - 1);
+      if (!rawInner.includes('\n')) continue; // single-line ones are handled above
+      const inner = rawInner.trim().replace(/^await\s+/, '').replace(/,\s*$/, '');
+      const expr = inner.replace(/^await\s+/, '').replace(/\s+/g, ' ').trim();
+      let k = e;
+      const insn = /^\s*\.toMatchInlineSnapshot\(\s*`/.exec(body.slice(k));
+      if (insn) {
+        const s0 = k + insn[0].length;
+        const k2 = tpl(body, s0);
+        exps.push({ expr: ('await ' + expr).replace(/^await await /, 'await '), snap: parseSnap(dedent(body.slice(s0, k2).replace(/\\([\\`$])/g, '$1'))) });
+        continue;
+      }
+      if (/^\s*\.toMatchSnapshot\(\s*\)/.test(body.slice(k))) {
+        snapIdx++;
+        const key = fullName + ' ' + snapIdx;
+        const full = ('await ' + expr).replace(/^await await /, 'await ');
+        if (extSnaps[key] !== undefined) exps.push({ expr: full, snap: parseSnap(extSnaps[key].replace(/^\n/, '')) });
+        else exps.push({ expr: full, snap: { __err: 'no ext snapshot' } });
+      }
+    }
+  }
+
   // guard against attaching the wrong canned response: the snapshot's ids
   // must appear in the response we picked
   let suspect = false;

@@ -137,13 +137,26 @@ func (c Case) handler() http.HandlerFunc {
 // with the TS snapshot. Cases listed in skip (by test name) are logged only.
 func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.LanguageModel, skip map[string]string) {
 	t.Helper()
+	seen := map[string]int{}
 	for _, c := range cases {
 		c := c
 		if c.Response == nil || c.Response.Error != "" || c.Call == nil || c.Suspect {
 			continue
 		}
+		// repeated test names get the "#01", "#02" suffix t.Run gives them; a
+		// skip entry for the plain name covers all of them, "name#01" only
+		// the second
+		occurrence := seen[c.Test]
+		seen[c.Test]++
+		suffixed := c.Test
+		if occurrence > 0 {
+			suffixed = fmt.Sprintf("%s#%02d", c.Test, occurrence)
+		}
 		t.Run(c.Test, func(t *testing.T) {
-			if why, ok := skip[c.Test]; ok {
+			if why, ok := skip[suffixed]; ok {
+				t.Skip(why)
+			}
+			if why, ok := skip[c.Test]; ok && occurrence > 0 {
 				t.Skip(why)
 			}
 			var reqBody interface{}
@@ -505,6 +518,9 @@ func StreamToTS(chunks []*provider.StreamChunk) []interface{} {
 		case provider.ChunkTypeToolResult:
 			if tr := c.ToolResult; tr != nil {
 				o["toolCallId"], o["toolName"], o["result"] = tr.ToolCallID, tr.ToolName, tr.Result
+				if tr.Dynamic {
+					o["dynamic"] = true
+				}
 				if len(tr.ProviderMetadata) > 0 {
 					o["providerMetadata"] = tr.ProviderMetadata
 				}
@@ -705,7 +721,7 @@ func Diff(path string, want, got interface{}) string {
 }
 
 func trunc(s string) string {
-	if len(s) > 300 {
+	if os.Getenv("TSFIXTURE_FULL") == "" && len(s) > 300 {
 		return s[:300] + "..."
 	}
 	return s
