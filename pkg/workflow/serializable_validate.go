@@ -353,6 +353,128 @@ func (w *ajvWalker) appendArrayErrors(arr []interface{}, sch map[string]interfac
 	if m, has := schemaBound(sch, "minItems"); has && float64(len(arr)) < m {
 		out = append(out, fmt.Sprintf("%s must NOT have fewer than %s items", path, formatJSNumber(m)))
 	}
+	out = appendUniqueItemsError(arr, sch, path, out)
+	out = w.appendItemsErrors(arr, sch, hint, path, out, depth)
+	return w.appendContainsError(arr, sch, hint, path, out, depth)
+}
+
+// appendUniqueItemsError mirrors Ajv's uniqueItems keyword: one error per
+// array, "must NOT have duplicate items (items ## j and i are identical)".
+// Arrays whose items schema declares only scalar types take Ajv's indexed fast
+// path (scanning from the end, j is the later index); anything else compares
+// pairs (largest i first, j below it).
+func appendUniqueItemsError(arr []interface{}, sch map[string]interface{}, path string, out []string) []string {
+	if u, _ := sch["uniqueItems"].(bool); !u || len(arr) <= 1 {
+		return out
+	}
+	msg := func(i, j int) string {
+		return fmt.Sprintf("%s must NOT have duplicate items (items ## %d and %d are identical)", path, j, i)
+	}
+	var itemTypes []string
+	if items, ok := sch["items"].(map[string]interface{}); ok {
+		switch t := items["type"].(type) {
+		case string:
+			itemTypes = []string{t}
+		case []interface{}:
+			for _, e := range t {
+				if name, ok := e.(string); ok {
+					itemTypes = append(itemTypes, name)
+				}
+			}
+		}
+		if n, _ := items["nullable"].(bool); n {
+			itemTypes = append(itemTypes, "null")
+		}
+	}
+	optimize := len(itemTypes) > 0
+	for _, t := range itemTypes {
+		if t == "object" || t == "array" {
+			optimize = false
+		}
+	}
+	if optimize {
+		seen := map[string]int{}
+		for i := len(arr) - 1; i >= 0; i-- {
+			wrong := true
+			for _, t := range itemTypes {
+				if matchesJSONType(arr[i], t) {
+					wrong = false
+					break
+				}
+			}
+			if wrong {
+				continue
+			}
+			key := jsonString(arr[i])
+			if j, dup := seen[key]; dup {
+				return append(out, msg(i, j))
+			}
+			seen[key] = i
+		}
+		return out
+	}
+	for i := len(arr) - 1; i >= 0; i-- {
+		for j := i - 1; j >= 0; j-- {
+			if jsonEqual(arr[i], arr[j]) {
+				return append(out, msg(i, j))
+			}
+		}
+	}
+	return out
+}
+
+// appendContainsError mirrors Ajv's contains keyword. minContains and
+// maxContains only apply under draft 2020-12 (Ajv2020 sets opts.next); the
+// failing branch drops the per-item errors and reports one message.
+func (w *ajvWalker) appendContainsError(arr []interface{}, sch map[string]interface{}, hint interface{}, path string, out []string, depth int) []string {
+	contains, has := sch["contains"]
+	if !has {
+		return out
+	}
+	min, max, hasMax := 1.0, 0.0, false
+	if w.draft2020 {
+		if m, ok := schemaBound(sch, "minContains"); ok {
+			min = m
+		}
+		if m, ok := schemaBound(sch, "maxContains"); ok {
+			max, hasMax = m, true
+		}
+	}
+	if !hasMax && min == 0 {
+		return out
+	}
+	msg := fmt.Sprintf("%s must contain at least %s valid item(s)", path, formatJSNumber(min))
+	if hasMax {
+		msg = fmt.Sprintf("%s must contain at least %s and no more than %s valid item(s)", path, formatJSNumber(min), formatJSNumber(max))
+		if min > max {
+			return append(out, msg)
+		}
+	}
+	count := 0.0
+	for i := range arr {
+		valid := false
+		switch c := contains.(type) {
+		case bool:
+			valid = c
+		case map[string]interface{}:
+			valid = len(w.errors(arr[i], c, hintChild(hint, "contains"), fmt.Sprintf("%s/%d", path, i), nil, depth+1)) == 0
+		default:
+			valid = true
+		}
+		if valid {
+			count++
+			if hasMax && count > max {
+				break
+			}
+		}
+	}
+	if count < min || (hasMax && count > max) {
+		out = append(out, msg)
+	}
+	return out
+}
+
+func (w *ajvWalker) appendItemsErrors(arr []interface{}, sch map[string]interface{}, hint interface{}, path string, out []string, depth int) []string {
 	elem := func(i int, s map[string]interface{}, h interface{}) {
 		out = w.errors(arr[i], s, h, fmt.Sprintf("%s/%d", path, i), out, depth+1)
 	}
