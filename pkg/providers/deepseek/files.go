@@ -70,17 +70,32 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		return nil, err
 	}
 
+	// TS deepSeekFilesOptionsSchema: expiresAfter is z.number().int().
 	var expiresAfter *int
 	if opts.ProviderOptions != nil {
 		if deepseekOpts, ok := opts.ProviderOptions["deepseek"].(map[string]interface{}); ok {
-			switch v := deepseekOpts["expiresAfter"].(type) {
-			case int:
-				expiresAfter = &v
-			case int64:
-				iv := int(v)
-				expiresAfter = &iv
-			case float64:
-				iv := int(v)
+			if raw, present := deepseekOpts["expiresAfter"]; present && raw != nil {
+				var n float64
+				switch v := raw.(type) {
+				case int:
+					n = float64(v)
+				case int64:
+					n = float64(v)
+				case float64:
+					n = v
+				default:
+					return nil, &providererrors.InvalidArgumentError{
+						Field:   "providerOptions.deepseek.expiresAfter",
+						Message: "expiresAfter must be an integer between 3600 (1 hour) and 2592000 (30 days) seconds.",
+					}
+				}
+				if n != math.Trunc(n) {
+					return nil, &providererrors.InvalidArgumentError{
+						Field:   "providerOptions.deepseek.expiresAfter",
+						Message: "expiresAfter must be an integer between 3600 (1 hour) and 2592000 (30 days) seconds.",
+					}
+				}
+				iv := int(n)
 				expiresAfter = &iv
 			}
 		}
@@ -120,9 +135,9 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		Method: "POST",
 		Path:   "/files",
 		Body:   &body,
-		Headers: map[string]string{
+		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{
 			"Content-Type": writer.FormDataContentType(),
-		},
+		}),
 	})
 	if err != nil {
 		return nil, err
