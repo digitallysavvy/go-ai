@@ -46,6 +46,11 @@ const unclosedStepErrorMessage = "HarnessAgent: received terminal finish with un
 type chunkChannelStream struct {
 	ch  chan provider.StreamChunk
 	err error
+
+	// asyncMu/closed guard pushAsync (host tool goroutines) against a close
+	// by the driver goroutine.
+	asyncMu sync.Mutex
+	closed  bool
 }
 
 func newChunkChannelStream() *chunkChannelStream {
@@ -54,7 +59,27 @@ func newChunkChannelStream() *chunkChannelStream {
 
 func (s *chunkChannelStream) push(c provider.StreamChunk) { s.ch <- c }
 
-func (s *chunkChannelStream) closeOK() { close(s.ch) }
+func (s *chunkChannelStream) closeOK() {
+	s.asyncMu.Lock()
+	defer s.asyncMu.Unlock()
+	s.closed = true
+	close(s.ch)
+}
+
+// pushAsync is push for goroutines other than the driver (host tool
+// executions): it drops the chunk once the stream is closed or ctx is done
+// instead of panicking or blocking forever.
+func (s *chunkChannelStream) pushAsync(ctx context.Context, c provider.StreamChunk) {
+	s.asyncMu.Lock()
+	defer s.asyncMu.Unlock()
+	if s.closed {
+		return
+	}
+	select {
+	case s.ch <- c:
+	case <-ctx.Done():
+	}
+}
 
 // suspending reports whether the host is suspending this turn (see
 // runPromptInput.IsTurnSuspending).
@@ -1958,6 +1983,25 @@ func (d *turnDriver) executeHostToolAsync(tool types.Tool, raw *ToolCallPart, ca
 			return tool.Execute(execCtx, args, types.ToolExecutionOptions{
 				ToolCallID: raw.ToolCallID, RuntimeContext: d.in.RuntimeContext, ToolContext: toolCtx,
 				ExperimentalSandbox: d.in.SandboxSession,
+				// Each value a generator-form tool yields before its last is
+				// a preliminary tool-result part on the consumer stream (TS
+				// maybeExecuteHostTool onPreliminaryResult). Preliminary
+				// values never reach the runtime, so the work dir is
+				// stripped here like the final result's projection.
+				OnPreliminaryResult: func(prelim interface{}) {
+					display := StripWorkDir(&ToolResultPart{ToolCallID: raw.ToolCallID, ToolName: raw.ToolName, Result: prelim}, d.in.SessionWorkDir)
+					stripped, _ := display.(*ToolResultPart)
+					if stripped == nil {
+						return
+					}
+					d.stream.pushAsync(d.ctx, provider.StreamChunk{
+						Type: provider.ChunkTypeToolResult,
+						ToolResult: &types.ToolResult{
+							ToolCallID: raw.ToolCallID, ToolName: raw.ToolName,
+							Result: stripped.Result, Preliminary: true,
+						},
+					})
+				},
 			})
 		}
 		var output interface{}

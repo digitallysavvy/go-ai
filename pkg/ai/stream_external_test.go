@@ -551,3 +551,56 @@ func TestNewStreamTextResultFromParts_FullStreamOmitsInternalMarkers(t *testing.
 		t.Fatalf("UI start-step count = %d, want 2", starts)
 	}
 }
+
+// TS HarnessStreamTextResult emits a 'start-step' part (carrying the step's
+// warnings) before the first part of every step, with or without the source's
+// stream-start. The turn-closing finish opens no step. The workflow harness
+// runner converts result.Stream() to UI chunks, so the public stream must
+// carry them (pkg/workflow harness tests assert the UI start-step parts).
+func TestNewStreamTextResultFromParts_PublicStreamHasStartStepPerStep(t *testing.T) {
+	t.Parallel()
+
+	for _, withStreamStart := range []bool{false, true} {
+		chunks := []provider.StreamChunk{}
+		if withStreamStart {
+			chunks = append(chunks, provider.StreamChunk{Type: provider.ChunkTypeStreamStart, Warnings: []types.Warning{{Type: "other", Message: "w"}}})
+		}
+		chunks = append(chunks,
+			provider.StreamChunk{Type: provider.ChunkTypeText, Text: "one"},
+			provider.StreamChunk{Type: provider.ChunkTypeFinishStep, FinishReason: types.FinishReasonToolCalls},
+			provider.StreamChunk{Type: provider.ChunkTypeText, Text: "two"},
+			provider.StreamChunk{Type: provider.ChunkTypeFinishStep, FinishReason: types.FinishReasonStop},
+			provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+		)
+		result := NewStreamTextResultFromParts(context.Background(), testutil.NewMockTextStream(chunks), ExternalStreamOptions{Provider: "harness", ModelID: "m"})
+		var got []provider.ChunkType
+		var firstWarnings int
+		s := result.Stream()
+		for {
+			c, err := s.Next()
+			if err != nil {
+				break
+			}
+			if c.Type == provider.ChunkTypeStartStep && len(got) == 0 {
+				firstWarnings = len(c.Warnings)
+			}
+			got = append(got, c.Type)
+		}
+		want := []provider.ChunkType{
+			provider.ChunkTypeStartStep, provider.ChunkTypeText, provider.ChunkTypeFinishStep,
+			provider.ChunkTypeStartStep, provider.ChunkTypeText, provider.ChunkTypeFinishStep,
+			provider.ChunkTypeFinish,
+		}
+		if len(got) != len(want) {
+			t.Fatalf("withStreamStart=%v public chunk types = %v, want %v", withStreamStart, got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("withStreamStart=%v public chunk types = %v, want %v", withStreamStart, got, want)
+			}
+		}
+		if withStreamStart && firstWarnings != 1 {
+			t.Fatalf("first start-step carries %d warnings, want 1", firstWarnings)
+		}
+	}
+}

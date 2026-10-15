@@ -337,7 +337,7 @@ func TestRunHarnessAgentTimeSlice_FinishesFirstTurn(t *testing.T) {
 	// *ai.StreamTextResult.ToUIMessageStream() pipeline end to end, so the
 	// step-boundary chunks it naturally emits (pkg/ai/ui_message_stream.go,
 	// outside this package's scope) are part of the expected output too.
-	want := []string{"start", "text-start", "text-delta", "text-end", "finish-step", "finish"}
+	want := []string{"start", "start-step", "text-start", "text-delta", "text-end", "finish-step", "finish"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("chunk types = %v, want %v", got, want)
 	}
@@ -503,7 +503,7 @@ func TestRunHarnessAgentTimeSlice_SuspendsAtBudgetAndContinues(t *testing.T) {
 		t.Fatal("a suspended slice must not close the output stream")
 	}
 	gotFirst := firstWriter.types()
-	wantFirst := []string{"start", "text-start", "text-delta", "reasoning-start", "reasoning-delta", "text-end", "reasoning-end"}
+	wantFirst := []string{"start", "start-step", "text-start", "text-delta", "reasoning-start", "reasoning-delta", "text-end", "reasoning-end"}
 	if strings.Join(gotFirst, ",") != strings.Join(wantFirst, ",") {
 		t.Fatalf("first slice chunk types = %v, want %v", gotFirst, wantFirst)
 	}
@@ -550,7 +550,7 @@ func TestRunHarnessAgentTimeSlice_SuspendsAtBudgetAndContinues(t *testing.T) {
 	// TestRunHarnessAgentTimeSlice_ToolApprovalPause's simpler single-slice
 	// cases) never gets a chance to fire here; a real orphan-delta-with-no-
 	// start from a bridge-backed adapter would.
-	wantSecond := []string{"text-start", "text-delta", "text-end", "reasoning-start", "reasoning-delta", "reasoning-end", "finish-step", "finish"}
+	wantSecond := []string{"start-step", "text-start", "text-delta", "text-end", "reasoning-start", "reasoning-delta", "reasoning-end", "finish-step", "finish"}
 	if strings.Join(gotSecond, ",") != strings.Join(wantSecond, ",") {
 		t.Fatalf("second slice chunk types = %v, want %v", gotSecond, wantSecond)
 	}
@@ -605,7 +605,7 @@ func TestRunHarnessAgentStep_ReturnsReadyForNextStepAtStepBoundary(t *testing.T)
 	// "finish" part is never observed here because RunHarnessAgentStep stops
 	// reading once it sees the step boundary, before the underlying
 	// ToUIMessageStream goroutine gets to emit it.
-	want := []string{"start", "text-start", "text-delta", "text-end", "finish-step"}
+	want := []string{"start", "start-step", "text-start", "text-delta", "text-end", "finish-step"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("chunk types = %v, want %v", got, want)
 	}
@@ -1135,7 +1135,7 @@ func TestRunHarnessAgentTimeSlice_MidTurnContinuationWithoutNewPrompt(t *testing
 	// asserts as the dropped-`start`-plus-one-delta shape survives here as
 	// the dropped `start` (state.ContinueFrom != nil) with the delta's own
 	// synthesized start/end pair around it.
-	want := []string{"text-start", "text-delta", "text-end", "finish-step", "finish"}
+	want := []string{"start-step", "text-start", "text-delta", "text-end", "finish-step", "finish"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("chunk types = %v, want %v", got, want)
 	}
@@ -1284,7 +1284,7 @@ func TestRunHarnessAgentStep_ContinuesSemanticStepAndFinishesCompletedTurn(t *te
 	// doc comment for why this differs from TS's literal
 	// ['text-delta','finish']: the real ToUIMessageStream pipeline
 	// synthesizes text-start/text-end around the bare delta.
-	want := []string{"text-start", "text-delta", "text-end", "finish-step", "finish"}
+	want := []string{"start-step", "text-start", "text-delta", "text-end", "finish-step", "finish"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("chunk types = %v, want %v", got, want)
 	}

@@ -30,7 +30,6 @@ func rawChunkModel(captured **provider.GenerateOptions) *testutil.MockLanguageMo
 	}
 }
 
-
 func TestTSReplay_StreamText_RawChunksForwarding(t *testing.T) {
 	cases := []struct {
 		name         string
