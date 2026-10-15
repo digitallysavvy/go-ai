@@ -75,3 +75,12 @@ func TestIssueJSONShapes(t *testing.T) {
 		t.Fatalf("disc issue = %q", got)
 	}
 }
+
+func TestUnionNestedErrors(t *testing.T) {
+	u := Union(String, Number)
+	got := IssueText(ValidationMessage(Object(F("a", u)), `{"a":true}`))
+	want := "[\n  {\n    \"code\": \"invalid_union\",\n    \"errors\": [\n      [\n        {\n          \"expected\": \"string\",\n          \"code\": \"invalid_type\",\n          \"path\": [],\n          \"message\": \"Invalid input: expected string, received boolean\"\n        }\n      ],\n      [\n        {\n          \"expected\": \"number\",\n          \"code\": \"invalid_type\",\n          \"path\": [],\n          \"message\": \"Invalid input: expected number, received boolean\"\n        }\n      ]\n    ],\n    \"path\": [\n      \"a\"\n    ],\n    \"message\": \"Invalid input\"\n  }\n]"
+	if got != want {
+		t.Fatalf("got %s", got)
+	}
+}
