@@ -3,7 +3,6 @@ package gateway
 import (
 	"encoding/json"
 	"errors"
-	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -320,11 +319,6 @@ func decodeV4GenerateResult(body []byte) (*types.GenerateResult, error) {
 		Usage            v4Usage                `json:"usage"`
 		Warnings         json.RawMessage        `json:"warnings"`
 		ProviderMetadata map[string]interface{} `json:"providerMetadata"`
-		Response         *struct {
-			ID        string `json:"id"`
-			ModelID   string `json:"modelId"`
-			Timestamp string `json:"timestamp"`
-		} `json:"response"`
 	}
 	if err := json.Unmarshal(body, &wire); err != nil {
 		return nil, err
@@ -356,13 +350,8 @@ func decodeV4GenerateResult(body []byte) (*types.GenerateResult, error) {
 	if len(wire.Content) == 0 && wire.Text != "" { // older flat shape
 		result.Text = wire.Text
 	}
-	if wire.Response != nil {
-		md := &types.ResponseMetadata{ID: wire.Response.ID, ModelID: wire.Response.ModelID}
-		if t, err := time.Parse(time.RFC3339, wire.Response.Timestamp); err == nil {
-			md.Timestamp = t
-		}
-		result.ResponseMetadata = md
-	}
+	// TS spreads the body and then overrides `response` with {headers, body}, so
+	// the server's response id, model and timestamp are dropped (doGenerate only).
 	return result, nil
 }
 

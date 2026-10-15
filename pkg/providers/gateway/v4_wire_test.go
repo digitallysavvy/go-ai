@@ -99,7 +99,8 @@ func TestDoGenerateDecodesV4GenerateResult(t *testing.T) {
 	if len(res.Warnings) != 1 || res.ProviderMetadata["gateway"] == nil {
 		t.Fatalf("warnings/metadata = %v / %v", res.Warnings, res.ProviderMetadata)
 	}
-	if res.ResponseMetadata == nil || res.ResponseMetadata.ID != "resp_1" || res.ResponseMetadata.ModelID != "openai/gpt-5" {
+	// TS overrides the body's `response` with {headers, body}: server id/model/timestamp are dropped.
+	if res.ResponseMetadata == nil || res.ResponseMetadata.ID != "" || res.ResponseMetadata.ModelID != "" || !res.ResponseMetadata.Timestamp.IsZero() {
 		t.Fatalf("response metadata = %+v", res.ResponseMetadata)
 	}
 }
