@@ -178,7 +178,8 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	stream.extensionRegistry = m.provider.extensionRegistry
 	stream.getResponseErrorMetadata = m.provider.config.GetResponseErrorMetadata
 	stream.requestBody = reqBody
-	return providerutils.WithResponseMetadata(stream, httpResp.Header, m.ModelID()), nil
+	// TS enqueues stream-start with the warnings first.
+	return providerutils.WithResponseMetadata(streaming.NewWarningsStream(stream, warnings), httpResp.Header, m.ModelID()), nil
 }
 
 // buildRequestBody builds the Open Responses API request body
@@ -1110,6 +1111,10 @@ type openResponsesStream struct {
 	toolCallsByItemID map[string]*toolCallState
 	hasToolCalls      bool
 	finishReason      types.FinishReason
+	// rawFinishReason and finishUsage are what the last terminal event
+	// recorded; flush() puts them on the finish chunk.
+	rawFinishReason string
+	finishUsage     *types.Usage
 
 	// customToolCallsByItemID mirrors toolCallsByItemID for caller-executed
 	// "custom" tool calls (Config.CustomToolID), whose input streams as raw
@@ -1196,20 +1201,29 @@ func (s *openResponsesStream) Next() (*provider.StreamChunk, error) {
 		// Get next SSE event
 		event, err := s.parser.Next()
 		if err != nil {
+			if err == io.EOF {
+				s.queueFlush()
+				continue
+			}
 			s.err = err
 			return nil, err
 		}
 
-		// Check for stream completion
+		// TS only skips the [DONE] marker; flush() runs when the stream ends.
 		if streaming.IsStreamDone(event) {
-			s.err = io.EOF
-			return nil, io.EOF
+			s.queueFlush()
+			continue
 		}
 
-		// Parse the event data as JSON
+		// Parse the event data as JSON. TS enqueues an error part for an
+		// event that does not parse and keeps reading.
 		var streamEvent StreamEvent
 		if err := json.Unmarshal([]byte(event.Data), &streamEvent); err != nil {
-			return nil, fmt.Errorf("failed to parse stream event: %w", err)
+			return &provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: fmt.Sprintf("failed to parse stream event: %v", err),
+				Err:  fmt.Errorf("failed to parse stream event: %w", err),
+			}, nil
 		}
 
 		// Handle different event types
@@ -1550,76 +1564,43 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		return nil, false
 
 	case "response.completed", "response.incomplete":
+		// TS only records the finish reason and usage here; `finish` is
+		// enqueued by flush() when the stream ends.
 		finishReason := ""
 		if event.Response != nil && event.Response.IncompleteDetails != nil {
 			finishReason = event.Response.IncompleteDetails.Reason
 		}
-		fr := MapOpenResponsesFinishReason(finishReason, s.hasToolCalls)
-
-		var usage *types.Usage
+		s.finishReason = MapOpenResponsesFinishReason(finishReason, s.hasToolCalls)
+		s.rawFinishReason = finishReason
 		if event.Response != nil && event.Response.Usage != nil {
 			u := convertOpenResponsesUsage(event.Response.Usage)
-			usage = &u
+			s.finishUsage = &u
 		}
-
-		s.err = io.EOF
-		finishChunk := &provider.StreamChunk{
-			Type:            provider.ChunkTypeFinish,
-			FinishReason:    fr,
-			RawFinishReason: finishReason,
-			Usage:           usage,
-		}
-		// Row 6fe187f: close an unfinished reasoning block (using its
-		// original item id) before the finish chunk, mirroring TS's
-		// transform stream flush().
-		if s.activeReasoningID != "" {
-			reasoningEnd := &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: s.activeReasoningID}
-			s.activeReasoningID = ""
-			s.pending = append(s.pending, finishChunk)
-			return reasoningEnd, true
-		}
-		return finishChunk, true
+		return nil, false
 
 	case "response.failed":
 		// Response failed. The error lives inside the nested response object
-		// (response.error), not a top-level event.error field. Mirrors TS: a
-		// response.failed event still ends the stream with a finish chunk
-		// (via flush()); the error, if present, is enqueued as a separate
-		// mid-stream error chunk immediately before it (not thrown/fatal).
+		// (response.error), not a top-level event.error field. Mirrors TS: the
+		// finish reason is recorded (finish itself comes from flush()); the
+		// error, if present, is enqueued as a mid-stream error chunk.
 		s.finishReason = types.FinishReasonError
 		var respErr *ResponseError
 		var status string
-		var usage *types.Usage
 		if event.Response != nil {
 			respErr = event.Response.Error
 			status = event.Response.Status
 			if event.Response.Usage != nil {
 				u := convertOpenResponsesUsage(event.Response.Usage)
-				usage = &u
+				s.finishUsage = &u
 			}
 		}
-		rawReason := status
+		s.rawFinishReason = status
 		if respErr != nil && respErr.Code != "" {
-			rawReason = respErr.Code
+			s.rawFinishReason = respErr.Code
 		}
-		s.err = io.EOF
-		finishChunk := &provider.StreamChunk{
-			Type:            provider.ChunkTypeFinish,
-			FinishReason:    types.FinishReasonError,
-			RawFinishReason: rawReason,
-			Usage:           usage,
-		}
-		// Row 6fe187f (extended to response.failed): close an unfinished
-		// reasoning block before the finish chunk here too, mirroring TS's
-		// flush() running unconditionally regardless of what ended the
-		// stream.
-		tail := s.finishChunksAfterReasoningClose(finishChunk)
 		if respErr == nil {
-			first := tail[0]
-			s.pending = append(s.pending, tail[1:]...)
-			return first, true
+			return nil, false
 		}
-		s.pending = append(s.pending, tail...)
 		return &provider.StreamChunk{
 			Type: provider.ChunkTypeError,
 			Text: respErr.Message,
@@ -1627,21 +1608,13 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		}, true
 
 	case "error":
-		// A bare error event (no response wrapper). Mirrors TS: enqueued as a
-		// mid-stream error chunk; the stream still ends normally via a later
-		// [DONE]/flush, so a finish chunk (with any still-open reasoning
-		// block closed first, same as response.failed above) is queued
-		// behind it here too.
+		// A bare error event (no response wrapper). Mirrors TS: the finish
+		// reason becomes error and the error is enqueued as a mid-stream chunk.
 		if event.Error == nil {
 			return nil, false
 		}
 		s.finishReason = types.FinishReasonError
-		finishChunk := &provider.StreamChunk{
-			Type:            provider.ChunkTypeFinish,
-			FinishReason:    types.FinishReasonError,
-			RawFinishReason: event.Error.Code,
-		}
-		s.pending = append(s.pending, s.finishChunksAfterReasoningClose(finishChunk)...)
+		s.rawFinishReason = event.Error.Code
 		return &provider.StreamChunk{
 			Type: provider.ChunkTypeError,
 			Text: event.Error.Message,
@@ -1770,23 +1743,21 @@ func (s *openResponsesStream) Err() error {
 	return s.err
 }
 
-// finishChunksAfterReasoningClose returns finishChunk alone, or -- when a
-// reasoning block is still open (s.activeReasoningID != "") -- a
-// reasoning-end chunk for it followed by finishChunk, closing s's active
-// reasoning state either way. Used by response.failed and a bare error
-// event (response.completed/incomplete apply the same reasoning-close
-// ordering inline above) so an interrupted reasoning block always closes
-// before the finish chunk, no matter which event ended the stream, mirroring
-// TS's flush() (which runs unconditionally at the end of the ReadableStream
-// regardless of the reason) closing `activeReasoningId` before enqueuing
-// `finish`.
-func (s *openResponsesStream) finishChunksAfterReasoningClose(finishChunk *provider.StreamChunk) []*provider.StreamChunk {
-	if s.activeReasoningID == "" {
-		return []*provider.StreamChunk{finishChunk}
+// queueFlush is TS flush(): close a still-open reasoning block, then enqueue
+// `finish` with what the stream recorded (other / no usage when it ended
+// without a terminal response event), and end the stream.
+func (s *openResponsesStream) queueFlush() {
+	if s.activeReasoningID != "" {
+		s.pending = append(s.pending, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: s.activeReasoningID})
+		s.activeReasoningID = ""
 	}
-	reasoningEnd := &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: s.activeReasoningID}
-	s.activeReasoningID = ""
-	return []*provider.StreamChunk{reasoningEnd, finishChunk}
+	s.pending = append(s.pending, &provider.StreamChunk{
+		Type:            provider.ChunkTypeFinish,
+		FinishReason:    s.finishReason,
+		RawFinishReason: s.rawFinishReason,
+		Usage:           s.finishUsage,
+	})
+	s.err = io.EOF
 }
 
 // streamProviderError classifies a streamed response.failed/error event's
