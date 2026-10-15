@@ -136,6 +136,8 @@ func applyEmbeddingDimensions(reqBody map[string]interface{}, opts *provider.Emb
 		return
 	}
 	resolved, _ := providerutils.ResolveOpenAICompatibleProviderOptions("together", opts.ProviderOptions)
+	// TS provider id togetherai.embedding: its options live under "togetherai".
+	mergeTogetherAIProviderOptions(resolved, opts.ProviderOptions)
 	if d, ok := providerutils.ResolveEmbeddingDimensions(resolved["dimensions"], opts.Dimensions); ok {
 		reqBody["dimensions"] = d
 	}

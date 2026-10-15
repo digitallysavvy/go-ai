@@ -74,3 +74,21 @@ func TestEmbeddingUserOption(t *testing.T) {
 		t.Fatalf("user sent without option: %#v", body)
 	}
 }
+
+// TS provider id togetherai.embedding: options are read from providerOptions.togetherai.
+func TestEmbeddingTogetherAIOptionsKey(t *testing.T) {
+	var body map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer srv.Close()
+	m := NewEmbeddingModel(New(Config{APIKey: "k", BaseURL: srv.URL}), "embed")
+	_, _ = m.DoEmbedMany(context.Background(), []string{"a"}, &provider.EmbedModelOptions{
+		ProviderOptions: map[string]interface{}{"togetherai": map[string]interface{}{"dimensions": float64(128), "user": "u"}},
+	})
+	if body["dimensions"] != float64(128) || body["user"] != "u" {
+		t.Fatalf("body = %v", body)
+	}
+}
