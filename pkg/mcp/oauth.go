@@ -354,7 +354,7 @@ func DiscoverAuthorizationServerMetadata(ctx context.Context, authorizationServe
 	for _, candidate := range urls {
 		candidateURL, perr := url.Parse(candidate.URL)
 		if perr != nil || origin(candidateURL) != origin(serverURL) {
-			return nil, NewMCPClientError(0, "OAuth discovery URL changed authorization-server origin", nil)
+			return nil, &MCPClientOAuthError{Message: "OAuth discovery URL changed authorization-server origin"}
 		}
 	}
 	for _, candidate := range urls {
