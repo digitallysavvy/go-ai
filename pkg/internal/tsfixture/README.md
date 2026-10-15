@@ -67,6 +67,18 @@ case with that name.
 (requests, responses and call results) against Go providers; see
 `record/README.md`.
 
+## Stateful replays
+
+`google/testdata/tscases/realtime_stateful.jsonl.gz` holds every
+`parseServerEvent` / `serializeClientEvent` call the TS realtime event mapper
+tests make, in order, with the number of the mapper instance (`inst`) each ran
+on. `TestTSCasesRealtimeStateful` feeds them to one Go mapper per instance, so
+id counters and transcription accumulation that depend on earlier events are
+checked. The recorder (`record/setup.mjs`) captures these two methods like the
+`do*` calls; record them with
+`REC_OUT=<dir> npx vitest run --config ../../rec/vitest.config.mjs src/realtime/google-realtime-event-mapper.test.ts`
+in the `google` package, then gzip the `.jsonl` file with `gzip -9n`.
+
 ## Large payloads
 
 Recorded image payloads would make case files huge (the TS image fixtures
@@ -76,6 +88,9 @@ every base64 JPEG run of 100,000 characters or more is replaced by a 1x1
 JPEG, and every other run that long (thought signatures) by its first 64
 characters, everywhere it occurs (response bodies and snapshots alike). Apply
 the same rule after regenerating, before gzipping, so no file passes 1 MB.
+A test whose point is the size itself cannot be shrunk: the two Google batch
+tests that build a 20 MB creation body (`reaches 20 MB` and the file-input
+variant) are left out of `testdata/tswire/google.jsonl.gz`.
 
 ## Prompt building
 
