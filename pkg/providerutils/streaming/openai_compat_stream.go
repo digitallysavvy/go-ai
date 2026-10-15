@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -49,6 +50,18 @@ type OpenAICompatStream struct {
 	// If it returns ("", true), hook handled it but no reasoning text (no-op).
 	// If it returns ("", false), standard processing continues unchanged.
 	OnReasoningDelta func(eventBytes []byte) (text string, ok bool)
+
+	// ResponseHeaders are the HTTP response headers; the first event carrying
+	// id/model/created (or any header) yields one ChunkTypeResponseMetadata,
+	// like TS's once-only response-metadata part.
+	ResponseHeaders map[string]string
+	metadataEmitted bool
+
+	// MetadataKey is the providerMetadata key (TS providerOptionsName, e.g.
+	// "togetherai") under which the finish chunk reports
+	// acceptedPredictionTokens / rejectedPredictionTokens. Empty disables the
+	// finish providerMetadata.
+	MetadataKey string
 
 	// isActiveReasoning tracks whether we are inside a reasoning block.
 	isActiveReasoning bool
@@ -200,8 +213,10 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 		var chunkData struct {
 			Choices []struct {
 				Delta struct {
-					Content   string `json:"content"`
-					ToolCalls []struct {
+					Content          string  `json:"content"`
+					ReasoningContent *string `json:"reasoning_content"`
+					Reasoning        *string `json:"reasoning"`
+					ToolCalls        []struct {
 						Index    *int    `json:"index"`
 						ID       string  `json:"id"`
 						Type     *string `json:"type"` // nullable mid-stream
@@ -214,8 +229,11 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 				} `json:"delta"`
 				FinishReason *string `json:"finish_reason"`
 			} `json:"choices"`
-			Error json.RawMessage          `json:"error,omitempty"`
-			Usage *openAICompatStreamUsage `json:"usage,omitempty"`
+			Error   json.RawMessage          `json:"error,omitempty"`
+			Usage   *openAICompatStreamUsage `json:"usage,omitempty"`
+			ID      string                   `json:"id"`
+			Model   string                   `json:"model"`
+			Created int64                    `json:"created"`
 		}
 
 		if err := json.Unmarshal([]byte(eventData), &chunkData); err != nil {
@@ -237,6 +255,16 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 				Type: provider.ChunkTypeError,
 				Text: rawStreamErrorText(chunkData.Error),
 			}, nil
+		}
+
+		// Response metadata is emitted once, from the first event that has any.
+		if !s.metadataEmitted && (chunkData.ID != "" || chunkData.Model != "" || chunkData.Created != 0 || len(s.ResponseHeaders) > 0) {
+			s.metadataEmitted = true
+			meta := &provider.ResponseMetadata{ID: chunkData.ID, ModelID: chunkData.Model, Headers: s.ResponseHeaders}
+			if chunkData.Created != 0 {
+				meta.Timestamp = time.Unix(chunkData.Created, 0)
+			}
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: meta})
 		}
 
 		// Usage may arrive on the finish_reason event itself, or as a trailing
@@ -265,33 +293,43 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 			}
 		}
 
-		// Reasoning delta hook — manage start/end lifecycle.
+		// Reasoning delta — manage start/end lifecycle. Without a provider hook
+		// the base reads delta.reasoning_content ?? delta.reasoning like TS.
+		defaultReasoning := func() (string, bool) {
+			if len(chunkData.Choices) == 0 {
+				return "", false
+			}
+			d := chunkData.Choices[0].Delta
+			switch {
+			case d.ReasoningContent != nil:
+				return *d.ReasoningContent, true
+			case d.Reasoning != nil:
+				return *d.Reasoning, true
+			}
+			return "", false
+		}
+		reasoningHook := func([]byte) (string, bool) { return defaultReasoning() }
 		if s.OnReasoningDelta != nil {
-			if rc, handled := s.OnReasoningDelta([]byte(eventData)); handled && rc != "" {
+			reasoningHook = func(b []byte) (string, bool) {
+				// A provider hook that finds nothing falls back to TS's
+				// delta.reasoning_content ?? delta.reasoning.
+				if rc, ok := s.OnReasoningDelta(b); ok && rc != "" {
+					return rc, ok
+				}
+				return defaultReasoning()
+			}
+		}
+		{
+			if rc, handled := reasoningHook([]byte(eventData)); handled && rc != "" {
+				// Queue (append, never prepend) so chunks OnBeforeDelta already
+				// queued for this event (e.g. response-metadata) drain first,
+				// then keep processing the same event: TS also handles
+				// content and tool_calls carried next to the reasoning delta.
 				if !s.isActiveReasoning {
 					s.isActiveReasoning = true
-					// Append (not prepend): any chunks OnBeforeDelta already
-					// queued for this same event (e.g. a one-shot
-					// response-metadata chunk) must drain before this stream's
-					// own synthesized reasoning-start/delta, matching TS's
-					// order (response metadata is emitted by the core
-					// transform before provider-specific delta extraction).
-					s.flushQueue = append(s.flushQueue,
-						&provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"},
-						&provider.StreamChunk{Type: provider.ChunkTypeReasoning, Reasoning: rc, ID: "reasoning-0"},
-					)
-					continue
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"})
 				}
-				chunk := &provider.StreamChunk{
-					Type:      provider.ChunkTypeReasoning,
-					Reasoning: rc,
-					ID:        "reasoning-0",
-				}
-				if len(s.flushQueue) > 0 {
-					s.flushQueue = append(s.flushQueue, chunk)
-					continue
-				}
-				return chunk, nil
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoning, Reasoning: rc, ID: "reasoning-0"})
 			}
 		}
 
@@ -323,6 +361,11 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 
 			// Tool call delta — accumulate arguments by index, never emit yet.
 			if len(choice.Delta.ToolCalls) > 0 {
+				// TS ends the active reasoning block before tool calls start.
+				if s.isActiveReasoning {
+					s.isActiveReasoning = false
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
+				}
 				for _, tc := range choice.Delta.ToolCalls {
 					chunks := s.toolCallTracker.TrackDelta(ToolCallDelta{
 						Index:            tc.Index,
@@ -425,10 +468,11 @@ func (s *OpenAICompatStream) endStream(err error) (*provider.StreamChunk, error)
 		s.pendingFinishReason = ""
 		s.err = err
 		return &provider.StreamChunk{
-			Type:            provider.ChunkTypeFinish,
-			FinishReason:    s.finishReasonMapper(finishReason),
-			RawFinishReason: finishReason,
-			Usage:           convertOpenAICompatStreamUsage(usage),
+			Type:             provider.ChunkTypeFinish,
+			FinishReason:     s.finishReasonMapper(finishReason),
+			RawFinishReason:  finishReason,
+			Usage:            convertOpenAICompatStreamUsage(usage),
+			ProviderMetadata: s.finishMetadata(usage),
 		}, nil
 	}
 	if err == io.EOF {
@@ -467,9 +511,10 @@ func (s *OpenAICompatStream) endStream(err error) (*provider.StreamChunk, error)
 			})
 		}
 		pending = append(pending, &provider.StreamChunk{
-			Type:         provider.ChunkTypeFinish,
-			FinishReason: types.FinishReasonError,
-			Usage:        convertOpenAICompatStreamUsage(s.pendingUsage),
+			Type:             provider.ChunkTypeFinish,
+			FinishReason:     types.FinishReasonError,
+			Usage:            convertOpenAICompatStreamUsage(s.pendingUsage),
+			ProviderMetadata: s.finishMetadata(s.pendingUsage),
 		})
 		s.err = err
 		first := pending[0]
@@ -491,13 +536,36 @@ type openAICompatStreamUsage struct {
 		CachedTokens *int `json:"cached_tokens,omitempty"`
 	} `json:"prompt_tokens_details,omitempty"`
 	CompletionTokensDetails *struct {
-		ReasoningTokens *int `json:"reasoning_tokens,omitempty"`
+		ReasoningTokens          *int `json:"reasoning_tokens,omitempty"`
+		AcceptedPredictionTokens *int `json:"accepted_prediction_tokens,omitempty"`
+		RejectedPredictionTokens *int `json:"rejected_prediction_tokens,omitempty"`
 	} `json:"completion_tokens_details,omitempty"`
+
+	// rawWire is the usage object exactly as sent (TS usage.raw keeps every
+	// field a provider adds, e.g. cost_in_usd_ticks).
+	rawWire map[string]interface{}
+}
+
+// UnmarshalJSON decodes the typed fields and keeps the wire object.
+func (u *openAICompatStreamUsage) UnmarshalJSON(b []byte) error {
+	type plain openAICompatStreamUsage
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	*u = openAICompatStreamUsage(p)
+	var raw map[string]interface{}
+	if json.Unmarshal(b, &raw) == nil {
+		u.rawWire = raw
+	}
+	return nil
 }
 
 // convertOpenAICompatStreamUsage converts a raw OpenAI-compatible usage
-// payload to types.Usage, mirroring TS's convertOpenAICompatibleChatUsage.
-// Returns nil when no usage was ever observed on the stream.
+// payload to types.Usage, mirroring TS's convertOpenAICompatibleChatUsage:
+// the input/output breakdown is always reported (cached/reasoning default to
+// 0, text is clamped at 0, cacheWrite stays undefined). Returns nil when no
+// usage was ever observed on the stream.
 func convertOpenAICompatStreamUsage(usage *openAICompatStreamUsage) *types.Usage {
 	if usage == nil {
 		return nil
@@ -514,30 +582,55 @@ func convertOpenAICompatStreamUsage(usage *openAICompatStreamUsage) *types.Usage
 	if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens != nil {
 		cachedTokens = int64(*usage.PromptTokensDetails.CachedTokens)
 	}
-	if cachedTokens > 0 {
-		noCacheTokens := promptTokens - cachedTokens
-		result.InputDetails = &types.InputTokenDetails{
-			NoCacheTokens:   &noCacheTokens,
-			CacheReadTokens: &cachedTokens,
-		}
+	noCacheTokens := promptTokens - cachedTokens
+	result.InputDetails = &types.InputTokenDetails{
+		NoCacheTokens:   &noCacheTokens,
+		CacheReadTokens: &cachedTokens,
 	}
 	var reasoningTokens int64
 	if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens != nil {
 		reasoningTokens = int64(*usage.CompletionTokensDetails.ReasoningTokens)
 	}
-	if reasoningTokens > 0 {
-		textTokens := completionTokens - reasoningTokens
-		result.OutputDetails = &types.OutputTokenDetails{
-			TextTokens:      &textTokens,
-			ReasoningTokens: &reasoningTokens,
+	textTokens := completionTokens - reasoningTokens
+	if textTokens < 0 {
+		textTokens = 0
+	}
+	result.OutputDetails = &types.OutputTokenDetails{
+		TextTokens:      &textTokens,
+		ReasoningTokens: &reasoningTokens,
+	}
+	if usage.rawWire != nil {
+		result.Raw = usage.rawWire
+	} else {
+		result.Raw = map[string]interface{}{
+			"prompt_tokens":     usage.PromptTokens,
+			"completion_tokens": usage.CompletionTokens,
+			"total_tokens":      usage.TotalTokens,
 		}
 	}
-	result.Raw = map[string]interface{}{
-		"prompt_tokens":     usage.PromptTokens,
-		"completion_tokens": usage.CompletionTokens,
-		"total_tokens":      usage.TotalTokens,
-	}
 	return result
+}
+
+// finishMetadata builds the TS finish providerMetadata:
+// {[providerOptionsName]: {acceptedPredictionTokens?, rejectedPredictionTokens?}}.
+func (s *OpenAICompatStream) finishMetadata(usage *openAICompatStreamUsage) json.RawMessage {
+	if s.MetadataKey == "" {
+		return nil
+	}
+	meta := map[string]interface{}{}
+	if usage != nil && usage.CompletionTokensDetails != nil {
+		if v := usage.CompletionTokensDetails.AcceptedPredictionTokens; v != nil {
+			meta["acceptedPredictionTokens"] = *v
+		}
+		if v := usage.CompletionTokensDetails.RejectedPredictionTokens; v != nil {
+			meta["rejectedPredictionTokens"] = *v
+		}
+	}
+	raw, err := json.Marshal(map[string]interface{}{s.MetadataKey: meta})
+	if err != nil {
+		return nil
+	}
+	return raw
 }
 
 func openAICompatToolCallMetadata(extraContent map[string]interface{}) map[string]interface{} {

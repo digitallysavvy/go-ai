@@ -2,8 +2,8 @@ package deepseek
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"strings"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -461,7 +461,7 @@ func deepseekToolCallsWire(calls []types.ToolCall) []map[string]interface{} {
 			if args == nil {
 				args = map[string]interface{}{}
 			}
-			if b, err := json.Marshal(args); err == nil {
+			if b, err := jsonstr.Marshal(args); err == nil {
 				arguments = string(b)
 			}
 		}
@@ -503,7 +503,7 @@ func (m *LanguageModel) convertToolMessage(msg types.Message, providerOptionsNam
 			entries = append(entries, deepseekToolMessage(tr.ToolCallID, reason))
 
 		case types.ToolResultOutputJSON, types.ToolResultOutputErrorJSON, types.ToolResultOutputError:
-			b, _ := json.Marshal(tr.Output.Value)
+			b, _ := jsonstr.Marshal(tr.Output.Value)
 			entries = append(entries, deepseekToolMessage(tr.ToolCallID, string(b)))
 
 		case types.ToolResultOutputContent:
@@ -515,7 +515,7 @@ func (m *LanguageModel) convertToolMessage(msg types.Message, providerOptionsNam
 				}
 			}
 			if !hasImage {
-				b, _ := json.Marshal(tr.Output.Content)
+				b, _ := jsonstr.Marshal(tr.Output.Content)
 				entries = append(entries, deepseekToolMessage(tr.ToolCallID, string(b)))
 				continue
 			}
@@ -578,7 +578,7 @@ func deepseekStringValue(v interface{}) string {
 	if s, ok := v.(string); ok {
 		return s
 	}
-	b, _ := json.Marshal(v)
+	b, _ := jsonstr.Marshal(v)
 	return string(b)
 }
 
@@ -589,7 +589,7 @@ func deepseekStringifyResult(v interface{}) string {
 	if s, ok := v.(string); ok {
 		return s
 	}
-	b, err := json.Marshal(v)
+	b, err := jsonstr.Marshal(v)
 	if err != nil {
 		return fmt.Sprintf("%v", v)
 	}

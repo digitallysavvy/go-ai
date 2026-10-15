@@ -217,19 +217,13 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	if opts.TopP != nil {
 		body["top_p"] = *opts.TopP
 	}
-	// Note: Open Responses doesn't support frequencyPenalty, presencePenalty,
-	// stopSequences, topK, or seed. These are ignored with TS-shaped warnings.
-	if opts.FrequencyPenalty != nil {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported",
-			Feature: "frequencyPenalty",
-		})
-	}
+	// TS forwards presence_penalty / frequency_penalty; stopSequences, topK
+	// and seed are ignored with warnings.
 	if opts.PresencePenalty != nil {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported",
-			Feature: "presencePenalty",
-		})
+		body["presence_penalty"] = *opts.PresencePenalty
+	}
+	if opts.FrequencyPenalty != nil {
+		body["frequency_penalty"] = *opts.FrequencyPenalty
 	}
 
 	// These are ignored with warnings
@@ -872,22 +866,27 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) (*types.
 			// Include reasoning parts when the item has an ID or encrypted_content (#12869).
 			// Previously these were skipped when ItemID was absent; now we include them
 			// as long as either the ID or EncryptedContent is non-empty.
-			if item.ID != "" || item.EncryptedContent != "" {
-				// Reasoning items expose their text through Summary, not Content.
+			// TS emits one reasoning part per reasoning_text content part, or a
+			// single part with the joined summary when there is no content.
+			itemCopy := item
+			if item.ID == "" && item.EncryptedContent == "" {
+				break // nothing to replay (the API always sends an id)
+			}
+			if len(item.Content) > 0 {
+				for _, cp := range item.Content {
+					one := itemCopy
+					one.Content = []ContentPart{cp}
+					result.Content = append(result.Content, types.ReasoningContent{
+						Text:             cp.Text,
+						EncryptedContent: item.EncryptedContent,
+						ProviderMetadata: openResponsesReasoningProviderMetadata(m.providerName(), &one),
+					})
+				}
+			} else {
 				var summaryText string
 				for _, part := range item.Summary {
-					if part.Type == "summary_text" || part.Type == "text" {
-						summaryText += part.Text
-					}
+					summaryText += part.Text
 				}
-				if summaryText != "" {
-					textParts = append(textParts, summaryText)
-				}
-				itemCopy := item
-				// Preserve EncryptedContent so callers can forward this reasoning
-				// block in subsequent turns (input-side round-trip, #12869), plus
-				// full itemId/reasoningSummary/reasoningContent metadata (row
-				// 1c1a9d1) so replay can reconstruct the original item exactly.
 				result.Content = append(result.Content, types.ReasoningContent{
 					Text:             summaryText,
 					EncryptedContent: item.EncryptedContent,
@@ -1014,12 +1013,19 @@ func convertOpenResponsesUsage(usage *Usage) types.Usage {
 		reasoningTokens = int64(usage.OutputTokensDetails.ReasoningTokens)
 	}
 
-	// Set input token details
+	// Set input token details (TS: noCache = input - cached - cacheWrite)
 	{
 		noCacheTokens := inputTokens - cachedTokens
+		var cacheWrite *int64
+		if usage.InputTokensDetails != nil && usage.InputTokensDetails.CacheWriteTokens != nil {
+			cw := int64(*usage.InputTokensDetails.CacheWriteTokens)
+			cacheWrite = &cw
+			noCacheTokens -= cw
+		}
 		result.InputDetails = &types.InputTokenDetails{
-			NoCacheTokens:   &noCacheTokens,
-			CacheReadTokens: &cachedTokens,
+			NoCacheTokens:    &noCacheTokens,
+			CacheReadTokens:  &cachedTokens,
+			CacheWriteTokens: cacheWrite,
 		}
 	}
 
@@ -1035,11 +1041,15 @@ func convertOpenResponsesUsage(usage *Usage) types.Usage {
 		}
 	}
 
-	// Store raw usage
-	result.Raw = map[string]interface{}{
-		"input_tokens":  usage.InputTokens,
-		"output_tokens": usage.OutputTokens,
-		"total_tokens":  usage.TotalTokens,
+	// Store raw usage: the wire object verbatim (TS raw: response.usage).
+	if usage.rawWire != nil {
+		result.Raw = usage.rawWire
+	} else {
+		result.Raw = map[string]interface{}{
+			"input_tokens":  usage.InputTokens,
+			"output_tokens": usage.OutputTokens,
+			"total_tokens":  usage.TotalTokens,
+		}
 	}
 
 	return result

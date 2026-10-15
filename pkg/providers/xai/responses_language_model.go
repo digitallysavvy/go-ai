@@ -177,6 +177,7 @@ func (m *ResponsesLanguageModel) DoStream(ctx context.Context, opts *provider.Ge
 	stream := newXAIResponsesStream(httpResp.Body, opts.IncludeRawChunks)
 	stream.responseHeaders = httpResp.Header
 	stream.requestBody = body
+	stream.toolNames = resolveProviderToolNames(opts.Tools)
 	return streaming.NewWarningsStream(stream, warnings), nil
 }
 
@@ -537,9 +538,13 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			if err := json.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
-			var msgText string
+			// TS emits, per content part, its text and then its url_citation
+			// sources.
 			for _, part := range item.Content {
-				msgText += part.Text
+				if part.Text != "" {
+					result.Text += part.Text
+					result.Content = append(result.Content, types.TextContent{Text: part.Text})
+				}
 				for _, ann := range part.Annotations {
 					if ann.Type == "url_citation" && ann.URL != "" {
 						title := ann.Title
@@ -548,15 +553,12 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 						}
 						result.Content = append(result.Content, types.SourceContent{
 							SourceType: "url",
+							ID:         streaming.GenerateID(),
 							URL:        ann.URL,
 							Title:      title,
 						})
 					}
 				}
-			}
-			if msgText != "" {
-				result.Text += msgText
-				result.Content = append(result.Content, types.TextContent{Text: msgText})
 			}
 
 		case "function_call":
@@ -572,17 +574,6 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				Arguments: args,
 			})
 			hasFunctionCall = true
-
-		case "custom_tool_call":
-			var item responses.CustomToolCallItem
-			if err := json.Unmarshal(rawItem, &item); err != nil {
-				continue
-			}
-			toolCalls = append(toolCalls, types.ToolCall{
-				ID:        item.CallID,
-				ToolName:  item.Name,
-				Arguments: map[string]interface{}{"input": item.Input},
-			})
 
 		case "reasoning":
 			// Extract reasoning text from summary parts and encrypted content.
@@ -634,19 +625,32 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			result.Content = append(result.Content, rc)
 
 		case "web_search_call", "x_search_call", "code_interpreter_call",
-			"code_execution_call", "view_image_call", "view_x_video_call":
+			"code_execution_call", "view_image_call", "view_x_video_call",
+			"custom_tool_call", "mcp_call":
 			var item struct {
-				ID     string          `json:"id"`
-				Name   string          `json:"name,omitempty"`
-				Action json.RawMessage `json:"action,omitempty"`
+				ID        string          `json:"id"`
+				Name      string          `json:"name,omitempty"`
+				Action    json.RawMessage `json:"action,omitempty"`
+				Arguments string          `json:"arguments,omitempty"`
+				Input     string          `json:"input,omitempty"`
 			}
 			if err := json.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
-			toolName := resolvedToolName(peek.Type, item.Name, toolNames)
+			toolName := bareXAIToolName(peek.Type, item.Name, toolNames)
+			// TS: the call's input is the item's arguments (input for
+			// custom_tool_call), verbatim.
+			toolInput := item.Arguments
+			if peek.Type == "custom_tool_call" {
+				toolInput = item.Input
+			}
+			var toolArgs map[string]interface{}
+			_ = json.Unmarshal([]byte(toolInput), &toolArgs)
 			toolCalls = append(toolCalls, types.ToolCall{
 				ID:               item.ID,
 				ToolName:         toolName,
+				Arguments:        toolArgs,
+				RawArguments:     toolInput,
 				ProviderExecuted: true,
 			})
 			// Row 6843788: preserve the web_search action (query/queries/
@@ -675,7 +679,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			}
 			toolName := toolNames["xai.file_search"]
 			if toolName == "" {
-				toolName = "xai.file_search"
+				toolName = "file_search"
 			}
 			toolCalls = append(toolCalls, types.ToolCall{
 				ID:               item.ID,
@@ -707,24 +711,6 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				Result:     resultData,
 			})
 
-		case "mcp_call":
-			var item struct {
-				ID   string `json:"id"`
-				Name string `json:"name,omitempty"`
-			}
-			if err := json.Unmarshal(rawItem, &item); err != nil {
-				continue
-			}
-			mcpName := toolNames["xai.mcp"]
-			if mcpName == "" {
-				mcpName = item.Name
-			}
-			toolCalls = append(toolCalls, types.ToolCall{
-				ID:               item.ID,
-				ToolName:         mcpName,
-				ProviderExecuted: true,
-			})
-
 		case "image_generation_call":
 			// Row fa2c2bb: server-side image generation tool.
 			var item struct {
@@ -738,7 +724,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			}
 			toolName := toolNames["xai.image_generation"]
 			if toolName == "" {
-				toolName = "xai.image_generation"
+				toolName = "image_generation"
 			}
 			toolCalls = append(toolCalls, types.ToolCall{
 				ID:               item.ID,
@@ -794,7 +780,11 @@ func resolveProviderToolNames(tools []types.Tool) map[string]string {
 	}
 	names := make(map[string]string)
 	for _, t := range tools {
-		if knownIDs[t.Name] {
+		// TS-shaped tools are identified by ProviderID and carry their own
+		// SDK name; Go-style tools use the canonical id as Name.
+		if knownIDs[t.ProviderID] {
+			names[t.ProviderID] = t.Name
+		} else if knownIDs[t.Name] {
 			names[t.Name] = t.Name
 		}
 	}
@@ -1040,6 +1030,11 @@ type xaiResponsesStream struct {
 	// finish reason to 'tool-calls' regardless of response.status.
 	hasFunctionCall bool
 
+	// toolNames maps canonical provider tool ids to the SDK names the caller
+	// registered; seenToolCalls dedupes the added/done events of one item.
+	toolNames     map[string]string
+	seenToolCalls map[string]bool
+
 	// requestBody is the raw request body this stream was opened with,
 	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
 	// "stream request body field").
@@ -1184,6 +1179,20 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 					id:   e.Item.CallID,
 					name: e.Item.Name,
 				}
+				// TS streams the call's input: tool-input-start now,
+				// deltas as arguments arrive, tool-input-end at done.
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+					Type:     provider.ChunkTypeToolInputStart,
+					ToolCall: &types.ToolCall{ID: e.Item.CallID, ToolName: e.Item.Name},
+				})
+			}
+			if isXAIProviderExecutedItem(e.Item.Type) {
+				var added struct {
+					Item json.RawMessage `json:"item"`
+				}
+				if json.Unmarshal([]byte(event.Data), &added) == nil {
+					s.queueProviderExecutedItem(e.Item.Type, added.Item, false)
+				}
 			}
 			continue
 
@@ -1211,6 +1220,11 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			}
 			if accum, ok := s.toolAccum[e.OutputIndex]; ok {
 				accum.arguments += e.Delta
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+					Type: provider.ChunkTypeToolInputDelta,
+					ID:   accum.id,
+					Text: e.Delta,
+				})
 			}
 			continue
 
@@ -1548,159 +1562,47 @@ func (s *xaiResponsesStream) handleOutputItemDone(e responses.OutputItemDoneEven
 		delete(s.toolAccum, e.OutputIndex)
 		delete(s.itemTypes, e.OutputIndex)
 
-		var args map[string]interface{}
-		if accum.arguments != "" {
-			json.Unmarshal([]byte(accum.arguments), &args) //nolint:errcheck
+		// TS uses the done item's call_id / name / arguments.
+		callID, name, rawArgs := accum.id, accum.name, accum.arguments
+		var doneItem struct {
+			CallID    string `json:"call_id"`
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
 		}
-		return s.emitParsedChunk(&provider.StreamChunk{
-			Type: provider.ChunkTypeToolCall,
-			ToolCall: &types.ToolCall{
-				ID:        accum.id,
-				ToolName:  accum.name,
-				Arguments: args,
-			},
-		})
+		if json.Unmarshal(e.Item, &doneItem) == nil {
+			if doneItem.CallID != "" {
+				callID = doneItem.CallID
+			}
+			if doneItem.Name != "" {
+				name = doneItem.Name
+			}
+			if doneItem.Arguments != "" || rawArgs == "" {
+				rawArgs = doneItem.Arguments
+			}
+		}
+		var args map[string]interface{}
+		if rawArgs != "" {
+			json.Unmarshal([]byte(rawArgs), &args) //nolint:errcheck
+		}
+		s.flushQueue = append(s.flushQueue,
+			&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: callID, ToolCall: &types.ToolCall{ID: callID, ToolName: name}},
+			&provider.StreamChunk{
+				Type: provider.ChunkTypeToolCall,
+				ToolCall: &types.ToolCall{
+					ID:           callID,
+					ToolName:     name,
+					Arguments:    args,
+					RawArguments: rawArgs,
+				},
+			})
+		return nil, false
 
 	case "web_search_call", "x_search_call", "code_interpreter_call",
-		"code_execution_call", "view_image_call", "view_x_video_call":
+		"code_execution_call", "view_image_call", "view_x_video_call",
+		"file_search_call", "image_generation_call", "custom_tool_call", "mcp_call":
 		delete(s.itemTypes, e.OutputIndex)
-		var item struct {
-			ID     string          `json:"id"`
-			Action json.RawMessage `json:"action,omitempty"`
-		}
-		if err := json.Unmarshal(e.Item, &item); err != nil {
-			return nil, false
-		}
-		toolName := providerToolNameFromType(itemType)
-		// Row 5520b8a: emit a tool-result chunk right after the tool-call for
-		// completed provider-executed tools; web_search additionally carries
-		// its mapped action/sources (row 6843788).
-		result := interface{}(map[string]interface{}{})
-		if itemType == "web_search_call" {
-			result = mapWebSearchAction(item.Action)
-		}
-		// Queue both chunks (FIFO) so the tool-call is returned now and the
-		// tool-result follows on the next Next() call, preserving any
-		// chunks already pending ahead of them.
-		s.flushQueue = append(s.flushQueue,
-			&provider.StreamChunk{
-				Type: provider.ChunkTypeToolCall,
-				ToolCall: &types.ToolCall{
-					ID:               item.ID,
-					ToolName:         toolName,
-					ProviderExecuted: true,
-				},
-			},
-			&provider.StreamChunk{
-				Type: provider.ChunkTypeToolResult,
-				ToolResult: &types.ToolResult{
-					ToolCallID: item.ID,
-					ToolName:   toolName,
-					Result:     result,
-				},
-			},
-		)
-		next := s.flushQueue[0]
-		s.flushQueue = s.flushQueue[1:]
-		return next, true
-
-	case "file_search_call":
-		delete(s.itemTypes, e.OutputIndex)
-		var item struct {
-			ID string `json:"id"`
-		}
-		if err := json.Unmarshal(e.Item, &item); err != nil {
-			return nil, false
-		}
-		return s.emitParsedChunk(&provider.StreamChunk{
-			Type: provider.ChunkTypeToolCall,
-			ToolCall: &types.ToolCall{
-				ID:               item.ID,
-				ToolName:         "xai.file_search",
-				ProviderExecuted: true,
-			},
-		})
-
-	case "mcp_call":
-		delete(s.itemTypes, e.OutputIndex)
-		var item struct {
-			ID   string `json:"id"`
-			Name string `json:"name,omitempty"`
-		}
-		if err := json.Unmarshal(e.Item, &item); err != nil {
-			return nil, false
-		}
-		return s.emitParsedChunk(&provider.StreamChunk{
-			Type: provider.ChunkTypeToolCall,
-			ToolCall: &types.ToolCall{
-				ID:               item.ID,
-				ToolName:         item.Name,
-				ProviderExecuted: true,
-			},
-		})
-
-	case "image_generation_call":
-		// Row fa2c2bb.
-		delete(s.itemTypes, e.OutputIndex)
-		var item struct {
-			ID     string  `json:"id"`
-			Status string  `json:"status"`
-			Prompt *string `json:"prompt,omitempty"`
-			Result *string `json:"result,omitempty"`
-		}
-		if err := json.Unmarshal(e.Item, &item); err != nil {
-			return nil, false
-		}
-		var resultChunk types.ToolResult
-		if item.Result != nil {
-			resultValue := map[string]interface{}{"result": *item.Result}
-			if item.Prompt != nil {
-				resultValue["prompt"] = *item.Prompt
-			}
-			resultChunk = types.ToolResult{ToolCallID: item.ID, ToolName: "xai.image_generation", Result: resultValue}
-		} else {
-			resultChunk = types.ToolResult{
-				ToolCallID: item.ID,
-				ToolName:   "xai.image_generation",
-				Error:      fmt.Errorf("Image generation failed (status: %s).", item.Status), //nolint:staticcheck // matches TS SDK's exact error text
-			}
-		}
-		s.flushQueue = append(s.flushQueue,
-			&provider.StreamChunk{
-				Type: provider.ChunkTypeToolCall,
-				ToolCall: &types.ToolCall{
-					ID:               item.ID,
-					ToolName:         "xai.image_generation",
-					RawArguments:     "{}",
-					ProviderExecuted: true,
-				},
-			},
-			&provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &resultChunk},
-		)
-		next := s.flushQueue[0]
-		s.flushQueue = s.flushQueue[1:]
-		return next, true
-
-	// Gap 3: custom_tool_call handled on done (input arrives via custom_tool_call_input.delta).
-	case "custom_tool_call":
-		delete(s.itemTypes, e.OutputIndex)
-		var item struct {
-			ID    string `json:"id"`
-			Name  string `json:"name,omitempty"`
-			Input string `json:"input,omitempty"`
-		}
-		if err := json.Unmarshal(e.Item, &item); err != nil {
-			return nil, false
-		}
-		return s.emitParsedChunk(&provider.StreamChunk{
-			Type: provider.ChunkTypeToolCall,
-			ToolCall: &types.ToolCall{
-				ID:               item.ID,
-				ToolName:         item.Name,
-				Arguments:        map[string]interface{}{"input": item.Input},
-				ProviderExecuted: true,
-			},
-		})
+		s.queueProviderExecutedItem(itemType, e.Item, true)
+		return nil, false
 
 	// Gap 2: forward encrypted_content from reasoning items so callers can
 	// round-trip it in subsequent turns when store=false.
@@ -1762,3 +1664,147 @@ func (s *xaiResponsesStream) handleOutputItemDone(e responses.OutputItemDoneEven
 
 // Compile-time interface check.
 var _ provider.LanguageModel = (*ResponsesLanguageModel)(nil)
+
+func isXAIProviderExecutedItem(t string) bool {
+	switch t {
+	case "web_search_call", "x_search_call", "code_interpreter_call", "code_execution_call",
+		"view_image_call", "view_x_video_call", "custom_tool_call", "mcp_call",
+		"file_search_call", "image_generation_call":
+		return true
+	}
+	return false
+}
+
+// queueProviderExecutedItem mirrors the TS doStream handling of
+// provider-executed output items (web/x search, code execution, file search,
+// image generation, custom and MCP tools): on the first sighting of an item
+// it streams tool-input-start / delta / end followed by the tool-call, and on
+// done it adds the tool-result. custom_tool_call is only emitted on done.
+func (s *xaiResponsesStream) queueProviderExecutedItem(itemType string, raw json.RawMessage, done bool) {
+	var item struct {
+		ID        string          `json:"id"`
+		Name      string          `json:"name,omitempty"`
+		Action    json.RawMessage `json:"action,omitempty"`
+		Arguments string          `json:"arguments,omitempty"`
+		Input     string          `json:"input,omitempty"`
+		Status    string          `json:"status,omitempty"`
+		Prompt    *string         `json:"prompt,omitempty"`
+		Result    *string         `json:"result,omitempty"`
+		Queries   []string        `json:"queries,omitempty"`
+		Results   []struct {
+			FileID   string  `json:"file_id"`
+			Filename string  `json:"filename"`
+			Score    float64 `json:"score"`
+			Text     string  `json:"text"`
+		} `json:"results,omitempty"`
+	}
+	if json.Unmarshal(raw, &item) != nil {
+		return
+	}
+	if s.seenToolCalls == nil {
+		s.seenToolCalls = map[string]bool{}
+	}
+	var toolName, toolInput string
+	switch itemType {
+	case "file_search_call":
+		toolName = s.toolNames["xai.file_search"]
+		if toolName == "" {
+			toolName = "file_search"
+		}
+	case "image_generation_call":
+		toolName = s.toolNames["xai.image_generation"]
+		if toolName == "" {
+			toolName = "image_generation"
+		}
+		toolInput = "{}"
+	default:
+		toolName = bareXAIToolName(itemType, item.Name, s.toolNames)
+		toolInput = item.Arguments
+		if itemType == "custom_tool_call" {
+			toolInput = item.Input
+		}
+	}
+	emit := !s.seenToolCalls[item.ID]
+	if itemType == "custom_tool_call" {
+		emit = emit && done
+	}
+	if emit {
+		s.seenToolCalls[item.ID] = true
+		var args map[string]interface{}
+		_ = json.Unmarshal([]byte(toolInput), &args)
+		s.flushQueue = append(s.flushQueue,
+			&provider.StreamChunk{Type: provider.ChunkTypeToolInputStart, ToolCall: &types.ToolCall{ID: item.ID, ToolName: toolName}},
+			&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: item.ID, Text: toolInput},
+			&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: item.ID, ToolCall: &types.ToolCall{ID: item.ID, ToolName: toolName}},
+			&provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{
+				ID: item.ID, ToolName: toolName, Arguments: args, RawArguments: toolInput, ProviderExecuted: true,
+			}},
+		)
+	}
+	if !done {
+		return
+	}
+	result := types.ToolResult{ToolCallID: item.ID, ToolName: toolName}
+	switch itemType {
+	case "file_search_call":
+		results := interface{}(nil)
+		if item.Results != nil {
+			mapped := make([]map[string]interface{}, len(item.Results))
+			for i, r := range item.Results {
+				mapped[i] = map[string]interface{}{"fileId": r.FileID, "filename": r.Filename, "score": r.Score, "text": r.Text}
+			}
+			results = mapped
+		}
+		queries := item.Queries
+		if queries == nil {
+			queries = []string{}
+		}
+		result.Result = map[string]interface{}{"queries": queries, "results": results}
+	case "image_generation_call":
+		if item.Result != nil {
+			v := map[string]interface{}{"result": *item.Result}
+			if item.Prompt != nil {
+				v["prompt"] = *item.Prompt
+			}
+			result.Result = v
+		} else {
+			result.Error = fmt.Errorf("Image generation failed (status: %s).", item.Status) //nolint:staticcheck // matches TS SDK's exact error text
+		}
+	case "web_search_call":
+		result.Result = mapWebSearchAction(item.Action)
+	default:
+		result.Result = map[string]interface{}{}
+	}
+	s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &result})
+}
+
+// bareXAIToolName resolves the SDK name of a provider-executed item like TS:
+// the registered name when the tool was declared, otherwise the bare tool
+// name ("web_search", "x_search", "code_execution", the item's own name).
+func bareXAIToolName(itemType, itemName string, toolNames map[string]string) string {
+	webSearchSubTools := map[string]bool{"web_search": true, "web_search_with_snippets": true, "browse_page": true}
+	xSearchSubTools := map[string]bool{"x_user_search": true, "x_keyword_search": true, "x_semantic_search": true, "x_thread_fetch": true}
+	pick := func(id, bare string) string {
+		if n := toolNames[id]; n != "" {
+			return n
+		}
+		return bare
+	}
+	switch {
+	case webSearchSubTools[itemName] || itemType == "web_search_call":
+		return pick("xai.web_search", "web_search")
+	case xSearchSubTools[itemName] || itemType == "x_search_call":
+		return pick("xai.x_search", "x_search")
+	case itemName == "code_execution" || itemType == "code_interpreter_call" || itemType == "code_execution_call":
+		return pick("xai.code_execution", "code_execution")
+	case itemType == "mcp_call":
+		if n := toolNames["xai.mcp"]; n != "" {
+			return n
+		}
+		if itemName != "" {
+			return itemName
+		}
+		return "mcp"
+	}
+	return itemName
+}

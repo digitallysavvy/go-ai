@@ -125,6 +125,13 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 	// Convert response to GenerateResult and attach HTTP headers.
 	result := m.convertResponse(response)
+	// TS result.request.body / result.response.body: the request as sent and
+	// the response as received.
+	result.RawRequest = reqBody
+	var rawResponse interface{}
+	if json.Unmarshal(resp.Body, &rawResponse) == nil {
+		result.RawResponse = rawResponse
+	}
 	m.applyChatLogprobs(result, resp.Body)
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
@@ -862,6 +869,9 @@ func convertOpenAIUsage(usage openAIUsage) types.Usage {
 	if usage.CompletionTokensDetails != nil {
 		result.Raw["completion_tokens_details"] = usage.CompletionTokensDetails
 	}
+	if usage.rawWire != nil {
+		result.Raw = usage.rawWire
+	}
 
 	return result
 }
@@ -907,6 +917,51 @@ type openAIUsage struct {
 		AcceptedPredictionTokens *int `json:"accepted_prediction_tokens,omitempty"`
 		RejectedPredictionTokens *int `json:"rejected_prediction_tokens,omitempty"`
 	} `json:"completion_tokens_details,omitempty"`
+
+	// rawWire is the usage object exactly as the API sent it (TS usage.raw).
+	rawWire map[string]interface{}
+}
+
+// UnmarshalJSON decodes the usage and keeps the wire object so Usage.Raw is
+// the provider payload verbatim, not a re-encoding of the typed fields.
+func (u *openAIUsage) UnmarshalJSON(b []byte) error {
+	type plain openAIUsage
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	*u = openAIUsage(p)
+	var raw map[string]interface{}
+	if json.Unmarshal(b, &raw) == nil {
+		u.rawWire = filterChatUsageRaw(raw)
+	}
+	return nil
+}
+
+// filterChatUsageRaw keeps only the keys the TS openai chat usage schema
+// declares: its zod parse strips the rest (e.g. audio_tokens) from usage.raw.
+func filterChatUsageRaw(raw map[string]interface{}) map[string]interface{} {
+	pick := func(m map[string]interface{}, keys ...string) map[string]interface{} {
+		o := map[string]interface{}{}
+		for _, k := range keys {
+			if v, ok := m[k]; ok {
+				o[k] = v
+			}
+		}
+		return o
+	}
+	out := pick(raw, "prompt_tokens", "completion_tokens", "total_tokens")
+	if d, ok := raw["prompt_tokens_details"].(map[string]interface{}); ok {
+		out["prompt_tokens_details"] = pick(d, "cached_tokens", "cache_write_tokens")
+	} else if v, ok := raw["prompt_tokens_details"]; ok {
+		out["prompt_tokens_details"] = v
+	}
+	if d, ok := raw["completion_tokens_details"].(map[string]interface{}); ok {
+		out["completion_tokens_details"] = pick(d, "reasoning_tokens", "accepted_prediction_tokens", "rejected_prediction_tokens")
+	} else if v, ok := raw["completion_tokens_details"]; ok {
+		out["completion_tokens_details"] = v
+	}
+	return out
 }
 
 // openAIMessage represents an OpenAI message
@@ -1015,6 +1070,7 @@ type openAIStream struct {
 	// into it, as TS does in flush().
 	finishRaw         string
 	finishSeen        bool
+	finishErrored     bool // TS finishReason={unified:'error'} after an unparsable/error chunk
 	finished          bool
 	isActiveReasoning bool
 	usage             *openAIUsage
@@ -1118,6 +1174,7 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 
 		if err := json.Unmarshal([]byte(event.Data), &chunkData); err != nil {
 			s.queueRawChunk(event.Data)
+			s.finishErrored = true
 			errorChunk := &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
@@ -1140,6 +1197,7 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 			if rawChunk != nil {
 				s.flushQueue = append(s.flushQueue, rawChunk)
 			}
+			s.finishErrored = true
 			errorChunk := &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: openAIStreamErrorText(chunkData.Error),
@@ -1264,6 +1322,7 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 				}
 				s.outputStarted = true
 				s.finishSeen = true
+				s.finishErrored = false
 				s.finishRaw = *choice.FinishReason
 				s.closeBlocksAndToolCalls()
 			}
@@ -1358,6 +1417,9 @@ func (s *openAIStream) endStream() {
 			Type:            provider.ChunkTypeFinish,
 			FinishReason:    providerutils.MapOpenAIFinishReason(s.finishRaw),
 			RawFinishReason: s.finishRaw,
+		}
+		if s.finishErrored {
+			finish.FinishReason, finish.RawFinishReason = types.FinishReasonError, ""
 		}
 		var details *struct {
 			ReasoningTokens          *int `json:"reasoning_tokens,omitempty"`

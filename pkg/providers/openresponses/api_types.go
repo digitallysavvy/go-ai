@@ -276,11 +276,30 @@ type Usage struct {
 	// Detailed token breakdown
 	InputTokensDetails  *InputTokensDetails  `json:"input_tokens_details,omitempty"`
 	OutputTokensDetails *OutputTokensDetails `json:"output_tokens_details,omitempty"`
+
+	// rawWire is the usage object exactly as the API sent it (TS usage.raw).
+	rawWire map[string]interface{}
+}
+
+// UnmarshalJSON decodes the typed fields and keeps the wire object.
+func (u *Usage) UnmarshalJSON(b []byte) error {
+	type plain Usage
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	*u = Usage(p)
+	var raw map[string]interface{}
+	if json.Unmarshal(b, &raw) == nil {
+		u.rawWire = raw
+	}
+	return nil
 }
 
 // InputTokensDetails provides detailed input token information
 type InputTokensDetails struct {
-	CachedTokens int `json:"cached_tokens,omitempty"`
+	CachedTokens     int  `json:"cached_tokens,omitempty"`
+	CacheWriteTokens *int `json:"cache_write_tokens,omitempty"`
 }
 
 // OutputTokensDetails provides detailed output token information

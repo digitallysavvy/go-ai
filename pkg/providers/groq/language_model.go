@@ -82,6 +82,14 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if err != nil {
 		return nil, err
 	}
+	providerutils.ApplyWireUsageRawSchema(result, resp.Body, providerutils.UsageRawSchema{
+		Keys: []string{"prompt_tokens", "completion_tokens", "total_tokens"},
+		Nested: map[string][]string{
+			"prompt_tokens_details":     {"cached_tokens"},
+			"completion_tokens_details": {"reasoning_tokens"},
+		},
+	})
+	result.RawRequest = reqBody
 	applyJSONResponseToolResult(result, response, m.jsonResponseToolName(opts))
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
@@ -123,8 +131,10 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 
 func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning) {
 	body := map[string]interface{}{
-		"model":  m.modelID,
-		"stream": stream,
+		"model": m.modelID,
+	}
+	if stream {
+		body["stream"] = true
 	}
 	// AssistantToolCallContentMode: Text -- Groq's own TS converter
 	// (convert-to-groq-chat-messages.ts) always sets `content: text`
@@ -511,6 +521,8 @@ type groqStream struct {
 	includeRawChunks  bool
 	responseHeaders   map[string]string
 	metadataEmitted   bool
+	finishEmitted     bool // a finish chunk has been queued
+	finishErrored     bool // TS finishReason={unified:"error"} after a parse/error chunk
 	// requestBody is the raw request body this stream was opened with,
 	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
 	// "stream request body field").
@@ -559,10 +571,16 @@ func (s *groqStream) Next() (*provider.StreamChunk, error) {
 		}
 		event, err := s.parser.Next()
 		if err != nil {
+			if err == io.EOF && s.queueFinishAtEnd() {
+				continue
+			}
 			s.err = err
 			return nil, err
 		}
 		if streaming.IsStreamDone(event) {
+			if s.queueFinishAtEnd() {
+				continue
+			}
 			s.err = io.EOF
 			return nil, io.EOF
 		}
@@ -580,6 +598,7 @@ func (s *groqStream) Next() (*provider.StreamChunk, error) {
 		}
 		var chunkData groqStreamChunk
 		if err := json.Unmarshal([]byte(event.Data), &chunkData); err != nil {
+			s.finishErrored = true
 			errorChunk := &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
@@ -591,6 +610,7 @@ func (s *groqStream) Next() (*provider.StreamChunk, error) {
 			return errorChunk, nil
 		}
 		if len(chunkData.Error) > 0 {
+			s.finishErrored = true
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: groqStreamErrorText(chunkData.Error),
@@ -701,7 +721,37 @@ func groqStreamErrorText(raw json.RawMessage) string {
 	return string(raw)
 }
 
+// queueFinishAtEnd mirrors TS's flush(): when the stream ends without a
+// finish_reason the terminal finish part is still emitted (reason "other", or
+// "error" after a parse/error chunk). It reports whether it queued anything.
+func (s *groqStream) queueFinishAtEnd() bool {
+	if s.finishEmitted {
+		return false
+	}
+	s.finishEmitted = true
+	if s.isActiveReasoning {
+		s.isActiveReasoning = false
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
+	}
+	for _, chunk := range s.toolCallTracker.Flush() {
+		c := chunk
+		s.flushQueue = append(s.flushQueue, &c)
+	}
+	finish := &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonOther}
+	if s.finishErrored {
+		finish.FinishReason = types.FinishReasonError
+	}
+	if s.pendingUsage != nil {
+		u := convertGroqUsage(*s.pendingUsage)
+		finish.Usage = &u
+	}
+	s.flushQueue = append(s.flushQueue, finish)
+	return true
+}
+
 func (s *groqStream) flushGroqToolCalls(finishReason string) {
+	s.finishEmitted = true
+	s.finishErrored = false
 	if s.isActiveReasoning {
 		s.isActiveReasoning = false
 		s.flushQueue = append([]*provider.StreamChunk{

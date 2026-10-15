@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"strings"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -274,6 +275,24 @@ func toOpenAIMessages(messages []types.Message, opt ToOpenAIMessagesOptions, ref
 
 		// Assistant messages that made tool calls must carry the tool_calls array
 		// so that the subsequent tool role messages are considered valid by OpenAI.
+		if msg.Role == types.RoleAssistant && len(msg.ToolCalls) == 0 {
+			// TS-shaped assistant messages carry tool calls as content parts.
+			for _, part := range msg.Content {
+				var tc types.ToolCallContent
+				switch p := part.(type) {
+				case types.ToolCallContent:
+					tc = p
+				case *types.ToolCallContent:
+					if p == nil {
+						continue
+					}
+					tc = *p
+				default:
+					continue
+				}
+				msg.ToolCalls = append(msg.ToolCalls, types.ToolCall{ID: tc.ToolCallID, ToolName: tc.ToolName, Arguments: tc.Arguments, RawArguments: tc.Input})
+			}
+		}
 		if msg.Role == types.RoleAssistant && len(msg.ToolCalls) > 0 {
 			toolCalls := openAIToolCalls(msg.ToolCalls, opt.SanitizeReplayedToolCallArguments)
 			openAIMsg["tool_calls"] = toolCalls
@@ -424,7 +443,7 @@ func openAIToolCalls(toolCalls []types.ToolCall, sanitizeReplayedArguments bool)
 			if args == nil {
 				args = map[string]interface{}{}
 			}
-			argsJSON, _ := marshalJSONLikeJS(args)
+			argsJSON, _ := jsonstr.Marshal(args)
 			arguments = string(argsJSON)
 		}
 		result = append(result, map[string]interface{}{

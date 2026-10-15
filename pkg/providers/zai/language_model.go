@@ -86,6 +86,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, m.handleError(err)
 	}
 	result := m.convertResponse(response)
+	providerutils.ApplyWireUsageRaw(result, resp.Body)
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	return result, nil
@@ -112,7 +113,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	inner := newZaiStream(httpResp.Body)
 	inner.SetRequestBody(reqBody)
 	inner.IncludeRawChunks = opts.IncludeRawChunks
-	inner.responseHeaders = providerutils.ExtractHeaders(httpResp.Header)
+	inner.ResponseHeaders = providerutils.ExtractHeaders(httpResp.Header)
 	return streaming.NewWarningsStream(inner, warnings), nil
 }
 
@@ -407,8 +408,6 @@ type zaiUsage struct {
 
 type zaiStream struct {
 	*streaming.OpenAICompatStream
-	responseHeaders         map[string]string
-	responseMetadataEmitted bool
 }
 
 // newZaiStream wraps the shared OpenAICompatStream, adding Z.AI's
@@ -426,6 +425,7 @@ func newZaiStream(reader io.ReadCloser) *zaiStream {
 	s := &zaiStream{
 		OpenAICompatStream: streaming.NewOpenAICompatStream(reader, mapZaiFinishReason),
 	}
+	s.MetadataKey = "zai"
 	s.OnReasoningDelta = func(eventBytes []byte) (string, bool) {
 		var chunk struct {
 			Choices []struct {
@@ -439,32 +439,6 @@ func newZaiStream(reader io.ReadCloser) *zaiStream {
 		}
 		rc := chunk.Choices[0].Delta.ReasoningContent
 		return rc, rc != ""
-	}
-	s.OnBeforeDelta = func(data []byte) []*provider.StreamChunk {
-		var peek struct {
-			ID      string `json:"id"`
-			Model   string `json:"model"`
-			Created int64  `json:"created"`
-		}
-		if json.Unmarshal(data, &peek) != nil {
-			return nil
-		}
-		if s.responseMetadataEmitted || (peek.ID == "" && peek.Model == "" && peek.Created == 0 && len(s.responseHeaders) == 0) {
-			return nil
-		}
-		s.responseMetadataEmitted = true
-		meta := &provider.ResponseMetadata{
-			ID:      peek.ID,
-			ModelID: peek.Model,
-			Headers: s.responseHeaders,
-		}
-		if peek.Created != 0 {
-			meta.Timestamp = time.Unix(peek.Created, 0)
-		}
-		return []*provider.StreamChunk{{
-			Type:             provider.ChunkTypeResponseMetadata,
-			ResponseMetadata: meta,
-		}}
 	}
 	return s
 }

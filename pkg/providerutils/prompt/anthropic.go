@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/media"
@@ -1857,7 +1858,7 @@ func stringValue(v interface{}) string {
 
 // jsonStringify mirrors JSON.stringify for tool output values.
 func jsonStringify(v interface{}) string {
-	data, err := marshalJSONLikeJS(v)
+	data, err := jsonstr.Marshal(v)
 	if err != nil {
 		return fmt.Sprintf("%v", v)
 	}

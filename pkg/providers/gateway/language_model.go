@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -81,34 +83,42 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	}
 
 	// Create headers for the request
-	headers := m.getModelConfigHeaders(false)
+	// TS combineHeaders(config, options.headers, model headers, o11y): per-call
+	// headers sit between the client's and the model's own.
+	headers := internalhttp.MergeHeaders(opts.Headers, m.getModelConfigHeaders(false))
 
 	// Add observability headers if in Vercel environment
 	o11y := GetO11yHeaders(ctx)
 	AddO11yHeaders(headers, o11y)
 
-	// Make API request. Warnings are decoded separately as raw JSON (TS parity:
-	// gateway-language-model.ts doGenerate spreads `responseBody.warnings ?? []`)
-	// so that an absent field defaults to an empty slice and a malformed one
-	// does not fail the whole decode.
-	var wire struct {
-		types.GenerateResult
-		Warnings json.RawMessage `json:"warnings,omitempty"`
-	}
-	err = m.provider.client.DoJSON(ctx, internalhttp.Request{
+	// Make the API request; the body is a LanguageModelV4GenerateResult.
+	var raw json.RawMessage
+	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/language-model",
 		Body:    reqBody,
 		Headers: headers,
-	}, &wire)
+	}, &raw)
 	if err != nil {
 		return nil, m.handleErrorWithContext(ctx, err)
 	}
 
-	result := wire.GenerateResult
-	result.Warnings = parseGatewayWarnings(wire.Warnings)
-
-	return &result, nil
+	result, err := decodeV4GenerateResult(httpResp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode gateway response: %w", err)
+	}
+	// TS: request { body: args }, response { headers, body: rawResponse }.
+	result.RawRequest = reqBody
+	result.ResponseHeaders = providerutils.ExtractHeaders(httpResp.Headers)
+	var rawResponse interface{}
+	if json.Unmarshal(httpResp.Body, &rawResponse) == nil {
+		result.RawResponse = rawResponse
+	}
+	if result.ResponseMetadata == nil {
+		result.ResponseMetadata = &types.ResponseMetadata{}
+	}
+	result.ResponseMetadata.Headers = result.ResponseHeaders
+	return result, nil
 }
 
 // parseGatewayWarnings tolerantly decodes a gateway response's "warnings"
@@ -136,7 +146,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 
 	// Create headers for the request
-	headers := m.getModelConfigHeaders(true)
+	headers := internalhttp.MergeHeaders(opts.Headers, m.getModelConfigHeaders(true))
 	headers["Accept"] = "text/event-stream"
 
 	// Add observability headers if in Vercel environment
@@ -217,14 +227,10 @@ type gatewayStreamChunk struct {
 	ToolCallArgsJSON map[string]interface{} `json:"-"` // Parsed from ToolCallArgs
 
 	// For finish chunks
-	FinishReason types.FinishReason `json:"finishReason,omitempty"`
+	FinishReason v4FinishReason `json:"finishReason,omitempty"`
 
-	// For usage chunks
-	Usage *struct {
-		PromptTokens     *int64 `json:"promptTokens,omitempty"`
-		CompletionTokens *int64 `json:"completionTokens,omitempty"`
-		TotalTokens      *int64 `json:"totalTokens,omitempty"`
-	} `json:"usage,omitempty"`
+	// For usage / finish chunks (V4 usage object or the older flat counts)
+	Usage *v4Usage `json:"usage,omitempty"`
 
 	// For error chunks. The Gateway server is itself built on this SDK and
 	// forwards a stream part shaped exactly like the origin provider's own
@@ -258,6 +264,9 @@ type gatewayStreamChunk struct {
 	ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
 
 	raw map[string]interface{}
+
+	// part is the same event decoded with the V4 field names.
+	part v4Part
 }
 
 // Close implements io.Closer
@@ -304,6 +313,7 @@ func (s *gatewayTextStream) Next() (*provider.StreamChunk, error) {
 			return nil, s.err
 		}
 		_ = json.Unmarshal([]byte(event.Data), &chunk.raw)
+		_ = json.Unmarshal([]byte(event.Data), &chunk.part)
 
 		// Convert Gateway chunk to provider StreamChunk.
 		result, convertErr, ok := s.convertChunk(&chunk)
@@ -374,6 +384,7 @@ func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.S
 			Type:             provider.ChunkTypeTextEnd,
 			ID:               chunk.ID,
 			ProviderMetadata: chunk.ProviderMetadata,
+			Citations:        chunk.part.citations(),
 		}, nil, true
 
 	case "reasoning-start":
@@ -402,7 +413,43 @@ func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.S
 			ProviderMetadata: chunk.ProviderMetadata,
 		}, nil, true
 
-	case "tool-call", "tool-call-delta":
+	case "tool-input-start":
+		return &provider.StreamChunk{
+			Type: provider.ChunkTypeToolInputStart,
+			ID:   chunk.part.ID,
+			ToolCall: &types.ToolCall{
+				ID:               chunk.part.ID,
+				ToolName:         chunk.part.ToolName,
+				ProviderExecuted: chunk.part.ProviderExecuted,
+				Dynamic:          chunk.part.Dynamic,
+				Title:            chunk.part.Title,
+			},
+		}, nil, true
+
+	case "tool-input-delta":
+		return &provider.StreamChunk{
+			Type: provider.ChunkTypeToolInputDelta,
+			ID:   chunk.part.ID,
+			Text: chunk.part.Delta,
+		}, nil, true
+
+	case "tool-input-end":
+		return &provider.StreamChunk{
+			Type:     provider.ChunkTypeToolInputEnd,
+			ID:       chunk.part.ID,
+			ToolCall: &types.ToolCall{ID: chunk.part.ID},
+		}, nil, true
+
+	case "tool-call":
+		// V4: input is the raw JSON string. The older flat shape carried
+		// toolCallArgs / toolCallName.
+		if chunk.part.ToolName != "" || len(chunk.part.Input) > 0 {
+			tc := chunk.part.toolCall()
+			return &provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &tc}, nil, true
+		}
+		fallthrough
+
+	case "tool-call-delta":
 		// Parse tool call arguments if present
 		var args map[string]interface{}
 		if chunk.ToolCallArgs != "" {
@@ -420,21 +467,40 @@ func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.S
 			},
 		}, nil, true
 
+	case "tool-result":
+		tr := chunk.part.toolResult()
+		tr.ProviderMetadata = nil
+		return &provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &tr}, nil, true
+
+	case "tool-approval-request":
+		return &provider.StreamChunk{
+			Type: provider.ChunkTypeToolApprovalRequest,
+			ToolApprovalRequest: &types.ToolApprovalRequestContent{
+				ApprovalID: chunk.part.ApprovalID,
+				ToolCallID: chunk.part.ToolCallID,
+			},
+		}, nil, true
+
+	case "reasoning-file":
+		fd := decodeV4FileData(chunk.part.Data, chunk.part.MediaType)
+		return &provider.StreamChunk{
+			Type: provider.ChunkTypeReasoningFile,
+			ReasoningFileContent: &types.ReasoningFileContent{
+				MediaType: chunk.part.MediaType, FileData: fd, ProviderMetadata: chunk.part.ProviderMetadata,
+			},
+		}, nil, true
+
 	case "finish":
 		result := &provider.StreamChunk{
-			Type:         provider.ChunkTypeFinish,
-			FinishReason: chunk.FinishReason,
+			Type:             provider.ChunkTypeFinish,
+			FinishReason:     chunk.FinishReason.toTypes(),
+			RawFinishReason:  chunk.FinishReason.Raw,
+			ProviderMetadata: chunk.ProviderMetadata,
 		}
-
-		// Add usage information if present
-		if chunk.Usage != nil {
-			result.Usage = &types.Usage{
-				InputTokens:  chunk.Usage.PromptTokens,
-				OutputTokens: chunk.Usage.CompletionTokens,
-				TotalTokens:  chunk.Usage.TotalTokens,
-			}
+		if chunk.Usage != nil && chunk.Usage.set {
+			u := chunk.Usage.usage
+			result.Usage = &u
 		}
-
 		return result, nil, true
 
 	case "source":
@@ -490,15 +556,9 @@ func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.S
 		}, nil, true
 
 	case "usage":
-		if chunk.Usage != nil {
-			return &provider.StreamChunk{
-				Type: provider.ChunkTypeUsage,
-				Usage: &types.Usage{
-					InputTokens:  chunk.Usage.PromptTokens,
-					OutputTokens: chunk.Usage.CompletionTokens,
-					TotalTokens:  chunk.Usage.TotalTokens,
-				},
-			}, nil, true
+		if chunk.Usage != nil && chunk.Usage.set {
+			u := chunk.Usage.usage
+			return &provider.StreamChunk{Type: provider.ChunkTypeUsage, Usage: &u}, nil, true
 		}
 		// Skip empty usage chunks
 		return nil, nil, false
@@ -554,50 +614,14 @@ func (s *gatewayTextStream) Err() error {
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, streaming bool) (map[string]interface{}, error) {
 	body := make(map[string]interface{})
 
-	// Convert prompt - gateway expects the V3 format
-	if opts.Prompt.IsMessages() {
-		// Convert messages to the format expected by gateway
-		messages := make([]map[string]interface{}, 0, len(opts.Prompt.Messages))
-		for _, msg := range opts.Prompt.Messages {
-			message := map[string]interface{}{
-				"role": string(msg.Role),
-			}
-
-			// Convert content parts
-			if len(msg.Content) > 0 {
-				content := make([]map[string]interface{}, 0, len(msg.Content))
-				for _, part := range msg.Content {
-					contentPart, err := m.convertContentPart(part)
-					if err != nil {
-						return nil, err
-					}
-					content = append(content, contentPart)
-				}
-				message["content"] = content
-			}
-
-			messages = append(messages, message)
-		}
-		body["prompt"] = messages
-	} else if opts.Prompt.IsSimple() {
-		// Simple text prompt - convert to user message
-		body["prompt"] = []map[string]interface{}{
-			{
-				"role": "user",
-				"content": []map[string]interface{}{
-					{
-						"type": "text",
-						"text": opts.Prompt.Text,
-					},
-				},
-			},
-		}
+	// The gateway receives LanguageModelV4CallOptions: the prompt is an array of
+	// role messages (system content is a plain string), and every setting
+	// uses its V4 name.
+	prompt, err := m.buildPromptV4(opts)
+	if err != nil {
+		return nil, err
 	}
-
-	// Add system message if present
-	if opts.Prompt.System != "" {
-		body["system"] = opts.Prompt.System
-	}
+	body["prompt"] = prompt
 
 	// Add temperature
 	if opts.Temperature != nil {
@@ -631,7 +655,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, streami
 
 	// Add max tokens
 	if opts.MaxTokens != nil {
-		body["maxTokens"] = *opts.MaxTokens
+		body["maxOutputTokens"] = *opts.MaxTokens
 	}
 
 	// Add seed
@@ -656,7 +680,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, streami
 		body["responseFormat"] = format
 	}
 
-	// Add tools
+	// Add tools (V4 function / provider tools)
 	if len(opts.Tools) > 0 {
 		tools := make([]map[string]interface{}, 0, len(opts.Tools))
 		for _, tool := range opts.Tools {
@@ -672,10 +696,16 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, streami
 				tools = append(tools, toolMap)
 				continue
 			}
-			toolMap["description"] = tool.Description
-			toolMap["parameters"] = tool.Parameters
-			if tool.ProviderExecuted {
-				toolMap["providerExecuted"] = true
+			toolMap["type"] = "function"
+			if tool.Description != "" {
+				toolMap["description"] = tool.Description
+			}
+			toolMap["inputSchema"] = gatewayInputSchema(tool.Parameters)
+			if tool.Strict != nil {
+				toolMap["strict"] = *tool.Strict
+			}
+			if len(tool.InputExamples) > 0 {
+				toolMap["inputExamples"] = tool.InputExamples
 			}
 			tools = append(tools, toolMap)
 		}
@@ -684,10 +714,18 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, streami
 
 	// Add tool choice
 	if opts.ToolChoice.Type != "" {
-		body["toolChoice"] = map[string]interface{}{
-			"type":     string(opts.ToolChoice.Type),
-			"toolName": opts.ToolChoice.ToolName,
+		choice := map[string]interface{}{"type": string(opts.ToolChoice.Type)}
+		if opts.ToolChoice.Type == types.ToolChoiceTool {
+			choice["toolName"] = opts.ToolChoice.ToolName
 		}
+		body["toolChoice"] = choice
+	}
+
+	if opts.Reasoning != nil {
+		body["reasoning"] = string(*opts.Reasoning)
+	}
+	if opts.IncludeRawChunks {
+		body["includeRawChunks"] = true
 	}
 
 	// Add headers
@@ -800,23 +838,17 @@ func (m *LanguageModel) convertContentPart(part types.ContentPart) (map[string]i
 		return result, nil
 
 	case types.ImageContent:
-		result := map[string]interface{}{
-			"type": "image",
+		// V4 has no image part: images are file parts with an image media type.
+		mediaType := v.MimeType
+		if mediaType == "" {
+			mediaType = "image/*"
 		}
-
-		// Handle image URL or data
+		result := map[string]interface{}{"type": "file", "mediaType": mediaType}
 		if v.URL != "" {
-			result["image"] = v.URL
-		} else if len(v.Image) > 0 {
-			// Image is binary data - encode as base64 data URL
-			mediaType := v.MimeType
-			if mediaType == "" {
-				mediaType = "image/jpeg"
-			}
-			encoded := base64.StdEncoding.EncodeToString(v.Image)
-			result["image"] = fmt.Sprintf("data:%s;base64,%s", mediaType, encoded)
+			result["data"] = map[string]interface{}{"type": "url", "url": v.URL}
+		} else {
+			result["data"] = map[string]interface{}{"type": "data", "data": base64.StdEncoding.EncodeToString(v.Image)}
 		}
-
 		addProviderOptions(result, v.ProviderOptions)
 		return result, nil
 
@@ -861,6 +893,49 @@ func (m *LanguageModel) convertContentPart(part types.ContentPart) (map[string]i
 
 	case types.ToolResultContent:
 		return gatewayToolResultMap(v)
+
+	case types.ReasoningContent:
+		result := map[string]interface{}{"type": "reasoning", "text": v.Text}
+		addProviderOptions(result, v.ProviderOptions)
+		return result, nil
+
+	case types.ToolCallContent:
+		var input interface{} = v.Arguments
+		if v.Input != "" {
+			var parsed interface{}
+			if json.Unmarshal([]byte(v.Input), &parsed) == nil {
+				input = parsed
+			}
+		}
+		if input == nil {
+			input = map[string]interface{}{}
+		}
+		result := map[string]interface{}{
+			"type":       "tool-call",
+			"toolCallId": v.ToolCallID,
+			"toolName":   v.ToolName,
+			"input":      input,
+		}
+		if v.ProviderExecuted {
+			result["providerExecuted"] = true
+		}
+		addProviderOptions(result, v.ProviderOptions)
+		return result, nil
+
+	case types.CustomContent:
+		result := map[string]interface{}{"type": "custom", "kind": v.Kind}
+		addProviderOptions(result, v.ProviderOptions)
+		return result, nil
+
+	case types.ToolApprovalResponseContent:
+		result := map[string]interface{}{"type": "tool-approval-response", "approvalId": v.ApprovalID, "approved": v.Approved}
+		if v.Reason != "" {
+			result["reason"] = v.Reason
+		}
+		return result, nil
+
+	case types.ToolApprovalRequestContent:
+		return nil, nil // not part of the V4 prompt
 
 	default:
 		return nil, fmt.Errorf("unsupported content part type: %s", part.ContentType())
@@ -1086,4 +1161,84 @@ func (m *LanguageModel) handleErrorWithContext(ctx context.Context, err error) e
 	}
 
 	return m.provider.gatewayUnknownError(err)
+}
+
+// gatewayInputSchema returns a tool's JSON schema, defaulting to an empty
+// object schema like TS (inputSchema is required there).
+func gatewayInputSchema(parameters interface{}) interface{} {
+	if parameters == nil {
+		return map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
+	}
+	return parameters
+}
+
+// buildPromptV4 converts the SDK prompt into the LanguageModelV4Prompt the
+// gateway expects: system content is a string; user parts are text/file;
+// assistant parts are text/file/reasoning/tool-call/...; tool messages carry
+// tool-result / tool-approval-response parts.
+func (m *LanguageModel) buildPromptV4(opts *provider.GenerateOptions) ([]map[string]interface{}, error) {
+	var prompt []map[string]interface{}
+	if opts.Prompt.System != "" {
+		prompt = append(prompt, map[string]interface{}{"role": "system", "content": opts.Prompt.System})
+	}
+	if opts.Prompt.IsSimple() {
+		prompt = append(prompt, map[string]interface{}{
+			"role":    "user",
+			"content": []map[string]interface{}{{"type": "text", "text": opts.Prompt.Text}},
+		})
+		return prompt, nil
+	}
+	for _, msg := range opts.Prompt.Messages {
+		message := map[string]interface{}{"role": string(msg.Role)}
+		if len(msg.ProviderOptions) > 0 {
+			message["providerOptions"] = msg.ProviderOptions
+		}
+		if msg.Role == types.RoleSystem {
+			var text strings.Builder
+			for _, part := range msg.Content {
+				if t, ok := part.(types.TextContent); ok {
+					text.WriteString(t.Text)
+				}
+			}
+			message["content"] = text.String()
+			prompt = append(prompt, message)
+			continue
+		}
+		content := make([]map[string]interface{}, 0, len(msg.Content))
+		hasToolCallPart := false
+		for _, part := range msg.Content {
+			if _, ok := part.(types.ToolCallContent); ok {
+				hasToolCallPart = true
+			}
+			contentPart, err := m.convertContentPart(part)
+			if err != nil {
+				return nil, err
+			}
+			if contentPart != nil {
+				content = append(content, contentPart)
+			}
+		}
+		if msg.Role == types.RoleAssistant && !hasToolCallPart {
+			for _, tc := range msg.ToolCalls {
+				input := interface{}(tc.Arguments)
+				if tc.RawArguments != "" {
+					var parsed interface{}
+					if json.Unmarshal([]byte(tc.RawArguments), &parsed) == nil {
+						input = parsed
+					}
+				}
+				if input == nil {
+					input = map[string]interface{}{}
+				}
+				part := map[string]interface{}{"type": "tool-call", "toolCallId": tc.ID, "toolName": tc.ToolName, "input": input}
+				if tc.ProviderExecuted {
+					part["providerExecuted"] = true
+				}
+				content = append(content, part)
+			}
+		}
+		message["content"] = content
+		prompt = append(prompt, message)
+	}
+	return prompt, nil
 }

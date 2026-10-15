@@ -12,8 +12,12 @@ import (
 // This is used when sending tool definitions to AI providers
 func ToJSONSchema(tool types.Tool) map[string]interface{} {
 	functionDef := map[string]interface{}{
-		"name":        tool.Name,
-		"description": tool.Description,
+		"name": tool.Name,
+	}
+	// TS sends `description: tool.description`, which JSON.stringify drops
+	// when the tool has no description.
+	if tool.Description != "" {
+		functionDef["description"] = tool.Description
 	}
 
 	functionDef["parameters"] = defaultObjectSchema(tool.Parameters)

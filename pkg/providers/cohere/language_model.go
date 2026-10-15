@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"io"
 	"net/http"
 	"strings"
@@ -85,6 +86,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if err != nil {
 		return nil, err
 	}
+	result.RawRequest = reqBody
 	result.Warnings = append(warnings, result.Warnings...)
 	// TS: response { id: generation_id, headers } (no timestamp/model id).
 	result.ResponseHeaders = providerutils.ExtractHeaders(httpResp.Headers)
@@ -562,6 +564,14 @@ type cohereV2Stream struct {
 	pendingTools      map[string]*cohereV2PendingTool
 	isActiveReasoning bool
 
+	// The finish part is emitted when the stream ends (TS flush(): reason
+	// "other" until a message-end supplies one).
+	finishRaw     string
+	finishSeen    bool
+	finishUsage   json.RawMessage
+	finishQueued  bool
+	finishErrored bool
+
 	// requestBody is the raw request body this stream was opened with,
 	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
 	// "stream request body field").
@@ -571,6 +581,27 @@ type cohereV2Stream struct {
 // RequestBody implements provider.StreamRequestBody, exposing the raw
 // request body that was sent to open this stream.
 func (s *cohereV2Stream) RequestBody() interface{} { return s.requestBody }
+
+// queueFinishAtEnd queues the terminal finish part once.
+func (s *cohereV2Stream) queueFinishAtEnd() bool {
+	if s.finishQueued {
+		return false
+	}
+	s.finishQueued = true
+	finish := &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonOther}
+	if s.finishSeen {
+		finish.FinishReason = mapCohereV2FinishReason(s.finishRaw)
+		finish.RawFinishReason = s.finishRaw
+	} else if s.finishErrored {
+		finish.FinishReason = types.FinishReasonError
+	}
+	if s.finishUsage != nil {
+		u := convertCohereUsage(s.finishUsage)
+		finish.Usage = &u
+	}
+	s.flushQueue = append(s.flushQueue, finish)
+	return true
+}
 
 type cohereV2PendingTool struct {
 	id        string
@@ -634,10 +665,16 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 		}
 		event, err := s.parser.Next()
 		if err != nil {
+			if err == io.EOF && s.queueFinishAtEnd() {
+				continue
+			}
 			s.err = err
 			return nil, err
 		}
 		if streaming.IsStreamDone(event) {
+			if s.queueFinishAtEnd() {
+				continue
+			}
 			s.err = io.EOF
 			return nil, io.EOF
 		}
@@ -649,11 +686,26 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 			Delta json.RawMessage `json:"delta"`
 		}
 		if err := json.Unmarshal([]byte(event.Data), &ev); err != nil {
-			continue
+			// TS: a chunk that fails parsing becomes an error part and the
+			// finish reason turns to "error".
+			s.finishErrored = true
+			return &provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
+			}, nil
 		}
 
 		switch ev.Type {
 		case "message-start":
+			var start struct {
+				ID *string `json:"id"`
+			}
+			if json.Unmarshal([]byte(event.Data), &start) == nil && start.ID != nil && *start.ID != "" {
+				return &provider.StreamChunk{
+					Type:             provider.ChunkTypeResponseMetadata,
+					ResponseMetadata: &provider.ResponseMetadata{ID: *start.ID},
+				}, nil
+			}
 			continue
 
 		case "content-start":
@@ -741,6 +793,13 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 					name:      delta.Message.ToolCalls.Function.Name,
 					arguments: delta.Message.ToolCalls.Function.Arguments,
 				}
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+					Type:     provider.ChunkTypeToolInputStart,
+					ToolCall: &types.ToolCall{ID: id, ToolName: delta.Message.ToolCalls.Function.Name},
+				})
+				if initial := delta.Message.ToolCalls.Function.Arguments; initial != "" {
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: id, Text: initial})
+				}
 			}
 			continue
 
@@ -759,6 +818,9 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 				for _, tc := range s.pendingTools {
 					if !tc.finished {
 						tc.arguments += delta.Message.ToolCalls.Function.Arguments
+						s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+							Type: provider.ChunkTypeToolInputDelta, ID: tc.id, Text: delta.Message.ToolCalls.Function.Arguments,
+						})
 						break
 					}
 				}
@@ -776,14 +838,19 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 						args = map[string]interface{}{}
 					}
 					delete(s.pendingTools, id)
-					return &provider.StreamChunk{
-						Type: provider.ChunkTypeToolCall,
-						ToolCall: &types.ToolCall{
-							ID:        tc.id,
-							ToolName:  tc.name,
-							Arguments: args,
-						},
-					}, nil
+					input, _ := jsonstr.Marshal(args)
+					s.flushQueue = append(s.flushQueue,
+						&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: tc.id, ToolCall: &types.ToolCall{ID: tc.id, ToolName: tc.name}},
+						&provider.StreamChunk{
+							Type: provider.ChunkTypeToolCall,
+							ToolCall: &types.ToolCall{
+								ID:           tc.id,
+								ToolName:     tc.name,
+								Arguments:    args,
+								RawArguments: string(input),
+							},
+						})
+					break
 				}
 			}
 			continue
@@ -794,16 +861,11 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 				Usage        json.RawMessage `json:"usage"`
 			}
 			if err := json.Unmarshal(ev.Delta, &delta); err == nil {
-				usage := convertCohereUsage(delta.Usage)
-				return &provider.StreamChunk{
-					Type:            provider.ChunkTypeFinish,
-					FinishReason:    mapCohereV2FinishReason(delta.FinishReason),
-					RawFinishReason: delta.FinishReason,
-					Usage:           &usage,
-				}, nil
+				s.finishSeen = true
+				s.finishRaw = delta.FinishReason
+				s.finishUsage = delta.Usage
 			}
-			s.err = io.EOF
-			return nil, io.EOF
+			continue
 
 		default:
 			// citation-start, citation-end, tool-plan-delta, etc. — ignore

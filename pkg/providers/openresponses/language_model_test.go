@@ -37,9 +37,12 @@ func TestConvertResponse_ReasoningWithEncryptedContentNoID(t *testing.T) {
 		t.Fatalf("convertResponse failed: %v", convertErr)
 	}
 
-	// The reasoning text should appear in the combined output.
-	if !strings.Contains(result.Text, "thinking step") {
-		t.Errorf("expected reasoning summary in text, got %q", result.Text)
+	// Reasoning is its own content part and is not mixed into the text.
+	if !hasReasoningText(result, "thinking step") {
+		t.Errorf("expected reasoning summary in reasoning content, got %#v", result.Content)
+	}
+	if strings.Contains(result.Text, "thinking step") {
+		t.Errorf("reasoning leaked into text: %q", result.Text)
 	}
 	if !strings.Contains(result.Text, "final answer") {
 		t.Errorf("expected message text in output, got %q", result.Text)
@@ -67,8 +70,8 @@ func TestConvertResponse_ReasoningWithIDNoEncryptedContent(t *testing.T) {
 		t.Fatalf("convertResponse failed: %v", convertErr)
 	}
 
-	if !strings.Contains(result.Text, "reasoning text") {
-		t.Errorf("expected reasoning text in output, got %q", result.Text)
+	if !hasReasoningText(result, "reasoning text") {
+		t.Errorf("expected reasoning text in reasoning content, got %#v", result.Content)
 	}
 }
 
@@ -422,4 +425,13 @@ func TestBuildRequestBody_ReasoningHighAndXHighMapping(t *testing.T) {
 	if reasoningXHigh["effort"] != "xhigh" {
 		t.Fatalf("xhigh effort = %v, want xhigh", reasoningXHigh["effort"])
 	}
+}
+
+func hasReasoningText(result *types.GenerateResult, text string) bool {
+	for _, p := range result.Content {
+		if r, ok := p.(types.ReasoningContent); ok && r.Text == text {
+			return true
+		}
+	}
+	return false
 }

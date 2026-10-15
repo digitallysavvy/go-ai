@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"net/http"
 	"strings"
 
@@ -60,6 +61,13 @@ type ConvertOptions struct {
 	// with this exact name is treated as the tool_search feature; a regular
 	// function tool that happens to be named "tool_search" is not.
 	ToolSearchToolName string
+
+	// ProviderToolNames maps the SDK tool name a caller declared for an OpenAI
+	// provider-defined tool (e.g. "program" for openai.programmatic_tool_calling)
+	// to the bare provider tool name ("programmatic_tool_calling"), like the
+	// TS toolNameMapping.toProviderToolName. Names without an entry fall back
+	// to trimming an "openai." prefix.
+	ProviderToolNames map[string]string
 	// OutputSchemaToolNames holds the names of function tools that declared
 	// providerOptions.openai.outputSchema. OpenAI parses their
 	// function_call_output.output as JSON, so text-like results must be
@@ -576,7 +584,7 @@ func convertAssistantItems(msg types.Message, opts ConvertOptions) ([]interface{
 		if args == nil {
 			args = map[string]interface{}{}
 		}
-		argsJSON, _ := json.Marshal(args)
+		argsJSON, _ := jsonstr.Marshal(args)
 		namespace := ""
 		var async *bool
 		if openaiMeta, ok := tc.ProviderMetadata[providerName].(map[string]interface{}); ok {
@@ -697,7 +705,7 @@ func toolResultCaller(part types.ToolResultContent, providerName string) *ToolCa
 
 func toolCallContentArguments(part types.ToolCallContent) (map[string]interface{}, string) {
 	if part.Arguments != nil {
-		argsJSON, _ := json.Marshal(part.Arguments)
+		argsJSON, _ := jsonstr.Marshal(part.Arguments)
 		return part.Arguments, string(argsJSON)
 	}
 	if part.Input == "" {
@@ -705,14 +713,14 @@ func toolCallContentArguments(part types.ToolCallContent) (map[string]interface{
 	}
 	var parsed interface{}
 	if err := json.Unmarshal([]byte(part.Input), &parsed); err != nil {
-		argsJSON, _ := json.Marshal(part.Input)
+		argsJSON, _ := jsonstr.Marshal(part.Input)
 		return map[string]interface{}{}, string(argsJSON)
 	}
 	if args, ok := parsed.(map[string]interface{}); ok {
-		argsJSON, _ := json.Marshal(args)
+		argsJSON, _ := jsonstr.Marshal(args)
 		return args, string(argsJSON)
 	}
-	argsJSON, _ := json.Marshal(parsed)
+	argsJSON, _ := jsonstr.Marshal(parsed)
 	return map[string]interface{}{}, string(argsJSON)
 }
 
@@ -739,13 +747,13 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 			}, true
 		}
 	}
-	toolName := normalizeOpenAIToolName(tc.ToolName)
+	toolName := opts.providerToolName(tc.ToolName)
 	if tc.ToolName == opts.toolSearchName() {
 		if opts.Store && itemID != "" {
 			return map[string]interface{}{"type": "item_reference", "id": itemID}, true
 		}
 		arguments := tc.Arguments
-		rawArguments, _ := json.Marshal(arguments)
+		rawArguments, _ := jsonstr.Marshal(arguments)
 		var callID *string
 		execution := "server"
 		if rawCallID, ok := arguments["call_id"].(string); ok && rawCallID != "" {
@@ -753,7 +761,7 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 			execution = "client"
 		}
 		if nested, ok := arguments["arguments"]; ok {
-			rawArguments, _ = json.Marshal(nested)
+			rawArguments, _ = jsonstr.Marshal(nested)
 		}
 		// TS: `id: id ?? part.toolCallId` -- unlike local_shell_call/
 		// shell_call/apply_patch_call/computer_call (which use a bare `id!`
@@ -772,7 +780,7 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 			Arguments: rawArguments,
 		}, true
 	}
-	if tc.ToolName == "openai.programmatic_tool_calling" {
+	if opts.providerToolName(tc.ToolName) == "programmatic_tool_calling" {
 		// Row 1f6dd3a: checked before the generic ProviderExecuted branch
 		// below, mirroring TS placing its 'programmatic_tool_calling' check
 		// ahead of the generic providerExecuted branch.
@@ -854,7 +862,7 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 	if opts.CustomToolNames[tc.ToolName] || opts.CustomToolNames[toolName] {
 		input := tc.RawArguments
 		if input == "" {
-			raw, _ := json.Marshal(tc.Arguments)
+			raw, _ := jsonstr.Marshal(tc.Arguments)
 			input = string(raw)
 		}
 		var async *bool
@@ -945,7 +953,7 @@ func convertReasoningItem(part types.ReasoningContent, opts ConvertOptions, reas
 				// encrypted_content below) when an empty-text reasoning part
 				// would otherwise append nothing to an already-started
 				// reasoning sequence.
-				raw, _ := json.Marshal(part)
+				raw, _ := jsonstr.Marshal(part)
 				warnings = append(warnings, types.Warning{
 					Type:    "other",
 					Message: fmt.Sprintf("Cannot append empty reasoning part to existing reasoning sequence. Skipping reasoning part: %s.", raw),
@@ -971,7 +979,7 @@ func convertReasoningItem(part types.ReasoningContent, opts ConvertOptions, reas
 		// Row (P1-5c item 7): a reasoning part with neither an itemId nor
 		// encrypted_content didn't originate from this provider and cannot
 		// be replayed; TS warns instead of silently dropping it.
-		raw, _ := json.Marshal(part)
+		raw, _ := jsonstr.Marshal(part)
 		return nil, []types.Warning{{
 			Type:    "other",
 			Message: fmt.Sprintf("Non-OpenAI reasoning parts are not supported. Skipping reasoning part: %s.", raw),
@@ -1031,10 +1039,10 @@ func droppedToolResultWarning(part types.ToolResultContent, opts ConvertOptions)
 	if opts.Store || opts.HasConversation || isExecutionDeniedOutput(part.Output) {
 		return nil
 	}
-	if part.ToolName == opts.toolSearchName() || part.ToolName == "openai.programmatic_tool_calling" {
+	if part.ToolName == opts.toolSearchName() || opts.providerToolName(part.ToolName) == "programmatic_tool_calling" {
 		return nil
 	}
-	if opts.HasShellTool && normalizeOpenAIToolName(part.ToolName) == "shell" {
+	if opts.HasShellTool && opts.providerToolName(part.ToolName) == "shell" {
 		return nil
 	}
 	return &types.Warning{
@@ -1050,7 +1058,7 @@ func convertAssistantToolResultItem(part types.ToolResultContent, opts ConvertOp
 	if opts.HasConversation {
 		return nil
 	}
-	toolName := normalizeOpenAIToolName(part.ToolName)
+	toolName := opts.providerToolName(part.ToolName)
 	if isWebSearchToolName(part.ToolName, opts) {
 		// TS #22346: stateless replay re-creates the web_search_call so the
 		// search context survives across steps.
@@ -1081,7 +1089,7 @@ func convertAssistantToolResultItem(part types.ToolResultContent, opts ConvertOp
 		}
 		return nil
 	}
-	if part.ToolName == "openai.programmatic_tool_calling" {
+	if opts.providerToolName(part.ToolName) == "programmatic_tool_calling" {
 		// Row 1f6dd3a: the result of a hosted program's execution, mirroring
 		// tool_search's item_reference-first handling above.
 		itemID := firstNonEmpty(openAIToolResultItemID(part, openAIProviderOptionsName(opts)), part.ToolCallID)
@@ -1636,7 +1644,7 @@ func buildParallelFunctionCallOutput(group parallelToolResultGroup, opts Convert
 		case string:
 			parts[i] = out
 		default:
-			b, _ := json.Marshal(out)
+			b, _ := jsonstr.Marshal(out)
 			parts[i] = string(b)
 		}
 	}
@@ -1654,7 +1662,7 @@ func convertSpecialToolOutput(part types.ToolResultContent, opts ConvertOptions)
 	if part.ToolName == opts.toolSearchName() {
 		return convertToolSearchOutput(part, "client")
 	}
-	toolName := normalizeOpenAIToolName(part.ToolName)
+	toolName := opts.providerToolName(part.ToolName)
 	switch toolName {
 	case "local_shell":
 		if !opts.HasLocalShellTool {
@@ -1799,6 +1807,15 @@ func convertApplyPatchOutput(part types.ToolResultContent) interface{} {
 		Status: parsed.Status,
 		Output: parsed.Output,
 	}
+}
+
+// providerToolName resolves an SDK tool name to the bare OpenAI provider tool
+// name, honouring custom names declared for provider tools.
+func (o ConvertOptions) providerToolName(name string) string {
+	if mapped, ok := o.ProviderToolNames[name]; ok {
+		return mapped
+	}
+	return normalizeOpenAIToolName(name)
 }
 
 func normalizeOpenAIToolName(name string) string {
@@ -1965,7 +1982,7 @@ func stringMapArg(values map[string]interface{}, key string) map[string]string {
 }
 
 func decodeToolOutputJSON(value interface{}, target interface{}) bool {
-	data, err := json.Marshal(value)
+	data, err := jsonstr.Marshal(value)
 	if err != nil {
 		return false
 	}
@@ -2056,7 +2073,7 @@ func toolResultOutputWithOptions(tr types.ToolResultContent, opts ConvertOptions
 		if !hasOutputSchema {
 			return value
 		}
-		b, _ := json.Marshal(value)
+		b, _ := jsonstr.Marshal(value)
 		return string(b)
 	}
 	if tr.Output != nil {
@@ -2066,7 +2083,7 @@ func toolResultOutputWithOptions(tr types.ToolResultContent, opts ConvertOptions
 			// tell a failed execution from a successful result (TS #22209).
 			// The wrapped text is already JSON, so it is not re-encoded for
 			// tools with an output schema.
-			if b, err := json.Marshal(map[string]interface{}{"error": tr.Output.Value}); err == nil {
+			if b, err := jsonstr.Marshal(map[string]interface{}{"error": tr.Output.Value}); err == nil {
 				return string(b)
 			}
 		case types.ToolResultOutputText:
@@ -2074,7 +2091,7 @@ func toolResultOutputWithOptions(tr types.ToolResultContent, opts ConvertOptions
 				return scalarOutput(s)
 			}
 		case types.ToolResultOutputJSON:
-			if b, err := json.Marshal(tr.Output.Value); err == nil {
+			if b, err := jsonstr.Marshal(tr.Output.Value); err == nil {
 				return string(b)
 			}
 		case types.ToolResultOutputExecutionDenied:

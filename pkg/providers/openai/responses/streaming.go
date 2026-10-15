@@ -21,10 +21,27 @@ import (
 // Callers must forward the encryptedContent verbatim in subsequent
 // Responses API requests to maintain conversation continuity.
 func CompactionEventToChunk(event CompactionEvent) *provider.StreamChunk {
+	return CompactionEventToChunkForProvider(event, "openai")
+}
+
+// CompactionEventToChunkForProvider is CompactionEventToChunk for a specific
+// provider-options name (e.g. "azure"). The metadata is namespaced under that
+// name like the TS custom part's providerMetadata[providerOptionsName]; the
+// flat v0.5.2 keys are kept alongside for existing callers.
+func CompactionEventToChunkForProvider(event CompactionEvent, providerName string) *provider.StreamChunk {
+	if event.ItemID == "" {
+		event.ItemID = event.ID
+	}
+	fields := map[string]interface{}{
+		"type":             event.Type,
+		"itemId":           event.ItemID,
+		"encryptedContent": event.EncryptedContent,
+	}
 	metadata, _ := json.Marshal(map[string]interface{}{
 		"type":             event.Type,
 		"itemId":           event.ItemID,
 		"encryptedContent": event.EncryptedContent,
+		providerName:       fields,
 	})
 	return &provider.StreamChunk{
 		Type: provider.ChunkTypeCustom,

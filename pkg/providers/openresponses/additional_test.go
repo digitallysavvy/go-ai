@@ -139,7 +139,7 @@ func TestBuildRequestBodyWarningsAndReasoningMapping(t *testing.T) {
 	if _, ok := body["tools"]; ok {
 		t.Fatalf("request should omit tools field when no tools are configured like TS, got %#v", body["tools"])
 	}
-	if len(warnings) < 5 {
+	if len(warnings) < 3 {
 		t.Fatalf("expected warnings for unsupported settings, got %+v", warnings)
 	}
 	warningFeatures := map[string]bool{}
@@ -148,15 +148,14 @@ func TestBuildRequestBodyWarningsAndReasoningMapping(t *testing.T) {
 			warningFeatures[warning.Feature] = true
 		}
 	}
-	for _, feature := range []string{"frequencyPenalty", "presencePenalty", "stopSequences", "topK", "seed"} {
+	for _, feature := range []string{"stopSequences", "topK", "seed"} {
 		if !warningFeatures[feature] {
 			t.Fatalf("missing unsupported warning for %s: %+v", feature, warnings)
 		}
 	}
-	for _, key := range []string{"frequency_penalty", "presence_penalty"} {
-		if _, ok := body[key]; ok {
-			t.Fatalf("%s should be omitted for Open Responses parity: %#v", key, body)
-		}
+	// TS forwards both penalties (open-responses-language-model.ts getArgs).
+	if body["frequency_penalty"] != frequencyPenalty || body["presence_penalty"] != presencePenalty {
+		t.Fatalf("penalties should be forwarded: %#v", body)
 	}
 	reasoning := body["reasoning"].(map[string]interface{})
 	if reasoning["effort"] != "high" || reasoning["summary"] != "concise" {

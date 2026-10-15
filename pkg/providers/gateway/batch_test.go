@@ -191,8 +191,8 @@ func TestGatewayBatch_DoStartBatch_RequestBodyShape(t *testing.T) {
 	}
 	second, _ := requests[1].(map[string]interface{})
 	secondOptions, _ := second["options"].(map[string]interface{})
-	if secondOptions["maxTokens"] != float64(32) {
-		t.Fatalf("second request maxTokens = %v, want 32", secondOptions["maxTokens"])
+	if secondOptions["maxOutputTokens"] != float64(32) {
+		t.Fatalf("second request maxOutputTokens = %v, want 32", secondOptions["maxOutputTokens"])
 	}
 	if secondOptions["temperature"] != float64(0) {
 		t.Fatalf("second request temperature = %v, want 0", secondOptions["temperature"])
