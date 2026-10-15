@@ -707,3 +707,49 @@ The `runtime/debug` import is gone from both files. This is a Go-only change;
 mutation-checked by restoring `debug.Stack()` in `newProxyErr`) and
 `pkg/codemode/robustness_test.go`'s
 `TestRunawayRecursionErrorDoesNotLeakHostTrace` (WASM call path).
+
+## Catchable stack overflow (Oct 14 2026) — qjs.wasm rebuilt
+
+**Problem.** Runaway JS recursion ended in an uncatchable engine trap
+(`wasm error: out of bounds memory access`, surfaced by pkg/codemode as
+`InternalError: sandbox runtime trapped: ...`), where the TS AI SDK code-mode
+raises a script-catchable `InternalError: stack overflow`.
+
+**Root cause.** quickjs-ng's `update_stack_limit` hard-codes
+`stack_limit = 0` under `__wasi__` (and `JS_NewRuntime` sets `stack_size = 0`
+there), so `js_check_stack_overflow` can never fire; the recursion instead
+runs off the wasm shadow stack. The probe itself
+(`__builtin_frame_address(0)`) is fine under clang/wasm. Separately, the
+linked shadow stack was only ~64 KiB (initial `__stack_pointer` 165552, data
+first) and the `add_link_options("LINKER:--stack-first")` /
+`--initial-memory` lines in `qjswasm.cmake` do not reach the `qjswasm`
+target (directory-scope options added after the target exists), so they are
+no-ops in this build; they are left untouched.
+
+**Patch.** `build/wasm-stack-check.patch` (applied third by `build.sh`):
+1. `quickjs.c`: on `__wasi__` keep the check on with
+   `limit = stack_top - min(configured or 0->cap, 768 KiB)`
+   (`QJS_WASM_MAX_STACK_SIZE`), so a larger `MaxStackSize` (codemode default
+   2 MiB) or none can never exceed the linked stack.
+2. `quickjs.c`: `JS_ThrowStackOverflow` now throws
+   `InternalError: stack overflow` (was RangeError "Maximum call stack size
+   exceeded"), matching TS and classic QuickJS.
+3. `qjswasm.cmake`: `target_link_options(qjswasm PRIVATE
+   "LINKER:-z,stack-size=1048576")` (1 MiB shadow stack; 256 KiB headroom
+   above the cap for native helpers). Keep the two numbers in sync.
+
+Net effect: the effective JS stack limit is 768 KiB regardless of
+`MaxStackSize` above that; smaller values are honoured. Each instance's
+linear memory grows by ~1 MiB (the stack lives after the data segment).
+
+**Build.** `build.sh` run twice, identical output:
+
+```
+e474fc52a83dfea5e1c38c6ccf29b1321550c880c2296a80613ebb22695ca81a
+```
+
+Size 1,283,460 bytes (was 1,283,463; sha256 c91dd469...ba787d19 superseded).
+
+**Tests.** `wasm_stack_check_patch_test.go` (this package) and
+`pkg/codemode/stack_overflow_test.go`; mutation-checked by restoring the
+previous qjs.wasm (they fail/panic with the out-of-bounds trap).

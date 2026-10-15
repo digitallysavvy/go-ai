@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Rebuilds qjs.wasm (the file embedded one directory up, via go:embed in
 # runtime.go) from upstream fastschema/qjs's qjswasm/ C sources plus its
-# pinned quickjs-ng submodule, with job-queue-quiescence.patch and then
-# disable-modules.patch (both in this directory) applied on top, in that
-# order. See ../README.vendor.md for why these patches exist (concurrent
+# pinned quickjs-ng submodule, with job-queue-quiescence.patch, then
+# disable-modules.patch, then wasm-stack-check.patch (all in this directory)
+# applied on top, in that order. See ../README.vendor.md for why these patches exist (concurrent
 # code-mode tool-approval batching; rejecting every module import for
 # code-mode's sandbox) and the exact provenance of everything this script
 # fetches.
@@ -128,6 +128,9 @@ patch -p1 -d "$BUILD_ROOT" < "$SCRIPT_DIR/job-queue-quiescence.patch"
 
 echo "==> Applying ${SCRIPT_DIR}/disable-modules.patch ..."
 patch -p1 -d "$BUILD_ROOT" < "$SCRIPT_DIR/disable-modules.patch"
+
+echo "==> Applying ${SCRIPT_DIR}/wasm-stack-check.patch ..."
+patch -p1 -d "$BUILD_ROOT" < "$SCRIPT_DIR/wasm-stack-check.patch"
 
 echo "==> Configuring (wasi-sdk image: ${WASI_SDK_IMAGE}) ..."
 "$DOCKER_BIN" run --rm \
