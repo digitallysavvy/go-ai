@@ -778,6 +778,16 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			if len(toolResults) == 0 {
 				shouldContinue = false
 			}
+			// A tool call awaiting user approval pauses the loop, as in
+			// ai.GenerateText and TS WorkflowAgent: the next call resumes it
+			// with the approval response. Continuing would send the model a
+			// tool call that has no tool result.
+			for _, tr := range toolResults {
+				if tr.ApprovalStatus == types.ToolApprovalStatusUserApproval {
+					shouldContinue = false
+					break
+				}
+			}
 		}
 		responseMessages := providerutils.ConvertToResponseMessages(stepResult.ToolCalls, responseContent, stepToolResults)
 		stepResult.ResponseMessages = responseMessages

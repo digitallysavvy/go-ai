@@ -16,6 +16,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 	telemetrypkg "github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/version"
@@ -1280,6 +1281,12 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 		telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 		return nil, err
 	}
+	// TS convertToLanguageModelPrompt rejects a history whose tool calls (or
+	// unresolved approval requests) lack tool results.
+	if err := validateWorkflowToolResults(opts.Messages, effectiveWorkflowTools(w, WorkflowStreamOptions{}, opts)); err != nil {
+		telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
+		return nil, err
+	}
 	onAbort := mergeAbort(w.OnAbort, opts.OnAbort)
 	if ctx != nil && ctx.Err() != nil {
 		telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID})
@@ -1469,4 +1476,14 @@ func newWorkflowCallID() string {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+func validateWorkflowToolResults(messages []types.Message, tools []types.Tool) error {
+	var providerTools []string
+	for _, tool := range tools {
+		if tool.ProviderExecuted {
+			providerTools = append(providerTools, tool.Name)
+		}
+	}
+	return promptutils.ValidateToolResults(messages, providerTools...)
 }
