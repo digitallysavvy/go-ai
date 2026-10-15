@@ -56,7 +56,7 @@ func runResponsesStreamRecursionChild() {
 		// Unrecognized event type: hits Next()'s `default: continue` branch.
 		sb.WriteString(`data: {"type":"response.unrecognized_event"}` + "\n\n")
 	}
-	sb.WriteString(`data: {"type":"response.output_text.delta","output_index":0,"delta":"hello"}` + "\n\n")
+	sb.WriteString(`data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"delta":"hello"}` + "\n\n")
 
 	s := newResponsesStream(io.NopCloser(strings.NewReader(sb.String())), false)
 	// This call used to recurse once per unrecognized event -- 300,000 deep

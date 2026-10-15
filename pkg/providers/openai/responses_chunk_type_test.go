@@ -15,7 +15,8 @@ func TestResponsesStream_FrameWithoutTypeIsAnError(t *testing.T) {
 		`{}`:                              true,
 		`{"type":5}`:                      true,
 		`{"type":"response.brand_new"}`:   false,
-		`{"type":"response.in_progress"}`: false,
+		`{"type":"response.queued"}`:      false,
+		`{"type":"response.in_progress"}`: true,
 	} {
 		chunks := drainResponsesStream(t, "data: "+frame+"\n\ndata: [DONE]\n\n")
 		sawError := false

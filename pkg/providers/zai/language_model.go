@@ -444,6 +444,7 @@ func newZaiStream(reader io.ReadCloser) *zaiStream {
 		OpenAICompatStream: streaming.NewOpenAICompatStream(reader, mapZaiFinishReason),
 	}
 	s.MetadataKey = "zai"
+	s.ChunkErrorKind = providerutils.ChunkErrorZai
 	s.OnReasoningDelta = func(eventBytes []byte) (string, bool) {
 		var chunk struct {
 			Choices []struct {

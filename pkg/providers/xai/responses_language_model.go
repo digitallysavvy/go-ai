@@ -1184,9 +1184,11 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 
 		var peek responses.ResponsesStreamEvent
 		if err := json.Unmarshal([]byte(event.Data), &peek); err != nil {
+			msg, perr := providerutils.ChunkParseFailure(event.Data, err)
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type: provider.ChunkTypeError,
-				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
+				Text: msg,
+				Err:  perr,
 			})
 			if ok {
 				return chunk, nil
@@ -1550,9 +1552,11 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			// does not list (or a frame without a string `type`) fails the
 			// parse and becomes an error part.
 			if !xaiIgnoredEventTypes[peek.Type] {
+				msg, perr := providerutils.ChunkParseFailure(event.Data, fmt.Errorf("Invalid discriminator value %q", peek.Type))
 				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 					Type: provider.ChunkTypeError,
-					Text: fmt.Sprintf("failed to parse stream chunk: Invalid discriminator value %q", peek.Type),
+					Text: msg,
+					Err:  perr,
 				})
 				if ok {
 					return chunk, nil

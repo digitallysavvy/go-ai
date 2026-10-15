@@ -464,12 +464,22 @@ func (s *completionStream) Next() (*provider.StreamChunk, error) {
 			continue
 		}
 		var chunk openAICompletionChunk
-		if err := json.Unmarshal([]byte(event.Data), &chunk); err != nil {
+		// TS openaiCompletionChunkSchema: invalid JSON or a schema mismatch is
+		// an error part carrying a typed error; the error envelope is routed
+		// below.
+		msg, perr := providerutils.CheckChatChunk(event.Data, providerutils.ChatChunkShape{Kind: providerutils.ChunkKindOpenAICompletion})
+		if perr == nil {
+			if derr := providerutils.UnmarshalChunk([]byte(event.Data), &chunk); derr != nil {
+				msg, perr = providerutils.ChunkParseFailure(event.Data, derr)
+			}
+		}
+		if perr != nil {
 			s.queueRawChunk(event.Data)
 			s.finishReason = types.FinishReasonError
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
-				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
+				Text: msg,
+				Err:  perr,
 			})
 			continue
 		}
@@ -489,15 +499,6 @@ func (s *completionStream) Next() (*provider.StreamChunk, error) {
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: openAIStreamErrorText(chunk.Error),
-			})
-			continue
-		}
-		// TS openaiCompletionChunkSchema: choices[] with required text and index.
-		if err := providerutils.ValidateChatChunk([]byte(event.Data), providerutils.ChatChunkShape{ChoiceTextRequired: true, ChoiceIndexRequired: true}); err != nil {
-			s.finishReason = types.FinishReasonError
-			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-				Type: provider.ChunkTypeError,
-				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
 			})
 			continue
 		}

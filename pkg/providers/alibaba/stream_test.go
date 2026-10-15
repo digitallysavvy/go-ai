@@ -343,7 +343,7 @@ data: [DONE]
 	require.Len(t, chunks, 3)
 
 	assert.Equal(t, provider.ChunkTypeError, chunks[0].Type)
-	assert.Contains(t, chunks[0].Text, "failed to parse stream chunk")
+	assert.Contains(t, chunks[0].Text, "JSON parsing failed")
 
 	assert.Equal(t, provider.ChunkTypeText, chunks[1].Type)
 	assert.Equal(t, "Hello", chunks[1].Text)

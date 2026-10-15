@@ -613,11 +613,11 @@ func TestResponsesLanguageModel_DoStream_Text(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 
 		events := []string{
-			`{"type":"response.created","response":{"id":"resp_stream","model":"gpt-4o"}}`,
+			`{"type":"response.created","response":{"id":"resp_stream","created_at":1,"model":"gpt-4o"}}`,
 			`{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1"}}`,
-			`{"type":"response.output_text.delta","output_index":0,"delta":"Hello"}`,
-			`{"type":"response.output_text.delta","output_index":0,"delta":" world"}`,
-			`{"type":"response.output_item.done","output_index":0,"item":{"type":"message"}}`,
+			`{"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"delta":"Hello"}`,
+			`{"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"delta":" world"}`,
+			`{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_1"}}`,
 			`{"type":"response.completed","response":{"id":"resp_stream","usage":{"input_tokens":5,"output_tokens":3}}}`,
 		}
 		for _, e := range events {
@@ -681,11 +681,11 @@ func TestResponsesLanguageModel_DoStream_TextBoundaries(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 
 		events := []string{
-			`{"type":"response.created","response":{"id":"resp_stream","model":"gpt-4o"}}`,
+			`{"type":"response.created","response":{"id":"resp_stream","created_at":1,"model":"gpt-4o"}}`,
 			`{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","phase":"final_answer"}}`,
-			`{"type":"response.output_text.delta","output_index":0,"delta":"See "}`,
+			`{"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"delta":"See "}`,
 			`{"type":"response.output_text.annotation.added","annotation":{"type":"url_citation","url":"https://example.com","title":"Example","start_index":0,"end_index":3}}`,
-			`{"type":"response.output_text.delta","output_index":0,"delta":"this."}`,
+			`{"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"delta":"this."}`,
 			`{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_1","phase":"final_answer"}}`,
 			`{"type":"response.completed","response":{"id":"resp_stream","usage":{"input_tokens":5,"output_tokens":3}}}`,
 		}
@@ -788,9 +788,9 @@ func TestResponsesLanguageModel_DoStream_TextEndPhaseFallsBackToAddedEvent(t *te
 		w.WriteHeader(http.StatusOK)
 
 		events := []string{
-			`{"type":"response.created","response":{"id":"resp_stream","model":"gpt-4o"}}`,
+			`{"type":"response.created","response":{"id":"resp_stream","created_at":1,"model":"gpt-4o"}}`,
 			`{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","phase":"final_answer"}}`,
-			`{"type":"response.output_text.delta","output_index":0,"delta":"Hi."}`,
+			`{"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"delta":"Hi."}`,
 			`{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_1"}}`,
 			`{"type":"response.completed","response":{"id":"resp_stream","usage":{"input_tokens":5,"output_tokens":3}}}`,
 		}
@@ -843,7 +843,7 @@ func TestResponsesLanguageModel_DoStreamIncludesRawChunks(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, `data: {"type":"response.created","response":{"id":"resp_1","created_at":1702657020,"model":"gpt-4o"}}
 
-data: {"type":"response.output_text.delta","delta":"Hello"}
+data: {"type":"response.output_text.delta","item_id":"msg_1","delta":"Hello"}
 
 data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}
 
@@ -934,7 +934,7 @@ data: [DONE]
 	if chunk.Type != provider.ChunkTypeError {
 		t.Fatalf("second chunk type = %v, want error", chunk.Type)
 	}
-	if !strings.Contains(chunk.Text, "failed to parse stream chunk") {
+	if !strings.Contains(chunk.Text, "JSON parsing failed") {
 		t.Fatalf("error text = %q, want parse failure", chunk.Text)
 	}
 }
@@ -942,7 +942,7 @@ data: [DONE]
 func TestResponsesLanguageModel_DoStreamEarlyProviderErrorReturnsError(t *testing.T) {
 	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_error","created_at":1741269019,"model":"gpt-4o"}}
 
-data: {"type":"error","code":"rate_limit_exceeded","message":"boom"}
+data: {"type":"error","sequence_number":1,"code":"rate_limit_exceeded","message":"boom"}
 
 data: [DONE]
 
@@ -1044,7 +1044,7 @@ data: {"type":"response.failed","sequence_number":1,"response":{"id":"resp_1","e
 func TestResponsesLanguageModel_DoStreamMidStreamErrorEventAttachesStructuredPayload(t *testing.T) {
 	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1"}}
 
-data: {"type":"error","message":"rate limited","code":"rate_limit_exceeded"}
+data: {"type":"error","sequence_number":1,"message":"rate limited","code":"rate_limit_exceeded"}
 
 `)), false)
 	defer stream.Close() //nolint:errcheck
@@ -1123,12 +1123,13 @@ func TestResponsesLanguageModel_DoStream_ToolCall(t *testing.T) {
 			"call_id":   "call_xyz",
 			"name":      "search",
 			"namespace": "search_tools",
+			"status":    "completed",
 			"arguments": `{"query":"go lang"}`,
 		})
 		events := []string{
-			`{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_xyz","call_id":"call_xyz","name":"search","namespace":"search_tools"}}`,
-			`{"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"query\":"}`,
-			`{"type":"response.function_call_arguments.delta","output_index":0,"delta":"\"go lang\"}"}`,
+			`{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_xyz","call_id":"call_xyz","name":"search","arguments":"","namespace":"search_tools"}}`,
+			`{"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"{\"query\":"}`,
+			`{"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"\"go lang\"}"}`,
 			fmt.Sprintf(`{"type":"response.output_item.done","output_index":0,"item":%s}`, string(callDoneItem)),
 			`{"type":"response.completed","response":{"id":"r1","usage":{"input_tokens":5,"output_tokens":5}}}`,
 		}
@@ -2690,7 +2691,7 @@ func TestResponsesLanguageModel_DoStreamChatCompletionsMismatchError(t *testing.
 // ChunkTypeError chunk, and forces the eventual finish reason to "error"
 // even though the terminal event itself reports a normal completion.
 func TestResponsesLanguageModel_DoStreamKnownEventDecodeErrorForcesErrorFinish(t *testing.T) {
-	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_text.delta","delta":123}
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_text.delta","item_id":"msg_1","delta":123}
 
 data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}
 
@@ -2755,7 +2756,7 @@ func TestResponsesLanguageModel_ApplyPatchCallDecodesAsToolCall(t *testing.T) {
 // TestResponsesLanguageModel_StreamApplyPatchCallDecodesAsToolCall covers row
 // 45f2b6a for the streaming path.
 func TestResponsesLanguageModel_StreamApplyPatchCallDecodesAsToolCall(t *testing.T) {
-	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"apply_patch_call","id":"ap_1","call_id":"call_1","operation":{"type":"delete_file","path":"bar.go"}}}
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"apply_patch_call","id":"ap_1","call_id":"call_1","status":"in_progress","operation":{"type":"delete_file","path":"bar.go"}}}
 
 data: {"type":"response.output_item.done","output_index":0,"item":{"type":"apply_patch_call","id":"ap_1","call_id":"call_1","status":"completed","operation":{"type":"delete_file","path":"bar.go"}}}
 
@@ -2823,7 +2824,7 @@ data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reaso
 func TestResponsesLanguageModel_StreamFailedRawFinishReason(t *testing.T) {
 	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.created","response":{"id":"resp_1","created_at":1741269019,"model":"gpt-4o"}}
 
-data: {"type":"response.failed","response":{"id":"resp_1","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":1,"output_tokens":1}}}
+data: {"type":"response.failed","sequence_number":1,"response":{"id":"resp_1","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":1,"output_tokens":1}}}
 
 `)), false)
 	defer stream.Close() //nolint:errcheck
@@ -2989,7 +2990,7 @@ func TestResponsesLanguageModel_ComputerToolPrepareAndDecode(t *testing.T) {
 	}
 
 	// Streaming path.
-	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"computer_call","id":"cu_1"}}
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"computer_call","id":"cu_1","status":"in_progress"}}
 
 data: {"type":"response.output_item.done","output_index":0,"item":{"type":"computer_call","id":"cu_1","call_id":"call_1","status":"completed","actions":[{"type":"screenshot"}],"pending_safety_checks":[]}}
 
@@ -3041,7 +3042,7 @@ func TestResponsesLanguageModel_ComputerToolNullCallIDIsProviderExecuted(t *test
 	}
 
 	// Streaming path emits tool-input-end, tool-call, then tool-result.
-	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"computer_call","id":"computer_1"}}
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"computer_call","id":"computer_1","status":"in_progress"}}
 
 data: {"type":"response.output_item.done","output_index":0,"item":{"type":"computer_call","id":"computer_1","status":"completed"}}
 
@@ -3203,7 +3204,7 @@ func TestResponsesLanguageModel_ProgrammaticToolCallingPrepareAndDecode(t *testi
 
 	// Streaming path: "program" and "program_output" are separate output
 	// items, each decoded on its own output_item.done event.
-	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"program","id":"pg_1"}}
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"program","id":"pg_1","call_id":"call_1","code":"","fingerprint":"fp"}}
 
 data: {"type":"response.output_item.done","output_index":0,"item":{"type":"program","id":"pg_1","call_id":"call_1","code":"callTool('lookup', {})","fingerprint":"fp_1"}}
 
@@ -3218,7 +3219,7 @@ data: {"type":"response.output_item.done","output_index":0,"item":{"type":"progr
 		t.Fatalf("chunk = %#v, want a provider-executed openai.programmatic_tool_calling tool call", chunk)
 	}
 
-	outputStream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":1,"item":{"type":"program_output","id":"pgo_1"}}
+	outputStream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":1,"item":{"type":"program_output","id":"pgo_1","call_id":"call_1","result":"","status":"completed"}}
 
 data: {"type":"response.output_item.done","output_index":1,"item":{"type":"program_output","id":"pgo_1","call_id":"call_1","result":"42","status":"completed"}}
 
@@ -3408,11 +3409,11 @@ func TestResponsesLanguageModel_ParallelToolCallExpandsDeclaredTools(t *testing.
 
 	// Streaming path: the wrapper's arguments arrive as one delta, expansion
 	// happens at output_item.done.
-	stream := newResponsesStreamWithMetadata(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_p","name":"parallel"}}
+	stream := newResponsesStreamWithMetadata(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_p","name":"parallel","arguments":"","status":"completed"}}
 
-data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"`+strings.ReplaceAll(rawInput, `"`, `\"`)+`"}
+data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"`+strings.ReplaceAll(rawInput, `"`, `\"`)+`"}
 
-data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_p","name":"parallel","arguments":""}}
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_p","name":"parallel","arguments":"","status":"completed"}}
 
 `)), false, "web_search", "openai", nil)
 	stream.tools = tools

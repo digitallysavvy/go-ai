@@ -449,6 +449,7 @@ type fireworksStream struct {
 func newFireworksStream(reader io.ReadCloser) *fireworksStream {
 	s := streaming.NewOpenAICompatStream(reader, providerutils.MapOpenAIFinishReason)
 	s.MetadataKey = "fireworks"
+	s.ChunkErrorKind = providerutils.ChunkErrorStringOrObject
 	s.OnReasoningDelta = func(eventBytes []byte) (string, bool) {
 		var chunk struct {
 			Choices []struct {

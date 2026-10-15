@@ -795,8 +795,18 @@ func (s *moonshotStream) Next() (*provider.StreamChunk, error) {
 		}
 
 		var chunk moonshotStreamChunk
-		if err := json.Unmarshal([]byte(event.Data), &chunk); err != nil {
-			errChunk := &provider.StreamChunk{Type: provider.ChunkTypeError, Text: fmt.Sprintf("failed to parse stream chunk: %v", err)}
+		// TS moonshotAIChatChunkSchema: invalid JSON or a schema mismatch is an
+		// error part carrying a typed error (finish reason error); the error
+		// envelope is routed below.
+		msg, perr := providerutils.CheckChatChunk(event.Data, providerutils.ChatChunkShape{Kind: providerutils.ChunkKindMoonshot})
+		if perr == nil {
+			if derr := providerutils.UnmarshalChunk([]byte(event.Data), &chunk); derr != nil {
+				msg, perr = providerutils.ChunkParseFailure(event.Data, derr)
+			}
+		}
+		if perr != nil {
+			s.finishReason = types.FinishReasonError
+			errChunk := &provider.StreamChunk{Type: provider.ChunkTypeError, Text: msg, Err: perr}
 			if len(s.flushQueue) > 0 {
 				s.flushQueue = append(s.flushQueue, errChunk)
 				continue
@@ -816,18 +826,6 @@ func (s *moonshotStream) Next() (*provider.StreamChunk, error) {
 				Text: chunk.Error.Message,
 				Err:  newMoonshotStreamProviderErrorChunk(*chunk.Error, json.RawMessage(event.Data)),
 			}
-			if len(s.flushQueue) > 0 {
-				s.flushQueue = append(s.flushQueue, errChunk)
-				continue
-			}
-			return errChunk, nil
-		}
-
-		// TS moonshotAIChatChunkSchema: a frame that is not an error needs a
-		// `choices` array.
-		if err := providerutils.ValidateChatChunk([]byte(event.Data), providerutils.ChatChunkShape{}); err != nil {
-			s.finishReason = types.FinishReasonError
-			errChunk := &provider.StreamChunk{Type: provider.ChunkTypeError, Text: fmt.Sprintf("failed to parse stream chunk: %v", err)}
 			if len(s.flushQueue) > 0 {
 				s.flushQueue = append(s.flushQueue, errChunk)
 				continue

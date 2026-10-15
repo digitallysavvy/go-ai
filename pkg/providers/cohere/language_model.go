@@ -698,17 +698,21 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 			// TS: a chunk that fails parsing becomes an error part and the
 			// finish reason turns to "error".
 			s.finishErrored = true
+			msg, perr := providerutils.ChunkParseFailure(event.Data, err)
 			return &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
-				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
+				Text: msg,
+				Err:  perr,
 			}, nil
 		}
 
 		if err := validateCohereChunk([]byte(event.Data)); err != nil {
 			s.finishErrored = true
+			msg, perr := providerutils.ChunkParseFailure(event.Data, err)
 			return &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
-				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
+				Text: msg,
+				Err:  perr,
 			}, nil
 		}
 

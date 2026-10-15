@@ -116,7 +116,7 @@ data: {"type":"response.output_text.annotation.added","annotation":{"type":"url_
 
 data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_1"}}
 
-data: {"type":"response.output_item.added","output_index":1,"item":{"type":"web_search_call","id":"ws_1"}}
+data: {"type":"response.output_item.added","output_index":1,"item":{"type":"web_search_call","id":"ws_1","status":"in_progress"}}
 
 data: {"type":"response.output_item.done","output_index":1,"item":{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","sources":[{"type":"url","url":"https://go.dev/blog/"}]}}}
 
@@ -165,7 +165,7 @@ data: {"type":"response.output_item.done","output_index":0,"item":{"type":"messa
 func TestResponsesStreamFileSearchSourcesDeduplicated(t *testing.T) {
 	sse := `data: {"type":"response.output_item.added","output_index":0,"item":{"type":"file_search_call","id":"fs_1"}}
 
-data: {"type":"response.output_item.done","output_index":0,"item":{"type":"file_search_call","id":"fs_1","queries":["q"],"results":[{"file_id":"file_1","filename":"a.txt","score":1,"text":"x"},{"file_id":"file_1","filename":"a.txt","score":1,"text":"y"}]}}
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"file_search_call","id":"fs_1","queries":["q"],"results":[{"attributes":{},"file_id":"file_1","filename":"a.txt","score":1,"text":"x"},{"attributes":{},"file_id":"file_1","filename":"a.txt","score":1,"text":"y"}]}}
 
 `
 	var docs int

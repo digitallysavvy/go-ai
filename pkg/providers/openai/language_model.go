@@ -3,7 +3,6 @@ package openai
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -1206,6 +1205,31 @@ func newOpenAIStreamWithMetadata(reader io.ReadCloser, emitRaw bool, providerNam
 	}
 }
 
+// chunkShape selects the TS chunk schema for this stream: the OpenAI chat
+// schema, or openai-compatible's chunkBaseSchema (with the provider's error
+// member) for compat wrappers.
+func (s *openAIStream) chunkShape() providerutils.ChatChunkShape {
+	if !s.compat {
+		return providerutils.ChatChunkShape{Kind: providerutils.ChunkKindOpenAI}
+	}
+	name, _, _ := strings.Cut(s.providerName, ".")
+	return providerutils.ChatChunkShape{Error: providerutils.ChunkErrorKindForProvider(strings.TrimSpace(name))}
+}
+
+// contentParts reads a delta's `content` (already schema-validated): a string,
+// or for compat wrappers an array of text / thinking parts.
+func (s *openAIStream) contentParts(raw json.RawMessage) []streaming.CompatContentPart {
+	if s.compat {
+		parts, _ := streaming.OpenAICompatContentParts(raw)
+		return parts
+	}
+	var text string
+	if json.Unmarshal(raw, &text) != nil || text == "" {
+		return nil
+	}
+	return []streaming.CompatContentPart{{Text: text}}
+}
+
 // RequestBody implements provider.StreamRequestBody, exposing the raw
 // request body that opened this stream in types.StepRequest.Body for
 // streaming calls, matching TS doStream()'s {request: {body}} (hand-off:
@@ -1258,9 +1282,9 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 			Created int64  `json:"created"`
 			Choices []struct {
 				Delta struct {
-					Content          string  `json:"content"`
-					ReasoningContent *string `json:"reasoning_content,omitempty"`
-					Reasoning        *string `json:"reasoning,omitempty"`
+					Content          json.RawMessage `json:"content"`
+					ReasoningContent *string         `json:"reasoning_content,omitempty"`
+					Reasoning        *string         `json:"reasoning,omitempty"`
 					ToolCalls        []struct {
 						Index    *int    `json:"index"`
 						ID       string  `json:"id"`
@@ -1281,12 +1305,23 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 			Error json.RawMessage `json:"error,omitempty"`
 		}
 
-		if err := json.Unmarshal([]byte(event.Data), &chunkData); err != nil {
+		// TS openaiChatChunkSchema (openai-compatible chunkBaseSchema for
+		// compat wrappers): a frame that is not valid JSON or fails the schema
+		// is an error part carrying a typed error. The schema also accepts the
+		// provider's error envelope, which is routed below.
+		msg, perr := providerutils.CheckChatChunk(event.Data, s.chunkShape())
+		if perr == nil {
+			if derr := providerutils.UnmarshalChunk([]byte(event.Data), &chunkData); derr != nil {
+				msg, perr = providerutils.ChunkParseFailure(event.Data, derr)
+			}
+		}
+		if perr != nil {
 			s.queueRawChunk(event.Data)
 			s.finishErrored = true
 			errorChunk := &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
-				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
+				Text: msg,
+				Err:  perr,
 			}
 			if len(s.flushQueue) > 0 {
 				s.flushQueue = append(s.flushQueue, errorChunk)
@@ -1323,21 +1358,6 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 			return errorChunk, nil
 		}
 
-		// TS openaiChatChunkSchema: choices[] with a required index and
-		// tool_calls[].index; a frame failing the schema is an error part.
-		if err := providerutils.ValidateChatChunk([]byte(event.Data), providerutils.ChatChunkShape{ChoiceIndexRequired: true, ToolCallIndexRequired: true}); err != nil {
-			s.queueRawChunk(event.Data)
-			s.finishErrored = true
-			errorChunk := &provider.StreamChunk{
-				Type: provider.ChunkTypeError,
-				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
-			}
-			if len(s.flushQueue) > 0 {
-				s.flushQueue = append(s.flushQueue, errorChunk)
-				continue
-			}
-			return errorChunk, nil
-		}
 		if !s.metadataEmitted && (chunkData.ID != "" || chunkData.Model != "" || chunkData.Created != 0) {
 			metadata := &provider.ResponseMetadata{
 				ID:      chunkData.ID,
@@ -1394,15 +1414,24 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 				}
 			}
 
-			// Text chunk
-			if choice.Delta.Content != "" {
+			// Text chunk: a string, or (compat) an array of text / thinking
+			// parts as TS convertOpenAICompatibleContent reads it.
+			for _, part := range s.contentParts(choice.Delta.Content) {
+				if part.Reasoning {
+					if !s.isActiveReasoning {
+						s.isActiveReasoning = true
+						emit(&provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"})
+					}
+					emit(&provider.StreamChunk{Type: provider.ChunkTypeReasoning, Reasoning: part.Text, ID: "reasoning-0"})
+					continue
+				}
 				if s.isActiveReasoning {
 					s.isActiveReasoning = false
 					emit(&provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
 				}
 				emit(&provider.StreamChunk{
 					Type: provider.ChunkTypeText,
-					Text: choice.Delta.Content,
+					Text: part.Text,
 				})
 			}
 
