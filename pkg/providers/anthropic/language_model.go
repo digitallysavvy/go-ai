@@ -1678,6 +1678,21 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			}, nil
 		}
 
+		// TS then validates the parsed value against anthropicChunkSchema; a
+		// mismatch is a TypeValidationError `error` part and the stream goes
+		// on. Empty data frames carry no payload and are left to the switch.
+		if strings.TrimSpace(event.Data) != "" {
+			if message := anthropicChunkValidationMessage(event.Data); message != "" {
+				return &provider.StreamChunk{
+					Type: provider.ChunkTypeError,
+					Text: message,
+					Err:  providererrors.NewValidationErrorWithContext(compactJSON(event.Data), strings.TrimPrefix(message[strings.Index(message, "Error message: "):], "Error message: "), nil, &providererrors.ValidationContext{}),
+				}, nil
+			}
+			// TS dispatches on the payload `type`, not the SSE event name.
+			event.Event = anthropicChunkType(event.Data)
+		}
+
 		// Anthropic uses different event types
 		switch event.Event {
 		case "ping":
