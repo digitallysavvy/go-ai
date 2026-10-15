@@ -202,7 +202,8 @@ func TestGoogleRealtimeBuildSessionAndSerialize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SerializeClientEvent: %v", err)
 	}
-	if !strings.Contains(string(raw), `"responseModalities":["TEXT","AUDIO"]`) || strings.Contains(string(raw), `"$schema"`) {
+	// TS keeps the JSON Schema untouched in parametersJsonSchema.
+	if !strings.Contains(string(raw), `"responseModalities":["TEXT","AUDIO"]`) || !strings.Contains(string(raw), `"parametersJsonSchema":{"$schema":"http://json-schema.org/draft-07/schema#","type":"object"}`) {
 		t.Fatalf("session raw = %s", raw)
 	}
 	setup := model.BuildSessionConfig(provider.RealtimeSessionConfig{
@@ -245,52 +246,45 @@ func TestGoogleRealtimeSerializeUnsupportedClientEventReturnsNullLikeTypeScript(
 	}
 }
 
-func TestGoogleRealtimeToolSchemaConversionMatchesTypeScript(t *testing.T) {
+func TestGoogleRealtimeToolSchemaIsPassedThroughAsParametersJsonSchema(t *testing.T) {
 	model := NewRealtimeModel(New(Config{APIKey: "k"}), "gemini-2.0-flash-live-001")
+	schema := map[string]interface{}{
+		"type":     "object",
+		"required": []interface{}{"value"},
+		"properties": map[string]interface{}{
+			"value": map[string]interface{}{"anyOf": []interface{}{map[string]interface{}{"type": "string"}, map[string]interface{}{"type": "null"}}},
+		},
+	}
+	desc := "Look something up"
 	session := model.BuildSessionConfig(provider.RealtimeSessionConfig{
 		Tools: []provider.RealtimeToolDefinition{
-			{
-				Type:       "function",
-				Name:       "empty",
-				Parameters: map[string]interface{}{"type": "object", "$schema": "http://json-schema.org/draft-07/schema#"},
-			},
-			{
-				Type: "function",
-				Name: "nullable",
-				Parameters: map[string]interface{}{
-					"type":     "object",
-					"required": []interface{}{"value"},
-					"properties": map[string]interface{}{
-						"value": map[string]interface{}{
-							"anyOf": []map[string]interface{}{
-								{"type": "string"},
-								{"type": "null"},
-							},
-						},
-						"nested": map[string]interface{}{
-							"type":       "object",
-							"properties": map[string]interface{}{},
-						},
-					},
-				},
-			},
+			{Type: "function", Name: "empty"},
+			{Type: "function", Name: "nullable", Description: &desc, Parameters: schema},
 		},
 	}).(map[string]interface{})
 
-	tools := session["tools"].([]map[string]interface{})
-	decls := tools[0]["functionDeclarations"].([]map[string]interface{})
-	if _, ok := decls[0]["parameters"]; ok {
-		t.Fatalf("empty root parameters should be omitted, decl = %#v", decls[0])
+	decls := session["tools"].([]map[string]interface{})[0]["functionDeclarations"].([]map[string]interface{})
+	if _, ok := decls[0]["parametersJsonSchema"]; ok {
+		t.Fatalf("a tool without parameters has no parametersJsonSchema, decl = %#v", decls[0])
 	}
-	params := decls[1]["parameters"].(map[string]interface{})
-	props := params["properties"].(map[string]interface{})
-	value := props["value"].(map[string]interface{})
-	if value["nullable"] != true || value["type"] != "string" {
-		t.Fatalf("nullable property = %#v", value)
+	if _, ok := decls[1]["parameters"]; ok {
+		t.Fatalf("the OpenAPI conversion is gone, decl = %#v", decls[1])
 	}
-	nested := props["nested"].(map[string]interface{})
-	if nested["type"] != "object" {
-		t.Fatalf("nested empty object = %#v", nested)
+	if !reflect.DeepEqual(decls[1]["parametersJsonSchema"], schema) || decls[1]["description"] != desc {
+		t.Fatalf("decl = %#v", decls[1])
+	}
+}
+
+// A raw providerOptions.generationConfig replaces the default one (TS
+// Object.assign(setup, restProviderOptions)): no default responseModalities.
+func TestGoogleRealtimeRawGenerationConfigReplacesTheDefault(t *testing.T) {
+	model := NewRealtimeModel(New(Config{APIKey: "k"}), "gemini-2.0-flash-live-001")
+	setup := model.BuildSessionConfig(provider.RealtimeSessionConfig{
+		ProviderOptions: map[string]interface{}{"generationConfig": map[string]interface{}{"temperature": 0.2}},
+	}).(map[string]interface{})
+	generation := setup["generationConfig"].(map[string]interface{})
+	if _, ok := generation["responseModalities"]; ok || generation["temperature"] != 0.2 {
+		t.Fatalf("generationConfig = %#v", generation)
 	}
 }
 

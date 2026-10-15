@@ -384,6 +384,11 @@ for (let i = 0; i < starts.length; i++) {
     }
     for (const n of Object.keys(saved2)) { if (saved2[n] === undefined) delete ctx[n]; else ctx[n] = saved2[n]; }
     for (const n of Object.keys(saved)) { if (saved[n] === undefined) delete ctx[n]; else ctx[n] = saved[n]; }
+    // a test that calls the function several times outside its assertions is
+    // stateful or compares calls: only the first call is modeled, so skip it
+    const totalCalls = (body0.match(new RegExp('\\b' + fnName + '\\(', 'g')) || []).length;
+    const ownCalls = asserts2.filter(a => a.callArgs).length;
+    if (totalCalls - ownCalls > 1) { for (const n of Object.keys(saved2)) { if (saved2[n] === undefined) delete ctx[n]; else ctx[n] = saved2[n]; } for (const n of Object.keys(saved)) { if (saved[n] === undefined) delete ctx[n]; else ctx[n] = saved[n]; } continue; }
     if ((cm && fnArgs || asserts2.some(a => a.callArgs)) && asserts2.length) out.push({ test: name, topDescribe: topDescribeOf(starts[i].idx), fnArgs: fnArgs || [], fnArgSrc: fnArgSrc || [], asserts: asserts2, aliases: aliases2 });
     continue;
   }
