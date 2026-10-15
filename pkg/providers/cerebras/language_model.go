@@ -5,6 +5,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // LanguageModel applies Cerebras-specific parity fixes on top of the
@@ -61,8 +62,10 @@ func (m *LanguageModel) withCerebrasOptions(ctx context.Context, opts *provider.
 	return context.WithValue(ctx, cerebrasOptionsContextKey{}, extras), warnings
 }
 
+// cerebrasJSONMode is TS `responseFormat?.type === 'json'` (a text response
+// format, or none, never triggers the structured-output normalization).
 func cerebrasJSONMode(opts *provider.GenerateOptions) bool {
-	return opts != nil && opts.ResponseFormat != nil && opts.ResponseFormat.Type != ""
+	return opts != nil && providerutils.IsJSONResponseFormat(opts.ResponseFormat)
 }
 
 type cerebrasStream struct {
@@ -85,6 +88,16 @@ func (s *cerebrasStream) Next() (*provider.StreamChunk, error) {
 		case provider.ChunkTypeToolInputStart, provider.ChunkTypeToolInputDelta, provider.ChunkTypeToolInputEnd, provider.ChunkTypeToolCall:
 			if s.seenText {
 				continue
+			}
+			return chunk, nil
+		case provider.ChunkTypeFinish:
+			// TS: a `tool_calls` finish after structured-output text is the
+			// final answer, so the unified reason becomes `stop` (the raw
+			// reason is kept).
+			if s.seenText && chunk.RawFinishReason == "tool_calls" {
+				fixed := *chunk
+				fixed.FinishReason = types.FinishReasonStop
+				return &fixed, nil
 			}
 			return chunk, nil
 		default:
