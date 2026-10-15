@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -173,6 +174,34 @@ func ToOpenAIMessagesWithError(messages []types.Message, opts ...ToOpenAIMessage
 func ValidateProviderFileReferences(messages []types.Message, providerName string) error {
 	_, err := ToOpenAIMessagesWithError(messages, ToOpenAIMessagesOptions{Provider: providerName})
 	return err
+}
+
+// RejectProviderReferenceFiles returns an *errors.UnsupportedFunctionalityError
+// ("file parts with provider references") when any message holds a file part
+// whose data is a provider reference. Providers with no file-ID API (Groq,
+// Mistral chat, Alibaba chat, Cohere, ...) call it before building a request,
+// matching their TS converters.
+func RejectProviderReferenceFiles(messages []types.Message) error {
+	for _, msg := range messages {
+		for _, part := range msg.Content {
+			var fc types.FileContent
+			switch p := part.(type) {
+			case types.FileContent:
+				fc = p
+			case *types.FileContent:
+				if p == nil {
+					continue
+				}
+				fc = *p
+			default:
+				continue
+			}
+			if fc.FileData.Type == types.FileDataTypeReference {
+				return &providererrors.UnsupportedFunctionalityError{Functionality: "file parts with provider references"}
+			}
+		}
+	}
+	return nil
 }
 
 func toOpenAIMessages(messages []types.Message, opt ToOpenAIMessagesOptions, refs *providerRefResolver) []map[string]interface{} {

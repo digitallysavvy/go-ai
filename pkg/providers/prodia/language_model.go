@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	promptutil "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // ProdiaLanguageModel implements the provider.LanguageModel interface for the
@@ -131,7 +134,31 @@ func (m *ProdiaLanguageModel) DoGenerate(ctx context.Context, opts *provider.Gen
 	}
 
 	// Extract text prompt and optional image from the message history.
+	imageFile, err := lastUserImageFile(opts.Prompt)
+	if err != nil {
+		return nil, err
+	}
 	prompt, imageData, imageMIME := extractPromptAndImage(opts.Prompt)
+	if imageFile != nil {
+		switch imageFile.FileData.Type {
+		case types.FileDataTypeData:
+			imageData = imageFile.FileData.Data
+			imageMIME = imageFile.MediaType
+		case types.FileDataTypeURL:
+			// TS fetches URL image parts and sends the bytes.
+			imageData, err = fetchImageURL(ctx, imageFile.FileData.URL)
+			if err != nil {
+				return nil, err
+			}
+			imageMIME = imageFile.MediaType
+		}
+		if imageMIME == "" || imageMIME == "image" || imageMIME == "image/*" {
+			imageMIME = http.DetectContentType(imageData)
+			if !strings.HasPrefix(imageMIME, "image/") {
+				imageMIME = "image/png"
+			}
+		}
+	}
 
 	jobConfig := map[string]interface{}{
 		"prompt":           prompt,
@@ -252,6 +279,66 @@ func (m *ProdiaLanguageModel) DoStream(ctx context.Context, opts *provider.Gener
 	})
 
 	return &prodiaTextStream{chunks: chunks}, nil
+}
+
+// maxPromptImageBytes bounds a fetched URL image (untrusted remote input).
+const maxPromptImageBytes = 50 << 20
+
+// lastUserImageFile returns the first image file part (any file-data shape) of
+// the last user message, normalized. Provider-reference and text image parts
+// are unsupported (TS prodia-language-model.ts).
+func lastUserImageFile(p types.Prompt) (*types.FileContent, error) {
+	if p.IsSimple() {
+		return nil, nil
+	}
+	for i := len(p.Messages) - 1; i >= 0; i-- {
+		if p.Messages[i].Role != types.RoleUser {
+			continue
+		}
+		for _, part := range p.Messages[i].Content {
+			fc, ok := part.(types.FileContent)
+			if !ok {
+				continue
+			}
+			n, err := promptutil.NormalizeFileContent(fc)
+			if err != nil {
+				return nil, err
+			}
+			mt := n.MediaType
+			if mt != "image" && !strings.HasPrefix(mt, "image/") {
+				continue
+			}
+			switch n.FileData.Type {
+			case types.FileDataTypeReference:
+				return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "file parts with provider references"}
+			case types.FileDataTypeText:
+				return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "text file parts"}
+			}
+			return &n, nil
+		}
+		break
+	}
+	return nil, nil
+}
+
+func fetchImageURL(ctx context.Context, rawURL string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxPromptImageBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxPromptImageBytes {
+		return nil, fmt.Errorf("prodia: image URL response exceeds %d bytes", maxPromptImageBytes)
+	}
+	return data, nil
 }
 
 // extractPromptAndImage walks the message prompt and returns:

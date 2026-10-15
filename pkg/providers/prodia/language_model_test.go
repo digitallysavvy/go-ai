@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -482,5 +483,51 @@ func TestProviderLanguageModelRouting(t *testing.T) {
 	_, err = prov.LanguageModel("gpt-4")
 	if err == nil {
 		t.Error("expected error for unsupported language model, got nil")
+	}
+}
+
+// TS prodia-language-model rejects image parts that are provider references.
+func TestDoGenerateRejectsProviderReferenceImage(t *testing.T) {
+	model := NewLanguageModel(New(Config{APIKey: "k", BaseURL: "http://127.0.0.1:1"}), LanguageModelNanoBananaImgToImgV2)
+	_, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Messages: []types.Message{{
+		Role: types.RoleUser,
+		Content: []types.ContentPart{types.FileContent{
+			MediaType: "image/png",
+			FileData:  types.FileData{Type: types.FileDataTypeReference, Reference: types.ProviderReference{"prodia": "f"}},
+		}},
+	}}}})
+	if !providererrors.IsUnsupportedFunctionalityError(err) {
+		t.Fatalf("err = %v, want UnsupportedFunctionalityError", err)
+	}
+}
+
+// URL image parts are fetched and uploaded (TS fetches part.data.url).
+func TestDoGenerateFetchesURLImage(t *testing.T) {
+	img := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A})
+	}))
+	defer img.Close()
+	fake := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A}
+	body, ct := buildTestMultipartBody(`{"id":"j"}`, fake, "image/png")
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", ct)
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+	model := NewLanguageModel(New(Config{APIKey: "k", BaseURL: srv.URL}), LanguageModelNanoBananaImgToImgV2)
+	_, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Messages: []types.Message{{
+		Role: types.RoleUser,
+		Content: []types.ContentPart{
+			types.TextContent{Text: "edit"},
+			types.FileContent{MediaType: "image/png", FileData: types.FileData{Type: types.FileDataTypeURL, URL: img.URL}},
+		},
+	}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(gotBody), "PNG") {
+		t.Fatalf("image bytes not uploaded: %q", gotBody)
 	}
 }
