@@ -298,7 +298,7 @@ func (c *MCPClient) Connect(ctx context.Context) error {
 		// TS init() closes the transport and the client when the handshake
 		// fails, so a failed Connect never leaves a live subprocess,
 		// connection or receive goroutine behind.
-		_ = c.Close()
+		_ = c.closeWith(ctx)
 		if initTimeout > 0 && errors.Is(context.Cause(ctx), errInitTimeout) && parent.Err() == nil {
 			return &MCPClientError{Message: fmt.Sprintf("MCP client initialization timed out after %dms", initTimeout/time.Millisecond), Cause: err}
 		}
@@ -457,6 +457,18 @@ func (c *MCPClient) InitializeResult() InitializeResult {
 
 // Close closes the connection to the MCP server
 func (c *MCPClient) Close() error {
+	return c.closeWith(context.Background())
+}
+
+// contextCloser is implemented by transports whose Close does network I/O
+// that a context can bound (the streamable HTTP session DELETE).
+type contextCloser interface {
+	CloseContext(ctx context.Context) error
+}
+
+// closeWith closes the client; ctx bounds transport cleanup that waits on the
+// server (TS transport.close({ signal })).
+func (c *MCPClient) closeWith(ctx context.Context) error {
 	c.cancel()
 
 	// Pending calls observe the cancelled client context and return; their
@@ -466,6 +478,9 @@ func (c *MCPClient) Close() error {
 	c.pending = make(map[interface{}]chan *MCPMessage)
 	c.pendingMu.Unlock()
 
+	if cc, ok := c.transport.(contextCloser); ok {
+		return cc.CloseContext(ctx)
+	}
 	return c.transport.Close()
 }
 

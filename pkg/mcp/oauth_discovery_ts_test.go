@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -171,5 +172,28 @@ func TestTSASDiscoveryNetworkFailuresAndStatuses(t *testing.T) {
 	client, calls = recordingClient(t, func(int, *http.Request) (*http.Response, error) { return jsonResponse(200, asMeta), nil })
 	if _, err = DiscoverAuthorizationServerMetadata(context.Background(), "https://auth.example.com", OAuthDiscoveryOptions{HTTPClient: client, ProtocolVersion: "2025-01-01"}); err != nil || (*calls)[0].header != "2025-01-01" {
 		t.Fatalf("err=%v calls=%+v", err, *calls)
+	}
+}
+
+// startAuthorization: "excludes scope parameter when not provided", "excludes
+// state parameter when not provided", "does not add trailing slash to
+// pathless resource URL".
+func TestTSStartAuthorizationOptionalParams(t *testing.T) {
+	resource, _ := url.Parse("https://api.example.com")
+	authURL, _, err := StartOAuthAuthorization("https://auth.example.com", StartOAuthAuthorizationParams{
+		ClientInformation: OAuthClientInformation{ClientID: "client-123"},
+		RedirectURL:       "https://app.example.com/callback",
+		Resource:          resource,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, _ := url.Parse(authURL)
+	q := parsed.Query()
+	if q.Has("scope") || q.Has("state") || q.Has("prompt") {
+		t.Fatalf("optional params must be absent: %v", q)
+	}
+	if q.Get("resource") != "https://api.example.com" {
+		t.Fatalf("resource = %q", q.Get("resource"))
 	}
 }
