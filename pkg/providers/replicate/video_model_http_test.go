@@ -3,11 +3,13 @@ package replicate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // newTestVideoModelServer builds a Provider + httptest server for the video
@@ -258,5 +260,37 @@ func TestVideoModel_DoGenerate_EndToEnd(t *testing.T) {
 	}
 	if len(resp.Videos) != 1 || resp.Videos[0].URL != "https://replicate.delivery/video.mp4" {
 		t.Fatalf("Videos = %#v", resp.Videos)
+	}
+}
+
+// TS replicateFailedResponseHandler: message = detail ?? error ??
+// 'Unknown Replicate error'; a non-JSON body falls back to the status text.
+func TestVideoModel_DoStart_ErrorMessageFollowsReplicateHandler(t *testing.T) {
+	cases := []struct {
+		name, body string
+		status     int
+		want       string
+	}{
+		{"detail", `{"detail":"Invalid version","error":"other"}`, 422, "Invalid version"},
+		{"error", `{"error":"Bad token"}`, 401, "Bad token"},
+		{"unknown", `{"title":"x"}`, 500, "Unknown Replicate error"},
+		{"html", `<html>Bad Gateway</html>`, 502, "Bad Gateway"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/models/minimax/video-01/predictions", func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			})
+			model, _ := newTestVideoModelServer(t, mux)
+			_, err := model.DoStart(context.Background(), &provider.VideoModelV3StartOptions{
+				VideoModelV3CallOptions: provider.VideoModelV3CallOptions{Prompt: "p"},
+			})
+			var perr *providererrors.ProviderError
+			if !errors.As(err, &perr) || perr.Message != tc.want || perr.StatusCode != tc.status {
+				t.Fatalf("err = %v, want message %q status %d", err, tc.want, tc.status)
+			}
+		})
 	}
 }

@@ -2,6 +2,7 @@ package replicate
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -204,9 +205,37 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 func (m *ImageModel) handleError(err error) error {
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		return providererrors.NewProviderError("replicate", statusErr.StatusCode, "", string(statusErr.Body), err)
+		return replicateAPIError(statusErr.StatusCode, statusErr.Headers, statusErr.Body)
 	}
 	return providererrors.NewProviderError("replicate", 0, "", err.Error(), err)
+}
+
+// replicateErrorMessage mirrors TS replicateFailedResponseHandler: the
+// message is `detail ?? error ?? 'Unknown Replicate error'` of a JSON object
+// error body; a body that is not that shape falls back to the status text.
+func replicateErrorMessage(status int, body []byte) string {
+	var parsed struct {
+		Detail *string `json:"detail"`
+		Error  *string `json:"error"`
+	}
+	if len(body) > 0 && json.Unmarshal(body, &parsed) == nil {
+		switch {
+		case parsed.Detail != nil:
+			return *parsed.Detail
+		case parsed.Error != nil:
+			return *parsed.Error
+		}
+		return "Unknown Replicate error"
+	}
+	return http.StatusText(status)
+}
+
+// replicateAPIError builds the provider error for a non-2xx Replicate
+// response: status, headers and body are kept and the message follows
+// replicateErrorMessage.
+func replicateAPIError(status int, headers http.Header, body []byte) error {
+	cause := &internalhttp.HTTPStatusError{StatusCode: status, Headers: headers, Body: body}
+	return providererrors.NewProviderError("replicate", 0, "", replicateErrorMessage(status, body), cause)
 }
 
 // buildRequest builds the prediction request body, warnings and Prefer header.

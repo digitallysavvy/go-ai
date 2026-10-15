@@ -363,7 +363,7 @@ func (m *VideoModel) getPollOptions(providerOpts map[string]interface{}) polling
 func (m *VideoModel) handleError(err error) error {
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		return providererrors.NewProviderError(m.Provider(), statusErr.StatusCode, "", string(statusErr.Body), err)
+		return replicateAPIError(statusErr.StatusCode, statusErr.Headers, statusErr.Body)
 	}
 	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 }
@@ -374,7 +374,7 @@ func (m *VideoModel) handleError(err error) error {
 func (m *VideoModel) handlePollError(err error) error {
 	var dlErr *providererrors.DownloadError
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
-		return providererrors.NewProviderError(m.Provider(), dlErr.StatusCode, "", string(dlErr.Body), err)
+		return replicateAPIError(dlErr.StatusCode, http.Header(dlErr.Headers), dlErr.Body)
 	}
 	return fmt.Errorf("failed to check status: %w", err)
 }
