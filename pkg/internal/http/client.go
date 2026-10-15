@@ -41,14 +41,20 @@ func applyUserAgentSuffix(h http.Header) {
 	h.Set("User-Agent", merged["user-agent"])
 }
 
-// DefaultHTTPClient is a shared HTTP client with sensible defaults
+// DefaultHTTPClient is a shared HTTP client with sensible defaults.
+//
+// It has no whole-request timeout: TS fetch has none, so a slow
+// non-streaming call (a reasoning model, an image generation) or a long
+// stream must not be cut off at an arbitrary limit; callers bound a call with
+// its context. As with Node's fetch (undici headersTimeout), the server must
+// start responding within 5 minutes.
 var DefaultHTTPClient = &http.Client{
-	Timeout: 60 * time.Second,
 	Transport: &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 10,
-		IdleConnTimeout:     90 * time.Second,
-		DisableCompression:  false,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   10,
+		IdleConnTimeout:       90 * time.Second,
+		ResponseHeaderTimeout: 5 * time.Minute,
+		DisableCompression:    false,
 	},
 }
 
@@ -78,7 +84,7 @@ type Config struct {
 	// Headers are default headers to send with all requests
 	Headers map[string]string
 
-	// Timeout for requests (default: 60 seconds)
+	// Timeout for requests (default: none; bound a call with its context)
 	Timeout time.Duration
 
 	// HTTPClient is the underlying HTTP client to use

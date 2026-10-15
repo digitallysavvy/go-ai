@@ -51,3 +51,15 @@ func TestStatusProviderError(t *testing.T) {
 		t.Fatal("400 must not be retryable")
 	}
 }
+
+// A slow non-streaming provider call (reasoning model, image generation) must
+// not hit an arbitrary whole-request timeout: TS fetch has none.
+func TestDefaultHTTPClientHasNoWholeRequestTimeout(t *testing.T) {
+	if DefaultHTTPClient.Timeout != 0 {
+		t.Fatalf("DefaultHTTPClient.Timeout = %v, want 0", DefaultHTTPClient.Timeout)
+	}
+	tr, ok := DefaultHTTPClient.Transport.(*http.Transport)
+	if !ok || tr.ResponseHeaderTimeout != 5*time.Minute {
+		t.Fatalf("transport = %#v, want a 5 minute response header timeout", DefaultHTTPClient.Transport)
+	}
+}
