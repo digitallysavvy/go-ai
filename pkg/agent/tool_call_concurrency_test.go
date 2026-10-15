@@ -165,7 +165,9 @@ func TestLegacyLoopToModelOutputReceivesUsage(t *testing.T) {
 	total := int64(7)
 	var got *types.Usage
 	tool := types.Tool{Name: "t", Parameters: map[string]interface{}{"type": "object"},
-		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "ok", nil },
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "ok", nil
+		},
 		ToModelOutput: func(_ context.Context, o types.ToModelOutputOptions) (*types.ToolResultOutput, error) {
 			got = o.Usage
 			return &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "x"}, nil
