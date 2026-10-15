@@ -170,3 +170,16 @@ func TestVertexAnthropicLabelsHeader(t *testing.T) {
 		})
 	}
 }
+
+func TestTransformRequestHeadersEmptyExplicitLabelsHeaderWins(t *testing.T) {
+	po := map[string]interface{}{"vertex": map[string]interface{}{"labels": map[string]interface{}{"team": "x"}}}
+	for _, name := range []string{"x-vertex-ai-labels", "X-Vertex-AI-Labels"} {
+		out, err := transformRequestHeaders(map[string]string{name: ""}, po)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v, ok := out[name]; !ok || v != "" || len(out) != 1 {
+			t.Fatalf("%s: headers = %v, want the explicit empty header kept and no labels added", name, out)
+		}
+	}
+}

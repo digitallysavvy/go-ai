@@ -14,7 +14,7 @@ const LabelsHeader = "x-vertex-ai-labels"
 
 // transformRequestHeaders forwards providerOptions.vertex.labels as the
 // base64-encoded JSON x-vertex-ai-labels header (TS #23348). An explicit
-// request header of the same name (any casing) wins. Invalid labels return an
+// request header of the same name (any casing, even empty) wins. Invalid labels return an
 // InvalidArgumentError before any request is sent. Note that Go map keys are
 // marshaled in sorted order, unlike TS which keeps insertion order.
 func transformRequestHeaders(headers map[string]string, providerOptions map[string]interface{}) (map[string]string, error) {
@@ -34,8 +34,8 @@ func transformRequestHeaders(headers map[string]string, providerOptions map[stri
 	if err != nil {
 		return nil, err
 	}
-	for name, value := range headers {
-		if strings.EqualFold(name, LabelsHeader) && value != "" {
+	for name := range headers {
+		if strings.EqualFold(name, LabelsHeader) {
 			return headers, nil
 		}
 	}

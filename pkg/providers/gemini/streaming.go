@@ -49,6 +49,7 @@ type stream struct {
 
 	// Metadata accumulated across SSE events, emitted on the finish chunk.
 	lastGroundingMetadata  json.RawMessage
+	emittedSourceURLs      map[string]bool
 	lastUrlContextMetadata json.RawMessage
 	lastSafetyRatings      json.RawMessage
 	lastFinishMessage      string
@@ -323,6 +324,20 @@ func (s *stream) processSSEEvent(chunkData Response) {
 		if candidate.FinishReason == "CONTINUATION" {
 			s.pendingContinuation = candidate.ContinuationToken
 		}
+	}
+
+	// Grounding chunks become url sources, each URL emitted once (TS
+	// emittedSourceUrls; document sources are not streamed).
+	for _, src := range extractSources(candidate.GroundingMetadata, s.generateID) {
+		if src.SourceType != "url" || s.emittedSourceURLs[src.URL] {
+			continue
+		}
+		if s.emittedSourceURLs == nil {
+			s.emittedSourceURLs = map[string]bool{}
+		}
+		s.emittedSourceURLs[src.URL] = true
+		src := src
+		s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{Type: provider.ChunkTypeSource, SourceContent: &src})
 	}
 
 	// Process parts: non-function-call parts first (text/thought/code/inline),

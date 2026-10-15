@@ -497,6 +497,10 @@ func (m *LanguageModel) convertResponseFull(response Response, tnm toolNameMappi
 	}
 	isPromptBlocked := candidate.FinishReason == "" && confirmedPromptBlockReason != ""
 
+	for _, src := range extractSources(candidate.GroundingMetadata, m.generateID) {
+		result.Content = append(result.Content, src)
+	}
+
 	// Finish reason.
 	hasToolCalls := len(result.ToolCalls) > 0
 	switch {

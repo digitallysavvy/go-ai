@@ -3,6 +3,7 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -339,6 +341,11 @@ func TestSplicedStreamRejected(t *testing.T) {
 	wantMsg := `Received message_start for message "msg_B" while message "msg_A" is still open.`
 	if chunk.Text != wantMsg {
 		t.Errorf("Text = %q, want %q", chunk.Text, wantMsg)
+	}
+
+	var invalid *providererrors.InvalidResponseDataError
+	if !errors.As(chunk.Err, &invalid) || invalid.Message != wantMsg {
+		t.Errorf("chunk.Err = %#v, want *InvalidResponseDataError carrying the message", chunk.Err)
 	}
 
 	// Everything after the spliced message_start (including the "spliced" text
