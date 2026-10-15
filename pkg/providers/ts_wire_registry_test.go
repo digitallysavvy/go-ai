@@ -174,7 +174,9 @@ var wireSuites = map[string]tsfixture.WireSuite{
 	}, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return topaz.New(topaz.Config{APIKey: k, BaseURL: b, Headers: h, VideoPollIntervalMillis: 1, VideoPollTimeoutMillis: 5000})
 	})},
-	"xai": {ProviderTool: xaiProviderTool, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
+	"xai": {ProviderTool: xaiProviderTool, BatchPrefix: "/v1", Skip: map[string]string{
+		"xAI batch > uploads prepared JSONL requests and creates a file-backed batch": "provider headers are not captured in the batch recording config; JSONL line key order is semantically irrelevant (covered by xai batch unit tests)",
+	}, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return xai.New(xai.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
 	"black-forest-labs": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
@@ -282,6 +284,8 @@ var wireSuites = map[string]tsfixture.WireSuite{
 		// TS gateway language tests answer with non-V4 JSON; only the request is compared.
 		Skip: map[string]string{
 			"~o11y": "observability headers come from the Vercel environment; covered by gateway unit tests",
+			"GatewayBatch > doStartBatch > should send the shared request model in the model header":    "ai-o11y-* headers come from the Vercel environment, which the replay does not set",
+			"~GatewayBatch > doCancelBatch > should acknowledge cancellation without treating":          "ai-o11y-* headers come from the Vercel environment, which the replay does not set",
 			"GatewayLanguageModel > Provider Options > should pass provider routing order for doStream": "TS callers omit includeRawChunks here; streamText always sends it (false), which Go sends",
 			"GatewayLanguageModel > Provider Options > should pass providerTimeouts for doStream":       "TS callers omit includeRawChunks here; streamText always sends it (false), which Go sends",
 		},

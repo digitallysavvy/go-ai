@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	openaitool "github.com/digitallysavvy/go-ai/pkg/providers/openai/tool"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -294,6 +295,30 @@ func TestOpenAIBatch_WarnsOnUnsupportedProviderTool(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("warnings = %+v, want a warning about the unconvertible provider tool", result.Warnings)
+	}
+}
+
+func TestBatchWarnsForUnsupportedHostedTool(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/files" {
+			_, _ = w.Write([]byte(`{"id":"file-input"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"batch_123","status":"completed"}`))
+	}))
+	defer srv.Close()
+
+	b := New(Config{APIKey: "k", BaseURL: srv.URL}).ExperimentalBatch()
+	req := openaiTextBatchRequest("a", "gpt-5.6", "Hi")
+	// Typed hosted tools carry the id in Name and ProviderExecuted, not Type.
+	req.Text.Options.Tools = []types.Tool{openaitool.ImageGeneration(openaitool.ImageGenerationConfig{}), openaitool.WebSearch(openaitool.WebSearchConfig{})}
+	result, err := b.DoStartBatch(t.Context(), provider.BatchV4StartOptions{Requests: []provider.BatchV4Request{req}})
+	if err != nil {
+		t.Fatalf("DoStartBatch: %v", err)
+	}
+	if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0].Warning.Feature, "image_generation") {
+		t.Fatalf("warnings = %+v, want exactly one for image_generation", result.Warnings)
 	}
 }
 

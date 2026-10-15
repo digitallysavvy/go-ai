@@ -340,21 +340,10 @@ func (f gatewayBatchStatusFields) toStatus() provider.BatchV4Status {
 	if f.RawStatus != nil {
 		status.RawStatus = *f.RawStatus
 	}
-	if f.RequestCounts != nil {
-		rc := &provider.BatchRequestCounts{}
-		if f.RequestCounts.Total != nil {
-			rc.Total = *f.RequestCounts.Total
-		}
-		if f.RequestCounts.Pending != nil {
-			rc.Pending = *f.RequestCounts.Pending
-		}
-		if f.RequestCounts.Completed != nil {
-			rc.Completed = *f.RequestCounts.Completed
-		}
-		if f.RequestCounts.Failed != nil {
-			rc.Failed = *f.RequestCounts.Failed
-		}
-		status.RequestCounts = rc
+	// TS omits requestCounts unless all four counters are present; Go must
+	// not fabricate zeros for the missing ones.
+	if rc := f.RequestCounts; rc != nil && rc.Total != nil && rc.Pending != nil && rc.Completed != nil && rc.Failed != nil {
+		status.RequestCounts = &provider.BatchRequestCounts{Total: *rc.Total, Pending: *rc.Pending, Completed: *rc.Completed, Failed: *rc.Failed}
 	}
 	status.Error = f.Error.toBatchError()
 	if f.CreatedAt != nil {

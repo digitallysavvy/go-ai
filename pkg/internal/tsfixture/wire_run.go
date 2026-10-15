@@ -62,6 +62,9 @@ type WireSuite struct {
 	// usage, finish reason, warnings, provider metadata); otherwise only the
 	// requests they send are compared.
 	LanguageResults bool
+	// BatchPrefix is the Go base-URL path prefix for batch objects, whose
+	// recordings carry no URL config (for example "/v1").
+	BatchPrefix string
 	// SkipLanguage skips language-model calls (covered by another suite).
 	SkipLanguage bool
 	// ProviderTool maps a TS provider tool for language-model calls.
@@ -168,6 +171,9 @@ func runWireTest(t *testing.T, pkg string, s WireSuite, w WireTest) {
 			} else if s.GoPrefix != nil {
 				base = srv.URL + s.GoPrefix(WirePrefix(c.Model))
 			}
+			if s.BatchPrefix != "" && strings.Contains(c.Model.Cls, "Batch") && WirePrefix(c.Model) == "" {
+				base = srv.URL + s.BatchPrefix
+			}
 			p, err = s.Provider(base, c.Model)
 			if err != nil || p == nil {
 				skip(fmt.Sprintf("provider not constructible: %v", err))
@@ -219,6 +225,8 @@ func WireKind(c WireCall) string {
 		return "rerank"
 	case c.Method == "doDecide":
 		return "decide"
+	case c.Method == "doStartBatch" || c.Method == "doGetBatchStatus" || c.Method == "doGetBatchResults" || c.Method == "doCancelBatch":
+		return "batch"
 	case (c.Method == "doStart" || c.Method == "doStatus") && strings.Contains(cls, "Video"):
 		return "video"
 	case c.Method == "doGenerate" || c.Method == "doStream":
@@ -271,6 +279,12 @@ func RunWireCall(ctx context.Context, srv *WireServer, s WireSuite, p provider.P
 			return nil, err
 		}
 		return wireTranscription(ctx, m, arg)
+	case "batch":
+		bp, ok := p.(provider.BatchProvider)
+		if !ok {
+			return map[string]interface{}{"skip": "provider has no ExperimentalBatch"}, errWireSkip
+		}
+		return wireBatch(ctx, s, bp.ExperimentalBatch(), c)
 	case "decide":
 		dp, ok := p.(provider.DecisionModelProvider)
 		if !ok {
@@ -322,6 +336,9 @@ func CompareWireResult(srv *WireServer, s WireSuite, c WireCall, got map[string]
 	}
 	if err != nil {
 		return []string{"Go returned an error, TS did not: " + err.Error()}
+	}
+	if c.Method == "doGetBatchResults" {
+		return nil
 	}
 	if WireKind(c) == "language" && ((!s.LanguageResults && os.Getenv("TSWIRE_LMRESULTS") == "") || c.Method == "doStream") {
 		return nil
@@ -1127,4 +1144,106 @@ func reportWire(pkg string, w WireTest, status, reason string) {
 	defer f.Close() //nolint:errcheck
 	b, _ := json.Marshal(map[string]string{"pkg": pkg, "file": w.File, "test": w.Test, "status": status, "reason": reason})
 	_, _ = f.Write(append(b, '\n'))
+}
+
+func wireBatchStatus(st provider.BatchV4Status) map[string]interface{} {
+	out := map[string]interface{}{"status": string(st.Status), "rawStatus": st.RawStatus, "providerMetadata": st.ProviderMetadata}
+	if c := st.RequestCounts; c != nil {
+		out["requestCounts"] = map[string]interface{}{"total": c.Total, "pending": c.Pending, "completed": c.Completed, "failed": c.Failed}
+	}
+	if e := st.Error; e != nil {
+		out["error"] = e
+	}
+	out["createdAt"], out["expiresAt"] = st.CreatedAt, st.ExpiresAt
+	return out
+}
+
+// wireBatch replays batch calls. Results are a stream in TS, so only the
+// requests are compared for doGetBatchResults.
+func wireBatch(ctx context.Context, s WireSuite, b provider.BatchV4, c WireCall) (map[string]interface{}, error) {
+	arg := c.Arg()
+	headers, po := strMap(arg["headers"]), objMap(arg["providerOptions"])
+	switch c.Method {
+	case "doStartBatch":
+		opts := provider.BatchV4StartOptions{Headers: headers, ProviderOptions: po}
+		opts.WebhookURL, _ = arg["webhookUrl"].(string)
+		reqs, _ := arg["requests"].([]interface{})
+		for _, rv := range reqs {
+			rm, _ := rv.(map[string]interface{})
+			id, _ := rm["id"].(string)
+			model, _ := rm["modelId"].(string)
+			optsMap, _ := rm["options"].(map[string]interface{})
+			switch rm["type"] {
+			case "text":
+				prev := ProviderToolHook
+				ProviderToolHook = s.ProviderTool
+				g, why := BuildOptions(optsMap)
+				ProviderToolHook = prev
+				if g == nil {
+					return map[string]interface{}{"skip": "unsupported batch text options: " + why}, errWireSkip
+				}
+				opts.Requests = append(opts.Requests, provider.BatchV4Request{Type: provider.BatchRequestTypeText, Text: &provider.TextBatchV4Request{ID: id, ModelID: model, Options: *g}})
+			case "image":
+				img := provider.ImageGenerateOptions{ProviderOptions: objMap(optsMap["providerOptions"]), N: intPtr(optsMap["n"]), Seed: intPtr(optsMap["seed"])}
+				img.Prompt, _ = optsMap["prompt"].(string)
+				img.Size, _ = optsMap["size"].(string)
+				img.AspectRatio, _ = optsMap["aspectRatio"].(string)
+				if fs, ok := optsMap["files"].([]interface{}); ok {
+					for _, f := range fs {
+						if x := wireImageFile(f); x != nil {
+							img.Files = append(img.Files, *x)
+						}
+					}
+				}
+				img.Mask = wireImageFile(optsMap["mask"])
+				opts.Requests = append(opts.Requests, provider.BatchV4Request{Type: provider.BatchRequestTypeImage, Image: &provider.ImageBatchV4Request{ID: id, ModelID: model, Options: img}})
+			default:
+				opts.Requests = append(opts.Requests, provider.BatchV4Request{Type: provider.BatchRequestType(fmt.Sprint(rm["type"]))})
+			}
+		}
+		res, err := b.DoStartBatch(ctx, opts)
+		if err != nil {
+			return nil, err
+		}
+		out := wireBatchStatus(res.BatchV4Status)
+		out["batchId"] = res.BatchID
+		var ws []interface{}
+		for _, w := range res.Warnings {
+			ws = append(ws, map[string]interface{}{"requestId": w.RequestID, "warning": WireWarnings([]types.Warning{w.Warning}).([]interface{})[0]})
+		}
+		out["warnings"] = ws
+		return out, nil
+	case "doGetBatchStatus":
+		id, _ := arg["batchId"].(string)
+		st, err := b.DoGetBatchStatus(ctx, provider.BatchV4OperationOptions{BatchID: id, Headers: headers, ProviderOptions: po})
+		if err != nil {
+			return nil, err
+		}
+		return wireBatchStatus(*st), nil
+	case "doGetBatchResults":
+		id, _ := arg["batchId"].(string)
+		st, err := b.DoGetBatchResults(ctx, provider.BatchV4OperationOptions{BatchID: id, Headers: headers, ProviderOptions: po})
+		if err != nil {
+			return nil, err
+		}
+		defer st.Close() //nolint:errcheck
+		for {
+			if _, err := st.Next(); err != nil {
+				break
+			}
+		}
+		return map[string]interface{}{}, nil
+	case "doCancelBatch":
+		cb, ok := b.(provider.BatchV4Canceller)
+		if !ok {
+			return map[string]interface{}{"skip": "batch has no DoCancelBatch"}, errWireSkip
+		}
+		id, _ := arg["batchId"].(string)
+		res, err := cb.DoCancelBatch(ctx, provider.BatchV4OperationOptions{BatchID: id, Headers: headers, ProviderOptions: po})
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{"providerMetadata": res.ProviderMetadata}, nil
+	}
+	return map[string]interface{}{"skip": "batch method " + c.Method}, errWireSkip
 }
