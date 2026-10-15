@@ -1021,3 +1021,89 @@ func TestBatch_DoGetBatchResults_ProviderExecutedToolCalls(t *testing.T) {
 		t.Errorf("Content = %+v, want tool-result/text/source parts", item.TextResult.Content)
 	}
 }
+
+// Every batch call sends the provider headers merged with the per-call headers
+// (TS combineHeaders(config.headers(), options.headers)).
+func TestBatch_SendsProviderAndCallHeaders(t *testing.T) {
+	server := newXAIBatchTestServer(t)
+	defer server.close()
+	server.filesBody = map[string]interface{}{"id": "file_123"}
+	server.createBody = xaiBatchResponseBody(nil)
+	server.statusBody = xaiBatchResponseBody(nil)
+	server.cancelBody = xaiBatchResponseBody(nil)
+	server.listBody = map[string]interface{}{"batches": []interface{}{}}
+	server.resultsBody = []map[string]interface{}{{"results": []interface{}{}}}
+
+	p := New(Config{APIKey: "test-api-key", BaseURL: server.ts.URL, Headers: map[string]string{"X-Provider": "p", "X-Both": "provider"}})
+	batch := NewBatch(p)
+	h := map[string]string{"X-Call": "c", "X-Both": "call"}
+	ctx := context.Background()
+	if _, err := batch.DoStartBatch(ctx, provider.BatchV4StartOptions{Requests: []provider.BatchV4Request{textBatchRequest("a", "grok-4.3", "hi")}, Headers: h}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := batch.DoGetBatchStatus(ctx, provider.BatchV4OperationOptions{BatchID: "batch_123", Headers: h}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := batch.DoCancelBatch(ctx, provider.BatchV4OperationOptions{BatchID: "batch_123", Headers: h}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := batch.DoListBatches(ctx, provider.BatchV4ListOptions{Headers: h}); err != nil {
+		t.Fatal(err)
+	}
+	stream, err := batch.DoGetBatchResults(ctx, provider.BatchV4OperationOptions{BatchID: "batch_123", Headers: h})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := stream.Next(); err != nil {
+			break
+		}
+	}
+	_ = stream.Close()
+
+	want := map[string]bool{"POST /files": false, "POST /batches": false, "GET /batches/batch_123": false, "POST /batches/batch_123:cancel": false, "GET /batches": false, "GET /batches/batch_123/results": false}
+	for i := 0; i < server.requestCount(); i++ {
+		r := server.request(i)
+		key := r.Method + " " + r.Path
+		if _, ok := want[key]; !ok {
+			continue
+		}
+		want[key] = true
+		if r.Headers.Get("Authorization") != "Bearer test-api-key" || r.Headers.Get("X-Provider") != "p" || r.Headers.Get("X-Call") != "c" || r.Headers.Get("X-Both") != "call" {
+			t.Errorf("%s headers = %v", key, r.Headers)
+		}
+	}
+	for key, seen := range want {
+		if !seen {
+			t.Errorf("no request %s", key)
+		}
+	}
+}
+
+// TS throws from the result generator when an image has neither data nor a
+// URL (InvalidArgumentError), which errors the whole result stream.
+func TestBatch_DoGetBatchResults_ImageWithoutDataErrorsStream(t *testing.T) {
+	server := newXAIBatchTestServer(t)
+	defer server.close()
+	server.statusBody = xaiBatchResponseBody(nil)
+	server.resultsBody = []map[string]interface{}{{
+		"results": []map[string]interface{}{{
+			"batch_request_id": "image-empty",
+			"batch_result": map[string]interface{}{"response": map[string]interface{}{
+				"image_generation": map[string]interface{}{"data": []map[string]interface{}{{"revised_prompt": "x"}}},
+			}},
+		}},
+	}}
+	batch := newTestXAIBatchProvider(server.ts.URL)
+	stream, err := batch.DoGetBatchResults(context.Background(), provider.BatchV4OperationOptions{BatchID: "batch_123"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := stream.Next()
+	if err == nil || item != nil {
+		t.Fatalf("want a stream error, got item=%+v err=%v", item, err)
+	}
+	if stream.Err() == nil {
+		t.Fatal("Err() should report the failure")
+	}
+}
