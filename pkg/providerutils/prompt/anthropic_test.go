@@ -1225,3 +1225,26 @@ func TestAnthropicToolSearchErrorResultHasNoCaller(t *testing.T) {
 		t.Fatalf("unexpected caller: %v", part)
 	}
 }
+
+// TS: `title: metadata.title ?? part.filename` -- an explicit empty title
+// stays empty; only an absent one falls back to the filename.
+func TestConvertToAnthropicPrompt_EmptyDocumentTitleStaysEmpty(t *testing.T) {
+	p, err := ConvertToAnthropicPrompt([]types.Message{{Role: types.RoleUser, Content: []types.ContentPart{
+		types.FileContent{Data: []byte("text"), MediaType: "text/plain", Filename: "a.txt", ProviderOptions: anthropicOpt("title", "")},
+	}}}, AnthropicPromptOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertJSONEqual(t, "messages", p.Messages, `[{"role":"user","content":[{"type":"document","source":{"type":"text","media_type":"text/plain","data":"text"},"title":""}]}]`)
+}
+
+// TS toAnthropicToolInput: JSON null input becomes {rawInvalidInput: null}.
+func TestConvertToAnthropicPrompt_NullToolInputRecordedAsRawInvalid(t *testing.T) {
+	p, err := ConvertToAnthropicPrompt([]types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+		types.ToolCallContent{ToolCallID: "t1", ToolName: "x", Input: "null"},
+	}}}, AnthropicPromptOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertJSONEqual(t, "messages", p.Messages, `[{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"x","input":{"rawInvalidInput":null}}]}]`)
+}

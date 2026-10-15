@@ -746,12 +746,12 @@ func detectAnthropicMediaType(data []byte, topLevel string) string {
 
 func (c *anthropicConverter) documentMetadata(providerOptions map[string]interface{}, filename string, block map[string]interface{}) {
 	opts := anthropicOptions(providerOptions)
-	title, _ := opts["title"].(string)
-	if title == "" {
-		title = filename
-	}
-	if title != "" {
+	// TS: metadata.title ?? part.filename -- an explicit empty title stays
+	// empty (and is sent), only an absent title falls back to the filename.
+	if title, ok := opts["title"].(string); ok {
 		block["title"] = title
+	} else if filename != "" {
+		block["title"] = filename
 	}
 	if context, _ := opts["context"].(string); context != "" {
 		block["context"] = context
@@ -1116,7 +1116,10 @@ type anthropicToolCall struct {
 	// inputRaw is the wire text of the input when the part carries it
 	// (ToolCallContent.Input / ToolCall.RawArguments). Go maps have no key
 	// order, so the converter takes the order of the keys from it.
-	inputRaw         string
+	inputRaw string
+	// inputNull is true when the input is the JSON literal null (as opposed
+	// to absent); TS wraps it as {rawInvalidInput: null}.
+	inputNull        bool
 	providerExecuted bool
 	providerOptions  map[string]interface{}
 }
@@ -1139,6 +1142,7 @@ func toolCallFromContent(p types.ToolCallContent) anthropicToolCall {
 		toolName:         p.ToolName,
 		input:            input,
 		inputRaw:         p.Input,
+		inputNull:        p.Arguments == nil && strings.TrimSpace(p.Input) == "null",
 		providerExecuted: p.ProviderExecuted,
 		providerOptions:  opts,
 	}
@@ -1158,6 +1162,7 @@ func toolCallFromLegacy(p types.ToolCall) anthropicToolCall {
 		toolName:         p.ToolName,
 		input:            input,
 		inputRaw:         p.RawArguments,
+		inputNull:        p.Arguments == nil && strings.TrimSpace(p.RawArguments) == "null",
 		providerExecuted: p.ProviderExecuted,
 		providerOptions:  p.ProviderMetadata,
 	}
@@ -1454,7 +1459,7 @@ func (c *anthropicConverter) convertToolCall(content *[]map[string]interface{}, 
 		// tool-result/error for this call; otherwise Anthropic rejects the
 		// request for a dangling result with no matching call (TS commit
 		// c35458eac5, #21875).
-		rawInput := toAnthropicToolInput(part.input)
+		rawInput := part.toolInput()
 		action, hasAction := rawInput["action"].(string)
 		if !hasAction {
 			c.warn(fmt.Sprintf("toolset tool call for tool %s is missing the action", part.toolName))
@@ -1482,7 +1487,7 @@ func (c *anthropicConverter) convertToolCall(content *[]map[string]interface{}, 
 		"type":  "tool_use",
 		"id":    part.id,
 		"name":  part.toolName,
-		"input": orderedInput(toAnthropicToolInput(part.input), part.inputRaw),
+		"input": orderedInput(part.toolInput(), part.inputRaw),
 	}
 	if caller != nil {
 		block["caller"] = caller
@@ -1791,6 +1796,15 @@ func anthropicCaller(providerOptions map[string]interface{}) map[string]interfac
 		return map[string]interface{}{"type": "direct"}
 	}
 	return nil
+}
+
+// toolInput is the tool_use input: a JSON null input is recorded as
+// {rawInvalidInput: null} like TS, other non-objects via toAnthropicToolInput.
+func (t anthropicToolCall) toolInput() map[string]interface{} {
+	if t.inputNull {
+		return map[string]interface{}{"rawInvalidInput": nil}
+	}
+	return toAnthropicToolInput(t.input)
 }
 
 // toAnthropicToolInput wraps invalid (non-object) tool call input because
