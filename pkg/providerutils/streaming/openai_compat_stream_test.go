@@ -998,3 +998,23 @@ func runOpenAICompatStreamRecursionChild() {
 	}
 	fmt.Println("BF5_CHILD_OK")
 }
+
+// An empty `data:` event is a JSON parse error in TS (safeParseJSON of ""),
+// with includeRawChunks as well as without.
+func TestOpenAICompatStream_EmptyDataEventIsParseError(t *testing.T) {
+	for _, raw := range []bool{false, true} {
+		stream := newTestStream("data:\n\ndata: [DONE]\n\n")
+		stream.IncludeRawChunks = raw
+		chunks := collectStreamChunks(t, stream)
+		var sawErr bool
+		for _, c := range chunks {
+			if c.Type == provider.ChunkTypeError && strings.Contains(c.Text, "failed to parse stream chunk") {
+				sawErr = true
+			}
+		}
+		if !sawErr {
+			t.Errorf("includeRaw=%v: no parse error chunk in %d chunks", raw, len(chunks))
+		}
+		_ = stream.Close()
+	}
+}

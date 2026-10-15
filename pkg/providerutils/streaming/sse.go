@@ -50,12 +50,43 @@ const (
 type SSEParser struct {
 	scanner *bufio.Scanner
 	err     error
+	started bool
+}
+
+// scanSSELines splits on "\n", "\r\n" and a bare "\r", the three line
+// terminators of the SSE spec (bufio.ScanLines knows only the first two).
+func scanSSELines(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if atEOF && len(data) == 0 {
+		return 0, nil, nil
+	}
+	i := bytes.IndexAny(data, "\r\n")
+	if i < 0 {
+		if atEOF {
+			return len(data), data, nil
+		}
+		return 0, nil, nil
+	}
+	if data[i] == '\n' {
+		return i + 1, data[:i], nil
+	}
+	// Bare CR or the CR of a CRLF pair: look at the next byte to tell them apart.
+	if i+1 < len(data) {
+		if data[i+1] == '\n' {
+			return i + 2, data[:i], nil
+		}
+		return i + 1, data[:i], nil
+	}
+	if atEOF {
+		return i + 1, data[:i], nil
+	}
+	return 0, nil, nil
 }
 
 // NewSSEParser creates a new SSE parser for the given reader
 func NewSSEParser(r io.Reader) *SSEParser {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, sseScannerInitialBufferSize), sseScannerMaxLineSize)
+	scanner.Split(scanSSELines)
 	return &SSEParser{
 		scanner: scanner,
 	}
@@ -73,14 +104,24 @@ func (p *SSEParser) Next() (*SSEEvent, error) {
 
 	for p.scanner.Scan() {
 		line := p.scanner.Text()
+		if !p.started {
+			// eventsource-parser strips a leading byte order mark.
+			p.started = true
+			line = strings.TrimPrefix(line, "\ufeff")
+		}
 
-		// Empty line signals end of event
+		// Empty line signals end of event. Like eventsource-parser, an event
+		// is dispatched only when it has a data field; an empty "data:" line
+		// dispatches an event with empty data (the consumer's JSON parse then
+		// fails, as in TS), while an event with no data field is dropped.
 		if line == "" {
-			if len(dataLines) > 0 || event.Event != "" {
+			if len(dataLines) > 0 {
 				// Combine data lines
 				event.Data = strings.Join(dataLines, "\n")
 				return event, nil
 			}
+			// Nothing to dispatch: the event type, id and retry are reset.
+			event = &SSEEvent{}
 			continue
 		}
 
@@ -92,13 +133,13 @@ func (p *SSEParser) Next() (*SSEEvent, error) {
 
 		// Split by first colon
 		colonIdx := strings.Index(line, ":")
-		if colonIdx == -1 {
-			// Treat as field with empty value
-			continue
+		field := line
+		value := ""
+		if colonIdx != -1 {
+			// A line without a colon is a field with an empty value.
+			field = line[:colonIdx]
+			value = line[colonIdx+1:]
 		}
-
-		field := line[:colonIdx]
-		value := line[colonIdx+1:]
 
 		// Remove leading space from value
 		if len(value) > 0 && value[0] == ' ' {
@@ -131,7 +172,7 @@ func (p *SSEParser) Next() (*SSEEvent, error) {
 	}
 
 	// Check if we have any data left
-	if len(dataLines) > 0 || event.Event != "" {
+	if len(dataLines) > 0 {
 		event.Data = strings.Join(dataLines, "\n")
 		return event, nil
 	}
