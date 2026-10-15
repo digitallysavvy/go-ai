@@ -21,6 +21,10 @@ type Config struct {
 
 	// BaseURL is the base URL for the Rev.ai API (optional).
 	BaseURL string
+
+	// Headers are custom HTTP headers sent with every request (TS provider
+	// settings `headers`).
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // Provider represents the Rev.ai provider.
@@ -40,9 +44,9 @@ func New(config Config) *Provider {
 
 	client := internalhttp.NewClient(internalhttp.Config{
 		BaseURL: config.BaseURL,
-		Headers: version.WithUserAgentSuffix(map[string]string{
+		Headers: version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{
 			"Authorization": "Bearer " + config.APIKey,
-		}, version.ProviderUserAgent("revai")),
+		}, config.Headers), version.ProviderUserAgent("revai")),
 	})
 
 	return &Provider{

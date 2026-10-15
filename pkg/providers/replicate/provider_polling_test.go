@@ -84,8 +84,8 @@ func TestReplicateImageDoGeneratePollingAndNoURLError(t *testing.T) {
 		}
 		return nil, errors.New("unexpected request")
 	})
-	im := NewImageModel(p, "img-ver")
-	if im.SpecificationVersion() != "v4" || im.Provider() != "replicate" || im.ModelID() != "img-ver" {
+	im := NewImageModel(p, "img-ver:v1")
+	if im.SpecificationVersion() != "v4" || im.Provider() != "replicate" || im.ModelID() != "img-ver:v1" {
 		t.Fatalf("metadata mismatch")
 	}
 	_, err := im.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "cat"})
@@ -151,7 +151,7 @@ func TestReplicatePollingFailuresAndStreamHelpers(t *testing.T) {
 		}
 		return nil, errors.New("unexpected request")
 	})
-	_, err = NewImageModel(pCancel, "img").DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x"})
+	_, err = NewImageModel(pCancel, "img:v1").DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x"})
 	if err == nil || !errors.As(err, &respErr) || !strings.Contains(err.Error(), "Replicate image generation canceled: canceled") {
 		t.Fatalf("expected InvalidResponseDataError with 'Replicate image generation canceled: canceled', got %v", err)
 	}
@@ -181,7 +181,7 @@ func TestReplicateImageDoGenerateWiresProviderOptionsIntoPolling(t *testing.T) {
 		}
 		return nil, errors.New("unexpected request")
 	})
-	im := NewImageModel(p, "img-wire")
+	im := NewImageModel(p, "img-wire:v1")
 	_, err := im.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
 		Prompt: "cat",
 		ProviderOptions: map[string]interface{}{
@@ -191,7 +191,7 @@ func TestReplicateImageDoGenerateWiresProviderOptionsIntoPolling(t *testing.T) {
 			},
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "timed out after 3 attempts") {
+	if err == nil || !strings.Contains(err.Error(), "did not complete after 3 polling attempts") {
 		t.Fatalf("error = %v, want timeout after 3 attempts (ProviderOptions wired through)", err)
 	}
 	if getCount != 3 {
@@ -206,7 +206,7 @@ func TestReplicateImageNullOutputAfterCompletionReturnsInvalidResponseDataError(
 		}
 		return nil, errors.New("unexpected request")
 	})
-	im := NewImageModel(p, "img-ver")
+	im := NewImageModel(p, "img-ver:v1")
 	_, err := im.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "cat"})
 	if err == nil {
 		t.Fatal("expected InvalidResponseDataError for null output")
@@ -233,7 +233,7 @@ func TestReplicateImagePollingRespectsCustomPollOptions(t *testing.T) {
 	pollIntervalMillis := 5
 	maxPollAttempts := 10
 	start := time.Now()
-	prediction, err := im.pollImagePrediction(context.Background(), "pred-poll", ReplicateImagePollOptions{
+	prediction, err := im.pollImagePrediction(context.Background(), replicateImagePrediction{ID: "pred-poll", Status: "starting"}, nil, ReplicateImagePollOptions{
 		PollIntervalMillis: &pollIntervalMillis,
 		MaxPollAttempts:    &maxPollAttempts,
 	})
@@ -265,11 +265,11 @@ func TestReplicateImagePollingRespectsMaxPollAttempts(t *testing.T) {
 	im := NewImageModel(p, "img-timeout")
 	pollIntervalMillis := 1
 	maxPollAttempts := 2
-	_, err := im.pollImagePrediction(context.Background(), "pred-timeout", ReplicateImagePollOptions{
+	_, err := im.pollImagePrediction(context.Background(), replicateImagePrediction{ID: "pred-timeout", Status: "starting"}, nil, ReplicateImagePollOptions{
 		PollIntervalMillis: &pollIntervalMillis,
 		MaxPollAttempts:    &maxPollAttempts,
 	})
-	if err == nil || !strings.Contains(err.Error(), "timed out after 2 attempts") {
+	if err == nil || !strings.Contains(err.Error(), "did not complete after 2 polling attempts") {
 		t.Fatalf("error = %v, want timeout after 2 attempts", err)
 	}
 }
@@ -329,7 +329,7 @@ func TestPollImagePrediction_RespondsPromptlyToContextCancellation(t *testing.T)
 	}()
 
 	start := time.Now()
-	_, err := m.pollImagePrediction(ctx, "p1", ReplicateImagePollOptions{})
+	_, err := m.pollImagePrediction(ctx, replicateImagePrediction{ID: "p1", Status: "starting"}, nil, ReplicateImagePollOptions{})
 	elapsed := time.Since(start)
 
 	if err == nil {

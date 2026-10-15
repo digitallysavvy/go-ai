@@ -5,7 +5,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"time"
+
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -63,7 +66,40 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		return nil, err
 	}
 	result.Warnings = append(result.Warnings, togetherWarnings(m.modelID, opts)...)
+	result.Response = &types.ResponseMetadata{Timestamp: time.Now(), ModelID: m.modelID, Headers: providerutils.ExtractHeaders(resp.Headers)}
 	return result, nil
+}
+
+// MaxImagesPerCall mirrors TS TogetherAIImageModel#maxImagesPerCall.
+func (m *ImageModel) MaxImagesPerCall() int { return 1 }
+
+// SupportsFileInputs mirrors TS TogetherAIImageModel#supportsFileInputs.
+func (m *ImageModel) SupportsFileInputs() *bool {
+	switch m.modelID {
+	case "black-forest-labs/FLUX.1-kontext-pro", "black-forest-labs/FLUX.1-kontext-max",
+		"black-forest-labs/FLUX.1-kontext-dev", "black-forest-labs/FLUX.1-canny",
+		"black-forest-labs/FLUX.1-depth", "black-forest-labs/FLUX.1-redux",
+		"black-forest-labs/FLUX.2-pro", "black-forest-labs/FLUX.2-flex":
+		t := true
+		return &t
+	case "stabilityai/stable-diffusion-xl-base-1.0", "black-forest-labs/FLUX.1-dev",
+		"black-forest-labs/FLUX.1-dev-lora", "black-forest-labs/FLUX.1-schnell",
+		"black-forest-labs/FLUX.1.1-pro", "black-forest-labs/FLUX.1-pro",
+		"black-forest-labs/FLUX.1-schnell-Free", "black-forest-labs/FLUX.2-dev",
+		"google/gemini-3-pro-image":
+		f := false
+		return &f
+	}
+	return nil
+}
+
+// SupportsMaskInputs mirrors TS TogetherAIImageModel#supportsMaskInputs.
+func (m *ImageModel) SupportsMaskInputs() *bool {
+	if m.SupportsFileInputs() == nil {
+		return nil
+	}
+	f := false
+	return &f
 }
 
 // nonDiffusionImageModels lists Together image models that aren't diffusion
@@ -192,7 +228,10 @@ func (m *ImageModel) convertResponse(body []byte) (*types.ImageResult, error) {
 			result.MimeType = "image/png"
 		}
 		if item.B64JSON != "" {
-			image := []byte(item.B64JSON)
+			image, err := base64.StdEncoding.DecodeString(item.B64JSON)
+			if err != nil {
+				return nil, fmt.Errorf("failed to decode base64 image: %w", err)
+			}
 			result.Images = append(result.Images, image)
 			result.Base64Images = append(result.Base64Images, item.B64JSON)
 			if result.Image == nil {

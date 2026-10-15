@@ -55,14 +55,18 @@ func TestReplicateLanguageModelBuildConvertAndStream(t *testing.T) {
 }
 
 func TestReplicateImageModelBuildAndConvertErrors(t *testing.T) {
-	m := NewImageModel(New(Config{APIKey: "k"}), "img-ver")
+	m := NewImageModel(New(Config{APIKey: "k"}), "owner/img:ver")
 	n := 3
-	body := m.buildRequestBody(&provider.ImageGenerateOptions{Prompt: "cat", N: &n, Size: "640x480"})
-	if body["version"] != "img-ver" {
+	seed := 7
+	body, _, prefer, err := m.buildRequest(&provider.ImageGenerateOptions{Prompt: "cat", N: &n, Size: "640x480", AspectRatio: "1:1", Seed: &seed})
+	if err != nil || prefer != "wait" {
+		t.Fatalf("err=%v prefer=%q", err, prefer)
+	}
+	if body["version"] != "ver" {
 		t.Fatalf("version = %#v", body["version"])
 	}
 	input := body["input"].(map[string]interface{})
-	if input["prompt"] != "cat" || input["num_outputs"] != 3 || input["width"] != 640 || input["height"] != 480 {
+	if input["prompt"] != "cat" || input["num_outputs"] != 3 || input["size"] != "640x480" || input["aspect_ratio"] != "1:1" || input["seed"] != 7 {
 		t.Fatalf("input mismatch: %#v", input)
 	}
 

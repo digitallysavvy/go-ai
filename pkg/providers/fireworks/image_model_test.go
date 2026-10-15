@@ -539,16 +539,22 @@ func TestDoGenerateAsync_ReadyMissingSample(t *testing.T) {
 func TestDoGenerateSync_NonAsyncModel(t *testing.T) {
 	const modelID = "accounts/fireworks/models/stable-diffusion-xl-1024-v1-0"
 
-	// The sync path POSTs to /v1/images/generations and returns JSON with a data array
+	// TS getUrlForModel: image_generation models POST to
+	// /image_generation/{model} and answer with the image bytes.
+	var gotBody map[string]interface{}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/images/generations", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/image_generation/"+modelID, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.NotFound(w, r)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprintln(w, `{"data": [{"url": "https://example.com/sync.png"}]}`) //nolint:errcheck
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write([]byte("IMGBYTES"))
+	})
+	mux.HandleFunc("/v1/workflows/accounts/fireworks/models/flux-1-dev-fp8/text_to_image", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("FLUXBYTES"))
 	})
 
 	server := httptest.NewServer(mux)
@@ -557,14 +563,27 @@ func TestDoGenerateSync_NonAsyncModel(t *testing.T) {
 	prov := providerForAsyncServer(server.URL)
 	model := NewImageModel(prov, modelID)
 
+	n := 2
+	seed := 3
 	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
-		Prompt: "Mountains",
+		Prompt: "Mountains", N: &n, Seed: &seed, Size: "512x768", AspectRatio: "1:1",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.URL != "https://example.com/sync.png" {
-		t.Errorf("expected sync URL, got %q", result.URL)
+	if string(result.Image) != "IMGBYTES" || result.MimeType != "image/jpeg" || result.Response == nil {
+		t.Errorf("unexpected result: %+v", result)
+	}
+	if gotBody["samples"] != float64(2) || gotBody["seed"] != float64(3) || gotBody["width"] != "512" || gotBody["height"] != "768" {
+		t.Errorf("body = %v", gotBody)
+	}
+	if len(result.Warnings) != 1 || result.Warnings[0].Feature != "aspectRatio" {
+		t.Errorf("warnings = %+v", result.Warnings)
+	}
+
+	flux, err := NewImageModel(prov, "accounts/fireworks/models/flux-1-dev-fp8").DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x"})
+	if err != nil || string(flux.Image) != "FLUXBYTES" {
+		t.Fatalf("workflows text_to_image: %v %+v", err, flux)
 	}
 }
 
@@ -608,7 +627,7 @@ func TestCheckAsyncStatus_Statuses(t *testing.T) {
 			prov := providerForAsyncServer(server.URL)
 			model := NewImageModel(prov, modelID)
 
-			_, done, err := model.checkAsyncStatus(context.Background(), requestID)
+			_, done, err := model.checkAsyncStatus(context.Background(), requestID, nil)
 
 			if tt.wantErrStr != "" {
 				if err == nil {
@@ -695,10 +714,10 @@ func TestBuildRequestBody_SyncProviderOptionsPassthrough(t *testing.T) {
 	if body["prompt"] != "Test prompt" {
 		t.Errorf("expected prompt, got %v", body["prompt"])
 	}
-	if body["n"] != 2 {
-		t.Errorf("expected n=2, got %v", body["n"])
+	if body["samples"] != 2 {
+		t.Errorf("expected samples=2, got %v", body["samples"])
 	}
-	if body["width"] != 512 || body["height"] != 512 {
+	if body["width"] != "512" || body["height"] != "512" {
 		t.Errorf("expected width/height=512, got %v/%v", body["width"], body["height"])
 	}
 	if body["cfg_scale"] != 7.5 {
@@ -723,11 +742,10 @@ func TestDoGenerateSync_ProviderOptionsInRequestBody(t *testing.T) {
 
 	var gotBody map[string]interface{}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/images/generations", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/image_generation/"+modelID, func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprintln(w, `{"data": [{"url": "https://example.com/sync.png"}]}`) //nolint:errcheck
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("PNG"))
 	})
 
 	server := httptest.NewServer(mux)
@@ -809,26 +827,17 @@ func TestDoGenerateAsync_Warnings(t *testing.T) {
 		t.Errorf("expected 3 warnings, got %d: %v", len(result.Warnings), result.Warnings)
 	}
 
-	warnTypes := make(map[string]bool)
+	feats := map[string]bool{}
 	for _, w := range result.Warnings {
-		warnTypes[w.Type] = true
-		if w.Type != "unsupported-setting" {
-			t.Errorf("unexpected warning type %q", w.Type)
+		feats[w.Type+"/"+w.Feature] = true
+		if w.Type == "other" && !strings.Contains(w.Message, "Fireworks only supports a single input image") {
+			t.Errorf("unexpected other warning %q", w.Message)
 		}
 	}
-
-	warnMessages := make(map[string]bool)
-	for _, w := range result.Warnings {
-		warnMessages[w.Message] = true
-	}
-	if !warnMessages["size is not supported for flux-kontext models; use aspect_ratio instead"] {
-		t.Errorf("expected size warning, got: %v", result.Warnings)
-	}
-	if !warnMessages["only the first input image is used; multiple files are not supported"] {
-		t.Errorf("expected multiple-files warning, got: %v", result.Warnings)
-	}
-	if !warnMessages["mask is not supported for flux-kontext models"] {
-		t.Errorf("expected mask warning, got: %v", result.Warnings)
+	for _, want := range []string{"unsupported/size", "other/", "unsupported/mask"} {
+		if !feats[want] {
+			t.Errorf("missing warning %s in %+v", want, result.Warnings)
+		}
 	}
 }
 

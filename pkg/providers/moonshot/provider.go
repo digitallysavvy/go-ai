@@ -34,10 +34,10 @@ func New(cfg Config) *Provider {
 	// Create HTTP client with authorization header
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: version.WithUserAgentSuffix(map[string]string{
+		Headers: version.WithUserAgentSuffix(http.MergeHeaders(map[string]string{
 			"Authorization": "Bearer " + cfg.APIKey,
 			"Content-Type":  "application/json",
-		}, version.ProviderUserAgent("moonshotai")),
+		}, cfg.Headers), version.ProviderUserAgent("moonshotai")),
 	})
 
 	return &Provider{

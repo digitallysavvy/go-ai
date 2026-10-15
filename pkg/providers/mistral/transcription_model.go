@@ -275,7 +275,7 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 		audioBytes = decoded
 	}
 
-	part, err := writer.CreateFormFile("file", "audio."+mistralAudioExtension(opts.MimeType))
+	part, err := providerutils.CreateTypedFormFile(writer, "file", "audio."+mistralAudioExtension(opts.MimeType), opts.MimeType)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create form file: %w", err)
 	}
@@ -326,22 +326,7 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 }
 
 func mistralAudioExtension(mimeType string) string {
-	switch mimeType {
-	case "audio/mpeg", "audio/mp3":
-		return "mp3"
-	case "audio/wav", "audio/x-wav", "audio/wave":
-		return "wav"
-	case "audio/webm":
-		return "webm"
-	case "audio/mp4", "audio/m4a", "audio/x-m4a":
-		return "m4a"
-	case "audio/flac", "audio/x-flac":
-		return "flac"
-	case "audio/ogg":
-		return "ogg"
-	default:
-		return "audio"
-	}
+	return providerutils.MediaTypeToExtension(mimeType)
 }
 
 type mistralTranscriptionResponse struct {

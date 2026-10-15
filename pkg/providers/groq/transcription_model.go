@@ -191,7 +191,7 @@ func (m *TranscriptionModel) buildMultipartBody(audio []byte, mediaType string, 
 		return nil, "", err
 	}
 
-	part, err := writer.CreateFormFile("file", "audio."+groqAudioExtension(mediaType))
+	part, err := providerutils.CreateTypedFormFile(writer, "file", "audio."+groqAudioExtension(mediaType), mediaType)
 	if err != nil {
 		return nil, "", err
 	}
@@ -232,22 +232,7 @@ func (m *TranscriptionModel) buildMultipartBody(audio []byte, mediaType string, 
 }
 
 func groqAudioExtension(mediaType string) string {
-	switch mediaType {
-	case "audio/mpeg", "audio/mp3":
-		return "mp3"
-	case "audio/wav", "audio/wave", "audio/x-wav":
-		return "wav"
-	case "audio/webm":
-		return "webm"
-	case "audio/mp4", "audio/m4a":
-		return "m4a"
-	case "audio/flac":
-		return "flac"
-	case "audio/ogg":
-		return "ogg"
-	default:
-		return "wav"
-	}
+	return providerutils.MediaTypeToExtension(mediaType)
 }
 
 // groqTranscriptionResponse mirrors groqTranscriptionResponseSchema in TS.

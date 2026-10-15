@@ -221,3 +221,11 @@ func TestElevenLabsTranscription_PreservesWordMetadata(t *testing.T) {
 		t.Fatalf("providerMetadata = %#v", res.ProviderMetadata)
 	}
 }
+
+func TestElevenLabsAudioExtensionMatchesMediaTypeToExtension(t *testing.T) {
+	for in, want := range map[string]string{"audio/mpeg": "mp3", "audio/x-wav": "wav", "audio/opus": "ogg", "audio/mp4": "m4a", "audio/x-m4a": "m4a", "audio/flac": "flac", "audio/aac": "aac", "": ""} {
+		if got := elevenLabsAudioExtension(in); got != want {
+			t.Errorf("%q -> %q, want %q", in, got, want)
+		}
+	}
+}

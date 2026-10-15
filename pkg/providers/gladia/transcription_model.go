@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -237,7 +239,7 @@ func buildUploadMultipart(opts *provider.TranscriptionOptions) (*bytes.Buffer, s
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
 
-	part, err := writer.CreateFormFile("audio", "audio."+gladiaAudioExtension(opts.MimeType))
+	part, err := providerutils.CreateTypedFormFile(writer, "audio", "audio."+gladiaAudioExtension(opts.MimeType), opts.MimeType)
 	if err != nil {
 		return nil, "", err
 	}
@@ -251,22 +253,7 @@ func buildUploadMultipart(opts *provider.TranscriptionOptions) (*bytes.Buffer, s
 }
 
 func gladiaAudioExtension(mimeType string) string {
-	switch mimeType {
-	case "audio/mpeg", "audio/mp3":
-		return "mp3"
-	case "audio/wav", "audio/wave", "audio/x-wav":
-		return "wav"
-	case "audio/webm":
-		return "webm"
-	case "audio/mp4", "audio/m4a":
-		return "m4a"
-	case "audio/flac":
-		return "flac"
-	case "audio/ogg":
-		return "ogg"
-	default:
-		return "wav"
-	}
+	return providerutils.MediaTypeToExtension(mimeType)
 }
 
 // pollResult polls resultURL until the job reaches status "done" or "error",

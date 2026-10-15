@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ImageModel implements the provider.ImageModel interface for Prodia
@@ -100,6 +102,7 @@ func extractProviderOptions(opts *provider.ImageGenerateOptions) *ProdiaImagePro
 
 // DoGenerate performs image generation using the Prodia API.
 func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
+	currentDate := time.Now()
 	var warnings []types.Warning
 
 	// Warn about invalid size format — matches TS getArgs warning.
@@ -156,6 +159,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	if len(imageData) == 0 && jobResp.ImageURL != "" {
 		result.URL = jobResp.ImageURL
 	}
+	result.Response = &types.ResponseMetadata{Timestamp: currentDate, ModelID: m.modelID, Headers: providerutils.ExtractHeaders(resp.Headers)}
 
 	return result, nil
 }

@@ -7,11 +7,15 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"net/textproto"
+	"strings"
+	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // TranscriptionModel implements the provider.TranscriptionModel interface for OpenAI Whisper
@@ -51,6 +55,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		}
 	}
 
+	currentDate := time.Now()
 	body, contentType, err := m.buildMultipartBody(opts)
 	if err != nil {
 		return nil, err
@@ -60,6 +65,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	req := internalhttp.Request{
 		Method:  "POST",
 		Path:    "/audio/transcriptions",
+		Query:   m.provider.config.AudioQuery,
 		Body:    body,
 		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
 	}
@@ -77,13 +83,28 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	if err := json.Unmarshal(resp.Body, &response); err != nil {
 		return nil, fmt.Errorf("failed to decode transcription response: %w", err)
 	}
+	var rawResponse interface{}
+	_ = json.Unmarshal(resp.Body, &rawResponse)
 
 	result := &types.TranscriptionResult{
 		Text: response.Text,
 		Usage: types.TranscriptionUsage{
-			DurationSeconds: response.Duration,
+			DurationSeconds: durationOrZero(response.Duration),
 		},
 		ProviderUsage: response.Usage,
+		Response: &types.ResponseMetadata{
+			Timestamp: currentDate,
+			ModelID:   m.modelID,
+			Headers:   providerutils.ExtractHeaders(resp.Headers),
+			Body:      rawResponse,
+		},
+	}
+	if code, ok := openaiTranscriptionLanguages[response.Language]; ok {
+		result.Language = code
+	}
+	if response.Duration != nil {
+		d := *response.Duration
+		result.DurationInSeconds = &d
 	}
 
 	// Timestamped segments/words (abb9ebf: diarized segments carry an extra
@@ -140,7 +161,14 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	writer := multipart.NewWriter(&buf)
 
 	// Add file
-	part, err := writer.CreateFormFile("file", "audio."+getExtensionFromMimeType(opts.MimeType))
+	fileHeader := textproto.MIMEHeader{}
+	fileHeader.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename="audio.%s"`, getExtensionFromMimeType(opts.MimeType)))
+	if opts.MimeType != "" {
+		fileHeader.Set("Content-Type", opts.MimeType)
+	} else {
+		fileHeader.Set("Content-Type", "application/octet-stream")
+	}
+	part, err := writer.CreatePart(fileHeader)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create form file: %w", err)
 	}
@@ -153,65 +181,86 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 		return nil, "", err
 	}
 
-	// Add language if specified
-	if opts.Language != "" {
-		if err := writer.WriteField("language", opts.Language); err != nil {
-			return nil, "", err
-		}
-	}
-
-	// Add timestamp granularities if requested
-	if opts.Timestamps {
-		if err := writer.WriteField("timestamp_granularities[]", "word"); err != nil {
-			return nil, "", err
-		}
-	}
-
 	openaiOpts := transcriptionOpenAIOptions(opts.ProviderOptions)
 	isDiarizationModel := m.modelID == "gpt-4o-transcribe-diarize"
 	isGpt4oTranscribeModel := m.modelID == "gpt-4o-transcribe" || m.modelID == "gpt-4o-mini-transcribe"
 
-	// Add response format (TS getArgs: whisper-1 unconditionally gets
-	// "verbose_json" -- set before, and never overridden by,
-	// providerOptions.openai.responseFormat. Every other model defaults to
-	// diarized_json for the diarize model, json for gpt-4o(-mini)-transcribe,
-	// verbose_json otherwise, with an explicit responseFormat override
-	// winning over all of those; abb9ebf).
-	responseFormat := "verbose_json"
-	if m.modelID != "whisper-1" {
-		switch {
-		case openaiOpts.ResponseFormat != "":
-			responseFormat = openaiOpts.ResponseFormat
-		case isDiarizationModel:
-			responseFormat = "diarized_json"
-		case isGpt4oTranscribeModel:
-			responseFormat = "json"
-		default:
-			responseFormat = "verbose_json"
-		}
-	}
-	if err := writer.WriteField("response_format", responseFormat); err != nil {
-		return nil, "", err
-	}
-
-	if openaiOpts.Prompt != "" {
-		if err := writer.WriteField("prompt", openaiOpts.Prompt); err != nil {
+	// TS getArgs: whisper-1 unconditionally gets verbose_json; the other
+	// provider options (and, for other models, response_format) are only
+	// sent when providerOptions.openai is present, with the schema defaults
+	// temperature=0 and timestampGranularities=["segment"]. Without options
+	// only the diarize model gets a response_format.
+	if m.modelID == "whisper-1" {
+		if err := writer.WriteField("response_format", "verbose_json"); err != nil {
 			return nil, "", err
 		}
 	}
-	if openaiOpts.HasTemperature {
-		if err := writer.WriteField("temperature", formatFloat(openaiOpts.Temperature)); err != nil {
+	language := openaiOpts.Language
+	if language == "" {
+		language = opts.Language
+	}
+	if openaiOpts.Present {
+		for _, inc := range openaiOpts.Include {
+			if err := writer.WriteField("include[]", inc); err != nil {
+				return nil, "", err
+			}
+		}
+		if language != "" {
+			if err := writer.WriteField("language", language); err != nil {
+				return nil, "", err
+			}
+		}
+		if openaiOpts.Prompt != "" {
+			if err := writer.WriteField("prompt", openaiOpts.Prompt); err != nil {
+				return nil, "", err
+			}
+		}
+		if m.modelID != "whisper-1" {
+			responseFormat := "verbose_json"
+			switch {
+			case openaiOpts.ResponseFormat != "":
+				responseFormat = openaiOpts.ResponseFormat
+			case isDiarizationModel:
+				responseFormat = "diarized_json"
+			case isGpt4oTranscribeModel:
+				responseFormat = "json"
+			}
+			if err := writer.WriteField("response_format", responseFormat); err != nil {
+				return nil, "", err
+			}
+		}
+		temperature := openaiOpts.Temperature
+		if !openaiOpts.HasTemperature {
+			temperature = 0
+		}
+		if err := writer.WriteField("temperature", formatFloat(temperature)); err != nil {
 			return nil, "", err
 		}
-	}
-	for _, inc := range openaiOpts.Include {
-		if err := writer.WriteField("include[]", inc); err != nil {
-			return nil, "", err
+		granularities := openaiOpts.TimestampGranularities
+		if !openaiOpts.HasTimestampGranularities {
+			granularities = []string{"segment"}
 		}
-	}
-	for _, tg := range openaiOpts.TimestampGranularities {
-		if err := writer.WriteField("timestamp_granularities[]", tg); err != nil {
-			return nil, "", err
+		for _, tg := range granularities {
+			if err := writer.WriteField("timestamp_granularities[]", tg); err != nil {
+				return nil, "", err
+			}
+		}
+	} else {
+		if isDiarizationModel {
+			if err := writer.WriteField("response_format", "diarized_json"); err != nil {
+				return nil, "", err
+			}
+		}
+		if language != "" {
+			if err := writer.WriteField("language", language); err != nil {
+				return nil, "", err
+			}
+		}
+		// Go extension: top-level Timestamps requests word granularity.
+		if opts.Timestamps {
+			if err := writer.WriteField("timestamp_granularities[]", "word"); err != nil {
+				return nil, "", err
+			}
 		}
 	}
 
@@ -281,6 +330,11 @@ type transcriptionOpenAIOptionsValue struct {
 	Temperature            float64
 	Include                []string
 	TimestampGranularities []string
+	// Present is true when providerOptions.openai was supplied (TS
+	// parseProviderOptions then applies the schema defaults).
+	Present                   bool
+	HasTimestampGranularities bool
+	Language                  string
 }
 
 func transcriptionOpenAIOptions(providerOptions map[string]interface{}) transcriptionOpenAIOptionsValue {
@@ -291,6 +345,10 @@ func transcriptionOpenAIOptions(providerOptions map[string]interface{}) transcri
 	openaiOpts, ok := providerOptions["openai"].(map[string]interface{})
 	if !ok {
 		return result
+	}
+	result.Present = true
+	if v, ok := openaiOpts["language"].(string); ok {
+		result.Language = v
 	}
 	if v, ok := openaiOpts["responseFormat"].(string); ok {
 		result.ResponseFormat = v
@@ -305,6 +363,9 @@ func transcriptionOpenAIOptions(providerOptions map[string]interface{}) transcri
 		result.Temperature = v
 		result.HasTemperature = true
 	}
+	if v, ok := openaiOpts["include"].([]string); ok {
+		result.Include = append(result.Include, v...)
+	}
 	if v, ok := openaiOpts["include"].([]interface{}); ok {
 		for _, item := range v {
 			if s, ok := item.(string); ok {
@@ -312,7 +373,12 @@ func transcriptionOpenAIOptions(providerOptions map[string]interface{}) transcri
 			}
 		}
 	}
+	if v, ok := openaiOpts["timestampGranularities"].([]string); ok {
+		result.HasTimestampGranularities = true
+		result.TimestampGranularities = append(result.TimestampGranularities, v...)
+	}
 	if v, ok := openaiOpts["timestampGranularities"].([]interface{}); ok {
+		result.HasTimestampGranularities = true
 		for _, item := range v {
 			if s, ok := item.(string); ok {
 				result.TimestampGranularities = append(result.TimestampGranularities, s)
@@ -322,24 +388,54 @@ func transcriptionOpenAIOptions(providerOptions map[string]interface{}) transcri
 	return result
 }
 
+func durationOrZero(d *float64) float64 {
+	if d == nil {
+		return 0
+	}
+	return *d
+}
+
+// getExtensionFromMimeType mirrors TS provider-utils mediaTypeToExtension.
 func getExtensionFromMimeType(mimeType string) string {
-	switch mimeType {
-	case "audio/mpeg", "audio/mp3":
+	parts := strings.SplitN(strings.ToLower(mimeType), "/", 2)
+	subtype := ""
+	if len(parts) == 2 {
+		subtype = parts[1]
+	}
+	switch subtype {
+	case "mpeg":
 		return "mp3"
-	case "audio/wav":
+	case "x-wav":
 		return "wav"
-	case "audio/webm":
-		return "webm"
-	case "audio/mp4", "audio/m4a":
+	case "opus":
+		return "ogg"
+	case "mp4", "x-m4a":
 		return "m4a"
 	default:
-		return "audio"
+		return subtype
 	}
+}
+
+// openaiTranscriptionLanguages maps the language names whisper returns to
+// ISO-639-1 codes (TS languageMap).
+var openaiTranscriptionLanguages = map[string]string{
+	"afrikaans": "af", "arabic": "ar", "armenian": "hy", "azerbaijani": "az", "belarusian": "be",
+	"bosnian": "bs", "bulgarian": "bg", "catalan": "ca", "chinese": "zh", "croatian": "hr",
+	"czech": "cs", "danish": "da", "dutch": "nl", "english": "en", "estonian": "et",
+	"finnish": "fi", "french": "fr", "galician": "gl", "german": "de", "greek": "el",
+	"hebrew": "he", "hindi": "hi", "hungarian": "hu", "icelandic": "is", "indonesian": "id",
+	"italian": "it", "japanese": "ja", "kannada": "kn", "kazakh": "kk", "korean": "ko",
+	"latvian": "lv", "lithuanian": "lt", "macedonian": "mk", "malay": "ms", "marathi": "mr",
+	"maori": "mi", "nepali": "ne", "norwegian": "no", "persian": "fa", "polish": "pl",
+	"portuguese": "pt", "romanian": "ro", "russian": "ru", "serbian": "sr", "slovak": "sk",
+	"slovenian": "sl", "spanish": "es", "swahili": "sw", "swedish": "sv", "tagalog": "tl",
+	"tamil": "ta", "thai": "th", "turkish": "tr", "ukrainian": "uk", "urdu": "ur",
+	"vietnamese": "vi", "welsh": "cy",
 }
 
 type openaiTranscriptionResponse struct {
 	Text     string                 `json:"text"`
-	Duration float64                `json:"duration"`
+	Duration *float64               `json:"duration"`
 	Language string                 `json:"language,omitempty"`
 	Usage    map[string]interface{} `json:"usage,omitempty"`
 	Segments []struct {

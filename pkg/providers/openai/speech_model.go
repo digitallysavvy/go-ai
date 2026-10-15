@@ -51,6 +51,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	resp, err := m.provider.client.Do(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/audio/speech",
+		Query:   m.provider.config.AudioQuery,
 		Body:    reqBody,
 		Headers: opts.Headers,
 	})

@@ -145,7 +145,7 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 		return nil, "", nil, err
 	}
 
-	part, err := writer.CreateFormFile("file", "audio."+cartesiaAudioExtension(opts.MimeType))
+	part, err := providerutils.CreateTypedFormFile(writer, "file", "audio."+cartesiaAudioExtension(opts.MimeType), opts.MimeType)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -173,20 +173,5 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 }
 
 func cartesiaAudioExtension(mimeType string) string {
-	switch mimeType {
-	case "audio/mpeg", "audio/mp3":
-		return "mp3"
-	case "audio/wav", "audio/wave", "audio/x-wav":
-		return "wav"
-	case "audio/webm":
-		return "webm"
-	case "audio/mp4", "audio/m4a":
-		return "m4a"
-	case "audio/flac":
-		return "flac"
-	case "audio/ogg":
-		return "ogg"
-	default:
-		return "wav"
-	}
+	return providerutils.MediaTypeToExtension(mimeType)
 }

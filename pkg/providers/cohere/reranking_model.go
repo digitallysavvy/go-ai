@@ -2,6 +2,7 @@ package cohere
 
 import (
 	"context"
+	"encoding/json"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"net/http"
 	"time"
@@ -40,47 +41,88 @@ func (m *RerankingModel) ModelID() string {
 	return m.modelID
 }
 
-// DoRerank performs document reranking
+// DoRerank performs document reranking (TS CohereRerankingModel#doRerank).
 func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOptions) (*types.RerankResult, error) {
-	// Build request body
-	reqBody := m.buildRequestBody(opts)
+	if opts == nil {
+		opts = &provider.RerankOptions{}
+	}
+	reqBody, warnings := m.buildRequestBodyWithWarnings(opts)
 
-	// Make API request
 	var response cohereRerankResponse
-	err := m.provider.client.DoJSON(ctx, internalhttp.Request{Method: http.MethodPost, Path: "/rerank", Body: reqBody, Headers: opts.Headers}, &response)
+	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{Method: http.MethodPost, Path: "/rerank", Body: reqBody, Headers: opts.Headers}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
 
-	// Convert response
-	return m.convertResponse(response), nil
+	result := m.convertResponse(response)
+	result.Warnings = warnings
+	result.Response.Headers = map[string][]string(httpResp.Headers)
+	var raw interface{}
+	if json.Unmarshal(httpResp.Body, &raw) == nil {
+		result.Response.Body = raw
+	}
+	return result, nil
 }
 
-// buildRequestBody builds the Cohere rerank API request body
-func (m *RerankingModel) buildRequestBody(opts *provider.RerankOptions) map[string]interface{} {
+// buildRequestBodyWithWarnings mirrors the TS request: object documents are
+// converted to JSON strings (with a compatibility warning) and the
+// providerOptions.cohere maxTokensPerDoc/priority options are forwarded.
+func (m *RerankingModel) buildRequestBodyWithWarnings(opts *provider.RerankOptions) (map[string]interface{}, []types.Warning) {
 	body := map[string]interface{}{
 		"model": m.modelID,
 		"query": opts.Query,
 	}
+	var warnings []types.Warning
 
-	// Convert documents to the format Cohere expects
 	switch docs := opts.Documents.(type) {
 	case []string:
 		body["documents"] = docs
-	case []map[string]interface{}:
-		// Cohere accepts structured documents
-		body["documents"] = docs
+	case nil:
+		body["documents"] = []string{}
 	default:
-		// Fallback: try to convert to []interface{}
-		body["documents"] = opts.Documents
+		var items []interface{}
+		switch typed := docs.(type) {
+		case []map[string]interface{}:
+			for _, d := range typed {
+				items = append(items, d)
+			}
+		case []interface{}:
+			items = typed
+		}
+		strs := make([]string, 0, len(items))
+		allText := true
+		for _, item := range items {
+			if s, ok := item.(string); ok {
+				strs = append(strs, s)
+				continue
+			}
+			allText = false
+			raw, _ := json.Marshal(item)
+			strs = append(strs, string(raw))
+		}
+		if !allText {
+			warnings = append(warnings, types.Warning{
+				Type:    "compatibility",
+				Feature: "object documents",
+				Details: "Object documents are converted to strings.",
+			})
+		}
+		body["documents"] = strs
 	}
 
-	// Add topN if specified
 	if opts.TopN != nil && *opts.TopN > 0 {
 		body["top_n"] = *opts.TopN
 	}
 
-	return body
+	if po, ok := opts.ProviderOptions["cohere"].(map[string]interface{}); ok {
+		if v, ok := po["maxTokensPerDoc"]; ok && v != nil {
+			body["max_tokens_per_doc"] = v
+		}
+		if v, ok := po["priority"]; ok && v != nil {
+			body["priority"] = v
+		}
+	}
+	return body, warnings
 }
 
 // convertResponse converts a Cohere response to RerankResult

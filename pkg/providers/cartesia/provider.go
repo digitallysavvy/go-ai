@@ -33,6 +33,10 @@ type Config struct {
 	// APIVersion is the Cartesia API version sent via the Cartesia-Version
 	// header (optional, defaults to DefaultAPIVersion).
 	APIVersion string
+
+	// Headers are custom HTTP headers sent with every request (TS provider
+	// settings `headers`).
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // Provider represents the Cartesia provider.
@@ -55,10 +59,10 @@ func New(config Config) *Provider {
 
 	client := internalhttp.NewClient(internalhttp.Config{
 		BaseURL: config.BaseURL,
-		Headers: version.WithUserAgentSuffix(map[string]string{
+		Headers: version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{
 			"Authorization":    "Bearer " + config.APIKey,
 			"Cartesia-Version": config.APIVersion,
-		}, version.ProviderUserAgent("cartesia")),
+		}, config.Headers), version.ProviderUserAgent("cartesia")),
 	})
 
 	return &Provider{

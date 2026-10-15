@@ -408,7 +408,10 @@ func (m *ImageModel) checkUnsupportedOptions(opts *provider.ImageGenerateOptions
 
 // downloadImage downloads an image from a URL with size limits to prevent DoS
 func (m *ImageModel) downloadImage(ctx context.Context, url string) ([]byte, error) {
-	return fileutil.Download(ctx, url, fileutil.DefaultDownloadOptions())
+	// url comes from the response body: validated and DNS-pinned, with the
+	// configured base URL origin exempt (TS getFromApi validateUrl +
+	// trustedOrigin: baseURL).
+	return fileutil.Download(ctx, url, fileutil.TrustedOriginDownloadOptions(m.provider.config.BaseURL, m.provider.client.HTTPClient().Transport))
 }
 
 // extractImageProviderOptions extracts XAI-specific provider options
