@@ -1,7 +1,9 @@
 // Extracts TS AI SDK test cases (canned wire response + call options + vitest
 // snapshots) into JSON consumed by the Go tsfixture package.
 //
-//   cd <ai repo>/packages && node <this file> <test.ts> > cases.json
+//   cd <ai repo>/packages && node <this file> <test.ts> | gzip -9n > cases.json.gz
+//
+// Cases are committed gzipped (see README.md in this directory).
 //
 // Each case carries: test name, response (json body / SSE chunks / fixture
 // file contents), call kind and options (evaluated literal), model id, the
