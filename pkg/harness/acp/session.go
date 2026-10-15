@@ -581,24 +581,15 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 		return nil, err
 	}
 
-	go func() {
-		select {
-		case <-ctx.Done():
-			select {
-			case <-c.done:
-				return
-			default:
-			}
-			abortMu.Lock()
-			abortRequested = true
-			abortErr = context.Cause(ctx)
-			abortMu.Unlock()
-			if err := s.p.channel.Send(bridge.AbortCommand{}); err != nil {
-				settle(context.Cause(ctx))
-			}
-		case <-c.done:
+	go bridge.WatchAbort(ctx, c.done, func() {
+		abortMu.Lock()
+		abortRequested = true
+		abortErr = context.Cause(ctx)
+		abortMu.Unlock()
+		if err := s.p.channel.Send(bridge.AbortCommand{}); err != nil {
+			settle(context.Cause(ctx))
 		}
-	}()
+	})
 
 	return c, nil
 }
