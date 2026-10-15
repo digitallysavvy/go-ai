@@ -552,15 +552,6 @@ func wireData(v interface{}) []byte {
 	return nil
 }
 
-// wireB64 normalizes a TS binary value to base64 text.
-func wireB64(v interface{}) string {
-	if b, ok := WireBytes(v); ok {
-		return b64(b)
-	}
-	s, _ := v.(string)
-	return s
-}
-
 func wireEmbed(ctx context.Context, m provider.EmbeddingModel, arg map[string]interface{}) (map[string]interface{}, error) {
 	opts := &provider.EmbedModelOptions{
 		ProviderOptions: objMap(arg["providerOptions"]),
