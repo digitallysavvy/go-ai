@@ -2090,8 +2090,12 @@ func TestStreamText_UsesStepTextForContinuedPrompt(t *testing.T) {
 		t.Fatal("timed out waiting for stream completion")
 	}
 
-	if result.Text() != "firstseconddone" {
-		t.Fatalf("unexpected accumulated text: %q", result.Text())
+	// TS StreamTextResult.text is the final step's text.
+	if result.Text() != "done" {
+		t.Fatalf("unexpected final text: %q", result.Text())
+	}
+	if all, err := result.ReadAll(); err != nil || all != "firstseconddone" {
+		t.Fatalf("ReadAll (every step's text) = %q, %v", all, err)
 	}
 	var assistantTexts []string
 	for _, msg := range thirdPrompt {

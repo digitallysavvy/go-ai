@@ -482,6 +482,11 @@ type StreamTextResult struct {
 
 	// Accumulated text (built as chunks arrive)
 	text string
+	// finalText is the final step's own text (TS StreamTextResult.text); text
+	// above concatenates every step's text. hasFinalText is false until a
+	// multi-step call has recorded its last step.
+	finalText    string
+	hasFinalText bool
 
 	// Finish reason (set when stream completes)
 	finishReason types.FinishReason
@@ -2411,7 +2416,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				experimentalSandbox: opts.ExperimentalSandbox,
 				toolExecutionMs:     toolExecutionMs,
 				executionBlocked:    !isToolExecutionAllowedFinishReason(r.finishReason),
-				preApprovals: eagerApprovals,
+				preApprovals:        eagerApprovals,
 				onPreliminary: func(result types.ToolResult) {
 					// Tools may run concurrently; the transform chain is not
 					// concurrency-safe.
@@ -3180,6 +3185,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	if r.err == nil && sinkPartialErr != nil {
 		r.err = sinkPartialErr
 	}
+	if len(allSteps) > 0 {
+		r.finalText = allSteps[len(allSteps)-1].Text
+		r.hasFinalText = true
+	}
 	if r.err == nil {
 		totalUsage := r.usage
 		callFinishChunk := provider.StreamChunk{
@@ -3295,7 +3304,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		Usage:            streamTelUsage,
 		ModelProvider:    r.cbModelProvider,
 		ModelID:          r.cbModelID,
-		Text:             r.text,
+		Text:             r.finalStepText(),
 		Reasoning:        streamReasoningText,
 		ToolCalls:        streamToolCalls,
 		Files:            streamFiles,
@@ -3380,7 +3389,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		Model:              lastStep.Model,
 		ModelProvider:      lastStep.Model.Provider,
 		ModelID:            lastStep.Model.ModelID,
-		Text:               r.text,
+		Text:               r.finalStepText(),
 		Reasoning:          lastStep.Reasoning,
 		ReasoningText:      lastStep.ReasoningText,
 		ToolCalls:          lastStep.ToolCalls,
@@ -3633,6 +3642,10 @@ func (r *StreamTextResult) Text() string {
 	// processingDone channel close — establishes a happens-before edge for
 	// every field processStream wrote, matching the pattern used by Usage().
 	_ = r.ensureConsumed()
+	if r.hasFinalText {
+		// TS StreamTextResult.text: the final step's text, not every step's.
+		return r.finalText
+	}
 	return r.text
 }
 
@@ -4726,4 +4739,13 @@ func (r *StreamTextResult) Chunks() <-chan provider.StreamChunk {
 	}()
 
 	return ch
+}
+
+// finalStepText is the text TS reports for a finished call (the final step's
+// text); r.text when no step was recorded.
+func (r *StreamTextResult) finalStepText() string {
+	if r.hasFinalText {
+		return r.finalText
+	}
+	return r.text
 }
