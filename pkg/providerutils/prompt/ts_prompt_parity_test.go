@@ -55,3 +55,13 @@ func TestDownloadsSkipAssistantFileParts(t *testing.T) {
 		t.Fatalf("assistant file URLs were planned for download: %v", seen)
 	}
 }
+
+func TestIsFullMediaTypeMatchesTS(t *testing.T) {
+	for in, want := range map[string]bool{
+		"image/png": true, "image/*": false, "image": false, "image/": false, "": false, "/": false, "/png": true, "a/b/c": true,
+	} {
+		if got := isFullMediaType(in); got != want {
+			t.Errorf("isFullMediaType(%q)=%v want %v", in, got, want)
+		}
+	}
+}

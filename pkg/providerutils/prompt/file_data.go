@@ -552,8 +552,10 @@ func applyDownloadedFileContentBlock(block types.FileContentBlock, downloaded ma
 }
 
 func isFullMediaType(mediaType string) bool {
-	parts := strings.Split(mediaType, "/")
-	return len(parts) == 2 && parts[0] != "" && parts[1] != ""
+	// TS isFullMediaType: a slash followed by a non-empty subtype other than
+	// the "*" wildcard (the top-level type is not checked).
+	_, subtype, ok := strings.Cut(mediaType, "/")
+	return ok && subtype != "" && subtype != "*"
 }
 
 // NormalizeContentParts rewrites content parts into provider-facing v4 content.
