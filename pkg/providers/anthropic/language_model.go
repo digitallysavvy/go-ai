@@ -184,6 +184,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	stream.providerOptionsName = req.providerOptionsName
 	stream.usedCustomProviderKey = req.usedCustomProviderKey
 	stream.requestBody = body
+	stream.includeRawChunks = opts.IncludeRawChunks
 	stream.citationDocuments = extractCitationDocuments(opts.Prompt.Messages)
 	return providerutils.WithResponseMetadata(stream, httpResp.Header, m.ModelID()), nil
 }
@@ -1322,6 +1323,13 @@ type anthropicStream struct {
 	cacheReadTokens  int64
 	cacheWriteTokens int64
 	usage            anthropicUsage
+	// includeRawChunks emits a ChunkTypeRaw chunk (the parsed SSE payload)
+	// ahead of everything an event produces, like TS options.includeRawChunks.
+	includeRawChunks bool
+	rawEmitted       bool
+	// heldEvent is an event whose raw chunk was just returned; it is
+	// processed on the next Next call.
+	heldEvent *streaming.SSEEvent
 	// In-flight content blocks, keyed by SSE index.
 	// Populated by content_block_start; removed on content_block_stop.
 	contentBlocks map[int]*streamContentBlock
@@ -1455,7 +1463,13 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 		}
 
 		// Get next SSE event
-		event, err := s.parser.Next()
+		var event *streaming.SSEEvent
+		var err error
+		if s.heldEvent != nil {
+			event, s.heldEvent = s.heldEvent, nil
+		} else {
+			event, err = s.parser.Next()
+		}
 		if err != nil {
 			if s.spliced {
 				// A spliced stream ends without a finish chunk: TS never
@@ -1478,6 +1492,14 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 		if s.spliced {
 			continue
 		}
+
+		// TS emits the raw chunk (even for pings) before handling the event.
+		if s.includeRawChunks && s.heldEvent == nil && !s.rawEmitted {
+			s.heldEvent = event
+			s.rawEmitted = true
+			return &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: rawSSEPayload(event.Data)}, nil
+		}
+		s.rawEmitted = false
 
 		// Anthropic uses different event types
 		switch event.Event {
@@ -2800,4 +2822,14 @@ func messageStartChunk(data string) *provider.StreamChunk {
 			ProviderMetadata: metadata,
 		},
 	}
+}
+
+// rawSSEPayload decodes an SSE data payload to the value a raw chunk carries
+// (the parsed JSON, or the text itself when it is not valid JSON).
+func rawSSEPayload(data string) interface{} {
+	var raw interface{}
+	if err := json.Unmarshal([]byte(data), &raw); err != nil {
+		return data
+	}
+	return raw
 }
