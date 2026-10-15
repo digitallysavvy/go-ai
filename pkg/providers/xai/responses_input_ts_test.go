@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/openai/responses"
 )
 
 func xaiOpt(k string, v interface{}) map[string]interface{} {
@@ -74,5 +75,25 @@ func TestXAIResponsesInputMatchesTSConverter(t *testing.T) {
 	}
 	if !reflect.DeepEqual(msgsW, wantW) {
 		t.Fatalf("warnings = %q, want %q", msgsW, wantW)
+	}
+}
+
+// TS doGenerate: reasoning parts need text or encrypted content, and a
+// response without usage reports explicit zero tokens.
+func TestXAIResponsesConvertResponseReasoningAndZeroUsage(t *testing.T) {
+	m := NewResponsesLanguageModel(New(Config{APIKey: "k"}), "grok-4")
+	var resp responses.ResponsesAPIResponse
+	if err := json.Unmarshal([]byte(`{"id":"r","status":"completed","output":[{"type":"reasoning","id":"rs_1","summary":[]},{"type":"reasoning","id":"rs_2","summary":[],"encrypted_content":"enc"}]}`), &resp); err != nil {
+		t.Fatal(err)
+	}
+	res, err := m.convertResponse(resp, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Content) != 1 {
+		t.Fatalf("content = %#v, want only the encrypted reasoning part", res.Content)
+	}
+	if res.Usage.InputTokens == nil || *res.Usage.InputTokens != 0 || res.Usage.InputDetails == nil || res.Usage.InputDetails.CacheWriteTokens == nil {
+		t.Fatalf("usage = %+v, want explicit zeros", res.Usage)
 	}
 }

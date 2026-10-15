@@ -466,6 +466,18 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 		Usage:       convertXAIResponsesUsage(resp.Usage),
 		RawResponse: resp,
 	}
+	if resp.Usage == nil {
+		// TS doGenerate: a response without usage reports explicit zeros.
+		zero := int64(0)
+		z := func() *int64 { v := zero; return &v }
+		result.Usage = types.Usage{
+			InputTokens:   z(),
+			OutputTokens:  z(),
+			TotalTokens:   z(),
+			InputDetails:  &types.InputTokenDetails{NoCacheTokens: z(), CacheReadTokens: z(), CacheWriteTokens: z()},
+			OutputDetails: &types.OutputTokenDetails{TextTokens: z(), ReasoningTokens: z()},
+		}
+	}
 	if resp.Usage != nil && resp.Usage.CostInUsdTicks != nil {
 		result.ProviderMetadata = map[string]interface{}{
 			"xai": map[string]interface{}{
@@ -635,7 +647,11 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 					rc.ProviderMetadata = raw
 				}
 			}
-			result.Content = append(result.Content, rc)
+			// TS: a reasoning part is emitted only when it has text or
+			// encrypted content.
+			if reasoningText != "" || item.EncryptedContent != "" {
+				result.Content = append(result.Content, rc)
+			}
 
 		case "web_search_call", "x_search_call", "code_interpreter_call",
 			"code_execution_call", "view_image_call", "view_x_video_call",
@@ -774,7 +790,9 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 	if hasFunctionCall {
 		result.FinishReason = types.FinishReasonToolCalls
 	} else {
-		result.FinishReason = mapXAIResponsesFinishReason(resp.Status, resp.IncompleteDetails)
+		// TS doGenerate maps response.status alone: an "incomplete" status is
+		// "other" here (incomplete_details only drives the streaming path).
+		result.FinishReason = mapXAIResponsesFinishReason(resp.Status, nil)
 	}
 	result.RawFinishReason = resp.Status
 
