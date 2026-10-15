@@ -64,7 +64,7 @@ func resolveDebugConfig(debug *DebugConfig, getenv func(string) string) resolved
 		out.Level = DebugLevelDebug
 	}
 	if debug != nil && debug.Subsystems != nil {
-		out.Subsystems = append([]string(nil), debug.Subsystems...)
+		out.Subsystems = append([]string{}, debug.Subsystems...) // non-nil: TS keeps an explicit []
 	} else if l := parseEnvList(getenv("HARNESS_DEBUG_SUBSYSTEMS")); len(l) > 0 {
 		out.Subsystems = l
 	}

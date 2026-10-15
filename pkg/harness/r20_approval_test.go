@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"testing"
 
@@ -84,5 +85,19 @@ func TestDecodeStreamPart_ToolCallProviderExecutedOmitted(t *testing.T) {
 		if got := p.(*ToolCallPart).ProviderExecutedOmitted; got != want {
 			t.Fatalf("%s: omitted=%v want %v", in, got, want)
 		}
+	}
+}
+
+func TestQuestionMarshal_KeepsEmptyOptionsArray(t *testing.T) {
+	b, err := json.Marshal(Question{ID: "q", Question: "?", Options: []QuestionOption{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"id":"q","question":"?","options":[]}`; string(b) != want {
+		t.Fatalf("got %s want %s", b, want)
+	}
+	b, _ = json.Marshal(Question{ID: "q", Question: "?"})
+	if want := `{"id":"q","question":"?"}`; string(b) != want {
+		t.Fatalf("got %s want %s", b, want)
 	}
 }

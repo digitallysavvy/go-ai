@@ -93,15 +93,15 @@ func ReadSubscription(ctx context.Context, opts ReadSubscriptionOptions) (string
 // Mirrors TS `resolveCursorAuthPath`.
 func ResolveAuthPath(env map[string]string, homeDirectory, goos string) string {
 	if harnessutil.IsWindows(goos) {
-		appData := env["APPDATA"]
-		if appData == "" {
+		appData, ok := env["APPDATA"] // TS `??`: only an absent variable falls back
+		if !ok {
 			appData = filepath.Join(homeDirectory, "AppData", "Roaming")
 		}
 		return filepath.Join(appData, "Cursor", "auth.json")
 	}
 	if harnessutil.IsLinux(goos) {
-		xdg := env["XDG_CONFIG_HOME"]
-		if xdg == "" {
+		xdg, ok := env["XDG_CONFIG_HOME"]
+		if !ok {
 			xdg = filepath.Join(homeDirectory, ".config")
 		}
 		return filepath.Join(xdg, "cursor", "auth.json")

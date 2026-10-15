@@ -81,7 +81,7 @@ func (s *AgentSession) ReadHistory(ctx context.Context, since string) (*ReadHist
 	underlying := s.underlying
 	s.mu.Unlock()
 	if !active || underlying == nil {
-		return nil, fmt.Errorf("harness session '%s' is not active and cannot read history", s.sessionID)
+		return nil, fmt.Errorf("Harness session %s is not active and cannot read history.", s.sessionID) //nolint:staticcheck // matches TS SDK exact error text
 	}
 	reader, ok := underlying.(HistoryReader)
 	if !ok {
