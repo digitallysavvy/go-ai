@@ -333,6 +333,9 @@ func (r *StreamTextResult) consumeExternalParts(ctx context.Context, src provide
 		r.cbSteps = append(r.cbSteps, result)
 		r.cbResponseMessages = append(r.cbResponseMessages, stepResponseMsgs...)
 		r.text = strings.Join(accumulatedText, "")
+		// TS HarnessStreamTextResult.text resolves to the final step's text.
+		r.finalText = step.text
+		r.hasFinalText = true
 		r.finishReason = step.finishReason
 		if step.rawFinishReason != "" {
 			r.rawFinishReason = step.rawFinishReason
