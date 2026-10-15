@@ -2,7 +2,6 @@ package registry
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
