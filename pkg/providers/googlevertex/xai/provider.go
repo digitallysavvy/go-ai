@@ -101,7 +101,7 @@ var _ provider.Provider = (*Provider)(nil)
 // with location defaulting to "global" when unset.
 func New(cfg Config) (*Provider, error) {
 	if cfg.Project == "" {
-		return nil, fmt.Errorf("project is required for Google Vertex xAI")
+		return nil, fmt.Errorf("Google Vertex project setting is missing. Pass it using the 'project' parameter or the GOOGLE_VERTEX_PROJECT environment variable.")
 	}
 
 	location := cfg.Location

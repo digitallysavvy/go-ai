@@ -161,7 +161,7 @@ func (p *MaaSProvider) init() error {
 			project = os.Getenv("GOOGLE_VERTEX_PROJECT")
 		}
 		if project == "" {
-			p.initErr = fmt.Errorf("project is required for Google Vertex MaaS")
+			p.initErr = fmt.Errorf("Google Vertex project setting is missing. Pass it using the 'project' parameter or the GOOGLE_VERTEX_PROJECT environment variable.")
 			return p.initErr
 		}
 

@@ -194,10 +194,10 @@ func New(cfg Config) (*Provider, error) {
 	} else {
 		// Validate project/location for standard Vertex endpoints.
 		if cfg.Project == "" {
-			return nil, fmt.Errorf("project is required for Google Vertex AI")
+			return nil, fmt.Errorf("Google Vertex project setting is missing. Pass it using the 'project' parameter or the GOOGLE_VERTEX_PROJECT environment variable.")
 		}
 		if cfg.Location == "" {
-			return nil, fmt.Errorf("location is required for Google Vertex AI")
+			return nil, fmt.Errorf("Google Vertex location setting is missing. Pass it using the 'location' parameter or the GOOGLE_VERTEX_LOCATION environment variable.")
 		}
 		// With no AuthToken, AccessToken or TokenSource, authentication falls
 		// back to Application Default Credentials, resolved lazily on the

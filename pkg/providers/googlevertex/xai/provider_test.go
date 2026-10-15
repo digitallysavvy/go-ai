@@ -12,7 +12,7 @@ import (
 func TestNew_ValidationErrors(t *testing.T) {
 	_, err := New(Config{})
 	require.Error(t, err)
-	assert.Equal(t, "project is required for Google Vertex xAI", err.Error())
+	assert.Equal(t, "Google Vertex project setting is missing. Pass it using the 'project' parameter or the GOOGLE_VERTEX_PROJECT environment variable.", err.Error())
 }
 
 func TestNew_Name(t *testing.T) {
