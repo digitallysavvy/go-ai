@@ -124,14 +124,20 @@ func (m *AzureSpeechTranscriptionModel) DoGenerate(ctx context.Context, opts *pr
 		timestamps = "segment"
 	}
 
+	// TS JSON.stringify drops undefined members, so unset options are omitted
+	// rather than sent as null.
+	modelOptions := map[string]interface{}{}
+	if timestamps != "" {
+		modelOptions["timestamps"] = timestamps
+	}
+	if azureOpts.TranscribeStyle != "" {
+		modelOptions["transcribeStyle"] = azureOpts.TranscribeStyle
+	}
 	definition := map[string]interface{}{
 		"enhancedMode": map[string]interface{}{
-			"enabled": true,
-			"model":   modelName,
-			"modelOptions": map[string]interface{}{
-				"timestamps":      nilIfEmptyString(timestamps),
-				"transcribeStyle": nilIfEmptyString(azureOpts.TranscribeStyle),
-			},
+			"enabled":      true,
+			"model":        modelName,
+			"modelOptions": modelOptions,
 		},
 	}
 	if azureOpts.Locales != nil {
@@ -267,13 +273,6 @@ func (m *AzureSpeechTranscriptionModel) DoGenerate(ctx context.Context, opts *pr
 			Body:      respBody,
 		},
 	}, nil
-}
-
-func nilIfEmptyString(s string) interface{} {
-	if s == "" {
-		return nil
-	}
-	return s
 }
 
 func buildAzureSpeechTranscribeMultipart(audio []byte, mimeType string, definition map[string]interface{}) (*bytes.Buffer, string, error) {
