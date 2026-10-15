@@ -2,6 +2,9 @@ package telemetry
 
 import (
 	"context"
+	"encoding/json"
+	"math"
+	"strings"
 	"testing"
 
 	"go.opentelemetry.io/otel/codes"
@@ -503,5 +506,343 @@ func TestOpenTelemetrySpanStatusErrorOnErrorFinishReason(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TS onGenerateStart / onObjectOperationStart put the request settings on the
+// root span (open-telemetry.test.ts "creates root span with correct
+// attributes"), and the object root declares gen_ai.output.type=json.
+func TestOpenTelemetryOnStartRequestSettingsOnRootSpan(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("genai-test"), Schema: true})
+	settings := &Settings{IsEnabled: Bool(true)}
+
+	maxTokens, topK, seed := 100, 5, 7
+	temperature, topP := 0.7, 0.9
+	start := TelemetryStartEvent{
+		OperationType:   "ai.generateText",
+		ModelProvider:   "openai.chat",
+		ModelID:         "gpt-text",
+		Settings:        settings,
+		MaxOutputTokens: &maxTokens,
+		Temperature:     &temperature,
+		TopP:            &topP,
+		TopK:            &topK,
+		Seed:            &seed,
+		StopSequences:   []string{"END"},
+	}
+	trace.SpanFromContext(integration.OnStart(context.Background(), start)).End()
+
+	span := findSpan(rec, "invoke_agent gpt-text")
+	if span == nil {
+		t.Fatal("missing text root span")
+	}
+	for key, want := range map[string]interface{}{
+		"gen_ai.request.max_tokens":  int64(100),
+		"gen_ai.request.temperature": 0.7,
+		"gen_ai.request.top_p":       0.9,
+		"gen_ai.request.top_k":       int64(5),
+		"gen_ai.request.seed":        int64(7),
+	} {
+		if v, ok := attrValue(span, key); !ok || v != want {
+			t.Errorf("%s = %v (ok=%v), want %v", key, v, ok, want)
+		}
+	}
+	if _, ok := attrValue(span, "gen_ai.request.stop_sequences"); !ok {
+		t.Error("generateText root must carry gen_ai.request.stop_sequences")
+	}
+	if _, ok := attrValue(span, "gen_ai.output.type"); ok {
+		t.Error("text root must not carry gen_ai.output.type")
+	}
+
+	start.OperationType = "ai.generateObject"
+	start.ModelID = "gpt-object"
+	start.SettingsOutput = "object"
+	trace.SpanFromContext(integration.OnStart(context.Background(), start)).End()
+	obj := findSpan(rec, "invoke_agent gpt-object")
+	if obj == nil {
+		t.Fatal("missing object root span")
+	}
+	if v, ok := attrValue(obj, "gen_ai.output.type"); !ok || v != "json" {
+		t.Errorf("gen_ai.output.type = %v (ok=%v), want json", v, ok)
+	}
+	if _, ok := attrValue(obj, "gen_ai.request.stop_sequences"); ok {
+		t.Error("object root must not carry gen_ai.request.stop_sequences (TS settings omit it)")
+	}
+	if v, ok := attrValue(obj, "ai.settings.output"); !ok || v != "object" {
+		t.Errorf("ai.settings.output = %v (ok=%v), want object", v, ok)
+	}
+	if v, ok := attrValue(obj, "gen_ai.request.max_tokens"); !ok || v != int64(100) {
+		t.Errorf("object root max_tokens = %v (ok=%v)", v, ok)
+	}
+}
+
+// TS open-telemetry.test.ts "sets GenAI client performance attributes on the
+// chat span": time_per_output_chunk is the average gap in seconds (67ms -> 0.067).
+func TestOpenTelemetryLanguageModelCallEndPerformanceAttributes(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("genai-test")})
+	settings := &Settings{IsEnabled: Bool(true)}
+
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings, CallID: "perf-1", ModelID: "m"})
+	ctx = integration.OnStepStart(ctx, TelemetryStepStartEvent{Settings: settings, OperationType: "ai.generateText", CallID: "perf-1"})
+	ctx = integration.OnLanguageModelCallStart(ctx, LanguageModelCallStartEvent{Settings: settings, CallID: "perf-1", ModelID: "m"})
+	first := int64(345)
+	integration.OnLanguageModelCallEnd(ctx, LanguageModelCallEndEvent{
+		Settings:     settings,
+		CallID:       "perf-1",
+		FinishReason: "stop",
+		Performance: LanguageModelCallPerformance{
+			ResponseTimeMs:            1234,
+			TimeToFirstOutputMs:       &first,
+			TimeBetweenOutputChunksMs: &types.OutputChunkTimingStats{Min: 10, P10: 20, Median: 50, Avg: 67, P90: 90, Max: 100},
+		},
+	})
+
+	span := findSpan(rec, "chat m")
+	if span == nil {
+		t.Fatal("missing chat span")
+	}
+	for key, want := range map[string]float64{
+		"gen_ai.client.operation.duration":              1.234,
+		"gen_ai.client.operation.time_to_first_chunk":   0.345,
+		"gen_ai.client.operation.time_per_output_chunk": 0.067,
+	} {
+		v, ok := attrValue(span, key)
+		if !ok || math.Abs(v.(float64)-want) > 1e-9 {
+			t.Errorf("%s = %v (ok=%v), want %v", key, v, ok, want)
+		}
+	}
+}
+
+// TS stringifies the prepared tools for gen_ai.tool.definitions (function
+// tools keep type and inputSchema, provider tools id and args) and gates the
+// attribute on recordInputs.
+func TestOpenTelemetryToolDefinitionsShapeAndInputGate(t *testing.T) {
+	strict := true
+	tools := []types.Tool{
+		{Name: "get_weather", Description: "Get weather", Parameters: map[string]interface{}{"type": "object"}, Strict: &strict},
+		{Name: "web_search", Type: "provider", ProviderID: "openai.web_search", ProviderArgs: map[string]interface{}{"k": "v"}},
+	}
+	run := func(recordInputs bool) *tracetest.SpanRecorder {
+		rec := tracetest.NewSpanRecorder()
+		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+		t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+		integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("genai-test")})
+		settings := &Settings{IsEnabled: Bool(true), RecordInputs: recordInputs, RecordOutputs: true}
+		ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings, CallID: "td", ModelID: "m"})
+		ctx = integration.OnStepStart(ctx, TelemetryStepStartEvent{Settings: settings, OperationType: "ai.generateText", CallID: "td"})
+		ctx = integration.OnLanguageModelCallStart(ctx, LanguageModelCallStartEvent{Settings: settings, CallID: "td", ModelID: "m", Tools: tools})
+		integration.OnLanguageModelCallEnd(ctx, LanguageModelCallEndEvent{Settings: settings, CallID: "td", FinishReason: "stop"})
+		return rec
+	}
+
+	span := findSpan(run(true), "chat m")
+	if span == nil {
+		t.Fatal("missing chat span")
+	}
+	raw, ok := attrValue(span, "gen_ai.tool.definitions")
+	if !ok {
+		t.Fatal("missing gen_ai.tool.definitions")
+	}
+	var defs []map[string]interface{}
+	if err := json.Unmarshal([]byte(raw.(string)), &defs); err != nil {
+		t.Fatal(err)
+	}
+	if len(defs) != 2 ||
+		defs[0]["type"] != "function" || defs[0]["name"] != "get_weather" || defs[0]["description"] != "Get weather" ||
+		defs[0]["inputSchema"] == nil || defs[0]["strict"] != true ||
+		defs[1]["type"] != "provider" || defs[1]["id"] != "openai.web_search" || defs[1]["args"] == nil {
+		t.Fatalf("definitions = %v", defs)
+	}
+
+	if span := findSpan(run(false), "chat m"); span != nil {
+		if _, ok := attrValue(span, "gen_ai.tool.definitions"); ok {
+			t.Error("tool definitions are inputs: must be omitted when recordInputs is false")
+		}
+	}
+}
+
+// TS onGenerateEnd records finish reasons, usage and gen_ai.output.messages
+// on the root span (open-telemetry.test.ts "sets total usage and output on
+// root span"); the step span only gets the supplemental attributes.
+func TestOpenTelemetryRootAndStepSpanEndAttributes(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("genai-test"), Usage: true})
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings, CallID: "end-1", ModelID: "m", ModelProvider: "openai.chat"})
+	stepCtx := integration.OnStepStart(ctx, TelemetryStepStartEvent{Settings: settings, OperationType: "ai.generateText", CallID: "end-1", ModelID: "m", ModelProvider: "openai.chat"})
+	usage := TelemetryUsage{
+		InputTokens: int64p(10), OutputTokens: int64p(20), CacheReadInputTokens: int64p(3), CacheCreationInputTokens: int64p(4),
+		NoCacheInputTokens: int64p(7), OutputTextTokens: int64p(15), ReasoningTokens: int64p(5),
+	}
+	integration.OnStepEnd(stepCtx, TelemetryStepEndEvent{Settings: settings, OperationType: "ai.generateText", CallID: "end-1", FinishReason: "stop", Usage: usage})
+	integration.OnEnd(ctx, TelemetryFinishEvent{
+		CallID: "end-1", OperationType: "ai.generateText", Settings: settings, FinishReason: "tool-calls", Usage: usage,
+		Text:           "Hello world",
+		ReasoningParts: []types.ReasoningContent{{Text: "think"}},
+		ToolCalls:      []types.ToolCall{{ID: "tc1", ToolName: "weather", Arguments: map[string]interface{}{"city": "Berlin"}}},
+		ToolResults: []types.ToolResult{
+			{ToolCallID: "tc1", ToolName: "weather", Result: map[string]interface{}{"temp": 20}},
+			{ToolCallID: "tc2", ToolName: "failing", Error: context.Canceled},
+		},
+	})
+
+	step := findSpan(rec, "step 1")
+	if step == nil {
+		t.Fatal("missing step span")
+	}
+	for _, key := range []string{"gen_ai.response.finish_reasons", "gen_ai.usage.input_tokens", "gen_ai.usage.output_tokens", "gen_ai.provider.name", "gen_ai.request.model"} {
+		if _, ok := attrValue(step, key); ok {
+			t.Errorf("step span must not carry %s (TS keeps it on the chat span and root)", key)
+		}
+	}
+	if v, ok := attrValue(step, "ai.usage.inputTokenDetails.noCacheTokens"); !ok || v != int64(7) {
+		t.Errorf("step noCacheTokens = %v (ok=%v), want 7", v, ok)
+	}
+
+	root := findSpan(rec, "invoke_agent m")
+	if root == nil {
+		t.Fatal("missing root span")
+	}
+	for key, want := range map[string]int64{
+		"gen_ai.usage.input_tokens":                   10,
+		"gen_ai.usage.output_tokens":                  20,
+		"gen_ai.usage.cache_read.input_tokens":        3,
+		"gen_ai.usage.cache_creation.input_tokens":    4,
+		"ai.usage.inputTokenDetails.noCacheTokens":    7,
+		"ai.usage.outputTokenDetails.textTokens":      15,
+		"ai.usage.outputTokenDetails.reasoningTokens": 5,
+	} {
+		if v, ok := attrValue(root, key); !ok || v != want {
+			t.Errorf("root %s = %v (ok=%v), want %d", key, v, ok, want)
+		}
+	}
+	if _, ok := attrValue(root, "ai.usage.totalTokens"); ok {
+		t.Error("ai.usage.totalTokens is not a TS supplemental usage attribute")
+	}
+	raw, ok := attrValue(root, "gen_ai.output.messages")
+	if !ok {
+		t.Fatal("root span is missing gen_ai.output.messages")
+	}
+	var msgs []struct {
+		Role         string                   `json:"role"`
+		FinishReason string                   `json:"finish_reason"`
+		Parts        []map[string]interface{} `json:"parts"`
+	}
+	if err := json.Unmarshal([]byte(raw.(string)), &msgs); err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 || msgs[0].Role != "assistant" || msgs[0].FinishReason != "tool_call" {
+		t.Fatalf("messages = %+v", msgs)
+	}
+	var kinds []string
+	for _, p := range msgs[0].Parts {
+		kinds = append(kinds, p["type"].(string))
+	}
+	if got := strings.Join(kinds, ","); got != "reasoning,text,tool_call,tool_call_response" {
+		t.Errorf("part order = %s, want reasoning,text,tool_call,tool_call_response (failed tool results are not tool results)", got)
+	}
+}
+
+// TS onRerankOperationEnd records nothing and onEmbedOperationEnd only the
+// embedding values: no finish reason and no usage on those roots.
+func TestOpenTelemetryEmbedAndRerankRootEnd(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("genai-test"), Embedding: true})
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+
+	embedCtx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.embed", Settings: settings, CallID: "e1", ModelID: "emb"})
+	integration.OnEnd(embedCtx, TelemetryFinishEvent{CallID: "e1", OperationType: "ai.embed", Settings: settings, FinishReason: "stop", Usage: TelemetryUsage{TotalTokens: int64p(5)}, Embedding: []float64{0.1, 0.2}})
+	embed := findSpan(rec, "embeddings emb")
+	if embed == nil {
+		t.Fatal("missing embed root span")
+	}
+	if v, ok := attrValue(embed, "ai.embedding"); !ok || v != "[0.1,0.2]" {
+		t.Errorf("ai.embedding = %v (ok=%v)", v, ok)
+	}
+	for _, key := range []string{"gen_ai.response.finish_reasons", "gen_ai.usage.input_tokens"} {
+		if _, ok := attrValue(embed, key); ok {
+			t.Errorf("embed root must not carry %s", key)
+		}
+	}
+
+	rerankCtx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.rerank", Settings: settings, CallID: "r1", ModelID: "rr"})
+	integration.OnEnd(rerankCtx, TelemetryFinishEvent{CallID: "r1", OperationType: "ai.rerank", Settings: settings, FinishReason: "stop"})
+	rerank := findSpan(rec, "rerank rr")
+	if rerank == nil {
+		t.Fatal("missing rerank root span")
+	}
+	if _, ok := attrValue(rerank, "gen_ai.response.finish_reasons"); ok {
+		t.Error("rerank root must not carry finish reasons")
+	}
+}
+
+func TestOpenTelemetryObjectRootEndOutputMessages(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("genai-test")})
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateObject", Settings: settings, CallID: "o1", ModelID: "m"})
+	integration.OnEnd(ctx, TelemetryFinishEvent{
+		CallID: "o1", OperationType: "ai.generateObject", Settings: settings, FinishReason: "stop",
+		Usage:  TelemetryUsage{InputTokens: int64p(3), CacheCreationInputTokens: int64p(9)},
+		Object: map[string]interface{}{"name": "Ann"},
+	})
+	root := findSpan(rec, "invoke_agent m")
+	if root == nil {
+		t.Fatal("missing root span")
+	}
+	raw, ok := attrValue(root, "gen_ai.output.messages")
+	if !ok || raw != `[{"role":"assistant","parts":[{"content":"{\"name\":\"Ann\"}","type":"text"}],"finish_reason":"stop"}]` {
+		t.Errorf("gen_ai.output.messages = %v (ok=%v)", raw, ok)
+	}
+	if _, ok := attrValue(root, "gen_ai.usage.cache_creation.input_tokens"); ok {
+		t.Error("object root must not carry cache_creation tokens (TS omits them)")
+	}
+}
+
+// TS reuses baseSupplementalAttributes (runtime context, headers) on the step
+// span but not on tool spans.
+func TestOpenTelemetryStepSpanReusesRootSupplementalAttributes(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("genai-test"), RuntimeContext: true, Headers: true})
+	settings := &Settings{IsEnabled: Bool(true)}
+
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{
+		OperationType: "ai.generateText", Settings: settings, CallID: "sup", ModelID: "m",
+		RuntimeContext: map[string]interface{}{"user": "u1"}, Headers: map[string]string{"x-id": "7"},
+	})
+	stepCtx := integration.OnStepStart(ctx, TelemetryStepStartEvent{Settings: settings, OperationType: "ai.generateText", CallID: "sup"})
+	toolCtx := integration.OnToolExecutionStart(stepCtx, TelemetryToolCallStartEvent{Settings: settings, CallID: "sup", ToolCallID: "t1", ToolName: "tool"})
+	integration.OnToolExecutionEnd(toolCtx, TelemetryToolCallFinishEvent{Settings: settings, CallID: "sup", ToolCallID: "t1", ToolName: "tool"})
+	integration.OnStepEnd(stepCtx, TelemetryStepEndEvent{Settings: settings, OperationType: "ai.generateText", CallID: "sup", FinishReason: "stop"})
+
+	step := findSpan(rec, "step 1")
+	tool := findSpan(rec, "execute_tool tool")
+	if step == nil || tool == nil {
+		t.Fatal("missing step or tool span")
+	}
+	if v, ok := attrValue(step, "ai.settings.context.user"); !ok || v != "u1" {
+		t.Errorf("step runtime context = %v (ok=%v)", v, ok)
+	}
+	if v, ok := attrValue(step, "ai.request.headers.x-id"); !ok || v != "7" {
+		t.Errorf("step header = %v (ok=%v)", v, ok)
+	}
+	if _, ok := attrValue(tool, "ai.settings.context.user"); ok {
+		t.Error("tool span must not carry the runtime context (TS tool spans have none)")
 	}
 }

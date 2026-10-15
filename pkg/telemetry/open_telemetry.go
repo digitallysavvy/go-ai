@@ -129,8 +129,12 @@ func genAISpanKey(kind, callID string) string { return "genai:" + kind + ":" + c
 // trace.ContextWithSpan before starting a child span, so nesting stays
 // correct regardless of what the other integration did to ctx.
 type genAICallState struct {
-	mu        sync.Mutex
-	rootSpan  trace.Span
+	mu       sync.Mutex
+	rootSpan trace.Span
+	// baseSupp holds the root span's supplemental runtime-context/header
+	// attributes (TS baseSupplementalAttributes) for the step, embeddings
+	// and reranking child spans.
+	baseSupp  []attribute.KeyValue
 	stepSpan  trace.Span
 	toolSpans map[string]trace.Span
 	// embedSpans/rerankSpan mirror LegacyOpenTelemetry's own fields in
@@ -151,6 +155,18 @@ func genAIState(callID string) *genAICallState {
 	}
 	v, _ := genAICallStates.LoadOrStore(callID, &genAICallState{})
 	return v.(*genAICallState)
+}
+
+// genAIBaseSupplemental returns the root span's supplemental attributes
+// (runtime context and headers) recorded for callID.
+func genAIBaseSupplemental(callID string) []attribute.KeyValue {
+	st := genAIState(callID)
+	if st == nil {
+		return nil
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.baseSupp
 }
 
 // genAIDeleteState removes callID's call state once its root span has ended.
@@ -215,6 +231,15 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 	if e.Settings != nil && e.Settings.FunctionID != "" {
 		span.SetAttributes(attribute.String("gen_ai.agent.name", e.Settings.FunctionID))
 	}
+	// TS onGenerateStart / onObjectOperationStart also put the call-level
+	// request settings on the root span; embed/rerank roots carry none.
+	// stop_sequences is a generateText/streamText setting only, and the
+	// generateObject/streamObject root declares its output type.
+	isObjectOperation := e.OperationType == "ai.generateObject" || e.OperationType == "ai.streamObject"
+	if isObjectOperation {
+		span.SetAttributes(attribute.String("gen_ai.output.type", "json"))
+	}
+	span.SetAttributes(requestSettingAttributes(e, !isObjectOperation)...)
 	recordInputs := e.Settings == nil || e.Settings.RecordInputs
 	if recordInputs && e.System != "" {
 		if b, err := json.Marshal(formatSystemInstructions(e.System)); err == nil {
@@ -272,12 +297,23 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 		if e.SchemaDescription != "" {
 			span.SetAttributes(attribute.String("ai.schema.description", e.SchemaDescription))
 		}
+		if e.SettingsOutput != "" {
+			span.SetAttributes(attribute.String("ai.settings.output", e.SettingsOutput))
+		}
 	}
+	// TS baseSupplementalAttributes: the runtime-context and header
+	// attributes of the root span, reused by the step, embeddings and
+	// reranking child spans (not by chat or tool spans).
+	var baseSupp []attribute.KeyValue
 	if i.opts.RuntimeContext {
 		if attrs := runtimeContextAttributes(e.RuntimeContext); len(attrs) > 0 {
 			span.SetAttributes(attrs...)
 			ctx = context.WithValue(ctx, genAIRuntimeContextKey{}, attrs)
+			baseSupp = append(baseSupp, attrs...)
 		}
+	}
+	if i.opts.Headers {
+		baseSupp = append(baseSupp, headerAttributes(e.Headers)...)
 	}
 	// H5: record this integration's own root span in callId-keyed state, so
 	// OnStepStart/OnToolExecutionStart/OnEnd/OnError/OnAbort can find it by
@@ -286,9 +322,42 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 		st := genAIState(e.CallID)
 		st.mu.Lock()
 		st.rootSpan = span
+		st.baseSupp = baseSupp
 		st.mu.Unlock()
 	}
 	return ctx
+}
+
+// requestSettingAttributes returns the gen_ai.request.* attributes for the
+// call-level generation settings of a start event (TS onGenerateStart /
+// onObjectOperationStart). Unset settings are omitted.
+func requestSettingAttributes(e TelemetryStartEvent, includeStopSequences bool) []attribute.KeyValue {
+	var attrs []attribute.KeyValue
+	if e.FrequencyPenalty != nil {
+		attrs = setFiniteFloat64(attrs, "gen_ai.request.frequency_penalty", *e.FrequencyPenalty)
+	}
+	if e.MaxOutputTokens != nil {
+		attrs = append(attrs, attribute.Int("gen_ai.request.max_tokens", *e.MaxOutputTokens))
+	}
+	if e.PresencePenalty != nil {
+		attrs = setFiniteFloat64(attrs, "gen_ai.request.presence_penalty", *e.PresencePenalty)
+	}
+	if e.Temperature != nil {
+		attrs = setFiniteFloat64(attrs, "gen_ai.request.temperature", *e.Temperature)
+	}
+	if e.TopK != nil {
+		attrs = append(attrs, attribute.Int("gen_ai.request.top_k", *e.TopK))
+	}
+	if e.TopP != nil {
+		attrs = setFiniteFloat64(attrs, "gen_ai.request.top_p", *e.TopP)
+	}
+	if includeStopSequences && len(e.StopSequences) > 0 {
+		attrs = append(attrs, attribute.StringSlice("gen_ai.request.stop_sequences", e.StopSequences))
+	}
+	if e.Seed != nil {
+		attrs = append(attrs, attribute.Int("gen_ai.request.seed", *e.Seed))
+	}
+	return attrs
 }
 
 // headerAttributes converts caller-supplied request headers into
@@ -332,11 +401,8 @@ func (i OpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepStartEven
 	}); len(attrs) > 0 {
 		stepSpan.SetAttributes(attrs...)
 	}
-	stepSpan.SetAttributes(
-		attribute.String("gen_ai.operation.name", "agent_step"),
-		attribute.String("gen_ai.provider.name", mapProviderName(e.ModelProvider)),
-		attribute.String("gen_ai.request.model", e.ModelID),
-	)
+	stepSpan.SetAttributes(attribute.String("gen_ai.operation.name", "agent_step"))
+	stepSpan.SetAttributes(genAIBaseSupplemental(e.CallID)...)
 	if i.opts.ToolChoice && e.ToolChoice.Type != "" {
 		if b, err := json.Marshal(e.ToolChoice); err == nil {
 			stepSpan.SetAttributes(attribute.String("ai.prompt.toolChoice", string(b)))
@@ -435,7 +501,7 @@ func (i OpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageM
 		}
 	}
 	toolDefs := toolDefinitionsList(e.Tools)
-	if len(toolDefs) > 0 {
+	if recordInputs && len(toolDefs) > 0 {
 		if b, err := json.Marshal(toolDefs); err == nil {
 			attrs = append(attrs, attribute.String("gen_ai.tool.definitions", string(b)))
 		}
@@ -447,9 +513,11 @@ func (i OpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageM
 	return ctx
 }
 
-// toolDefinitionsList builds the gen_ai.tool.definitions SemConv value (a
-// list of {name, description?} objects) from the tools declared for this
-// call, matching TS's gen_ai.tool.definitions shape. The returned slice is
+// toolDefinitionsList builds the gen_ai.tool.definitions value from the tools
+// declared for this call. TS stringifies the prepared language-model tools
+// (prepareTools), so function tools carry {type:"function", name,
+// inputSchema, description?, inputExamples?, providerOptions?, strict?} and
+// provider tools {type:"provider", name, id, args}. The returned slice is
 // also retained on the span entry so OnLanguageModelCallEnd can append
 // provider-executed tools observed only in the response (5ad6abf).
 func toolDefinitionsList(tools interface{}) []map[string]interface{} {
@@ -459,13 +527,46 @@ func toolDefinitionsList(tools interface{}) []map[string]interface{} {
 	}
 	defs := make([]map[string]interface{}, 0, len(list))
 	for _, t := range list {
-		def := map[string]interface{}{"name": t.Name}
+		if t.Type == "provider" {
+			def := map[string]interface{}{"type": "provider", "name": t.Name, "id": t.ProviderID}
+			if t.ProviderArgs != nil {
+				def["args"] = t.ProviderArgs
+			} else {
+				def["args"] = map[string]interface{}{}
+			}
+			defs = append(defs, def)
+			continue
+		}
+		def := map[string]interface{}{"type": "function", "name": t.Name, "inputSchema": toolInputSchema(t.Parameters)}
 		if t.Description != "" {
 			def["description"] = t.Description
+		}
+		if len(t.InputExamples) > 0 {
+			examples := make([]map[string]interface{}, 0, len(t.InputExamples))
+			for _, ex := range t.InputExamples {
+				examples = append(examples, map[string]interface{}{"input": ex.Input})
+			}
+			def["inputExamples"] = examples
+		}
+		if t.ProviderOptions != nil {
+			def["providerOptions"] = t.ProviderOptions
+		}
+		if t.Strict != nil {
+			def["strict"] = *t.Strict
 		}
 		defs = append(defs, def)
 	}
 	return defs
+}
+
+// toolInputSchema returns the JSON Schema of a function tool for the tool
+// definitions attribute, falling back to the empty object schema TS uses for
+// a tool without input.
+func toolInputSchema(parameters interface{}) interface{} {
+	if parameters == nil {
+		return map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
+	}
+	return parameters
 }
 
 // mergeProviderExecutedToolDefs appends {type:"extension", name} entries for
@@ -536,19 +637,28 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 	attrs := []attribute.KeyValue{
 		attribute.StringSlice("gen_ai.response.finish_reasons", []string{e.FinishReason}),
 	}
+	// TS re-records the provider on the chat span at call end, since the
+	// responding provider can differ from the requested one.
+	if e.ModelProvider != "" {
+		attrs = append(attrs, attribute.String("gen_ai.provider.name", mapProviderName(e.ModelProvider)))
+	}
 	if e.ResponseID != "" {
 		attrs = append(attrs, attribute.String("gen_ai.response.id", e.ResponseID))
 	}
 	if e.ModelID != "" {
 		attrs = append(attrs, attribute.String("gen_ai.response.model", e.ModelID))
 	}
-	attrs = appendGenAIUsageAttrs(attrs, e.Usage, i.opts.Usage)
+	attrs = append(attrs, baseUsageAttrs(e.Usage, true)...)
+	if i.opts.Usage {
+		attrs = append(attrs, detailedUsageAttrs(e.Usage)...)
+	}
 	attrs = setFiniteFloat64(attrs, "gen_ai.client.operation.duration", msToSeconds(e.Performance.ResponseTimeMs))
 	if e.Performance.TimeToFirstOutputMs != nil {
 		attrs = setFiniteFloat64(attrs, "gen_ai.client.operation.time_to_first_chunk", msToSeconds(*e.Performance.TimeToFirstOutputMs))
 	}
 	if stats := e.Performance.TimeBetweenOutputChunksMs; stats != nil {
-		attrs = setFiniteFloat64(attrs, "gen_ai.client.operation.time_per_output_chunk", msToSeconds(stats.Median)/1000)
+		// TS: msToSeconds(performance.timeBetweenOutputChunksMs?.avg).
+		attrs = setFiniteFloat64(attrs, "gen_ai.client.operation.time_per_output_chunk", stats.Avg/1000)
 	}
 	recordOutputs := e.Settings == nil || e.Settings.RecordOutputs
 	if recordOutputs && len(content) > 0 {
@@ -569,7 +679,7 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 		}
 	}
 	mergedToolDefs, changed := mergeProviderExecutedToolDefs(entry.toolDefs, content)
-	if changed {
+	if changed && (e.Settings == nil || e.Settings.RecordInputs) {
 		if b, err := json.Marshal(mergedToolDefs); err == nil {
 			attrs = append(attrs, attribute.String("gen_ai.tool.definitions", string(b)))
 		}
@@ -630,7 +740,12 @@ func jsonOrString(v interface{}) string {
 	return ""
 }
 
-func appendGenAIUsageAttrs(attrs []attribute.KeyValue, usage TelemetryUsage, legacyUsage bool) []attribute.KeyValue {
+// baseUsageAttrs returns the GenAI SemConv usage attributes. cacheCreation
+// controls gen_ai.usage.cache_creation.input_tokens: TS records it for
+// language-model calls and generateText/streamText roots but not for the
+// generateObject/streamObject root.
+func baseUsageAttrs(usage TelemetryUsage, cacheCreation bool) []attribute.KeyValue {
+	var attrs []attribute.KeyValue
 	if usage.InputTokens != nil {
 		attrs = append(attrs, attribute.Int64("gen_ai.usage.input_tokens", *usage.InputTokens))
 	}
@@ -640,16 +755,25 @@ func appendGenAIUsageAttrs(attrs []attribute.KeyValue, usage TelemetryUsage, leg
 	if usage.CacheReadInputTokens != nil {
 		attrs = append(attrs, attribute.Int64("gen_ai.usage.cache_read.input_tokens", *usage.CacheReadInputTokens))
 	}
-	if usage.CacheCreationInputTokens != nil {
+	if cacheCreation && usage.CacheCreationInputTokens != nil {
 		attrs = append(attrs, attribute.Int64("gen_ai.usage.cache_creation.input_tokens", *usage.CacheCreationInputTokens))
 	}
-	if legacyUsage {
-		if usage.TotalTokens != nil {
-			attrs = append(attrs, attribute.Int64("ai.usage.totalTokens", *usage.TotalTokens))
-		}
-		if usage.ReasoningTokens != nil {
-			attrs = append(attrs, attribute.Int64("ai.usage.reasoningTokens", *usage.ReasoningTokens))
-		}
+	return attrs
+}
+
+// detailedUsageAttrs mirrors TS getDetailedUsageAttributes (emitted when
+// OpenTelemetryOptions.Usage is set): the usage details GenAI SemConv has no
+// attribute for.
+func detailedUsageAttrs(usage TelemetryUsage) []attribute.KeyValue {
+	var attrs []attribute.KeyValue
+	if usage.NoCacheInputTokens != nil {
+		attrs = append(attrs, attribute.Int64("ai.usage.inputTokenDetails.noCacheTokens", *usage.NoCacheInputTokens))
+	}
+	if usage.OutputTextTokens != nil {
+		attrs = append(attrs, attribute.Int64("ai.usage.outputTokenDetails.textTokens", *usage.OutputTextTokens))
+	}
+	if usage.ReasoningTokens != nil {
+		attrs = append(attrs, attribute.Int64("ai.usage.outputTokenDetails.reasoningTokens", *usage.ReasoningTokens))
 	}
 	return attrs
 }
@@ -681,6 +805,7 @@ func (i OpenTelemetry) OnEmbedStart(ctx context.Context, e EmbeddingModelCallSta
 		attribute.String("gen_ai.provider.name", mapProviderName(e.ModelProvider)),
 		attribute.String("gen_ai.request.model", e.ModelID),
 	)
+	span.SetAttributes(genAIBaseSupplemental(e.CallID)...)
 	if i.opts.Embedding && (e.Settings == nil || e.Settings.RecordInputs) && len(e.Values) > 0 {
 		span.SetAttributes(attribute.StringSlice("ai.values", jsonStringifyEach(e.Values)))
 	}
@@ -781,6 +906,7 @@ func (i OpenTelemetry) OnRerankStart(ctx context.Context, e RerankingModelCallSt
 		attribute.String("gen_ai.provider.name", mapProviderName(e.ModelProvider)),
 		attribute.String("gen_ai.request.model", e.ModelID),
 	)
+	span.SetAttributes(genAIBaseSupplemental(e.CallID)...)
 	if i.opts.Reranking && (e.Settings == nil || e.Settings.RecordInputs) {
 		if docs, ok := e.Documents.([]string); ok && len(docs) > 0 {
 			span.SetAttributes(attribute.StringSlice("ai.documents", jsonStringifyEach(docs)))
@@ -829,12 +955,15 @@ func (i OpenTelemetry) OnRerankEnd(_ context.Context, e RerankingModelCallEndEve
 		entry.span.End()
 		return
 	}
-	entry.span.SetAttributes(attribute.Int("ai.reranking.results.count", len(e.Ranking)))
-	if i.opts.Reranking && (e.Settings == nil || e.Settings.RecordOutputs) && len(e.Ranking) > 0 {
-		entry.span.SetAttributes(
-			attribute.String("ai.ranking.type", e.DocumentsType),
-			attribute.StringSlice("ai.ranking", jsonStringifyEach(e.Ranking)),
-		)
+	// TS onRerankEnd: ai.ranking.type is a plain value, ai.ranking an output;
+	// there is no results-count attribute.
+	if i.opts.Reranking {
+		if e.DocumentsType != "" {
+			entry.span.SetAttributes(attribute.String("ai.ranking.type", e.DocumentsType))
+		}
+		if (e.Settings == nil || e.Settings.RecordOutputs) && len(e.Ranking) > 0 {
+			entry.span.SetAttributes(attribute.StringSlice("ai.ranking", jsonStringifyEach(e.Ranking)))
+		}
 	}
 	entry.span.End()
 }
@@ -883,11 +1012,6 @@ func (i OpenTelemetry) OnToolExecutionStart(ctx context.Context, e TelemetryTool
 	if e.Settings == nil || e.Settings.RecordInputs {
 		if b, err := json.Marshal(e.Args); err == nil {
 			child.SetAttributes(attribute.String("gen_ai.tool.call.arguments", string(b)))
-		}
-	}
-	if i.opts.RuntimeContext {
-		if attrs, ok := ctx.Value(genAIRuntimeContextKey{}).([]attribute.KeyValue); ok {
-			child.SetAttributes(attrs...)
 		}
 	}
 	if e.CallID != "" {
@@ -977,16 +1101,14 @@ func (i OpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEvent) {
 	if e.FinishReason == string(types.FinishReasonError) {
 		stepSpan.SetStatus(codes.Error, "")
 	}
-	attrs := []attribute.KeyValue{
-		attribute.StringSlice("gen_ai.response.finish_reasons", []string{e.FinishReason}),
+	// TS onStepEnd records only the supplemental attributes on the step span;
+	// the response id/model, finish reasons and token usage live on the
+	// nested chat span (and the root), so repeating them here would
+	// double-count tokens in aggregations.
+	var attrs []attribute.KeyValue
+	if i.opts.Usage {
+		attrs = append(attrs, detailedUsageAttrs(e.Usage)...)
 	}
-	if e.ResponseID != "" {
-		attrs = append(attrs, attribute.String("gen_ai.response.id", e.ResponseID))
-	}
-	if e.ResponseModelID != "" {
-		attrs = append(attrs, attribute.String("gen_ai.response.model", e.ResponseModelID))
-	}
-	attrs = appendGenAIUsageAttrs(attrs, e.Usage, i.opts.Usage)
 	// Gated only by opts.ProviderMetadata (not recordOutputs) — see the
 	// identical comment in OnLanguageModelCallEnd.
 	if i.opts.ProviderMetadata && e.ProviderMetadata != nil {
@@ -1045,37 +1167,131 @@ func (i OpenTelemetry) OnEnd(ctx context.Context, e TelemetryFinishEvent) {
 		genAIDeleteState(e.CallID)
 		return
 	}
-	isEmbedOperation := spanNameLooksLikeEmbed(e)
-	attrs := []attribute.KeyValue{
-		attribute.StringSlice("gen_ai.response.finish_reasons", []string{e.FinishReason}),
+	recordOutputs := e.Settings == nil || e.Settings.RecordOutputs
+	switch e.OperationType {
+	case "ai.embed", "ai.embedMany":
+		i.onEmbedOperationEnd(span, e, recordOutputs)
+	case "ai.rerank":
+		// TS onRerankOperationEnd only ends the root span.
+	case "ai.generateObject", "ai.streamObject":
+		i.onObjectOperationEnd(span, e, recordOutputs)
+	default:
+		i.onGenerateEnd(span, e, recordOutputs)
 	}
-	if e.ModelProvider != "" {
-		attrs = append(attrs, attribute.String("gen_ai.provider.name", mapProviderName(e.ModelProvider)))
-	}
-	if e.ModelID != "" {
-		attrs = append(attrs, attribute.String("gen_ai.request.model", e.ModelID))
-	}
-	if !isEmbedOperation {
-		attrs = appendGenAIUsageAttrs(attrs, e.Usage, i.opts.Usage)
-	} else if e.Usage.OutputTokens != nil {
-		// Non-embed-input-token usage (rare for embeddings) is still safe to
-		// report; only input_tokens is the documented double count.
-		attrs = append(attrs, attribute.Int64("gen_ai.usage.output_tokens", *e.Usage.OutputTokens))
-	}
-	span.SetAttributes(attrs...)
 	span.End()
 	genAIDeleteState(e.CallID)
 }
 
-// spanNameLooksLikeEmbed reports whether this TelemetryFinishEvent likely
-// belongs to an embed/embedMany operation. TelemetryFinishEvent carries no
-// OperationType field, so this is inferred from the presence of a
-// TotalTokens-only usage shape (Embed/EmbedMany report only TotalTokens, see
-// telemetryUsageFromEmbeddingUsage in pkg/ai/embed.go), matching the
-// embedding usage shape distinctly from chat usage (which always has
-// InputTokens/OutputTokens split).
-func spanNameLooksLikeEmbed(e TelemetryFinishEvent) bool {
-	return e.Usage.TotalTokens != nil && e.Usage.InputTokens == nil && e.Usage.OutputTokens == nil
+// onGenerateEnd mirrors TS onGenerateEnd (generateText/streamText): finish
+// reason, token usage, gen_ai.output.messages, and the supplemental
+// providerMetadata/usage details.
+func (i OpenTelemetry) onGenerateEnd(span trace.Span, e TelemetryFinishEvent, recordOutputs bool) {
+	attrs := []attribute.KeyValue{
+		attribute.StringSlice("gen_ai.response.finish_reasons", []string{e.FinishReason}),
+	}
+	attrs = append(attrs, baseUsageAttrs(e.Usage, true)...)
+	if recordOutputs {
+		if b, err := json.Marshal(formatOutputMessagesFromFinish(e)); err == nil {
+			attrs = append(attrs, attribute.String("gen_ai.output.messages", string(b)))
+		}
+	}
+	attrs = append(attrs, i.endSupplementalAttrs(e)...)
+	span.SetAttributes(attrs...)
+}
+
+// onObjectOperationEnd mirrors TS onObjectOperationEnd (generateObject/
+// streamObject): like onGenerateEnd without the cache-creation tokens, and
+// gen_ai.output.messages carrying the serialized object when there is one.
+func (i OpenTelemetry) onObjectOperationEnd(span trace.Span, e TelemetryFinishEvent, recordOutputs bool) {
+	attrs := []attribute.KeyValue{
+		attribute.StringSlice("gen_ai.response.finish_reasons", []string{e.FinishReason}),
+	}
+	attrs = append(attrs, baseUsageAttrs(e.Usage, false)...)
+	if recordOutputs && e.Object != nil {
+		if objectJSON, err := json.Marshal(e.Object); err == nil {
+			if b, err := json.Marshal(formatObjectOutputMessages(string(objectJSON), e.FinishReason)); err == nil {
+				attrs = append(attrs, attribute.String("gen_ai.output.messages", string(b)))
+			}
+		}
+	}
+	attrs = append(attrs, i.endSupplementalAttrs(e)...)
+	span.SetAttributes(attrs...)
+}
+
+// onEmbedOperationEnd mirrors TS onEmbedOperationEnd: only the embedding
+// values (ai.embedding / ai.embeddings), no usage or finish reason — the
+// token count lives on the nested embeddings span.
+func (i OpenTelemetry) onEmbedOperationEnd(span trace.Span, e TelemetryFinishEvent, recordOutputs bool) {
+	if !i.opts.Embedding || !recordOutputs || e.Embedding == nil {
+		return
+	}
+	switch v := e.Embedding.(type) {
+	case [][]float64:
+		if len(v) > 0 {
+			span.SetAttributes(attribute.StringSlice("ai.embeddings", jsonStringifyEach(v)))
+		}
+	case []float64:
+		if b, err := json.Marshal(v); err == nil {
+			span.SetAttributes(attribute.String("ai.embedding", string(b)))
+		}
+	}
+}
+
+// endSupplementalAttrs returns the supplemental attributes TS adds to a
+// finished root span: provider metadata (OpenTelemetryOptions.ProviderMetadata)
+// and the detailed usage breakdown (OpenTelemetryOptions.Usage).
+func (i OpenTelemetry) endSupplementalAttrs(e TelemetryFinishEvent) []attribute.KeyValue {
+	var attrs []attribute.KeyValue
+	if i.opts.ProviderMetadata && e.ProviderMetadata != nil {
+		if b, err := json.Marshal(e.ProviderMetadata); err == nil {
+			attrs = append(attrs, attribute.String("ai.response.providerMetadata", string(b)))
+		}
+	}
+	if i.opts.Usage {
+		attrs = append(attrs, detailedUsageAttrs(e.Usage)...)
+	}
+	return attrs
+}
+
+// formatOutputMessagesFromFinish builds the root span's gen_ai.output.messages
+// the way TS onGenerateEnd does: final-step reasoning and text, then the tool
+// calls and results and the files of every step.
+func formatOutputMessagesFromFinish(e TelemetryFinishEvent) []semConvOutputMessage {
+	parts := make([]semConvPart, 0, len(e.ReasoningParts)+len(e.ToolCalls)+len(e.ToolResults)+len(e.Files)+1)
+	for _, r := range e.ReasoningParts {
+		if r.Text != "" {
+			parts = append(parts, semConvPart{"type": "reasoning", "content": r.Text})
+		}
+	}
+	if e.Text != "" {
+		parts = append(parts, semConvPart{"type": "text", "content": e.Text})
+	}
+	for _, tc := range e.ToolCalls {
+		parts = append(parts, semConvPart{
+			"type":      "tool_call",
+			"id":        nullableString(tc.ID),
+			"name":      tc.ToolName,
+			"arguments": tc.Arguments,
+		})
+	}
+	for _, tr := range e.ToolResults {
+		if tr.Error != nil || tr.Preliminary {
+			continue
+		}
+		parts = append(parts, semConvPart{
+			"type":     "tool_call_response",
+			"id":       nullableString(tr.ToolCallID),
+			"response": tr.Result,
+		})
+	}
+	for _, f := range e.Files {
+		parts = append(parts, generatedFileToSemConv(f))
+	}
+	return []semConvOutputMessage{{
+		Role:         "assistant",
+		Parts:        parts,
+		FinishReason: mapFinishReasonSemConv(e.FinishReason),
+	}}
 }
 
 // onAudioOperationEnd sets the final attributes for "ai.generateSpeech"/

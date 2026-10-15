@@ -427,6 +427,11 @@ type TelemetryFinishEvent struct {
 	// Files holds any model-generated output files (e.g. images, audio).
 	// Integrations should check Settings.RecordOutputs before recording file data.
 	Files []types.GeneratedFileContent
+	// ToolResults and ReasoningParts feed the GenAI integration's root-span
+	// gen_ai.output.messages (TS onGenerateEnd): the tool results of every
+	// step and the reasoning parts of the final step.
+	ToolResults    []types.ToolResult
+	ReasoningParts []types.ReasoningContent
 	// Object holds the parsed result for ai.generateObject/ai.streamObject,
 	// emitted as ai.response.object (output-gated, JSON-encoded) instead of
 	// ai.response.text/reasoning/toolCalls/files, mirroring TS's

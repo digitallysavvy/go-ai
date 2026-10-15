@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
-	"github.com/digitallysavvy/go-ai/pkg/internal/media"
 	retryutil "github.com/digitallysavvy/go-ai/pkg/internal/retry"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -633,30 +632,14 @@ func decodeVideoPromptImageDataString(value string) ([]byte, string, error) {
 	return data, mediaType, nil
 }
 
+// detectVideoPromptImageMediaType detects an image media type from the bytes
+// of a prompt or frame image, falling back to image/png (TS
+// detectFileMediaType with restrictToImages).
 func detectVideoPromptImageMediaType(data []byte) string {
-	switch {
-	case len(data) >= 8 &&
-		data[0] == 0x89 && data[1] == 0x50 &&
-		data[2] == 0x4E && data[3] == 0x47 &&
-		data[4] == 0x0D && data[5] == 0x0A &&
-		data[6] == 0x1A && data[7] == 0x0A:
-		return "image/png"
-	case len(data) >= 4 &&
-		data[0] == 0x47 && data[1] == 0x49 &&
-		data[2] == 0x46 && data[3] == 0x38:
-		return "image/gif"
-	case len(data) >= 3 &&
-		data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF:
-		return "image/jpeg"
-	case len(data) >= 12 &&
-		data[0] == 0x52 && data[1] == 0x49 &&
-		data[2] == 0x46 && data[3] == 0x46 &&
-		data[8] == 0x57 && data[9] == 0x45 &&
-		data[10] == 0x42 && data[11] == 0x50:
-		return "image/webp"
-	default:
-		return "image/png"
+	if mt, ok := fileutil.DetectMediaTypeSignature(data, "image"); ok {
+		return mt
 	}
+	return "image/png"
 }
 
 // normalizedVideoInputs holds the shared, provider-ready video call inputs
@@ -813,60 +796,15 @@ func decodeVideoReferenceDataString(value string, explicitMediaType string) ([]b
 	return data, mediaType, nil
 }
 
-// detectAnyFileMediaType detects an image or video media type from binary
-// data, trying image signatures first (they are shorter and more specific)
-// and falling back to video signatures, defaulting to "image/png" when
-// neither matches (mirrors TS detectFileMediaType with restrictToImages=false).
+// detectAnyFileMediaType detects the media type of a reference's bytes across
+// every known signature (image, video, audio, document), defaulting to
+// "image/png" when none matches (TS detectFileMediaType without
+// restrictToImages).
 func detectAnyFileMediaType(data []byte) string {
-	if mt := detectImageMediaTypeOrEmpty(data); mt != "" {
-		return mt
-	}
-	if mt := detectVideoMediaTypeOrEmpty(data); mt != "" {
+	if mt, ok := fileutil.DetectMediaTypeSignature(data, ""); ok {
 		return mt
 	}
 	return "image/png"
-}
-
-func detectImageMediaTypeOrEmpty(data []byte) string {
-	switch {
-	case len(data) >= 8 &&
-		data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47 &&
-		data[4] == 0x0D && data[5] == 0x0A && data[6] == 0x1A && data[7] == 0x0A:
-		return "image/png"
-	case len(data) >= 4 &&
-		data[0] == 0x47 && data[1] == 0x49 && data[2] == 0x46 && data[3] == 0x38:
-		return "image/gif"
-	case len(data) >= 3 &&
-		data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF:
-		return "image/jpeg"
-	case len(data) >= 12 &&
-		data[0] == 0x52 && data[1] == 0x49 && data[2] == 0x46 && data[3] == 0x46 &&
-		data[8] == 0x57 && data[9] == 0x45 && data[10] == 0x42 && data[11] == 0x50:
-		return "image/webp"
-	default:
-		return ""
-	}
-}
-
-func detectVideoMediaTypeOrEmpty(data []byte) string {
-	switch {
-	case len(data) >= 4 &&
-		data[0] == 0x1A && data[1] == 0x45 && data[2] == 0xDF && data[3] == 0xA3:
-		return "video/webm"
-	case len(data) >= 12 &&
-		data[0] == 0x52 && data[1] == 0x49 && data[2] == 0x46 && data[3] == 0x46 &&
-		data[8] == 0x41 && data[9] == 0x56 && data[10] == 0x49 && data[11] == 0x20:
-		return "video/x-msvideo"
-	case len(data) >= 12 &&
-		data[4] == 0x66 && data[5] == 0x74 && data[6] == 0x79 && data[7] == 0x70 &&
-		data[8] == 0x71 && data[9] == 0x74:
-		return "video/quicktime"
-	case len(data) >= 8 &&
-		data[4] == 0x66 && data[5] == 0x74 && data[6] == 0x79 && data[7] == 0x70:
-		return "video/mp4"
-	default:
-		return ""
-	}
 }
 
 // convertVideoData converts VideoModelV3VideoData to GeneratedFile.
@@ -883,7 +821,7 @@ func convertVideoData(ctx context.Context, data provider.VideoModelV3VideoData, 
 			mediaType = downloadedMediaType
 		}
 		if !isUsableVideoMediaType(mediaType) {
-			mediaType = media.DetectVideoMediaType(videoBytes)
+			mediaType = detectVideoBytesMediaType(videoBytes)
 		}
 		if mediaType == "" {
 			mediaType = "video/mp4"
@@ -911,7 +849,7 @@ func convertVideoData(ctx context.Context, data provider.VideoModelV3VideoData, 
 	case "binary":
 		mediaType := data.MediaType
 		if mediaType == "" && len(data.Binary) > 0 {
-			mediaType = media.DetectVideoMediaType(data.Binary)
+			mediaType = detectVideoBytesMediaType(data.Binary)
 		}
 		if mediaType == "" {
 			mediaType = "video/mp4"
@@ -981,6 +919,13 @@ func downloadVideoURL(ctx context.Context, url string, download URLDownloadFunct
 		return nil, "", err
 	}
 	return result.Data, result.ContentType, nil
+}
+
+// detectVideoBytesMediaType detects a video media type from bytes (TS
+// detectMediaType with topLevelType video); empty when no signature matches.
+func detectVideoBytesMediaType(data []byte) string {
+	mt, _ := fileutil.DetectMediaTypeSignature(data, "video")
+	return mt
 }
 
 func isUsableVideoMediaType(mediaType string) bool {

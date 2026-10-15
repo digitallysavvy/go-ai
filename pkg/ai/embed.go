@@ -251,9 +251,9 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnEmbedStart, startEvent)
 	}
 	if opts.OnStart != nil {
-		opts.OnStart(startEvent)
+		safeInvoke(func() { opts.OnStart(startEvent) })
 	} else if opts.ExperimentalOnStart != nil {
-		opts.ExperimentalOnStart(startEvent)
+		safeInvoke(func() { opts.ExperimentalOnStart(startEvent) })
 	}
 	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
 		CallID:         callID,
@@ -378,13 +378,13 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnEmbedEnd, finishEvent)
 	}
 	if opts.OnEnd != nil {
-		opts.OnEnd(finishEvent)
+		safeInvoke(func() { opts.OnEnd(finishEvent) })
 	} else {
 		if opts.ExperimentalOnEnd != nil {
-			opts.ExperimentalOnEnd(finishEvent)
+			safeInvoke(func() { opts.ExperimentalOnEnd(finishEvent) })
 		}
 		if opts.ExperimentalOnFinish != nil {
-			opts.ExperimentalOnFinish(finishEvent)
+			safeInvoke(func() { opts.ExperimentalOnFinish(finishEvent) })
 		}
 	}
 	telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
@@ -555,9 +555,9 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnEmbedStart, startEvent)
 	}
 	if opts.OnStart != nil {
-		opts.OnStart(startEvent)
+		safeInvoke(func() { opts.OnStart(startEvent) })
 	} else if opts.ExperimentalOnStart != nil {
-		opts.ExperimentalOnStart(startEvent)
+		safeInvoke(func() { opts.ExperimentalOnStart(startEvent) })
 	}
 	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
 		CallID:         callID,
@@ -605,13 +605,13 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnEmbedEnd, finishEvent)
 	}
 	if opts.OnEnd != nil {
-		opts.OnEnd(finishEvent)
+		safeInvoke(func() { opts.OnEnd(finishEvent) })
 	} else {
 		if opts.ExperimentalOnEnd != nil {
-			opts.ExperimentalOnEnd(finishEvent)
+			safeInvoke(func() { opts.ExperimentalOnEnd(finishEvent) })
 		}
 		if opts.ExperimentalOnFinish != nil {
-			opts.ExperimentalOnFinish(finishEvent)
+			safeInvoke(func() { opts.ExperimentalOnFinish(finishEvent) })
 		}
 	}
 	telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{

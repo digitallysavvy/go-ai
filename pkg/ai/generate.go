@@ -799,6 +799,16 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		}
 	}
 
+	// Standardize the prompt first: TS standardizePrompt throws before any
+	// start event or telemetry is emitted.
+	// Build prompt
+	prompt := buildPrompt(opts.Prompt, opts.Messages, system)
+	allowSystem := allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages)
+	prompt, err = promptutils.NormalizePrompt(prompt, allowSystem)
+	if err != nil {
+		return nil, err
+	}
+
 	// Fire OnStart — registered integrations start their root spans here and
 	// embed them in the returned context.  When no integration is registered
 	// the fire function is a no-op.
@@ -857,7 +867,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				}
 				reason := abortReason(ctx, err)
 				if onAbort := firstOnAbort(opts.OnAbortEvent, opts.OnAbort); onAbort != nil {
-					onAbort(ctx, GenerateTextAbortEvent{CallID: callID, Steps: abortSteps, Reason: reason})
+					safeInvoke(func() { onAbort(ctx, GenerateTextAbortEvent{CallID: callID, Steps: abortSteps, Reason: reason}) })
 				}
 				telemetry.FireOnAbort(ctx, telemetry.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID, Reason: reason, Steps: abortSteps})
 				return
@@ -873,13 +883,6 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		defer cancel()
 	}
 
-	// Build prompt
-	prompt := buildPrompt(opts.Prompt, opts.Messages, system)
-	allowSystem := allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages)
-	prompt, err = promptutils.NormalizePrompt(prompt, allowSystem)
-	if err != nil {
-		return nil, err
-	}
 	// Extract telemetry info once for all callback events
 	cbFuncID, cbMeta := telemetryCallbackInfo(telemetrySettings)
 	generateID := internalGenerateID(opts.Internal)
@@ -1007,6 +1010,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		stepMessages := currentMessages
 		stepSandbox := opts.ExperimentalSandbox
 		stepTools := FilterActiveTools(opts.Tools, opts.ActiveTools)
+		stepActiveTools := opts.ActiveTools
 		stepToolChoice := opts.ToolChoice
 		stepToolOrder := opts.ToolOrder
 		stepProviderOptions := opts.ProviderOptions
@@ -1079,9 +1083,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			if prepared.Messages != nil {
 				stepMessages = prepared.Messages
 			}
-			if prepared.Tools != nil {
-				stepTools = prepared.Tools
-			}
+			stepTools, stepActiveTools = applyPreparedTools(opts.Tools, stepTools, stepActiveTools, prepared)
 			if prepared.ToolChoice.Type != "" {
 				stepToolChoice = prepared.ToolChoice
 			}
@@ -1173,7 +1175,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			Messages:            stepMessages,
 			Tools:               stepTools,
 			ToolChoice:          stepToolChoice,
-			ActiveTools:         opts.ActiveTools,
+			ActiveTools:         stepActiveTools,
 			ToolOrder:           stepToolOrder,
 			ProviderOptions:     stepProviderOptions,
 			Steps:               result.Steps,
@@ -1370,7 +1372,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			Settings:         telemetrySettings,
 			CallID:           callID,
 			ModelProvider:    stepModel.Provider(),
-			ModelID:          stepModel.ModelID(),
+			ModelID:          responseModelID, // the response model (TS event.modelId), not the request model
 			FinishReason:     string(genResult.FinishReason),
 			Usage:            modelCallUsage,
 			Content:          generateResultContentParts(genResult),
@@ -1496,9 +1498,14 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				toolExecutionMs:     map[string]int64{},
 				executionBlocked:    !isToolExecutionAllowedFinishReason(genResult.FinishReason),
 			}
-			toolResults, err := executeToolsConfigured(ctx, genResult.ToolCalls, stepExecutionTools, runtimeContext, toolsContext, opts.ToolApproval, &result.Usage, toolCallbacks, toolCallConcurrency)
+			// Tools run inside the step context: the TS step timeout aborts the
+			// whole step (mergedAbortSignal also feeds executeTools), and the
+			// tool spans parent under the step span.
+			toolResults, err := executeToolsConfigured(stepCtx, genResult.ToolCalls, stepExecutionTools, runtimeContext, toolsContext, opts.ToolApproval, &result.Usage, toolCallbacks, toolCallConcurrency)
 			if err != nil {
-				if opts.Timeout != nil && opts.Timeout.HasTotal() && ctx.Err() != nil {
+				if opts.Timeout != nil && opts.Timeout.HasPerStep() && stepCtx.Err() != nil && ctx.Err() == nil {
+					err = wrapTimeoutError(TimeoutReasonStep, err)
+				} else if opts.Timeout != nil && opts.Timeout.HasTotal() && ctx.Err() != nil {
 					err = wrapTimeoutError(TimeoutReasonTotal, err)
 				}
 				var conversionErr *toolResultModelOutputError
@@ -1603,25 +1610,6 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			stepResult.Response.Messages = finalMsgs
 			result.Response.Messages = finalMsgs
 
-			// Parse typed output if an Output spec was provided. Parse on a
-			// clean stop, or on any other finish reason besides tool-calls
-			// as long as the step produced text — e.g. a provider that
-			// omits/misreports finishReason but still returned the object
-			// (audit rows eed7950/9de0baf / WG4). A 'length' finish with no
-			// text is still skipped: it would likely be invalid/truncated
-			// JSON, surfaced instead as NoObjectGeneratedError by the Output
-			// spec's own parseCompleteOutput.
-			if op, ok := opts.Output.(outputProcessor); ok && shouldParseFinalOutput(genResult.FinishReason, genResult.Text) {
-				parsed, parseErr := op.parseCompleteOutput(stepCtx, ParseCompleteOutputOptions{
-					Text:         genResult.Text,
-					FinishReason: genResult.FinishReason,
-					Usage:        &genResult.Usage,
-				})
-				if parseErr != nil {
-					return nil, fmt.Errorf("output parsing failed: %w", parseErr)
-				}
-				result.Output = parsed
-			}
 		}
 
 		// Provider-executed results the model returned in this response are
@@ -1681,7 +1669,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 
 		// Call step finish callback (v6.0: with user context)
 		if onStepEnd != nil {
-			onStepEnd(ctx, stepResult, runtimeContext)
+			safeInvoke(func() { onStepEnd(ctx, stepResult, runtimeContext) })
 		}
 
 		// Emit structured OnStepFinishEvent.
@@ -1819,6 +1807,14 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				break
 			}
 		}
+
+		// TS generate-text.ts: the step timeout aborts the shared signal for
+		// good, so the next iteration's throwIfAborted() rejects with the
+		// step TimeoutError (a tool that swallowed the abort does not
+		// prevent it).
+		if opts.Timeout != nil && opts.Timeout.HasPerStep() && stepCtx.Err() != nil && ctx.Err() == nil {
+			return nil, wrapTimeoutError(TimeoutReasonStep, stepCtx.Err())
+		}
 	}
 
 	// Populate TotalUsage and final shortcuts before finish callbacks observe the result.
@@ -1839,6 +1835,25 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		result.ResponseMessages = responseMessagesWithInitial(initialResponseMessages, result.Steps)
 		result.RawRequest = result.Request.Body
 		result.RawResponse = result.Response.Body
+	}
+
+	// Parse the typed output of the last step (TS generate-text.ts: after the
+	// loop, from lastStep.text/finishReason). The parse error is returned only
+	// after the step-end and end callbacks have fired, as in TS, where
+	// parseCompleteOutput runs after notify(onEnd).
+	var outputParseErr error
+	if op, ok := opts.Output.(outputProcessor); ok && len(result.Steps) > 0 && shouldParseFinalOutput(result.FinalStep.FinishReason, result.FinalStep.Text) {
+		lastUsage := result.FinalStep.Usage
+		parsed, parseErr := op.parseCompleteOutput(ctx, ParseCompleteOutputOptions{
+			Text:         result.FinalStep.Text,
+			FinishReason: result.FinalStep.FinishReason,
+			Usage:        &lastUsage,
+		})
+		if parseErr != nil {
+			outputParseErr = fmt.Errorf("output parsing failed: %w", parseErr)
+		} else {
+			result.Output = parsed
+		}
 	}
 
 	// Fire OnFinish — integrations record output attributes and end their spans.
@@ -1866,6 +1881,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		Text:             result.Text,
 		Reasoning:        result.ReasoningText,
 		ToolCalls:        result.ToolCalls,
+		ToolResults:      result.ToolResults,
+		ReasoningParts:   result.Reasoning,
 		Files:            result.Files,
 		ProviderMetadata: result.ProviderMetadata,
 		Settings:         telemetrySettings,
@@ -1875,7 +1892,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 
 	// Call end callback (v6.0: with user context)
 	if onEnd != nil {
-		onEnd(ctx, result, runtimeContext)
+		safeInvoke(func() { onEnd(ctx, result, runtimeContext) })
 	}
 
 	// Emit structured OnFinishEvent.
@@ -1948,6 +1965,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	}
 	finishEvent.SetAggregatesFromSteps(result.Steps, result.ResponseMessages)
 	Notify(ctx, finishEvent, onEndEvent)
+
+	if outputParseErr != nil {
+		return nil, outputParseErr
+	}
 
 	// Apply retention settings (v6.0.60)
 	// Exclude request/response bodies based on retention settings
@@ -2067,6 +2088,25 @@ func responseMessagesFromSteps(steps []types.StepResult) []types.Message {
 		messages = append(messages, step.Response.Messages...)
 	}
 	return messages
+}
+
+// applyPreparedTools applies the tool-related overrides a PrepareStep callback
+// returned. TS PrepareStepResult.activeTools restricts the step to those
+// tools (filterActiveTools on the full tool set); Go's additional Tools
+// override, when set, replaces the base the filter runs on.
+func applyPreparedTools(callTools, current []types.Tool, currentActive []string, prepared PrepareStepOptions) ([]types.Tool, []string) {
+	tools := current
+	if prepared.Tools != nil {
+		tools = prepared.Tools
+	}
+	if prepared.ActiveTools == nil {
+		return tools, currentActive
+	}
+	base := callTools
+	if prepared.Tools != nil {
+		base = prepared.Tools
+	}
+	return FilterActiveTools(base, prepared.ActiveTools), prepared.ActiveTools
 }
 
 // RefineToolCalls applies the per-tool input refiners to the valid calls.
@@ -2496,6 +2536,25 @@ func telemetryCallbackInfo(t *TelemetrySettings) (functionID string, metadata ma
 	}
 	functionID = t.FunctionID
 	return functionID, metadata
+}
+
+// telemetryToolResultsOf returns the tool results of every step (TS
+// onEndEvent.toolResults).
+func telemetryToolResultsOf(steps []types.StepResult) []types.ToolResult {
+	var out []types.ToolResult
+	for _, step := range steps {
+		out = append(out, step.ToolResults...)
+	}
+	return out
+}
+
+// telemetryFinalReasoningOf returns the reasoning parts of the final step (TS
+// finalStep.reasoning).
+func telemetryFinalReasoningOf(steps []types.StepResult) []types.ReasoningContent {
+	if len(steps) == 0 {
+		return nil
+	}
+	return steps[len(steps)-1].Reasoning
 }
 
 func telemetryUsageFromUsage(usage types.Usage) telemetry.TelemetryUsage {

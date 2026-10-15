@@ -181,7 +181,7 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 		Headers:        opts.Headers,
 	})
 	if opts.OnStart != nil {
-		opts.OnStart(startEvent)
+		safeInvoke(func() { opts.OnStart(startEvent) })
 	}
 
 	headers := version.WithUserAgentSuffix(opts.Headers, version.UserAgent())
@@ -326,7 +326,7 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 	})
 
 	if opts.OnEnd != nil {
-		opts.OnEnd(DecideOnEndEvent{
+		endEvent := DecideOnEndEvent{
 			DecideOnStartEvent: startEvent,
 			Answers:            evalResult.Answers,
 			Usage:              evalResult.Usage,
@@ -334,7 +334,8 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 			Rounding:           evalResult.Rounding,
 			ProviderMetadata:   evalResult.ProviderMetadata,
 			Response:           evalResult.Response,
-		})
+		}
+		safeInvoke(func() { opts.OnEnd(endEvent) })
 	}
 
 	return evalResult, nil

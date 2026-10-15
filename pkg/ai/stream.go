@@ -969,6 +969,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		stepMessages = append(append([]types.Message(nil), prompt.Messages...), initialResponseMessages...)
 	}
 	stepTools := FilterActiveTools(opts.Tools, opts.ActiveTools)
+	stepActiveTools := opts.ActiveTools
 	stepToolChoice := opts.ToolChoice
 	stepToolOrder := opts.ToolOrder
 	stepProviderOptions := opts.ProviderOptions
@@ -1041,9 +1042,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		if prepared.Messages != nil {
 			stepMessages = prepared.Messages
 		}
-		if prepared.Tools != nil {
-			stepTools = prepared.Tools
-		}
+		stepTools, stepActiveTools = applyPreparedTools(opts.Tools, stepTools, stepActiveTools, prepared)
 		if prepared.ToolChoice.Type != "" {
 			stepToolChoice = prepared.ToolChoice
 		}
@@ -1125,7 +1124,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		Messages:            stepMessages,
 		Tools:               stepTools,
 		ToolChoice:          stepToolChoice,
-		ActiveTools:         opts.ActiveTools,
+		ActiveTools:         stepActiveTools,
 		ToolOrder:           stepToolOrder,
 		ProviderOptions:     stepProviderOptions,
 		PreviousSteps:       nil, // first (and only) step
@@ -1291,7 +1290,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		if isAbortErr(stepCtx, err) {
 			reason := abortReason(stepCtx, err)
 			if onAbort := firstOnAbort(opts.OnAbortEvent, opts.OnAbort); onAbort != nil {
-				onAbort(stepCtx, GenerateTextAbortEvent{CallID: callID, Reason: reason})
+				safeInvoke(func() { onAbort(stepCtx, GenerateTextAbortEvent{CallID: callID, Reason: reason}) })
 			}
 			telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID})
 			telemetry.FireOnAbort(telemetryCtx, telemetry.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID, Reason: reason})
@@ -1507,11 +1506,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		abortFired = true
 		reason = abortReason(ctx, reason)
 		if onAbort := firstOnAbort(opts.OnAbortEvent, opts.OnAbort); onAbort != nil {
-			onAbort(ctx, GenerateTextAbortEvent{
+			abortEvent := GenerateTextAbortEvent{
 				CallID: r.cbCallID,
 				Steps:  append([]types.StepResult(nil), allSteps...),
 				Reason: reason,
-			})
+			}
+			safeInvoke(func() { onAbort(ctx, abortEvent) })
 		}
 		telemetry.FireOnAbort(r.telemetryCtx, telemetry.TelemetryAbortEvent{
 			Settings: r.telemetrySettings,
@@ -1854,7 +1854,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			if chunk.Type == provider.ChunkTypeRaw && !includeRawChunksValue(r.cbInclude) {
 				forwardChunk = false
 			}
-			if chunk.Type == provider.ChunkTypeText && chunk.Text == "" {
+			// TS forwards an empty text-delta only when it carries provider
+			// metadata (e.g. a Gemini thought signature).
+			if chunk.Type == provider.ChunkTypeText && chunk.Text == "" && len(chunk.ProviderMetadata) == 0 {
 				forwardChunk = false
 			}
 			// The raw provider finish chunk is never forwarded to the
@@ -2106,7 +2108,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 						Settings:         r.telemetrySettings,
 						CallID:           r.cbCallID,
 						ModelProvider:    stepProvider,
-						ModelID:          stepModelID,
+						ModelID:          stepResponseModelID, // the response model (TS event.modelId)
 						FinishReason:     string(chunk.FinishReason),
 						Usage:            telemetryUsageFromUsage(stepUsage),
 						Content:          append([]types.ContentPart(nil), stepContent...),
@@ -2813,20 +2815,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 
 		// Fire step-finish telemetry — OTel implementation ends the child step span.
 		{
-			stepTelUsage := telemetry.TelemetryUsage{
-				InputTokens:  r.usage.InputTokens,
-				OutputTokens: r.usage.OutputTokens,
-				TotalTokens:  r.usage.TotalTokens,
-			}
-			if r.usage.InputDetails != nil {
-				stepTelUsage.NoCacheInputTokens = r.usage.InputDetails.NoCacheTokens
-				stepTelUsage.CacheReadInputTokens = r.usage.InputDetails.CacheReadTokens
-				stepTelUsage.CacheCreationInputTokens = r.usage.InputDetails.CacheWriteTokens
-			}
-			if r.usage.OutputDetails != nil {
-				stepTelUsage.OutputTextTokens = r.usage.OutputDetails.TextTokens
-				stepTelUsage.ReasoningTokens = r.usage.OutputDetails.ReasoningTokens
-			}
+			// The step's own usage (r.usage is the running total across steps).
+			stepTelUsage := telemetryUsageFromUsage(stepResult.Usage)
 			var stepFiles []types.GeneratedFileContent
 			r.mu.Lock()
 			if len(r.files) > stepFilesStart {
@@ -2869,7 +2859,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// Call the simple step-end callback (mirrors GenerateTextOptions.OnStepEnd
 		// exactly — see the doc comment on StreamTextOptions.OnStepEnd).
 		if r.cbOnStepEnd != nil {
-			r.cbOnStepEnd(ctx, stepResult, r.cbRuntimeCtx)
+			safeInvoke(func() { r.cbOnStepEnd(ctx, stepResult, r.cbRuntimeCtx) })
 		}
 		Notify(ctx, OnStepFinishEvent{
 			CallID:             r.cbCallID,
@@ -2957,6 +2947,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		nextSystem := r.cbSystem
 		nextMessages := currentMessages
 		nextTools := FilterActiveTools(opts.Tools, opts.ActiveTools)
+		nextActiveTools := opts.ActiveTools
 		nextToolChoice := opts.ToolChoice
 		nextToolOrder := opts.ToolOrder
 		nextProviderOptions := opts.ProviderOptions
@@ -3028,9 +3019,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			if prepared.Messages != nil {
 				nextMessages = prepared.Messages
 			}
-			if prepared.Tools != nil {
-				nextTools = prepared.Tools
-			}
+			nextTools, nextActiveTools = applyPreparedTools(opts.Tools, nextTools, nextActiveTools, prepared)
 			if prepared.ToolChoice.Type != "" {
 				nextToolChoice = prepared.ToolChoice
 			}
@@ -3125,7 +3114,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			Messages:            nextMessages,
 			Tools:               nextTools,
 			ToolChoice:          nextToolChoice,
-			ActiveTools:         opts.ActiveTools,
+			ActiveTools:         nextActiveTools,
 			ToolOrder:           nextToolOrder,
 			ProviderOptions:     nextProviderOptions,
 			Steps:               allSteps,
@@ -3406,6 +3395,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		Text:             r.finalStepText(),
 		Reasoning:        streamReasoningText,
 		ToolCalls:        streamToolCalls,
+		ToolResults:      telemetryToolResultsOf(allSteps),
+		ReasoningParts:   telemetryFinalReasoningOf(allSteps),
 		Files:            streamFiles,
 		ProviderMetadata: streamProviderMeta,
 		Settings:         r.telemetrySettings,
@@ -3421,7 +3412,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 
 	// Call finish callback
 	if onFinish != nil {
-		onFinish(r)
+		safeInvoke(func() { onFinish(r) })
 	}
 
 	// Emit structured step-finish and generation-finish events.
@@ -4427,6 +4418,8 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 		Text:             r.text,
 		Reasoning:        step.ReasoningText,
 		ToolCalls:        step.ToolCalls,
+		ToolResults:      step.ToolResults,
+		ReasoningParts:   step.Reasoning,
 		Files:            readAllFiles,
 		ProviderMetadata: readAllProviderMeta,
 		Settings:         r.telemetrySettings,
