@@ -270,8 +270,8 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 
 	launched, err := bridge.Launch(ctx, bridge.LaunchOptions{
 		Label: "codex bridge", Source: HarnessID, Sandbox: restricted,
-		Command: fmt.Sprintf("node %s/bridge.mjs --workdir %s --bridge-state-dir %s",
-			harnessutil.ShellQuote(bootstrapDir), harnessutil.ShellQuote(workDir), harnessutil.ShellQuote(bridgeStateDir)),
+		Command: fmt.Sprintf("node %s --workdir %s --bridge-state-dir %s",
+			harnessutil.ShellQuote(bootstrapDir+"/bridge.mjs"), harnessutil.ShellQuote(workDir), harnessutil.ShellQuote(bridgeStateDir)),
 		Env: env, Port: port, Token: token, ReplayFromDisk: respawnStrategy == "replay",
 		BridgeStateDir: bridgeStateDir, BridgeType: HarnessID, StartupTimeout: timeout,
 		ResolveEndpoint: func(ctx context.Context, boundPort int) (harness.PortEndpoint, error) {
