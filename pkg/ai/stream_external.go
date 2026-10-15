@@ -597,7 +597,14 @@ consumeLoop:
 			if step.rawFinishReason == "" {
 				step.rawFinishReason = "error"
 			}
-			r.err = fmt.Errorf("%s", chunk.Text)
+			// Keep the typed error when the source carries one (TS rejects the
+			// result promises with the original error object), so errors.As
+			// works on Err().
+			if chunk.Err != nil {
+				r.err = chunk.Err
+			} else {
+				r.err = fmt.Errorf("%s", chunk.Text)
+			}
 			finishStep(true)
 			break consumeLoop
 		}

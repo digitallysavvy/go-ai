@@ -72,7 +72,7 @@ func (d *turnDriver) suspending() bool {
 // (via settleFailure below), so a separate hard, non-data-preserving
 // channel-level failure path is never needed.
 func (d *turnDriver) fail(err error) {
-	d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeError, Text: err.Error()})
+	d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeError, Err: err, Text: err.Error()})
 	d.stream.closeOK()
 }
 
