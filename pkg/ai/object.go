@@ -964,9 +964,6 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 		return nil, fmt.Errorf("generation failed: %w", err)
 	}
 
-	// Log model warnings once per model call (TS generate-object.ts
-	// logWarnings, called right after the model call and before the
-	// step-finish event is built).
 	// A response without any text fails before the step-end event, as in TS
 	// generateObject (extractTextContent(content) === undefined).
 	if noResponseErr := generateObjectNoResponseError(genResult, opts.Model); noResponseErr != nil {
@@ -974,6 +971,9 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 		return nil, noResponseErr
 	}
 
+	// Log model warnings once per model call (TS generate-object.ts
+	// logWarnings, called right after the model call and before the
+	// step-finish event is built).
 	logModelWarnings(genResult.Warnings, opts.Model.Provider(), opts.Model.ModelID())
 
 	reasoning := extractObjectReasoning(genResult)
@@ -1129,9 +1129,6 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 		return nil, fmt.Errorf("generation failed: %w", err)
 	}
 
-	// Log model warnings once per model call (TS generate-object.ts
-	// logWarnings, called right after the model call and before the
-	// step-finish event is built).
 	// A response without any text fails before the step-end event, as in TS
 	// generateObject (extractTextContent(content) === undefined).
 	if noResponseErr := generateObjectNoResponseError(genResult, opts.Model); noResponseErr != nil {
@@ -1139,6 +1136,9 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 		return nil, noResponseErr
 	}
 
+	// Log model warnings once per model call (TS generate-object.ts
+	// logWarnings, called right after the model call and before the
+	// step-finish event is built).
 	logModelWarnings(genResult.Warnings, opts.Model.Provider(), opts.Model.ModelID())
 
 	arrayReasoning := extractObjectReasoning(genResult)
@@ -1284,9 +1284,6 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc object
 		return nil, fmt.Errorf("generation failed: %w", err)
 	}
 
-	// Log model warnings once per model call (TS generate-object.ts
-	// logWarnings, called right after the model call and before the
-	// step-finish event is built).
 	// A response without any text fails before the step-end event, as in TS
 	// generateObject (extractTextContent(content) === undefined).
 	if noResponseErr := generateObjectNoResponseError(genResult, opts.Model); noResponseErr != nil {
@@ -1294,6 +1291,9 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc object
 		return nil, noResponseErr
 	}
 
+	// Log model warnings once per model call (TS generate-object.ts
+	// logWarnings, called right after the model call and before the
+	// step-finish event is built).
 	logModelWarnings(genResult.Warnings, opts.Model.Provider(), opts.Model.ModelID())
 
 	enumReasoning := extractObjectReasoning(genResult)
@@ -1433,9 +1433,6 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc ob
 		return nil, fmt.Errorf("generation failed: %w", err)
 	}
 
-	// Log model warnings once per model call (TS generate-object.ts
-	// logWarnings, called right after the model call and before the
-	// step-finish event is built).
 	// A response without any text fails before the step-end event, as in TS
 	// generateObject (extractTextContent(content) === undefined).
 	if noResponseErr := generateObjectNoResponseError(genResult, opts.Model); noResponseErr != nil {
@@ -1443,6 +1440,9 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc ob
 		return nil, noResponseErr
 	}
 
+	// Log model warnings once per model call (TS generate-object.ts
+	// logWarnings, called right after the model call and before the
+	// step-finish event is built).
 	logModelWarnings(genResult.Warnings, opts.Model.Provider(), opts.Model.ModelID())
 
 	noSchemaReasoning := extractObjectReasoning(genResult)
