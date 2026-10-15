@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
+	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil/subscription"
 )
 
 // OAuth endpoint constants for the Claude Code native subscription (a `claude
@@ -22,15 +24,90 @@ const (
 	claudeSubscriptionBaseURL = "https://api.anthropic.com"
 )
 
+// claudeGOOS is the platform used to decide on the macOS Keychain fallback;
+// replaceable in tests.
+var claudeGOOS = runtime.GOOS
+
+const claudeKeychainService = "Claude Code-credentials"
+
+type claudeCredentialStore struct {
+	value map[string]any
+	write func(map[string]any) error
+}
+
+func claudeOAuth(value map[string]any) (map[string]any, bool) {
+	oauth, ok := value["claudeAiOauth"].(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	if _, ok := oauth["accessToken"].(string); !ok {
+		return nil, false
+	}
+	if _, ok := oauth["refreshToken"].(string); !ok {
+		return nil, false
+	}
+	if _, ok := oauth["expiresAt"].(float64); !ok {
+		return nil, false
+	}
+	return oauth, true
+}
+
+func parseClaudeCredentialFile(text string) map[string]any {
+	var value map[string]any
+	if err := json.Unmarshal([]byte(text), &value); err != nil || value == nil {
+		return nil
+	}
+	return value
+}
+
+// readClaudeCredentialStore mirrors TS `readClaudeCredentialStore`: the
+// credentials file when it holds a usable OAuth credential, otherwise (macOS,
+// default config dir only) the "Claude Code-credentials" Keychain item.
+func readClaudeCredentialStore(ctx context.Context, home, configDir, credentialPath string) *claudeCredentialStore {
+	if raw, err := os.ReadFile(credentialPath); err == nil {
+		if value := parseClaudeCredentialFile(string(raw)); value != nil {
+			if _, ok := claudeOAuth(value); ok {
+				return &claudeCredentialStore{value: value, write: func(updated map[string]any) error {
+					return writeClaudeCredentialFile(credentialPath, updated)
+				}}
+			}
+		}
+	}
+	if claudeGOOS != "darwin" {
+		return nil
+	}
+	defaultDir, err := filepath.Abs(filepath.Join(home, ".claude"))
+	if err != nil {
+		return nil
+	}
+	if abs, err := filepath.Abs(configDir); err != nil || abs != defaultDir {
+		return nil
+	}
+	account := os.Getenv("USER")
+	text := subscription.ReadMacOSKeychainPassword(ctx, claudeKeychainService, account)
+	if text == "" {
+		return nil
+	}
+	value := parseClaudeCredentialFile(text)
+	if value == nil {
+		return nil
+	}
+	return &claudeCredentialStore{value: value, write: func(updated map[string]any) error {
+		data, err := json.Marshal(updated)
+		if err != nil {
+			return err
+		}
+		return subscription.WriteMacOSKeychainPassword(ctx, claudeKeychainService, account, string(data))
+	}}
+}
+
 // readClaudeCodeSubscription reads the native Claude Code subscription
 // credential from `$CLAUDE_CONFIG_DIR/.credentials.json` (default
-// `~/.claude/.credentials.json`), refreshing the OAuth access token when it
-// is expiring soon and writing the refreshed credential back to disk.
-// Returns (nil, false) when no usable credential is found; any I/O, parse or
-// refresh failure is treated as "not found", matching TS's blanket
-// `.catch(() => undefined)`. Mirrors TS `readClaudeCodeSubscription`
-// (claude-code-subscription.ts). The macOS Keychain fallback is not ported
-// — see the package doc.
+// `~/.claude/.credentials.json`) or, on macOS with the default config dir,
+// the Keychain; refreshes the OAuth access token when it is expiring soon and
+// writes the refreshed credential back to the store it came from. Returns
+// (nil, false) when no usable credential is found; a refresh failure is
+// treated as "not found". Mirrors TS `readClaudeCodeSubscription`.
 func readClaudeCodeSubscription(ctx context.Context) (map[string]string, bool) {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
@@ -40,24 +117,23 @@ func readClaudeCodeSubscription(ctx context.Context) (map[string]string, bool) {
 	if configDir == "" {
 		configDir = filepath.Join(home, ".claude")
 	}
+	if abs, err := filepath.Abs(configDir); err == nil {
+		configDir = abs
+	}
 	credentialPath := filepath.Join(configDir, ".credentials.json")
 
-	raw, err := os.ReadFile(credentialPath)
-	if err != nil {
+	store := readClaudeCredentialStore(ctx, home, configDir, credentialPath)
+	if store == nil {
 		return nil, false
 	}
-	var store map[string]any
-	if err := json.Unmarshal(raw, &store); err != nil {
-		return nil, false
-	}
-	oauth, ok := store["claudeAiOauth"].(map[string]any)
+	oauth, ok := claudeOAuth(store.value)
 	if !ok {
 		return nil, false
 	}
 	accessToken, _ := oauth["accessToken"].(string)
 	refreshToken, _ := oauth["refreshToken"].(string)
-	expiresAt, hasExpiry := oauth["expiresAt"].(float64)
-	if accessToken == "" || refreshToken == "" || !hasExpiry {
+	expiresAt, _ := oauth["expiresAt"].(float64)
+	if accessToken == "" || refreshToken == "" {
 		return nil, false
 	}
 
@@ -74,10 +150,10 @@ func readClaudeCodeSubscription(ctx context.Context) (map[string]string, bool) {
 		if refreshed.RefreshToken != "" {
 			oauth["refreshToken"] = refreshed.RefreshToken
 		}
-		store["claudeAiOauth"] = oauth
+		store.value["claudeAiOauth"] = oauth
 		// A failed write-back never invalidates the freshly refreshed token
-		// for this call — it just means the next call refreshes again.
-		_ = writeClaudeCredentialFile(credentialPath, store)
+		// for this call: it just means the next call refreshes again.
+		_ = store.write(store.value)
 	}
 
 	return map[string]string{
@@ -94,8 +170,11 @@ func writeClaudeCredentialFile(path string, value map[string]any) error {
 	if err != nil {
 		return err
 	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
 	tmp := fmt.Sprintf("%s.%d.tmp", path, os.Getpid())
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
 		return err
 	}
 	if err := os.Chmod(tmp, 0o600); err != nil {
