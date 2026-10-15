@@ -21,7 +21,7 @@ func convertPromptToTextBlocks(prompt harness.Prompt, harnessID string) ([]TextC
 	if prompt.Message == nil {
 		return []TextContentBlock{{Type: "text", Text: prompt.Text}}, nil
 	}
-	var blocks []TextContentBlock
+	blocks := []TextContentBlock{}
 	for _, part := range prompt.Message.Content {
 		switch p := part.(type) {
 		case types.TextContent:
@@ -54,7 +54,7 @@ func unsupportedPromptContent(harnessID, category string) error {
 // prependInstructionGuidance mirrors TS `prependACPInstructionGuidance`.
 func prependInstructionGuidance(prompt []TextContentBlock, instructions string) []TextContentBlock {
 	if instructions == "" {
-		return append([]TextContentBlock(nil), prompt...)
+		return append(make([]TextContentBlock, 0, len(prompt)), prompt...)
 	}
 	lines := []string{
 		"<session-guidance>",
