@@ -153,15 +153,18 @@ func GetMCPAppResourceFromReadResult(uri string, resource ReadResourceResult) (M
 		if content.MimeType != MCPAppMimeType {
 			return MCPAppResource{}, fmt.Errorf("unsupported MCP App resource MIME type: %s", content.MimeType)
 		}
-		html := content.Text
-		if html == "" && content.Blob != "" {
-			decoded, err := base64.StdEncoding.DecodeString(content.Blob)
+		// TS: a string text wins (even ""), else a string blob is decoded.
+		var html string
+		switch {
+		case content.Text != "" || content.textPresent:
+			html = content.Text
+		case content.Blob != "" || content.blobPresent:
+			decoded, err := decodeBase64Lenient(content.Blob)
 			if err != nil {
 				return MCPAppResource{}, fmt.Errorf("unsupported MCP App resource content format: %s", uri)
 			}
 			html = string(decoded)
-		}
-		if html == "" {
+		default:
 			return MCPAppResource{}, fmt.Errorf("unsupported MCP App resource content format: %s", uri)
 		}
 		var meta map[string]interface{}
@@ -296,4 +299,22 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// decodeBase64Lenient mirrors TS convertBase64ToUint8Array: base64url
+// characters are mapped to the standard alphabet and (as with atob) padding
+// is optional and ASCII whitespace is ignored.
+func decodeBase64Lenient(s string) ([]byte, error) {
+	s = strings.Map(func(r rune) rune {
+		switch r {
+		case '-':
+			return '+'
+		case '_':
+			return '/'
+		case ' ', '\t', '\n', '\f', '\r':
+			return -1
+		}
+		return r
+	}, s)
+	return base64.RawStdEncoding.DecodeString(strings.TrimRight(s, "="))
 }
