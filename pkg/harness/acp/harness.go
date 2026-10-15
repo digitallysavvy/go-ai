@@ -66,10 +66,19 @@ func CreateACP(settings Settings) (harness.Harness, error) {
 	}
 	h := &acpHarness{
 		settings: settings, impl: impl, clientApp: clientApp, bootstrap: &bootstrapCache{},
-		permMap: settings.PermissionModeMapping,
+		permMap: completePermissionModeMapping(settings.PermissionModeMapping),
 	}
 	h.settings.BuiltinTools = builtinTools
 	return h, nil
+}
+
+// completePermissionModeMapping mirrors TS `isCompletePermissionModeMapping`:
+// only a mapping with an entry for every mode is used outside the identity.
+func completePermissionModeMapping(m *PermissionModeMapping) *PermissionModeMapping {
+	if m.IsComplete() {
+		return m
+	}
+	return nil
 }
 
 func (h *acpHarness) SpecificationVersion() string { return harness.SpecificationVersion }
@@ -210,7 +219,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 	implementationIdentity := createImplementationIdentity(implementationIdentityInput{
 		HarnessID: settings.HarnessID, Implementation: h.impl, ClientApp: h.clientApp,
 		ClientCapabilities: settings.ClientCapabilities, ModelMapping: settings.ModelMapping,
-		ProviderAuthentication: compat, PermissionModeMapping: h.permMap,
+		ProviderAuthentication: compat, PermissionModeMapping: h.settings.PermissionModeMapping,
 		NonTextContentTypes: settings.NonTextContentTypes,
 	})
 	authProfile := createAuthenticationProfileIdentity(settings.Authentication, compat)
