@@ -50,9 +50,9 @@ func runXAIResponsesStreamRecursionChild() {
 	sb.Grow(n*32 + 256)
 	for i := 0; i < n; i++ {
 		// Unrecognized event type: hits Next()'s `default: continue` branch.
-		sb.WriteString(`data: {"type":"response.content_part.added"}` + "\n\n")
+		sb.WriteString(`data: {"type":"response.content_part.added","item_id":"i1","output_index":0,"content_index":0,"part":{"type":"output_text"}}` + "\n\n")
 	}
-	sb.WriteString(`data: {"type":"response.output_text.delta","output_index":0,"delta":"hello"}` + "\n\n")
+	sb.WriteString(`data: {"type":"response.output_text.delta","item_id":"i1","output_index":0,"content_index":0,"delta":"hello"}` + "\n\n")
 
 	s := newXAIResponsesStream(io.NopCloser(strings.NewReader(sb.String())))
 	// This call used to recurse once per unrecognized event -- 300,000 deep

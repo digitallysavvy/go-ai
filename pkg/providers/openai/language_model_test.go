@@ -906,7 +906,7 @@ data: [DONE]
 	if chunk.Type != provider.ChunkTypeError {
 		t.Fatalf("second chunk type = %v, want error", chunk.Type)
 	}
-	if !strings.Contains(chunk.Text, "failed to parse stream chunk") {
+	if !strings.Contains(chunk.Text, "JSON parsing failed") {
 		t.Fatalf("error text = %q, want parse failure", chunk.Text)
 	}
 }

@@ -1184,9 +1184,26 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 
 		var peek responses.ResponsesStreamEvent
 		if err := json.Unmarshal([]byte(event.Data), &peek); err != nil {
+			msg, perr := providerutils.ChunkParseFailure(event.Data, err)
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type: provider.ChunkTypeError,
-				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
+				Text: msg,
+				Err:  perr,
+			})
+			if ok {
+				return chunk, nil
+			}
+			continue
+		}
+
+		// TS xaiResponsesChunkSchema is a closed union: an event type it does
+		// not list, or a listed one whose members do not match, fails the
+		// parse and becomes an error part (the stream keeps going).
+		if msg, perr := providerutils.CheckXAIResponsesChunk(event.Data); perr != nil {
+			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: msg,
+				Err:  perr,
 			})
 			if ok {
 				return chunk, nil
@@ -1546,64 +1563,11 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			continue
 
 		default:
-			// TS xaiResponsesChunkSchema is a closed union: an event type it
-			// does not list (or a frame without a string `type`) fails the
-			// parse and becomes an error part.
-			if !xaiIgnoredEventTypes[peek.Type] {
-				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
-					Type: provider.ChunkTypeError,
-					Text: fmt.Sprintf("failed to parse stream chunk: Invalid discriminator value %q", peek.Type),
-				})
-				if ok {
-					return chunk, nil
-				}
-			}
+			// Validated above: a listed event with nothing to emit.
 			continue
 		}
 
 	}
-}
-
-// xaiIgnoredEventTypes are the xaiResponsesChunkSchema event types that carry
-// no client-visible output; TS validates them and then does nothing.
-var xaiIgnoredEventTypes = map[string]bool{
-	"response.code_execution_call.completed":      true,
-	"response.code_execution_call.executing":      true,
-	"response.code_execution_call.in_progress":    true,
-	"response.code_interpreter_call_code.delta":   true,
-	"response.code_interpreter_call_code.done":    true,
-	"response.code_interpreter_call.completed":    true,
-	"response.code_interpreter_call.executing":    true,
-	"response.code_interpreter_call.in_progress":  true,
-	"response.code_interpreter_call.interpreting": true,
-	"response.content_part.added":                 true,
-	"response.content_part.done":                  true,
-	"response.custom_tool_call_input.delta":       true,
-	"response.custom_tool_call_input.done":        true,
-	"response.file_search_call.completed":         true,
-	"response.file_search_call.in_progress":       true,
-	"response.file_search_call.searching":         true,
-	"response.function_call_arguments.done":       true,
-	"response.image_generation_call.completed":    true,
-	"response.image_generation_call.generating":   true,
-	"response.image_generation_call.in_progress":  true,
-	"response.mcp_call_arguments.delta":           true,
-	"response.mcp_call_arguments.done":            true,
-	"response.mcp_call_output.delta":              true,
-	"response.mcp_call_output.done":               true,
-	"response.mcp_call.completed":                 true,
-	"response.mcp_call.executing":                 true,
-	"response.mcp_call.failed":                    true,
-	"response.mcp_call.in_progress":               true,
-	"response.reasoning_summary_part.done":        true,
-	"response.reasoning_summary_text.done":        true,
-	"response.reasoning_text.done":                true,
-	"response.web_search_call.completed":          true,
-	"response.web_search_call.in_progress":        true,
-	"response.web_search_call.searching":          true,
-	"response.x_search_call.completed":            true,
-	"response.x_search_call.in_progress":          true,
-	"response.x_search_call.searching":            true,
 }
 
 // startTextBlock enqueues text-start the first time a text block id is seen.

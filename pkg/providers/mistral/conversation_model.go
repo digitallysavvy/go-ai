@@ -2,6 +2,7 @@ package mistral
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -532,12 +533,14 @@ func (s *conversationStream) handle(data string) {
 	}
 	if err := json.Unmarshal([]byte(data), &ev); err != nil {
 		s.hasError = true
-		s.queue = append(s.queue, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: fmt.Sprintf("mistral: failed to parse stream chunk: %v", err)})
+		msg, perr := providerutils.ChunkParseFailure(data, err)
+		s.queue = append(s.queue, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: msg, Err: perr})
 		return
 	}
 	if field, ok := conversationRequiredFieldsPresent(data, ev.Type); !ok {
 		s.hasError = true
-		s.queue = append(s.queue, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: fmt.Sprintf("mistral: failed to parse stream chunk: %s: Invalid input for %s event", field, ev.Type)})
+		msg, perr := providerutils.ChunkParseFailure(data, fmt.Errorf("%s: Invalid input for %s event", field, ev.Type))
+		s.queue = append(s.queue, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: msg, Err: perr})
 		return
 	}
 	switch ev.Type {
@@ -558,7 +561,8 @@ func (s *conversationStream) handle(data string) {
 	case "message.output.delta":
 		if !validConversationContent(ev.Content) {
 			s.hasError = true
-			s.queue = append(s.queue, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: "mistral: invalid message.output.delta content in conversation stream"})
+			msg, perr := providerutils.ChunkParseFailure(data, errors.New("content: Invalid input"))
+			s.queue = append(s.queue, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: msg, Err: perr})
 			return
 		}
 		if !s.hasModelID && ev.Model != nil {

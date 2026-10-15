@@ -659,19 +659,18 @@ func (s *perplexityAgentStream) processEvent(data string) {
 		}
 	}
 
+	// TS perplexityAgentChunkSchema: invalid JSON or a mistyped member is an
+	// error part carrying a typed error, and the finish reason turns to error.
 	var chunk perplexityAgentChunk
-	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-		s.finishReason = types.FinishReasonError
-		s.pending = append(s.pending, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: err.Error()})
-		return
+	msg, perr := providerutils.CheckPerplexityAgentChunk(data)
+	if perr == nil {
+		if derr := providerutils.UnmarshalChunk([]byte(data), &chunk); derr != nil {
+			msg, perr = providerutils.ChunkParseFailure(data, derr)
+		}
 	}
-	// TS perplexityAgentChunkSchema requires `type: z.string()`.
-	var typeProbe struct {
-		Type *string `json:"type"`
-	}
-	if err := json.Unmarshal([]byte(data), &typeProbe); err != nil || typeProbe.Type == nil {
+	if perr != nil {
 		s.finishReason = types.FinishReasonError
-		s.pending = append(s.pending, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: "type: Invalid input: expected string"})
+		s.pending = append(s.pending, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: msg, Err: perr})
 		return
 	}
 

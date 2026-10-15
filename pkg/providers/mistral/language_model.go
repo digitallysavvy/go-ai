@@ -691,16 +691,20 @@ func (s *mistralStream) Next() (*provider.StreamChunk, error) {
 				} `json:"delta"`
 			} `json:"choices"`
 		}
-		err = json.Unmarshal([]byte(event.Data), &chunkData)
-		if err == nil {
-			// TS mistralChatChunkSchema requires `choices`: a frame without
-			// it (for example an {"error": ...} envelope) is a parse failure.
-			err = providerutils.ValidateChatChunk([]byte(event.Data), providerutils.ChatChunkShape{DeltaRequired: true, ChoiceIndexRequired: true})
+		// TS mistralChatChunkSchema has no error member: a frame without
+		// `choices` (for example an {"error": ...} envelope) or with a mistyped
+		// member is a parse failure carrying a typed error.
+		msg, perr := providerutils.CheckChatChunk(event.Data, providerutils.ChatChunkShape{Kind: providerutils.ChunkKindMistral})
+		if perr == nil {
+			if derr := providerutils.UnmarshalChunk([]byte(event.Data), &chunkData); derr != nil {
+				msg, perr = providerutils.ChunkParseFailure(event.Data, derr)
+			}
 		}
-		if err != nil {
+		if perr != nil {
 			errorChunk := &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
-				Text: fmt.Sprintf("mistral: failed to parse stream chunk: %v", err),
+				Text: msg,
+				Err:  perr,
 			}
 			if rawQueued {
 				s.flushQueue = append(s.flushQueue, errorChunk)

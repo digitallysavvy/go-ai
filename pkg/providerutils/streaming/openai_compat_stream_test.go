@@ -591,7 +591,7 @@ data: [DONE]
 	if chunk.Type != provider.ChunkTypeError {
 		t.Fatalf("second chunk type = %v, want error", chunk.Type)
 	}
-	if !strings.Contains(chunk.Text, "failed to parse stream chunk") {
+	if !strings.Contains(chunk.Text, "JSON parsing failed") {
 		t.Fatalf("error text = %q, want parse failure", chunk.Text)
 	}
 }
@@ -744,7 +744,7 @@ data: [DONE]
 	if len(errorChunks) != 1 {
 		t.Fatalf("expected 1 error chunk, got %#v", chunks)
 	}
-	if !strings.Contains(errorChunks[0].Text, "failed to parse stream chunk") {
+	if !strings.Contains(errorChunks[0].Text, "JSON parsing failed") {
 		t.Fatalf("error text = %q, want parse failure", errorChunks[0].Text)
 	}
 	finishes := compatChunksOfType(chunks, provider.ChunkTypeFinish)
@@ -1008,7 +1008,7 @@ func TestOpenAICompatStream_EmptyDataEventIsParseError(t *testing.T) {
 		chunks := collectStreamChunks(t, stream)
 		var sawErr bool
 		for _, c := range chunks {
-			if c.Type == provider.ChunkTypeError && strings.Contains(c.Text, "failed to parse stream chunk") {
+			if c.Type == provider.ChunkTypeError && strings.Contains(c.Text, "JSON parsing failed") {
 				sawErr = true
 			}
 		}

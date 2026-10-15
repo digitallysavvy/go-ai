@@ -2496,9 +2496,12 @@ type responsesReasoningAccum struct {
 
 // responsesStream implements provider.TextStream for the Responses API SSE stream.
 type responsesStream struct {
-	reader io.ReadCloser
-	parser *streaming.SSEParser
-	err    error
+	// curEventData is the SSE data of the frame being processed (for typed
+	// validation errors).
+	curEventData string
+	reader       io.ReadCloser
+	parser       *streaming.SSEParser
+	err          error
 
 	// hasFunctionCall is set once a client-side tool call item finishes; it
 	// makes the finish reason "tool-calls" (TS hasFunctionCall).
@@ -2674,9 +2677,14 @@ func (s *responsesStream) resolveOutputItemID(outputIndex int, itemID string) st
 // emitParsedChunk below for why this no longer recurses into Next()).
 func (s *responsesStream) emitDecodeError(eventType string, err error) (*provider.StreamChunk, bool) {
 	s.hadDecodeError = true
+	// The frame is valid JSON with a string `type` but a member that does not
+	// fit that event's typed decode: TS's chunk schema rejects it as a
+	// TypeValidationError.
+	msg, perr := providerutils.ChunkParseFailure(s.curEventData, fmt.Errorf("%s event: %w", eventType, err))
 	return s.emitParsedChunk(&provider.StreamChunk{
 		Type: provider.ChunkTypeError,
-		Text: fmt.Sprintf("failed to parse %s event: %v", eventType, err),
+		Text: msg,
+		Err:  perr,
 	})
 }
 
@@ -2847,12 +2855,15 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			continue
 		}
 		// Parse the "type" discriminator.
+		s.curEventData = event.Data
 		var peek responses.ResponsesStreamEvent
 		if err := json.Unmarshal([]byte(event.Data), &peek); err != nil {
 			s.queueRawChunk(event.Data)
+			msg, perr := providerutils.ChunkParseFailure(event.Data, err)
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type: provider.ChunkTypeError,
-				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
+				Text: msg,
+				Err:  perr,
 			})
 			if ok {
 				return chunk, nil
@@ -2872,15 +2883,17 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				return nil, s.err
 			}
 		}
-		// TS openaiResponsesChunkSchema ends in `{type: z.string()}.loose()`:
-		// a frame without a string `type` fails every union member, which is a
-		// parse failure (error part + finish reason "error").
-		if peek.Type == "" && !providerutils.HasStringField([]byte(event.Data), "type") {
+		// TS openaiResponsesChunkSchema: a modeled event whose members fail its
+		// schema, or a frame without a string `type`, is a parse failure (error
+		// part + finish reason "error"); unmodeled event types pass as
+		// unknown chunks.
+		if msg, perr := providerutils.CheckResponsesChunk(event.Data); perr != nil {
 			s.queueRawChunk(event.Data)
 			s.hadDecodeError = true
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type: provider.ChunkTypeError,
-				Text: "failed to parse stream chunk: type: Invalid input: expected string",
+				Text: msg,
+				Err:  perr,
 			})
 			if ok {
 				return chunk, nil

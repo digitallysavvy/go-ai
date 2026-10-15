@@ -38,11 +38,11 @@ func xaiChunkTypes(chunks []*provider.StreamChunk) []string {
 // response.completed only records the finish state, so a stream that ends
 // without one still finishes (other, zero usage).
 func TestXAIResponsesStreamTextBlocksAndFlush(t *testing.T) {
-	chunks := drainXAIResponses(t, `data: {"type":"response.output_text.delta","item_id":"a","delta":"Hi"}
+	chunks := drainXAIResponses(t, `data: {"type":"response.output_text.delta","item_id":"a","output_index":0,"content_index":0,"delta":"Hi"}
 
-data: {"type":"response.output_text.delta","item_id":"a","delta":""}
+data: {"type":"response.output_text.delta","item_id":"a","output_index":0,"content_index":0,"delta":""}
 
-data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":2,"output_tokens":3},"service_tier":"default"}}
+data: {"type":"response.completed","response":{"object":"response","output":[],"status":"completed","usage":{"input_tokens":2,"output_tokens":3},"service_tier":"default"}}
 
 `)
 	got := strings.Join(xaiChunkTypes(chunks), ",")
@@ -58,7 +58,7 @@ data: {"type":"response.completed","response":{"status":"completed","usage":{"in
 	}
 
 	// No terminal event at all.
-	chunks = drainXAIResponses(t, `data: {"type":"response.output_text.delta","item_id":"a","delta":"Hi"}`+"\n\n")
+	chunks = drainXAIResponses(t, `data: {"type":"response.output_text.delta","item_id":"a","output_index":0,"content_index":0,"delta":"Hi"}`+"\n\n")
 	if got := strings.Join(xaiChunkTypes(chunks), ","); got != "text-start,text,text-end,finish" {
 		t.Fatalf("no-terminal chunks = %s", got)
 	}
@@ -70,9 +70,9 @@ data: {"type":"response.completed","response":{"status":"completed","usage":{"in
 // TS message output item: text that was not streamed as deltas is emitted
 // whole (once per item), and its url_citation annotations become sources.
 func TestXAIResponsesStreamMessageItemText(t *testing.T) {
-	chunks := drainXAIResponses(t, `data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"m1","content":[]}}
+	chunks := drainXAIResponses(t, `data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"m1","role":"assistant","status":"in_progress","content":[]}}
 
-data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"m1","content":[{"text":"Full","annotations":[{"type":"url_citation","url":"https://x.test","title":"X"}]}]}}
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"m1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Full","annotations":[{"type":"url_citation","url":"https://x.test","title":"X"}]}]}}
 
 `)
 	got := strings.Join(xaiChunkTypes(chunks), ",")

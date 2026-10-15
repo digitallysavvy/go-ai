@@ -1221,10 +1221,11 @@ func (s *openResponsesStream) Next() (*provider.StreamChunk, error) {
 		// event that does not parse and keeps reading.
 		var streamEvent StreamEvent
 		if err := json.Unmarshal([]byte(event.Data), &streamEvent); err != nil {
+			msg, perr := providerutils.ChunkParseFailure(event.Data, err)
 			return &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
-				Text: fmt.Sprintf("failed to parse stream event: %v", err),
-				Err:  fmt.Errorf("failed to parse stream event: %w", err),
+				Text: msg,
+				Err:  perr,
 			}, nil
 		}
 

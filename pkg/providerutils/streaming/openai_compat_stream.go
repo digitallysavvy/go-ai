@@ -65,6 +65,11 @@ type OpenAICompatStream struct {
 	// finish providerMetadata.
 	MetadataKey string
 
+	// ChunkErrorKind selects the error member of the TS chunk union
+	// (ProviderErrorStructure.errorSchema); the zero value is the default
+	// openaiCompatibleErrorDataSchema.
+	ChunkErrorKind providerutils.ChunkErrorKind
+
 	// ConvertUsage, when set, replaces the default usage conversion with a
 	// provider's own (TS openai-compatible `convertUsage` config). It receives
 	// the usage object exactly as sent.
@@ -246,16 +251,25 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 			Created int64                    `json:"created"`
 		}
 
-		if err := json.Unmarshal([]byte(eventData), &chunkData); err != nil {
-			// Matches TS's chunk-schema-parse-failure branch (openai-compatible-
-			// chat-language-model.ts:574-575), which sets finishReason to the
-			// unified "error" reason right when this fires -- so endStream must
-			// not additionally treat a later clean EOF as a "truncated stream".
+		// TS chunkBaseSchema (a union with the provider's error schema): invalid
+		// JSON, or a frame that is neither an error nor a valid chat chunk,
+		// fails the schema parse: an error part carrying a typed error, plus
+		// finishReason "error". Matches TS's chunk-schema-parse-failure branch
+		// (openai-compatible-chat-language-model.ts:574-575), so endStream must
+		// not additionally treat a later clean EOF as a "truncated stream".
+		msg, perr := providerutils.CheckChatChunk(eventData, providerutils.ChatChunkShape{Error: s.ChunkErrorKind})
+		if perr == nil {
+			if derr := providerutils.UnmarshalChunk([]byte(eventData), &chunkData); derr != nil {
+				msg, perr = providerutils.ChunkParseFailure(eventData, derr)
+			}
+		}
+		if perr != nil {
 			s.streamErrored = true
 			s.finishErrored = true
 			return &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
-				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
+				Text: msg,
+				Err:  perr,
 			}, nil
 		}
 		if len(chunkData.Error) > 0 {
@@ -266,18 +280,6 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 			return &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: rawStreamErrorText(chunkData.Error),
-			}, nil
-		}
-
-		// TS chunkBaseSchema (a union with the error schema): a frame that is
-		// neither an error nor a chat chunk with a `choices` array fails the
-		// schema parse, which is an error part plus finishReason "error".
-		if err := providerutils.ValidateChatChunk([]byte(eventData), providerutils.ChatChunkShape{}); err != nil {
-			s.streamErrored = true
-			s.finishErrored = true
-			return &provider.StreamChunk{
-				Type: provider.ChunkTypeError,
-				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
 			}, nil
 		}
 

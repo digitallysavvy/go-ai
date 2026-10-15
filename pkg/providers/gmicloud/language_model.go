@@ -339,6 +339,7 @@ func newGmicloudStream(reader io.ReadCloser) *gmicloudStream {
 		OpenAICompatStream: streaming.NewOpenAICompatStream(reader, providerutils.MapOpenAIFinishReason),
 	}
 	s.MetadataKey = "gmicloud"
+	s.ChunkErrorKind = providerutils.ChunkErrorGmicloud
 	s.OnReasoningDelta = func(eventBytes []byte) (string, bool) {
 		var chunk struct {
 			Choices []struct {

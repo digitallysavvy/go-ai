@@ -798,11 +798,20 @@ func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
 			rawQueued = true
 		}
 		var chunkData deepseekStreamChunk
-		if err := json.Unmarshal([]byte(event.Data), &chunkData); err != nil {
+		// TS deepseekChatChunkSchema: invalid JSON or a schema mismatch is an error part
+		// carrying a typed error; the error envelope is routed below.
+		msg, perr := providerutils.CheckChatChunk(event.Data, providerutils.ChatChunkShape{Kind: providerutils.ChunkKindDeepSeek})
+		if perr == nil {
+			if derr := providerutils.UnmarshalChunk([]byte(event.Data), &chunkData); derr != nil {
+				msg, perr = providerutils.ChunkParseFailure(event.Data, derr)
+			}
+		}
+		if perr != nil {
 			s.finishErrored = true
 			errorChunk := &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
-				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
+				Text: msg,
+				Err:  perr,
 			}
 			if rawQueued {
 				s.flushQueue = append(s.flushQueue, errorChunk)
@@ -825,19 +834,6 @@ func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
 				return chunk, nil
 			}
 			continue
-		}
-		// TS deepseekChatChunkSchema: choices[] with tool_calls[].index required.
-		if err := providerutils.ValidateChatChunk([]byte(event.Data), providerutils.ChatChunkShape{ToolCallIndexRequired: true}); err != nil {
-			s.finishErrored = true
-			errorChunk := &provider.StreamChunk{
-				Type: provider.ChunkTypeError,
-				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
-			}
-			if rawQueued {
-				s.flushQueue = append(s.flushQueue, errorChunk)
-				continue
-			}
-			return errorChunk, nil
 		}
 		if len(chunkData.Usage) > 0 && string(chunkData.Usage) != "null" {
 			s.usageRaw = chunkData.Usage

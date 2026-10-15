@@ -10,6 +10,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
@@ -124,10 +125,11 @@ func (s *hfStream) handleEvent(data string) (*provider.StreamChunk, error) {
 		// Mirrors TS's `if (!chunk.success) { ... enqueue({type:'error', error: chunk.error}); return; }`
 		s.finishReason = types.FinishReasonError
 		s.rawFinishReason = ""
+		msg, perr := providerutils.ChunkParseFailure(data, err)
 		return &provider.StreamChunk{
 			Type: provider.ChunkTypeError,
-			Text: err.Error(),
-			Err:  providererrors.NewStreamProviderError(err.Error(), s.providerName, "", nil, nil, nil, nil),
+			Text: msg,
+			Err:  perr,
 		}, nil
 	}
 
@@ -135,13 +137,13 @@ func (s *hfStream) handleEvent(data string) (*provider.StreamChunk, error) {
 	// .loose()`: every frame must be an object with a string `type`, anything
 	// else fails the parse and becomes an error part.
 	if _, ok := raw["type"].(string); !ok {
-		err := errors.New("type: Invalid input: expected string")
+		msg, perr := providerutils.CheckTypedFrame(data)
 		s.finishReason = types.FinishReasonError
 		s.rawFinishReason = ""
 		return &provider.StreamChunk{
 			Type: provider.ChunkTypeError,
-			Text: err.Error(),
-			Err:  providererrors.NewStreamProviderError(err.Error(), s.providerName, "", nil, nil, nil, nil),
+			Text: msg,
+			Err:  perr,
 		}, nil
 	}
 
