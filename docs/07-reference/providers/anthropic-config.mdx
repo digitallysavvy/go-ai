@@ -16,7 +16,8 @@ The tables on this page are generated from the Go source. For usage, see the [An
 | Field | Type | Description |
 | --- | --- | --- |
 | `BatchResultDownloads` | `providerutils.BatchResultDownloads` | BatchResultDownloads configures JSON Lines batch result downloads, e.g. the maximum bytes per result row (TS `batchResultDownloads`). |
-| `APIKey` | `string` | APIKey is the Anthropic API key |
+| `APIKey` | `string` | APIKey is the Anthropic API key. When it is empty (and AuthToken is not set) the direct Anthropic provider falls back to the ANTHROPIC_API_KEY environment variable like TS loadApiKey; providers built on top of this one (Vertex, Bedrock, AWS, MiniMax) never read it. |
+| `AuthToken` | `string` | AuthToken authenticates with an `Authorization: Bearer` header instead of an API key (TS authToken). Setting both APIKey and AuthToken makes New panic with an InvalidArgumentError, like the TS constructor throws. |
 | `Name` | `string` | Name overrides the provider name returned by Provider.Name() and LanguageModel.Provider(). Defaults to "anthropic". |
 | `BaseURL` | `string` | BaseURL is the URL prefix for API calls, including the version path (default: https://api.anthropic.com/v1, or ANTHROPIC_BASE_URL). The bare host https://api.anthropic.com is normalized to .../v1. A base URL that is set but empty after trimming whitespace makes New panic, matching the TS validateBaseURL error ("baseURL must be a non-empty string."). |
 | `APIVersion` | `string` | APIVersion is the Anthropic API version (default: 2023-06-01) |
