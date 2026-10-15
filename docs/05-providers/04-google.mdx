@@ -106,6 +106,12 @@ result, err := imageModel.DoGenerate(ctx, &provider.ImageGenerateOptions{
 
 `googleSearch` is only supported for Gemini image models — the only image models this provider exposes now that Imagen has been removed.
 
+Image editing takes its input images as bytes (`provider.ImageFile` with
+`Type: "file"`, `Data` and `MediaType`). A `Type: "url"` entry returns an
+`UnsupportedFunctionalityError` ("file of media type "image/*" must specify
+subtype since it is not passed as inline bytes"), as the TypeScript SDK does,
+for `DoGenerate` and for image batches. Download the image and pass the bytes.
+
 ### Embedding Models
 
 | Model ID | Go constant | Dimensions | Best for |
