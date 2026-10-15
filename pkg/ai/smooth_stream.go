@@ -87,7 +87,7 @@ func customSmoothStreamDetector(fn ChunkDetector) smoothStreamDetector {
 			return "", fmt.Errorf("Chunking function must return a non-empty string.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		if !strings.HasPrefix(buffer, match) {
-			return "", fmt.Errorf("Chunking function must return a match that is a prefix of the buffer. Received: %q expected to start with %q", match, buffer) //nolint:staticcheck // matches TS SDK's exact error text
+			return "", fmt.Errorf("Chunking function must return a match that is a prefix of the buffer. Received: \"%s\" expected to start with \"%s\"", match, buffer) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		return match, nil
 	}
