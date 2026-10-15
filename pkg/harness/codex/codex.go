@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
@@ -180,10 +181,6 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 		timeout = bridge.DefaultStartupTimeout
 	}
 
-	if err := mkdirs(ctx, restricted, workDir, bridgeStateDir); err != nil {
-		return nil, err
-	}
-
 	// Normalize each forwarded bridge diagnostics frame into the general
 	// harness.Diagnostic and report it. Mirrors TS `codex-harness.ts`
 	// `onDiagnostic` (report ? frame => report(harnessV1DiagnosticFromBridgeFrame(...)) : undefined).
@@ -212,6 +209,7 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 			permissionMode:               opts.PermissionMode, sandbox: restricted, sandboxHomeDir: sandboxHomeDir,
 			turnConfigurationFingerprint: resumeData.TurnConfigurationFingerprint,
 			onDiagnostic:                 onDiagnostic,
+			debug:                        debugConfig(opts.Observability),
 		}); sess != nil {
 			return sess, nil
 		}
@@ -229,6 +227,15 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 		logText, _ := restricted.ReadTextFile(ctx, providerutils.SandboxReadTextFileOptions{Path: bridgeStateDir + "/event-log.ndjson"})
 		if harnessutil.ClassifyDiskLog(logText) == harnessutil.DiskLogReplay {
 			respawnStrategy = "replay"
+		}
+	}
+
+	// A fresh start creates the workdir and bridge-state directory; resumes
+	// reuse the ones already in the sandbox. Mirrors TS `respawnStrategy ===
+	// undefined` mkdir.
+	if respawnStrategy == "" {
+		if err := mkdirs(ctx, restricted, workDir, bridgeStateDir); err != nil {
+			return nil, err
 		}
 	}
 
@@ -304,12 +311,13 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 		model: DefaultModel, reasoningEffort: settings.ReasoningEffort, webSearch: settings.WebSearch,
 		builtinToolFiltering: opts.BuiltinToolFiltering,
 		codexConfig:          settings.CodexConfig, mcpServers: settings.MCPServers, headers: opts.Headers,
-		isResume: isResume, seedResumeThreadOnFirstPrompt: isResume, rerunContinue: isResume,
+		isResume: isResume, seedResumeThreadOnFirstPrompt: isResume, rerunContinue: respawnStrategy == "rerun",
 		resumeThreadID: resumeData.ThreadID,
 		bridgePort:     port, bridgeToken: token, sandboxID: sandboxID,
 		sandboxCredentialEnvironment: sandboxCredentialEnv,
 		permissionMode:               opts.PermissionMode, sandbox: restricted, sandboxHomeDir: sandboxHomeDir,
 		turnConfigurationFingerprint: resumeData.TurnConfigurationFingerprint,
+		debug:                        debugConfig(opts.Observability),
 	}), nil
 }
 
@@ -335,6 +343,7 @@ type attachOptions struct {
 	sandboxHomeDir               string
 	turnConfigurationFingerprint string
 	onDiagnostic                 func(bridge.OutboundMessage)
+	debug                        *harness.DebugConfig
 }
 
 // tryAttach reopens a socket to a still-running bridge using persisted
@@ -381,16 +390,22 @@ func (h *Harness) tryAttach(ctx context.Context, opts attachOptions) *session {
 		sandboxCredentialEnvironment: opts.sandboxCredentialEnvironment,
 		permissionMode:               opts.permissionMode, sandbox: opts.sandbox, sandboxHomeDir: opts.sandboxHomeDir,
 		turnConfigurationFingerprint: opts.turnConfigurationFingerprint,
+		debug:                        opts.debug,
 	})
 }
 
 func mkdirs(ctx context.Context, sandbox providerutils.SandboxSession, dirs ...string) error {
-	for _, dir := range dirs {
-		if _, err := sandbox.Run(ctx, providerutils.SandboxProcessOptions{
-			Command: "mkdir -p " + harnessutil.ShellQuote(dir),
-		}); err != nil {
-			return err
-		}
+	quoted := make([]string, len(dirs))
+	for i, dir := range dirs {
+		quoted[i] = harnessutil.ShellQuote(dir)
 	}
-	return nil
+	_, err := sandbox.Run(ctx, providerutils.SandboxProcessOptions{Command: "mkdir -p " + strings.Join(quoted, " ")})
+	return err
+}
+
+func debugConfig(o *harness.Observability) *harness.DebugConfig {
+	if o == nil {
+		return nil
+	}
+	return o.Debug
 }
