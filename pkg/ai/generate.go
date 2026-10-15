@@ -14,6 +14,7 @@ import (
 	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
+	toolutil "github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
@@ -1212,7 +1213,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			StopSequences:         stepStopSequences,
 			Seed:                  stepSeed,
 			Headers:               opts.Headers,
-			Tools:                 stepTools,
+			Tools:                 toolutil.ResolveToolSchemas(stepTools),
 			ToolChoice:            stepToolChoice,
 			RuntimeContext:        runtimeContext,
 			ToolsContext:          toolsContext,

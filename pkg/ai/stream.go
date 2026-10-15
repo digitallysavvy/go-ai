@@ -16,6 +16,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
+	toolutil "github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
 
@@ -1131,7 +1132,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		StopSequences:         stepStopSequences,
 		Seed:                  stepSeed,
 		Headers:               opts.Headers,
-		Tools:                 stepTools,
+		Tools:                 toolutil.ResolveToolSchemas(stepTools),
 		ToolChoice:            stepToolChoice,
 		IncludeRawChunks:      includeRawChunksValue(include),
 		RuntimeContext:        runtimeContext,
@@ -2752,7 +2753,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			StopSequences:         nextStopSequences,
 			Seed:                  nextSeed,
 			Headers:               opts.Headers,
-			Tools:                 nextTools,
+			Tools:                 toolutil.ResolveToolSchemas(nextTools),
 			ToolChoice:            nextToolChoice,
 			IncludeRawChunks:      includeRawChunksValue(r.cbInclude),
 			RuntimeContext:        r.cbRuntimeCtx,

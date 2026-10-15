@@ -16,6 +16,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
+	toolutil "github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 	"github.com/google/uuid"
@@ -1438,7 +1439,7 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		FrequencyPenalty:      callConfig.FrequencyPenalty,
 		PresencePenalty:       callConfig.PresencePenalty,
 		StopSequences:         callConfig.StopSequences,
-		Tools:                 callConfig.Tools,
+		Tools:                 toolutil.ResolveToolSchemas(callConfig.Tools),
 		ToolChoice:            toolChoice,
 		RuntimeContext:        callConfig.RuntimeContext,
 		ToolsContext:          callConfig.ToolsContext,

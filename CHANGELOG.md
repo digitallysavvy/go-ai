@@ -24,6 +24,16 @@ security fixes.
 
 ### Fixed
 
+- `GenerateObject` and `StreamObject` sent responseFormat type `json_schema` /
+  `json_object` instead of `json` (as the TS SDK does). Providers that key JSON
+  mode off `json` (Gemini, Cohere, Alibaba, Bedrock, Perplexity, Hugging Face,
+  xAI and OpenAI Responses, Open Responses) lost JSON mode or the schema. The
+  response schema is now the JSON Schema map. Azure and Ollama map `json` to
+  `json_schema` / `json_object` on the wire.
+- Tools whose `Parameters` is a `schema.Schema` (such as
+  `schema.NewSimpleJSONSchema(...)`) reached providers as `{}`. The schema is
+  now resolved to its JSON Schema map in `GenerateText`, `StreamText`, batch
+  and agents (new `toolutil.ResolveToolSchemas`).
 - Bedrock Anthropic (InvokeModel) streaming returned no content: events are
   now dispatched on the payload `type`, the `[DONE]` sentinel is skipped, and
   modeled exceptions carry their status code and retryability.
