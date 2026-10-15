@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -777,16 +778,11 @@ func TestImageModel_DoGenerate_Gemini_WithFilesOptionsAndWarnings(t *testing.T) 
 		contents := reqBody["contents"].([]interface{})
 		content := contents[0].(map[string]interface{})
 		parts := content["parts"].([]interface{})
-		require.Len(t, parts, 3)
+		require.Len(t, parts, 2)
 		assert.Equal(t, "Edit these", parts[0].(map[string]interface{})["text"])
 		inline := parts[1].(map[string]interface{})["inlineData"].(map[string]interface{})
 		assert.Equal(t, "image/png", inline["mimeType"])
 		assert.Equal(t, "aW5saW5l", inline["data"])
-		fileData := parts[2].(map[string]interface{})["fileData"].(map[string]interface{})
-		assert.Equal(t, "https://example.com/ref.png", fileData["fileUri"])
-		// "image/*" is not a full media type (TS isFullMediaType), so the
-		// converter resolves it from the URL extension.
-		assert.Equal(t, "image/png", fileData["mimeType"])
 
 		genConfig := reqBody["generationConfig"].(map[string]interface{})
 		imageConfig := genConfig["imageConfig"].(map[string]interface{})
@@ -839,7 +835,6 @@ func TestImageModel_DoGenerate_Gemini_WithFilesOptionsAndWarnings(t *testing.T) 
 		AspectRatio: "9:16",
 		Files: []provider.ImageFile{
 			{Type: "file", MediaType: "image/png", Data: []byte("inline")},
-			{Type: "url", URL: "https://example.com/ref.png"},
 		},
 		ProviderOptions: map[string]interface{}{
 			"google": map[string]interface{}{
@@ -979,4 +974,34 @@ func TestImageModel_PromptBlockReportsRawFinishReason(t *testing.T) {
 	require.NoError(t, err)
 	meta, _ := result.ProviderMetadata["google"].(map[string]interface{})
 	assert.Equal(t, "PROHIBITED_CONTENT", meta["finishReason"])
+}
+
+// TS sends a URL input as a file part with media type "image/*", which the
+// Google prompt conversion cannot resolve without inline bytes, so editing
+// with a URL input throws (google-image-model.test.ts "should reject
+// unsupported URL editing input and masks").
+func TestImageModel_DoGenerate_Gemini_RejectsURLInput(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true }))
+	defer server.Close()
+	model := NewImageModel(New(Config{APIKey: "k", BaseURL: server.URL}), "gemini-2.5-flash-image")
+
+	_, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt: "Add a hat to this cat",
+		Files:  []provider.ImageFile{{Type: "url", URL: "https://example.com/cat.png"}},
+	})
+	var unsupported *providererrors.UnsupportedFunctionalityError
+	require.ErrorAs(t, err, &unsupported)
+	assert.Regexp(t, `media type "image/\*".*not passed as inline bytes`, err.Error())
+	assert.False(t, called, "no request may be sent")
+}
+
+func TestBatchImageRequestRejectsURLInput(t *testing.T) {
+	b := &Batch{provider: New(Config{APIKey: "k"})}
+	_, _, err := b.prepareImageBatchRequest(&provider.ImageBatchV4Request{
+		ID: "1", ModelID: "gemini-2.5-flash-image",
+		Options: provider.ImageGenerateOptions{Prompt: "p", Files: []provider.ImageFile{{Type: "url", URL: "https://example.com/a.png"}}},
+	})
+	var unsupported *providererrors.UnsupportedFunctionalityError
+	require.ErrorAs(t, err, &unsupported)
 }
