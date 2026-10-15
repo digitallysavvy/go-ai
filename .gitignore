@@ -15,6 +15,9 @@ main
 # Build output directories
 bin/
 build/
+# The vendored qjs build recipe (build.sh and its patches) is source, not
+# output: build.sh works in a temp dir and only rewrites ../qjs.wasm.
+!pkg/internal/third_party/qjs/build/
 builds/*
 !builds/README.md
 dist/
