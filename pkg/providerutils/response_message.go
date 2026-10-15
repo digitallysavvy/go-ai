@@ -248,7 +248,7 @@ func ToolErrorText(err error) string {
 
 func normalizeToolErrorContent(part types.ToolErrorContent, providerExecuted bool) types.ToolResultContent {
 	outputType := types.ToolResultOutputErrorText
-	var value interface{} = part.Error
+	value := part.Error
 	if part.ErrorText != "" {
 		value = part.ErrorText
 	}
