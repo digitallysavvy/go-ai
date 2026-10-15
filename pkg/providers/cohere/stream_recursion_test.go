@@ -50,7 +50,7 @@ func runCohereStreamRecursionChild() {
 		sb.WriteString(`event: message-start` + "\n" + `data: {"type":"message-start"}` + "\n\n")
 	}
 	sb.WriteString(`event: content-start` + "\n" +
-		`data: {"type":"content-start","index":0,"delta":{"message":{"content":{"type":"text"}}}}` + "\n\n")
+		`data: {"type":"content-start","index":0,"delta":{"message":{"content":{"type":"text","text":""}}}}` + "\n\n")
 	sb.WriteString(`event: content-delta` + "\n" +
 		`data: {"type":"content-delta","index":0,"delta":{"message":{"content":{"text":"hello"}}}}` + "\n\n")
 

@@ -621,6 +621,20 @@ func (s *groqStream) Next() (*provider.StreamChunk, error) {
 			}
 			continue
 		}
+		// TS groqChatChunkSchema: choices[] with a required index and
+		// tool_calls[].index; anything else fails the parse.
+		if err := providerutils.ValidateChatChunk([]byte(event.Data), providerutils.ChatChunkShape{}); err != nil {
+			s.finishErrored = true
+			errorChunk := &provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
+			}
+			if rawQueued {
+				s.flushQueue = append(s.flushQueue, errorChunk)
+				continue
+			}
+			return errorChunk, nil
+		}
 		if !s.metadataEmitted && (chunkData.ID != "" || chunkData.Model != "" || chunkData.Created != 0 || len(s.responseHeaders) > 0) {
 			metadata := &provider.ResponseMetadata{
 				ID:      chunkData.ID,

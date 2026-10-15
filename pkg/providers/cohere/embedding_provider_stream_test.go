@@ -88,17 +88,17 @@ func TestCohereEmbeddingModelErrorAndHelpers(t *testing.T) {
 }
 
 func TestCohereDoStreamAndStreamHelpers(t *testing.T) {
-	sse := `data: {"type":"content-start","index":0,"delta":{"message":{"content":{"type":"thinking"}}}}
+	sse := `data: {"type":"content-start","index":0,"delta":{"message":{"content":{"type":"thinking","thinking":""}}}}
 
 data: {"type":"content-delta","index":0,"delta":{"message":{"content":{"thinking":"hmm"}}}}
 
 data: {"type":"content-end","index":0,"delta":{}}
 
-data: {"type":"content-start","index":1,"delta":{"message":{"content":{"type":"text"}}}}
+data: {"type":"content-start","index":1,"delta":{"message":{"content":{"type":"text","text":""}}}}
 
 data: {"type":"content-delta","index":1,"delta":{"message":{"content":{"text":"hello"}}}}
 
-data: {"type":"tool-call-start","index":0,"delta":{"message":{"tool_calls":{"id":"tc1","function":{"name":"lookup","arguments":"{\"q\":"}}}}}
+data: {"type":"tool-call-start","index":0,"delta":{"message":{"tool_calls":{"id":"tc1","type":"function","function":{"name":"lookup","arguments":"{\"q\":"}}}}}
 
 data: {"type":"tool-call-delta","index":0,"delta":{"message":{"tool_calls":{"function":{"arguments":"\"x\"}"}}}}
 

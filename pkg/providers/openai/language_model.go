@@ -1323,6 +1323,21 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 			return errorChunk, nil
 		}
 
+		// TS openaiChatChunkSchema: choices[] with a required index and
+		// tool_calls[].index; a frame failing the schema is an error part.
+		if err := providerutils.ValidateChatChunk([]byte(event.Data), providerutils.ChatChunkShape{}); err != nil {
+			s.queueRawChunk(event.Data)
+			s.finishErrored = true
+			errorChunk := &provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
+			}
+			if len(s.flushQueue) > 0 {
+				s.flushQueue = append(s.flushQueue, errorChunk)
+				continue
+			}
+			return errorChunk, nil
+		}
 		if !s.metadataEmitted && (chunkData.ID != "" || chunkData.Model != "" || chunkData.Created != 0) {
 			metadata := &provider.ResponseMetadata{
 				ID:      chunkData.ID,

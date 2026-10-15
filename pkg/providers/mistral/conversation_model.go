@@ -535,6 +535,11 @@ func (s *conversationStream) handle(data string) {
 		s.queue = append(s.queue, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: fmt.Sprintf("mistral: failed to parse stream chunk: %v", err)})
 		return
 	}
+	if field, ok := conversationRequiredFieldsPresent(data, ev.Type); !ok {
+		s.hasError = true
+		s.queue = append(s.queue, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: fmt.Sprintf("mistral: failed to parse stream chunk: %s: Invalid input for %s event", field, ev.Type)})
+		return
+	}
 	switch ev.Type {
 	case "conversation.response.started":
 		meta := &provider.ResponseMetadata{ID: ev.ConversationID, Headers: s.headers}
@@ -671,3 +676,49 @@ func (s *conversationStream) flush() {
 }
 
 var _ provider.LanguageModel = (*ConversationLanguageModel)(nil)
+
+// conversationRequiredFieldsPresent mirrors the required members of the TS
+// mistralConversationChunkSchema union members (zod rejects a missing or
+// ill-typed required field). Unknown types are left to the caller's default
+// branch.
+func conversationRequiredFieldsPresent(data, eventType string) (string, bool) {
+	var m map[string]json.RawMessage
+	if json.Unmarshal([]byte(data), &m) != nil {
+		return "", true
+	}
+	isStr := func(k string) bool { v := m[k]; return len(v) > 0 && v[0] == '"' }
+	isNum := func(k string) bool {
+		v := m[k]
+		return len(v) > 0 && (v[0] == '-' || (v[0] >= '0' && v[0] <= '9'))
+	}
+	var strs []string
+	var nums []string
+	switch eventType {
+	case "conversation.response.started":
+		strs = []string{"conversation_id"}
+	case "conversation.response.error":
+		strs, nums = []string{"message"}, []string{"code"}
+	case "message.output.delta":
+		strs = []string{"id"}
+		if len(m["content"]) == 0 {
+			return "content", false
+		}
+	case "function.call.delta":
+		strs = []string{"tool_call_id", "name", "arguments"}
+	case "tool.execution.started", "tool.execution.delta":
+		strs = []string{"id", "name", "arguments"}
+	case "tool.execution.done":
+		strs = []string{"id", "name"}
+	}
+	for _, k := range strs {
+		if !isStr(k) {
+			return k, false
+		}
+	}
+	for _, k := range nums {
+		if !isNum(k) {
+			return k, false
+		}
+	}
+	return "", true
+}

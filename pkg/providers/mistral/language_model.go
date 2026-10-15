@@ -695,7 +695,7 @@ func (s *mistralStream) Next() (*provider.StreamChunk, error) {
 		if err == nil {
 			// TS mistralChatChunkSchema requires `choices`: a frame without
 			// it (for example an {"error": ...} envelope) is a parse failure.
-			err = providerutils.RequireChunkChoices([]byte(event.Data))
+			err = providerutils.ValidateChatChunk([]byte(event.Data), providerutils.ChatChunkShape{DeltaRequired: true})
 		}
 		if err != nil {
 			errorChunk := &provider.StreamChunk{

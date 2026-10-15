@@ -2872,6 +2872,21 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				return nil, s.err
 			}
 		}
+		// TS openaiResponsesChunkSchema ends in `{type: z.string()}.loose()`:
+		// a frame without a string `type` fails every union member, which is a
+		// parse failure (error part + finish reason "error").
+		if peek.Type == "" && !providerutils.HasStringField([]byte(event.Data), "type") {
+			s.queueRawChunk(event.Data)
+			s.hadDecodeError = true
+			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: "failed to parse stream chunk: type: Invalid input: expected string",
+			})
+			if ok {
+				return chunk, nil
+			}
+			continue
+		}
 		var eventRawChunk *provider.StreamChunk
 		if s.includeRawChunks {
 			eventRawChunk = openAIResponsesRawChunk(event.Data)
