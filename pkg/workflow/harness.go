@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"sync"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/agent"
@@ -289,7 +290,11 @@ func RunHarnessAgent(ctx context.Context, opts RunHarnessAgentOptions) (HarnessW
 	// below needs the real message to recognize a suspend-induced closure,
 	// so this engine always supplies its own passthrough formatter (TS's
 	// `errorText` already carries the underlying error/rejection reason).
-	chunksCh, errCh := ai.ToUIMessageStream(ctx, result.Stream(), ai.UIMessageStreamResultOptions{
+	// The converter goroutine must not outlive this call when the loop below
+	// stops early (a writer error): cancel it on return.
+	uiCtx, stopUI := context.WithCancel(ctx)
+	defer stopUI()
+	chunksCh, errCh := ai.ToUIMessageStream(uiCtx, result.Stream(), ai.UIMessageStreamResultOptions{
 		OnError: func(err error) string { return err.Error() },
 	})
 
@@ -395,7 +400,7 @@ func RunHarnessAgent(ctx context.Context, opts RunHarnessAgentOptions) (HarnessW
 		}, nil
 	}
 
-	finishReason := result.FinishReason()
+	finishReason := finishReasonString(result.FinishReason())
 	usage := result.Usage()
 
 	if session.HasUnfinishedTurn() {
@@ -415,7 +420,7 @@ func RunHarnessAgent(ctx context.Context, opts RunHarnessAgentOptions) (HarnessW
 		}
 
 		if writer != nil {
-			if werr := writer.Write(ai.UIMessageChunk{"type": "finish", "finishReason": string(finishReason)}); werr != nil {
+			if werr := writer.Write(ai.UIMessageChunk{"type": "finish", "finishReason": finishReason}); werr != nil {
 				return HarnessWorkflowState{}, werr
 			}
 			if werr := writer.Close(); werr != nil {
@@ -425,7 +430,7 @@ func RunHarnessAgent(ctx context.Context, opts RunHarnessAgentOptions) (HarnessW
 		return HarnessWorkflowState{
 			SessionID: state.SessionID, Prompt: state.Prompt, Status: HarnessWorkflowStatusAwaitingToolApproval,
 			ContinueFrom: continueFrom, ResumeFrom: toResumeState(continueFrom),
-			FinalResult: &HarnessWorkflowFinalResult{SessionID: state.SessionID, FinishReason: string(finishReason), Usage: toUsageSummary(usage)},
+			FinalResult: &HarnessWorkflowFinalResult{SessionID: state.SessionID, FinishReason: finishReason, Usage: toUsageSummary(usage)},
 		}, nil
 	}
 
@@ -493,7 +498,7 @@ func RunHarnessAgent(ctx context.Context, opts RunHarnessAgentOptions) (HarnessW
 		resumeFrom = rf
 	}
 
-	finalResult := &HarnessWorkflowFinalResult{SessionID: state.SessionID, FinishReason: string(finishReason), Usage: toUsageSummary(usage)}
+	finalResult := &HarnessWorkflowFinalResult{SessionID: state.SessionID, FinishReason: finishReason, Usage: toUsageSummary(usage)}
 	if shouldCaptureOutput {
 		finalResult.Output = output
 	}
@@ -650,6 +655,13 @@ type suspendGate struct {
 	doneCh  chan struct{}
 	state   *harness.ContinueTurnState
 	err     error
+
+	// mu makes "decide to suspend" and "stop the timer" mutually exclusive, so
+	// a timer that fires just as the turn ends either suspends before the
+	// caller checks triggered(), or never suspends (JS gets this for free from
+	// its single thread and clearTimeout).
+	mu      sync.Mutex
+	stopped bool
 }
 
 func newSuspendGate(ctx context.Context, session *harness.AgentSession, timeSliceSeconds float64) *suspendGate {
@@ -661,10 +673,13 @@ func newSuspendGate(ctx context.Context, session *harness.AgentSession, timeSlic
 	g.doneCh = make(chan struct{})
 	dur := time.Duration(timeSliceSeconds * float64(time.Second))
 	g.timer = time.AfterFunc(dur, func() {
-		if !session.HasUnfinishedTurn() {
+		g.mu.Lock()
+		if g.stopped || !session.HasUnfinishedTurn() {
+			g.mu.Unlock()
 			return
 		}
 		close(g.firedCh)
+		g.mu.Unlock()
 		st, err := session.SuspendTurn(ctx)
 		g.state, g.err = st, err
 		close(g.doneCh)
@@ -690,6 +705,9 @@ func (g *suspendGate) wait() (*harness.ContinueTurnState, error) {
 }
 
 func (g *suspendGate) stopTimer() {
+	g.mu.Lock()
+	g.stopped = true
+	g.mu.Unlock()
 	if g.timer != nil {
 		g.timer.Stop()
 	}
@@ -774,10 +792,47 @@ type mutableStreamContext struct {
 	pendingToolInputs    map[string]ai.UIMessageChunk
 }
 
+// orderedSet is a set that remembers insertion order (a JS Set), so parts
+// close in the order they opened.
+type orderedSet struct {
+	order []string
+	m     map[string]struct{}
+}
+
+func newOrderedSet() *orderedSet { return &orderedSet{m: map[string]struct{}{}} }
+
+func (s *orderedSet) has(id string) bool { _, ok := s.m[id]; return ok }
+
+func (s *orderedSet) add(id string) {
+	if _, ok := s.m[id]; ok {
+		return
+	}
+	s.m[id] = struct{}{}
+	s.order = append(s.order, id)
+}
+
+func (s *orderedSet) delete(id string) {
+	if _, ok := s.m[id]; !ok {
+		return
+	}
+	delete(s.m, id)
+	for i, existing := range s.order {
+		if existing == id {
+			s.order = append(s.order[:i:i], s.order[i+1:]...)
+			break
+		}
+	}
+}
+
+func (s *orderedSet) clear() {
+	s.order = nil
+	s.m = map[string]struct{}{}
+}
+
 type executionPartState struct {
-	openedTextParts      map[string]struct{}
-	openedReasoningParts map[string]struct{}
-	openedToolInputs     map[string]struct{}
+	openedTextParts      *orderedSet
+	openedReasoningParts *orderedSet
+	openedToolInputs     *orderedSet
 }
 
 func newMutableStreamContext(ctx *HarnessWorkflowStreamContext) *mutableStreamContext {
@@ -807,9 +862,9 @@ func newMutableStreamContext(ctx *HarnessWorkflowStreamContext) *mutableStreamCo
 
 func newExecutionPartState() *executionPartState {
 	return &executionPartState{
-		openedTextParts:      map[string]struct{}{},
-		openedReasoningParts: map[string]struct{}{},
-		openedToolInputs:     map[string]struct{}{},
+		openedTextParts:      newOrderedSet(),
+		openedReasoningParts: newOrderedSet(),
+		openedToolInputs:     newOrderedSet(),
 	}
 }
 
@@ -833,33 +888,33 @@ func writeRequiredPrelude(w HarnessWorkflowWriter, chunk ai.UIMessageChunk, sc *
 
 	if (typ == "text-delta" || typ == "text-end") && id != "" {
 		if start, ok := sc.activeTextParts[id]; ok {
-			if _, opened := ps.openedTextParts[id]; !opened {
+			if !ps.openedTextParts.has(id) {
 				if w != nil {
 					if err := w.Write(start); err != nil {
 						return err
 					}
 				}
-				ps.openedTextParts[id] = struct{}{}
+				ps.openedTextParts.add(id)
 			}
 		}
 	}
 
 	if (typ == "reasoning-delta" || typ == "reasoning-end") && id != "" {
 		if start, ok := sc.activeReasoningParts[id]; ok {
-			if _, opened := ps.openedReasoningParts[id]; !opened {
+			if !ps.openedReasoningParts.has(id) {
 				if w != nil {
 					if err := w.Write(start); err != nil {
 						return err
 					}
 				}
-				ps.openedReasoningParts[id] = struct{}{}
+				ps.openedReasoningParts.add(id)
 			}
 		}
 	}
 
 	if typ == "tool-input-delta" && toolCallID != "" {
 		if active, ok := sc.activeToolInputs[toolCallID]; ok {
-			if _, opened := ps.openedToolInputs[toolCallID]; !opened {
+			if !ps.openedToolInputs.has(toolCallID) {
 				if w != nil {
 					if err := w.Write(active.start); err != nil {
 						return err
@@ -870,7 +925,7 @@ func writeRequiredPrelude(w HarnessWorkflowWriter, chunk ai.UIMessageChunk, sc *
 						}
 					}
 				}
-				ps.openedToolInputs[toolCallID] = struct{}{}
+				ps.openedToolInputs.add(toolCallID)
 			}
 		}
 	}
@@ -885,23 +940,23 @@ func recordWorkflowChunk(chunk ai.UIMessageChunk, sc *mutableStreamContext, ps *
 	switch {
 	case typ == "text-start" && id != "":
 		sc.activeTextParts[id] = cloneChunk(chunk)
-		ps.openedTextParts[id] = struct{}{}
+		ps.openedTextParts.add(id)
 		return
 	case typ == "text-end" && id != "":
 		delete(sc.activeTextParts, id)
-		delete(ps.openedTextParts, id)
+		ps.openedTextParts.delete(id)
 		return
 	case typ == "reasoning-start" && id != "":
 		sc.activeReasoningParts[id] = cloneChunk(chunk)
-		ps.openedReasoningParts[id] = struct{}{}
+		ps.openedReasoningParts.add(id)
 		return
 	case typ == "reasoning-end" && id != "":
 		delete(sc.activeReasoningParts, id)
-		delete(ps.openedReasoningParts, id)
+		ps.openedReasoningParts.delete(id)
 		return
 	case typ == "tool-input-start" && toolCallID != "":
 		sc.activeToolInputs[toolCallID] = activeToolInput{start: cloneChunk(chunk)}
-		ps.openedToolInputs[toolCallID] = struct{}{}
+		ps.openedToolInputs.add(toolCallID)
 		return
 	case typ == "tool-input-delta" && toolCallID != "":
 		if active, ok := sc.activeToolInputs[toolCallID]; ok {
@@ -912,12 +967,12 @@ func recordWorkflowChunk(chunk ai.UIMessageChunk, sc *mutableStreamContext, ps *
 		return
 	case typ == "tool-input-available" && toolCallID != "":
 		delete(sc.activeToolInputs, toolCallID)
-		delete(ps.openedToolInputs, toolCallID)
+		ps.openedToolInputs.delete(toolCallID)
 		sc.pendingToolInputs[toolCallID] = cloneChunk(chunk)
 		return
 	case typ == "tool-input-error" && toolCallID != "":
 		delete(sc.activeToolInputs, toolCallID)
-		delete(ps.openedToolInputs, toolCallID)
+		ps.openedToolInputs.delete(toolCallID)
 		delete(sc.pendingToolInputs, toolCallID)
 		return
 	}
@@ -929,23 +984,23 @@ func recordWorkflowChunk(chunk ai.UIMessageChunk, sc *mutableStreamContext, ps *
 }
 
 func closeOpenExecutionParts(w HarnessWorkflowWriter, sc *mutableStreamContext, ps *executionPartState) error {
-	for id := range ps.openedTextParts {
+	for _, id := range ps.openedTextParts.order {
 		if _, ok := sc.activeTextParts[id]; ok && w != nil {
 			if err := w.Write(ai.UIMessageChunk{"type": "text-end", "id": id}); err != nil {
 				return err
 			}
 		}
 	}
-	ps.openedTextParts = map[string]struct{}{}
+	ps.openedTextParts.clear()
 
-	for id := range ps.openedReasoningParts {
+	for _, id := range ps.openedReasoningParts.order {
 		if _, ok := sc.activeReasoningParts[id]; ok && w != nil {
 			if err := w.Write(ai.UIMessageChunk{"type": "reasoning-end", "id": id}); err != nil {
 				return err
 			}
 		}
 	}
-	ps.openedReasoningParts = map[string]struct{}{}
+	ps.openedReasoningParts.clear()
 	return nil
 }
 
@@ -984,4 +1039,13 @@ func cloneChunk(chunk ai.UIMessageChunk) ai.UIMessageChunk {
 		out[k] = v
 	}
 	return out
+}
+
+// finishReasonString is TS toFinishReasonString: the unified finish reason, or
+// "stop" when the turn reported none.
+func finishReasonString(reason types.FinishReason) string {
+	if reason == "" {
+		return "stop"
+	}
+	return string(reason)
 }
