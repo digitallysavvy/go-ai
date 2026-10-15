@@ -1142,9 +1142,8 @@ func TestPrepareTools_ToolSearchWireShape(t *testing.T) {
 	if !ok {
 		t.Fatalf("toolSpec.inputSchema = %#v, want a map", toolSpec["inputSchema"])
 	}
-	jsonSchema, ok := inputSchema["json"].(map[string]interface{})
-	if !ok || jsonSchema["type"] != "object" {
-		t.Fatalf("toolSpec.inputSchema.json = %#v, want the tool_search input schema", inputSchema["json"])
+	if got := wireSchemaJSON(t, inputSchema["json"]); !strings.Contains(got, `"type":"object"`) {
+		t.Fatalf("toolSpec.inputSchema.json = %s, want the tool_search input schema", got)
 	}
 }
 
@@ -1186,8 +1185,8 @@ func TestPrepareTools_BuiltinToolsForwarded(t *testing.T) {
 	if !ok {
 		t.Fatalf("toolSpec.inputSchema = %#v, want a map", toolSpec["inputSchema"])
 	}
-	if jsonSchema, ok := inputSchema["json"].(map[string]interface{}); !ok || jsonSchema["type"] != "object" {
-		t.Fatalf("toolSpec.inputSchema.json = %#v, want the bash input schema", inputSchema["json"])
+	if got := wireSchemaJSON(t, inputSchema["json"]); !strings.Contains(got, `"type":"object"`) {
+		t.Fatalf("toolSpec.inputSchema.json = %s, want the bash input schema", got)
 	}
 }
 
@@ -1268,9 +1267,8 @@ func TestPrepareTools_SelfSerializingAnthropicToolsForwarded(t *testing.T) {
 			if !ok {
 				t.Fatalf("toolSpec.inputSchema = %#v, want a map", toolSpec["inputSchema"])
 			}
-			jsonSchema, ok := inputSchema["json"].(map[string]interface{})
-			if !ok || jsonSchema["type"] != "object" {
-				t.Fatalf("toolSpec.inputSchema.json = %#v, want the tool's own JSON schema", inputSchema["json"])
+			if got := wireSchemaJSON(t, inputSchema["json"]); !strings.Contains(got, `"type":"object"`) {
+				t.Fatalf("toolSpec.inputSchema.json = %s, want the tool's JSON schema", got)
 			}
 		})
 	}

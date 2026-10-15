@@ -333,8 +333,14 @@ var bedrockToolsetNames = map[string]string{
 // Returns nil for tools Bedrock does not recognize this way (the caller
 // emits an "unsupported" warning).
 func bedrockAnthropicProviderTool(t types.Tool) map[string]interface{} {
-	inputSchema := providerutils.ResponseFormatJSONSchema(t.Parameters)
-	if inputSchema == nil {
+	// TS sends the zod-derived schema of the tool factory found by id, never
+	// the schema of the caller's tool instance.
+	var inputSchema interface{}
+	if raw, ok := anthropicProviderToolSchema(t.Name); ok {
+		inputSchema = raw
+	} else if fallback := providerutils.ResponseFormatJSONSchema(t.Parameters); fallback != nil {
+		inputSchema = fallback
+	} else {
 		inputSchema = map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
 	}
 	wireSchema := map[string]interface{}{"json": inputSchema}
