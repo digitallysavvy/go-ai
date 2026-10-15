@@ -84,7 +84,7 @@ func readTerminalKeyBlocking(ctx context.Context, input io.Reader, reader *bufio
 		return TerminalKey{}, err
 	}
 	if first != 0x1b {
-		return ParseTerminalKey([]byte{first}), nil
+		return ParseTerminalKey(readUTF8Rest(ctx, input, reader, first)), nil
 	}
 
 	sequence := []byte{first}
@@ -102,6 +102,34 @@ func readTerminalKeyBlocking(ctx context.Context, input io.Reader, reader *bufio
 		}
 	}
 	return ParseTerminalKey(sequence), nil
+}
+
+// readUTF8Rest completes a multi-byte UTF-8 character whose lead byte was
+// just read, so the key carries the whole character (TS parseKey receives the
+// whole chunk) and no intermediate frame shows half a character.
+func readUTF8Rest(ctx context.Context, input io.Reader, reader *bufio.Reader, first byte) []byte {
+	need := 0
+	switch {
+	case first >= 0xf0 && first <= 0xf7:
+		need = 3
+	case first >= 0xe0:
+		need = 2
+	case first >= 0xc0:
+		need = 1
+	}
+	out := []byte{first}
+	for ; need > 0; need-- {
+		next, err := readByteBriefly(ctx, input, reader)
+		if err != nil {
+			break
+		}
+		if next&0xc0 != 0x80 {
+			_ = reader.UnreadByte()
+			break
+		}
+		out = append(out, next)
+	}
+	return out
 }
 
 var errNoByteReady = errors.New("no byte ready")
