@@ -65,3 +65,15 @@ func TestIsFullMediaTypeMatchesTS(t *testing.T) {
 		}
 	}
 }
+
+func TestToolOutputJSONTextIsNotHTMLEscaped(t *testing.T) {
+	msgs := []types.Message{{Role: types.RoleTool, Content: []types.ContentPart{types.ToolResultContent{
+		ToolCallID: "c", ToolName: "fetch",
+		Output: &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: map[string]interface{}{"html": "<a href=\"x\">T&C</a>"}},
+	}}}}
+	out := ToOpenAIMessages(msgs)
+	content, _ := out[0]["content"].(string)
+	if want := `{"html":"<a href=\"x\">T&C</a>"}`; content != want {
+		t.Fatalf("content=%q want %q", content, want)
+	}
+}
