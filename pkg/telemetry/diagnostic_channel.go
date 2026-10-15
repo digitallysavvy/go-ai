@@ -39,6 +39,13 @@ const (
 	DiagnosticEventOnEmbedFinish  DiagnosticEventType = DiagnosticEventOnEmbedEnd
 	DiagnosticEventOnRerankFinish DiagnosticEventType = DiagnosticEventOnRerankEnd
 	DiagnosticEventOnFinish       DiagnosticEventType = DiagnosticEventOnEnd
+
+	// Deprecated: the evaluate events were renamed to decide; the published
+	// event type is the decide one.
+	DiagnosticEventOnEvaluateStart            DiagnosticEventType = DiagnosticEventOnDecideStart
+	DiagnosticEventOnEvaluateEnd              DiagnosticEventType = DiagnosticEventOnDecideEnd
+	DiagnosticEventOnEvaluationModelCallStart DiagnosticEventType = DiagnosticEventOnDecisionModelCallStart
+	DiagnosticEventOnEvaluationModelCallEnd   DiagnosticEventType = DiagnosticEventOnDecisionModelCallEnd
 )
 
 // DiagnosticMessage is published to diagnostic subscribers for every telemetry
