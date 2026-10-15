@@ -9,7 +9,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 
@@ -198,7 +197,7 @@ func (t *WorkflowChatTransport) sendMessages(ctx context.Context, req ai.ChatTra
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 || resp.Body == nil {
 		payload, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		_ = resp.Body.Close()
-		errs <- fmt.Errorf("workflow chat transport: failed to fetch chat: %d %s", resp.StatusCode, strings.TrimSpace(string(payload)))
+		errs <- fmt.Errorf("Failed to fetch chat: %d %s", resp.StatusCode, string(payload)) //nolint:staticcheck // matches TS SDK error text
 		return
 	}
 
@@ -206,7 +205,7 @@ func (t *WorkflowChatTransport) sendMessages(ctx context.Context, req ai.ChatTra
 	if workflowRunID == "" {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
-		errs <- fmt.Errorf(`workflow chat transport: workflow run ID not found in "x-workflow-run-id" response header`)
+		errs <- fmt.Errorf(`Workflow run ID not found in "x-workflow-run-id" response header`) //nolint:staticcheck // matches TS SDK error text
 		return
 	}
 
@@ -247,7 +246,8 @@ func (t *WorkflowChatTransport) reconnectLoop(ctx context.Context, chatID, runID
 	}
 	useExplicitStartIndex := initialChunkIndex == 0 && explicitStartIndex != 0
 
-	base := fmt.Sprintf("%s/%s/stream", strings.TrimRight(t.api, "/"), url.PathEscape(runID))
+	// TS: `${this.api}/${encodeURIComponent(workflowRunId ?? chatId)}/stream`.
+	base := fmt.Sprintf("%s/%s/stream", t.api, encodeURIComponent(runID))
 	reconnectCtx := WorkflowChatTransportReconnectContext{ChatID: chatID, API: base}
 	headers := map[string]string{}
 	usedDefaultBase := true
@@ -313,7 +313,7 @@ func (t *WorkflowChatTransport) reconnectLoop(ctx context.Context, chatID, runID
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 || resp.Body == nil {
 			payload, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 			_ = resp.Body.Close()
-			errs <- fmt.Errorf("workflow chat transport: failed to fetch chat: %d %s", resp.StatusCode, strings.TrimSpace(string(payload)))
+			errs <- fmt.Errorf("Failed to fetch chat: %d %s", resp.StatusCode, string(payload)) //nolint:staticcheck // matches TS SDK error text
 			return
 		}
 
@@ -362,7 +362,7 @@ func (t *WorkflowChatTransport) reconnectLoop(ctx context.Context, chatID, runID
 		}
 		consecutiveErrors++
 		if consecutiveErrors >= t.maxConsecutiveErrors {
-			errs <- fmt.Errorf("workflow chat transport: failed to reconnect after %d consecutive errors. Last error: %s", t.maxConsecutiveErrors, lastErr)
+			errs <- fmt.Errorf("Failed to reconnect after %d consecutive errors. Last error: %s", t.maxConsecutiveErrors, lastErr) //nolint:staticcheck // matches TS SDK error text
 			return
 		}
 	}
@@ -637,4 +637,25 @@ func (f *orphanFilter) warn(orphanKind, orphanRef string) {
 		"start chunk wasn't in the resumed window. To preserve the full message, configure "+
 		"your stream endpoint to rewind to a step boundary before returning the readable.",
 		orphanKind, orphanRef)
+}
+
+// encodeURIComponent mirrors JavaScript's encodeURIComponent, which
+// url.PathEscape does not (it leaves ':', '@', '&', '=', '+', '$' and ','
+// unescaped): everything except A-Z a-z 0-9 and -_.!~*'() is percent-encoded.
+func encodeURIComponent(s string) string {
+	const hex = "0123456789ABCDEF"
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9',
+			strings.IndexByte("-_.!~*'()", c) >= 0:
+			b.WriteByte(c)
+		default:
+			b.WriteByte('%')
+			b.WriteByte(hex[c>>4])
+			b.WriteByte(hex[c&15])
+		}
+	}
+	return b.String()
 }
