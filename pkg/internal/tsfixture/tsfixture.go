@@ -37,7 +37,11 @@ type Case struct {
 	Call        map[string]interface{} `json:"call"`
 	Exps        []Expectation          `json:"exps"`
 	Asserts     []Assertion            `json:"asserts"`
-	Aliases     map[string]string      `json:"aliases"`
+	// FnArgs are the evaluated arguments of the function a function-level test
+	// calls (extractor --fn=NAME); FnArgSrc are their TS source.
+	FnArgs   []interface{}     `json:"fnArgs"`
+	FnArgSrc []string          `json:"fnArgSrc"`
+	Aliases  map[string]string `json:"aliases"`
 }
 
 // Response is the canned wire response.
@@ -970,14 +974,12 @@ func buildPrompt(v interface{}) ([]types.Message, string) {
 			case "tool-result":
 				tr := types.ToolResultContent{ToolCallID: p["toolCallId"].(string), ToolName: promptToolName(p["toolName"].(string)), ProviderOptions: po}
 				if out, ok := p["output"].(map[string]interface{}); ok {
-					o := &types.ToolResultOutput{Type: types.ToolResultOutputType(out["type"].(string))}
-					switch o.Type {
-					case types.ToolResultOutputText, types.ToolResultOutputJSON, types.ToolResultOutputError, types.ToolResultOutputErrorText, types.ToolResultOutputErrorJSON:
-						o.Value = out["value"]
-					default:
-						return nil, "tool-result output " + string(o.Type)
+					b, _ := json.Marshal(out)
+					var o types.ToolResultOutput
+					if err := json.Unmarshal(b, &o); err != nil {
+						return nil, "tool-result output " + fmt.Sprint(out["type"])
 					}
-					tr.Output = o
+					tr.Output = &o
 				}
 				msg.Content = append(msg.Content, tr)
 			default:
@@ -1033,4 +1035,10 @@ func promptToolName(name string) string {
 		return n
 	}
 	return name
+}
+
+// BuildPromptMessages converts the JSON form of a TS prompt to Go messages. It
+// returns a reason when the prompt uses a part the harness cannot build.
+func BuildPromptMessages(v interface{}) ([]types.Message, string) {
+	return buildPrompt(v)
 }

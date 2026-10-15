@@ -327,7 +327,7 @@ func (e *UnsupportedFunctionalityError) Error() string {
 	if e.Message != "" {
 		return e.Message
 	}
-	return fmt.Sprintf("%q functionality not supported.", e.Functionality)
+	return fmt.Sprintf("'%s' functionality not supported.", e.Functionality)
 }
 
 // IsUnsupportedFunctionalityError checks if an error is an UnsupportedFunctionalityError.

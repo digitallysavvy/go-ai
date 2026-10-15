@@ -2,6 +2,7 @@ package tsfixture
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"regexp"
@@ -291,3 +292,65 @@ func runAsserts(t *testing.T, c Case, roots map[string]interface{}) {
 		t.Logf("%d of %d plain assertions not evaluated", skipped, len(c.Asserts))
 	}
 }
+
+// RunFn replays function-level TS tests (extractor --fn=NAME): call receives
+// the evaluated TS arguments and returns the Go counterpart of the function's
+// result in the TS return shape, so the assertions (expressions over result,
+// its destructured members and any returned out-parameters such as warnings)
+// can be evaluated. Cases listed in skip (by test name) are logged only.
+func RunFn(t *testing.T, cases []Case, call func(args []interface{}) (interface{}, error), skip map[string]string) {
+	t.Helper()
+	for _, c := range cases {
+		c := c
+		if c.FnArgs == nil || len(c.Asserts) == 0 {
+			continue
+		}
+		t.Run(c.Test, func(t *testing.T) {
+			if why, ok := skip[c.Test]; ok {
+				t.Skip(why)
+			}
+			ret, err := call(c.FnArgs)
+			if errors.Is(err, ErrUnsupported) {
+				t.Skipf("unsupported input: %v", err)
+			}
+			expectsThrow := false
+			for _, a := range c.Asserts {
+				if strings.HasPrefix(a.Matcher, "rejects.") || strings.HasPrefix(a.Matcher, "toThrow") {
+					expectsThrow = true
+					if (err == nil) != a.Not {
+						t.Errorf("%s(...): error = %v, TS expects it to throw (not=%v)", a.Expr[:min(len(a.Expr), 40)], err, a.Not)
+					}
+					if msg, ok := a.Arg.(string); ok && msg != "" && err != nil && !strings.Contains(err.Error(), msg) {
+						t.Errorf("error %q does not contain the TS message %q", err.Error(), msg)
+					}
+				}
+			}
+			if err != nil && !expectsThrow {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if err != nil {
+				return
+			}
+			roots := map[string]interface{}{"result": jsonValue(ret)}
+			if m, ok := jsonValue(ret).(map[string]interface{}); ok {
+				for k, v := range m {
+					if _, taken := roots[k]; !taken {
+						roots[k] = v
+					}
+				}
+			}
+			var plain []Assertion
+			for _, a := range c.Asserts {
+				if !strings.HasPrefix(a.Matcher, "rejects.") && !strings.HasPrefix(a.Matcher, "toThrow") {
+					plain = append(plain, a)
+				}
+			}
+			c.Asserts = plain
+			runAsserts(t, c, roots)
+		})
+	}
+}
+
+// ErrUnsupported is returned by a RunFn call function for an input the Go side
+// cannot express (the case is skipped).
+var ErrUnsupported = errors.New("unsupported")

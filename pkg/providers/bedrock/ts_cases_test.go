@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -61,4 +62,30 @@ func TestTSCasesChat(t *testing.T) {
 		"should include response headers in rawResponse": "the TS mock server answers with text/event-stream headers; Go reads the AWS event stream",
 		"should handle Anthropic provider-defined tools": "the TS test mocks the Anthropic prepareTools result (tool_choice, betas, schema)",
 	})
+}
+
+// TestTSCasesConvertMessages replays convert-to-amazon-bedrock-chat-messages.test.ts.
+func TestTSCasesConvertMessages(t *testing.T) {
+	cases := tsfixture.LoadCases(t, "testdata/tscases/convert_messages.json.gz")
+	tsfixture.RunFn(t, cases, func(args []interface{}) (interface{}, error) {
+		msgs, why := tsfixture.BuildPromptMessages(args[0])
+		if why != "" {
+			return nil, fmt.Errorf("%w: %s", tsfixture.ErrUnsupported, why)
+		}
+		isMistral := false
+		if len(args) > 1 {
+			isMistral, _ = args[1].(bool)
+		}
+		system, messages, err := convertToBedrockChatMessages(msgs, isMistral)
+		if err != nil {
+			return nil, err
+		}
+		if system == nil {
+			system = []map[string]interface{}{}
+		}
+		if messages == nil {
+			messages = []map[string]interface{}{}
+		}
+		return map[string]interface{}{"system": system, "messages": messages}, nil
+	}, nil)
 }

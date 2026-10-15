@@ -13,7 +13,8 @@ import vm from 'vm';
 import path from 'path';
 
 const testFile = process.argv[2];
-const wantAsserts = process.argv.includes('--asserts');
+const wantAsserts = process.argv.includes('--asserts') || process.argv.some(a => a.startsWith('--fn='));
+const fnName = (process.argv.find(a => a.startsWith('--fn=')) || '').slice(5) || null;
 const src = fs.readFileSync(testFile, 'utf8');
 const snapPath = path.join(path.dirname(testFile), '__snapshots__', path.basename(testFile) + '.snap');
 let extSnaps = {};
@@ -214,6 +215,11 @@ function scopedDecls(testIdx, testIndent) {
     .sort((x, y) => x.indent - y.indent || x.pos - y.pos);
 }
 
+function topDescribeOf(idx) {
+  const ms = [...src.slice(0, idx).matchAll(/^describe\(\s*(['"`])(.*?)\1/gm)];
+  return ms.length ? ms[ms.length - 1][2] : '';
+}
+
 const out = [];
 for (let i = 0; i < starts.length; i++) {
   const saved = {};
@@ -245,6 +251,80 @@ for (let i = 0; i < starts.length; i++) {
         body = region.slice(bi, e) + '\n' + body0;
       }
     }
+  }
+
+  if (fnName) {
+    // function-level test: expect(...) over the return value of fnName(args)
+    const saved2 = {};
+    const own = [];
+    const reD = /(?:const|let)\s+(\w+)(?::[^=]+)?\s*=\s*/g;
+    let dm;
+    while ((dm = reD.exec(body0))) {
+      const st = dm.index + dm[0].length;
+      const se = stmtEnd(body0, st);
+      if (se < 0) continue;
+      own.push({ name: dm[1], expr: body0.slice(st, se) });
+    }
+    for (const d of own) {
+      if (!(d.name in saved2)) saved2[d.name] = ctx[d.name];
+      try { vm.runInContext(`var ${d.name} = (${stripTS(d.expr)})`, ctx); } catch (e) { /* not a literal */ }
+    }
+    const cm = new RegExp('\\b' + fnName + '\\(').exec(body0);
+    let fnArgs = null, fnArgSrc = null;
+    if (cm) {
+      const st = cm.index + cm[0].length - 1;
+      const e = balanced(body0, st);
+      const inner = body0.slice(st + 1, e - 1);
+      const parts = [];
+      let depth = 0, cur = '';
+      for (let k = 0; k < inner.length; k++) {
+        const c = inner[k];
+        if (c === "'" || c === '"') { const q = c; let j = k + 1; while (j < inner.length && inner[j] !== q) { if (inner[j] === '\\') j++; j++; } cur += inner.slice(k, j + 1); k = j; continue; }
+        if (c === '`') { const j = tpl(inner, k + 1); cur += inner.slice(k, j + 1); k = j; continue; }
+        if ('{[('.includes(c)) { const j = balanced(inner, k); cur += inner.slice(k, j); k = j - 1; continue; }
+        if (c === ',') { parts.push(cur); cur = ''; continue; }
+        cur += c;
+      }
+      if (cur.trim() !== '') parts.push(cur);
+      fnArgSrc = parts.map(p => p.trim());
+      try {
+        fnArgs = fnArgSrc.map(a => JSON.parse(JSON.stringify(evalExpr(a), (kk, v) => v instanceof Uint8Array ? { __bytes: Buffer.from(v).toString('base64') } : (v === undefined ? { __undef: true } : v))));
+      } catch (err) { fnArgs = null; }
+    }
+    const aliases2 = {};
+    const dstr = new RegExp('(?:const|let)\\s*\\{([^}]*)\\}\\s*=\\s*await\\s+' + fnName + '\\(').exec(body0);
+    if (dstr) for (const nm of dstr[1].split(',')) { const n = nm.trim().split(':').pop().trim(); if (n) aliases2[n] = 'result.' + nm.trim().split(':')[0].trim(); }
+    const rv = new RegExp('(?:const|let)\\s+(\\w+)\\s*=\\s*await\\s+' + fnName + '\\(').exec(body0);
+    if (rv) aliases2[rv[1]] = 'result';
+    const asserts2 = [];
+    const reE2 = /\bexpect\(/g;
+    let em2;
+    while ((em2 = reE2.exec(body0))) {
+      const st = em2.index + 'expect'.length;
+      const e = balanced(body0, st);
+      if (e < 0) continue;
+      const expr = body0.slice(st + 1, e - 1).trim().replace(/^await\s+/, '');
+      let k = e;
+      let not = false;
+      let rejects = false;
+      if (body0.startsWith('.rejects', k)) { rejects = true; k += 8; }
+      if (body0.startsWith('.not', k)) { not = true; k += 4; }
+      const mm3 = /^\.(toEqual|toStrictEqual|toBe|toMatchObject|toHaveLength|toBeUndefined|toBeNull|toBeDefined|toContain|toBeGreaterThan|toBeTruthy|toBeFalsy|toThrowError|toThrow)\(/.exec(body0.slice(k));
+      if (!mm3) continue;
+      const as = k + mm3[0].length - 1;
+      const ae = balanced(body0, as);
+      if (ae < 0) continue;
+      const argSrc = body0.slice(as + 1, ae - 1).trim();
+      let arg = null, ok = true;
+      if (argSrc !== '') { try { arg = JSON.parse(JSON.stringify(evalExpr(argSrc), (kk, v) => v instanceof Uint8Array ? { __bytes: Buffer.from(v).toString('base64') } : (v === undefined ? { __undef: true } : v))); } catch (err) { ok = false; arg = argSrc; } }
+      const matcher = (rejects ? 'rejects.' : '') + mm3[1];
+      if (!ok && !/toThrow/.test(matcher)) continue;
+      asserts2.push({ expr, matcher, not, arg: ok ? arg : null });
+    }
+    for (const n of Object.keys(saved2)) { if (saved2[n] === undefined) delete ctx[n]; else ctx[n] = saved2[n]; }
+    for (const n of Object.keys(saved)) { if (saved[n] === undefined) delete ctx[n]; else ctx[n] = saved[n]; }
+    if (cm && fnArgs && asserts2.length) out.push({ test: name, topDescribe: topDescribeOf(starts[i].idx), fnArgs, fnArgSrc, asserts: asserts2, aliases: aliases2 });
+    continue;
   }
 
   let response = null;

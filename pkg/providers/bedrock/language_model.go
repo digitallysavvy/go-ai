@@ -70,6 +70,10 @@ type converseArgs struct {
 func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, error) {
 	warnings := []types.Warning{}
 
+	if err := validateChatProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
+
 	amazonBedrockOptions := cloneMap(bedrockProviderOptions(opts))
 	anthropicOptions := bedrockProviderOptionMap(opts.ProviderOptions, "anthropic")
 
