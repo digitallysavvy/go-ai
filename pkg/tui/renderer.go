@@ -384,7 +384,11 @@ func (r *TerminalRenderer) RenderStream(ctx context.Context, result AgentTUIStre
 			r.applyUsage(*chunk.Usage)
 		}
 		if chunk.Type == provider.ChunkTypeError {
-			r.addErrorSectionLocked("Error", streamChunkErrorText(*chunk))
+			// TS adds the section when it observes the chunk and again from
+			// readUIMessageStream's onError, which fires for the same chunk.
+			text := streamChunkErrorText(*chunk)
+			r.addErrorSectionLocked("Error", text)
+			r.addErrorSectionLocked("Error", text)
 		}
 		r.renderModel(model, display)
 		r.paintLocked("", false, true, contextSize)

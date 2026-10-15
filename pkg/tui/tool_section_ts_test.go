@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"context"
+	"io"
 	"strings"
 	"testing"
 
@@ -113,3 +115,39 @@ func TestTransportDeniedApprovalRendersLikeTS(t *testing.T) {
 		t.Fatalf("after output denied: %#v", s[0])
 	}
 }
+
+// TS reports an `error` chunk twice: once when the renderer observes it and
+// once through readUIMessageStream's onError.
+func TestErrorChunkAddsTwoErrorSectionsLikeTS(t *testing.T) {
+	var out strings.Builder
+	r := NewTerminalRenderer(TerminalRendererOptions{Input: strings.NewReader(""), Output: &out, Columns: 60, Rows: 40})
+	source := NewStreamRenderSourceFromTextStream(&sliceTextStream{chunks: []provider.StreamChunk{{Type: provider.ChunkTypeError, Text: "Bad API key"}}}, nil, types.StepResult{})
+	if _, err := r.RenderStream(context.Background(), AgentTUIStreamResult{Stream: source}, TerminalSessionOptions{WaitForExit: false, WaitForExitSet: true}); err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, s := range r.sections {
+		if s.kind == sectionError && s.content == "Bad API key" {
+			count++
+		}
+	}
+	if count != 2 {
+		t.Fatalf("error sections = %d, want 2", count)
+	}
+}
+
+type sliceTextStream struct {
+	chunks []provider.StreamChunk
+	i      int
+}
+
+func (s *sliceTextStream) Next() (*provider.StreamChunk, error) {
+	if s.i >= len(s.chunks) {
+		return nil, io.EOF
+	}
+	c := s.chunks[s.i]
+	s.i++
+	return &c, nil
+}
+func (s *sliceTextStream) Err() error   { return nil }
+func (s *sliceTextStream) Close() error { return nil }
