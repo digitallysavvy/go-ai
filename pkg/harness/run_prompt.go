@@ -768,7 +768,7 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 					d.resetStepAccum()
 				} else {
 					d.ensureStepOpen()
-					d.completeStep(ignored.FinishReason, ignored.Usage)
+					d.completeStep(ignored.FinishReason, ignored.Usage, ignored.HarnessMetadata)
 				}
 			}
 		}
@@ -884,7 +884,7 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 			if err := d.joinOutstandingExecutions(); err != nil {
 				return false, false, err
 			}
-			d.completeStep(fs.FinishReason, fs.Usage)
+			d.completeStep(fs.FinishReason, fs.Usage, fs.HarnessMetadata)
 			// Deferred to the *next* part read — see the pendingStopBoundary
 			// handling above (TS's "one event of lookahead") — rather than
 			// evaluated immediately: StopConditions are meaningless with none
@@ -924,10 +924,11 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 			// Deferred, not pushed here — see turnDriver.pendingFinishChunk's
 			// doc. run() pushes it once OnTurnFinished has been called.
 			d.pendingFinishChunk = &provider.StreamChunk{
-				Type:            provider.ChunkTypeFinish,
-				FinishReason:    unifiedFinishReason(fp.FinishReason),
-				RawFinishReason: fp.FinishReason.Raw,
-				Usage:           usage,
+				Type:             provider.ChunkTypeFinish,
+				FinishReason:     unifiedFinishReason(fp.FinishReason),
+				RawFinishReason:  fp.FinishReason.Raw,
+				Usage:            usage,
+				ProviderMetadata: marshalMetadata(fp.HarnessMetadata),
 			}
 			finished = true
 		}
@@ -1289,7 +1290,7 @@ func (d *turnDriver) recordToolResult(tr *ToolResultPart) {
 // completeStep flushes buffered tool-result chunks, fires the model-call-end
 // and step-end callbacks from locally-tracked step data (see turnDriver
 // doc), pushes the step boundary chunk, and advances stepNumber.
-func (d *turnDriver) completeStep(finishReason FinishReason, usage Usage) {
+func (d *turnDriver) completeStep(finishReason FinishReason, usage Usage, metadata Metadata) {
 	if d.in.Callbacks.OnLanguageModelCallEnd != nil {
 		d.in.Callbacks.OnLanguageModelCallEnd(d.ctx, ai.LanguageModelCallEndEvent{
 			Provider: "harness:" + d.in.Harness.HarnessID(), ModelID: d.in.Model,
@@ -1310,6 +1311,9 @@ func (d *turnDriver) completeStep(finishReason FinishReason, usage Usage) {
 		FinishReason:  unifiedFinishReason(finishReason),
 		Usage:         harnessUsageToTypesUsageValue(usage),
 	}
+	if len(metadata) > 0 {
+		step.ProviderMetadata = convertProviderMetadata(ProviderMetadata(metadata))
+	}
 	if d.in.Callbacks.OnStepEnd != nil {
 		d.in.Callbacks.OnStepEnd(d.ctx, ai.OnStepFinishEvent{
 			StepNumber: step.StepNumber, Model: step.Model, Text: step.Text,
@@ -1321,10 +1325,11 @@ func (d *turnDriver) completeStep(finishReason FinishReason, usage Usage) {
 	d.telStepEnd(step.StepNumber, step)
 
 	d.stream.push(provider.StreamChunk{
-		Type:            provider.ChunkTypeFinishStep,
-		FinishReason:    unifiedFinishReason(finishReason),
-		RawFinishReason: finishReason.Raw,
-		Usage:           harnessUsageToTypesUsage(usage),
+		Type:             provider.ChunkTypeFinishStep,
+		FinishReason:     unifiedFinishReason(finishReason),
+		RawFinishReason:  finishReason.Raw,
+		Usage:            harnessUsageToTypesUsage(usage),
+		ProviderMetadata: marshalMetadata(metadata),
 	})
 
 	d.completedSteps = append(d.completedSteps, step)
@@ -1370,7 +1375,7 @@ func (d *turnDriver) pauseForHostInput() error {
 		return err
 	}
 	if d.stepOpen {
-		d.completeStep(FinishReason{Unified: FinishReasonToolCalls}, Usage{})
+		d.completeStep(FinishReason{Unified: FinishReasonToolCalls}, Usage{}, nil)
 	} else {
 		d.flushBufferedResultChunks()
 	}
@@ -1392,7 +1397,11 @@ func (d *turnDriver) pauseAtHostInputBoundary(fs *FinishStepPart) error {
 	if fs != nil {
 		usage = fs.Usage
 	}
-	d.completeStep(FinishReason{Unified: FinishReasonToolCalls}, usage)
+	var metadata Metadata
+	if fs != nil {
+		metadata = fs.HarnessMetadata
+	}
+	d.completeStep(FinishReason{Unified: FinishReasonToolCalls}, usage, metadata)
 	return d.finishForHostInputPause()
 }
 
@@ -1853,7 +1862,7 @@ func (d *turnDriver) executeHostToolAsync(tool types.Tool, raw *ToolCallPart, ca
 		d.toolExecMs[raw.ToolCallID] = time.Since(start).Milliseconds()
 		d.execMu.Unlock()
 		if err != nil {
-			_ = d.submitToolResult(ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: map[string]interface{}{"error": err.Error()}, IsError: true})
+			_ = d.submitToolResult(ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: map[string]interface{}{"error": toolErrorString(err)}, IsError: true})
 			return
 		}
 		submission := ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: output}
@@ -1866,7 +1875,7 @@ func (d *turnDriver) executeHostToolAsync(tool types.Tool, raw *ToolCallPart, ca
 				ToolCallID: raw.ToolCallID, Input: execArgs, Output: output, Result: output, //nolint:staticcheck // Result is the deprecated alias; set for older callbacks
 			})
 			if mErr != nil {
-				_ = d.submitToolResult(ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: map[string]interface{}{"error": mErr.Error()}, IsError: true})
+				_ = d.submitToolResult(ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: map[string]interface{}{"error": toolErrorString(mErr)}, IsError: true})
 				return
 			}
 			if modelOutput != nil {
@@ -2131,3 +2140,9 @@ func unwrapToolResultOutput(result types.ToolResultContent) (output interface{},
 }
 
 func generateApprovalID() string { return newID() }
+
+// toolErrorString mirrors JS `String(err)` for an Error, which is what the TS
+// host sends back to the runtime for a failed host tool: "Error: <message>".
+func toolErrorString(err error) string {
+	return "Error: " + err.Error()
+}
