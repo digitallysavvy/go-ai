@@ -24,6 +24,10 @@ type Config struct {
 	// BaseURL is the base URL for the Cerebras API (optional)
 	BaseURL string
 
+	// Headers are custom HTTP headers sent with every request (TS provider
+	// settings `headers`).
+	Headers map[string]string `json:"headers,omitempty"`
+
 	// HTTPClient overrides the HTTP client used for requests.
 	HTTPClient *http.Client
 }
@@ -40,6 +44,7 @@ func New(cfg Config) *Provider {
 		APIKey:     cfg.APIKey,
 		Name:       "cerebras",
 		BaseURL:    baseURL,
+		Headers:    cfg.Headers,
 		HTTPClient: withCerebrasTransform(cfg.HTTPClient),
 		// TS CerebrasChatLanguageModel extends OpenAICompatibleChatLanguageModel,
 		// which supports video_url content parts (7dd9ec320c).

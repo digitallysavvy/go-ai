@@ -14,6 +14,10 @@ type Config struct {
 	// BaseURL is the base URL for the API (optional)
 	// Default: https://api.moonshot.ai/v1
 	BaseURL string
+
+	// Headers are custom HTTP headers sent with every request (TS provider
+	// settings `headers`).
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // NewConfig creates a new Moonshot provider configuration

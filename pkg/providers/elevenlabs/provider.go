@@ -22,6 +22,10 @@ type Config struct {
 
 	// BaseURL is the base URL for the ElevenLabs API (optional)
 	BaseURL string
+
+	// Headers are custom HTTP headers sent with every request (TS provider
+	// settings `headers`).
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // New creates a new ElevenLabs provider with the given configuration
@@ -36,10 +40,10 @@ func New(cfg Config) *Provider {
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: version.WithUserAgentSuffix(map[string]string{
+		Headers: version.WithUserAgentSuffix(http.MergeHeaders(map[string]string{
 			"xi-api-key":   cfg.APIKey,
 			"Content-Type": "application/json",
-		}, version.ProviderUserAgent("elevenlabs")),
+		}, cfg.Headers), version.ProviderUserAgent("elevenlabs")),
 	})
 
 	return &Provider{

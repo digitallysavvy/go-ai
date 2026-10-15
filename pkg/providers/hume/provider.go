@@ -20,6 +20,10 @@ type Config struct {
 
 	// BaseURL is the base URL for the Hume API (optional).
 	BaseURL string
+
+	// Headers are custom HTTP headers sent with every request (TS provider
+	// settings `headers`).
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // Provider represents the Hume provider.
@@ -39,9 +43,9 @@ func New(config Config) *Provider {
 
 	client := internalhttp.NewClient(internalhttp.Config{
 		BaseURL: config.BaseURL,
-		Headers: version.WithUserAgentSuffix(map[string]string{
+		Headers: version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{
 			"X-Hume-Api-Key": config.APIKey,
-		}, version.ProviderUserAgent("hume")),
+		}, config.Headers), version.ProviderUserAgent("hume")),
 	})
 
 	return &Provider{

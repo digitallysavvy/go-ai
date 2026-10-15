@@ -26,6 +26,10 @@ type Config struct {
 
 	// BaseURL is the base URL for the Replicate API (optional)
 	BaseURL string
+
+	// Headers are custom HTTP headers sent with every request (TS provider
+	// settings `headers`).
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // New creates a new Replicate provider with the given configuration
@@ -37,10 +41,10 @@ func New(cfg Config) *Provider {
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: version.WithUserAgentSuffix(map[string]string{
+		Headers: version.WithUserAgentSuffix(http.MergeHeaders(map[string]string{
 			"Authorization": "Token " + cfg.APIKey,
 			"Content-Type":  "application/json",
-		}, version.ProviderUserAgent("replicate")),
+		}, cfg.Headers), version.ProviderUserAgent("replicate")),
 	})
 
 	return &Provider{

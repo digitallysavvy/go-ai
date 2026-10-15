@@ -17,6 +17,10 @@ type Config struct {
 
 	// Base URL for the Gladia API (optional, defaults to production)
 	BaseURL string
+
+	// Headers are custom HTTP headers sent with every request (TS provider
+	// settings `headers`).
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // Provider represents the Gladia AI provider
@@ -33,9 +37,9 @@ func New(config Config) *Provider {
 
 	client := internalhttp.NewClient(internalhttp.Config{
 		BaseURL: config.BaseURL,
-		Headers: version.WithUserAgentSuffix(map[string]string{
+		Headers: version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{
 			"x-gladia-key": config.APIKey,
-		}, version.ProviderUserAgent("gladia")),
+		}, config.Headers), version.ProviderUserAgent("gladia")),
 	})
 
 	return &Provider{

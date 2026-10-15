@@ -21,6 +21,9 @@ type Config struct {
 
 	// BaseURL is the base URL for the Stability AI API (optional)
 	BaseURL string
+
+	// Headers are custom HTTP headers sent with every request.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // New creates a new Stability AI provider with the given configuration
@@ -32,10 +35,10 @@ func New(cfg Config) *Provider {
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: version.WithUserAgentSuffix(map[string]string{
+		Headers: version.WithUserAgentSuffix(http.MergeHeaders(map[string]string{
 			"Authorization": "Bearer " + cfg.APIKey,
 			"Content-Type":  "application/json",
-		}, version.ProviderUserAgent("stability")),
+		}, cfg.Headers), version.ProviderUserAgent("stability")),
 	})
 
 	return &Provider{
