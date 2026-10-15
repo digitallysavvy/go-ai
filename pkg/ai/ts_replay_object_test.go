@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
@@ -148,4 +149,95 @@ func TestTSReplay_GenerateObject_RepairText(t *testing.T) {
 
 func repairWith(suffix string) RepairTextFunc {
 	return func(_ context.Context, text string, _ error) (*string, error) { s := text + suffix; return &s, nil }
+}
+
+func responseFormatSchema(t *testing.T, rf *provider.ResponseFormat) map[string]interface{} {
+	t.Helper()
+	if rf == nil || rf.Schema == nil {
+		return nil
+	}
+	js, ok := rf.Schema.(interface{ JSONSchema() map[string]interface{} })
+	if !ok {
+		t.Fatalf("schema %T has no JSONSchema()", rf.Schema)
+	}
+	// normalize through JSON so []string and []interface{} compare equal
+	b, err := json.Marshal(js.JSONSchema())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+// generate-object.test.ts: output = array / enum / no-schema, including the
+// response format schema each mode sends to the model.
+func TestTSReplay_GenerateObject_OutputModes(t *testing.T) {
+	t.Run("array", func(t *testing.T) {
+		model := objectModel(`{"elements":[{"content":"element 1"},{"content":"element 2"},{"content":"element 3"}]}`)
+		r, err := GenerateObject(context.Background(), GenerateObjectOptions{
+			Model: model, Prompt: "prompt", Schema: contentSchema(), OutputMode: ObjectModeArray,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []interface{}{
+			map[string]interface{}{"content": "element 1"}, map[string]interface{}{"content": "element 2"}, map[string]interface{}{"content": "element 3"},
+		}
+		if !reflect.DeepEqual(r.Array, want) {
+			t.Fatalf("array = %#v", r.Array)
+		}
+		wantSchema := map[string]interface{}{
+			"$schema": "http://json-schema.org/draft-07/schema#", "type": "object", "additionalProperties": false,
+			"required": []interface{}{"elements"},
+			"properties": map[string]interface{}{"elements": map[string]interface{}{
+				"type": "array",
+				"items": map[string]interface{}{
+					"type": "object", "additionalProperties": false, "required": []interface{}{"content"},
+					"properties": map[string]interface{}{"content": map[string]interface{}{"type": "string"}},
+				},
+			}},
+		}
+		if got := responseFormatSchema(t, model.GenerateCalls[0].ResponseFormat); !reflect.DeepEqual(got, wantSchema) {
+			gb, _ := json.Marshal(got)
+			wb, _ := json.Marshal(wantSchema)
+			t.Fatalf("response schema\n got %s\nwant %s", gb, wb)
+		}
+	})
+	t.Run("enum", func(t *testing.T) {
+		model := objectModel(`{"result":"sunny"}`)
+		r, err := GenerateObject(context.Background(), GenerateObjectOptions{
+			Model: model, Prompt: "prompt", OutputMode: ObjectModeEnum, EnumValues: []string{"sunny", "rainy", "snowy"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.EnumValue != "sunny" {
+			t.Fatalf("enum = %q", r.EnumValue)
+		}
+		wantSchema := map[string]interface{}{
+			"$schema": "http://json-schema.org/draft-07/schema#", "type": "object", "additionalProperties": false,
+			"required":   []interface{}{"result"},
+			"properties": map[string]interface{}{"result": map[string]interface{}{"type": "string", "enum": []interface{}{"sunny", "rainy", "snowy"}}},
+		}
+		if got := responseFormatSchema(t, model.GenerateCalls[0].ResponseFormat); !reflect.DeepEqual(got, wantSchema) {
+			gb, _ := json.Marshal(got)
+			t.Fatalf("response schema %s", gb)
+		}
+	})
+	t.Run("no-schema", func(t *testing.T) {
+		model := objectModel(`{ "content": "Hello, world!" }`)
+		r, err := GenerateObject(context.Background(), GenerateObjectOptions{Model: model, Prompt: "prompt", OutputMode: ObjectModeNoSchema})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(r.Object, map[string]interface{}{"content": "Hello, world!"}) {
+			t.Fatalf("object = %#v", r.Object)
+		}
+		if rf := model.GenerateCalls[0].ResponseFormat; rf == nil || rf.Schema != nil {
+			t.Fatalf("response format = %#v, want JSON mode without schema", rf)
+		}
+	})
 }
