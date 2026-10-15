@@ -259,5 +259,6 @@ type ChatTransport interface {
 | Field | Type | Description |
 | --- | --- | --- |
 | `ChatID` | `string` | ChatID identifies the conversation whose in-progress stream should be resumed. |
+| `StartIndex` | `*int` | StartIndex overrides the transport's default start index for this reconnect (TS ReconnectToStreamOptions.startIndex). Negative values read the tail of the stream. nil keeps the transport default; an explicit 0 replays from the beginning. Only the workflow chat transport reads it. |
 
 {/* /gen:fields */}
