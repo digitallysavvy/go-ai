@@ -263,9 +263,9 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 			telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnRerankStart, emptyStartEvent)
 		}
 		if opts.OnStart != nil {
-			opts.OnStart(emptyStartEvent)
+			safeInvoke(func() { opts.OnStart(emptyStartEvent) })
 		} else if opts.ExperimentalOnStart != nil {
-			opts.ExperimentalOnStart(emptyStartEvent)
+			safeInvoke(func() { opts.ExperimentalOnStart(emptyStartEvent) })
 		}
 
 		emptyResponse := types.RerankResponse{
@@ -279,7 +279,7 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 			Response:          emptyResponse,
 		}
 		if opts.OnFinish != nil {
-			opts.OnFinish(emptyResult)
+			safeInvoke(func() { opts.OnFinish(emptyResult) })
 		}
 		emptyFinishEvent := RerankOnFinishEvent{
 			CallID:         callID,
@@ -302,13 +302,13 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 			telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnRerankEnd, emptyFinishEvent)
 		}
 		if opts.OnEnd != nil {
-			opts.OnEnd(emptyFinishEvent)
+			safeInvoke(func() { opts.OnEnd(emptyFinishEvent) })
 		} else {
 			if opts.ExperimentalOnEnd != nil {
-				opts.ExperimentalOnEnd(emptyFinishEvent)
+				safeInvoke(func() { opts.ExperimentalOnEnd(emptyFinishEvent) })
 			}
 			if opts.ExperimentalOnFinish != nil {
-				opts.ExperimentalOnFinish(emptyFinishEvent)
+				safeInvoke(func() { opts.ExperimentalOnFinish(emptyFinishEvent) })
 			}
 		}
 		return emptyResult, nil
@@ -341,9 +341,9 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnRerankStart, startEvent)
 	}
 	if opts.OnStart != nil {
-		opts.OnStart(startEvent)
+		safeInvoke(func() { opts.OnStart(startEvent) })
 	} else if opts.ExperimentalOnStart != nil {
-		opts.ExperimentalOnStart(startEvent)
+		safeInvoke(func() { opts.ExperimentalOnStart(startEvent) })
 	}
 	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
 		CallID:         callID,
@@ -462,7 +462,7 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 
 	// Call finish callback
 	if opts.OnFinish != nil {
-		opts.OnFinish(result)
+		safeInvoke(func() { opts.OnFinish(result) })
 	}
 
 	// Fire ExperimentalOnFinish callback
@@ -494,13 +494,13 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnRerankEnd, finishEvent)
 	}
 	if opts.OnEnd != nil {
-		opts.OnEnd(finishEvent)
+		safeInvoke(func() { opts.OnEnd(finishEvent) })
 	} else {
 		if opts.ExperimentalOnEnd != nil {
-			opts.ExperimentalOnEnd(finishEvent)
+			safeInvoke(func() { opts.ExperimentalOnEnd(finishEvent) })
 		}
 		if opts.ExperimentalOnFinish != nil {
-			opts.ExperimentalOnFinish(finishEvent)
+			safeInvoke(func() { opts.ExperimentalOnFinish(finishEvent) })
 		}
 	}
 	telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{

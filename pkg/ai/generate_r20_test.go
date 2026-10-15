@@ -158,3 +158,64 @@ func TestGenerateText_StepTimeoutCoversToolExecution(t *testing.T) {
 		t.Fatalf("model calls = %d, want 1 (next step must not start)", calls)
 	}
 }
+
+// TS notify() swallows callback errors, so a throwing onStepEnd/onEnd must not
+// break the call. The Go equivalent is a panic in the callback.
+func TestGenerateText_PanickingLegacyCallbacksDoNotBreakCall(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{Text: "ok", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+	res, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:     model,
+		Prompt:    "hi",
+		OnStepEnd: func(context.Context, types.StepResult, interface{}) { panic("step") },
+		OnEnd:     func(context.Context, *GenerateTextResult, interface{}) { panic("end") },
+	})
+	if err != nil || res.Text != "ok" {
+		t.Fatalf("res=%v err=%v", res, err)
+	}
+}
+
+func TestStreamText_PanickingLegacyCallbacksDoNotBreakCall(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "ok"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+	res, err := StreamText(context.Background(), StreamTextOptions{
+		Model:     model,
+		Prompt:    "hi",
+		OnStepEnd: func(context.Context, types.StepResult, interface{}) { panic("step") },
+		OnEnd:     func(*StreamTextResult) { panic("end") },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, err := res.ReadAll()
+	if err != nil || text != "ok" {
+		t.Fatalf("text=%q err=%v", text, err)
+	}
+}
+
+func TestEmbedMany_PanickingCallbacksDoNotBreakCall(t *testing.T) {
+	t.Parallel()
+
+	res, err := EmbedMany(context.Background(), EmbedManyOptions{
+		Model:   &testutil.MockEmbeddingModel{},
+		Inputs:  []string{"a", "b"},
+		OnStart: func(EmbedOnStartEvent) { panic("start") },
+		OnEnd:   func(EmbedOnFinishEvent) { panic("end") },
+	})
+	if err != nil || len(res.Embeddings) != 2 {
+		t.Fatalf("res=%v err=%v", res, err)
+	}
+}

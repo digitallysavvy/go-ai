@@ -1044,7 +1044,7 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 	}, resolveObjectOnEnd(opts.OnEnd, opts.OnFinishEvent))
 
 	if opts.OnFinish != nil {
-		opts.OnFinish(ctx, result, opts.ExperimentalContext)
+		safeInvoke(func() { opts.OnFinish(ctx, result, opts.ExperimentalContext) })
 	}
 
 	return result, nil
@@ -1207,7 +1207,7 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 	}, resolveObjectOnEnd(opts.OnEnd, opts.OnFinishEvent))
 
 	if opts.OnFinish != nil {
-		opts.OnFinish(ctx, result, opts.ExperimentalContext)
+		safeInvoke(func() { opts.OnFinish(ctx, result, opts.ExperimentalContext) })
 	}
 
 	return result, nil
@@ -1362,7 +1362,7 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc object
 	}, resolveObjectOnEnd(opts.OnEnd, opts.OnFinishEvent))
 
 	if opts.OnFinish != nil {
-		opts.OnFinish(ctx, result, opts.ExperimentalContext)
+		safeInvoke(func() { opts.OnFinish(ctx, result, opts.ExperimentalContext) })
 	}
 
 	return result, nil
@@ -1511,7 +1511,7 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc ob
 	}, resolveObjectOnEnd(opts.OnEnd, opts.OnFinishEvent))
 
 	if opts.OnFinish != nil {
-		opts.OnFinish(ctx, result, opts.ExperimentalContext)
+		safeInvoke(func() { opts.OnFinish(ctx, result, opts.ExperimentalContext) })
 	}
 
 	return result, nil
@@ -2121,7 +2121,7 @@ streamLoop:
 
 	// Call legacy OnFinish if provided
 	if opts.OnFinish != nil {
-		opts.OnFinish(ctx, result, opts.ExperimentalContext)
+		safeInvoke(func() { opts.OnFinish(ctx, result, opts.ExperimentalContext) })
 	}
 
 	return result, nil

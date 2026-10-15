@@ -867,7 +867,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				}
 				reason := abortReason(ctx, err)
 				if onAbort := firstOnAbort(opts.OnAbortEvent, opts.OnAbort); onAbort != nil {
-					onAbort(ctx, GenerateTextAbortEvent{CallID: callID, Steps: abortSteps, Reason: reason})
+					safeInvoke(func() { onAbort(ctx, GenerateTextAbortEvent{CallID: callID, Steps: abortSteps, Reason: reason}) })
 				}
 				telemetry.FireOnAbort(ctx, telemetry.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID, Reason: reason, Steps: abortSteps})
 				return
@@ -1669,7 +1669,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 
 		// Call step finish callback (v6.0: with user context)
 		if onStepEnd != nil {
-			onStepEnd(ctx, stepResult, runtimeContext)
+			safeInvoke(func() { onStepEnd(ctx, stepResult, runtimeContext) })
 		}
 
 		// Emit structured OnStepFinishEvent.
@@ -1890,7 +1890,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 
 	// Call end callback (v6.0: with user context)
 	if onEnd != nil {
-		onEnd(ctx, result, runtimeContext)
+		safeInvoke(func() { onEnd(ctx, result, runtimeContext) })
 	}
 
 	// Emit structured OnFinishEvent.

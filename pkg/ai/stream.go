@@ -1290,7 +1290,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		if isAbortErr(stepCtx, err) {
 			reason := abortReason(stepCtx, err)
 			if onAbort := firstOnAbort(opts.OnAbortEvent, opts.OnAbort); onAbort != nil {
-				onAbort(stepCtx, GenerateTextAbortEvent{CallID: callID, Reason: reason})
+				safeInvoke(func() { onAbort(stepCtx, GenerateTextAbortEvent{CallID: callID, Reason: reason}) })
 			}
 			telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID})
 			telemetry.FireOnAbort(telemetryCtx, telemetry.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID, Reason: reason})
@@ -1506,11 +1506,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		abortFired = true
 		reason = abortReason(ctx, reason)
 		if onAbort := firstOnAbort(opts.OnAbortEvent, opts.OnAbort); onAbort != nil {
-			onAbort(ctx, GenerateTextAbortEvent{
+			abortEvent := GenerateTextAbortEvent{
 				CallID: r.cbCallID,
 				Steps:  append([]types.StepResult(nil), allSteps...),
 				Reason: reason,
-			})
+			}
+			safeInvoke(func() { onAbort(ctx, abortEvent) })
 		}
 		telemetry.FireOnAbort(r.telemetryCtx, telemetry.TelemetryAbortEvent{
 			Settings: r.telemetrySettings,
@@ -2868,7 +2869,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// Call the simple step-end callback (mirrors GenerateTextOptions.OnStepEnd
 		// exactly — see the doc comment on StreamTextOptions.OnStepEnd).
 		if r.cbOnStepEnd != nil {
-			r.cbOnStepEnd(ctx, stepResult, r.cbRuntimeCtx)
+			safeInvoke(func() { r.cbOnStepEnd(ctx, stepResult, r.cbRuntimeCtx) })
 		}
 		Notify(ctx, OnStepFinishEvent{
 			CallID:             r.cbCallID,
@@ -3419,7 +3420,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 
 	// Call finish callback
 	if onFinish != nil {
-		onFinish(r)
+		safeInvoke(func() { onFinish(r) })
 	}
 
 	// Emit structured step-finish and generation-finish events.
