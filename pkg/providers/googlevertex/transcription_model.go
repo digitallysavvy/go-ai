@@ -232,7 +232,7 @@ func convertVertexTranscriptionResponse(resp vertexTranscriptionResponse, modelI
 		}
 	}
 	return &types.TranscriptionResult{
-		Text:              strings.TrimSpace(strings.Join(texts, " ")),
+		Text:              providerutils.JSTrim(strings.Join(texts, " ")),
 		Segments:          segments,
 		Timestamps:        segments,
 		Language:          language,

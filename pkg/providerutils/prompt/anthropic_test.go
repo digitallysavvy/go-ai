@@ -1196,3 +1196,15 @@ func TestConvertToAnthropicPrompt_LegacyToolResultFields(t *testing.T) {
 		{"type":"tool_result","tool_use_id":"c","content":"failed","is_error":true}
 	]}]`)
 }
+
+func TestAnthropicLastAssistantTextTrimIsJSTrim(t *testing.T) {
+	msgs := []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{types.TextContent{Text: "hi\xef\xbb\xbf "}}}}
+	got, err := ConvertToAnthropicPrompt(msgs, AnthropicPromptOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := got.Messages[0]["content"].([]map[string]interface{})
+	if content[0]["text"] != "hi" {
+		t.Fatalf("text = %q", content[0]["text"])
+	}
+}

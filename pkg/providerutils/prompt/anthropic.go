@@ -4,8 +4,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/media"
@@ -1332,7 +1333,7 @@ func (c *anthropicConverter) convertAssistantText(content *[]map[string]interfac
 	text := p.Text
 	if trim {
 		// Anthropic rejects trailing whitespace in pre-filled assistant responses.
-		text = strings.TrimSpace(text)
+		text = providerutils.JSTrim(text)
 	}
 	block := map[string]interface{}{"type": "text", "text": text}
 	if citations, ok := textMetadata["citations"]; ok && citations != nil {
