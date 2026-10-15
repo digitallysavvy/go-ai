@@ -54,3 +54,16 @@ func TestGenerateImage_CallsRunInParallelAndSumTokenUsage(t *testing.T) {
 }
 
 func intPtrT(n int) *int { return &n }
+
+func TestResolveGeneratedImageMediaTypeSniffsBytesLikeTS(t *testing.T) {
+	bmp := []byte{'B', 'M', 0x36, 0, 0, 0, 0, 0, 0, 0, 0x36, 0, 0, 0, 0x28, 0, 0, 0}
+	if got := resolveGeneratedImageMediaType(bmp, ""); got != "image/bmp" {
+		t.Fatalf("bmp bytes = %q, want image/bmp", got)
+	}
+	if got := resolveGeneratedImageMediaType(nil, "image/jpeg"); got != "image/jpeg" {
+		t.Fatalf("url-only result = %q, want the provider type", got)
+	}
+	if got := resolveGeneratedImageMediaType([]byte("not an image"), ""); got != "image/png" {
+		t.Fatalf("unknown bytes = %q, want image/png", got)
+	}
+}

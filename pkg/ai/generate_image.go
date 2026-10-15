@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	retryutil "github.com/digitallysavvy/go-ai/pkg/internal/retry"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -363,30 +364,16 @@ func resolveMaxImagesPerCall(opts GenerateImageOptions) int {
 	return 1
 }
 
+// resolveGeneratedImageMediaType mirrors TS generate-image.ts: the media type
+// is sniffed from the image bytes (image-scoped signature detection, which
+// also knows bmp/tiff/avif/heic), falling back to the provider-reported type
+// (URL-only results carry no bytes) and finally image/png.
 func resolveGeneratedImageMediaType(data []byte, mediaType string) string {
+	if detected, ok := fileutil.DetectMediaTypeSignature(data, "image"); ok {
+		return detected
+	}
 	if mediaType != "" {
 		return mediaType
-	}
-	if len(data) >= 8 &&
-		data[0] == 0x89 && data[1] == 0x50 &&
-		data[2] == 0x4E && data[3] == 0x47 &&
-		data[4] == 0x0D && data[5] == 0x0A &&
-		data[6] == 0x1A && data[7] == 0x0A {
-		return "image/png"
-	}
-	if len(data) >= 4 &&
-		data[0] == 0x47 && data[1] == 0x49 &&
-		data[2] == 0x46 && data[3] == 0x38 {
-		return "image/gif"
-	}
-	if len(data) >= 3 &&
-		data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF {
-		return "image/jpeg"
-	}
-	if len(data) >= 12 &&
-		data[0] == 0x52 && data[1] == 0x49 && data[2] == 0x46 && data[3] == 0x46 &&
-		data[8] == 0x57 && data[9] == 0x45 && data[10] == 0x42 && data[11] == 0x50 {
-		return "image/webp"
 	}
 	return "image/png"
 }
