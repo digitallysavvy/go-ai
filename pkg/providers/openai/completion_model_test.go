@@ -290,3 +290,29 @@ func TestCompletionModelDoStreamMetadataOnlyThenErrorIsStillEarly(t *testing.T) 
 		t.Fatalf("provider error = %#v", providerErr)
 	}
 }
+
+func TestCompletionModelDoStreamMidStreamErrorFrameCarriesStreamProviderError(t *testing.T) {
+	stream := newCompletionStream(io.NopCloser(strings.NewReader(
+		`data: {"id":"cmpl_1","model":"gpt-3.5-turbo-instruct","choices":[{"index":0,"text":"hi"}]}`+"\n\n"+
+			`data: {"error":{"message":"rate limited","type":"rate_limit_exceeded","param":null,"code":null}}`+"\n\n",
+	)), false)
+	defer stream.Close() //nolint:errcheck
+
+	for {
+		chunk, err := stream.Next()
+		if err != nil {
+			t.Fatalf("no error chunk before end: %v", err)
+		}
+		if chunk.Type != provider.ChunkTypeError {
+			continue
+		}
+		var spe *providererrors.StreamProviderError
+		if !errors.As(chunk.Err, &spe) {
+			t.Fatalf("chunk.Err = %T %[1]v, want StreamProviderError", chunk.Err)
+		}
+		if spe.Message != "rate limited" {
+			t.Fatalf("message = %q", spe.Message)
+		}
+		return
+	}
+}

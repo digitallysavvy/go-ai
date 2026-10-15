@@ -858,3 +858,26 @@ data: {"type":"response.completed","response":{"id":"r1","output":[],"status":"c
 		t.Fatalf("extensionState[calls] = %#v, want 1 (state persists across the stream)", s.extensionState["calls"])
 	}
 }
+
+// A DecodeItem failure mid-stream becomes an error part carrying the decode
+// error itself (TS enqueues the caught error as the part's `error`).
+func TestOpenResponsesExtensionItemDecodeStreamErrorCarriesErr(t *testing.T) {
+	decodeErr := errors.New("bad extension item")
+	p := New(Config{BaseURL: "http://localhost:1234/v1", Extensions: []Extension{{
+		ID:        "lmstudio.broken",
+		ItemTypes: []string{"lmstudio:broken"},
+		DecodeItem: func(ExtensionItem, string) ([]types.ContentPart, error) {
+			return nil, decodeErr
+		},
+	}}})
+	var item OutputItem
+	if err := json.Unmarshal([]byte(`{"type":"lmstudio:broken","id":"b_1","status":"completed"}`), &item); err != nil {
+		t.Fatalf("unmarshal item failed: %v", err)
+	}
+	s := newOpenResponsesStream(io.NopCloser(strings.NewReader("")), nil, "open-responses")
+	s.extensionRegistry = p.extensionRegistry
+	chunk, ok := s.handleStreamEvent(&StreamEvent{Type: "response.output_item.done", Item: &item})
+	if !ok || chunk == nil || chunk.Type != provider.ChunkTypeError || !errors.Is(chunk.Err, decodeErr) {
+		t.Fatalf("chunk = %#v, want error chunk carrying decodeErr", chunk)
+	}
+}

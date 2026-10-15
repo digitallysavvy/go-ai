@@ -499,6 +499,10 @@ func (s *completionStream) Next() (*provider.StreamChunk, error) {
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: openAIStreamErrorText(chunk.Error),
+				// TS createOpenAIProviderStreamError(value.error): attach the
+				// structured StreamProviderError so retries see its
+				// type/code/statusCode/isRetryable.
+				Err: newOpenAIStreamProviderErrorChunk(s.providerName, chunk.Error),
 			})
 			continue
 		}

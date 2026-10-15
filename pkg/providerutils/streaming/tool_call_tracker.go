@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -510,6 +511,8 @@ func (t *StreamingToolCallTracker) finishToolCall(call *trackedToolCall) []ToolC
 			{
 				Type: provider.ChunkTypeError,
 				Text: "Expected 'function.name' to be a string.",
+				// TS throws InvalidResponseDataError here.
+				Err: providererrors.NewInvalidResponseDataError(nil, "Expected 'function.name' to be a string."),
 				ToolCall: &types.ToolCall{
 					ID:           call.id,
 					RawArguments: call.args,

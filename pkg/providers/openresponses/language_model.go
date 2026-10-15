@@ -1493,7 +1493,7 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			if err != nil {
 				// Mirrors TS's try/catch around decodeExtensionItem: a
 				// decode failure doesn't abort the whole stream.
-				return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: err.Error()}, true
+				return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: err.Error(), Err: err}, true
 			}
 			for _, part := range decoded {
 				if tc, ok := part.(types.ToolCallContent); ok {
@@ -1634,7 +1634,7 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		if err != nil {
 			// Mirrors TS's try/catch around extension.decodeEvent: a decode
 			// failure doesn't abort the whole stream.
-			return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: err.Error()}, true
+			return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: err.Error(), Err: err}, true
 		}
 		for _, chunk := range decoded {
 			if chunk.Type == provider.ChunkTypeToolCall || chunk.Type == provider.ChunkTypeToolInputStart {

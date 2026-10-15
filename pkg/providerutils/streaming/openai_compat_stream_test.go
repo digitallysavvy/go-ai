@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -360,6 +361,10 @@ data: [DONE]
 	}
 	if errorChunks[0].Text != "Expected 'function.name' to be a string." {
 		t.Fatalf("error text = %q", errorChunks[0].Text)
+	}
+	var invalid *providererrors.InvalidResponseDataError
+	if !errors.As(errorChunks[0].Err, &invalid) {
+		t.Fatalf("error chunk Err = %T, want InvalidResponseDataError", errorChunks[0].Err)
 	}
 	if toolCalls := compatChunksOfType(chunks, provider.ChunkTypeToolCall); len(toolCalls) != 0 {
 		t.Fatalf("expected no tool-call chunks, got %#v", toolCalls)
