@@ -2104,3 +2104,32 @@ func TestGenerateObject_RawText(t *testing.T) {
 		t.Error("text content mismatch")
 	}
 }
+
+func TestObjectCallsRejectMissingToolResults(t *testing.T) {
+	t.Parallel()
+
+	called := false
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			called = true
+			return &types.GenerateResult{Text: `{}`, FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		{Role: types.RoleAssistant, Content: []types.ContentPart{types.ToolCallContent{ToolCallID: "c1", ToolName: "t", Input: "{}"}}},
+		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "again"}}},
+	}
+	s := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})
+	var missing *types.MissingToolResultsError
+	if _, err := GenerateObject(context.Background(), GenerateObjectOptions{Model: model, Messages: msgs, Schema: s}); !errors.As(err, &missing) {
+		t.Fatalf("GenerateObject err = %v, want MissingToolResultsError", err)
+	}
+	if _, err := StreamObject(context.Background(), StreamObjectOptions{Model: model, Messages: msgs, Schema: s}); !errors.As(err, &missing) {
+		t.Fatalf("StreamObject err = %v, want MissingToolResultsError", err)
+	}
+	if called {
+		t.Fatal("model must not be called")
+	}
+}

@@ -920,6 +920,9 @@ func objectResultValue(mode ObjectOutputMode, r *GenerateObjectResult) interface
 // generateObjectMode handles standard object generation
 func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc objectCallCtx) (*GenerateObjectResult, error) {
 	prompt := buildPrompt(opts.Prompt, opts.Messages, opts.System)
+	if err := validateStepToolResults(prompt.Messages, nil); err != nil {
+		return nil, err
+	}
 
 	genOpts := &provider.GenerateOptions{
 		Prompt:           prompt,
@@ -1050,6 +1053,9 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 // generateArrayMode handles array generation
 func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objectCallCtx) (*GenerateObjectResult, error) {
 	prompt := buildPrompt(opts.Prompt, opts.Messages, opts.System)
+	if err := validateStepToolResults(prompt.Messages, nil); err != nil {
+		return nil, err
+	}
 
 	// Build the wrapped array schema matching TS SDK's arrayOutputStrategy.jsonSchema():
 	// { type: 'object', properties: { elements: { type: 'array', items: itemSchema } }, required: ['elements'] }
@@ -1207,6 +1213,9 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 // The model outputs { "result": "value" } and we extract value.result.
 func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc objectCallCtx) (*GenerateObjectResult, error) {
 	prompt := buildPrompt(opts.Prompt, opts.Messages, opts.System)
+	if err := validateStepToolResults(prompt.Messages, nil); err != nil {
+		return nil, err
+	}
 
 	// Build the wrapped enum schema matching TS SDK's enumOutputStrategy.jsonSchema().
 	enumVals := make([]interface{}, len(opts.EnumValues))
@@ -1365,6 +1374,9 @@ func (n noopValidator) JSONSchema() map[string]interface{} { return n.jsonSchema
 // generateNoSchemaMode handles raw JSON generation without validation
 func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc objectCallCtx) (*GenerateObjectResult, error) {
 	prompt := buildPrompt(opts.Prompt, opts.Messages, opts.System)
+	if err := validateStepToolResults(prompt.Messages, nil); err != nil {
+		return nil, err
+	}
 
 	genOpts := &provider.GenerateOptions{
 		Prompt:           prompt,
@@ -1765,6 +1777,9 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 
 	// Build prompt
 	prompt := buildPrompt(opts.Prompt, opts.Messages, opts.System)
+	if err := validateStepToolResults(prompt.Messages, nil); err != nil {
+		return nil, err
+	}
 
 	// Create streaming generation options
 	genOpts := &provider.GenerateOptions{
