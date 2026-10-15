@@ -86,7 +86,10 @@ func sanitizeToolName(toolName string) string {
 }
 
 var invalidToolNameCharsPattern = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
-var whitespacePattern = regexp.MustCompile(`\s+`)
+
+// whitespacePattern is the JS /\s+/g class (RE2 \s lacks \v, NBSP and the
+// Unicode spaces, which JS collapses to a single space before they are stripped).
+var whitespacePattern = regexp.MustCompile(`[\t\n\x{0B}\f\r \x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}]+`)
 var invalidDocumentNameCharsPattern = regexp.MustCompile(`[^a-zA-Z0-9 ()\[\]-]`)
 
 // sanitizeDocumentName ports TS
@@ -918,8 +921,23 @@ func bedrockToolResultContent(part types.ToolResultContent, getDocumentName func
 		if part.Error != "" {
 			return []map[string]interface{}{{"text": part.Error}}, nil
 		}
+		// Legacy Result field, resolved like the Anthropic/Google converters:
+		// a string is text, an embedded output is unwrapped, anything else is
+		// JSON.stringify(value) (never Go's %v rendering).
+		switch v := part.Result.(type) {
+		case string:
+			return []map[string]interface{}{{"text": v}}, nil
+		case types.ToolResultOutput:
+			part.Output = &v
+			return bedrockToolResultContent(part, getDocumentName)
+		case *types.ToolResultOutput:
+			if v != nil {
+				part.Output = v
+				return bedrockToolResultContent(part, getDocumentName)
+			}
+		}
 		if part.Result != nil {
-			return []map[string]interface{}{{"text": fmt.Sprint(part.Result)}}, nil
+			return []map[string]interface{}{{"text": jsonStringify(part.Result)}}, nil
 		}
 		return []map[string]interface{}{{"text": ""}}, nil
 	}

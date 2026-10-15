@@ -243,7 +243,7 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) (map[
 			}
 			args = map[string]interface{}{"taskType": "IMAGE_VARIATION", "imageVariationParams": params, "imageGenerationConfig": imageGenerationConfig}
 		default:
-			return nil, nil, fmt.Errorf("unsupported task type: %s", taskType)
+			return nil, nil, fmt.Errorf("Unsupported task type: %s", taskType) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 	} else {
 		params := map[string]interface{}{"text": opts.Prompt}
@@ -335,7 +335,7 @@ func bedrockImageOptions(providerOptions map[string]interface{}) map[string]inte
 
 func bedrockImageFileBase64(file provider.ImageFile) (string, error) {
 	if file.Type == "url" || file.URL != "" {
-		return "", fmt.Errorf("URL-based images are not supported for Amazon Bedrock image editing. Please provide the image data directly")
+		return "", fmt.Errorf("URL-based images are not supported for Amazon Bedrock image editing. Please provide the image data directly.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	if alreadyBase64(file.Data) {
 		return string(file.Data), nil

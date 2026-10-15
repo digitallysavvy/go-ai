@@ -144,3 +144,29 @@ func TestSanitizeDocumentName(t *testing.T) {
 		}
 	}
 }
+
+// A legacy ToolResultContent{Result: map} (no Output) is JSON.stringify'd like
+// the Anthropic and Google converters do, not rendered with Go's %v.
+func TestBedrockToolResultContent_LegacyResultIsJSONEncoded(t *testing.T) {
+	got, err := bedrockToolResultContent(types.ToolResultContent{Result: map[string]interface{}{"a": 1.0, "b": []interface{}{"x"}}}, func(string) string { return "doc" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0]["text"] != `{"a":1,"b":["x"]}` {
+		t.Fatalf("got %#v", got)
+	}
+}
+
+// JS \s matches NBSP and other Unicode spaces, which collapse to one space
+// before the invalid-character strip (RE2 \s would let them be stripped).
+func TestSanitizeDocumentNameJSWhitespace(t *testing.T) {
+	for in, want := range map[string]string{
+		"my file.pdf": "my file",
+		"a  　 b.txt":  "a b",
+		"x\vy":        "x y",
+	} {
+		if got := sanitizeDocumentName(in); got != want {
+			t.Errorf("sanitizeDocumentName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

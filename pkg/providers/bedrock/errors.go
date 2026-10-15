@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"encoding/json"
+	"net/http"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
@@ -25,7 +26,12 @@ type bedrockErrorBody struct {
 // responseBody from the failed HTTP response).
 func bedrockAPIError(statusCode int, body []byte, headers map[string]string) *providererrors.ProviderError {
 	var parsed bedrockErrorBody
-	message := string(body)
+	// TS createJsonErrorResponseHandler: an empty or unparseable body gives the
+	// response status text (the body stays on ResponseBody).
+	message := http.StatusText(statusCode)
+	if message == "" {
+		message = string(body)
+	}
 	if err := json.Unmarshal(body, &parsed); err == nil && parsed.Message != "" {
 		if parsed.Type != "" {
 			message = parsed.Type + ": " + parsed.Message

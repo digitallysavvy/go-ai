@@ -1031,7 +1031,9 @@ func TestPrepareTools_RejectsForcedToolUse(t *testing.T) {
 		wantWarning := types.Warning{
 			Type:    "unsupported",
 			Feature: "toolChoice",
-			Details: "toolChoice 'tool' is not supported by this model because it rejects forced tool use. Only the 'bash' tool is sent with 'auto' tool choice. Instruct the model to use the tool in the prompt and verify that a tool call was made.",
+			// TS takes this warning from prepareAnthropicTools, whose text differs
+			// from Bedrock's own function-tool fallback warning.
+			Details: "toolChoice 'tool' is not supported with this model or thinking configuration. Only the 'bash' tool is sent with 'auto' tool choice. Instruct the model to use the tool in the prompt and verify that a tool call was made.",
 		}
 		if len(result.Warnings) != 1 || result.Warnings[0] != wantWarning {
 			t.Fatalf("warnings = %#v, want [%#v]", result.Warnings, wantWarning)
@@ -1340,8 +1342,12 @@ func TestBedrockAPIError_FormatsTypeAndMessage(t *testing.T) {
 	}
 
 	errUnparsable := bedrockAPIError(502, []byte("not json"), nil)
-	if errUnparsable.Message != "not json" {
-		t.Fatalf("Message = %q, want raw body fallback", errUnparsable.Message)
+	// TS createJsonErrorResponseHandler: unparseable/empty body -> status text.
+	if errUnparsable.Message != "Bad Gateway" || errUnparsable.ResponseBody != "not json" {
+		t.Fatalf("Message = %q body = %q, want status text with the body kept", errUnparsable.Message, errUnparsable.ResponseBody)
+	}
+	if empty := bedrockAPIError(503, nil, nil); empty.Message != "Service Unavailable" {
+		t.Fatalf("empty body Message = %q", empty.Message)
 	}
 }
 

@@ -113,3 +113,27 @@ func TestAWSSignerSkipsNonASCIIHeaderValues(t *testing.T) {
 		t.Fatalf("non-ASCII header must still be sent, got %q", req.Header.Get("X-Custom-Name"))
 	}
 }
+
+// SigV4 canonical form: query names/values are URI-encoded then sorted, header
+// values have whitespace runs collapsed and repeated headers comma-joined.
+func TestAWSSignerCanonicalQueryAndHeaderNormalization(t *testing.T) {
+	s := NewAWSSigner("AKID", "SECRET", "", "us-east-1")
+	u, _ := url.Parse("https://bedrock-runtime.us-east-1.amazonaws.com/x?b=a%2Fb+c&a=%7E%20x&a=1")
+	req := &http.Request{Method: http.MethodPost, URL: u, Header: http.Header{}}
+	req.Header.Add("X-Multi", "one   two")
+	req.Header.Add("X-Multi", " three ")
+
+	if got := s.buildCanonicalQueryString(req); got != "a=1&a=~%20x&b=a%2Fb%20c" {
+		t.Fatalf("canonical query = %q", got)
+	}
+	canonicalHeaders, _ := s.buildCanonicalHeaders(req)
+	if canonicalHeaders != "x-multi:one two,three\n" {
+		t.Fatalf("canonical headers = %q", canonicalHeaders)
+	}
+
+	req.Header.Add("X-Late", "ok")
+	req.Header.Add("X-Late", "café")
+	if _, signed := s.buildCanonicalHeaders(req); signed != "x-multi" {
+		t.Fatalf("a header with any non-ASCII value must not be signed: %q", signed)
+	}
+}
