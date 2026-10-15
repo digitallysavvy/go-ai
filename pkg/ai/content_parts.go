@@ -134,7 +134,7 @@ func generateResultContentParts(result *types.GenerateResult) []types.ContentPar
 	}
 	parts := append([]types.ContentPart(nil), result.Content...)
 	if result.Text != "" && !contentHasText(parts) {
-		parts = append([]types.ContentPart{types.TextContent{Text: result.Text}}, parts...)
+		parts = types.InsertLeadText(parts, result.Text)
 	}
 	seenToolCalls := map[string]bool{}
 	for i, part := range parts {

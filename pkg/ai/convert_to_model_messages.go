@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // MessageConversionError is returned when a UI message cannot be converted to
@@ -401,11 +402,11 @@ func uiToolCallContent(toolCallID, toolName string, input interface{}, providerE
 		call.Input = v
 	case map[string]interface{}:
 		call.Arguments = v
-		if data, err := json.Marshal(v); err == nil {
+		if data, err := jsonstr.Marshal(v); err == nil {
 			call.Input = string(data)
 		}
 	default:
-		if data, err := json.Marshal(v); err == nil {
+		if data, err := jsonstr.Marshal(v); err == nil {
 			call.Input = string(data)
 		}
 	}
@@ -461,7 +462,7 @@ func uiErrorMessage(value interface{}) string {
 	case error:
 		return v.Error()
 	default:
-		data, err := json.Marshal(v)
+		data, err := jsonstr.Marshal(v)
 		if err != nil {
 			return fmt.Sprint(v)
 		}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
@@ -323,7 +324,7 @@ func toolCallInputText(call types.ToolCall) string {
 	if call.Arguments == nil {
 		return ""
 	}
-	data, err := json.Marshal(call.Arguments)
+	data, err := jsonstr.Marshal(call.Arguments)
 	if err != nil {
 		return ""
 	}

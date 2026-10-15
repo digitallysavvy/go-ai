@@ -1810,12 +1810,12 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				Args:        call.Arguments,
 				ToolContext: telemetryToolContextFor(tsettings, call.ToolName, toolContext),
 			})
-			startMs := time.Now().UnixMilli()
+			toolStarted := time.Now()
 			toolResult, toolErr := telemetry.FireExecuteToolWithSettings(toolTelCtx, tsettings, call.ToolName, call.Arguments,
 				func(execCtx context.Context, args map[string]interface{}) (interface{}, error) {
 					return tool.Execute(execCtx, args, execOptions)
 				})
-			durationMs := time.Now().UnixMilli() - startMs
+			durationMs := time.Since(toolStarted).Milliseconds()
 			timings.record(call.ID, durationMs)
 			telemetry.FireOnToolCallFinish(toolTelCtx, telemetry.TelemetryToolCallFinishEvent{
 				Settings:    tsettings,
@@ -1949,7 +1949,7 @@ func contentFromGenerateResult(result *types.GenerateResult, toolCalls []types.T
 	}
 	parts := append([]types.ContentPart(nil), result.Content...)
 	if result.Text != "" && !agentContentHasText(parts) {
-		parts = append([]types.ContentPart{types.TextContent{Text: result.Text}}, parts...)
+		parts = types.InsertLeadText(parts, result.Text)
 	}
 	seenToolCalls := map[string]bool{}
 	for i, part := range parts {

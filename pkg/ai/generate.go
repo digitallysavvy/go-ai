@@ -18,12 +18,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
-// now returns the current time in milliseconds since Unix epoch.
-// Used for measuring tool call execution duration.
-func now() int64 {
-	return time.Now().UnixMilli()
-}
-
 // abortReason resolves the reason an aborted call should report:
 // context.Cause(ctx) when the context carries a specific cancellation cause,
 // else fallback (typically the error that surfaced the abort). Mirrors TS
@@ -2244,7 +2238,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				execCtx, execCancel = context.WithTimeout(toolCtx, *toolTimeout)
 			}
 
-			startTime := now()
+			toolStarted := time.Now()
 			toolResult, toolErr := telemetry.FireExecuteToolWithSettings(
 				execCtx,
 				callbacks.telemetrySettings,
@@ -2254,7 +2248,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 					return tool.Execute(execCtx, args, execOptions)
 				},
 			)
-			durationMs := now() - startTime
+			durationMs := time.Since(toolStarted).Milliseconds()
 			if callbacks.toolExecutionMs != nil {
 				callbacks.toolExecutionMs[call.ID] = durationMs
 			}

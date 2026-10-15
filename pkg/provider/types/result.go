@@ -450,3 +450,28 @@ type StepResult struct {
 	// RuntimeContext is the user-defined context in effect for this step.
 	RuntimeContext interface{} `json:"runtimeContext,omitempty"`
 }
+
+// InsertLeadText returns parts with a TextContent{Text: text} inserted after the
+// leading run of reasoning parts, or at the front when there are none.
+//
+// Providers report a response's primary text in GenerateResult.Text and only
+// the remaining parts (reasoning, sources, files, tool calls) in
+// GenerateResult.Content. TS exposes every part, text included, in `content`,
+// in model order. Core uses this to rebuild that list: reasoning is emitted
+// before the answer text by every provider, while sources, files and tool
+// calls follow it.
+func InsertLeadText(parts []ContentPart, text string) []ContentPart {
+	i := 0
+	for i < len(parts) {
+		switch parts[i].(type) {
+		case ReasoningContent, *ReasoningContent:
+			i++
+			continue
+		}
+		break
+	}
+	out := make([]ContentPart, 0, len(parts)+1)
+	out = append(out, parts[:i]...)
+	out = append(out, TextContent{Text: text})
+	return append(out, parts[i:]...)
+}
