@@ -235,6 +235,23 @@ func TestHTTPPolicyClient(t *testing.T) {
 	}
 }
 
+// OPA answers an undefined decision with `{}`; the client returns the missing
+// `result` as nil (TS: undefined), which normalizes to not-applicable.
+func TestHTTPPolicyClientUndefinedDecisionIsNotApplicable(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+	raw, err := HTTPPolicyClient(server.URL).Evaluate(context.Background(), "p", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := NormalizeOPADecision(raw); got.Type != types.ToolApprovalStatusNotApplicable {
+		t.Fatalf("decision = %+v, want not-applicable", got)
+	}
+}
+
 func TestHTTPPolicyClientNon2xxRejects(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
