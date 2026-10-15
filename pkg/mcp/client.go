@@ -351,6 +351,12 @@ func (c *MCPClient) handshake(ctx context.Context) error {
 
 	c.protocolEra = "legacy"
 	c.protocolVersion = LatestLegacyProtocolVersion
+	// TS setTransportProtocolVersion(legacy): a failed server/discover probe
+	// left the transport on the modern version, which must not be sent as
+	// MCP-Protocol-Version on the initialize request.
+	if versionTransport, ok := c.transport.(ProtocolVersionTransport); ok {
+		versionTransport.SetProtocolVersion(c.protocolVersion)
+	}
 
 	// Send initialize request
 	if err := c.initialize(ctx); err != nil {
